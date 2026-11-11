@@ -241,6 +241,7 @@ export component MixerConsole inherits Rectangle {
     in property <string> master-color-label: "";
     in property <string> master-meter-peak: "-120.0";
     in property <string> master-meter-rms: "-120.0";
+    in property <string> master-meter-lufs: "-120.0";
     in property <float> master-meter-level: 0.0;
 
     // ⭐ 任务单 `#186`：**窄档判定**（本文件唯一一处几何断点）。
@@ -1123,6 +1124,17 @@ export component MixerConsole inherits Rectangle {
                 background: Tokens.warn-amber;
                 border-radius: Tokens.radius-sm;
             }
+        }
+
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 164px;
+            width: 24px;
+            height: 10px;
+            text: root.master-meter-lufs;
+            color: Tokens.ink-2;
+            font-size: 8px;
+            overflow: elide;
         }
 
         Rectangle {

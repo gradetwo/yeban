@@ -170,6 +170,7 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> master-color-label: "";
     in property <string> master-meter-peak: "-120.0";
     in property <string> master-meter-rms: "-120.0";
+    in property <string> master-meter-lufs: "-120.0";
     in property <float> master-meter-level: 0.0;
     // ⭐ 控制台最大化（`Cmd/Ctrl+Alt+M` / 右上角 ⤢）：只读绑定，唯一写者 = 宿主
     // （`MainWindow.console-maximized`）—— 本组件用它给按钮报 `accessible-checked`。
@@ -472,6 +473,7 @@ export component ConsoleTabs inherits Rectangle {
         master-color-label: root.master-color-label;
         master-meter-peak: root.master-meter-peak;
         master-meter-rms: root.master-meter-rms;
+        master-meter-lufs: root.master-meter-lufs;
         master-meter-level: root.master-meter-level;
         // 写入面：三个手势 + 两个开关，全部原样上抛（`MainWindow` 是唯一落点）。
         mixer-fader-grab(index, y) => {

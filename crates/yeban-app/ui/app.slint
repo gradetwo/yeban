@@ -1542,6 +1542,7 @@ export component MainWindow inherits Window {
     in property <string> master-color-label: "";
     in property <string> master-meter-peak: "-120.0";
     in property <string> master-meter-rms: "-120.0";
+    in property <string> master-meter-lufs: "-120.0";
     in property <float> master-meter-level: 0.0;
 
     title: root.window-title;
@@ -2127,6 +2128,7 @@ export component MainWindow inherits Window {
             master-color-label: root.master-color-label;
             master-meter-peak: root.master-meter-peak;
             master-meter-rms: root.master-meter-rms;
+            master-meter-lufs: root.master-meter-lufs;
             master-meter-level: root.master-meter-level;
 
             select-piano-roll => { root.console-tab = 0; }

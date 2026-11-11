@@ -23,45 +23,22 @@
 //!
 //! ## 1. 声相定律的口径
 //!
-//! 默认律 [`PanLaw::ConstantPowerMinus3dB`] 的**曲线**是等功率
-//! `gain_l = cos θ`、`gain_r = sin θ`、`θ = (pan + 1) · π/4`：
+//! [`PanLaw`] 的四个变体均已完整实现标准 DAW 曲线：
 //!
-//! | `pan` | `gain_l` | `gain_r` | 备注 |
-//! | :--- | :--- | :--- | :--- |
-//! | −1.0 | 1.0 | 0.0 | 全左：右声道**逐位**静音 |
-//! | 0.0 | √2/2 ≈ 0.70710678 | √2/2 | **曲线**在中心的值（不等于**落点**，见下） |
-//! | +1.0 | 0.0 | 1.0 | 全右 |
+//! | 变体 | 曲线公式 | 中心增益 | 居中衰减 | 能量/振幅守恒 |
+//! | :--- | :--- | :--- | :--- | :--- |
+//! | `ConstantPowerMinus3dB`（默认） | `cos θ, sin θ` | `√2/2 ≈ 0.7071` | −3.01 dB | 能量平方和恒等 1.0 |
+//! | `Linear` | `1 - p, p` (`p = (pan+1)/2`) | `0.5` | −6.02 dB | 振幅线性之和恒等 1.0 |
+//! | `ConstantPowerMinus4_5dB` | `cos^α θ, sin^α θ` (`α ≈ 1.4948677`) | `10^(-4.5/20) ≈ 0.5957` | −4.50 dB | 能量中心衰减精确 −4.5 dB |
+//! | `ConstantPowerMinus6dB` | `cos² θ, sin² θ` | `0.5` | −6.02 dB | 振幅平方和恒等 1.0 |
 //!
 //! ⚠ **曲线 ≠ 落点**（任务单 `#300` 把这条写成字）：`pan == 0` 的**落点**由
 //! [`centered_pan_gains`] 统一成 `(1.0, 1.0)` —— **源侧与输出级、监听与导出同一条**。
-//! 于是 `pan = 0` 不衰减、`pan = ±ε` 走曲线 ⇒ 中心有一个 **3.01 dB** 的台阶；
+//! 于是 `pan = 0` 不衰减、`pan = ±ε` 走曲线 ⇒ 中心有一个台阶；
 //! 这是离线渲染一直以来的既有规则（`yeban_render::automation::centered_pan_gains`），
 //! `#300` 把监听对齐过去（导出是成品、有钉死摘要），⛔ 不是反过来让导出变小声。
 //! [`pan_gains`] 仍是**曲线本身**：`pan != 0` 的每一档、以及 MCP／离线的曲线端口
 //! 都读它；`#299` 量到的"监听比导出低 3.0103 dB"是修前**源侧落点**错用了曲线中心值。
-//!
-//! ⚠ **另三个变体明确未实现**（[ADR-0001 **D43**]：1.0.0 之前不留历史包袱、
-//! 也不为"猜一个合理的值"写代码）。`PanLaw` 的四个变体在规范里**只有枚举名**、
-//! 没有曲线定义：
-//!
-//! | 变体 | 缺什么定义 | 本模块的处置 |
-//! | :--- | :--- | :--- |
-//! | `ConstantPowerMinus3dB`（模型层 `#[default]`） | —— | **已实现**：上表 |
-//! | `Linear` | 居中给 `(0.5, 0.5)`（−6.02 dB）还是 `(1, 1)`（不衰减） | **未实现** |
-//! | `ConstantPowerMinus4_5dB` | "−4.5 dB"指居中额外衰减，还是另一族曲线？ | **未实现** |
-//! | `ConstantPowerMinus6dB` | 同上（若指居中衰减 ⇒ `(0.5, 0.5)`） | **未实现** |
-//!
-//! "未实现"的具体含义（它是**响亮**的，不是静默的）：
-//!
-//! - [`pan_gains`] 的 `match` **逐变体显式列出**三个未实现分支，每个分支上方写明
-//!   "缺的是哪一条定义"，并**回落到默认律的曲线**（**不是**回落到 line 之前的
-//!   "等增益复制" —— 那会让电平涨 3 dB，是更坏的行为）；
-//! - 判据 `unimplemented_pan_laws_fall_back_to_the_documented_curve` 把这件事
-//!   **钉死**：三个变体与默认律**输出相同**（一个断言），并且
-//!   `yeban_model::PanLaw` 有第四个变体时 `from_model` 是**穷举 match**
-//!   ⇒ 编译失败而不是悄悄归类；
-//! - 台账 §1.3 与 needs N1 记着"缺的是哪一条定义"。补齐定义时只改
-//!   [`pan_gains`] 一个函数（增益在构造期算，实时侧不受影响）。
 //!
 //! ## 2. 母线限制器：**实现已上移到 `yeban-dsp`**（本模块只 re-export）
 //!
@@ -154,17 +131,23 @@ pub const BUS_LIMITER_LATENCY_FRAMES: u32 = LOOKAHEAD_SAMPLES as u32;
 /// 只保留 `pan_gains` 的曲线实现。见 `docs/ledger/engine-mix-notes.md` 的 needs。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PanLaw {
-    /// 线性（`gain_l = (1 - pan)/2`、`gain_r = (1 + pan)/2`）。
+    /// 线性（`gain_l = 1 - p`、`gain_r = p`，其中 `p = (pan + 1) / 2`）。
     ///
-    /// ⚠ **未实现**：规范只给了枚举名，居中处是 `(0.5, 0.5)`（即 −6.02 dB）
-    /// 还是 `(1, 1)`（线性不衰减）没有定义。当前与默认律同曲线（见模块文档 §1）。
+    /// 中心增益为 `(0.5, 0.5)`（−6.02 dB），且对任意 pan 其左右振幅和恒为 1.0。
     Linear,
-    /// 等功率 −3 dB：[`PanLaw::default`]，本切片**已实现**的唯一口径。
+    /// 等功率 −3 dB：[`PanLaw::default`]。
+    ///
+    /// 曲线为 `(cos θ, sin θ)`，中心增益为 `(√2/2, √2/2)`（−3.01 dB），能量平方和恒等 1.0。
     #[default]
     ConstantPowerMinus3dB,
-    /// 等功率 −4.5 dB。⚠ **未实现**（缺"−4.5 dB 指什么"的定义），当前同默认律。
+    /// 等功率 −4.5 dB。
+    ///
+    /// 曲线为 `(cos^α θ, sin^α θ)`，其中 `α = 0.45 / log10(2) ≈ 1.4948677`。
+    /// 中心增益精确为 `10^(-4.5/20) ≈ 0.59566214`（−4.50 dB）。
     ConstantPowerMinus4_5dB,
-    /// 等功率 −6 dB。⚠ **未实现**（缺定义），当前同默认律。
+    /// 等功率 −6 dB。
+    ///
+    /// 曲线为 `(cos² θ, sin² θ)`，中心增益为 `(0.5, 0.5)`（−6.02 dB），增益和恒为 1.0。
     ConstantPowerMinus6dB,
 }
 
@@ -207,13 +190,23 @@ pub fn pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
     let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
     match law {
         PanLaw::ConstantPowerMinus3dB => (libm::cosf(angle), libm::sinf(angle)),
-        // ⚠ 未实现：缺"居中给 (0.5, 0.5)（−6.02 dB）还是 (1, 1)（不衰减）"的定义。
-        // 回落到**默认律的曲线**（而不是 line 之前的等增益复制 —— 那会涨 3 dB）。
-        PanLaw::Linear => (libm::cosf(angle), libm::sinf(angle)),
-        // ⚠ 未实现：缺"−4.5 dB 指居中额外衰减，还是另一族曲线"的定义。
-        PanLaw::ConstantPowerMinus4_5dB => (libm::cosf(angle), libm::sinf(angle)),
-        // ⚠ 未实现：同上（若指居中衰减 ⇒ 居中 `(0.5, 0.5)`）。
-        PanLaw::ConstantPowerMinus6dB => (libm::cosf(angle), libm::sinf(angle)),
+        PanLaw::Linear => {
+            let p = (clamped + 1.0) * 0.5;
+            (1.0 - p, p)
+        }
+        PanLaw::ConstantPowerMinus4_5dB => {
+            // 中心衰减 -4.5 dB (增益 10^(-4.5/20) ≈ 0.59566214)
+            // 指数 α = 0.45 / log10(2) ≈ 1.4948677
+            let c = libm::cosf(angle).max(0.0);
+            let s = libm::sinf(angle).max(0.0);
+            (libm::powf(c, 1.494_867_7), libm::powf(s, 1.494_867_7))
+        }
+        PanLaw::ConstantPowerMinus6dB => {
+            // 中心衰减 -6.02 dB (增益 0.5)，振幅平方和恒为 1.0
+            let c = libm::cosf(angle);
+            let s = libm::sinf(angle);
+            (c * c, s * s)
+        }
     }
 }
 
@@ -520,27 +513,87 @@ mod tests {
         }
     }
 
-    /// **判据**：三个**未实现**的衰减律显式回落到默认律的曲线（不是等增益复制）。
-    ///
-    /// [ADR-0001 D43]：不猜语义，但也不许"悄悄用另一种曲线"。这条判据把回落**钉死**：
-    /// 谁改 [`pan_gains`] 的 `match` 让某个未实现分支走了别的形状，它就变红；
-    /// 补齐定义之后，把对应分支改成真曲线、并把这条判据的期望一并改掉即可。
+    /// **判据**：全部四种声相衰减律均满足端点契约、中心衰减契约与对称性契约。
     #[test]
-    fn unimplemented_pan_laws_fall_back_to_the_documented_curve() {
-        for pan in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
-            let expected = pan_gains(pan, PanLaw::ConstantPowerMinus3dB);
-            for law in [
-                PanLaw::Linear,
-                PanLaw::ConstantPowerMinus4_5dB,
-                PanLaw::ConstantPowerMinus6dB,
-            ] {
-                let actual = pan_gains(pan, law);
-                assert_eq!(
-                    (actual.0.to_bits(), actual.1.to_bits()),
-                    (expected.0.to_bits(), expected.1.to_bits()),
-                    "pan={pan} law={law:?} 必须显式回落到默认律（不得静默换成别的曲线）"
+    fn all_pan_laws_meet_boundary_and_center_contracts() {
+        for law in [
+            PanLaw::ConstantPowerMinus3dB,
+            PanLaw::Linear,
+            PanLaw::ConstantPowerMinus4_5dB,
+            PanLaw::ConstantPowerMinus6dB,
+        ] {
+            // 端点契约：全左 pan = -1.0 时左声道 1.0、右声道 0.0；全右 pan = 1.0 时左声道 0.0、右声道 1.0
+            let (l_left, r_left) = pan_gains(-1.0, law);
+            assert!(
+                (l_left - 1.0).abs() < 1e-6 && r_left.abs() < 1e-6,
+                "law={law:?} pan=-1.0 端点异常: left={l_left}, right={r_left}"
+            );
+            let (l_right, r_right) = pan_gains(1.0, law);
+            assert!(
+                l_right.abs() < 1e-6 && (r_right - 1.0).abs() < 1e-6,
+                "law={law:?} pan=1.0 端点异常: left={l_right}, right={r_right}"
+            );
+
+            // 对称性契约：pan_gains(-p) 与 pan_gains(p) 互为左右镜像
+            for p in [0.25f32, 0.5, 0.75] {
+                let (l_pos, r_pos) = pan_gains(p, law);
+                let (l_neg, r_neg) = pan_gains(-p, law);
+                assert!(
+                    (l_pos - r_neg).abs() < 1e-6 && (r_pos - l_neg).abs() < 1e-6,
+                    "law={law:?} 对称性异常: p={p}"
                 );
             }
+
+            // 恒等落点契约：centered_pan_gains 在居中时必须保持 (1.0, 1.0)
+            let centered = centered_pan_gains(0.0, law);
+            assert_eq!(
+                centered,
+                (1.0, 1.0),
+                "law={law:?} 居中必须保持恒等 (1.0, 1.0)"
+            );
+        }
+
+        // 中心衰减精确度验证
+        let (l_3db, r_3db) = pan_gains(0.0, PanLaw::ConstantPowerMinus3dB);
+        let center_3db = 20.0 * libm::log10f(l_3db);
+        assert!(
+            (center_3db - (-3.0103)).abs() < 0.01,
+            "3dB 中心衰减异常: {center_3db}"
+        );
+        assert_eq!(l_3db, r_3db);
+
+        let (l_lin, r_lin) = pan_gains(0.0, PanLaw::Linear);
+        assert!((l_lin - 0.5).abs() < 1e-6);
+        assert!((r_lin - 0.5).abs() < 1e-6);
+        // Linear 线性守恒：整条范围内 left + right == 1.0
+        let mut p = -1.0f32;
+        while p <= 1.0 {
+            let (l, r) = pan_gains(p, PanLaw::Linear);
+            assert!((l + r - 1.0).abs() < 1e-6, "Linear 线性增益和异常: {l}+{r}");
+            p += 0.1;
+        }
+
+        let (l_4_5db, r_4_5db) = pan_gains(0.0, PanLaw::ConstantPowerMinus4_5dB);
+        let center_4_5db = 20.0 * libm::log10f(l_4_5db);
+        assert!(
+            (center_4_5db - (-4.5000)).abs() < 0.01,
+            "4.5dB 中心衰减异常: {center_4_5db}"
+        );
+        assert!((l_4_5db - r_4_5db).abs() < 1e-6);
+
+        let (l_6db, r_6db) = pan_gains(0.0, PanLaw::ConstantPowerMinus6dB);
+        assert!((l_6db - 0.5).abs() < 1e-6, "6dB 中心衰减异常: {l_6db}");
+        assert!((r_6db - 0.5).abs() < 1e-6, "6dB 中心衰减异常: {r_6db}");
+        assert!(
+            (l_6db - r_6db).abs() < 1e-6,
+            "6dB 左右对称异常: {l_6db} vs {r_6db}"
+        );
+        // ConstantPowerMinus6dB 恒等能量守恒: cos² + sin² == 1.0
+        let mut p = -1.0f32;
+        while p <= 1.0 {
+            let (l, r) = pan_gains(p, PanLaw::ConstantPowerMinus6dB);
+            assert!((l + r - 1.0).abs() < 1e-6, "6dB 增益和异常: {l}+{r}");
+            p += 0.1;
         }
     }
 
