@@ -1396,6 +1396,8 @@ pub enum Plan {
         /// `band_definitions_hz` / `structural_summary` / `bar_series`
         /// + `provider` / `resolution`，`include_png_path` 时另有
         ///   `pngPath: null` + `pngNote`）。
+        ///
+        /// `format: "html"` 时 `data` 是完整 HTML 报告字符串（不是对象）。
         data: Value,
     },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。

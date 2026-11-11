@@ -48,6 +48,16 @@
 //! * 缺省 = 渲染失败即失败（`render-failed`，退出码 5）；
 //! * 给 `--overview-score-only` = 跳过整曲渲染，直接出谱面分析（`render=score-only` 会写在
 //!   回执行与 JSON 的 `renderMode` 字段里）—— 名字里带 `score-only`，谁也误会不了。
+//!
+//! ## `--export-song-overview-html`：同一份总览的 HTML 报告
+//!
+//! 与 JSON 出口**同一份"算总览"步骤**（provider / ScoreOnly → `rounded`，见
+//! [`compute_overview`]），只差最后一步：JSON 换成 `yeban-mcp` 的转置 +
+//! `yeban-dsp` 唯一渲染器的单文件自包含 HTML 字符串（与
+//! `tools/call get_song_overview {"format": "html"}` 的 `data` 逐字节相同）。
+//! 报告标题取 `project.title`（与工具侧同一来源 ⇒ 逐字节一致仍成立）。
+//! 回执前缀是 `exported-song-overview-html:`；失败语义与 JSON 出口同款（见上）。
+//! HTML 报告本身不写 `renderMode`（它不是 JSON），口径只写在回执行 `render=` 里。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -55,7 +65,8 @@ use std::sync::Arc;
 
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::song_overview::{
-    Profile, Resolution, SongOverviewProvider, SongOverviewRequest, rounded,
+    Profile, Resolution, SongOverviewProvider, SongOverviewRequest,
+    overview_html_report_with_title, rounded,
 };
 use yeban_model::{AssetHash, YebanProjectV1};
 
@@ -64,6 +75,29 @@ use crate::song_overview_provider::RealSongOverviewProvider;
 
 /// 导出成功后回执行的第一段（稳定前缀，判据与脚本据此切片）。
 pub const RECEIPT_PREFIX: &str = "exported-song-overview:";
+
+/// HTML 报告出口的回执前缀（与 JSON 出口的唯一区别，判据据此切片）。
+pub const RECEIPT_HTML_PREFIX: &str = "exported-song-overview-html:";
+
+/// 导出形态（回执前缀的唯一来源：`line()` 不手写前缀）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// JSON（`exported-song-overview:`）。
+    Json,
+    /// HTML 报告（`exported-song-overview-html:`）。
+    Html,
+}
+
+impl ExportFormat {
+    /// 回执里的稳定前缀。
+    #[must_use]
+    pub const fn receipt_prefix(self) -> &'static str {
+        match self {
+            Self::Json => RECEIPT_PREFIX,
+            Self::Html => RECEIPT_HTML_PREFIX,
+        }
+    }
+}
 
 /// 两种渲染口径（写进回执 `render=` 与 JSON 的 `renderMode`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +136,8 @@ pub struct OverviewExportReport {
     pub provider: &'static str,
     /// `render=full|score-only`。
     pub mode: RenderMode,
+    /// 导出形态（决定回执前缀；JSON 行为一字不动）。
+    pub format: ExportFormat,
     /// 有声小节的 `lufs_short` 范围（全静音 ⇒ `None`，⛔ 不写成 −70）。
     pub lufs: Option<(f64, f64)>,
     /// 高潮小节（`structural_summary.climax_bar`，§8.2 里它是 `u64` 的小节号）。
@@ -120,8 +156,9 @@ impl OverviewExportReport {
             || "lufs=none".to_owned(),
             |(low, high)| format!("lufs={low:.1}..{high:.1}"),
         );
+        let prefix = self.format.receipt_prefix();
         format!(
-            "{RECEIPT_PREFIX} path={} bytes={} bars={} resolution={} profile={} provider={} \
+            "{prefix} path={} bytes={} bars={} resolution={} profile={} provider={} \
              render={} {lufs} climaxBar={} anomalies={} cacheHit={}",
             self.path.display(),
             self.bytes,
@@ -226,27 +263,7 @@ pub fn export_song_overview(
     assets: &[(AssetHash, Vec<u8>)],
     mode: RenderMode,
 ) -> Result<OverviewExportReport, OverviewExportError> {
-    // provider 要一份共享池（它内部按需解码，缓存也在它里面）。批处理是一次性的 ⇒
-    // 这份 `Arc<BTreeMap>` 只活这一次调用，不存在"多轨共享"之外的复用诉求。
-    let pool: Arc<BTreeMap<AssetHash, Vec<u8>>> =
-        Arc::new(assets.iter().cloned().collect::<BTreeMap<_, _>>());
-    let provider =
-        RealSongOverviewProvider::new(project_dir.map(Path::to_path_buf), Arc::clone(&pool));
-    let request = SongOverviewRequest {
-        resolution: Resolution::Bar,
-        profile: Profile::Default,
-        expected_levels: BTreeMap::new(),
-    };
-
-    let overview = match mode {
-        RenderMode::Full => provider
-            .overview(project, &request)
-            .map_err(|fault| OverviewExportError::Render(Box::new(fault)))?,
-        RenderMode::ScoreOnly => crate::song_overview_provider::score_only_overview(project)
-            .map_err(|fault| OverviewExportError::Render(Box::new(fault)))?,
-    };
-    // §8.2 取整：**同一个**函数（见模块文档的逐字节契约）。
-    let overview = rounded(overview);
+    let (overview, provider, request) = compute_overview(project, project_dir, assets, mode)?;
     let mut data = serde_json::to_value(&overview).map_err(|error| {
         OverviewExportError::Render(Box::new(Fault::domain(
             yeban_mcp::tools::ErrorCode::IoError,
@@ -254,10 +271,7 @@ pub fn export_song_overview(
         )))
     })?;
     let object = data.as_object_mut().expect("SongOverview 序列化后是对象");
-    object.insert(
-        "provider".to_owned(),
-        serde_json::Value::from(provider.name()),
-    );
+    object.insert("provider".to_owned(), serde_json::Value::from(provider));
     object.insert(
         "resolution".to_owned(),
         serde_json::Value::from(request.resolution.as_str()),
@@ -291,8 +305,89 @@ pub fn export_song_overview(
         bars: overview.bar_series.len(),
         resolution: request.resolution.as_str(),
         profile: "default",
-        provider: provider.name(),
+        provider,
         mode,
+        format: ExportFormat::Json,
+        lufs: lufs_range(&overview),
+        climax_bar: overview.structural_summary.climax_bar,
+        anomalies: overview.structural_summary.detected_anomalies.len(),
+        cache_hit: false,
+    })
+}
+
+/// 两条出口共用的"算总览"步骤：provider / ScoreOnly → §8.2 取整。
+///
+/// 返回（已取整总览，provider 名，本次请求）。JSON 与 HTML 在此之后分叉。
+fn compute_overview(
+    project: &YebanProjectV1,
+    project_dir: Option<&Path>,
+    assets: &[(AssetHash, Vec<u8>)],
+    mode: RenderMode,
+) -> Result<
+    (
+        yeban_mcp::output_schema::SongOverview,
+        &'static str,
+        SongOverviewRequest,
+    ),
+    OverviewExportError,
+> {
+    // provider 要一份共享池（它内部按需解码，缓存也在它里面）。批处理是一次性的 ⇒
+    // 这份 `Arc<BTreeMap>` 只活这一次调用，不存在"多轨共享"之外的复用诉求。
+    let pool: Arc<BTreeMap<AssetHash, Vec<u8>>> =
+        Arc::new(assets.iter().cloned().collect::<BTreeMap<_, _>>());
+    let provider =
+        RealSongOverviewProvider::new(project_dir.map(Path::to_path_buf), Arc::clone(&pool));
+    let request = SongOverviewRequest {
+        resolution: Resolution::Bar,
+        profile: Profile::Default,
+        expected_levels: BTreeMap::new(),
+    };
+
+    let overview = match mode {
+        RenderMode::Full => provider
+            .overview(project, &request)
+            .map_err(|fault| OverviewExportError::Render(Box::new(fault)))?,
+        RenderMode::ScoreOnly => crate::song_overview_provider::score_only_overview(project)
+            .map_err(|fault| OverviewExportError::Render(Box::new(fault)))?,
+    };
+    // §8.2 取整：**同一个**函数（见模块文档的逐字节契约）。
+    let overview = rounded(overview);
+    Ok((overview, provider.name(), request))
+}
+
+/// 算一份总览并**原子**落盘成 HTML 报告，返回实测读数。
+///
+/// 与 [`export_song_overview`] 同一份"算总览"步骤（见 [`compute_overview`]），
+/// 只差最后一步：JSON 换成转置 + `yeban-dsp` 唯一渲染器的 HTML 字符串；
+/// 回执前缀是 `exported-song-overview-html:`。失败语义与 JSON 出口同款。
+///
+/// # 参数 / Errors
+///
+/// 同 [`export_song_overview`]（`path` 是 `.html` 落点）。
+pub fn export_song_overview_html(
+    project: &YebanProjectV1,
+    path: &Path,
+    project_dir: Option<&Path>,
+    assets: &[(AssetHash, Vec<u8>)],
+    mode: RenderMode,
+) -> Result<OverviewExportReport, OverviewExportError> {
+    let (overview, provider, request) = compute_overview(project, project_dir, assets, mode)?;
+    let text = overview_html_report_with_title(&overview, &project.title);
+    let report: SaveReport = write_file_atomically(text.as_bytes(), path).map_err(|source| {
+        OverviewExportError::Save {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(OverviewExportReport {
+        path: report.path,
+        bytes: report.bytes,
+        bars: overview.bar_series.len(),
+        resolution: request.resolution.as_str(),
+        profile: "default",
+        provider,
+        mode,
+        format: ExportFormat::Html,
         lufs: lufs_range(&overview),
         climax_bar: overview.structural_summary.climax_bar,
         anomalies: overview.structural_summary.detected_anomalies.len(),

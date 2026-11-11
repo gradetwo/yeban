@@ -55,8 +55,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
-use yeban_dsp::song_overview::{
-    AnalysisOptions, AudioInput, SongOverview, analyze_song_overview_with_options,
+use yeban_dsp::song_overview::{AnalysisOptions, AudioInput, analyze_song_overview_with_options};
+
+/// `yeban-dsp` 总览类型的再导出：`yeban-mcp` 经本 crate 调用 dsp 的 HTML 渲染器
+/// （`yeban-mcp → yeban-render` 是已登记例外；`pub use yeban_dsp::loudness` 同款先例
+/// 在 `crate::loudness`）。再导出不新增任何依赖边：`yeban-mcp` 的清单里不出现
+/// `yeban-dsp`，守卫 `check_mcp_dependency_direction.py` 仍只认那一条已登记边。
+pub use yeban_dsp::song_overview::{
+    Anomaly, AnomalyType, BarSeries, BestMatch, NO_ENVELOPE, RepeatedPassage, RepetitionSummary,
+    SCHEMA_VERSION, SongMeta, SongOverview, StructuralSummary,
+};
+/// 同上：HTML 渲染器（唯一实现，住在 `yeban-dsp` 的 `song_overview_report`）。
+pub use yeban_dsp::song_overview_report::{
+    DEFAULT_REPORT_TITLE, render_html_report, render_html_report_with_title,
 };
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_model::{

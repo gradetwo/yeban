@@ -61,6 +61,11 @@
 //! - `include_png_path`：缺省 `false`。Phase 1 **只接受参数、不产 PNG**：
 //!   给 `true` 时响应带 `pngPath: null` + 一句 `pngNote`（Phase 2 再接 Slint
 //!   离屏渲染，设计稿 §8.1），⛔ 不声称已实现未实现的功能。
+//! - `format`：`"json"`（缺省，现有行为一字不动）或 `"html"`（返回完整 HTML 报告
+//!   字符串，见 [`overview_html_report`]）；其它值 ⇒ `INVALID_PARAMETER_RANGE`
+//!   （`reason: "unknownFormat"`）。`format: "html"` 与 `include_png_path: true`
+//!   同给 ⇒ 同码（`reason: "includePngPathRequiresJson"`）：HTML 报告没有
+//!   `pngPath` 槽位，⛔ 不静默忽略。
 //! - 没有活跃工程 ⇒ `NO_ACTIVE_PROJECT`（与其它只读工具同一口径）。
 //! - 宿主没有注入 provider ⇒ `CONFLICT` + `reason: "providerUnavailable"`
 //!   （与 `yeban_launch_scene` 的 `engineUnavailable` 同一款"响亮拒绝"，
@@ -70,9 +75,16 @@
 
 use serde_json::Value;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_model::YebanProjectV1;
+use yeban_render::song_overview::{
+    Anomaly as DspAnomaly, AnomalyType as DspAnomalyType, BarSeries as DspBarSeries,
+    BestMatch as DspBestMatch, DEFAULT_REPORT_TITLE, NO_ENVELOPE,
+    RepeatedPassage as DspRepeatedPassage, RepetitionSummary as DspRepetitionSummary,
+    SCHEMA_VERSION, SongMeta as DspSongMeta, SongOverview as DspSongOverview,
+    StructuralSummary as DspStructuralSummary, render_html_report_with_title,
+};
 
 use crate::output_schema::{
     BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
@@ -248,6 +260,163 @@ pub fn rounded(mut overview: SongOverview) -> SongOverview {
     overview
 }
 
+/// `format` 参数的响应形态（缺省 `"json"`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverviewFormat {
+    /// §8.2 JSON（既有行为，一字不动）。
+    Json,
+    /// 单文件 HTML 报告（[`overview_html_report`]）。
+    Html,
+}
+
+/// `u64` 小节号 → dsp 的 `u32`（饱和截断；小节号是小整数，截断臂不可达）。
+fn to_u32(value: u64) -> u32 {
+    value.min(u32::MAX as u64) as u32
+}
+
+/// 把已取整的 §8.2 总览（行式）转置成 dsp 列式并渲染成单文件 HTML 报告（通用标题口径）。
+///
+/// 唯一 HTML 实现住在 `yeban-dsp` 的 `song_overview_report`（经 `yeban-render` 的
+/// 再导出调用，见本文件头的依赖说明）；这里只做机械转置，⛔ 不另写 HTML。
+/// CLI 的 `--export-song-overview-html` 调同一函数 ⇒ 两边逐字节一致。
+/// 标题口径见 [`overview_html_report_with_title`]：两边都传当前工程的
+/// `project.title`，同一工程 ⇒ 同一标题 ⇒ 逐字节一致仍成立。
+///
+/// 转置口径：
+/// - 数值已由 handler 按 §8.2 取整（归一化 2 位、dB 1 位），HTML 显示的正是 JSON 的数；
+/// - `envelope_lo` / `envelope_hi` 的 `None`（无等级）→ dsp 哨兵 [`NO_ENVELOPE`]；
+/// - `resolution: "beat"` 的拍行按小节去重（取每小节首行；拍行值继承所属小节，
+///   逐位相同，去重不丢信息），报告恒为小节级；
+/// - `effective_weights` 不在 §8.2 形状里：填所选曲风档的档位权重（[`profile_weights`]），
+///   报告不展示该字段（只为凑齐 dsp 结构）；自适应权重只活在 dsp 侧，不经 MCP 形状回传；
+/// - `schema_version` 恒为 [`SCHEMA_VERSION`]：§8.2 形状只携带这一版；
+/// - 未知异常类型（§8.2 契约外的值）→ `LowMidBuildup` 兜底：类型名不在契约值域里时
+///   描述文本仍原样保留在报告里（信息不丢）；两条 in-tree provider 只产出契约内的 4 种，
+///   该臂不可达（对照见 `tests/song_overview.rs` 的 `html_report_keeps_unknown_anomaly_text`）。
+#[must_use]
+pub fn overview_html_report(overview: &SongOverview) -> String {
+    overview_html_report_with_title(overview, DEFAULT_REPORT_TITLE)
+}
+
+/// 带标题的转置 + 渲染：标题取当前活跃工程的 `project.title`
+/// （`YebanProjectV1.title`，顶层唯一权威；调用点见 `plan_song_overview` 的
+/// HTML 分支，`project` 就是 `require_active` 取到的活跃工程）。
+/// 空标题时渲染器回退到通用标题。
+#[must_use]
+pub fn overview_html_report_with_title(overview: &SongOverview, title: &str) -> String {
+    // 拍级行按小节去重（取每小节首行）。
+    let mut seen = BTreeSet::new();
+    let mut rows: Vec<&BarRow> = Vec::new();
+    for row in &overview.bar_series {
+        if seen.insert(row.bar) {
+            rows.push(row);
+        }
+    }
+    let dsp = DspSongOverview {
+        schema_version: SCHEMA_VERSION,
+        song_meta: DspSongMeta {
+            total_bars: to_u32(overview.song_meta.total_bars),
+            duration_sec: overview.song_meta.duration_sec as f32,
+            base_bpm: overview.song_meta.base_bpm as f32,
+            key_signature: overview.song_meta.key_signature.clone(),
+            profile: overview.song_meta.profile.clone(),
+        },
+        band_definitions_hz: overview
+            .band_definitions_hz
+            .map(|[lo, hi]| [lo as f32, hi as f32]),
+        effective_weights: profile_weights(
+            Profile::from_name(&overview.song_meta.profile).unwrap_or_default(),
+        )
+        .map(|weight| weight as f32),
+        structural_summary: DspStructuralSummary {
+            climax_bar: to_u32(overview.structural_summary.climax_bar),
+            climax_tension: overview.structural_summary.climax_tension as f32,
+            dynamic_range_lu: overview.structural_summary.dynamic_range_lu as f32,
+            detected_anomalies: overview
+                .structural_summary
+                .detected_anomalies
+                .iter()
+                .map(|anomaly| DspAnomaly {
+                    bars: [to_u32(anomaly.bars[0]), to_u32(anomaly.bars[1])],
+                    anomaly_type: match anomaly.anomaly_type.as_str() {
+                        "low_mid_buildup" => DspAnomalyType::LowMidBuildup,
+                        "compression_squash" => DspAnomalyType::CompressionSquash,
+                        "envelope_deviation" => DspAnomalyType::EnvelopeDeviation,
+                        "arrangement_repetition" => DspAnomalyType::ArrangementRepetition,
+                        _ => DspAnomalyType::LowMidBuildup,
+                    },
+                    description: anomaly.description.clone(),
+                })
+                .collect(),
+        },
+        repetition: DspRepetitionSummary {
+            best_matches: overview
+                .repetition
+                .best_matches
+                .iter()
+                .map(|best| DspBestMatch {
+                    bar_a: to_u32(best.bar_a),
+                    bar_b: to_u32(best.bar_b),
+                    similarity: best.similarity as f32,
+                })
+                .collect(),
+            mechanical_index: overview.repetition.mechanical_index as f32,
+            repeated_passages: overview
+                .repetition
+                .repeated_passages
+                .iter()
+                .map(|passage| DspRepeatedPassage {
+                    bars: [to_u32(passage.bars[0]), to_u32(passage.bars[1])],
+                    source_bars: [
+                        to_u32(passage.source_bars[0]),
+                        to_u32(passage.source_bars[1]),
+                    ],
+                    mean_similarity: passage.mean_similarity as f32,
+                })
+                .collect(),
+        },
+        bar_series: DspBarSeries {
+            bar: rows.iter().map(|row| to_u32(row.bar)).collect(),
+            time_sec: rows.iter().map(|row| row.time_sec as f32).collect(),
+            section: rows.iter().map(|row| row.section.clone()).collect(),
+            tension: rows.iter().map(|row| row.tension as f32).collect(),
+            valence_hue: rows.iter().map(|row| row.valence_hue as f32).collect(),
+            lufs_short: rows.iter().map(|row| row.lufs_short as f32).collect(),
+            lufs_momentary_max: rows
+                .iter()
+                .map(|row| row.lufs_momentary_max as f32)
+                .collect(),
+            score_dyn: rows.iter().map(|row| row.score_dyn as f32).collect(),
+            envelope_lo: rows
+                .iter()
+                .map(|row| row.envelope_lo.map_or(NO_ENVELOPE, |value| value as f32))
+                .collect(),
+            envelope_hi: rows
+                .iter()
+                .map(|row| row.envelope_hi.map_or(NO_ENVELOPE, |value| value as f32))
+                .collect(),
+            target_deviation: rows.iter().map(|row| row.target_deviation as f32).collect(),
+            density_pitched_onsets_per_beat: rows
+                .iter()
+                .map(|row| row.density_pitched_onsets_per_beat as f32)
+                .collect(),
+            density_pitched_duty: rows
+                .iter()
+                .map(|row| row.density_pitched_duty as f32)
+                .collect(),
+            density_perc_onsets_per_beat: rows
+                .iter()
+                .map(|row| row.density_perc_onsets_per_beat as f32)
+                .collect(),
+            bands_tilted_db: rows
+                .iter()
+                .map(|row| row.bands_tilted_db.map(|value| value as f32))
+                .collect(),
+        },
+    };
+    render_html_report_with_title(&dsp, title)
+}
+
 /// 读 `expected_levels` 实参：缺席 ⇒ 空表；对象 ⇒ 逐项校验（值须为 1–5 级
 /// 的整数）；其它形状 ⇒ `INVALID_PARAMETER_RANGE`（`reason: "invalidExpectedLevels"`）。
 fn arg_expected_levels(call: &ToolCall) -> Result<BTreeMap<String, u8>, Fault> {
@@ -325,8 +494,31 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
             )
         })?,
     };
+    let format = match arg_str(call, "format") {
+        None | Some("json") => OverviewFormat::Json,
+        Some("html") => OverviewFormat::Html,
+        Some(other) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`format` 只接受 \"json\" 或 \"html\"、实际收到 \"{other}\""),
+                serde_json::json!({
+                    "reason": "unknownFormat",
+                    "accepted": ["json", "html"],
+                }),
+            ));
+        }
+    };
     let expected_levels = arg_expected_levels(call)?;
     let include_png_path = arg_bool(call, "include_png_path", false);
+    if format == OverviewFormat::Html && include_png_path {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`include_png_path` 只对 `format: \"json\"` 生效：HTML 报告没有 `pngPath` 槽位",
+            serde_json::json!({
+                "reason": "includePngPathRequiresJson",
+            }),
+        ));
+    }
     let provider = domain.song_overview_provider().ok_or_else(|| {
         Fault::domain_with_data(
             ErrorCode::Conflict,
@@ -348,6 +540,17 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
     };
     let overview = provider.overview(project, &request)?;
     let overview = rounded(overview);
+    if format == OverviewFormat::Html {
+        // HTML 形态：`data` 就是报告字符串本身（不是对象；`commitModel` 只注入对象，
+        // 见 `ToolResponse::with_commit_model` 的第二条口径）。
+        // 标题取当前活跃工程的 `project.title`：`project` 是本函数开头
+        // `require_active(domain)` 取到的那一份，即 `domain.active_project()`；
+        // 没有活跃工程时上面那一步已 `NO_ACTIVE_PROJECT` 报错，不必另设回退。
+        let html = overview_html_report_with_title(&overview, &project.title);
+        return Ok(super::Plan::SongOverview {
+            data: Value::String(html),
+        });
+    }
     let mut data = serde_json::to_value(&overview).map_err(|error| {
         Fault::domain(
             ErrorCode::IoError,

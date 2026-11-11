@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 43 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 44] = [
+/// 44 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 45] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -249,6 +249,10 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 44] = [
     // （`default` / `orchestral` / `electronic`），未知值由 `plan_song_overview`
     // 以 `unknownProfile` 拒绝并列出 `accepted`。
     ("profile", BoundStatus::WordList),
+    // 整曲总览图 HTML 报告：`get_song_overview` 的 `format` —— 取值是固定词表
+    // （`json` / `html`），未知值由 `plan_song_overview` 以 `unknownFormat`
+    // 拒绝并列出 `accepted`。
+    ("format", BoundStatus::WordList),
     // ARA 宿主：`yeban_ara_bind` / `yeban_ara_query` / `yeban_ara_render` 新增的
     // 3 个不同名 string 参数（`pluginPath`、`pluginId` 已在表内）。
     (

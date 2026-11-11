@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 297 条：collection_size 64 ／ value_bound 222 ／ element_value_bound 5 ／ condition_counter 6
+# 合计 303 条：collection_size 65 ／ value_bound 227 ／ element_value_bound 5 ／ condition_counter 6
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -236,6 +236,12 @@ src/smoothing.rs|block_rendering_stays_on_the_ramp|value_bound|assert!(pair[1] >
 src/smoothing.rs|sample_rate_changes_recompute_the_coefficient|value_bound|assert!(             smoother.alpha() > at_48k,             "a shorter τ in samples must s
 src/smoothing.rs|the_response_matches_the_closed_form|value_bound|assert!(                 (value - expected).abs() < 1e-4,                 "sample {sample}
 src/smoothing.rs|the_time_constant_is_five_milliseconds|value_bound|assert!(             crossing.abs_diff(expected) <= 2,             "63.2% at sample {cross
+src/song_overview_report.rs|data_strings_are_escaped_before_they_reach_html|value_bound|assert!(html.contains("&lt;&gt;&amp;&quot;&#39;")
+src/song_overview_report.rs|empty_overview_renders_without_panicking|value_bound|assert!(html.contains("<h1>整曲总览报告</h1>")
+src/song_overview_report.rs|empty_title_falls_back_to_the_generic_title|value_bound|assert!(                 html.contains("<h1>整曲总览报告</h1>"),                 "空标题回退到通用标题：{ti
+src/song_overview_report.rs|escape_html_covers_all_five_characters|value_bound|assert_eq!(             escape_html("<a href=\"x\">&'"),             "&lt;a href=&quot;x&q
+src/song_overview_report.rs|report_contains_every_section_with_fixture_values|collection_size|assert!(html.contains("<h1>整曲总览报告</h1>")
+src/song_overview_report.rs|report_title_is_escaped_in_h1_and_title_tag|value_bound|assert!(             html.contains(&format!("<h1>{escaped}</h1>")),             "h1 用转义后的标
 src/tape.rs|asym_creates_the_second_harmonic_that_pade_tanh_cannot|value_bound|assert!(             even1 > 10.0 * even0,             "⭐ `asym = 0.3` 的二次谐波必须比 `asym = 0`
 src/tape.rs|asym_does_not_change_the_small_signal_level|value_bound|assert!(                     db.abs() < 0.5,                     "drive {drive} / asym {as
 src/tape.rs|asym_keeps_silence_silent|value_bound|assert!(                 worst == 0.0,                 "⭐ `asym = {asym}` 的静音输入必须**逐位**输出 
