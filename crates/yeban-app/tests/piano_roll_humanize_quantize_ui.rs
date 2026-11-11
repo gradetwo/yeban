@@ -184,6 +184,39 @@ fn click_by_id(plane: &mut LiveControlPlane, seq: i64, element_id: &str, button:
     );
 }
 
+/// 在卷帘元素的（x_offset, y_offset）处点一下（左/右键）：端口按元素包围盒 +
+/// 偏移算**绝对**位置，因此可以点到盖在卷帘上的弹出层菜单项（见判据①的注释）。
+fn click_scroll_at(
+    plane: &mut LiveControlPlane,
+    seq: i64,
+    x_offset: f64,
+    y_offset: f64,
+    button: &str,
+) {
+    let down = plane.plane().try_line(&request_line(
+        seq + 1,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(json!({
+            "elementId": SCROLL_AREA,
+            "xOffset": x_offset,
+            "yOffset": y_offset,
+            "button": button
+        })),
+    ));
+    assert!(
+        !down.is_error(),
+        "卷帘（{x_offset}, {y_offset}）按下（{button}）必须落到真实窗口: {down:?}"
+    );
+    let up = plane.plane().try_line(&request_line(
+        seq + 2,
+        METHOD_DISPATCH_POINTER_UP,
+        Some(json!({ "button": button })),
+    ));
+    assert!(
+        !up.is_error(),
+        "卷帘（{x_offset}, {y_offset}）松手（{button}）必须落到真实窗口: {up:?}"
+    );
+}
 /// 只按下（不抬起）：右键菜单在 `down` 那一刻弹出，判据随后在菜单打开的状态下读树。
 fn press_by_id(plane: &mut LiveControlPlane, seq: i64, element_id: &str, button: &str) {
     let bounds = element_bounds(plane, seq, element_id);
@@ -269,8 +302,15 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
     }
 
     // 右键按下 ⇒ 菜单弹出（菜单项进运行时树）；右键抬起 ⇒ 菜单**不**关（它是弹出层），
-    // 且抬起不得触发左键点击（判据⑥在下面单独钉；这里只钉「菜单还在」）。
-    press_by_id(&mut plane, 1, SCROLL_AREA, "right");
+    // 且抬起不得触发左键点击（判据⑤单独钉；这里只钉「菜单还在」）。
+    // ⚠ 弹出层子项的树包围盒是**弹出层局部坐标**（x:0, y:0），⛔ 不能按元素 ID +
+    // 偏移去点（端口会按树坐标算到窗口左上角去，点不中菜单）。菜单顶左 = 右键点
+    // （卷帘中心，远离边缘 ⇒ 不夹），「人性化…」项中心 = 右键点 + (75, 16) ⇒
+    // 按卷帘元素的绝对偏移点过去（命中测试由 Slint 做，弹出层在最上层）。
+    let scroll_bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let center_x = scroll_bounds["width"].as_f64().expect("width") / 2.0;
+    let center_y = scroll_bounds["height"].as_f64().expect("height") / 2.0;
+    press_by_id(&mut plane, 2, SCROLL_AREA, "right");
     let humanize_bounds = element_bounds(&mut plane, 10, MENU_HUMANIZE);
     let quantize_bounds = element_bounds(&mut plane, 20, MENU_QUANTIZE);
     report_line(&format!(
@@ -286,7 +326,7 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
     let _ = element_bounds(&mut plane, 40, MENU_HUMANIZE);
 
     // 点「人性化…」⇒ 对话框打开，焦点落人性化区段，种子预填工程 rng_seed。
-    click_by_id(&mut plane, 50, MENU_HUMANIZE, "left");
+    click_scroll_at(&mut plane, 50, center_x + 75.0, center_y + 16.0, "left");
     assert!(
         window.get_humanize_open(),
         "点菜单「人性化…」必须打开对话框"
