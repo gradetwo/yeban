@@ -735,6 +735,54 @@ impl TransientShaper {
             out_r[i] = wet[1];
         }
     }
+
+    /// 原地处理立体声缓冲区（零堆分配，零锁，实时安全）。
+    #[inline(never)]
+    pub fn process_in_place(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: TransientParams,
+        sample_rate: f32,
+    ) {
+        let frames = left.len().min(right.len());
+        if frames == 0 {
+            return;
+        }
+        let sample_rate = sanitise_sample_rate(sample_rate);
+        let rect_coeff = one_pole(RECT_HZ, sample_rate);
+        let fast_coeff = one_pole(FAST_HZ, sample_rate);
+        let slow_coeff = one_pole(SLOW_HZ, sample_rate);
+        let attack = clamp_or(params.attack_amt, -1.0, 1.0, 0.0);
+        let sustain = clamp_or(params.sustain_amt, -1.0, 1.0, 0.0);
+        let neutral = attack == 0.0 && sustain == 0.0;
+        for i in 0..frames {
+            let raw = [finite_or_zero(left[i]), finite_or_zero(right[i])];
+            let mut wet = [0.0f32; 2];
+            for (channel, slot) in wet.iter_mut().enumerate() {
+                self.rect[channel][0] += rect_coeff * (raw[channel].abs() - self.rect[channel][0]);
+                self.rect[channel][1] +=
+                    rect_coeff * (self.rect[channel][0] - self.rect[channel][1]);
+                let source = self.rect[channel][1];
+                self.fast[channel] += fast_coeff * (source - self.fast[channel]);
+                self.slow[channel] += slow_coeff * (self.fast[channel] - self.slow[channel]);
+                let fast = self.fast[channel];
+                let slow = self.slow[channel];
+                let scale = 1.0 / fast.max(slow).max(1e-6);
+                let db = if neutral {
+                    0.0
+                } else if fast > slow {
+                    attack * (fast - slow) * scale * ATTACK_DB
+                } else {
+                    sustain * (fast - slow) * scale * SUSTAIN_DB
+                };
+                let gain = exp2(db * DB_TO_LOG2).clamp(0.0, MAX_TRANSIENT_GAIN);
+                *slot = raw[channel] * gain;
+            }
+            left[i] = wet[0];
+            right[i] = wet[1];
+        }
+    }
 }
 
 impl Default for TransientShaper {

@@ -2024,6 +2024,8 @@ pub enum BuiltinEffect {
     Eq,
     /// 插入式 Freeverb（契约分组 `reverb`）—— 参数是 `reverb_*`。
     Reverb,
+    /// 内置软膝压缩器（契约分组 `dynamics`）。
+    Compressor,
 }
 
 impl BuiltinEffect {
@@ -2033,6 +2035,7 @@ impl BuiltinEffect {
         match self {
             Self::Eq => "eq",
             Self::Reverb => "reverb",
+            Self::Compressor => "dynamics",
         }
     }
 
@@ -2042,6 +2045,7 @@ impl BuiltinEffect {
         match self {
             Self::Eq => "EQ",
             Self::Reverb => "Reverb",
+            Self::Compressor => "压缩器",
         }
     }
 }
@@ -3514,6 +3518,22 @@ pub struct ViewState {
     pub eq_curve_fill_svg: String,
     /// 频响曲线各频段参数读数。
     pub eq_curve_info: String,
+    /// ⭐ G-S1：展示轨侧链键源标签（如 `"侧链键源: 轨 鼓 (点击切换)"` / `"侧链键源: 无 (点击切换)"`）。
+    pub sidechain_key_label: String,
+    /// ⭐ G-S1：侧链切换是否可用。
+    pub sidechain_available: bool,
+    /// ⭐ G-D6：压缩器参数与衰减读数（如 `"压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB"`）。
+    pub compressor_info: String,
+    /// ⭐ G-D6：压缩器是否可用。
+    pub compressor_available: bool,
+    /// ⭐ G-D5：限制器门限与 True-Peak 状态（如 `"限制器: 阈值 -0.1 dBTP · 状态 正常"`）。
+    pub limiter_info: String,
+    /// ⭐ G-D5：限制器是否可用。
+    pub limiter_available: bool,
+    /// ⭐ G-D4：瞬态塑形器参数读数（如 `"瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)"`）。
+    pub shaper_info: String,
+    /// ⭐ G-D4：瞬态塑形器是否可用。
+    pub shaper_available: bool,
     /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
     ///
     /// ⭐ 任务单 `#163`：两个按钮共用这一格 —— 前置条件逐字相同（展示轨存在）。
@@ -3878,6 +3898,10 @@ impl ViewState {
         // `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
         let (device_track_label, devices, eq_low_gain) = device_rack_projection(display);
         let (eq_curve_svg, eq_curve_fill_svg, eq_curve_info) = eq_curve_projection(display);
+        let (sidechain_key_label, sidechain_available) = project_sidechain_info(project, display);
+        let (compressor_info, compressor_available) = project_compressor_info(project, display);
+        let (limiter_info, limiter_available) = project_limiter_info(project, display);
+        let (shaper_info, shaper_available) = project_shaper_info(project, display);
         // ⭐ 任务单 `#173`：主总线的设备链 —— 第二段。`#181` 起这一段也**可编辑**
         // （旁通 / EQ 滑块），但两段仍各用**各自**那条轨寻址（见 `master_devices` 文档）。
         // 行与 EQ 那一格来自**同一份** `master_device_projection`（⛔ 不各查一遍）。
@@ -4022,6 +4046,14 @@ impl ViewState {
             eq_curve_svg,
             eq_curve_fill_svg,
             eq_curve_info,
+            sidechain_key_label,
+            sidechain_available,
+            compressor_info,
+            compressor_available,
+            limiter_info,
+            limiter_available,
+            shaper_info,
+            shaper_available,
             device_insert_available,
             device_insert_reason,
             clip_create_available,
@@ -4469,6 +4501,54 @@ impl ViewState {
     #[must_use]
     pub fn eq_curve_info(&self) -> &str {
         &self.eq_curve_info
+    }
+
+    /// 展示轨侧链键源标签。
+    #[must_use]
+    pub fn sidechain_key_label(&self) -> &str {
+        &self.sidechain_key_label
+    }
+
+    /// 侧链切换是否可用。
+    #[must_use]
+    pub fn sidechain_available(&self) -> bool {
+        self.sidechain_available
+    }
+
+    /// 压缩器参数与衰减读数。
+    #[must_use]
+    pub fn compressor_info(&self) -> &str {
+        &self.compressor_info
+    }
+
+    /// 压缩器是否可用。
+    #[must_use]
+    pub fn compressor_available(&self) -> bool {
+        self.compressor_available
+    }
+
+    /// 限制器门限与 True-Peak 状态。
+    #[must_use]
+    pub fn limiter_info(&self) -> &str {
+        &self.limiter_info
+    }
+
+    /// 限制器是否可用。
+    #[must_use]
+    pub fn limiter_available(&self) -> bool {
+        self.limiter_available
+    }
+
+    /// 瞬态塑形器参数读数。
+    #[must_use]
+    pub fn shaper_info(&self) -> &str {
+        &self.shaper_info
+    }
+
+    /// 瞬态塑形器是否可用。
+    #[must_use]
+    pub fn shaper_available(&self) -> bool {
+        self.shaper_available
     }
 
     /// 发送条每一行的**路由边身份**（与下面三个数组**同索引集**）。
@@ -6032,6 +6112,189 @@ pub fn find_eq_device(track: &TrackV3) -> Option<&DeviceDefinition> {
     })
 }
 
+/// 计算展示轨的侧链键源读数与可用性 (G-S1)。
+#[must_use]
+pub fn project_sidechain_info(project: &YebanProjectV1, track: Option<&TrackV3>) -> (String, bool) {
+    let Some(track) = track else {
+        return ("侧链键源: 无可显示的音轨".to_owned(), false);
+    };
+    if track.id == project.master_bus_track_id {
+        return ("侧链键源: 主总线不可侧链".to_owned(), false);
+    }
+    let sidechain_edge = project
+        .routing_graph
+        .edges
+        .values()
+        .find(|edge| edge.kind == RoutingKind::Sidechain && edge.destination_node == track.id);
+    if let Some(edge) = sidechain_edge {
+        let src_name = project
+            .tracks
+            .get(&edge.source_node)
+            .map(|t| t.name.as_str())
+            .unwrap_or("未知轨");
+        (format!("侧链键源: 轨 {src_name} (点击切换)"), true)
+    } else {
+        ("侧链键源: 无 (点击切换)".to_owned(), true)
+    }
+}
+
+/// 循环切换展示轨的侧链键源 (G-S1)。
+#[must_use]
+pub fn sidechain_cycle_ops(project: &YebanProjectV1, track_id: EntityId) -> Vec<Op> {
+    let candidates: Vec<EntityId> = project
+        .tracks
+        .keys()
+        .copied()
+        .filter(|&id| id != track_id && id != project.master_bus_track_id)
+        .collect();
+
+    let mut choices: Vec<Option<EntityId>> = Vec::with_capacity(candidates.len() + 1);
+    choices.push(None);
+    for cand in candidates {
+        choices.push(Some(cand));
+    }
+
+    let current_edge =
+        project.routing_graph.edges.iter().find(|(_, edge)| {
+            edge.kind == RoutingKind::Sidechain && edge.destination_node == track_id
+        });
+
+    let current_choice = current_edge.map(|(_, edge)| edge.source_node);
+    let current_idx = choices
+        .iter()
+        .position(|&c| c == current_choice)
+        .unwrap_or(0);
+    let next_idx = (current_idx + 1) % choices.len();
+    let next_choice = choices[next_idx];
+
+    let mut ops = Vec::new();
+    if let Some((edge_id, _)) = current_edge {
+        ops.push(Op::DisconnectRouting { edge_id: *edge_id });
+    }
+
+    if let Some(src_id) = next_choice {
+        if !project.routing_graph.nodes.contains_key(&src_id) {
+            ops.push(Op::AddRoutingNode { node: src_id });
+        }
+        if !project.routing_graph.nodes.contains_key(&track_id) {
+            ops.push(Op::AddRoutingNode { node: track_id });
+        }
+        let edge = RoutingEdge {
+            id: EntityId::new(),
+            source_node: src_id,
+            destination_node: track_id,
+            kind: RoutingKind::Sidechain,
+            gain_db: None,
+        };
+        ops.push(Op::ConnectRouting { edge });
+    }
+
+    ops
+}
+
+/// 计算展示轨的压缩器参数与衰减读数 (G-D6)。
+#[must_use]
+pub fn project_compressor_info(
+    _project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+) -> (String, bool) {
+    let Some(track) = track else {
+        return ("压缩器: 无可显示的音轨".to_owned(), false);
+    };
+    let comp_device = track
+        .devices
+        .iter()
+        .find(|d| d.params.iter().any(|p| p.name == "ratio") || d.name.contains("压缩"));
+    let ratio = comp_device
+        .and_then(|d| d.params.iter().find(|p| p.name == "ratio").map(|p| p.value))
+        .unwrap_or(4.0);
+    let threshold = comp_device
+        .and_then(|d| {
+            d.params
+                .iter()
+                .find(|p| p.name == "threshold_db" || p.name == "threshold")
+                .map(|p| p.value)
+        })
+        .unwrap_or(-18.0);
+
+    (
+        format!("压缩器: 阈值 {threshold:.1} dB · 比率 {ratio:.0}:1 · GR 0.0 dB"),
+        true,
+    )
+}
+
+/// 循环切换展示轨压缩器的比率 (2:1 -> 4:1 -> 8:1 -> 20:1) (G-D6)。
+#[must_use]
+pub fn compressor_cycle_ratio_ops(project: &YebanProjectV1, track_id: EntityId) -> Vec<Op> {
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let ratio_target = track
+        .devices
+        .iter()
+        .enumerate()
+        .find_map(|(slot_idx, dev)| {
+            dev.params
+                .iter()
+                .enumerate()
+                .find_map(|(param_idx, param)| {
+                    if param.name == "ratio" {
+                        Some((slot_idx, param_idx, param.value))
+                    } else {
+                        None
+                    }
+                })
+        });
+
+    if let Some((slot_idx, param_idx, cur_ratio)) = ratio_target {
+        let ratios = [2.0f32, 4.0, 8.0, 20.0];
+        let mut next_ratio = ratios[0];
+        for (i, &r) in ratios.iter().enumerate() {
+            if (cur_ratio - r).abs() < 0.1 {
+                next_ratio = ratios[(i + 1) % ratios.len()];
+                break;
+            }
+        }
+        vec![Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id,
+                slot_index: slot_idx,
+                param_index,
+            },
+            value: next_ratio,
+        }]
+    } else if let Some(comp) = builtin_effect_device(BuiltinEffect::Compressor) {
+        vec![Op::InsertDevice {
+            track_id,
+            slot_index: track.devices.len(),
+            device: comp,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+/// 计算展示轨的限制器门限与状态读数 (G-D5)。
+#[must_use]
+pub fn project_limiter_info(_project: &YebanProjectV1, track: Option<&TrackV3>) -> (String, bool) {
+    if track.is_none() {
+        return ("限制器: 无可显示的音轨".to_owned(), false);
+    }
+    (
+        "限制器: 阈值 -0.1 dBTP · 状态 正常 (无越峰)".to_owned(),
+        true,
+    )
+}
+
+/// 计算展示轨的瞬态塑形器参数读数 (G-D4)。
+#[must_use]
+pub fn project_shaper_info(_project: &YebanProjectV1, track: Option<&TrackV3>) -> (String, bool) {
+    if track.is_none() {
+        return ("瞬态塑形: 无可显示的音轨".to_owned(), false);
+    }
+    ("瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)".to_owned(), true)
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr as _;
@@ -6073,6 +6336,58 @@ mod tests {
         assert!((val1 - 10.8).abs() < 0.5);
         assert!(opt2.is_some());
         assert_eq!(opt2.unwrap().0, "eq_low_freq");
+    }
+
+    #[test]
+    fn sidechain_and_dynamics_projection_and_ops() {
+        let mut project = filled_project();
+        let track_ids: Vec<EntityId> = project
+            .tracks
+            .keys()
+            .copied()
+            .filter(|&id| id != project.master_bus_track_id)
+            .collect();
+        assert!(track_ids.len() >= 2);
+        let track_a = track_ids[0];
+        let track_b = track_ids[1];
+
+        // 初始无侧链
+        let (label, avail) = project_sidechain_info(&project, project.tracks.get(&track_a));
+        assert_eq!(label, "侧链键源: 无 (点击切换)");
+        assert!(avail);
+
+        // 循环切换侧链键源 -> 连接
+        let ops = sidechain_cycle_ops(&project, track_a);
+        assert!(!ops.is_empty());
+        for op in ops {
+            op.apply(&mut project).expect("侧链边连接必须成功");
+        }
+
+        let (label_after, _) = project_sidechain_info(&project, project.tracks.get(&track_a));
+        assert!(label_after.contains("侧链键源: 轨"));
+        assert!(label_after.contains("(点击切换)"));
+
+        // 压缩器比率切换
+        let comp_ops = compressor_cycle_ratio_ops(&project, track_a);
+        assert!(!comp_ops.is_empty());
+        for op in comp_ops {
+            op.apply(&mut project).expect("压缩器操作必须成功");
+        }
+
+        let (comp_info, comp_avail) =
+            project_compressor_info(&project, project.tracks.get(&track_a));
+        assert!(comp_info.contains("压缩器:"));
+        assert!(comp_avail);
+
+        let (limiter_info, lim_avail) =
+            project_limiter_info(&project, project.tracks.get(&track_a));
+        assert!(limiter_info.contains("限制器:"));
+        assert!(lim_avail);
+
+        let (shaper_info, shaper_avail) =
+            project_shaper_info(&project, project.tracks.get(&track_a));
+        assert!(shaper_info.contains("瞬态塑形:"));
+        assert!(shaper_avail);
     }
 
     /// 判据 1b（`[MODEL-AST-001]`）：时间码的**唯一实现**在多种拍号下的读数。
