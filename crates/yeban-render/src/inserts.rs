@@ -158,6 +158,7 @@ use yeban_dsp::limiter::{InsertLimiter, LimiterParams};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::oversample::OS_TAPS;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
+use yeban_dsp::sample_delay::{SampleDelay, SampleDelayParams};
 use yeban_dsp::shaping::EqParams;
 use yeban_dsp::tape::{TapeParams, TapeSaturation};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, TrackV3, YebanProjectV1};
@@ -265,6 +266,15 @@ pub struct InsertChain {
     /// 乒乓延迟参数（音符同步已在投影期按工程 `bpm` 换算成 `time_s`）；
     /// `None` = 本轨没有延迟。
     delay: Option<DelayParams>,
+    /// 采样延迟参数（手动相位对齐第一层）；`None` = 本轨没有采样延迟。
+    ///
+    /// 位置是链的**最前**（通道条之前）：它只是把整段信号在时间上平移，
+    /// 放在任何音色处理之前才与"对齐波峰波谷"的语义相符。`delay_samples = 0`
+    /// 且 `invert = false` 的链仍投影为 `Some`（与乒乓延迟同口径），
+    /// 运行态按恒等门决定建不建器件。**没有** `force_sample_delay`：第一层
+    /// 不做采样延迟的泳道自动化（见 `docs/` 设计说明），恒等链丢掉器件不会
+    /// 让任何泳道无落点。
+    sample_delay: Option<SampleDelayParams>,
     /// 插入式限制器参数；`None` = 本轨没有限制器。
     ///
     /// ⚠ 它是本链**唯一**会引入延迟的器件（前瞻 = [`LimiterParams::latency_frames`]），
@@ -308,6 +318,7 @@ impl InsertChain {
             reverb: None,
             convolution: None,
             delay: None,
+            sample_delay: None,
             limiter: None,
             force_strip: false,
             force_saturation: false,
@@ -323,7 +334,7 @@ impl InsertChain {
     /// 规则与引擎 `InsertParams::from_devices` 逐条一致：
     ///
     /// 1. 只看**非旁通**的 [`DeviceKind::InternalEffect`]；
-    /// 2. 四件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
+    /// 2. 七件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
     /// 3. 未出现的字段保持 `yeban-dsp` 的默认值；
     /// 4. 同名参数**后者胜**；参数名大小写不敏感；
     /// 5. 没写旋钮的级不执行（`eq_enabled` 等开关写过的优先）。
@@ -336,6 +347,7 @@ impl InsertChain {
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         let mut delay: Option<DelayParams> = None;
+        let mut sample_delay: Option<SampleDelayParams> = None;
         let mut limiter: Option<LimiterParams> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
@@ -356,6 +368,9 @@ impl InsertChain {
             if delay.is_none() {
                 delay = delay_of(device, bpm);
             }
+            if sample_delay.is_none() {
+                sample_delay = sample_delay_of(device);
+            }
             if limiter.is_none() {
                 limiter = limiter_of(device);
             }
@@ -364,6 +379,7 @@ impl InsertChain {
                 && reverb.is_some()
                 && convolution.is_some()
                 && delay.is_some()
+                && sample_delay.is_some()
                 && limiter.is_some()
             {
                 break;
@@ -375,6 +391,7 @@ impl InsertChain {
             reverb,
             convolution,
             delay,
+            sample_delay,
             limiter: limiter.map(LimiterParams::sanitised),
             force_strip: false,
             force_saturation: false,
@@ -483,6 +500,7 @@ impl InsertChain {
             && self.reverb.is_none()
             && self.convolution.is_none()
             && self.delay.is_none()
+            && self.sample_delay.is_none()
             && self.limiter.is_none()
     }
 
@@ -591,6 +609,12 @@ impl InsertChain {
     #[must_use]
     pub const fn delay(&self) -> Option<DelayParams> {
         self.delay
+    }
+
+    /// 投影出来的采样延迟参数（判据用；手动相位对齐第一层）。
+    #[must_use]
+    pub const fn sample_delay(&self) -> Option<SampleDelayParams> {
+        self.sample_delay
     }
 }
 
@@ -1017,7 +1041,7 @@ pub fn delay_source_params(track: &TrackV3) -> Option<DelayStageParams> {
 /// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
     ConvolutionField, DelayField, DelayStageParams, DeviceParamFamily, DeviceParamField,
-    ReverbField, StripField, TapeField, sanitised_output_gain_db,
+    ReverbField, SampleDelayField, StripField, TapeField, sanitised_output_gain_db,
 };
 
 /// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
@@ -1509,6 +1533,25 @@ fn delay_of(device: &DeviceDefinition, bpm: f64) -> Option<DelayParams> {
     Some(delay_params_from_stage(&stage, bpm))
 }
 
+/// 单台设备 → 采样延迟参数（`None` = 本设备不是采样延迟来源）。
+///
+/// 手动相位对齐第一层。基值是 [`SampleDelayParams::new`]（零延迟、不反转）；
+/// 只有**出现**的名字才覆盖它；小数采样四舍五入
+/// （[`SampleDelayField::store`]）。与乒乓延迟不同：这里**没有** `bpm` 换算
+/// （毫秒不是本层的单位）。名字表是 [`SampleDelayField::SPELLINGS`]
+/// （与引擎 `sample_delay_of` **同一张**）。
+fn sample_delay_of(device: &DeviceDefinition) -> Option<SampleDelayParams> {
+    let mut params = SampleDelayParams::new();
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = SampleDelayField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
 /// 一条链的**运行态**（每个渲染节点一份）。
 ///
 /// 构造期把全部缓冲与器件状态准备好；逐块处理**零分配**。器件状态跨块存活，
@@ -1527,6 +1570,13 @@ pub(crate) struct InsertRuntime {
     /// 延迟当前参数（块边界自动化改这一份；`process` 按钳制后 `mix` 门控，
     /// 见 [`Self::process`] 的 `-0.0` 注记）。
     delay_params: DelayParams,
+    /// 采样延迟状态（手动相位对齐第一层）；`None` = 不动（恒等参数）。
+    ///
+    /// 位置是链的**最前**（通道条之前）：`process` / `process_with_key` 都在
+    /// 去交错之后、通道条之前先过它。
+    sample_delay: Option<SampleDelay>,
+    /// 采样延迟当前参数（第一层没有泳道自动化 ⇒ 构造期定死，不改）。
+    sample_delay_params: SampleDelayParams,
     /// 插入式限制器状态；`None` = 本轨没有限制器。
     limiter: Option<InsertLimiter>,
     /// 限制器当前参数（块边界自动化改这一份，再 `configure` 成器件配置）。
@@ -1649,6 +1699,20 @@ impl InsertRuntime {
         let limiter = chain
             .limiter
             .map(|params| InsertLimiter::with_config(params.config(sample_rate_f32)));
+        // 采样延迟：建级门是**非恒等**（零延迟且不反转 ⇒ 直通，不建器件）。
+        // 第一层没有泳道自动化 ⇒ 没有强制位；恒等链丢掉器件不会让任何泳道无落点。
+        // 容量 = 满上限（离线侧不省缓冲：块与块之间没有武装期重建，`configure`
+        // 一次建满 `MAX + 1` 帧；`process` 按参数钳制到 `容量 − 1`）。
+        let sample_delay_params = chain.sample_delay.unwrap_or_default();
+        let sample_delay = chain.sample_delay.and_then(|_| {
+            if sample_delay_params.is_identity() {
+                return None;
+            }
+            let mut state = SampleDelay::new();
+            state.configure(sample_rate_f32);
+            state.set_params(sample_delay_params);
+            Some(state)
+        });
         Self {
             strip,
             saturation,
@@ -1656,6 +1720,8 @@ impl InsertRuntime {
             convolution,
             delay,
             delay_params,
+            sample_delay,
+            sample_delay_params,
             limiter,
             limiter_params,
             sample_rate: sample_rate_f32,
@@ -1684,6 +1750,9 @@ impl InsertRuntime {
         }
         if let Some(delay) = &mut self.delay {
             delay.reset();
+        }
+        if let Some(sample_delay) = &mut self.sample_delay {
+            sample_delay.reset();
         }
         if let Some(limiter) = &mut self.limiter {
             limiter.reset();
@@ -1786,6 +1855,8 @@ impl InsertRuntime {
             convolution,
             delay,
             delay_params,
+            sample_delay,
+            sample_delay_params,
             limiter,
             left,
             right,
@@ -1796,6 +1867,15 @@ impl InsertRuntime {
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
             right[frame] = buffer[2 * frame + 1];
+        }
+        // ⓪ 采样延迟是链的**最前**一级（通道条之前）：纯时间平移，放在任何
+        // 音色处理之前才与"对齐波峰波谷"的语义相符。
+        if let Some(sample_delay) = sample_delay {
+            sample_delay.process(
+                *sample_delay_params,
+                &mut left[..frames],
+                &mut right[..frames],
+            );
         }
         if let Some(strip) = strip {
             strip.process_stereo(&mut left[..frames], &mut right[..frames]);
@@ -1860,6 +1940,8 @@ impl InsertRuntime {
             convolution,
             delay,
             delay_params,
+            sample_delay,
+            sample_delay_params,
             left,
             right,
             limiter,
@@ -1874,6 +1956,14 @@ impl InsertRuntime {
             right[frame] = buffer[2 * frame + 1];
             key_left[frame] = key[2 * frame] * key_gain;
             key_right[frame] = key[2 * frame + 1] * key_gain;
+        }
+        // ⓪ 采样延迟是链的**最前**一级（与 `process` 同一位；键信号不延时）。
+        if let Some(sample_delay) = sample_delay {
+            sample_delay.process(
+                *sample_delay_params,
+                &mut left[..frames],
+                &mut right[..frames],
+            );
         }
         if let Some(strip) = strip {
             strip.process_stereo_with_key(
@@ -2633,6 +2723,121 @@ mod tests {
         let mut runtime = InsertRuntime::new(&forced, 48_000, 128);
         runtime.apply_device_params(DeviceParamField::Delay(DelayField::Mix), 1.0);
         assert_eq!(runtime.delay_params.mix.to_bits(), 1.0f32.to_bits());
+    }
+
+    /// 判据：采样延迟投影——首个含 `sample_delay_` 参数名的设备是唯一来源；
+    /// 小数采样四舍五入；旁通设备不算来源；无已识别参数 ⇒ `None`；
+    /// 含采样延迟的链不是空链（与引擎 `InsertParams::is_empty` 同口径）。
+    #[test]
+    fn sample_delay_projection_takes_first_recognised_device() {
+        let first = device(&[
+            ("sample_delay_samples", 240.4),
+            ("sample_delay_invert", 1.0),
+        ]);
+        let second = device(&[("sample_delay_samples", 480.0)]);
+        let chain = InsertChain::from_devices(&[first, second], 48_000, 120.0);
+        assert_eq!(
+            chain.sample_delay(),
+            Some(SampleDelayParams {
+                delay_samples: 240,
+                invert: true,
+            }),
+            "小数采样四舍五入；首个来源不被后来者覆盖"
+        );
+        assert!(!chain.is_empty(), "含采样延迟的链不是空链");
+        // 别名 `sample_delay` 同样认；旁通设备不算来源。
+        let aliased = device(&[("sample_delay", 48.0)]);
+        assert_eq!(
+            InsertChain::from_devices(&[aliased], 48_000, 120.0).sample_delay(),
+            Some(SampleDelayParams {
+                delay_samples: 48,
+                invert: false,
+            })
+        );
+        let mut bypassed = device(&[("sample_delay_samples", 48.0)]);
+        bypassed.bypassed = true;
+        assert_eq!(
+            InsertChain::from_devices(&[bypassed], 48_000, 120.0).sample_delay(),
+            None
+        );
+        // `sample_delay_ms` 不是拼写：毫秒不是本层的单位。
+        let ms_only = device(&[("sample_delay_ms", 5.0)]);
+        assert_eq!(
+            InsertChain::from_devices(&[ms_only], 48_000, 120.0).sample_delay(),
+            None
+        );
+        assert!(
+            InsertChain::from_devices(&[], 48_000, 120.0)
+                .sample_delay()
+                .is_none()
+        );
+    }
+
+    /// 判据：离线链的采样延迟是**最前**一级——脉冲延时 N 采样后峰值位置精确移动 N；
+    /// 极性反转后信号取反；恒等参数（0 采样、不反转）不建器件（输出逐位不变）。
+    #[test]
+    fn sample_delay_stage_shifts_pulse_and_inverts() {
+        // 延时 4 采样：帧 0 的脉冲在同一块里出现在帧 4。
+        let chain =
+            InsertChain::from_devices(&[device(&[("sample_delay_samples", 4.0)])], 48_000, 120.0);
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 128);
+        let mut buffer = vec![0.0f32; 2 * 128];
+        buffer[0] = 1.0;
+        buffer[1] = 1.0;
+        runtime.process(&mut buffer);
+        assert_eq!(buffer[0], 0.0, "延时 4：帧 0 必须为空（延迟线初值）");
+        assert_eq!(buffer[2 * 4], 1.0, "延时 4：脉冲必须在帧 4");
+        assert_eq!(buffer[2 * 4 + 1], 1.0, "右声道同样延时");
+        // 跨块：上一块末尾的脉冲在**再下一块**开头 3 帧后出现（4 − 1）。
+        let mut buffer2 = vec![0.0f32; 2 * 128];
+        buffer2[2 * 127] = 0.5;
+        buffer2[2 * 127 + 1] = 0.5;
+        runtime.process(&mut buffer2);
+        assert_eq!(buffer2[2 * 3], 0.0, "跨块：第二块帧 3 尚未到脉冲");
+        let mut buffer3 = vec![0.0f32; 2 * 128];
+        runtime.process(&mut buffer3);
+        assert_eq!(buffer3[2 * 3], 0.5, "跨块：脉冲必须在第三块帧 3");
+        assert_eq!(buffer3[2 * 3 + 1], 0.5);
+        // 极性反转（零延时）：同一帧取反。
+        let chain =
+            InsertChain::from_devices(&[device(&[("sample_delay_invert", 1.0)])], 48_000, 120.0);
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 128);
+        let mut buffer = vec![0.0f32; 2 * 128];
+        buffer[0] = 1.0;
+        buffer[1] = -0.5;
+        runtime.process(&mut buffer);
+        assert_eq!(buffer[0], -1.0, "反转：1.0 → −1.0");
+        assert_eq!(buffer[1], 0.5, "反转：−0.5 → 0.5");
+        // 延时 + 反转：帧 4 出 −1.0。
+        let chain = InsertChain::from_devices(
+            &[device(&[
+                ("sample_delay_samples", 4.0),
+                ("sample_delay_invert", 1.0),
+            ])],
+            48_000,
+            120.0,
+        );
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 128);
+        let mut buffer = vec![0.0f32; 2 * 128];
+        buffer[0] = 1.0;
+        buffer[1] = 1.0;
+        runtime.process(&mut buffer);
+        assert_eq!(buffer[2 * 4], -1.0, "延时 + 反转：帧 4 出 −1.0");
+        assert_eq!(buffer[2 * 4 + 1], -1.0);
+        // 恒等参数不建器件：输出逐位不变。
+        let chain =
+            InsertChain::from_devices(&[device(&[("sample_delay_samples", 0.0)])], 48_000, 120.0);
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 128);
+        let mut buffer = vec![0.0f32; 2 * 128];
+        buffer[0] = 1.0;
+        buffer[2 * 127 + 1] = -0.25;
+        let input = buffer.clone();
+        runtime.process(&mut buffer);
+        assert_eq!(
+            buffer.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            input.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "恒等采样延迟不得改动任何样本"
+        );
     }
 
     /// 块边界改 5 个器件字段进运行参数；同步字段不改 `time_s`（投影期口径）。

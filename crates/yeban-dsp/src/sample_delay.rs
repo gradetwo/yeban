@@ -78,6 +78,15 @@ impl SampleDelayParams {
             invert: false,
         }
     }
+
+    /// 本参数是否是**恒等**（零延迟且不反转 ⇒ `process` 逐位直通）。
+    ///
+    /// 运行态的建级门：恒等链不建器件（省下 `2 × 48_001` 帧缓冲），
+    /// 与乒乓延迟的 `mix = 0` 门同款。
+    #[must_use]
+    pub const fn is_identity(self) -> bool {
+        self.delay_samples == 0 && !self.invert
+    }
 }
 
 impl Default for SampleDelayParams {
@@ -92,6 +101,9 @@ pub struct SampleDelay {
     index: usize,
     delay_samples: usize,
     ready: bool,
+    /// 块边界 / 武装期写入的运行参数（实时单声道路径用这一份；离线 `process` 仍由
+    /// 调用方逐块给参数，见 [`Self::process`]）。
+    params: SampleDelayParams,
 }
 
 impl SampleDelay {
@@ -103,17 +115,49 @@ impl SampleDelay {
             index: 0,
             delay_samples: 0,
             ready: false,
+            params: SampleDelayParams::new(),
         }
     }
 
     /// 配置（分配缓冲）。**只能在音频回调之外调用** [ARCH-RT-001]。
+    ///
+    /// 容量恒为 [`MAX_SAMPLE_DELAY_SAMPLES`] + 1（全量）；实时池按配置延迟配容量时
+    /// 用 [`Self::configure_with_capacity`]（65 槽 × 全量 = 约 25 MiB，见设计）。
     pub fn configure(&mut self, sample_rate: f32) {
+        self.configure_with_capacity(sample_rate, MAX_SAMPLE_DELAY_SAMPLES);
+    }
+
+    /// 按给定延迟量配置（分配缓冲）。**只能在音频回调之外调用** [ARCH-RT-001]。
+    ///
+    /// 每声道分配 `capacity + 1` 帧（`capacity` 钳到 `0..=MAX_SAMPLE_DELAY_SAMPLES`）：
+    /// `capacity + 1` 是 `delay == capacity` 仍能读到正确历史的最小长度
+    /// （`process` 的读下标是 `(index + capacity - delay) % capacity`，容量恰好
+    /// `delay + 1` 时读到上一圈刚写入的那一帧）。容量不足时 `process` 把延迟钳到
+    /// `容量 − 1`（⛔ 不下溢、不静默丢声，只缩短延迟 —— 武装期超容拒装是另一道门）。
+    pub fn configure_with_capacity(&mut self, sample_rate: f32, capacity: usize) {
         let _ = sample_rate;
-        let capacity = MAX_SAMPLE_DELAY_SAMPLES + 1;
+        let capacity = capacity.min(MAX_SAMPLE_DELAY_SAMPLES) + 1;
         self.lines = [vec![0.0; capacity], vec![0.0; capacity]];
         self.index = 0;
         self.delay_samples = 0;
         self.ready = true;
+    }
+
+    /// 已配缓冲的容量（帧；未配置 = 0）。
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.lines[0].len()
+    }
+
+    /// 写入运行参数（标量赋值，零分配；只供实时武装期用，离线 `process` 不读它）。
+    pub fn set_params(&mut self, params: SampleDelayParams) {
+        self.params = params;
+    }
+
+    /// 当前运行参数（武装期写入的那一份；`process` 的显式参数不经过这里）。
+    #[must_use]
+    pub const fn params(&self) -> SampleDelayParams {
+        self.params
     }
 
     /// 是否已配置。
@@ -140,12 +184,18 @@ impl SampleDelay {
     /// 处理一对立体声切片（原地）。
     ///
     /// 未配置时直通（不经过非有限守卫，没有样本进入延迟线）。
-    /// 已配置时：延迟量钳制到 `MAX_SAMPLE_DELAY_SAMPLES`；前 `delay` 帧输出静音。
+    /// 已配置时：延迟量钳制到 `MAX_SAMPLE_DELAY_SAMPLES` **且** `容量 − 1`（容量是
+    /// [`Self::configure_with_capacity`] 配的那一份；钳制只缩短延迟，⛔ 不下溢）；
+    /// 前 `delay` 帧输出静音。
     pub fn process(&mut self, params: SampleDelayParams, left: &mut [f32], right: &mut [f32]) {
         if !self.ready {
             return;
         }
-        let delay = params.delay_samples.min(MAX_SAMPLE_DELAY_SAMPLES);
+        let capacity = self.lines[0].len();
+        let delay = params
+            .delay_samples
+            .min(MAX_SAMPLE_DELAY_SAMPLES)
+            .min(capacity.saturating_sub(1));
         self.delay_samples = delay;
         let len = left.len().min(right.len());
         if delay == 0 {
@@ -159,7 +209,6 @@ impl SampleDelay {
             }
             return;
         }
-        let capacity = self.lines[0].len();
         for i in 0..len {
             let read = (self.index + capacity - delay) % capacity;
             let l_in = finite_or_zero(left[i]);
@@ -176,6 +225,39 @@ impl SampleDelay {
                 left[i] = l_out;
                 right[i] = r_out;
             }
+        }
+    }
+
+    /// 处理一段单声道切片（原地），参数取武装期 [`Self::set_params`] 写入的那一份。
+    ///
+    /// 实时插入链是单声道（`track_scratch`）：只用左声道那条线；右声道那条线不动。
+    /// 未配置时直通。延迟钳制与 [`Self::process`] 同一条（`容量 − 1`）。
+    pub fn process_mono(&mut self, mono: &mut [f32]) {
+        if !self.ready {
+            return;
+        }
+        let params = self.params;
+        let capacity = self.lines[0].len();
+        let delay = params
+            .delay_samples
+            .min(MAX_SAMPLE_DELAY_SAMPLES)
+            .min(capacity.saturating_sub(1));
+        self.delay_samples = delay;
+        if delay == 0 {
+            if params.invert {
+                for sample in mono.iter_mut() {
+                    *sample = -finite_or_zero(*sample);
+                }
+            }
+            return;
+        }
+        for sample in mono.iter_mut() {
+            let read = (self.index + capacity - delay) % capacity;
+            let input = finite_or_zero(*sample);
+            let out = self.lines[0][read];
+            self.lines[0][self.index] = input;
+            self.index = (self.index + 1) % capacity;
+            *sample = if params.invert { -out } else { out };
         }
     }
 }
@@ -257,6 +339,22 @@ mod tests {
     fn zero_delay_no_invert_is_bitwise_passthrough() {
         let mut d = configured();
         let (mut left, mut right) = pulse(64, 5);
+        // 恒等门：只有零延迟且不反转才是恒等。
+        assert!(SampleDelayParams::new().is_identity());
+        assert!(
+            !SampleDelayParams {
+                delay_samples: 1,
+                invert: false,
+            }
+            .is_identity()
+        );
+        assert!(
+            !SampleDelayParams {
+                delay_samples: 0,
+                invert: true,
+            }
+            .is_identity()
+        );
         let (want_l, want_r) = (left.clone(), right.clone());
         d.process(SampleDelayParams::default(), &mut left, &mut right);
         assert_eq!(left, want_l);
@@ -346,5 +444,57 @@ mod tests {
         );
         assert_eq!(left, want_l);
         assert_eq!(right, want_r);
+    }
+
+    /// `process_mono` 用武装期参数：脉冲精确移动 N 采样，且只动左声道那条线。
+    #[test]
+    fn process_mono_moves_pulse_by_armed_params() {
+        let mut d = SampleDelay::new();
+        d.configure_with_capacity(48_000.0, 16);
+        d.set_params(SampleDelayParams {
+            delay_samples: 5,
+            invert: false,
+        });
+        let mut mono = vec![0.0_f32; 32];
+        mono[4] = 1.0;
+        d.process_mono(&mut mono);
+        assert_eq!(mono[9], 1.0);
+        assert!(mono[..9].iter().all(|v| *v == 0.0));
+        assert_eq!(d.delay_samples(), 5);
+    }
+
+    /// `process_mono` 的反相：零延迟也取反（只读武装参数，不读 `process` 的显式参数）。
+    #[test]
+    fn process_mono_inverts_with_armed_params() {
+        let mut d = SampleDelay::new();
+        d.configure_with_capacity(48_000.0, 0);
+        d.set_params(SampleDelayParams {
+            delay_samples: 0,
+            invert: true,
+        });
+        let mut mono = vec![0.5_f32, -0.25, 0.0];
+        d.process_mono(&mut mono);
+        assert_eq!(mono, vec![-0.5, 0.25, 0.0]);
+    }
+
+    /// 容量不足时延迟钳到 `容量 − 1`，不下溢、不 panic：配 8 帧容量、要 240 采样延迟
+    /// ⇒ 实际延迟 8 采样（`capacity()` 读数是 9 帧 = 8 + 1）。
+    #[test]
+    fn delay_beyond_configured_capacity_is_clamped_not_panicking() {
+        let mut d = SampleDelay::new();
+        d.configure_with_capacity(48_000.0, 8);
+        assert_eq!(d.capacity(), 9);
+        let (mut left, mut right) = pulse(32, 4);
+        d.process(
+            SampleDelayParams {
+                delay_samples: 240,
+                invert: false,
+            },
+            &mut left,
+            &mut right,
+        );
+        assert_eq!(d.delay_samples(), 8);
+        assert_eq!(left[12], 1.0);
+        assert_eq!(right[12], -0.5);
     }
 }

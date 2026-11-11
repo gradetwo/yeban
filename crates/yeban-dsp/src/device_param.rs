@@ -32,6 +32,7 @@ use crate::convolution_reverb::{
 };
 use crate::delay::{DelayParams, MAX_DELAY_SECONDS};
 use crate::reverb::{REVERB_MAX_PREDELAY_S, ReverbParams};
+use crate::sample_delay::{MAX_SAMPLE_DELAY_SAMPLES, SampleDelayParams};
 use crate::tape::TapeParams;
 
 /// 通道条**实际会用的**输出增益值（`dB`）—— 与器件内部同一次钳制
@@ -833,6 +834,100 @@ impl DelayField {
     }
 }
 
+/// 采样延迟上**可被 `DeviceParam` 自动化落点**的字段。
+///
+/// 手动相位对齐第一层。与 [`DelayField`] 同一款拆分：静态投影（`sample_delay_of` /
+/// 引擎 `sample_delay_of`）与块边界自动化读的是同一组名字（[`Self::SPELLINGS`]），
+/// ⛔ 不写第二份。**没有** `sample_delay_ms` 拼写：投影只拿到 `bpm`，没有采样率，
+/// 毫秒换算不在这一层（毫秒是表现层单位，见 [`crate::sample_delay::millis_to_samples`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SampleDelayField {
+    /// 延迟量（整数采样，`0..=MAX_SAMPLE_DELAY_SAMPLES`）。`sample_delay_samples` /
+    /// `sample_delay`。
+    Samples,
+    /// 极性反转开关。`sample_delay_invert` / `sample_delay_polarity_invert`。
+    Invert,
+}
+
+impl SampleDelayField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[Self::Samples, Self::Invert];
+
+    /// **全部拼写** → 字段（`4` 条 = `2` 个字段）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("sample_delay_samples", Self::Samples),
+        ("sample_delay", Self::Samples),
+        ("sample_delay_invert", Self::Invert),
+        ("sample_delay_polarity_invert", Self::Invert),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Samples => "sample_delay_samples",
+            Self::Invert => "sample_delay_invert",
+        }
+    }
+
+    /// 本字段是否是**开关**（读作 `1.0` / `0.0`，写时非零即真）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        matches!(self, Self::Invert)
+    }
+
+    /// 从投影参数里读这个字段（开关读成 `1.0` / `0.0`）。
+    #[must_use]
+    pub fn read(self, params: &SampleDelayParams) -> f32 {
+        match self {
+            Self::Samples => params.delay_samples as f32,
+            Self::Invert => f32::from(u8::from(params.invert)),
+        }
+    }
+
+    /// 把**原生绝对值**写进投影参数（⛔ 不在这里钳制到器件域：钳制在器件的 `process`
+    /// 入口；但 `usize` 字段没有\"原样存 f32\"的形态 ⇒ 小数**四舍五入**到最近整数，
+    /// 非有限值**保留现值**、不编一个数）。
+    pub fn store(self, params: &mut SampleDelayParams, value: f32) {
+        match self {
+            Self::Samples => {
+                if value.is_finite() {
+                    params.delay_samples =
+                        value.round().clamp(0.0, MAX_SAMPLE_DELAY_SAMPLES as f32) as usize;
+                }
+            }
+            Self::Invert => params.invert = value != 0.0,
+        }
+    }
+
+    /// 与器件**同一次**钳制/回落（只给恒等判定与运行态的建级门用）。
+    ///
+    /// 采样数钳到 `0..=MAX_SAMPLE_DELAY_SAMPLES`（非有限值回落到 `0`）；开关读作
+    /// `1.0` / `0.0`。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        match self {
+            Self::Samples => {
+                if value.is_finite() {
+                    value.round().clamp(0.0, MAX_SAMPLE_DELAY_SAMPLES as f32)
+                } else {
+                    0.0
+                }
+            }
+            Self::Invert => f32::from(u8::from(value != 0.0)),
+        }
+    }
+}
+
 /// 音符同步换算（投影期、控制线程做）：`time_s = 60/bpm × 4 × num/den × (附点 ? 1.5 : 1)`。
 ///
 /// `num` / `den` 先钳到 `1..16` 再取整（拍数是整数）；结果钳到器件域
@@ -1253,5 +1348,64 @@ mod tests {
             );
         }
         assert_eq!(DelayField::SPELLINGS.len(), 15, "延迟拼写共 15 条");
+    }
+
+    /// 采样延迟字段表：规范名往返、别名指向同一字段、拼写数钉死；`store` 的小数
+    /// 四舍五入、非有限保留现值、越界钳制。
+    #[test]
+    fn sample_delay_field_spellings_round_trip() {
+        for field in SampleDelayField::ALL {
+            assert_eq!(
+                SampleDelayField::from_name(field.canonical_name()),
+                Some(*field),
+                "规范名必须往返"
+            );
+            assert_eq!(
+                SampleDelayField::from_name(&field.canonical_name().to_ascii_uppercase()),
+                Some(*field),
+                "大小写不敏感"
+            );
+        }
+        for (alias, field) in [
+            ("sample_delay", SampleDelayField::Samples),
+            ("sample_delay_polarity_invert", SampleDelayField::Invert),
+        ] {
+            assert_eq!(
+                SampleDelayField::from_name(alias),
+                Some(field),
+                "别名 {alias} 必须指向同一字段"
+            );
+        }
+        assert_eq!(SampleDelayField::SPELLINGS.len(), 4, "采样延迟拼写共 4 条");
+        assert_eq!(SampleDelayField::ALL.len(), 2, "采样延迟共 2 个字段");
+        assert!(SampleDelayField::Invert.is_flag());
+        assert!(!SampleDelayField::Samples.is_flag());
+
+        let mut params = SampleDelayParams::new();
+        SampleDelayField::Samples.store(&mut params, 240.4);
+        assert_eq!(params.delay_samples, 240, "240.4 四舍五入到 240");
+        SampleDelayField::Samples.store(&mut params, 240.5);
+        assert_eq!(
+            params.delay_samples, 241,
+            "240.5 四舍五入到 241（half away from zero）"
+        );
+        SampleDelayField::Samples.store(&mut params, f32::NAN);
+        assert_eq!(params.delay_samples, 241, "非有限保留现值");
+        SampleDelayField::Samples.store(&mut params, -5.0);
+        assert_eq!(params.delay_samples, 0, "负数钳到 0");
+        SampleDelayField::Samples.store(&mut params, 999_999.0);
+        assert_eq!(
+            params.delay_samples, MAX_SAMPLE_DELAY_SAMPLES,
+            "越界钳到上限"
+        );
+        SampleDelayField::Invert.store(&mut params, 1.0);
+        assert!(params.invert);
+        assert_eq!(SampleDelayField::Invert.read(&params), 1.0);
+        assert_eq!(
+            SampleDelayField::Samples.read(&params),
+            MAX_SAMPLE_DELAY_SAMPLES as f32
+        );
+        SampleDelayField::Invert.store(&mut params, 0.0);
+        assert!(!params.invert);
     }
 }
