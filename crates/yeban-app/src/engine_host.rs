@@ -71,7 +71,7 @@
 //!   | 形态 | 谁推进 `process_quantum` | 位置前进的驱动 |
 //!   | :--- | :--- | :--- |
 //!   | **设备腿**（有声卡） | cpal 回调线程（`device::open_output` 的闭包 → `device::render_callback`） | **真实时钟**（设备缓冲节拍） |
-//!   | **控制驱动**（无声卡 / `open_device` 失败） | 控制面显式 `pump(n)` / `drive_audio(n)` | 每次走带动作 **1** 个量子（既有形态，一位没变） |
+//!   | **控制驱动**（无声卡 / `open_device` 失败） | 控制面显式 `pump(n)` / `drive_audio(n)` ＋ 生产 16 ms 定时器墙钟泵送 | 播放时按真实时间泵送（`sample_rate / 128` 量子/秒，无声）；走带动作另推 **1** 个量子 |
 //!   | 无引擎（快照投影失败） | 没有 | 没有 |
 //!
 //!   ⚠ **两处仍然存在的缺口**（如实登记，本票**不实现**）：
@@ -175,6 +175,13 @@ const RETIRE_CAPACITY: usize = 32;
 /// 无锁 SPSC 批量通道（`[ARCH-RT-001]` / `[ROAD-M2-007]`），不是为走带新造的第二条。
 /// 容量 256 远超实际（一次走带动作只发 1–2 条），所以通道**永不成为瓶颈**。
 const EVENT_CAPACITY: usize = 256;
+
+/// 墙钟泵送每跳上限（量子数）。
+///
+/// 生产 16 ms 定时器正常每跳约 6.25 量子（16 ms @ 48 kHz）⇒ 32 是约 5 倍余量。
+/// 定时器偶尔卡顿（窗口失焦 / 系统繁忙）时不一次性渲染几百个量子堵住 UI 线程；
+/// 欠的帧留在余帧里，后面几跳追上（追赶有界，不丢时间）。
+const WALL_CLOCK_PUMP_MAX_QUANTA_PER_TICK: u64 = 32;
 
 /// 引擎重建失败的原因。
 #[derive(Debug)]
@@ -799,6 +806,18 @@ pub struct EngineHost {
     /// `open_device`）与新工程缓存（`Some(project)`）都要清掉它，否则新
     /// `ParamTable`（默认值）永远等不到第一批值。
     automation_last_values: Vec<(ParamAddress, f32)>,
+    /// **墙钟泵送锚点**：控制面模式（无音频设备）下上一次泵送的墙钟时点。
+    ///
+    /// 生产 16 ms 定时器（`src/main.rs` 的心跳闭包）每跳调
+    /// [`Self::pump_wall_clock`]；锚点立在"播放中"的第一跳。停住 / 无引擎 /
+    /// 设备腿时清掉 ⇒ 暂停期间不欠量，恢复播放不补泵（门在
+    /// [`Self::pump_wall_clock_for`]）。
+    wall_clock_pump_last: Option<std::time::Instant>,
+    /// **墙钟泵送余帧**：不足一个量子的零头帧数（漂移校正的进位）。
+    ///
+    /// 每跳 `余帧 += 经过秒数 × 采样率`，够一个量子（128 帧）就泵、余帧减掉已泵
+    /// 的帧数 ⇒ 长期平均速率与墙钟一致（⛔ 不许固定每跳泵 N 个而越走越偏）。
+    wall_clock_pump_debt_frames: f64,
     /// **`#259` 的读数**：最近一跳"**实时引擎不执行**"的自动化泳道（gauge，不是累计）。
     ///
     /// 由 [`unapplied_automation_lanes`] 在 [`Self::publish_automation`] 的每一跳重采；
@@ -1245,6 +1264,9 @@ impl EngineHost {
         self.snapshot_revision = revision;
         // 新运行时 ⇒ 新 `ParamTable`（默认值）⇒ 去重缓存清掉，下一跳全量重发。
         self.automation_last_values.clear();
+        // 新运行时 ⇒ 墙钟泵送的锚点与余帧一起清掉（旧一代的时间线不带到新一代）。
+        self.wall_clock_pump_last = None;
+        self.wall_clock_pump_debt_frames = 0.0;
         // 新快照**就是** `project` 的投影 ⇒ "已经反映的标记"未知，由调用方用
         // [`EngineHost::mark_applied`] 记下（生产路径与判据都这么做）；在此之前
         // [`EngineHost::should_publish`] 恒为 `true`（宁多发一次，不漏发）。
@@ -1379,6 +1401,10 @@ impl EngineHost {
         self.device = Some(handle);
         // 新运行时 ⇒ 新 `ParamTable`（默认值）⇒ 去重缓存清掉，下一跳全量重发。
         self.automation_last_values.clear();
+        // 设备腿接管了时钟 ⇒ 墙钟泵送的锚点与余帧清掉（本函数之后 `runtime` 是
+        // `None`，泵送门本来就会关；这里是换设备时的干净收尾）。
+        self.wall_clock_pump_last = None;
+        self.wall_clock_pump_debt_frames = 0.0;
         Ok((
             DeviceOpening {
                 device_name,
@@ -2151,6 +2177,53 @@ impl EngineHost {
         quanta
     }
 
+    /// 墙钟泵送：控制面模式下按真实时间推进量子（无声）。
+    ///
+    /// 只在**控制驱动**（`runtime` 在手里）且走带**播放中**时泵送；设备腿
+    /// （`runtime == None`）恒返回 0 —— 推进由音频时钟负责，**绝不双泵**。
+    /// 停住 / 无引擎时清掉锚点与余帧，下一次播放从零开始计（暂停期间不欠量）。
+    ///
+    /// 速率：每量子 [`DEFAULT_BLOCK_FRAMES`] 帧，采样率取**快照自己的**
+    /// `sample_rate()` ⇒ 每秒量子数 = `sample_rate / 128`（48 kHz ⇒ 375 量子/秒）。
+    /// 余帧进位（见 `wall_clock_pump_debt_frames` 字段）⇒ 长期平均速率与墙钟一致。
+    ///
+    /// 每跳上限 [`WALL_CLOCK_PUMP_MAX_QUANTA_PER_TICK`] 个量子（卡顿追赶有界）。
+    /// 返回实际推进的量子数。
+    ///
+    /// ⚠ 本函数**不**由 [`crate::host::ProductionLoop::tick`] 调 —— tick 是确定性的
+    /// （只由显式泵送推进，既有判据据此钉"没有推量子 ⇒ 位置不变"）；墙钟泵送只挂在
+    /// 生产 16 ms 定时器上（`src/main.rs` 的心跳闭包），⛔ 不进任何判据路径。
+    /// 本函数**不新建线程、不新建定时器**：复用既有的 16 ms 心跳节拍。
+    pub fn pump_wall_clock(&mut self) -> u64 {
+        let now = std::time::Instant::now();
+        let last = self.wall_clock_pump_last.replace(now);
+        let Some(last) = last else {
+            return 0; // 锚点刚立：这一跳只记时，不泵。
+        };
+        self.pump_wall_clock_for(now.duration_since(last))
+    }
+
+    /// 可注入时长的泵送核（判据入口；生产只走 [`Self::pump_wall_clock`]）。
+    ///
+    /// 门：控制驱动 + 播放中才泵；其余形态清掉锚点与余帧、返回 0（暂停期间不欠量）。
+    /// 采样率取快照自己的 `sample_rate()`；没有快照 ⇒ 0（⛔ 不猜采样率）。
+    fn pump_wall_clock_for(&mut self, elapsed: std::time::Duration) -> u64 {
+        if self.runtime.is_none() || !self.transport().state.is_running() {
+            self.wall_clock_pump_last = None;
+            self.wall_clock_pump_debt_frames = 0.0;
+            return 0;
+        }
+        let Some(sample_rate) = self.slot.as_ref().map(|slot| slot.current().sample_rate()) else {
+            return 0;
+        };
+        let frames =
+            elapsed.as_secs_f64() * f64::from(sample_rate) + self.wall_clock_pump_debt_frames;
+        let quanta = (frames / DEFAULT_BLOCK_FRAMES as f64) as u64;
+        let quanta = quanta.min(WALL_CLOCK_PUMP_MAX_QUANTA_PER_TICK);
+        self.wall_clock_pump_debt_frames = frames - quanta as f64 * DEFAULT_BLOCK_FRAMES as f64;
+        self.pump(quanta)
+    }
+
     /// 播放（**位置保留** ⇒ 停住之后从这里继续）。
     pub fn play(&mut self) -> TransportReading {
         self.send_transport(&[TransportCommand::Play])
@@ -2854,6 +2927,140 @@ mod tests {
             "关掉的泳道在 `None` 跳也不得下发"
         );
         assert_eq!(host.automation_counts(), before, "关掉的泳道不产生任何计数");
+    }
+
+    /// 判据（**墙钟泵送**）：控制面模式下播放时，墙钟泵送按真实时间推进播放头。
+    ///
+    /// 1. 停住时泵送返回 0、位置不动（暂停期间不欠量）；
+    /// 2. 播放时 `50 ms` ⇒ 18 量子（48 kHz：2400 帧 ÷ 128 = 18.75，取整 18），
+    ///    播放头前进约 92 tick（18 量子 × 128 帧 ÷ 25 帧/tick），`transport_quanta`
+    ///    恰好 +18（50 ms 是单跳能足额泵出的时长：100 ms 要 37 量子，超每跳上限 32，
+    ///    那是第 4 步的用例）；
+    /// 3. 余帧进位：两次 `10 ms`（各 480 帧 = 3.75 量子）共泵 7 量子（不是 3 + 3）；
+    /// 4. 每跳上限：`1 s` 的一次性泵送被截到 32 量子，余帧留待后跳追赶；
+    /// 5. 再停住 ⇒ 泵送返回 0、位置不动，且停住期间的时长不欠账。
+    ///
+    /// 时长是**注入的**（`pump_wall_clock_for`），与机器速度无关。夹具前提与 R55
+    /// 判据同一份：demo 工程 120 BPM / 960 PPQ / 48 kHz（采样率现读快照，⛔ 不写死
+    /// 48000 —— 期望量子数由它现算；余帧与 tick 区间按 48 kHz / 120 BPM 手算，
+    /// 因此先断言夹具前提）。位置增量的断言是**区间**（88..=95 tick）：引擎用有理数
+    /// 余数进位，单量子 5.12 tick 的零头在 18 个量子里攒出 ±5 tick 的取整差。
+    #[test]
+    fn wall_clock_pump_advances_the_playhead_while_playing() {
+        let project = demo_project();
+        let mut host = EngineHost::new();
+        host.reload(&project, 4).expect("重建");
+        // ⚠ 新引擎沿用"自由跑"默认值（`Playing`，见模块文档"加载即停住"那一段），
+        // 因此先显式 `stop()` 立住"停住"前提 —— 与生产 `main.rs` 在装配期调 `stop()`
+        // 是同一步；不先停，门看到的就是播放态。
+        host.stop();
+        let sample_rate = host
+            .current_snapshot()
+            .expect("重建后必有快照")
+            .sample_rate();
+        assert_eq!(
+            sample_rate, 48_000,
+            "夹具前提：demo 工程是 48 kHz（余帧与 tick 区间按它手算）"
+        );
+        // 量子数期望值的算式（与实现同一把尺子）：`经过秒数 × 采样率 ÷ 128`，取整。
+        let quanta_for = |millis: u64| -> u64 {
+            (millis as f64 / 1000.0 * f64::from(sample_rate) / DEFAULT_BLOCK_FRAMES as f64) as u64
+        };
+
+        // 1. 停住时不泵（锚点也没立起来）。
+        assert_eq!(
+            host.pump_wall_clock_for(std::time::Duration::from_millis(100)),
+            0,
+            "停住时墙钟泵送必须返回 0"
+        );
+        let stopped_ticks = host.transport().position_ticks;
+
+        // 公共入口第一跳只立锚点、不泵（确定性：与墙钟无关）。
+        let playing = host.play();
+        assert!(
+            playing.state.is_running(),
+            "play() 之后必须是播放态（实得 {:?}）",
+            playing.state
+        );
+        assert_eq!(host.pump_wall_clock(), 0, "锚点刚立的第一跳只记时、不泵");
+
+        // 2. 播放时 50 ms ⇒ 18 量子，播放头与 `transport_quanta` 同步前进。
+        let quanta_before = host
+            .engine_stats()
+            .expect("控制驱动必有统计")
+            .transport_quanta;
+        let ticks_before = host.transport().position_ticks;
+        let pumped = host.pump_wall_clock_for(std::time::Duration::from_millis(50));
+        assert_eq!(pumped, quanta_for(50), "50 ms 必须泵出期望的量子数");
+        assert_eq!(
+            host.engine_stats()
+                .expect("控制驱动必有统计")
+                .transport_quanta,
+            quanta_before + pumped,
+            "`transport_quanta` 必须恰好 +{pumped}"
+        );
+        let tick_delta = host.transport().position_ticks - ticks_before;
+        assert!(
+            (88..=95).contains(&tick_delta),
+            "18 量子必须让播放头前进约 92 tick（实得 {tick_delta}）"
+        );
+        assert_ne!(
+            host.transport().position_ticks,
+            stopped_ticks,
+            "泵送后位置必须离开停住时的 tick"
+        );
+
+        // 3. 余帧进位：先停住清掉上一步的余帧（96 帧），再播，两次 10 ms 共泵 7 量子。
+        host.stop();
+        assert_eq!(
+            host.pump_wall_clock_for(std::time::Duration::from_millis(100)),
+            0,
+            "停住后泵送必须返回 0（且清掉余帧）"
+        );
+        let playing = host.play();
+        assert!(playing.state.is_running(), "再 play() 必须是播放态");
+        let first = host.pump_wall_clock_for(std::time::Duration::from_millis(10));
+        let second = host.pump_wall_clock_for(std::time::Duration::from_millis(10));
+        assert_eq!(first, 3, "第一个 10 ms：480 帧 = 3.75 量子 ⇒ 3");
+        assert_eq!(second, 4, "第二个 10 ms：480 + 96 余帧 = 4.5 量子 ⇒ 4");
+        assert_eq!(
+            first + second,
+            7,
+            "两次 10 ms 共 20 ms = 7.5 量子 ⇒ 7（无进位会是 6）"
+        );
+
+        // 4. 每跳上限：1 s 一次性泵送被截到 32 量子，余帧留待后跳追赶。
+        let capped = host.pump_wall_clock_for(std::time::Duration::from_secs(1));
+        assert_eq!(
+            capped, WALL_CLOCK_PUMP_MAX_QUANTA_PER_TICK,
+            "1 s 的泵送必须被截到每跳上限"
+        );
+        let follow_up = host.pump_wall_clock_for(std::time::Duration::ZERO);
+        assert_eq!(
+            follow_up, WALL_CLOCK_PUMP_MAX_QUANTA_PER_TICK,
+            "余帧必须留待后跳追赶（不是丢掉）"
+        );
+
+        // 5. 再停住 ⇒ 泵送返回 0、位置不动，且停住期间的时长不欠账。
+        let ticks_before_stop = host.transport().position_ticks;
+        host.stop();
+        assert_eq!(
+            host.pump_wall_clock_for(std::time::Duration::from_secs(1)),
+            0,
+            "停住后 1 s 的泵送也必须返回 0"
+        );
+        assert_eq!(
+            host.transport().position_ticks,
+            ticks_before_stop,
+            "停住时泵送不得移动位置"
+        );
+        let playing = host.play();
+        assert!(playing.state.is_running(), "第三次 play() 必须是播放态");
+        assert_eq!(
+            host.pump_wall_clock_for(std::time::Duration::from_millis(50)),
+            quanta_for(50),
+            "恢复播放只泵这一跳的 50 ms，停住期间的 1 s 不欠账"
+        );
     }
 
     // ---------------------------------------------------------------------
