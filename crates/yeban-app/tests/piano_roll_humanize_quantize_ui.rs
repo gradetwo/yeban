@@ -41,7 +41,8 @@ use yeban_model::samples::filled_project;
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::{
-    METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_UP, METHOD_NODE,
+    METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE, METHOD_DISPATCH_POINTER_UP,
+    METHOD_NODE,
 };
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::report_line;
@@ -227,6 +228,22 @@ fn tree_has(plane: &mut LiveControlPlane, seq: i64, element_id: &str) -> bool {
     !node.is_error()
 }
 
+/// 把指针移到**窗口绝对**坐标 (x, y)（`METHOD_DISPATCH_POINTER_MOVE`）。
+/// ⛔ 不能省：`TouchArea.mouse-x/y` 只在指针移动时更新 —— 直接 `down`（指针瞬移）
+/// 会让 `mouse-x/y` 停在初值 0，右键菜单就开到卷帘 (0,0) 去而不是点击处
+/// （真桌面上指针是移过去再按下的，`mouse-x/y` 必然已更新；无头注入必须先移后按）。
+fn move_to(plane: &mut LiveControlPlane, seq: i64, x: f64, y: f64) {
+    let moved = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_DISPATCH_POINTER_MOVE,
+        Some(json!({ "x": x, "y": y })),
+    ));
+    assert!(
+        !moved.is_error(),
+        "指针移到 ({x}, {y}) 必须落到真实窗口: {moved:?}"
+    );
+}
+
 /// 只按下（不抬起）：右键菜单在 `down` 那一刻弹出，判据随后在菜单打开的状态下读树。
 fn press_by_id(plane: &mut LiveControlPlane, seq: i64, element_id: &str, button: &str) {
     let bounds = element_bounds(plane, seq, element_id);
@@ -342,6 +359,14 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
     report_line(&format!(
         "[humanize-ui] 卷帘原点=({roll_x}, {roll_y})，滚动面=({scroll_x}, {scroll_y}, {scroll_w}x{scroll_h})，人性化项中心=({item_cx}, {item_cy})"
     ));
+    // 先把指针移到点击处（`move_to` 的注释：不移就 `down` 会让 `mouse-x/y` 停在 0，
+    // 菜单开到卷帘 (0,0) 去），再右键按下。
+    move_to(
+        &mut plane,
+        2,
+        scroll_x + scroll_w / 2.0,
+        scroll_y + scroll_h / 2.0,
+    );
     press_by_id(&mut plane, 3, SCROLL_AREA, "right");
     let humanize_bounds = element_bounds(&mut plane, 10, MENU_HUMANIZE);
     let quantize_bounds = element_bounds(&mut plane, 20, MENU_QUANTIZE);
@@ -358,14 +383,12 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
     let _ = element_bounds(&mut plane, 40, MENU_HUMANIZE);
 
     // 点「人性化…」⇒ 对话框打开，焦点落人性化区段，种子预填工程 rng_seed。
-    // 诊断实验（本轮）：若 `PopupWindow` 的 x/y 是**窗口**坐标（而非卷帘局部），
-    // 则菜单顶左在窗口 (960, 175.5)，项中心在窗口 (1035, 191.5) —— 即上面
-    // 那个点再往上挪一个卷帘原点 y（601）。先按这个点试一次，看对话框开不开。
+    // （坐标换算见上：项中心窗口坐标 − 滚动面原点 = 滚动面元素的偏移。）
     click_scroll_at(
         &mut plane,
         50,
         item_cx - scroll_x,
-        item_cy - scroll_y - roll_y,
+        item_cy - scroll_y,
         "left",
     );
     // 诊断二分（见文件头）：点下去之后菜单还在不在树里 ——
