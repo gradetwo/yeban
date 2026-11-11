@@ -20626,7 +20626,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 54] = [
+        let rows: [Row<'_>; 57] = [
             (
                 "add",
                 None,

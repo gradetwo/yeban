@@ -1057,16 +1057,18 @@ impl RenderPlan {
                     .map(|chain| {
                         InsertRuntime::new(chain, options.sample_rate, options.block_size)
                     });
-                // 主总线恒等：它是混音本身，不是可对齐的轨。若把它也平移，整路母带
-                // 会被拖后 |min|（R4 实测：A −240 / B 0 时母带第 0 帧变 0）。min 本身
-                // 仍按全部节点算（master 缺表项当 0，不影响 min ≤ 0）。
+                // 主总线恒等：它是混音本身，不是可对齐的轨。恒等的是**有效**值 ——
+                // 只把原值归零不够（有效 = 原值 − min，0 − (−240) 仍是 240，整路
+                // 母带会被拖后 |min|；R4 实测：A −240 / B 0 时母带第 0 帧变 0）。
+                // min 本身仍按全部节点算（master 缺表项当 0，不影响 min ≤ 0）。
                 // 实时侧同规则（arming 跳 master，见 R6）。
-                let align = if node == master {
-                    PhaseAlign::default()
+                let align = phase.get(&node).copied().unwrap_or_default();
+                let effective_delay = if node == master {
+                    0
                 } else {
-                    phase.get(&node).copied().unwrap_or_default()
+                    align.delay_samples.saturating_sub(min_delay)
                 };
-                let effective_delay = align.delay_samples.saturating_sub(min_delay);
+                let phase_invert = node != master && align.invert_polarity;
                 NodeState {
                     node,
                     buffer: vec![0.0; block_width],
@@ -1082,7 +1084,7 @@ impl RenderPlan {
                     } else {
                         None
                     },
-                    phase_invert: align.invert_polarity,
+                    phase_invert,
                     key_buffer: Vec::new(),
                     key_input: None,
                     key_tap: false,
@@ -1389,6 +1391,11 @@ impl RenderPlan {
         for state in &mut self.states {
             state.source = None;
             for line in &mut state.delay_lines {
+                line.reset();
+            }
+            // 手动相位对齐的延迟线同样是**跨执行存活**的时间状态 ⇒ 与 PDC 线
+            // 同一条复位规则，否则同一个计划执行两次的第二遍会带着第一遍的尾巴。
+            if let Some(line) = &mut state.phase_delay {
                 line.reset();
             }
             // 发送增益自动化的 5 ms 平滑器也是**跨执行存活**的时间状态 ⇒ 一起复位

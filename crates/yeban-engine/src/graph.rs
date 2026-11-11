@@ -1603,22 +1603,23 @@ mod tests {
         // early −240、plain 0、late +480 且反转 ⇒ min = −240 ⇒
         // 有效延时 0 / 240 / 720。plain 原值恒等、有效 240 ⇒ 也占槽
         // （不占槽就会在第 0 帧出声，相对偏移丢了 —— R4 的教训）。
+        // early 有效 0 且不反转 ⇒ 不占槽（直通）；三轨里占槽的是 plain + late。
         let mut bank = PhaseBank::preallocated(6, 9600);
         assert!(bank.is_empty(), "预分配之后一条都没武装");
         let shortfall = bank.rearm(&[(early, -240, false), (plain, 0, false), (late, 480, true)]);
         assert!(shortfall.is_exact(), "3 条轨 6 条线：{shortfall:?}");
-        assert_eq!(bank.len(), 3, "有效 240 的 plain 也占槽位");
-        assert_eq!(bank.effective_delay(&early), Some(0));
+        assert_eq!(bank.len(), 2, "占槽的是 plain + late，early 有效恒等不占槽");
+        assert_eq!(bank.effective_delay(&early), None, "有效恒等不可达");
         assert_eq!(bank.effective_delay(&plain), Some(240));
         assert_eq!(bank.effective_delay(&late), Some(720));
-        assert_eq!(bank.invert(&early), Some(false));
+        assert_eq!(bank.invert(&early), None, "有效恒等不可达");
         assert_eq!(bank.invert(&plain), Some(false));
         assert_eq!(bank.invert(&late), Some(true));
 
-        // 行为面：early 的脉冲当即出声，late 的脉冲在 720 帧后以 −1 出声。
+        // 行为面：early 无武装、样本一位不动；late 的脉冲在 720 帧后以 −1 出声。
         let mut buf = [1.0f32, 0.0, 0.0, 0.0];
-        assert!(bank.apply(&early, &mut buf));
-        assert_eq!(buf, [1.0, 0.0, 0.0, 0.0], "有效延时 0：直通");
+        assert!(!bank.apply(&early, &mut buf));
+        assert_eq!(buf, [1.0, 0.0, 0.0, 0.0], "无武装：样本一位不动");
         let mut buf = vec![1.0f32; 724];
         assert!(bank.apply(&late, &mut buf));
         assert_eq!(buf[..720], [0.0; 720], "前 720 帧必须是零历史");
@@ -1626,7 +1627,7 @@ mod tests {
         assert_eq!(
             bank.processed_blocks(),
             1,
-            "只有非零延迟/反转的那一次算『真的处理过』（有效延时 0 且不反转的武装直通不计）"
+            "只有非零延迟/反转的那一次算『真的处理过』（有效恒等不占槽、不计）"
         );
 
         // plain 的脉冲在 240 帧后出声（有效延时 240，不是第 0 帧）。
