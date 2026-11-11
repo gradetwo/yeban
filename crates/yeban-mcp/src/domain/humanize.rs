@@ -925,11 +925,7 @@ mod tests {
             sxy += (value - mean_s) * (log_f[index] - mean_f);
             sxx += (value - mean_s) * (value - mean_s);
         }
-        if sxx == 0.0 {
-            0.0
-        } else {
-            sxy / sxx
-        }
+        if sxx == 0.0 { 0.0 } else { sxy / sxx }
     }
 
     #[test]
@@ -1005,8 +1001,14 @@ mod tests {
             fgn_normals(&mut stream, 4096, hurst).0
         };
         // R75: 纯函数自比 —— 同一种子两次调用必须输出同一 fGn 序列（确定性探针）。
-        assert_eq!(take(42, DEFAULT_HURST_PERMILLE), take(42, DEFAULT_HURST_PERMILLE));
-        assert_ne!(take(42, DEFAULT_HURST_PERMILLE), take(43, DEFAULT_HURST_PERMILLE));
+        assert_eq!(
+            take(42, DEFAULT_HURST_PERMILLE),
+            take(42, DEFAULT_HURST_PERMILLE)
+        );
+        assert_ne!(
+            take(42, DEFAULT_HURST_PERMILLE),
+            take(43, DEFAULT_HURST_PERMILLE)
+        );
         // H = 0.81 时 DFA α ≈ 0.81（Wang 2026-11-11 锚点）。
         let alpha = dfa_alpha(&take(42, DEFAULT_HURST_PERMILLE), &scales);
         assert!(
@@ -1058,10 +1060,7 @@ mod tests {
         // 尺度取中段 [16, 32, 64, 128]（同 `fgn_hurst_controls_dfa_alpha` 的取舍）。
         let scales = [16usize, 32, 64, 128];
         let alpha = dfa_alpha(&timing, &scales);
-        assert!(
-            alpha > 0.6,
-            "混合输出 DFA α = {alpha}，应 > 0.6"
-        );
+        assert!(alpha > 0.6, "混合输出 DFA α = {alpha}，应 > 0.6");
         // 短程记忆仍在：滞后 1 自相关 ≥ 0.7（L2 AR + HMM 持续性）。
         let rho1 = lag1_autocorrelation(&timing);
         assert!(rho1 >= 0.7, "混合输出 ρ1 = {rho1}，应 ≥ 0.7");
