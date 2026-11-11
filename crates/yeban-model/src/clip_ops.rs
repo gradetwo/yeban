@@ -180,7 +180,6 @@ impl VelocityShapeParams {
     /// 带顺序校验：`1 ≤ ghost_min ≤ ghost_max ≤ comfort_min ≤ comfort_max
     /// < accent_min ≤ 127`，强度 0..=1000，抖动 0..=[`MAX_SHAPE_JITTER`]。
     /// 调用方（MCP 解析期）须先判，非法 ⇒ `INVALID_PARAMETER_RANGE`。
-    #[must_use]
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.ghost_min < 1
             || self.ghost_min > self.ghost_max
@@ -238,7 +237,6 @@ pub struct ChordStaggerParams {
 
 impl ChordStaggerParams {
     /// 取值校验：步长 1..=240，抖动 0..=240。
-    #[must_use]
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.stagger_ticks < 1 || self.stagger_ticks > MAX_STAGGER_TICKS {
             return Err("staggerTicks 必须在 1..=240");
@@ -324,21 +322,17 @@ enum Voice {
 /// - 其余按声部：melody ⇒ `[comfort_min+10, comfort_max]`、bass ⇒
 ///   `[comfort_min, comfort_min+15]`、accompaniment ⇒ `[comfort_min,
 ///   comfort_max-10]`（带端钳进舒适区内，不越界）。
-/// 带内保序：原力度在源区间 `[ghost_max+1, 127]`（幽灵音 `[1, ghost_max]`、
-/// 重音 `[accent_min, 127]`）内的相对位置线性映进目标带。
-/// 之后按 `strength_permille` 在原力度与目标间内插，再加 seed 驱动的带内
-/// 抖动（±`jitter`，沿 tick 序阻尼，相邻步 ≤ `max(1, jitter / 4)`）。
+///   带内保序：原力度在源区间 `[ghost_max+1, 127]`（幽灵音 `[1, ghost_max]`、
+///   重音 `[accent_min, 127]`）内的相对位置线性映进目标带。
+///   之后按 `strength_permille` 在原力度与目标间内插，再加 seed 驱动的带内
+///   抖动（±`jitter`，沿 tick 序阻尼，相邻步 ≤ `max(1, jitter / 4)`）。
 ///
 /// # Panics
 ///
 /// 参数未通过 [`VelocityShapeParams::validate`] 时 debug 断言失败
 /// （MCP 解析期已判；GUI 调用方同样须先判）。
 #[must_use]
-pub fn shape_velocities(
-    notes: &[&MidiNote],
-    seed: u64,
-    params: &VelocityShapeParams,
-) -> Vec<u8> {
+pub fn shape_velocities(notes: &[&MidiNote], seed: u64, params: &VelocityShapeParams) -> Vec<u8> {
     debug_assert!(params.validate().is_ok());
     let comfort_min = u16::from(params.comfort_min);
     let comfort_max = u16::from(params.comfort_max);
@@ -391,7 +385,7 @@ pub fn shape_velocities(
             let is_ghost = note.velocity <= params.ghost_max;
             let is_accent = !is_ghost
                 && (note.velocity >= params.accent_min
-                    || (voice == Voice::Melody && note.start_tick % BEAT_TICKS == 0));
+                    || (voice == Voice::Melody && note.start_tick.is_multiple_of(BEAT_TICKS)));
             let mapped = if is_accent {
                 linear_map(
                     note.velocity,
@@ -635,19 +629,27 @@ mod tests {
     fn velocity_shape_params_validate_rejects_bad_bands() {
         assert!(VelocityShapeParams::default().validate().is_ok());
         // 带顺序错乱（ghostMax > comfortMin）。
-        let mut bad = VelocityShapeParams::default();
-        bad.ghost_max = 70;
+        let bad = VelocityShapeParams {
+            ghost_max: 70,
+            ..Default::default()
+        };
         assert!(bad.validate().is_err());
         // 重音下限压进舒适区（comfortMax >= accentMin）。
-        let mut bad = VelocityShapeParams::default();
-        bad.accent_min = 90;
+        let bad = VelocityShapeParams {
+            accent_min: 90,
+            ..Default::default()
+        };
         assert!(bad.validate().is_err());
         // 强度与抖动越界。
-        let mut bad = VelocityShapeParams::default();
-        bad.strength_permille = 1001;
+        let bad = VelocityShapeParams {
+            strength_permille: 1001,
+            ..Default::default()
+        };
         assert!(bad.validate().is_err());
-        let mut bad = VelocityShapeParams::default();
-        bad.jitter = MAX_SHAPE_JITTER + 1;
+        let bad = VelocityShapeParams {
+            jitter: MAX_SHAPE_JITTER + 1,
+            ..Default::default()
+        };
         assert!(bad.validate().is_err());
     }
 
@@ -845,7 +847,10 @@ mod tests {
         assert!(first.iter().all(|value| (-240..=240).contains(value)));
         // 严格递增（钳制后仍单调：后音至少比前音晚 1 tick，直到顶到 240）。
         for pair in first.windows(2) {
-            assert!(pair[1] > pair[0] || pair[1] == 240, "延迟必须严格递增: {first:?}");
+            assert!(
+                pair[1] > pair[0] || pair[1] == 240,
+                "延迟必须严格递增: {first:?}"
+            );
         }
     }
 }
