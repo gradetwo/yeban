@@ -156,8 +156,16 @@ fn clip_offset_shifts_the_realtime_audio_span() {
         .audio_clip_schedule(&fixture.track)
         .expect("音频轨必须在表里");
     assert_eq!(schedule.len(), 1);
-    assert_eq!(schedule.spans()[0].start(), 24_240, "+240 采样 ⇒ span 起点移 240 帧");
-    assert_eq!(schedule.spans()[0].end(), 48_240, "+240 采样 ⇒ span 终点同移 240 帧");
+    assert_eq!(
+        schedule.spans()[0].start(),
+        24_240,
+        "+240 采样 ⇒ span 起点移 240 帧"
+    );
+    assert_eq!(
+        schedule.spans()[0].end(),
+        48_240,
+        "+240 采样 ⇒ span 终点同移 240 帧"
+    );
     let rendered = render_snapshot(snapshot, 200);
     assert_eq!(
         first_nonzero(&rendered),
@@ -176,10 +184,7 @@ fn clip_offset_shifts_the_realtime_audio_span() {
             placement.offset_samples = Some(-240);
         }
     }
-    let snapshot = snapshot_with_pcm(
-        &clamped.project,
-        mono_pcm(0.5, rate as usize, rate),
-    );
+    let snapshot = snapshot_with_pcm(&clamped.project, mono_pcm(0.5, rate as usize, rate));
     let schedule = snapshot
         .audio_clip_schedule(&clamped.track)
         .expect("音频轨必须在表里");

@@ -393,8 +393,7 @@ fn clip_offset_shifts_the_audible_window_by_exactly_the_offset() {
         let dir = scratch(&format!("offset-{tag}"));
         let (bytes, source_sample) = synth_asset(&dir, EXPORT_RATE);
         let hash = AssetHash::of_bytes(&bytes);
-        let project =
-            project_with_audio_clip_offset(hash, CLIP_GAIN_DB, start_tick, offset);
+        let project = project_with_audio_clip_offset(hash, CLIP_GAIN_DB, start_tick, offset);
         let container = write_container(&dir, "song.yeban", &project, &bytes);
         let out = dir.join("out.wav");
         let lines = export_via_cli(&container, &out);
@@ -411,8 +410,7 @@ fn clip_offset_shifts_the_audible_window_by_exactly_the_offset() {
         assert_eq!(left.len(), 48_000 * 8, "默认导出的帧数变了 ⇒ 本判据需同步");
         let expected = source_sample * db_to_linear(CLIP_GAIN_DB);
         let inside = peak_in(&left, expect_start..expect_end);
-        let outside =
-            peak_in(&left, 0..expect_start).max(peak_in(&left, expect_end..left.len()));
+        let outside = peak_in(&left, 0..expect_start).max(peak_in(&left, expect_end..left.len()));
         println!(
             "[export-audio/offset-{tag}] 偏移 {offset} 采样：窗口 [{expect_start}, {expect_end}) 内峰值 {inside:.6}；期望 {expected:.6}；窗口外峰值 {outside:.8}"
         );
