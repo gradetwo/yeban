@@ -8884,10 +8884,10 @@ pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
         if ui.get_humanize_velocity_jitter().trim().is_empty() {
             ui.set_humanize_velocity_jitter("10".into());
         }
-        if ui.get_humanize_seed().trim().is_empty() {
-            if let Some(project) = port.and_then(|p| p.try_project()) {
-                ui.set_humanize_seed(project.rng_seed.to_string().into());
-            }
+        if ui.get_humanize_seed().trim().is_empty()
+            && let Some(project) = port.and_then(|p| p.try_project())
+        {
+            ui.set_humanize_seed(project.rng_seed.to_string().into());
         }
         if ui.get_humanize_grid().trim().is_empty() {
             ui.set_humanize_grid("240".into());
