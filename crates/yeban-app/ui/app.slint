@@ -1481,10 +1481,6 @@ export component MainWindow inherits Window {
     callback note-drag-release(length, length);
     /// 指针离开窗口 / 控件被禁用（`PointerEventKind.cancel`）⇒ 丢弃草稿。
     callback note-drag-cancel();
-    /// ⭐ 卷帘右键上下文菜单的两项（本组件只透传到宿主的 `on_open_humanize` /
-    /// `on_open_quantize`；播种 / 解析 / 提交全在 `host::wire_humanize_dialog`）。
-    callback humanize-requested();
-    callback quantize-requested();
     /// 被拖音符的身份（空 = 没有手势）与拖动期的草稿预览位移（逻辑像素，宿主算好注入）。
     /// 它们住在窗口上的理由与 `roll-scroll-x` 相同：宿主要在 `grab` / `move` / `release`
     /// 三条回调之间记住"这一拖从哪个音符、哪个指针位置开始"，而 `Escape`
@@ -2067,8 +2063,11 @@ export component MainWindow inherits Window {
             note-drag-move(x, y) => { root.note-drag-move(x, y); }
             note-drag-release(x, y) => { root.note-drag-release(x, y); }
             note-drag-cancel() => { root.note-drag-cancel(); }
-            humanize-requested => { root.humanize-requested(); }
-            quantize-requested => { root.quantize-requested(); }
+            // ⭐ 卷帘右键菜单的两项**直接落到对话框的打开回调**（`open-humanize` /
+            // `open-quantize` 是宿主接的唯一落点；`humanize-requested` 只透传到这里，
+            // ⛔ 不在 MainWindow 上再立一个无人接的同名回调 —— 立了就是死回调）。
+            humanize-requested => { root.open-humanize(); }
+            quantize-requested => { root.open-quantize(); }
             note-drag-ulid: root.note-drag-ulid;
             note-drag-preview-dx: root.note-drag-preview-dx;
             note-drag-preview-dy: root.note-drag-preview-dy;
