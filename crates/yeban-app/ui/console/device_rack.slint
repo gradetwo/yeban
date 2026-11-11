@@ -6,9 +6,9 @@
 //   - [UI-NOTE-004]: 编曲辅助 (视觉反馈) —— 频响曲线属视觉反馈层
 //   - [UI-MCP-002] §12.5: 频响曲线会随参数每帧变化 → 无头截图比对时必须遮罩
 //
-// 静态骨架: 频响曲线是纯色占位块。真正的曲线要用 `Path` 元素把 biquad 幅频响应画出来,
-// 而 4 段 EQ 的传递函数住在 `yeban-dsp` —— 现在画一条假的曲线只会制造"看起来对"的假象,
-// 所以这里明确留空并登记为 pending。
+// 频响曲线 (G-E1 & G-E2)：由 `yeban-dsp` 的 Biquad 传递函数真实计算幅频响应，
+// 经 `bridge::eq_curve_projection` 映射生成 SVG `Path` 路径命令并在此渲染。
+// 曲线交互面支持按频段（低架 / 中峰 / 高架）在曲线上直接拖拽调节增益与频率。
 //
 // ⚠ **诚实性审计登记（2026-10-08，本次未修，如实登记不假装）**：
 // `device-names`（`:29`）与 `band-gains`（`:32`）是**声称有数据**的属性，而它们
@@ -125,6 +125,18 @@ export component DeviceRack inherits Rectangle {
     /// ⭐ 任务单 `#182`：可编辑那一格的**设备身份**（`DeviceDefinition::id`，`""` = 没有
     /// 目标）。EQ 手势只报它（⛔ 不报行下标）—— 宿主按身份在权威链里现查槽位。
     in property <string> eq-device-id: "";
+
+    // ---------------------------------------------------------------- 频响曲线真绘制 (G-E1 & G-E2)
+    /// 频响曲线的 SVG Path 指令（如 `"M 0 50 L 10 50 ... L 420 50"`）。
+    in property <string> eq-curve-svg: "M 0 50 L 420 50";
+    /// 频响曲线下方面积的 SVG Path 指令。
+    in property <string> eq-curve-fill-svg: "";
+    /// 频响曲线各频段参数读数。
+    in property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    /// 频响曲线拖动手势回调：归一化坐标 `(norm_x, norm_y)`。
+    callback eq-curve-drag(float, float);
+    /// 频响曲线手势松开。
+    callback eq-curve-release();
 
     // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`，第二段）
     /// 主总线设备链那一栏的标题（`"主总线 Master · 设备链"`；没有主总线时是逐字原因）。
@@ -469,8 +481,7 @@ export component DeviceRack inherits Rectangle {
         }
     }
 
-    // ---------------------------------------------------------------- 频响曲线区
-    // ⚠ 仍是**占位**：曲线未实现（见文件头）。这里不写任何数值读数。
+    // ---------------------------------------------------------------- 频响曲线区 (G-E1 & G-E2)
     Rectangle {
         x: Tokens.space-4;
         y: 28px;
@@ -483,7 +494,7 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: image;
         accessible-id: "device-rack-eq-curve";
-        accessible-label: "4 段 EQ 频响曲线 (占位, 曲线未实现)";
+        accessible-label: "4 段 EQ 频响曲线";
 
         // 频响网格
         for eq_grid_index in 8 : Rectangle {
@@ -510,14 +521,64 @@ export component DeviceRack inherits Rectangle {
             background: Tokens.gold-deep;
         }
 
+        // 频响填充（半透明）
+        Path {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 420;
+            viewbox-height: 100;
+            fit: ImageFit.fill;
+            commands: root.eq-curve-fill-svg;
+            fill: #d4a01720;
+            stroke-width: 0px;
+        }
+
+        // 真实频响曲线 Path (G-E1)
+        Path {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 420;
+            viewbox-height: 100;
+            fit: ImageFit.fill;
+            commands: root.eq-curve-svg;
+            stroke: Tokens.gold;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+
+        // 频段信息读数 (G-E2)
         UiMonoText {
             x: Tokens.space-3;
             y: Tokens.space-2;
-            width: 200px;
+            width: parent.width - Tokens.space-4;
             height: 16px;
-            text: "-18 dB / 0 / +18 dB · 20 Hz – 20 kHz (占位)";
-            color: Tokens.ink-2;
+            text: root.eq-curve-info;
+            color: root.eq-available ? Tokens.gold : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 曲线交互拖拽面 (G-E2: 直接拖动低/中/高频段)
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(event) => {
+                if (root.eq-available) {
+                    if (event.kind == PointerEventKind.down || event.kind == PointerEventKind.move) {
+                        root.eq-curve-drag(self.mouse-x / self.width, self.mouse-y / self.height);
+                    } else {
+                        root.eq-curve-release();
+                    }
+                }
+            }
         }
     }
 

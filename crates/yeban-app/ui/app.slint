@@ -1106,6 +1106,10 @@ export component MainWindow inherits Window {
     callback device-eq-drag(float);
     /// EQ 低架增益收尾（松手 / 指针离开窗口）⇒ 值真的变了才提交一次。
     callback device-eq-release();
+    /// EQ 频响曲线拖动（参数 = 归一化坐标 norm_x, norm_y）。
+    callback eq-curve-drag(float, float);
+    /// EQ 频响曲线手势收尾。
+    callback eq-curve-release();
     // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：控制台 **Tab 3** 同一面板里的三个按钮。
     //
     // 形状与 `device-*` / `track-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪台设备"，
@@ -1338,6 +1342,10 @@ export component MainWindow inherits Window {
     // ⭐ 任务单 `#182`：EQ 滑块的**设备身份**（`DeviceDefinition::id`，`""` = 没有目标）。
     // 手势把它原样带回宿主（`device-eq-grab(device-id, fraction)`）—— ⛔ 不是行下标。
     in property <string> device-eq-device-id: "";
+    // ⭐ 频响曲线真绘制 (G-E1 & G-E2)：SVG Path 命令与频段信息读数。
+    in property <string> eq-curve-svg: "M 0 50 L 420 50";
+    in property <string> eq-curve-fill-svg: "";
+    in property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量。唯一写者是
     // `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
     in property <bool> device-insert-available: false;
@@ -2043,6 +2051,9 @@ export component MainWindow inherits Window {
             device-eq-max-db: root.device-eq-max-db;
             // ⭐ 任务单 `#182`：EQ 手势的**设备身份**（⛔ 不是下标）。
             device-eq-device-id: root.device-eq-device-id;
+            device-eq-curve-svg: root.eq-curve-svg;
+            device-eq-curve-fill-svg: root.eq-curve-fill-svg;
+            device-eq-curve-info: root.eq-curve-info;
             // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量，只做单向搬运。
             device-insert-available: root.device-insert-available;
             device-insert-reason: root.device-insert-reason;
@@ -2149,6 +2160,12 @@ export component MainWindow inherits Window {
             }
             device-eq-release() => {
                 root.device-eq-release();
+            }
+            device-eq-curve-drag(x, y) => {
+                root.eq-curve-drag(x, y);
+            }
+            device-eq-curve-release() => {
+                root.eq-curve-release();
             }
             // ⭐ 设备增删 ＋ 建空片段（Tab 3，任务单 `#163`）：只上抛 —— 唯一落点是
             // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。

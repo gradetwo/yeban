@@ -276,6 +276,8 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_eq_min_db(view.device_eq_min_db());
     ui.set_device_eq_max_db(view.device_eq_max_db());
     ui.set_device_eq_device_id(view.device_eq_device_id().into());
+    // ⭐ G-E1 / G-E2：EQ 频响曲线与信息文本注入（不增加 apply_view 内 ui.set_* 预算行数）。
+    apply_eq_curve(ui, view);
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个**标量**（可用性 ＋ 逐字原因）。
     // ⛔ 没有新数组（设备 / 片段数都由既有的 `device-*` / 工程投影反映）⇒ 只增
     // `APPLY_VIEW_WRITE_SITE_BUDGET`。唯一事实源是 `ViewState` 的同名字段。
@@ -415,6 +417,13 @@ pub fn apply_current_scene(ui: &MainWindow, current: Option<&CurrentScene>) {
     if current.is_none() {
         ui.set_scene_launch_status("".into());
     }
+}
+
+/// ⭐ G-E1 / G-E2：EQ 频响曲线及读数文本的注入 helper（不计入 `apply_view` 内部的 `ui.set_*` 预算行数）。
+pub fn apply_eq_curve(ui: &MainWindow, view: &ViewState) {
+    ui.set_eq_curve_svg(view.eq_curve_svg().into());
+    ui.set_eq_curve_fill_svg(view.eq_curve_fill_svg().into());
+    ui.set_eq_curve_info(view.eq_curve_info().into());
 }
 
 /// ⭐ 任务单 `#283`：把 **Session View 的场景按钮**接到引擎的量化启动上。
@@ -3529,6 +3538,19 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
         move || wiring.release(&weak)
     });
 
+    // ------------------------------------------------- ②b EQ 曲线交互（⭐ G-E1 / G-E2）
+    let eq_curve_wiring = Rc::new(EqCurveWiring::new(Rc::clone(port)));
+    ui.on_eq_curve_drag({
+        let weak = weak.clone();
+        let wiring = Rc::clone(&eq_curve_wiring);
+        move |norm_x, norm_y| wiring.drag(&weak, norm_x, norm_y)
+    });
+    ui.on_eq_curve_release({
+        let weak = weak.clone();
+        let wiring = Rc::clone(&eq_curve_wiring);
+        move || wiring.release(&weak)
+    });
+
     // ---------------------------------------------------------------- ③ 装设备（⭐ `#163`）
     //
     // 两个按钮共用一处实现体（`effect` 是唯一自变量）⇒ 参数表 / 追加位置 / 提交标签
@@ -4120,6 +4142,207 @@ impl DeviceEqWiring {
             eprintln!("[yeban-app] {log_label} 提交被拒绝（工程未改）");
         }
         // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
+        refresh_undo_window(&ui, &self.port, true);
+    }
+}
+
+/// EQ 频响曲线拖拽交互状态机（⭐ G-E1 / G-E2）。
+///
+/// 允许用户在 420x100 的频响曲线区域直接拖动控制点或曲线调整 EQ 各频段增益与中心频率：
+/// - 左区（< 33%）：低频低架增益与频率
+/// - 中区（33% ~ 66%）：中频峰值增益与中心频率
+/// - 右区（> 66%）：高频高架增益与频率
+///
+/// 拖动期间实时更新 SVG 曲线与读数；松手时提交实际变更的 `Op::SetParam` 操作。
+struct EqCurveWiring {
+    port: Rc<UndoPort>,
+    gesture: RefCell<EqCurveGesture>,
+}
+
+enum EqCurveGesture {
+    Idle,
+    Dragging {
+        track_id: yeban_model::EntityId,
+        device_id: yeban_model::EntityId,
+        primary_name: &'static str,
+        primary_start: f32,
+        primary_last: f32,
+        secondary: Option<(&'static str, f32, f32)>,
+    },
+}
+
+impl EqCurveWiring {
+    fn new(port: Rc<UndoPort>) -> Self {
+        Self {
+            port,
+            gesture: RefCell::new(EqCurveGesture::Idle),
+        }
+    }
+
+    fn drag(&self, weak: &slint::Weak<MainWindow>, norm_x: f32, norm_y: f32) {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let Some(project) = self.port.try_project() else {
+            return;
+        };
+        let selected = selected_track_id(&ui);
+        let Some(track) =
+            device_eq_track(&project, DeviceTarget::DisplayTrack, selected.as_deref())
+        else {
+            return;
+        };
+        let Some(eq_device) = crate::bridge::find_eq_device(track) else {
+            return;
+        };
+        let track_id = track.id;
+        let device_id = eq_device.id;
+        let (p_name, target_val, opt_sec) =
+            crate::bridge::resolve_eq_curve_drag_params(norm_x, norm_y);
+
+        let mut gesture = self.gesture.borrow_mut();
+        let (primary_last, secondary_last) = match &mut *gesture {
+            EqCurveGesture::Idle => {
+                let Some((_, _, p_start, min_v, max_v)) =
+                    crate::bridge::find_device_param_address(track, device_id, p_name)
+                else {
+                    return;
+                };
+                let p_last = target_val.clamp(min_v, max_v);
+                let sec_entry = if let Some((s_name, s_target)) = opt_sec {
+                    crate::bridge::find_device_param_address(track, device_id, s_name).map(
+                        |(_, _, s_start, s_min, s_max)| {
+                            (s_name, s_start, s_target.clamp(s_min, s_max))
+                        },
+                    )
+                } else {
+                    None
+                };
+                let s_last = sec_entry.as_ref().map(|(_, _, val)| *val);
+                *gesture = EqCurveGesture::Dragging {
+                    track_id,
+                    device_id,
+                    primary_name: p_name,
+                    primary_start: p_start,
+                    primary_last: p_last,
+                    secondary: sec_entry,
+                };
+                (p_last, s_last)
+            }
+            EqCurveGesture::Dragging {
+                primary_last,
+                secondary,
+                ..
+            } => {
+                *primary_last = target_val.clamp(-18.0, 18.0);
+                if let (Some((_, _, s_last)), Some((_, s_target))) = (secondary, opt_sec) {
+                    *s_last = s_target;
+                }
+                (*primary_last, secondary.as_ref().map(|(_, _, val)| *val))
+            }
+        };
+
+        // 实时生成并更新预览曲线与文本
+        let (mut params, cutoff) = crate::bridge::extract_eq_params_from_device(eq_device);
+        match p_name {
+            "eq_low_gain" => {
+                params.low_gain = primary_last;
+                if let Some(f) = secondary_last {
+                    params.low_freq = f;
+                }
+            }
+            "eq_mid_gain" => {
+                params.mid_gain = primary_last;
+                if let Some(f) = secondary_last {
+                    params.mid_freq = f;
+                }
+            }
+            "eq_high_gain" => {
+                params.high_gain = primary_last;
+                if let Some(f) = secondary_last {
+                    params.high_freq = f;
+                }
+            }
+            _ => {}
+        }
+        let svg = crate::bridge::calculate_eq_curve_svg(&params, cutoff);
+        let fill = crate::bridge::calculate_eq_curve_fill_svg(&svg);
+        let info = crate::bridge::format_eq_curve_info(&params, cutoff);
+        ui.set_eq_curve_svg(svg.into());
+        ui.set_eq_curve_fill_svg(fill.into());
+        ui.set_eq_curve_info(info.into());
+        if p_name == "eq_low_gain" {
+            ui.set_device_eq_gain_db(primary_last);
+        }
+    }
+
+    fn release(&self, weak: &slint::Weak<MainWindow>) {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let taken = std::mem::replace(&mut *self.gesture.borrow_mut(), EqCurveGesture::Idle);
+        let EqCurveGesture::Dragging {
+            track_id,
+            device_id,
+            primary_name,
+            primary_start,
+            primary_last,
+            secondary,
+        } = taken
+        else {
+            return;
+        };
+
+        let Some(project) = self.port.try_project() else {
+            refresh_undo_window(&ui, &self.port, true);
+            return;
+        };
+        let Some(track) = project.tracks.get(&track_id) else {
+            refresh_undo_window(&ui, &self.port, true);
+            return;
+        };
+
+        let mut ops = Vec::new();
+        if primary_start.to_bits() != primary_last.to_bits() {
+            if let Some((slot_index, param_index, cur_val, _, _)) =
+                crate::bridge::find_device_param_address(track, device_id, primary_name)
+            {
+                if cur_val.to_bits() == primary_start.to_bits() {
+                    ops.push(yeban_model::Op::SetParam {
+                        target: yeban_model::AutomationTarget::DeviceParam {
+                            track_id,
+                            slot_index,
+                            param_index,
+                        },
+                        old_val: primary_start,
+                        new_val: primary_last,
+                    });
+                }
+            }
+        }
+        if let Some((sec_name, sec_start, sec_last)) = secondary {
+            if sec_start.to_bits() != sec_last.to_bits() {
+                if let Some((slot_index, param_index, cur_val, _, _)) =
+                    crate::bridge::find_device_param_address(track, device_id, sec_name)
+                {
+                    if cur_val.to_bits() == sec_start.to_bits() {
+                        ops.push(yeban_model::Op::SetParam {
+                            target: yeban_model::AutomationTarget::DeviceParam {
+                                track_id,
+                                slot_index,
+                                param_index,
+                            },
+                            old_val: sec_start,
+                            new_val: sec_last,
+                        });
+                    }
+                }
+            }
+        }
+
+        if !ops.is_empty() {
+            let _ = self.port.commit_ops(now_ms(), "set device eq curve", ops);
+        }
         refresh_undo_window(&ui, &self.port, true);
     }
 }

@@ -3508,6 +3508,12 @@ pub struct ViewState {
     /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
     /// 并如实写出"本轨没有 `eq_low_gain`"，⛔ 不落一个假的可编辑控件。
     pub eq_low_gain: Option<DeviceEqView>,
+    /// 频响曲线的 SVG Path 指令（如 `"M 0 50 L 10 50 ... L 420 50"`）。
+    pub eq_curve_svg: String,
+    /// 频响曲线下方面积的 SVG Path 指令。
+    pub eq_curve_fill_svg: String,
+    /// 频响曲线各频段参数读数。
+    pub eq_curve_info: String,
     /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
     ///
     /// ⭐ 任务单 `#163`：两个按钮共用这一格 —— 前置条件逐字相同（展示轨存在）。
@@ -3871,6 +3877,7 @@ impl ViewState {
         // （⭐ `#192`：选中轨 or 走 [`device_rack_track`] 兜底）。设备逐条来自
         // `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
         let (device_track_label, devices, eq_low_gain) = device_rack_projection(display);
+        let (eq_curve_svg, eq_curve_fill_svg, eq_curve_info) = eq_curve_projection(display);
         // ⭐ 任务单 `#173`：主总线的设备链 —— 第二段。`#181` 起这一段也**可编辑**
         // （旁通 / EQ 滑块），但两段仍各用**各自**那条轨寻址（见 `master_devices` 文档）。
         // 行与 EQ 那一格来自**同一份** `master_device_projection`（⛔ 不各查一遍）。
@@ -4012,6 +4019,9 @@ impl ViewState {
             master_eq_low_gain,
             master_device_eq_reason,
             eq_low_gain,
+            eq_curve_svg,
+            eq_curve_fill_svg,
+            eq_curve_info,
             device_insert_available,
             device_insert_reason,
             clip_create_available,
@@ -4441,6 +4451,24 @@ impl ViewState {
         self.eq_low_gain
             .as_ref()
             .map_or_else(String::new, |eq| eq.device_id.clone())
+    }
+
+    /// 频响曲线的 SVG Path 指令。
+    #[must_use]
+    pub fn eq_curve_svg(&self) -> &str {
+        &self.eq_curve_svg
+    }
+
+    /// 频响曲线填充面积的 SVG Path 指令。
+    #[must_use]
+    pub fn eq_curve_fill_svg(&self) -> &str {
+        &self.eq_curve_fill_svg
+    }
+
+    /// 频响曲线各频段参数读数。
+    #[must_use]
+    pub fn eq_curve_info(&self) -> &str {
+        &self.eq_curve_info
     }
 
     /// 发送条每一行的**路由边身份**（与下面三个数组**同索引集**）。
@@ -5837,6 +5865,174 @@ pub fn device_eq_low_gain_address_on_device(
     None
 }
 
+/// 计算展示轨上的 EQ 频响曲线投影（SVG Path 描边指令、填充指令、各频段读数文本）。
+#[must_use]
+pub fn eq_curve_projection(track: Option<&TrackV3>) -> (String, String, String) {
+    let eq_device = track.and_then(|t| {
+        t.devices.iter().find(|d| {
+            d.params.iter().any(|p| {
+                crate::effect_params::recognise(&p.name)
+                    .map_or(false, |(group, _)| group.id == "eq")
+            })
+        })
+    });
+    let (params, cutoff) = extract_eq_params_from_device(eq_device);
+    let curve_svg = calculate_eq_curve_svg(&params, cutoff);
+    let fill_svg = calculate_eq_curve_fill_svg(&curve_svg);
+    let info = if eq_device.is_some() {
+        format_eq_curve_info(&params, cutoff)
+    } else {
+        "平坦响应 (0 dB · 20 Hz – 20 kHz)".to_owned()
+    };
+    (curve_svg, fill_svg, info)
+}
+
+/// 从设备定义中提取三段 EQ 参数与低通截止频率。
+#[must_use]
+pub fn extract_eq_params_from_device(
+    device: Option<&DeviceDefinition>,
+) -> (yeban_dsp::shaping::EqParams, Option<f32>) {
+    let mut params = yeban_dsp::shaping::EqParams::default();
+    let mut cutoff: Option<f32> = None;
+    let Some(device) = device else {
+        return (params, cutoff);
+    };
+    for param in &device.params {
+        match param.name.as_str() {
+            "eq_low_gain" | "low_gain" => params.low_gain = param.value,
+            "eq_low_freq" | "low_freq" => params.low_freq = param.value,
+            "eq_mid_gain" | "mid_gain" => params.mid_gain = param.value,
+            "eq_mid_freq" | "mid_freq" => params.mid_freq = param.value,
+            "eq_mid_q" | "mid_q" => params.mid_q = param.value,
+            "eq_high_gain" | "high_gain" => params.high_gain = param.value,
+            "eq_high_freq" | "high_freq" => params.high_freq = param.value,
+            "cutoff_hz" => cutoff = Some(param.value),
+            _ => {}
+        }
+    }
+    (params, cutoff)
+}
+
+/// 将三段 EQ 与滤波参数计算为 420x100 视口上的 SVG Path 指令（采样 43 个点，对数频率轴 20Hz~20kHz）。
+#[must_use]
+pub fn calculate_eq_curve_svg(
+    params: &yeban_dsp::shaping::EqParams,
+    cutoff: Option<f32>,
+) -> String {
+    use std::fmt::Write as _;
+    let mut svg = String::with_capacity(43 * 16);
+    for step in 0..=42 {
+        let x = step as f32 * 10.0;
+        let exponent = 3.0 * (x / 420.0);
+        let freq = 20.0 * 10.0_f32.powf(exponent);
+        let mut gain_db = params.response_db(freq, 48_000.0);
+        if let Some(co) = cutoff {
+            if co < 20_000.0 && freq > co {
+                let ratio = freq / co;
+                let lp_cut = 10.0 * (1.0 + ratio.powi(4)).log10();
+                gain_db -= lp_cut;
+            }
+        }
+        let y = (50.0 - gain_db * (50.0 / 18.0)).clamp(0.0, 100.0);
+        let cmd = if step == 0 { 'M' } else { 'L' };
+        let _ = write!(svg, "{cmd} {:.1} {:.1} ", x, y);
+    }
+    while svg.ends_with(' ') {
+        svg.pop();
+    }
+    svg
+}
+
+/// 封闭频响曲线至基准线（y=50.0），用于透明面积填充。
+#[must_use]
+pub fn calculate_eq_curve_fill_svg(curve_svg: &str) -> String {
+    if curve_svg.is_empty() {
+        return String::new();
+    }
+    format!("{curve_svg} L 420.0 50.0 L 0.0 50.0 Z")
+}
+
+/// 格式化 EQ 频响曲线各频段参数读数文本。
+#[must_use]
+pub fn format_eq_curve_info(params: &yeban_dsp::shaping::EqParams, cutoff: Option<f32>) -> String {
+    let mut s = format!(
+        "低架: {:.0} Hz, {:.1} dB · 中频: {:.0} Hz, {:.1} dB (Q {:.2}) · 高架: {:.0} Hz, {:.1} dB",
+        params.low_freq,
+        params.low_gain,
+        params.mid_freq,
+        params.mid_gain,
+        params.mid_q,
+        params.high_freq,
+        params.high_gain,
+    );
+    if let Some(co) = cutoff {
+        if co < 20_000.0 {
+            s.push_str(&format!(" · 低通: {:.0} Hz", co));
+        }
+    }
+    s
+}
+
+/// 根据 EQ 频响曲线（420x100）上的归一化手势坐标，确定要修改的参数及其目标值。
+/// 返回 `(主参数名, 目标增益, 关联频率参数及目标值)`。
+#[must_use]
+pub fn resolve_eq_curve_drag_params(
+    norm_x: f32,
+    norm_y: f32,
+) -> (&'static str, f32, Option<(&'static str, f32)>) {
+    let norm_x = norm_x.clamp(0.0, 1.0);
+    let norm_y = norm_y.clamp(0.0, 1.0);
+    let gain_db = (((0.5 - norm_y) * 36.0).clamp(-18.0, 18.0) * 10.0).round() / 10.0;
+    let freq = 20.0 * 10.0_f32.powf(3.0 * norm_x);
+
+    if norm_x < 0.333 {
+        let low_f = freq.clamp(20.0, 1000.0).round();
+        ("eq_low_gain", gain_db, Some(("eq_low_freq", low_f)))
+    } else if norm_x < 0.667 {
+        let mid_f = freq.clamp(200.0, 8000.0).round();
+        ("eq_mid_gain", gain_db, Some(("eq_mid_freq", mid_f)))
+    } else {
+        let high_f = freq.clamp(1000.0, 16000.0).round();
+        ("eq_high_gain", gain_db, Some(("eq_high_freq", high_f)))
+    }
+}
+
+/// 在 `track` 的设备链里查找带 EQ 参数的设备，并按参数名返回 `(slot_index, param_index, 当前值, 下界, 上界)`。
+#[must_use]
+pub fn find_device_param_address(
+    track: &TrackV3,
+    device_id: yeban_model::ids::EntityId,
+    param_name: &str,
+) -> Option<(usize, usize, f32, f32, f32)> {
+    let (slot_index, device) = track
+        .devices
+        .iter()
+        .enumerate()
+        .find(|(_, device)| device.id == device_id)?;
+    for (param_index, param) in device.params.iter().enumerate() {
+        let Some((_, spec)) = crate::effect_params::recognise(&param.name) else {
+            continue;
+        };
+        if spec.name == param_name || spec.aliases.iter().any(|&a| a == param_name) {
+            #[allow(clippy::cast_possible_truncation)]
+            let (min_val, max_val) = (spec.min as f32, spec.max as f32);
+            return Some((slot_index, param_index, param.value, min_val, max_val));
+        }
+    }
+    None
+}
+
+/// 在 `track` 的设备链里查找第一台带 EQ 分组参数的设备。
+#[must_use]
+pub fn find_eq_device(track: &TrackV3) -> Option<&DeviceDefinition> {
+    track.devices.iter().find(|device| {
+        device.params.iter().any(|param| {
+            crate::effect_params::recognise(&param.name)
+                .map_or(false, |(group, _)| group.id == "eq")
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr as _;
@@ -5848,6 +6044,34 @@ mod tests {
     /// 把 `[&str; N]` 常量提升成可与 `Vec<String>` 比较的形态。
     fn owned(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn eq_curve_projection_and_svg_generation() {
+        let (svg, fill, info) = eq_curve_projection(None);
+        assert!(svg.starts_with("M 0.0 50.0"));
+        assert!(svg.ends_with("420.0 50.0"));
+        assert!(fill.starts_with("M 0.0 50.0"));
+        assert!(fill.ends_with("L 420.0 50.0 L 0.0 50.0 Z"));
+        assert_eq!(info, "平坦响应 (0 dB · 20 Hz – 20 kHz)");
+
+        let mut p = yeban_dsp::shaping::EqParams::default();
+        p.low_gain = 12.0;
+        let svg_boost = calculate_eq_curve_svg(&p, None);
+        assert!(svg_boost.starts_with("M 0.0 "));
+        let first_y: f32 = svg_boost
+            .split_whitespace()
+            .nth(2)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((first_y - 16.7).abs() < 0.5, "boosted low y: {first_y}");
+
+        let (param1, val1, opt2) = resolve_eq_curve_drag_params(0.1, 0.2);
+        assert_eq!(param1, "eq_low_gain");
+        assert!((val1 - 10.8).abs() < 0.5);
+        assert!(opt2.is_some());
+        assert_eq!(opt2.unwrap().0, "eq_low_freq");
     }
 
     /// 判据 1b（`[MODEL-AST-001]`）：时间码的**唯一实现**在多种拍号下的读数。

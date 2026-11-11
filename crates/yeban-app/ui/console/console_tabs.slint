@@ -96,6 +96,10 @@ export component ConsoleTabs inherits Rectangle {
     in property <float> device-eq-max-db: 0.0;
     // ⭐ 任务单 `#182`：EQ 手势的**设备身份**（⛔ 不是下标）—— 只透传。
     in property <string> device-eq-device-id: "";
+    // ⭐ 频响曲线真绘制 (G-E1 & G-E2)：SVG Path 描边与填充命令及各频段读数文本。
+    in property <string> device-eq-curve-svg: "M 0 50 L 420 50";
+    in property <string> device-eq-curve-fill-svg: "";
+    in property <string> device-eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：两个按钮共用"装设备"的可用性，
     // 建片段有自己的一格。四格都是**投影标量**，本组件只透传。
     in property <bool> device-insert-available: false;
@@ -214,6 +218,8 @@ export component ConsoleTabs inherits Rectangle {
     callback device-eq-grab(string, float);
     callback device-eq-drag(float);
     callback device-eq-release();
+    callback device-eq-curve-drag(float, float);
+    callback device-eq-curve-release();
     // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：同样只上抛 —— 唯一实现是
     // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。
     callback device-insert-eq();
@@ -591,6 +597,11 @@ export component ConsoleTabs inherits Rectangle {
         eq-max-db: root.device-eq-max-db;
         // ⭐ 任务单 `#182`：EQ 手势的**设备身份**（⛔ 不是下标）。
         eq-device-id: root.device-eq-device-id;
+        eq-curve-svg: root.device-eq-curve-svg;
+        eq-curve-fill-svg: root.device-eq-curve-fill-svg;
+        eq-curve-info: root.device-eq-curve-info;
+        eq-curve-drag(x, y) => { root.device-eq-curve-drag(x, y); }
+        eq-curve-release() => { root.device-eq-curve-release(); }
         // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：只透传投影。
         device-insert-available: root.device-insert-available;
         device-insert-reason: root.device-insert-reason;
