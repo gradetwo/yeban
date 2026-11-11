@@ -611,7 +611,7 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         204_800usize.saturating_sub(runtime)
     );
     assert_eq!(
-        runtime, 45_680,
+        runtime, 45_840,
         "**`P2`（轨道槽可配）之后从 200112 降到 45648，`P6` 之后为 45680**：声部池、插入池、混响池、\
          卷积池、声相表、键抽头表全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身\
          只剩瘦指针，「每槽一格」的表不再随容量把它撑大；分配次数与回调内零分配\
@@ -621,7 +621,7 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
          ⭐ **`P6` 插入式限制器片** ＋32 B ⇒ **45680 B**（母线限制器为了可配阈值/天花板/真峰值，\
          新增 `ceiling: f32` ＋ `true_peak: bool` ＋ `history: [[f32; 3]; 2]`，越过既有对齐填充；\
          ⛔ 窗口已改为常量泛型 `Limiter<const W: usize>`，192 帧的环与峰队列**只**长在\
-         `InsertLimiter = Limiter<192>` 上，`EngineRuntime` 里那份仍是 33 帧 ⇒ 没有多背 3.9 KB）；见本判据文档）"
+         `InsertLimiter = Limiter<192>` 上，`EngineRuntime` 里那份仍是 33 帧 ⇒ 没有多背 3.9 KB）； ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。见本判据文档）"
     );
     assert_eq!(
         snapshot, 4_656,
