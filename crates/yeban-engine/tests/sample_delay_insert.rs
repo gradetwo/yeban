@@ -159,7 +159,9 @@ fn armed_sample_delay_is_readable_and_counted() {
     let mut armed: Option<SampleDelayParams> = None;
     let mut slots = usize::MAX;
     let rendered = render_with(&project, QUANTA, 1, |quantum, rig| {
-        if quantum == 0 {
+        // 钩子在 `process_quantum` 之前跑：quantum 0 时武装尚未发生
+        //（与 `reverb_insert.rs` 的 R1 同一时序，读 quantum 1）。
+        if quantum == 1 {
             armed = rig.runtime.armed_sample_delay(&track);
             slots = rig.runtime.armed_sample_delay_slot_count();
         }
