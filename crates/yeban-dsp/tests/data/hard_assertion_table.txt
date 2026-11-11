@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 374 条：float_bits 88 ／ integer_count 286；其中 hard 73 ／ platform 12
+# 合计 375 条：float_bits 88 ／ integer_count 287；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -295,6 +295,7 @@ integer_count | no_callee | 0 | - | src/shaping.rs | a_bit_depth_below_the_floor
 integer_count | no_callee | 0 | - | src/shaping.rs | bit_depth_sets_the_quantisation_step
 integer_count | no_callee | 0 | - | src/shaping.rs | deeper_divisors_push_the_mirror_lower_in_level_and_frequency
 integer_count | no_callee | 0 | - | src/shaping.rs | divisor_and_anti_alias_move_the_mirror
+integer_count | no_callee | 0 | - | src/shaping.rs | eq_analytic_response_matches_theory_and_unity
 integer_count | no_callee | 0 | - | src/shaping.rs | eq_band_gains_match_the_cookbook
 integer_count | no_callee | 0 | - | src/shaping.rs | eq_flat_is_unity
 integer_count | no_callee | 0 | - | src/shaping.rs | eq_shelves_reach_their_gain_at_the_ends_and_slope_back
