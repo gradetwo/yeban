@@ -1,0 +1,96 @@
+HEAD=c55b401718d3f0bde7dafa3b4895aca42b3ebe8b BASE=d5ddf340ead1e30270fcbc175ed4603e5069c7b5
+FMT_EXIT=0
+    Checking yeban-render v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-render)
+    Checking yeban-ui-test-port v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-ui-test-port)
+    Checking yeban-mcp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-mcp)
+    Checking yeban-app v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-app)
+    Checking yeban-ui-mcp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-ui-mcp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 29s
+CLIPPY_EXIT=0
+   Compiling yeban-render v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-render)
+   Compiling yeban-mcp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-mcp)
+   Compiling yeban-app v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-app)
+   Compiling yeban-ui-mcp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-ui-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.01s
+     Running tests/export_wav_loudness.rs (target/debug/deps/export_wav_loudness-9796663097de8ceb)
+
+running 8 tests
+test non_stereo_is_refused_when_loudness_is_requested ... ok
+test default_export_reports_no_loudness_and_keeps_the_legacy_summary ... ok
+test silence_cannot_reach_a_target ... ok
+test loudness_target_is_reached_within_tolerance ... ok
+test unsupported_sample_rate_fails_loudly ... ok
+test true_peak_ceiling_wins_over_the_target ... ok
+test the_real_cli_prints_the_loudness_line_only_when_the_switches_are_given ... ok
+test applying_the_same_preset_twice_is_bit_exact ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.95s
+
+LOUDNESS_EXIT=0
+   Compiling yeban-app v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.25s
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-117325a72556d37e)
+
+running 31 tests
+test default_artifact_refuses_the_experimental_logic_switch ... ok
+test default_artifact_refuses_the_experimental_als_switch ... ok
+test default_artifact_refuses_the_in_process_mcp_switch ... ok
+test default_artifact_refuses_the_ui_mcp_http_switch ... ok
+test default_artifact_refuses_the_song_overview_switch ... ok
+test broken_inputs_exit_non_zero_without_panicking ... ok
+test duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output ... ok
+test delete_selection_is_implemented_in_the_host_table_and_rendered_output ... ok
+test export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary ... ok
+test export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing ... ok
+test empty_sample_reports_zero_audio_tracks_and_default_reports_six ... ok
+test export_elements_matches_dump_elements ... ok
+test export_wav_loudness_switches_are_guarded_and_reach_the_target ... ok
+test headless_handshake_appears_exactly_once_and_names_the_source ... ok
+test headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness ... ok
+test help_and_version_are_real_and_short_circuit ... ok
+test open_rejects_a_bare_project_json_with_a_precise_reason ... ok
+test export_wav_runs_on_the_windowless_path_from_the_real_binary ... ok
+test open_reports_the_real_project_counts ... ok
+test save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file ... ok
+test save_as_is_refused_while_the_project_lock_is_held ... ok
+test save_as_round_trips_and_is_deterministic_from_the_real_binary ... ok
+test save_as_without_open_says_it_saved_the_demo_project ... ok
+test print_shortcuts_is_a_batch_command ... ok
+test shortcut_table_status_matches_the_resolution_and_host_pipeline ... ok
+test slint_backend_headless_sentinel_alone_keeps_the_window_closed ... ok
+test unknown_switches_exit_two_with_usage_on_stderr ... ok
+test the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented ... ok
+test zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output ... ok
+test export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible ... ok
+test export_wav_render_threads_change_only_time_not_bytes ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.58s
+
+CLI_CONTRACT_EXIT=0
+   Compiling yeban-app v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-loudness-target/crates/yeban-app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.13s
+     Running unittests src/lib.rs (target/debug/deps/yeban_app-1239fcd1e605bb82)
+
+running 1 test
+test cli::tests::every_action_switch_routes_exactly_as_the_shared_table_says ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 0.00s
+
+CENSUS1_EXIT=0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.62s
+     Running unittests src/lib.rs (target/debug/deps/yeban_app-1239fcd1e605bb82)
+
+running 1 test
+test cli::tests::every_usage_example_that_names_an_action_switch_selects_batch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 0.00s
+
+CENSUS2_EXIT=0
+[ok] feature-alignment.md: 90 行功能 / 38 个 MCP 工具 / 18 条 ui 方法全部点名，三方齐全 33，系统+UI（MCP 无） 6，系统+MCP（UI 无） 29，仅系统 12，仅计划（系统也未实现） 6，UI 或 MCP 独有（系统没有） 4；3 处行号交叉引用全部落在目标行；75 处源码引用点名了**存在**的构件；射程仅 3 个活表（仓库 docs/** 共 162 个 .md，其余按构造未纳入、未假装通过）（另有 1593 处路径歧义 / 未点名构件，按构造跳过、未假装通过；25 处历史更正的行号已漂移，不判红；附录 8 处行号未判（不参与成败）；分表：feature-alignment.md 核对 72 跳过 217 历史漂移 24 附录未判 8 / gate-status.md 核对 0 跳过 7 历史漂移 0 附录未判 0 / phase-status.md 核对 3 跳过 1369 历史漂移 1 附录未判 0）；手抄数字 7 处现行读数对上（8 处更正前的旧读数不判）；负存在断言命中 3 处（0 处现算，3 处历史/已更正不判）
+GATE1_EXIT=0
+[check-test-criteria] 扫过 389 个 tests/*.rs；含判据 380 个；零判据 9 个；登记例外 9 条
+[ok] 每个 tests/*.rs 要么自带判据，要么是已登记且可机检的例外
+GATE2_EXIT=0
+[ok] golden-manifest(linux): 核对了 5 行——5 个 sha256 + 5 个字节数(表内 5 个文件全部与磁盘一致; 目录内无未登记文件; 表内字节合计 31112090)
+GATE3_EXIT=0
+VERIFY_A_DONE

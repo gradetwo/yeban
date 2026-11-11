@@ -70,14 +70,14 @@ pub use yeban_dsp::song_overview::{
     Anomaly, AnomalyType, BarSeries, BestMatch, NO_ENVELOPE, RepeatedPassage, RepetitionSummary,
     SCHEMA_VERSION, SongMeta, SongOverview, StructuralSummary,
 };
-/// 同上：HTML 渲染器（唯一实现，住在 `yeban-dsp` 的 `song_overview_report`）。
-pub use yeban_dsp::song_overview_report::{
-    DEFAULT_REPORT_TITLE, render_html_report, render_html_report_with_title,
-};
 /// 同上：分轨频率打架类型（`yeban-mcp` 的 mcp→dsp 反向映射用：HTML 渲染前把
 /// mcp 总览拼回 dsp 总览；与上条同款已登记例外，不新增依赖边）。
 pub use yeban_dsp::song_overview::{
     BarOverlap, ClashSeverity, ClashTrackRef, FrequencyClashEntry, FrequencyClashSummary,
+};
+/// 同上：HTML 渲染器（唯一实现，住在 `yeban-dsp` 的 `song_overview_report`）。
+pub use yeban_dsp::song_overview_report::{
+    DEFAULT_REPORT_TITLE, render_html_report, render_html_report_with_title,
 };
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_model::{
