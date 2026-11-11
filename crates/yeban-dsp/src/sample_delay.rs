@@ -327,9 +327,7 @@ mod tests {
         assert_eq!(d.delay_samples(), MAX_SAMPLE_DELAY_SAMPLES);
         assert_eq!(left[MAX_SAMPLE_DELAY_SAMPLES], 1.0);
         assert_eq!(right[MAX_SAMPLE_DELAY_SAMPLES], -0.5);
-        assert!(left[..MAX_SAMPLE_DELAY_SAMPLES]
-            .iter()
-            .all(|v| *v == 0.0));
+        assert!(left[..MAX_SAMPLE_DELAY_SAMPLES].iter().all(|v| *v == 0.0));
     }
 
     /// 未配置时直通（不改输入）。

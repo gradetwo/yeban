@@ -2131,7 +2131,9 @@ impl Op {
                 Ok(())
             }
             Self::SetTrackPolarity {
-                track_id, old_invert, ..
+                track_id,
+                old_invert,
+                ..
             } => {
                 // ⚠ `None` 视作 false 的解出值比较 ⇒ 陈旧载荷必被拒。
                 if doc.track(track_id)?.invert_polarity.unwrap_or(false) != *old_invert {
@@ -3453,7 +3455,9 @@ impl Op {
             // 只写那**一个**延时字段：⛔ 不碰 `volume_db` / `pan` / `mute` / `solo` /
             // `invert_polarity`。0 归一化为 `None`（缺省即无延时，落盘不变）。
             Self::SetTrackDelay {
-                track_id, new_delay_samples, ..
+                track_id,
+                new_delay_samples,
+                ..
             } => {
                 doc.track_mut(track_id)?.delay_samples = if *new_delay_samples == 0 {
                     None
@@ -3465,13 +3469,12 @@ impl Op {
             // 只写那**一个**极性开关：⛔ 不碰 `delay_samples` 与其它混音字段。
             // false 归一化为 `None`（缺省即不反转，落盘不变）。
             Self::SetTrackPolarity {
-                track_id, new_invert, ..
+                track_id,
+                new_invert,
+                ..
             } => {
-                doc.track_mut(track_id)?.invert_polarity = if *new_invert {
-                    Some(true)
-                } else {
-                    None
-                };
+                doc.track_mut(track_id)?.invert_polarity =
+                    if *new_invert { Some(true) } else { None };
                 Ok(())
             }
             // 整体替换三个字段：⛔ 不逐字段写（见枚举文档：三个字段是一个作者选择）。
