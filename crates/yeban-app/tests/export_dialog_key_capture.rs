@@ -402,7 +402,8 @@ fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
         "⑧ 弹窗里的可寻址控件数必须是 10（本票⛔ 不新增控件 ⇒ 默认帧与金帧基准不受影响）"
     );
 
-    // ---- 开关与焦点同处，且回焦的调用者只有那两处 ----
+    // ---- 开关与焦点同处，且回焦的调用者只有那三处 ----
+    // 三处合法回焦调用者：时光机关闭 + 导出弹窗关闭 + BPM 提交。
     assert_eq!(
         host.matches("invoke_focus_export_wav_dialog").count(),
         1,
@@ -410,8 +411,8 @@ fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
     );
     assert_eq!(
         host.matches("invoke_focus_shortcut_layer").count(),
-        2,
-        "⑧ 复位到快捷键层的调用者必须恰好两处：时光机关闭 + 导出弹窗关闭"
+        3,
+        "⑧ 复位到快捷键层的调用者必须恰好三处：时光机关闭 + 导出弹窗关闭 + BPM 提交"
     );
 }
 

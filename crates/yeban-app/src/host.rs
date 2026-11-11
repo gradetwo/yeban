@@ -7328,7 +7328,7 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
         // （数字键 `2`）与组合键（Ctrl+Shift+H）都到不了宿主。桌面审计时间线就是这一形：
         // 96–97 号图敲 BPM → 98–102 号图按 `2` 不切换、106–110 号图 Ctrl+Shift+H 不开，
         // 而 `C`（63–65 号图，敲 BPM 之前）是通的。与模态关闭回焦
-        // （`apply_undo` 调 `invoke_focus_shortcut_layer`）同一机制。
+        // （`apply_undo` 调同一个回焦入口）同一机制。
         // 放在公共入口 ⇒ 合法 / 非法 / 同值 / 无工程四条路都回焦。
         ui.invoke_focus_shortcut_layer();
         // 权威工程读不出来 ⇒ 出声不画（与 `refresh_undo_window` 同款纪律）。
