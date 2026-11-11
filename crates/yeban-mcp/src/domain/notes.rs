@@ -21218,7 +21218,9 @@ mod tests {
         // 本票的 `setTempoPoint` / `setTimeSignaturePoint`（各独占一个变体）⇒ 45 → **47**；
         // `ADR-0019` 的 `setPitchBendPoint`（独占一个变体）⇒ 47 → **48**。
         // 本票的 `duplicateClip`（独占 `Batch`）⇒ 48 → **49**（四个展开形态进不了 `seen`）。
-        assert_eq!(seen.len(), 49);
+        // 本票（手动相位对齐）的 `setTrackDelay` / `setTrackPolarity` /
+        // `setClipPlacementOffset`（各独占一个变体）⇒ 49 → **52**。
+        assert_eq!(seen.len(), 52);
         // ⭐ `#179`：音符级分支集合**恰好是十三个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,

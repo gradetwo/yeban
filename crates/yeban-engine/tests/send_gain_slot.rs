@@ -108,6 +108,7 @@ fn build_project(
             duration_ticks: NOTE.duration_ticks,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     tracks.insert(track, lead);

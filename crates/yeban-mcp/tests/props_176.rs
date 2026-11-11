@@ -1117,6 +1117,7 @@ fn render_project() -> YebanProjectV1 {
             duration_ticks: 1_920,
             loop_config: yeban_model::LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

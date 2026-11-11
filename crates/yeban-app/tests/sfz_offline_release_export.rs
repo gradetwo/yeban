@@ -144,6 +144,7 @@ fn project() -> YebanProjectV1 {
             duration_ticks: NOTE_TICKS,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

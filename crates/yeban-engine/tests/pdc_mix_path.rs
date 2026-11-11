@@ -169,6 +169,7 @@ fn note_track(
             duration_ticks: start_tick + NOTE_TICKS,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     (track, Some(entry))

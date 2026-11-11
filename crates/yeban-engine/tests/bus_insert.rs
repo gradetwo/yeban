@@ -158,6 +158,7 @@ fn build_project(master: EntityId, tracks: &[TrackSpec], edges: &[EdgeSpec]) -> 
                     duration_ticks: span,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
         }

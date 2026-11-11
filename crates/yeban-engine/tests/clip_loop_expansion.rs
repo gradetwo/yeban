@@ -70,6 +70,7 @@ fn fixture(loop_config: LoopConfig, notes: &[(u64, u64, u8, u8)]) -> (YebanProje
             duration_ticks: DURATION_TICKS,
             loop_config,
             muted: false,
+            offset_samples: None,
         },
     );
 

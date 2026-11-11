@@ -149,6 +149,7 @@ fn fixture(pan_lane: bool, volume_lane: bool) -> (YebanProjectV1, EntityId) {
             duration_ticks: 1_920,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     project.tracks.insert(track, lead);

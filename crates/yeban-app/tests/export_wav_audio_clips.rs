@@ -261,6 +261,7 @@ fn project_with_audio_clip(asset: AssetHash, gain_db: f32) -> YebanProjectV1 {
                 duration_ticks: DURATION_TICKS,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
     project

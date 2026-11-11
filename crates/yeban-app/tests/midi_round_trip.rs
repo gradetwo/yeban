@@ -222,6 +222,7 @@ fn round_trip_fixture() -> (YebanProjectV1, EntityId, EntityId) {
                 duration_ticks: 3840,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
     assert_eq!(project.validate(), Ok(()), "夹具必须是合法工程");

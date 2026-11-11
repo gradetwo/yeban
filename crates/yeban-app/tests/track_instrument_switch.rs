@@ -187,6 +187,7 @@ fn project_with_two_tracks() -> (YebanProjectV1, EntityId, EntityId) {
         duration_ticks: 480,
         loop_config: LoopConfig::default(),
         muted: false,
+        offset_samples: None,
     };
     project
         .tracks

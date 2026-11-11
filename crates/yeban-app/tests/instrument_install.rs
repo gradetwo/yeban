@@ -199,6 +199,7 @@ fn project_with_one_note(tag: &str) -> (YebanProjectV1, EntityId) {
         duration_ticks: NOTE_TICKS,
         loop_config: LoopConfig::default(),
         muted: false,
+        offset_samples: None,
     };
     project
         .tracks

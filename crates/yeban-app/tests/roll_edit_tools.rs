@@ -4014,6 +4014,7 @@ fn place_empty_midi_clip(
             duration_ticks: 1920,
             loop_config: yeban_model::LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
 }

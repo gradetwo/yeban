@@ -518,6 +518,7 @@ fn the_pencil_writes_into_the_selected_tracks_clip() {
                 duration_ticks: 3840,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
 
