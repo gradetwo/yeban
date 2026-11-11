@@ -127,6 +127,70 @@ pub fn resolve_preset(embedded: &BTreeMap<String, Preset>, id: &str) -> Result<P
     Preset::parse(&bytes).map_err(|error| preset_fault(format!("用户预制 `{id}` 损坏：{error}")))
 }
 
+/// 预制自动加载（设计稿 §2.6）：本批给某条轨换了采样器（`Op::SetTrackSampler`）
+/// 且该轨 `track.preset.autoLoad` 缺省 `true`、尚未应用同一预制时，把该乐器的
+/// 默认预制应用追加进**同一批** `compiled`。`SetTrackSampler` 本身不动设备链 /
+/// 宏 / `preset` 字段，因此追加的 `Op` 的旧值（`previous` 快照）从当前工程
+/// 读就是对的；追加的规划里排除 `instrument` 类（绑定已由本批那条 op 负责，
+/// 再写一次会在模拟里撞 `OpStateMismatch`）。
+///
+/// 调用方：`plan_edit_notes`（提案路径）与 `plan_create`（创建路径）共用。
+/// 返回 `(轨, 预制标识)`，调用方负责写进描述；`compiled` 里追加的 op
+/// 由调用方落盘/应用。
+#[must_use]
+pub fn auto_load_default_presets(
+    embedded: &BTreeMap<String, Preset>,
+    project: &YebanProjectV1,
+    compiled: &mut Vec<Op>,
+) -> Vec<(EntityId, String)> {
+    let mut auto_loaded: Vec<(EntityId, String)> = Vec::new();
+    for op in compiled.clone() {
+        let Op::SetTrackSampler {
+            track_id: target,
+            new_sampler: Some(sampler),
+            ..
+        } = op
+        else {
+            continue;
+        };
+        if auto_loaded.iter().any(|(seen, _)| *seen == target) {
+            continue;
+        }
+        let Some(slug) = slug_for_sfz_path(&sampler.path) else {
+            continue;
+        };
+        let Some(default_id) = default_preset_id_for_instrument(slug) else {
+            continue;
+        };
+        let Ok(track) = project.track(&target) else {
+            continue;
+        };
+        let current = track.preset.as_ref();
+        if current.is_some_and(|state| !state.auto_load) {
+            continue;
+        }
+        if current
+            .is_some_and(|state| state.preset_id.as_deref() == Some(default_id) && !state.bypassed)
+        {
+            continue;
+        }
+        let Ok(preset) = resolve_preset(embedded, default_id) else {
+            continue;
+        };
+        let Ok(plan) = build_apply_ops(
+            project,
+            &target,
+            &preset,
+            &["strip", "effects", "sends", "macros"],
+        ) else {
+            continue;
+        };
+        compiled.extend(plan.ops);
+        auto_loaded.push((target, default_id.to_owned()));
+    }
+    auto_loaded
+}
+
 /// 用户预制标识 → 用户库里的文件路径。
 #[must_use]
 pub fn user_preset_path(id: &str) -> PathBuf {

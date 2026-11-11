@@ -2833,8 +2833,27 @@ fn plan_create(
         seed.and_then(|seed| seed.get("trackCount")),
         seed.and_then(|seed| seed.get("clipName")),
         seed.and_then(|seed| seed.get("notes")),
+        seed.and_then(|seed| seed.get("sampler")),
     )?;
-    let created = project_create::build(&config, &path)?;
+    let mut created = project_create::build(&config, &path)?;
+    // ⭐ 预制自动加载（设计稿 §2.2/§2.6）：创建时绑了种子采样器 ⇒ 与
+    // `setTrackSampler` 走同一共享钩子。创建批次已应用、轨已存在，追加的
+    // 预制 op 再以第二批落到文档上，并追加进 `created.ops`（`seed_summary`
+    // 的 `opKinds` 如实反映）；不给 `seed.sampler` 时钩子是空操作。
+    let preset_start = created.ops.len();
+    let _loaded = preset::auto_load_default_presets(
+        &domain.embedded_presets,
+        &created.project,
+        &mut created.ops,
+    );
+    if created.ops.len() > preset_start {
+        Op::Batch {
+            ops: created.ops[preset_start..].to_vec(),
+            description: "create project (auto-load default preset)".to_owned(),
+        }
+        .apply(&mut created.project)
+        .map_err(|error| error::from_model("新建工程的预制自动加载", &error))?;
+    }
     let json = store::serialize_project(&created.project)?;
     let digest = store::digest_of(json.as_bytes());
     // `history.dag`：新工程从**空图谱**开始（与 `yeban-app --save-as` 的
@@ -3571,67 +3590,17 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     } else {
         track_id
     };
-    // ⭐ 预制自动加载（设计稿 §2.6）：本批给某条轨换了采样器（`SetTrackSampler`）
-    // 且该轨 `track.preset.autoLoad` 缺省 `true`、尚未应用同一预制时，把该乐器
-    // 的默认预制应用追加进**同一批**提案。`SetTrackSampler` 本身不动设备链 /
-    // 宏 / `preset` 字段，因此追加的 `Op` 的旧值（`previous` 快照）从当前工程
-    // 读就是对的；追加的规划里排除 `instrument` 类（绑定已由本批那条 op 负责，
-    // 再写一次会在模拟里撞 `OpStateMismatch`）。
-    {
-        let mut auto_loaded: Vec<(EntityId, String)> = Vec::new();
-        for op in compiled.clone() {
-            let Op::SetTrackSampler {
-                track_id: target,
-                new_sampler: Some(sampler),
-                ..
-            } = op
-            else {
-                continue;
-            };
-            if auto_loaded.iter().any(|(seen, _)| *seen == target) {
-                continue;
-            }
-            let Some(slug) = yeban_model::preset::slug_for_sfz_path(&sampler.path) else {
-                continue;
-            };
-            let Some(default_id) = yeban_model::preset::default_preset_id_for_instrument(slug)
-            else {
-                continue;
-            };
-            let Ok(track) = project.track(&target) else {
-                continue;
-            };
-            let current = track.preset.as_ref();
-            if current.is_some_and(|state| !state.auto_load) {
-                continue;
-            }
-            if current.is_some_and(|state| {
-                state.preset_id.as_deref() == Some(default_id) && !state.bypassed
-            }) {
-                continue;
-            }
-            let Ok(preset) = preset::resolve_preset(&domain.embedded_presets, default_id) else {
-                continue;
-            };
-            let Ok(plan) = preset::build_apply_ops(
-                project,
-                &target,
-                &preset,
-                &["strip", "effects", "sends", "macros"],
-            ) else {
-                continue;
-            };
-            compiled.extend(plan.ops);
-            auto_loaded.push((target, default_id.to_owned()));
-        }
-        if !auto_loaded.is_empty() {
-            let names: Vec<String> = auto_loaded
-                .iter()
-                .map(|(target, id)| format!("音轨 {target} ← {id}"))
-                .collect();
-            // 描述里点名自动加载的预制（提案摘要随响应回传）。
-            description.push_str(&format!("；自动加载默认预制：{}", names.join("、")));
-        }
+    // ⭐ 预制自动加载（设计稿 §2.6）：共享函数 `preset::auto_load_default_presets`
+    //（同一逻辑亦供 `plan_create` 的创建路径用；描述文本逐字不变）。
+    let auto_loaded =
+        preset::auto_load_default_presets(&domain.embedded_presets, project, &mut compiled);
+    if !auto_loaded.is_empty() {
+        let names: Vec<String> = auto_loaded
+            .iter()
+            .map(|(target, id)| format!("音轨 {target} ← {id}"))
+            .collect();
+        // 描述里点名自动加载的预制（提案摘要随响应回传）。
+        description.push_str(&format!("；自动加载默认预制：{}", names.join("、")));
     }
     propose_draft(
         domain,
