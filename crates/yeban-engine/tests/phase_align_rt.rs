@@ -88,11 +88,7 @@ fn two_track_project() -> (YebanProjectV1, EntityId, EntityId) {
     let mut entry_b = entry_a.clone();
     entry_b.id = track_b;
     entry_b.clips.clear();
-    let old_placement = *entry_a
-        .clips
-        .values()
-        .next()
-        .expect("夹具必须有一个摆放");
+    let old_placement = *entry_a.clips.values().next().expect("夹具必须有一个摆放");
     let mut placement = old_placement;
     let new_placement_id = EntityId::new();
     placement.id = new_placement_id;
