@@ -7440,6 +7440,15 @@ pub fn wire_bpm_commit(ui: &MainWindow, port: &Rc<UndoPort>) {
         // （"⛔ 不留下一个冒充成权威值的草稿"）与 `tests/ui_bpm_field.rs` ③/④ 因此
         // 一位不动。⚠ 清零的语义是"这串草稿已经有了裁决"，⛔ 不是"焦点离开了框"。
         ui.set_bpm_field_editing(false);
+        // ⭐ 死控件 ②③：回车 = 编辑结束 ⇒ 焦点必须回到快捷键层。
+        // 不回焦 ⇒ 焦点一直留在 `bpm-input` 里；`key-handler` 是空 `FocusScope`
+        // （`app.slint:846`，Transport 不在其子树内），再也收不到键 ⇒ 此后一切单键
+        // （数字键 `2`）与组合键（Ctrl+Shift+H）都到不了宿主。桌面审计时间线就是这一形：
+        // 96–97 号图敲 BPM → 98–102 号图按 `2` 不切换、106–110 号图 Ctrl+Shift+H 不开，
+        // 而 `C`（63–65 号图，敲 BPM 之前）是通的。与模态关闭回焦
+        // （`apply_undo` 调同一个回焦入口）同一机制。
+        // 放在公共入口 ⇒ 合法 / 非法 / 同值 / 无工程四条路都回焦。
+        ui.invoke_focus_shortcut_layer();
         // 权威工程读不出来 ⇒ 出声不画（与 `refresh_undo_window` 同款纪律）。
         let Some(project) = port.try_project() else {
             eprintln!("[yeban-app] BPM 敲入没有可投影的工程: 权威会话此刻没有活跃工程");
