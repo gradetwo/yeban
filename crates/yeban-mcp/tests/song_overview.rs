@@ -496,9 +496,9 @@ fn struct_round_trip_and_rounding() {
 #[test]
 fn registry_and_schema_counts_agree() {
     // 注册表三常量（现读，不抄文档手抄数）。
-    assert_eq!(TOOL_COUNT, 38);
-    assert_eq!(EXTENSION_TOOL_COUNT, 28);
-    assert_eq!(EXTENSION_NAMES.last(), Some(&"get_song_overview"));
+    assert_eq!(TOOL_COUNT, 41);
+    assert_eq!(EXTENSION_TOOL_COUNT, 31);
+    assert_eq!(EXTENSION_NAMES.last(), Some(&"yeban_correct_pitch_notes"));
     assert!(EXTENSION_NAMES.contains(&"get_song_overview"));
     // §8.2 的形状由 structs + 本文件钉住，不进 `COVERED_TOOLS` 的广播
     // （见 `output_schema.rs` 的决策说明：不改他人的十工具广播测试）。
@@ -509,12 +509,15 @@ fn registry_and_schema_counts_agree() {
     let enum_names = parsed["definitions"]["ToolCall"]["properties"]["name"]["enum"]
         .as_array()
         .expect("name enum");
-    assert_eq!(enum_names.len(), 38);
-    assert_eq!(enum_names.last().expect("末位"), "get_song_overview");
+    assert_eq!(enum_names.len(), 41);
+    assert_eq!(
+        enum_names.last().expect("末位"),
+        "yeban_correct_pitch_notes"
+    );
     let defs = parsed["definitions"]["ExtensionToolArguments"]["$defs"]
         .as_object()
         .expect("$defs");
-    assert_eq!(defs.len(), 28);
+    assert_eq!(defs.len(), 31);
     assert!(defs.contains_key("get_song_overview"));
 }
 

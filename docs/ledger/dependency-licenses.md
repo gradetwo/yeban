@@ -3,8 +3,8 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `0882086bf8349034`
-- 外部依赖包数: **638**（不含 28 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `33454ca0079bd909`
+- 外部依赖包数: **638**（不含 29 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
@@ -470,10 +470,10 @@
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `sctk-adwaita` | `0.10.1` | `MIT` | 传递 | — |
 | `semver` | `1.0.28` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-ui-mcp`, `yeban-ui-test-port` |
+| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-otcp`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_core` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_derive` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-mcp`, `yeban-model`, `yeban-render`, `yeban-ui-mcp`, `yeban-ui-test-port` |
+| `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-mcp`, `yeban-model`, `yeban-otcp`, `yeban-render`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_repr` | `0.1.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_spanned` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-diagnostics`, `yeban-model`, `yeban-render` |
@@ -526,7 +526,7 @@
 | `sys-locale` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `taffy` | `0.10.1` | `MIT` | 传递 | — |
 | `tar` | `0.4.46` | `MIT OR Apache-2.0` | 传递 | — |
-| `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | 直接 | `yeban-render` |
+| `tempfile` | `3.27.0` | `MIT OR Apache-2.0` | 直接 | `yeban-otcp`, `yeban-render` |
 | `text-size` | `1.1.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `thiserror` | `1.0.69` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory`, `yeban-ui-mcp` |
 | `thiserror` | `2.0.21` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory`, `yeban-ui-mcp` |

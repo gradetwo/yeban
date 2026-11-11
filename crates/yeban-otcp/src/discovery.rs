@@ -105,6 +105,11 @@ pub fn check_control_dir_mode(dir: &Path) -> Result<(), OtcpError> {
             ));
         }
     }
+    // 非 Unix 下 `dir` 只在 Unix 权限检查里用；显式消费，避免 Windows 构建报 unused variable。
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
     Ok(())
 }
 
