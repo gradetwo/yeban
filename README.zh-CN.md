@@ -84,7 +84,7 @@ macOS 与 Linux 有完整测试。Windows 平台测试尚不充分。UI 层面�
 | :--- | :--- |
 | **Rust** | **1.99.0** —— 由 [`rust-toolchain.toml`](rust-toolchain.toml) 钉死，`rustup` 会自动安装；`rustfmt` + `clippy` 组件同样被钉住。 |
 | **操作系统** | macOS（Apple Silicon / Intel）、Linux（X11 或 Wayland）、Windows。 |
-| **Linux 构建依赖** | `pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev`（Debian/Ubuntu 包名；Slint / winit / cpal 链接时需要）。 |
+| **Linux 构建依赖** | `pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev`（Debian/Ubuntu 包名；Slint / winit / cpal 链接时需要）。 |
 | **macOS 构建依赖** | Xcode Command Line Tools：`xcode-select --install`。 |
 | **显示器** | 打开主窗口需要真实显示器；`--headless` 不需要（CI 用的就是它）。 |
 

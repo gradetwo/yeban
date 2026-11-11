@@ -138,7 +138,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             pkg-config libfontconfig1-dev libfreetype-dev \
-            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libgl1-mesa-dev \
             libasound2-dev \
             clang libclang-dev \
             fonts-noto-cjk

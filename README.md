@@ -76,7 +76,7 @@ macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI l
 | :--- | :--- |
 | **Rust** | **1.99.0** — pinned by [`rust-toolchain.toml`](rust-toolchain.toml); `rustup` installs it automatically. Components `rustfmt` + `clippy` are pinned too. |
 | **OS** | macOS (Apple Silicon / Intel), Linux (X11 or Wayland), Windows. |
-| **Linux build deps** | `pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev` (Debian/Ubuntu names; needed to link Slint, winit and cpal). |
+| **Linux build deps** | `pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libgl1-mesa-dev libasound2-dev` (Debian/Ubuntu names; needed to link Slint, winit and cpal). |
 | **macOS build deps** | Xcode Command Line Tools: `xcode-select --install`. |
 | **Display** | A real display is needed for the GUI window. `--headless` runs without one (that is what CI uses). |
 
