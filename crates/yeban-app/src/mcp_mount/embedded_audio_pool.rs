@@ -157,6 +157,7 @@ fn the_embedded_mount_carries_the_session_asset_pool_into_the_render() {
                     duration_ticks: END_TICK,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             },
         ],

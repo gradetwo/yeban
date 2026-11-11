@@ -333,6 +333,7 @@ fn place_clip(
                 duration_ticks: END_TICK,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
 }

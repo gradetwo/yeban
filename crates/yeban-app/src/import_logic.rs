@@ -771,6 +771,7 @@ fn build_project(
                 duration_ticks: u64::from(region.length_ticks),
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         placements += 1;
@@ -847,6 +848,7 @@ fn build_project(
                     duration_ticks: resolved_slot.duration_ticks,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             audio.clips += 1;
