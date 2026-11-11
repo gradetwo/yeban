@@ -665,9 +665,13 @@ fn clip_offset_moves_the_first_audible_frame_by_exactly_the_offset() {
     // 局部名 `fixture` 会遮住同名构造器 ⇒ 第二份夹具换名。
     let minus_fixture = fixture(wav_f32(2, 48_000, &samples), &minus);
     let out = scratch.join("minus.wav");
-    let artifact =
-        build_with(&minus_fixture.project, &pool(&minus_fixture), &out, args(&out))
-            .expect("渲染");
+    let artifact = build_with(
+        &minus_fixture.project,
+        &pool(&minus_fixture),
+        &out,
+        args(&out),
+    )
+    .expect("渲染");
     let rendered = payload_samples(&artifact);
     assert_eq!(artifact.frames, 48_000, "负偏移不延长默认母带长度");
     assert_eq!(
