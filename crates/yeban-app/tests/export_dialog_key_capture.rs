@@ -410,8 +410,8 @@ fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
     );
     assert_eq!(
         host.matches("invoke_focus_shortcut_layer").count(),
-        2,
-        "⑧ 复位到快捷键层的调用者必须恰好两处：时光机关闭 + 导出弹窗关闭"
+        3,
+        "⑧ 复位到快捷键层的调用者必须恰好三处：时光机关闭 + 导出弹窗关闭 + 人性化 / 量化弹窗关闭"
     );
 }
 

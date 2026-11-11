@@ -2224,6 +2224,112 @@ impl ElementRegistry {
             "按当前选项导出 WAV",
             false,
         );
+        // 人性化 / 量化选项框：默认关闭（`humanize-open=false`），因此不进运行时控件树，
+        // 也不改任何金帧。打开后宿主把卷帘右键菜单的两项接到这里，真正的提交仍走
+        // `MainWindow.apply-humanize` / `apply-quantize` → `host::wire_humanize_dialog`。
+        // 五个输入框的文本**不在 UI 侧解析**：解析只发生在宿主，非法值写进 `humanize-error`
+        // 且不落盘、不提交。种子是**基础种子**（缺省 = 工程 `rng_seed`），⛔ 不加每轨种子输入。
+        registry.add(
+            "humanize-dialog",
+            ElementKind::Region,
+            "dialogs/humanize_dialog.slint",
+            "人性化 / 量化对话框",
+            false,
+        );
+        registry.add(
+            "humanize-panel",
+            ElementKind::Region,
+            "dialogs/humanize_dialog.slint",
+            "人性化 / 量化选项面板",
+            false,
+        );
+        registry.add(
+            "humanize-close-button",
+            ElementKind::Button,
+            "dialogs/humanize_dialog.slint",
+            "关闭人性化 / 量化对话框",
+            false,
+        );
+        registry.add(
+            "humanize-time-jitter-input",
+            ElementKind::TextInput,
+            "dialogs/humanize_dialog.slint",
+            "时值抖动量（ticks，非负整数）",
+            false,
+        );
+        registry.add(
+            "humanize-velocity-jitter-input",
+            ElementKind::TextInput,
+            "dialogs/humanize_dialog.slint",
+            "力度抖动量（0..=127）",
+            false,
+        );
+        registry.add(
+            "humanize-seed-input",
+            ElementKind::TextInput,
+            "dialogs/humanize_dialog.slint",
+            "基础种子（缺省工程种子，可显式改）",
+            false,
+        );
+        registry.add(
+            "humanize-grid-input",
+            ElementKind::TextInput,
+            "dialogs/humanize_dialog.slint",
+            "量化网格（ticks，非零）",
+            false,
+        );
+        registry.add(
+            "humanize-strength-input",
+            ElementKind::TextInput,
+            "dialogs/humanize_dialog.slint",
+            "量化强度（0..=100%，100% = 完全贴格）",
+            false,
+        );
+        registry.add(
+            "humanize-apply-button",
+            ElementKind::Button,
+            "dialogs/humanize_dialog.slint",
+            "应用人性化",
+            false,
+        );
+        registry.add(
+            "humanize-apply-quantize-button",
+            ElementKind::Button,
+            "dialogs/humanize_dialog.slint",
+            "应用量化",
+            false,
+        );
+        registry.add(
+            "humanize-error-line",
+            ElementKind::Text,
+            "dialogs/humanize_dialog.slint",
+            "人性化 / 量化失败原因（空 = 无失败）",
+            false,
+        );
+        registry.add(
+            "humanize-note-line",
+            ElementKind::Text,
+            "dialogs/humanize_dialog.slint",
+            "基础种子说明：同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎接上",
+            false,
+        );
+        // 卷帘右键上下文菜单的两项：默认不显示（菜单只在右键按下那一刻弹出），
+        // 因此不进运行时控件树、不改任何金帧。点击后只上抛 `humanize-requested` /
+        // `quantize-requested`，播种与提交全在宿主。
+        registry.add(
+            "piano-roll-context-menu-humanize",
+            ElementKind::Button,
+            "console/piano_roll.slint",
+            "卷帘右键菜单：人性化…",
+            false,
+        );
+        registry.add(
+            "piano-roll-context-menu-quantize",
+            ElementKind::Button,
+            "console/piano_roll.slint",
+            "卷帘右键菜单：量化…",
+            false,
+        );
 
         registry
     }
