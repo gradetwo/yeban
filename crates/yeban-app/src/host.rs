@@ -4235,7 +4235,7 @@ impl EqCurveWiring {
                 ..
             } => {
                 *primary_last = target_val.clamp(-18.0, 18.0);
-                if let (Some((_, _, s_last)), Some((_, s_target))) = (secondary, opt_sec) {
+                if let (Some((_, _, s_last)), Some((_, s_target))) = (secondary.as_mut(), opt_sec) {
                     *s_last = s_target;
                 }
                 (*primary_last, secondary.as_ref().map(|(_, _, val)| *val))
