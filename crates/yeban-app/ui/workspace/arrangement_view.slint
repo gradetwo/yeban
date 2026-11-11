@@ -288,6 +288,8 @@ export component ArrangementView inherits Rectangle {
     /// 空车道拖动 ⇒ 横向滚动（与卷帘 `scroll-requested` 同一条回调，宿主
     /// `install_roll_scroll`；只在空白车道区生效，不与剪辑拖拽抢事件）。
     callback scroll-requested(length);
+    /// 点击自动化车道添加或编辑点 (G-A1): (车道下标, 点击处相对于车道区域的 x, 点击处相对于车道区域的 y)
+    callback automation-lane-click(int, length, length);
 
     // ---------------------------------------------------------------- ⭐ 缩放工具栏（2026-11-07 ①：可见控件路）
     //
@@ -1246,6 +1248,16 @@ export component ArrangementView inherits Rectangle {
         // 标签携带**单位与当前值** (读关闭 / 无采样点 / 目标不存在各有分支):
         // "AI 能读到自动化"的机械证据就是这一行 —— 它与投影的 `label` 逐字相等。
         accessible-label: root.automation-lane-labels[lane_index];
+
+        TouchArea {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.automation-lane-click(lane_index, self.mouse-x, self.mouse-y);
+            }
+        }
 
         Path {
             // ⭐ 2026-11-07：折线顶点是绝对像素（`automation.rs` 的 `path_commands`），
