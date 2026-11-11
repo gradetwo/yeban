@@ -25,10 +25,10 @@ use yeban_render::render::{
 /// 判据统一用 48 kHz。
 const SR: u32 = 48_000;
 
-//! 一帧脉冲：`[1.0, 0.0, …]`（峰值位置就是答案本身）。
+/// 一帧脉冲：`[1.0, 0.0, …]`（峰值位置就是答案本身）。
 const FRAMES: usize = 4_096;
 
-//! 判据统一用的延时：240 采样 = 5 ms @ 48 kHz。
+/// 判据统一用的延时：240 采样 = 5 ms @ 48 kHz。
 const DELAY: i32 = 240;
 
 fn node(seed: u32) -> EntityId {
@@ -64,7 +64,7 @@ fn graph(nodes: &[EntityId], edges: &[(EntityId, EntityId, RoutingKind)]) -> Rou
     }
 }
 
-//! 把一条单声道缓冲复制到各声道的源。
+/// 把一条单声道缓冲复制到各声道的源。
 struct BufferSource {
     mono: Vec<f32>,
     position: usize,
@@ -89,7 +89,7 @@ impl AudioSource for BufferSource {
     }
 }
 
-//! 渲染一张"源节点 → master"图，返回母带。`sources` 按节点给单声道缓冲。
+/// 渲染一张"源节点 → master"图，返回母带。`sources` 按节点给单声道缓冲。
 fn render(
     routing: &RoutingGraph,
     master: EntityId,
@@ -108,24 +108,29 @@ fn render(
     .expect("编译");
     let sources = sources
         .into_iter()
-        .map(|(node, mono)| (node, Box::new(BufferSource::new(mono)) as Box<dyn AudioSource>))
+        .map(|(node, mono)| {
+            (
+                node,
+                Box::new(BufferSource::new(mono)) as Box<dyn AudioSource>,
+            )
+        })
         .collect();
     plan.execute(sources).expect("渲染")
 }
 
-//! 单帧脉冲（左＝右＝1.0，只在第 0 帧）。
+/// 单帧脉冲（左＝右＝1.0，只在第 0 帧）。
 fn pulse() -> Vec<f32> {
     let mut mono = vec![0.0f32; FRAMES];
     mono[0] = 1.0;
     mono
 }
 
-//! 左声道在帧 `frame` 的值。
+/// 左声道在帧 `frame` 的值。
 fn left(samples: &[f32], frame: usize) -> f32 {
     samples[frame * 2]
 }
 
-//! 判据 1：延时 N 采样 ⇒ 脉冲峰值精确移动 N 采样。
+/// 判据 1：延时 N 采样 ⇒ 脉冲峰值精确移动 N 采样。
 #[test]
 fn track_delay_shifts_impulse_by_exact_samples() {
     let master = node(0xFF);
@@ -140,10 +145,13 @@ fn track_delay_shifts_impulse_by_exact_samples() {
     let delayed = render(
         &routing,
         master,
-        &BTreeMap::from([(track_node, PhaseAlign {
-            delay_samples: DELAY,
-            invert_polarity: false,
-        })]),
+        &BTreeMap::from([(
+            track_node,
+            PhaseAlign {
+                delay_samples: DELAY,
+                invert_polarity: false,
+            },
+        )]),
         sources.clone(),
     );
     let plain = render(&routing, master, &BTreeMap::new(), sources);
@@ -170,7 +178,7 @@ fn track_delay_shifts_impulse_by_exact_samples() {
     }
 }
 
-//! 判据 2：极性反转 ⇒ 信号逐样本取反。
+/// 判据 2：极性反转 ⇒ 信号逐样本取反。
 #[test]
 fn invert_polarity_negates_signal() {
     let master = node(0xFF);
@@ -185,10 +193,13 @@ fn invert_polarity_negates_signal() {
     let inverted = render(
         &routing,
         master,
-        &BTreeMap::from([(track_node, PhaseAlign {
-            delay_samples: 0,
-            invert_polarity: true,
-        })]),
+        &BTreeMap::from([(
+            track_node,
+            PhaseAlign {
+                delay_samples: 0,
+                invert_polarity: true,
+            },
+        )]),
         sources.clone(),
     );
     let plain = render(&routing, master, &BTreeMap::new(), sources);
@@ -208,10 +219,10 @@ fn invert_polarity_negates_signal() {
     }
 }
 
-//! 判据 3：负延时 = 相对提前（最小值平移）。
+/// 判据 3：负延时 = 相对提前（最小值平移）。
 ///
-//! A −240、B 0 ⇒ min = −240 ⇒ A 有效 0、B 有效 240：A 的脉冲在第 0 帧，
-//! B 的脉冲在第 240 帧，两轨相对偏移精确保持 240 采样。
+/// A −240、B 0 ⇒ min = −240 ⇒ A 有效 0、B 有效 240：A 的脉冲在第 0 帧，
+/// B 的脉冲在第 240 帧，两轨相对偏移精确保持 240 采样。
 #[test]
 fn negative_delay_advances_relatively() {
     let master = node(0xFF);
@@ -232,14 +243,20 @@ fn negative_delay_advances_relatively() {
         &routing,
         master,
         &BTreeMap::from([
-            (track_a, PhaseAlign {
-                delay_samples: -DELAY,
-                invert_polarity: false,
-            }),
-            (track_b, PhaseAlign {
-                delay_samples: 0,
-                invert_polarity: false,
-            }),
+            (
+                track_a,
+                PhaseAlign {
+                    delay_samples: -DELAY,
+                    invert_polarity: false,
+                },
+            ),
+            (
+                track_b,
+                PhaseAlign {
+                    delay_samples: 0,
+                    invert_polarity: false,
+                },
+            ),
         ]),
         sources,
     );
@@ -263,7 +280,7 @@ fn negative_delay_advances_relatively() {
     );
 }
 
-//! 判据 4：恒等相位表（全 0、不反转）与无相位表逐位相同。
+/// 判据 4：恒等相位表（全 0、不反转）与无相位表逐位相同。
 #[test]
 fn identity_phase_is_bitwise_identical() {
     let master = node(0xFF);
@@ -274,7 +291,10 @@ fn identity_phase_is_bitwise_identical() {
     );
     // 非平凡信号：正弦突发（恒等路径一个样本都不许碰）。
     let mono: Vec<f32> = (0..FRAMES)
-        .map(|index| (0.5 * (2.0 * core::f64::consts::PI * 440.0 * index as f64 / f64::from(SR)).sin()) as f32)
+        .map(|index| {
+            (0.5 * (2.0 * core::f64::consts::PI * 440.0 * index as f64 / f64::from(SR)).sin())
+                as f32
+        })
         .collect();
     let mut sources = BTreeMap::new();
     sources.insert(track_node, mono);
@@ -282,10 +302,13 @@ fn identity_phase_is_bitwise_identical() {
     let with_identity = render(
         &routing,
         master,
-        &BTreeMap::from([(track_node, PhaseAlign {
-            delay_samples: 0,
-            invert_polarity: false,
-        })]),
+        &BTreeMap::from([(
+            track_node,
+            PhaseAlign {
+                delay_samples: 0,
+                invert_polarity: false,
+            },
+        )]),
         sources.clone(),
     );
     let plain = render(&routing, master, &BTreeMap::new(), sources);
@@ -296,7 +319,7 @@ fn identity_phase_is_bitwise_identical() {
     );
 }
 
-//! 判据 5：延时＋反转复合。
+/// 判据 5：延时＋反转复合。
 #[test]
 fn delay_and_invert_compose() {
     let master = node(0xFF);
@@ -311,10 +334,13 @@ fn delay_and_invert_compose() {
     let rendered = render(
         &routing,
         master,
-        &BTreeMap::from([(track_node, PhaseAlign {
-            delay_samples: DELAY,
-            invert_polarity: true,
-        })]),
+        &BTreeMap::from([(
+            track_node,
+            PhaseAlign {
+                delay_samples: DELAY,
+                invert_polarity: true,
+            },
+        )]),
         sources,
     );
 
@@ -328,7 +354,7 @@ fn delay_and_invert_compose() {
     );
 }
 
-//! 判据 6：`project_phase_align` 只收非恒等轨。
+/// 判据 6：`project_phase_align` 只收非恒等轨。
 #[test]
 fn project_phase_align_skips_identity_tracks() {
     let plain_track = node(1);
