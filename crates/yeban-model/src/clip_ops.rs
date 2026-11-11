@@ -106,13 +106,15 @@ pub fn humanize_note(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
     use super::*;
     use crate::EntityId;
     use crate::music::MidiNote;
 
     fn note(velocity: u8, micro: Option<i16>) -> MidiNote {
         MidiNote {
-            id: EntityId::from_u128(1),
+            id: EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P1F9").expect("fixture ulid"),
             start_tick: 0,
             duration_ticks: 240,
             pitch: 60,
