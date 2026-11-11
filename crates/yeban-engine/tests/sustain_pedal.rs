@@ -22,7 +22,11 @@ use yeban_model::{
 };
 
 /// 给夹具工程的唯一 MIDI 轨挂一条 CC64 泳道（线性点）。
-fn with_pedal(mut project: YebanProjectV1, track: EntityId, points: &[(u64, f32)]) -> YebanProjectV1 {
+fn with_pedal(
+    mut project: YebanProjectV1,
+    track: EntityId,
+    points: &[(u64, f32)],
+) -> YebanProjectV1 {
     let mut lane_points = BTreeMap::new();
     for (tick, value) in points {
         let id = EntityId::new();
@@ -61,7 +65,13 @@ fn render_two_seconds(project: &YebanProjectV1) -> Vec<f32> {
 #[test]
 fn pedal_holds_sound_past_note_off_until_it_lifts() {
     let fixture = note_project(&[NoteSpec::at(0, 960, 69, 100)]);
-    let pedal = with_pedal(fixture.project, fixture.track, &[(0, 127.0), (1920, 0.0)]);
+    // 阶梯形踏板（踩下恒 127、1920 抬起）：两点斜坡在松键处值已降到 63.5，
+    // 终点会落在 1913 tick 而非 1920 —— 见 snapshot.rs P1 判据注。
+    let pedal = with_pedal(
+        fixture.project,
+        fixture.track,
+        &[(0, 127.0), (1920, 127.0), (1921, 0.0)],
+    );
     let control = fixture_project_without_pedal();
     let held = render_two_seconds(&pedal);
     let dry = render_two_seconds(&control);
@@ -96,7 +106,13 @@ fn pedal_holds_sound_past_note_off_until_it_lifts() {
 #[test]
 fn half_pedal_holds_sound_only_part_way() {
     let fixture = note_project(&[NoteSpec::at(0, 960, 69, 100)]);
-    let half = with_pedal(fixture.project, fixture.track, &[(0, 32.0), (1920, 0.0)]);
+    // 阶梯形半踏板（松键处值恒 32，1920 回 0 ⇒ 终点 1440 tick = 36000 样本）；
+    // 两点斜坡在松键处值只有 16，终点会落在 1200 tick —— 见 snapshot.rs P3 注。
+    let half = with_pedal(
+        fixture.project,
+        fixture.track,
+        &[(0, 32.0), (1919, 32.0), (1920, 0.0)],
+    );
     let samples = render_two_seconds(&half);
     assert_eq!(samples.len(), 96_000);
     // 延后终点 36000：30000..35000 仍在持续；40000..46000 已过终点 + 释放尾巴。

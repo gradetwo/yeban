@@ -3642,11 +3642,22 @@ mod tests {
     ) -> (YebanProjectV1, EntityId) {
         let mut project = simple_project();
         project.bpm = 120.0;
+        // `validate()` 要求主总线以 `Master` 种轨在表里（`simple_project` 本身
+        // 只放了一条 MIDI 轨；`from_project` 的判据不调 `validate`，故此前没暴露）。
+        let master = project.master_bus_track_id;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
         let track_id = *project
             .tracks
             .keys()
-            .next()
-            .expect("simple_project 有一条轨");
+            .find(|id| **id != master)
+            .expect("simple_project 有一条 MIDI 轨");
         let clip_id = EntityId::new();
         let placement_id = EntityId::new();
         let mut note_map = BTreeMap::new();
@@ -3702,12 +3713,15 @@ mod tests {
     }
 
     /// ADR-0071 判据 P1（全踏板）：音符 0..960、踏板 0 踩下（127）1920 抬起（0）
-    /// ⇒ 发声终点延到 1920 tick = 48000 样本。
+    /// ⇒ 发声终点延到 1920 tick = 48000 样本。踏板曲线取**阶梯形**（真实踏板
+    /// 数据的形状：踩下后值恒为 127，抬起时才跌到 0）；两点斜坡 `(0,127),(1920,0)`
+    /// 在松键 tick 960 处值已降到 63.5（半踏板），不是全踏板 —— 那是判据 P5
+    /// 斜坡的情形。抬起弦 `(1920,127)→(1921,0)` 交 64 于 1920.496 → 四舍五入 1920。
     #[test]
     fn pedal_holds_a_note_until_the_pedal_lifts() {
         let (project, track_id) = pedal_project(
             &[(0, 960, 69, None)],
-            Some((&[(0, 127.0), (1920, 0.0)], true)),
+            Some((&[(0, 127.0), (1920, 127.0), (1921, 0.0)], true)),
         );
         assert_eq!(
             scheduled_spans(&project, track_id),
@@ -3736,11 +3750,13 @@ mod tests {
 
     /// ADR-0071 判据 P3（半踏板）：踏板深度 32（`32/64 = 0.5`）、1920 回到 0
     /// ⇒ 保持区间减半：960 + (1920 − 960) × 0.5 = 1440 tick = 36000 样本。
+    /// 同样取阶梯形（松键处值恒为 32）；回 0 弦 `(1919,32)→(1920,0)` 交 0 于
+    /// 1920 整点（`frac = 1.0`）。
     #[test]
     fn half_pedal_holds_a_fraction_of_the_down_interval() {
         let (project, track_id) = pedal_project(
             &[(0, 960, 69, None)],
-            Some((&[(0, 32.0), (1920, 0.0)], true)),
+            Some((&[(0, 32.0), (1919, 32.0), (1920, 0.0)], true)),
         );
         assert_eq!(
             scheduled_spans(&project, track_id),
@@ -3792,7 +3808,7 @@ mod tests {
     fn ratchet_only_the_last_pulse_is_held() {
         let (project, track_id) = pedal_project(
             &[(0, 960, 69, Some(2))],
-            Some((&[(0, 127.0), (1920, 0.0)], true)),
+            Some((&[(0, 127.0), (1920, 127.0), (1921, 0.0)], true)),
         );
         assert_eq!(
             scheduled_spans(&project, track_id),
