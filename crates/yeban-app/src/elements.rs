@@ -2251,14 +2251,14 @@ impl ElementRegistry {
             false,
         );
         registry.add(
-            "humanize-time-jitter-input",
+            "humanize-time-input",
             ElementKind::TextInput,
             "dialogs/humanize_dialog.slint",
             "时值抖动量（ticks，非负整数）",
             false,
         );
         registry.add(
-            "humanize-velocity-jitter-input",
+            "humanize-velocity-input",
             ElementKind::TextInput,
             "dialogs/humanize_dialog.slint",
             "力度抖动量（0..=127）",
@@ -2272,14 +2272,14 @@ impl ElementRegistry {
             false,
         );
         registry.add(
-            "humanize-grid-input",
+            "quantize-grid-input",
             ElementKind::TextInput,
             "dialogs/humanize_dialog.slint",
             "量化网格（ticks，非零）",
             false,
         );
         registry.add(
-            "humanize-strength-input",
+            "quantize-strength-input",
             ElementKind::TextInput,
             "dialogs/humanize_dialog.slint",
             "量化强度（0..=100%，100% = 完全贴格）",
