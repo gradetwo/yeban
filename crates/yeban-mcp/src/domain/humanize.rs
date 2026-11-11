@@ -71,12 +71,6 @@ pub(crate) fn splitmix64_finalizer(mut x: u64) -> u64 {
     x
 }
 
-/// 单参 splitmix64（与 `yeban-model` 的 `splitmix64(seed)` 同型）。
-#[must_use]
-pub(crate) fn splitmix64_single(seed: u64) -> u64 {
-    splitmix64_finalizer(seed.wrapping_add(SPLITMIX_GAMMA))
-}
-
 /// 双参 splitmix64 混合：`finalizer(seed + salt·GAMMA + GAMMA)`。
 #[must_use]
 pub(crate) fn splitmix64_mix(seed: u64, salt: u64) -> u64 {
@@ -92,12 +86,12 @@ pub(crate) fn splitmix64_mix(seed: u64, salt: u64) -> u64 {
 /// 轨盐 = 轨 ULID 高低 64 位的嵌套 splitmix64 折叠，
 /// 与 `yeban-model` 的 `trigger_hash` 同型（轨用身份、不用下标：
 /// 轨重排不改变抖动）。
+///
+/// ⚠ **唯一实现住在 `yeban_model::clip_ops::derive_track_seed`**：宿主（GUI）
+/// 与判据也调那一份 —— 这里只转调，⛔ 不另写一份公式（两份公式必然分叉）。
 #[must_use]
 pub(crate) fn derive_track_seed(base_seed: u64, track_id: &EntityId) -> u64 {
-    let raw = track_id.as_ulid().0;
-    let low = raw as u64;
-    let high = (raw >> 64) as u64;
-    splitmix64_single(base_seed ^ splitmix64_single(low ^ splitmix64_single(high)))
+    yeban_model::clip_ops::derive_track_seed(base_seed, track_id)
 }
 
 /// 抖动模型（`humanizeClip` 的 `model` 字段；缺省 `Uniform`）。

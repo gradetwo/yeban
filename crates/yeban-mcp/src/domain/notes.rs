@@ -772,6 +772,7 @@ use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
+use yeban_model::clip_ops::quantize_tick;
 use yeban_model::music::{
     MICRO_TIMING_MAX_ABS, MIDI_CHANNEL_MAX, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX,
     PITCH_BEND_CENTS_MAX_ABS, PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
@@ -8986,20 +8987,6 @@ fn expand_clip_level_op(
         _ => return Ok(None),
     };
     Ok(Some(expanded))
-}
-
-/// 把 `start` 吸到最近的 `grid` 整数倍；`strength_permille` < 1000 时
-/// 只走强度比例的那段距离（线性内插，tick 分辨率取整）。
-fn quantize_tick(start: u64, grid: u64, strength_permille: u16) -> u64 {
-    let snapped = if grid <= 1 {
-        start
-    } else {
-        // 最近整数倍 = round(start / grid) * grid（半格向上）。
-        (start + grid / 2) / grid * grid
-    };
-    let distance = i128::from(snapped) - i128::from(start);
-    let scaled = i128::from(start) + distance * i128::from(strength_permille) / 1000;
-    scaled.max(0) as u64
 }
 
 /// 把解析过的操作编译成 [`Op`]（**读文档**补齐撤销载荷，但绝不改文档）。

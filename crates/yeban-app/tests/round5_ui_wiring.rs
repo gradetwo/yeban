@@ -255,11 +255,11 @@ fn the_piano_roll_status_value_is_the_same_expression_as_its_visible_text() {
         "④ 可见 `text` 必须与 `accessible-value` 逐字同源"
     );
 
-    // 零新增可寻址节点 / 一条新增 value（原 2 条）。
+    // 人性化 UI 线：卷帘右键菜单新增 2 个可寻址节点（人性化/量化项）；value 仍 3 条。
     assert_eq!(
         roll.matches("accessible-id:").count(),
-        10,
-        "④ 本票只加属性、⛔ 不新增可寻址节点（可寻址数仍为 10）"
+        12,
+        "④ 可寻址数 12（既有 10 ＋ 右键菜单 2：人性化/量化项；菜单项须带 accessible-id 供宿主与 UI 测试寻址）"
     );
     assert_eq!(
         roll.matches("accessible-value:").count(),

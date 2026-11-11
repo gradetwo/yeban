@@ -68,6 +68,13 @@ export component PianoRoll inherits Rectangle {
     callback note-drag-release(length, length);
     // 指针离开窗口 / 控件被禁用（上游导出成 `PointerEventKind.cancel`）⇒ **丢弃**草稿。
     callback note-drag-cancel();
+    // ⭐ 右键上下文菜单（人性化 / 量化）的**上抛**入口：菜单项点中后调这里，
+    // 宿主打开 `dialogs/humanize_dialog.slint` 的对应区段。界面只上报"点了哪一项"；
+    // 播种、解析、提交全在宿主（`host::wire_humanize_dialog`）。
+    // 菜单本身默认**不显示**（`PopupWindow`，只在右键按下时 `show()`），因此默认帧
+    // 与 `tests/golden/linux/` 的 5 张基准一位不变。
+    callback humanize-requested();
+    callback quantize-requested();
     // 被拖音符的身份（空 = 没有手势）与拖动期的**草稿预览位移**（逻辑像素，由宿主算好注入）。
     // 只有身份相等的那个音符矩形跟着偏移 —— 界面不做位置算术（`[UI-NOTE-002]`）。
     in property <string> note-drag-ulid: "";
@@ -370,6 +377,10 @@ export component PianoRoll inherits Rectangle {
     property <length> drag-origin-y: 0px;
     property <bool> drag-moved: false;
     property <bool> note-dragging: false;
+    // ⭐ 右键菜单的弹出位置（卷帘局部坐标，右键按下那一刻写；菜单宽 150px、高 64px，
+    // 贴边时向内收 —— 菜单不得被窗口边缘裁掉）。
+    property <length> context-menu-x: 0px;
+    property <length> context-menu-y: 0px;
     TouchArea {
         // `[UI-TEST-001]` §12.2 稳定语义元素寻址：拖动滚动手势面必须有 `accessible-id`
         // （与 `ui/` 下其它关键节点同一族），否则无头注入只能靠像素坐标 —— 那正是被禁的做法。
@@ -383,7 +394,16 @@ export component PianoRoll inherits Rectangle {
         // 才 fired 一次 `clicked`。在此之前 `up` 无条件 fired `clicked` ⇒ 用铅笔（或橡皮擦）
         // 在空白处滚动一下，松手处就会**插进一个音符** —— 滚动手势被当成了单击。
         pointer-event(event) => {
-            if event.kind == PointerEventKind.down {
+            if event.button == PointerEventButton.right {
+                // ⭐ 右键：只开上下文菜单。`down` 记位置并 `show()`；`move` / `up` /
+                // `cancel` 一律不滚动、不拖音符、不单击 —— 右键抬起要是落进下面
+                // 的 `up` 支，会把一次右键误认成左键单击（铅笔会在松手处插音符）。
+                if event.kind == PointerEventKind.down {
+                    root.context-menu-x = self.mouse-x > root.width - 150px ? root.width - 150px : self.mouse-x;
+                    root.context-menu-y = self.mouse-y > root.height - 64px ? root.height - 64px : self.mouse-y;
+                    context-menu-popup.show();
+                }
+            } else if event.kind == PointerEventKind.down {
                 root.drag-origin-x = self.mouse-x;
                 root.drag-origin-y = self.mouse-y;
                 root.drag-moved = false;
@@ -446,6 +466,95 @@ export component PianoRoll inherits Rectangle {
         // 工具门 / 命中 / 提交全在宿主派发器里。
         double-clicked => {
             root.double-clicked(self.mouse-x, self.mouse-y);
+        }
+    }
+
+    // ⭐ 右键上下文菜单（`PopupWindow`，Slint 1.18 原生弹出层，与 std `ComboBox`
+    // 的下拉同款）：默认不显示、不占命中、不进默认帧；`show()` 时落在
+    // `context-menu-x/y`（卷帘局部坐标）；点项外任意处自动关（`close-on-click-outside`）。
+    // 菜单项在弹出层**内**调外部回调（`root.humanize-requested()`）是允许的方向
+    // （禁的是反向：外部访问弹出层内的元素）；点中后显式 `close()` 再上抛。
+    context-menu-popup := PopupWindow {
+        x: root.context-menu-x;
+        y: root.context-menu-y;
+        width: 150px;
+        height: 64px;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            background: Tokens.bg-panel;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+            clip: true;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: 32px;
+                accessible-role: button;
+                accessible-id: "piano-roll-context-menu-humanize";
+                accessible-label: "人性化…";
+                accessible-action-default => {
+                    root.humanize-requested();
+                    context-menu-popup.close();
+                }
+
+                UiText {
+                    x: 8px;
+                    y: 0;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    text: "人性化…";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.humanize-requested();
+                        context-menu-popup.close();
+                    }
+                }
+            }
+
+            Rectangle {
+                x: 0;
+                y: 32px;
+                width: parent.width;
+                height: 32px;
+                accessible-role: button;
+                accessible-id: "piano-roll-context-menu-quantize";
+                accessible-label: "量化…";
+                accessible-action-default => {
+                    root.quantize-requested();
+                    context-menu-popup.close();
+                }
+
+                UiText {
+                    x: 8px;
+                    y: 0;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    text: "量化…";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.quantize-requested();
+                        context-menu-popup.close();
+                    }
+                }
+            }
         }
     }
 }

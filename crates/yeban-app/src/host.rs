@@ -8973,6 +8973,245 @@ pub fn wire_module_actions_with(
     wire_module_actions_with_capture(ui, port, paths, None)
 }
 
+/// 人性化 / 量化对话框的文本解析（与 MCP `humanizeClip` / `quantizeClip` 同一口径）。
+///
+/// 返回 `Err(界面文案)`：失败只写进 `humanize-error`，弹窗**不关**、⛔ 不提交。
+fn parse_humanize_u64(text: &str, label: &str) -> Result<u64, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label}不能为空"));
+    }
+    trimmed
+        .parse::<u64>()
+        .map_err(|_| format!("{label}不是有效的非负整数：{trimmed}"))
+}
+
+/// 钢琴卷帘右键菜单的人性化 / 量化对话框（`ui/dialogs/humanize_dialog.slint`）的接线。
+///
+/// 与 [`wire_module_actions_with_capture`] 的导出对话框**同一结构**：打开时播种
+/// （五格为空 ⇒ 填缺省：时值 10 / 力度 10 / 基础种子 = 工程 `rng_seed` / 网格 240 /
+/// 强度 100；已填的值重开时逐字符保留）、关闭时焦点复位回快捷键层、应用时现读文本
+/// 按 MCP 同一口径解析 —— 解析失败 / 未选中剪辑 / 不是 MIDI 片段 / 模型拒绝时
+/// 把原因写进 `humanize-error`，**弹窗不关**。成功 ⇒ 一次 [`UndoPort::commit_ops`]
+/// （一步撤销）+ 重投影卷帘 + 关弹窗。
+///
+/// 种子是**基础种子**：⛔ 不加每轨种子输入、⛔ 不在 UI 侧按轨编不同种子 —— 按轨派生
+/// （基础种子 ⊕ 轨标识）在引擎侧做（v2 线）。参数透传保持通用：抖动量不标\"均匀随机\"
+/// （分布由引擎定，v2 会换分布而不改 UI）。
+///
+/// 调用方（`main.rs` 的 `run_gui` 与 `live_surface.rs` 的 `build_live_ui_with`）
+/// 在接 `wire_module_actions` 的同一处调本函数；无头装配与产品进程同一条接线。
+pub fn wire_humanize_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
+    // 播种：五格为空 ⇒ 填缺省；已填 ⇒ 保留（与导出对话框的\"没人动过 ⇒ 刷新\"同一口径
+    // —— 这里五格的空值本身就是非法输入，空 ⇒ 填缺省不需要记上一次播的值）。
+    fn seed_humanize_fields(ui: &MainWindow, port: Option<&Rc<UndoPort>>) {
+        if ui.get_humanize_time_jitter().trim().is_empty() {
+            ui.set_humanize_time_jitter("10".into());
+        }
+        if ui.get_humanize_velocity_jitter().trim().is_empty() {
+            ui.set_humanize_velocity_jitter("10".into());
+        }
+        if ui.get_humanize_seed().trim().is_empty()
+            && let Some(project) = port.and_then(|p| p.try_project())
+        {
+            ui.set_humanize_seed(project.rng_seed.to_string().into());
+        }
+        if ui.get_humanize_grid().trim().is_empty() {
+            ui.set_humanize_grid("240".into());
+        }
+        if ui.get_humanize_strength().trim().is_empty() {
+            ui.set_humanize_strength("100".into());
+        }
+    }
+    // ---- 打开（两个入口，只差焦点落点）-------------------------------------
+    {
+        let weak = ui.as_weak();
+        let port_for_seed = port.clone();
+        ui.on_open_humanize(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            seed_humanize_fields(&ui, port_for_seed.as_ref());
+            ui.set_humanize_error("".into());
+            ui.set_humanize_focus_section(0);
+            ui.set_humanize_open(true);
+            ui.invoke_focus_humanize_dialog();
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let port_for_seed = port.clone();
+        ui.on_open_quantize(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            seed_humanize_fields(&ui, port_for_seed.as_ref());
+            ui.set_humanize_error("".into());
+            ui.set_humanize_focus_section(1);
+            ui.set_humanize_open(true);
+            ui.invoke_focus_humanize_dialog();
+        });
+    }
+    // ---- 关闭（只改视图态，⛔ 不碰工程）-------------------------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_close_humanize(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // `D-UI-19` 同款：只在**真的开 → 关**那一次复位回快捷键层。
+            let was_open = ui.get_humanize_open();
+            ui.set_humanize_open(false);
+            if was_open {
+                ui.invoke_focus_shortcut_layer();
+            }
+        });
+    }
+    // ---- 应用人性化 ---------------------------------------------------------
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        ui.on_apply_humanize(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(port) = port.as_ref() else {
+                ui.set_humanize_error("没有撤销会话，无法应用".into());
+                return;
+            };
+            let seed_text = ui.get_humanize_seed();
+            let seed = match parse_humanize_u64(seed_text.as_str(), "基础种子") {
+                Ok(v) => v,
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            let time_text = ui.get_humanize_time_jitter();
+            let time_jitter = match parse_humanize_u64(time_text.as_str(), "时值抖动量") {
+                Ok(v) => v,
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            let velocity_text = ui.get_humanize_velocity_jitter();
+            let velocity_jitter = match parse_humanize_u64(velocity_text.as_str(), "力度抖动量")
+            {
+                Ok(v) if v <= 127 => v as u8,
+                Ok(_) => {
+                    ui.set_humanize_error("力度抖动量必须在 0..=127 之间".into());
+                    return;
+                }
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            let Some(project) = port.try_project() else {
+                ui.set_humanize_error("没有活跃工程".into());
+                return;
+            };
+            let ops = match humanize_clip_ops_for(
+                &project,
+                ui.get_selected_clip_ulid().as_str(),
+                seed,
+                time_jitter,
+                velocity_jitter,
+            ) {
+                Ok(ops) => ops,
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            if ops.is_empty() {
+                ui.set_humanize_error("选中的剪辑里没有音符".into());
+                return;
+            }
+            if port.commit_ops(now_ms(), "humanize clip", ops).is_err() {
+                ui.set_humanize_error("模型拒绝了这次应用（音符已不存在或结果越界）".into());
+                return;
+            }
+            ui.set_humanize_error("".into());
+            ui.invoke_close_humanize();
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            reproject_roll(&ui, port, width, ui.get_roll_scroll_x());
+        });
+    }
+    // ---- 应用量化 -----------------------------------------------------------
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        ui.on_apply_quantize(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(port) = port.as_ref() else {
+                ui.set_humanize_error("没有撤销会话，无法应用".into());
+                return;
+            };
+            let grid_text = ui.get_humanize_grid();
+            let grid = match parse_humanize_u64(grid_text.as_str(), "网格") {
+                Ok(0) => {
+                    ui.set_humanize_error("网格不能为 0".into());
+                    return;
+                }
+                Ok(v) => v,
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            let strength_text = ui.get_humanize_strength();
+            let strength_permille = match parse_humanize_u64(strength_text.as_str(), "强度") {
+                Ok(v) if v <= 100 => (v * 10) as u16,
+                Ok(_) => {
+                    ui.set_humanize_error("强度必须在 0..=100 之间".into());
+                    return;
+                }
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            let Some(project) = port.try_project() else {
+                ui.set_humanize_error("没有活跃工程".into());
+                return;
+            };
+            let ops = match quantize_clip_ops_for(
+                &project,
+                ui.get_selected_clip_ulid().as_str(),
+                grid,
+                strength_permille,
+            ) {
+                Ok(ops) => ops,
+                Err(msg) => {
+                    ui.set_humanize_error(msg.into());
+                    return;
+                }
+            };
+            if ops.is_empty() {
+                ui.set_humanize_error("没有需要改动的音符（已在网格上或剪辑为空）".into());
+                return;
+            }
+            if port.commit_ops(now_ms(), "quantize clip", ops).is_err() {
+                ui.set_humanize_error("模型拒绝了这次应用（音符已不存在或结果越界）".into());
+                return;
+            }
+            ui.set_humanize_error("".into());
+            ui.invoke_close_humanize();
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            reproject_roll(&ui, port, width, ui.get_roll_scroll_x());
+        });
+    }
+}
+
 /// ⭐ **硬件 MIDI 采集入口**的签名（默认 = [`crate::midi_in::capture_messages`]）。
 ///
 /// 为什么要有这个类型：判据必须**确定性地**观察"采集进行中"那个窗口。真入口在**无端口**
@@ -13594,6 +13833,108 @@ pub fn clip_delete_ops_for(
         // 在 `-D clippy::all` 下是硬错；CI run `41476987648` 就红在这一行）。
         previous_placement: *placement,
     }]
+}
+
+/// 选中剪辑的人性化 op（纯函数；判据可直接喂合成工程逐条对账）。
+///
+/// 与 MCP `humanizeClip` 的展开**同一批模型 `Op`**：每音符一条
+/// `Op::SetNoteExpression`（微时值）+ 一条 `Op::ModifyNoteVelocity`（力度），
+/// 按片段音符集合的 `BTreeMap` 键序（身份序）排列 —— 与 `compile` 的产物
+/// 逐条一致（`tests/piano_roll_humanize_quantize_ui.rs` 的交叉对照臂钉住它）。
+/// 抖动值本身来自 [`yeban_model::clip_ops::humanize_note`]（唯一实现），这里只包 `Op`。
+/// 基础种子先按轨派生（Wang 2026-11-11 13:01 定：每轨种子必须不一致；
+/// 派生住在 `clip_ops::derive_track_seed`，与 MCP 侧同一份）再传给
+/// `humanize_note` —— 传原始种子会让同一种子的两轨抖动逐位相同。
+/// 旧值全部从**当前文档**读（模型前置条件逐字段比较旧值，⛔ 不采信调用方声明）。
+/// 解析不到选中剪辑 / 不是 MIDI 片段 ⇒ 返回 `Err(界面文案)`（调用方响亮失败，⛔ 不提交）。
+pub fn humanize_clip_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    seed: u64,
+    time_jitter_ticks: u64,
+    velocity_jitter: u8,
+) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
+    let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
+        return Err("未选中剪辑");
+    };
+    let Some(notes) = project
+        .clip_pool
+        .get(&placement.clip_id)
+        .and_then(|entry| entry.content.notes())
+    else {
+        return Err("选中的剪辑不是 MIDI 片段");
+    };
+    let effective_seed = yeban_model::clip_ops::derive_track_seed(seed, &track_id);
+    let mut ops = Vec::with_capacity(notes.len() * 2);
+    for (index, (note_id, note)) in notes.iter().enumerate() {
+        let (micro, velocity) = yeban_model::clip_ops::humanize_note(
+            note,
+            effective_seed,
+            index,
+            time_jitter_ticks,
+            velocity_jitter,
+        );
+        ops.push(yeban_model::ops::Op::SetNoteExpression {
+            track_id,
+            clip_id: placement.clip_id,
+            note_id: *note_id,
+            old_probability: note.probability,
+            old_ratchet: note.ratchet,
+            old_micro_timing_ticks: note.micro_timing_ticks,
+            new_probability: note.probability,
+            new_ratchet: note.ratchet,
+            new_micro_timing_ticks: Some(micro),
+        });
+        ops.push(yeban_model::ops::Op::ModifyNoteVelocity {
+            track_id,
+            clip_id: placement.clip_id,
+            note_id: *note_id,
+            old_vel: note.velocity,
+            new_vel: velocity,
+        });
+    }
+    Ok(ops)
+}
+
+/// 选中剪辑的量化 op（纯函数；判据可直接喂合成工程逐条对账）。
+///
+/// 与 MCP `quantizeClip` 的展开**同一批模型 `Op`**：只有吸附后起点**变了**的音符
+/// 才产一条 `Op::SetNoteTiming`（已在格上的音符不产生 op）；强度经
+/// [`yeban_model::clip_ops::quantize_tick`] 的线性插值。空展开 ⇒ 空 `Vec`
+/// （调用方据此给明文、⛔ 不提交空批次）。
+pub fn quantize_clip_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    grid_ticks: u64,
+    strength_permille: u16,
+) -> Result<Vec<yeban_model::ops::Op>, &'static str> {
+    let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip_ulid) else {
+        return Err("未选中剪辑");
+    };
+    let Some(notes) = project
+        .clip_pool
+        .get(&placement.clip_id)
+        .and_then(|entry| entry.content.notes())
+    else {
+        return Err("选中的剪辑不是 MIDI 片段");
+    };
+    let mut ops = Vec::new();
+    for (note_id, note) in notes.iter() {
+        let snapped =
+            yeban_model::clip_ops::quantize_tick(note.start_tick, grid_ticks, strength_permille);
+        if snapped != note.start_tick {
+            ops.push(yeban_model::ops::Op::SetNoteTiming {
+                track_id,
+                clip_id: placement.clip_id,
+                note_id: *note_id,
+                old_start_tick: note.start_tick,
+                old_duration_ticks: note.duration_ticks,
+                new_start_tick: snapped,
+                new_duration_ticks: note.duration_ticks,
+            });
+        }
+    }
+    Ok(ops)
 }
 
 /// `Delete` / `Backspace` 落到**编曲视图选中的剪辑**上（`D-UI-15`）：一次原子提交、一步撤销。

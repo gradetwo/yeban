@@ -49,6 +49,7 @@ import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
+import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { MacroPanel } from "dialogs/macro_panel.slint";
 // 五个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）。
 // 它们住在右栏的下半区（`AiRail` 的 `ModuleActions` 实例），因此**不改**任何既有
@@ -490,6 +491,20 @@ export component MainWindow inherits Window {
     // 缺省 `false` 逐字等于 CLI 不给 `--limiter`。宿主在 `resolve()` **之后**读它并赋
     // `wav_options.limiter`；它是每次调用的修饰量（任务单 `#302`），⛔ 不进工程、不进撤销栈。
     in-out property <bool> export-wav-limiter: false;
+    // ---- 人性化 / 量化设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）--------------
+    // 五格文本**不在这里解析**：`host::wire_humanize_dialog` 按 MCP `humanizeClip` /
+    // `quantizeClip` 的同一口径解析，失败即把原因写进 `humanize-error`、弹窗不关。
+    // 种子是**基础种子**（缺省 = 工程 `rng_seed`，可显式改）；⛔ 不加每轨种子输入，
+    // 按轨派生（基础种子 ⊕ 轨标识）在引擎侧做（v2 线）。
+    in-out property <bool> humanize-open: false;
+    in-out property <string> humanize-time-jitter: "";
+    in-out property <string> humanize-velocity-jitter: "";
+    in-out property <string> humanize-seed: "";
+    in-out property <string> humanize-grid: "";
+    in-out property <string> humanize-strength: "";
+    in-out property <string> humanize-error: "";
+    // 打开时焦点落哪个区段：0 = 人性化首格（时值抖动量），1 = 量化首格（网格）。
+    in-out property <int> humanize-focus-section: 0;
     // ---- 撤销能力的显示态（**模型读数**，唯一写者 = src/host.rs 的 apply_undo）------
     // 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由 `undo_session::UndoDisplay`
     // 从 `CommitGraph` + `UndoCursor` 读出（ADR-0001 D45）。界面不自己推断。
@@ -677,6 +692,14 @@ export component MainWindow inherits Window {
     // `host::wire_export_wav_browse` → `FilePicker::choose_save` → 写回 `export-wav-path`。
     // ⛔ 不写盘、⛔ 不猜缺省路径、⛔ 不构造第二份导出实现。
     callback browse-export-wav-path();
+    // ⭐ 人性化 / 量化对话框：打开（分人性化 / 量化两个入口，只差焦点落点）、
+    // 关闭（只改视图态，⛔ 不碰工程）、应用（各一区段；唯一落点
+    // `host::wire_humanize_dialog`）。
+    callback open-humanize();
+    callback open-quantize();
+    callback close-humanize();
+    callback apply-humanize();
+    callback apply-quantize();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
@@ -2045,6 +2068,11 @@ export component MainWindow inherits Window {
             note-drag-move(x, y) => { root.note-drag-move(x, y); }
             note-drag-release(x, y) => { root.note-drag-release(x, y); }
             note-drag-cancel() => { root.note-drag-cancel(); }
+            // ⭐ 卷帘右键菜单的两项**直接落到对话框的打开回调**（`open-humanize` /
+            // `open-quantize` 是宿主接的唯一落点；`humanize-requested` 只透传到这里，
+            // ⛔ 不在 MainWindow 上再立一个无人接的同名回调 —— 立了就是死回调）。
+            humanize-requested => { root.open-humanize(); }
+            quantize-requested => { root.open-quantize(); }
             note-drag-ulid: root.note-drag-ulid;
             note-drag-preview-dx: root.note-drag-preview-dx;
             note-drag-preview-dy: root.note-drag-preview-dy;
@@ -2682,6 +2710,48 @@ export component MainWindow inherits Window {
     /// 为什么单开一条：`export-wav-focused-field` 的值域被 `D-UI-19` 的判据按"四格"钉着，
     /// 改它等于悄悄放宽既有判据。唯一读者 = 无头判据（`tests/export_dialog_button_focus.rs`）。
     out property <int> export-wav-focused-control: export_dialog.focused-control;
+
+    // 人性化 / 量化设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
+    humanize_dialog := HumanizeDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        visible: root.humanize-open;
+
+        // 两向绑定：宿主打开时播种，用户编辑后宿主在 `apply-humanize` /
+        // `apply-quantize` 分支现读。
+        time-jitter <=> root.humanize-time-jitter;
+        velocity-jitter <=> root.humanize-velocity-jitter;
+        seed <=> root.humanize-seed;
+        grid <=> root.humanize-grid;
+        strength <=> root.humanize-strength;
+        error <=> root.humanize-error;
+        focus-section <=> root.humanize-focus-section;
+
+        apply-humanize => { root.apply-humanize(); }
+        apply-quantize => { root.apply-quantize(); }
+        close => { root.close-humanize(); }
+    }
+
+    /// 人性化弹窗的焦点读数（`-1` = 焦点不在任何输入格内；`0..4` = 时值 / 力度 /
+    /// 基础种子 / 网格 / 强度）。纯转发弹窗内的**推导**读数 ⇒ ⛔ 这里不存第二份焦点状态。
+    /// 唯一读者 = 无头判据。
+    out property <int> humanize-focused-field: humanize_dialog.focused-field;
+
+    /// `D-UI-20`：轮转**全集**（八格）的读数：`0..4` = 五框，`5` = 「应用人性化」、
+    /// `6` = 「应用量化」，`7` = ✕ 关闭，`-1` = 焦点不在模态内。
+    /// 与上一条同口径 —— 纯转发弹窗内的**推导**读数，⛔ 这里不存第二份焦点状态。
+    /// 唯一读者 = 无头判据。
+    out property <int> humanize-focused-control: humanize_dialog.focused-control;
+
+    /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格（按 `humanize-focus-section`
+    /// 落人性化首格或量化首格）。⛔ 不是第三份焦点状态：焦点仍只有 Slint 一个事实源，
+    /// 这里只是**命令**它（与上面的 `focus-export-wav-dialog` 同一机制）。
+    /// 唯一调用者 = `host::wire_humanize_dialog` 打开弹窗那一处。
+    public function focus-humanize-dialog() {
+        humanize_dialog.focus-first-field();
+    }
 
     /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格。⛔ 不是第三份焦点状态：
     /// 焦点仍只有 Slint 一个事实源，这里只是**命令**它（与上面的

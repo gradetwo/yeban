@@ -1,0 +1,575 @@
+// 夜半 (Yeban) — 人性化 / 量化对话框
+//
+// 规范来源 (Normative):
+//   - 钢琴卷帘右键菜单「人性化… / 量化…」的**选项面**（`ui/console/piano_roll.slint`
+//     的上下文菜单）。与导出 WAV 对话框（`dialogs/export_wav_dialog.slint`）同一结构：
+//     弹窗默认**关着**（`MainWindow.humanize-open = false`），因此默认帧与
+//     `tests/golden/linux/` 的 5 张基准一位不变。打开后是整帧遮罩（与导出对话框同款）。
+//   - 引擎 `humanizeClip` / `quantizeClip`（`yeban-mcp` 的 `yeban_edit_notes`）的 UI 入口；
+//     纯计算住在 `yeban-model::clip_ops`（唯一实现），本文件**不解析**任何数值：
+//     五个输入框的文本原样交给宿主（`host::wire_humanize_dialog`），由它按 MCP 的
+//     同一口径解析（种子 u64 必填、时值抖动 u64、力度抖动 0..=127、网格非零 u64、
+//     强度 0..=100%）；解析失败时宿主把原因写进 `error`，**弹窗不关**、不提交半成品。
+//
+// ## 命名口径（Wang 2026-11-11 13:00 / 13:01）
+//
+// - 只标**幅度**：时值抖动量（tick）、力度抖动量（±n）—— ⛔ 不写死分布假设
+//   （均匀 / 高斯之类）。真人误差是有偏、有记忆、有结构的随机过程，引擎 v2
+//   会按层升级分布与记忆；参数透传保持通用，让 v2 直接接上。
+// - 种子只标**基础种子**：UI 只透传一个基础种子（缺省 = 工程 `rng_seed`，可显式改）。
+//   ⛔ 不加每轨种子输入，⛔ 不在 UI 侧按轨派生 —— 每轨的有效种子派生
+//   （基础种子 ⊕ 轨标识）在引擎侧做（v2 线）。v1 里同一基础种子在不同剪辑上
+//   产出相同的抖动序列，下面那行注记如实写明，不假装已派生。
+//
+// ## 键盘（D-UI-19：`[UI-A11Y-003]` §7.3 第 1 条 —— 模态对话框内焦点闭环）
+//
+// 与导出对话框同一机制：`humanize-trap` 是八格（五框 + 两应用钮 + ✕）的**祖先**
+// `FocusScope`；`Tab` / `Shift+Tab` 做八格闭环轮转并 `accept`；`Return` 落在
+// 文本框内 ⇒ 该框的 `accepted` 调对应区段的 `apply-*`（与按钮同一条回调）；
+// `Return` / `Space` 落在按钮上 ⇒ 该按钮自己的 `FocusScope.key-pressed`；
+// `Esc` 调既有的 `close` 回调；其它裸键 `reject` ⇒ 快捷键层收不到（模态持有键盘）。
+// 打开时焦点落点由宿主写的 `focus-section` 定：`0` = 人性化首格（时值抖动量），
+// `1` = 量化首格（网格）。
+
+import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+
+export component HumanizeDialog inherits Rectangle {
+    // ---- 五格可编辑文本（唯一写者 = 宿主打开时播种；此后用户输入）------------
+    in-out property <string> time-jitter: "";
+    in-out property <string> velocity-jitter: "";
+    in-out property <string> seed: "";
+    in-out property <string> grid: "";
+    in-out property <string> strength: "";
+    // ---- 宿主写的失败行（空串 = 无失败；失败时弹窗不关）----------------------
+    in-out property <string> error: "";
+    // ---- 打开时焦点落哪个区段：0 = 人性化，1 = 量化（宿主在打开前写）--------
+    in-out property <int> focus-section: 0;
+
+    callback apply-humanize();
+    callback apply-quantize();
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "humanize-dialog";
+    accessible-label: "人性化与量化";
+
+    // ⭐ `D-UI-21`：遮罩**真的**吞掉鼠标（与导出对话框同款：`Rectangle` 对鼠标
+    // 返回 `EventIgnored`，只有 `TouchArea` 会拦）。这一枚刻意⛔ 没有任何回调：
+    // 点遮罩不关面板（关面板只有 ✕ 与 `Esc`），唯一职责是把这一击**吃掉**。
+    // 声明在 `humanize-trap` 与面板**之前** ⇒ 面板里的控件仍然在上面。
+    // ⛔ 无 `accessible-id` ⇒ 运行时寻址面也不变。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    // ------------------------------------------------- 键盘（D-UI-19）：焦点陷阱
+    humanize-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        Rectangle {
+            x: (root.width - 560px) / 2;
+            y: (root.height - 360px) / 2;
+            width: 560px;
+            height: 360px;
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            clip: true;
+
+            accessible-role: region;
+            accessible-id: "humanize-panel";
+            accessible-label: "人性化与量化面板";
+
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: "人性化 · 量化";
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            // 关闭
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "humanize-close-button";
+                accessible-label: "关闭人性化与量化";
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                humanize-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 人性化
+            UiText {
+                x: Tokens.space-6;
+                y: 48px;
+                width: parent.width - 48px;
+                height: 16px;
+                text: "人性化（整片段）";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            UiText {
+                x: Tokens.space-6;
+                y: 72px;
+                width: 160px;
+                height: 16px;
+                text: "时值抖动量（tick）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            humanize-time-input := TextInput {
+                x: Tokens.space-6;
+                y: 92px;
+                width: 160px;
+                height: 24px;
+                text <=> root.time-jitter;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "humanize-time-input";
+                accessible-label: "时值抖动量（tick）";
+                accessible-value: root.time-jitter;
+                accessible-read-only: false;
+                accepted => { root.apply-humanize(); }
+            }
+
+            UiText {
+                x: Tokens.space-6 + 176px;
+                y: 72px;
+                width: 160px;
+                height: 16px;
+                text: "力度抖动量（±n）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            humanize-velocity-input := TextInput {
+                x: Tokens.space-6 + 176px;
+                y: 92px;
+                width: 160px;
+                height: 24px;
+                text <=> root.velocity-jitter;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "humanize-velocity-input";
+                accessible-label: "力度抖动量（±n）";
+                accessible-value: root.velocity-jitter;
+                accessible-read-only: false;
+                accepted => { root.apply-humanize(); }
+            }
+
+            UiText {
+                x: Tokens.space-6 + 352px;
+                y: 72px;
+                width: 160px;
+                height: 16px;
+                text: "基础种子（缺省工程种子）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            humanize-seed-input := TextInput {
+                x: Tokens.space-6 + 352px;
+                y: 92px;
+                width: 160px;
+                height: 24px;
+                text <=> root.seed;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "humanize-seed-input";
+                accessible-label: "基础种子（缺省工程种子）";
+                accessible-value: root.seed;
+                accessible-read-only: false;
+                accepted => { root.apply-humanize(); }
+            }
+
+            UiText {
+                x: Tokens.space-6;
+                y: 124px;
+                width: parent.width - 48px;
+                height: 16px;
+                accessible-role: text;
+                accessible-id: "humanize-note-line";
+                accessible-label: "基础种子说明";
+                text: "同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎 v2 接上。";
+                color: Tokens.warn-amber;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+
+            Rectangle {
+                x: Tokens.space-6;
+                y: 148px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "humanize-apply-button";
+                accessible-label: "对选中剪辑应用人性化";
+                accessible-action-default => { root.apply-humanize(); }
+
+                humanize-apply-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.apply-humanize();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "应用人性化";
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.apply-humanize(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 量化
+            UiText {
+                x: Tokens.space-6;
+                y: 196px;
+                width: parent.width - 48px;
+                height: 16px;
+                text: "量化（整片段）";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            UiText {
+                x: Tokens.space-6;
+                y: 220px;
+                width: 160px;
+                height: 16px;
+                text: "网格（tick）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            quantize-grid-input := TextInput {
+                x: Tokens.space-6;
+                y: 240px;
+                width: 160px;
+                height: 24px;
+                text <=> root.grid;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "quantize-grid-input";
+                accessible-label: "网格（tick）";
+                accessible-value: root.grid;
+                accessible-read-only: false;
+                accepted => { root.apply-quantize(); }
+            }
+
+            UiText {
+                x: Tokens.space-6 + 176px;
+                y: 220px;
+                width: 160px;
+                height: 16px;
+                text: "强度（0–100%）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            quantize-strength-input := TextInput {
+                x: Tokens.space-6 + 176px;
+                y: 240px;
+                width: 160px;
+                height: 24px;
+                text <=> root.strength;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "quantize-strength-input";
+                accessible-label: "强度（0–100%）";
+                accessible-value: root.strength;
+                accessible-read-only: false;
+                accepted => { root.apply-quantize(); }
+            }
+
+            Rectangle {
+                x: Tokens.space-6;
+                y: 280px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "quantize-apply-button";
+                accessible-label: "对选中剪辑应用量化";
+                accessible-action-default => { root.apply-quantize(); }
+
+                quantize-apply-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.apply-quantize();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "应用量化";
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.apply-quantize(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 失败行
+            Rectangle {
+                x: Tokens.space-6;
+                y: 324px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "humanize-error-line";
+                accessible-label: "人性化或量化失败的原因";
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.error;
+                    color: Tokens.record-red;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // ---- 焦点读数（D-UI-19 / D-UI-20）---------------------------------------
+    /// 五格**文本框**里哪一格正持有键盘：`0` 时值 / `1` 力度 / `2` 基础种子 /
+    /// `3` 网格 / `4` 强度 / `-1` 不在任何文本框内。
+    out property <int> focused-field:
+        humanize-time-input.has-focus ? 0
+        : humanize-velocity-input.has-focus ? 1
+        : humanize-seed-input.has-focus ? 2
+        : quantize-grid-input.has-focus ? 3
+        : quantize-strength-input.has-focus ? 4
+        : -1;
+
+    /// 轮转**全集**的读数 —— 八格。`0..4` 同上，`5` 应用人性化 /
+    /// `6` 应用量化 / `7` ✕ 关闭 / `-1` 不在模态内。
+    out property <int> focused-control:
+        humanize-time-input.has-focus ? 0
+        : humanize-velocity-input.has-focus ? 1
+        : humanize-seed-input.has-focus ? 2
+        : quantize-grid-input.has-focus ? 3
+        : quantize-strength-input.has-focus ? 4
+        : humanize-apply-focus.has-focus ? 5
+        : quantize-apply-focus.has-focus ? 6
+        : humanize-close-focus.has-focus ? 7
+        : -1;
+
+    /// 打开时由宿主调用：焦点进 `focus-section` 指定的首格。
+    public function focus-first-field() {
+        if (root.focus-section == 1) {
+            quantize-grid-input.focus();
+        } else {
+            humanize-time-input.focus();
+        }
+    }
+
+    /// 八格的**唯一**一张「序号 → 控件」表。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            humanize-time-input.focus();
+        } else if (index == 1) {
+            humanize-velocity-input.focus();
+        } else if (index == 2) {
+            humanize-seed-input.focus();
+        } else if (index == 3) {
+            quantize-grid-input.focus();
+        } else if (index == 4) {
+            quantize-strength-input.focus();
+        } else if (index == 5) {
+            humanize-apply-focus.focus();
+        } else if (index == 6) {
+            quantize-apply-focus.focus();
+        } else if (index == 7) {
+            humanize-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：时值 → 力度 → 基础种子 → 网格 → 强度 → 应用人性化 →
+    /// 应用量化 → ✕ → 回第一格。两端都闭合；`-1` ⇒ 落回 `focus-section` 的首格。
+    public function focus-next-control() {
+        if (root.focused-control == 0) {
+            root.focus-control(1);
+        } else if (root.focused-control == 1) {
+            root.focus-control(2);
+        } else if (root.focused-control == 2) {
+            root.focus-control(3);
+        } else if (root.focused-control == 3) {
+            root.focus-control(4);
+        } else if (root.focused-control == 4) {
+            root.focus-control(5);
+        } else if (root.focused-control == 5) {
+            root.focus-control(6);
+        } else if (root.focused-control == 6) {
+            root.focus-control(7);
+        } else if (root.focused-control == 7) {
+            root.focus-control(0);
+        } else {
+            root.focus-first-field();
+        }
+    }
+
+    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
+    public function focus-previous-control() {
+        if (root.focused-control == 1) {
+            root.focus-control(0);
+        } else if (root.focused-control == 2) {
+            root.focus-control(1);
+        } else if (root.focused-control == 3) {
+            root.focus-control(2);
+        } else if (root.focused-control == 4) {
+            root.focus-control(3);
+        } else if (root.focused-control == 5) {
+            root.focus-control(4);
+        } else if (root.focused-control == 6) {
+            root.focus-control(5);
+        } else if (root.focused-control == 7) {
+            root.focus-control(6);
+        } else {
+            root.focus-control(7);
+        }
+    }
+
+}

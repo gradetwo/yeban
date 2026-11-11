@@ -2457,6 +2457,9 @@ pub fn build_live_ui_with(
         options.undo.clone(),
         options.save_path.as_deref().and_then(|path| path.parent()),
     );
+    // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
+    // 同一条接线（产品进程在 `main.rs` 的同一处调它）。
+    host::wire_humanize_dialog(&window, options.undo.clone());
     // ⭐ `[PATCH UI-WIRING-01]`：**WAV 导出选项框的 `Ctrl/Cmd+O` 路径浏览** 在本装配也要有注册者，
     // 否则 Slint 的 `on_*` 空实现 ⇒ 控制面上按下去什么都不动（与 `D-UI-8` 同族）。
     // 本档没有 OS 窗口 ⇒ 接 `NoPicker`（`choose_save` 恒 `None` = 每次都取消），

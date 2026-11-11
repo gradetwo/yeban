@@ -36,6 +36,7 @@
 #![deny(missing_docs)]
 
 pub mod automation;
+pub mod clip_ops;
 pub mod commit;
 pub mod container;
 pub mod error;
