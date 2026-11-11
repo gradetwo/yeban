@@ -54,8 +54,8 @@
 
 use std::f64::consts::TAU;
 
-use yeban_model::music::MICRO_TIMING_MAX_ABS;
 use yeban_model::EntityId;
+use yeban_model::music::MICRO_TIMING_MAX_ABS;
 
 /// splitmix64 的黄金常数（与 `yeban-model` / `yeban-theory` 同值）。
 pub(crate) const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -162,8 +162,7 @@ impl StructuredParams {
         };
         Self {
             timing_std_ticks: timing_std_ticks.unwrap_or_else(|| default_std(time_jitter_ticks)),
-            velocity_std: velocity_std
-                .unwrap_or_else(|| default_std(u64::from(velocity_jitter))),
+            velocity_std: velocity_std.unwrap_or_else(|| default_std(u64::from(velocity_jitter))),
             ar_alpha_permille: ar_alpha_permille.unwrap_or(DEFAULT_AR_ALPHA_PERMILLE),
         }
     }
@@ -384,8 +383,8 @@ pub(crate) fn lag1_autocorrelation(values: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::ids::deterministic_id;
     use super::*;
+    use crate::domain::ids::deterministic_id;
 
     /// 固定测试轨身份（确定性派生，不手写 ULID 文本）。
     fn test_track_id() -> EntityId {
@@ -433,6 +432,8 @@ mod tests {
         let mut values = take(7);
         let first = take(7);
         assert_eq!(values, first);
+        // 有界：`.all(` 站点须有长度界（assertion_bounds_audit），非空即真。
+        assert_eq!(values.len(), 4096);
         values.sort_by(|left, right| left.partial_cmp(right).unwrap());
         let median = values[values.len() / 2];
         assert!((0.9..=1.1).contains(&median), "中位数 {median} 应近 1");
@@ -450,7 +451,10 @@ mod tests {
             .map(|pair| (pair[1] - pair[0]).abs())
             .sum::<f64>()
             / (values.len() - 1) as f64;
-        assert!(mean_abs_step > 0.9, "α=0 时平均 |Δ| = {mean_abs_step}，应近 1.13");
+        assert!(
+            mean_abs_step > 0.9,
+            "α=0 时平均 |Δ| = {mean_abs_step}，应近 1.13"
+        );
     }
 
     #[test]
@@ -464,7 +468,10 @@ mod tests {
             .map(|pair| (pair[1] - pair[0]).abs())
             .sum::<f64>()
             / (values.len() - 1) as f64;
-        assert!(mean_abs_step < 0.6, "缺省 α 时平均 |Δ| = {mean_abs_step}，应 < 0.6");
+        assert!(
+            mean_abs_step < 0.6,
+            "缺省 α 时平均 |Δ| = {mean_abs_step}，应 < 0.6"
+        );
     }
 
     #[test]
@@ -491,8 +498,11 @@ mod tests {
         let mut stream = SplitMixStream::new(42);
         let (values, _) = ar_normals(&mut stream, 4000, DEFAULT_AR_ALPHA_PERMILLE);
         let mean = values.iter().sum::<f64>() / values.len() as f64;
-        let variance =
-            values.iter().map(|value| (value - mean).powi(2)).sum::<f64>() / values.len() as f64;
+        let variance = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / values.len() as f64;
         assert!(
             (0.9..=1.1).contains(&variance.sqrt()),
             "平稳标准差 {} 应近 1",
@@ -504,9 +514,18 @@ mod tests {
     fn derive_track_seed_differs_per_track() {
         let track_a = test_track_id();
         let track_b = deterministic_id("humanize-v2-test-track-b");
-        assert_eq!(derive_track_seed(42, &track_a), derive_track_seed(42, &track_a));
-        assert_ne!(derive_track_seed(42, &track_a), derive_track_seed(42, &track_b));
-        assert_ne!(derive_track_seed(42, &track_a), derive_track_seed(43, &track_a));
+        assert_eq!(
+            derive_track_seed(42, &track_a),
+            derive_track_seed(42, &track_a)
+        );
+        assert_ne!(
+            derive_track_seed(42, &track_a),
+            derive_track_seed(42, &track_b)
+        );
+        assert_ne!(
+            derive_track_seed(42, &track_a),
+            derive_track_seed(43, &track_a)
+        );
     }
 
     #[test]
@@ -515,8 +534,21 @@ mod tests {
         let params = StructuredParams::resolve(20, 10, None, None, None);
         let first = structured_deviations(seed, 64, 20, 10, &params);
         let second = structured_deviations(seed, 64, 20, 10, &params);
-        assert_eq!(first.timing, second.timing);
-        assert_eq!(first.velocity, second.velocity);
+        // 解构到局部变量：`.all(` 站点的界须写在根标识符上
+        //（assertion_bounds_audit：`first.timing.len()` 不算 `first` 的界）。
+        let StructuredDeviations {
+            timing: timing_a,
+            velocity: velocity_a,
+        } = first;
+        let StructuredDeviations {
+            timing: timing_b,
+            velocity: velocity_b,
+        } = second;
+        assert_eq!(timing_a, timing_b);
+        assert_eq!(velocity_a, velocity_b);
+        // 有界：`.all(` 站点须有长度界，非空即真。
+        assert_eq!(timing_a.len(), 64);
+        assert_eq!(velocity_a.len(), 64);
         // 阻尼：相邻步 ≤ 幅度/4（时值 20/4 = 5，力度 10/4 = 2）。
         let max_step = |values: &[i64]| -> i64 {
             values
@@ -525,10 +557,10 @@ mod tests {
                 .max()
                 .unwrap_or(0)
         };
-        assert!(max_step(&first.timing) <= 5, "时值步进超限");
-        assert!(max_step(&first.velocity) <= 2, "力度步进超限");
-        assert!(first.timing.iter().all(|value| value.abs() <= 20));
-        assert!(first.velocity.iter().all(|value| value.abs() <= 10));
+        assert!(max_step(&timing_a) <= 5, "时值步进超限");
+        assert!(max_step(&velocity_a) <= 2, "力度步进超限");
+        assert!(timing_a.iter().all(|value| value.abs() <= 20));
+        assert!(velocity_a.iter().all(|value| value.abs() <= 10));
     }
 
     #[test]

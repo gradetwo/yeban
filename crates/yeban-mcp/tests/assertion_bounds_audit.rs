@@ -38,6 +38,10 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../src/domain/extension_audit.rs"),
     ),
     (
+        "src/domain/humanize.rs",
+        include_str!("../src/domain/humanize.rs"),
+    ),
+    (
         "src/domain/midi_input.rs",
         include_str!("../src/domain/midi_input.rs"),
     ),
@@ -116,7 +120,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 26;
+const MIN_SOURCES: usize = 27;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
