@@ -28,6 +28,7 @@ mod live;
 
 use live::{LiveControlPlane, build_live_ui_with};
 use serde_json::json;
+use slint::Model as _;
 use std::rc::Rc;
 // 只在交叉对照臂（`in-process-mcp` 构建）里用 ⇒ 导入本身也要门控，
 // 否则默认构建会报 unused import（`-D warnings` 下是硬错）。
