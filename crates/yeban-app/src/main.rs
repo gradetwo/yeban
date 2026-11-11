@@ -403,9 +403,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 本 crate 只做**接线**（D19：app 里一个裸 `cpal::*` 都不出现）。
     //
     // **失败不是致命错误**（`device.rs` 硬要求 #1：绝不 panic）：`DeviceError` 走既有
-    // 错误路径 ⇒ 产品退化成"控制面显式推量子"的形态（无声卡机器与托管 CI 的常态），
-    // 界面、走带回调、电平表照常工作。`EngineHost::open_device` 的前四步都不动手里那一代，
-    // 因此这里的 `Err` 分支**一位状态都不需要回滚**。
+    // 错误路径 ⇒ 产品退化成"控制面驱动"的形态（无声卡机器与托管 CI 的常态；墙钟泵送
+    // 按真实时间推量子，播放头照常走动，只是无声），界面、走带回调、电平表照常工作。
+    // `EngineHost::open_device` 的前四步都不动手里那一代，因此这里的 `Err` 分支
+    // **一位状态都不需要回滚**。
     //
     // 两处**不实现**的缺口（如实登记，见 `engine_host.rs` 的模块文档）：
     // `[ROAD-M2-001]` 实时线程优先级（自实现要新的 `libc` 依赖 ⇒ 依赖图裁决）；
@@ -427,7 +428,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 opening.carryover_state,
             )]),
             Err(error) => cli::emit(&[format!(
-                "音频设备: **未接线**（{error}）⇒ 降级为控制面推量子驱动（每次走带动作 1 个量子）；\
+                "音频设备: **未接线**（{error}）⇒ 降级为控制面驱动：墙钟泵送按真实时间推量子（无声）；\
                  界面、走带与电平照常可用"
             )]),
         }
@@ -536,6 +537,14 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     None
                 };
                 let tick = production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
+                // ⭐ **墙钟泵送**（控制面模式）：播放时按真实时间推量子（无声）。
+                //
+                // 只挂在生产 16 ms 定时器上（⛔ 不进 `ProductionLoop::tick`）：tick 是
+                // 确定性的（只由显式泵送推进，既有判据据此钉"没有推量子 ⇒ 位置不变"）；
+                // 墙钟泵送是生产才有的真实时间驱动。设备腿恒返回 0（音频时钟负责，
+                // 绝不双泵）；停住时返回 0 且不清不欠。返回值刻意忽略（泵送是尽力而为
+                // 的推进，不是命令）。
+                production.engine_handle().borrow_mut().pump_wall_clock();
                 // ⭐ `#290`：**MCP 场景启动**的唯一搬运点（与界面按钮同一个 60Hz 节拍、
                 // 同一个 `EngineHost::queue_scene_launch`）。取走即清空；再回注生效计数。
                 // ⚠ 在 `tick` **之后**取引擎（`tick` 内部已经借用过它，`#212` 的纪律）。
