@@ -152,6 +152,15 @@ fn t2_unvoiced_gap_reproduction_matches_self_test() {
     let record_text = fs::read_to_string(config.self_test_path()).expect("T2：自测记录应在");
     let record: Value = serde_json::from_str(&record_text).expect("T2：解析自测记录");
     let gap = record["unvoiced_gap"].as_str().unwrap_or("unknown");
+    eprintln!(
+        "T2：自测 unvoiced_gap={gap}，构建={}，任务结果={}",
+        record["build_commit"].as_str().unwrap_or("?"),
+        if outcome.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        }
+    );
     match gap {
         "fail" => {
             let error = outcome.expect_err("T2：缺陷仍在时导出应失败");
