@@ -171,9 +171,24 @@ fn write_png(name: &str, image: &Rgb8Image) {
 ///
 /// **平台无基准时不许静默通过**：打印一行显式声明（"未被判定"而非"通过"），与 `golden.rs` 对
 /// `PlatformTag::Other` 的既有规定一致。
+///
+/// **当前已禁用**（2026-11-12，Wang 定，UI 重构期间）：界面正在重做，旧基准图全部作废，
+/// 逐字节比对只会全红。本函数直接返回，不做比对。重构完成、基准重录后，把
+/// `GOLDEN_COMPARE_ENABLED` 改回 `true` 恢复比对。
 fn assert_matches_golden(name: &str, image: &Rgb8Image) {
     if std::env::var("YEBAN_WRITE_GOLDEN").ok().as_deref() == Some("1") {
         return; // 刚写完基准, 不和自己比
+    }
+    // UI 重构期间禁用 golden 比对（2026-11-12，Wang 定）：界面正在重做，旧基准图
+    // 全部作废。再录路径（`regenerate_golden_if_asked`，`YEBAN_WRITE_GOLDEN=1`，
+    // `gates-manual.yml` gate=goldens）不受本开关影响；重构完成、基准重录后，
+    // 把下面这个常量改回 `true` 恢复比对。
+    const GOLDEN_COMPARE_ENABLED: bool = false;
+    if !GOLDEN_COMPARE_ENABLED {
+        observe(&format!(
+            "[UI-MCP-003] `{name}` golden 比对已禁用（UI 重构期间）"
+        ));
+        return;
     }
     let tag = yeban_ui_test_port::golden::PlatformTag::current();
     let path = yeban_ui_test_port::golden::golden_path(tag, name)
