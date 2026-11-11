@@ -764,6 +764,7 @@ use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
+use yeban_model::clip_ops::{humanize_note, quantize_tick};
 use yeban_model::music::{
     MICRO_TIMING_MAX_ABS, MIDI_CHANNEL_MAX, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX,
     PITCH_BEND_CENTS_MAX_ABS, PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
@@ -8581,41 +8582,11 @@ fn expand_clip_level_op(
         } => {
             let mut pairs = Vec::with_capacity(notes.len() * 2);
             for (index, (note_id, note)) in notes.iter().enumerate() {
-                // 确定性抖动：splitmix64(seed ⊕ index ⊕ 通道) —— 同一
-                // `seed` 永远给出同一份"手感"，跨进程/重放稳定（红线 4）。
-                let base_seed = *seed;
-                let jitter = |channel: u64| -> i64 {
-                    let mut x = base_seed
-                        .wrapping_add(0x9E37_79B9_7F4A_7C15)
-                        .wrapping_add((index as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
-                        .wrapping_add(channel.wrapping_mul(0x94D0_49BB_1331_11EB));
-                    x ^= x >> 30;
-                    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                    x ^= x >> 27;
-                    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
-                    x ^= x >> 31;
-                    // 把高 33 位压成有偏的 ±区间：[0, 2n] − n。
-                    (x >> 33) as i64
-                };
-                let micro = if *time_jitter_ticks == 0 {
-                    note.micro_timing_ticks.unwrap_or(0)
-                } else {
-                    let span = (*time_jitter_ticks)
-                        .min(u64::try_from(MICRO_TIMING_MAX_ABS).unwrap_or(240));
-                    let jitter = (jitter(0) % (2 * span as i64 + 1)) - span as i64;
-                    let base = i64::from(note.micro_timing_ticks.unwrap_or(0));
-                    (base + jitter).clamp(
-                        -i64::from(MICRO_TIMING_MAX_ABS),
-                        i64::from(MICRO_TIMING_MAX_ABS),
-                    ) as i16
-                };
-                let velocity = if *velocity_jitter == 0 {
-                    note.velocity
-                } else {
-                    let span = i64::from(*velocity_jitter);
-                    let jitter = (jitter(1) % (2 * span + 1)) - span;
-                    (i64::from(note.velocity) + jitter).clamp(1, i64::from(MIDI_VELOCITY_MAX)) as u8
-                };
+                // 纯计算住在 `yeban_model::clip_ops::humanize_note`（唯一实现，
+                // GUI 的钢琴卷帘菜单调同一份）—— 这里只包 `NoteOp`，⛔ 不再内联
+                // 第二份抖动推导（同一种子在两处产出不同抖动是 seed 绑定的违背）。
+                let (micro, velocity) =
+                    humanize_note(note, *seed, index, *time_jitter_ticks, *velocity_jitter);
                 pairs.push(NoteOp::SetNoteExpression {
                     note_id: *note_id,
                     new_probability: note.probability,
@@ -8632,20 +8603,6 @@ fn expand_clip_level_op(
         _ => return Ok(None),
     };
     Ok(Some(expanded))
-}
-
-/// 把 `start` 吸到最近的 `grid` 整数倍；`strength_permille` < 1000 时
-/// 只走强度比例的那段距离（线性内插，tick 分辨率取整）。
-fn quantize_tick(start: u64, grid: u64, strength_permille: u16) -> u64 {
-    let snapped = if grid <= 1 {
-        start
-    } else {
-        // 最近整数倍 = round(start / grid) * grid（半格向上）。
-        (start + grid / 2) / grid * grid
-    };
-    let distance = i128::from(snapped) - i128::from(start);
-    let scaled = i128::from(start) + distance * i128::from(strength_permille) / 1000;
-    scaled.max(0) as u64
 }
 
 /// 把解析过的操作编译成 [`Op`]（**读文档**补齐撤销载荷，但绝不改文档）。
