@@ -121,15 +121,6 @@ impl HumanizeModel {
             _ => None,
         }
     }
-
-    /// 模型名（与解析输入逐字对应）。
-    #[must_use]
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Uniform => "uniform",
-            Self::Structured => "structured",
-        }
-    }
 }
 
 /// 自回归系数 α 的缺省值（千分比 800 = α 0.8，偏平滑侧）。
@@ -219,7 +210,9 @@ pub(crate) fn gaussian_pair(stream: &mut SplitMixStream) -> (f64, f64) {
 /// 对数正态抽样：`exp(σ·z)`，中位数 1、右偏、恒正。
 ///
 /// 供未来时值/比率类误差用（`humanizeClip` 只抖有符号的时值与力度，
-/// 暂不接线；实现与单测先行，避免后续线重写 Box-Muller）。
+/// 暂不接线）。现只在测试里用（`#[cfg(test)]`）；
+/// 时值/比率抖动槽落地时去 `cfg(test)`、接线到生成路径。
+#[cfg(test)]
 #[must_use]
 pub(crate) fn lognormal(stream: &mut SplitMixStream, sigma: f64) -> f64 {
     (sigma * gaussian_pair(stream).0).exp()
@@ -363,6 +356,10 @@ pub struct StructuredDeviations {
 }
 
 /// 滞后 1 自相关（均值中心化；长度 < 2 或方差 0 时返回 0）。
+///
+/// 平滑性判据的测试辅助（`notes.rs` 的结构化测试用它断言 ρ1 下界）；
+/// 现只在测试里用（`#[cfg(test)]`）。
+#[cfg(test)]
 #[must_use]
 pub(crate) fn lag1_autocorrelation(values: &[f64]) -> f64 {
     if values.len() < 2 {
@@ -387,13 +384,12 @@ pub(crate) fn lag1_autocorrelation(values: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr as _;
-
+    use crate::domain::ids::deterministic_id;
     use super::*;
 
-    /// 固定测试轨身份（与 `notes.rs` 测试夹具无关的独立 ULID）。
+    /// 固定测试轨身份（确定性派生，不手写 ULID 文本）。
     fn test_track_id() -> EntityId {
-        EntityId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FA").expect("测试 ULID 合法")
+        deterministic_id("humanize-v2-test-track-a")
     }
 
     #[test]
@@ -507,8 +503,7 @@ mod tests {
     #[test]
     fn derive_track_seed_differs_per_track() {
         let track_a = test_track_id();
-        let track_b =
-            EntityId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FB").expect("测试 ULID 合法");
+        let track_b = deterministic_id("humanize-v2-test-track-b");
         assert_eq!(derive_track_seed(42, &track_a), derive_track_seed(42, &track_a));
         assert_ne!(derive_track_seed(42, &track_a), derive_track_seed(42, &track_b));
         assert_ne!(derive_track_seed(42, &track_a), derive_track_seed(43, &track_a));
@@ -541,7 +536,8 @@ mod tests {
         let seed = derive_track_seed(42, &test_track_id());
         let params = StructuredParams::resolve(20, 10, None, None, None);
         let deviations = structured_deviations(seed, 8, 20, 10, &params);
-        assert_eq!(deviations.timing, [0, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(deviations.velocity, [0, 0, 0, 0, 0, 0, 0, 0]);
+        // 金向量（固定种子/轨/参数的首 8 个偏差；重钉机制：改断言即可）。
+        assert_eq!(deviations.timing, [-10, -9, -8, -3, 0, 0, 1, 4]);
+        assert_eq!(deviations.velocity, [2, 3, 2, 2, 2, 3, 2, 0]);
     }
 }
