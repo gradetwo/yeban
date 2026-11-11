@@ -6323,11 +6323,18 @@ pub fn cycle_automation_write_mode_ops(
         };
         let mut new_lane = lane.clone();
         new_lane.write_mode = next_mode;
-        vec![Op::SetAutomationLane {
-            target: *target,
-            old_lane: Some(lane.clone()),
-            new_lane,
-        }]
+        if new_lane.is_implicit() {
+            vec![Op::RemoveAutomationLane {
+                target: *target,
+                previous_lane: lane.clone(),
+            }]
+        } else {
+            vec![Op::SetAutomationLane {
+                target: *target,
+                old_lane: Some(lane.clone()),
+                new_lane,
+            }]
+        }
     } else {
         let mut new_lane = AutomationLane::implicit(*target);
         new_lane.write_mode = AutomationWriteMode::Touch;

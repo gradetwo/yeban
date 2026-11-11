@@ -62,8 +62,11 @@ fn automation_write_mode_cycling() {
     for op in ops {
         op.apply(&mut project).expect("操作合法");
     }
-    let lane = project.tracks[&track_id].automation_lanes[&target].clone();
-    assert_eq!(lane.write_mode, AutomationWriteMode::Off);
+    let mode = project.tracks[&track_id]
+        .automation_lanes
+        .get(&target)
+        .map_or(AutomationWriteMode::Off, |l| l.write_mode);
+    assert_eq!(mode, AutomationWriteMode::Off);
 }
 
 #[test]
