@@ -578,17 +578,30 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "humanizeClip",
-                "整片段人性化：对顶层 `clipId` 那条 MIDI 片段里**每个**音符加确定性的微时值（`microTimingTicks` ±`timeJitterTicks`）与力度（±`velocityJitter`）抖动。`seed` 相同 ⇒ 永远同一份\"手感\"（splitmix64 哈希，跨进程稳定；一步撤销）",
+                "整片段人性化：对顶层 `clipId` 那条 MIDI 片段里**每个**音符加确定性的微时值（`microTimingTicks` ±`timeJitterTicks`）与力度（±`velocityJitter`）抖动。有效种子按轨派生：同（`seed`，轨）⇒ 永远同一份\"手感\"（splitmix64 哈希，跨进程稳定；一步撤销），不同轨即使音符相同、seed 相同，抖动序列也不同（消除跨轨碰撞；2026-11-11 行为变化：旧均匀路径的抖动值因此改变，op 契约不变）。`model = \"structured\"` 时走结构化抖动 v2：高斯分布 + AR(2) 自回归（缺省 α = 0.8，偏平滑）+ 相邻音阻尼（跳变 ≤ 生效幅度 / 4）",
                 &["kind", "seed"],
                 json!({
                     "kind": kind("humanizeClip"),
-                    "seed": uint("抖动种子（确定性：同一 seed 重放同一手感）"),
+                    "seed": uint("抖动种子（确定性：同（seed，轨）重放同一手感）"),
                     "timeJitterTicks": uint("微时值抖动幅度 ±N tick（在 ±240 的模型边界内被截断；缺省 0 = 不动时值）"),
                     "velocityJitter": {
                         "type": "integer",
                         "minimum": 0,
                         "maximum": MIDI_VELOCITY_MAX,
                         "description": "力度抖动幅度 ±N（结果压进 1..=127，缺省 0 = 不动力度）",
+                    },
+                    "model": {
+                        "type": "string",
+                        "enum": ["uniform", "structured"],
+                        "description": "抖动模型（缺省 \"uniform\" = 旧均匀；\"structured\" = v2 结构化：高斯 + AR(2) + 阻尼）",
+                    },
+                    "timingStdTicks": uint("结构化时值高斯 σ（tick；缺省 = timeJitterTicks / 3，最小 1；仅 model = \"structured\" 用）"),
+                    "velocityStd": uint("结构化力度高斯 σ（缺省 = velocityJitter / 3，最小 1；仅 model = \"structured\" 用）"),
+                    "arAlphaPermille": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 950,
+                        "description": "自回归系数 α 千分比（0..=950；缺省 800；α 近 1 平滑、近 0 独立；仅 model = \"structured\" 用）",
                     },
                 }),
                 true,
