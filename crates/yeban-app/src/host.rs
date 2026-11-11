@@ -4243,7 +4243,7 @@ impl EqCurveWiring {
         };
 
         // 实时生成并更新预览曲线与文本
-        let (mut params, cutoff) = crate::bridge::extract_eq_params_from_device(eq_device);
+        let (mut params, cutoff) = crate::bridge::extract_eq_params_from_device(Some(eq_device));
         match p_name {
             "eq_low_gain" => {
                 params.low_gain = primary_last;
