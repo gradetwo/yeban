@@ -3580,7 +3580,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
             };
             let ops = crate::bridge::sidechain_cycle_ops(&project, track.id);
             if !ops.is_empty() {
-                let _ = port.commit_ops(ops, "cycle sidechain key source");
+                let _ = port.commit_ops(now_ms(), "cycle sidechain key source", ops);
             }
         }
     });
@@ -3599,7 +3599,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
             };
             let ops = crate::bridge::compressor_cycle_ratio_ops(&project, track.id);
             if !ops.is_empty() {
-                let _ = port.commit_ops(ops, "cycle compressor ratio");
+                let _ = port.commit_ops(now_ms(), "cycle compressor ratio", ops);
             }
         }
     });

@@ -6168,15 +6168,18 @@ pub fn sidechain_cycle_ops(project: &YebanProjectV1, track_id: EntityId) -> Vec<
     let next_choice = choices[next_idx];
 
     let mut ops = Vec::new();
-    if let Some((edge_id, _)) = current_edge {
-        ops.push(Op::DisconnectRouting { edge_id: *edge_id });
+    if let Some((edge_id, edge)) = current_edge {
+        ops.push(Op::DisconnectRouting {
+            edge_id: *edge_id,
+            previous_edge: *edge,
+        });
     }
 
     if let Some(src_id) = next_choice {
-        if !project.routing_graph.nodes.contains_key(&src_id) {
+        if !project.routing_graph.nodes.contains(&src_id) {
             ops.push(Op::AddRoutingNode { node: src_id });
         }
-        if !project.routing_graph.nodes.contains_key(&track_id) {
+        if !project.routing_graph.nodes.contains(&track_id) {
             ops.push(Op::AddRoutingNode { node: track_id });
         }
         let edge = RoutingEdge {
@@ -6256,12 +6259,13 @@ pub fn compressor_cycle_ratio_ops(project: &YebanProjectV1, track_id: EntityId) 
             }
         }
         vec![Op::SetParam {
-            target: AutomationTarget::DeviceParam {
+            target: yeban_model::AutomationTarget::DeviceParam {
                 track_id,
                 slot_index: slot_idx,
                 param_index,
             },
-            value: next_ratio,
+            old_val: cur_ratio,
+            new_val: next_ratio,
         }]
     } else if let Some(comp) = builtin_effect_device(BuiltinEffect::Compressor) {
         vec![Op::InsertDevice {
@@ -6349,7 +6353,7 @@ mod tests {
             .collect();
         assert!(track_ids.len() >= 2);
         let track_a = track_ids[0];
-        let track_b = track_ids[1];
+        let _track_b = track_ids[1];
 
         // 初始无侧链
         let (label, avail) = project_sidechain_info(&project, project.tracks.get(&track_a));
