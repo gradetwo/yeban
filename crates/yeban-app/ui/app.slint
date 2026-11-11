@@ -1110,6 +1110,10 @@ export component MainWindow inherits Window {
     callback eq-curve-drag(float, float);
     /// EQ 频响曲线手势收尾。
     callback eq-curve-release();
+    /// ⭐ G-S1：循环切换侧链键源
+    callback sidechain-cycle();
+    /// ⭐ G-D6：循环切换压缩器比率
+    callback compressor-cycle-ratio();
     // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：控制台 **Tab 3** 同一面板里的三个按钮。
     //
     // 形状与 `device-*` / `track-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪台设备"，
@@ -1346,6 +1350,15 @@ export component MainWindow inherits Window {
     in property <string> eq-curve-svg: "M 0 50 L 420 50";
     in property <string> eq-curve-fill-svg: "";
     in property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（投影标量）。
+    in property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
+    in property <bool> sidechain-available: false;
+    in property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
+    in property <bool> compressor-available: false;
+    in property <string> limiter-info: "限制器: 阈值 -0.1 dBTP · 状态 正常";
+    in property <bool> limiter-available: false;
+    in property <string> shaper-info: "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)";
+    in property <bool> shaper-available: false;
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量。唯一写者是
     // `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
     in property <bool> device-insert-available: false;
@@ -2054,6 +2067,15 @@ export component MainWindow inherits Window {
             device-eq-curve-svg: root.eq-curve-svg;
             device-eq-curve-fill-svg: root.eq-curve-fill-svg;
             device-eq-curve-info: root.eq-curve-info;
+            // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（透传）
+            sidechain-key-label: root.sidechain-key-label;
+            sidechain-available: root.sidechain-available;
+            compressor-info: root.compressor-info;
+            compressor-available: root.compressor-available;
+            limiter-info: root.limiter-info;
+            limiter-available: root.limiter-available;
+            shaper-info: root.shaper-info;
+            shaper-available: root.shaper-available;
             // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量，只做单向搬运。
             device-insert-available: root.device-insert-available;
             device-insert-reason: root.device-insert-reason;
@@ -2166,6 +2188,13 @@ export component MainWindow inherits Window {
             }
             device-eq-curve-release() => {
                 root.eq-curve-release();
+            }
+            // ⭐ G-S1 / G-D6：动态与侧链交互（只上抛）
+            sidechain-cycle() => {
+                root.sidechain-cycle();
+            }
+            compressor-cycle-ratio() => {
+                root.compressor-cycle-ratio();
             }
             // ⭐ 设备增删 ＋ 建空片段（Tab 3，任务单 `#163`）：只上抛 —— 唯一落点是
             // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。

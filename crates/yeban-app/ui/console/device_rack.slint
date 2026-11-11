@@ -138,6 +138,20 @@ export component DeviceRack inherits Rectangle {
     /// 频响曲线手势松开。
     callback eq-curve-release();
 
+    // ---------------------------------------------------------------- 动态与侧链扩展 (G-S1, G-D4, G-D5, G-D6)
+    in property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
+    in property <bool> sidechain-available: false;
+    in property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
+    in property <bool> compressor-available: false;
+    in property <string> limiter-info: "限制器: 阈值 -0.1 dBTP · 状态 正常";
+    in property <bool> limiter-available: false;
+    in property <string> shaper-info: "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)";
+    in property <bool> shaper-available: false;
+    /// 循环切换展示轨侧链键源
+    callback sidechain-cycle();
+    /// 循环切换压缩器比率
+    callback compressor-cycle-ratio();
+
     // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`，第二段）
     /// 主总线设备链那一栏的标题（`"主总线 Master · 设备链"`；没有主总线时是逐字原因）。
     in property <string> master-device-label: "";
@@ -408,6 +422,9 @@ export component DeviceRack inherits Rectangle {
     /// `216 + 46n + 4`（逐位不动）。
     property <length> placeholder-y: 216px + 46px * root.device-names.length
         + (root.device-names.length == 0 ? 24px : 4px);
+    /// ⭐ 动态与侧链控制扩展面板上沿（紧接在发送条 send-strip 正下方）。
+    property <length> dynamics-panel-y: 136px + 126px + 40px * root.send-destination-names.length
+        + (root.send-destination-names.length == 0 ? 22px : 0px) + 8px;
 
     // ---------------------------------------------------------------- 标题
     UiText {
@@ -1209,6 +1226,144 @@ export component DeviceRack inherits Rectangle {
             accessible-role: text;
             accessible-id: "send-create-reason";
             accessible-label: root.send-create-reason;
+        }
+    }
+
+    // ---------------------------------------------------------------- 动态与侧链控制扩展面板 (G-S1, G-D4, G-D5, G-D6)
+    Rectangle {
+        x: 444px;
+        y: root.dynamics-panel-y;
+        width: root.first-side-width;
+        visible: root.first-side-visible;
+        height: 120px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+
+        // 标题行
+        UiText {
+            x: Tokens.space-4;
+            y: 6px;
+            width: parent.width - 16px;
+            height: 14px;
+            text: "动态、侧链与瞬态控制";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 行 1: 侧链键源切换 (G-S1)
+        Rectangle {
+            x: Tokens.space-4;
+            y: 24px;
+            width: parent.width - 16px;
+            height: 20px;
+            background: Tokens.bg-shell;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+
+            UiText {
+                x: 8px;
+                y: 0;
+                width: parent.width - 16px;
+                height: parent.height;
+                text: root.sidechain-key-label;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.sidechain-cycle();
+                }
+            }
+        }
+
+        // 行 2: 压缩器与比率切换 (G-D6)
+        Rectangle {
+            x: Tokens.space-4;
+            y: 48px;
+            width: parent.width - 16px;
+            height: 20px;
+            background: Tokens.bg-shell;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+
+            UiText {
+                x: 8px;
+                y: 0;
+                width: parent.width - 16px;
+                height: parent.height;
+                text: root.compressor-info;
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.compressor-cycle-ratio();
+                }
+            }
+        }
+
+        // 行 3: 限制器与 True-Peak (G-D5)
+        Rectangle {
+            x: Tokens.space-4;
+            y: 72px;
+            width: parent.width - 16px;
+            height: 20px;
+            background: Tokens.bg-shell;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+
+            UiText {
+                x: 8px;
+                y: 0;
+                width: parent.width - 16px;
+                height: parent.height;
+                text: root.limiter-info;
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // 行 4: 瞬态塑形 (G-D4)
+        Rectangle {
+            x: Tokens.space-4;
+            y: 96px;
+            width: parent.width - 16px;
+            height: 20px;
+            background: Tokens.bg-shell;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+
+            UiText {
+                x: 8px;
+                y: 0;
+                width: parent.width - 16px;
+                height: parent.height;
+                text: root.shaper-info;
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
     }
 

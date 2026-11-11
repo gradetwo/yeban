@@ -100,6 +100,15 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> device-eq-curve-svg: "M 0 50 L 420 50";
     in property <string> device-eq-curve-fill-svg: "";
     in property <string> device-eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（只透传）
+    in property <string> sidechain-key-label: "";
+    in property <bool> sidechain-available: false;
+    in property <string> compressor-info: "";
+    in property <bool> compressor-available: false;
+    in property <string> limiter-info: "";
+    in property <bool> limiter-available: false;
+    in property <string> shaper-info: "";
+    in property <bool> shaper-available: false;
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：两个按钮共用"装设备"的可用性，
     // 建片段有自己的一格。四格都是**投影标量**，本组件只透传。
     in property <bool> device-insert-available: false;
@@ -220,6 +229,9 @@ export component ConsoleTabs inherits Rectangle {
     callback device-eq-release();
     callback device-eq-curve-drag(float, float);
     callback device-eq-curve-release();
+    // ⭐ G-S1 / G-D6：动态与侧链交互
+    callback sidechain-cycle();
+    callback compressor-cycle-ratio();
     // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：同样只上抛 —— 唯一实现是
     // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。
     callback device-insert-eq();
@@ -602,6 +614,17 @@ export component ConsoleTabs inherits Rectangle {
         eq-curve-info: root.device-eq-curve-info;
         eq-curve-drag(x, y) => { root.device-eq-curve-drag(x, y); }
         eq-curve-release() => { root.device-eq-curve-release(); }
+        // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（透传）
+        sidechain-key-label: root.sidechain-key-label;
+        sidechain-available: root.sidechain-available;
+        compressor-info: root.compressor-info;
+        compressor-available: root.compressor-available;
+        limiter-info: root.limiter-info;
+        limiter-available: root.limiter-available;
+        shaper-info: root.shaper-info;
+        shaper-available: root.shaper-available;
+        sidechain-cycle() => { root.sidechain-cycle(); }
+        compressor-cycle-ratio() => { root.compressor-cycle-ratio(); }
         // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：只透传投影。
         device-insert-available: root.device-insert-available;
         device-insert-reason: root.device-insert-reason;

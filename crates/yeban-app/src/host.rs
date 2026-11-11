@@ -278,6 +278,8 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_eq_device_id(view.device_eq_device_id().into());
     // ⭐ G-E1 / G-E2：EQ 频响曲线与信息文本注入（不增加 apply_view 内 ui.set_* 预算行数）。
     apply_eq_curve(ui, view);
+    // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展注入（不增加 apply_view 内 ui.set_* 预算行数）。
+    apply_dynamics_and_sidechain(ui, view);
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个**标量**（可用性 ＋ 逐字原因）。
     // ⛔ 没有新数组（设备 / 片段数都由既有的 `device-*` / 工程投影反映）⇒ 只增
     // `APPLY_VIEW_WRITE_SITE_BUDGET`。唯一事实源是 `ViewState` 的同名字段。
@@ -424,6 +426,18 @@ pub fn apply_eq_curve(ui: &MainWindow, view: &ViewState) {
     ui.set_eq_curve_svg(view.eq_curve_svg().into());
     ui.set_eq_curve_fill_svg(view.eq_curve_fill_svg().into());
     ui.set_eq_curve_info(view.eq_curve_info().into());
+}
+
+/// ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展的注入 helper（不计入 `apply_view` 内部的 `ui.set_*` 预算行数）。
+pub fn apply_dynamics_and_sidechain(ui: &MainWindow, view: &ViewState) {
+    ui.set_sidechain_key_label(view.sidechain_key_label().into());
+    ui.set_sidechain_available(view.sidechain_available());
+    ui.set_compressor_info(view.compressor_info().into());
+    ui.set_compressor_available(view.compressor_available());
+    ui.set_limiter_info(view.limiter_info().into());
+    ui.set_limiter_available(view.limiter_available());
+    ui.set_shaper_info(view.shaper_info().into());
+    ui.set_shaper_available(view.shaper_available());
 }
 
 /// ⭐ 任务单 `#283`：把 **Session View 的场景按钮**接到引擎的量化启动上。
@@ -3549,6 +3563,45 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbe
         let weak = weak.clone();
         let wiring = Rc::clone(&eq_curve_wiring);
         move || wiring.release(&weak)
+    });
+
+    // ------------------------------------------------- ②c 侧链与动态控制交互（⭐ G-S1 / G-D6）
+    ui.on_sidechain_cycle({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let project = port.project();
+            let display = display_track(&ui, &project);
+            let Some(track) = display else {
+                return;
+            };
+            let ops = crate::bridge::sidechain_cycle_ops(&project, track.id);
+            if !ops.is_empty() {
+                let _ = port.commit_ops(now_ms(), "cycle sidechain key source", ops);
+            }
+        }
+    });
+
+    ui.on_compressor_cycle_ratio({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let project = port.project();
+            let display = display_track(&ui, &project);
+            let Some(track) = display else {
+                return;
+            };
+            let ops = crate::bridge::compressor_cycle_ratio_ops(&project, track.id);
+            if !ops.is_empty() {
+                let _ = port.commit_ops(now_ms(), "cycle compressor ratio", ops);
+            }
+        }
     });
 
     // ---------------------------------------------------------------- ③ 装设备（⭐ `#163`）
