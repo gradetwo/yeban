@@ -36,10 +36,10 @@ use yeban_midi::midi::{
     parse_smf, track_chunks, track_from_notes,
 };
 use yeban_midi::vlq;
+use yeban_model::music::MidiNote;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType, EntityId,
 };
-use yeban_model::music::MidiNote;
 
 /// 造一颗合法音符（力度 100 = `yeban_model::music::DEFAULT_VELOCITY`）。
 fn note(start_tick: u64, pitch: u8, duration_ticks: u64) -> MidiNote {

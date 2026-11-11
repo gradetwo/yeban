@@ -2943,7 +2943,7 @@ pub mod tests {
                     panic!("CC 1 / CC 64 必须落在 MidiCc 目标上，实得 {target:?}");
                 };
                 assert_eq!(track_id, dest_track_id, "泳道挂在导入目标轨上");
-                (*controller, lane_points(lane))
+                (controller, lane_points(lane))
             })
             .collect();
         by_controller.sort_by_key(|row| row.0);
@@ -2979,12 +2979,12 @@ pub mod tests {
         }
         for controller in [1u8, 64u8] {
             assert!(
-                doc.tracks[&dest_track_id]
-                    .automation_lanes
-                    .contains_key(&AutomationTarget::MidiCc {
+                doc.tracks[&dest_track_id].automation_lanes.contains_key(
+                    &AutomationTarget::MidiCc {
                         track_id: dest_track_id,
                         controller,
-                    }),
+                    }
+                ),
                 "CC {controller} 泳道落进文档"
             );
         }
