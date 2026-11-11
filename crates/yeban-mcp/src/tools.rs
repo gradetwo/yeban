@@ -10,13 +10,14 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 三十一个工具 = 规范表格的十个 + 二十一条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//! ## 三十九个工具 = 规范表格的十个 + 二十九条**扩展**（ADR-0001 D45 / D46 + 后续线）
 //!
 //! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
 //! D56 的诊断包 1 条、SMF 导出 1 条、SMF 导入 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条、
 //! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）、场景启动 1 条（`#290`）、
 //! 分轨导出 1 条（`ADR-0030`）、会话乐器清单 1 条（审计 `N13`）、插件扫描 1 条 +
-//! 插件装载 1 条（`ADR-0069`）、伶人 SVS 2 条、整曲总览 1 条（设计稿 §8，Phase 1）= **21** 条。
+//! 插件装载 1 条（`ADR-0069`）、ARA 绑定 / 查询 / 渲染 3 条、伶人 SVS 2 条、
+//! 原生预制 4 条、整曲总览 1 条（设计稿 §8，Phase 1）、快照对比 1 条（设计稿 §8.3，Phase 2）= **29** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
@@ -45,6 +46,7 @@
 //! | `yeban_ara_render` | 已绑定 ARA 会话离线渲染成 WAV（原子落盘 + 文档 blob 哈希回传） | `MCP-TOOL-EXT-ARA-RENDER` |
 //!
 //! | `get_song_overview` | 整曲多层总览图：小节级列式 JSON + 自动异常诊断摘要（设计稿 §8，Phase 1；只读；分析由宿主注入的 provider 提供） | `MCP-TOOL-EXT-SONG-OVERVIEW` |
+//! | `compare_song_snapshots` | 两版 Songmap 快照的 A/B Diff：逐小节差值 + 新增/删除小节 + 异常与重复增减（设计稿 §8.3，Phase 2；只读；入参的纯函数，不要求活跃工程） | `MCP-TOOL-EXT-COMPARE-SNAPSHOT` |
 
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -111,8 +113,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条）。
-pub const TOOL_COUNT: usize = 38;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + 快照对比 1 条）。
+pub const TOOL_COUNT: usize = 39;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -131,8 +133,9 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **伶人 SVS 2 条**（`synthesize_singing` 提交 + `svs_job` 查询/取回，Phase 2）。
 /// + **原生预制 4 条**（`yeban_list_presets` / `yeban_apply_preset` /
 ///   `yeban_save_preset` / `yeban_preset_bypass`，夜半原生预制机制一期，MCP-only）。
-/// + **整曲总览 1 条**（设计稿 §8，Phase 1：`get_song_overview`，小节级列式 JSON + 自动异常诊断摘要）。
-pub const EXTENSION_TOOL_COUNT: usize = 28;
+/// + **整曲总览 1 条**（设计稿 §8，Phase 1：`get_song_overview`，小节级列式 JSON + 自动异常诊断摘要）
+/// + **快照对比 1 条**（设计稿 §8.3，Phase 2：`compare_song_snapshots`，两版快照的 A/B Diff）。
+pub const EXTENSION_TOOL_COUNT: usize = 29;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -174,6 +177,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_save_preset",
     "yeban_preset_bypass",
     "get_song_overview",
+    "compare_song_snapshots",
 ];
 
 /// 规范 ID 前缀。
@@ -2239,9 +2243,36 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::Conflict,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-COMPARE-SNAPSHOT",
+        name: "compare_song_snapshots",
+        summary: "返回两版 Songmap 快照的 A/B Diff（设计稿 §8.3，Phase 2）：逐小节差值（Δ = B − A，归一化指标 2 位小数、响度与频段能量 1 位小数，与 §8.2 同口径）+ 新增/删除小节 + 异常与重复条目的增减 + 结构摘要变化（高潮小节移动、动态范围差值）。快照 = `get_song_overview` 的 `data`（`SongOverview`，schema 1.1）原样：先取修改前的快照 A，改谱后再取当前版快照 B，两份原样传进来。只比小节级：任一快照含拍级行 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"snapshotMismatch\"`，`field: \"resolution\"`）；两版 `schema_version` / `band_definitions_hz` 不等 ⇒ 同码（`field` 点名哪一项）。快照形状非法（缺字段、类型错、行键重复、小节号为 0）⇒ `INVALID_PARAMETER_RANGE`（`reason: \"invalidSnapshot\"`）。只读：入参的纯函数，不要求活跃工程、不改工程、不落盘。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §11 定，是跨线契约名，见注册判据的例外说明。",
+        scope: Scope::AppAdmin,
+        // 只读：对两份入参快照做纯算术，不改工程、不落盘。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的
+            // `definitions.ExtensionToolArguments.$defs.compare_song_snapshots` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "snapshot_a",
+                "object",
+                true,
+                "修改前的快照：`get_song_overview` 的 `data`（`SongOverview`，schema 1.1）原样；非对象 ⇒ 协议层 `-32602`（注册表类型先拒），形状非法 ⇒ `INVALID_PARAMETER_RANGE`（`reason: \"invalidSnapshot\"`）",
+            ),
+            param(
+                "snapshot_b",
+                "object",
+                true,
+                "当前版的快照：`get_song_overview` 的 `data`（`SongOverview`，schema 1.1）原样；与 `snapshot_a` 同口径（版本 / 频段定义 / 小节级）",
+            ),
+        ],
+        errors: &[ErrorCode::InvalidParameterRange],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；38 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；39 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -2672,11 +2703,16 @@ mod tests {
         // ⭐ 规格名例外（跨线契约名，不带 `yeban_` 前缀）：`synthesize_singing` /
         // `svs_job` 的名字由 SVS Phase 1 规格定（服务文档与调用方都按此名），
         // 是 `yeban_` 族之外的第一个工具族；`get_song_overview` 的名字由整曲
-        // 总览设计稿 §8.1/§12 定（MCP 工具名就叫它），是第二个。例外**只此三条**：
-        // 新增工具仍须 `yeban_` 前缀；对齐守卫的 `TABLE_TOOL_RE` 同步放了这三条
-        // （见该脚本注释）。
-        const NON_YEBAN_PREFIX_NAMES: [&str; 3] =
-            ["synthesize_singing", "svs_job", "get_song_overview"];
+        // 总览设计稿 §8.1/§12 定（MCP 工具名就叫它），是第二个；
+        // `compare_song_snapshots` 的名字由同一设计稿 §11 定，是第三个。
+        // 例外**只此四条**：新增工具仍须 `yeban_` 前缀；对齐守卫的 `TABLE_TOOL_RE`
+        // 同步放了这四条（见该脚本注释）。
+        const NON_YEBAN_PREFIX_NAMES: [&str; 4] = [
+            "synthesize_singing",
+            "svs_job",
+            "get_song_overview",
+            "compare_song_snapshots",
+        ];
         for spec in &TOOLS {
             assert!(
                 spec.name.starts_with("yeban_") || NON_YEBAN_PREFIX_NAMES.contains(&spec.name),
@@ -3010,7 +3046,9 @@ mod tests {
                 // 原生预制清单：只读发行表 + 用户库，不改工程、不落盘 ⇒ 读-only。
                 "yeban_list_presets",
                 // 整曲总览：只取 provider 已算好的总览做映射，不改工程、不落盘 ⇒ 只读。
-                "get_song_overview"
+                "get_song_overview",
+                // 快照对比：对两份入参快照做纯算术，不读工程、不落盘 ⇒ 只读。
+                "compare_song_snapshots"
             ],
             "只读工具必须显式分类为 read-only"
         );

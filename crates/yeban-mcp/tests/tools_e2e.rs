@@ -1563,6 +1563,30 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         // `providerUnavailable`（不是实现级出口）；这里只要求"走到领域实现 +
         // 契约形状"，真 provider 的证据在 `tests/song_overview.rs`（stub）。
         ("get_song_overview", json!({ "resolution": "bar" })),
+        // Songmap A/B 快照对比：两份合法的 1 小节快照 ⇒ `success`
+        // （Diff 是入参的纯函数，不要求活跃工程；逐位算术的证据在
+        // `tests/compare_song_snapshots.rs`）。
+        (
+            "compare_song_snapshots",
+            json!({
+                "snapshot_a": {
+                    "schema_version": "1.1",
+                    "song_meta": {"total_bars": 1, "duration_sec": 5.0, "base_bpm": 120.0, "key_signature": "C major", "profile": "pop"},
+                    "band_definitions_hz": [[20, 60], [60, 250], [250, 500], [500, 2000], [2000, 4000], [4000, 6000], [6000, 10000], [10000, 20000]],
+                    "structural_summary": {"climax_bar": 1, "climax_tension": 0.9, "dynamic_range_lu": 8.0, "detected_anomalies": []},
+                    "repetition": {"mechanical_index": 0.3, "best_matches": [], "repeated_passages": []},
+                    "bar_series": [{"bar": 1, "time_sec": 0.0, "section": "Verse", "tension": 0.3, "valence_hue": 0.5, "lufs_short": -14.0, "lufs_momentary_max": -10.0, "score_dyn": 0.5, "envelope_lo": 0.2, "envelope_hi": 0.8, "target_deviation": 0.0, "density_pitched_onsets_per_beat": 1.0, "density_pitched_duty": 0.5, "density_perc_onsets_per_beat": 1.0, "bands_tilted_db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}],
+                },
+                "snapshot_b": {
+                    "schema_version": "1.1",
+                    "song_meta": {"total_bars": 1, "duration_sec": 5.0, "base_bpm": 120.0, "key_signature": "C major", "profile": "pop"},
+                    "band_definitions_hz": [[20, 60], [60, 250], [250, 500], [500, 2000], [2000, 4000], [4000, 6000], [6000, 10000], [10000, 20000]],
+                    "structural_summary": {"climax_bar": 1, "climax_tension": 0.9, "dynamic_range_lu": 8.0, "detected_anomalies": []},
+                    "repetition": {"mechanical_index": 0.3, "best_matches": [], "repeated_passages": []},
+                    "bar_series": [{"bar": 1, "time_sec": 0.0, "section": "Verse", "tension": 0.5, "valence_hue": 0.5, "lufs_short": -13.0, "lufs_momentary_max": -10.0, "score_dyn": 0.5, "envelope_lo": 0.2, "envelope_hi": 0.8, "target_deviation": 0.0, "density_pitched_onsets_per_beat": 1.0, "density_pitched_duty": 0.5, "density_perc_onsets_per_beat": 1.0, "bands_tilted_db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}],
+                },
+            }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

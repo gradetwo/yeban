@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，90 行）
+# 三方对齐矩阵（系统 / UI / MCP，91 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -32,11 +32,11 @@
 
 - 三方齐全：33 行
 - 系统+UI（MCP 无）：6 行
-- 系统+MCP（UI 无）：29 行
+- 系统+MCP（UI 无）：30 行
 - 仅系统：12 行
 - 仅计划（系统也未实现）：6 行
 - UI 或 MCP 独有（系统没有）：4 行
-- **合计：90 行**
+- **合计：91 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -211,17 +211,18 @@
 | MLS Ping 声学脉冲延迟校准 | 无｜`crates/yeban-services/src/lib.rs` 只有文档占位；`grep -rn -i "mls\|ping" docs/ledger/audio-latency-notes.md` 命中 0 | 无｜无 | 无｜无 | 原因：完全未实现（与 `BASELINE-005` 的"机器就绪、门禁仍 PENDING"是两件事）；计划：`yeban-services` 线；状态：未到期 |
 | ASIO 可选特性与反向 VST3 打包（`yeban-vst`） | 无｜`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 0（`docs/ledger/phase-status.md` §1 `ROAD-M-1-004`）；`crates/yeban-vst/src/lib.rs` 是 11 行占位且 `[dependencies]` 为空（`ROAD-M-1-003`） | 无｜无 | 无｜无 | 原因：法务确认未做（`HD-34`），且没有 `asio` 特性可标 `unverified`；反向打包属 `[v2.0.0]`；计划：人类法务签字 + v2.0.0；状态：人类决策中 ⚠ **2026-10-22 就地更正（读数）**：`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 实测 **1** 命中（`crates/yeban-midi-io/Cargo.toml:18` 的注释「`asio`/`experimental-*` 同族处理」），**不是 0**。**结论与读数分开**：结论「`asio` 未定义、不引入」**仍成立**（唯一命中是说明性注释，不是特性声明）；而「命中 0」为假。 |
 | 待合并提案列表 | 待接线｜`crates/yeban-mcp/src/domain/mod.rs` 的 `Domain.proposals: BTreeMap<EntityId, Proposal>`（内存记录，`Plan::ListProposals` 只读回传；`src/output_schema.rs` 给五个主力工具发布 `outputSchema`） | 无｜无提案列表面板 | 有｜`yeban_list_proposals`（可选 `kind`；出参 `proposals[]` / `openCount` / `totalCount` / `mergeTool`） | 原因：`#174` 验收发现提案不跨进程且无法列出 ⇒ 进程崩溃后成孤儿；计划：本工具让同一进程内可发现与可恢复，⛔ 不承诺跨进程恢复（记录不进 `project.json`）；状态：已实现 |
-| VST3 插件扫描（`yeban_scan_plugins`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:100`（`scan`，枚举目录、打开库、逐个实例化探针）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1789`（`yeban_scan_plugins`） | 无｜无插件扫描面板 | 有｜`yeban_scan_plugins`（`paths`，可选数组；不给则只扫环境变量与平台标准路径） | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
-| VST3 插件装载（`yeban_load_plugin`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:153`（`load`，打开插件、按类指名、验证激活）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1812`（`yeban_load_plugin`） | 无｜无插件装载面板 | 有｜`yeban_load_plugin`（`trackId` / `pluginPath` 必填；`pluginId` / `autoMerge` / `mergeCommitMessage` 可选） | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
-| ARA 绑定（`yeban_ara_bind`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:1517`（`open`，模块加载、ARA 类名配对、文档图构建）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1866`（`yeban_ara_bind`） | 无｜无 ARA 面板 | 有｜`yeban_ara_bind`（`pluginPath` / `wavPath` 必填；`pluginId` / `tempoBpm` / `loopIterations` / `muted` 可选） | 原因：ARA2 宿主原型，UI 侧无 ARA 面板；计划：UI ARA 面板待排期；状态：待接线 |
-| ARA 查询（`yeban_ara_query`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:2021`（`analysis_available`，分析可用性）+ `crates/yeban-plugin-host/src/ara.rs:2083`（`notes`，内容查询）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1916`（`yeban_ara_query`） | 无｜无 ARA 面板 | 有｜`yeban_ara_query`（`sessionId` 必填） | 原因：同上；计划：同上；状态：待接线 |
-| ARA 渲染（`yeban_ara_render`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:2254`（`render`，按块调处理器、编 32-bit float WAV、原子落盘）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1934`（`yeban_ara_render`） | 无｜无 ARA 面板 | 有｜`yeban_ara_render`（`sessionId` / `outPath` 必填；`blockFrames` 可选） | 原因：同上；计划：同上；状态：待接线 |
+| VST3 插件扫描（`yeban_scan_plugins`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:100`（`scan`，枚举目录、打开库、逐个实例化探针）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1793`（`yeban_scan_plugins`） | 无｜无插件扫描面板 | 有｜`yeban_scan_plugins`（`paths`，可选数组；不给则只扫环境变量与平台标准路径） | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
+| VST3 插件装载（`yeban_load_plugin`） | 已实现｜`crates/yeban-plugin-host/src/host.rs:153`（`load`，打开插件、按类指名、验证激活）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1816`（`yeban_load_plugin`） | 无｜无插件装载面板 | 有｜`yeban_load_plugin`（`trackId` / `pluginPath` 必填；`pluginId` / `autoMerge` / `mergeCommitMessage` 可选） | 原因：插件宿主为一期 MCP 线，UI 侧无插件面板；计划：UI 插件面板待排期；状态：待接线 |
+| ARA 绑定（`yeban_ara_bind`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:1517`（`open`，模块加载、ARA 类名配对、文档图构建）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1870`（`yeban_ara_bind`） | 无｜无 ARA 面板 | 有｜`yeban_ara_bind`（`pluginPath` / `wavPath` 必填；`pluginId` / `tempoBpm` / `loopIterations` / `muted` 可选） | 原因：ARA2 宿主原型，UI 侧无 ARA 面板；计划：UI ARA 面板待排期；状态：待接线 |
+| ARA 查询（`yeban_ara_query`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:2021`（`analysis_available`，分析可用性）+ `crates/yeban-plugin-host/src/ara.rs:2083`（`notes`，内容查询）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1920`（`yeban_ara_query`） | 无｜无 ARA 面板 | 有｜`yeban_ara_query`（`sessionId` 必填） | 原因：同上；计划：同上；状态：待接线 |
+| ARA 渲染（`yeban_ara_render`） | 已实现｜`crates/yeban-plugin-host/src/ara.rs:2254`（`render`，按块调处理器、编 32-bit float WAV、原子落盘）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs:1938`（`yeban_ara_render`） | 无｜无 ARA 面板 | 有｜`yeban_ara_render`（`sessionId` / `outPath` 必填；`blockFrames` 可选） | 原因：同上；计划：同上；状态：待接线 |
 | 歌声合成（外部伶人 SVS 服务） | 无｜歌声合成不在夜半引擎内实现，由外部伶人服务提供；夜半侧只有 MCP 客户端（`crates/yeban-mcp/src/domain/svs.rs`：`std` HTTP 客户端 + 放置语义；规格 `~/workspace/svs-api-service/phase1/yeban-mcp-tools-spec.md`） | 无｜无歌声合成面板 | 有｜`synthesize_singing`（`parts` / `service_url`；提交乐谱到服务）＋ `svs_job`（`job_id` / `want` / `part` / `take` / `trackId` / `startTick` / `license` / `gainDb`；轮询、取 wav 与回执、按 SoulX 乐谱时钟或 VocalRender 实测起点落轨） | 原因：歌声合成是外部服务能力，夜半系统侧没有对应实现；计划：UI 入口与 `https` 服务地址支持随 Phase 2 后续排期；状态：PENDING |
 | 夜半原生预制：列出预制（`yeban_list_presets`） | 已实现｜`crates/yeban-mcp/src/domain/preset.rs`（`list_presets_json`：工厂预制 `include_str!` 内嵌 + 用户库读盘，坏文件逐条跳过并计数）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs`（`yeban_list_presets`） | 无｜无预制列表面板 | 有｜`yeban_list_presets`（`kind` / `instrument`，均可选） | 原因：预制机制一期 MCP-only，UI 方法不动；计划：UI 预制面板待排期；状态：待接线 |
 | 夜半原生预制：应用预制（`yeban_apply_preset`） | 已实现｜`crates/yeban-mcp/src/domain/preset.rs`（`build_apply_ops`：`Preset: …` 设备 + 只改已有发送边 + 只调已有宏位 + `Op::SetTrackPreset` 写 `previous` 快照）；模型侧 `crates/yeban-model/src/preset.rs`（`Preset::parse`，64 KiB 上限与 major 拒绝）+ `crates/yeban-model/src/ops.rs`（`Op::SetTrackPreset`） | 无｜无预制应用面板 | 有｜`yeban_apply_preset`（`trackId` / `presetId` 必填；`categories` / `autoMerge` / `mergeCommitMessage` 可选；走提案路径） | 原因：预制机制一期 MCP-only，UI 方法不动；计划：UI 预制面板待排期；状态：待接线 |
 | 夜半原生预制：另存预制（`yeban_save_preset`） | 已实现｜`crates/yeban-mcp/src/domain/preset.rs`（`build_save_preset` 纯构造 + `write_user_preset_file` 写用户库；同名响亮拒绝）；领域侧 `Plan::SavePreset`（`crates/yeban-mcp/src/domain/mod.rs`：写盘在 `apply`，`dryRun` 不写盘） | 无｜无预制另存面板 | 有｜`yeban_save_preset`（`trackId` / `name` 必填；`scope` / `overwrite` 可选） | 原因：预制机制一期 MCP-only，UI 方法不动；计划：UI 预制面板待排期；状态：待接线 |
 | 夜半原生预制：旁通预制（`yeban_preset_bypass`） | 已实现｜`crates/yeban-mcp/src/domain/preset.rs`（`build_bypass_ops`：旁通恢复 `previous` 快照，只旁通处理、不换乐器；取消旁通按当前预制重新应用） | 无｜无预制旁通面板 | 有｜`yeban_preset_bypass`（`trackId` / `bypassed` 必填；`autoMerge` / `mergeCommitMessage` 可选；走提案路径） | 原因：预制机制一期 MCP-only，UI 方法不动；计划：UI 预制面板待排期；状态：待接线 |
 | 整曲多层可视化总览图（Phase 1） | 部分｜设计稿 `~/workspace/yeban-songmap-design.md` §8（Phase 1：小节级列式 JSON + 自动异常诊断摘要）；分析住在 `crates/yeban-dsp/src/song_overview.rs`（离线四层分析：情绪 / 频率 / 能量 / 疏密 + 两条诊断）；MCP 侧是 `crates/yeban-mcp/src/domain/song_overview.rs` 的 stub provider（宿主注入，未注入响亮报 `CONFLICT` + `providerUnavailable`；真实接线待 `yeban-app` 挂载时注入） | 无｜无总览图面板 | 有｜`get_song_overview`（`resolution` / `include_png_path` 可选；出参 `schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `bar_series`） | 原因：Phase 1 只出 JSON + 诊断摘要，PNG 渲染（Phase 2）与 UI 面板未做，app 挂载注入真实 provider 的接线未做；计划：app 挂载注入真实 provider、Phase 2 接 Slint 离屏渲染；状态：待接线 |
+| Songmap A/B 快照对比（Phase 2） | 已实现｜设计稿 `~/workspace/yeban-songmap-design.md` §8.3（逐小节差值 Δ = B − A + 异常与重复条目集合比对 + 结构摘要变化）；Diff 住在 `crates/yeban-mcp/src/domain/compare_snapshots.rs`（两份 `SongOverview` 的纯函数比对，不要求活跃工程；只比小节级，拍级快照响亮报 `snapshotMismatch`）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs`（`compare_song_snapshots`） | 无｜无快照对比面板 | 有｜`compare_song_snapshots`（`snapshot_a` / `snapshot_b` 必填，均为 `get_song_overview` 的 `data` 原样；出参 `schema_version` / `snapshot_a` / `snapshot_b` / `meta_changes` / `summary` / `bar_diffs` / `bars_added` / `bars_removed` / `anomalies_*` / `repetition_changes` / `structural_changes`） | 原因：Phase 2 只出 Diff JSON，UI 面板（双线 ghost / 差异色块）未做；计划：UI 对比面板待排期；状态：待接线 |
 
 ## 16. 建表过程中发现的**具体错位**（本表最有价值的部分）
 

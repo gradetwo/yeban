@@ -52,7 +52,7 @@
 
 ## 强大功能
 
-- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线。段内自相似度检查已合入（相似度 ≥ 0.95、≥ 4 小节，取最优 5 个匹配）。
+- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线与 A/B 快照对比（`compare_song_snapshots` MCP 工具）。段内自相似度检查已合入（相似度 ≥ 0.95、≥ 4 小节，取最优 5 个匹配）。
 - **命令行母带**：`--loudness-target` 配 `--true-peak-ceiling`，在 `--export-wav` 上应用响度目标；目标达不到就响亮失败，绝不静默降级。
 - **批量操作与分轨**：`--apply-ops` 把一文件编曲操作一次提交；`--export-stems` 分轨导出，与 MCP 工具同一后端。
 - **采样库编辑器**：`--edit-samples` 把每个采样的音准校到 ±0.5 音分以内（FFT 基频），合成 mf/f 力度层并做 RMS 归一化。
