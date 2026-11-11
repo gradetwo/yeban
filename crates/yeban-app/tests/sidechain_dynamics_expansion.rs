@@ -27,7 +27,7 @@ fn sidechain_cycling_and_connecting_creates_valid_ops() {
         .collect();
     assert!(track_ids.len() >= 2, "测试工程至少需要 2 条非主总线轨道");
     let track_a = track_ids[0];
-    let track_b = track_ids[1];
+    let _track_b = track_ids[1];
 
     // 初始状态：无侧链
     let (label, avail) = project_sidechain_info(&project, project.tracks.get(&track_a));
