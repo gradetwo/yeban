@@ -1,8 +1,27 @@
 # yeban-otcp 真实二进制集成测试交接说明
 
-> 状态：2026-11-11，VM 上 mock 集成测试 9/9 绿、单元测试 41/41 绿。
-> 真实二进制测试（`tests/real_binary.rs`，T1–T13）**尚未在真实构建上跑过**。
-> 等盒子空闲再跑。⛔ 不抢盒子、⛔ 不唤醒盒子。
+> 状态：2026-11-11，**已在 yanshi-5 真二进制上跑完：T1–T13 13/13 绿**
+> （126.84 秒）。分支 `line/yeban-otcp-driver @ 6c4ae1b5`。
+> VM 上 mock 集成测试 9/9 绿、单元测试 43/43 绿。
+> 本文件原为跑前交接，现为实测记录；重跑方法见下。
+
+## 实测结果（2026-11-11，yanshi-5）
+
+- 二进制：`/data/workspace/opentune-build/OpenTune-api/build-linux-ninja/OpenTuneStandalone_artefacts/Release/Standalone/OpenTune`
+  （44,326,464 字节，2026-11-06 02:06 构建；提交 `9ef45f9a3b5a26ed55216a76baf2ccbaf2e05c9f`；
+  树含 21 文件未提交改动，0005 反向校验干净、0004 反向校验在
+  `AutoTunePitchShifter.cpp:415` 处不合——0004 归属未定论）。
+- 显示：`DISPLAY=:1` 真 X（`/tmp/.X11-unix/X1` 在跑）；Xvfb 未实测。
+- T1 正弦 452 Hz → A 大调：成功，中位 |偏差| < 10 音分，检测率 ≥ 80%。
+- **T2 时光切片 A：自测 `unvoiced_gap=pass`，任务成功**——设计稿 §6 的
+  无声间隙渲染失败在本轮未复现（after-fix probe 日志
+  `repro_log-after-fix.jsonl` 亦显示人声导出成功）。§6.2 大声失败路径
+  仍保留（mock 已验），自测记录对该构建记 pass。
+- T3 连续有声乐句：成功。T4 失败后可正常退出：通过（mock 形）。
+- T7 冷启动整任务耗时 **16 秒**（首轮 F0 等待未达传说的 60 秒）。
+- T9 收据无秘密键：通过。T11 Drop 杀服务端 + 清临时目录：通过。
+- T5/T6/T8/T10/T12/T13：按设计以 mock / MCP 测试覆盖（loud-skipping）。
+- 残留：跑完盒上无孤儿 OpenTune 进程；`/data` 剩 1.5G。
 
 ## 在哪台盒子跑
 
@@ -26,15 +45,16 @@ import.v1, export.v1, ui.bridge, edit.v1`。普通 v1.8.2 发行版无监听器�
 
 ## 怎么跑
 
-盒上须有显示：`DISPLAY=:1`（yanshi-5 会话显示）或装好 `xvfb-run`
-（驱动在无 `DISPLAY` 时包 `xvfb-run`；Xvfb 下 `ui.getState` 是否可用
-是设计稿 §9 开放问题 1，本轮跑完须把结果记下来）。
+盒上须有显示：`DISPLAY=:1`（yanshi-5 会话显示；本轮已验，真 X 下
+`ui.getState` 可用）。`xvfb-run` 是驱动在无 `DISPLAY` 时的包法，
+Xvfb 下 `ui.getState` 是否可用仍是设计稿 §9 开放问题 1——未实测，
+重跑若用 Xvfb 须把结果记下来。
 
 ```sh
-cd ~/workspace/tmp-wt-yeban-otcp-driver   # 或盒上同步后的同名 worktree
-export YEBAN_OTCP_TEST_BIN=/path/to/OpenTune   # 现查的路径
-export PATH="$HOME/.cargo/bin:$PATH"
-cargo test -p yeban-otcp --test real_binary -- --ignored --test-threads=1 --nocapture
+cd /data/workspace/yeban-otcp-test   # 盒上 worktree（分支已推远端）
+export YEBAN_OTCP_TEST_BIN=/data/workspace/opentune-build/OpenTune-api/build-linux-ninja/OpenTuneStandalone_artefacts/Release/Standalone/OpenTune
+export CARGO_TARGET_DIR=/tmp/yeban-otcp-target   # 保 /data（仅剩 1.5G）
+DISPLAY=:1 cargo test -p yeban-otcp --test real_binary -- --ignored --test-threads=1 --nocapture
 ```
 
 串行（一次一个服务端）。`--nocapture` 必带，否则 `SKIPPED` 行被吞。
