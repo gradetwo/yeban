@@ -1558,8 +1558,12 @@ impl TrackFlag {
     ///
     /// 与模型 `apply` 的前置条件读的是**同一个字段**：本层不复制那份判定，
     /// 只是把文档现值搬进 `Op` 的 `old_*`。
+    ///
+    /// ⚠ 本函数**不是** `const`：`Option::unwrap_or` 尚未稳定为 const fn
+    ///（`Option<bool>` 在常量上下文里不能 `unwrap_or(false)`），而 `mute` /
+    /// `solo` 是裸 `bool` 字段、本来也不需要常量求值。
     #[must_use]
-    pub const fn read(self, track: &TrackV3) -> bool {
+    pub fn read(self, track: &TrackV3) -> bool {
         match self {
             Self::Mute => track.mute,
             Self::Solo => track.solo,
@@ -9131,6 +9135,7 @@ pub fn compile(
                             duration_ticks: span,
                             loop_config: LoopConfig::default(),
                             muted: false,
+                            offset_samples: None,
                         },
                     });
                 }
@@ -11471,6 +11476,7 @@ fn build_placement(
             end_tick: loop_end_tick,
         },
         muted: read_optional_bool(object, "muted")?.unwrap_or(false),
+        offset_samples: None,
     };
     placement
         .validate()

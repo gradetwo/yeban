@@ -493,6 +493,7 @@ pub fn build_with_clock(
                 duration_ticks: bar_ticks,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         });
     }
