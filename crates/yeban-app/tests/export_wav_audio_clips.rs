@@ -378,16 +378,18 @@ fn project_with_audio_clip_offset(
     project
 }
 
-/// `offset_samples` ⇒ 可闻窗口 `[start, end)` 整体平移偏移量（1 tick = 25 帧）：
+/// `offset_samples` ⇒ 可闻窗口 `[start, end)` 整体平移偏移量（1 tick = 25 帧 @120 BPM/960 PPQ/48 kHz）：
 /// +240 后移、−240 前移、起点 96 tick 配 −4800 时起点夹到 0。窗口外必须 ≈ 0 ⇒
 /// "偏移被忽略"（窗口留在原地）与"偏移量算错"都不能通过。
+/// 起点帧 = tick × 25：4800 tick = 120_000 帧；终点同样逐边界移位（夹紧时 span 会缩短：
+/// clamp 例的终点是 (96 + 4800) × 25 − 4800 = 117_600，不是 122_400）。
 #[test]
 fn clip_offset_shifts_the_audible_window_by_exactly_the_offset() {
     // （标签，摆放起点 tick，偏移采样，期望窗口起点帧，期望窗口终点帧）。
     let cases = [
-        ("plus", START_TICK, 240, 12_240_usize, 24_240_usize),
-        ("minus", START_TICK, -240, 11_760_usize, 23_760_usize),
-        ("clamp", 96_u64, -4_800, 0_usize, 9_600_usize),
+        ("plus", START_TICK, 240, 120_240_usize, 240_240_usize),
+        ("minus", START_TICK, -240, 119_760_usize, 239_760_usize),
+        ("clamp", 96_u64, -4_800, 0_usize, 117_600_usize),
     ];
     for (tag, start_tick, offset, expect_start, expect_end) in cases {
         let dir = scratch(&format!("offset-{tag}"));
@@ -411,8 +413,11 @@ fn clip_offset_shifts_the_audible_window_by_exactly_the_offset() {
         let expected = source_sample * db_to_linear(CLIP_GAIN_DB);
         let inside = peak_in(&left, expect_start..expect_end);
         let outside = peak_in(&left, 0..expect_start).max(peak_in(&left, expect_end..left.len()));
+        // 诊断：可闻窗口的真实首/末帧（偏移被忽略/算错/反号时，窗口位置本身就是证据）。
+        let first_audible = left.iter().position(|value| value.abs() > 1e-4);
+        let last_audible = left.iter().rposition(|value| value.abs() > 1e-4);
         println!(
-            "[export-audio/offset-{tag}] 偏移 {offset} 采样：窗口 [{expect_start}, {expect_end}) 内峰值 {inside:.6}；期望 {expected:.6}；窗口外峰值 {outside:.8}"
+            "[export-audio/offset-{tag}] 偏移 {offset} 采样：窗口 [{expect_start}, {expect_end}) 内峰值 {inside:.6}；期望 {expected:.6}；窗口外峰值 {outside:.8}；首个可闻帧 {first_audible:?}、末个可闻帧 {last_audible:?}"
         );
         assert!(
             (inside - expected).abs() <= 0.02 * expected,

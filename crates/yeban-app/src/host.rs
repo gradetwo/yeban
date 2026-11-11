@@ -11096,6 +11096,33 @@ fn apply_action(
             refresh_undo_window(ui, port, true);
             true
         }
+        // 手动相位对齐第一层：`Cmd/Ctrl+Shift+←/→`（±1 ms）/
+        // `Cmd/Ctrl+Shift+Alt+←/→`（±0.1 ms）微移**选中的音频片段**。
+        //
+        // 语义（四条都是决定）：
+        // 1. 作用域与 [`Action::ResizeSelectionDuration`] 的 `D-UI-17` 同一个读点
+        //    （`selected-clip-ulid`），但**只动音频片段**：MIDI 片段不消费（它的音符已有
+        //    `Alt+←/→` 1 tick 微移），分派看的是片段种类、⛔ 不跨界去改音符；
+        // 2. 幅度由 [`clip_ms_nudge_ops_for`] **唯一**换算（毫秒→采样按工程采样率、
+        //    四舍五入；新值夹到 ±4800 采样，夹后不变 ⇒ 空）；
+        // 3. **没有撤销端口 / 不在编曲视图 / 没有选中 / 身份解析不到 / 不是音频 /
+        //    已在边界上 ⇒ 返回 `false`**（不吞键），与 `NudgeSelection` /
+        //    `ResizeSelectionDuration` 的空前置条件同一取向；
+        // 4. 一次按键 = **一次** `commit_ops` = 一步撤销；剪辑不销毁（改的是偏移，
+        //    身份仍然有效）⇒ 选中态留下，可以连按第二下继续微移。
+        // 提交后⛔ 不需要新写任何界面属性：剪辑的 **x 位置**本来就是投影算出来的
+        // （`ViewState::clip_view` ← `ClipPlacement::offset_samples`），重投影一跑，
+        // 那块剪辑块就在像素上平移 —— 与 `resize_selected_clip_duration` 同款\"零改动\"，
+        // 默认帧因此逐像素不变（⛔ 不触发基准重录）。
+        Action::NudgeClipMs { direction, step_ms } => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            nudge_selected_clip_ms(ui, port, &project, step_ms.as_f32(), direction)
+        }
         // `Cmd/Ctrl+Alt+方向`：微调**当前选中轨**的音量 / 声相。
         //
         // 语义（六条都是决定，不是意外）：
@@ -13907,6 +13934,71 @@ pub fn clip_duration_ops_for(
     }]
 }
 
+/// `Cmd/Ctrl+Shift+←/→`（±1 ms）/ `Cmd/Ctrl+Shift+Alt+←/→`（±0.1 ms）：把\"选中音频
+/// 片段 + 一格毫秒 + 方向\"解析成待提交的 **`Op::SetClipPlacementOffset` 集合**（纯函数，
+/// 有判据；手动相位对齐第一层，见 [`crate::input::Action::NudgeClipMs`]）。
+///
+/// # 与 [`clip_duration_ops_for`] 同一条分工
+///
+/// 宿主臂只负责\"提交 + 重投影\"，`Op` 的形状与\"什么时候什么都不提交\"在这里一次决定。
+/// 毫秒→采样按工程采样率换算并四舍五入（与 MCP `SetTrackDelay` 的 `delayMs` 同一条口径：
+/// `(ms * hz / 1000.0).round() as i32`，半值远离零；模型只认采样，毫秒是表现层单位）。
+///
+/// # 四条\"什么都不提交\"（返回空 `Vec`）
+///
+/// 1. 身份文本解析不出 `EntityId`，或该身份**不在**当前工程里（陈旧选中态不猜）；
+/// 2. 该摆放**不是音频片段**（片段池条目 `content` 不是 `ClipContent::Audio`）——
+///    MIDI 片段的音符已有 `Alt+←/→` 1 tick 微移，⛔ 不让同一把键在两种语义间摇摆；
+/// 3. `direction == 0`（增量 0）；
+/// 4. 新偏移夹到 ±[`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 后与现值**相同**
+///    （已在边界上再按同一方向 ⇒ 不写一步什么都没改的撤销；与
+///    [`mixer_nudge_ops_for`] 的端点口径同一取向）。
+///
+/// ⚠ 本函数**不**查视图：编曲视图那道门由宿主臂（`nudge_selected_clip_ms`）把，纯函数
+/// 只认工程与身份（与 `clip_duration_ops_for` 同一款拆法）。
+#[must_use]
+pub fn clip_ms_nudge_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_clip_ulid: &str,
+    step_ms: f32,
+    direction: i8,
+) -> Vec<yeban_model::ops::Op> {
+    let Some((track_id, placement_id, placement)) = clip_placement_for(project, selected_clip_ulid)
+    else {
+        return Vec::new();
+    };
+    let Some(clip_entry) = project.clip_pool.get(&placement.clip_id) else {
+        return Vec::new();
+    };
+    if !matches!(
+        clip_entry.content,
+        yeban_model::project::ClipContent::Audio { .. }
+    ) {
+        return Vec::new();
+    }
+    let step = direction.signum();
+    if step == 0 {
+        return Vec::new();
+    }
+    let hz = f64::from(project.audio_config.sample_rate.hz());
+    #[allow(clippy::cast_possible_truncation)]
+    let delta_samples = (f64::from(step_ms) * f64::from(step) * hz / 1000.0).round() as i32;
+    let old_offset = placement.offset_samples.unwrap_or(0);
+    let new_offset = (old_offset + delta_samples).clamp(
+        -yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES,
+        yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES,
+    );
+    if new_offset == old_offset {
+        return Vec::new();
+    }
+    vec![yeban_model::ops::Op::SetClipPlacementOffset {
+        track_id,
+        placement_id,
+        old_offset_samples: old_offset,
+        new_offset_samples: new_offset,
+    }]
+}
+
 /// `Shift+←/→` 落到**编曲视图选中的剪辑摆放**上（`D-UI-17`）：一次原子提交、一步撤销。
 ///
 /// 四条口径与 [`toggle_selected_clip_mute`] 逐条同款，差别只在改的是 `duration_ticks`：
@@ -13940,6 +14032,47 @@ fn resize_selected_clip_duration(
         .commit_ops(now_ms(), "resize clip duration", ops)
         .is_err()
     {
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// `Cmd/Ctrl+Shift+←/→` / `Cmd/Ctrl+Shift+Alt+←/→` 落到**编曲视图选中的音频片段**上
+/// （手动相位对齐第一层）：一次原子提交、一步撤销。
+///
+/// 四条口径与 [`resize_selected_clip_duration`] 逐条同款，差别只在改的是
+/// `offset_samples`（毫秒→采样在 [`clip_ms_nudge_ops_for`] 里换算）：
+/// 1. **只在编曲视图**生效（`arrangement-view`）；
+/// 2. 没有选中 / 身份解析不到 / 不是音频片段 / 已在边界上 ⇒ **不消费**，⛔ 也不顺手清掉
+///    那个陈旧读数；
+/// 3. 一次按键 = **一次** [`UndoPort::commit_ops`]（单条 op）；模型拒绝 ⇒ `false` 且
+///    ⛔ 不重试；
+/// 4. 剪辑**不销毁**（改的是偏移，身份仍然有效）⇒ 选中态留下，可以连按第二下继续微移。
+///
+/// 提交后⛔ 不需要新写任何界面属性：剪辑的 **x 位置**本来就是投影算出来的
+/// （`ViewState::clip_view` ← `ClipPlacement::offset_samples`），重投影一跑，那块剪辑块
+/// 就在像素上平移 —— 与 `resize_selected_clip_duration` 同款\"零改动\"，默认帧因此逐像素
+/// 不变（⛔ 不触发基准重录）。
+fn nudge_selected_clip_ms(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+    step_ms: f32,
+    direction: i8,
+) -> bool {
+    if !ui.get_arrangement_view() {
+        return false;
+    }
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let ops = clip_ms_nudge_ops_for(project, selected.as_str(), step_ms, direction);
+    if ops.is_empty() {
+        return false;
+    }
+    if port.commit_ops(now_ms(), "nudge clip by ms", ops).is_err() {
         return false;
     }
     refresh_undo_window(ui, port, true);
@@ -15148,6 +15281,210 @@ mod pencil_op_tests {
     /// ## ⛔ 它不证明什么
     ///
     /// - ⛔ 不证明按键可达（`apply_action` 那条臂由 `tests/roll_edit_tools.rs` 的真事件管）；
+    ///
+    /// `Cmd/Ctrl+Shift+←/→` / `Cmd/Ctrl+Shift+Alt+←/→`：[`clip_ms_nudge_ops_for`] 只动
+    /// **音频**摆放，毫秒→采样按工程采样率四舍五入，边界夹紧后不变 ⇒ 空。
+    ///
+    /// 换算 oracle（⛔ 不读实现里的常量自证）：48 kHz 下 1 ms = 48 采样、0.1 ms = 4.8 → 5；
+    /// 44.1 kHz 下 1 ms = 44.1 → 44、5 ms = 220.5 → 221（半值远离零，与 MCP
+    /// `SetTrackDelay` 的 `delayMs` 同一条口径）。
+    #[test]
+    fn clip_ms_nudge_ops_for_moves_only_audio_placements_by_rounded_samples() {
+        use yeban_model::ops::Op;
+        use yeban_model::project::{ClipContent, SampleRate};
+
+        // 夹具里第一条音频摆放与第一条 MIDI 摆放（`filled_project` 两者都有）。
+        fn first_placement_of(
+            project: &yeban_model::YebanProjectV1,
+            audio: bool,
+        ) -> (String, yeban_model::EntityId, yeban_model::EntityId) {
+            for (track_id, track) in &project.tracks {
+                for placement in track.clips.values() {
+                    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                        continue;
+                    };
+                    let is_audio = matches!(entry.content, ClipContent::Audio { .. });
+                    if is_audio == audio {
+                        return (placement.id.to_canonical_string(), *track_id, placement.id);
+                    }
+                }
+            }
+            panic!(
+                "夹具里必须有一条{}摆放",
+                if audio { "音频" } else { "MIDI" }
+            );
+        }
+
+        let project = filled_project();
+        assert_eq!(
+            project.audio_config.sample_rate,
+            SampleRate::Hz48000,
+            "夹具采样率变了 ⇒ 下面 48 kHz 的换算期望需同步"
+        );
+        let (audio_ulid, audio_track, audio_placement) = first_placement_of(&project, true);
+        let (midi_ulid, _, _) = first_placement_of(&project, false);
+        let old = project
+            .tracks
+            .get(&audio_track)
+            .expect("音频轨")
+            .clips
+            .get(&audio_placement)
+            .expect("音频摆放")
+            .offset_samples
+            .unwrap_or(0);
+
+        // ① 48 kHz：+1 ms ⇒ +48 采样；op 形状逐字段对账。
+        let ops = clip_ms_nudge_ops_for(&project, &audio_ulid, 1.0, 1);
+        assert_eq!(ops.len(), 1, "+1 ms 必须恰好一条 op");
+        assert!(
+            matches!(
+                ops[0],
+                Op::SetClipPlacementOffset {
+                    track_id,
+                    placement_id,
+                    old_offset_samples,
+                    new_offset_samples,
+                } if track_id == audio_track
+                    && placement_id == audio_placement
+                    && old_offset_samples == old
+                    && new_offset_samples == old + 48
+            ),
+            "+1 ms @48k 必须是 SetClipPlacementOffset(old={old}, new={}): {ops:?}",
+            old + 48
+        );
+        // ② 48 kHz：+0.1 ms ⇒ 4.8 → 5 采样（四舍五入）；−1 ms ⇒ −48。
+        let ops = clip_ms_nudge_ops_for(&project, &audio_ulid, 0.1, 1);
+        assert!(
+            matches!(
+                ops[0],
+                Op::SetClipPlacementOffset {
+                    new_offset_samples,
+                    ..
+                } if new_offset_samples == old + 5
+            ),
+            "+0.1 ms @48k 必须是 +5 采样: {ops:?}"
+        );
+        let ops = clip_ms_nudge_ops_for(&project, &audio_ulid, 1.0, -1);
+        assert!(
+            matches!(
+                ops[0],
+                Op::SetClipPlacementOffset {
+                    new_offset_samples,
+                    ..
+                } if new_offset_samples == old - 48
+            ),
+            "−1 ms @48k 必须是 −48 采样: {ops:?}"
+        );
+        // ③ MIDI 摆放 ⇒ 空（同一把键不跨界去改音符）。
+        assert!(
+            clip_ms_nudge_ops_for(&project, &midi_ulid, 1.0, 1).is_empty(),
+            "MIDI 片段必须不消费"
+        );
+        // ④ 空 / 垃圾身份 / direction 0 ⇒ 空。
+        assert!(clip_ms_nudge_ops_for(&project, "", 1.0, 1).is_empty());
+        assert!(clip_ms_nudge_ops_for(&project, "not-a-ulid", 1.0, 1).is_empty());
+        assert!(clip_ms_nudge_ops_for(&project, &audio_ulid, 1.0, 0).is_empty());
+        // ⑤ 44.1 kHz：+1 ms ⇒ +44；+5 ms ⇒ 220.5 → 221（半值远离零）。
+        let mut project_441 = project.clone();
+        project_441.audio_config.sample_rate = SampleRate::Hz44100;
+        let ops = clip_ms_nudge_ops_for(&project_441, &audio_ulid, 1.0, 1);
+        assert!(
+            matches!(
+                ops[0],
+                Op::SetClipPlacementOffset {
+                    new_offset_samples,
+                    ..
+                } if new_offset_samples == old + 44
+            ),
+            "+1 ms @44.1k 必须是 +44 采样: {ops:?}"
+        );
+        let ops = clip_ms_nudge_ops_for(&project_441, &audio_ulid, 5.0, 1);
+        assert!(
+            matches!(
+                ops[0],
+                Op::SetClipPlacementOffset {
+                    new_offset_samples,
+                    ..
+                } if new_offset_samples == old + 221
+            ),
+            "+5 ms @44.1k 必须是 +221 采样: {ops:?}"
+        );
+        // ⑥ 边界：已在 +4800，再 +1 ms ⇒ 空；4752 再 +1 ms ⇒ 夹到 4800（仍变 ⇒ 一条 op）。
+        let mut at_top = project.clone();
+        at_top
+            .tracks
+            .get_mut(&audio_track)
+            .expect("音频轨")
+            .clips
+            .get_mut(&audio_placement)
+            .expect("音频摆放")
+            .offset_samples = Some(4_800);
+        assert!(
+            clip_ms_nudge_ops_for(&at_top, &audio_ulid, 1.0, 1).is_empty(),
+            "已在 +4800 再按 + ⇒ 空（不写空 op）"
+        );
+        let mut near_top = project.clone();
+        near_top
+            .tracks
+            .get_mut(&audio_track)
+            .expect("音频轨")
+            .clips
+            .get_mut(&audio_placement)
+            .expect("音频摆放")
+            .offset_samples = Some(4_752);
+        let ops = clip_ms_nudge_ops_for(&near_top, &audio_ulid, 1.0, 1);
+        assert!(
+            matches!(
+                ops[0],
+                Op::SetClipPlacementOffset {
+                    new_offset_samples,
+                    ..
+                } if new_offset_samples == 4_800
+            ),
+            "4752 + 48 必须夹到 4800: {ops:?}"
+        );
+        // ⑦ op 可应用且可逆（`Op::Batch` 的逆是逆序的逆操作批 —— 与 `delete_ops_for` 同一条路）。
+        // apply 把 0 归一化为 `None`（缺省即无偏移）⇒ 撤销后与原值逐位相同。
+        let original_offset = project
+            .tracks
+            .get(&audio_track)
+            .expect("音频轨")
+            .clips
+            .get(&audio_placement)
+            .expect("音频摆放")
+            .offset_samples;
+        let ops = clip_ms_nudge_ops_for(&project, &audio_ulid, 1.0, 1);
+        let batch = Op::Batch {
+            ops,
+            description: "nudge clip by ms".to_owned(),
+        };
+        let mut doc = project.clone();
+        batch.apply(&mut doc).expect("整批必须可应用（原子）");
+        assert_eq!(
+            doc.tracks
+                .get(&audio_track)
+                .expect("音频轨")
+                .clips
+                .get(&audio_placement)
+                .expect("音频摆放")
+                .offset_samples,
+            Some(old + 48),
+            "应用后偏移必须是 old + 48"
+        );
+        batch.apply_inverse(&mut doc).expect("一步撤销必须整批回来");
+        assert_eq!(
+            doc.tracks
+                .get(&audio_track)
+                .expect("音频轨")
+                .clips
+                .get(&audio_placement)
+                .expect("音频摆放")
+                .offset_samples,
+            original_offset,
+            "撤销后偏移必须回到原值"
+        );
+    }
+
     /// - ⛔ 不证明幅度常量（那是 [`resize_duration_delta_for`]；本判据传字面量 240）。
     #[test]
     fn resize_duration_ops_for_clamps_per_note_and_refuses_no_ops() {

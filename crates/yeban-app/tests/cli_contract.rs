@@ -1315,7 +1315,7 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
     let rows = shortcut_rows();
     assert_eq!(
         rows.len(),
-        50,
+        54,
         "快捷键表的**条目**数（不是行数）：18 条 §7.1 核心快捷键 ＋ `[UI-NOTE-005]` §3.5 项 1–2 的 \
          8 条方向键微调（四个修饰组合 × 两个方向）＋ ⭐ `[UI-NOTE-005]` §3 项 3 的 2 条 \
          时值伸缩（`Shift+←/→`）＋ ⭐ `[ARCH-RT-001]` 的 2 条节拍器键 \
@@ -1329,7 +1329,9 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
          ⭐ 1 条另存为键（`Cmd/Ctrl+Shift+S`，界面决定）＋ \
          ⭐ 3 条控制台标签键（`F7`/`F8`/`F9`，界面决定）＋ \
          ⭐ 1 条聚焦键（`Cmd/Ctrl+F` 把键盘焦点交给左栏搜索框，D-UI-18，界面决定）＋ \
-         ⭐ 2 条移轨键（`Cmd/Ctrl+Shift+↑/↓` 选中轨上移 / 下移一格，界面决定，2026-11-07）"
+         ⭐ 2 条移轨键（`Cmd/Ctrl+Shift+↑/↓` 选中轨上移 / 下移一格，界面决定，2026-11-07）＋ \
+         ⭐ 4 条片段毫秒微移（`Cmd/Ctrl+Shift+←/→` ±1 ms / `Cmd/Ctrl+Shift+Alt+←/→` ±0.1 ms，\
+         界面决定，手动相位对齐第一层，2026-11-11）"
     );
     // 表头那三行 `# …` 是说明文字, 其中一行**定义**了标记; 数标记只数**条目行**。
     let printed_marks: usize = run

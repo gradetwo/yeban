@@ -107,6 +107,17 @@ impl Modifiers {
         }
     }
 
+    /// `Ctrl` + `Shift` + `Alt`（片段毫秒微移的 0.1 ms 那一格）。
+    #[must_use]
+    pub const fn ctrl_shift_alt() -> Self {
+        Self {
+            ctrl: true,
+            shift: true,
+            alt: true,
+            meta: false,
+        }
+    }
+
     /// `Cmd`/`Super` + `Shift`。
     #[must_use]
     pub const fn meta_shift() -> Self {
@@ -114,6 +125,17 @@ impl Modifiers {
             ctrl: false,
             shift: true,
             alt: false,
+            meta: true,
+        }
+    }
+
+    /// `Cmd`/`Super` + `Shift` + `Alt`（片段毫秒微移的 0.1 ms 那一格，逻辑键入口）。
+    #[must_use]
+    pub const fn meta_shift_alt() -> Self {
+        Self {
+            ctrl: false,
+            shift: true,
+            alt: true,
             meta: true,
         }
     }
@@ -684,6 +706,29 @@ pub enum NudgeStep {
     Octave,
 }
 
+/// `Cmd/Ctrl+Shift+←/→` 微移选中音频片段时**一格多少毫秒**。
+///
+/// 枚举而不是 `f32`：[`Action`] 派生 `Eq`，而 `f32` 没有 `Eq`（实测：`step_ms: f32`
+/// 让 `#[derive(Eq)]` 在 `input.rs` 直接红）。毫秒值只住在 [`Self::as_f32`] 这一处。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MsStep {
+    /// `Cmd/Ctrl+Shift+←/→`：±1 ms。
+    OneMs,
+    /// `Cmd/Ctrl+Shift+Alt+←/→`：±0.1 ms。
+    TenthMs,
+}
+
+impl MsStep {
+    /// 一格多少毫秒（唯一换算；宿主臂与纯函数都读它，⛔ 不在别处再写第二份）。
+    #[must_use]
+    pub const fn as_f32(self) -> f32 {
+        match self {
+            Self::OneMs => 1.0,
+            Self::TenthMs => 0.1,
+        }
+    }
+}
+
 /// 键盘微调混音台时**动哪一格**。
 ///
 /// 刻意只有两格，判据是**量的类型**而不是规范条文：音量 / 声相是**连续量** ⇒ 有"一格
@@ -871,6 +916,31 @@ pub enum Action {
     ResizeSelectionDuration {
         /// `-1` = `Shift+←` 缩短；`+1` = `Shift+→` 延长。
         direction: i8,
+    },
+    /// 手动相位对齐第一层：`Cmd/Ctrl+Shift+←/→` 把**选中的音频片段**按毫秒微移。
+    ///
+    /// 键位（**界面决定**，⛔ 不是规范点名）：Logic Pro 里区域可按 tick/ms/采样微移；
+    /// 本仓的 `Cmd/Ctrl+←/→` 已被规范判据钉成放行（文本 / 系统 caret 语义，见
+    /// `arrow_keys_resolve_to_the_four_spec_nudge_steps` 末尾那段），`Shift+←/→` 已是
+    /// 时值裁剪、`Alt+Shift+←/→` 已是 Tick 微移 ⇒ 毫秒微移占 `Cmd/Ctrl+Shift+←/→`
+    /// 这一格（±1 ms）与 `Cmd/Ctrl+Shift+Alt+←/→` 这一格（±0.1 ms），两格此前都落到
+    /// 第 3 步的 `_ => PassThrough`。`Cmd/Ctrl+Shift+↑/↓` 仍是移轨
+    /// （[`Self::MoveSelectedTrackBy`]），互不冲突。
+    ///
+    /// 作用域 = 编曲视图选中的**音频**片段（`selected-clip-ulid`，与
+    /// [`Self::ResizeSelectionDuration`] 的 `D-UI-17` 同一个读点；MIDI 片段不消费，
+    /// 因为它的音符已有 `Alt+←/→` 1 tick 微移，⛔ 不让同一把键在两种语义间摇摆）。
+    /// 毫秒→采样在宿主臂里按工程采样率换算并四舍五入（`Op::SetClipPlacementOffset`
+    /// 只存采样；换算口径与 MCP `SetTrackDelay` 的 `delayMs` 同一条：半值远离零）。
+    /// 新偏移夹到 ±[`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]（48 kHz 下 ±100 ms），
+    /// 夹后与现值相同 ⇒ 不提交（与 [`Self::NudgeMixerChannel`] 的端点口径同一取向）。
+    /// 落点是 `host::apply_action` 的同名臂（纯函数 [`crate::host::clip_ms_nudge_ops_for`]）。
+    NudgeClipMs {
+        /// `-1` = 左（提前）；`+1` = 右（延后）。
+        direction: i8,
+        /// 一格多少毫秒（[`MsStep`]：`OneMs` = `Cmd/Ctrl+Shift+←/→`，
+        /// `TenthMs` = `Cmd/Ctrl+Shift+Alt+←/→`）。
+        step_ms: MsStep,
     },
     /// 把**当前选中音轨**的混音参数按一档步长微调（键盘入口，与鼠标拖动同一提交通道）。
     ///
@@ -1293,6 +1363,26 @@ impl InputContext {
                 // 落到 `_ => PassThrough`；见 [`Action::MoveSelectedTrackBy`] 的 caveat）。
                 (Key::UpArrow, true, false) => Resolution::Action(Action::MoveSelectedTrackBy(-1)),
                 (Key::DownArrow, true, false) => Resolution::Action(Action::MoveSelectedTrackBy(1)),
+                // 手动相位对齐第一层：`Cmd/Ctrl+Shift+←/→` = 选中音频片段 ±1 ms，
+                // `Cmd/Ctrl+Shift+Alt+←/→` = ±0.1 ms（见 [`Action::NudgeClipMs`]）。
+                // 两格此前都是空的（落到 `_ => PassThrough`）；`Cmd/Ctrl+←/→`（无 Shift）
+                // 仍放行（规范判据钉死的 caret 语义，⛔ 不动）。
+                (Key::LeftArrow, true, false) => Resolution::Action(Action::NudgeClipMs {
+                    direction: -1,
+                    step_ms: MsStep::OneMs,
+                }),
+                (Key::RightArrow, true, false) => Resolution::Action(Action::NudgeClipMs {
+                    direction: 1,
+                    step_ms: MsStep::OneMs,
+                }),
+                (Key::LeftArrow, true, true) => Resolution::Action(Action::NudgeClipMs {
+                    direction: -1,
+                    step_ms: MsStep::TenthMs,
+                }),
+                (Key::RightArrow, true, true) => Resolution::Action(Action::NudgeClipMs {
+                    direction: 1,
+                    step_ms: MsStep::TenthMs,
+                }),
                 _ => Resolution::PassThrough,
             };
         }
@@ -1430,13 +1520,13 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NudgeMixerChannel, NudgeSelection,
-        OpenProject, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration, ResumeFromCursor,
-        SaveProject, SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy, ShowView,
-        SplitAtPlayhead, ToggleAiDrawer, ToggleAutomation, ToggleClipMute, ToggleConsoleMaximize,
-        ToggleCycle, ToggleEditor, ToggleMixer, TogglePencilTool, ToggleRecord, ToggleSidebar,
-        ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo, VerticalZoomIn, VerticalZoomOut,
-        ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
+        FocusSidebarSearch, GoToBeginning, MoveSelectedTrackBy, NudgeClipMs, NudgeMixerChannel,
+        NudgeSelection, OpenProject, OpenTimeMachine, PlayPause, Redo, ResizeSelectionDuration,
+        ResumeFromCursor, SaveProject, SaveProjectAs, SelectConsoleTab, SelectTool, SelectTrackBy,
+        ShowView, SplitAtPlayhead, ToggleAiDrawer, ToggleAutomation, ToggleClipMute,
+        ToggleConsoleMaximize, ToggleCycle, ToggleEditor, ToggleMixer, TogglePencilTool,
+        ToggleRecord, ToggleSidebar, ToggleTrackMute, ToggleTrackSolo, ToggleView, Undo,
+        VerticalZoomIn, VerticalZoomOut, ZoomIn, ZoomOut, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use MixerParam::{Pan, Volume};
@@ -2692,6 +2782,70 @@ mod tests {
             PassThrough,
             "文本框里的 `←` 是 caret 移动，不是微调音符"
         );
+    }
+
+    /// 手动相位对齐第一层：`Cmd/Ctrl+Shift+←/→` ⇒ 选中音频片段 ±1 ms；
+    /// `Cmd/Ctrl+Shift+Alt+←/→` ⇒ ±0.1 ms（见 [`Action::NudgeClipMs`]）。
+    ///
+    /// 物理码与逻辑键两入口同解（与 `arrow_keys_resolve_to_the_four_spec_nudge_steps`
+    /// 同一条钉法）；`Cmd/Ctrl+←/→`（无 Shift）**仍放行**（caret 语义，上面那条判据钉死），
+    /// `Cmd/Ctrl+Shift+↑/↓` 仍是移轨（[`Action::MoveSelectedTrackBy`]），两格都不被本票碰。
+    #[test]
+    fn cmd_ctrl_shift_arrows_nudge_the_selected_audio_clip_by_milliseconds() {
+        for (key, logical, mods, direction, step_ms) in [
+            (
+                LeftArrow,
+                LKey::LeftArrow,
+                Modifiers::ctrl_shift(),
+                -1,
+                MsStep::OneMs,
+            ),
+            (
+                RightArrow,
+                LKey::RightArrow,
+                Modifiers::ctrl_shift(),
+                1,
+                MsStep::OneMs,
+            ),
+            (
+                LeftArrow,
+                LKey::LeftArrow,
+                Modifiers::ctrl_shift_alt(),
+                -1,
+                MsStep::TenthMs,
+            ),
+            (
+                RightArrow,
+                LKey::RightArrow,
+                Modifiers::ctrl_shift_alt(),
+                1,
+                MsStep::TenthMs,
+            ),
+        ] {
+            let expected = Act(NudgeClipMs { direction, step_ms });
+            assert_eq!(
+                canvas().resolve(key, mods),
+                expected,
+                "物理 `{key:?}` + {mods:?} 必须解成毫秒微移"
+            );
+            assert_eq!(
+                canvas().resolve_logical(logical, mods),
+                expected,
+                "逻辑 `{logical:?}` + {mods:?} 必须与物理入口同解"
+            );
+            // macOS 的 `Cmd` 入口：逻辑键 + `meta` 变体同解（物理码入口的 `Cmd` 由
+            // `physical_and_logical_entries_resolve_identically` 那条的同解机制覆盖）。
+            let meta_mods = if mods.alt {
+                Modifiers::meta_shift_alt()
+            } else {
+                Modifiers::meta_shift()
+            };
+            assert_eq!(
+                canvas().resolve_logical(logical, meta_mods),
+                expected,
+                "逻辑 `{logical:?}` + {meta_mods:?}（Cmd）必须同解"
+            );
+        }
     }
 
     /// `Cmd/Ctrl+Alt+方向` ⇒ **微调选中轨的混音参数**（音量 ↑/↓、声相 ←/→）。
