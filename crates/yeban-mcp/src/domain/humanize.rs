@@ -195,15 +195,19 @@ impl SplitMixStream {
 
 /// Box-Muller：一对独立标准正态抽样（均值 0，标准差 1）。
 ///
-/// `f64` 的 `ln` / `cos` / `sin` / `sqrt` 是 IEEE 确定性运算：
-/// 同种子同平台 ⇒ 同输出（本仓库金向量判据已依赖同类浮点确定性）。
+/// ⚠ `libm::log` / `libm::cos` / `libm::sin` 而不是 `f64` 的 `.ln()` / `.cos()` /
+/// `.sin()`：`ARCH-DET-001` 要求"统一启用纯 Rust libm"，禁止落到宿主 libm ——
+/// 否则同一份工程导出的母带会随平台差 LSB。本 crate 的判据
+/// `probe_authenticity::the_crates_own_transcendental_call_sites_are_the_registered_list`
+/// 会**当场**把 std 的 `.ln()` / `.cos()` / `.sin()` 抓出来（`sfz.rs` 的 `sine` 同例）。
+/// `sqrt` 属 IEEE 精确类（正确舍入），可留。
 #[must_use]
 pub(crate) fn gaussian_pair(stream: &mut SplitMixStream) -> (f64, f64) {
     let u1 = stream.next_unit_open();
     let u2 = stream.next_unit_open();
-    let radius = (-2.0 * u1.ln()).sqrt();
+    let radius = (-2.0 * libm::log(u1)).sqrt();
     let angle = TAU * u2;
-    (radius * angle.cos(), radius * angle.sin())
+    (radius * libm::cos(angle), radius * libm::sin(angle))
 }
 
 /// 对数正态抽样：`exp(σ·z)`，中位数 1、右偏、恒正。
@@ -419,6 +423,7 @@ mod tests {
             let mut stream = SplitMixStream::new(seed);
             (0..64).map(|_| gaussian_pair(&mut stream).0).collect()
         };
+        // R75: 纯函数自比 —— 同一种子两次调用必须输出同一高斯流（确定性探针）。
         assert_eq!(take(42), take(42));
         assert_ne!(take(42), take(43));
     }
@@ -514,6 +519,7 @@ mod tests {
     fn derive_track_seed_differs_per_track() {
         let track_a = test_track_id();
         let track_b = deterministic_id("humanize-v2-test-track-b");
+        // R75: 纯函数自比 —— 同一种子同轨两次派生必须同一有效种子（确定性探针）。
         assert_eq!(
             derive_track_seed(42, &track_a),
             derive_track_seed(42, &track_a)
