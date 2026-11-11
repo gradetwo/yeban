@@ -173,6 +173,17 @@ impl AutomationAxis {
     pub fn y_offset(self, value: f32) -> f32 {
         (1.0 - self.fraction(value)) * self.height_px
     }
+
+    /// 带内相对 y（逻辑像素）反算数值：`y_offset` 越大越靠下（值越小）。
+    #[must_use]
+    pub fn value_at_y(self, y_offset: f32) -> f32 {
+        let span = self.max - self.min;
+        if !span.is_finite() || span <= 0.0 || self.height_px <= 0.0 || !y_offset.is_finite() {
+            return self.min;
+        }
+        let fraction = (1.0 - (y_offset / self.height_px)).clamp(0.0, 1.0);
+        self.min + fraction * span
+    }
 }
 
 /// 折线上的一个顶点（**已经换算好的逻辑像素**，界面不做任何算术）。

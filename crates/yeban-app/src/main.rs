@@ -858,6 +858,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::wire_arrangement_hscroll(&ui, &undo_port);
     host::wire_track_rename(&ui, &undo_port);
     host::wire_track_arm(&ui);
+    host::wire_automation_lane_click(&ui, &undo_port);
     // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏。
     //
     // 工程内容是**领域内容** ⇒ 走 `Op` + `UndoPort`（`ADR-0005`）：拖动期间只写视图态，

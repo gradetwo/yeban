@@ -2430,6 +2430,7 @@ pub fn build_live_ui_with(
         host::wire_track_select(&window, undo);
         host::wire_track_rename(&window, undo);
         host::wire_track_arm(&window);
+        host::wire_automation_lane_click(&window, undo);
         // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放控件 / 移轨 / 横向滚动
         // （与 `main.rs` 的产品进程调**同一个**函数 ⇒ 无头面与生产面不分叉；
         // `tests/d_ui_11_serve_header_gestures.rs` 的名单对账要求两处都在场）。

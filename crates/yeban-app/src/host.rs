@@ -1510,6 +1510,64 @@ pub fn wire_track_arm(ui: &MainWindow) {
     });
 }
 
+/// 连接自动化车道点击与编辑 (G-A1)。
+pub fn wire_automation_lane_click(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    ui.on_automation_lane_click({
+        let weak = weak.clone();
+        let port = Rc::clone(&port);
+        move |click_x, click_y| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !ui.get_automation_visible() {
+                return;
+            }
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let Ok(view) = crate::bridge::ViewState::from_project(&project) else {
+                return;
+            };
+            // 找到包含 click_y 的泳道
+            // Flickable 内容区内，各泳道带顶沿是 band_y - 42.0 (rows-top)
+            let mut matched_lane = None;
+            for (idx, lane) in view.automation_lanes.iter().enumerate() {
+                let lane_top = lane.band_y - 42.0;
+                let lane_bottom = lane_top + lane.band_height;
+                if click_y >= lane_top && click_y < lane_bottom {
+                    let local_y = click_y - lane_top;
+                    matched_lane = Some((idx, local_y, lane.band_height));
+                    break;
+                }
+            }
+            let Some((lane_idx, local_y, height_px)) = matched_lane else {
+                return;
+            };
+            let scroll_x = ui.get_roll_scroll_x();
+            let ops = crate::bridge::automation_lane_click_ops(
+                &project,
+                lane_idx,
+                click_x,
+                local_y,
+                scroll_x,
+                view.ticks_per_pixel,
+                height_px,
+            );
+            if !ops.is_empty() {
+                let _ = port.commit_ops_with_origin(
+                    now_ms(),
+                    yeban_model::OpOrigin::UserUi,
+                    "add/edit automation point",
+                    ops,
+                );
+                refresh_undo_window(&ui, &port, true);
+            }
+        }
+    });
+}
+
 // ===========================================================================
 // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏
 // ===========================================================================
@@ -2159,15 +2217,36 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             let Ok(track_id) = track_id.parse::<yeban_model::EntityId>() else {
                 return;
             };
+            let target = yeban_model::AutomationTarget::TrackVolume { track_id };
             let op = yeban_model::Op::SetParam {
-                target: yeban_model::AutomationTarget::TrackVolume { track_id },
+                target,
                 old_val: start_db,
                 new_val: last_db,
             };
-            if port
-                .commit_ops(now_ms(), "mixer: set track volume", vec![op])
-                .is_err()
+            let mut ops = vec![op];
+            let mut is_auto_record = false;
+            if let Some(project) = port.try_project()
+                && ui.get_playing()
             {
+                let tick = playhead_tick(&ui);
+                let auto_ops =
+                    crate::bridge::record_automation_touch_ops(&project, &target, tick, last_db);
+                if !auto_ops.is_empty() {
+                    ops.extend(auto_ops);
+                    is_auto_record = true;
+                }
+            }
+            let res = if is_auto_record {
+                port.commit_ops_with_origin(
+                    now_ms(),
+                    yeban_model::OpOrigin::AutomationRecord,
+                    "record automation: track volume",
+                    ops,
+                )
+            } else {
+                port.commit_ops(now_ms(), "mixer: set track volume", ops)
+            };
+            if res.is_err() {
                 eprintln!("[yeban-app] 推子提交被拒绝（工程未改）");
                 return;
             }
@@ -2295,15 +2374,36 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             let Ok(track_id) = track_id.parse::<yeban_model::EntityId>() else {
                 return;
             };
+            let target = yeban_model::AutomationTarget::TrackPan { track_id };
             let op = yeban_model::Op::SetParam {
-                target: yeban_model::AutomationTarget::TrackPan { track_id },
+                target,
                 old_val: start_pan,
                 new_val: last_pan,
             };
-            if port
-                .commit_ops(now_ms(), "mixer: set track pan", vec![op])
-                .is_err()
+            let mut ops = vec![op];
+            let mut is_auto_record = false;
+            if let Some(project) = port.try_project()
+                && ui.get_playing()
             {
+                let tick = playhead_tick(&ui);
+                let auto_ops =
+                    crate::bridge::record_automation_touch_ops(&project, &target, tick, last_pan);
+                if !auto_ops.is_empty() {
+                    ops.extend(auto_ops);
+                    is_auto_record = true;
+                }
+            }
+            let res = if is_auto_record {
+                port.commit_ops_with_origin(
+                    now_ms(),
+                    yeban_model::OpOrigin::AutomationRecord,
+                    "record automation: track pan",
+                    ops,
+                )
+            } else {
+                port.commit_ops(now_ms(), "mixer: set track pan", ops)
+            };
+            if res.is_err() {
                 eprintln!("[yeban-app] 声相提交被拒绝（工程未改）");
                 return;
             }
@@ -4178,20 +4278,38 @@ impl DeviceEqWiring {
             refresh_undo_window(&ui, &self.port, true);
             return;
         }
+        let target = yeban_model::AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        };
         let op = yeban_model::Op::SetParam {
-            target: yeban_model::AutomationTarget::DeviceParam {
-                track_id,
-                slot_index,
-                param_index,
-            },
+            target,
             old_val: start_db,
             new_val: last_db,
         };
-        if self
-            .port
-            .commit_ops(now_ms(), commit_label, vec![op])
-            .is_err()
-        {
+        let mut ops = vec![op];
+        let mut is_auto_record = false;
+        if ui.get_playing() {
+            let tick = playhead_tick(&ui);
+            let auto_ops =
+                crate::bridge::record_automation_touch_ops(&project, &target, tick, last_db);
+            if !auto_ops.is_empty() {
+                ops.extend(auto_ops);
+                is_auto_record = true;
+            }
+        }
+        let res = if is_auto_record {
+            self.port.commit_ops_with_origin(
+                now_ms(),
+                yeban_model::OpOrigin::AutomationRecord,
+                commit_label,
+                ops,
+            )
+        } else {
+            self.port.commit_ops(now_ms(), commit_label, ops)
+        };
+        if res.is_err() {
             eprintln!("[yeban-app] {log_label} 提交被拒绝（工程未改）");
         }
         // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。

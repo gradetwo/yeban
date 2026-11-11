@@ -55,9 +55,10 @@ pub use yeban_model::samples::{demo_id, demo_project};
 use yeban_model::music::MidiNote;
 pub use yeban_model::note_plan::{NotePlan, plan_to_add_note};
 use yeban_model::project::{
-    ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, LoopConfig,
-    ParameterValue, RoutingEdge, RoutingKind, SceneV3, SectionV3, TimeSignature, TrackKind,
-    TrackV3, YebanProjectV1,
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
+    ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, LoopConfig, ParameterValue,
+    RoutingEdge, RoutingKind, SceneV3, SectionV3, TimeSignature, TrackKind, TrackV3,
+    YebanProjectV1,
 };
 use yeban_model::{EntityId, Op, SamplerBinding};
 
@@ -6297,6 +6298,204 @@ pub fn project_shaper_info(_project: &YebanProjectV1, track: Option<&TrackV3>) -
         return ("瞬态塑形: 无可显示的音轨".to_owned(), false);
     }
     ("瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)".to_owned(), true)
+}
+
+/// 循环切换指定目标的自动化泳道写模式 (G-A2)。
+///
+/// 循环顺序: `Off -> Touch -> Latch -> Write -> Off`。
+/// 若目标泳道尚不存在，则以 `Touch` 模式创建隐式泳道。
+#[must_use]
+pub fn cycle_automation_write_mode_ops(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+) -> Vec<Op> {
+    let track_id = target.track_id();
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+
+    if let Some(lane) = track.automation_lanes.get(target) {
+        let next_mode = match lane.write_mode {
+            AutomationWriteMode::Off => AutomationWriteMode::Touch,
+            AutomationWriteMode::Touch => AutomationWriteMode::Latch,
+            AutomationWriteMode::Latch => AutomationWriteMode::Write,
+            AutomationWriteMode::Write => AutomationWriteMode::Off,
+        };
+        let mut new_lane = lane.clone();
+        new_lane.write_mode = next_mode;
+        if new_lane.is_implicit() {
+            vec![Op::RemoveAutomationLane {
+                target: *target,
+                previous_lane: lane.clone(),
+            }]
+        } else {
+            vec![Op::SetAutomationLane {
+                target: *target,
+                old_lane: Some(lane.clone()),
+                new_lane,
+            }]
+        }
+    } else {
+        let mut new_lane = AutomationLane::implicit(*target);
+        new_lane.write_mode = AutomationWriteMode::Touch;
+        vec![Op::SetAutomationLane {
+            target: *target,
+            old_lane: None,
+            new_lane,
+        }]
+    }
+}
+
+/// 点击自动化车道添加或编辑自动化点 (G-A1)。
+///
+/// 坐标经由 `px_to_tick` 与 `AutomationAxis::value_at_y` 双向还原。
+/// 若点击位置靠近既有点 (8 像素容差对应 ticks)，则原位修改该点的值；否则创建新点。
+#[must_use]
+pub fn automation_lane_click_ops(
+    project: &YebanProjectV1,
+    lane_index: usize,
+    click_x_px: f32,
+    click_y_px: f32,
+    scroll_x_px: f32,
+    ticks_per_pixel: u64,
+    height_px: f32,
+) -> Vec<Op> {
+    let Ok(view) = ViewState::from_project(project) else {
+        return Vec::new();
+    };
+    if lane_index >= view.automation_lanes.len() {
+        return Vec::new();
+    }
+    let lane_view = &view.automation_lanes[lane_index];
+    let target = lane_view.target;
+    let track_id = target.track_id();
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+
+    let abs_x = (click_x_px + scroll_x_px).max(0.0);
+    let tick = px_to_tick(abs_x as u32, ticks_per_pixel.max(1)).unwrap_or(0);
+
+    let axis = crate::automation::AutomationAxis::new(
+        lane_view.domain_min,
+        lane_view.domain_max,
+        height_px.max(1.0),
+    );
+    let value = axis.value_at_y(click_y_px);
+
+    // 容差：8 像素对应 tick 数
+    let tolerance_ticks = 8u64.saturating_mul(ticks_per_pixel.max(1));
+
+    if let Some(lane) = track.automation_lanes.get(&target) {
+        // 查找既有点是否在容差内
+        let nearest = lane
+            .points
+            .values()
+            .find(|pt| pt.tick.abs_diff(tick) <= tolerance_ticks);
+        if let Some(existing) = nearest {
+            let new_point = AutomationPoint {
+                id: existing.id,
+                tick: existing.tick,
+                value,
+                curve: existing.curve,
+            };
+            return vec![Op::SetAutomationPoint {
+                target,
+                point_id: existing.id,
+                old_point: Some(*existing),
+                new_point,
+            }];
+        }
+    }
+
+    // 新增点
+    let point_id = EntityId::new();
+    let new_point = AutomationPoint {
+        id: point_id,
+        tick,
+        value,
+        curve: yeban_model::CurveType::Linear,
+    };
+    vec![Op::SetAutomationPoint {
+        target,
+        point_id,
+        old_point: None,
+        new_point,
+    }]
+}
+
+/// 将录制的一批 (tick, value) 点转换为 `Op::SetAutomationPoint` 操作集 (G-A2)。
+///
+/// 若工程在该 tick 已存在点，则附带 `old_point` 实现原地修改；否则新建点。
+#[must_use]
+pub fn record_automation_points_ops(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+    points: &[(u64, f32)],
+) -> Vec<Op> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let track_id = target.track_id();
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let lane = track.automation_lanes.get(target);
+
+    let mut ops = Vec::with_capacity(points.len());
+    for &(tick, value) in points {
+        let existing = lane.and_then(|l| l.points.values().find(|p| p.tick == tick));
+        if let Some(old) = existing {
+            let new_point = AutomationPoint {
+                id: old.id,
+                tick,
+                value,
+                curve: old.curve,
+            };
+            ops.push(Op::SetAutomationPoint {
+                target: *target,
+                point_id: old.id,
+                old_point: Some(*old),
+                new_point,
+            });
+        } else {
+            let point_id = EntityId::new();
+            let new_point = AutomationPoint {
+                id: point_id,
+                tick,
+                value,
+                curve: yeban_model::CurveType::Linear,
+            };
+            ops.push(Op::SetAutomationPoint {
+                target: *target,
+                point_id,
+                old_point: None,
+                new_point,
+            });
+        }
+    }
+    ops
+}
+
+/// 检查给定目标是否处于自动化录制激活态 (G-A2)，并在有效模式下生成单点写入操作。
+#[must_use]
+pub fn record_automation_touch_ops(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+    tick: u64,
+    value: f32,
+) -> Vec<Op> {
+    let track_id = target.track_id();
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    let Some(lane) = track.automation_lanes.get(target) else {
+        return Vec::new();
+    };
+    if lane.write_mode.is_off() {
+        return Vec::new();
+    }
+    record_automation_points_ops(project, target, &[(tick, value)])
 }
 
 #[cfg(test)]

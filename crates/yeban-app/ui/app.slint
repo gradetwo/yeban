@@ -1025,6 +1025,8 @@ export component MainWindow inherits Window {
     callback ruler-seek-bar(string);
     /// 点击章节卡片 ⇒ 走带定位到该段起点：`(段落下标)`。
     callback section-seek(int);
+    /// 点击自动化车道添加/编辑自动化点 (G-A1)
+    callback automation-lane-click(length, length);
     // ⭐ 任务单 `#283`：Session View 的场景按钮 ⇒ **真的**把这次启动送到引擎
     // （`host::wire_scene_launch` → `EngineHost::queue_scene_launch`）。界面只报场景下标：
     // 量化档 / tempo 覆盖 / 拍号由宿主从**当前投影**现读，⛔ 界面不拼这些语义。
@@ -1913,6 +1915,9 @@ export component MainWindow inherits Window {
                     automation-lane-read-enabled: root.automation-lane-read-enabled;
                     automation-lane-badges: root.automation-lane-badges;
                     automation-path-commands: root.automation-path-commands;
+                    automation-lane-click(click_x, click_y) => {
+                        root.automation-lane-click(click_x, click_y);
+                    }
                 }
             }
 
