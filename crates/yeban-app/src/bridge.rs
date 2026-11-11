@@ -6262,7 +6262,7 @@ pub fn compressor_cycle_ratio_ops(project: &YebanProjectV1, track_id: EntityId) 
             target: yeban_model::AutomationTarget::DeviceParam {
                 track_id,
                 slot_index: slot_idx,
-                param_index,
+                param_index: param_idx,
             },
             old_val: cur_ratio,
             new_val: next_ratio,
