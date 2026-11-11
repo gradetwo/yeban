@@ -4980,6 +4980,7 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     ui.set_track_meter_levels(lengths(&snapshot.levels()));
     ui.set_master_meter_peak(snapshot.master_peak_label().into());
     ui.set_master_meter_rms(snapshot.master_rms_label().into());
+    ui.set_master_meter_lufs(snapshot.master_lufs_label().into());
     ui.set_master_meter_level(snapshot.master_level());
 }
 

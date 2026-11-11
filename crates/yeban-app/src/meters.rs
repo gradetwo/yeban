@@ -189,6 +189,28 @@ impl MeterSnapshot {
     pub fn master_level(&self) -> f32 {
         self.master.as_ref().map_or(0.0, |master| master.level)
     }
+
+    /// 主控 LUFS 读数（LKFS / LUFS）。
+    ///
+    /// 依照 ITU-R BS.1770-4，双声道瞬时功率经 K 计权后，标定偏移量为 -0.691 dBFS。
+    /// 当主总线有电平帧且高于静音下限时，由平滑 RMS 减去 0.691 dB 计算；
+    /// 静音或无主总线时保持为静音下限 METER_FLOOR_DBFS。
+    #[must_use]
+    pub fn master_lufs(&self) -> f32 {
+        self.master.as_ref().map_or(METER_FLOOR_DBFS, |master| {
+            if master.rms_dbfs > METER_FLOOR_DBFS {
+                sanitize_dbfs(master.rms_dbfs - 0.691)
+            } else {
+                METER_FLOOR_DBFS
+            }
+        })
+    }
+
+    /// 主控 LUFS 显示文本（`display_dbfs(master_lufs())`）。
+    #[must_use]
+    pub fn master_lufs_label(&self) -> String {
+        display_dbfs(self.master_lufs())
+    }
 }
 
 /// 一个**没有引擎**的静音快照：每轨都是 [`ChannelMeter::silent`]。
@@ -632,5 +654,29 @@ mod tests {
         // `expected_nodes = 1` ⇒ scratch 只有一格；`drain_latest` 仍然抽干整个积压。
         assert_eq!(runtime.poll(1), 1);
         assert_eq!(runtime.snapshot(&view).quantum, Some(9));
+    }
+
+    /// 判据 10：主控 LUFS 读数与 ITU-R BS.1770-4 偏移量吻合，且静音时保持下限。
+    #[test]
+    fn master_lufs_calculation_matches_bs1770_offset() {
+        let view = ViewState::from_project(&demo_project()).expect("投影");
+        let silent = silent_snapshot(&view);
+        assert_eq!(silent.master_lufs(), METER_FLOOR_DBFS);
+        assert_eq!(silent.master_lufs_label(), "-120.0");
+
+        let master_id = view.master.as_ref().expect("演示工程有主控").id.clone();
+        let master_entity =
+            yeban_model::EntityId::from_canonical_string(&master_id).expect("有效 ID");
+
+        let (mut publisher, collector) = meter_channel(16);
+        let mut runtime = MeterRuntime::with_collector(collector);
+        // 发布一帧满幅信号 (1.0 peak, 1.0 rms => 0.0 dBFS)
+        publisher.publish(&[MeterFrame::new(master_entity, 1, 1.0, 1.0)]);
+        assert_eq!(runtime.poll(view.tracks.len() + 1), 1);
+        let shot = runtime.snapshot(&view);
+
+        // 0.0 dBFS rms - 0.691 dB = -0.691 LUFS -> 显示 "-0.7"
+        assert!((shot.master_lufs() - (-0.691)).abs() < 1e-4);
+        assert_eq!(shot.master_lufs_label(), "-0.7");
     }
 }
