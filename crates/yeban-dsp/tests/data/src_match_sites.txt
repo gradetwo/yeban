@@ -49,8 +49,8 @@ src/polysynth.rs|2233|variable||index| {|variable_needle|needle 非字面量：�
 src/polysynth.rs|2302|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|2761|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview.rs|210|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview.rs|369|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview.rs|214|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview.rs|395|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/song_overview_report.rs|752|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
 src/song_overview_report.rs|753|literal|schema 1.1|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
 src/song_overview_report.rs|754|literal|D minor|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计

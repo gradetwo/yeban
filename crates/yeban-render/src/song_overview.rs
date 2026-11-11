@@ -3,10 +3,12 @@
 //! 工程 → 离线总线音频（内存缓冲）→ dsp 四层分析（[`SongOverview`]）的
 //! Phase 1 管线 + 整曲哈希缓存。
 //!
-//! ## 两条入口
+//! ## 三条入口
 //!
 //! - [`render_project_to_buffer`]：给定工程，离线渲染整曲总线音频到内存交错
 //!   立体声 `f32` 缓冲（[`AudioInput`] 可直接用的形状）+ 采样率。
+//! - [`render_stems_to_buffers`]：逐源轨 solo 渲染（设计稿 §8.2 追加，schema 1.2），
+//!   分轨频率打架检测的音频来源；复用分轨导出的 clone-mute-re-render 招数。
 //! - [`cached_overview`]：同一哈希直接返回缓存结果（不重算）；工程或渲染设置
 //!   任一变化即失效（见 [`song_overview_hash`]）。
 //!
@@ -17,7 +19,8 @@
 //! PDC 延迟走 [`track_latencies`]，声相走 [`centered_pan_gains`] +
 //! `yeban_engine::mixer::pan_gains`（与 CLI 离线导出同一条曲线）。
 //! 谱面映射走 `yeban_model::song_overview::score_input_from_project`，
-//! 分析走 [`yeban_dsp::song_overview::analyze_song_overview`]。
+//! 分析走 [`yeban_dsp::song_overview::analyze_song_overview_with_stems`]
+//! （分轨版；无分轨时退化为旧行为）。
 //!
 //! ## 帧数口径（与 `yeban_render_master` 同一条公式）
 //!
@@ -55,7 +58,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
-use yeban_dsp::song_overview::{AnalysisOptions, AudioInput, analyze_song_overview_with_options};
+use yeban_dsp::song_overview::{
+    AnalysisOptions, AudioInput, StemInput, analyze_song_overview_with_stems,
+};
 
 /// `yeban-dsp` 总览类型的再导出：`yeban-mcp` 经本 crate 调用 dsp 的 HTML 渲染器
 /// （`yeban-mcp → yeban-render` 是已登记例外；`pub use yeban_dsp::loudness` 同款先例
@@ -68,6 +73,11 @@ pub use yeban_dsp::song_overview::{
 /// 同上：HTML 渲染器（唯一实现，住在 `yeban-dsp` 的 `song_overview_report`）。
 pub use yeban_dsp::song_overview_report::{
     DEFAULT_REPORT_TITLE, render_html_report, render_html_report_with_title,
+};
+/// 同上：分轨频率打架类型（`yeban-mcp` 的 mcp→dsp 反向映射用：HTML 渲染前把
+/// mcp 总览拼回 dsp 总览；与上条同款已登记例外，不新增依赖边）。
+pub use yeban_dsp::song_overview::{
+    BarOverlap, ClashSeverity, ClashTrackRef, FrequencyClashEntry, FrequencyClashSummary,
 };
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_model::{
@@ -339,7 +349,7 @@ impl SongOverviewCache {
 /// 命中缓存时不渲染、不分析，直接返回克隆结果（`hit = true`）。
 /// 未命中时全量跑一遍后把结果存入缓存（`hit = false`）。
 /// `options` 是 Phase 2 分析选项（曲风档 / 期望等级表）：进哈希（见
-/// [`song_overview_hash`]），也进分析（[`analyze_song_overview_with_options`]）。
+/// [`song_overview_hash`]），也进分析（[`analyze_song_overview_with_stems`]）。
 ///
 /// # Errors
 ///
@@ -362,9 +372,23 @@ where
     }
     cache.misses = cache.misses.saturating_add(1);
     let rendered = render_project_to_buffer(project, settings, &mut sfz_provider)?;
+    let stems = render_stems_to_buffers(project, settings, &mut sfz_provider)?;
     let score = score_input_from_project(project);
     let audio = rendered.as_audio_input();
-    let overview = analyze_song_overview_with_options(&score, Some(&audio), options);
+    let stem_ids: Vec<String> = stems
+        .iter()
+        .map(|stem| stem.track.to_canonical_string())
+        .collect();
+    let stem_inputs: Vec<StemInput<'_>> = stems
+        .iter()
+        .zip(&stem_ids)
+        .map(|(stem, id)| StemInput {
+            track_id: id,
+            track_name: &stem.name,
+            audio: stem.audio.as_audio_input(),
+        })
+        .collect();
+    let overview = analyze_song_overview_with_stems(&score, Some(&audio), &stem_inputs, options);
     cache.insert(hash, overview.clone());
     Ok((overview, false))
 }
@@ -474,6 +498,106 @@ where
         frames: output.frames,
         skipped_tracks,
     })
+}
+
+/// 一条源轨 solo 渲染出的音频（分轨频率打架检测的输入，见 [`render_stems_to_buffers`]）。
+#[derive(Clone, Debug)]
+pub struct StemBuffer {
+    /// 轨 id。
+    pub track: EntityId,
+    /// 轨名。
+    pub name: String,
+    /// 该轨 solo 渲染的音频（与混音同采样率、同帧数）。
+    pub audio: RenderedAudio,
+}
+
+/// 逐源轨 solo 渲染（设计稿 §8.2 追加，schema 1.2；分轨频率打架检测的音频来源）。
+///
+/// 做法与 MCP 的分轨导出（`yeban_mcp::domain::stems::export`）同一招数，
+/// 不另建渲染器：每条源轨各 clone 一份工程 → 试听复位（mute/solo/solo_safe
+/// 全清，与 `stems.rs` 的 `project_without_audition` 同语义）→ 清主总线
+/// devices（与分轨一致：主总线处理是共用的，分轨各涂一遍会扭曲各轨频段
+/// 相对关系）→ 除目标轨外的其余**源节点** mute → [`render_project_to_buffer`]。
+/// mute 经引擎快照生效（静音轨渲染为静音）。总线与 master **不动** —— 它们
+/// 是目标轨信号的通路，静音它们会连目标一起消掉（`stems.rs` 同款注释；
+/// 本函数初版误 mute 全轨，演示工程 4 条 MIDI 分轨只剩鼓轨出声，遂改）。
+///
+/// 源节点 = 探针计划里无入边（`bus_reduction_order` 为 None 或空）的节点，
+/// 主总线除外；与 MCP 的 `probe_subgraph` / `is_source_node` 同规则（那侧
+/// 是 `pub(super)`，本侧自己实现）。有入边 + 自带 clips 的总线源轨跳过，
+/// 是 v1 的已知局限（与分轨后端的 `NotASourceNode` 同规则）。
+///
+/// 成本：N 次渲染（N = 源轨数），与 `--export-stems` 同量级；调用方
+/// （[`cached_overview`]）只在缓存未命中时跑。
+///
+/// # Errors
+///
+/// [`SongOverviewError`]：采样率不一致 / 工程无内容 / 快照武装失败 /
+/// 渲染计划编译或执行失败。
+pub fn render_stems_to_buffers<F>(
+    project: &YebanProjectV1,
+    settings: &RenderSettings,
+    mut sfz_provider: F,
+) -> Result<Vec<StemBuffer>, SongOverviewError>
+where
+    F: FnMut(EntityId, &str) -> ArmedSfzInput,
+{
+    let sample_rate = project.audio_config.sample_rate.hz();
+    if settings.sample_rate_hz != sample_rate {
+        return Err(SongOverviewError::SampleRateMismatch {
+            expected_hz: sample_rate,
+            got_hz: settings.sample_rate_hz,
+        });
+    }
+    // 探针计划取保留子图 + 源节点（与 `render_project_to_buffer` 同一招数）。
+    let probe_options = RenderOptions::l1(1, 2, sample_rate, settings.seed);
+    let probe = RenderPlan::compile(
+        &project.routing_graph,
+        project.master_bus_track_id,
+        probe_options,
+    )?;
+    let sources: Vec<EntityId> = probe
+        .nodes()
+        .into_iter()
+        .filter(|node| {
+            *node != project.master_bus_track_id
+                && probe
+                    .bus_reduction_order(*node)
+                    .is_none_or(|inputs| inputs.is_empty())
+        })
+        .collect();
+    let mut stems = Vec::with_capacity(sources.len());
+    for &target in &sources {
+        let mut clone = project.clone();
+        for track in clone.tracks.values_mut() {
+            track.mute = false;
+            track.solo = false;
+            track.solo_safe = false;
+        }
+        if let Some(master) = clone.tracks.get_mut(&clone.master_bus_track_id) {
+            master.devices.clear();
+        }
+        // 只 mute 其余源节点：总线与 master 是目标信号的通路，不动。
+        for &node in &sources {
+            if node != target
+                && let Some(track) = clone.tracks.get_mut(&node)
+            {
+                track.mute = true;
+            }
+        }
+        let audio = render_project_to_buffer(&clone, settings, &mut sfz_provider)?;
+        let name = project
+            .tracks
+            .get(&target)
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        stems.push(StemBuffer {
+            track: target,
+            name,
+            audio,
+        });
+    }
+    Ok(stems)
 }
 
 /// 该节点是否有一条来自保留子图的音频入边（侧链边不算音频边）。

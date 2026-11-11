@@ -2199,7 +2199,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SONG-OVERVIEW",
         name: "get_song_overview",
-        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `repetition` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；Phase 2：`profile`（曲风预设，缺省 `default`）与 `expected_levels`（段落期望张力等级表，缺省无标注）；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。`format` 缺省 `\"json\"`（§8.2 JSON）；给 `\"html\"` 返回单文件自包含 HTML 报告字符串（与 JSON 同一份数，由 `yeban-dsp` 的唯一渲染器生成）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
+        summary: "返回整曲多层可视化总览图的小节级列式 JSON 与自动异常诊断摘要（设计稿 §8.2：`schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `repetition` / `frequency_clash` / `bar_series`；归一化指标保留 2 位小数，响度与频段能量保留 1 位小数）。`resolution` 缺省 `\"bar\"`（一小节一行），给 `\"beat\"` 则一拍一行；Phase 2：`profile`（曲风预设，缺省 `default`）与 `expected_levels`（段落期望张力等级表，缺省无标注）；`include_png_path` 缺省 `false`，Phase 1 只接受参数、不产 PNG（给 `true` 时 `pngPath: null` + 一句 Phase 2 说明，见设计稿 §8.1）。`format` 缺省 `\"json\"`（§8.2 JSON）；给 `\"html\"` 返回单文件自包含 HTML 报告字符串（与 JSON 同一份数，由 `yeban-dsp` 的唯一渲染器生成）。只读：不改工程、不落盘；需要活跃工程与宿主注入的 provider（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回空总览）。⚠ 工具名**不带** `yeban_` 前缀：名字由设计稿 §8.1/§12 定，是跨线契约名，见注册判据的例外说明。",
         scope: Scope::AppAdmin,
         // 只读：取 provider 已算好的总览做映射，不改工程、不落盘。
         side_effect: SideEffect::ReadOnly,

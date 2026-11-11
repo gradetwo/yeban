@@ -20,8 +20,8 @@ use yeban_mcp::domain::song_overview::{
     overview_html_report_with_title,
 };
 use yeban_mcp::output_schema::{
-    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
-    StructuralSummary, for_tool,
+    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, FrequencyClashSummary, RepetitionSummary,
+    SongMeta, SongOverview, StructuralSummary, for_tool,
 };
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{EXTENSION_NAMES, EXTENSION_TOOL_COUNT, TOOL_COUNT};
@@ -217,13 +217,18 @@ fn stub_bar_overview_matches_independent_recomputation() {
     let data = ok_data(&response);
 
     // 顶层形状（设计稿 §8.2；schema 1.1 起加 `repetition`）。
-    assert_eq!(data["schema_version"], "1.1");
+    assert_eq!(data["schema_version"], "1.2");
     assert_eq!(data["provider"], "stub");
     assert_eq!(data["resolution"], "bar");
     // stub 不算重复检测：重复摘要为空（形状完整、值为空）。
     assert_eq!(data["repetition"]["best_matches"], json!([]));
     assert_eq!(data["repetition"]["mechanical_index"], 0.0);
     assert_eq!(data["repetition"]["repeated_passages"], json!([]));
+    // stub 不算打架检测：重叠摘要为空（形状完整、值为空）。
+    assert_eq!(data["frequency_clash"]["total_groups"], 0);
+    assert_eq!(data["frequency_clash"]["overall_overlap"], 0.0);
+    assert_eq!(data["frequency_clash"]["bar_overlaps"], json!([]));
+    assert_eq!(data["frequency_clash"]["entries"], json!([]));
     // `song_meta` 的键名以 `output_schema::SongMeta` 为准（无 title / bpm 别名）。
     assert_eq!(data["song_meta"]["total_bars"], 8);
     assert_eq!(data["song_meta"]["duration_sec"], 16.0);
@@ -788,7 +793,9 @@ fn invalid_expected_levels_are_rejected() {
 
 /// `format` 缺省前（`{}`）的金标：2026-11-11 抓自改动前代码（临时抓取测试已删），
 /// 规范序 JSON（`serde_json::to_string` 的键序）逐字节钉死。
-const GOLDEN_JSON: &str = r#"{"band_definitions_hz":[[20,90],[90,250],[250,500],[500,1000],[1000,2000],[2000,5000],[5000,10000],[10000,20000]],"bar_series":[{"bands_tilted_db":[-18.2,-14.5,-12.0,-11.4,-15.0,-19.2,-24.0,-31.5],"bar":1,"density_perc_onsets_per_beat":0.5,"density_pitched_duty":0.65,"density_pitched_onsets_per_beat":1.5,"lufs_momentary_max":-19.8,"lufs_short":-22.4,"score_dyn":0.28,"section":"Intro","target_deviation":0.0,"tension":0.42,"time_sec":0.0,"valence_hue":-0.62},{"bands_tilted_db":[-17.0,-13.8,-12.1,-11.0,-14.6,-18.8,-23.5,-31.0],"bar":2,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.68,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-17.5,"lufs_short":-20.1,"score_dyn":0.34,"section":"Intro","target_deviation":0.0,"tension":0.5,"time_sec":2.0,"valence_hue":-0.58},{"bands_tilted_db":[-16.2,-13.2,-11.9,-10.6,-14.0,-18.0,-22.8,-30.2],"bar":3,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.7,"density_pitched_onsets_per_beat":2.5,"lufs_momentary_max":-16.0,"lufs_short":-18.6,"score_dyn":0.42,"section":"Verse","target_deviation":0.0,"tension":0.54,"time_sec":4.0,"valence_hue":-0.55},{"bands_tilted_db":[-15.0,-12.4,-12.2,-10.2,-13.5,-17.4,-22.0,-29.5],"bar":4,"density_perc_onsets_per_beat":2.0,"density_pitched_duty":0.72,"density_pitched_onsets_per_beat":3.0,"lufs_momentary_max":-13.6,"lufs_short":-16.2,"score_dyn":0.48,"section":"Verse","target_deviation":0.0,"tension":0.62,"time_sec":6.0,"valence_hue":-0.5},{"bands_tilted_db":[-14.2,-11.8,-6.8,-10.0,-13.2,-17.0,-21.6,-29.0],"bar":5,"density_perc_onsets_per_beat":2.5,"density_pitched_duty":0.75,"density_pitched_onsets_per_beat":3.5,"lufs_momentary_max":-11.2,"lufs_short":-13.8,"score_dyn":0.52,"section":"Chorus","target_deviation":0.0,"tension":0.69,"time_sec":8.0,"valence_hue":-0.44},{"bands_tilted_db":[-14.6,-12.0,-6.8,-10.4,-13.6,-17.5,-22.2,-29.6],"bar":6,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.6,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-11.4,"lufs_short":-14.0,"score_dyn":0.4,"section":"Chorus","target_deviation":0.0,"tension":0.58,"time_sec":10.0,"valence_hue":-0.52},{"bands_tilted_db":[-13.8,-11.2,-12.0,-9.8,-13.0,-16.8,-21.2,-28.6],"bar":7,"density_perc_onsets_per_beat":3.0,"density_pitched_duty":0.78,"density_pitched_onsets_per_beat":4.0,"lufs_momentary_max":-11.0,"lufs_short":-13.6,"score_dyn":0.54,"section":"Chorus","target_deviation":0.0,"tension":0.73,"time_sec":12.0,"valence_hue":-0.4},{"bands_tilted_db":[-13.0,-10.6,-11.8,-9.4,-12.6,-16.2,-20.8,-28.0],"bar":8,"density_perc_onsets_per_beat":3.5,"density_pitched_duty":0.8,"density_pitched_onsets_per_beat":4.5,"lufs_momentary_max":-9.8,"lufs_short":-12.4,"score_dyn":0.58,"section":"Outro","target_deviation":0.0,"tension":0.79,"time_sec":14.0,"valence_hue":-0.35}],"commitModel":"none","provider":"stub","repetition":{"best_matches":[],"mechanical_index":0.0,"repeated_passages":[]},"resolution":"bar","schema_version":"1.1","song_meta":{"base_bpm":120.0,"duration_sec":16.0,"key_signature":"D minor","profile":"default","total_bars":8},"structural_summary":{"climax_bar":8,"climax_tension":0.79,"detected_anomalies":[{"bars":[5,6],"description":"Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB","type":"low_mid_buildup"},{"bars":[7,8],"description":"Score velocity rises +35% but rendered LUFS changes only +0.4 LU","type":"compression_squash"}],"dynamic_range_lu":10.0}}"#;
+/// 分轨频率打架线合入时同步更新：schema 1.1 → 1.2，`frequency_clash` 为空摘要
+/// （stub 不算打架；真实值见 `frequency_clash` 判据）。
+const GOLDEN_JSON: &str = r#"{"band_definitions_hz":[[20,90],[90,250],[250,500],[500,1000],[1000,2000],[2000,5000],[5000,10000],[10000,20000]],"bar_series":[{"bands_tilted_db":[-18.2,-14.5,-12.0,-11.4,-15.0,-19.2,-24.0,-31.5],"bar":1,"density_perc_onsets_per_beat":0.5,"density_pitched_duty":0.65,"density_pitched_onsets_per_beat":1.5,"lufs_momentary_max":-19.8,"lufs_short":-22.4,"score_dyn":0.28,"section":"Intro","target_deviation":0.0,"tension":0.42,"time_sec":0.0,"valence_hue":-0.62},{"bands_tilted_db":[-17.0,-13.8,-12.1,-11.0,-14.6,-18.8,-23.5,-31.0],"bar":2,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.68,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-17.5,"lufs_short":-20.1,"score_dyn":0.34,"section":"Intro","target_deviation":0.0,"tension":0.5,"time_sec":2.0,"valence_hue":-0.58},{"bands_tilted_db":[-16.2,-13.2,-11.9,-10.6,-14.0,-18.0,-22.8,-30.2],"bar":3,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.7,"density_pitched_onsets_per_beat":2.5,"lufs_momentary_max":-16.0,"lufs_short":-18.6,"score_dyn":0.42,"section":"Verse","target_deviation":0.0,"tension":0.54,"time_sec":4.0,"valence_hue":-0.55},{"bands_tilted_db":[-15.0,-12.4,-12.2,-10.2,-13.5,-17.4,-22.0,-29.5],"bar":4,"density_perc_onsets_per_beat":2.0,"density_pitched_duty":0.72,"density_pitched_onsets_per_beat":3.0,"lufs_momentary_max":-13.6,"lufs_short":-16.2,"score_dyn":0.48,"section":"Verse","target_deviation":0.0,"tension":0.62,"time_sec":6.0,"valence_hue":-0.5},{"bands_tilted_db":[-14.2,-11.8,-6.8,-10.0,-13.2,-17.0,-21.6,-29.0],"bar":5,"density_perc_onsets_per_beat":2.5,"density_pitched_duty":0.75,"density_pitched_onsets_per_beat":3.5,"lufs_momentary_max":-11.2,"lufs_short":-13.8,"score_dyn":0.52,"section":"Chorus","target_deviation":0.0,"tension":0.69,"time_sec":8.0,"valence_hue":-0.44},{"bands_tilted_db":[-14.6,-12.0,-6.8,-10.4,-13.6,-17.5,-22.2,-29.6],"bar":6,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.6,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-11.4,"lufs_short":-14.0,"score_dyn":0.4,"section":"Chorus","target_deviation":0.0,"tension":0.58,"time_sec":10.0,"valence_hue":-0.52},{"bands_tilted_db":[-13.8,-11.2,-12.0,-9.8,-13.0,-16.8,-21.2,-28.6],"bar":7,"density_perc_onsets_per_beat":3.0,"density_pitched_duty":0.78,"density_pitched_onsets_per_beat":4.0,"lufs_momentary_max":-11.0,"lufs_short":-13.6,"score_dyn":0.54,"section":"Chorus","target_deviation":0.0,"tension":0.73,"time_sec":12.0,"valence_hue":-0.4},{"bands_tilted_db":[-13.0,-10.6,-11.8,-9.4,-12.6,-16.2,-20.8,-28.0],"bar":8,"density_perc_onsets_per_beat":3.5,"density_pitched_duty":0.8,"density_pitched_onsets_per_beat":4.5,"lufs_momentary_max":-9.8,"lufs_short":-12.4,"score_dyn":0.58,"section":"Outro","target_deviation":0.0,"tension":0.79,"time_sec":14.0,"valence_hue":-0.35}],"commitModel":"none","frequency_clash":{"bar_overlaps":[],"entries":[],"overall_overlap":0.0,"total_groups":0},"provider":"stub","repetition":{"best_matches":[],"mechanical_index":0.0,"repeated_passages":[]},"resolution":"bar","schema_version":"1.2","song_meta":{"base_bpm":120.0,"duration_sec":16.0,"key_signature":"D minor","profile":"default","total_bars":8},"structural_summary":{"climax_bar":8,"climax_tension":0.79,"detected_anomalies":[{"bars":[5,6],"description":"Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB","type":"low_mid_buildup"},{"bars":[7,8],"description":"Score velocity rises +35% but rendered LUFS changes only +0.4 LU","type":"compression_squash"}],"dynamic_range_lu":10.0}}"#;
 
 #[test]
 fn default_json_is_byte_identical_to_pre_change_golden() {
@@ -941,6 +948,13 @@ fn two_bar_overview_with_beat_duplicate() -> SongOverview {
             best_matches: vec![],
             mechanical_index: 0.0,
             repeated_passages: vec![],
+        },
+        // 夹具不声称重叠与否，字段只保形状完整，值为空摘要。
+        frequency_clash: FrequencyClashSummary {
+            total_groups: 0,
+            overall_overlap: 0.0,
+            bar_overlaps: vec![],
+            entries: vec![],
         },
         bar_series: vec![
             row(1, Some(1), 0.0),

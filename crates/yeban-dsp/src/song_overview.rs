@@ -22,7 +22,9 @@
 //! 诊断（[`Anomaly`]，MCP 与 UI 共用）：低频中段淤积（`low_mid_buildup`）、
 //! 总线压缩压扁（`compression_squash`）与期望带偏离（`envelope_deviation`，
 //! Phase 2），均为纯逻辑阈值判定；段内自相似度（[`analyze_repetition`]）
-//! 找跨段重复（`arrangement_repetition`，设计稿 §8.2 追加，schema 1.1），
+//! 找跨段重复（`arrangement_repetition`，设计稿 §8.2 追加，schema 1.1）；
+//! 分轨频率打架（[`detect_frequency_clash`]，设计稿 §8.2 追加，schema 1.2）
+//! 按拍按频段比各轨能量，次响轨距最响轨 6 dB 内且高于可听门限即记打架。
 //! 谱面力度虚线（设计稿 §5.1）直接画 `bar_series.score_dyn` 列，不另算。
 //!
 //! Phase 2（设计稿 §3.5/§3.6/§5.1）：曲风预设 3 档 + 方差自适应权重
@@ -38,9 +40,11 @@
 use crate::loudness::GatedLoudness;
 use realfft::RealFftPlanner;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
-/// 设计稿 schema 版本（§8.2；1.1 起加 `repetition` 与 `arrangement_repetition`）。
-pub const SCHEMA_VERSION: &str = "1.1";
+/// 设计稿 schema 版本（§8.2；1.1 起加 `repetition` 与 `arrangement_repetition`；
+/// 1.2 起加 `frequency_clash`）。
+pub const SCHEMA_VERSION: &str = "1.2";
 
 /// 8 频段边界（Hz），顺序为 Sub → Air（设计稿 §4.1）。
 pub const BAND_DEFINITIONS_HZ: [[f32; 2]; 8] = [
@@ -255,6 +259,28 @@ pub const ROUGHNESS_REFERENCE: f64 = 0.5;
 pub const LOW_MID_EXCESS_DB: f32 = 4.0;
 /// 诊断所需的最短连续小节数。
 pub const DIAGNOSTIC_MIN_BARS: usize = 4;
+
+/// 分轨频率打架：可听门限（dBFS，设计稿 §8.2 追加，schema 1.2）：低于满刻度
+/// 60 dB 的频段能量在任何现实混音下都听不见，不参评；混音频段下限是 −120 dB，
+/// −60 取在静音/底噪区与可听区之间。
+pub const CLASH_AUDIBILITY_FLOOR_DB: f32 = -60.0;
+/// 分轨频率打架：重叠度重档下限（Wang 2026-11-11 13:17 定：输出以频谱重叠度
+/// 为主，6 dB 不再是定性硬门限，只作换算参考点）：重叠度 > 0.5 即重档——
+/// 第二强轨能量超最强轨一半（差距 < 3 dB），两轨在该频段近乎等强、强互掩蔽。
+pub const CLASH_SEVERE_OVERLAP: f32 = 0.5;
+/// 分轨频率打架：重叠度中档下限：重叠度 0.25–0.5 为中档（差距 3–6 dB，
+/// 第二强轨能量为最强轨的四分之一到一半，清晰可闻、部分掩蔽）；低于 0.25
+/// 为轻档（差距 > 6 dB，第二强轨在该频段处于被掩蔽侧，但仍是真实测得的重叠，
+/// 照样计入输出）。3 dB 与 6 dB 是能量比的自然锚点（一半、四分之一）。
+pub const CLASH_MODERATE_OVERLAP: f32 = 0.25;
+/// 分轨频率打架：每条轨在某拍的某频段参评的前提——该频段能量距该轨当拍最响
+/// 频段不得超过 20 dB。没有这一条，Hann 窗旁瓣泄漏（约低于峰值频段 30 dB 以上）
+/// 会让一条纯音在相邻频段也"参评"，同频段测试会多报 2 条假打架；20 dB 既拦
+/// 住泄漏，又留住轨的真实次要频段内容（典型在峰值 20 dB 以内）。
+pub const CLASH_TRACK_BAND_FLOOR_DB: f32 = 20.0;
+/// 分轨频率打架：每曲最多报几条（按重叠度降序截断；截断前的组数进
+/// [`FrequencyClashSummary::total_groups`]）。
+pub const CLASH_MAX_ENTRIES: usize = 20;
 
 /// 段内自相似度：重复判定阈值（余弦相似度；设计稿 §8.2 追加：重复段检查）。
 pub const REPEAT_SIMILARITY: f32 = 0.95;
@@ -559,6 +585,93 @@ pub struct RepetitionSummary {
     pub repeated_passages: Vec<RepeatedPassage>,
 }
 
+/// 分轨频率打架检测的一条分轨输入（设计稿 §8.2 追加，schema 1.2）：渲染侧
+/// 把每条源轨 solo 渲染出的音频连同轨身份一起传进来；DSP 层不认识工程模型
+/// （本 crate 无 `yeban-model` 依赖），轨只以 id + name 字符串区分。
+#[derive(Debug, Clone)]
+pub struct StemInput<'a> {
+    /// 轨 id（`EntityId` 的规范字符串）。
+    pub track_id: &'a str,
+    /// 轨名（显示用）。
+    pub track_name: &'a str,
+    /// 该轨 solo 渲染的音频（交错立体声，与混音同采样率、同长度）。
+    pub audio: AudioInput<'a>,
+}
+
+/// `frequency_clash.entries[]` 里的一条轨引用。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClashTrackRef {
+    /// 轨 id。
+    pub track_id: String,
+    /// 轨名。
+    pub track_name: String,
+}
+
+/// 分轨频率打架严重度分档（由重叠度划，见 [`severity_band`]；Wang 2026-11-11
+/// 13:17 定）：重 = 第二强轨能量超最强轨一半，中 = 四分之一到一半，
+/// 轻 = 低于四分之一（仍是真实测得的重叠，只是不掩蔽）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClashSeverity {
+    /// 重叠度 > 0.5（差距 < 3 dB）。
+    Severe,
+    /// 重叠度 0.25–0.5（含 0.25 与 0.5；差距 3–6 dB）。
+    Moderate,
+    /// 重叠度 < 0.25（差距 > 6 dB）。
+    #[default]
+    Mild,
+}
+
+/// 分轨频率打架的一条（`frequency_clash.entries[]` 的一条；设计稿 §8.2 追加，
+/// schema 1.2；Wang 2026-11-11 13:17 定：以频谱重叠度为主，不再二值定性）：
+/// 同一小节、同一频段里最响的两条轨在各拍的重叠度汇总。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FrequencyClashEntry {
+    /// 小节号（1-based）。
+    pub bar: u32,
+    /// 频段下标（0–7，Sub → Air；Hz 区间见 [`BAND_DEFINITIONS_HZ`]）。
+    pub band: u8,
+    /// 最响的轨（该组重叠度最大那拍的胜者）。
+    pub track_a: ClashTrackRef,
+    /// 次响的轨（与 `track_a` 同拍同频段参评）。
+    pub track_b: ClashTrackRef,
+    /// 该组各拍重叠度的最大值（0–1；1 = 两轨等能）。
+    pub overlap: f32,
+    /// 该组各拍重叠度的均值（0–1）。
+    pub mean_overlap: f32,
+    /// 两轨在该组重叠度最大那拍的频段能量差距（dB；只作参考，不定性：
+    /// `overlap = 10^(-gap_db / 10)`，6 dB ↔ 0.25、3 dB ↔ 0.5）。
+    pub gap_db: f32,
+    /// 严重度分档（由 `overlap` 划，见 [`severity_band`]）。
+    pub severity: ClashSeverity,
+    /// 该小节里这对轨在该频段参评的拍数。
+    pub beats: u32,
+}
+
+/// 分轨频率打架：某一小节的总体重叠度（`frequency_clash.bar_overlaps[]` 的一条）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BarOverlap {
+    /// 小节号（1-based）。
+    pub bar: u32,
+    /// 该小节全部参评（拍，频段）重叠度的均值（0–1）。
+    pub overlap: f32,
+    /// 该小节全部参评（拍，频段）重叠度的最大值（0–1）。
+    pub max_overlap: f32,
+}
+
+/// 分轨频率打架摘要（设计稿 §8.2 追加：`SongOverview.frequency_clash`，schema 1.2；
+/// Wang 2026-11-11 13:17 定：以频谱重叠度为主，不再二值定性）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FrequencyClashSummary {
+    /// 重叠组总数（截断前；`entries.len()` ≤ [`CLASH_MAX_ENTRIES`]）。
+    pub total_groups: usize,
+    /// 全曲总体重叠度：全部参评（拍，频段）重叠度的均值（0–1；无参评时 0.0）。
+    pub overall_overlap: f32,
+    /// 每小节总体重叠度（只含至少一处参评的小节，按小节升序）。
+    pub bar_overlaps: Vec<BarOverlap>,
+    /// 按重叠度降序的前 [`CLASH_MAX_ENTRIES`] 条。
+    pub entries: Vec<FrequencyClashEntry>,
+}
+
 /// 小节级列式序列（设计稿 §8.2：MCP 默认返回小节级**列式**数组，
 ///
 /// 即 `"tension": [0.24, 0.26, …]` 而非每小节重复键名；拍级数据只在调用方
@@ -634,6 +747,9 @@ pub struct SongOverview {
     pub structural_summary: StructuralSummary,
     /// 段内自相似度摘要（schema 1.1：最相似小节对、机械指数与成段重复）。
     pub repetition: RepetitionSummary,
+    /// 分轨频率打架摘要（schema 1.2：逐拍逐频段最响两轨的频谱重叠度，按小节聚合；
+    /// 重叠度为主，`gap_db` 只作参考）。
+    pub frequency_clash: FrequencyClashSummary,
     /// 小节级列式序列。
     pub bar_series: BarSeries,
 }
@@ -1182,6 +1298,193 @@ fn cosine_similarity(left: &[f32; 14], right: &[f32; 14]) -> f32 {
     (dot / libm::sqrtf(norm_left * norm_right)).clamp(0.0, 1.0)
 }
 
+/// 打架聚合组的值：（最大重叠度，重叠度之和，拍数，最大重叠那拍的差距，
+/// 最大重叠那拍的最响轨下标）。
+type ClashGroup = (f32, f32, u32, f32, usize);
+
+/// 频谱重叠度换算：两轨频段能量差距 `gap_db`（dB）→ 线性域能量比
+/// `E2 / E1 = 10^(-gap_db / 10)`（等能为 1，3 dB 差为 0.5，6 dB 差为 0.25）。
+fn overlap_from_gap_db(gap_db: f32) -> f32 {
+    10f32.powf(-gap_db / 10.0)
+}
+
+/// 重叠度 → 严重度分档（Wang 2026-11-11 13:17 定）：> 0.5 重（差距 < 3 dB，
+/// 第二强轨能量超最强轨一半）；0.25–0.5 中（差距 3–6 dB）；< 0.25 轻
+/// （差距 > 6 dB）。3 dB 与 6 dB 是能量比的自然锚点（一半、四分之一），
+/// 不是另设的硬门限——低于 0.25 的重叠仍计入输出，只定为轻档。
+#[must_use]
+pub fn severity_band(overlap: f32) -> ClashSeverity {
+    if overlap > CLASH_SEVERE_OVERLAP {
+        ClashSeverity::Severe
+    } else if overlap >= CLASH_MODERATE_OVERLAP {
+        ClashSeverity::Moderate
+    } else {
+        ClashSeverity::Mild
+    }
+}
+
+/// 分轨频率打架检测（设计稿 §8.2 追加，schema 1.2；Wang 2026-11-11 13:17 定：
+/// 输出以频谱重叠度为主，不再二值定性）：逐拍逐频段比各轨能量。
+/// 速度图取自谱面（[`TempoMap::from_score`]，与混音分析同一份）；
+/// `TempoMap` 是本模块私有类型，故本函数公开面只收 [`ScoreInput`]。
+///
+/// 每条分轨先复用 [`band_energies_per_beat`]（与混音频段同一口径：倾斜补偿后
+/// dB）。每拍每频段：取能量最高的两个参评轨，记一次重叠度
+/// `overlap = E2 / E1 = 10^(-gap_db / 10)`（等能为 1，3 dB 差为 0.5，
+/// 6 dB 差为 0.25）。参评前提有二：绝对门限（两轨都高于
+/// [`CLASH_AUDIBILITY_FLOOR_DB`]，−60 dBFS）与相对门限（各轨该频段能量距
+/// 该轨当拍最响频段 ≤ [`CLASH_TRACK_BAND_FLOOR_DB`]，拦 Hann 窗旁瓣泄漏）。
+/// 6 dB 不再是定性硬门限：低于 0.25 的重叠也计入，只定为轻档。候选按
+/// （小节，频段，轨对）聚合：每组报最大重叠度与均值、最大重叠那拍的差距
+/// 与拍数；组按重叠度降序、小节升序、频段升序、轨 id 升序排，取前
+/// [`CLASH_MAX_ENTRIES`] 条；`total_groups` 为截断前的组数。另报全曲总体
+/// 重叠度（全部参评重叠度的均值）与每小节总体重叠度（均值与最大值）。
+///
+/// 空分轨、单轨、全静音时返回空摘要（`total_groups = 0`，总体重叠度 0.0）。
+/// 纯函数、确定性：聚合用 `BTreeMap`，不依赖哈希迭代顺序。
+#[must_use]
+pub fn detect_frequency_clash(
+    stems: &[StemInput<'_>],
+    score: &ScoreInput,
+    total_beats: usize,
+    beats_per_bar: u32,
+) -> FrequencyClashSummary {
+    if stems.len() < 2 || total_beats == 0 {
+        return FrequencyClashSummary::default();
+    }
+    let tempo = TempoMap::from_score(score);
+    let bpb = beats_per_bar.max(1) as usize;
+    // 每条分轨的逐拍频段能量（与混音同一口径），及每轨每拍的最响频段
+    // （相对门限的基准）。
+    let per_stem: Vec<Vec<[f32; 8]>> = stems
+        .iter()
+        .map(|stem| band_energies_per_beat(Some(&stem.audio), &tempo, total_beats))
+        .collect();
+    let peaks: Vec<Vec<f32>> = per_stem
+        .iter()
+        .map(|bands| {
+            bands
+                .iter()
+                .map(|row| row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)))
+                .collect()
+        })
+        .collect();
+    // 聚合：(小节 0-based, 频段, 轨下标 a, 轨下标 b) →
+    // （最大重叠度，重叠度之和，拍数，最大重叠那拍的差距，最响轨下标）。
+    let mut groups: BTreeMap<(usize, usize, usize, usize), ClashGroup> = BTreeMap::new();
+    // 全曲总体重叠度与每小节总体重叠度的累加器：重叠度之和、参评个数、最大值。
+    let mut song_sum = 0.0f32;
+    let mut song_count = 0u32;
+    let mut bar_totals: BTreeMap<usize, (f32, u32, f32)> = BTreeMap::new();
+    for beat in 0..total_beats {
+        for band in 0..8 {
+            // 找能量最高的两条参评轨。
+            let mut top: [(usize, f32); 2] = [(usize::MAX, f32::NEG_INFINITY); 2];
+            for (index, bands) in per_stem.iter().enumerate() {
+                let energy = bands[beat][band];
+                if energy <= CLASH_AUDIBILITY_FLOOR_DB {
+                    continue;
+                }
+                if energy < peaks[index][beat] - CLASH_TRACK_BAND_FLOOR_DB {
+                    continue;
+                }
+                if energy > top[0].1 {
+                    top[1] = top[0];
+                    top[0] = (index, energy);
+                } else if energy > top[1].1 {
+                    top[1] = (index, energy);
+                }
+            }
+            if top[1].0 == usize::MAX {
+                continue;
+            }
+            let gap = top[0].1 - top[1].1;
+            let overlap = overlap_from_gap_db(gap);
+            let bar = beat / bpb;
+            let (a, b) = if top[0].0 < top[1].0 {
+                (top[0].0, top[1].0)
+            } else {
+                (top[1].0, top[0].0)
+            };
+            // 全曲与每小节的总体重叠度：全部参评（拍，频段）的重叠度都计入
+            // （不只进榜的组），均值才是全曲/小节的真实重叠水平。
+            song_sum += overlap;
+            song_count += 1;
+            let bar_total = bar_totals.entry(bar).or_insert((0.0, 0, 0.0));
+            bar_total.0 += overlap;
+            bar_total.1 += 1;
+            bar_total.2 = bar_total.2.max(overlap);
+            let entry =
+                groups
+                    .entry((bar, band, a, b))
+                    .or_insert((0.0, 0.0, 0, f32::INFINITY, top[0].0));
+            entry.2 += 1;
+            entry.1 += overlap;
+            if overlap > entry.0 {
+                entry.0 = overlap;
+                entry.3 = gap;
+                entry.4 = top[0].0;
+            }
+        }
+    }
+    let total_groups = groups.len();
+    let overall_overlap = if song_count > 0 {
+        song_sum / song_count as f32
+    } else {
+        0.0
+    };
+    let bar_overlaps: Vec<BarOverlap> = bar_totals
+        .into_iter()
+        .map(|(bar, (sum, count, max))| BarOverlap {
+            bar: (bar as u32) + 1,
+            overlap: sum / count as f32,
+            max_overlap: max,
+        })
+        .collect();
+    let mut entries: Vec<FrequencyClashEntry> = groups
+        .into_iter()
+        .map(
+            |((bar, band, a, b), (max_overlap, sum, beats, gap, loudest))| {
+                let other = if loudest == a { b } else { a };
+                FrequencyClashEntry {
+                    bar: (bar as u32) + 1,
+                    band: band as u8,
+                    track_a: ClashTrackRef {
+                        track_id: stems[loudest].track_id.to_string(),
+                        track_name: stems[loudest].track_name.to_string(),
+                    },
+                    track_b: ClashTrackRef {
+                        track_id: stems[other].track_id.to_string(),
+                        track_name: stems[other].track_name.to_string(),
+                    },
+                    overlap: max_overlap,
+                    mean_overlap: sum / beats as f32,
+                    gap_db: gap,
+                    severity: severity_band(max_overlap),
+                    beats,
+                }
+            },
+        )
+        .collect();
+    entries.sort_by(|left, right| {
+        right
+            .overlap
+            .partial_cmp(&left.overlap)
+            .unwrap_or(Ordering::Equal)
+            .then(left.bar.cmp(&right.bar))
+            .then(left.band.cmp(&right.band))
+            .then(left.track_a.track_id.cmp(&right.track_a.track_id))
+            .then(left.track_b.track_id.cmp(&right.track_b.track_id))
+    });
+    entries.truncate(CLASH_MAX_ENTRIES);
+    FrequencyClashSummary {
+        total_groups,
+        overall_overlap,
+        bar_overlaps,
+        entries,
+    }
+}
+
 /// 段内自相似度分析（设计稿 §8.2 追加，schema 1.1）：对 [`BarSeries`] 的
 /// 14 维小节特征逐对算余弦相似度，找跨段重复。纯函数，无音频 I/O。
 ///
@@ -1339,6 +1642,19 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
 pub fn analyze_song_overview_with_options(
     score: &ScoreInput,
     audio: Option<&AudioInput<'_>>,
+    options: &AnalysisOptions,
+) -> SongOverview {
+    analyze_song_overview_with_stems(score, audio, &[], options)
+}
+
+/// 整曲四层离线分析（分轨版，设计稿 §8.2 追加，schema 1.2）：`stems` 是渲染侧
+/// 每条源轨 solo 渲染的音频；空分轨（`&[]`）时 `frequency_clash` 为空摘要，
+/// 其余四层与 [`analyze_song_overview_with_options`] 逐位一致。
+#[must_use]
+pub fn analyze_song_overview_with_stems(
+    score: &ScoreInput,
+    audio: Option<&AudioInput<'_>>,
+    stems: &[StemInput<'_>],
     options: &AnalysisOptions,
 ) -> SongOverview {
     let mut score = score.clone();
@@ -1724,6 +2040,7 @@ pub fn analyze_song_overview_with_options(
     // 成段重复每段一条 `arrangement_repetition` 异常（与音频无关，纯谱面
     // 序列即可判；单小节撞分不成段，故只看 `repeated_passages`）。
     let repetition = analyze_repetition(&series);
+    let frequency_clash = detect_frequency_clash(stems, score, total_beats, bpb);
     for passage in &repetition.repeated_passages {
         anomalies.push(Anomaly {
             bars: passage.bars,
@@ -1757,6 +2074,7 @@ pub fn analyze_song_overview_with_options(
             detected_anomalies: anomalies,
         },
         repetition,
+        frequency_clash,
         bar_series: series,
     }
 }

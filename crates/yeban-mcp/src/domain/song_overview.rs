@@ -79,16 +79,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_model::YebanProjectV1;
 use yeban_render::song_overview::{
-    Anomaly as DspAnomaly, AnomalyType as DspAnomalyType, BarSeries as DspBarSeries,
-    BestMatch as DspBestMatch, DEFAULT_REPORT_TITLE, NO_ENVELOPE,
+    Anomaly as DspAnomaly, AnomalyType as DspAnomalyType, BarOverlap as DspBarOverlap,
+    BarSeries as DspBarSeries, BestMatch as DspBestMatch, ClashSeverity as DspClashSeverity,
+    ClashTrackRef as DspClashTrackRef, DEFAULT_REPORT_TITLE,
+    FrequencyClashEntry as DspFrequencyClashEntry,
+    FrequencyClashSummary as DspFrequencyClashSummary, NO_ENVELOPE,
     RepeatedPassage as DspRepeatedPassage, RepetitionSummary as DspRepetitionSummary,
     SCHEMA_VERSION, SongMeta as DspSongMeta, SongOverview as DspSongOverview,
     StructuralSummary as DspStructuralSummary, render_html_report_with_title,
 };
 
 use crate::output_schema::{
-    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
-    StructuralSummary,
+    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, FrequencyClashSummary, RepetitionSummary,
+    SongMeta, SongOverview, StructuralSummary,
 };
 use crate::tools::{ErrorCode, ToolCall};
 
@@ -240,6 +243,18 @@ pub fn rounded(mut overview: SongOverview) -> SongOverview {
     for passage in &mut overview.repetition.repeated_passages {
         passage.mean_similarity = round2(passage.mean_similarity);
     }
+    // schema 1.2 的 `frequency_clash`：重叠度 2 位小数、差距 1 位小数（dB）；
+    // 严重度是分档字符串，不取整（§8.2 同口径）。
+    overview.frequency_clash.overall_overlap = round2(overview.frequency_clash.overall_overlap);
+    for bar in &mut overview.frequency_clash.bar_overlaps {
+        bar.overlap = round2(bar.overlap);
+        bar.max_overlap = round2(bar.max_overlap);
+    }
+    for entry in &mut overview.frequency_clash.entries {
+        entry.overlap = round2(entry.overlap);
+        entry.mean_overlap = round2(entry.mean_overlap);
+        entry.gap_db = round1(entry.gap_db);
+    }
     for row in &mut overview.bar_series {
         row.time_sec = round2(row.time_sec);
         row.tension = round2(row.tension);
@@ -372,6 +387,48 @@ pub fn overview_html_report_with_title(overview: &SongOverview, title: &str) -> 
                         to_u32(passage.source_bars[1]),
                     ],
                     mean_similarity: passage.mean_similarity as f32,
+                })
+                .collect(),
+        },
+        // schema 1.2：分轨频率打架摘要反向搬运（f64 → f32；严重度字符串 → 枚举，
+        // 与 `song_overview_provider` 的正向映射逐项对仗；未知分档落 `"mild"`）。
+        frequency_clash: DspFrequencyClashSummary {
+            total_groups: overview.frequency_clash.total_groups as usize,
+            overall_overlap: overview.frequency_clash.overall_overlap as f32,
+            bar_overlaps: overview
+                .frequency_clash
+                .bar_overlaps
+                .iter()
+                .map(|bar| DspBarOverlap {
+                    bar: to_u32(bar.bar),
+                    overlap: bar.overlap as f32,
+                    max_overlap: bar.max_overlap as f32,
+                })
+                .collect(),
+            entries: overview
+                .frequency_clash
+                .entries
+                .iter()
+                .map(|entry| DspFrequencyClashEntry {
+                    bar: to_u32(entry.bar),
+                    band: entry.band,
+                    track_a: DspClashTrackRef {
+                        track_id: entry.track_a.track_id.clone(),
+                        track_name: entry.track_a.track_name.clone(),
+                    },
+                    track_b: DspClashTrackRef {
+                        track_id: entry.track_b.track_id.clone(),
+                        track_name: entry.track_b.track_name.clone(),
+                    },
+                    overlap: entry.overlap as f32,
+                    mean_overlap: entry.mean_overlap as f32,
+                    gap_db: entry.gap_db as f32,
+                    severity: match entry.severity.as_str() {
+                        "severe" => DspClashSeverity::Severe,
+                        "moderate" => DspClashSeverity::Moderate,
+                        _ => DspClashSeverity::Mild,
+                    },
+                    beats: to_u32(entry.beats),
                 })
                 .collect(),
         },
@@ -960,7 +1017,7 @@ impl SongOverviewProvider for StubSongOverviewProvider {
         let mut detected_anomalies = fixture_anomalies();
         detected_anomalies.extend(envelope_anomalies(&envelope_deviations));
         Ok(SongOverview {
-            schema_version: "1.1".to_owned(),
+            schema_version: "1.2".to_owned(),
             song_meta: SongMeta {
                 total_bars: FIXTURE_BARS.len() as u64,
                 duration_sec: 16.0,
@@ -981,6 +1038,14 @@ impl SongOverviewProvider for StubSongOverviewProvider {
                 best_matches: Vec::new(),
                 mechanical_index: 0.0,
                 repeated_passages: Vec::new(),
+            },
+            // stub 不算打架检测（检测在 dsp；见模块头"diagnostics 的归属"）：
+            // 夹具不声称重叠与否，字段只保形状完整，值为空摘要。
+            frequency_clash: FrequencyClashSummary {
+                total_groups: 0,
+                overall_overlap: 0.0,
+                bar_overlaps: Vec::new(),
+                entries: Vec::new(),
             },
             bar_series,
         })

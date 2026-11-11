@@ -70,8 +70,8 @@ use serde_json::{Value, json};
 
 use yeban_decode::{DecodeOptions, decode_bytes};
 use yeban_dsp::song_overview::{
-    AnalysisOptions, NO_ENVELOPE, SongOverview as DspSongOverview, TensionProfile,
-    analyze_song_overview_with_options,
+    AnalysisOptions, ClashSeverity as DspClashSeverity, NO_ENVELOPE,
+    SongOverview as DspSongOverview, TensionProfile, analyze_song_overview_with_options,
 };
 use yeban_engine::sfz_instrument::SfzInstrument;
 use yeban_mcp::domain::error::Fault;
@@ -79,8 +79,9 @@ use yeban_mcp::domain::song_overview::{
     Profile as McpProfile, Resolution, SongOverviewProvider, SongOverviewRequest,
 };
 use yeban_mcp::output_schema::{
-    BAND_DEFINITIONS_HZ, BarRow, BestMatch, DetectedAnomaly, RepeatedPassage, RepetitionSummary,
-    SongMeta, SongOverview as McpSongOverview, StructuralSummary,
+    BAND_DEFINITIONS_HZ, BarOverlap, BarRow, BestMatch, ClashTrackRef, DetectedAnomaly,
+    FrequencyClashEntry, FrequencyClashSummary, RepeatedPassage, RepetitionSummary, SongMeta,
+    SongOverview as McpSongOverview, StructuralSummary,
 };
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::song_overview::score_input_from_project;
@@ -655,6 +656,48 @@ pub fn map_song_overview(
                 })
                 .collect(),
         },
+        // schema 1.2：分轨频率打架摘要原样搬运（只做 f32 → f64；取整不在这里，
+        // 见 `domain::song_overview::rounded`；严重度分档枚举 → 字符串）。
+        frequency_clash: FrequencyClashSummary {
+            total_groups: overview.frequency_clash.total_groups as u64,
+            overall_overlap: f64::from(overview.frequency_clash.overall_overlap),
+            bar_overlaps: overview
+                .frequency_clash
+                .bar_overlaps
+                .iter()
+                .map(|bar| BarOverlap {
+                    bar: u64::from(bar.bar),
+                    overlap: f64::from(bar.overlap),
+                    max_overlap: f64::from(bar.max_overlap),
+                })
+                .collect(),
+            entries: overview
+                .frequency_clash
+                .entries
+                .iter()
+                .map(|entry| FrequencyClashEntry {
+                    bar: u64::from(entry.bar),
+                    band: entry.band,
+                    track_a: ClashTrackRef {
+                        track_id: entry.track_a.track_id.clone(),
+                        track_name: entry.track_a.track_name.clone(),
+                    },
+                    track_b: ClashTrackRef {
+                        track_id: entry.track_b.track_id.clone(),
+                        track_name: entry.track_b.track_name.clone(),
+                    },
+                    overlap: f64::from(entry.overlap),
+                    mean_overlap: f64::from(entry.mean_overlap),
+                    gap_db: f64::from(entry.gap_db),
+                    severity: match entry.severity {
+                        DspClashSeverity::Severe => "severe".to_owned(),
+                        DspClashSeverity::Moderate => "moderate".to_owned(),
+                        DspClashSeverity::Mild => "mild".to_owned(),
+                    },
+                    beats: u64::from(entry.beats),
+                })
+                .collect(),
+        },
         bar_series,
     }
 }
@@ -689,9 +732,12 @@ fn expand_to_beats(bar_series: Vec<BarRow>, beats_per_bar: u32, base_bpm: f64) -
 mod tests {
     use super::*;
     use yeban_dsp::song_overview::{
-        Anomaly, AnomalyType, BarSeries, BestMatch as DspBestMatch,
-        RepeatedPassage as DspRepeatedPassage, RepetitionSummary as DspRepetitionSummary,
-        SongMeta as DspSongMeta, StructuralSummary as DspStructuralSummary,
+        Anomaly, AnomalyType, BarOverlap as DspBarOverlap, BarSeries, BestMatch as DspBestMatch,
+        ClashSeverity as DspClashSeverity, ClashTrackRef as DspClashTrackRef,
+        FrequencyClashEntry as DspFrequencyClashEntry,
+        FrequencyClashSummary as DspFrequencyClashSummary, RepeatedPassage as DspRepeatedPassage,
+        RepetitionSummary as DspRepetitionSummary, SongMeta as DspSongMeta,
+        StructuralSummary as DspStructuralSummary,
     };
     use yeban_model::SamplerBinding;
     use yeban_model::samples::demo_project;
@@ -699,7 +745,7 @@ mod tests {
     /// 两小节的手算 dsp 夹具（列式；与 `map_song_overview` 的输入形状一致）。
     fn two_bar_dsp_overview() -> DspSongOverview {
         DspSongOverview {
-            schema_version: "1.1",
+            schema_version: "1.2",
             song_meta: DspSongMeta {
                 total_bars: 2,
                 duration_sec: 4.0,
@@ -724,6 +770,34 @@ mod tests {
             },
             // schema 1.1：两小节成不了段，重复摘要为空。
             repetition: DspRepetitionSummary::default(),
+            // schema 1.2：两小节里贝斯与键盘在 Band 3 重叠 1 组（差距 0.5 dB、
+            // 重叠度 0.89 = 10^(-0.5/10)、重档；映射只做 f32 → f64，不取整）。
+            frequency_clash: DspFrequencyClashSummary {
+                total_groups: 1,
+                overall_overlap: 0.87,
+                bar_overlaps: vec![DspBarOverlap {
+                    bar: 1,
+                    overlap: 0.87,
+                    max_overlap: 0.89,
+                }],
+                entries: vec![DspFrequencyClashEntry {
+                    bar: 1,
+                    band: 2,
+                    track_a: DspClashTrackRef {
+                        track_id: "track-bass".to_owned(),
+                        track_name: "Bass".to_owned(),
+                    },
+                    track_b: DspClashTrackRef {
+                        track_id: "track-keys".to_owned(),
+                        track_name: "Keys".to_owned(),
+                    },
+                    overlap: 0.89,
+                    mean_overlap: 0.85,
+                    gap_db: 0.5,
+                    severity: DspClashSeverity::Severe,
+                    beats: 2,
+                }],
+            },
             bar_series: BarSeries {
                 bar: vec![1, 2],
                 time_sec: vec![0.0, 2.0],
@@ -762,7 +836,26 @@ mod tests {
     #[test]
     fn mapping_turns_columns_into_rows() {
         let mapped = map_song_overview(&two_bar_dsp_overview(), Resolution::Bar, 4);
-        assert_eq!(mapped.schema_version, "1.1");
+        assert_eq!(mapped.schema_version, "1.2");
+        assert_eq!(mapped.frequency_clash.total_groups, 1);
+        assert_eq!(mapped.frequency_clash.overall_overlap, f64::from(0.87f32));
+        assert_eq!(mapped.frequency_clash.bar_overlaps.len(), 1);
+        assert_eq!(mapped.frequency_clash.bar_overlaps[0].bar, 1);
+        assert_eq!(
+            mapped.frequency_clash.bar_overlaps[0].overlap,
+            f64::from(0.87f32)
+        );
+        assert_eq!(mapped.frequency_clash.entries.len(), 1);
+        let clash = &mapped.frequency_clash.entries[0];
+        assert_eq!(clash.bar, 1);
+        assert_eq!(clash.band, 2);
+        assert_eq!(clash.track_a.track_id, "track-bass");
+        assert_eq!(clash.track_b.track_name, "Keys");
+        assert_eq!(clash.overlap, f64::from(0.89f32));
+        assert_eq!(clash.mean_overlap, f64::from(0.85f32));
+        assert_eq!(clash.gap_db, 0.5);
+        assert_eq!(clash.severity, "severe");
+        assert_eq!(clash.beats, 2);
         assert_eq!(mapped.song_meta.total_bars, 2);
         assert_eq!(mapped.song_meta.duration_sec, 4.0);
         assert_eq!(mapped.song_meta.base_bpm, 120.0);
@@ -904,7 +997,7 @@ mod tests {
     #[test]
     fn mapping_an_empty_overview_stays_empty() {
         let empty = DspSongOverview {
-            schema_version: "1.1",
+            schema_version: "1.2",
             song_meta: DspSongMeta {
                 total_bars: 0,
                 duration_sec: 0.0,
@@ -921,6 +1014,7 @@ mod tests {
                 detected_anomalies: Vec::new(),
             },
             repetition: DspRepetitionSummary::default(),
+            frequency_clash: DspFrequencyClashSummary::default(),
             bar_series: BarSeries {
                 bar: Vec::new(),
                 time_sec: Vec::new(),
@@ -943,6 +1037,10 @@ mod tests {
         assert_eq!(mapped.song_meta.total_bars, 0);
         assert!(mapped.bar_series.is_empty());
         assert_eq!(mapped.structural_summary.climax_bar, 0);
+        assert_eq!(mapped.frequency_clash.total_groups, 0);
+        assert_eq!(mapped.frequency_clash.overall_overlap, 0.0);
+        assert!(mapped.frequency_clash.bar_overlaps.is_empty());
+        assert!(mapped.frequency_clash.entries.is_empty());
     }
 
     #[test]
@@ -958,6 +1056,9 @@ mod tests {
         assert!((first.song_meta.duration_sec - 5.0).abs() < 1e-6);
         assert_eq!(first.song_meta.base_bpm, 120.0);
         assert_eq!(first.bar_series.len(), 3);
+        // 演示工程只有一条轨出声（鼓），无重叠。
+        assert_eq!(first.frequency_clash.total_groups, 0);
+        assert_eq!(first.frequency_clash.overall_overlap, 0.0);
         assert_eq!(first.bar_series[0].section, "Intro");
         for row in &first.bar_series {
             assert!((0.0..=1.0).contains(&row.tension), "张力越界");

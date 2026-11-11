@@ -2109,7 +2109,7 @@ pub const BAND_DEFINITIONS_HZ: [[u32; 2]; 8] = [
 // struct 本身只定形状 —— "几位小数"不在类型里，⛔ 不要在这里发明第二套口径。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SongOverview {
-    /// 契约版本（§8.2 示例：`"1.1"`；1.1 起加 `repetition`）。
+    /// 契约版本（§8.2 示例：`"1.2"`；1.1 起加 `repetition`；1.2 起加 `frequency_clash`）。
     pub schema_version: String,
     /// 歌曲元数据。
     pub song_meta: SongMeta,
@@ -2119,6 +2119,8 @@ pub struct SongOverview {
     pub structural_summary: StructuralSummary,
     /// 段内自相似度摘要（schema 1.1：最相似小节对、机械指数与成段重复）。
     pub repetition: RepetitionSummary,
+    /// 分轨频率打架摘要（schema 1.2：逐拍逐频段最响两轨的打架清单，按小节聚合）。
+    pub frequency_clash: FrequencyClashSummary,
     /// 小节级列式数组（`resolution: "bar"` 时一小节一行；`"beat"` 时一拍一行，
     /// 此时每行多一个 `beat` 键 = 该拍在小节内的序号 1..=拍号拍数）。
     pub bar_series: Vec<BarRow>,
@@ -2155,6 +2157,65 @@ pub struct RepeatedPassage {
     pub source_bars: [u64; 2],
     /// 该段逐小节相似度的均值（0–1，保留 2 位小数）。
     pub mean_similarity: f64,
+}
+
+/// `frequency_clash`（设计稿 §8.2 追加，schema 1.2；Wang 2026-11-11 13:17 定：
+/// 以频谱重叠度为主，不再二值定性）：分轨频率打架摘要。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FrequencyClashSummary {
+    /// 重叠组总数（截断前）。
+    pub total_groups: u64,
+    /// 全曲总体重叠度（全部参评重叠度的均值，0–1，保留 2 位小数；无参评时 0.0）。
+    pub overall_overlap: f64,
+    /// 每小节总体重叠度（只含至少一处参评的小节，按小节升序）。
+    pub bar_overlaps: Vec<BarOverlap>,
+    /// 按重叠度降序的前 20 条。
+    pub entries: Vec<FrequencyClashEntry>,
+}
+
+/// `frequency_clash.bar_overlaps[]` 的一条。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BarOverlap {
+    /// 小节号（1 起）。
+    pub bar: u64,
+    /// 该小节全部参评重叠度的均值（0–1，保留 2 位小数）。
+    pub overlap: f64,
+    /// 该小节全部参评重叠度的最大值（0–1，保留 2 位小数）。
+    pub max_overlap: f64,
+}
+
+/// `frequency_clash.entries[]` 的一条。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FrequencyClashEntry {
+    /// 小节号（1 起）。
+    pub bar: u64,
+    /// 频段下标（0–7，Sub → Air；Hz 区间见 `band_definitions_hz`）。
+    pub band: u8,
+    /// 最响的轨（该组重叠度最大那拍的胜者）。
+    pub track_a: ClashTrackRef,
+    /// 次响的轨（与 `track_a` 同拍同频段参评）。
+    pub track_b: ClashTrackRef,
+    /// 该组各拍重叠度的最大值（0–1，保留 2 位小数；1 = 两轨等能）。
+    pub overlap: f64,
+    /// 该组各拍重叠度的均值（0–1，保留 2 位小数）。
+    pub mean_overlap: f64,
+    /// 两轨在该组重叠度最大那拍的频段能量差距（dB，保留 1 位小数；只作参考，
+    /// `overlap = 10^(-gap_db / 10)`，6 dB ↔ 0.25、3 dB ↔ 0.5）。
+    pub gap_db: f64,
+    /// 严重度分档（由 `overlap` 划：> 0.5 `"severe"`、0.25–0.5 `"moderate"`、
+    /// < 0.25 `"mild"`）。
+    pub severity: String,
+    /// 该小节里这对轨在该频段参评的拍数。
+    pub beats: u64,
+}
+
+/// `frequency_clash.entries[]` 里的一条轨引用。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClashTrackRef {
+    /// 轨 id（`EntityId` 的规范字符串）。
+    pub track_id: String,
+    /// 轨名。
+    pub track_name: String,
 }
 
 /// `song_meta`（设计稿 §8.2）。
