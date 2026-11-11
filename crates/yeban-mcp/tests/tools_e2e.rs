@@ -1364,6 +1364,16 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         .expect("MIDI")
         .id
         .to_canonical_string();
+    // 移轨：把夹具音轨移到另一个合法位置（提案成功，带内 `success`）。
+    let move_track_new_index = {
+        let project = dispatcher.domain().active_project().expect("工程");
+        let ids = project.display_track_ids();
+        let old = ids
+            .iter()
+            .position(|id| id.to_canonical_string() == track)
+            .expect("夹具音轨在显示顺序里");
+        if old == 0 { 1 } else { 0 }
+    };
     // 一份**真 SFZ**（两条区域）写进 scratch：`yeban_load_sfz` 因此走成功路径。
     fs::write(
         scratch.join("no-blanket.sfz"),
@@ -1563,6 +1573,11 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         // `providerUnavailable`（不是实现级出口）；这里只要求"走到领域实现 +
         // 契约形状"，真 provider 的证据在 `tests/song_overview.rs`（stub）。
         ("get_song_overview", json!({ "resolution": "bar" })),
+        // 移轨：合法目标位置 ⇒ 提案成功（带内 `success`，不是实现级出口）。
+        (
+            "yeban_move_track",
+            json!({ "trackId": track, "newIndex": move_track_new_index }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];
@@ -2850,6 +2865,142 @@ fn set_macro_checks_track_index_and_value_range() {
     assert_eq!(ops.len(), 3, "SetMacro + 每个映射 2 个级联点");
     assert_eq!(ops[0]["op"]["SetMacro"]["new_val"], 0.25);
     assert_eq!(ops[1]["origin"]["McpProposal"]["agent_name"], "yeban-mcp");
+}
+
+#[test]
+fn move_track_moves_a_track_in_display_order_and_merges() {
+    let scratch = Scratch::new("move-track");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let order_before: Vec<String> = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .display_track_ids()
+        .iter()
+        .map(yeban_model::EntityId::to_canonical_string)
+        .collect();
+    assert!(
+        order_before.len() >= 2,
+        "夹具至少要有两条非主总线轨才能测移轨: {order_before:?}"
+    );
+    let first = order_before[0].clone();
+    let last_index = order_before.len() - 1;
+
+    // dryRun 预览的 op 必须与真调用提交的 op 逐字节相同。
+    let preview = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": first, "newIndex": last_index, "includeOps": true, "dryRun": true }),
+    );
+    assert_eq!(preview["status"], "success", "{preview}");
+    let planned = preview["data"]["preview"]["ops"].clone();
+    assert!(planned.as_array().is_some_and(|ops| !ops.is_empty()));
+
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": first, "newIndex": last_index, "includeOps": true }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let committed = created["data"]["proposal"]["ops"].clone();
+    let committed_ops: Vec<Value> = committed
+        .as_array()
+        .expect("ops")
+        .iter()
+        .map(|entry| entry["op"].clone())
+        .collect();
+    assert_eq!(committed_ops.len(), 1, "移轨只写一条 MoveTrack");
+    assert_eq!(committed_ops[0]["MoveTrack"]["old_index"], 0);
+    assert_eq!(committed_ops[0]["MoveTrack"]["new_index"], last_index);
+    assert_eq!(
+        planned,
+        Value::Array(committed_ops),
+        "预览与提交的 op 必须相同"
+    );
+
+    merge(&mut dispatcher, &auth, &created, "move track e2e");
+    let order_after: Vec<String> = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .display_track_ids()
+        .iter()
+        .map(yeban_model::EntityId::to_canonical_string)
+        .collect();
+    let mut expected = order_before[1..].to_vec();
+    expected.push(first);
+    assert_eq!(order_after, expected, "首轨移到末位后显示顺序必须跟着变");
+}
+
+#[test]
+fn move_track_rejects_ghost_out_of_range_master_and_noop() {
+    let scratch = Scratch::new("move-track-reject");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let project = dispatcher.domain().active_project().expect("工程");
+    let order: Vec<String> = project
+        .display_track_ids()
+        .iter()
+        .map(yeban_model::EntityId::to_canonical_string)
+        .collect();
+    let first = order[0].clone();
+    let master = project.master_bus_track_id.to_canonical_string();
+
+    let ghost = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": "01J8ZQ00000000000000000009", "newIndex": 0 }),
+    );
+    assert_domain_error(&ghost, "TRACK_NOT_FOUND", "未知音轨");
+
+    let out_of_range = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": first, "newIndex": order.len() }),
+    );
+    assert_domain_error(&out_of_range, "INDEX_OUT_OF_BOUNDS", "目标位置越界");
+    assert_eq!(
+        out_of_range["error"]["data"]["trackCount"],
+        order.len(),
+        "越界回执须带显示轨数"
+    );
+
+    let negative = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": first, "newIndex": -1 }),
+    );
+    assert_domain_error(&negative, "INVALID_PARAMETER_RANGE", "负下标不是非负整数");
+
+    let master_call = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": master, "newIndex": 0 }),
+    );
+    assert_domain_error(&master_call, "CONFLICT", "主总线不参与显示顺序");
+    assert_eq!(
+        master_call["error"]["data"]["reason"], "masterBusTrackCannotBeMoved",
+        "主总线拒收须带 reason"
+    );
+
+    let noop = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_move_track",
+        json!({ "trackId": first, "newIndex": 0 }),
+    );
+    assert_domain_error(&noop, "INVALID_PARAMETER_RANGE", "等于现位置是无操作");
+    assert_eq!(
+        noop["error"]["data"]["reason"], "alreadyAtTargetIndex",
+        "无操作拒收须带 reason"
+    );
 }
 
 #[test]

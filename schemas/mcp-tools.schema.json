@@ -63,7 +63,8 @@
             "yeban_apply_preset",
             "yeban_save_preset",
             "yeban_preset_bypass",
-            "get_song_overview"
+            "get_song_overview",
+            "yeban_move_track"
           ]
         },
         "arguments": {
@@ -611,6 +612,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/get_song_overview"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_move_track"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_move_track"
               }
             }
           }
@@ -1929,6 +1949,45 @@
               "maxLength": 256
             }
           }
+        },
+        "yeban_move_track": {
+          "title": "yeban_move_track",
+          "type": "object",
+          "description": "移动音轨在显示顺序里的位置（Op::MoveTrack 的 MCP 出口；提案路径，autoMerge 可一次调用落 main）。newIndex 是显示顺序里的绝对位置（0..显示轨数，不含主总线）；oldIndex 由服务端从当前文档读，调用方不传。等于现位置即 INVALID_PARAMETER_RANGE（无操作不建提案），主总线即 CONFLICT，越界即 INDEX_OUT_OF_BOUNDS。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "被移动的音轨 EntityId（26 字符 ULID）"
+            },
+            "newIndex": {
+              "type": "integer",
+              "description": "移动后在显示顺序里的位置（0..显示轨数，不含主总线）"
+            },
+            "includeOps": {
+              "type": "boolean",
+              "description": "是否回传完整 op 载荷: 缺省 false = 只回结构化字段, true = 额外回传逐条 ops (审查用途) [BASELINE-006]"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "[ADR-0029]: 缺省 false = 只建提案 (pendingMerge:true)。true = 同一次调用内背靠背执行既有的 yeban_merge_proposal 合并实现, 响应 = 提案回执 ⊕ 合并回执"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "[ADR-0029]: autoMerge 合并提交的信息, 只随 autoMerge:true 生效"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "trackId",
+            "newIndex"
+          ]
         }
       }
     }
