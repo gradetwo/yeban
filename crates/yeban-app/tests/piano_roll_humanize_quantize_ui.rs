@@ -217,6 +217,16 @@ fn click_scroll_at(
         "卷帘（{x_offset}, {y_offset}）松手（{button}）必须落到真实窗口: {up:?}"
     );
 }
+/// 某个语义 ID 是否在运行时控件树里（不 panic：用于诊断「弹出层还在不在」）。
+fn tree_has(plane: &mut LiveControlPlane, seq: i64, element_id: &str) -> bool {
+    let node = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_NODE,
+        Some(json!({ "elementId": element_id })),
+    ));
+    !node.is_error()
+}
+
 /// 只按下（不抬起）：右键菜单在 `down` 那一刻弹出，判据随后在菜单打开的状态下读树。
 fn press_by_id(plane: &mut LiveControlPlane, seq: i64, element_id: &str, button: &str) {
     let bounds = element_bounds(plane, seq, element_id);
@@ -327,6 +337,14 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
 
     // 点「人性化…」⇒ 对话框打开，焦点落人性化区段，种子预填工程 rng_seed。
     click_scroll_at(&mut plane, 50, center_x + 75.0, center_y + 16.0, "left");
+    // 诊断二分（见文件头）：点下去之后菜单还在不在树里 ——
+    // 不在 ⇒ 这一击落在弹出层外（位置算错，弹出层被点外关闭）；
+    // 还在 ⇒ 这一击落在弹出层内、但菜单项的 `clicked` 没跑（测试后端不把指针事件送进弹出层）。
+    let menu_still_there = tree_has(&mut plane, 60, MENU_HUMANIZE);
+    report_line(&format!(
+        "[humanize-ui] 点菜单后：对话框开={}，菜单仍在树里={menu_still_there}",
+        window.get_humanize_open()
+    ));
     assert!(
         window.get_humanize_open(),
         "点菜单「人性化…」必须打开对话框"
