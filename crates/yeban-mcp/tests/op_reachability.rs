@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 56] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 59] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -118,6 +118,13 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 56] = [
     ("SetParam", &["domain/notes.rs"]),
     ("SetTrackMute", &["domain/notes.rs"]),
     ("SetTrackSolo", &["domain/notes.rs"]),
+    // ⭐ 手动相位对齐第一层：`setTrackDelay` / `setTrackPolarity` /
+    // `setClipPlacementOffset` 的 `parse_one` / `compile` 在 `domain/notes.rs`
+    // 构造 `Op::SetTrackDelay` / `Op::SetTrackPolarity` /
+    // `Op::SetClipPlacementOffset`（与 `SetTrackMute` / `SetTrackSolo` 同族）。
+    ("SetTrackDelay", &["domain/notes.rs"]),
+    ("SetTrackPolarity", &["domain/notes.rs"]),
+    ("SetClipPlacementOffset", &["domain/notes.rs"]),
     ("SetMacro", &["domain/macros.rs"]),
     (
         "SetAutomationPoint",

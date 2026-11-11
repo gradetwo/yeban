@@ -314,7 +314,6 @@ mod tests {
     fn invert_negates_signal() {
         let mut d = configured();
         let (mut left, mut right) = pulse(64, 5);
-        let mut right = right;
         d.process(
             SampleDelayParams {
                 delay_samples: 0,
