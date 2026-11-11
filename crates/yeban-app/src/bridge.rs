@@ -5871,8 +5871,7 @@ pub fn eq_curve_projection(track: Option<&TrackV3>) -> (String, String, String) 
     let eq_device = track.and_then(|t| {
         t.devices.iter().find(|d| {
             d.params.iter().any(|p| {
-                crate::effect_params::recognise(&p.name)
-                    .map_or(false, |(group, _)| group.id == "eq")
+                crate::effect_params::recognise(&p.name).is_some_and(|(group, _)| group.id == "eq")
             })
         })
     });
@@ -5926,12 +5925,13 @@ pub fn calculate_eq_curve_svg(
         let exponent = 3.0 * (x / 420.0);
         let freq = 20.0 * 10.0_f32.powf(exponent);
         let mut gain_db = params.response_db(freq, 48_000.0);
-        if let Some(co) = cutoff {
-            if co < 20_000.0 && freq > co {
-                let ratio = freq / co;
-                let lp_cut = 10.0 * (1.0 + ratio.powi(4)).log10();
-                gain_db -= lp_cut;
-            }
+        if let Some(co) = cutoff
+            && co < 20_000.0
+            && freq > co
+        {
+            let ratio = freq / co;
+            let lp_cut = 10.0 * (1.0 + ratio.powi(4)).log10();
+            gain_db -= lp_cut;
         }
         let y = (50.0 - gain_db * (50.0 / 18.0)).clamp(0.0, 100.0);
         let cmd = if step == 0 { 'M' } else { 'L' };
@@ -5965,10 +5965,10 @@ pub fn format_eq_curve_info(params: &yeban_dsp::shaping::EqParams, cutoff: Optio
         params.high_freq,
         params.high_gain,
     );
-    if let Some(co) = cutoff {
-        if co < 20_000.0 {
-            s.push_str(&format!(" · 低通: {:.0} Hz", co));
-        }
+    if let Some(co) = cutoff
+        && co < 20_000.0
+    {
+        s.push_str(&format!(" · 低通: {:.0} Hz", co));
     }
     s
 }
@@ -6013,7 +6013,7 @@ pub fn find_device_param_address(
         let Some((_, spec)) = crate::effect_params::recognise(&param.name) else {
             continue;
         };
-        if spec.name == param_name || spec.aliases.iter().any(|&a| a == param_name) {
+        if spec.name == param_name || spec.aliases.contains(&param_name) {
             #[allow(clippy::cast_possible_truncation)]
             let (min_val, max_val) = (spec.min as f32, spec.max as f32);
             return Some((slot_index, param_index, param.value, min_val, max_val));
@@ -6027,8 +6027,7 @@ pub fn find_device_param_address(
 pub fn find_eq_device(track: &TrackV3) -> Option<&DeviceDefinition> {
     track.devices.iter().find(|device| {
         device.params.iter().any(|param| {
-            crate::effect_params::recognise(&param.name)
-                .map_or(false, |(group, _)| group.id == "eq")
+            crate::effect_params::recognise(&param.name).is_some_and(|(group, _)| group.id == "eq")
         })
     })
 }
@@ -6055,8 +6054,10 @@ mod tests {
         assert!(fill.ends_with("L 420.0 50.0 L 0.0 50.0 Z"));
         assert_eq!(info, "平坦响应 (0 dB · 20 Hz – 20 kHz)");
 
-        let mut p = yeban_dsp::shaping::EqParams::default();
-        p.low_gain = 12.0;
+        let p = yeban_dsp::shaping::EqParams {
+            low_gain: 12.0,
+            ..Default::default()
+        };
         let svg_boost = calculate_eq_curve_svg(&p, None);
         assert!(svg_boost.starts_with("M 0.0 "));
         let first_y: f32 = svg_boost

@@ -4303,41 +4303,36 @@ impl EqCurveWiring {
         };
 
         let mut ops = Vec::new();
-        if primary_start.to_bits() != primary_last.to_bits() {
-            if let Some((slot_index, param_index, cur_val, _, _)) =
+        if primary_start.to_bits() != primary_last.to_bits()
+            && let Some((slot_index, param_index, cur_val, _, _)) =
                 crate::bridge::find_device_param_address(track, device_id, primary_name)
-            {
-                if cur_val.to_bits() == primary_start.to_bits() {
-                    ops.push(yeban_model::Op::SetParam {
-                        target: yeban_model::AutomationTarget::DeviceParam {
-                            track_id,
-                            slot_index,
-                            param_index,
-                        },
-                        old_val: primary_start,
-                        new_val: primary_last,
-                    });
-                }
-            }
+            && cur_val.to_bits() == primary_start.to_bits()
+        {
+            ops.push(yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index,
+                    param_index,
+                },
+                old_val: primary_start,
+                new_val: primary_last,
+            });
         }
-        if let Some((sec_name, sec_start, sec_last)) = secondary {
-            if sec_start.to_bits() != sec_last.to_bits() {
-                if let Some((slot_index, param_index, cur_val, _, _)) =
-                    crate::bridge::find_device_param_address(track, device_id, sec_name)
-                {
-                    if cur_val.to_bits() == sec_start.to_bits() {
-                        ops.push(yeban_model::Op::SetParam {
-                            target: yeban_model::AutomationTarget::DeviceParam {
-                                track_id,
-                                slot_index,
-                                param_index,
-                            },
-                            old_val: sec_start,
-                            new_val: sec_last,
-                        });
-                    }
-                }
-            }
+        if let Some((sec_name, sec_start, sec_last)) = secondary
+            && sec_start.to_bits() != sec_last.to_bits()
+            && let Some((slot_index, param_index, cur_val, _, _)) =
+                crate::bridge::find_device_param_address(track, device_id, sec_name)
+            && cur_val.to_bits() == sec_start.to_bits()
+        {
+            ops.push(yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index,
+                    param_index,
+                },
+                old_val: sec_start,
+                new_val: sec_last,
+            });
         }
 
         if !ops.is_empty() {
