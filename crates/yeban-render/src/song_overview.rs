@@ -559,10 +559,10 @@ where
         }
         // 只 mute 其余源节点：总线与 master 是目标信号的通路，不动。
         for &node in &sources {
-            if node != target {
-                if let Some(track) = clone.tracks.get_mut(&node) {
-                    track.mute = true;
-                }
+            if node != target
+                && let Some(track) = clone.tracks.get_mut(&node)
+            {
+                track.mute = true;
             }
         }
         let audio = render_project_to_buffer(&clone, settings, &mut sfz_provider)?;

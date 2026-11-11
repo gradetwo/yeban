@@ -320,20 +320,22 @@ fn cached_overview_reports_frequency_clash_for_the_demo() {
     assert!(!hit, "首次必须是未命中");
     assert_eq!(overview.schema_version, "1.2");
     let clash = &overview.frequency_clash;
-    // 未超上限时条目数 = 总组数；条目按严重度降序；数值都在定义域内。
-    assert_eq!(clash.entries.len(), clash.total_clashes.min(20));
-    let mut prev_severity = f32::INFINITY;
+    // 未超上限时条目数 = 总组数；条目按重叠度降序；数值都在定义域内
+    //（差距只作参考，不再封顶 6 dB）。
+    assert_eq!(clash.entries.len(), clash.total_groups.min(20));
+    let mut prev_overlap = f32::INFINITY;
     for entry in &clash.entries {
         assert!((1..=3).contains(&entry.bar), "演示工程 3 小节");
         assert!(entry.band < 8);
-        assert!((0.0..=6.0).contains(&entry.gap_db));
-        assert!((0.0..=1.0).contains(&entry.severity));
+        assert!(entry.gap_db >= 0.0 && entry.gap_db.is_finite());
+        assert!((0.0..=1.0).contains(&entry.overlap));
+        assert!((0.0..=1.0).contains(&entry.mean_overlap));
         assert!(entry.beats >= 1);
-        assert!(entry.severity <= prev_severity, "条目须按严重度降序");
-        prev_severity = entry.severity;
+        assert!(entry.overlap <= prev_overlap, "条目须按重叠度降序");
+        prev_overlap = entry.overlap;
     }
     println!(
         "### [demo-clash] total={} entries={:?}",
-        clash.total_clashes, clash.entries
+        clash.total_groups, clash.entries
     );
 }

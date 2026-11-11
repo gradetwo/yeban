@@ -75,8 +75,8 @@ use std::collections::BTreeMap;
 use yeban_model::YebanProjectV1;
 
 use crate::output_schema::{
-    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
-    StructuralSummary,
+    BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, FrequencyClashSummary, RepetitionSummary,
+    SongMeta, SongOverview, StructuralSummary,
 };
 use crate::tools::{ErrorCode, ToolCall};
 
@@ -227,6 +227,18 @@ pub fn rounded(mut overview: SongOverview) -> SongOverview {
     overview.repetition.mechanical_index = round2(overview.repetition.mechanical_index);
     for passage in &mut overview.repetition.repeated_passages {
         passage.mean_similarity = round2(passage.mean_similarity);
+    }
+    // schema 1.2 的 `frequency_clash`：重叠度 2 位小数、差距 1 位小数（dB）；
+    // 严重度是分档字符串，不取整（§8.2 同口径）。
+    overview.frequency_clash.overall_overlap = round2(overview.frequency_clash.overall_overlap);
+    for bar in &mut overview.frequency_clash.bar_overlaps {
+        bar.overlap = round2(bar.overlap);
+        bar.max_overlap = round2(bar.max_overlap);
+    }
+    for entry in &mut overview.frequency_clash.entries {
+        entry.overlap = round2(entry.overlap);
+        entry.mean_overlap = round2(entry.mean_overlap);
+        entry.gap_db = round1(entry.gap_db);
     }
     for row in &mut overview.bar_series {
         row.time_sec = round2(row.time_sec);
@@ -757,7 +769,7 @@ impl SongOverviewProvider for StubSongOverviewProvider {
         let mut detected_anomalies = fixture_anomalies();
         detected_anomalies.extend(envelope_anomalies(&envelope_deviations));
         Ok(SongOverview {
-            schema_version: "1.1".to_owned(),
+            schema_version: "1.2".to_owned(),
             song_meta: SongMeta {
                 total_bars: FIXTURE_BARS.len() as u64,
                 duration_sec: 16.0,
@@ -778,6 +790,14 @@ impl SongOverviewProvider for StubSongOverviewProvider {
                 best_matches: Vec::new(),
                 mechanical_index: 0.0,
                 repeated_passages: Vec::new(),
+            },
+            // stub 不算打架检测（检测在 dsp；见模块头"diagnostics 的归属"）：
+            // 夹具不声称重叠与否，字段只保形状完整，值为空摘要。
+            frequency_clash: FrequencyClashSummary {
+                total_groups: 0,
+                overall_overlap: 0.0,
+                bar_overlaps: Vec::new(),
+                entries: Vec::new(),
             },
             bar_series,
         })
