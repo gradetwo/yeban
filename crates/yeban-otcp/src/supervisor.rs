@@ -184,8 +184,16 @@ fn start_server_inner(
     nonce: &str,
 ) -> Result<ServerSession, OtcpError> {
     let ready = wait_ready_file(control_dir, Duration::from_secs(config.timeouts.ready_secs))?;
-    let discovery_path = control_dir.join(&ready.discovery_file);
+    // ready 文件只含 {pid, instanceId}（PROTOCOL §5.5）；发现文件即
+    // <control_dir>/<pid>.json，端口在发现文件里，不在 ready 文件里。
+    let discovery_path = control_dir.join(format!("{}.json", ready.pid));
     let discovery = read_discovery_file(&discovery_path, nonce)?;
+    if discovery.instance_id != ready.instance_id {
+        return Err(OtcpError::protocol(format!(
+            "发现文件的 instanceId 与 ready 文件不符（陈旧文件）：{} vs {}",
+            discovery.instance_id, ready.instance_id
+        )));
+    }
     if discovery.pid == 0 {
         return Err(OtcpError::protocol("发现文件的 pid 为 0"));
     }
@@ -477,7 +485,7 @@ mod tests {
         let discovery = DiscoveryFile {
             port: 41234,
             pid: 1234,
-            launch_nonce: "n".to_owned(),
+            launch_nonce: Some("n".to_owned()),
             process_start_time_ms: 1,
             token: "t".to_owned(),
             server_proof: "p".to_owned(),

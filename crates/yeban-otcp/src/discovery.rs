@@ -19,17 +19,33 @@ use serde::{Deserialize, Serialize};
 use crate::error::OtcpError;
 
 /// `ready.json` 的内容。
+///
+/// 协议原文（`PROTOCOL.md` §5.5，`schemas/discovery-file.schema.json`
+/// `$defs/readyFile`，闭合）：ready 文件只含 `{pid, instanceId}`，
+/// 不含秘密、**不含端口**；端口在发现文件 `<pid>.json` 里。
+/// 2026-11-11 在 yanshi-5 上对 9ef45f9 真二进制实测确认：
+/// `{"pid":1077812,"instanceId":"f6f9a2f12862b59c0d5f4b41852e61da"}`。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyFile {
-    /// 控制 API 监听端口。
-    pub port: u16,
-    /// 进程 pid。
+    /// 进程 pid；发现文件即 `<control_dir>/<pid>.json`。
     pub pid: u32,
-    /// 发现文件路径（`<pid>.json`）。
-    pub discovery_file: String,
+    /// 实例 id（⛔ 不是秘密）；须与发现文件的 `instanceId` 一致。
+    #[serde(rename = "instanceId")]
+    pub instance_id: String,
 }
 
 /// `<pid>.json` 发现文件的内容。
+///
+/// 协议原文（`PROTOCOL.md` §5.4，`schemas/discovery-file.schema.json`
+/// `$defs/knownMembers`）：14 个成员恒在场；`build` 是对象
+/// `{commit, tag}`、`launchNonce` 为 string|null、`buildTag` 为
+/// string|null。2026-11-11 在 yanshi-5 上对 9ef45f9 真二进制实测：
+/// `{"protocolMajors":[1],"pid":…,"processStartTimeMs":…,"instanceId":…,
+/// "port":36833,"token":…,"serverProof":…,"launchNonce":…,
+/// "appVersion":"1.8.2","build":{"commit":"9ef45f9a…","tag":null},
+/// "buildTag":null,"sourceUrl":"https://github.com/YuFeng926/OpenTune",
+/// "startedAtMs":…,"flavor":"standalone"}`。
+/// 本结构只取驱动要用的成员，未知成员按协议 §2.3 规则 1 忽略。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryFile {
     /// 控制 API 监听端口。
@@ -37,8 +53,9 @@ pub struct DiscoveryFile {
     /// 进程 pid。
     pub pid: u32,
     /// 服务端启动时验证用的 nonce（⛔ 不记日志）。
+    /// 未传 `--control-api-launch-nonce` 时服务端写 null。
     #[serde(rename = "launchNonce")]
-    pub launch_nonce: String,
+    pub launch_nonce: Option<String>,
     /// 进程启动时间（Unix 毫秒）。
     #[serde(rename = "processStartTimeMs")]
     pub process_start_time_ms: u64,
@@ -134,7 +151,7 @@ pub fn read_discovery_file(path: &Path, expected_nonce: &str) -> Result<Discover
     let file: DiscoveryFile = serde_json::from_str(&text).map_err(|error| {
         OtcpError::protocol(format!("解析发现文件 {} 失败: {error}", path.display()))
     })?;
-    if file.launch_nonce != expected_nonce {
+    if file.launch_nonce.as_deref() != Some(expected_nonce) {
         return Err(OtcpError::protocol(format!(
             "发现文件 {} 的 launchNonce 与本次启动不符（陈旧文件）",
             path.display()
@@ -295,7 +312,7 @@ mod tests {
         let file = DiscoveryFile {
             port: 41234,
             pid: 999_999,
-            launch_nonce: "valid-nonce-0123456789".to_owned(),
+            launch_nonce: Some("valid-nonce-0123456789".to_owned()),
             process_start_time_ms: now_ms(),
             token: "t".to_owned(),
             server_proof: "p".to_owned(),
@@ -312,7 +329,7 @@ mod tests {
         let file = DiscoveryFile {
             port: 41234,
             pid: 1234,
-            launch_nonce: "nonce-secret".to_owned(),
+            launch_nonce: Some("nonce-secret".to_owned()),
             process_start_time_ms: 1_000_000,
             token: "token-secret".to_owned(),
             server_proof: "proof-secret".to_owned(),

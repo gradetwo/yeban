@@ -125,18 +125,29 @@ class MockServer:
         sock.listen(1)
         self.port = sock.getsockname()[1]
         discovery_name = f"{self.pid}.json"
+        now_ms = int(time.time() * 1000)
+        # 发现文件：按协议 §5.4 的 14 个成员全写，与 9ef45f9 真二进制
+        # 在 yanshi-5 上的实测形状一致（build 是对象 {commit, tag}）。
         discovery = {
-            "port": self.port, "pid": self.pid,
-            "launchNonce": self.nonce,
-            "processStartTimeMs": int(time.time() * 1000),
-            "token": self.token, "serverProof": self.server_proof,
+            "protocolMajors": [1], "pid": self.pid,
+            "processStartTimeMs": now_ms,
             "instanceId": self.instance_id,
+            "port": self.port,
+            "token": self.token, "serverProof": self.server_proof,
+            "launchNonce": self.nonce,
+            "appVersion": "1.8.2",
+            "build": {"commit": self.build_commit, "tag": None},
+            "buildTag": None,
+            "sourceUrl": "https://github.com/YuFeng926/OpenTune",
+            "startedAtMs": now_ms,
+            "flavor": "standalone",
         }
         with open(os.path.join(self.control_dir, discovery_name), "w") as fh:
             json.dump(discovery, fh)
+        # ready 文件：协议 §5.5 闭合，只含 {pid, instanceId}，无端口。
         with open(self.ready_file, "w") as fh:
-            json.dump({"port": self.port, "pid": self.pid,
-                       "discovery_file": discovery_name}, fh)
+            json.dump({"pid": self.pid,
+                       "instanceId": self.instance_id}, fh)
         conn, _ = sock.accept()
         stream = conn.makefile("rwb")
         while True:
