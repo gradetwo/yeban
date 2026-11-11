@@ -152,6 +152,34 @@ impl Default for EqParams {
     }
 }
 
+impl EqParams {
+    /// 计算指定频率 `freq`（Hz）在采样率 `sample_rate` 下的三段 EQ 复合幅频响应（单位：dB）。
+    #[must_use]
+    pub fn response_db(&self, freq: f32, sample_rate: f32) -> f32 {
+        let sr = sanitise_sample_rate(sample_rate);
+        let mut low = Biquad::identity();
+        low.low_shelf(
+            sr,
+            clamp_or(self.low_freq, 20.0, 1000.0, 200.0),
+            clamp_or(self.low_gain, -18.0, 18.0, 0.0),
+        );
+        let mut mid = Biquad::identity();
+        mid.peaking(
+            sr,
+            clamp_or(self.mid_freq, 200.0, 8000.0, 1000.0),
+            clamp_or(self.mid_q, 0.3, 6.0, 0.9),
+            clamp_or(self.mid_gain, -18.0, 18.0, 0.0),
+        );
+        let mut high = Biquad::identity();
+        high.high_shelf(
+            sr,
+            clamp_or(self.high_freq, 1000.0, 16000.0, 4000.0),
+            clamp_or(self.high_gain, -18.0, 18.0, 0.0),
+        );
+        low.response_db(freq, sr) + mid.response_db(freq, sr) + high.response_db(freq, sr)
+    }
+}
+
 /// 中置量化（mid-tread）：全量程分 `2^bits` 级，因此满量程本身落在网格上，
 /// 钳制永远不会停在两个网格点之间。16 bit 的步长是 3.05e-5，4 bit 是 0.125。
 #[inline]
@@ -300,6 +328,33 @@ impl Biquad {
         self.b2 = b2 * inv;
         self.a1 = a1 * inv;
         self.a2 = a2 * inv;
+    }
+
+    /// 计算指定频率 `freq`（Hz）在采样率 `sample_rate` 下该 Biquad 滤波器的幅频响应（单位：dB）。
+    #[must_use]
+    pub(crate) fn response_db(&self, freq: f32, sample_rate: f32) -> f32 {
+        let sr = sanitise_sample_rate(sample_rate);
+        let f = freq.clamp(1.0, sr * 0.499);
+        let w = TAU * (f / sr);
+        let (sin_w, cos_w) = w.sin_cos();
+        let (sin_2w, cos_2w) = (2.0 * w).sin_cos();
+
+        let num_re = self.b0 + self.b1 * cos_w + self.b2 * cos_2w;
+        let num_im = -self.b1 * sin_w - self.b2 * sin_2w;
+        let den_re = 1.0 + self.a1 * cos_w + self.a2 * cos_2w;
+        let den_im = -self.a1 * sin_w - self.a2 * sin_2w;
+
+        let num_sq = num_re * num_re + num_im * num_im;
+        let den_sq = den_re * den_re + den_im * den_im;
+        if den_sq <= 1e-12 {
+            return 0.0;
+        }
+        let mag_sq = num_sq / den_sq;
+        if mag_sq <= 1e-12 {
+            -60.0
+        } else {
+            10.0 * mag_sq.log10()
+        }
     }
 
     /// RBJ 低架，斜率 `S = 1`（12 dB/octave 渐近线）。
@@ -1077,6 +1132,72 @@ mod tests {
         assert!(
             (high_end + 12.0).abs() < 1.0,
             "high shelf at 16 kHz: {high_end:.2} dB"
+        );
+    }
+
+    #[test]
+    fn eq_analytic_response_matches_theory_and_unity() {
+        let flat = EqParams::default();
+        for freq in [20.0, 100.0, 1000.0, 5000.0, 18000.0] {
+            let gain = flat.response_db(freq, SR);
+            assert!(
+                gain.abs() < 1e-4,
+                "flat response at {freq} Hz must be 0 dB, got {gain}"
+            );
+        }
+
+        let low_boost = EqParams {
+            low_gain: 12.0,
+            low_freq: 200.0,
+            ..EqParams::default()
+        };
+        let low_val = low_boost.response_db(30.0, SR);
+        assert!(
+            (low_val - 12.0).abs() < 0.5,
+            "low shelf below corner: {low_val} dB"
+        );
+        let low_corner = low_boost.response_db(200.0, SR);
+        assert!(
+            (low_corner - 6.0).abs() < 0.5,
+            "low shelf at corner: {low_corner} dB"
+        );
+        let low_high = low_boost.response_db(4000.0, SR);
+        assert!(
+            low_high.abs() < 0.2,
+            "low shelf well above corner: {low_high} dB"
+        );
+
+        let mid_cut = EqParams {
+            mid_gain: -9.0,
+            mid_freq: 1000.0,
+            mid_q: 1.0,
+            ..EqParams::default()
+        };
+        let mid_val = mid_cut.response_db(1000.0, SR);
+        assert!(
+            (mid_val + 9.0).abs() < 0.1,
+            "mid peak at center: {mid_val} dB"
+        );
+        let mid_away = mid_cut.response_db(4000.0, SR);
+        assert!(
+            mid_away.abs() < 1.0,
+            "mid peak two octaves away: {mid_away} dB"
+        );
+
+        let high_boost = EqParams {
+            high_gain: 9.0,
+            high_freq: 4000.0,
+            ..EqParams::default()
+        };
+        let high_val = high_boost.response_db(16000.0, SR);
+        assert!(
+            (high_val - 9.0).abs() < 0.5,
+            "high shelf well above corner: {high_val} dB"
+        );
+        let high_corner = high_boost.response_db(4000.0, SR);
+        assert!(
+            (high_corner - 4.5).abs() < 0.5,
+            "high shelf at corner: {high_corner} dB"
         );
     }
 

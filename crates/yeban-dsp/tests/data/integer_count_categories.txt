@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 286 条：collection_size 60 ／ value_bound 215 ／ element_value_bound 5 ／ condition_counter 6
+# 合计 287 条：collection_size 60 ／ value_bound 216 ／ element_value_bound 5 ／ condition_counter 6
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -213,6 +213,7 @@ src/shaping.rs|a_bit_depth_below_the_floor_is_folded_onto_the_floor|value_bound|
 src/shaping.rs|bit_depth_sets_the_quantisation_step|value_bound|assert!(                 worst_grid < 1e-2,                 "{bits} bits: an output is {wo
 src/shaping.rs|deeper_divisors_push_the_mirror_lower_in_level_and_frequency|value_bound|assert!(                 level > -40.0,                 "down {down}: no mirror found ({le
 src/shaping.rs|divisor_and_anti_alias_move_the_mirror|value_bound|assert!(             no_divisor < -40.0,             "down = 1 still mirrors at {no_diviso
+src/shaping.rs|eq_analytic_response_matches_theory_and_unity|value_bound|assert!(                 gain.abs() < 1e-4,                 "flat response at {freq} Hz mu
 src/shaping.rs|eq_band_gains_match_the_cookbook|value_bound|assert!((low - 12.0).abs() < 1.0, "low shelf end: {low:.2} dB"
 src/shaping.rs|eq_flat_is_unity|value_bound|assert!(gain.abs() < 0.05, "flat EQ {freq} Hz: {gain:.3} dB"
 src/shaping.rs|eq_shelves_reach_their_gain_at_the_ends_and_slope_back|value_bound|assert!(             (bottom - 12.0).abs() < 1.0,             "low shelf at 65 Hz: {bottom

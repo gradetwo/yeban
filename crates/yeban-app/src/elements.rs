@@ -1385,7 +1385,7 @@ impl ElementRegistry {
             "device-rack-eq-curve",
             ElementKind::Image,
             "console/device_rack.slint",
-            "4 段 EQ 频响曲线 (占位)",
+            "4 段 EQ 频响曲线",
             true,
         );
         registry.add(
