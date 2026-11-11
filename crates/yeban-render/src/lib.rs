@@ -109,6 +109,7 @@ pub use yeban_midi::midi;
 // `yeban-dsp`（DSP 本体是同一份）。待办：把投影下移到 `yeban-dsp`，见模块头 §0。
 pub mod inserts;
 pub mod pdc;
+pub mod phase_align_auto;
 pub mod render;
 /// 整曲多层可视化总览图 Phase 1：工程 → 离线总线音频（内存缓冲）→ dsp
 /// 四层分析 + 整曲哈希缓存（设计稿 `yeban-songmap-design.md` §9 / §11）。
