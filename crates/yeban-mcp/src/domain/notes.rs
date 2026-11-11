@@ -1444,7 +1444,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 48 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 56 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -20824,6 +20824,20 @@ mod tests {
                 "SetTrackSolo",
             ),
             (
+                "setTrackPolarity",
+                None,
+                None,
+                serde_json::json!({"value": true}),
+                "SetTrackPolarity",
+            ),
+            (
+                "setTrackDelay",
+                None,
+                None,
+                serde_json::json!({"delaySamples": 240}),
+                "SetTrackDelay",
+            ),
+            (
                 "setTransportConfig",
                 None,
                 None,
@@ -20979,6 +20993,17 @@ mod tests {
                 "SetClipPlacementDuration",
             ),
             (
+                "setClipPlacementOffset",
+                None,
+                None,
+                serde_json::json!({
+                    "trackId": placement_track.to_canonical_string(),
+                    "placementId": placed.to_canonical_string(),
+                    "offsetSamples": 48,
+                }),
+                "SetClipPlacementOffset",
+            ),
+            (
                 "setAutomationLane#patch",
                 None,
                 None,
@@ -21086,11 +21111,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "48 个 kind ＋ 1 个额外载荷分支"
+            "56 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 48 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 56 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {

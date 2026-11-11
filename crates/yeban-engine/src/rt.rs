@@ -4820,10 +4820,10 @@ impl EngineRuntime {
                 // 与 PDC 的 2b'' 同一条边界：快照边界只做 `set_delay`（零分配、零锁、
                 // 零 I/O）。最小值平移在 [`PhaseBank::rearm`] 里做（负延时 = 相对提前）。
                 // 主总线**不进表**：它在逐轨循环里根本不走 `track_scratch`（它是混音
-                // 本身，不是可对齐的轨；离线侧的 master 若写了延时等于整曲后移，
-                // 那是另一条路径的节点语义，不搬到这里）。
-                // 恒等轨（延时 0 且不反转）不进表 ⇒ 不占槽位（`rearm` 里再跳一次是
-                // 兜底，调用方这里已经过滤）。
+                // 本身，不是可对齐的轨；离线侧的 master 同样恒等，见 R6）。
+                // 恒等轨只在 min < 0 时进表：此时它有效非零（有效 = 0 − min），必须
+                // 占槽，否则相对偏移就丢了（R4：A −240 / B 0 里 B 有效 240）；min == 0
+                // 时它有效恒等，直通不占槽。`rearm` 里按有效值再跳一次是兜底。
                 // 池装不下的部分不静默：记进两个累计读数（与 PDC 的 `RearmShortfall` 同族）。
                 {
                     // ⚠ 栈数组按**池槽数**（64）封顶，不按 `MAX_TRACK_SLOTS`（2048）：
@@ -4834,13 +4834,22 @@ impl EngineRuntime {
                         [(EntityId::default(), 0, false); PDC_SLOTS];
                     let mut phase_count = 0usize;
                     let mut phase_overflow = 0usize;
+                    // 第一遍：min 取遍全部非 master 轨（恒等轨以 0 参与）。
+                    let mut min_delay = 0i32;
+                    for (id, params) in current.tracks() {
+                        if *id == master {
+                            continue;
+                        }
+                        min_delay = min_delay.min(params.delay_samples());
+                    }
+                    // 第二遍：非恒等轨总进表；恒等轨只在 min < 0 时进表。
                     for (id, params) in current.tracks() {
                         if *id == master {
                             continue;
                         }
                         let delay = params.delay_samples();
                         let invert = params.invert_polarity();
-                        if delay == 0 && !invert {
+                        if delay == 0 && !invert && min_delay == 0 {
                             continue;
                         }
                         if phase_count >= PDC_SLOTS {

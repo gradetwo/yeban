@@ -1057,7 +1057,15 @@ impl RenderPlan {
                     .map(|chain| {
                         InsertRuntime::new(chain, options.sample_rate, options.block_size)
                     });
-                let align = phase.get(&node).copied().unwrap_or_default();
+                // 主总线恒等：它是混音本身，不是可对齐的轨。若把它也平移，整路母带
+                // 会被拖后 |min|（R4 实测：A −240 / B 0 时母带第 0 帧变 0）。min 本身
+                // 仍按全部节点算（master 缺表项当 0，不影响 min ≤ 0）。
+                // 实时侧同规则（arming 跳 master，见 R6）。
+                let align = if node == master {
+                    PhaseAlign::default()
+                } else {
+                    phase.get(&node).copied().unwrap_or_default()
+                };
                 let effective_delay = align.delay_samples.saturating_sub(min_delay);
                 NodeState {
                     node,

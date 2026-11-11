@@ -911,10 +911,13 @@ impl PhaseBank {
     /// 2. 延迟超过线容量 ⇒ 钳到容量上界，差额进 [`RearmShortfall::clamped_frames`]。
     pub fn rearm(&mut self, phases: &[(EntityId, i32, bool)]) -> RearmShortfall {
         let mut shortfall = RearmShortfall::default();
-        // 最小值平移：只对**非恒等**项取最小值（恒等项不进表，不影响 min）。
+        // 最小值平移：对表里的**全部**项取最小值（恒等项以 0 参与 —— 恒等项的 0
+        // 不会把 min 拉得更低，但它自己的有效延时 = 0 − min：min < 0 时 > 0 ⇒
+        // 它也必须占槽，否则相对偏移就丢了。R4 的 A −240 / B 0 正是此例：B 原值
+        // 0、有效 240，不占槽就会在第 0 帧出声）。
+        // 占槽只看**有效**值：有效 0 且不反转才跳过（直通，不占槽）。
         let min_delay = phases
             .iter()
-            .filter(|(_, delay, invert)| *delay != 0 || *invert)
             .map(|(_, delay, _)| *delay)
             .min()
             .unwrap_or(0)
@@ -922,14 +925,14 @@ impl PhaseBank {
         let mut armed = 0usize;
         let mut rebindings = 0u64;
         for (node, delay, invert) in phases {
-            if *delay == 0 && !*invert {
+            let wanted = (*delay - min_delay).max(0) as usize;
+            if wanted == 0 && !*invert {
                 continue;
             }
             if armed >= self.entries.len() {
                 shortfall.unarmed_nodes += 1;
                 continue;
             }
-            let wanted = (*delay - min_delay).max(0) as usize;
             let (slot_node, line) = &mut self.entries[armed];
             if *slot_node != *node {
                 line.reset();
@@ -954,7 +957,7 @@ impl PhaseBank {
         self.entries.len()
     }
 
-    /// 已武装的条数（= 有非恒等相位设置的节点数）。
+    /// 已武装的条数（= 有效延时非零或反转的节点数；有效恒等不占槽）。
     #[must_use]
     pub const fn len(&self) -> usize {
         self.armed
@@ -1588,7 +1591,7 @@ mod tests {
     }
 
     /// **手动相位对齐第一层**：`PhaseBank::rearm` 做最小值平移，`apply`
-    /// 施加延时与反转；恒等轨不占槽位。
+    /// 施加延时与反转；有效恒等（有效 0 且不反转）不占槽位。
     ///
     /// 角色按身份升序分配（`rearm` 的输入表必须按键升序，与
     /// `CompensationBank` 的 `BTreeMap` 迭代顺序同一条前提）。
@@ -1598,17 +1601,19 @@ mod tests {
         ids.sort_unstable();
         let [early, plain, late] = ids;
         // early −240、plain 0、late +480 且反转 ⇒ min = −240 ⇒
-        // 有效延时 0 / 240 / 720。
+        // 有效延时 0 / 240 / 720。plain 原值恒等、有效 240 ⇒ 也占槽
+        // （不占槽就会在第 0 帧出声，相对偏移丢了 —— R4 的教训）。
         let mut bank = PhaseBank::preallocated(6, 9600);
         assert!(bank.is_empty(), "预分配之后一条都没武装");
         let shortfall = bank.rearm(&[(early, -240, false), (plain, 0, false), (late, 480, true)]);
         assert!(shortfall.is_exact(), "3 条轨 6 条线：{shortfall:?}");
-        assert_eq!(bank.len(), 2, "恒等轨 plain 不占槽位");
+        assert_eq!(bank.len(), 3, "有效 240 的 plain 也占槽位");
         assert_eq!(bank.effective_delay(&early), Some(0));
+        assert_eq!(bank.effective_delay(&plain), Some(240));
         assert_eq!(bank.effective_delay(&late), Some(720));
         assert_eq!(bank.invert(&early), Some(false));
+        assert_eq!(bank.invert(&plain), Some(false));
         assert_eq!(bank.invert(&late), Some(true));
-        assert_eq!(bank.invert(&plain), None, "恒等轨不可达");
 
         // 行为面：early 的脉冲当即出声，late 的脉冲在 720 帧后以 −1 出声。
         let mut buf = [1.0f32, 0.0, 0.0, 0.0];
@@ -1623,6 +1628,12 @@ mod tests {
             1,
             "只有非零延迟/反转的那一次算『真的处理过』（有效延时 0 且不反转的武装直通不计）"
         );
+
+        // plain 的脉冲在 240 帧后出声（有效延时 240，不是第 0 帧）。
+        let mut buf = vec![1.0f32; 244];
+        assert!(bank.apply(&plain, &mut buf));
+        assert_eq!(buf[..240], [0.0; 240], "前 240 帧必须是零历史");
+        assert_eq!(buf[240], 1.0, "第 240 帧是 plain 的脉冲");
 
         // 不在表里的节点：apply 返回 false，样本不动。
         let stranger = EntityId::new();
