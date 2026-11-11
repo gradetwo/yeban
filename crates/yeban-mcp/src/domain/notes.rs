@@ -13887,11 +13887,21 @@ mod tests {
         // —— 同样与真实 `kind` 同步。
         // 本票（整片段编辑形态）新增 quantizeClip / invertClip / retrogradeClip /
         // humanizeClip / duplicateClip 五个 kind 后为 53 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 53);
+        // 本票（手动相位对齐）新增 setTrackDelay / setTrackPolarity /
+        // setClipPlacementOffset 三个 kind 后为 56 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 56);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
-        assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
+        assert_eq!(
+            TrackFlag::NAMES,
+            [
+                SET_TRACK_MUTE_KIND,
+                SET_TRACK_SOLO_KIND,
+                SET_TRACK_POLARITY_KIND
+            ]
+        );
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
+        assert!(OP_KINDS.contains(&SET_TRACK_POLARITY_KIND));
         assert!(OP_KINDS.contains(&SET_AUTOMATION_LANE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
         assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
@@ -19975,7 +19985,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 53] = [
+        let table: [(&str, serde_json::Value); 56] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),

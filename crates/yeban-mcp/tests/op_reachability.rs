@@ -460,9 +460,9 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        56,
-        "登记表有 56 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
-         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56）"
+        59,
+        "登记表有 59 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59）"
     );
 }
 

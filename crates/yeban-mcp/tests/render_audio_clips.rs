@@ -353,6 +353,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             start_tick: tune.start_tick,
             duration_ticks: tune.duration_ticks,
             muted: tune.placement_muted,
+            offset_samples: None,
             loop_config: tune.loop_config,
         },
     );

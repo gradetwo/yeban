@@ -3367,6 +3367,7 @@ mod tests {
                 duration_ticks: 960 * notes.len().max(1) as u64,
                 loop_config: yeban_model::LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         project.tracks.insert(track_id, track);
