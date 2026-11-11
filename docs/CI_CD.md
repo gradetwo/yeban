@@ -239,11 +239,19 @@ Actions 的清理会一直等它 ⇒ 作业既不成功也不失败，判决要�
 而其余 `success` 几乎全是 **docs-only ⇒ crate 腿 `skipped steps=0`**；最近一次该腿真跑完且绿是更早的一条。
 ⇒ **"main 绿"这个集合长期混进大量零 crate 证据的 success** —— 这是"空心绿"的**系统性版本**。
 
-**已做的修复**: `ci.yml` 改为 `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`
-—— 分支上仍取消（省额度），**main 上排队等它跑完**（不掐掉证据）。
+**旧修复已撤销（Wang 2026-11-12 定，避免 CI 等待）**: `ci.yml` 曾改为
+`cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` —— 分支上仍取消，
+**main 上排队等它跑完**（不掐掉证据）。该规则让 main 上积压多条在飞 run，
+等待时间随合入数线性增长；现已撤销，改为 main 与分支同一规则：
+同一 ref 的新推送取消在飞 run，只跑最新头的完整 CI。
+「空心绿」不再由"不取消"防范，而由另一条改动兜底 —— **main 推送恒为完整 CI**
+（`plan` 在 `github.ref == 'refs/heads/main'` 时传 `--force-full`），
+跑完的 main run 恒为全量，不再有零 crate 证据的 success。
+被取消的 run 不是判决，只有跑完的完整 run 才算 main 的绿。
 
-**要确定性拿到"workspace 全量"判决，只有两条可靠路径**（实测：`rerun` **不是**可靠开关 —— 两次 rerun 一次 wide 一次 narrow）：
-1. **推一个碰 `crates/**` 的提交**（或根级触发器：`Cargo.toml`/`Cargo.lock`/`schemas/**`/`scripts/**`/`.github/**`/`deny.toml`/`rust-toolchain`）
+**要确定性拿到"workspace 全量"判决，可靠路径**（实测：`rerun` **不是**可靠开关 —— 两次 rerun 一次 wide 一次 narrow）：
+1. **推到 main** ⇒ `plan` 强制全量 ⇒ 跑 `rust (workspace 全量)`；
+   分支上仍可推一个碰 `crates/**` 的提交（或根级触发器：`Cargo.toml`/`Cargo.lock`/`schemas/**`/`scripts/**`/`.github/**`/`deny.toml`/`rust-toolchain`）
    ⇒ `plan` 判 `workspace_wide` ⇒ 跑 `rust (workspace 全量)`；
 2. **用 `gates-manual.yml`** 派一发（它的 `cancel-in-progress: false`，不会被别的推送掐掉）。
 
@@ -252,7 +260,9 @@ Actions 的清理会一直等它 ⇒ 作业既不成功也不失败，判决要�
 - **"挂住的绿"的可靠判据**是 job 的 `steps[].started_at` 是否还在前进 —— 只看 `updatedAt`、或看"最后一步是不是 `Post Run …`"都会误判
   （**未开始的步骤也会显示成 `Post Run …[pending]`**）；
 - `gh run cancel` 在 post-job 阶段**长时间不响应**；取消挂起 run 后，同 ref 的新 run 会一直 `queued` 直到它真的被终止；
-- **等判决期间不要推送** —— `cancel-in-progress` 会把证据 run 掐掉（本项目的实测代价：掐掉过**唯一**那条证据）；
+- **main 上等判决期间推送是预期行为** —— 新合入会取消在飞的完整 CI，最新头的 run 才是证据 run；
+  分支上仍尽量不在等判决时推送（`cancel-in-progress` 会把证据 run 掐掉，本项目的实测代价：
+  掐掉过**唯一**那条证据）；
 - **`gh` 的日志缓存要落在仓库外**：`XDG_CACHE_HOME=/Users/crow/work/music/.cache gh run view --log`，
   否则 `.cache/gh/run-log-*.zip` 会落进仓库，被 `G12 [仓库卫生]` 一票否决（它扫**文件系统**，不是索引）。
 
