@@ -92,6 +92,18 @@ VST3 路走不通（宿主调研 2026-11-06：插件能加载但无参数通道�
    v1 的 `Note` 只存 7 个字段（下标 / 起止 / 检测音高 / 目标音高 /
    偏移 / 是否校正），响应面按 camelCase 展开这 7 个。参数往返存活
    是设计稿 §9 待办，待真机量测后定是否补进 `Note`。
+9. **恢复循环覆盖 onboarding 遮罩，且每次写调用前都跑**。设计稿
+   §4.2 的循环只写了对话框；真机实测（yanshi-5，9ef45f9）证明新鲜
+   服务端启动即有首跑 onboarding（confirm 对话框 closeCommits: false
+   + `onboarding.showing: true`），只清对话框不够——须另发
+   `ui.dismiss {target: "onboarding"}`（需 `ui.onboardingClose` 能力，
+   该构建有）。驱动在启动后先清一次（§1.4 验 `ui.getState` ），每次
+   写调用（import / autoTune / editNotes / export）前经 `write_call`
+   再跑循环，写调用本身报 `BUSY(modal_open)` 时恢复一次并重试一次。
+   解散只改本次任务临时数据目录里的 `onboardingShown` 偏好，关机即删
+   目录，用户侧无残留。另：`ui.dismiss` 结果的 `sideEffects.dialogClosed`
+   真形状是对象 `{dialogs: [{kind, trackId}], revert: null}`，不是字符串
+   数组（首版按假设写错，mock 已按实测改）。
 
 ## 不做（v1 之外）
 

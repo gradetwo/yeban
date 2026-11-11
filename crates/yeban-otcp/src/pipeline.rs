@@ -380,6 +380,12 @@ impl OtcpDriver {
         receipt.editing_scheme = session.editing_scheme.clone();
         write_receipt(config, receipt);
 
+        // 启动即验 `ui.getState` 并清首跑 onboarding（设计稿 §1.4）：
+        // 新鲜服务端（每任务一个 OPENTUNE_DATA_DIR）启动即有
+        // confirm 对话框 + onboarding 遮罩，不清则首个写调用必报
+        // BUSY(modal_open)。写调用前 `write_call` 还会再跑恢复循环。
+        recover_modal(&mut session.client, job_id, 3)?;
+
         let outcome = self.run_with_session(&mut session, request, receipt, deadline);
         // 关闭（每条路径都走）：先解模态框再退出。
         // 注：OTCP 的 import/export 任务 id 未在收据里跟踪，取消只对
@@ -411,7 +417,9 @@ impl OtcpDriver {
         let client = &mut session.client;
 
         // 2. 导入。
-        let import_job = client.call(
+        let import_job = write_call(
+            client,
+            job_id,
             "import.start",
             json!({
                 "items": [{"path": request.source_wav.display().to_string()}],
@@ -422,7 +430,6 @@ impl OtcpDriver {
                 "focus": false,
                 "idempotencyKey": job_id,
             }),
-            job_id,
         )?;
         let import_job_id = import_job
             .get("jobId")
@@ -569,7 +576,9 @@ fn run_self_test(
     write_self_test_fixture(&fixture_path)?;
     let client = &mut session.client;
     let deadline = Instant::now() + Duration::from_secs(config.timeouts.job_budget_secs);
-    let import_job = client.call(
+    let import_job = write_call(
+        client,
+        job_id,
         "import.start",
         json!({
             "items": [{"path": fixture_path.display().to_string()}],
@@ -580,7 +589,6 @@ fn run_self_test(
             "focus": false,
             "idempotencyKey": format!("{job_id}-selftest"),
         }),
-        job_id,
     )?;
     let import_job_id = import_job
         .get("jobId")
@@ -883,7 +891,7 @@ fn revision_for(content_id: &str, value: &Value) -> Option<String> {
 }
 
 /// `content.autoTune`（snapNotes）：`REVISION_CONFLICT` → 重读令牌重试一次；
-/// `BUSY(modal_open)` → 走恢复循环重试一次。
+/// 模态恢复由 `write_call` 在每次写前做。
 /// 返回新的修订令牌。
 fn snap_notes(
     client: &mut OtcpClient,
@@ -898,20 +906,15 @@ fn snap_notes(
         "expectedRevision": revision,
         "key": {"root": key.root, "scale": key.scale},
     });
-    match client.call("content.autoTune", params.clone(), job_id) {
+    match write_call(client, job_id, "content.autoTune", params.clone()) {
         Ok(result) => Ok(revision_for(content_id, &result).unwrap_or_else(|| revision.to_owned())),
         Err(error) if error.reason == "otcpRevisionConflict" => {
             let (_, fresh) = read_notes(client, job_id, content_id)?;
             let fresh = fresh.ok_or_else(|| OtcpError::protocol("冲突重试时未读到新修订令牌"))?;
             let mut retry_params = params.clone();
             retry_params["expectedRevision"] = Value::String(fresh.clone());
-            let result = client.call("content.autoTune", retry_params, job_id)?;
+            let result = write_call(client, job_id, "content.autoTune", retry_params)?;
             Ok(revision_for(content_id, &result).unwrap_or(fresh))
-        }
-        Err(error) if error.reason == "otcpModalBlocked" => {
-            recover_modal(client, job_id, 3)?;
-            let result = client.call("content.autoTune", params, job_id)?;
-            Ok(revision_for(content_id, &result).unwrap_or_else(|| revision.to_owned()))
         }
         Err(error) => Err(error),
     }
@@ -946,6 +949,27 @@ fn verify_notes(before: &[Note], after: &[Note], key: &Key) -> Result<(), OtcpEr
     Ok(())
 }
 
+/// 写调用（设计稿 §4.2）：每次写操作前先跑模态恢复循环；
+/// 写调用本身报 `BUSY(modal_open)` 时再恢复一次并重试一次。
+/// 读调用（`project.get`/`getDetails`/`getNotes`/`job.get`）不受
+/// 模态框拒绝，⛔ 不走这里。
+fn write_call(
+    client: &mut OtcpClient,
+    job_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, OtcpError> {
+    recover_modal(client, job_id, 3)?;
+    match client.call(method, params.clone(), job_id) {
+        Ok(result) => Ok(result),
+        Err(error) if error.reason == "otcpModalBlocked" => {
+            recover_modal(client, job_id, 3)?;
+            client.call(method, params, job_id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// `content.editNotes`（noteOps 透传；干跑时 `dryRun: true` 只预测）。
 /// 返回新的修订令牌。
 fn apply_note_ops(
@@ -956,7 +980,9 @@ fn apply_note_ops(
     ops: &[Value],
     dry_run: bool,
 ) -> Result<String, OtcpError> {
-    let result = client.call(
+    let result = write_call(
+        client,
+        job_id,
         "content.editNotes",
         json!({
             "contentId": content_id,
@@ -964,7 +990,6 @@ fn apply_note_ops(
             "ops": ops,
             "dryRun": dry_run,
         }),
-        job_id,
     )?;
     Ok(revision_for(content_id, &result).unwrap_or_else(|| revision.to_owned()))
 }
@@ -982,7 +1007,9 @@ fn export_clip(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let start = client.call(
+        let start = write_call(
+            client,
+            job_id,
             "export.start",
             json!({
                 "kind": "clip",
@@ -991,7 +1018,6 @@ fn export_clip(
                 "ifExists": "error",
                 "allowDry": false,
             }),
-            job_id,
         )?;
         let export_job_id = start
             .get("jobId")

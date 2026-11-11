@@ -82,6 +82,31 @@ def write_wav_float32(path, sample_rate, freqs):
         fh.write(header + data)
 
 
+def proc_start_time_ms():
+    """本进程的 OS 上报启动时间（Unix 毫秒），与真服务端的写法一致。
+
+    不能写 wall-clock now：Python 解释器启动本身耗时，并行跑测试时
+    可达 2 秒以上，驱动按设计稿 2000 ms 容差会把文件判为陈旧。
+    读不到 /proc 时才回落到 wall-clock。
+    """
+    try:
+        with open("/proc/self/stat") as fh:
+            stat = fh.read()
+        after_comm = stat.rsplit(")", 1)[1].split()
+        starttime_ticks = int(after_comm[19])  # 第 22 字段
+        btime = None
+        with open("/proc/stat") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    btime = int(line.split()[1])
+                    break
+        if btime is None:
+            raise ValueError("no btime")
+        return btime * 1000 + starttime_ticks * 1000 // 100
+    except Exception:
+        return int(time.time() * 1000)
+
+
 class MockServer:
     def __init__(self, control_dir, ready_file, nonce, scenario):
         self.control_dir = control_dir
@@ -105,8 +130,13 @@ class MockServer:
         self.last_content_id = None
         self.import_count = 0
         self.source_duration = 2.0
-        self.modal_open = False
-        self.dialogs = []
+        # 新鲜服务端启动即有首跑 onboarding：confirm 对话框
+        #（closeCommits: false）+ onboarding 遮罩同时在，与 9ef45f9
+        # 真二进制在 yanshi-5 上的实测一致；驱动须在首个写调用前清掉。
+        self.modal_open = True
+        self.dialogs = [{"kind": "confirm", "closeCommits": False}]
+        self.onboarding_shown = True
+        self.onboarding_showing = True
         # 每个 content 各触发一次场景行为（自测与任务是不同的 content，
         # 各自走一遍模态 / 冲突路径）。
         self.auto_tune_seen = set()
@@ -130,7 +160,7 @@ class MockServer:
         # 在 yanshi-5 上的实测形状一致（build 是对象 {commit, tag}）。
         discovery = {
             "protocolMajors": [1], "pid": self.pid,
-            "processStartTimeMs": now_ms,
+            "processStartTimeMs": proc_start_time_ms(),
             "instanceId": self.instance_id,
             "port": self.port,
             "token": self.token, "serverProof": self.server_proof,
@@ -400,17 +430,35 @@ class MockServer:
                              "exportInProgress": False,
                              "projectOperation": False},
                     "dialogs": self.dialogs,
-                    "onboarding": {}, "ui": {}, "uiScale": 1.0}, None
+                    "onboarding": {"shown": self.onboarding_shown,
+                                   "showing": self.onboarding_showing},
+                    "ui": {}, "uiScale": 1.0}, None
         if method == "ui.dismiss":
-            for dialog in self.dialogs:
-                if dialog.get("closeCommits"):
-                    return None, rpc_error(
-                        -32000, "INVALID_ARGUMENT", "dialog_commits_on_close",
-                        "关闭该对话框会提交")
-            closed = [d.get("kind", "") for d in self.dialogs]
-            self.dialogs = []
-            self.modal_open = False
-            return {"sideEffects": {"dialogClosed": closed}}, None
+            target = params.get("target", "dialogs")
+            if target == "dialogs":
+                for dialog in self.dialogs:
+                    if dialog.get("closeCommits"):
+                        return None, rpc_error(
+                            -32000, "INVALID_ARGUMENT", "dialog_commits_on_close",
+                            "关闭该对话框会提交")
+                closed = [{"kind": d.get("kind", ""), "trackId": d.get("trackId")}
+                          for d in self.dialogs]
+                self.dialogs = []
+                # 真服务实测：解散对话框时随之关掉 onboarding 遮罩。
+                self.onboarding_showing = False
+                if not self.dialogs and not self.onboarding_showing:
+                    self.modal_open = False
+                # 真形状：dialogClosed 是对象 {dialogs: [...], revert: null}。
+                return {"sideEffects": {"dialogClosed": {"dialogs": closed,
+                                                         "revert": None}}}, None
+            if target == "onboarding":
+                self.onboarding_showing = False
+                if not self.dialogs and not self.onboarding_showing:
+                    self.modal_open = False
+                return {"sideEffects": {"dialogClosed": {"dialogs": [],
+                                                         "revert": None}}}, None
+            return None, rpc_error(-32000, "INVALID_ARGUMENT", "invalid_argument",
+                                   f"未知 dismiss target {target}")
         if method == "app.quit":
             return {"quitting": True, "discardedUnsavedChanges": True,
                     "projectPath": None, "exitDeadlineMs": 5000,

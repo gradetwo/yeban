@@ -201,9 +201,18 @@ fn dialog_that_commits_stops_without_confirm() {
         .correct_clip(request("dialog-1", &source, false))
         .expect_err("提交型对话框应停住");
     assert_eq!(error.reason, "otcpDialogCommits");
-    // 驱动⛔ 没有自行确认：ui.dismiss 一次也没发。
+    // 驱动⛔ 没有自行确认：提交型对话框出现（首个 content.autoTune）
+    // 之后，ui.dismiss 一次也没发。启动期解散首跑 onboarding 遮罩
+    //（closeCommits: false 的 confirm 框）是合法的，在它之前。
     let methods = trace_methods(&config, "dialog-1");
-    assert!(!methods.contains(&"ui.dismiss".to_owned()));
+    let first_autotune = methods
+        .iter()
+        .position(|m| m.as_str() == "content.autoTune")
+        .expect("应有一次 autoTune 调用");
+    assert!(
+        !methods[first_autotune..].contains(&"ui.dismiss".to_owned()),
+        "提交型对话框出现后不得发 ui.dismiss: {methods:?}"
+    );
     let receipt = driver.read_receipt("dialog-1").expect("收据在");
     assert_eq!(receipt.status, "failed");
 }
