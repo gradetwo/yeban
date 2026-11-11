@@ -110,7 +110,7 @@ fn automation_lane_click_and_point_editing() {
             ..
         } => {
             assert!(old_point.is_some(), "原位修改包含 old_point");
-            assert_ne!(old_point.unwrap().value, new_point.value);
+            assert!((old_point.unwrap().value - new_point.value).abs() > 1e-4);
         }
         _ => panic!("必须是 SetAutomationPoint"),
     }
@@ -142,7 +142,7 @@ fn automation_recording_generation() {
     match &ops[0] {
         Op::SetAutomationPoint { new_point, .. } => {
             assert_eq!(new_point.tick, 480);
-            assert_eq!(new_point.value, -3.0);
+            assert!((new_point.value - (-3.0)).abs() < 1e-4);
         }
         _ => panic!("必须是 SetAutomationPoint"),
     }

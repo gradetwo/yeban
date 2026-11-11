@@ -2212,16 +2212,15 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             let mut ops = vec![op];
             let mut is_auto_record = false;
-            if let Some(project) = port.try_project() {
-                if ui.get_playing() {
-                    let tick = playhead_tick(&ui);
-                    let auto_ops = crate::bridge::record_automation_touch_ops(
-                        &project, &target, tick, last_db,
-                    );
-                    if !auto_ops.is_empty() {
-                        ops.extend(auto_ops);
-                        is_auto_record = true;
-                    }
+            if let Some(project) = port.try_project()
+                && ui.get_playing()
+            {
+                let tick = playhead_tick(&ui);
+                let auto_ops =
+                    crate::bridge::record_automation_touch_ops(&project, &target, tick, last_db);
+                if !auto_ops.is_empty() {
+                    ops.extend(auto_ops);
+                    is_auto_record = true;
                 }
             }
             let res = if is_auto_record {
@@ -2370,16 +2369,15 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             let mut ops = vec![op];
             let mut is_auto_record = false;
-            if let Some(project) = port.try_project() {
-                if ui.get_playing() {
-                    let tick = playhead_tick(&ui);
-                    let auto_ops = crate::bridge::record_automation_touch_ops(
-                        &project, &target, tick, last_pan,
-                    );
-                    if !auto_ops.is_empty() {
-                        ops.extend(auto_ops);
-                        is_auto_record = true;
-                    }
+            if let Some(project) = port.try_project()
+                && ui.get_playing()
+            {
+                let tick = playhead_tick(&ui);
+                let auto_ops =
+                    crate::bridge::record_automation_touch_ops(&project, &target, tick, last_pan);
+                if !auto_ops.is_empty() {
+                    ops.extend(auto_ops);
+                    is_auto_record = true;
                 }
             }
             let res = if is_auto_record {
