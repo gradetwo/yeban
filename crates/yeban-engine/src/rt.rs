@@ -88,7 +88,7 @@
 //! 理由与代价（逐条登记，⛔ 不隐藏）：
 //!
 //! 1. **零新状态**：总线本身是一条 `TrackV3`，它的器件已经占着逐轨武装池
-//!    （[`BranchShare::armed_strips`] / `armed_reverbs` / `armed_convs`）里的一个槽位
+//!    （[`BranchShare::armed_strips`] / `armed_reverbs` / `armed_sample_delays` / `armed_convs`）里的一个槽位
 //!    ⇒ 转发阶段**复用同一台器件**即可，`EngineRuntime` / `EngineSnapshot` **＋0 B**。
 //!    左右各一套则需要每总线两份器件状态：`Reverb` 的 24 条延迟线（2 × 8 comb ＋
 //!    2 × 4 allpass，约 2.3 万样本 @48 kHz）与 `ConvolutionReverb` 的 4 条 IR 频谱
@@ -218,6 +218,7 @@
 //! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 65]`（`INSERT_SLOTS`：轨道 ＋ 主总线；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
 //! - [`EngineRuntime::reverb_pool`]：`[Reverb; 65]`（`INSERT_SLOTS`；**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
 //! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
+//! - [`EngineRuntime::sample_delay_pool`]：`[SampleDelay; 65]`（`INSERT_SLOTS`；**延迟线在构造期按初始快照的最大延迟分配**；回调内只 `set_params`／`reset` 与逐样本处理；手动相位对齐第一层）
 //! - [`EngineRuntime::conv_pool`]：`Box<[ConvolutionReverb]>`（`INSERT_SLOTS`；**IR 频谱与预延迟线
 //!   在构造期分配**，长度是引擎常量 ⇒ 回调内只做同长度的换 IR 与 `set_params`）
 //! - [`EngineRuntime::conv_scratch`]：`[f32; 256]`（卷积混响的**交错立体声**暂存，栈/内联）
@@ -225,8 +226,8 @@
 //!   **构造期一次性分配**；回调内只 `set_params` / `trigger` / `render`）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
-//! ⚠ [`EngineRuntime::reverb_pool`] / [`EngineRuntime::conv_pool`] 与 [`SynthEngine`] 的
-//! 鼓机池是这份清单里**仅有的**持有堆的字段（混响有自己的延迟线 `Vec`，卷积混响有 IR 频谱
+//! ⚠ [`EngineRuntime::reverb_pool`] / [`EngineRuntime::sample_delay_pool`] / [`EngineRuntime::conv_pool`] 与 [`SynthEngine`] 的
+//! 鼓机池是这份清单里**仅有的**持有堆的字段（混响有自己的延迟线 `Vec`，采样延迟有自己的延迟线 `Vec`，卷积混响有 IR 频谱
 //! 与预延迟线 `Vec`，鼓机池是 `Box<[_; 16]>`）。它们满足禁令的
 //! 方式不是"没有堆"，而是"**堆只在构造期建立**"（[`EngineRuntime::new`]）：
 //! 回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档 §8.4、§8.5 与 §9.5
@@ -249,7 +250,7 @@ use crate::fpu::{self, FtzDazOutcome};
 use crate::graph::CompensationBank;
 use crate::insert::{
     ChannelStrip, ChannelStripParams, CompressorParams, ConvolutionReverb, ConvolutionReverbParams,
-    Reverb, ReverbParams,
+    Reverb, ReverbParams, SampleDelay, SampleDelayParams,
 };
 use crate::level::MAX_LINEAR_MAGNITUDE;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
@@ -608,6 +609,19 @@ pub struct EngineStats {
     /// （那会分配 + 释放 [MUST-GATE-001]）⇒ 那一份快照里混响不工作。它是"容量/
     /// 配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
     pub insert_reverb_rate_rejects: u64,
+    /// **每轨插入器件的采样延迟级**累计处理过的帧数（手动相位对齐第一层；0 = 从未处理）。
+    ///
+    /// 口径：读数由引擎在**真的调用了** [`SampleDelay::process_mono`] 的那一条分支上累加
+    /// （条件 = 本轨武装了采样延迟）。与 [`Self::insert_reverb_frames`] 同族：没有它，
+    /// \"采样延迟真的接在轨上\"就只能从音频输出反推。全部轨都没有采样延迟时（默认）**恒为 0**。
+    pub insert_sample_delay_frames: u64,
+    /// 因**采样延迟量超过池容量**而未武装的设备次数（手动相位对齐第一层；正常恒为 0）。
+    ///
+    /// 池容量在构造期按**初始快照**全部轨的最大延迟定（`max + 1`）；后续快照出现更大
+    /// 延迟时该轨不武装（音频线程不许分配 [MUST-GATE-001]）。非 0 = 这一份快照里有
+    /// 采样延迟设备，但引擎拒绝在回调里重建延迟线 ⇒ 那一份快照里该轨的采样延迟不工作。
+    /// 它是\"容量不足不静默\"的机械形式：宁可少一个器件，也不做出听不出来的错。
+    pub insert_sample_delay_capacity_rejects: u64,
     /// **每轨插入器件的卷积混响级**累计处理过的帧数（[`crate::insert`]；0 = 从未处理）。
     ///
     /// 口径：读数由引擎在**真的调用了** [`ConvolutionReverb::process`] 的那一条分支上累加
@@ -1433,6 +1447,12 @@ struct BranchShare<'a> {
     armed_reverbs: &'a mut [(EntityId, bool)],
     armed_reverb_slots: &'a mut usize,
     reverb_scratch: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]; 2],
+    /// 采样延迟池（手动相位对齐第一层；与 `reverb_pool` 同款借用视图）。
+    sample_delay_pool: &'a mut [SampleDelay],
+    armed_sample_delays: &'a mut [(EntityId, bool)],
+    armed_sample_delay_slots: &'a mut usize,
+    /// 采样延迟级累计处理帧数（与 `insert_reverb_frames` 同款计数器借用）。
+    insert_sample_delay_frames: &'a mut u64,
     conv_pool: &'a mut Box<[ConvolutionReverb]>,
     armed_convs: &'a mut [(EntityId, bool)],
     armed_conv_slots: &'a mut usize,
@@ -1526,6 +1546,26 @@ fn process_insert_chain(
 ) -> bool {
     let frames = frames.min(DEFAULT_BLOCK_FRAMES);
     let mut seen = false;
+
+    // --- ⓪ 采样延迟级：逐样本（器件的接口是单声道块）---
+    //
+    // 手动相位对齐第一层。位置是链的**最前**（通道条之前）：它只是把整段信号
+    // 在时间上平移，放在任何音色处理之前才与"对齐波峰波谷"的语义相符。
+    // 参数是武装期 `set_params` 写入的那一份（`process_mono` 只读它）。
+    //
+    // **默认口径**：本轨没有采样延迟（`armed_sample_delays` 里查不到武装项）
+    // ⇒ 整段跳过；恒等参数根本不进武装表 ⇒ 器件的状态**不推进**。
+    if let Some(index) = share.armed_sample_delays[..*share.armed_sample_delay_slots]
+        .iter()
+        .position(|(id, armed)| *armed && id == &track)
+    {
+        let device = &mut share.sample_delay_pool[index];
+        device.process_mono(&mut share.track_scratch[..frames]);
+        *share.insert_sample_delay_frames =
+            share.insert_sample_delay_frames.wrapping_add(frames as u64);
+        // ⚠ 不置 `seen`：`seen` 只表示\"通道条跑过、读数可用\"（调用方据此决定
+        // 要不要用 strip 的 current/detector 读数），混响/卷积级同样不置它。
+    }
 
     // --- ① 通道条（EQ／滤波／动态）：逐样本 ---
     //
@@ -2621,6 +2661,34 @@ pub struct EngineRuntime {
     ///
     /// 复用一个定长缓冲（与 [`Self::track_scratch`] 同一个形状）⇒ 零分配。
     reverb_scratch: [[f32; DEFAULT_BLOCK_FRAMES]; 2],
+    /// **采样延迟池**：每槽一台，**构造期**按初始快照的最大延迟预分配
+    /// [ARCH-RT-001, MUST-GATE-001]（手动相位对齐第一层）。
+    ///
+    /// 与 [`Self::reverb_pool`] 同一个槽位表形状，但\"容量按什么定\"这件事**不同**：
+    /// 每槽容量 = **初始快照全部轨的 `delay_samples` 最大值 + 1**
+    /// （`configure_with_capacity` 的唯一分配点在构造期；快照边界只允许
+    /// `set_params`（标量赋值，零分配）与 `reset`（填零，零分配））。
+    /// 后续快照出现更大延迟时该轨**不武装**（见 [`Self::insert_sample_delay_capacity_rejects`]），
+    /// 宁可少一个器件，也不在回调里分配。
+    ///
+    /// ⚠ 最坏容量：某轨挂 `48_000` 采样延迟 ⇒ 每槽 `48_001 × 2 × 4 B ≈ 384 KiB`，
+    /// 65 槽 ≈ 25 MiB（构造期一次）。这是\"容量跟最大延迟走\"的代价；日常
+    /// （最大延迟几百采样）每槽只有几 KiB。
+    ///
+    /// ⚠ 槽位里装的**不是** `Option<SampleDelay>`：延迟线必须是**构造期**建好的那一批，
+    /// 因此 `Option` 只表达\"这一槽本快照是否武装、武装给哪条轨\"，实例本身恒存在。
+    sample_delay_pool: Box<[SampleDelay]>,
+    /// 本快照武装的采样延迟 `(轨道, 是否武装)`；前 [`Self::armed_sample_delay_slots`] 项有效。
+    ///
+    /// 与 [`Self::armed_reverbs`] 同款。
+    armed_sample_delays: Box<[(EntityId, bool)]>,
+    /// 本快照武装的采样延迟条数（前 `n` 项有效）。
+    armed_sample_delay_slots: usize,
+    /// 采样延迟池每槽的容量（最大 `delay_samples`，构造期定，运行期不变；
+    /// 实际每声道分配帧数是它 + 1）。
+    ///
+    /// 只读数：武装期的容量守卫与它比（`delay_samples > capacity ⇒ 不武装`）。
+    sample_delay_capacity: usize,
     /// **卷积混响池**：每槽一台，**构造期**按初始快照的采样率把 IR 频谱与预延迟线
     /// 全部建好 [ARCH-RT-001, MUST-GATE-001]。
     ///
@@ -2689,6 +2757,12 @@ pub struct EngineRuntime {
     /// 因混响延迟线的采样率不匹配而未武装的修订次数
     /// （与 [`EngineStats::insert_reverb_rate_rejects`] 同源）。
     insert_reverb_rate_rejects: u64,
+    /// 累计被**插入器件的采样延迟级**处理过的帧数
+    /// （与 [`EngineStats::insert_sample_delay_frames`] 同源）。
+    insert_sample_delay_frames: u64,
+    /// 因采样延迟量超过池容量而未武装的设备次数
+    /// （与 [`EngineStats::insert_sample_delay_capacity_rejects`] 同源）。
+    insert_sample_delay_capacity_rejects: u64,
     /// 累计被**插入器件的卷积混响级**处理过的帧数
     /// （与 [`EngineStats::insert_convolution_frames`] 同源）。
     insert_convolution_frames: u64,
@@ -2894,7 +2968,7 @@ impl EngineRuntime {
 
     /// 构造期**唯一的**字段写入点（[`Self::new`] 与 [`Self::new_boxed`] 共用）。
     ///
-    /// 字段清单与结构体定义**同名、同序**（80 个字段；`#173` 起现读，含 `@drained` 的 `reverb_pool`）⇒ "`EngineRuntime` 由什么组成"
+    /// 字段清单与结构体定义**同名、同序**（86 个字段；`#173` 起现读，含 `@drained` 的 `reverb_pool`）⇒ "`EngineRuntime` 由什么组成"
     /// 只有一处描述，⛔ 不会出现两份会漂移的字段表。
     ///
     /// ## ⭐ 字段完备性是**编译期断言**（⛔ 不是文本守卫）
@@ -2951,6 +3025,27 @@ impl EngineRuntime {
         unsafe {
             core::ptr::write(core::ptr::addr_of_mut!((*dst).reverb_pool), reverb_pool);
         }
+        // 采样延迟池的**唯一**分配点（手动相位对齐第一层）：
+        // 容量 = **初始快照**全部轨的 `delay_samples` 最大值（`None`/无设备 ⇒ 0）。
+        // 采样率与器件无关（延迟按采样计），因此这里不读采样率；
+        // `SnapshotSlot::current` 的锁等待与混响同一条纪律（只允许在**非实时**路径调用）。
+        let sample_delay_capacity = slot
+            .current()
+            .inserts()
+            .values()
+            .filter_map(|insert| insert.sample_delay())
+            .map(|params| params.delay_samples)
+            .max()
+            .unwrap_or(0);
+        let mut sample_delay_pool: Vec<SampleDelay> = Vec::with_capacity(INSERT_SLOTS);
+        for _ in 0..INSERT_SLOTS {
+            let mut device = SampleDelay::new();
+            // 构造期允许分配：每槽 `capacity + 1` 帧 × 2 声道（见
+            // `SampleDelay::configure_with_capacity`）。
+            device.configure_with_capacity(armed_reverb_sample_rate as f32, sample_delay_capacity);
+            sample_delay_pool.push(device);
+        }
+        let sample_delay_pool = sample_delay_pool.into_boxed_slice();
         // 卷积混响池的**唯一**分配点（[`crate::insert`] 模块文档 §9.2／§9.5）：预延迟线
         // ＋ 四条 IR 频谱。两者都按**引擎常量**的 IR 长度建满，于是快照边界上的换 IR
         // 永远是"长度不变"的那条路径 ⇒ 零分配。
@@ -3157,6 +3252,14 @@ impl EngineRuntime {
             put!(armed_reverb_slots, 0);
             put!(armed_reverb_sample_rate, armed_reverb_sample_rate);
             put!(reverb_scratch, [[0.0; DEFAULT_BLOCK_FRAMES]; 2]);
+            // 采样延迟池：构造期按初始快照的最大延迟配好容量（见 `write_into` 上段）。
+            put!(sample_delay_pool, sample_delay_pool);
+            put!(
+                armed_sample_delays,
+                vec![(EntityId::default(), false); INSERT_SLOTS].into_boxed_slice()
+            );
+            put!(armed_sample_delay_slots, 0);
+            put!(sample_delay_capacity, sample_delay_capacity);
             // 卷积混响池：**构造期**按初始快照的采样率把占位 IR 与预延迟线全部建好
             // （回调内只做同长度的换 IR 与 `set_params`）。
             put!(conv_pool, conv_pool);
@@ -3177,6 +3280,8 @@ impl EngineRuntime {
             put!(insert_strip_frames, 0);
             put!(insert_reverb_frames, 0);
             put!(insert_reverb_rate_rejects, 0);
+            put!(insert_sample_delay_frames, 0);
+            put!(insert_sample_delay_capacity_rejects, 0);
             put!(insert_convolution_frames, 0);
             put!(insert_convolution_rejects, 0);
             put!(master_insert_frames, 0);
@@ -3509,6 +3614,8 @@ impl EngineRuntime {
             insert_strip_frames: self.insert_strip_frames,
             insert_reverb_frames: self.insert_reverb_frames,
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
+            insert_sample_delay_frames: self.insert_sample_delay_frames,
+            insert_sample_delay_capacity_rejects: self.insert_sample_delay_capacity_rejects,
             insert_convolution_frames: self.insert_convolution_frames,
             insert_convolution_rejects: self.insert_convolution_rejects,
             master_insert_frames: self.master_insert_frames,
@@ -3916,6 +4023,32 @@ impl EngineRuntime {
         self.armed_reverb_slots
     }
 
+    /// 本快照武装的**每轨插入器件（采样延迟）参数**（诊断/判据用）。
+    ///
+    /// 返回 `None` = 这条轨**没有**采样延迟（实时侧整段跳过；恒等参数同样不进表）。
+    /// 与 [`Self::armed_reverb`] 同族，读数取自器件自己的 `params()`。
+    #[must_use]
+    pub fn armed_sample_delay(&self, track: &EntityId) -> Option<SampleDelayParams> {
+        // 槽位下标就是池的下标（同一张表）⇒ 先找下标，再读池里那一台的当前参数。
+        self.armed_sample_delays[..self.armed_sample_delay_slots]
+            .iter()
+            .position(|(id, armed)| *armed && id == track)
+            .map(|index| self.sample_delay_pool[index].params())
+    }
+
+    /// 武装表里的**采样延迟**条数。
+    #[must_use]
+    pub const fn armed_sample_delay_slot_count(&self) -> usize {
+        self.armed_sample_delay_slots
+    }
+
+    /// 采样延迟池每槽的容量（最大 `delay_samples`，构造期按初始快照定；
+    /// 诊断/判据用）。
+    #[must_use]
+    pub const fn sample_delay_capacity(&self) -> usize {
+        self.sample_delay_capacity
+    }
+
     /// 混响延迟线池武装时用的采样率（**构造期**定；诊断/判据用）。
     #[must_use]
     pub const fn armed_reverb_sample_rate(&self) -> u32 {
@@ -4140,6 +4273,12 @@ impl EngineRuntime {
             reverb_scratch,
             insert_reverb_frames,
             insert_reverb_rate_rejects,
+            sample_delay_pool,
+            armed_sample_delays,
+            armed_sample_delay_slots,
+            sample_delay_capacity,
+            insert_sample_delay_frames,
+            insert_sample_delay_capacity_rejects,
             conv_pool,
             armed_convs,
             armed_conv_slots,
@@ -4887,6 +5026,56 @@ impl EngineRuntime {
                     *insert_convolution_rejects = insert_convolution_rejects.wrapping_add(unarmed);
                 }
 
+                // --- 2c''''') 每轨插入器件的**采样延迟级**：与混响同一个槽位表形状 ---
+                // 手动相位对齐第一层。延迟线在 `Self::new` 里就按**初始快照的最大延迟**
+                // 配好容量 ⇒ 这里**只允许** `set_params`（标量赋值，零分配）与新占用槽位
+                // 的 `reset`（填零，零分配）。
+                //
+                // ⚠ **延迟超过池容量 ⇒ 整台不武装**：`configure_with_capacity` 会分配，
+                // 音频线程不允许 [MUST-GATE-001]。宁可少一个器件，也不在回调里分配、
+                // 也不拿容量不足的延迟线去处理信号（那会把延迟**缩短**，听上去是对齐了
+                // 其实没对齐）。拒绝次数进 `insert_sample_delay_capacity_rejects`。
+                // 采样率与武装时不同**不**拦截：延迟按采样计，`set_params` 不依赖采样率。
+                //
+                // ⚠ 恒等参数（零延迟且不反转）不占槽位：`process_mono` 对它本就是直通，
+                // 武装它只会让逐样本路径多一次查表。
+                //
+                // 默认口径：`insert.sample_delay()` 在设备没有已识别 `sample_delay_`
+                // 参数时是 `None` ⇒ 本循环那一项 `continue`、`armed_sample_delay_slots`
+                // 保持 0 ⇒ 逐样本路径整段跳过 ⇒ 那类轨的输出与接线前**逐位相同**。
+                *armed_sample_delay_slots = 0;
+                // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
+                for (id, insert) in master_last(current) {
+                    if *armed_sample_delay_slots >= PDC_SLOTS && *id != master {
+                        continue;
+                    }
+                    let Some(params) = insert.sample_delay() else {
+                        continue;
+                    };
+                    if params.is_identity() {
+                        continue;
+                    }
+                    if params.delay_samples > *sample_delay_capacity {
+                        *insert_sample_delay_capacity_rejects =
+                            insert_sample_delay_capacity_rejects.wrapping_add(1);
+                        continue;
+                    }
+                    let slot = *armed_sample_delay_slots;
+                    let (existing, was_armed) = armed_sample_delays[slot];
+                    if existing == *id && was_armed {
+                        // 同一条轨仍占同一个槽位 ⇒ 只换参数：**器件状态保留**
+                        // （重建会把延迟线清空 ⇒ 一次听得见的对齐跳变）。
+                        sample_delay_pool[slot].set_params(params);
+                    } else {
+                        // 新占用该槽位：延迟线里可能还留着上一条轨的陈旧样本 ⇒
+                        // 先 `reset`（填零，零分配）再武装，否则第一块会吐出别人的尾巴。
+                        sample_delay_pool[slot].reset();
+                        sample_delay_pool[slot].set_params(params);
+                        armed_sample_delays[slot] = (*id, true);
+                    }
+                    *armed_sample_delay_slots += 1;
+                }
+
                 // --- 2d) 节拍器：波形与拍栅格都在**构造期**算好（`sin` 属超越函数类），
                 // 这里只把两个整数（每拍 tick / 每小节拍数）与一个开关读进实时侧
                 // （[`crate::metronome`]）。**关掉时**把武装标志置假并丢掉可能正在响的
@@ -4933,6 +5122,10 @@ impl EngineRuntime {
                     armed_reverbs: &mut *armed_reverbs,
                     armed_reverb_slots: &mut *armed_reverb_slots,
                     reverb_scratch: &mut *reverb_scratch,
+                    sample_delay_pool: &mut *sample_delay_pool,
+                    armed_sample_delays: &mut *armed_sample_delays,
+                    armed_sample_delay_slots: &mut *armed_sample_delay_slots,
+                    insert_sample_delay_frames: &mut *insert_sample_delay_frames,
                     conv_pool: &mut *conv_pool,
                     armed_convs: &mut *armed_convs,
                     armed_conv_slots: &mut *armed_conv_slots,
@@ -8278,6 +8471,10 @@ mod tests {
                 armed_reverbs,
                 armed_reverb_slots,
                 reverb_scratch,
+                sample_delay_pool,
+                armed_sample_delays,
+                armed_sample_delay_slots,
+                insert_sample_delay_frames,
                 conv_pool,
                 armed_convs,
                 armed_conv_slots,
@@ -8334,6 +8531,10 @@ mod tests {
                 armed_reverbs,
                 armed_reverb_slots,
                 reverb_scratch,
+                sample_delay_pool,
+                armed_sample_delays,
+                armed_sample_delay_slots,
+                insert_sample_delay_frames,
                 conv_pool,
                 armed_convs,
                 armed_conv_slots,

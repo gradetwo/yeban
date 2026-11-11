@@ -178,6 +178,8 @@ pub struct EngineStatsMirror {
     insert_strip_frames: AtomicU64,
     insert_reverb_frames: AtomicU64,
     insert_reverb_rate_rejects: AtomicU64,
+    insert_sample_delay_frames: AtomicU64,
+    insert_sample_delay_capacity_rejects: AtomicU64,
     insert_convolution_frames: AtomicU64,
     insert_convolution_rejects: AtomicU64,
     master_insert_frames: AtomicU64,
@@ -251,6 +253,8 @@ impl EngineStatsMirror {
             insert_strip_frames: AtomicU64::new(0),
             insert_reverb_frames: AtomicU64::new(0),
             insert_reverb_rate_rejects: AtomicU64::new(0),
+            insert_sample_delay_frames: AtomicU64::new(0),
+            insert_sample_delay_capacity_rejects: AtomicU64::new(0),
             insert_convolution_frames: AtomicU64::new(0),
             insert_convolution_rejects: AtomicU64::new(0),
             master_insert_frames: AtomicU64::new(0),
@@ -357,6 +361,12 @@ impl EngineStatsMirror {
             .store(stats.insert_reverb_frames, Ordering::Relaxed);
         self.insert_reverb_rate_rejects
             .store(stats.insert_reverb_rate_rejects, Ordering::Relaxed);
+        self.insert_sample_delay_frames
+            .store(stats.insert_sample_delay_frames, Ordering::Relaxed);
+        self.insert_sample_delay_capacity_rejects.store(
+            stats.insert_sample_delay_capacity_rejects,
+            Ordering::Relaxed,
+        );
         self.insert_convolution_frames
             .store(stats.insert_convolution_frames, Ordering::Relaxed);
         self.insert_convolution_rejects
@@ -474,6 +484,10 @@ impl EngineStatsMirror {
             insert_strip_frames: self.insert_strip_frames.load(Ordering::Relaxed),
             insert_reverb_frames: self.insert_reverb_frames.load(Ordering::Relaxed),
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
+            insert_sample_delay_frames: self.insert_sample_delay_frames.load(Ordering::Relaxed),
+            insert_sample_delay_capacity_rejects: self
+                .insert_sample_delay_capacity_rejects
+                .load(Ordering::Relaxed),
             insert_convolution_frames: self.insert_convolution_frames.load(Ordering::Relaxed),
             insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
             master_insert_frames: self.master_insert_frames.load(Ordering::Relaxed),
@@ -573,6 +587,8 @@ mod tests {
             insert_strip_frames: 19,
             insert_reverb_frames: 20,
             insert_reverb_rate_rejects: 21,
+            insert_sample_delay_frames: 55,
+            insert_sample_delay_capacity_rejects: 56,
             insert_convolution_frames: 27,
             insert_convolution_rejects: 28,
             master_insert_frames: 54,
