@@ -313,14 +313,36 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
 
     // 右键按下 ⇒ 菜单弹出（菜单项进运行时树）；右键抬起 ⇒ 菜单**不**关（它是弹出层），
     // 且抬起不得触发左键点击（判据⑤单独钉；这里只钉「菜单还在」）。
-    // ⚠ 弹出层子项的树包围盒是**弹出层局部坐标**（x:0, y:0），⛔ 不能按元素 ID +
-    // 偏移去点（端口会按树坐标算到窗口左上角去，点不中菜单）。菜单顶左 = 右键点
-    // （卷帘中心，远离边缘 ⇒ 不夹），「人性化…」项中心 = 右键点 + (75, 16) ⇒
-    // 按卷帘元素的绝对偏移点过去（命中测试由 Slint 做，弹出层在最上层）。
+    //
+    // ⚠ 菜单位置的坐标链（写死会错，须现算）：
+    //   ① 右键点的 `mouse-x/y` 是**滚动面局部**坐标；弹出层 `x/y` 是**卷帘局部**
+    //      坐标（`context-menu-x/y`）；两者差一个「滚动面在卷帘里的原点」。
+    //   ② 弹出层子项的树包围盒是**弹出层局部**坐标（x:0, y:0）⇒ ⛔ 不能按元素 ID +
+    //      偏移去点（端口会按树坐标算到窗口左上角去，点不中菜单 —— 本判据第一版就
+    //      这样点空过：点后菜单不在树里 = 击落在弹出层外、被点外关闭）。
+    //   ③ 卷帘原点（窗口坐标）用走带光标锚定：它在卷帘里的位置恒为 (56px, 28px)
+    //      （`playhead-ticks = 0` 且 `scroll-x = 0` 的夹具前提；下面先断言后者）。
+    //   ⇒ 「人性化…」项中心（窗口坐标）= 卷帘原点 + (滚动面宽/2 + 75, 滚动面高/2 + 16)，
+    //      再换算成滚动面元素的偏移去点（命中测试由 Slint 做，弹出层在最上层）。
+    assert_eq!(
+        window.get_roll_scroll_x(),
+        0.0,
+        "夹具前提：滚动偏移必须是 0（否则走带光标锚点失效）"
+    );
     let scroll_bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
-    let center_x = scroll_bounds["width"].as_f64().expect("width") / 2.0;
-    let center_y = scroll_bounds["height"].as_f64().expect("height") / 2.0;
-    press_by_id(&mut plane, 2, SCROLL_AREA, "right");
+    let playhead_bounds = element_bounds(&mut plane, 2, "piano-roll-playhead");
+    let roll_x = playhead_bounds["x"].as_f64().expect("x") - 56.0;
+    let roll_y = playhead_bounds["y"].as_f64().expect("y") - 28.0;
+    let scroll_w = scroll_bounds["width"].as_f64().expect("width");
+    let scroll_h = scroll_bounds["height"].as_f64().expect("height");
+    let scroll_x = scroll_bounds["x"].as_f64().expect("x");
+    let scroll_y = scroll_bounds["y"].as_f64().expect("y");
+    let item_cx = roll_x + scroll_w / 2.0 + 75.0;
+    let item_cy = roll_y + scroll_h / 2.0 + 16.0;
+    report_line(&format!(
+        "[humanize-ui] 卷帘原点=({roll_x}, {roll_y})，滚动面=({scroll_x}, {scroll_y}, {scroll_w}x{scroll_h})，人性化项中心=({item_cx}, {item_cy})"
+    ));
+    press_by_id(&mut plane, 3, SCROLL_AREA, "right");
     let humanize_bounds = element_bounds(&mut plane, 10, MENU_HUMANIZE);
     let quantize_bounds = element_bounds(&mut plane, 20, MENU_QUANTIZE);
     report_line(&format!(
@@ -336,7 +358,14 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
     let _ = element_bounds(&mut plane, 40, MENU_HUMANIZE);
 
     // 点「人性化…」⇒ 对话框打开，焦点落人性化区段，种子预填工程 rng_seed。
-    click_scroll_at(&mut plane, 50, center_x + 75.0, center_y + 16.0, "left");
+    // （坐标换算见上：项中心窗口坐标 − 滚动面原点 = 滚动面元素的偏移。）
+    click_scroll_at(
+        &mut plane,
+        50,
+        item_cx - scroll_x,
+        item_cy - scroll_y,
+        "left",
+    );
     // 诊断二分（见文件头）：点下去之后菜单还在不在树里 ——
     // 不在 ⇒ 这一击落在弹出层外（位置算错，弹出层被点外关闭）；
     // 还在 ⇒ 这一击落在弹出层内、但菜单项的 `clicked` 没跑（测试后端不把指针事件送进弹出层）。
