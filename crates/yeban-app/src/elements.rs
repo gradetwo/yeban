@@ -2804,7 +2804,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 18] = [
+    const SLINT_MANIFEST: [&str; 19] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2827,6 +2827,8 @@ mod tests {
         "dialogs/undo_tree_modal.slint",
         // 导出 WAV 选项框（`[UI-NOTE-004]`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/export_wav_dialog.slint",
+        // 人性化 / 量化选项框（`line/humanize-ui-entry`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/humanize_dialog.slint",
         // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
         "dialogs/macro_panel.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
