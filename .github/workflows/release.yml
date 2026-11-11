@@ -44,6 +44,12 @@
 #      golden 判据有**抖动**先例 —— 同字节数 (6222418 vs 6222418) 在 docs-only 提交上红过,
 #      下一次同代码绿 (见任务上下文)。本 job 若红在这一条, 先用 `gh run rerun <id>` 复跑**同一棵树**
 #      再下结论; 不要据此认为渲染被改坏了 (`--locked` + 干净工作树保证复跑的是同一份字节)。
+#   6. 隐私门: 打包之后、上传 artifact 之前, `scripts/gates/check_release_privacy.py`
+#      扫描 `dist/` 里的归档 (读成员字节、不落盘解包, 只认产物字节、不问源码):
+#      Windows 盘符绝对路径 (文本成员)、家目录路径 (CI runner 自身的 /home/runner
+#      除外)、私钥、API key、token —— 命中即红, 什么都不发。release 用 debug=1
+#      构建, 二进制里嵌的是构建机自己的源码路径, 排除 runner 前缀是为不把每发必红
+#      (见脚本头注释)。
 #
 # 本文件**不做**的事: 不打标签、不推送、不在负责人之外发布 (DEV_WORKFLOW §5 第 4 条是人类关卡)。
 
@@ -589,6 +595,19 @@ jobs:
             cat "dist/$NAME.tar.gz.sha256"
           } 2>&1 | tee /tmp/release-pack.txt
           cat /tmp/release-pack.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "隐私门 check_release_privacy.py (扫发布产物: 绝对路径/家目录/私钥/key/token)"
+        run: |
+          set -euo pipefail
+          # 位置纪律: 打包之后、上传 artifact 之前 ⇒ 命中即红, 什么都不发
+          # (与 MUST-GATE-009 同一条纪律: 退出码 2 = 无法判定, 也按红处理)。
+          set +e
+          python3 scripts/gates/check_release_privacy.py dist 2>&1 | tee /tmp/release-privacy.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          cat /tmp/release-privacy.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "privacy_exit=$rc"
+          [ "$rc" -eq 0 ] || { echo "::error::check_release_privacy.py 退出码 $rc (2 = 无法判定, 也按红处理: 不许把 SKIP 当通过)"; exit 1; }
 
       - name: 上传归档 (artifact; 发布是 release job 的事)
         uses: actions/upload-artifact@v4
