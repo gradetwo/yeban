@@ -39,6 +39,7 @@ ENGINE_CRATES_NO_GUI = (
     "yeban-engine",
     "yeban-sfz",
     "yeban-decode",
+    "yeban-otcp",
 )
 
 #: 强制 #![forbid(unsafe_code)] 的 crate [AGENTS.md 红线 8]
