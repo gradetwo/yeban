@@ -42,7 +42,7 @@
 
 ## What Yeban can do
 
-- **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line. A within-song self-similarity check is in development.
+- **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line. A within-song self-similarity check has shipped (similarity ≥ 0.95 over ≥ 4 bars, best 5 matches).
 - **Mastering from the command line**: `--loudness-target` with `--true-peak-ceiling` applies the loudness target on `--export-wav`; an unreachable target fails loudly instead of silently degrading.
 - **Batch edits and stems**: `--apply-ops` commits a file of edit operations as one batch; `--export-stems` renders stems with the same backend as the MCP tool.
 - **Sample-library editor**: `--edit-samples` corrects each sample's pitch to within ±0.5 cents (FFT fundamental), synthesises mf/f velocity layers and normalises RMS.
@@ -52,6 +52,18 @@
 - **Native presets**: four MCP tools (`yeban_list_presets`, `yeban_apply_preset`, `yeban_save_preset`, `yeban_preset_bypass`) and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing instead of a dry sound.
 - **Singing synthesis, via the external SVS service**: `synthesize_singing` submits a score and `svs_job` polls it back — Yeban is the MCP client; synthesis itself runs in the Lingren SVS service.
 - **38 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
+
+## Roadmap
+
+The original six phases are done; current work deepens capabilities beyond that plan. The full plan is in [docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md](docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md).
+
+- **Phase -1 · Open-source compliance** — done
+- **Phase 0 · Nine feasibility spikes** — done
+- **Phase 1 · Data model and storage** — done
+- **Phase 2 · Real-time audio pipeline** — done
+- **Phase 3 · Arrangement workspace** — done
+- **Phase 4 · Intent API and mastering export** — done
+- **Now · Capability deepening** — in progress: MIDI humanization, phase alignment, EQ curve, per-track Songmap frequency overlap, OTCP pitch-correction driver, Synth VST3 plug-in
 
 ## Platform support
 
@@ -134,17 +146,18 @@ and says so in its output; unknown switches exit **2** with usage. Exit codes: `
 ### Test
 
 ```bash
-cargo test --workspace                                  # unit + integration criteria (≈1,100 of them)
+cargo test --workspace                                  # unit + integration criteria (≈7,000 of them)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 > **Honest status.** The real-time engine **does produce audio now** (it synthesises the MIDI notes of a project
 > deterministically — 102 398 / 102 400 non-zero samples for a three-note fixture, bit-identical across runs, and the
-> zero-allocation real-time window still holds). What it does **not** do yet: no filter/timbre parameters, no bus
-> limiter, no pan law, no transport, no sound-card path in those criteria — and the app still starts with a demo
-> project. For exactly what is verified — and what is still `PENDING` — see
-> [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md).
+> zero-allocation real-time window still holds). Pan law, noise gate, compressor, limiter, sidechain keying and
+> transport are all in — including a wall-clock pump that advances the playhead with no audio device. What it does
+> **not** do yet: no automation recording, no MPE, MIDI import drops all CCs, the EQ curve display is still a
+> placeholder — and the app still starts with a demo project. For exactly what is verified — and what is still
+> `PENDING` — see [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md).
 
 ### Working on the code
 
@@ -228,7 +241,7 @@ yeban/
 | `yeban-decode` | symphonia decoding + rubato resampling |
 | `yeban-render` | Rayon offline mastering render, RF64/BW64 + MIDI export |
 | `yeban-mcp` | Yeban Intent API v2 — library form (embedded) + standalone stdio binary |
-| `yeban-app` | Slint GUI host (`ui/*.slint`, 11 components) |
+| `yeban-app` | Slint GUI host (`ui/*.slint`, 18 files) |
 | `yeban-ui-test-port` | Headless UI test port: Tier-1 software rasterisation, semantic control tree |
 | `yeban-ui-mcp` | JSON-RPC UI automation and headless screenshot adapter |
 | `yeban-services` | [v1.1.0] external editor integration, acoustic ping calibration |

@@ -52,7 +52,7 @@
 
 ## 强大功能
 
-- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线。段内自相似度检查开发中。
+- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线。段内自相似度检查已合入（相似度 ≥ 0.95、≥ 4 小节，取最优 5 个匹配）。
 - **命令行母带**：`--loudness-target` 配 `--true-peak-ceiling`，在 `--export-wav` 上应用响度目标；目标达不到就响亮失败，绝不静默降级。
 - **批量操作与分轨**：`--apply-ops` 把一文件编曲操作一次提交；`--export-stems` 分轨导出，与 MCP 工具同一后端。
 - **采样库编辑器**：`--edit-samples` 把每个采样的音准校到 ±0.5 音分以内（FFT 基频），合成 mf/f 力度层并做 RMS 归一化。
@@ -62,6 +62,18 @@
 - **原生预制**：4 个 MCP 工具（`yeban_list_presets`、`yeban_apply_preset`、`yeban_save_preset`、`yeban_preset_bypass`）与 6 个工厂预制（钢琴、大提琴、古典吉他、长笛、萨克斯、鼓组），载入即带调好的处理，不是干声。
 - **歌声合成（经外部 SVS 服务）**：`synthesize_singing` 提交谱子、`svs_job` 取回结果——夜半是 MCP 客户端，合成在伶人 SVS 服务侧进行。
 - **38 个 MCP 工具，已经很强大**（意图 API v2）与 **VST3 插件宿主**（进程内；跨进程隔离为二期）。
+
+## 路线图
+
+最初六个阶段已完成；当前工作在原计划之外继续深化能力。完整计划见 [docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md](docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md)。
+
+- **Phase -1 · 开源合规大扫除**——已完成
+- **Phase 0 · 九大可行性验证**——已完成
+- **Phase 1 · 数据模型与存储**——已完成
+- **Phase 2 · 实时音频管线**——已完成
+- **Phase 3 · 编曲工作区**——已完成
+- **Phase 4 · 意图接口与母带导出**——已完成
+- **现在 · 能力深化**——进行中：MIDI 人性化、相位对齐、EQ 曲线、Songmap 分轨频率重叠、OTCP 校音驱动、Synth VST3 插件
 
 ## 平台支持
 
@@ -141,14 +153,15 @@ cargo run --release -p yeban-mcp --features mcp-http -- --enable-mcp-http       
 ### 测试
 
 ```bash
-cargo test --workspace                                  # 单元 + 集成判据（约 1,100 条）
+cargo test --workspace                                  # 单元 + 集成判据（约 7,000 条）
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 > **诚实状态**：实时引擎**现在已经能产生音频**了（它确定性地合成工程里的 MIDI 音符 —— 三个音符的夹具实测
 > **102 398 / 102 400 个非零样本**、两次运行逐位相同，且实时窗口的**零分配**约束仍然成立）。
-> 它还**不做**：滤波器/音色参数、母线限制器、声相定律、走带控制，这些判据里也**还没有声卡路径**；
+> 声相定律、噪声门、压缩器、限制器、侧链触发与走带控制都已合入——无音频设备时墙钟泵送照样推进播放头。
+> 它还**不做**：自动化录制、MPE、MIDI 导入丢全部 CC、EQ 曲线显示仍是占位；
 > 主窗口启动时用的仍是演示工程。"到底什么算已验证、什么仍是 `PENDING`"请看
 > [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md)。
 
