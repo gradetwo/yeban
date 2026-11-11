@@ -48,8 +48,8 @@ src/polysynth.rs|2233|variable||index| {|variable_needle|needle 非字面量：�
 src/polysynth.rs|2302|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|2761|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview.rs|210|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview.rs|369|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview.rs|214|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview.rs|395|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|432|variable|&params.drive|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|433|variable|&params.mix|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|435|variable|&params.trim_db|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

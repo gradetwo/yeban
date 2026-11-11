@@ -70,8 +70,8 @@ use serde_json::{Value, json};
 
 use yeban_decode::{DecodeOptions, decode_bytes};
 use yeban_dsp::song_overview::{
-    AnalysisOptions, NO_ENVELOPE, SongOverview as DspSongOverview, TensionProfile,
-    analyze_song_overview_with_options,
+    AnalysisOptions, ClashSeverity as DspClashSeverity, NO_ENVELOPE,
+    SongOverview as DspSongOverview, TensionProfile, analyze_song_overview_with_options,
 };
 use yeban_engine::sfz_instrument::SfzInstrument;
 use yeban_mcp::domain::error::Fault;
