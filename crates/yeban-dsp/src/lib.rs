@@ -53,6 +53,7 @@
 //! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
 //! | [`tape`] | 磁带饱和：链级饱和器（`pade_tanh`＋2x 过采样＋湿路低通），覆盖采样器轨 | 新写 [ADR-0062] |
 //! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
+//! | [`gate`] | 噪声门 / 扩展器 / 闪避器：侧链键滤波 + 峰值/RMS 检波 + 迟滞与保持 + 线性域弹道（**零延迟**） | 新写 [ARCH-RT-001, ARCH-DSP-001] |
 //! | [`limiter`] | 母线前瞻式峰值限制器（立体声联动、33 帧延迟、立即攻击/速率上限释放、软膝天花板） | engine `mixer.rs` 上移 [ARCH-DSP-001, ARCH-PDC-001]，见该模块 §0 |
 //! | [`polysynth`] | 双振荡器减法复音合成器（定容声部池 + 确定性窃取 + 3 ms 指数淡出 + 整数相位波表 + 声部级梯形低通） | engine `synth.rs` 上移 [ARCH-RT-001, ARCH-RT-004, ARCH-DET-001]，见该模块 §0 |
 //! | [`device_param`] | 设备参数落点表：三个器件族的字段枚举 ＋ 拼写表 ＋ 与器件同次的钳制（`read`/`store`/`sanitise`）| 从 `yeban_render::inserts` 下移（依赖方向 `render → engine → dsp`）|
@@ -87,6 +88,7 @@ pub mod device_param;
 pub mod drums;
 pub mod envelope;
 pub mod filter;
+pub mod gate;
 pub mod limiter;
 pub mod loop_window;
 pub mod loudness;
