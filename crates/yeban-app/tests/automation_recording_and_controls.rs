@@ -24,6 +24,13 @@ fn automation_write_mode_cycling() {
         .find(|&&id| id != project.master_bus_track_id)
         .expect("需要非主总线轨道");
     let target = AutomationTarget::TrackVolume { track_id };
+    // 确保从无泳道状态开始测试循环
+    project
+        .tracks
+        .get_mut(&track_id)
+        .unwrap()
+        .automation_lanes
+        .remove(&target);
 
     // 初始状态没有显式泳道，cycle 产生 Touch 隐式泳道
     let ops = cycle_automation_write_mode_ops(&project, &target);
@@ -125,8 +132,15 @@ fn automation_recording_generation() {
         .find(|&&id| id != project.master_bus_track_id)
         .expect("需要非主总线轨道");
     let target = AutomationTarget::TrackVolume { track_id };
+    // 确保从无泳道状态开始测试
+    project
+        .tracks
+        .get_mut(&track_id)
+        .unwrap()
+        .automation_lanes
+        .remove(&target);
 
-    // Off 模式：不生成录制点
+    // Off/无泳道模式：不生成录制点
     let ops = record_automation_touch_ops(&project, &target, 480, -3.0);
     assert!(ops.is_empty());
 
