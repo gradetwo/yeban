@@ -63,7 +63,7 @@ The original six phases are done; current work deepens capabilities beyond that 
 - **Phase 2 · Real-time audio pipeline** — done
 - **Phase 3 · Arrangement workspace** — done
 - **Phase 4 · Intent API and mastering export** — done
-- **Now · Capability deepening** — in progress: MIDI humanization, phase alignment, EQ curve, per-track Songmap frequency overlap, OTCP pitch-correction driver, Synth VST3 plug-in
+- **Now · Capability deepening** — in progress: MIDI humanization, phase alignment, per-track Songmap frequency overlap, OTCP pitch-correction driver, Synth VST3 plug-in
 
 ## Platform support
 
@@ -155,8 +155,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 > deterministically — 102 398 / 102 400 non-zero samples for a three-note fixture, bit-identical across runs, and the
 > zero-allocation real-time window still holds). Pan law, noise gate, compressor, limiter, sidechain keying and
 > transport are all in — including a wall-clock pump that advances the playhead with no audio device. What it does
-> **not** do yet: no automation recording, no MPE, MIDI import drops all CCs, the EQ curve display is still a
-> placeholder — and the app still starts with a demo project. For exactly what is verified — and what is still
+> **not** do yet: no automation recording, no MPE, MIDI import drops all CCs — and the app still starts with a demo
+> project. The EQ curve display has shipped (real biquad curve, drag interaction). For exactly what is verified — and what is still
 > `PENDING` — see [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md).
 
 ### Working on the code
