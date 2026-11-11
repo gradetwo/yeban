@@ -99,6 +99,7 @@ yeban-midi-io = { path = "crates/yeban-midi-io" }
 yeban-record = { path = "crates/yeban-record" }
 yeban-sfz = { path = "crates/yeban-sfz" }
 yeban-decode = { path = "crates/yeban-decode" }
+yeban-otcp = { path = "crates/yeban-otcp" }
 yeban-render = { path = "crates/yeban-render" }
 yeban-mcp = { path = "crates/yeban-mcp" }
 yeban-app = { path = "crates/yeban-app" }

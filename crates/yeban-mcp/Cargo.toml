@@ -87,6 +87,11 @@ yeban-plugin-host = { path = "../yeban-plugin-host" }
 # 这条边复用根 `[workspace.dependencies]` 里**已登记**的 `yeban-decode`,
 # 因此 `Cargo.lock` 的包集合不变 (没有新的第三方包), 只有一条成员间的依赖边新增。
 yeban-decode.workspace = true
+# OTCP 音高校正驱动（`ADR-0070`）：子进程驱动用户自备的 OpenTune API 分支构建，
+# 走公开 OTCP 协议。本 crate 只有 std + serde_json 两个依赖（`Cargo.lock` 的包集合
+# 不变），不拖音频栈进 MCP，与 `yeban-decode` 同一条"轻量"口径；禁单
+# （`scripts/gates/check_mcp_dependency_direction.py` 的 `FORBIDDEN`）里没有它。
+yeban-otcp.workspace = true
 # SFZ v2 采样器（ROAD-M2-005）：零拷贝解析器 + 区域/曲线/力度/交叉淡化/声部池的**唯一实现**。
 # `yeban_load_sfz`（装载 + 区域摘要）与 `yeban_render_sfz_wav`（用区域渲染音符）都只调用
 # 它的**公开**读数（`Region::matches_key` / `Region::playback_rate` /

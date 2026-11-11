@@ -63,7 +63,10 @@
             "yeban_apply_preset",
             "yeban_save_preset",
             "yeban_preset_bypass",
-            "get_song_overview"
+            "get_song_overview",
+            "yeban_correct_pitch",
+            "yeban_correct_pitch_job",
+            "yeban_correct_pitch_notes"
           ]
         },
         "arguments": {
@@ -611,6 +614,63 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/get_song_overview"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_correct_pitch"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_correct_pitch"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_correct_pitch_job"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_correct_pitch_job"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_correct_pitch_notes"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_correct_pitch_notes"
               }
             }
           }
@@ -1919,6 +1979,129 @@
             "include_png_path": {
               "type": "boolean",
               "description": "是否返回 PNG 路径（缺省 false）。Phase 1 只接受参数、不产 PNG：给 true 时响应带 pngPath: null + 一句 Phase 2 说明"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "yeban_correct_pitch": {
+          "title": "yeban_correct_pitch",
+          "type": "object",
+          "description": "把一个音频片段提交给用户自备的 OpenTune API 分支构建做离线调性 snap（ADR-0070；单 clip；只改音高、不改时值）。提交后立即回 job_id，校正在后台线程跑；用 yeban_correct_pitch_job 轮询。源音频须是单声道；轨道已挂 OpenTune 外部效果绑定即拒（驱动与效果二选一）。mode 缺省 snapNotes，v1 只执行它。autoMerge 缺省 false（只出提案）；true 时交付当场合并。dryRun 只做音符预测，不导出、不交付。RENDER_FAILED 时大声失败、什么都不写、不回落干声。自测门：该构建无记录时提交前先跑一次自测，fail 只注解错误、不拦任务。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 id（26 字符 ULID）"
+            },
+            "clipId": {
+              "type": "string",
+              "description": "目标音频片段 id（26 字符 ULID，clip_pool 的键）"
+            },
+            "keyRoot": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 11,
+              "description": "目标调性根音 0–11（C=0）"
+            },
+            "scale": {
+              "type": "string",
+              "enum": [
+                "major",
+                "minor",
+                "chromatic",
+                "harmonicMinor",
+                "dorian",
+                "mixolydian",
+                "pentatonicMajor",
+                "pentatonicMinor"
+              ],
+              "description": "音阶名"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "snapNotes",
+                "regenerate",
+                "notesOnly"
+              ],
+              "description": "校正模式：snapNotes（缺省，v1 只执行它）；regenerate / notesOnly 须先探针验证，给了即 INVALID_PARAMETER_RANGE"
+            },
+            "tuningHz": {
+              "type": "number",
+              "description": "A4 频率 Hz（缺省 440）"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "交付时是否立即合并提案（缺省 false：只出提案；true 时当场合并）"
+            },
+            "predictOnly": {
+              "type": "boolean",
+              "description": "只预测不交付（缺省 false）：真跑一遍导入→F0→调音→读谱，只返回预测音符表，不导出、不交付；与通用 dryRun 不同（dryRun 只校验参数、不提交）"
+            },
+            "noteOps": {
+              "type": "array",
+              "description": "content.editNotes 的 op 列表（JSON 原样透传；空 = 不做；干跑时只预测）"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "trackId",
+            "clipId",
+            "keyRoot",
+            "scale"
+          ]
+        },
+        "yeban_correct_pitch_job": {
+          "title": "yeban_correct_pitch_job",
+          "type": "object",
+          "description": "查音高校正任务状态；成功后经提案换资产。running 回 job_id / status / notes_before / receipt_path；succeeded 回 notes_before / notes_after / measurement / asset / server / receipt_path，同时按提交时的 autoMerge 出提案（false 只出提案，true 当场合并）；failed 回 error {code, detail, block?, self_test?}，code 是固定 reason（otcpRenderFailed 等）。任务收据住在控制根的任务目录下，进程重启后仍可查。",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "校正任务 id（提交时返回的 job_id）"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "job_id"
+          ]
+        },
+        "yeban_correct_pitch_notes": {
+          "title": "yeban_correct_pitch_notes",
+          "type": "object",
+          "description": "读某片段最近一次校正的检测音符表（只读）。给 trackId + clipId：取该片段最近一次校正任务的音符表；给 contentId：取该 OpenTune 内容的任务音符表。返回 contentId / tuningHz / totalCount / notes[]。这是 OpenTune 检测到的音符，不是夜半乐谱（会过分割）；无任务时报 otcpNotesUnavailable，不返回空表。v1 不启动服务端现算音符。",
+          "properties": {
+            "trackId": {
+              "type": "string",
+              "description": "片段所属音轨 id（26 字符 ULID；与 clipId 成对给）"
+            },
+            "clipId": {
+              "type": "string",
+              "description": "目标片段 id（26 字符 ULID，clip_pool 的键；与 trackId 成对给）"
+            },
+            "contentId": {
+              "type": "string",
+              "description": "OpenTune 内容 id（在途任务的 contentId；与 trackId/clipId 二选一）"
             },
             "dryRun": {
               "type": "boolean",
