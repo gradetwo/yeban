@@ -659,14 +659,13 @@ mod tests {
     /// 判据 10：主控 LUFS 读数与 ITU-R BS.1770-4 偏移量吻合，且静音时保持下限。
     #[test]
     fn master_lufs_calculation_matches_bs1770_offset() {
-        let view = ViewState::from_project(&demo_project()).expect("投影");
+        let project = demo_project();
+        let view = ViewState::from_project(&project).expect("投影");
         let silent = silent_snapshot(&view);
         assert_eq!(silent.master_lufs(), METER_FLOOR_DBFS);
         assert_eq!(silent.master_lufs_label(), "-120.0");
 
-        let master_id = view.master.as_ref().expect("演示工程有主控").id.clone();
-        let master_entity =
-            yeban_model::EntityId::from_canonical_string(&master_id).expect("有效 ID");
+        let master_entity = project.master_bus_track_id;
 
         let (mut publisher, collector) = meter_channel(16);
         let mut runtime = MeterRuntime::with_collector(collector);
