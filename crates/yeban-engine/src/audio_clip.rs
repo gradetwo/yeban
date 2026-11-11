@@ -392,11 +392,24 @@ pub fn project_audio_clips_with_tempo(
             // 非有限增益按 `0` 处理（[`track_gain`] 的口径）。⚠ 已校验的工程走不到这里：
             // `ClipContent::validate` 拒绝非有限增益 —— 这条只是"不 panic、不发疯"的兜底。
             let gain = track_gain(*gain_db) * track_gain_scale;
+            // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，负值结果夹到 0
+            // （与 `micro_timing_ticks` 负值夹 0 同一条口径）。`source_offset` 与
+            // 循环周期是 tick 差值，移位下不变 ⇒ `push` 只移 span 边界，不动那两处。
+            let offset = i64::from(placement.offset_samples.unwrap_or(0));
+            let shift = |frame: u64| -> u64 {
+                u64::try_from(
+                    i64::try_from(frame)
+                        .unwrap_or(i64::MAX)
+                        .saturating_add(offset)
+                        .max(0),
+                )
+                .unwrap_or(0)
+            };
             let push =
                 |spans: &mut Vec<AudioClipSpan>, start: u64, end: u64, source_offset: u64| {
                     spans.push(AudioClipSpan {
-                        start,
-                        end,
+                        start: shift(start),
+                        end: shift(end),
                         gain,
                         asset: asset.clone(),
                         pcm: None,

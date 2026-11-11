@@ -782,6 +782,10 @@ impl NoteToneSource {
                     )
                     .unwrap_or(0)
                     .max(start.saturating_add(1));
+                    // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，起点夹到 0，
+                    // 时值不变（与 `micro_timing_ticks` 的"夹起点、保时值"同一条口径）。
+                    let (start, end) =
+                        shift_note_span(start, end, placement.offset_samples.unwrap_or(0));
                     // 预先计算频率及 `2 * f / fs`（供渲染循环廉价算相位），以及幅度。
                     // ⭐ `#234`：音高换算走纯 Rust `libm::pow`（⛔ 不是宿主 `f64::powf`）
                     // —— 这是**音频字节路径**，同一工程必须在每个平台渲染出同一串字节
@@ -896,6 +900,17 @@ impl AudioSource for NoteToneSource {
     }
 }
 
+/// 片段采样偏移（`ClipPlacement.offset_samples`）：**帧换算之后**加，起点夹到 0，
+/// 时值不变（与 `micro_timing_ticks` 的"夹起点、保时值"同一条口径）。
+///
+/// `None` ⇒ 0。调用方在 tick→帧换算**完成**后调，不参与 tick arithmetic。
+fn shift_note_span(start: u64, end: u64, offset_samples: i32) -> (u64, u64) {
+    let duration = end.saturating_sub(start);
+    let shifted = (i128::from(start) + i128::from(offset_samples)).max(0);
+    let start = u64::try_from(shifted).unwrap_or(u64::MAX);
+    (start, start.saturating_add(duration))
+}
+
 /// 一条轨道的音符，按 **960 PPQ ＋ 工程 `bpm`** 换算成
 /// `(起始帧, 时值帧, 音高, 力度)`（⛔ 与最小音源同一口径）。
 ///
@@ -960,6 +975,10 @@ pub(crate) fn track_notes_in_frames(
                         )
                         .unwrap_or(0)
                         .max(start.saturating_add(1));
+                        // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，起点夹到 0，
+                        // 时值不变（与 `micro_timing_ticks` 的"夹起点、保时值"同一条口径）。
+                        let (start, end) =
+                            shift_note_span(start, end, placement.offset_samples.unwrap_or(0));
                         notes.push((start, end.saturating_sub(start), note.pitch, note.velocity));
                     }
                 }
@@ -1882,6 +1901,85 @@ mod tests {
                 (21_000, 3_000, 60, 100),
             ],
             "ratchet=4 必须等分成四个 120 tick 的脉冲"
+        );
+    }
+
+    /// 片段采样偏移：`track_notes_in_frames` 里音符帧区间整体移 `offset_samples`，
+    /// 起点夹到 0、时值不变（与 `micro_timing_ticks` 的"夹起点、保时值"同一条口径；
+    /// 与 `snapshot.rs` 的 `project_schedules` 同解）。
+    ///
+    /// 口径（120 BPM、960 PPQ、48 kHz ⇒ 1 tick = 25 帧）：夹具音符从 12000 帧起、
+    /// 长 12000 帧。
+    #[test]
+    fn sampler_note_frames_shift_by_clip_offset_samples() {
+        use yeban_model::project::ClipContent;
+
+        let (mut project, track_id, placement_id, _clip_id, _note_id) = one_note_fixture();
+
+        let set_offset = |project: &mut YebanProjectV1, offset: i32| {
+            project
+                .tracks
+                .get_mut(&track_id)
+                .unwrap()
+                .clips
+                .get_mut(&placement_id)
+                .unwrap()
+                .offset_samples = Some(offset);
+        };
+        set_offset(&mut project, 240);
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![(12_240, 12_000, 60, 100)],
+            "+240 采样 ⇒ 起点与终点同移 240 帧，时值不变"
+        );
+        set_offset(&mut project, -240);
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![(11_760, 12_000, 60, 100)],
+            "-240 采样 ⇒ 起点前移 240 帧，时值不变"
+        );
+        // 夹取：摆放与音符都从 0 起，-240 ⇒ 起点夹到 0、时值仍 12000（不是 11760）。
+        project
+            .tracks
+            .get_mut(&track_id)
+            .unwrap()
+            .clips
+            .get_mut(&placement_id)
+            .unwrap()
+            .start_tick = 0;
+        let ClipContent::Midi { notes } =
+            &mut project.clip_pool.get_mut(&_clip_id).unwrap().content
+        else {
+            unreachable!("夹具是 MIDI 片段");
+        };
+        notes.get_mut(&_note_id).unwrap().start_tick = 0;
+        set_offset(&mut project, -240);
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![(0, 12_000, 60, 100)],
+            "起点 0 再前移 ⇒ 夹到 0 且时值不变（⛔ 不是下溢、⛔ 不是缩短）"
+        );
+    }
+
+    /// `NoteToneSource::from_track` 走**同一份** `shift_note_span`：+240 采样 ⇒
+    /// 音符 `(start, end)` 同移 240 帧。
+    #[test]
+    fn note_tone_source_shifts_by_clip_offset_samples() {
+        let (mut project, track_id, placement_id, _clip_id, _note_id) = one_note_fixture();
+        project
+            .tracks
+            .get_mut(&track_id)
+            .unwrap()
+            .clips
+            .get_mut(&placement_id)
+            .unwrap()
+            .offset_samples = Some(240);
+        let source = NoteToneSource::from_track(&project, track_id, 48_000);
+        assert_eq!(source.notes.len(), 1, "夹具必须恰好一音符");
+        assert_eq!(
+            (source.notes[0].0, source.notes[0].1),
+            (12_240, 24_240),
+            "+240 采样 ⇒ 音源音符起止同移 240 帧"
         );
     }
 

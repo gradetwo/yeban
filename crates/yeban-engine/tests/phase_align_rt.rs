@@ -18,17 +18,22 @@
 //! | R4 | **负延时 = 相对提前**：A −240、B 0 与 A 0、B +240 逐位相同，且前 240 帧等于单轨 A（B 未到） | 负值被钳到 0（半个量程变谎言）/ 最小值在逐轨处各算一遍 |
 //! | R5 | **确定性**：两次独立装配逐位相同 | 引入真熵源 / 重新武装清空延迟线状态 |
 //! | R6 | **主总线不进相位表**：master 上写延时不改变输出 | master 也被当成可对齐的轨 |
+//! | R7 | **片段采样偏移移调度音符**：`offset_samples` 让快照里音符的起止样本同移，
+//! |    | 起点夹到 0、时值不变（与 app `export_wav::shift_note_span` 同解） | 偏移只在离线
+//! |    | 生效、实时快照漏接；或负值下溢 / 时值被缩短 |
 //!
 //! ## 覆盖范围（**明说**）
 //!
 //! 本文件覆盖：`snapshot.rs` 的轨参数投影、`graph.rs` 的 `PhaseBank`
-//! 武装与施加、`rt.rs` 的**构造期预分配** / **快照边界武装** / **逐样本调用**。
+//! 武装与施加、`rt.rs` 的**构造期预分配** / **快照边界武装** / **逐样本调用**，
+//! 以及 `snapshot.rs` 的 `project_schedules` 里片段采样偏移的帧换算。
 //! 它**不**覆盖离线链（那是 `yeban-render` 的 `tests/phase_align.rs` 的职责），
 //! 也不覆盖采样延迟器件（那是 `tests/sample_delay_insert.rs` 的职责）。
 
 mod support;
 
 use support::{NoteSpec, note_project, render, render_with};
+use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{EntityId, RoutingEdge, RoutingKind, YebanProjectV1};
 
 /// 判据用的栅格：120 BPM / 48 kHz / 960 PPQ ⇒ 1 tick = 25 样本。
@@ -280,5 +285,53 @@ fn master_delay_is_ignored() {
         render(&fixture.project, QUANTA).fingerprint(),
         plain.fingerprint(),
         "master 的延时/反转不得进入相位池"
+    );
+}
+
+/// 给夹具的那条 MIDI 轨上唯一的摆放写片段采样偏移（**只改夹具**，不改模型层）。
+fn set_clip_offset(project: &mut YebanProjectV1, track: EntityId, offset: i32) {
+    let entry = project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨");
+    let placement = entry
+        .clips
+        .values_mut()
+        .next()
+        .expect("夹具里必须有一个摆放");
+    placement.offset_samples = Some(offset);
+}
+
+/// 快照里那条 MIDI 轨上唯一的调度音符的起止样本。
+fn scheduled_span(project: &YebanProjectV1, track: EntityId) -> (u64, u64) {
+    let snapshot = EngineSnapshot::from_project(project, 1).expect("夹具工程必须能编译成快照");
+    let notes = snapshot
+        .schedule(&track)
+        .expect("夹具里必须有调度表")
+        .notes();
+    assert_eq!(notes.len(), 1, "夹具必须恰好一音符");
+    (notes[0].start_sample(), notes[0].end_sample())
+}
+
+/// R7：片段采样偏移让快照里音符的起止样本同移（120 BPM / 48 kHz ⇒ 1 tick = 25 帧；
+/// 夹具音符从 0 起、长 12000 帧）。
+#[test]
+fn clip_offset_shifts_the_scheduled_note() {
+    let mut plus = note_project(&NOTES);
+    let track = plus.track;
+    set_clip_offset(&mut plus.project, track, 240);
+    assert_eq!(
+        scheduled_span(&plus.project, track),
+        (240, 12_240),
+        "+240 采样 ⇒ 调度音符起止同移 240 帧，时值不变"
+    );
+
+    let mut minus = note_project(&NOTES);
+    let track = minus.track;
+    set_clip_offset(&mut minus.project, track, -240);
+    assert_eq!(
+        scheduled_span(&minus.project, track),
+        (0, 12_000),
+        "起点 0 再前移 ⇒ 夹到 0 且时值不变（⛔ 不是下溢、⛔ 不是缩短）"
     );
 }

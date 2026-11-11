@@ -2912,9 +2912,22 @@ pub fn build(
     }
     // 7. 帧数: ⭐ `#252` 显式 `frames`／`durationSeconds` 优先；缺省仍由时间轴末端与
     //    工程量纲唯一决定（＝修改前的同一条公式，逐字节不变）。
-    let frames = request
-        .frames
-        .unwrap_or_else(|| math::frames_at_tick(end_tick, PPQ, &project.tempo(), sample_rate));
+    //    手动相位对齐：正向片段偏移会把尾巴推出母带末端，7b 步夹住就静默截尾 ⇒
+    //    缺省帧数补**源节点轨上未静音摆放里最大的正偏移**（`None` ⇒ 0；无偏移的
+    //    工程 ⇒ 加 0 ⇒ 逐位不变；显式 `frames` 优先，不动）。
+    let max_clip_offset = source_nodes
+        .iter()
+        .filter_map(|node| project.tracks.get(node))
+        .flat_map(|track| track.clips.values())
+        .filter(|placement| !placement.muted)
+        .map(|placement| placement.offset_samples.unwrap_or(0))
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let frames = request.frames.unwrap_or_else(|| {
+        math::frames_at_tick(end_tick, PPQ, &project.tempo(), sample_rate)
+            .saturating_add(u64::try_from(max_clip_offset).unwrap_or(0))
+    });
     if frames == 0 {
         return Err(render_failed(
             "工程里没有可渲染的内容 (0 帧)",
@@ -4843,6 +4856,12 @@ fn build_source(
                 .start_tick
                 .saturating_add(placement.duration_ticks),
         );
+        // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，负值结果夹到 0
+        // （与 `micro_timing_ticks` 负值夹 0 同一条口径；`source_offset` 与循环
+        // 周期是 tick 差值，移位下不变 ⇒ 音频 span 只移边界，采样器音符保时值；
+        // 与 app `audio_clip.rs` / `export_wav.rs` 同一套语义，⛔ 不另立规则）。
+        let offset = i64::from(placement.offset_samples.unwrap_or(0));
+        let shift = |frame: i64| frame.saturating_add(offset).max(0);
         // ⭐ `#246` / [ADR-0010 D5]：循环展开**只**由 `yeban-model` 决定
         // （`ClipPlacement::loop_repeat` / `note_copies`）。没有循环计划时
         // `note_copies` 返回原样一遍 ⇒ 与展开之前逐位相同。
@@ -4908,7 +4927,9 @@ fn build_source(
                                     &tempo,
                                     sample_rate,
                                 );
-                                let origin = u64::try_from(start.max(0)).unwrap_or(0);
+                                // 片段采样偏移：起点夹到 0，时值不变（与 app
+                                // `export_wav::shift_note_span` 同解）。
+                                let origin = u64::try_from(shift(start)).unwrap_or(0);
                                 let span = u64::try_from((end - start).max(1)).unwrap_or(1);
                                 sampler_notes.push((origin, span, note.pitch, note.velocity));
                             }
@@ -4973,6 +4994,7 @@ fn build_source(
                     &tempo,
                     sample_rate,
                 );
+                let (base_start, base_end) = (shift(base_start), shift(base_end));
                 let entry = per_asset
                     .entry(asset.clone())
                     .or_insert_with(|| (Arc::clone(&prepared), Vec::new()));
@@ -5018,8 +5040,8 @@ fn build_source(
                         // 区间之前的内容：播放一遍（素材从 0 开始）。
                         if region_start_frames > base_start_frames {
                             entry.1.push(ClipSpan {
-                                start: frames_i64(base_start_frames),
-                                end: frames_i64(region_start_frames),
+                                start: shift(frames_i64(base_start_frames)),
+                                end: shift(frames_i64(region_start_frames)),
                                 source_offset: 0,
                                 gain_l,
                                 gain_r,
@@ -5036,8 +5058,8 @@ fn build_source(
                             }
                             let end = start.saturating_add(period_frames).min(base_end_frames);
                             entry.1.push(ClipSpan {
-                                start: frames_i64(start),
-                                end: frames_i64(end),
+                                start: shift(frames_i64(start)),
+                                end: shift(frames_i64(end)),
                                 source_offset,
                                 gain_l,
                                 gain_r,

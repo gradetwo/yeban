@@ -1586,6 +1586,15 @@ fn project_schedules(
                         if end_sample <= start_sample {
                             continue;
                         }
+                        // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，起点夹到 0，
+                        // 时值不变（与 `micro_timing_ticks` 的"夹起点、保时值"同一条口径；
+                        // 与 app `export_wav::shift_note_span` 同解）。
+                        let offset = i64::from(placement.offset_samples.unwrap_or(0));
+                        let duration = end_sample.saturating_sub(start_sample);
+                        let start_sample =
+                            u64::try_from((i128::from(start_sample) + i128::from(offset)).max(0))
+                                .unwrap_or(u64::MAX);
+                        let end_sample = start_sample.saturating_add(duration);
                         if notes.len() >= MAX_NOTES_PER_TRACK {
                             dropped = dropped.saturating_add(1);
                             continue;

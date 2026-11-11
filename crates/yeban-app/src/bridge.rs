@@ -5525,6 +5525,24 @@ fn clip_view(
         .ok_or(BridgeError::TickOverflow { start_tick })?;
     let x = as_px(tick_to_px(start_tick, ticks_per_pixel)?);
     let x_end = as_px(tick_to_px(end_tick, ticks_per_pixel)?);
+    // 手动相位对齐：显示位置随片段采样偏移同步移动（与音频渲染同一条口径：
+    // 换算之后加，起点夹到 0；亚像素量级下多数缩放里不可见，但投影保持诚实）。
+    // `dx` 是偏移换算成像素：采样 → tick（`samples_per_tick`）→ 像素。
+    let offset = placement.offset_samples.unwrap_or(0);
+    #[allow(clippy::cast_possible_truncation)]
+    let dx = if offset == 0 {
+        0.0
+    } else {
+        f64::from(offset)
+            / yeban_model::time_math::samples_per_tick(
+                project.bpm,
+                PPQ,
+                project.audio_config.sample_rate.hz(),
+            )
+            / f64::from(ticks_per_pixel)
+    } as f32;
+    let x = (x + dx).max(0.0);
+    let x_end = x_end + dx;
     let entry = project.clip_pool.get(&placement.clip_id);
     let clip_name = entry.map_or_else(String::new, |entry| entry.name.clone());
     let content = entry.map_or("unknown", |entry| match entry.content {
@@ -7150,6 +7168,53 @@ mod tests {
                 "`{ulid}` 不是合法 ULID 文本"
             );
         }
+    }
+
+    /// 手动相位对齐：`clip_view` 的 x 随 `offset_samples` 同步移动（采样 → tick → 像素）。
+    ///
+    /// 同一个工程只改偏移：无偏移与 +240 采样的两版视图里，同一摆放的 x 之差必须
+    /// 等于 `240 / samples_per_tick(bpm, PPQ, rate) / ticks_per_pixel`（1 tick/px
+    /// 缩放下可读）。偏移被忽略 ⇒ 两版 x 相同，判据变红。
+    #[test]
+    fn clip_view_x_follows_clip_offset_samples() {
+        let mut project = filled_project();
+        let (track_id, placement_id) = {
+            let track = project
+                .tracks
+                .values()
+                .find(|track| track.id != project.master_bus_track_id)
+                .expect("filled_project 有非 master 轨");
+            let placement = track.clips.values().next().expect("轨上有一个摆放");
+            (track.id, placement.id)
+        };
+        let clip_x = |project: &YebanProjectV1| -> f32 {
+            let view = ViewState::from_project_with_zoom(project, 1).expect("投影必须成功");
+            view.clips
+                .iter()
+                .find(|clip| clip.placement_id == placement_id.to_canonical_string())
+                .expect("摆放必须进视图")
+                .x
+        };
+        let plain_x = clip_x(&project);
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨在表里")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放在表里")
+            .offset_samples = Some(240);
+        let shifted_x = clip_x(&project);
+        let per_tick = yeban_model::time_math::samples_per_tick(
+            project.bpm,
+            PPQ,
+            project.audio_config.sample_rate.hz(),
+        );
+        let expected_dx = 240.0 / per_tick;
+        assert!(
+            (f64::from(shifted_x - plain_x) - expected_dx).abs() < 1e-4,
+            "x 必须随 +240 采样偏移移动 {expected_dx:.6}px（实测 {plain_x} → {shifted_x}）"
+        );
     }
 
     /// 判据 7: 位置是**整数派生**的 —— 与独立算出的 `tick / tpp` 逐个相等，

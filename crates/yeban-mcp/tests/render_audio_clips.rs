@@ -209,6 +209,8 @@ struct Tune {
     device_latency: u32,
     /// ⭐ `#241`：摆放的循环配置（缺省 = 关闭）。
     loop_config: LoopConfig,
+    /// ⭐ 手动相位对齐：摆放的采样偏移（`ClipPlacement.offset_samples`，缺省 0 = 无偏移）。
+    clip_offset_samples: i32,
     /// ⭐ 效果器线：音轨是否挂一台带 `stub:gain` 绑定的外部效果器（缺省增益 1.0＝直通）。
     effect_stub: bool,
     /// ⭐ 效果器线：坏绑定路径（打不开的插件；与 `effect_stub` 二选一）。
@@ -232,6 +234,7 @@ impl Default for Tune {
             declare_in_index: true,
             device_latency: 0,
             loop_config: LoopConfig::default(),
+            clip_offset_samples: 0,
             effect_stub: false,
             effect_bad_path: false,
             effect_opentune: false,
@@ -353,7 +356,11 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             start_tick: tune.start_tick,
             duration_ticks: tune.duration_ticks,
             muted: tune.placement_muted,
-            offset_samples: None,
+            offset_samples: if tune.clip_offset_samples == 0 {
+                None
+            } else {
+                Some(tune.clip_offset_samples)
+            },
             loop_config: tune.loop_config,
         },
     );
@@ -606,6 +613,68 @@ fn the_clip_lands_exactly_on_the_placement_start_frame() {
     );
     // 起点之前**没有**任何事件（抖动不构成事件）。
     for frame in 0..24_000 {
+        assert!(frame_peak(&rendered, frame) <= 1.0 / 8_388_608.0);
+    }
+}
+
+/// 手动相位对齐：`offset_samples` 让片段首个可闻帧精确移动偏移量，且默认母带长度
+/// 跟着最大的正偏移延长（否则 7b 步夹住会静默截尾）。
+///
+/// 夹具：片段摆在 0.5 秒处（960 tick = 24 000 帧）、时值 1 秒（48 000 帧），
+/// 素材 240 帧。+240 ⇒ 首可闻 24 240、末可闻 24 479、母带 48 240 帧；
+/// −240 ⇒ 首可闻 23 760、母带仍 48 000 帧（负偏移不延长）。
+#[test]
+fn clip_offset_moves_the_first_audible_frame_by_exactly_the_offset() {
+    let scratch = Scratch::new("offset-landing");
+    let samples = pattern(240);
+
+    let plus = Tune {
+        start_tick: 960,
+        duration_ticks: 960,
+        clip_offset_samples: 240,
+        ..Tune::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &plus);
+    let out = scratch.join("plus.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+    assert_eq!(artifact.frames, 48_240, "默认母带长度 = 时间轴末端 + 最大正偏移");
+    assert_eq!(
+        first_audible_frame(&rendered, 0.01),
+        Some(24_240),
+        "+240 采样 ⇒ 首可闻帧移 240"
+    );
+    assert_eq!(
+        last_audible_frame(&rendered, 0.01),
+        Some(24_240 + 239),
+        "240 帧素材必须整段落在移位后的区间内"
+    );
+    for frame in 0..24_240 {
+        assert!(frame_peak(&rendered, frame) <= 1.0 / 8_388_608.0);
+    }
+
+    let minus = Tune {
+        start_tick: 960,
+        duration_ticks: 960,
+        clip_offset_samples: -240,
+        ..Tune::default()
+    };
+    let fixture = fixture(wav_f32(2, 48_000, &samples), &minus);
+    let out = scratch.join("minus.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let rendered = payload_samples(&artifact);
+    assert_eq!(artifact.frames, 48_000, "负偏移不延长默认母带长度");
+    assert_eq!(
+        first_audible_frame(&rendered, 0.01),
+        Some(23_760),
+        "−240 采样 ⇒ 首可闻帧前移 240"
+    );
+    assert_eq!(
+        last_audible_frame(&rendered, 0.01),
+        Some(23_760 + 239),
+        "240 帧素材必须整段落在移位后的区间内"
+    );
+    for frame in 0..23_760 {
         assert!(frame_peak(&rendered, frame) <= 1.0 / 8_388_608.0);
     }
 }
