@@ -57,7 +57,7 @@
 //! * ⛔ **提案 / 宏抽屉 Esc 关不掉**：`round9` ⑥ 重评后决定不动（唯一写者契约，
 //!   补臂要新造 callback）；**三个根级抽屉 `visible`** 被 `live_ui_mcp.rs` 钉住；
 //!   **`Action::Cancel` 级联顺序**被 `round7` ④⑤ 钉住。三者都不动 `host.rs`。
-//! * ⛔ 本轮**零新增** `accessible-id` / `accessible-value` / 可寻址节点；全仓 224
+//! * ⛔ 本轮**零新增** `accessible-id` / `accessible-value` / 可寻址节点；全仓 238
 //!   个可寻址节点仍由 `round6_addressable_roles.rs` 覆盖。⑥ 逐文件钉住读数一位未动。
 //! * ⛔ 本文件刻意不用 `.all(` 适配器（`assertion_bounds_audit.rs` 的登记守卫会要求
 //!   扩 `SOURCES`）；全是纯源码文本判据，不装 Slint 平台、不碰活窗口。
@@ -82,13 +82,14 @@ const DEVICE_RACK: &str = include_str!("../ui/console/device_rack.slint");
 const MUSICAL_PR_DRAWER: &str = include_str!("../ui/dialogs/musical_pr_drawer.slint");
 const MACRO_PANEL: &str = include_str!("../ui/dialogs/macro_panel.slint");
 const EXPORT_WAV_DIALOG: &str = include_str!("../ui/dialogs/export_wav_dialog.slint");
+const HUMANIZE_DIALOG: &str = include_str!("../ui/dialogs/humanize_dialog.slint");
 const UNDO_TREE_MODAL: &str = include_str!("../ui/dialogs/undo_tree_modal.slint");
 const HOST_RS: &str = include_str!("../src/host.rs");
 const SONG_OVERVIEW_RS: &str = include_str!("../src/song_overview.rs");
 
 /// 全仓 `.slint` 清单：与 `round8_action_feedback.rs`、`round9_action_feedback.rs`、
 /// `round6_addressable_roles.rs::SLINT_FILES`、`src/elements.rs::SLINT_MANIFEST` 同一份
-/// 18 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
+/// 19 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
 const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", APP),
     ("transport.slint", TRANSPORT),
@@ -110,6 +111,7 @@ const SLINT_FILES: &[(&str, &str)] = &[
     ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER),
     ("dialogs/macro_panel.slint", MACRO_PANEL),
     ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG),
+    ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG),
     ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL),
 ];
 
@@ -124,6 +126,7 @@ fn overlay_action_controls_are_discoverable_with_pointer_cursors() {
         ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL, 4),
         ("dialogs/macro_panel.slint", MACRO_PANEL, 1),
         ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG, 3),
+        ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG, 3), // 人性化弹窗：关闭 + 两枚应用
         ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 1), // 第九轮段落标签
     ];
     for (file, src, want) in cases {
@@ -149,10 +152,10 @@ fn overlay_action_controls_are_discoverable_with_pointer_cursors() {
         pointer_total += src.matches("mouse-cursor: MouseCursor.pointer;").count();
     }
     assert_eq!(
-        pointer_total, 50,
-        "全仓手型光标 = 50（第九轮 2 + 第十轮 11 + 第十一轮 37）；多一处就是别处也改了光标"
+        pointer_total, 53,
+        "全仓手型光标 = 53（第九轮 2 + 第十轮 11 + 第十一轮 37 + 人性化弹窗 3）；多一处就是别处也改了光标"
     );
-    assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
+    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
 }
 
 /// ② 7 处拖拽手势面补「可拖」光标：这是本轮唯一的新交互语言。
@@ -182,8 +185,8 @@ fn drag_surfaces_now_show_a_grabbable_cursor() {
     assert_eq!(grab_total, 7, "全仓可拖光标恰好 7 处");
     // ⭐ 第十一轮：+37 pointer +1 row-resize ⇒ 20→58（grab 7 一位未动）。
     assert_eq!(
-        cursor_total, 58,
-        "全仓光标恰好 58 处 = 50 pointer + 7 grab + 1 row-resize；多一处就是别处也改了光标"
+        cursor_total, 61,
+        "全仓光标恰好 61 处 = 53 pointer + 7 grab + 1 row-resize；多一处就是别处也改了光标"
     );
     // 拖拽手势面本身仍是「不画任何像素」的静态矩形，⛔ 没改成会渲染的控件。
     assert!(MIXER_CONSOLE.contains("它们是**静态矩形**"));
@@ -260,7 +263,7 @@ fn the_hover_inventory_and_round8_round9_pins_stay_consistent() {
         total, 32,
         "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）"
     );
-    assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
+    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
 }
 
 /// ⑤ 第 ④ 组（M/S 激活态字色）**A/B 后撤回**：钉住 `arrangement_view.slint`
@@ -290,6 +293,7 @@ fn mute_solo_active_labels_stay_untouched_after_the_ab_findings() {
 }
 
 /// ⑥ 零新增可寻址节点 / 无障碍读数：本轮改动的 7 个 `.slint` 逐文件对账
+/// （＋人性化弹窗 1 案：12 ID / 5 读数）。
 /// （第 ④ 组撤回后，`arrangement_view.slint` 已不在改动清单内）。
 /// `mouse-cursor` 与 `TouchArea` 命名都**不**进运行时控件树。
 #[test]
@@ -299,6 +303,7 @@ fn no_new_addressable_nodes_or_second_readouts() {
         ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL, 8, 0),
         ("dialogs/macro_panel.slint", MACRO_PANEL, 8, 2),
         ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG, 10, 4),
+        ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG, 12, 5),
         ("console/mixer_console.slint", MIXER_CONSOLE, 22, 7),
         ("console/device_rack.slint", DEVICE_RACK, 63, 3),
         ("workspace/session_view.slint", SESSION_VIEW, 9, 2),
@@ -329,7 +334,10 @@ fn no_new_addressable_nodes_or_second_readouts() {
     for (_, src) in SLINT_FILES {
         readout_total += src.matches("accessible-value:").count();
     }
-    assert_eq!(readout_total, 50, "全仓读数总数 50 一位未动");
+    assert_eq!(
+        readout_total, 55,
+        "全仓读数总数 55（+ 人性化弹窗 5：时值/力度/种子/网格/强度）"
+    );
 }
 
 /// ⑦ 刻意不做的边界：Esc 级联顺序、三个抽屉 `visible`、静音态档名、

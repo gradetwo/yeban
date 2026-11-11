@@ -82,6 +82,10 @@ const SLINT_SOURCES: &[(&str, &str)] = &[
         include_str!("../ui/dialogs/export_wav_dialog.slint"),
     ),
     (
+        "ui/dialogs/humanize_dialog.slint",
+        include_str!("../ui/dialogs/humanize_dialog.slint"),
+    ),
+    (
         "ui/dialogs/macro_panel.slint",
         include_str!("../ui/dialogs/macro_panel.slint"),
     ),

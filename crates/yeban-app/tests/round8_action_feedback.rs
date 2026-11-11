@@ -80,7 +80,7 @@ const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.sl
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 
 /// 全仓 `.slint` 清单：与 `round6_addressable_roles.rs::SLINT_FILES`、
-/// `src/elements.rs::SLINT_MANIFEST` 同一份 18 文件口径（编译期固定）。
+/// `src/elements.rs::SLINT_MANIFEST` 同一份 19 文件口径（编译期固定）。
 /// ② 的「全仓 `has-hover` 总数」用它做主体扫描，⛔ 不用 `read_dir` 空转成绿。
 const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", APP),
@@ -122,6 +122,10 @@ const SLINT_FILES: &[(&str, &str)] = &[
     (
         "dialogs/export_wav_dialog.slint",
         include_str!("../ui/dialogs/export_wav_dialog.slint"),
+    ),
+    (
+        "dialogs/humanize_dialog.slint",
+        include_str!("../ui/dialogs/humanize_dialog.slint"),
     ),
     (
         "dialogs/macro_panel.slint",
@@ -272,7 +276,7 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
         "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）；\
          改了要同步复核清单、解析口径与交付说明"
     );
-    assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
+    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
 }
 
 /// ③ 零新增可寻址节点 / 无障碍读数：三个被改的文件逐字对账。

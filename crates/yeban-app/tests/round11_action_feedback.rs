@@ -48,7 +48,7 @@
 //!   且 `elements.rs:3792` 与 `round8` ⑤ 把「今天不得有 `clicked`」钉成事实 ——
 //!   本轮巡检时亲自复核过，**不是漏接线**，不动。
 //! * ⛔ 本轮**零新增** `accessible-id` / `accessible-value` / 可寻址节点，
-//!   全仓 225 / 50 由 ⑥ 逐文件对账。零新增 `experimental-*` / `mcp-*` feature、
+//!   全仓 239 / 55 由 ⑥ 逐文件对账。零新增 `experimental-*` / `mcp-*` feature、
 //!   零 `Cargo.toml` 改动、零 golden PNG 改动。
 //! * ⛔ 本文件刻意不用 `.all(` 适配器（`assertion_bounds_audit.rs` 的登记守卫会要求
 //!   扩 `SOURCES`）；全是纯源码文本判据，不装 Slint 平台、不碰活窗口。
@@ -70,11 +70,12 @@ const DEVICE_RACK: &str = include_str!("../ui/console/device_rack.slint");
 const MUSICAL_PR_DRAWER: &str = include_str!("../ui/dialogs/musical_pr_drawer.slint");
 const MACRO_PANEL: &str = include_str!("../ui/dialogs/macro_panel.slint");
 const EXPORT_WAV_DIALOG: &str = include_str!("../ui/dialogs/export_wav_dialog.slint");
+const HUMANIZE_DIALOG: &str = include_str!("../ui/dialogs/humanize_dialog.slint");
 const UNDO_TREE_MODAL: &str = include_str!("../ui/dialogs/undo_tree_modal.slint");
 
 /// 全仓 `.slint` 清单：与 `round8` / `round9` / `round10`、
 /// `round6_addressable_roles.rs::SLINT_FILES`、`src/elements.rs::SLINT_MANIFEST`
-/// 同一份 18 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
+/// 同一份 19 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
 const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", APP),
     ("transport.slint", TRANSPORT),
@@ -96,6 +97,7 @@ const SLINT_FILES: &[(&str, &str)] = &[
     ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER),
     ("dialogs/macro_panel.slint", MACRO_PANEL),
     ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG),
+    ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG),
     ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL),
 ];
 
@@ -141,6 +143,7 @@ fn all_clickable_controls_now_show_a_pointer_cursor() {
         ("console/device_rack.slint", DEVICE_RACK, 20),  // 20 个主操作键
         ("console/mixer_console.slint", MIXER_CONSOLE, 7), // M/S ×4 + 浏览键 ×3
         ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG, 3), // 第十轮
+        ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG, 3), // 人性化弹窗：关闭 + 两枚应用
         ("dialogs/macro_panel.slint", MACRO_PANEL, 1),   // 第十轮
         ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER, 4), // 第九+十轮
         ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL, 4), // 第十轮
@@ -161,10 +164,10 @@ fn all_clickable_controls_now_show_a_pointer_cursor() {
         pointer_total += src.matches("mouse-cursor: MouseCursor.pointer;").count();
     }
     assert_eq!(
-        pointer_total, 50,
-        "全仓手型光标 = 50（第九轮 2 + 第十轮 11 + 第十一轮 37）"
+        pointer_total, 53,
+        "全仓手型光标 = 53（第九轮 2 + 第十轮 11 + 第十一轮 37 + 人性化弹窗 3）"
     );
-    assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
+    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
     // 光标只补可发现性，⛔ 不替换任何按钮的行为落点（抽三处高频键逐字钉）。
     assert!(TRANSPORT.contains("clicked => { root.show-session(); }"));
     assert!(TRANSPORT.contains("clicked => { root.show-arrangement(); }"));
@@ -254,8 +257,8 @@ fn the_grab_and_hover_inventories_are_untouched() {
     assert_eq!(grab, 7, "全仓可拖光标恰好 7 处");
     assert_eq!(hover, 32, "全仓 `has-hover` 仍 32（本轮零反馈改动）");
     assert_eq!(
-        total, 58,
-        "全仓光标恰好 58 处 = 50 pointer + 7 grab + 1 row-resize"
+        total, 61,
+        "全仓光标恰好 61 处 = 53 pointer + 7 grab + 1 row-resize"
     );
 }
 
@@ -322,11 +325,13 @@ fn disabled_buttons_do_not_pretend_to_be_clickable() {
     assert!(seg.contains("root.track-create-audio();"));
 }
 
-/// ⑥ 零新增可寻址节点 / 无障碍读数 / 唯一强调色：本轮 8 个改动文件逐文件对账。
+/// ⑥ 零新增可寻址节点 / 无障碍读数 / 唯一强调色：本轮 8 个改动文件逐文件对账
+/// （＋人性化弹窗 1 案：12 ID / 5 读数）。
 #[test]
 fn zero_new_addressable_nodes_or_readouts() {
     let cases: &[(&str, &str, usize, usize)] = &[
         ("app.slint", APP, 8, 3),
+        ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG, 12, 5),
         (
             "console/asset_pool_panel.slint",
             include_str!("../ui/console/asset_pool_panel.slint"),
@@ -358,10 +363,13 @@ fn zero_new_addressable_nodes_or_readouts() {
         values += src.matches("accessible-value:").count();
     }
     assert_eq!(
-        ids, 225,
-        "全仓可寻址 ID 仍 225（上游 Songmap Phase 2 之后）"
+        ids, 239,
+        "全仓可寻址 ID 仍 239（上游 Songmap Phase 2 之后 ＋ 卷帘右键菜单 2 ＋ 人性化弹窗 12）"
     );
-    assert_eq!(values, 50, "全仓无障碍读数仍 50");
+    assert_eq!(
+        values, 55,
+        "全仓无障碍读数仍 55（+ 人性化弹窗 5：时值/力度/种子/网格/强度）"
+    );
 }
 
 /// ⑦ 刻意不做的边界：无动作占位、A/B 撤回的 M/S 字色、× 关闭键反馈、piano_roll。

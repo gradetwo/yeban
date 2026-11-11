@@ -2,7 +2,7 @@
 //!
 //! ## 本轮要证的三句话
 //!
-//! 1. **全仓闭环**：`ui/**/*.slint` 的 **224 个可寻址节点块**（带 `accessible-id`
+//! 1. **全仓闭环**：`ui/**/*.slint` 的 **238 个可寻址节点块**（带 `accessible-id`
 //!    的元素）里，本轮之前恰好有 **4 个**没写显式 `accessible-role`；补齐后
 //!    **0 缺口**。本判据把「有 id ⇒ 必须有显式 role」升级为**全仓常驻门禁**，
 //!    以后谁新增可寻址节点却忘了 role，立刻红。
@@ -47,7 +47,7 @@
 //! * 刻意⛔ 不用 `all` 适配器（`assertion_bounds_audit.rs` 的登记守卫会要求扩 SOURCES）；
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
-/// 被扫文件：**编译期固定**，与 `src/elements.rs` 的 `SLINT_MANIFEST: [&str; 18]`
+/// 被扫文件：**编译期固定**，与 `src/elements.rs` 的 `SLINT_MANIFEST: [&str; 19]`
 /// 逐字对应。UI 加一个 `.slint` 文件必须同时扩这两处（第 ④ 条判据会判红）。
 const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", include_str!("../ui/app.slint")),
@@ -98,6 +98,10 @@ const SLINT_FILES: &[(&str, &str)] = &[
     (
         "dialogs/export_wav_dialog.slint",
         include_str!("../ui/dialogs/export_wav_dialog.slint"),
+    ),
+    (
+        "dialogs/humanize_dialog.slint",
+        include_str!("../ui/dialogs/humanize_dialog.slint"),
     ),
     (
         "dialogs/macro_panel.slint",
@@ -281,7 +285,7 @@ fn every_addressable_node_declares_an_explicit_accessible_role() {
         "非真空：必须真的扫过大批可寻址节点（实测 {total}，下限 200）"
     );
     assert_eq!(
-        total, 224,
+        total, 238,
         "全仓可寻址节点块数应与本轮基线一致；变了要复核清单与解析口径"
     );
     assert!(
@@ -383,12 +387,12 @@ fn the_judged_manifest_stays_in_sync_with_the_registry_manifest() {
         + start;
     let manifest = &ELEMENTS_RS[start..end];
     assert!(
-        manifest.contains("[&str; 18]"),
-        "注册表清单长度钉在 18；改了要同步本判据的 SLINT_FILES"
+        manifest.contains("[&str; 19]"),
+        "注册表清单长度钉在 19；改了要同步本判据的 SLINT_FILES"
     );
-    assert_eq!(SLINT_FILES.len(), 18, "本判据清单也要是 18");
+    assert_eq!(SLINT_FILES.len(), 19, "本判据清单也要是 19");
 
-    // 注册表侧声明的 18 个文件名（跳过整行注释）。
+    // 注册表侧声明的 19 个文件名（跳过整行注释）。
     let declared: Vec<&str> = manifest
         .lines()
         .filter_map(|line| {
@@ -407,7 +411,7 @@ fn the_judged_manifest_stays_in_sync_with_the_registry_manifest() {
             }
         })
         .collect();
-    assert_eq!(declared.len(), 18, "注册表清单里应恰好解析出 18 个 .slint");
+    assert_eq!(declared.len(), 19, "注册表清单里应恰好解析出 19 个 .slint");
 
     for name in &declared {
         assert!(

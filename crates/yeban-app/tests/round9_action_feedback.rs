@@ -47,7 +47,7 @@
 //! ## 诚实登记
 //!
 //! * ⛔ 本轮**零新增** `accessible-id` / `accessible-value` / 可寻址节点（⑤ 逐文件钉住）；
-//!   全仓 224 个可寻址节点由 `round6_addressable_roles.rs` 照旧覆盖，这里**不**重复钉
+//!   全仓 238 个可寻址节点由 `round6_addressable_roles.rs` 照旧覆盖，这里**不**重复钉
 //!   那个解析口径。
 //! * ⛔ 本文件刻意不用 `.all(` 适配器（`assertion_bounds_audit.rs` 的登记守卫会要求扩
 //!   `SOURCES`）；全是纯源码文本判据，不装 Slint 平台、不碰活窗口。
@@ -70,7 +70,7 @@ const MUSICAL_PR_DRAWER: &str = include_str!("../ui/dialogs/musical_pr_drawer.sl
 
 /// 全仓 `.slint` 清单：与 `round8_action_feedback.rs::SLINT_FILES`、
 /// `round6_addressable_roles.rs::SLINT_FILES`、`src/elements.rs::SLINT_MANIFEST`
-/// 同一份 18 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
+/// 同一份 19 文件口径（编译期固定），⛔ 不用 `read_dir` 空转成绿。
 const SLINT_FILES: &[(&str, &str)] = &[
     ("app.slint", APP),
     ("transport.slint", TRANSPORT),
@@ -108,6 +108,10 @@ const SLINT_FILES: &[(&str, &str)] = &[
     (
         "dialogs/export_wav_dialog.slint",
         include_str!("../ui/dialogs/export_wav_dialog.slint"),
+    ),
+    (
+        "dialogs/humanize_dialog.slint",
+        include_str!("../ui/dialogs/humanize_dialog.slint"),
     ),
     (
         "dialogs/macro_panel.slint",
@@ -182,9 +186,10 @@ fn section_label_click_target_is_discoverable_without_new_pixels() {
     // ⭐ 第十一轮 `[PATCH UI-FEEDBACK-05]`：全仓剩余 37 个高频可点控件收官 ⇒ 13→50。
     // `MouseCursor.row-resize`（分隔条）同样不在此串内，由 `round11` 单独钉。
     // 带日期记录只追加、不改写，上面两行原文保留。
+    // 人性化 UI 线（`line/humanize-ui-entry`）：人性化弹窗新增 3 个可点控件（关闭 + 两枚应用）⇒ 50→53。
     assert_eq!(
-        cursor_total, 50,
-        "全仓手型光标应为 50 处（第九轮 2 + 第十轮 11 + 第十一轮 37）；改了要同步复核清单与交付说明"
+        cursor_total, 53,
+        "全仓手型光标应为 53 处（第九轮 2 + 第十轮 11 + 第十一轮 37 + 人性化弹窗 3）；改了要同步复核清单与交付说明"
     );
 }
 
@@ -256,7 +261,7 @@ fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
         total, 32,
         "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）"
     );
-    assert_eq!(SLINT_FILES.len(), 18, "判据清单仍须是 18 个 `.slint`");
+    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
 
     // round7 ③ 的三条扩钉值：预设键补反馈后 3→4 / 3→4 / 1→2。
     assert_eq!(
