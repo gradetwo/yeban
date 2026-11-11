@@ -5066,6 +5066,7 @@ mod tests {
                 duration_ticks: 3_840,
                 loop_config: yeban_model::LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         project.tracks.insert(lead.id, lead);
@@ -5104,6 +5105,7 @@ mod tests {
                 duration_ticks: 960,
                 loop_config: yeban_model::LoopConfig::default(),
                 muted: true,
+                offset_samples: None,
             },
         );
         project.tracks.insert(audio.id, audio);
@@ -5206,6 +5208,7 @@ mod tests {
                     duration_ticks: 3_840,
                     loop_config: yeban_model::LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             project.tracks.insert(track.id, track);
@@ -8529,6 +8532,7 @@ mod tests {
                     duration_ticks: end.max(3_840),
                     loop_config: yeban_model::LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             project.tracks.insert(model_track.id, model_track);
