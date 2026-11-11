@@ -7,7 +7,7 @@
 #      实测本 crate 这三类 needle **各 0 处** ⇒ 当前口径**无漏判**（不是靠巧合）。
 #   ③ 注释：跳过 trim_start() 后以 // 开头的行。
 #   ④ 行尾：text.lines() 已去 \n／\r；读表时走 read_evidence_text() 再归一化（R134）。
-# 合计 53 处：literal 7 ／ variable 46；其中 **twin_point_risk 0 处**
+# 合计 54 处：literal 7 ／ variable 47；其中 **twin_point_risk 0 处**
 src/comb.rs|443|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|444|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/compressor.rs|1431|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
@@ -28,6 +28,7 @@ src/drums/mod.rs|1399|variable|&kit.snare.tone_ratio|variable_needle|needle 非�
 src/drums/mod.rs|1412|variable|&kit.clap.burst_spacing_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1667|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1939|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/gate.rs|235|variable|&sr|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|1570|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|1574|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|2013|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
