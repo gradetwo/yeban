@@ -325,7 +325,19 @@ pub fn pan_to_cc10(pan: f32) -> u8 {
     libm::roundf(raw).clamp(0.0, 127.0) as u8
 }
 
-/// ⭐ ADR-0015 D3：一条音轨的 `TrackVolume` / `TrackPan` 泳道 ⇒ 待写出的 CC 事件。
+/// ⭐ ADR-0015 D4：`MidiCc` 泳道值 ⇒ CC（0..=127）。
+///
+/// 导入侧把原始 7 位值原样放进泳道（`f32` 数值 = CC 值），这里只做四舍五入后钳制；
+/// 整数值往返恒等（手画的非整数点按就近格取整）。非有限值 ⇒ 0（"无控制器值"）。
+#[must_use]
+pub fn cc_lane_value(value: f32) -> u8 {
+    if !value.is_finite() {
+        return 0;
+    }
+    libm::roundf(value).clamp(0.0, 127.0) as u8
+}
+
+/// ⭐ ADR-0015 D3/D4：一条音轨的 `TrackVolume` / `TrackPan` / `MidiCc` 泳道 ⇒ 待写出的 CC 事件。
 ///
 /// 逐点写出（一个采样点一条 CC），tick 原样取点的位置 —— 工程时钟与 SMF 分度在此
 /// 都是模型 960 PPQ（[`crate::export::MidiExportError::PpqMismatch`] 钉住两边一致），
@@ -345,6 +357,9 @@ fn track_control_changes(track: &TrackV3) -> Vec<ExportControlChange> {
                     (crate::import::CC_CHANNEL_VOLUME, decibels_to_cc7)
                 }
                 AutomationTarget::TrackPan { .. } => (crate::import::CC_PAN, pan_to_cc10),
+                // ⭐ ADR-0015 D4：`MidiCc` 泳道原样写回同号控制器（CC 7 / CC 10
+                // 不走这里 —— 它们只活在音量/声相泳道里，⛔ 不双写）。
+                AutomationTarget::MidiCc { controller, .. } => (controller, cc_lane_value),
                 // 其余目标（发送增益 / 设备参数 / 宏）在 SMF 里没有对应的控制器号 ⇒ 不写。
                 _ => return Vec::new(),
             };
@@ -1861,6 +1876,28 @@ mod tests {
         assert_eq!(pan_to_cc10(1.0), 127, "极右");
         assert_eq!(pan_to_cc10(2.0), 127, "越界 ⇒ 钳位");
         assert_eq!(pan_to_cc10(f32::NAN), 64, "非有限读数 ⇒ 居中");
+    }
+
+    /// ⭐ ADR-0015 D4 换算端点：`MidiCc` 泳道值 ⇒ CC 只做四舍五入后钳制。
+    #[test]
+    fn midi_cc_lane_values_round_trip_verbatim() {
+        for value in 0..=127_u8 {
+            assert_eq!(
+                cc_lane_value(f32::from(value)),
+                value,
+                "CC = {value} 往返恒等（整数值）"
+            );
+        }
+        assert_eq!(cc_lane_value(63.5), 64, "半格向上取整");
+        assert_eq!(cc_lane_value(63.4), 63, "63.4 ⇒ 63");
+        assert_eq!(cc_lane_value(-1.0), 0, "越界下端 ⇒ 钳到 0");
+        assert_eq!(cc_lane_value(200.0), 127, "越界上端 ⇒ 钳到 127");
+        assert_eq!(cc_lane_value(f32::NAN), 0, "非有限读数 ⇒ 0");
+        assert_eq!(
+            cc_lane_value(f32::INFINITY),
+            0,
+            "非有限读数 ⇒ 0（⛔ 不拿 inf 猜一个控制器值）"
+        );
     }
 
     /// ⭐ ADR-0015 D3 往返：CC → 泳道值 → CC 逐格回到原值，**下端有一截塌缩**。

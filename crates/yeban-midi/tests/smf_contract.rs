@@ -28,6 +28,7 @@
 //!   这里**不**为它们编造覆盖。
 //! - SMPTE 时间码与格式 2 文件只证明"被拒绝"，不证明它们的语义被支持。
 
+use std::collections::BTreeMap;
 use std::fs;
 
 use yeban_midi::midi::{
@@ -35,7 +36,9 @@ use yeban_midi::midi::{
     parse_smf, track_chunks, track_from_notes,
 };
 use yeban_midi::vlq;
-use yeban_model::EntityId;
+use yeban_model::{
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType, EntityId,
+};
 use yeban_model::music::MidiNote;
 
 /// 造一颗合法音符（力度 100 = `yeban_model::music::DEFAULT_VELOCITY`）。
@@ -1799,6 +1802,99 @@ fn readable_volume_and_pan_lanes_are_written_as_control_changes() {
     assert_eq!(
         yeban_model::AssetHash::of_bytes(&bytes).as_str(),
         "1a251551838737456897162730f2d3c1a78bbc0963fa7668e45f75a622e57c78"
+    );
+}
+
+/// ⭐ ADR-0015 D4 判据：带读通的 `MidiCc` 泳道 ⇒ 逐点写回同号 CC（原始值原样）；
+/// 读通关闭的 `MidiCc` 泳道不写；与既有的 CC 7 音量点共存时各写各的号。
+#[test]
+fn readable_midi_cc_lanes_are_written_back_verbatim() {
+    let mut project = yeban_model::samples::demo_project();
+    let track_id = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("demo 有 MIDI 轨");
+    let lane = |controller: u8, points: &[(u64, f32)], read_enabled: bool| {
+        let mut lane_points = BTreeMap::new();
+        for (tick, value) in points {
+            let id = EntityId::new();
+            lane_points.insert(
+                id,
+                AutomationPoint {
+                    id,
+                    tick: *tick,
+                    value: *value,
+                    curve: CurveType::Linear,
+                },
+            );
+        }
+        AutomationLane {
+            target: AutomationTarget::MidiCc {
+                track_id,
+                controller,
+            },
+            points: lane_points,
+            read_enabled,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        }
+    };
+    let track = project.tracks.get_mut(&track_id).expect("demo 首轨");
+    track.automation_lanes.insert(
+        AutomationTarget::MidiCc {
+            track_id,
+            controller: 1,
+        },
+        lane(1, &[(480, 50.0)], true),
+    );
+    track.automation_lanes.insert(
+        AutomationTarget::MidiCc {
+            track_id,
+            controller: 11,
+        },
+        lane(11, &[(960, 90.0)], true),
+    );
+    track.automation_lanes.insert(
+        AutomationTarget::MidiCc {
+            track_id,
+            controller: 64,
+        },
+        lane(64, &[(0, 127.0), (1920, 0.0)], true),
+    );
+    // 读通关闭的 CC 2 泳道：一点也不许写出。
+    track.automation_lanes.insert(
+        AutomationTarget::MidiCc {
+            track_id,
+            controller: 2,
+        },
+        lane(2, &[(0, 100.0)], false),
+    );
+    project.validate().expect("夹具必须合法");
+
+    let bytes = yeban_midi::export::export_from_project(&project)
+        .expect("投影")
+        .to_smf_bytes()
+        .expect("编码");
+    let parsed = parse_smf(&bytes).expect("回读");
+    let mut got: Vec<(u64, u8, u8)> = parsed
+        .control_changes
+        .iter()
+        .map(|cc| (cc.tick, cc.controller, cc.value))
+        .collect();
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![
+            (0, 7, 106),
+            (0, 64, 127),
+            (480, 1, 50),
+            (960, 11, 90),
+            (1920, 7, 80),
+            (1920, 64, 0),
+            (3840, 7, 120),
+        ],
+        "CC 1/11/64 原样写回、CC 2（读通关闭）不写、既有 CC 7 点一个字不动"
     );
 }
 

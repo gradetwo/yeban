@@ -93,7 +93,8 @@ pub struct MidiExportTrack {
     pub channel: u8,
     /// 音符（来自 `yeban_model::MidiNote`, 单一事实源）。
     pub notes: Vec<MidiNote>,
-    /// ⭐ ADR-0015 D3：控制器事件（CC 7 音量 / CC 10 声相，由泳道换算而来）。
+    /// ⭐ ADR-0015 D3/D4：控制器事件（CC 7 音量 / CC 10 声相由泳道换算而来；
+    /// 其余控制器由 `MidiCc` 泳道原样写回）。
     ///
     /// 通道取本轨的 `channel`；空表 ⇒ **一个 CC 事件都不写** ⇒ 没有自动化泳道的工程
     /// 导出字节与改动前逐位相同。
@@ -408,8 +409,9 @@ enum RawEvent {
         channel: u8,
         cents: i16,
     },
-    /// ⭐ ADR-0015 D3：控制器改变（`B0`）。`controller` / `value` 都是 7 位线值
-    /// （0..=127），由泳道换算而来（CC 7 = 音量、CC 10 = 声相）。
+    /// ⭐ ADR-0015 D3/D4：控制器改变（`B0`）。`controller` / `value` 都是 7 位线值
+    /// （0..=127），由泳道换算而来（CC 7 = 音量、CC 10 = 声相、其余 = `MidiCc`
+    /// 泳道的原始值）。
     ControlChange {
         tick: u64,
         channel: u8,
@@ -1078,10 +1080,9 @@ pub enum MidiAuxEventKind {
     /// `FF 59` 调号。丢掉：`YebanProjectV1` / `TrackV3` / `MidiNote` **都没有**调号字段，
     /// 也没有 `Op` 写它 ⇒ 模型里没有家（加字段是另一个决定）。
     KeySignature,
-    /// `B0` 控制器。⭐ ADR-0015 D1/D2：解析层**全部读出**（⛔ 不筛控制器号），导入侧
-    /// 只有 **CC 7**（通道音量）与 **CC 10**（声相）有落点 —— 它们换算成自动化泳道的
-    /// 采样点；其余控制器（CC 1 调制、CC 64 延音踏板…）在模型里**没有**对应目标 ⇒
-    /// 逐条 `dropped`。
+    /// `B0` 控制器。⭐ ADR-0015 D1/D2/D4：解析层**全部读出**（⛔ 不筛控制器号），导入侧
+    /// **全部有落点**：CC 7（通道音量）与 CC 10（声相）换算成音量/声相泳道的
+    /// 采样点；其余控制器原样进各自的 `MidiCc` 泳道（原始 7 位值）。
     ControlChange,
     /// `C0` 音色切换。丢掉：`TrackV3::sampler` 是外部采样器**文件路径**，不是 program
     /// number；两者不是一回事。
@@ -1290,8 +1291,9 @@ pub struct ParsedMidi {
     pub pitch_bends: Vec<ParsedPitchBend>,
     /// ⭐ ADR-0015 D1：全部 `B0` 控制器事件（**文件顺序**，⛔ 不筛选控制器号）。
     ///
-    /// 解析层只负责"读到"；**哪些控制器有落点**（CC 7 → 音量、CC 10 → 声相、其余报丢）
-    /// 由 `yeban-midi` 的 `plan_midi_import` 决定（与 [`Self::pitch_bends`] 同一分工）。
+    /// 解析层只负责"读到"；**哪些控制器有落点**（CC 7 → 音量、CC 10 → 声相、
+    /// 其余 → 各自的 `MidiCc` 泳道）由 `yeban-midi` 的 `plan_midi_import` 决定
+    /// （与 [`Self::pitch_bends`] 同一分工）。
     pub control_changes: Vec<ParsedControlChange>,
 }
 
