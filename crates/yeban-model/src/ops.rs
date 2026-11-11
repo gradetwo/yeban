@@ -5496,8 +5496,10 @@ mod tests {
     /// [`ClipPlacement::validate`] 的边界值）。
     #[test]
     fn track_delay_and_clip_offset_ranges_are_validated() {
-        let mut track = TrackV3::default();
-        track.delay_samples = Some(crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES);
+        let mut track = TrackV3 {
+            delay_samples: Some(crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES),
+            ..Default::default()
+        };
         assert!(track.validate().is_ok(), "边界值必须合法");
         track.delay_samples = Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES);
         assert!(track.validate().is_ok(), "负边界值必须合法");
@@ -5509,8 +5511,10 @@ mod tests {
             })
         );
 
-        let mut placement = ClipPlacement::default();
-        placement.offset_samples = Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES);
+        let mut placement = ClipPlacement {
+            offset_samples: Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES),
+            ..Default::default()
+        };
         assert!(placement.validate().is_ok(), "负边界值必须合法");
         placement.offset_samples = Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES - 1);
         assert_eq!(

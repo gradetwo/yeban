@@ -15282,8 +15282,8 @@ mod pencil_op_tests {
     ///
     /// - ⛔ 不证明按键可达（`apply_action` 那条臂由 `tests/roll_edit_tools.rs` 的真事件管）；
     ///
-    /// `Cmd/Ctrl+Shift+←/→` / `Cmd/Ctrl+Shift+Alt+←/→`：[`clip_ms_nudge_ops_for`] 只动
-    /// **音频**摆放，毫秒→采样按工程采样率四舍五入，边界夹紧后不变 ⇒ 空。
+    ///   `Cmd/Ctrl+Shift+←/→` / `Cmd/Ctrl+Shift+Alt+←/→`：[`clip_ms_nudge_ops_for`] 只动
+    ///   **音频**摆放，毫秒→采样按工程采样率四舍五入，边界夹紧后不变 ⇒ 空。
     ///
     /// 换算 oracle（⛔ 不读实现里的常量自证）：48 kHz 下 1 ms = 48 采样、0.1 ms = 4.8 → 5；
     /// 44.1 kHz 下 1 ms = 44.1 → 44、5 ms = 220.5 → 221（半值远离零，与 MCP
