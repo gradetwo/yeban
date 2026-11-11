@@ -358,12 +358,14 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
     let _ = element_bounds(&mut plane, 40, MENU_HUMANIZE);
 
     // 点「人性化…」⇒ 对话框打开，焦点落人性化区段，种子预填工程 rng_seed。
-    // （坐标换算见上：项中心窗口坐标 − 滚动面原点 = 滚动面元素的偏移。）
+    // 诊断实验（本轮）：若 `PopupWindow` 的 x/y 是**窗口**坐标（而非卷帘局部），
+    // 则菜单顶左在窗口 (960, 175.5)，项中心在窗口 (1035, 191.5) —— 即上面
+    // 那个点再往上挪一个卷帘原点 y（601）。先按这个点试一次，看对话框开不开。
     click_scroll_at(
         &mut plane,
         50,
         item_cx - scroll_x,
-        item_cy - scroll_y,
+        item_cy - scroll_y - roll_y,
         "left",
     );
     // 诊断二分（见文件头）：点下去之后菜单还在不在树里 ——
