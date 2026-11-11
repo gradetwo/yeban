@@ -11,7 +11,7 @@ use yeban_model::{TrackKind, TrackV3, YebanProjectV1};
 use yeban_render::engine_source::ArmedSfzInput;
 use yeban_render::song_overview::{
     RenderSettings, SkippedReason, SongOverviewCache, SongOverviewError, cached_overview,
-    render_project_to_buffer, song_overview_hash,
+    render_project_to_buffer, render_stems_to_buffers, song_overview_hash,
 };
 
 /// 演示工程没有采样器绑定 ⇒ provider 绝不能被调用（被调用即 panic）。
@@ -272,4 +272,68 @@ fn an_empty_project_is_a_loud_error_not_silence() {
     )
     .expect_err("无内容工程必须响亮失败");
     assert_eq!(error, SongOverviewError::EmptyProject);
+}
+
+#[test]
+fn stems_render_each_source_track_solo() {
+    let project = demo_project();
+    let settings = RenderSettings::default();
+    let stems =
+        render_stems_to_buffers(&project, &settings, never_called_provider()).expect("分轨渲染");
+
+    // 演示工程 6 条源轨；每条分轨与混音同帧数。
+    assert_eq!(stems.len(), 6, "演示工程应有 6 条源轨");
+    for stem in &stems {
+        assert_eq!(stem.audio.frames, 240_000);
+        assert_eq!(stem.audio.sample_rate, 48_000);
+    }
+    // 只有鼓轨有 MIDI 剪辑摆放（其余轨：贝斯/铺底只有音频剪辑，Phase 1 不
+    // 渲染音频；主音/弦乐/打击根本没有剪辑）→ 5 条静音、仅鼓轨出声。
+    let mut silent: Vec<&str> = stems
+        .iter()
+        .filter(|stem| stem.audio.peak() == 0.0)
+        .map(|stem| stem.name.as_str())
+        .collect();
+    silent.sort_unstable();
+    assert_eq!(silent, vec!["主音", "弦乐", "打击", "贝斯", "铺底"]);
+    let sounding: Vec<&str> = stems
+        .iter()
+        .filter(|stem| stem.audio.peak() > 0.01)
+        .map(|stem| stem.name.as_str())
+        .collect();
+    assert_eq!(sounding, vec!["鼓"]);
+}
+
+#[test]
+fn cached_overview_reports_frequency_clash_for_the_demo() {
+    let project = demo_project();
+    let settings = RenderSettings::default();
+    let mut cache = SongOverviewCache::new();
+    let (overview, hit) = cached_overview(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("分析");
+    assert!(!hit, "首次必须是未命中");
+    assert_eq!(overview.schema_version, "1.2");
+    let clash = &overview.frequency_clash;
+    // 未超上限时条目数 = 总组数；条目按严重度降序；数值都在定义域内。
+    assert_eq!(clash.entries.len(), clash.total_clashes.min(20));
+    let mut prev_severity = f32::INFINITY;
+    for entry in &clash.entries {
+        assert!((1..=3).contains(&entry.bar), "演示工程 3 小节");
+        assert!(entry.band < 8);
+        assert!((0.0..=6.0).contains(&entry.gap_db));
+        assert!((0.0..=1.0).contains(&entry.severity));
+        assert!(entry.beats >= 1);
+        assert!(entry.severity <= prev_severity, "条目须按严重度降序");
+        prev_severity = entry.severity;
+    }
+    println!(
+        "### [demo-clash] total={} entries={:?}",
+        clash.total_clashes, clash.entries
+    );
 }

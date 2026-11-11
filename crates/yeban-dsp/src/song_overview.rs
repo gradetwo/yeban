@@ -1257,6 +1257,8 @@ fn cosine_similarity(left: &[f32; 14], right: &[f32; 14]) -> f32 {
 }
 
 /// 分轨频率打架检测（设计稿 §8.2 追加，schema 1.2）：逐拍逐频段比各轨能量。
+/// 速度图取自谱面（[`TempoMap::from_score`]，与混音分析同一份）；
+/// `TempoMap` 是本模块私有类型，故本函数公开面只收 [`ScoreInput`]。
 ///
 /// 每条分轨先复用 [`band_energies_per_beat`]（与混音频段同一口径：倾斜补偿后
 /// dB）。每拍每频段：取能量最高的两个参评轨；次响轨高于
@@ -1272,19 +1274,20 @@ fn cosine_similarity(left: &[f32; 14], right: &[f32; 14]) -> f32 {
 #[must_use]
 pub fn detect_frequency_clash(
     stems: &[StemInput<'_>],
-    tempo: &TempoMap,
+    score: &ScoreInput,
     total_beats: usize,
     beats_per_bar: u32,
 ) -> FrequencyClashSummary {
     if stems.len() < 2 || total_beats == 0 {
         return FrequencyClashSummary::default();
     }
+    let tempo = TempoMap::from_score(score);
     let bpb = beats_per_bar.max(1) as usize;
     // 每条分轨的逐拍频段能量（与混音同一口径），及每轨每拍的最响频段
     // （相对门限的基准）。
     let per_stem: Vec<Vec<[f32; 8]>> = stems
         .iter()
-        .map(|stem| band_energies_per_beat(Some(&stem.audio), tempo, total_beats))
+        .map(|stem| band_energies_per_beat(Some(&stem.audio), &tempo, total_beats))
         .collect();
     let peaks: Vec<Vec<f32>> = per_stem
         .iter()
@@ -1938,7 +1941,7 @@ pub fn analyze_song_overview_with_stems(
     // 成段重复每段一条 `arrangement_repetition` 异常（与音频无关，纯谱面
     // 序列即可判；单小节撞分不成段，故只看 `repeated_passages`）。
     let repetition = analyze_repetition(&series);
-    let frequency_clash = detect_frequency_clash(stems, &tempo, total_beats, bpb);
+    let frequency_clash = detect_frequency_clash(stems, score, total_beats, bpb);
     for passage in &repetition.repeated_passages {
         anomalies.push(Anomaly {
             bars: passage.bars,
