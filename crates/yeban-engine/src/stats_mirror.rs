@@ -191,6 +191,9 @@ pub struct EngineStatsMirror {
     pdc_unarmed_nodes: AtomicU64,
     pdc_clamped_frames: AtomicU64,
     pdc_processed_blocks: AtomicU64,
+    phase_unarmed_nodes: AtomicU64,
+    phase_clamped_frames: AtomicU64,
+    phase_processed_blocks: AtomicU64,
     pdc_alignment_frames: AtomicU32,
     engine_output_latency_frames: AtomicU32,
     metronome_clicks: AtomicU64,
@@ -266,6 +269,9 @@ impl EngineStatsMirror {
             pdc_unarmed_nodes: AtomicU64::new(0),
             pdc_clamped_frames: AtomicU64::new(0),
             pdc_processed_blocks: AtomicU64::new(0),
+            phase_unarmed_nodes: AtomicU64::new(0),
+            phase_clamped_frames: AtomicU64::new(0),
+            phase_processed_blocks: AtomicU64::new(0),
             pdc_alignment_frames: AtomicU32::new(0),
             engine_output_latency_frames: AtomicU32::new(0),
             metronome_clicks: AtomicU64::new(0),
@@ -389,6 +395,12 @@ impl EngineStatsMirror {
             .store(stats.pdc_clamped_frames, Ordering::Relaxed);
         self.pdc_processed_blocks
             .store(stats.pdc_processed_blocks, Ordering::Relaxed);
+        self.phase_unarmed_nodes
+            .store(stats.phase_unarmed_nodes, Ordering::Relaxed);
+        self.phase_clamped_frames
+            .store(stats.phase_clamped_frames, Ordering::Relaxed);
+        self.phase_processed_blocks
+            .store(stats.phase_processed_blocks, Ordering::Relaxed);
         self.pdc_alignment_frames
             .store(stats.pdc_alignment_frames, Ordering::Relaxed);
         self.engine_output_latency_frames
@@ -499,6 +511,9 @@ impl EngineStatsMirror {
             pdc_unarmed_nodes: self.pdc_unarmed_nodes.load(Ordering::Relaxed),
             pdc_clamped_frames: self.pdc_clamped_frames.load(Ordering::Relaxed),
             pdc_processed_blocks: self.pdc_processed_blocks.load(Ordering::Relaxed),
+            phase_unarmed_nodes: self.phase_unarmed_nodes.load(Ordering::Relaxed),
+            phase_clamped_frames: self.phase_clamped_frames.load(Ordering::Relaxed),
+            phase_processed_blocks: self.phase_processed_blocks.load(Ordering::Relaxed),
             pdc_alignment_frames: self.pdc_alignment_frames.load(Ordering::Relaxed),
             engine_output_latency_frames: self.engine_output_latency_frames.load(Ordering::Relaxed),
             metronome_clicks: self.metronome_clicks.load(Ordering::Relaxed),
@@ -600,6 +615,9 @@ mod tests {
             pdc_unarmed_nodes: 22,
             pdc_clamped_frames: 23,
             pdc_processed_blocks: 24,
+            phase_unarmed_nodes: 57,
+            phase_clamped_frames: 58,
+            phase_processed_blocks: 59,
             pdc_alignment_frames: 45,
             engine_output_latency_frames: 46,
             metronome_clicks: 25,

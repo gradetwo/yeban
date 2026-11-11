@@ -219,6 +219,7 @@
 //! - [`EngineRuntime::reverb_pool`]：`[Reverb; 65]`（`INSERT_SLOTS`；**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
 //! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
 //! - [`EngineRuntime::sample_delay_pool`]：`[SampleDelay; 65]`（`INSERT_SLOTS`；**延迟线在构造期按初始快照的最大延迟分配**；回调内只 `set_params`／`reset` 与逐样本处理；手动相位对齐第一层）
+//! - [`EngineRuntime::phase_bank`]：`PhaseBank`（`PDC_SLOTS` 条 × 9600 采样；**延迟线在构造期按上限分配**；回调内只 `set_delay` 与逐样本处理；手动相位对齐第一层）
 //! - [`EngineRuntime::conv_pool`]：`Box<[ConvolutionReverb]>`（`INSERT_SLOTS`；**IR 频谱与预延迟线
 //!   在构造期分配**，长度是引擎常量 ⇒ 回调内只做同长度的换 IR 与 `set_params`）
 //! - [`EngineRuntime::conv_scratch`]：`[f32; 256]`（卷积混响的**交错立体声**暂存，栈/内联）
@@ -226,9 +227,9 @@
 //!   **构造期一次性分配**；回调内只 `set_params` / `trigger` / `render`）
 //! - [`MeterBank`]：`[MeterSlot; 256]`（每节点电平状态，定长数组 + 原位 `swap` 对齐）
 //!
-//! ⚠ [`EngineRuntime::reverb_pool`] / [`EngineRuntime::sample_delay_pool`] / [`EngineRuntime::conv_pool`] 与 [`SynthEngine`] 的
+//! ⚠ [`EngineRuntime::reverb_pool`] / [`EngineRuntime::sample_delay_pool`] / [`EngineRuntime::conv_pool`] / [`EngineRuntime::phase_bank`] 与 [`SynthEngine`] 的
 //! 鼓机池是这份清单里**仅有的**持有堆的字段（混响有自己的延迟线 `Vec`，采样延迟有自己的延迟线 `Vec`，卷积混响有 IR 频谱
-//! 与预延迟线 `Vec`，鼓机池是 `Box<[_; 16]>`）。它们满足禁令的
+//! 与预延迟线 `Vec`，相位池有自己的延迟线 `Vec`，鼓机池是 `Box<[_; 16]>`）。它们满足禁令的
 //! 方式不是"没有堆"，而是"**堆只在构造期建立**"（[`EngineRuntime::new`]）：
 //! 回调内一次也不分配、不释放。见 [`crate::insert`] 模块文档 §8.4、§8.5 与 §9.5
 //! （为什么连"换采样率"也不能在回调里重建延迟线）与 [`crate::synth`] 的
@@ -241,13 +242,14 @@ use std::sync::Arc;
 
 use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::EntityId;
+use yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 // ⭐ 任务单 `#107`：MIDI CC 的**会话运行态**表（`EngineEvent::ControlChange` 的落点，
 // 也是实时 SFZ 通路的 CC 探针来源）。定长、`Copy`、零分配（见该模块文档）。
 use crate::cc_state::ControlChangeState;
 use crate::fpu::{self, FtzDazOutcome};
-use crate::graph::CompensationBank;
+use crate::graph::{CompensationBank, PhaseBank};
 use crate::insert::{
     ChannelStrip, ChannelStripParams, CompressorParams, ConvolutionReverb, ConvolutionReverbParams,
     Reverb, ReverbParams, SampleDelay, SampleDelayParams,
@@ -320,6 +322,15 @@ pub const INSERT_SLOTS: usize = PDC_SLOTS + 1;
 /// 超出这条线的计划由 [`EngineStats::pdc_clamped_frames`] 计数；`yeban-render` 的
 /// 离线路径按计划精确分配容量、**没有**这条上限（它允许分配）。
 pub const MAX_PDC_DELAY_FRAMES: usize = 8192;
+
+/// 手动相位对齐第一层：逐轨延时线池的**单线容量上限**（采样点）。
+///
+/// 有效延时 = `delay − min(0, 全部延时)`，`delay ∈ [−4800, +4800]` ⇒
+/// 上界 = `2 × PHASE_ALIGN_MAX_ABS_SAMPLES = 9600`。池在构造期按此定长
+/// 预分配 ⇒ 正常输入下 `PhaseBank::rearm` 的钳制恒不触发；一旦触发仍进
+/// [`EngineStats::phase_clamped_frames`]（不静默）。与
+/// [`MAX_PDC_DELAY_FRAMES`] 同一条"容量线必须有读数"的规则。
+pub const MAX_PHASE_DELAY_FRAMES: usize = 2 * PHASE_ALIGN_MAX_ABS_SAMPLES as usize;
 
 /// 渲染驱动的累计统计（音频线程写入，非实时线程读取 —— 只用于诊断/UI）。
 ///
@@ -693,6 +704,22 @@ pub struct EngineStats {
     /// 因延迟线**容量上限**（[`MAX_PDC_DELAY_FRAMES`]）而被钳掉的补偿帧数
     /// （累计；正常恒为 0）。
     pub pdc_clamped_frames: u64,
+    /// 手动相位对齐第一层：因相位池**槽位用尽**而未能武装的节点数（累计；正常恒为 0）。
+    ///
+    /// 非 0 = 那一份快照里有轨**没有**得到手动延时/反转。它是"容量不足不静默"的
+    /// 机械形式：只把相位"尽力而为"地做掉，会让手动对齐悄悄失效而没有任何读数
+    /// （与 `pdc_unarmed_nodes` 同族）。
+    pub phase_unarmed_nodes: u64,
+    /// 手动相位对齐第一层：因延迟线**容量上限**（[`MAX_PHASE_DELAY_FRAMES`]）
+    /// 而被钳掉的相位帧数（累计；正常恒为 0 —— 有效延时上界 9600 = 容量，
+    /// 钳制在正常输入下恒不触发）。
+    pub phase_clamped_frames: u64,
+    /// 手动相位对齐第一层：相位池**真的施加过非零延迟或反转**的"节点·量子"次数（累计）。
+    ///
+    /// 它是"接线"的见证（与 `pdc_processed_blocks` 同族）：武装读数只能证明
+    /// "相位设置被武装进了池"，而一个被武装却从不被调用的池与一个正常工作的池
+    /// 在读数上完全一样。
+    pub phase_processed_blocks: u64,
     /// PDC 延迟线**真的施加过非零延迟**的"节点·量子"次数（累计）[ROAD-M2-004]。
     ///
     /// 它是"接线"这件事的**见证**：[`EngineRuntime::armed_pdc_delay`] 只能证明
@@ -1432,6 +1459,8 @@ fn send_armed(share: &BranchShare<'_>, route: &RouteTarget) -> bool {
 /// 互不相交，因此合法。本结构**只是借用视图**：不拥有状态、不分配、不引入新语义。
 struct BranchShare<'a> {
     pdc: &'a mut CompensationBank,
+    /// 手动相位对齐第一层：逐轨延时＋极性反转池（与 `pdc` 同款借用视图）。
+    phase_bank: &'a mut PhaseBank,
     params: &'a mut ParamTable,
     /// ⭐ **只读**的 MIDI CC 会话运行态（任务单 `#107`）。
     ///
@@ -1990,6 +2019,14 @@ fn render_branch(
         // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
         // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
         share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        // --- 手动相位对齐第一层：PDC 之后、声相/母线求和之前 ---
+        //
+        // 与 PDC 同一条位置规则（"进入总线求和节点前"）：先把插件延迟补齐，
+        // 用户延时再按对齐后的信号施加。无武装的轨返回 `false`、样本一位不动
+        // ⇒ 没有相位设置的工程逐位不变。走带停住时**也**调（喂静音，推进线）。
+        let _ = share
+            .phase_bank
+            .apply(&track, &mut share.track_scratch[..frames]);
         // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
         // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
         // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
@@ -2471,6 +2508,20 @@ pub struct EngineRuntime {
     pdc_unarmed_nodes: u64,
     /// 见 [`EngineStats::pdc_clamped_frames`]。
     pdc_clamped_frames: u64,
+    /// 手动相位对齐第一层：逐轨延时＋极性反转的预分配池（与 `pdc` 同形）。
+    ///
+    /// 位置：**每轨输出之后、汇入母线之前**，在 `pdc.apply` 之后（PDC 先把
+    /// 插件延迟补齐，用户延时再按对齐后的信号施加）。延迟量来自快照里的
+    /// `TrackParams::delay_samples` / `invert_polarity`，在**快照边界**
+    /// 用 [`PhaseBank::rearm`](crate::graph::PhaseBank::rearm) 重新武装
+    /// （最小值平移在 `rearm` 里做）—— 只写 `set_delay`，因此回调内
+    /// **零分配** [MUST-GATE-001]。单线容量
+    /// [`MAX_PHASE_DELAY_FRAMES`] = 9600（有效延时上界）。
+    phase_bank: PhaseBank,
+    /// 见 [`EngineStats::phase_unarmed_nodes`]。
+    phase_unarmed_nodes: u64,
+    /// 见 [`EngineStats::phase_clamped_frames`]。
+    phase_clamped_frames: u64,
     /// 见 [`EngineStats::pdc_alignment_frames`]（快照边界覆写；初值 0）。
     pdc_alignment_frames: u32,
     /// 见 [`EngineStats::engine_output_latency_frames`]（快照边界覆写；初值 0）。
@@ -2968,7 +3019,7 @@ impl EngineRuntime {
 
     /// 构造期**唯一的**字段写入点（[`Self::new`] 与 [`Self::new_boxed`] 共用）。
     ///
-    /// 字段清单与结构体定义**同名、同序**（86 个字段；`#173` 起现读，含 `@drained` 的 `reverb_pool`）⇒ "`EngineRuntime` 由什么组成"
+    /// 字段清单与结构体定义**同名、同序**（89 个字段；`#173` 起现读，含 `@drained` 的 `reverb_pool`）⇒ "`EngineRuntime` 由什么组成"
     /// 只有一处描述，⛔ 不会出现两份会漂移的字段表。
     ///
     /// ## ⭐ 字段完备性是**编译期断言**（⛔ 不是文本守卫）
@@ -3171,6 +3222,14 @@ impl EngineRuntime {
             );
             put!(pdc_unarmed_nodes, 0);
             put!(pdc_clamped_frames, 0);
+            // 手动相位对齐池：**构造期**按上限预分配（回调内绝不再分配）。
+            // 单线 9600 采样 × 64 槽 ≈ 2.4 MiB（f32），在构造期一次付清。
+            put!(
+                phase_bank,
+                PhaseBank::preallocated(PDC_SLOTS, MAX_PHASE_DELAY_FRAMES)
+            );
+            put!(phase_unarmed_nodes, 0);
+            put!(phase_clamped_frames, 0);
             put!(pdc_alignment_frames, 0);
             put!(engine_output_latency_frames, 0);
             put!(armed_pan_law, PanLaw::default());
@@ -3626,6 +3685,9 @@ impl EngineRuntime {
             param_capacity_drops: self.params.capacity_drops(),
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
             pdc_clamped_frames: self.pdc_clamped_frames,
+            phase_unarmed_nodes: self.phase_unarmed_nodes,
+            phase_clamped_frames: self.phase_clamped_frames,
+            phase_processed_blocks: self.phase_bank.processed_blocks(),
             pdc_processed_blocks: self.pdc.processed_blocks(),
             pdc_alignment_frames: self.pdc_alignment_frames,
             engine_output_latency_frames: self.engine_output_latency_frames,
@@ -3667,6 +3729,35 @@ impl EngineRuntime {
     #[must_use]
     pub fn armed_pdc_delay(&self, node: &EntityId) -> Option<usize> {
         self.pdc.line(node).map(crate::graph::DelayLine::delay)
+    }
+
+    /// 本快照武装的**每轨手动相位对齐**（诊断/判据用）。
+    ///
+    /// 返回 `Some((有效延时, 反转))` = 这条轨有非恒等相位设置（有效延时已做
+    /// 最小值平移）；`None` = 这条轨没有相位设置（实时侧整段跳过）。
+    #[must_use]
+    pub fn armed_phase_delay(&self, track: &EntityId) -> Option<(usize, bool)> {
+        let delay = self.phase_bank.effective_delay(track)?;
+        let invert = self.phase_bank.invert(track)?;
+        Some((delay, invert))
+    }
+
+    /// 武装表里的**手动相位对齐**条数。
+    #[must_use]
+    pub const fn armed_phase_delay_slot_count(&self) -> usize {
+        self.phase_bank.len()
+    }
+
+    /// 相位池**真的施加过非零延迟或反转**的"节点·量子"次数（见证；累计）。
+    #[must_use]
+    pub const fn phase_processed_blocks(&self) -> u64 {
+        self.phase_bank.processed_blocks()
+    }
+
+    /// 相位池槽位**换过主人**的累计次数（见证；与 `pdc_rebindings` 同族）。
+    #[must_use]
+    pub const fn phase_rebindings(&self) -> u64 {
+        self.phase_bank.rebindings()
     }
 
     /// **见证**：PDC 补偿延迟线的槽位**换过主人**的累计次数
@@ -4316,6 +4407,9 @@ impl EngineRuntime {
             pdc,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
+            phase_bank,
+            phase_unarmed_nodes,
+            phase_clamped_frames,
             pdc_alignment_frames,
             engine_output_latency_frames,
             armed_revision,
@@ -4721,6 +4815,51 @@ impl EngineRuntime {
                 *pdc_unarmed_nodes = pdc_unarmed_nodes.wrapping_add(shortfall.unarmed_nodes as u64);
                 *pdc_clamped_frames = pdc_clamped_frames.wrapping_add(shortfall.clamped_frames);
 
+                // --- 2b'''') 手动相位对齐第一层：把这一份快照的逐轨延时/反转武装进预分配相位池 ---
+                //
+                // 与 PDC 的 2b'' 同一条边界：快照边界只做 `set_delay`（零分配、零锁、
+                // 零 I/O）。最小值平移在 [`PhaseBank::rearm`] 里做（负延时 = 相对提前）。
+                // 主总线**不进表**：它在逐轨循环里根本不走 `track_scratch`（它是混音
+                // 本身，不是可对齐的轨；离线侧的 master 若写了延时等于整曲后移，
+                // 那是另一条路径的节点语义，不搬到这里）。
+                // 恒等轨（延时 0 且不反转）不进表 ⇒ 不占槽位（`rearm` 里再跳一次是
+                // 兜底，调用方这里已经过滤）。
+                // 池装不下的部分不静默：记进两个累计读数（与 PDC 的 `RearmShortfall` 同族）。
+                {
+                    // ⚠ 栈数组按**池槽数**（64）封顶，不按 `MAX_TRACK_SLOTS`（2048）：
+                    // 2048 项 ≈ 76 KiB 栈内存，音频线程的栈付不起；池只有 64 槽，
+                    // 第 65 条起的非恒等轨本来就武装不上 ⇒ 直接记进溢出（不静默），
+                    // 不必先装进数组再让 `rearm` 数。
+                    let mut phases: [(EntityId, i32, bool); PDC_SLOTS] =
+                        [(EntityId::default(), 0, false); PDC_SLOTS];
+                    let mut phase_count = 0usize;
+                    let mut phase_overflow = 0usize;
+                    for (id, params) in current.tracks() {
+                        if *id == master {
+                            continue;
+                        }
+                        let delay = params.delay_samples();
+                        let invert = params.invert_polarity();
+                        if delay == 0 && !invert {
+                            continue;
+                        }
+                        if phase_count >= PDC_SLOTS {
+                            phase_overflow += 1;
+                            continue;
+                        }
+                        phases[phase_count] = (*id, delay, invert);
+                        phase_count += 1;
+                    }
+                    // ⚠ `current.tracks()` 是 `BTreeMap` ⇒ 迭代已按键升序，
+                    // `rearm` 的 `binary_search` 前提成立（写进栈数组时顺序不变）。
+                    let shortfall = phase_bank.rearm(&phases[..phase_count]);
+                    *phase_unarmed_nodes = phase_unarmed_nodes
+                        .wrapping_add(shortfall.unarmed_nodes as u64)
+                        .wrapping_add(phase_overflow as u64);
+                    *phase_clamped_frames =
+                        phase_clamped_frames.wrapping_add(shortfall.clamped_frames);
+                }
+
                 // --- 2b''') PDC 计划的**两个延迟读数**：纯读、不碰任何样本 ---
                 // [ARCH-PDC-001, ARCH-PDC-002]。此前这两个数**只算不读**：
                 // `PdcPlan` 在控制线程算好，实时侧只消费逐节点的 `D(v)`，
@@ -5112,6 +5251,7 @@ impl EngineRuntime {
             {
                 let mut share = BranchShare {
                     pdc: &mut *pdc,
+                    phase_bank: &mut *phase_bank,
                     params: &mut *params,
                     // ⭐ 共享借用：写它的是**上面**那个出队闭包，本处只读（NLL：可变借用已结束）。
                     control_change: &*control_change,
@@ -8463,6 +8603,7 @@ mod tests {
                 armed_pan_gains,
                 control_change,
                 pdc,
+                phase_bank,
                 params,
                 bank,
                 armed_strips,
@@ -8522,6 +8663,7 @@ mod tests {
             pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
             let mut share = BranchShare {
                 pdc,
+                phase_bank,
                 params,
                 control_change: &*control_change,
                 bank,

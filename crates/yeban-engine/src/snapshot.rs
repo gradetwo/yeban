@@ -221,6 +221,10 @@ pub struct TrackParams {
     solo_safe: bool,
     device_count: u32,
     latency_samples: u32,
+    /// 手动相位对齐第一层：用户延时（采样，±4800；`None` = 0 的原值）。
+    delay_samples: i32,
+    /// 手动相位对齐第一层：极性反转（`None` = 不反转）。
+    invert_polarity: bool,
 }
 
 impl TrackParams {
@@ -242,6 +246,8 @@ impl TrackParams {
             solo_safe: track.solo_safe,
             device_count: u32::try_from(track.devices.len()).unwrap_or(u32::MAX),
             latency_samples,
+            delay_samples: track.delay_samples.unwrap_or(0),
+            invert_polarity: track.invert_polarity.unwrap_or(false),
         }
     }
 
@@ -291,6 +297,21 @@ impl TrackParams {
     #[must_use]
     pub const fn latency_samples(&self) -> u32 {
         self.latency_samples
+    }
+
+    /// 手动相位对齐第一层：用户延时（采样，±4800；原始值，未做最小值平移）。
+    ///
+    /// 最小值平移在实时侧武装期（`PhaseBank::rearm`）做，不在这里 ——
+    /// 它要对**快照里的全部轨**取最小值，而本函数只看一条轨。
+    #[must_use]
+    pub const fn delay_samples(&self) -> i32 {
+        self.delay_samples
+    }
+
+    /// 手动相位对齐第一层：极性反转。
+    #[must_use]
+    pub const fn invert_polarity(&self) -> bool {
+        self.invert_polarity
     }
 
     /// 本轨的**源侧**声相增益 `(左, 右)`：由 `pan` 与**声相定律**在**构造期**算出。

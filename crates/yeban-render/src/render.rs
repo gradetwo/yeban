@@ -692,7 +692,7 @@ pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityI
 /// 手动相位对齐第一层：每轨的用户延时与极性反转（**原始值**，未做最小值平移）。
 ///
 /// `delay_samples` 是 `TrackV3::delay_samples` 的原值（`None` = 0，范围
-/// ±`yeban_model::PHASE_ALIGN_MAX_ABS_SAMPLES`）；`invert_polarity` 是
+/// ±`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`）；`invert_polarity` 是
 /// `TrackV3::invert_polarity`（`None` = 不反转）。
 ///
 /// 恒等轨（延时 0 且不反转）**不进表** —— 调用方把缺表项当恒等，逐位不退化。

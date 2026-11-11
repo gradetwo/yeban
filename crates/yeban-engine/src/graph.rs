@@ -830,6 +830,205 @@ impl CompensationBank {
     }
 }
 
+/// 手动相位对齐第一层：逐轨延时＋极性反转的预分配池（实时路径）。
+///
+/// 与 [`CompensationBank`] 同形（预分配定长池＋快照边界 `rearm`＋逐块
+/// `apply`），但事实源不同：PDC 的延迟来自插件延迟补偿计划（`PdcPlan`），
+/// 这里的延迟来自用户在轨上写的 `delay_samples` / `invert_polarity`
+/// （`TrackV3` → `TrackParams` → 快照边界的一张 `(轨, 延时, 反转)` 表）。
+///
+/// ## 最小值平移（负延时 = 相对提前）
+///
+/// 与离线侧 [`yeban_render::render::RenderPlan`] 同一条口径：`rearm` 对
+/// 输入表取 `min(0, 全部延时)`，每轨有效延时 = `delay − min`（最早那轨
+/// 为 0，其余按差值延迟），整曲只整体后移 `|min|`。有效延时上界 =
+/// `2 × 4800 = 9600` 采样 ⇒ 池的线容量由调用方按此定（见
+/// `crate::rt::MAX_PHASE_DELAY_FRAMES`），`set_delay` 的钳制在正常输入下
+/// 恒不触发；一旦触发仍进 `RearmShortfall::clamped_frames`（不静默）。
+///
+/// ## 恒等轨不占槽位
+///
+/// 延时 0 且不反转的轨**不进** `rearm` 的输入表（调用方过滤）或在 `rearm`
+/// 里被跳过 ⇒ `apply` 对它返回 `false`、样本一位不动。
+pub struct PhaseBank {
+    /// 按键升序（输入表是 `BTreeMap` 的迭代顺序，天然有序）。
+    ///
+    /// `preallocated` 之后本 `Vec` 的长度固定不变（**绝不在处理期增长或截断**），
+    /// 只有**前 `armed` 项**参与查找。
+    entries: Vec<(EntityId, DelayLine)>,
+    /// 与 `entries` 下标对齐的极性反转标志（`true` = 该轨输出乘 −1）。
+    ///
+    /// 与延迟线**同一张表**：换主人时反转标志随槽位一起换（`rearm` 里同下标写），
+    /// 不存在"线是 A 的、标志是 B 的"这种错位。
+    invert: Vec<bool>,
+    /// 已武装的条数（`entries[..armed]` 有效且按键升序）。
+    armed: usize,
+    /// **见证计数**：槽位**换了主人**的累计次数（每个"绑定变更·槽位"记 1）。
+    ///
+    /// 与 [`CompensationBank::rebindings`] 同族：它是"重绑分支真的被走到"的
+    /// 机械证据。
+    rebindings: u64,
+    /// **见证计数**：`apply` 真的施加过**非零延迟或反转**的"节点·块"次数。
+    ///
+    /// 只增不减、恒等直通不计。它是"延迟线真的在信号路径上"的机械证据。
+    processed_blocks: u64,
+}
+
+impl PhaseBank {
+    /// 预分配 `slots` 条上限为 `max_delay_samples` 的延迟线（**实时路径**）。
+    ///
+    /// 构造期一次分配；之后只用 [`rearm`](Self::rearm) 重新绑定节点与延迟，
+    /// 因此回调内零分配。初始状态一条都没武装（`len() == 0`）。
+    #[must_use]
+    pub fn preallocated(slots: usize, max_delay_samples: usize) -> Self {
+        Self {
+            entries: (0..slots)
+                .map(|_| (EntityId::default(), DelayLine::new(max_delay_samples)))
+                .collect(),
+            invert: vec![false; slots],
+            armed: 0,
+            rebindings: 0,
+            processed_blocks: 0,
+        }
+    }
+
+    /// 用一份新相位表重新武装（**零分配**：只写节点键、`set_delay` 与"换主人时清线"）。
+    ///
+    /// `phases` 是 `(轨, 延时, 反转)` 表，**必须按键升序**（调用方从
+    /// `EngineSnapshot::tracks()`——`BTreeMap`——迭代得到，天然有序），
+    /// 因此 `entries[..armed]` 始终保持按键升序 —— [`apply`](Self::apply) 的
+    /// `binary_search` 前提由此成立。恒等项（延时 0 且不反转）在这里被跳过，
+    /// 不占槽位。
+    ///
+    /// ## 槽位绑定变更时必须清线
+    ///
+    /// 与 [`CompensationBank::rearm`] 同一条规则（见那里的文档）：槽位是按
+    /// 下标绑定的，换主人就 [`DelayLine::reset`]，否则新主人会先把另一个节点
+    /// 的音频播出来。反转标志随槽位一起换写，不留上一任的值。
+    ///
+    /// 两个上限（都由构造期容量决定，**都不静默**）：
+    /// 1. 槽位不够 ⇒ 多出来的节点进 [`RearmShortfall::unarmed_nodes`]；
+    /// 2. 延迟超过线容量 ⇒ 钳到容量上界，差额进 [`RearmShortfall::clamped_frames`]。
+    pub fn rearm(&mut self, phases: &[(EntityId, i32, bool)]) -> RearmShortfall {
+        let mut shortfall = RearmShortfall::default();
+        // 最小值平移：只对**非恒等**项取最小值（恒等项不进表，不影响 min）。
+        let min_delay = phases
+            .iter()
+            .filter(|(_, delay, invert)| *delay != 0 || *invert)
+            .map(|(_, delay, _)| *delay)
+            .min()
+            .unwrap_or(0)
+            .min(0);
+        let mut armed = 0usize;
+        let mut rebindings = 0u64;
+        for (node, delay, invert) in phases {
+            if *delay == 0 && !*invert {
+                continue;
+            }
+            if armed >= self.entries.len() {
+                shortfall.unarmed_nodes += 1;
+                continue;
+            }
+            let wanted = (*delay - min_delay).max(0) as usize;
+            let (slot_node, line) = &mut self.entries[armed];
+            if *slot_node != *node {
+                line.reset();
+                *slot_node = *node;
+                rebindings = rebindings.wrapping_add(1);
+            }
+            self.invert[armed] = *invert;
+            let actual = line.set_delay(wanted);
+            if actual != wanted {
+                shortfall.clamped_frames += (wanted - actual) as u64;
+            }
+            armed += 1;
+        }
+        self.armed = armed;
+        self.rebindings = self.rebindings.wrapping_add(rebindings);
+        shortfall
+    }
+
+    /// 预分配的槽位数（与武装了多少条无关）。
+    #[must_use]
+    pub fn slots(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 已武装的条数（= 有非恒等相位设置的节点数）。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.armed
+    }
+
+    /// 是否没有武装任何相位设置。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.armed == 0
+    }
+
+    /// 见 [`Self::processed_blocks`] 字段（累计；采样点级不动，每个"节点·块"一次）。
+    #[must_use]
+    pub const fn processed_blocks(&self) -> u64 {
+        self.processed_blocks
+    }
+
+    /// 见 [`Self::rebindings`] 字段（累计；每个"槽位换主人"一次）。
+    #[must_use]
+    pub const fn rebindings(&self) -> u64 {
+        self.rebindings
+    }
+
+    /// 对 `node` 的本块样本施加武装好的延时与反转（**零分配**）。
+    ///
+    /// 返回 `true` = 该节点有武装（延时或反转至少其一非恒等）；`false` =
+    /// 无武装，`buf` 一位不动。走带停住时调用方**也**调它（喂的是静音）：
+    /// 延迟线是时间状态，不推进它会让恢复播放时吐出陈音频（与 PDC 同一条规则）。
+    pub fn apply(&mut self, node: &EntityId, buf: &mut [f32]) -> bool {
+        match self.entries[..self.armed].binary_search_by(|(candidate, _)| candidate.cmp(node)) {
+            Ok(index) => {
+                let line = &mut self.entries[index].1;
+                let active = line.delay() != 0 || self.invert[index];
+                self.processed_blocks = self.processed_blocks.wrapping_add(u64::from(active));
+                line.process_in_place(buf);
+                if self.invert[index] {
+                    for sample in buf.iter_mut() {
+                        *sample = -*sample;
+                    }
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 只读访问某个节点的有效延时（采样；未武装的节点不可达）。
+    #[must_use]
+    pub fn effective_delay(&self, node: &EntityId) -> Option<usize> {
+        self.entries[..self.armed]
+            .binary_search_by(|(candidate, _)| candidate.cmp(node))
+            .ok()
+            .map(|index| self.entries[index].1.delay())
+    }
+
+    /// 只读访问某个节点的反转标志（未武装的节点不可达）。
+    #[must_use]
+    pub fn invert(&self, node: &EntityId) -> Option<bool> {
+        self.entries[..self.armed]
+            .binary_search_by(|(candidate, _)| candidate.cmp(node))
+            .ok()
+            .map(|index| self.invert[index])
+    }
+
+    /// 只读访问某个节点的延迟线（未武装的槽位不可达）。
+    #[must_use]
+    pub fn line(&self, node: &EntityId) -> Option<&DelayLine> {
+        self.entries[..self.armed]
+            .binary_search_by(|(candidate, _)| candidate.cmp(node))
+            .ok()
+            .map(|index| &self.entries[index].1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1386,6 +1585,90 @@ mod tests {
         assert_eq!(bank.line(&a).map(DelayLine::delay), Some(3));
         assert_eq!(bank.line(&b).map(DelayLine::delay), Some(0));
         assert!(bank.line(&stranger).is_none());
+    }
+
+    /// **手动相位对齐第一层**：`PhaseBank::rearm` 做最小值平移，`apply`
+    /// 施加延时与反转；恒等轨不占槽位。
+    ///
+    /// 角色按身份升序分配（`rearm` 的输入表必须按键升序，与
+    /// `CompensationBank` 的 `BTreeMap` 迭代顺序同一条前提）。
+    #[test]
+    fn phase_bank_rearm_applies_min_shift_and_invert() {
+        let mut ids: [EntityId; 3] = core::array::from_fn(|_| EntityId::new());
+        ids.sort_unstable();
+        let [early, plain, late] = ids;
+        // early −240、plain 0、late +480 且反转 ⇒ min = −240 ⇒
+        // 有效延时 0 / 240 / 720。
+        let mut bank = PhaseBank::preallocated(6, 9600);
+        assert!(bank.is_empty(), "预分配之后一条都没武装");
+        let shortfall = bank.rearm(&[(early, -240, false), (plain, 0, false), (late, 480, true)]);
+        assert!(shortfall.is_exact(), "3 条轨 6 条线：{shortfall:?}");
+        assert_eq!(bank.len(), 2, "恒等轨 plain 不占槽位");
+        assert_eq!(bank.effective_delay(&early), Some(0));
+        assert_eq!(bank.effective_delay(&late), Some(720));
+        assert_eq!(bank.invert(&early), Some(false));
+        assert_eq!(bank.invert(&late), Some(true));
+        assert_eq!(bank.invert(&plain), None, "恒等轨不可达");
+
+        // 行为面：early 的脉冲当即出声，late 的脉冲在 720 帧后以 −1 出声。
+        let mut buf = [1.0f32, 0.0, 0.0, 0.0];
+        assert!(bank.apply(&early, &mut buf));
+        assert_eq!(buf, [1.0, 0.0, 0.0, 0.0], "有效延时 0：直通");
+        let mut buf = vec![1.0f32; 724];
+        assert!(bank.apply(&late, &mut buf));
+        assert_eq!(buf[..720], [0.0; 720], "前 720 帧必须是零历史");
+        assert_eq!(buf[720], -1.0, "第 720 帧是反转后的脉冲");
+        assert_eq!(
+            bank.processed_blocks(),
+            1,
+            "只有非零延迟/反转的那一次算『真的处理过』（有效延时 0 且不反转的武装直通不计）"
+        );
+
+        // 不在表里的节点：apply 返回 false，样本不动。
+        let stranger = EntityId::new();
+        let mut buf = [3.0f32, 4.0];
+        assert!(!bank.apply(&stranger, &mut buf));
+        assert_eq!(buf, [3.0, 4.0]);
+    }
+
+    /// **手动相位对齐第一层**：全恒等表 ⇒ 一条都不武装。
+    #[test]
+    fn phase_bank_skips_identity_tracks() {
+        let a = EntityId::new();
+        let mut bank = PhaseBank::preallocated(4, 9600);
+        let shortfall = bank.rearm(&[(a, 0, false)]);
+        assert!(shortfall.is_exact());
+        assert!(bank.is_empty());
+        assert_eq!(bank.len(), 0);
+        let mut buf = [1.0f32, 2.0];
+        assert!(!bank.apply(&a, &mut buf));
+        assert_eq!(buf, [1.0, 2.0], "无武装：样本一位不动");
+    }
+
+    /// **手动相位对齐第一层**：槽位换主人时必须清线（与 PDC 同一条规则）。
+    ///
+    /// 角色按身份升序分配：`first` 占第 1 槽，写满标记；剪掉 `first` 后
+    /// `second` 下移到第 1 槽 ⇒ 它的第一个块必须是全零，不许吐出 `first`
+    /// 的标记。
+    #[test]
+    fn phase_bank_rebinding_clears_the_line() {
+        const MARKER: f32 = 7.0;
+        const BLOCK: usize = 128;
+        let mut ids: [EntityId; 2] = core::array::from_fn(|_| EntityId::new());
+        ids.sort_unstable();
+        let [first, second] = ids;
+
+        let mut bank = PhaseBank::preallocated(2, 128);
+        let shortfall = bank.rearm(&[(first, 32, false), (second, 32, false)]);
+        assert!(shortfall.is_exact());
+        let mut buf = [MARKER; BLOCK];
+        assert!(bank.apply(&first, &mut buf));
+
+        let shortfall = bank.rearm(&[(second, 32, false)]);
+        assert!(shortfall.is_exact());
+        let mut buf = [0.0f32; BLOCK];
+        assert!(bank.apply(&second, &mut buf));
+        assert_eq!(buf, [0.0f32; BLOCK], "换主人后环里不得留上一任的标记样本");
     }
 
     /// **槽位换主人时必须清线**：新主人不得把上一任的音频播出来。
