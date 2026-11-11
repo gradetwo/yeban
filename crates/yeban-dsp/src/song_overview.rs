@@ -22,7 +22,9 @@
 //! 诊断（[`Anomaly`]，MCP 与 UI 共用）：低频中段淤积（`low_mid_buildup`）、
 //! 总线压缩压扁（`compression_squash`）与期望带偏离（`envelope_deviation`，
 //! Phase 2），均为纯逻辑阈值判定；段内自相似度（[`analyze_repetition`]）
-//! 找跨段重复（`arrangement_repetition`，设计稿 §8.2 追加，schema 1.1），
+//! 找跨段重复（`arrangement_repetition`，设计稿 §8.2 追加，schema 1.1）；
+//! 分轨频率打架（[`detect_frequency_clash`]，设计稿 §8.2 追加，schema 1.2）
+//! 按拍按频段比各轨能量，次响轨距最响轨 6 dB 内且高于可听门限即记打架。
 //! 谱面力度虚线（设计稿 §5.1）直接画 `bar_series.score_dyn` 列，不另算。
 //!
 //! Phase 2（设计稿 §3.5/§3.6/§5.1）：曲风预设 3 档 + 方差自适应权重
@@ -38,9 +40,11 @@
 use crate::loudness::GatedLoudness;
 use realfft::RealFftPlanner;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
-/// 设计稿 schema 版本（§8.2；1.1 起加 `repetition` 与 `arrangement_repetition`）。
-pub const SCHEMA_VERSION: &str = "1.1";
+/// 设计稿 schema 版本（§8.2；1.1 起加 `repetition` 与 `arrangement_repetition`；
+/// 1.2 起加 `frequency_clash`）。
+pub const SCHEMA_VERSION: &str = "1.2";
 
 /// 8 频段边界（Hz），顺序为 Sub → Air（设计稿 §4.1）。
 pub const BAND_DEFINITIONS_HZ: [[f32; 2]; 8] = [
@@ -255,6 +259,23 @@ pub const ROUGHNESS_REFERENCE: f64 = 0.5;
 pub const LOW_MID_EXCESS_DB: f32 = 4.0;
 /// 诊断所需的最短连续小节数。
 pub const DIAGNOSTIC_MIN_BARS: usize = 4;
+
+/// 分轨频率打架：可听门限（dBFS，设计稿 §8.2 追加，schema 1.2）：低于满刻度
+/// 60 dB 的频段能量在任何现实混音下都听不见，不参评；混音频段下限是 −120 dB，
+/// −60 取在静音/底噪区与可听区之间。
+pub const CLASH_AUDIBILITY_FLOOR_DB: f32 = -60.0;
+/// 分轨频率打架：最大差距（dB）：次响轨与最响轨的频段能量差距 ≤ 6 dB 即记
+/// 打架（差距 6 dB 内 = 次响轨振幅至少是最响轨的一半，强互掩蔽区；大于 6 dB
+/// 时次响轨被主导轨掩蔽到可忽略）。
+pub const CLASH_MAX_GAP_DB: f32 = 6.0;
+/// 分轨频率打架：每条轨在某拍的某频段参评的前提——该频段能量距该轨当拍最响
+/// 频段不得超过 20 dB。没有这一条，Hann 窗旁瓣泄漏（约低于峰值频段 30 dB 以上）
+/// 会让一条纯音在相邻频段也"参评"，同频段测试会多报 2 条假打架；20 dB 既拦
+/// 住泄漏，又留住轨的真实次要频段内容（典型在峰值 20 dB 以内）。
+pub const CLASH_TRACK_BAND_FLOOR_DB: f32 = 20.0;
+/// 分轨频率打架：每曲最多报几条（按严重度降序截断；截断前的组数进
+/// [`FrequencyClashSummary::total_clashes`]）。
+pub const CLASH_MAX_ENTRIES: usize = 20;
 
 /// 段内自相似度：重复判定阈值（余弦相似度；设计稿 §8.2 追加：重复段检查）。
 pub const REPEAT_SIMILARITY: f32 = 0.95;
@@ -559,6 +580,57 @@ pub struct RepetitionSummary {
     pub repeated_passages: Vec<RepeatedPassage>,
 }
 
+/// 分轨频率打架检测的一条分轨输入（设计稿 §8.2 追加，schema 1.2）：渲染侧
+/// 把每条源轨 solo 渲染出的音频连同轨身份一起传进来；DSP 层不认识工程模型
+/// （本 crate 无 `yeban-model` 依赖），轨只以 id + name 字符串区分。
+#[derive(Debug, Clone)]
+pub struct StemInput<'a> {
+    /// 轨 id（`EntityId` 的规范字符串）。
+    pub track_id: &'a str,
+    /// 轨名（显示用）。
+    pub track_name: &'a str,
+    /// 该轨 solo 渲染的音频（交错立体声，与混音同采样率、同长度）。
+    pub audio: AudioInput<'a>,
+}
+
+/// `frequency_clash.entries[]` 里的一条轨引用。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClashTrackRef {
+    /// 轨 id。
+    pub track_id: String,
+    /// 轨名。
+    pub track_name: String,
+}
+
+/// 分轨频率打架的一条（`frequency_clash.entries[]` 的一条；设计稿 §8.2 追加，
+/// schema 1.2）：同一小节、同一频段里最响的两条轨。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FrequencyClashEntry {
+    /// 小节号（1-based）。
+    pub bar: u32,
+    /// 频段下标（0–7，Sub → Air；Hz 区间见 [`BAND_DEFINITIONS_HZ`]）。
+    pub band: u8,
+    /// 最响的轨（该组最差拍的胜者）。
+    pub track_a: ClashTrackRef,
+    /// 次响的轨（与 `track_a` 的频段能量差距 ≤ [`CLASH_MAX_GAP_DB`]）。
+    pub track_b: ClashTrackRef,
+    /// 两轨在该组最差拍的频段能量差距（dB，0–6）。
+    pub gap_db: f32,
+    /// 严重度（0–1）：`1.0 − gap_db / 6.0`，差距越小越严重。
+    pub severity: f32,
+    /// 该小节里这对轨在该频段打架的拍数。
+    pub beats: u32,
+}
+
+/// 分轨频率打架摘要（设计稿 §8.2 追加：`SongOverview.frequency_clash`，schema 1.2）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FrequencyClashSummary {
+    /// 打架组总数（截断前；`entries.len()` ≤ [`CLASH_MAX_ENTRIES`]）。
+    pub total_clashes: usize,
+    /// 按严重度降序的前 [`CLASH_MAX_ENTRIES`] 条。
+    pub entries: Vec<FrequencyClashEntry>,
+}
+
 /// 小节级列式序列（设计稿 §8.2：MCP 默认返回小节级**列式**数组，
 ///
 /// 即 `"tension": [0.24, 0.26, …]` 而非每小节重复键名；拍级数据只在调用方
@@ -634,6 +706,8 @@ pub struct SongOverview {
     pub structural_summary: StructuralSummary,
     /// 段内自相似度摘要（schema 1.1：最相似小节对、机械指数与成段重复）。
     pub repetition: RepetitionSummary,
+    /// 分轨频率打架摘要（schema 1.2：逐拍逐频段最响两轨的打架清单，按小节聚合）。
+    pub frequency_clash: FrequencyClashSummary,
     /// 小节级列式序列。
     pub bar_series: BarSeries,
 }
@@ -1182,6 +1256,133 @@ fn cosine_similarity(left: &[f32; 14], right: &[f32; 14]) -> f32 {
     (dot / libm::sqrtf(norm_left * norm_right)).clamp(0.0, 1.0)
 }
 
+/// 分轨频率打架检测（设计稿 §8.2 追加，schema 1.2）：逐拍逐频段比各轨能量。
+///
+/// 每条分轨先复用 [`band_energies_per_beat`]（与混音频段同一口径：倾斜补偿后
+/// dB）。每拍每频段：取能量最高的两个参评轨；次响轨高于
+/// [`CLASH_AUDIBILITY_FLOOR_DB`] 且与最响轨差距 ≤ [`CLASH_MAX_GAP_DB`] 时记
+/// 一次候选（差距含 6.0 dB）。参评前提有二：绝对门限（高于 −60 dBFS）与相对
+/// 门限（距该轨当拍最响频段 ≤ [`CLASH_TRACK_BAND_FLOOR_DB`]，拦 Hann 窗旁瓣
+/// 泄漏）。候选按（小节，频段，轨对）聚合：每组保留最差严重度（`1.0 − gap / 6.0`）
+/// 与拍数；组按严重度降序、小节升序、频段升序、轨 id 升序排，取前
+/// [`CLASH_MAX_ENTRIES`] 条；`total_clashes` 为截断前的组数。
+///
+/// 空分轨、单轨、全静音时返回空摘要（`total_clashes = 0`）。纯函数、确定性：
+/// 聚合用 `BTreeMap`，不依赖哈希迭代顺序。
+#[must_use]
+pub fn detect_frequency_clash(
+    stems: &[StemInput<'_>],
+    tempo: &TempoMap,
+    total_beats: usize,
+    beats_per_bar: u32,
+) -> FrequencyClashSummary {
+    if stems.len() < 2 || total_beats == 0 {
+        return FrequencyClashSummary::default();
+    }
+    let bpb = beats_per_bar.max(1) as usize;
+    // 每条分轨的逐拍频段能量（与混音同一口径），及每轨每拍的最响频段
+    // （相对门限的基准）。
+    let per_stem: Vec<Vec<[f32; 8]>> = stems
+        .iter()
+        .map(|stem| band_energies_per_beat(Some(&stem.audio), tempo, total_beats))
+        .collect();
+    let peaks: Vec<Vec<f32>> = per_stem
+        .iter()
+        .map(|bands| {
+            bands
+                .iter()
+                .map(|row| row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)))
+                .collect()
+        })
+        .collect();
+    // 聚合：(小节 0-based, 频段, 轨下标 a, 轨下标 b) →
+    // （最差严重度，拍数，最差差距，最差拍的最响轨下标）。
+    let mut groups: BTreeMap<(usize, usize, usize, usize), (f32, u32, f32, usize)> =
+        BTreeMap::new();
+    for beat in 0..total_beats {
+        for band in 0..8 {
+            // 找能量最高的两条参评轨。
+            let mut top: [(usize, f32); 2] = [(usize::MAX, f32::NEG_INFINITY); 2];
+            for (index, bands) in per_stem.iter().enumerate() {
+                let energy = bands[beat][band];
+                if energy <= CLASH_AUDIBILITY_FLOOR_DB {
+                    continue;
+                }
+                if energy < peaks[index][beat] - CLASH_TRACK_BAND_FLOOR_DB {
+                    continue;
+                }
+                if energy > top[0].1 {
+                    top[1] = top[0];
+                    top[0] = (index, energy);
+                } else if energy > top[1].1 {
+                    top[1] = (index, energy);
+                }
+            }
+            if top[1].0 == usize::MAX {
+                continue;
+            }
+            let gap = top[0].1 - top[1].1;
+            if gap > CLASH_MAX_GAP_DB {
+                continue;
+            }
+            let severity = 1.0 - gap / CLASH_MAX_GAP_DB;
+            let bar = beat / bpb;
+            let (a, b) = if top[0].0 < top[1].0 {
+                (top[0].0, top[1].0)
+            } else {
+                (top[1].0, top[0].0)
+            };
+            let entry =
+                groups
+                    .entry((bar, band, a, b))
+                    .or_insert((0.0, 0, f32::INFINITY, top[0].0));
+            entry.1 += 1;
+            if severity > entry.0 {
+                entry.0 = severity;
+                entry.2 = gap;
+                entry.3 = top[0].0;
+            }
+        }
+    }
+    let total_clashes = groups.len();
+    let mut entries: Vec<FrequencyClashEntry> = groups
+        .into_iter()
+        .map(|((bar, band, a, b), (severity, beats, gap, loudest))| {
+            let other = if loudest == a { b } else { a };
+            FrequencyClashEntry {
+                bar: (bar as u32) + 1,
+                band: band as u8,
+                track_a: ClashTrackRef {
+                    track_id: stems[loudest].track_id.to_string(),
+                    track_name: stems[loudest].track_name.to_string(),
+                },
+                track_b: ClashTrackRef {
+                    track_id: stems[other].track_id.to_string(),
+                    track_name: stems[other].track_name.to_string(),
+                },
+                gap_db: gap,
+                severity,
+                beats,
+            }
+        })
+        .collect();
+    entries.sort_by(|left, right| {
+        right
+            .severity
+            .partial_cmp(&left.severity)
+            .unwrap_or(Ordering::Equal)
+            .then(left.bar.cmp(&right.bar))
+            .then(left.band.cmp(&right.band))
+            .then(left.track_a.track_id.cmp(&right.track_a.track_id))
+            .then(left.track_b.track_id.cmp(&right.track_b.track_id))
+    });
+    entries.truncate(CLASH_MAX_ENTRIES);
+    FrequencyClashSummary {
+        total_clashes,
+        entries,
+    }
+}
+
 /// 段内自相似度分析（设计稿 §8.2 追加，schema 1.1）：对 [`BarSeries`] 的
 /// 14 维小节特征逐对算余弦相似度，找跨段重复。纯函数，无音频 I/O。
 ///
@@ -1339,6 +1540,19 @@ pub fn analyze_song_overview(score: &ScoreInput, audio: Option<&AudioInput<'_>>)
 pub fn analyze_song_overview_with_options(
     score: &ScoreInput,
     audio: Option<&AudioInput<'_>>,
+    options: &AnalysisOptions,
+) -> SongOverview {
+    analyze_song_overview_with_stems(score, audio, &[], options)
+}
+
+/// 整曲四层离线分析（分轨版，设计稿 §8.2 追加，schema 1.2）：`stems` 是渲染侧
+/// 每条源轨 solo 渲染的音频；空分轨（`&[]`）时 `frequency_clash` 为空摘要，
+/// 其余四层与 [`analyze_song_overview_with_options`] 逐位一致。
+#[must_use]
+pub fn analyze_song_overview_with_stems(
+    score: &ScoreInput,
+    audio: Option<&AudioInput<'_>>,
+    stems: &[StemInput<'_>],
     options: &AnalysisOptions,
 ) -> SongOverview {
     let mut score = score.clone();
@@ -1724,6 +1938,7 @@ pub fn analyze_song_overview_with_options(
     // 成段重复每段一条 `arrangement_repetition` 异常（与音频无关，纯谱面
     // 序列即可判；单小节撞分不成段，故只看 `repeated_passages`）。
     let repetition = analyze_repetition(&series);
+    let frequency_clash = detect_frequency_clash(stems, &tempo, total_beats, bpb);
     for passage in &repetition.repeated_passages {
         anomalies.push(Anomaly {
             bars: passage.bars,
@@ -1757,6 +1972,7 @@ pub fn analyze_song_overview_with_options(
             detected_anomalies: anomalies,
         },
         repetition,
+        frequency_clash,
         bar_series: series,
     }
 }

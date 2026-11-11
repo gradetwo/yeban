@@ -8,9 +8,10 @@
 
 use yeban_dsp::song_overview::{
     AnalysisOptions, AnomalyType, AudioInput, BAND_DB_FLOOR, NO_ENVELOPE, NO_LOUDNESS_READING_LUFS,
-    NoteEvent, ScoreInput, SectionMarker, TensionProfile, adaptive_weights, analyze_repetition,
-    analyze_song_overview, analyze_song_overview_with_options, bilateral_smooth,
-    circle_of_fifths_distance, envelope_band, envelope_deviation, roughness_of_midis,
+    NoteEvent, ScoreInput, SectionMarker, StemInput, TensionProfile, adaptive_weights,
+    analyze_repetition, analyze_song_overview, analyze_song_overview_with_options,
+    analyze_song_overview_with_stems, bilateral_smooth, circle_of_fifths_distance, envelope_band,
+    envelope_deviation, roughness_of_midis,
 };
 
 /// 正弦夹具（相位用 `f64` 算），返回交错立体声。
@@ -541,7 +542,7 @@ fn output_shape_matches_design_schema() {
         sample_rate: 48_000.0,
     };
     let overview = analyze_song_overview(&score_with(notes), Some(&audio));
-    assert_eq!(overview.schema_version, "1.1");
+    assert_eq!(overview.schema_version, "1.2");
     assert_eq!(
         overview.band_definitions_hz,
         [
@@ -1182,7 +1183,7 @@ fn repetition_verbatim_chorus_is_flagged_end_to_end() {
         }
     }
     let overview = analyze_song_overview(&score_with(notes), None);
-    assert_eq!(overview.schema_version, "1.1");
+    assert_eq!(overview.schema_version, "1.2");
     assert!(
         overview.repetition.mechanical_index >= 0.875,
         "机械指数至少 14/16，实际 {}",
@@ -1231,4 +1232,153 @@ fn repetition_no_passage_for_short_song() {
             .any(|a| a.anomaly_type == AnomalyType::ArrangementRepetition),
         "7 小节成不了 4 小节段，不得报 arrangement_repetition"
     );
+}
+
+/// 分轨夹具：一条分轨 = id + 名 + 正弦音频（与混音同采样率）。
+fn stem<'a>(id: &'a str, name: &'a str, samples: &'a [f32]) -> StemInput<'a> {
+    StemInput {
+        track_id: id,
+        track_name: name,
+        audio: AudioInput {
+            samples,
+            sample_rate: 48_000.0,
+        },
+    }
+}
+
+/// 两轨同频段正弦（300 Hz 与 400 Hz，同在 Band 3：250–500 Hz）→ 记 1 条打架。
+#[test]
+fn clash_same_band_two_sines_flagged() {
+    let mix = two_sine_stereo(0.2, 300.0, 400.0, 48_000.0, 48_000 * 2);
+    let stem_a = sine_stereo(0.3, 300.0, 48_000.0, 48_000 * 2);
+    let stem_b = sine_stereo(0.3, 400.0, 48_000.0, 48_000 * 2);
+    let overview = analyze_song_overview_with_stems(
+        &score_with(vec![]),
+        Some(&AudioInput {
+            samples: &mix,
+            sample_rate: 48_000.0,
+        }),
+        &[
+            stem("track-a", "Bass", &stem_a),
+            stem("track-b", "Keys", &stem_b),
+        ],
+        &AnalysisOptions::default(),
+    );
+    assert_eq!(overview.schema_version, "1.2");
+    assert_eq!(overview.frequency_clash.total_clashes, 1);
+    assert_eq!(overview.frequency_clash.entries.len(), 1);
+    let entry = &overview.frequency_clash.entries[0];
+    assert_eq!(entry.bar, 1);
+    assert_eq!(entry.band, 2);
+    assert_eq!(entry.beats, 4);
+    assert!(
+        entry.gap_db < 1.0,
+        "等幅同频段正弦差距应 < 1 dB，实际 {}",
+        entry.gap_db
+    );
+    assert!(
+        entry.severity > 0.9,
+        "严重度应 > 0.9，实际 {}",
+        entry.severity
+    );
+    let mut ids = [
+        entry.track_a.track_id.as_str(),
+        entry.track_b.track_id.as_str(),
+    ];
+    ids.sort_unstable();
+    assert_eq!(ids, ["track-a", "track-b"]);
+}
+
+/// 两轨不同频段正弦（300 Hz 在 Band 3，3000 Hz 在 Band 6）→ 不报打架。
+#[test]
+fn clash_different_bands_not_flagged() {
+    let mix = two_sine_stereo(0.2, 300.0, 3000.0, 48_000.0, 48_000 * 2);
+    let stem_a = sine_stereo(0.3, 300.0, 48_000.0, 48_000 * 2);
+    let stem_b = sine_stereo(0.3, 3000.0, 48_000.0, 48_000 * 2);
+    let overview = analyze_song_overview_with_stems(
+        &score_with(vec![]),
+        Some(&AudioInput {
+            samples: &mix,
+            sample_rate: 48_000.0,
+        }),
+        &[
+            stem("track-a", "Bass", &stem_a),
+            stem("track-b", "Lead", &stem_b),
+        ],
+        &AnalysisOptions::default(),
+    );
+    assert_eq!(overview.frequency_clash.total_clashes, 0);
+    assert!(overview.frequency_clash.entries.is_empty());
+}
+
+/// 两轨全静音 → 不报打架（频段能量在 −120 dB 下限，低于可听门限）。
+#[test]
+fn clash_silence_not_flagged() {
+    let silent = vec![0.0f32; 48_000 * 2 * 2];
+    let overview = analyze_song_overview_with_stems(
+        &score_with(vec![]),
+        Some(&AudioInput {
+            samples: &silent,
+            sample_rate: 48_000.0,
+        }),
+        &[stem("track-a", "A", &silent), stem("track-b", "B", &silent)],
+        &AnalysisOptions::default(),
+    );
+    assert_eq!(overview.frequency_clash.total_clashes, 0);
+    assert!(overview.frequency_clash.entries.is_empty());
+}
+
+/// 只有一条分轨 → 不报打架（打架至少要两轨）。
+#[test]
+fn clash_single_stem_not_flagged() {
+    let stem_a = sine_stereo(0.3, 300.0, 48_000.0, 48_000 * 2);
+    let overview = analyze_song_overview_with_stems(
+        &score_with(vec![]),
+        Some(&AudioInput {
+            samples: &stem_a,
+            sample_rate: 48_000.0,
+        }),
+        &[stem("track-a", "A", &stem_a)],
+        &AnalysisOptions::default(),
+    );
+    assert_eq!(overview.frequency_clash.total_clashes, 0);
+    assert!(overview.frequency_clash.entries.is_empty());
+}
+
+/// 同频段但差距 > 6 dB（0.3 vs 0.1，约 9.5 dB）→ 不报打架。
+#[test]
+fn clash_gap_beyond_6db_not_flagged() {
+    let mix = two_sine_stereo(0.2, 300.0, 400.0, 48_000.0, 48_000 * 2);
+    let stem_a = sine_stereo(0.3, 300.0, 48_000.0, 48_000 * 2);
+    let stem_b = sine_stereo(0.1, 400.0, 48_000.0, 48_000 * 2);
+    let overview = analyze_song_overview_with_stems(
+        &score_with(vec![]),
+        Some(&AudioInput {
+            samples: &mix,
+            sample_rate: 48_000.0,
+        }),
+        &[
+            stem("track-a", "Bass", &stem_a),
+            stem("track-b", "Keys", &stem_b),
+        ],
+        &AnalysisOptions::default(),
+    );
+    assert_eq!(overview.frequency_clash.total_clashes, 0);
+    assert!(overview.frequency_clash.entries.is_empty());
+}
+
+/// 不给分轨（旧入口）→ 打架摘要为空，schema 仍为 1.2。
+#[test]
+fn no_stems_gives_empty_clash_summary() {
+    let samples = sine_stereo(0.1, 997.0, 48_000.0, 48_000 * 2);
+    let overview = analyze_song_overview(
+        &score_with(vec![]),
+        Some(&AudioInput {
+            samples: &samples,
+            sample_rate: 48_000.0,
+        }),
+    );
+    assert_eq!(overview.schema_version, "1.2");
+    assert_eq!(overview.frequency_clash.total_clashes, 0);
+    assert!(overview.frequency_clash.entries.is_empty());
 }
