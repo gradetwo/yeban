@@ -114,8 +114,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条）。
-pub const TOOL_COUNT: usize = 41;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条）。
+pub const TOOL_COUNT: usize = 42;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -138,7 +138,8 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **OTCP 音高校正 3 条**（`ADR-0070`：`yeban_correct_pitch` 提交 +
 ///   `yeban_correct_pitch_job` 查询/交付 + `yeban_correct_pitch_notes` 读谱，
 ///   子进程驱动用户自备的 OpenTune API 分支构建，单 clip 调性 snap）。
-pub const EXTENSION_TOOL_COUNT: usize = 31;
+/// + **移轨 1 条**（`yeban_move_track`，`Op::MoveTrack` 的 MCP 出口：显示顺序里的绝对位置，主总线不参与）。
+pub const EXTENSION_TOOL_COUNT: usize = 32;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -183,6 +184,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_correct_pitch",
     "yeban_correct_pitch_job",
     "yeban_correct_pitch_notes",
+    "yeban_move_track",
 ];
 
 /// 规范 ID 前缀。
@@ -2384,9 +2386,49 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::NoActiveProject,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-MOVE-TRACK",
+        name: "yeban_move_track",
+        summary: "移动音轨在显示顺序里的位置（`Op::MoveTrack` 的 MCP 出口；提案路径，`autoMerge` 可一次调用落 main）。`newIndex` 是显示顺序里的绝对位置（`display_track_ids`，不含主总线）；`oldIndex` 由服务端从当前文档读，调用方不传（陈旧的旧值在模型层必被拒绝）。等于现位置即 `INVALID_PARAMETER_RANGE`（无操作不建提案），主总线即 `CONFLICT`，越界即 `INDEX_OUT_OF_BOUNDS`。",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("trackId", "string", true, "被移动的音轨 EntityId（26 字符 ULID）"),
+            param(
+                "newIndex",
+                "integer",
+                true,
+                "移动后在显示顺序里的位置（0..显示轨数，不含主总线）；等于现位置即 INVALID_PARAMETER_RANGE，越界即 INDEX_OUT_OF_BOUNDS",
+            ),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内**背靠背执行既有的** `yeban_merge_proposal` 合并实现 (同一把锁、同一预演、同一多父合并提交), 响应 = 提案回执 ⊕ 合并回执 (`autoMerged:true` / `pendingMerge:false` / `projectUnchanged:false` / `mergeTool:\\\"applied-in-process:autoMerge\\\"` / `merge:{...}`, `proposal` 投影随合并后状态)。第二步失败 ⇒ 提案**保持 Open**, 错误 `data` 带 `proposalCreated:true` + `proposalId` + `proposalRemainsOpen:true` (⛔ 不假装回滚)",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\\\"merge proposal {id}\\\"`",
+            ),
+        ],
+        errors: &[
+            ErrorCode::TrackNotFound,
+            ErrorCode::IndexOutOfBounds,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::Conflict,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；41 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；42 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)

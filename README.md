@@ -51,7 +51,7 @@
 - **Projects carry what they use**: used samples and their SFZ definitions are embedded in the `.yeban` container; rendering checks the embedded pool first, disk second; old projects are byte-identical.
 - **Native presets**: four MCP tools (`yeban_list_presets`, `yeban_apply_preset`, `yeban_save_preset`, `yeban_preset_bypass`) and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing instead of a dry sound.
 - **Singing synthesis, via the external SVS service**: `synthesize_singing` submits a score and `svs_job` polls it back — Yeban is the MCP client; synthesis itself runs in the Lingren SVS service.
-- **38 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
+- **42 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
 
 ## Roadmap
 

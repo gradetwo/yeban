@@ -2715,6 +2715,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_correct_pitch" => otcp::plan_correct_pitch(domain, call),
         "yeban_correct_pitch_job" => otcp::plan_correct_pitch_job(domain, call),
         "yeban_correct_pitch_notes" => otcp::plan_correct_pitch_notes(domain, call),
+        "yeban_move_track" => plan_move_track(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -3772,6 +3773,87 @@ fn plan_set_macro(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("宏调整: 音轨 {track_id} 宏 #{macro_index} → {value}"),
         format!("set_macro {track_id}#{macro_index}"),
         macro_plan.ops,
+        call,
+    )
+}
+
+/// `yeban_move_track`（提案路径；`autoMerge: true` 可一次调用落 main）。
+///
+/// 参数语义照 [`Op::MoveTrack`]：`newIndex` 是显示顺序里的绝对位置
+/// （`YebanProjectV1::display_track_ids`，不含主总线）；`oldIndex` 由服务端
+/// 从当前文档读，调用方不传（陈旧的旧值在模型层必被 `OpStateMismatch` 拒绝，
+/// 见 `Op::MoveTrack` 的文档）。前置校验全部在建提案之前做完，不让模型的
+/// `OpStateMismatch` 冒泡成泛 `CONFLICT`（与 `notes.rs` 同款纪律）：
+/// - 音轨不存在 → `TRACK_NOT_FOUND`；
+/// - 主总线 → `CONFLICT`（`reason: "masterBusTrackCannotBeMoved"`，与
+///   `removeTrack` 的 `masterBusTrackCannotBeRemoved` 同型）；
+/// - `newIndex` 越界 → `INDEX_OUT_OF_BOUNDS`；
+/// - 等于现位置（无操作）→ `INVALID_PARAMETER_RANGE`（`reason: "alreadyAtTargetIndex"`）。
+fn plan_move_track(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let track_id = arg_id(call, "trackId")?;
+    let new_index = arg_u64(call, "newIndex")?
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`newIndex` 是必填参数"))?;
+    let new_index = usize::try_from(new_index).map_err(|_| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            "`newIndex` 超出 usize 表示范围",
+        )
+    })?;
+    // 音轨存在性：`doc.track` 一臂（不存在 → TRACK_NOT_FOUND）。
+    project
+        .track(&track_id)
+        .map_err(|error| error::from_model("音轨查找", &error))?;
+    let ids = project.display_track_ids();
+    let Some(old_index) = ids.iter().position(|id| id == &track_id) else {
+        // `display_track_ids` 恒含全部非主总线轨 ⇒ 不在表里即主总线。
+        return Err(Fault::domain_with_data(
+            ErrorCode::Conflict,
+            format!("音轨 {track_id} 是工程的主总线，主总线不参与显示顺序，不能移动"),
+            serde_json::json!({
+                "trackId": track_id.to_canonical_string(),
+                "masterBusTrackId": project.master_bus_track_id.to_canonical_string(),
+                "reason": "masterBusTrackCannotBeMoved",
+                "hint": "主总线有固定角色，只移动非主总线音轨",
+            }),
+        ));
+    };
+    if new_index >= ids.len() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::IndexOutOfBounds,
+            format!("目标位置 {new_index} 越界：显示顺序只有 {} 条轨", ids.len()),
+            serde_json::json!({
+                "trackId": track_id.to_canonical_string(),
+                "oldIndex": old_index,
+                "newIndex": new_index,
+                "trackCount": ids.len(),
+            }),
+        ));
+    }
+    if new_index == old_index {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("音轨 {track_id} 已在位置 {old_index}，没有可移动的位置"),
+            serde_json::json!({
+                "trackId": track_id.to_canonical_string(),
+                "oldIndex": old_index,
+                "newIndex": new_index,
+                "reason": "alreadyAtTargetIndex",
+            }),
+        ));
+    }
+    let op = Op::MoveTrack {
+        track_id,
+        old_index,
+        new_index,
+    };
+    propose_draft(
+        domain,
+        project,
+        "move_track",
+        format!("移轨：音轨 {track_id} 从位置 {old_index} → {new_index}"),
+        format!("move_track {track_id} {old_index}->{new_index}"),
+        vec![op],
         call,
     )
 }
@@ -6935,6 +7017,16 @@ mod tests {
         // （无 provider 的那条响亮拒绝由 `tests/song_overview.rs` 单独覆盖）。
         domain.set_song_overview_provider(Arc::new(song_overview::StubSongOverviewProvider));
         let track = fixture_track(&domain);
+        // 移轨：把夹具音轨移到另一个合法位置 —— 规划必须成功（走 `_` 分支）。
+        let move_track_new_index = {
+            let project = domain.active_project().expect("工程");
+            let ids = project.display_track_ids();
+            let old = ids
+                .iter()
+                .position(|id| *id == track)
+                .expect("夹具音轨在显示顺序里");
+            if old == 0 { 1 } else { 0 }
+        };
         // SVS 服务不在：绑一个临时端口后立刻释放 ⇒ 连接必被拒
         //（不依赖“某个端口恰好没人用”这种运气）。
         let closed_service_url = {
@@ -7159,6 +7251,14 @@ mod tests {
                 serde_json::json!({
                     "trackId": EntityId::new().to_canonical_string(),
                     "clipId": EntityId::new().to_canonical_string(),
+                }),
+            ),
+            // 移轨：合法目标位置 ⇒ 规划成功（走 `_` 分支的"规划必须成功"）。
+            (
+                "yeban_move_track",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "newIndex": move_track_new_index,
                 }),
             ),
             // ARA2 宿主原型：绑定只做解码（不打开插件）⇒ 指向不存在的插件路径
