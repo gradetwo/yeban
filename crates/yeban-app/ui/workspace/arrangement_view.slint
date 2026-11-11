@@ -1160,6 +1160,18 @@ export component ArrangementView inherits Rectangle {
     // 因此"动的"只有画面，输入面的坐标系**不动**；指针按下后 Slint 会把后续事件继续
     // 送给这个抓取中的 `TouchArea`（即使指针已离开它的外框）。
     //
+    // ⭐ G-A1 自动化泳道点击交互面：置于剪辑拖动面之前 ⇒ 剪辑仍在最上层（不抢剪辑拖拽手势）。
+    for _[lane_index] in root.automation-lane-target-keys : TouchArea {
+        x: 168px;
+        y: root.automation-lane-band-ys[lane_index] - root.rows-top;
+        width: parent.width - 168px;
+        height: root.automation-lane-band-heights[lane_index];
+        visible: root.automation-visible;
+        clicked => {
+            root.automation-lane-click(lane_index, self.mouse-x, self.mouse-y);
+        }
+    }
+
     // 只覆盖包头以下的剪辑体：包头归选中臂（`clip-{ulid}-header`），两者不抢同一块像素。
     for clip_ulid[clip_index] in root.clip-ulids : TouchArea {
         // ⭐ 2026-11-07：减 `scroll-x`（与剪辑矩形同一格；位移量是同一 TouchArea 内的
@@ -1248,16 +1260,6 @@ export component ArrangementView inherits Rectangle {
         // 标签携带**单位与当前值** (读关闭 / 无采样点 / 目标不存在各有分支):
         // "AI 能读到自动化"的机械证据就是这一行 —— 它与投影的 `label` 逐字相等。
         accessible-label: root.automation-lane-labels[lane_index];
-
-        TouchArea {
-            x: 0;
-            y: 0;
-            width: parent.width;
-            height: parent.height;
-            clicked => {
-                root.automation-lane-click(lane_index, self.mouse-x, self.mouse-y);
-            }
-        }
 
         Path {
             // ⭐ 2026-11-07：折线顶点是绝对像素（`automation.rs` 的 `path_commands`），
