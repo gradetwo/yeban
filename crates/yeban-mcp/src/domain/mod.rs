@@ -3249,9 +3249,11 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///   此时 `ops` 允许是**空数组** —— "这次调用做什么"由 `placement` 承载。
 ///   与 `create: true` 同给时摆的是**本次新建**的片段（`ADR-0018`）。
 /// - **音轨级编辑**（`ops[].kind` ∈ `setParam` / `setTrackMute` / `setTrackSolo` /
-///   `setAutomationLane` / `removeAutomationPoint`）：分别写 `trackId` 那条轨的
-///   `TrackV3::volume_db` / `pan`（`Op::SetParam`）、`TrackV3::mute` / `solo`
-///   （`Op::SetTrackMute` / `Op::SetTrackSolo`）、自动化泳道自己的属性
+///   `setTrackPolarity` / `setTrackDelay` / `setAutomationLane` / `removeAutomationPoint`）：
+///   分别写 `trackId` 那条轨的
+///   `TrackV3::volume_db` / `pan`（`Op::SetParam`）、`TrackV3::mute` / `solo` /
+///   `invert_polarity`（`Op::SetTrackMute` / `Op::SetTrackSolo` / `Op::SetTrackPolarity`）、
+///   `TrackV3::delay_samples`（`Op::SetTrackDelay`）、自动化泳道自己的属性
 ///   （`Op::SetAutomationLane` / `Op::RemoveAutomationLane`）与泳道里的**一个**点
 ///   （`Op::RemoveAutomationPoint`，按文档上的 `tick` 或点的显式身份寻址）
 ///   —— 关闭"17 个工具没有一个能写静态混音值 / 通道条开关 / 泳道属性 /
@@ -3337,7 +3339,8 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
     // ⭐ 占位 envelope 身份的两条路: ① 批内**全是**自带寻址形态（`removeTrack` / 设备
     // 形态, 逐字节旧行为）; ② 批内**每条**要么自带寻址、要么自带 `ops[].trackId`
-    // （`setParam` / `setTrackMute` / `setTrackSolo` 的逐条点名形态, 以及只建新轨的
+    // （`setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` /
+    // `setTrackDelay` 的逐条点名形态, 以及只建新轨的
     // `addTrack` —— 它连顶层 `trackId` 都不读）, 且没有 `placement`
     // 在场、也不是 `create`（那两件事的语义挂在顶层身份上, 占位身份会把它们引向 nil）。
     // 判定住在 `notes::NoteOp::all_ops_address_their_own_track`（与 `compile` 同一份真相）。

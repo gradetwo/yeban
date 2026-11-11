@@ -110,7 +110,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 238] = [
+pub const GOLDEN_REASONS: [&str; 242] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -142,6 +142,9 @@ pub const GOLDEN_REASONS: [&str; 238] = [
     // ⭐ `ADR-0018`：`create: true` 与 `placement` 同给时，`kind` 只能是 `add`。
     "createPlacementKindMustBeAdd",
     "createRequiresAddOps",
+    // ⭐ 手动相位对齐第一层：`setTrackDelay` 的两个单位二选一。
+    "delayUnitAmbiguous",
+    "delayUnitRequired",
     "deviceIdAlreadyInTrack",
     "deviceNameRequired",
     "deviceNotFound",
@@ -325,6 +328,7 @@ pub const GOLDEN_REASONS: [&str; 238] = [
     "unknownSetClipPlacementDurationField",
     "unknownSetClipPlacementLoopField",
     "unknownSetClipPlacementMutedField",
+    "unknownSetClipPlacementOffsetField",
     "unknownSetDeviceBypassedField",
     "unknownSetDeviceNameField",
     "unknownSetKeySignatureField",
@@ -340,6 +344,7 @@ pub const GOLDEN_REASONS: [&str; 238] = [
     "unknownSetTimeSignaturePointField",
     "unknownSetTitleField",
     "unknownSetTrackColorField",
+    "unknownSetTrackDelayField",
     "unknownSetTrackNameField",
     "unknownSetTrackSamplerField",
     "unknownTransposeClipField",
@@ -997,7 +1002,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "reject_unknown_keys",
         suffix: "",
-        call_sites: 30,
+        call_sites: 32,
         literals: &[
             "unknownDuplicateClipField",
             "unknownHumanizeClipField",
@@ -1011,6 +1016,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
             "unknownSetClipPlacementDurationField",
             "unknownSetClipPlacementLoopField",
             "unknownSetClipPlacementMutedField",
+            "unknownSetClipPlacementOffsetField",
             "unknownSetDeviceBypassedField",
             "unknownSetDeviceNameField",
             "unknownSetKeySignatureField",
@@ -1026,6 +1032,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
             "unknownSetTimeSignaturePointField",
             "unknownSetTitleField",
             "unknownSetTrackColorField",
+            "unknownSetTrackDelayField",
             "unknownSetTrackNameField",
             "unknownSetTrackSamplerField",
             "unknownTransposeClipField",
@@ -1953,6 +1960,12 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 238] = [
         &["reason", "received", "supportedKindsWhenCreating"],
     ),
     (
+        // ⭐ 手动相位对齐第一层：`setTrackDelay` 的两个单位二选一。
+        "delayUnitAmbiguous",
+        &["field", "reason", "unitFields"],
+    ),
+    ("delayUnitRequired", &["field", "reason", "unitFields"]),
+    (
         "deviceIdAlreadyInTrack",
         &["deviceId", "existingSlotIndex", "hint", "reason", "trackId"],
     ),
@@ -2574,6 +2587,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 238] = [
         &["reason", "supportedFields", "unsupportedFields"],
     ),
     (
+        "unknownSetClipPlacementOffsetField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
         "unknownSetDeviceBypassedField",
         &["reason", "supportedFields", "unsupportedFields"],
     ),
@@ -2631,6 +2648,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 238] = [
     ),
     (
         "unknownSetTrackColorField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownSetTrackDelayField",
         &["reason", "supportedFields", "unsupportedFields"],
     ),
     (

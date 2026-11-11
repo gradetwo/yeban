@@ -145,8 +145,9 @@
 //!
 //! 落地路径与本工具既有的音符编辑**完全相同**：先提案、再 `yeban_merge_proposal`。
 //!
-//! ## 音轨开关形态（`ops[].kind == "setTrackMute"` / `"setTrackSolo"`）
-//! —— 关闭"工具面写不了静音 / 独奏"这一半
+//! ## 音轨开关形态（`ops[].kind == "setTrackMute"` / `"setTrackSolo"` /
+//! `"setTrackPolarity"`）
+//! —— 关闭"工具面写不了静音 / 独奏 / 极性反转"这一半
 //!
 //! 上一票让 `setParam` 能写音轨的**静态**音量与声相，但同一排通道条上另外两个开关
 //! 仍然够不着：模型有 [`Op::SetTrackMute`] / [`Op::SetTrackSolo`]（载荷是 `bool`，
@@ -154,6 +155,13 @@
 //! （`super::render` 的 `audible` 判定），而这两个变体在整个 `crates/yeban-mcp` 里
 //! **一次都没有被构造过** ⇒ 也就是"渲染器会静音"这件已实现的能力在 17 个工具的
 //! 面上**不可达**（与 `setParam` 之前那一票同型的缺口）。
+//!
+//! 手动相位对齐第一层把这条线再往前推一步：第三个开关是极性反转
+//! （`setTrackPolarity` → [`Op::SetTrackPolarity`]，`TrackV3::invert_polarity`，
+//! 渲染器在 PDC 之后、求和之前把信号 × −1）；同族还多了轨延时
+//! （`setTrackDelay` → [`Op::SetTrackDelay`]，`delaySamples` / `delayMs` 二选一）
+//! 与摆放偏移（`setClipPlacementOffset` → [`Op::SetClipPlacementOffset`]）。
+//! 三者与静音 / 独奏走同一条提案路径，撤销载荷一律从当前文档读。
 //!
 //! 为什么**不能**把它们塞进 `setParam` 的两个目标：`AutomationTarget` 没有静音 /
 //! 独奏变体，而 `SetParam` 的两个载荷都是 `f32`（`TrackV3::mute` / `solo` 是 `bool`）
@@ -1235,6 +1243,41 @@ pub const SET_TRACK_MUTE_KIND: &str = "setTrackMute";
 /// `ops[].kind` 的**音轨独奏**形态名（写 [`Op::SetTrackSolo`]）。
 pub const SET_TRACK_SOLO_KIND: &str = "setTrackSolo";
 
+/// `ops[].kind` 的**音轨极性反转**形态名（写 [`Op::SetTrackPolarity`]）。
+///
+/// 手动相位对齐第一层。与 [`SET_TRACK_MUTE_KIND`] 同族：载荷就是一个布尔
+/// （`ops[].value`），走同一条 [`TrackFlag`] 通路。
+pub const SET_TRACK_POLARITY_KIND: &str = "setTrackPolarity";
+
+/// `ops[].kind` 的**音轨延时**形态名（写 [`Op::SetTrackDelay`]）。
+///
+/// 手动相位对齐第一层。载荷是 `delaySamples`（整数采样）与 `delayMs`（毫秒数）
+/// 二选一（见 [`SET_TRACK_DELAY_FIELDS`]）：毫秒在 [`compile`] 里用工程采样率
+/// （`audio_config.sample_rate`）换算、四舍五入；采样是唯一精确单位。
+pub const SET_TRACK_DELAY_KIND: &str = "setTrackDelay";
+
+/// `setTrackDelay` 的**采样数**字段名（`ops[].delaySamples`，可选，整数采样）。
+///
+/// ⚠ 与 `delayMs` **二选一**：两个都给 ⇒ `delayUnitAmbiguous`，两个都不给 ⇒
+/// `delayUnitRequired`（⛔ 不猜调用方想要哪个单位）。
+pub const SET_TRACK_DELAY_SAMPLES_FIELD: &str = "delaySamples";
+
+/// `setTrackDelay` 的**毫秒数**字段名（`ops[].delayMs`，可选，有限毫秒数）。
+///
+/// ⚠ 换算口径：采样 = 四舍五入（毫秒 × 工程采样率 ÷ 1000），工程采样率是
+/// `audio_config.sample_rate`（唯一来源）；非有限 ⇒ `valueMustBeNumber`。
+pub const SET_TRACK_DELAY_MS_FIELD: &str = "delayMs";
+
+/// `setTrackDelay` 允许出现的**全部**键（判别键 + 可选的目标音轨 + 两个单位字段）。
+///
+/// `trackId` 是**可选**的：省略时目标音轨就是工具顶层的 `trackId`（与开关形态同口径）。
+pub const SET_TRACK_DELAY_FIELDS: [&str; 4] = [
+    "kind",
+    TRACK_FLAG_TRACK_FIELD,
+    SET_TRACK_DELAY_SAMPLES_FIELD,
+    SET_TRACK_DELAY_MS_FIELD,
+];
+
 /// `ops[].kind` 的**走带配置**形态名（写 [`Op::SetTransportConfig`]）。
 ///
 /// 与模型 `Op` 变体名同词（`SetTransportConfig` 的小驼峰），与 [`SET_TRACK_MUTE_KIND`]
@@ -1320,6 +1363,8 @@ pub const OP_KINDS: &[&str] = &[
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
+    SET_TRACK_POLARITY_KIND,
+    SET_TRACK_DELAY_KIND,
     SET_TRANSPORT_CONFIG_KIND,
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
@@ -1338,6 +1383,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_TRACK_COLOR_KIND,
     SET_TRACK_SAMPLER_KIND,
     SET_CLIP_PLACEMENT_DURATION_KIND,
+    SET_CLIP_PLACEMENT_OFFSET_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1359,7 +1405,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 48 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 56 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1473,22 +1519,29 @@ impl StaticLane {
     }
 }
 
-/// 通道条上的一个**布尔开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`]）。
+/// 通道条上的一个**布尔开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`] /
+/// [`Op::SetTrackPolarity`]）。
 ///
-/// 为什么单列一个二值枚举：两个 `kind` 的**载荷完全相同**（一个 `bool`），
+/// 为什么单列一个三值枚举：三个 `kind` 的**载荷完全相同**（一个 `bool`），
 /// 差异只在目标字段与模型变体上。用类型把这条差异收成一处，
-/// [`parse_one`] 与 [`compile`] 各自只有**一个**开关分支（不是两份会漂移的复制）。
+/// [`parse_one`] 与 [`compile`] 各自只有**一个**开关分支（不是三份会漂移的复制）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackFlag {
     /// 音轨静音（`TrackV3::mute`，[`Op::SetTrackMute`]）。
     Mute,
     /// 音轨独奏（`TrackV3::solo`，[`Op::SetTrackSolo`]）。
     Solo,
+    /// 音轨极性反转（`TrackV3::invert_polarity`，[`Op::SetTrackPolarity`]）。
+    Polarity,
 }
 
 impl TrackFlag {
-    /// 两个形态名，**规范顺序**（错误信息的 `allowed` 与判据共用）。
-    pub const NAMES: [&'static str; 2] = [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND];
+    /// 三个形态名，**规范顺序**（错误信息的 `allowed` 与判据共用）。
+    pub const NAMES: [&'static str; 3] = [
+        SET_TRACK_MUTE_KIND,
+        SET_TRACK_SOLO_KIND,
+        SET_TRACK_POLARITY_KIND,
+    ];
 
     /// 该开关在 `arguments.ops[].kind` 里的字面名字（错误信息与判据共用同一份真相）。
     #[must_use]
@@ -1496,10 +1549,12 @@ impl TrackFlag {
         match self {
             Self::Mute => SET_TRACK_MUTE_KIND,
             Self::Solo => SET_TRACK_SOLO_KIND,
+            Self::Polarity => SET_TRACK_POLARITY_KIND,
         }
     }
 
-    /// 撤销载荷要读的**当前**开关态（`TrackV3::mute` / `TrackV3::solo`）。
+    /// 撤销载荷要读的**当前**开关态（`TrackV3::mute` / `TrackV3::solo` /
+    /// `TrackV3::invert_polarity` 的解出值）。
     ///
     /// 与模型 `apply` 的前置条件读的是**同一个字段**：本层不复制那份判定，
     /// 只是把文档现值搬进 `Op` 的 `old_*`。
@@ -1508,6 +1563,7 @@ impl TrackFlag {
         match self {
             Self::Mute => track.mute,
             Self::Solo => track.solo,
+            Self::Polarity => track.invert_polarity.unwrap_or(false),
         }
     }
 
@@ -1524,6 +1580,11 @@ impl TrackFlag {
                 track_id,
                 old_solo: old,
                 new_solo: new,
+            },
+            Self::Polarity => Op::SetTrackPolarity {
+                track_id,
+                old_invert: old,
+                new_invert: new,
             },
         }
     }
@@ -2291,6 +2352,33 @@ pub const SET_CLIP_PLACEMENT_DURATION_FIELDS: [&str; 4] = [
     SET_CLIP_PLACEMENT_DURATION_TRACK_FIELD,
     SET_CLIP_PLACEMENT_DURATION_PLACEMENT_FIELD,
     SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD,
+];
+
+/// `ops[].kind` 的**设置摆放偏移**形态名（写 [`Op::SetClipPlacementOffset`]）。
+///
+/// 手动相位对齐第一层。与 [`SET_CLIP_PLACEMENT_DURATION_KIND`] 同族：寻址一条摆放
+/// （`trackId` + `placementId` 双定位），只写一个采样字段。
+pub const SET_CLIP_PLACEMENT_OFFSET_KIND: &str = "setClipPlacementOffset";
+
+/// 设置摆放偏移形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_OFFSET_TRACK_FIELD: &str = "trackId";
+
+/// 设置摆放偏移形态的**目标摆放**字段名（`ops[].placementId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_OFFSET_PLACEMENT_FIELD: &str = "placementId";
+
+/// 设置摆放偏移形态的**偏移**字段名（`ops[].offsetSamples`，**必填**，整数采样）。
+///
+/// ⚠ 值域就是模型窗口：±[`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]
+/// （48 kHz 下 ±100 ms）；越界由模型 `ClipOffsetOutOfRange` 拒绝（本层不自造第二条口径）。
+/// `null` ⛔ 不适用（`i32` 不可空）⇒ 缺键／非数／非整数一律响亮拒绝。
+pub const SET_CLIP_PLACEMENT_OFFSET_OFFSET_FIELD: &str = "offsetSamples";
+
+/// 设置摆放偏移形态允许出现的**全部**键（判别键 + 目标音轨 + 目标摆放 + 偏移）。
+pub const SET_CLIP_PLACEMENT_OFFSET_FIELDS: [&str; 4] = [
+    "kind",
+    SET_CLIP_PLACEMENT_OFFSET_TRACK_FIELD,
+    SET_CLIP_PLACEMENT_OFFSET_PLACEMENT_FIELD,
+    SET_CLIP_PLACEMENT_OFFSET_OFFSET_FIELD,
 ];
 
 /// `ops[].kind` 的**整片段移调**形态名（`ADR-0034`：展开成 N 条 [`Op::MoveNote`]）。
@@ -3290,11 +3378,12 @@ pub enum NoteOp {
         /// `DeviceParam` 由该设备参数的既有值域决定（模型 `SetParam` 不另设范围）。
         value: f32,
     },
-    /// 写一个**音轨开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`]）。
+    /// 写一个**音轨开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`] /
+    /// [`Op::SetTrackPolarity`]）。
     ///
     /// 与 [`Self::SetParam`] 同族（音轨级、目标缺省由顶层 `trackId` 给出，
     /// `ops[].trackId` 可逐条覆盖），
-    /// 但载荷是**布尔**：模型把 `mute` / `solo` 从 `SetParam` 里分出去的理由
+    /// 但载荷是**布尔**：模型把 `mute` / `solo` / `invert_polarity` 从 `SetParam` 里分出去的理由
     /// （`f32` 写不了 `bool`）在工具面这一侧同样成立。撤销载荷 `old_*` 由
     /// [`TrackFlag::read`] 从**当前文档**读，不是调用方声明。
     SetTrackFlag {
@@ -3304,6 +3393,22 @@ pub enum NoteOp {
         flag: TrackFlag,
         /// 目标态。
         value: bool,
+    },
+    /// 写一条音轨的**延时**（[`Op::SetTrackDelay`]，单位：采样）。
+    ///
+    /// 手动相位对齐第一层。与 [`Self::SetTrackFlag`] 同族（音轨级、目标缺省由顶层
+    /// `trackId` 给出，`ops[].trackId` 可逐条覆盖），但载荷是**二选一的单位**：
+    /// `delay_samples`（整数采样）或 `delay_ms`（毫秒数）恰好给一个 ——
+    /// 毫秒在 [`compile`] 里用工程采样率换算、四舍五入，采样是唯一精确单位。
+    /// 撤销载荷 `old_delay_samples` 由 [`compile`] 从**当前文档**读（`None` 视作 0），
+    /// 不是调用方声明。
+    SetTrackDelay {
+        /// 可选的**逐条目标音轨**（`ops[].trackId`）；`None` = 回退到顶层 `trackId`。
+        track_id: Option<EntityId>,
+        /// 目标延时（采样；与 `delay_ms` 二选一，恰好一个为 `Some`）。
+        delay_samples: Option<i32>,
+        /// 目标延时（毫秒；与 `delay_samples` 二选一，恰好一个为 `Some`）。
+        delay_ms: Option<f64>,
     },
     /// 设置**走带配置**（[`Op::SetTransportConfig`]）。
     ///
@@ -3523,6 +3628,27 @@ pub enum NoteOp {
         old_duration_ticks: u64,
         /// 修改后的长度（tick，必须 ≥ 1）。
         new_duration_ticks: u64,
+    },
+    /// 设置一条摆放的**偏移**（[`Op::SetClipPlacementOffset`]，单位：采样）。
+    ///
+    /// 手动相位对齐第一层。与 [`Self::SetClipPlacementDuration`] 同族（寻址一条摆放，
+    /// 只写一个采样字段），但改的是**采样粒度的平移量**、不是 tick 粒度的长度：
+    /// 偏移在 tick→帧换算之后加，不动 `start_tick`、不动循环展开。
+    /// ⚠ **值域**：±[`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]
+    /// （越界由模型 `ClipOffsetOutOfRange` 拒绝）。
+    /// 撤销载荷 `old_offset_samples` 由 [`compile`] 从**当前文档**读（`None` 视作 0）
+    /// ⇒ ⛔ 不信调用方。⛔ 不碰 `id` / `clip_id` / `start_tick` / `duration_ticks` /
+    /// `muted` / `loop_config`。
+    SetClipPlacementOffset {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份。
+        placement_id: EntityId,
+        /// 修改前的偏移（采样，来自当前文档；`None` 视作 0）。
+        old_offset_samples: i32,
+        /// 修改后的偏移（采样，必须在
+        /// ±[`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 内）。
+        new_offset_samples: i32,
     },
     /// 设置**音轨色标**（[`Op::SetTrackColor`]，寻址到一条音轨）。
     ///
@@ -4080,6 +4206,7 @@ impl NoteOp {
             Self::SetNotePitchBendPoint { .. } => SET_PITCH_BEND_POINT_KIND,
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
+            Self::SetTrackDelay { .. } => SET_TRACK_DELAY_KIND,
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
@@ -4098,6 +4225,7 @@ impl NoteOp {
             Self::SetTrackColor { .. } => SET_TRACK_COLOR_KIND,
             Self::SetTrackSampler { .. } => SET_TRACK_SAMPLER_KIND,
             Self::SetClipPlacementDuration { .. } => SET_CLIP_PLACEMENT_DURATION_KIND,
+            Self::SetClipPlacementOffset { .. } => SET_CLIP_PLACEMENT_OFFSET_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -4235,10 +4363,11 @@ impl NoteOp {
 
     /// 该形态**本条**是否自带了目标音轨（`ops[].trackId` 给了值）。
     ///
-    /// 只对两个音轨属性形态为真（[`Self::SetParam`] / [`Self::SetTrackFlag`]），且**仅当**
+    /// 只对三个音轨属性形态为真（[`Self::SetParam`] / [`Self::SetTrackFlag`] /
+    /// [`Self::SetTrackDelay`]），且**仅当**
     /// `track_id` 为 `Some` —— 省略时它们照旧回退到顶层 `trackId`（⛔ 不是自带寻址）。
     /// 与 [`Self::is_self_addressed`] 的同类形态（`removeTrack` / 设备）不同：那几个**永远**
-    /// 自带 `trackId`，这两个是**调用方选择**是否逐条点名。
+    /// 自带 `trackId`，这三个是**调用方选择**是否逐条点名。
     #[must_use]
     pub const fn addresses_own_track(&self) -> bool {
         matches!(
@@ -4247,6 +4376,9 @@ impl NoteOp {
                 track_id: Some(_),
                 ..
             } | Self::SetTrackFlag {
+                track_id: Some(_),
+                ..
+            } | Self::SetTrackDelay {
                 track_id: Some(_),
                 ..
             }
@@ -4756,6 +4888,51 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 value,
             })
         }
+        SET_TRACK_POLARITY_KIND => {
+            let value = parse_track_flag_value(object)?;
+            Ok(NoteOp::SetTrackFlag {
+                track_id: read_optional_id(object, TRACK_FLAG_TRACK_FIELD)?,
+                flag: TrackFlag::Polarity,
+                value,
+            })
+        }
+        SET_TRACK_DELAY_KIND => {
+            reject_set_track_delay_fields(object)?;
+            let delay_samples = read_optional_i32(object, SET_TRACK_DELAY_SAMPLES_FIELD)?;
+            let delay_ms = read_optional_finite_f64(object, SET_TRACK_DELAY_MS_FIELD)?;
+            // ⚠ 两个单位**二选一**：与 `removeAutomationPoint` 的 `pointAddressIsAmbiguous` /
+            // `pointAddressRequired` 同一口径（⛔ 不猜调用方想要哪个单位）。
+            let (delay_samples, delay_ms) = match (delay_samples, delay_ms) {
+                (Some(_), Some(_)) => {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        "`delaySamples` 与 `delayMs` 只能给一个（两个单位二选一）".to_owned(),
+                        serde_json::json!({
+                            "field": SET_TRACK_DELAY_KIND,
+                            "reason": "delayUnitAmbiguous",
+                            "unitFields": [SET_TRACK_DELAY_SAMPLES_FIELD, SET_TRACK_DELAY_MS_FIELD],
+                        }),
+                    ));
+                }
+                (None, None) => {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        "`delaySamples` 与 `delayMs` 必须给一个（两个单位二选一）".to_owned(),
+                        serde_json::json!({
+                            "field": SET_TRACK_DELAY_KIND,
+                            "reason": "delayUnitRequired",
+                            "unitFields": [SET_TRACK_DELAY_SAMPLES_FIELD, SET_TRACK_DELAY_MS_FIELD],
+                        }),
+                    ));
+                }
+                pair => pair,
+            };
+            Ok(NoteOp::SetTrackDelay {
+                track_id: read_optional_id(object, TRACK_FLAG_TRACK_FIELD)?,
+                delay_samples,
+                delay_ms,
+            })
+        }
         SET_TEMPO_KIND => {
             reject_set_tempo_fields(object)?;
             Ok(NoteOp::SetTempo {
@@ -4774,6 +4951,19 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_duration_ticks: read_required_u64(
                     object,
                     SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD,
+                )?,
+            })
+        }
+        SET_CLIP_PLACEMENT_OFFSET_KIND => {
+            reject_set_clip_placement_offset_fields(object)?;
+            Ok(NoteOp::SetClipPlacementOffset {
+                track_id: read_id(object, SET_CLIP_PLACEMENT_OFFSET_TRACK_FIELD)?,
+                placement_id: read_id(object, SET_CLIP_PLACEMENT_OFFSET_PLACEMENT_FIELD)?,
+                // ⚠ `old_offset_samples` 是**占位**：真值由 `compile` 从当前文档读。
+                old_offset_samples: 0,
+                new_offset_samples: read_required_i32(
+                    object,
+                    SET_CLIP_PLACEMENT_OFFSET_OFFSET_FIELD,
                 )?,
             })
         }
@@ -5398,6 +5588,26 @@ fn reject_set_clip_placement_duration_fields(object: &Map<String, Value>) -> Res
         &SET_CLIP_PLACEMENT_DURATION_FIELDS,
         SET_CLIP_PLACEMENT_DURATION_KIND,
         "unknownSetClipPlacementDurationField",
+    )
+}
+
+/// 拒绝 `setTrackDelay` 里 [`SET_TRACK_DELAY_FIELDS`] 之外的键。
+fn reject_set_track_delay_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TRACK_DELAY_FIELDS,
+        SET_TRACK_DELAY_KIND,
+        "unknownSetTrackDelayField",
+    )
+}
+
+/// 拒绝 `setClipPlacementOffset` 里 [`SET_CLIP_PLACEMENT_OFFSET_FIELDS`] 之外的键。
+fn reject_set_clip_placement_offset_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_CLIP_PLACEMENT_OFFSET_FIELDS,
+        SET_CLIP_PLACEMENT_OFFSET_KIND,
+        "unknownSetClipPlacementOffsetField",
     )
 }
 
@@ -9108,6 +9318,48 @@ pub fn compile(
                 };
                 flag.compile(target_track, flag.read(current), *value)
             }
+            NoteOp::SetTrackDelay {
+                track_id: op_track_id,
+                delay_samples,
+                delay_ms,
+            } => {
+                // 目标音轨解析与 `SetTrackFlag` 同一条（逐条 `trackId` 优先于顶层）。
+                let target_track = op_track_id.unwrap_or(*track_id);
+                let current = match op_track_id {
+                    Some(_) => project
+                        .track(&target_track)
+                        .map_err(|error| from_model("音轨查找", &error))?,
+                    None => track.expect("批内有回退形态时必查顶层音轨"),
+                };
+                // 单位换算：毫秒 → 采样（工程采样率，四舍五入）；采样直接用。
+                // ⚠ 换算在编译期做：模型只认采样，毫秒是表现层单位。
+                let new_delay_samples = match (delay_samples, delay_ms) {
+                    (Some(samples), None) => *samples,
+                    (None, Some(ms)) => {
+                        let hz = f64::from(project.sample_rate().hz());
+                        (ms * hz / 1000.0).round() as i32
+                    }
+                    _ => unreachable!("parse_one 已保证二选一恰好一个"),
+                };
+                // ⚠ 区间在**这里提前拒**（与 `SetTempo` 的"提前拒"同口径）：模型自己也会拒
+                // 同一区间（`TrackDelayOutOfRange`），这里让越界在编译期就带上 `reason`。
+                if !(-yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+                    ..=yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES)
+                    .contains(&new_delay_samples)
+                {
+                    return Err(from_model(
+                        "轨延时",
+                        &yeban_model::ModelError::TrackDelayOutOfRange {
+                            value: new_delay_samples,
+                        },
+                    ));
+                }
+                Op::SetTrackDelay {
+                    track_id: target_track,
+                    old_delay_samples: current.delay_samples.unwrap_or(0),
+                    new_delay_samples,
+                }
+            }
             NoteOp::SetTempo { new_bpm, .. } => {
                 // 撤销载荷来自**当前文档**（模型的前提条件读同一个字段、且是**逐位**比较）
                 // ⇒ 本层不采信调用方声明的旧状态。
@@ -9196,6 +9448,44 @@ pub fn compile(
                     placement_id: *placement_id,
                     old_duration_ticks: placement.duration_ticks,
                     new_duration_ticks: *new_duration_ticks,
+                }
+            }
+            NoteOp::SetClipPlacementOffset {
+                track_id,
+                placement_id,
+                new_offset_samples,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（与 `SetClipPlacementDuration` 同一条，模型只查
+                // "陈旧载荷"这一条，值比较）。寻址失败的错误码与 `hint` 与长度形态**同一份**。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有摆放可以改偏移"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "placementTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                let placement = track.clips.get(placement_id).ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::ClipNotFound,
+                        format!("音轨 {track_id} 上没有身份 {placement_id} 的摆放"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "placementId": placement_id.to_canonical_string(),
+                            "reason": "clipPlacementNotFound",
+                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                        }),
+                    )
+                })?;
+                Op::SetClipPlacementOffset {
+                    track_id: *track_id,
+                    placement_id: *placement_id,
+                    old_offset_samples: placement.offset_samples.unwrap_or(0),
+                    new_offset_samples: *new_offset_samples,
                 }
             }
             NoteOp::SetTrackColor {
@@ -11557,6 +11847,39 @@ fn read_i8(object: &Map<String, Value>, field: &str) -> Result<i8, Fault> {
     })
 }
 
+/// 读一个**必填**的 `i32` 字段：缺键 ⇒ `missing`；非整数 ⇒ `INVALID_PARAMETER_RANGE`；
+/// 出 `i32` ⇒ `OUT_OF_RANGE`（与 [`read_i8`] 同一口径）。
+fn read_required_i32(object: &Map<String, Value>, field: &str) -> Result<i32, Fault> {
+    let number = read_i64(object, field)?;
+    i32::try_from(number).map_err(|_| {
+        Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{field}` 越界: {number} 不在 -2147483648..=2147483647"),
+            serde_json::json!({ "field": field, "value": number }),
+        )
+    })
+}
+
+/// 读一个**可选**的 `i32` 字段：整键缺省 = `None`；给了则按 [`read_required_i32`] 读。
+fn read_optional_i32(object: &Map<String, Value>, field: &str) -> Result<Option<i32>, Fault> {
+    if !object.contains_key(field) {
+        return Ok(None);
+    }
+    read_required_i32(object, field).map(Some)
+}
+
+/// 读一个**可选**的有限 `f64` 字段：整键缺省 = `None`；给了则按
+/// [`read_required_finite_f64`] 读（非数 / 非有限一律响亮拒绝）。
+fn read_optional_finite_f64(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<f64>, Fault> {
+    if !object.contains_key(field) {
+        return Ok(None);
+    }
+    read_required_finite_f64(object, field).map(Some)
+}
+
 /// 读一个**可选**的 `EntityId` 字段：整键缺省 = `None`（回退语义）；
 /// 给了则按 [`read_id`] 逐字解析（非字符串 / 非法 ULID 都是响亮失败，⛔ 不静默忽略）。
 ///
@@ -11913,6 +12236,183 @@ mod tests {
         let restored = project.track(&track_id).expect("音轨");
         assert_eq!(restored.volume_db, volume_before, "音量必须逐字节回原值");
         assert_eq!(restored.pan, pan_before, "声相必须逐字节回原值");
+    }
+
+    /// 手动相位对齐第一层：`setTrackDelay` / `setTrackPolarity` /
+    /// `setClipPlacementOffset` 三个新形态 —— 解析、毫秒换算、编译与逆操作。
+    ///
+    /// 判据钉住四条：
+    /// 1. 毫秒→采样换算在 48 kHz 与 44.1 kHz 下都对（5 ms @48k = 240 采样；
+    ///    1 ms @44.1k = 44 采样，四舍五入），换算用的采样率是工程
+    ///    `audio_config.sample_rate`（唯一来源）。
+    /// 2. 两个单位二选一：同给 ⇒ `delayUnitAmbiguous`，都不给 ⇒ `delayUnitRequired`；
+    ///    未知键各有各的 reason（`unknownSetTrackDelayField` /
+    ///    `unknownSetClipPlacementOffsetField`）。
+    /// 3. 撤销载荷来自当前文档（`old_*` 不是调用方声明）；施加后逆操作逐字节回原。
+    /// 4. 越界在编译期就拒（`TrackDelayOutOfRange` ⇒ `OUT_OF_RANGE`），与 `SetTempo`
+    ///    的"提前拒"同口径。
+    #[test]
+    fn phase_align_kinds_parse_compile_and_invert() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let placement_id = *project
+            .track(&track_id)
+            .expect("音轨")
+            .clips
+            .keys()
+            .next()
+            .expect("至少一个摆放");
+
+        // --- 解析：两个单位二选一 + 未知键，各有各的 reason ---
+        for (broken, reason) in [
+            (
+                serde_json::json!([{"kind": "setTrackDelay", "delaySamples": 240, "delayMs": 5.0}]),
+                "delayUnitAmbiguous",
+            ),
+            (
+                serde_json::json!([{"kind": "setTrackDelay"}]),
+                "delayUnitRequired",
+            ),
+            (
+                serde_json::json!([{"kind": "setTrackDelay", "delaySamples": 240, "delay": 240}]),
+                "unknownSetTrackDelayField",
+            ),
+        ] {
+            let fault = parse_ops(&broken).expect_err("必须响亮拒绝");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            assert_eq!(lane_fault_data(&fault)["reason"], reason);
+        }
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setClipPlacementOffset", "trackId": track_id.to_canonical_string(), "placementId": placement_id.to_canonical_string(), "offsetSamples": 48, "offset": 48}
+        ]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownSetClipPlacementOffsetField"
+        );
+
+        // --- 编译：采样直通、极性与偏移的撤销载荷来自文档 ---
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackDelay", "delaySamples": 240},
+            {"kind": "setTrackPolarity", "value": true},
+            {"kind": "setClipPlacementOffset", "trackId": track_id.to_canonical_string(), "placementId": placement_id.to_canonical_string(), "offsetSamples": 48}
+        ]))
+        .expect("规范形状必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 3);
+        match &compiled[0] {
+            Op::SetTrackDelay {
+                track_id: target,
+                old_delay_samples,
+                new_delay_samples,
+            } => {
+                assert_eq!(*target, track_id);
+                assert_eq!(*old_delay_samples, 0, "撤销载荷必须来自当前文档");
+                assert_eq!(*new_delay_samples, 240);
+            }
+            other => panic!("应当是 SetTrackDelay: {other:?}"),
+        }
+        match &compiled[1] {
+            Op::SetTrackPolarity {
+                track_id: target,
+                old_invert,
+                new_invert,
+            } => {
+                assert_eq!(*target, track_id);
+                assert!(!*old_invert, "撤销载荷必须来自当前文档");
+                assert!(*new_invert);
+            }
+            other => panic!("应当是 SetTrackPolarity: {other:?}"),
+        }
+        match &compiled[2] {
+            Op::SetClipPlacementOffset {
+                track_id: target,
+                placement_id: target_placement,
+                old_offset_samples,
+                new_offset_samples,
+            } => {
+                assert_eq!(*target, track_id);
+                assert_eq!(*target_placement, placement_id);
+                assert_eq!(*old_offset_samples, 0, "撤销载荷必须来自当前文档");
+                assert_eq!(*new_offset_samples, 48);
+            }
+            other => panic!("应当是 SetClipPlacementOffset: {other:?}"),
+        }
+
+        // --- 施加后逆操作逐字节回原 ---
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "phaseAlign".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        let track = project.track(&track_id).expect("音轨");
+        assert_eq!(track.delay_samples, Some(240));
+        assert_eq!(track.invert_polarity, Some(true));
+        assert_eq!(
+            track.clips[&placement_id].offset_samples,
+            Some(48),
+            "偏移必须落进摆放"
+        );
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        let restored = project.track(&track_id).expect("音轨");
+        assert_eq!(restored.delay_samples, None, "延时必须逐字节回原值");
+        assert_eq!(restored.invert_polarity, None, "极性必须逐字节回原值");
+        assert_eq!(
+            restored.clips[&placement_id].offset_samples, None,
+            "偏移必须逐字节回原值"
+        );
+
+        // --- 毫秒换算：48 kHz 下 5 ms = 240 采样；44.1 kHz 下 1 ms = 44 采样 ---
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackDelay", "delayMs": 5.0}
+        ]))
+        .expect("毫秒形状必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetTrackDelay {
+                new_delay_samples, ..
+            } => assert_eq!(*new_delay_samples, 240, "5 ms @48 kHz = 240 采样"),
+            other => panic!("应当是 SetTrackDelay: {other:?}"),
+        }
+        let mut project_441 = filled_project();
+        project_441.audio_config.sample_rate = yeban_model::project::SampleRate::Hz44100;
+        let compiled = compile(&project_441, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetTrackDelay {
+                new_delay_samples, ..
+            } => assert_eq!(
+                *new_delay_samples, 221,
+                "5 ms @44.1 kHz = 220.5 → 四舍五入 221 采样"
+            ),
+            other => panic!("应当是 SetTrackDelay: {other:?}"),
+        }
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackDelay", "delayMs": 1.0}
+        ]))
+        .expect("毫秒形状必须被接受");
+        let compiled = compile(&project_441, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetTrackDelay {
+                new_delay_samples, ..
+            } => assert_eq!(
+                *new_delay_samples, 44,
+                "1 ms @44.1 kHz = 44.1 → 四舍五入 44 采样"
+            ),
+            other => panic!("应当是 SetTrackDelay: {other:?}"),
+        }
+
+        // --- 越界在编译期就拒（采样与毫秒两路同一口径） ---
+        for broken in [
+            serde_json::json!([{"kind": "setTrackDelay", "delaySamples": 4801}]),
+            serde_json::json!([{"kind": "setTrackDelay", "delayMs": 200.0}]),
+        ] {
+            let ops = parse_ops(&broken).expect("形状本身合法");
+            let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("越界必须拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        }
     }
 
     /// 声相值域**不在本层**：越界的 `value` 在模型自己的 `validate_param_value` 处
@@ -19558,6 +20058,8 @@ mod tests {
             ),
             ("setTrackMute", serde_json::json!({"value": true})),
             ("setTrackSolo", serde_json::json!({"value": false})),
+            ("setTrackPolarity", serde_json::json!({"value": true})),
+            ("setTrackDelay", serde_json::json!({"delaySamples": 240})),
             (
                 "setTransportConfig",
                 serde_json::json!({
@@ -19649,6 +20151,14 @@ mod tests {
                 }),
             ),
             (
+                "setClipPlacementOffset",
+                serde_json::json!({
+                    "trackId": ulid,
+                    "placementId": ulid,
+                    "offsetSamples": 48,
+                }),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -19709,6 +20219,8 @@ mod tests {
                 "setParam",
                 "setTrackMute",
                 "setTrackSolo",
+                "setTrackPolarity",
+                "setTrackDelay",
                 "setTransportConfig",
                 "setTempo",
                 "setAuthor",
@@ -19727,6 +20239,7 @@ mod tests {
                 "setTrackColor",
                 "setTrackSampler",
                 "setClipPlacementDuration",
+                "setClipPlacementOffset",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -19760,7 +20273,7 @@ mod tests {
                 "解析出来的 `NoteOp` 必须回环到同一个 `kind`"
             );
             // ⭐ `#177` 坑④：发布的"读顶层 `clipId` 的 kind 清单"必须与谓词**在全部
-            // 36 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
+            // 56 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
             // 全集，谓词是 `compile` 真正用的那一份）。任一方向漂移都会在这里变红：
             // 清单里多一个 ⇒ `reads_envelope_clip` 为 `false`；谓词里多一个而清单
             // 没跟上 ⇒ 清单漏报（调用方会以为它不需要，而 `compile` 会读）。

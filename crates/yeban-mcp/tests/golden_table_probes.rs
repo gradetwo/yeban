@@ -23,7 +23,7 @@
 //! | `LANE_WRITE_MODES` | `AutomationWriteMode`（**模型** 4） | `write_mode` 4 臂 |
 //! | `DEVICE_KINDS` | `DeviceKind`（**模型** 4） | `device_kind` 4 臂 |
 //! | `StaticLane::NAMES` | `StaticLane`（本地 3） | `static_lane` 3 臂 |
-//! | `TrackFlag::NAMES` | `TrackFlag`（本地 2） | `track_flag` 2 臂 |
+//! | `TrackFlag::NAMES` | `TrackFlag`（本地 3） | `track_flag` 3 臂 |
 //!
 //! `Channel` / `RunMode` / `ChannelLayout` / `Violation` / `ContainerRejection` **没有**
 //! 独立的表（它们的 `as_str` / `name()` 本身就是无通配符 `match`）⇒ 已有等价探针，不重复。
@@ -140,11 +140,12 @@ fn static_lane_name(lane: StaticLane) -> &'static str {
     }
 }
 
-/// `TrackFlag` 的 `kind` 名 —— 无通配符（2 臂）。
+/// `TrackFlag` 的 `kind` 名 —— 无通配符（3 臂）。
 fn track_flag_kind(flag: TrackFlag) -> &'static str {
     match flag {
         TrackFlag::Mute => "setTrackMute",
         TrackFlag::Solo => "setTrackSolo",
+        TrackFlag::Polarity => "setTrackPolarity",
     }
 }
 
@@ -356,8 +357,8 @@ fn the_small_local_tables_are_probed_without_a_wildcard() {
     .map(static_lane_name)
     .collect();
     assert_eq!(statics, StaticLane::NAMES.into_iter().collect());
-    assert_eq!(TrackFlag::NAMES.len(), 2);
-    let flags: BTreeSet<&str> = [TrackFlag::Mute, TrackFlag::Solo]
+    assert_eq!(TrackFlag::NAMES.len(), 3);
+    let flags: BTreeSet<&str> = [TrackFlag::Mute, TrackFlag::Solo, TrackFlag::Polarity]
         .into_iter()
         .map(track_flag_kind)
         .collect();
