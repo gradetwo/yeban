@@ -292,6 +292,8 @@ mod tests {
         for delay in [1_usize, 2, 7, 100, 4800] {
             let mut d = configured();
             let (mut left, mut right) = pulse(6000, 10);
+            // 断言判据的规模界：`pulse` 造出的块定长 6000（`left[..10 + delay]` 的根是 `left`）。
+            assert_eq!(left.len(), 6000);
             d.process(
                 SampleDelayParams {
                     delay_samples: delay,
@@ -419,6 +421,8 @@ mod tests {
     fn delay_beyond_max_is_clamped() {
         let mut d = configured();
         let (mut left, mut right) = pulse(MAX_SAMPLE_DELAY_SAMPLES + 100, 0);
+        // 断言判据的规模界：块定长 `MAX_SAMPLE_DELAY_SAMPLES + 100`（`left[..MAX_…]` 的根是 `left`）。
+        assert_eq!(left.len(), MAX_SAMPLE_DELAY_SAMPLES + 100);
         d.process(
             SampleDelayParams {
                 delay_samples: usize::MAX,
@@ -461,6 +465,8 @@ mod tests {
             invert: false,
         });
         let mut mono = vec![0.0_f32; 32];
+        // 断言判据的规模界：块定长 32（`mono[..9]` 的根是 `mono`）。
+        assert_eq!(mono.len(), 32);
         mono[4] = 1.0;
         d.process_mono(&mut mono);
         assert_eq!(mono[9], 1.0);

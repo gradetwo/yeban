@@ -920,7 +920,7 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
 /// 每个 `kind` 至少喂一条**缺字段 / 类型错 / 身份不存在**的载荷，并断言
 /// 1. 顶层**不得**出现 JSON-RPC `error`（失败必须是**带内**的）；
 /// 2. 失败码**逐行等于登记值**，且都在 `ErrorCode::SCHEMA_CONTRACT` 里；
-/// 3. 19 次被拒之后，工程的 JSON 与调用**之前**逐字节相同（被拒的调用不留痕）。
+/// 3. 22 次被拒之后，工程的 JSON 与调用**之前**逐字节相同（被拒的调用不留痕）。
 ///
 /// 单位 = 一次 `tools/call` 的响应对象（子进程退出码由 `session` 断言为 0）。
 ///
@@ -1158,8 +1158,8 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
     let res = session(&requests);
     assert_eq!(
         res.len(),
-        22,
-        "1 握手 + 1 打开 + 19 次调用 + 1 次回读: {res:?}"
+        25,
+        "1 握手 + 1 打开 + 22 次调用 + 1 次回读: {res:?}"
     );
 
     for (index, (kind, _payload, expected)) in cases.iter().enumerate() {
@@ -1186,8 +1186,8 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
             "带内失败必须给出结构化的 `error.data`（哪怕是 null）"
         );
     }
-    // 19 次被拒之后，工程一个字节都没变。
-    let after = serde_json::to_string(&res[21]["result"]["data"]["project"]).expect("JSON");
+    // 22 次被拒之后，工程一个字节都没变。
+    let after = serde_json::to_string(&res[24]["result"]["data"]["project"]).expect("JSON");
     assert_eq!(after, before, "被拒的调用不得改动工程");
 }
 

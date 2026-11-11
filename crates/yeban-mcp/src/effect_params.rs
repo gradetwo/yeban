@@ -755,8 +755,35 @@ const LIMITER: EffectGroup = EffectGroup {
     ],
 };
 
+/// 采样延迟：手动相位对齐第一层（纯延迟、无反馈、100% 湿）。
+const SAMPLE_DELAY: EffectGroup = EffectGroup {
+    id: "sampleDelay",
+    title: "采样延迟",
+    summary: "采样级延迟（手动相位对齐；纯延迟、无反馈；`sample_delay_samples` 整数采样、`sample_delay_invert` 极性反转）",
+    params: &[
+        EffectParam {
+            name: "sample_delay_samples",
+            aliases: &["sample_delay"],
+            unit: "samples",
+            min: 0.0,
+            max: 48_000.0,
+            default: 0.0,
+            doc: "延迟量（整数采样；小数四舍五入，超限由器件钳制到 0..=48000）",
+        },
+        EffectParam {
+            name: "sample_delay_invert",
+            aliases: &["sample_delay_polarity_invert"],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            doc: "极性反转开关（非零即真；缺省 0 = 不反转）",
+        },
+    ],
+};
+
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 10] = [
+pub const EFFECT_GROUPS: [EffectGroup; 11] = [
     CHANNEL_STRIP,
     EQ,
     FILTER,
@@ -767,6 +794,7 @@ pub const EFFECT_GROUPS: [EffectGroup; 10] = [
     TAPE,
     DELAY,
     LIMITER,
+    SAMPLE_DELAY,
 ];
 
 /// 按名字（大小写不敏感）查一个参数的归属。
