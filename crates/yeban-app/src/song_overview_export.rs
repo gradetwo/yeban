@@ -55,6 +55,7 @@
 //! [`compute_overview`]），只差最后一步：JSON 换成 `yeban-mcp` 的转置 +
 //! `yeban-dsp` 唯一渲染器的单文件自包含 HTML 字符串（与
 //! `tools/call get_song_overview {"format": "html"}` 的 `data` 逐字节相同）。
+//! 报告标题取 `project.title`（与工具侧同一来源 ⇒ 逐字节一致仍成立）。
 //! 回执前缀是 `exported-song-overview-html:`；失败语义与 JSON 出口同款（见上）。
 //! HTML 报告本身不写 `renderMode`（它不是 JSON），口径只写在回执行 `render=` 里。
 
@@ -64,7 +65,8 @@ use std::sync::Arc;
 
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::song_overview::{
-    Profile, Resolution, SongOverviewProvider, SongOverviewRequest, overview_html_report, rounded,
+    Profile, Resolution, SongOverviewProvider, SongOverviewRequest,
+    overview_html_report_with_title, rounded,
 };
 use yeban_model::{AssetHash, YebanProjectV1};
 
@@ -370,7 +372,7 @@ pub fn export_song_overview_html(
     mode: RenderMode,
 ) -> Result<OverviewExportReport, OverviewExportError> {
     let (overview, provider, request) = compute_overview(project, project_dir, assets, mode)?;
-    let text = overview_html_report(&overview);
+    let text = overview_html_report_with_title(&overview, &project.title);
     let report: SaveReport = write_file_atomically(text.as_bytes(), path).map_err(|source| {
         OverviewExportError::Save {
             path: path.to_path_buf(),

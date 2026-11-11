@@ -17,8 +17,10 @@
 //!
 //! 调用方：MCP 的 `get_song_overview`（`format: "html"`）与 CLI 的
 //! `--export-song-overview-html` 都调这里 —— 两边共享行→列转置后调
-//! [`render_html_report`]，⛔ 不各写一份 HTML 生成代码（转置住在 `yeban-mcp` 的
-//! `domain::song_overview`，渲染只住在这里）。
+//! [`render_html_report_with_title`]，⛔ 不各写一份 HTML 生成代码（转置住在 `yeban-mcp` 的
+//! `domain::song_overview`，渲染只住在这里）。标题取工程的 `title`
+//! （`YebanProjectV1.title`，顶层唯一权威）；无标题时调 [`render_html_report`]，
+//! 它委托给带标题入口并用通用标题。
 
 use crate::song_overview::{BAND_DB_FLOOR, NO_ENVELOPE, NO_LOUDNESS_READING_LUFS, SongOverview};
 
@@ -284,12 +286,28 @@ fn envelope_band_polygons(series: &crate::song_overview::BarSeries) -> String {
     out
 }
 
-/// 把 [`SongOverview`] 渲染成单文件自包含 HTML 报告字符串。
+/// 报告无标题时的通用标题（空标题回退到它，不得输出空 `<h1>`）。
+pub const DEFAULT_REPORT_TITLE: &str = "整曲总览报告";
+
+/// 把 [`SongOverview`] 渲染成单文件自包含 HTML 报告字符串（通用标题口径）。
 ///
 /// 只渲染、不分析、不改数值；数值显示口径见模块文档。输出确定性：
 /// 同一份输入恒产出同一份 HTML（无时间戳、无随机 id）。
 #[must_use]
 pub fn render_html_report(overview: &SongOverview) -> String {
+    render_html_report_with_title(overview, DEFAULT_REPORT_TITLE)
+}
+
+/// 带标题的渲染入口：报告头 `<h1>` 与 `<title>` 都用传入的标题（[`escape_html`] 后）；
+/// 空标题（或全空白）回退到通用标题 [`DEFAULT_REPORT_TITLE`]，不得输出空 `<h1>`。
+#[must_use]
+pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> String {
+    let title = if title.trim().is_empty() {
+        DEFAULT_REPORT_TITLE
+    } else {
+        title
+    };
+    let title = escape_html(title);
     let series = &overview.bar_series;
     let meta = &overview.song_meta;
     let summary = &overview.structural_summary;
@@ -303,13 +321,13 @@ pub fn render_html_report(overview: &SongOverview) -> String {
         "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">",
     );
     html.push_str(&format!(
-        "<title>整曲总览报告 · {} · {}</title><style>{STYLE}</style></head><body>",
+        "<title>{title} · {} · {}</title><style>{STYLE}</style></head><body>",
         escape_html(&meta.key_signature),
         escape_html(&meta.profile),
     ));
 
     // ---- 文件头 ----
-    html.push_str("<header><h1>整曲总览报告</h1>");
+    html.push_str(&format!("<header><h1>{title}</h1>"));
     let schema = escape_html(overview.schema_version);
     let key = escape_html(&meta.key_signature);
     let profile = escape_html(&meta.profile);
@@ -802,5 +820,34 @@ mod tests {
         assert!(html.contains("未检出异常"));
         assert!(html.contains("无数据"));
         assert!(!html.contains("<polyline"));
+    }
+
+    #[test]
+    fn report_title_is_escaped_in_h1_and_title_tag() {
+        let title = "夜半 <>&\"' 试听";
+        let html = render_html_report_with_title(&two_bar_overview(), title);
+        let escaped = "夜半 &lt;&gt;&amp;&quot;&#39; 试听";
+        assert!(
+            html.contains(&format!("<h1>{escaped}</h1>")),
+            "h1 用转义后的标题"
+        );
+        assert!(
+            html.contains(&format!("<title>{escaped} · ")),
+            "title 用转义后的标题"
+        );
+        assert!(!html.contains(title), "原始标题不得原样出现");
+    }
+
+    #[test]
+    fn empty_title_falls_back_to_the_generic_title() {
+        for title in ["", "   "] {
+            let html = render_html_report_with_title(&two_bar_overview(), title);
+            assert!(
+                html.contains("<h1>整曲总览报告</h1>"),
+                "空标题回退到通用标题：{title:?}"
+            );
+            assert!(!html.contains("<h1></h1>"), "不得输出空 h1");
+            assert!(!html.contains("<h1>   </h1>"), "不得输出空白 h1");
+        }
     }
 }

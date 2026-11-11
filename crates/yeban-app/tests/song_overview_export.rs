@@ -404,6 +404,10 @@ fn the_html_export_is_the_same_report_as_the_tool_html() {
     );
     assert!(text.starts_with("<!doctype html>"), "报告以 doctype 开头");
     assert!(!text.contains("<script"), "报告里不含脚本");
+    // 报告头带工程标题：两边都是演示工程（`demo_project`，title "夜半 Yeban"），
+    // 同一标题 ⇒ 逐字节一致仍成立。
+    assert!(text.contains("<h1>夜半 Yeban</h1>"), "h1 是工程标题");
+    assert!(text.contains("<title>夜半 Yeban · "), "title 是工程标题");
 
     // 回执：前缀是 HTML 专用的那一个，读数与文件对得上。
     let receipt = lines

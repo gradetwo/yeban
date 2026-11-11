@@ -17,6 +17,7 @@ use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::song_overview::{
     SongOverviewProvider, SongOverviewRequest, StubSongOverviewProvider, overview_html_report,
+    overview_html_report_with_title,
 };
 use yeban_mcp::output_schema::{
     BAND_DEFINITIONS_HZ, BarRow, DetectedAnomaly, RepetitionSummary, SongMeta, SongOverview,
@@ -803,7 +804,8 @@ fn default_json_is_byte_identical_to_pre_change_golden() {
 
 #[test]
 fn format_html_returns_the_same_report_the_renderer_produces() {
-    let mut dispatcher = dispatcher_with_project(filled_project(), true);
+    let project = filled_project();
+    let mut dispatcher = dispatcher_with_project(project.clone(), true);
     let json_response = call_tool(&mut dispatcher, "get_song_overview", json!({}));
     let overview: SongOverview =
         serde_json::from_value(ok_data(&json_response).clone()).expect("json data 反序列化");
@@ -817,12 +819,45 @@ fn format_html_returns_the_same_report_the_renderer_produces() {
         .expect("html data 是字符串");
     assert_eq!(
         html,
-        overview_html_report(&overview),
-        "handler 与渲染器同一份输出"
+        overview_html_report_with_title(&overview, &project.title),
+        "handler 与渲染器同一份输出（同一工程标题）"
     );
     assert!(html.starts_with("<!doctype html>"));
-    assert!(html.contains("整曲总览报告"));
     assert!(!html.contains("<script"), "报告里不含脚本");
+    // 报告头带当前工程标题（`filled_project` 的 title）。
+    assert!(
+        html.contains("<h1>Yeban Model Core Sample</h1>"),
+        "h1 是当前工程标题"
+    );
+    assert!(
+        html.contains("<title>Yeban Model Core Sample · "),
+        "title 是当前工程标题"
+    );
+}
+
+#[test]
+fn format_html_escapes_the_project_title() {
+    let mut project = filled_project();
+    project.title = "试听 <>&\"' 版".to_owned();
+    let mut dispatcher = dispatcher_with_project(project, true);
+    let html_response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"format": "html"}),
+    );
+    let html = ok_data(&html_response)
+        .as_str()
+        .expect("html data 是字符串");
+    let escaped = "试听 &lt;&gt;&amp;&quot;&#39; 版";
+    assert!(
+        html.contains(&format!("<h1>{escaped}</h1>")),
+        "h1 里的工程标题必须转义"
+    );
+    assert!(
+        html.contains(&format!("<title>{escaped} · ")),
+        "title 里的工程标题必须转义"
+    );
+    assert!(!html.contains("试听 <>&\"' 版"), "原始标题不得原样出现");
 }
 
 #[test]

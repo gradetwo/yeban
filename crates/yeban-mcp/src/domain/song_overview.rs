@@ -80,9 +80,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use yeban_model::YebanProjectV1;
 use yeban_render::song_overview::{
     Anomaly as DspAnomaly, AnomalyType as DspAnomalyType, BarSeries as DspBarSeries,
-    BestMatch as DspBestMatch, NO_ENVELOPE, RepeatedPassage as DspRepeatedPassage,
-    RepetitionSummary as DspRepetitionSummary, SCHEMA_VERSION, SongMeta as DspSongMeta,
-    SongOverview as DspSongOverview, StructuralSummary as DspStructuralSummary, render_html_report,
+    BestMatch as DspBestMatch, DEFAULT_REPORT_TITLE, NO_ENVELOPE,
+    RepeatedPassage as DspRepeatedPassage, RepetitionSummary as DspRepetitionSummary,
+    SCHEMA_VERSION, SongMeta as DspSongMeta, SongOverview as DspSongOverview,
+    StructuralSummary as DspStructuralSummary, render_html_report_with_title,
 };
 
 use crate::output_schema::{
@@ -273,11 +274,13 @@ fn to_u32(value: u64) -> u32 {
     value.min(u32::MAX as u64) as u32
 }
 
-/// 把已取整的 §8.2 总览（行式）转置成 dsp 列式并渲染成单文件 HTML 报告。
+/// 把已取整的 §8.2 总览（行式）转置成 dsp 列式并渲染成单文件 HTML 报告（通用标题口径）。
 ///
 /// 唯一 HTML 实现住在 `yeban-dsp` 的 `song_overview_report`（经 `yeban-render` 的
 /// 再导出调用，见本文件头的依赖说明）；这里只做机械转置，⛔ 不另写 HTML。
 /// CLI 的 `--export-song-overview-html` 调同一函数 ⇒ 两边逐字节一致。
+/// 标题口径见 [`overview_html_report_with_title`]：两边都传当前工程的
+/// `project.title`，同一工程 ⇒ 同一标题 ⇒ 逐字节一致仍成立。
 ///
 /// 转置口径：
 /// - 数值已由 handler 按 §8.2 取整（归一化 2 位、dB 1 位），HTML 显示的正是 JSON 的数；
@@ -292,6 +295,15 @@ fn to_u32(value: u64) -> u32 {
 ///   该臂不可达（对照见 `tests/song_overview.rs` 的 `html_report_keeps_unknown_anomaly_text`）。
 #[must_use]
 pub fn overview_html_report(overview: &SongOverview) -> String {
+    overview_html_report_with_title(overview, DEFAULT_REPORT_TITLE)
+}
+
+/// 带标题的转置 + 渲染：标题取当前活跃工程的 `project.title`
+/// （`YebanProjectV1.title`，顶层唯一权威；调用点见 `plan_song_overview` 的
+/// HTML 分支，`project` 就是 `require_active` 取到的活跃工程）。
+/// 空标题时渲染器回退到通用标题。
+#[must_use]
+pub fn overview_html_report_with_title(overview: &SongOverview, title: &str) -> String {
     // 拍级行按小节去重（取每小节首行）。
     let mut seen = BTreeSet::new();
     let mut rows: Vec<&BarRow> = Vec::new();
@@ -402,7 +414,7 @@ pub fn overview_html_report(overview: &SongOverview) -> String {
                 .collect(),
         },
     };
-    render_html_report(&dsp)
+    render_html_report_with_title(&dsp, title)
 }
 
 /// 读 `expected_levels` 实参：缺席 ⇒ 空表；对象 ⇒ 逐项校验（值须为 1–5 级
@@ -531,7 +543,10 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
     if format == OverviewFormat::Html {
         // HTML 形态：`data` 就是报告字符串本身（不是对象；`commitModel` 只注入对象，
         // 见 `ToolResponse::with_commit_model` 的第二条口径）。
-        let html = overview_html_report(&overview);
+        // 标题取当前活跃工程的 `project.title`：`project` 是本函数开头
+        // `require_active(domain)` 取到的那一份，即 `domain.active_project()`；
+        // 没有活跃工程时上面那一步已 `NO_ACTIVE_PROJECT` 报错，不必另设回退。
+        let html = overview_html_report_with_title(&overview, &project.title);
         return Ok(super::Plan::SongOverview {
             data: Value::String(html),
         });

@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 379 条：float_bits 88 ／ integer_count 291；其中 hard 73 ／ platform 12
+# 合计 381 条：float_bits 88 ／ integer_count 293；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -313,8 +313,10 @@ float_bits | hard | 8 | - | src/smoothing.rs | the_snap_threshold_sits_between_t
 integer_count | no_callee | 0 | - | src/smoothing.rs | the_time_constant_is_five_milliseconds
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | data_strings_are_escaped_before_they_reach_html
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | empty_overview_renders_without_panicking
+integer_count | no_callee | 0 | - | src/song_overview_report.rs | empty_title_falls_back_to_the_generic_title
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | escape_html_covers_all_five_characters
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | report_contains_every_section_with_fixture_values
+integer_count | no_callee | 0 | - | src/song_overview_report.rs | report_title_is_escaped_in_h1_and_title_tag
 integer_count | no_callee | 0 | - | src/tape.rs | asym_creates_the_second_harmonic_that_pade_tanh_cannot
 integer_count | no_callee | 0 | - | src/tape.rs | asym_does_not_change_the_small_signal_level
 integer_count | no_callee | 0 | - | src/tape.rs | asym_keeps_silence_silent

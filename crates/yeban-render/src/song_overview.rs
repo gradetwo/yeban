@@ -66,7 +66,9 @@ pub use yeban_dsp::song_overview::{
     SCHEMA_VERSION, SongMeta, SongOverview, StructuralSummary,
 };
 /// 同上：HTML 渲染器（唯一实现，住在 `yeban-dsp` 的 `song_overview_report`）。
-pub use yeban_dsp::song_overview_report::render_html_report;
+pub use yeban_dsp::song_overview_report::{
+    DEFAULT_REPORT_TITLE, render_html_report, render_html_report_with_title,
+};
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_model::{
     ClipContent, DeviceKind, EntityId, PPQ, RoutingKind, YebanProjectV1,
