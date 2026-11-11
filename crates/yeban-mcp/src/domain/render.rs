@@ -460,7 +460,7 @@ use yeban_render::inserts::{
 use yeban_render::mastering;
 use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, OutputStage, RenderError, RenderOptions,
-    RenderOutput, RenderPlan, db_to_linear, track_latencies,
+    RenderOutput, RenderPlan, db_to_linear, project_phase_align, track_latencies,
 };
 // **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
 // 门限积分）。本模块**不复制**它一个表达式：走 `yeban-render` 的再导出，因为
@@ -2992,12 +2992,13 @@ pub fn build(
     // （`#309` 起 pre-pan 判据也要读它）。
     let inserts =
         project_inserts_with_forced_instances(&project.tracks, sample_rate, project.bpm, &forced);
-    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts_and_phase(
         &project.routing_graph,
         project.master_bus_track_id,
         options,
         &latencies,
         &inserts,
+        &project_phase_align(&project.tracks),
     )
     .map_err(|error| render_error("渲染计划编译", &error))?;
     // ⭐ 任务单 `#256`：把每条 `SendGain` 泳道接到计划里的**那条入边**上。
