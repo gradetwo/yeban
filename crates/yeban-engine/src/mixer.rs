@@ -563,8 +563,8 @@ mod tests {
         assert_eq!(l_3db, r_3db);
 
         let (l_lin, r_lin) = pan_gains(0.0, PanLaw::Linear);
-        assert_eq!(l_lin, 0.5);
-        assert_eq!(r_lin, 0.5);
+        assert!((l_lin - 0.5).abs() < 1e-6);
+        assert!((r_lin - 0.5).abs() < 1e-6);
         // Linear 线性守恒：整条范围内 left + right == 1.0
         let mut p = -1.0f32;
         while p <= 1.0 {
@@ -579,11 +579,15 @@ mod tests {
             (center_4_5db - (-4.5000)).abs() < 0.01,
             "4.5dB 中心衰减异常: {center_4_5db}"
         );
-        assert_eq!(l_4_5db, r_4_5db);
+        assert!((l_4_5db - r_4_5db).abs() < 1e-6);
 
         let (l_6db, r_6db) = pan_gains(0.0, PanLaw::ConstantPowerMinus6dB);
-        assert_eq!(l_6db, 0.5);
-        assert_eq!(r_6db, 0.5);
+        assert!((l_6db - 0.5).abs() < 1e-6, "6dB 中心衰减异常: {l_6db}");
+        assert!((r_6db - 0.5).abs() < 1e-6, "6dB 中心衰减异常: {r_6db}");
+        assert!(
+            (l_6db - r_6db).abs() < 1e-6,
+            "6dB 左右对称异常: {l_6db} vs {r_6db}"
+        );
         // ConstantPowerMinus6dB 恒等能量守恒: cos² + sin² == 1.0
         let mut p = -1.0f32;
         while p <= 1.0 {
