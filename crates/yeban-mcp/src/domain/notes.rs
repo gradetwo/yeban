@@ -781,6 +781,7 @@ use yeban_render::inserts::{UnresolvedReason, resolve_device_param};
 
 use super::error::{Fault, from_model};
 use super::extension_pure::LaneKind;
+use super::humanize::{self, HumanizeModel, StructuredParams};
 // ⚠ `setAsset` 的许可判定**复用** `import_audio` 的那一份（⛔ 不复制第二套）。
 use super::ids::deterministic_id;
 use super::import_audio::require_allowed_licence;
@@ -2358,12 +2359,28 @@ pub const HUMANIZE_CLIP_TIME_FIELD: &str = "timeJitterTicks";
 /// `humanizeClip` 的**力度抖动幅度**字段名（必填，±n；结果裁进 1..=127）。
 pub const HUMANIZE_CLIP_VELOCITY_FIELD: &str = "velocityJitter";
 /// `humanizeClip` 允许出现的全部键。
-pub const HUMANIZE_CLIP_FIELDS: [&str; 4] = [
+pub const HUMANIZE_CLIP_FIELDS: [&str; 8] = [
     "kind",
     HUMANIZE_CLIP_SEED_FIELD,
     HUMANIZE_CLIP_TIME_FIELD,
     HUMANIZE_CLIP_VELOCITY_FIELD,
+    HUMANIZE_CLIP_MODEL_FIELD,
+    HUMANIZE_CLIP_TIMING_STD_FIELD,
+    HUMANIZE_CLIP_VELOCITY_STD_FIELD,
+    HUMANIZE_CLIP_AR_ALPHA_FIELD,
 ];
+/// `humanizeClip` 的**抖动模型**字段名（可选，`"uniform"` / `"structured"`；
+/// 缺省 `"uniform"` = 旧均匀行为）。
+pub const HUMANIZE_CLIP_MODEL_FIELD: &str = "model";
+/// `humanizeClip` 的**结构化时值高斯 σ**字段名（可选，tick；缺省 =
+/// `timeJitterTicks / 3`，最小 1；仅 `model = "structured"` 用）。
+pub const HUMANIZE_CLIP_TIMING_STD_FIELD: &str = "timingStdTicks";
+/// `humanizeClip` 的**结构化力度高斯 σ**字段名（可选；缺省 =
+/// `velocityJitter / 3`，最小 1；仅 `model = "structured"` 用）。
+pub const HUMANIZE_CLIP_VELOCITY_STD_FIELD: &str = "velocityStd";
+/// `humanizeClip` 的**自回归系数 α 千分比**字段名（可选，0..=950；
+/// 缺省 800；仅 `model = "structured"` 用）。
+pub const HUMANIZE_CLIP_AR_ALPHA_FIELD: &str = "arAlphaPermille";
 
 /// `ops[].kind` 的**整片段复制**形态名（克隆池条目；可选地同时摆上新片段，
 /// 编译成一条 `Op::Batch`）。
@@ -3161,16 +3178,32 @@ pub enum NoteOp {
     /// 展开成 N 条 `Op::SetNoteTiming`。
     RetrogradeClip,
     /// **整片段人性化**：对每个音符施加**确定性**微时值与力度抖动
-    /// （`splitmix64` 从 `seed` + 音符身份派生，同种子同结果，⛔ 不引 RNG 依赖）。
-    /// 展开成 per-note 的 `Op::SetNoteExpression`（写 `micro_timing_ticks`）
-    /// 与 `Op::ModifyNoteVelocity` 对。
+    /// （`splitmix64` 从 `seed` + 轨身份派生有效种子，同（seed，轨）同结果，
+    /// ⛔ 不引 RNG 依赖）。展开成 per-note 的 `Op::SetNoteExpression`
+    /// （写 `micro_timing_ticks`）与 `Op::ModifyNoteVelocity` 对。
+    ///
+    /// 模型分两路：`model = "uniform"`（缺省）是旧均匀抖动，
+    /// 只换种子派生（旧金向量按测试自带机制重钉，见判据）；
+    /// `model = "structured"` 是 v2 结构化抖动（高斯 + AR(2) + 阻尼，
+    /// 见 [`super::humanize`]）。
     HumanizeClip {
-        /// 抖动种子（同一种子 ⇒ 同一份抖动）。
+        /// 抖动种子（同（种子，轨）⇒ 同一份抖动）。
         seed: u64,
         /// 微时值抖动幅度（tick，±n；结果裁进 ±240）。
         time_jitter_ticks: u64,
         /// 力度抖动幅度（±n；结果裁进 1..=127）。
         velocity_jitter: u8,
+        /// 抖动模型（缺省 `Uniform` = 旧均匀行为）。
+        model: HumanizeModel,
+        /// 结构化时值高斯 σ（tick；`None` = 幅度 / 3，最小 1；
+        /// 仅 `Structured` 用）。
+        timing_std_ticks: Option<u64>,
+        /// 结构化力度高斯 σ（`None` = 幅度 / 3，最小 1；
+        /// 仅 `Structured` 用）。
+        velocity_std: Option<u64>,
+        /// 自回归系数 α 千分比（0..=950；`None` = 800；
+        /// 仅 `Structured` 用）。
+        ar_alpha_permille: Option<u16>,
     },
     /// **整片段复制**：克隆顶层 `clipId` 的池条目（MIDI 与音频片段均可），
     /// 可选地把新片段摆上 `track_id` 的 `start_tick`。
@@ -4622,6 +4655,41 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         }
         HUMANIZE_CLIP_KIND => {
             reject_humanize_clip_fields(object)?;
+            // `model` 缺省 = 旧均匀；未知值响亮拒绝（不引新 reason 字串）。
+            let model = match read_optional_string(object, HUMANIZE_CLIP_MODEL_FIELD)? {
+                None => HumanizeModel::Uniform,
+                Some(value) => HumanizeModel::parse(&value).ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "`model` 必须是 \"uniform\" 或 \"structured\", 实际收到 \"{value}\""
+                        ),
+                    )
+                })?,
+            };
+            // α 千分比 0..=950；越界用 `OutOfRange` + 字段数据（与 `read_range` 同形）。
+            let ar_alpha_permille = match read_optional_u64(object, HUMANIZE_CLIP_AR_ALPHA_FIELD)? {
+                None => None,
+                Some(value) => {
+                    if value > u64::from(humanize::MAX_AR_ALPHA_PERMILLE) {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::OutOfRange,
+                            format!(
+                                "`{}` 越界: {value} 不在 0..={}",
+                                HUMANIZE_CLIP_AR_ALPHA_FIELD,
+                                humanize::MAX_AR_ALPHA_PERMILLE
+                            ),
+                            serde_json::json!({
+                                "field": HUMANIZE_CLIP_AR_ALPHA_FIELD,
+                                "value": value,
+                                "min": 0,
+                                "max": humanize::MAX_AR_ALPHA_PERMILLE,
+                            }),
+                        ));
+                    }
+                    Some(u16::try_from(value).unwrap_or(humanize::MAX_AR_ALPHA_PERMILLE))
+                }
+            };
             Ok(NoteOp::HumanizeClip {
                 seed: read_u64(object, HUMANIZE_CLIP_SEED_FIELD)?,
                 time_jitter_ticks: read_u64(object, HUMANIZE_CLIP_TIME_FIELD)?,
@@ -4631,6 +4699,10 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                     0,
                     MIDI_VELOCITY_MAX,
                 )?,
+                model,
+                timing_std_ticks: read_optional_u64(object, HUMANIZE_CLIP_TIMING_STD_FIELD)?,
+                velocity_std: read_optional_u64(object, HUMANIZE_CLIP_VELOCITY_STD_FIELD)?,
+                ar_alpha_permille,
             })
         }
         DUPLICATE_CLIP_KIND => {
@@ -8457,6 +8529,7 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// - `invertClip` 镜像后音高越出 `0..=127` → `OUT_OF_RANGE`（点名轴与音高）。
 fn expand_clip_level_op(
     project: &YebanProjectV1,
+    track_id: &EntityId,
     clip_id: &EntityId,
     op: &NoteOp,
 ) -> Result<Option<Vec<NoteOp>>, Fault> {
@@ -8578,44 +8651,22 @@ fn expand_clip_level_op(
             seed,
             time_jitter_ticks,
             velocity_jitter,
+            model,
+            timing_std_ticks,
+            velocity_std,
+            ar_alpha_permille,
         } => {
+            // 有效种子按轨派生（Wang 2026-11-11 定）：同（seed，轨）同抖动，
+            // 不同轨即使音符相同、seed 相同，抖动序列也不同。
+            // ⚠ 旧均匀路径的抖动值因此改变（金向量按测试自带机制重钉）；
+            // op 契约（字段名、缺省值、校验）不变，只有派生出的值变。
+            let effective_seed = humanize::derive_track_seed(*seed, track_id);
             let mut pairs = Vec::with_capacity(notes.len() * 2);
-            for (index, (note_id, note)) in notes.iter().enumerate() {
-                // 确定性抖动：splitmix64(seed ⊕ index ⊕ 通道) —— 同一
-                // `seed` 永远给出同一份"手感"，跨进程/重放稳定（红线 4）。
-                let base_seed = *seed;
-                let jitter = |channel: u64| -> i64 {
-                    let mut x = base_seed
-                        .wrapping_add(0x9E37_79B9_7F4A_7C15)
-                        .wrapping_add((index as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
-                        .wrapping_add(channel.wrapping_mul(0x94D0_49BB_1331_11EB));
-                    x ^= x >> 30;
-                    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                    x ^= x >> 27;
-                    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
-                    x ^= x >> 31;
-                    // 把高 33 位压成有偏的 ±区间：[0, 2n] − n。
-                    (x >> 33) as i64
-                };
-                let micro = if *time_jitter_ticks == 0 {
-                    note.micro_timing_ticks.unwrap_or(0)
-                } else {
-                    let span = (*time_jitter_ticks)
-                        .min(u64::try_from(MICRO_TIMING_MAX_ABS).unwrap_or(240));
-                    let jitter = (jitter(0) % (2 * span as i64 + 1)) - span as i64;
-                    let base = i64::from(note.micro_timing_ticks.unwrap_or(0));
-                    (base + jitter).clamp(
-                        -i64::from(MICRO_TIMING_MAX_ABS),
-                        i64::from(MICRO_TIMING_MAX_ABS),
-                    ) as i16
-                };
-                let velocity = if *velocity_jitter == 0 {
-                    note.velocity
-                } else {
-                    let span = i64::from(*velocity_jitter);
-                    let jitter = (jitter(1) % (2 * span + 1)) - span;
-                    (i64::from(note.velocity) + jitter).clamp(1, i64::from(MIDI_VELOCITY_MAX)) as u8
-                };
+            let push_pair = |pairs: &mut Vec<NoteOp>,
+                             note_id: &EntityId,
+                             note: &MidiNote,
+                             micro: i16,
+                             velocity: u8| {
                 pairs.push(NoteOp::SetNoteExpression {
                     note_id: *note_id,
                     new_probability: note.probability,
@@ -8626,6 +8677,95 @@ fn expand_clip_level_op(
                     note_id: *note_id,
                     velocity,
                 });
+            };
+            match model {
+                HumanizeModel::Uniform => {
+                    for (index, (note_id, note)) in notes.iter().enumerate() {
+                        // 确定性抖动：splitmix64(effective_seed ⊕ index ⊕ 通道) —— 同
+                        // （`seed`，轨）永远给出同一份"手感"，跨进程/重放稳定（红线 4）。
+                        // 迭代序与映射与旧版逐位一致（BTreeMap 序），只换种子。
+                        let jitter = |channel: u64| -> i64 {
+                            let mut x = effective_seed
+                                .wrapping_add(0x9E37_79B9_7F4A_7C15)
+                                .wrapping_add((index as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
+                                .wrapping_add(channel.wrapping_mul(0x94D0_49BB_1331_11EB));
+                            x ^= x >> 30;
+                            x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                            x ^= x >> 27;
+                            x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+                            x ^= x >> 31;
+                            // 把高 33 位压成有偏的 ±区间：[0, 2n] − n。
+                            (x >> 33) as i64
+                        };
+                        let micro = if *time_jitter_ticks == 0 {
+                            note.micro_timing_ticks.unwrap_or(0)
+                        } else {
+                            let span = (*time_jitter_ticks)
+                                .min(u64::try_from(MICRO_TIMING_MAX_ABS).unwrap_or(240));
+                            let jitter = (jitter(0) % (2 * span as i64 + 1)) - span as i64;
+                            let base = i64::from(note.micro_timing_ticks.unwrap_or(0));
+                            (base + jitter).clamp(
+                                -i64::from(MICRO_TIMING_MAX_ABS),
+                                i64::from(MICRO_TIMING_MAX_ABS),
+                            ) as i16
+                        };
+                        let velocity = if *velocity_jitter == 0 {
+                            note.velocity
+                        } else {
+                            let span = i64::from(*velocity_jitter);
+                            let jitter = (jitter(1) % (2 * span + 1)) - span;
+                            (i64::from(note.velocity) + jitter)
+                                .clamp(1, i64::from(MIDI_VELOCITY_MAX))
+                                as u8
+                        };
+                        push_pair(&mut pairs, note_id, note, micro, velocity);
+                    }
+                }
+                HumanizeModel::Structured => {
+                    // AR 按 tick 顺序生成：BTreeMap 序是身份序、不是时序，
+                    // 先按 (start_tick, pitch, 身份) 稳定排序。
+                    let mut ordered: Vec<(&EntityId, &MidiNote)> = notes.iter().collect();
+                    ordered.sort_by(|left, right| {
+                        left.1
+                            .start_tick
+                            .cmp(&right.1.start_tick)
+                            .then(left.1.pitch.cmp(&right.1.pitch))
+                            .then(left.0.cmp(right.0))
+                    });
+                    let params = StructuredParams::resolve(
+                        *time_jitter_ticks,
+                        *velocity_jitter,
+                        *timing_std_ticks,
+                        *velocity_std,
+                        *ar_alpha_permille,
+                    );
+                    let deviations = humanize::structured_deviations(
+                        effective_seed,
+                        ordered.len(),
+                        *time_jitter_ticks,
+                        *velocity_jitter,
+                        &params,
+                    );
+                    for (index, (note_id, note)) in ordered.iter().enumerate() {
+                        let micro = if *time_jitter_ticks == 0 {
+                            note.micro_timing_ticks.unwrap_or(0)
+                        } else {
+                            let base = i64::from(note.micro_timing_ticks.unwrap_or(0));
+                            (base + deviations.timing[index]).clamp(
+                                -i64::from(MICRO_TIMING_MAX_ABS),
+                                i64::from(MICRO_TIMING_MAX_ABS),
+                            ) as i16
+                        };
+                        let velocity = if *velocity_jitter == 0 {
+                            note.velocity
+                        } else {
+                            (i64::from(note.velocity) + deviations.velocity[index])
+                                .clamp(1, i64::from(MIDI_VELOCITY_MAX))
+                                as u8
+                        };
+                        push_pair(&mut pairs, note_id, note, micro, velocity);
+                    }
+                }
             }
             pairs
         }
@@ -8778,7 +8918,7 @@ pub fn compile(
         // 所有"整片段"形态（`transposeClip` / `quantizeClip` / `invertClip` /
         // `retrogradeClip` / `humanizeClip`）共用这一条展开通道：
         // [`expand_clip_level_op`] 在**当前投影**上把形态换成音符级条目。
-        if let Some(expanded) = expand_clip_level_op(&project, clip_id, &queue[index])? {
+        if let Some(expanded) = expand_clip_level_op(&project, track_id, clip_id, &queue[index])? {
             let _ = queue.splice(index..index + 1, expanded);
             // ⛔ 不推进下标：下一次迭代编译的就是刚展开的**第一条** `move`。
             continue;
@@ -11413,6 +11553,19 @@ fn read_optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option
     })
 }
 
+/// 读一个**可选**的字符串键（缺省 = `None`；非字符串拒绝）。
+fn read_optional_string(object: &Map<String, Value>, field: &str) -> Result<Option<String>, Fault> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    value.as_str().map(str::to_owned).map(Some).ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是字符串, 实际收到 {value}"),
+        )
+    })
+}
+
 /// 峰值同时发声数（在 `[start, start + duration)` 上的最大重叠）。
 #[must_use]
 pub fn peak_polyphony(notes: impl IntoIterator<Item = (u64, u64)>) -> usize {
@@ -12436,6 +12589,195 @@ mod tests {
         .expect("解析");
         let fault = compile(&project, &track, &clip, &ops).expect_err("撞库必须红");
         assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+    }
+
+    /// 64 音 fixture：tick 等距 240、音高 60..71 循环、力度 100、微时值 0。
+    fn project_with_notes(count: usize) -> (YebanProjectV1, EntityId, EntityId) {
+        let mut project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let mut notes = BTreeMap::new();
+        for index in 0..count {
+            let id = deterministic_id(&format!("humanize-v2-test-note:{index}"));
+            let note = MidiNote::new(id, (index as u64) * 240, 60 + (index % 12) as u8, 240);
+            notes.insert(id, note);
+        }
+        project.clip_pool.get_mut(&clip).expect("夹具片段").content = ClipContent::Midi { notes };
+        (project, track, clip)
+    }
+
+    /// 从 `humanizeClip` 编译产物（`SetNoteExpression` + `ModifyNoteVelocity`
+    /// 成对）里按序抽微时值与力度。
+    fn humanized_values(compiled: &[Op]) -> (Vec<i16>, Vec<u8>) {
+        let mut micros = Vec::new();
+        let mut velocities = Vec::new();
+        for op in compiled {
+            match op {
+                Op::SetNoteExpression {
+                    new_micro_timing_ticks,
+                    ..
+                } => micros.push(new_micro_timing_ticks.expect("人性化必写微时值")),
+                Op::ModifyNoteVelocity { new_vel, .. } => velocities.push(*new_vel),
+                _ => panic!("humanizeClip 只能产出两类 op, 实际 {}", op.name()),
+            }
+        }
+        (micros, velocities)
+    }
+
+    /// `humanizeClip`：每轨种子派生 + 结构化模型 v2（高斯 + AR(2) + 阻尼）。
+    ///
+    /// ① 两轨音符相同、base seed 相同 ⇒ 抖动序列不同（每轨种子派生）；
+    ///    同轨跑两次 ⇒ 同序列（确定性契约现为每（seed，轨））。
+    /// ② 结构化：同 seed 同参数 ⇒ 同输出；与均匀同 seed 输出不同；
+    ///    缺省参数下相邻步 ≤ 生效幅度 / 4、滞后 1 自相关 ≥ 0.8；
+    ///    α = 0 对照的平均 |Δ| 大于缺省 α 的 1.5 倍（α 确实控平滑；
+    ///    1.5 倍口径：阻尼把 α=0 的步进压到 ≤ 5，实测比值 1.71 倍，
+    ///    无阻尼生成器的 2 倍口径见 `humanize` 模块单测）。
+    /// ③ 校验：`model = "bogus"` ⇒ `INVALID_PARAMETER_RANGE`；
+    ///    `arAlphaPermille = 951` ⇒ `OUT_OF_RANGE`（带字段数据）；
+    ///    未知字段 ⇒ `unknownHumanizeClipField`；
+    ///    新字段缺省 ⇒ 旧均匀行为（解析通过、编译通过）。
+    /// ④ 金向量：结构化缺省参数、固定（seed，轨）的前 8 个时值/力度偏差
+    ///    已钉死（重钉机制：测试失败时打印实际值，改断言即可）。
+    #[test]
+    fn humanize_clip_per_track_seed_and_structured_model() {
+        // —— ① 每轨种子派生（夹具只有一条 MIDI 轨：克隆后加一条 MIDI 轨，
+        //    同一片段、同一 seed，分别在两轨上编译）。
+        let mut project = filled_project();
+        let (lead_track, clip) = lead_clip(&project);
+        let second_track = deterministic_id("humanize-v2-test-track-b");
+        project.tracks.insert(
+            second_track,
+            TrackV3 {
+                id: second_track,
+                name: "Second".to_owned(),
+                ..TrackV3::default()
+            },
+        );
+        let payload = serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+        }]);
+        let ops = parse_ops(&payload).expect("解析");
+        let lead_first = compile(&project, &lead_track, &clip, &ops).expect("编译");
+        let lead_second = compile(&project, &lead_track, &clip, &ops).expect("编译");
+        let second = compile(&project, &second_track, &clip, &ops).expect("编译");
+        assert_eq!(
+            format!("{lead_first:?}"),
+            format!("{lead_second:?}"),
+            "同轨跑两次序列相同"
+        );
+        assert_ne!(
+            format!("{lead_first:?}"),
+            format!("{second:?}"),
+            "不同轨即使音符相同、seed 相同，抖动序列也不同"
+        );
+
+        // —— ②④ 结构化路径（64 音 fixture）。
+        let (project, track, clip) = project_with_notes(64);
+        let structured_payload = serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "model": "structured",
+        }]);
+        let ops = parse_ops(&structured_payload).expect("解析");
+        let first = compile(&project, &track, &clip, &ops).expect("编译");
+        let second = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(
+            format!("{first:?}"),
+            format!("{second:?}"),
+            "结构化同 seed 同输出"
+        );
+        let uniform_ops = parse_ops(&payload).expect("解析");
+        let uniform = compile(&project, &track, &clip, &uniform_ops).expect("编译");
+        assert_ne!(
+            format!("{first:?}"),
+            format!("{uniform:?}"),
+            "结构化与均匀同 seed 输出不同"
+        );
+        let (micros, velocities) = humanized_values(&first);
+        assert_eq!(micros.len(), 64);
+        assert_eq!(velocities.len(), 64);
+        // 平滑性：相邻步 ≤ 生效幅度 / 4（时值 20/4 = 5）。
+        let max_step = micros
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(max_step <= 5, "缺省参数下相邻时值步进 {max_step} 应 ≤ 5");
+        let rho1 = humanize::lag1_autocorrelation(
+            &micros
+                .iter()
+                .map(|value| f64::from(*value))
+                .collect::<Vec<_>>(),
+        );
+        assert!(rho1 >= 0.8, "缺省参数下滞后 1 自相关 {rho1} 应 ≥ 0.8");
+        // α = 0 对照：平均 |Δ| 大于缺省 α 的 1.5 倍（实测 1.71 倍；
+        // 阻尼把 α=0 的步进压到 ≤ 5，故不用无阻尼的 2 倍口径）。
+        let alpha0_ops = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "model": "structured", "arAlphaPermille": 0,
+        }]))
+        .expect("解析");
+        let alpha0 = compile(&project, &track, &clip, &alpha0_ops).expect("编译");
+        let (micros0, _) = humanized_values(&alpha0);
+        let mean_abs_step = |values: &[i16]| -> f64 {
+            values
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).abs() as f64)
+                .sum::<f64>()
+                / (values.len() - 1) as f64
+        };
+        assert!(
+            mean_abs_step(&micros0) > 1.5 * mean_abs_step(&micros),
+            "α=0 平均 |Δ| {} 应大于缺省 α 的 1.5 倍 {}",
+            mean_abs_step(&micros0),
+            mean_abs_step(&micros),
+        );
+        // 力度钳制 1..=127。
+        assert!(
+            velocities
+                .iter()
+                .all(|velocity| (1..=127).contains(velocity))
+        );
+        // ④ 金向量（基线微时值全 0 ⇒ 微时值即偏差；基线力度 100 ⇒ 力度 − 100 即偏差）。
+        assert_eq!(&micros[..8], &[0, -3, -4, -5, -5, -3, 2, 6]);
+        assert_eq!(
+            velocities[..8]
+                .iter()
+                .map(|velocity| i64::from(*velocity) - 100)
+                .collect::<Vec<_>>(),
+            [0, 0, -1, -1, -1, -2, 0, 2]
+        );
+
+        // —— ③ 校验。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "model": "bogus",
+        }]))
+        .expect_err("未知 model 必须红");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "arAlphaPermille": 951,
+        }]))
+        .expect_err("α 越界必须红");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        assert_eq!(
+            lane_fault_data(&fault)["field"],
+            serde_json::json!("arAlphaPermille")
+        );
+        assert_eq!(lane_fault_data(&fault)["max"], serde_json::json!(950));
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "bogusField": 1,
+        }]))
+        .expect_err("未知字段必须红");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownHumanizeClipField")
+        );
+        // 新字段缺省 ⇒ 旧均匀行为（解析通过、编译通过）。
+        let ops = parse_ops(&payload).expect("解析");
+        assert_eq!(ops.len(), 1);
+        let _ = compile(&project, &track, &clip, &ops).expect("编译");
     }
 
     /// `setNoteTiming`：解析新值、拒绝未知键，并从**当前文档**读旧值。

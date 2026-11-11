@@ -62,6 +62,7 @@ pub mod error;
 pub mod export_midi;
 pub mod extension_audit;
 pub mod extension_pure;
+pub mod humanize;
 pub mod ids;
 pub mod import_audio;
 pub mod import_midi;

@@ -3254,8 +3254,10 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // 键）；另 `src/domain/mod.rs` 新增 1 处 `araSessionNotFound` 字面站点（键
     // `reason` / `loadedSessionIds`）⇒ reason 数 239 → 240、规范行数 1022 → 1025
     // （1 reason 行 ＋ 2 键行）、摘要同批重钉。
+    // 人性化引擎 v2（本支）：新增 `src/domain/humanize.rs` ⇒ 51 → 52（该文件本身不含
+    // `reason` 键；摘要逐位不变）。
     // ⇒ 本条只证明"分母变了一位"。
-    assert_eq!(files.len(), 51, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 52, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()
