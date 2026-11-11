@@ -154,6 +154,19 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 | 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | 已声明、非 required；**夹具里不落盘**（任务单 `#76` 新增，见下） |
 | 20 | `#.embedded_samples` | 根 `embedded_samples` | 已声明、非 required；**夹具里不落盘**（采样内嵌线新增，见下） |
 | 21 | `#.track_order` | 根 `track_order` | 已声明、非 required；**夹具里不落盘**（UI 轨道交互线新增，见下） |
+| 22 | `#.tracks.*.delay_samples` | `tracks[*].delay_samples` | 已声明、非 required；**夹具里不落盘**（手动相位对齐线新增，见下） |
+| 23 | `#.tracks.*.invert_polarity` | `tracks[*].invert_polarity` | 已声明、非 required；**夹具里不落盘**（手动相位对齐线新增，见下） |
+| 24 | `#.tracks.*.clips.*.offset_samples` | `tracks[*].clips[*].offset_samples` | 已声明、非 required；**夹具里不落盘**（手动相位对齐线新增，见下） |
+
+⚠ **第 22–24 项（手动相位对齐线，2026-11-11 追加）**：`TrackV3::delay_samples`
+（`Option<i32>`，±4800 采样）与 `TrackV3::invert_polarity`（`Option<bool>`）及
+`ClipPlacement::offset_samples`（`Option<i32>`，±4800 采样），三者皆为
+`#[serde(default)]` + `skip_serializing_if`，`None` 时不落盘，与第 19/20/21 项**同形**
+⇒ 契约里只能声明为可选属性，而既有夹具**刻意不落盘**它们
+（填进夹具会改变 `project.filled.json` 的冻结 sha256 与顶层键集）。
+⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"；唯一出路是登记。本次与该三行同时更新了
+`model-no-compat-notes.md` §5.4 与 `tests/schema_ratchet.rs` 的常量表
+（常量现共 36 项）。它们同样受 ④/⑤ 双向反证：删键必须读成功、且不得进任何 `required`。
 
 ⚠ **第 21 项（UI 轨道交互线，2026-11-07 追加）**：`YebanProjectV1::track_order`
 （`Vec<EntityId>` + `#[serde(default)]` + `skip_serializing_if`，空表不落盘）

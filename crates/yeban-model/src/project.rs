@@ -1172,6 +1172,17 @@ pub struct ClipPlacement {
     ///
     /// **必需** [ADR-0001 D43]：缺了它会把一个静音的摆放静默放出来（可听的行为反转）。
     pub muted: bool,
+    /// 摆放偏移（单位：采样，有符号）。
+    ///
+    /// 手动相位对齐第一层：整段摆放沿时间轴平移，渲染时在 tick→帧换算**之后**
+    /// 加到帧位置上（负值结果夹到 0）。范围
+    /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]（48 kHz 下 ±100 ms）。
+    ///
+    /// `None` 是一等状态（“无偏移”），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]，并与 `skip_serializing_if` 对偶
+    /// ⇒ **默认（无偏移）的工程逐字节不变**：本字段为 `None` 时**不落盘**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_samples: Option<i32>,
 }
 
 impl Default for ClipPlacement {
@@ -1183,6 +1194,7 @@ impl Default for ClipPlacement {
             duration_ticks: crate::ids::PPQ,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         }
     }
 }
@@ -1192,10 +1204,18 @@ impl ClipPlacement {
     ///
     /// # Errors
     ///
-    /// 时值为零 → [`ModelError::ZeroDuration`]；循环区间非法 → [`ModelError::ZeroDuration`]。
+    /// 时值为零 → [`ModelError::ZeroDuration`]；循环区间非法 → [`ModelError::ZeroDuration`]；
+    /// 偏移越界 → [`ModelError::ClipOffsetOutOfRange`]。
     pub fn validate(&self) -> Result<(), ModelError> {
         if self.duration_ticks == 0 {
             return Err(ModelError::ZeroDuration);
+        }
+        if let Some(offset) = self.offset_samples
+            && !(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+                ..=crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES)
+                .contains(&offset)
+        {
+            return Err(ModelError::ClipOffsetOutOfRange { value: offset });
         }
         self.loop_config.validate()
     }
@@ -1276,6 +1296,30 @@ pub struct TrackV3 {
     /// **必需** [ADR-0001 D43]：它改变 solo 的混音结果，且与同族字段
     /// `mute` / `solo`（都无默认值）对称 —— 三个混音开关要么都写，要么都别写。
     pub solo_safe: bool,
+    /// 轨延时（单位：采样，有符号）。
+    ///
+    /// 手动相位对齐第一层：整条轨的输出沿时间轴平移，渲染时按采样精确施加。
+    /// 正值 = 推后（晚出声），负值 = 提前。范围
+    /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]（48 kHz 下 ±100 ms）。
+    /// 施加点在 PDC 补偿**之后**、求和之前（[ARCH-PDC-001] 的反向约束：
+    /// 绝不能写进 `DeviceDefinition::latency_samples`，否则 PDC 会把它当成
+    /// 设备固有延迟、抬高 `L_max`、在汇合点抹平相对偏移）。
+    ///
+    /// `None` 是一等状态（“无延时”），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]，并与 `skip_serializing_if` 对偶
+    /// ⇒ **默认（无延时）的工程逐字节不变**：本字段为 `None` 时**不落盘**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_samples: Option<i32>,
+    /// 极性反转（这条轨的输出乘 -1）。
+    ///
+    /// 手动相位对齐第一层：与 `delay_samples` 同一施加点（PDC 之后、求和之前），
+    /// 实时与离线两路都生效。
+    ///
+    /// `None` 是一等状态（“不反转”），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]，并与 `skip_serializing_if` 对偶
+    /// ⇒ **默认（不反转）的工程逐字节不变**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invert_polarity: Option<bool>,
     /// 所属折叠文件夹（**仅界面语义**）。
     ///
     /// `None` 是**一等状态**（"不折叠进任何文件夹"），保留 `#[serde(default)]`
@@ -1345,6 +1389,8 @@ impl Default for TrackV3 {
             mute: false,
             solo: false,
             solo_safe: false,
+            delay_samples: None,
+            invert_polarity: None,
             folder_id: None,
             color: None,
             sampler: None,
@@ -1382,6 +1428,13 @@ impl TrackV3 {
         }
         if !(-1.0..=1.0).contains(&self.pan) {
             return Err(ModelError::PanOutOfRange { value: self.pan });
+        }
+        if let Some(delay) = self.delay_samples
+            && !(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+                ..=crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES)
+                .contains(&delay)
+        {
+            return Err(ModelError::TrackDelayOutOfRange { value: delay });
         }
         for device in &self.devices {
             device.validate()?;

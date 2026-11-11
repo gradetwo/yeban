@@ -608,6 +608,37 @@ pub enum Op {
         /// 修改后的静音状态。
         new_muted: bool,
     },
+    /// 设置摆放偏移（[`ClipPlacement::offset_samples`]，单位：采样）。
+    ///
+    /// 手动相位对齐第一层：整段摆放沿时间轴平移。为什么必须有这个变体
+    /// （而不是复用 [`Op::MoveClipPlacement`]）：`MoveClipPlacement` 只写
+    /// `start_tick`（tick 粒度，且改动会动循环展开的锚点）；偏移是**采样粒度**
+    /// 的独立量，在 tick→帧换算之后加，不动 `start_tick`、不动循环展开。
+    ///
+    /// ⚠ **前置条件**：① 音轨与摆放都必须存在（[`ModelError::TrackNotFound`] /
+    /// [`ModelError::ClipPlacementNotFound`]）；② 文档**当前**的 `offset_samples`
+    /// （`None` 视作 0）必须等于 `old_offset_samples`，否则
+    /// [`ModelError::OpStateMismatch`]（⛔ 不信调用方声明的旧值）；③ 新值必须在
+    /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 内，否则
+    /// [`ModelError::ClipOffsetOutOfRange`]（与 [`ClipPlacement::validate`]
+    /// 同一条口径、⛔ 不自造新错误）。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+    /// `duration_ticks` / `muted` / `loop_config`。
+    /// ⚠ **寻址用 `track_id` + `placement_id` 双定位**（与
+    /// [`Op::SetClipPlacementDuration`] 同族）。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类），⛔ 不是 `previous_*`。
+    SetClipPlacementOffset {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份（即 `clips` 的键）。
+        placement_id: EntityId,
+        /// 修改前的偏移（采样；`None` 视作 0 的解出值）。
+        old_offset_samples: i32,
+        /// 修改后的偏移（采样，必须在
+        /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 内）。
+        new_offset_samples: i32,
+    },
     /// **整体替换**一条摆放的循环配置（[`ClipPlacement::loop_config`]）。
     ///
     /// ⚠ **本变体补上了什么**（任务单 `#336`，直接来自 `#335` 的实测报告）：
@@ -1100,6 +1131,44 @@ pub enum Op {
         /// 修改后独奏。
         new_solo: bool,
     },
+    /// 设置音轨**延时**（[`TrackV3::delay_samples`]，单位：采样）。
+    ///
+    /// 手动相位对齐第一层。为什么必须有这个变体（而不是复用 [`Op::SetParam`]）：
+    /// `SetParam` 的载荷是 `f32` + [`AutomationTarget`]，而延时是 `i32` 采样数，
+    /// 且没有对应的自动化目标 ⇒ 延时在操作日志层**不可表达**（与
+    /// [`Op::SetTrackMute`] 不得不用 `bool` 载荷的理由同型）。
+    ///
+    /// ⚠ **前置条件**：① 音轨必须存在；② 文档**当前**的 `delay_samples`
+    /// （`None` 视作 0）必须等于 `old_delay_samples`，否则
+    /// [`ModelError::OpStateMismatch`]；③ 新值必须在
+    /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 内，否则
+    /// [`ModelError::TrackDelayOutOfRange`]（与 [`TrackV3::validate`] 同一条口径）。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `volume_db` / `pan` / `mute` / `solo` /
+    /// `invert_polarity`。`apply` 时 0 归一化为 `None`（缺省即无延时，落盘不变）。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类），⛔ 不是 `previous_*`。
+    SetTrackDelay {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前延时（采样；`None` 视作 0 的解出值）。
+        old_delay_samples: i32,
+        /// 修改后延时（采样，必须在
+        /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 内）。
+        new_delay_samples: i32,
+    },
+    /// 设置音轨**极性反转**（[`TrackV3::invert_polarity`]）。
+    ///
+    /// 手动相位对齐第一层。与 [`Op::SetTrackMute`] 同族：
+    /// [`TrackV3::invert_polarity`] 是 `bool`，`SetParam` 的 `f32` 载荷带不动。
+    /// ⚠ 本变体只写这一个开关：⛔ 不碰 `delay_samples` 与其它混音字段。
+    SetTrackPolarity {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前极性反转。
+        old_invert: bool,
+        /// 修改后极性反转。
+        new_invert: bool,
+    },
     /// 设置宏位置。
     SetMacro {
         /// 目标音轨。
@@ -1298,6 +1367,7 @@ impl Op {
             Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
             Self::MoveClipPlacement { .. } => "MoveClipPlacement",
             Self::SetClipPlacementMuted { .. } => "SetClipPlacementMuted",
+            Self::SetClipPlacementOffset { .. } => "SetClipPlacementOffset",
             Self::SetClipPlacementLoop { .. } => "SetClipPlacementLoop",
             Self::SetClipPlacementDuration { .. } => "SetClipPlacementDuration",
             Self::AddTrack { .. } => "AddTrack",
@@ -1327,6 +1397,8 @@ impl Op {
             Self::SetAsset { .. } => "SetAsset",
             Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
+            Self::SetTrackDelay { .. } => "SetTrackDelay",
+            Self::SetTrackPolarity { .. } => "SetTrackPolarity",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
             Self::RemoveAutomationPoint { .. } => "RemoveAutomationPoint",
@@ -1613,6 +1685,32 @@ impl Op {
                 // ⚠ `bool` 的比较是**值比较**（与 [`Op::SetTrackMute`] 同口径）⇒ 陈旧载荷必被拒。
                 if current.muted != *old_muted {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetClipPlacementOffset {
+                track_id,
+                placement_id,
+                old_offset_samples,
+                new_offset_samples,
+            } => {
+                let track = doc.track(track_id)?;
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                // ⚠ `None` 视作 0 的解出值比较 ⇒ 陈旧载荷必被拒。
+                if current.offset_samples.unwrap_or(0) != *old_offset_samples {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 新值必须在窗口内：与 [`ClipPlacement::validate`] 同一条口径。
+                if !(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+                    ..=crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES)
+                    .contains(new_offset_samples)
+                {
+                    return Err(ModelError::ClipOffsetOutOfRange {
+                        value: *new_offset_samples,
+                    });
                 }
                 Ok(())
             }
@@ -2008,6 +2106,35 @@ impl Op {
                 track_id, old_solo, ..
             } => {
                 if doc.track(track_id)?.solo != *old_solo {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetTrackDelay {
+                track_id,
+                old_delay_samples,
+                new_delay_samples,
+            } => {
+                // ⚠ `None` 视作 0 的解出值比较 ⇒ 陈旧载荷必被拒。
+                if doc.track(track_id)?.delay_samples.unwrap_or(0) != *old_delay_samples {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 新值必须在窗口内：与 [`TrackV3::validate`] 同一条口径。
+                if !(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+                    ..=crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES)
+                    .contains(new_delay_samples)
+                {
+                    return Err(ModelError::TrackDelayOutOfRange {
+                        value: *new_delay_samples,
+                    });
+                }
+                Ok(())
+            }
+            Self::SetTrackPolarity {
+                track_id, old_invert, ..
+            } => {
+                // ⚠ `None` 视作 false 的解出值比较 ⇒ 陈旧载荷必被拒。
+                if doc.track(track_id)?.invert_polarity.unwrap_or(false) != *old_invert {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -2509,6 +2636,17 @@ impl Op {
                 old_muted: *new_muted,
                 new_muted: *old_muted,
             },
+            Self::SetClipPlacementOffset {
+                track_id,
+                placement_id,
+                old_offset_samples,
+                new_offset_samples,
+            } => Self::SetClipPlacementOffset {
+                track_id: *track_id,
+                placement_id: *placement_id,
+                old_offset_samples: *new_offset_samples,
+                new_offset_samples: *old_offset_samples,
+            },
             Self::SetClipPlacementLoop {
                 track_id,
                 placement_id,
@@ -2791,6 +2929,24 @@ impl Op {
                 track_id: *track_id,
                 old_solo: *new_solo,
                 new_solo: *old_solo,
+            },
+            Self::SetTrackDelay {
+                track_id,
+                old_delay_samples,
+                new_delay_samples,
+            } => Self::SetTrackDelay {
+                track_id: *track_id,
+                old_delay_samples: *new_delay_samples,
+                new_delay_samples: *old_delay_samples,
+            },
+            Self::SetTrackPolarity {
+                track_id,
+                old_invert,
+                new_invert,
+            } => Self::SetTrackPolarity {
+                track_id: *track_id,
+                old_invert: *new_invert,
+                new_invert: *old_invert,
             },
             Self::SetMacro {
                 track_id,
@@ -3108,6 +3264,24 @@ impl Op {
                 }
                 Ok(())
             }
+            // 只写那**一个**偏移字段：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+            // `duration_ticks` / `muted` / `loop_config`。0 归一化为 `None`
+            // （缺省即无偏移，落盘不变）。
+            Self::SetClipPlacementOffset {
+                track_id,
+                placement_id,
+                new_offset_samples,
+                ..
+            } => {
+                if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
+                    placement.offset_samples = if *new_offset_samples == 0 {
+                        None
+                    } else {
+                        Some(*new_offset_samples)
+                    };
+                }
+                Ok(())
+            }
             // 只写那**一个**结构体字段：⛔ 不碰 `id` / `clip_id` / `start_tick` /
             // `duration_ticks` / `muted`。⭐ 整体替换，⛔ 不是逐字段合并。
             Self::SetClipPlacementLoop {
@@ -3274,6 +3448,30 @@ impl Op {
                 track_id, new_solo, ..
             } => {
                 doc.track_mut(track_id)?.solo = *new_solo;
+                Ok(())
+            }
+            // 只写那**一个**延时字段：⛔ 不碰 `volume_db` / `pan` / `mute` / `solo` /
+            // `invert_polarity`。0 归一化为 `None`（缺省即无延时，落盘不变）。
+            Self::SetTrackDelay {
+                track_id, new_delay_samples, ..
+            } => {
+                doc.track_mut(track_id)?.delay_samples = if *new_delay_samples == 0 {
+                    None
+                } else {
+                    Some(*new_delay_samples)
+                };
+                Ok(())
+            }
+            // 只写那**一个**极性开关：⛔ 不碰 `delay_samples` 与其它混音字段。
+            // false 归一化为 `None`（缺省即不反转，落盘不变）。
+            Self::SetTrackPolarity {
+                track_id, new_invert, ..
+            } => {
+                doc.track_mut(track_id)?.invert_polarity = if *new_invert {
+                    Some(true)
+                } else {
+                    None
+                };
                 Ok(())
             }
             // 整体替换三个字段：⛔ 不逐字段写（见枚举文档：三个字段是一个作者选择）。
@@ -3767,6 +3965,7 @@ mod tests {
                 duration_ticks: 3840,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
 
@@ -3885,6 +4084,7 @@ mod tests {
             duration_ticks: 960,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         };
         let new_edge = RoutingEdge {
             id: fresh_edge,
@@ -4049,6 +4249,13 @@ mod tests {
                 old_duration_ticks: 3840,
                 new_duration_ticks: 1920,
             },
+            Op::SetClipPlacementOffset {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_offset_samples: 0,
+                // 48 kHz 下 1 ms。
+                new_offset_samples: 48,
+            },
             Op::RemoveClipPlacement {
                 track_id: f.lead,
                 placement_id: f.placement,
@@ -4059,6 +4266,7 @@ mod tests {
                     duration_ticks: 3840,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             },
             Op::MoveClipPlacement {
@@ -4176,6 +4384,17 @@ mod tests {
                 track_id: f.bass,
                 old_solo: false,
                 new_solo: true,
+            },
+            Op::SetTrackDelay {
+                track_id: f.lead,
+                old_delay_samples: 0,
+                // 48 kHz 下 5 ms。
+                new_delay_samples: 240,
+            },
+            Op::SetTrackPolarity {
+                track_id: f.lead,
+                old_invert: false,
+                new_invert: true,
             },
             // 走带配置：夹具的 `transport` 是 `TransportConfig::default()`
             // （`metronome_enabled=false` / `count_in_bars=0` / `Bar`）⇒ `old_config`
@@ -4472,6 +4691,7 @@ mod tests {
             "AddClipPlacement",
             "RemoveClipPlacement",
             "MoveClipPlacement",
+            "SetClipPlacementOffset",
             "AddTrack",
             "RemoveTrack",
             "MoveTrack",
@@ -4483,6 +4703,8 @@ mod tests {
             "SetParam",
             "SetTrackMute",
             "SetTrackSolo",
+            "SetTrackDelay",
+            "SetTrackPolarity",
             "SetMacro",
             "SetAutomationPoint",
             "RemoveAutomationPoint",
@@ -4625,6 +4847,7 @@ mod tests {
                 duration_ticks: 960,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         };
         place.apply(&mut chain).expect("摆放新建的片段");
@@ -5088,6 +5311,213 @@ mod tests {
         assert_eq!(noop_doc, fixture_document(), "无操作不得改变文档的任何一位");
     }
 
+    /// 判据（手动相位对齐第一层）：`SetTrackDelay` / `SetTrackPolarity` /
+    /// `SetClipPlacementOffset` 的四条硬性质 —— **可逆** / **前置条件走既有错误码** /
+    /// **范围越界走模型校验口径** / **0 与 false 归一化为 `None`**。
+    ///
+    /// 怎么变红：
+    /// - 把 `structural_inverse()` 里两个字段都写成 `*new_*` ⇒ 逆操作的前置条件不成立；
+    /// - 把 `precondition()` 里的比较删掉 ⇒ 第二段断言红；
+    /// - 把 `commit()` 里的归一化删掉（0 存成 `Some(0)`）⇒ 第一段的还原断言红；
+    /// - 把范围校验删掉 ⇒ 第三段断言红。
+    #[test]
+    fn phase_align_ops_are_reversible_and_check_their_payloads() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        // 夹具起点：lead 的 `delay_samples` 与摆放的 `offset_samples` 都是 `None`，
+        // `invert_polarity` 也是 `None`。
+        assert_eq!(doc.track(&f.lead).expect("lead").delay_samples, None);
+        assert_eq!(doc.track(&f.lead).expect("lead").invert_polarity, None);
+        assert_eq!(
+            doc.track(&f.lead)
+                .expect("lead")
+                .clips
+                .get(&f.placement)
+                .expect("摆放")
+                .offset_samples,
+            None
+        );
+
+        // ---- ① 真的写下去，并按载荷精确还原（含 0/false → None 的归一化） ----
+        let before = doc.clone();
+        let delay = Op::SetTrackDelay {
+            track_id: f.lead,
+            old_delay_samples: 0,
+            new_delay_samples: 240,
+        };
+        delay.apply(&mut doc).expect("延时必须可应用");
+        assert_eq!(
+            doc.track(&f.lead).expect("lead").delay_samples,
+            Some(240),
+            "必须真的写成 240"
+        );
+        delay
+            .invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("逆应用");
+        assert_eq!(doc, before, "延时的逆必须逐位还原（含归一化为 None）");
+
+        let polarity = Op::SetTrackPolarity {
+            track_id: f.lead,
+            old_invert: false,
+            new_invert: true,
+        };
+        polarity.apply(&mut doc).expect("极性必须可应用");
+        assert_eq!(
+            doc.track(&f.lead).expect("lead").invert_polarity,
+            Some(true),
+            "必须真的写成 true"
+        );
+        polarity
+            .invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("逆应用");
+        assert_eq!(doc, before, "极性的逆必须逐位还原（含归一化为 None）");
+
+        let offset = Op::SetClipPlacementOffset {
+            track_id: f.lead,
+            placement_id: f.placement,
+            old_offset_samples: 0,
+            new_offset_samples: 48,
+        };
+        offset.apply(&mut doc).expect("偏移必须可应用");
+        assert_eq!(
+            doc.track(&f.lead)
+                .expect("lead")
+                .clips
+                .get(&f.placement)
+                .expect("摆放")
+                .offset_samples,
+            Some(48),
+            "必须真的写成 48"
+        );
+        offset
+            .invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("逆应用");
+        assert_eq!(doc, before, "偏移的逆必须逐位还原（含归一化为 None）");
+
+        // ---- ② 载荷与文档不符 ⇒ 既有错误码 `OpStateMismatch` ----
+        assert_eq!(
+            Op::SetTrackDelay {
+                track_id: f.lead,
+                old_delay_samples: 240,
+                new_delay_samples: 0,
+            }
+            .apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetTrackDelay"
+            }),
+            "文档现值是 0 而载荷说 240 ⇒ 必须拒绝"
+        );
+        assert_eq!(
+            Op::SetTrackPolarity {
+                track_id: f.lead,
+                old_invert: true,
+                new_invert: false,
+            }
+            .apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetTrackPolarity"
+            })
+        );
+        assert_eq!(
+            Op::SetClipPlacementOffset {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_offset_samples: 48,
+                new_offset_samples: 0,
+            }
+            .apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetClipPlacementOffset"
+            })
+        );
+        assert_eq!(doc, before, "被拒的载荷不得改变文档的任何一位");
+
+        // ---- ③ 新值越界 ⇒ 与模型校验同一条口径（不自造新错误） ----
+        assert_eq!(
+            Op::SetTrackDelay {
+                track_id: f.lead,
+                old_delay_samples: 0,
+                new_delay_samples: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES + 1,
+            }
+            .apply(&mut doc),
+            Err(ModelError::TrackDelayOutOfRange {
+                value: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES + 1
+            })
+        );
+        assert_eq!(
+            Op::SetClipPlacementOffset {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_offset_samples: 0,
+                new_offset_samples: -crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES - 1,
+            }
+            .apply(&mut doc),
+            Err(ModelError::ClipOffsetOutOfRange {
+                value: -crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES - 1
+            })
+        );
+        // 边界值必须放行。
+        Op::SetTrackDelay {
+            track_id: f.lead,
+            old_delay_samples: 0,
+            new_delay_samples: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES,
+        }
+        .apply(&mut doc)
+        .expect("边界值必须放行");
+        Op::SetTrackDelay {
+            track_id: f.lead,
+            old_delay_samples: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES,
+            new_delay_samples: 0,
+        }
+        .apply(&mut doc)
+        .expect("边界值还原");
+        assert_eq!(doc, before, "边界值往返后文档必须还原");
+
+        // ---- ④ 无操作（`new == old`）必须被放行，且文档一位不动 ----
+        let noop = Op::SetTrackDelay {
+            track_id: f.lead,
+            old_delay_samples: 0,
+            new_delay_samples: 0,
+        };
+        assert_eq!(noop.apply(&mut doc), Ok(()), "无操作必须被放行");
+        assert_eq!(doc, before, "无操作不得改变文档的任何一位");
+    }
+
+    /// 判据：轨延时与片段偏移的范围校验（`TrackV3::validate` /
+    /// [`ClipPlacement::validate`] 的边界值）。
+    #[test]
+    fn track_delay_and_clip_offset_ranges_are_validated() {
+        let mut track = TrackV3::default();
+        track.delay_samples = Some(crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES);
+        assert!(track.validate().is_ok(), "边界值必须合法");
+        track.delay_samples = Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES);
+        assert!(track.validate().is_ok(), "负边界值必须合法");
+        track.delay_samples = Some(crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES + 1);
+        assert_eq!(
+            track.validate(),
+            Err(ModelError::TrackDelayOutOfRange {
+                value: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES + 1
+            })
+        );
+
+        let mut placement = ClipPlacement::default();
+        placement.offset_samples = Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES);
+        assert!(placement.validate().is_ok(), "负边界值必须合法");
+        placement.offset_samples = Some(-crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES - 1);
+        assert_eq!(
+            placement.validate(),
+            Err(ModelError::ClipOffsetOutOfRange {
+                value: -crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES - 1
+            })
+        );
+    }
+
     #[test]
     fn every_variant_applies_and_inverts_exactly() {
         let mut doc = fixture_document();
@@ -5116,7 +5546,7 @@ mod tests {
     /// 而"重放同一条 op 会不会把状态改两遍"恰恰是重试 / 重连 / AI 代理重复提交的安全前提
     /// （`MCP-TOOL-006` 的 `idempotencyKey` 就是为它存在的）。
     ///
-    /// 机械枚举：`showcase_ops()` 的 **35** 条覆盖 `Op` 的**全部 31 个变体**
+    /// 机械枚举：`showcase_ops()` 的 **66** 条覆盖 `Op` 的**全部 60 个变体**
     /// （由 `every_op_variant_is_declared_in_the_contract` 从源码的穷举 `match` 机械抽取证明），
     /// 每一条都在**全新** `fixture_document()` 上跑（与
     /// `every_variant_applies_and_inverts_exactly` 同一前提：脚本里的每条 op 都针对初始文档构造）。
@@ -6586,6 +7016,7 @@ mod tests {
                             duration_ticks: 960,
                             loop_config: LoopConfig::default(),
                             muted: false,
+                            offset_samples: None,
                         },
                     };
                 }
@@ -7077,6 +7508,7 @@ mod tests {
                 duration_ticks: 960,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         }
         .apply(&mut doc)
@@ -9867,7 +10299,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 57] = [
+        const FROZEN: [(&str, &[&str]); 60] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -9901,6 +10333,7 @@ mod tests {
             ("SetClipPlacementDuration", &["tracks"]),
             ("SetClipPlacementLoop", &["tracks"]),
             ("SetClipPlacementMuted", &["tracks"]),
+            ("SetClipPlacementOffset", &["tracks"]),
             ("SetDeviceBypassed", &["tracks"]),
             ("SetDeviceName", &["tracks"]),
             ("SetKeySignature", &["key_signature"]),
@@ -9919,8 +10352,10 @@ mod tests {
             ("SetTimeSignaturePoint", &["time_signature_map"]),
             ("SetTitle", &["title"]),
             ("SetTrackColor", &["tracks"]),
+            ("SetTrackDelay", &["tracks"]),
             ("SetTrackMute", &["tracks"]),
             ("SetTrackName", &["tracks"]),
+            ("SetTrackPolarity", &["tracks"]),
             ("SetTrackSampler", &["tracks"]),
             ("SetTrackPreset", &["tracks"]),
             ("SetTrackSolo", &["tracks"]),
@@ -10134,7 +10569,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 57] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 60] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -10168,6 +10603,7 @@ mod tests {
             ("SetClipPlacementDuration", &["duration_ticks"]),
             ("SetClipPlacementLoop", &["enabled", "end_tick"]),
             ("SetClipPlacementMuted", &["muted"]),
+            ("SetClipPlacementOffset", &["offset_samples"]),
             ("SetDeviceBypassed", &["bypassed"]),
             ("SetDeviceName", &["name"]),
             ("SetKeySignature", &["key_signature"]),
@@ -10189,8 +10625,10 @@ mod tests {
             ("SetTimeSignaturePoint", &[]),
             ("SetTitle", &["title"]),
             ("SetTrackColor", &["color"]),
+            ("SetTrackDelay", &["delay_samples"]),
             ("SetTrackMute", &["mute"]),
             ("SetTrackName", &["name"]),
+            ("SetTrackPolarity", &["invert_polarity"]),
             ("SetTrackSampler", &["sampler"]),
             ("SetTrackPreset", &["preset"]),
             ("SetTrackSolo", &["solo"]),

@@ -42,6 +42,16 @@ pub const RATCHET_MAX: u8 = 16;
 /// 微时值偏移的合法绝对值上界（含）：±240 tick = ±1/16 音符 @960 PPQ。
 pub const MICRO_TIMING_MAX_ABS: i16 = 240;
 
+/// 手动相位对齐窗口的合法绝对值上界（含，单位：采样）：±4800 采样。
+///
+/// 48 kHz 下 ±100 ms，44.1 kHz 下约 ±108.8 ms。轨延时
+/// （[`crate::TrackV3::delay_samples`]）与片段偏移
+/// （[`crate::ClipPlacement::offset_samples`]）共用这一个窗口：
+/// 两者都是同一层手动对齐的输入，窗口分开写会漂移。
+/// 毫秒是表现层单位，换算只用工程采样率（`audio_config.sample_rate`），
+/// 毫秒→采样的换算口径见 `yeban-dsp` 的 `SampleDelay::millis_to_samples`。
+pub const PHASE_ALIGN_MAX_ABS_SAMPLES: i32 = 4800;
+
 /// `probability` 的合法下界（含）。
 ///
 /// 与 [`PROBABILITY_MAX`] 一起是概率值域的**唯一**机械载体：模型的两处校验
