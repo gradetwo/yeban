@@ -271,6 +271,9 @@ export component HumanizeDialog inherits Rectangle {
                 y: 124px;
                 width: parent.width - 48px;
                 height: 16px;
+                accessible-role: text;
+                accessible-id: "humanize-note-line";
+                accessible-label: "基础种子说明";
                 text: "同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎 v2 接上。";
                 color: Tokens.warn-amber;
                 font-size: Tokens.font-size-xs;

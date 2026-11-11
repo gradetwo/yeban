@@ -2293,7 +2293,7 @@ impl ElementRegistry {
             false,
         );
         registry.add(
-            "humanize-apply-quantize-button",
+            "quantize-apply-button",
             ElementKind::Button,
             "dialogs/humanize_dialog.slint",
             "应用量化",
