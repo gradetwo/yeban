@@ -81,8 +81,8 @@ use yeban_dsp::math::note_to_hz;
 use yeban_model::project::DEFAULT_BPM;
 use yeban_model::time_math::TempoMap;
 use yeban_model::{
-    AssetHash, BlockSize, ClipContent, EntityId, MidiNote, ModelError, RoutingGraph, TrackKind,
-    TrackV3, YebanProjectV1,
+    AssetHash, AutomationLane, AutomationTarget, BlockSize, ClipContent, EntityId, MidiNote,
+    ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
 };
 
 use crate::audio_clip::{
@@ -1441,6 +1441,108 @@ impl Drop for EngineSnapshot {
     }
 }
 
+/// ⭐ **延音踏板控制器号**（MIDI 1.0：CC 64，`Damper Pedal / Sustain`）。
+pub const SUSTAIN_PEDAL_CC: u8 = 64;
+
+/// ⭐ **踏板通断阈值**（MIDI 1.0：`0..=63` = 抬起，`64..=127` = 踩下）。
+///
+/// 半踏板（`0 < v < 64`）不走这个阈值 —— 它的保持量由 [`pedal_hold_end_tick`] 里的
+/// 深度比单独算；阈值只决定"全踏板何时算抬起"。
+pub const SUSTAIN_PEDAL_ON_THRESHOLD: f32 = 64.0;
+
+/// 取一条轨的延音踏板泳道（`MidiCc{64}`），**读通且有点的才算**。
+///
+/// `read_enabled == false` ⇒ 引擎求值入口返回"无自动化值"（与
+/// `yeban-model` 的 `automation_value_at` 同一条口径）⇒ 踏板视为不存在；
+/// 空泳道同理。`None` ⇒ 本轨音符行为与接线前逐位相同。
+fn sustain_pedal_lane(track: &TrackV3) -> Option<&AutomationLane> {
+    let lane = track.automation_lanes.get(&AutomationTarget::MidiCc {
+        track_id: track.id,
+        controller: SUSTAIN_PEDAL_CC,
+    })?;
+    if lane.read_enabled && !lane.points.is_empty() {
+        Some(lane)
+    } else {
+        None
+    }
+}
+
+/// ⭐ **延音踏板保持终点**（ADR-0071）：音符在 `note_end_tick` 松键时，CC64 泳道
+/// 把它的发声终点延到哪里。纯函数、确定性（同一泳道同一终点 ⇒ 同一输出）。
+///
+/// # 语义
+///
+/// 设 `v` = 泳道在 `note_end_tick` 处的值（`AutomationLane::value_at`：点间线性
+/// 插值、区间外保持端点值，与渲染侧 `CcProbe` 同一个求值口径）：
+///
+/// - `v <= 0` ⇒ 踏板完全抬起，终点不动；
+/// - `v >= 64` ⇒ **全踏板**：终点延到踏板抬起处 —— 曲线首次跌破 `64` 的 tick
+///   （相邻点对之间的线性弦上求交点；`Linear` 段精确，缓动段为弦近似）；
+///   踏板到数据末仍未抬起 ⇒ 延到 `track_end_tick`（本轨内容末 tick）；
+/// - `0 < v < 64` ⇒ **半踏板**：终点延到曲线**回到 0** 的 tick，但保持区间按深度比
+///   `v / 64` 线性缩放（`v → 0` 时延量 → 0，`v → 64` 时延量 → 全踏板量，
+///   **连续无跳变**）；同样以 `track_end_tick` 为上限。
+///
+/// # 边界
+///
+/// - 终点**不短于**原终点（`track_end_tick < note_end_tick` 的退化情形也不回缩）；
+/// - 摆放裁剪**不管**踏板延量：摆放裁的是**记谱时值**（`project_schedules` 第 1 条），
+///   踏板延的是**发声终点**；上限只由踏板抬起 tick 与本轨内容末 tick 定。
+#[must_use]
+pub fn pedal_hold_end_tick(lane: &AutomationLane, note_end_tick: u64, track_end_tick: u64) -> u64 {
+    let Some(value) = lane.value_at(note_end_tick) else {
+        return note_end_tick;
+    };
+    if !(value > 0.0) {
+        return note_end_tick;
+    }
+    // 全踏板看"跌破 64"，半踏板看"回到 0"。
+    let threshold = if value >= SUSTAIN_PEDAL_ON_THRESHOLD {
+        SUSTAIN_PEDAL_ON_THRESHOLD
+    } else {
+        0.0
+    };
+    // 拐点表：（松键点，插值）＋ 之后全部点。首个"从阈值之上跨到阈值之下"的
+    // 相邻点对即抬起处；松键点本身已在插值段上 ⇒ 弦与真实段共线（Linear 精确）。
+    let mut knots: Vec<(u64, f32)> = vec![(note_end_tick, value)];
+    knots.extend(
+        lane.points_in_tick_order()
+            .into_iter()
+            .filter(|point| point.tick > note_end_tick)
+            .map(|point| (point.tick, point.value)),
+    );
+    let mut release_tick: Option<u64> = None;
+    for pair in knots.windows(2) {
+        let [(tick0, value0), (tick1, value1)] = pair else {
+            continue;
+        };
+        let crosses = if threshold > 0.0 {
+            *value0 >= threshold && *value1 < threshold
+        } else {
+            *value0 > threshold && *value1 <= threshold
+        };
+        if !crosses {
+            continue;
+        }
+        // 线性弦上的交点：`t0 + (v0 - thr) / (v0 - v1) * (t1 - t0)`（`f64`、
+        // 四舍五入到 tick；分母恒 > 0：`v0 >= thr > v1` 或 `v0 > 0 >= v1`）。
+        let span = tick1.saturating_sub(*tick0) as f64;
+        let frac = f64::from(*value0 - threshold) / f64::from(*value0 - *value1);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let crossing = (*tick0 as f64 + frac * span).round() as u64;
+        release_tick = Some(crossing);
+        break;
+    }
+    // 踏板到数据末仍未抬起 ⇒ 保持到本轨内容末（⛔ 不是无限延长）。
+    let release_tick = release_tick.unwrap_or(track_end_tick);
+    let held = release_tick.saturating_sub(note_end_tick) as f64;
+    // 深度比：全踏板恒为 1；半踏板 `v/64`（`v = 64` 时恰为 1 ⇒ 在阈值处连续）。
+    let depth = (value.min(SUSTAIN_PEDAL_ON_THRESHOLD) / SUSTAIN_PEDAL_ON_THRESHOLD) as f64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let extended = note_end_tick.saturating_add((held * depth).round() as u64);
+    extended.max(note_end_tick)
+}
+
 /// 把工程的 MIDI 摆放投影成"每轨一份已调度音符表"[ROAD-M2-005, ROAD-M2-006]。
 ///
 /// 这是**控制线程**上的纯投影（允许分配、允许超越函数），实时侧只读结果：
@@ -1490,6 +1592,19 @@ impl Drop for EngineSnapshot {
 /// 播一遍（pickup）；`enabled == false`、`end <= start`、`end >= D`（含恰好覆盖）
 /// 仍**逐位单遍**。每条副本逐遍走原来的 ratchet/pulse 路径，副本计入
 /// [`MAX_NOTES_PER_TRACK`] 的丢弃计数（[`EngineSnapshot::note_schedule_drops`]）。
+/// ⭐ ⭐ **追加修订段（ADR-0071：延音踏板 CC64）**：
+/// 第 1 条描述的"摆放裁剪"管的是**记谱时值**，现仍逐字保留。自 ADR-0071 起：
+///
+/// - 每轨的 `MidiCc{64}` 泳道（读通且有点）在投影期把音符的**发声终点**延后
+///   （[`pedal_hold_end_tick`]）：全踏板（`v >= 64`）延到踏板抬起 tick，
+///   半踏板（`0 < v < 64`）按 `v/64` 缩放保持区间；无泳道 / 读通关闭 / 空泳道
+///   ⇒ 本轨与接线前**逐位相同**；
+/// - 只延每份拷贝的**最后一个** ratchet 脉冲（细分节奏不糊成一片）；
+/// - 延后终点**不**受摆放区间裁剪（摆放裁的是记谱时值，踏板延的是发声终点），
+///   上限只由踏板抬起 tick 与本轨内容末 tick 定；
+/// - 终点在 tick 域延、再走 `sample_at` 换算 ⇒ 变速工程同样正确；
+///   `held_before`（`trigger=first` / `legato` 的按住数）读的 `end_sample` 已含
+///   踏板延量 ⇒ 踏板按住的音符在触发期也被算作"按住"。
 fn project_schedules(
     project: &YebanProjectV1,
     tempo: &TempoMap,
@@ -1517,6 +1632,31 @@ fn project_schedules(
         // 一个音符的曲线只在这里建**一次**，它的 `ratchet` 子脉冲与循环副本共享同一下标
         //（`D10`：局部时间各自从自己的起点算 ⇒ 每个副本从 0 重放）。
         let mut pitch_shapes: Vec<PitchShape> = Vec::new();
+        // ⭐ ADR-0071：本轨的延音踏板泳道（无 / 读通关闭 / 空 ⇒ `None` ⇒ 本轨逐位不变）
+        // 与踏板到数据末仍未抬起时的保持上限（本轨内容末 tick）。
+        let pedal_lane = sustain_pedal_lane(track);
+        let track_end_tick = track
+            .clips
+            .values()
+            .filter(|placement| !placement.muted)
+            .filter_map(|placement| {
+                let entry = project.clip_pool.get(&placement.clip_id)?;
+                let ClipContent::Midi { notes: pool } = &entry.content else {
+                    return None;
+                };
+                let placement_start = placement.start_tick;
+                let placement_end = placement_start.saturating_add(placement.duration_ticks);
+                pool.values()
+                    .map(|note| {
+                        placement_start
+                            .saturating_add(note.start_tick)
+                            .saturating_add(note.duration_ticks)
+                            .min(placement_end)
+                    })
+                    .max()
+            })
+            .max()
+            .unwrap_or(0);
 
         for placement in track.clips.values() {
             if placement.muted {
@@ -1578,6 +1718,16 @@ fn project_schedules(
                         }
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         let (start_tick, end_tick) = (start_tick as u64, end_tick as u64);
+                        // ⭐ ADR-0071：延音踏板只延每份拷贝的**最后一个**脉冲
+                        // （`ratchet` 细分节奏不糊）；终点在 tick 域延、再换算成帧。
+                        // 无踏板泳道时 `pedal_lane` 为 `None` ⇒ 这一行不执行。
+                        let end_tick = if pulse + 1 == ratchet {
+                            pedal_lane.map_or(end_tick, |lane| {
+                                pedal_hold_end_tick(lane, end_tick, track_end_tick)
+                            })
+                        } else {
+                            end_tick
+                        };
                         let (Some(start_sample), Some(end_sample)) =
                             (timebase.sample_at(start_tick), timebase.sample_at(end_tick))
                         else {
@@ -2356,7 +2506,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use yeban_model::{RoutingEdge, RoutingKind};
+    use yeban_model::{
+        AutomationPoint, AutomationWriteMode, ClipPlacement, ClipPoolEntry, CurveType, LoopConfig,
+        RoutingEdge, RoutingKind,
+    };
 
     fn simple_project() -> YebanProjectV1 {
         let master = EntityId::new();
@@ -3440,6 +3593,211 @@ mod tests {
         assert!(
             !text.contains("rtrb"),
             "不得暴露环的内部类型（实得 {text}）"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0071：延音踏板 CC64（调度层、tick 域）
+    // -----------------------------------------------------------------------
+
+    /// CC64 泳道夹具（线性点；`read_enabled` 由调用方定）。
+    fn pedal_lane_for(
+        track_id: EntityId,
+        points: &[(u64, f32)],
+        read_enabled: bool,
+    ) -> AutomationLane {
+        let mut lane_points = BTreeMap::new();
+        for (tick, value) in points {
+            let id = EntityId::new();
+            lane_points.insert(
+                id,
+                AutomationPoint {
+                    id,
+                    tick: *tick,
+                    value: *value,
+                    curve: CurveType::Linear,
+                },
+            );
+        }
+        AutomationLane {
+            target: AutomationTarget::MidiCc {
+                track_id,
+                controller: SUSTAIN_PEDAL_CC,
+            },
+            points: lane_points,
+            read_enabled,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        }
+    }
+
+    /// 一条 MIDI 轨 + 一个片段（起点 0、时值 = 最长音符末 tick）+ 可选的 CC64 泳道。
+    ///
+    /// 栅格：120 BPM / 48 kHz / 960 PPQ ⇒ **1 tick = 25 样本**。
+    /// 音符元组 =（起点 tick，时值 tick，音高，ratchet）。
+    /// 踏板参数 =（点位，`read_enabled`）；泳道在取到真实轨身份后才建。
+    fn pedal_project(
+        notes: &[(u64, u64, u8, Option<u8>)],
+        pedal: Option<(&[(u64, f32)], bool)>,
+    ) -> (YebanProjectV1, EntityId) {
+        let mut project = simple_project();
+        project.bpm = 120.0;
+        let track_id = *project
+            .tracks
+            .keys()
+            .next()
+            .expect("simple_project 有一条轨");
+        let clip_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut note_map = BTreeMap::new();
+        for (start, duration, pitch, ratchet) in notes {
+            let id = EntityId::new();
+            let mut note = MidiNote::new(id, *start, *pitch, *duration);
+            note.velocity = 100;
+            note.ratchet = *ratchet;
+            note_map.insert(id, note);
+        }
+        project.clip_pool.insert(
+            clip_id,
+            ClipPoolEntry {
+                id: clip_id,
+                name: "Clip".to_owned(),
+                content: ClipContent::Midi { notes: note_map },
+            },
+        );
+        let span = notes
+            .iter()
+            .map(|(start, duration, _, _)| start + duration)
+            .max()
+            .unwrap_or(960);
+        let track = project.tracks.get_mut(&track_id).expect("轨");
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: span,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        if let Some((points, read_enabled)) = pedal {
+            let lane = pedal_lane_for(track_id, points, read_enabled);
+            track.automation_lanes.insert(lane.target, lane);
+        }
+        project.validate().expect("夹具必须合法");
+        (project, track_id)
+    }
+
+    /// 投影后本轨已调度音符的 `(起点样本, 终点样本)`（按调度序）。
+    fn scheduled_spans(project: &YebanProjectV1, track_id: EntityId) -> Vec<(u64, u64)> {
+        let (schedules, _) = project_schedules(project, &project.tempo());
+        schedules[&track_id]
+            .notes()
+            .iter()
+            .map(|note| (note.start_sample(), note.end_sample()))
+            .collect()
+    }
+
+    /// ADR-0071 判据 P1（全踏板）：音符 0..960、踏板 0 踩下（127）1920 抬起（0）
+    /// ⇒ 发声终点延到 1920 tick = 48000 样本。
+    #[test]
+    fn pedal_holds_a_note_until_the_pedal_lifts() {
+        let (project, track_id) = pedal_project(
+            &[(0, 960, 69, None)],
+            Some((&[(0, 127.0), (1920, 0.0)], true)),
+        );
+        assert_eq!(
+            scheduled_spans(&project, track_id),
+            vec![(0, 48_000)],
+            "踏板抬起 tick 1920 ⇒ 48000 样本"
+        );
+    }
+
+    /// ADR-0071 正对照：没有 CC64 泳道 ⇒ 终点不动（与接线前逐位相同）。
+    #[test]
+    fn without_a_pedal_lane_the_note_ends_on_time() {
+        let (project, track_id) = pedal_project(&[(0, 960, 69, None)], None);
+        assert_eq!(scheduled_spans(&project, track_id), vec![(0, 24_000)]);
+    }
+
+    /// ADR-0071 判据 P2：踏板在音符松键前已抬起（480 抬起、音符 960 结束）
+    /// ⇒ 不保持。
+    #[test]
+    fn pedal_lifted_before_note_off_does_not_hold() {
+        let (project, track_id) = pedal_project(
+            &[(0, 960, 69, None)],
+            Some((&[(0, 127.0), (480, 0.0)], true)),
+        );
+        assert_eq!(scheduled_spans(&project, track_id), vec![(0, 24_000)]);
+    }
+
+    /// ADR-0071 判据 P3（半踏板）：踏板深度 32（`32/64 = 0.5`）、1920 回到 0
+    /// ⇒ 保持区间减半：960 + (1920 − 960) × 0.5 = 1440 tick = 36000 样本。
+    #[test]
+    fn half_pedal_holds_a_fraction_of_the_down_interval() {
+        let (project, track_id) = pedal_project(
+            &[(0, 960, 69, None)],
+            Some((&[(0, 32.0), (1920, 0.0)], true)),
+        );
+        assert_eq!(
+            scheduled_spans(&project, track_id),
+            vec![(0, 36_000)],
+            "半踏板深度 32 ⇒ 保持一半"
+        );
+    }
+
+    /// ADR-0071 判据 P4（踏板到数据末仍未抬起）：单点 (0, 127) 踏板 ⇒ 保持到
+    /// 本轨内容末 tick（两音符中最长的 1920）⇒ 两音符终点都是 48000 样本。
+    #[test]
+    fn pedal_never_lifting_holds_to_the_end_of_track_content() {
+        let (project, track_id) = pedal_project(
+            &[(0, 960, 69, None), (0, 1920, 72, None)],
+            Some((&[(0, 127.0)], true)),
+        );
+        assert_eq!(
+            scheduled_spans(&project, track_id),
+            vec![(0, 48_000), (0, 48_000)],
+            "A 被延到内容末 1920；B 本来就到 1920"
+        );
+    }
+
+    /// ADR-0071 判据 P5（斜坡交点）：踏板 0→2880 从 127 线性降到 0，音符 960 松键
+    /// ⇒ 跌破 64 的交点在 2880 × 63/127 ≈ 1428.66 → 1429 tick（四舍五入）。
+    #[test]
+    fn pedal_crossing_on_a_ramp_is_interpolated() {
+        let lane = pedal_lane_for(EntityId::new(), &[(0, 127.0), (2880, 0.0)], true);
+        assert_eq!(
+            pedal_hold_end_tick(&lane, 960, 2880),
+            1429,
+            "2880 × 63/127 = 1428.66 ⇒ 1429"
+        );
+    }
+
+    /// ADR-0071 判据 P6：`read_enabled = false` 的踏板泳道 ⇒ 视为不存在。
+    #[test]
+    fn read_disabled_pedal_lane_is_ignored() {
+        let (project, track_id) = pedal_project(
+            &[(0, 960, 69, None)],
+            Some((&[(0, 127.0), (1920, 0.0)], false)),
+        );
+        assert_eq!(scheduled_spans(&project, track_id), vec![(0, 24_000)]);
+    }
+
+    /// ADR-0071 判据 P7（ratchet）：时值 960 的音符拆成两脉冲时，只有**最后**
+    /// 一脉冲被踏板延（480..960 → 480..1920）；第一脉冲 0..480 不动。
+    #[test]
+    fn ratchet_only_the_last_pulse_is_held() {
+        let (project, track_id) = pedal_project(
+            &[(0, 960, 69, Some(2))],
+            Some((&[(0, 127.0), (1920, 0.0)], true)),
+        );
+        assert_eq!(
+            scheduled_spans(&project, track_id),
+            vec![(0, 12_000), (12_000, 48_000)],
+            "第一脉冲 0..480 tick 不动；第二脉冲延到踏板抬起"
         );
     }
 }
