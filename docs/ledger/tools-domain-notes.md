@@ -44,6 +44,8 @@
 | `src/domain/proposal.rs` | `MCP-TOOL-005/006/007/009/010`、`ARCH-OPS-002` | 提案记录（状态、基于哪个提交、op 清单、合并/拒绝留痕） |
 | `src/domain/render.rs` | `MCP-TOOL-008` | 渲染参数校验（`format` 白名单 + 走模型层 `SampleRate::from_hz`）；**渲染本体已由 `line/mcp-render` 接线** |
 | `src/domain/ids.rs` | `MODEL-AST-001` 精神 | 确定性夹具身份（FNV-1a 128 → Crockford Base32 ULID），让 `dryRun` 预览与真调用逐字节一致 |
+| `src/domain/otcp.rs` | `MCP-TOOL-EXT-OTCP-CORRECT/JOB/NOTES`（ADR-0070） | OTCP 音高校正的 MCP 适配层：提交 / 轮询 / 音符表 + 19 个 reason → Fault 的唯一映射（`fault_for`）+ 提案交付（`Op::SetAsset` + `Op::SetClipAsset`） |
+| `crates/yeban-otcp/` | `MCP-TOOL-EXT-OTCP-*`（ADR-0070） | OTCP 子进程驱动（client / discovery / supervisor / pipeline / recovery / measure / config / error）；依赖只有 `std` + `serde_json` |
 | `src/dispatch.rs` | `MCP-TOOL-001..010` | `Dispatcher` 持有 `Domain`；`dryRun` 走只读 `domain::preview`；幂等缓存查询仍在执行之前 |
 | `tests/tools_e2e.rs` | `MCP-TOOL-001..010`、`MUST-GATE-010` | **25 条端到端判据**（真实文件系统 + 真实 JSON-RPC 管线） |
 
@@ -375,3 +377,21 @@ python3 scripts/gates/validate_schemas.py --samples-dir target/schema-samples   
   `docs/ledger/lock-advisory-notes.md` 为准。
 - 仍未闭环的（转记自该线）：**Windows 分支从未编译过**；非 Unix/非 Windows 只有 `UnsupportedPlatform` 映射判据。
 
+
+---
+
+## 8. 扩展工具：OTCP 音高校正（ADR-0070，`line/yeban-otcp-driver`）
+
+图例同 §2：**真做** = 领域语义完整；**半做** = 真的做了一部分，另一部分明确缩水。
+
+| 规范 ID | 工具 | 状态 | 真做的部分 | 缩水/未接线的部分 |
+| :--- | :--- | :--- | :--- | :--- |
+| `MCP-TOOL-EXT-OTCP-CORRECT` | `yeban_correct_pitch` | **真做**（提交侧） | 实参关（`keyRoot` 0–11、`scale` 8 值词表、`mode` 只接受 `snapNotes`——其余模式响亮拒绝）；片段解析（音频片段才接、许可证缺失响亮失败）；双重校正拒绝（轨道已挂 OpenTune 外部效果 ⇒ `otcpDoubleCorrection`，**未派生任何进程**）；源制备（`yeban-decode` 解码 → 立体声响亮拒绝 → 重采样到工程采样率 → PCM16 单声道 WAV 落任务目录）；后台线程跑完整流水线（自测 → 导入 → F0 等待 → snap → 导出 → 量测门）；`dryRun` 只预览（不派生线程、不写任务目录）；`predictOnly` 真跑预测（导入→F0→snap→重读音符表），不导出、不交付 | `regenerate` / `notesOnly` 未开放（设计稿 §9 待办：须先无头探查）；`noteOps` 透传 `editNotes`（干跑预测可用），但颤音/漂移参数的往返存活未量测（设计稿 §9 待办）；多 clip / 整轨校正不在 v1；音符表只含 OpenTune **检测**到的音符（过切分，22 音符对 16 音符乐句），不是乐谱音符 |
+| `MCP-TOOL-EXT-OTCP-JOB` | `yeban_correct_pitch_job` | **真做** | 读任务收据（运行中 / 成功 / 失败 / 取消四态）；成功任务经提案交付：默认只出提案（工程一位不变，`pendingMerge: true`）；`autoMerge: true` 当场合并（`Op::SetAsset` + `Op::SetClipAsset` 同一批次模拟后建提案再合并；片段资产换新、旧资产索引保留）；重复轮询不重复建提案（收据记 `delivered_proposal_id`，上一轮收据补记失败时按标题找回补记）；失败任务把 §6.2 结构化错误（`block` + `note_gap` + 自测记录）原样带回，**不写任何资产** | 交付要求活跃工程在场（无工程时只回 `delivery.pending`，等工程打开再轮询）；MCP 进程死亡会带走工作线程（子进程 pid 记在收据里，事后可手工回收；见 ADR-0070） |
+| `MCP-TOOL-EXT-OTCP-NOTES` | `yeban_correct_pitch_notes` | **半做** | 读收据里的检测音符表（片段寻址走片段→任务索引，内容寻址扫任务目录；无收据 ⇒ `otcpNotesUnavailable`）；返回 `contentId` / `tuningHz` / `totalCount` / 全量音符（`detectedMidi` / `targetMidi` / `offsetCents` / `corrected` / 参数） | **不派生服务端、不做实时检测**：音符只在一次校正任务之后才存在；从未跑过任务的片段查不到音符表（这是 v1 的有意限制，见 ADR-0070） |
+
+**本节的判据**：`crates/yeban-mcp/tests/otcp_tools.rs`（10 组：坏实参 / dryRun 预览 / 二进制未配置 /
+立体声拒绝 / 双重校正拒绝 / 未知任务 / 无音符表 / 提案交付 / autoMerge 当场合并 / 收据音符表 /
+19 个 reason → Fault 映射）；`crates/yeban-otcp/tests/mock_server.rs`（9 组，mock 服务端）；
+`crates/yeban-otcp/tests/real_binary.rs`（13 组 `#[ignore]`，T1–T13，需真二进制，
+见 `crates/yeban-otcp/tests/REAL_BINARY_HANDOVER.md`）。

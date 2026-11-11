@@ -474,6 +474,40 @@ pub enum Op {
         /// 修改后的增益 (dB)。
         new_gain_db: f32,
     },
+    /// 设置**音频片段的资产引用**（`ClipContent::Audio::asset`）。
+    ///
+    /// ⚠ **本变体补上了什么**：`asset` 在创建时由 `AddClip` 写一次，而 `Op` 全集
+    /// 此前**没有任何变体写得进它** ⇒ ⭐ **音频片段建得出、资产换不了**：
+    /// 校正后的音频只能"删片段 + 加新片段"换进去，而删除再添加会**换掉
+    /// `EntityId`**、丢掉摆放与自动化引用。这是 `ARCH-OPS-001` 那一族的又一处
+    /// （与 [`Op::SetClipGain`] / [`Op::SetClipName`] 同型）。
+    ///
+    /// ⚠ **寻址与内容类型门**：目标由载荷自带的 `clip_id`（`clip_pool` 的键）给出。
+    /// 片段必须**存在**（[`ModelError::ClipNotFound`]）且内容必须是
+    /// `ClipContent::Audio`，否则 [`ModelError::ClipContentKindMismatch`] ——
+    /// MIDI 片段没有 `asset` 可读，**⛔ 不 panic、⛔ 不静默**。
+    ///
+    /// ⚠ **新资产必须已在 `doc.assets` 里注册**：前置条件要求 `new_asset` 的
+    /// 索引项存在，否则 [`ModelError::OpStateMismatch`]。这是刻意的：交付
+    /// （`yeban_correct_pitch` 的提案）总在同一提交里先施加 [`Op::SetAsset`]
+    /// 注册新资产、再施加本变体换引用 —— `Batch` 按序施加（见
+    /// [`Op::commit`]），所以同一提交内先注册、后换引用是成立的；
+    /// ⛔ 不允许换向一个未注册的资产（那会留下一个悬空引用）。
+    ///
+    /// ⚠ **旧资产不删**：历史提交仍引用它（`history.dag`），`assets` 表里的
+    /// 旧索引项由本变体⛔ 不动 —— 删除旧资产是另一条 `Op::RemoveAsset` 的事。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetClipGain`]），⛔ **不是**
+    /// `previous_*`；`AssetHash` 的相等是派生 `PartialEq`（64 字符十六进制
+    /// 字符串逐字节）⇒ 陈旧载荷必被拒。
+    SetClipAsset {
+        /// 目标片段身份（即 `clip_pool` 的键）。
+        clip_id: EntityId,
+        /// 修改前的资产哈希（来自当前文档）。
+        old_asset: AssetHash,
+        /// 修改后的资产哈希（须已在 `doc.assets` 注册）。
+        new_asset: AssetHash,
+    },
     /// 切换**设备旁通**（[`DeviceDefinition::bypassed`]）。
     ///
     /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`DeviceDefinition::bypassed` **只能**在
@@ -1361,6 +1395,7 @@ impl Op {
             Self::RemoveClip { .. } => "RemoveClip",
             Self::SetClipName { .. } => "SetClipName",
             Self::SetClipGain { .. } => "SetClipGain",
+            Self::SetClipAsset { .. } => "SetClipAsset",
             Self::AddRoutingNode { .. } => "AddRoutingNode",
             Self::RemoveRoutingNode { .. } => "RemoveRoutingNode",
             Self::AddClipPlacement { .. } => "AddClipPlacement",
@@ -1853,6 +1888,31 @@ impl Op {
                         field: "clip.audio.gain_db",
                         value: f64::from(*new_gain_db),
                     });
+                }
+                Ok(())
+            }
+            Self::SetClipAsset {
+                clip_id,
+                old_asset,
+                new_asset,
+            } => {
+                let clip = doc
+                    .clip_pool
+                    .get(clip_id)
+                    .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
+                // ⚠ 内容类型门必须**早于**陈旧载荷比较：MIDI 片段没有 `asset` 可读
+                // ⇒ 报 `ClipContentKindMismatch`（⛔ 不 panic、⛔ 不静默）。
+                let ClipContent::Audio { asset, .. } = &clip.content else {
+                    return Err(ModelError::ClipContentKindMismatch { id: *clip_id });
+                };
+                // `AssetHash` 逐字节比较 ⇒ 陈旧载荷必被拒。
+                if asset != old_asset {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 新资产必须已注册：交付总在同一提交里先 `SetAsset` 注册、
+                // 再换引用（`Batch` 按序施加）；未注册 ⇒ 悬空引用，拒。
+                if !doc.assets.contains_key(new_asset) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
             }
@@ -2709,6 +2769,17 @@ impl Op {
                 old_gain_db: *new_gain_db,
                 new_gain_db: *old_gain_db,
             },
+            // 纯结构化取反：`AssetHash` 是 `Clone`，只交换"前 / 后"两个哈希
+            // （与 [`Op::SetClipGain`] 同型；⛔ 不伪造旧值）。
+            Self::SetClipAsset {
+                clip_id,
+                old_asset,
+                new_asset,
+            } => Self::SetClipAsset {
+                clip_id: *clip_id,
+                old_asset: new_asset.clone(),
+                new_asset: old_asset.clone(),
+            },
             Self::AddClip { clip } => Self::RemoveClip {
                 clip_id: clip.id,
                 // `ClipPoolEntry` 含 `String`/`BTreeMap`, 不是 `Copy` ⇒ 逆操作必须克隆
@@ -3108,6 +3179,24 @@ impl Op {
                     return Err(ModelError::ClipContentKindMismatch { id: *clip_id });
                 };
                 *gain_db = *new_gain_db;
+                Ok(())
+            }
+            // 只写那**一个** `asset` 字段：⛔ 不碰 `id` / `name` / `gain_db`、
+            // ⛔ 不动 `clip_pool` 的键、⛔ 不碰 `assets` 表（旧资产不删）、
+            // ⛔ 不碰任何摆放。
+            Self::SetClipAsset {
+                clip_id, new_asset, ..
+            } => {
+                let clip = doc
+                    .clip_pool
+                    .get_mut(clip_id)
+                    .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
+                // 前置条件已经做过同一道内容类型门；apply 也**必*要**自己做一遍
+                // （⛔ 不 assume 调用方一定先跑 precondition —— `apply` 是公开面）。
+                let ClipContent::Audio { asset, .. } = &mut clip.content else {
+                    return Err(ModelError::ClipContentKindMismatch { id: *clip_id });
+                };
+                *asset = new_asset.clone();
                 Ok(())
             }
             Self::RemoveClip { clip_id, .. } => {
@@ -3923,6 +4012,17 @@ mod tests {
         crate::ids::AssetHash::of_bytes(b"kick")
     }
 
+    /// 夹具里第二份资产：`SetClipAsset` 的 showcase 实例的目标。
+    ///
+    /// 必须是已登记的资产 —— `SetClipAsset` 的前置条件要求新资产已在
+    /// `doc.assets` 里（交付时先 `SetAsset` 登记再换引用；同批 `Batch` 内
+    /// 顺序施加）。showcase 的每条 op 都要在**全新**夹具文档上第一遍成功，
+    /// 因此目标资产只能住在夹具里（`set_asset_is_reversible…` 的计数前提
+    /// 同步从"原有 1 条"改成"原有 2 条"）。
+    fn kick_corrected_asset() -> crate::ids::AssetHash {
+        crate::ids::AssetHash::of_bytes(b"kick-corrected")
+    }
+
     fn fixture_document() -> YebanProjectV1 {
         let f = fixture();
         let mut lead = TrackV3 {
@@ -4016,16 +4116,28 @@ mod tests {
             master_bus_track_id: f.master,
             // ⚠ 夹具的音频片段引用了 `b"kick"` 这份资产 ⇒ 它的**索引项**必须存在，
             // 否则 `RemoveAsset` 的代表实例没有可删的对象（也让夹具更接近真实文档）。
-            assets: BTreeMap::from([(
-                kick_asset(),
-                AssetMetadata {
-                    hash: kick_asset(),
-                    original_path: "samples/kick.wav".to_owned(),
-                    byte_len: 1_024,
-                    media_kind: MediaKind::Audio,
-                    license: "CC0-1.0".to_owned(),
-                },
-            )]),
+            assets: BTreeMap::from([
+                (
+                    kick_asset(),
+                    AssetMetadata {
+                        hash: kick_asset(),
+                        original_path: "samples/kick.wav".to_owned(),
+                        byte_len: 1_024,
+                        media_kind: MediaKind::Audio,
+                        license: "CC0-1.0".to_owned(),
+                    },
+                ),
+                (
+                    kick_corrected_asset(),
+                    AssetMetadata {
+                        hash: kick_corrected_asset(),
+                        original_path: "samples/kick-corrected.wav".to_owned(),
+                        byte_len: 1_024,
+                        media_kind: MediaKind::Audio,
+                        license: "CC0-1.0".to_owned(),
+                    },
+                ),
+            ]),
             routing_graph: crate::project::RoutingGraph {
                 nodes: vec![f.master, f.lead, f.bass],
                 edges: BTreeMap::from([(
@@ -4513,6 +4625,15 @@ mod tests {
                 clip_id: f.audio_clip,
                 old_gain_db: 0.0,
                 new_gain_db: -6.0,
+            },
+            // 换**音频片段**的资产引用（OTCP 音高校正交付）：只换 `asset` 字段，
+            // 不碰增益、不碰名字。⚠ 新资产必须是已登记的（夹具里第二条
+            // `kick_corrected_asset`）—— 前置条件要求；旧资产的索引条目保留
+            // （历史仍引用它，逆操作换回即复原）。
+            Op::SetClipAsset {
+                clip_id: f.audio_clip,
+                old_asset: kick_asset(),
+                new_asset: kick_corrected_asset(),
             },
             // 改设备显示名：**唯一的改名通路**（此前只能"删 + 加"，而 `devices` 是
             // `Vec` ⇒ 增删还会移位下标）。
@@ -8618,6 +8739,170 @@ mod tests {
         }
     }
 
+    /// `SetClipAsset` 只换音频片段的资产引用，且"陈旧载荷必被拒"。
+    ///
+    /// 六条读数：① 改动**只**落在 `asset` 上（与"同工程只换这一个字段"的克隆
+    /// **逐字节**比较）；② 逆操作**逐字节**回到原状；③ 陈旧的 `old_asset` ⇒
+    /// `OpStateMismatch`，文档逐字节不动；④ 目标是 **MIDI 片段** ⇒
+    /// `ClipContentKindMismatch`（⛔ panic、⛔ 静默），文档不动；
+    /// ⑤ 新资产**未注册** ⇒ `OpStateMismatch`（⛔ 不留悬空引用），文档不动；
+    /// ⑥ 与 `SetAsset` 同提交按序施加时成立（先注册、后换引用），且旧资产
+    /// 索引项仍在（历史提交仍引用它）。
+    #[test]
+    fn set_clip_asset_swaps_only_the_asset_and_rejects_stale_or_unregistered() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let old_asset = match &doc.clip_pool[&f.audio_clip].content {
+            ClipContent::Audio { asset, .. } => asset.clone(),
+            ClipContent::Midi { .. } => panic!("夹具的 audio_clip 必须是音频片段"),
+        };
+        assert_eq!(old_asset, kick_asset(), "夹具口径");
+        let new_asset = crate::ids::AssetHash::of_bytes(b"kick-corrected");
+        let corrected = AssetMetadata {
+            hash: new_asset.clone(),
+            original_path: "samples/kick-corrected.wav".to_owned(),
+            byte_len: 2_048,
+            media_kind: MediaKind::Audio,
+            license: "CC0-1.0".to_owned(),
+        };
+
+        // ⑤ 新资产未注册时先拒（顺序在 ① 之前：`kick-unregistered` 不在夹具里；
+        // `kick-corrected` 已在夹具里注册，⛔ 不能拿它当"未注册"的例子）。
+        let unregistered = Op::SetClipAsset {
+            clip_id: f.audio_clip,
+            old_asset: old_asset.clone(),
+            new_asset: crate::ids::AssetHash::of_bytes(b"kick-unregistered"),
+        };
+        let error = unregistered
+            .precondition(&doc)
+            .expect_err("未注册的新资产必须被拒");
+        assert!(
+            matches!(error, ModelError::OpStateMismatch { .. }),
+            "必须报 OpStateMismatch, 实际 {error:?}"
+        );
+
+        doc.assets.insert(new_asset.clone(), corrected);
+        // ⚠ `before` 在注册新资产之后取：逆操作只还原因引用，⛔ 不动 assets 表。
+        let before = serde_json::to_vec(&doc).expect("序列化");
+
+        // ① 改动只落在 asset 上。
+        let op = Op::SetClipAsset {
+            clip_id: f.audio_clip,
+            old_asset: old_asset.clone(),
+            new_asset: new_asset.clone(),
+        };
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        let mut expected = fixture_document();
+        expected.assets.insert(
+            new_asset.clone(),
+            AssetMetadata {
+                hash: new_asset.clone(),
+                original_path: "samples/kick-corrected.wav".to_owned(),
+                byte_len: 2_048,
+                media_kind: MediaKind::Audio,
+                license: "CC0-1.0".to_owned(),
+            },
+        );
+        let ClipContent::Audio { asset, .. } = &mut expected
+            .clip_pool
+            .get_mut(&f.audio_clip)
+            .expect("条目")
+            .content
+        else {
+            panic!("夹具的 audio_clip 必须是音频片段");
+        };
+        *asset = new_asset.clone();
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在 asset 上（⛔ 不碰 name / gain_db / 摆放）"
+        );
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 陈旧的 old_asset 被拒，且文档逐字节不动。
+        let stale = Op::SetClipAsset {
+            clip_id: f.audio_clip,
+            old_asset: crate::ids::AssetHash::of_bytes(b"other"),
+            new_asset: new_asset.clone(),
+        };
+        let stale_before = serde_json::to_vec(&doc).expect("s");
+        let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+        assert!(
+            matches!(error, ModelError::OpStateMismatch { .. }),
+            "必须报 OpStateMismatch, 实际 {error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            stale_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ④ 目标是 MIDI 片段 ⇒ 内容类型门（⛔ panic ⛔ 静默）。
+        let midi_target = Op::SetClipAsset {
+            clip_id: f.clip,
+            old_asset: old_asset.clone(),
+            new_asset: new_asset.clone(),
+        };
+        let midi_before = serde_json::to_vec(&doc).expect("s");
+        let error = midi_target.apply(&mut doc).expect_err("MIDI 片段必须被拒");
+        assert_eq!(
+            error,
+            ModelError::ClipContentKindMismatch { id: f.clip },
+            "必须报既有的 ClipContentKindMismatch（⛔ 新变体）"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            midi_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ⑥ 与 SetAsset 同提交按序施加：先注册、后换引用，旧资产仍在。
+        // ⚠ 用第三份资产（`kick-batch`）：`kick-corrected` 已在夹具里注册，
+        // 拿它当"先注册"的例子会撞"已存在"的前置条件。
+        let batch_asset = crate::ids::AssetHash::of_bytes(b"kick-batch");
+        let mut staged = fixture_document();
+        let batch = Op::Batch {
+            ops: vec![
+                Op::SetAsset {
+                    asset_hash: batch_asset.clone(),
+                    old_asset: None,
+                    new_asset: AssetMetadata {
+                        hash: batch_asset.clone(),
+                        original_path: "samples/kick-batch.wav".to_owned(),
+                        byte_len: 2_048,
+                        media_kind: MediaKind::Audio,
+                        license: "CC0-1.0".to_owned(),
+                    },
+                },
+                Op::SetClipAsset {
+                    clip_id: f.audio_clip,
+                    old_asset: old_asset.clone(),
+                    new_asset: batch_asset.clone(),
+                },
+            ],
+            description: "otcp deliver".to_owned(),
+        };
+        batch
+            .apply(&mut staged)
+            .expect("同提交先注册后换引用必须成立");
+        let ClipContent::Audio { asset, .. } = &staged.clip_pool[&f.audio_clip].content else {
+            panic!("夹具的 audio_clip 必须是音频片段");
+        };
+        assert_eq!(asset, &batch_asset);
+        assert!(
+            staged.assets.contains_key(&old_asset),
+            "旧资产索引项必须仍在（历史提交仍引用它）"
+        );
+    }
+
     /// `SetNoteExpression` 只写三个表现力字段，且"陈旧载荷必被拒"（`#329`）。
     ///
     /// 七条读数：① 改动**只**落在这三个字段上（与"同工程只换这三个字段"的克隆
@@ -10306,7 +10591,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 60] = [
+        const FROZEN: [(&str, &[&str]); 61] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -10335,6 +10620,7 @@ mod tests {
             ("SetAuthor", &["author"]),
             ("SetAutomationLane", &["tracks"]),
             ("SetAutomationPoint", &["tracks"]),
+            ("SetClipAsset", &["clip_pool"]),
             ("SetClipGain", &["clip_pool"]),
             ("SetClipName", &["clip_pool"]),
             ("SetClipPlacementDuration", &["tracks"]),
@@ -10576,7 +10862,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 60] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 61] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -10605,6 +10891,7 @@ mod tests {
             ("SetAuthor", &["author"]),
             ("SetAutomationLane", &["automation_lanes"]),
             ("SetAutomationPoint", &["curve", "value"]),
+            ("SetClipAsset", &["asset"]),
             ("SetClipGain", &["gain_db"]),
             ("SetClipName", &["name"]),
             ("SetClipPlacementDuration", &["duration_ticks"]),
@@ -10829,7 +11116,7 @@ mod tests {
         create.apply(&mut doc).expect("必须能创建");
         assert_eq!(doc.assets.get(&new_hash), Some(&new_asset));
         assert_eq!(doc.clip_pool, clips_before, "创建资产 ⛔ 不得碰 clip_pool");
-        assert_eq!(doc.assets.len(), 2, "夹具原有 1 条 + 新建 1 条");
+        assert_eq!(doc.assets.len(), 3, "夹具原有 2 条 + 新建 1 条");
         create.apply_inverse(&mut doc).expect("逆必须能应用");
         assert!(!doc.assets.contains_key(&new_hash), "撤销后键必须消失");
         assert_eq!(

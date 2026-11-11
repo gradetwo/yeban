@@ -1563,6 +1563,31 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         // `providerUnavailable`（不是实现级出口）；这里只要求"走到领域实现 +
         // 契约形状"，真 provider 的证据在 `tests/song_overview.rs`（stub）。
         ("get_song_overview", json!({ "resolution": "bar" })),
+        // OTCP 音高校正三条：本 harness 不备二进制、不备音频片段 ⇒
+        // 提交走带内 `TRACK_NOT_FOUND`，轮询/音符表走带内 `ENTITY_NOT_FOUND`
+        //（不是实现级出口）；这里只要求"走到领域实现 + 契约形状"，
+        // 正向通路的证据在 `tests/otcp_tools.rs` 与
+        // `crates/yeban-otcp/tests/mock_server.rs`。
+        (
+            "yeban_correct_pitch",
+            json!({
+                "trackId": "01J8ZQ00000000000000000001",
+                "clipId": "01J8ZQ00000000000000000002",
+                "keyRoot": 9,
+                "scale": "major",
+            }),
+        ),
+        (
+            "yeban_correct_pitch_job",
+            json!({ "job_id": "otcp-e2e-no-such-job" }),
+        ),
+        (
+            "yeban_correct_pitch_notes",
+            json!({
+                "trackId": "01J8ZQ00000000000000000001",
+                "clipId": "01J8ZQ00000000000000000002",
+            }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

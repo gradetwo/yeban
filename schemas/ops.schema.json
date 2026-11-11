@@ -222,6 +222,16 @@
         },
         {
           "required": [
+            "SetClipAsset"
+          ],
+          "properties": {
+            "SetClipAsset": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetDeviceBypassed"
           ],
           "properties": {

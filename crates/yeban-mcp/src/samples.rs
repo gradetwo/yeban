@@ -513,7 +513,7 @@ pub fn call_sample(spec: &ToolSpec) -> Value {
     let mut arguments = Map::new();
     for param in spec.all_params() {
         if param.required {
-            arguments.insert(param.name.to_owned(), fixture_argument(param));
+            arguments.insert(param.name.to_owned(), fixture_argument(spec.name, param));
         }
     }
     arguments.insert(crate::tools::DRY_RUN_PARAM.to_owned(), Value::from(true));
@@ -528,8 +528,14 @@ pub fn call_sample(spec: &ToolSpec) -> Value {
 }
 
 /// 参数的确定性夹具值（样本必须逐字节稳定，因此不用随机值）。
-fn fixture_argument(param: &ParamSpec) -> Value {
+///
+/// `tool_name` 是必需的：同名实参可能有两个域。`scale` 在
+/// `yeban_propose_section` 里是"主音 + 调式"的自由形（`"C minor"`），
+/// 在 `yeban_correct_pitch` 里是 OTCP 线的 8 值调式名（`"minor"`）——
+/// 契约枚举只接受后者，工具不感知就会写出非法样本（contract 红）。
+fn fixture_argument(tool_name: &str, param: &ParamSpec) -> Value {
     match param.name {
+        "scale" if tool_name == "yeban_correct_pitch" => Value::from("minor"),
         "path" => Value::from("~/Music/yeban/demo.yeban"),
         "format" => Value::from("wav"),
         "sampleRate" => Value::from(48_000),

@@ -1,0 +1,23 @@
+[package]
+name = "yeban-otcp"
+description = "[v1] OpenTune Standalone 子进程驱动：离线整 clip 音高校正（OTCP 协议）；只驱动用户自备的 API 分支构建，仓库里不含任何 OpenTune 代码"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_otcp"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

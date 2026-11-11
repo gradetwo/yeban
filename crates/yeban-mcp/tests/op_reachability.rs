@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 59] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 60] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -103,6 +103,9 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 59] = [
     ("SetTrackName", &["domain/notes.rs"]),
     ("SetClipName", &["domain/notes.rs"]),
     ("SetClipGain", &["domain/notes.rs"]),
+    // ⭐ `ADR-0070`：`yeban_correct_pitch_job` 的交付在 `domain/otcp.rs`
+    // 构造 `Op::SetClipAsset`（换片段音频资产引用）。
+    ("SetClipAsset", &["domain/otcp.rs"]),
     ("SetDeviceName", &["domain/notes.rs"]),
     ("SetDeviceBypassed", &["domain/notes.rs"]),
     ("SetClipPlacementMuted", &["domain/notes.rs"]),
@@ -460,9 +463,9 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        59,
-        "登记表有 59 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
-         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59）"
+        60,
+        "登记表有 60 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+         `every_model_op_variant_is_registered_or_declared_unreachable` 管；夜半原生预制线加 `SetTrackPreset` 一条 ⇒ 55 → 56；手动相位对齐加 `SetTrackDelay` / `SetTrackPolarity` / `SetClipPlacementOffset` 三条 ⇒ 56 → 59；OTCP 音高校正线加 `SetClipAsset` 一条（构造点 `domain/otcp.rs`）⇒ 59 → 60）"
     );
 }
 

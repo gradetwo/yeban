@@ -6715,6 +6715,7 @@ dependencies = [
  "yeban-midi",
  "yeban-midi-io",
  "yeban-model",
+ "yeban-otcp",
  "yeban-plugin-host",
  "yeban-record",
  "yeban-render",
@@ -6750,6 +6751,15 @@ dependencies = [
  "thiserror 2.0.21",
  "ulid",
  "yeban-dsp",
+]
+
+[[package]]
+name = "yeban-otcp"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

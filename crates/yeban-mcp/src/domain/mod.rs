@@ -70,6 +70,7 @@ pub mod lock;
 pub mod macros;
 pub mod midi_input;
 pub mod notes;
+pub mod otcp;
 pub mod preset;
 pub mod project_create;
 pub mod proposal;
@@ -1400,6 +1401,55 @@ pub enum Plan {
         /// `format: "html"` 时 `data` 是完整 HTML 报告字符串（不是对象）。
         data: Value,
     },
+    /// `yeban_correct_pitch`（OTCP 音高校正提交，`ADR-0070`）：提交回执
+    /// （或 `dryRun` 预览）。
+    ///
+    /// 提交本身是**外部**副作用（后台线程驱动 OpenTune 子进程建任务），
+    /// 不改工程文档、不落盘工程；`dryRun` 时 `plan` 只校验参数、不提交
+    /// （见 `otcp` 模块头的分工说明）。
+    OtcpSubmit {
+        /// 提交回执 `{jobId, status: "running", dryRun, server, notesBefore, receiptPath}`
+        /// 或 `dryRun` 预览 `{wouldSubmit, trackId, clipId, keyRoot, scale, mode, tuningHz, autoMerge, predictOnly}`。
+        data: Value,
+    },
+    /// `yeban_correct_pitch_job`（状态 / 交付）：只读读数（`plan` 里已取好，
+    /// `apply` 原样回传）—— 但 `succeeded` 且未交付时 `plan` 产出的不是它，
+    /// 而是下面的 `OtcpDeliver`。
+    OtcpJob {
+        /// 状态数据 `{jobId, status, dryRun, contentId, notesBefore, notesAfter,
+        /// measurement, asset, error, server, receiptPath}`（成功时另有
+        /// `proposal` / `delivery` 块）。
+        data: Value,
+    },
+    /// `yeban_correct_pitch_notes`（**只读**）：某片段最近一次校正的检测音符表。
+    /// `data` 在 `plan` 里就从任务收据里读好（`apply` 原样回传，一位都不改）。
+    OtcpNotes {
+        /// 音符表 `{jobId, contentId, tuningHz, totalCount, notes}`。
+        data: Value,
+    },
+    /// `yeban_correct_pitch_job`（`succeeded` 且未交付）：交付一次校正。
+    ///
+    /// 与 `Plan::Propose` 同一款提案（`SetAsset` 登记新资产 + `SetClipAsset`
+    /// 换片段引用），只是资产字节随计划一起带到 `apply`（`apply` 先
+    /// `put_asset` 再 `apply_propose`，最后给收据记交付）。
+    OtcpDeliver {
+        /// 待创建的提案（与 `Plan::Propose` 的 `draft` 同一款）。
+        draft: Box<ProposalDraft>,
+        /// 响应是否回传完整 op 载荷（本变体恒为 `false`，字段只为与
+        /// `Plan::Propose` 的 `apply_propose` 签名对齐）。
+        include_ops: bool,
+        /// 本次提案的 `warnings[]`（恒为空 —— 见 `otcp::plan_succeeded_job`
+        /// 的注释：`[SetAsset, SetClipAsset]` 不触发任何一条警告规则）。
+        warnings: Vec<Value>,
+        /// 交付时是否立即合并提案（提交时记录的值）。
+        auto_merge: bool,
+        /// 合并提交信息（本变体恒为 `None`：用缺省文案）。
+        merge_commit_message: Option<String>,
+        /// 校正后导出的 WAV 字节（`plan` 里已读好；`apply` 登记进会话 CAS 池）。
+        asset_bytes: Vec<u8>,
+        /// 任务 id（交付收据记 `delivered_proposal_id` 用）。
+        job_id: String,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -1444,6 +1494,10 @@ impl Plan {
             Self::SvsJob { .. } => "svs_job",
             Self::SvsAudio { .. } => "svs_audio",
             Self::SongOverview { .. } => "song_overview",
+            Self::OtcpSubmit { .. } => "otcp_submit",
+            Self::OtcpJob { .. } => "otcp_job",
+            Self::OtcpNotes { .. } => "otcp_notes",
+            Self::OtcpDeliver { .. } => "otcp_deliver",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -1456,7 +1510,7 @@ impl Plan {
     #[must_use]
     pub fn commit_delta(&self) -> usize {
         match self {
-            Self::Propose { .. } | Self::Merge { .. } => 1,
+            Self::Propose { .. } | Self::Merge { .. } | Self::OtcpDeliver { .. } => 1,
             // 只写一个点的自动化编辑 = 一条提交；只读调用（没有 `point`）= 0。
             Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
             // 真登记才提交；幂等命中（内容已存在）一位都不改。
@@ -1506,6 +1560,10 @@ impl Plan {
             // SVS 提交 / 状态 / 回执不产生提交；落轨那条走上面的 `SvsAudio` 臂。
             | Self::SvsSubmit { .. }
             | Self::SvsJob { .. }
+            // OTCP 提交 / 状态 / 音符表不产生提交；交付那条走上面的 `OtcpDeliver` 臂。
+            | Self::OtcpSubmit { .. }
+            | Self::OtcpJob { .. }
+            | Self::OtcpNotes { .. }
             // 整曲总览是只读读数（provider 只算数，不改工程）。
             | Self::SongOverview { .. }
             // 场景启动不改工程文档（只改会话/引擎运行态）⇒ 提交数不变。
@@ -1571,6 +1629,7 @@ impl Plan {
             | Self::Query { .. }
             | Self::Diagnostics { .. }
             | Self::Propose { .. }
+            | Self::OtcpDeliver { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
             // 引擎/会话读数是**只读**的。
@@ -1599,6 +1658,11 @@ impl Plan {
             // SVS 提交 / 状态 / 回执不改工程文档（提交是外部副作用）。
             | Self::SvsSubmit { .. }
             | Self::SvsJob { .. }
+            // OTCP 提交 / 状态 / 音符表不改工程文档（提交是外部副作用）；
+            // 交付与 `Propose` 同一款（只动提案记录与提案分支）。
+            | Self::OtcpSubmit { .. }
+            | Self::OtcpJob { .. }
+            | Self::OtcpNotes { .. }
             // 整曲总览是只读读数（provider 只算数）。
             | Self::SongOverview { .. } => false,
         }
@@ -1681,7 +1745,12 @@ impl Plan {
                 Ok(Some(simulated))
             }
             // SVS 提交 / 状态 / 回执不改工程内容 ⇒ `dryRun` 的工程差异是 `None`。
-            Self::SvsSubmit { .. } | Self::SvsJob { .. } => Ok(None),
+            // OTCP 提交 / 状态 / 音符表同样只读。
+            Self::SvsSubmit { .. }
+            | Self::SvsJob { .. }
+            | Self::OtcpSubmit { .. }
+            | Self::OtcpJob { .. }
+            | Self::OtcpNotes { .. } => Ok(None),
             Self::ImportMidi(import) => {
                 if import.ops.is_empty() {
                     return Ok(None);
@@ -1747,6 +1816,7 @@ impl Plan {
             | Self::Query { .. }
             | Self::Diagnostics { .. }
             | Self::Propose { .. }
+            | Self::OtcpDeliver { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
             | Self::EngineState { .. }
@@ -2159,6 +2229,59 @@ impl Plan {
                     }
                 }
                 preview.insert("wouldApply".to_owned(), Value::from(true));
+            }
+            // OTCP 提交：`dryRun` 预览就是 plan 的 data（`wouldSubmit` 在内）；
+            // 真提交不走预览。⛔ 不标 `readOnly` —— 提交是外部副作用。
+            Self::OtcpSubmit { data } | Self::OtcpJob { data } | Self::OtcpNotes { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                // 任务状态 / 音符表是只读查询，预览 = 真做（与 `SvsJob` 同一做法）；
+                // 提交预览不标 `readOnly`（提交是外部副作用，见上）。
+                if !matches!(self, Self::OtcpSubmit { .. }) {
+                    preview.insert("readOnly".to_owned(), Value::from(true));
+                    preview.insert("result".to_owned(), data.clone());
+                }
+            }
+            // OTCP 交付：与 `Propose` 同一款预览（提案内容 + 待合并说明），
+            // 另带任务 id 与资产字节数（交付的载荷是"换哪份音频"）。
+            Self::OtcpDeliver {
+                draft,
+                include_ops,
+                warnings,
+                auto_merge,
+                asset_bytes,
+                job_id,
+                ..
+            } => {
+                preview.insert("jobId".to_owned(), Value::from(job_id.clone()));
+                preview.insert("kind".to_owned(), Value::from(draft.kind));
+                preview.insert("title".to_owned(), Value::from(draft.title.clone()));
+                preview.insert(
+                    "branchPrefix".to_owned(),
+                    Value::from(PROPOSAL_BRANCH_PREFIX),
+                );
+                preview.insert(
+                    "baseCommit".to_owned(),
+                    Value::from(draft.base_commit.to_canonical_string()),
+                );
+                preview.insert("opCount".to_owned(), Value::from(draft.ops.len()));
+                preview.insert("assetByteLen".to_owned(), Value::from(asset_bytes.len()));
+                if *include_ops {
+                    preview.insert("ops".to_owned(), draft_ops_value(draft));
+                }
+                preview.insert(
+                    "willCreate".to_owned(),
+                    section_build::summarize_ops(&draft.ops),
+                );
+                preview.insert("pendingMerge".to_owned(), Value::from(true));
+                preview.insert("mergeTool".to_owned(), Value::from("yeban_merge_proposal"));
+                preview.insert("warnings".to_owned(), Value::Array(warnings.clone()));
+                if *auto_merge {
+                    preview.insert("wouldAutoMerge".to_owned(), Value::from(true));
+                }
             }
             // SVS 提交：`dryRun` 预览就是 plan 的 data（`wouldSubmit` 在内）；
             // 真提交不走预览。⛔ 不标 `readOnly` —— 提交是外部副作用。
@@ -2589,6 +2712,9 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "synthesize_singing" => svs::plan_synthesize(domain, call),
         "svs_job" => svs::plan_svs_job(domain, call),
         "get_song_overview" => song_overview::plan_song_overview(domain, call),
+        "yeban_correct_pitch" => otcp::plan_correct_pitch(domain, call),
+        "yeban_correct_pitch_job" => otcp::plan_correct_pitch_job(domain, call),
+        "yeban_correct_pitch_notes" => otcp::plan_correct_pitch_notes(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -5153,7 +5279,7 @@ pub const COMMIT_MODEL_VALUES: [&str; 4] = ["proposal", "proposalAutoMerged", "d
 pub fn commit_model_of(plan: &Plan) -> &'static str {
     match plan {
         // 提案家族：`autoMerge` 把同一条轴上的两种收尾分开（`ADR-0029`）。
-        Plan::Propose { auto_merge, .. } => {
+        Plan::Propose { auto_merge, .. } | Plan::OtcpDeliver { auto_merge, .. } => {
             if *auto_merge {
                 "proposalAutoMerged"
             } else {
@@ -5207,6 +5333,9 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::MidiInputProbe { .. }
         | Plan::SvsSubmit { .. }
         | Plan::SvsJob { .. }
+        | Plan::OtcpSubmit { .. }
+        | Plan::OtcpJob { .. }
+        | Plan::OtcpNotes { .. }
         | Plan::SongOverview { .. } => "none",
     }
 }
@@ -5314,6 +5443,27 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
         Plan::SvsSubmit { data } => Ok(ToolResponse::success(data)),
         Plan::SvsJob { data } => Ok(ToolResponse::success(data)),
+        Plan::OtcpSubmit { data } => Ok(ToolResponse::success(data)),
+        Plan::OtcpJob { data } => Ok(ToolResponse::success(data)),
+        Plan::OtcpNotes { data } => Ok(ToolResponse::success(data)),
+        Plan::OtcpDeliver {
+            draft,
+            include_ops,
+            warnings,
+            auto_merge,
+            merge_commit_message,
+            asset_bytes,
+            job_id,
+        } => otcp::apply_deliver(
+            domain,
+            *draft,
+            include_ops,
+            &warnings,
+            auto_merge,
+            merge_commit_message,
+            asset_bytes,
+            &job_id,
+        ),
         // 只读：总览在 `plan` 里就组装好了，`apply` 原样回传（一位都不改）。
         Plan::SongOverview { data } => Ok(ToolResponse::success(data)),
         Plan::SvsAudio { import, report } => svs::apply_svs_audio(domain, import, report),
@@ -5843,7 +5993,7 @@ fn apply_close(
 ///
 /// `warnings` 是 `plan` 阶段算好的那一份（`#178`）：本函数**不**重算，因此 `dryRun`
 /// 预览与真正创建提案的 `warnings[]` 是同一批读数。
-fn apply_propose(
+pub(crate) fn apply_propose(
     domain: &mut Domain,
     draft: ProposalDraft,
     include_ops: bool,
@@ -6985,6 +7135,32 @@ mod tests {
             ),
             // 整曲总览：stub provider 已注入 ⇒ 缺省实参规划成功（8 小节总览）。
             ("get_song_overview", serde_json::json!({})),
+            // OTCP 音高校正提交：随机音轨 id ⇒ 规划阶段响亮 `TRACK_NOT_FOUND`
+            // （参数本身合法；正向通路由 `tests/otcp_tools.rs` 覆盖）。
+            (
+                "yeban_correct_pitch",
+                serde_json::json!({
+                    "trackId": EntityId::new().to_canonical_string(),
+                    "clipId": EntityId::new().to_canonical_string(),
+                    "keyRoot": 9,
+                    "scale": "major",
+                }),
+            ),
+            // OTCP 任务查询：无此任务收据 ⇒ 规划阶段响亮 `ENTITY_NOT_FOUND`。
+            (
+                "yeban_correct_pitch_job",
+                serde_json::json!({
+                    "job_id": "otcp-plan-case-no-such-job",
+                }),
+            ),
+            // OTCP 音符表：随机片段 ⇒ 无片段→任务索引 ⇒ 响亮 `ENTITY_NOT_FOUND`。
+            (
+                "yeban_correct_pitch_notes",
+                serde_json::json!({
+                    "trackId": EntityId::new().to_canonical_string(),
+                    "clipId": EntityId::new().to_canonical_string(),
+                }),
+            ),
             // ARA2 宿主原型：绑定只做解码（不打开插件）⇒ 指向不存在的插件路径
             // 也规划成功（真 wav 夹具）；打开失败只在 apply 里响亮。
             (
@@ -7112,6 +7288,17 @@ mod tests {
                     // 绑了采样器的正向通路由 `tests/preset_tools.rs` 覆盖。
                     let fault = outcome.expect_err("夹具音轨没有采样器");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                }
+                "yeban_correct_pitch" => {
+                    // 随机音轨 id ⇒ 规划阶段响亮拒绝（`TRACK_NOT_FOUND`）。
+                    // 正向通路（真提交 + 轮询 + 交付）在 `tests/otcp_tools.rs`。
+                    let fault = outcome.expect_err("不存在的音轨");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
+                }
+                "yeban_correct_pitch_job" | "yeban_correct_pitch_notes" => {
+                    // 无任务收据 / 无片段索引 ⇒ 响亮 `ENTITY_NOT_FOUND`。
+                    let fault = outcome.expect_err("无任务收据");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
                 }
                 "yeban_preset_bypass" => {
                     // 这个夹具的音轨**没有**预制状态 ⇒ 旁通无从谈起，规划阶段响亮拒绝。

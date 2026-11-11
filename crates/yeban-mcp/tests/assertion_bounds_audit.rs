@@ -49,6 +49,7 @@ const SOURCES: &[(&str, &str)] = &[
         "src/domain/notes.rs",
         include_str!("../src/domain/notes.rs"),
     ),
+    ("src/domain/otcp.rs", include_str!("../src/domain/otcp.rs")),
     (
         "src/domain/render_math.rs",
         include_str!("../src/domain/render_math.rs"),

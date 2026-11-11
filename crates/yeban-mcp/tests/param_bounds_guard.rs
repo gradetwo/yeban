@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 44 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 45] = [
+/// 47 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 47] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -271,6 +271,17 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 45] = [
         "outPath",
         BoundStatus::Unbounded(
             "渲染输出 wav 路径（`yeban_ara_render`）：操作员自选的本机输出路径；父目录不存在 ⇒ `IO_ERROR`。\\n后果限于该次调用的落盘失败报文长度与该路径的一次写盘。收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    // ADR-0070：OTCP 音高校正新增的 2 个不同名 string 参数。
+    // `mode`：校正模式词表（snapNotes / regenerate / notesOnly），
+    // 未知值由 `otcp::parse_mode` 拒绝；`regenerate` / `notesOnly` 在 v1
+    // 同样响亮拒绝（须先在无头环境探针验证，见设计稿 §9）。
+    ("mode", BoundStatus::WordList),
+    (
+        "contentId",
+        BoundStatus::Parsed(
+            "OTCP 服务端返回的不透明 contentId，原样透传作任务收据查找键；未知值 ⇒ `otcpNotesUnavailable`",
         ),
     ),
 ];

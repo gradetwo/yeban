@@ -45,6 +45,9 @@
 //! | `yeban_ara_render` | 已绑定 ARA 会话离线渲染成 WAV（原子落盘 + 文档 blob 哈希回传） | `MCP-TOOL-EXT-ARA-RENDER` |
 //!
 //! | `get_song_overview` | 整曲多层总览图：小节级列式 JSON + 自动异常诊断摘要（设计稿 §8，Phase 1；只读；分析由宿主注入的 provider 提供） | `MCP-TOOL-EXT-SONG-OVERVIEW` |
+//! | `yeban_correct_pitch` | 把一个音频片段提交给用户自备的 OpenTune 做离线调性 snap（`ADR-0070`；后台线程跑，立即回 `job_id`） | `MCP-TOOL-EXT-OTCP-CORRECT` |
+//! | `yeban_correct_pitch_job` | 查校正任务状态；成功后经提案换资产（默认只出提案，`autoMerge` 时当场合并） | `MCP-TOOL-EXT-OTCP-JOB` |
+//! | `yeban_correct_pitch_notes` | 读某片段最近一次校正的检测音符表（只读；无任务时报 `otcpNotesUnavailable`） | `MCP-TOOL-EXT-OTCP-NOTES` |
 
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -111,8 +114,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条）。
-pub const TOOL_COUNT: usize = 38;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条）。
+pub const TOOL_COUNT: usize = 41;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -132,7 +135,10 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **原生预制 4 条**（`yeban_list_presets` / `yeban_apply_preset` /
 ///   `yeban_save_preset` / `yeban_preset_bypass`，夜半原生预制机制一期，MCP-only）。
 /// + **整曲总览 1 条**（设计稿 §8，Phase 1：`get_song_overview`，小节级列式 JSON + 自动异常诊断摘要）。
-pub const EXTENSION_TOOL_COUNT: usize = 28;
+/// + **OTCP 音高校正 3 条**（`ADR-0070`：`yeban_correct_pitch` 提交 +
+///   `yeban_correct_pitch_job` 查询/交付 + `yeban_correct_pitch_notes` 读谱，
+///   子进程驱动用户自备的 OpenTune API 分支构建，单 clip 调性 snap）。
+pub const EXTENSION_TOOL_COUNT: usize = 31;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -174,6 +180,9 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_save_preset",
     "yeban_preset_bypass",
     "get_song_overview",
+    "yeban_correct_pitch",
+    "yeban_correct_pitch_job",
+    "yeban_correct_pitch_notes",
 ];
 
 /// 规范 ID 前缀。
@@ -2245,9 +2254,139 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::Conflict,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-OTCP-CORRECT",
+        name: "yeban_correct_pitch",
+        summary: "把一个音频片段提交给用户自备的 OpenTune API 分支构建做离线调性 snap（`ADR-0070`，`yeban-otcp` 驱动子进程走 OTCP 协议；单 clip；只改音高、不改时值）。提交后立即回 `{job_id, status: \"running\", server: {build, instanceId, self_test}, notes_before: {count}, receipt_path}`，校正在后台线程跑；用 `yeban_correct_pitch_job` 轮询。源音频须是单声道（立体声 ⇒ `otcpStereoUnsupported`）；轨道已挂 OpenTune 外部效果绑定 ⇒ `otcpDoubleCorrection`（驱动与效果二选一，⛔ 不双重校正）。`mode` 缺省 `snapNotes`，v1 只执行它（`regenerate` / `notesOnly` 须先在无头环境探针验证，见设计稿 §9，给了即响亮拒绝）。`autoMerge` 缺省 `false`：只出提案；`true` 时交付当场合并（像 `yeban_load_plugin`）。`predictOnly`（缺省 `false`）：真跑一遍导入→F0→调音→读谱，只返回预测音符表，⛔ 不导出、不交付（与通用 `dryRun` 不同——`dryRun` 只校验参数、不提交）。失败模态：`RENDER_FAILED` 时大声失败、什么都不写、⛔ 不回落干声（设计稿 §6）。自测门：该构建无记录时提交前先跑一次自测（合成夹具），`fail` 只注解错误、⛔ 不拦任务。响应里每处都带服务端块（构建提交 + 自测记录）。",
+        scope: Scope::AppAdmin,
+        // 外部副作用（启动 OpenTune 子进程建任务）：不改工程、不落盘，但 `dryRun` 必须短路它。
+        side_effect: SideEffect::External,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的
+            // `definitions.ExtensionToolArguments.$defs.yeban_correct_pitch` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "trackId",
+                "string",
+                true,
+                "目标音轨 id（26 字符 ULID）",
+            ),
+            param(
+                "clipId",
+                "string",
+                true,
+                "目标音频片段 id（26 字符 ULID，`clip_pool` 的键）",
+            ),
+            param(
+                "keyRoot",
+                "integer",
+                true,
+                "目标调性根音 0–11（C=0）；越界 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "scale",
+                "string",
+                true,
+                "音阶名：`major` | `minor` | `chromatic` | `harmonicMinor` | `dorian` | `mixolydian` | `pentatonicMajor` | `pentatonicMinor`；其它值 ⇒ `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "mode",
+                "string",
+                false,
+                "校正模式：`snapNotes`（缺省，v1 只执行它）；`regenerate` / `notesOnly` 须先探针验证，给了即 `INVALID_PARAMETER_RANGE`",
+            ),
+            param(
+                "tuningHz",
+                "number",
+                false,
+                "A4 频率 Hz（缺省 440）",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "交付时是否立即合并提案（缺省 false：只出提案；true 时当场合并，像 `yeban_load_plugin`）",
+            ),
+            param(
+                "predictOnly",
+                "boolean",
+                false,
+                "只预测不交付（缺省 false）：真跑一遍导入→F0→调音→读谱，只返回预测音符表，不导出、不交付；与通用 `dryRun` 不同（`dryRun` 只校验参数、不提交）",
+            ),
+            param(
+                "noteOps",
+                "array",
+                false,
+                "`content.editNotes` 的 op 列表（JSON 原样透传；空 = 不做；干跑时只预测）",
+            ),
+        ],
+        errors: &[
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::IoError,
+            ErrorCode::NoActiveProject,
+            ErrorCode::TrackNotFound,
+            ErrorCode::ClipNotFound,
+            ErrorCode::Conflict,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-OTCP-JOB",
+        name: "yeban_correct_pitch_job",
+        summary: "查音高校正任务状态；成功后经提案换资产。`running`：回 `{job_id, status, notes_before, receipt_path}`。`succeeded`：回 `{job_id, status, notes_before, notes_after, measurement: {median_cents, p90_cents, detection_rate, hybrid_mode, backend}, asset: {hash, path}, server, receipt_path}`，同时按提交时的 `autoMerge` 出提案（`false` 只出提案，`true` 当场合并）；响应带 `proposal` 块（`id` / `commitModel`）。`failed`：回 `{job_id, status, error: {code, detail, block?, self_test?}}`，`code` 是固定 `reason`（`otcpRenderFailed` 等，见 `yeban-otcp` 的 `REASONS`）；`RENDER_FAILED` 时什么都没写、源片段原样。任务收据住在控制根的任务目录下（`receipt.json`），进程重启后仍可查。",
+        scope: Scope::AppAdmin,
+        // 按最坏情况：成功后交付走提案路径改工程（与 `svs_job` 同款口径）。
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            param("job_id", "string", true, "校正任务 id（提交时返回的 `job_id`）"),
+        ],
+        errors: &[
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::IoError,
+            ErrorCode::EntityNotFound,
+            ErrorCode::NoActiveProject,
+            ErrorCode::Conflict,
+            ErrorCode::RenderFailed,
+            ErrorCode::Busy,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-OTCP-NOTES",
+        name: "yeban_correct_pitch_notes",
+        summary: "读某片段最近一次校正的检测音符表（只读）。给 `trackId` + `clipId`：取该片段最近一次校正任务的音符表；给 `contentId`：取该 OpenTune 内容的任务音符表。返回 `{contentId, tuningHz, totalCount, notes: [{index, startContentSec, endContentSec, detectedMidi, targetMidi, offsetCents, corrected}]}`。⚠ 这是 OpenTune **检测到**的音符，不是夜半乐谱（探针实测会过分割：16 音乐句检出 22 音，含 40 ms 碎片）；无任务时报 `otcpNotesUnavailable`，⛔ 不返回空表。v1 不启动服务端现算音符（须已有任务收据）。",
+        scope: Scope::AppAdmin,
+        // 只读：读任务收据里的音符表，不改工程、不落盘、不启动服务端。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            param(
+                "trackId",
+                "string",
+                false,
+                "片段所属音轨 id（26 字符 ULID；与 `clipId` 成对给）",
+            ),
+            param(
+                "clipId",
+                "string",
+                false,
+                "目标片段 id（26 字符 ULID，`clip_pool` 的键；与 `trackId` 成对给）",
+            ),
+            param(
+                "contentId",
+                "string",
+                false,
+                "OpenTune 内容 id（在途任务的 `contentId`；与 `trackId`/`clipId` 二选一）",
+            ),
+        ],
+        errors: &[
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::IoError,
+            ErrorCode::EntityNotFound,
+            ErrorCode::NoActiveProject,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；38 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；41 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -3016,7 +3155,9 @@ mod tests {
                 // 原生预制清单：只读发行表 + 用户库，不改工程、不落盘 ⇒ 读-only。
                 "yeban_list_presets",
                 // 整曲总览：只取 provider 已算好的总览做映射，不改工程、不落盘 ⇒ 只读。
-                "get_song_overview"
+                "get_song_overview",
+                // OTCP 音符表：只读任务收据（不派生服务端、不改工程、不落盘）⇒ 只读。
+                "yeban_correct_pitch_notes"
             ],
             "只读工具必须显式分类为 read-only"
         );
