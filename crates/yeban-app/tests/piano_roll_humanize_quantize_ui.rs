@@ -88,14 +88,14 @@ fn assemble() -> (yeban_app::ui::MainWindow, Rc<UndoPort>, LiveControlPlane) {
 fn first_midi_clip(project: &YebanProjectV1) -> (String, EntityId, EntityId) {
     for (track_id, track) in project.tracks.iter() {
         for placement in track.clips.values() {
-            if let Some(entry) = project.clip_pool.get(&placement.clip_id) {
-                if entry.content.notes().is_some_and(|notes| !notes.is_empty()) {
-                    return (
-                        placement.id.to_canonical_string(),
-                        *track_id,
-                        placement.clip_id,
-                    );
-                }
+            if let Some(entry) = project.clip_pool.get(&placement.clip_id)
+                && entry.content.notes().is_some_and(|notes| !notes.is_empty())
+            {
+                return (
+                    placement.id.to_canonical_string(),
+                    *track_id,
+                    placement.clip_id,
+                );
             }
         }
     }
