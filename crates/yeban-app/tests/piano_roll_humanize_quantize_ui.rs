@@ -779,3 +779,23 @@ fn host_expansion_matches_mcp_compile_for_humanize_and_quantize() {
     }
     report_line("[humanize-ui] 交叉对照：宿主展开 == MCP compile（人性化 + 量化两档）");
 }
+
+/// 诊断臂（临时）：菜单打开后，直接调 MainWindow 的 `humanize-requested` 回调，
+/// 断言对话框打开 —— 用于二分「回调链断了」还是「弹出层里的点击没送达」。
+#[test]
+fn diag_mainwindow_callback_opens_the_dialog_after_the_menu_opens() {
+    let (window, _port, mut plane) = assemble();
+    assert_eq!(window.get_console_tab(), 0, "默认底部标签必须是卷帘");
+    move_to(&mut plane, 1, 960.0, 776.5);
+    press_by_id(&mut plane, 2, SCROLL_AREA, "right");
+    let _ = element_bounds(&mut plane, 10, MENU_HUMANIZE);
+    window.invoke_humanize_requested();
+    report_line(&format!(
+        "[humanize-ui] 直接调 MainWindow 回调后：对话框开={}",
+        window.get_humanize_open()
+    ));
+    assert!(
+        window.get_humanize_open(),
+        "直接调 MainWindow 的 humanize-requested 必须打开对话框（否则回调链断了）"
+    );
+}
