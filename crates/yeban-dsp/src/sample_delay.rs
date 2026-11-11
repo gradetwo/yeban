@@ -106,6 +106,12 @@ pub struct SampleDelay {
     params: SampleDelayParams,
 }
 
+impl Default for SampleDelay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SampleDelay {
     /// 构造一个**未配置**的实例（直通）。
     #[must_use]
