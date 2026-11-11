@@ -221,6 +221,10 @@ pub struct TrackParams {
     solo_safe: bool,
     device_count: u32,
     latency_samples: u32,
+    /// 手动相位对齐第一层：用户延时（采样，±4800；`None` = 0 的原值）。
+    delay_samples: i32,
+    /// 手动相位对齐第一层：极性反转（`None` = 不反转）。
+    invert_polarity: bool,
 }
 
 impl TrackParams {
@@ -242,6 +246,8 @@ impl TrackParams {
             solo_safe: track.solo_safe,
             device_count: u32::try_from(track.devices.len()).unwrap_or(u32::MAX),
             latency_samples,
+            delay_samples: track.delay_samples.unwrap_or(0),
+            invert_polarity: track.invert_polarity.unwrap_or(false),
         }
     }
 
@@ -291,6 +297,21 @@ impl TrackParams {
     #[must_use]
     pub const fn latency_samples(&self) -> u32 {
         self.latency_samples
+    }
+
+    /// 手动相位对齐第一层：用户延时（采样，±4800；原始值，未做最小值平移）。
+    ///
+    /// 最小值平移在实时侧武装期（`PhaseBank::rearm`）做，不在这里 ——
+    /// 它要对**快照里的全部轨**取最小值，而本函数只看一条轨。
+    #[must_use]
+    pub const fn delay_samples(&self) -> i32 {
+        self.delay_samples
+    }
+
+    /// 手动相位对齐第一层：极性反转。
+    #[must_use]
+    pub const fn invert_polarity(&self) -> bool {
+        self.invert_polarity
     }
 
     /// 本轨的**源侧**声相增益 `(左, 右)`：由 `pan` 与**声相定律**在**构造期**算出。
@@ -1565,6 +1586,15 @@ fn project_schedules(
                         if end_sample <= start_sample {
                             continue;
                         }
+                        // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，起点夹到 0，
+                        // 时值不变（与 `micro_timing_ticks` 的"夹起点、保时值"同一条口径；
+                        // 与 app `export_wav::shift_note_span` 同解）。
+                        let offset = i64::from(placement.offset_samples.unwrap_or(0));
+                        let duration = end_sample.saturating_sub(start_sample);
+                        let start_sample =
+                            u64::try_from((i128::from(start_sample) + i128::from(offset)).max(0))
+                                .unwrap_or(u64::MAX);
+                        let end_sample = start_sample.saturating_add(duration);
                         if notes.len() >= MAX_NOTES_PER_TRACK {
                             dropped = dropped.saturating_add(1);
                             continue;

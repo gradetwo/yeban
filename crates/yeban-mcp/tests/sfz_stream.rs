@@ -135,6 +135,7 @@ fn project_with_notes(track_id: EntityId, notes: &[(u8, u8)]) -> YebanProjectV1 
             duration_ticks: 960 * notes.len().max(1) as u64,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     project.tracks.insert(track_id, track);

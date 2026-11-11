@@ -58,6 +58,8 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
         mute: false,
         solo: false,
         solo_safe: false,
+        delay_samples: None,
+        invert_polarity: None,
         folder_id: None,
         color: None,
         sampler: None,
@@ -280,6 +282,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     duration_ticks: 3840,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             placement_count += 1;
@@ -313,6 +316,7 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
                     duration_ticks: 3840,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             placement_count += 1;

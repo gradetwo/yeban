@@ -161,6 +161,9 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::ProbabilityOutOfRange { .. }
         | ModelError::RatchetOutOfRange { .. }
         | ModelError::MicroTimingOutOfRange { .. }
+        // 手动相位对齐第一层：轨延时与片段 offset 越界，与 `micro_timing` 同组。
+        | ModelError::TrackDelayOutOfRange { .. }
+        | ModelError::ClipOffsetOutOfRange { .. }
         | ModelError::ZeroDuration
         | ModelError::BpmOutOfRange { .. }
         | ModelError::TimeSignatureNumeratorOutOfRange { .. }

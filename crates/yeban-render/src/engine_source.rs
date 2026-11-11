@@ -967,6 +967,7 @@ mod tests {
                     duration_ticks: 480,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             project.tracks.insert(track, track_params);

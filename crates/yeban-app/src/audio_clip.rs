@@ -431,6 +431,12 @@ pub(crate) fn resolve_track_clips(
             project.bpm,
             sample_rate,
         );
+        // 手动相位对齐：片段采样偏移在 tick→帧换算**之后**加，负值结果夹到 0
+        // （与 `micro_timing_ticks` 负值夹 0 同一条口径）。`source_offset` 与
+        // 循环周期是 tick 差值，移位下不变 ⇒ 下面只移 span 边界，不动那两处。
+        let offset = i64::from(placement.offset_samples.unwrap_or(0));
+        let shift = |frame: i64| frame.saturating_add(offset).max(0);
+        let (base_start, base_end) = (shift(base_start), shift(base_end));
         let entry = per_asset
             .entry(asset.clone())
             .or_insert_with(|| (Arc::clone(&prepared), Vec::new()));
@@ -471,8 +477,8 @@ pub(crate) fn resolve_track_clips(
                 // 区间之前的内容：播放一遍（素材从 0 开始）。
                 if region_start_frames > base_start_frames {
                     entry.1.push(ClipSpan {
-                        start: base_start_frames,
-                        end: region_start_frames,
+                        start: shift(base_start_frames),
+                        end: shift(region_start_frames),
                         source_offset: 0,
                         gain_l,
                         gain_r,
@@ -489,8 +495,8 @@ pub(crate) fn resolve_track_clips(
                     }
                     let end = start.saturating_add(period_frames).min(base_end_frames);
                     entry.1.push(ClipSpan {
-                        start,
-                        end,
+                        start: shift(start),
+                        end: shift(end),
                         source_offset,
                         gain_l,
                         gain_r,

@@ -109,6 +109,7 @@ fn placement(fixture: &Fixture, loop_config: LoopConfig) -> ClipPlacement {
         duration_ticks: DURATION_TICKS,
         loop_config,
         muted: false,
+        offset_samples: None,
     }
 }
 

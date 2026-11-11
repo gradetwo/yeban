@@ -188,6 +188,7 @@ fn fixture_with_lane(on: LaneOn) -> (YebanProjectV1, BTreeMap<AssetHash, Vec<u8>
             start_tick: 0,
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
+            offset_samples: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -486,6 +487,7 @@ fn fixture_aux_with_source(
             start_tick: 0,
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
+            offset_samples: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -506,6 +508,7 @@ fn fixture_aux_with_source(
             start_tick: 0,
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
+            offset_samples: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -661,6 +664,7 @@ fn fixture_midi_with_lane(with_lane: bool) -> YebanProjectV1 {
             start_tick: 0,
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
+            offset_samples: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -786,6 +790,7 @@ fn fixture_midi_aux_with_source(with_lane: bool) -> YebanProjectV1 {
             start_tick: 0,
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
+            offset_samples: None,
             loop_config: LoopConfig::default(),
         },
     );
@@ -806,6 +811,7 @@ fn fixture_midi_aux_with_source(with_lane: bool) -> YebanProjectV1 {
             start_tick: 0,
             duration_ticks: 2 * TICKS_PER_SECOND,
             muted: false,
+            offset_samples: None,
             loop_config: LoopConfig::default(),
         },
     );

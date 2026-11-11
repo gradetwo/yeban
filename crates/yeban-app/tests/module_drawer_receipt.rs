@@ -143,6 +143,7 @@ fn project_with_track(volume_db: f32) -> YebanProjectV1 {
             duration_ticks: 1_920,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = std::collections::BTreeMap::new();

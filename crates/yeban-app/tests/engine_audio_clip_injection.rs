@@ -201,6 +201,7 @@ fn project_with_audio(asset: &AssetHash, starts: &[u64]) -> (YebanProjectV1, Ent
                 duration_ticks: CLIP_TICKS,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
     }
@@ -214,6 +215,7 @@ fn project_with_audio(asset: &AssetHash, starts: &[u64]) -> (YebanProjectV1, Ent
             duration_ticks: CLIP_TICKS,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     (project, midi_clip)

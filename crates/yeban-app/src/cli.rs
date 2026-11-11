@@ -59,7 +59,7 @@ use crate::export_als::AlsExportError;
 use crate::export_logic::LogicExportError;
 use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
 use crate::input::{
-    Action, InputContext, MixerParam, Modifiers, NudgeStep, PhysicalKey, Tool, View,
+    Action, InputContext, MixerParam, Modifiers, MsStep, NudgeStep, PhysicalKey, Tool, View,
 };
 use crate::open::{
     DOCUMENT_FORMAT, OpenError, OpenedProject, ProjectOpenOptions, open_project_document_file,
@@ -4825,7 +4825,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 50] = [
+const SHORTCUTS: [ShortcutRow; 54] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -5298,6 +5298,55 @@ const SHORTCUTS: [ShortcutRow; 50] = [
         action: Action::MoveSelectedTrackBy(1),
         key: PhysicalKey::DownArrow,
         modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    // ⭐ **界面决定**（⛔ 不是规范点名）：手动相位对齐第一层的**片段毫秒微移**，
+    // `Cmd/Ctrl+Shift+←/→`（±1 ms）/ `Cmd/Ctrl+Shift+Alt+←/→`（±0.1 ms）。
+    //
+    // 该两格此前落在第 3 步的 `_ => PassThrough`；`Cmd/Ctrl+←/→`（无 Shift）仍放行
+    // （规范判据钉死的 caret 语义）、`Cmd/Ctrl+Shift+↑/↓` 仍是移轨（上一组），一格不动。
+    // 落点是 `host::apply_action` 的 `NudgeClipMs` 臂 ⇒ 提交一条
+    // `Op::SetClipPlacementOffset`（可撤销；只动**音频**片段，MIDI 片段不消费）。
+    // 毫秒→采样按工程采样率换算并四舍五入（与 MCP `SetTrackDelay` 的 `delayMs` 同一条口径）。
+    // 登记在 `.work/DESIGN.md` §7b（UI 键）。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+← → 选中音频片段左移 1 ms",
+        action: Action::NudgeClipMs {
+            direction: -1,
+            step_ms: MsStep::OneMs,
+        },
+        key: PhysicalKey::LeftArrow,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+→ → 选中音频片段右移 1 ms",
+        action: Action::NudgeClipMs {
+            direction: 1,
+            step_ms: MsStep::OneMs,
+        },
+        key: PhysicalKey::RightArrow,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+Alt+← → 选中音频片段左移 0.1 ms",
+        action: Action::NudgeClipMs {
+            direction: -1,
+            step_ms: MsStep::TenthMs,
+        },
+        key: PhysicalKey::LeftArrow,
+        modifiers: Modifiers::ctrl_shift_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+Alt+→ → 选中音频片段右移 0.1 ms",
+        action: Action::NudgeClipMs {
+            direction: 1,
+            step_ms: MsStep::TenthMs,
+        },
+        key: PhysicalKey::RightArrow,
+        modifiers: Modifiers::ctrl_shift_alt(),
         implemented: true,
     },
     // 以下**一条**是本版本仅剩的 `implemented: false` 条目。

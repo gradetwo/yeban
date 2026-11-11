@@ -185,6 +185,7 @@ fn project(tune: &Tune<'_>, bytes: &[u8]) -> YebanProjectV1 {
                 duration_ticks: ONE_SECOND_TICKS,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         project.clip_pool.insert(
@@ -214,6 +215,7 @@ fn project(tune: &Tune<'_>, bytes: &[u8]) -> YebanProjectV1 {
                 duration_ticks: ONE_SECOND_TICKS,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         project.clip_pool.insert(

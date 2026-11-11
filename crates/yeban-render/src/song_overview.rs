@@ -68,7 +68,8 @@ use crate::automation::centered_pan_gains;
 use crate::engine_source::{ArmedSfzInput, EngineSourceError, EngineTimbre};
 use crate::inserts::project_inserts;
 use crate::render::{
-    AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan, track_latencies,
+    AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan, project_phase_align,
+    track_latencies,
 };
 
 /// 渲染设置（整曲哈希的一半；另一半是工程内容）。
@@ -406,12 +407,13 @@ where
     let latencies = track_latencies(&project.tracks);
     let inserts = project_inserts(&project.tracks, sample_rate, project.bpm);
     let options = RenderOptions::l1(frames, 2, sample_rate, settings.seed);
-    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts_and_phase(
         &project.routing_graph,
         project.master_bus_track_id,
         options,
         &latencies,
         &inserts,
+        &project_phase_align(&project.tracks),
     )?;
 
     // 4. 逐轨装源：有排程音符的轨走引擎源（声相 + CC 探针）；外置乐器轨与

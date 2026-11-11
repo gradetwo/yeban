@@ -112,6 +112,7 @@ fn master_project(
             duration_ticks: note.start_tick + note.duration_ticks,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     tracks.insert(track, track_model);

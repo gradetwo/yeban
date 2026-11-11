@@ -74,6 +74,32 @@ pub enum ModelError {
         value: i32,
     },
 
+    /// 轨延时越界（允许 -4800..=4800 采样，即 48 kHz 下 ±100 ms）。
+    ///
+    /// 区间来自 [`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]。
+    #[error(
+        "track delay {value} samples out of range -{}..={}",
+        crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES,
+        crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+    )]
+    TrackDelayOutOfRange {
+        /// 实际收到的采样偏移。
+        value: i32,
+    },
+
+    /// 片段偏移越界（允许 -4800..=4800 采样，即 48 kHz 下 ±100 ms）。
+    ///
+    /// 区间来自 [`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]。
+    #[error(
+        "clip offset {value} samples out of range -{}..={}",
+        crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES,
+        crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES
+    )]
+    ClipOffsetOutOfRange {
+        /// 实际收到的采样偏移。
+        value: i32,
+    },
+
     /// 弯音曲线的 tick 不**严格**升序（同一 tick 出现两次也算）。
     #[error("pitch bend ticks are not strictly ascending: {previous} then {tick}")]
     PitchBendTicksNotAscending {

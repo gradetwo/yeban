@@ -99,6 +99,7 @@ pub mod oscillator;
 pub mod oversample;
 pub mod polysynth;
 pub mod reverb;
+pub mod sample_delay;
 pub mod sample_edit;
 pub mod shaping;
 pub mod slicer;

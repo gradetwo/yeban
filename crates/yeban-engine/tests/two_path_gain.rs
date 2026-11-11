@@ -76,6 +76,7 @@ fn project(mute: bool, velocity: u8) -> (YebanProjectV1, EntityId) {
             duration_ticks: DURATION_TICKS,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
 

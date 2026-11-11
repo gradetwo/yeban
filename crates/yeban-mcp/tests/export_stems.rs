@@ -146,6 +146,7 @@ fn three_track_project() -> YebanProjectV1 {
                 duration_ticks: 1_920,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         let mut notes = BTreeMap::new();

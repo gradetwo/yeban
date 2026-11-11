@@ -89,6 +89,7 @@ fn neutral_project() -> YebanProjectV1 {
             duration_ticks: 480,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let master_track = TrackV3 {

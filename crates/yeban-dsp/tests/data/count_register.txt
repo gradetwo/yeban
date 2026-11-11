@@ -4,10 +4,10 @@
 # 合计 11 条：raw 3 ／ masked 1 ／ structural 5 ／ log_lines 1 ／ runtime_passed 1
 raw_assert_in_src|1963|raw|grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描）
 masked_assert_in_src|1943|masked|掩码器：等价脚本 ~/workspace/tools/dsp-mask-count.py 按同一口径计（排除 // 与 /* */ 注释及 "…" 字符串后计 assert）
-impl_default_for|54|structural|grep -rc '^impl Default for' crates/yeban-dsp/src/**/*.rs 求和（数组条目式；`Limiter<W>` 写成 `impl<const W: usize> Default` 故不被该谓词计到）
-rows_hard_assertion_table|375|structural|证据文件行数（去掉 # 表头）
-rows_integer_count_categories|287|structural|证据文件行数（去掉 # 表头）
-rows_src_match_sites|54|structural|证据文件行数（去掉 # 表头）
+impl_default_for|56|structural|grep -rc '^impl Default for' crates/yeban-dsp/src/**/*.rs 求和（数组条目式；`Limiter<W>` 写成 `impl<const W: usize> Default` 故不被该谓词计到）
+rows_hard_assertion_table|385|structural|证据文件行数（去掉 # 表头）
+rows_integer_count_categories|297|structural|证据文件行数（去掉 # 表头）
+rows_src_match_sites|55|structural|证据文件行数（去掉 # 表头）
 rows_device_injection_evidence|15|structural|证据文件行数（去掉 # 表头）
 digits_in_comment_fragments|18221|raw|对 // 片段内的数字字符计数（含数字的注释片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计
 digits_in_string_fragments|1747|raw|对 "…" 片段内的数字字符计数（含数字的字符串片段）；等价脚本 ~/workspace/tools/dsp-mask-count.py 同口径计

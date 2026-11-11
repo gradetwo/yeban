@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 375 条：float_bits 88 ／ integer_count 287；其中 hard 73 ／ platform 12
+# 合计 385 条：float_bits 88 ／ integer_count 297；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -110,6 +110,7 @@ integer_count | no_callee | 0 | - | src/delay.rs | two_instances_do_not_share_ti
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_spellings_resolve_to_the_same_field
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_conversion_table_at_84_bpm
 integer_count | no_callee | 0 | - | src/device_param.rs | delay_sync_off_or_bad_bpm_keeps_written_time
+integer_count | no_callee | 0 | - | src/device_param.rs | sample_delay_field_spellings_round_trip
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | default_preset_coefficients_match_the_groove_formulas
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | kick_style_from_f32_threshold
 integer_count | no_callee | 0 | - | src/drums/anatomy.rs | preset_table_is_complete_and_verbatim
@@ -285,6 +286,15 @@ float_bits | hard | 5 | - | src/reverb.rs | re_applying_the_same_params_is_a_no_
 float_bits | hard | 6 | - | src/reverb.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
 float_bits | hard | 5 | - | src/reverb.rs | the_wet_impulse_response_is_frozen_bit_for_bit
 integer_count | no_callee | 0 | - | src/reverb.rs | width_controls_the_stereo_spread
+integer_count | no_callee | 0 | - | src/sample_delay.rs | delay_beyond_configured_capacity_is_clamped_not_panicking
+integer_count | no_callee | 0 | - | src/sample_delay.rs | delay_beyond_max_is_clamped
+integer_count | no_callee | 0 | - | src/sample_delay.rs | invert_negates_signal
+integer_count | no_callee | 0 | - | src/sample_delay.rs | millis_to_samples_at_both_rates
+integer_count | no_callee | 0 | - | src/sample_delay.rs | process_mono_moves_pulse_by_armed_params
+integer_count | no_callee | 0 | - | src/sample_delay.rs | pulse_moves_exactly_n_samples
+integer_count | no_callee | 0 | - | src/sample_delay.rs | reset_reproduces_a_freshly_built_device_bit_for_bit
+integer_count | no_callee | 0 | - | src/sample_delay.rs | same_params_same_output_twice
+integer_count | no_callee | 0 | - | src/sample_delay.rs | zero_delay_no_invert_is_bitwise_passthrough
 integer_count | no_callee | 0 | - | src/sample_edit.rs | correct_pitch_lands_within_half_a_cent
 integer_count | no_callee | 0 | - | src/sample_edit.rs | measure_fundamental_finds_a_pure_sine_within_one_cent
 integer_count | no_callee | 0 | - | src/sample_edit.rs | midi_69_is_440_hz

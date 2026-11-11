@@ -262,6 +262,16 @@
         },
         {
           "required": [
+            "SetClipPlacementOffset"
+          ],
+          "properties": {
+            "SetClipPlacementOffset": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetClipPlacementLoop"
           ],
           "properties": {
@@ -546,6 +556,26 @@
           ],
           "properties": {
             "SetTrackSolo": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTrackDelay"
+          ],
+          "properties": {
+            "SetTrackDelay": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTrackPolarity"
+          ],
+          "properties": {
+            "SetTrackPolarity": {
               "type": "object"
             }
           }

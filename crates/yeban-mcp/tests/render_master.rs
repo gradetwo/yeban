@@ -274,6 +274,7 @@ fn project(spec: &Spec) -> YebanProjectV1 {
                 duration_ticks: spec.end_tick,
                 loop_config: spec.loop_config,
                 muted: false,
+                offset_samples: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -365,6 +366,7 @@ fn two_track_clip_project(lead_volume_db: f32, pad_volume_db: f32) -> YebanProje
             duration_ticks: Spec::default().end_tick,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();
@@ -425,6 +427,7 @@ fn many_track_clip_project(tracks: usize) -> YebanProjectV1 {
                 duration_ticks: 480,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
         let mut notes = BTreeMap::new();
@@ -5343,6 +5346,7 @@ fn two_track_project() -> YebanProjectV1 {
             duration_ticks: 1_920,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();
@@ -5713,6 +5717,7 @@ fn the_known_unsupported_list_is_not_decoration() {
                         duration_ticks: 480,
                         loop_config: LoopConfig::default(),
                         muted: false,
+                        offset_samples: None,
                     },
                 );
             project.validate().expect("夹具合法");
@@ -5781,6 +5786,7 @@ fn the_known_unsupported_list_is_not_decoration() {
                     duration_ticks: 480,
                     loop_config: LoopConfig::default(),
                     muted: false,
+                    offset_samples: None,
                 },
             );
             project.validate().expect("夹具合法");

@@ -135,6 +135,67 @@ fn realtime_transport_plays_an_audio_clip() {
     );
 }
 
+/// 片段采样偏移（手动相位对齐）：实时音频排程的 span 边界整体移 `offset_samples`，
+/// 负值结果夹到 0（与离线 `audio_clip.rs` 同一套语义）；走带起声位置跟着移。
+///
+/// 夹具：摆放 960 tick @120BPM/48k = 24 000 帧。+240 ⇒ span `[24240, 48240)`、
+/// 走带在 24240 帧起声；起点 0 配 −240 ⇒ 起点夹到 0、终点 23 760（边界移位，
+/// 时值缩短被夹掉的那 240 帧——与 MIDI 音符"夹起点、保时值"不同，见 DESIGN §4）。
+#[test]
+fn clip_offset_shifts_the_realtime_audio_span() {
+    // +240：span 与起声位置同移 240 帧。
+    let mut fixture = audio_clip_project_at(960, 960, 0.0);
+    for track in fixture.project.tracks.values_mut() {
+        for placement in track.clips.values_mut() {
+            placement.offset_samples = Some(240);
+        }
+    }
+    let rate = fixture_rate(&fixture.project);
+    let snapshot = snapshot_with_pcm(&fixture.project, mono_pcm(0.5, rate as usize, rate));
+    let schedule = snapshot
+        .audio_clip_schedule(&fixture.track)
+        .expect("音频轨必须在表里");
+    assert_eq!(schedule.len(), 1);
+    assert_eq!(
+        schedule.spans()[0].start(),
+        24_240,
+        "+240 采样 ⇒ span 起点移 240 帧"
+    );
+    assert_eq!(
+        schedule.spans()[0].end(),
+        48_240,
+        "+240 采样 ⇒ span 终点同移 240 帧"
+    );
+    let rendered = render_snapshot(snapshot, 200);
+    assert_eq!(
+        first_nonzero(&rendered),
+        Some(24_240),
+        "走带必须在移位后的起点起声（偏移被忽略会在 24000 帧起声）"
+    );
+    assert!(
+        silent_in(&rendered, 0, 24_240),
+        "移位后的起点之前必须全静音"
+    );
+
+    // 夹取：起点 0 配 −240 ⇒ 起点夹到 0、终点 24000 − 240 = 23760。
+    let mut clamped = audio_clip_project_at(0, 960, 0.0);
+    for track in clamped.project.tracks.values_mut() {
+        for placement in track.clips.values_mut() {
+            placement.offset_samples = Some(-240);
+        }
+    }
+    let snapshot = snapshot_with_pcm(&clamped.project, mono_pcm(0.5, rate as usize, rate));
+    let schedule = snapshot
+        .audio_clip_schedule(&clamped.track)
+        .expect("音频轨必须在表里");
+    assert_eq!(schedule.spans()[0].start(), 0, "起点 0 再前移 ⇒ 夹到 0");
+    assert_eq!(
+        schedule.spans()[0].end(),
+        23_760,
+        "终点 = 24000 − 240（边界移位：被夹掉的 240 帧不补回）"
+    );
+}
+
 /// A2（**反向腿**）：有摆放但**没注入 PCM** ⇒ 逐位静音；把摆放**移除** ⇒ 与它**指纹相同**。
 ///
 /// 这是"接线前逐位不变"的运行期证据：新增的逐轨混合代码在 `pcm == None` 与
@@ -478,13 +539,13 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
     );
     assert_eq!(
-        runtime, 45_680,
+        runtime, 45_840,
         "EngineRuntime 的现读值。**`P2`（轨道槽可配）之后从 200112 降到 45648**：\
          声部池（默认 1024 槽）、插入池（65 槽）、混响池、卷积池、声相表、键抽头表\
          全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身只剩瘦指针，\
          而「每槽一格」的表不再随容量增长把它撑大。⛔ 这不是「省掉了功能」：\
          分配次数仍是构造期那几次，回调内依旧零分配 [MUST-GATE-001]。\
-          ⭐ **`P6`（限制器）＋32 B ⇒ 45 680 B**：`Limiter` 增加 `ceiling: f32`、`true_peak: bool` 与         `history: [[f32; 3]; 2]`（真峰值插值的三点历史）；窗口本身已改为**常量泛型**         （母线仍是 33 帧），⛔ 没有把 192 帧的存储塞进运行时。         改前读数（历史）：（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
+          ⭐ **`P6`（限制器）＋32 B ⇒ 45 680 B**：`Limiter` 增加 `ceiling: f32`、`true_peak: bool` 与         `history: [[f32; 3]; 2]`（真峰值插值的三点历史）；窗口本身已改为**常量泛型**         （母线仍是 33 帧），⛔ 没有把 192 帧的存储塞进运行时。 ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。         改前读数（历史）：（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
          逐边发送量表/平滑器/重放副本；⭐ **S1 第一片**再加 **16 B** = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`，⛔ 不新增任何表\
          ——落点复用既有的 `armed_strips`；本判据只要求音频片段**不再**加字节 ——\

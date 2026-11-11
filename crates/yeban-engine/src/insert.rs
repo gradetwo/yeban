@@ -432,6 +432,13 @@ pub use yeban_dsp::delay::Delay as DspDelay;
 // 延迟的投影期参数表（舞台参数 + 音符同步换算）住在 `yeban-dsp` 的 `device_param`。
 // 本模块只读它，不复制第二份拼写表与钳制（与 render 的 `inserts` 同一张表）。
 use yeban_dsp::device_param::{DelayField, DelayStageParams, delay_params_from_stage};
+// 采样延迟的**唯一实现**住在 `yeban-dsp`（`crates/yeban-dsp/src/sample_delay.rs`）。
+// 本模块只转发：类型 + 参数类型（手动相位对齐第一层；与乒乓延迟同款）。
+pub use yeban_dsp::sample_delay::{SampleDelay, SampleDelayParams};
+// 与 `DspDelay` 同一个理由：让判据能写出"dsp 类型 ← engine 路径"的赋值。
+pub use yeban_dsp::sample_delay::SampleDelay as DspSampleDelay;
+// 采样延迟的字段表住在 `yeban-dsp` 的 `device_param`（与 `DelayField` 同一张拆分）。
+use yeban_dsp::device_param::SampleDelayField;
 // 磁带饱和的**唯一实现**住在 `yeban-dsp`（`crates/yeban-dsp/src/tape.rs`）。
 // 本模块只转发：类型 + 参数类型（`ADR-0062`）。
 pub use yeban_dsp::tape::{TapeParams, TapeSaturation};
@@ -439,7 +446,7 @@ pub use yeban_dsp::tape::{TapeParams, TapeSaturation};
 // 显式播种、跨运行同序），本模块**不**定义第二份 PRNG。
 use yeban_dsp::noise::Rng;
 
-/// 一条轨的**插入链**投影（五件器件：通道条、磁带饱和、混响、卷积混响与乒乓延迟）。
+/// 一条轨的**插入链**投影（六件器件：通道条、磁带饱和、混响、卷积混响、乒乓延迟与采样延迟）。
 ///
 /// 结构体保留一个"链"的形状而不是裸 `Option<ChannelStripParams>`：后续器件接线时
 /// 在这里**加字段**即可，实时侧的"逐轨查找 + 整段跳过"骨架不必改。
@@ -480,6 +487,13 @@ pub struct InsertParams {
     /// 就是音频线程将要用的那一份数。`mix = 0` 的链仍投影为 `Some`（与 render 同口径），
     /// 运行态按钳制后 mix 门决定建不建器件。
     delay: Option<DelayParams>,
+    /// 本轨的**采样延迟参数**：`None` = 本轨**没有**采样延迟（实时侧那段跳过）。
+    ///
+    /// 手动相位对齐第一层。位置是链的**最前**（通道条之前）：它只是把整段信号在时间上
+    /// 平移，放在任何音色处理之前才与\"对齐波峰波谷\"的语义相符。`delay_samples = 0`
+    /// 且 `invert = false` 的链仍投影为 `Some`（与乒乓延迟同口径），运行态按恒等门
+    /// 决定建不建器件。
+    sample_delay: Option<SampleDelayParams>,
 }
 
 /// 一条轨的**卷积混响计划**：四个器件标量参数 ＋ 一份**已经就绪**的 IR。
@@ -823,13 +837,14 @@ impl InsertParams {
             reverb: None,
             convolution: None,
             delay: None,
+            sample_delay: None,
         }
     }
     /// 从模型层的设备链投影（**构造期**；见模块文档 §4、§8 与 §9 的规则表）。
     ///
-    /// 五件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，磁带饱和取第一个含
+    /// 六件器件**各自独立**取来源：通道条取第一个含通道条参数名的设备，磁带饱和取第一个含
     /// 饱和参数名的设备，混响取第一个含混响参数名的设备，卷积混响取第一个含 `conv_` 参数名的设备，延迟取第一个含
-    /// `delay_` 参数名的设备（同一台设备可以同时是五者的来源）。这与"第一条含已识别参数的设备是唯一来源"是同一个口径 —— 已识别的
+    /// `delay_` 参数名的设备，采样延迟取第一个含 `sample_delay_` 参数名的设备（同一台设备可以同时是六者的来源）。这与"第一条含已识别参数的设备是唯一来源"是同一个口径 —— 已识别的
     /// 名字集合变大了，但每一件的**首个**来源仍然是首个（先命中者不被后来的覆盖）。
     ///
     /// `sample_rate` 只在卷积混响那一支用到（IR 的帧数 = 采样率 ÷ 10，
@@ -847,6 +862,7 @@ impl InsertParams {
         let mut saturation: Option<TapeParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         let mut delay: Option<DelayParams> = None;
+        let mut sample_delay: Option<SampleDelayParams> = None;
         for device in devices {
             // 规则 1 + 2：只看非旁通的内置效果器。
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
@@ -865,7 +881,14 @@ impl InsertParams {
             if delay.is_none() {
                 delay = Self::delay_of(device, bpm);
             }
-            if reverb.is_some() && saturation.is_some() && convolution.is_some() && delay.is_some()
+            if sample_delay.is_none() {
+                sample_delay = Self::sample_delay_of(device);
+            }
+            if reverb.is_some()
+                && saturation.is_some()
+                && convolution.is_some()
+                && delay.is_some()
+                && sample_delay.is_some()
             {
                 break;
             }
@@ -877,6 +900,7 @@ impl InsertParams {
             reverb,
             convolution,
             delay,
+            sample_delay,
         }
     }
 
@@ -1001,6 +1025,34 @@ impl InsertParams {
         self.delay
     }
 
+    /// 单台设备 → 采样延迟参数（`None` = 一个已识别的 `sample_delay_` 名字都没有）。
+    ///
+    /// 手动相位对齐第一层。基值是 [`SampleDelayParams::new`]（零延迟、不反转）；
+    /// 只有**出现**的名字才覆盖它；小数采样四舍五入（[`SampleDelayField::store`]）。
+    /// 与乒乓延迟不同：这里**没有** `bpm` 换算（毫秒不是本层的单位）。
+    fn sample_delay_of(device: &DeviceDefinition) -> Option<SampleDelayParams> {
+        let mut params = SampleDelayParams::new();
+        let mut seen = false;
+        for param in &device.params {
+            let name = param.name.to_ascii_lowercase();
+            if let Some(field) = SampleDelayField::from_name(&name) {
+                field.store(&mut params, param.value);
+                seen = true;
+            }
+        }
+        if seen { Some(params) } else { None }
+    }
+
+    /// 本轨的**采样延迟参数**；`None` = 整段跳过。
+    ///
+    /// 存在的理由与 [`Self::strip`] 相同：把"投影出来的那个数"变成可读的，
+    /// 判据就不必从音频输出反推。**只**被音频线程（武装期 `set_params`）与离线链
+    /// 用来调 `SampleDelay`。
+    #[must_use]
+    pub const fn sample_delay(&self) -> Option<SampleDelayParams> {
+        self.sample_delay
+    }
+
     /// 本轨通道条的**动态级**参数（`ChannelStripParams::compressor` 的直读）。
     ///
     /// 存在的理由与 `c792fdc` 的同类读数一样：把"投影出来的那个数"变成可读的，
@@ -1021,6 +1073,7 @@ impl InsertParams {
             && self.reverb.is_none()
             && self.convolution.is_none()
             && self.delay.is_none()
+            && self.sample_delay.is_none()
     }
 }
 
@@ -2388,6 +2441,57 @@ mod tests {
         assert!(insert.delay().is_some());
     }
 
+    /// 判据：采样延迟投影——首个含 `sample_delay_` 参数名的设备是唯一来源；
+    /// 小数采样四舍五入；旁通设备不算来源；无已识别参数 ⇒ `None`。
+    #[test]
+    fn sample_delay_projection_takes_first_recognised_device() {
+        let first = device(
+            DeviceKind::InternalEffect,
+            false,
+            &[
+                ("sample_delay_samples", 240.4),
+                ("sample_delay_invert", 1.0),
+            ],
+        );
+        let second = device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("sample_delay_samples", 480.0)],
+        );
+        let insert = from_devices(&[first, second]);
+        assert_eq!(
+            insert.sample_delay(),
+            Some(SampleDelayParams {
+                delay_samples: 240,
+                invert: true,
+            }),
+            "小数采样四舍五入；首个来源不被后来者覆盖"
+        );
+        // 别名 `sample_delay` 同样认；旁通设备不算来源。
+        let aliased = device(DeviceKind::InternalEffect, false, &[("sample_delay", 48.0)]);
+        assert_eq!(
+            from_devices(&[aliased]).sample_delay(),
+            Some(SampleDelayParams {
+                delay_samples: 48,
+                invert: false,
+            })
+        );
+        let bypassed = device(
+            DeviceKind::InternalEffect,
+            true,
+            &[("sample_delay_samples", 48.0)],
+        );
+        assert_eq!(from_devices(&[bypassed]).sample_delay(), None);
+        // `sample_delay_ms` 不是拼写：毫秒不是本层的单位。
+        let ms_only = device(
+            DeviceKind::InternalEffect,
+            false,
+            &[("sample_delay_ms", 5.0)],
+        );
+        assert_eq!(from_devices(&[ms_only]).sample_delay(), None);
+        assert!(from_devices(&[]).sample_delay().is_none());
+    }
+
     /// 判据：**engine 侧没有第二份延迟实现**（源码级机械检查，与前四件同款）。
     ///
     /// ⚠ 与前件同样的自我命中风险：本条注释里也**不许**出现被禁字面量。
@@ -2398,6 +2502,9 @@ mod tests {
             concat!("struct", " Delay", " {"),
             concat!("struct", " DelayParams", " {"),
             concat!("const", " MAX_DELAY_SECONDS"),
+            concat!("struct", " SampleDelay", " {"),
+            concat!("struct", " SampleDelayParams", " {"),
+            concat!("const", " MAX_SAMPLE_DELAY_SAMPLES"),
         ];
         for needle in forbidden {
             assert!(
@@ -2408,6 +2515,10 @@ mod tests {
         assert!(
             source.contains("pub use yeban_dsp::delay::{Delay, DelayParams};"),
             "engine 的 insert.rs 必须把 dsp 延迟的**类型与参数类型**都再导出"
+        );
+        assert!(
+            source.contains("pub use yeban_dsp::sample_delay::{SampleDelay, SampleDelayParams};"),
+            "engine 的 insert.rs 必须把 dsp 采样延迟的**类型与参数类型**都再导出"
         );
     }
 }

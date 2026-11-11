@@ -334,6 +334,8 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 | 根 | `track_order` | 空表 ⇒ **不落盘**（**UI 轨道交互线新增的第 21 项**；`Vec<EntityId>` = "轨道显示顺序"，缺键/空表时投影按 BTreeMap 的 id 序，旧工程默认顺序不变） |
 | 根 | `lyrics` | 空表 ⇒ **不落盘**（**歌词轨线新增的第 31 项**；`Vec<LyricLine>` = "歌词时间轴（一行 = 一个 LRC 行：起始 tick + 整行文本）"，行文本非空、起始 tick 严格升序由 `validate` 机械检查） |
 | `tracks[*]` | `preset`, `preset.preset_id`, `preset.bypassed`, `preset.auto_load`, `preset.previous`, `previous.strip`, `previous.effects`, `previous.sends`, `previous.macros` | `None` / 缺省值 / 空集 ⇒ **不落盘**（**夜半原生预制线新增的第 20–28 项**；`Option<Box<TrackPresetState>>` = "这条轨当前用的预制、旁通与默认加载开关"，子路径全是 `#[serde(default, skip_serializing_if = …)]`） |
+| `tracks[*]` | `delay_samples`, `invert_polarity` | `None` ⇒ **不落盘**（**手动相位对齐线新增**；`Option<i32>` = "轨延时（采样，±4800）"，`Option<bool>` = "极性反转"，缺省即旧行为：0 延时、不反转） |
+| `tracks[*].clips[*]` | `offset_samples` | `None` ⇒ **不落盘**（**手动相位对齐线新增**；`Option<i32>` = "摆放偏移（采样，±4800）"，缺省即旧行为：0 偏移） |
 | `sections[*]` | `color` | `None` ⇒ **不落盘** |
 | `scenes[*]` | `tempo`, `color` | `None` ⇒ **不落盘** |
 | `routing_graph.edges[*]` | `gain_db` | `None` ⇒ **不落盘**（对比 `clip_pool[*].content.Audio.gain_db`：那里是裸 `f32`，所以**是**必需） |
@@ -352,6 +354,15 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 不登记进 `D43_EXEMPT_REQUIRED_PATHS` 就会**变红**（"棘轮盲区"），而"把它填进夹具"会改掉
 `project.filled.json` 的冻结 sha256。⇒ 唯一正确的出路同样是**登记**，这就是本节从 19 长成 28 的原因
 （同一组已同步进 `docs/ledger/schema-ratchet-notes.md` §3 与 `tests/schema_ratchet.rs` 的常量表）。
+
+⚠ **手动相位对齐三项的机械后果**（照实登记，与第 19 项同一理由）：`tracks[*].delay_samples`、
+`tracks[*].invert_polarity`、`tracks[*].clips[*].offset_samples` 在既有夹具
+`samples::filled_project()` 里**一处都不落盘** —— 那正是"默认不改变既有工程"这条判据本身。
+因此 `tests/schema_ratchet.rs` 的判据 ⑥ 会把它们记成"契约声明了、夹具里一处都没有"的 `unjudged`；
+不登记进 `D43_EXEMPT_REQUIRED_PATHS` 就会**变红**（"棘轮盲区"），而"把它填进夹具"会改掉
+`project.filled.json` 的冻结 sha256。⇒ 唯一正确的出路同样是**登记**
+（同一组已同步进 `docs/ledger/schema-ratchet-notes.md` §3 与 `tests/schema_ratchet.rs` 的常量表，
+常量现共 36 项）。
 
 一句话记忆法：**"写入器会省略的键，schema 一律不得 required"**；反过来，"schema required 的键，写入器必须总是写出、读取器必须要求存在"。判据 ④ 是这条原则的机械形式。
 

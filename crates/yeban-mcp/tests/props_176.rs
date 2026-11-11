@@ -14,7 +14,7 @@
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
 //! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
 //! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 5 种注入（少 required / 错类型 / 声明字段缺席 / 违 `const` / 违 `enum`）各 1 条 |
-//! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（109） |
+//! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（113） |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test props_176 -- --nocapture`
 
@@ -993,19 +993,21 @@ fn the_validator_can_go_red_and_the_schema_is_not_idealised() {
 /// ⭐ **夜半原生预制线**：通道条 `#341/#342/#343/#344/#346` 十条（低切 `hpf_hz` /
 /// 宽度 `strip_width` / mono-maker `mono_below_hz` / M/S 中频 `ms_mid_*` /
 /// 动态 EQ `deq_*`，各 1 别名）⇒ **＋10 规范、＋10 别名 = 109**（62 + 47）。
+/// ⭐ **手动相位对齐第一层**：新增 `sampleDelay` 组，2 条规范拼写
+/// （`sample_delay_samples` / `sample_delay_invert`，各 1 别名）⇒ **＋2 规范、＋2 别名 = 113**（64 + 49）。
 /// ⛔ 故意不给裸 `threshold_db` 之类别名：它已经被压缩器占着，同名会让"写进设备的是
 /// 谁的阈值"变成猜的。
 #[test]
 fn the_58_published_spellings_are_still_all_there() {
     use yeban_mcp::{effect_params, op_schema};
     let names = effect_params::recognised_names();
-    assert_eq!(names.len(), 109, "62 规范 + 47 别名");
+    assert_eq!(names.len(), 113, "64 规范 + 49 别名");
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        62
+        64
     );
     let items = op_schema::ops_items();
     let insert = items["oneOf"]
@@ -1017,7 +1019,7 @@ fn the_58_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 62);
+    assert_eq!(branches.len(), 64);
     let published: usize = branches
         .iter()
         .map(|branch| {
@@ -1027,7 +1029,7 @@ fn the_58_published_spellings_are_still_all_there() {
                 .len()
         })
         .sum();
-    assert_eq!(published, 109, "公告面的拼写个数");
+    assert_eq!(published, 113, "公告面的拼写个数");
     assert!(effect_params::recognise("eq_low_gain").is_some());
     assert!(effect_params::recognise("eq_low_gian").is_none());
     assert_eq!(
@@ -1117,6 +1119,7 @@ fn render_project() -> YebanProjectV1 {
             duration_ticks: 1_920,
             loop_config: yeban_model::LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

@@ -3117,6 +3117,7 @@ pub fn plan_with_options(
                 duration_ticks: span,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         });
     }

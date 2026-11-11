@@ -261,6 +261,7 @@ fn project_with_audio_clip(asset: AssetHash, gain_db: f32) -> YebanProjectV1 {
                 duration_ticks: DURATION_TICKS,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
     project
@@ -354,6 +355,80 @@ fn a_placed_audio_clip_is_audible_inside_its_frame_window_and_silent_outside() {
     assert!(outside <= 1e-4, "窗口之外必须 ≈ 0（实测峰值 {outside}）");
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 判据 1b（手动相位对齐）：片段采样偏移让可闻窗口精确移动偏移量
+// ---------------------------------------------------------------------------
+
+/// 建一个带采样偏移的最小可渲染工程（只改摆放的起点与 `offset_samples`）。
+fn project_with_audio_clip_offset(
+    asset: AssetHash,
+    gain_db: f32,
+    start_tick: u64,
+    offset: i32,
+) -> YebanProjectV1 {
+    let mut project = project_with_audio_clip(asset, gain_db);
+    for track in project.tracks.values_mut() {
+        for placement in track.clips.values_mut() {
+            placement.start_tick = start_tick;
+            placement.offset_samples = Some(offset);
+        }
+    }
+    project
+}
+
+/// `offset_samples` ⇒ 可闻窗口 `[start, end)` 整体平移偏移量（1 tick = 25 帧 @120 BPM/960 PPQ/48 kHz）：
+/// +240 后移、−240 前移、起点 96 tick 配 −4800 时起点夹到 0。窗口外必须 ≈ 0 ⇒
+/// "偏移被忽略"（窗口留在原地）与"偏移量算错"都不能通过。
+/// 起点帧 = tick × 25：4800 tick = 120_000 帧；终点同样逐边界移位（夹紧时 span 会缩短：
+/// clamp 例的终点是 (96 + 4800) × 25 − 4800 = 117_600，不是 122_400）。
+#[test]
+fn clip_offset_shifts_the_audible_window_by_exactly_the_offset() {
+    // （标签，摆放起点 tick，偏移采样，期望窗口起点帧，期望窗口终点帧）。
+    let cases = [
+        ("plus", START_TICK, 240, 120_240_usize, 240_240_usize),
+        ("minus", START_TICK, -240, 119_760_usize, 239_760_usize),
+        ("clamp", 96_u64, -4_800, 0_usize, 117_600_usize),
+    ];
+    for (tag, start_tick, offset, expect_start, expect_end) in cases {
+        let dir = scratch(&format!("offset-{tag}"));
+        let (bytes, source_sample) = synth_asset(&dir, EXPORT_RATE);
+        let hash = AssetHash::of_bytes(&bytes);
+        let project = project_with_audio_clip_offset(hash, CLIP_GAIN_DB, start_tick, offset);
+        let container = write_container(&dir, "song.yeban", &project, &bytes);
+        let out = dir.join("out.wav");
+        let lines = export_via_cli(&container, &out);
+        let exported = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须打印 exported-wav 行");
+        assert!(
+            exported.contains("audio-clips(rendered=1"),
+            "偏移工程必须如实登记渲染了 1 个音频摆放: {exported}"
+        );
+
+        let left = left_channel_of(&out);
+        assert_eq!(left.len(), 48_000 * 8, "默认导出的帧数变了 ⇒ 本判据需同步");
+        let expected = source_sample * db_to_linear(CLIP_GAIN_DB);
+        let inside = peak_in(&left, expect_start..expect_end);
+        let outside = peak_in(&left, 0..expect_start).max(peak_in(&left, expect_end..left.len()));
+        // 诊断：可闻窗口的真实首/末帧（偏移被忽略/算错/反号时，窗口位置本身就是证据）。
+        let first_audible = left.iter().position(|value| value.abs() > 1e-4);
+        let last_audible = left.iter().rposition(|value| value.abs() > 1e-4);
+        println!(
+            "[export-audio/offset-{tag}] 偏移 {offset} 采样：窗口 [{expect_start}, {expect_end}) 内峰值 {inside:.6}；期望 {expected:.6}；窗口外峰值 {outside:.8}；首个可闻帧 {first_audible:?}、末个可闻帧 {last_audible:?}"
+        );
+        assert!(
+            (inside - expected).abs() <= 0.02 * expected,
+            "移位后的窗口内峰值必须 ≈ 源样本 × db_to_linear(gain_db)：实测 {inside}，期望 {expected}"
+        );
+        assert!(
+            outside <= 1e-4,
+            "移位后的窗口之外必须 ≈ 0（实测峰值 {outside}）：偏移被忽略会让旧窗口出声"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 // ---------------------------------------------------------------------------

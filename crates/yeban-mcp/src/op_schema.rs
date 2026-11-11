@@ -15,7 +15,7 @@
 //! | schema 分支 | 解析器 |
 //! | :--- | :--- |
 //! | `add` / `delete` / `move` / `velocity` | `notes.rs` 的同名臂 + `parse_note` |
-//! | `setParam` / `setTrackMute` / `setTrackSolo` | `parse_static_lane` / `parse_track_flag_value` |
+//! | `setParam` / `setTrackMute` / `setTrackSolo` / `setTrackPolarity` / `setTrackDelay` | `parse_static_lane` / `parse_track_flag_value` |
 //! | `insertDevice` / `removeDevice` | `parse_device` / `read_id` |
 //! | `setAutomationLane` / `removeAutomationPoint` | `parse_lane_edit` / `parse_point_removal` |
 //! | 其余 | 各自的 `reject_*_fields` 白名单 |
@@ -695,6 +695,37 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setTrackPolarity",
+                "写目标音轨的 `invert_polarity` 开关（极性反转；目标缺省 = 顶层 `trackId`，`trackId` 可逐条点名另一条音轨）",
+                &["kind", "value"],
+                json!({
+                    "kind": kind("setTrackPolarity"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
+                    "value": { "type": "boolean", "description": "目标态：true = 反相（信号 × −1），false = 正常（不做真假值强转）" },
+                }),
+                true,
+            ),
+            op(
+                "setTrackDelay",
+                "写目标音轨的 `delay_samples`（手动相位对齐；目标缺省 = 顶层 `trackId`，`trackId` 可逐条点名另一条音轨）",
+                &["kind"],
+                json!({
+                    "kind": kind("setTrackDelay"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
+                    "delaySamples": {
+                        "type": "integer",
+                        "minimum": -4800,
+                        "maximum": 4800,
+                        "description": "目标延时（整数采样；48 kHz 下 ±100 ms；与 `delayMs` 二选一，恰好给一个）",
+                    },
+                    "delayMs": {
+                        "type": "number",
+                        "description": "目标延时（毫秒；换算口径：采样 = 四舍五入（毫秒 × 工程采样率 ÷ 1000），工程采样率是 `audio_config.sample_rate`；换算后必须在 ±4800 采样内；与 `delaySamples` 二选一，恰好给一个）",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "setTransportConfig",
                 "整体替换走带配置（三个字段全部必填）",
                 &["kind", "metronomeEnabled", "countInBars", "launchQuantization"],
@@ -742,6 +773,23 @@ pub fn ops_items() -> Value {
                         "type": "integer",
                         "minimum": 1,
                         "description": "新长度（tick；0 由模型 `ZeroDuration` 拒绝）",
+                    },
+                }),
+                true,
+            ),
+            op(
+                "setClipPlacementOffset",
+                "改一条已有摆放的偏移（手动相位对齐：采样粒度的平移量，不动起点 tick、不动长度）",
+                &["kind", "trackId", "placementId", "offsetSamples"],
+                json!({
+                    "kind": kind("setClipPlacementOffset"),
+                    "trackId": id("摆放所在的音轨身份"),
+                    "placementId": id("摆放身份"),
+                    "offsetSamples": {
+                        "type": "integer",
+                        "minimum": -4800,
+                        "maximum": 4800,
+                        "description": "新偏移（整数采样；48 kHz 下 ±100 ms；越界由模型 `ClipOffsetOutOfRange` 拒绝）",
                     },
                 }),
                 true,

@@ -362,6 +362,14 @@ struct NodeState {
     /// 有**非恒等**设备参数泳道的轨，对应器件在编译期被强制实例化
     /// （`#266` 通道条 / `#293` Freeverb 与卷积）⇒ 有器件可改。
     inserts: Option<InsertRuntime>,
+    /// 手动相位对齐第一层：输出级之后的逐轨延时线（立体声交错，与 PDC 的
+    /// 边延迟线同一形态）。`None` = 有效延时 0 ⇒ 不分配、不拷贝、不碰样本。
+    ///
+    /// 有效延时已在编译期做过最小值平移（负延时 = 相对提前），这里只剩
+    /// ≥ 0 的延时。
+    phase_delay: Option<DelayLine>,
+    /// 手动相位对齐第一层：极性反转（延时之后乘 −1；与延时无关，可单用）。
+    phase_invert: bool,
     /// 键抽头缓冲：仅当本节点是某条**已求值**侧链边的源时，`render_node`
     /// 在插入链之后把本块样本拷到这里（抽头点：链后、声相前）。
     ///
@@ -681,9 +689,52 @@ pub fn track_latencies(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityI
         .collect()
 }
 
-/// 把 `gain_db` 转成线性增益。
+/// 手动相位对齐第一层：每轨的用户延时与极性反转（**原始值**，未做最小值平移）。
 ///
-/// 走 `libm::powf` 而不是 `f32::powf`: [ARCH-DET-001] 要求"统一启用纯 Rust `libm`
+/// `delay_samples` 是 `TrackV3::delay_samples` 的原值（`None` = 0，范围
+/// ±`yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES`）；`invert_polarity` 是
+/// `TrackV3::invert_polarity`（`None` = 不反转）。
+///
+/// 恒等轨（延时 0 且不反转）**不进表** —— 调用方把缺表项当恒等，逐位不退化。
+///
+/// 最小值平移（负延时 = 相对提前）**不在这里做**：它要对**计划里的节点**
+/// 取最小值，而本函数只看工程轨表。`RenderPlan::compile_*_and_phase`
+/// 在编译期对计划节点取 `min(0, 全部延时)`，每轨有效延时 =
+/// `delay_samples − min`（最早那轨为 0，其余按差值延迟），整曲只整体
+/// 后移 `|min|`。设计见 `.work/DESIGN.md`（手动层 §1）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhaseAlign {
+    /// 用户延时（采样，±4800；原始值）。
+    pub delay_samples: i32,
+    /// 极性反转。
+    pub invert_polarity: bool,
+}
+
+/// 从工程轨表投影每轨的手动相位对齐参数（恒等轨不进表）。
+#[must_use]
+pub fn project_phase_align(tracks: &BTreeMap<EntityId, TrackV3>) -> BTreeMap<EntityId, PhaseAlign> {
+    tracks
+        .iter()
+        .filter_map(|(id, track)| {
+            let delay = track.delay_samples.unwrap_or(0);
+            let invert = track.invert_polarity.unwrap_or(false);
+            if delay == 0 && !invert {
+                None
+            } else {
+                Some((
+                    *id,
+                    PhaseAlign {
+                        delay_samples: delay,
+                        invert_polarity: invert,
+                    },
+                ))
+            }
+        })
+        .collect()
+}
+
+/// 把 `gain_db` 转成线性增益。
+////// 走 `libm::powf` 而不是 `f32::powf`: [ARCH-DET-001] 要求"统一启用纯 Rust `libm`
 /// 数学库", 平台的 `powf` 在不同 libm 实现下可能差 LSB。
 #[must_use]
 pub fn db_to_linear(gain_db: f32) -> f32 {
@@ -774,6 +825,47 @@ impl RenderPlan {
         options: RenderOptions,
         latencies: &BTreeMap<EntityId, u32>,
         inserts: &BTreeMap<EntityId, InsertChain>,
+    ) -> Result<Self, RenderError> {
+        Self::compile_with_latencies_and_inserts_and_phase(
+            graph,
+            master,
+            options,
+            latencies,
+            inserts,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// 与 [`Self::compile_with_latencies_and_inserts`] 相同, 但给每条轨挂上
+    /// 手动相位对齐第一层（每轨延时＋极性反转）。
+    ///
+    /// # 插入点
+    ///
+    /// 在 `render_node` 的**最后一级**（插入链＋输出级之后、下游读节点
+    /// buffer 之前）：延时与反转作用于本轨的**最终**输出（源＋入边＋插入＋
+    /// 推子/声相），下游节点读到的就是对齐后的信号。
+    ///
+    /// # 负延时 = 相对提前（最小值平移）
+    ///
+    /// 延迟线只能延时、不能提前；负值不是"钳到 0"（那样半个量程是谎言），
+    /// 而是对**计划里的全部节点**取 `min(0, 全部延时)`，每轨有效延时 =
+    /// `delay_samples − min`（最早那轨为 0，其余按差值延迟），整曲只整体
+    /// 后移 `|min|`。`phase` 里缺项的节点当延时 0、不反转。
+    ///
+    /// `phase` 由 [`project_phase_align`] 从 `TrackV3.delay_samples` /
+    /// `TrackV3.invert_polarity` 投影得到（恒等轨不进表）。空表等价于
+    /// [`Self::compile_with_latencies_and_inserts`]（逐位不退化）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::compile_with_latencies_and_inserts`] 相同。
+    pub fn compile_with_latencies_and_inserts_and_phase(
+        graph: &RoutingGraph,
+        master: EntityId,
+        options: RenderOptions,
+        latencies: &BTreeMap<EntityId, u32>,
+        inserts: &BTreeMap<EntityId, InsertChain>,
+        phase: &BTreeMap<EntityId, PhaseAlign>,
     ) -> Result<Self, RenderError> {
         if options.channels == 0 {
             return Err(RenderError::ZeroChannels);
@@ -943,6 +1035,16 @@ impl RenderPlan {
         // ---- 5. 每个节点的入边贡献, 按 (source_node, edge_id) 字典序固定 ----
         // `block_width` 已在上面用 `checked_mul` 校验过, 这里直接复用那个值 ——
         // 不再做第二遍可能溢出的乘法。
+        // ---- 手动相位对齐第一层：最小值平移（负延时 = 相对提前） ----
+        //
+        // 对**计划里的全部节点**取最小值；缺表项的节点当延时 0。`min(0, …)` 保证
+        // 平移量 ≤ 0，有效延时 = 原值 − min ≥ 0（延迟线只能延时）。
+        let min_delay = ordered
+            .iter()
+            .map(|node| phase.get(node).map_or(0, |align| align.delay_samples))
+            .min()
+            .unwrap_or(0)
+            .min(0);
         let mut states: Vec<NodeState> = ordered
             .iter()
             .map(|&node| {
@@ -955,6 +1057,18 @@ impl RenderPlan {
                     .map(|chain| {
                         InsertRuntime::new(chain, options.sample_rate, options.block_size)
                     });
+                // 主总线恒等：它是混音本身，不是可对齐的轨。恒等的是**有效**值 ——
+                // 只把原值归零不够（有效 = 原值 − min，0 − (−240) 仍是 240，整路
+                // 母带会被拖后 |min|；R4 实测：A −240 / B 0 时母带第 0 帧变 0）。
+                // min 本身仍按全部节点算（master 缺表项当 0，不影响 min ≤ 0）。
+                // 实时侧同规则（arming 跳 master，见 R6）。
+                let align = phase.get(&node).copied().unwrap_or_default();
+                let effective_delay = if node == master {
+                    0
+                } else {
+                    align.delay_samples.saturating_sub(min_delay)
+                };
+                let phase_invert = node != master && align.invert_polarity;
                 NodeState {
                     node,
                     buffer: vec![0.0; block_width],
@@ -965,6 +1079,12 @@ impl RenderPlan {
                     delay_lines: Vec::new(),
                     scratch: vec![0.0; block_width],
                     inserts,
+                    phase_delay: if effective_delay > 0 {
+                        Some(DelayLine::new(effective_delay as usize, options.channels))
+                    } else {
+                        None
+                    },
+                    phase_invert,
                     key_buffer: Vec::new(),
                     key_input: None,
                     key_tap: false,
@@ -1273,6 +1393,11 @@ impl RenderPlan {
             for line in &mut state.delay_lines {
                 line.reset();
             }
+            // 手动相位对齐的延迟线同样是**跨执行存活**的时间状态 ⇒ 与 PDC 线
+            // 同一条复位规则，否则同一个计划执行两次的第二遍会带着第一遍的尾巴。
+            if let Some(line) = &mut state.phase_delay {
+                line.reset();
+            }
             // 发送增益自动化的 5 ms 平滑器也是**跨执行存活**的时间状态 ⇒ 一起复位
             // （回到“tick 0 的曲线值”，与全新构造逐位一致）。
             for automation in state.send_automations.iter_mut().flatten() {
@@ -1414,6 +1539,8 @@ fn render_node(
         delay_lines,
         scratch,
         inserts,
+        phase_delay,
+        phase_invert,
         key_buffer,
         key_input,
         key_tap,
@@ -1542,6 +1669,22 @@ fn render_node(
         context.frames,
         context.channels,
     );
+    // ---- 手动相位对齐（第一层）：输出级之后、下游读节点 buffer 之前 ----
+    //
+    // 位置刻意在最后：延时与反转作用于本轨的**最终**输出（源＋入边＋插入＋
+    // 推子/声相），下游节点读到的就是对齐后的信号。有效延时已在编译期做过
+    // 最小值平移（负延时 = 相对提前），这里只剩 ≥ 0 的延时与一个开关；
+    // 恒等轨（`phase_delay` 为 `None` 且不反转）一个样本都不碰。
+    // `scratch` 在入边循环之后已无用，复用它作延迟线的中转缓冲。
+    if let Some(line) = phase_delay.as_mut() {
+        line.process(&buffer[..width], &mut scratch[..width]);
+        buffer[..width].copy_from_slice(&scratch[..width]);
+    }
+    if *phase_invert {
+        for sample in buffer[..width].iter_mut() {
+            *sample = -*sample;
+        }
+    }
     Ok(())
 }
 

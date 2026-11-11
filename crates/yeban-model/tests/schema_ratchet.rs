@@ -96,6 +96,7 @@ use yeban_model::samples::filled_project;
 /// | 12–18 | `#.clip_pool.*.content.Midi.notes.*.{probability,ratchet,micro_timing_ticks,slide,pitch_bend_curve,syllable,phonemes}` | 同左（7 个表现力字段） | `None` / 空集 ⇒ 不落盘（稀疏编码） |
 /// | 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | `None` ⇒ 不落盘（任务单 `#76` 新增） |
 /// | 20–28 | `#.tracks.*.preset` 及其 8 个子路径（`preset_id` / `bypassed` / `auto_load` / `previous` / `previous.strip` / `previous.effects` / `previous.sends` / `previous.macros`） | `tracks[*].preset` 一组 | `None` / 缺省值 / 空集 ⇒ 不落盘（夜半原生预制线新增） |
+/// | 34–36 | `#.tracks.*.delay_samples` / `#.tracks.*.invert_polarity` / `#.tracks.*.clips.*.offset_samples` | `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` | `None` ⇒ 不落盘（手动相位对齐线新增） |
 ///
 /// **注意反例**：`clip_pool[*].content.Audio.gain_db` **不在**本表里 —— 那里 `gain_db`
 /// 是裸 `f32`，所以它**是**必需的（§5.4 原文明确点名了这个对比）。
@@ -141,6 +142,14 @@ use yeban_model::samples::filled_project;
 /// `project.filled.json` 的冻结 sha256 与顶层键集 —— 后者是
 /// `model_isolation` 对 default/filled 两份样本的同一冻结集，单份填表无法闭合）
 /// ⇒ 登记是唯一出路。账本两处已同步补行。
+///
+/// ⚠ **第 34–36 项的来历**（手动相位对齐线，2026-11-11）：`TrackV3::delay_samples`
+/// 是 `Option<i32>`（±4800 采样）＋ `#[serde(default)]` + `skip_serializing_if`，
+/// `TrackV3::invert_polarity` 是 `Option<bool>` ＋ 同形，`ClipPlacement::offset_samples`
+/// 是 `Option<i32>`（±4800 采样）＋ 同形 ⇒ 与第 19/31/32/33 项**同形**，契约里只能声明
+/// 为可选属性。既有夹具一处都不落盘它们（\"默认不改变既有工程\"），填进夹具会改掉冻结
+/// sha256 ⇒ 唯一正确的出路同样是登记。账本 `model-no-compat-notes.md` §5.4 与
+/// `schema-ratchet-notes.md` §3 已同步补行。
 const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.author",
     "#.metadata.description",
@@ -159,6 +168,9 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.tracks.*.preset.previous.effects",
     "#.tracks.*.preset.previous.sends",
     "#.tracks.*.preset.previous.macros",
+    "#.tracks.*.delay_samples",
+    "#.tracks.*.invert_polarity",
+    "#.tracks.*.clips.*.offset_samples",
     "#.sections.*.color",
     "#.scenes.*.tempo",
     "#.scenes.*.color",
@@ -1046,8 +1058,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        33,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics`（逐项对应见常量上的表）"
+        36,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics` ＋ 手动相位对齐线的 `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` 3 条（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,

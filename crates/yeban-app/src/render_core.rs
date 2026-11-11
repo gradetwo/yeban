@@ -96,7 +96,7 @@ use yeban_render::automation::{
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
     AudioSource, BlockContext, OutputStage, RenderError, RenderOptions, RenderOutput, RenderPlan,
-    db_to_linear, track_latencies,
+    db_to_linear, project_phase_align, track_latencies,
 };
 
 use yeban_engine::mixer::{BusLimiter, LOOKAHEAD_SAMPLES, PanLaw, pan_gains};
@@ -591,12 +591,13 @@ pub fn render_project_f32_with_plans_under(
         project.bpm,
         &forced,
     );
-    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts_and_phase(
         &project.routing_graph,
         project.master_bus_track_id,
         options_render,
         &latencies,
         &inserts,
+        &project_phase_align(&project.tracks),
     )
     .map_err(|error| WavExportError::Render(error.to_string()))?;
 

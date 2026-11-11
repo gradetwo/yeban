@@ -60,7 +60,7 @@
 //! Windows 的线程栈保留按 64 KiB 分配粒度取整（另有一页守卫页），45 KiB
 //! 的差值不到一个桶，两边落在同一桶里就量不出严格小于。⇒ 严格小于只在
 //! Linux/macOS 断言；Windows 断言 `boxed <= by_value`，另由 ①（1 MiB 下
-//! 构造＋渲染）与 ③（尺寸钉 45680 ＋逐位等价）继续覆盖 Windows 腿。
+//! 构造＋渲染）与 ③（尺寸钉 45840 ＋逐位等价）继续覆盖 Windows 腿。
 //!
 //! ⛔ 本文件**不测** `new_boxed` 与 `new` 的内部结构，只测它们的**栈用量**与**输出**。
 
@@ -256,7 +256,7 @@ fn boxed_constructor_lowers_the_crash_threshold() {
     );
     // Windows 上线程栈保留按 64 KiB 分配粒度取整（另有一页守卫页），二分的
     // 16 KiB 读数只能落在 64 KiB 的桶里；装箱省下的栈（`size_of::<EngineRuntime>()`
-    // = 45680 B ≈ 45 KiB）不到一个桶 ⇒ 严格小于在 Windows 上量不出来。
+    // = 45840 B ≈ 45 KiB）不到一个桶 ⇒ 严格小于在 Windows 上量不出来。
     // Windows 腿只断言不劣于按值；严格小于仍由 Linux/macOS 腿在 CI 里钉。
     if cfg!(windows) {
         assert!(
@@ -292,7 +292,7 @@ fn boxed_constructor_is_bit_identical_to_by_value() {
     );
     assert_eq!(
         core::mem::size_of::<EngineRuntime>(),
-        45_680,
+        45_840,
         "**`P2`（轨道槽可配）之后从 200112 降到 45648，`P6` 之后为 45680**：声部池/插入池/混响池/卷积池/\
          声相表/键抽头表改成构造期堆分配（`Box<[_]>`）⇒ 结构体只剩瘦指针。\
          ⚠ 逐位相等判据仍然成立：它比的是**音频输出与统计**，⛔ 不是结构体字节。\
@@ -302,7 +302,7 @@ fn boxed_constructor_is_bit_identical_to_by_value() {
          `#261` 的逐边发送量表/平滑器/重放副本 ＋4784 → 186720；\
          ⭐ **S1 第一片**的两个 `u64` 事件计数 ＋16 → 186736；\
          ⭐ 侧链 v1 的键抽头池指针 ＋ 填充标记 ＋ 对齐填充 ＋32 → 186768；\
-         ⭐ **通道条 hpf/dyn-eq/width 片** ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；门槛改为 200 KiB = 204800）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）；⭐ **`P6` 插入式限制器片** ＋32 B ⇒ **45680 B**（母线限制器新增 `ceiling: f32` ＋ `true_peak: bool` ＋ `history: [[f32; 3]; 2]`，越过既有对齐填充；窗口已改常量泛型 `Limiter<const W: usize>`，192 帧的环与峰队列**只**长在 `InsertLimiter` 上，运行时不背）"
+         ⭐ **通道条 hpf/dyn-eq/width 片** ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；门槛改为 200 KiB = 204800）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）；⭐ **`P6` 插入式限制器片** ＋32 B ⇒ **45680 B**（母线限制器新增 `ceiling: f32` ＋ `true_peak: bool` ＋ `history: [[f32; 3]; 2]`，越过既有对齐填充；窗口已改常量泛型 `Limiter<const W: usize>`，192 帧的环与峰队列**只**长在 `InsertLimiter` 上，运行时不背）； ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。"
     );
     assert_eq!(
         boxed.fingerprint(),

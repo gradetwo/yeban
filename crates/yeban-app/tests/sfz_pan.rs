@@ -138,6 +138,7 @@ fn project(pan: f32, sampler: Option<&Path>) -> YebanProjectV1 {
             duration_ticks: 960,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

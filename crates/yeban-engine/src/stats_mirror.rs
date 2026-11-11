@@ -178,6 +178,8 @@ pub struct EngineStatsMirror {
     insert_strip_frames: AtomicU64,
     insert_reverb_frames: AtomicU64,
     insert_reverb_rate_rejects: AtomicU64,
+    insert_sample_delay_frames: AtomicU64,
+    insert_sample_delay_capacity_rejects: AtomicU64,
     insert_convolution_frames: AtomicU64,
     insert_convolution_rejects: AtomicU64,
     master_insert_frames: AtomicU64,
@@ -189,6 +191,9 @@ pub struct EngineStatsMirror {
     pdc_unarmed_nodes: AtomicU64,
     pdc_clamped_frames: AtomicU64,
     pdc_processed_blocks: AtomicU64,
+    phase_unarmed_nodes: AtomicU64,
+    phase_clamped_frames: AtomicU64,
+    phase_processed_blocks: AtomicU64,
     pdc_alignment_frames: AtomicU32,
     engine_output_latency_frames: AtomicU32,
     metronome_clicks: AtomicU64,
@@ -251,6 +256,8 @@ impl EngineStatsMirror {
             insert_strip_frames: AtomicU64::new(0),
             insert_reverb_frames: AtomicU64::new(0),
             insert_reverb_rate_rejects: AtomicU64::new(0),
+            insert_sample_delay_frames: AtomicU64::new(0),
+            insert_sample_delay_capacity_rejects: AtomicU64::new(0),
             insert_convolution_frames: AtomicU64::new(0),
             insert_convolution_rejects: AtomicU64::new(0),
             master_insert_frames: AtomicU64::new(0),
@@ -262,6 +269,9 @@ impl EngineStatsMirror {
             pdc_unarmed_nodes: AtomicU64::new(0),
             pdc_clamped_frames: AtomicU64::new(0),
             pdc_processed_blocks: AtomicU64::new(0),
+            phase_unarmed_nodes: AtomicU64::new(0),
+            phase_clamped_frames: AtomicU64::new(0),
+            phase_processed_blocks: AtomicU64::new(0),
             pdc_alignment_frames: AtomicU32::new(0),
             engine_output_latency_frames: AtomicU32::new(0),
             metronome_clicks: AtomicU64::new(0),
@@ -357,6 +367,12 @@ impl EngineStatsMirror {
             .store(stats.insert_reverb_frames, Ordering::Relaxed);
         self.insert_reverb_rate_rejects
             .store(stats.insert_reverb_rate_rejects, Ordering::Relaxed);
+        self.insert_sample_delay_frames
+            .store(stats.insert_sample_delay_frames, Ordering::Relaxed);
+        self.insert_sample_delay_capacity_rejects.store(
+            stats.insert_sample_delay_capacity_rejects,
+            Ordering::Relaxed,
+        );
         self.insert_convolution_frames
             .store(stats.insert_convolution_frames, Ordering::Relaxed);
         self.insert_convolution_rejects
@@ -379,6 +395,12 @@ impl EngineStatsMirror {
             .store(stats.pdc_clamped_frames, Ordering::Relaxed);
         self.pdc_processed_blocks
             .store(stats.pdc_processed_blocks, Ordering::Relaxed);
+        self.phase_unarmed_nodes
+            .store(stats.phase_unarmed_nodes, Ordering::Relaxed);
+        self.phase_clamped_frames
+            .store(stats.phase_clamped_frames, Ordering::Relaxed);
+        self.phase_processed_blocks
+            .store(stats.phase_processed_blocks, Ordering::Relaxed);
         self.pdc_alignment_frames
             .store(stats.pdc_alignment_frames, Ordering::Relaxed);
         self.engine_output_latency_frames
@@ -474,6 +496,10 @@ impl EngineStatsMirror {
             insert_strip_frames: self.insert_strip_frames.load(Ordering::Relaxed),
             insert_reverb_frames: self.insert_reverb_frames.load(Ordering::Relaxed),
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
+            insert_sample_delay_frames: self.insert_sample_delay_frames.load(Ordering::Relaxed),
+            insert_sample_delay_capacity_rejects: self
+                .insert_sample_delay_capacity_rejects
+                .load(Ordering::Relaxed),
             insert_convolution_frames: self.insert_convolution_frames.load(Ordering::Relaxed),
             insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
             master_insert_frames: self.master_insert_frames.load(Ordering::Relaxed),
@@ -485,6 +511,9 @@ impl EngineStatsMirror {
             pdc_unarmed_nodes: self.pdc_unarmed_nodes.load(Ordering::Relaxed),
             pdc_clamped_frames: self.pdc_clamped_frames.load(Ordering::Relaxed),
             pdc_processed_blocks: self.pdc_processed_blocks.load(Ordering::Relaxed),
+            phase_unarmed_nodes: self.phase_unarmed_nodes.load(Ordering::Relaxed),
+            phase_clamped_frames: self.phase_clamped_frames.load(Ordering::Relaxed),
+            phase_processed_blocks: self.phase_processed_blocks.load(Ordering::Relaxed),
             pdc_alignment_frames: self.pdc_alignment_frames.load(Ordering::Relaxed),
             engine_output_latency_frames: self.engine_output_latency_frames.load(Ordering::Relaxed),
             metronome_clicks: self.metronome_clicks.load(Ordering::Relaxed),
@@ -573,6 +602,8 @@ mod tests {
             insert_strip_frames: 19,
             insert_reverb_frames: 20,
             insert_reverb_rate_rejects: 21,
+            insert_sample_delay_frames: 55,
+            insert_sample_delay_capacity_rejects: 56,
             insert_convolution_frames: 27,
             insert_convolution_rejects: 28,
             master_insert_frames: 54,
@@ -584,6 +615,9 @@ mod tests {
             pdc_unarmed_nodes: 22,
             pdc_clamped_frames: 23,
             pdc_processed_blocks: 24,
+            phase_unarmed_nodes: 57,
+            phase_clamped_frames: 58,
+            phase_processed_blocks: 59,
             pdc_alignment_frames: 45,
             engine_output_latency_frames: 46,
             metronome_clicks: 25,

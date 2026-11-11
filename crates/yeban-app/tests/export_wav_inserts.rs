@@ -99,6 +99,7 @@ fn track_with_note(
             duration_ticks: NOTE_TICKS,
             loop_config: LoopConfig::default(),
             muted: false,
+            offset_samples: None,
         },
     );
     let mut notes = BTreeMap::new();

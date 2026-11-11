@@ -207,6 +207,7 @@ fn shadowed_project() -> yeban_model::YebanProjectV1 {
                 duration_ticks: 3_840,
                 loop_config: LoopConfig::default(),
                 muted: false,
+                offset_samples: None,
             },
         );
     project

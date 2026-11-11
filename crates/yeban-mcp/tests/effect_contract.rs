@@ -6,7 +6,7 @@
 //! | :--- | :--- | :--- |
 //! | [`tools_list_publishes_one_branch_per_parser_kind`] | `catalog()` 里 `yeban_edit_notes.inputSchema.properties.ops.items.oneOf` | **分支数**（每个 `OP_KINDS` 条目 1 个） |
 //! | [`every_published_effect_name_is_a_quoted_literal_in_insert_rs`] | `effect_params::recognised_names()` | **名字数**（含别名），逐个对照 `crates/yeban-engine/src/insert.rs` 的带引号字面量 |
-//! | [`the_published_effect_contract_carries_name_range_unit_and_default`] | `device.params.items.oneOf` | **参数分支数**（= 32 个规范名） |
+//! | [`the_published_effect_contract_carries_name_range_unit_and_default`] | `device.params.items.oneOf` | **参数分支数**（= 64 个规范名） |
 //! | [`eq_and_reverb_round_trip_and_sends_are_readable`] | 一次 `insertDevice` + `connectRouting` → `query_engine_state` | `inserts[]` / `sends[]` 的**条目数** |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test effect_contract -- --nocapture`
