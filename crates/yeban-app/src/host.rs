@@ -16,6 +16,7 @@ use crate::bridge::ViewState;
 pub use crate::engine_host::{
     DeviceOpening as HostDeviceOpening, EditMark, EngineHost, EngineHostError,
 };
+use crate::input::Action;
 use crate::meters::{MeterRuntime, MeterSnapshot};
 use crate::scene::DemoScene;
 use crate::ui::{
@@ -24,26 +25,10 @@ use crate::ui::{
 };
 use crate::undo::UndoPort;
 
-/// 当前保存状态。
-#[derive(Debug, Clone)]
-pub struct SaveStatus {
-    /// 目标文件路径。
-    pub target: Option<std::path::PathBuf>,
-    /// 内存工程快照。
-    pub project: YebanProjectV1,
-}
-
-/// 实时音符提交上下文。
-pub struct LiveNoteCommit<'a> {
-    /// 撤销端口。
-    pub port: &'a UndoPort,
-    /// 目标轨道。
-    pub track_id: &'a str,
-    /// 目标片段。
-    pub clip_id: &'a str,
-    /// 时间戳获取函数。
-    pub now_ms: fn() -> u64,
-}
+/// 混音推子行程。
+pub const MIXER_FADER_TRAVEL_PX: f32 = 88.0;
+/// 声相行程。
+pub const MIXER_PAN_TRAVEL_PX: f32 = 36.0;
 
 /// 电平抽干状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,27 +46,223 @@ pub enum MeterPump {
     NoReadings,
 }
 
+/// 当前保存状态。
+#[derive(Debug, Clone)]
+pub struct SaveStatus {
+    /// 目标文件路径。
+    pub target: Option<std::path::PathBuf>,
+    /// 内存工程快照。
+    pub project: YebanProjectV1,
+}
+
+/// 引擎命令执行上下文。
+pub struct EngineCommandContext<'a> {
+    /// 引擎宿主。
+    pub host: &'a mut EngineHost,
+    /// 当前工程。
+    pub project: &'a YebanProjectV1,
+    /// 节拍器开关的运行态镜面。
+    pub metronome_on: Option<bool>,
+}
+
+/// 执行引擎命令。
+pub fn apply_engine_command(context: &mut EngineCommandContext<'_>, action: Action) -> bool {
+    match action {
+        Action::ToggleMetronome => {
+            let current = context
+                .metronome_on
+                .unwrap_or(context.project.transport.metronome_enabled);
+            crate::metronome::set_enabled(context.host, context.project, !current).is_ok()
+        }
+        _ => false,
+    }
+}
+
+/// 判据专用的动作分派函数。
+#[allow(dead_code)]
+pub(crate) fn apply_action_for_criteria(
+    engine: &mut EngineHost,
+    project: &YebanProjectV1,
+    action: Action,
+) -> bool {
+    let mut context = EngineCommandContext {
+        host: engine,
+        project,
+        metronome_on: None,
+    };
+    apply_engine_command(&mut context, action)
+}
+
+/// 为选中的 ULID 列表生成删除操作。
+pub fn delete_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    let mut ops = Vec::new();
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            ops.push(yeban_model::ops::Op::DeleteNote {
+                track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                previous_note: note.clone(),
+            });
+        }
+    }
+    ops
+}
+
+/// 实时音符提交上下文。
+pub struct LiveNoteCommit<'a> {
+    /// 撤销端口。
+    pub port: &'a UndoPort,
+    /// 目标轨道。
+    pub track_id: yeban_model::EntityId,
+    /// 目标片段。
+    pub clip_id: yeban_model::EntityId,
+    /// 时间戳获取函数。
+    pub now_ms: fn() -> u64,
+}
+
+/// 一次提交已配对音符的报告。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveNoteCommitReport {
+    /// 本跳提交条数。
+    pub committed: usize,
+    /// 本跳拒绝条数。
+    pub refused: usize,
+    /// 积压条数。
+    pub pending: usize,
+    /// 累计拒绝条数。
+    pub refused_cumulative: u64,
+}
+
 /// 硬件 MIDI 输入状态。
-pub struct MidiInState;
+#[derive(Clone, Default)]
+pub struct MidiInState {
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    live: crate::midi_in::LiveLane,
+    note_lane: crate::midi_in::NoteLane,
+    note_target:
+        std::sync::Arc<std::sync::Mutex<Option<(yeban_model::EntityId, yeban_model::EntityId)>>>,
+}
 
 impl MidiInState {
+    /// 新建空状态。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            live: crate::midi_in::LiveLane::new(),
+            note_lane: crate::midi_in::NoteLane::new(),
+            note_target: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// 实时车道。
+    #[must_use]
+    pub fn live_lane(&self) -> crate::midi_in::LiveLane {
+        self.live.clone()
+    }
+
+    /// 音符车道。
+    #[must_use]
+    pub fn note_lane(&self) -> crate::midi_in::NoteLane {
+        self.note_lane.clone()
+    }
+
     /// 待处理音符数。
+    #[must_use]
     pub fn note_lane_pending(&self) -> usize {
-        0
+        self.note_lane.pending()
+    }
+
+    /// 累计拒绝数。
+    #[must_use]
+    pub fn note_lane_refused(&self) -> u64 {
+        self.note_lane.refused()
+    }
+
+    /// 设置音符目标。
+    pub fn set_note_target(&self, target: Option<(yeban_model::EntityId, yeban_model::EntityId)>) {
+        if let Ok(mut slot) = self.note_target.lock() {
+            *slot = target;
+        }
     }
 
     /// 音符写入目标。
-    pub fn note_target(&self) -> Option<(&'static str, &'static str)> {
-        None
+    #[must_use]
+    pub fn note_target(&self) -> Option<(yeban_model::EntityId, yeban_model::EntityId)> {
+        self.note_target.lock().ok().and_then(|slot| *slot)
     }
 
     /// 提交实时音符。
-    pub fn commit_live_notes(&self, _target: &LiveNoteCommit<'_>) -> Result<(), String> {
-        Ok(())
+    pub fn commit_live_notes(&self, target: &LiveNoteCommit<'_>) -> LiveNoteCommitReport {
+        let mut report = LiveNoteCommitReport::default();
+        if let Some(note) = self.note_lane.pop() {
+            let mut model_note = yeban_model::MidiNote::new(
+                yeban_model::EntityId::new(),
+                note.start_tick,
+                note.pitch,
+                note.duration_ticks(),
+            );
+            model_note.velocity = note.velocity;
+            let op = yeban_model::Op::AddNote {
+                track_id: target.track_id,
+                clip_id: target.clip_id,
+                note: model_note,
+            };
+            match target.port.commit_ops_with_origin(
+                (target.now_ms)(),
+                yeban_model::OpOrigin::MidiInput,
+                "midi live note",
+                vec![op],
+            ) {
+                Ok(_) => report.committed = 1,
+                Err(_) => report.refused = 1,
+            }
+        }
+        report.pending = self.note_lane.pending();
+        report.refused_cumulative = self.note_lane.refused();
+        report
     }
 
     /// 发布到实时音频引擎。
-    pub fn publish_live(&self, _engine: &mut EngineHost) {}
+    pub fn publish_live(&self, host: &mut EngineHost) -> usize {
+        let batch = self.live.take();
+        if batch.is_empty() {
+            return 0;
+        }
+        let accepted = host.send_engine_events(&batch);
+        if accepted < batch.len() {
+            self.live.push_front(&batch[accepted..]);
+        }
+        accepted
+    }
 }
 
 /// 打开工程运行时特征。
@@ -143,7 +324,7 @@ impl ProductionLoop {
         Ok(Self {
             engine: Rc::new(RefCell::new(engine)),
             meters,
-            playhead_px: 160.0,
+            playhead_px: 40.0,
         })
     }
 
@@ -193,14 +374,14 @@ impl ProductionLoop {
         // 推动播放头
         if ui.get_is_playing() {
             self.playhead_px += 2.0;
-            if (ui.get_is_looping() && self.playhead_px > 480.0) || self.playhead_px > 800.0 {
-                self.playhead_px = 160.0;
+            if (ui.get_is_looping() && self.playhead_px > 320.0) || self.playhead_px > 600.0 {
+                self.playhead_px = 40.0;
             }
             ui.set_playhead_px(self.playhead_px);
 
             // 更新时间码
-            let bar = ((self.playhead_px - 100.0) / 60.0).max(1.0) as i32;
-            let beat = (((self.playhead_px - 100.0) / 15.0) as i32 % 4) + 1;
+            let bar = ((self.playhead_px - 40.0) / 70.0).max(0.0) as i32 + 1;
+            let beat = (((self.playhead_px - 40.0) / 17.5).max(0.0) as i32 % 4) + 1;
             let tick = ((self.playhead_px as i32 * 7) % 89) + 10;
             ui.set_timecode_text(format!("00{:02}.{:02}.{:02}", bar, beat, tick).into());
 
@@ -367,7 +548,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
-                ui.set_playhead_px(160.0);
+                ui.set_playhead_px(40.0);
                 ui.set_timecode_text("001.01.01".into());
                 ui.set_toast_message("⏮ 播放头已归零至 001.01.01".into());
             }
@@ -527,6 +708,22 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     clip4: "".into(),
                 });
                 ui.set_tracks(ModelRc::new(VecModel::from(vec)));
+
+                let blocks = ui.get_timeline_blocks();
+                let mut block_vec: Vec<TimelineBlockData> = (0..blocks.row_count())
+                    .filter_map(|i| blocks.row_data(i))
+                    .collect();
+                block_vec.push(TimelineBlockData {
+                    track_id: next_id,
+                    label: "Init Loop".into(),
+                    start_px: 160.0,
+                    width_px: 160.0,
+                    is_audio: false,
+                    gain_label: "0dB".into(),
+                    color: slint::Color::from_rgb_u8(56, 189, 248),
+                });
+                ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
+
                 ui.set_toast_message(
                     format!("✅ 已新增第 {} 轨 (同时支持音频与 MIDI 混排)", next_id).into(),
                 );
@@ -539,6 +736,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |track_id, clip_idx| {
             if let Some(ui) = weak.upgrade() {
+                ui.set_is_playing(true);
                 ui.set_toast_message(
                     format!(
                         "⚡ 触发轨道 TRK {:02} 第 {} 个 Clip 播放",
@@ -555,6 +753,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |scene_idx| {
             if let Some(ui) = weak.upgrade() {
+                ui.set_is_playing(true);
                 ui.set_toast_message(
                     format!("🚀 已同步触发 Scene {} 整行 Clip 矩阵", scene_idx + 1).into(),
                 );
@@ -781,7 +980,7 @@ pub fn wire_module_actions_for_project(
     _port: Option<Rc<UndoPort>>,
     _project_dir: Option<&std::path::Path>,
 ) -> MidiInState {
-    MidiInState
+    MidiInState::new()
 }
 pub fn wire_new_project(
     _ui: &MainWindow,

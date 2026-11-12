@@ -66,7 +66,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         color: root.active-tab == "inspector" ? Theme.accent : #94a3b8;
                         horizontal-alignment: center;
                         }
-                    TouchArea { clicked => { root.switch-tab("inspector"); } }
+                    TouchArea {
+                        clicked => {
+                            root.active-tab = "inspector";
+                            root.switch-tab("inspector");
+                        }
+                    }
                 }
 
                 Rectangle {
@@ -82,7 +87,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         color: root.active-tab == "browser" ? Theme.accent : #94a3b8;
                         horizontal-alignment: center;
                         }
-                    TouchArea { clicked => { root.switch-tab("browser"); } }
+                    TouchArea {
+                        clicked => {
+                            root.active-tab = "browser";
+                            root.switch-tab("browser");
+                        }
+                    }
                 }
             }
         }
@@ -350,28 +360,48 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     background: root.active-tag == "all" ? Theme.accent : #1e293b;
                     border-radius: 11px;
                     Text { text: "全部"; font-size: 9px; font-weight: 700; color: root.active-tag == "all" ? #020617 : #94a3b8; }
-                    TouchArea { clicked => { root.select-tag("all"); } }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "all";
+                            root.select-tag("all");
+                        }
+                    }
                 }
 
                 Rectangle {
                     background: root.active-tag == "Synth" ? Theme.accent : #1e293b;
                     border-radius: 11px;
                     Text { text: "#Synth"; font-size: 9px; font-weight: 700; color: root.active-tag == "Synth" ? #020617 : #94a3b8; }
-                    TouchArea { clicked => { root.select-tag("Synth"); } }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "Synth";
+                            root.select-tag("Synth");
+                        }
+                    }
                 }
 
                 Rectangle {
                     background: root.active-tag == "DSP" ? Theme.accent : #1e293b;
                     border-radius: 11px;
                     Text { text: "#DSP"; font-size: 9px; font-weight: 700; color: root.active-tag == "DSP" ? #020617 : #94a3b8; }
-                    TouchArea { clicked => { root.select-tag("DSP"); } }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "DSP";
+                            root.select-tag("DSP");
+                        }
+                    }
                 }
 
                 Rectangle {
                     background: root.active-tag == "Drums" ? Theme.accent : #1e293b;
                     border-radius: 11px;
                     Text { text: "#Drums"; font-size: 9px; font-weight: 700; color: root.active-tag == "Drums" ? #020617 : #94a3b8; }
-                    TouchArea { clicked => { root.select-tag("Drums"); } }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "Drums";
+                            root.select-tag("Drums");
+                        }
+                    }
                 }
             }
 
@@ -381,29 +411,31 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 vertical-stretch: 1;
 
                 for item in root.browser-items : Rectangle {
-                    height: 48px;
-                    background: Theme.bg-surface;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
+                    if root.active-tag == "all" || item.tag == root.active-tag : Rectangle {
+                        height: 48px;
+                        background: Theme.bg-surface;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
 
-                    VerticalLayout {
-                        padding: 6px;
-                        spacing: 2px;
-                        alignment: center;
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 2px;
+                            alignment: center;
 
-                        HorizontalLayout {
-                            Text { text: item.name; font-size: 11px; font-weight: 700; color: #f8fafc; overflow: elide; }
-                            Rectangle {
-                                background: Theme.accent.with-alpha(0.15);
-                                border-radius: 3px;
-                                Text { text: "#" + item.tag; font-size: 8px; color: Theme.accent; font-weight: 700; }
+                            HorizontalLayout {
+                                Text { text: item.name; font-size: 11px; font-weight: 700; color: #f8fafc; overflow: elide; }
+                                Rectangle {
+                                    background: Theme.accent.with-alpha(0.15);
+                                    border-radius: 3px;
+                                    Text { text: "#" + item.tag; font-size: 8px; color: Theme.accent; font-weight: 700; }
+                                }
                             }
-                        }
 
-                        Text { text: item.desc; font-size: 9px; color: #94a3b8; overflow: elide; }
+                            Text { text: item.desc; font-size: 9px; color: #94a3b8; overflow: elide; }
+                        }
+                        TouchArea { clicked => { root.load-item(item.name); } }
                     }
-                    TouchArea { clicked => { root.load-item(item.name); } }
                 }
             }
         }

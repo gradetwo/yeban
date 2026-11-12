@@ -491,12 +491,12 @@ export component ArrangementViewport inherits Rectangle {
                 }
             }
 
-            // Animated Playhead Line
+            // Animated Playhead Line (adaptive offset relative to left/right headers)
             Rectangle {
-                x: root.playhead-px;
+                x: (Theme.track-headers-on-right ? 0px : 208px) + root.playhead-px;
                 y: 0px;
                 width: 2px;
-                height: 500px;
+                height: parent.height;
                 background: Theme.accent;
 
                 // Diamond head

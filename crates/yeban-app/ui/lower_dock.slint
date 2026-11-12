@@ -41,6 +41,26 @@ export component UnifiedLowerDock inherits Rectangle {
     callback toggle-piano-step(int, int);
     callback toggle-scale-fold(bool);
 
+    function toggle-step(r-idx: int, s-idx: int) {
+        if (s-idx == 0) { root.piano-rows[r-idx].step0 = !root.piano-rows[r-idx].step0; }
+        else if (s-idx == 1) { root.piano-rows[r-idx].step1 = !root.piano-rows[r-idx].step1; }
+        else if (s-idx == 2) { root.piano-rows[r-idx].step2 = !root.piano-rows[r-idx].step2; }
+        else if (s-idx == 3) { root.piano-rows[r-idx].step3 = !root.piano-rows[r-idx].step3; }
+        else if (s-idx == 4) { root.piano-rows[r-idx].step4 = !root.piano-rows[r-idx].step4; }
+        else if (s-idx == 5) { root.piano-rows[r-idx].step5 = !root.piano-rows[r-idx].step5; }
+        else if (s-idx == 6) { root.piano-rows[r-idx].step6 = !root.piano-rows[r-idx].step6; }
+        else if (s-idx == 7) { root.piano-rows[r-idx].step7 = !root.piano-rows[r-idx].step7; }
+        else if (s-idx == 8) { root.piano-rows[r-idx].step8 = !root.piano-rows[r-idx].step8; }
+        else if (s-idx == 9) { root.piano-rows[r-idx].step9 = !root.piano-rows[r-idx].step9; }
+        else if (s-idx == 10) { root.piano-rows[r-idx].step10 = !root.piano-rows[r-idx].step10; }
+        else if (s-idx == 11) { root.piano-rows[r-idx].step11 = !root.piano-rows[r-idx].step11; }
+        else if (s-idx == 12) { root.piano-rows[r-idx].step12 = !root.piano-rows[r-idx].step12; }
+        else if (s-idx == 13) { root.piano-rows[r-idx].step13 = !root.piano-rows[r-idx].step13; }
+        else if (s-idx == 14) { root.piano-rows[r-idx].step14 = !root.piano-rows[r-idx].step14; }
+        else if (s-idx == 15) { root.piano-rows[r-idx].step15 = !root.piano-rows[r-idx].step15; }
+        root.toggle-piano-step(r-idx, s-idx);
+    }
+
     height: 256px;
     background: Theme.bg-panel;
     // border line
@@ -214,7 +234,12 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text { text: "WT Pos"; font-size: 8px; color: #94a3b8; horizontal-alignment: center; }
                                     Text { text: "" + root.wt-pos-val + "%"; font-size: 9px; font-weight: 700; color: #38bdf8; horizontal-alignment: center; }
                                 }
-                                TouchArea { clicked => { root.set-wt-pos(root.wt-pos-val == 64 ? 85 : 64); } }
+                                TouchArea {
+                                    clicked => {
+                                        root.wt-pos-val = root.wt-pos-val == 64 ? 85 : 64;
+                                        root.set-wt-pos(root.wt-pos-val);
+                                    }
+                                }
                             }
 
                             Rectangle {
@@ -226,7 +251,12 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text { text: "Cutoff"; font-size: 8px; color: #94a3b8; horizontal-alignment: center; }
                                     Text { text: "" + root.wt-cutoff-hz + "Hz"; font-size: 9px; font-weight: 700; color: #10b981; horizontal-alignment: center; }
                                 }
-                                TouchArea { clicked => { root.set-wt-cutoff(root.wt-cutoff-hz == 4800 ? 8200 : 4800); } }
+                                TouchArea {
+                                    clicked => {
+                                        root.wt-cutoff-hz = root.wt-cutoff-hz == 4800 ? 8200 : 4800;
+                                        root.set-wt-cutoff(root.wt-cutoff-hz);
+                                    }
+                                }
                             }
 
                             Rectangle {
@@ -529,7 +559,12 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text { text: root.scale-folded ? "✓" : "○"; font-size: 9px; font-weight: 800; color: Theme.accent; }
                                 Text { text: "仅显示调内音符"; font-size: 9px; color: #f8fafc; vertical-alignment: center; }
                             }
-                            TouchArea { clicked => { root.toggle-scale-fold(!root.scale-folded); } }
+                            TouchArea {
+                                clicked => {
+                                    root.scale-folded = !root.scale-folded;
+                                    root.toggle-scale-fold(root.scale-folded);
+                                }
+                            }
                         }
 
                         // Piano key rows
@@ -570,22 +605,22 @@ export component UnifiedLowerDock inherits Rectangle {
                             height: 22px;
                             spacing: 3px;
 
-                            Rectangle { background: row.step0 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 0); } } }
-                            Rectangle { background: row.step1 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 1); } } }
-                            Rectangle { background: row.step2 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 2); } } }
-                            Rectangle { background: row.step3 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 3); } } }
-                            Rectangle { background: row.step4 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 4); } } }
-                            Rectangle { background: row.step5 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 5); } } }
-                            Rectangle { background: row.step6 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 6); } } }
-                            Rectangle { background: row.step7 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 7); } } }
-                            Rectangle { background: row.step8 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 8); } } }
-                            Rectangle { background: row.step9 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 9); } } }
-                            Rectangle { background: row.step10 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 10); } } }
-                            Rectangle { background: row.step11 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 11); } } }
-                            Rectangle { background: row.step12 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 12); } } }
-                            Rectangle { background: row.step13 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 13); } } }
-                            Rectangle { background: row.step14 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 14); } } }
-                            Rectangle { background: row.step15 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-piano-step(r-idx, 15); } } }
+                            Rectangle { background: row.step0 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 0); } } }
+                            Rectangle { background: row.step1 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 1); } } }
+                            Rectangle { background: row.step2 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 2); } } }
+                            Rectangle { background: row.step3 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 3); } } }
+                            Rectangle { background: row.step4 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 4); } } }
+                            Rectangle { background: row.step5 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 5); } } }
+                            Rectangle { background: row.step6 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 6); } } }
+                            Rectangle { background: row.step7 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 7); } } }
+                            Rectangle { background: row.step8 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 8); } } }
+                            Rectangle { background: row.step9 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 9); } } }
+                            Rectangle { background: row.step10 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 10); } } }
+                            Rectangle { background: row.step11 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 11); } } }
+                            Rectangle { background: row.step12 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 12); } } }
+                            Rectangle { background: row.step13 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 13); } } }
+                            Rectangle { background: row.step14 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 14); } } }
+                            Rectangle { background: row.step15 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 15); } } }
                         }
                     }
                 }

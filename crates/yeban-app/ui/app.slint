@@ -134,6 +134,8 @@ export component MainWindow inherits Window {
     ];
 
     in-out property <int> selected-track-id: 1;
+    property <int> safe-selected-idx: root.tracks.length > 0 ? Math.max(0, Math.min(root.tracks.length - 1, root.selected-track-id - 1)) : 0;
+    in-out property <string> left-panel-tab: "inspector";
 
     // Zone Visibility State
     in-out property <bool> show-left-inspector: true;
@@ -230,6 +232,37 @@ export component MainWindow inherits Window {
                 root.edit-tool-selected("draw");
                 return accept;
             }
+            if (event.text == Key.Tab) {
+                root.show-clip-matrix = !root.show-clip-matrix;
+                root.zone-toggle("clipmatrix");
+                return accept;
+            }
+            if (event.text == "x" || event.text == "X") {
+                root.show-lower-dock = true;
+                Theme.active-dock-tab = "mixer";
+                root.dock-tab-selected("mixer");
+                return accept;
+            }
+            if (event.text == "p" || event.text == "P") {
+                root.show-lower-dock = true;
+                Theme.active-dock-tab = "pianoroll";
+                root.dock-tab-selected("pianoroll");
+                return accept;
+            }
+            if (event.text == "i" || event.text == "I") {
+                root.show-left-inspector = !root.show-left-inspector;
+                root.zone-toggle("browser");
+                return accept;
+            }
+            if (event.text == "h" || event.text == "H") {
+                root.show-hotspots = !root.show-hotspots;
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.show-cmd-palette = false;
+                root.show-hotspots = false;
+                return accept;
+            }
             accept
         }
 
@@ -279,15 +312,23 @@ export component MainWindow inherits Window {
                     if (p == PersonaMode.AbletonLive) {
                         root.show-clip-matrix = true;
                         root.show-control-room = false;
+                        Theme.active-dock-tab = "devices";
+                        root.left-panel-tab = "browser";
                     } else if (p == PersonaMode.LogicPro) {
                         root.show-clip-matrix = false;
                         root.show-control-room = false;
+                        Theme.active-dock-tab = "mixer";
+                        root.left-panel-tab = "inspector";
                     } else if (p == PersonaMode.CubasePro) {
                         root.show-clip-matrix = false;
                         root.show-control-room = true;
+                        Theme.active-dock-tab = "mixer";
+                        root.left-panel-tab = "inspector";
                     } else {
                         root.show-clip-matrix = true;
                         root.show-control-room = true;
+                        Theme.active-dock-tab = "stacked";
+                        root.left-panel-tab = "inspector";
                     }
                 }
                 open-cmd-palette() => { root.show-cmd-palette = true; }
@@ -301,16 +342,18 @@ export component MainWindow inherits Window {
 
                 // Zone A: Dual Inspector & Browser (Left, 256px)
                 if root.show-left-inspector : ZoneBrowserAndInspector {
-                    selected-track-name: root.tracks[root.selected-track-id - 1].name;
-                    selected-track-badge: "TRK 0" + root.selected-track-id + " · " + root.tracks[root.selected-track-id - 1].kind;
-                    selected-track-bus: root.tracks[root.selected-track-id - 1].bus;
-                    selected-track-vol: root.tracks[root.selected-track-id - 1].volume_db;
-                    selected-track-peak: root.tracks[root.selected-track-id - 1].meter_peak;
-                    selected-track-inserts: [
-                        root.tracks[root.selected-track-id - 1].insert1,
-                        root.tracks[root.selected-track-id - 1].insert2,
-                        root.tracks[root.selected-track-id - 1].insert3
-                    ];
+                    active-tab: root.left-panel-tab;
+                    switch-tab(t) => { root.left-panel-tab = t; }
+                    selected-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
+                    selected-track-badge: root.tracks.length > 0 ? ("TRK 0" + root.selected-track-id + " · " + root.tracks[root.safe-selected-idx].kind) : "";
+                    selected-track-bus: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].bus : "";
+                    selected-track-vol: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].volume_db : 0.0;
+                    selected-track-peak: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].meter_peak : 0.0;
+                    selected-track-inserts: root.tracks.length > 0 ? [
+                        root.tracks[root.safe-selected-idx].insert1,
+                        root.tracks[root.safe-selected-idx].insert2,
+                        root.tracks[root.safe-selected-idx].insert3
+                    ] : [];
 
                     normalize-heights() => { root.normalize-track-heights(); }
                     fader-changed(vol) => { root.track-volume-changed(root.selected-track-id, vol); }
@@ -371,7 +414,7 @@ export component MainWindow inherits Window {
             // 3. BOTTOM UNIFIED MULTI-MODAL DOCK
             if root.show-lower-dock : UnifiedLowerDock {
                 active-tab: Theme.active-dock-tab;
-                focus-track-name: root.tracks[root.selected-track-id - 1].name;
+                focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                 tracks: root.tracks;
                 selected-track-id: root.selected-track-id;
 
