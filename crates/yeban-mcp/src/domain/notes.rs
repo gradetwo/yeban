@@ -772,7 +772,10 @@ use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
-use yeban_model::clip_ops::quantize_tick;
+use yeban_model::clip_ops::{
+    ChordStaggerParams, StaggerDirection, VelocityShapeParams, quantize_tick, shape_velocities,
+    stagger_micro_offsets,
+};
 use yeban_model::music::{
     MICRO_TIMING_MAX_ABS, MIDI_CHANNEL_MAX, MIDI_PITCH_MAX, MIDI_VELOCITY_MAX,
     PITCH_BEND_CENTS_MAX_ABS, PROBABILITY_MAX, PROBABILITY_MIN, RATCHET_MAX, RATCHET_MIN,
@@ -1355,6 +1358,8 @@ pub const OP_KINDS: &[&str] = &[
     INVERT_CLIP_KIND,
     RETROGRADE_CLIP_KIND,
     HUMANIZE_CLIP_KIND,
+    VELOCITY_SHAPE_CLIP_KIND,
+    CHORD_STAGGER_CLIP_KIND,
     DUPLICATE_CLIP_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
@@ -1407,7 +1412,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 56 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 58 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1424,6 +1429,8 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
     INVERT_CLIP_KIND,
     RETROGRADE_CLIP_KIND,
     HUMANIZE_CLIP_KIND,
+    VELOCITY_SHAPE_CLIP_KIND,
+    CHORD_STAGGER_CLIP_KIND,
     DUPLICATE_CLIP_KIND,
     REMOVE_CLIP_KIND,
 ];
@@ -1433,8 +1440,11 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// ⭐ `#179`：本集合收窄到音符号形态之后，曾是**八个**（`add` / `delete` /
 /// `move` / `velocity` / `setNoteTiming` / `setNoteExpression` /
 /// `setNotePitchShape` / `setPitchBendPoint`）；`ADR-0034` 加上 `transposeClip`
-/// （整片段移调**逐条读音符**，只是把点名换成枚举）⇒ 现在是**九个**，也就是
-/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的九个。其余形态
+/// （整片段移调**逐条读音符**，只是把点名换成枚举）⇒ 九个；整片段编辑形态
+/// （`quantizeClip` / `invertClip` / `retrogradeClip` / `humanizeClip`）⇒
+/// 十三个；人性化 ROI 线加上 `velocityShapeClip` / `chordStaggerClip`
+/// （整片段力度塑形与和弦错开，同样逐条读音符）⇒ 现在是**十五个**，也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的十五个。其余形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
 /// ⚠ 这里⛔ 不写"其余 N 个"：那个数在本票之前就已经与 `47 − 8` 不符（写的是 33），
@@ -1446,7 +1456,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 56 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 58 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1463,6 +1473,8 @@ pub const NOTE_LEVEL_KINDS: &[&str] = &[
     INVERT_CLIP_KIND,
     RETROGRADE_CLIP_KIND,
     HUMANIZE_CLIP_KIND,
+    VELOCITY_SHAPE_CLIP_KIND,
+    CHORD_STAGGER_CLIP_KIND,
 ];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
@@ -2487,6 +2499,58 @@ pub const HUMANIZE_CLIP_HURST_FIELD: &str = "hurstPermille";
 /// 缺省 500，0 = 关掉第四层；仅 `model = "structured"` 用）。
 pub const HUMANIZE_CLIP_FGN_WEIGHT_FIELD: &str = "fgnWeightPermille";
 
+/// `ops[].kind` 的**整片段力度塑形**形态名（批量力度：舒适区 / 重音 / 幽灵音 +
+/// 和弦声部加权；展开成 per-note 的 `velocity`）。
+pub const VELOCITY_SHAPE_CLIP_KIND: &str = "velocityShapeClip";
+/// `velocityShapeClip` 的**种子**字段名（必填，u64；同（种子，轨）= 同一份塑形）。
+pub const VELOCITY_SHAPE_CLIP_SEED_FIELD: &str = "seed";
+/// `velocityShapeClip` 的**舒适区下限**字段名（可选，缺省 65）。
+pub const VELOCITY_SHAPE_CLIP_COMFORT_MIN_FIELD: &str = "comfortMin";
+/// `velocityShapeClip` 的**舒适区上限**字段名（可选，缺省 95）。
+pub const VELOCITY_SHAPE_CLIP_COMFORT_MAX_FIELD: &str = "comfortMax";
+/// `velocityShapeClip` 的**重音下限**字段名（可选，缺省 101）。
+pub const VELOCITY_SHAPE_CLIP_ACCENT_MIN_FIELD: &str = "accentMin";
+/// `velocityShapeClip` 的**幽灵音下限**字段名（可选，缺省 35）。
+pub const VELOCITY_SHAPE_CLIP_GHOST_MIN_FIELD: &str = "ghostMin";
+/// `velocityShapeClip` 的**幽灵音上限**字段名（可选，缺省 50）。
+pub const VELOCITY_SHAPE_CLIP_GHOST_MAX_FIELD: &str = "ghostMax";
+/// `velocityShapeClip` 的**施加强度**字段名（可选，千分比 0..=1000；缺省 = 1000）。
+pub const VELOCITY_SHAPE_CLIP_STRENGTH_FIELD: &str = "strengthPermille";
+/// `velocityShapeClip` 的**带内抖动幅度**字段名（可选，±n；缺省 = 3）。
+pub const VELOCITY_SHAPE_CLIP_JITTER_FIELD: &str = "jitter";
+/// `velocityShapeClip` 允许出现的全部键。
+pub const VELOCITY_SHAPE_CLIP_FIELDS: [&str; 9] = [
+    "kind",
+    VELOCITY_SHAPE_CLIP_SEED_FIELD,
+    VELOCITY_SHAPE_CLIP_COMFORT_MIN_FIELD,
+    VELOCITY_SHAPE_CLIP_COMFORT_MAX_FIELD,
+    VELOCITY_SHAPE_CLIP_ACCENT_MIN_FIELD,
+    VELOCITY_SHAPE_CLIP_GHOST_MIN_FIELD,
+    VELOCITY_SHAPE_CLIP_GHOST_MAX_FIELD,
+    VELOCITY_SHAPE_CLIP_STRENGTH_FIELD,
+    VELOCITY_SHAPE_CLIP_JITTER_FIELD,
+];
+
+/// `ops[].kind` 的**整片段和弦错开**形态名（同 `start_tick` 的和弦组内各音按
+/// 方向依次延迟；展开成 per-note 的 `setNoteExpression`，只写微时值）。
+pub const CHORD_STAGGER_CLIP_KIND: &str = "chordStaggerClip";
+/// `chordStaggerClip` 的**种子**字段名（必填，u64；同（种子，轨）= 同一份错开）。
+pub const CHORD_STAGGER_CLIP_SEED_FIELD: &str = "seed";
+/// `chordStaggerClip` 的**每步标称错开量**字段名（必填，tick，1..=240）。
+pub const CHORD_STAGGER_CLIP_STAGGER_FIELD: &str = "staggerTicks";
+/// `chordStaggerClip` 的**错开方向**字段名（可选，`"up"` / `"down"`；缺省 `"up"`）。
+pub const CHORD_STAGGER_CLIP_DIRECTION_FIELD: &str = "direction";
+/// `chordStaggerClip` 的**每音附加抖动幅度**字段名（可选，±n tick；缺省 = 0）。
+pub const CHORD_STAGGER_CLIP_JITTER_FIELD: &str = "jitterTicks";
+/// `chordStaggerClip` 允许出现的全部键。
+pub const CHORD_STAGGER_CLIP_FIELDS: [&str; 5] = [
+    "kind",
+    CHORD_STAGGER_CLIP_SEED_FIELD,
+    CHORD_STAGGER_CLIP_STAGGER_FIELD,
+    CHORD_STAGGER_CLIP_DIRECTION_FIELD,
+    CHORD_STAGGER_CLIP_JITTER_FIELD,
+];
+
 /// `ops[].kind` 的**整片段复制**形态名（克隆池条目；可选地同时摆上新片段，
 /// 编译成一条 `Op::Batch`）。
 pub const DUPLICATE_CLIP_KIND: &str = "duplicateClip";
@@ -3318,6 +3382,48 @@ pub enum NoteOp {
         /// fGn 混合权重 w 千分比（0..=1000；`None` = 500，0 = 关掉第四层；
         /// 仅 `Structured` 用）。
         fgn_weight_permille: Option<u16>,
+    },
+    /// **整片段力度塑形**（ROI #2：批量力度 + 和弦声部加权）：
+    /// 每个音符按声部/角色映进目标带（舒适区 65–95、重音 >100、幽灵音
+    /// 35–50），再按强度内插、加 seed 驱动的带内抖动。
+    ///
+    /// 纯计算住在 [`yeban_model::clip_ops::shape_velocities`]（与
+    /// `humanizeClip` / `quantizeClip` 同一口径：MCP 只做解析与展开包装）；
+    /// 展开成 per-note 的 `Op::ModifyNoteVelocity`（力度不变的音符不产 op）。
+    VelocityShapeClip {
+        /// 塑形种子（同（种子，轨）⇒ 同一份塑形）。
+        seed: u64,
+        /// 舒适区下限（缺省 65）。
+        comfort_min: u8,
+        /// 舒适区上限（缺省 95）。
+        comfort_max: u8,
+        /// 重音下限（缺省 101）。
+        accent_min: u8,
+        /// 幽灵音下限（缺省 35）。
+        ghost_min: u8,
+        /// 幽灵音上限（缺省 50）。
+        ghost_max: u8,
+        /// 施加强度千分比 `0..=1000`（`1000` = 全额）。
+        strength_permille: u16,
+        /// 带内抖动幅度 ±n（缺省 3；seed 驱动、沿 tick 序阻尼）。
+        jitter: u8,
+    },
+    /// **整片段和弦错开**（ROI #4）：同 `start_tick` 的和弦组内各音按方向
+    /// 依次延迟（首音锚定 0，组内严格递增；每和弦实际步长 = 标称 ±25%，
+    /// seed 决定）。
+    ///
+    /// 纯计算住在 [`yeban_model::clip_ops::stagger_micro_offsets`]；
+    /// 展开成 per-note 的 `Op::SetNoteExpression`（只写 `micro_timing_ticks`，
+    /// 其余表现力字段原样保留；单音组与微时值不变的音符不产 op）。
+    ChordStaggerClip {
+        /// 错开种子（同（种子，轨）⇒ 同一份错开）。
+        seed: u64,
+        /// 每步标称错开量（tick，1..=240）。
+        stagger_ticks: u64,
+        /// 错开方向（缺省 `Up` = 低音先、高音后）。
+        direction: StaggerDirection,
+        /// 每音附加抖动幅度 ±n tick（缺省 0）。
+        jitter_ticks: u64,
     },
     /// **整片段复制**：克隆顶层 `clipId` 的池条目（MIDI 与音频片段均可），
     /// 可选地把新片段摆上 `track_id` 的 `start_tick`。
@@ -4257,6 +4363,8 @@ impl NoteOp {
             Self::InvertClip { .. } => INVERT_CLIP_KIND,
             Self::RetrogradeClip => RETROGRADE_CLIP_KIND,
             Self::HumanizeClip { .. } => HUMANIZE_CLIP_KIND,
+            Self::VelocityShapeClip { .. } => VELOCITY_SHAPE_CLIP_KIND,
+            Self::ChordStaggerClip { .. } => CHORD_STAGGER_CLIP_KIND,
             Self::DuplicateClip { .. } => DUPLICATE_CLIP_KIND,
             Self::Velocity { .. } => "velocity",
             Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
@@ -4345,6 +4453,8 @@ impl NoteOp {
                 | Self::InvertClip { .. }
                 | Self::RetrogradeClip
                 | Self::HumanizeClip { .. }
+                | Self::VelocityShapeClip { .. }
+                | Self::ChordStaggerClip { .. }
         )
     }
 
@@ -4502,6 +4612,8 @@ impl NoteOp {
                 | Self::InvertClip { .. }
                 | Self::RetrogradeClip
                 | Self::HumanizeClip { .. }
+                | Self::VelocityShapeClip { .. }
+                | Self::ChordStaggerClip { .. }
                 | Self::DuplicateClip { .. }
                 | Self::RemoveClip
         )
@@ -4867,6 +4979,157 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 hmm_stay_permille,
                 hurst_permille,
                 fgn_weight_permille,
+            })
+        }
+        VELOCITY_SHAPE_CLIP_KIND => {
+            reject_velocity_shape_clip_fields(object)?;
+            // 五个带端各自只判 0..=127；带顺序由 `VelocityShapeParams::validate`
+            // 一次判（交叉字段，不造新 reason 字串）。
+            let defaults = VelocityShapeParams::default();
+            let band = |field: &str, default: u8| -> Result<u8, Fault> {
+                match read_optional_u64(object, field)? {
+                    None => Ok(default),
+                    Some(value) if value <= u64::from(MIDI_VELOCITY_MAX) => {
+                        Ok(u8::try_from(value).unwrap_or(MIDI_VELOCITY_MAX))
+                    }
+                    Some(value) => Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!("`{field}` 越界: {value} 不在 0..={MIDI_VELOCITY_MAX}"),
+                        serde_json::json!({
+                            "field": field,
+                            "value": value,
+                            "min": 0,
+                            "max": MIDI_VELOCITY_MAX,
+                        }),
+                    )),
+                }
+            };
+            let strength_permille =
+                match read_optional_u64(object, VELOCITY_SHAPE_CLIP_STRENGTH_FIELD)? {
+                    None => 1000u16,
+                    Some(value) if value <= 1000 => u16::try_from(value).unwrap_or(1000),
+                    Some(value) => {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::OutOfRange,
+                            format!(
+                                "`{}` 越界: {value} 不在 0..=1000",
+                                VELOCITY_SHAPE_CLIP_STRENGTH_FIELD
+                            ),
+                            serde_json::json!({
+                                "field": VELOCITY_SHAPE_CLIP_STRENGTH_FIELD,
+                                "value": value,
+                                "min": 0,
+                                "max": 1000,
+                            }),
+                        ));
+                    }
+                };
+            let jitter = match read_optional_u64(object, VELOCITY_SHAPE_CLIP_JITTER_FIELD)? {
+                None => defaults.jitter,
+                Some(value) if value <= u64::from(yeban_model::clip_ops::MAX_SHAPE_JITTER) => {
+                    u8::try_from(value).unwrap_or(yeban_model::clip_ops::MAX_SHAPE_JITTER)
+                }
+                Some(value) => {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!(
+                            "`{}` 越界: {value} 不在 0..={}",
+                            VELOCITY_SHAPE_CLIP_JITTER_FIELD,
+                            yeban_model::clip_ops::MAX_SHAPE_JITTER
+                        ),
+                        serde_json::json!({
+                            "field": VELOCITY_SHAPE_CLIP_JITTER_FIELD,
+                            "value": value,
+                            "min": 0,
+                            "max": yeban_model::clip_ops::MAX_SHAPE_JITTER,
+                        }),
+                    ));
+                }
+            };
+            let params = VelocityShapeParams {
+                comfort_min: band(VELOCITY_SHAPE_CLIP_COMFORT_MIN_FIELD, defaults.comfort_min)?,
+                comfort_max: band(VELOCITY_SHAPE_CLIP_COMFORT_MAX_FIELD, defaults.comfort_max)?,
+                accent_min: band(VELOCITY_SHAPE_CLIP_ACCENT_MIN_FIELD, defaults.accent_min)?,
+                ghost_min: band(VELOCITY_SHAPE_CLIP_GHOST_MIN_FIELD, defaults.ghost_min)?,
+                ghost_max: band(VELOCITY_SHAPE_CLIP_GHOST_MAX_FIELD, defaults.ghost_max)?,
+                strength_permille,
+                jitter,
+            };
+            params.validate().map_err(|message| {
+                Fault::domain(ErrorCode::InvalidParameterRange, message.to_owned())
+            })?;
+            Ok(NoteOp::VelocityShapeClip {
+                seed: read_u64(object, VELOCITY_SHAPE_CLIP_SEED_FIELD)?,
+                comfort_min: params.comfort_min,
+                comfort_max: params.comfort_max,
+                accent_min: params.accent_min,
+                ghost_min: params.ghost_min,
+                ghost_max: params.ghost_max,
+                strength_permille: params.strength_permille,
+                jitter: params.jitter,
+            })
+        }
+        CHORD_STAGGER_CLIP_KIND => {
+            reject_chord_stagger_clip_fields(object)?;
+            let stagger_ticks = read_u64(object, CHORD_STAGGER_CLIP_STAGGER_FIELD)?;
+            if !(1..=yeban_model::clip_ops::MAX_STAGGER_TICKS).contains(&stagger_ticks) {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::OutOfRange,
+                    format!(
+                        "`{}` 越界: {stagger_ticks} 不在 1..={}",
+                        CHORD_STAGGER_CLIP_STAGGER_FIELD,
+                        yeban_model::clip_ops::MAX_STAGGER_TICKS
+                    ),
+                    serde_json::json!({
+                        "field": CHORD_STAGGER_CLIP_STAGGER_FIELD,
+                        "value": stagger_ticks,
+                        "min": 1,
+                        "max": yeban_model::clip_ops::MAX_STAGGER_TICKS,
+                    }),
+                ));
+            }
+            let direction = match read_optional_string(object, CHORD_STAGGER_CLIP_DIRECTION_FIELD)?
+            {
+                None => StaggerDirection::Up,
+                Some(value) => StaggerDirection::parse(&value).ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`direction` 必须是 \"up\" 或 \"down\", 实际收到 \"{value}\""),
+                    )
+                })?,
+            };
+            let jitter_ticks = match read_optional_u64(object, CHORD_STAGGER_CLIP_JITTER_FIELD)? {
+                None => 0,
+                Some(value) if value <= MICRO_TIMING_MAX_ABS as u64 => value,
+                Some(value) => {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!(
+                            "`{}` 越界: {value} 不在 0..={MICRO_TIMING_MAX_ABS}",
+                            CHORD_STAGGER_CLIP_JITTER_FIELD
+                        ),
+                        serde_json::json!({
+                            "field": CHORD_STAGGER_CLIP_JITTER_FIELD,
+                            "value": value,
+                            "min": 0,
+                            "max": MICRO_TIMING_MAX_ABS,
+                        }),
+                    ));
+                }
+            };
+            let params = ChordStaggerParams {
+                stagger_ticks,
+                direction,
+                jitter_ticks,
+            };
+            params.validate().map_err(|message| {
+                Fault::domain(ErrorCode::InvalidParameterRange, message.to_owned())
+            })?;
+            Ok(NoteOp::ChordStaggerClip {
+                seed: read_u64(object, CHORD_STAGGER_CLIP_SEED_FIELD)?,
+                stagger_ticks: params.stagger_ticks,
+                direction: params.direction,
+                jitter_ticks: params.jitter_ticks,
             })
         }
         DUPLICATE_CLIP_KIND => {
@@ -5768,6 +6031,26 @@ fn reject_humanize_clip_fields(object: &Map<String, Value>) -> Result<(), Fault>
         &HUMANIZE_CLIP_FIELDS,
         HUMANIZE_CLIP_KIND,
         "unknownHumanizeClipField",
+    )
+}
+
+/// 拒绝 `velocityShapeClip` 里 [`VELOCITY_SHAPE_CLIP_FIELDS`] 之外的键。
+fn reject_velocity_shape_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &VELOCITY_SHAPE_CLIP_FIELDS,
+        VELOCITY_SHAPE_CLIP_KIND,
+        "unknownVelocityShapeClipField",
+    )
+}
+
+/// 拒绝 `chordStaggerClip` 里 [`CHORD_STAGGER_CLIP_FIELDS`] 之外的键。
+fn reject_chord_stagger_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &CHORD_STAGGER_CLIP_FIELDS,
+        CHORD_STAGGER_CLIP_KIND,
+        "unknownChordStaggerClipField",
     )
 }
 
@@ -8783,6 +9066,8 @@ fn expand_clip_level_op(
             | NoteOp::InvertClip { .. }
             | NoteOp::RetrogradeClip
             | NoteOp::HumanizeClip { .. }
+            | NoteOp::VelocityShapeClip { .. }
+            | NoteOp::ChordStaggerClip { .. }
     );
     if !needs_notes {
         return Ok(None);
@@ -9019,6 +9304,88 @@ fn expand_clip_level_op(
             }
             pairs
         }
+        NoteOp::VelocityShapeClip {
+            seed,
+            comfort_min,
+            comfort_max,
+            accent_min,
+            ghost_min,
+            ghost_max,
+            strength_permille,
+            jitter,
+        } => {
+            // 有效种子按轨派生（与 `humanizeClip` 同一条：同（seed，轨）同塑形）。
+            let effective_seed = humanize::derive_track_seed(*seed, track_id);
+            // 纯计算要求 (start_tick, pitch, 身份) 序：BTreeMap 序是身份序，
+            // 先排（与结构化人性化臂同一段排序）。
+            let mut ordered: Vec<(&EntityId, &MidiNote)> = notes.iter().collect();
+            ordered.sort_by(|left, right| {
+                left.1
+                    .start_tick
+                    .cmp(&right.1.start_tick)
+                    .then(left.1.pitch.cmp(&right.1.pitch))
+                    .then(left.0.cmp(right.0))
+            });
+            let params = VelocityShapeParams {
+                comfort_min: *comfort_min,
+                comfort_max: *comfort_max,
+                accent_min: *accent_min,
+                ghost_min: *ghost_min,
+                ghost_max: *ghost_max,
+                strength_permille: *strength_permille,
+                jitter: *jitter,
+            };
+            let refs: Vec<&MidiNote> = ordered.iter().map(|(_, note)| *note).collect();
+            let shaped = shape_velocities(&refs, effective_seed, &params);
+            // 力度不变的音符不产 op —— 空动只涨日志不涨音乐（与 `quantizeClip` 同口径）。
+            ordered
+                .iter()
+                .zip(shaped.iter())
+                .filter(|((_, note), new_velocity)| **new_velocity != note.velocity)
+                .map(|((note_id, _), new_velocity)| NoteOp::Velocity {
+                    note_id: **note_id,
+                    velocity: *new_velocity,
+                })
+                .collect()
+        }
+        NoteOp::ChordStaggerClip {
+            seed,
+            stagger_ticks,
+            direction,
+            jitter_ticks,
+        } => {
+            // 有效种子按轨派生（与 `humanizeClip` 同一条）。
+            let effective_seed = humanize::derive_track_seed(*seed, track_id);
+            let mut ordered: Vec<(&EntityId, &MidiNote)> = notes.iter().collect();
+            ordered.sort_by(|left, right| {
+                left.1
+                    .start_tick
+                    .cmp(&right.1.start_tick)
+                    .then(left.1.pitch.cmp(&right.1.pitch))
+                    .then(left.0.cmp(right.0))
+            });
+            let params = ChordStaggerParams {
+                stagger_ticks: *stagger_ticks,
+                direction: *direction,
+                jitter_ticks: *jitter_ticks,
+            };
+            let refs: Vec<&MidiNote> = ordered.iter().map(|(_, note)| *note).collect();
+            let micros = stagger_micro_offsets(&refs, effective_seed, &params);
+            // 微时值不变的音符（单音组、和弦首音）不产 op。
+            ordered
+                .iter()
+                .zip(micros.iter())
+                .filter(|((_, note), new_micro)| {
+                    **new_micro != note.micro_timing_ticks.unwrap_or(0)
+                })
+                .map(|((note_id, note), new_micro)| NoteOp::SetNoteExpression {
+                    note_id: **note_id,
+                    new_probability: note.probability,
+                    new_ratchet: note.ratchet,
+                    new_micro_timing_ticks: Some(*new_micro),
+                })
+                .collect()
+        }
         _ => return Ok(None),
     };
     Ok(Some(expanded))
@@ -9152,7 +9519,8 @@ pub fn compile(
         // ⚠ 先把增量**抄出来**再去改 `queue`：`if let ... = queue[index]` 会在整个
         // `if let` 体上保留对 `queue` 的借用，下面的 `splice`（可变借用）因此编译不过。
         // 所有"整片段"形态（`transposeClip` / `quantizeClip` / `invertClip` /
-        // `retrogradeClip` / `humanizeClip`）共用这一条展开通道：
+        // `retrogradeClip` / `humanizeClip` / `velocityShapeClip` /
+        // `chordStaggerClip`）共用这一条展开通道：
         // [`expand_clip_level_op`] 在**当前投影**上把形态换成音符级条目。
         if let Some(expanded) = expand_clip_level_op(&project, track_id, clip_id, &queue[index])? {
             let _ = queue.splice(index..index + 1, expanded);
@@ -9222,7 +9590,9 @@ pub fn compile(
             | NoteOp::QuantizeClip { .. }
             | NoteOp::InvertClip { .. }
             | NoteOp::RetrogradeClip
-            | NoteOp::HumanizeClip { .. } => {
+            | NoteOp::HumanizeClip { .. }
+            | NoteOp::VelocityShapeClip { .. }
+            | NoteOp::ChordStaggerClip { .. } => {
                 // ⭐ 展开路径**只**在上面的 `if let`（同一形态 ⇒ 就地换成音符级条目
                 // 并 `continue`）。本臂因此拿不到"一条 `Op`"可返回 —— 用 `continue`
                 // 而不是 `unreachable!`：⛔ 在编译路径上留一条 panic。
@@ -12162,9 +12532,9 @@ mod tests {
     ///
     /// `crates/yeban-mcp/tests/fault_vocabulary.rs` 的 `PROPAGATED_REASON_SITES` 说
     /// "这两个辅助函数在运行时输出的 `reason` 就是调用点传进去的那些字面量"。
-    /// 那条判据是**静态**读数 ⇒ 它自己可能是扫描器造的假词表。这里把表里 33 个入参
-    /// **逐个喂进**辅助函数，断言响应里的 `data.reason` 与同级键面 —— 证明那 41 个词
-    /// （33 个原样 + 8 个带 `MustBeString` 后缀）是**真输出**，不是推断。
+    /// 那条判据是**静态**读数 ⇒ 它自己可能是扫描器造的假词表。这里把表里 35 个入参
+    /// **逐个喂进**辅助函数，断言响应里的 `data.reason` 与同级键面 —— 证明那 43 个词
+    /// （35 个原样 + 8 个带 `MustBeString` 后缀）是**真输出**，不是推断。
     #[test]
     fn forwarded_reason_arguments_emit_the_published_literals() {
         fn data_keys(fault: &Fault) -> Vec<&str> {
@@ -12181,7 +12551,8 @@ mod tests {
         // ⛔ 这张名单与 `PROPAGATED_REASON_SITES` 里 `reject_unknown_keys` 的 `literals`
         // 必须逐条相同：名单漏一条 ⇒ `every_reason_is_asserted_somewhere` 变红（那个词
         // 在判据侧没有任何运行时断言）。
-        let forwarded: [&str; 25] = [
+        let forwarded: [&str; 27] = [
+            "unknownChordStaggerClipField",
             "unknownKeySignatureField",
             "unknownSetAuthorField",
             "unknownSetClipGainField",
@@ -12207,6 +12578,7 @@ mod tests {
             "unknownSetTrackNameField",
             "unknownSetTrackSamplerField",
             "unknownTransposeClipField",
+            "unknownVelocityShapeClipField",
         ];
         let mut object = serde_json::Map::new();
         object.insert("name".to_owned(), Value::from("可用键"));
@@ -12985,12 +13357,14 @@ mod tests {
                 "quantizeClip",
                 "invertClip",
                 "retrogradeClip",
-                "humanizeClip"
+                "humanizeClip",
+                "velocityShapeClip",
+                "chordStaggerClip"
             ],
-            "音符级清单必须逐字是这十三个"
+            "音符级清单必须逐字是这十五个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 13);
-        // 十三个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 15);
+        // 十五个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
@@ -13097,7 +13471,212 @@ mod tests {
             "同一 seed 必须产出逐字节同一批 op"
         );
 
-        // ⑤ duplicateClip：编译成一条 Batch(AddClip + AddClipPlacement)，
+        // ⑤ velocityShapeClip：和弦夹具（tick 0 三音和弦 + tick 960 单音 + 一个
+        //    幽灵音）⇒ 声部权重真实分流：低音进 [65,80]、中音进 [65,85]、
+        //    拍上旋律进重音 [101,127]、幽灵音进 [35,50]；同一 seed 两次编译逐字节相同。
+        let mut chord_project = filled_project();
+        let (chord_track, chord_clip) = lead_clip(&chord_project);
+        {
+            let notes = chord_project
+                .clip_pool
+                .get_mut(&chord_clip)
+                .expect("片段")
+                .content
+                .notes_mut()
+                .expect("MIDI");
+            notes.clear();
+            for (index, (tick, pitch)) in [(0u64, 48u8), (0, 55), (0, 60), (0, 72), (960, 67)]
+                .into_iter()
+                .enumerate()
+            {
+                let id = deterministic_id(&format!("shape-note-{index}"));
+                notes.insert(id, MidiNote::new(id, tick, pitch, 480));
+            }
+            // 55 号音是幽灵音（力度 40）：拍上也不进重音（幽灵优先于拍上重音）。
+            let ghost_id = deterministic_id("shape-note-1");
+            notes.get_mut(&ghost_id).expect("幽灵音").velocity = 40;
+        }
+        let ops = parse_ops(&serde_json::json!([{"kind": "velocityShapeClip", "seed": 42}]))
+            .expect("解析");
+        let shaped = compile(&chord_project, &chord_track, &chord_clip, &ops).expect("编译");
+        let shaped_again = compile(&chord_project, &chord_track, &chord_clip, &ops).expect("编译");
+        assert_eq!(
+            format!("{shaped:?}"),
+            format!("{shaped_again:?}"),
+            "同一 seed 必须产出逐字节同一批 op"
+        );
+        assert_eq!(shaped.len(), 5, "五个音符的力度都变 ⇒ 五条 op");
+        let mut by_pitch: Vec<(u8, u8)> = Vec::new();
+        for op in &shaped {
+            let Op::ModifyNoteVelocity {
+                note_id,
+                new_vel: velocity,
+                ..
+            } = op
+            else {
+                panic!(
+                    "velocityShapeClip 只能产出 ModifyNoteVelocity, 实际 {}",
+                    op.name()
+                );
+            };
+            let note = chord_project.clip_pool[&chord_clip]
+                .content
+                .notes()
+                .expect("MIDI")
+                .get(note_id)
+                .expect("op 必须指回夹具音符");
+            by_pitch.push((note.pitch, *velocity));
+        }
+        by_pitch.sort_unstable();
+        // （pitch, 塑形后力度）：48 低音 74±3、55 幽灵 46±3、60 中音 77±3、
+        // 72 拍上旋律重音 101±3、67 拍上单音重音 101±3（抖动 ±3，阻尼）。
+        assert!(
+            (71..=77).contains(&by_pitch[0].1),
+            "低音须进 [65,80] 带，实际 {}",
+            by_pitch[0].1
+        );
+        assert!(
+            (43..=49).contains(&by_pitch[1].1),
+            "幽灵音须进 [35,50] 带，实际 {}",
+            by_pitch[1].1
+        );
+        assert!(
+            (74..=80).contains(&by_pitch[2].1),
+            "中音须进 [65,85] 带，实际 {}",
+            by_pitch[2].1
+        );
+        assert!(
+            (98..=104).contains(&by_pitch[3].1),
+            "拍上旋律须进重音带，实际 {}",
+            by_pitch[3].1
+        );
+        assert!(
+            (98..=104).contains(&by_pitch[4].1),
+            "拍上单音须进重音带，实际 {}",
+            by_pitch[4].1
+        );
+        assert!(by_pitch[0].1 < by_pitch[3].1, "低音必须弱于旋律重音");
+        assert!(by_pitch[2].1 < by_pitch[3].1, "中音必须弱于旋律重音");
+        // 拒绝：未知键 / 带序颠倒 / 缺 seed。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "velocityShapeClip", "seed": 7, "loud": 1,
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownVelocityShapeClipField")
+        );
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "velocityShapeClip", "seed": 7, "comfortMin": 90, "comfortMax": 80,
+        }]))
+        .expect_err("带序颠倒必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        parse_ops(&serde_json::json!([{"kind": "velocityShapeClip"}]))
+            .expect_err("缺 seed 必须被拒");
+
+        // ⑥ chordStaggerClip：同一和弦夹具 ⇒ 首音锚定（无 op）、后两音微时值
+        //    严格递增（总微时值单调，不只延迟单调）；单音不动；方向 down 反转次序。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "chordStaggerClip", "seed": 7, "staggerTicks": 12,
+        }]))
+        .expect("解析");
+        let staggered = compile(&chord_project, &chord_track, &chord_clip, &ops).expect("编译");
+        let staggered_again =
+            compile(&chord_project, &chord_track, &chord_clip, &ops).expect("编译");
+        assert_eq!(
+            format!("{staggered:?}"),
+            format!("{staggered_again:?}"),
+            "同一 seed 必须产出逐字节同一批 op"
+        );
+        assert_eq!(staggered.len(), 3, "和弦后三音各一条 op，首音与单音不动");
+        let mut staggered_micros: Vec<(u8, i16)> = Vec::new();
+        for op in &staggered {
+            let Op::SetNoteExpression {
+                note_id,
+                new_micro_timing_ticks: Some(micro),
+                ..
+            } = op
+            else {
+                panic!(
+                    "chordStaggerClip 只能产出带微时值的 SetNoteExpression, 实际 {}",
+                    op.name()
+                );
+            };
+            let note = chord_project.clip_pool[&chord_clip]
+                .content
+                .notes()
+                .expect("MIDI")
+                .get(note_id)
+                .expect("op 必须指回夹具音符");
+            staggered_micros.push((note.pitch, *micro));
+        }
+        staggered_micros.sort_unstable();
+        assert_eq!(
+            staggered_micros[0].0, 55,
+            "up 方向：幽灵音（55）先于中音（60）错开"
+        );
+        assert_eq!(staggered_micros[1].0, 60, "up 方向：中音（60）第二");
+        assert_eq!(staggered_micros[2].0, 72, "up 方向：高音（72）最后");
+        assert!(
+            0 < staggered_micros[0].1
+                && staggered_micros[0].1 < staggered_micros[1].1
+                && staggered_micros[1].1 < staggered_micros[2].1,
+            "微时值必须严格递增，实际 {staggered_micros:?}"
+        );
+        // 步长 12 ±25% ⇒ 实际步长落在 9..=15；第 p 个音微时值 = p × 步长。
+        assert!(
+            (9..=15).contains(&staggered_micros[0].1)
+                && (18..=30).contains(&staggered_micros[1].1)
+                && (27..=45).contains(&staggered_micros[2].1),
+            "微时值须为步长的 1/2/3 倍，实际 {staggered_micros:?}"
+        );
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "chordStaggerClip", "seed": 7, "staggerTicks": 12, "direction": "down",
+        }]))
+        .expect("解析");
+        let down = compile(&chord_project, &chord_track, &chord_clip, &ops).expect("编译");
+        assert_eq!(down.len(), 3, "down 方向同样三条 op");
+        let mut down_pitches: Vec<u8> = Vec::new();
+        for op in &down {
+            let Op::SetNoteExpression { note_id, .. } = op else {
+                panic!("实际 {}", op.name());
+            };
+            down_pitches.push(
+                chord_project.clip_pool[&chord_clip]
+                    .content
+                    .notes()
+                    .expect("MIDI")
+                    .get(note_id)
+                    .expect("op 必须指回夹具音符")
+                    .pitch,
+            );
+        }
+        down_pitches.sort_unstable();
+        assert_eq!(
+            down_pitches,
+            vec![48, 55, 60],
+            "down 方向：高音（72）锚定，低音（48）/幽灵（55）/中音（60）错开"
+        );
+        // 拒绝：未知键 / 方向非法 / 步长越界。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "chordStaggerClip", "seed": 7, "staggerTicks": 12, "up": true,
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownChordStaggerClipField")
+        );
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "chordStaggerClip", "seed": 7, "staggerTicks": 12, "direction": "sideways",
+        }]))
+        .expect_err("方向非法必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        parse_ops(&serde_json::json!([{
+            "kind": "chordStaggerClip", "seed": 7, "staggerTicks": 0,
+        }]))
+        .expect_err("步长 0 必须被拒");
+
+        // ⑦ duplicateClip：编译成一条 Batch(AddClip + AddClipPlacement)，
         //    内容 = 源片段内容克隆；trackId 不存在 ⇒ 响亮失败。
         let ops = parse_ops(&serde_json::json!([{
             "kind": "duplicateClip",
@@ -13136,7 +13715,7 @@ mod tests {
         assert_eq!(placement.start_tick, 3840);
         assert_eq!(placement.duration_ticks, hi, "缺省时值 = 内容最右端");
 
-        // ⑥ 新身份撞库 ⇒ CONFLICT（⛔ 覆盖既有片段）。
+        // ⑧ 新身份撞库 ⇒ CONFLICT（⛔ 覆盖既有片段）。
         let ops = parse_ops(&serde_json::json!([{
             "kind": "duplicateClip", "newClipId": clip.to_canonical_string(),
         }]))
@@ -14326,7 +14905,8 @@ mod tests {
         // humanizeClip / duplicateClip 五个 kind 后为 53 —— 同样与真实 `kind` 同步。
         // 本票（手动相位对齐）新增 setTrackDelay / setTrackPolarity /
         // setClipPlacementOffset 三个 kind 后为 56 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 56);
+        // 本票（人性化 ROI）新增 velocityShapeClip / chordStaggerClip 两个 kind 后为 58 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 58);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(
             TrackFlag::NAMES,
@@ -20422,7 +21002,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 56] = [
+        let table: [(&str, serde_json::Value); 58] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -20443,6 +21023,11 @@ mod tests {
             (
                 "humanizeClip",
                 serde_json::json!({"seed": 7, "timeJitterTicks": 12, "velocityJitter": 8}),
+            ),
+            ("velocityShapeClip", serde_json::json!({"seed": 7})),
+            (
+                "chordStaggerClip",
+                serde_json::json!({"seed": 7, "staggerTicks": 12}),
             ),
             (
                 "duplicateClip",
@@ -20662,6 +21247,8 @@ mod tests {
                 "invertClip",
                 "retrogradeClip",
                 "humanizeClip",
+                "velocityShapeClip",
+                "chordStaggerClip",
                 "duplicateClip",
                 "removeClip",
                 "removeAsset",
@@ -20726,7 +21313,7 @@ mod tests {
                 "解析出来的 `NoteOp` 必须回环到同一个 `kind`"
             );
             // ⭐ `#177` 坑④：发布的"读顶层 `clipId` 的 kind 清单"必须与谓词**在全部
-            // 56 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
+            // 58 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
             // 全集，谓词是 `compile` 真正用的那一份）。任一方向漂移都会在这里变红：
             // 清单里多一个 ⇒ `reads_envelope_clip` 为 `false`；谓词里多一个而清单
             // 没跟上 ⇒ 清单漏报（调用方会以为它不需要，而 `compile` 会读）。
@@ -21063,7 +21650,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 57] = [
+        let rows: [Row<'_>; 59] = [
             (
                 "add",
                 None,
@@ -21178,6 +21765,20 @@ mod tests {
                 None,
                 None,
                 serde_json::json!({"seed": 7, "timeJitterTicks": 12, "velocityJitter": 8}),
+                "SetNoteExpression",
+            ),
+            (
+                "velocityShapeClip",
+                None,
+                None,
+                serde_json::json!({"seed": 7}),
+                "ModifyNoteVelocity",
+            ),
+            (
+                "chordStaggerClip",
+                None,
+                None,
+                serde_json::json!({"seed": 7, "staggerTicks": 12}),
                 "SetNoteExpression",
             ),
             (
@@ -21548,11 +22149,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "56 个 kind ＋ 1 个额外载荷分支"
+            "58 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 56 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 58 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -21598,8 +22199,12 @@ mod tests {
                 expected_len > 0,
                 "`{label}` 的夹具片段必须至少有一个音符, 否则展开路径测不到东西"
             );
-            if kind == QUANTIZE_CLIP_KIND {
-                // 量化只点名不在格上的音符 ⇒ 数目是数据相关的 (0..=音符数)。
+            if kind == QUANTIZE_CLIP_KIND
+                || kind == VELOCITY_SHAPE_CLIP_KIND
+                || kind == CHORD_STAGGER_CLIP_KIND
+            {
+                // 量化只点名不在格上的音符 ⇒ 数目是数据相关的 (0..=音符数)；
+                // 塑形 / 错开只点名实际变化的音符 ⇒ 同样是数据相关的 (0..=音符数)。
                 assert!(
                     compiled.len() <= notes_len,
                     "`{label}` 的量化产物不能超过音符数"
@@ -21617,6 +22222,8 @@ mod tests {
                 QUANTIZE_CLIP_KIND | RETROGRADE_CLIP_KIND => &["SetNoteTiming"],
                 INVERT_CLIP_KIND => &["DeleteNote", "AddNote"],
                 HUMANIZE_CLIP_KIND => &["SetNoteExpression", "ModifyNoteVelocity"],
+                VELOCITY_SHAPE_CLIP_KIND => &["ModifyNoteVelocity"],
+                CHORD_STAGGER_CLIP_KIND => &["SetNoteExpression"],
                 _ => std::slice::from_ref(&expected),
             };
             for op in &compiled {
@@ -21633,6 +22240,8 @@ mod tests {
                     | INVERT_CLIP_KIND
                     | RETROGRADE_CLIP_KIND
                     | HUMANIZE_CLIP_KIND
+                    | VELOCITY_SHAPE_CLIP_KIND
+                    | CHORD_STAGGER_CLIP_KIND
             ) {
                 // 展开⛔ 引入新变体（它们是音符级形态的产物）⇒ 不进 `seen`、也不占单射名额。
             } else {
@@ -21657,8 +22266,10 @@ mod tests {
         // 本票的 `duplicateClip`（独占 `Batch`）⇒ 48 → **49**（四个展开形态进不了 `seen`）。
         // 本票（手动相位对齐）的 `setTrackDelay` / `setTrackPolarity` /
         // `setClipPlacementOffset`（各独占一个变体）⇒ 49 → **52**。
+        // 本票（人性化 ROI）的 `velocityShapeClip` / `chordStaggerClip` 是展开形态
+        // （产 `ModifyNoteVelocity` / `SetNoteExpression`，已有变体）⇒ 52 不变。
         assert_eq!(seen.len(), 52);
-        // ⭐ `#179`：音符级分支集合**恰好是十三个**，且逐字等于发布清单。
+        // ⭐ `#179`：音符级分支集合**恰好是十五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
             [
@@ -21674,14 +22285,16 @@ mod tests {
                 "quantizeClip",
                 "invertClip",
                 "retrogradeClip",
-                "humanizeClip"
+                "humanizeClip",
+                "velocityShapeClip",
+                "chordStaggerClip"
             ],
-            "音符级 kind 必须恰好是十三个音符形态（字面表，⛔ 不是常量自比）"
+            "音符级 kind 必须恰好是十五个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            13,
-            "全部 kind 里 `is_note_level()` 为真的必须**恰好十三个**，实际: {note_level_seen:?}"
+            15,
+            "全部 kind 里 `is_note_level()` 为真的必须**恰好十五个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

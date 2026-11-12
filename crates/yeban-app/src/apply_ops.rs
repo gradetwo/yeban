@@ -2,7 +2,7 @@
 //!
 //! ## 它补的是哪一格（这是本模块存在的全部理由）
 //!
-//! 53 种 ops（`yeban-mcp` 的 `OP_KINDS`，`addTrack` / `insertDevice` / `setParam` /
+//! 58 种 ops（`yeban-mcp` 的 `OP_KINDS`，`addTrack` / `insertDevice` / `setParam` /
 //! `humanizeClip` / `quantizeClip` 全在内）今天只有两条执行入口：MCP 的
 //! `propose_section`（提案）与 `yeban_edit_notes`（直接编辑），以及 GUI 里对提案的
 //! 接受 —— 三条都要一个活着的 MCP 会话或一个窗口。在没有显示器的机器上批量改一批

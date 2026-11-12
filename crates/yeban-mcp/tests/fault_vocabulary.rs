@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 272 | 1147 | `468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 274 | 1155 | `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -146,6 +146,14 @@
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
+//! ⚠ 人性化 ROI clip-ops（本支）：`velocityShapeClip` / `chordStaggerClip`
+//! 2 条新 `unknown*ClipField`（`reject_unknown_keys` 传播，各带 `reason` /
+//! `supportedFields` / `unsupportedFields` 3 键）⇒ reason 数 272 → 274、
+//! 规范行数 1147 → 1155（2 reason 行 ＋ 6 键行）。新摘要
+//! `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
 //! ⚠ `#340`：摘要**只覆盖可分类面**。运行时站点（`format!` / 转发入参 /
@@ -163,7 +171,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 268] = [
+pub const GOLDEN_REASONS: [&str; 270] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -375,11 +383,12 @@ pub const GOLDEN_REASONS: [&str; 268] = [
     "valueMustBeUnsignedInteger",
     "valueOutOfRange",
     "writeModeMustBeString",
-    // ⭐ **调用点传播片**（2026-10-28）：以下 41 条以前是**运行时盲区**（登记在
+    // ⭐ **调用点传播片**（2026-10-28）：以下 43 条以前是**运行时盲区**（登记在
     // `EXEMPT_DYNAMIC_REASON_SITES`），现在由 [`PROPAGATED_REASON_SITES`] 从辅助函数的
-    // **调用点实参**传播出来 ⇒ 进词表。25 个 `reject_unknown_keys` 的 `unknown*Field`
+    // **调用点实参**传播出来 ⇒ 进词表。27 个 `reject_unknown_keys` 的 `unknown*Field`
     // ＋ 8 个 `read_non_empty_string` 的空串理由 ＋ 8 个同参数的非字符串理由
     // （`…MustBeNonEmptyStringMustBeString`：入参本身已带后缀, 拼接又加一次 —— 真实输出, 如实登记）。
+    "unknownChordStaggerClipField",
     "unknownDuplicateClipField",
     "unknownHumanizeClipField",
     "unknownInvertClipField",
@@ -412,6 +421,7 @@ pub const GOLDEN_REASONS: [&str; 268] = [
     "unknownSetTrackNameField",
     "unknownSetTrackSamplerField",
     "unknownTransposeClipField",
+    "unknownVelocityShapeClipField",
     "assetLicenseMustBeNonEmptyString",
     "assetOriginalPathMustBeNonEmptyString",
     "duplicateClipNameMustBeNonEmptyString",
@@ -1092,8 +1102,9 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
         occurrences: 1,
         helper: "reject_unknown_keys",
         suffix: "",
-        call_sites: 32,
+        call_sites: 34,
         literals: &[
+            "unknownChordStaggerClipField",
             "unknownDuplicateClipField",
             "unknownHumanizeClipField",
             "unknownInvertClipField",
@@ -1126,6 +1137,7 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
             "unknownSetTrackNameField",
             "unknownSetTrackSamplerField",
             "unknownTransposeClipField",
+            "unknownVelocityShapeClipField",
         ],
     },
     PropagatedReasonSite {
@@ -1983,7 +1995,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 270] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2657,9 +2669,13 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
     ),
     ("writeModeMustBeString", &["allowed", "field", "reason"]),
     ("valueOutOfRange", &["field", "max", "reason", "received"]),
-    // ⭐ **调用点传播片**（2026-10-28）：41 条由调用点传播出来的 reason, 载荷键**实测**
-    // （`reject_unknown_keys` 的那 25 条带 `supportedFields` / `unsupportedFields`；
+    // ⭐ **调用点传播片**（2026-10-28）：43 条由调用点传播出来的 reason, 载荷键**实测**
+    // （`reject_unknown_keys` 的那 27 条带 `supportedFields` / `unsupportedFields`；
     // `read_non_empty_string` 的空串分支只有 `field`, 非字符串分支多一条 `received`）。
+    (
+        "unknownChordStaggerClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
     (
         "unknownDuplicateClipField",
         &["reason", "supportedFields", "unsupportedFields"],
@@ -2786,6 +2802,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
     ),
     (
         "unknownTransposeClipField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownVelocityShapeClipField",
         &["reason", "supportedFields", "unsupportedFields"],
     ),
     ("assetLicenseMustBeNonEmptyString", &["field", "reason"]),
@@ -3276,13 +3296,19 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新增 2 条新字面站点（`alreadyAtTargetIndex` 4 键 / `masterBusTrackCannotBeMoved`
 /// 4 键）⇒ 242 → **244** 个 reason、1032 → **1042** 行（2 reason 行 ＋ 8 键行）。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+///
+/// ⭐ **人性化 ROI clip-ops 线**（本支）重钉：`velocityShapeClip` / `chordStaggerClip`
+/// 2 条新 `unknown*ClipField`（`reject_unknown_keys` 传播）⇒ 272 → **274** 个 reason、
+/// 1147 → **1155** 行（2 reason 行 ＋ 6 键行）。新摘要
+/// `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0";
+    "bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 272;
+pub const REASON_SURFACE_REASONS: usize = 274;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1147;
+pub const REASON_SURFACE_LINES: usize = 1155;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

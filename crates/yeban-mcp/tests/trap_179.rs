@@ -480,7 +480,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
 /// 注入（实测红）：把 `NOTE_LEVEL_KINDS` 加回任一属性级形态，或把谓词改回收窄前的
 /// 反选清单 ⇒ 本判据红；`six_property_forms_succeed_on_an_audio_clip` 的标题断言也红。
 #[test]
-fn the_note_level_predicate_is_exactly_thirteen() {
+fn the_note_level_predicate_is_exactly_fifteen() {
     assert_eq!(
         NOTE_LEVEL_KINDS,
         [
@@ -498,11 +498,13 @@ fn the_note_level_predicate_is_exactly_thirteen() {
             "quantizeClip",
             "invertClip",
             "retrogradeClip",
-            "humanizeClip"
+            "humanizeClip",
+            "velocityShapeClip",
+            "chordStaggerClip"
         ],
-        "音符级 kind 必须逐字是十三个音符形态（⛔ 不是从常量自己比出来的长度）"
+        "音符级 kind 必须逐字是十五个音符形态（⛔ 不是从常量自己比出来的长度）"
     );
-    assert_eq!(NOTE_LEVEL_KINDS.len(), 13, "恰好十三个");
+    assert_eq!(NOTE_LEVEL_KINDS.len(), 15, "恰好十五个");
     // 每个成员都在 `OP_KINDS` 目录里（不是幽灵名字）。
     for kind in NOTE_LEVEL_KINDS {
         assert!(OP_KINDS.contains(kind), "`{kind}` 必须在 `OP_KINDS` 目录里");
