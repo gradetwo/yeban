@@ -34,6 +34,9 @@ use std::path::PathBuf;
 /// 被扫文件：**编译期固定**（`include_str!`）⇒ ⛔ 不用 `read_dir` 做主体扫描
 /// （外部夹具缺失会真空；`read_dir` 只用于第 ④ 条完整性检查）。
 const SOURCES: &[(&str, &str)] = &[
+    // Band-Solo 监听滤波器（follow-ons (a)）：内联测试有两处 `.all(` 断言，
+    // 已在 ALLOWLIST 逐条登记理由。
+    ("src/band_solo.rs", include_str!("../src/band_solo.rs")),
     (
         "src/channel_strip.rs",
         include_str!("../src/channel_strip.rs"),
@@ -148,7 +151,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 37;
+const MIN_SOURCES: usize = 38;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -160,6 +163,16 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// 内层站点（`!= pool_clip` 那两处），它们**共用同一条理由**；唯一性检查会把这对刻意同形的
 /// 站点判成歧义。冒充风险由 [`stale_entries`] 兜住：任一处已经**有界**仍登记 ⇒ 直接红。
 const ALLOWLIST: &[(&str, &str, &str)] = &[
+    (
+        "src/band_solo.rs",
+        "assert!(left.iter().all(|&s| s == 0.0), \"静音过带通仍须是静音\");",
+        "测试内断言：定长静音块经带通后左声道全零，规模由测试构造固定，非生产路径",
+    ),
+    (
+        "src/band_solo.rs",
+        "assert!(right.iter().all(|&s| s == 0.0), \"静音过带通仍须是静音\");",
+        "测试内断言：定长静音块经带通后右声道全零，规模由测试构造固定，非生产路径",
+    ),
     (
         "src/tape.rs",
         "dirty.iter().chain(dirty_r.iter()).all(|s| s.is_finite()),",

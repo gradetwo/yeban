@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn centers_and_q_are_geometric_means() {
         let expected_centers = [
-            42.426_41, 150.0, 353.553_39, 707.106_78, 1414.213_6, 3162.277_7, 7071.067_9, 14142.136,
+            42.4264, 150.0, 353.5534, 707.1068, 1414.2136, 3162.2777, 7_071.068, 14142.136,
         ];
         for (band, &expected) in expected_centers.iter().enumerate() {
             let center = band_center_hz(band).expect("频段下标 0..8 必须有中心频率");

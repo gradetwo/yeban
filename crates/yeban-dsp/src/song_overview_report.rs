@@ -693,7 +693,6 @@ mod tests {
                     [-13.0, -10.6, -11.8, -9.4, -12.6, -16.2, -20.8, -28.0],
                 ],
             },
-            frequency_clash: FrequencyClashSummary::default(),
         }
     }
 
@@ -734,7 +733,6 @@ mod tests {
                 density_perc_onsets_per_beat: Vec::new(),
                 bands_tilted_db: Vec::new(),
             },
-            frequency_clash: FrequencyClashSummary::default(),
         }
     }
 

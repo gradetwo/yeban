@@ -2,7 +2,12 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 303 条：collection_size 65 ／ value_bound 227 ／ element_value_bound 5 ／ condition_counter 6
+# 合计 308 条：collection_size 65 ／ value_bound 231 ／ element_value_bound 5 ／ condition_counter 7
+src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
+src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
+src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
+src/band_solo.rs|silence_stays_silent_and_bypass_is_bit_identical|value_bound|assert_eq!(filter.band(), Some(5)
+src/band_solo.rs|sine_at_center_passes_and_far_sine_is_rejected|condition_counter|assert!(             (0.9..=1.1).contains(&ratio),             "707 Hz 正弦过 Mid 段（中心 707 Hz
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
