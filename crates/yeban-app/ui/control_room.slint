@@ -1,4 +1,4 @@
-import { Theme } from "tokens.slint";
+import { Theme, Tokens } from "tokens.slint";
 
 export component ControlRoomMeters inherits Rectangle {
     in-out property <string> lufs-integrated: "-9.4 LUFS";
@@ -18,7 +18,6 @@ export component ControlRoomMeters inherits Rectangle {
 
     width: 192px;
     background: Theme.bg-panel;
-    // border line
     border-color: Theme.border-subtle;
 
     VerticalLayout {
@@ -31,13 +30,32 @@ export component ControlRoomMeters inherits Rectangle {
             spacing: 6px;
 
             HorizontalLayout {
-                Text { text: "🎚️ Control Room"; font-size: 11px; font-weight: 800; color: #f8fafc; }
+                alignment: space-between;
+                Text {
+                    text: "🎚️ 监听室 (Control Room)";
+                    font-family: Tokens.font-ui;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #f8fafc;
+                    vertical-alignment: center;
+                }
                 Rectangle {
-                    background: #10b98120;
+                    background: #10b98118;
                     border-radius: 3px;
                     border-width: 1px;
-                    border-color: #10b98140;
-                    Text { text: "EBU R128"; font-size: 8px; font-weight: 700; color: #10b981; }
+                    border-color: #10b98135;
+                    HorizontalLayout {
+                        padding-left: 5px;
+                        padding-right: 5px;
+                        Text {
+                            text: "EBU R128";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            font-weight: 700;
+                            color: #34d399;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
             }
 
@@ -49,49 +67,110 @@ export component ControlRoomMeters inherits Rectangle {
                 border-color: Theme.border-subtle;
 
                 VerticalLayout {
-                    padding: 6px;
+                    padding: 8px;
                     spacing: 4px;
 
                     HorizontalLayout {
-                        Text { text: "Integrated:"; font-size: 9px; color: #64748b; }
-                        Text { text: root.lufs-integrated; font-size: 10px; font-weight: 800; color: #10b981; horizontal-alignment: right; }
+                        alignment: space-between;
+                        Text {
+                            text: "INTEGRATED:";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            letter-spacing: 0.6px;
+                            color: #64748b;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lufs-integrated;
+                            font-family: Tokens.font-mono;
+                            font-size: 11px;
+                            font-weight: 800;
+                            color: #34d399;
+                            vertical-alignment: center;
+                        }
                     }
 
                     HorizontalLayout {
-                        Text { text: "Short-Term:"; font-size: 9px; color: #64748b; }
-                        Text { text: root.lufs-short; font-size: 10px; font-weight: 800; color: #38bdf8; horizontal-alignment: right; }
+                        alignment: space-between;
+                        Text {
+                            text: "SHORT-TERM:";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            letter-spacing: 0.6px;
+                            color: #64748b;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lufs-short;
+                            font-family: Tokens.font-mono;
+                            font-size: 11px;
+                            font-weight: 800;
+                            color: #38bdf8;
+                            vertical-alignment: center;
+                        }
                     }
 
                     HorizontalLayout {
-                        Text { text: "True Peak:"; font-size: 9px; color: #64748b; }
-                        Text { text: root.lufs-peak; font-size: 10px; font-weight: 800; color: #f59e0b; horizontal-alignment: right; }
+                        alignment: space-between;
+                        Text {
+                            text: "TRUE PEAK:";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            letter-spacing: 0.6px;
+                            color: #64748b;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lufs-peak;
+                            font-family: Tokens.font-mono;
+                            font-size: 11px;
+                            font-weight: 800;
+                            color: #fbbf24;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
 
             // Speaker Matrix Switcher
             VerticalLayout {
-                spacing: 4px;
+                spacing: 5px;
 
-                Text { text: "监听音箱矩阵切换"; font-size: 9px; font-weight: 700; color: #64748b; }
+                Text {
+                    text: "MONITOR MATRIX";
+                    font-family: Tokens.font-mono;
+                    font-size: 8px;
+                    letter-spacing: 0.8px;
+                    font-weight: 700;
+                    color: #64748b;
+                }
 
                 HorizontalLayout {
                     spacing: 4px;
 
                     Rectangle {
-                        height: 22px;
-                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.25) : #1e293b;
+                        height: 24px;
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : #141720;
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "main" ? 1px : 0;
                         border-color: Theme.accent;
 
-                        Text {
-                            text: "A: 近场主箱";
-                            font-size: 9px;
-                            font-weight: 700;
-                            color: root.active-monitor == "main" ? Theme.accent : #94a3b8;
-                            horizontal-alignment: center;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            alignment: center;
+                            Text {
+                                text: "A: 近场主箱";
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: root.active-monitor == "main" ? Theme.accent : #94a3b8;
+                                vertical-alignment: center;
                             }
+                        }
                         TouchArea {
                             clicked => {
                                 root.active-monitor = "main";
@@ -101,19 +180,25 @@ export component ControlRoomMeters inherits Rectangle {
                     }
 
                     Rectangle {
-                        height: 22px;
-                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.25) : #1e293b;
+                        height: 24px;
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : #141720;
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "alt" ? 1px : 0;
                         border-color: Theme.accent;
 
-                        Text {
-                            text: "B: 单声道小箱";
-                            font-size: 9px;
-                            font-weight: 700;
-                            color: root.active-monitor == "alt" ? Theme.accent : #94a3b8;
-                            horizontal-alignment: center;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            alignment: center;
+                            Text {
+                                text: "B: 单声道参考";
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: root.active-monitor == "alt" ? Theme.accent : #94a3b8;
+                                vertical-alignment: center;
                             }
+                        }
                         TouchArea {
                             clicked => {
                                 root.active-monitor = "alt";
@@ -127,12 +212,20 @@ export component ControlRoomMeters inherits Rectangle {
                     spacing: 4px;
 
                     Rectangle {
-                        height: 20px;
-                        background: root.is-dim ? #f59e0b35 : #1e293b;
+                        height: 22px;
+                        background: root.is-dim ? #f59e0b35 : #141720;
                         border-radius: 3px;
-                        border-width: root.is-dim ? 1px : 0;
-                        border-color: #f59e0b;
-                        Text { text: "DIM"; font-size: 8px; font-weight: 800; color: root.is-dim ? #f59e0b : #94a3b8; horizontal-alignment: center; }
+                        border-width: 1px;
+                        border-color: root.is-dim ? #f59e0b : #ffffff12;
+                        Text {
+                            text: "DIM";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            font-weight: 800;
+                            color: root.is-dim ? #f59e0b : #94a3b8;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea {
                             clicked => {
                                 root.is-dim = !root.is-dim;
@@ -142,12 +235,20 @@ export component ControlRoomMeters inherits Rectangle {
                     }
 
                     Rectangle {
-                        height: 20px;
-                        background: root.is-mono ? #38bdf835 : #1e293b;
+                        height: 22px;
+                        background: root.is-mono ? #38bdf835 : #141720;
                         border-radius: 3px;
-                        border-width: root.is-mono ? 1px : 0;
-                        border-color: #38bdf8;
-                        Text { text: "MONO"; font-size: 8px; font-weight: 800; color: root.is-mono ? #38bdf8 : #94a3b8; horizontal-alignment: center; }
+                        border-width: 1px;
+                        border-color: root.is-mono ? #38bdf8 : #ffffff12;
+                        Text {
+                            text: "MONO";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            font-weight: 800;
+                            color: root.is-mono ? #38bdf8 : #94a3b8;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea {
                             clicked => {
                                 root.is-mono = !root.is-mono;
@@ -157,12 +258,20 @@ export component ControlRoomMeters inherits Rectangle {
                     }
 
                     Rectangle {
-                        height: 20px;
-                        background: root.is-side ? #f43f5e35 : #1e293b;
+                        height: 22px;
+                        background: root.is-side ? #ef444435 : #141720;
                         border-radius: 3px;
-                        border-width: root.is-side ? 1px : 0;
-                        border-color: #f43f5e;
-                        Text { text: "SIDE"; font-size: 8px; font-weight: 800; color: root.is-side ? #f43f5e : #94a3b8; horizontal-alignment: center; }
+                        border-width: 1px;
+                        border-color: root.is-side ? #ef4444 : #ffffff12;
+                        Text {
+                            text: "SIDE";
+                            font-family: Tokens.font-mono;
+                            font-size: 8px;
+                            font-weight: 800;
+                            color: root.is-side ? #ef4444 : #94a3b8;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea {
                             clicked => {
                                 root.is-side = !root.is-side;
@@ -174,12 +283,12 @@ export component ControlRoomMeters inherits Rectangle {
             }
         }
 
-        // Stereo Master Twin Bar Meters (Large vertical LED bars)
+        // Stereo Master Twin Bar Meters (Precision vertical LED bars)
         Rectangle {
-            background: #06080d;
+            background: #06080e;
             border-radius: Theme.radius;
             border-width: 1px;
-            border-color: #1e293b;
+            border-color: #1a202c;
             vertical-stretch: 1;
 
             HorizontalLayout {
@@ -192,42 +301,47 @@ export component ControlRoomMeters inherits Rectangle {
                     alignment: space-between;
                     for mark in ["0", "-6", "-12", "-24", "-48"] : Text {
                         text: mark;
+                        font-family: Tokens.font-mono;
                         font-size: 8px;
-                        color: #475569;
+                        color: #64748b;
                         font-weight: 700;
                     }
                 }
 
                 // Left Meter Bar
                 Rectangle {
-                    width: 16px;
-                    background: #0f172a;
-                    border-radius: 3px;
+                    width: 14px;
+                    background: #0a0d14;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: #ffffff0a;
                     clip: true;
 
                     Rectangle {
                         x: 0;
                         y: parent.height - (root.master-meter-l * parent.height);
-                        width: 16px;
+                        width: 14px;
                         height: root.master-meter-l * parent.height;
-                        background: #10b981;
+                        background: root.master-meter-l > 0.85 ? #f59e0b : #10b981;
                         border-radius: 2px;
                     }
                 }
 
                 // Right Meter Bar
                 Rectangle {
-                    width: 16px;
-                    background: #0f172a;
-                    border-radius: 3px;
+                    width: 14px;
+                    background: #0a0d14;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: #ffffff0a;
                     clip: true;
 
                     Rectangle {
                         x: 0;
                         y: parent.height - (root.master-meter-r * parent.height);
-                        width: 16px;
+                        width: 14px;
                         height: root.master-meter-r * parent.height;
-                        background: #10b981;
+                        background: root.master-meter-r > 0.85 ? #f59e0b : #10b981;
                         border-radius: 2px;
                     }
                 }
@@ -237,15 +351,20 @@ export component ControlRoomMeters inherits Rectangle {
         // Master Output Footer
         Rectangle {
             height: 24px;
-            background: #00000040;
+            background: #090c14;
             border-radius: 3px;
+            border-width: 1px;
+            border-color: #ffffff0a;
             Text {
-                text: "MASTER OUT · 32-bit Float";
-                font-size: 9px;
+                text: "MASTER OUT · 32-BIT FLOAT";
+                font-family: Tokens.font-mono;
+                font-size: 8px;
+                letter-spacing: 0.8px;
                 font-weight: 700;
                 color: #64748b;
                 horizontal-alignment: center;
-                }
+                vertical-alignment: center;
+            }
         }
     }
 }

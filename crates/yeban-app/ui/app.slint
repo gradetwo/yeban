@@ -10,7 +10,7 @@ import { UnifiedLowerDock } from "lower_dock.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
 export component MainWindow inherits Window {
-    title: "AetherStudio Native DAW (Rust + Slint 1.x)";
+    title: "夜半 DAW";
     background: Theme.bg-canvas;
     preferred-width: 1600px;
     preferred-height: 920px;
@@ -139,9 +139,9 @@ export component MainWindow inherits Window {
 
     // Zone Visibility State
     in-out property <bool> show-left-inspector: true;
-    in-out property <bool> show-clip-matrix: Theme.persona == PersonaMode.AetherDefault || Theme.persona == PersonaMode.AbletonLive;
+    in-out property <bool> show-clip-matrix: Theme.persona == PersonaMode.YebanDefault || Theme.persona == PersonaMode.AbletonLive;
     in-out property <bool> show-lower-dock: true;
-    in-out property <bool> show-control-room: Theme.persona == PersonaMode.AetherDefault || Theme.persona == PersonaMode.CubasePro;
+    in-out property <bool> show-control-room: Theme.persona == PersonaMode.YebanDefault || Theme.persona == PersonaMode.CubasePro;
 
     // Transport & Playback State
     in-out property <string> active-tool: "pointer";
@@ -440,7 +440,7 @@ export component MainWindow inherits Window {
             is-open: root.show-cmd-palette;
             close-modal() => { root.show-cmd-palette = false; }
             execute-command(id) => {
-                if (id == "persona-default") { Theme.persona = PersonaMode.AetherDefault; root.show-clip-matrix = true; root.show-control-room = true; }
+                if (id == "persona-default") { Theme.persona = PersonaMode.YebanDefault; root.show-clip-matrix = true; root.show-control-room = true; }
                 else if (id == "persona-ableton") { Theme.persona = PersonaMode.AbletonLive; root.show-clip-matrix = true; root.show-control-room = false; }
                 else if (id == "persona-logic") { Theme.persona = PersonaMode.LogicPro; root.show-clip-matrix = false; root.show-control-room = false; }
                 else if (id == "persona-cubase") { Theme.persona = PersonaMode.CubasePro; root.show-clip-matrix = false; root.show-control-room = true; }

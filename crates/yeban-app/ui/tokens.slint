@@ -917,11 +917,11 @@ import "../../../assets/fonts/NotoSerifSC-Regular-subset.otf";
 
 
 // =========================================================================
-// AetherStudio DAW — 多 Persona 模式与全局主题架构 (来自设计方案)
+// 夜半 DAW — 多 Persona 模式与全局专业工作室主题架构
 // =========================================================================
 
 export enum PersonaMode {
-    AetherDefault,
+    YebanDefault,
     AbletonLive,
     LogicPro,
     CubasePro,
@@ -1000,50 +1000,50 @@ export struct PianoStepRow {
 }
 
 export global Theme {
-    in-out property <PersonaMode> persona: PersonaMode.AetherDefault;
+    in-out property <PersonaMode> persona: PersonaMode.YebanDefault;
 
-    // 响应式设计 Token
+    // 响应式专业设计 Token
     out property <color> bg-canvas:
-        persona == PersonaMode.AbletonLive ? #1e1e1e :
-        persona == PersonaMode.LogicPro    ? #16181c :
-        persona == PersonaMode.CubasePro   ? #0f1114 : #0b0d12;
+        persona == PersonaMode.AbletonLive ? #12141c :
+        persona == PersonaMode.LogicPro    ? #0f1218 :
+        persona == PersonaMode.CubasePro   ? #0c0e14 : #0a0c12;
 
     out property <color> bg-panel:
-        persona == PersonaMode.AbletonLive ? #2b2b2b :
-        persona == PersonaMode.LogicPro    ? #24272d :
-        persona == PersonaMode.CubasePro   ? #1a1d21 : #131720;
+        persona == PersonaMode.AbletonLive ? #181c26 :
+        persona == PersonaMode.LogicPro    ? #141822 :
+        persona == PersonaMode.CubasePro   ? #11141c : #10131b;
 
     out property <color> bg-surface:
-        persona == PersonaMode.AbletonLive ? #363636 :
-        persona == PersonaMode.LogicPro    ? #2e323b :
-        persona == PersonaMode.CubasePro   ? #24282e : #1b202c;
+        persona == PersonaMode.AbletonLive ? #202634 :
+        persona == PersonaMode.LogicPro    ? #1c2230 :
+        persona == PersonaMode.CubasePro   ? #171b26 : #161b26;
 
     out property <color> border-subtle:
-        persona == PersonaMode.AbletonLive ? #141414 :
-        persona == PersonaMode.LogicPro    ? #3a3f4b :
-        persona == PersonaMode.CubasePro   ? #262b38 : #262d3d;
+        persona == PersonaMode.AbletonLive ? #2b3345 :
+        persona == PersonaMode.LogicPro    ? #272f40 :
+        persona == PersonaMode.CubasePro   ? #202634 : #1f2533;
 
     out property <color> accent:
         persona == PersonaMode.AbletonLive ? #ff764d :
         persona == PersonaMode.LogicPro    ? #3b82f6 :
-        persona == PersonaMode.CubasePro   ? #00c8ff : #06b6d4;
+        persona == PersonaMode.CubasePro   ? #00c8ff : #00c5ff;
 
     out property <color> accent-glow:
         persona == PersonaMode.AbletonLive ? #ff764d40 :
         persona == PersonaMode.LogicPro    ? #3b82f640 :
-        persona == PersonaMode.CubasePro   ? #00c8ff40 : #06b6d440;
+        persona == PersonaMode.CubasePro   ? #00c8ff40 : #00c5ff35;
 
     out property <length> radius:
-        persona == PersonaMode.AbletonLive ? 2px :
-        persona == PersonaMode.LogicPro    ? 7px :
-        persona == PersonaMode.CubasePro   ? 3px : 6px;
+        persona == PersonaMode.AbletonLive ? 3px :
+        persona == PersonaMode.LogicPro    ? 6px :
+        persona == PersonaMode.CubasePro   ? 3px : 4px;
 
     out property <color> header-bg:
-        persona == PersonaMode.AbletonLive ? #282828 :
-        persona == PersonaMode.LogicPro    ? #23262e :
-        persona == PersonaMode.CubasePro   ? #171a1e : #12161f;
+        persona == PersonaMode.AbletonLive ? #161922 :
+        persona == PersonaMode.LogicPro    ? #12151e :
+        persona == PersonaMode.CubasePro   ? #0e1118 : #0d1017;
 
-    // Ableton 兼容模式下可将轨道头切换至右侧，默认旗舰保持在左侧
+    // 演出激发模式下可将轨道头切换至右侧，默认旗舰保持在左侧黄金视线区
     in-out property <bool> track-headers-on-right:
         persona == PersonaMode.AbletonLive;
 

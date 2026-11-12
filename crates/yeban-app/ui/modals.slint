@@ -1,26 +1,26 @@
-import { Theme, CommandPaletteItem } from "tokens.slint";
+import { Theme, CommandPaletteItem, Tokens } from "tokens.slint";
 
 export component CommandPaletteModal inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <string> filter-text: "";
     in-out property <[CommandPaletteItem]> commands: [
-        { id: "persona-default", title: "切换至：全新默认旗舰布局 (Aether Hybrid)", category: "Persona", shortcut: "1" },
-        { id: "persona-ableton", title: "切换至：Ableton Live 兼容布局 (Live Flow)", category: "Persona", shortcut: "2" },
-        { id: "persona-logic",   title: "切换至：Logic Pro 兼容布局 (Apple Studio)", category: "Persona", shortcut: "3" },
-        { id: "persona-cubase",  title: "切换至：Cubase Pro 兼容布局 (Steinberg 4-Zone)", category: "Persona", shortcut: "4" },
-        { id: "toggle-hotspots", title: "打开/关闭 UI 痛点改进标注透视图 (Hotspots)", category: "Help", shortcut: "H" },
-        { id: "tab-stacked",     title: "切换底栏：堆叠视图 (Stacked Devices+Mixer)", category: "View", shortcut: "F3" },
-        { id: "tab-devices",     title: "切换底栏：内联 DSP 设备链 (Devices)", category: "View", shortcut: "Shift+Tab" },
-        { id: "tab-mixer",       title: "切换底栏：MixConsole 混音台 (Mixer)", category: "View", shortcut: "X" },
+        { id: "persona-default", title: "切换至：夜半全景工作区 (旗舰混合 Production)", category: "Layout", shortcut: "1" },
+        { id: "persona-ableton", title: "切换至：现场激发工作区 (Clip 矩阵 Performance)", category: "Layout", shortcut: "2" },
+        { id: "persona-logic",   title: "切换至：线性编曲工作区 (时间轴编曲 Arrange)", category: "Layout", shortcut: "3" },
+        { id: "persona-cubase",  title: "切换至：混音控制台工作区 (母带监听 Mix & Master)", category: "Layout", shortcut: "4" },
+        { id: "toggle-hotspots", title: "打开/关闭 创新工作流与架构透视 (Insights)", category: "Help", shortcut: "H" },
+        { id: "tab-stacked",     title: "切换底栏：旗舰设备与混音堆叠 (Stacked Devices+Mixer)", category: "View", shortcut: "F3" },
+        { id: "tab-devices",     title: "切换底栏：内联 DSP 设备机架 (Inline Devices)", category: "View", shortcut: "Shift+Tab" },
+        { id: "tab-mixer",       title: "切换底栏：MixConsole 混音控制台 (Mixer)", category: "View", shortcut: "X" },
         { id: "tab-pianoroll",   title: "切换底栏：MPE 钢琴卷帘编辑器 (Piano Roll)", category: "View", shortcut: "P" },
-        { id: "action-add-track",title: "新增轨道 (Add Hybrid Track)", category: "Track", shortcut: "Cmd+T" }
+        { id: "action-add-track",title: "新增轨道 (Add Audio/MIDI Track)", category: "Track", shortcut: "Cmd+T" }
     ];
 
     callback execute-command(string);
     callback close-modal();
 
     if root.is-open : Rectangle {
-        background: #00000088;
+        background: #020612bb;
 
         VerticalLayout {
             alignment: center;
@@ -29,12 +29,12 @@ export component CommandPaletteModal inherits Rectangle {
                 alignment: center;
 
                 Rectangle {
-                    width: 520px;
-                    height: 380px;
-                    background: #111520;
-                    border-radius: 12px;
+                    width: 560px;
+                    height: 400px;
+                    background: #11141d;
+                    border-radius: 8px;
                     border-width: 1px;
-                    border-color: Theme.accent;
+                    border-color: #262e3d;
                     clip: true;
 
                     VerticalLayout {
@@ -44,27 +44,52 @@ export component CommandPaletteModal inherits Rectangle {
                         // Header with input
                         Rectangle {
                             height: 48px;
-                            background: #161c2b;
-                            // border line
-                            border-color: #334155;
+                            background: #151a24;
+                            border-color: #ffffff14;
 
                             HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 8px;
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                spacing: 10px;
                                 alignment: space-between;
 
                                 HorizontalLayout {
-                                    spacing: 8px;
-                                    Text { text: "⌘K"; font-size: 13px; font-weight: 800; color: Theme.accent; }
-                                    Text { text: "输入动作或切换布局 (例如: Ableton, 混音台, 切分)..."; font-size: 12px; color: #94a3b8; vertical-alignment: center; }
+                                    spacing: 10px;
+                                    Text {
+                                        text: "⌘K";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 13px;
+                                        font-weight: 800;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "输入命令、切换工作区或定位模块 (如: 混音台, 卷帘, 切分)...";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 12px;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
                                 }
 
                                 Rectangle {
-                                    background: #1e293b;
+                                    background: #1e2536;
                                     border-radius: 4px;
-                                    height: 22px;
-                                    Text { text: "ESC"; font-size: 9px; font-weight: 700; color: #cbd5e1; }
+                                    height: 24px;
+                                    border-width: 1px;
+                                    border-color: #ffffff10;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "ESC";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            color: #cbd5e1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                     TouchArea { clicked => { root.close-modal(); } }
                                 }
                             }
@@ -72,32 +97,70 @@ export component CommandPaletteModal inherits Rectangle {
 
                         // Command List
                         VerticalLayout {
-                            padding: 8px;
-                            spacing: 4px;
+                            padding: 10px;
+                            spacing: 5px;
                             vertical-stretch: 1;
 
                             for cmd in root.commands : Rectangle {
                                 height: 32px;
-                                background: #182030;
-                                border-radius: 6px;
+                                background: #161b26;
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
 
                                 HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
+                                    padding-left: 12px;
+                                    padding-right: 12px;
                                     alignment: space-between;
-                                    Text { text: cmd.title; font-size: 11px; font-weight: 600; color: #f8fafc; }
+                                    Text {
+                                        text: cmd.title;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: #f1f5f9;
+                                        vertical-alignment: center;
+                                    }
 
                                     HorizontalLayout {
                                         spacing: 6px;
+                                        alignment: end;
                                         Rectangle {
-                                            background: #33415540;
+                                            background: #00000030;
                                             border-radius: 3px;
-                                            Text { text: cmd.category; font-size: 8px; color: #94a3b8; }
+                                            border-width: 1px;
+                                            border-color: #ffffff0a;
+                                            height: 18px;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                Text {
+                                                    text: cmd.category;
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 8px;
+                                                    font-weight: 600;
+                                                    color: #94a3b8;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
                                         }
                                         Rectangle {
-                                            background: Theme.accent.with-alpha(0.15);
+                                            background: Theme.accent.with-alpha(0.18);
                                             border-radius: 3px;
-                                            Text { text: cmd.shortcut; font-size: 9px; font-weight: 700; color: Theme.accent; }
+                                            border-width: 1px;
+                                            border-color: Theme.accent.with-alpha(0.35);
+                                            height: 18px;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                Text {
+                                                    text: cmd.shortcut;
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 9px;
+                                                    font-weight: 700;
+                                                    color: Theme.accent;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -122,7 +185,7 @@ export component HotspotOverlay inherits Rectangle {
     callback close-overlay();
 
     if root.is-open : Rectangle {
-        background: #020617bb;
+        background: #020612cc;
 
         VerticalLayout {
             padding: 24px;
@@ -130,53 +193,88 @@ export component HotspotOverlay inherits Rectangle {
 
             // Top Header
             Rectangle {
-                height: 40px;
-                // border line
+                height: 44px;
                 border-color: #f59e0b50;
 
                 HorizontalLayout {
                     alignment: space-between;
 
                     HorizontalLayout {
-                        spacing: 8px;
+                        spacing: 10px;
                         Rectangle {
                             background: #f59e0b;
                             border-radius: 4px;
-                            Text { text: "UI/UX 核心痛点修复透视图"; font-size: 11px; font-weight: 800; color: #020617; }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                Text {
+                                    text: "夜半 DAW 专业工作流与现代声学架构";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 800;
+                                    color: #020617;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
-                        Text { text: "对比 Ableton / Logic / Cubase 原生缺陷与本方案的架构级改进"; font-size: 11px; color: #fde68a; vertical-alignment: center; }
+                        Text {
+                            text: "基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            color: #fde68a;
+                            vertical-alignment: center;
+                        }
                     }
 
                     Rectangle {
-                        background: #f43f5e;
+                        background: #ef4444;
                         border-radius: 4px;
                         height: 26px;
-                        Text { text: "✕ 关闭透视"; font-size: 10px; font-weight: 800; color: #ffffff; }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "✕ 关闭透视";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 800;
+                                color: #ffffff;
+                                vertical-alignment: center;
+                            }
+                        }
                         TouchArea { clicked => { root.close-overlay(); } }
                     }
                 }
             }
 
-            // 3 Improvement Cards
+            // 3 Architectural Highlight Cards
             HorizontalLayout {
                 spacing: 16px;
                 alignment: center;
 
                 // Card 1
                 Rectangle {
-                    width: 340px;
-                    height: 180px;
-                    background: #0f172aee;
+                    width: 350px;
+                    height: 190px;
+                    background: #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
-                    border-color: #06b6d4;
+                    border-color: #00c5ff;
 
                     VerticalLayout {
-                        padding: 14px;
+                        padding: 16px;
                         spacing: 8px;
-                        Text { text: "① 解决 Ableton「轨道头在最右侧」反人类痛点"; font-size: 12px; font-weight: 800; color: #38bdf8; wrap: word-wrap; }
                         Text {
-                            text: "Ableton 将轨道名称与 M/S 按钮放在屏幕最右侧，超宽屏下视线与鼠标需横跨整个屏幕。\nAether 默认将轨道头回归时间轴左侧，并在「Ableton 兼容模式」中提供一键左/右镜像切换！";
+                            text: "① 黄金视线轨道头与全景排布";
+                            font-family: Tokens.font-ui;
+                            font-size: 12px;
+                            font-weight: 800;
+                            color: #38bdf8;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。";
+                            font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
                             wrap: word-wrap;
@@ -186,19 +284,27 @@ export component HotspotOverlay inherits Rectangle {
 
                 // Card 2
                 Rectangle {
-                    width: 340px;
-                    height: 180px;
-                    background: #0f172aee;
+                    width: 350px;
+                    height: 190px;
+                    background: #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: #10b981;
 
                     VerticalLayout {
-                        padding: 14px;
+                        padding: 16px;
                         spacing: 8px;
-                        Text { text: "② 解决 Logic/Cubase「插件弹窗遮挡地狱」"; font-size: 12px; font-weight: 800; color: #34d399; wrap: word-wrap; }
                         Text {
-                            text: "传统 DAW 中打开 5 个以上 EQ/压缩插件会堆满屏幕遮挡编曲区。\nAether 引入底部内联 DSP 设备机架 (Inline Rack)，原生与常用三方参数直接嵌于底栏同屏调校，双击才展开独立窗口！";
+                            text: "② 内联全功能 DSP 设备机架 (Zero Popups)";
+                            font-family: Tokens.font-ui;
+                            font-size: 12px;
+                            font-weight: 800;
+                            color: #34d399;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。";
+                            font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
                             wrap: word-wrap;
@@ -208,19 +314,27 @@ export component HotspotOverlay inherits Rectangle {
 
                 // Card 3
                 Rectangle {
-                    width: 340px;
-                    height: 180px;
-                    background: #0f172aee;
+                    width: 350px;
+                    height: 190px;
+                    background: #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: #f59e0b;
 
                     VerticalLayout {
-                        padding: 14px;
+                        padding: 16px;
                         spacing: 8px;
-                        Text { text: "③ 解决 Ableton「Tab 盲切割裂」与 Logic「重载卡顿」"; font-size: 12px; font-weight: 800; color: #fbbf24; wrap: word-wrap; }
                         Text {
-                            text: "支持左侧 Clip 激发抽屉 + 右侧线性时间轴同屏联动，直接拖拽 Loop 入轨；\n顶栏切换 Buffer 大小零重载即时生效，彻底告别 Logic Pro 重新加载整首歌的漫长等待！";
+                            text: "③ 即时混合工作流与无感缓冲热切";
+                            font-family: Tokens.font-ui;
+                            font-size: 12px;
+                            font-weight: 800;
+                            color: #fbbf24;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。";
+                            font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
                             wrap: word-wrap;
@@ -232,7 +346,13 @@ export component HotspotOverlay inherits Rectangle {
             // Bottom tip
             Rectangle {
                 height: 24px;
-                Text { text: "提示：您可以随时点击顶栏「Aether / Live / Logic / Cubase」实时对比 4 套布局与快捷键映射。"; font-size: 10px; color: #94a3b8; horizontal-alignment: center; }
+                Text {
+                    text: "提示：您可以随时点击顶栏「旗舰 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。";
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    color: #94a3b8;
+                    horizontal-alignment: center;
+                }
             }
         }
     }
@@ -248,8 +368,8 @@ export component ToastBanner inherits Rectangle {
         y: parent.height - 56px;
         width: 300px;
         height: 36px;
-        background: #0f172af0;
-        border-radius: 8px;
+        background: #0e1422f2;
+        border-radius: 6px;
         border-width: 1px;
         border-color: Theme.accent;
 
@@ -259,8 +379,16 @@ export component ToastBanner inherits Rectangle {
             spacing: 8px;
             alignment: start;
 
-            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-            Text { text: root.toast-text; font-size: 10px; font-weight: 700; color: #f8fafc; vertical-alignment: center; overflow: elide; }
+            Rectangle { width: 7px; height: 7px; border-radius: 3.5px; background: Theme.accent; }
+            Text {
+                text: root.toast-text;
+                font-family: Tokens.font-ui;
+                font-size: 10px;
+                font-weight: 600;
+                color: #f8fafc;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
     }
 }
