@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 272 | 1147 | `468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 274 | 1155 | `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -148,9 +148,9 @@
 //!
 //! ⚠ 人性化 ROI clip-ops（本支）：`velocityShapeClip` / `chordStaggerClip`
 //! 2 条新 `unknown*ClipField`（`reject_unknown_keys` 传播，各带 `reason` /
-//! `supportedFields` / `unsupportedFields` 3 键）⇒ reason 数 268 → 270、
-//! 规范行数 1129 → 1137（2 reason 行 ＋ 6 键行）。新摘要
-//! `f27978571894951dc7401e1078e4756e344db1f07cf1b484e852a46367187f02`
+//! `supportedFields` / `unsupportedFields` 3 键）⇒ reason 数 272 → 274、
+//! 规范行数 1147 → 1155（2 reason 行 ＋ 6 键行）。新摘要
+//! `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4`
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
@@ -3298,14 +3298,17 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 ///
 /// ⭐ **人性化 ROI clip-ops 线**（本支）重钉：`velocityShapeClip` / `chordStaggerClip`
-/// 2 条新 `unknown*ClipField`（`reject_unknown_keys` 传播）⇒ 待判据报出值重钉。
+/// 2 条新 `unknown*ClipField`（`reject_unknown_keys` 传播）⇒ 272 → **274** 个 reason、
+/// 1147 → **1155** 行（2 reason 行 ＋ 6 键行）。新摘要
+/// `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0";
+    "bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 272;
+pub const REASON_SURFACE_REASONS: usize = 274;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1147;
+pub const REASON_SURFACE_LINES: usize = 1155;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
