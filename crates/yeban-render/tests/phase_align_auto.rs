@@ -42,10 +42,7 @@ fn copy_placements_with_offset(
             source_track.devices.clone(),
         )
     };
-    let target_track = project
-        .tracks
-        .get_mut(&target)
-        .expect("目标轨必须在工程里");
+    let target_track = project.tracks.get_mut(&target).expect("目标轨必须在工程里");
     target_track.clips.clear();
     for placement in placements {
         let id = EntityId::new();
