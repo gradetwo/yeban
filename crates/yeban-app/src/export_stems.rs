@@ -204,32 +204,36 @@ pub fn export_stems(
     );
     let request = stems::validate(&arguments)?;
     let pool: BTreeMap<AssetHash, Vec<u8>> = assets.iter().cloned().collect();
-    let batch: StemBatch = stems::export(
+    // ⭐ **流式**（渲一条、写一条、释放一条）而不是 `export` + `write`：
+    //   批处理没有 `dryRun`，没有理由把 N 条分轨全攒在内存里再统一写盘。
+    //   实测读数不变（同一条渲染链、同一条容器编码），内存峰值从
+    //   `N × 单轨字节` 降到 `1 × 单轨字节`。
+    let batch: StemBatch = stems::export_streaming(
         project,
         project_path,
         &request,
         crate::host::now_ms(),
         &pool,
     )?;
-    let _ = stems::write(&batch)?;
     let mut stems_out = Vec::with_capacity(batch.stems.len());
     for row in &batch.stems {
         stems_out.push(StemLine {
             track: row.name.clone(),
             file_name: row.file_name.clone(),
             path: row.path.clone(),
-            bytes: row.artifact.bytes.len(),
+            bytes: row.bytes_len,
             bit_depth: row.artifact.bit_depth,
             channels: row.artifact.channels as u16,
         });
     }
     let mut skipped_out = Vec::with_capacity(batch.skipped.len());
     for skipped in &batch.skipped {
-        // `reason` 的字面量（`masterBusTrack` / `notASourceNode`）是
+        // `reason` 的字面量（`masterBusTrack` / `notASourceNode` / `emptyTrack`）是
         // `fault_vocabulary` 黄金表里的冻结词，这里只复述，不另造。
         let reason = match skipped.reason {
             stems::SkipReason::MasterBusTrack => "masterBusTrack",
             stems::SkipReason::NotASourceNode => "notASourceNode",
+            stems::SkipReason::EmptyTrack => "emptyTrack",
         };
         skipped_out.push(SkippedLine {
             track: skipped.name.clone(),

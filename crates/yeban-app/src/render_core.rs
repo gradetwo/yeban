@@ -96,7 +96,7 @@ use yeban_render::automation::{
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
     AudioSource, BlockContext, OutputStage, RenderError, RenderOptions, RenderOutput, RenderPlan,
-    db_to_linear, project_phase_align, track_latencies,
+    SilentSource, db_to_linear, project_phase_align, track_latencies,
 };
 
 use yeban_engine::mixer::{BusLimiter, LOOKAHEAD_SAMPLES, PanLaw, pan_gains};
@@ -107,6 +107,12 @@ use crate::audio_clip;
 use crate::export_wav::{NoteToneSource, WavExportError, WavExportOptions, track_notes_in_frames};
 // ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`；与 MCP 共用同一份实现。
 use yeban_render::engine_source::EngineTrackSource;
+
+/// **空轨的运行态**：一个不产生任何样本、也不占用任何内存的源。
+///
+/// 实现住在 [`yeban_render::render::SilentSource`] —— CLI 与 MCP 的渲染核心现在
+/// 共用同一份（两处各写一份时，"空轨"的判据很容易一边改一边忘）。本层直接引用
+/// 那个类型，调用点写法与真值语义都不变。
 
 /// 一条轨的复合源：**先 MIDI 基座、后音频片段**（顺序与 MCP 的 `TrackSource` 相同，
 /// 且与块边界无关 ⇒ 逐位可复现）。
@@ -767,6 +773,43 @@ pub fn render_project_f32_with_plans_under(
         .into_iter()
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
+    // ⭐⭐ **空轨不建源**（内存缺陷修复）。
+    //
+    // 修前：`renderable` 是"计划里的**全部**非主总线节点"，源表对它们一视同仁 ⇒
+    // 一条**没有任何 clip、也没绑采样器**的轨照样建一个 `AudioSource` —— 引擎音源
+    // 那台 `SynthEngine`（每源一份，1024 槽 × 每槽 `DrumMachine<16>` ＋ `PolySynth`
+    // ＋ `SfzVoicePool`）≈ 32 MiB **一条**。这是"轨数 × 32 MiB"的常量开销，
+    // 与工程长度无关：
+    //
+    // | 工程 | 非 master 节点 | 单次整曲渲染峰值 |
+    // |:--|--:|--:|
+    // | 79 轨（7 条有声） | 78 | 3.33 GB |
+    // | 同工程剪掉空轨 | 7 | 1.05 GB |
+    // | 内置演示工程 | — | 0.40 GB |
+    //
+    // 于是 `--export-stems`（N+1 次渲染）与 `--export-song-overview-html`
+    // （母带 1 次 ＋ 逐源轨各 1 次）在一个进程里双双撞 8 GB cgroup 上限，
+    // `exit=137` 且没有 traceback。
+    //
+    // 判据与 `#311` 的 `has_content`（下面那个块）**完全同一条**：一条 MIDI 轨只要
+    // **没有 clip 也没有采样器**，就没有任何能产生样本的东西 —— 引擎音源只会输出
+    // 静音，SFZ 源没有音符可放，最小音源同理。节点本身**仍然留在计划里**（求和、
+    // 发送、插入链、自动化照样参与），只是不再配一台"确定输出 0"的源
+    // ⇒ 音频逐位不变，省掉的是纯开销。
+    //
+    // ⚠ 只筛 `clips` / `sampler` 两样，⛔ 不把 `devices`、发送、自动化算进判据：
+    // 那些是**节点**行为，与"这条轨会不会出声音"无关；把它们算进来会让
+    // "挂了混响的空 aux" 掉源，而那台混响仍要给别的轨处理。
+    let sourced: Vec<EntityId> = renderable
+        .iter()
+        .copied()
+        .filter(|id| {
+            project
+                .tracks
+                .get(id)
+                .is_some_and(|track| !track.clips.is_empty() || track.sampler.is_some())
+        })
+        .collect();
     // ⭐⭐ **"空渲染"必须说出来**（任务 `#311`）。
     //
     // 修前：`renderable` 静默排掉主总线轨（那是**对的** —— 总线不产生素材），但如果工程的
@@ -854,7 +897,7 @@ pub fn render_project_f32_with_plans_under(
                 eprintln!("  …… 另有 {} 个，未列出", table.missing.len() - SHOWN);
             }
         }
-        for track_id in renderable.clone() {
+        for track_id in sourced.clone() {
             let notes = track_notes_in_frames(project, track_id, options.sample_rate);
             // ⭐ `#296`：总线轨的推子改由输出级乘 ⇒ 源侧只保留 `mute`/`solo` 门
             // （`volume_db = 0` 的同一个 `track_gain_scale`），⛔ 不乘两次。
@@ -898,7 +941,7 @@ pub fn render_project_f32_with_plans_under(
             .first()
             .map_or_else(|| "sfz(无区域)".to_owned(), |label| format!("sfz({label})"))
     } else if let Some(snapshot) = snapshot.as_ref() {
-        for track_id in renderable.clone() {
+        for track_id in sourced.clone() {
             // ⭐ `#255`：**采样器轨也乘 pan**。修前这里按 `snapshot.sfz().contains_key`
             // 分流、把绑了采样器的轨钉成 `(1.0, 1.0)`（对齐当时**不应用**声相的 MCP
             // 采样器源）。⭐ `#274`：MCP 的采样器轨也走同一个 `EngineTrackSource` ⇒
@@ -929,7 +972,7 @@ pub fn render_project_f32_with_plans_under(
         // （⇒ 同一个 `track_gain_scale`）。⚠ 这段必须在这里算：最小音源同样是**整体替换**
         // 引擎音源的旁路（见上面 `snapshot` 判据），拿不到投影期已乘好的那一份。
         let any_solo = project.tracks.values().any(|track| track.solo);
-        for track_id in renderable.clone() {
+        for track_id in sourced.clone() {
             // ⭐ `#296`：与 SFZ 分支同一条 —— 总线轨的推子改由输出级乘。
             let track_gain = if bus_nodes.contains(&track_id) {
                 track_gain_of_without_fader(project, track_id, any_solo)
@@ -954,6 +997,18 @@ pub fn render_project_f32_with_plans_under(
         }
         "最小音源（方波 + 首尾包络；回退）".to_owned()
     };
+
+    // ---- 2a-bis. 空轨：注册**零成本静音源**（见 [`SilentSource`] 的内存注释）----
+    //
+    // 上面的三个分支都只给 `sourced`（有 clip 或绑了采样器）建源；计划里剩下的
+    // 非 master 节点仍要求"有源或有入边"，否则 `RenderPlan::execute` 响亮失败。
+    // 这里把它们的源补成静音 —— 不是绕过那条检查，而是如实声明"这条轨什么都不产出"。
+    for track_id in renderable.iter().copied() {
+        if !sourced.contains(&track_id) && !sources.contains_key(&track_id) {
+            let silent: Box<dyn AudioSource> = Box::new(SilentSource);
+            sources.insert(track_id, silent);
+        }
+    }
 
     // ---- 2b. 音频片段（`ClipContent::Audio`）叠加 ----
     //
@@ -1226,6 +1281,83 @@ fn sfz_decode_label(decoded: &[(EntityId, crate::sfz_load::SfzDecodeReport)]) ->
 mod tests {
     use super::*;
     use yeban_model::TrackV3;
+
+    /// ⭐⭐ **空轨判据**：给工程插 8 条空轨（无 `clips`、无 `sampler`）后，
+    /// 渲染结果**逐样本相同**，且不报 [`RenderError::MissingSource`]。
+    ///
+    /// # 这条判据守着什么
+    ///
+    /// 修前：`renderable` 里的每条轨都建一个引擎源 ⇒ 空轨也吃一台 `SynthEngine`
+    /// （≈ 32 MiB，见 [`EngineTrackSource::new`] 的内存注释）；79 轨工程单次整曲
+    /// 渲染 3.33 GB，`--export-stems` / `--export-song-overview-html` 双双 OOM。
+    /// 修后：空轨只拿一个 [`SilentSource`]（0 字节）。
+    ///
+    /// ⚠ 这条判据的**牙齿**不是"修前会红"（修前空轨有引擎源，音频同样对），
+    /// 而是钉住"删源"这条路走不通：`RenderPlan::execute` 对"无源无入边"会响亮失败，
+    /// 谁把 [`SilentSource`] 那一步去掉，本测试立刻变红（而不是等到导出时才发现）。
+    /// 内存本身的判据在 `yeban-render` 的
+    /// `engine_source::tests::an_offline_source_arms_exactly_one_track_slot`。
+    #[test]
+    fn empty_tracks_change_no_sample_and_do_not_fail() {
+        use std::str::FromStr as _;
+
+        use yeban_model::{RoutingEdge, RoutingKind};
+
+        /// 26 字符 ULID（与 `yeban_model::samples::demo_id` 同一形状）。
+        fn ulid(tail: &str) -> EntityId {
+            EntityId::from_str(&format!("01J8Z5Q0R7K3M9X2V4B6N8P0{tail}"))
+                .expect("夹具 ULID 必须是合法 Crockford Base32")
+        }
+        fn render(project: &YebanProjectV1) -> Vec<f32> {
+            let options = WavExportOptions {
+                frames: 24_000,
+                ..Default::default()
+            };
+            render_project_f32(project, options, None)
+                .expect("渲染必须成功：空轨不得让计划报「没有注册样本源」")
+                .0
+        }
+
+        let base = yeban_model::samples::filled_project();
+        let reference = render(&base);
+
+        let mut with_empty = base.clone();
+        let master = with_empty.master_bus_track_id;
+        for index in 0..8_u32 {
+            let track_id = ulid(&format!("X{index}"));
+            let mut track = TrackV3 {
+                id: track_id,
+                name: format!("空轨 {index}"),
+                ..TrackV3::default()
+            };
+            track.clips.clear();
+            track.sampler = None;
+            with_empty.insert_track(track).expect("插空轨必须成功");
+            with_empty.routing_graph.nodes.push(track_id);
+            let edge_id = ulid(&format!("Y{index}"));
+            with_empty.routing_graph.edges.insert(
+                edge_id,
+                RoutingEdge {
+                    id: edge_id,
+                    source_node: track_id,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            );
+        }
+
+        let with_empty_samples = render(&with_empty);
+        assert_eq!(
+            reference.len(),
+            with_empty_samples.len(),
+            "空轨不得改变渲染长度"
+        );
+        assert_eq!(
+            reference, with_empty_samples,
+            "8 条空轨必须**逐样本**不改变母带（它们是确定输出 0 的静音源）"
+        );
+    }
 
     /// 夹具：`filled_project` 里那条**带 MIDI 音符**的非主总线轨（＝ 工程里唯一会发声的
     /// 可渲染轨：另一条音频轨没有资产池 ⇒ 被如实跳过），把三个自变量写进去。

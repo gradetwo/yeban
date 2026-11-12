@@ -193,6 +193,41 @@ pub trait AudioSource: Send + Sync {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError>;
 }
 
+/// 一条**确定输出 0** 的音轨源（`clips` 为空且没绑采样器）。
+///
+/// ## 它为什么必须存在（⛔ 不能让源表里少一条）
+///
+/// [`RenderPlan::execute`] 把"没有源、也没有入边"的节点判成
+/// [`RenderError::MissingSource`]。这条检查不是可以绕的仪式：它把"该响却没响"
+/// （采样器读不到样本、插件装载失败）从"静音"里区分出来。**空轨**是唯一一种
+/// 确定形状的例外 —— 既没有片段摆放可以触发声音，也没有采样器可以读不到样本，
+/// 于是它的正确读数就是 0，而不是一个待诊断的失败。
+///
+/// 因此空轨不能从源表里**删掉**，只能声明成"确定输出 0"：这就是本类型。
+///
+/// ## 内存口径（这是它存在的第二个理由）
+///
+/// 真实的一条轨源（引擎 / SFZ）每条约 32 MiB（见 `EngineTrackSource` 的槽位说明），
+/// 而本类型是 **0 字节**。79 轨工程里 71 条空轨，光这一项就从 2.3 GB 降到 ~0。
+///
+/// ## 为什么 `render_block` 什么都不写
+///
+/// `render_node` 在调用源之前已经把 `buffer` 清零（[`AudioSource::render_block`] 的
+/// `out` 契约），所以"不写"就是"输出静音"。⛔ 不做 `fill(0.0)`：那是每块一次白花的
+/// memset。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SilentSource;
+
+impl AudioSource for SilentSource {
+    fn render_block(
+        &mut self,
+        _context: BlockContext,
+        _out: &mut [f32],
+    ) -> Result<(), RenderError> {
+        Ok(())
+    }
+}
+
 /// 渲染失败的原因。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RenderError {

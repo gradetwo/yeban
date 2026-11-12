@@ -7,12 +7,18 @@
 //! 还要自己保证落点不覆盖、命名不漂移。渲染器**早就**能单轨出声（`track_contributions`
 //! 就是这么做的），缺的只是"一次调用"这件事。本片把它做成一个扩展工具。
 //!
-//! ## 两阶段切分照 `yeban_render_master`
+//! ## 两条路径：两阶段（`export` + `write`）与流式（`export_streaming`）
 //!
 //! [`export`] 是**纯只读**的：`N + 1` 次渲染全部在这里完成，产物是内存里的容器字节。
-//! [`write`] 才是唯一的写盘处，且**逐条**写 —— 跨 N 个文件没有事务
+//! [`write`] 落盘，且**逐条**写 —— 跨 N 个文件没有事务
 //! （[`store::write_project_atomic`] 只保证**单文件**原子），所以第 k 条失败时
 //! 前 k−1 条已经在盘上。这条事实决定了 D5 的响应形状：部分成功是**一等状态**。
+//!
+//! 两阶段的代价是"全部字节同时在内存里"（每条 95.8 MB / 266 s 立体声 32-bit Float）。
+//! 需要 `dryRun` 的调用方（MCP 的 `plan`/`apply`）只能走它 —— 预览要报**实测**
+//! 字节数，就必须先渲出来。不需要 `dryRun` 的批处理走 [`export_streaming`]：
+//! 渲一条、写一条、立刻把那条的字节还回去，峰值从 `N × 单轨` 降到 `1 × 单轨`，
+//! 产物与两阶段**逐字节相同**（判据 `streaming_export_writes_the_same_bytes_and_releases_the_buffers`）。
 //!
 //! ⛔ 不回滚删除：删用户盘上的文件比留一个如实的 `orphanedFiles` 危险。
 //!
@@ -163,6 +169,14 @@ pub enum SkipReason {
     MasterBusTrack,
     /// 该轨在路由图里不是任何源节点（总线 / 分组轨）⇒ 弹出来的不是"这条轨的内容"。
     NotASourceNode,
+    /// 该轨**没有 clip、也没有绑采样器** ⇒ 它确定输出静音，弹出来会是一个
+    /// 时长与母带相同、样本全 0 的文件。
+    ///
+    /// 一条这样的文件是 95.8 MB（266 s / 44.1 kHz / 32-bit Float 立体声），
+    /// 而 `stems::export` 把**全部**分轨的字节攒在内存里，只在 [`write`] 时落盘
+    /// ⇒ 78 条轨的工程（其中 71 条空轨）要 7.5 GB，实测在 8 GB 的 cgroup 上限被
+    /// OOM 杀（`exit=137`，无 traceback），一个文件都没落地。
+    EmptyTrack,
 }
 
 /// 一条**被登记但不出文件**的轨（D4：⛔ 不静默丢轨）。
@@ -192,6 +206,11 @@ impl SkippedTrack {
                 "name": self.name,
                 "reason": "notASourceNode",
             }),
+            SkipReason::EmptyTrack => json!({
+                "trackId": track_id,
+                "name": self.name,
+                "reason": "emptyTrack",
+            }),
         }
     }
 }
@@ -214,6 +233,11 @@ pub struct StemRow {
     pub source_mute: bool,
     /// 导出**当时**该轨的 `solo` 读数。
     pub source_solo: bool,
+    /// 产物字节数。
+    ///
+    /// ⚠ **独立于 `artifact.bytes.len()`**：流式落盘（[`export_streaming`]）写完一条
+    /// 就把 `artifact.bytes` 清空以释放内存，回执必须仍报**真实**的文件大小。
+    pub bytes_len: usize,
     /// 已编码的分轨容器。
     pub artifact: render::RenderArtifact,
 }
@@ -228,7 +252,7 @@ impl StemRow {
             "fileName": self.file_name,
             "path": self.path.display().to_string(),
             "sha256": self.artifact.sha256.clone(),
-            "bytes": self.artifact.bytes.len(),
+            "bytes": self.bytes_len,
             "headerBytes": self.artifact.header_bytes,
             "payloadBytes": self.artifact.payload_bytes,
             "bitDepth": self.artifact.bit_depth,
@@ -251,7 +275,7 @@ impl StemRow {
         value.insert("wouldWrite".to_owned(), json!(true));
         value.insert(
             "bytesRenderedInMemory".to_owned(),
-            json!(self.artifact.bytes.len()),
+            json!(self.bytes_len),
         );
         Value::Object(value)
     }
@@ -279,13 +303,18 @@ pub struct StemBatch {
     /// 本批的采样率（Hz）= **工程**采样率（⛔ 不新增 `sampleRate` 实参：分轨的口径是
     /// "不掉精度的素材"，重采样属于下游的事）。
     pub sample_rate: u32,
+    /// ⭐ 本批是否**已经写穿**（[`export_streaming`]）。
+    ///
+    /// `true` ⇒ 每条分轨在渲染完成的那一刻就落了盘、`artifact.bytes` 已释放；
+    /// [`write`] 因此不再重写，直接出回执。这是"同一批字节只写一次"的护栏。
+    pub streamed: bool,
 }
 
 impl StemBatch {
     /// 本批产物的字节合计（单位：字节）。
     #[must_use]
     pub fn bytes_total(&self) -> usize {
-        self.stems.iter().map(|row| row.artifact.bytes.len()).sum()
+        self.stems.iter().map(|row| row.bytes_len).sum()
     }
 
     /// 最长的清洗后文件名的**UTF-8 字节数**（目录名由调用方控制，这里只报自己造的那一段）。
@@ -301,14 +330,7 @@ impl StemBatch {
     /// 批次级成本读数（D6）。
     #[must_use]
     pub fn stems_basis(&self) -> Value {
-        json!({
-            "renders": self.renders,
-            "basisRender": "projectWide",
-            "audioFramesPerRender": self.basis_frames,
-            "sampleRate": self.sample_rate,
-            "bitDepth": render::STEM_BIT_DEPTH,
-            "basis": STEMS_BASIS_TEXT,
-        })
+        stems_basis_value(self.renders, self.basis_frames, self.sample_rate)
     }
 
     /// `dryRun` 预览：全部实测数字，一个字节都不写盘。
@@ -352,7 +374,7 @@ impl StemBatch {
             json!(
                 completed
                     .iter()
-                    .map(|row| row.artifact.bytes.len())
+                    .map(|row| row.bytes_len)
                     .sum::<usize>()
             ),
         );
@@ -383,20 +405,100 @@ impl StemBatch {
     }
 }
 
+/// 批次级成本读数（D6）的**唯一**拼装点。
+///
+/// `StemBatch::stems_basis`（成功回执）与 [`write_failed`]（部分成功回执）共用它 ——
+/// 两处各写一份 `json!` 迟早会在加字段时漂移，而这两份读数会被放在同一份响应里对照。
+#[must_use]
+fn stems_basis_value(renders: usize, basis_frames: u64, sample_rate: u32) -> Value {
+    json!({
+        "renders": renders,
+        "basisRender": "projectWide",
+        "audioFramesPerRender": basis_frames,
+        "sampleRate": sample_rate,
+        "bitDepth": render::STEM_BIT_DEPTH,
+        "basis": STEMS_BASIS_TEXT,
+    })
+}
+
+/// 分轨字节的去向：`None` = 全留内存；`Some(f)` = 每渲完一条立刻 `f(path, bytes)`。
+type StemWriter<'a> = Option<&'a mut dyn FnMut(&Path, &[u8]) -> Result<(), Fault>>;
+
 /// ⭐ 渲染整个批次（**只读**：`N + 1` 次 [`render::build`]，零字节落盘）。
+///
+/// 这是 MCP 的两阶段路径：`plan` 渲完 → `apply` 落盘，`dryRun` 因此能报**实测**的
+/// 每条字节数与 SHA-256。代价是**内存峰值随"要出的轨数"线性涨**（每条约 95.8 MB：
+/// 266 s / 44.1 kHz / 32-bit Float 立体声）。不需要 `dryRun` 的批处理走
+/// [`export_streaming`] —— 那条路径的峰值只有一条分轨的字节。
 ///
 /// # Errors
 ///
 /// - `INVALID_PARAMETER_RANGE`：`outDir` 与工程文件/锁文件同路径，或某个既有目标文件已被占用；
 /// - `TRACK_NOT_FOUND`：`trackIds` 里的身份不在工程里；
 /// - `RENDER_FAILED`：渲染层拒绝（含"工程里没有可渲染的内容"）。
-#[allow(clippy::too_many_lines)]
 pub fn export(
     project: &YebanProjectV1,
     project_path: &Path,
     request: &StemRequest,
     now_ms: u64,
     assets: &dyn render::AssetStore,
+) -> Result<StemBatch, Fault> {
+    export_with_sink(project, project_path, request, now_ms, assets, None)
+}
+
+/// ⭐ **流式落盘**：渲一条、写一条、立刻释放那条的字节。
+///
+/// ## 为什么需要它（这不是优化，是能不能跑完的区别）
+///
+/// [`export`] 把 `N` 条分轨**全部**攒在内存里再交给 [`write`] 统一写盘。7 条有声轨
+/// 时那是 0.67 GB，够用；**40 条有声轨**时是 3.8 GB，叠上渲染器自身（79 轨 / 8 GB
+/// cgroup 的实测基线是 1.1 GB）就会撞上进程上限 —— 而失败的位置在 [`write`] 之前，
+/// 于是一个文件都不会落盘。
+///
+/// 本函数把 `StemRow.artifact.bytes` 的生命周期压到"一条"：写成功就 `Vec::new()`。
+/// 单条产物与 [`export`] 逐字节相同（同一条渲染链、同一条容器编码、同一条写盘路径
+/// `store::write_project_atomic`），差别只在内存曲线。
+///
+/// ## 失败语义（与 [`write`] 同一条 D5）
+///
+/// 第 k 条写失败时：前 k−1 条**保留不删**，回一条 `IO_ERROR` +
+/// `errorKind:"stemWriteFailed"`，`data` 里有 `completedStems` / `failedTrackId` /
+/// `orphanedFiles` / `resumeFrom`。⚠ `resumeFrom.trackIds` 是**还没渲染**的轨
+/// （含失败那条）—— 比 [`write`] 的版本更准：流式下后面的轨确实一次都没跑过。
+///
+/// # Errors
+///
+/// 与 [`export`] 相同，另加落盘失败（上一条的 `IO_ERROR`）。
+pub fn export_streaming(
+    project: &YebanProjectV1,
+    project_path: &Path,
+    request: &StemRequest,
+    now_ms: u64,
+    assets: &dyn render::AssetStore,
+) -> Result<StemBatch, Fault> {
+    export_with_sink(
+        project,
+        project_path,
+        request,
+        now_ms,
+        assets,
+        Some(&mut |path, bytes| store::write_project_atomic(path, bytes)),
+    )
+}
+
+/// [`export`] 与 [`export_streaming`] 的**唯一**实现（差别只在 `sink`）。
+///
+/// 两个入口共用它，是为了让"选哪些轨、跳哪些轨、文件名怎么排、帧数怎么钉"只有一份
+/// 判据 —— 复制一份迟早会漂移（`export_streaming` 出的字节必须与 `export` 相同，
+/// 那是本文件的硬约束）。
+#[allow(clippy::too_many_lines)]
+fn export_with_sink(
+    project: &YebanProjectV1,
+    project_path: &Path,
+    request: &StemRequest,
+    now_ms: u64,
+    assets: &dyn render::AssetStore,
+    mut sink: StemWriter<'_>,
 ) -> Result<StemBatch, Fault> {
     // 0. `trackIds` 里的陌生身份 ⇒ 响亮拒绝（⛔ 不静默忽略拼错的 ULID，`G1` 的教训）。
     if let Some(ids) = &request.track_ids {
@@ -448,6 +550,17 @@ pub fn export(
         {
             continue;
         }
+        // ⭐ **空轨不出文件**（判据与 CLI 渲染核心同一条：没有 clip 也没有采样器
+        // ⇒ 引擎/SFZ/最小音源都只能输出 0）。⛔ 不静默丢：走 `skippedTracks` 点名。
+        // 序号照样占位 ⇒ 文件名序号与工程里的轨序号一致，不因跳过而重排。
+        if track.clips.is_empty() && track.sampler.is_none() {
+            skipped.push(SkippedTrack {
+                track_id,
+                name: track.name.clone(),
+                reason: SkipReason::EmptyTrack,
+            });
+            continue;
+        }
         queue.push((index, track_id, track.name.as_str()));
     }
     // 2. 基线渲染：全工程可闻（试听状态已复位），帧数**由时间轴推导**。
@@ -456,13 +569,12 @@ pub fn export(
     let basis_request = stem_render_request(&basis_project, None, None);
     let basis = render::build(&basis_project, project_path, &basis_request, now_ms, assets)?;
     let source_nodes = basis.source_nodes.iter().copied().collect::<BTreeSet<_>>();
-    // 3. 逐轨渲染。每个落点先过 `guard_output_path`（工程文件 / 锁文件），
-    //    再加一条**批内预检**：目标已存在就整批拒绝（`write_project_atomic` 会覆盖它）。
-    let mut stems = Vec::with_capacity(queue.len());
-    let mut renders = 1_usize;
+    // 3. 剔除非源节点（总线/分组轨：它自己的信号来自子轨，逐轨弹出来的东西不是
+    //    "这条轨的内容"）。这一遍在**渲染之前**做完，`skippedTracks` 于是与
+    //    "哪些轨真的要渲"同源 —— `resumeFrom` 也就不必猜后续轨的身份。
+    let mut planned: Vec<(EntityId, String, String, PathBuf)> = Vec::with_capacity(queue.len());
     for (index, track_id, name) in queue {
         if !source_nodes.contains(&track_id) {
-            // 总线/分组轨：它自己的信号来自子轨，逐轨弹出来的东西不是"这条轨的内容"。
             skipped.push(SkippedTrack {
                 track_id,
                 name: name.to_owned(),
@@ -471,11 +583,26 @@ pub fn export(
             continue;
         }
         let file_name = stem_file_name(index, project.tracks.len(), name);
-        let path = request.out_dir.join(&file_name);
-        render::guard_output_path(&path, project_path)?;
+        planned.push((track_id, name.to_owned(), file_name, PathBuf::new()));
+    }
+    // 4. 落点预检（**一次做完**，⛔ 不边渲边发现）：每个落点先过 `guard_output_path`
+    //    （工程文件 / 锁文件），再加一条批内预检——目标已存在就整批拒绝
+    //    （`write_project_atomic` 会覆盖它）。
+    for (_, _, file_name, path) in &mut planned {
+        *path = request.out_dir.join(&file_name);
+        render::guard_output_path(path, project_path)?;
         if path.exists() {
-            return Err(collisions_fault(&[&path], "目标文件已存在"));
+            return Err(collisions_fault(&[path], "目标文件已存在"));
         }
+    }
+    let planned_ids = planned
+        .iter()
+        .map(|(track_id, _, _, _)| *track_id)
+        .collect::<Vec<_>>();
+    // 5. 逐轨渲染（`sink` 有值 ⇒ 渲完这条立刻写盘并释放字节）。
+    let mut stems = Vec::with_capacity(planned.len());
+    let mut renders = 1_usize;
+    for (position, (track_id, name, file_name, path)) in planned.into_iter().enumerate() {
         let mut stem_project = project_without_audition(project);
         // 只留这一条源节点可闻：其余源节点**在克隆上**静音（D3 的克隆-改-重渲染）。
         // 总线与 master 不动 —— 它们是这一条信号的通路，静音它们会连目标一起消掉。
@@ -494,15 +621,35 @@ pub fn export(
             .tracks
             .get(&track_id)
             .expect("轨来自同一份 tracks 遍历");
-        stems.push(StemRow {
+        let mut row = StemRow {
             track_id,
-            name: name.to_owned(),
+            name,
             file_name,
             path: artifact.path.clone(),
             source_mute: source.mute,
             source_solo: source.solo,
+            bytes_len: artifact.bytes.len(),
             artifact,
-        });
+        };
+        if let Some(write) = sink.as_mut() {
+            if let Err(fault) = (**write)(&row.path, &row.artifact.bytes) {
+                let remaining = planned_ids[position..].to_vec();
+                return Err(write_failed(
+                    request,
+                    &stems,
+                    &row,
+                    &remaining,
+                    renders,
+                    basis.frames,
+                    project.sample_rate().hz(),
+                    &fault,
+                ));
+            }
+            // ⭐ 已落盘 ⇒ 这份字节不再有读者。`Vec::new()` 立刻归还，峰值因此只有
+            //    "一条"而不是"一条 × 已出轨数"。
+            row.artifact.bytes = Vec::new();
+        }
+        stems.push(row);
     }
     // ⛔ 不做隐式 ` (1)` 去重：文件名前缀的序号在**全部**非 master 轨上唯一，
     //    两条不同轨不可能撞同一个落点（清洗只改字符、不改序号）。
@@ -513,6 +660,7 @@ pub fn export(
         renders,
         basis_frames: basis.frames,
         sample_rate: project.sample_rate().hz(),
+        streamed: sink.is_some(),
     })
 }
 
@@ -523,38 +671,65 @@ pub fn export(
 /// `resumeFrom`。⛔ 不用 `"reason"` 这个键名 —— 它是故障词汇表冻结面的字面量，新增一处
 /// 就要重钉一次金标（见 `docs/DEVELOPMENT_LEDGER.md` 的 `fault_vocabulary` 条目）。
 pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
+    // ⭐ 已经在 [`export_streaming`] 里写穿的批次：⛔ 不重写。
+    //    重写一次不会错（同一条 `write_project_atomic`、同样的字节），但它会白花
+    //    一倍磁盘带宽，而且在"字节已释放"之后 `artifact.bytes` 是空数组 —— 那会写出
+    //    一个 0 字节文件。这条短路是"同一批字节只写一次"的护栏。
+    if batch.streamed {
+        return Ok(batch.response_data(&batch.stems));
+    }
     for (position, row) in batch.stems.iter().enumerate() {
         if let Err(fault) = store::write_project_atomic(&row.path, &row.artifact.bytes) {
-            return Err(write_failed(batch, &batch.stems[..position], row, &fault));
+            let remaining = batch.stems[position..]
+                .iter()
+                .map(|row| row.track_id)
+                .collect::<Vec<_>>();
+            return Err(write_failed(
+                &batch.request,
+                &batch.stems[..position],
+                row,
+                &remaining,
+                batch.renders,
+                batch.basis_frames,
+                batch.sample_rate,
+                &fault,
+            ));
         }
     }
     Ok(batch.response_data(&batch.stems))
 }
 
 /// 把落盘失败包成 D5 形状的部分成功回执。
+///
+/// 参数是**显式**的一批，而不是 `&StemBatch`：流式路径失败时批次还没构造出来
+/// （后面的轨一次都没渲染），而有用的读数（已写清单 / 剩余清单 / 成本）全都已经
+/// 在手上了。硬造一个假的 `StemBatch` 只会让"剩余"变成谎话。
+#[allow(clippy::too_many_arguments)]
 fn write_failed(
-    batch: &StemBatch,
+    request: &StemRequest,
     completed: &[StemRow],
     failed: &StemRow,
+    remaining: &[EntityId],
+    renders: usize,
+    basis_frames: u64,
+    sample_rate: u32,
     fault: &Fault,
 ) -> Fault {
     let (failed_reason, inner_data) = match fault {
         Fault::Domain { message, data, .. } => (message.clone(), data.clone()),
         Fault::Impl { error } => (error.message.clone(), None),
     };
-    // `orphanedFiles`：**实测**盘上存在但本批未完成的路径（含被中断的目标残留字节）。
-    let orphaned = batch
-        .stems
-        .iter()
-        .filter(|row| !completed.iter().any(|done| done.track_id == row.track_id))
-        .map(|row| row.path.clone())
+    // `orphanedFiles`：**实测**盘上存在、却不属于 `completed` 的落点。
+    //
+    // 只有"写过的"才可能在盘上，而写过的都在 `completed` 里 ⇒ 唯一候选是失败那条
+    // 自己的残留（`write_project_atomic` 失败时可能已经 rename 了一部分）。这条
+    // 口径对流式与两阶段**同一条**：两阶段里"已渲未写"的行根本不存在于盘上。
+    let orphaned = std::iter::once(failed.path.clone())
         .filter(|path| path.exists())
         .collect::<Vec<_>>();
-    let remaining = batch
-        .stems
+    let remaining = remaining
         .iter()
-        .skip_while(|row| row.track_id != failed.track_id)
-        .map(|row| row.track_id.to_canonical_string())
+        .map(EntityId::to_canonical_string)
         .collect::<Vec<_>>();
     let mut data = Map::new();
     data.insert("errorKind".to_owned(), json!("stemWriteFailed"));
@@ -587,19 +762,22 @@ fn write_failed(
     data.insert(
         "resumeFrom".to_owned(),
         json!({
-            "outDir": batch.request.out_dir.display().to_string(),
+            "outDir": request.out_dir.display().to_string(),
             "trackIds": remaining,
         }),
     );
     data.insert("partial".to_owned(), json!(true));
     data.insert("auditionStateIgnored".to_owned(), json!(true));
-    data.insert("stemsBasis".to_owned(), batch.stems_basis());
+    data.insert(
+        "stemsBasis".to_owned(),
+        stems_basis_value(renders, basis_frames, sample_rate),
+    );
     data.insert(
         "writtenBeforeFailure".to_owned(),
         json!(
             completed
                 .iter()
-                .map(|row| row.artifact.bytes.len())
+                .map(|row| row.bytes_len)
                 .sum::<usize>()
         ),
     );

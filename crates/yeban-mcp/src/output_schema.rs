@@ -860,6 +860,20 @@ fn render_request_roster() -> Value {
     ])
 }
 
+/// ⭐ **空轨点名**（`data.emptySources`，3 键）—— 拼装点唯一
+/// （`domain/render.rs` 的 `RenderArtifact::details`）。
+///
+/// 它是 `sourceNodes` / `sources[]` 剔除空轨后的**补偿读数**：被剔掉的轨在这里
+/// 按身份点名，⛔ 不静默消失。`count` 恒等于 `trackIds.len()`。
+#[must_use]
+fn empty_sources_roster() -> Value {
+    roster(&[
+        ("count", json!({"type": "integer"})),
+        ("trackIds", json!({"type": "array", "items": {"type": "string"}})),
+        ("why", json!({"type": "string"})),
+    ])
+}
+
 /// ⭐ s31：`data.probability`（5 键）—— 概率触发的实测读数。
 /// 拼装点唯一（`domain/render.rs` 里 `map.insert("probability", …)` 那段 `json!`）。
 #[must_use]
@@ -1897,6 +1911,7 @@ fn render_master() -> Value {
             "latencySource",
             "nodeCount",
             "sourceNodes",
+            "emptySources",
             "sources",
             "midiSource",
             "probability",
@@ -1976,6 +1991,10 @@ fn render_master() -> Value {
         && let Some(Value::Object(properties)) = map.get_mut("properties")
     {
         properties.insert("midiSource".to_owned(), midi_source_roster());
+        // ⭐ **空轨点名**（本支）：与 `midiSource` 同一条理由单独插入 —— 这份字面量的
+        // 键数贴着 `serde_json` 宏的递归上限，往字面量里加一个键就 `recursion limit
+        // reached`（实测）。放在这里与写在字面量里是**同一份** schema。
+        properties.insert("emptySources".to_owned(), empty_sources_roster());
         // ⭐ s32：`data.automation` 此前**完全没有条目**（既不在 `required` 也不在 `properties`），
         // 而它是每次成功渲染都发的一整块逐泳道读数 ⇒ 这一槽是新补的，不是"把裸对象填紧"。
         properties.insert("automation".to_owned(), automation_roster());

@@ -179,7 +179,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 274] = [
+pub const GOLDEN_REASONS: [&str; 275] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -230,6 +230,9 @@ pub const GOLDEN_REASONS: [&str; 274] = [
     "duplicateSceneTarget",
     "durationNotDerivable",
     "edgeIdRequired",
+    // ⭐ 空轨分轨豁免（本支）：`yeban_export_stems` 对"没有 clip、也没有采样器"的轨
+    // 不出静音文件，改用这条 reason 在 `skippedTracks[]` 里点名（⛔ 不静默丢轨）。
+    "emptyTrack",
     // ⭐ `#268`（`ADR-0011`）：引擎音源装配失败（防御映射；合法工程上前面的
     // 探针编译会先拒绝同一批路由错误 ⇒ 本词主要用于"没有主总线 / 快照投影失败"）。
     "engineSource",
@@ -2015,7 +2018,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 274] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 275] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2198,6 +2201,8 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 274] = [
         "masterBusTrackCannotBeMoved",
         &["hint", "masterBusTrackId", "reason", "trackId"],
     ),
+    // ⭐ 空轨分轨豁免（本支）：同形三键。
+    ("emptyTrack", &["name", "reason", "trackId"]),
     // ⭐ `ADR-0030`：`yeban_export_stems` 的 `skippedTracks[]` 两条豁免登记（同形三键）。
     ("masterBusTrack", &["name", "reason", "trackId"]),
     ("notASourceNode", &["name", "reason", "trackId"]),
