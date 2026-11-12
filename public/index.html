@@ -163,7 +163,7 @@
         <article class="card">
           <h3 data-i18n="quickstart.note_title">诚实状态</h3>
           <p class="qs-note" data-i18n="quickstart.cli_note">打不开时退出码 3 并给出容器的原始原因，绝不退化成"打开成空工程"；--save-as 是原子替换（临时文件 → fsync → rename），失败时旧文件一字未改；没有 --open 时存的是内置演示工程并在输出里明说；未知开关退出 2 并打印用法。</p>
-          <p class="qs-note" data-i18n="quickstart.note" style="margin-top:10px">实时引擎现在已经能产生音频了（确定性地合成工程里的 MIDI 音符）。声相定律、噪声门、压缩器、限制器、侧链触发、走带控制与 EQ 曲线显示都已合入。它还**不做**：自动化录制、MPE、MIDI 导入丢全部 CC；主窗口启动时用的仍是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。</p>
+          <p class="qs-note" data-i18n="quickstart.note" style="margin-top:10px">实时引擎现在已经能产生音频了（确定性地合成工程里的 MIDI 音符）。声相定律、噪声门、压缩器、限制器、侧链触发、走带控制与 EQ 曲线显示都已合入。它还**不做**：MPE；主窗口启动时用的仍是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。</p>
         </article>
       </div>
 
@@ -236,7 +236,7 @@ cargo clippy --workspace --all-targets -- -D warnings</code></pre>
       <div class="cards">
         <article class="card">
           <h3 data-i18n="caps.c1_title">整曲总览图 Songmap</h3>
-          <p data-i18n="caps.c1_body">小节级四层诊断：能量、频率、疏密、情绪，附自动异常诊断；Phase 2 加段落期望包络、3 档流派预设与谱面力度虚线。段内自相似度检查已合入。</p>
+          <p data-i18n="caps.c1_body">小节级四层诊断：能量、频率、疏密、情绪，附自动异常诊断；Phase 2 加段落期望包络、3 档流派预设与谱面力度虚线。段内自相似度检查已合入，可导出单文件 HTML 报告；分轨频率重叠诊断已合入。</p>
         </article>
         <article class="card">
           <h3 data-i18n="caps.c2_title">命令行母带</h3>
@@ -244,7 +244,7 @@ cargo clippy --workspace --all-targets -- -D warnings</code></pre>
         </article>
         <article class="card">
           <h3 data-i18n="caps.c3_title">批量操作与分轨</h3>
-          <p data-i18n="caps.c3_body">--apply-ops 一次提交一批编曲操作；--export-stems 分轨导出。</p>
+          <p data-i18n="caps.c3_body">--apply-ops 一次提交一批编曲操作；--export-stems 分轨导出，文件名保留中文等 Unicode 轨名。</p>
         </article>
         <article class="card">
           <h3 data-i18n="caps.c4_title">采样库编辑器</h3>
@@ -267,7 +267,7 @@ cargo clippy --workspace --all-targets -- -D warnings</code></pre>
           <p data-i18n="caps.c8_body">4 个 MCP 工具 + 6 个工厂预制（钢琴、大提琴、古典吉他、长笛、萨克斯、鼓组），载入即带调好的处理。</p>
         </article>
       </div>
-      <p data-i18n="caps.note">MCP 功能已经很强大：38 个 MCP 意图工具，外加 VST3 插件宿主（进程内），以及经 MCP 直通外部伶人 SVS 服务的歌声合成。</p>
+      <p data-i18n="caps.note">MCP 功能已经很强大：44 个 MCP 意图工具，外加 VST3 插件宿主（进程内），以及经 MCP 直通外部伶人 SVS 服务的歌声合成。</p>
     </div>
   </section>
 
@@ -349,7 +349,7 @@ cargo clippy --workspace --all-targets -- -D warnings</code></pre>
         <li class="tl-item is-current">
           <span class="tl-tag" data-i18n="roadmap.status_current">进行中</span>
           <h3><code>now</code> <span data-i18n="roadmap.p7_title">现在 · 能力深化</span></h3>
-          <p data-i18n="roadmap.p7_body">MIDI 人性化、相位对齐、Songmap 分轨频率重叠、OTCP 校音驱动、Synth VST3 插件。</p>
+          <p data-i18n="roadmap.p7_body">MIDI 人性化（引擎 v2 + L3/L4）、相位对齐（手动 + 自动）、Songmap 分轨频率重叠、Songmap HTML 报告、OTCP 校音驱动、分轨导出中文文件名均已合入；Synth VST3 插件一期已落地，深化继续。</p>
         </li>
       </ol>
     </div>
