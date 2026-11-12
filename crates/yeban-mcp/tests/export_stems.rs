@@ -667,7 +667,11 @@ fn file_names_are_deterministic_and_carry_no_path_from_the_track_name() {
         json!("0001.etc_passwd.wav"),
         "相对路径前缀必须被清洗干净"
     );
-    assert_eq!(data["stems"][1]["fileName"], json!("0002.track.wav"));
+    assert_eq!(
+        data["stems"][1]["fileName"],
+        json!("0002.鼓_组___主.wav"),
+        "汉字是 Unicode 字母必须原样保留（D7 2026-11-13 修订）；空格与 `/` 逐个换 `_`"
+    );
     assert_eq!(
         data["stems"][2]["fileName"],
         json!("0003.track.wav"),
