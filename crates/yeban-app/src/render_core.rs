@@ -108,11 +108,11 @@ use crate::export_wav::{NoteToneSource, WavExportError, WavExportOptions, track_
 // ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`；与 MCP 共用同一份实现。
 use yeban_render::engine_source::EngineTrackSource;
 
-/// **空轨的运行态**：一个不产生任何样本、也不占用任何内存的源。
-///
-/// 实现住在 [`yeban_render::render::SilentSource`] —— CLI 与 MCP 的渲染核心现在
-/// 共用同一份（两处各写一份时，"空轨"的判据很容易一边改一边忘）。本层直接引用
-/// 那个类型，调用点写法与真值语义都不变。
+// **空轨的运行态**：一个不产生任何样本、也不占用任何内存的源。
+//
+// 实现住在 [`yeban_render::render::SilentSource`] —— CLI 与 MCP 的渲染核心现在
+// 共用同一份（两处各写一份时，"空轨"的判据很容易一边改一边忘）。本层直接引用
+// 那个类型，调用点写法与真值语义都不变。
 
 /// 一条轨的复合源：**先 MIDI 基座、后音频片段**（顺序与 MCP 的 `TrackSource` 相同，
 /// 且与块边界无关 ⇒ 逐位可复现）。
