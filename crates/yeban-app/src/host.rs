@@ -691,7 +691,13 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     id: next_id,
                     name: format!("0{}. New Hybrid Track", next_id).into(),
                     kind: "HYBRID".into(),
-                    color: slint::Color::from_rgb_u8(56, 189, 248),
+                    color: match (next_id % 5) {
+                        1 => slint::Color::from_rgb_u8(54, 128, 148), // #368094
+                        2 => slint::Color::from_rgb_u8(166, 124, 59), // #a67c3b
+                        3 => slint::Color::from_rgb_u8(118, 104, 150), // #766896
+                        4 => slint::Color::from_rgb_u8(59, 133, 106), // #3b856a
+                        _ => slint::Color::from_rgb_u8(145, 90, 119), // #915a77
+                    },
                     bus: "Bus 1 (Synth Grp)".into(),
                     volume_db: -3.0,
                     pan: "C".into(),
@@ -720,7 +726,13 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     width_px: 160.0,
                     is_audio: false,
                     gain_label: "0dB".into(),
-                    color: slint::Color::from_rgb_u8(56, 189, 248),
+                    color: match (next_id % 5) {
+                        1 => slint::Color::from_rgb_u8(54, 128, 148), // #368094
+                        2 => slint::Color::from_rgb_u8(166, 124, 59), // #a67c3b
+                        3 => slint::Color::from_rgb_u8(118, 104, 150), // #766896
+                        4 => slint::Color::from_rgb_u8(59, 133, 106), // #3b856a
+                        _ => slint::Color::from_rgb_u8(145, 90, 119), // #915a77
+                    },
                 });
                 ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
 

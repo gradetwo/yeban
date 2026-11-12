@@ -134,10 +134,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle {
-                            background: #3b82f618;
+                            background: Theme.accent.with-alpha(0.18);
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #3b82f640;
+                            border-color: Theme.accent.with-alpha(0.40);
                             height: 18px;
                             HorizontalLayout {
                                 padding-left: 6px;
@@ -147,7 +147,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     font-weight: 700;
-                                    color: #60a5fa;
+                                    color: Theme.accent;
                                     vertical-alignment: center;
                                 }
                             }
@@ -180,7 +180,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 600;
-                            color: #34d399;
+                            color: #3b856a;
                             vertical-alignment: center;
                         }
                     }
@@ -272,11 +272,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Fader + Meter
+                        // Fader + Meter (flexes vertically to occupy panel height)
                         HorizontalLayout {
                             alignment: center;
                             spacing: 8px;
-                            height: 68px;
+                            vertical-stretch: 1;
+                            min-height: 72px;
 
                             // Fader rail
                             Rectangle {
@@ -296,7 +297,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                                 Rectangle {
                                     x: 2px;
-                                    y: 22px;
+                                    y: Math.max(4px, parent.height * 0.35);
                                     width: 18px;
                                     height: 14px;
                                     background: #94a3b8;
@@ -325,10 +326,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                                 Rectangle {
                                     x: 0;
-                                    y: 68px - (root.selected-track-peak * 68px);
+                                    y: parent.height - (root.selected-track-peak * parent.height);
                                     width: 8px;
-                                    height: root.selected-track-peak * 68px;
-                                    background: root.selected-track-peak > 0.8 ? #f59e0b : #10b981;
+                                    height: root.selected-track-peak * parent.height;
+                                    background: root.selected-track-peak > 0.8 ? #a67c3b : #3b856a;
                                     border-radius: 2px;
                                 }
                             }
@@ -362,7 +363,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 700;
-                            color: #34d399;
+                            color: #3b856a;
                             horizontal-alignment: center;
                             overflow: elide;
                         }
@@ -409,7 +410,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                             Path {
                                 commands: "M 0 22 Q 35 20, 55 14 T 100 18";
-                                stroke: #10b981;
+                                stroke: #3b856a;
                                 stroke-width: 1.8px;
                             }
                             Text {
@@ -424,11 +425,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Bus Fader + Meter
+                        // Bus Fader + Meter (flexes vertically to occupy panel height)
                         HorizontalLayout {
                             alignment: center;
                             spacing: 8px;
-                            height: 68px;
+                            vertical-stretch: 1;
+                            min-height: 72px;
 
                             Rectangle {
                                 width: 22px;
@@ -447,7 +449,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                                 Rectangle {
                                     x: 2px;
-                                    y: 28px;
+                                    y: Math.max(4px, parent.height * 0.4);
                                     width: 18px;
                                     height: 14px;
                                     background: #94a3b8;
@@ -475,10 +477,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                                 Rectangle {
                                     x: 0;
-                                    y: 68px - (root.bus-track-peak * 68px);
+                                    y: parent.height - (root.bus-track-peak * parent.height);
                                     width: 8px;
-                                    height: root.bus-track-peak * 68px;
-                                    background: root.bus-track-peak > 0.8 ? #f59e0b : #10b981;
+                                    height: root.bus-track-peak * parent.height;
+                                    background: root.bus-track-peak > 0.8 ? #a67c3b : #3b856a;
                                     border-radius: 2px;
                                 }
                             }
@@ -489,7 +491,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 10px;
                             font-weight: 800;
-                            color: #34d399;
+                            color: #3b856a;
                             horizontal-alignment: center;
                         }
                     }

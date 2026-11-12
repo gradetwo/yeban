@@ -23,7 +23,7 @@ export component MainWindow inherits Window {
             id: 1,
             name: "01. Lead Neuro Bass",
             kind: "SYNTH · MPE",
-            color: #06b6d4,
+            color: #368094,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -2.5,
             pan: "C",
@@ -43,7 +43,7 @@ export component MainWindow inherits Window {
             id: 2,
             name: "02. Punchy Tech Drums",
             kind: "DRUM RACK",
-            color: #f59e0b,
+            color: #a67c3b,
             bus: "Bus 2 (Drum Grp)",
             volume_db: -1.0,
             pan: "C",
@@ -63,7 +63,7 @@ export component MainWindow inherits Window {
             id: 3,
             name: "03. Atmos Granular Pad",
             kind: "GRANULAR",
-            color: #a855f7,
+            color: #766896,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -6.0,
             pan: "12L",
@@ -83,7 +83,7 @@ export component MainWindow inherits Window {
             id: 4,
             name: "04. Lead Vocal Comp",
             kind: "AUDIO · COMP",
-            color: #10b981,
+            color: #3b856a,
             bus: "Bus 3 (Vocal Grp)",
             volume_db: -1.8,
             pan: "C",
@@ -103,7 +103,7 @@ export component MainWindow inherits Window {
             id: 5,
             name: "05. Arp Pluck Sequencer",
             kind: "MIDI · STEP",
-            color: #ec4899,
+            color: #915a77,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -4.2,
             pan: "18R",
@@ -122,15 +122,30 @@ export component MainWindow inherits Window {
     ];
 
     in-out property <[TimelineBlockData]> timeline-blocks: [
-        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #06b6d4 },
-        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #06b6d4 },
-        { track_id: 1, label: "Outro Glide", start_px: 405px, width_px: 150px, is_audio: false, gain_label: "0dB", color: #06b6d4 },
-        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #f59e0b },
-        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #f59e0b },
-        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: true, gain_label: "Gain: -2dB", color: #a855f7 },
-        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #10b981 },
-        { track_id: 4, label: "Chorus Harmonies", start_px: 400px, width_px: 155px, is_audio: true, gain_label: "Gain: 0dB", color: #10b981 },
-        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #ec4899 }
+        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #368094 },
+        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #368094 },
+        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: #368094 },
+        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: #368094 },
+        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #368094 },
+        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #368094 },
+        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #a67c3b },
+        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #a67c3b },
+        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #a67c3b },
+        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #a67c3b },
+        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #a67c3b },
+        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: true, gain_label: "Gain: -2dB", color: #766896 },
+        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: true, gain_label: "Gain: -1.5dB", color: #766896 },
+        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: true, gain_label: "Gain: -3dB", color: #766896 },
+        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: true, gain_label: "Gain: -2dB", color: #766896 },
+        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #3b856a },
+        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #3b856a },
+        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #3b856a },
+        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: #3b856a },
+        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: #3b856a },
+        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #915a77 },
+        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: #915a77 },
+        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #915a77 },
+        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #915a77 }
     ];
 
     in-out property <int> selected-track-id: 1;
@@ -335,6 +350,12 @@ export component MainWindow inherits Window {
                 toggle-hotspots() => { root.show-hotspots = !root.show-hotspots; }
             }
 
+            // Top-to-Workspace Divider
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
             // 2. MIDDLE MAIN WORKSPACE (Zone A + Zone B + Zone C + Zone D)
             HorizontalLayout {
                 spacing: 0px;
@@ -365,6 +386,12 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // Zone A-to-B/C Divider
+                if root.show-left-inspector : Rectangle {
+                    width: 1px;
+                    background: Theme.border-subtle;
+                }
+
                 // Zone B: Hybrid Clip Matrix Drawer (220px)
                 if root.show-clip-matrix : HybridClipMatrixDrawer {
                     tracks: root.tracks;
@@ -376,6 +403,12 @@ export component MainWindow inherits Window {
                         root.selected-track-id = t-id;
                         root.track-selected(t-id);
                     }
+                }
+
+                // Zone B-to-C Divider
+                if root.show-clip-matrix : Rectangle {
+                    width: 1px;
+                    background: Theme.border-subtle;
                 }
 
                 // Zone C: Center Linear Arrangement & Track Headers
@@ -399,6 +432,12 @@ export component MainWindow inherits Window {
                     scrub-timeline(pos) => { root.playhead-px = pos; }
                 }
 
+                // Zone C-to-D Divider
+                if root.show-control-room : Rectangle {
+                    width: 1px;
+                    background: Theme.border-subtle;
+                }
+
                 // Zone D: Right Control Room & Master Loudness Meter (192px)
                 if root.show-control-room : ControlRoomMeters {
                     lufs-integrated: root.lufs-integrated;
@@ -409,6 +448,12 @@ export component MainWindow inherits Window {
 
                     switch-monitor(name) => { root.monitor-switch(name); }
                 }
+            }
+
+            // Workspace-to-Dock Divider
+            if root.show-lower-dock : Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
             }
 
             // 3. BOTTOM UNIFIED MULTI-MODAL DOCK

@@ -78,10 +78,10 @@ export component ArrangementViewport inherits Rectangle {
 
                         Rectangle {
                             height: 22px;
-                            background: #6366f118;
+                            background: #3e4b7818;
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #6366f130;
+                            border-color: #3e4b7835;
 
                             HorizontalLayout {
                                 padding-left: 6px;
@@ -92,14 +92,14 @@ export component ArrangementViewport inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     font-weight: 700;
-                                    color: #a5b4fc;
+                                    color: #94a3b8;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: "智能和声声学";
                                     font-family: Tokens.font-ui;
                                     font-size: 8px;
-                                    color: #818cf8;
+                                    color: #64748b;
                                     vertical-alignment: center;
                                 }
                             }
@@ -114,7 +114,7 @@ export component ArrangementViewport inherits Rectangle {
                     VerticalLayout {
                         spacing: 0px;
 
-                        // Ruler (24px)
+                        // Ruler (24px) - Spans across 24 bars
                         Rectangle {
                             height: 24px;
                             background: #06080e;
@@ -122,13 +122,13 @@ export component ArrangementViewport inherits Rectangle {
 
                             HorizontalLayout {
                                 padding-left: 10px;
-                                spacing: 70px;
+                                spacing: 64px;
 
-                                for bar in ["1", "2", "3 (Loop)", "4", "5", "6", "7", "8", "9", "10", "11", "12"] : Text {
+                                for bar in ["1", "2", "3 (Loop)", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36"] : Text {
                                     text: bar;
                                     font-family: Tokens.font-mono;
                                     font-size: 9px;
-                                    font-weight: bar == "3 (Loop)" ? 800 : 600;
+                                    font-weight: bar == "3 (Loop)" ? 800 : 500;
                                     color: bar == "3 (Loop)" ? Theme.accent : #64748b;
                                     vertical-alignment: center;
                                 }
@@ -149,21 +149,22 @@ export component ArrangementViewport inherits Rectangle {
                             }
                         }
 
-                        // Chord Progression Track (30px)
+                        // Chord Progression Track (30px) - Extended 8-chord progression reflows across canvas
                         Rectangle {
                             height: 30px;
-                            background: #181b2e25;
+                            background: #12152020;
 
                             HorizontalLayout {
                                 padding: 3px;
                                 spacing: 4px;
 
                                 Rectangle {
-                                    width: 130px;
-                                    background: #4f46e520;
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #28334c22;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #6366f140;
+                                    border-color: #38476a33;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -174,14 +175,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #c7d2fe;
+                                            color: #8ba2cc;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "🔊 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            color: #818cf8;
+                                            color: #64748b;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -189,11 +190,12 @@ export component ArrangementViewport inherits Rectangle {
                                 }
 
                                 Rectangle {
-                                    width: 130px;
-                                    background: #7c3aed20;
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #342c4822;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #8b5cf640;
+                                    border-color: #483c6433;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -204,14 +206,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #ddd6fe;
+                                            color: #9a8bb8;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "🔊 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            color: #a78bfa;
+                                            color: #64748b;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -219,11 +221,12 @@ export component ArrangementViewport inherits Rectangle {
                                 }
 
                                 Rectangle {
-                                    width: 130px;
-                                    background: #0284c720;
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #22364422;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #38bdf840;
+                                    border-color: #304c6033;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -234,14 +237,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #bae6fd;
+                                            color: #7fa3b8;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "🔊 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            color: #38bdf8;
+                                            color: #64748b;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -249,11 +252,12 @@ export component ArrangementViewport inherits Rectangle {
                                 }
 
                                 Rectangle {
-                                    width: 130px;
-                                    background: #d9770620;
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #3c321e22;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #fbbf2440;
+                                    border-color: #54462a33;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -264,18 +268,142 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #fde68a;
+                                            color: #b89f68;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "🔊 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            color: #fbbf24;
+                                            color: #64748b;
                                             vertical-alignment: center;
                                         }
                                     }
                                     TouchArea { clicked => { root.audition-chord("G7alt"); } }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #22364422;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #304c6033;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        alignment: space-between;
+                                        Text {
+                                            text: "EbMaj7 (III7)";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            color: #7fa3b8;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "🔊 试听";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 8px;
+                                            color: #64748b;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("EbMaj7"); } }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #342c4822;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #483c6433;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        alignment: space-between;
+                                        Text {
+                                            text: "Dm7b5 (iiø7)";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            color: #9a8bb8;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "🔊 试听";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 8px;
+                                            color: #64748b;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("Dm7b5"); } }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #3c321e22;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #54462a33;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        alignment: space-between;
+                                        Text {
+                                            text: "G7#9 (V7#9)";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            color: #b89f68;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "🔊 试听";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 8px;
+                                            color: #64748b;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("G7#9"); } }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 90px;
+                                    background: #28334c22;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #38476a33;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        alignment: space-between;
+                                        Text {
+                                            text: "Cm11 (i11)";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            color: #8ba2cc;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "🔊 试听";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 8px;
+                                            color: #64748b;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("Cm11"); } }
                                 }
                             }
                         }
@@ -301,14 +429,14 @@ export component ArrangementViewport inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
                                 font-weight: 700;
-                                color: #ff764d;
+                                color: Theme.accent;
                                 vertical-alignment: center;
                             }
                             Rectangle {
-                                background: #ff764d18;
+                                background: Theme.accent.with-alpha(0.18);
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #ff764d;
+                                border-color: Theme.accent;
                                 height: 18px;
                                 HorizontalLayout {
                                     padding-left: 6px;
@@ -318,7 +446,7 @@ export component ArrangementViewport inherits Rectangle {
                                         font-family: Tokens.font-ui;
                                         font-size: 9px;
                                         font-weight: 800;
-                                        color: #ff764d;
+                                        color: Theme.accent;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -328,7 +456,7 @@ export component ArrangementViewport inherits Rectangle {
 
                         Rectangle {
                             height: 22px;
-                            background: #ff764d18;
+                            background: Theme.accent.with-alpha(0.12);
                             border-radius: 3px;
                             HorizontalLayout {
                                 padding-left: 6px;
@@ -337,7 +465,7 @@ export component ArrangementViewport inherits Rectangle {
                                     text: "右置轨道头模式 (镜像工作区)";
                                     font-family: Tokens.font-ui;
                                     font-size: 8px;
-                                    color: #fed7aa;
+                                    color: #cbd5e1;
                                     vertical-alignment: center;
                                 }
                             }
@@ -355,7 +483,9 @@ export component ArrangementViewport inherits Rectangle {
                 spacing: 0px;
 
                 for trk in root.tracks : Rectangle {
-                    height: 64px;
+                    vertical-stretch: 1;
+                    min-height: 64px;
+                    max-height: 160px;
                     background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.06) : transparent;
                     border-color: #ffffff0a;
 
@@ -372,7 +502,7 @@ export component ArrangementViewport inherits Rectangle {
                                 x: 0;
                                 y: 0;
                                 width: 4px;
-                                height: 64px;
+                                height: parent.height;
                                 background: trk.color;
                             }
 
@@ -418,7 +548,7 @@ export component ArrangementViewport inherits Rectangle {
                                     spacing: 4px;
                                     alignment: space-between;
 
-                                    // M S R buttons
+                                    // M S R buttons (subdued studio colors)
                                     HorizontalLayout {
                                         spacing: 3px;
 
@@ -426,9 +556,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #f59e0b : #141720;
+                                            background: trk.muted ? #a67c3b : #141720;
                                             border-width: 1px;
-                                            border-color: trk.muted ? #fbbf24 : #ffffff12;
+                                            border-color: trk.muted ? #8a6730 : #ffffff12;
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
@@ -445,9 +575,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? #00c5ff : #141720;
+                                            background: trk.soloed ? Theme.accent : #141720;
                                             border-width: 1px;
-                                            border-color: trk.soloed ? #38bdf8 : #ffffff12;
+                                            border-color: trk.soloed ? Theme.accent : #ffffff12;
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
@@ -464,9 +594,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #ef4444 : #141720;
+                                            background: trk.armed ? #a84343 : #141720;
                                             border-width: 1px;
-                                            border-color: trk.armed ? #f87171 : #ffffff12;
+                                            border-color: trk.armed ? #8c3838 : #ffffff12;
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
@@ -519,11 +649,11 @@ export component ArrangementViewport inherits Rectangle {
                         Rectangle {
                             horizontal-stretch: 1;
 
-                            // Timeline Grid lines
+                            // Timeline Grid lines spanning 36 bars
                             HorizontalLayout {
                                 padding-left: 10px;
-                                spacing: 70px;
-                                for _ in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] : Rectangle {
+                                spacing: 64px;
+                                for _ in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] : Rectangle {
                                     width: 1px;
                                     background: #ffffff08;
                                 }
@@ -533,13 +663,13 @@ export component ArrangementViewport inherits Rectangle {
                             for blk in root.timeline-blocks : Rectangle {
                                 if blk.track_id == trk.id : Rectangle {
                                     x: blk.start_px;
-                                    y: 6px;
+                                    y: 4px;
                                     width: blk.width_px;
-                                    height: 52px;
+                                    height: Math.max(52px, parent.height - 8px);
                                     border-radius: 4px;
-                                    background: trk.color.with-alpha(0.22);
+                                    background: trk.color.with-alpha(0.18);
                                     border-width: 1px;
-                                    border-color: trk.color.with-alpha(0.75);
+                                    border-color: trk.color.with-alpha(0.65);
                                     clip: true;
 
                                     VerticalLayout {
@@ -562,23 +692,23 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: blk.gain_label;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8px;
-                                                color: #e2e8f0;
+                                                color: #cbd5e1;
                                                 horizontal-alignment: right;
                                                 vertical-alignment: center;
                                             }
                                         }
 
-                                        // Audio Waveform or MIDI Note Rects
+                                        // Audio Waveform or MIDI Note Rects (adaptive height)
                                         if blk.is_audio : Path {
-                                            commands: "M 0 10 L 8 4 L 14 16 L 22 5 L 30 15 L 38 2 L 45 18 L 54 6 L 62 14 L 70 2 L 78 18 L 86 7 L 95 13 L 105 4 L 114 16 L 124 3 L 134 17 L 145 6 L 156 14 L 168 4 L 178 16 L 190 7 L 200 10";
+                                            commands: "M 0 10 L 8 4 L 14 16 L 22 5 L 30 15 L 38 2 L 45 18 L 54 6 L 62 14 L 70 2 L 78 18 L 86 7 L 95 13 L 105 4 L 114 16 L 124 3 L 134 17 L 145 6 L 156 14 L 168 4 L 178 16 L 190 7 L 200 10 L 212 4 L 224 16 L 236 5 L 248 15 L 260 3 L 272 17 L 285 6 L 298 14 L 310 4 L 322 16 L 335 7 L 350 12 L 365 4 L 380 16 L 395 5 L 410 14 L 425 4 L 440 16 L 455 7 L 470 11";
                                             stroke: trk.color;
                                             stroke-width: 1.4px;
-                                            height: 20px;
+                                            height: Math.max(20px, parent.height - 28px);
                                         }
 
                                         if !blk.is_audio : HorizontalLayout {
                                             spacing: 4px;
-                                            height: 12px;
+                                            height: Math.max(14px, parent.height - 30px);
                                             alignment: center;
 
                                             for h in [2px, 6px, 10px, 4px, 8px, 3px, 9px, 5px, 7px] : Rectangle {
@@ -604,7 +734,7 @@ export component ArrangementViewport inherits Rectangle {
                                 x: 204px;
                                 y: 0;
                                 width: 4px;
-                                height: 64px;
+                                height: parent.height;
                                 background: trk.color;
                             }
 
@@ -656,9 +786,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #f59e0b : #141720;
+                                            background: trk.muted ? #a67c3b : #141720;
                                             border-width: 1px;
-                                            border-color: trk.muted ? #fbbf24 : #ffffff12;
+                                            border-color: trk.muted ? #8a6730 : #ffffff12;
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
@@ -674,9 +804,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? #ff764d : #141720;
+                                            background: trk.soloed ? Theme.accent : #141720;
                                             border-width: 1px;
-                                            border-color: trk.soloed ? #ff764d : #ffffff12;
+                                            border-color: trk.soloed ? Theme.accent : #ffffff12;
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
@@ -692,9 +822,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #ef4444 : #141720;
+                                            background: trk.armed ? #a84343 : #141720;
                                             border-width: 1px;
-                                            border-color: trk.armed ? #f87171 : #ffffff12;
+                                            border-color: trk.armed ? #8c3838 : #ffffff12;
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
@@ -738,6 +868,80 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
                             TouchArea { clicked => { root.select-track(trk.id); } }
+                        }
+                    }
+                }
+
+                // Empty Track Lane Canvas / Add Track Drop Zone (Reflows cleanly when dock is closed or tracks few)
+                Rectangle {
+                    vertical-stretch: 0;
+                    height: 38px;
+                    background: transparent;
+
+                    HorizontalLayout {
+                        spacing: 0px;
+
+                        // Left Header Box placeholder
+                        if !Theme.track-headers-on-right : Rectangle {
+                            width: 208px;
+                            border-color: Theme.border-subtle;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "+ 点击添加新轨道";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 10px;
+                                    color: #475569;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.add-track(); } }
+                        }
+
+                        // Center Grid Area
+                        Rectangle {
+                            horizontal-stretch: 1;
+
+                            // Grid lines continuing down
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 64px;
+                                for _ in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] : Rectangle {
+                                    width: 1px;
+                                    background: #ffffff04;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "在此区域拖拽音频、MIDI 文件或双击以新增轨道";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 10px;
+                                    color: #334155;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.add-track(); } }
+                        }
+
+                        // Right Header Box placeholder (if right mode)
+                        if Theme.track-headers-on-right : Rectangle {
+                            width: 208px;
+                            border-color: Theme.border-subtle;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "+ 点击添加新轨道";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 10px;
+                                    color: #475569;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.add-track(); } }
                         }
                     }
                 }
