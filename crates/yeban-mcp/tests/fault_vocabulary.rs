@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 276 | 1171 | `PLACEHOLDER_DIGEST` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 276 | 1168 | `PLACEHOLDER_DIGEST` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -174,7 +174,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 276] = [
+pub const GOLDEN_REASONS: [&str; 272] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -2006,7 +2006,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 276] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 272] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -3338,7 +3338,7 @@ pub const FROZEN_REASON_SURFACE_SHA256: &str = "PLACEHOLDER_DIGEST";
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 276;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1171;
+pub const REASON_SURFACE_LINES: usize = 1168;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
