@@ -449,8 +449,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::output_schema::{
-        BarRow, BestMatch, DetectedAnomaly, RepeatedPassage, RepetitionSummary, SongMeta,
-        SongOverview, StructuralSummary,
+        BarRow, BestMatch, DetectedAnomaly, FrequencyClashSummary, RepeatedPassage,
+        RepetitionSummary, SongMeta, SongOverview, StructuralSummary,
     };
     use crate::tools::ToolCall;
 
@@ -508,6 +508,14 @@ mod tests {
                 mechanical_index: 0.3,
                 best_matches: Vec::new(),
                 repeated_passages: Vec::new(),
+            },
+            // 夹具只喂小节序列供 Diff 算增量，不算打架检测（检测在 dsp）：
+            // 字段只保形状完整，值为空摘要。
+            frequency_clash: FrequencyClashSummary {
+                total_groups: 0,
+                overall_overlap: 0.0,
+                bar_overlaps: Vec::new(),
+                entries: Vec::new(),
             },
             bar_series: bars,
         }
