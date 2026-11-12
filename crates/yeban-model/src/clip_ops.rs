@@ -717,6 +717,7 @@ mod tests {
             shape_velocities(&refs, 43, &params),
             "不同 seed 的抖动序列必须不同"
         );
+        assert_eq!(first.len(), 16);
         assert!(first.iter().all(|velocity| (1..=127).contains(velocity)));
     }
 
@@ -844,6 +845,7 @@ mod tests {
         let second = stagger_micro_offsets(&refs, 42, &params);
         assert_eq!(first, second, "同一 seed 必须给出同一份错开");
         assert_eq!(first[0], 0);
+        assert_eq!(first.len(), 8);
         assert!(first.iter().all(|value| (-240..=240).contains(value)));
         // 严格递增（钳制后仍单调：后音至少比前音晚 1 tick，直到顶到 240）。
         for pair in first.windows(2) {
