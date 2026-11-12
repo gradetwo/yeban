@@ -70,23 +70,98 @@ fn fmt_band_edge(value: f32) -> String {
     }
 }
 
-/// 内联 CSS（单文件自包含；打印时每节尽量不跨页断开）。
-const STYLE: &str = "body{margin:24px;background:#fff;color:#171717;font:14px/1.5 system-ui,sans-serif}h1{font-size:24px;margin:0 0 4px}h2{font-size:18px;margin:24px 0 8px}h3{font-size:14px;margin:16px 0 4px}p{margin:6px 0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #ccc;padding:4px 6px;text-align:right}th:first-child,td:first-child{text-align:left}th{background:#f0f0f0}section{break-inside:avoid}svg{display:block;max-width:100%;height:auto;background:#fafafa;border:1px solid #ddd}.legend{font-size:12px;color:#444}.nodata{color:#666;font-style:italic}.meta{color:#444}.note{color:#444;font-size:12px}footer{margin-top:24px;border-top:1px solid #ccc;padding-top:8px;color:#666;font-size:12px}@media print{body{margin:0}section{break-inside:avoid}}@page{size:A4;margin:12mm}";
+/// 内联 CSS（单文件自包含；屏幕深色专业报告风，打印切浅色；每节尽量不跨页断开）。
+const STYLE: &str = r#"
+:root{--bg:#0f1115;--panel:#171a21;--panel2:#1d2230;--line:#2a2f3a;--line-soft:#232838;--text:#e8eaf0;--muted:#9aa3b2;--faint:#6b7280;--accent:#6ea8fe;--red:#e5534b;--amber:#e8a13a;--teal:#58a6a0;--green:#5fb878;--purple:#b678e6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 24px 48px}
+.cover{background:linear-gradient(135deg,#1b2a4a 0%,#141a28 55%,#171a21 100%);border:1px solid var(--line);border-radius:12px;padding:28px 28px 22px;margin-bottom:20px}
+h1{font-size:28px;line-height:1.2;margin:0 0 8px;letter-spacing:.2px}
+h2{font-size:18px;margin:0 0 12px;padding-left:10px;border-left:4px solid var(--accent)}
+h3{font-size:14px;margin:20px 0 8px}
+p{margin:8px 0}
+.meta{color:var(--muted);margin:4px 0}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
+.chip{display:inline-block;padding:3px 10px;border:1px solid var(--line);border-radius:999px;background:#1d2230;font-size:12px;white-space:nowrap}
+.chip b{color:var(--accent);font-weight:600}
+.note{color:var(--muted);font-size:12px}
+.kpi-row{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:18px 0 4px}
+.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi-label{font-size:11px;letter-spacing:.06em;color:var(--muted);text-transform:uppercase}
+.kpi-value{font-size:26px;font-weight:700;line-height:1.25;font-variant-numeric:tabular-nums;white-space:nowrap}
+.kpi-sub{font-size:11px;color:var(--faint)}
+.toc{position:sticky;top:0;z-index:5;background:#0f1115;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:0 0 20px;display:flex;flex-wrap:wrap;gap:6px 16px}
+.toc a{color:var(--accent);text-decoration:none;font-size:13px}
+.toc a:hover{text-decoration:underline}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:18px;break-inside:avoid;scroll-margin-top:64px}
+#overview h2{border-left-color:var(--accent)}
+#energy h2{border-left-color:var(--red)}
+#frequency h2{border-left-color:var(--accent)}
+#density h2{border-left-color:var(--green)}
+#emotion h2{border-left-color:var(--purple)}
+#clash h2{border-left-color:var(--amber)}
+#anomalies h2{border-left-color:var(--red)}
+#repetition h2{border-left-color:var(--teal)}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{border:1px solid var(--line);padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left}
+thead th{background:#232838;position:sticky;top:48px}
+tbody tr:nth-child(even){background:#1b1f2a}
+svg{display:block;width:100%;height:auto;background:#141821;border:1px solid var(--line);border-radius:8px}
+.legend{font-size:12px;color:var(--muted)}
+.nodata{color:var(--muted);font-style:italic}
+footer{margin-top:8px;border-top:1px solid var(--line);padding-top:10px;color:var(--faint);font-size:12px}
+.sev{display:inline-block;min-width:34px;text-align:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.sev-severe{background:rgba(229,83,75,.18);color:#ff8a80;border:1px solid #e5534b}
+.sev-moderate{background:rgba(232,161,58,.15);color:#f2b95c;border:1px solid #e8a13a}
+.sev-mild{background:rgba(88,166,160,.15);color:#7cc9c2;border:1px solid #58a6a0}
+.type-low_mid_buildup{color:#f2b95c;border-color:#e8a13a}
+.type-compression_squash{color:#ff8a80;border-color:#e5534b}
+.type-envelope_deviation{color:#d3a5f5;border-color:#b678e6}
+.type-arrangement_repetition{color:#9cc2ff;border-color:#6ea8fe}
+.wbar{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:12px}
+.wbar-label{width:44px;color:var(--muted)}
+.wbar-track{flex:1;height:8px;background:#232838;border-radius:4px;overflow:hidden}
+.wbar-fill{height:100%;background:var(--accent);border-radius:4px}
+.wbar-value{width:36px;text-align:right;font-variant-numeric:tabular-nums}
+.heat{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:12px}
+.heat-label{width:170px;color:var(--muted)}
+.heat-track{flex:1;height:10px;background:#232838;border-radius:5px;overflow:hidden}
+.heat-fill{height:100%;border-radius:5px}
+.heat-value{width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.obar{width:110px;height:10px;background:#232838;border-radius:5px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:8px}
+.obar-fill{display:block;height:100%;border-radius:5px}
+@media (max-width:720px){.kpi-row{grid-template-columns:repeat(3,1fr)}}
+@media print{body{background:#fff;color:#111}.wrap{padding:0}.cover{background:#fff;border-color:#bbb;color:#111}.toc{display:none}section{background:#fff;border-color:#bbb;break-inside:avoid}th,td{border-color:#bbb;color:#111}thead th{background:#eee}tbody tr:nth-child(even){background:#f7f7f7}svg{background:#fff;border-color:#bbb}.kpi{background:#fff;border-color:#bbb}.kpi-value{color:#111}.chip{background:#fff;color:#111;border-color:#999}.chip b{color:#1a56db}.meta,.note,.legend,.kpi-sub{color:#444}footer{color:#555;border-color:#bbb}.wbar-track,.heat-track,.obar{background:#e5e5e5}.sev-severe{color:#b3261e}.sev-moderate{color:#8a5a00}.sev-mild{color:#2e7d6b}.type-low_mid_buildup{color:#8a5a00}.type-compression_squash{color:#b3261e}.type-envelope_deviation{color:#6b3fa0}.type-arrangement_repetition{color:#1a56db}}
+@page{size:A4;margin:12mm}
+"#;
 
-/// 一条折线（`svg_chart` 的输入）：图例名 + 每小节一个值 + 颜色。
+/// 图表画布（`svg_chart` 与期望带多边形共用；SVG 用 viewBox 缩放，CSS 宽度 100%）。
+const CHART_WIDTH: f32 = 960.0;
+const CHART_HEIGHT: f32 = 180.0;
+const CHART_PAD_LEFT: f32 = 56.0;
+const CHART_PAD_RIGHT: f32 = 12.0;
+const CHART_PAD_TOP: f32 = 10.0;
+const CHART_PAD_BOTTOM: f32 = 26.0;
+
+/// 一条折线（`svg_chart` 的输入）：图例名 + 每小节一个值 + 颜色；
+/// `area` 为真时在折线下铺半透明面积（只给每层的主线，避免多线叠色）。
 struct ChartLine<'a> {
     label: &'a str,
     values: &'a [f32],
     color: &'a str,
     dashed: bool,
+    area: bool,
 }
 
 /// 折线图（内联 SVG）：`lines` 各画一条折线，`extra` 是画在折线**之下**的附加 SVG
-/// 片段（如期望带的多边形），`unit` 是纵轴单位（画在纵轴上下两端）。
+/// 片段（如期望带的多边形），`unit` 是纵轴单位（画在右上角）。
 ///
 /// 空序列 / 全空序列 ⇒ 一段“无数据”文字，不画空图。纵轴范围由调用方给
 /// （各层自己的量纲）；范围退化（上下相等）时向两边各扩 0.5 防除零。
 /// 非有限值断开折线（该点不画、不连线），⛔ 不把坏值画成 0。
+/// 图带 5 档横向网格线 + 纵轴刻度、至多 8 个 x 轴小节刻度。
 fn svg_chart(lines: &[ChartLine<'_>], min: f32, max: f32, unit: &str, extra: &str) -> String {
     let mut point_count = 0usize;
     for line in lines {
@@ -105,45 +180,76 @@ fn svg_chart(lines: &[ChartLine<'_>], min: f32, max: f32, unit: &str, extra: &st
         lo = mid - 0.5;
         hi = mid + 0.5;
     }
-    const WIDTH: f32 = 720.0;
-    const HEIGHT: f32 = 150.0;
-    const PAD_LEFT: f32 = 52.0;
-    const PAD_RIGHT: f32 = 8.0;
-    const PAD_TOP: f32 = 8.0;
-    const PAD_BOTTOM: f32 = 20.0;
-    let plot_w = WIDTH - PAD_LEFT - PAD_RIGHT;
-    let plot_h = HEIGHT - PAD_TOP - PAD_BOTTOM;
+    let plot_w = CHART_WIDTH - CHART_PAD_LEFT - CHART_PAD_RIGHT;
+    let plot_h = CHART_HEIGHT - CHART_PAD_TOP - CHART_PAD_BOTTOM;
     let x_of = |index: usize, count: usize| -> f32 {
         if count <= 1 {
-            PAD_LEFT + plot_w / 2.0
+            CHART_PAD_LEFT + plot_w / 2.0
         } else {
-            PAD_LEFT + plot_w * index as f32 / (count - 1) as f32
+            CHART_PAD_LEFT + plot_w * index as f32 / (count - 1) as f32
         }
     };
-    let y_of = |value: f32| -> f32 { PAD_TOP + plot_h * (1.0 - (value - lo) / (hi - lo)) };
+    let y_of = |value: f32| -> f32 { CHART_PAD_TOP + plot_h * (1.0 - (value - lo) / (hi - lo)) };
     let mut svg = String::new();
     svg.push_str(&format!(
-        "<svg viewBox=\"0 0 {WIDTH:.0} {HEIGHT:.0}\" role=\"img\" aria-label=\"折线图\">"
+        "<svg viewBox=\"0 0 {CHART_WIDTH:.0} {CHART_HEIGHT:.0}\" role=\"img\" aria-label=\"折线图\">"
     ));
-    svg.push_str(extra);
-    // 纵轴上下限 + 单位。
-    let y_top = PAD_TOP + 4.0;
-    let y_bottom = PAD_TOP + plot_h;
-    let y_unit = HEIGHT - 4.0;
-    let hi_label = fmt_axis(hi);
-    let lo_label = fmt_axis(lo);
+    // 横向网格线（5 档）+ 纵轴刻度。
+    for step in 0..=4 {
+        let value = lo + (hi - lo) * step as f32 / 4.0;
+        let y = y_of(value);
+        let label = fmt_axis(value);
+        svg.push_str(&format!(
+            "<line x1=\"{CHART_PAD_LEFT:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"#2a2f3a\" stroke-width=\"1\"/>",
+            CHART_WIDTH - CHART_PAD_RIGHT
+        ));
+        svg.push_str(&format!(
+            "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\" fill=\"#9aa3b2\">{label}</text>",
+            CHART_PAD_LEFT - 6.0,
+            y + 4.0
+        ));
+    }
+    // x 轴小节刻度（至多 8 个，1-based 小节号）+ 纵向浅网格。
+    let max_count = lines
+        .iter()
+        .map(|line| line.values.len())
+        .max()
+        .unwrap_or(0);
+    if max_count > 1 {
+        let step = (max_count - 1).div_ceil(7).max(1);
+        let mut index = 0usize;
+        while index < max_count {
+            let x = x_of(index, max_count);
+            svg.push_str(&format!(
+                "<line x1=\"{x:.1}\" y1=\"{CHART_PAD_TOP:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"#232838\" stroke-width=\"1\"/>",
+                CHART_PAD_TOP + plot_h
+            ));
+            svg.push_str(&format!(
+                "<text x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"11\" fill=\"#9aa3b2\">{}</text>",
+                CHART_HEIGHT - 8.0,
+                index + 1
+            ));
+            index += step;
+        }
+        // 末小节号（步进未必落在末点时补一个）。
+        if (max_count - 1) % step != 0 {
+            let x = x_of(max_count - 1, max_count);
+            svg.push_str(&format!(
+                "<text x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"11\" fill=\"#9aa3b2\">{max_count}</text>",
+                CHART_HEIGHT - 8.0
+            ));
+        }
+    }
+    // 纵轴单位（右上角）。
     svg.push_str(&format!(
-        "<text x=\"48\" y=\"{y_top}\" text-anchor=\"end\" font-size=\"11\">{hi_label}</text>"
-    ));
-    svg.push_str(&format!(
-        "<text x=\"48\" y=\"{y_bottom}\" text-anchor=\"end\" font-size=\"11\">{lo_label}</text>"
-    ));
-    svg.push_str(&format!(
-        "<text x=\"48\" y=\"{y_unit}\" text-anchor=\"end\" font-size=\"11\">{}</text>",
+        "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\" fill=\"#9aa3b2\">{}</text>",
+        CHART_WIDTH - CHART_PAD_RIGHT,
+        CHART_PAD_TOP + 10.0,
         escape_html(unit)
     ));
+    svg.push_str(extra);
     for line in lines {
-        // 连续有限值成段画；断点处另起一段，单点画圆。
+        // 连续有限值成段画；断点处另起一段，单点画圆；主线铺面积。
         let mut segment: Vec<(f32, f32)> = Vec::new();
         let flush = |segment: &mut Vec<(f32, f32)>, svg: &mut String| {
             if segment.len() == 1 {
@@ -153,12 +259,27 @@ fn svg_chart(lines: &[ChartLine<'_>], min: f32, max: f32, unit: &str, extra: &st
                     "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"3\" fill=\"{color}\"/>"
                 ));
             } else if segment.len() > 1 {
+                let color = line.color;
+                if line.area {
+                    let base = y_of(lo);
+                    let mut points: Vec<String> = segment
+                        .iter()
+                        .map(|(x, y)| format!("{x:.1},{y:.1}"))
+                        .collect();
+                    let (first_x, _) = segment[0];
+                    let (last_x, _) = segment[segment.len() - 1];
+                    points.push(format!("{last_x:.1},{base:.1}"));
+                    points.push(format!("{first_x:.1},{base:.1}"));
+                    svg.push_str(&format!(
+                        "<polygon points=\"{}\" fill=\"{color}\" fill-opacity=\"0.10\" stroke=\"none\"/>",
+                        points.join(" ")
+                    ));
+                }
                 let points: Vec<String> = segment
                     .iter()
                     .map(|(x, y)| format!("{x:.1},{y:.1}"))
                     .collect();
                 let points = points.join(" ");
-                let color = line.color;
                 let dash = if line.dashed {
                     " stroke-dasharray=\"6 4\""
                 } else {
@@ -195,6 +316,77 @@ fn svg_chart(lines: &[ChartLine<'_>], min: f32, max: f32, unit: &str, extra: &st
     svg
 }
 
+/// 逐小节柱状图（分轨频率重叠节）：`values` 每小节一个重叠度（0–1），
+/// `labels` 为小节号；柱按 `max_overlap` 的严重度着色（>0.5 重 / 0.25–0.5 中 / 其余轻）。
+/// 空序列 ⇒ “无数据”文字。纵轴恒为 [0, 1]。
+fn svg_bar_chart(values: &[f32], max_values: &[f32], labels: &[u32]) -> String {
+    if values.is_empty() {
+        return "<p class=\"nodata\">无数据</p>".to_owned();
+    }
+    let count = values.len();
+    let plot_w = CHART_WIDTH - CHART_PAD_LEFT - CHART_PAD_RIGHT;
+    let plot_h = CHART_HEIGHT - CHART_PAD_TOP - CHART_PAD_BOTTOM;
+    let slot = plot_w / count as f32;
+    let bar_w = (slot * 0.62).max(2.0);
+    let y_of = |value: f32| -> f32 { CHART_PAD_TOP + plot_h * (1.0 - value.clamp(0.0, 1.0)) };
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        "<svg viewBox=\"0 0 {CHART_WIDTH:.0} {CHART_HEIGHT:.0}\" role=\"img\" aria-label=\"逐小节重叠度柱状图\">"
+    ));
+    for step in 0..=4 {
+        let value = step as f32 / 4.0;
+        let y = y_of(value);
+        let label = fmt_axis(value);
+        svg.push_str(&format!(
+            "<line x1=\"{CHART_PAD_LEFT:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"#2a2f3a\" stroke-width=\"1\"/>",
+            CHART_WIDTH - CHART_PAD_RIGHT
+        ));
+        svg.push_str(&format!(
+            "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\" fill=\"#9aa3b2\">{label}</text>",
+            CHART_PAD_LEFT - 6.0,
+            y + 4.0
+        ));
+    }
+    for (index, &value) in values.iter().enumerate() {
+        let x = CHART_PAD_LEFT + slot * index as f32 + (slot - bar_w) / 2.0;
+        let y = y_of(value);
+        let height = (CHART_PAD_TOP + plot_h - y).max(0.0);
+        let max_value = max_values.get(index).copied().unwrap_or(value);
+        let color = if max_value > 0.5 {
+            "#e5534b"
+        } else if max_value >= 0.25 {
+            "#e8a13a"
+        } else {
+            "#58a6a0"
+        };
+        svg.push_str(&format!(
+            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bar_w:.1}\" height=\"{height:.1}\" fill=\"{color}\" fill-opacity=\"0.85\"/>"
+        ));
+        // x 轴小节号（至多 12 个）。
+        let step = count.div_ceil(11).max(1);
+        if index % step == 0 || index == count - 1 {
+            let cx = CHART_PAD_LEFT + slot * index as f32 + slot / 2.0;
+            let label = labels.get(index).copied().unwrap_or(index as u32 + 1);
+            svg.push_str(&format!(
+                "<text x=\"{cx:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"11\" fill=\"#9aa3b2\">{label}</text>",
+                CHART_HEIGHT - 8.0
+            ));
+        }
+    }
+    svg.push_str(&format!(
+        "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\" fill=\"#9aa3b2\">重叠度</text>",
+        CHART_WIDTH - CHART_PAD_RIGHT,
+        CHART_PAD_TOP + 10.0
+    ));
+    svg.push_str("</svg>");
+    svg.push_str(
+        "<p class=\"legend\"><span style=\"color:#e5534b\">■</span> 重（&gt;0.5）　\
+         <span style=\"color:#e8a13a\">■</span> 中（0.25–0.5）　\
+         <span style=\"color:#58a6a0\">■</span> 轻（&lt;0.25）</p>",
+    );
+    svg
+}
+
 /// 纵轴刻度：整数不带小数位，其余 1 位小数。
 fn fmt_axis(value: f32) -> String {
     if value == value.trunc() {
@@ -228,27 +420,21 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
 /// 期望带多边形（情绪层折线图之下）：有期望等级的小节连成一段半透明带，
 /// 无等级的小节断开（不跨无等级小节连带）。
 fn envelope_band_polygons(series: &crate::song_overview::BarSeries) -> String {
-    const WIDTH: f32 = 720.0;
-    const HEIGHT: f32 = 150.0;
-    const PAD_LEFT: f32 = 52.0;
-    const PAD_RIGHT: f32 = 8.0;
-    const PAD_TOP: f32 = 8.0;
-    const PAD_BOTTOM: f32 = 20.0;
-    let plot_w = WIDTH - PAD_LEFT - PAD_RIGHT;
-    let plot_h = HEIGHT - PAD_TOP - PAD_BOTTOM;
+    let plot_w = CHART_WIDTH - CHART_PAD_LEFT - CHART_PAD_RIGHT;
+    let plot_h = CHART_HEIGHT - CHART_PAD_TOP - CHART_PAD_BOTTOM;
     let count = series.len();
     if count == 0 {
         return String::new();
     }
     let x_of = |index: usize| -> f32 {
         if count <= 1 {
-            PAD_LEFT + plot_w / 2.0
+            CHART_PAD_LEFT + plot_w / 2.0
         } else {
-            PAD_LEFT + plot_w * index as f32 / (count - 1) as f32
+            CHART_PAD_LEFT + plot_w * index as f32 / (count - 1) as f32
         }
     };
     // 张力域恒为 [0, 1]，与 svg_chart 的情绪层纵轴同域。
-    let y_of = |value: f32| -> f32 { PAD_TOP + plot_h * (1.0 - value.clamp(0.0, 1.0)) };
+    let y_of = |value: f32| -> f32 { CHART_PAD_TOP + plot_h * (1.0 - value.clamp(0.0, 1.0)) };
     let mut out = String::new();
     let mut run: Vec<usize> = Vec::new();
     let flush = |run: &mut Vec<usize>, out: &mut String| {
@@ -269,7 +455,7 @@ fn envelope_band_polygons(series: &crate::song_overview::BarSeries) -> String {
         }
         let points = points.join(" ");
         out.push_str(&format!(
-            "<polygon points=\"{points}\" fill=\"#8888ff\" fill-opacity=\"0.18\" stroke=\"none\"/>"
+            "<polygon points=\"{points}\" fill=\"#7d7bff\" fill-opacity=\"0.22\" stroke=\"none\"/>"
         ));
         run.clear();
     };
@@ -284,6 +470,67 @@ fn envelope_band_polygons(series: &crate::song_overview::BarSeries) -> String {
     }
     flush(&mut run, &mut out);
     out
+}
+
+/// 分轨频率重叠严重度 → CSS 类（分档见 [`ClashSeverity`]；Wang 2026-11-11 定）。
+fn clash_severity_class(severity: crate::song_overview::ClashSeverity) -> &'static str {
+    use crate::song_overview::ClashSeverity;
+    match severity {
+        ClashSeverity::Severe => "sev-severe",
+        ClashSeverity::Moderate => "sev-moderate",
+        ClashSeverity::Mild => "sev-mild",
+    }
+}
+
+/// 分轨频率重叠严重度 → 中文名。
+fn clash_severity_label(severity: crate::song_overview::ClashSeverity) -> &'static str {
+    use crate::song_overview::ClashSeverity;
+    match severity {
+        ClashSeverity::Severe => "重",
+        ClashSeverity::Moderate => "中",
+        ClashSeverity::Mild => "轻",
+    }
+}
+
+/// 异常类型 → CSS 类（只按类型着色，不发明严重度）。
+fn anomaly_type_class(anomaly_type: crate::song_overview::AnomalyType) -> &'static str {
+    use crate::song_overview::AnomalyType;
+    match anomaly_type {
+        AnomalyType::LowMidBuildup => "type-low_mid_buildup",
+        AnomalyType::CompressionSquash => "type-compression_squash",
+        AnomalyType::EnvelopeDeviation => "type-envelope_deviation",
+        AnomalyType::ArrangementRepetition => "type-arrangement_repetition",
+    }
+}
+
+/// KPI 卡（标签 + 大值 + 小字说明；值须已格式化 / 已转义）。
+fn kpi_card(label: &str, value: &str, sub: &str) -> String {
+    format!(
+        "<div class=\"kpi\"><div class=\"kpi-label\">{}</div><div class=\"kpi-value\">{}</div><div class=\"kpi-sub\">{}</div></div>",
+        escape_html(label),
+        value,
+        escape_html(sub)
+    )
+}
+
+/// 分析权重条（`effective_weights` 的一项：标签 + 0–1 值 + 比例条）。
+fn weight_bar(label: &str, value: f32) -> String {
+    let pct = (value.clamp(0.0, 1.0) * 100.0).round();
+    format!(
+        "<div class=\"wbar\"><span class=\"wbar-label\">{}</span><div class=\"wbar-track\"><div class=\"wbar-fill\" style=\"width:{pct:.0}%\"></div></div><span class=\"wbar-value\">{}</span></div>",
+        escape_html(label),
+        fmt2(value)
+    )
+}
+
+/// 频段热力条（频段名 + 全曲均值 dB + 按 [−120, 0] dB 映射的条）。
+fn band_heat_bar(label: &str, mean_db: f32, color: &str) -> String {
+    let pct = ((mean_db + 120.0) / 120.0 * 100.0).clamp(0.0, 100.0);
+    format!(
+        "<div class=\"heat\"><span class=\"heat-label\">{}</span><div class=\"heat-track\"><div class=\"heat-fill\" style=\"width:{pct:.0}%;background:{color}\"></div></div><span class=\"heat-value\">{} dB</span></div>",
+        escape_html(label),
+        fmt1(mean_db)
+    )
 }
 
 /// 报告无标题时的通用标题（空标题回退到它，不得输出空 `<h1>`）。
@@ -321,13 +568,15 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
         "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">",
     );
     html.push_str(&format!(
-        "<title>{title} · {} · {}</title><style>{STYLE}</style></head><body>",
+        "<title>{title} · {} · {}</title><style>{STYLE}</style></head><body><div class=\"wrap\">",
         escape_html(&meta.key_signature),
         escape_html(&meta.profile),
     ));
 
-    // ---- 文件头 ----
-    html.push_str(&format!("<header><h1>{title}</h1>"));
+    // ---- 封面标题带 ----
+    html.push_str("<header class=\"cover\"><h1>");
+    html.push_str(&title);
+    html.push_str("</h1>");
     let schema = escape_html(overview.schema_version);
     let key = escape_html(&meta.key_signature);
     let profile = escape_html(&meta.profile);
@@ -337,14 +586,56 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
     html.push_str(&format!(
         "<p class=\"meta\">schema {schema} · 调号 {key} · 曲风 {profile} · {total_bars} 小节 · {duration} 秒 · {bpm} BPM</p>",
     ));
+    html.push_str(&format!(
+        "<div class=\"chips\"><span class=\"chip\">调号 <b>{key}</b></span><span class=\"chip\">曲风 <b>{profile}</b></span><span class=\"chip\"><b>{total_bars}</b> 小节</span><span class=\"chip\">时长 <b>{duration} 秒</b></span><span class=\"chip\">速度 <b>{bpm} BPM</b></span><span class=\"chip\">schema <b>{schema}</b></span></div>",
+    ));
+    // KPI 卡行（无数据不显该卡、不编造：无小节时高潮/张力/动态范围显 —；
+    // 总体重叠只在参评组数 > 0 时显）。
+    html.push_str("<div class=\"kpi-row\">");
+    let (climax_bar, climax_tension, dynamic_range) = if bars == 0 {
+        ("—".to_owned(), "—".to_owned(), "—".to_owned())
+    } else {
+        (
+            summary.climax_bar.to_string(),
+            fmt2(summary.climax_tension),
+            format!("{} LU", fmt1(summary.dynamic_range_lu)),
+        )
+    };
+    html.push_str(&kpi_card("高潮小节", &climax_bar, "张力峰值所在小节"));
+    html.push_str(&kpi_card("最高张力", &climax_tension, "0–1 归一化"));
+    html.push_str(&kpi_card("动态范围", &dynamic_range, "短时 LUFS 极差"));
+    html.push_str(&kpi_card(
+        "异常",
+        &summary.detected_anomalies.len().to_string(),
+        "见异常诊断节",
+    ));
+    let clash = &overview.frequency_clash;
+    if clash.total_groups > 0 {
+        html.push_str(&kpi_card(
+            "总体频谱重叠",
+            &fmt2(clash.overall_overlap),
+            &format!("共 {} 组", clash.total_groups),
+        ));
+    }
+    html.push_str(&kpi_card(
+        "机械指数",
+        &fmt2(repetition.mechanical_index),
+        "≥0.95 匹配占比",
+    ));
+    html.push_str("</div>");
     html.push_str(
         "<p class=\"note\">生成说明：本报告由 yeban-dsp 渲染器自整曲总览（SongOverview）直接生成；\
          数值与 JSON 总览一致（归一化指标 2 位小数，响度与频段能量 1 位小数）。\
          单文件自包含，无外部资源，无脚本，可打印。</p></header>",
     );
 
+    // ---- 页内目录（纯 CSS 锚点，无 JS） ----
+    html.push_str(
+        "<nav class=\"toc\" aria-label=\"目录\"><a href=\"#overview\">总览</a><a href=\"#energy\">能量层</a><a href=\"#frequency\">频率层</a><a href=\"#density\">疏密层</a><a href=\"#emotion\">情绪层</a><a href=\"#clash\">分轨频率重叠</a><a href=\"#anomalies\">异常诊断</a><a href=\"#repetition\">自相似度</a></nav>",
+    );
+
     // ---- 总览摘要 ----
-    html.push_str("<section><h2>总览</h2>");
+    html.push_str("<section id=\"overview\"><h2>总览</h2>");
     let summary_rows = vec![vec![
         summary.climax_bar.to_string(),
         fmt2(summary.climax_tension),
@@ -355,23 +646,32 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
         &["高潮小节", "最高张力", "动态范围 (LU)", "异常条数"],
         &summary_rows,
     ));
+    // 方差自适应后的实际权重 [响度, 密度, 音区, 和声, 配器]（和恒为 1.0）。
+    html.push_str("<h3>分析权重</h3>");
+    const WEIGHT_LABELS: [&str; 5] = ["响度", "密度", "音区", "和声", "配器"];
+    for (index, label) in WEIGHT_LABELS.iter().enumerate() {
+        html.push_str(&weight_bar(label, overview.effective_weights[index]));
+    }
+    html.push_str("<p class=\"note\">权重为方差自适应后的实际权重（和为 1.0）；有死特征时按设计稿 §3.6 衰减并重分配。</p>");
     html.push_str("</section>");
 
     // ---- 能量层 ----
-    html.push_str("<section><h2>能量层（LUFS）</h2>");
+    html.push_str("<section id=\"energy\"><h2>能量层（LUFS）</h2>");
     html.push_str(&svg_chart(
         &[
             ChartLine {
                 label: "短时 LUFS",
                 values: &series.lufs_short,
-                color: "#c0392b",
+                color: "#e5534b",
                 dashed: false,
+                area: true,
             },
             ChartLine {
                 label: "瞬时 LUFS 最大值",
                 values: &series.lufs_momentary_max,
                 color: "#e67e22",
                 dashed: true,
+                area: false,
             },
         ],
         NO_LOUDNESS_READING_LUFS,
@@ -398,7 +698,7 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
     html.push_str("</section>");
 
     // ---- 频率层 ----
-    html.push_str("<section><h2>频率层（8 频段，dB）</h2>");
+    html.push_str("<section id=\"frequency\"><h2>频率层（8 频段，dB）</h2>");
     const BAND_COLORS: [&str; 8] = [
         "#1f77b4", "#2ca02c", "#d62728", "#ff7f0e", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
     ];
@@ -420,9 +720,23 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
             values: &band_columns[band],
             color: BAND_COLORS[band],
             dashed: false,
+            area: false,
         })
         .collect();
     html.push_str(&svg_chart(&band_lines, BAND_DB_FLOOR, 0.0, "dB", ""));
+    // 频段全曲均值能量热力条（均值 = 该频段各小节能量算术均值）。
+    if bars > 0 {
+        html.push_str("<h3>频段均值能量</h3>");
+        for band in 0..8 {
+            let mean_db: f32 =
+                band_columns[band].iter().sum::<f32>() / band_columns[band].len() as f32;
+            html.push_str(&band_heat_bar(
+                &band_labels[band],
+                mean_db,
+                BAND_COLORS[band],
+            ));
+        }
+    }
     let mut freq_headers: Vec<&str> = vec!["小节", "起始 (秒)", "段落"];
     let freq_band_headers: Vec<String> = band_labels.clone();
     let mut freq_header_refs: Vec<&str> = freq_headers.to_vec();
@@ -448,20 +762,22 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
     html.push_str("</section>");
 
     // ---- 疏密层 ----
-    html.push_str("<section><h2>疏密层（触发率）</h2>");
+    html.push_str("<section id=\"density\"><h2>疏密层（触发率）</h2>");
     html.push_str(&svg_chart(
         &[
             ChartLine {
                 label: "旋律组触发率 (次/拍)",
                 values: &series.density_pitched_onsets_per_beat,
-                color: "#2e86c1",
+                color: "#5fb878",
                 dashed: false,
+                area: true,
             },
             ChartLine {
                 label: "打击组触发率 (次/拍)",
                 values: &series.density_perc_onsets_per_beat,
-                color: "#28b463",
+                color: "#2e86c1",
                 dashed: true,
+                area: false,
             },
         ],
         0.0,
@@ -495,21 +811,23 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
     html.push_str("</section>");
 
     // ---- 情绪层 ----
-    html.push_str("<section><h2>情绪层（张力 / 效价）</h2>");
+    html.push_str("<section id=\"emotion\"><h2>情绪层（张力 / 效价）</h2>");
     let band_polygons = envelope_band_polygons(series);
     html.push_str(&svg_chart(
         &[
             ChartLine {
                 label: "张力",
                 values: &series.tension,
-                color: "#7d3c98",
+                color: "#b678e6",
                 dashed: false,
+                area: true,
             },
             ChartLine {
                 label: "谱面力度",
                 values: &series.score_dyn,
-                color: "#b7950b",
+                color: "#e8c53a",
                 dashed: true,
+                area: false,
             },
         ],
         0.0,
@@ -549,8 +867,77 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
     html.push_str("<p class=\"note\">期望带缺失的小节显示 —（该段落未标注期望张力等级）；偏离超过 0.15 的小节进异常诊断。</p>");
     html.push_str("</section>");
 
+    // ---- 分轨频率重叠（schema 1.2；此前报告未渲染本节数据） ----
+    html.push_str("<section id=\"clash\"><h2>分轨频率重叠</h2>");
+    if clash.entries.is_empty() {
+        html.push_str("<p>未检出分轨频率重叠（无参评轨对）。</p>");
+    } else {
+        html.push_str(&format!(
+            "<p>总体重叠度 <b>{}</b>（共 {} 组，取重叠度最高的前 {} 条；重叠度 = 第二强轨能量 / 最强轨能量，1 = 两轨等能）。</p>",
+            fmt2(clash.overall_overlap),
+            clash.total_groups,
+            clash.entries.len(),
+        ));
+        // 逐小节总体重叠度柱状图（柱按该小节最大重叠度的严重度着色）。
+        if !clash.bar_overlaps.is_empty() {
+            let overlaps: Vec<f32> = clash.bar_overlaps.iter().map(|bar| bar.overlap).collect();
+            let max_overlaps: Vec<f32> = clash
+                .bar_overlaps
+                .iter()
+                .map(|bar| bar.max_overlap)
+                .collect();
+            let bar_labels: Vec<u32> = clash.bar_overlaps.iter().map(|bar| bar.bar).collect();
+            html.push_str(&svg_bar_chart(&overlaps, &max_overlaps, &bar_labels));
+        }
+        let clash_rows: Vec<Vec<String>> = clash
+            .entries
+            .iter()
+            .map(|entry| {
+                let band_no = entry.band as usize + 1;
+                let [lo, hi] = overview
+                    .band_definitions_hz
+                    .get(entry.band as usize)
+                    .copied()
+                    .unwrap_or([0.0, 0.0]);
+                let overlap_pct = (entry.overlap.clamp(0.0, 1.0) * 100.0).round();
+                let class = clash_severity_class(entry.severity);
+                let severity = clash_severity_label(entry.severity);
+                vec![
+                    entry.bar.to_string(),
+                    format!("Band {band_no} ({lo}–{hi} Hz)"),
+                    escape_html(&entry.track_a.track_name),
+                    escape_html(&entry.track_b.track_name),
+                    format!(
+                        "<span class=\"obar\"><span class=\"obar-fill {class}\" style=\"width:{overlap_pct:.0}%\"></span></span>{}",
+                        fmt2(entry.overlap)
+                    ),
+                    fmt2(entry.mean_overlap),
+                    fmt1(entry.gap_db),
+                    format!("<span class=\"sev {class}\">{severity}</span>"),
+                    entry.beats.to_string(),
+                ]
+            })
+            .collect();
+        html.push_str(&table(
+            &[
+                "小节",
+                "频段",
+                "轨 A（最响）",
+                "轨 B（次响）",
+                "重叠度",
+                "均值",
+                "差距 (dB)",
+                "严重度",
+                "拍数",
+            ],
+            &clash_rows,
+        ));
+        html.push_str("<p class=\"note\">严重度分档：重 &gt; 0.5（差距 &lt; 3 dB）、中 0.25–0.5（差距 3–6 dB）、轻 &lt; 0.25（差距 &gt; 6 dB）；gap_db 只作参考，不定性（overlap = 10^(−gap_db / 10)）。</p>");
+    }
+    html.push_str("</section>");
+
     // ---- 异常诊断 ----
-    html.push_str("<section><h2>异常诊断</h2>");
+    html.push_str("<section id=\"anomalies\"><h2>异常诊断</h2>");
     if summary.detected_anomalies.is_empty() {
         html.push_str("<p>未检出异常。</p>");
     } else {
@@ -559,9 +946,11 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
             .iter()
             .map(|anomaly| {
                 let (start, end) = (anomaly.bars[0], anomaly.bars[1]);
+                let type_name = anomaly.anomaly_type.as_str();
+                let type_class = anomaly_type_class(anomaly.anomaly_type);
                 vec![
                     format!("{start}–{end}"),
-                    escape_html(anomaly.anomaly_type.as_str()),
+                    format!("<span class=\"chip {type_class}\">{type_name}</span>"),
                     escape_html(&anomaly.description),
                 ]
             })
@@ -571,7 +960,7 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
     html.push_str("</section>");
 
     // ---- 自相似度 ----
-    html.push_str("<section><h2>自相似度（repetition）</h2>");
+    html.push_str("<section id=\"repetition\"><h2>自相似度（repetition）</h2>");
     html.push_str(&format!(
         "<p>机械指数：{}（最佳非邻匹配 ≥ 0.95 的小节占比）</p>",
         fmt2(repetition.mechanical_index)
@@ -619,7 +1008,7 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
 
     // ---- 页脚 ----
     html.push_str(&format!(
-        "<footer><p>schema 版本 {} · 整曲总览 HTML 报告（yeban-dsp 渲染器）</p></footer></body></html>",
+        "<footer><p>schema 版本 {} · 整曲总览 HTML 报告（yeban-dsp 渲染器）</p></footer></div></body></html>",
         escape_html(overview.schema_version),
     ));
     html
@@ -629,8 +1018,9 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
 mod tests {
     use super::*;
     use crate::song_overview::{
-        Anomaly, AnomalyType, BAND_DEFINITIONS_HZ, BarSeries, BestMatch, FrequencyClashSummary,
-        RepeatedPassage, RepetitionSummary, SongMeta, StructuralSummary,
+        Anomaly, AnomalyType, BAND_DEFINITIONS_HZ, BarOverlap, BarSeries, BestMatch, ClashSeverity,
+        ClashTrackRef, FrequencyClashEntry, FrequencyClashSummary, RepeatedPassage,
+        RepetitionSummary, SongMeta, StructuralSummary,
     };
 
     /// 两小节手算夹具（列式；与 `song_overview_provider` 的映射夹具同源的数值，
@@ -672,7 +1062,58 @@ mod tests {
                     mean_similarity: 0.97,
                 }],
             },
-            frequency_clash: FrequencyClashSummary::default(),
+            frequency_clash: FrequencyClashSummary {
+                total_groups: 2,
+                overall_overlap: 0.42,
+                bar_overlaps: vec![
+                    BarOverlap {
+                        bar: 1,
+                        overlap: 0.35,
+                        max_overlap: 0.62,
+                    },
+                    BarOverlap {
+                        bar: 2,
+                        overlap: 0.42,
+                        max_overlap: 0.80,
+                    },
+                ],
+                entries: vec![
+                    FrequencyClashEntry {
+                        bar: 2,
+                        band: 2,
+                        track_a: ClashTrackRef {
+                            track_id: "t-drums".to_owned(),
+                            track_name: "鼓组".to_owned(),
+                        },
+                        track_b: ClashTrackRef {
+                            track_id: "t-bass".to_owned(),
+                            track_name: "贝斯".to_owned(),
+                        },
+                        overlap: 0.62,
+                        mean_overlap: 0.48,
+                        gap_db: 2.1,
+                        severity: ClashSeverity::Severe,
+                        beats: 4,
+                    },
+                    FrequencyClashEntry {
+                        bar: 1,
+                        band: 4,
+                        track_a: ClashTrackRef {
+                            track_id: "t-vox".to_owned(),
+                            track_name: "主唱".to_owned(),
+                        },
+                        track_b: ClashTrackRef {
+                            track_id: "t-guitar".to_owned(),
+                            track_name: "吉他".to_owned(),
+                        },
+                        overlap: 0.35,
+                        mean_overlap: 0.30,
+                        gap_db: 4.6,
+                        severity: ClashSeverity::Moderate,
+                        beats: 4,
+                    },
+                ],
+            },
             bar_series: BarSeries {
                 bar: vec![1, 2],
                 time_sec: vec![0.0, 2.0],
@@ -779,11 +1220,35 @@ mod tests {
         assert!(html.contains("自相似度"));
         assert!(html.contains("0.50"));
         assert!(html.contains("0.97"));
-        // 每层一条 SVG 迷你折线图（能量/频率/疏密/情绪各一）。
-        assert_eq!(html.matches("<svg").count(), 4);
+        // SVG 图：四层折线图各一 + 分轨频率重叠逐小节柱状图一。
+        assert_eq!(html.matches("<svg").count(), 5);
         assert!(html.contains("<polyline"));
         // 高潮小节与动态范围。
         assert!(html.contains("10.0"));
+    }
+
+    #[test]
+    fn clash_section_renders_entries_weights_and_heat() {
+        let html = render_html_report(&two_bar_overview());
+        // 分轨频率重叠：总体重叠度、轨名、严重度色卡、数值。
+        assert!(html.contains("分轨频率重叠"));
+        assert!(html.contains("鼓组"));
+        assert!(html.contains("贝斯"));
+        assert!(html.contains("主唱"));
+        assert!(html.contains("吉他"));
+        assert!(html.contains("sev-severe"));
+        assert!(html.contains("sev-moderate"));
+        assert!(html.contains("0.62"));
+        assert!(html.contains("0.48"));
+        assert!(html.contains("2.1"));
+        assert!(html.contains("4.6"));
+        assert!(html.contains("Band 5 (1000–2000 Hz)"));
+        // 分析权重与频段均值能量（此前未渲染的字段）。
+        assert!(html.contains("分析权重"));
+        assert!(html.contains("0.30"));
+        assert!(html.contains("频段均值能量"));
+        // 页内目录锚点。
+        assert!(html.contains("href=\"#clash\""));
     }
 
     #[test]
@@ -820,6 +1285,7 @@ mod tests {
         let html = render_html_report(&empty_overview());
         assert!(html.contains("<h1>整曲总览报告</h1>"));
         assert!(html.contains("未检出异常"));
+        assert!(html.contains("未检出分轨频率重叠"));
         assert!(html.contains("无数据"));
         assert!(!html.contains("<polyline"));
     }
