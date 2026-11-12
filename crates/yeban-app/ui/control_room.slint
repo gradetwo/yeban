@@ -1,0 +1,226 @@
+import { Theme } from "tokens.slint";
+
+export component ControlRoomMeters inherits Rectangle {
+    in-out property <string> lufs-integrated: "-9.4 LUFS";
+    in-out property <string> lufs-short: "-8.8 LUFS";
+    in-out property <string> lufs-peak: "-0.3 dBTP";
+    in-out property <string> active-monitor: "main"; // "main" | "alt"
+    in-out property <bool> is-dim: false;
+    in-out property <bool> is-mono: false;
+    in-out property <bool> is-side: false;
+    in-out property <float> master-meter-l: 0.68;
+    in-out property <float> master-meter-r: 0.64;
+
+    callback switch-monitor(string);
+    callback toggle-dim();
+    callback toggle-mono();
+    callback toggle-side();
+
+    width: 192px;
+    background: Theme.bg-panel;
+    // border line
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+        alignment: space-between;
+
+        // Top Header
+        VerticalLayout {
+            spacing: 6px;
+
+            HorizontalLayout {
+                Text { text: "🎚️ Control Room"; font-size: 11px; font-weight: 800; color: #f8fafc; }
+                Rectangle {
+                    background: #10b98120;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: #10b98140;
+                    Text { text: "EBU R128"; font-size: 8px; font-weight: 700; color: #10b981; }
+                }
+            }
+
+            // Loudness Telemetry Card
+            Rectangle {
+                background: Theme.bg-surface;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        Text { text: "Integrated:"; font-size: 9px; color: #64748b; }
+                        Text { text: root.lufs-integrated; font-size: 10px; font-weight: 800; color: #10b981; horizontal-alignment: right; }
+                    }
+
+                    HorizontalLayout {
+                        Text { text: "Short-Term:"; font-size: 9px; color: #64748b; }
+                        Text { text: root.lufs-short; font-size: 10px; font-weight: 800; color: #38bdf8; horizontal-alignment: right; }
+                    }
+
+                    HorizontalLayout {
+                        Text { text: "True Peak:"; font-size: 9px; color: #64748b; }
+                        Text { text: root.lufs-peak; font-size: 10px; font-weight: 800; color: #f59e0b; horizontal-alignment: right; }
+                    }
+                }
+            }
+
+            // Speaker Matrix Switcher
+            VerticalLayout {
+                spacing: 4px;
+
+                Text { text: "监听音箱矩阵切换"; font-size: 9px; font-weight: 700; color: #64748b; }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 22px;
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.25) : #1e293b;
+                        border-radius: Theme.radius;
+                        border-width: root.active-monitor == "main" ? 1px : 0;
+                        border-color: Theme.accent;
+
+                        Text {
+                            text: "A: 近场主箱";
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: root.active-monitor == "main" ? Theme.accent : #94a3b8;
+                            horizontal-alignment: center;
+                            }
+                        TouchArea { clicked => { root.switch-monitor("main"); } }
+                    }
+
+                    Rectangle {
+                        height: 22px;
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.25) : #1e293b;
+                        border-radius: Theme.radius;
+                        border-width: root.active-monitor == "alt" ? 1px : 0;
+                        border-color: Theme.accent;
+
+                        Text {
+                            text: "B: 单声道小箱";
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: root.active-monitor == "alt" ? Theme.accent : #94a3b8;
+                            horizontal-alignment: center;
+                            }
+                        TouchArea { clicked => { root.switch-monitor("alt"); } }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 20px;
+                        background: root.is-dim ? #f59e0b35 : #1e293b;
+                        border-radius: 3px;
+                        border-width: root.is-dim ? 1px : 0;
+                        border-color: #f59e0b;
+                        Text { text: "DIM"; font-size: 8px; font-weight: 800; color: root.is-dim ? #f59e0b : #94a3b8; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.toggle-dim(); } }
+                    }
+
+                    Rectangle {
+                        height: 20px;
+                        background: root.is-mono ? #38bdf835 : #1e293b;
+                        border-radius: 3px;
+                        border-width: root.is-mono ? 1px : 0;
+                        border-color: #38bdf8;
+                        Text { text: "MONO"; font-size: 8px; font-weight: 800; color: root.is-mono ? #38bdf8 : #94a3b8; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.toggle-mono(); } }
+                    }
+
+                    Rectangle {
+                        height: 20px;
+                        background: root.is-side ? #f43f5e35 : #1e293b;
+                        border-radius: 3px;
+                        border-width: root.is-side ? 1px : 0;
+                        border-color: #f43f5e;
+                        Text { text: "SIDE"; font-size: 8px; font-weight: 800; color: root.is-side ? #f43f5e : #94a3b8; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.toggle-side(); } }
+                    }
+                }
+            }
+        }
+
+        // Stereo Master Twin Bar Meters (Large vertical LED bars)
+        Rectangle {
+            background: #06080d;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: #1e293b;
+            vertical-stretch: 1;
+
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 8px;
+                alignment: center;
+
+                // dB scale markings
+                VerticalLayout {
+                    alignment: space-between;
+                    for mark in ["0", "-6", "-12", "-24", "-48"] : Text {
+                        text: mark;
+                        font-size: 8px;
+                        color: #475569;
+                        font-weight: 700;
+                    }
+                }
+
+                // Left Meter Bar
+                Rectangle {
+                    width: 16px;
+                    background: #0f172a;
+                    border-radius: 3px;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0;
+                        y: parent.height - (root.master-meter-l * parent.height);
+                        width: 16px;
+                        height: root.master-meter-l * parent.height;
+                        background: #10b981;
+                        border-radius: 2px;
+                    }
+                }
+
+                // Right Meter Bar
+                Rectangle {
+                    width: 16px;
+                    background: #0f172a;
+                    border-radius: 3px;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0;
+                        y: parent.height - (root.master-meter-r * parent.height);
+                        width: 16px;
+                        height: root.master-meter-r * parent.height;
+                        background: #10b981;
+                        border-radius: 2px;
+                    }
+                }
+            }
+        }
+
+        // Master Output Footer
+        Rectangle {
+            height: 24px;
+            background: #00000040;
+            border-radius: 3px;
+            Text {
+                text: "MASTER OUT · 32-bit Float";
+                font-size: 9px;
+                font-weight: 700;
+                color: #64748b;
+                horizontal-alignment: center;
+                }
+        }
+    }
+}

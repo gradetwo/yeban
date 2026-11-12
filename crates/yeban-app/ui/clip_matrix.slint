@@ -1,0 +1,186 @@
+import { Theme, TrackData } from "tokens.slint";
+
+export component HybridClipMatrixDrawer inherits Rectangle {
+    in-out property <[TrackData]> tracks;
+    in-out property <int> selected-track-id: 1;
+
+    callback trigger-scene(int);
+    callback trigger-clip(int, int);
+    callback select-track(int);
+
+    width: 220px;
+    background: Theme.bg-panel;
+    // border line
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Top Header Row with Scene Launchers
+        Rectangle {
+            height: 54px;
+            background: #00000035;
+            // border line
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 4px;
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 3px;
+                alignment: center;
+
+                HorizontalLayout {
+                    Text { text: "⚡ Clip 激发矩阵"; font-size: 10px; font-weight: 800; color: #f59e0b; }
+                    Text { text: "Scene 1-4"; font-size: 9px; color: #64748b; font-weight: 600; horizontal-alignment: right; vertical-alignment: center; }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 20px;
+                        background: #1e293b;
+                        border-radius: Theme.radius;
+                        Text { text: "▶ S1"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.trigger-scene(0); } }
+                    }
+
+                    Rectangle {
+                        height: 20px;
+                        background: #1e293b;
+                        border-radius: Theme.radius;
+                        Text { text: "▶ S2"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.trigger-scene(1); } }
+                    }
+
+                    Rectangle {
+                        height: 20px;
+                        background: #1e293b;
+                        border-radius: Theme.radius;
+                        Text { text: "▶ S3"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.trigger-scene(2); } }
+                    }
+
+                    Rectangle {
+                        height: 20px;
+                        background: #1e293b;
+                        border-radius: Theme.radius;
+                        Text { text: "▶ S4"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        TouchArea { clicked => { root.trigger-scene(3); } }
+                    }
+                }
+            }
+        }
+
+        // Track Clip Rows (aligned 1:1 with tracks, 64px row height)
+        VerticalLayout {
+            spacing: 0px;
+
+            for trk in root.tracks : Rectangle {
+                height: 64px;
+                background: trk.id == root.selected-track-id ? #ffffff08 : transparent;
+                // border line
+                border-color: #ffffff0a;
+
+                HorizontalLayout {
+                    padding: 4px;
+                    spacing: 3px;
+
+                    // Clip 1
+                    Rectangle {
+                        background: trk.clip1 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip1 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+
+                        Text {
+                            text: trk.clip1 != "" ? ("▶ " + trk.clip1) : "■";
+                            font-size: trk.clip1 != "" ? 8px : 7px;
+                            font-weight: 700;
+                            color: trk.clip1 != "" ? #ffffff : #475569;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 0);
+                            }
+                        }
+                    }
+
+                    // Clip 2
+                    Rectangle {
+                        background: trk.clip2 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip2 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+
+                        Text {
+                            text: trk.clip2 != "" ? ("▶ " + trk.clip2) : "■";
+                            font-size: trk.clip2 != "" ? 8px : 7px;
+                            font-weight: 700;
+                            color: trk.clip2 != "" ? #ffffff : #475569;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 1);
+                            }
+                        }
+                    }
+
+                    // Clip 3
+                    Rectangle {
+                        background: trk.clip3 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip3 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+
+                        Text {
+                            text: trk.clip3 != "" ? ("▶ " + trk.clip3) : "■";
+                            font-size: trk.clip3 != "" ? 8px : 7px;
+                            font-weight: 700;
+                            color: trk.clip3 != "" ? #ffffff : #475569;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 2);
+                            }
+                        }
+                    }
+
+                    // Clip 4
+                    Rectangle {
+                        background: trk.clip4 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip4 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+
+                        Text {
+                            text: trk.clip4 != "" ? ("▶ " + trk.clip4) : "■";
+                            font-size: trk.clip4 != "" ? 8px : 7px;
+                            font-weight: 700;
+                            color: trk.clip4 != "" ? #ffffff : #475569;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 3);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -914,3 +914,139 @@ import "../../../assets/fonts/NotoSerifSC-Regular-subset.otf";
 // `22-zoom-strip.png` (章节名衬线 + UUID, 2x) /
 // `22-zoom-console.png` (控制台脚注, 4x) /
 // `22-zoom-statusbar.png` (状态栏, 3x)。
+
+
+// =========================================================================
+// AetherStudio DAW — 多 Persona 模式与全局主题架构 (来自设计方案)
+// =========================================================================
+
+export enum PersonaMode {
+    AetherDefault,
+    AbletonLive,
+    LogicPro,
+    CubasePro,
+}
+
+export struct TrackData {
+    id: int,
+    name: string,
+    kind: string,
+    color: color,
+    bus: string,
+    volume_db: float,
+    pan: string,
+    muted: bool,
+    soloed: bool,
+    armed: bool,
+    meter_peak: float,
+    insert1: string,
+    insert2: string,
+    insert3: string,
+    clip1: string,
+    clip2: string,
+    clip3: string,
+    clip4: string,
+}
+
+export struct TimelineBlockData {
+    track_id: int,
+    label: string,
+    start_px: length,
+    width_px: length,
+    is_audio: bool,
+    gain_label: string,
+    color: color,
+}
+
+export struct BrowserItemData {
+    name: string,
+    desc: string,
+    tag: string,
+    format: string,
+}
+
+export struct ChordBlockData {
+    name: string,
+    roman: string,
+    color: color,
+}
+
+export struct CommandPaletteItem {
+    id: string,
+    title: string,
+    category: string,
+    shortcut: string,
+}
+
+export struct PianoStepRow {
+    pitch_name: string,
+    is_root: bool,
+    step0: bool,
+    step1: bool,
+    step2: bool,
+    step3: bool,
+    step4: bool,
+    step5: bool,
+    step6: bool,
+    step7: bool,
+    step8: bool,
+    step9: bool,
+    step10: bool,
+    step11: bool,
+    step12: bool,
+    step13: bool,
+    step14: bool,
+    step15: bool,
+}
+
+export global Theme {
+    in-out property <PersonaMode> persona: PersonaMode.AetherDefault;
+
+    // 响应式设计 Token
+    out property <color> bg-canvas:
+        persona == PersonaMode.AbletonLive ? #1e1e1e :
+        persona == PersonaMode.LogicPro    ? #16181c :
+        persona == PersonaMode.CubasePro   ? #0f1114 : #0b0d12;
+
+    out property <color> bg-panel:
+        persona == PersonaMode.AbletonLive ? #2b2b2b :
+        persona == PersonaMode.LogicPro    ? #24272d :
+        persona == PersonaMode.CubasePro   ? #1a1d21 : #131720;
+
+    out property <color> bg-surface:
+        persona == PersonaMode.AbletonLive ? #363636 :
+        persona == PersonaMode.LogicPro    ? #2e323b :
+        persona == PersonaMode.CubasePro   ? #24282e : #1b202c;
+
+    out property <color> border-subtle:
+        persona == PersonaMode.AbletonLive ? #141414 :
+        persona == PersonaMode.LogicPro    ? #3a3f4b :
+        persona == PersonaMode.CubasePro   ? #262b38 : #262d3d;
+
+    out property <color> accent:
+        persona == PersonaMode.AbletonLive ? #ff764d :
+        persona == PersonaMode.LogicPro    ? #3b82f6 :
+        persona == PersonaMode.CubasePro   ? #00c8ff : #06b6d4;
+
+    out property <color> accent-glow:
+        persona == PersonaMode.AbletonLive ? #ff764d40 :
+        persona == PersonaMode.LogicPro    ? #3b82f640 :
+        persona == PersonaMode.CubasePro   ? #00c8ff40 : #06b6d440;
+
+    out property <length> radius:
+        persona == PersonaMode.AbletonLive ? 2px :
+        persona == PersonaMode.LogicPro    ? 7px :
+        persona == PersonaMode.CubasePro   ? 3px : 6px;
+
+    out property <color> header-bg:
+        persona == PersonaMode.AbletonLive ? #282828 :
+        persona == PersonaMode.LogicPro    ? #23262e :
+        persona == PersonaMode.CubasePro   ? #171a1e : #12161f;
+
+    // Ableton 兼容模式下可将轨道头切换至右侧，默认旗舰保持在左侧
+    in-out property <bool> track-headers-on-right:
+        persona == PersonaMode.AbletonLive;
+
+    in-out property <string> active-tool: "pointer"; // "pointer" | "range" | "split" | "draw"
+    in-out property <string> active-dock-tab: persona == PersonaMode.AbletonLive ? "devices" : (persona == PersonaMode.LogicPro || persona == PersonaMode.CubasePro ? "mixer" : "stacked");
+}

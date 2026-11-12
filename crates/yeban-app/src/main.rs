@@ -452,7 +452,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         .as_ref()
         .map(yeban_app::mcp_mount::InProcessMcp::engine_readings_handle);
     let engine_handle = engine.engine_handle();
-    host::apply_transport(&ui, engine_handle.borrow().transport());
+    host::apply_transport(&ui, &engine_handle.borrow().transport());
     // -----------------------------------------------------------------------
     // 60Hz 主线程心跳：**编辑 ⇒ 发声** 的发布点 ＋ 退役回收 ＋ **电平抽干**
     // -----------------------------------------------------------------------

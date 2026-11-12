@@ -1,0 +1,264 @@
+import { Theme, CommandPaletteItem } from "tokens.slint";
+
+export component CommandPaletteModal inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in-out property <string> filter-text: "";
+    in-out property <[CommandPaletteItem]> commands: [
+        { id: "persona-default", title: "切换至：全新默认旗舰布局 (Aether Hybrid)", category: "Persona", shortcut: "1" },
+        { id: "persona-ableton", title: "切换至：Ableton Live 兼容布局 (Live Flow)", category: "Persona", shortcut: "2" },
+        { id: "persona-logic",   title: "切换至：Logic Pro 兼容布局 (Apple Studio)", category: "Persona", shortcut: "3" },
+        { id: "persona-cubase",  title: "切换至：Cubase Pro 兼容布局 (Steinberg 4-Zone)", category: "Persona", shortcut: "4" },
+        { id: "toggle-hotspots", title: "打开/关闭 UI 痛点改进标注透视图 (Hotspots)", category: "Help", shortcut: "H" },
+        { id: "tab-stacked",     title: "切换底栏：堆叠视图 (Stacked Devices+Mixer)", category: "View", shortcut: "F3" },
+        { id: "tab-devices",     title: "切换底栏：内联 DSP 设备链 (Devices)", category: "View", shortcut: "Shift+Tab" },
+        { id: "tab-mixer",       title: "切换底栏：MixConsole 混音台 (Mixer)", category: "View", shortcut: "X" },
+        { id: "tab-pianoroll",   title: "切换底栏：MPE 钢琴卷帘编辑器 (Piano Roll)", category: "View", shortcut: "P" },
+        { id: "action-add-track",title: "新增轨道 (Add Hybrid Track)", category: "Track", shortcut: "Cmd+T" }
+    ];
+
+    callback execute-command(string);
+    callback close-modal();
+
+    if root.is-open : Rectangle {
+        background: #00000088;
+
+        VerticalLayout {
+            alignment: center;
+
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 520px;
+                    height: 380px;
+                    background: #111520;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    clip: true;
+
+                    VerticalLayout {
+                        padding: 0px;
+                        spacing: 0px;
+
+                        // Header with input
+                        Rectangle {
+                            height: 48px;
+                            background: #161c2b;
+                            // border line
+                            border-color: #334155;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: "⌘K"; font-size: 13px; font-weight: 800; color: Theme.accent; }
+                                    Text { text: "输入动作或切换布局 (例如: Ableton, 混音台, 切分)..."; font-size: 12px; color: #94a3b8; vertical-alignment: center; }
+                                }
+
+                                Rectangle {
+                                    background: #1e293b;
+                                    border-radius: 4px;
+                                    height: 22px;
+                                    Text { text: "ESC"; font-size: 9px; font-weight: 700; color: #cbd5e1; }
+                                    TouchArea { clicked => { root.close-modal(); } }
+                                }
+                            }
+                        }
+
+                        // Command List
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 4px;
+                            vertical-stretch: 1;
+
+                            for cmd in root.commands : Rectangle {
+                                height: 32px;
+                                background: #182030;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    alignment: space-between;
+                                    Text { text: cmd.title; font-size: 11px; font-weight: 600; color: #f8fafc; }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Rectangle {
+                                            background: #33415540;
+                                            border-radius: 3px;
+                                            Text { text: cmd.category; font-size: 8px; color: #94a3b8; }
+                                        }
+                                        Rectangle {
+                                            background: Theme.accent.with-alpha(0.15);
+                                            border-radius: 3px;
+                                            Text { text: cmd.shortcut; font-size: 9px; font-weight: 700; color: Theme.accent; }
+                                        }
+                                    }
+                                }
+
+                                TouchArea {
+                                    clicked => {
+                                        root.execute-command(cmd.id);
+                                        root.close-modal();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component HotspotOverlay inherits Rectangle {
+    in-out property <bool> is-open: false;
+    callback close-overlay();
+
+    if root.is-open : Rectangle {
+        background: #020617bb;
+
+        VerticalLayout {
+            padding: 24px;
+            alignment: space-between;
+
+            // Top Header
+            Rectangle {
+                height: 40px;
+                // border line
+                border-color: #f59e0b50;
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            background: #f59e0b;
+                            border-radius: 4px;
+                            Text { text: "UI/UX 核心痛点修复透视图"; font-size: 11px; font-weight: 800; color: #020617; }
+                        }
+                        Text { text: "对比 Ableton / Logic / Cubase 原生缺陷与本方案的架构级改进"; font-size: 11px; color: #fde68a; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        background: #f43f5e;
+                        border-radius: 4px;
+                        height: 26px;
+                        Text { text: "✕ 关闭透视"; font-size: 10px; font-weight: 800; color: #ffffff; }
+                        TouchArea { clicked => { root.close-overlay(); } }
+                    }
+                }
+            }
+
+            // 3 Improvement Cards
+            HorizontalLayout {
+                spacing: 16px;
+                alignment: center;
+
+                // Card 1
+                Rectangle {
+                    width: 340px;
+                    height: 180px;
+                    background: #0f172aee;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #06b6d4;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        Text { text: "① 解决 Ableton「轨道头在最右侧」反人类痛点"; font-size: 12px; font-weight: 800; color: #38bdf8; wrap: word-wrap; }
+                        Text {
+                            text: "Ableton 将轨道名称与 M/S 按钮放在屏幕最右侧，超宽屏下视线与鼠标需横跨整个屏幕。\nAether 默认将轨道头回归时间轴左侧，并在「Ableton 兼容模式」中提供一键左/右镜像切换！";
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Card 2
+                Rectangle {
+                    width: 340px;
+                    height: 180px;
+                    background: #0f172aee;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #10b981;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        Text { text: "② 解决 Logic/Cubase「插件弹窗遮挡地狱」"; font-size: 12px; font-weight: 800; color: #34d399; wrap: word-wrap; }
+                        Text {
+                            text: "传统 DAW 中打开 5 个以上 EQ/压缩插件会堆满屏幕遮挡编曲区。\nAether 引入底部内联 DSP 设备机架 (Inline Rack)，原生与常用三方参数直接嵌于底栏同屏调校，双击才展开独立窗口！";
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Card 3
+                Rectangle {
+                    width: 340px;
+                    height: 180px;
+                    background: #0f172aee;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #f59e0b;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        Text { text: "③ 解决 Ableton「Tab 盲切割裂」与 Logic「重载卡顿」"; font-size: 12px; font-weight: 800; color: #fbbf24; wrap: word-wrap; }
+                        Text {
+                            text: "支持左侧 Clip 激发抽屉 + 右侧线性时间轴同屏联动，直接拖拽 Loop 入轨；\n顶栏切换 Buffer 大小零重载即时生效，彻底告别 Logic Pro 重新加载整首歌的漫长等待！";
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // Bottom tip
+            Rectangle {
+                height: 24px;
+                Text { text: "提示：您可以随时点击顶栏「Aether / Live / Logic / Cubase」实时对比 4 套布局与快捷键映射。"; font-size: 10px; color: #94a3b8; horizontal-alignment: center; }
+            }
+        }
+    }
+}
+
+export component ToastBanner inherits Rectangle {
+    in-out property <string> toast-text: "";
+
+    if root.toast-text != "" : Rectangle {
+        x: parent.width - 320px;
+        y: parent.height - 56px;
+        width: 300px;
+        height: 36px;
+        background: #0f172af0;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.accent;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 8px;
+            alignment: start;
+
+            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
+            Text { text: root.toast-text; font-size: 10px; font-weight: 700; color: #f8fafc; vertical-alignment: center; overflow: elide; }
+        }
+    }
+}
