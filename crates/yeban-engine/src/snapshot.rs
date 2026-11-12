@@ -1493,7 +1493,7 @@ pub fn pedal_hold_end_tick(lane: &AutomationLane, note_end_tick: u64, track_end_
     let Some(value) = lane.value_at(note_end_tick) else {
         return note_end_tick;
     };
-    if !(value > 0.0) {
+    if value <= 0.0 || value.is_nan() {
         return note_end_tick;
     }
     // 全踏板看"跌破 64"，半踏板看"回到 0"。
