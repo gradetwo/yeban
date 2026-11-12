@@ -2452,7 +2452,7 @@ pub const HUMANIZE_CLIP_TIME_FIELD: &str = "timeJitterTicks";
 /// `humanizeClip` 的**力度抖动幅度**字段名（必填，±n；结果裁进 1..=127）。
 pub const HUMANIZE_CLIP_VELOCITY_FIELD: &str = "velocityJitter";
 /// `humanizeClip` 允许出现的全部键。
-pub const HUMANIZE_CLIP_FIELDS: [&str; 8] = [
+pub const HUMANIZE_CLIP_FIELDS: [&str; 11] = [
     "kind",
     HUMANIZE_CLIP_SEED_FIELD,
     HUMANIZE_CLIP_TIME_FIELD,
@@ -2461,6 +2461,9 @@ pub const HUMANIZE_CLIP_FIELDS: [&str; 8] = [
     HUMANIZE_CLIP_TIMING_STD_FIELD,
     HUMANIZE_CLIP_VELOCITY_STD_FIELD,
     HUMANIZE_CLIP_AR_ALPHA_FIELD,
+    HUMANIZE_CLIP_HMM_STAY_FIELD,
+    HUMANIZE_CLIP_HURST_FIELD,
+    HUMANIZE_CLIP_FGN_WEIGHT_FIELD,
 ];
 /// `humanizeClip` 的**抖动模型**字段名（可选，`"uniform"` / `"structured"`；
 /// 缺省 `"uniform"` = 旧均匀行为）。
@@ -2474,6 +2477,15 @@ pub const HUMANIZE_CLIP_VELOCITY_STD_FIELD: &str = "velocityStd";
 /// `humanizeClip` 的**自回归系数 α 千分比**字段名（可选，0..=950；
 /// 缺省 800；仅 `model = "structured"` 用）。
 pub const HUMANIZE_CLIP_AR_ALPHA_FIELD: &str = "arAlphaPermille";
+/// `humanizeClip` 的 **HMM 自留概率 p 千分比**字段名（可选，0..=990；
+/// 缺省 800；仅 `model = "structured"` 用）。
+pub const HUMANIZE_CLIP_HMM_STAY_FIELD: &str = "hmmStayPermille";
+/// `humanizeClip` 的 **fGn Hurst 指数 H 千分比**字段名（可选，500..=950；
+/// 缺省 810；仅 `model = "structured"` 用）。
+pub const HUMANIZE_CLIP_HURST_FIELD: &str = "hurstPermille";
+/// `humanizeClip` 的 **fGn 混合权重 w 千分比**字段名（可选，0..=1000；
+/// 缺省 500，0 = 关掉第四层；仅 `model = "structured"` 用）。
+pub const HUMANIZE_CLIP_FGN_WEIGHT_FIELD: &str = "fgnWeightPermille";
 
 /// `ops[].kind` 的**整片段复制**形态名（克隆池条目；可选地同时摆上新片段，
 /// 编译成一条 `Op::Batch`）。
@@ -3277,7 +3289,7 @@ pub enum NoteOp {
     ///
     /// 模型分两路：`model = "uniform"`（缺省）是旧均匀抖动，
     /// 只换种子派生（旧金向量按测试自带机制重钉，见判据）；
-    /// `model = "structured"` 是 v2 结构化抖动（高斯 + AR(2) + 阻尼，
+    /// `model = "structured"` 是 v3 结构化抖动（高斯 + AR(2) + HMM + fGn + 阻尼，
     /// 见 [`super::humanize`]）。
     HumanizeClip {
         /// 抖动种子（同（种子，轨）⇒ 同一份抖动）。
@@ -3297,6 +3309,15 @@ pub enum NoteOp {
         /// 自回归系数 α 千分比（0..=950；`None` = 800；
         /// 仅 `Structured` 用）。
         ar_alpha_permille: Option<u16>,
+        /// HMM 自留概率 p 千分比（0..=990；`None` = 800；
+        /// 仅 `Structured` 用）。
+        hmm_stay_permille: Option<u16>,
+        /// fGn Hurst 指数 H 千分比（500..=950；`None` = 810；
+        /// 仅 `Structured` 用）。
+        hurst_permille: Option<u16>,
+        /// fGn 混合权重 w 千分比（0..=1000；`None` = 500，0 = 关掉第四层；
+        /// 仅 `Structured` 用）。
+        fgn_weight_permille: Option<u16>,
     },
     /// **整片段复制**：克隆顶层 `clipId` 的池条目（MIDI 与音频片段均可），
     /// 可选地把新片段摆上 `track_id` 的 `start_tick`。
@@ -4804,29 +4825,32 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                     )
                 })?,
             };
-            // α 千分比 0..=950；越界用 `OutOfRange` + 字段数据（与 `read_range` 同形）。
-            let ar_alpha_permille = match read_optional_u64(object, HUMANIZE_CLIP_AR_ALPHA_FIELD)? {
-                None => None,
-                Some(value) => {
-                    if value > u64::from(humanize::MAX_AR_ALPHA_PERMILLE) {
-                        return Err(Fault::domain_with_data(
-                            ErrorCode::OutOfRange,
-                            format!(
-                                "`{}` 越界: {value} 不在 0..={}",
-                                HUMANIZE_CLIP_AR_ALPHA_FIELD,
-                                humanize::MAX_AR_ALPHA_PERMILLE
-                            ),
-                            serde_json::json!({
-                                "field": HUMANIZE_CLIP_AR_ALPHA_FIELD,
-                                "value": value,
-                                "min": 0,
-                                "max": humanize::MAX_AR_ALPHA_PERMILLE,
-                            }),
-                        ));
-                    }
-                    Some(u16::try_from(value).unwrap_or(humanize::MAX_AR_ALPHA_PERMILLE))
-                }
-            };
+            // 千分比字段：α 0..=950、HMM 自留 0..=990、Hurst 500..=950、
+            // fGn 权重 0..=1000；越界用 `OutOfRange` + 字段数据。
+            let ar_alpha_permille = read_optional_u16_bounded(
+                object,
+                HUMANIZE_CLIP_AR_ALPHA_FIELD,
+                0,
+                humanize::MAX_AR_ALPHA_PERMILLE,
+            )?;
+            let hmm_stay_permille = read_optional_u16_bounded(
+                object,
+                HUMANIZE_CLIP_HMM_STAY_FIELD,
+                0,
+                humanize::MAX_HMM_STAY_PERMILLE,
+            )?;
+            let hurst_permille = read_optional_u16_bounded(
+                object,
+                HUMANIZE_CLIP_HURST_FIELD,
+                humanize::MIN_HURST_PERMILLE,
+                humanize::MAX_HURST_PERMILLE,
+            )?;
+            let fgn_weight_permille = read_optional_u16_bounded(
+                object,
+                HUMANIZE_CLIP_FGN_WEIGHT_FIELD,
+                0,
+                humanize::MAX_FGN_WEIGHT_PERMILLE,
+            )?;
             Ok(NoteOp::HumanizeClip {
                 seed: read_u64(object, HUMANIZE_CLIP_SEED_FIELD)?,
                 time_jitter_ticks: read_u64(object, HUMANIZE_CLIP_TIME_FIELD)?,
@@ -4840,6 +4864,9 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 timing_std_ticks: read_optional_u64(object, HUMANIZE_CLIP_TIMING_STD_FIELD)?,
                 velocity_std: read_optional_u64(object, HUMANIZE_CLIP_VELOCITY_STD_FIELD)?,
                 ar_alpha_permille,
+                hmm_stay_permille,
+                hurst_permille,
+                fgn_weight_permille,
             })
         }
         DUPLICATE_CLIP_KIND => {
@@ -8870,6 +8897,9 @@ fn expand_clip_level_op(
             timing_std_ticks,
             velocity_std,
             ar_alpha_permille,
+            hmm_stay_permille,
+            hurst_permille,
+            fgn_weight_permille,
         } => {
             // 有效种子按轨派生（Wang 2026-11-11 定）：同（seed，轨）同抖动，
             // 不同轨即使音符相同、seed 相同，抖动序列也不同。
@@ -8953,6 +8983,11 @@ fn expand_clip_level_op(
                         *timing_std_ticks,
                         *velocity_std,
                         *ar_alpha_permille,
+                        humanize::LayerParams::resolve(
+                            *hmm_stay_permille,
+                            *hurst_permille,
+                            *fgn_weight_permille,
+                        ),
                     );
                     let deviations = humanize::structured_deviations(
                         effective_seed,
@@ -11823,6 +11858,32 @@ fn read_optional_u64(object: &Map<String, Value>, field: &str) -> Result<Option<
     })
 }
 
+/// 读一个**可选**的千分比键（缺省 = `None`；非整数拒绝；越界用 `OutOfRange` +
+/// 字段数据，`min`/`max` 照抄调用方给的界）。
+fn read_optional_u16_bounded(
+    object: &Map<String, Value>,
+    field: &str,
+    min: u16,
+    max: u16,
+) -> Result<Option<u16>, Fault> {
+    let Some(value) = read_optional_u64(object, field)? else {
+        return Ok(None);
+    };
+    if value < u64::from(min) || value > u64::from(max) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{field}` 越界: {value} 不在 {min}..={max}"),
+            serde_json::json!({
+                "field": field,
+                "value": value,
+                "min": min,
+                "max": max,
+            }),
+        ));
+    }
+    Ok(Some(u16::try_from(value).unwrap_or(max)))
+}
+
 /// 读一个**可选**的布尔键（缺省 = `None`；非布尔拒绝）。
 fn read_optional_bool(object: &Map<String, Value>, field: &str) -> Result<Option<bool>, Fault> {
     let Some(value) = object.get(field) else {
@@ -13122,15 +13183,17 @@ mod tests {
     ///    同轨跑两次 ⇒ 同序列（确定性契约现为每（seed，轨））。
     /// ② 结构化：同 seed 同参数 ⇒ 同输出；与均匀同 seed 输出不同；
     ///    缺省参数下相邻步 ≤ 生效幅度 / 4、滞后 1 自相关 ≥ 0.8；
-    ///    α = 0 对照的平均 |Δ| 大于缺省 α 的 1.5 倍（α 确实控平滑；
-    ///    1.5 倍口径：阻尼把 α=0 的步进压到 ≤ 5，实测比值 1.71 倍，
-    ///    无阻尼生成器的 2 倍口径见 `humanize` 模块单测）。
+    ///    α = 0 对照的平均 |Δ| 大于缺省 α 的 1.25 倍（α 确实控平滑；
+    ///    v3 实测比值 1.335 倍，L3/L4 稀释了 v2 的 1.71 倍；
+    ///    阻尼把 α=0 的步进压到 ≤ 5，无阻尼生成器的 2 倍口径见
+    ///    `humanize` 模块单测）。
     /// ③ 校验：`model = "bogus"` ⇒ `INVALID_PARAMETER_RANGE`；
     ///    `arAlphaPermille = 951` ⇒ `OUT_OF_RANGE`（带字段数据）；
     ///    未知字段 ⇒ `unknownHumanizeClipField`；
     ///    新字段缺省 ⇒ 旧均匀行为（解析通过、编译通过）。
     /// ④ 金向量：结构化缺省参数、固定（seed，轨）的前 8 个时值/力度偏差
-    ///    已钉死（重钉机制：测试失败时打印实际值，改断言即可）。
+    ///    已钉死（v3 重钉：L3 HMM + L4 fGn 叠进 structured；
+    ///    重钉机制：测试失败时打印实际值，改断言即可）。
     #[test]
     fn humanize_clip_per_track_seed_and_structured_model() {
         // —— ① 每轨种子派生（夹具只有一条 MIDI 轨：克隆后加一条 MIDI 轨，
@@ -13202,8 +13265,10 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert!(rho1 >= 0.8, "缺省参数下滞后 1 自相关 {rho1} 应 ≥ 0.8");
-        // α = 0 对照：平均 |Δ| 大于缺省 α 的 1.5 倍（实测 1.71 倍；
-        // 阻尼把 α=0 的步进压到 ≤ 5，故不用无阻尼的 2 倍口径）。
+        // α = 0 对照：平均 |Δ| 大于缺省 α 的 1.25 倍（v3 实测 1.335 倍；
+        // L3/L4 稀释了 α 的对比：fGn 混合与 HMM 换态给缺省 α 加了步进
+        // （缺省平均 |Δ| 2.89），α=0 的步进受阻尼封顶 5（平均 |Δ| 3.86），
+        // 比值从 v2 的 1.71 倍压缩到 1.335 倍；口径随之改 1.25 倍）。
         let alpha0_ops = parse_ops(&serde_json::json!([{
             "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
             "model": "structured", "arAlphaPermille": 0,
@@ -13219,8 +13284,8 @@ mod tests {
                 / (values.len() - 1) as f64
         };
         assert!(
-            mean_abs_step(&micros0) > 1.5 * mean_abs_step(&micros),
-            "α=0 平均 |Δ| {} 应大于缺省 α 的 1.5 倍 {}",
+            mean_abs_step(&micros0) > 1.25 * mean_abs_step(&micros),
+            "α=0 平均 |Δ| {} 应大于缺省 α 的 1.25 倍 {}",
             mean_abs_step(&micros0),
             mean_abs_step(&micros),
         );
@@ -13231,13 +13296,14 @@ mod tests {
                 .all(|velocity| (1..=127).contains(velocity))
         );
         // ④ 金向量（基线微时值全 0 ⇒ 微时值即偏差；基线力度 100 ⇒ 力度 − 100 即偏差）。
-        assert_eq!(&micros[..8], &[0, -3, -4, -5, -5, -3, 2, 6]);
+        // ⚠ v3 重钉：L3 HMM + L4 fGn 叠进 structured，旧 v2 金向量已失效。
+        assert_eq!(&micros[..8], &[9, 4, -1, -4, -6, -1, 4, 9]);
         assert_eq!(
             velocities[..8]
                 .iter()
                 .map(|velocity| i64::from(*velocity) - 100)
                 .collect::<Vec<_>>(),
-            [0, 0, -1, -1, -1, -2, 0, 2]
+            [1, -1, 0, -1, 0, -2, 0, 2]
         );
 
         // —— ③ 校验。
@@ -13258,6 +13324,48 @@ mod tests {
             serde_json::json!("arAlphaPermille")
         );
         assert_eq!(lane_fault_data(&fault)["max"], serde_json::json!(950));
+        // 新字段越界同样 `OUT_OF_RANGE`（带字段数据）。
+        for (field, value, min, max) in [
+            ("hmmStayPermille", 991, 0, 990),
+            ("hurstPermille", 499, 500, 950),
+            ("hurstPermille", 951, 500, 950),
+            ("fgnWeightPermille", 1001, 0, 1000),
+        ] {
+            let mut payload = serde_json::json!([{
+                "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+                "model": "structured",
+            }]);
+            payload[0][field] = serde_json::json!(value);
+            let fault = parse_ops(&payload).expect_err("新字段越界必须红");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+            assert_eq!(lane_fault_data(&fault)["field"], serde_json::json!(field));
+            assert_eq!(lane_fault_data(&fault)["min"], serde_json::json!(min));
+            assert_eq!(lane_fault_data(&fault)["max"], serde_json::json!(max));
+        }
+        // 新字段确实控输出：Hurst 500（白噪声）与缺省 810 的结构化输出不同；
+        // fGn 权重 0（关掉第四层）与缺省 500 的输出不同。
+        let hurst500_ops = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "model": "structured", "hurstPermille": 500,
+        }]))
+        .expect("解析");
+        let hurst500 = compile(&project, &track, &clip, &hurst500_ops).expect("编译");
+        assert_ne!(
+            format!("{first:?}"),
+            format!("{hurst500:?}"),
+            "hurstPermille 500 与缺省 810 的输出应不同"
+        );
+        let fgn0_ops = parse_ops(&serde_json::json!([{
+            "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
+            "model": "structured", "fgnWeightPermille": 0,
+        }]))
+        .expect("解析");
+        let fgn0 = compile(&project, &track, &clip, &fgn0_ops).expect("编译");
+        assert_ne!(
+            format!("{first:?}"),
+            format!("{fgn0:?}"),
+            "fgnWeightPermille 0 与缺省 500 的输出应不同"
+        );
         let fault = parse_ops(&serde_json::json!([{
             "kind": "humanizeClip", "seed": 42, "timeJitterTicks": 20, "velocityJitter": 10,
             "bogusField": 1,

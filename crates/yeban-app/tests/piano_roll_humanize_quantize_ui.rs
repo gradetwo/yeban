@@ -770,6 +770,9 @@ fn host_expansion_matches_mcp_compile_for_humanize_and_quantize() {
             timing_std_ticks: None,
             velocity_std: None,
             ar_alpha_permille: None,
+            hmm_stay_permille: None,
+            hurst_permille: None,
+            fgn_weight_permille: None,
         }],
     )
     .expect("夹具前提：MCP 的人性化展开必须成功");
