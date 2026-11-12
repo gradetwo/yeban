@@ -8,11 +8,12 @@
 
 use yeban_dsp::song_overview::{
     AnalysisOptions, AnomalyType, AudioInput, BAND_DB_FLOOR, ClashSeverity, NO_ENVELOPE,
-    NO_LOUDNESS_READING_LUFS, NoteEvent, ScoreInput, SectionMarker, StemInput, TensionProfile,
-    adaptive_weights, analyze_repetition, analyze_song_overview,
-    analyze_song_overview_with_options, analyze_song_overview_with_stems, bilateral_smooth,
+    NO_LOUDNESS_READING_LUFS, NoteEvent, ScoreInput, SectionMarker, StemBandCache, StemInput,
+    TempoChange, TensionProfile, adaptive_weights, analyze_repetition, analyze_song_overview,
+    analyze_song_overview_with_options, analyze_song_overview_with_stems,
+    analyze_song_overview_with_stems_cached, bar_hashes, bilateral_smooth,
     circle_of_fifths_distance, envelope_band, envelope_deviation, roughness_of_midis,
-    severity_band,
+    score_bar_hash, severity_band, stem_sample_fingerprint,
 };
 
 /// 正弦夹具（相位用 `f64` 算），返回交错立体声。
@@ -663,6 +664,142 @@ fn four_minute_timing_probe() {
         elapsed.as_millis() < 10_000,
         "4 分钟分析耗时应 < 10 s，实际 {elapsed:?}"
     );
+}
+
+/// 真实歌曲规模夹具（(c) 30 ms 量测口径）：120 小节、4/4、120 BPM、8 轨、
+/// 约 12,000 个音符（4 轨十六分音符 + 2 轨八分音符 + 1 轨四分音符 + 1 轨
+/// 打击十六分音符）；音频为 4 分钟 48 kHz 立体声、5 个正弦分量叠加
+/// （110/220/440/880/1760 Hz，模拟多乐器频谱共存，非单频正弦）。
+fn dense_song_fixture() -> (ScoreInput, Vec<f32>) {
+    let mut notes = Vec::new();
+    for bar in 0..120u32 {
+        let base = bar as f32 * 4.0;
+        for track in 0..4u32 {
+            for step in 0..16u32 {
+                notes.push(note(
+                    base + step as f32 * 0.25,
+                    0.25,
+                    48 + ((bar + step + track * 3) % 24) as u8,
+                    70 + ((step * 7 + track * 11) % 50) as u8,
+                    track,
+                    false,
+                ));
+            }
+        }
+        for track in 4..6u32 {
+            for step in 0..8u32 {
+                notes.push(note(
+                    base + step as f32 * 0.5,
+                    0.5,
+                    40 + ((bar + step + track) % 16) as u8,
+                    80,
+                    track,
+                    false,
+                ));
+            }
+        }
+        for beat in 0..4u32 {
+            notes.push(note(base + beat as f32, 1.0, 60, 90, 6, false));
+            notes.push(note(base + beat as f32 * 0.25, 0.25, 36, 100, 7, true));
+            for extra in 1..4u32 {
+                notes.push(note(
+                    base + beat as f32 + extra as f32 * 0.25,
+                    0.25,
+                    42,
+                    60,
+                    7,
+                    true,
+                ));
+            }
+        }
+    }
+    let len = 48_000 * 240;
+    let mut samples = Vec::with_capacity(len * 2);
+    for i in 0..len {
+        let t = i as f64 / 48_000.0;
+        let sample = (0.05 * (std::f64::consts::TAU * 110.0 * t).sin()
+            + 0.04 * (std::f64::consts::TAU * 220.0 * t).sin()
+            + 0.04 * (std::f64::consts::TAU * 440.0 * t).sin()
+            + 0.03 * (std::f64::consts::TAU * 880.0 * t).sin()
+            + 0.02 * (std::f64::consts::TAU * 1760.0 * t).sin()) as f32;
+        samples.push(sample);
+        samples.push(sample);
+    }
+    (score_with(notes), samples)
+}
+
+/// (c) 量测探针：真实规模稠密谱面 + 4 分钟多分量音频，无分轨。
+/// 跑 3 次取最小值（去掉首跑缓存/分页噪声）。`#[ignore]`，release 档手动跑。
+#[test]
+#[ignore]
+fn dense_song_timing_probe() {
+    use std::time::Instant;
+    let (score, samples) = dense_song_fixture();
+    let audio = AudioInput {
+        samples: &samples,
+        sample_rate: 48_000.0,
+    };
+    eprintln!(
+        "dense fixture: notes={}, bars=120, audio_frames={}",
+        score.notes.len(),
+        samples.len() / 2
+    );
+    let mut best = std::time::Duration::MAX;
+    for run in 0..3 {
+        let start = Instant::now();
+        let overview = analyze_song_overview(&score, Some(&audio));
+        let elapsed = start.elapsed();
+        assert_eq!(overview.song_meta.total_bars, 120);
+        eprintln!("dense run {run}: {elapsed:?}");
+        best = best.min(elapsed);
+    }
+    eprintln!("dense best: {best:?}");
+}
+
+/// (c) 量测探针：真实规模 + 6 条分轨（分轨频率打架路径全开）。
+/// 每条分轨为 4 分钟单频正弦（110–660 Hz 各一），增益 0.08。
+#[test]
+#[ignore]
+fn dense_song_with_stems_timing_probe() {
+    use std::time::Instant;
+    let (score, samples) = dense_song_fixture();
+    let audio = AudioInput {
+        samples: &samples,
+        sample_rate: 48_000.0,
+    };
+    let stem_samples: Vec<Vec<f32>> = [110.0f64, 220.0, 330.0, 440.0, 550.0, 660.0]
+        .iter()
+        .map(|&freq| sine_stereo(0.08, freq, 48_000.0, 48_000 * 240))
+        .collect();
+    let ids: Vec<String> = (0..6).map(|i| format!("track-{i}")).collect();
+    let names: Vec<String> = (0..6).map(|i| format!("Stem {i}")).collect();
+    let stems: Vec<StemInput<'_>> = stem_samples
+        .iter()
+        .enumerate()
+        .map(|(i, buf)| StemInput {
+            track_id: &ids[i],
+            track_name: &names[i],
+            audio: AudioInput {
+                samples: buf,
+                sample_rate: 48_000.0,
+            },
+        })
+        .collect();
+    let mut best = std::time::Duration::MAX;
+    for run in 0..3 {
+        let start = Instant::now();
+        let overview = analyze_song_overview_with_stems(
+            &score,
+            Some(&audio),
+            &stems,
+            &AnalysisOptions::default(),
+        );
+        let elapsed = start.elapsed();
+        assert_eq!(overview.song_meta.total_bars, 120);
+        eprintln!("dense+stems run {run}: {elapsed:?}");
+        best = best.min(elapsed);
+    }
+    eprintln!("dense+stems best: {best:?}");
 }
 
 // ===========================================================================
@@ -1462,4 +1599,203 @@ fn no_stems_gives_empty_clash_summary() {
     assert!(overview.frequency_clash.entries.is_empty());
     assert_eq!(overview.frequency_clash.overall_overlap, 0.0);
     assert!(overview.frequency_clash.bar_overlaps.is_empty());
+}
+
+// ===========================================================================
+// Follow-ons (b)：小节级双键哈希 + 分轨增量重算（设计稿 §9.2 / §9.3）。
+// ===========================================================================
+
+/// 8 小节谱面：轨 0 每小节一音；轨 1 只在第 5 小节（下标 4）一音。
+fn hash_fixture_score() -> ScoreInput {
+    let mut notes = Vec::new();
+    for bar in 0..8u32 {
+        notes.push(note(bar as f32 * 4.0, 1.0, 60, 100, 0, false));
+    }
+    notes.push(note(16.0, 1.0, 48, 90, 1, false));
+    score_with(notes)
+}
+
+/// 双键失效矩阵（设计稿 §9.3）：改一音 ⇒ 谱面键只变该小节、音频键只变
+/// [k, k+1]；改 BPM ⇒ 谱面键全不变、音频键全变；改 Marker 标签 ⇒ 双键
+/// 全不变；换只在第 5 小节发声的轨的指纹 ⇒ 音频键只变第 5、6 小节。
+#[test]
+fn bar_hashes_follow_design_invalidation_matrix() {
+    let base = hash_fixture_score();
+    let no_fingerprints = std::collections::BTreeMap::new();
+    let base_hashes = bar_hashes(&base, &no_fingerprints);
+    assert_eq!(base_hashes.len(), 8, "8 小节应有 8 对双键");
+
+    // 改第 3 小节（下标 2）一个音符的音高。
+    let mut changed = base.clone();
+    changed.notes[2].midi = 61;
+    let changed_hashes = bar_hashes(&changed, &no_fingerprints);
+    for bar in 0..8 {
+        assert_eq!(
+            changed_hashes[bar].score != base_hashes[bar].score,
+            bar == 2,
+            "谱面键只应在第 3 小节变化（小节下标 {bar}）"
+        );
+        assert_eq!(
+            changed_hashes[bar].audio != base_hashes[bar].audio,
+            bar == 2 || bar == 3,
+            "音频键只应在第 3、4 小节变化（小节下标 {bar}）"
+        );
+    }
+    assert!(
+        score_bar_hash(&changed, 2) != score_bar_hash(&base, 2),
+        "score_bar_hash 与 bar_hashes 的谱面键同口径"
+    );
+
+    // 改 BPM：谱面键全不变，音频键全变。
+    let mut retempered = base.clone();
+    retempered.tempo_map = vec![TempoChange {
+        beat: 0.0,
+        bpm: 90.0,
+    }];
+    let retempered_hashes = bar_hashes(&retempered, &no_fingerprints);
+    for bar in 0..8 {
+        assert_eq!(
+            retempered_hashes[bar].score, base_hashes[bar].score,
+            "改 BPM 不得改谱面键（小节下标 {bar}）"
+        );
+        assert_ne!(
+            retempered_hashes[bar].audio, base_hashes[bar].audio,
+            "改 BPM 必须改音频键（小节下标 {bar}）"
+        );
+    }
+
+    // 改 Marker 标签：双键全不变。
+    let mut relabelled = base.clone();
+    relabelled.markers = vec![SectionMarker {
+        bar: 1,
+        label: "Verse".to_string(),
+        expected_level: None,
+    }];
+    let relabelled_hashes = bar_hashes(&relabelled, &no_fingerprints);
+    assert_eq!(relabelled_hashes, base_hashes, "改 Marker 标签双键须全不变");
+
+    // 换轨 1 的指纹（轨 1 只在第 5 小节发声）：音频键只变第 5、6 小节。
+    let mut fingerprints = std::collections::BTreeMap::new();
+    fingerprints.insert(1u32, 42u64);
+    let fingerprinted = bar_hashes(&base, &fingerprints);
+    for bar in 0..8 {
+        assert_eq!(fingerprinted[bar].score, base_hashes[bar].score);
+        assert_eq!(
+            fingerprinted[bar].audio != base_hashes[bar].audio,
+            bar == 4 || bar == 5,
+            "轨 1 指纹只应影响第 5、6 小节音频键（小节下标 {bar}）"
+        );
+    }
+}
+
+/// 增量打架检测：冷缓存与全量逐位一致；暖缓存全复用；改一音只重算
+/// [k, k+1] 两小节的分轨；换一条分轨的指纹只重算该轨全部小节。
+#[test]
+fn clash_cached_matches_full_and_recomputes_only_dirty_bars() {
+    // 8 小节 / 32 拍：轨 0、轨 1 每小节各一音（谱面只定小节网格与速度）。
+    let mut notes = Vec::new();
+    for bar in 0..8u32 {
+        notes.push(note(bar as f32 * 4.0, 1.0, 60, 100, 0, false));
+        notes.push(note(bar as f32 * 4.0, 1.0, 48, 90, 1, false));
+    }
+    let score = score_with(notes);
+    let mix = two_sine_stereo(0.2, 300.0, 400.0, 48_000.0, 48_000 * 16);
+    let stem_a = sine_stereo(0.3, 300.0, 48_000.0, 48_000 * 16);
+    let stem_b = sine_stereo(0.3, 400.0, 48_000.0, 48_000 * 16);
+    let stems = [
+        stem("track-a", "Bass", &stem_a),
+        stem("track-b", "Keys", &stem_b),
+    ];
+    let fingerprints = [11u64, 22u64];
+    let audio = AudioInput {
+        samples: &mix,
+        sample_rate: 48_000.0,
+    };
+    let full =
+        analyze_song_overview_with_stems(&score, Some(&audio), &stems, &AnalysisOptions::default());
+
+    let mut cache = StemBandCache::new();
+    let (cold, cold_stats) = analyze_song_overview_with_stems_cached(
+        &score,
+        Some(&audio),
+        &stems,
+        &AnalysisOptions::default(),
+        &fingerprints,
+        &mut cache,
+    );
+    assert_eq!(cold, full, "冷缓存增量版须与全量版逐位一致");
+    assert_eq!(cold_stats.computed_beats, 64, "冷缓存：2 轨 × 32 拍全实算");
+    assert_eq!(cold_stats.reused_beats, 0);
+
+    let (warm, warm_stats) = analyze_song_overview_with_stems_cached(
+        &score,
+        Some(&audio),
+        &stems,
+        &AnalysisOptions::default(),
+        &fingerprints,
+        &mut cache,
+    );
+    assert_eq!(warm, full);
+    assert_eq!(warm_stats.computed_beats, 0, "暖缓存：零重算");
+    assert_eq!(warm_stats.reused_beats, 64);
+
+    // 改第 3 小节（下标 2）一个音符 ⇒ 每轨重算 [2, 3] 两小节 = 8 拍。
+    let mut changed = score.clone();
+    changed.notes[4].midi = 61; // notes[4] 是第 3 小节轨 0 的音符
+    let (after_edit, edit_stats) = analyze_song_overview_with_stems_cached(
+        &changed,
+        Some(&audio),
+        &stems,
+        &AnalysisOptions::default(),
+        &fingerprints,
+        &mut cache,
+    );
+    let full_after_edit = analyze_song_overview_with_stems(
+        &changed,
+        Some(&audio),
+        &stems,
+        &AnalysisOptions::default(),
+    );
+    assert_eq!(after_edit, full_after_edit, "改谱后增量版仍须逐位一致");
+    assert_eq!(
+        edit_stats.computed_beats, 16,
+        "改一音只应重算 2 轨 × 2 小节 × 4 拍 = 16 拍"
+    );
+    assert_eq!(edit_stats.reused_beats, 48);
+
+    // 换轨 A 的指纹（模拟换音色/EQ）⇒ 只重算轨 A 的 32 拍。
+    let (after_fp, fp_stats) = analyze_song_overview_with_stems_cached(
+        &changed,
+        Some(&audio),
+        &stems,
+        &AnalysisOptions::default(),
+        &[99u64, 22u64],
+        &mut cache,
+    );
+    assert_eq!(after_fp, full_after_edit, "换指纹不改音频，结果须不变");
+    assert_eq!(fp_stats.computed_beats, 32, "换指纹只应重算该轨全部小节");
+    assert_eq!(fp_stats.reused_beats, 32);
+}
+
+/// 采样指纹：同内容同键、改一个采样即变键。
+#[test]
+fn stem_sample_fingerprint_tracks_content() {
+    let samples = sine_stereo(0.2, 440.0, 48_000.0, 4_800);
+    let audio = AudioInput {
+        samples: &samples,
+        sample_rate: 48_000.0,
+    };
+    let key = stem_sample_fingerprint(&audio);
+    assert_eq!(key, stem_sample_fingerprint(&audio), "同内容须同键");
+    let mut altered = samples.clone();
+    altered[100] += 0.01;
+    let altered_audio = AudioInput {
+        samples: &altered,
+        sample_rate: 48_000.0,
+    };
+    assert_ne!(
+        key,
+        stem_sample_fingerprint(&altered_audio),
+        "改一个采样必须变键"
+    );
 }

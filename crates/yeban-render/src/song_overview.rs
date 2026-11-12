@@ -60,6 +60,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use yeban_dsp::song_overview::{
     AnalysisOptions, AudioInput, StemInput, analyze_song_overview_with_stems,
+    analyze_song_overview_with_stems_cached, bar_hashes,
 };
 
 /// `yeban-dsp` 总览类型的再导出：`yeban-mcp` 经本 crate 调用 dsp 的 HTML 渲染器
@@ -70,6 +71,8 @@ pub use yeban_dsp::song_overview::{
     Anomaly, AnomalyType, BarSeries, BestMatch, NO_ENVELOPE, RepeatedPassage, RepetitionSummary,
     SCHEMA_VERSION, SongMeta, SongOverview, StructuralSummary,
 };
+/// 同上：小节级双键哈希与分轨增量缓存类型（follow-ons (b)，设计稿 §9.3）。
+pub use yeban_dsp::song_overview::{BarHashPair, ClashCacheStats, StemBandCache};
 /// 同上：分轨频率打架类型（`yeban-mcp` 的 mcp→dsp 反向映射用：HTML 渲染前把
 /// mcp 总览拼回 dsp 总览；与上条同款已登记例外，不新增依赖边）。
 pub use yeban_dsp::song_overview::{
@@ -390,6 +393,159 @@ where
         .collect();
     let overview = analyze_song_overview_with_stems(&score, Some(&audio), &stem_inputs, options);
     cache.insert(hash, overview.clone());
+    Ok((overview, false))
+}
+
+/// 一条轨的音频指纹（follow-ons (b)）：该轨决定**声音**的字段
+/// （采样器绑定、预制状态、设备链、音量、声相、轨延时、极性反转）的
+/// 确定性序列化 SHA-256 前 8 字节。轨名、片段、音符不入指纹——它们归
+/// 谱面键管。换音色/换 EQ/改推子 ⇒ 指纹变 ⇒ 该轨发声小节的音频键失效。
+fn track_audio_fingerprint(track: &yeban_model::TrackV3) -> u64 {
+    let payload = serde_json::json!({
+        "sampler": track.sampler,
+        "preset": track.preset,
+        "devices": track.devices,
+        "volume_db": track.volume_db,
+        "pan": track.pan,
+        "delay_samples": track.delay_samples,
+        "invert_polarity": track.invert_polarity,
+    });
+    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    let digest = Sha256::digest(&bytes);
+    let mut fingerprint = [0u8; 8];
+    fingerprint.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(fingerprint)
+}
+
+/// 每轨音频指纹（键 = 谱面轨道下标，与 `ScoreInput` 的 `track` 同序：
+/// `display_track_ids` 的枚举序，`score_input_from_project` 同一口径）。
+#[must_use]
+pub fn track_audio_fingerprints(project: &YebanProjectV1) -> BTreeMap<u32, u64> {
+    project
+        .display_track_ids()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, id)| {
+            project
+                .tracks
+                .get(&id)
+                .map(|track| (index as u32, track_audio_fingerprint(track)))
+        })
+        .collect()
+}
+
+/// 工程的小节级双键哈希表（设计稿 §9.3；follow-ons (b)）：谱面投影 +
+/// 每轨音频指纹 → [`bar_hashes`]。失效矩阵见 `yeban-dsp` 的
+/// [`BarHashPair`] 文档；本函数是纯投影 + 哈希，不渲染、不分析，
+/// 毫秒级，可在每次编辑后廉价重算来决定要不要重跑增量分析。
+#[must_use]
+pub fn project_bar_hashes(project: &YebanProjectV1) -> Vec<BarHashPair> {
+    let score = score_input_from_project(project);
+    bar_hashes(&score, &track_audio_fingerprints(project))
+}
+
+/// 增量总览缓存（follow-ons (b)）：整曲哈希缓存（[`SongOverviewCache`]，
+/// 决定回不回缓存结果）+ 分轨频段能量缓存（[`StemBandCache`]，决定
+/// 未命中时分轨 STFT 要算多少）。
+///
+/// 语义分工：工程任一位变化 ⇒ 整曲哈希变 ⇒ 总览按新版重算（谱面层与
+/// 响度层全量，毫秒至百毫秒级）；但分轨 STFT 是全链最贵的一段，增量
+/// 版只重算音频键变了的小节（改一音 ⇒ 两小节；其余小节逐位复用）。
+/// 进程内内存，不写盘、不碰持久化 AST（与 [`SongOverviewCache`] 同）。
+#[derive(Clone, Debug, Default)]
+pub struct IncrementalOverviewCache {
+    overviews: SongOverviewCache,
+    stem_cache: StemBandCache,
+    last_clash_stats: Option<ClashCacheStats>,
+}
+
+impl IncrementalOverviewCache {
+    /// 空缓存。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 内层整曲缓存（命中计数等收据从这里读）。
+    #[must_use]
+    pub const fn overviews(&self) -> &SongOverviewCache {
+        &self.overviews
+    }
+
+    /// 内层分轨频段缓存（累计复用/实算拍数从这里读）。
+    #[must_use]
+    pub const fn stem_cache(&self) -> &StemBandCache {
+        &self.stem_cache
+    }
+
+    /// 最近一次未命中计算的增量收据（命中整曲缓存时保持上一次的值；
+    /// 从未算过时为 `None`）。
+    #[must_use]
+    pub const fn last_clash_stats(&self) -> Option<ClashCacheStats> {
+        self.last_clash_stats
+    }
+}
+
+/// 端到端管线（增量版）：与 [`cached_overview`] 同签名、同结果（逐位
+/// 一致），未命中时分轨打架检测走 [`StemBandCache`] 增量重算。
+/// 分轨指纹按轨 id 现算（预设级指纹，见 [`track_audio_fingerprint`]），
+/// 与 `render_stems_to_buffers` 的分轨顺序对位。
+///
+/// # Errors
+///
+/// 同 [`cached_overview`]。
+pub fn cached_overview_incremental<F>(
+    cache: &mut IncrementalOverviewCache,
+    project: &YebanProjectV1,
+    settings: &RenderSettings,
+    options: &AnalysisOptions,
+    mut sfz_provider: F,
+) -> Result<(SongOverview, bool), SongOverviewError>
+where
+    F: FnMut(EntityId, &str) -> ArmedSfzInput,
+{
+    let hash = song_overview_hash(project, settings, options);
+    if let Some(cached) = cache.overviews.get(&hash).cloned() {
+        cache.overviews.hits = cache.overviews.hits.saturating_add(1);
+        return Ok((cached, true));
+    }
+    cache.overviews.misses = cache.overviews.misses.saturating_add(1);
+    let rendered = render_project_to_buffer(project, settings, &mut sfz_provider)?;
+    let stems = render_stems_to_buffers(project, settings, &mut sfz_provider)?;
+    let score = score_input_from_project(project);
+    let audio = rendered.as_audio_input();
+    let stem_ids: Vec<String> = stems
+        .iter()
+        .map(|stem| stem.track.to_canonical_string())
+        .collect();
+    let stem_inputs: Vec<StemInput<'_>> = stems
+        .iter()
+        .zip(&stem_ids)
+        .map(|(stem, id)| StemInput {
+            track_id: id,
+            track_name: &stem.name,
+            audio: stem.audio.as_audio_input(),
+        })
+        .collect();
+    let stem_fingerprints: Vec<u64> = stems
+        .iter()
+        .map(|stem| {
+            project
+                .tracks
+                .get(&stem.track)
+                .map_or(0, track_audio_fingerprint)
+        })
+        .collect();
+    let (overview, stats) = analyze_song_overview_with_stems_cached(
+        &score,
+        Some(&audio),
+        &stem_inputs,
+        options,
+        &stem_fingerprints,
+        &mut cache.stem_cache,
+    );
+    cache.last_clash_stats = Some(stats);
+    cache.overviews.insert(hash, overview.clone());
     Ok((overview, false))
 }
 

@@ -22,6 +22,10 @@ libm.workspace = true
 # 整曲总览图 STFT：4096 点实数 FFT（song_overview.rs）。realfft 后端 rustfft
 # 为纯 Rust 确定性实现；只替换 math::fft 调用，数值须与旧实现逐位一致（测试钉死）。
 realfft.workspace = true
+# 整曲总览图并行（song_overview.rs，follow-ons (c)）：帧级 STFT / 逐轨频段
+# 能量 / 逐拍特征三处 rayon 并行；归约恒保原序，结果逐位一致。rayon 是
+# workspace 既有依赖（yeban-render 在用，MIT / Apache-2.0），不新增许可面。
+rayon.workspace = true
 
 [lints]
 workspace = true
