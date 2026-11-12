@@ -51,54 +51,54 @@ src/polysynth.rs|2761|variable||index| whole[*index].to_bits(|variable_needle|ne
 src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/song_overview.rs|214|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/song_overview.rs|395|variable|&level|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview_report.rs|752|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|753|literal|schema 1.1|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|754|literal|D minor|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|755|literal|schema 版本 1.1|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|757|literal|能量层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|758|literal|-22.4|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|759|literal|-12.4|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|760|literal|频率层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|761|literal|-18.2|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|762|literal|Band 3 (250–500 Hz)|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|763|literal|疏密层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|764|literal|1.50|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|765|literal|情绪层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|766|literal|0.42|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|767|literal|0.79|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|768|literal|-0.62|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|770|literal|0.35|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|771|literal|0.65|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|772|literal|—|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|774|literal|异常诊断|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|775|literal|low_mid_buildup|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|776|literal|+5.2 dB|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|777|literal|自相似度|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|778|literal|0.50|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|779|literal|0.97|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|782|literal|<polyline|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|784|literal|10.0|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|791|literal|Intro &lt;&amp;&gt;|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|792|literal|Intro <&>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|794|literal|&lt;&gt;&amp;&quot;&#39;|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|795|literal|by +5.2 dB <>&\|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|801|literal|http://|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|802|literal|https://|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|803|literal|<script|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|804|literal|<link|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|805|literal|url(|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|806|literal|<style>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|807|literal|<svg|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|819|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|820|literal|未检出异常|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|821|literal|无数据|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|822|literal|<polyline|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|831|variable|&format!("<h1>{escaped}</h1>"|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview_report.rs|835|variable|&format!("<title>{escaped} · "|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview_report.rs|838|variable|title|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/song_overview_report.rs|846|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|849|literal|<h1></h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
-src/song_overview_report.rs|850|literal|<h1>   </h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|754|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|755|literal|schema 1.1|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|756|literal|D minor|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|757|literal|schema 版本 1.1|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|759|literal|能量层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|760|literal|-22.4|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|761|literal|-12.4|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|762|literal|频率层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|763|literal|-18.2|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|764|literal|Band 3 (250–500 Hz)|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|765|literal|疏密层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|766|literal|1.50|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|767|literal|情绪层|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|768|literal|0.42|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|769|literal|0.79|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|770|literal|-0.62|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|772|literal|0.35|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|773|literal|0.65|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|774|literal|—|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|776|literal|异常诊断|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|777|literal|low_mid_buildup|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|778|literal|+5.2 dB|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|779|literal|自相似度|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|780|literal|0.50|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|781|literal|0.97|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|784|literal|<polyline|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|786|literal|10.0|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|793|literal|Intro &lt;&amp;&gt;|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|794|literal|Intro <&>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|796|literal|&lt;&gt;&amp;&quot;&#39;|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|797|literal|by +5.2 dB <>&\|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|803|literal|http://|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|804|literal|https://|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|805|literal|<script|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|806|literal|<link|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|807|literal|url(|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|808|literal|<style>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|809|literal|<svg|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|821|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|822|literal|未检出异常|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|823|literal|无数据|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|824|literal|<polyline|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|833|variable|&format!("<h1>{escaped}</h1>"|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview_report.rs|837|variable|&format!("<title>{escaped} · "|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview_report.rs|840|variable|title|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/song_overview_report.rs|848|literal|<h1>整曲总览报告</h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|851|literal|<h1></h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/song_overview_report.rs|852|literal|<h1>   </h1>|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
 src/tape.rs|432|variable|&params.drive|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|433|variable|&params.mix|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/tape.rs|435|variable|&params.trim_db|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
