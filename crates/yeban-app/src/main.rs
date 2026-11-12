@@ -62,11 +62,11 @@
 //! → `CommitGraph::undo_with`。因此"人按 `Cmd+Z` 与 AI 发工具调用"改的是同一串字节。
 //!
 //! **谁是权威**（`ROAD-M4-008` 选项 (a) 第二片）：`run_gui` 先挂进程内控制面
-//! （`--features in-process-mcp` + 运行期开关），再据结果构造 `UndoPort` ——
+//! （`in-process-mcp`（默认 feature，2026-11-12 裁决起）+ 运行期开关），再据结果构造 `UndoPort` ——
 //! 挂上了就用 [`yeban_app::undo::UndoPort::from_authority`]（端口只握
 //! `ProjectAuthorityHandle`，写入口落到控制面正在服务的那一个 `Domain`），
 //! 没挂上才用 [`yeban_app::undo::UndoPort::new`]（自己的一份会话，那时进程里没有第二个写者）。
-//! 因此**默认构建与"控制面关闭"两种形态一位没变**。
+//! 因此**运行期未挂载控制面时，行为与无控制面构建一位没变**。
 //!
 //! 键盘那一跳（OS 键事件 → `input.rs` 的策略表）**已经接上**（`N2` 裁决 (1)）：
 //! `.slint` 的 `FocusScope.key-pressed` 把**逻辑键**（`event.text` + 修饰位）交给

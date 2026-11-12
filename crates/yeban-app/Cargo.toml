@@ -77,8 +77,9 @@ yeban-render = { workspace = true }
 # 都要写出 dsp 的类型名 (`yeban_dsp::song_overview::SongOverview`)。
 # 这是**工作区内**依赖边, 零新增包: `yeban-dsp` 早已在传递依赖里
 # (`yeban-app → yeban-render → yeban-dsp`), `Cargo.lock` 只多一行依赖名。
-# 它不进默认构建的任何新功能: provider 模块本身只在 `in-process-mcp`
-# feature 下编译 (见 `src/song_overview_provider.rs` 的 `cfg` 门)。
+# provider 模块本身只在 `in-process-mcp` feature 下编译
+# (见 `src/song_overview_provider.rs` 的 `cfg` 门; 该 feature 自 2026-11-12
+# 负责人裁决起为默认开, 见 ADR-0072)。
 yeban-dsp = { workspace = true }
 
 # ---------------------------------------------------------------------------
@@ -184,11 +185,14 @@ yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
 # `scripts/gates/check_mcp_dependency_direction.py` 约束的是 yeban-mcp **不得**依赖
 # yeban-app (它自己的"轻量 crate"规则), 不禁止 app 依赖它。
 #
-# 为什么默认关闭 (AGENTS.md §2 红线 6 / MUST-GATE-009「网络监听默认关闭」):
-# 编译期是**第一道**开关 —— 默认 release 二进制里既没有监听循环, 也没有 yeban-mcp
-# 这一整个依赖图。核验命令 (零编译, 本机可跑):
-#     cargo tree -p yeban-app -e normal --locked                      # 默认档: `yeban-mcp` 命中 **0**
-#     cargo tree -p yeban-app -e normal --locked --features in-process-mcp   # 命中 **>= 1**
+# 默认开关沿革: 原依 AGENTS.md §2 红线 6 / MUST-GATE-009「网络监听默认关闭」
+# 默认关 —— 编译期是**第一道**开关, 默认 release 二进制里既没有监听循环,
+# 也没有 yeban-mcp 这一整个依赖图。⭐ 2026-11-12 负责人裁决改为**默认开**
+#（ADR-0072）: 默认构建包含本依赖图与监听代码; 运行时第二道开关
+#（`--enable-mcp-http` / `YEBAN_MCP_HTTP=1`, 见下）不变, 不显式开就不监听。
+# 核验命令 (零编译, 本机可跑):
+#     cargo tree -p yeban-app -e normal --locked                      # 默认档: `yeban-mcp` 命中 **>= 1**
+#     cargo tree -p yeban-app -e normal --locked --no-default-features   # 命中 **0**
 #
 # `yeban-mcp/mcp-http` 必须**一起**打开: 那个 crate 的 `transport::http` 模块在非 test
 # 构建下只在 `mcp-http` feature 下存在, 少了它连 `HttpServer::bind_loopback` 都没有。
@@ -258,6 +262,13 @@ rfd = "0.17.2"
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]
 
+# `default`: ⭐ 2026-11-12 负责人裁决 —— `in-process-mcp` **默认开**（含其
+# 转发的 `yeban-mcp/mcp-http` 监听代码）。此前它被 MUST-GATE-009 与守卫名单
+# 点名默认关；裁决记录见 ADR-0072。运行时第二道开关不变：不带
+# `--enable-mcp-http` / `YEBAN_MCP_HTTP=1` 不监听。
+# `--no-default-features` 仍可整组关掉。
+default = ["in-process-mcp"]
+
 # `midi-input`: ⭐ **物理 MIDI 输入的产品入口**（`--midi-in <端口> [--midi-in-seconds N]`,
 # 见 `src/midi_in.rs`）。⭐ 依 ADR-0006 **D5** 与人类裁决（2026-10-11）：feature 名 `midi-input`、
 # ⭐ **默认关**（即 `default` 不含它）。⚠ 负责人同次指示："产品和模块全部完整后要改为**默认开**"
@@ -266,8 +277,9 @@ ui-test-port = ["dep:yeban-ui-test-port"]
 midi-input = ["dep:yeban-midi-io", "yeban-midi-io/midi-input"]
 
 # `in-process-mcp`: 形态 A 的运行态挂载 (见上面的长注释与 `src/mcp_mount.rs`)。
-# **不在 `default` 里** —— 这是 MUST-GATE-009 的第一道开关, 不是可选的便利。
-# 它同时打开 `yeban-mcp/mcp-http`: 那一边的监听代码同样默认关着。
+# ⭐ **在 `default` 里**（2026-11-12 负责人裁决，ADR-0072）—— 此前它是
+# MUST-GATE-009 的第一道开关、默认关；裁决后默认构建包含它转发的
+# `yeban-mcp/mcp-http` 监听代码，运行时开不开仍由第二道开关决定。
 in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]
 
 # `ui-mcp-http`: **UI 控制面**的产品入口 (`--enable-ui-mcp-http`, 见 `src/ui_mcp_serve.rs`)。

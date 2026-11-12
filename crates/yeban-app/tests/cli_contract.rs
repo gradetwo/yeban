@@ -753,14 +753,15 @@ fn unknown_switches_exit_two_with_usage_on_stderr() {
     }
 }
 
-/// 判据 B7b: **默认产物层面**拒绝 `--enable-mcp-http`（`[ROAD-M4-001]` / `[MUST-GATE-009]`）。
+/// 判据 B7b: **未编译该 feature 的产物层面**拒绝 `--enable-mcp-http`（`[ROAD-M4-001]` / `[MUST-GATE-009]`）。
 ///
-/// 这是"危险能力默认关"在 **app 二进制产物**上的断言（与
+/// 这是"未编译的危险能力必须点名拒绝"在 **app 二进制产物**上的断言（与
 /// `scripts/gates/check_release_defaults.sh` 对 `yeban-mcp` 二进制做的那一条同一条纪律、
-/// 另一个产物）：默认构建里 `in-process-mcp` 没被编译，于是这个开关**必须**以用法错误
+/// 另一个产物）：未编译 `in-process-mcp` 的构建里（`--no-default-features`；
+/// 该 feature 自 2026-11-12 负责人裁决起为默认，ADR-0072），这个开关**必须**以用法错误
 /// （退出码 2）被拒，并**点名**缺的是哪个 feature —— 不许静默地"以为开了其实没开"。
 ///
-/// 为什么只在默认构建里跑：带 `in-process-mcp` 时它是**合法**的 GUI 开关，给它会走
+/// 为什么只在未编译该 feature 的构建里跑：带 `in-process-mcp` 时它是**合法**的 GUI 开关，给它会走
 /// 开窗口那一档，而本文件只用无窗口参数（见模块文档的纪律）。带 feature 的正面判据在
 /// `tests/in_process_mcp.rs`（真环回 socket 上的完整往返）。
 #[cfg(not(feature = "in-process-mcp"))]
@@ -882,14 +883,15 @@ fn default_artifact_refuses_the_experimental_als_switch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 判据 B7d: **默认产物层面**拒绝 `--export-song-overview`。
+/// 判据 B7d: **未编译该 feature 的产物层面**拒绝 `--export-song-overview`。
 ///
 /// 与 B7b/B7c 同一条纪律：这个出口的产物就是 `get_song_overview` 的 `data`
-/// （§8.2 的 structs 与取整函数 `rounded` 住在 `yeban-mcp`），默认构建里那条依赖边
+/// （§8.2 的 structs 与取整函数 `rounded` 住在 `yeban-mcp`），未编译 `in-process-mcp`
+/// 的构建里（`--no-default-features`）那条依赖边
 /// 不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并**点名**缺的 feature，
 /// 绝不静默地"以为写了其实没写"。
 ///
-/// 为什么只在默认构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
+/// 为什么只在未编译该 feature 的构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
 /// `tests/song_overview_export.rs`（它拿批处理出口与工具出口逐字节对账）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
@@ -923,13 +925,13 @@ fn default_artifact_refuses_the_song_overview_switch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 判据 B7e: **默认产物层面**拒绝 `--apply-ops`。
+/// 判据 B7e: **未编译该 feature 的产物层面**拒绝 `--apply-ops`。
 ///
 /// 与 B7d 同一条纪律：执行管线（`parse_ops` / `compile` / `UndoPort` 提交）全住在
-/// `yeban-mcp`，默认构建里那条依赖边不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并
+/// `yeban-mcp`，未编译 `in-process-mcp` 的构建里（`--no-default-features`）那条依赖边不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并
 /// **点名**缺的 feature，绝不静默地"以为改了其实没改"。
 ///
-/// 为什么只在默认构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
+/// 为什么只在未编译该 feature 的构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
 /// `tests/apply_ops.rs`（改名走 `--save-as` 回读即是新名）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
@@ -971,13 +973,13 @@ fn default_artifact_refuses_the_apply_ops_switch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 判据 B7f: **默认产物层面**拒绝 `--export-stems`。
+/// 判据 B7f: **未编译该 feature 的产物层面**拒绝 `--export-stems`。
 ///
 /// 与 B7d 同一条纪律：渲染与落盘（`stems::export` / `stems::write`）全住在
-/// `yeban-mcp`，默认构建里那条依赖边不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并
+/// `yeban-mcp`，未编译 `in-process-mcp` 的构建里（`--no-default-features`）那条依赖边不存在 ⇒ 必须是以用法错误（退出码 2）被拒、并
 /// **点名**缺的 feature，绝不静默地"以为导了其实没导"。
 ///
-/// 为什么只在默认构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
+/// 为什么只在未编译该 feature 的构建里跑：带 feature 时它是合法的无窗口开关，正面判据是同包的
 /// `tests/export_stems.rs`（每条轨各得一个有效 32-bit Float WAV）。
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]

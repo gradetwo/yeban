@@ -22,16 +22,20 @@
 #     在此**显式写明**, 不静默引入。
 #
 # 发布纪律 (本文件是"响亮失败"的实现, 不是"尽力而为"):
-#   1. MUST-GATE-009 (发行物默认关, AGENTS.md §2 红线 6): 发布物**只**用默认 feature 构建 ——
-#      `in-process-mcp` / `experimental-als-export` / `experimental-logic-export` 必须**不在**里面。
+#   1. MUST-GATE-009 (发行物默认口径, AGENTS.md §2 红线 6): 发布物**只**用默认 feature 构建。
+#      `experimental-als-export` / `experimental-logic-export` 必须**不在**默认组里面;
+#      `in-process-mcp` 自 2026-11-12 负责人裁决 (ADR-0072) 起**在**默认组里面 —— 发行物
+#      从此链接 MCP 监听代码, 运行时开不开仍由第二道开关 (`--enable-mcp-http` /
+#      `YEBAN_MCP_HTTP=1`) 决定, 不显式开不监听。
 #      本文件**不假设**这一点, 而是三路证明 (见 job `build` 的 MUST-GATE-009 步骤):
 #        ① 依赖图指标: `cargo tree -p yeban-app -e normal --locked --prefix none` 去掉 ` (*)` 标记后
-#           的**不同 `name version` 行数**; 并断言 `yeban-mcp` / `yeban-ui-mcp` / `yeban-ui-test-port`
-#           在该图里命中 **0** (这是 m4-008 账本用的同一条判据);
-#        ② **正对照**: 加上 `--features in-process-mcp` 再量一次, 命中必须 >= 1 且指标必须变大
-#           —— 证明 ① 的"0 命中"不是空转;
-#        ③ **产物级**: 发布二进制自己拒绝三个开关 (退出码 2 且 stderr 点名缺哪个 feature),
-#           并跑仓库自己的守卫 `scripts/gates/check_release_defaults.sh`。
+#           的**不同 `name version` 行数**; 并断言 `yeban-mcp` 在该图里命中 **>= 1** (裁决后的
+#           新口径)、`yeban-ui-mcp` / `yeban-ui-test-port` 命中 **0** (指标判据沿 m4-008 账本同一条);
+#        ② **负对照**: 加 `--no-default-features` 再量一次, `yeban-mcp` 命中必须回到 0 且指标
+#           必须变小 —— 证明 ① 的命中数不是空转 (裁决前这里是反过来的正对照);
+#        ③ **产物级**: 发布二进制自己拒绝仍默认关的三个开关 (退出码 2 且 stderr 点名缺哪个
+#           feature), 并跑仓库自己的守卫 `scripts/gates/check_release_defaults.sh` (它查
+#           `yeban-mcp` 二进制; 其 `mcp-http` 仍默认关, 不受本裁决影响)。
 #   2. 版本对账: 标签 `vX.Y.Z` 必须与根 `Cargo.toml` 的 `[workspace.package] version`、
 #      与**真二进制** `yeban-app --version` 的输出**三处一致**。不一致 ⇒ 立刻红, 什么都不发。
 #   3. 失败不发: `release` job `needs: build`; 且发布走"先建 draft → 上传全部资产 → 最后 publish",
@@ -431,18 +435,20 @@ jobs:
           DEFAULT_UI_PORT="$(crate_hits yeban-ui-test-port)"
           echo "默认档: 不同 name version 行 = $DEFAULT_METRIC; yeban-mcp=$DEFAULT_MCP yeban-ui-mcp=$DEFAULT_UI_MCP yeban-ui-test-port=$DEFAULT_UI_PORT"
 
-          # 正对照: 把 MUST-GATE-009 的第一道开关打开, 指标**必须**变化、命中**必须** >= 1。
-          # 没有这一步, "0 命中"就可能只是 grep 写错了 (本仓库最忌的假绿)。
-          CTRL_METRIC="$(graph_metric --features in-process-mcp)"
-          CTRL_MCP="$(crate_hits yeban-mcp --features in-process-mcp)"
-          echo "正对照(--features in-process-mcp): 不同 name version 行 = $CTRL_METRIC; yeban-mcp=$CTRL_MCP"
+          # 负对照: 把默认组整组关掉 (--no-default-features), `in-process-mcp` 随之关闭,
+          # 命中**必须**回到 0、指标**必须**变小。没有这一步, "默认档命中 >= 1"就可能只是
+          # grep 写错了 (本仓库最忌的假绿)。2026-11-12 负责人裁决 (ADR-0072) 前这里是
+          # 反过来的正对照: 默认档必须 0 命中、开 feature 后必须 >= 1。
+          CTRL_METRIC="$(graph_metric --no-default-features)"
+          CTRL_MCP="$(crate_hits yeban-mcp --no-default-features)"
+          echo "负对照(--no-default-features): 不同 name version 行 = $CTRL_METRIC; yeban-mcp=$CTRL_MCP"
 
           fail=0
-          [ "$DEFAULT_MCP" = "0" ]     || { echo "::error::默认依赖图里出现了 yeban-mcp ($DEFAULT_MCP) ⇒ in-process-mcp 被编进了发行物"; fail=1; }
+          [ "$DEFAULT_MCP" -ge 1 ]     || { echo "::error::默认依赖图里 yeban-mcp 命中为 0 ⇒ in-process-mcp 未按 2026-11-12 裁决 (ADR-0072) 编进发行物"; fail=1; }
           [ "$DEFAULT_UI_MCP" = "0" ]  || { echo "::error::默认依赖图里出现了 yeban-ui-mcp ($DEFAULT_UI_MCP)"; fail=1; }
           [ "$DEFAULT_UI_PORT" = "0" ] || { echo "::error::默认依赖图里出现了 yeban-ui-test-port ($DEFAULT_UI_PORT)"; fail=1; }
-          [ "$CTRL_MCP" -ge 1 ]        || { echo "::error::正对照失效: 打开 in-process-mcp 后 yeban-mcp 命中仍为 0 ⇒ 上面的 0 命中是空转的"; fail=1; }
-          [ "$CTRL_METRIC" -gt "$DEFAULT_METRIC" ] || { echo "::error::正对照失效: 打开 in-process-mcp 后依赖图指标($CTRL_METRIC)未大于默认档($DEFAULT_METRIC)"; fail=1; }
+          [ "$CTRL_MCP" = "0" ]        || { echo "::error::负对照失效: --no-default-features 后 yeban-mcp 命中仍为 $CTRL_MCP ⇒ 上面的命中数不可信"; fail=1; }
+          [ "$CTRL_METRIC" -lt "$DEFAULT_METRIC" ] || { echo "::error::负对照失效: --no-default-features 后依赖图指标($CTRL_METRIC)未小于默认档($DEFAULT_METRIC)"; fail=1; }
           [ "$fail" -eq 0 ] || exit 1
 
           {
@@ -453,7 +459,7 @@ jobs:
             echo "| 档位 | 不同 name version 行 | \`yeban-mcp\` 命中 |"
             echo "| :--- | ---: | ---: |"
             echo "| 发行档 (默认 feature) | $DEFAULT_METRIC | $DEFAULT_MCP |"
-            echo "| 正对照 (\`--features in-process-mcp\`) | $CTRL_METRIC | $CTRL_MCP |"
+            echo "| 负对照 (\`--no-default-features\`) | $CTRL_METRIC | $CTRL_MCP |"
             echo ""
             # ⚠ 变量一律用 ${VAR} 花括号写法: 本机 bash 3.2 + UTF-8 locale 下,
             #   `$VAR。` 会把全角句号吞进变量名 (实测 unbound variable), 而 CI 的 bash 5 不会 ——
@@ -467,7 +473,9 @@ jobs:
         run: |
           set -euo pipefail
           # 与 check_release_defaults.sh 同一条纪律: **不问源码, 问产物**。
-          # 默认构建里这三个 feature 没被编译 ⇒ 开关必须是"点名 feature 的用法错误"(退出码 2),
+          # 默认构建里这三个 feature 仍没被编译 (`ui-mcp-http` / als / logic;
+          # `in-process-mcp` 自 2026-11-12 裁决起已编译, 其开关不再是拒绝判据)
+          # ⇒ 开关必须是"点名 feature 的用法错误"(退出码 2),
           # 不是静默忽略, 也不是别的原因失败。
           # 期望的 stdout 为空、stderr 同时出现开关名与 feature 名 (判据形状照抄 crates/yeban-app/tests/cli_contract.rs B7/B7c/B7d)。
           app=target/release/yeban-app
@@ -481,7 +489,7 @@ jobs:
             [ "$rc" -eq 2 ] || { echo "::error::$label 期望退出码 2 (未编译该 feature 的用法错误), 实得 $rc"; return 1; }
             printf '%s' "$out" | grep -q -- "$feature" || { echo "::error::$label 的拒绝未能点名 feature '$feature' ⇒ 无法证明拒绝是因为它没编进来"; return 1; }
           }
-          check_refusal "--enable-mcp-http"       "in-process-mcp"                --enable-mcp-http
+          check_refusal "--enable-ui-mcp-http"    "ui-mcp-http"                   --enable-ui-mcp-http
           check_refusal "--export-als"            "experimental-als-export"       --export-als /tmp/yeban-must-not-exist.als
           check_refusal "--export-logic"          "experimental-logic-export"     --export-logic /tmp/yeban-must-not-exist.logicx
           echo "[ok] 三个开关都被默认产物以退出码 2 拒绝, 且各自点名了缺失的 feature"
@@ -573,7 +581,7 @@ jobs:
             printf 'source commit: %s\n' "${GITHUB_SHA}"
             printf 'rustc: %s\n' "$(rustc --version)"
             printf 'built at (SOURCE_DATE_EPOCH=%s): %s\n' "$SOURCE_DATE_EPOCH" "$(python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
-            printf 'features: 默认档 only —— in-process-mcp / experimental-als-export / experimental-logic-export 均未编译\n'
+            printf 'features: 默认档 —— in-process-mcp 已编译 (2026-11-12 裁决默认开, ADR-0072); experimental-als-export / experimental-logic-export 未编译\n'
             printf '依赖图指标 (不同 name version 行数, cargo tree -p yeban-app -e normal --locked --prefix none): %s\n' "${{ steps.graph.outputs.metric }}"
             printf 'sha256(yeban-app): %s\n' "$(sha256sum "stage/$NAME/yeban-app" | cut -d' ' -f1)"
             printf 'sha256(yeban-mcp): %s\n' "$(sha256sum "stage/$NAME/yeban-mcp" | cut -d' ' -f1)"

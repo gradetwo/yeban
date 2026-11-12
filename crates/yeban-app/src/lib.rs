@@ -86,9 +86,10 @@ pub mod engine_host;
 // 设备机架要回答两件必须由契约回答的事：⭐ ① 某个参数名**引擎认不认**（"已识别 /
 // 未识别"）；⭐ ② 低架增益的**值域**（滑块两端的物理范围）。这两件事的唯一事实源是
 // `crates/yeban-mcp/src/effect_params.rs`（`#156` 发布到 MCP 的那 58 个拼写 + 钳制域），
-// 而 `yeban-app` **不能**依赖 `yeban-mcp` 这个包：默认构建里那条边是
-// `optional`／`in-process-mcp`（`Cargo.toml` 的 MUST-GATE-009 第一道开关），
-// 把它改成默认依赖会削弱那扇门。
+// 而这里**不**直接依赖 `yeban-mcp` 这个包：那条边是
+// `optional`／`in-process-mcp`（历史上是 `Cargo.toml` 的 MUST-GATE-009 第一道开关；
+// 2026-11-12 裁决后为默认边，ADR-0072），`--no-default-features` 构建仍无此边，
+// 故本模块不靠它。
 //
 // ⇒ 这里用 `#[path]` 把**那一份**源码装进来（与 `src/undo.rs` 装
 // `yeban-mcp/src/undo_session.rs`、`src/project_lock.rs` 装 `yeban-mcp/src/domain/lock.rs`
@@ -178,11 +179,12 @@ pub mod song_overview;
 pub mod undo;
 
 // ---------------------------------------------------------------------------
-// 形态 A 的运行态挂载 (非默认 feature `in-process-mcp`) [ROAD-M4-001, MUST-GATE-009]
+// 形态 A 的运行态挂载 (默认 feature `in-process-mcp`, 2026-11-12 裁决起) [ROAD-M4-001, MUST-GATE-009]
 // ---------------------------------------------------------------------------
-// 单独一个 `cfg` 门而不是"模块里再判 feature": 默认构建**看不到**这个模块,
+// 单独一个 `cfg` 门而不是"模块里再判 feature": `--no-default-features` 构建**看不到**这个模块,
 // 也就看不到 `yeban-mcp` 这个依赖 (依赖边由 `[features]` 的 `dep:yeban-mcp` 拉进来)。
-// 这就是「发行物默认关」在源码层面的落点 —— 与 `ui-test-port` 是同一套做法。
+// 这曾是「发行物默认关」在源码层面的落点; 裁决 (ADR-0072) 后默认构建看得到它,
+// `cfg` 门保留给整组关闭的构建 —— 与 `ui-test-port` 是同一套做法。
 #[cfg(feature = "in-process-mcp")]
 pub mod mcp_mount;
 
@@ -198,8 +200,10 @@ pub mod song_overview_provider;
 ///
 /// 与 `song_overview_provider` 同一个 `cfg` 门 —— 它产出的 JSON 就是
 /// `get_song_overview` 的 `data`（§8.2 的 structs 与取整函数都住在 `yeban-mcp`，
-/// 那个依赖边只在 `in-process-mcp` 下存在）。默认构建里这个开关**存在但会拒绝**
-/// （`--features in-process-mcp` 的用法错误，见 `cli::ParseError::SongOverviewNotCompiled`）。
+/// 那个依赖边只在 `in-process-mcp` 下存在）。未编译该 feature 的构建里
+/// （`--no-default-features`）这个开关**存在但会拒绝**（用法错误，见
+/// `cli::ParseError::SongOverviewNotCompiled`）；默认构建自 2026-11-12 起
+/// 已编译该 feature，开关直接可用。
 #[cfg(feature = "in-process-mcp")]
 pub mod song_overview_export;
 
@@ -207,8 +211,9 @@ pub mod song_overview_export;
 ///
 /// 与 `song_overview_export` 同一个 `cfg` 门 —— 执行管线（`parse_ops` /
 /// `compile` / `UndoPort` 提交）全住在 `yeban-mcp`，那个依赖边只在
-/// `in-process-mcp` 下存在。默认构建里这个开关**存在但会拒绝**
-/// （`--features in-process-mcp` 的用法错误，见 `cli::ParseError::ApplyOpsNotCompiled`）。
+/// `in-process-mcp` 下存在。未编译该 feature 的构建里（`--no-default-features`）
+/// 这个开关**存在但会拒绝**（用法错误，见 `cli::ParseError::ApplyOpsNotCompiled`）；
+/// 默认构建自 2026-11-12 起已编译该 feature，开关直接可用。
 #[cfg(feature = "in-process-mcp")]
 pub mod apply_ops;
 
@@ -216,8 +221,9 @@ pub mod apply_ops;
 ///
 /// 与 `song_overview_export` 同一个 `cfg` 门 —— 渲染与落盘（`stems::export` /
 /// `stems::write`）全住在 `yeban-mcp`，那个依赖边只在 `in-process-mcp`
-/// 下存在。默认构建里这个开关**存在但会拒绝**
-/// （`--features in-process-mcp` 的用法错误，见 `cli::ParseError::ExportStemsNotCompiled`）。
+/// 下存在。未编译该 feature 的构建里（`--no-default-features`）这个开关
+/// **存在但会拒绝**（用法错误，见 `cli::ParseError::ExportStemsNotCompiled`）；
+/// 默认构建自 2026-11-12 起已编译该 feature，开关直接可用。
 #[cfg(feature = "in-process-mcp")]
 pub mod export_stems;
 
@@ -225,7 +231,8 @@ pub mod export_stems;
 // 生产窗口的运行期重投影钩子 (`ROAD-M4-008` 选项 (a) 第 (b) 项, 2026-10-06)
 // ---------------------------------------------------------------------------
 // 与 `mcp_mount` 同一个 `cfg` 门：没有控制面就没有"会话侧"，也就没有要重投影的权威。
-// 默认构建里这个模块**不存在**，产品二进制的依赖图因此一位没变。
+// `--no-default-features` 构建里这个模块**不存在**；默认构建自 2026-11-12
+// 负责人裁决起含它（ADR-0072），产品二进制的依赖图随之包含 `yeban-mcp`。
 #[cfg(feature = "in-process-mcp")]
 pub mod reproject;
 

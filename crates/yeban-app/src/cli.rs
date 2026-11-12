@@ -121,8 +121,9 @@ pub const MAX_IDLE_SECONDS: u32 = 60;
 /// `--enable-mcp-http` 的字面值（`[ROAD-M4-001]` 的**运行期**开关）。
 ///
 /// 权威定义在 `yeban-mcp` 的 `transport::ENABLE_HTTP_FLAG`（形态 A 与形态 B 说的是
-/// 同一个词）。这里保留一份的理由是**编译期**的：默认构建里 `yeban-mcp` 根本不在依赖图上
-/// （`in-process-mcp` 默认关），而用法文本与错误信息在默认构建里也要打得出来。
+/// 同一个词）。这里保留一份的理由是**编译期**的：`--no-default-features` 构建里
+/// `yeban-mcp` 不在依赖图上（`in-process-mcp` 自 2026-11-12 起默认开，可整组关），
+/// 而用法文本与错误信息在那种构建里也要打得出来。
 /// 两边**逐字节相同**这件事由判据钉住 —— `crates/yeban-app/tests/in_process_mcp.rs`
 /// 断言它等于 `yeban_mcp::transport::ENABLE_HTTP_FLAG`。
 pub const MCP_HTTP_SWITCH: &str = "--enable-mcp-http";
@@ -560,8 +561,9 @@ pub fn usage_text() -> String {
                            采样器读不到 ⇒ **响亮失败** (`samplerUnreadable`, 退出码 {export}),
                            ⛔ 不悄悄降级成纯谱面 (要那一档请显式给 --overview-score-only);
                            回执一行: `exported-song-overview:` + 落点/字节/小节数/渲染口径/
-                           响度范围/高潮小节/异常条数; **只在** `--features {overview_feature}`
-                           的构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
+                           响度范围/高潮小节/异常条数; **默认构建里存在** (`{overview_feature}`
+                           自 2026-11-12 起为默认 feature); `--no-default-features`
+                           构建给这个开关 = 用法错误 (退出码 {usage})
   --export-song-overview-html <path.html>
                            把当前工程的**整曲总览图**算出来落成单文件自包含 HTML 报告:
                            内容与 `--export-song-overview` 的 JSON **同一份数** (同一份
@@ -572,8 +574,9 @@ pub fn usage_text() -> String {
                            (`samplerUnreadable`, 退出码 {export}), ⛔ 不悄悄降级成纯谱面
                            (要那一档请显式给 --overview-score-only);
                            回执一行: `exported-song-overview-html:` + 落点/字节/小节数/
-                           渲染口径/响度范围/高潮小节/异常条数; **只在** `--features {overview_feature}`
-                           的构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
+                           渲染口径/响度范围/高潮小节/异常条数; **默认构建里存在** (`{overview_feature}`
+                           自 2026-11-12 起为默认 feature); `--no-default-features`
+                           构建给这个开关 = 用法错误 (退出码 {usage})
   --overview-score-only     `--export-song-overview` 与 `--export-song-overview-html` 的**口径修饰**: 跳过整曲渲染, 只出谱面
                            分析 (回执 `render=score-only`, JSON 多一个 `renderMode` 字段);
                            单独给 = 用法错误 (它只改那一份产物的口径, 没有东西可修饰)
@@ -586,8 +589,9 @@ pub fn usage_text() -> String {
                            真执行**必须**配 `--save-as <out.yeban>` (⛔ 不猜落点, 不原地改
                            `--open` 的文件); 先全部解析、再一次性提交, 任何一步失败都在
                            提交之前返回 ⇒ 不留半批; 回执一行: `applied-ops:` + 文件/条数/
-                           kind 列表/提交数; **只在** `--features {apply_ops_feature}` 的
-                           构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
+                           kind 列表/提交数; **默认构建里存在** (`{apply_ops_feature}`
+                           自 2026-11-12 起为默认 feature); `--no-default-features`
+                           构建给这个开关 = 用法错误 (退出码 {usage})
   --dry-run                `--apply-ops` 的**口径修饰**: 模拟, 不写盘 (解析与编译照旧跑,
                            提交改成在克隆上模拟施加 + 校验; 前置不满足时模拟照样失败,
                            ⛔ 不伪造成功); 回执一行: `applied-ops-dryrun:` + 文件/条数/
@@ -603,9 +607,10 @@ pub fn usage_text() -> String {
                            但在回执里各有一行 `stem-skipped:` (⛔ 不静默丢轨); 目录**必须已存在**
                            (⛔ 不自动创建), 目标文件已存在时整批拒绝 (⛔ 不覆盖); 落盘逐条原子,
                            第 k 条失败时前 k−1 条保留、回执带续跑起点 (D5 部分成功是一等状态);
-                           回执: `exported-stems:` 汇总 + 每条 `stem:`; **只在**
-                           `--features {export_stems_feature}` 的构建里存在 —— 默认构建给
-                           这个开关 = 用法错误 (退出码 {usage})
+                           回执: `exported-stems:` 汇总 + 每条 `stem:`; **默认构建里
+                           存在** (`{export_stems_feature}` 自 2026-11-12 起为默认
+                           feature); `--no-default-features` 构建给这个开关 =
+                           用法错误 (退出码 {usage})
   --edit-samples <input>   采样库编辑的**批处理**出口 (缺口报告 C-1): 输入是采样目录
                            (递归取 .wav / .wave / .flac / .ogg) 或 .sfz 文件
                            (按 region 的 sample 与 pitch_keycenter 定目标音高);

@@ -257,7 +257,7 @@ jobs:
             printf 'source commit: %s\n' "${GITHUB_SHA}"
             printf 'rustc: %s\n' "$(rustc --version)"
             printf 'built at (SOURCE_DATE_EPOCH=%s): %s\n' "$SOURCE_DATE_EPOCH" "$(python3 -c 'import datetime, os; print(datetime.datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
-            printf 'features: 默认档 only —— in-process-mcp / experimental-als-export / experimental-logic-export 均未编译\n'
+            printf 'features: 默认档 —— in-process-mcp 已编译 (2026-11-12 裁决默认开, ADR-0072); experimental-als-export / experimental-logic-export 未编译\n'
             printf 'sha256(yeban-app): %s\n' "$(python3 -c "import hashlib; print(hashlib.sha256(open('stage/$NAME/yeban-app${{ matrix.exe }}','rb').read()).hexdigest())")"
             printf 'sha256(yeban-mcp): %s\n' "$(python3 -c "import hashlib; print(hashlib.sha256(open('stage/$NAME/yeban-mcp${{ matrix.exe }}','rb').read()).hexdigest())")"
           } > "stage/$NAME/BUILD-INFO.txt"
