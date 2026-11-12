@@ -723,7 +723,7 @@ pub fn stem_file_name(index: usize, track_count: usize, name: &str) -> String {
         while !base.is_char_boundary(cut) {
             cut -= 1;
         }
-        base = base[..cut].trim_end_matches(|ch: char| ch == '.' || ch == '_');
+        base = base[..cut].trim_end_matches(['.', '_']);
     }
     let base = if base.is_empty() { "track" } else { base };
     format!("{index:0width$}.{base}.{STEM_FILE_EXTENSION}")
