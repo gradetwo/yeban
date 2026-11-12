@@ -1,2773 +1,424 @@
-// 夜半 (Yeban) — 主窗口容器: 全局网格 (48 / 240 / 280 / 4 / 24) + 多标签导轨
-//
-// 规范来源 (Normative):
-//   - [UI-GRID-001] UI/UX 规范 §1.1 网格布局拓扑:
-//       顶栏 48px | 左资源栏 240px | 主工作区 (弹性) | 右 AI 协作栏 280px
-//       4px splitter | 底部控制台 | 24px 状态栏
-//   - [UI-GRID-002] §1.2 响应式断点:
-//       规范原文 ≥1920 全展开 / 1366–1919 折叠; ⭐ 任务单 `#195` 由负责人裁决把阈值
-//       移到 **1180**（`width < 1180px` 才折叠 ⇒ `1440` 现在展开, 规范 ⛔ 未改）;
-//       splitter 拖拽硬限 220–600px
-//   - [UI-GRID-003] §1.3 / [ARCH-UI-001] 保留模式与局部脏矩形 —— 由 Slint 后端负责,
-//     UI 侧不写任何全屏重绘逻辑
-//   - [UI-GRID-004] §1.4 120 FPS + VSync; 主渲染线程与实时音频线程物理隔离 [ARCH-TOP-002]:
-//     UI 动画与绘制负载绝不穿透阻塞音频渲染回调
-//   - [ARCH-UI-003] §1.3 无头模式运行配置 —— 见 src/main.rs 对 `SLINT_BACKEND=headless`
-//     这个"规范与 Slint 1.18.1 实测不一致"之处的记录
-//   - [UI-TEST-003] §12.1 无头启动 —— 无头路径不构造本组件, 见 src/main.rs
-//   - [UI-MCP-002] §12.5 高频刷新区域 (时间码 / 电平 / 走带光标) 由
-//     src/elements.rs 的 `is_dynamic_region()` 登记, 供截图比对时遮罩
-//   - ADR-0001 D2: UI 文件清单以 UI/UX §8 的 11 个 `.slint` 为准, 另加 status_bar.slint
-//     与 tokens.slint (主题层, 规范缺口)
-//
-// 中段:底部控制台的弹性比 = 3:2, 即各占弹性区的 60% / 40%, 落在规范的
-// 55–65% / 35–45% 区间正中 (弹性区 = 窗口高 - 48 - 4 - 24)。
-//
-// 布局策略: 外层用 VerticalLayout / HorizontalLayout 表达规范的网格 (这是 UI-GRID-001 的
-// 明文要求); 组件**内部**一律绝对定位 —— DAW 的坐标是可断言的几何事实, 用布局反而会
-// 让 `absolute-position` 随字体度量漂移, 破坏截图回归与元素包围盒断言。
-//
-// 数据流方向: MainWindow 是唯一写者。子组件只读 + 发回调。
+import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow } from "tokens.slint";
+export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow } from "tokens.slint";
 
-// `import` 把名字带进**本文件**的作用域; `export { … } from …` 是**纯再导出**
-// (实测: 它**不**把名字带进本文件 —— 只写后者会让本文件里 44 处 `Tokens.*` 全部报
-// `Cannot access id 'Tokens'`)。因此两行都要, 且它们不冲突: 再导出不引入本地名字。
-//
-// 为什么必须让 Rust 侧看见 `Tokens` / `ThemeState`:
-// `src/host.rs` 的 `apply_theme` 要写 `ThemeState.theme`, 而
-// `tests/theme_selection.rs` 要**回读** `Tokens.*` 的真实取值 —— 那是"生效的调色板
-// 真的跟着主题变了"的判据 (断言 token 值, 不碰像素)。
-import { Tokens, UiText, UiTitleText } from "tokens.slint";
-export { Tokens, ThemeState } from "tokens.slint";
-import { Transport } from "transport.slint";
-import { StatusBar } from "status_bar.slint";
-import { Sidebar } from "sidebar.slint";
-import { SessionView } from "workspace/session_view.slint";
-import { ArrangementView } from "workspace/arrangement_view.slint";
-import { SongOverviewPanel } from "workspace/song_overview_panel.slint";
-import { ConsoleTabs } from "console/console_tabs.slint";
-import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
-import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
-import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
-import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
-import { MacroPanel } from "dialogs/macro_panel.slint";
-// 五个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）。
-// 它们住在右栏的下半区（`AiRail` 的 `ModuleActions` 实例），因此**不改**任何既有
-// 几何：顶栏 48 / 中段 / 4px splitter / 底部控制台 / 24px 状态栏一位未动，
-// 基准图上只有这一块新像素（见本票的 golden 影响登记）。
-import { ModuleActions } from "module_actions.slint";
-
-// 右侧 AI 协作栏 (280px) 的内容。被实例化两次 (常驻列 / compact 抽屉),
-// 两者的 visible 条件互斥, 因此无障碍树里同一时刻只有一个 `ai-rail`。
-component AiRail inherits Rectangle {
-    callback open-musical-pr();
-    callback run-acoustic-diagnosis();
-    callback export-diagnostics();
-    // ---- 模块入口（本票起五条）--------------------------------------------
-    // 与上面三条同款：`AiRail` 只**转发**，动作的语义、目标路径与回执全在宿主
-    // （`src/host.rs` 的 `wire_module_actions`）。界面不写盘、不猜路径、不存状态。
-    // 「导出 WAV」只打开选项对话框；真正的导出回调在 `MainWindow` 上。
-    callback open-export-wav();
-    callback import-midi();
-    callback load-sfz();
-    callback record-wav();
-    // ⭐ 第五条：**硬件** MIDI 输入（`crate::midi_in::capture`，与 CLI `--midi-in` 同一个函数）。
-    // 它与 `import-midi` **不是**同一件事：那条读的是**文件**（SMF），这条读的是**物理端口**。
-    callback midi-in();
-    // 模块入口的**只读**注入面（唯一写者 = `host::wire_module_actions`）。
-    // `status` 的默认值是空串 = "本次会话还没按过任何模块入口"，不是一个编造的读数。
-    in property <string> module-status: "";
-    in property <bool> module-status-succeeded: false;
-    // MIDI 输入的**专属**结果行（同一串字节、同一个写者 ⇒ ⛔ 不是第二个真相源）。
-    in property <string> module-midi-in-status: "";
-    in property <bool> module-midi-in-status-succeeded: false;
-    // ⭐ 任务单 `#230`：母带削波警示行的**可见短句**（空串 = 不显示）。
-    // 唯一写者 = 宿主 `host::wire_module_actions` 的 `export-wav` 分支。
-    in property <string> module-clipping-warning: "";
-    // ⭐ 任务单 `#319`：MIDI 文件导入的损失摘要行（空串 = 不显示）。
-    // 与削波警示**同一物理槽位**（`y = 444`）、互斥；唯一写者 =
-    // `host::apply_module_receipt_with_alerts`（每次动作两条都写，没给的写空串）。
-    in property <string> module-import-losses: "";
-
-    background: Tokens.bg-panel;
-    border-width: 1px;
-    border-color: Tokens.line;
-    clip: true;
-
-    accessible-role: complementary;
-    accessible-id: "ai-rail";
-    accessible-label: "AI 协作栏: 意图生成与声学诊断";
-
-    UiTitleText {
-        x: Tokens.space-4;
-        y: Tokens.space-3;
-        width: parent.width - 8px;
-        height: 20px;
-        text: "AI 协作";
-        color: Tokens.gold;
-        font-size: Tokens.font-size-lg;
-    }
-
-    Rectangle {
-        x: Tokens.space-4;
-        y: 32px;
-        width: parent.width - 8px;
-        height: 64px;
-        background: Tokens.bg-void;
-        border-radius: Tokens.radius-md;
-        border-width: 1px;
-        border-color: Tokens.ai-suggestion;
-        clip: true;
-        accessible-role: button;
-        accessible-id: "ai-rail-intent-button";
-        accessible-label: "用自然语言描述编曲意图";
-
-        UiText {
-            x: Tokens.space-3;
-            y: 0;
-            width: parent.width - 8px;
-            height: parent.height;
-            text: "意图生成:\n描述你想要的段落…";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-    }
-
-    Rectangle {
-        x: Tokens.space-4;
-        y: 104px;
-        width: parent.width - 8px;
-        height: 64px;
-        background: Tokens.bg-void;
-        border-radius: Tokens.radius-md;
-        border-width: 1px;
-        border-color: Tokens.line-strong;
-        clip: true;
-        accessible-role: button;
-        accessible-id: "ai-rail-diagnose-button";
-        accessible-label: "声学诊断";
-        // `[UI-A11Y-003]` §7.3：无障碍**动作**。屏读器 / OS 辅助技术激活这个节点时走
-        // 下面 `TouchArea` 的**同一个**回调（判据见 `elements.rs` 的
-        // `every_clickable_control_binds_a_matching_accessibility_action`）。
-        // 为什么必须有它：上游 `i-slint-backend-winit` 只按 `accessible-action-*`
-        // 的绑定情况导出 accesskit 动作（`supported_accessibility_actions`），
-        // 没有它这个节点读得到标签、却**按不动**。
-        accessible-action-default => { root.run-acoustic-diagnosis(); }
-        // **不得**声明 `accessible-checkable`（台账 R11c）：这是**瞬态动作**，不是切换，
-        // 故"可勾选"是假话。实测（落这一行时，本文件删掉本注释块后的行号）：本处有真的
-        // 点击源 `TouchArea`（现位于第 141 行）＋ `clicked => { root.run-acoustic-diagnosis(); }`（现位于第 144 行），
-        // 而该回调的宿主实现 `crates/yeban-app/src/main.rs:645` 的
-        // `ui.on_run_acoustic_diagnosis(..)` 只打一行 stderr —— **不置位任何状态**
-        // （全仓 `run_acoustic_diagnosis` 的命中里没有一处是状态写者）。
-        // `accessible-role: button` 与标签保留，它们是真话。
-        // `accessible-checked: false` **一并删除**：全仓**没有**判据读它
-        // （`.checked` 只有 `test_port_adapter.rs:2911` 与 `:2950` 两处，都在录音键上）。
-
-        UiText {
-            x: Tokens.space-3;
-            y: 0;
-            width: parent.width - 8px;
-            height: parent.height;
-            text: "声学诊断:\n掩蔽 / 相位 / 动态范围";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        TouchArea {
-            mouse-cursor: MouseCursor.pointer;
-            width: parent.width;
-            height: parent.height;
-            clicked => { root.run-acoustic-diagnosis(); }
-        }
-    }
-
-    // ⭐ 任务单 `#187`：`diagnostics-export-action` 与「审查提案」改成**同一行并排**。
-    //
-    // 修前（`21592ff` 起）：导出诊断包住 `y: 148px`、高 28 ⇒ `148..176`；
-    // 而「声学诊断」卡住 `y: 104px`、高 64 ⇒ `104..168` ⇒ **两键相交 20px**
-    // （1920 档实测 `(1648,152,272,64)` ⟂ `(1648,196,272,28)`；三档全中）。
-    // 为什么不是"整体下移 28px"：`AiRail` 的竖向预算在 1440 档只剩 7px
-    // （内容 440 < 栏高 475；⭐ 总览图面板加入后栏高 475→462、警示槽位上移至 444，
-    // 预算进一步收至 2px）、1024 档本来就已溢出（415）⇒ 再下移 28 会在 1440
-    // 把最后一条回执行推出裁剪区，是拿一个缺陷换另一个。
-    // 因此改为**不占新高度**的并排：两个键同住 `y: 172..200`（诊断卡下沿 168 ＋ 4px），
-    // 下面 `ModuleActions` 的 `212px` 标题一位不动。
-    Rectangle {
-        x: Tokens.space-4;
-        y: 172px;
-        width: 108px;
-        height: 28px;
-        background: (diag_export_touch.pressed || diag_export_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
-        border-radius: Tokens.radius-md;
-        accessible-role: button;
-        accessible-id: "diagnostics-export-action";
-        accessible-label: "导出诊断包";
-        // `[UI-A11Y-003]` §7.3：落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-        accessible-action-default => { root.export-diagnostics(); }
-
-        UiText {
-            x: Tokens.space-3;
-            y: 0;
-            width: parent.width - 8px;
-            height: parent.height;
-            text: "导出诊断包 (D56)";
-            color: Tokens.ink-2;
-            font-size: Tokens.font-size-xs;
-        }
-
-        diag_export_touch := TouchArea {
-            width: parent.width;
-            height: parent.height;
-            clicked => { root.export-diagnostics(); }
-        }
-    }
-
-    Rectangle {
-        x: Tokens.space-4 + 108px + Tokens.space-2;
-        y: 172px;
-        width: parent.width - 2 * Tokens.space-4 - 108px - Tokens.space-2;
-        height: 28px;
-        background: (musical_pr_touch.pressed || musical_pr_touch.has-hover) ? Tokens.bg-raised : Tokens.bg-panel-alt;
-        border-radius: Tokens.radius-md;
-        accessible-role: button;
-        accessible-id: "ai-rail-musical-pr-button";
-        accessible-label: "打开 AI 编曲提案审核抽屉";
-        // `[UI-A11Y-003]` §7.3：落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-        accessible-action-default => { root.open-musical-pr(); }
-
-        UiText {
-            x: 0;
-            y: 0;
-            width: parent.width;
-            height: parent.height;
-            text: "审查提案 (Musical PR)";
-            color: Tokens.selection;
-            font-size: Tokens.font-size-sm;
-            horizontal-alignment: center;
-        }
-
-        musical_pr_touch := TouchArea {
-            width: parent.width;
-            height: parent.height;
-            clicked => { root.open-musical-pr(); }
-        }
-    }
-
-    // ---------------------------------------------------------- 四个模块入口
-    // 本票新增。它占据右栏 y=208..380 这一段**此前完全空白**的区域（`#187` 起
-    // 上面四条控件止于 y=200）⇒ 不改任何既有控件的坐标，也不改任何容器的尺寸。
-    // 四个回调与两条注入属性各自**原样**转给 `MainWindow`（与上面三条同款）。
-    ModuleActions {
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: 240px;
-
-        status: root.module-status;
-        status-succeeded: root.module-status-succeeded;
-        midi-in-status: root.module-midi-in-status;
-        midi-in-status-succeeded: root.module-midi-in-status-succeeded;
-        clipping-warning: root.module-clipping-warning;
-        import-losses: root.module-import-losses;
-
-        open-export-wav => { root.open-export-wav(); }
-        import-midi => { root.import-midi(); }
-        load-sfz => { root.load-sfz(); }
-        record-wav => { root.record-wav(); }
-        midi-in => { root.midi-in(); }
-    }
-}
-
-// ⭐ **引擎错误横幅**（任务单 `#86` 甲）：把"最近一次快照发布失败"投到窗口里。
-//
-// ## 它补的是哪一格
-//
-// 引擎侧的发布失败**早就是结构化的**（`EngineHostError::Sfz` 等），`#82` 也**不再吞掉**
-// 它（`live_surface::engine_tick` ⇒ `EngineTick::publish_error`）。但那一路只把原文落成
-// **读数 ＋ `stderr`** —— **窗口里看不见**。后果是用户点了混音台的 SET 敲一条不存在的
-// SFZ 路径，界面毫无反应，他以为"没生效"。本组件就是那句话的可见落点。
-//
-// ## 数据流（单向，界面不算任何东西）
-//
-// ```text
-// EngineHost::publish_project(…)
-//     └─ Err(EngineHostError) ──> host::apply_engine_error(ui, Failed(text))  ← 唯一写者
-//         └─ MainWindow.engine-error ──> EngineErrorBanner.text
-//             └─ visible: text != ""     ← 空串 = 不显示（成功 / 还没出过错）
-// ```
-//
-// 界面**不**自己判断"这是不是错误"、**不**自己清屏、**不**存第二份状态 —— 与
-// `status_bar.slint` 的 `save-status` / `module_actions.slint` 的 `module-status`
-// 是**同一条**纪律（宿主是唯一写者，`.slint` 只显示）。
-//
-// ## 为什么它住在 `app.slint` 里而不是自己的一个 `.slint` 文件
-//
-// `ADR-0001` **D2** 把 `ui/` 的 `.slint` 清单**冻结**了，且由本 crate 的判据
-// `elements::tests::slint_manifest_matches_adr_0001_d2` 机械看守（新建一个文件会让它当场红）。
-// 增加一个 `.slint` 文件等于改一条**已生效**的 ADR 裁决 —— 那是人类负责人的事
-// （`AGENTS.md` §5.7：⛔ 不擅自改写 Normative 文档），⛔ 不是本单能顺手做的。
-// 因此本条**就地**定义：与 `AiRail` 同一种形态（`app.slint` 里的内联组件）。
-//
-// ## 为什么 `visible` 绑在**文本**上而不是另设一个 `bool`
-//
-// 两个属性会造出一个自相矛盾的中间态（"文字还在、bool 说没有"），而那种态没有任何
-// 合法的产生路径，只会让判据分不清"没有错误"与"写者漏写了一半"。空串因此是**唯一**的
-// "没有错误"表示（与 `save-status` 的 `""` 同款口径）。
-//
-// ## 默认帧为什么逐像素不变（第 247 条）
-//
-// 它在 `MainWindow` 里是**覆盖层**（不是 `VerticalLayout` 的子元素，见本文件末尾的
-// "覆盖层"一节），且没有错误时 `visible = false` ⇒ 它一位像素都不画、也不参与任何布局
-// 计算。上游的控件树遍历会**过滤掉** `visible: false` 的分支（既有判据
-// `test_port_adapter` 的 `DEFAULT_VIEW_MUST_NOT_HAVE` 钉的就是这条语义）⇒ 无头控件树
-// JSON 里它**根本不出现** —— 这正是"成功时不显示"的可判形态。
-//
-// ## `accessible-value` 是原文，不是"有错误吗"
-//
-// `[UI-TEST-001]` 的语义寻址要能回答"**错在哪**"，所以 `accessible-value` 直接挂错误
-// 原文。压成一个 `bool` 就等于又把信息丢一次 —— 那正是 `#82` 修掉的错法。
-component EngineErrorBanner inherits Rectangle {
-    /// **最近一次**快照发布失败的原文（`EngineHostError` 的 `Display`）。
-    ///
-    /// 唯一写者 = `crates/yeban-app/src/host.rs` 的 `host::apply_engine_error`。
-    /// 默认空串 = "本次会话还没有过引擎错误"，**不是**一个编造的读数。
-    in property <string> text: "";
-
-    // 空串 ⇒ 不显示（也不进入控件树、不影响布局）。
-    visible: text != "";
-
-    height: 28px;
-    background: Tokens.bg-panel;
-    border-width: 1px;
-    border-color: Tokens.record-red;
-
-    // 语义节点：ID 稳定、角色是 `banner`、label 与 `src/elements.rs` 的注册表**逐字相同**
-    // （`test_port_adapter` 会断言运行时 label == 注册表 label）。
-    accessible-role: banner;
-    accessible-id: "engine-error-banner";
-    accessible-label: "引擎错误横幅";
-    // ⭐ 错误**原文**（`DoD §3.6` 的"内容可读"就落在这一格上）。
-    accessible-value: root.text;
-
-    UiText {
-        x: Tokens.space-4;
-        y: 0;
-        width: parent.width - Tokens.space-4 * 2;
-        height: parent.height;
-        // 前缀是**界面**加的固定字面量（不是读数）；读数本身原样跟在后面。
-        text: "引擎错误：" + root.text;
-        color: Tokens.record-red;
-        font-size: Tokens.font-size-xs;
-    }
-}
+import { TransportHeaderBar } from "transport_bar.slint";
+import { ZoneBrowserAndInspector } from "left_panel.slint";
+import { HybridClipMatrixDrawer } from "clip_matrix.slint";
+import { ArrangementViewport } from "arrangement.slint";
+import { ControlRoomMeters } from "control_room.slint";
+import { UnifiedLowerDock } from "lower_dock.slint";
+import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
 export component MainWindow inherits Window {
-    // [UI-GRID-002] 断点: `width < 1180px` ⇒ 折叠 (左栏 36px、右栏变抽屉)。
-    //
-    // ⭐ `#195`：阈值由 `1920` 移到 `1180`（负责人裁决选 B）⇒ `1024` 仍折叠、
-    // **`1180` 本身 / `1440` / `1920` 都展开**。1920 下 `1920 < 1180` 为假 ⇒ 基准帧不动。
-    //
-    // ⭐ `#191`：这里是**表达式绑定**, ⛔ 不是宿主在装配时写入一次的常量。`#183` 之后
-    // `root.width` 是**后端给出的真实窗口宽**（根尺寸不再钉死 1920px）, 因此窗口被拉窄 /
-    // 拉宽时 Slint 会自己重算这一条 —— 左栏 240↔36、右栏在场性都跟着走。
-    //
-    // 原 `host.rs:8451` 的 `ui.set_compact(scene.compact())` 已删除: 那个写法用的视口是
-    // `DemoScene::viewport_width`（恒 1920, 见 `scene.rs:188`）, 且只在装配时算一次 ⇒
-    // 窗口拉窄时左栏不会折叠。**装配点不再写这个属性**（生产路径唯一写者 = 本条绑定）。
-    //
-    // 仍声明为 `in-out` 而不是 `out`: 测试夹具可以在固定尺寸下显式渲染折叠态
-    // （例如 `app-main-window-arrangement-compact-1920x1080.png`）。从 Rust 写一次会
-    // 覆盖该实例的绑定（Slint 语义），因此它**只**是测试旁路, ⛔ 不是生产写者。
-    in-out property <bool> compact: self.width < Tokens.breakpoint-full-hd * 1px;
+    title: "AetherStudio Native DAW (Rust + Slint 1.x)";
+    background: Theme.bg-canvas;
+    preferred-width: 1600px;
+    preferred-height: 920px;
+    min-width: 1200px;
+    min-height: 700px;
 
-    in-out property <bool> playing: false;
-    /// ⭐ 录音键的显示态（`[ARCH-REC-001]`）：唯一写者 = `host::wire_transport`
-    /// （起录 ⇒ true、停录 ⇒ false）。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）。
-    in-out property <bool> recording: false;
-    /// ⭐ 节拍器开关的显示态（`[ARCH-RT-001]`）：唯一写者 = 宿主
-    /// （`host::wire_transport` 的 `on_toggle_metronome` 与 `host::apply_action` 的
-    /// `Action::ToggleMetronome` 臂写的是**同一个**属性）。⛔ 不是工程数据
-    /// （`MODEL-ISO-001` 的挥发性层）；初始值由装配期从
-    /// `project.transport.metronome_enabled` 读入。
-    in-out property <bool> metronome-on: false;
-    in-out property <bool> arrangement-view: true;
-    in-out property <int> console-tab: 0;
-    /// ⭐ 底部控制台是否最大化（`Cmd/Ctrl+Alt+M` / 控制台右上角 ⤢ 的同一个视图态）。
-    /// 唯一写者是宿主（`host::apply_action` 的 `Action::ToggleConsoleMaximize` 与
-    /// `host::wire_view_callbacks` 的点击回调写的是**同一个**属性）⇒ 按键与点击不分叉。
-    /// 布局绑定：最大化时中段（工作区）让出全部高度，控制台吃掉剩余空间。
-    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
-    in-out property <bool> console-maximized: false;
-    /// ⭐ 底部控制台高度的**拖拽档位**（px）。唯一写者 = `host::wire_view_callbacks` 的
-    /// `console-height-requested`（钳到 `220..=600`，`UI-GRID-002` 的硬限）与
-    /// `console-height-reset`（写 `0`）。`0` = 未拖拽 ⇒ 布局保持 3:2 弹性比 ⇒
-    /// **默认帧一位不变**。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、
-    /// 不进 `.yeban`、不进撤销栈。
-    in-out property <int> console-height-px: 0;
-    // ---- splitter 指针状态机的 UI 局部读数（⛔ 不是视图态：不进宿主、不进测试 API）----
-    property <bool> splitter-dragging: false;
-    property <length> splitter-press-y: 0px;
-    property <bool> console-fixed: !root.console-maximized && root.console-height-px > 0;
-    /// 控制台的**实测**高度（布局读数）—— splitter 的 `accessible-value` 的唯一数据源，
-    /// 与画面同源（⛔ 不是抄来的 "320"）。
-    out property <length> console-height-readout: console-tabs.height;
-    // ⭐ 拖拽档位生效 = **state 覆盖**（Slint `states`）：只有 `console-fixed` 成立时
-    // 才把控制台高度钉死在 `console-height-px`。默认帧不经过任何新绑定 ⇒ 一位像素不变。
-    states [
-        console-pinned when root.console-fixed : {
-            console-tabs.min-height: root.console-height-px * 1px;
-            console-tabs.max-height: root.console-height-px * 1px;
+    // View & Track State
+    in-out property <[TrackData]> tracks: [
+        {
+            id: 1,
+            name: "01. Lead Neuro Bass",
+            kind: "SYNTH · MPE",
+            color: #06b6d4,
+            bus: "Bus 1 (Synth Grp)",
+            volume_db: -2.5,
+            pan: "C",
+            muted: false,
+            soloed: false,
+            armed: true,
+            meter_peak: 0.65,
+            insert1: "⚡ Wavetable MPE",
+            insert2: "📈 Pro-QLinear 8",
+            insert3: "🔥 Glue Comp VCA",
+            clip1: "Neuro Hook A",
+            clip2: "Bass Wobble B",
+            clip3: "Filtered Drop",
+            clip4: ""
+        },
+        {
+            id: 2,
+            name: "02. Punchy Tech Drums",
+            kind: "DRUM RACK",
+            color: #f59e0b,
+            bus: "Bus 2 (Drum Grp)",
+            volume_db: -1.0,
+            pan: "C",
+            muted: false,
+            soloed: false,
+            armed: false,
+            meter_peak: 0.72,
+            insert1: "🥁 Transient Shaper",
+            insert2: "🔥 Drum Bus Saturator",
+            insert3: "📈 Pro-QLinear 8",
+            clip1: "Kick+Hat Groove",
+            clip2: "Full Breakbeat",
+            clip3: "Snare Roll Build",
+            clip4: "Outro Groove"
+        },
+        {
+            id: 3,
+            name: "03. Atmos Granular Pad",
+            kind: "GRANULAR",
+            color: #a855f7,
+            bus: "Bus 1 (Synth Grp)",
+            volume_db: -6.0,
+            pan: "12L",
+            muted: false,
+            soloed: false,
+            armed: false,
+            meter_peak: 0.45,
+            insert1: "🌌 Granulator IV",
+            insert2: "🌊 Shimmer Verb",
+            insert3: "🎚️ Stereo Imager",
+            clip1: "Cloud Texture",
+            clip2: "Dark Shimmer",
+            clip3: "",
+            clip4: "Fade Pad"
+        },
+        {
+            id: 4,
+            name: "04. Lead Vocal Comp",
+            kind: "AUDIO · COMP",
+            color: #10b981,
+            bus: "Bus 3 (Vocal Grp)",
+            volume_db: -1.8,
+            pan: "C",
+            muted: false,
+            soloed: false,
+            armed: false,
+            meter_peak: 0.58,
+            insert1: "🎤 Auto-Pitch Zero",
+            insert2: "🔥 FET 1176 Comp",
+            insert3: "✨ Optical LA-2A",
+            clip1: "Vox Verse",
+            clip2: "Vox Chorus Hook",
+            clip3: "Vox Adlibs",
+            clip4: ""
+        },
+        {
+            id: 5,
+            name: "05. Arp Pluck Sequencer",
+            kind: "MIDI · STEP",
+            color: #ec4899,
+            bus: "Bus 1 (Synth Grp)",
+            volume_db: -4.2,
+            pan: "18R",
+            muted: false,
+            soloed: false,
+            armed: false,
+            meter_peak: 0.50,
+            insert1: "🎹 Analog Poly",
+            insert2: "⏱️ PingPong Delay",
+            insert3: "📈 HighPass Filter",
+            clip1: "16th Pluck",
+            clip2: "Octave Jump",
+            clip3: "Poly Metric",
+            clip4: "Mute"
         }
-    ]
-    in-out property <bool> sidebar-collapsed: false;
-    /// ⭐ 左侧资源栏的激活分类（0 = 乐器 / 1 = 采样 / 2 = 预置）。
-    /// 唯一写者 = `host::wire_sidebar_contents` 的 `select-sidebar-category` 回调
-    /// （先钳到 `0..=2` 再写）；界面**不自己**翻转选中态。⛔ 不是工程数据
-    /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
-    in-out property <int> sidebar-category: 0;
-    /// ⭐ 当前分类的条目**显示名**数组。唯一写者 = 宿主的 `host::inject_sidebar`
-    /// （三个调用点：装配期 `host::apply_view`、`select-sidebar-category` 换分类、
-    /// `sidebar-search-changed` 换搜索词），来源逐字是
-    /// `bridge::sidebar_category_content()` 再过一道 `bridge::filter_sidebar_content()`
-    /// —— 与 `ElementRegistry::from_view` 读的是**同一个**投影函数（注册表按**过滤前**
-    /// 的全量登记，运行时是它的子集 ⇒ `ui/coverage` 的"注册表 ⊇ 运行时"成立）
-    /// ⇒ "注册表说 N 条、屏幕画 M 条"这类分叉在结构上不可能发生。
-    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
-    in-out property <[string]> sidebar-items: [];
-    /// ⭐ `sidebar-items` 为空时画出来的**理由**（同样由宿主按分类注入）。⛔ 不是占位文案。
-    in-out property <string> sidebar-empty-reason: "";
-    /// ⭐ 左侧资源栏选中的条目（合法区间 = **注入的那一份** `sidebar-items` 的长度 ——
-    /// 分类 ∩ 搜索词）。
-    /// 唯一写者 = `host::wire_sidebar_contents` 的 `select-sidebar-item` 回调
-    /// （按当次投影条数钳位后再写，⛔ 不是常量区间）；界面**不自己**翻转选中态。⛔ 不是工程数据
-    /// （`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
-    in-out property <int> sidebar-item: 0;
-    /// ⭐ D-UI-14：左栏搜索框里的字。写者**只有**输入框自己（`text <=> root.search-text`
-    /// 那条两向绑定链，宿主一个字节都不写）；读者 = 宿主的三个注入调用点，它们把这份字
-    /// 交给 `bridge::filter_sidebar_content` 算出**上面那个数组**。
-    /// 默认**空串** ⇒ 装配期"不过滤"，`sidebar-items` 逐字等于全量投影 ⇒
-    /// `tests/golden/**` 的基准帧一位不动。⛔ 不是工程数据、不进 `.yeban`、不进撤销栈。
-    in-out property <string> sidebar-search: "";
-    in-out property <bool> ai-drawer-open: false;
-    in-out property <bool> musical-pr-open: false;
-    // ---- AI 提案抽屉的**读数**（唯一写者 = src/host.rs 的 apply_proposal_drawer）----
-    // 来源是**进程内唯一可变权威**：`ProjectAuthorityHandle::open_proposal_rows()` →
-    // `Domain::open_proposal_rows()`（会话运行态, `MODEL-ISO-001` 第二层）。界面自带
-    // 的默认值全空 ⇒ 没有接来源的装配画空态, 而不是画一份编造的提案。
-    // ⭐ `resolve-available` 现在是**算出来的**：有写入口 ∧ 点选了当前清单里的一行
-    // （口径唯一, 在 `src/proposals.rs` 的 `drawer_values`）。写入口 = `HostAction` 的
-    // `MergeProposal` / `RejectProposal` 两臂（复用工具面同一个 `Plan::Merge` /
-    // `Plan::Reject` 实现, ⛔ 不是第二份合并逻辑）。
-    in property <int> musical-pr-proposal-count: 0;
-    in property <[string]> musical-pr-proposal-ids: [];
-    in property <[string]> musical-pr-proposal-kinds: [];
-    in property <[string]> musical-pr-proposal-titles: [];
-    in property <[int]> musical-pr-proposal-op-counts: [];
-    /// 用户点选的那一行的身份；宿主**夹紧**过（不在当前清单里 ⇒ 空串）。
-    /// ⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）、不进 `.yeban`、不进撤销栈。
-    in property <string> musical-pr-selected-id: "";
-    in property <string> musical-pr-empty-reason: "";
-    in property <bool> musical-pr-resolve-available: false;
-    in property <string> musical-pr-resolve-reason: "";
-    // ⭐ 宏面板（右侧抽屉；默认关着 ⇒ 默认帧一位不变）。打开者 = 控制台 Tab 3 的
-    // 「宏 (N)」按钮；关闭者 = 抽屉自己的 `close`。
-    in-out property <bool> macro-panel-open: false;
-    in-out property <bool> undo-tree-open: false;
-    // ---- WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）----------------
-    // 四格文本**不在这里解析**：`host::wire_module_actions_with_capture` 的
-    // `export-wav` 分支按 `WavExportOptions::resolve` 的唯一口径解析，失败即
-    // `error=invalid-options` 且不落盘。`export-wav-path` 为空时用 `ModulePaths`
-    // 的缺省路径（打开对话框时由宿主播种，用户可改）。
-    in-out property <bool> export-wav-open: false;
-    in-out property <string> export-wav-path: "";
-    in-out property <string> export-wav-sample-rate: "auto";
-    in-out property <string> export-wav-bit-depth: "24";
-    // ⭐ `D-UI-28`：这一格**不再写死 "8"**。空 = "还没打开过对话框"，打开时由宿主按
-    // **工程可闻末端**播种（`host::audible_end_seconds`）；播不出（空工程）⇒ 继续留空，
-    // 让后端那条既有缺省 8 秒生效。⛔ 两侧（根属性与对话框自己）初始值必须同为空串：
-    // `seconds <=> root.export-wav-seconds` 是两向绑定，两边各写字面量时谁生效不确定。
-    in-out property <string> export-wav-seconds: "";
-    // ⭐ `D-EX-1`：母线限制器开关（第五格，布尔量 ⇒ ⛔ 不经上面那条文本解析口径）。
-    // 缺省 `false` 逐字等于 CLI 不给 `--limiter`。宿主在 `resolve()` **之后**读它并赋
-    // `wav_options.limiter`；它是每次调用的修饰量（任务单 `#302`），⛔ 不进工程、不进撤销栈。
-    in-out property <bool> export-wav-limiter: false;
-    // ---- 人性化 / 量化设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）--------------
-    // 五格文本**不在这里解析**：`host::wire_humanize_dialog` 按 MCP `humanizeClip` /
-    // `quantizeClip` 的同一口径解析，失败即把原因写进 `humanize-error`、弹窗不关。
-    // 种子是**基础种子**（缺省 = 工程 `rng_seed`，可显式改）；⛔ 不加每轨种子输入，
-    // 按轨派生（基础种子 ⊕ 轨标识）在引擎侧做（v2 线）。
-    in-out property <bool> humanize-open: false;
-    in-out property <string> humanize-time-jitter: "";
-    in-out property <string> humanize-velocity-jitter: "";
-    in-out property <string> humanize-seed: "";
-    in-out property <string> humanize-grid: "";
-    in-out property <string> humanize-strength: "";
-    in-out property <string> humanize-error: "";
-    // 打开时焦点落哪个区段：0 = 人性化首格（时值抖动量），1 = 量化首格（网格）。
-    in-out property <int> humanize-focus-section: 0;
-    // ---- 撤销能力的显示态（**模型读数**，唯一写者 = src/host.rs 的 apply_undo）------
-    // 能不能撤销、还能撤几步、已撤几步、提交多少条 —— 全部由 `undo_session::UndoDisplay`
-    // 从 `CommitGraph` + `UndoCursor` 读出（ADR-0001 D45）。界面不自己推断。
-    in-out property <bool> undo-can-undo: false;
-    in-out property <bool> undo-can-redo: false;
-    in-out property <int> undo-depth: 0;
-    in-out property <int> undo-undone: 0;
-    in-out property <int> undo-commit-count: 0;
-    // ---- 时光机画出的**真实提交链**（唯一写者 = src/host.rs 的 apply_undo）--------
-    // 来源是**权威提交图谱**：`UndoPort::graph()` → `CommitGraph::ancestry(head)` →
-    // 每个 `Commit::message`（最新在前）。界面不自带节点；默认全空 ⇒ 画空态。
-    // `undo-node-hidden` = 链条上比画布画得下的更多的版本数（如实报数，不静默截断）。
-    // ⚠ 这三个属性**曾经不存在**：那时 `UndoTreeModal` 自带 6 个编造的版本名默认值，
-    // 而没有任何宿主写者 ⇒ 用户看到的是不存在的历史。判据见
-    // `crates/yeban-app/tests/undo_tree_honesty.rs`。
-    in-out property <int> undo-node-count: 0;
-    in-out property <[string]> undo-node-labels: [];
-    in-out property <int> undo-node-hidden: 0;
+    ];
 
-    in-out property <string> timecode: "001.01.000";
-    in-out property <string> bpm-display: "120.00";
-    in-out property <string> branch-name: "main";
+    in-out property <[TimelineBlockData]> timeline-blocks: [
+        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #06b6d4 },
+        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #06b6d4 },
+        { track_id: 1, label: "Outro Glide", start_px: 405px, width_px: 150px, is_audio: false, gain_label: "0dB", color: #06b6d4 },
+        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #f59e0b },
+        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #f59e0b },
+        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: true, gain_label: "Gain: -2dB", color: #a855f7 },
+        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #10b981 },
+        { track_id: 4, label: "Chorus Harmonies", start_px: 400px, width_px: 155px, is_audio: true, gain_label: "Gain: 0dB", color: #10b981 },
+        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #ec4899 }
+    ];
 
-    // ⭐ 任务单 `D-UI-24`：**「BPM 框此刻正被敲」的宿主可见标记**（编辑保护的门）。
-    //
-    // 修前的事实（现读链条）：`host::apply_view` 每次重投影都**无条件**写
-    // `set_bpm_display(权威读数)`，而画布那一侧（卷帘 / 编排）**没有** `FocusScope`
-    // ⇒ 用户在 BPM 框里敲到一半时点一下剪辑，焦点**不会**离开文本框，但那一次编辑
-    // 会提交并重投影 ⇒ 草稿被权威读数直接盖掉（会话侧 `tools/call` 改动同理）。
-    //
-    // 口径（⛔ 不是第二份焦点状态）：本属性的唯一写者是 `src/host.rs` 的
-    // `wire_input` —— 写的是 `bpm-input` 自己在 `changed has-focus` 里发出的那一条
-    // **既有**事件（与 `[UI-A11Y-002]` §7.2 喂给 `InputContext::set_focus` 的是**同一次**
-    // 通知，⛔ 不新造事件源、⛔ 不轮询焦点系统）。唯一读者 = `apply_view` 的那一句
-    // 编辑保护 ＋ 无头判据 `tests/d_ui_24_bpm_draft_survives_reprojection.rs`。
-    //
-    // ⚠ **为什么它是 `in` 而不是像 `shortcut-layer-focused` 那样的派生 `out`**：
-    // `bpm-input` 声明在**子组件** `Transport` 内部，主窗口层的绑定够不到那个标识
-    // ⇒ 只能由宿主把已经存在的那条焦点事件镜像过来。这也是本属性与
-    // `export-wav-focused-field`（派生读数）**不同形**的原因，判据 ⑦ 钉着写者数量。
-    //
-    // ⚠ 提交（`accepted`）本身**解决**草稿：`wire_bpm_commit` 一进门就把本标记清零
-    // ⇒ 合法值归一化成 `{:.2}` 读数、非法值写回权威读数（`ui/transport.slint` 的
-    // "⛔ 不留下一个冒充成权威值的草稿"那条既有口径因此一位不动）。
-    in property <bool> bpm-field-editing: false;
+    in-out property <int> selected-track-id: 1;
 
-    // 走带光标的位置（960 PPQ tick）。唯一写者 = `src/host.rs` 的 `apply_transport`
-    // （与 `timecode` 同一次引擎读数）；编曲 / 卷帘两条 playhead 都由它派生 x
-    // （`tick ÷ ticks-per-pixel`，与投影里音符 / 小节线的整数除法同口径）。
-    // ⛔ 界面不记位置；旧版两条 playhead 的 `x` 是写死的假位置（`accessible-value: "3"`）。
-    in-out property <int> playhead-ticks: 0;
+    // Zone Visibility State
+    in-out property <bool> show-left-inspector: true;
+    in-out property <bool> show-clip-matrix: Theme.persona == PersonaMode.AetherDefault || Theme.persona == PersonaMode.AbletonLive;
+    in-out property <bool> show-lower-dock: true;
+    in-out property <bool> show-control-room: Theme.persona == PersonaMode.AetherDefault || Theme.persona == PersonaMode.CubasePro;
 
-    // ---------------------------------------------------------------------
-    // 时间码的**格式化网格**（`[MODEL-AST-001]`）
-    // ---------------------------------------------------------------------
-    // 唯一写者 = `src/host.rs` 的 `apply_view`（D28 的唯一注入点），值来自投影
-    // `ViewState::timecode_grid()`；唯一读 = `src/host.rs` 的 `apply_transport`，
-    // 它把这两个整数交给唯一的换算实现 `bridge::timecode_for_ticks`。
-    //
-    // 为什么参数要过一遍界面属性：走带位置是**引擎**读数（每帧在变），而拍号属于
-    // **工程**投影（换工程 / 撤销才变）。把网格钉在窗口上 ⇒ "换工程之后同一个 tick
-    // 的读数跟着变"不需要任何额外的共享可变状态，也不会读到过期的拍号。
-    // 0 = 模型层拒绝这个拍号 ⇒ `timecode_for_ticks` 如实退回 tick 文本。
-    in-out property <int> timecode-ticks-beat: 0;
-    in-out property <int> timecode-ticks-bar: 0;
+    // Transport & Playback State
+    in-out property <string> active-tool: "pointer";
+    in-out property <bool> is-playing: false;
+    in-out property <bool> is-recording: false;
+    in-out property <bool> is-looping: true;
+    in-out property <string> timecode-text: "003.02.01";
+    in-out property <int> bpm-val: 124;
+    in-out property <string> scale-text: "C Minor (自然小调)";
+    in-out property <int> buffer-samples: 128;
+    in-out property <int> dsp-cpu-percent: 14;
+    in-out property <length> playhead-px: 360px;
 
-    // 键盘/菜单入口: src/input.rs 判定后由宿主调用对应的 invoke_*。
-    callback toggle-play();
-    /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
-    callback toggle-record();
-    /// ⭐ 节拍器开关（`Cmd/Ctrl+Alt+N` 的可点等价物）。界面只发通知；
-    /// 状态属性 `metronome-on` 的唯一写者仍是宿主（`D-UI-29`：落点在
-    /// `host::apply_action` 的节拍器那一臂，运行态由 `host::apply_metronome_mirror` 校正）。
-    callback toggle-metronome();
-    // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
-    // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
-    callback stop();
-    callback toggle-view();
-    /// ⭐ Session 视图「→ 编曲」按钮的点击入口：宿主把它落到 `arrangement-view = true`
-    /// （与 `toggle-view` 写的是**同一个**属性；唯一写者 = `host::wire_view_callbacks`）。
-    callback back-to-arrangement();
-    callback toggle-sidebar();
-    /// ⭐ 左侧资源分类标签的点击入口：宿主把分类号钳到 `0..=2` 再写 `sidebar-category`。
-    callback select-sidebar-category(int);
-    /// ⭐ 左侧资源条目的点击入口：宿主把条目号钳到**当前注入的那一份**投影条数再写 `sidebar-item`。
-    callback select-sidebar-item(int);
-    /// ⭐ D-UI-14：左栏搜索框**每敲一个字**报一次整串。落点 = 宿主
-    /// `host::wire_sidebar_contents` 的 `on_sidebar_search_changed`：拿这份字重算
-    /// `bridge::filter_sidebar_content` 并重注入数组 + 钳位选中态。
-    /// 宿主⛔ 不把这个串写回任何属性（写者是输入框那条两向绑定，写回会成环）。
-    callback sidebar-search-changed(string);
-    callback toggle-ai-drawer();
-    /// ⭐ 控制台右上角 ⤢ 的点击入口：与 `Cmd/Ctrl+Alt+M`（`Action::ToggleConsoleMaximize`）
-    /// 落到**同一个**属性 `console-maximized`（唯一实现 = 宿主写属性，界面不自己翻转）。
-    callback console-maximize-toggle();
-    /// ⭐ 拖 splitter：界面按"实测高 + 指针位移"报**目标高度**（px），宿主钳到
-    /// `220..=600` 后写 `console-height-px`（唯一写者，与 sidebar 两条同档）。
-    callback console-height-requested(int);
-    /// ⭐ 双击 splitter：宿主把 `console-height-px` 清零 ⇒ 回到 3:2 弹性比（默认态）。
-    callback console-height-reset();
-    callback toggle-undo-tree();
-    // 时光机右上角 × 的关闭入口：必须落**端口**（`UiAction::CloseUndoTree`），与 `Esc`
-    // 同一个动作、同一个回写路径。只写界面属性会让端口仍记着"开着"，下一次撤销的
-    // `apply_undo` 就按端口把弹窗翻回来（改动前的 × 正是如此）。
-    callback close-undo-tree();
-    // D45: 时光机里的"撤销一步"（与 `Cmd+Z` 汇到同一个 `UndoPort::perform`）。
-    callback undo-step();
-    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：时光机里的"重做一步"。唯一注册者 =
-    // `host::wire_undo` 的 `on_redo_step` → `UndoPort::perform(UiAction::Redo)`，
-    // 与键盘重做同一个落点；界面只上报，不复制第二份重做逻辑。
-    callback redo-step();
-    // 时光机里**点击版本节点**：参数 = 节点下标（0 = 活跃分支头）；宿主
-    // `host::wire_undo` 把它换算成 `UndoMany` / `RedoMany` 落到同一个 `UndoPort::perform`。
-    callback undo-node-selected(int);
-    // `ROAD-M4-008` 选项 (a)：**保存工程**。事件源是 `ui/transport.slint` 的"保存"按钮
-    // （`accessible-id: "transport-save-button"`）；宿主 `host::wire_save` 把它落到
-    // `save_action::dispatch_save`（有控制面会话 ⇒ 走那个会话；没有 ⇒ 本地原子写），
-    // 并把它说的**原话**写回 `save-status`（下面的 `in-out property`）。
-    // 界面**不**自己写盘、也不自己做"保存成功了吗"的判断。
-    callback save-project();
-    // ⭐ **另存为**（`Cmd/Ctrl+Shift+S`，界面决定，⛔ 规范未点名）：**只有键盘入口**，
-    // 界面上没有对应的按钮 ⇒ 它不画任何东西、也不改变默认帧。落点是宿主
-    // `host::wire_save_with_engine` 里与 `save-project` **同一个**闭包链：
-    // 先问一次保存对话框（`FilePicker::choose_save`，"另存为"），选中后把路径记成
-    // 本会话的**当前目标**，再走**同一条** `dispatch_save`。取消 ⇒ 一位不动、不写回执。
-    callback save-project-as();
-    // 走带区「回滚到上一个 Commit」—— 原样上抛给宿主（`host::wire_undo` 落到
-    // `UiAction::Undo`）。界面不判"有没有可撤销的编辑"，那是撤销会话的读数。
-    callback revert-to-last-commit();
-    // 最近一次保存的结果文本（`""` = 本次会话还没按过保存）。
-    // 它是**宿主写的**（`host::apply_save_outcome` 是唯一写者），由状态栏读出来；
-    // 成功与失败都在这里 —— 失败被吞掉正是本仓库最忌讳的失败模式。
-    in-out property <string> save-status: "";
-    // 最近一次保存是否成功（`.slint` 用它选颜色；读数是宿主的，不是界面算的）。
-    in-out property <bool> save-succeeded: false;
-    // =====================================================================
-    // 五个**模块入口**的宿主回执（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）
-    // =====================================================================
-    // 唯一写者 = `src/host.rs` 的 `wire_module_actions`。它是**成功与失败都在**的
-    // 一行结构化回执：形如
-    //   `module:action=export-wav:outcome=ok:path=…:frames=…:source=…`
-    //   `module:action=load-sfz:outcome=error:error=sfz-read:message="…"`
-    // 为什么进界面属性而不是只打日志：与 `save-status` 同款 —— "动作失败了而用户
-    // 以为成功"是本仓库最忌讳的失败模式。`module_actions.slint` 的
-    // `module-last-status` 把它同时放进可见 `text` 与 `accessible-label`。
-    // 默认空串 = "本次会话还没按过任何模块入口"，**不是**一个编造的读数。
-    in-out property <string> module-status: "";
-    in-out property <bool> module-status-succeeded: false;
-    // ⭐ **硬件 MIDI 输入**的专属结果行（`ui/module_actions.slint` 的
-    // `module-midi-in-status`）。⭐ 与上面那条**同一串字节、同一个写者**
-    // （`host::wire_module_actions` 的 `midi-in` 分支只写一次、写两处）
-    // ⇒ ⛔ 不是第二个真相源；分成两格只是为了让"最近一次动作"与"这次采集的读数"
-    // 各自能被语义 ID 寻址（`[UI-TEST-001]`）。
-    // 默认空串 = "还没按过这个入口"，**不是**一个编造的读数。
-    in-out property <string> module-midi-in-status: "";
-    in-out property <bool> module-midi-in-status-succeeded: false;
-    // ⭐ 任务单 `#230`：母带削波警示行（`ui/module_actions.slint` 的
-    // `module-clipping-warning`）。空串 = 不显示；削波导出 ⇒ 一行短句。
-    // 完整读数仍在 `module-status` 的 `clipping_note="…"` 字段里（`#229` 的数据通道）。
-    in-out property <string> module-clipping-warning: "";
-    // ⭐ 任务单 `#319`／`#320`：MIDI 文件导入的损失摘要行（`ui/module_actions.slint`
-    // 的 `module-import-losses`，与削波警示共用 `y = 444`、互斥）。空串 = 不显示；
-    // 完整 24 类明细与歌词五字段在 `module-status` 的 `loss_detail="…"`／
-    // `lyrics_detail="…"` 字段里（同一个 `MidiImportLosses`／`MidiLyricCounts`，
-    // 与 CLI 的 `imported-midi:` 行同源）。
-    in-out property <string> module-import-losses: "";
-    // 六条入口回调（事件源 = `ui/module_actions.slint` 的五个 `TouchArea` ＋
-    // `ui/console/mixer_console.slint` 的 `midi_export_area`）。
-    // 宿主 `host::wire_module_actions` 把它们落到**已经存在的**六个模块实现上：
-    //   导出 WAV    → `crate::export_wav::export_wav_with_sfz_file`
-    //   导出 MIDI   → `crate::export_midi::export_project_to_file`（与 CLI `--export-midi` **同一个**函数；
-    //                 入口住在控制台 Tab 1，见下面 `export-midi` 回调的注释）
-    //   导入 MIDI   → `crate::import_midi::import_midi_file`（经 `UndoPort`，来源 `MidiInput`）
-    //   装载 SFZ    → `crate::sfz_load::load_sfz_with_instrument`
-    //   录音        → `crate::record_wav::record_test_tone`
-    //   硬件 MIDI 入 → `crate::midi_in::capture_messages`（与 CLI `--midi-in` **同一个**函数）
-    //                  ＋ `crate::midi_notes::write_notes`（= CLI 的 `--midi-in-write-notes`）
-    // ⚠ `import-midi` 读的是**文件**（SMF）；`midi-in` 读的是**物理端口** ⇒ 两条不是一件事。
-    // ⛔ 界面不写盘、不猜路径、不自己判断成功与否（那是第二个真相源）。
-    callback export-wav();
-    // 「导出 WAV」入口打开选项对话框；关闭它只改视图态（⛔ 不碰工程）。
-    callback open-export-wav();
-    callback close-export-wav();
-    // ⭐ [PATCH UI-WIRING-01]：导出对话框的 `Ctrl/Cmd+O` 路径浏览。唯一落点
-    // `host::wire_export_wav_browse` → `FilePicker::choose_save` → 写回 `export-wav-path`。
-    // ⛔ 不写盘、⛔ 不猜缺省路径、⛔ 不构造第二份导出实现。
-    callback browse-export-wav-path();
-    // ⭐ 人性化 / 量化对话框：打开（分人性化 / 量化两个入口，只差焦点落点）、
-    // 关闭（只改视图态，⛔ 不碰工程）、应用（各一区段；唯一落点
-    // `host::wire_humanize_dialog`）。
-    callback open-humanize();
-    callback open-quantize();
-    callback close-humanize();
-    callback apply-humanize();
-    callback apply-quantize();
-    callback import-midi();
-    callback load-sfz();
-    callback record-wav();
-    callback midi-in();
-    // ⭐ **只给宿主用**：硬件 MIDI 采集完成 ⇒ 请 UI 线程排空（并在有端口时把音符写进谱面）。
-    //
-    // 为什么需要一个"空"的 callback（它**不**被 `.slint` 里的任何控件调用）：工作线程做完采集后
-    // 要把结果交回 **UI 线程**，而 `slint::Weak::upgrade_in_event_loop` 的闭包**必须** `Send`
-    // （上游 `i-slint-core` 的 `api.rs:1227-1230`）—— 落地端口是 `Rc<UndoPort>`（UI 线程独占，
-    // ⛔ 不 `Send`）⇒ **不能**由工作线程的闭包直接搬运。⇒ 跨线程只传**这一句"请排空"**：
-    // 工作线程调 `invoke_midi_in_drain_requested()`，本窗口上由 `host::wire_module_actions` 注册的
-    // handler（它握着端口与状态）在 UI 线程上执行排空。
-    // ⛔ 它不画任何像素（⛔ 不是控件、⛔ 不改几何）⇒ 金标截图不受影响。
-    callback midi-in-drain-requested();
-    // 状态栏「选区信息」那一格的**整串文本**（台账 R9）。
-    //
-    // 写者**只有一处**：`host::apply_view` 末尾的 `host::publish_status_bar`。
-    // 数据源 = `ViewState::selection_tick_span` 解析本窗口的 `selected-ulids`
-    // （有选区 ⇒ `选区 001.01.000 – 005.04.480`），格式化走唯一的
-    // `bridge::timecode_for_ticks`；空选区 = 本属性默认值 `选区 无`。
-    // `.slint` 侧**不做**任何 tick 算术，也不构造这一串文本。
-    in-out property <string> status-selection: "选区 无";
-    // 状态栏「音频配置」那一格的**整串文本**（台账 R9）。
-    //
-    // 写者同上（`host::publish_status_bar`）。数据源 = `ViewState::audio_config_display`，
-    // 它在投影层由 `project.audio_config.sample_rate` / `.bit_depth` 唯一一次格式化。
-    // 默认值 `"—"` = **还没有读数**；它**不是**任何一个具体的采样率 / 位深。
-    // `"DSP …%"` 那个编造的性能读数已删除：没有真实数据源就不填那一格。
-    in-out property <string> status-device: "—";
-    // ⭐ 任务单 `#166`：卷帘**最近一次编辑拒绝**的逐字原因（空串 = 没有拒绝）。
-    //
-    // 写者**只有一处**：`host::install_roll_click` 的第二段（它是卷帘点击的唯一派发器）——
-    // 每次点击先清空，铅笔拒绝时写入一句人话（"当前显示的轨上没有覆盖该位置的片段，未写入音符"）。
-    // 它不是工程数据、不是"选中轨"状态：只是**最近一次拒绝**的显示文本（`MODEL-ISO-001` 的挥发性层）。
-    // 读 = `ui/console/piano_roll.slint` 的 `piano-roll-status` 那一行。
-    in-out property <string> roll-edit-status: "";
-    // ⭐ **最近一次"引擎发布失败"的原文**（任务单 `#86` 甲）。
-    //
-    // 写者**只有一处**：`host::apply_engine_error`（生产 60Hz 心跳与无头执行面共用它）。
-    // 数据源 = `EngineHost::publish_project` 的 `Err` ⇒ `EngineHostError` 的 `Display` 原文。
-    // 默认空串 = **本次会话还没有过引擎错误**，不是一个编造的读数。
-    //
-    // ⛔ 界面**不**自己清屏：`host::apply_engine_error` 只在**真的发布成功**那一跳写空串
-    // （标记没变的那一跳一位不动）—— 否则 60Hz 心跳会让横幅闪一下就走，等于没做。
-    in-out property <string> engine-error: "";
-    // =====================================================================
-    // 整曲多层总览图（Song Overview，Phase 1）—— 设计稿 §7 / §11 MVP
-    // =====================================================================
-    // 数据面（`in`）：唯一写者 = `song_overview::apply_song_overview`。
-    // 数据是真实管线（工程 → 离线渲染 → dsp 分析 → 映射），标题不再带「试算」。
-    // 视图态面（`in-out`）：图层开关 / 折叠 / 悬停读数，唯一写者 =
-    // `song_overview::wire_song_overview`（界面不自己翻转任何状态）。
-    // 布局：底部、状态栏之上、可折叠、总高 104 px（主画布 82 + 底部 22；设计稿 §11
-    // 的「100 px」是约数，82 + 22 = 104，见面板本体文件头的算术说明）。
-    in property <int> song-overview-total-bars: 0;
-    in property <[float]> song-overview-tension: [];
-    in property <[color]> song-overview-tension-colors: [];
-    in property <[float]> song-overview-lufs: [];
-    in property <[color]> song-overview-band-colors: [];
-    in property <[float]> song-overview-density-pitched: [];
-    in property <[float]> song-overview-density-perc: [];
-    in property <[float]> song-overview-density-duty: [];
-    in property <[string]> song-overview-section-names: [];
-    in property <[int]> song-overview-section-start-bars: [];
-    in property <[string]> song-overview-ruler-labels: [];
-    in property <int> song-overview-span-ticks: 0;
-    in property <string> song-overview-key-signature: "";
-    // Phase 2（设计稿 §3.5 / §3.6 / §5.1）：谱面力度、期望带、偏离告警、曲风档中文名。
-    in property <[float]> song-overview-score-dyn: [];
-    in property <[float]> song-overview-envelope-lo: [];
-    in property <[float]> song-overview-envelope-hi: [];
-    in property <[bool]> song-overview-envelope-alert: [];
-    in property <string> song-overview-profile: "均衡";
-    /// 总览面板是否折叠（22 px 条带）。
-    ///
-    /// 默认值是**表达式绑定**，不是写死 `false`：窗口不在 UI-GRID-002 的全展开档
-    /// （≥1920×1080）时默认折叠，展开档默认展开。`pane_no_overlap` 的实测：
-    /// 常驻 104 px 时 1024x800 与 1440x900 两档各丢底部节点（8 个失败），1920x1080
-    /// 全过 —— 折叠档只认 `compact`（宽 < 1180）盖不住 1440 档，因此默认折叠的
-    /// 档位取全展开档本身（宽 < 1920 或高 < 1080 即折叠），两个数都引自 §1.2 的
-    /// 全展开档定义，⛔ 不是新发明的断点值。折叠后多出的 82 px 还给中段弹性区。
-    ///
-    /// 与 `compact` 同款：Rust 写一次即覆盖本实例的绑定（Slint 语义）⇒ 用户按
-    /// 折叠键后跟 toggle 走，窗口再拉宽/拉窄不再自动翻（默认折叠只是默认值）。
-    in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
-    /// 总览面板是否全屏（Wang 2026-11-08 19:56 要求）：占满主窗口可用区。
-    ///
-    /// 默认 `false`。与 `song-overview-collapsed` 是协调的一对（见
-    /// `song_overview::wire_song_overview`）：进入全屏即展开，折叠即退出全屏。
-    /// 全屏时中段（编排/卷帘）与控制台的 `vertical-stretch` 归零 + `visible: false`
-    ///（`console-maximized` 同款伸缩口径），面板拿 `vertical-stretch: 1` 与放开的
-    /// `max-height` 吃掉全部弹性高度；顶栏 48 px 与状态栏 24 px 不动。
-    ///
-    /// Logic Pro 对照（Wang 立规：不确定处抄 Logic）：Logic 的编辑器全屏是窗口级
-    /// 最大化 + 按钮退出、退出恢复原窗口态 —— 本面板抄的是"退出恢复原态"这一点
-    ///（退出全屏恢复 104 px，折叠态 22 px）；`Esc` 退出是本仓库 `Action::Cancel`
-    /// 级联的既有口径（面板先于手势收尾），Logic 里 `Esc` 不退全屏，直说。
-    in-out property <bool> song-overview-fullscreen: false;
-    in-out property <bool> song-overview-show-tension: true;
-    in-out property <bool> song-overview-show-energy: true;
-    in-out property <bool> song-overview-show-bands: true;
-    in-out property <bool> song-overview-show-density: true;
-    in-out property <bool> song-overview-hover-visible: false;
-    in-out property <float> song-overview-hover-fraction: 0.0;
-    in-out property <string> song-overview-hover-text: "";
-    /// ⭐ 频段独奏（Songmap follow-ons (a)）：当前独奏的频段（0 Sub … 7 Air），−1 = 未独奏。
-    /// 会话态（MODEL-ISO-001 第二层）：不进工程、不进撤销。唯一写者 = `song_overview::wire_song_overview`。
-    in-out property <int> song-overview-band-solo: -1;
-    /// 点击总览图 ⇒ 走带定位（分数 0..1；落点 = `song_overview::wire_song_overview`）。
-    callback song-overview-seek(float);
-    /// 悬停总览图 ⇒ 小节读数（分数 0..1）。
-    callback song-overview-hover(float);
-    /// 图层胶囊单击 ⇒ 隐藏/显示（下标 0 情绪 / 1 能量 / 2 频段 / 3 疏密）。
-    callback song-overview-layer-toggle(int);
-    /// 图层胶囊双击 ⇒ 独显（已独显则恢复全显）。
-    callback song-overview-layer-solo(int);
-    /// Alt+点总览图频段行 ⇒ 独奏该频段（已独奏则关闭）。
-    /// ⚠ 回调名带 `-requested` 后缀：属性与回调在 Slint 里不许同名（与面板本体
-    /// `band-solo` / `band-solo-requested` 同款区分）。
-    callback song-overview-band-solo-requested(int);
-    /// 拖视口框 ⇒ 滚动编排视图（目标横向偏移 px，已夹紧）。
-    callback song-overview-viewport-scroll(float);
-    /// 拖视口框右缘 ⇒ 缩放编排视图（目标 tick/px）。
-    callback song-overview-viewport-zoom(int);
-    /// 折叠键 ⇒ 翻转 `song-overview-collapsed`。
-    callback song-overview-toggle-collapsed();
-    /// 全屏键 / `Esc`（`Action::Cancel` 级联）⇒ 翻转 `song-overview-fullscreen`。
-    /// `Esc` 只在全屏态才消费（见 `host::apply_action` 的 Cancel 臂）。
-    callback song-overview-toggle-fullscreen();
-    /// Phase 2 预设键 ⇒ 曲风档循环。
-    callback song-overview-profile-cycle();
-    /// Phase 2 段落标签 ⇒ 该段落的期望等级循环（参数 = 段落下标）。
-    callback song-overview-target-cycle(int);
-    callback open-musical-pr();
-    callback accept-ai-proposal();
-    callback reject-ai-proposal();
-    /// 抽屉里点了一行提案：上报**那一行的身份原文**（`ProposalRowView::id`）。
-    /// 唯一落点 = `host::wire_proposal_drawer` 的 `on_select_ai_proposal`。
-    callback select-ai-proposal(string);
+    // Telemetry Meters
+    in-out property <string> lufs-integrated: "-9.4 LUFS";
+    in-out property <string> lufs-short: "-8.8 LUFS";
+    in-out property <string> lufs-peak: "-0.3 dBTP";
+    in-out property <float> master-meter-l: 0.68;
+    in-out property <float> master-meter-r: 0.64;
+
+    // Overlays
+    in-out property <bool> show-cmd-palette: false;
+    in-out property <bool> show-hotspots: false;
+    in-out property <string> toast-message: "";
+
+    // Callbacks to Rust Host
+    callback hot-swap-buffer-size(int);
+    callback trigger-shortcut(string, KeyEvent);
+    callback transport-toggle-play();
+    callback transport-toggle-rec();
+    callback transport-toggle-loop();
+    callback transport-rewind();
+    callback transport-set-bpm(int);
+    callback transport-set-scale(string);
+    callback edit-tool-selected(string);
+    callback track-selected(int);
+    callback track-toggle-mute(int);
+    callback track-toggle-solo(int);
+    callback track-toggle-arm(int);
+    callback track-volume-changed(int, float);
+    callback track-add-requested();
+    callback clip-trigger(int, int);
+    callback scene-trigger(int);
+    callback chord-audition(string);
+    callback browser-item-load(string);
+    callback dock-tab-selected(string);
+    callback zone-toggle(string);
+    callback command-execute(string);
+    callback normalize-track-heights();
+    callback monitor-switch(string);
+    callback device-param-changed(string, string, float);
+    callback piano-step-toggle(int, int);
     callback run-acoustic-diagnosis();
-    callback export-diagnostics();
-    // `[UI-A11Y-002]` §7.2：BPM 敲入控件里真 `TextInput` 的合成态 / 焦点事件
-    // （见 ui/transport.slint 的 `bpm-input`）。宿主 `host::wire_input` 把它翻成
-    // `InputContext::begin_composition` / `end_composition` / `set_focus`。
-    callback ime-composition-changed(bool);
-    callback ime-focus-changed(bool);
-    // ⭐ BPM 输入框回车 ⇒ 提交一次速度编辑（`host::wire_bpm_commit`）。
-    callback bpm-commit(string);
 
-    // =====================================================================
-    // `N2` 裁决 (1)：GUI 路径的键盘事件源（**逻辑键**）
-    // =====================================================================
-    // Slint 的 `KeyEvent` 只有 `text` + `modifiers`，**没有物理码**
-    // （`i-slint-common-1.18.1/builtin_structs.rs` 的 `KeyEvent { text, modifiers, repeat }`），
-    // 而 `src/input.rs` 的扫描码表需要物理键身份 ⇒ GUI **只能**绑逻辑键。
-    // 因此这个 `FocusScope` 是**唯一**的键盘事件源：它把 `event.text` 与四个修饰位
-    // 原样交给宿主（`host::wire_keys` → `input::resolve_logical`，与无头端口的物理码路径
-    // **共用同一张**快捷键策略表）。
-    //
-    // 参数顺序（Rust 侧 `on_key_action` 必须逐位对齐）：
-    //   text, shift, control, alt, meta
-    //
-    // 返回值 = `.slint` 的 `EventResult`：
-    //   `true`  ⇒ `accept`：这一键被 DAW 消费（不再冒泡，Slint 也不做 `Tab` 焦点轮转）；
-    //   `false` ⇒ `reject`：交给焦点系统 / 文本控件（例如文本框里的 `Tab` 与单键、未绑定的键）。
-    callback key-action(string, bool, bool, bool, bool) -> bool;
-    // 为什么用 `forward-focus`：`FocusScope` 只有在 `has-focus`（或包住获得焦点的元素）时才收键；
-    // `forward-focus` 让窗口建立时焦点就落在这里，因此快捷键**不需要先点一下界面**才生效
-    // （判据 16 的端口注入就是这个前提的机械证据）。
-    // 焦点被 BPM 敲入框拿走时，单键快捷键按 §7.1/§7.2 归文本控件 —— 那是规范语义，不是缺口；
-    // 回到这里要靠 Slint 的焦点轮转（`Tab`）或程序性 `focus()`。模态那条路径的程序性回焦
-    // （关闭时光机 ⇒ 复位到这里）已有判据：`tests/undo_tree_focus_trap.rs`。
-    forward-focus: key-handler;
-    key-handler := FocusScope {
+    // Global Key Guard FocusScope
+    FocusScope {
         key-pressed(event) => {
-            if (root.key-action(event.text, event.modifiers.shift, event.modifiers.control,
-                                event.modifiers.alt, event.modifiers.meta)) {
-                accept
-            } else {
-                reject
+            root.trigger-shortcut(event.text, event);
+            if (event.text == " " || event.text == Key.Space) {
+                root.transport-toggle-play();
+                return accept;
             }
-        }
-    }
-
-    // =====================================================================
-    // 模型投影注入面（**唯一写者** = src/host.rs 的 apply_view）
-    // =====================================================================
-    // 这些数组的默认值一律是**空**：界面里不再内联演示数据（上一版的债见
-    // docs/ledger/ui-shell-notes.md pending 4）。规模（轨道数 / 剪辑数 / 段落数）
-    // 由工程决定，因此 `.slint` 里不存在 `for … in 6` 这种把演示规模刻进界面的写法。
-    //
-    // 为什么长度与数据分两个来源：数组长度本身就是规模（`root.tracks.length`），
-    // 因此不需要额外的 `track-count` 标量属性 —— 少一个可能与数组不一致的状态。
-    in property <string> window-title: "夜半 Yeban";
-    in property <[string]> track-names: [];
-    // ⭐ [PATCH UI-TRACK-KINDS-01]（2026-11-08）：与 `track-names` 同索引集的轨道类型
-    // （`"midi"` / `"audio"` / `"aux-return"`）。唯一写者 = `host::apply_view`
-    // （`ViewState::track_kinds()` 的投影读数）；只转发给 `ArrangementView` 挑类型色带 /
-    // 徽标 —— ⛔ 不进 `ConsoleTabs → MixerConsole` 链（那两级的注入集合判据逐条对齐，
-    // 轨道类型不属于混音台的注入面）。关闭 `docs/ledger/app-binding-notes.md` 的历史登记
-    // `tracks[*].kind` →「待接图标位」。
-    in property <[string]> track-kinds: [];
-    // 编排行几何（行顶沿 y / 行高，逻辑像素）—— 由投影的前缀和算一次（ADR-0004 S0），
-    // 与 `track-names` 同索引集；`.slint` 不再做 `42px + 56px * i`。
-    in property <[length]> track-ys: [];
-    in property <[length]> track-heights: [];
-    // 行区内容高（逻辑像素）—— 由宿主从行几何现算注入；只喂编排行区滚动容器的
-    // `content-height`（演示工程内容不高 ⇒ 偏移恒 0）。
-    in property <float> arrangement-sheet-height: 0.0;
-    // =====================================================================
-    // 轨道高度的**会话/视图态**（ADR-0004 S1 / Q4-A）：宿主拥有、重新注入，零 schema。
-    // =====================================================================
-    // 这三个是**输入**（不是投影输出）：宿主读它们造投影参数，而投影算出的每行高仍从
-    // `track-ys` / `track-heights` 注入（唯一注入实现仍是 `host::apply_view`）。
-    // - `track-height-percent`：全局高度缩放级（100 = 不缩放）；
-    // - `track-height-override-ids` / `-pxs`：按轨道**身份**（26 字符 EntityId 文本）
-    //   配对的每轨基准高（整数逻辑像素）。用身份而不是下标，插/删轨道才不会把高度
-    //   错配到别的轨道上（`UI-TEST-001` 的语义寻址口径）。
-    // 进程退出即失（不持久化，见 `bridge::TrackHeightLayout` 的文档）。
-    in-out property <int> track-height-percent: 100;
-    in-out property <[string]> track-height-override-ids: [];
-    in-out property <[length]> track-height-override-pxs: [];
-    // 轨道身份的 26 字符 `EntityId` 规范文本，与 `track-names` / `track-ys` **同索引集**。
-    // 它是**投影输出**（`ViewState::track_ids`），存在的理由只有一个：每轨高度覆盖按
-    // **身份**键控，而拖拽手势落在轨道头上时只能报告**下标** ⇒ 宿主需要"下标 → 身份"
-    // 这一格。没有它，宿主只能拿一个会在换工程后过期的快照去猜身份。
-    in property <[string]> track-ids: [];
-    // ⭐ 任务单 `#192`：**选中轨**（编辑器视图态）—— 26 字符身份文本，空串 = 没有明确选中。
-    //
-    // 唯一写者 = `host::wire_track_select`（轨道头点击）；唯一读点 = `host::selected_track_id`
-    // （投影 / 设备 / 发送 / 铅笔的主语解析）。⛔ 它不是工程数据：不进 `.yeban`、
-    // 不进 `projectDigest`、不进撤销栈、不进 `ViewState` 的摘要 —— 与 `roll-scroll-x` /
-    // `roll-ticks-per-pixel` / `selected-ulids` 同属"进程退出即失"的视图态。
-    in-out property <string> selected-track-id: "";
-    /// ⭐ 剪辑选中态（编辑器视图态）—— **片段身份**文本，取值域 = `clip-ulids` 的元素，
-    /// 空串 = 没有明确选中。
-    ///
-    /// 唯一写者 = `host::wire_clip_select`（剪辑包头点击；宿主先校验身份确实在
-    /// 当前注入的 `clip-ulids` 里再写）；唯一读点 = `ArrangementView::selected-clip-ulid`
-    /// （包头高亮 + `accessible-item-selected`）。⛔ 它不是工程数据：不进 `.yeban`、
-    /// 不进 `projectDigest`、不进撤销栈 —— 与 `selected-track-id` 同一层。
-    in-out property <string> selected-clip-ulid: "";
-    /// ⭐ 剪辑平移的**草稿读数**（宿主拥有，与卷帘 `note-drag-*` 同款）：
-    /// `clip-drag-ulid` = 正在被拖的摆放身份（空串 = 没有手势），
-    /// `clip-drag-preview-dx` = 宿主算好的预览位移（逻辑像素）。
-    /// ⛔ 它们不是工程数据：拖动期**不提交**，松手时宿主才 `commit_ops` **一次**。
-    in-out property <string> clip-drag-ulid: "";
-    in-out property <float> clip-drag-preview-dx: 0.0;
-    /// 按下那一刻拖动面的局部 x（宿主在 `grab` 里写、在 `move` / `release` 里读）——
-    /// 位移 = 当前 x − 它。⛔ 界面不读它（界面的阈值判定用自己那一份 `drag-origin-x`）。
-    in-out property <float> clip-drag-origin-x: 0.0;
-    // =====================================================================
-    // 轨道高度**拖拽手势的进行态**（ADR-0004 S1 的纵向入口）：宿主拥有、界面只报事件。
-    // =====================================================================
-    // 这四个是宿主的手势状态机（不是第二份高度权威 —— 高度仍只住在上面那三个属性里，
-    // 写入口仍只有 `host::set_track_height_override` 一处）。它们住在窗口上的理由与
-    // `roll-scroll-x` 相同：宿主在两个回调之间要记住"这一拖是从哪一行的哪一个高度开始的"，
-    // 而 `Escape`（`Action::Cancel`）也必须能读到同一份状态去收尾。
-    //
-    // `track-height-drag-active` 是"手势是否还没结束"的唯一读数：松开 / 离开窗口 /
-    // `Escape` 三条收尾路径都必须把它写回 `false`（判据钉住"不留粘住的拖拽态"）。
-    in-out property <bool> track-height-drag-active: false;
-    in-out property <string> track-height-drag-track: "";
-    in-out property <int> track-height-drag-start-px: 0;
-    in-out property <float> track-height-drag-start-y: 0.0;
-    // `ADR-0004` S1 的纵向拖拽手势（三个回调都由 `ui/workspace/arrangement_view.slint`
-    // 的轨道头 `TouchArea` 发出；宿主侧唯一实现是 `host::wire_track_height_drag`）。
-    /// 按下：`(轨道下标, 指针在轨道头坐标系里的 y)`。
-    callback track-height-grab(int, length);
-    /// 拖动：同一个下标、同一个坐标系里的当前 y（位移由宿主算）。
-    callback track-height-drag(int, length);
-    /// 收尾：松开 / 指针离开窗口（`PointerEventKind.cancel`）/ 打断。
-    callback track-height-release(int);
-    // =====================================================================
-    // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放 / 移轨 / 横向滚动
-    // =====================================================================
-    // 三项缺失的修法（根因与 Logic Pro 对照见完结回执）：
-    // ① 缩放：本块的滑块 fraction + 按钮/滑块回调（`host::wire_zoom_controls`）＋
-    //    `Cmd+←/→` 与对调后的 `Cmd+↑/↓`（`input.rs`）＋ Option+滚轮；
-    // ② 移轨：`Op::MoveTrack`（`yeban-model`）＋ 本块的重排手势态与回调
-    //    （`host::wire_track_reorder`）＋ `MoveSelectedTrackBy`（`apply_action`）；
-    // ③ 横向查看：本块的 `arrangement-content-px`（`apply_view` 注入）＋ 滚动条回调
-    //    （`host::wire_arrangement_hscroll`）＋ 滚轮回调（`host::wire_arrangement_wheel`）。
-    //
-    // 缩放滑块 fraction（宿主拥有、重新注入，与 `roll-ticks-per-pixel` 同款）：
-    // - `zoom-h-fraction` = ln(tpp) / ln(960)（对数，tpp 1..960；默认 tpp=30 ⇒ ≈ 0.495）；
-    // - `zoom-v-fraction` = (percent − 40) / 260（线性，percent 40..300；默认 100 ⇒ ≈ 0.231）。
-    // 唯一写点是 `host::set_roll_ticks_per_pixel` / `host::set_track_height_percent`
-    // （与属性本体同处 ⇒ 滑块与缩放不可能分叉）。
-    in-out property <float> zoom-h-fraction: 0.495;
-    in-out property <float> zoom-v-fraction: 0.231;
-    /// 横向滚动条的内容总长（逻辑像素）—— `host::apply_view` 每次注入
-    /// （`bridge::tick_to_px(content_end_tick, tpp)`）⇒ 缩放一变滑块同步更新。
-    in property <float> arrangement-content-px: 0.0;
-    /// 缩放控件（`host::wire_zoom_controls`）：按钮步进（`true` = 放大）/ 滑块绝对值。
-    callback zoom-h-step(bool);
-    callback zoom-v-step(bool);
-    callback zoom-h-slider(float);
-    callback zoom-v-slider(float);
-    // 轨道重排手势态（宿主拥有；与 `track-height-drag-*` 同款"宿主手势状态机"，
-    // 界面只报事件、宿主算插入位置、松手恰好提交一次 `Op::MoveTrack`）。
-    // `track-reorder-preview-index` = 插入位置（0..=n，-1 = 未越 4px 阈值 ⇒ 不画线）；
-    // `track-reorder-preview-y` = 插入线的行空间 y（行顶沿或表底）。
-    in-out property <bool> track-reorder-active: false;
-    in-out property <int> track-reorder-index: 0;
-    in-out property <string> track-reorder-track: "";
-    in-out property <float> track-reorder-start-y: 0.0;
-    in-out property <int> track-reorder-preview-index: -1;
-    in-out property <float> track-reorder-preview-y: 0.0;
-    /// 重排手势（`host::wire_track_reorder`）：按下 / 拖动（报**行空间 y** =
-    /// `track-ys[index] + mouse-y`）/ 收尾。
-    callback track-reorder-grab(int, length);
-    callback track-reorder-drag(int, length);
-    callback track-reorder-release(int);
-    /// 包头无障碍动作：`(轨道下标, 方向)`（-1 = 上移一格，+1 = 下移一格）⇒ 直接提交。
-    callback track-reorder-step(int, int);
-    /// 编曲滚轮（`host::wire_arrangement_wheel`）：`(横向增量, 纵向增量, Shift, Option)`。
-    /// `.slint` 只在带 Shift / Option 时调用（无修饰返回 `reject` ⇒ 冒泡给 Flickable
-    /// 纵向滚动）；宿主按修饰分流：Shift = 横向滚动、Option = 纵向缩放、
-    /// Option+Shift = 横向缩放。
-    callback arrangement-wheel(length, length, bool, bool);
-    /// 横向滚动条（`host::wire_arrangement_hscroll`）：绝对目标 px（已夹紧 ≥ 0）。
-    callback arrangement-scroll-to(length);
-    // ⭐ 任务单 `#192`：轨道头点击 ⇒ **选中这条轨**（界面只报下标；身份查表与
-    // `selected-track-id` 的写入全在 `host::wire_track_select`）。
-    //
-    // ⛔ 它不是一次编辑：宿主**不**调用 `UndoPort::commit_ops`，因此 `commit_count` /
-    // `undoable` / `projectDigest` 全部 Δ0 —— 选中是视图态，不是工程内容。
-    /// 点击轨道头：`(轨道下标)`。
-    callback track-select(int);
-    /// 轨道重命名：`(轨道下标, 新名称)`。
-    callback track-rename(int, string);
-    /// 轨道录音就绪 (Arm) 开关：`(轨道下标)`。
-    callback track-arm-toggle(int);
-    /// 双击剪辑：直达钢琴卷帘（Logic Pro 对齐）。
-    callback clip-double-click(string);
-    /// 点击剪辑包头：`(片段身份)` —— 身份由界面原样上报（它在 `clip-ulids` 的循环里就有），
-    /// 校验与写入全在 `host::wire_clip_select`。
-    callback clip-select(string);
-    /// 剪辑体拖动：`(摆放身份, 拖动面局部 x)` —— 换算 / 吸附 / 夹紧 / 提交全在
-    /// `host::wire_clip_drag`；`grab` 的返回值 = 宿主是否接管这一拖。
-    callback clip-drag-grab(string, length) -> bool;
-    callback clip-drag-move(string, length);
-    callback clip-drag-release(string, length);
-    callback clip-drag-cancel();
-    // ⭐ 点击编曲标尺 ⇒ 走带定位（界面只报标尺带局部 x；换算 / 夹紧 / `SeekTicks`
-    // 全在 `host::wire_ruler_seek`，与上面 `clip-drag-*` 同一条「界面零算术」纪律）。
-    /// 点击小节 / 拍标尺：`(局部 x)`。
-    callback ruler-seek(length);
-    /// 无障碍「上一 / 下一小节」：`(步数)` —— 落点是同一个 `host::wire_ruler_seek`。
-    callback ruler-step(int);
-    /// 无障碍「定位到第 N 小节」：`(小节号文本，1 起)`。
-    callback ruler-seek-bar(string);
-    /// 点击章节卡片 ⇒ 走带定位到该段起点：`(段落下标)`。
-    callback section-seek(int);
-    /// 点击自动化车道添加/编辑自动化点 (G-A1)
-    callback automation-lane-click(length, length);
-    // ⭐ 任务单 `#283`：Session View 的场景按钮 ⇒ **真的**把这次启动送到引擎
-    // （`host::wire_scene_launch` → `EngineHost::queue_scene_launch`）。界面只报场景下标：
-    // 量化档 / tempo 覆盖 / 拍号由宿主从**当前投影**现读，⛔ 界面不拼这些语义。
-    /// 点击场景按钮：`(场景下标)`。
-    callback scene-launch(int);
-    // 混音台的**写入面**（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`）。
-    //
-    // 形状与上面三个 `track-height-*` 同款：`.slint` 只报"哪一个下标 + 本地坐标"，
-    // 位移换算、拖动期的视图态与松手时的**一次** `commit_ops` 全在宿主
-    // （`host::wire_mixer_edit`）。成员 = 推子竖直拖 / 声相水平拖 / 两个双击复位 / 两个开关。
-    /// 推子按下（轨道下标, 推子面坐标系里的 y）。
-    callback mixer-fader-grab(int, length);
-    /// 推子拖动（同一个下标的当前 y；位移由宿主算）。
-    callback mixer-fader-drag(int, length);
-    /// 推子收尾（松手 / 指针离开窗口）。
-    callback mixer-fader-release(int);
-    /// 声相按下（轨道下标, 声相面坐标系里的 x）。
-    callback mixer-pan-grab(int, length);
-    /// 声相拖动。
-    callback mixer-pan-drag(int, length);
-    /// 声相收尾。
-    callback mixer-pan-release(int);
-    /// ⭐ **双击复位**（DAW 的通行手势）：推子 → `0 dB`（unity）、声相 → 中央（`0`）。
-    ///
-    /// 与上面六条同族：`.slint` 只报"哪一个下标"，换算与**一次** `commit_ops` 全在宿主
-    /// （`host::wire_mixer_edit` 的 `on_mixer_*_reset`）。已是中性值 ⇒ 宿主⛔ 提交
-    /// （否则双击会往撤销栈里压一条空操作）。
-    ///
-    /// ⚠ 边界（如实登记）：这是**鼠标**手势，屏读器与键盘拿不到它 —— 本仓库的键盘/屏读
-    /// 路径**不承诺**能复位（要把轨回到中性，今天只有工具面 `yeban_edit_notes` 的
-    /// `setParam` + `lane:"TrackVolume"` 那一条，见 `crates/yeban-mcp/src/op_schema.rs`）。
-    /// 推子 → `0 dB`（unity）。
-    callback mixer-fader-reset(int);
-    /// 声相 → 中央（`0`）。
-    callback mixer-pan-reset(int);
-    /// 静音按钮点击（一次点击 = 一次可撤销的编辑）。
-    callback mixer-mute-toggle(int);
-    /// 独奏按钮点击。
-    callback mixer-solo-toggle(int);
-    /// ⭐ 主控通道条的静音点击：与轨道开关**同一对** `Op`，目标由宿主从投影里
-    /// （`bridge::master_device_track`）解析，界面⛔ 不猜是哪条轨。
-    callback mixer-master-mute-toggle();
-    /// ⭐ 主控通道条的独奏点击（同上）。
-    callback mixer-master-solo-toggle();
-    // ⭐ **SFZ 采样器绑定**（任务单 `#82`）—— 模型 `TrackV3::sampler`（`#76`）的**用户入口**。
-    //
-    // 形状与上面两个开关逐条同款（`.slint` 只报"哪一个下标（+ 输入框文本）"，`Op` 的构造、
-    // 陈旧载荷比对与 `commit_ops` 全在宿主 `host::wire_mixer_sampler`）⇒ 一次 SET / CLR
-    // = **恰好一步**可撤销的编辑。
-    //
-    // ⚠ 路径是**文本输入**而不是文件对话框：本仓没有文件对话框（原生选择器要引新依赖 ⇒
-    // 必须先报批）⇒ 本单交最小可用的一条，见交付报告的"删减了什么"。
-    /// SET：把该轨的采样器绑定设成 `Some(path)`（空文本**不提交**，见宿主的口径）。
-    callback mixer-sampler-set(int, string);
-    /// CLR：把该轨的采样器绑定设回 `None`（**解绑**；`None` 是一等状态，⛔ 不是"丢失"）。
-    callback mixer-sampler-clear(int);
-    // ⭐ **③ 浏览…**（任务单 `#86` 乙）：开一次**原生**文件对话框，把选中的路径**填进**
-    // `track-{i}-sampler-path` 那个文本框。
-    //
-    // ⚠ 它与上面两条**不是同一类**：SET / CLR 是**工程内容**的提交（走 `Op` ＋ `UndoPort`），
-    // 而本回调⛔ 不提交任何东西 —— 唯一落点 `host::wire_mixer_sampler_browse` 只写
-    // 界面属性 `track-sampler-paths[i]`。用户随后照旧按 SET 提交
-    // ⇒ **文本框与 CLI 两条路一位没变**（本单的硬要求）。
-    callback mixer-sampler-browse(int);
-    // ⭐ **设备效果链的写入面**（任务单 `#157`）：控制台 **Tab 3** 里的两个手势。
-    //
-    // 形状与 `mixer-*` 一族逐条同款：`.slint` 只报"哪一格 / 滑块位置"，取反 / 值域映射 /
-    // 陈旧基线比对与**一次** `commit_ops` 全在宿主 `host::wire_device_rack`。
-    // 因此一次点击 / 一次拖动 = **恰好一步**可撤销的编辑，且界面不持有工程值。
-    //
-    // ⭐ 任务单 `#182`：两个手势都携带**设备身份**（`device-ids[i]` /
-    // `device-eq-device-id`，`DeviceDefinition::id` 的 26 字符文本），⛔ 不是行下标
-    // —— 下标会在"投影之后、点击之前"随增删漂移，身份不会。
-    /// 点击某台的旁通开关（参数 = 设备身份，⛔ 不是行下标）。
-    callback device-bypass-toggle(string);
-    /// EQ 低架增益按下（参数 = 设备身份 + 滑块面内的归一化位置 0.0–1.0）。
-    callback device-eq-grab(string, float);
-    /// EQ 低架增益拖动（同一个归一化位置；dB 换算与预览在宿主）。
-    callback device-eq-drag(float);
-    /// EQ 低架增益收尾（松手 / 指针离开窗口）⇒ 值真的变了才提交一次。
-    callback device-eq-release();
-    /// EQ 频响曲线拖动（参数 = 归一化坐标 norm_x, norm_y）。
-    callback eq-curve-drag(float, float);
-    /// EQ 频响曲线手势收尾。
-    callback eq-curve-release();
-    /// ⭐ G-S1：循环切换侧链键源
-    callback sidechain-cycle();
-    /// ⭐ G-D6：循环切换压缩器比率
-    callback compressor-cycle-ratio();
-    // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：控制台 **Tab 3** 同一面板里的三个按钮。
-    //
-    // 形状与 `device-*` / `track-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪台设备"，
-    // 参数缺省值、身份分配、目标解析与**一次** `commit_ops` 全在宿主
-    // （`host::wire_device_rack` / `host::wire_clip_create`）。
-    /// 装一台内置 EQ（参数取共享契约的缺省值）。
-    callback device-insert-eq();
-    /// 装一台内置混响（同上）。
-    callback device-insert-reverb();
-    /// 删除某台设备（参数 = 设备身份，⛔ 不是行下标）。
-    callback device-remove(string);
-    /// 建一个空的 MIDI 片段并摆到展示轨的 tick 0。
-    callback clip-create();
-    // ⭐ **主总线设备增删**（任务单 `#180`）：控制台 **Tab 3** 面板的**第二段**。
-    //
-    // 形状与上面三个设备手势逐条同款 —— 唯一的差别是**目标轨**：宿主显式选
-    // `master_bus_track_id`（⛔ 不是展示轨）。一次点击 = 恰好一次 `commit_ops`。
-    /// 给主总线装一台内置 EQ（参数取共享契约的缺省值）。
-    callback master-device-insert-eq();
-    /// 给主总线装一台内置混响（同上）。
-    callback master-device-insert-reverb();
-    /// 删除主总线上的某台设备（参数 = 设备身份，⛔ 不是行下标）。
-    callback master-device-remove(string);
-    // ⭐ ⭐ **主总线设备的旁通 ＋ EQ 低架增益**（任务单 `#181`）：与上面 `#157` 的两条
-    // 展示轨手势**逐条同款**（同一个 `DeviceEqWiring` / `bypass_device`），唯一差别是
-    // 目标轨 = `master_bus_track_id`。⭐ `#182` 起两条手势都携带**设备身份**
-    // （`master-device-ids[i]` / `master-device-eq-device-id`），⛔ 不是下标。
-    /// 点击主总线某台的旁通开关（参数 = 设备身份，⛔ 不是主总线设备链下标）。
-    callback master-device-bypass-toggle(string);
-    /// 主总线 EQ 低架增益按下（参数 = 设备身份 + 滑块面内的归一化位置 0.0–1.0）。
-    callback master-device-eq-grab(string, float);
-    /// 主总线 EQ 低架增益拖动。
-    callback master-device-eq-drag(float);
-    /// 主总线 EQ 低架增益收尾（值真的变了才提交一次）。
-    callback master-device-eq-release();
-    // ⭐ **一键装乐器**（任务单 `#164`）：控制台 Tab 3 的 `DeviceRack` 里。
-    // 与上面两条同款 —— 只上报内置清单下标，路径 / Op / 一次 `commit_ops` 全在宿主
-    // （`host::wire_device_rack`）。
-    /// 装第 `i` 份内置 SFZ 乐器（参数 = 内置清单下标）。
-    callback instrument-install(int);
-    // ⭐ 任务单 `#211`：字节探针在工作线程上跑完 ⇒ 请求 UI 线程排空并提交。
-    // 与 `sample-library-download-drain-requested` / `midi-in-drain-requested` 同一条手法。
-    callback instrument-probe-drain-requested();
-    // ⭐ **下载采样库**（任务单 `#196`）：唯一落点 `host::wire_device_rack`。
-    // ⛔ 启动时不联网、⛔ 判据里不点它 —— 只有用户显式点击才跑取回脚本。
-    /// 用户点了"下载采样库"（下载到程序预设的库根；体积约 9.4 GiB）。
-    callback sample-library-download();
-    /// 内部：工作线程完成 ⇒ 请求 UI 线程排空（与 `midi-in-drain-requested` 同一条手法）。
-    callback sample-library-download-drain-requested();
-    // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 设备机架面板里的"发送"区。
-    //
-    // 形状与 `device-*` 一族逐条同款：`.slint` 只报"哪一条边 / 滑块位置"，dB 换算 /
-    // 陈旧基线比对与**一次** `commit_ops` 全在宿主 `host::wire_send_strip`。
-    // 三个滑块回调都携带**路由边身份**（`RoutingEdge::id` 的 26 字符文本）——
-    // ⛔ 不用行下标当第二份身份。
-    /// 发送增益按下（参数 = 路由边身份 + 滑块面内的归一化位置 0.0–1.0）。
-    callback send-gain-grab(string, float);
-    /// 发送增益拖动（同一个边身份 + 归一化位置；dB 换算与预览在宿主）。
-    callback send-gain-drag(string, float);
-    /// 发送增益收尾（松手 / 指针离开窗口）⇒ 值真的变了才提交一次。
-    callback send-gain-release(string);
-    /// 新建发送（目的地 = 身份序第一条 `AuxReturn` 轨；新边身份由宿主分配）。
-    callback send-create();
-    // ⭐ **宏面板的写入面**：右侧 `MacroPanel` 的滑块。`.slint` 只报"第几个宏 + 滑块
-    // 位置"，取值夹紧 / 陈旧基线比对 / **一次** `commit_ops` 全在宿主 `host::wire_macro_panel`。
-    /// 宏滑块按下（参数 = 宏下标 + 滑块面内的归一化位置 0.0–1.0）。
-    callback macro-grab(int, float);
-    /// 宏滑块拖动。
-    callback macro-drag(int, float);
-    /// 宏滑块收尾（值真的变了才提交一次 `Op::SetMacro`）。
-    callback macro-release(int);
-    // ⭐ **轨 / 路由的写入面**（任务单 `#160`）：控制台 **Tab 3** 与发送条**同一面板**。
-    //
-    // 形状与 `send-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪条边"，身份分配、
-    // 目标解析、防重复与**一次** `commit_ops` 全在宿主 `host::wire_track_strip` /
-    // `host::wire_send_strip`。因此一次点击 = **恰好一步**可撤销的编辑。
-    /// 删除某一条发送（参数 = 路由边身份，⛔ 不是行下标）。
-    callback send-remove(string);
-    /// 新建 MIDI 轨。
-    callback track-create-midi();
-    /// 新建音频轨。
-    callback track-create-audio();
-    /// 新建辅助返回轨（`AuxReturn`）。
-    callback track-create-aux();
-    /// 删除展示轨（主总线不是目标）。
-    callback track-delete();
-    // ⭐ **导出 MIDI**（任务单 `#90` 甲）：把**当前工程**写成标准 MIDI 文件（`SMF 1`）。
-    //
-    // 事件源 = `ui/console/mixer_console.slint` 的 `module-export-midi-button`
-    // （控制台 **Tab 1 = 调音台**里那条入口；它因此在**默认帧**里一个像素都不画 ⇒ 5 张
-    // Linux 基准逐位不变）。落点是宿主 `host::wire_module_actions` 的 `export-midi` 分支，
-    // 复用**已经存在**的 `crate::export_midi::export_project_to_file`（与 CLI 的
-    // `--export-midi` 是**同一个**函数，⛔ 不另写一套导出器），回执走**既有**的
-    // `module-status` 投影通道（与 `export-wav` 逐字同款）。
-    // ⛔ 界面不写盘、不猜路径、不自己判断成功与否（那是第二个真相源）。
-    callback export-midi();
-    // ⭐ **打开工程**（任务单 `#93`）：**运行期换工程**在界面上的可见入口。
-    //
-    // 事件源 = `ui/console/mixer_console.slint` 的 `module-open-project-button`
-    // （控制台 **Tab 1 = 调音台**里那条入口；与 `#90` 甲那条「导出 MIDI」同一个面板行 ——
-    // 它因此在**默认帧**里一个像素都不画 ⇒ 5 张 Linux 基准逐位不变）。
-    //
-    // 落点是宿主 `host::wire_open_project`：问一次**可注入**的 `FilePicker`
-    // （`#86` 乙 的 `yeban_app::file_picker::FilePicker`）⇒ 走**已经存在**的
-    // `crate::open::open_project_file` 读盘 ⇒ 把撤销端口里的会话整体换成新的一份
-    // （`UndoPort::open_project_session`，「打开一个工程 = **新会话**」）⇒ 重投影。
-    // ⛔ 界面不读盘、不猜路径、不自己判断成功与否（那是第二个真相源）；回执走**既有**的
-    // `module-status` 投影通道（与 `export-midi` / `export-wav` 逐字同款）。
-    callback open-project();
-    // ⭐ **新建工程**（任务单 `#129`）：**从零开始**在界面上的可见入口。
-    //
-    // 事件源 = `ui/console/mixer_console.slint` 的 `module-new-project-button`
-    // （控制台 **Tab 1 = 调音台**里「打开工程」**正下方**那一格 ⇒ 默认帧一个像素都不画）。
-    //
-    // 落点是宿主 `host::wire_new_project`：问一次**同一个** `FilePicker::choose_save`
-    // ⇒ `host::create_new_project_file`（`samples::default_project()` ＋
-    // `save::save_archive_file`，与 CLI `--save-as` **同一条**写入口，1136 B／0 音轨 ＋ 1 主总线）⇒
-    // **打开工程那条**换工程路径（`OpenProjectRuntime::open_runtime`）。
-    // ⛔ 界面不写盘、不猜路径、不判断成功与否；回执走**既有**的 `module-status` 通道。
-    callback new-project();
-    // ⭐ **导入音频**（本线补的那一格）：把一份 WAV 作为片段导入当前工程。
-    //
-    // 事件源 = `ui/console/asset_pool_panel.slint` 的 `asset-pool-import-button`
-    // （控制台 **Tab 1** 的素材池面板 ⇒ 默认帧一个像素都不画，5 张 Linux 基准逐位不变）。
-    // 落点 = 宿主 `host::wire_import_audio`：问一次**可注入**的 `FilePicker` ⇒
-    // `crate::import_audio::import_audio_file`（经 `UndoPort`，来源 `OpOrigin::Import`
-    // ⇒ 可撤销）＋ 资产字节登记进会话池（保存才有 `assets/{sha256}`）⇒ 重投影。
-    // 回执走**既有**的 `module-status` 投影通道。⛔ 界面不读盘、不猜路径、不判断成功与否。
-    callback import-audio();
-    // 主控通道条的**写入面**：与上面那一族手势逐条同形，唯一区别是**不带下标**
-    // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
-    // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
-    // 因此 `.slint` 里**没有**任何身份→下标的算术。
-    /// 主控推子按下（推子面坐标系里的 y）。
-    callback mixer-master-fader-grab(length);
-    /// 主控推子拖动（当前 y；位移由宿主算）。
-    callback mixer-master-fader-drag(length);
-    /// 主控推子收尾（松手 / 指针离开窗口）。
-    callback mixer-master-fader-release();
-    /// 主控声相按下（声相面坐标系里的 x）。
-    callback mixer-master-pan-grab(length);
-    /// 主控声相拖动。
-    callback mixer-master-pan-drag(length);
-    /// 主控声相收尾。
-    callback mixer-master-pan-release();
-    /// 主控推子**双击复位**（→ `0 dB`）：与 `mixer-fader-reset` 同一对 `Op`、同一条撤销栈，
-    /// 只是**不带下标** —— 主总线身份由宿主现读。
-    callback mixer-master-fader-reset();
-    /// 主控声相**双击复位**（→ 中央 `0`）。
-    callback mixer-master-pan-reset();
-    // 混音台手势（推子 / 声相）的**进行态**读数：宿主拥有、界面只报事件。
-    //
-    // 与上面的 `track-height-drag-active` 同一个角色：它是"混音手势是否还没结束"的**唯一**
-    // 窗口读数。三条收尾路径（松开 / 指针离开窗口 / `Escape`）都必须把它写回 `false`，
-    // 因此不存在"取消之后一次孤立的 move 继续改音量"这种粘住的手势态。
-    in-out property <bool> mixer-drag-active: false;
-    /// 取消进行中的混音手势（推子竖直拖 / 声相水平拖）。
-    ///
-    /// 宿主侧唯一实现是 `host::wire_mixer_edit` 里的 `on_mixer_cancel_gesture`，
-    /// 它把值写回**起点**（视图态）并**不提交** —— 与 `cancel_track_height_drag` 同口径。
-    /// 返回 `true` = 确实有手势在手、已经取消；`false` = 此刻没有混音手势
-    /// ⇒ `Escape` 与混音台无关，照旧放行（没人接线时 Slint 返回 `bool` 的默认值 `false`）。
-    callback mixer-cancel-gesture() -> bool;
-    in property <[string]> track-volumes: [];
-    in property <[bool]> track-mutes: [];
-    in property <[bool]> track-solos: [];
-    in property <[bool]> track-arms: [];
-    in-out property <bool> automation-visible: true;
-    in-out property <bool> cycle-enabled: false;
-    in-out property <int> cycle-start-ticks: 0;
-    in-out property <int> cycle-end-ticks: 15360;
-    // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
-    // 注入面与 `track-mutes` / `track-solos` 同族（`host::apply_view` 是唯一写者；
-    // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
-    in property <[string]> track-sampler-paths: [];
-    in property <[string]> scene-names: [];
-    // 场景色标（`SceneV3::color` 经投影解析 / 回退后的颜色与规范化文本）。
-    // 与 `track-colors` / `track-color-labels` 同族：`host::apply_view` 是唯一写者。
-    in property <[color]> scene-colors: [];
-    in property <[string]> scene-color-labels: [];
-    // ⭐ 任务单 `#283`：**当前场景**读数（唯一写者 `host::apply_current_scene`；
-    // 唯一事实源 `ViewState::current_scene`）。`-1` / `""` = 本会话还没有启动过场景。
-    in property <int> current-scene-index: -1;
-    in property <string> current-scene-name: "";
-    // 场景启动的**如实回执**（没有引擎 / 环满时非空；默认空串 = 不占视觉空间）。
-    in property <string> scene-launch-status: "";
-    in property <[string]> section-names: [];
-    // 段落色标（`SectionV3::color` 经投影解析 / 回退后的颜色与规范化文本），
-    // 与 `track-colors` / `scene-colors` 同族：`host::apply_view` 是唯一写者。
-    in property <[color]> section-colors: [];
-    in property <[string]> section-color-labels: [];
-    in property <[length]> section-positions: [];
-    in property <[length]> section-widths: [];
-    in property <[string]> clip-ulids: [];
-    in property <[string]> clip-labels: [];
-    // 每条摆放的静音态（`ClipPlacement::muted`，与 `clip-ulids` 同序同长）。
-    // `Cmd/Ctrl+M` 的结果必须**看得见** ⇒ 界面读它；唯一写者是 `host::apply_view`
-    // （与 `track-mutes` / `track-solos` 同一族：工程字段，⛔ 不是界面自己记的第二份状态）。
-    in property <[bool]> clip-mutes: [];
-    in property <[length]> clip-positions: [];
-    in property <[length]> clip-widths: [];
-    // 剪辑的行几何（y / 高，逻辑像素）—— 由投影从所在行派生（ADR-0004 S0）。
-    in property <[length]> clip-ys: [];
-    in property <[length]> clip-heights: [];
-    in property <[length]> bar-positions: [];
-    // 钢琴卷帘的音符身份与力度（`MidiNote::id` / `MidiNote::velocity` ÷ 127）
-    in property <[string]> note-ulids: [];
-    in property <[float]> note-velocities: [];
-    // ⭐ 素材池（任务单 `#133`）：`clip_pool` 的行投影（名字 / 类型 / 可用字段）。
-    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::asset_pool`。
-    // 面板住在控制台 Tab 1（`MixerConsole` 里的 `AssetPoolPanel`）⇒ 默认帧不画它。
-    in property <[string]> asset-pool-names: [];
-    in property <[string]> asset-pool-kinds: [];
-    in property <[string]> asset-pool-details: [];
-    // ⭐ 设备效果链（任务单 `#157`）：`TrackV3::devices` 的逐条投影 ＋ 那一格可编辑的
-    // `eq_low_gain`。唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::devices` /
-    // `ViewState::eq_low_gain`（⛔ 界面上没有第二份列表，也⛔ 没有第二份值域表）。
-    // 面板住在控制台 Tab 3（`DeviceRack`）⇒ 默认帧不画它。
-    in property <string> device-track-label: "";
-    in property <[string]> device-names: [];
-    // ⭐ 设备增删（任务单 `#163`）：每台的设备身份（删除按钮的寻址单位）。
-    in property <[string]> device-ids: [];
-    in property <[bool]> device-bypassed: [];
-    in property <[string]> device-recognised: [];
-    in property <[string]> device-unrecognised: [];
-    in property <bool> device-eq-available: false;
-    in property <float> device-eq-gain-db: 0.0;
-    in property <float> device-eq-min-db: 0.0;
-    in property <float> device-eq-max-db: 0.0;
-    // ⭐ 任务单 `#182`：EQ 滑块的**设备身份**（`DeviceDefinition::id`，`""` = 没有目标）。
-    // 手势把它原样带回宿主（`device-eq-grab(device-id, fraction)`）—— ⛔ 不是行下标。
-    in property <string> device-eq-device-id: "";
-    // ⭐ 频响曲线真绘制 (G-E1 & G-E2)：SVG Path 命令与频段信息读数。
-    in property <string> eq-curve-svg: "M 0 50 L 420 50";
-    in property <string> eq-curve-fill-svg: "";
-    in property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
-    // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（投影标量）。
-    in property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
-    in property <bool> sidechain-available: false;
-    in property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
-    in property <bool> compressor-available: false;
-    in property <string> limiter-info: "限制器: 阈值 -0.1 dBTP · 状态 正常";
-    in property <bool> limiter-available: false;
-    in property <string> shaper-info: "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)";
-    in property <bool> shaper-available: false;
-    // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量。唯一写者是
-    // `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
-    in property <bool> device-insert-available: false;
-    in property <string> device-insert-reason: "";
-    in property <bool> clip-create-available: false;
-    in property <string> clip-create-reason: "";
-    // ⭐ 主总线设备链（任务单 `#180`）：四个平行数组（名字 / 身份 / 已识别 / 未识别）
-    // ＋ 三个投影标量（标题 / 可用性 / 逐字原因）。唯一写者是 `host::apply_view`，
-    // 唯一事实源是 `ViewState::master_devices` 与同名字段 —— ⛔ 界面上没有第二份
-    // 主总线设备列表。与设备链同住控制台 Tab 3 ⇒ 默认帧不画它。
-    in property <string> master-device-label: "";
-    in property <[string]> master-device-names: [];
-    in property <[string]> master-device-ids: [];
-    in property <[string]> master-device-recognised: [];
-    in property <[string]> master-device-unrecognised: [];
-    in property <bool> master-device-insert-available: false;
-    in property <string> master-device-insert-reason: "";
-    // ⭐ 主总线设备的两个可编辑面（任务单 `#181`）：逐台旁通位数组 ＋ 那一格 EQ 的
-    // 可用性 / 当前值 / 值域 / 逐字原因。唯一写者是 `host::apply_view`，唯一事实源是
-    // `ViewState::master_devices` 与 `ViewState::master_eq_low_gain`；值域来自效果器契约。
-    in property <[bool]> master-device-bypassed: [];
-    in property <bool> master-device-eq-available: false;
-    in property <float> master-device-eq-gain-db: 0.0;
-    in property <float> master-device-eq-min-db: 0.0;
-    in property <float> master-device-eq-max-db: 0.0;
-    in property <string> master-device-eq-reason: "";
-    // ⭐ 任务单 `#182`：主总线 EQ 滑块的**设备身份**（⛔ 不是行下标）。
-    in property <string> master-device-eq-device-id: "";
-    // ⭐ 一键装乐器（任务单 `#164`）：当前乐器读数 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
-    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
-    in property <string> instrument-label: "未装乐器";
-    in property <[string]> instrument-names: [];
-    in property <bool> instrument-install-available: false;
-    in property <string> instrument-install-reason: "";
-    // ⭐ 任务单 `#211`：**点击之后的运行期回执**（"检查中…：X" / "已装上：X" /
-    // "装不了：缺样本（N 个文件）…"）。⛔ 不是投影：唯一写者是宿主（点击 / 排空回调），
-    // `apply_view` 不碰它（属性写入点预算 93 因此一位不动）。默认空串 ⇒ 初始帧不画它。
-    in property <string> instrument-install-status: "";
-    // ⭐ 采样库（任务单 `#196`）：是否已按清单安装 ＋ 逐字提示 ＋ 下载按钮可见性 ＋ 预设路径。
-    // 唯一写者是 `host::apply_view`（四个投影标量）与下载回调（`sample-library-status`）。
-    in property <bool> sample-library-installed: false;
-    in property <string> sample-library-notice: "";
-    in property <bool> sample-library-download-visible: false;
-    in property <string> sample-library-root: "";
-    /// 运行期下载状态（"下载中…" / "下载完成：…"）；空串 ⇒ 显示 `sample-library-notice`。
-    in property <string> sample-library-status: "";
-    // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
-    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::sends` /
-    // `ViewState::send_create_available` / `ViewState::send_create_reason`
-    // （⛔ 界面上没有第二份发送列表，也⛔ 没有第二份增益范围表 —— 值域来自模型）。
-    // 与设备链同住控制台 Tab 3 ⇒ 默认帧不画它。
-    in property <[string]> send-edge-ids: [];
-    in property <[string]> send-destination-names: [];
-    in property <[string]> send-gain-labels: [];
-    in property <[float]> send-gain-dbs: [];
-    in property <float> send-gain-min-db: 0.0;
-    in property <float> send-gain-max-db: 0.0;
-    in property <bool> send-create-available: false;
-    in property <string> send-create-reason: "";
-    // ⭐ 宏面板：展示轨的 `TrackV3::macros` 逐条投影（名字 / 位置 0.0..=1.0 / 位置文本）。
-    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::macros`。
-    // 「宏 (N)」按钮在 Tab 3；抽屉默认关 ⇒ 默认帧不画它。
-    in property <[string]> macro-names: [];
-    in property <[float]> macro-values: [];
-    in property <[string]> macro-value-labels: [];
-    // ⭐ 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / 删展示轨的可用性与逐字原因。
-    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
-    // 与发送条同住控制台 Tab 3 ⇒ 默认帧不画它。
-    in property <string> routing-count-label: "";
-    in property <bool> routing-create-available: false;
-    in property <string> routing-master-label: "";
-    in property <bool> routing-delete-available: false;
-    in property <string> routing-delete-reason: "";
-    // 卷帘音符的位置（x / y / 宽，逻辑像素）—— 由 `start_tick` / `pitch` 整数派生，
-    // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
-    /// `[ROAD-M3-002]` 卷帘滚动手势（由宿主接管并重新注入）。
-    callback scroll-requested(length);
-    /// `[UI-NOTE-003]` 卷帘左键单击（坐标由界面报告, 语义由宿主决定）。
-    callback clicked(length, length);
-    /// `[UI-NOTE-003]` §3.3 aux 列的**双击**（力度工具 = "双击恢复默认力度 100"）。
-    /// 与 `clicked` 逐字同一帧、同一个宿主派发器（`host::install_roll_click`）——
-    /// 界面只报告"第二拍落在哪"，工具门 / 命中 / 一个原子 `Op` 全在宿主。
-    callback double-clicked(length, length);
-    /// `[UI-NOTE-003]` §3.3 工具矩阵的点击（工具行号 1..5）。
-    /// 唯一落点是 `host::wire_tool_select` → `host::apply_action` 的
-    /// `Action::SelectTool` 臂 —— 与 `1`..`5` 数字键**同一条**链。
-    callback tool-selected(int);
-    /// `[UI-NOTE-003]` 卷帘左键**拖拽**的手势通道（工具矩阵"左键拖拽"列；本切片只接
-    /// 选择工具的移动臂）。四条与 `track-height-*` / `mixer-*` 逐条同形：`.slint` 只报
-    /// "指针在哪、按下了 / 移动了 / 抬起了 / 被取消了"，工具门、命中、草稿与"抬起恰好一个
-    /// 原子 `Op`"全在宿主（`host::wire_roll_edit` → `install_roll_note_drag`）。
-    /// `grab` 返回 `true` = 宿主**接管**这次手势 ⇒ 本组件不把它当滚动。
-    callback note-drag-grab(length, length) -> bool;
-    /// 接管后的拖动（绘制帧坐标）⇒ 宿主只更新**草稿**，⛔ 不写工程。
-    callback note-drag-move(length, length);
-    /// 松手（绘制帧坐标）⇒ 宿主至多提交**一个**原子 `Op`。
-    callback note-drag-release(length, length);
-    /// 指针离开窗口 / 控件被禁用（`PointerEventKind.cancel`）⇒ 丢弃草稿。
-    callback note-drag-cancel();
-    /// 被拖音符的身份（空 = 没有手势）与拖动期的草稿预览位移（逻辑像素，宿主算好注入）。
-    /// 它们住在窗口上的理由与 `roll-scroll-x` 相同：宿主要在 `grab` / `move` / `release`
-    /// 三条回调之间记住"这一拖从哪个音符、哪个指针位置开始"，而 `Escape`
-    /// （`Action::Cancel` → `host::cancel_note_drag`）也必须能读到同一份状态去收尾。
-    /// `note-drag-active` 是"手势是否还没结束"的唯一读数：松手 / 离开窗口 / `Escape`
-    /// 三条收尾路径都必须把它写回 `false`（判据钉住"不留粘住的拖拽态"）。
-    in-out property <bool> note-drag-active: false;
-    in-out property <float> note-drag-origin-x: 0.0;
-    in-out property <float> note-drag-origin-y: 0.0;
-    in-out property <string> note-drag-ulid: "";
-    in-out property <float> note-drag-preview-dx: 0.0;
-    in-out property <float> note-drag-preview-dy: 0.0;
-    /// `[UI-NOTE-003]` **力度臂**的两个读数（与移动臂共用同一条手势通道 `note-drag-*`）：
-    /// `note-drag-preview-velocity` = 拖动期的草稿力度（0.0–1.0 归一化，宿主算好注入）；
-    /// `velocity-drag-active` = "力度手势是否还没结束"的唯一读数（松手 / 离开窗口 / `Escape`
-    /// 三条收尾路径都必须写回 `false`）。
-    /// ⚠ 身份**不另开一个属性**：被拖的是哪一个音符只有 `note-drag-ulid` 一个读数
-    /// （两个同义字符串属性 = 第二个真相源，而且界面只可能按其中一个画预览）。
-    in-out property <float> note-drag-preview-velocity: 0.0;
-    in-out property <bool> velocity-drag-active: false;
-    /// `[UI-NOTE-003]` 力度车道顶沿在**卷帘局部坐标系**里的位置（逻辑像素）。
-    /// 由 `.slint` 从车道元素**上报**（`ConsoleTabs` → `PianoRoll` 的 `velocity-lane.y`）；
-    /// 宿主读它把指针 y 反解成"车道内 y"（= 绝对力度）—— ⛔ 宿主那边没有第二份 `height - 44`。
-    out property <length> roll-velocity-lane-top: console-tabs.velocity-lane-top;
-    /// `[ROAD-M3-002]` 卷帘当前水平偏移（逻辑像素）。
-    /// 用 `<float>` 而非 `<length>`：宿主只需读写一个数，避免 `f32 -> Length` 转换与组件链转发。
-    in-out property <float> roll-scroll-x: 0.0;
-    /// 时间轴的**横向缩放**（每逻辑像素多少 tick；越大越缩小）。
-    ///
-    /// 它由宿主拥有（与 `track-height-percent` / `roll-scroll-x` 同款"宿主拥有、重新注入"）：
-    /// 写入口只有 `host::set_roll_ticks_per_pixel` 一处，读点只有
-    /// `host::roll_ticks_per_pixel`（唯一）。**进程退出即失**（零 schema、不进 `.yeban`、
-    /// 不进撤销栈）—— 缩放是**视图态**，与 `ADR-0004` Q5 的裁决同口径。
-    /// 默认值与 `bridge::DEFAULT_TICKS_PER_PIXEL` 同值；`<= 0` 或超出
-    /// `bridge` 的 `MIN/MAX_TICKS_PER_PIXEL` 时宿主回退到默认值。
-    in-out property <int> roll-ticks-per-pixel: 30;
-    /// `[UI-NOTE-001]` 步骤 ①：当前视口的 tick 上下界（由宿主按裁剪窗口算出）。
-    /// 用 `<int>`：i32 在 960 PPQ 下可表示约 8.9 天音频, 且**精确**（`<float>` 在 2^24=1677 万 tick 以上会丢整数精度,
-    /// 而本项目 10 万音符夹具已跨 2400 万 tick）。转换必须**饱和**, 不得回绕（见 `tick_to_i32_saturating` 的判据）。
-    in-out property <int> roll-min-tick: 0;
-    in-out property <int> roll-max-tick: 0;
-    /// `[UI-NOTE-003]` 当前选中的音符数（供判据观测；真正的选中高亮走 `note-selected` 数组, 见账本第 223 轮）。
-    in-out property <int> selected-note-count: 0;
-    /// `[UI-NOTE-003]` 与可见数组**同一索引集**的选中标志（宿主注入；界面只取下标）。
-    in-out property <[bool]> note-selected: [];
-    /// `[UI-NOTE-003]` 当前卷帘工具（1..5）。镜像到窗口是为了让**宿主**能读到它：
-    /// 没有这个镜像, 宿主无从知道该按哪个工具的语义处理点击（账本第 258 轮）。
-    in-out property <int> active-tool: 1;
-    /// `[UI-NOTE-003]` 当前选中的音符 ULID（**单一事实源**：`apply_view` 每次注入都由它重算标志）。
-    in-out property <[string]> selected-ulids: [];
-    /// `[UI-NOTE-001]` 步骤 ①（纵向）：可见音高上下界。
-    /// 由**固定 16 条泳道**推出（见 `visible_pitch_range` 的判据）；纵向范围若将来变成动态,
-    /// 泳道数必须来自 `.slint` 而不是宿主硬编码（账本第 202 轮）。
-    in-out property <int> roll-min-pitch: 0;
-    in-out property <int> roll-max-pitch: 0;
-    in property <[length]> note-positions: [];
-    in property <[length]> note-ys: [];
-    in property <[length]> note-widths: [];
-    // 轨道色标：`[color]` = 解析后的 RGB；`track-color-labels` = 同一个色的 `#RRGGBB` 文本
-    // （进无障碍标签，让色标在控件树里可读）。
-    in property <[color]> track-colors: [];
-    in property <[string]> track-color-labels: [];
-
-    // =====================================================================
-    // 自动化泳道的注入面（`src/automation.rs` 的投影 → `ArrangementView`）
-    // =====================================================================
-    // 9 个平行数组：每条泳道一个成员。折线顶点与数值都是**投影算好的**逻辑像素 / 文本，
-    // `.slint` 不做任何算术；`accessible-label` 携带单位与当前值，因此"AI/判据能读到
-    // 自动化"有机械证据（不是"画了几条线"）。求值一律走模型的唯一入口，界面与投影层
-    // 都没有第二份插值实现。
-    in property <[string]> automation-lane-target-keys: [];
-    in property <[int]> automation-lane-track-indexes: [];
-    in property <[string]> automation-lane-labels: [];
-    in property <[string]> automation-lane-axis-labels: [];
-    in property <[length]> automation-lane-band-ys: [];
-    in property <[length]> automation-lane-band-heights: [];
-    in property <[bool]> automation-lane-read-enabled: [];
-    in property <[string]> automation-lane-badges: [];
-    in property <[string]> automation-path-commands: [];
-
-    // =====================================================================
-    // 混音台电平注入面（[ARCH-UI-002] 的"UI 线程定时器批量出队更新 Slint Properties"）
-    // =====================================================================
-    // 推子位置（0.0–1.0）由工程的 `TrackV3::volume_db` 派生 —— 与电平柱高是**两个量**：
-    // 推子说"我把这条轨设到多大声"，电平说"它现在多大声"（`src/bridge.rs` 的
-    // `volume_fraction` 与 `src/meters.rs` 的 `peak_fraction` 各有一份判据）。
-    in property <[float]> track-volume-fractions: [];
-    // 声相文本（`"C"` / `"L50"` / `"R30"`）—— 由投影的整数千分之一派生。
-    in property <[string]> track-pans: [];
-    // 电平：`{:.1}` dBFS 文本 + 0.0–1.0 柱高。长度**恒等于** `track-names.length`
-    // （换工程时 `host::apply_view` 先重置成等长的静音，`apply_meters` 再填真实读数）。
-    in property <[string]> track-meter-peaks: [];
-    in property <[string]> track-meter-rmss: [];
-    in property <[float]> track-meter-levels: [];
-    // 主控通道条（投影 + 电平）
-    in property <string> master-name: "Master";
-    in property <string> master-volume-display: "";
-    in property <float> master-volume-fraction: 0.0;
-    in property <string> master-pan: "C";
-    in property <bool> master-mute: false;
-    in property <bool> master-solo: false;
-    in property <color> master-color: #2c3a63;
-    in property <string> master-color-label: "";
-    in property <string> master-meter-peak: "-120.0";
-    in property <string> master-meter-rms: "-120.0";
-    in property <string> master-meter-lufs: "-120.0";
-    in property <float> master-meter-level: 0.0;
-
-    title: root.window-title;
-    // 演示窗口落在 §1.2 的"全展开"档 (≥1920×1080): 左栏 240 + 主区 + 右栏 280,
-    // 中段与底部控制台各占弹性区的 60% / 40% (规范要 55–65% / 35–45%)。
-    // 与 `DemoScene::demo()` 的 viewport_width/height 保持一致 —— 不一致会让
-    // `compact` 的取值和实际窗口宽度对不上。
-    // ⭐ `#183`：这里原来钉着 `width: 1920px; height: 1080px;`。钉死的根尺寸 = **窗口不可
-    // 缩小**：窗口被拉到 1440×900 时，Slint 仍按 1920×1080 排版，再**裁掉**右下角 ⇒
-    // 底部控制台的下沿（以及设备架两段的下半部分）落在窗口外。现在尺寸交给**后端**
-    // （下面那个 `VerticalLayout` 的 `preferred-*` 只给**初值** 1920×1080），
-    // `root.width` / `root.height` 从此是**真实窗口尺寸**。
-    background: Tokens.bg-void;
-
-    // =====================================================================
-    // 外壳网格 [UI-GRID-001]
-    // =====================================================================
-    VerticalLayout {
-        // ⭐ `#183`：初值仍是 1920×1080（= §1.2 的"全展开"档与 `DemoScene::demo()` 的
-        // viewport），但它是**首选**尺寸而不是硬约束 —— 窗口被拉小时布局跟着缩。
-        preferred-width: 1920px;
-        preferred-height: 1080px;
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-
-        // ---------------------------------------------------------- 48px 顶栏
-        Transport {
-            // ⚠ 录音键是**子组件**上的控件 ⇒ `recording` 必须**双向绑**：宿主写的是
-            // `root.recording`，而 `accessible-checked` 读的是子组件里那一份。
-            // 单向（`recording: root.recording;`）会让宿主写的值**到不了**按钮 ⇒
-            // 那正是"控件存在 ≠ 回调接线"的同族假象。
-            recording <=> root.recording;
-            playing: root.playing;
-            timecode: root.timecode;
-            bpm-display <=> root.bpm-display;
-            branch-name: root.branch-name;
-            arrangement-view: root.arrangement-view;
-            ai-drawer-open: root.ai-drawer-open;
-            // ⚠ 单向（子只读）：`metronome-on` 的唯一写者是宿主（`host::apply_action` 的
-            // 节拍器那一臂 + `host::apply_metronome_mirror` 的每跳校正），写的是
-            // `root.metronome-on`；子组件的 `accessible-checked` 与选中态读这一份。
-            metronome-on: root.metronome-on;
-
-            // ⚠ 界面**不**自己翻转 `root.playing`：那个属性只有一个写者 ——
-            // `src/host.rs` 的 `apply_transport`（读的是引擎的原子读数）。
-            // 这一版删掉的 `root.playing = !root.playing;` 正是"控件存在 ≠ 回调接线"
-            // 那类假象的来源（`docs/ledger/feature-alignment.md` 错位 7）。
-            toggle-play => {
-                root.toggle-play();
+            if (event.text == "r" || event.text == "R") {
+                root.transport-toggle-rec();
+                return accept;
             }
-            stop => {
-                root.stop();
+            if (event.text == "c" || event.text == "C") {
+                root.transport-toggle-loop();
+                return accept;
             }
-            // ⭐ 录音键：原样转给宿主（⛔ 界面不写 `recording` —— 那是宿主的状态）。
-            toggle-record => {
-                root.toggle-record();
+            if (event.text == "1") {
+                root.active-tool = "pointer";
+                root.edit-tool-selected("pointer");
+                return accept;
             }
-            // ⭐ 节拍器键：原样转给宿主（⛔ 界面不翻转 `metronome-on` —— 唯一写者是宿主）。
-            toggle-metronome => {
-                root.toggle-metronome();
+            if (event.text == "2") {
+                root.active-tool = "range";
+                root.edit-tool-selected("range");
+                return accept;
             }
-            // `ROAD-M4-008`：保存按钮**原样**转给宿主 —— 界面不写盘、不改 `save-status`
-            // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。
-            save-project => {
-                root.save-project();
+            if (event.text == "3") {
+                root.active-tool = "split";
+                root.edit-tool-selected("split");
+                return accept;
             }
-            revert-to-last-commit => {
-                root.revert-to-last-commit();
+            if (event.text == "4" || event.text == "b" || event.text == "B") {
+                root.active-tool = "draw";
+                root.edit-tool-selected("draw");
+                return accept;
             }
-            // ⚠ 界面**不**自己翻转 `root.arrangement-view` / `root.ai-drawer-open`：
-            // 这两个属性与 `playing` 同款 —— 唯一写者是宿主（`host::wire_view_callbacks`，
-            // 与键盘路径的 `host::apply_action` 写的是**同一个**属性）。
-            // 转发块里再翻转一次就会有两个真相源（`docs/ledger/feature-alignment.md` 错位 7）。
-            toggle-view => {
-                root.toggle-view();
-            }
-            show-session => { root.arrangement-view = false; }
-            show-arrangement => { root.arrangement-view = true; }
-            toggle-ai-drawer => {
-                root.toggle-ai-drawer();
-            }
-            // 顶栏那枚 AI 徽章：它原先 `accessible-role: button` 却**没有点击源**、
-            // 也没有回调，还写着"待审查 (1)"这个没有任何数据源的读数（= 假控件 +
-            // 假状态）。现在它有**一个真实动作**：打开同一个提案抽屉 —— 与右栏的
-            // `ai-rail-musical-pr-button` 落到**同一个** `open-musical-pr` 回调
-            // （唯一写者仍是 `host::wire_view_callbacks`），因此不产生第二个真相源。
-            open-ai-proposals => {
-                root.open-musical-pr();
-            }
-            // §7.2：合成态 / 焦点是**事件**，不是状态 —— 界面原样转给宿主，
-            // 由宿主写进 `InputContext`（界面不存"我是不是在合成"）。
-            ime-composition-changed(composing) => {
-                root.ime-composition-changed(composing);
-            }
-            ime-focus-changed(focused) => {
-                root.ime-focus-changed(focused);
-            }
-            // BPM 回车：原样转给宿主 —— 界面不解析数字、不判区间、不提交。
-            bpm-commit(text) => {
-                root.bpm-commit(text);
-            }
+            accept
         }
 
-        // ------------------------------------------- 中段 (弹性区的 60%)
-        HorizontalLayout {
-            // ⭐ 控制台最大化：让出**全部**弹性高度（stretch 0 ⇒ 只剩首选高度，
-            // 工作区画布按设计缩到 0）⇒ 剩下的都给控制台。还原 ⇒ 回到 3 : 2。
-            // ⭐ 总览面板全屏：同款口径，`vertical-stretch` 归零 **且** `visible: false`
-            //（中段无 min-height 钳制，伸缩归零即塌到 0；`visible: false` 只停渲染
-            // 与命中测试，在 Slint 1.18 布局里**不让空间** —— 空间靠伸缩/min-height
-            // 归零腾，见分割条与控制台两处的实测注）。
-            vertical-stretch: (root.console-maximized || root.song-overview-fullscreen) ? 0 : Tokens.workspace-stretch;
-            visible: !root.song-overview-fullscreen;
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
 
-            // 240px 左资源栏 (compact 时 36px 图标导轨)
-            sidebar := Sidebar {
-                compact: root.compact || root.sidebar-collapsed;
-                min-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
-                max-width: (root.compact || root.sidebar-collapsed) ? Tokens.left-rail-collapsed-width : Tokens.left-rail-width;
+            // 1. TOP TRANSPORT HEADER BAR
+            TransportHeaderBar {
+                show-browser: root.show-left-inspector;
+                show-clipmatrix: root.show-clip-matrix;
+                show-lower-dock: root.show-lower-dock;
+                show-control-room: root.show-control-room;
+                active-tool: root.active-tool;
+                is-playing: root.is-playing;
+                is-recording: root.is-recording;
+                is-looping: root.is-looping;
+                timecode-text: root.timecode-text;
+                bpm-val: root.bpm-val;
+                scale-text: root.scale-text;
+                buffer-samples: root.buffer-samples;
+                dsp-cpu-percent: root.dsp-cpu-percent;
 
-                // 同 `toggle-view`：折叠态是**视图态**，唯一写者是 `host::wire_view_callbacks`
-                // （键盘路径的 `Action::ToggleSidebar` 也写同一个属性）。
-                toggle-collapse => {
-                    root.toggle-sidebar();
+                toggle-zone(z) => {
+                    if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
+                    else if (z == "clipmatrix") { root.show-clip-matrix = !root.show-clip-matrix; }
+                    else if (z == "lower") { root.show-lower-dock = !root.show-lower-dock; }
+                    else if (z == "right") { root.show-control-room = !root.show-control-room; }
+                    root.zone-toggle(z);
                 }
-
-                // 同款：激活分类是**视图态**，界面只报告"用户点了哪一个"，
-                // 钳位与写属性都在宿主 ⇒ 越界请求（如 7）不会留在界面上。
-                active-category: root.sidebar-category;
-                select-category(category) => {
-                    root.select-sidebar-category(category);
+                select-tool(t) => {
+                    root.active-tool = t;
+                    root.edit-tool-selected(t);
                 }
-
-                // ⭐ 条目数组与空态理由：主窗口**只转发**宿主注入的值，自己不取数
-                // （取数只有宿主一处 = `bridge::sidebar_category_content`，与注册表同源）。
-                items: root.sidebar-items;
-                empty-reason: root.sidebar-empty-reason;
-
-                // 同款：条目选中也是**视图态**，界面只报告"用户点了哪一个"。
-                active-item: root.sidebar-item;
-                select-item(item) => {
-                    root.select-sidebar-item(item);
+                toggle-play() => { root.transport-toggle-play(); }
+                toggle-rec() => { root.transport-toggle-rec(); }
+                toggle-loop() => { root.transport-toggle-loop(); }
+                rewind() => { root.transport-rewind(); }
+                change-bpm(b) => { root.transport-set-bpm(b); }
+                change-scale(s) => { root.transport-set-scale(s); }
+                hot-swap-buffer(smp) => {
+                    root.buffer-samples = smp;
+                    root.hot-swap-buffer-size(smp);
                 }
-
-                // ⭐ D-UI-14：搜索框里的**字**由输入框自己写（两向绑定），主窗口只转发
-                // "敲了一个字"这件事。输入法那两条**不**从这里转发 —— 理由逐字写在
-                // `ui/sidebar.slint` 的 `search-changed` 处（`wire_input` 的"失焦 ⇒ 画布"
-                // 硬编码只容得下一个敲入控件，接第二路会把 `InputContext` 写成顺序依赖）。
-                search-text <=> root.sidebar-search;
-                search-changed(query) => {
-                    root.sidebar-search-changed(query);
+                select-persona(p) => {
+                    Theme.persona = p;
+                    if (p == PersonaMode.AbletonLive) {
+                        root.show-clip-matrix = true;
+                        root.show-control-room = false;
+                    } else if (p == PersonaMode.LogicPro) {
+                        root.show-clip-matrix = false;
+                        root.show-control-room = false;
+                    } else if (p == PersonaMode.CubasePro) {
+                        root.show-clip-matrix = false;
+                        root.show-control-room = true;
+                    } else {
+                        root.show-clip-matrix = true;
+                        root.show-control-room = true;
+                    }
                 }
+                open-cmd-palette() => { root.show-cmd-palette = true; }
+                toggle-hotspots() => { root.show-hotspots = !root.show-hotspots; }
             }
 
-            // 主工作区: 双视图同构投射, 同一时刻只显示一个 [规范 §2.1]
-            Rectangle {
-                horizontal-stretch: 1;
-                clip: true;
-                background: Tokens.bg-shell;
+            // 2. MIDDLE MAIN WORKSPACE (Zone A + Zone B + Zone C + Zone D)
+            HorizontalLayout {
+                spacing: 0px;
+                vertical-stretch: 1;
 
-                SessionView {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    visible: !root.arrangement-view;
-                    tracks: root.track-names;
-                    scenes: root.scene-names;
-                    scene-colors: root.scene-colors;
-                    scene-color-labels: root.scene-color-labels;
-                    // ⭐ `#283`：场景按钮的落点 + "当前场景"读数（全部来自宿主的
-                    // 唯一注入；⛔ `.slint` 不自己记"上次点了哪个"）。
-                    scene-launch(scene_index) => {
-                        root.scene-launch(scene_index);
+                // Zone A: Dual Inspector & Browser (Left, 256px)
+                if root.show-left-inspector : ZoneBrowserAndInspector {
+                    selected-track-name: root.tracks[root.selected-track-id - 1].name;
+                    selected-track-badge: "TRK 0" + root.selected-track-id + " · " + root.tracks[root.selected-track-id - 1].kind;
+                    selected-track-bus: root.tracks[root.selected-track-id - 1].bus;
+                    selected-track-vol: root.tracks[root.selected-track-id - 1].volume_db;
+                    selected-track-peak: root.tracks[root.selected-track-id - 1].meter_peak;
+                    selected-track-inserts: [
+                        root.tracks[root.selected-track-id - 1].insert1,
+                        root.tracks[root.selected-track-id - 1].insert2,
+                        root.tracks[root.selected-track-id - 1].insert3
+                    ];
+
+                    normalize-heights() => { root.normalize-track-heights(); }
+                    fader-changed(vol) => { root.track-volume-changed(root.selected-track-id, vol); }
+                    bus-fader-changed(vol) => { root.track-volume-changed(0, vol); }
+                    load-item(name) => { root.browser-item-load(name); }
+                    focus-devices() => {
+                        root.show-lower-dock = true;
+                        Theme.active-dock-tab = "devices";
                     }
-                    // ⭐ Session 视图「→ 编曲」：原样转给宿主（界面不自己翻转
-                    // `arrangement-view`；唯一写者 = `host::wire_view_callbacks`）。
-                    back-to-arrangement => {
-                        root.back-to-arrangement();
-                    }
-                    current-scene-index: root.current-scene-index;
-                    current-scene-name: root.current-scene-name;
-                    scene-launch-status: root.scene-launch-status;
                 }
 
-                ArrangementView {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    visible: root.arrangement-view;
-                    tracks: root.track-names;
-                    // ⭐ [PATCH UI-TRACK-KINDS-01]：轨道类型与 `tracks` 同一次注入、同索引集；
-                    // 包头用它在左沿画类型色带 / 在控制区印类型徽标（纯视觉，不新增控件）。
-                    track-kinds: root.track-kinds;
-                    // ⭐ 任务单 `#192`：选中态按**身份**键控（无障碍 `accessible-item-selected`
-                    // 读它）。两个属性都是从根转发的**同一份**注入（⛔ 界面不造第二份表）。
-                    track-ids: root.track-ids;
+                // Zone B: Hybrid Clip Matrix Drawer (220px)
+                if root.show-clip-matrix : HybridClipMatrixDrawer {
+                    tracks: root.tracks;
                     selected-track-id: root.selected-track-id;
-                    track-ys: root.track-ys;
-                    track-heights: root.track-heights;
-                    sheet-height: root.arrangement-sheet-height;
-                    // ⭐ 任务单 `#192`：轨道头点击 ⇒ 选中（界面只报下标）。
-                    track-select(track_index) => {
-                        root.track-select(track_index);
-                    }
-                    // `ADR-0004` S1 的纵向入口：轨道头 `TouchArea` 的事件原样转给宿主
-                    // （界面不做位移 / 像素 / 夹紧中的任何一件）。
-                    track-height-grab(track_index, pointer_y) => {
-                        root.track-height-grab(track_index, pointer_y);
-                    }
-                    track-height-drag(track_index, pointer_y) => {
-                        root.track-height-drag(track_index, pointer_y);
-                    }
-                    track-height-release(track_index) => {
-                        root.track-height-release(track_index);
-                    }
-                    // ⭐ 2026-11-07 夜半 UI 轨道交互修复线：缩放 / 移轨 / 横向滚动的转发
-                    // （界面只做单向搬运，⛔ 不解释、不持有第二份值域；宿主是唯一实现）。
-                    // 横向偏移与内容总长（滚动条与 `.slint` 减法共用同一读数）。
-                    scroll-x: root.roll-scroll-x;
-                    content-px: root.arrangement-content-px;
-                    // 缩放滑块 fraction（根 → 视图单向；滑块拖动经回调回宿主）。
-                    zoom-h-fraction: root.zoom-h-fraction;
-                    zoom-v-fraction: root.zoom-v-fraction;
-                    zoom-h-step(zoom_in) => { root.zoom-h-step(zoom_in); }
-                    zoom-v-step(zoom_in) => { root.zoom-v-step(zoom_in); }
-                    zoom-h-slider(fraction) => { root.zoom-h-slider(fraction); }
-                    zoom-v-slider(fraction) => { root.zoom-v-slider(fraction); }
-                    // 重排手势态（根 → 视图单向；手势事件经回调回宿主）。
-                    track-reorder-active: root.track-reorder-active;
-                    track-reorder-index: root.track-reorder-index;
-                    track-reorder-preview-index: root.track-reorder-preview-index;
-                    track-reorder-preview-y: root.track-reorder-preview-y;
-                    track-reorder-grab(track_index, pointer_y) => {
-                        root.track-reorder-grab(track_index, pointer_y);
-                    }
-                    track-reorder-drag(track_index, pointer_y) => {
-                        root.track-reorder-drag(track_index, pointer_y);
-                    }
-                    track-reorder-release(track_index) => {
-                        root.track-reorder-release(track_index);
-                    }
-                    track-reorder-step(track_index, direction) => {
-                        root.track-reorder-step(track_index, direction);
-                    }
-                    // 横向滚动：滚轮（带修饰才调宿主）/ 滚动条（绝对目标 px）/ 空车道拖动
-                    // （`scroll-requested` 是卷帘那条既有回调，宿主 `install_roll_scroll`）。
-                    arrangement-wheel(delta_x, delta_y, shift, alt) => {
-                        root.arrangement-wheel(delta_x, delta_y, shift, alt);
-                    }
-                    arrangement-scroll-to(target_px) => {
-                        root.arrangement-scroll-to(target_px);
-                    }
-                    scroll-requested(delta) => { root.scroll-requested(delta); }
-                    // 静音 / 独奏开关：点击原样上抛给宿主，界面不改任何工程值。
-                    // 落点是 MainWindow 上**已有**的两条回调 —— 它们的唯一实现
-                    // （`host::wire_mixer_switch`）按下标查宿主注入的 `track-ids`，
-                    // 与编排视图包头的 `track_index` 同一索引集。
-                    track-mute-toggle(track_index) => {
-                        root.mixer-mute-toggle(track_index);
-                    }
-                    track-solo-toggle(track_index) => {
-                        root.mixer-solo-toggle(track_index);
-                    }
-                    track-volumes: root.track-volumes;
-                    track-mutes: root.track-mutes;
-                    track-solos: root.track-solos;
-                    track-arms: root.track-arms;
-                    automation-visible: root.automation-visible;
-                    cycle-enabled: root.cycle-enabled;
-                    cycle-start-ticks: root.cycle-start-ticks;
-                    cycle-end-ticks: root.cycle-end-ticks;
-                    track-arm-toggle(track_index) => {
-                        root.track-arm-toggle(track_index);
-                    }
-                    track-rename(track_index, name) => {
-                        root.track-rename(track_index, name);
-                    }
-                    sections: root.section-names;
-                    section-colors: root.section-colors;
-                    section-color-labels: root.section-color-labels;
-                    section-positions: root.section-positions;
-                    section-widths: root.section-widths;
-                    clip-ulids: root.clip-ulids;
-                    // ⭐ 走带光标：位置 = 引擎读数（`host::apply_transport` 的唯一写入）；
-                    // 缩放与卷帘共用 `roll-ticks-per-pixel`（同一个 `ViewState` 的投影口径）。
-                    playhead-ticks: root.playhead-ticks;
-                    ticks-per-pixel: root.roll-ticks-per-pixel;
-                    playhead-timecode: root.timecode;
-                    // ⭐ 剪辑选中态：与 `clip-ulids` 同一取值域的**身份**（宿主写、界面只读）。
-                    selected-clip-ulid: root.selected-clip-ulid;
-                    // 包头点击 ⇒ 原样上抛身份，宿主校验后写 `selected-clip-ulid`。
-                    clip-select(clip_ulid) => {
-                        root.clip-select(clip_ulid);
-                    }
-                    clip-double-click(clip_ulid) => {
-                        root.clip-double-click(clip_ulid);
-                    }
-                    // ⭐ 剪辑平移：草稿读数由宿主写，界面只转发四段手势。
-                    clip-drag-ulid: root.clip-drag-ulid;
-                    clip-drag-preview-dx: root.clip-drag-preview-dx;
-                    clip-drag-grab(clip_id, x) => {
-                        root.clip-drag-grab(clip_id, x);
-                    }
-                    clip-drag-move(clip_id, x) => {
-                        root.clip-drag-move(clip_id, x);
-                    }
-                    clip-drag-release(clip_id, x) => {
-                        root.clip-drag-release(clip_id, x);
-                    }
-                    clip-drag-cancel() => {
-                        root.clip-drag-cancel();
-                    }
-                    // ⭐ 章节卡片点击 / 无障碍默认动作 ⇒ 原样上抛下标，宿主查段起点并 seek。
-                    section-seek(section_index) => {
-                        root.section-seek(section_index);
-                    }
-                    // ⭐ 标尺点击 ⇒ 原样上抛局部 x，宿主换算成 tick 并 seek。
-                    ruler-seek(x) => {
-                        root.ruler-seek(x);
-                    }
-                    // ⭐ 无障碍「上 / 下一小节」与「第 N 小节」⇒ 同一个宿主入口。
-                    ruler-step(steps) => {
-                        root.ruler-step(steps);
-                    }
-                    ruler-seek-bar(bar) => {
-                        root.ruler-seek-bar(bar);
-                    }
-                    clip-labels: root.clip-labels;
-                    clip-mutes: root.clip-mutes;
-                    clip-positions: root.clip-positions;
-                    clip-widths: root.clip-widths;
-                    clip-ys: root.clip-ys;
-                    clip-heights: root.clip-heights;
-                    bar-positions: root.bar-positions;
-                    track-colors: root.track-colors;
-                    track-color-labels: root.track-color-labels;
-                    automation-lane-target-keys: root.automation-lane-target-keys;
-                    automation-lane-track-indexes: root.automation-lane-track-indexes;
-                    automation-lane-labels: root.automation-lane-labels;
-                    automation-lane-axis-labels: root.automation-lane-axis-labels;
-                    automation-lane-band-ys: root.automation-lane-band-ys;
-                    automation-lane-band-heights: root.automation-lane-band-heights;
-                    automation-lane-read-enabled: root.automation-lane-read-enabled;
-                    automation-lane-badges: root.automation-lane-badges;
-                    automation-path-commands: root.automation-path-commands;
-                    automation-lane-click(click_x, click_y) => {
-                        root.automation-lane-click(click_x, click_y);
-                    }
-                }
-            }
 
-            // 280px 右 AI 协作栏 (compact 时宽度归零, 改由下面的抽屉承担)
-            AiRail {
-                visible: !root.compact;
-                min-width: root.compact ? 0px : Tokens.right-rail-width;
-                max-width: root.compact ? 0px : Tokens.right-rail-width;
-
-                // 打开抽屉是**视图态**，唯一写者是宿主（`host::wire_view_callbacks`）。
-                open-musical-pr => { root.open-musical-pr(); }
-                run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
-                export-diagnostics => { root.export-diagnostics(); }
-                // 四个模块入口：与上面三条同款 —— 原样上抛，界面不改任何状态。
-                // 两条注入属性由宿主单向写入（唯一写者 = `host::wire_module_actions`）。
-                module-status: root.module-status;
-                module-status-succeeded: root.module-status-succeeded;
-                module-midi-in-status: root.module-midi-in-status;
-                module-midi-in-status-succeeded: root.module-midi-in-status-succeeded;
-                // ⭐ `#230`：母带削波警示行（空串 ⇒ 不显示）。
-                module-clipping-warning: root.module-clipping-warning;
-                // ⭐ `#319`：导入损失摘要行（与削波行同一槽位、互斥；空串 ⇒ 不显示）。
-                module-import-losses: root.module-import-losses;
-                open-export-wav => { root.open-export-wav(); }
-                import-midi => { root.import-midi(); }
-                load-sfz => { root.load-sfz(); }
-                record-wav => { root.record-wav(); }
-                midi-in => { root.midi-in(); }
-            }
-        }
-
-        // ---------------------------------------------------------- 4px splitter
-        // [UI-GRID-002] 拖拽范围硬限 220–600px（钳位在宿主 = 唯一写者）。指针状态机与
-        // 卷帘拖动同款（§6.1）：down 记按下点、move 报目标高度、up/cancel 收手。
-        // 总览面板全屏时归零（`visible: false` 在 Slint 1.18 布局里**不让空间**，
-        // 实测：只加 `visible` 面板高 792 = 900−48−24−32−4；min/max 归零后 828。
-        // 见 `tests/song_overview_panel.rs` ⑯ 的钉子）。
-        Rectangle {
-            min-height: root.song-overview-fullscreen ? 0px : Tokens.splitter-height;
-            max-height: root.song-overview-fullscreen ? 0px : Tokens.splitter-height;
-            visible: !root.song-overview-fullscreen;
-            background: Tokens.line-strong;
-
-            accessible-role: slider;
-            accessible-id: "splitter-workspace-console";
-            accessible-label: "主工作区与底部控制台的分割线 (220–600px)";
-            accessible-orientation: horizontal;
-            accessible-value-minimum: 220;
-            accessible-value-maximum: 600;
-            accessible-value-step: 1;
-            // 屏读器读到的必须是**实测**高度（与画面同源）；改动前这里写死 "320"，
-            // 每一帧都谎报自己的位置。
-            accessible-value: "" + Math.round(root.console-height-readout / 1px);
-
-            splitter-touch := TouchArea {
-                mouse-cursor: MouseCursor.row-resize;
-                // 命中带上下各扩 2px：4px 的细线不好抓（⛔ 不改可视几何）。
-                width: parent.width;
-                y: -2px;
-                height: parent.height + 4px;
-
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.down {
-                        root.splitter-dragging = true;
-                        root.splitter-press-y = self.mouse-y;
-                    } else if event.kind == PointerEventKind.move && root.splitter-dragging {
-                        // 目标 = 实测高 + 按下以来的**屏幕**位移。`mouse-y` 是 TouchArea
-                        // 局部坐标，分割线**自身**随布局移动的量已含在实测高里，两者相消
-                        // ⇒ 拖多少涨多少，⛔ 不逐事件累积误差（推导见 tests/splitter_drag.rs 头注）。
-                        root.console-height-requested(Math.round(
-                            root.console-height-readout / 1px
-                            + (root.splitter-press-y - self.mouse-y) / 1px
-                        ));
-                    } else if event.kind == PointerEventKind.up
-                        || event.kind == PointerEventKind.cancel {
-                        root.splitter-dragging = false;
+                    trigger-scene(s-idx) => { root.scene-trigger(s-idx); }
+                    trigger-clip(t-id, c-idx) => { root.clip-trigger(t-id, c-idx); }
+                    select-track(t-id) => {
+                        root.selected-track-id = t-id;
+                        root.track-selected(t-id);
                     }
                 }
 
-                // 双击 = 回到默认（3:2 弹性比）：清零档位由宿主做（唯一写者）。
-                double-clicked => {
-                    root.splitter-dragging = false;
-                    root.console-height-reset();
+                // Zone C: Center Linear Arrangement & Track Headers
+                ArrangementViewport {
+                    horizontal-stretch: 1;
+                    tracks: root.tracks;
+                    timeline-blocks: root.timeline-blocks;
+                    selected-track-id: root.selected-track-id;
+                    playhead-px: root.playhead-px;
+                    is-looping: root.is-looping;
+
+                    select-track(t-id) => {
+                        root.selected-track-id = t-id;
+                        root.track-selected(t-id);
+                    }
+                    toggle-mute(t-id) => { root.track-toggle-mute(t-id); }
+                    toggle-solo(t-id) => { root.track-toggle-solo(t-id); }
+                    toggle-arm(t-id) => { root.track-toggle-arm(t-id); }
+                    add-track() => { root.track-add-requested(); }
+                    audition-chord(name) => { root.chord-audition(name); }
+                    scrub-timeline(pos) => { root.playhead-px = pos; }
+                }
+
+                // Zone D: Right Control Room & Master Loudness Meter (192px)
+                if root.show-control-room : ControlRoomMeters {
+                    lufs-integrated: root.lufs-integrated;
+                    lufs-short: root.lufs-short;
+                    lufs-peak: root.lufs-peak;
+                    master-meter-l: root.master-meter-l;
+                    master-meter-r: root.master-meter-r;
+
+                    switch-monitor(name) => { root.monitor-switch(name); }
                 }
             }
-        }
 
-        // --------------------------------------- 底部控制台 (弹性区的 40%)
-        // ⭐ 窄档分栏维持 3:2（`Tokens.console-stretch`）：曾试过窄档把控制台
-        // stretch 提到 2.4–2.6 给素材池腾高度（1024x800 档素材池第二行要
-        // 控制台 ≥ 334 px），但控制台 ≥ 312 px 时设备链占位卡翻为可见，与
-        // `pane_no_overlap.rs` 的 1024 窄档清单（6 项、无占位卡）冲突 ——
-        // 素材池与设备链在 1024 档要的是相反的控制台高度，单靠分栏无解；
-        // 须由素材池/设备链的归属线改窄档座位或判据清单，本轮不越权改动。
-        // （折叠面板已把 82 px 还给中段：素材池第一行已回树，只剩第二行。）
-        console-tabs := ConsoleTabs {
-            // 总览面板全屏：`vertical-stretch` 归零 **且** `min-height` 归零 **且**
-            // `visible: false` —— 三者缺一不可：只归零伸缩腾不出控制台的 32 px
-            // 首选高度（`console_tabs.slint:288` 的 `min-height: 32px`），只隐藏
-            // 在 Slint 1.18 布局里不让空间（实测 792 vs 828）；实例上的 `min-height`
-            // 赋值优先于组件内默认值。32 px 在此与组件内同值（该组件不认 fullscreen，
-            // 只能在实例上覆盖；改组件内数值时须同步改这里）。
-            vertical-stretch: root.song-overview-fullscreen ? 0 : Tokens.console-stretch;
-            min-height: root.song-overview-fullscreen ? 0px : 32px;
-            visible: !root.song-overview-fullscreen;
-            active-tab: root.console-tab;
-            console-maximized: root.console-maximized;
-            note-ulids: root.note-ulids;
-            note-velocities: root.note-velocities;
-            note-positions: root.note-positions;
-            note-selected: root.note-selected;
-            // ⭐ 走带光标（卷帘）：与编曲同一次引擎读数、同一个缩放口径；
-            // 滚动偏移让卷帘的 x 与已减过 scroll 的音符位置保持同一坐标系。
-            playhead-ticks: root.playhead-ticks;
-            ticks-per-pixel: root.roll-ticks-per-pixel;
-            scroll-x: root.roll-scroll-x;
-            playhead-timecode: root.timecode;
-            active-tool: root.active-tool;
-            roll-edit-status: root.roll-edit-status;
-            scroll-requested(d) => { root.scroll-requested(d); }
-            clicked(x, y) => { root.clicked(x, y); }
-            double-clicked(x, y) => { root.double-clicked(x, y); }
-            tool-selected(tool) => { root.tool-selected(tool); }
-            note-drag-grab(x, y) => { root.note-drag-grab(x, y); }
-            note-drag-move(x, y) => { root.note-drag-move(x, y); }
-            note-drag-release(x, y) => { root.note-drag-release(x, y); }
-            note-drag-cancel() => { root.note-drag-cancel(); }
-            // ⭐ 卷帘右键菜单的两项**直接落到对话框的打开回调**（`open-humanize` /
-            // `open-quantize` 是宿主接的唯一落点；`humanize-requested` 只透传到这里，
-            // ⛔ 不在 MainWindow 上再立一个无人接的同名回调 —— 立了就是死回调）。
-            humanize-requested => { root.open-humanize(); }
-            quantize-requested => { root.open-quantize(); }
-            note-drag-ulid: root.note-drag-ulid;
-            note-drag-preview-dx: root.note-drag-preview-dx;
-            note-drag-preview-dy: root.note-drag-preview-dy;
-            note-drag-preview-velocity: root.note-drag-preview-velocity;
-            note-ys: root.note-ys;
-            note-widths: root.note-widths;
-            // ⭐ 素材池（`#133`）：透传到 `MixerConsole` 的 `AssetPoolPanel`（Tab 1）。
-            asset-pool-names: root.asset-pool-names;
-            asset-pool-kinds: root.asset-pool-kinds;
-            asset-pool-details: root.asset-pool-details;
-            // ⭐ 设备效果链（任务单 `#157`）：透传到 `DeviceRack`（Tab 3）—— 本窗口只做
-            // 单向搬运，⛔ 不解释、⛔ 不持有第二份列表 / 值域。
-            device-track-label: root.device-track-label;
-            device-names: root.device-names;
-            device-ids: root.device-ids;
-            device-bypassed: root.device-bypassed;
-            device-recognised: root.device-recognised;
-            device-unrecognised: root.device-unrecognised;
-            device-eq-available: root.device-eq-available;
-            device-eq-gain-db: root.device-eq-gain-db;
-            device-eq-min-db: root.device-eq-min-db;
-            device-eq-max-db: root.device-eq-max-db;
-            // ⭐ 任务单 `#182`：EQ 手势的**设备身份**（⛔ 不是下标）。
-            device-eq-device-id: root.device-eq-device-id;
-            device-eq-curve-svg: root.eq-curve-svg;
-            device-eq-curve-fill-svg: root.eq-curve-fill-svg;
-            device-eq-curve-info: root.eq-curve-info;
-            // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（透传）
-            sidechain-key-label: root.sidechain-key-label;
-            sidechain-available: root.sidechain-available;
-            compressor-info: root.compressor-info;
-            compressor-available: root.compressor-available;
-            limiter-info: root.limiter-info;
-            limiter-available: root.limiter-available;
-            shaper-info: root.shaper-info;
-            shaper-available: root.shaper-available;
-            // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量，只做单向搬运。
-            device-insert-available: root.device-insert-available;
-            device-insert-reason: root.device-insert-reason;
-            clip-create-available: root.clip-create-available;
-            clip-create-reason: root.clip-create-reason;
-            // ⭐ 主总线设备链（任务单 `#180`）：同样只做单向搬运。
-            master-device-label: root.master-device-label;
-            master-device-names: root.master-device-names;
-            master-device-ids: root.master-device-ids;
-            master-device-recognised: root.master-device-recognised;
-            master-device-unrecognised: root.master-device-unrecognised;
-            master-device-insert-available: root.master-device-insert-available;
-            master-device-insert-reason: root.master-device-insert-reason;
-            // ⭐ 主总线设备的旁通 ＋ EQ（任务单 `#181`）：同样只做单向搬运。
-            master-device-bypassed: root.master-device-bypassed;
-            master-device-eq-available: root.master-device-eq-available;
-            master-device-eq-gain-db: root.master-device-eq-gain-db;
-            master-device-eq-min-db: root.master-device-eq-min-db;
-            master-device-eq-max-db: root.master-device-eq-max-db;
-            master-device-eq-reason: root.master-device-eq-reason;
-            // ⭐ 任务单 `#182`：主总线 EQ 手势的**设备身份**（⛔ 不是下标）。
-            master-device-eq-device-id: root.master-device-eq-device-id;
-            instrument-label: root.instrument-label;
-            instrument-names: root.instrument-names;
-            instrument-install-available: root.instrument-install-available;
-            instrument-install-reason: root.instrument-install-reason;
-            instrument-install-status: root.instrument-install-status;
-            // ⭐ 采样库（任务单 `#196`）：四个投影标量 ＋ 运行期下载状态，原样透传。
-            sample-library-installed: root.sample-library-installed;
-            sample-library-notice: root.sample-library-notice;
-            sample-library-download-visible: root.sample-library-download-visible;
-            sample-library-root: root.sample-library-root;
-            sample-library-status: root.sample-library-status;
-            // ⭐ 发送条（任务单 `#159`）：同样只做单向搬运，⛔ 不解释、⛔ 不持有第二份
-            // 发送列表 / 增益范围（值域来自模型，经 `host::apply_view` 注入）。
-            send-edge-ids: root.send-edge-ids;
-            send-destination-names: root.send-destination-names;
-            send-gain-labels: root.send-gain-labels;
-            send-gain-dbs: root.send-gain-dbs;
-            send-gain-min-db: root.send-gain-min-db;
-            send-gain-max-db: root.send-gain-max-db;
-            send-create-available: root.send-create-available;
-            send-create-reason: root.send-create-reason;
-            // ⭐ 宏面板：投影只单向搬运（「宏 (N)」按钮的条数以它为准）。
-            macro-names: root.macro-names;
-            macro-values: root.macro-values;
-            macro-value-labels: root.macro-value-labels;
-            // ⭐ 轨 / 路由（任务单 `#160`）：同样只做单向搬运，⛔ 不解释、⛔ 不自己算
-            // "能不能建 / 删"（可用性与逐字原因都来自投影）。
-            routing-count-label: root.routing-count-label;
-            routing-create-available: root.routing-create-available;
-            routing-master-label: root.routing-master-label;
-            routing-delete-available: root.routing-delete-available;
-            routing-delete-reason: root.routing-delete-reason;
-            // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。
-            track-names: root.track-names;
-            track-volumes: root.track-volumes;
-            track-volume-fractions: root.track-volume-fractions;
-            track-pans: root.track-pans;
-            track-mutes: root.track-mutes;
-            track-solos: root.track-solos;
-            track-sampler-paths: root.track-sampler-paths;
-            track-colors: root.track-colors;
-            track-color-labels: root.track-color-labels;
-            track-ids: root.track-ids;
-            selected-track-id: root.selected-track-id;
-            track-select(track_index) => {
-                root.track-select(track_index);
-            }
-            track-rename(track_index, name) => {
-                root.track-rename(track_index, name);
-            }
-            track-meter-peaks: root.track-meter-peaks;
-            track-meter-rmss: root.track-meter-rmss;
-            track-meter-levels: root.track-meter-levels;
-            master-name: root.master-name;
-            master-volume-display: root.master-volume-display;
-            master-volume-fraction: root.master-volume-fraction;
-            master-pan: root.master-pan;
-            master-mute: root.master-mute;
-            master-solo: root.master-solo;
-            master-color: root.master-color;
-            master-color-label: root.master-color-label;
-            master-meter-peak: root.master-meter-peak;
-            master-meter-rms: root.master-meter-rms;
-            master-meter-lufs: root.master-meter-lufs;
-            master-meter-level: root.master-meter-level;
+            // 3. BOTTOM UNIFIED MULTI-MODAL DOCK
+            if root.show-lower-dock : UnifiedLowerDock {
+                active-tab: Theme.active-dock-tab;
+                focus-track-name: root.tracks[root.selected-track-id - 1].name;
+                tracks: root.tracks;
+                selected-track-id: root.selected-track-id;
 
-            select-piano-roll => { root.console-tab = 0; }
-            select-mixer => { root.console-tab = 1; }
-            select-devices => { root.console-tab = 2; }
-
-            // ⭐ 设备效果链（Tab 3）的写入面：只上抛，唯一落点 `host::wire_device_rack`
-            // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，⛔ 界面不改任何工程值）。
-            // ⭐ `#182`：旁通与 EQ 按下都上抛**设备身份**，⛔ 不是下标。
-            device-bypass-toggle(device-id) => {
-                root.device-bypass-toggle(device-id);
-            }
-            device-eq-grab(device-id, fraction) => {
-                root.device-eq-grab(device-id, fraction);
-            }
-            device-eq-drag(fraction) => {
-                root.device-eq-drag(fraction);
-            }
-            device-eq-release() => {
-                root.device-eq-release();
-            }
-            device-eq-curve-drag(x, y) => {
-                root.eq-curve-drag(x, y);
-            }
-            device-eq-curve-release() => {
-                root.eq-curve-release();
-            }
-            // ⭐ G-S1 / G-D6：动态与侧链交互（只上抛）
-            sidechain-cycle() => {
-                root.sidechain-cycle();
-            }
-            compressor-cycle-ratio() => {
-                root.compressor-cycle-ratio();
-            }
-            // ⭐ 设备增删 ＋ 建空片段（Tab 3，任务单 `#163`）：只上抛 —— 唯一落点是
-            // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。
-            device-insert-eq() => {
-                root.device-insert-eq();
-            }
-            device-insert-reverb() => {
-                root.device-insert-reverb();
-            }
-            device-remove(device-id) => {
-                root.device-remove(device-id);
-            }
-            clip-create() => {
-                root.clip-create();
-            }
-            // ⭐ 主总线设备增删（Tab 3，任务单 `#180`）：只上抛 —— 唯一落点仍是
-            // `host::wire_device_rack`（与展示轨那两个手势同一份实现体，目标轨不同）。
-            master-device-insert-eq() => {
-                root.master-device-insert-eq();
-            }
-            master-device-insert-reverb() => {
-                root.master-device-insert-reverb();
-            }
-            master-device-remove(device-id) => {
-                root.master-device-remove(device-id);
-            }
-            // ⭐ 主总线设备的旁通 ＋ EQ（Tab 3，任务单 `#181` / `#182`）：只上抛 —— 唯一
-            // 落点是 `host::wire_device_rack` 的 `bypass_device` / `DeviceEqWiring`（与展示轨
-            // 那两条手势**同一份**实现体，`DeviceTarget` 不同）。参数是**设备身份**。
-            master-device-bypass-toggle(device-id) => {
-                root.master-device-bypass-toggle(device-id);
-            }
-            master-device-eq-grab(device-id, fraction) => {
-                root.master-device-eq-grab(device-id, fraction);
-            }
-            master-device-eq-drag(fraction) => {
-                root.master-device-eq-drag(fraction);
-            }
-            master-device-eq-release() => {
-                root.master-device-eq-release();
-            }
-            instrument-install(index) => {
-                root.instrument-install(index);
-            }
-            sample-library-download() => {
-                root.sample-library-download();
-            }
-            sample-library-download-drain-requested() => {
-                root.sample-library-download-drain-requested();
-            }
-            // ⭐ 发送条（Tab 3）的写入面：只上抛，唯一落点 `host::wire_send_strip`
-            // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，⛔ 界面不改任何工程值）。
-            // 三个滑块回调携带**路由边身份**，⛔ 不是行下标。
-            send-gain-grab(edge-id, fraction) => {
-                root.send-gain-grab(edge-id, fraction);
-            }
-            send-gain-drag(edge-id, fraction) => {
-                root.send-gain-drag(edge-id, fraction);
-            }
-            send-gain-release(edge-id) => {
-                root.send-gain-release(edge-id);
-            }
-            send-create() => {
-                root.send-create();
-            }
-            // ⭐ 轨 / 路由（Tab 3）的写入面：只上抛，唯一落点 `host::wire_track_strip`
-            // 与 `host::wire_send_strip`（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，
-            // ⛔ 界面不改任何工程值）。删除发送携带**路由边身份**，⛔ 不是行下标。
-            send-remove(edge-id) => {
-                root.send-remove(edge-id);
-            }
-            track-create-midi() => {
-                root.track-create-midi();
-            }
-            track-create-audio() => {
-                root.track-create-audio();
-            }
-            track-create-aux() => {
-                root.track-create-aux();
-            }
-            track-delete() => {
-                root.track-delete();
-            }
-            // ⭐ 宏入口：打开右侧抽屉（开关状态住在本窗口；⛔ 不在控制台里存第二份）。
-            open-macro-panel() => {
-                root.macro-panel-open = true;
-            }
-
-            // ⭐ 控制台右上角 ⤢：只上抛 —— 开关状态由宿主写 `console-maximized`
-            // （与 `toggle-view` 一族同款，界面不自己翻转）。
-            console-maximize-toggle() => {
-                root.console-maximize-toggle();
-            }
-
-            // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值
-            // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，落点是 `host::wire_mixer_edit`）。
-            mixer-fader-grab(index, y) => {
-                root.mixer-fader-grab(index, y);
-            }
-            mixer-fader-drag(index, y) => {
-                root.mixer-fader-drag(index, y);
-            }
-            mixer-fader-release(index) => {
-                root.mixer-fader-release(index);
-            }
-            mixer-pan-grab(index, x) => {
-                root.mixer-pan-grab(index, x);
-            }
-            mixer-pan-drag(index, x) => {
-                root.mixer-pan-drag(index, x);
-            }
-            mixer-pan-release(index) => {
-                root.mixer-pan-release(index);
-            }
-            // **双击复位**：同样只上抛（宿主 `host::wire_mixer_edit` 的 `on_*_reset` 是唯一落点）。
-            mixer-fader-reset(index) => {
-                root.mixer-fader-reset(index);
-            }
-            mixer-pan-reset(index) => {
-                root.mixer-pan-reset(index);
-            }
-            mixer-mute-toggle(index) => {
-                root.mixer-mute-toggle(index);
-            }
-            mixer-solo-toggle(index) => {
-                root.mixer-solo-toggle(index);
-            }
-            mixer-master-mute-toggle() => {
-                root.mixer-master-mute-toggle();
-            }
-            mixer-master-solo-toggle() => {
-                root.mixer-master-solo-toggle();
-            }
-            // ⭐ SFZ 采样器绑定（任务单 `#82`）：同样只上抛，宿主是唯一落点。
-            mixer-sampler-set(index, path) => {
-                root.mixer-sampler-set(index, path);
-            }
-            mixer-sampler-clear(index) => {
-                root.mixer-sampler-clear(index);
-            }
-            // ⭐ **③ 浏览…**（任务单 `#86` 乙）：只上抛。落点 `host::wire_mixer_sampler_browse`
-            // 只把选中的路径**填进输入框**（⛔ 不提交工程内容 —— 提交仍是 SET / 回车）。
-            mixer-sampler-browse(index) => {
-                root.mixer-sampler-browse(index);
-            }
-            // ⭐ **导出 MIDI**（任务单 `#90` 甲）：只上抛。唯一落点 = `host::wire_module_actions`
-            // 的 `export-midi` 分支（与 `export-wav` 同一条回执通道）。
-            export-midi => {
-                root.export-midi();
-            }
-            // ⭐ **打开工程**（任务单 `#93`）：只上抛。唯一落点 = `host::wire_open_project`
-            // （与 `export-midi` 同一条 `module-status` 回执通道）。
-            open-project => {
-                root.open-project();
-            }
-            // ⭐ **新建工程**（任务单 `#129`）：只上抛。唯一落点 = `host::wire_new_project`
-            // （与「打开工程」同一条 `module-status` 回执通道）。
-            new-project => {
-                root.new-project();
-            }
-            // ⭐ **导入音频**：只上抛。唯一落点 = `host::wire_import_audio`。
-            import-audio => {
-                root.import-audio();
-            }
-            // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
-            mixer-master-fader-grab(y) => {
-                root.mixer-master-fader-grab(y);
-            }
-            mixer-master-fader-drag(y) => {
-                root.mixer-master-fader-drag(y);
-            }
-            mixer-master-fader-release() => {
-                root.mixer-master-fader-release();
-            }
-            mixer-master-pan-grab(x) => {
-                root.mixer-master-pan-grab(x);
-            }
-            mixer-master-pan-drag(x) => {
-                root.mixer-master-pan-drag(x);
-            }
-            mixer-master-pan-release() => {
-                root.mixer-master-pan-release();
-            }
-            // 主控的**双击复位**：同样只上抛、不带下标。
-            mixer-master-fader-reset() => {
-                root.mixer-master-fader-reset();
-            }
-            mixer-master-pan-reset() => {
-                root.mixer-master-pan-reset();
+                select-tab(t) => {
+                    Theme.active-dock-tab = t;
+                    root.dock-tab-selected(t);
+                }
+                select-track(t-id) => {
+                    root.selected-track-id = t-id;
+                    root.track-selected(t-id);
+                }
+                toggle-track-mute(t-id) => { root.track-toggle-mute(t-id); }
+                toggle-track-solo(t-id) => { root.track-toggle-solo(t-id); }
+                track-volume-change(t-id, vol) => { root.track-volume-changed(t-id, vol); }
+                set-wt-pos(pos) => { root.device-param-changed("wavetable", "wt_pos", pos); }
+                set-wt-cutoff(cut) => { root.device-param-changed("wavetable", "cutoff", cut); }
+                toggle-piano-step(r, s) => { root.piano-step-toggle(r, s); }
             }
         }
 
-        // --------------------------------------- 整曲多层总览图（底部、状态栏之上）
-        // Phase 1：可折叠 104 px（主画布 82 + 底部 22；「100 px」是约数）。数据由 `song_overview.rs`
-        // 的真实管线注入（工程 → 离线渲染 → dsp 分析 → 映射）；默认折叠见
-        // `song-overview-collapsed` 的表达式绑定（非全展开档默认 22 px）。
-        // 画布左缘 = 左侧资源栏宽 + 168 px 轨道头列（与编排视图时间轴同一起点），
-        // 右缘留出右 AI 协作栏宽（compact 时为 0）。
-        // 全屏（Wang 2026-11-08 19:56 要求）：中段与控制台塌掉后，面板拿
-        // `vertical-stretch: 1` 吃掉全部弹性高度（顶栏 48 px 与状态栏 24 px 不动）；
-        // 左侧资源栏与右 AI 栏随中段一起隐藏，时间对齐无意义 ⇒ `time-origin-x` 与
-        // `right-reserve` 强制归零，画布占满整宽。
-        SongOverviewPanel {
-            vertical-stretch: root.song-overview-fullscreen ? 1 : 0;
-            time-origin-x: root.song-overview-fullscreen ? 0px : sidebar.width + 168px;
-            right-reserve: root.song-overview-fullscreen ? 0px : (root.compact ? 0px : Tokens.right-rail-width);
-            total-bars: root.song-overview-total-bars;
-            tension: root.song-overview-tension;
-            tension-colors: root.song-overview-tension-colors;
-            lufs: root.song-overview-lufs;
-            band-colors: root.song-overview-band-colors;
-            density-pitched: root.song-overview-density-pitched;
-            density-perc: root.song-overview-density-perc;
-            density-duty: root.song-overview-density-duty;
-            section-names: root.song-overview-section-names;
-            section-start-bars: root.song-overview-section-start-bars;
-            ruler-labels: root.song-overview-ruler-labels;
-            span-ticks: root.song-overview-span-ticks;
-            key-signature: root.song-overview-key-signature;
-            score-dyn: root.song-overview-score-dyn;
-            envelope-lo: root.song-overview-envelope-lo;
-            envelope-hi: root.song-overview-envelope-hi;
-            envelope-alert: root.song-overview-envelope-alert;
-            profile: root.song-overview-profile;
-            collapsed: root.song-overview-collapsed;
-            fullscreen: root.song-overview-fullscreen;
-            show-tension: root.song-overview-show-tension;
-            show-energy: root.song-overview-show-energy;
-            show-bands: root.song-overview-show-bands;
-            show-density: root.song-overview-show-density;
-            hover-visible: root.song-overview-hover-visible;
-            hover-fraction: root.song-overview-hover-fraction;
-            hover-text: root.song-overview-hover-text;
-            band-solo: root.song-overview-band-solo;
-            viewport-scroll-x: root.roll-scroll-x;
-            viewport-ticks-per-pixel: root.roll-ticks-per-pixel;
-            playhead-ticks: root.playhead-ticks;
-            playhead-timecode: root.timecode;
-            seek-requested(fraction) => { root.song-overview-seek(fraction); }
-            hover-requested(fraction) => { root.song-overview-hover(fraction); }
-            layer-toggle(index) => { root.song-overview-layer-toggle(index); }
-            layer-solo(index) => { root.song-overview-layer-solo(index); }
-            band-solo-requested(band) => { root.song-overview-band-solo-requested(band); }
-            viewport-scroll-requested(target) => { root.song-overview-viewport-scroll(target); }
-            viewport-zoom-requested(target) => { root.song-overview-viewport-zoom(target); }
-            toggle-collapsed() => { root.song-overview-toggle-collapsed(); }
-            toggle-fullscreen() => { root.song-overview-toggle-fullscreen(); }
-            profile-cycle() => { root.song-overview-profile-cycle(); }
-            target-cycle(index) => { root.song-overview-target-cycle(index); }
-        }
-
-        // ---------------------------------------------------------- 24px 状态栏
-        StatusBar {
-            // `ROAD-M4-008`：最近一次保存的原话（宿主是唯一写者）。
-            save-status: root.save-status;
-            save-succeeded: root.save-succeeded;
-            // 台账 R9：这两格都是**宿主注入的整串文本**（`host::publish_status_bar`）。
-            // `chord` **没有**传：那一格没有能力、也没有宿主写者（见 status_bar.slint 的登记）。
-            selection: root.status-selection;
-            device: root.status-device;
-        }
-    }
-
-    // =====================================================================
-    // 覆盖层 (不是布局子元素, 因此可以绝对定位且不影响网格)
-    // =====================================================================
-
-    // ⭐ **引擎错误横幅**（任务单 `#86` 甲）—— 紧贴在 24px 状态栏**上方**的一条 28px 横条。
-    //
-    // 为什么是覆盖层而不是 `VerticalLayout` 里的一格（**这是第 247 条的关键**）：
-    // 加进 `VerticalLayout` 会在没有错误时也**占掉 28px**（布局是静态的，`visible: false`
-    // 的兄弟会不会被重新分配空间取决于 Slint 的布局实现）⇒ 默认帧会变 ⇒ 必须重录基准。
-    // 覆盖层没有这个问题：`visible: false` 时它一位像素都不画、也不动任何人的几何。
-    //
-    // `text` 由 `root.engine-error` 单向注入（唯一写者 = `host::apply_engine_error`）；
-    // 组件内部自己用 `text != ""` 决定 `visible` ⇒ 本处**不**再写一次 `visible`。
-    EngineErrorBanner {
-        x: 0;
-        y: root.height - Tokens.status-bar-height - self.height;
-        width: root.width;
-        text: root.engine-error;
-    }
-
-    // compact 断点: 右栏变抽屉 (Cmd/Ctrl+Alt+A 呼出)
-    AiRail {
-        x: root.width - Tokens.right-rail-width;
-        y: 0;
-        width: Tokens.right-rail-width;
-        height: root.height;
-        visible: root.compact && root.ai-drawer-open;
-
-        open-musical-pr => { root.open-musical-pr(); }
-        run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
-        export-diagnostics => { root.export-diagnostics(); }
-        // ⭐ `#235`：抽屉是 `AiRail` 的**第二个实例** —— 四条模块回执属性也必须读到
-        // **同一格** `MainWindow.module-*`（`#230` 只转了警示行，这四条漏转 ⇒ 1024 档
-        // 在抽屉里按导出，宿主写了回执、抽屉的回执行却仍是默认空串）。
-        // 绑定是单向只读、与常驻栏实例逐字同款；抽屉默认关 ⇒ 默认帧零像素。
-        module-status: root.module-status;
-        module-status-succeeded: root.module-status-succeeded;
-        module-midi-in-status: root.module-midi-in-status;
-        module-midi-in-status-succeeded: root.module-midi-in-status-succeeded;
-        // ⭐ `#230`：抽屉是 `AiRail` 的第二个实例；警示行必须读到**同一格**
-        // `MainWindow.module-clipping-warning`（否则 1024 档抽屉里的导出点不出提示）。
-        module-clipping-warning: root.module-clipping-warning;
-        // ⭐ `#319`：同理 —— 1024 档抽屉里按「导入 MIDI」也必须看到损失摘要。
-        module-import-losses: root.module-import-losses;
-    }
-
-    // AI 编曲提案审核抽屉 (§10 Musical PR)
-    MusicalPrDrawer {
-        x: root.width - 360px;
-        y: 0;
-        width: 360px;
-        height: root.height;
-        visible: root.musical-pr-open;
-
-        // ⭐ 抽屉的数据面**全部**来自 `MainWindow` 上那九个属性（唯一写者 =
-        // `host::apply_proposal_drawer`）。这里不写任何字面量 —— 界面不自己拼提案。
-        proposal-count: root.musical-pr-proposal-count;
-        proposal-ids: root.musical-pr-proposal-ids;
-        proposal-kinds: root.musical-pr-proposal-kinds;
-        proposal-titles: root.musical-pr-proposal-titles;
-        proposal-op-counts: root.musical-pr-proposal-op-counts;
-        selected-proposal-id: root.musical-pr-selected-id;
-        empty-reason: root.musical-pr-empty-reason;
-        resolve-available: root.musical-pr-resolve-available;
-        resolve-reason: root.musical-pr-resolve-reason;
-
-        // ⛔ 按下**不**关抽屉（与上一轮的行为不同, 那是刻意的）：宿主处理完之后
-        // 重新读权威再注入 —— 成功 ⇒ 那一行消失（真实的反馈, 不是一句"操作成功"）;
-        // 被拒 ⇒ `resolve-reason` 换成**权威自己的**那句话, 抽屉必须留着才看得见。
-        accept => { root.accept-ai-proposal(); }
-        reject => { root.reject-ai-proposal(); }
-        select-proposal(id) => { root.select-ai-proposal(id); }
-        close => { root.musical-pr-open = false; }
-    }
-
-    // 宏面板（Tab 3 头部的「宏 (N)」→ 右侧抽屉；默认关着 ⇒ 默认帧一位不变）
-    MacroPanel {
-        x: root.width - 300px;
-        y: 0;
-        width: 300px;
-        height: root.height;
-        visible: root.macro-panel-open;
-
-        // 标题里写明"这些宏属于哪条轨" —— 与设备架 / 发送条**同一条**展示轨。
-        track-label: root.device-track-label;
-        macro-names: root.macro-names;
-        macro-values: root.macro-values;
-        macro-value-labels: root.macro-value-labels;
-
-        macro-grab(index, fraction) => {
-            root.macro-grab(index, fraction);
-        }
-        macro-drag(index, fraction) => {
-            root.macro-drag(index, fraction);
-        }
-        macro-release(index) => {
-            root.macro-release(index);
-        }
-        close => { root.macro-panel-open = false; }
-    }
-
-    // 模态焦点闭环（[UI-A11Y-003] §7.3）：打开时光机 ⇒ 键盘焦点从唯一键盘事件源
-    // `key-handler` 移进模态；关闭 ⇒ 复位到 `key-handler`（打开它的那一层）。`Tab` 在
-    // 模态内被吞掉：焦点不许离开模态，也不许落到画布语义的切视图。
-    // 本 `FocusScope` 没有绘制内容，且 `focus-on-click` / `focus-on-tab-navigation` 关着
-    // ⇒ 不开模态时它既不画像素、也不会被 Tab 轮转选中（只能由下面 `changed` 程序性取焦）。
-    undo_tree_trap := FocusScope {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        focus-on-click: false;
-        focus-on-tab-navigation: false;
-        key-pressed(event) => {
-            // Slint 1.18 的字符串转义只认 `\"` / `\\` / `\n` / `\u{...}`，`\t` 会编译失败。
-            // ⭐ [PATCH UI-FOCUS-01]（2026-11-09）：Backtab 与 Tab 必须**一起**吞。
-            // Shift+Tab 在部分平台以 Backtab 到达；`i-slint-core` 内建焦点轮转两种都认，
-            // 而本模态原先只认 Tab ⇒ Backtab 落进下面的 `key-action` / `reject`，
-            // 焦点会经内建轮转逃出模态。这里没有子 FocusScope 可轮转（弹窗按钮都是
-            // TouchArea），闭环 = 两种 Tab 都 `accept`，⛔ 不调 focus-previous/next。
-            // 与 `dialogs/export_wav_dialog.slint` 的双吞同口径（那边另做七格轮转）。
-            if (event.text == "\u{9}" || event.text == "\u{19}") {
-                accept
-            } else if (root.key-action(event.text, event.modifiers.shift,
-                                       event.modifiers.control, event.modifiers.alt,
-                                       event.modifiers.meta)) {
-                accept
-            } else {
-                reject
+        // Modals & Overlays
+        CommandPaletteModal {
+            is-open: root.show-cmd-palette;
+            close-modal() => { root.show-cmd-palette = false; }
+            execute-command(id) => {
+                if (id == "persona-default") { Theme.persona = PersonaMode.AetherDefault; root.show-clip-matrix = true; root.show-control-room = true; }
+                else if (id == "persona-ableton") { Theme.persona = PersonaMode.AbletonLive; root.show-clip-matrix = true; root.show-control-room = false; }
+                else if (id == "persona-logic") { Theme.persona = PersonaMode.LogicPro; root.show-clip-matrix = false; root.show-control-room = false; }
+                else if (id == "persona-cubase") { Theme.persona = PersonaMode.CubasePro; root.show-clip-matrix = false; root.show-control-room = true; }
+                else if (id == "toggle-hotspots") { root.show-hotspots = !root.show-hotspots; }
+                else if (id == "tab-stacked") { root.show-lower-dock = true; Theme.active-dock-tab = "stacked"; }
+                else if (id == "tab-devices") { root.show-lower-dock = true; Theme.active-dock-tab = "devices"; }
+                else if (id == "tab-mixer") { root.show-lower-dock = true; Theme.active-dock-tab = "mixer"; }
+                else if (id == "tab-pianoroll") { root.show-lower-dock = true; Theme.active-dock-tab = "pianoroll"; }
+                else if (id == "action-add-track") { root.track-add-requested(); }
+                root.command-execute(id);
             }
         }
-    }
 
-    // 全屏可视化 DAG 时光机 (Cmd/Ctrl + Shift + H)
-    UndoTreeModal {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        visible: root.undo-tree-open;
+        HotspotOverlay {
+            is-open: root.show-hotspots;
+            close-overlay() => { root.show-hotspots = false; }
+        }
 
-        // 显示态 = 模型读数（宿主注入；界面只显示）。
-        can-undo: root.undo-can-undo;
-        // ⭐ [PATCH UI-REDO-01]：`undo-can-redo` 此前是死写属性（宿主写、界面无人读），
-        // 这里补上唯一读者 —— 与 `can-undo` 同一条注入链、同一个 `apply_undo`。
-        can-redo: root.undo-can-redo;
-        undo-depth: root.undo-depth;
-        undone-depth: root.undo-undone;
-        commit-count: root.undo-commit-count;
-        branch-name: root.branch-name;
-        // 图谱节点 = **真实提交链**的投影（宿主从 `UndoPort::graph()` 读出）。
-        node-count: root.undo-node-count;
-        node-labels: root.undo-node-labels;
-        node-hidden: root.undo-node-hidden;
-
-        undo-step => { root.undo-step(); }
-        redo-step => { root.redo-step(); }
-        node-selected(index) => { root.undo-node-selected(index); }
-        close => { root.close-undo-tree(); }
-    }
-
-    // 焦点闭环的**读数**：Slint 的焦点状态不在控件树里，因此把它镜像成两个可读属性
-    // （唯一读者 = 无头判据 `tests/undo_tree_focus_trap.rs`；界面自己不读）。
-    out property <bool> shortcut-layer-focused: key-handler.has-focus;
-    out property <bool> undo-tree-focus-trapped: undo_tree_trap.has-focus;
-
-    // ---------------------------------------------------------------- D-UI-18：搜索框的键盘入口
-    // `Cmd/Ctrl+F` 的唯一落点（调用者 = `host::apply_action` 的 `FocusSidebarSearch` 臂）。
-    // ⛔ 焦点不是属性：`public function` 是宿主**命令**Slint 焦点的唯一方式，
-    // 因此这里没有第二份"我以为焦点在哪"的状态。读数镜像在下面一条。
-    public function focus-sidebar-search() {
-        sidebar.focus-search();
-    }
-    /// 焦点读数：`true` ⇒ 键盘此刻归左栏搜索框。宿主用它决定这一键**消费还是放行**
-    /// （折叠 / 窄栏时框不在场 ⇒ 取焦落不下去 ⇒ 返回 `false` ⇒ ⛔ 不假装成功）。
-    out property <bool> sidebar-search-focused: sidebar.search-has-focus;
-
-    // 取焦/复位由**宿主** `host::apply_undo` 在开关翻转时同步调用（`undo-tree-open`
-    // 的唯一写者就是它）。⛔ 不用 `changed undo-tree-open`：该处理器要等事件循环
-    // 的下一拍才跑，而无头判据设置属性后并不跑事件循环 ⇒ 焦点永远停在原地。
-    public function focus-undo-tree-trap() {
-        undo_tree_trap.focus();
-    }
-    public function focus-shortcut-layer() {
-        key-handler.focus();
-    }
-
-    // WAV 导出设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
-    export_dialog := ExportWavDialog {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        visible: root.export-wav-open;
-
-        // 两向绑定：宿主打开时播种，用户编辑后宿主在 `export-wav` 分支现读。
-        path <=> root.export-wav-path;
-        sample-rate <=> root.export-wav-sample-rate;
-        bit-depth <=> root.export-wav-bit-depth;
-        seconds <=> root.export-wav-seconds;
-        limiter <=> root.export-wav-limiter;
-
-        run => { root.export-wav(); }
-        close => { root.close-export-wav(); }
-        // ⭐ [PATCH UI-WIRING-01]：路径浏览（`Ctrl/Cmd+O`，见弹窗的 `export-trap`）。
-        // 与 `run` 一样只上抛 ⇒ 弹窗组件里没有第二份"挑路径"的实现。
-        browse-path => { root.browse-export-wav-path(); }
-    }
-
-    /// 导出弹窗的焦点读数（`-1` = 焦点不在任何输入格内；`0..3` = 路径 / 采样率 / 位深 / 时长）。
-    /// 纯转发弹窗内的**推导**读数（`export_wav_dialog.slint` 的 `focused-field`，从四个
-    /// `TextInput.has-focus` 算出）⇒ ⛔ 这里不存第二份"我以为焦点在哪"的状态。
-    /// 唯一读者 = 无头判据（`tests/export_dialog_key_capture.rs`）。
-    out property <int> export-wav-focused-field: export_dialog.focused-field;
-
-    /// `D-UI-20`：轮转**全集**（七格）的读数：`0..3` = 四框，`4` = 限制器开关，
-    /// `5` = 「导出」，`6` = ✕ 关闭，`-1` = 焦点不在模态内。
-    /// 与上一条同口径 —— 纯转发弹窗内的**推导**读数，⛔ 这里不存第二份焦点状态。
-    /// 为什么单开一条：`export-wav-focused-field` 的值域被 `D-UI-19` 的判据按"四格"钉着，
-    /// 改它等于悄悄放宽既有判据。唯一读者 = 无头判据（`tests/export_dialog_button_focus.rs`）。
-    out property <int> export-wav-focused-control: export_dialog.focused-control;
-
-    // 人性化 / 量化设置（隐藏的模态；默认关着 ⇒ 默认帧一位不变）
-    humanize_dialog := HumanizeDialog {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        visible: root.humanize-open;
-
-        // 两向绑定：宿主打开时播种，用户编辑后宿主在 `apply-humanize` /
-        // `apply-quantize` 分支现读。
-        time-jitter <=> root.humanize-time-jitter;
-        velocity-jitter <=> root.humanize-velocity-jitter;
-        seed <=> root.humanize-seed;
-        grid <=> root.humanize-grid;
-        strength <=> root.humanize-strength;
-        error <=> root.humanize-error;
-        focus-section <=> root.humanize-focus-section;
-
-        apply-humanize => { root.apply-humanize(); }
-        apply-quantize => { root.apply-quantize(); }
-        close => { root.close-humanize(); }
-    }
-
-    /// 人性化弹窗的焦点读数（`-1` = 焦点不在任何输入格内；`0..4` = 时值 / 力度 /
-    /// 基础种子 / 网格 / 强度）。纯转发弹窗内的**推导**读数 ⇒ ⛔ 这里不存第二份焦点状态。
-    /// 唯一读者 = 无头判据。
-    out property <int> humanize-focused-field: humanize_dialog.focused-field;
-
-    /// `D-UI-20`：轮转**全集**（八格）的读数：`0..4` = 五框，`5` = 「应用人性化」、
-    /// `6` = 「应用量化」，`7` = ✕ 关闭，`-1` = 焦点不在模态内。
-    /// 与上一条同口径 —— 纯转发弹窗内的**推导**读数，⛔ 这里不存第二份焦点状态。
-    /// 唯一读者 = 无头判据。
-    out property <int> humanize-focused-control: humanize_dialog.focused-control;
-
-    /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格（按 `humanize-focus-section`
-    /// 落人性化首格或量化首格）。⛔ 不是第三份焦点状态：焦点仍只有 Slint 一个事实源，
-    /// 这里只是**命令**它（与上面的 `focus-export-wav-dialog` 同一机制）。
-    /// 唯一调用者 = `host::wire_humanize_dialog` 打开弹窗那一处。
-    public function focus-humanize-dialog() {
-        humanize_dialog.focus-first-field();
-    }
-
-    /// `D-UI-19`：把键盘交给**开着的那个**弹窗的第一格。⛔ 不是第三份焦点状态：
-    /// 焦点仍只有 Slint 一个事实源，这里只是**命令**它（与上面的
-    /// `focus-undo-tree-trap` / `focus-shortcut-layer` 同一机制）。
-    /// 唯一调用者 = `host::wire_module_actions_with_capture` 打开弹窗那一处
-    /// （与 `export-wav-open` 的写者同一个地方 ⇒ 开关与焦点不可能分叉）。
-    public function focus-export-wav-dialog() {
-        export_dialog.focus-first-field();
+        ToastBanner {
+            toast-text: root.toast-message;
+        }
     }
 }
+

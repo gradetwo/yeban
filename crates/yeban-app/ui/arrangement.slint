@@ -1,0 +1,514 @@
+import { Theme, TrackData, TimelineBlockData } from "tokens.slint";
+
+export component ArrangementViewport inherits Rectangle {
+    in-out property <[TrackData]> tracks;
+    in-out property <[TimelineBlockData]> timeline-blocks;
+    in-out property <int> selected-track-id: 1;
+    in-out property <length> playhead-px: 360px;
+    in-out property <bool> is-looping: true;
+
+    callback select-track(int);
+    callback toggle-mute(int);
+    callback toggle-solo(int);
+    callback toggle-arm(int);
+    callback add-track();
+    callback audition-chord(string);
+    callback scrub-timeline(length);
+
+    background: Theme.bg-canvas;
+    clip: true;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // TOP HEADER ROW (Height: 54px): Track header top box + Ruler + Chord Progression Track
+        Rectangle {
+            height: 54px;
+            background: #0f131c;
+            // border line
+            border-color: Theme.border-subtle;
+
+            HorizontalLayout {
+                spacing: 0px;
+
+                // Left top box (if headers on left)
+                if !Theme.track-headers-on-right : Rectangle {
+                    width: 208px;
+                    // border line
+                    border-color: Theme.border-subtle;
+
+                    VerticalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        alignment: space-between;
+
+                        HorizontalLayout {
+                            Text { text: "TRACK HEADERS (左置)"; font-size: 9px; font-weight: 700; color: #94a3b8; }
+                            Rectangle {
+                                background: Theme.accent.with-alpha(0.2);
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.accent;
+                                height: 18px;
+                                Text { text: "+ 轨道"; font-size: 9px; font-weight: 800; color: Theme.accent; }
+                                TouchArea { clicked => { root.add-track(); } }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 20px;
+                            background: #6366f120;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: #6366f140;
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text { text: "🎼 全局和弦轨"; font-size: 9px; font-weight: 700; color: #a5b4fc; }
+                                Text { text: "Cubase 基因"; font-size: 8px; color: #818cf8; horizontal-alignment: right; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+
+                // Center Timeline Ruler + Chord Progression Blocks
+                Rectangle {
+                    horizontal-stretch: 1;
+
+                    VerticalLayout {
+                        spacing: 0px;
+
+                        // Ruler (24px)
+                        Rectangle {
+                            height: 24px;
+                            background: #0b0e14;
+                            // border line
+                            border-color: #ffffff0d;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 70px;
+
+                                for bar in ["1", "2", "3 (Loop)", "4", "5", "6", "7", "8", "9", "10", "11", "12"] : Text {
+                                    text: bar;
+                                    font-size: 9px;
+                                    font-weight: bar == "3 (Loop)" ? 800 : 500;
+                                    color: bar == "3 (Loop)" ? Theme.accent : #64748b;
+                                    }
+                            }
+
+                            // Loop brace
+                            if root.is-looping : Rectangle {
+                                x: 150px;
+                                y: 0px;
+                                width: 220px;
+                                height: 3px;
+                                background: Theme.accent;
+                                border-radius: 1.5px;
+                            }
+
+                            TouchArea {
+                                clicked => { root.scrub-timeline(self.mouse-x); }
+                            }
+                        }
+
+                        // Chord Progression Track (30px)
+                        Rectangle {
+                            height: 30px;
+                            background: #312e8115;
+
+                            HorizontalLayout {
+                                padding: 3px;
+                                spacing: 4px;
+
+                                Rectangle {
+                                    width: 130px;
+                                    background: #4f46e525;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #6366f150;
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text { text: "Cm9 (i9)"; font-size: 9px; font-weight: 700; color: #c7d2fe; }
+                                        Text { text: "🔊 试听"; font-size: 8px; color: #818cf8; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("Cm9"); } }
+                                }
+
+                                Rectangle {
+                                    width: 130px;
+                                    background: #7c3aed25;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #8b5cf650;
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text { text: "AbMaj7 (VI7)"; font-size: 9px; font-weight: 700; color: #ddd6fe; }
+                                        Text { text: "🔊 试听"; font-size: 8px; color: #a78bfa; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("AbMaj7"); } }
+                                }
+
+                                Rectangle {
+                                    width: 130px;
+                                    background: #0284c725;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #38bdf850;
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text { text: "Fm11 (iv11)"; font-size: 9px; font-weight: 700; color: #bae6fd; }
+                                        Text { text: "🔊 试听"; font-size: 8px; color: #38bdf8; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("Fm11"); } }
+                                }
+
+                                Rectangle {
+                                    width: 130px;
+                                    background: #d9770625;
+                                    border-radius: Theme.radius;
+                                    border-width: 1px;
+                                    border-color: #fbbf2450;
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text { text: "G7alt (V7alt)"; font-size: 9px; font-weight: 700; color: #fde68a; }
+                                        Text { text: "🔊 试听"; font-size: 8px; color: #f59e0b; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                    TouchArea { clicked => { root.audition-chord("G7alt"); } }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Right top box (if headers on right for Ableton mode!)
+                if Theme.track-headers-on-right : Rectangle {
+                    width: 208px;
+                    // border line
+                    border-color: Theme.border-subtle;
+
+                    VerticalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        alignment: space-between;
+
+                        HorizontalLayout {
+                            Text { text: "TRACK HEADERS (Ableton右置)"; font-size: 9px; font-weight: 700; color: #ff764d; }
+                            Rectangle {
+                                background: #ff764d20;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ff764d;
+                                height: 18px;
+                                Text { text: "+ 轨道"; font-size: 9px; font-weight: 800; color: #ff764d; }
+                                TouchArea { clicked => { root.add-track(); } }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 20px;
+                            background: #ff764d20;
+                            border-radius: 3px;
+                            Text { text: "Ableton 肌肉记忆右置模式"; font-size: 8px; color: #fed7aa; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // TRACK LANES CONTAINER
+        Rectangle {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                for trk in root.tracks : Rectangle {
+                    height: 64px;
+                    background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent;
+                    // border line
+                    border-color: #ffffff0a;
+
+                    HorizontalLayout {
+                        spacing: 0px;
+
+                        // Left Track Header (if not headers on right)
+                        if !Theme.track-headers-on-right : Rectangle {
+                            width: 208px;
+                            // border line
+                            border-color: Theme.border-subtle;
+
+                            // Left color strip
+                            Rectangle {
+                                x: 0;
+                                y: 0;
+                                width: 4px;
+                                height: 64px;
+                                background: trk.color;
+                            }
+
+                            VerticalLayout {
+                                padding-left: 10px;
+                                padding-right: 8px;
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    Text { text: trk.name; font-size: 11px; font-weight: 800; color: trk.id == root.selected-track-id ? #ffffff : #cbd5e1; overflow: elide; }
+                                    Rectangle {
+                                        background: #00000050;
+                                        border-radius: 2px;
+                                        Text { text: trk.kind; font-size: 7px; color: #94a3b8; font-weight: 700; }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    alignment: space-between;
+
+                                    // M S R buttons
+                                    HorizontalLayout {
+                                        spacing: 3px;
+
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 2px;
+                                            background: trk.muted ? #f59e0b : #1e293b;
+                                            Text { text: "M"; font-size: 9px; font-weight: 800; color: trk.muted ? #020617 : #94a3b8; horizontal-alignment: center; }
+                                            TouchArea { clicked => { root.toggle-mute(trk.id); } }
+                                        }
+
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 2px;
+                                            background: trk.soloed ? #06b6d4 : #1e293b;
+                                            Text { text: "S"; font-size: 9px; font-weight: 800; color: trk.soloed ? #020617 : #94a3b8; horizontal-alignment: center; }
+                                            TouchArea { clicked => { root.toggle-solo(trk.id); } }
+                                        }
+
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 2px;
+                                            background: trk.armed ? #f43f5e : #1e293b;
+                                            Text { text: "R"; font-size: 9px; font-weight: 800; color: trk.armed ? #ffffff : #94a3b8; horizontal-alignment: center; }
+                                            TouchArea { clicked => { root.toggle-arm(trk.id); } }
+                                        }
+                                    }
+
+                                    // Volume and mini meter
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: end;
+
+                                        Text { text: "" + trk.volume_db + "dB"; font-size: 9px; color: #94a3b8; font-weight: 600; vertical-alignment: center; }
+
+                                        Rectangle {
+                                            width: 32px;
+                                            height: 6px;
+                                            background: #0f172a;
+                                            border-radius: 3px;
+                                            Rectangle {
+                                                x: 0;
+                                                width: trk.muted ? 0px : trk.meter_peak * 32px;
+                                                height: 6px;
+                                                border-radius: 3px;
+                                                background: trk.color;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            TouchArea { clicked => { root.select-track(trk.id); } }
+                        }
+
+                        // Center Timeline Lane
+                        Rectangle {
+                            horizontal-stretch: 1;
+
+                            // Timeline Grid lines
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 70px;
+                                for _ in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] : Rectangle {
+                                    width: 1px;
+                                    background: #ffffff08;
+                                }
+                            }
+
+                            // Timeline Clips for this track
+                            for blk in root.timeline-blocks : Rectangle {
+                                if blk.track_id == trk.id : Rectangle {
+                                    x: blk.start_px;
+                                    y: 6px;
+                                    width: blk.width_px;
+                                    height: 52px;
+                                    border-radius: Theme.radius;
+                                    background: trk.color.with-alpha(0.25);
+                                    border-width: 1px;
+                                    border-color: trk.color.with-alpha(0.8);
+                                    clip: true;
+
+                                    VerticalLayout {
+                                        padding: 4px;
+                                        spacing: 2px;
+                                        alignment: space-between;
+
+                                        HorizontalLayout {
+                                            Text { text: blk.label; font-size: 9px; font-weight: 700; color: #ffffff; overflow: elide; }
+                                            Text { text: blk.gain_label; font-size: 8px; color: #e2e8f0; horizontal-alignment: right; }
+                                        }
+
+                                        // Audio Waveform or MIDI Note Rects
+                                        if blk.is_audio : Path {
+                                            commands: "M 0 10 L 8 4 L 14 16 L 22 5 L 30 15 L 38 2 L 45 18 L 54 6 L 62 14 L 70 2 L 78 18 L 86 7 L 95 13 L 105 4 L 114 16 L 124 3 L 134 17 L 145 6 L 156 14 L 168 4 L 178 16 L 190 7 L 200 10";
+                                            stroke: trk.color;
+                                            stroke-width: 1.4px;
+                                            height: 20px;
+                                        }
+
+                                        if !blk.is_audio : HorizontalLayout {
+                                            spacing: 4px;
+                                            height: 12px;
+                                            alignment: center;
+
+                                            for h in [2px, 6px, 10px, 4px, 8px, 3px, 9px, 5px, 7px] : Rectangle {
+                                                width: 8px;
+                                                height: h;
+                                                border-radius: 1px;
+                                                background: trk.color;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            TouchArea { clicked => { root.select-track(trk.id); } }
+                        }
+
+                        // Right Track Header (if Ableton mode)
+                        if Theme.track-headers-on-right : Rectangle {
+                            width: 208px;
+                            // border line
+                            border-color: Theme.border-subtle;
+
+                            Rectangle {
+                                x: 204px;
+                                y: 0;
+                                width: 4px;
+                                height: 64px;
+                                background: trk.color;
+                            }
+
+                            VerticalLayout {
+                                padding-left: 8px;
+                                padding-right: 10px;
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    Text { text: trk.name; font-size: 11px; font-weight: 800; color: trk.id == root.selected-track-id ? #ffffff : #cbd5e1; overflow: elide; }
+                                    Rectangle {
+                                        background: #00000050;
+                                        border-radius: 2px;
+                                        Text { text: trk.kind; font-size: 7px; color: #94a3b8; font-weight: 700; }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 3px;
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 2px;
+                                            background: trk.muted ? #f59e0b : #1e293b;
+                                            Text { text: "M"; font-size: 9px; font-weight: 800; color: trk.muted ? #020617 : #94a3b8; horizontal-alignment: center; }
+                                            TouchArea { clicked => { root.toggle-mute(trk.id); } }
+                                        }
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 2px;
+                                            background: trk.soloed ? #ff764d : #1e293b;
+                                            Text { text: "S"; font-size: 9px; font-weight: 800; color: trk.soloed ? #020617 : #94a3b8; horizontal-alignment: center; }
+                                            TouchArea { clicked => { root.toggle-solo(trk.id); } }
+                                        }
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 2px;
+                                            background: trk.armed ? #f43f5e : #1e293b;
+                                            Text { text: "R"; font-size: 9px; font-weight: 800; color: trk.armed ? #ffffff : #94a3b8; horizontal-alignment: center; }
+                                            TouchArea { clicked => { root.toggle-arm(trk.id); } }
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: end;
+                                        Text { text: "" + trk.volume_db + "dB"; font-size: 9px; color: #94a3b8; font-weight: 600; vertical-alignment: center; }
+                                        Rectangle {
+                                            width: 32px;
+                                            height: 6px;
+                                            background: #0f172a;
+                                            border-radius: 3px;
+                                            Rectangle {
+                                                x: 0;
+                                                width: trk.muted ? 0px : trk.meter_peak * 32px;
+                                                height: 6px;
+                                                border-radius: 3px;
+                                                background: trk.color;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            TouchArea { clicked => { root.select-track(trk.id); } }
+                        }
+                    }
+                }
+            }
+
+            // Animated Playhead Line
+            Rectangle {
+                x: root.playhead-px;
+                y: 0px;
+                width: 2px;
+                height: 500px;
+                background: Theme.accent;
+
+                // Diamond head
+                Rectangle {
+                    x: -4px;
+                    y: 0px;
+                    width: 10px;
+                    height: 10px;
+                    background: Theme.accent;
+                    border-radius: 2px;
+                }
+            }
+        }
+    }
+}

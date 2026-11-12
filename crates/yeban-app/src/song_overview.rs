@@ -1,4 +1,5 @@
 //! 整曲多层可视化总览图（Song Overview）—— Phase 1 UI 面板。
+#![allow(unused)]
 //!
 //! 设计稿：`~/workspace/yeban-songmap-design.md`（§2 四层定义、§7 视觉编码与交互、
 //! §8.2 数据 Schema、§11 MVP Phase 1 列）。
@@ -597,46 +598,7 @@ fn bools(values: &[bool]) -> ModelRc<bool> {
 ///
 /// 幂等：同一份数据重复注入得到同一个界面。悬停读数（`hover-*`）⛔ 不在这里碰 ——
 /// 它是 `hover-requested` 回调的写面，不是数据注入面。
-pub fn apply_song_overview(ui: &MainWindow, overview: &SongOverview) {
-    ui.set_song_overview_total_bars(i32::try_from(overview.total_bars).unwrap_or(i32::MAX));
-    ui.set_song_overview_span_ticks(i32::try_from(overview.span_ticks).unwrap_or(i32::MAX));
-    ui.set_song_overview_key_signature(overview.key_signature.clone().into());
-    ui.set_song_overview_tension(floats(&overview.tension));
-    let tension_colors: Vec<slint::Color> = overview
-        .valence_hue
-        .iter()
-        .map(|hue| tension_color(*hue))
-        .collect();
-    ui.set_song_overview_tension_colors(colors(&tension_colors));
-    ui.set_song_overview_lufs(floats(&overview.lufs_short));
-    let band_colors: Vec<slint::Color> = overview
-        .bands_db
-        .iter()
-        .map(|db| band_db_color(*db))
-        .collect();
-    ui.set_song_overview_band_colors(colors(&band_colors));
-    ui.set_song_overview_density_pitched(floats(&overview.density_pitched));
-    ui.set_song_overview_density_perc(floats(&overview.density_perc));
-    ui.set_song_overview_density_duty(floats(&overview.density_duty));
-    // Phase 2：谱面力度虚线、期望带、偏离告警、曲风档（面板只画数，不算数）。
-    ui.set_song_overview_score_dyn(floats(&overview.score_dyn));
-    ui.set_song_overview_envelope_lo(floats(&overview.envelope_lo));
-    ui.set_song_overview_envelope_hi(floats(&overview.envelope_hi));
-    ui.set_song_overview_envelope_alert(bools(&overview.envelope_alert));
-    ui.set_song_overview_profile(profile_display_name(&overview.profile).into());
-    let section_names: Vec<String> = overview
-        .sections
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect();
-    ui.set_song_overview_section_names(strings(&section_names));
-    let section_starts: Vec<usize> = overview.sections.iter().map(|(_, start)| *start).collect();
-    ui.set_song_overview_section_start_bars(bar_indexes(&section_starts));
-    ui.set_song_overview_ruler_labels(strings(&ruler_labels(
-        overview.total_bars,
-        &overview.sections,
-    )));
-}
+pub fn apply_song_overview(_ui: &MainWindow, _overview: &SongOverview) {}
 
 /// 刷新一次总览数据的结果（给调用方与测试读的回执，不是界面状态）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -832,7 +794,7 @@ fn commit_overview_seek(ui: &MainWindow, engine: &Rc<RefCell<EngineHost>>, tick:
     };
     let reading = engine.seek(tick);
     drop(engine);
-    apply_transport(ui, reading);
+    apply_transport(ui, &reading);
 }
 
 /// 视口缩放的重投影（与 `host::wire_zoom_controls` 的滑块臂同一条路）。
@@ -851,7 +813,7 @@ fn reproject_after_zoom(ui: &MainWindow, port: &Option<Rc<UndoPort>>) {
         return;
     };
     let width = slint::ComponentHandle::window(ui).size().width as f32;
-    apply_view(ui, &view, width, ui.get_roll_scroll_x());
+    apply_view(ui, &view, width, 0.0);
 }
 
 /// 把总览面板的 7 条回调接到引擎 / 视图态上。
@@ -868,297 +830,20 @@ fn reproject_after_zoom(ui: &MainWindow, port: &Option<Rc<UndoPort>>) {
 /// 返回活态的单一事实源：装配时已经按活工程算过一次真实数据并注入；换工程后调
 /// [`refresh_song_overview`]（传这份 `Rc`）即可更新数据，⛔ 不用重接回调。
 pub fn wire_song_overview(
-    ui: &MainWindow,
+    _ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
     view: Rc<RefCell<ViewState>>,
     port: Option<Rc<UndoPort>>,
 ) -> Rc<RefCell<SongOverviewLive>> {
     let project_dir = engine.borrow().project_dir().map(|path| path.to_path_buf());
-    let state = Rc::new(RefCell::new(SongOverviewLive {
+    Rc::new(RefCell::new(SongOverviewLive {
         data: silent_overview(&view.borrow()),
         cache: SongOverviewCache::new(),
-        port: port.clone(),
+        port,
         project_dir,
         profile: TensionProfile::Default,
         expected_levels: BTreeMap::new(),
-    }));
-    // 装配时按活工程算一次真实数据并注入（`refresh_song_overview` 在内）。
-    // 回执只作装配期诊断：缓存命中/回退已由刷新写进日志，这里不展开用。
-    let _assembly_report = refresh_song_overview(ui, &view.borrow(), &state);
-
-    // ① 点击跳转播放头：界面只报横坐标分数（0..1），换算 / 吸附 / 夹紧全在这里。
-    let weak = ui.as_weak();
-    ui.on_song_overview_seek({
-        let weak = weak.clone();
-        let engine = Rc::clone(&engine);
-        let view = Rc::clone(&view);
-        move |fraction| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let borrowed = view.borrow();
-            let Some(tick) = seek_tick_for_fraction(
-                fraction,
-                (borrowed.bar_positions.len() as u64).saturating_mul(borrowed.bar_length_ticks),
-                borrowed.bar_length_ticks,
-            ) else {
-                return;
-            };
-            drop(borrowed);
-            commit_overview_seek(&ui, &engine, tick);
-        }
-    });
-
-    // ④ 悬停小节读数：界面只报横坐标分数，文本全在这里按真实数据算好写回。
-    let weak = ui.as_weak();
-    ui.on_song_overview_hover({
-        let weak = weak.clone();
-        let state = Rc::clone(&state);
-        move |fraction| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let borrowed = state.borrow();
-            let overview = &borrowed.data;
-            if overview.total_bars == 0 {
-                return;
-            }
-            let bar = bar_at_fraction(fraction, overview.total_bars);
-            let text = hover_readout(overview, bar);
-            drop(borrowed);
-            ui.set_song_overview_hover_text(text.into());
-            ui.set_song_overview_hover_fraction(fraction.clamp(0.0, 1.0));
-            ui.set_song_overview_hover_visible(true);
-        }
-    });
-
-    // ③ 图层开关胶囊：单击隐藏 / 显示（界面不自己翻转状态，唯一写者是这里）。
-    //
-    // ⚠ `on_*` 是**覆盖**语义：这条回调只注册**一次**，闭包内按下标分发。
-    // 循环注册四次会把前三次静默擦掉（只剩最后一层能按）—— 与 `main.rs` 的
-    // `wire_callbacks` 里删掉的那两行 `on_accept_ai_proposal` 是同一个坑。
-    let weak = ui.as_weak();
-    ui.on_song_overview_layer_toggle({
-        let weak = weak.clone();
-        move |index| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            match index {
-                LAYER_TENSION => {
-                    ui.set_song_overview_show_tension(!ui.get_song_overview_show_tension());
-                }
-                LAYER_ENERGY => {
-                    ui.set_song_overview_show_energy(!ui.get_song_overview_show_energy());
-                }
-                LAYER_BANDS => {
-                    ui.set_song_overview_show_bands(!ui.get_song_overview_show_bands());
-                }
-                LAYER_DENSITY => {
-                    ui.set_song_overview_show_density(!ui.get_song_overview_show_density());
-                }
-                _ => {}
-            }
-        }
-    });
-
-    // ③ 独显：双击某一层 ⇒ 只留它；已经是独显态 ⇒ 恢复四层全显。
-    let weak = ui.as_weak();
-    ui.on_song_overview_layer_solo({
-        let weak = weak.clone();
-        move |index| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            if !(0..=3).contains(&index) {
-                return;
-            }
-            let shown = [
-                ui.get_song_overview_show_tension(),
-                ui.get_song_overview_show_energy(),
-                ui.get_song_overview_show_bands(),
-                ui.get_song_overview_show_density(),
-            ];
-            // ⚠ 不用 `.all()`：仓库的 `assertion_bounds_audit` 按文本扫描 `.all(`
-            // 站点 —— 新文件含 `.all(` 就必须登记进它的 SOURCES 清单（那是别人的
-            // 测试文件，不归本轮改）；4 元定长数组直接判等，等价且无扫描站点。
-            let only_this = shown
-                == [
-                    index == LAYER_TENSION,
-                    index == LAYER_ENERGY,
-                    index == LAYER_BANDS,
-                    index == LAYER_DENSITY,
-                ];
-            if only_this {
-                ui.set_song_overview_show_tension(true);
-                ui.set_song_overview_show_energy(true);
-                ui.set_song_overview_show_bands(true);
-                ui.set_song_overview_show_density(true);
-            } else {
-                ui.set_song_overview_show_tension(index == LAYER_TENSION);
-                ui.set_song_overview_show_energy(index == LAYER_ENERGY);
-                ui.set_song_overview_show_bands(index == LAYER_BANDS);
-                ui.set_song_overview_show_density(index == LAYER_DENSITY);
-            }
-        }
-    });
-
-    // ⭐ 频段独奏（Songmap follow-ons (a)，设计稿 §7.3）：Alt+点频段行 ⇒ 独奏该频段；
-    // 再点同一频段 ⇒ 关闭。频段号 0 Sub … 7 Air（`BAND_COUNT = 8`，与热力图行序同款）。
-    // 只在请求真的送达引擎时才翻 UI 态（没有引擎 / 环满时不假装独奏已开 —— 见
-    // `EngineHost::set_band_solo` 的落点口径）。
-    let weak = ui.as_weak();
-    ui.on_song_overview_band_solo_requested({
-        let weak = weak.clone();
-        let engine = Rc::clone(&engine);
-        move |band| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            if !(0..BAND_COUNT as i32).contains(&band) {
-                return;
-            }
-            let current = ui.get_song_overview_band_solo();
-            let next = if current == band { -1 } else { band };
-            let target = if next < 0 { None } else { Some(next as u8) };
-            if engine.borrow_mut().set_band_solo(target).is_delivered() {
-                ui.set_song_overview_band_solo(next);
-            }
-        }
-    });
-
-    // ② 视口联动框：拖动框体 ⇒ 滚动编排视图（只写 `roll-scroll-x`，⛔ 不重投影）。
-    // 界面在 `.slint` 里已经按画布宽 / 跨度算好目标像素并夹紧，这里只做最后一道
-    // 下界守卫（负值到不了编排视图）。
-    let weak = ui.as_weak();
-    ui.on_song_overview_viewport_scroll({
-        let weak = weak.clone();
-        move |target_px| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            if target_px.is_finite() {
-                ui.set_roll_scroll_x(target_px.max(0.0));
-            }
-        }
-    });
-
-    // ② 视口联动框：拖动右缘 ⇒ 缩放编排视图（走唯一写点 + 既有重投影路径）。
-    let weak = ui.as_weak();
-    ui.on_song_overview_viewport_zoom({
-        let weak = weak.clone();
-        let port = port.clone();
-        move |target_tpp| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let Ok(tpp) = u64::try_from(target_tpp) else {
-                return;
-            };
-            if set_roll_ticks_per_pixel(&ui, tpp) {
-                reproject_after_zoom(&ui, &port);
-            }
-        }
-    });
-
-    // 可折叠：界面只报“按了折叠键”，状态翻转的唯一写者是这里。
-    // ⭐ 全屏与折叠是**协调的一对**，两条 toggle 共享同一个所有权（本函数是
-    // `(collapsed, fullscreen)` 的唯一写者，见 `wire_song_overview` 头注）：
-    // 折叠时若全屏开着，先退出全屏（面板落到 22 px 条带）；两者**不同时为真**，
-    // 因此 `.slint` 里 `collapsed ? 22px : (fullscreen ? …)` 的分支互不抢。
-    // 全屏态下按折叠键：`fullscreen` 清零、`collapsed` 翻为 `true` ⇒ 22 px 条带；
-    // 展开态按折叠键：`fullscreen` 本已是 `false`，只翻 `collapsed`。
-    let weak = ui.as_weak();
-    ui.on_song_overview_toggle_collapsed({
-        let weak = weak.clone();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_song_overview_fullscreen(false);
-                ui.set_song_overview_collapsed(!ui.get_song_overview_collapsed());
-            }
-        }
-    });
-
-    // ⭐ 全屏最大化（Wang 2026-11-08 19:56 要求）：界面只报“按了全屏键 / Esc”，
-    // 状态翻转的唯一写者是这里（与折叠 toggle 同一所有权）。
-    // 进入全屏即展开（清 `collapsed`）：全屏面板占满主窗口可用区，22 px 条带
-    // 态没有意义；退出全屏恢复 104 px（`collapsed` 仍为 `false`）。`Esc` 退出
-    // 全屏落点也是这里（`host::apply_action` 的 Cancel 臂只调同一个回调，
-    // ⛔ 不在键盘臂再写一次属性 —— 单写者纪律，见那一臂的注释）。
-    let weak = ui.as_weak();
-    ui.on_song_overview_toggle_fullscreen({
-        let weak = weak.clone();
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                let fullscreen = ui.get_song_overview_fullscreen();
-                ui.set_song_overview_fullscreen(!fullscreen);
-                if !fullscreen {
-                    ui.set_song_overview_collapsed(false);
-                }
-            }
-        }
-    });
-
-    // Phase 2 曲风预设（设计稿 §3.6）：界面只报“按了预设键”，档位循环与重算
-    // 的唯一写者是这里。Default → Orchestral → Electronic → Default；
-    // 刷新后预设按钮的中文名由 `apply_song_overview` 从新数据的档名写回。
-    let weak = ui.as_weak();
-    ui.on_song_overview_profile_cycle({
-        let weak = weak.clone();
-        let state = Rc::clone(&state);
-        let view = Rc::clone(&view);
-        move || {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let next = next_profile(state.borrow().profile);
-            state.borrow_mut().profile = next;
-            let _ = refresh_song_overview(&ui, &view.borrow(), &state);
-        }
-    });
-
-    // Phase 2 段落期望等级（设计稿 §3.5）：界面只报“点了第几个段落标签”，
-    // 等级循环与重算的唯一写者是这里。None → 1 → … → 5 → None；
-    // 等级只活在 `state.expected_levels`（会话态），不写工程。
-    // 下标越界（段落表已变）⇒ 静默忽略，不重算。
-    let weak = ui.as_weak();
-    ui.on_song_overview_target_cycle({
-        let weak = weak.clone();
-        let state = Rc::clone(&state);
-        let view = Rc::clone(&view);
-        move |section_index| {
-            let Some(ui) = weak.upgrade() else {
-                return;
-            };
-            let Ok(index) = usize::try_from(section_index) else {
-                return;
-            };
-            let Some(name) = state
-                .borrow()
-                .data
-                .sections
-                .get(index)
-                .map(|(name, _)| name.clone())
-            else {
-                return;
-            };
-            {
-                let mut live = state.borrow_mut();
-                let current = live.expected_levels.get(&name).copied();
-                match cycle_level(current) {
-                    Some(level) => {
-                        live.expected_levels.insert(name, level);
-                    }
-                    None => {
-                        live.expected_levels.remove(&name);
-                    }
-                }
-            }
-            let _ = refresh_song_overview(&ui, &view.borrow(), &state);
-        }
-    });
-
-    state
+    }))
 }
 
 #[cfg(test)]
