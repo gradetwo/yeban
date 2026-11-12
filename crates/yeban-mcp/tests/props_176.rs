@@ -187,7 +187,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        43,
+        44,
         "10 个规范工具 + 34 个扩展 = 44（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条、插件宿主一期新增 `yeban_scan_plugins` 与 `yeban_load_plugin` 2 条、SVS 新增 `synthesize_singing` 与 `svs_job` 2 条、夜半原生预制新增 `yeban_list_presets` / `yeban_apply_preset` / `yeban_save_preset` / `yeban_preset_bypass` 4 条、songmap 新增 `get_song_overview` 1 条、ARA 宿主新增 `yeban_ara_bind` / `yeban_ara_query` / `yeban_ara_render` 3 条、OTCP 新增 `yeban_correct_pitch` / `yeban_correct_pitch_job` / `yeban_correct_pitch_notes` 3 条、MoveTrack 新增 `yeban_move_track` 1 条、songmap 新增 `compare_song_snapshots` 1 条、自动相位对齐新增 `yeban_auto_align_tracks` 1 条）"
     );
     assert_eq!(

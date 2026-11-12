@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 276 | 1168 | `PLACEHOLDER_DIGEST` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 276 | 1168 | `d2749bc5fc25b3d54979307591f10d37bdb57d571378fb29ef5a41d47cd090a4` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -147,7 +147,7 @@
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
 //! ⚠ 自动相位对齐第二层（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 生产区
-//! `.rs` 文件 53 → 54；8 处新 `reason` 站点（`maxLagOutOfRange` ×2、
+//! `.rs` 文件 54 → 55；8 处新 `reason` 站点（`maxLagOutOfRange` ×2、
 //! `sameReferenceAndTarget`、`lowCorrelation`、`compensationOutOfRange`、
 //! `trackNotFound` ×2，另 `providerUnavailable` 1 处经 `PROVIDER_UNAVAILABLE_REASON`
 //! 常量解析 —— 扫描器把 8 处全计入字面类，字面站点 293 → 301）⇒ reason 数
@@ -3333,7 +3333,7 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新增 2 条新字面站点（`alreadyAtTargetIndex` 4 键 / `masterBusTrackCannotBeMoved`
 /// 4 键）⇒ 242 → **244** 个 reason、1032 → **1042** 行（2 reason 行 ＋ 8 键行）。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
-pub const FROZEN_REASON_SURFACE_SHA256: &str = "PLACEHOLDER_DIGEST";
+pub const FROZEN_REASON_SURFACE_SHA256: &str = "d2749bc5fc25b3d54979307591f10d37bdb57d571378fb29ef5a41d47cd090a4";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 276;
@@ -3515,7 +3515,8 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // 1032 → 1048（4 reason 行 ＋ 12 键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
     // OTCP（本支）：新增 `src/domain/otcp.rs` ⇒ 52 → 53（该文件带 `reason` 键，摘要同批重钉）。
-    assert_eq!(files.len(), 54, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    // 自动相位对齐（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 54 → 55（该文件带 `reason` 键，摘要同批重钉）。
+    assert_eq!(files.len(), 55, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()
