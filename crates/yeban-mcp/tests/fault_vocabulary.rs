@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 278 | 1176 | `9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 279 | 1180 | `83addccf310f1e7a18fec794ba0f757a374f95fb05f8ef02bee6cdcdf9703c9f` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -168,6 +168,11 @@
 //! 外部枚举 `as_str()`）不贡献值，逐条登记在 `EXEMPT_DYNAMIC_REASON_SITES`。
 //! ⚠ `#341`：三个 `as_str()` / `format!` 站点退役成 `match` 字面量 ⇒ 运行时站点
 //! 9 → 6 处、可分类面 150 → 156 个 reason（摘要同批重钉）。
+//!
+//! ⚠ 雨窗空轨豁免（本合入）：`domain/stems.rs` 新增 `emptyTrack` 字面站点
+//! （`name` / `reason` / `trackId` 3 键）⇒ reason 数 278 → 279、
+//! 规范行数 1176 → 1180（1 reason 行 ＋ 3 键行）；`reason` 键站点 321 → 322；
+//! 数值按判据报出（新摘要见本表）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -1689,13 +1694,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // `reason` 字面站点 ⇒ 出现 316 → 324、键站点 313 → 321、字面站点 302 → 310
 // （恒等式仍闭合：321 = 字面 310 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 324 = 321 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 324;
+// 雨窗空轨豁免（本合入）：`domain/stems.rs` 新增 1 处 `emptyTrack`
+// 字面站点 ⇒ 出现 324 → 325、键站点 321 → 322、字面站点 310 → 311
+// （恒等式仍闭合：322 = 字面 311 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 325 = 322 ＋ 参数名 3。）
+const REASON_OCCURRENCES_TOTAL: usize = 325;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 321;
-const REASON_LITERAL_SITES_TOTAL: usize = 310;
+const REASON_KEY_SITES_TOTAL: usize = 322;
+const REASON_LITERAL_SITES_TOTAL: usize = 311;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -3366,13 +3375,18 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 的 4 条 ⇒ 274 → **278** 个 reason、1155 → **1176** 行（4 reason 行 ＋ 17 键行）。
 /// 新摘要 `9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+///
+/// ⭐ **雨窗空轨豁免**（本合入）重钉：`emptyTrack` 1 reason ＋ 3 键
+/// ⇒ 278 → **279** 个 reason、1176 → **1180** 行。数值按判据报出；
+/// 新摘要 `83addccf310f1e7a18fec794ba0f757a374f95fb05f8ef02bee6cdcdf9703c9f`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac";
+    "83addccf310f1e7a18fec794ba0f757a374f95fb05f8ef02bee6cdcdf9703c9f";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 278;
+pub const REASON_SURFACE_REASONS: usize = 279;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1176;
+pub const REASON_SURFACE_LINES: usize = 1180;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
