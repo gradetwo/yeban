@@ -48,12 +48,14 @@
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
 //! | [`song_overview`] | `get_song_overview`：整曲多层总览图（设计稿 §8，Phase 1）—— `SongOverviewProvider` trait + stub；分析住在 `yeban-dsp`，宿主注入 |
+//! | [`compare_snapshots`] | `compare_song_snapshots`：Songmap A/B 快照 Diff（设计稿 §8.3，Phase 2）—— 两份 `SongOverview` 的纯函数比对，不要求活跃工程 |
 //! | [`sfz_stream`] | P2 磁盘流式引擎：后台读盘线程＋逐声部无锁环＋起音预载（预览＝已用区域、实时＝整件乐器） |
 //! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
 pub mod ara;
 pub mod automation;
 pub mod automation_audit;
+pub mod compare_snapshots;
 pub mod diagnostics;
 // ⭐ 保存侧内嵌收集：逐音触发样本 ＋ SFZ 文本进会话 CAS 池（`embedded_samples`）。
 pub mod embed_samples;
@@ -1450,6 +1452,15 @@ pub enum Plan {
         /// 任务 id（交付收据记 `delivered_proposal_id` 用）。
         job_id: String,
     },
+    /// `compare_song_snapshots`（**只读**）：两版快照的 A/B Diff（设计稿 §8.3，
+    /// Phase 2）。`data` 在 `plan` 里就组装好（`apply` 原样回传，一位都不改）。
+    CompareSongSnapshots {
+        /// 已经组装好的 Diff（`schema_version` / `snapshot_a` /
+        /// `snapshot_b` / `meta_changes` / `summary` / `bar_diffs` /
+        /// `bars_added` / `bars_removed` / `anomalies_*` /
+        /// `repetition_changes` / `structural_changes`）。
+        data: Value,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -1498,6 +1509,7 @@ impl Plan {
             Self::OtcpJob { .. } => "otcp_job",
             Self::OtcpNotes { .. } => "otcp_notes",
             Self::OtcpDeliver { .. } => "otcp_deliver",
+            Self::CompareSongSnapshots { .. } => "compare_song_snapshots",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -1566,6 +1578,8 @@ impl Plan {
             | Self::OtcpNotes { .. }
             // 整曲总览是只读读数（provider 只算数，不改工程）。
             | Self::SongOverview { .. }
+            // 快照 Diff 是入参的纯函数（不读工程、不落盘）⇒ 提交数不变。
+            | Self::CompareSongSnapshots { .. }
             // 场景启动不改工程文档（只改会话/引擎运行态）⇒ 提交数不变。
             | Self::LaunchScene { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
@@ -1664,7 +1678,9 @@ impl Plan {
             | Self::OtcpJob { .. }
             | Self::OtcpNotes { .. }
             // 整曲总览是只读读数（provider 只算数）。
-            | Self::SongOverview { .. } => false,
+            | Self::SongOverview { .. }
+            // 快照 Diff 是入参的纯函数（不读工程、不落盘）。
+            | Self::CompareSongSnapshots { .. } => false,
         }
     }
 
@@ -1837,7 +1853,9 @@ impl Plan {
             // 场景启动不改工程文档 ⇒ `dryRun` 的“工程差异”是 `None`。
             | Self::LaunchScene { .. }
             // 整曲总览是只读读数 ⇒ `dryRun` 的“工程差异”同样是 `None`。
-            | Self::SongOverview { .. } => Ok(None),
+            | Self::SongOverview { .. }
+            // 快照 Diff 是入参的纯函数 ⇒ `dryRun` 的“工程差异”同样是 `None`。
+            | Self::CompareSongSnapshots { .. } => Ok(None),
         }
     }
 
@@ -2312,6 +2330,16 @@ impl Plan {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data.clone());
             }
+            // 快照 Diff：只读读数，预览 = 真做（与总览同一做法）。
+            Self::CompareSongSnapshots { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("readOnly".to_owned(), Value::from(true));
+                preview.insert("result".to_owned(), data.clone());
+            }
             // SVS 取音频：报告键 +（落轨时）导入计划的 `data()`，与音频导入同款。
             Self::SvsAudio { import, report } => {
                 if let Value::Object(fields) = report.clone() {
@@ -2716,6 +2744,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_correct_pitch_job" => otcp::plan_correct_pitch_job(domain, call),
         "yeban_correct_pitch_notes" => otcp::plan_correct_pitch_notes(domain, call),
         "yeban_move_track" => plan_move_track(domain, call),
+        "compare_song_snapshots" => compare_snapshots::plan_compare_song_snapshots(call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -5418,7 +5447,8 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
         | Plan::OtcpSubmit { .. }
         | Plan::OtcpJob { .. }
         | Plan::OtcpNotes { .. }
-        | Plan::SongOverview { .. } => "none",
+        | Plan::SongOverview { .. }
+        | Plan::CompareSongSnapshots { .. } => "none",
     }
 }
 
@@ -5548,6 +5578,8 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
         ),
         // 只读：总览在 `plan` 里就组装好了，`apply` 原样回传（一位都不改）。
         Plan::SongOverview { data } => Ok(ToolResponse::success(data)),
+        // 只读：Diff 在 `plan` 里就组装好了，`apply` 原样回传（一位都不改、不落盘）。
+        Plan::CompareSongSnapshots { data } => Ok(ToolResponse::success(data)),
         Plan::SvsAudio { import, report } => svs::apply_svs_audio(domain, import, report),
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
@@ -7009,6 +7041,54 @@ mod tests {
             .id
     }
 
+    /// 最小合法 SongOverview 快照 JSON（两小节；两小节的张力由调用方给，
+    /// 其余列固定 —— 只够 `compare_song_snapshots` 的规划臂走通正向通路；
+    /// 差值的逐位算术在 `domain::compare_snapshots` 的单元判据里钉）。
+    fn snapshot_json(tension_1: f64, tension_2: f64) -> serde_json::Value {
+        let row = |bar: u64, tension: f64| {
+            serde_json::json!({
+                "bar": bar,
+                "time_sec": (bar - 1) as f64 * 2.0,
+                "section": "Verse",
+                "tension": tension,
+                "valence_hue": 0.5,
+                "lufs_short": -14.0,
+                "lufs_momentary_max": -10.0,
+                "score_dyn": 0.5,
+                "envelope_lo": 0.2,
+                "envelope_hi": 0.8,
+                "target_deviation": 0.0,
+                "density_pitched_onsets_per_beat": 1.0,
+                "density_pitched_duty": 0.5,
+                "density_perc_onsets_per_beat": 1.0,
+                "bands_tilted_db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            })
+        };
+        serde_json::json!({
+            "schema_version": "1.1",
+            "song_meta": {
+                "total_bars": 2,
+                "duration_sec": 10.0,
+                "base_bpm": 120.0,
+                "key_signature": "C major",
+                "profile": "pop",
+            },
+            "band_definitions_hz": [[20, 60], [60, 250], [250, 500], [500, 2000], [2000, 4000], [4000, 6000], [6000, 10000], [10000, 20000]],
+            "structural_summary": {
+                "climax_bar": 1,
+                "climax_tension": 0.9,
+                "dynamic_range_lu": 8.0,
+                "detected_anomalies": [],
+            },
+            "repetition": {
+                "mechanical_index": 0.3,
+                "best_matches": [],
+                "repeated_passages": [],
+            },
+            "bar_series": [row(1, tension_1), row(2, tension_2)],
+        })
+    }
+
     #[test]
     fn every_tool_has_a_plan_arm_and_no_not_implemented_report() {
         // 十个工具都必须能进 `plan`（不再一律 -32005）。
@@ -7259,6 +7339,16 @@ mod tests {
                 serde_json::json!({
                     "trackId": track.to_canonical_string(),
                     "newIndex": move_track_new_index,
+                }),
+            ),
+            // Songmap A/B 快照对比：两份合法快照 ⇒ 规划成功（Diff 在 plan 里组装；
+            // 不要求活跃工程 —— 这里有工程也一样走通，正向通路的逐位算术在
+            // `domain::compare_snapshots` 的单元判据与 `tests/compare_song_snapshots.rs` 里钉）。
+            (
+                "compare_song_snapshots",
+                serde_json::json!({
+                    "snapshot_a": snapshot_json(0.3, 0.5),
+                    "snapshot_b": snapshot_json(0.5, 0.5),
                 }),
             ),
             // ARA2 宿主原型：绑定只做解码（不打开插件）⇒ 指向不存在的插件路径

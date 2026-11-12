@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 270 | 1139 | `ec82ea38b512394533887b993414b6696db473d6a2bdde8703d0e13b675f2eb1` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 272 | 1147 | `468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -136,6 +136,16 @@
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
+//! ⚠ Songmap A/B 快照对比（本支）：新增 `src/domain/compare_snapshots.rs` ⇒ 生产区 `.rs` 文件 51 → 52；
+//! 2 个新 `reason` 常量（`invalidSnapshot` 4 处字面站点、`snapshotMismatch` 3 处）⇒ reason 数
+//! 242 → 244、规范行数 1032 → 1040（2 reason 行 ＋ 6 键行：`invalidSnapshot`
+//! 带 `detail` / `reason` / `snapshot` 3 键，`snapshotMismatch` 带 `detail` /
+//! `field` / `reason` 3 键）；`reason` 键站点 276 → 283、字面站点 265 → 272、总出现
+//! 279 → 286；新摘要
+//! `abccf0a7e7596b631c7ddbd8259fed4f24d1c154ecfc75e0c5667c5fe7fd1d04`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
 //! ⚠ `#340`：摘要**只覆盖可分类面**。运行时站点（`format!` / 转发入参 /
@@ -153,7 +163,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 266] = [
+pub const GOLDEN_REASONS: [&str; 268] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -217,6 +227,7 @@ pub const GOLDEN_REASONS: [&str; 266] = [
     "invalidExpectedLevels",
     // ⭐ `#290`：`sceneId` 不是合法 ULID。
     "invalidSceneId",
+    "invalidSnapshot",
     "laneMustBeString",
     "lanePropertiesNotApplicableToPointRemoval",
     "latencyOutOfRange",
@@ -309,6 +320,7 @@ pub const GOLDEN_REASONS: [&str; 266] = [
     "sfzPathIsDirectory",
     "sfzReadFailed",
     "slotOutOfRange",
+    "snapshotMismatch",
     "sourceAmbiguous",
     "sourceMissing",
     "staticLaneNotApplicable",
@@ -1642,13 +1654,13 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⇒ 出现 307 → 309、键站点 304 → 306、字面站点 293 → 295
 // （恒等式仍闭合：306 = 字面 295 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 309 = 306 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 309;
+const REASON_OCCURRENCES_TOTAL: usize = 316;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 306;
-const REASON_LITERAL_SITES_TOTAL: usize = 295;
+const REASON_KEY_SITES_TOTAL: usize = 313;
+const REASON_LITERAL_SITES_TOTAL: usize = 302;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1971,7 +1983,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 266] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2100,6 +2112,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 266] = [
     ("invalidExpectedLevels", &["received", "reason", "section"]),
     // ⭐ `#290`：非法 `sceneId`。
     ("invalidSceneId", &["hint", "reason", "sceneId"]),
+    ("invalidSnapshot", &["detail", "reason", "snapshot"]),
     ("laneMustBeString", &["allowed", "field", "reason"]),
     (
         "lanePropertiesNotApplicableToPointRemoval",
@@ -2364,6 +2377,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 266] = [
         "slotOutOfRange",
         &["field", "paramIndex", "reason", "slotIndex", "trackId"],
     ),
+    ("snapshotMismatch", &["detail", "field", "reason"]),
     ("sourceAmbiguous", &["reason"]),
     ("sourceMissing", &["reason"]),
     (
@@ -3263,12 +3277,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 4 键）⇒ 242 → **244** 个 reason、1032 → **1042** 行（2 reason 行 ＋ 8 键行）。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "ec82ea38b512394533887b993414b6696db473d6a2bdde8703d0e13b675f2eb1";
+    "468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 270;
+pub const REASON_SURFACE_REASONS: usize = 272;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1139;
+pub const REASON_SURFACE_LINES: usize = 1147;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3445,7 +3459,7 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // 1032 → 1048（4 reason 行 ＋ 12 键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
     // OTCP（本支）：新增 `src/domain/otcp.rs` ⇒ 52 → 53（该文件带 `reason` 键，摘要同批重钉）。
-    assert_eq!(files.len(), 53, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 54, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()
