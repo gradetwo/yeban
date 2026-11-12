@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 272 | 1147 | `468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 276 | 1171 | `PLACEHOLDER_DIGEST` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -146,6 +146,17 @@
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
+//! ⚠ 自动相位对齐第二层（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 生产区
+//! `.rs` 文件 53 → 54；8 处新 `reason` 站点（`maxLagOutOfRange` ×2、
+//! `sameReferenceAndTarget`、`lowCorrelation`、`compensationOutOfRange`、
+//! `trackNotFound` ×2，另 `providerUnavailable` 1 处经 `PROVIDER_UNAVAILABLE_REASON`
+//! 常量解析 —— 扫描器把 8 处全计入字面类，字面站点 293 → 301）⇒ reason 数
+//! 268 → 272、规范行数 1129 → 1150（4 reason 行 ＋
+//! 17 键行）；`reason` 键站点 304 → 312、总出现 307 → 315（315 = 312 ＋ 参数名 3）。
+//! 新摘要 `3c81a7022e15130bf2891e5a25e1a101ac917dd8c1d810f952883ebc0dc0b63e`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
 //! ⚠ `#274`：摘要随"登记位置搬进 provider"重钉（集合不变、顺序变了）；
 //! 见 `FROZEN_REASON_SURFACE_SHA256` 的沿革注释。
 //! ⚠ `#340`：摘要**只覆盖可分类面**。运行时站点（`format!` / 转发入参 /
@@ -205,6 +216,8 @@ pub const GOLDEN_REASONS: [&str; 268] = [
     "deviceTrackNotFound",
     "placementTrackNotFound",
     "clipPlacementNotFound",
+    // ⭐ 自动相位对齐第二层：补偿后的轨延时超出 ±4800 采用窗。
+    "compensationOutOfRange",
     "domainMustBeObjectOrNull",
     "duplicateClipPlacementPairRequired",
     "duplicateLaneTarget",
@@ -235,6 +248,8 @@ pub const GOLDEN_REASONS: [&str; 268] = [
     "licenseRequired",
     "licenseWhitelistUnavailable",
     "loudnessTargetMissed",
+    // ⭐ 自动相位对齐第二层：|ρ| < 0.3，峰值不可信，不施加补偿。
+    "lowCorrelation",
     "masterBusNodeCannotBeRemoved",
     "masterBusTrackCannotBeRemoved",
     // ⭐ MoveTrack MCP 工具（本支）：移主总线音轨被拒（与移除主总线音轨同形）。
@@ -242,6 +257,8 @@ pub const GOLDEN_REASONS: [&str; 268] = [
     // ⭐ `ADR-0030`：`yeban_export_stems` 的 D4 豁免点名（主总线 / 路由图里的非源节点轨）。
     "masterBusTrack",
     "notASourceNode",
+    // ⭐ 自动相位对齐第二层：`maxLagMs` 非有限正数，或换算后超出 ±4800 采用窗。
+    "maxLagOutOfRange",
     "midiInputAmbiguousPort",
     "midiInputConnectFailed",
     "midiInputEmptyPortName",
@@ -300,6 +317,8 @@ pub const GOLDEN_REASONS: [&str; 268] = [
     "routingEdgeNotFound",
     "routingNodeAlreadyExists",
     "routingNodeNotFound",
+    // ⭐ 自动相位对齐第二层：基准轨与目标轨是同一条轨。
+    "sameReferenceAndTarget",
     "samplerUnreadable",
     "sceneAlreadyExists",
     // ⭐ `#290`：`sceneId` 缺失 / 队列满 / 场景 tempo 越界。
@@ -1654,13 +1673,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⇒ 出现 307 → 309、键站点 304 → 306、字面站点 293 → 295
 // （恒等式仍闭合：306 = 字面 295 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 309 = 306 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 316;
+// 自动相位对齐（本合入）：`domain/phase_align_auto.rs` 新增 8 处
+// `reason` 字面站点 ⇒ 出现 316 → 324、键站点 313 → 321、字面站点 302 → 310
+// （恒等式仍闭合：321 = 字面 310 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 324 = 321 ＋ 参数名 3。）
+const REASON_OCCURRENCES_TOTAL: usize = 324;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 313;
-const REASON_LITERAL_SITES_TOTAL: usize = 302;
+const REASON_KEY_SITES_TOTAL: usize = 321;
+const REASON_LITERAL_SITES_TOTAL: usize = 310;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2088,6 +2111,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
         "clipPlacementNotFound",
         &["hint", "placementId", "reason", "trackId"],
     ),
+    (
+        // ⭐ 自动相位对齐第二层：单一站点的全键。
+        "compensationOutOfRange",
+        &[
+            "compensationSamples",
+            "delaySamplesAfter",
+            "delaySamplesBefore",
+            "limitSamples",
+            "reason",
+            "trackId",
+        ],
+    ),
     ("domainMustBeObjectOrNull", &["field", "reason"]),
     (
         "duplicateClipPlacementPairRequired",
@@ -2138,6 +2173,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
         ],
     ),
     (
+        // ⭐ 自动相位对齐第二层。
+        "lowCorrelation",
+        &["correlation", "lagSamples", "reason", "threshold"],
+    ),
+    (
         "masterBusNodeCannotBeRemoved",
         &["hint", "masterBusTrackId", "nodeId", "reason"],
     ),
@@ -2152,6 +2192,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
     // ⭐ `ADR-0030`：`yeban_export_stems` 的 `skippedTracks[]` 两条豁免登记（同形三键）。
     ("masterBusTrack", &["name", "reason", "trackId"]),
     ("notASourceNode", &["name", "reason", "trackId"]),
+    (
+        // ⭐ 自动相位对齐第二层：两处站点的并集
+        // （非有限分支只有 `maxLagMs` / `reason` 两键）。
+        "maxLagOutOfRange",
+        &[
+            "limitSamples",
+            "maxLagMs",
+            "maxLagSamples",
+            "reason",
+            "sampleRateHz",
+        ],
+    ),
     (
         "midiInputAmbiguousPort",
         &["candidates", "field", "reason", "requested"],
@@ -2361,6 +2413,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 268] = [
     ("sfzReadFailed", &["ioError", "path", "reason"]),
     // ⭐ `#221`：音轨绑定的采样器定义文件读不到/解析不了（渲染期唯一的新 reason）。
     // ⭐ 内嵌腿：绑定哈希非法时载荷多一个 `embeddedHash` 键（见 `render.rs`）。
+    (
+        // ⭐ 自动相位对齐第二层。
+        "sameReferenceAndTarget",
+        &["reason", "trackId"],
+    ),
     (
         "samplerUnreadable",
         &[
@@ -3277,12 +3334,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 4 键）⇒ 242 → **244** 个 reason、1032 → **1042** 行（2 reason 行 ＋ 8 键行）。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "468fdeaef057dfa0275a0a4981dfb2ba9a5f0541b87038c7c016eab4354b94f0";
+    "PLACEHOLDER_DIGEST";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 272;
+pub const REASON_SURFACE_REASONS: usize = 276;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1147;
+pub const REASON_SURFACE_LINES: usize = 1171;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

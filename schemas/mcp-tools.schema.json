@@ -68,7 +68,8 @@
             "yeban_correct_pitch_job",
             "yeban_correct_pitch_notes",
             "yeban_move_track",
-            "compare_song_snapshots"
+            "compare_song_snapshots",
+            "yeban_auto_align_tracks"
           ]
         },
         "arguments": {
@@ -711,6 +712,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/compare_song_snapshots"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_auto_align_tracks"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_auto_align_tracks"
               }
             }
           }
@@ -2225,6 +2245,53 @@
           "required": [
             "snapshot_a",
             "snapshot_b"
+          ]
+        },
+        "yeban_auto_align_tracks": {
+          "title": "yeban_auto_align_tracks",
+          "type": "object",
+          "description": "自动相位对齐（手动层第二层）：对两条源轨 solo 渲染后做归一化互相关，测目标轨相对基准轨的延时，再把补偿经提案路径写进已有的手动延时机制（只延时先到的轨，正延时，无前视；极性反转时同时翻目标轨 invert_polarity）。apply 缺省 true = 建提案；false = 只测量、不建提案。测量取最响 5 秒窗；置信度 |ρ| ≥ 0.7 高 / ≥ 0.4 中 / 其余低；|ρ| < 0.3 响亮拒绝应用。超出 ±4800 采样响亮拒绝，不部分应用。Logic Pro 没有自动互相关对齐：测量设计抄自动对齐插件的通行做法，补偿侧抄 Logic 轨延时语义。",
+          "properties": {
+            "referenceTrackId": {
+              "type": "string",
+              "description": "基准轨 EntityId（26 字符 ULID）；时间锚点"
+            },
+            "targetTrackId": {
+              "type": "string",
+              "description": "目标轨 EntityId（26 字符 ULID）；须与基准轨不同"
+            },
+            "maxLagMs": {
+              "type": "number",
+              "description": "最大搜索延时（毫秒，缺省 50；须 > 0 且折算 ≤ 4800 采样）"
+            },
+            "apply": {
+              "type": "boolean",
+              "description": "缺省 true = 有补偿时建提案；false = 只测量、不建提案"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "[ADR-0029]：缺省 false = 只建提案；true = 同一次调用内背靠背执行既有的合并实现"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "[ADR-0029]：autoMerge 合并提交的信息，只随 autoMerge:true 生效"
+            },
+            "includeOps": {
+              "type": "boolean",
+              "description": "是否回传完整 op 载荷：缺省 false = 只回结构化字段，true = 额外回传逐条 ops（审查用途）[BASELINE-006]"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "referenceTrackId",
+            "targetTrackId"
           ]
         }
       }
