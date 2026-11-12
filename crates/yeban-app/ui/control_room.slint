@@ -92,7 +92,12 @@ export component ControlRoomMeters inherits Rectangle {
                             color: root.active-monitor == "main" ? Theme.accent : #94a3b8;
                             horizontal-alignment: center;
                             }
-                        TouchArea { clicked => { root.switch-monitor("main"); } }
+                        TouchArea {
+                            clicked => {
+                                root.active-monitor = "main";
+                                root.switch-monitor("main");
+                            }
+                        }
                     }
 
                     Rectangle {
@@ -109,7 +114,12 @@ export component ControlRoomMeters inherits Rectangle {
                             color: root.active-monitor == "alt" ? Theme.accent : #94a3b8;
                             horizontal-alignment: center;
                             }
-                        TouchArea { clicked => { root.switch-monitor("alt"); } }
+                        TouchArea {
+                            clicked => {
+                                root.active-monitor = "alt";
+                                root.switch-monitor("alt");
+                            }
+                        }
                     }
                 }
 
@@ -123,7 +133,12 @@ export component ControlRoomMeters inherits Rectangle {
                         border-width: root.is-dim ? 1px : 0;
                         border-color: #f59e0b;
                         Text { text: "DIM"; font-size: 8px; font-weight: 800; color: root.is-dim ? #f59e0b : #94a3b8; horizontal-alignment: center; }
-                        TouchArea { clicked => { root.toggle-dim(); } }
+                        TouchArea {
+                            clicked => {
+                                root.is-dim = !root.is-dim;
+                                root.toggle-dim();
+                            }
+                        }
                     }
 
                     Rectangle {
@@ -133,7 +148,12 @@ export component ControlRoomMeters inherits Rectangle {
                         border-width: root.is-mono ? 1px : 0;
                         border-color: #38bdf8;
                         Text { text: "MONO"; font-size: 8px; font-weight: 800; color: root.is-mono ? #38bdf8 : #94a3b8; horizontal-alignment: center; }
-                        TouchArea { clicked => { root.toggle-mono(); } }
+                        TouchArea {
+                            clicked => {
+                                root.is-mono = !root.is-mono;
+                                root.toggle-mono();
+                            }
+                        }
                     }
 
                     Rectangle {
@@ -143,7 +163,12 @@ export component ControlRoomMeters inherits Rectangle {
                         border-width: root.is-side ? 1px : 0;
                         border-color: #f43f5e;
                         Text { text: "SIDE"; font-size: 8px; font-weight: 800; color: root.is-side ? #f43f5e : #94a3b8; horizontal-alignment: center; }
-                        TouchArea { clicked => { root.toggle-side(); } }
+                        TouchArea {
+                            clicked => {
+                                root.is-side = !root.is-side;
+                                root.toggle-side();
+                            }
+                        }
                     }
                 }
             }

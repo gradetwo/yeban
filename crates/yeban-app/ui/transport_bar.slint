@@ -277,6 +277,12 @@ export component TransportHeaderBar inherits Rectangle {
                     spacing: 0px;
                     Text { text: "BPM"; font-size: 8px; color: #64748b; font-weight: 700; }
                     Text { text: "" + root.bpm-val; font-size: 12px; color: #f59e0b; font-weight: 800; }
+                    TouchArea {
+                        clicked => {
+                            let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124);
+                            root.change-bpm(next-bpm);
+                        }
+                    }
                 }
 
                 // Global Scale Key
@@ -285,6 +291,12 @@ export component TransportHeaderBar inherits Rectangle {
                     spacing: 0px;
                     Text { text: "SCALE / KEY"; font-size: 8px; color: #64748b; font-weight: 700; }
                     Text { text: root.scale-text; font-size: 11px; color: #10b981; font-weight: 700; }
+                    TouchArea {
+                        clicked => {
+                            let next-scale = root.scale-text == "C Minor (自然小调)" ? "D Dorian (多利亚)" : (root.scale-text == "D Dorian (多利亚)" ? "F Major (大调)" : "C Minor (自然小调)");
+                            root.change-scale(next-scale);
+                        }
+                    }
                 }
             }
         }
