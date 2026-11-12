@@ -100,7 +100,8 @@ use yeban_model::{
 pub const MODEL_PPQ: u64 = 960;
 
 /// ⭐ `#342` / `#350`：今天**有落点**的十类 aux 事件（弯音自 ADR-0014 D2 起有落点；
-/// 控制器自 ADR-0015 D2 起 CC 7 / CC 10 有落点；版权自 [ARCH-EXT-002] 起可进
+/// 控制器自 ADR-0015 D2 起 CC 7 / CC 10 有落点、**D4 起全部控制器有落点**；
+/// 版权自 [ARCH-EXT-002] 起可进
 /// `project.author`；乐器名 / 程序名自 ADR-0013 D3 起可作拆分新轨的名字）。
 ///
 /// 其余 14 类由 [`MidiImportLosses::is_total_loss`] 钉住"仍全损"。
@@ -310,8 +311,11 @@ impl MidiLossCount {
 ///   零长度 / 非 UTF-8 的逐条 `dropped`。
 /// - `E0` 弯音：落点是**唯一发声音符**的 `MidiNote::pitch_bend_curve`
 ///   （ADR-0014 D2，与歌词同一条"唯一才归属"原则）；0 颗或多颗发声的条 `dropped`。
-/// - `FF 59` 调号 / CC / 触后 / Program Change / SysEx / Escape / 其余 meta：
+/// - `B0` 控制器：落点是自动化泳道（CC 7 → 音量、CC 10 → 声相，其余 → 各自的
+///   `MidiCc` 泳道；ADR-0015 D2/D4）⇒ 今天**一条不丢**。
+/// - `FF 59` 调号 / 触后 / Program Change / SysEx / Escape / 其余 meta：
 ///   模型或导入映射没有落点 ⇒ **全丢**（原因见 [`Self::aux_reasons`]）。
+///   （调号单条 tick 0 可进 `project.key_signature`，见 [`adopt_key_signature`]。）
 /// - 轨分区：全部音符进**同一个**音轨与同一个片段 ⇒ 文件 N 条 `MTrk` 只剩 1 个落点，
 ///   `N-1` 个分区丢失。
 /// - 音符通道：[`MidiNote`] 的 channel 字段保存每颗音符的通道值（`#348` [MODEL-AST-005]）。
@@ -1512,13 +1516,16 @@ fn plan_sections(
     (sections, dropped, reason)
 }
 
-/// ⭐ ADR-0015 D2：CC 7 / CC 10 ⇒ 音轨自动化泳道（`Op::SetAutomationLane`）。
+/// ⭐ ADR-0015 D2/D4：CC ⇒ 音轨自动化泳道（`Op::SetAutomationLane`）。
 ///
 /// ## 归属与换算
 ///
 /// - **音轨归属**与音符走**同一条** `track_destinations` 规则（拆分开启时按 `MTrk`，
 ///   否则统一进目标轨）⇒ CC 与它所在那条轨的音符落在同一个 `track_id` 上；
-/// - **数值换算**见 [`cc7_to_decibels`] / [`cc10_to_pan`]；tick 走 [`scale_ticks`]
+/// - **数值换算**：CC 7 / CC 10 走 D2 的声学换算（见 [`cc7_to_decibels`] /
+///   [`cc10_to_pan`]）；**其余控制器（D4）不换算**，原始 7 位值 `0..=127` 原样进
+///   `AutomationTarget::MidiCc` 泳道 —— 渲染侧的 `CcProbe` 与 SFZ 的 `*_onccN` /
+///   `loccN`/`hiccN` 本来就以原始值为域，归一化只会引入舍入；tick 走 [`scale_ticks`]
 ///   （与音符同一个纯比例换算，⛔ 不量化）；
 /// - **同一 tick 后到者覆盖**：`BTreeMap<tick, value>` 天然给出"文件序最后一条生效"，
 ///   点位此之后按 tick 递增，⛔ 一条泳道里同一 tick 不留两个点。
@@ -1533,7 +1540,7 @@ fn plan_sections(
 /// `Op::SetAutomationPoint` 每次只落一个点，且它建出来的是**隐式形状**的泳道；一条
 /// 映射出的曲线要的是"一次写入、一次可撤销"的整体 ⇒ 用 `SetAutomationLane`（ADR-0015 D2）。
 ///
-/// 返回 `(ops, attached)`：`attached` = **被映射的事件条数**（CC 7 + CC 10，覆盖也算），
+/// 返回 `(ops, attached)`：`attached` = **被映射的事件条数**（全部控制器，覆盖也算），
 /// 供损失分桶用 `read - attached` 报未映射的控制器（⚠ 不是"点的条数"：同 tick 覆盖会
 /// 让点数少于事件数，而守恒判据数的是**事件**）。
 fn plan_cc_lanes(
@@ -1558,8 +1565,16 @@ fn plan_cc_lanes(
                 AutomationTarget::TrackPan { track_id },
                 cc10_to_pan(cc.value),
             ),
-            // 其余控制器：模型里没有对应目标 ⇒ 不映射（逐条计入 `dropped`）。
-            _ => continue,
+            // ⭐ ADR-0015 D4：其余控制器原样进各自的 `MidiCc` 泳道（原始 7 位值，
+            // ⛔ 不换算、不归一化）。CC 1 调制、CC 11 表情、CC 64 踏板都在这里 ——
+            // 控制器号即泳道身份，一号一条泳道。
+            controller => (
+                AutomationTarget::MidiCc {
+                    track_id,
+                    controller,
+                },
+                f32::from(cc.value),
+            ),
         };
         curves
             .entry(target)
@@ -1621,12 +1636,14 @@ fn static_loss_reason(kind: MidiAuxEventKind) -> &'static str {
         MidiAuxEventKind::KeySignature => {
             "key-signature map has no home: project.key_signature is a single scalar"
         }
-        // ⭐ ADR-0015 D2：CC 7 / CC 10 有落点（音量/声相泳道）；这里的原因是
-        // **其余**控制器落不下去 —— 不是"CC 一律没有落点"（那句话自本 ADR 起就是错的）。
+        // ⭐ ADR-0015 D4：全部控制器有落点（CC 7 / CC 10 走音量/声相泳道，其余走
+        // `MidiCc` 泳道）；这里的文本只是"仍有事件落不下去"时的兜底 —— 今天
+        // `plan_cc_lanes` 不再产生这类丢失（`dropped` 恒为 0），兜底只防未来
+        // 某个控制器号再度失去目标。
         MidiAuxEventKind::ControlChange => {
-            "a control change other than CC 7 (channel volume) and CC 10 (pan) has no \
-             automation target to map onto (ADR-0015 D2: only those two controllers land \
-             in a lane)"
+            "a control change has no automation target to map onto (ADR-0015 D4: every \
+             controller lands in a lane — CC 7 / CC 10 in volume/pan lanes, the rest in \
+             MidiCc lanes)"
         }
         MidiAuxEventKind::ProgramChange => {
             "TrackV3::sampler is a sampler file path, not a MIDI program number"
@@ -1776,8 +1793,8 @@ fn count_losses(
             // ⭐ ADR-0014 D2：唯一发声归属的弯音进了音符，其余报丢（read == attached + dropped）。
             (read.saturating_sub(pitch_bends_attached), None)
         } else if kind == MidiAuxEventKind::ControlChange {
-            // ⭐ ADR-0015 D2：CC 7 / CC 10 进了自动化泳道，其余控制器报丢
-            // （read == attached + dropped）。
+            // ⭐ ADR-0015 D4：全部控制器进了自动化泳道（CC 7 / CC 10 进音量/声相，
+            // 其余进 `MidiCc`）⇒ `dropped` 恒为 0（read == attached + dropped）。
             (read.saturating_sub(cc_attached), None)
         } else if kind == MidiAuxEventKind::InstrumentName {
             // ⭐ ADR-0013 D3：被拆出新轨采纳为 `TrackV3::name` 的乐器名记入 attached，
@@ -2038,7 +2055,7 @@ pub fn plan_midi_import(
     }));
     let notes = parsed.notes.len();
 
-    // ⭐ ADR-0015 D2：CC 7 / CC 10 ⇒ 自动化泳道。排在**新建轨 ops 之后**（拆分开启时
+    // ⭐ ADR-0015 D2/D4：CC ⇒ 自动化泳道。排在**新建轨 ops 之后**（拆分开启时
     // `SetAutomationLane` 的 `old_lane` 前置检查要求目标音轨已存在），⛔ 不新建音轨。
     let (lane_ops, cc_attached) =
         plan_cc_lanes(parsed, project, &track_destinations, dest_track_id);
@@ -2899,11 +2916,13 @@ pub mod tests {
         );
     }
 
-    /// ⭐ ADR-0015 D2 判据 d（未映射的控制器报丢）：CC 1（调制）与 CC 64（延音踏板）
-    /// 在模型里没有对应目标 ⇒ ⛔ 不新建泳道、逐条计入 `dropped`、原因走静态文案。
+    /// ⭐ ADR-0015 D4 判据 d（其余控制器进 `MidiCc` 泳道）：CC 1（调制）与 CC 64
+    /// （延音踏板）各落进自己控制器号的泳道，值取**原始 7 位值**、一条不丢。
     #[test]
-    fn an_unsupported_control_change_is_reported_as_dropped() {
+    fn other_control_changes_land_in_midi_cc_lanes() {
         let project = yeban_model::samples::filled_project();
+        let (dest_track_id, _) =
+            destination(&project, &MidiImportOptions::default()).expect("目标轨");
         let mut parsed = parsed(960, vec![note(60, 100, 0, 960)]);
         parsed.control_changes = vec![cc(0, 1, 50), cc(480, 64, 127)];
         let read = parsed.control_changes.len();
@@ -2911,19 +2930,163 @@ pub mod tests {
         let plan =
             plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
 
-        assert!(lane_ops(&plan).is_empty(), "未映射的控制器不许造出泳道 op");
+        let rows = lane_ops(&plan);
+        assert_eq!(rows.len(), 2, "两个控制器号 ⇒ 两条泳道 op");
+        let mut by_controller: Vec<(u8, Vec<(u64, f32)>)> = rows
+            .iter()
+            .map(|(target, lane, _)| {
+                let AutomationTarget::MidiCc {
+                    track_id,
+                    controller,
+                } = *target
+                else {
+                    panic!("CC 1 / CC 64 必须落在 MidiCc 目标上，实得 {target:?}");
+                };
+                assert_eq!(track_id, dest_track_id, "泳道挂在导入目标轨上");
+                (controller, lane_points(lane))
+            })
+            .collect();
+        by_controller.sort_by_key(|row| row.0);
+        assert_eq!(
+            by_controller,
+            vec![(1, vec![(0, 50.0)]), (64, vec![(480, 127.0)])],
+            "原始 7 位值原样进泳道（⛔ 不换算、不归一化）"
+        );
         assert_eq!(
             plan.losses.aux_events[&MidiAuxEventKind::ControlChange],
             MidiLossCount {
                 read: 2,
-                dropped: 2
+                dropped: 0
             },
-            "read == attached + dropped（attached = 0）"
+            "read == attached + dropped（attached = 2）"
+        );
+        assert!(
+            !plan
+                .losses
+                .aux_reasons
+                .contains_key(&MidiAuxEventKind::ControlChange),
+            "没丢的类别不许编原因"
+        );
+
+        // 模型侧闭环：两条 `SetAutomationLane` 必须由 `apply` 真的接受。
+        let mut doc = project.clone();
+        for op in plan
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::SetAutomationLane { .. }))
+        {
+            op.apply(&mut doc).expect("模型必须接受本次导入的泳道 op");
+        }
+        for controller in [1u8, 64u8] {
+            assert!(
+                doc.tracks[&dest_track_id].automation_lanes.contains_key(
+                    &AutomationTarget::MidiCc {
+                        track_id: dest_track_id,
+                        controller,
+                    }
+                ),
+                "CC {controller} 泳道落进文档"
+            );
+        }
+    }
+
+    /// ⭐ ADR-0015 D4 判据 d2（混合）：CC 7、CC 1、CC 64 同批导入 ⇒ 三条泳道 op
+    /// （音量 / MidiCc{1} / MidiCc{64}），CC 7 仍走 D2 的分贝换算，其余走原始值。
+    #[test]
+    fn mixed_control_changes_land_in_their_own_lanes() {
+        let project = yeban_model::samples::filled_project();
+        let (dest_track_id, _) =
+            destination(&project, &MidiImportOptions::default()).expect("目标轨");
+        let mut parsed = parsed(960, vec![note(60, 100, 0, 960)]);
+        parsed.control_changes = vec![cc(0, CC_CHANNEL_VOLUME, 127), cc(0, 1, 50), cc(0, 64, 127)];
+        let read = parsed.control_changes.len();
+        let parsed = recording(parsed, MidiAuxEventKind::ControlChange, read);
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+
+        let rows = lane_ops(&plan);
+        assert_eq!(rows.len(), 3, "三个控制器号 ⇒ 三条泳道 op");
+        let targets: Vec<AutomationTarget> = rows.iter().map(|row| row.0).collect();
+        assert!(
+            targets.contains(&AutomationTarget::TrackVolume {
+                track_id: dest_track_id
+            }),
+            "CC 7 仍走音量泳道：{targets:?}"
+        );
+        assert!(
+            targets.contains(&AutomationTarget::MidiCc {
+                track_id: dest_track_id,
+                controller: 1,
+            }),
+            "CC 1 走 MidiCc 泳道：{targets:?}"
+        );
+        assert!(
+            targets.contains(&AutomationTarget::MidiCc {
+                track_id: dest_track_id,
+                controller: 64,
+            }),
+            "CC 64 走 MidiCc 泳道：{targets:?}"
         );
         assert_eq!(
-            plan.losses.aux_reasons[&MidiAuxEventKind::ControlChange],
-            static_loss_reason(MidiAuxEventKind::ControlChange),
-            "只有 CC 7 / CC 10 有落点 ⇒ 其余走静态兜底文案"
+            plan.losses.aux_events[&MidiAuxEventKind::ControlChange],
+            MidiLossCount {
+                read: 3,
+                dropped: 0
+            }
+        );
+    }
+
+    /// ⭐ ADR-0015 D4 判据 d3（拆分归属）：`split_tracks = true` 时第二条 `MTrk` 的
+    /// CC 64 必须落进**那条轨新建出来的**音轨的 `MidiCc{64}` 泳道（与判据 e 同口径）。
+    #[test]
+    fn a_cc64_on_a_split_track_lands_on_the_new_tracks_midi_cc_lane() {
+        let project = yeban_model::samples::filled_project();
+        let mut parsed = parsed(
+            960,
+            vec![
+                note(60, 100, 0, 960),
+                ParsedNote {
+                    track: 1,
+                    ..note(64, 100, 0, 960)
+                },
+            ],
+        );
+        parsed.control_changes = vec![cc_on(1, 0, 64, 127), cc_on(1, 960, 64, 0)];
+        let read = parsed.control_changes.len();
+        let parsed = recording(parsed, MidiAuxEventKind::ControlChange, read);
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("有目标");
+
+        let rows = lane_ops(&plan);
+        assert_eq!(rows.len(), 1);
+        let (target, lane, old) = &rows[0];
+        assert_eq!(*old, None, "新建出来的音轨不可能带泳道");
+        let AutomationTarget::MidiCc {
+            track_id,
+            controller,
+        } = *target
+        else {
+            panic!("CC 64 必须落在 MidiCc 目标上，实得 {target:?}");
+        };
+        assert_eq!(controller, 64);
+        assert_ne!(
+            track_id,
+            destination(&project, &MidiImportOptions::default())
+                .expect("目标轨")
+                .0,
+            "第二条 `MTrk` 的 CC 64 不许并进首轨的泳道"
+        );
+        assert_eq!(
+            lane_points(lane),
+            vec![(0, 127.0), (960, 0.0)],
+            "踏板按下/抬起原样进泳道"
+        );
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::ControlChange],
+            MidiLossCount {
+                read: 2,
+                dropped: 0
+            }
         );
     }
 

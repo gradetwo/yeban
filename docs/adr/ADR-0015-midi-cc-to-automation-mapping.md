@@ -1,4 +1,4 @@
-# ADR-0015 — MIDI CC 到轨道自动化泳道映射（Volume CC 7 与 Pan CC 10）
+# ADR-0015 — MIDI CC 到轨道自动化泳道映射
 
 - **状态**: Proposed (依 Logic Pro 与 MIDI 1.0 通行规范裁决)
 - **决定者**: Agent (依据人类常设授权："遇到需要裁决的、参考 Logic Pro 自己裁决")
@@ -100,8 +100,32 @@
      $$v = \operatorname{round}\left(\text{if } pan \le 0.0 \{ 64.0 + pan \times 64.0 \} \text{ else } \{ 64.0 + pan \times 63.0 \}\right).\operatorname{clamp}(0, 127)$$
 4. 逐点输出为 `TrackEventKind::Midi { channel, message: MidiMessage::Controller { controller, value } }`。
 
+### D4: 其余全部控制器进各自的 `MidiCc` 泳道（2026-11-12 追加）
+
+D2 只给了 CC 7 / CC 10 落点，其余控制器（CC 1 调制、CC 11 表情、CC 64 踏板…）
+仍在导入时丢弃。`AutomationTarget::MidiCc { track_id, controller }` 自 `#341`
+起已存在（值域原始 `0..=127`，渲染侧 `CcProbe` 逐块求值进引擎），缺的只是
+导入/导出两端的接线：
+
+1. 导入（`plan_cc_lanes`）：CC 7 / CC 10 仍走 D2 的声学换算（向后兼容）；
+   其余控制器号一律进各自的 `MidiCc` 泳道，值取**原始 7 位值**（⛔ 不换算、
+   不归一化 —— 渲染侧与 SFZ 的 `*_onccN` / `loccN` / `hiccN` 本来就以原始值
+   为域，归一化只会引入舍入）。音轨归属、同 tick 后到者覆盖、并入已有泳道、
+   `CurveType::Linear` 与 D2 同口径；`attached` 数全部映射事件，
+   `ControlChange` 的 `dropped` 自此恒为 0。
+2. 导出（`track_control_changes`）：`MidiCc` 泳道逐点写回同号 CC
+   （四舍五入后钳 `0..=127`；`read_enabled = false` 不写，与 D3 同口径）。
+   CC 7 / CC 10 不走这里（它们只活在音量/声相泳道里，⛔ 不双写）。
+   整数值往返恒等；手画的非整数点按就近格取整。
+
+代价：`MidiCc` 泳道是按控制器号分的"一号一条"，文件里 20 个控制器号即 20 条
+泳道 —— 这是模型既有的寻址方式（`AutomationTarget` 以控制器号为身份），
+不是本决定新增的。
+
 ## 影响
 
 - 表现力：MIDI 文件中包含的音量渐变（Volume swell）与左右声相摆动能够无缝还原为夜半 DAW 的原生混音包络；
 - 确定性与可逆性：CC 7 与 CC 10 在夜半 DAW 与标准 DAW 之间实现高精度往返转换；
 - 兼容性：未包含 CC 自动化泳道的现有工程导出字节保持不变。
+- D4 之后：导入不再丢弃任何 CC（踏板、表情、调制数据全部进泳道）；CC64 的
+  保持语义由 ADR-0071 另行裁决（D4 只解决"数据进泳道"，不解决"踏板保持"）。
