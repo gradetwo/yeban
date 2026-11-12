@@ -488,9 +488,20 @@ fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclus
         SaveError::Locked(hold) => {
             assert_eq!(hold.path, project, "拒绝必须点名目标工程");
             assert_eq!(hold.lock_file, lock_path(&project), "拒绝必须点名锁文件");
+            // 持有者元数据的可读性是**平台事实**，不是锁的状态：
+            // Unix 上建议锁是建议的，加锁前的快照能读到持有者元数据 ⇒ `available`；
+            // Windows 上 `LockFileEx` 是强制锁，别的进程持锁时元数据读不到 ⇒
+            // `unavailable-on-this-platform`（口径见 `lock.rs` `LockSnapshot::availability()`；
+            // 同一口径的 Windows 侧判据见 `yeban-mcp` 的 `lock_advisory.rs`）。
+            // 两平台上"保存被拒"本身不变，变的只是诊断载荷里元数据的口径。
+            let expected_holder_metadata = if cfg!(windows) {
+                "unavailable-on-this-platform"
+            } else {
+                "available"
+            };
             assert_eq!(
-                hold.holder_metadata, "available",
-                "Unix 上建议锁是**建议**的 ⇒ 加锁前的快照必须读到持有者元数据: {error}"
+                hold.holder_metadata, expected_holder_metadata,
+                "持有者元数据的口径必须与平台事实一致（Unix `available` / Windows `unavailable-on-this-platform`）: {error}"
             );
         }
         other => panic!("必须是 SaveError::Locked, 实际: {other:?}"),
