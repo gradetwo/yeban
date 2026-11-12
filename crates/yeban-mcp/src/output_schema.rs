@@ -2302,6 +2302,164 @@ pub struct BarRow {
     pub bands_tilted_db: [f64; 8],
 }
 
+/// `compare_song_snapshots` 成功响应的 `data`（设计稿 §8.3，Phase 2）。
+///
+/// 两版快照都是 `get_song_overview` 的 `data`（`SongOverview`，schema 1.1）。
+/// Diff 是逐点相减（Δ = B − A）：曲线列逐小节减、异常与重复按条目集合比对、
+/// 结构摘要比高潮小节与动态范围。量化口径与 §8.2 同口径：归一化指标的差值
+/// 保留 2 位小数，响度与频段能量的差值保留 1 位小数（dB）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SongOverviewDiff {
+    /// Diff 自身的契约版本（恒等于两版快照的 `schema_version`，本轮为 `"1.1"`）。
+    pub schema_version: String,
+    /// 快照 A（修改前）的元数据原样回传（`song_meta`）。
+    pub snapshot_a: SongMeta,
+    /// 快照 B（当前版）的元数据原样回传（`song_meta`）。
+    pub snapshot_b: SongMeta,
+    /// 元数据里**变了的**字段（只含变化项；两版元数据逐位相同则为空对象）。
+    pub meta_changes: MetaChanges,
+    /// 汇总读数（比了几小节、变了几小节、最大差值）。
+    pub summary: DiffSummary,
+    /// 两版都有的小节的逐小节差值（按小节号升序；拍级快照按 `(bar, beat)` 升序）。
+    pub bar_diffs: Vec<BarDiff>,
+    /// 只在 B 里的小节号（新增小节；升序）。
+    pub bars_added: Vec<u64>,
+    /// 只在 A 里的小节号（删除小节；升序）。
+    pub bars_removed: Vec<u64>,
+    /// 只在 B 里的异常条目（新增异常；按 `(bars, type)` 排序）。
+    pub anomalies_added: Vec<DetectedAnomaly>,
+    /// 只在 A 里的异常条目（消失异常；按 `(bars, type)` 排序）。
+    pub anomalies_removed: Vec<DetectedAnomaly>,
+    /// 两版都有的异常条目（未变；按 `(bars, type)` 排序）。
+    pub anomalies_unchanged: Vec<DetectedAnomaly>,
+    /// 自相似度摘要的变化（机械指数差值 + 最相似小节对 / 成段重复的增减）。
+    pub repetition_changes: RepetitionChanges,
+    /// 结构摘要的变化（高潮小节移动 + 高潮张力 / 动态范围差值）。
+    pub structural_changes: StructuralChanges,
+}
+
+/// `from` → `to` 的一对值（元数据与高潮小节的变化项共用）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Change<T> {
+    /// 修改前的值。
+    pub from: T,
+    /// 修改后的值。
+    pub to: T,
+}
+
+/// `SongOverviewDiff.meta_changes`：元数据里变了的字段（只含变化项）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MetaChanges {
+    /// 总小节数变了（改谱增删小节时出现）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bars: Option<Change<u64>>,
+    /// 总时长变了（秒，保留 1 位小数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_sec: Option<Change<f64>>,
+    /// 基准速度变了（BPM，保留 1 位小数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_bpm: Option<Change<f64>>,
+    /// 调号变了。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_signature: Option<Change<String>>,
+    /// 曲风档变了。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Change<String>>,
+}
+
+/// `SongOverviewDiff.summary`：汇总读数。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiffSummary {
+    /// 两版都有的行数（可比小节数；拍级快照为可比拍数）。
+    pub bars_compared: u64,
+    /// 只在 B 里的行数。
+    pub bars_added: u64,
+    /// 只在 A 里的行数。
+    pub bars_removed: u64,
+    /// 可比行里 `changed` 为真的行数。
+    pub bars_changed: u64,
+    /// 可比行里张力差值的最大绝对值（保留 2 位小数；无可比行时为 0.0）。
+    pub max_abs_tension_delta: f64,
+    /// 可比行里短时 LUFS 差值的最大绝对值（保留 1 位小数，单位 LU；无可比行时为 0.0）。
+    pub max_abs_lufs_delta: f64,
+    /// 可比行里 8 频段能量差值的最大绝对值（保留 1 位小数，单位 dB；无可比行时为 0.0）。
+    pub max_abs_band_delta_db: f64,
+}
+
+/// `SongOverviewDiff.bar_diffs[]` 的一行：两版都有的某一小节（拍级时为某一拍）的差值。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BarDiff {
+    /// 小节号（1 起）。
+    pub bar: u64,
+    /// 该拍在小节内的序号（拍级快照时才有；小节级快照缺席）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beat: Option<u64>,
+    /// B 里该行的段落标签（当前版）。
+    pub section: String,
+    /// A 里该行的段落标签（段落改名时才有）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_from: Option<String>,
+    /// 综合情绪张力差值（B − A，保留 2 位小数）。
+    pub tension_delta: f64,
+    /// 效价色相差值（B − A，保留 2 位小数）。
+    pub valence_hue_delta: f64,
+    /// 短时响度差值（B − A，保留 1 位小数，单位 LUFS）。
+    pub lufs_short_delta: f64,
+    /// 瞬时响度峰值差值（B − A，保留 1 位小数，单位 LUFS）。
+    pub lufs_momentary_max_delta: f64,
+    /// 谱面合成力度差值（B − A，保留 2 位小数）。
+    pub score_dyn_delta: f64,
+    /// 期望带下沿差值（B − A，保留 2 位小数；两版任一缺失时缺席）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope_lo_delta: Option<f64>,
+    /// 期望带上沿差值（B − A，保留 2 位小数；两版任一缺失时缺席）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope_hi_delta: Option<f64>,
+    /// 期望带偏离量差值（B − A，保留 2 位小数）。
+    pub target_deviation_delta: f64,
+    /// 旋律和声组每拍触发数差值（B − A，保留 2 位小数）。
+    pub density_pitched_onsets_per_beat_delta: f64,
+    /// 旋律和声组发声占空比差值（B − A，保留 2 位小数）。
+    pub density_pitched_duty_delta: f64,
+    /// 打击组每拍触发数差值（B − A，保留 2 位小数）。
+    pub density_perc_onsets_per_beat_delta: f64,
+    /// 8 频段倾斜补偿后能量差值（B − A，顺序 Sub → Air，保留 1 位小数，单位 dB）。
+    pub bands_tilted_db_delta: [f64; 8],
+    /// 本行是否变了：任一差值取整后非 0，或段落改名。
+    pub changed: bool,
+}
+
+/// `SongOverviewDiff.repetition_changes`：自相似度摘要的变化。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RepetitionChanges {
+    /// 机械指数差值（B − A，保留 2 位小数）。
+    pub mechanical_index_delta: f64,
+    /// 只在 B 里的最相似小节对（按 `(bar_a, bar_b)` 排序）。
+    pub best_matches_added: Vec<BestMatch>,
+    /// 只在 A 里的最相似小节对（按 `(bar_a, bar_b)` 排序）。
+    pub best_matches_removed: Vec<BestMatch>,
+    /// 两版都有的最相似小节对（未变；按 `(bar_a, bar_b)` 排序）。
+    pub best_matches_unchanged: Vec<BestMatch>,
+    /// 只在 B 里的成段重复（按 `(bars, source_bars)` 排序）。
+    pub repeated_passages_added: Vec<RepeatedPassage>,
+    /// 只在 A 里的成段重复（按 `(bars, source_bars)` 排序）。
+    pub repeated_passages_removed: Vec<RepeatedPassage>,
+    /// 两版都有的成段重复（未变；按 `(bars, source_bars)` 排序）。
+    pub repeated_passages_unchanged: Vec<RepeatedPassage>,
+}
+
+/// `SongOverviewDiff.structural_changes`：结构摘要的变化。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StructuralChanges {
+    /// 高潮小节移动了（只在移动时出现）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub climax_bar: Option<Change<u64>>,
+    /// 高潮张力差值（B − A，保留 2 位小数）。
+    pub climax_tension_delta: f64,
+    /// 动态范围差值（B − A，保留 1 位小数，单位 LU）。
+    pub dynamic_range_lu_delta: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

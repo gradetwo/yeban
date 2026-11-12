@@ -205,11 +205,12 @@ CATEGORIES = (
 #: 表里允许出现的名字形态：工具名与方法名。
 #: ⭐ 规格名例外：`synthesize_singing` / `svs_job` 的名字由 SVS Phase 1
 #: 规格定（跨线契约），不带 `yeban_` 前缀；`get_song_overview` 的名字由
-#: 整曲总览设计稿 §8.1/§12 定（跨线契约名），同样不带前缀。判据 1 要求
-#: schema 里的每个工具名都在表里出现，因此正则必须认这三条，否则任何
-#: 规格名的工具都过不了本守卫。例外只此三条（与
+#: 整曲总览设计稿 §8.1/§12 定（跨线契约名），同样不带前缀；
+#: `compare_song_snapshots` 的名字由同一设计稿 §11 定，同样不带前缀。
+#: 判据 1 要求 schema 里的每个工具名都在表里出现，因此正则必须认这四条，
+#: 否则任何规格名的工具都过不了本守卫。例外只此四条（与
 #: `crates/yeban-mcp/src/tools.rs` 注册判据同步）。
-TABLE_TOOL_RE = re.compile(r"yeban_[a-z_]+|synthesize_singing|svs_job|get_song_overview")
+TABLE_TOOL_RE = re.compile(r"yeban_[a-z_]+|synthesize_singing|svs_job|get_song_overview|compare_song_snapshots")
 #: ⚠ 两侧的边界都是**承重**的：`crates/yeban-app/ui/dialogs/undo_tree_modal.slint` 与
 #: `ui/transport.slint` 这类**文件路径**也含 `ui/<片段>`，朴素的 `ui/[a-z_]+` 会把
 #: `ui/dialogs` / `ui/sidebar` / `ui/transport` 当成"方法名"，于是判据 2 会把真实存在的

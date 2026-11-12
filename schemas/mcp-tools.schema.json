@@ -67,7 +67,8 @@
             "yeban_correct_pitch",
             "yeban_correct_pitch_job",
             "yeban_correct_pitch_notes",
-            "yeban_move_track"
+            "yeban_move_track",
+            "compare_song_snapshots"
           ]
         },
         "arguments": {
@@ -691,6 +692,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_move_track"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "compare_song_snapshots"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/compare_song_snapshots"
               }
             }
           }
@@ -2178,6 +2198,33 @@
           "required": [
             "trackId",
             "newIndex"
+          ]
+        },
+        "compare_song_snapshots": {
+          "title": "compare_song_snapshots",
+          "type": "object",
+          "description": "两版 Songmap 快照的 A/B Diff（设计稿 §8.3，Phase 2）：逐小节差值（Δ = B − A，归一化指标 2 位小数、响度与频段能量 1 位小数，与 §8.2 同口径）+ 新增/删除小节 + 异常与重复条目的增减 + 结构摘要变化（高潮小节移动、动态范围差值）。快照 = get_song_overview 的 data（SongOverview，schema 1.1）原样：先取修改前的快照 A，改谱后再取当前版快照 B，两份原样传进来。只比小节级：任一快照含拍级行 ⇒ INVALID_PARAMETER_RANGE（reason: \"snapshotMismatch\"，field: \"resolution\"）；两版 schema_version / band_definitions_hz 不等 ⇒ 同码（field 点名哪一项）。快照形状非法（缺字段、类型错、行键重复、小节号为 0）⇒ INVALID_PARAMETER_RANGE（reason: \"invalidSnapshot\"）。只读：入参的纯函数，不要求活跃工程、不改工程、不落盘。",
+          "properties": {
+            "snapshot_a": {
+              "type": "object",
+              "description": "修改前的快照：get_song_overview 的 data（SongOverview，schema 1.1）原样"
+            },
+            "snapshot_b": {
+              "type": "object",
+              "description": "当前版的快照：get_song_overview 的 data（SongOverview，schema 1.1）原样；与 snapshot_a 同口径（版本 / 频段定义 / 小节级）"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "snapshot_a",
+            "snapshot_b"
           ]
         }
       }

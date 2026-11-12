@@ -52,7 +52,7 @@
 
 ## 强大功能
 
-- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线。段内自相似度检查已合入（相似度 ≥ 0.95、≥ 4 小节，取最优 5 个匹配）。
+- **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线与 A/B 快照对比（`compare_song_snapshots` MCP 工具）。段内自相似度检查已合入（相似度 ≥ 0.95、≥ 4 小节，取最优 5 个匹配）。
 - **命令行母带**：`--loudness-target` 配 `--true-peak-ceiling`，在 `--export-wav` 上应用响度目标；目标达不到就响亮失败，绝不静默降级。
 - **批量操作与分轨**：`--apply-ops` 把一文件编曲操作一次提交；`--export-stems` 分轨导出，与 MCP 工具同一后端。
 - **采样库编辑器**：`--edit-samples` 把每个采样的音准校到 ±0.5 音分以内（FFT 基频），合成 mf/f 力度层并做 RMS 归一化。
@@ -61,7 +61,7 @@
 - **工程自带一切**：用到的采样与 SFZ 定义内嵌进 `.yeban` 容器；渲染先查容器内嵌、再查磁盘；旧工程逐字节不动。
 - **原生预制**：4 个 MCP 工具（`yeban_list_presets`、`yeban_apply_preset`、`yeban_save_preset`、`yeban_preset_bypass`）与 6 个工厂预制（钢琴、大提琴、古典吉他、长笛、萨克斯、鼓组），载入即带调好的处理，不是干声。
 - **歌声合成（经外部 SVS 服务）**：`synthesize_singing` 提交谱子、`svs_job` 取回结果——夜半是 MCP 客户端，合成在伶人 SVS 服务侧进行。
-- **42 个 MCP 工具，已经很强大**（意图 API v2）与 **VST3 插件宿主**（进程内；跨进程隔离为二期）。
+- **43 个 MCP 工具，已经很强大**（意图 API v2）与 **VST3 插件宿主**（进程内；跨进程隔离为二期）。
 
 ## 路线图
 

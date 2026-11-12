@@ -212,12 +212,14 @@ pub trait SongOverviewProvider: std::fmt::Debug + Send + Sync {
 }
 
 /// 保留 2 位小数（归一化指标，§8.2）。
-fn round2(value: f64) -> f64 {
+/// `pub(crate)`：`compare_snapshots` 的差值取整复用同一份事实源（⛔ 不另写一份）。
+pub(crate) fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
 /// 保留 1 位小数（响度与频段能量 dB，§8.2）。
-fn round1(value: f64) -> f64 {
+/// `pub(crate)`：`compare_snapshots` 的差值取整复用同一份事实源（⛔ 不另写一份）。
+pub(crate) fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 

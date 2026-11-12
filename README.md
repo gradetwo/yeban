@@ -42,7 +42,7 @@
 
 ## What Yeban can do
 
-- **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line. A within-song self-similarity check has shipped (similarity ≥ 0.95 over ≥ 4 bars, best 5 matches).
+- **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line and an A/B snapshot diff (`compare_song_snapshots` MCP tool). A within-song self-similarity check has shipped (similarity ≥ 0.95 over ≥ 4 bars, best 5 matches).
 - **Mastering from the command line**: `--loudness-target` with `--true-peak-ceiling` applies the loudness target on `--export-wav`; an unreachable target fails loudly instead of silently degrading.
 - **Batch edits and stems**: `--apply-ops` commits a file of edit operations as one batch; `--export-stems` renders stems with the same backend as the MCP tool.
 - **Sample-library editor**: `--edit-samples` corrects each sample's pitch to within ±0.5 cents (FFT fundamental), synthesises mf/f velocity layers and normalises RMS.
@@ -51,7 +51,7 @@
 - **Projects carry what they use**: used samples and their SFZ definitions are embedded in the `.yeban` container; rendering checks the embedded pool first, disk second; old projects are byte-identical.
 - **Native presets**: four MCP tools (`yeban_list_presets`, `yeban_apply_preset`, `yeban_save_preset`, `yeban_preset_bypass`) and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing instead of a dry sound.
 - **Singing synthesis, via the external SVS service**: `synthesize_singing` submits a score and `svs_job` polls it back — Yeban is the MCP client; synthesis itself runs in the Lingren SVS service.
-- **42 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
+- **43 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
 
 ## Roadmap
 
