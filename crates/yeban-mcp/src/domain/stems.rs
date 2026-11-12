@@ -49,6 +49,10 @@ pub const STEM_FILE_EXTENSION: &str = "wav";
 /// 文件名序号的最小宽度（`0001.wav`）。轨数超过 4 位时按实际位数加宽。
 pub const STEM_INDEX_MIN_WIDTH: usize = 4;
 
+/// 分轨文件名总长上限（字节）。255 是 ext4 / APFS / NTFS 共同的单个文件名
+/// 上限；汉字每字 3 字节，清洗后的名字超限时按整字截断（见 [`stem_file_name`]）。
+pub const STEM_FILE_NAME_MAX_BYTES: usize = 255;
+
 /// `stemsBasis.basis` 的固定措辞（成本读数必须**自己说清**代价，`WALL ⑦` 的先例）。
 pub const STEMS_BASIS_TEXT: &str = "per-track re-render of the full project window (one project-wide basis render + one render per stem)";
 
@@ -681,10 +685,16 @@ fn stem_render_request(
     }
 }
 
-/// 确定性清洗轨名 → 文件名（D7）。
+/// 确定性清洗轨名 → 文件名（D7，2026-11-13 修订）。
 ///
-/// 规则：保留 `[0-9A-Za-z._-]`，其余**逐个**换成 `_`；去掉首尾的 `.`/`_`；
-/// 空结果回退成 `track`（回退是**确定的**，不是随机）。
+/// 规则：保留 **Unicode 字母与数字**（`char::is_alphanumeric`，含汉字、假名、谚文、
+/// 带重音的拉丁字母等）与 `.`/`_`/`-`，其余**逐个**换成 `_`；去掉首尾的 `.`/`_`；
+/// 空结果回退成 `track`（回退是**确定的**，不是随机）。路径分隔符、控制字符与
+/// Windows 禁用字符（`< > : " / \ | ? *`）都不在保留集内，照旧被换掉 ⇒ 清洗
+/// 结果里不存在目录分隔，轨名带不进路径穿越。
+/// 文件名总长封顶 [`STEM_FILE_NAME_MAX_BYTES`] 字节：超限时把清洗后的名字按
+/// **整字**截断到预算内，截断后尾部的 `.`/`_` 再剥一次。汉字每字 3 字节，
+/// 不封顶时八十余字的中文轨名即越过 255 字节的文件系统上限，写盘必然失败。
 /// 形状 = `<index>.<sanitized-track-name>.wav`，`index` 是**工程内轨顺序**的十进制（`1` 起）。
 ///
 /// 序号宽度 = [`STEM_INDEX_MIN_WIDTH`] 起，按 `track_count`（工程里的**全部**轨数，含
@@ -697,7 +707,7 @@ pub fn stem_file_name(index: usize, track_count: usize, name: &str) -> String {
     let sanitized: String = name
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            if ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-') {
                 ch
             } else {
                 '_'
@@ -705,7 +715,17 @@ pub fn stem_file_name(index: usize, track_count: usize, name: &str) -> String {
         })
         .collect();
     let trimmed = sanitized.trim_matches(|ch: char| ch == '.' || ch == '_');
-    let base = if trimmed.is_empty() { "track" } else { trimmed };
+    // 名字段的字节预算 = 总长上限 − 序号 − 两个 `.` − 扩展名。
+    let base_budget = STEM_FILE_NAME_MAX_BYTES - width - 1 - 1 - STEM_FILE_EXTENSION.len();
+    let mut base = trimmed;
+    if base.len() > base_budget {
+        let mut cut = base_budget;
+        while !base.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        base = base[..cut].trim_end_matches(['.', '_']);
+    }
+    let base = if base.is_empty() { "track" } else { base };
     format!("{index:0width$}.{base}.{STEM_FILE_EXTENSION}")
 }
 
@@ -713,13 +733,46 @@ pub fn stem_file_name(index: usize, track_count: usize, name: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 清洗规则的唯一权威是 **ADR-0030 D7**：保留 `[0-9A-Za-z._-]`、其余逐个 `_`、
-    /// 首尾的 `.`/`_` 剥掉、空结果回退 `track`。下面的期望值全部按这条规则实测得出。
+    /// 清洗规则的唯一权威是 **ADR-0030 D7**（2026-11-13 修订）：保留 Unicode
+    /// 字母/数字与 `.`/`_`/`-`、其余逐个 `_`、首尾的 `.`/`_` 剥掉、空结果回退
+    /// `track`、总长封顶 [`STEM_FILE_NAME_MAX_BYTES`] 字节。下面的期望值全部
+    /// 按这条规则实测得出。
     #[test]
-    fn file_name_keeps_only_the_safe_charset_and_pads_the_index() {
-        // 空格与两个汉字各换成一个 `_`，尾部的 `__` 属于首尾剥离范围 ⇒ 全消。
-        assert_eq!(stem_file_name(1, 3, "Lead Vox 主唱"), "0001.Lead_Vox.wav");
+    fn file_name_keeps_unicode_letters_and_pads_the_index() {
+        // 空格换成一个 `_`；汉字是 Unicode 字母，原样保留（修订前被削成 `_`
+        // 再被首尾剥离吃掉，纯中文轨名整段消失）。
+        assert_eq!(
+            stem_file_name(1, 3, "Lead Vox 主唱"),
+            "0001.Lead_Vox_主唱.wav"
+        );
         assert_eq!(stem_file_name(42, 99, "drum-kit.2"), "0042.drum-kit.2.wav");
+    }
+
+    #[test]
+    fn pure_chinese_track_names_survive_and_stay_distinct() {
+        // 两条纯中文轨名各自可读，不再一起塌成 `track`。
+        assert_eq!(stem_file_name(1, 3, "鼓组"), "0001.鼓组.wav");
+        assert_eq!(stem_file_name(2, 3, "帮腔"), "0002.帮腔.wav");
+        // `/` 仍是路径分隔符：逐个换成 `_`，名字里带不进目录。
+        assert_eq!(stem_file_name(1, 3, "鼓组/帮腔"), "0001.鼓组_帮腔.wav");
+        // 符号（emoji）不在保留集内：换成 `_` 后被首尾剥离吃掉。
+        assert_eq!(stem_file_name(1, 3, "鼓组🥁"), "0001.鼓组.wav");
+    }
+
+    #[test]
+    fn overlong_names_are_truncated_on_a_char_boundary_within_the_byte_cap() {
+        // 名字段预算 = 255 − 4（序号）− 1 − 1 − 3（`.wav`）= 246 字节。
+        // 汉字每字 3 字节 ⇒ 82 字封顶，截断点落在整字边界上。
+        let chinese = "鼓".repeat(200);
+        let file_name = stem_file_name(1, 3, &chinese);
+        assert_eq!(file_name, format!("0001.{}.wav", "鼓".repeat(82)));
+        assert!(file_name.len() <= STEM_FILE_NAME_MAX_BYTES);
+        // ASCII 长名同口径：246 个字符封顶。
+        let ascii = "a".repeat(300);
+        assert_eq!(
+            stem_file_name(1, 3, &ascii),
+            format!("0001.{}.wav", "a".repeat(246))
+        );
     }
 
     #[test]
