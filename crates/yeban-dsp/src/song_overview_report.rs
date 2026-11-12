@@ -629,8 +629,8 @@ pub fn render_html_report_with_title(overview: &SongOverview, title: &str) -> St
 mod tests {
     use super::*;
     use crate::song_overview::{
-        Anomaly, AnomalyType, BAND_DEFINITIONS_HZ, BarSeries, BestMatch, RepeatedPassage,
-        RepetitionSummary, SongMeta, StructuralSummary,
+        Anomaly, AnomalyType, BAND_DEFINITIONS_HZ, BarSeries, BestMatch, FrequencyClashSummary,
+        RepeatedPassage, RepetitionSummary, SongMeta, StructuralSummary,
     };
 
     /// 两小节手算夹具（列式；与 `song_overview_provider` 的映射夹具同源的数值，
@@ -692,6 +692,7 @@ mod tests {
                     [-13.0, -10.6, -11.8, -9.4, -12.6, -16.2, -20.8, -28.0],
                 ],
             },
+            frequency_clash: FrequencyClashSummary::default(),
         }
     }
 
@@ -731,6 +732,7 @@ mod tests {
                 density_perc_onsets_per_beat: Vec::new(),
                 bands_tilted_db: Vec::new(),
             },
+            frequency_clash: FrequencyClashSummary::default(),
         }
     }
 
