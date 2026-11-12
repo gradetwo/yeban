@@ -303,8 +303,8 @@ fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
 fn no_new_addressable_nodes_or_second_readouts() {
     assert_eq!(
         SONG_OVERVIEW.matches("accessible-id:").count(),
-        11,
-        "总览面板的 11 个可寻址 ID 一位未动（含 Phase 2 预设键）"
+        12,
+        "总览面板的 12 个可寻址 ID 一位未动（含 Phase 2 预设键 ＋ follow-ons (a) 频段独奏金框）"
     );
     assert_eq!(
         SONG_OVERVIEW.matches("accessible-value:").count(),

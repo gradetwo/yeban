@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `33454ca0079bd909`
+- `Cargo.lock` SHA-256（前 16 位）: `4571877a4e385d96`
 - 外部依赖包数: **638**（不含 29 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -437,7 +437,7 @@
 | `range-alloc` | `0.1.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `raw-window-handle` | `0.6.2` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
 | `raw-window-metal` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
-| `rayon` | `1.12.0` | `MIT OR Apache-2.0` | 直接 | `yeban-render` |
+| `rayon` | `1.12.0` | `MIT OR Apache-2.0` | 直接 | `yeban-dsp`, `yeban-render` |
 | `rayon-core` | `1.13.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `read-fonts` | `0.41.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `realfft` | `3.5.1` | `MIT` | 直接 | `yeban-dsp` |

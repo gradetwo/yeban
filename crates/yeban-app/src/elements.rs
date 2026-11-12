@@ -1026,6 +1026,15 @@ impl ElementRegistry {
             "曲风预设",
             false,
         );
+        // Songmap follow-ons (a) 频段独奏金框：标签与 `.slint` 的
+        // `accessible-label` 逐字相同（"独奏频段行"）；角色 image（图形载体）。
+        registry.add(
+            "song-overview-band-solo-outline",
+            ElementKind::Image,
+            "workspace/song_overview_panel.slint",
+            "独奏频段行",
+            false,
+        );
 
         // ------------------------------------------------------------ 控制台导轨
         registry.add(
