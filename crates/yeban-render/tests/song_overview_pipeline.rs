@@ -282,21 +282,24 @@ fn stems_render_each_source_track_solo() {
     let stems =
         render_stems_to_buffers(&project, &settings, never_called_provider()).expect("分轨渲染");
 
-    // 演示工程 6 条源轨；每条分轨与混音同帧数。
-    assert_eq!(stems.len(), 6, "演示工程应有 6 条源轨");
+    // ⭐ **空轨不进逐轨渲染**：演示工程 6 条轨里「主音」「弦乐」「打击」**没有任何剪辑**
+    // （既无 MIDI 也无音频）⇒ 确定输出静音。渲染它们只是把静音抄一遍（每条 95.8 MB：266 s / 44.1 kHz / 32-bit Float 立体声），
+    // 而 `StemBuffer.audio` 全程驻留内存 ⇒ 大工程会把进程撑爆（见 `render_stems_to_buffers`
+    // 里那条判据的实测读数）。剩下 3 条有内容的源轨，每条分轨与混音同帧数。
+    assert_eq!(stems.len(), 3, "只有有剪辑/采样器的源轨才进逐轨渲染");
     for stem in &stems {
         assert_eq!(stem.audio.frames, 240_000);
         assert_eq!(stem.audio.sample_rate, 48_000);
     }
-    // 只有鼓轨有 MIDI 剪辑摆放（其余轨：贝斯/铺底只有音频剪辑，Phase 1 不
-    // 渲染音频；主音/弦乐/打击根本没有剪辑）→ 5 条静音、仅鼓轨出声。
+    // 只有鼓轨有 MIDI 剪辑摆放（贝斯/铺底只有音频剪辑，Phase 1 不渲染音频）⇒
+    // 2 条静音、仅鼓轨出声。「主音/弦乐/打击」没有剪辑，已在上面被排除。
     let mut silent: Vec<&str> = stems
         .iter()
         .filter(|stem| stem.audio.peak() == 0.0)
         .map(|stem| stem.name.as_str())
         .collect();
     silent.sort_unstable();
-    assert_eq!(silent, vec!["主音", "弦乐", "打击", "贝斯", "铺底"]);
+    assert_eq!(silent, vec!["贝斯", "铺底"]);
     let sounding: Vec<&str> = stems
         .iter()
         .filter(|stem| stem.audio.peak() > 0.01)

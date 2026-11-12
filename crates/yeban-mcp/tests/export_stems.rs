@@ -745,3 +745,207 @@ fn export_without_an_active_project_fails_as_no_active_project() {
     assert_eq!(response["error"]["code"], json!("NO_ACTIVE_PROJECT"));
     assert_eq!(entries(&out_dir), Vec::<String>::new());
 }
+
+// ---------------------------------------------------------------------------
+// 判据 10 / 11（本支）：⭐ **流式落盘** —— 渲一条、写一条、释放一条
+// ---------------------------------------------------------------------------
+
+/// 判据 10：`export_streaming` 的产物与 `export` + `write` **逐字节相同**，
+/// 且字节确实在写完之后被释放（`artifact.bytes` 为空、`bytes_len` 仍报真实大小）。
+///
+/// 为什么这条必须存在：流式路径的存在理由是"内存"，而内存优化的第一嫌疑就是
+/// "顺手改了字节"。这条把"省下的只有内存"钉成可执行事实 —— 任一条字节不同就红。
+#[test]
+fn streaming_export_writes_the_same_bytes_and_releases_the_buffers() {
+    use yeban_mcp::domain::stems::{self, StemRequest};
+
+    let scratch = Scratch::new("stream-bytes");
+    let project = three_track_project();
+    let project_path = scratch.project_path();
+    let deferred_dir = scratch.dir.join("deferred");
+    let streamed_dir = scratch.dir.join("streamed");
+    fs::create_dir_all(&deferred_dir).expect("建两阶段目录");
+    fs::create_dir_all(&streamed_dir).expect("建流式目录");
+    let assets: BTreeMap<yeban_model::AssetHash, Vec<u8>> = BTreeMap::new();
+    let now_ms = 1_760_000_000_000;
+
+    let deferred = stems::export(
+        &project,
+        &project_path,
+        &StemRequest {
+            out_dir: deferred_dir.clone(),
+            track_ids: None,
+        },
+        now_ms,
+        &assets,
+    )
+    .expect("两阶段渲染");
+    assert!(!deferred.streamed, "`export` 不该声称写过盘");
+    assert!(
+        deferred.stems.iter().all(|row| !row.artifact.bytes.is_empty()),
+        "两阶段路径的全部字节都留在内存里（那是它的成本，也是 dryRun 的前提）"
+    );
+    let in_memory: Vec<usize> = deferred.stems.iter().map(|row| row.bytes_len).collect();
+    let names: Vec<String> = deferred
+        .stems
+        .iter()
+        .map(|row| row.file_name.clone())
+        .collect();
+    stems::write(&deferred).expect("两阶段落盘");
+
+    let streamed = stems::export_streaming(
+        &project,
+        &project_path,
+        &StemRequest {
+            out_dir: streamed_dir.clone(),
+            track_ids: None,
+        },
+        now_ms,
+        &assets,
+    )
+    .expect("流式导出");
+    assert!(streamed.streamed, "`export_streaming` 必须标记已写穿");
+    assert!(
+        streamed.stems.iter().all(|row| row.artifact.bytes.is_empty()),
+        "写完之后字节必须被释放 —— 否则这个函数只是在原地踏步"
+    );
+    assert_eq!(
+        streamed.stems.iter().map(|row| row.bytes_len).collect::<Vec<_>>(),
+        in_memory,
+        "`bytes_len` 是回执的唯一来源，⛔ 不能跟着 `artifact.bytes` 一起清零"
+    );
+    assert_eq!(
+        streamed.stems.iter().map(|row| row.file_name.clone()).collect::<Vec<_>>(),
+        names,
+        "两条路径的文件名必须一致"
+    );
+
+    for name in &names {
+        let left = fs::read(deferred_dir.join(name)).expect("两阶段产物");
+        let right = fs::read(streamed_dir.join(name)).expect("流式产物");
+        assert_eq!(left, right, "{name}: 流式产物必须与两阶段逐字节相同");
+        assert!(!right.is_empty(), "{name}: 不许写出空文件");
+    }
+    for row in &streamed.stems {
+        assert_eq!(
+            usize::try_from(fs::metadata(&row.path).expect("产物存在").len()).expect("放得进 usize"),
+            row.bytes_len,
+            "{}: 回执里的字节数必须是盘上文件的大小",
+            row.file_name
+        );
+        assert_eq!(
+            file_sha256(&row.path),
+            row.artifact.sha256,
+            "{}: 回执里的 sha256 必须能从盘上字节读回",
+            row.file_name
+        );
+    }
+    // ⭐ 写穿之后再调 `write` 是**空操作**（护栏：字节已释放，重写会写出 0 字节）。
+    // 判据是"与**写前**的哈希相同"，⛔ 不是把读到的字节与它自己比 —— 后者恒真。
+    let before: Vec<String> = names
+        .iter()
+        .map(|name| file_sha256(&streamed_dir.join(name)))
+        .collect();
+    stems::write(&streamed).expect("写穿后的 write 必须幂等");
+    for (name, sha) in names.iter().zip(before) {
+        assert_eq!(
+            file_sha256(&streamed_dir.join(name)),
+            sha,
+            "{name}: 幂等写入不能动字节"
+        );
+    }
+}
+
+/// 判据 11：流式路径**中途失败**时，已写的保留、剩余的清点如实 —— 与两阶段的
+/// D5 回执**逐字段相同**（`resumeFrom` 尤其：流式下它真的是"还没渲染"的那些）。
+///
+/// 失败注入手法与判据 4 相同：给第 2 条轨一个 300 字符的名字 ⇒ 文件名超长，
+/// `rename` 报 `ENAMETOOLONG`。它不依赖文件权限，因此在 root 下同样会失败
+/// （`chmod 0o555` 对 root 无效，见 `render_master` 里那条环境限制）。
+#[test]
+fn streaming_failure_keeps_completed_files_and_reports_the_true_remainder() {
+    use yeban_mcp::domain::stems::{self, StemRequest};
+
+    let scratch = Scratch::new("stream-fail");
+    let mut project = three_track_project();
+    project.tracks.get_mut(&id(3)).expect("Pad 在夹具里").name = "A".repeat(300);
+    let project_path = scratch.project_path();
+    let assets: BTreeMap<yeban_model::AssetHash, Vec<u8>> = BTreeMap::new();
+    let now_ms = 1_760_000_000_000;
+
+    let mut receipts = Vec::new();
+    for (tag, streaming) in [("deferred", false), ("streamed", true)] {
+        let out_dir = scratch.dir.join(tag);
+        fs::create_dir_all(&out_dir).expect("建目录");
+        let request = StemRequest {
+            out_dir: out_dir.clone(),
+            track_ids: None,
+        };
+        let fault = if streaming {
+            stems::export_streaming(&project, &project_path, &request, now_ms, &assets)
+                .expect_err("第 2 条必须写失败")
+        } else {
+            let batch =
+                stems::export(&project, &project_path, &request, now_ms, &assets).expect("渲染成功");
+            stems::write(&batch).expect_err("第 2 条必须写失败")
+        };
+        let data = match &fault {
+            yeban_mcp::domain::error::Fault::Domain { data, .. } => {
+                data.clone().expect("部分成功回执必须带 data")
+            }
+            other => panic!("期望领域失败, 实际 {other:?}"),
+        };
+        assert_eq!(data["errorKind"], json!("stemWriteFailed"), "{tag}");
+        assert_eq!(array_len(&data, "completedStems"), 1, "{tag}: 恰好 1 条已落盘");
+        assert_eq!(data["completedStems"][0]["name"], json!("Lead"), "{tag}");
+        // 已成功的那条**真的在盘上**（两类路径都必须保留它）。
+        assert_eq!(
+            entries(&out_dir),
+            vec!["0001.Lead.wav".to_owned()],
+            "{tag}: 只许留下已成功的第 1 条"
+        );
+        assert_eq!(
+            file_sha256(&out_dir.join("0001.Lead.wav")),
+            data["completedStems"][0]["sha256"].as_str().expect("sha256"),
+            "{tag}: 保留下来的文件要能按回执校验"
+        );
+        assert_eq!(array_len(&data, "orphanedFiles"), 0, "{tag}: 没有残留就不许虚报");
+        receipts.push(data);
+    }
+
+    // ⭐ 两条路径的 D5 回执必须同形同值（除了 `stemsBasis.renders` 之外 ——
+    //    两阶段渲了 4 条，流式渲到第 2 条就停了）。
+    let (deferred, streamed) = (&receipts[0], &receipts[1]);
+    for key in ["failedTrackId", "failedFileName", "partial"] {
+        assert_eq!(deferred[key], streamed[key], "`{key}` 必须一致");
+    }
+    // `failedPath` 唯一的差别是**目录**（两个批次落在不同目录），文件名必须相同。
+    assert_eq!(
+        Path::new(deferred["failedPath"].as_str().expect("路径"))
+            .file_name()
+            .expect("文件名"),
+        Path::new(streamed["failedPath"].as_str().expect("路径"))
+            .file_name()
+            .expect("文件名"),
+        "`failedPath` 的文件名部分必须一致"
+    );
+    assert_eq!(
+        deferred["resumeFrom"]["trackIds"], streamed["resumeFrom"]["trackIds"],
+        "剩余清单必须一致（流式下它就是'还没渲染'的那些）"
+    );
+    assert_eq!(
+        deferred["resumeFrom"]["trackIds"]
+            .as_array()
+            .expect("数组")
+            .len(),
+        2,
+        "失败那条 + 后面那条 = 2"
+    );
+    assert!(
+        streamed["stemsBasis"]["renders"]
+            .as_u64()
+            .expect("整数")
+            < deferred["stemsBasis"]["renders"].as_u64().expect("整数"),
+        "流式在失败处就停了 ⇒ 渲染次数必须更少（如实计价）"
+    );
+}

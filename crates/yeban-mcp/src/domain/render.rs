@@ -460,7 +460,7 @@ use yeban_render::inserts::{
 use yeban_render::mastering;
 use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, OutputStage, RenderError, RenderOptions,
-    RenderOutput, RenderPlan, db_to_linear, project_phase_align, track_latencies,
+    RenderOutput, RenderPlan, SilentSource, db_to_linear, project_phase_align, track_latencies,
 };
 // **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
 // 门限积分）。本模块**不复制**它一个表达式：走 `yeban-render` 的再导出，因为
@@ -2195,8 +2195,14 @@ pub struct RenderArtifact {
     pub longest_path_frames: u32,
     /// 渲染计划里的节点数（剪枝后）。
     pub node_count: usize,
-    /// 源节点。
+    /// 源节点（**建了源**的那些：至少有一个片段摆放或绑了采样器）。
     pub source_nodes: Vec<EntityId>,
+    /// ⭐ **空轨**：图里是源节点、但没有片段也没有采样器的轨。
+    ///
+    /// 它们确定输出 0，因此**不建源**（[`SilentSource`] 除外，那只是为了让
+    /// `RenderPlan::execute` 的"有源或有入边"判据成立）、**不进 `sources[]`**。
+    /// 但也不静默消失：`details().emptySources` 会按身份点名。
+    pub empty_source_nodes: Vec<EntityId>,
     /// 每个源节点的报告。
     pub sources: Vec<SourceReport>,
     /// ⭐ `ADR-0020`：逐轨贡献读数；`None` = 调用方没要（`contributions` 缺省）。
@@ -2410,6 +2416,20 @@ impl RenderArtifact {
                     .map(|node| Value::from(node.to_canonical_string()))
                     .collect(),
             ),
+        );
+        // ⭐ **空轨不静默消失**：`sourceNodes` / `sources[]` 只含有内容的源轨
+        // （空轨既不出声、也没有可报的读数），被剔掉的那些在这里成组点名。
+        // `count` 与 `trackIds.len()` 恒相等 —— 两个读数互相校验，不靠"看一遍数组"。
+        map.insert(
+            "emptySources".to_owned(),
+            serde_json::json!({
+                "count": self.empty_source_nodes.len(),
+                "trackIds": self.empty_source_nodes
+                    .iter()
+                    .map(|node| node.to_canonical_string())
+                    .collect::<Vec<_>>(),
+                "why": "该轨既没有片段摆放也没有采样器, 确定输出 0; 不建源、不进 sources[]",
+            }),
         );
         map.insert(
             "sources".to_owned(),
@@ -2698,9 +2718,32 @@ pub fn build(
     let probe = probe_subgraph(project, sample_rate)
         .map_err(|error| render_error("渲染计划探针编译", &error))?;
     let nodes = probe.nodes;
-    let source_nodes = probe.source_nodes;
+    let all_source_nodes = probe.source_nodes;
     let bus_source_nodes = probe.bus_source_nodes;
     let rendered_edges = probe.rendered_edges;
+    // ⭐ **空轨不进源表**（判据与 CLI 的 `render_core` 同一条：`clips` 为空且没绑采样器
+    // ⇒ 引擎/SFZ/最小音源都只能输出 0）。
+    //
+    // 为什么这条不是"优化"而是"修缺陷"：
+    // * 一条空轨**仍然是一个节点**，而 `RenderPlan::execute` 要求"有源或有入边"；
+    //   它没有入边，所以直接从源表里删掉会让整次渲染报 `MissingSource`。
+    //   空轨于是走 [`SilentSource`]（0 字节），而不是给它建一台 ~32 MiB 的引擎。
+    // * `sources[]` 回执过去为每条空轨发一行 `notes:0 / peak:0` —— 78 项里 71 项是
+    //   噪声，真正的读数（哪条轨出了声）被埋掉。剔除后另行在 `emptySources` 里
+    //   成组点名（⛔ 不静默丢轨，与分轨的 `skippedTracks` 同一条纪律）。
+    //
+    // ⚠ `all_source_nodes` 仍服务三处**结构**判定（自动化收据、输出级、非源节点片段
+    // 登记）—— 那些地方问的是"图里这条节点是什么角色"，不是"它要不要建源"。
+    let (empty_source_nodes, source_nodes): (Vec<EntityId>, Vec<EntityId>) = all_source_nodes
+        .iter()
+        .copied()
+        .partition(|node| {
+            *node != project.master_bus_track_id
+                && project
+                    .tracks
+                    .get(node)
+                    .is_some_and(|track| track.clips.is_empty() && track.sampler.is_none())
+        });
     // ⭐ `#315` / `#337`：三个侧链读数（"声明了 N 条、求和了 M 条、没有键输入路径 K 条"）。
     // **纯读**，⛔ 不碰一个样本。
     //
@@ -2777,7 +2820,7 @@ pub fn build(
     //      `RenderPlan::attach_device_param_automation`）。
     // ⭐ TrackVolume 修复：收据的源节点集也要含总线源轨 —— 它们的引擎源真的渲染
     // （`MidiCc` 泳道因此落点），写侧读数与导出读数才同源。
-    let mut report_source_nodes = source_nodes.clone();
+    let mut report_source_nodes = all_source_nodes.clone();
     report_source_nodes.extend(bus_source_nodes.iter().copied());
     let automation =
         AutomationReport::from_project(project, &report_source_nodes, &rendered_edges, &nodes);
@@ -2898,6 +2941,12 @@ pub fn build(
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
         pending.push((node, source, effect));
+    }
+    // ⭐ 空轨：注册 **0 字节**静音源（不建引擎、不建 SFZ 表、也不进 `sources[]` 回执）。
+    // 直接进 `registry` 而不是 `pending` —— 静音源没有可夹的片段区间、也没有值得
+    // 探针测量的峰值，走 `pending` 只会多一次 `clamp_to` 与一个恒为 0 的 `PeakTap`。
+    for &node in &empty_source_nodes {
+        registry.insert(node, Box::new(SilentSource));
     }
     // 5. 非源节点(总线/主轨)上的片段: 不渲染, 但**明确登记**, 不静默丢。
     for &node in &nodes {
@@ -3299,6 +3348,7 @@ pub fn build(
         bytes,
         node_count: nodes.len(),
         source_nodes,
+        empty_source_nodes,
         sources: reports,
         // ⭐ `ADR-0020`：一次渲染给不出"拿掉某轨差多少"；由调用方（`plan_render_master`）
         // 在 `build` 之后按需填。这样 `build` 仍然只做**一次**渲染。

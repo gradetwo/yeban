@@ -698,6 +698,20 @@ fn source_nodes(
                     .bus_reduction_order(*node)
                     .is_none_or(|inputs| inputs.is_empty())
         })
+        // ⭐⭐ **空轨不进逐轨渲染**（与 `yeban-app` 的渲染核心、`yeban_export_stems`
+        // 同一条判据：没有 clip、也没有绑定采样器 ⇒ 确定输出静音）。
+        //
+        // 每条源轨都要渲一整条母带长度、并且**留在内存里**（`StemBuffer.audio`
+        // 是 266 s / 44.1 kHz / 立体声 f32 ≈ 95.8 MB）。78 条源轨的工程
+        // （其中 71 条空轨）就是 7.5 GB —— 实测在这个 8 GB 的 cgroup 上限被
+        // OOM 杀（`exit=137`、254 s、无 traceback）。空轨的能量层恒为 −∞ / 全 0，
+        // ⛔ 不进任何一张图；把它们渲出来只是把静音抄 71 遍。
+        .filter(|node| {
+            project
+                .tracks
+                .get(node)
+                .is_some_and(|track| !track.clips.is_empty() || track.sampler.is_some())
+        })
         .collect())
 }
 

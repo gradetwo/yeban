@@ -503,7 +503,22 @@ impl EngineTrackSource {
         // ⭐ 直接构造**在堆上**：`SynthEngine::new` 的 109152 B 返回位因此只在本帧
         //    存在一次（随后 memcpy 进 `Box`），⛔ 不再有"返回位 ＋ 中间位 ＋ 装箱源"
         //    三份 10 万字节级副本叠在同一帧里（见字段文档的尺寸对照）。
-        let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
+        //
+        // ⭐⭐ **槽数 = 1**（不是 `DEFAULT_TRACK_SLOTS` = 1024）。
+        //
+        // 本源只渲染**一条**轨（下面 `arm_track_from_snapshot` 逐轨武装），1024 个槽里
+        // 只有一个会用上，其余 1023 个是纯浪费 —— 而每个槽带着一台
+        // `DrumMachine<16>`（≈ 23.9 KiB）＋ `PolySynth` ＋ `SfzVoicePool`，一整台默认
+        // 引擎 ≈ 32 MiB。导出链**每条轨一个源** ⇒ 工程里有多少条轨就乘多少份：
+        // 实测 79 轨工程（其中 71 条空轨）单次整曲渲染峰值 3.33 GB，
+        // 而 7 条有声轨的同一份工程只要 1.05 GB —— 差的 2.28 GB 全是空轨那 71 台
+        // 1024 槽引擎。`--export-stems` / `--export-song-overview-html` 要在**一个进程**
+        // 里渲染 N+1 次，于是双双在 8 GB 的 cgroup 上限被 OOM 杀掉（exit=137）。
+        //
+        // 1 槽不会掉音：`arm_track_from_snapshot` 的契约就是"一个源一个槽"（见
+        // `synth.rs` 该函数文档：单轨武装**正是**为了让槽位上限与工程规模解耦），
+        // 而且 `begin_snapshot` 里 `tracks` 迭代器只有本轨一项 ⇒ `track_drops` 恒 0。
+        let mut engine = Box::new(SynthEngine::with_track_slots(snapshot.sample_rate(), 1));
         // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
         //
         // ⭐ **只武装这一条轨**（`arm_track_from_snapshot`）：本源只渲染 `track`，
@@ -564,6 +579,16 @@ impl EngineTrackSource {
     #[must_use]
     pub fn scheduled_notes(&self) -> usize {
         self.schedule.as_ref().map_or(0, NoteSchedule::len)
+    }
+
+    /// 本源那台引擎的**轨道槽数**（构造期定死）。
+    ///
+    /// 回归判据的读点：它必须是 **`1`**，⛔ 不是 `DEFAULT_TRACK_SLOTS`（1024）——
+    /// 见 [`Self::new`] 的内存注释（一个源只渲染一条轨，多出来的 1023 个槽
+    /// 每个都带着一台 `DrumMachine<16>`，合计 ≈ 32 MiB **一条轨**的纯浪费）。
+    #[must_use]
+    pub fn track_slots(&self) -> usize {
+        self.engine.track_slots()
     }
 
     /// 本源的调度表（加法访问器，无行为变化；供 MCP 插件源构造时复用——
@@ -1109,6 +1134,42 @@ mod tests {
             RenderOutput::digest_of(&[]),
             RenderOutput::digest_of(&[]),
             "`digest_of` 对空输入是稳定的（它只是 SHA-256 的包装）"
+        );
+    }
+
+    /// ⭐⭐ **内存判据**：一个离线源只武装**一个**轨道槽。
+    ///
+    /// # 量什么
+    ///
+    /// `EngineTrackSource::new` 建的那台 `SynthEngine` 的 `track_slots()`。修前是
+    /// `DEFAULT_TRACK_SLOTS` = 1024，修后是 1。
+    ///
+    /// # 为什么这条判据值钱（实测读数）
+    ///
+    /// 每个槽带着一台 `DrumMachine<16>`（≈ 23.9 KiB）＋ `PolySynth` ＋ `SfzVoicePool`
+    /// ⇒ 一整台默认引擎 ≈ **32 MiB**。导出链**每条轨一个源**，于是"轨数 × 32 MiB"：
+    ///
+    /// | 工程 | 非 master 节点 | 单次整曲（266 s）渲染峰值 |
+    /// |:--|--:|--:|
+    /// | 79 轨（7 条有声） | 78 | 3.33 GB（修前）→ **841 MB**（修后） |
+    /// | 同工程剪掉 71 条空轨 | 7 | 1.05 GB |
+    ///
+    /// 修前 `--export-stems` / `--export-song-overview-html`（一个进程里渲染 N+1 次）
+    /// 双双在 8 GB cgroup 上限被 OOM 杀（`exit=137`，无 traceback）。
+    ///
+    /// # 怎么变红
+    ///
+    /// 把 `new` 里的 `with_track_slots(_, 1)` 换回 `SynthEngine::new(_)`
+    /// ⇒ `track_slots() == 1024` ⇒ 本条红。
+    #[test]
+    fn an_offline_source_arms_exactly_one_track_slot() {
+        let project = yeban_model::samples::demo_project();
+        let (timbre, track) = source(&project);
+        let source = timbre.track_source(track).expect("必须能武装");
+        assert_eq!(
+            source.track_slots(),
+            1,
+            "离线源只渲染一条轨 ⇒ 只该占一个槽（每多一个槽 ≈ 32 KiB 的鼓机 + 声部池）"
         );
     }
 }

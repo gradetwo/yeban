@@ -9181,3 +9181,115 @@ fn an_instrument_wave_choice_changes_the_master_and_stops_registering_device_cha
         "乐器里混着没人消费的名字 ⇒ 正对照必须仍登记: {mystery}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 判据（本支）：⭐ **空轨不进源表** —— 但也不静默消失
+// ---------------------------------------------------------------------------
+
+/// 给夹具工程追加 `count` 条空轨（无片段、无采样器），各自一条到 Master 的边。
+///
+/// 形状与 `build_project3.py` 造的 71 条空轨**同源**：它们是被导入器按 Logic 的
+/// 轨道数建出来的，既没有内容也没有采样器，却在渲染器里各占一份运行态。
+fn with_empty_tracks(mut project: YebanProjectV1, count: u32) -> YebanProjectV1 {
+    let master = project.master_bus_track_id;
+    for index in 0..count {
+        let track_id = id(500 + index);
+        let edge = id(600 + index);
+        project.tracks.insert(
+            track_id,
+            TrackV3 {
+                id: track_id,
+                name: format!("空 {index:02}"),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: track_id,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        project.routing_graph.nodes.push(track_id);
+    }
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("带空轨的夹具必须合法: {error}"));
+    project
+}
+
+/// 判据：空轨**不进 `sourceNodes` / `sources[]`**（它们确定输出 0，建源只是把静音
+/// 抄一遍），但**必须在 `emptySources` 里按身份点名**（⛔ 不静默丢轨）。
+///
+/// 同一判据钉两件事，缺一不可：
+/// * 母带**逐字节不变** —— 剔除空轨是"同一份音频、少一份运行态"，⛔ 不是行为改动；
+/// * 读数**变了** —— `sources[]` 从 1+N 条降到 1 条，被去掉的那些在 `emptySources`。
+#[test]
+fn empty_tracks_are_named_but_never_become_sources() {
+    const EMPTY: u32 = 6;
+
+    let scratch = Scratch::new("empty-sources");
+    let bare = project(&Spec::default());
+    let padded = with_empty_tracks(project(&Spec::default()), EMPTY);
+    assert_eq!(padded.tracks.len(), bare.tracks.len() + EMPTY as usize);
+
+    let (mut dispatcher, auth) = dispatcher_with(&padded, &scratch.join("demo.yeban"));
+    let path = scratch.join("padded.wav");
+    let response = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": path.display().to_string()}),
+    );
+    assert_eq!(response["status"], "success", "{response}");
+    let data = &response["data"];
+
+    // ① 空轨不在源表里。
+    assert_eq!(
+        data["sourceNodes"].as_array().expect("数组").len(),
+        1,
+        "只有 Lead 是源: 空轨确定输出 0, ⛔ 不该建源: {}",
+        data["sourceNodes"]
+    );
+    assert_eq!(
+        data["sources"].as_array().expect("数组").len(),
+        1,
+        "`sources[]` 是逐源读数, 空轨没有读数可报"
+    );
+    // ② 但一条都没丢：按身份、按稳定顺序点名。
+    assert_eq!(data["emptySources"]["count"], json!(EMPTY), "{data}");
+    let named = data["emptySources"]["trackIds"].as_array().expect("数组");
+    assert_eq!(named.len(), EMPTY as usize, "count 必须等于 trackIds 长度");
+    let expected: Vec<Value> = (0..EMPTY)
+        .map(|index| json!(id(500 + index).to_canonical_string()))
+        .collect();
+    assert_eq!(
+        named, &expected,
+        "空轨必须按身份点名（顺序 = 工程内确定序）"
+    );
+    // ③ 母带字节不变 —— 与"根本没有这些轨"的工程逐字节相同。
+    let (mut bare_dispatcher, bare_auth) = dispatcher_with(&bare, &scratch.join("bare.yeban"));
+    let bare_path = scratch.join("bare.wav");
+    let bare_response = call(
+        &mut bare_dispatcher,
+        &bare_auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": bare_path.display().to_string()}),
+    );
+    assert_eq!(bare_response["status"], "success", "{bare_response}");
+    assert_eq!(
+        data["sha256"], bare_response["data"]["sha256"],
+        "空轨只是运行态, 不许改一个字节的音频"
+    );
+    assert_eq!(
+        data["masterDigest"], bare_response["data"]["masterDigest"],
+        "样本位级摘要也要一致"
+    );
+    assert_eq!(
+        fs::read(&path).expect("带空轨的产物"),
+        fs::read(&bare_path).expect("不带空轨的产物"),
+        "整份文件逐字节相同"
+    );
+}
