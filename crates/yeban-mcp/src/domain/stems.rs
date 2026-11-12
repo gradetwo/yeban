@@ -273,10 +273,7 @@ impl StemRow {
             .expect("to_value 产出对象")
             .clone();
         value.insert("wouldWrite".to_owned(), json!(true));
-        value.insert(
-            "bytesRenderedInMemory".to_owned(),
-            json!(self.bytes_len),
-        );
+        value.insert("bytesRenderedInMemory".to_owned(), json!(self.bytes_len));
         Value::Object(value)
     }
 }
@@ -371,12 +368,7 @@ impl StemBatch {
         map.insert("stemsBasis".to_owned(), self.stems_basis());
         map.insert(
             "bytesTotal".to_owned(),
-            json!(
-                completed
-                    .iter()
-                    .map(|row| row.bytes_len)
-                    .sum::<usize>()
-            ),
+            json!(completed.iter().map(|row| row.bytes_len).sum::<usize>()),
         );
         map.insert(
             "maxFileNameBytes".to_owned(),
@@ -774,12 +766,7 @@ fn write_failed(
     );
     data.insert(
         "writtenBeforeFailure".to_owned(),
-        json!(
-            completed
-                .iter()
-                .map(|row| row.bytes_len)
-                .sum::<usize>()
-        ),
+        json!(completed.iter().map(|row| row.bytes_len).sum::<usize>()),
     );
     data.insert(
         "rollback".to_owned(),

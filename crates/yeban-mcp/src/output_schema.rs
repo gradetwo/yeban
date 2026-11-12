@@ -869,7 +869,10 @@ fn render_request_roster() -> Value {
 fn empty_sources_roster() -> Value {
     roster(&[
         ("count", json!({"type": "integer"})),
-        ("trackIds", json!({"type": "array", "items": {"type": "string"}})),
+        (
+            "trackIds",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
         ("why", json!({"type": "string"})),
     ])
 }

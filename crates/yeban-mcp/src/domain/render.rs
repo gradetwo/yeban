@@ -2734,10 +2734,8 @@ pub fn build(
     //
     // ⚠ `all_source_nodes` 仍服务三处**结构**判定（自动化收据、输出级、非源节点片段
     // 登记）—— 那些地方问的是"图里这条节点是什么角色"，不是"它要不要建源"。
-    let (empty_source_nodes, source_nodes): (Vec<EntityId>, Vec<EntityId>) = all_source_nodes
-        .iter()
-        .copied()
-        .partition(|node| {
+    let (empty_source_nodes, source_nodes): (Vec<EntityId>, Vec<EntityId>) =
+        all_source_nodes.iter().copied().partition(|node| {
             *node != project.master_bus_track_id
                 && project
                     .tracks

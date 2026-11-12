@@ -782,7 +782,10 @@ fn streaming_export_writes_the_same_bytes_and_releases_the_buffers() {
     .expect("两阶段渲染");
     assert!(!deferred.streamed, "`export` 不该声称写过盘");
     assert!(
-        deferred.stems.iter().all(|row| !row.artifact.bytes.is_empty()),
+        deferred
+            .stems
+            .iter()
+            .all(|row| !row.artifact.bytes.is_empty()),
         "两阶段路径的全部字节都留在内存里（那是它的成本，也是 dryRun 的前提）"
     );
     let in_memory: Vec<usize> = deferred.stems.iter().map(|row| row.bytes_len).collect();
@@ -806,16 +809,27 @@ fn streaming_export_writes_the_same_bytes_and_releases_the_buffers() {
     .expect("流式导出");
     assert!(streamed.streamed, "`export_streaming` 必须标记已写穿");
     assert!(
-        streamed.stems.iter().all(|row| row.artifact.bytes.is_empty()),
+        streamed
+            .stems
+            .iter()
+            .all(|row| row.artifact.bytes.is_empty()),
         "写完之后字节必须被释放 —— 否则这个函数只是在原地踏步"
     );
     assert_eq!(
-        streamed.stems.iter().map(|row| row.bytes_len).collect::<Vec<_>>(),
+        streamed
+            .stems
+            .iter()
+            .map(|row| row.bytes_len)
+            .collect::<Vec<_>>(),
         in_memory,
         "`bytes_len` 是回执的唯一来源，⛔ 不能跟着 `artifact.bytes` 一起清零"
     );
     assert_eq!(
-        streamed.stems.iter().map(|row| row.file_name.clone()).collect::<Vec<_>>(),
+        streamed
+            .stems
+            .iter()
+            .map(|row| row.file_name.clone())
+            .collect::<Vec<_>>(),
         names,
         "两条路径的文件名必须一致"
     );
@@ -828,7 +842,8 @@ fn streaming_export_writes_the_same_bytes_and_releases_the_buffers() {
     }
     for row in &streamed.stems {
         assert_eq!(
-            usize::try_from(fs::metadata(&row.path).expect("产物存在").len()).expect("放得进 usize"),
+            usize::try_from(fs::metadata(&row.path).expect("产物存在").len())
+                .expect("放得进 usize"),
             row.bytes_len,
             "{}: 回执里的字节数必须是盘上文件的大小",
             row.file_name
@@ -885,8 +900,8 @@ fn streaming_failure_keeps_completed_files_and_reports_the_true_remainder() {
             stems::export_streaming(&project, &project_path, &request, now_ms, &assets)
                 .expect_err("第 2 条必须写失败")
         } else {
-            let batch =
-                stems::export(&project, &project_path, &request, now_ms, &assets).expect("渲染成功");
+            let batch = stems::export(&project, &project_path, &request, now_ms, &assets)
+                .expect("渲染成功");
             stems::write(&batch).expect_err("第 2 条必须写失败")
         };
         let data = match &fault {
@@ -896,7 +911,11 @@ fn streaming_failure_keeps_completed_files_and_reports_the_true_remainder() {
             other => panic!("期望领域失败, 实际 {other:?}"),
         };
         assert_eq!(data["errorKind"], json!("stemWriteFailed"), "{tag}");
-        assert_eq!(array_len(&data, "completedStems"), 1, "{tag}: 恰好 1 条已落盘");
+        assert_eq!(
+            array_len(&data, "completedStems"),
+            1,
+            "{tag}: 恰好 1 条已落盘"
+        );
         assert_eq!(data["completedStems"][0]["name"], json!("Lead"), "{tag}");
         // 已成功的那条**真的在盘上**（两类路径都必须保留它）。
         assert_eq!(
@@ -906,10 +925,16 @@ fn streaming_failure_keeps_completed_files_and_reports_the_true_remainder() {
         );
         assert_eq!(
             file_sha256(&out_dir.join("0001.Lead.wav")),
-            data["completedStems"][0]["sha256"].as_str().expect("sha256"),
+            data["completedStems"][0]["sha256"]
+                .as_str()
+                .expect("sha256"),
             "{tag}: 保留下来的文件要能按回执校验"
         );
-        assert_eq!(array_len(&data, "orphanedFiles"), 0, "{tag}: 没有残留就不许虚报");
+        assert_eq!(
+            array_len(&data, "orphanedFiles"),
+            0,
+            "{tag}: 没有残留就不许虚报"
+        );
         receipts.push(data);
     }
 
@@ -942,9 +967,7 @@ fn streaming_failure_keeps_completed_files_and_reports_the_true_remainder() {
         "失败那条 + 后面那条 = 2"
     );
     assert!(
-        streamed["stemsBasis"]["renders"]
-            .as_u64()
-            .expect("整数")
+        streamed["stemsBasis"]["renders"].as_u64().expect("整数")
             < deferred["stemsBasis"]["renders"].as_u64().expect("整数"),
         "流式在失败处就停了 ⇒ 渲染次数必须更少（如实计价）"
     );
