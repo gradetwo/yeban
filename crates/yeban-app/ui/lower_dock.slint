@@ -1,4 +1,4 @@
-import { Theme, TrackData, PianoStepRow } from "tokens.slint";
+import { Theme, TrackData, PianoStepRow, Tokens } from "tokens.slint";
 
 export component UnifiedLowerDock inherits Rectangle {
     in-out property <string> active-tab: "stacked"; // "stacked" | "devices" | "mixer" | "pianoroll"
@@ -63,7 +63,6 @@ export component UnifiedLowerDock inherits Rectangle {
 
     height: 256px;
     background: Theme.bg-panel;
-    // border line
     border-color: Theme.border-subtle;
 
     VerticalLayout {
@@ -72,17 +71,16 @@ export component UnifiedLowerDock inherits Rectangle {
 
         // DOCK TAB BAR
         Rectangle {
-            height: 32px;
-            background: #00000040;
-            // border line
+            height: 34px;
+            background: #090c14;
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
+                padding-left: 10px;
+                padding-right: 10px;
                 padding-top: 4px;
                 padding-bottom: 4px;
-                spacing: 6px;
+                spacing: 8px;
                 alignment: space-between;
 
                 HorizontalLayout {
@@ -91,48 +89,72 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         background: root.active-tab == "stacked" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
-                        Text {
-                            text: "🎛️ 堆叠视图 (Aether)";
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.active-tab == "stacked" ? #020617 : #94a3b8;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "🎛️ 旗舰堆叠";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: root.active-tab == "stacked" ? #020617 : #94a3b8;
+                                vertical-alignment: center;
                             }
+                        }
                         TouchArea { clicked => { root.select-tab("stacked"); } }
                     }
 
                     Rectangle {
                         background: root.active-tab == "devices" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
-                        Text {
-                            text: "⚡ 内联设备链 (Ableton)";
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.active-tab == "devices" ? #020617 : #94a3b8;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "⚡ 内联设备机架";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: root.active-tab == "devices" ? #020617 : #94a3b8;
+                                vertical-alignment: center;
                             }
+                        }
                         TouchArea { clicked => { root.select-tab("devices"); } }
                     }
 
                     Rectangle {
                         background: root.active-tab == "mixer" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
-                        Text {
-                            text: "🎚️ 混音台 (MixConsole)";
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.active-tab == "mixer" ? #020617 : #94a3b8;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "🎚️ 混音控制台";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: root.active-tab == "mixer" ? #020617 : #94a3b8;
+                                vertical-alignment: center;
                             }
+                        }
                         TouchArea { clicked => { root.select-tab("mixer"); } }
                     }
 
                     Rectangle {
                         background: root.active-tab == "pianoroll" ? Theme.accent : transparent;
                         border-radius: Theme.radius;
-                        Text {
-                            text: "🎹 MPE 钢琴卷帘";
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.active-tab == "pianoroll" ? #020617 : #94a3b8;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "🎹 钢琴卷帘 (MPE)";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: root.active-tab == "pianoroll" ? #020617 : #94a3b8;
+                                vertical-alignment: center;
                             }
+                        }
                         TouchArea { clicked => { root.select-tab("pianoroll"); } }
                     }
                 }
@@ -142,15 +164,24 @@ export component UnifiedLowerDock inherits Rectangle {
                     alignment: end;
                     Rectangle {
                         background: Theme.accent.with-alpha(0.15);
-                        border-radius: 3px;
+                        border-radius: 4px;
                         border-width: 1px;
                         border-color: Theme.accent.with-alpha(0.4);
-                        Text {
-                            text: "Focus: " + root.focus-track-name;
-                            font-size: 9px;
-                            font-weight: 700;
-                            color: Theme.accent;
+                        height: 24px;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.accent; }
+                            Text {
+                                text: "聚焦: " + root.focus-track-name;
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: Theme.accent;
+                                vertical-alignment: center;
                             }
+                        }
                     }
                 }
             }
@@ -158,18 +189,18 @@ export component UnifiedLowerDock inherits Rectangle {
 
         // DOCK BODY CONTENT (Panes)
         HorizontalLayout {
-            padding: 6px;
-            spacing: 6px;
+            padding: 8px;
+            spacing: 8px;
             vertical-stretch: 1;
 
             // PANE: INLINE DSP DEVICES (Visible in stacked or devices mode)
             if root.active-tab == "stacked" || root.active-tab == "devices" : HorizontalLayout {
-                spacing: 6px;
+                spacing: 8px;
                 horizontal-stretch: 1;
 
                 // Device 1: Wavetable MPE Synth
                 Rectangle {
-                    width: 230px;
+                    width: 235px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -177,32 +208,53 @@ export component UnifiedLowerDock inherits Rectangle {
 
                     VerticalLayout {
                         padding: 8px;
-                        spacing: 4px;
+                        spacing: 6px;
                         alignment: space-between;
 
                         HorizontalLayout {
-                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #06b6d4; }
-                            Text { text: "Wavetable MPE Synth"; font-size: 10px; font-weight: 800; color: #ffffff; vertical-alignment: center; }
-                            Text { text: "OSC 1+2"; font-size: 8px; color: #38bdf8; font-weight: 700; horizontal-alignment: right; vertical-alignment: center; }
+                            spacing: 6px;
+                            alignment: space-between;
+                            HorizontalLayout {
+                                spacing: 5px;
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #00c5ff; }
+                                Text {
+                                    text: "Wavetable MPE";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: #f8fafc;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: "OSC 1+2";
+                                font-family: Tokens.font-mono;
+                                font-size: 8px;
+                                letter-spacing: 0.8px;
+                                color: #38bdf8;
+                                font-weight: 700;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
                         }
 
                         // 3D Morph Wave SVG
                         Rectangle {
                             height: 72px;
-                            background: #06090f;
+                            background: #06080e;
                             border-radius: 4px;
                             border-width: 1px;
-                            border-color: #1e293b;
+                            border-color: #1a202c;
                             clip: true;
 
                             Path {
                                 commands: "M 0 55 Q 25 20, 50 50 T 100 30 T 160 45";
-                                stroke: #06b6d440;
+                                stroke: #00c5ff40;
                                 stroke-width: 1.5px;
                             }
                             Path {
                                 commands: "M 0 35 Q 25 8, 50 35 T 100 15 T 160 30";
-                                stroke: #06b6d4;
+                                stroke: #00c5ff;
                                 stroke-width: 2.2px;
                             }
                             Path {
@@ -212,12 +264,23 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             HorizontalLayout {
-                                x: 6px;
+                                x: 8px;
                                 y: 56px;
-                                width: parent.width - 12px;
+                                width: parent.width - 16px;
                                 alignment: space-between;
-                                Text { text: "POS: " + root.wt-pos-val + "%"; font-size: 8px; font-weight: 700; color: #38bdf8; }
-                                Text { text: "UNISON: 4 Voices"; font-size: 8px; color: #64748b; }
+                                Text {
+                                    text: "POS: " + root.wt-pos-val + "%";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    font-weight: 700;
+                                    color: #38bdf8;
+                                }
+                                Text {
+                                    text: "UNISON: 4 Voices";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    color: #64748b;
+                                }
                             }
                         }
 
@@ -226,13 +289,30 @@ export component UnifiedLowerDock inherits Rectangle {
                             spacing: 4px;
 
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
                                 VerticalLayout {
-                                    padding: 3px;
-                                    Text { text: "WT Pos"; font-size: 8px; color: #94a3b8; horizontal-alignment: center; }
-                                    Text { text: "" + root.wt-pos-val + "%"; font-size: 9px; font-weight: 700; color: #38bdf8; horizontal-alignment: center; }
+                                    padding: 4px;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "WT Pos";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                    }
+                                    Text {
+                                        text: "" + root.wt-pos-val + "%";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10px;
+                                        font-weight: 800;
+                                        color: #38bdf8;
+                                        horizontal-alignment: center;
+                                    }
                                 }
                                 TouchArea {
                                     clicked => {
@@ -243,13 +323,30 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
                                 VerticalLayout {
-                                    padding: 3px;
-                                    Text { text: "Cutoff"; font-size: 8px; color: #94a3b8; horizontal-alignment: center; }
-                                    Text { text: "" + root.wt-cutoff-hz + "Hz"; font-size: 9px; font-weight: 700; color: #10b981; horizontal-alignment: center; }
+                                    padding: 4px;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "Cutoff";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                    }
+                                    Text {
+                                        text: "" + root.wt-cutoff-hz + "Hz";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10px;
+                                        font-weight: 800;
+                                        color: #34d399;
+                                        horizontal-alignment: center;
+                                    }
                                 }
                                 TouchArea {
                                     clicked => {
@@ -260,13 +357,30 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
                                 VerticalLayout {
-                                    padding: 3px;
-                                    Text { text: "Reso"; font-size: 8px; color: #94a3b8; horizontal-alignment: center; }
-                                    Text { text: "" + root.wt-reso-val + "%"; font-size: 9px; font-weight: 700; color: #f59e0b; horizontal-alignment: center; }
+                                    padding: 4px;
+                                    spacing: 2px;
+                                    Text {
+                                        text: "Reso";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                    }
+                                    Text {
+                                        text: "" + root.wt-reso-val + "%";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10px;
+                                        font-weight: 800;
+                                        color: #fbbf24;
+                                        horizontal-alignment: center;
+                                    }
                                 }
                             }
                         }
@@ -275,7 +389,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                 // Device 2: Pro-QLinear 8-band Dynamic EQ
                 Rectangle {
-                    width: 250px;
+                    width: 255px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -283,39 +397,59 @@ export component UnifiedLowerDock inherits Rectangle {
 
                     VerticalLayout {
                         padding: 8px;
-                        spacing: 4px;
+                        spacing: 6px;
                         alignment: space-between;
 
                         HorizontalLayout {
-                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #10b981; }
-                            Text { text: "Pro-QLinear 8 (内联频谱)"; font-size: 10px; font-weight: 800; color: #ffffff; vertical-alignment: center; }
-                            Text { text: "" + root.wt-cutoff-hz + " Hz"; font-size: 8px; color: #10b981; font-weight: 700; horizontal-alignment: right; vertical-alignment: center; }
+                            spacing: 6px;
+                            alignment: space-between;
+                            HorizontalLayout {
+                                spacing: 5px;
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #10b981; }
+                                Text {
+                                    text: "Pro-QLinear 8 (动态 EQ)";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: #f8fafc;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: "" + root.wt-cutoff-hz + " Hz";
+                                font-family: Tokens.font-mono;
+                                font-size: 8px;
+                                color: #10b981;
+                                font-weight: 700;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
                         }
 
                         // EQ Curve + Spectrum Display
                         Rectangle {
                             height: 72px;
-                            background: #06090f;
+                            background: #06080e;
                             border-radius: 4px;
                             border-width: 1px;
-                            border-color: #1e293b;
+                            border-color: #1a202c;
                             clip: true;
 
-                                HorizontalLayout {
-                                    x: 4px;
-                                    y: 8px;
-                                    width: parent.width - 8px;
-                                    height: 56px;
-                                    spacing: 2px;
-                                    alignment: end;
+                            HorizontalLayout {
+                                x: 4px;
+                                y: 8px;
+                                width: parent.width - 8px;
+                                height: 56px;
+                                spacing: 2px;
+                                alignment: end;
 
-                                    for h in [12px, 18px, 28px, 42px, 35px, 48px, 32px, 25px, 38px, 44px, 30px, 22px, 16px, 24px, 18px, 10px] : Rectangle {
-                                        width: 8px;
-                                        height: h;
-                                        background: #10b98135;
-                                        border-radius: 1px;
-                                    }
+                                for h in [12px, 18px, 28px, 42px, 35px, 48px, 32px, 25px, 38px, 44px, 30px, 22px, 16px, 24px, 18px, 10px] : Rectangle {
+                                    width: 8px;
+                                    height: h;
+                                    background: #10b98135;
+                                    border-radius: 1px;
                                 }
+                            }
 
                             // Dynamic Filter Curve Path
                             Path {
@@ -330,22 +464,61 @@ export component UnifiedLowerDock inherits Rectangle {
                             spacing: 4px;
 
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                Text { text: "LOW: " + root.eq-low-db; font-size: 8px; font-weight: 700; color: #38bdf8; horizontal-alignment: center; }
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "LOW: " + root.eq-low-db;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: #38bdf8;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                Text { text: "MID: " + root.eq-mid-db; font-size: 8px; font-weight: 700; color: #10b981; horizontal-alignment: center; }
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "MID: " + root.eq-mid-db;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: #34d399;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                Text { text: "AIR: " + root.eq-air-db; font-size: 8px; font-weight: 700; color: #f59e0b; horizontal-alignment: center; }
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "AIR: " + root.eq-air-db;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: #fbbf24;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
                     }
@@ -353,7 +526,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                 // Device 3: VCA Glue Compressor
                 Rectangle {
-                    width: 200px;
+                    width: 215px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -361,35 +534,69 @@ export component UnifiedLowerDock inherits Rectangle {
 
                     VerticalLayout {
                         padding: 8px;
-                        spacing: 4px;
+                        spacing: 6px;
                         alignment: space-between;
 
                         HorizontalLayout {
-                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #f59e0b; }
-                            Text { text: "VCA Glue Compressor"; font-size: 10px; font-weight: 800; color: #ffffff; vertical-alignment: center; }
-                            Text { text: root.comp-gr-text; font-size: 8px; color: #f59e0b; font-weight: 700; horizontal-alignment: right; vertical-alignment: center; }
+                            spacing: 6px;
+                            alignment: space-between;
+                            HorizontalLayout {
+                                spacing: 5px;
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #f59e0b; }
+                                Text {
+                                    text: "VCA Glue Comp";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: #f8fafc;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: "GR " + root.comp-gr-text;
+                                font-family: Tokens.font-mono;
+                                font-size: 8px;
+                                color: #fbbf24;
+                                font-weight: 700;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
                         }
 
                         // GR Meter Box
                         Rectangle {
                             height: 72px;
-                            background: #06090f;
+                            background: #06080e;
                             border-radius: 4px;
                             border-width: 1px;
-                            border-color: #1e293b;
+                            border-color: #1a202c;
 
                             VerticalLayout {
                                 padding: 6px;
                                 alignment: space-between;
 
                                 HorizontalLayout {
-                                    Text { text: "Gain Reduction"; font-size: 8px; color: #94a3b8; }
-                                    Text { text: root.comp-gr-text; font-size: 9px; font-weight: 800; color: #f59e0b; horizontal-alignment: right; }
+                                    Text {
+                                        text: "GAIN REDUCTION";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        letter-spacing: 0.8px;
+                                        color: #64748b;
+                                        font-weight: 700;
+                                    }
+                                    Text {
+                                        text: root.comp-gr-text;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 800;
+                                        color: #fbbf24;
+                                        horizontal-alignment: right;
+                                    }
                                 }
 
                                 Rectangle {
                                     height: 8px;
-                                    background: #1e293b;
+                                    background: #141720;
                                     border-radius: 4px;
                                     Rectangle {
                                         x: 0;
@@ -402,9 +609,24 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                 HorizontalLayout {
                                     alignment: space-between;
-                                    Text { text: "Atk: 10ms"; font-size: 8px; color: #64748b; }
-                                    Text { text: "Rel: Auto"; font-size: 8px; color: #64748b; }
-                                    Text { text: "Ratio: 4:1"; font-size: 8px; color: #64748b; }
+                                    Text {
+                                        text: "Atk: 10ms";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                    }
+                                    Text {
+                                        text: "Rel: Auto";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                    }
+                                    Text {
+                                        text: "Ratio: 4:1";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                    }
                                 }
                             }
                         }
@@ -412,16 +634,42 @@ export component UnifiedLowerDock inherits Rectangle {
                         HorizontalLayout {
                             spacing: 4px;
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                Text { text: "Thresh: -16dB"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; }
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "Thresh: -16dB";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #cbd5e1;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                             Rectangle {
-                                background: #00000030;
+                                background: #090c13;
                                 border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                Text { text: "Makeup: +4.5dB"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; }
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "Makeup: +4.5dB";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #cbd5e1;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
                     }
@@ -442,68 +690,143 @@ export component UnifiedLowerDock inherits Rectangle {
                     spacing: 6px;
 
                     for trk in root.tracks : Rectangle {
-                        width: 80px;
-                        background: #090c13;
+                        width: 82px;
+                        background: #0a0d14;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: trk.id == root.selected-track-id ? Theme.accent : #1e293b;
+                        border-color: trk.id == root.selected-track-id ? Theme.accent : #1e2433;
 
                         VerticalLayout {
-                            padding: 4px;
-                            spacing: 3px;
+                            padding: 5px;
+                            spacing: 4px;
                             alignment: space-between;
 
                             // Color label
                             Rectangle {
-                                height: 16px;
+                                height: 18px;
                                 background: trk.color;
                                 border-radius: 2px;
-                                Text { text: trk.name; font-size: 8px; font-weight: 800; color: #020617; horizontal-alignment: center; overflow: elide; }
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: trk.name;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: #020617;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
                             }
 
                             // Inserts
                             Rectangle {
-                                height: 14px;
-                                background: #1e293b;
+                                height: 16px;
+                                background: #141720;
                                 border-radius: 2px;
-                                Text { text: trk.insert1; font-size: 7px; color: #cbd5e1; horizontal-alignment: center; overflow: elide; }
+                                border-width: 1px;
+                                border-color: #ffffff08;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: trk.insert1;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 7px;
+                                        color: #cbd5e1;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
                             }
 
                             // M / S / Pan
                             HorizontalLayout {
-                                spacing: 2px;
-                                Rectangle {
-                                    width: 14px;
-                                    height: 14px;
-                                    border-radius: 2px;
-                                    background: trk.muted ? #f59e0b : #1e293b;
-                                    Text { text: "M"; font-size: 7px; font-weight: 800; color: trk.muted ? #020617 : #94a3b8; horizontal-alignment: center; }
-                                    TouchArea { clicked => { root.toggle-track-mute(trk.id); } }
+                                spacing: 3px;
+                                alignment: space-between;
+                                HorizontalLayout {
+                                    spacing: 2px;
+                                    Rectangle {
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 2px;
+                                        background: trk.muted ? #f59e0b : #141720;
+                                        Text {
+                                            text: "M";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 7px;
+                                            font-weight: 800;
+                                            color: trk.muted ? #020617 : #94a3b8;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        TouchArea { clicked => { root.toggle-track-mute(trk.id); } }
+                                    }
+                                    Rectangle {
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 2px;
+                                        background: trk.soloed ? #00c5ff : #141720;
+                                        Text {
+                                            text: "S";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 7px;
+                                            font-weight: 800;
+                                            color: trk.soloed ? #020617 : #94a3b8;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        TouchArea { clicked => { root.toggle-track-solo(trk.id); } }
+                                    }
                                 }
-                                Rectangle {
-                                    width: 14px;
-                                    height: 14px;
-                                    border-radius: 2px;
-                                    background: trk.soloed ? #06b6d4 : #1e293b;
-                                    Text { text: "S"; font-size: 7px; font-weight: 800; color: trk.soloed ? #020617 : #94a3b8; horizontal-alignment: center; }
-                                    TouchArea { clicked => { root.toggle-track-solo(trk.id); } }
+                                Text {
+                                    text: trk.pan;
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    color: #64748b;
+                                    font-weight: 700;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
                                 }
-                                Text { text: trk.pan; font-size: 8px; color: #64748b; horizontal-alignment: right; vertical-alignment: center; }
                             }
 
                             // Vertical Fader
                             Rectangle {
-                                height: 80px;
-                                background: #06090e;
+                                height: 76px;
+                                background: #06080e;
                                 border-radius: 2px;
+                                border-width: 1px;
+                                border-color: #1a202c;
 
+                                // Fader track line
+                                Rectangle {
+                                    x: parent.width / 2 - 1px;
+                                    y: 0;
+                                    width: 2px;
+                                    height: parent.height;
+                                    background: #000000;
+                                }
+
+                                // Fader cap
                                 Rectangle {
                                     x: 2px;
-                                    y: 35px;
+                                    y: 32px;
                                     width: parent.width - 4px;
                                     height: 14px;
                                     background: #94a3b8;
                                     border-radius: 2px;
+
+                                    Rectangle {
+                                        x: 0;
+                                        y: 6px;
+                                        width: parent.width;
+                                        height: 2px;
+                                        background: #ffffff;
+                                    }
                                 }
 
                                 TouchArea {
@@ -516,6 +839,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             Text {
                                 text: "" + trk.volume_db + " dB";
+                                font-family: Tokens.font-mono;
                                 font-size: 9px;
                                 font-weight: 700;
                                 color: trk.color;
@@ -529,12 +853,12 @@ export component UnifiedLowerDock inherits Rectangle {
 
             // PANE: MPE PIANO ROLL (Visible when pianoroll tab active)
             if root.active-tab == "pianoroll" : HorizontalLayout {
-                spacing: 6px;
+                spacing: 8px;
                 horizontal-stretch: 1;
 
                 // Left Piano Keys & Scale lock
                 Rectangle {
-                    width: 150px;
+                    width: 155px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -542,13 +866,19 @@ export component UnifiedLowerDock inherits Rectangle {
 
                     VerticalLayout {
                         padding: 8px;
-                        spacing: 4px;
+                        spacing: 6px;
 
-                        Text { text: "🎹 音阶折叠与 MPE"; font-size: 10px; font-weight: 800; color: Theme.accent; }
+                        Text {
+                            text: "🎹 音阶折叠与 MPE";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.accent;
+                        }
 
                         Rectangle {
-                            height: 22px;
-                            background: root.scale-folded ? Theme.accent.with-alpha(0.2) : #1e293b;
+                            height: 24px;
+                            background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #141720;
                             border-radius: 3px;
                             border-width: root.scale-folded ? 1px : 0;
                             border-color: Theme.accent;
@@ -556,8 +886,21 @@ export component UnifiedLowerDock inherits Rectangle {
                             HorizontalLayout {
                                 padding-left: 6px;
                                 spacing: 4px;
-                                Text { text: root.scale-folded ? "✓" : "○"; font-size: 9px; font-weight: 800; color: Theme.accent; }
-                                Text { text: "仅显示调内音符"; font-size: 9px; color: #f8fafc; vertical-alignment: center; }
+                                Text {
+                                    text: root.scale-folded ? "✓" : "○";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 9px;
+                                    font-weight: 800;
+                                    color: Theme.accent;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "仅显示调内音符";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9px;
+                                    color: #f8fafc;
+                                    vertical-alignment: center;
+                                }
                             }
                             TouchArea {
                                 clicked => {
@@ -574,16 +917,20 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             for row in root.piano-rows : Rectangle {
                                 height: 22px;
-                                background: row.is_root ? #1e293b : #0f172a;
+                                background: row.is_root ? #141720 : #0a0d14;
                                 border-radius: 2px;
+                                border-width: 1px;
+                                border-color: row.is_root ? Theme.accent.with-alpha(0.3) : #ffffff06;
 
                                 Text {
-                                    x: 6px;
+                                    x: 8px;
                                     text: row.pitch_name;
+                                    font-family: Tokens.font-mono;
                                     font-size: 9px;
                                     font-weight: row.is_root ? 800 : 500;
                                     color: row.is_root ? Theme.accent : #cbd5e1;
-                                    }
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }
@@ -592,7 +939,7 @@ export component UnifiedLowerDock inherits Rectangle {
                 // 16-Step Grid
                 Rectangle {
                     horizontal-stretch: 1;
-                    background: #080a0f;
+                    background: #06080e;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;

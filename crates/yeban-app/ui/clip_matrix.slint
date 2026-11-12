@@ -1,4 +1,4 @@
-import { Theme, TrackData } from "tokens.slint";
+import { Theme, TrackData, Tokens } from "tokens.slint";
 
 export component HybridClipMatrixDrawer inherits Rectangle {
     in-out property <[TrackData]> tracks;
@@ -10,7 +10,6 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
     width: 220px;
     background: Theme.bg-panel;
-    // border line
     border-color: Theme.border-subtle;
 
     VerticalLayout {
@@ -20,54 +19,110 @@ export component HybridClipMatrixDrawer inherits Rectangle {
         // Top Header Row with Scene Launchers
         Rectangle {
             height: 54px;
-            background: #00000035;
-            // border line
+            background: #090c14;
             border-color: Theme.border-subtle;
 
             VerticalLayout {
-                padding: 4px;
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 3px;
+                padding: 6px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 5px;
                 alignment: center;
 
                 HorizontalLayout {
-                    Text { text: "⚡ Clip 激发矩阵"; font-size: 10px; font-weight: 800; color: #f59e0b; }
-                    Text { text: "Scene 1-4"; font-size: 9px; color: #64748b; font-weight: 600; horizontal-alignment: right; vertical-alignment: center; }
+                    alignment: space-between;
+                    Text {
+                        text: "⚡ Clip 激发矩阵";
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #fbbf24;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "SCENE 1-4";
+                        font-family: Tokens.font-mono;
+                        font-size: 8px;
+                        letter-spacing: 0.8px;
+                        color: #64748b;
+                        font-weight: 700;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
                 }
 
                 HorizontalLayout {
                     spacing: 4px;
 
                     Rectangle {
-                        height: 20px;
-                        background: #1e293b;
-                        border-radius: Theme.radius;
-                        Text { text: "▶ S1"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        height: 22px;
+                        background: #141720;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #ffffff14;
+                        Text {
+                            text: "▶ S1";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea { clicked => { root.trigger-scene(0); } }
                     }
 
                     Rectangle {
-                        height: 20px;
-                        background: #1e293b;
-                        border-radius: Theme.radius;
-                        Text { text: "▶ S2"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        height: 22px;
+                        background: #141720;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #ffffff14;
+                        Text {
+                            text: "▶ S2";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea { clicked => { root.trigger-scene(1); } }
                     }
 
                     Rectangle {
-                        height: 20px;
-                        background: #1e293b;
-                        border-radius: Theme.radius;
-                        Text { text: "▶ S3"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        height: 22px;
+                        background: #141720;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #ffffff14;
+                        Text {
+                            text: "▶ S3";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea { clicked => { root.trigger-scene(2); } }
                     }
 
                     Rectangle {
-                        height: 20px;
-                        background: #1e293b;
-                        border-radius: Theme.radius;
-                        Text { text: "▶ S4"; font-size: 9px; font-weight: 700; color: #cbd5e1; horizontal-alignment: center; }
+                        height: 22px;
+                        background: #141720;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: #ffffff14;
+                        Text {
+                            text: "▶ S4";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                         TouchArea { clicked => { root.trigger-scene(3); } }
                     }
                 }
@@ -81,27 +136,33 @@ export component HybridClipMatrixDrawer inherits Rectangle {
             for trk in root.tracks : Rectangle {
                 height: 64px;
                 background: trk.id == root.selected-track-id ? #ffffff08 : transparent;
-                // border line
                 border-color: #ffffff0a;
 
                 HorizontalLayout {
-                    padding: 4px;
-                    spacing: 3px;
+                    padding: 5px;
+                    spacing: 4px;
 
                     // Clip 1
                     Rectangle {
-                        background: trk.clip1 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        background: trk.clip1 != "" ? trk.color.with-alpha(0.18) : #00000025;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip1 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+                        border-color: trk.clip1 != "" ? trk.color.with-alpha(0.5) : #ffffff08;
 
-                        Text {
-                            text: trk.clip1 != "" ? ("▶ " + trk.clip1) : "■";
-                            font-size: trk.clip1 != "" ? 8px : 7px;
-                            font-weight: 700;
-                            color: trk.clip1 != "" ? #ffffff : #475569;
-                            horizontal-alignment: center;
-                            overflow: elide;
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip1 != "" ? ("▶ " + trk.clip1) : "+";
+                                font-family: trk.clip1 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip1 != "" ? 9px : 10px;
+                                font-weight: 600;
+                                color: trk.clip1 != "" ? #f8fafc : #475569;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
                         }
                         TouchArea {
                             clicked => {
@@ -113,18 +174,25 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 2
                     Rectangle {
-                        background: trk.clip2 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        background: trk.clip2 != "" ? trk.color.with-alpha(0.18) : #00000025;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip2 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+                        border-color: trk.clip2 != "" ? trk.color.with-alpha(0.5) : #ffffff08;
 
-                        Text {
-                            text: trk.clip2 != "" ? ("▶ " + trk.clip2) : "■";
-                            font-size: trk.clip2 != "" ? 8px : 7px;
-                            font-weight: 700;
-                            color: trk.clip2 != "" ? #ffffff : #475569;
-                            horizontal-alignment: center;
-                            overflow: elide;
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip2 != "" ? ("▶ " + trk.clip2) : "+";
+                                font-family: trk.clip2 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip2 != "" ? 9px : 10px;
+                                font-weight: 600;
+                                color: trk.clip2 != "" ? #f8fafc : #475569;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
                         }
                         TouchArea {
                             clicked => {
@@ -136,18 +204,25 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 3
                     Rectangle {
-                        background: trk.clip3 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        background: trk.clip3 != "" ? trk.color.with-alpha(0.18) : #00000025;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip3 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+                        border-color: trk.clip3 != "" ? trk.color.with-alpha(0.5) : #ffffff08;
 
-                        Text {
-                            text: trk.clip3 != "" ? ("▶ " + trk.clip3) : "■";
-                            font-size: trk.clip3 != "" ? 8px : 7px;
-                            font-weight: 700;
-                            color: trk.clip3 != "" ? #ffffff : #475569;
-                            horizontal-alignment: center;
-                            overflow: elide;
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip3 != "" ? ("▶ " + trk.clip3) : "+";
+                                font-family: trk.clip3 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip3 != "" ? 9px : 10px;
+                                font-weight: 600;
+                                color: trk.clip3 != "" ? #f8fafc : #475569;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
                         }
                         TouchArea {
                             clicked => {
@@ -159,18 +234,25 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 4
                     Rectangle {
-                        background: trk.clip4 != "" ? trk.color.with-alpha(0.2) : #00000030;
+                        background: trk.clip4 != "" ? trk.color.with-alpha(0.18) : #00000025;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip4 != "" ? trk.color.with-alpha(0.6) : #ffffff10;
+                        border-color: trk.clip4 != "" ? trk.color.with-alpha(0.5) : #ffffff08;
 
-                        Text {
-                            text: trk.clip4 != "" ? ("▶ " + trk.clip4) : "■";
-                            font-size: trk.clip4 != "" ? 8px : 7px;
-                            font-weight: 700;
-                            color: trk.clip4 != "" ? #ffffff : #475569;
-                            horizontal-alignment: center;
-                            overflow: elide;
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip4 != "" ? ("▶ " + trk.clip4) : "+";
+                                font-family: trk.clip4 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip4 != "" ? 9px : 10px;
+                                font-weight: 600;
+                                color: trk.clip4 != "" ? #f8fafc : #475569;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
                         }
                         TouchArea {
                             clicked => {

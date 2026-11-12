@@ -1,5 +1,5 @@
 //! 视图状态与实时音频引擎 → Slint `MainWindow` 的双向桥接与宿主实现。
-//! 遵循 AetherStudio DAW 跨平台 Rust + Slint UI 设计方案。
+//! 遵循夜半 DAW 原生跨平台桌面 UI 设计方案。
 #![allow(missing_docs)]
 #![allow(unused)]
 
@@ -405,7 +405,7 @@ pub fn now_ms() -> u64 {
         .map_or(0, |e| e.as_millis() as u64)
 }
 
-/// 构造并初始化 AetherStudio DAW 主窗口。
+/// 构造并初始化夜半 DAW 主窗口。
 pub fn build_main_window(
     _view: &ViewState,
     _scene: &DemoScene,
