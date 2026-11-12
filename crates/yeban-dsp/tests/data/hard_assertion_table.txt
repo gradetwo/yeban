@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 405 条：float_bits 88 ／ integer_count 317；其中 hard 73 ／ platform 12
+# 合计 406 条：float_bits 88 ／ integer_count 318；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -335,6 +335,7 @@ integer_count | no_callee | 0 | - | src/smoothing.rs | the_response_matches_the_
 float_bits | hard | 7 | - | src/smoothing.rs | the_snap_threshold_has_an_absolute_floor_for_tiny_parameters
 float_bits | hard | 8 | - | src/smoothing.rs | the_snap_threshold_sits_between_the_stall_point_and_the_audible_error
 integer_count | no_callee | 0 | - | src/smoothing.rs | the_time_constant_is_five_milliseconds
+integer_count | no_callee | 0 | - | src/song_overview_report.rs | clash_section_renders_entries_weights_and_heat
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | data_strings_are_escaped_before_they_reach_html
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | empty_overview_renders_without_panicking
 integer_count | no_callee | 0 | - | src/song_overview_report.rs | empty_title_falls_back_to_the_generic_title
