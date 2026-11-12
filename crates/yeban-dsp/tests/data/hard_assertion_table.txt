@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 391 条：float_bits 88 ／ integer_count 303；其中 hard 73 ／ platform 12
+# 合计 400 条：float_bits 88 ／ integer_count 312；其中 hard 73 ／ platform 12
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -255,6 +255,15 @@ integer_count | no_callee | 0 | - | src/oversample.rs | short_buffers_are_reject
 integer_count | no_callee | 0 | - | src/oversample.rs | the_odd_phase_is_the_half_sample_and_not_a_copy_of_the_even_phase
 integer_count | no_callee | 0 | - | src/oversample.rs | the_upsample_phase_order_puts_the_prototype_peak_at_its_centre_tap
 integer_count | no_callee | 0 | - | src/oversample.rs | upsample_kills_the_image_above_the_base_nyquist
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | fractional_lag_interpolates
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | identical_signals_have_zero_lag
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | integer_lag_is_recovered_exactly
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | inverted_polarity_is_detected
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | negative_lag_is_recovered
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | periodic_signal_prefers_smallest_lag
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | silence_is_an_error
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | too_short_is_an_error
+integer_count | no_callee | 0 | - | src/phase_align_auto.rs | window_picks_loudest_region
 integer_count | no_callee | 0 | - | src/polysynth.rs | a4_puts_its_energy_in_the_440_hz_bin
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_full_octave_bend_moves_the_spectral_peak_from_440_to_880
 integer_count | no_callee | 0 | - | src/polysynth.rs | a_sample_rate_change_keeps_the_envelope_time_scale

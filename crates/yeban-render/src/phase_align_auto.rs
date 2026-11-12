@@ -59,7 +59,9 @@ pub struct MeasuredStemDelay {
 /// 到达时差，声相不参与）。
 fn mono_mixdown(interleaved_stereo: &[f32]) -> Vec<f32> {
     interleaved_stereo
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0] + pair[1]) * 0.5)
         .collect()
 }

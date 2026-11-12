@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 303 条：collection_size 65 ／ value_bound 227 ／ element_value_bound 5 ／ condition_counter 6
+# 合计 312 条：collection_size 66 ／ value_bound 235 ／ element_value_bound 5 ／ condition_counter 6
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -182,6 +182,15 @@ src/oversample.rs|short_buffers_are_rejected_instead_of_panicking|value_bound|as
 src/oversample.rs|the_odd_phase_is_the_half_sample_and_not_a_copy_of_the_even_phase|collection_size|assert_eq!(             total,             128 - 32,             "夹具必须扫过恰好 {0} 个基础样本（实测 {t
 src/oversample.rs|the_upsample_phase_order_puts_the_prototype_peak_at_its_centre_tap|value_bound|assert_eq!(             peak,             2 * impulse + OS_CENTRE,             "上采样峰位必须在原型
 src/oversample.rs|upsample_kills_the_image_above_the_base_nyquist|value_bound|assert!(             stop < pass * 0.02,             "30 kHz image is only {:.1} dB down",
+src/phase_align_auto.rs|fractional_lag_interpolates|value_bound|assert_eq!(measurement.lag_samples_rounded, 240
+src/phase_align_auto.rs|identical_signals_have_zero_lag|value_bound|assert_eq!(measurement.lag_samples_rounded, 0
+src/phase_align_auto.rs|integer_lag_is_recovered_exactly|value_bound|assert_eq!(measurement.lag_samples_rounded, 240
+src/phase_align_auto.rs|inverted_polarity_is_detected|value_bound|assert_eq!(measurement.lag_samples_rounded, 100
+src/phase_align_auto.rs|negative_lag_is_recovered|value_bound|assert_eq!(measurement.lag_samples_rounded, -120
+src/phase_align_auto.rs|periodic_signal_prefers_smallest_lag|value_bound|assert_eq!(measurement.lag_samples_rounded, 120
+src/phase_align_auto.rs|silence_is_an_error|value_bound|assert_eq!(             measure_delay(&silent, &reference, 2_400),             Err(Measure
+src/phase_align_auto.rs|too_short_is_an_error|collection_size|assert_eq!(             measure_delay(&reference, &target, 100),             Err(MeasureDe
+src/phase_align_auto.rs|window_picks_loudest_region|value_bound|assert_eq!(measurement.lag_samples_rounded, 240
 src/polysynth.rs|a4_puts_its_energy_in_the_440_hz_bin|value_bound|assert!(at_440 > 0.1, "440 Hz bin 太弱: {at_440:.6}"
 src/polysynth.rs|a_full_octave_bend_moves_the_spectral_peak_from_440_to_880|value_bound|assert!(             flat_440 > 10.0 * flat_880,             "未弯时谱峰在 440（440={flat_440}, 8
 src/polysynth.rs|a_sample_rate_change_keeps_the_envelope_time_scale|value_bound|assert!(             crossing.abs_diff(EXPECTED_ATTACK_FRAMES) <= 2,             "换采样率之后起振
