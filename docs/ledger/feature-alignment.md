@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，95 行）
+# 三方对齐矩阵（系统 / UI / MCP，96 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -36,7 +36,7 @@
 - 仅系统：12 行
 - 仅计划（系统也未实现）：6 行
 - UI 或 MCP 独有（系统没有）：4 行
-- **合计：95 行**
+- **合计：96 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -227,6 +227,7 @@
 | 夜半原生预制：旁通预制（`yeban_preset_bypass`） | 已实现｜`crates/yeban-mcp/src/domain/preset.rs`（`build_bypass_ops`：旁通恢复 `previous` 快照，只旁通处理、不换乐器；取消旁通按当前预制重新应用） | 无｜无预制旁通面板 | 有｜`yeban_preset_bypass`（`trackId` / `bypassed` 必填；`autoMerge` / `mergeCommitMessage` 可选；走提案路径） | 原因：预制机制一期 MCP-only，UI 方法不动；计划：UI 预制面板待排期；状态：待接线 |
 | 整曲多层可视化总览图（Phase 1） | 部分｜设计稿 `~/workspace/yeban-songmap-design.md` §8（Phase 1：小节级列式 JSON + 自动异常诊断摘要）；分析住在 `crates/yeban-dsp/src/song_overview.rs`（离线四层分析：情绪 / 频率 / 能量 / 疏密 + 两条诊断）；MCP 侧是 `crates/yeban-mcp/src/domain/song_overview.rs` 的 stub provider（宿主注入，未注入响亮报 `CONFLICT` + `providerUnavailable`；真实接线待 `yeban-app` 挂载时注入） | 无｜无总览图面板 | 有｜`get_song_overview`（`resolution` / `include_png_path` 可选；出参 `schema_version` / `song_meta` / `band_definitions_hz` / `structural_summary` / `repetition` / `frequency_clash` / `bar_series`） | 原因：Phase 1 只出 JSON + 诊断摘要，PNG 渲染（Phase 2）与 UI 面板未做，app 挂载注入真实 provider 的接线未做；计划：app 挂载注入真实 provider、Phase 2 接 Slint 离屏渲染；状态：待接线 |
 | Songmap A/B 快照对比（Phase 2） | 已实现｜设计稿 `~/workspace/yeban-songmap-design.md` §8.3（逐小节差值 Δ = B − A + 异常与重复条目集合比对 + 结构摘要变化）；Diff 住在 `crates/yeban-mcp/src/domain/compare_snapshots.rs`（两份 `SongOverview` 的纯函数比对，不要求活跃工程；只比小节级，拍级快照响亮报 `snapshotMismatch`）；MCP 侧装配在 `crates/yeban-mcp/src/tools.rs`（`compare_song_snapshots`） | 无｜无快照对比面板 | 有｜`compare_song_snapshots`（`snapshot_a` / `snapshot_b` 必填，均为 `get_song_overview` 的 `data` 原样；出参 `schema_version` / `snapshot_a` / `snapshot_b` / `meta_changes` / `summary` / `bar_diffs` / `bars_added` / `bars_removed` / `anomalies_*` / `repetition_changes` / `structural_changes`） | 原因：Phase 2 只出 Diff JSON，UI 面板（双线 ghost / 差异色块）未做；计划：UI 对比面板待排期；状态：待接线 |
+| 自动相位对齐（`yeban_auto_align_tracks`） | 已实现｜测量住在 `crates/yeban-dsp/src/phase_align_auto.rs`（归一化互相关，最响 5 秒窗，粗 8× 抽稀 + 全速 ±16 采样精修 + 抛物线亚采样插值；置信度门 ρ 绝对值 ≥ 0.7 高 / ≥ 0.4 中）；渲染侧 `crates/yeban-render/src/phase_align_auto.rs`（两轨 solo 渲染后测延时）；MCP 侧 `crates/yeban-mcp/src/domain/phase_align_auto.rs`（`PhaseAlignAutoProvider` trait + stub，宿主注入；补偿经提案路径写 `Op::SetTrackDelay` / `Op::SetTrackPolarity`），装配在 `crates/yeban-mcp/src/tools.rs:2393`（`yeban_auto_align_tracks`，`MCP-TOOL-EXT-PHASE-ALIGN-AUTO`） | 无｜无相位对齐面板 | 有｜`yeban_auto_align_tracks`（`referenceTrackId` / `targetTrackId` 必填；`maxLagMs` / `apply` / `autoMerge` / `mergeCommitMessage` / `includeOps` 可选；ρ 绝对值 < 0.3 响亮拒绝应用，补偿超 ±4800 采样响亮拒绝） | 原因：Logic Pro 没有自动互相关对齐（只有轨延时 + Sample Delay 插件，手动层已镜像），测量设计抄自动对齐插件的通行做法，UI 面板未做，app 挂载注入真实 provider 的接线待做；计划：app 挂载注入真实 provider、UI 相位对齐面板待排期；状态：待接线 |
 
 ## 16. 建表过程中发现的**具体错位**（本表最有价值的部分）
 
