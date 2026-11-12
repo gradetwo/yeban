@@ -1603,6 +1603,17 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_move_track",
             json!({ "trackId": track, "newIndex": move_track_new_index }),
         ),
+        // 相位自动对齐：基准轨用夹具真轨、目标轨用不存在的 ID ⇒ 带内
+        // `TRACK_NOT_FOUND`（不是实现级出口）；这里只要求"走到领域实现 +
+        // 契约形状"，正向通路的证据在 `tests/phase_align_auto_tool.rs`。
+        (
+            "yeban_auto_align_tracks",
+            json!({
+                "referenceTrackId": track,
+                "targetTrackId": "01J8ZQ00000000000000000009",
+                "dryRun": true,
+            }),
+        ),
         // Songmap A/B 快照对比：两份合法的 1 小节快照 ⇒ `success`
         // （Diff 是入参的纯函数，不要求活跃工程；逐位算术的证据在
         // `tests/compare_song_snapshots.rs`）。

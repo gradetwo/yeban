@@ -49,6 +49,7 @@
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
 //! | [`song_overview`] | `get_song_overview`：整曲多层总览图（设计稿 §8，Phase 1）—— `SongOverviewProvider` trait + stub；分析住在 `yeban-dsp`，宿主注入 |
 //! | [`compare_snapshots`] | `compare_song_snapshots`：Songmap A/B 快照 Diff（设计稿 §8.3，Phase 2）—— 两份 `SongOverview` 的纯函数比对，不要求活跃工程 |
+//! | [`phase_align_auto`] | `yeban_auto_align_tracks`：自动相位对齐（手动层第二层）—— `PhaseAlignAutoProvider` trait + stub；测量住在 `yeban-dsp`，宿主注入 |
 //! | [`sfz_stream`] | P2 磁盘流式引擎：后台读盘线程＋逐声部无锁环＋起音预载（预览＝已用区域、实时＝整件乐器） |
 //! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
@@ -73,6 +74,7 @@ pub mod macros;
 pub mod midi_input;
 pub mod notes;
 pub mod otcp;
+pub mod phase_align_auto;
 pub mod preset;
 pub mod project_create;
 pub mod proposal;
@@ -258,6 +260,12 @@ pub struct Domain {
     /// [`Self::engine`] 的引擎读数镜像同一口径 —— 换一份工程不等于换一台
     /// 分析引擎）。`Arc` 共享：宿主与控制面会话可各持一份句柄。
     song_overview_provider: Option<Arc<dyn song_overview::SongOverviewProvider>>,
+    /// 宿主注入的两轨相位测量 provider（`yeban_auto_align_tracks` 的唯一测量来源）。
+    ///
+    /// `None` = 宿主没有注入（形态 B 的独立 stdio 进程）⇒ 工具响亮报 `CONFLICT` +
+    /// `reason: "providerUnavailable"`，⛔ 不返回假测量。与 `song_overview_provider`
+    /// 同一条口径：宿主能力，不是工程状态，打开 / 关闭工程不重置它。
+    phase_align_auto_provider: Option<Arc<dyn phase_align_auto::PhaseAlignAutoProvider>>,
     now_ms: u64,
     /// **会话内已装载的 SFZ 乐器**（`yeban_load_sfz` 的登记表），键 = instrumentId。
     ///
@@ -320,6 +328,7 @@ impl Domain {
             pending_scene_launches: Vec::new(),
             scene_launches_applied: None,
             song_overview_provider: None,
+            phase_align_auto_provider: None,
             now_ms: 0,
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
@@ -543,6 +552,28 @@ impl Domain {
         provider: Arc<dyn song_overview::SongOverviewProvider>,
     ) {
         self.song_overview_provider = Some(provider);
+    }
+
+    /// 宿主注入的两轨相位测量 provider（`None` = 未注入）。
+    ///
+    /// 与 [`Self::song_overview_provider`] 同一条口径：没有任何工具会写它。
+    #[must_use]
+    pub fn phase_align_auto_provider(
+        &self,
+    ) -> Option<Arc<dyn phase_align_auto::PhaseAlignAutoProvider>> {
+        self.phase_align_auto_provider.clone()
+    }
+
+    /// 注入 / 替换两轨相位测量 provider（形态 A 的 `yeban-app` 在挂载时调用；
+    /// 挂载之后再注入同样生效，工具下一次调用即用新 provider）。
+    ///
+    /// 注入是**宿主能力声明**，不是工程写操作：它不推进 `apply_revision`，
+    /// 也不动提交图谱。打开 / 关闭工程不清除它（见字段文档）。
+    pub fn set_phase_align_auto_provider(
+        &mut self,
+        provider: Arc<dyn phase_align_auto::PhaseAlignAutoProvider>,
+    ) {
+        self.phase_align_auto_provider = Some(provider);
     }
 
     /// 把模型会话态里那份**撤销游标镜像**同步成权威值（见 [`Domain::session`]）。
@@ -1461,6 +1492,27 @@ pub enum Plan {
         /// `repetition_changes` / `structural_changes`）。
         data: Value,
     },
+    /// `yeban_auto_align_tracks`（自动相位对齐，手动层第二层）：测量结果 +
+    /// 可选的补偿提案（`OtcpDeliver` 同款：`data` + 可选 `draft`）。
+    ///
+    /// `draft` 为 `Some` ⇔ `apply: true` 且有补偿可写（lag ≠ 0 或极性反转）；
+    /// `None` ⇔ 只测量（`apply: false` / 无事可做 / `dryRun` 预览）。
+    /// 补偿只延时先到的轨（正延时），写 `Op::SetTrackDelay`（+ 极性反转时
+    /// `Op::SetTrackPolarity`），提案 kind 为 `"notes"`。
+    PhaseAlignAuto {
+        /// 测量结果（成功响应的 `data` 主体；`apply` 原样回传并拼提案块）。
+        data: Value,
+        /// `apply: true` 且有补偿可写时待创建的提案；`None` = 只测量。
+        draft: Option<Box<ProposalDraft>>,
+        /// 响应是否回传完整 op 载荷（`arguments.includeOps`）。
+        include_ops: bool,
+        /// 本次提案的 `warnings[]`（恒为空：延时与极性 op 不触发任何一条警告规则）。
+        warnings: Vec<Value>,
+        /// 交付时是否立即合并提案（提交时记录的值）。
+        auto_merge: bool,
+        /// 合并提交信息（`None` = 用缺省文案）。
+        merge_commit_message: Option<String>,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -1510,6 +1562,7 @@ impl Plan {
             Self::OtcpNotes { .. } => "otcp_notes",
             Self::OtcpDeliver { .. } => "otcp_deliver",
             Self::CompareSongSnapshots { .. } => "compare_song_snapshots",
+            Self::PhaseAlignAuto { .. } => "phase_align_auto",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -1523,6 +1576,8 @@ impl Plan {
     pub fn commit_delta(&self) -> usize {
         match self {
             Self::Propose { .. } | Self::Merge { .. } | Self::OtcpDeliver { .. } => 1,
+            // 有补偿提案才提交；只测量 / 预览 = 0。
+            Self::PhaseAlignAuto { draft, .. } => usize::from(draft.is_some()),
             // 只写一个点的自动化编辑 = 一条提交；只读调用（没有 `point`）= 0。
             Self::EditAutomation { edit } => usize::from(edit.write.is_some()),
             // 真登记才提交；幂等命中（内容已存在）一位都不改。
@@ -1644,6 +1699,8 @@ impl Plan {
             | Self::Diagnostics { .. }
             | Self::Propose { .. }
             | Self::OtcpDeliver { .. }
+            // 自动相位对齐与 `Propose` 同一款（只动提案记录与提案分支）。
+            | Self::PhaseAlignAuto { .. }
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
             // 引擎/会话读数是**只读**的。
@@ -1855,7 +1912,9 @@ impl Plan {
             // 整曲总览是只读读数 ⇒ `dryRun` 的“工程差异”同样是 `None`。
             | Self::SongOverview { .. }
             // 快照 Diff 是入参的纯函数 ⇒ `dryRun` 的“工程差异”同样是 `None`。
-            | Self::CompareSongSnapshots { .. } => Ok(None),
+            | Self::CompareSongSnapshots { .. }
+            // 自动相位对齐只建提案（或只测量）⇒ 工作工程一位不变。
+            | Self::PhaseAlignAuto { .. } => Ok(None),
         }
     }
 
@@ -2340,6 +2399,44 @@ impl Plan {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data.clone());
             }
+            // 自动相位对齐：`dryRun` 预览就是 plan 的 data（`wouldMeasure` 在内）；
+            // 有 draft 时另附提案预览（与 `Propose` 臂同一组键）。
+            Self::PhaseAlignAuto {
+                data,
+                draft,
+                include_ops,
+                warnings,
+                auto_merge,
+                ..
+            } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                if let Some(draft) = draft {
+                    preview.insert("kind".to_owned(), Value::from(draft.kind));
+                    preview.insert("title".to_owned(), Value::from(draft.title.clone()));
+                    preview.insert(
+                        "baseCommit".to_owned(),
+                        Value::from(draft.base_commit.to_canonical_string()),
+                    );
+                    preview.insert("opCount".to_owned(), Value::from(draft.ops.len()));
+                    if *include_ops {
+                        preview.insert("ops".to_owned(), draft_ops_value(draft));
+                    }
+                    preview.insert(
+                        "willCreate".to_owned(),
+                        section_build::summarize_ops(&draft.ops),
+                    );
+                    preview.insert("pendingMerge".to_owned(), Value::from(true));
+                    preview.insert("mergeTool".to_owned(), Value::from("yeban_merge_proposal"));
+                    preview.insert("warnings".to_owned(), Value::Array(warnings.clone()));
+                    if *auto_merge {
+                        preview.insert("wouldAutoMerge".to_owned(), Value::from(true));
+                    }
+                }
+            }
             // SVS 取音频：报告键 +（落轨时）导入计划的 `data()`，与音频导入同款。
             Self::SvsAudio { import, report } => {
                 if let Value::Object(fields) = report.clone() {
@@ -2740,6 +2837,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "synthesize_singing" => svs::plan_synthesize(domain, call),
         "svs_job" => svs::plan_svs_job(domain, call),
         "get_song_overview" => song_overview::plan_song_overview(domain, call),
+        "yeban_auto_align_tracks" => phase_align_auto::plan_auto_align_tracks(domain, call),
         "yeban_correct_pitch" => otcp::plan_correct_pitch(domain, call),
         "yeban_correct_pitch_job" => otcp::plan_correct_pitch_job(domain, call),
         "yeban_correct_pitch_notes" => otcp::plan_correct_pitch_notes(domain, call),
@@ -5423,6 +5521,20 @@ pub fn commit_model_of(plan: &Plan) -> &'static str {
             | HostAction::Commit { .. }
             | HostAction::MergeProposal { .. } => "direct",
         },
+        // 自动相位对齐：有补偿提案时与 `Propose` 同一款；只测量 = 没有提交。
+        Plan::PhaseAlignAuto {
+            draft, auto_merge, ..
+        } => {
+            if draft.is_some() {
+                if *auto_merge {
+                    "proposalAutoMerged"
+                } else {
+                    "proposal"
+                }
+            } else {
+                "none"
+            }
+        }
         // 不产生任何提交：只读读数、渲染/导出到文件、容器与会话操作、硬件探针。
         Plan::Open(..)
         | Plan::Save { .. }
@@ -5575,6 +5687,22 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             merge_commit_message,
             asset_bytes,
             &job_id,
+        ),
+        Plan::PhaseAlignAuto {
+            data,
+            draft,
+            include_ops,
+            warnings,
+            auto_merge,
+            merge_commit_message,
+        } => phase_align_auto::apply_phase_align_auto(
+            domain,
+            data,
+            draft,
+            include_ops,
+            &warnings,
+            auto_merge,
+            merge_commit_message,
         ),
         // 只读：总览在 `plan` 里就组装好了，`apply` 原样回传（一位都不改）。
         Plan::SongOverview { data } => Ok(ToolResponse::success(data)),
@@ -7115,6 +7243,16 @@ mod tests {
                 .expect("夹具音轨在显示顺序里");
             if old == 0 { 1 } else { 0 }
         };
+        // 自动相位对齐：取显示顺序里与夹具音轨不同的另一条轨当目标轨。
+        let other_track = {
+            let project = domain.active_project().expect("工程");
+            project
+                .display_track_ids()
+                .iter()
+                .copied()
+                .find(|id| *id != track)
+                .expect("夹具工程至少有两条显示轨")
+        };
         // SVS 服务不在：绑一个临时端口后立刻释放 ⇒ 连接必被拒
         //（不依赖“某个端口恰好没人用”这种运气）。
         let closed_service_url = {
@@ -7359,6 +7497,16 @@ mod tests {
                     "snapshot_b": snapshot_json(0.5, 0.5),
                 }),
             ),
+            // 自动相位对齐：两条真实轨、未注入 provider ⇒ 规划阶段响亮
+            // `CONFLICT` + `providerUnavailable`（不返回假测量；注入 stub 的
+            // 正向通路由 `tests/phase_align_auto_tool.rs` 覆盖）。
+            (
+                "yeban_auto_align_tracks",
+                serde_json::json!({
+                    "referenceTrackId": track.to_canonical_string(),
+                    "targetTrackId": other_track.to_canonical_string(),
+                }),
+            ),
             // ARA2 宿主原型：绑定只做解码（不打开插件）⇒ 指向不存在的插件路径
             // 也规划成功（真 wav 夹具）；打开失败只在 apply 里响亮。
             (
@@ -7503,6 +7651,16 @@ mod tests {
                     // 有快照的正向通路由 `tests/preset_tools.rs` 覆盖。
                     let fault = outcome.expect_err("夹具音轨没有预制状态");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                }
+                "yeban_auto_align_tracks" => {
+                    // 未注入 provider ⇒ 响亮 `CONFLICT`（带 `providerUnavailable`）。
+                    let fault = outcome.expect_err("没有相位测量 provider");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+                    let rendered = format!("{fault:?}");
+                    assert!(
+                        rendered.contains("providerUnavailable"),
+                        "缺 provider 必须带 `providerUnavailable`: {rendered}"
+                    );
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));

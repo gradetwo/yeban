@@ -49,6 +49,7 @@
 //! | `yeban_correct_pitch_job` | 查校正任务状态；成功后经提案换资产（默认只出提案，`autoMerge` 时当场合并） | `MCP-TOOL-EXT-OTCP-JOB` |
 //! | `yeban_correct_pitch_notes` | 读某片段最近一次校正的检测音符表（只读；无任务时报 `otcpNotesUnavailable`） | `MCP-TOOL-EXT-OTCP-NOTES` |
 //! | `compare_song_snapshots` | 两版 Songmap 快照的 A/B Diff：逐小节差值 + 新增/删除小节 + 异常与重复增减（设计稿 §8.3，Phase 2；只读；入参的纯函数，不要求活跃工程） | `MCP-TOOL-EXT-COMPARE-SNAPSHOT` |
+//! | `yeban_auto_align_tracks` | 自动相位对齐（手动层第二层）：互相关测两轨延时，补偿经提案路径写延时/极性（`apply: false` 只测量） | `MCP-TOOL-EXT-PHASE-ALIGN-AUTO` |
 
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -115,8 +116,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条 + 快照对比 1 条）。
-pub const TOOL_COUNT: usize = 43;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条 + 快照对比 1 条 + 自动相位对齐 1 条）。
+pub const TOOL_COUNT: usize = 44;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -141,7 +142,9 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 ///   子进程驱动用户自备的 OpenTune API 分支构建，单 clip 调性 snap）。
 /// + **移轨 1 条**（`yeban_move_track`，`Op::MoveTrack` 的 MCP 出口：显示顺序里的绝对位置，主总线不参与）。
 /// + **快照对比 1 条**（设计稿 §8.3，Phase 2：`compare_song_snapshots`，两版快照的 A/B Diff）。
-pub const EXTENSION_TOOL_COUNT: usize = 33;
+/// + **自动相位对齐 1 条**（手动层第二层：`yeban_auto_align_tracks`，互相关测两轨延时
+///   + 经提案路径写延时/极性补偿；测量住在 `yeban-dsp`，宿主注入 provider）。
+pub const EXTENSION_TOOL_COUNT: usize = 34;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -188,6 +191,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_correct_pitch_notes",
     "yeban_move_track",
     "compare_song_snapshots",
+    "yeban_auto_align_tracks",
 ];
 
 /// 规范 ID 前缀。
@@ -2456,9 +2460,71 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         ],
         errors: &[ErrorCode::InvalidParameterRange],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-PHASE-ALIGN-AUTO",
+        name: "yeban_auto_align_tracks",
+        summary: "自动相位对齐（手动层第二层）：对两条源轨 solo 渲染后做归一化互相关，测目标轨相对基准轨的延时（`lagSamples`，正 = 目标轨晚到），再把补偿经提案路径写进已有的手动延时机制（只延时先到的轨，正延时，无前视；极性反转时同时翻目标轨 `invert_polarity`）。`apply` 缺省 `true` = 建提案；`false` = 只测量、不建提案。测量取最响 5 秒窗（粗 8× 抽稀 + 全速 ±16 采样精修 + 抛物线亚采样插值）；置信度 |ρ| ≥ 0.7 高 / ≥ 0.4 中 / 其余低；|ρ| < 0.3 响亮拒绝应用（`lowCorrelation`）。新延时 = 旧延时 + 补偿，超出 ±4800 采样响亮拒绝（`compensationOutOfRange`），⛔ 不部分应用。`autoMerge` 缺省 `false`：只出提案；`true` 时交付当场合并（与 `yeban_load_plugin` 同一条提案纪律）。⚠ Logic Pro 没有自动互相关对齐（只有轨延时 + Sample Delay 插件，手动层已镜像）：测量设计（归一化互相关、基准轨约定、搜索窗、置信度门）抄自动对齐插件的通行做法，补偿侧抄 Logic 轨延时语义（正 = 更晚）。测量由宿主注入的 provider 提供（分析住在 `yeban-dsp`，由 `yeban-app` 挂载时注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回假测量）。",
+        scope: Scope::AppAdmin,
+        // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_auto_align_tracks` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "referenceTrackId",
+                "string",
+                true,
+                "基准轨 EntityId（26 字符 ULID）；时间锚点：补偿只延时先到的轨，基准轨是被对齐的参照",
+            ),
+            param(
+                "targetTrackId",
+                "string",
+                true,
+                "目标轨 EntityId（26 字符 ULID）；须与基准轨不同，相同 ⇒ `INVALID_PARAMETER_RANGE` + `sameReferenceAndTarget`；音轨不存在 ⇒ `TRACK_NOT_FOUND`",
+            ),
+            param(
+                "maxLagMs",
+                "number",
+                false,
+                "最大搜索延时（毫秒，缺省 50；须 > 0 且折算 ≤ 4800 采样；越界 ⇒ `INVALID_PARAMETER_RANGE` + `maxLagOutOfRange`）",
+            ),
+            param(
+                "apply",
+                "boolean",
+                false,
+                "缺省 true = 有补偿时建提案；false = 只测量、不建提案（响应仍带完整测量字段，`applied: false`）",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]：缺省 false = 只建提案；true = 同一次调用内背靠背执行既有的合并实现（与 `yeban_edit_notes` 同一条纪律）",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]：`autoMerge` 合并提交的信息，只随 `autoMerge:true` 生效；缺省同手动合并的既有缺省",
+            ),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::TrackNotFound,
+            ErrorCode::Conflict,
+            ErrorCode::RenderFailed,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；43 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；44 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)

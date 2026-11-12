@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 274 | 1155 | `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 278 | 1176 | `9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -151,6 +151,14 @@
 //! `supportedFields` / `unsupportedFields` 3 键）⇒ reason 数 272 → 274、
 //! 规范行数 1147 → 1155（2 reason 行 ＋ 6 键行）。新摘要
 //! `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4`
+//! ⚠ 自动相位对齐第二层（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 生产区
+//! `.rs` 文件 54 → 55；8 处新 `reason` 站点（`maxLagOutOfRange` ×2、
+//! `sameReferenceAndTarget`、`lowCorrelation`、`compensationOutOfRange`、
+//! `trackNotFound` ×2，另 `providerUnavailable` 1 处经 `PROVIDER_UNAVAILABLE_REASON`
+//! 常量解析 —— 扫描器把 8 处全计入字面类，字面站点 293 → 301）⇒ reason 数
+//! 268 → 272、规范行数 1129 → 1150（4 reason 行 ＋
+//! 17 键行）；`reason` 键站点 304 → 312、总出现 307 → 315（315 = 312 ＋ 参数名 3）。
+//! 新摘要 `3c81a7022e15130bf2891e5a25e1a101ac917dd8c1d810f952883ebc0dc0b63e`
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 //!
@@ -171,7 +179,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 270] = [
+pub const GOLDEN_REASONS: [&str; 274] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -213,6 +221,8 @@ pub const GOLDEN_REASONS: [&str; 270] = [
     "deviceTrackNotFound",
     "placementTrackNotFound",
     "clipPlacementNotFound",
+    // ⭐ 自动相位对齐第二层：补偿后的轨延时超出 ±4800 采用窗。
+    "compensationOutOfRange",
     "domainMustBeObjectOrNull",
     "duplicateClipPlacementPairRequired",
     "duplicateLaneTarget",
@@ -243,6 +253,8 @@ pub const GOLDEN_REASONS: [&str; 270] = [
     "licenseRequired",
     "licenseWhitelistUnavailable",
     "loudnessTargetMissed",
+    // ⭐ 自动相位对齐第二层：|ρ| < 0.3，峰值不可信，不施加补偿。
+    "lowCorrelation",
     "masterBusNodeCannotBeRemoved",
     "masterBusTrackCannotBeRemoved",
     // ⭐ MoveTrack MCP 工具（本支）：移主总线音轨被拒（与移除主总线音轨同形）。
@@ -250,6 +262,8 @@ pub const GOLDEN_REASONS: [&str; 270] = [
     // ⭐ `ADR-0030`：`yeban_export_stems` 的 D4 豁免点名（主总线 / 路由图里的非源节点轨）。
     "masterBusTrack",
     "notASourceNode",
+    // ⭐ 自动相位对齐第二层：`maxLagMs` 非有限正数，或换算后超出 ±4800 采用窗。
+    "maxLagOutOfRange",
     "midiInputAmbiguousPort",
     "midiInputConnectFailed",
     "midiInputEmptyPortName",
@@ -308,6 +322,8 @@ pub const GOLDEN_REASONS: [&str; 270] = [
     "routingEdgeNotFound",
     "routingNodeAlreadyExists",
     "routingNodeNotFound",
+    // ⭐ 自动相位对齐第二层：基准轨与目标轨是同一条轨。
+    "sameReferenceAndTarget",
     "samplerUnreadable",
     "sceneAlreadyExists",
     // ⭐ `#290`：`sceneId` 缺失 / 队列满 / 场景 tempo 越界。
@@ -1666,13 +1682,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // ⇒ 出现 307 → 309、键站点 304 → 306、字面站点 293 → 295
 // （恒等式仍闭合：306 = 字面 295 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
 // 309 = 306 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 316;
+// 自动相位对齐（本合入）：`domain/phase_align_auto.rs` 新增 8 处
+// `reason` 字面站点 ⇒ 出现 316 → 324、键站点 313 → 321、字面站点 302 → 310
+// （恒等式仍闭合：321 = 字面 310 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 324 = 321 ＋ 参数名 3。）
+const REASON_OCCURRENCES_TOTAL: usize = 324;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 313;
-const REASON_LITERAL_SITES_TOTAL: usize = 302;
+const REASON_KEY_SITES_TOTAL: usize = 321;
+const REASON_LITERAL_SITES_TOTAL: usize = 310;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -1995,7 +2015,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 270] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 274] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2100,6 +2120,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 270] = [
         "clipPlacementNotFound",
         &["hint", "placementId", "reason", "trackId"],
     ),
+    (
+        // ⭐ 自动相位对齐第二层：单一站点的全键。
+        "compensationOutOfRange",
+        &[
+            "compensationSamples",
+            "delaySamplesAfter",
+            "delaySamplesBefore",
+            "limitSamples",
+            "reason",
+            "trackId",
+        ],
+    ),
     ("domainMustBeObjectOrNull", &["field", "reason"]),
     (
         "duplicateClipPlacementPairRequired",
@@ -2150,6 +2182,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 270] = [
         ],
     ),
     (
+        // ⭐ 自动相位对齐第二层。
+        "lowCorrelation",
+        &["correlation", "lagSamples", "reason", "threshold"],
+    ),
+    (
         "masterBusNodeCannotBeRemoved",
         &["hint", "masterBusTrackId", "nodeId", "reason"],
     ),
@@ -2164,6 +2201,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 270] = [
     // ⭐ `ADR-0030`：`yeban_export_stems` 的 `skippedTracks[]` 两条豁免登记（同形三键）。
     ("masterBusTrack", &["name", "reason", "trackId"]),
     ("notASourceNode", &["name", "reason", "trackId"]),
+    (
+        // ⭐ 自动相位对齐第二层：两处站点的并集
+        // （非有限分支只有 `maxLagMs` / `reason` 两键）。
+        "maxLagOutOfRange",
+        &[
+            "limitSamples",
+            "maxLagMs",
+            "maxLagSamples",
+            "reason",
+            "sampleRateHz",
+        ],
+    ),
     (
         "midiInputAmbiguousPort",
         &["candidates", "field", "reason", "requested"],
@@ -2373,6 +2422,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 270] = [
     ("sfzReadFailed", &["ioError", "path", "reason"]),
     // ⭐ `#221`：音轨绑定的采样器定义文件读不到/解析不了（渲染期唯一的新 reason）。
     // ⭐ 内嵌腿：绑定哈希非法时载荷多一个 `embeddedHash` 键（见 `render.rs`）。
+    (
+        // ⭐ 自动相位对齐第二层。
+        "sameReferenceAndTarget",
+        &["reason", "trackId"],
+    ),
     (
         "samplerUnreadable",
         &[
@@ -3302,13 +3356,18 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 1147 → **1155** 行（2 reason 行 ＋ 6 键行）。新摘要
 /// `bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+///
+/// ⭐ **主干合入相位对齐自动层**（2026-11-12，并集重钉）：clip-ops 的 2 条 ＋ 自动层
+/// 的 4 条 ⇒ 274 → **278** 个 reason、1155 → **1176** 行（4 reason 行 ＋ 17 键行）。
+/// 新摘要 `9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "bdc5e7d8b55b499ed6fd1b7269025c87b27d144e7232aac5b85c5c73ddfb13b4";
+    "9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 274;
+pub const REASON_SURFACE_REASONS: usize = 278;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1155;
+pub const REASON_SURFACE_LINES: usize = 1176;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3485,7 +3544,8 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // 1032 → 1048（4 reason 行 ＋ 12 键行）、摘要同批重钉。
     // ⇒ 本条只证明"分母变了一位"。
     // OTCP（本支）：新增 `src/domain/otcp.rs` ⇒ 52 → 53（该文件带 `reason` 键，摘要同批重钉）。
-    assert_eq!(files.len(), 54, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    // 自动相位对齐（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 54 → 55（该文件带 `reason` 键，摘要同批重钉）。
+    assert_eq!(files.len(), 55, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

@@ -9,7 +9,7 @@
 //!
 //! | 判据 | 对象 | 单位 |
 //! | :--- | :--- | :--- |
-//! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（43） |
+//! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（44） |
 //! | [`a_pending_proposal_is_listed_and_disappears_after_merge`] | `yeban_list_proposals` 的 `openCount` | **提案条数**（1 → 0） |
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
 //! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
@@ -187,8 +187,8 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::TOOL_COUNT,
-        43,
-        "10 个规范工具 + 33 个扩展 = 43（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条、插件宿主一期新增 `yeban_scan_plugins` 与 `yeban_load_plugin` 2 条、SVS 新增 `synthesize_singing` 与 `svs_job` 2 条、夜半原生预制新增 `yeban_list_presets` / `yeban_apply_preset` / `yeban_save_preset` / `yeban_preset_bypass` 4 条、songmap 新增 `get_song_overview` 1 条、ARA 宿主新增 `yeban_ara_bind` / `yeban_ara_query` / `yeban_ara_render` 3 条、OTCP 新增 `yeban_correct_pitch` / `yeban_correct_pitch_job` / `yeban_correct_pitch_notes` 3 条、MoveTrack 新增 `yeban_move_track` 1 条、songmap 新增 `compare_song_snapshots` 1 条）"
+        44,
+        "10 个规范工具 + 34 个扩展 = 44（#176 新增 1 条、#290 新增场景启动 1 条、#345 新增 MIDI 导入 1 条、`ADR-0030` 新增分轨导出 1 条、审计 `N13` 新增会话乐器清单 1 条、插件宿主一期新增 `yeban_scan_plugins` 与 `yeban_load_plugin` 2 条、SVS 新增 `synthesize_singing` 与 `svs_job` 2 条、夜半原生预制新增 `yeban_list_presets` / `yeban_apply_preset` / `yeban_save_preset` / `yeban_preset_bypass` 4 条、songmap 新增 `get_song_overview` 1 条、ARA 宿主新增 `yeban_ara_bind` / `yeban_ara_query` / `yeban_ara_render` 3 条、OTCP 新增 `yeban_correct_pitch` / `yeban_correct_pitch_job` / `yeban_correct_pitch_notes` 3 条、MoveTrack 新增 `yeban_move_track` 1 条、songmap 新增 `compare_song_snapshots` 1 条、自动相位对齐新增 `yeban_auto_align_tracks` 1 条）"
     );
     assert_eq!(
         registry["count"],
@@ -201,11 +201,11 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
     );
     assert_eq!(
         tools::EXTENSION_NAMES.last().copied(),
-        Some("compare_song_snapshots"),
+        Some("yeban_auto_align_tracks"),
         "扩展清单顺序 = 注册顺序（新工具追加在末尾）"
     );
 
-    // 契约 enum 也是 43 个名字，且与注册表逐字相同（顺序一致）。
+    // 契约 enum 也是 44 个名字，且与注册表逐字相同（顺序一致）。
     let contract: Value = serde_json::from_str(
         &std::fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -227,7 +227,7 @@ fn list_proposals_is_discoverable_and_the_counts_move_with_it() {
         "### 契约 enum 尾部\n{:?}",
         &enum_names[enum_names.len().saturating_sub(3)..]
     );
-    assert_eq!(enum_names.len(), 43, "契约 enum 的工具个数");
+    assert_eq!(enum_names.len(), 44, "契约 enum 的工具个数");
     assert_eq!(enum_names, tools::tool_names(), "enum 顺序 = 注册表顺序");
 }
 

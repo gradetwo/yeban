@@ -53,6 +53,10 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../src/convolution_stereo.rs"),
     ),
     ("src/delay.rs", include_str!("../src/delay.rs")),
+    (
+        "src/phase_align_auto.rs",
+        include_str!("../src/phase_align_auto.rs"),
+    ),
     ("src/drums/mod.rs", include_str!("../src/drums/mod.rs")),
     ("src/filter.rs", include_str!("../src/filter.rs")),
     ("src/limiter.rs", include_str!("../src/limiter.rs")),

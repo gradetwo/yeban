@@ -145,6 +145,12 @@ pub enum SongOverviewError {
         /// 请求的采样率（Hz）。
         got_hz: u32,
     },
+    /// 请求的轨不是源节点（有音频入边或是主总线），不能单独 solo 渲染。
+    /// 见 [`render_stems_for_tracks_to_buffers`]。
+    NotASourceTrack {
+        /// 请求的轨 id。
+        track: EntityId,
+    },
 }
 
 impl std::fmt::Display for SongOverviewError {
@@ -160,6 +166,9 @@ impl std::fmt::Display for SongOverviewError {
                 f,
                 "采样率与工程不一致: 工程是 {expected_hz} Hz, 请求是 {got_hz} Hz"
             ),
+            Self::NotASourceTrack { track } => {
+                write!(f, "轨 {track} 不是源节点，不能单独 solo 渲染")
+            }
         }
     }
 }
@@ -667,6 +676,78 @@ pub struct StemBuffer {
     pub audio: RenderedAudio,
 }
 
+/// 探针计划取保留子图里的源节点（主总线除外；与 MCP 的 `probe_subgraph` /
+/// `is_source_node` 同规则）。
+fn source_nodes(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+    seed: u64,
+) -> Result<Vec<EntityId>, SongOverviewError> {
+    let probe_options = RenderOptions::l1(1, 2, sample_rate, seed);
+    let probe = RenderPlan::compile(
+        &project.routing_graph,
+        project.master_bus_track_id,
+        probe_options,
+    )?;
+    Ok(probe
+        .nodes()
+        .into_iter()
+        .filter(|node| {
+            *node != project.master_bus_track_id
+                && probe
+                    .bus_reduction_order(*node)
+                    .is_none_or(|inputs| inputs.is_empty())
+        })
+        .collect())
+}
+
+/// 逐轨 solo 渲染给定的源节点（`render_stems_to_buffers` 与
+/// [`render_stems_for_tracks_to_buffers`] 共用的循环体；做法见
+/// [`render_stems_to_buffers`] 的文档）。
+fn render_stems_for_targets<F>(
+    project: &YebanProjectV1,
+    settings: &RenderSettings,
+    mut sfz_provider: F,
+    sources: &[EntityId],
+    targets: &[EntityId],
+) -> Result<Vec<StemBuffer>, SongOverviewError>
+where
+    F: FnMut(EntityId, &str) -> ArmedSfzInput,
+{
+    let mut stems = Vec::with_capacity(targets.len());
+    for &target in targets {
+        let mut clone = project.clone();
+        for track in clone.tracks.values_mut() {
+            track.mute = false;
+            track.solo = false;
+            track.solo_safe = false;
+        }
+        if let Some(master) = clone.tracks.get_mut(&clone.master_bus_track_id) {
+            master.devices.clear();
+        }
+        // 只 mute 其余源节点：总线与 master 是目标信号的通路，不动。
+        for &node in sources {
+            if node != target
+                && let Some(track) = clone.tracks.get_mut(&node)
+            {
+                track.mute = true;
+            }
+        }
+        let audio = render_project_to_buffer(&clone, settings, &mut sfz_provider)?;
+        let name = project
+            .tracks
+            .get(&target)
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        stems.push(StemBuffer {
+            track: target,
+            name,
+            audio,
+        });
+    }
+    Ok(stems)
+}
+
 /// 逐源轨 solo 渲染（设计稿 §8.2 追加，schema 1.2；分轨频率打架检测的音频来源）。
 ///
 /// 做法与 MCP 的分轨导出（`yeban_mcp::domain::stems::export`）同一招数，
@@ -693,7 +774,7 @@ pub struct StemBuffer {
 pub fn render_stems_to_buffers<F>(
     project: &YebanProjectV1,
     settings: &RenderSettings,
-    mut sfz_provider: F,
+    sfz_provider: F,
 ) -> Result<Vec<StemBuffer>, SongOverviewError>
 where
     F: FnMut(EntityId, &str) -> ArmedSfzInput,
@@ -705,55 +786,45 @@ where
             got_hz: settings.sample_rate_hz,
         });
     }
-    // 探针计划取保留子图 + 源节点（与 `render_project_to_buffer` 同一招数）。
-    let probe_options = RenderOptions::l1(1, 2, sample_rate, settings.seed);
-    let probe = RenderPlan::compile(
-        &project.routing_graph,
-        project.master_bus_track_id,
-        probe_options,
-    )?;
-    let sources: Vec<EntityId> = probe
-        .nodes()
-        .into_iter()
-        .filter(|node| {
-            *node != project.master_bus_track_id
-                && probe
-                    .bus_reduction_order(*node)
-                    .is_none_or(|inputs| inputs.is_empty())
-        })
-        .collect();
-    let mut stems = Vec::with_capacity(sources.len());
-    for &target in &sources {
-        let mut clone = project.clone();
-        for track in clone.tracks.values_mut() {
-            track.mute = false;
-            track.solo = false;
-            track.solo_safe = false;
-        }
-        if let Some(master) = clone.tracks.get_mut(&clone.master_bus_track_id) {
-            master.devices.clear();
-        }
-        // 只 mute 其余源节点：总线与 master 是目标信号的通路，不动。
-        for &node in &sources {
-            if node != target
-                && let Some(track) = clone.tracks.get_mut(&node)
-            {
-                track.mute = true;
-            }
-        }
-        let audio = render_project_to_buffer(&clone, settings, &mut sfz_provider)?;
-        let name = project
-            .tracks
-            .get(&target)
-            .map(|track| track.name.clone())
-            .unwrap_or_default();
-        stems.push(StemBuffer {
-            track: target,
-            name,
-            audio,
+    let sources = source_nodes(project, sample_rate, settings.seed)?;
+    render_stems_for_targets(project, settings, sfz_provider, &sources, &sources)
+}
+
+/// 只渲染给定的几条源轨（自动相位对齐的音频来源；与 [`render_stems_to_buffers`]
+/// 同一条 clone-mute-re-render 招数，只是不渲染无关的轨）。
+///
+/// 成本：一次调用渲染 `targets.len()` 次（不是全工程源轨数）。
+/// 目标轨里有不是源节点的 ⇒ [`SongOverviewError::NotASourceTrack`]
+///（主总线、有音频入边的总线轨）；静音轨（无排程音符、无音频片段）
+/// 不报错，返回全零 stem，调用方按静音处理。
+///
+/// # Errors
+///
+/// [`SongOverviewError`]：采样率不一致 / 工程无内容 / 快照武装失败 /
+/// 渲染计划编译或执行失败 / 目标轨不是源节点。
+pub fn render_stems_for_tracks_to_buffers<F>(
+    project: &YebanProjectV1,
+    settings: &RenderSettings,
+    sfz_provider: F,
+    targets: &[EntityId],
+) -> Result<Vec<StemBuffer>, SongOverviewError>
+where
+    F: FnMut(EntityId, &str) -> ArmedSfzInput,
+{
+    let sample_rate = project.audio_config.sample_rate.hz();
+    if settings.sample_rate_hz != sample_rate {
+        return Err(SongOverviewError::SampleRateMismatch {
+            expected_hz: sample_rate,
+            got_hz: settings.sample_rate_hz,
         });
     }
-    Ok(stems)
+    let sources = source_nodes(project, sample_rate, settings.seed)?;
+    for &target in targets {
+        if !sources.contains(&target) {
+            return Err(SongOverviewError::NotASourceTrack { track: target });
+        }
+    }
+    render_stems_for_targets(project, settings, sfz_provider, &sources, targets)
 }
 
 /// 该节点是否有一条来自保留子图的音频入边（侧链边不算音频边）。

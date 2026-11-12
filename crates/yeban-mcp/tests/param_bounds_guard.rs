@@ -87,11 +87,13 @@ enum BoundStatus {
 }
 
 /// 47 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 47] = [
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 49] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
     ("trackId", BoundStatus::Identity),
+    ("referenceTrackId", BoundStatus::Identity),
+    ("targetTrackId", BoundStatus::Identity),
     ("clipId", BoundStatus::Identity),
     ("edgeId", BoundStatus::Identity),
     ("pointId", BoundStatus::Identity),

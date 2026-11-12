@@ -99,6 +99,7 @@ pub mod meter;
 pub mod noise;
 pub mod oscillator;
 pub mod oversample;
+pub mod phase_align_auto;
 pub mod polysynth;
 pub mod reverb;
 pub mod sample_delay;
