@@ -3333,7 +3333,8 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新增 2 条新字面站点（`alreadyAtTargetIndex` 4 键 / `masterBusTrackCannotBeMoved`
 /// 4 键）⇒ 242 → **244** 个 reason、1032 → **1042** 行（2 reason 行 ＋ 8 键行）。
 /// 新摘要由本判据的 `left:` 报出值照抄（⛔ 不手算）。
-pub const FROZEN_REASON_SURFACE_SHA256: &str = "d2749bc5fc25b3d54979307591f10d37bdb57d571378fb29ef5a41d47cd090a4";
+pub const FROZEN_REASON_SURFACE_SHA256: &str =
+    "d2749bc5fc25b3d54979307591f10d37bdb57d571378fb29ef5a41d47cd090a4";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 276;
