@@ -196,11 +196,12 @@ export component UnifiedLowerDock inherits Rectangle {
             // PANE: INLINE DSP DEVICES (Visible in stacked or devices mode)
             if root.active-tab == "stacked" || root.active-tab == "devices" : HorizontalLayout {
                 spacing: 8px;
-                horizontal-stretch: 1;
+                horizontal-stretch: root.active-tab == "stacked" ? 3 : 1;
 
-                // Device 1: Wavetable MPE Synth
+                // Device 1: Wavetable MPE Synth (Flex width across available space)
                 Rectangle {
-                    width: 235px;
+                    horizontal-stretch: 1;
+                    min-width: 190px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -216,7 +217,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             alignment: space-between;
                             HorizontalLayout {
                                 spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #00c5ff; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
                                 Text {
                                     text: "Wavetable MPE";
                                     font-family: Tokens.font-ui;
@@ -231,14 +232,14 @@ export component UnifiedLowerDock inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
                                 letter-spacing: 0.8px;
-                                color: #38bdf8;
+                                color: Theme.accent;
                                 font-weight: 700;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                             }
                         }
 
-                        // 3D Morph Wave SVG
+                        // 3D Morph Wave SVG (stretches to fill device width)
                         Rectangle {
                             height: 72px;
                             background: #06080e;
@@ -248,18 +249,18 @@ export component UnifiedLowerDock inherits Rectangle {
                             clip: true;
 
                             Path {
-                                commands: "M 0 55 Q 25 20, 50 50 T 100 30 T 160 45";
-                                stroke: #00c5ff40;
+                                commands: "M 0 55 Q 40 20, 80 50 T 160 30 T 240 45 T 320 28 T 400 48 T 480 32 T 560 46 T 640 38";
+                                stroke: Theme.accent.with-alpha(0.35);
                                 stroke-width: 1.5px;
                             }
                             Path {
-                                commands: "M 0 35 Q 25 8, 50 35 T 100 15 T 160 30";
-                                stroke: #00c5ff;
-                                stroke-width: 2.2px;
+                                commands: "M 0 35 Q 40 8, 80 35 T 160 15 T 240 30 T 320 18 T 400 35 T 480 20 T 560 32 T 640 25";
+                                stroke: Theme.accent;
+                                stroke-width: 2.0px;
                             }
                             Path {
-                                commands: "M 0 60 Q 35 30, 70 55 T 120 38 T 160 52";
-                                stroke: #10b98140;
+                                commands: "M 0 60 Q 50 30, 100 55 T 200 38 T 300 52 T 400 36 T 500 50 T 600 42";
+                                stroke: #3b856a.with-alpha(0.35);
                                 stroke-width: 1.5px;
                             }
 
@@ -273,7 +274,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     font-family: Tokens.font-mono;
                                     font-size: 8px;
                                     font-weight: 700;
-                                    color: #38bdf8;
+                                    color: Theme.accent;
                                 }
                                 Text {
                                     text: "UNISON: 4 Voices";
@@ -310,7 +311,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 10px;
                                         font-weight: 800;
-                                        color: #38bdf8;
+                                        color: Theme.accent;
                                         horizontal-alignment: center;
                                     }
                                 }
@@ -344,7 +345,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 10px;
                                         font-weight: 800;
-                                        color: #34d399;
+                                        color: #3b856a;
                                         horizontal-alignment: center;
                                     }
                                 }
@@ -378,7 +379,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 10px;
                                         font-weight: 800;
-                                        color: #fbbf24;
+                                        color: #a67c3b;
                                         horizontal-alignment: center;
                                     }
                                 }
@@ -387,9 +388,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
                 }
 
-                // Device 2: Pro-QLinear 8-band Dynamic EQ
+                // Device 2: Pro-QLinear 8-band Dynamic EQ (Flex width)
                 Rectangle {
-                    width: 255px;
+                    horizontal-stretch: 1;
+                    min-width: 200px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -405,7 +407,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             alignment: space-between;
                             HorizontalLayout {
                                 spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #10b981; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3b856a; }
                                 Text {
                                     text: "Pro-QLinear 8 (动态 EQ)";
                                     font-family: Tokens.font-ui;
@@ -419,7 +421,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: "" + root.wt-cutoff-hz + " Hz";
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
-                                color: #10b981;
+                                color: #3b856a;
                                 font-weight: 700;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
@@ -441,21 +443,23 @@ export component UnifiedLowerDock inherits Rectangle {
                                 width: parent.width - 8px;
                                 height: 56px;
                                 spacing: 2px;
-                                alignment: end;
+                                alignment: center;
 
-                                for h in [12px, 18px, 28px, 42px, 35px, 48px, 32px, 25px, 38px, 44px, 30px, 22px, 16px, 24px, 18px, 10px] : Rectangle {
-                                    width: 8px;
+                                for h in [12px, 18px, 28px, 42px, 35px, 48px, 32px, 25px, 38px, 44px, 30px, 22px, 16px, 24px, 18px, 10px, 14px, 20px, 32px, 45px, 36px, 28px, 20px, 14px] : Rectangle {
+                                    horizontal-stretch: 1;
+                                    min-width: 3px;
+                                    max-width: 8px;
                                     height: h;
-                                    background: #10b98135;
+                                    background: #3b856a28;
                                     border-radius: 1px;
                                 }
                             }
 
-                            // Dynamic Filter Curve Path
+                            // Dynamic Filter Curve Path (spans across device width)
                             Path {
-                                commands: "M 0 52 Q 40 46, 75 22 T 145 32 T 220 54";
-                                stroke: #10b981;
-                                stroke-width: 2.2px;
+                                commands: "M 0 52 Q 60 46, 120 22 T 240 32 T 360 20 T 480 38 T 600 52";
+                                stroke: #3b856a;
+                                stroke-width: 2.0px;
                             }
                         }
 
@@ -477,7 +481,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: #38bdf8;
+                                        color: Theme.accent;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -496,7 +500,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: #34d399;
+                                        color: #3b856a;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -515,7 +519,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: #fbbf24;
+                                        color: #a67c3b;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -524,9 +528,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
                 }
 
-                // Device 3: VCA Glue Compressor
+                // Device 3: VCA Glue Compressor (Flex width)
                 Rectangle {
-                    width: 215px;
+                    horizontal-stretch: 1;
+                    min-width: 190px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -542,7 +547,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             alignment: space-between;
                             HorizontalLayout {
                                 spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #f59e0b; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #a67c3b; }
                                 Text {
                                     text: "VCA Glue Comp";
                                     font-family: Tokens.font-ui;
@@ -556,7 +561,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: "GR " + root.comp-gr-text;
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
-                                color: #fbbf24;
+                                color: #a67c3b;
                                 font-weight: 700;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
@@ -589,7 +594,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 800;
-                                        color: #fbbf24;
+                                        color: #a67c3b;
                                         horizontal-alignment: right;
                                     }
                                 }
@@ -603,7 +608,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         width: root.comp-gr-fraction * parent.width;
                                         height: 8px;
                                         border-radius: 4px;
-                                        background: #f59e0b;
+                                        background: #a67c3b;
                                     }
                                 }
 
@@ -676,10 +681,10 @@ export component UnifiedLowerDock inherits Rectangle {
                 }
             }
 
-            // PANE: MIXCONSOLE (Visible in stacked or mixer mode)
+            // PANE: MIXCONSOLE (Visible in stacked or mixer mode - reflows to fill available space)
             if root.active-tab == "stacked" || root.active-tab == "mixer" : Rectangle {
-                width: root.active-tab == "stacked" ? 440px : 700px;
-                horizontal-stretch: root.active-tab == "stacked" ? 0 : 1;
+                horizontal-stretch: root.active-tab == "stacked" ? 2 : 1;
+                min-width: root.active-tab == "stacked" ? 400px : 600px;
                 background: Theme.bg-surface;
                 border-radius: Theme.radius;
                 border-width: 1px;
@@ -689,8 +694,11 @@ export component UnifiedLowerDock inherits Rectangle {
                     padding: 6px;
                     spacing: 6px;
 
+                    // Channel Fader Strips (Dynamic reflow based on mode)
                     for trk in root.tracks : Rectangle {
-                        width: 82px;
+                        horizontal-stretch: 1;
+                        min-width: 74px;
+                        max-width: root.active-tab == "stacked" ? 150px : 240px;
                         background: #0a0d14;
                         border-radius: 4px;
                         border-width: 1px;
@@ -704,8 +712,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Color label
                             Rectangle {
                                 height: 18px;
-                                background: trk.color;
+                                background: trk.color.with-alpha(0.25);
                                 border-radius: 2px;
+                                border-width: 1px;
+                                border-color: trk.color.with-alpha(0.65);
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -714,7 +724,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-ui;
                                         font-size: 8px;
                                         font-weight: 700;
-                                        color: #020617;
+                                        color: #e2e8f0;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -754,7 +764,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                         width: 16px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: trk.muted ? #f59e0b : #141720;
+                                        background: trk.muted ? #a67c3b : #141720;
+                                        border-width: 1px;
+                                        border-color: trk.muted ? #8a6730 : #ffffff10;
                                         Text {
                                             text: "M";
                                             font-family: Tokens.font-mono;
@@ -770,7 +782,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                         width: 16px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: trk.soloed ? #00c5ff : #141720;
+                                        background: trk.soloed ? Theme.accent : #141720;
+                                        border-width: 1px;
+                                        border-color: trk.soloed ? Theme.accent : #ffffff10;
                                         Text {
                                             text: "S";
                                             font-family: Tokens.font-mono;
@@ -848,6 +862,277 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
                         TouchArea { clicked => { root.select-track(trk.id); } }
                     }
+
+                    // Optional Group Bus Strip in Mixer mode (shows Synth/Drum bus summing)
+                    if root.active-tab == "mixer" : Rectangle {
+                        width: 92px;
+                        background: #090c14;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #3b856a40;
+
+                        VerticalLayout {
+                            padding: 5px;
+                            spacing: 4px;
+                            alignment: space-between;
+
+                            Rectangle {
+                                height: 18px;
+                                background: #3b856a24;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: #3b856a60;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "BUS SUM";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: 800;
+                                        color: #3b856a;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 16px;
+                                background: #141720;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: #ffffff08;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "Tape Saturator";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 7px;
+                                        color: #cbd5e1;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "BUS 1+2";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    color: #64748b;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 76px;
+                                background: #06080e;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: #1a202c;
+
+                                Rectangle {
+                                    x: parent.width / 2 - 1px;
+                                    y: 0;
+                                    width: 2px;
+                                    height: parent.height;
+                                    background: #000000;
+                                }
+
+                                Rectangle {
+                                    x: 2px;
+                                    y: 28px;
+                                    width: parent.width - 4px;
+                                    height: 14px;
+                                    background: #94a3b8;
+                                    border-radius: 2px;
+                                    Rectangle {
+                                        x: 0;
+                                        y: 6px;
+                                        width: parent.width;
+                                        height: 2px;
+                                        background: #3b856a;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "-1.0 dB";
+                                font-family: Tokens.font-mono;
+                                font-size: 9px;
+                                font-weight: 700;
+                                color: #3b856a;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Dedicated Master 2-Bus Channel Strip on Mixer Right
+                    Rectangle {
+                        width: 90px;
+                        background: #060810;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: Theme.accent.with-alpha(0.3);
+
+                        VerticalLayout {
+                            padding: 5px;
+                            spacing: 4px;
+                            alignment: space-between;
+
+                            // Master Badge
+                            Rectangle {
+                                height: 18px;
+                                background: Theme.accent.with-alpha(0.24);
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.accent.with-alpha(0.65);
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "MASTER 2-BUS";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: 800;
+                                        color: Theme.accent;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Master Limiter
+                            Rectangle {
+                                height: 16px;
+                                background: #141720;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: #ffffff08;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "⚡ TruePeak Limit";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 7px;
+                                        color: #cbd5e1;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            // Master Pan & Mono
+                            HorizontalLayout {
+                                spacing: 3px;
+                                alignment: space-between;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 16px;
+                                    border-radius: 2px;
+                                    background: #141720;
+                                    Text {
+                                        text: "MONO";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: 700;
+                                        color: #94a3b8;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: "0 dBTP";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 7px;
+                                    color: #3b856a;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Master Vertical Fader
+                            Rectangle {
+                                height: 76px;
+                                background: #04050a;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: #1a202c;
+
+                                Rectangle {
+                                    x: parent.width / 2 - 1px;
+                                    y: 0;
+                                    width: 2px;
+                                    height: parent.height;
+                                    background: #000000;
+                                }
+
+                                Rectangle {
+                                    x: 2px;
+                                    y: 24px;
+                                    width: parent.width - 4px;
+                                    height: 14px;
+                                    background: #cbd5e1;
+                                    border-radius: 2px;
+
+                                    Rectangle {
+                                        x: 0;
+                                        y: 6px;
+                                        width: parent.width;
+                                        height: 2px;
+                                        background: Theme.accent;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "-0.3 dB";
+                                font-family: Tokens.font-mono;
+                                font-size: 9px;
+                                font-weight: 800;
+                                color: Theme.accent;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Empty / Add Channel Strip Slot in full Mixer mode to catch remaining width
+                    if root.active-tab == "mixer" : Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 60px;
+                        max-width: 140px;
+                        background: #07090e;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #ffffff08;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            Text {
+                                text: "+";
+                                font-family: Tokens.font-mono;
+                                font-size: 16px;
+                                color: #475569;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "添加混音轨";
+                                font-family: Tokens.font-ui;
+                                font-size: 8px;
+                                color: #475569;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -916,7 +1201,9 @@ export component UnifiedLowerDock inherits Rectangle {
                             vertical-stretch: 1;
 
                             for row in root.piano-rows : Rectangle {
-                                height: 22px;
+                                vertical-stretch: 1;
+                                min-height: 22px;
+                                max-height: 32px;
                                 background: row.is_root ? #141720 : #0a0d14;
                                 border-radius: 2px;
                                 border-width: 1px;
@@ -949,7 +1236,9 @@ export component UnifiedLowerDock inherits Rectangle {
                         spacing: 3px;
 
                         for row[r-idx] in root.piano-rows : HorizontalLayout {
-                            height: 22px;
+                            vertical-stretch: 1;
+                            min-height: 22px;
+                            max-height: 32px;
                             spacing: 3px;
 
                             Rectangle { background: row.step0 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 0); } } }

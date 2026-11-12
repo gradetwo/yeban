@@ -36,7 +36,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         font-family: Tokens.font-ui;
                         font-size: 10px;
                         font-weight: 700;
-                        color: #fbbf24;
+                        color: #a88344;
                         vertical-alignment: center;
                     }
                     Text {
@@ -129,12 +129,15 @@ export component HybridClipMatrixDrawer inherits Rectangle {
             }
         }
 
-        // Track Clip Rows (aligned 1:1 with tracks, 64px row height)
+        // Track Clip Rows (aligned 1:1 with tracks, flex row height)
         VerticalLayout {
             spacing: 0px;
+            vertical-stretch: 1;
 
             for trk in root.tracks : Rectangle {
-                height: 64px;
+                vertical-stretch: 1;
+                min-height: 64px;
+                max-height: 160px;
                 background: trk.id == root.selected-track-id ? #ffffff08 : transparent;
                 border-color: #ffffff0a;
 
@@ -262,6 +265,13 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // Bottom empty placeholder row (matches arrangement empty lane 1:1)
+            Rectangle {
+                vertical-stretch: 0;
+                height: 38px;
+                background: transparent;
             }
         }
     }
