@@ -10,7 +10,7 @@
 //! | [`a_device_on_an_empty_track_warns_and_does_not_block`] | 装到 `Track 2` 的 `warnings[]` | 1 条 `deviceOnSilentTrack` ＋ 提案/提交计数各 +1 |
 //! | [`a_device_on_a_track_with_notes_has_no_warning`] | 装到 `Track 1` 的 `warnings[]` | 0 条 |
 //! | [`an_empty_note_clip_is_silent_too_with_its_own_reading`] | 有摆放但片段里 0 音符 | 1 条警告 ＋ `placements:1` / `notes:0` |
-//! | [`the_warned_track_is_the_silent_source_in_render_master`] | 同一工程的两处读数 | `warnings[0].track == sources[].track` 且 `kind:"silent"` |
+//! | [`the_warned_track_is_named_in_empty_sources_in_render_master`] | 同一工程的两处读数 | 警告轨不在 `sources[]`，且其 id == `emptySources.trackIds` 唯一一条 |
 //! | [`dry_run_preview_carries_the_same_warning`] | `dryRun:true` 的 `preview.warnings` | 与真实响应同一份 |
 //! | [`a_device_on_master_never_warns`] | 装到 `Master` 的 `warnings[]` | 0 条（主总线永不报） |
 //! | [`a_device_on_a_bus_fed_by_sounding_source_has_no_warning`] | 装到接有声源的总线轨 | 0 条（入边上游有声） |
@@ -629,9 +629,14 @@ fn an_empty_note_clip_is_silent_too_with_its_own_reading() {
 }
 
 /// 判据 ⑤：同一工程里，装设备时警告的那条轨在 `yeban_render_master` 的
-/// `sources[]` 里就是 `kind:"silent"`（两处读数对照）。
+/// 收据里被点名（两处读数对照）。
+///
+/// ⭐ 2026-11-12 雨窗空轨包合入后契约迁移：空轨**不进** `sources[]`（不再有
+/// `kind:"silent"` 的源条目），改在 `emptySources.trackIds` 里按 id 点名。
+/// 本判据的对照关系不变 —— 警告点名的轨必须在渲染收据里以同一身份出现，
+/// ⛔ 不许静默消失；出现的位置按新契约改查 `emptySources`。
 #[test]
-fn the_warned_track_is_the_silent_source_in_render_master() {
+fn the_warned_track_is_named_in_empty_sources_in_render_master() {
     let scratch = Scratch::new("trap-178-render");
     let fixture = fixture(false);
     let (mut dispatcher, auth) = dispatcher(&fixture.project);
@@ -669,17 +674,31 @@ fn the_warned_track_is_the_silent_source_in_render_master() {
     let sources = rendered["data"]["sources"]
         .as_array()
         .expect("sources 必须是数组");
-    let warned = sources
-        .iter()
-        .find(|source| source["track"] == warned_track)
-        .unwrap_or_else(|| panic!("sources[] 里必须有 {warned_track}: {sources:?}"));
-    assert_eq!(
-        warned["kind"], "silent",
-        "装设备时警告的那条轨在渲染侧必须也是 silent: {warned}"
+    assert!(
+        sources
+            .iter()
+            .find(|source| source["track"] == warned_track)
+            .is_none(),
+        "空轨不得再出现在 sources[]: {sources:?}"
     );
-    assert_eq!(warned["audible"], true, "{warned}");
-    assert_eq!(warned["notes"], 0, "{warned}");
-    assert_eq!(warned["audioClips"], 0, "{warned}");
+    let empty_sources = &rendered["data"]["emptySources"];
+    assert_eq!(
+        empty_sources["count"], 1,
+        "被点名的空轨恰一条: {empty_sources}"
+    );
+    let track_ids = empty_sources["trackIds"]
+        .as_array()
+        .expect("emptySources.trackIds 必须是数组");
+    assert_eq!(
+        track_ids.len(),
+        1,
+        "count 与 trackIds.len() 必须一致: {empty_sources}"
+    );
+    assert_eq!(
+        track_ids[0],
+        json!(fixture.empty.to_canonical_string()),
+        "被点名的必须是装设备时警告的那条轨: {empty_sources}"
+    );
 
     // 对照：有声的那条轨不是 silent。
     let sounding = sources

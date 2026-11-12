@@ -780,6 +780,11 @@ fn streaming_export_writes_the_same_bytes_and_releases_the_buffers() {
         &assets,
     )
     .expect("两阶段渲染");
+    assert_eq!(
+        deferred.stems.len(),
+        3,
+        "夹具三条轨都有摆放 ⇒ 三条都进 stems（空集会让下面的 `.all(` 断言真空通过）"
+    );
     assert!(!deferred.streamed, "`export` 不该声称写过盘");
     assert!(
         deferred
@@ -807,6 +812,11 @@ fn streaming_export_writes_the_same_bytes_and_releases_the_buffers() {
         &assets,
     )
     .expect("流式导出");
+    assert_eq!(
+        streamed.stems.len(),
+        3,
+        "流式路径与两阶段路径同数（空集会让下面的 `.all(` 断言真空通过）"
+    );
     assert!(streamed.streamed, "`export_streaming` 必须标记已写穿");
     assert!(
         streamed
