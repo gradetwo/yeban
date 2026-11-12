@@ -240,6 +240,7 @@
 
 use std::sync::Arc;
 
+use yeban_dsp::band_solo::BandSoloFilter;
 use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::EntityId;
 use yeban_model::music::PHASE_ALIGN_MAX_ABS_SAMPLES;
@@ -2435,6 +2436,22 @@ pub struct EngineRuntime {
     control_change: ControlChangeState,
     meters: MeterPublisher,
     block: AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    /// ⭐ **频段独奏监听滤波器（Songmap follow-ons (a)）**：Alt+点总览图频段行时
+    /// 挂在监听总线末端的 RBJ 带通（[`yeban_dsp::band_solo::BandSoloFilter`]）。
+    ///
+    /// 落点在 [`Self::process_quantum`]：每块渲染完、写出到声卡之前滤 `block`
+    /// （电平计量在 `render_block` 里已按未滤的混音计完 ⇒ 独奏不污染电平读数；
+    /// 渲染管线、录音、工程一律不碰）。
+    ///
+    /// * **挥发性会话运行态**（与 [`Self::pending_launch`] 同层）：⛔ 不进快照、
+    ///   不进工程、不进撤销栈；`reload` 建新运行时回到未激活。
+    /// * **成本**：未激活时 `process_in_place` 是空操作（⛔ 不读不写），输出逐位不变；
+    ///   激活时每块多一节双二阶（两声道各 5 次乘加 / 样本）。系数在构造期按初始快照
+    ///   的采样率配好（见 `write_into`），`reload` 重建运行时重配。
+    /// * **尺寸**：`Biquad` 36 B ＋ `sample_rate` 4 B ＋ `Option<usize>` 16 B
+    ///   ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B ⇒ 45 888 B
+    ///   （见 `tests/bus_insert.rs` 的尺寸判据）。
+    band_solo: BandSoloFilter,
     scratch_events: [EngineEvent; SCRATCH_EVENTS],
     scratch_meters: [MeterFrame; SCRATCH_METERS],
     /// 单轨渲染结果（声相之前、单声道）。复用同一个缓冲，避免每轨一份。
@@ -3177,6 +3194,10 @@ impl EngineRuntime {
             put!(control_change, ControlChangeState::new());
             put!(meters, meters);
             put!(block, AudioBlock::new());
+            put!(
+                band_solo,
+                BandSoloFilter::new(armed_reverb_sample_rate as f32)
+            );
             put!(scratch_events, [EngineEvent::IDLE; SCRATCH_EVENTS]);
             put!(scratch_meters, [MeterFrame::default(); SCRATCH_METERS]);
             put!(track_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
@@ -3487,6 +3508,24 @@ impl EngineRuntime {
         self.pending_launch = None;
     }
 
+    /// ⭐ 频段独奏（Songmap follow-ons (a)）：设定监听总线的独奏频段。
+    ///
+    /// `Some(band)`（0..8，Sub → Air）独奏该频段，`None` 关闭（直通）。
+    /// 这是**控制面直接调用**的版本（运行时还在本线程时用，如控制面模式 /
+    /// 未开设备）；设备腿（运行时已 move 进 cpal 回调）走
+    /// [`EngineEvent::BandSolo`]（同一 `set_band`，见 `render_block` 的出队臂）。
+    /// 越界下标由滤波器按关闭处理（⛔ 不配非法系数、不 panic）。
+    /// 本函数不分配、不取锁；系数切换时滤波器清状态（换频段不带旧递推）。
+    pub fn set_band_solo(&mut self, band: Option<u8>) {
+        self.band_solo.set_band(band.map(usize::from));
+    }
+
+    /// 当前独奏的频段（`None` = 未激活，直通）。读口：控制面显示独奏态用。
+    #[must_use]
+    pub fn band_solo(&self) -> Option<u8> {
+        self.band_solo.band().map(|band| band as u8)
+    }
+
     /// 当前是否有排队的场景启动。
     #[must_use]
     pub const fn has_pending_scene_launch(&self) -> bool {
@@ -3592,6 +3631,13 @@ impl EngineRuntime {
         while offset < total_frames {
             let frames = (total_frames - offset).min(DEFAULT_BLOCK_FRAMES);
             self.render_block(frames);
+            // ⭐ 频段独奏（Songmap follow-ons (a)）：监听总线末端。未激活时
+            // `process_in_place` 是空操作，输出逐位不变；激活时只滤本块（`n`
+            // 钳到本块实际帧数，块尾的零区不进滤波器）。
+            let (left, right) = self.block.stereo_mut();
+            let n = frames.min(left.len());
+            self.band_solo
+                .process_in_place(&mut left[..n], &mut right[..n]);
             // ⚠ `channels == 1` ⇒ 只有第 0 路（= 左）被写：右声道的内容在单声道设备上
             // **无处可去**。这是**待裁决**的已知缺口，不是可以就地改掉的小事：
             // 见 `tests/idempotency_and_channel_consistency.rs` 的模块文档 §4 发现 1。
@@ -4337,6 +4383,7 @@ impl EngineRuntime {
             control_change,
             meters,
             block,
+            band_solo,
             scratch_events,
             scratch_meters,
             track_scratch,
@@ -4683,6 +4730,12 @@ impl EngineRuntime {
                     quantization,
                     time_signature,
                 );
+            }
+            // ⭐ 频段独奏（Songmap follow-ons (a)）：与 SceneLaunch 同一条路 ——
+            // 事件环是设备腿唯一能走的路径；`set_band` 只换系数并清状态（零分配、
+            // 零锁、零 I/O），换频段时旧递推不带入新频段。越界下标由滤波器按关闭处理。
+            if let EngineEvent::BandSolo { band } = event {
+                band_solo.set_band(band.map(usize::from));
             }
         });
         *event_bulk_pops = event_bulk_pops.wrapping_add(1);
@@ -6685,6 +6738,97 @@ mod tests {
         assert!((rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9);
         assert_eq!(rig.runtime.stats().scene_launches_applied, 1, "⭐ 恰好一次");
         assert!(!rig.runtime.has_pending_scene_launch());
+    }
+
+    /// ⭐ 频段独奏（Songmap follow-ons (a)）：直接调用武装滤波器，读口与输出见证。
+    ///
+    /// `set_band_solo(Some(3))` ⇒ 读口 `band_solo()` 报 `Some(3)`；静音夹具过带通
+    /// 仍是静音（无 NaN、无状态爆炸）；`set_band_solo(None)` ⇒ 回到直通；
+    /// 越界下标 `Some(9)` 按关闭处理（滤波器钳住，⛔ 不配非法系数）。
+    ///
+    /// 频响本身由 `yeban-dsp` 的 `band_solo` 单测钉（中心 0 dB、十倍频程外 −20 dB、
+    /// 正弦实测）；本夹具无音源（`simple_snapshot` 是静音轨），这里只证武装、
+    /// 读口与开关的无痕性，⛔ 不假装在引擎层测了频响。
+    #[test]
+    fn band_solo_direct_call_arms_filter_and_off_is_silent() {
+        let mut rig = rig();
+        assert_eq!(rig.runtime.band_solo(), None, "初始须未激活");
+        rig.runtime.set_band_solo(Some(3));
+        assert_eq!(rig.runtime.band_solo(), Some(3), "直接调用须武装 Mid 段");
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "静音夹具过带通仍须是静音（无 NaN、无状态爆炸）"
+        );
+        rig.runtime.set_band_solo(None);
+        assert_eq!(rig.runtime.band_solo(), None, "None 须关闭独奏");
+        rig.runtime.process_quantum(&mut out, 2);
+        assert!(out.iter().all(|&s| s == 0.0), "关闭后仍须是静音");
+        rig.runtime.set_band_solo(Some(9));
+        assert_eq!(rig.runtime.band_solo(), None, "越界频段须按关闭处理");
+    }
+
+    /// ⭐ 频段独奏（Songmap follow-ons (a)）：**事件环里的 `BandSolo` 与直接调用等价**。
+    ///
+    /// 这是设备腿（`EngineRuntime` 被 move 进 cpal 回调）唯一能走的路径：产品把请求
+    /// 写进既有的无锁 SPSC，实时侧在量子边界调用**同一个** `set_band`。
+    ///
+    /// 独立变色：删掉事件出队里的 `EngineEvent::BandSolo` 分支 ⇒ `band_solo()` 恒为
+    /// `None`，本判据在第一个断言处红。
+    #[test]
+    fn band_solo_sent_through_the_event_ring_arms_like_the_control_call() {
+        let mut rig = rig();
+        let written = rig
+            .sender
+            .publish(&[EngineEvent::BandSolo { band: Some(2) }]);
+        assert_eq!(written, 1, "事件必须真的进了环");
+        assert_eq!(
+            rig.runtime.band_solo(),
+            None,
+            "事件在量子边界之前⛔ 不武装（控制面没有偷偷改实时态）"
+        );
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        assert_eq!(
+            rig.runtime.band_solo(),
+            Some(2),
+            "一个量子后 Low-Mid 段须武装"
+        );
+        assert_eq!(rig.runtime.stats().events_applied, 1, "事件须计入已应用数");
+        let written = rig.sender.publish(&[EngineEvent::BandSolo { band: None }]);
+        assert_eq!(written, 1, "关闭事件必须真的进了环");
+        rig.runtime.process_quantum(&mut out, 2);
+        assert_eq!(rig.runtime.band_solo(), None, "关闭事件生效后须回到直通");
+    }
+
+    /// ⭐ 频段独奏（Songmap follow-ons (a)）：开过再关 ⇒ 与从未碰过逐位相同。
+    ///
+    /// 未激活时 `process_in_place` 是空操作：独奏开关本身⛔ 不许在输出或统计里
+    /// 留痕。删掉空操作分支（未激活也过一遍恒等 biquad）时，静音仍是静音、
+    /// 本判据不红 —— 真正的守卫是 `band_solo_direct_call_arms_filter_and_off_is_silent`
+    /// 的读口 + dsp 层的频响；本判据守的是“开关往返不改变统计与输出”。
+    #[test]
+    fn band_solo_on_then_off_is_bit_identical_to_never_touched() {
+        let mut untouched = rig();
+        let mut toggled = rig();
+        toggled.runtime.set_band_solo(Some(5));
+        toggled.runtime.set_band_solo(None);
+        let mut out_untouched = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        let mut out_toggled = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..3 {
+            untouched.runtime.process_quantum(&mut out_untouched, 2);
+            toggled.runtime.process_quantum(&mut out_toggled, 2);
+        }
+        assert_eq!(
+            out_toggled, out_untouched,
+            "开过再关的输出须与从未碰过逐位相同"
+        );
+        assert_eq!(
+            toggled.runtime.stats(),
+            untouched.runtime.stats(),
+            "开过再关的统计须与从未碰过逐位相同"
+        );
     }
 
     /// 判据（`line/engine-26` 注入 R13 的处置）：`EngineRuntime` 每个量子开始都必须

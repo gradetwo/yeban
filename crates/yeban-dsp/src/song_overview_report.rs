@@ -672,6 +672,7 @@ mod tests {
                     mean_similarity: 0.97,
                 }],
             },
+            frequency_clash: FrequencyClashSummary::default(),
             bar_series: BarSeries {
                 bar: vec![1, 2],
                 time_sec: vec![0.0, 2.0],
@@ -715,6 +716,7 @@ mod tests {
                 detected_anomalies: Vec::new(),
             },
             repetition: RepetitionSummary::default(),
+            frequency_clash: FrequencyClashSummary::default(),
             bar_series: BarSeries {
                 bar: Vec::new(),
                 time_sec: Vec::new(),

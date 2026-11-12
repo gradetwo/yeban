@@ -66,6 +66,7 @@
 //! | [`vocal_refine`] | 本地声学边界精修器：±80 ms 窗内 VOP/起音/收音精修 + F0/HNR/置信度 + 换气分段 + ad-lib 检出（**离线限定**） | 新写 [ADR-0067] |
 //! | [`vocal_timemap`] | 连续流式 timemap 人声对齐：单实例拉伸渲染 + VOP 锚定映射构造 + 门检 verdict（**离线限定**，不进实时回调） | 新写 [ADR-0067] |
 //! | [`slicer`] | 音频切片：onset 检测切出片段 → tape 变速变调 / shift 移调 / stretch 拉伸 → 4/10 ms 淡入淡出（**离线限定**，不进实时回调） | 新写 [缺口分级 C 级 ②] |
+//! | [`band_solo`] | 频段独奏监听滤波器：RBJ 二阶带通，中心取频段几何平均、Q 定带宽（−3 dB 点落频段两端），只滤监听总线 | 新写 [Songmap follow-ons (a)] |
 //!
 //! ## 规范来源 (Normative)
 //!
@@ -76,6 +77,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod band_solo;
 pub mod block;
 pub mod channel_strip;
 pub mod comb;
