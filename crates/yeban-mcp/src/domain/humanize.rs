@@ -176,6 +176,44 @@ pub const DEFAULT_FGN_WEIGHT_PERMILLE: u16 = 500;
 /// fGn 混合权重 w 的上界（千分比 1000 = w 1.0；fGn 与 AR 各占一半方差）。
 pub const MAX_FGN_WEIGHT_PERMILLE: u16 = 1000;
 
+/// 第三/四层旋钮（`humanizeClip` 的三个新可选字段；缺省见各常量）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerParams {
+    /// HMM 自留概率 p 的千分比（0..=990）。
+    pub hmm_stay_permille: u16,
+    /// fGn Hurst 指数 H 的千分比（500..=950）。
+    pub hurst_permille: u16,
+    /// fGn 混合权重 w 的千分比（0..=1000；0 = 关掉第四层）。
+    pub fgn_weight_permille: u16,
+}
+
+impl Default for LayerParams {
+    /// 缺省：自留 800、Hurst 810、fGn 权重 500。
+    fn default() -> Self {
+        Self {
+            hmm_stay_permille: DEFAULT_HMM_STAY_PERMILLE,
+            hurst_permille: DEFAULT_HURST_PERMILLE,
+            fgn_weight_permille: DEFAULT_FGN_WEIGHT_PERMILLE,
+        }
+    }
+}
+
+impl LayerParams {
+    /// 由 `humanizeClip` 的可选字段填缺省（`None` = 各自缺省）。
+    #[must_use]
+    pub(crate) fn resolve(
+        hmm_stay_permille: Option<u16>,
+        hurst_permille: Option<u16>,
+        fgn_weight_permille: Option<u16>,
+    ) -> Self {
+        Self {
+            hmm_stay_permille: hmm_stay_permille.unwrap_or(DEFAULT_HMM_STAY_PERMILLE),
+            hurst_permille: hurst_permille.unwrap_or(DEFAULT_HURST_PERMILLE),
+            fgn_weight_permille: fgn_weight_permille.unwrap_or(DEFAULT_FGN_WEIGHT_PERMILLE),
+        }
+    }
+}
+
 /// 隐状态数（precise / slightly-early / slightly-late / free）。
 pub const HIDDEN_STATE_COUNT: usize = 4;
 
@@ -205,10 +243,7 @@ pub struct StructuredParams {
 impl StructuredParams {
     /// 由 `humanizeClip` 的幅度与可选字段填缺省：
     /// σ 缺省 = 幅度 / 3（最小 1；幅度 0 时 σ = 0，即不动）；
-    /// α 缺省 [`DEFAULT_AR_ALPHA_PERMILLE`]；
-    /// HMM 自留概率缺省 [`DEFAULT_HMM_STAY_PERMILLE`]；
-    /// Hurst 指数缺省 [`DEFAULT_HURST_PERMILLE`]；
-    /// fGn 权重缺省 [`DEFAULT_FGN_WEIGHT_PERMILLE`]。
+    /// α 缺省 [`DEFAULT_AR_ALPHA_PERMILLE`]；第三/四层旋钮见 `layers`。
     #[must_use]
     pub(crate) fn resolve(
         time_jitter_ticks: u64,
@@ -216,9 +251,7 @@ impl StructuredParams {
         timing_std_ticks: Option<u64>,
         velocity_std: Option<u64>,
         ar_alpha_permille: Option<u16>,
-        hmm_stay_permille: Option<u16>,
-        hurst_permille: Option<u16>,
-        fgn_weight_permille: Option<u16>,
+        layers: LayerParams,
     ) -> Self {
         let default_std = |amplitude: u64| -> u64 {
             if amplitude == 0 {
@@ -231,9 +264,9 @@ impl StructuredParams {
             timing_std_ticks: timing_std_ticks.unwrap_or_else(|| default_std(time_jitter_ticks)),
             velocity_std: velocity_std.unwrap_or_else(|| default_std(u64::from(velocity_jitter))),
             ar_alpha_permille: ar_alpha_permille.unwrap_or(DEFAULT_AR_ALPHA_PERMILLE),
-            hmm_stay_permille: hmm_stay_permille.unwrap_or(DEFAULT_HMM_STAY_PERMILLE),
-            hurst_permille: hurst_permille.unwrap_or(DEFAULT_HURST_PERMILLE),
-            fgn_weight_permille: fgn_weight_permille.unwrap_or(DEFAULT_FGN_WEIGHT_PERMILLE),
+            hmm_stay_permille: layers.hmm_stay_permille,
+            hurst_permille: layers.hurst_permille,
+            fgn_weight_permille: layers.fgn_weight_permille,
         }
     }
 }
@@ -559,6 +592,29 @@ fn structured_floats(
     (modulated, pre)
 }
 
+/// 一条通道的生成规约（`structured_channel` 的入参束；参数过多会触发
+/// `clippy::too_many_arguments`）。
+struct ChannelSpec {
+    /// 按轨派生的有效种子。
+    effective_seed: u64,
+    /// AR 流的盐。
+    salt_ar: u64,
+    /// fGn 流的盐。
+    salt_fgn: u64,
+    /// HMM 流的盐（力度不用，预留）。
+    salt_hmm: u64,
+    /// 音符数。
+    count: usize,
+    /// 抖动幅度（0 = 不动）。
+    amplitude: u64,
+    /// 高斯 σ。
+    std_dev: u64,
+    /// 截断上限（时值 `min(幅度, 240)`，力度 `幅度`）。
+    cap: i64,
+    /// 是否叠加 HMM 状态调制（只用于时值）。
+    apply_hmm: bool,
+}
+
 /// 一条通道的结构化偏差：浮点序列 × σ → 取整 → 幅度截断 → 阻尼限摆。
 ///
 /// - 幅度 0 或数量 0 时全 0（不耗流，输出仍确定）；
@@ -569,36 +625,25 @@ fn structured_floats(
 /// - 首音以前一值为平稳前值（同 σ 缩放、同样截到 `±cap`）。
 /// - 时值与力度各走独立流（盐：AR 0/1、fGn 2/3、HMM 4/5；HMM 只用于时值，
 ///   力度的 HMM 盐 5 预留）。
-fn structured_channel(
-    effective_seed: u64,
-    salt_ar: u64,
-    salt_fgn: u64,
-    salt_hmm: u64,
-    count: usize,
-    amplitude: u64,
-    std_dev: u64,
-    params: &StructuredParams,
-    cap: i64,
-    apply_hmm: bool,
-) -> Vec<i64> {
-    if count == 0 || amplitude == 0 {
-        return vec![0; count];
+fn structured_channel(spec: ChannelSpec, params: &StructuredParams) -> Vec<i64> {
+    if spec.count == 0 || spec.amplitude == 0 {
+        return vec![0; spec.count];
     }
     let (floats, pre) = structured_floats(
-        effective_seed,
-        salt_ar,
-        salt_fgn,
-        salt_hmm,
-        count,
+        spec.effective_seed,
+        spec.salt_ar,
+        spec.salt_fgn,
+        spec.salt_hmm,
+        spec.count,
         params,
-        apply_hmm,
+        spec.apply_hmm,
     );
-    let std_dev = std_dev as f64;
-    let slew = (cap / 4).max(1);
-    let mut prev = ((pre * std_dev).round() as i64).clamp(-cap, cap);
-    let mut out = Vec::with_capacity(count);
+    let std_dev = spec.std_dev as f64;
+    let slew = (spec.cap / 4).max(1);
+    let mut prev = ((pre * std_dev).round() as i64).clamp(-spec.cap, spec.cap);
+    let mut out = Vec::with_capacity(spec.count);
     for value in floats {
-        let raw = ((value * std_dev).round() as i64).clamp(-cap, cap);
+        let raw = ((value * std_dev).round() as i64).clamp(-spec.cap, spec.cap);
         let damped = raw.clamp(prev - slew, prev + slew);
         prev = damped;
         out.push(damped);
@@ -626,28 +671,32 @@ pub(crate) fn structured_deviations(
         time_jitter_ticks.min(u64::try_from(MICRO_TIMING_MAX_ABS).unwrap_or(240)) as i64;
     StructuredDeviations {
         timing: structured_channel(
-            effective_seed,
-            0,
-            2,
-            4,
-            count,
-            time_jitter_ticks,
-            params.timing_std_ticks,
+            ChannelSpec {
+                effective_seed,
+                salt_ar: 0,
+                salt_fgn: 2,
+                salt_hmm: 4,
+                count,
+                amplitude: time_jitter_ticks,
+                std_dev: params.timing_std_ticks,
+                cap: timing_cap,
+                apply_hmm: true,
+            },
             params,
-            timing_cap,
-            true,
         ),
         velocity: structured_channel(
-            effective_seed,
-            1,
-            3,
-            5,
-            count,
-            u64::from(velocity_jitter),
-            params.velocity_std,
+            ChannelSpec {
+                effective_seed,
+                salt_ar: 1,
+                salt_fgn: 3,
+                salt_hmm: 5,
+                count,
+                amplitude: u64::from(velocity_jitter),
+                std_dev: params.velocity_std,
+                cap: i64::from(velocity_jitter),
+                apply_hmm: false,
+            },
             params,
-            i64::from(velocity_jitter),
-            false,
         ),
     }
 }
@@ -839,7 +888,7 @@ mod tests {
     #[test]
     fn structured_deviations_are_deterministic_and_damped() {
         let seed = derive_track_seed(42, &test_track_id());
-        let params = StructuredParams::resolve(20, 10, None, None, None, None, None, None);
+        let params = StructuredParams::resolve(20, 10, None, None, None, LayerParams::default());
         let first = structured_deviations(seed, 64, 20, 10, &params);
         let second = structured_deviations(seed, 64, 20, 10, &params);
         // 解构到局部变量：`.all(` 站点的界须写在根标识符上
@@ -926,6 +975,19 @@ mod tests {
             sxx += (value - mean_s) * (value - mean_s);
         }
         if sxx == 0.0 { 0.0 } else { sxy / sxx }
+    }
+
+    #[test]
+    fn layer_params_defaults() {
+        let resolved = LayerParams::resolve(None, None, None);
+        assert_eq!(resolved, LayerParams::default());
+        assert_eq!(resolved.hmm_stay_permille, DEFAULT_HMM_STAY_PERMILLE);
+        assert_eq!(resolved.hurst_permille, DEFAULT_HURST_PERMILLE);
+        assert_eq!(resolved.fgn_weight_permille, DEFAULT_FGN_WEIGHT_PERMILLE);
+        let partial = LayerParams::resolve(Some(900), None, Some(0));
+        assert_eq!(partial.hmm_stay_permille, 900);
+        assert_eq!(partial.hurst_permille, DEFAULT_HURST_PERMILLE);
+        assert_eq!(partial.fgn_weight_permille, 0);
     }
 
     #[test]
@@ -1043,7 +1105,7 @@ mod tests {
     #[test]
     fn structured_floats_keep_unit_variance_and_gain_long_range_correlation() {
         let seed = derive_track_seed(42, &test_track_id());
-        let params = StructuredParams::resolve(20, 10, None, None, None, None, None, None);
+        let params = StructuredParams::resolve(20, 10, None, None, None, LayerParams::default());
         let (timing, _) = structured_floats(seed, 0, 2, 4, 2000, &params, true);
         let mean = timing.iter().sum::<f64>() / timing.len() as f64;
         let variance = timing
@@ -1069,7 +1131,7 @@ mod tests {
     #[test]
     fn structured_deviations_golden_vector() {
         let seed = derive_track_seed(42, &test_track_id());
-        let params = StructuredParams::resolve(20, 10, None, None, None, None, None, None);
+        let params = StructuredParams::resolve(20, 10, None, None, None, LayerParams::default());
         let deviations = structured_deviations(seed, 8, 20, 10, &params);
         // 金向量（固定种子/轨/参数的首 8 个偏差；重钉机制：改断言即可）。
         // ⚠ v3 重钉：L3 HMM + L4 fGn 叠进 structured，旧 v2 金向量已失效

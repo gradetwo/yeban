@@ -8983,9 +8983,11 @@ fn expand_clip_level_op(
                         *timing_std_ticks,
                         *velocity_std,
                         *ar_alpha_permille,
-                        *hmm_stay_permille,
-                        *hurst_permille,
-                        *fgn_weight_permille,
+                        humanize::LayerParams::resolve(
+                            *hmm_stay_permille,
+                            *hurst_permille,
+                            *fgn_weight_permille,
+                        ),
                     );
                     let deviations = humanize::structured_deviations(
                         effective_seed,
