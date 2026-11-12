@@ -755,6 +755,30 @@ impl SceneLaunchDisposition {
     }
 }
 
+/// 频段独奏（Songmap follow-ons (a)）：独奏请求**真的落到哪条腿上** —— 如实报告，不假装成功。
+///
+/// 与 [`SceneLaunchDisposition`] 同一张表：控制驱动直接调
+/// `EngineRuntime::set_band_solo`，设备腿走既有的事件环 `EngineEvent::BandSolo`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BandSoloDisposition {
+    /// 控制驱动：独奏已武装在实时运行时上（下一个量子即滤）。
+    Direct,
+    /// 设备腿：请求已写进**既有**无锁 SPSC，cpal 回调在量子边界武装。
+    QueuedToDevice,
+    /// 事件环满（极罕见）：一条都没写进去 ⇒ 调用方必须如实告诉用户。
+    EventQueueFull,
+    /// 没有引擎 / 没有命令通道：一位都没动。
+    NoEngine,
+}
+
+impl BandSoloDisposition {
+    /// 这次请求**是否真的送到了引擎**（两个成功变体之一）。
+    #[must_use]
+    pub const fn is_delivered(self) -> bool {
+        matches!(self, Self::Direct | Self::QueuedToDevice)
+    }
+}
+
 /// 引擎宿主：持有"当前这一代"的全部引擎侧对象。
 ///
 /// 字段全部私有 + 只有 [`EngineHost::reload`] 能换掉它们 —— "换引擎"这条路径只有一条，
@@ -2095,6 +2119,40 @@ impl EngineHost {
         } else {
             SceneLaunchDisposition::EventQueueFull
         }
+    }
+
+    /// 频段独奏（Songmap follow-ons (a)）：设定监听总线的独奏频段。
+    ///
+    /// 与 [`Self::queue_scene_launch`] 同一条双腿口径：运行时还在本线程时直接调
+    /// `EngineRuntime::set_band_solo`，设备腿（运行时已 move 进 cpal 回调）时写进
+    /// 既有的事件环 `EngineEvent::BandSolo`。`Some(band)`（0..8，Sub → Air）独奏
+    /// 该频段，`None` 关闭（直通）。返回值如实报告落点（[`BandSoloDisposition`]）：
+    /// 没有引擎 / 环满都不假装成功。调用方（总览面板）只在送达时才翻 UI 的独奏态。
+    pub fn set_band_solo(&mut self, band: Option<u8>) -> BandSoloDisposition {
+        if let Some(runtime) = self.runtime.as_deref_mut() {
+            runtime.set_band_solo(band);
+            return BandSoloDisposition::Direct;
+        }
+        let Some(sender) = self.events.as_mut() else {
+            return BandSoloDisposition::NoEngine;
+        };
+        let written = sender.publish(&[EngineEvent::BandSolo { band }]);
+        if written == 1 {
+            BandSoloDisposition::QueuedToDevice
+        } else {
+            BandSoloDisposition::EventQueueFull
+        }
+    }
+
+    /// 频段独奏（Songmap follow-ons (a)）：引擎侧当前独奏的频段。
+    ///
+    /// 外层 `None` = 没有引擎可问（设备腿活跃时也是 `None`：那一代的
+    /// `EngineRuntime` 在 cpal 回调线程上，与 [`Self::has_pending_scene_launch`]
+    /// 同一条已知限制，不是本函数新造的）。控制面显示独奏态以
+    /// `MainWindow.song-overview-band-solo` 为准，不拿这个读口当 UI 事实源。
+    #[must_use]
+    pub fn band_solo(&self) -> Option<Option<u8>> {
+        self.runtime.as_deref().map(EngineRuntime::band_solo)
     }
 
     /// ⭐ 任务单 `#283`：引擎侧**有没有**排队的场景启动（判据读口）。

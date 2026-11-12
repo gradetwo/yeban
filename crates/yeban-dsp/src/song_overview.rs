@@ -33,11 +33,18 @@
 //! 已存在、虚线由 UI 画。分析选项经 [`AnalysisOptions`] 传入，默认选项与
 //! Phase 1 逐位一致。
 //!
+//! Follow-ons（设计稿 §9.2/§9.3 与 §9.1）：小节级双键哈希
+//! （[`score_bar_hash`] / [`bar_hashes`]）+ 分轨逐拍能量的增量缓存
+//! （[`StemBandCache`] / [`detect_frequency_clash_cached`]，只重算变化
+//! 小节、复用与重算逐位一致）；rayon 并行（帧级 STFT、逐轨频段能量、
+//! 逐拍特征三处，归约恒保原序 ⇒ 结果逐位一致、与线程数无关）。
+//!
 //! 约束：离线分析，不在实时音频回调里调用；确定性——固定锚点、固定阈值，
 //! 同一输入跨进程结果一致；不写 `unsafe`；持久化集合只用 `BTreeMap`/`BTreeSet`
 //! （本模块实际只用 `Vec` 与定长数组）。
 
 use crate::loudness::GatedLoudness;
+use rayon::prelude::*;
 use realfft::RealFftPlanner;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -1071,13 +1078,38 @@ fn band_energies_per_beat(
     tempo: &TempoMap,
     total_beats: usize,
 ) -> Vec<[f32; 8]> {
+    let beats: Vec<usize> = (0..total_beats).collect();
+    let rows = band_energies_for_beats(audio, tempo, &beats);
     let mut per_beat = vec![[BAND_DB_FLOOR; 8]; total_beats];
-    let Some(audio) = audio else {
-        return per_beat;
-    };
-    if total_beats == 0 || audio.frames() < STFT_WINDOW {
-        return per_beat;
+    for (beat, row) in beats.into_iter().zip(rows) {
+        per_beat[beat] = row;
     }
+    per_beat
+}
+
+/// 指定拍集合的 8 频段倾斜补偿能量（与 [`band_energies_per_beat`] 同口径）。
+///
+/// 返回与 `beats` 等长、顺序对应的行。**可分性**：每帧按中心时刻只归入一拍，
+/// 拍的能量只是其帧功率之和，故子集计算与全量计算**逐位一致**——这是分轨
+/// 增量缓存（[`StemBandCache`]）只重算变化小节的数学依据。
+///
+/// 并行（(c) 30 ms 线）：帧级 FFT 用 rayon 并行（每块自带 plan），每帧先算出
+/// 自己的 8 频段功率小计；归约恒按**帧序**顺序累加，且每帧内按 bin 升序累加
+/// ——与原顺序实现的浮点累加顺序逐字相同，结果逐位一致、与线程数无关。
+fn band_energies_for_beats(
+    audio: Option<&AudioInput<'_>>,
+    tempo: &TempoMap,
+    beats: &[usize],
+) -> Vec<[f32; 8]> {
+    let mut rows = vec![[BAND_DB_FLOOR; 8]; beats.len()];
+    let Some(audio) = audio else {
+        return rows;
+    };
+    if beats.is_empty() || audio.frames() < STFT_WINDOW {
+        return rows;
+    }
+    // 拍 → 结果行下标（同一拍在 `beats` 中只出现一次，调用方保证）。
+    let wanted: BTreeMap<usize, usize> = beats.iter().enumerate().map(|(i, &b)| (b, i)).collect();
     let sample_rate = f64::from(audio.sample_rate);
     // Hann 窗与其能量和（Parseval 归一化用）。
     let mut window = vec![0.0f64; STFT_WINDOW];
@@ -1086,12 +1118,6 @@ fn band_energies_per_beat(
             * (1.0 - libm::cos(2.0 * std::f64::consts::PI * n as f64 / (STFT_WINDOW as f64 - 1.0)));
     }
     let window_power: f64 = window.iter().map(|w| w * w).sum();
-    // realfft 实数 FFT：plan 一次复用；输出为 N/2+1 个复数 bin（0..=N/2），
-    // 与旧 math::fft 的正频半区逐位一致（未归一化正变换，无 1/N 缩放）。
-    let mut planner = RealFftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(STFT_WINDOW);
-    let mut input = fft.make_input_vec();
-    let mut spectrum = fft.make_output_vec();
     // bin→频段表：每帧 2047 个 bin 各做一次 8 段线性查表太贵（约 1150 万次），
     // 改为每采样率只算一次（2048 项），帧循环里只做数组下标。表内容与
     // band_index_for_freq 逐位一致，数值不受影响。
@@ -1099,45 +1125,81 @@ fn band_energies_per_beat(
     for (k, slot) in bin_band.iter_mut().enumerate().skip(1) {
         *slot = band_index_for_freq(k as f64 * sample_rate / STFT_WINDOW as f64);
     }
-    // 每拍累积线性功率与帧数（均方池化）。
-    let mut energy = vec![[0.0f64; 8]; total_beats];
-    let mut counts = vec![0u32; total_beats];
+    // 帧序表与每帧归属的拍（帧中心时刻定拍，与 FFT 无关：不想要的拍的帧
+    // 直接跳过 FFT，这是增量重算只付变化小节成本的关键）。
     let frames_total = audio.frames();
-    let mut start = 0usize;
-    while start + STFT_WINDOW <= frames_total {
-        for n in 0..STFT_WINDOW {
-            let l = f64::from(audio.samples[(start + n) * 2]);
-            let r = f64::from(audio.samples[(start + n) * 2 + 1]);
-            input[n] = (l + r) * 0.5 * window[n];
-        }
-        // 输入/输出向量由 plan 给出，长度恒合规；失败只可能来自长度错配。
-        fft.process(&mut input, &mut spectrum)
-            .expect("realfft 输入/输出长度由 plan 给出，process 不应失败");
-        let center_sec = (start + STFT_WINDOW / 2) as f32 / audio.sample_rate;
-        let beat = tempo.sec_to_beat(center_sec) as usize;
-        if beat < total_beats {
-            for (k, bin) in spectrum
+    let num_frames = (frames_total - STFT_WINDOW) / STFT_HOP + 1;
+    let frame_beat: Vec<usize> = (0..num_frames)
+        .map(|frame| {
+            let center_sec = (frame * STFT_HOP + STFT_WINDOW / 2) as f32 / audio.sample_rate;
+            tempo.sec_to_beat(center_sec) as usize
+        })
+        .collect();
+    let todo: Vec<usize> = (0..num_frames)
+        .filter(|&frame| wanted.contains_key(&frame_beat[frame]))
+        .collect();
+    // 帧级并行：按块并行（每块一张自己的 realfft plan，块内复用输入/输出
+    // 缓冲）；collect 保块序，块内保帧序 ⇒ 展开后恒为帧序。
+    let samples = audio.samples;
+    let window_ref = &window;
+    let bin_band_ref = &bin_band;
+    let chunks: Vec<Vec<(usize, [f64; 8])>> = todo
+        .par_chunks(64)
+        .map(|chunk| {
+            // realfft 实数 FFT：输出为 N/2+1 个复数 bin（0..=N/2），与旧
+            // math::fft 的正频半区逐位一致（未归一化正变换，无 1/N 缩放）。
+            let mut planner = RealFftPlanner::<f64>::new();
+            let fft = planner.plan_fft_forward(STFT_WINDOW);
+            let mut input = fft.make_input_vec();
+            let mut spectrum = fft.make_output_vec();
+            chunk
                 .iter()
-                .enumerate()
-                .skip(1)
-                .take(STFT_WINDOW / 2 - 1)
-            {
-                let Some(band) = bin_band[k] else {
-                    continue;
-                };
-                energy[beat][band] += bin.norm_sqr();
+                .map(|&frame| {
+                    let start = frame * STFT_HOP;
+                    for n in 0..STFT_WINDOW {
+                        let l = f64::from(samples[(start + n) * 2]);
+                        let r = f64::from(samples[(start + n) * 2 + 1]);
+                        input[n] = (l + r) * 0.5 * window_ref[n];
+                    }
+                    // 输入/输出向量由 plan 给出，长度恒合规；失败只可能来自长度错配。
+                    fft.process(&mut input, &mut spectrum)
+                        .expect("realfft 输入/输出长度由 plan 给出，process 不应失败");
+                    let mut energy = [0.0f64; 8];
+                    for (k, bin) in spectrum
+                        .iter()
+                        .enumerate()
+                        .skip(1)
+                        .take(STFT_WINDOW / 2 - 1)
+                    {
+                        let Some(band) = bin_band_ref[k] else {
+                            continue;
+                        };
+                        energy[band] += bin.norm_sqr();
+                    }
+                    (frame, energy)
+                })
+                .collect()
+        })
+        .collect();
+    // 顺序归约：按帧序把每帧小计累加进其拍（浮点顺序与原实现逐字相同）。
+    let mut energy = vec![[0.0f64; 8]; beats.len()];
+    let mut counts = vec![0u32; beats.len()];
+    for chunk in chunks {
+        for (frame, frame_energy) in chunk {
+            let row = wanted[&frame_beat[frame]];
+            for band in 0..8 {
+                energy[row][band] += frame_energy[band];
             }
-            counts[beat] += 1;
+            counts[row] += 1;
         }
-        start += STFT_HOP;
     }
-    for beat in 0..total_beats {
-        if counts[beat] == 0 {
+    for (index, row) in rows.iter_mut().enumerate() {
+        if counts[index] == 0 {
             continue;
         }
         for band in 0..8 {
-            let mean_square = 2.0 * energy[beat][band]
-                / (STFT_WINDOW as f64 * window_power * f64::from(counts[beat]));
+            let mean_square = 2.0 * energy[index][band]
+                / (STFT_WINDOW as f64 * window_power * f64::from(counts[index]));
             let [lo, hi] = BAND_DEFINITIONS_HZ[band];
             let fc = libm::sqrt(f64::from(lo) * f64::from(hi));
             let tilt = f64::from(TILT_DB_PER_OCTAVE) * libm::log2(fc / 1000.0);
@@ -1146,10 +1208,10 @@ fn band_energies_per_beat(
             } else {
                 f64::from(BAND_DB_FLOOR)
             };
-            per_beat[beat][band] = (db as f32).max(BAND_DB_FLOOR);
+            row[band] = (db as f32).max(BAND_DB_FLOOR);
         }
     }
-    per_beat
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,6 +1317,171 @@ struct BeatFeatures {
     density_perc: f32,
 }
 
+/// 一拍的特征（滤波前）：窗口以该拍为中心、宽 1 小节。
+///
+/// 从主入口的逐拍循环抽出（(c) 30 ms 线）：每拍只读谱面、速度图与响度轨，
+/// 拍与拍互不依赖，故主入口用 rayon 并行算、按拍序 collect；本函数内部
+/// 算术与原顺序循环逐字相同 ⇒ 并行结果与顺序结果逐位一致。
+#[allow(clippy::too_many_arguments)]
+fn beat_feature_at(
+    beat: usize,
+    score: &ScoreInput,
+    tempo: &TempoMap,
+    loudness: &LoudnessTrack,
+    has_audio: bool,
+    total_beats: usize,
+    bpb_f: f32,
+    tonic: u8,
+) -> BeatFeatures {
+    let center = beat as f32 + 0.5;
+    let win_start = (beat as f32 - bpb_f / 2.0).max(0.0);
+    let win_end = (beat as f32 + bpb_f / 2.0).min(total_beats as f32);
+    let win_beats = (win_end - win_start).max(0.0);
+    let win_seconds = (tempo.beat_to_sec(win_end) - tempo.beat_to_sec(win_start)).max(0.0);
+
+    let active: Vec<&NoteEvent> = score
+        .notes
+        .iter()
+        .filter(|n| n.start_beat < win_end && note_end(n) > win_start)
+        .collect();
+    let pitched: Vec<&NoteEvent> = active
+        .iter()
+        .copied()
+        .filter(|n| !n.is_percussion)
+        .collect();
+    let onsets: Vec<&NoteEvent> = score
+        .notes
+        .iter()
+        .filter(|n| n.start_beat >= win_start && n.start_beat < win_end)
+        .collect();
+
+    // 响度分量：有音频时取短时 LUFS（未满 3 s 时取瞬时）；无音频时回退到谱面代理。
+    let lufs = if has_audio {
+        let (momentary, short_term) = loudness.at(tempo.beat_to_sec(center));
+        if short_term != NO_LOUDNESS_READING_LUFS {
+            short_term
+        } else {
+            momentary
+        }
+    } else {
+        fallback_lufs(&active)
+    };
+    let loudness_norm = anchored(lufs, LOUDNESS_ANCHOR_MIN_LUFS, LOUDNESS_ANCHOR_MAX_LUFS);
+
+    // 密度分量：聚类后 Onset 数 / 窗秒数，对数压缩。
+    let onset_seconds: Vec<f32> = onsets
+        .iter()
+        .map(|n| tempo.beat_to_sec(n.start_beat))
+        .collect();
+    let clustered = clustered_onset_count(&onset_seconds);
+    let notes_per_sec = if win_seconds > 0.0 {
+        clustered as f32 / win_seconds
+    } else {
+        0.0
+    };
+    let density_norm =
+        clamp01(libm::logf(1.0 + notes_per_sec) / libm::logf(1.0 + DENSITY_ANCHOR_NOTES_PER_SEC));
+
+    // 音区分量：活跃旋律音符的力度加权平均 MIDI 音高。
+    let pitch_norm = if pitched.is_empty() {
+        0.0
+    } else {
+        let (weighted_sum, weight_sum) = pitched.iter().fold((0.0f32, 0.0f32), |(s, w), n| {
+            let weight = f32::from(n.velocity) / 127.0;
+            (s + weight * f32::from(n.midi), w + weight)
+        });
+        if weight_sum > 0.0 {
+            anchored(
+                weighted_sum / weight_sum,
+                PITCH_ANCHOR_MIN_MIDI,
+                PITCH_ANCHOR_MAX_MIDI,
+            )
+        } else {
+            0.0
+        }
+    };
+
+    // 和声分量：窗口中心时刻的粗糙度 + 全窗音高类别轮廓的五度圈偏移。
+    let center_active: Vec<&NoteEvent> = pitched
+        .iter()
+        .copied()
+        .filter(|n| n.start_beat <= center && note_end(n) > center)
+        .collect();
+    let mut partials = Vec::with_capacity(center_active.len() * 6);
+    for n in &center_active {
+        let f0 = midi_freq(n.midi);
+        let amp = f64::from(n.velocity) / 127.0;
+        for k in 1..=6 {
+            partials.push((f0 * f64::from(k), amp / f64::from(k)));
+        }
+    }
+    let roughness = sensory_roughness(&partials);
+    let mut profile = [0.0f32; 12];
+    for n in &pitched {
+        let overlap = note_end(n).min(win_end) - n.start_beat.max(win_start);
+        if overlap > 0.0 {
+            profile[usize::from(n.midi % 12)] += overlap * (f32::from(n.velocity) / 127.0);
+        }
+    }
+    let cof = circle_of_fifths_distance(&profile, tonic);
+    let harmony = 0.55 * roughness + 0.45 * cof;
+
+    // 配器分量：活跃轨道数 + 旋律音区跨越的八度带宽。
+    let mut tracks: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for n in &active {
+        tracks.insert(n.track);
+    }
+    let pitch_span_oct = if pitched.is_empty() {
+        0.0
+    } else {
+        let min_midi = pitched.iter().map(|n| n.midi).min().unwrap_or(0);
+        let max_midi = pitched.iter().map(|n| n.midi).max().unwrap_or(0);
+        f32::from(max_midi - min_midi) / 12.0
+    };
+    let orchestration =
+        0.5 * (tracks.len() as f32 / 8.0).min(1.0) + 0.5 * (pitch_span_oct / 5.0).min(1.0);
+
+    let tension = 0.0f32; // 第二遍：方差自适应权重算出后点乘填（见循环后）。
+    let components = [
+        loudness_norm,
+        density_norm,
+        pitch_norm,
+        harmony,
+        orchestration,
+    ];
+
+    // 疏密层：旋律组聚类 Onset 率 + 占空比；打击组只算原始 Onset 率。
+    let pitched_onset_seconds: Vec<f32> = onsets
+        .iter()
+        .filter(|n| !n.is_percussion)
+        .map(|n| tempo.beat_to_sec(n.start_beat))
+        .collect();
+    let pitched_intervals: Vec<(f32, f32)> = pitched
+        .iter()
+        .map(|n| (n.start_beat, note_end(n)))
+        .collect();
+    let perc_onsets = onsets.iter().filter(|n| n.is_percussion).count();
+    let density_pitched = if win_beats > 0.0 {
+        clustered_onset_count(&pitched_onset_seconds) as f32 / win_beats
+    } else {
+        0.0
+    };
+    let duty_pitched = duty_cycle(&pitched_intervals, win_start, win_end);
+    let density_perc = if win_beats > 0.0 {
+        perc_onsets as f32 / win_beats
+    } else {
+        0.0
+    };
+
+    BeatFeatures {
+        tension,
+        components,
+        density_pitched,
+        duty_pitched,
+        density_perc,
+    }
+}
+
 /// 一小节的 14 维自相似度特征（固定锚点归一化到 0–1，不做全曲 Min-Max 拉伸）：
 /// 张力 1、短时 LUFS 1（锚点 −70–0 LUFS）、谱面力度 1、疏密 3
 /// （旋律 Onset 率、旋律占空比、打击 Onset 率）、8 频段能量 8
@@ -1323,6 +1550,328 @@ pub fn severity_band(overlap: f32) -> ClashSeverity {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 小节级双键哈希 + 分轨增量重算（设计稿 §9.2 / §9.3；follow-ons (b)）
+// ---------------------------------------------------------------------------
+
+/// FNV-1a 的偏移基（64 位）。本节哈希只作**缓存键**（内容寻址的失效判定），
+/// 不是安全摘要：同工程同参数必须同键、内容变必须变键，仅此而已。故用
+/// 无依赖、跨平台逐位确定的 FNV-1a，不引新依赖。
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a 的乘子（64 位）。
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// 把一个 `u64` 以小端字节喂进 FNV-1a 状态。
+fn fnv_mix_u64(state: u64, value: u64) -> u64 {
+    let mut hash = state;
+    for byte in value.to_le_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// 把一个 `f32` 以位模式喂进 FNV-1a 状态（`to_bits`：−0.0 与 0.0 是不同
+/// 内容、NaN 按位模式计 —— 缓存键只认内容恒等，不做数值等价合并）。
+fn fnv_mix_f32(state: u64, value: f32) -> u64 {
+    fnv_mix_u64(state, u64::from(value.to_bits()))
+}
+
+/// 一小节的双键哈希（设计稿 §9.3）。
+///
+/// 双键分工（本节的设计依据，逐条对应设计稿 §9.2/§9.3）：
+/// - `score` 只由**本小节内的音符**决定（设计稿 §9.3 的定义）。改第 k
+///   小节一个音符 ⇒ 只有第 k 小节的 `score` 变（局部收敛的前提）。
+/// - `audio` = `score[本节]` + `score[前一节]` + 全曲速度图摘要 + 本节与
+///   前一节发声轨道的音频指纹。前一节入键是因为释放尾音跨小节：改第 k
+///   小节 ⇒ 音频失效窗恰为 [k, k+1] 两小节（设计稿 §9.2 的音频层口径）。
+/// - 速度图整体入 `audio` 摘要：改 BPM 时谱面按拍指标不变（`score`
+///   全不变）、音频全失效（设计稿 §9.3 矩阵最后一行）。
+/// - Marker 不入任何键：改标签名 ⇒ 双键都不变（设计稿 §9.3 矩阵第三
+///   行：四层数值零重算，标签由调用方廉价重取）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BarHashPair {
+    /// 谱面键：本小节谱面内容（见 [`score_bar_hash`]）。
+    pub score: u64,
+    /// 音频键：本小节音频内容（谱面键 + 前节谱面键 + 速度图 + 发声轨指纹）。
+    pub audio: u64,
+}
+
+/// 一小节的谱面键（设计稿 §9.3 的 `score_bar_hash`，逐字按设计定义）：
+/// 只由**该小节内所有轨道的音符**（音高、时值、力度、轨道、打击标志）
+/// 合成。
+///
+/// 不入键的项及其去向（设计稿 §9.3 矩阵）：速度图 → 进音频键的摘要
+/// （BPM 变 ⇒ 谱面键不变、音频全失效）；调号 → 只影响和声张力的解读、
+/// 不影响音频，不入任何键；Marker 标签 → 不入键（改名零重算）；拍号 →
+/// 改变小节边界即改变音符的归属小节，经分组自然入键。每小节拍数取
+/// [`ScoreInput::beats_per_bar`]。音符按（起始位模式、音高、轨道、时值、
+/// 力度、打击）排序后喂入 ⇒ 与输入顺序无关。`bar` 为 0-based；超出
+/// 谱面范围的小节按空小节计（空小节键为常数）。
+#[must_use]
+pub fn score_bar_hash(score: &ScoreInput, bar: usize) -> u64 {
+    let bpb = score.beats_per_bar();
+    let bar_start = bar as f32 * bpb as f32;
+    let bar_end = bar_start + bpb as f32;
+    let mut hash = FNV_OFFSET_BASIS;
+    // 与本小节重叠的音符：排序后喂入（顺序无关性）。
+    let mut notes: Vec<&NoteEvent> = score
+        .notes
+        .iter()
+        .filter(|note| note.start_beat < bar_end && note_end(note) > bar_start)
+        .collect();
+    notes.sort_by(|a, b| {
+        a.start_beat
+            .to_bits()
+            .cmp(&b.start_beat.to_bits())
+            .then(a.midi.cmp(&b.midi))
+            .then(a.track.cmp(&b.track))
+            .then(a.duration_beats.to_bits().cmp(&b.duration_beats.to_bits()))
+            .then(a.velocity.cmp(&b.velocity))
+            .then(a.is_percussion.cmp(&b.is_percussion))
+    });
+    hash = fnv_mix_u64(hash, notes.len() as u64);
+    for note in notes {
+        hash = fnv_mix_f32(hash, note.start_beat);
+        hash = fnv_mix_f32(hash, note.duration_beats);
+        hash = fnv_mix_u64(hash, u64::from(note.midi));
+        hash = fnv_mix_u64(hash, u64::from(note.velocity));
+        hash = fnv_mix_u64(hash, u64::from(note.track));
+        hash = fnv_mix_u64(hash, u64::from(note.is_percussion));
+    }
+    hash
+}
+
+/// 全曲速度图摘要（进每个小节的音频键：BPM 一变，音频全失效）。
+fn tempo_digest(score: &ScoreInput) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    hash = fnv_mix_u64(hash, u64::from(score.beats_per_bar()));
+    hash = fnv_mix_u64(hash, score.tempo_map.len() as u64);
+    for change in &score.tempo_map {
+        hash = fnv_mix_f32(hash, change.beat);
+        hash = fnv_mix_f32(hash, change.bpm);
+    }
+    hash
+}
+
+/// 某小节（0-based）内发声的轨道集合（有音符与之重叠即发声）。
+fn sounding_tracks(score: &ScoreInput, bar: usize) -> std::collections::BTreeSet<u32> {
+    let bpb = score.beats_per_bar();
+    let bar_start = bar as f32 * bpb as f32;
+    let bar_end = bar_start + bpb as f32;
+    score
+        .notes
+        .iter()
+        .filter(|note| note.start_beat < bar_end && note_end(note) > bar_start)
+        .map(|note| note.track)
+        .collect()
+}
+
+/// 全曲每小节的双键哈希（设计稿 §9.3 的小节级双键哈希表）。
+///
+/// 小节数 = 谱面末端折算（音频时长不在本层视野：渲染侧以谱面小节为准，
+/// 音频更长时多出的尾巴不产生新小节，与主分析的 `total_bars` 口径一致——
+/// 主分析的小节数取谱面与音频的较大者，纯音频尾巴小节无谱面内容，其
+/// `score` 键由 [`score_bar_hash`] 对空小节的定义给出，调用方按需补算）。
+/// `track_fingerprints` 是调用方给的**每轨音频指纹**（轨道下标 → 指纹）：
+/// 渲染侧由采样器预设 + 效果链参数算（见 `yeban-render` 的
+/// `project_bar_hashes`）；指纹缺省的轨道按 0 计。换某轨音色/EQ ⇒ 该轨
+/// 指纹变 ⇒ 只有该轨发声小节（及其后一节）的音频键变（设计稿 §9.3
+/// 矩阵第二行：谱面层免算、只更新对应小节的频率层与 LUFS）。
+#[must_use]
+pub fn bar_hashes(score: &ScoreInput, track_fingerprints: &BTreeMap<u32, u64>) -> Vec<BarHashPair> {
+    let bpb = score.beats_per_bar().max(1);
+    let score_end_beat = score
+        .notes
+        .iter()
+        .fold(0.0f32, |max, note| max.max(note_end(note)));
+    let total_bars = (score_end_beat / bpb as f32).ceil().max(0.0) as usize;
+    let score_hashes: Vec<u64> = (0..total_bars)
+        .map(|bar| score_bar_hash(score, bar))
+        .collect();
+    let tempo = tempo_digest(score);
+    (0..total_bars)
+        .map(|bar| {
+            let mut sounding = sounding_tracks(score, bar);
+            if bar > 0 {
+                sounding.extend(sounding_tracks(score, bar - 1));
+            }
+            let mut audio = FNV_OFFSET_BASIS;
+            audio = fnv_mix_u64(audio, score_hashes[bar]);
+            audio = fnv_mix_u64(audio, if bar > 0 { score_hashes[bar - 1] } else { 0 });
+            audio = fnv_mix_u64(audio, tempo);
+            for track in sounding {
+                audio = fnv_mix_u64(audio, u64::from(track));
+                audio = fnv_mix_u64(audio, track_fingerprints.get(&track).copied().unwrap_or(0));
+            }
+            BarHashPair {
+                score: score_hashes[bar],
+                audio,
+            }
+        })
+        .collect()
+}
+
+/// 一条分轨音频的内容指纹（采样逐个按位模式喂入的字级 FNV 变体 + 采样率
+/// + 帧数）：给没有预设级指纹的调用方（如直接拿波形调 dsp 的测试与工具）
+///   一把与音频内容恒等的键。成本为一趟线性扫描；渲染管线里优先用预设级
+///   指纹（`yeban-render::project_bar_hashes`），不必每版重扫采样。
+#[must_use]
+pub fn stem_sample_fingerprint(audio: &AudioInput<'_>) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS ^ (audio.samples.len() as u64);
+    for &sample in audio.samples {
+        hash = (hash ^ u64::from(sample.to_bits())).wrapping_mul(FNV_PRIME);
+    }
+    fnv_mix_f32(hash, audio.sample_rate)
+}
+
+/// 缓存一条：该（轨，小节）的茎音频键 + 该小节各拍的 8 频段能量行。
+type StemBandEntry = (u64, Vec<[f32; 8]>);
+
+/// 分轨逐拍频段能量的增量缓存（设计稿 §9.2 的 Stem 块缓存，落点在打架
+/// 检测的 STFT 层）：键 =（轨 id，小节），值 =（该小节的茎音频键，该小节
+/// 各拍的 8 频段能量行）。
+///
+/// 失效粒度：小节的茎音频键由 [`bar_hashes`] 的音频键与该轨指纹合成——
+/// 改第 k 小节一个音符 ⇒ 只有 [k, k+1] 两小节的键变，其余小节的能量行
+/// 原样复用；换某轨指纹（音色/EQ）⇒ 只有该轨的键变。复用与重算的数值
+/// **逐位一致**：每帧只归入一拍（见 [`band_energies_for_beats`]），子集
+/// 计算与全量计算同值，集成测试逐位钉死。
+#[derive(Debug, Clone, Default)]
+pub struct StemBandCache {
+    entries: BTreeMap<(String, u32), StemBandEntry>,
+    reused_beats: u64,
+    computed_beats: u64,
+}
+
+impl StemBandCache {
+    /// 空缓存。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 缓存条目数（轨 × 小节）。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否空缓存。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 累计复用的拍数（全部历史调用）。
+    #[must_use]
+    pub const fn reused_beats(&self) -> u64 {
+        self.reused_beats
+    }
+
+    /// 累计实算的拍数（全部历史调用）。
+    #[must_use]
+    pub const fn computed_beats(&self) -> u64 {
+        self.computed_beats
+    }
+}
+
+/// 一次增量打架检测的用量收据：实算了几拍、复用了几拍。
+/// `computed_beats + reused_beats` = 分轨数 × 总拍数（空输入时为 0）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClashCacheStats {
+    /// 本次实算（缓存未命中）的（轨，拍）数。
+    pub computed_beats: usize,
+    /// 本次复用缓存的（轨，拍）数。
+    pub reused_beats: usize,
+}
+
+/// 分轨频率打架检测（增量版）：与 [`detect_frequency_clash`] 同一摘要、
+/// 逐位一致，只是逐拍频段能量走 [`StemBandCache`]——键未变的小节直接
+/// 复用，键变了的小节只算该小节的拍（帧按中心归拍，子集同值）。
+///
+/// `stem_fingerprints` 与 `stems` 等长对位：该轨的音频指纹（预设级或
+/// [`stem_sample_fingerprint`] 的采样级，调用方选一并保持口径一致）；
+/// 长度对不上时缺位按采样指纹现算（响亮地贵，不静默用错键）。
+#[must_use]
+pub fn detect_frequency_clash_cached(
+    stems: &[StemInput<'_>],
+    score: &ScoreInput,
+    total_beats: usize,
+    beats_per_bar: u32,
+    stem_fingerprints: &[u64],
+    cache: &mut StemBandCache,
+) -> (FrequencyClashSummary, ClashCacheStats) {
+    let mut stats = ClashCacheStats::default();
+    if stems.len() < 2 || total_beats == 0 {
+        return (FrequencyClashSummary::default(), stats);
+    }
+    let tempo = TempoMap::from_score(score);
+    let bpb = beats_per_bar.max(1) as usize;
+    let total_bars = total_beats.div_ceil(bpb);
+    // 双键：音频键提供 [k, k+1] 失效窗，指纹提供按轨失效。
+    let fingerprints_by_track: BTreeMap<u32, u64> = BTreeMap::new();
+    let hashes = bar_hashes(score, &fingerprints_by_track);
+    let per_stem: Vec<Vec<[f32; 8]>> = stems
+        .iter()
+        .enumerate()
+        .map(|(index, stem)| {
+            let fingerprint = stem_fingerprints
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| stem_sample_fingerprint(&stem.audio));
+            let mut rows = vec![[BAND_DB_FLOOR; 8]; total_beats];
+            for bar in 0..total_bars {
+                let beat_start = bar * bpb;
+                let beat_end = ((bar + 1) * bpb).min(total_beats);
+                if beat_start >= beat_end {
+                    continue;
+                }
+                // 小节键：音频键（谱面侧）+ 本轨指纹。谱面小节数可能小于
+                // 音频小节数（纯音频尾巴）：越界小节的音频键按空小节
+                // 谱面键现算，口径与 bar_hashes 的定义衔接。
+                let audio_key = if bar < hashes.len() {
+                    hashes[bar].audio
+                } else {
+                    let mut hash = FNV_OFFSET_BASIS;
+                    hash = fnv_mix_u64(hash, score_bar_hash(score, bar));
+                    hash = fnv_mix_u64(
+                        hash,
+                        if bar > 0 {
+                            score_bar_hash(score, bar - 1)
+                        } else {
+                            0
+                        },
+                    );
+                    hash = fnv_mix_u64(hash, tempo_digest(score));
+                    hash
+                };
+                let key = fnv_mix_u64(audio_key, fingerprint);
+                let cache_key = (stem.track_id.to_string(), bar as u32);
+                if let Some((stored_key, stored_rows)) = cache.entries.get(&cache_key)
+                    && *stored_key == key
+                    && stored_rows.len() == beat_end - beat_start
+                {
+                    rows[beat_start..beat_end].clone_from_slice(stored_rows);
+                    stats.reused_beats += beat_end - beat_start;
+                    continue;
+                }
+                let beats: Vec<usize> = (beat_start..beat_end).collect();
+                let computed = band_energies_for_beats(Some(&stem.audio), &tempo, &beats);
+                rows[beat_start..beat_end].clone_from_slice(&computed);
+                cache.entries.insert(cache_key, (key, computed));
+                stats.computed_beats += beat_end - beat_start;
+            }
+            rows
+        })
+        .collect();
+    cache.reused_beats = cache.reused_beats.saturating_add(stats.reused_beats as u64);
+    cache.computed_beats = cache
+        .computed_beats
+        .saturating_add(stats.computed_beats as u64);
+    (clash_from_per_stem(&per_stem, stems, beats_per_bar), stats)
+}
+
 /// 分轨频率打架检测（设计稿 §8.2 追加，schema 1.2；Wang 2026-11-11 13:17 定：
 /// 输出以频谱重叠度为主，不再二值定性）：逐拍逐频段比各轨能量。
 /// 速度图取自谱面（[`TempoMap::from_score`]，与混音分析同一份）；
@@ -1353,13 +1902,26 @@ pub fn detect_frequency_clash(
         return FrequencyClashSummary::default();
     }
     let tempo = TempoMap::from_score(score);
-    let bpb = beats_per_bar.max(1) as usize;
-    // 每条分轨的逐拍频段能量（与混音同一口径），及每轨每拍的最响频段
-    // （相对门限的基准）。
+    // 每条分轨的逐拍频段能量（与混音同一口径）：分轨间互不依赖，rayon
+    // 并行算、按轨序 collect ⇒ 与顺序版逐位一致（(c) 30 ms 线）。
     let per_stem: Vec<Vec<[f32; 8]>> = stems
-        .iter()
+        .par_iter()
         .map(|stem| band_energies_per_beat(Some(&stem.audio), &tempo, total_beats))
         .collect();
+    clash_from_per_stem(&per_stem, stems, beats_per_bar)
+}
+
+/// 打架聚合（[`detect_frequency_clash`] 的后半）：逐拍频段能量 → 重叠度
+/// 摘要。与算能量的路径解耦，使增量版（[`detect_frequency_clash_cached`]）
+/// 复用缓存的逐拍能量后走同一份聚合 —— 聚合口径只有一份，不漂移。
+fn clash_from_per_stem(
+    per_stem: &[Vec<[f32; 8]>],
+    stems: &[StemInput<'_>],
+    beats_per_bar: u32,
+) -> FrequencyClashSummary {
+    let total_beats = per_stem.first().map_or(0, Vec::len);
+    let bpb = beats_per_bar.max(1) as usize;
+    // 每轨每拍的最响频段（相对门限的基准）。
     let peaks: Vec<Vec<f32>> = per_stem
         .iter()
         .map(|bands| {
@@ -1657,6 +2219,41 @@ pub fn analyze_song_overview_with_stems(
     stems: &[StemInput<'_>],
     options: &AnalysisOptions,
 ) -> SongOverview {
+    analyze_impl(score, audio, stems, options, None).0
+}
+
+/// 整曲四层离线分析（分轨增量版，follow-ons (b)）：与
+/// [`analyze_song_overview_with_stems`] 逐位一致的总览 + 一次用量收据
+/// （[`ClashCacheStats`]）。分轨逐拍频段能量走 [`StemBandCache`]：只改
+/// 少数小节时，未变小节的分轨 STFT 全部复用（见
+/// [`detect_frequency_clash_cached`] 的失效粒度）。其余四层每次全量算
+/// （谱面层本身是毫秒级；响度轨是全局 IIR 链，不可局部化，不假装增量）。
+#[must_use]
+pub fn analyze_song_overview_with_stems_cached(
+    score: &ScoreInput,
+    audio: Option<&AudioInput<'_>>,
+    stems: &[StemInput<'_>],
+    options: &AnalysisOptions,
+    stem_fingerprints: &[u64],
+    stem_cache: &mut StemBandCache,
+) -> (SongOverview, ClashCacheStats) {
+    analyze_impl(
+        score,
+        audio,
+        stems,
+        options,
+        Some((stem_cache, stem_fingerprints)),
+    )
+}
+
+/// 分析主实现：`clash_cache` 为 `Some` 时打架检测走增量缓存。
+fn analyze_impl(
+    score: &ScoreInput,
+    audio: Option<&AudioInput<'_>>,
+    stems: &[StemInput<'_>],
+    options: &AnalysisOptions,
+    clash_cache: Option<(&mut StemBandCache, &[u64])>,
+) -> (SongOverview, ClashCacheStats) {
     let mut score = score.clone();
     apply_expected_levels(&mut score, &options.expected_levels);
     let score = &score;
@@ -1687,157 +2284,22 @@ pub fn analyze_song_overview_with_stems(
     let bands_per_beat = band_energies_per_beat(audio, &tempo, total_beats);
 
     // -- 每拍特征（1 小节滑窗、1 拍步进；窗以该拍为中心）--
-    let mut beat_features = Vec::with_capacity(total_beats);
-    for beat in 0..total_beats {
-        let center = beat as f32 + 0.5;
-        let win_start = (beat as f32 - bpb_f / 2.0).max(0.0);
-        let win_end = (beat as f32 + bpb_f / 2.0).min(total_beats as f32);
-        let win_beats = (win_end - win_start).max(0.0);
-        let win_seconds = (tempo.beat_to_sec(win_end) - tempo.beat_to_sec(win_start)).max(0.0);
-
-        let active: Vec<&NoteEvent> = score
-            .notes
-            .iter()
-            .filter(|n| n.start_beat < win_end && note_end(n) > win_start)
-            .collect();
-        let pitched: Vec<&NoteEvent> = active
-            .iter()
-            .copied()
-            .filter(|n| !n.is_percussion)
-            .collect();
-        let onsets: Vec<&NoteEvent> = score
-            .notes
-            .iter()
-            .filter(|n| n.start_beat >= win_start && n.start_beat < win_end)
-            .collect();
-
-        // 响度分量：有音频时取短时 LUFS（未满 3 s 时取瞬时）；无音频时回退到谱面代理。
-        let lufs = if audio.is_some() {
-            let (momentary, short_term) = loudness.at(tempo.beat_to_sec(center));
-            if short_term != NO_LOUDNESS_READING_LUFS {
-                short_term
-            } else {
-                momentary
-            }
-        } else {
-            fallback_lufs(&active)
-        };
-        let loudness_norm = anchored(lufs, LOUDNESS_ANCHOR_MIN_LUFS, LOUDNESS_ANCHOR_MAX_LUFS);
-
-        // 密度分量：聚类后 Onset 数 / 窗秒数，对数压缩。
-        let onset_seconds: Vec<f32> = onsets
-            .iter()
-            .map(|n| tempo.beat_to_sec(n.start_beat))
-            .collect();
-        let clustered = clustered_onset_count(&onset_seconds);
-        let notes_per_sec = if win_seconds > 0.0 {
-            clustered as f32 / win_seconds
-        } else {
-            0.0
-        };
-        let density_norm = clamp01(
-            libm::logf(1.0 + notes_per_sec) / libm::logf(1.0 + DENSITY_ANCHOR_NOTES_PER_SEC),
-        );
-
-        // 音区分量：活跃旋律音符的力度加权平均 MIDI 音高。
-        let pitch_norm = if pitched.is_empty() {
-            0.0
-        } else {
-            let (weighted_sum, weight_sum) = pitched.iter().fold((0.0f32, 0.0f32), |(s, w), n| {
-                let weight = f32::from(n.velocity) / 127.0;
-                (s + weight * f32::from(n.midi), w + weight)
-            });
-            if weight_sum > 0.0 {
-                anchored(
-                    weighted_sum / weight_sum,
-                    PITCH_ANCHOR_MIN_MIDI,
-                    PITCH_ANCHOR_MAX_MIDI,
-                )
-            } else {
-                0.0
-            }
-        };
-
-        // 和声分量：窗口中心时刻的粗糙度 + 全窗音高类别轮廓的五度圈偏移。
-        let center_active: Vec<&NoteEvent> = pitched
-            .iter()
-            .copied()
-            .filter(|n| n.start_beat <= center && note_end(n) > center)
-            .collect();
-        let mut partials = Vec::with_capacity(center_active.len() * 6);
-        for n in &center_active {
-            let f0 = midi_freq(n.midi);
-            let amp = f64::from(n.velocity) / 127.0;
-            for k in 1..=6 {
-                partials.push((f0 * f64::from(k), amp / f64::from(k)));
-            }
-        }
-        let roughness = sensory_roughness(&partials);
-        let mut profile = [0.0f32; 12];
-        for n in &pitched {
-            let overlap = note_end(n).min(win_end) - n.start_beat.max(win_start);
-            if overlap > 0.0 {
-                profile[usize::from(n.midi % 12)] += overlap * (f32::from(n.velocity) / 127.0);
-            }
-        }
-        let cof = circle_of_fifths_distance(&profile, tonic);
-        let harmony = 0.55 * roughness + 0.45 * cof;
-
-        // 配器分量：活跃轨道数 + 旋律音区跨越的八度带宽。
-        let mut tracks: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
-        for n in &active {
-            tracks.insert(n.track);
-        }
-        let pitch_span_oct = if pitched.is_empty() {
-            0.0
-        } else {
-            let min_midi = pitched.iter().map(|n| n.midi).min().unwrap_or(0);
-            let max_midi = pitched.iter().map(|n| n.midi).max().unwrap_or(0);
-            f32::from(max_midi - min_midi) / 12.0
-        };
-        let orchestration =
-            0.5 * (tracks.len() as f32 / 8.0).min(1.0) + 0.5 * (pitch_span_oct / 5.0).min(1.0);
-
-        let tension = 0.0f32; // 第二遍：方差自适应权重算出后点乘填（见循环后）。
-        let components = [
-            loudness_norm,
-            density_norm,
-            pitch_norm,
-            harmony,
-            orchestration,
-        ];
-
-        // 疏密层：旋律组聚类 Onset 率 + 占空比；打击组只算原始 Onset 率。
-        let pitched_onset_seconds: Vec<f32> = onsets
-            .iter()
-            .filter(|n| !n.is_percussion)
-            .map(|n| tempo.beat_to_sec(n.start_beat))
-            .collect();
-        let pitched_intervals: Vec<(f32, f32)> = pitched
-            .iter()
-            .map(|n| (n.start_beat, note_end(n)))
-            .collect();
-        let perc_onsets = onsets.iter().filter(|n| n.is_percussion).count();
-        let density_pitched = if win_beats > 0.0 {
-            clustered_onset_count(&pitched_onset_seconds) as f32 / win_beats
-        } else {
-            0.0
-        };
-        let duty_pitched = duty_cycle(&pitched_intervals, win_start, win_end);
-        let density_perc = if win_beats > 0.0 {
-            perc_onsets as f32 / win_beats
-        } else {
-            0.0
-        };
-
-        beat_features.push(BeatFeatures {
-            tension,
-            components,
-            density_pitched,
-            duty_pitched,
-            density_perc,
-        });
-    }
+    let has_audio = audio.is_some();
+    let mut beat_features: Vec<BeatFeatures> = (0..total_beats)
+        .into_par_iter()
+        .map(|beat| {
+            beat_feature_at(
+                beat,
+                score,
+                &tempo,
+                &loudness,
+                has_audio,
+                total_beats,
+                bpb_f,
+                tonic,
+            )
+        })
+        .collect();
 
     // -- 第二遍：方差自适应权重（设计稿 §3.6）--
     // 五维分量逐拍的总体标准差；单拍 / 空曲时 σ 全为 0（全部死特征 ⇒
@@ -2040,7 +2502,15 @@ pub fn analyze_song_overview_with_stems(
     // 成段重复每段一条 `arrangement_repetition` 异常（与音频无关，纯谱面
     // 序列即可判；单小节撞分不成段，故只看 `repeated_passages`）。
     let repetition = analyze_repetition(&series);
-    let frequency_clash = detect_frequency_clash(stems, score, total_beats, bpb);
+    let (frequency_clash, clash_stats) = match clash_cache {
+        Some((cache, fingerprints)) => {
+            detect_frequency_clash_cached(stems, score, total_beats, bpb, fingerprints, cache)
+        }
+        None => (
+            detect_frequency_clash(stems, score, total_beats, bpb),
+            ClashCacheStats::default(),
+        ),
+    };
     for passage in &repetition.repeated_passages {
         anomalies.push(Anomaly {
             bars: passage.bars,
@@ -2056,7 +2526,7 @@ pub fn analyze_song_overview_with_stems(
         });
     }
 
-    SongOverview {
+    let overview = SongOverview {
         schema_version: SCHEMA_VERSION,
         song_meta: SongMeta {
             total_bars: total_bars as u32,
@@ -2076,7 +2546,8 @@ pub fn analyze_song_overview_with_stems(
         repetition,
         frequency_clash,
         bar_series: series,
-    }
+    };
+    (overview, clash_stats)
 }
 
 // ---------------------------------------------------------------------------

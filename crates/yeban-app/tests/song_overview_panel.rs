@@ -44,6 +44,7 @@
 //! | ㉔（Phase 2 段落期望等级） | 点 Intro 段落标签 ⇒ 等级 None → 1 → … → 5 → None 循环；设档后第 0 小节包络带 = 该等级的带（f32 舍入 1e-6 内）、偏离超 0.15 的小节告警、悬停读数含偏离量、走带一位不动；6 次点击回到无标注（带哨兵、无告警）。⚠ Chorus 在第 4 小节、落在 dsp 内容跨度（3 小节）之外是垫条，带画不出 ⇒ 本判据用跨度内的 Intro（见测试内注） |
 //! | ㉕（Phase 2 谱面力度虚线） | UI `score-dyn` 数组与活态逐位一致；第 0 小节有起音 ⇒ 力度大于 0；垫条区（第 3 小节起）力度为 0；无标注时包络列全哨兵、无告警、档名 "均衡" |
 //! | ㉖（Phase 2 视觉验收 1:1 + 3x） | 管弦档 + Intro 5 级（或 1 级，按张力选保证告警的那档）展开态截图非黑、面板区多色；1:1 与 3x 两张 PNG 落盘供执行员肉眼验收（期望带浅灰、琥珀告警、谱面力度虚线、预设键 "预设：管弦"） |
+//! | ㉗（频段独奏，follow-ons (a)） | Alt+点 Low-Mid 行 ⇒ `song-overview-band-solo` = 2、引擎独奏 2、走带一位不动、日志零新增、金框进树且落在行 5；再 Alt+点同一行 ⇒ 关闭、金框离树；无 Alt 点同一点 ⇒ 跳转到第 7 小节线、不独奏 |
 //!
 //! ## 边界（不许当成已证）
 //!
@@ -113,6 +114,8 @@ const FULLSCREEN: &str = "song-overview-fullscreen-button";
 const PROFILE: &str = "song-overview-profile-button";
 /// Phase 2 底部条（段落标签点击的目标，设计稿 §3.5）。
 const STRIP: &str = "song-overview-density-strip";
+/// 频段独奏金框（follow-ons (a)）：独奏时才进树。
+const SOLO_OUTLINE: &str = "song-overview-band-solo-outline";
 /// 顶栏高 48 px（`app.slint` 的 Transport 固定行）。
 const TRANSPORT_HEIGHT: u32 = 48;
 
@@ -414,6 +417,26 @@ impl Rig {
         self.port
             .dispatch_pointer_up(PointerButton::Left)
             .expect("释放必须送达");
+    }
+
+    /// 在画布上 Alt+点一次：局部坐标 `(x, y)` ⇒ 走命中测试，⛔ 不直接调回调。
+    ///
+    /// 修饰态由窗口的内部修饰键状态持有（上游 `InternalKeyboardModifierState`）：
+    /// `KeyCode::Alt` 按下即置位、`dispatch_key_release` 才清 —— 漏放会让后续注入
+    /// 一直带 Alt（与 `ShiftEnter` 臂"用完就放"同一条理由），因此这里按/放成对。
+    fn alt_click_canvas(&mut self, local_x: f64, local_y: f64) {
+        self.port
+            .dispatch_key_press(KeyCode::Alt)
+            .expect("Alt 按下必须送达");
+        self.port
+            .dispatch_pointer_down(CANVAS, local_x, local_y, PointerButton::Left)
+            .expect("Interactive 权限下画布必须可按下");
+        self.port
+            .dispatch_pointer_up(PointerButton::Left)
+            .expect("释放必须送达");
+        self.port
+            .dispatch_key_release(KeyCode::Alt)
+            .expect("Alt 释放必须送达");
     }
 
     /// 在画布上按**横坐标分数**点一次（`y` 取画布中点 41 px）。
@@ -1035,6 +1058,108 @@ fn double_clicking_a_pill_solos_then_restores_all_layers() {
             && rig.ui().get_song_overview_show_bands()
             && rig.ui().get_song_overview_show_density(),
         "已独显时再双击 ⇒ 四层必须全恢复可见"
+    );
+}
+
+/// ㉗：Alt+点 Low-Mid 频段行 ⇒ 独奏该频段（走带一位不动、金框进树）；再 Alt+点同一行 ⇒ 关闭；
+/// 无 Alt 点同一点 ⇒ 跳转、不独奏。
+#[test]
+fn alt_clicking_a_band_row_solos_it_and_plain_click_seeks() {
+    let mut rig = Rig::new();
+    // 前提：未独奏、金框不在树里、引擎直通、日志为空起点。
+    assert_eq!(
+        rig.ui().get_song_overview_band_solo(),
+        -1,
+        "前提：初始未独奏"
+    );
+    assert!(
+        !rig.port.tree().contains(SOLO_OUTLINE),
+        "前提：未独奏时金框不在树里"
+    );
+    assert_eq!(
+        rig.engine.borrow().band_solo(),
+        Some(None),
+        "前提：引擎侧初始直通（控制驱动下读口可问）"
+    );
+    let before = rig.position();
+    let journal_before = rig.journal_len();
+
+    // Low-Mid（频段 2，250–500 Hz）⇒ 行 = 7 − 2 = 5，行中点 y = (5.5/8) × 画布高；
+    // x 取第 7 小节中部（6.5/16，框体盖不到的画布外区域 —— 与悬停判据 ⑪ 同一点）。
+    let canvas = rig.bounds(CANVAS);
+    let x = f64::from(canvas.width) * (6.5 / 16.0);
+    let y = f64::from(canvas.height) * (5.5 / 8.0);
+    rig.alt_click_canvas(x, y);
+    assert_eq!(
+        rig.ui().get_song_overview_band_solo(),
+        2,
+        "Alt+点 Low-Mid 行 ⇒ 独奏态必须是频段 2"
+    );
+    assert_eq!(
+        rig.engine.borrow().band_solo(),
+        Some(Some(2)),
+        "Alt+点 ⇒ 引擎侧必须独奏 Low-Mid（控制驱动直通）"
+    );
+    assert_eq!(rig.position(), before, "Alt+点 ⇒ 走带一位不动（⛔ 不跳转）");
+    assert_eq!(
+        rig.journal_len(),
+        journal_before,
+        "Alt+点 ⇒ 日志零新增（⛔ 不写 SeekTicks）"
+    );
+    rig.refresh();
+    assert!(
+        rig.port.tree().contains(SOLO_OUTLINE),
+        "独奏后金框必须进树（可见态信号）"
+    );
+    // 金框几何：行 5 的框（y = 画布顶 + 5/8 × 画布高，高 = 1/8 × 画布高；±2 px 容差）。
+    let outline = rig.bounds(SOLO_OUTLINE);
+    let expected_y = f64::from(canvas.y) + f64::from(canvas.height) * (5.0 / 8.0);
+    assert!(
+        (f64::from(outline.y) - expected_y).abs() <= 2.0,
+        "金框必须落在行 5（实得 y {}，期望 {expected_y}）",
+        outline.y,
+    );
+    assert!(
+        (f64::from(outline.height) - f64::from(canvas.height) / 8.0).abs() <= 2.0,
+        "金框高必须是一行（实得 {}，期望 {}）",
+        outline.height,
+        f64::from(canvas.height) / 8.0,
+    );
+
+    // 再 Alt+点同一行 ⇒ 关闭（切换语义与图层独显同款）。
+    rig.alt_click_canvas(x, y);
+    assert_eq!(
+        rig.ui().get_song_overview_band_solo(),
+        -1,
+        "再 Alt+点同一行 ⇒ 独奏必须关闭"
+    );
+    assert_eq!(
+        rig.engine.borrow().band_solo(),
+        Some(None),
+        "再 Alt+点同一行 ⇒ 引擎侧必须回到直通"
+    );
+    rig.refresh();
+    assert!(
+        !rig.port.tree().contains(SOLO_OUTLINE),
+        "关闭后金框必须离树"
+    );
+
+    // 无 Alt 点同一点 ⇒ 跳转、不独奏（Alt 是独奏的唯一开关）。
+    rig.click_canvas(x, y);
+    assert_eq!(
+        rig.ui().get_song_overview_band_solo(),
+        -1,
+        "无 Alt 点 ⇒ 不独奏"
+    );
+    assert_eq!(
+        rig.position(),
+        7 * BAR_TICKS,
+        "无 Alt 点 6.5/16 处 ⇒ 落到第 7 小节线（6.5 小节平局向上吸附，`snap_tick` 同款）"
+    );
+    assert_eq!(
+        rig.journal_len(),
+        journal_before + 1,
+        "无 Alt 点 ⇒ 日志恰 +1 条（一次跳转）"
     );
 }
 

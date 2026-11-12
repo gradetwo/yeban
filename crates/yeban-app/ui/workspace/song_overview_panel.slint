@@ -100,6 +100,11 @@ export component SongOverviewPanel inherits Rectangle {
     in property <bool> hover-visible: false;
     in property <float> hover-fraction: 0.0;
     in property <string> hover-text: "";
+    /// ⭐ 频段独奏（Songmap follow-ons (a)，设计稿 §7.3）：当前独奏的频段（0 Sub … 7 Air），−1 = 未独奏。
+    /// 会话态（MODEL-ISO-001 第二层）：不进工程、不进撤销。唯一写者 = `wire_song_overview` 的独奏回调。
+    in property <int> band-solo: -1;
+    /// Alt+点按下后、松手前的"这一按是独奏"标记：拖动分支见了它就不定位（否则 Alt+拖会边独奏边跳转）。
+    property <bool> alt-solo-press: false;
     /// 编排视图横向偏移（px，活读 `MainWindow.roll-scroll-x`）。
     in property <float> viewport-scroll-x: 0.0;
     /// 编排视图横向缩放（tick/px，活读 `MainWindow.roll-ticks-per-pixel`）。
@@ -117,6 +122,8 @@ export component SongOverviewPanel inherits Rectangle {
     callback layer-toggle(int);
     /// 图层下标 ⇒ 独显（已独显则恢复全显）。
     callback layer-solo(int);
+    /// Alt+点频段行 ⇒ 独奏该频段（参数 0 Sub … 7 Air；再点同一频段 ⇒ 关闭）。
+    callback band-solo-requested(int);
     /// 目标横向偏移（px，已夹紧）⇒ 滚动编排视图。
     callback viewport-scroll-requested(float);
     /// 目标横向缩放（tick/px）⇒ 缩放编排视图。
@@ -176,11 +183,23 @@ export component SongOverviewPanel inherits Rectangle {
         height: parent.height;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
-                root.seek-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+                // ⭐ 频段独奏（Songmap follow-ons (a)，设计稿 §7.3）：按住 Alt 点频段行 ⇒
+                // 独奏该频段，⛔ 不跳转。行序与热力图同款：行 0 = Air（顶）……行 7 = Sub（底）
+                // ⇒ 频段 = 7 − 行。折叠态画布不可见 ⇒ 不独奏（只定位条带本身不响应点击）。
+                root.alt-solo-press = event.modifiers.alt && !root.collapsed;
+                if root.alt-solo-press {
+                    root.band-solo-requested(7 - Math.floor(Math.max(0.0, Math.min(7.0, (self.mouse-y / canvas.height) * 8.0))));
+                } else {
+                    root.seek-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+                }
+            } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                root.alt-solo-press = false;
             } else if event.kind == PointerEventKind.move && root.canvas-width > 0px {
                 if self.pressed {
-                    // 按住拖动 ⇒ 连续定位（与标尺 `U-07 R3` 同款）。
-                    root.seek-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+                    // 按住拖动 ⇒ 连续定位（与标尺 `U-07 R3` 同款）；独奏按住的拖动不定位。
+                    if !root.alt-solo-press {
+                        root.seek-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
+                    }
                 } else {
                     // 悬停 ⇒ 小节读数。
                     root.hover-requested((self.mouse-x - root.time-origin-x) / root.canvas-width);
@@ -307,6 +326,24 @@ export component SongOverviewPanel inherits Rectangle {
             accessible-value: root.playhead-timecode;
         }
 
+        // ---- 频段独奏（Songmap follow-ons (a)）：独奏频段行的金色框（2 px，设计稿 §7.3）。
+        // 行序与热力图同款：行 0 = Air（顶）……行 7 = Sub（底）⇒ 独奏频段 b 的行 = 7 − b。
+        // 只在频段层可见时画（`show-bands` 关了，行本身也不在）；画在走带光标之后、
+        // 视口框之前 ⇒ 框体（半透白 0.10）盖不住它。
+        Rectangle {
+            x: 0;
+            y: (7 - root.band-solo) * parent.height / 8;
+            width: parent.width;
+            height: parent.height / 8;
+            border-width: 2px;
+            border-color: Tokens.gold;
+            visible: root.band-solo >= 0 && root.show-bands;
+            // ⚠ `accessible-id` / `accessible-label` 必须配一个 `accessible-role`（Slint 编译器硬性要求）。
+            accessible-role: image;
+            accessible-id: "song-overview-band-solo-outline";
+            accessible-label: "独奏频段行";
+        }
+
         // ============================================================ ② 视口联动框
         //
         // 框 = 当前编排视口（左缘 / 宽度全由 `roll-scroll-x` 与 `roll-ticks-per-pixel`
@@ -340,10 +377,18 @@ export component SongOverviewPanel inherits Rectangle {
                 height: parent.height;
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down {
-                        root.lens-dragging = true;
-                        root.lens-grab-offset-frac = (parent.x + self.mouse-x) / canvas.width - root.viewport-start-frac;
-                        root.lens-press-frac = (parent.x + self.mouse-x) / canvas.width;
+                        // ⭐ 频段独奏：框体盖住画布左段，Alt+点落在框里时先拿到事件 ⇒ 这里也要
+                        // 独奏（不记拖动、不跳转）。行 → 频段换算与 `seek-area` 同款。
+                        root.alt-solo-press = event.modifiers.alt;
+                        if root.alt-solo-press {
+                            root.band-solo-requested(7 - Math.floor(Math.max(0.0, Math.min(7.0, (self.mouse-y / canvas.height) * 8.0))));
+                        } else {
+                            root.lens-dragging = true;
+                            root.lens-grab-offset-frac = (parent.x + self.mouse-x) / canvas.width - root.viewport-start-frac;
+                            root.lens-press-frac = (parent.x + self.mouse-x) / canvas.width;
+                        }
                     } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        root.alt-solo-press = false;
                         if root.lens-dragging && root.canvas-width > 0px {
                             // 位移（px）= 分数差 × 画布宽；取绝对值不用 Math.abs（手写三元更稳）。
                             if ((parent.x + self.mouse-x) / canvas.width - root.lens-press-frac) * (root.canvas-width / 1px) < 3.0 && (root.lens-press-frac - (parent.x + self.mouse-x) / canvas.width) * (root.canvas-width / 1px) < 3.0 {

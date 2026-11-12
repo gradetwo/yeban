@@ -285,8 +285,8 @@ fn every_addressable_node_declares_an_explicit_accessible_role() {
         "非真空：必须真的扫过大批可寻址节点（实测 {total}，下限 200）"
     );
     assert_eq!(
-        total, 238,
-        "全仓可寻址节点块数应与本轮基线一致；变了要复核清单与解析口径"
+        total, 239,
+        "全仓可寻址节点块数应与本轮基线一致；变了要复核清单与解析口径（Songmap follow-ons (a) 频段独奏金框 1，带 accessible-role: image）"
     );
     assert!(
         gaps.is_empty(),

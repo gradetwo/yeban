@@ -6684,6 +6684,7 @@ name = "yeban-dsp"
 version = "0.0.1"
 dependencies = [
  "libm",
+ "rayon",
  "realfft",
  "signalsmith-stretch",
 ]

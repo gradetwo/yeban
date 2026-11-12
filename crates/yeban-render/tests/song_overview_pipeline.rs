@@ -10,8 +10,9 @@ use yeban_model::samples::demo_project;
 use yeban_model::{TrackKind, TrackV3, YebanProjectV1};
 use yeban_render::engine_source::ArmedSfzInput;
 use yeban_render::song_overview::{
-    RenderSettings, SkippedReason, SongOverviewCache, SongOverviewError, cached_overview,
-    render_project_to_buffer, render_stems_to_buffers, song_overview_hash,
+    IncrementalOverviewCache, RenderSettings, SkippedReason, SongOverviewCache, SongOverviewError,
+    cached_overview, cached_overview_incremental, project_bar_hashes, render_project_to_buffer,
+    render_stems_to_buffers, song_overview_hash,
 };
 
 /// 演示工程没有采样器绑定 ⇒ provider 绝不能被调用（被调用即 panic）。
@@ -337,5 +338,112 @@ fn cached_overview_reports_frequency_clash_for_the_demo() {
     println!(
         "### [demo-clash] total={} entries={:?}",
         clash.total_groups, clash.entries
+    );
+}
+
+/// 双键哈希（follow-ons (b)）：同工程同键；改轨名（不入任何键）全不变；
+/// 改一条发声轨的音量（音频指纹）⇒ 谱面键全不变、至少一小节音频键变。
+#[test]
+fn project_bar_hashes_are_deterministic_and_separate_score_from_audio() {
+    let project = demo_project();
+    let hashes = project_bar_hashes(&project);
+    assert!(!hashes.is_empty(), "演示工程有谱面内容，应有小节双键");
+    assert_eq!(
+        hashes,
+        project_bar_hashes(&project),
+        "同工程两次投影双键须逐位相同"
+    );
+
+    // 改轨名：谱面键与音频键都不许变（名字不入任何键）。
+    let mut renamed = project.clone();
+    let any_track = renamed
+        .display_track_ids()
+        .into_iter()
+        .next()
+        .expect("演示工程有轨");
+    renamed.tracks.get_mut(&any_track).expect("轨在").name = "改名".to_string();
+    assert_eq!(project_bar_hashes(&renamed), hashes, "改轨名不得改任何双键");
+
+    // 改一条带片段的轨的音量：谱面键全不变，音频键至少一处变。
+    let mut louder = project.clone();
+    let sounding_track = louder
+        .tracks
+        .values()
+        .find(|track| !track.clips.is_empty())
+        .map(|track| track.id)
+        .expect("演示工程有带片段的轨");
+    louder
+        .tracks
+        .get_mut(&sounding_track)
+        .expect("轨在")
+        .volume_db += 3.0;
+    let louder_hashes = project_bar_hashes(&louder);
+    assert_eq!(louder_hashes.len(), hashes.len());
+    for (before, after) in hashes.iter().zip(&louder_hashes) {
+        assert_eq!(before.score, after.score, "改音量不得改谱面键");
+    }
+    assert!(
+        hashes
+            .iter()
+            .zip(&louder_hashes)
+            .any(|(before, after)| before.audio != after.audio),
+        "改音量必须使至少一小节的音频键失效"
+    );
+}
+
+/// 增量管线（follow-ons (b)）：结果与普通管线逐位一致；首次全实算、
+/// 整曲命中不重算；收据与内层计数自洽。
+#[test]
+fn incremental_pipeline_matches_cached_overview_and_reports_stats() {
+    let project = demo_project();
+    let settings = RenderSettings::default();
+
+    let mut plain_cache = SongOverviewCache::new();
+    let (plain, plain_hit) = cached_overview(
+        &mut plain_cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("普通管线分析");
+    assert!(!plain_hit);
+
+    let mut cache = IncrementalOverviewCache::new();
+    let (first, first_hit) = cached_overview_incremental(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("增量管线首次分析");
+    assert!(!first_hit, "首次必须是未命中");
+    assert_eq!(first, plain, "增量管线结果须与普通管线逐位一致");
+    let stats = cache
+        .last_clash_stats()
+        .expect("首次未命中后必须有增量收据");
+    assert!(stats.computed_beats > 0, "冷缓存首次必须有实算拍数");
+    assert_eq!(stats.reused_beats, 0, "冷缓存首次不得有复用");
+    assert_eq!(
+        cache.stem_cache().computed_beats(),
+        stats.computed_beats as u64,
+        "内层累计实算拍数须与收据一致"
+    );
+
+    let (second, second_hit) = cached_overview_incremental(
+        &mut cache,
+        &project,
+        &settings,
+        &AnalysisOptions::default(),
+        never_called_provider(),
+    )
+    .expect("增量管线二次分析");
+    assert!(second_hit, "同工程第二次必须整曲命中");
+    assert_eq!(second, plain);
+    assert_eq!(
+        (cache.overviews().hits(), cache.overviews().misses()),
+        (1, 1),
+        "整曲缓存命中/未命中计数须为 (1, 1)"
     );
 }

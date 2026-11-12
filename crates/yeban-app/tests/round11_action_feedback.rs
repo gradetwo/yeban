@@ -363,8 +363,8 @@ fn zero_new_addressable_nodes_or_readouts() {
         values += src.matches("accessible-value:").count();
     }
     assert_eq!(
-        ids, 239,
-        "全仓可寻址 ID 仍 239（上游 Songmap Phase 2 之后 ＋ 卷帘右键菜单 2 ＋ 人性化弹窗 12）"
+        ids, 240,
+        "全仓可寻址 ID 仍 240（上游 Songmap Phase 2 之后 ＋ 卷帘右键菜单 2 ＋ 人性化弹窗 12 ＋ Songmap follow-ons (a) 频段独奏金框 1）"
     );
     assert_eq!(
         values, 55,

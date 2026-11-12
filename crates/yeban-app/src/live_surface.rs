@@ -441,7 +441,7 @@ const fn ime_focus_of(focus: Focus) -> ImeFocus {
 /// `yeban_ui_test_port::port::KeyCode` → 状态机的物理键 + 修饰键。
 ///
 /// `None` = 这个 `key_code` 在 `[UI-A11Y-001]` 的扫描码表里没有对应（例如裸修饰键
-/// `Shift`/`Ctrl`）：宿主直接丢弃、不进状态机（`input.rs` 的边界），
+/// `Shift`/`Ctrl`/`Alt`）：宿主直接丢弃、不进状态机（`input.rs` 的边界），
 /// 因此它的"处置"是 `pass-through`（不冒充成一个动作）。
 fn physical_key_of(key: KeyCode) -> Option<(PhysicalKey, Modifiers)> {
     let bare = Modifiers::none();
@@ -465,7 +465,7 @@ fn physical_key_of(key: KeyCode) -> Option<(PhysicalKey, Modifiers)> {
             digit @ '1'..='5' => (PhysicalKey::Digit(digit as u8 - b'0'), bare),
             _ => return None,
         },
-        KeyCode::Shift | KeyCode::Control => return None,
+        KeyCode::Shift | KeyCode::Control | KeyCode::Alt => return None,
     };
     Some(mapped)
 }

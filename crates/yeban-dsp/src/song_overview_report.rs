@@ -672,6 +672,7 @@ mod tests {
                     mean_similarity: 0.97,
                 }],
             },
+            frequency_clash: FrequencyClashSummary::default(),
             bar_series: BarSeries {
                 bar: vec![1, 2],
                 time_sec: vec![0.0, 2.0],
@@ -692,7 +693,6 @@ mod tests {
                     [-13.0, -10.6, -11.8, -9.4, -12.6, -16.2, -20.8, -28.0],
                 ],
             },
-            frequency_clash: FrequencyClashSummary::default(),
         }
     }
 
@@ -715,6 +715,7 @@ mod tests {
                 detected_anomalies: Vec::new(),
             },
             repetition: RepetitionSummary::default(),
+            frequency_clash: FrequencyClashSummary::default(),
             bar_series: BarSeries {
                 bar: Vec::new(),
                 time_sec: Vec::new(),
@@ -732,7 +733,6 @@ mod tests {
                 density_perc_onsets_per_beat: Vec::new(),
                 bands_tilted_db: Vec::new(),
             },
-            frequency_clash: FrequencyClashSummary::default(),
         }
     }
 

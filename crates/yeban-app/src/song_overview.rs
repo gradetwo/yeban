@@ -1003,6 +1003,30 @@ pub fn wire_song_overview(
         }
     });
 
+    // ⭐ 频段独奏（Songmap follow-ons (a)，设计稿 §7.3）：Alt+点频段行 ⇒ 独奏该频段；
+    // 再点同一频段 ⇒ 关闭。频段号 0 Sub … 7 Air（`BAND_COUNT = 8`，与热力图行序同款）。
+    // 只在请求真的送达引擎时才翻 UI 态（没有引擎 / 环满时不假装独奏已开 —— 见
+    // `EngineHost::set_band_solo` 的落点口径）。
+    let weak = ui.as_weak();
+    ui.on_song_overview_band_solo_requested({
+        let weak = weak.clone();
+        let engine = Rc::clone(&engine);
+        move |band| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if !(0..BAND_COUNT as i32).contains(&band) {
+                return;
+            }
+            let current = ui.get_song_overview_band_solo();
+            let next = if current == band { -1 } else { band };
+            let target = if next < 0 { None } else { Some(next as u8) };
+            if engine.borrow_mut().set_band_solo(target).is_delivered() {
+                ui.set_song_overview_band_solo(next);
+            }
+        }
+    });
+
     // ② 视口联动框：拖动框体 ⇒ 滚动编排视图（只写 `roll-scroll-x`，⛔ 不重投影）。
     // 界面在 `.slint` 里已经按画布宽 / 跨度算好目标像素并夹紧，这里只做最后一道
     // 下界守卫（负值到不了编排视图）。

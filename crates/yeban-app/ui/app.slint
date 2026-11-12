@@ -805,6 +805,9 @@ export component MainWindow inherits Window {
     in-out property <bool> song-overview-hover-visible: false;
     in-out property <float> song-overview-hover-fraction: 0.0;
     in-out property <string> song-overview-hover-text: "";
+    /// ⭐ 频段独奏（Songmap follow-ons (a)）：当前独奏的频段（0 Sub … 7 Air），−1 = 未独奏。
+    /// 会话态（MODEL-ISO-001 第二层）：不进工程、不进撤销。唯一写者 = `song_overview::wire_song_overview`。
+    in-out property <int> song-overview-band-solo: -1;
     /// 点击总览图 ⇒ 走带定位（分数 0..1；落点 = `song_overview::wire_song_overview`）。
     callback song-overview-seek(float);
     /// 悬停总览图 ⇒ 小节读数（分数 0..1）。
@@ -813,6 +816,10 @@ export component MainWindow inherits Window {
     callback song-overview-layer-toggle(int);
     /// 图层胶囊双击 ⇒ 独显（已独显则恢复全显）。
     callback song-overview-layer-solo(int);
+    /// Alt+点总览图频段行 ⇒ 独奏该频段（已独奏则关闭）。
+    /// ⚠ 回调名带 `-requested` 后缀：属性与回调在 Slint 里不许同名（与面板本体
+    /// `band-solo` / `band-solo-requested` 同款区分）。
+    callback song-overview-band-solo-requested(int);
     /// 拖视口框 ⇒ 滚动编排视图（目标横向偏移 px，已夹紧）。
     callback song-overview-viewport-scroll(float);
     /// 拖视口框右缘 ⇒ 缩放编排视图（目标 tick/px）。
@@ -2461,6 +2468,7 @@ export component MainWindow inherits Window {
             hover-visible: root.song-overview-hover-visible;
             hover-fraction: root.song-overview-hover-fraction;
             hover-text: root.song-overview-hover-text;
+            band-solo: root.song-overview-band-solo;
             viewport-scroll-x: root.roll-scroll-x;
             viewport-ticks-per-pixel: root.roll-ticks-per-pixel;
             playhead-ticks: root.playhead-ticks;
@@ -2469,6 +2477,7 @@ export component MainWindow inherits Window {
             hover-requested(fraction) => { root.song-overview-hover(fraction); }
             layer-toggle(index) => { root.song-overview-layer-toggle(index); }
             layer-solo(index) => { root.song-overview-layer-solo(index); }
+            band-solo-requested(band) => { root.song-overview-band-solo-requested(band); }
             viewport-scroll-requested(target) => { root.song-overview-viewport-scroll(target); }
             viewport-zoom-requested(target) => { root.song-overview-viewport-zoom(target); }
             toggle-collapsed() => { root.song-overview-toggle-collapsed(); }

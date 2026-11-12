@@ -203,6 +203,28 @@ pub enum EngineEvent {
         /// 引擎快照里没有拍号 ⇒ 由控制面给出（与 `queue_scene_launch` 的入参同源）。
         time_signature: TimeSignature,
     },
+    /// ⭐ **频段独奏（Songmap follow-ons (a)）**：监听总线临时挂带通，只放过一个频段。
+    ///
+    /// 为什么需要这条事件（而不是只让产品直接调
+    /// [`crate::rt::EngineRuntime::set_band_solo`]）：与 [`Self::SceneLaunch`]
+    /// 同一条理由 —— 产品的**设备腿**把 `EngineRuntime` **按值**移进 cpal 回调线程
+    /// ⇒ 控制线程手里没有 `&mut EngineRuntime`，只有这一条既有的无锁 SPSC。
+    /// 没有它，接了声卡的用户按 Alt 点频段行就什么都不会发生。
+    ///
+    /// 载荷与 [`crate::rt::EngineRuntime::set_band_solo`] 的入参**一一对应**：
+    /// `Some(band)`（0..8，Sub → Air）独奏该频段，`None` 关闭（直通）。
+    /// 越界下标由消费端按 `None` 处理（[`yeban_dsp::band_solo::BandSoloFilter::set_band`]）。
+    ///
+    /// # 顺序与尺寸
+    ///
+    /// ⛔ 追加在末尾 ⇒ 既有变体的判别式与语义一个字节都没动。
+    /// 载荷只有两个字节 ⇒ `size_of::<EngineEvent>()` 仍是 **48 B**
+    /// （门槛 `<= 64`，判据见本文件库单测 `events_are_copy_and_carry_no_destructor`）。
+    /// 全部字段都是 `Copy` ⇒ 事件在音频线程出队时**零分配、零释放**。
+    BandSolo {
+        /// 独奏的频段下标（0..8，Sub → Air）；`None` = 关闭独奏。
+        band: Option<u8>,
+    },
 }
 
 impl EngineEvent {

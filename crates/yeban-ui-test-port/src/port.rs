@@ -213,6 +213,8 @@ pub enum KeyCode {
     Shift,
     /// Ctrl 单键。
     Control,
+    /// Alt 单键（修饰键；按下后保持修饰态，直到显式释放 —— 供 Alt+点这类组合注入）。
+    Alt,
     /// Shift+Enter chord：采纳 AI 提案。
     ShiftEnter,
     /// 任意单个字符（字母数字等）。
@@ -235,6 +237,7 @@ impl KeyCode {
             "backspace" => Self::Backspace,
             "shift" => Self::Shift,
             "ctrl" | "control" => Self::Control,
+            "alt" => Self::Alt,
             "shift+enter" | "shift+return" => Self::ShiftEnter,
             _ => {
                 let mut chars = normalized.chars();
@@ -262,6 +265,7 @@ impl KeyCode {
             Self::Backspace => "Backspace".to_owned(),
             Self::Shift => "Shift".to_owned(),
             Self::Control => "Ctrl".to_owned(),
+            Self::Alt => "Alt".to_owned(),
             Self::ShiftEnter => "Shift+Enter".to_owned(),
             Self::Character(ch) => ch.to_string(),
         }
@@ -638,6 +642,21 @@ pub trait UiTestPort {
     /// 注入键盘按下（`Interactive`）。
     fn dispatch_key_press_impl(&mut self, key: KeyCode) -> Result<(), PortError>;
 
+    /// 注入键盘释放（`Interactive`）。只对**修饰键**有意义（Alt / Shift / Ctrl 的按下
+    /// 会保持修饰态 —— 见 `render.rs` 的 `ShiftEnter` 臂注：只按下不释放会让后续按键
+    /// 一直被当成组合，那是一条隐蔽的状态泄漏）。
+    ///
+    /// 默认实现如实报"没有载体"（与 [`Self::dispatch_key_chord_impl`] 同一族）：
+    /// 泛型执行面不知道哪个键有修饰态可放。真实载体是 `LivePort`（见 `render.rs`）。
+    fn dispatch_key_release_impl(&mut self, key: KeyCode) -> Result<(), PortError> {
+        let _ = key;
+        Err(PortError::Rejected {
+            message: "这个执行面没有按键释放的载体（`UiTestPort::dispatch_key_release_impl` \
+                      用的是默认实现）"
+                .to_owned(),
+        })
+    }
+
     /// 注入一次**带修饰键的组合**（`Interactive`）。返回**界面有没有消费**这一键
     /// （`invoke_key_action` 的返回值口径，见 `crates/yeban-app/src/host.rs` 的 `wire_keys`）。
     ///
@@ -751,6 +770,13 @@ pub trait UiTestPort {
     fn dispatch_key_press(&mut self, key: KeyCode) -> Result<(), PortError> {
         self.authorize_here(Operation::DispatchKey)?;
         self.dispatch_key_press_impl(key)
+    }
+
+    /// 注入键盘释放。闸门与 [`Self::dispatch_key_press`] **同级**（`Interactive`）⇒
+    /// 释放不是"可以少判一层"的旁路。
+    fn dispatch_key_release(&mut self, key: KeyCode) -> Result<(), PortError> {
+        self.authorize_here(Operation::DispatchKey)?;
+        self.dispatch_key_release_impl(key)
     }
 
     /// 注入一次带修饰键的组合。闸门与 [`Self::dispatch_key_press`] **同级**
@@ -1120,6 +1146,8 @@ mod tests {
             ("shift+enter", KeyCode::ShiftEnter),
             ("Space", KeyCode::Space),
             ("Backspace", KeyCode::Backspace),
+            ("Alt", KeyCode::Alt),
+            ("alt", KeyCode::Alt),
             ("a", KeyCode::Character('a')),
             ("7", KeyCode::Character('7')),
         ] {

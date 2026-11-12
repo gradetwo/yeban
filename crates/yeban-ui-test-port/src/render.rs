@@ -608,6 +608,7 @@ impl<T: ComponentHandle> UiTestPort for LivePort<T> {
             KeyCode::Backspace => self.window.key_press(Key::Backspace),
             KeyCode::Shift => self.window.key_press(Key::Shift),
             KeyCode::Control => self.window.key_press(Key::Control),
+            KeyCode::Alt => self.window.key_press(Key::Alt),
             KeyCode::ShiftEnter => {
                 // 修饰键必须**用完就放**：只按下不释放会让后续按键一直被当成 Shift 组合,
                 // 那是一条隐蔽的状态泄漏。
@@ -616,6 +617,26 @@ impl<T: ComponentHandle> UiTestPort for LivePort<T> {
                 self.window.key_release(Key::Shift);
             }
             KeyCode::Character(ch) => self.window.type_char(ch),
+        }
+        Ok(())
+    }
+
+    fn dispatch_key_release_impl(&mut self, key: KeyCode) -> Result<(), PortError> {
+        match key {
+            // 修饰键的按下会保持修饰态（上游 `InternalKeyboardModifierState`），
+            // 释放必须走同一条 `key_release` 才能清掉 —— 只按不放会让后续注入
+            // 一直带修饰位（与 `ShiftEnter` 臂"用完就放"同一条理由）。
+            KeyCode::Alt => self.window.key_release(Key::Alt),
+            KeyCode::Shift => self.window.key_release(Key::Shift),
+            KeyCode::Control => self.window.key_release(Key::Control),
+            other => {
+                return Err(PortError::Rejected {
+                    message: format!(
+                        "这个键没有可释放的修饰态（`KeyCode::{other:?}` 的按下已自带释放，\
+                         或它根本不是修饰键；见 `UiTestPort::dispatch_key_release_impl`）"
+                    ),
+                });
+            }
         }
         Ok(())
     }
