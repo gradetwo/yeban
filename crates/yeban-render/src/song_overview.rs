@@ -676,9 +676,10 @@ pub struct StemBuffer {
     pub audio: RenderedAudio,
 }
 
-/// 探针计划取保留子图里的源节点（主总线除外；与 MCP 的 `probe_subgraph` /
-/// `is_source_node` 同规则）。
-fn source_nodes(
+/// 探针计划取保留子图里的**结构**源节点（主总线除外；与 MCP 的
+/// `probe_subgraph` / `is_source_node` 同规则）—— **不**剔空轨。
+/// [`source_nodes`] 在此之上再剔空轨；两者的差就是空轨集合。
+fn structural_source_nodes(
     project: &YebanProjectV1,
     sample_rate: u32,
     seed: u64,
@@ -698,6 +699,17 @@ fn source_nodes(
                     .bus_reduction_order(*node)
                     .is_none_or(|inputs| inputs.is_empty())
         })
+        .collect())
+}
+
+/// 逐轨渲染用的源节点：在结构源节点里再剔掉空轨。
+fn source_nodes(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+    seed: u64,
+) -> Result<Vec<EntityId>, SongOverviewError> {
+    Ok(structural_source_nodes(project, sample_rate, seed)?
+        .into_iter()
         // ⭐⭐ **空轨不进逐轨渲染**（与 `yeban-app` 的渲染核心、`yeban_export_stems`
         // 同一条判据：没有 clip、也没有绑定采样器 ⇒ 确定输出静音）。
         //
@@ -807,10 +819,13 @@ where
 /// 只渲染给定的几条源轨（自动相位对齐的音频来源；与 [`render_stems_to_buffers`]
 /// 同一条 clone-mute-re-render 招数，只是不渲染无关的轨）。
 ///
-/// 成本：一次调用渲染 `targets.len()` 次（不是全工程源轨数）。
-/// 目标轨里有不是源节点的 ⇒ [`SongOverviewError::NotASourceTrack`]
-///（主总线、有音频入边的总线轨）；静音轨（无排程音符、无音频片段）
-/// 不报错，返回全零 stem，调用方按静音处理。
+/// 成本：一次调用至多渲染 `targets.len()` 次（不是全工程源轨数）。
+/// 目标轨分三类：有内容的源轨真渲染；**空轨**（结构上是源节点，但没有
+/// clip、也没有绑定采样器 ⇒ 确定输出静音）**不报错、也不真渲染** —— 直接
+/// 合成一条与真渲染同帧数的全零 stem，调用方按静音处理（与逐轨总览剔除
+/// 空轨同一条内存口径，但本函数的契约是把静音交回调用方判读，⛔ 不能把
+/// 空轨误报成「不是源节点」）；其余（主总线、有音频入边的总线轨）不是
+/// 源节点 ⇒ [`SongOverviewError::NotASourceTrack`]。
 ///
 /// # Errors
 ///
@@ -832,13 +847,78 @@ where
             got_hz: settings.sample_rate_hz,
         });
     }
+    let structural = structural_source_nodes(project, sample_rate, settings.seed)?;
     let sources = source_nodes(project, sample_rate, settings.seed)?;
+    let mut renderable: Vec<EntityId> = Vec::new();
+    let mut silent: Vec<EntityId> = Vec::new();
     for &target in targets {
-        if !sources.contains(&target) {
+        if sources.contains(&target) {
+            renderable.push(target);
+        } else if structural.contains(&target) {
+            silent.push(target);
+        } else {
             return Err(SongOverviewError::NotASourceTrack { track: target });
         }
     }
-    render_stems_for_targets(project, settings, sfz_provider, &sources, targets)
+    let mut by_track: BTreeMap<EntityId, StemBuffer> = BTreeMap::new();
+    if !renderable.is_empty() {
+        for stem in
+            render_stems_for_targets(project, settings, sfz_provider, &sources, &renderable)?
+        {
+            by_track.insert(stem.track, stem);
+        }
+    }
+    if !silent.is_empty() {
+        // 全零 stem 的帧数必须与真渲染一致（调用方在同一条时间轴上比对）：
+        // 有真渲染结果就用它的帧数；一条都没有时按工程帧数公式推导
+        //（与 `render_project_to_buffer` 同一条公式：探针保留子图上的
+        // 摆放末端最大值）。
+        let frames = match by_track.values().next() {
+            Some(stem) => stem.audio.frames,
+            None => {
+                let probe_options = RenderOptions::l1(1, 2, sample_rate, settings.seed);
+                let probe = RenderPlan::compile(
+                    &project.routing_graph,
+                    project.master_bus_track_id,
+                    probe_options,
+                )?;
+                let kept: BTreeSet<EntityId> = probe.nodes().into_iter().collect();
+                let frames = frames_for_project(project, &kept, sample_rate);
+                if frames == 0 {
+                    return Err(SongOverviewError::EmptyProject);
+                }
+                frames
+            }
+        };
+        for target in silent {
+            let name = project
+                .tracks
+                .get(&target)
+                .map(|track| track.name.clone())
+                .unwrap_or_default();
+            by_track.insert(
+                target,
+                StemBuffer {
+                    track: target,
+                    name,
+                    audio: RenderedAudio {
+                        samples: vec![0.0; usize::try_from(frames).unwrap_or(0) * 2],
+                        sample_rate,
+                        frames,
+                        skipped_tracks: Vec::new(),
+                    },
+                },
+            );
+        }
+    }
+    Ok(targets
+        .iter()
+        .map(|target| {
+            by_track
+                .remove(target)
+                .expect("每个目标轨恰有一条 stem（三分类已逐个处理）")
+        })
+        .collect())
 }
 
 /// 该节点是否有一条来自保留子图的音频入边（侧链边不算音频边）。
