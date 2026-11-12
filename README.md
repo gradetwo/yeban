@@ -51,7 +51,7 @@
 - **Projects carry what they use**: used samples and their SFZ definitions are embedded in the `.yeban` container; rendering checks the embedded pool first, disk second; old projects are byte-identical.
 - **Native presets**: four MCP tools (`yeban_list_presets`, `yeban_apply_preset`, `yeban_save_preset`, `yeban_preset_bypass`) and six factory presets (piano, cello, classical guitar, flute, saxophone, drums) that load with tuned processing instead of a dry sound.
 - **Singing synthesis, via the external SVS service**: `synthesize_singing` submits a score and `svs_job` polls it back — Yeban is the MCP client; synthesis itself runs in the Lingren SVS service.
-- **43 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
+- **44 MCP tools — already a powerful surface** (Intent API v2) and a **VST3 plug-in host** (in-process; cross-process isolation is phase 2).
 
 ## Roadmap
 
@@ -63,7 +63,7 @@ The original six phases are done; current work deepens capabilities beyond that 
 - **Phase 2 · Real-time audio pipeline** — done
 - **Phase 3 · Arrangement workspace** — done
 - **Phase 4 · Intent API and mastering export** — done
-- **Now · Capability deepening** — in progress: MIDI humanization, phase alignment, per-track Songmap frequency overlap, OTCP pitch-correction driver, Synth VST3 plug-in
+- **Now · Capability deepening** — in progress beyond the original plan. Already shipped from this list: MIDI humanization, phase alignment (manual and automatic), per-track Songmap frequency overlap, OTCP pitch-correction driver
 
 ## Platform support
 
@@ -155,7 +155,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 > deterministically — 102 398 / 102 400 non-zero samples for a three-note fixture, bit-identical across runs, and the
 > zero-allocation real-time window still holds). Pan law, noise gate, compressor, limiter, sidechain keying and
 > transport are all in — including a wall-clock pump that advances the playhead with no audio device. What it does
-> **not** do yet: no automation recording, no MPE, MIDI import drops all CCs — and the app still starts with a demo
+> **not** do yet: no MPE — and the app still starts with a demo
 > project. The EQ curve display has shipped (real biquad curve, drag interaction). For exactly what is verified — and what is still
 > `PENDING` — see [`docs/ledger/gate-status.md`](docs/ledger/gate-status.md).
 
