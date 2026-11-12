@@ -440,14 +440,14 @@ mod tests {
     /// 目标轨 = 基准轨延迟 `delay` 采样（线性插值，亚采样延迟）。
     fn delayed_fractional(signal: &[f32], delay: f64) -> Vec<f32> {
         let mut out = vec![0.0_f32; signal.len()];
-        for index in 0..signal.len() {
+        for (index, slot) in out.iter_mut().enumerate() {
             let source = index as f64 - delay;
             if source < 0.0 || source + 1.0 >= signal.len() as f64 {
                 continue;
             }
             let base = source.floor() as usize;
             let alpha = (source - base as f64) as f32;
-            out[index] = signal[base] * (1.0 - alpha) + signal[base + 1] * alpha;
+            *slot = signal[base] * (1.0 - alpha) + signal[base + 1] * alpha;
         }
         out
     }
