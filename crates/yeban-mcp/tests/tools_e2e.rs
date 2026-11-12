@@ -1610,19 +1610,21 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "compare_song_snapshots",
             json!({
                 "snapshot_a": {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "song_meta": {"total_bars": 1, "duration_sec": 5.0, "base_bpm": 120.0, "key_signature": "C major", "profile": "pop"},
                     "band_definitions_hz": [[20, 60], [60, 250], [250, 500], [500, 2000], [2000, 4000], [4000, 6000], [6000, 10000], [10000, 20000]],
                     "structural_summary": {"climax_bar": 1, "climax_tension": 0.9, "dynamic_range_lu": 8.0, "detected_anomalies": []},
                     "repetition": {"mechanical_index": 0.3, "best_matches": [], "repeated_passages": []},
+                    "frequency_clash": {"total_groups": 0, "overall_overlap": 0.0, "bar_overlaps": [], "entries": []},
                     "bar_series": [{"bar": 1, "time_sec": 0.0, "section": "Verse", "tension": 0.3, "valence_hue": 0.5, "lufs_short": -14.0, "lufs_momentary_max": -10.0, "score_dyn": 0.5, "envelope_lo": 0.2, "envelope_hi": 0.8, "target_deviation": 0.0, "density_pitched_onsets_per_beat": 1.0, "density_pitched_duty": 0.5, "density_perc_onsets_per_beat": 1.0, "bands_tilted_db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}],
                 },
                 "snapshot_b": {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "song_meta": {"total_bars": 1, "duration_sec": 5.0, "base_bpm": 120.0, "key_signature": "C major", "profile": "pop"},
                     "band_definitions_hz": [[20, 60], [60, 250], [250, 500], [500, 2000], [2000, 4000], [4000, 6000], [6000, 10000], [10000, 20000]],
                     "structural_summary": {"climax_bar": 1, "climax_tension": 0.9, "dynamic_range_lu": 8.0, "detected_anomalies": []},
                     "repetition": {"mechanical_index": 0.3, "best_matches": [], "repeated_passages": []},
+                    "frequency_clash": {"total_groups": 0, "overall_overlap": 0.0, "bar_overlaps": [], "entries": []},
                     "bar_series": [{"bar": 1, "time_sec": 0.0, "section": "Verse", "tension": 0.5, "valence_hue": 0.5, "lufs_short": -13.0, "lufs_momentary_max": -10.0, "score_dyn": 0.5, "envelope_lo": 0.2, "envelope_hi": 0.8, "target_deviation": 0.0, "density_pitched_onsets_per_beat": 1.0, "density_pitched_duty": 0.5, "density_perc_onsets_per_beat": 1.0, "bands_tilted_db": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}],
                 },
             }),

@@ -90,7 +90,7 @@ fn row_json(bar: u64, tension: f64, lufs_short: f64, band0: f64) -> Value {
 
 fn snapshot_json(tension_1: f64, tension_2: f64, lufs_1: f64, band0_1: f64) -> Value {
     json!({
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "song_meta": {
             "total_bars": 2,
             "duration_sec": 10.0,
@@ -109,6 +109,13 @@ fn snapshot_json(tension_1: f64, tension_2: f64, lufs_1: f64, band0_1: f64) -> V
             "mechanical_index": 0.3,
             "best_matches": [],
             "repeated_passages": [],
+        },
+        // 夹具无分轨打架：空摘要（schema 1.2 起 `frequency_clash` 必填）。
+        "frequency_clash": {
+            "total_groups": 0,
+            "overall_overlap": 0.0,
+            "bar_overlaps": [],
+            "entries": [],
         },
         "bar_series": [
             row_json(1, tension_1, lufs_1, band0_1),
@@ -162,7 +169,7 @@ fn compare_returns_hand_computed_diff_without_active_project() {
     );
     assert_eq!(result["status"], "success", "合法快照对必须成功: {result}");
     let data = &result["data"];
-    assert_eq!(data["schema_version"], "1.1");
+    assert_eq!(data["schema_version"], "1.2");
     assert_eq!(data["summary"]["bars_compared"], 2);
     assert_eq!(data["summary"]["bars_changed"], 1);
     assert_eq!(data["summary"]["max_abs_tension_delta"], 0.2);

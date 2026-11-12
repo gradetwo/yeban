@@ -7065,7 +7065,7 @@ mod tests {
             })
         };
         serde_json::json!({
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "song_meta": {
                 "total_bars": 2,
                 "duration_sec": 10.0,
@@ -7084,6 +7084,14 @@ mod tests {
                 "mechanical_index": 0.3,
                 "best_matches": [],
                 "repeated_passages": [],
+            },
+            // 夹具无分轨打架：空摘要（schema 1.2 起 `frequency_clash` 必填，
+            // 与 7db30d77 的补法同形）。
+            "frequency_clash": {
+                "total_groups": 0,
+                "overall_overlap": 0.0,
+                "bar_overlaps": [],
+                "entries": [],
             },
             "bar_series": [row(1, tension_1), row(2, tension_2)],
         })
