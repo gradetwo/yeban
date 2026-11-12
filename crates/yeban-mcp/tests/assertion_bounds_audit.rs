@@ -51,6 +51,10 @@ const SOURCES: &[(&str, &str)] = &[
     ),
     ("src/domain/otcp.rs", include_str!("../src/domain/otcp.rs")),
     (
+        "src/domain/phase_align_auto.rs",
+        include_str!("../src/domain/phase_align_auto.rs"),
+    ),
+    (
         "src/domain/render_math.rs",
         include_str!("../src/domain/render_math.rs"),
     ),

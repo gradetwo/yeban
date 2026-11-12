@@ -189,6 +189,9 @@ pub mod mcp_mount;
 /// 整曲总览图真实 provider（设计稿 §8，Phase 1）—— 只在 `in-process-mcp`
 /// 下编译，与 `mcp_mount` 同一个 `cfg` 门：没有控制面就没有要注入的 provider。
 #[cfg(feature = "in-process-mcp")]
+pub mod phase_align_auto_provider;
+
+#[cfg(feature = "in-process-mcp")]
 pub mod song_overview_provider;
 
 /// `--export-song-overview`：总览图的**批处理**出口。

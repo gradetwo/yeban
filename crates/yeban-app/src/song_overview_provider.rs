@@ -152,7 +152,7 @@ impl RealSongOverviewProvider {
     /// 任一 SFZ 文件读不到 / 文本非法 / 内嵌资产缺失 ⇒ `RENDER_FAILED`
     ///（`reason: "samplerUnreadable"`，含绑定路径与试过的根）。
     /// 缺**样本**不是错误（见模块文档：不进提供表，引擎标 `NO_SAMPLE`）。
-    fn arm_all(
+    pub(crate) fn arm_all(
         &self,
         project: &YebanProjectV1,
         engine_hz: f32,

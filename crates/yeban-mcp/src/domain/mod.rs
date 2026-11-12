@@ -7243,6 +7243,16 @@ mod tests {
                 .expect("夹具音轨在显示顺序里");
             if old == 0 { 1 } else { 0 }
         };
+        // 自动相位对齐：取显示顺序里与夹具音轨不同的另一条轨当目标轨。
+        let other_track = {
+            let project = domain.active_project().expect("工程");
+            project
+                .display_track_ids()
+                .iter()
+                .copied()
+                .find(|id| *id != track)
+                .expect("夹具工程至少有两条显示轨")
+        };
         // SVS 服务不在：绑一个临时端口后立刻释放 ⇒ 连接必被拒
         //（不依赖“某个端口恰好没人用”这种运气）。
         let closed_service_url = {
@@ -7487,6 +7497,16 @@ mod tests {
                     "snapshot_b": snapshot_json(0.5, 0.5),
                 }),
             ),
+            // 自动相位对齐：两条真实轨、未注入 provider ⇒ 规划阶段响亮
+            // `CONFLICT` + `providerUnavailable`（不返回假测量；注入 stub 的
+            // 正向通路由 `tests/phase_align_auto_tool.rs` 覆盖）。
+            (
+                "yeban_auto_align_tracks",
+                serde_json::json!({
+                    "referenceTrackId": track.to_canonical_string(),
+                    "targetTrackId": other_track.to_canonical_string(),
+                }),
+            ),
             // ARA2 宿主原型：绑定只做解码（不打开插件）⇒ 指向不存在的插件路径
             // 也规划成功（真 wav 夹具）；打开失败只在 apply 里响亮。
             (
@@ -7631,6 +7651,16 @@ mod tests {
                     // 有快照的正向通路由 `tests/preset_tools.rs` 覆盖。
                     let fault = outcome.expect_err("夹具音轨没有预制状态");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+                }
+                "yeban_auto_align_tracks" => {
+                    // 未注入 provider ⇒ 响亮 `CONFLICT`（带 `providerUnavailable`）。
+                    let fault = outcome.expect_err("没有相位测量 provider");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+                    let rendered = format!("{fault:?}");
+                    assert!(
+                        rendered.contains("providerUnavailable"),
+                        "缺 provider 必须带 `providerUnavailable`: {rendered}"
+                    );
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));
