@@ -2,6 +2,7 @@ import { Theme, TrackData, PianoStepRow, Tokens } from "tokens.slint";
 
 export component UnifiedLowerDock inherits Rectangle {
     in-out property <string> active-tab: "stacked"; // "stacked" | "devices" | "mixer" | "pianoroll"
+    in-out property <color> selected-track-color: #387691;
     in-out property <string> focus-track-name: "01. Lead Neuro Bass";
     in-out property <[TrackData]> tracks;
     in-out property <int> selected-track-id: 1;
@@ -72,7 +73,7 @@ export component UnifiedLowerDock inherits Rectangle {
         // DOCK TAB BAR
         Rectangle {
             height: 34px;
-            background: #090c14;
+            background: #080a10;
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
@@ -163,22 +164,22 @@ export component UnifiedLowerDock inherits Rectangle {
                 HorizontalLayout {
                     alignment: end;
                     Rectangle {
-                        background: Theme.accent.with-alpha(0.15);
+                        background: root.selected-track-color.with-alpha(0.15);
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: Theme.accent.with-alpha(0.4);
+                        border-color: root.selected-track-color.with-alpha(0.40);
                         height: 24px;
                         HorizontalLayout {
                             padding-left: 8px;
                             padding-right: 8px;
                             spacing: 5px;
-                            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.accent; }
+                            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.selected-track-color; }
                             Text {
                                 text: "聚焦: " + root.focus-track-name;
                                 font-family: Tokens.font-ui;
                                 font-size: 9px;
                                 font-weight: 700;
-                                color: Theme.accent;
+                                color: root.selected-track-color;
                                 vertical-alignment: center;
                             }
                         }
@@ -242,10 +243,10 @@ export component UnifiedLowerDock inherits Rectangle {
                         // 3D Morph Wave SVG (stretches to fill device width)
                         Rectangle {
                             height: 72px;
-                            background: #06080e;
+                            background: #06080d;
                             border-radius: 4px;
                             border-width: 1px;
-                            border-color: #1a202c;
+                            border-color: #191f2c;
                             clip: true;
 
                             Path {
@@ -260,7 +261,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
                             Path {
                                 commands: "M 0 60 Q 50 30, 100 55 T 200 38 T 300 52 T 400 36 T 500 50 T 600 42";
-                                stroke: #3b856a.with-alpha(0.35);
+                                stroke: #347864.with-alpha(0.35);
                                 stroke-width: 1.5px;
                             }
 
@@ -290,7 +291,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             spacing: 4px;
 
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -324,7 +325,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -345,7 +346,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 10px;
                                         font-weight: 800;
-                                        color: #3b856a;
+                                        color: #347864;
                                         horizontal-alignment: center;
                                     }
                                 }
@@ -358,7 +359,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             }
 
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -379,7 +380,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 10px;
                                         font-weight: 800;
-                                        color: #a67c3b;
+                                        color: #9a6a38;
                                         horizontal-alignment: center;
                                     }
                                 }
@@ -407,7 +408,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             alignment: space-between;
                             HorizontalLayout {
                                 spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3b856a; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #347864; }
                                 Text {
                                     text: "Pro-QLinear 8 (动态 EQ)";
                                     font-family: Tokens.font-ui;
@@ -421,7 +422,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: "" + root.wt-cutoff-hz + " Hz";
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
-                                color: #3b856a;
+                                color: #347864;
                                 font-weight: 700;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
@@ -431,35 +432,87 @@ export component UnifiedLowerDock inherits Rectangle {
                         // EQ Curve + Spectrum Display
                         Rectangle {
                             height: 72px;
-                            background: #06080e;
+                            background: #06080d;
                             border-radius: 4px;
                             border-width: 1px;
-                            border-color: #1a202c;
+                            border-color: #191f2c;
                             clip: true;
 
+                            // 0dB Center Axis & Frequency Reference Lines
+                            Rectangle {
+                                x: 0;
+                                y: 36px;
+                                width: parent.width;
+                                height: 1px;
+                                background: #ffffff0a;
+                            }
+
+                            // Spectrum Bars (Natural acoustic curve)
                             HorizontalLayout {
                                 x: 4px;
-                                y: 8px;
+                                y: 12px;
                                 width: parent.width - 8px;
-                                height: 56px;
+                                height: 52px;
                                 spacing: 2px;
                                 alignment: center;
 
-                                for h in [12px, 18px, 28px, 42px, 35px, 48px, 32px, 25px, 38px, 44px, 30px, 22px, 16px, 24px, 18px, 10px, 14px, 20px, 32px, 45px, 36px, 28px, 20px, 14px] : Rectangle {
+                                for h in [14px, 20px, 32px, 44px, 38px, 46px, 34px, 28px, 36px, 42px, 30px, 24px, 18px, 26px, 20px, 14px, 16px, 22px, 34px, 42px, 35px, 26px, 18px, 12px] : Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 3px;
                                     max-width: 8px;
                                     height: h;
-                                    background: #3b856a28;
+                                    background: #34786422;
                                     border-radius: 1px;
                                 }
                             }
 
-                            // Dynamic Filter Curve Path (spans across device width)
+                            // Dynamic Filter Curve Path (Smooth Bezier curve across spectrum)
                             Path {
                                 commands: "M 0 52 Q 60 46, 120 22 T 240 32 T 360 20 T 480 38 T 600 52";
-                                stroke: #3b856a;
+                                stroke: #347864;
                                 stroke-width: 2.0px;
+                            }
+
+                            // 4 Parametric EQ Filter Nodes
+                            Rectangle {
+                                x: 60px;
+                                y: 44px;
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: #f8fafc;
+                                border-width: 1.5px;
+                                border-color: Theme.accent;
+                            }
+                            Rectangle {
+                                x: 120px;
+                                y: 20px;
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: #f8fafc;
+                                border-width: 1.5px;
+                                border-color: #347864;
+                            }
+                            Rectangle {
+                                x: 240px;
+                                y: 30px;
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: #f8fafc;
+                                border-width: 1.5px;
+                                border-color: #9a6a38;
+                            }
+                            Rectangle {
+                                x: 360px;
+                                y: 18px;
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: #f8fafc;
+                                border-width: 1.5px;
+                                border-color: #705e88;
                             }
                         }
 
@@ -468,7 +521,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             spacing: 4px;
 
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -487,7 +540,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -500,13 +553,13 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: #3b856a;
+                                        color: #347864;
                                         vertical-alignment: center;
                                     }
                                 }
                             }
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -519,7 +572,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: #a67c3b;
+                                        color: #9a6a38;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -547,7 +600,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             alignment: space-between;
                             HorizontalLayout {
                                 spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #a67c3b; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #9a6a38; }
                                 Text {
                                     text: "VCA Glue Comp";
                                     font-family: Tokens.font-ui;
@@ -561,7 +614,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: "GR " + root.comp-gr-text;
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
-                                color: #a67c3b;
+                                color: #9a6a38;
                                 font-weight: 700;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
@@ -571,10 +624,10 @@ export component UnifiedLowerDock inherits Rectangle {
                         // GR Meter Box
                         Rectangle {
                             height: 72px;
-                            background: #06080e;
+                            background: #06080d;
                             border-radius: 4px;
                             border-width: 1px;
-                            border-color: #1a202c;
+                            border-color: #191f2c;
 
                             VerticalLayout {
                                 padding: 6px;
@@ -594,21 +647,21 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 800;
-                                        color: #a67c3b;
+                                        color: #9a6a38;
                                         horizontal-alignment: right;
                                     }
                                 }
 
                                 Rectangle {
                                     height: 8px;
-                                    background: #141720;
+                                    background: #06080d;
                                     border-radius: 4px;
                                     Rectangle {
                                         x: 0;
                                         width: root.comp-gr-fraction * parent.width;
                                         height: 8px;
                                         border-radius: 4px;
-                                        background: #a67c3b;
+                                        background: #9a6a38;
                                     }
                                 }
 
@@ -639,7 +692,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         HorizontalLayout {
                             spacing: 4px;
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -658,7 +711,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                background: #090c13;
+                                background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
@@ -699,10 +752,10 @@ export component UnifiedLowerDock inherits Rectangle {
                         horizontal-stretch: 1;
                         min-width: 74px;
                         max-width: root.active-tab == "stacked" ? 150px : 240px;
-                        background: #0a0d14;
+                        background: #080a10;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: trk.id == root.selected-track-id ? Theme.accent : #1e2433;
+                        border-color: trk.id == root.selected-track-id ? Theme.accent : #191f2c;
 
                         VerticalLayout {
                             padding: 5px;
@@ -712,10 +765,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Color label
                             Rectangle {
                                 height: 18px;
-                                background: trk.color.with-alpha(0.25);
+                                background: trk.color.with-alpha(0.18);
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: trk.color.with-alpha(0.65);
+                                border-color: trk.color.with-alpha(0.60);
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -735,7 +788,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Inserts
                             Rectangle {
                                 height: 16px;
-                                background: #141720;
+                                background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: #ffffff08;
@@ -764,9 +817,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                         width: 16px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: trk.muted ? #a67c3b : #141720;
+                                        background: trk.muted ? #9a6a38 : #12151e;
                                         border-width: 1px;
-                                        border-color: trk.muted ? #8a6730 : #ffffff10;
+                                        border-color: trk.muted ? #825828 : #ffffff10;
                                         Text {
                                             text: "M";
                                             font-family: Tokens.font-mono;
@@ -782,7 +835,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         width: 16px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: trk.soloed ? Theme.accent : #141720;
+                                        background: trk.soloed ? Theme.accent : #12151e;
                                         border-width: 1px;
                                         border-color: trk.soloed ? Theme.accent : #ffffff10;
                                         Text {
@@ -811,10 +864,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Vertical Fader
                             Rectangle {
                                 height: 76px;
-                                background: #06080e;
+                                background: #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: #191f2c;
 
                                 // Fader track line
                                 Rectangle {
@@ -839,7 +892,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: 6px;
                                         width: parent.width;
                                         height: 2px;
-                                        background: #ffffff;
+                                        background: trk.color;
                                     }
                                 }
 
@@ -866,10 +919,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     // Optional Group Bus Strip in Mixer mode (shows Synth/Drum bus summing)
                     if root.active-tab == "mixer" : Rectangle {
                         width: 92px;
-                        background: #090c14;
+                        background: #080a10;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: #3b856a40;
+                        border-color: Theme.track-bus.with-alpha(0.40);
 
                         VerticalLayout {
                             padding: 5px;
@@ -878,10 +931,10 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             Rectangle {
                                 height: 18px;
-                                background: #3b856a24;
+                                background: Theme.track-bus.with-alpha(0.20);
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #3b856a60;
+                                border-color: Theme.track-bus.with-alpha(0.60);
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -890,7 +943,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 7px;
                                         font-weight: 800;
-                                        color: #3b856a;
+                                        color: Theme.track-bus;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -899,7 +952,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             Rectangle {
                                 height: 16px;
-                                background: #141720;
+                                background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: #ffffff08;
@@ -932,10 +985,10 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             Rectangle {
                                 height: 76px;
-                                background: #06080e;
+                                background: #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: #191f2c;
 
                                 Rectangle {
                                     x: parent.width / 2 - 1px;
@@ -957,7 +1010,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: 6px;
                                         width: parent.width;
                                         height: 2px;
-                                        background: #3b856a;
+                                        background: Theme.track-bus;
                                     }
                                 }
                             }
@@ -967,7 +1020,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 9px;
                                 font-weight: 700;
-                                color: #3b856a;
+                                color: Theme.track-bus;
                                 horizontal-alignment: center;
                             }
                         }
@@ -976,10 +1029,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     // Dedicated Master 2-Bus Channel Strip on Mixer Right
                     Rectangle {
                         width: 90px;
-                        background: #060810;
+                        background: #05070c;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: Theme.accent.with-alpha(0.3);
+                        border-color: Theme.accent.with-alpha(0.35);
 
                         VerticalLayout {
                             padding: 5px;
@@ -989,10 +1042,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Master Badge
                             Rectangle {
                                 height: 18px;
-                                background: Theme.accent.with-alpha(0.24);
+                                background: Theme.accent.with-alpha(0.20);
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: Theme.accent.with-alpha(0.65);
+                                border-color: Theme.accent.with-alpha(0.60);
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1011,7 +1064,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Master Limiter
                             Rectangle {
                                 height: 16px;
-                                background: #141720;
+                                background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: #ffffff08;
@@ -1038,7 +1091,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     width: 32px;
                                     height: 16px;
                                     border-radius: 2px;
-                                    background: #141720;
+                                    background: #10141d;
                                     Text {
                                         text: "MONO";
                                         font-family: Tokens.font-mono;
@@ -1053,7 +1106,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     text: "0 dBTP";
                                     font-family: Tokens.font-mono;
                                     font-size: 7px;
-                                    color: #3b856a;
+                                    color: #347864;
                                     font-weight: 700;
                                     vertical-alignment: center;
                                 }
@@ -1062,10 +1115,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Master Vertical Fader
                             Rectangle {
                                 height: 76px;
-                                background: #04050a;
+                                background: #040509;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: #191f2c;
 
                                 Rectangle {
                                     x: parent.width / 2 - 1px;
@@ -1109,7 +1162,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         horizontal-stretch: 1;
                         min-width: 60px;
                         max-width: 140px;
-                        background: #07090e;
+                        background: #06080d;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: #ffffff08;
@@ -1163,7 +1216,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                         Rectangle {
                             height: 24px;
-                            background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #141720;
+                            background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #10141d;
                             border-radius: 3px;
                             border-width: root.scale-folded ? 1px : 0;
                             border-color: Theme.accent;
@@ -1204,10 +1257,10 @@ export component UnifiedLowerDock inherits Rectangle {
                                 vertical-stretch: 1;
                                 min-height: 22px;
                                 max-height: 32px;
-                                background: row.is_root ? #141720 : #0a0d14;
+                                background: row.is_root ? #121622 : #0a0d14;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: row.is_root ? Theme.accent.with-alpha(0.3) : #ffffff06;
+                                border-color: row.is_root ? root.selected-track-color.with-alpha(0.3) : #ffffff06;
 
                                 Text {
                                     x: 8px;
@@ -1215,7 +1268,38 @@ export component UnifiedLowerDock inherits Rectangle {
                                     font-family: Tokens.font-mono;
                                     font-size: 9px;
                                     font-weight: row.is_root ? 800 : 500;
-                                    color: row.is_root ? Theme.accent : #cbd5e1;
+                                    color: row.is_root ? root.selected-track-color : #cbd5e1;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Left velocity label block
+                        Rectangle {
+                            height: 36px;
+                            background: #080a10;
+                            border-radius: 2px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                alignment: space-between;
+                                Text {
+                                    text: "VELOCITY 力度";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    font-weight: 700;
+                                    letter-spacing: 0.5px;
+                                    color: #64748b;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "MPE";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    color: root.selected-track-color;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1223,40 +1307,98 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
                 }
 
-                // 16-Step Grid
-                Rectangle {
+                // 16-Step Grid & Velocity Dynamic Lane
+                VerticalLayout {
                     horizontal-stretch: 1;
-                    background: #06080e;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
+                    spacing: 6px;
 
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 3px;
+                    // 16-Step Note Grid
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: #06080d;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
 
-                        for row[r-idx] in root.piano-rows : HorizontalLayout {
-                            vertical-stretch: 1;
-                            min-height: 22px;
-                            max-height: 32px;
+                        VerticalLayout {
+                            padding: 8px;
                             spacing: 3px;
 
-                            Rectangle { background: row.step0 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 0); } } }
-                            Rectangle { background: row.step1 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 1); } } }
-                            Rectangle { background: row.step2 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 2); } } }
-                            Rectangle { background: row.step3 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 3); } } }
-                            Rectangle { background: row.step4 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 4); } } }
-                            Rectangle { background: row.step5 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 5); } } }
-                            Rectangle { background: row.step6 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 6); } } }
-                            Rectangle { background: row.step7 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 7); } } }
-                            Rectangle { background: row.step8 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 8); } } }
-                            Rectangle { background: row.step9 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 9); } } }
-                            Rectangle { background: row.step10 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 10); } } }
-                            Rectangle { background: row.step11 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 11); } } }
-                            Rectangle { background: row.step12 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 12); } } }
-                            Rectangle { background: row.step13 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 13); } } }
-                            Rectangle { background: row.step14 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 14); } } }
-                            Rectangle { background: row.step15 ? Theme.accent : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 15); } } }
+                            for row[r-idx] in root.piano-rows : HorizontalLayout {
+                                vertical-stretch: 1;
+                                min-height: 22px;
+                                max-height: 32px;
+                                spacing: 3px;
+
+                                Rectangle { background: row.step0 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 0); } } }
+                                Rectangle { background: row.step1 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 1); } } }
+                                Rectangle { background: row.step2 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 2); } } }
+                                Rectangle { background: row.step3 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 3); } } }
+                                Rectangle { background: row.step4 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 4); } } }
+                                Rectangle { background: row.step5 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 5); } } }
+                                Rectangle { background: row.step6 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 6); } } }
+                                Rectangle { background: row.step7 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 7); } } }
+                                Rectangle { background: row.step8 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 8); } } }
+                                Rectangle { background: row.step9 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 9); } } }
+                                Rectangle { background: row.step10 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 10); } } }
+                                Rectangle { background: row.step11 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 11); } } }
+                                Rectangle { background: row.step12 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 12); } } }
+                                Rectangle { background: row.step13 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 13); } } }
+                                Rectangle { background: row.step14 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 14); } } }
+                                Rectangle { background: row.step15 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 15); } } }
+                            }
+                        }
+                    }
+
+                    // Velocity Dynamic Lane (力度动态包络)
+                    Rectangle {
+                        height: 36px;
+                        background: #06080d;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            spacing: 3px;
+
+                            // 16 Velocity Stalks with dynamic expression values (40 - 115)
+                            for h in [22px, 14px, 18px, 13px, 24px, 16px, 19px, 14px, 25px, 15px, 19px, 12px, 23px, 16px, 20px, 15px] : Rectangle {
+                                horizontal-stretch: 1;
+                                background: transparent;
+
+                                // Baseline guide
+                                Rectangle {
+                                    x: 0;
+                                    y: parent.height - 1px;
+                                    width: parent.width;
+                                    height: 1px;
+                                    background: #ffffff08;
+                                }
+
+                                // Velocity vertical stalk
+                                Rectangle {
+                                    x: (parent.width - 2px) / 2;
+                                    y: parent.height - h;
+                                    width: 2px;
+                                    height: h;
+                                    background: root.selected-track-color.with-alpha(0.65);
+                                    border-radius: 1px;
+                                }
+
+                                // Velocity top lollipop cap
+                                Rectangle {
+                                    x: (parent.width - 6px) / 2;
+                                    y: parent.height - h - 1px;
+                                    width: 6px;
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: root.selected-track-color;
+                                }
+                            }
                         }
                     }
                 }

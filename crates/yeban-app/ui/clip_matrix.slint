@@ -19,7 +19,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
         // Top Header Row with Scene Launchers
         Rectangle {
             height: 54px;
-            background: #090c14;
+            background: #080a10;
             border-color: Theme.border-subtle;
 
             VerticalLayout {
@@ -36,7 +36,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         font-family: Tokens.font-ui;
                         font-size: 10px;
                         font-weight: 700;
-                        color: #a88344;
+                        color: Theme.track-drum;
                         vertical-alignment: center;
                     }
                     Text {
@@ -56,16 +56,16 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: #141720;
+                        background: #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.border-subtle;
                         Text {
                             text: "▶ S1";
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             font-weight: 700;
-                            color: #cbd5e1;
+                            color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -74,16 +74,16 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: #141720;
+                        background: #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.border-subtle;
                         Text {
                             text: "▶ S2";
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             font-weight: 700;
-                            color: #cbd5e1;
+                            color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -92,16 +92,16 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: #141720;
+                        background: #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.border-subtle;
                         Text {
                             text: "▶ S3";
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             font-weight: 700;
-                            color: #cbd5e1;
+                            color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -110,16 +110,16 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: #141720;
+                        background: #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.border-subtle;
                         Text {
                             text: "▶ S4";
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             font-weight: 700;
-                            color: #cbd5e1;
+                            color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -138,7 +138,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                 vertical-stretch: 1;
                 min-height: 64px;
                 max-height: 160px;
-                background: trk.id == root.selected-track-id ? #ffffff08 : transparent;
+                background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.06) : transparent;
                 border-color: #ffffff0a;
 
                 HorizontalLayout {

@@ -18,12 +18,18 @@ export component MainWindow inherits Window {
     min-height: 700px;
 
     // View & Track State
+    in-out property <int> roll-min-tick: 0;
+    in-out property <int> roll-max-tick: 3840;
+    in-out property <int> roll-min-pitch: 36;
+    in-out property <int> roll-max-pitch: 84;
+    in-out property <[bool]> note-selected: [];
+
     in-out property <[TrackData]> tracks: [
         {
             id: 1,
             name: "01. Lead Neuro Bass",
             kind: "SYNTH · MPE",
-            color: #368094,
+            color: #387691,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -2.5,
             pan: "C",
@@ -43,7 +49,7 @@ export component MainWindow inherits Window {
             id: 2,
             name: "02. Punchy Tech Drums",
             kind: "DRUM RACK",
-            color: #a67c3b,
+            color: #9a6a38,
             bus: "Bus 2 (Drum Grp)",
             volume_db: -1.0,
             pan: "C",
@@ -63,7 +69,7 @@ export component MainWindow inherits Window {
             id: 3,
             name: "03. Atmos Granular Pad",
             kind: "GRANULAR",
-            color: #766896,
+            color: #705e88,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -6.0,
             pan: "12L",
@@ -83,7 +89,7 @@ export component MainWindow inherits Window {
             id: 4,
             name: "04. Lead Vocal Comp",
             kind: "AUDIO · COMP",
-            color: #3b856a,
+            color: #347864,
             bus: "Bus 3 (Vocal Grp)",
             volume_db: -1.8,
             pan: "C",
@@ -103,7 +109,7 @@ export component MainWindow inherits Window {
             id: 5,
             name: "05. Arp Pluck Sequencer",
             kind: "MIDI · STEP",
-            color: #915a77,
+            color: #8a4f6d,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -4.2,
             pan: "18R",
@@ -122,30 +128,30 @@ export component MainWindow inherits Window {
     ];
 
     in-out property <[TimelineBlockData]> timeline-blocks: [
-        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #368094 },
-        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #368094 },
-        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: #368094 },
-        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: #368094 },
-        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #368094 },
-        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #368094 },
-        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #a67c3b },
-        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #a67c3b },
-        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #a67c3b },
-        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #a67c3b },
-        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #a67c3b },
-        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: true, gain_label: "Gain: -2dB", color: #766896 },
-        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: true, gain_label: "Gain: -1.5dB", color: #766896 },
-        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: true, gain_label: "Gain: -3dB", color: #766896 },
-        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: true, gain_label: "Gain: -2dB", color: #766896 },
-        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #3b856a },
-        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #3b856a },
-        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #3b856a },
-        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: #3b856a },
-        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: #3b856a },
-        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #915a77 },
-        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: #915a77 },
-        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #915a77 },
-        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #915a77 }
+        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #387691 },
+        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #387691 },
+        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: #387691 },
+        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: #387691 },
+        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #387691 },
+        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #387691 },
+        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #9a6a38 },
+        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38 },
+        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #9a6a38 },
+        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38 },
+        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #9a6a38 },
+        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: true, gain_label: "Gain: -2dB", color: #705e88 },
+        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: true, gain_label: "Gain: -1.5dB", color: #705e88 },
+        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: true, gain_label: "Gain: -3dB", color: #705e88 },
+        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: true, gain_label: "Gain: -2dB", color: #705e88 },
+        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
+        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
+        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
+        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: #347864 },
+        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: #347864 },
+        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #8a4f6d },
+        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: #8a4f6d },
+        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #8a4f6d },
+        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #8a4f6d }
     ];
 
     in-out property <int> selected-track-id: 1;
@@ -365,6 +371,7 @@ export component MainWindow inherits Window {
                 if root.show-left-inspector : ZoneBrowserAndInspector {
                     active-tab: root.left-panel-tab;
                     switch-tab(t) => { root.left-panel-tab = t; }
+                    selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                     selected-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                     selected-track-badge: root.tracks.length > 0 ? ("TRK 0" + root.selected-track-id + " · " + root.tracks[root.safe-selected-idx].kind) : "";
                     selected-track-bus: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].bus : "";
@@ -459,6 +466,7 @@ export component MainWindow inherits Window {
             // 3. BOTTOM UNIFIED MULTI-MODAL DOCK
             if root.show-lower-dock : UnifiedLowerDock {
                 active-tab: Theme.active-dock-tab;
+                selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                 tracks: root.tracks;
                 selected-track-id: root.selected-track-id;

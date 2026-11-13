@@ -293,9 +293,9 @@ export component TransportHeaderBar inherits Rectangle {
                     width: 28px;
                     height: 28px;
                     border-radius: 4px;
-                    background: #141720;
+                    background: #10141d;
                     border-width: 1px;
-                    border-color: #ffffff14;
+                    border-color: Theme.border-subtle;
                     Text {
                         text: "⏮";
                         font-family: Tokens.font-ui;
@@ -311,9 +311,9 @@ export component TransportHeaderBar inherits Rectangle {
                 Rectangle {
                     height: 28px;
                     border-radius: 4px;
-                    background: root.is-playing ? #3b856a : #3b856a18;
+                    background: root.is-playing ? Theme.status-ok : Theme.status-ok.with-alpha(0.18);
                     border-width: 1px;
-                    border-color: root.is-playing ? #3b856a : #3b856a40;
+                    border-color: root.is-playing ? Theme.status-ok : Theme.status-ok.with-alpha(0.40);
 
                     HorizontalLayout {
                         padding-left: 10px;
@@ -323,7 +323,7 @@ export component TransportHeaderBar inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 700;
-                            color: root.is-playing ? #020617 : #3b856a;
+                            color: root.is-playing ? #020617 : Theme.status-ok;
                             vertical-alignment: center;
                         }
                     }
@@ -334,9 +334,9 @@ export component TransportHeaderBar inherits Rectangle {
                 Rectangle {
                     height: 28px;
                     border-radius: 4px;
-                    background: root.is-recording ? #a84343 : #a8434318;
+                    background: root.is-recording ? Theme.status-alert : Theme.status-alert.with-alpha(0.18);
                     border-width: 1px;
-                    border-color: root.is-recording ? #b84c4c : #a8434340;
+                    border-color: root.is-recording ? Theme.status-alert : Theme.status-alert.with-alpha(0.40);
 
                     HorizontalLayout {
                         padding-left: 10px;
@@ -346,7 +346,7 @@ export component TransportHeaderBar inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 700;
-                            color: root.is-recording ? #ffffff : #a84343;
+                            color: root.is-recording ? #ffffff : Theme.status-alert;
                             vertical-alignment: center;
                         }
                     }
@@ -357,9 +357,9 @@ export component TransportHeaderBar inherits Rectangle {
                 Rectangle {
                     height: 28px;
                     border-radius: 4px;
-                    background: root.is-looping ? Theme.accent.with-alpha(0.2) : #141720;
+                    background: root.is-looping ? Theme.accent.with-alpha(0.2) : #10141d;
                     border-width: 1px;
-                    border-color: root.is-looping ? Theme.accent : #ffffff14;
+                    border-color: root.is-looping ? Theme.accent : Theme.border-subtle;
 
                     HorizontalLayout {
                         padding-left: 8px;
@@ -407,7 +407,7 @@ export component TransportHeaderBar inherits Rectangle {
                             text: root.timecode-text;
                             font-family: Tokens.font-mono;
                             font-size: 12px;
-                            color: #41829e;
+                            color: Theme.accent;
                             font-weight: 800;
                         }
                     }
@@ -430,7 +430,7 @@ export component TransportHeaderBar inherits Rectangle {
                             text: "" + root.bpm-val;
                             font-family: Tokens.font-mono;
                             font-size: 12px;
-                            color: #a88344;
+                            color: Theme.track-drum;
                             font-weight: 800;
                         }
                         TouchArea {
@@ -459,7 +459,7 @@ export component TransportHeaderBar inherits Rectangle {
                             text: root.scale-text;
                             font-family: Tokens.font-ui;
                             font-size: 10px;
-                            color: #3b856a;
+                            color: Theme.status-ok;
                             font-weight: 700;
                         }
                         TouchArea {
@@ -546,21 +546,21 @@ export component TransportHeaderBar inherits Rectangle {
                             text: "" + root.dsp-cpu-percent + "%";
                             font-family: Tokens.font-mono;
                             font-size: 9px;
-                            color: #3b856a;
+                            color: Theme.status-ok;
                             font-weight: 800;
                             horizontal-alignment: right;
                         }
                     }
                     Rectangle {
                         height: 3px;
-                        background: #141720;
+                        background: #080a10;
                         border-radius: 1.5px;
                         Rectangle {
                             x: 0;
                             width: (root.dsp-cpu-percent * 60px) / 100;
                             height: 3px;
                             border-radius: 1.5px;
-                            background: #3b856a;
+                            background: Theme.status-ok;
                         }
                     }
                 }
@@ -599,7 +599,7 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 2. 现场演出 (Clip Matrix Performance Flow)
                     Rectangle {
-                        background: Theme.persona == PersonaMode.AbletonLive ? #a66046 : transparent;
+                        background: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : transparent;
                         border-radius: 3px;
                         HorizontalLayout {
                             padding-left: 8px;
@@ -618,7 +618,7 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 3. 线性编曲 (Arrange Flow)
                     Rectangle {
-                        background: Theme.persona == PersonaMode.LogicPro ? #436f9e : transparent;
+                        background: Theme.persona == PersonaMode.LogicPro ? Theme.accent : transparent;
                         border-radius: 3px;
                         HorizontalLayout {
                             padding-left: 8px;
@@ -637,7 +637,7 @@ export component TransportHeaderBar inherits Rectangle {
 
                     // 4. 混音控制台 (Mix & Master Studio)
                     Rectangle {
-                        background: Theme.persona == PersonaMode.CubasePro ? #38889e : transparent;
+                        background: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : transparent;
                         border-radius: 3px;
                         HorizontalLayout {
                             padding-left: 8px;
@@ -660,16 +660,16 @@ export component TransportHeaderBar inherits Rectangle {
             Rectangle {
                 width: 34px;
                 height: 28px;
-                background: #141720;
+                background: #10141d;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #ffffff14;
+                border-color: Theme.border-subtle;
                 Text {
                     text: "⌘K";
                     font-family: Tokens.font-mono;
                     font-size: 10px;
                     font-weight: 800;
-                    color: #7da2ba;
+                    color: Theme.accent;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -680,10 +680,10 @@ export component TransportHeaderBar inherits Rectangle {
             Rectangle {
                 width: 28px;
                 height: 28px;
-                background: #a67c3b18;
+                background: Theme.status-warn.with-alpha(0.18);
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #a67c3b38;
+                border-color: Theme.status-warn.with-alpha(0.35);
                 Text {
                     text: "💡";
                     font-family: Tokens.font-ui;

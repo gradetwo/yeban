@@ -2,6 +2,7 @@ import { Theme, BrowserItemData, Tokens } from "tokens.slint";
 
 export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> active-tab: "inspector"; // "inspector" | "browser"
+    in-out property <color> selected-track-color: #387691;
     in-out property <string> selected-track-name: "01. Lead Neuro Bass";
     in-out property <string> selected-track-badge: "TRK 01 · SYNTH";
     in-out property <string> selected-track-bus: "Bus 1 (Synth Grp)";
@@ -44,7 +45,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         // Subtab switcher
         Rectangle {
             height: 34px;
-            background: #090c14;
+            background: #080a10;
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
@@ -116,9 +117,20 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 border-color: Theme.border-subtle;
                 height: 76px;
 
+                // Color accent bar on left edge
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: 3px;
+                    height: parent.height;
+                    border-top-left-radius: Theme.radius;
+                    border-bottom-left-radius: Theme.radius;
+                    background: root.selected-track-color;
+                }
+
                 VerticalLayout {
                     padding: 8px;
-                    padding-left: 10px;
+                    padding-left: 12px;
                     padding-right: 10px;
                     spacing: 4px;
 
@@ -130,14 +142,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-size: 9px;
                             font-weight: 800;
                             letter-spacing: 0.8px;
-                            color: Theme.accent;
+                            color: root.selected-track-color;
                             vertical-alignment: center;
                         }
                         Rectangle {
-                            background: Theme.accent.with-alpha(0.18);
+                            background: root.selected-track-color.with-alpha(0.18);
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: Theme.accent.with-alpha(0.40);
+                            border-color: root.selected-track-color.with-alpha(0.40);
                             height: 18px;
                             HorizontalLayout {
                                 padding-left: 6px;
@@ -147,7 +159,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     font-weight: 700;
-                                    color: Theme.accent;
+                                    color: root.selected-track-color;
                                     vertical-alignment: center;
                                 }
                             }
@@ -180,7 +192,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 600;
-                            color: #3b856a;
+                            color: Theme.track-bus;
                             vertical-alignment: center;
                         }
                     }
@@ -209,7 +221,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 700;
-                            color: Theme.accent;
+                            color: root.selected-track-color;
                             horizontal-alignment: center;
                         }
                         Text {
@@ -225,10 +237,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // Inserts items
                         for ins in root.selected-track-inserts : Rectangle {
                             height: 22px;
-                            background: #090c13;
+                            background: #10141d;
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #ffffff0a;
+                            border-color: Theme.border-subtle;
                             HorizontalLayout {
                                 padding-left: 5px;
                                 padding-right: 5px;
@@ -249,15 +261,15 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // EQ Thumbnail Path
                         Rectangle {
                             height: 42px;
-                            background: #06080e;
+                            background: #06080d;
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #1a202c;
+                            border-color: Theme.border-subtle;
                             clip: true;
 
                             Path {
                                 commands: "M 0 30 Q 20 27, 35 14 T 70 20 T 100 26";
-                                stroke: Theme.accent;
+                                stroke: root.selected-track-color;
                                 stroke-width: 1.8px;
                             }
                             Text {
@@ -282,10 +294,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             // Fader rail
                             Rectangle {
                                 width: 22px;
-                                background: #06080e;
+                                background: #06080d;
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: Theme.border-subtle;
 
                                 Rectangle {
                                     x: 10px;
@@ -308,7 +320,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         y: 6px;
                                         width: 18px;
                                         height: 2px;
-                                        background: #ffffff;
+                                        background: root.selected-track-color;
                                     }
                                 }
                                 TouchArea {
@@ -319,17 +331,17 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             // Meter bar
                             Rectangle {
                                 width: 8px;
-                                background: #06080e;
+                                background: #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: Theme.border-subtle;
 
                                 Rectangle {
                                     x: 0;
                                     y: parent.height - (root.selected-track-peak * parent.height);
                                     width: 8px;
                                     height: root.selected-track-peak * parent.height;
-                                    background: root.selected-track-peak > 0.8 ? #a67c3b : #3b856a;
+                                    background: root.selected-track-peak > 0.8 ? Theme.status-warn : Theme.status-ok;
                                     border-radius: 2px;
                                 }
                             }
@@ -340,7 +352,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 10px;
                             font-weight: 800;
-                            color: Theme.accent;
+                            color: root.selected-track-color;
                             horizontal-alignment: center;
                         }
                     }
@@ -363,7 +375,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 700;
-                            color: #3b856a;
+                            color: Theme.track-bus;
                             horizontal-alignment: center;
                             overflow: elide;
                         }
@@ -379,10 +391,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                         for ins in root.bus-inserts : Rectangle {
                             height: 22px;
-                            background: #090c13;
+                            background: #10141d;
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #ffffff0a;
+                            border-color: Theme.border-subtle;
                             HorizontalLayout {
                                 padding-left: 5px;
                                 padding-right: 5px;
@@ -402,15 +414,15 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // Bus Comp Thumbnail Path
                         Rectangle {
                             height: 42px;
-                            background: #06080e;
+                            background: #06080d;
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #1a202c;
+                            border-color: Theme.border-subtle;
                             clip: true;
 
                             Path {
                                 commands: "M 0 22 Q 35 20, 55 14 T 100 18";
-                                stroke: #3b856a;
+                                stroke: Theme.track-bus;
                                 stroke-width: 1.8px;
                             }
                             Text {
@@ -434,10 +446,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                             Rectangle {
                                 width: 22px;
-                                background: #06080e;
+                                background: #06080d;
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: Theme.border-subtle;
 
                                 Rectangle {
                                     x: 10px;
@@ -460,7 +472,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         y: 6px;
                                         width: 18px;
                                         height: 2px;
-                                        background: #ffffff;
+                                        background: Theme.track-bus;
                                     }
                                 }
                                 TouchArea {
@@ -470,17 +482,17 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                             Rectangle {
                                 width: 8px;
-                                background: #06080e;
+                                background: #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #1a202c;
+                                border-color: Theme.border-subtle;
 
                                 Rectangle {
                                     x: 0;
                                     y: parent.height - (root.bus-track-peak * parent.height);
                                     width: 8px;
                                     height: root.bus-track-peak * parent.height;
-                                    background: root.bus-track-peak > 0.8 ? #a67c3b : #3b856a;
+                                    background: root.bus-track-peak > 0.8 ? Theme.status-warn : Theme.status-ok;
                                     border-radius: 2px;
                                 }
                             }
@@ -491,7 +503,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 10px;
                             font-weight: 800;
-                            color: #3b856a;
+                            color: Theme.track-bus;
                             horizontal-alignment: center;
                         }
                     }
@@ -507,10 +519,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
             // Search input field
             Rectangle {
                 height: 30px;
-                background: #07090e;
+                background: #06080d;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #1e2433;
+                border-color: Theme.border-subtle;
 
                 HorizontalLayout {
                     padding-left: 10px;
@@ -527,16 +539,16 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
             }
 
-            // Tag Filter Pills
+            // Tag Filter Pills (Harmonized with track mineral color order)
             HorizontalLayout {
                 spacing: 5px;
                 height: 22px;
 
                 Rectangle {
-                    background: root.active-tag == "all" ? Theme.accent : #161a24;
+                    background: root.active-tag == "all" ? Theme.accent : #10141d;
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "all" ? Theme.accent : #ffffff0a;
+                    border-color: root.active-tag == "all" ? Theme.accent : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
@@ -558,10 +570,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Synth" ? Theme.accent : #161a24;
+                    background: root.active-tag == "Synth" ? Theme.track-synth : #10141d;
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "Synth" ? Theme.accent : #ffffff0a;
+                    border-color: root.active-tag == "Synth" ? Theme.track-synth : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
@@ -583,10 +595,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "DSP" ? Theme.accent : #161a24;
+                    background: root.active-tag == "DSP" ? Theme.status-ok : #10141d;
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "DSP" ? Theme.accent : #ffffff0a;
+                    border-color: root.active-tag == "DSP" ? Theme.status-ok : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
@@ -608,10 +620,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Drums" ? Theme.accent : #161a24;
+                    background: root.active-tag == "Drums" ? Theme.track-drum : #10141d;
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "Drums" ? Theme.accent : #ffffff0a;
+                    border-color: root.active-tag == "Drums" ? Theme.track-drum : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;

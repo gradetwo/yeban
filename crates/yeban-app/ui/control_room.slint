@@ -40,10 +40,10 @@ export component ControlRoomMeters inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Rectangle {
-                    background: #3b856a18;
+                    background: Theme.status-ok.with-alpha(0.18);
                     border-radius: 3px;
                     border-width: 1px;
-                    border-color: #3b856a40;
+                    border-color: Theme.status-ok.with-alpha(0.40);
                     HorizontalLayout {
                         padding-left: 5px;
                         padding-right: 5px;
@@ -52,7 +52,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 8px;
                             font-weight: 700;
-                            color: #3b856a;
+                            color: Theme.status-ok;
                             vertical-alignment: center;
                         }
                     }
@@ -86,7 +86,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 11px;
                             font-weight: 800;
-                            color: #3b856a;
+                            color: Theme.status-ok;
                             vertical-alignment: center;
                         }
                     }
@@ -107,7 +107,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 11px;
                             font-weight: 800;
-                            color: #41829e;
+                            color: Theme.accent;
                             vertical-alignment: center;
                         }
                     }
@@ -128,7 +128,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 11px;
                             font-weight: 800;
-                            color: #a67c3b;
+                            color: Theme.status-warn;
                             vertical-alignment: center;
                         }
                     }
@@ -153,7 +153,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : #141720;
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : #10141d;
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "main" ? 1px : 0;
                         border-color: Theme.accent;
@@ -181,7 +181,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : #141720;
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : #10141d;
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "alt" ? 1px : 0;
                         border-color: Theme.accent;
@@ -213,16 +213,16 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-dim ? #a67c3b30 : #141720;
+                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: root.is-dim ? #a67c3b : #ffffff12;
+                        border-color: root.is-dim ? Theme.status-warn : Theme.border-subtle;
                         Text {
                             text: "DIM";
                             font-family: Tokens.font-mono;
                             font-size: 8px;
                             font-weight: 800;
-                            color: root.is-dim ? #a67c3b : #94a3b8;
+                            color: root.is-dim ? Theme.status-warn : #94a3b8;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -236,10 +236,10 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : #141720;
+                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: root.is-mono ? Theme.accent : #ffffff12;
+                        border-color: root.is-mono ? Theme.accent : Theme.border-subtle;
                         Text {
                             text: "MONO";
                             font-family: Tokens.font-mono;
@@ -259,16 +259,16 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-side ? #a8434330 : #141720;
+                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : #10141d;
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: root.is-side ? #a84343 : #ffffff12;
+                        border-color: root.is-side ? Theme.status-alert : Theme.border-subtle;
                         Text {
                             text: "SIDE";
                             font-family: Tokens.font-mono;
                             font-size: 8px;
                             font-weight: 800;
-                            color: root.is-side ? #a84343 : #94a3b8;
+                            color: root.is-side ? Theme.status-alert : #94a3b8;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -285,10 +285,10 @@ export component ControlRoomMeters inherits Rectangle {
 
         // Stereo Master Twin Bar Meters (Precision vertical LED bars)
         Rectangle {
-            background: #06080e;
+            background: #06080d;
             border-radius: Theme.radius;
             border-width: 1px;
-            border-color: #1a202c;
+            border-color: Theme.border-subtle;
             vertical-stretch: 1;
 
             HorizontalLayout {
@@ -322,7 +322,7 @@ export component ControlRoomMeters inherits Rectangle {
                         y: parent.height - (root.master-meter-l * parent.height);
                         width: 14px;
                         height: root.master-meter-l * parent.height;
-                        background: root.master-meter-l > 0.85 ? #a84343 : (root.master-meter-l > 0.70 ? #a67c3b : #3b856a);
+                        background: root.master-meter-l > 0.85 ? Theme.status-alert : (root.master-meter-l > 0.70 ? Theme.status-warn : Theme.status-ok);
                         border-radius: 2px;
                     }
                 }
@@ -341,7 +341,7 @@ export component ControlRoomMeters inherits Rectangle {
                         y: parent.height - (root.master-meter-r * parent.height);
                         width: 14px;
                         height: root.master-meter-r * parent.height;
-                        background: root.master-meter-r > 0.85 ? #a84343 : (root.master-meter-r > 0.70 ? #a67c3b : #3b856a);
+                        background: root.master-meter-r > 0.85 ? Theme.status-alert : (root.master-meter-r > 0.70 ? Theme.status-warn : Theme.status-ok);
                         border-radius: 2px;
                     }
                 }
@@ -351,10 +351,10 @@ export component ControlRoomMeters inherits Rectangle {
         // Master Output Footer
         Rectangle {
             height: 24px;
-            background: #090c14;
+            background: #080a10;
             border-radius: 3px;
             border-width: 1px;
-            border-color: #ffffff0a;
+            border-color: Theme.border-subtle;
             Text {
                 text: "MASTER OUT · 32-BIT FLOAT";
                 font-family: Tokens.font-mono;
