@@ -597,6 +597,9 @@ jobs:
           set -euo pipefail
           echo "== 回收前 =="
           df -h / | tail -1
+          avail_before_kb="$(df --output=avail -k / | tail -1 | tr -d ' ')"
+          avail_before_kb="${avail_before_kb:-0}"
+          freed_mb=0
           for path in \
             /usr/share/dotnet \
             /usr/local/lib/android \
@@ -606,8 +609,14 @@ jobs:
             /usr/local/.ghcup
           do
             if [ -e "$path" ]; then
-              echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
+              size_mb="$(du -sm "$path" 2>/dev/null | cut -f1)"
+              size_mb="${size_mb:-0}"
+              echo "removing $path (回收前 $(du -sh "$path" 2>/dev/null | cut -f1 || echo '?'))"
               sudo rm -rf "$path" || true
+              echo "removed $path (回收前 ${size_mb} MB，回收后路径已不存在)"
+              freed_mb=$((freed_mb + size_mb))
+            else
+              echo "::warning::回收路径在当前镜像不存在（跳过，未回收任何字节）: $path"
             fi
           done
           # ⭐ 预装 Docker 镜像（2026-10-30 加）。本仓**任何** job 都不用 docker
@@ -625,6 +634,11 @@ jobs:
           sudo apt-get clean || true
           echo "== 回收后 =="
           df -h / | tail -1
+          echo "== 回收汇总 =="
+          echo "列名路径回收合计: ${freed_mb} MB"
+          avail_after_kb="$(df --output=avail -k / | tail -1 | tr -d ' ')"
+          avail_after_kb="${avail_after_kb:-0}"
+          echo "回收字节数汇总 (df 可用空间增量，含 docker 镜像与 apt clean): $(( (avail_after_kb - avail_before_kb) / 1024 )) MB"
           # ⚠ 盘这一项**必须留读数**：下次若仍红，要能一眼看出是"回收没生效"还是"回收了也不够"
           #（后者才需要动链接体积，例如给测试 profile 关 debuginfo）。
 
@@ -652,11 +666,91 @@ jobs:
           set -o pipefail
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
-      - name: test --workspace
+      # ⭐ 2026-11-13 主干 CI run 43224008777（第 2 次尝试）rust 腿爆盘：
+      # runner 只剩 1 MB、链接期 ld SIGBUS，且失败 job 日志 HTTP 404，
+      # 死在哪一步未证实。下面三处读数 + 一次裁剪就是为了下次红时直接定位，
+      # 而不是再靠 rerun 猜。读数步用 `if: always()`，clippy 失败时也能看到死前盘况。
+      - name: 盘读数 (clippy 之后)
+        if: always()
+        run: |
+          set -euo pipefail
+          df -h . || true
+          du -sh target 2>/dev/null || true
+
+      # clippy 刚产出的已链接测试二进制在后续 test --workspace 还要重新链接，
+      # 不值得留着占盘；先裁再跑 test（与"释放增量目录"那步同一条纪律）。
+      - name: 释放已链接测试二进制 (clippy 之后、test --workspace 之前)
+        run: |
+          set -euo pipefail
+          echo "== trim 前 =="
+          df -h . || true
+          du -sh target 2>/dev/null || true
+          bash scripts/dev/trim-target.sh \
+            || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本步只做读数"
+          echo "== trim 后 =="
+          df -h . || true
+          du -sh target 2>/dev/null || true
+
+      # ⭐ 2026-11-13 二轮：`test --workspace` 分块 + 块间裁剪。
+      #
+      # ## 实证（分支 CI run 43388952571，job 131764086858，日志已读回）
+      #
+      # 第一轮（回收加固 + clippy 后 trim + 三处读数）落地后，读数步把死点抓实：
+      # clippy 后 target 仅 1315 MB、可用 109G（clippy 是 check 构建、只产 rmeta，
+      # 没有已链接二进制可裁 ⇒ clippy 后的 trim 只释放了 1 MB）；红死在单条
+      # `cargo test --workspace --all-targets` 步**内部** —— 该步把 target 从
+      # 1.3G 涨到 **110G**，145G 盘用满（剩 48M），日志逐字：
+      # `couldn't create a temp dir: No space left on device (os error 28)` +
+      # `ld terminated with signal 7 [Bus error]`，与主干 run 43224008777 同死法。
+      # ⇒ 步间 trim 救不了单步内部的爆涨：把这一步本身拆成 4 块，每块跑完立即
+      # trim，已链接测试二进制不跨块累积（`.rlib` 保留，后续块不重编）。
+      #
+      # ## 为什么不用 `debug = 0`
+      #
+      # 同本 job 盘回收注释的既有裁决：关 debuginfo 能压链接体积，但它**改变了
+      # 被构建的东西**（panic 回溯失去行号）。分块只改执行顺序与裁剪时机，
+      # 构建产物逐字不变，语义上惰性。
+      #
+      # 成员清单由 `cargo metadata` 现推（⛔ 不手抄包名，增删 crate 自动跟随）；
+      # 结尾断言已跑数 == 成员总数，日志里可核对覆盖无漏无重；成员数为 0 时
+      # 直接判红，⛔ 不许空跑假绿。
+      - name: test --workspace（分块 + 块间裁剪）
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test --workspace --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+          # 成员清单由 cargo metadata 现推（⛔ 不手抄包名：增删 crate 自动跟随）。
+          members_text="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[].name' | sort)"
+          mapfile -t members <<< "$members_text"
+          total="${#members[@]}"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::cargo metadata 未推出任何成员包，分块计划为空 ⇒ 拒绝空跑"
+            exit 1
+          fi
+          chunks=4
+          per=$(( (total + chunks - 1) / chunks ))
+          echo "== 分块计划：workspace 成员 ${total} 个，均分 ${chunks} 块（每块 ≤ ${per} 个） =="
+          tested=0
+          for ((start = 0; start < total; start += per)); do
+            chunk=("${members[@]:start:per}")
+            args=()
+            for pkg in "${chunk[@]}"; do args+=(-p "$pkg"); done
+            echo "== test 块 $((start / per + 1)): ${chunk[*]} =="
+            cargo test "${args[@]}" --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+            tested=$((tested + ${#chunk[@]}))
+            bash scripts/dev/trim-target.sh \
+              || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本块未裁剪"
+            df -h . || true
+            du -sh target 2>/dev/null || true
+          done
+          echo "== 分块覆盖校验：已跑 ${tested}/${total} 个成员包 =="
+          [ "$tested" -eq "$total" ]
+
+      - name: 盘读数 (test --workspace 之后)
+        if: always()
+        run: |
+          set -euo pipefail
+          df -h . || true
+          du -sh target 2>/dev/null || true
 
       # 同矩阵腿：`--all-targets` 不含 doctest。宽运行这一跳覆盖全部成员，
       # 因此它也是"一次把整个工作区文档示例编译一遍"的唯一位置。
@@ -665,6 +759,13 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test --workspace --doc --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      - name: 盘读数 (doctests 之后)
+        if: always()
+        run: |
+          set -euo pipefail
+          df -h . || true
+          du -sh target 2>/dev/null || true
 
       # 宽运行这一跳的 `test --workspace` 会留下 incremental; 下面这条 app 合并特性腿
       # 是本 job 最重的一次链接, 先清掉并打印盘读数（与矩阵腿同一条纪律）。
