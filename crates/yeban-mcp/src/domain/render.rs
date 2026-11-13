@@ -260,6 +260,9 @@
 //!   两条来源 —— ① `clippedSamples > 0` 时**恰好一条** `code:"exportClipping"`；
 //!   ② 可闻、排了内容、却**一个非零样本都没出**的源 ⇒ **一条** `code:"silentSources"`
 //!   逐源点名（见 [`silent_sources_warning`]）。两条都不出现时是**空数组**。
+//!   （其后另有 `ignoredStripDevices` / `incompleteDrumNoteMap` / `unroutedTracks`
+//!   三条同通道来源，各自的函数文档里写明判据；`unroutedTracks` 点名排了内容
+//!   却不在路由子图里的轨，见 [`unrouted_tracks_warning`]。）
 //!   为什么**不**进 `unsupported` / [`KNOWN_UNSUPPORTED_KEYS`]：那份清单的口径是
 //!   "我们会静默少做什么"（第 324 条：清单里的每一项都必须在一个具体输入下真的
 //!   出现）。削波不是"少做了什么"—— 渲染把工程算对了，**结果本身**过载。塞进去会
@@ -1615,6 +1618,63 @@ fn incomplete_drum_note_map_warning(
         "blocking": false,
         "count": count,
         "devices": devices,
+        "hint": hint,
+    }))
+}
+
+/// ⭐ **未入路由图音轨**预警（`data.warnings[]` 的一条来源）：排了内容、却不在
+/// 渲染计划剪枝子图里的轨 —— 它们在母带里**完全静默**，且此前没有任何告警
+/// （实测报告 P0-①：音效轨在轨列表可见、片段池有摆放，三版母带从未出声）。
+///
+/// 判据（与 CLI `render_core` 同一条）：非主总线轨 ∧（`clips` 非空 ∨ 绑了采样器）
+/// ∧ 身份不在探针 `nodes` 里。探针节点集是剪枝后的子图 ⇒ 本判据同时覆盖
+/// 「身份根本不在路由图」与「在图里但被剪枝（无通往主总线的路径）」两种情形。
+/// ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`（与削波预警同一条纪律）。
+/// 空 ⇒ `None`（**没有这条预警**，不是恒报）。
+fn unrouted_tracks_warning(project: &YebanProjectV1, probe_nodes: &[EntityId]) -> Option<Value> {
+    let routed: BTreeSet<EntityId> = probe_nodes.iter().copied().collect();
+    let orphans: Vec<(&EntityId, &TrackV3)> = project
+        .tracks
+        .iter()
+        .filter(|(track_id, track)| {
+            **track_id != project.master_bus_track_id
+                && (!track.clips.is_empty() || track.sampler.is_some())
+                && !routed.contains(track_id)
+        })
+        .collect();
+    if orphans.is_empty() {
+        return None;
+    }
+    let track_ids: Vec<Value> = orphans
+        .iter()
+        .map(|(track_id, _track)| Value::from(track_id.to_canonical_string()))
+        .collect();
+    let named: Vec<Value> = orphans
+        .iter()
+        .map(|(track_id, track)| {
+            serde_json::json!({
+                "trackId": track_id.to_canonical_string(),
+                "name": track.name,
+            })
+        })
+        .collect();
+    let count = orphans.len();
+    let hint = format!(
+        "本次渲染里有 {count} 条音轨排了内容（片段或采样器绑定），但不在渲染计划的 \
+         路由子图里 —— 它们**没有出现在母带里**，渲染也不会为它们报错。修法：逐条用 \
+         `yeban_edit_notes` 的 `addRoutingNode` 把该轨加进 `routing_graph.nodes`，\
+         再用 `connectRouting` 建一条到主总线的边（普通音轨 `edgeKind` 用 \
+         `TrackToBus`，`AuxReturn` 用 `BusToMaster`）；或删掉这些轨的内容。\
+         ⚠ 经 `addTrack` 新建的轨已自动接线，本告警针对的是未入图的存量轨。\
+         ⛔ 本工具**不自动修**，音频一个字节都没动。"
+    );
+    Some(serde_json::json!({
+        "code": "unroutedTracks",
+        "severity": "warning",
+        "blocking": false,
+        "count": count,
+        "trackIds": track_ids,
+        "tracks": named,
         "hint": hint,
     }))
 }
@@ -3261,6 +3321,10 @@ pub fn build(
     //
     // ⚠ `all_source_nodes` 仍服务三处**结构**判定（自动化收据、输出级、非源节点片段
     // 登记）—— 那些地方问的是"图里这条节点是什么角色"，不是"它要不要建源"。
+    // ⭐ 未入路由图音轨预警的孤儿集在**探针后、建源前**算出（见
+    //    [`unrouted_tracks_warning`]）：判据只读探针节点集与工程轨表，与建源无关；
+    //    结果在第 10a-bis 步随其余预警一起装配。⛔ 只生成 JSON，不动音频。
+    let unrouted_warning = unrouted_tracks_warning(project, &nodes);
     let (empty_source_nodes, source_nodes): (Vec<EntityId>, Vec<EntityId>) =
         all_source_nodes.iter().copied().partition(|node| {
             *node != project.master_bus_track_id
@@ -3864,6 +3928,8 @@ pub fn build(
         &project.tracks,
         &source_nodes,
     ))
+    // ⭐ 未入路由图的轨必须被点名（见 `unrouted_tracks_warning`，探针后已算好）。
+    .chain(unrouted_warning)
     .collect();
     // 10b. 响度读数 + 对 `targetLufs` 的判定（在抖动之前的浮点母带上）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是

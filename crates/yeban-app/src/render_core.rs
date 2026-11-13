@@ -338,6 +338,13 @@ pub struct RenderProjectOutput {
     /// （判据 `reporting_readings_does_not_change_a_single_byte` 用加读数之前的
     /// 整文件 `sha256` 常量钉住）。
     pub source_peaks: Vec<(EntityId, f32)>,
+    /// ⭐ **未入路由图音轨**点名（与 MCP `render_master` 的 `unroutedTracks`
+    /// 预警同一判据）：非主总线轨 ∧（`clips` 非空 ∨ 绑了采样器）∧ 身份不在
+    /// 渲染计划节点里（不在图与在图但被剪枝两种情形都算）。这些轨在产物里
+    /// **完全静默**；此前 CLI 只报 `audio-clips(rendered=0 skipped=…)` 的计数，
+    /// 不点名是哪条轨。逐轨 `(身份, 轨名)`，按 `project.tracks` 的确定序。
+    /// 空 = 有内容的轨全部进了渲染计划（此时 `source_label` 逐字不变）。
+    pub unrouted_tracks: Vec<(EntityId, String)>,
 }
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
@@ -772,6 +779,21 @@ pub fn render_project_f32_with_plans_under(
         .nodes()
         .into_iter()
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
+        .collect();
+    // ⭐ **未入路由图音轨**点名（与 MCP `render_master` 的 `unroutedTracks` 预警
+    //    同一判据）：`renderable` 是计划剪枝后的节点集 ⇒ 身份不在里面的有内容轨
+    //    在产物里完全静默。此前它们连 `audio-clips(skipped=…)` 都不进（片段解析
+    //    循环只遍历 `renderable`），计数与点名双缺。⛔ 只读读数，不动样本；
+    //    孤儿集为空时 `source_label` 与产物逐字不变（见函数末尾的追加点）。
+    let unrouted_tracks: Vec<(EntityId, String)> = project
+        .tracks
+        .iter()
+        .filter(|(track_id, track)| {
+            **track_id != project.master_bus_track_id
+                && (!track.clips.is_empty() || track.sampler.is_some())
+                && !renderable.contains(track_id)
+        })
+        .map(|(track_id, track)| (*track_id, track.name.clone()))
         .collect();
     // ⭐⭐ **空轨不建源**（内存缺陷修复）。
     //
@@ -1223,6 +1245,19 @@ pub fn render_project_f32_with_plans_under(
         use core::fmt::Write;
         let _ = write!(digest, "{byte:02x}");
     }
+    // ⭐ 未入图轨点名追加进 `source_label`（CLI 回执与导出报告都读这一份文案）；
+    //    孤儿集为空时**一个字都不追加** ⇒ 既有输出逐字不变。
+    if !unrouted_tracks.is_empty() {
+        let ids: Vec<String> = unrouted_tracks
+            .iter()
+            .map(|(track_id, _name)| track_id.to_canonical_string())
+            .collect();
+        source_label.push_str(&format!(
+            " + unrouted-tracks(count={} ids=[{}])",
+            unrouted_tracks.len(),
+            ids.join(",")
+        ));
+    }
     Ok(RenderProjectOutput {
         samples: output.samples,
         frames: output.frames,
@@ -1234,6 +1269,7 @@ pub fn render_project_f32_with_plans_under(
         sfz_decoded,
         source_peaks,
         limiter_reductions,
+        unrouted_tracks,
     })
 }
 

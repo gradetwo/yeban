@@ -469,17 +469,19 @@ fn undo_display_schema() -> Value {
 /// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它由契约名册兜住，⛔ 不许为凑等式造假 schema。
 const PROPOSAL_WARNING_CODES: [&str; 2] = ["deviceOnSilentTrack", "unrecognisedEffectParam"];
 
-/// ⭐ `data.warnings[].code` 的逐工具子集（母带）。四条来源 `clipping_warning` +
+/// ⭐ `data.warnings[].code` 的逐工具子集（母带）。五条来源 `clipping_warning` +
 /// `silent_sources_warning` + `ignored_strip_devices_warning` +
-/// `incomplete_drum_note_map_warning` 只在 `domain/render.rs` 的同一处 `warnings`
-/// 装配里链起来（全库现读：这四个函数各只有一个调用点，都在那一条
-/// `let warnings =` 上）⇒ 只有 `yeban_render_master` 发这四枚（台账 §22.16 的现读；
-/// `incompleteDrumNoteMap` 为 P2-3 补登记，与契约 enum 同属新警告码注册链）。
-const RENDER_WARNING_CODES: [&str; 4] = [
+/// `incomplete_drum_note_map_warning` + `unrouted_tracks_warning` 只在
+/// `domain/render.rs` 的同一处 `warnings` 装配里链起来（全库现读：这五个函数
+/// 各只有一个调用点，都在那一条 `let warnings =` 上）⇒ 只有 `yeban_render_master`
+/// 发这五枚（台账 §22.16 的现读；`incompleteDrumNoteMap` 为 P2-3 补登记、
+/// `unroutedTracks` 为未入路由图告警补登记，与契约 enum 同属新警告码注册链）。
+const RENDER_WARNING_CODES: [&str; 5] = [
     "exportClipping",
     "ignoredStripDevices",
     "incompleteDrumNoteMap",
     "silentSources",
+    "unroutedTracks",
 ];
 
 /// 提案族 `warnings[]` 的**逐条形状** —— 三个工具共用一份，因为它们的读数来自同一拼装点
@@ -2810,7 +2812,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 8, "契约名册现读 8 枚: {contract:?}");
+        assert_eq!(contract.len(), 9, "契约名册现读 9 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
@@ -2878,7 +2880,7 @@ mod tests {
                 "peakAboveFullScale".to_owned(),
                 "sfzSamplesUnreadable".to_owned()
             ],
-            "契约里不该被广播的 code 必须是 peakAboveFullScale 与 sfzSamplesUnreadable（其余六枚都必须广播）"
+            "契约里不该被广播的 code 必须是 peakAboveFullScale 与 sfzSamplesUnreadable（其余七枚都必须广播）"
         );
     }
 
