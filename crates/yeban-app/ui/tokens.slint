@@ -1097,4 +1097,11 @@ export component TooltipBubble inherits Rectangle {
             Theme.has-hover-tip = false;
         }
     }
+
+    changed text => {
+        if (root.is-visible && root.text != "") {
+            Theme.hover-tip = root.text;
+            Theme.has-hover-tip = true;
+        }
+    }
 }

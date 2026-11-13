@@ -407,14 +407,19 @@ pub fn now_ms() -> u64 {
 
 /// 构造并初始化夜半主窗口。
 pub fn build_main_window(
-    _view: &ViewState,
-    _scene: &DemoScene,
+    view: &ViewState,
+    scene: &DemoScene,
 ) -> Result<MainWindow, slint::PlatformError> {
     let ui = MainWindow::new()?;
 
     // 默认初始数据已经在 app.slint 中声明完备，这里挂接核心交互闭包
     wire_core_callbacks(&ui);
     wire_view_callbacks(&ui);
+
+    // 注入工程视图状态与场景数据
+    apply_view(&ui, view, 1920.0, 0.0);
+    ui.set_timecode_text(scene.timecode.clone().into());
+    ui.set_is_playing(false);
 
     Ok(ui)
 }
@@ -942,10 +947,6 @@ fn wire_core_callbacks(ui: &MainWindow) {
     });
 
     // 13. 传统钢琴卷帘与音符交互接线
-    const PITCH_NAMES: [&str; 16] = [
-        "C5", "B4", "Bb4", "A4", "Ab4", "G4", "F#4", "F4", "E4", "Eb4", "D4", "Db4", "C4", "B3",
-        "Bb3", "A3",
-    ];
 
     ui.on_piano_step_toggle({
         let weak = weak.clone();
@@ -1172,8 +1173,128 @@ fn apply_master(ui: &MainWindow, view: &ViewState) {
     ui.set_master_color_label(master.color_hex.clone().into());
 }
 
+/// 钢琴卷帘音高名称字典。
+pub const PITCH_NAMES: [&str; 16] = [
+    "C5", "B4", "Bb4", "A4", "Ab4", "G4", "F#4", "F4", "E4", "Eb4", "D4", "Db4", "C4", "B3", "Bb3",
+    "A3",
+];
+
+fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
+    view.tracks
+        .iter()
+        .map(|trk| {
+            let next_id = (trk.index + 1) as i32;
+            let clips: Vec<&crate::bridge::ClipView> = view
+                .clips
+                .iter()
+                .filter(|c| c.track_index == trk.index)
+                .collect();
+            let clip1 = clips.first().map_or("", |c| c.clip_name.as_str());
+            let clip2 = clips.get(1).map_or("", |c| c.clip_name.as_str());
+            let clip3 = clips.get(2).map_or("", |c| c.clip_name.as_str());
+            let clip4 = clips.get(3).map_or("", |c| c.clip_name.as_str());
+
+            TrackData {
+                id: next_id,
+                name: trk.name.clone().into(),
+                kind: trk.kind.to_uppercase().into(),
+                color: to_color(trk.color_rgb),
+                bus: if trk.is_master {
+                    "Master".into()
+                } else {
+                    "Bus 1 (Sum)".into()
+                },
+                volume_db: trk.volume_db,
+                pan: trk.pan_display.clone().into(),
+                muted: trk.mute,
+                soloed: trk.solo,
+                armed: false,
+                meter_peak: 0.0,
+                insert1: trk
+                    .sampler_path
+                    .as_deref()
+                    .unwrap_or(if trk.kind == "audio" {
+                        "Audio Clip"
+                    } else {
+                        "Wavetable MPE"
+                    })
+                    .into(),
+                insert2: "Pro-QLinear 8".into(),
+                insert3: "Glue Comp VCA".into(),
+                clip1: clip1.into(),
+                clip2: clip2.into(),
+                clip3: clip3.into(),
+                clip4: clip4.into(),
+            }
+        })
+        .collect()
+}
+
+fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
+    view.clips
+        .iter()
+        .map(|clip| {
+            let track_id = (clip.track_index + 1) as i32;
+            let col = view
+                .tracks
+                .get(clip.track_index)
+                .map(|t| to_color(t.color_rgb))
+                .unwrap_or_else(|| to_color(crate::bridge::DEFAULT_TRACK_COLOR));
+            TimelineBlockData {
+                track_id,
+                label: clip.label.clone().into(),
+                start_px: clip.x.max(0.0),
+                width_px: clip.width.max(12.0),
+                is_audio: clip.content == "audio",
+                gain_label: if clip.muted {
+                    "Muted".into()
+                } else {
+                    "0dB".into()
+                },
+                color: col,
+            }
+        })
+        .collect()
+}
+
+fn view_to_notes(view: &ViewState) -> Vec<PianoRollNote> {
+    view.notes
+        .iter()
+        .map(|note| {
+            let pitch_row = note.row.clamp(0, 15);
+            let pitch_name = PITCH_NAMES.get(pitch_row as usize).copied().unwrap_or("C4");
+            let start_step = (note.x / 42.0).clamp(0.0, 63.0) as i32;
+            let step_span = ((note.width / 42.0).ceil() as i32).max(1);
+            PianoRollNote {
+                id: (note.index + 1) as i32,
+                pitch_row,
+                pitch_name: pitch_name.into(),
+                start_step,
+                step_span,
+                velocity: note.velocity as i32,
+                selected: false,
+            }
+        })
+        .collect()
+}
+
 /// 注入视图状态。
 pub fn apply_view(ui: &MainWindow, view: &ViewState, _viewport_width: f32, _scroll: f32) {
+    if !view.tracks.is_empty() {
+        let tracks = view_to_tracks(view);
+        ui.set_tracks(ModelRc::new(VecModel::from(tracks)));
+    }
+    if !view.clips.is_empty() {
+        let blocks = view_to_timeline_blocks(view);
+        ui.set_timeline_blocks(ModelRc::new(VecModel::from(blocks)));
+    }
+    if !view.notes.is_empty() {
+        let notes = view_to_notes(view);
+        ui.set_notes(ModelRc::new(VecModel::from(notes)));
+    }
+    ui.set_bpm_val(view.bpm as i32);
+    ui.set_scale_text(format!("{} · 960 PPQ", view.time_signature_display).into());
+
     ui.set_track_names(strings(&view.track_names()));
     ui.set_track_kinds(static_strings(&view.track_kinds()));
     ui.set_track_ids(strings(&view.track_ids()));
@@ -1293,6 +1414,26 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     ui.set_master_meter_rms(snapshot.master_rms_label().into());
     ui.set_master_meter_lufs(snapshot.master_lufs_label().into());
     ui.set_master_meter_level(snapshot.master_level());
+
+    let levels = snapshot.levels();
+    if !levels.is_empty() {
+        let tracks_model = ui.get_tracks();
+        let mut tracks: Vec<TrackData> = (0..tracks_model.row_count())
+            .filter_map(|i| tracks_model.row_data(i))
+            .collect();
+        let mut changed = false;
+        for (i, track) in tracks.iter_mut().enumerate() {
+            if let Some(&lvl) = levels.get(i)
+                && (track.meter_peak - lvl).abs() > 0.005
+            {
+                track.meter_peak = lvl.clamp(0.0, 1.0);
+                changed = true;
+            }
+        }
+        if changed {
+            ui.set_tracks(ModelRc::new(VecModel::from(tracks)));
+        }
+    }
 }
 
 /// 注入撤销状态。

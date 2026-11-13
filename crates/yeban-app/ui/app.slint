@@ -384,17 +384,29 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.F3) {
-                root.show-lower-dock = true;
-                Theme.active-dock-tab = "mixer";
-                root.dock-tab-selected("mixer");
-                root.console-maximize-toggle();
+                if (root.console-maximized && Theme.active-dock-tab == "mixer") {
+                    root.console-maximize-toggle();
+                } else {
+                    root.show-lower-dock = true;
+                    Theme.active-dock-tab = "mixer";
+                    root.dock-tab-selected("mixer");
+                    if (!root.console-maximized) {
+                        root.console-maximize-toggle();
+                    }
+                }
                 return accept;
             }
             if (event.text == Key.F7 || event.text == Key.F8) {
-                root.show-lower-dock = true;
-                Theme.active-dock-tab = "pianoroll";
-                root.dock-tab-selected("pianoroll");
-                root.console-maximize-toggle();
+                if (root.console-maximized && Theme.active-dock-tab == "pianoroll") {
+                    root.console-maximize-toggle();
+                } else {
+                    root.show-lower-dock = true;
+                    Theme.active-dock-tab = "pianoroll";
+                    root.dock-tab-selected("pianoroll");
+                    if (!root.console-maximized) {
+                        root.console-maximize-toggle();
+                    }
+                }
                 return accept;
             }
             if (event.text == Key.Escape) {
@@ -726,10 +738,33 @@ export component MainWindow inherits Window {
                         spacing: 8px;
                         alignment: start;
 
-                        Text {
-                            text: "💡";
-                            font-size: 10px;
-                            vertical-alignment: center;
+                        Rectangle {
+                            width: 6px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: Theme.has-hover-tip ? Theme.accent : #347864;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        if Theme.has-hover-tip : Rectangle {
+                            background: Theme.accent.with-alpha(0.18);
+                            border-radius: 2px;
+                            border-width: 1px;
+                            border-color: Theme.accent.with-alpha(0.50);
+                            height: 16px;
+                            y: (parent.height - self.height) / 2;
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-right: 5px;
+                                Text {
+                                    text: "提示";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 8px;
+                                    font-weight: 700;
+                                    color: Theme.accent;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
 
                         Text {
@@ -799,7 +834,7 @@ export component MainWindow inherits Window {
         // Window-Level Root Tooltip Overlay (Top-most z-order, unclipped by any container)
         if Theme.has-hover-tip && Theme.hover-tip != "" : Rectangle {
             x: (parent.width - self.width) / 2;
-            y: parent.height - 56px;
+            y: 50px;
             height: 26px;
             background: #090e1cf5;
             border-radius: 6px;
