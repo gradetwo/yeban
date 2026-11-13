@@ -1,5 +1,5 @@
-import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow } from "tokens.slint";
-export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow } from "tokens.slint";
+import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote } from "tokens.slint";
+export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -23,6 +23,17 @@ export component MainWindow inherits Window {
     in-out property <int> roll-min-pitch: 36;
     in-out property <int> roll-max-pitch: 84;
     in-out property <[bool]> note-selected: [];
+
+    in-out property <[PianoRollNote]> notes: [
+        { id: 1, pitch_row: 0,  pitch_name: "C5",  start_step: 0,  step_span: 2, velocity: 108, selected: true },
+        { id: 2, pitch_row: 5,  pitch_name: "G4",  start_step: 2,  step_span: 2, velocity: 92,  selected: false },
+        { id: 3, pitch_row: 9,  pitch_name: "Eb4", start_step: 4,  step_span: 3, velocity: 100, selected: false },
+        { id: 4, pitch_row: 12, pitch_name: "C4",  start_step: 7,  step_span: 1, velocity: 85,  selected: false },
+        { id: 5, pitch_row: 0,  pitch_name: "C5",  start_step: 8,  step_span: 2, velocity: 112, selected: false },
+        { id: 6, pitch_row: 2,  pitch_name: "Bb4", start_step: 10, step_span: 2, velocity: 96,  selected: false },
+        { id: 7, pitch_row: 5,  pitch_name: "G4",  start_step: 12, step_span: 2, velocity: 104, selected: false },
+        { id: 8, pitch_row: 9,  pitch_name: "Eb4", start_step: 14, step_span: 2, velocity: 90,  selected: false }
+    ];
 
     in-out property <[TrackData]> tracks: [
         {
@@ -215,6 +226,12 @@ export component MainWindow inherits Window {
     callback monitor-switch(string);
     callback device-param-changed(string, string, float);
     callback piano-step-toggle(int, int);
+    callback piano-note-select(int);
+    callback piano-note-create(int, int);
+    callback piano-note-split(int);
+    callback piano-note-delete(int);
+    callback piano-note-velocity(int, int);
+    callback piano-key-audition(string, int);
     callback run-acoustic-diagnosis();
 
     // Global Key Guard FocusScope
@@ -479,6 +496,8 @@ export component MainWindow inherits Window {
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                 tracks: root.tracks;
                 selected-track-id: root.selected-track-id;
+                notes: root.notes;
+                playhead-px: root.playhead-px;
 
                 select-tab(t) => {
                     Theme.active-dock-tab = t;
@@ -494,6 +513,13 @@ export component MainWindow inherits Window {
                 set-wt-pos(pos) => { root.device-param-changed("wavetable", "wt_pos", pos); }
                 set-wt-cutoff(cut) => { root.device-param-changed("wavetable", "cutoff", cut); }
                 toggle-piano-step(r, s) => { root.piano-step-toggle(r, s); }
+                piano-key-clicked(key, row) => { root.piano-key-audition(key, row); }
+                select-note(id) => { root.piano-note-select(id); }
+                canvas-create-note(row, step) => { root.piano-note-create(row, step); }
+                canvas-clicked(row, step) => { root.piano-note-select(-1); }
+                split-note(id) => { root.piano-note-split(id); }
+                delete-note(id) => { root.piano-note-delete(id); }
+                velocity-changed(id, vel) => { root.piano-note-velocity(id, vel); }
             }
         }
 
