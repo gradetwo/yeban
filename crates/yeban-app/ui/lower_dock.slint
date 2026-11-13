@@ -1,7 +1,7 @@
-import { Theme, TrackData, PianoStepRow, Tokens } from "tokens.slint";
+import { Theme, TrackData, PianoStepRow, PianoRollNote, Tokens } from "tokens.slint";
 
 export component UnifiedLowerDock inherits Rectangle {
-    in-out property <string> active-tab: "stacked"; // "stacked" | "devices" | "mixer" | "pianoroll"
+    in-out property <string> active-tab: "devices"; // "devices" | "mixer" | "pianoroll" | "stacked"
     in-out property <color> selected-track-color: #387691;
     in-out property <string> focus-track-name: "01. Lead Neuro Bass";
     in-out property <[TrackData]> tracks;
@@ -21,8 +21,23 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <float> comp-gr-fraction: 0.34;
     in-out property <string> comp-gr-text: "-4.2 dB";
 
-    // Piano Roll
+    // Traditional Piano Roll State & Notes
+    in-out property <int> roll-tool: 1; // 1: Select, 2: Pencil, 3: Split, 4: Erase
+    in-out property <string> roll-snap: "1/16";
+    in-out property <bool> show-velocity: true;
+    in-out property <int> selected-note-id: 1;
     in-out property <bool> scale-folded: true;
+    in-out property <[PianoRollNote]> notes: [
+        { id: 1, pitch_row: 0,  pitch_name: "C5",  start_step: 0,  step_span: 2, velocity: 108, selected: true },
+        { id: 2, pitch_row: 5,  pitch_name: "G4",  start_step: 2,  step_span: 2, velocity: 92,  selected: false },
+        { id: 3, pitch_row: 9,  pitch_name: "Eb4", start_step: 4,  step_span: 3, velocity: 100, selected: false },
+        { id: 4, pitch_row: 12, pitch_name: "C4",  start_step: 7,  step_span: 1, velocity: 85,  selected: false },
+        { id: 5, pitch_row: 0,  pitch_name: "C5",  start_step: 8,  step_span: 2, velocity: 112, selected: false },
+        { id: 6, pitch_row: 2,  pitch_name: "Bb4", start_step: 10, step_span: 2, velocity: 96,  selected: false },
+        { id: 7, pitch_row: 5,  pitch_name: "G4",  start_step: 12, step_span: 2, velocity: 104, selected: false },
+        { id: 8, pitch_row: 9,  pitch_name: "Eb4", start_step: 14, step_span: 2, velocity: 90,  selected: false }
+    ];
+
     in-out property <[PianoStepRow]> piano-rows: [
         { pitch_name: "C4 (Root)", is_root: true,  step0: true,  step1: false, step2: false, step3: true,  step4: false, step5: true,  step6: false, step7: false, step8: true,  step9: false, step10: false, step11: true,  step12: false, step13: true,  step14: false, step15: false },
         { pitch_name: "Bb3 (m7)",  is_root: false, step0: false, step1: true,  step2: false, step3: false, step4: true,  step5: false, step6: false, step7: true,  step8: false, step9: true,  step10: false, step11: false, step12: true,  step13: false, step14: false, step15: true  },
@@ -41,6 +56,8 @@ export component UnifiedLowerDock inherits Rectangle {
     callback set-wt-cutoff(int);
     callback toggle-piano-step(int, int);
     callback toggle-scale-fold(bool);
+    callback piano-key-clicked(string, int);
+    callback note-selected(int);
 
     function toggle-step(r-idx: int, s-idx: int) {
         if (s-idx == 0) { root.piano-rows[r-idx].step0 = !root.piano-rows[r-idx].step0; }
@@ -94,7 +111,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "🎛️ 旗舰堆叠";
+                                text: "设备堆叠";
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -112,7 +129,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "⚡ 内联设备机架";
+                                text: "设备机架";
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -130,7 +147,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "🎚️ 混音控制台";
+                                text: "混音控制台";
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -148,7 +165,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "🎹 钢琴卷帘 (MPE)";
+                                text: "钢琴卷帘";
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -1072,7 +1089,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-left: 4px;
                                     padding-right: 4px;
                                     Text {
-                                        text: "⚡ TruePeak Limit";
+                                        text: "TruePeak Limit";
                                         font-family: Tokens.font-ui;
                                         font-size: 7px;
                                         color: #cbd5e1;
@@ -1189,107 +1206,502 @@ export component UnifiedLowerDock inherits Rectangle {
                 }
             }
 
-            // PANE: MPE PIANO ROLL (Visible when pianoroll tab active)
-            if root.active-tab == "pianoroll" : HorizontalLayout {
-                spacing: 8px;
+            // PANE: TRADITIONAL PIANO ROLL (Visible when pianoroll tab active)
+            if root.active-tab == "pianoroll" : VerticalLayout {
+                spacing: 4px;
                 horizontal-stretch: 1;
 
-                // Left Piano Keys & Scale lock
+                // 1. Piano Roll Toolbar: Scale info, Tools, Snap, Quantize, Velocity lane toggle
                 Rectangle {
-                    width: 155px;
-                    background: Theme.bg-surface;
+                    height: 26px;
+                    background: #080a10;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
 
-                    VerticalLayout {
-                        padding: 8px;
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
                         spacing: 6px;
+                        alignment: space-between;
 
-                        Text {
-                            text: "🎹 音阶折叠与 MPE";
-                            font-family: Tokens.font-ui;
-                            font-size: 11px;
-                            font-weight: 700;
-                            color: Theme.accent;
-                        }
+                        // Left: Scale info & Roll tool buttons
+                        HorizontalLayout {
+                            spacing: 5px;
+                            alignment: start;
 
-                        Rectangle {
-                            height: 24px;
-                            background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #10141d;
-                            border-radius: 3px;
-                            border-width: root.scale-folded ? 1px : 0;
-                            border-color: Theme.accent;
-
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                spacing: 4px;
-                                Text {
-                                    text: root.scale-folded ? "✓" : "○";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 9px;
-                                    font-weight: 800;
-                                    color: Theme.accent;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: "仅显示调内音符";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 9px;
-                                    color: #f8fafc;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea {
-                                clicked => {
-                                    root.scale-folded = !root.scale-folded;
-                                    root.toggle-scale-fold(root.scale-folded);
-                                }
-                            }
-                        }
-
-                        // Piano key rows
-                        VerticalLayout {
-                            spacing: 3px;
-                            vertical-stretch: 1;
-
-                            for row in root.piano-rows : Rectangle {
-                                vertical-stretch: 1;
-                                min-height: 22px;
-                                max-height: 32px;
-                                background: row.is_root ? #121622 : #0a0d14;
-                                border-radius: 2px;
+                            // Scale info badge
+                            Rectangle {
+                                background: #10141d;
+                                border-radius: 3px;
                                 border-width: 1px;
-                                border-color: row.is_root ? root.selected-track-color.with-alpha(0.3) : #ffffff06;
+                                border-color: Theme.border-subtle;
+                                height: 20px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: "C 自然小调 · 960 PPQ";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
 
-                                Text {
-                                    x: 8px;
-                                    text: row.pitch_name;
-                                    font-family: Tokens.font-mono;
-                                    font-size: 9px;
-                                    font-weight: row.is_root ? 800 : 500;
-                                    color: row.is_root ? root.selected-track-color : #cbd5e1;
-                                    vertical-alignment: center;
+                            // Tool buttons: 1 Select, 2 Draw, 3 Split, 4 Erase
+                            Rectangle {
+                                background: #0a0d14;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff10;
+                                height: 20px;
+
+                                HorizontalLayout {
+                                    padding: 1px;
+                                    spacing: 2px;
+
+                                    Rectangle {
+                                        background: root.roll-tool == 1 ? Theme.accent : transparent;
+                                        border-radius: 2px;
+                                        HorizontalLayout {
+                                            padding-left: 5px;
+                                            padding-right: 5px;
+                                            Text {
+                                                text: "选区";
+                                                font-family: Tokens.font-ui;
+                                                font-size: 8px;
+                                                font-weight: 700;
+                                                color: root.roll-tool == 1 ? #020617 : #94a3b8;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        TouchArea { clicked => { root.roll-tool = 1; } }
+                                    }
+
+                                    Rectangle {
+                                        background: root.roll-tool == 2 ? Theme.accent : transparent;
+                                        border-radius: 2px;
+                                        HorizontalLayout {
+                                            padding-left: 5px;
+                                            padding-right: 5px;
+                                            Text {
+                                                text: "画笔";
+                                                font-family: Tokens.font-ui;
+                                                font-size: 8px;
+                                                font-weight: 700;
+                                                color: root.roll-tool == 2 ? #020617 : #94a3b8;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        TouchArea { clicked => { root.roll-tool = 2; } }
+                                    }
+
+                                    Rectangle {
+                                        background: root.roll-tool == 3 ? Theme.accent : transparent;
+                                        border-radius: 2px;
+                                        HorizontalLayout {
+                                            padding-left: 5px;
+                                            padding-right: 5px;
+                                            Text {
+                                                text: "切分";
+                                                font-family: Tokens.font-ui;
+                                                font-size: 8px;
+                                                font-weight: 700;
+                                                color: root.roll-tool == 3 ? #020617 : #94a3b8;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        TouchArea { clicked => { root.roll-tool = 3; } }
+                                    }
+
+                                    Rectangle {
+                                        background: root.roll-tool == 4 ? Theme.status-alert : transparent;
+                                        border-radius: 2px;
+                                        HorizontalLayout {
+                                            padding-left: 5px;
+                                            padding-right: 5px;
+                                            Text {
+                                                text: "橡皮";
+                                                font-family: Tokens.font-ui;
+                                                font-size: 8px;
+                                                font-weight: 700;
+                                                color: root.roll-tool == 4 ? #ffffff : #94a3b8;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        TouchArea { clicked => { root.roll-tool = 4; } }
+                                    }
+                                }
+                            }
+
+                            // Scale fold toggle
+                            Rectangle {
+                                background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: root.scale-folded ? Theme.accent : Theme.border-subtle;
+                                height: 20px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 3px;
+                                    Text {
+                                        text: root.scale-folded ? "●" : "○";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 800;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "折叠调外音";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 8px;
+                                        color: #f8fafc;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.scale-folded = !root.scale-folded;
+                                        root.toggle-scale-fold(root.scale-folded);
+                                    }
                                 }
                             }
                         }
 
-                        // Left velocity label block
+                        // Right: Snap & Velocity toggle
+                        HorizontalLayout {
+                            spacing: 5px;
+                            alignment: end;
+
+                            // Snap selector
+                            Rectangle {
+                                background: #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                height: 20px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 3px;
+                                    Text {
+                                        text: "吸附:";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.roll-snap;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        if (root.roll-snap == "1/16") { root.roll-snap = "1/8"; }
+                                        else if (root.roll-snap == "1/8") { root.roll-snap = "1/4"; }
+                                        else if (root.roll-snap == "1/4") { root.roll-snap = "1/32"; }
+                                        else { root.roll-snap = "1/16"; }
+                                    }
+                                }
+                            }
+
+                            // Velocity toggle
+                            Rectangle {
+                                background: root.show-velocity ? Theme.accent.with-alpha(0.18) : #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: root.show-velocity ? Theme.accent : Theme.border-subtle;
+                                height: 20px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: root.show-velocity ? "力度泳道: 开" : "力度泳道: 关";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 8px;
+                                        color: root.show-velocity ? Theme.accent : #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea { clicked => { root.show-velocity = !root.show-velocity; } }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Main Piano Roll Work Area: Left Keyboard + Right Canvas (Ruler, Note Lanes, Notes)
+                HorizontalLayout {
+                    spacing: 4px;
+                    vertical-stretch: 1;
+
+                    // Left Vertical Piano Keyboard (16 chromatic pitch keys)
+                    Rectangle {
+                        width: 82px;
+                        background: #080a10;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 0px;
+                            spacing: 1px;
+
+                            // Header spacer matching ruler
+                            Rectangle {
+                                height: 16px;
+                                background: #05070a;
+                                border-color: #ffffff0a;
+                                Text {
+                                    text: "KEY / PITCH";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 7px;
+                                    letter-spacing: 0.5px;
+                                    color: #475569;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // 16 Piano Keys: C5 down to A3
+                            for key_info[k_idx] in [
+                                { name: "C5", is_black: false, is_c: true },
+                                { name: "B4", is_black: false, is_c: false },
+                                { name: "A#4", is_black: true, is_c: false },
+                                { name: "A4", is_black: false, is_c: false },
+                                { name: "G#4", is_black: true, is_c: false },
+                                { name: "G4", is_black: false, is_c: false },
+                                { name: "F#4", is_black: true, is_c: false },
+                                { name: "F4", is_black: false, is_c: false },
+                                { name: "E4", is_black: false, is_c: false },
+                                { name: "D#4", is_black: true, is_c: false },
+                                { name: "D4", is_black: false, is_c: false },
+                                { name: "C#4", is_black: true, is_c: false },
+                                { name: "C4", is_black: false, is_c: true },
+                                { name: "B3", is_black: false, is_c: false },
+                                { name: "A#3", is_black: true, is_c: false },
+                                { name: "A3", is_black: false, is_c: false }
+                            ] : Rectangle {
+                                vertical-stretch: 1;
+                                min-height: 8px;
+                                background: key_info.is_c ? #182232 : (key_info.is_black ? #0a0d13 : #121620);
+                                border-radius: 1px;
+                                border-width: 1px;
+                                border-color: key_info.is_c ? root.selected-track-color.with-alpha(0.4) : (key_info.is_black ? #05070a : #222b3b);
+
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 5px;
+                                    alignment: space-between;
+                                    Text {
+                                        text: key_info.name;
+                                        font-family: Tokens.font-mono;
+                                        font-size: key_info.is_c ? 8px : 7px;
+                                        font-weight: key_info.is_c ? 800 : (key_info.is_black ? 500 : 700);
+                                        color: key_info.is_c ? Theme.accent : (key_info.is_black ? #8292a6 : #cbd5e1);
+                                        vertical-alignment: center;
+                                    }
+                                    if key_info.is_black : Rectangle {
+                                        width: 10px;
+                                        height: 2px;
+                                        background: #000000;
+                                        border-radius: 1px;
+                                    }
+                                }
+
+                                TouchArea {
+                                    clicked => {
+                                        root.piano-key-clicked(key_info.name, k_idx);
+                                        root.toggle-step(Math.mod(k_idx, 6), 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Right Piano Roll Grid & Traditional Note Canvas
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 0px;
+
+                        // Measure / Beat Ruler (Height: 16px)
                         Rectangle {
-                            height: 36px;
-                            background: #080a10;
-                            border-radius: 2px;
+                            height: 16px;
+                            background: #06080d;
+                            border-radius: Theme.radius;
+                            border-bottom-left-radius: 0;
+                            border-bottom-right-radius: 0;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
 
                             HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
+                                padding-left: 2px;
+                                padding-right: 2px;
+                                spacing: 0px;
+
+                                for beat_idx in 16 : Rectangle {
+                                    horizontal-stretch: 1;
+                                    border-width: 1px;
+                                    border-color: (Math.mod(beat_idx, 4) == 0) ? #ffffff15 : #ffffff06;
+
+                                    Text {
+                                        x: 3px;
+                                        text: (Math.mod(beat_idx, 4) == 0) ? ("" + (Math.floor(beat_idx / 4) + 1) + ".1") : ("." + (Math.mod(beat_idx, 4) + 1));
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: (Math.mod(beat_idx, 4) == 0) ? 800 : 400;
+                                        color: (Math.mod(beat_idx, 4) == 0) ? Theme.accent : #475569;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Note Grid Canvas (Horizontal pitch lanes + Vertical step lines + Note Bars)
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: #05070a;
+                            border-radius: Theme.radius;
+                            border-top-left-radius: 0;
+                            border-top-right-radius: 0;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            clip: true;
+
+                            // 16 Horizontal Pitch Lanes
+                            VerticalLayout {
+                                padding: 0px;
+                                spacing: 1px;
+
+                                for lane_idx in 16 : Rectangle {
+                                    vertical-stretch: 1;
+                                    background: (lane_idx == 0 || lane_idx == 12) ? #11172418 : ((lane_idx == 2 || lane_idx == 4 || lane_idx == 6 || lane_idx == 9 || lane_idx == 11 || lane_idx == 14) ? #06080e : #090c14);
+                                    Rectangle {
+                                        y: parent.height - 1px;
+                                        height: 1px;
+                                        background: (lane_idx == 0 || lane_idx == 12) ? root.selected-track-color.with-alpha(0.2) : #ffffff04;
+                                    }
+                                }
+                            }
+
+                            // 16 Vertical Step Grid Dividers
+                            HorizontalLayout {
+                                padding: 0px;
+                                spacing: 0px;
+
+                                for s_idx in 16 : Rectangle {
+                                    horizontal-stretch: 1;
+                                    Rectangle {
+                                        x: parent.width - 1px;
+                                        width: 1px;
+                                        height: parent.height;
+                                        background: (Math.mod(s_idx, 4) == 3) ? #ffffff14 : #ffffff05;
+                                    }
+                                }
+                            }
+
+                            // Traditional DAW Note Bars (Rendered across pitch rows and step columns)
+                            for note[n_idx] in root.notes : Rectangle {
+                                x: (note.start_step * parent.width) / 16 + 1px;
+                                y: (note.pitch_row * parent.height) / 16 + 1px;
+                                width: Math.max(8px, (note.step_span * parent.width) / 16 - 2px);
+                                height: Math.max(7px, parent.height / 16 - 2px);
+                                border-radius: 2px;
+                                background: note.selected ? root.selected-track-color : root.selected-track-color.with-alpha(0.85);
+                                border-width: note.selected ? 1.5px : 0.5px;
+                                border-color: note.selected ? #ffffff : #ffffff30;
+
+                                // Note top bevel highlight line
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: parent.width;
+                                    height: 1px;
+                                    background: #ffffff50;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 3px;
+                                    padding-right: 3px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: note.pitch_name;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: 800;
+                                        color: #ffffff;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    // Right resize handle bar
+                                    Rectangle {
+                                        width: 2px;
+                                        height: parent.height - 3px;
+                                        background: #ffffff60;
+                                        border-radius: 1px;
+                                    }
+                                }
+
+                                TouchArea {
+                                    clicked => {
+                                        if (root.roll-tool == 4) {
+                                            root.note-selected(note.id);
+                                        } else {
+                                            root.selected-note-id = note.id;
+                                            root.note-selected(note.id);
+                                        }
+                                        root.toggle-step(Math.mod(note.pitch_row, 6), note.start_step);
+                                    }
+                                }
+                            }
+
+                            // Click on empty grid to draw/insert note
+                            TouchArea {
+                                clicked => {
+                                    let clicked-step = Math.min(15, Math.max(0, Math.floor(self.mouse-x / (self.width / 16))));
+                                    let clicked-row = Math.min(15, Math.max(0, Math.floor(self.mouse-y / (self.height / 16))));
+                                    root.toggle-step(Math.mod(clicked-row, 6), clicked-step);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Bottom Velocity Lane (Aligned with 16 steps)
+                if root.show-velocity : Rectangle {
+                    height: 32px;
+                    background: #06080d;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 4px;
+
+                        // Left velocity label
+                        Rectangle {
+                            width: 82px;
+                            HorizontalLayout {
                                 alignment: space-between;
                                 Text {
                                     text: "VELOCITY 力度";
                                     font-family: Tokens.font-mono;
-                                    font-size: 8px;
+                                    font-size: 7px;
                                     font-weight: 700;
                                     letter-spacing: 0.5px;
                                     color: #64748b;
@@ -1298,106 +1710,43 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "MPE";
                                     font-family: Tokens.font-mono;
-                                    font-size: 8px;
+                                    font-size: 7px;
                                     color: root.selected-track-color;
                                     vertical-alignment: center;
                                 }
                             }
                         }
-                    }
-                }
 
-                // 16-Step Grid & Velocity Dynamic Lane
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 6px;
+                        // Stalks container aligned with 16 steps
+                        Rectangle {
+                            horizontal-stretch: 1;
 
-                    // 16-Step Note Grid
-                    Rectangle {
-                        vertical-stretch: 1;
-                        background: #06080d;
-                        border-radius: Theme.radius;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
+                            // Velocity stalks for active notes
+                            for note in root.notes : Rectangle {
+                                x: (note.start_step * parent.width) / 16 + (parent.width / 32) - 1px;
+                                y: parent.height - (note.velocity * 22px / 127) - 3px;
+                                width: 2px;
+                                height: (note.velocity * 22px / 127) + 2px;
+                                background: root.selected-track-color.with-alpha(0.7);
 
-                        VerticalLayout {
-                            padding: 8px;
-                            spacing: 3px;
-
-                            for row[r-idx] in root.piano-rows : HorizontalLayout {
-                                vertical-stretch: 1;
-                                min-height: 22px;
-                                max-height: 32px;
-                                spacing: 3px;
-
-                                Rectangle { background: row.step0 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 0); } } }
-                                Rectangle { background: row.step1 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 1); } } }
-                                Rectangle { background: row.step2 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 2); } } }
-                                Rectangle { background: row.step3 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 3); } } }
-                                Rectangle { background: row.step4 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 4); } } }
-                                Rectangle { background: row.step5 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 5); } } }
-                                Rectangle { background: row.step6 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 6); } } }
-                                Rectangle { background: row.step7 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 7); } } }
-                                Rectangle { background: row.step8 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 8); } } }
-                                Rectangle { background: row.step9 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 9); } } }
-                                Rectangle { background: row.step10 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 10); } } }
-                                Rectangle { background: row.step11 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 11); } } }
-                                Rectangle { background: row.step12 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 12); } } }
-                                Rectangle { background: row.step13 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 13); } } }
-                                Rectangle { background: row.step14 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 14); } } }
-                                Rectangle { background: row.step15 ? root.selected-track-color : #ffffff08; border-radius: 2px; TouchArea { clicked => { root.toggle-step(r-idx, 15); } } }
-                            }
-                        }
-                    }
-
-                    // Velocity Dynamic Lane (力度动态包络)
-                    Rectangle {
-                        height: 36px;
-                        background: #06080d;
-                        border-radius: Theme.radius;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            padding-top: 4px;
-                            padding-bottom: 4px;
-                            spacing: 3px;
-
-                            // 16 Velocity Stalks with dynamic expression values (40 - 115)
-                            for h in [22px, 14px, 18px, 13px, 24px, 16px, 19px, 14px, 25px, 15px, 19px, 12px, 23px, 16px, 20px, 15px] : Rectangle {
-                                horizontal-stretch: 1;
-                                background: transparent;
-
-                                // Baseline guide
+                                // Lollipop handle cap
                                 Rectangle {
-                                    x: 0;
-                                    y: parent.height - 1px;
-                                    width: parent.width;
-                                    height: 1px;
-                                    background: #ffffff08;
-                                }
-
-                                // Velocity vertical stalk
-                                Rectangle {
-                                    x: (parent.width - 2px) / 2;
-                                    y: parent.height - h;
-                                    width: 2px;
-                                    height: h;
-                                    background: root.selected-track-color.with-alpha(0.65);
-                                    border-radius: 1px;
-                                }
-
-                                // Velocity top lollipop cap
-                                Rectangle {
-                                    x: (parent.width - 6px) / 2;
-                                    y: parent.height - h - 1px;
+                                    x: -2px;
+                                    y: 0px;
                                     width: 6px;
-                                    height: 4px;
-                                    border-radius: 2px;
-                                    background: root.selected-track-color;
+                                    height: 3px;
+                                    border-radius: 1.5px;
+                                    background: note.selected ? #ffffff : root.selected-track-color;
                                 }
+                            }
+
+                            // 16 step baseline
+                            Rectangle {
+                                x: 0;
+                                y: parent.height - 2px;
+                                width: parent.width;
+                                height: 1px;
+                                background: #ffffff0a;
                             }
                         }
                     }

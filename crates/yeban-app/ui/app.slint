@@ -10,7 +10,7 @@ import { UnifiedLowerDock } from "lower_dock.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
 export component MainWindow inherits Window {
-    title: "夜半 DAW";
+    title: "夜半";
     background: Theme.bg-canvas;
     preferred-width: 1600px;
     preferred-height: 920px;
@@ -37,9 +37,9 @@ export component MainWindow inherits Window {
             soloed: false,
             armed: true,
             meter_peak: 0.65,
-            insert1: "⚡ Wavetable MPE",
-            insert2: "📈 Pro-QLinear 8",
-            insert3: "🔥 Glue Comp VCA",
+            insert1: "Wavetable MPE",
+            insert2: "Pro-QLinear 8",
+            insert3: "Glue Comp VCA",
             clip1: "Neuro Hook A",
             clip2: "Bass Wobble B",
             clip3: "Filtered Drop",
@@ -57,9 +57,9 @@ export component MainWindow inherits Window {
             soloed: false,
             armed: false,
             meter_peak: 0.72,
-            insert1: "🥁 Transient Shaper",
-            insert2: "🔥 Drum Bus Saturator",
-            insert3: "📈 Pro-QLinear 8",
+            insert1: "Transient Shaper",
+            insert2: "Drum Bus Saturator",
+            insert3: "Pro-QLinear 8",
             clip1: "Kick+Hat Groove",
             clip2: "Full Breakbeat",
             clip3: "Snare Roll Build",
@@ -77,9 +77,9 @@ export component MainWindow inherits Window {
             soloed: false,
             armed: false,
             meter_peak: 0.45,
-            insert1: "🌌 Granulator IV",
-            insert2: "🌊 Shimmer Verb",
-            insert3: "🎚️ Stereo Imager",
+            insert1: "Granulator IV",
+            insert2: "Shimmer Verb",
+            insert3: "Stereo Imager",
             clip1: "Cloud Texture",
             clip2: "Dark Shimmer",
             clip3: "",
@@ -97,9 +97,9 @@ export component MainWindow inherits Window {
             soloed: false,
             armed: false,
             meter_peak: 0.58,
-            insert1: "🎤 Auto-Pitch Zero",
-            insert2: "🔥 FET 1176 Comp",
-            insert3: "✨ Optical LA-2A",
+            insert1: "Auto-Pitch Zero",
+            insert2: "FET 1176 Comp",
+            insert3: "Optical LA-2A",
             clip1: "Vox Verse",
             clip2: "Vox Chorus Hook",
             clip3: "Vox Adlibs",
@@ -117,9 +117,9 @@ export component MainWindow inherits Window {
             soloed: false,
             armed: false,
             meter_peak: 0.50,
-            insert1: "🎹 Analog Poly",
-            insert2: "⏱️ PingPong Delay",
-            insert3: "📈 HighPass Filter",
+            insert1: "Analog Poly",
+            insert2: "PingPong Delay",
+            insert3: "HighPass Filter",
             clip1: "16th Pluck",
             clip2: "Octave Jump",
             clip3: "Poly Metric",
@@ -158,11 +158,11 @@ export component MainWindow inherits Window {
     property <int> safe-selected-idx: root.tracks.length > 0 ? Math.max(0, Math.min(root.tracks.length - 1, root.selected-track-id - 1)) : 0;
     in-out property <string> left-panel-tab: "inspector";
 
-    // Zone Visibility State
+    // Zone Visibility State (Default: clean arrangement workspace with side/dock panels folded)
     in-out property <bool> show-left-inspector: true;
-    in-out property <bool> show-clip-matrix: Theme.persona == PersonaMode.YebanDefault || Theme.persona == PersonaMode.AbletonLive;
-    in-out property <bool> show-lower-dock: true;
-    in-out property <bool> show-control-room: Theme.persona == PersonaMode.YebanDefault || Theme.persona == PersonaMode.CubasePro;
+    in-out property <bool> show-clip-matrix: Theme.persona == PersonaMode.AbletonLive;
+    in-out property <bool> show-lower-dock: false;
+    in-out property <bool> show-control-room: Theme.persona == PersonaMode.CubasePro;
 
     // Transport & Playback State
     in-out property <string> active-tool: "pointer";
@@ -331,24 +331,33 @@ export component MainWindow inherits Window {
                 select-persona(p) => {
                     Theme.persona = p;
                     if (p == PersonaMode.AbletonLive) {
+                        root.show-left-inspector = false;
                         root.show-clip-matrix = true;
                         root.show-control-room = false;
+                        root.show-lower-dock = true;
                         Theme.active-dock-tab = "devices";
                         root.left-panel-tab = "browser";
                     } else if (p == PersonaMode.LogicPro) {
+                        root.show-left-inspector = true;
                         root.show-clip-matrix = false;
                         root.show-control-room = false;
+                        root.show-lower-dock = true;
                         Theme.active-dock-tab = "mixer";
                         root.left-panel-tab = "inspector";
                     } else if (p == PersonaMode.CubasePro) {
+                        root.show-left-inspector = true;
                         root.show-clip-matrix = false;
                         root.show-control-room = true;
+                        root.show-lower-dock = true;
                         Theme.active-dock-tab = "mixer";
                         root.left-panel-tab = "inspector";
                     } else {
-                        root.show-clip-matrix = true;
-                        root.show-control-room = true;
-                        Theme.active-dock-tab = "stacked";
+                        // Default Persona: tranquil clean workspace, side & dock panels collapsed by default
+                        root.show-left-inspector = true;
+                        root.show-clip-matrix = false;
+                        root.show-control-room = false;
+                        root.show-lower-dock = false;
+                        Theme.active-dock-tab = "devices";
                         root.left-panel-tab = "inspector";
                     }
                 }
@@ -493,10 +502,16 @@ export component MainWindow inherits Window {
             is-open: root.show-cmd-palette;
             close-modal() => { root.show-cmd-palette = false; }
             execute-command(id) => {
-                if (id == "persona-default") { Theme.persona = PersonaMode.YebanDefault; root.show-clip-matrix = true; root.show-control-room = true; }
-                else if (id == "persona-ableton") { Theme.persona = PersonaMode.AbletonLive; root.show-clip-matrix = true; root.show-control-room = false; }
-                else if (id == "persona-logic") { Theme.persona = PersonaMode.LogicPro; root.show-clip-matrix = false; root.show-control-room = false; }
-                else if (id == "persona-cubase") { Theme.persona = PersonaMode.CubasePro; root.show-clip-matrix = false; root.show-control-room = true; }
+                if (id == "persona-default") {
+                    Theme.persona = PersonaMode.YebanDefault;
+                    root.show-left-inspector = true;
+                    root.show-clip-matrix = false;
+                    root.show-control-room = false;
+                    root.show-lower-dock = false;
+                }
+                else if (id == "persona-ableton") { Theme.persona = PersonaMode.AbletonLive; root.show-left-inspector = false; root.show-clip-matrix = true; root.show-control-room = false; root.show-lower-dock = true; }
+                else if (id == "persona-logic") { Theme.persona = PersonaMode.LogicPro; root.show-left-inspector = true; root.show-clip-matrix = false; root.show-control-room = false; root.show-lower-dock = true; }
+                else if (id == "persona-cubase") { Theme.persona = PersonaMode.CubasePro; root.show-left-inspector = true; root.show-clip-matrix = false; root.show-control-room = true; root.show-lower-dock = true; }
                 else if (id == "toggle-hotspots") { root.show-hotspots = !root.show-hotspots; }
                 else if (id == "tab-stacked") { root.show-lower-dock = true; Theme.active-dock-tab = "stacked"; }
                 else if (id == "tab-devices") { root.show-lower-dock = true; Theme.active-dock-tab = "devices"; }

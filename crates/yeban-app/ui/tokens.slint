@@ -917,7 +917,7 @@ import "../../../assets/fonts/NotoSerifSC-Regular-subset.otf";
 
 
 // =========================================================================
-// 夜半 DAW — 多 Persona 模式与全局专业工作室主题架构
+// 夜半 — 多 Persona 模式与全局专业工作室主题架构
 // =========================================================================
 
 export enum PersonaMode {
@@ -999,6 +999,16 @@ export struct PianoStepRow {
     step15: bool,
 }
 
+export struct PianoRollNote {
+    id: int,
+    pitch_row: int,
+    pitch_name: string,
+    start_step: int,
+    step_span: int,
+    velocity: int,
+    selected: bool,
+}
+
 export global Theme {
     in-out property <PersonaMode> persona: PersonaMode.YebanDefault;
 
@@ -1058,10 +1068,10 @@ export global Theme {
         persona == PersonaMode.LogicPro    ? #11141c :
         persona == PersonaMode.CubasePro   ? #0d1016 : #0c0f16;
 
-    // 演出激发模式下可将轨道头切换至右侧，默认旗舰保持在左侧黄金视线区
+    // 演出激发模式下可将轨道头切换至右侧，默认布局保持在左侧黄金视线区
     in-out property <bool> track-headers-on-right:
         persona == PersonaMode.AbletonLive;
 
     in-out property <string> active-tool: "pointer"; // "pointer" | "range" | "split" | "draw"
-    in-out property <string> active-dock-tab: persona == PersonaMode.AbletonLive ? "devices" : (persona == PersonaMode.LogicPro || persona == PersonaMode.CubasePro ? "mixer" : "stacked");
+    in-out property <string> active-dock-tab: persona == PersonaMode.AbletonLive ? "devices" : (persona == PersonaMode.LogicPro || persona == PersonaMode.CubasePro ? "mixer" : "devices");
 }

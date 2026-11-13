@@ -6,6 +6,7 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <int> selected-track-id: 1;
     in-out property <length> playhead-px: 360px;
     in-out property <bool> is-looping: true;
+    in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
 
     callback select-track(int);
     callback toggle-mute(int);
@@ -22,9 +23,9 @@ export component ArrangementViewport inherits Rectangle {
         padding: 0px;
         spacing: 0px;
 
-        // TOP HEADER ROW (Height: 54px): Track header top box + Ruler + Chord Progression Track
+        // TOP HEADER ROW: Track header top box + Ruler + Chord Progression Track (Collapsible)
         Rectangle {
-            height: 54px;
+            height: root.show-chord-track ? 54px : 26px;
             background: #080a10;
             border-color: Theme.border-subtle;
 
@@ -54,29 +55,53 @@ export component ArrangementViewport inherits Rectangle {
                                 color: #64748b;
                                 vertical-alignment: center;
                             }
-                            Rectangle {
-                                background: Theme.accent.with-alpha(0.15);
-                                border-radius: 3px;
-                                border-width: 1px;
-                                border-color: Theme.accent.with-alpha(0.5);
-                                height: 18px;
-                                HorizontalLayout {
-                                    padding-left: 6px;
-                                    padding-right: 6px;
-                                    Text {
-                                        text: "+ 轨道";
-                                        font-family: Tokens.font-ui;
-                                        font-size: 9px;
-                                        font-weight: 800;
-                                        color: Theme.accent;
-                                        vertical-alignment: center;
+                            HorizontalLayout {
+                                spacing: 4px;
+                                // Chord Track fold toggle
+                                Rectangle {
+                                    background: root.show-chord-track ? Theme.accent.with-alpha(0.25) : transparent;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: root.show-chord-track ? Theme.accent : #ffffff14;
+                                    height: 18px;
+                                    HorizontalLayout {
+                                        padding-left: 5px;
+                                        padding-right: 5px;
+                                        Text {
+                                            text: root.show-chord-track ? "和弦 ▾" : "和弦 ▸";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 8px;
+                                            font-weight: 600;
+                                            color: root.show-chord-track ? Theme.accent : #94a3b8;
+                                            vertical-alignment: center;
+                                        }
                                     }
+                                    TouchArea { clicked => { root.show-chord-track = !root.show-chord-track; } }
                                 }
-                                TouchArea { clicked => { root.add-track(); } }
+                                Rectangle {
+                                    background: Theme.accent.with-alpha(0.15);
+                                    border-radius: 3px;
+                                    border-width: 1px;
+                                    border-color: Theme.accent.with-alpha(0.5);
+                                    height: 18px;
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text {
+                                            text: "+ 轨道";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 9px;
+                                            font-weight: 800;
+                                            color: Theme.accent;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.add-track(); } }
+                                }
                             }
                         }
 
-                        Rectangle {
+                        if root.show-chord-track : Rectangle {
                             height: 22px;
                             background: #141a26;
                             border-radius: 3px;
@@ -88,7 +113,7 @@ export component ArrangementViewport inherits Rectangle {
                                 padding-right: 6px;
                                 alignment: space-between;
                                 Text {
-                                    text: "🎼 全局和弦轨";
+                                    text: "全局和弦轨";
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     font-weight: 700;
@@ -149,8 +174,8 @@ export component ArrangementViewport inherits Rectangle {
                             }
                         }
 
-                        // Chord Progression Track (30px) - Harmonized with mineral color order
-                        Rectangle {
+                        // Chord Progression Track (30px) - Harmonized with mineral color order (Collapsible)
+                        if root.show-chord-track : Rectangle {
                             height: 30px;
                             background: #0d1017;
 
@@ -179,7 +204,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "🔊 试听";
+                                            text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             color: #64748b;
@@ -210,7 +235,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "🔊 试听";
+                                            text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             color: #64748b;
@@ -241,7 +266,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "🔊 试听";
+                                            text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             color: #64748b;
@@ -272,7 +297,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "🔊 试听";
+                                            text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             color: #64748b;
@@ -303,7 +328,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "🔊 试听";
+                                            text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             color: #64748b;
