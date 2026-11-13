@@ -2414,6 +2414,16 @@ impl SynthEngine {
             if drum_map.is_none()
                 && let Some(plan) = sfz
             {
+                // ⭐ **弯音探针**（本单）：与下面复音支路**逐字同一份构造** ——
+                // 有音高形状才传探针，探针就是调度表旁表的 `cents_at`
+                // （⛔ 不另立第二套曲线语义）；空表 ⇒ `None` ⇒ SFZ 池走接线前
+                // 的恒定速率路，输出逐位相同。
+                let bend_probe = |shape: u16, local: u64| schedule.cents_at(shape, local);
+                let pitch_probe: Option<&dyn Fn(u16, u64) -> f32> = if schedule.has_pitch_shapes() {
+                    Some(&bend_probe as &dyn Fn(u16, u64) -> f32)
+                } else {
+                    None
+                };
                 let mut offset = 0usize;
                 let mut cursor_frame = position;
                 loop {
@@ -2435,13 +2445,15 @@ impl SynthEngine {
                                 )));
                                 true
                             }
-                            && slot.sfz.trigger_note(
+                            && slot.sfz.trigger_note_with_pitch(
                                 plan,
                                 note.pitch,
                                 note.velocity,
+                                note.start_sample,
                                 note.end_sample,
                                 schedule.track_gain(),
                                 cc,
+                                note.pitch_shape,
                             ) > 0
                         {
                             *notes_triggered = notes_triggered.saturating_add(1);
@@ -2461,11 +2473,12 @@ impl SynthEngine {
                         if length == 0 {
                             break;
                         }
-                        slot.sfz.render_into_with_cc(
+                        slot.sfz.render_into_with_probes(
                             plan,
                             cursor_frame,
                             &mut out[offset..offset + length],
                             cc,
+                            pitch_probe,
                         );
                         offset += length;
                         cursor_frame = boundary;
@@ -2510,13 +2523,15 @@ impl SynthEngine {
                                     slot.cursor,
                                     note.start_sample,
                                 )));
-                                if slot.sfz.trigger_note(
+                                if slot.sfz.trigger_note_with_pitch(
                                     plan,
                                     note.pitch,
                                     note.velocity,
+                                    note.start_sample,
                                     note.end_sample,
                                     schedule.track_gain(),
                                     cc,
+                                    note.pitch_shape,
                                 ) > 0
                                 {
                                     *notes_triggered = notes_triggered.saturating_add(1);
@@ -2558,7 +2573,23 @@ impl SynthEngine {
                 // 零分配：只读 `plan` 的 PCM、原地写 `out`。
                 // 尾音在源采样播完（或音符终点）时于池内退休。
                 // ⭐ 任务单 `#107`：CC 探针沿这条路下行（`None` ⇒ 逐位同接线前）。
-                Some(plan) => slot.sfz.render_into_with_cc(plan, position, out, cc),
+                // ⭐ **弯音探针**（本单）：与复音支路**同一份构造**（有音高形状
+                // 才传探针 ⇒ 同一份 `cents_at`）；分段渲染路缺席时的兜底支路，
+                // 两条路的弯音语义必须一致（⛔ 不许一条生效一条静默）。
+                Some(plan) => {
+                    // ⚠ 闭包先绑定在本臂作用域里再取 `&dyn`（探针要活过整个调用）。
+                    let bend_probe = |shape: u16, local: u64| {
+                        schedule.map_or(0.0, |schedule| schedule.cents_at(shape, local))
+                    };
+                    let pitch_probe: Option<&dyn Fn(u16, u64) -> f32> = match schedule {
+                        Some(schedule) if schedule.has_pitch_shapes() => {
+                            Some(&bend_probe as &dyn Fn(u16, u64) -> f32)
+                        }
+                        _ => None,
+                    };
+                    slot.sfz
+                        .render_into_with_probes(plan, position, out, cc, pitch_probe);
+                }
                 // 复音：整数相位 + ADSR + 可选低通（器件内）。
                 None => {
                     slot.sfz.silence();

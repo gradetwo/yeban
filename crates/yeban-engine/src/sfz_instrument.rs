@@ -714,6 +714,7 @@
 //! | `EngineRuntime` | 186768 | **194960** | 16 个槽 × 512 B |
 //! | `EngineRuntime` | 194960 | **198496** | 通道条 hpf/dyn-eq/width 片：通道条 376 → 584（＋208 ＝ HPF 立体声 biquad ×2 ＋ 动态 EQ 检波/峰值 biquad ×3 ＋ 包络 ＋ 参数 5 标量）× 17 内联槽位；十臂 2 bool 落在填充里 ＋0 |
 //! | `SfzVoicePool` | 2232 | **2240** | portamento 池级四字段（`last_key: Option<u8>` 2 ＋ `porta_slot: u8` 1 ＋ `porta_delta: i8` 1 ＋ `porta_frame: u32` 4 ＝ 8 B） |
+//! | `SfzVoicePool` | 2240 | **2560** | 弯音旁表四数组（`pitch_shape` / `pending_pitch_shape` `[u16; 16]` ＋ `note_start` / `pending_note_start` `[u64; 16]` ＝ 320 B） |
 //! | `EngineRuntime` | 198496 | **198752** | portamento：池 ＋8 ⇒ ＋256（实测）；红线 200 KiB ＝ 204800 |
 //! | `EngineRuntime` | 198752 | **199296** | `#344` mono-maker：通道条 ＋32 B（side 低通 biquad：5 系数 ＋ 4 状态 ＝ 36 B，8 字节对齐后 32）× 17 内联槽位 ＝ ＋544；余量 5504 B |
 //! | `EngineRuntime` | 199296 | **200112** | nightfall 片：通道条 ＋48 × 17 内联槽位 ＝ ＋816（实测）；余量 4688 B |
@@ -728,6 +729,16 @@
 //! `SfzVoicePool` **2232 → 2240**、`EngineRuntime` **198496 → 198752**（＋256，实测；
 //! 红线 200 KiB ＝ 204800，余量 6048 B）。`SfzVoice` **仍是 40 B**，
 //! `PreparedRegion` **仍是 6168 B**（`pitch_eg: u16` 落进既有填充）。
+//!
+//! ⭐ **弯音片再 ＋320 B / 池**（本单：SFZ 声部消费工程弯音曲线
+//! `pitch_bend_curve`）：形状下标与音符起始帧放**池级每槽数组**
+//! （`pitch_shape` / `pending_pitch_shape` `[u16; 16]` ＋ `note_start` /
+//! `pending_note_start` `[u64; 16]`），`SfzVoicePool` **2240 → 2560**；
+//! `SfzVoice` **仍是 40 B**（⛔ 一个字段都没加 —— 与 portamento 把滑音态放
+//! 池级同一条纪律）。求值面与复音**同一探针**：调度表旁表的 `cents_at`、
+//! 同一局部时间基准（距音符起始帧的样本偏移）、同一乘子 `2^(cents/1200)`；
+//! 合成点与 portamento 的块内速率 ramp 同一处（`render_slot` 第 3 步）。
+//! 无弯音的音符形状下标是哨兵 ⇒ 探针一次都不调 ⇒ 输出逐位不变。
 //!
 //! ⭐ **mono-maker 片再 ＋32 B / 通道条**（`#344`：`side_lp: Biquad` ＝ 5 个系数 ＋
 //! `2 × 2` 的状态，共 36 B，8 字节对齐后 32）：`EngineRuntime` **198752 → 199296**
@@ -1673,7 +1684,7 @@ use std::sync::Arc;
 
 // ⭐ 窃取淡出的**帧数口径**：引擎里 PolySynth 用的就是这一个（3 ms × 采样率，
 // 上限 0.5 s、下限 1 帧）⇒ SFZ 池与复音池共用**同一个**舵，⛔ 不是第二份常数。
-use yeban_dsp::polysynth::steal_fade_frames_for;
+use yeban_dsp::polysynth::{NO_PITCH_SHAPE, steal_fade_frames_for};
 use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
@@ -5995,6 +6006,29 @@ pub struct SfzVoicePool {
     porta_delta: i8,
     /// 该滑音声部自触发起的帧数。
     porta_frame: u32,
+    /// ⭐ **弯音形状下标（每槽一份）**：触发该槽声部的音符在调度表旁表
+    /// （`crate::synth::NoteSchedule::pitch_shapes`）里的下标
+    /// （`crate::synth::ScheduledNote::pitch_shape` 的触发期副本）；
+    /// [`NO_PITCH_SHAPE`] ＝ 该音符没有弯音/滑音 ⇒ 渲染侧探针**一次都不调**，
+    /// 该槽走接线前的恒定速率路（逐位相同）。
+    ///
+    /// # 为什么在池上而不是在 [`SfzVoice`] 里
+    ///
+    /// 与 portamento 同一条理由：`SfzVoice` 必须保持 **40 B**（判据 `S9`）
+    /// ⇒ 逐声部的伴随状态放池级**每槽数组**（与 `order` / `fade` 同款）。
+    /// 代价：`[u16; 16]` ＝ **32 B / 池**。
+    pitch_shape: [u16; SFZ_VOICES_PER_TRACK],
+    /// ⭐ 挂起声部的弯音形状下标（与 [`Self::pending`] 同步写入、提升时同步搬运；
+    /// 32 B / 池）。
+    pending_pitch_shape: [u16; SFZ_VOICES_PER_TRACK],
+    /// ⭐ **该槽声部的音符起始帧**（引擎绝对位置）：弯音局部时间的原点
+    /// —— `local = 当前绝对位置 − note_start`，与复音探针的 `local` **同一基准**
+    /// （曲线在构造期已由 `crate::snapshot` 换算成"距音符 `start_sample` 的样本
+    /// 偏移"）。代价：`[u64; 16]` ＝ **128 B / 池**。
+    note_start: [u64; SFZ_VOICES_PER_TRACK],
+    /// ⭐ 挂起声部的音符起始帧（与 [`Self::pending`] 同步写入、提升时同步搬运；
+    /// 128 B / 池）。
+    pending_note_start: [u64; SFZ_VOICES_PER_TRACK],
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -6070,6 +6104,18 @@ impl PitchTrack {
     }
 }
 
+/// ⭐ **弯音音分 → 速率乘子** `2^(cents / 1200)`（本单新增）：与
+/// [`PitchTrack::ratio_at`] **同一条兜底口径** —— 非有限 ⇒ `1.0`（⛔ 不让 NaN
+/// 进逐样本循环；最终速率另由 [`rate_is_usable`] 守卫裁决）。
+/// `cents == 0.0` ⇒ 乘子恰 `1.0`（IEEE 精确）⇒ 输出逐位不变。
+fn bend_ratio(cents: f32) -> f32 {
+    if cents.is_finite() {
+        (cents / 1200.0).exp2()
+    } else {
+        1.0
+    }
+}
+
 impl SfzVoicePool {
     /// ⭐ `#341`：设定**本次触发**的"其它音符按住数"。
     ///
@@ -6101,6 +6147,10 @@ impl SfzVoicePool {
             porta_slot: u8::MAX,
             porta_delta: 0,
             porta_frame: 0,
+            pitch_shape: [NO_PITCH_SHAPE; SFZ_VOICES_PER_TRACK],
+            pending_pitch_shape: [NO_PITCH_SHAPE; SFZ_VOICES_PER_TRACK],
+            note_start: [0; SFZ_VOICES_PER_TRACK],
+            pending_note_start: [0; SFZ_VOICES_PER_TRACK],
         }
     }
 
@@ -6195,6 +6245,45 @@ impl SfzVoicePool {
         end_sample: u64,
         track_gain: f32,
         cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> usize {
+        self.trigger_note_with_pitch(
+            plan,
+            note,
+            velocity,
+            0,
+            end_sample,
+            track_gain,
+            cc,
+            NO_PITCH_SHAPE,
+        )
+    }
+
+    /// ⭐ **带弯音形状的触发**（本单新增）：在 [`Self::trigger_note`] 之上多带两件
+    /// 调度表事实 —— 音符的**起始帧**（弯音局部时间的原点）与**弯音形状下标**
+    /// （`crate::synth::ScheduledNote::pitch_shape`）。两者在触发期抄进池级每槽
+    /// 数组（见 [`Self::pitch_shape`] / [`Self::note_start`] 的字段文档），渲染侧
+    /// 经 [`Self::render_into_with_probes`] 的探针逐块求值 —— 与复音合成器
+    /// **同一个探针、同一份 `cents_at`、同一局部时间基准**（⛔ 不另立第二套
+    /// 曲线语义）。
+    ///
+    /// ⚠ `pitch_shape == NO_PITCH_SHAPE` ⇒ 起始帧**从不被读**、输出与
+    /// [`Self::trigger_note`] **逐位相同**（既有全部调用点走那条包装）。
+    /// 其余语义（区域选择、关断、窃取、轮替计数）与 [`Self::trigger_note`]
+    /// 的文档**逐字共用** —— 本函数就是它的函数体，⛔ 没有第二份触发实现。
+    ///
+    /// ⚠ 参数 9 个（`trigger_note` 的 7 个 ＋ 起始帧/形状下标两件调度事实）：
+    /// 拆结构体只会把触发 API 劈成两种形状，故按仓内惯例就地 `allow`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn trigger_note_with_pitch(
+        &mut self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        start_sample: u64,
+        end_sample: u64,
+        track_gain: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+        pitch_shape: u16,
     ) -> usize {
         let n = note as usize;
         // ⭐ **portamento 的 key delta**（CC140 的引擎侧来源）：当前音 − 上一个触发音。
@@ -6326,6 +6415,11 @@ impl SfzVoicePool {
                     self.order_counter = self.order_counter.wrapping_add(1);
                     self.order[index] = self.order_counter;
                     self.voices[index] = voice;
+                    // ⭐ 弯音伴随状态与声部**同刻**安装（形状下标 ＋ 起始帧）；
+                    // 挂起侧复位为哨兵（该槽此刻没有挂起声部）。
+                    self.pitch_shape[index] = pitch_shape;
+                    self.note_start[index] = start_sample;
+                    self.pending_pitch_shape[index] = NO_PITCH_SHAPE;
                     self.pending_active[index] = false;
                     self.fade[index] = FadeRamp::NONE;
                     // ⭐ **portamento**（本单）：这条区域带 `egN_pitch_oncc140|141`
@@ -6340,7 +6434,7 @@ impl SfzVoicePool {
                     created += 1;
                 }
                 // ⭐ 池满 ⇒ **窃取**（sfz-needs-2 的落地点）；⛔ 不再丢弃。
-                None => self.steal(voice),
+                None => self.steal(voice, pitch_shape, start_sample),
             }
         }
         created
@@ -6597,7 +6691,7 @@ impl SfzVoicePool {
     ///
     /// ⚠ 若选中的 victim **已经有挂起者**（还没轮到发声），那个挂起者被换掉
     /// ⇒ 它是一次**真丢弃**：计入 [`Self::dropped`]（⛔ 不静默）。
-    fn steal(&mut self, voice: SfzVoice) {
+    fn steal(&mut self, voice: SfzVoice, pitch_shape: u16, note_start: u64) {
         let Some(victim) = self.select_victim() else {
             // 不可达：容量 ≥ 1 且"池满"意味至少一个槽 active。
             self.dropped = self.dropped.saturating_add(1);
@@ -6609,6 +6703,11 @@ impl SfzVoicePool {
         self.stolen = self.stolen.saturating_add(1);
         if !fade.is_fading() {
             self.voices[victim] = voice;
+            // ⭐ 弯音伴随状态随声部一起换（硬窃取：新声部立刻是活声部；
+            // 挂起侧复位为哨兵）。
+            self.pitch_shape[victim] = pitch_shape;
+            self.note_start[victim] = note_start;
+            self.pending_pitch_shape[victim] = NO_PITCH_SHAPE;
             self.order[victim] = order;
             self.pending_active[victim] = false;
             self.fade[victim] = FadeRamp::NONE;
@@ -6619,6 +6718,9 @@ impl SfzVoicePool {
             self.dropped = self.dropped.saturating_add(1);
         }
         self.pending[victim] = voice;
+        // ⭐ 软窃取：新声部先挂起 ⇒ 弯音伴随状态进挂起侧，提升时再搬进活侧。
+        self.pending_pitch_shape[victim] = pitch_shape;
+        self.pending_note_start[victim] = note_start;
         self.pending_active[victim] = true;
         self.order[victim] = order;
         self.fade[victim] = fade;
@@ -6692,8 +6794,33 @@ impl SfzVoicePool {
         out: &mut [f32],
         cc: Option<&dyn Fn(u8) -> u8>,
     ) {
+        self.render_into_with_probes(plan, position, out, cc, None);
+    }
+
+    /// ⭐ **带弯音探针的逐块渲染**（本单新增）：在 [`Self::render_into_with_cc`]
+    /// 之上多带弯音探针 `pitch` —— 与复音合成器 `render_with_pitch` 的探针
+    /// **同一个形状、同一份语义**：`(形状下标, 音符局部样本偏移) -> 音分`。
+    ///
+    /// * `pitch == None` ⇒ 与 [`Self::render_into_with_cc`] **逐位相同**
+    ///   （该包装就传这个值）；
+    /// * `pitch == Some(probe)` ⇒ 每槽在块首/块末各求一次探针（局部时间 =
+    ///   本段绝对位置 − 该槽 [`Self::note_start`]），音分换速率乘子
+    ///   `2^(cents/1200)` 乘进块首/块末速率，块内由 `mix_span_into` 线性 ramp
+    ///   —— 与 portamento **同一个合成点、同一粒度**；
+    /// * 形状下标是 [`NO_PITCH_SHAPE`] 的槽 **一次都不调探针** ⇒ 恒定速率，
+    ///   与接线前逐位相同（探针恒回 `0.0` 时乘子恰 `1.0`，亦逐位相同）。
+    ///
+    /// **零分配、零锁、零 I/O**：探针是只读借用；逐块每槽至多两次探针调用。
+    pub fn render_into_with_probes(
+        &mut self,
+        plan: &PreparedSfz,
+        position: u64,
+        out: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+        pitch: Option<&dyn Fn(u16, u64) -> f32>,
+    ) {
         for index in 0..SFZ_VOICES_PER_TRACK {
-            self.render_slot(index, plan, position, out, cc);
+            self.render_slot(index, plan, position, out, cc, pitch);
         }
     }
 
@@ -6720,6 +6847,7 @@ impl SfzVoicePool {
         position: u64,
         out: &mut [f32],
         cc: Option<&dyn Fn(u8) -> u8>,
+        pitch: Option<&dyn Fn(u16, u64) -> f32>,
     ) {
         let mut offset = 0usize;
         let mut victim_stopped = false;
@@ -6779,6 +6907,9 @@ impl SfzVoicePool {
         // --- 2) 提升：淡出走完 **或** victim 提前静音 ⇒ 挂起者接管这一槽 ---
         if self.pending_active[index] && (!self.fade[index].is_fading() || victim_stopped) {
             self.voices[index] = self.pending[index];
+            // ⭐ 弯音伴随状态随挂起声部一起提升（形状下标 ＋ 起始帧）。
+            self.pitch_shape[index] = self.pending_pitch_shape[index];
+            self.note_start[index] = self.pending_note_start[index];
             self.pending_active[index] = false;
             self.fade[index] = FadeRamp::NONE;
         }
@@ -6830,6 +6961,27 @@ impl SfzVoicePool {
                 )
             }
             None => (readings.rate, readings.rate),
+        };
+        // ⭐ **弯音曲线的块内速率**（本单新增）：与 portamento **同一个合成点** ——
+        // 探针在块首/块末各求一次（局部时间 = 本段绝对位置 − 音符起始帧，与复音
+        // 探针的 `local` 同一基准），音分经 [`bend_ratio`] 换乘子乘进速率，块内
+        // 由 `mix_span_into` 线性 ramp。⚠ 形状下标是 [`NO_PITCH_SHAPE`] ⇒ 探针
+        // **一次都不调**；探针恒回 `0.0` ⇒ 乘子恰 `1.0`（IEEE 精确）—— 两条都与
+        // 接线前**逐位相同**。淡出段（上面第 1 步）⛔ 不施加弯音 —— 与
+        // portamento 同一口径（它的音高轨在淡出段同样只走 `readings.rate`）。
+        let (rate, rate_end) = match pitch {
+            Some(probe) if self.pitch_shape[index] != NO_PITCH_SHAPE => {
+                let shape = self.pitch_shape[index];
+                let local_start = position
+                    .saturating_add(offset as u64)
+                    .saturating_sub(self.note_start[index]);
+                let local_end = local_start.saturating_add(frames as u64);
+                (
+                    rate * bend_ratio(probe(shape, local_start)),
+                    rate_end * bend_ratio(probe(shape, local_end)),
+                )
+            }
+            _ => (rate, rate_end),
         };
         // ⭐ `#117` 的守卫对**最终 rate** 再判一次（乘子可能让速率溢出）。
         // 与另两条路同一个谓词 ⇒ 非法速率如实退休，⛔ 不让 `Inf` 进逐样本循环。
@@ -7012,6 +7164,12 @@ impl SfzVoicePool {
     /// 释放**一个**槽：声部与挂起者一起退休（淡出状态归 [`FadeRamp::NONE`]）。
     fn silence_slot(&mut self, index: usize) {
         self.voices[index].silence();
+        // ⭐ 弯音伴随状态一并退休（池的 `PartialEq` 是确定性判据的一部分：
+        // 残留会让"同一输入两次渲染"在池相等比较上分家）。
+        self.pitch_shape[index] = NO_PITCH_SHAPE;
+        self.pending_pitch_shape[index] = NO_PITCH_SHAPE;
+        self.note_start[index] = 0;
+        self.pending_note_start[index] = 0;
         self.pending_active[index] = false;
         self.fade[index] = FadeRamp::NONE;
     }
