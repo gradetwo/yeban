@@ -20,8 +20,8 @@ use crate::input::Action;
 use crate::meters::{MeterRuntime, MeterSnapshot};
 use crate::scene::DemoScene;
 use crate::ui::{
-    BrowserItemData, ChordBlockData, CommandPaletteItem, MainWindow, PersonaMode, PianoStepRow,
-    Theme, ThemeState, TimelineBlockData, TrackData, YebanTheme,
+    BrowserItemData, ChordBlockData, CommandPaletteItem, MainWindow, PersonaMode, PianoRollNote,
+    PianoStepRow, Theme, ThemeState, TimelineBlockData, TrackData, YebanTheme,
 };
 use crate::undo::UndoPort;
 
@@ -456,9 +456,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     ui.set_is_playing(playing);
                     ui.set_toast_message(
                         if playing {
-                            "▶ 播放走带"
+                            "[走带] 播放走带已启动"
                         } else {
-                            "⏸ 停止走带"
+                            "[走带] 走带已停止"
                         }
                         .into(),
                     );
@@ -467,9 +467,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     ui.set_is_recording(rec);
                     ui.set_toast_message(
                         if rec {
-                            "● 录音与回溯捕获已开启"
+                            "[录音] 录音与回溯捕获已开启"
                         } else {
-                            "录音已停止"
+                            "[录音] 录音已停止"
                         }
                         .into(),
                     );
@@ -498,9 +498,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 ui.set_is_playing(playing);
                 ui.set_toast_message(
                     if playing {
-                        "▶ 走带与 60FPS 频谱遥测已启动"
+                        "[走带] 走带与 60FPS 频谱遥测已启动"
                     } else {
-                        "⏹ 走带已停止"
+                        "[走带] 走带已停止"
                     }
                     .into(),
                 );
@@ -516,9 +516,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 ui.set_is_recording(rec);
                 ui.set_toast_message(
                     if rec {
-                        "● 录音与回溯捕获已激活"
+                        "[录音] 录音与回溯捕获已激活"
                     } else {
-                        "录音已关闭"
+                        "[录音] 录音已关闭"
                     }
                     .into(),
                 );
@@ -550,7 +550,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 ui.set_playhead_px(40.0);
                 ui.set_timecode_text("001.01.01".into());
-                ui.set_toast_message("|◀ 播放头已归零至 001.01.01".into());
+                ui.set_toast_message("[走带] 播放头已归零至 001.01.01".into());
             }
         }
     });
@@ -863,13 +863,178 @@ fn wire_core_callbacks(ui: &MainWindow) {
         }
     });
 
-    // 13. 钢琴卷帘音符切换
+    // 13. 传统钢琴卷帘与音符交互接线
+    const PITCH_NAMES: [&str; 16] = [
+        "C5", "B4", "Bb4", "A4", "Ab4", "G4", "F#4", "F4", "E4", "Eb4", "D4", "Db4", "C4", "B3",
+        "Bb3", "A3",
+    ];
+
     ui.on_piano_step_toggle({
         let weak = weak.clone();
         move |row, step| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_toast_message(
                     format!("[卷帘] 切换钢琴卷帘音高行 {} 第 {} 步", row, step + 1).into(),
+                );
+            }
+        }
+    });
+
+    ui.on_piano_key_audition({
+        let weak = weak.clone();
+        move |pitch_name, row| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_toast_message(
+                    format!("[卷帘] 琴键试听: {} (行 {})", pitch_name, row).into(),
+                );
+            }
+        }
+    });
+
+    ui.on_piano_note_select({
+        let weak = weak.clone();
+        move |note_id| {
+            if let Some(ui) = weak.upgrade() {
+                let notes_rc = ui.get_notes();
+                let mut notes_vec: Vec<PianoRollNote> = notes_rc.iter().collect();
+                let mut found_name = String::new();
+                let mut found_vel = 0;
+                for note in &mut notes_vec {
+                    if note.id == note_id {
+                        note.selected = true;
+                        found_name = note.pitch_name.to_string();
+                        found_vel = note.velocity;
+                    } else {
+                        note.selected = false;
+                    }
+                }
+                ui.set_notes(ModelRc::new(VecModel::from(notes_vec)));
+                if note_id >= 0 {
+                    ui.set_toast_message(
+                        format!(
+                            "[卷帘] 选中音符: {} (ID {}, 力度 {})",
+                            found_name, note_id, found_vel
+                        )
+                        .into(),
+                    );
+                } else {
+                    ui.set_toast_message("[卷帘] 清除音符选中态".into());
+                }
+            }
+        }
+    });
+
+    ui.on_piano_note_create({
+        let weak = weak.clone();
+        move |row, step| {
+            if let Some(ui) = weak.upgrade() {
+                let notes_rc = ui.get_notes();
+                let mut notes_vec: Vec<PianoRollNote> = notes_rc.iter().collect();
+                let max_id = notes_vec.iter().map(|n| n.id).max().unwrap_or(0);
+                let new_id = max_id + 1;
+                let pitch_idx = (row as usize).min(PITCH_NAMES.len() - 1);
+                let pitch_name = PITCH_NAMES[pitch_idx];
+
+                for note in &mut notes_vec {
+                    note.selected = false;
+                }
+
+                notes_vec.push(PianoRollNote {
+                    id: new_id,
+                    pitch_row: row,
+                    pitch_name: pitch_name.into(),
+                    start_step: step,
+                    step_span: 2,
+                    velocity: 100,
+                    selected: true,
+                });
+
+                ui.set_notes(ModelRc::new(VecModel::from(notes_vec)));
+                ui.set_toast_message(
+                    format!(
+                        "[卷帘] 画笔绘制音符: {} (第 {} 步, ID {})",
+                        pitch_name,
+                        step + 1,
+                        new_id
+                    )
+                    .into(),
+                );
+            }
+        }
+    });
+
+    ui.on_piano_note_split({
+        let weak = weak.clone();
+        move |note_id| {
+            if let Some(ui) = weak.upgrade() {
+                let notes_rc = ui.get_notes();
+                let mut notes_vec: Vec<PianoRollNote> = notes_rc.iter().collect();
+                let max_id = notes_vec.iter().map(|n| n.id).max().unwrap_or(0);
+                let mut new_note = None;
+
+                for note in &mut notes_vec {
+                    if note.id == note_id && note.step_span >= 2 {
+                        let original_span = note.step_span;
+                        let first_span = original_span / 2;
+                        let second_span = original_span - first_span;
+                        note.step_span = first_span;
+
+                        new_note = Some(PianoRollNote {
+                            id: max_id + 1,
+                            pitch_row: note.pitch_row,
+                            pitch_name: note.pitch_name.clone(),
+                            start_step: note.start_step + first_span,
+                            step_span: second_span,
+                            velocity: note.velocity,
+                            selected: true,
+                        });
+                        break;
+                    }
+                }
+
+                if let Some(nn) = new_note {
+                    notes_vec.push(nn);
+                    ui.set_notes(ModelRc::new(VecModel::from(notes_vec)));
+                    ui.set_toast_message(format!("[卷帘] 切分音符: ID {}", note_id).into());
+                } else {
+                    ui.set_toast_message(
+                        format!("[卷帘] 音符 ID {} 长度不足无法继续切分", note_id).into(),
+                    );
+                }
+            }
+        }
+    });
+
+    ui.on_piano_note_delete({
+        let weak = weak.clone();
+        move |note_id| {
+            if let Some(ui) = weak.upgrade() {
+                let notes_rc = ui.get_notes();
+                let before_len = notes_rc.row_count();
+                let notes_vec: Vec<PianoRollNote> =
+                    notes_rc.iter().filter(|n| n.id != note_id).collect();
+                if notes_vec.len() < before_len {
+                    ui.set_notes(ModelRc::new(VecModel::from(notes_vec)));
+                    ui.set_toast_message(format!("[卷帘] 橡皮擦除音符: ID {}", note_id).into());
+                }
+            }
+        }
+    });
+
+    ui.on_piano_note_velocity({
+        let weak = weak.clone();
+        move |note_id, new_vel| {
+            if let Some(ui) = weak.upgrade() {
+                let notes_rc = ui.get_notes();
+                let mut notes_vec: Vec<PianoRollNote> = notes_rc.iter().collect();
+                for note in &mut notes_vec {
+                    if note.id == note_id {
+                        note.velocity = new_vel.clamp(1, 127);
+                    }
+                }
+                ui.set_notes(ModelRc::new(VecModel::from(notes_vec)));
+                ui.set_toast_message(
+                    format!("[卷帘] 音符 ID {} 力度调整为: {}", note_id, new_vel).into(),
                 );
             }
         }
@@ -1106,4 +1271,90 @@ pub fn wire_roll_bounds_stub(ui: &MainWindow) {
 #[allow(dead_code)]
 fn flags_for_ids(_ids: &[yeban_model::EntityId]) -> Vec<bool> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+    use slint::platform::{Platform, WindowAdapter};
+    use std::rc::Rc;
+
+    struct TestSoftwarePlatform {
+        window: Rc<MinimalSoftwareWindow>,
+    }
+
+    impl Platform for TestSoftwarePlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+            Ok(self.window.clone())
+        }
+    }
+
+    #[test]
+    fn test_traditional_piano_roll_interactive_operations() {
+        let sw_win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        let _ = slint::platform::set_platform(Box::new(TestSoftwarePlatform { window: sw_win }));
+
+        let ui = MainWindow::new().expect("必须能够成功构建 MainWindow");
+        wire_core_callbacks(&ui);
+
+        // 1. 验证初始音符数量为 8
+        let initial_notes = ui.get_notes();
+        assert_eq!(initial_notes.row_count(), 8, "初始钢琴卷帘必须有 8 个音符");
+
+        // 2. 选区测试：选中 note 2
+        ui.invoke_piano_note_select(2);
+        let notes_after_sel = ui.get_notes();
+        let n2 = notes_after_sel.iter().find(|n| n.id == 2).unwrap();
+        assert!(n2.selected, "音符 2 必须被标记为选中");
+        let n1 = notes_after_sel.iter().find(|n| n.id == 1).unwrap();
+        assert!(!n1.selected, "音符 1 必须取消选中");
+
+        // 3. 绘制测试：在第 0 行第 6 步新建音符
+        ui.invoke_piano_note_create(0, 6);
+        let notes_after_create = ui.get_notes();
+        assert_eq!(notes_after_create.row_count(), 9, "新建后音符数增至 9");
+        let created = notes_after_create
+            .iter()
+            .find(|n| n.pitch_row == 0 && n.start_step == 6)
+            .unwrap();
+        assert_eq!(created.pitch_name, "C5");
+        assert!(created.selected);
+
+        // 4. 切分测试：切分 note 1 (span=2)
+        ui.invoke_piano_note_split(1);
+        let notes_after_split = ui.get_notes();
+        assert_eq!(notes_after_split.row_count(), 10, "切分后音符数增至 10");
+        let orig_part = notes_after_split.iter().find(|n| n.id == 1).unwrap();
+        assert_eq!(orig_part.step_span, 1, "前半段跨度变为 1");
+
+        // 5. 力度调整测试：设置 note 2 力度为 125
+        ui.invoke_piano_note_velocity(2, 125);
+        let notes_after_vel = ui.get_notes();
+        let n2_vel = notes_after_vel.iter().find(|n| n.id == 2).unwrap();
+        assert_eq!(n2_vel.velocity, 125, "音符 2 力度必须更新为 125");
+
+        // 6. 橡皮擦除测试：删除 note 2
+        ui.invoke_piano_note_delete(2);
+        let notes_after_del = ui.get_notes();
+        assert_eq!(notes_after_del.row_count(), 9, "删除后音符数减为 9");
+        assert!(
+            notes_after_del.iter().find(|n| n.id == 2).is_none(),
+            "音符 2 必须已被擦除"
+        );
+
+        // 7. 琴键试听测试
+        ui.invoke_piano_key_audition("C5".into(), 0);
+        assert_eq!(ui.get_toast_message(), "[卷帘] 琴键试听: C5 (行 0)");
+
+        // 8. 走带与快捷键无 Emoji 格式验证
+        ui.invoke_transport_toggle_play();
+        assert_eq!(ui.get_toast_message(), "[走带] 走带与 60FPS 频谱遥测已启动");
+        ui.invoke_transport_toggle_play();
+        assert_eq!(ui.get_toast_message(), "[走带] 走带已停止");
+        ui.invoke_transport_toggle_rec();
+        assert_eq!(ui.get_toast_message(), "[录音] 录音与回溯捕获已激活");
+        ui.invoke_transport_rewind();
+        assert_eq!(ui.get_toast_message(), "[走带] 播放头已归零至 001.01.01");
+    }
 }

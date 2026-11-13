@@ -1,5 +1,490 @@
 import { Theme, PersonaMode, Tokens } from "tokens.slint";
 
+// =========================================================================
+// UNIFIED VECTOR ICONS (1.2px - 1.5px Stroke, Geometric, Professional DAW Style)
+// =========================================================================
+
+// --- 1. Zone Visibility Toggles ---
+
+component IconInspectorToggle inherits Rectangle {
+    in property <bool> active: false;
+    in property <color> active-color: Theme.accent;
+    in property <color> inactive-color: #64748b;
+
+    width: 14px;
+    height: 12px;
+
+    // Window frame
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 14px;
+        height: 12px;
+        border-radius: 1px;
+        border-width: 1.2px;
+        border-color: root.active ? root.active-color : root.inactive-color;
+        background: transparent;
+
+        // Left inspector panel
+        Rectangle {
+            x: 1.2px;
+            y: 1.2px;
+            width: 3.5px;
+            height: 9.6px;
+            border-radius: 0.5px;
+            background: root.active ? root.active-color : root.inactive-color.with-alpha(0.3);
+        }
+
+        // Inner divider
+        Rectangle {
+            x: 4.8px;
+            y: 1.2px;
+            width: 1px;
+            height: 9.6px;
+            background: root.active ? root.active-color : root.inactive-color.with-alpha(0.6);
+        }
+
+        // Arranger content ghost lines
+        Rectangle {
+            x: 6.5px;
+            y: 3px;
+            width: 5.5px;
+            height: 1.5px;
+            border-radius: 0.5px;
+            background: root.inactive-color.with-alpha(0.35);
+        }
+        Rectangle {
+            x: 6.5px;
+            y: 6.5px;
+            width: 4px;
+            height: 1.5px;
+            border-radius: 0.5px;
+            background: root.inactive-color.with-alpha(0.35);
+        }
+    }
+}
+
+component IconClipMatrixToggle inherits Rectangle {
+    in property <bool> active: false;
+    in property <color> active-color: Theme.accent;
+    in property <color> inactive-color: #64748b;
+
+    width: 14px;
+    height: 12px;
+
+    Rectangle {
+        x: 0.5px;
+        y: 0.5px;
+        width: 5.5px;
+        height: 4.5px;
+        border-radius: 1px;
+        border-width: root.active ? 0 : 1px;
+        border-color: root.inactive-color;
+        background: root.active ? root.active-color : root.inactive-color.with-alpha(0.25);
+    }
+    Rectangle {
+        x: 8px;
+        y: 0.5px;
+        width: 5.5px;
+        height: 4.5px;
+        border-radius: 1px;
+        border-width: root.active ? 0 : 1px;
+        border-color: root.inactive-color;
+        background: root.active ? root.active-color : root.inactive-color.with-alpha(0.25);
+    }
+    Rectangle {
+        x: 0.5px;
+        y: 7px;
+        width: 5.5px;
+        height: 4.5px;
+        border-radius: 1px;
+        border-width: root.active ? 0 : 1px;
+        border-color: root.inactive-color;
+        background: root.active ? root.active-color : root.inactive-color.with-alpha(0.25);
+    }
+    Rectangle {
+        x: 8px;
+        y: 7px;
+        width: 5.5px;
+        height: 4.5px;
+        border-radius: 1px;
+        border-width: root.active ? 0 : 1px;
+        border-color: root.inactive-color;
+        background: root.active ? root.active-color : root.inactive-color.with-alpha(0.25);
+    }
+}
+
+component IconLowerDockToggle inherits Rectangle {
+    in property <bool> active: false;
+    in property <color> active-color: Theme.accent;
+    in property <color> inactive-color: #64748b;
+
+    width: 14px;
+    height: 12px;
+
+    // Window frame
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 14px;
+        height: 12px;
+        border-radius: 1px;
+        border-width: 1.2px;
+        border-color: root.active ? root.active-color : root.inactive-color;
+        background: transparent;
+
+        // Arranger content ghost lines in upper section
+        Rectangle {
+            x: 2px;
+            y: 2px;
+            width: 6px;
+            height: 1.5px;
+            border-radius: 0.5px;
+            background: root.inactive-color.with-alpha(0.35);
+        }
+        Rectangle {
+            x: 2px;
+            y: 4.5px;
+            width: 9px;
+            height: 1.5px;
+            border-radius: 0.5px;
+            background: root.inactive-color.with-alpha(0.35);
+        }
+
+        // Inner horizontal divider
+        Rectangle {
+            x: 1.2px;
+            y: 7px;
+            width: 11.6px;
+            height: 1px;
+            background: root.active ? root.active-color : root.inactive-color.with-alpha(0.6);
+        }
+
+        // Lower dock panel
+        Rectangle {
+            x: 1.2px;
+            y: 8px;
+            width: 11.6px;
+            height: 2.8px;
+            border-radius: 0.5px;
+            background: root.active ? root.active-color : root.inactive-color.with-alpha(0.3);
+        }
+    }
+}
+
+component IconControlRoomToggle inherits Rectangle {
+    in property <bool> active: false;
+    in property <color> active-color: Theme.accent;
+    in property <color> inactive-color: #64748b;
+
+    width: 14px;
+    height: 12px;
+
+    // Window frame
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 14px;
+        height: 12px;
+        border-radius: 1px;
+        border-width: 1.2px;
+        border-color: root.active ? root.active-color : root.inactive-color;
+        background: transparent;
+
+        // Arranger content ghost lines
+        Rectangle {
+            x: 2px;
+            y: 3px;
+            width: 5.5px;
+            height: 1.5px;
+            border-radius: 0.5px;
+            background: root.inactive-color.with-alpha(0.35);
+        }
+        Rectangle {
+            x: 2px;
+            y: 6.5px;
+            width: 4px;
+            height: 1.5px;
+            border-radius: 0.5px;
+            background: root.inactive-color.with-alpha(0.35);
+        }
+
+        // Inner divider
+        Rectangle {
+            x: 8.2px;
+            y: 1.2px;
+            width: 1px;
+            height: 9.6px;
+            background: root.active ? root.active-color : root.inactive-color.with-alpha(0.6);
+        }
+
+        // Right control room panel
+        Rectangle {
+            x: 9.2px;
+            y: 1.2px;
+            width: 3.6px;
+            height: 9.6px;
+            border-radius: 0.5px;
+            background: root.active ? root.active-color : root.inactive-color.with-alpha(0.3);
+        }
+    }
+}
+
+// --- 2. Edit Tools ---
+
+component IconToolPointer inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    Path {
+        x: 1px;
+        y: 0;
+        width: 12px;
+        height: 12px;
+        commands: "M 2 0.5 L 2 11.5 L 5 8.5 L 8 11.5 L 9.5 10 L 6.5 7 L 10 7 Z";
+        fill: root.icon-color;
+    }
+}
+
+component IconToolRange inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    // Left bracket
+    Rectangle {
+        x: 1.5px;
+        y: 1px;
+        width: 1.8px;
+        height: 10px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+    Rectangle {
+        x: 1.5px;
+        y: 1px;
+        width: 3.5px;
+        height: 1.5px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+    Rectangle {
+        x: 1.5px;
+        y: 9.5px;
+        width: 3.5px;
+        height: 1.5px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+
+    // Center span
+    Rectangle {
+        x: 4.5px;
+        y: 5.2px;
+        width: 5px;
+        height: 1.6px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+
+    // Right bracket
+    Rectangle {
+        x: 10.7px;
+        y: 1px;
+        width: 1.8px;
+        height: 10px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+    Rectangle {
+        x: 9px;
+        y: 1px;
+        width: 3.5px;
+        height: 1.5px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+    Rectangle {
+        x: 9px;
+        y: 9.5px;
+        width: 3.5px;
+        height: 1.5px;
+        border-radius: 0.5px;
+        background: root.icon-color;
+    }
+}
+
+component IconToolSplit inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    Path {
+        x: 1px;
+        y: 0;
+        width: 12px;
+        height: 12px;
+        commands: "M 2 11 L 10 1 M 6 1 L 11 1 L 11 6 M 3 11 L 1 11 L 1 9";
+        stroke: root.icon-color;
+        stroke-width: 1.5px;
+    }
+}
+
+component IconToolDraw inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    Path {
+        x: 1px;
+        y: 0;
+        width: 12px;
+        height: 12px;
+        commands: "M 1 11 L 1 8 L 8 1 L 11 4 L 4 11 Z";
+        stroke: root.icon-color;
+        stroke-width: 1.2px;
+        fill: root.selected ? root.icon-color : root.icon-color.with-alpha(0.25);
+    }
+}
+
+// --- 3. Workspace Persona Switchers ---
+
+component IconPersonaDefault inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    // Left Inspector strip
+    Rectangle {
+        x: 0.5px;
+        y: 0.5px;
+        width: 3.5px;
+        height: 11px;
+        border-radius: 1px;
+        background: root.icon-color;
+    }
+    // Top Arranger block
+    Rectangle {
+        x: 5px;
+        y: 0.5px;
+        width: 8.5px;
+        height: 4.8px;
+        border-radius: 1px;
+        background: root.icon-color;
+    }
+    // Bottom Mixer dock
+    Rectangle {
+        x: 5px;
+        y: 6.7px;
+        width: 8.5px;
+        height: 4.8px;
+        border-radius: 1px;
+        background: root.icon-color;
+    }
+}
+
+component IconPersonaPerformance inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    // 6-pad performance matrix (Clip launcher pads)
+    Rectangle { x: 0.5px; y: 0.5px; width: 3.6px; height: 4.5px; border-radius: 1px; background: root.icon-color; }
+    Rectangle { x: 5.2px; y: 0.5px; width: 3.6px; height: 4.5px; border-radius: 1px; background: root.icon-color; }
+    Rectangle { x: 9.9px; y: 0.5px; width: 3.6px; height: 4.5px; border-radius: 1px; background: root.icon-color; }
+    Rectangle { x: 0.5px; y: 7px;   width: 3.6px; height: 4.5px; border-radius: 1px; background: root.icon-color; }
+    Rectangle { x: 5.2px; y: 7px;   width: 3.6px; height: 4.5px; border-radius: 1px; background: root.icon-color; }
+    Rectangle { x: 9.9px; y: 7px;   width: 3.6px; height: 4.5px; border-radius: 1px; background: root.icon-color; }
+}
+
+component IconPersonaArranger inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    // Track 1
+    Rectangle { x: 0.5px; y: 1px; width: 6.5px; height: 2px; border-radius: 0.5px; background: root.icon-color; }
+    Rectangle { x: 8px; y: 1px; width: 5.5px; height: 2px; border-radius: 0.5px; background: root.icon-color.with-alpha(0.65); }
+
+    // Track 2
+    Rectangle { x: 1.5px; y: 5px; width: 10px; height: 2px; border-radius: 0.5px; background: root.icon-color; }
+
+    // Track 3
+    Rectangle { x: 0.5px; y: 9px; width: 5px; height: 2px; border-radius: 0.5px; background: root.icon-color; }
+    Rectangle { x: 6.5px; y: 9px; width: 7px; height: 2px; border-radius: 0.5px; background: root.icon-color.with-alpha(0.65); }
+
+    // Playhead line
+    Rectangle {
+        x: 6px;
+        y: 0;
+        width: 1.2px;
+        height: 12px;
+        background: root.selected ? #ffffff : Theme.accent;
+    }
+}
+
+component IconPersonaMixer inherits Rectangle {
+    in property <bool> selected: false;
+    in property <color> icon-color: #94a3b8;
+
+    width: 14px;
+    height: 12px;
+
+    // Fader strip 1
+    Rectangle { x: 1.8px; y: 0; width: 1.2px; height: 12px; background: root.icon-color.with-alpha(0.45); }
+    Rectangle { x: 0.5px; y: 3px; width: 3.8px; height: 3px; border-radius: 0.5px; background: root.icon-color; }
+
+    // Fader strip 2
+    Rectangle { x: 6.4px; y: 0; width: 1.2px; height: 12px; background: root.icon-color.with-alpha(0.45); }
+    Rectangle { x: 5.1px; y: 7px; width: 3.8px; height: 3px; border-radius: 0.5px; background: root.icon-color; }
+
+    // Fader strip 3
+    Rectangle { x: 11px; y: 0; width: 1.2px; height: 12px; background: root.icon-color.with-alpha(0.45); }
+    Rectangle { x: 9.7px; y: 4px; width: 3.8px; height: 3px; border-radius: 0.5px; background: root.icon-color; }
+}
+
+component IconEyeInsight inherits Rectangle {
+    in property <bool> active: false;
+    in property <color> active-color: Theme.status-warn;
+
+    width: 14px;
+    height: 12px;
+
+    Path {
+        x: 0;
+        y: 0;
+        width: 14px;
+        height: 12px;
+        commands: "M 1 6 Q 7 1, 13 6 Q 7 11, 1 6 Z";
+        stroke: root.active-color;
+        stroke-width: 1.2px;
+        fill: root.active ? root.active-color.with-alpha(0.3) : transparent;
+    }
+    Rectangle {
+        x: 5.5px;
+        y: 4.5px;
+        width: 3px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: root.active-color;
+    }
+}
+
 export component TransportHeaderBar inherits Rectangle {
     in-out property <bool> show-browser: true;
     in-out property <bool> show-clipmatrix: true;
@@ -105,7 +590,7 @@ export component TransportHeaderBar inherits Rectangle {
                 }
             }
 
-            // Zone visibility toggles
+            // Zone visibility toggles (检查器, Clip 矩阵, 底栏, 监听室)
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
@@ -116,90 +601,75 @@ export component TransportHeaderBar inherits Rectangle {
                 HorizontalLayout {
                     padding: 2px;
                     spacing: 2px;
+                    alignment: center;
 
+                    // 1. 检查器 [I]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.show-browser ? Theme.accent.with-alpha(0.18) : transparent;
                         border-radius: 3px;
                         border-width: root.show-browser ? 1px : 0;
                         border-color: Theme.accent;
-                        HorizontalLayout {
-                            padding-left: 7px;
-                            padding-right: 7px;
-                            Text {
-                                text: "◧ 检查器 [I]";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                color: root.show-browser ? Theme.accent : #94a3b8;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
+                        IconInspectorToggle {
+                            active: root.show-browser;
+                            active-color: Theme.accent;
+                            inactive-color: #64748b;
                         }
                         TouchArea { clicked => { root.toggle-zone("browser"); } }
                     }
 
+                    // 2. Clip 矩阵 [Tab]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.show-clipmatrix ? Theme.accent.with-alpha(0.18) : transparent;
                         border-radius: 3px;
                         border-width: root.show-clipmatrix ? 1px : 0;
                         border-color: Theme.accent;
-                        HorizontalLayout {
-                            padding-left: 7px;
-                            padding-right: 7px;
-                            Text {
-                                text: "⊞ Clip [Tab]";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                color: root.show-clipmatrix ? Theme.accent : #94a3b8;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
+                        IconClipMatrixToggle {
+                            active: root.show-clipmatrix;
+                            active-color: Theme.accent;
+                            inactive-color: #64748b;
                         }
                         TouchArea { clicked => { root.toggle-zone("clipmatrix"); } }
                     }
 
+                    // 3. 底栏 [F3]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.show-lower-dock ? Theme.accent.with-alpha(0.18) : transparent;
                         border-radius: 3px;
                         border-width: root.show-lower-dock ? 1px : 0;
                         border-color: Theme.accent;
-                        HorizontalLayout {
-                            padding-left: 7px;
-                            padding-right: 7px;
-                            Text {
-                                text: "⬓ 底栏 [F3]";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                color: root.show-lower-dock ? Theme.accent : #94a3b8;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
+                        IconLowerDockToggle {
+                            active: root.show-lower-dock;
+                            active-color: Theme.accent;
+                            inactive-color: #64748b;
                         }
                         TouchArea { clicked => { root.toggle-zone("lower"); } }
                     }
 
+                    // 4. 监听室 [F4]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.show-control-room ? Theme.accent.with-alpha(0.18) : transparent;
                         border-radius: 3px;
                         border-width: root.show-control-room ? 1px : 0;
                         border-color: Theme.accent;
-                        HorizontalLayout {
-                            padding-left: 7px;
-                            padding-right: 7px;
-                            Text {
-                                text: "◨ 监听 [F4]";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                color: root.show-control-room ? Theme.accent : #94a3b8;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
+                        IconControlRoomToggle {
+                            active: root.show-control-room;
+                            active-color: Theme.accent;
+                            inactive-color: #64748b;
                         }
                         TouchArea { clicked => { root.toggle-zone("right"); } }
                     }
                 }
             }
 
-            // Edit Tools
+            // Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
@@ -210,79 +680,56 @@ export component TransportHeaderBar inherits Rectangle {
                 HorizontalLayout {
                     padding: 2px;
                     spacing: 2px;
+                    alignment: center;
 
+                    // 选区 [1]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.active-tool == "pointer" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            Text {
-                                text: "选区";
-                                font-family: Tokens.font-ui;
-                                font-size: 9px;
-                                color: root.active-tool == "pointer" ? #020617 : #94a3b8;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        IconToolPointer {
+                            selected: root.active-tool == "pointer";
+                            icon-color: root.active-tool == "pointer" ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("pointer"); } }
                     }
 
+                    // 范围 [2]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.active-tool == "range" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            Text {
-                                text: "范围";
-                                font-family: Tokens.font-ui;
-                                font-size: 9px;
-                                color: root.active-tool == "range" ? #020617 : #94a3b8;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        IconToolRange {
+                            selected: root.active-tool == "range";
+                            icon-color: root.active-tool == "range" ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("range"); } }
                     }
 
+                    // 切分 [3]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.active-tool == "split" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            Text {
-                                text: "切分";
-                                font-family: Tokens.font-ui;
-                                font-size: 9px;
-                                color: root.active-tool == "split" ? #020617 : #94a3b8;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        IconToolSplit {
+                            selected: root.active-tool == "split";
+                            icon-color: root.active-tool == "split" ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("split"); } }
                     }
 
+                    // 画笔 [4]
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: root.active-tool == "draw" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            Text {
-                                text: "画笔";
-                                font-family: Tokens.font-ui;
-                                font-size: 9px;
-                                color: root.active-tool == "draw" ? #020617 : #94a3b8;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        IconToolDraw {
+                            selected: root.active-tool == "draw";
+                            icon-color: root.active-tool == "draw" ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("draw"); } }
                     }
@@ -310,10 +757,10 @@ export component TransportHeaderBar inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.border-subtle;
                     Text {
-                        text: "|◀";
-                        font-family: Tokens.font-mono;
-                        font-size: 10px;
-                        font-weight: 700;
+                        text: "◀◀";
+                        font-family: Tokens.font-ui;
+                        font-size: 9px;
+                        font-weight: 800;
                         color: #cbd5e1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -580,7 +1027,7 @@ export component TransportHeaderBar inherits Rectangle {
                 }
             }
 
-            // Workspace Persona Switcher (Professional studio workflows)
+            // Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
@@ -591,79 +1038,56 @@ export component TransportHeaderBar inherits Rectangle {
                 HorizontalLayout {
                     padding: 2px;
                     spacing: 2px;
+                    alignment: center;
 
                     // 1. 默认全景 (Default Production Studio)
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            Text {
-                                text: "默认";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                font-weight: 700;
-                                color: Theme.persona == PersonaMode.YebanDefault ? #020617 : #94a3b8;
-                                vertical-alignment: center;
-                            }
+                        IconPersonaDefault {
+                            selected: Theme.persona == PersonaMode.YebanDefault;
+                            icon-color: Theme.persona == PersonaMode.YebanDefault ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.YebanDefault); } }
                     }
 
                     // 2. 现场演出 (Clip Matrix Performance Flow)
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            Text {
-                                text: "演出";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                font-weight: 700;
-                                color: Theme.persona == PersonaMode.AbletonLive ? #020617 : #94a3b8;
-                                vertical-alignment: center;
-                            }
+                        IconPersonaPerformance {
+                            selected: Theme.persona == PersonaMode.AbletonLive;
+                            icon-color: Theme.persona == PersonaMode.AbletonLive ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.AbletonLive); } }
                     }
 
                     // 3. 线性编曲 (Arrange Flow)
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: Theme.persona == PersonaMode.LogicPro ? Theme.accent : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            Text {
-                                text: "编曲";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                font-weight: 700;
-                                color: Theme.persona == PersonaMode.LogicPro ? #ffffff : #94a3b8;
-                                vertical-alignment: center;
-                            }
+                        IconPersonaArranger {
+                            selected: Theme.persona == PersonaMode.LogicPro;
+                            icon-color: Theme.persona == PersonaMode.LogicPro ? #ffffff : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.LogicPro); } }
                     }
 
                     // 4. 混音控制台 (Mix & Master Studio)
                     Rectangle {
+                        width: 28px;
+                        height: 24px;
                         background: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : transparent;
                         border-radius: 3px;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            Text {
-                                text: "混音";
-                                font-family: Tokens.font-ui;
-                                font-size: 10px;
-                                font-weight: 700;
-                                color: Theme.persona == PersonaMode.CubasePro ? #020617 : #94a3b8;
-                                vertical-alignment: center;
-                            }
+                        IconPersonaMixer {
+                            selected: Theme.persona == PersonaMode.CubasePro;
+                            icon-color: Theme.persona == PersonaMode.CubasePro ? #020617 : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.CubasePro); } }
                     }
@@ -692,26 +1116,19 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Architecture insights toggle
             Rectangle {
+                width: 28px;
                 height: 28px;
                 background: Theme.status-warn.with-alpha(0.18);
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.status-warn.with-alpha(0.35);
-                HorizontalLayout {
-                    padding-left: 7px;
-                    padding-right: 7px;
-                    Text {
-                        text: "透视";
-                        font-family: Tokens.font-ui;
-                        font-size: 10px;
-                        font-weight: 700;
-                        color: Theme.status-warn;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                IconEyeInsight {
+                    active: false;
+                    active-color: Theme.status-warn;
                 }
                 TouchArea { clicked => { root.toggle-hotspots(); } }
             }
         }
     }
 }
+

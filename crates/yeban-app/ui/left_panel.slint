@@ -310,41 +310,55 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Fader + Meter (flexes vertically to occupy panel height)
+                        // Fader + Meter (Fixed tactile dimensions, non-stretching studio fader)
                         HorizontalLayout {
                             alignment: center;
                             spacing: 8px;
-                            vertical-stretch: 1;
-                            min-height: 72px;
+                            height: 104px;
 
                             // Fader rail
                             Rectangle {
-                                width: 22px;
+                                width: 24px;
+                                height: 104px;
                                 background: #06080d;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
 
+                                // Center groove
                                 Rectangle {
                                     x: 10px;
-                                    y: 0;
-                                    width: 2px;
-                                    height: parent.height;
+                                    y: 4px;
+                                    width: 4px;
+                                    height: parent.height - 8px;
                                     background: #000000;
+                                    border-radius: 1px;
                                 }
 
-                                Rectangle {
-                                    x: 2px;
-                                    y: Math.max(4px, parent.height * 0.35);
+                                // dB scale markings
+                                for tick_y in [18px, 36px, 54px, 72px, 90px] : Rectangle {
+                                    x: 3px;
+                                    y: tick_y;
                                     width: 18px;
-                                    height: 14px;
+                                    height: 1px;
+                                    background: #ffffff10;
+                                }
+
+                                // Tactile fader cap (fixed size 22px x 15px)
+                                Rectangle {
+                                    x: 1px;
+                                    y: root.selected-track-vol == -2.5 ? 42px : (root.selected-track-vol == 0.0 ? 22px : 64px);
+                                    width: 22px;
+                                    height: 15px;
                                     background: #94a3b8;
                                     border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
 
                                     Rectangle {
                                         x: 0;
-                                        y: 6px;
-                                        width: 18px;
+                                        y: 6.5px;
+                                        width: parent.width;
                                         height: 2px;
                                         background: root.selected-track-color;
                                     }
@@ -354,13 +368,15 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                             }
 
-                            // Meter bar
+                            // Meter bar (Fixed 104px height)
                             Rectangle {
                                 width: 8px;
+                                height: 104px;
                                 background: #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
+                                clip: true;
 
                                 Rectangle {
                                     x: 0;
@@ -463,40 +479,54 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Bus Fader + Meter (flexes vertically to occupy panel height)
+                        // Bus Fader + Meter (Fixed tactile dimensions, non-stretching studio fader)
                         HorizontalLayout {
                             alignment: center;
                             spacing: 8px;
-                            vertical-stretch: 1;
-                            min-height: 72px;
+                            height: 104px;
 
                             Rectangle {
-                                width: 22px;
+                                width: 24px;
+                                height: 104px;
                                 background: #06080d;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
 
+                                // Center groove
                                 Rectangle {
                                     x: 10px;
-                                    y: 0;
-                                    width: 2px;
-                                    height: parent.height;
+                                    y: 4px;
+                                    width: 4px;
+                                    height: parent.height - 8px;
                                     background: #000000;
+                                    border-radius: 1px;
                                 }
 
-                                Rectangle {
-                                    x: 2px;
-                                    y: Math.max(4px, parent.height * 0.4);
+                                // dB scale markings
+                                for tick_y in [18px, 36px, 54px, 72px, 90px] : Rectangle {
+                                    x: 3px;
+                                    y: tick_y;
                                     width: 18px;
-                                    height: 14px;
+                                    height: 1px;
+                                    background: #ffffff10;
+                                }
+
+                                // Tactile fader cap (fixed size 22px x 15px)
+                                Rectangle {
+                                    x: 1px;
+                                    y: root.bus-track-vol == -1.0 ? 36px : (root.bus-track-vol == 0.0 ? 22px : 64px);
+                                    width: 22px;
+                                    height: 15px;
                                     background: #94a3b8;
                                     border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
 
                                     Rectangle {
                                         x: 0;
-                                        y: 6px;
-                                        width: 18px;
+                                        y: 6.5px;
+                                        width: parent.width;
                                         height: 2px;
                                         background: Theme.track-bus;
                                     }
@@ -506,12 +536,15 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                             }
 
+                            // Meter bar (Fixed 104px height)
                             Rectangle {
                                 width: 8px;
+                                height: 104px;
                                 background: #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
+                                clip: true;
 
                                 Rectangle {
                                     x: 0;
@@ -555,9 +588,9 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     padding-right: 10px;
                     spacing: 6px;
                     Text {
-                        text: "⌕";
-                        font-family: Tokens.font-mono;
-                        font-size: 13px;
+                        text: "检索";
+                        font-family: Tokens.font-ui;
+                        font-size: 9px;
                         font-weight: 700;
                         color: #64748b;
                         vertical-alignment: center;
