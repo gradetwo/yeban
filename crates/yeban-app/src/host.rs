@@ -16713,3 +16713,181 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         }
     });
 }
+
+// ===========================================================================
+// 生产桥接层: 重构 UI 独有回调 -> 真实接线
+// ===========================================================================
+// `wire_aether_callbacks` 是"无上下文装配"(build_main_window) 的反馈层;
+// 本函数在 main.rs 完成全部 wire_* 装配之后注册, 用 on_* 的覆盖语义接管同名回调,
+// 把新 UI 控件触发的回调转发到 main 版接线层已注册的旧回调(真实领域逻辑),
+// 少数没有旧回调对应的(推子音量)直接提交 Op。
+// 转发用 invoke_*(调用回调) 而不是 on_*(注册), 因此与旧接线的注册顺序无关。
+
+/// 把新 UI 的显示属性与契约面(旧接线写入)对齐。
+///
+/// 数据数组(tracks / notes / track-mutes / track-volumes ...) 在两版 UI 里同名,
+/// `apply_view` / `apply_meters` 写入后新组件树直接消费; 这里只补那些**不同名**的
+/// 显示态(playing/recording/timecode/bpm/电平/播放头)。由 60Hz 心跳调用。
+pub fn sync_aether_display(ui: &MainWindow) {
+    ui.set_is_playing(ui.get_playing());
+    ui.set_is_recording(ui.get_recording());
+    ui.set_is_looping(ui.get_cycle_enabled());
+    ui.set_timecode_text(ui.get_timecode());
+    let bpm = ui.get_bpm_display().as_str().parse::<f32>().unwrap_or(120.0);
+    ui.set_bpm_val(bpm as i32);
+    let level = ui.get_master_meter_level();
+    ui.set_master_meter_l(level);
+    ui.set_master_meter_r((level * 0.95).min(1.0));
+    ui.set_lufs_short(ui.get_master_meter_lufs());
+    let tpp = ui.get_roll_ticks_per_pixel() as f32;
+    let px = if tpp > 0.0 {
+        40.0 + (ui.get_playhead_ticks() as f32) / tpp
+    } else {
+        40.0
+    };
+    ui.set_playhead_px(px);
+}
+
+/// 注册生产桥接回调; `port` 用于推子这类没有旧回调可转发的真实编辑。
+pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
+    let weak = ui.as_weak();
+
+    // ---- 走带 ----
+    ui.on_transport_toggle_play({
+        let w = weak.clone();
+        move || { if let Some(ui) = w.upgrade() { ui.invoke_toggle_play(); } }
+    });
+    ui.on_transport_toggle_rec({
+        let w = weak.clone();
+        move || { if let Some(ui) = w.upgrade() { ui.invoke_toggle_record(); } }
+    });
+    ui.on_transport_rewind({
+        let w = weak.clone();
+        move || { if let Some(ui) = w.upgrade() { ui.invoke_stop(); } }
+    });
+    ui.on_transport_set_bpm({
+        let w = weak.clone();
+        move |bpm: i32| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_bpm_commit(format!("{bpm}.00").into());
+            }
+        }
+    });
+    // `c` = Action::ToggleCycle(input.rs:1502), 与键盘同一条链。
+    ui.on_transport_toggle_loop({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_key_action("c".into(), false, false, false, false);
+            }
+        }
+    });
+    // 新 UI 的 FocusScope 把逻辑键交给这里; 修饰位取 Slint KeyboardModifiers
+    // (alt/control/shift/meta), control 对应 key-action 的 ctrl 参数。
+    ui.on_trigger_shortcut({
+        let w = weak.clone();
+        move |text, event| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_key_action(
+                    text,
+                    event.modifiers.shift,
+                    event.modifiers.control,
+                    event.modifiers.alt,
+                    event.modifiers.meta,
+                );
+            }
+        }
+    });
+
+    // ---- 轨道 / 混音 (新 UI 传 1-based TrackData.id, 旧回调要 0-based 索引) ----
+    ui.on_track_toggle_mute({
+        let w = weak.clone();
+        move |id: i32| { if let Some(ui) = w.upgrade() { ui.invoke_mixer_mute_toggle(id - 1); } }
+    });
+    ui.on_track_toggle_solo({
+        let w = weak.clone();
+        move |id: i32| { if let Some(ui) = w.upgrade() { ui.invoke_mixer_solo_toggle(id - 1); } }
+    });
+    ui.on_track_toggle_arm({
+        let w = weak.clone();
+        move |id: i32| { if let Some(ui) = w.upgrade() { ui.invoke_track_arm_toggle(id - 1); } }
+    });
+    ui.on_track_add_requested({
+        let w = weak.clone();
+        move || { if let Some(ui) = w.upgrade() { ui.invoke_track_create_midi(); } }
+    });
+    ui.on_track_selected({
+        let w = weak.clone();
+        move |id: i32| {
+            if let Some(ui) = w.upgrade() {
+                ui.set_selected_track_index(id);
+                ui.invoke_track_select(id - 1);
+            }
+        }
+    });
+    // 推子: 没有同义旧回调, 直接提交 Op::SetParam(TrackVolume), 与 wire_mixer_edit
+    // 的松手提交同一条模型路径(ADR-0005: 一次手势 = 一步可撤销编辑)。
+    ui.on_track_volume_changed({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move |id: i32, db: f32| {
+            let Some(ui) = w.upgrade() else { return; };
+            let Some(track_id) = track_id_at(&ui, id - 1) else { return; };
+            let Ok(tid) = track_id.parse::<yeban_model::EntityId>() else { return; };
+            let old_val = mixer_track_state(&port, &track_id).map_or(0.0, |state| state.volume_db);
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::TrackVolume { track_id: tid },
+                old_val,
+                new_val: db,
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            if port.commit_ops(now, "aether: 推子", vec![op]).is_err() {
+                ui.set_toast_message("推子提交被拒绝(工程未改)".into());
+            }
+        }
+    });
+
+    // ---- 工具矩阵 (新 UI 用字符串工具名, 旧回调要数字档位) ----
+    ui.on_edit_tool_selected({
+        let w = weak.clone();
+        move |tool| {
+            if let Some(ui) = w.upgrade() {
+                let digit = match tool.as_str() {
+                    "pointer" => 1, "range" => 2, "split" => 3, "draw" => 4, _ => 1,
+                };
+                ui.invoke_tool_selected(digit);
+            }
+        }
+    });
+
+    // ---- 命令面板: 把命令名分派到已接线的旧回调 ----
+    ui.on_command_execute({
+        let w = weak.clone();
+        move |cmd| {
+            let Some(ui) = w.upgrade() else { return; };
+            let c = cmd.as_str();
+            if c.contains("保存") || c.contains("save") { ui.invoke_save_project(); }
+            else if c.contains("打开") || c.contains("open") { ui.invoke_open_project(); }
+            else if c.contains("新建") || c.contains("new") { ui.invoke_new_project(); }
+            else if c.contains("撤销") || c.contains("undo") { ui.invoke_undo_step(); }
+            else if c.contains("重做") || c.contains("redo") { ui.invoke_redo_step(); }
+            else if c.contains("导出") && c.contains("WAV") { ui.invoke_open_export_wav(); }
+            else if c.contains("导出") && c.contains("MIDI") { ui.invoke_export_midi(); }
+            else if c.contains("导入") && c.contains("音频") { ui.invoke_import_audio(); }
+            else if c.contains("导入") && c.contains("MIDI") { ui.invoke_import_midi(); }
+            else if c.contains("SFZ") || c.contains("音色") { ui.invoke_load_sfz(); }
+            else if c.contains("录音") || c.contains("record") { ui.invoke_record_wav(); }
+            else if c.contains("播放") || c.contains("play") { ui.invoke_toggle_play(); }
+            else { ui.set_toast_message(format!("[命令] {}", c).into()); }
+        }
+    });
+
+    // 回滚按钮 -> 撤销一步(与 Cmd+Z 同一个 UndoPort)。
+    ui.on_revert_to_last_commit({
+        let w = weak.clone();
+        move || { if let Some(ui) = w.upgrade() { ui.invoke_undo_step(); } }
+    });
+}
+
