@@ -822,6 +822,7 @@ export component UnifiedLowerDock inherits Rectangle {
                     // Channel Fader Strips (Fixed studio width: 82px)
                     for trk in root.tracks : Rectangle {
                         width: 82px;
+                        vertical-stretch: 1;
                         background: #080a10;
                         border-radius: 4px;
                         border-width: 1px;
@@ -943,12 +944,14 @@ export component UnifiedLowerDock inherits Rectangle {
                             HorizontalLayout {
                                 alignment: center;
                                 spacing: 4px;
-                                height: 80px;
+                                vertical-stretch: 1;
+                                min-height: 80px;
 
                                 // Vertical Fader Rail
                                 Rectangle {
                                     width: 24px;
-                                    height: 80px;
+                                    vertical-stretch: 1;
+                                    min-height: 80px;
                                     background: #06080d;
                                     border-radius: 2px;
                                     border-width: 1px;
@@ -976,7 +979,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     // Tactile fader cap
                                     Rectangle {
                                         x: 1px;
-                                        y: trk.volume_db == -2.5 ? 34px : (trk.volume_db == 0.0 ? 18px : 48px);
+                                        y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (trk.volume_db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
                                         background: #94a3b8;
@@ -1006,7 +1009,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 // Level Meter Bar
                                 Rectangle {
                                     width: 6px;
-                                    height: 80px;
+                                    vertical-stretch: 1;
+                                    min-height: 80px;
                                     background: #06080d;
                                     border-radius: 1px;
                                     border-width: 1px;
@@ -1122,11 +1126,13 @@ export component UnifiedLowerDock inherits Rectangle {
                             HorizontalLayout {
                                 alignment: center;
                                 spacing: 4px;
-                                height: 80px;
+                                vertical-stretch: 1;
+                                min-height: 80px;
 
                                 Rectangle {
                                     width: 24px;
-                                    height: 80px;
+                                    vertical-stretch: 1;
+                                    min-height: 80px;
                                     background: #06080d;
                                     border-radius: 2px;
                                     border-width: 1px;
@@ -1171,7 +1177,8 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                 Rectangle {
                                     width: 6px;
-                                    height: 80px;
+                                    vertical-stretch: 1;
+                                    min-height: 80px;
                                     background: #06080d;
                                     border-radius: 1px;
                                     border-width: 1px;
@@ -1745,7 +1752,8 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             // 16 Piano Keys: C5 down to A3
                             Rectangle {
-                                height: 192px;
+                                vertical-stretch: 1;
+                                min-height: 192px;
 
                                 // Modern Studio Keyboard Accent Margin
                                 Rectangle {
@@ -1783,12 +1791,13 @@ export component UnifiedLowerDock inherits Rectangle {
                                         { name: "Bb3", is_black: true, is_c: false },
                                         { name: "A3", is_black: false, is_c: false }
                                     ] : Rectangle {
-                                        height: 12px;
+                                        vertical-stretch: 1;
+                                        min-height: 12px;
 
                                         // If White Key: Studio ivory-slate finish, dark slit divider, top sheen highlight, right bevel
                                         if !key_info.is_black : Rectangle {
                                             width: parent.width;
-                                            height: 12px;
+                                            height: parent.height;
                                             background: key_info.is_c ? #f1f5f9 : #d8dee9;
 
                                             // Bottom key slit divider
@@ -1860,7 +1869,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         // If Black Key: Modern tactile dark slate body, top catch light, right bevel edge, bottom drop shadow
                                         if key_info.is_black : Rectangle {
                                             width: parent.width;
-                                            height: 12px;
+                                            height: parent.height;
 
                                             Rectangle {
                                                 x: 0;
@@ -1992,11 +2001,14 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             // 16 Horizontal Pitch Lanes (High visual contrast: soft slate lanes, octave guide, crisp dividers)
                             VerticalLayout {
+                                width: parent.width;
+                                height: parent.height;
                                 padding: 0px;
                                 spacing: 0px;
 
                                 for lane_idx in 16 : Rectangle {
-                                    height: 12px;
+                                    vertical-stretch: 1;
+                                    min-height: 12px;
                                     // Studio harmonious contrast: C roots (#252d3d), white keys (#1f2432), black keys (#171b25)
                                     background: (lane_idx == 0 || lane_idx == 12) ? #252d3d : ((lane_idx == 2 || lane_idx == 4 || lane_idx == 6 || lane_idx == 9 || lane_idx == 11 || lane_idx == 14) ? #171b25 : #1f2432);
 
@@ -2028,8 +2040,9 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Click on empty grid to draw/insert note
                             TouchArea {
                                 clicked => {
+                                    let row_h = Math.max(12px, self.height / 16);
                                     let clicked-step = Math.min(63, Math.max(0, Math.floor(self.mouse-x / 42px)));
-                                    let clicked-row = Math.min(15, Math.max(0, Math.floor(self.mouse-y / 12px)));
+                                    let clicked-row = Math.min(15, Math.max(0, Math.floor(self.mouse-y / row_h)));
                                     if (root.roll-tool == 2) {
                                         root.canvas-create-note(clicked-row, clicked-step);
                                     } else {
@@ -2038,12 +2051,13 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            // Traditional DAW Note Bars (Fixed height 10px in 12px row, 42px step width)
+                            // Traditional DAW Note Bars (Proportional height based on row)
                             for note[n_idx] in root.notes : Rectangle {
+                                property <length> row_h: Math.max(12px, parent.height / 16);
                                 x: note.start_step * 42px + 1px;
-                                y: note.pitch_row * 12px + 1px;
+                                y: note.pitch_row * self.row_h + 1px;
                                 width: Math.max(12px, note.step_span * 42px - 2px);
-                                height: 10px;
+                                height: Math.max(10px, self.row_h - 2px);
                                 border-radius: 2px;
                                 background: note.selected ? #38bdf8 : root.selected-track-color;
                                 border-width: note.selected ? 1.5px : 1px;
