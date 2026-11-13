@@ -469,11 +469,18 @@ fn undo_display_schema() -> Value {
 /// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它由契约名册兜住，⛔ 不许为凑等式造假 schema。
 const PROPOSAL_WARNING_CODES: [&str; 2] = ["deviceOnSilentTrack", "unrecognisedEffectParam"];
 
-/// ⭐ `data.warnings[].code` 的逐工具子集（母带）。三条来源 `clipping_warning` +
-/// `silent_sources_warning` + `ignored_strip_devices_warning` 只在 `domain/render.rs`
-/// 的同一处 `warnings` 装配里链起来（全库现读：这三个函数各只有一个调用点，都在那一条
-/// `let warnings =` 上）⇒ 只有 `yeban_render_master` 发这三枚（台账 §22.16 的现读）。
-const RENDER_WARNING_CODES: [&str; 3] = ["exportClipping", "ignoredStripDevices", "silentSources"];
+/// ⭐ `data.warnings[].code` 的逐工具子集（母带）。四条来源 `clipping_warning` +
+/// `silent_sources_warning` + `ignored_strip_devices_warning` +
+/// `incomplete_drum_note_map_warning` 只在 `domain/render.rs` 的同一处 `warnings`
+/// 装配里链起来（全库现读：这四个函数各只有一个调用点，都在那一条
+/// `let warnings =` 上）⇒ 只有 `yeban_render_master` 发这四枚（台账 §22.16 的现读；
+/// `incompleteDrumNoteMap` 为 P2-3 补登记，与契约 enum 同属新警告码注册链）。
+const RENDER_WARNING_CODES: [&str; 4] = [
+    "exportClipping",
+    "ignoredStripDevices",
+    "incompleteDrumNoteMap",
+    "silentSources",
+];
 
 /// 提案族 `warnings[]` 的**逐条形状** —— 三个工具共用一份，因为它们的读数来自同一拼装点
 /// （⛔ 不是三份手抄：`edit_notes` 原本内联了这一份，只是 `code` 没带名册）。
@@ -2752,7 +2759,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 6, "契约名册现读 6 枚: {contract:?}");
+        assert_eq!(contract.len(), 7, "契约名册现读 7 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
@@ -2814,7 +2821,7 @@ mod tests {
         assert_eq!(
             unbroadcast,
             ["sfzSamplesUnreadable".to_owned()],
-            "契约里唯一不该被广播的 code 必须是 sfzSamplesUnreadable（其余五枚都必须广播）"
+            "契约里唯一不该被广播的 code 必须是 sfzSamplesUnreadable（其余六枚都必须广播）"
         );
     }
 
