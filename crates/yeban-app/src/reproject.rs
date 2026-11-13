@@ -160,7 +160,7 @@ impl AuthorityMirror {
         // 于是"会话侧改了工程"的重投影**不会**把手动调过的行高 / 缩放静默清零。
         match host::project_with_view_state(&project, ui) {
             Ok(view) => {
-                let scroll_x = 0.0;
+                let scroll_x = ui.get_roll_scroll_x();
                 host::apply_view(
                     ui,
                     &view,

@@ -318,6 +318,13 @@ export component MainWindow inherits Window {
     in-out property <bool> musical-pr-resolve-available: false;
     in-out property <string> musical-pr-resolve-reason: "";
 
+    // main 版 public function: 新 UI 无对应旧控件, 保留 invoke_* 入口为空实现
+    public function focus-sidebar-search() { }
+    public function focus-undo-tree-trap() { }
+    public function focus-shortcut-layer() { }
+    public function focus-humanize-dialog() { }
+    public function focus-export-wav-dialog() { }
+
     // ---- 契约兼容面: 新 UI 视觉组件树保留, 数据/控制面与 main 对齐 ----
     // 由 main 版 MainWindow 顶层 property/callback 声明机械补全: 字面量初值原样保留,
     // 绑定表达式(依赖旧组件树)改用类型默认值。host.rs 接线层与判据的唯一契约面。
