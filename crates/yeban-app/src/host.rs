@@ -663,7 +663,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |tool| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_active_tool(tool.clone());
+                ui.set_active_tool_name(tool.clone());
                 update_toast(&ui, format!("[工具] 当前编辑工具已切换为: {}", tool));
             }
         }
@@ -674,7 +674,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |id| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_selected_track_id(id);
+                ui.set_selected_track_index(id);
             }
         }
     });
@@ -1817,7 +1817,7 @@ mod tests {
         assert_eq!(ui.get_lower_dock_height(), 320.0);
         assert_eq!(ui.get_track_headers_width(), 240.0);
         assert_eq!(
-            ui.get_selected_track_id(),
+            ui.get_selected_track_index(),
             3,
             "默认选中轨道必须为 Track 3 (Atmos Granular Pad)"
         );
