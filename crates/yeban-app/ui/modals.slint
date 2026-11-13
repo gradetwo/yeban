@@ -73,7 +73,7 @@ export component CommandPaletteModal inherits Rectangle {
                                 }
 
                                 Rectangle {
-                                    background: #1e2536;
+                                    background: esc_touch.has-hover ? #28324a : #1e2536;
                                     border-radius: 4px;
                                     height: 24px;
                                     border-width: 1px;
@@ -90,7 +90,10 @@ export component CommandPaletteModal inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.close-modal(); } }
+                                    esc_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.close-modal(); }
+                                    }
                                 }
                             }
                         }
@@ -103,10 +106,10 @@ export component CommandPaletteModal inherits Rectangle {
 
                             for cmd in root.commands : Rectangle {
                                 height: 32px;
-                                background: #161b26;
+                                background: cmd_touch.has-hover ? #1f2738 : #161b26;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: cmd_touch.has-hover ? Theme.accent : #ffffff0a;
 
                                 HorizontalLayout {
                                     padding-left: 12px;
@@ -165,7 +168,8 @@ export component CommandPaletteModal inherits Rectangle {
                                     }
                                 }
 
-                                TouchArea {
+                                cmd_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => {
                                         root.execute-command(cmd.id);
                                         root.close-modal();
@@ -227,7 +231,7 @@ export component HotspotOverlay inherits Rectangle {
                     }
 
                     Rectangle {
-                        background: #a84343;
+                        background: close_hotspot_touch.has-hover ? #c54f4f : #a84343;
                         border-radius: 4px;
                         height: 26px;
                         HorizontalLayout {
@@ -242,7 +246,10 @@ export component HotspotOverlay inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea { clicked => { root.close-overlay(); } }
+                        close_hotspot_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.close-overlay(); }
+                        }
                     }
                 }
             }

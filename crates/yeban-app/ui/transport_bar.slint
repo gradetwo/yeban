@@ -1,4 +1,4 @@
-import { Theme, PersonaMode, Tokens } from "tokens.slint";
+import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
 
 // =========================================================================
 // UNIFIED VECTOR ICONS (1.2px - 1.5px Stroke, Geometric, Professional DAW Style)
@@ -611,7 +611,7 @@ export component TransportHeaderBar inherits Rectangle {
             spacing: 12px;
             alignment: start;
 
-            // Group A: Brand Mark (夜半 Studio)
+            // Group A: Brand Mark (夜半)
             Rectangle {
                 background: #10131a;
                 border-radius: 4px;
@@ -640,26 +640,12 @@ export component TransportHeaderBar inherits Rectangle {
                         color: #f1f5f9;
                         vertical-alignment: center;
                     }
-
-                    Rectangle {
-                        width: 1px;
-                        height: 10px;
-                        background: #ffffff1f;
-                    }
-
-                    Text {
-                        text: "PRO";
-                        font-family: Tokens.font-mono;
-                        font-size: 8px;
-                        font-weight: 700;
-                        letter-spacing: 0.5px;
-                        color: Theme.accent;
-                        vertical-alignment: center;
-                    }
                 }
+                brand_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
+                TooltipBubble { text: "夜半"; is-visible: brand_touch.has-hover; tip-offset-x: 20px; }
             }
 
-            // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [F3], 监听室 [F4])
+            // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
@@ -685,7 +671,11 @@ export component TransportHeaderBar inherits Rectangle {
                             active-color: Theme.accent;
                             inactive-color: #94a3b8;
                         }
-                        TouchArea { clicked => { root.toggle-zone("browser"); } }
+                        touch_insp := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-zone("browser"); }
+                        }
+                        TooltipBubble { text: "检查器与音色库 [I]"; is-visible: touch_insp.has-hover; }
                     }
 
                     // 2. Clip 矩阵 [Tab]
@@ -701,10 +691,14 @@ export component TransportHeaderBar inherits Rectangle {
                             active-color: Theme.accent;
                             inactive-color: #94a3b8;
                         }
-                        TouchArea { clicked => { root.toggle-zone("clipmatrix"); } }
+                        touch_clip := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-zone("clipmatrix"); }
+                        }
+                        TooltipBubble { text: "Clip 激发矩阵 [Tab]"; is-visible: touch_clip.has-hover; }
                     }
 
-                    // 3. 底栏 [F3]
+                    // 3. 底栏 [P/X]
                     Rectangle {
                         width: 28px;
                         height: 24px;
@@ -717,7 +711,11 @@ export component TransportHeaderBar inherits Rectangle {
                             active-color: Theme.accent;
                             inactive-color: #94a3b8;
                         }
-                        TouchArea { clicked => { root.toggle-zone("lower"); } }
+                        touch_dock := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-zone("lower"); }
+                        }
+                        TooltipBubble { text: "统一底栏 (调音台/卷帘) [P / X]"; is-visible: touch_dock.has-hover; }
                     }
 
                     // 4. 监听室 [F4]
@@ -733,7 +731,11 @@ export component TransportHeaderBar inherits Rectangle {
                             active-color: Theme.accent;
                             inactive-color: #94a3b8;
                         }
-                        TouchArea { clicked => { root.toggle-zone("right"); } }
+                        touch_room := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-zone("right"); }
+                        }
+                        TooltipBubble { text: "监听控制室与响度计 [F4]"; is-visible: touch_room.has-hover; }
                     }
                 }
             }
@@ -763,7 +765,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: root.active-tool == "pointer";
                             icon-color: root.active-tool == "pointer" ? Theme.accent : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-tool("pointer"); } }
+                        touch_ptr := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tool("pointer"); }
+                        }
+                        TooltipBubble { text: "指针选区工具: 选择与移动 [1]"; is-visible: touch_ptr.has-hover; }
                     }
 
                     // 范围 [2]
@@ -778,7 +784,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: root.active-tool == "range";
                             icon-color: root.active-tool == "range" ? Theme.accent : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-tool("range"); } }
+                        touch_rng := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tool("range"); }
+                        }
+                        TooltipBubble { text: "时间范围选择工具 [2]"; is-visible: touch_rng.has-hover; }
                     }
 
                     // 切分 [3]
@@ -793,7 +803,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: root.active-tool == "split";
                             icon-color: root.active-tool == "split" ? Theme.accent : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-tool("split"); } }
+                        touch_splt := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tool("split"); }
+                        }
+                        TooltipBubble { text: "剃刀切分工具 [3]"; is-visible: touch_splt.has-hover; }
                     }
 
                     // 画笔 [4]
@@ -808,7 +822,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: root.active-tool == "draw";
                             icon-color: root.active-tool == "draw" ? Theme.accent : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-tool("draw"); } }
+                        touch_drw := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tool("draw"); }
+                        }
+                        TooltipBubble { text: "画笔工具: 绘制音符与自动化 [4 / B]"; is-visible: touch_drw.has-hover; }
                     }
                 }
             }
@@ -848,6 +866,7 @@ export component TransportHeaderBar inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.rewind(); }
                         }
+                        TooltipBubble { text: "返回工程起点 / 归零 [Return]"; is-visible: btn_rewind_touch.has-hover; }
                     }
 
                     // 2. Stop Button (■)
@@ -869,6 +888,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 else { root.rewind(); }
                             }
                         }
+                        TooltipBubble { text: "停止播放并复位 [Space]"; is-visible: btn_stop_touch.has-hover; }
                     }
 
                     // 3. Play / Pause Button (▶)
@@ -886,6 +906,7 @@ export component TransportHeaderBar inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.toggle-play(); }
                         }
+                        TooltipBubble { text: "播放 / 暂停走带 [Space]"; is-visible: btn_play_touch.has-hover; }
                     }
 
                     // 4. Record Arm / Punch-in Button (●)
@@ -903,6 +924,7 @@ export component TransportHeaderBar inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.toggle-rec(); }
                         }
+                        TooltipBubble { text: "录音准备 / 穿插录音 [R]"; is-visible: btn_rec_touch.has-hover; }
                     }
 
                     // 5. Loop / Cycle Toggle Button (↻)
@@ -920,6 +942,7 @@ export component TransportHeaderBar inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.toggle-loop(); }
                         }
+                        TooltipBubble { text: "选区循环播放开关 [C]"; is-visible: btn_loop_touch.has-hover; }
                     }
                 }
             }
@@ -939,82 +962,97 @@ export component TransportHeaderBar inherits Rectangle {
                     alignment: center;
 
                     // LCD Bar.Beat.Tick
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 0px;
-                        Text {
-                            text: "BAR / BEAT";
-                            font-family: Tokens.font-mono;
-                            font-size: 7.5px;
-                            letter-spacing: 0.6px;
-                            color: #94a3b8;
-                            font-weight: 700;
+                    Rectangle {
+                        height: 24px;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 0px;
+                            Text {
+                                text: "BAR / BEAT";
+                                font-family: Tokens.font-mono;
+                                font-size: 7.5px;
+                                letter-spacing: 0.6px;
+                                color: #94a3b8;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.timecode-text;
+                                font-family: Tokens.font-mono;
+                                font-size: 12px;
+                                color: Theme.accent;
+                                font-weight: 800;
+                            }
                         }
-                        Text {
-                            text: root.timecode-text;
-                            font-family: Tokens.font-mono;
-                            font-size: 12px;
-                            color: Theme.accent;
-                            font-weight: 800;
-                        }
+                        lcd_beat_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
+                        TooltipBubble { text: "当前时间码: 小节.拍.分拍"; is-visible: lcd_beat_touch.has-hover; }
                     }
 
                     Rectangle { width: 1px; height: 16px; background: #ffffff14; }
 
                     // BPM
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 0px;
-                        Text {
-                            text: "TEMPO";
-                            font-family: Tokens.font-mono;
-                            font-size: 7.5px;
-                            letter-spacing: 0.6px;
-                            color: #94a3b8;
-                            font-weight: 700;
+                    Rectangle {
+                        height: 24px;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 0px;
+                            Text {
+                                text: "TEMPO";
+                                font-family: Tokens.font-mono;
+                                font-size: 7.5px;
+                                letter-spacing: 0.6px;
+                                color: #94a3b8;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "" + root.bpm-val + ".00";
+                                font-family: Tokens.font-mono;
+                                font-size: 12px;
+                                color: Theme.track-drum;
+                                font-weight: 800;
+                            }
                         }
-                        Text {
-                            text: "" + root.bpm-val + ".00";
-                            font-family: Tokens.font-mono;
-                            font-size: 12px;
-                            color: Theme.track-drum;
-                            font-weight: 800;
-                        }
-                        TouchArea {
+                        bpm_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 let next-bpm = root.bpm-val == 124 ? 128 : (root.bpm-val == 128 ? 140 : 124);
                                 root.change-bpm(next-bpm);
                             }
                         }
+                        TooltipBubble { text: "工程主速度: 点击循环切换 (124/128/140 BPM)"; is-visible: bpm_touch.has-hover; }
                     }
 
                     Rectangle { width: 1px; height: 16px; background: #ffffff14; }
 
                     // Global Scale Key
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 0px;
-                        Text {
-                            text: "KEY / SCALE";
-                            font-family: Tokens.font-mono;
-                            font-size: 7.5px;
-                            letter-spacing: 0.6px;
-                            color: #94a3b8;
-                            font-weight: 700;
+                    Rectangle {
+                        height: 24px;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 0px;
+                            Text {
+                                text: "KEY / SCALE";
+                                font-family: Tokens.font-mono;
+                                font-size: 7.5px;
+                                letter-spacing: 0.6px;
+                                color: #94a3b8;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.scale-text;
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                color: Theme.status-ok;
+                                font-weight: 700;
+                            }
                         }
-                        Text {
-                            text: root.scale-text;
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            color: Theme.status-ok;
-                            font-weight: 700;
-                        }
-                        TouchArea {
+                        scale_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 let next-scale = root.scale-text == "C Minor (自然小调)" ? "D Dorian (多利亚)" : (root.scale-text == "D Dorian (多利亚)" ? "F Major (大调)" : "C Minor (自然小调)");
                                 root.change-scale(next-scale);
                             }
                         }
+                        TooltipBubble { text: "全局工程调式: 点击循环切换"; is-visible: scale_touch.has-hover; }
                     }
                 }
             }
@@ -1056,7 +1094,8 @@ export component TransportHeaderBar inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
-                TouchArea {
+                buf_touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
                     clicked => {
                         if (root.buffer-samples == 64) { root.hot-swap-buffer(128); }
                         else if (root.buffer-samples == 128) { root.hot-swap-buffer(512); }
@@ -1064,6 +1103,7 @@ export component TransportHeaderBar inherits Rectangle {
                         else { root.hot-swap-buffer(64); }
                     }
                 }
+                TooltipBubble { text: "音频缓冲区延迟: 点击热切换 (64/128/512/2048 smp)"; is-visible: buf_touch.has-hover; tip-offset-x: -30px; }
             }
 
             // Group G: DSP CPU Gauge (High-contrast)
@@ -1111,6 +1151,8 @@ export component TransportHeaderBar inherits Rectangle {
                         }
                     }
                 }
+                dsp_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
+                TooltipBubble { text: "实时音频 DSP CPU 负荷率"; is-visible: dsp_touch.has-hover; tip-offset-x: -20px; }
             }
 
             // Group H: Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
@@ -1126,7 +1168,7 @@ export component TransportHeaderBar inherits Rectangle {
                     spacing: 2px;
                     alignment: center;
 
-                    // 1. 默认全景 (Default Production Studio)
+                    // 1. 默认全景 (Default Production)
                     Rectangle {
                         width: 28px;
                         height: 24px;
@@ -1138,7 +1180,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: Theme.persona == PersonaMode.YebanDefault;
                             icon-color: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-persona(PersonaMode.YebanDefault); } }
+                        touch_p_def := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-persona(PersonaMode.YebanDefault); }
+                        }
+                        TooltipBubble { text: "默认工作区"; is-visible: touch_p_def.has-hover; tip-offset-x: -20px; }
                     }
 
                     // 2. 现场演出 (Clip Matrix Performance Flow)
@@ -1153,7 +1199,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: Theme.persona == PersonaMode.AbletonLive;
                             icon-color: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-persona(PersonaMode.AbletonLive); } }
+                        touch_p_live := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-persona(PersonaMode.AbletonLive); }
+                        }
+                        TooltipBubble { text: "现场演出模式 (Clip 流)"; is-visible: touch_p_live.has-hover; tip-offset-x: -20px; }
                     }
 
                     // 3. 线性编曲 (Arrange Flow)
@@ -1168,10 +1218,14 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: Theme.persona == PersonaMode.LogicPro;
                             icon-color: Theme.persona == PersonaMode.LogicPro ? Theme.accent : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-persona(PersonaMode.LogicPro); } }
+                        touch_p_log := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-persona(PersonaMode.LogicPro); }
+                        }
+                        TooltipBubble { text: "线性编曲模式 (时间轴流)"; is-visible: touch_p_log.has-hover; tip-offset-x: -20px; }
                     }
 
-                    // 4. 混音控制台 (Mix & Master Studio)
+                    // 4. 混音控制台 (Mix & Master)
                     Rectangle {
                         width: 28px;
                         height: 24px;
@@ -1183,7 +1237,11 @@ export component TransportHeaderBar inherits Rectangle {
                             selected: Theme.persona == PersonaMode.CubasePro;
                             icon-color: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : #94a3b8;
                         }
-                        TouchArea { clicked => { root.select-persona(PersonaMode.CubasePro); } }
+                        touch_p_cu := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-persona(PersonaMode.CubasePro); }
+                        }
+                        TooltipBubble { text: "混音母带模式 (调音台流)"; is-visible: touch_p_cu.has-hover; tip-offset-x: -20px; }
                     }
                 }
             }
@@ -1205,7 +1263,11 @@ export component TransportHeaderBar inherits Rectangle {
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                TouchArea { clicked => { root.open-cmd-palette(); } }
+                touch_cmd := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.open-cmd-palette(); }
+                }
+                TooltipBubble { text: "快捷命令面板 [⌘K]"; is-visible: touch_cmd.has-hover; tip-offset-x: -30px; }
             }
 
             // Group J: Architecture insights toggle
@@ -1220,7 +1282,11 @@ export component TransportHeaderBar inherits Rectangle {
                     active: false;
                     active-color: Theme.status-warn;
                 }
-                TouchArea { clicked => { root.toggle-hotspots(); } }
+                touch_spot := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.toggle-hotspots(); }
+                }
+                TooltipBubble { text: "架构透视与热区诊断 [H]"; is-visible: touch_spot.has-hover; tip-offset-x: -40px; }
             }
         }
     }

@@ -1,4 +1,4 @@
-import { Theme, BrowserItemData, Tokens } from "tokens.slint";
+import { Theme, BrowserItemData, Tokens, TooltipBubble } from "tokens.slint";
 
 export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> active-tab: "inspector"; // "inspector" | "browser"
@@ -73,12 +73,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             vertical-alignment: center;
                         }
                     }
-                    TouchArea {
+                    tab_insp_touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
                         clicked => {
                             root.active-tab = "inspector";
                             root.switch-tab("inspector");
                         }
                     }
+                    TooltipBubble { text: "当前音轨与总线信号链检查器"; is-visible: tab_insp_touch.has-hover; tip-offset-y: 30px; }
                 }
 
                 Rectangle {
@@ -98,12 +100,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             vertical-alignment: center;
                         }
                     }
-                    TouchArea {
+                    tab_brow_touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
                         clicked => {
                             root.active-tab = "browser";
                             root.switch-tab("browser");
                         }
                     }
+                    TooltipBubble { text: "工程资产、音频切片与采样音色库"; is-visible: tab_brow_touch.has-hover; tip-offset-y: 30px; }
                 }
             }
         }
@@ -167,7 +171,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            TouchArea { clicked => { root.normalize-heights(); } }
+                            touch_norm := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.normalize-heights(); }
+                            }
+                            TooltipBubble { text: "重置所有音轨高度为标准紧凑视图"; is-visible: touch_norm.has-hover; tip-offset-x: -30px; tip-offset-y: 22px; }
                         }
                     }
 
@@ -222,7 +230,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            TouchArea { clicked => { root.show-bus-strip = !root.show-bus-strip; } }
+                            touch_bus_toggle := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.show-bus-strip = !root.show-bus-strip; }
+                            }
+                            TooltipBubble { text: "展开/折叠对应分组总线通道条"; is-visible: touch_bus_toggle.has-hover; tip-offset-x: -30px; tip-offset-y: 20px; }
                         }
                     }
                 }
@@ -334,7 +346,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         y: 8.5px;
                                     }
                                 }
-                                TouchArea { clicked => { root.focus-devices(); } }
+                                ins_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.focus-devices(); }
+                                }
+                                TooltipBubble { text: "效果器插槽: 点击聚焦底栏设备机架"; is-visible: ins_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 24px; }
                             }
                         }
 
@@ -364,53 +380,61 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-weight: 700;
                                 }
                             }
+                            eq_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
+                            TooltipBubble { text: "多段参量均衡器曲线预览"; is-visible: eq_touch.has-hover; tip-offset-y: 40px; }
                         }
 
-                        // Section 4: Pan (声像) Balance Control
-                        Rectangle {
-                            height: 22px;
-                            background: #0a0d14;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                alignment: space-between;
-                                Text {
-                                    text: "PAN";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    font-weight: 700;
-                                    color: #94a3b8;
-                                    vertical-alignment: center;
-                                }
+                        // Section 4: Pan (声像) Balance Control (Compact Centered DAW Widget)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 96px;
+                                height: 20px;
+                                background: #0a0d14;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
                                 HorizontalLayout {
-                                    spacing: 4px;
-                                    // Center detent balance bar with dynamic pan position
-                                    Rectangle {
-                                        width: 24px;
-                                        height: 4px;
-                                        y: 9px;
-                                        background: #141a24;
-                                        border-radius: 2px;
-                                        Rectangle {
-                                            x: root.selected-track-pan == "C" ? 10px : (root.selected-track-pan == "12L" ? 4px : (root.selected-track-pan == "18R" ? 16px : 10px));
-                                            width: 4px;
-                                            height: 4px;
-                                            border-radius: 2px;
-                                            background: root.selected-track-color;
-                                        }
-                                    }
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    alignment: space-between;
                                     Text {
-                                        text: root.selected-track-pan;
+                                        text: "PAN";
                                         font-family: Tokens.font-mono;
-                                        font-size: 9px;
-                                        font-weight: 800;
-                                        color: #f1f5f9;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: #94a3b8;
                                         vertical-alignment: center;
                                     }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        // Center detent balance bar with dynamic pan position
+                                        Rectangle {
+                                            width: 24px;
+                                            height: 4px;
+                                            y: 8px;
+                                            background: #141a24;
+                                            border-radius: 2px;
+                                            Rectangle {
+                                                x: root.selected-track-pan == "C" ? 10px : (root.selected-track-pan == "12L" ? 4px : (root.selected-track-pan == "18R" ? 16px : 10px));
+                                                width: 4px;
+                                                height: 4px;
+                                                border-radius: 2px;
+                                                background: root.selected-track-color;
+                                            }
+                                        }
+                                        Text {
+                                            text: root.selected-track-pan;
+                                            font-family: Tokens.font-mono;
+                                            font-size: 8.5px;
+                                            font-weight: 800;
+                                            color: #f1f5f9;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
+                                pan_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
+                                TooltipBubble { text: "声像平衡 (L/R Balance)"; is-visible: pan_touch.has-hover; tip-offset-y: 22px; }
                             }
                         }
 
@@ -479,9 +503,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         background: root.selected-track-color;
                                     }
                                 }
-                                TouchArea {
+                                fader_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => { root.fader-changed(root.selected-track-vol == -2.5 ? 0.0 : -2.5); }
                                 }
+                                TooltipBubble { text: "音量推子: 点击切换 0dB / -2.5dB"; is-visible: fader_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 106px; }
                             }
 
                             // Meter bar
@@ -505,22 +531,26 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Volume dB numerical badge
-                        Rectangle {
-                            height: 20px;
-                            background: #0a0d14;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                alignment: center;
-                                Text {
-                                    text: "" + root.selected-track-vol + " dB";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 10px;
-                                    font-weight: 800;
-                                    color: root.selected-track-color;
-                                    vertical-alignment: center;
+                        // Volume dB numerical badge (Compact Centered DAW Readout Box)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 58px;
+                                height: 18px;
+                                background: #080c14;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "" + root.selected-track-vol + " dB";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9.5px;
+                                        font-weight: 700;
+                                        color: root.selected-track-color;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
@@ -646,33 +676,39 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Section 4: Bus Pan
-                        Rectangle {
-                            height: 22px;
-                            background: #0a0d14;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                alignment: space-between;
-                                Text {
-                                    text: "PAN";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    font-weight: 700;
-                                    color: #94a3b8;
-                                    vertical-alignment: center;
+                        // Section 4: Bus Pan (Compact Centered DAW Widget)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 96px;
+                                height: 20px;
+                                background: #0a0d14;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    alignment: space-between;
+                                    Text {
+                                        text: "PAN";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "C";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8.5px;
+                                        font-weight: 800;
+                                        color: #f1f5f9;
+                                        vertical-alignment: center;
+                                    }
                                 }
-                                Text {
-                                    text: "C";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 9px;
-                                    font-weight: 800;
-                                    color: #f1f5f9;
-                                    vertical-alignment: center;
-                                }
+                                bus_pan_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
+                                TooltipBubble { text: "总线声像平衡 (L/R Balance)"; is-visible: bus_pan_touch.has-hover; tip-offset-y: 22px; }
                             }
                         }
 
@@ -736,9 +772,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         background: Theme.track-bus;
                                     }
                                 }
-                                TouchArea {
+                                bus_fader_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => { root.bus-fader-changed(root.bus-track-vol == -1.0 ? 0.0 : -1.0); }
                                 }
+                                TooltipBubble { text: "总线推子: 点击切换 0dB / -1.0dB"; is-visible: bus_fader_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 106px; }
                             }
 
                             Rectangle {
@@ -761,22 +799,26 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        // Bus Volume dB badge
-                        Rectangle {
-                            height: 20px;
-                            background: #0a0d14;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                alignment: center;
-                                Text {
-                                    text: "" + root.bus-track-vol + " dB";
-                                    font-family: Tokens.font-mono;
-                                    font-size: 10px;
-                                    font-weight: 800;
-                                    color: Theme.track-bus;
-                                    vertical-alignment: center;
+                        // Bus Volume dB badge (Compact Centered DAW Readout Box)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 58px;
+                                height: 18px;
+                                background: #080c14;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "" + root.bus-track-vol + " dB";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9.5px;
+                                        font-weight: 800;
+                                        color: Theme.track-bus;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
@@ -982,7 +1024,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 overflow: elide;
                             }
                         }
-                        TouchArea { clicked => { root.load-item(item.name); } }
+                        item_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.load-item(item.name); }
+                        }
+                        TooltipBubble { text: "点击载入 " + item.name + " 至当前轨道"; is-visible: item_touch.has-hover; tip-offset-y: 52px; }
                     }
                 }
             }

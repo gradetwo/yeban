@@ -1,4 +1,4 @@
-import { Theme, TrackData, PianoStepRow, PianoRollNote, Tokens } from "tokens.slint";
+import { Theme, TrackData, PianoStepRow, PianoRollNote, Tokens, TooltipBubble } from "tokens.slint";
 
 export component UnifiedLowerDock inherits Rectangle {
     in-out property <string> active-tab: "devices"; // "devices" | "mixer" | "pianoroll" | "stacked"
@@ -106,7 +106,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea { clicked => { root.select-tab("stacked"); } }
+                        tab_stk_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tab("stacked"); }
+                        }
+                        TooltipBubble { text: "效果器与调音台双层堆叠视图 [Alt+S]"; is-visible: tab_stk_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -124,7 +128,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea { clicked => { root.select-tab("devices"); } }
+                        tab_dev_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tab("devices"); }
+                        }
+                        TooltipBubble { text: "效果器与虚拟乐器机架 [D]"; is-visible: tab_dev_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -142,7 +150,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea { clicked => { root.select-tab("mixer"); } }
+                        tab_mix_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tab("mixer"); }
+                        }
+                        TooltipBubble { text: "多轨混音控制台 [X]"; is-visible: tab_mix_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -160,7 +172,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea { clicked => { root.select-tab("pianoroll"); } }
+                        tab_pr_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.select-tab("pianoroll"); }
+                        }
+                        TooltipBubble { text: "MPE 钢琴卷帘编辑器 [P]"; is-visible: tab_pr_touch.has-hover; tip-offset-y: 28px; }
                     }
                 }
 
@@ -829,7 +845,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
-                                        TouchArea { clicked => { root.toggle-track-mute(trk.id); } }
+                                        m_touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.toggle-track-mute(trk.id); }
+                                        }
+                                        TooltipBubble { text: "静音此音轨"; is-visible: m_touch.has-hover; tip-offset-y: -22px; }
                                     }
                                     Rectangle {
                                         width: 16px;
@@ -847,7 +867,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
-                                        TouchArea { clicked => { root.toggle-track-solo(trk.id); } }
+                                        s_touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.toggle-track-solo(trk.id); }
+                                        }
+                                        TooltipBubble { text: "独奏此音轨"; is-visible: s_touch.has-hover; tip-offset-y: -22px; }
                                     }
                                 }
                                 Text {
@@ -861,68 +885,113 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            // Vertical Fader (Fixed dimensions: centered track groove + fixed cap)
-                            Rectangle {
+                            // Fader + Meter Unit (Compact centered DAW layout)
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
                                 height: 80px;
-                                background: #06080d;
-                                border-radius: 2px;
-                                border-width: 1px;
-                                border-color: #191f2c;
 
-                                // Center fader track groove
+                                // Vertical Fader Rail
                                 Rectangle {
-                                    x: (parent.width - 4px) / 2;
-                                    y: 4px;
-                                    width: 4px;
-                                    height: parent.height - 8px;
-                                    background: #000000;
-                                    border-radius: 1px;
-                                }
-
-                                // dB scale ticks on sides
-                                for tick_y in [14px, 26px, 38px, 50px, 62px] : Rectangle {
-                                    x: (parent.width - 18px) / 2;
-                                    y: tick_y;
-                                    width: 18px;
-                                    height: 1px;
-                                    background: #ffffff10;
-                                }
-
-                                // Tactile fader cap (fixed size: 30px x 16px)
-                                Rectangle {
-                                    x: (parent.width - 30px) / 2;
-                                    y: trk.volume_db == -2.5 ? 34px : (trk.volume_db == 0.0 ? 18px : 48px);
-                                    width: 30px;
-                                    height: 16px;
-                                    background: #94a3b8;
+                                    width: 24px;
+                                    height: 80px;
+                                    background: #06080d;
                                     border-radius: 2px;
                                     border-width: 1px;
-                                    border-color: #cbd5e1;
+                                    border-color: #191f2c;
+
+                                    // Center fader track groove
+                                    Rectangle {
+                                        x: 10px;
+                                        y: 4px;
+                                        width: 4px;
+                                        height: parent.height - 8px;
+                                        background: #000000;
+                                        border-radius: 1px;
+                                    }
+
+                                    // dB scale ticks on sides
+                                    for tick_y in [14px, 26px, 38px, 50px, 62px] : Rectangle {
+                                        x: 3px;
+                                        y: tick_y;
+                                        width: 18px;
+                                        height: 1px;
+                                        background: #ffffff10;
+                                    }
+
+                                    // Tactile fader cap
+                                    Rectangle {
+                                        x: 1px;
+                                        y: trk.volume_db == -2.5 ? 34px : (trk.volume_db == 0.0 ? 18px : 48px);
+                                        width: 22px;
+                                        height: 15px;
+                                        background: #94a3b8;
+                                        border-radius: 2px;
+                                        border-width: 1px;
+                                        border-color: #cbd5e1;
+
+                                        Rectangle {
+                                            x: 0;
+                                            y: 6.5px;
+                                            width: parent.width;
+                                            height: 2px;
+                                            background: trk.color;
+                                        }
+                                    }
+
+                                    trk_fader_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => {
+                                            root.select-track(trk.id);
+                                            root.track-volume-change(trk.id, trk.volume_db == -2.5 ? 0.0 : -2.5);
+                                        }
+                                    }
+                                    TooltipBubble { text: "推子: " + trk.volume_db + " dB (点击切换 0dB)"; is-visible: trk_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
+                                }
+
+                                // Level Meter Bar
+                                Rectangle {
+                                    width: 6px;
+                                    height: 80px;
+                                    background: #06080d;
+                                    border-radius: 1px;
+                                    border-width: 1px;
+                                    border-color: #191f2c;
+                                    clip: true;
 
                                     Rectangle {
                                         x: 0;
-                                        y: 7px;
-                                        width: parent.width;
-                                        height: 2px;
-                                        background: trk.color;
-                                    }
-                                }
-
-                                TouchArea {
-                                    clicked => {
-                                        root.select-track(trk.id);
-                                        root.track-volume-change(trk.id, trk.volume_db == -2.5 ? 0.0 : -2.5);
+                                        y: parent.height - (trk.meter_peak * parent.height);
+                                        width: 6px;
+                                        height: trk.meter_peak * parent.height;
+                                        background: trk.meter_peak > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                        border-radius: 1px;
                                     }
                                 }
                             }
 
-                            Text {
-                                text: "" + trk.volume_db + " dB";
-                                font-family: Tokens.font-mono;
-                                font-size: 9px;
-                                font-weight: 700;
-                                color: trk.color;
-                                horizontal-alignment: center;
+                            // Compact Centered Volume dB Readout (Standard DAW convention)
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 50px;
+                                    height: 17px;
+                                    background: #080c14;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #191f2c;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "" + trk.volume_db + " dB";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 8.5px;
+                                            font-weight: 700;
+                                            color: trk.color;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
                             }
                         }
                         TouchArea { clicked => { root.select-track(trk.id); } }
@@ -995,57 +1064,99 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            Rectangle {
+                            // Bus Fader + Meter Unit
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
                                 height: 80px;
-                                background: #06080d;
-                                border-radius: 2px;
-                                border-width: 1px;
-                                border-color: #191f2c;
 
                                 Rectangle {
-                                    x: (parent.width - 4px) / 2;
-                                    y: 4px;
-                                    width: 4px;
-                                    height: parent.height - 8px;
-                                    background: #000000;
-                                    border-radius: 1px;
-                                }
-
-                                for tick_y in [14px, 26px, 38px, 50px, 62px] : Rectangle {
-                                    x: (parent.width - 18px) / 2;
-                                    y: tick_y;
-                                    width: 18px;
-                                    height: 1px;
-                                    background: #ffffff10;
-                                }
-
-                                Rectangle {
-                                    x: (parent.width - 30px) / 2;
-                                    y: 30px;
-                                    width: 30px;
-                                    height: 16px;
-                                    background: #94a3b8;
+                                    width: 24px;
+                                    height: 80px;
+                                    background: #06080d;
                                     border-radius: 2px;
                                     border-width: 1px;
-                                    border-color: #cbd5e1;
+                                    border-color: #191f2c;
+
+                                    Rectangle {
+                                        x: 10px;
+                                        y: 4px;
+                                        width: 4px;
+                                        height: parent.height - 8px;
+                                        background: #000000;
+                                        border-radius: 1px;
+                                    }
+
+                                    for tick_y in [14px, 26px, 38px, 50px, 62px] : Rectangle {
+                                        x: 3px;
+                                        y: tick_y;
+                                        width: 18px;
+                                        height: 1px;
+                                        background: #ffffff10;
+                                    }
+
+                                    Rectangle {
+                                        x: 1px;
+                                        y: 30px;
+                                        width: 22px;
+                                        height: 15px;
+                                        background: #94a3b8;
+                                        border-radius: 2px;
+                                        border-width: 1px;
+                                        border-color: #cbd5e1;
+
+                                        Rectangle {
+                                            x: 0;
+                                            y: 6.5px;
+                                            width: parent.width;
+                                            height: 2px;
+                                            background: Theme.track-bus;
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: 6px;
+                                    height: 80px;
+                                    background: #06080d;
+                                    border-radius: 1px;
+                                    border-width: 1px;
+                                    border-color: #191f2c;
+                                    clip: true;
 
                                     Rectangle {
                                         x: 0;
-                                        y: 7px;
-                                        width: parent.width;
-                                        height: 2px;
-                                        background: Theme.track-bus;
+                                        y: parent.height - 48px;
+                                        width: 6px;
+                                        height: 48px;
+                                        background: Theme.status-ok;
+                                        border-radius: 1px;
                                     }
                                 }
                             }
 
-                            Text {
-                                text: "-1.0 dB";
-                                font-family: Tokens.font-mono;
-                                font-size: 9px;
-                                font-weight: 700;
-                                color: Theme.track-bus;
-                                horizontal-alignment: center;
+                            // Compact Centered Bus Volume dB Readout
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 50px;
+                                    height: 17px;
+                                    background: #080c14;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #191f2c;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "-1.0 dB";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 8.5px;
+                                            font-weight: 700;
+                                            color: Theme.track-bus;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1136,58 +1247,117 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            // Master Vertical Fader
-                            Rectangle {
+                            // Master Vertical Fader + Stereo Meter Unit
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
                                 height: 80px;
-                                background: #040509;
-                                border-radius: 2px;
-                                border-width: 1px;
-                                border-color: #191f2c;
 
                                 Rectangle {
-                                    x: (parent.width - 4px) / 2;
-                                    y: 4px;
-                                    width: 4px;
-                                    height: parent.height - 8px;
-                                    background: #000000;
-                                    border-radius: 1px;
-                                }
-
-                                for tick_y in [14px, 26px, 38px, 50px, 62px] : Rectangle {
-                                    x: (parent.width - 18px) / 2;
-                                    y: tick_y;
-                                    width: 18px;
-                                    height: 1px;
-                                    background: #ffffff10;
-                                }
-
-                                Rectangle {
-                                    x: (parent.width - 30px) / 2;
-                                    y: 26px;
-                                    width: 30px;
-                                    height: 16px;
-                                    background: #cbd5e1;
+                                    width: 24px;
+                                    height: 80px;
+                                    background: #040509;
                                     border-radius: 2px;
                                     border-width: 1px;
-                                    border-color: #ffffff;
+                                    border-color: #191f2c;
 
                                     Rectangle {
-                                        x: 0;
-                                        y: 7px;
-                                        width: parent.width;
-                                        height: 2px;
-                                        background: Theme.accent;
+                                        x: 10px;
+                                        y: 4px;
+                                        width: 4px;
+                                        height: parent.height - 8px;
+                                        background: #000000;
+                                        border-radius: 1px;
+                                    }
+
+                                    for tick_y in [14px, 26px, 38px, 50px, 62px] : Rectangle {
+                                        x: 3px;
+                                        y: tick_y;
+                                        width: 18px;
+                                        height: 1px;
+                                        background: #ffffff10;
+                                    }
+
+                                    Rectangle {
+                                        x: 1px;
+                                        y: 26px;
+                                        width: 22px;
+                                        height: 15px;
+                                        background: #cbd5e1;
+                                        border-radius: 2px;
+                                        border-width: 1px;
+                                        border-color: #ffffff;
+
+                                        Rectangle {
+                                            x: 0;
+                                            y: 6.5px;
+                                            width: parent.width;
+                                            height: 2px;
+                                            background: Theme.accent;
+                                        }
+                                    }
+                                }
+
+                                // Stereo Master Meter Bar
+                                Rectangle {
+                                    width: 10px;
+                                    height: 80px;
+                                    background: #040509;
+                                    border-radius: 1px;
+                                    border-width: 1px;
+                                    border-color: #191f2c;
+                                    clip: true;
+
+                                    HorizontalLayout {
+                                        spacing: 1px;
+                                        Rectangle {
+                                            width: 4px;
+                                            height: 80px;
+                                            Rectangle {
+                                                x: 0;
+                                                y: parent.height - 56px;
+                                                width: 4px;
+                                                height: 56px;
+                                                background: Theme.status-ok;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 4px;
+                                            height: 80px;
+                                            Rectangle {
+                                                x: 0;
+                                                y: parent.height - 52px;
+                                                width: 4px;
+                                                height: 52px;
+                                                background: Theme.status-ok;
+                                            }
+                                        }
                                     }
                                 }
                             }
 
-                            Text {
-                                text: "-0.3 dB";
-                                font-family: Tokens.font-mono;
-                                font-size: 9px;
-                                font-weight: 800;
-                                color: Theme.accent;
-                                horizontal-alignment: center;
+                            // Compact Centered Master Volume dB Readout
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 50px;
+                                    height: 17px;
+                                    background: #080c14;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #191f2c;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "-0.3 dB";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 8.5px;
+                                            font-weight: 800;
+                                            color: Theme.accent;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1230,7 +1400,7 @@ export component UnifiedLowerDock inherits Rectangle {
                 // 1. Piano Roll Toolbar: Scale info, Tools, Snap, Quantize, Velocity lane toggle
                 Rectangle {
                     height: 26px;
-                    background: #080a10;
+                    background: #10141e;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
@@ -1248,7 +1418,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             // Scale info badge
                             Rectangle {
-                                background: #10141d;
+                                background: #141926;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1269,7 +1439,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             // Tool buttons: 1 Select, 2 Draw, 3 Split, 4 Erase
                             Rectangle {
-                                background: #0a0d14;
+                                background: #0c1018;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff10;
@@ -1294,7 +1464,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                        TouchArea { clicked => { root.roll-tool = 1; } }
+                                        pr_sel_touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.roll-tool = 1; }
+                                        }
+                                        TooltipBubble { text: "选区工具: 选择与移动音符 [1]"; is-visible: pr_sel_touch.has-hover; tip-offset-y: 22px; }
                                     }
 
                                     Rectangle {
@@ -1312,7 +1486,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                        TouchArea { clicked => { root.roll-tool = 2; } }
+                                        pr_draw_touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.roll-tool = 2; }
+                                        }
+                                        TooltipBubble { text: "画笔工具: 点击网格绘制音符 [2]"; is-visible: pr_draw_touch.has-hover; tip-offset-y: 22px; }
                                     }
 
                                     Rectangle {
@@ -1330,7 +1508,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                        TouchArea { clicked => { root.roll-tool = 3; } }
+                                        pr_split_touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.roll-tool = 3; }
+                                        }
+                                        TooltipBubble { text: "切分工具: 点击分割音符 [3]"; is-visible: pr_split_touch.has-hover; tip-offset-y: 22px; }
                                     }
 
                                     Rectangle {
@@ -1348,14 +1530,18 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                        TouchArea { clicked => { root.roll-tool = 4; } }
+                                        pr_del_touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.roll-tool = 4; }
+                                        }
+                                        TooltipBubble { text: "橡皮工具: 点击删除音符 [4]"; is-visible: pr_del_touch.has-hover; tip-offset-y: 22px; }
                                     }
                                 }
                             }
 
                             // Scale fold toggle
                             Rectangle {
-                                background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #10141d;
+                                background: root.scale-folded ? Theme.accent.with-alpha(0.18) : #141926;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: root.scale-folded ? Theme.accent : Theme.border-subtle;
@@ -1380,12 +1566,14 @@ export component UnifiedLowerDock inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                TouchArea {
+                                pr_fold_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => {
                                         root.scale-folded = !root.scale-folded;
                                         root.toggle-scale-fold(root.scale-folded);
                                     }
                                 }
+                                TooltipBubble { text: "折叠调外音: 仅显示当前调式内的音高"; is-visible: pr_fold_touch.has-hover; tip-offset-y: 22px; }
                             }
                         }
 
@@ -1396,7 +1584,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                             // Snap selector
                             Rectangle {
-                                background: #10141d;
+                                background: #141926;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1421,7 +1609,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                TouchArea {
+                                pr_snap_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => {
                                         if (root.roll-snap == "1/16") { root.roll-snap = "1/8"; }
                                         else if (root.roll-snap == "1/8") { root.roll-snap = "1/4"; }
@@ -1429,11 +1618,12 @@ export component UnifiedLowerDock inherits Rectangle {
                                         else { root.roll-snap = "1/16"; }
                                     }
                                 }
+                                TooltipBubble { text: "网格吸附量化 (1/16, 1/8, 1/4, 1/32)"; is-visible: pr_snap_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 22px; }
                             }
 
                             // Velocity toggle
                             Rectangle {
-                                background: root.show-velocity ? Theme.accent.with-alpha(0.18) : #10141d;
+                                background: root.show-velocity ? Theme.accent.with-alpha(0.18) : #141926;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: root.show-velocity ? Theme.accent : Theme.border-subtle;
@@ -1449,7 +1639,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                TouchArea { clicked => { root.show-velocity = !root.show-velocity; } }
+                                pr_vel_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.show-velocity = !root.show-velocity; }
+                                }
+                                TooltipBubble { text: "切换显示底部力度/MPE 表情泳道"; is-visible: pr_vel_touch.has-hover; tip-offset-x: -40px; tip-offset-y: 22px; }
                             }
                         }
                     }
@@ -1460,11 +1654,11 @@ export component UnifiedLowerDock inherits Rectangle {
                     spacing: 4px;
                     height: 210px;
 
-                    // Left Vertical Piano Keyboard (Authentic traditional acoustic piano tactile keys)
+                    // Left Vertical Piano Keyboard (Modern DAW tactile acoustic keyboard)
                     Rectangle {
                         width: 96px;
                         height: 210px;
-                        background: #080a10;
+                        background: #131722;
                         border-radius: Theme.radius;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -1477,18 +1671,18 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Header spacer matching ruler
                             Rectangle {
                                 height: 18px;
-                                background: #080b10;
+                                background: #161a26;
                                 Rectangle {
                                     y: parent.height - 1px;
                                     height: 1px;
-                                    background: #242c3d;
+                                    background: #262d3d;
                                 }
                                 Text {
                                     text: "KEY / PITCH";
                                     font-family: Tokens.font-mono;
                                     font-size: 7px;
                                     letter-spacing: 0.5px;
-                                    color: #475569;
+                                    color: #64748b;
                                     font-weight: 700;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
@@ -1499,29 +1693,20 @@ export component UnifiedLowerDock inherits Rectangle {
                             Rectangle {
                                 height: 192px;
 
-                                // Acoustic Grand Piano Red Felt Rail (Steinway / Yamaha acoustic felt strip along fallboard)
+                                // Modern Studio Keyboard Accent Margin
                                 Rectangle {
                                     x: 0;
                                     y: 0;
-                                    width: 5px;
+                                    width: 3px;
                                     height: parent.height;
-                                    background: #851824;
-
-                                    // Inner felt bevel highlight line
-                                    Rectangle {
-                                        x: 4px;
-                                        y: 0;
-                                        width: 1px;
-                                        height: parent.height;
-                                        background: #a52834;
-                                    }
+                                    background: Theme.accent;
                                 }
 
-                                // Keys Stack (from x: 5px to parent.width)
+                                // Keys Stack (from x: 3px to parent.width)
                                 VerticalLayout {
-                                    x: 5px;
+                                    x: 3px;
                                     y: 0;
-                                    width: parent.width - 5px;
+                                    width: parent.width - 3px;
                                     height: parent.height;
                                     padding: 0px;
                                     spacing: 0px;
@@ -1546,20 +1731,20 @@ export component UnifiedLowerDock inherits Rectangle {
                                     ] : Rectangle {
                                         height: 12px;
 
-                                        // If White Key: Authentic ivory finish, dark slit divider, top sheen highlight, right bevel shadow
+                                        // If White Key: Studio ivory-slate finish, dark slit divider, top sheen highlight, right bevel
                                         if !key_info.is_black : Rectangle {
                                             width: parent.width;
                                             height: 12px;
-                                            background: key_info.is_c ? #fcfaf5 : #eeeae1;
+                                            background: key_info.is_c ? #f1f5f9 : #d8dee9;
 
-                                            // Bottom key slit divider (crisp dark separation between adjacent keys)
+                                            // Bottom key slit divider
                                             Rectangle {
                                                 y: parent.height - 1px;
                                                 height: 1px;
-                                                background: #1a202c;
+                                                background: #334155;
                                             }
 
-                                            // Top sheen specular highlight line
+                                            // Top sheen highlight line
                                             Rectangle {
                                                 x: 0;
                                                 y: 0;
@@ -1568,13 +1753,13 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 background: #ffffff;
                                             }
 
-                                            // Right edge bevel shadow
+                                            // Right edge bevel
                                             Rectangle {
-                                                x: parent.width - 4px;
+                                                x: parent.width - 3px;
                                                 y: 0;
-                                                width: 4px;
+                                                width: 3px;
                                                 height: parent.height;
-                                                background: #ded7c8;
+                                                background: #cbd5e1;
                                             }
 
                                             HorizontalLayout {
@@ -1587,23 +1772,23 @@ export component UnifiedLowerDock inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: key_info.is_c ? 8px : 7px;
                                                     font-weight: key_info.is_c ? 800 : 600;
-                                                    color: key_info.is_c ? #0f172a : #475569;
+                                                    color: key_info.is_c ? #0284c7 : #1e293b;
                                                     vertical-alignment: center;
                                                 }
 
                                                 if key_info.is_c : Rectangle {
-                                                    width: 26px;
+                                                    width: 18px;
                                                     height: 9px;
                                                     border-radius: 2px;
                                                     background: Theme.accent.with-alpha(0.20);
                                                     border-width: 0.6px;
                                                     border-color: Theme.accent.with-alpha(0.55);
                                                     Text {
-                                                        text: "根音";
-                                                        font-family: Tokens.font-ui;
-                                                        font-size: 6px;
+                                                        text: key_info.name;
+                                                        font-family: Tokens.font-mono;
+                                                        font-size: 7px;
                                                         font-weight: 800;
-                                                        color: #0284c7;
+                                                        color: Theme.accent;
                                                         horizontal-alignment: center;
                                                         vertical-alignment: center;
                                                     }
@@ -1611,24 +1796,24 @@ export component UnifiedLowerDock inherits Rectangle {
                                             }
 
                                             TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
                                                 clicked => {
                                                     root.piano-key-clicked(key_info.name, k_idx);
                                                 }
                                             }
                                         }
 
-                                        // If Black Key: Raised 3D tactile ebony key body, top catch light, right tactile bevel edge, bottom drop shadow
+                                        // If Black Key: Modern tactile dark slate body, top catch light, right bevel edge, bottom drop shadow
                                         if key_info.is_black : Rectangle {
                                             width: parent.width;
                                             height: 12px;
 
-                                            // Raised 3D Black key body spanning full width to note lane
                                             Rectangle {
                                                 x: 0;
                                                 y: 0;
                                                 width: parent.width;
                                                 height: parent.height;
-                                                background: #141720;
+                                                background: #141722;
                                                 border-radius: 1px;
 
                                                 // Top highlight catch-light line
@@ -1637,25 +1822,25 @@ export component UnifiedLowerDock inherits Rectangle {
                                                     y: 0;
                                                     width: parent.width;
                                                     height: 1px;
-                                                    background: #4a576c;
+                                                    background: #2d3748;
                                                 }
 
                                                 // Bottom drop shadow
                                                 Rectangle {
                                                     x: 0;
-                                                    y: parent.height - 1.5px;
+                                                    y: parent.height - 1px;
                                                     width: parent.width;
-                                                    height: 1.5px;
-                                                    background: #05070a;
+                                                    height: 1px;
+                                                    background: #080b12;
                                                 }
 
-                                                // Right tactile bevel edge
+                                                // Right bevel edge
                                                 Rectangle {
                                                     x: parent.width - 3px;
                                                     y: 0;
                                                     width: 3px;
                                                     height: parent.height;
-                                                    background: #2b3445;
+                                                    background: #1e2535;
                                                 }
 
                                                 HorizontalLayout {
@@ -1681,6 +1866,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 }
 
                                                 TouchArea {
+                                                    mouse-cursor: MouseCursor.pointer;
                                                     clicked => {
                                                         root.piano-key-clicked(key_info.name, k_idx);
                                                     }
@@ -1693,7 +1879,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
                     }
 
-                    // Right Piano Roll Grid & Traditional Note Canvas (High contrast lanes + crisp dividers + fixed row/step dimensions)
+                    // Right Piano Roll Grid & Traditional Note Canvas (Harmonious studio slate tones + crisp dividers + clear notes)
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 0px;
@@ -1702,7 +1888,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         // Measure / Beat Ruler (Height: 18px, 64 steps across 4 measures)
                         Rectangle {
                             height: 18px;
-                            background: #080b10;
+                            background: #121622;
                             border-radius: Theme.radius;
                             border-bottom-left-radius: 0;
                             border-bottom-right-radius: 0;
@@ -1717,12 +1903,12 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                 for beat_idx in 64 : Rectangle {
                                     width: 42px;
-                                    background: (Math.mod(beat_idx, 16) == 0) ? #0e131c : transparent;
+                                    background: (Math.mod(beat_idx, 16) == 0) ? #1a202c : transparent;
                                     Rectangle {
                                         x: parent.width - 1px;
                                         width: (Math.mod(beat_idx, 16) == 15) ? 2px : ((Math.mod(beat_idx, 4) == 3) ? 1.5px : 1px);
                                         height: parent.height;
-                                        background: (Math.mod(beat_idx, 16) == 15) ? #60799f : ((Math.mod(beat_idx, 4) == 3) ? #3c4f6d : #243042);
+                                        background: (Math.mod(beat_idx, 16) == 15) ? #ffffff44 : ((Math.mod(beat_idx, 4) == 3) ? #ffffff20 : #ffffff0e);
                                     }
 
                                     Text {
@@ -1741,7 +1927,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         // Note Grid Canvas (Horizontal pitch lanes + Vertical step lines + Note Bars)
                         Rectangle {
                             height: 192px;
-                            background: #05070a;
+                            background: #141822;
                             border-radius: Theme.radius;
                             border-top-left-radius: 0;
                             border-top-right-radius: 0;
@@ -1749,26 +1935,26 @@ export component UnifiedLowerDock inherits Rectangle {
                             border-color: Theme.border-subtle;
                             clip: true;
 
-                            // 16 Horizontal Pitch Lanes (High visual contrast: white keys lighter, black keys darker, crisp dividers)
+                            // 16 Horizontal Pitch Lanes (High visual contrast: soft slate lanes, octave guide, crisp dividers)
                             VerticalLayout {
                                 padding: 0px;
                                 spacing: 0px;
 
                                 for lane_idx in 16 : Rectangle {
                                     height: 12px;
-                                    // High visual contrast: C roots (#1e2c40), white keys (#18202d), black keys (#0a0d14)
-                                    background: (lane_idx == 0 || lane_idx == 12) ? #1e2c40 : ((lane_idx == 2 || lane_idx == 4 || lane_idx == 6 || lane_idx == 9 || lane_idx == 11 || lane_idx == 14) ? #0a0d14 : #18202d);
+                                    // Studio harmonious contrast: C roots (#252d3d), white keys (#1f2432), black keys (#171b25)
+                                    background: (lane_idx == 0 || lane_idx == 12) ? #252d3d : ((lane_idx == 2 || lane_idx == 4 || lane_idx == 6 || lane_idx == 9 || lane_idx == 11 || lane_idx == 14) ? #171b25 : #1f2432);
 
                                     // Crisp Horizontal Divider between every pitch row
                                     Rectangle {
                                         y: parent.height - 1px;
                                         height: 1px;
-                                        background: (lane_idx == 0 || lane_idx == 12) ? #387691 : #263346;
+                                        background: (lane_idx == 0 || lane_idx == 12) ? #38bdf860 : #232a3a;
                                     }
                                 }
                             }
 
-                            // 64 Vertical Step Grid Dividers (Crisp Dividers between beats/steps)
+                            // 64 Vertical Step Grid Dividers (Delicate neutral alpha grid)
                             HorizontalLayout {
                                 padding: 0px;
                                 spacing: 0px;
@@ -1779,7 +1965,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         x: parent.width - 1px;
                                         width: (Math.mod(s_idx, 16) == 15) ? 2px : ((Math.mod(s_idx, 4) == 3) ? 1.5px : 1px);
                                         height: parent.height;
-                                        background: (Math.mod(s_idx, 16) == 15) ? #60799f : ((Math.mod(s_idx, 4) == 3) ? #3c4f6d : #243042);
+                                        background: (Math.mod(s_idx, 16) == 15) ? #ffffff44 : ((Math.mod(s_idx, 4) == 3) ? #ffffff20 : #ffffff0e);
                                     }
                                 }
                             }
@@ -1804,17 +1990,17 @@ export component UnifiedLowerDock inherits Rectangle {
                                 width: Math.max(12px, note.step_span * 42px - 2px);
                                 height: 10px;
                                 border-radius: 2px;
-                                background: note.selected ? root.selected-track-color : root.selected-track-color.with-alpha(0.88);
-                                border-width: note.selected ? 1.5px : 0.8px;
-                                border-color: note.selected ? #ffffff : #ffffff40;
+                                background: note.selected ? #38bdf8 : root.selected-track-color;
+                                border-width: note.selected ? 1.5px : 1px;
+                                border-color: note.selected ? #ffffff : #ffffff60;
 
-                                // Note top bevel highlight line
+                                // Note top highlight line
                                 Rectangle {
                                     x: 0;
                                     y: 0;
                                     width: parent.width;
                                     height: 1px;
-                                    background: #ffffff60;
+                                    background: #ffffff88;
                                 }
 
                                 HorizontalLayout {
@@ -1825,7 +2011,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: note.pitch_name;
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
+                                        font-size: 7.5px;
                                         font-weight: 800;
                                         color: #ffffff;
                                         vertical-alignment: center;
@@ -1834,14 +2020,15 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                     // Right resize handle bar
                                     Rectangle {
-                                        width: 2px;
+                                        width: 2.5px;
                                         height: 6px;
-                                        background: #ffffff60;
+                                        background: #ffffff88;
                                         border-radius: 1px;
                                     }
                                 }
 
-                                TouchArea {
+                                note_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => {
                                         if (root.roll-tool == 4) {
                                             root.delete-note(note.id);
