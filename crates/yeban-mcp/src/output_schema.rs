@@ -843,7 +843,7 @@ fn source_items() -> Value {
 // 契约变了，值得让判据红。散文键（`method` / `semantics` / `note`）只声明 `type` —— 改一个
 // 逗号不该强迫改 schema，而把文案钉成 `const` 换来的是"改措辞时必红"，不是"说谎时必红"。
 
-/// ⭐ s31：`data.request` —— 本次请求的回显（14 键，全部**恒发**）。
+/// ⭐ s31：`data.request` —— 本次请求的回显（15 键，全部**恒发**）。
 /// 拼装点唯一（`domain/render.rs` 的 `RenderRequest::to_value`）。
 /// ⚠ `null` 在这里是**语义**而非缺席：`frames: null` = "没给显式帧数、按工程末端推导"，
 /// 与 `data.frames`（实际长度）不是同一个含义（`#252`）。
@@ -858,6 +858,7 @@ fn render_request_roster() -> Value {
         ("framesSource", json!({"type": "string"})),
         ("targetLufs", json!({"type": ["number", "null"]})),
         ("targetToleranceLu", json!({"type": ["number", "null"]})),
+        ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
         ("path", json!({"type": ["string", "null"]})),
         ("pathRule", json!({"type": "string"})),
         ("bitDepth", json!({"type": "integer"})),
@@ -1006,10 +1007,11 @@ fn normalize_roster() -> Value {
     ])
 }
 
-/// ⭐ s31：`data.loudness`（11 键）。拼装点唯一（`LoudnessTarget::to_value`）。
-/// ⛔ **不要**把 `LoudnessTarget::failure()` 的那 7 个键并进来：那是带内错误
+/// ⭐ s31：`data.loudness`（15 键）。拼装点唯一（`LoudnessTarget::to_value`）。
+/// ⛔ **不要**把 `LoudnessTarget::failure()` 的那 13 个键并进来：那是带内错误
 /// `RENDER_FAILED` 的载荷（错误面），与本条（响应面）是同一结构体的**两个 `json!` 站点**。
-/// `verdict` 的词表⛔ 不手抄：直接引用 [`crate::domain::render::VERDICT_VALUES`]。
+/// `verdict` 与 `gainBound` 的词表⛔ 不手抄：直接引用
+/// [`crate::domain::render::VERDICT_VALUES`] 与 [`crate::domain::render::BOUND_VALUES`]。
 #[must_use]
 fn loudness_roster() -> Value {
     roster(&[
@@ -1029,6 +1031,20 @@ fn loudness_roster() -> Value {
         ),
         ("measured", json!({"type": "boolean"})),
         ("measurementNote", json!({"type": ["string", "null"]})),
+        ("appliedGainDb", json!({"type": ["number", "null"]})),
+        (
+            "gainBound",
+            json!({
+                "type": ["string", "null"],
+                "enum": crate::domain::render::BOUND_VALUES
+                    .iter()
+                    .map(|name| Value::from(*name))
+                    .chain(std::iter::once(Value::Null))
+                    .collect::<Vec<_>>()
+            }),
+        ),
+        ("beforeGainLufs", json!({"type": ["number", "null"]})),
+        ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
         ("algorithm", json!({"type": "string"})),
         ("implementation", json!({"type": "string"})),
         ("specId", json!({"type": "string"})),
@@ -3081,13 +3097,13 @@ mod tests {
     fn the_eleven_render_master_slots_delegate_to_their_rosters() {
         let schema = render_master();
         let cases: [(&str, Value, usize); 11] = [
-            ("request", render_request_roster(), 14),
+            ("request", render_request_roster(), 15),
             ("probability", probability_roster(), 5),
             ("ratchet", ratchet_roster(), 8),
             ("audio", audio_roster(), 8),
             ("peak", peak_roster(), 8),
             ("normalize", normalize_roster(), 5),
-            ("loudness", loudness_roster(), 11),
+            ("loudness", loudness_roster(), 15),
             ("bwf", bwf_roster(), 6),
             ("midiSource", midi_source_roster(), 7),
             (
@@ -3165,7 +3181,7 @@ mod tests {
         let request = json!({
             "format": "wav", "sampleRate": 48_000, "normalize": true,
             "frames": null, "durationSeconds": 30.0, "framesSource": "durationSeconds",
-            "targetLufs": -14.0, "targetToleranceLu": 0.5, "path": null,
+            "targetLufs": -14.0, "targetToleranceLu": 0.5, "truePeakCeilingDbtp": -1.0, "path": null,
             "pathRule": "<工程文件 stem>.master.<format>, 与工程同目录",
             "bitDepth": 24, "channels": 2, "contributions": false, "threads": null
         });
@@ -3193,6 +3209,8 @@ mod tests {
         let loudness = json!({
             "targetLufs": -14.0, "toleranceLu": 0.5, "measuredIntegratedLufs": -14.1,
             "deltaLu": -0.1, "verdict": "pass", "measured": true, "measurementNote": null,
+            "appliedGainDb": 0.1, "gainBound": "loudnessTarget", "beforeGainLufs": -14.2,
+            "truePeakCeilingDbtp": -1.0,
             "algorithm": "ITU-R BS.1770-4", "implementation": "yeban-dsp::loudness::GatedLoudness",
             "specId": "ARCH-UI-002", "specSilentOnTolerance": true
         });
@@ -3338,7 +3356,7 @@ mod tests {
             "$.normalize"
         );
 
-        // ④ 越词表 ⇒ 红（`verdict` 是本批唯一封闭的词表）。
+        // ④ 越词表 ⇒ 红（`verdict` 与 `gainBound` 是本批两张封闭词表）。
         let mut invented = loudness.clone();
         invented["verdict"] = Value::from("nearly");
         assert_eq!(
@@ -3346,6 +3364,14 @@ mod tests {
                 .expect_err("词表外的 verdict 拼写必须红")
                 .path,
             "$.verdict"
+        );
+        let mut invented = loudness.clone();
+        invented["gainBound"] = Value::from("everything");
+        assert_eq!(
+            validate(&loudness_roster(), &invented)
+                .expect_err("词表外的 gainBound 拼写必须红")
+                .path,
+            "$.gainBound"
         );
 
         // ⑤ 错型 ⇒ 红在对应键（`integer` 与 `number` 分开这条，在嵌套层同样生效）。
@@ -3392,13 +3418,19 @@ mod tests {
         nulls["durationSeconds"] = Value::Null;
         nulls["targetLufs"] = Value::Null;
         nulls["targetToleranceLu"] = Value::Null;
+        nulls["truePeakCeilingDbtp"] = Value::Null;
         nulls["threads"] = Value::Null;
-        validate(&render_request_roster(), &nulls).expect("默认请求的五个 null 都是常态");
+        validate(&render_request_roster(), &nulls).expect("默认请求的六个 null 都是常态");
         let mut nulls = loudness.clone();
         nulls["measuredIntegratedLufs"] = Value::Null;
         nulls["deltaLu"] = Value::Null;
+        nulls["appliedGainDb"] = Value::Null;
+        nulls["gainBound"] = Value::Null;
+        nulls["beforeGainLufs"] = Value::Null;
+        nulls["truePeakCeilingDbtp"] = Value::Null;
         nulls["measurementNote"] = Value::from("纯静音母带: 门限积分的读数为负无穷, 不是 0 LUFS");
-        validate(&loudness_roster(), &nulls).expect("测不出读数 ⇒ 两个 null 加一句原因");
+        validate(&loudness_roster(), &nulls)
+            .expect("测不出读数 ⇒ 读数 null、施加四键 null，加一句原因");
         let mut nulls = normalize.clone();
         nulls["note"] = Value::Null;
         validate(&normalize_roster(), &nulls).expect("没有备注时 note 就是 null");
@@ -3429,6 +3461,28 @@ mod tests {
         );
         // 非空断言：词表为空时上面那条等式会自我确认（两边都空）。
         assert!(!published.is_empty(), "verdict 词表不得为空");
+    }
+
+    /// ⭐ 同上（`gainBound` 版）：广播的词表必须逐字等于实现侧的
+    /// [`crate::domain::render::BOUND_VALUES`] 再加一个 `null`（没给目标时
+    /// 没有施加级 ⇒ 该键是 `null`，词表必须如实收它）。
+    #[test]
+    fn the_loudness_gain_bound_enum_is_the_producers_word_table_plus_null() {
+        let loudness = loudness_roster();
+        let published: Vec<Value> = loudness["properties"]["gainBound"]["enum"]
+            .as_array()
+            .expect("gainBound 必须带 enum")
+            .clone();
+        let mut expected: Vec<Value> = crate::domain::render::BOUND_VALUES
+            .iter()
+            .map(|name| Value::from(*name))
+            .collect();
+        expected.push(Value::Null);
+        assert_eq!(
+            published, expected,
+            "广播的词表必须与实现侧 BOUND_VALUES 同序同集，再加 null"
+        );
+        assert!(published.len() > 1, "gainBound 词表不得只有 null");
     }
 
     /// ⭐ s31 判据四（把"为什么不做"钉成读数）：`unsupportedCounts` **保持弱声明**。

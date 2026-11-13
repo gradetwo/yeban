@@ -1460,17 +1460,21 @@ fn loudness_reading_is_reported_on_the_default_path_without_a_target() {
     );
 }
 
-/// 判据 3b-ii：**判定必须有牙** —— 目标被忽略时本判据变红。
+/// 判据 3b-ii：**目标必须有牙** —— 目标被忽略时本判据变红。
 ///
-/// 三件事一起钉：
-/// 1. 目标 = 实测 ⇒ `pass` 且 `deltaLu ≈ 0`；
-/// 2. 目标 = 实测 − 6 LU ⇒ `fail` + `RENDER_FAILED`（带内结构化数据里给出实测/目标/差值）；
-/// 3. **同一个目标会产出不同的读数**：两个请求（一个合理、一个离谱）在同一工程上
-///    给出**不同**的 `verdict`，而**音频字节相同** —— 证明判定读的是母带而不是常量。
+/// 2026-11-13 起 `targetLufs` 是**施加**语义（清单 #17，与 CLI
+/// `--loudness-target` 同一台增益伺服）：不再是"量一量报个数"，而是
+/// "先按伺服把母带拉到目标、再复测判定"。三件事一起钉：
+/// 1. 目标 = 实测 ⇒ `pass`、`deltaLu ≈ 0`、施加增益 ≈ 0、产物逐字节不变；
+/// 2. 目标 = 实测 − 6 LU ⇒ 伺服**足额施加** −6 dB 后 `pass`（回执带
+///    `appliedGainDb` / `beforeGainLufs`，产物字节与探测不同）—— 只测不调的
+///    旧实现在这一步判 `fail`，本步就是新旧语义的分界；
+/// 3. 目标高出真峰值余量 ⇒ 增益被 −1.0 dBTP 上限截断、复测仍偏离 ⇒
+///    `fail` + `RENDER_FAILED`，诊断带 `reasonKind = truePeakCeilingBound`
+///    与可执行的 `suggestedTrimDb`，且不落盘。
 ///
-/// 注入（本机真的做过，见台账）：把 `build` 里的
-/// `if loudness.verdict == VERDICT_FAIL { return Err(loudness.failure()); }` 换成
-/// 注释掉 ⇒ 第 2 步不再报错 ⇒ 本判据红。
+/// 注入：把 `build` 里的施加级换回 `LoudnessTarget::measure`（只测不调）
+/// ⇒ 第 2 步增益变回 `null`、第 3 步判定翻转 ⇒ 本判据红。
 #[test]
 fn the_loudness_target_has_teeth() {
     let scratch = Scratch::new("loudness-teeth");
@@ -1518,14 +1522,71 @@ fn the_loudness_target_has_teeth() {
         delta.abs() < 1.0e-4,
         "目标 = 实测时差值必须是数值噪声: {delta}"
     );
-    // 判定**不改音频**：产物与不给目标时逐字节相同。
+    // 已达标时判定**不改音频**：产物与不给目标时逐字节相同。
     assert_eq!(
         fs::read(&probe_path).expect("probe"),
         fs::read(&hit_path).expect("hit"),
-        "响度判定是只读的: 加一个已经达标的 targetLufs 不许改动一个字节"
+        "加一个已经达标的 targetLufs 不许改动一个字节"
+    );
+    // 施加回执：施加级跑过了（增益不是 `null`），且增益 ≈ 0 ——
+    // 约束方是响度目标本身，施加前读数就是探测值，上限回显 −1.0 dBTP。
+    let applied = verdict["appliedGainDb"].as_f64().expect("施加增益必须回执");
+    assert!(applied.abs() < 0.01, "已达标时增益必须 ≈ 0: {applied}");
+    assert_eq!(verdict["gainBound"], "loudnessTarget", "{hit}");
+    let before = verdict["beforeGainLufs"].as_f64().expect("施加前读数");
+    assert!(
+        (before - measured).abs() < 1.0e-4,
+        "施加前读数 {before} 必须等于探测值 {measured}"
+    );
+    assert_eq!(verdict["truePeakCeilingDbtp"], -1.0, "{hit}");
+
+    // 3) 目标 = 实测 − 6 LU ⇒ 伺服足额施加 −6 dB 后**达标**
+    //    （只测不调的旧语义在这一步判 fail —— 新旧语义的分界线）。
+    let pulled_path = scratch.join("pulled.wav");
+    let pulled = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "targetLufs": measured - 6.0,
+            "path": pulled_path.display().to_string(),
+        }),
+    );
+    assert_eq!(pulled["status"], "success", "{pulled}");
+    let verdict = &pulled["data"]["loudness"];
+    assert_eq!(verdict["verdict"], "pass", "{pulled}");
+    let applied = verdict["appliedGainDb"].as_f64().expect("施加增益必须回执");
+    assert!(
+        (applied + 6.0).abs() < 0.05,
+        "向下 6 LU 必须足额施加: 实测增益 {applied}"
+    );
+    assert_eq!(verdict["gainBound"], "loudnessTarget", "{pulled}");
+    let before = verdict["beforeGainLufs"].as_f64().expect("施加前读数");
+    assert!(
+        (before - measured).abs() < 1.0e-4,
+        "施加前读数 {before} 必须等于探测值 {measured}"
+    );
+    let after = verdict["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("施加后读数");
+    assert!(
+        (after - (measured - 6.0)).abs() < 0.05,
+        "施加后读数 {after} 必须落在目标上 ({} ± 0.05)",
+        measured - 6.0
+    );
+    // 增益真施加的物证：产物字节与未施加的探测产物不同。
+    assert_ne!(
+        fs::read(&probe_path).expect("probe"),
+        fs::read(&pulled_path).expect("pulled"),
+        "施加了 −6 dB 的产物不许与未施加时逐字节相同"
     );
 
-    // 3) 目标 = 实测 − 6 LU ⇒ **未达标**，带内报 `RENDER_FAILED` + 结构化数字。
+    // 4) 目标高出真峰值余量 ⇒ 上限绑定不可达：`fail` + 可执行诊断 + 不落盘。
+    //    余量按探测响应的真峰值现算（上限 −1.0 dBTP），再故意多要 6 LU。
+    let true_peak = probe["data"]["truePeakDbfs"].as_f64().expect("真峰值读数");
+    let headroom = -1.0 - true_peak;
+    let unreachable_target = (measured + headroom + 6.0).min(0.0);
     let miss_path = scratch.join("miss.wav");
     let miss = call(
         &mut dispatcher,
@@ -1533,26 +1594,49 @@ fn the_loudness_target_has_teeth() {
         json!({
             "format": "wav",
             "sampleRate": 48000,
-            "targetLufs": measured - 6.0,
+            "targetLufs": unreachable_target,
             "path": miss_path.display().to_string(),
         }),
     );
     assert_eq!(miss["status"], "error", "{miss}");
     assert_eq!(miss["error"]["code"], "RENDER_FAILED", "{miss}");
     assert_eq!(miss["error"]["data"]["reason"], "loudnessTargetMissed");
-    let reported = miss["error"]["data"]["measuredIntegratedLufs"]
-        .as_f64()
-        .expect("失败报文里必须给实测值");
-    assert!(
-        (reported - measured).abs() < 1.0e-4,
-        "失败报文里的实测值 {reported} 必须等于只读探测到的 {measured}"
+    // 第五节第 3 条：未达原因必须成文到可执行 —— 哪一类、被什么约束、怎么补救。
+    assert_eq!(
+        miss["error"]["data"]["reasonKind"], "truePeakCeilingBound",
+        "{miss}"
+    );
+    assert_eq!(
+        miss["error"]["data"]["gainBound"], "truePeakCeiling",
+        "{miss}"
     );
     let echoed_target = miss["error"]["data"]["targetLufs"]
         .as_f64()
         .expect("失败报文里必须给目标");
     assert!(
-        (echoed_target - (measured - 6.0)).abs() < 1.0e-6,
+        (echoed_target - unreachable_target).abs() < 1.0e-6,
         "失败报文里的目标 {echoed_target} 必须是请求的那个 (f32 往返)"
+    );
+    let trim = miss["error"]["data"]["suggestedTrimDb"]
+        .as_f64()
+        .expect("上限绑定时必须给建议削减量");
+    assert!(trim < 0.0, "建议削减量必须是负的（减增益方向）: {trim}");
+    // 失败报文的 `measuredIntegratedLufs` 保持施加**前**语义（与旧报文同名同义），
+    // 施加后的复测另走 `achievedIntegratedLufs`。
+    let reported = miss["error"]["data"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("失败报文里必须给施加前实测值");
+    assert!(
+        (reported - measured).abs() < 1.0e-4,
+        "失败报文里的施加前读数 {reported} 必须等于探测值 {measured}"
+    );
+    let achieved = miss["error"]["data"]["achievedIntegratedLufs"]
+        .as_f64()
+        .expect("失败报文里必须给施加后复测值");
+    assert!(
+        (achieved - (measured + headroom)).abs() < 0.35,
+        "复测 {achieved} 必须停在上限放行的位置 ({} ± 0.35)",
+        measured + headroom
     );
     assert_eq!(miss["error"]["data"]["toleranceLu"], 0.5);
     // **失败时不许落盘**：未达标的母带不是可交付物。
@@ -1563,15 +1647,25 @@ fn the_loudness_target_has_teeth() {
     );
 }
 
-/// 判据 3b-iv：响度容差是**闭**区间 —— `|delta|` 恰好等于 `toleranceLu` 时必须判
-/// `pass`。
+/// 判据 3b-iv：容差边界在施加语义下的新位置 —— **上限可达点 ± 容差**。
 ///
-/// 既有判据把目标摆在"等于实测"（差值 ~1e-4）与"实测 − 6 LU"（差值 6）两处，
-/// 离 0.5 都很远 ⇒ 把 `<=` 写成 `<` 一样全绿。本条把目标摆在**恰好差一个容差**：
-/// `measured` 与 `measured - 0.5` 同量级（Sterbenz: `y/2 ≤ x ≤ 2y` ⇒ f32 减法精确）
-/// ⇒ `deltaLu` 逐位等于 `0.5`，本判据测的就是那条边界。
+/// 只测语义下边界摆在自然读数旁（目标 = 实测 − 0.5 恰达标、− 0.6 未达标）；
+/// 施加语义下伺服总把母带拉到"能到的最远处"，自然读数旁的目标恒被足额
+/// 拉达标，残差只在真峰值上限绑定时非零。于是边界搬到了上限可达点
+/// （实测 + 真峰值余量，本夹具约 −2.67 LUFS）旁边：
+/// 目标 = 可达点 + 0.4（增益被上限截断、残差 0.4 < 容差 0.5）⇒ `pass`，
+/// 且回执如实写 `gainBound = truePeakCeiling`（不许把让步藏掉）；
+/// 目标 = 可达点 + 0.6（残差 0.6 > 0.5）⇒ `fail`。
+/// 两边各留 0.1 LU 边距：可达点由两套同为 16× 的真峰值读数决定，
+/// 读数差远小于边距。
+///
+/// "恰好等于容差必须 pass"的闭区间性质不在集成层测（集成层凑不出逐位
+/// 恰好）；它由 `domain::render` 的单元判据
+/// `the_applied_loudness_tolerance_boundary_is_inclusive` 用手造读数钉死
+/// （after 恰偏 0.5 ⇒ pass，偏 0.6 ⇒ fail）。容差本身是固定常量
+/// 0.5 LU（规范未给输入参数，请求回显里的 `targetToleranceLu` 只是回显）。
 #[test]
-fn the_loudness_tolerance_boundary_is_inclusive() {
+fn the_loudness_tolerance_boundary_sits_at_the_ceiling_reach() {
     let scratch = Scratch::new("loudness-boundary");
     let (mut dispatcher, auth) =
         dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
@@ -1585,56 +1679,82 @@ fn the_loudness_tolerance_boundary_is_inclusive() {
     let measured = probe["data"]["loudness"]["measuredIntegratedLufs"]
         .as_f64()
         .expect("实测读数");
+    let true_peak = probe["data"]["truePeakDbfs"].as_f64().expect("真峰值读数");
+    let headroom = -1.0 - true_peak;
+    let reachable = measured + headroom;
 
-    let at = call(
+    // 可达点 + 0.4：增益被上限截断，但残差 0.4 在容差内 ⇒ pass。
+    let inside = call(
         &mut dispatcher,
         &auth,
         json!({
             "format": "wav",
             "sampleRate": 48000,
-            "targetLufs": measured - 0.5,
-            "path": scratch.text("at.wav"),
+            "targetLufs": reachable + 0.4,
+            "path": scratch.text("inside.wav"),
         }),
     );
-    assert_eq!(at["status"], "success", "恰好一个容差必须判 pass: {at}");
-    let loudness = &at["data"]["loudness"];
-    assert_eq!(loudness["toleranceLu"], 0.5, "{at}");
     assert_eq!(
-        loudness["deltaLu"], 0.5,
-        "差值必须逐位等于容差（否则本条测的不是边界）: {at}"
+        inside["status"], "success",
+        "容差内的上限让步必须放行: {inside}"
     );
-    assert_eq!(loudness["verdict"], "pass", "{at}");
+    let loudness = &inside["data"]["loudness"];
+    assert_eq!(loudness["verdict"], "pass", "{inside}");
+    assert_eq!(loudness["toleranceLu"], 0.5, "{inside}");
+    assert_eq!(loudness["gainBound"], "truePeakCeiling", "{inside}");
+    let delta = loudness["deltaLu"].as_f64().expect("残差");
+    assert!(
+        (delta + 0.4).abs() < 0.15,
+        "残差 {delta} 必须 ≈ −0.4（`deltaLu` 是带符号的施加后 − 目标，\
+         上限绑定够不到目标时为负；目标摆位错了本条测的就不是边界）"
+    );
+    let applied = loudness["appliedGainDb"].as_f64().expect("施加增益");
+    assert!(
+        (applied - headroom).abs() < 0.15,
+        "施加增益 {applied} 必须停在真峰值余量 {headroom} 处"
+    );
 
-    // 反向: 一格之外必须仍然 fail（闭区间不等于"永不失败"）。
-    let over = call(
+    // 可达点 + 0.6：残差 0.6 超出容差 ⇒ fail，原因仍是上限绑定。
+    let outside = call(
         &mut dispatcher,
         &auth,
         json!({
             "format": "wav",
             "sampleRate": 48000,
-            "targetLufs": measured - 0.6,
-            "path": scratch.text("over.wav"),
+            "targetLufs": reachable + 0.6,
+            "path": scratch.text("outside.wav"),
         }),
     );
-    assert_eq!(over["error"]["code"], "RENDER_FAILED", "{over}");
-    assert_eq!(over["error"]["data"]["reason"], "loudnessTargetMissed");
+    assert_eq!(outside["error"]["code"], "RENDER_FAILED", "{outside}");
+    assert_eq!(outside["error"]["data"]["reason"], "loudnessTargetMissed");
+    assert_eq!(
+        outside["error"]["data"]["reasonKind"], "truePeakCeilingBound",
+        "{outside}"
+    );
 }
 
 /// 判据 3b-iii：**目标被忽略时本判据变红**（"报告是常量"的负向测量）。
 ///
-/// 三个请求打在同一工程上：`无目标` / `目标 = 实测` / `目标 = 实测 − 12 LU`。
+/// 三个请求打在同一工程上：`无目标` / `可达目标` / `上限绑定不可达目标`。
 /// 若实现忽略 `targetLufs`，三个 `verdict` 会相同（都 `noTarget`）⇒ 红。
 /// 若实测读数是硬编码常量，三者的 `measuredIntegratedLufs` 会与母带无关 ——
 /// 用"改工程音量后读数必须跟着走"再钉一次（见下一条判据）。
+///
+/// 第三个目标不再用"实测 − 36 LU"这类深渊值：施加语义下向下多远都可达
+/// （伺服足额拉到、判 pass），真正的不可达只剩真峰值上限一侧 —— 目标按
+/// 第一个响应的真峰值余量现算（余量 + 6 LU，夹回合法区间上端 0.0）。
 #[test]
 fn the_target_changes_the_verdict_so_it_cannot_be_ignored() {
     let scratch = Scratch::new("loudness-ignored");
     let (mut dispatcher, auth) =
         dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
     let mut verdicts = Vec::new();
+    // 第三个目标要等第一个响应的读数才能算出，先占位、在循环里回填。
+    let mut targets: Vec<Option<f64>> = vec![None, Some(-4.0), None];
     // ⭐ `#268`：音源换成引擎音色之后母带的实测积分响度从 ≈ −3.0 LUFS 变成
     // ≈ −3.87 LUFS ⇒ "恰好达标"的目标值跟着改到 −4.0（|−3.87 − (−4.0)| < 0.5）。
-    for (index, target) in [None, Some(-4.0f64), Some(-40.0)].into_iter().enumerate() {
+    for index in 0..targets.len() {
+        let target = targets[index];
         let path = scratch.join(&format!("v{index}.wav"));
         let mut arguments = json!({
             "format": "wav",
@@ -1645,6 +1765,14 @@ fn the_target_changes_the_verdict_so_it_cannot_be_ignored() {
             arguments["targetLufs"] = json!(target);
         }
         let result = call(&mut dispatcher, &auth, arguments);
+        if index == 0 {
+            // 用无目标响应的读数现算第三个（上限绑定不可达）目标。
+            let measured = result["data"]["loudness"]["measuredIntegratedLufs"]
+                .as_f64()
+                .expect("实测读数");
+            let true_peak = result["data"]["truePeakDbfs"].as_f64().expect("真峰值读数");
+            targets[2] = Some((measured + (-1.0 - true_peak) + 6.0).min(0.0));
+        }
         let verdict = match result["status"].as_str().expect("status") {
             "success" => result["data"]["loudness"]["verdict"]
                 .as_str()
@@ -1652,6 +1780,12 @@ fn the_target_changes_the_verdict_so_it_cannot_be_ignored() {
                 .to_owned(),
             "error" => {
                 assert_eq!(result["error"]["code"], "RENDER_FAILED", "{result}");
+                if index == 2 {
+                    assert_eq!(
+                        result["error"]["data"]["reasonKind"], "truePeakCeilingBound",
+                        "{result}"
+                    );
+                }
                 String::from("fail")
             }
             other => panic!("非法的 status: {other}"),
@@ -1707,7 +1841,9 @@ fn the_loudness_reading_follows_the_master_level() {
 /// - 数字越出 `[-70, 0]` ⇒ 领域 `INVALID_PARAMETER_RANGE`（带区间）；
 /// - 字符串 ⇒ **JSON-RPC 层** `-32602`（`ToolSpec::validate_arguments` 的类型闸门,
 ///   它比领域校验更早 —— 这与既有 `normalize`/`path` 的处置完全一致）；
-/// - 端点 `-70.0` / `0.0` **合法**（闭区间），因此进入判定并以 `RENDER_FAILED` 收尾。
+/// - 端点 `-70.0` / `0.0` **合法**（闭区间）：都进入判定、都不报参数错；
+///   结论由施加语义决定 —— `-70.0` 被伺服足额拉到、复测达标判 `pass`，
+///   `0.0` 撞真峰值上限不可达，以 `RENDER_FAILED` 收尾。
 #[test]
 fn an_impossible_loudness_target_is_an_invalid_parameter() {
     let scratch = Scratch::new("loudness-bad");
@@ -1738,21 +1874,36 @@ fn an_impossible_loudness_target_is_an_invalid_parameter() {
             "参数错不许写出任何产品"
         );
     }
-    // 边界值本身是**接受**的（闭区间）。
-    for target in [-70.0f64, 0.0] {
-        let result = call(
-            &mut dispatcher,
-            &auth,
-            json!({"format": "wav", "sampleRate": 48000, "targetLufs": target, "dryRun": true}),
-        );
-        // 端点合法 ⇒ 结论是"未达标"（RENDER_FAILED），**不是**参数错。
-        assert_eq!(
-            result["status"], "error",
-            "端点 {target} 必须合法到能进入判定: {result}"
-        );
-        assert_eq!(result["error"]["code"], "RENDER_FAILED", "{result}");
-        assert_eq!(result["error"]["data"]["reason"], "loudnessTargetMissed");
-    }
+    // 边界值本身是**接受**的（闭区间）：两个端点都进入判定、都不报参数错，
+    // 结论由施加语义决定（2026-11-13 前两者都判"未达标"，那是只测语义）。
+    let low = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -70.0, "dryRun": true}),
+    );
+    assert_eq!(
+        low["status"], "success",
+        "端点 −70 必须合法且可达（伺服拉到 −69.9 一带仍在门限之上）: {low}"
+    );
+    assert_eq!(
+        low["data"]["preview"]["loudness"]["verdict"], "pass",
+        "{low}"
+    );
+    let high = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": 0.0, "dryRun": true}),
+    );
+    assert_eq!(
+        high["status"], "error",
+        "端点 0.0 必须合法到能进入判定: {high}"
+    );
+    assert_eq!(high["error"]["code"], "RENDER_FAILED", "{high}");
+    assert_eq!(high["error"]["data"]["reason"], "loudnessTargetMissed");
+    assert_eq!(
+        high["error"]["data"]["reasonKind"], "truePeakCeilingBound",
+        "{high}"
+    );
     // 非数字形状走 **JSON-RPC 层**的类型闸门（`-32602`），与 `normalize` / `path` 同一条。
     let line = json!({
         "jsonrpc": "2.0",
