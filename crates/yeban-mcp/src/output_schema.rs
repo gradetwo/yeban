@@ -2752,7 +2752,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 6, "契约名册现读 6 枚: {contract:?}");
+        assert_eq!(contract.len(), 7, "契约名册现读 7 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
@@ -2808,13 +2808,19 @@ mod tests {
             "广播侧发明了契约外的 code: {invented:?}"
         );
 
-        // ⭐ `sfzSamplesUnreadable` **故意**不在任何子集里（它只出自两个扩展工具，而扩展工具不广播 outputSchema）。
-        // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是它。
+        // ⭐ `sfzSamplesUnreadable` 与 `peakAboveFullScale` **故意**不在任何子集里：
+        // 前者只出自两个扩展工具，而扩展工具不广播 outputSchema；后者只出自
+        // `yeban_export_stems` 的逐轨 `peakWarning`（`StemRow` 内嵌键），不在顶层
+        // `warnings[]` 里，而 `export_stems` 不在 [`COVERED_TOOLS`] 之列。
+        // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是这两枚。
         let unbroadcast: Vec<String> = contract.difference(&all).cloned().collect();
         assert_eq!(
             unbroadcast,
-            ["sfzSamplesUnreadable".to_owned()],
-            "契约里唯一不该被广播的 code 必须是 sfzSamplesUnreadable（其余五枚都必须广播）"
+            [
+                "peakAboveFullScale".to_owned(),
+                "sfzSamplesUnreadable".to_owned()
+            ],
+            "契约里不该被广播的 code 必须是 peakAboveFullScale 与 sfzSamplesUnreadable（其余五枚都必须广播）"
         );
     }
 
