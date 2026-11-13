@@ -56,7 +56,6 @@ use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolutio
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::{MainWindow, ThemeState, YebanTheme};
-use crate::ui::{PianoRollNote, TimelineBlockData, TrackData};
 use crate::undo::{UiAction, UndoPort};
 
 /// [`wire_save`] 的**装配输入**：保存到哪 + 拿不到活会话时用哪一份工程。
@@ -16006,6 +16005,8 @@ mod pencil_op_tests {
         );
     }
 }
+
+use crate::ui::{PianoRollNote, TimelineBlockData, TrackData};
 
 // ===========================================================================
 // 重构 UI(Aether) 的交互回调 —— 新组件树触发的回调名
