@@ -694,7 +694,10 @@ const TAPE: EffectGroup = EffectGroup {
 ///   上报给 PDC 的延迟（渲染侧按它补相位）；
 /// - **真峰值**（`limiter_true_peak`）：检波器在样本之间做三次插值估计，
 ///   抓"样本没超但重建波形超了"的那一类峰；
-/// - **天花板**（`limiter_ceiling_db`）：软膝渐近到它 ⇒ 输出**严格**不超过它；
+/// - **天花板**（`limiter_ceiling_db`）：软膝渐近到它 ⇒ 输出峰值**严格**不超过它；
+///   它**可以低于阈值**，此时稳态峰值上限就是它（增益按 `min(阈值, 天花板)` 压峰，
+///   阈值仍是压限的起始点）。⚠ 旧实现里这一格是反的：稳态峰值被钉在阈值上、
+///   天花板只兜过冲，且净化层会静默把 ≤ 阈值的天花板抬到阈值之上（P0-1，已修）；
 /// - **释放**（`limiter_release_ms`）：增益从 0 回到 1 所需时间。
 ///
 /// 攻击没有旋钮，是**一步到位**的：任何"慢攻击"都会让瞬态漏过阈值，
@@ -713,7 +716,7 @@ const LIMITER: EffectGroup = EffectGroup {
             min: -30.0,
             max: 0.0,
             default: -1.0,
-            doc: "阈值：窗口峰值超过它就压。默认 −1 dBFS",
+            doc: "阈值：增益压限的起始点，窗口峰值超过它就压；实际压峰目标取它与天花板中较低者。默认 −1 dBFS",
         },
         EffectParam {
             name: "limiter_ceiling_db",
@@ -722,7 +725,7 @@ const LIMITER: EffectGroup = EffectGroup {
             min: -6.0,
             max: 0.0,
             default: -0.3,
-            doc: "天花板：软膝渐近值，输出严格不超过它。必须高于阈值",
+            doc: "天花板：输出峰值的硬上限，软膝渐近到它、严格不超过它。可以低于或等于阈值：此时稳态峰值被压到天花板（阈值只决定压限从哪开始）",
         },
         EffectParam {
             name: "limiter_release_ms",
