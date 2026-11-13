@@ -24,6 +24,8 @@
 | :--- | :--- |
 | [DEV_WORKFLOW.md](./DEV_WORKFLOW.md) | 一条工作线怎么开、怎么建 worktree、本机能跑什么不能跑什么、怎么才算"完成" |
 | [CI_CD.md](./CI_CD.md) | GitHub Actions 有哪些 workflow、何时触发、需要哪些 secret、判决怎么读回来 |
+| [asset-resolution.md](./asset-resolution.md) | SFZ 采样资源解析规则：`sample=` 相对路径与 `default_path`、`#include` 沙箱、解码与失败记账、渲染时容器池优先于磁盘的候选顺序（逐条带代码出处） |
+| [tool-availability.md](./tool-availability.md) | MCP 工具可用性：形态 A／B 的差异、`yeban-app` 的 feature 门控表、两个依赖宿主 provider 的工具与 `providerUnavailable` 契约、CLI 导出开关与 MCP 工具的对应表 |
 | [../skills/yeban-dev-workflow/SKILL.md](./skills/yeban-dev-workflow/SKILL.md) | 十条用血换来的规则（测量优先、判据必须先能变红、绝不管道化门禁……） |
 
 ## 4. 判例与账本 —— 规范有缺口或冲突时我们怎么裁的

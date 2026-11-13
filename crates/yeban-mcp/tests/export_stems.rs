@@ -982,3 +982,56 @@ fn streaming_failure_keeps_completed_files_and_reports_the_true_remainder() {
         "流式在失败处就停了 ⇒ 渲染次数必须更少（如实计价）"
     );
 }
+
+/// ⭐ P3⑥：样本峰值超过 0 dBFS 的轨，回执必须逐轨给 `peakWarning`；
+/// 不超限的轨**没有这个键**（不是恒报，也不是报一个 `null`）。
+///
+/// 夹具 = 三轨工程里把 `Lead`（`id(2)`）的轨音量推到 +24 dB：合成器单音的
+/// 原峰值是正数，×15.8 后必然越过满量程 ⇒ Lead 的样本峰值 > 1.0；
+/// `Pad` / `Bass` 保持 0 dB、峰值 < 1.0。警告只许出现在 Lead 那一行，
+/// 且警告不得改变产物（sha256 仍与盘上字节一致 —— 由既有判据同款读法核）。
+#[test]
+fn a_stem_above_full_scale_carries_a_peak_warning_and_quiet_stems_do_not() {
+    let scratch = Scratch::new("peak-warning");
+    let out_dir = scratch.stems_dir();
+    let mut project = three_track_project();
+    project
+        .tracks
+        .get_mut(&id(2))
+        .expect("Lead 轨在夹具里")
+        .volume_db = 24.0;
+    project.validate().expect("推过满量程的夹具仍须合法");
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.project_path());
+
+    let data = export(&mut dispatcher, &auth, &out_dir, Value::Null);
+    let stems = data["stems"].as_array().expect("stems 是数组");
+    assert_eq!(stems.len(), 3);
+    for row in stems {
+        let name = row["name"].as_str().expect("name 是字符串");
+        if name == "Lead" {
+            let warning = row["peakWarning"]
+                .as_object()
+                .unwrap_or_else(|| panic!("超 0 dBFS 的轨必须带 peakWarning: {row}"));
+            assert_eq!(warning["code"], json!("peakAboveFullScale"));
+            assert_eq!(warning["severity"], json!("warning"));
+            assert_eq!(warning["blocking"], json!(false));
+            assert_eq!(warning["bitDepth"], json!(32));
+            let peak = warning["peak"].as_f64().expect("peak 是数字");
+            assert!(peak > 1.0, "警告里的样本峰值必须真的超过满量程: {peak}");
+            let peak_dbfs = warning["peakDbfs"].as_f64().expect("peakDbfs 是数字");
+            assert!(peak_dbfs > 0.0, "peakDbfs 必须为正: {peak_dbfs}");
+            // 警告只读不改：回执 sha256 仍须等于盘上字节。
+            let path = PathBuf::from(row["path"].as_str().expect("path 是字符串"));
+            assert_eq!(
+                file_sha256(&path),
+                row["sha256"].as_str().expect("sha256 是字符串"),
+                "带警告的导出字节不得被警告改动"
+            );
+        } else {
+            assert!(
+                row.get("peakWarning").is_none(),
+                "不超限的轨不得出现 peakWarning 键: {row}"
+            );
+        }
+    }
+}

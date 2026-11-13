@@ -37,6 +37,12 @@
 //! `yeban-render` 的 `ContainerPlan` 对非 PCM 容器**自动**补 `fact` chunk
 //! （⚠ 漏掉它就是个坏文件，见 `crates/yeban-render/src/rf64.rs` 的容器规则）。
 //! 母带那条 24-bit + TPDF 的路径一位都不经过这里。
+//!
+//! ⚠ 32-bit Float 能容纳**超过 0 dBFS** 的样本而不削波 —— 这正是分轨的价值，
+//! 但也埋着一个下游陷阱：转 24-bit 整数时这些样本会被硬削平，而回执若只报
+//! `bitDepth: 32`，调用方无从知道哪条轨有这回事。因此逐轨回执在样本峰值
+//! 超过 1.0 时条件出现 `peakWarning`（见 [`StemRow::peak_warning`]，P3⑥）：
+//! 只点名、不改字节，不超限的轨不长这个键。
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -246,7 +252,7 @@ impl StemRow {
     /// 逐轨回执（与母带的同名键**同形**，便于调用方复用同一套校验代码）。
     #[must_use]
     pub fn to_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "trackId": self.track_id.to_canonical_string(),
             "name": self.name,
             "fileName": self.file_name,
@@ -261,7 +267,58 @@ impl StemRow {
             "container": self.artifact.container_name(),
             "sourceMute": self.source_mute,
             "sourceSolo": self.source_solo,
-        })
+        });
+        // ⭐ P3⑥：峰值警告是**条件键** —— 不超 0 dBFS 的轨一位都不加，
+        // 回执形状与从前逐键相同；超了才出现（见 [`Self::peak_warning`]）。
+        if let Some(warning) = self.peak_warning() {
+            value
+                .as_object_mut()
+                .expect("to_value 产出对象")
+                .insert("peakWarning".to_owned(), warning);
+        }
+        value
+    }
+
+    /// ⭐ P3⑥：本轨峰值**超过 0 dBFS** 时的逐轨警告（`peakWarning`）。
+    ///
+    /// 形状与母带 `data.warnings[]` 的元素同族（`code` / `severity` /
+    /// `blocking` / `hint`，见 `render::clipping_warning`）：分轨回执没有
+    /// 批次级 `warnings[]`，警告就挂在**出事的那一条轨**上。
+    ///
+    /// 触发口径是**样本峰值**（`artifact.peak_after` > 1.0；分轨恒不归一化，
+    /// `peak_after` 即渲染原峰值）：会被整数 PCM 钳住的是**样本**本身，
+    /// 与母带 `clipped_samples` 的判据（`|sample| > 1.0`）同一条线。
+    /// `truePeakDbfs` 一并给出（测不出 ⇒ `null`，⛔ 不编一个数）。
+    ///
+    /// ⛔ 只生成 JSON：不改样本、不改 `bytes`、不改 `sha256`（与母带削波
+    /// 预警同一条纪律）—— 带警告的导出与不带警告的导出逐字节相同，
+    /// 警告说的正是「文件没事、下游转换有事」。
+    /// 峰值不超限 ⇒ `None`（**没有这个键**，不是恒报）。
+    #[must_use]
+    fn peak_warning(&self) -> Option<Value> {
+        let peak = self.artifact.peak_after;
+        if !peak.is_finite() || peak <= 1.0 {
+            return None;
+        }
+        let peak_dbfs = super::render_math::amplitude_dbfs(peak);
+        let number_or_null = |value: Option<f32>| match value {
+            Some(number) if number.is_finite() => Value::from(number),
+            _ => Value::Null,
+        };
+        Some(json!({
+            "code": "peakAboveFullScale",
+            "severity": "warning",
+            "blocking": false,
+            "peak": peak,
+            "peakDbfs": number_or_null(peak_dbfs),
+            "truePeakDbfs": number_or_null(self.artifact.true_peak_dbfs),
+            "bitDepth": self.artifact.bit_depth,
+            "hint": "本轨峰值超过 0 dBFS：分轨文件是 32-bit float，超过满量程的样本被\
+                     **原样容纳**、在文件里不削波；但任何把本轨转成 24-bit（或更低）\
+                     整数 PCM 的环节都会把这些样本**硬削平**到满量程。下游若要转\
+                     整数格式，请先把本轨电平压到 0 dBFS 以下再转。\
+                     ⛔ 本警告只读不改：导出的字节与无警告时逐字节相同。",
+        }))
     }
 
     /// `dryRun` 预览（**不**声称已落盘）。

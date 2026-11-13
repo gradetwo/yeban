@@ -4,7 +4,7 @@
 数什么（单位：个）：
   ① 实现侧 = `crates/yeban-mcp/src/` 里 `"code": "camelCase"` 形态的**不同取值**个数；
   ② 契约侧 = `schemas/mcp-tools.schema.json` 里 `definitions.WarningCode.enum` 的**不同条目**个数。
-判据：① == ②（**集合等式**，⛔ 只写下界会在"两边同时删空"时空绿），且 ① ≥ 下界 7。
+判据：① == ②（**集合等式**，⛔ 只写下界会在"两边同时删空"时空绿），且 ① ≥ 下界 8。
 ⚠ 下界是**棘轮**：必须等于当前名册数；新增警告码时同步抬高下界，否则两侧
 成对删同一格（集合仍相等、数仍 ≥ 旧下界）会静默漏网 —— 守卫牙齿自检
 （`check_guard_teeth.py`）正是考这一条。
@@ -19,7 +19,7 @@ from pathlib import Path
 
 CAMEL = re.compile(r"^[a-z]+[A-Za-z0-9]*$")
 SITE = re.compile(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9]*)"')
-LOWER_BOUND = 7
+LOWER_BOUND = 8
 
 
 def fail(msg: str) -> None:
