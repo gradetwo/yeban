@@ -16,6 +16,13 @@
 //! >
 //! > `eg07_pitch_oncc140=100`
 //!
+//! ⚠ **文件级没有此 opcode ≠ 引擎不消费滑音**：制作入口（MCP 写音符）挂的
+//! 滑音是**音符级** `MidiNote::slide`（`SlideConfig`），与本模块的文件级 EG
+//! 是两回事 —— 它由引擎层投影成 `PitchShape` 的滑音段（`SlideSpan`），与
+//! 弯音相加后经同一份探针被合成器与 SFZ 声部一同消费（判据：
+//! `yeban-engine` 的 `tests/sfz_portamento.rs`）。⛔ 不在本 crate 为它发明
+//! 扩展 opcode。
+//!
 //! 也就是说：`egN_pitch_oncc140=<d>` 的 `<d>` 单位是 **cents / 半音**，而 CC140 的取值是
 //! **当前音与上一个音的半音差**（有符号），CC141 是它的绝对值
 //! （同页："keydelta: 140 / keydelta absolute: 141"）。
