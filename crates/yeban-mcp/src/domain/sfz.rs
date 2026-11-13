@@ -781,8 +781,8 @@ impl RegionSummary {
 /// - **门控（gate）**：某个 `loccN` / `hiccN` 区间的下界 `lo > 0` ⇒ 值 `0` 不在
 ///   `[lo, hi]` 内（`lo ≤ hi` 且 `lo ≥ 0` ⇒ 含 0 ⟺ `lo == 0`）；
 /// - **振幅（amplitude）**：`amplitude` 基值 ＋ 各 `amplitude_*ccN` 调制项在
-///   CC = 0 处的值（`delta × curve(0)`，曲线解析不到的项不贡献 —— 与
-///   `ampeg_value_with_cc` 的既有口径一致）恰为 `0` ⇒ 有效增益 `value / 100 == 0`。
+///   CC = 0 处的值（`delta × curve(0)`，曲线解析不到的项不贡献 —— 求值走
+///   `Instrument::amplitude_value_with_cc`）恰为 `0` ⇒ 有效增益 `value / 100 == 0`。
 ///
 /// ⚠ 只写 `amplitude_ccN=100` 而基值缺省 100 的区域**不算**静音：曲线 0 在
 /// `x = 0` 处为 `0` ⇒ 有效值仍是 `100`、增益恰 `1.0`（`modulation.rs` §5 的裁决）。
@@ -814,21 +814,12 @@ impl CcGateCensus {
 
 /// 一条区域的 `amplitude` 在缺省 CC（全 0）下的有效值（单位 %）。
 ///
-/// 公式与 `yeban-sfz` 的调制口径同一句：`amplitude + Σ delta × curve(cc 值)`，
-/// CC 值恒 `0`；曲线下标解析不到（内建 4..=6 无公式、`<curve>` 未定义）⇒ 该项
-/// **不贡献**（⛔ 不当成曲线 0 —— 与 `Instrument::ampeg_value_with_cc` 一致）。
+/// 求值属主是 `yeban-sfz` 的 [`Instrument::amplitude_value_with_cc`]：公式、
+/// 曲线解析与「解析不到的项不贡献」都在那一处，本函数只把探针钉成全 `0`
+/// （与 [`DemandLoadFilter::wants`] 的无探针口径同一句），⛔ 不在这里
+/// 自己求值曲线。
 fn amplitude_at_default_cc(instrument: &Instrument<'_>, region: &Region<'_>) -> f32 {
-    let mut value = region.amplitude;
-    for m in region
-        .cc_modulations()
-        .iter()
-        .filter(|m| m.target == ModTarget::Amplitude)
-    {
-        if let Some(curve_value) = instrument.curve_value_at(m.curve, 0.0) {
-            value += m.delta * curve_value;
-        }
-    }
-    value
+    instrument.amplitude_value_with_cc(region, &|_| 0).0
 }
 
 /// 对一整件乐器做 [`CcGateCensus`] 普查（纯函数：只读解析产物，⛔ 不碰文件系统）。
