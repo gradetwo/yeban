@@ -72,6 +72,14 @@
 //! 同款：**没写全映射的设备不是鼓机** ⇒ 该轨照旧走复音合成器 ⇒ 既有工程**逐位不变**
 //! （实测见 §6）。
 //!
+//! ⭐ **识别失败不再静默**（P2-3 修复）：上述"不识别"对**只写了部分键位**的设备是
+//! 误伤面 —— 漏写一个键位的工程得不到任何提示，整轨静音而回执正常。本模块因此
+//! 给出诊断读数 [`incomplete_drum_note_map`]：区分"一个键位名都没写"（不是鼓机，
+//! 诊断为 `None`）与"写了但没写全"（诊断逐条点名缺的键位名）。用户面落点在工具面：
+//! `yeban_edit_notes` 的 `insertDevice` 解析期响亮拒绝（`incompleteDrumNoteMap`），
+//! 渲染回执对存量工程给同名预警。识别规则本身（[`DrumsParams::from_devices`]）
+//! **一个字未改** ⇒ 完整五键与无键位工程逐位不变。
+//!
 //! ### 3.2 已识别的名字（每项列出目标字段）
 //!
 //! | 目标字段 | 名字 |
@@ -355,6 +363,63 @@ impl DrumsParams {
     }
 }
 
+/// 五个键位名的**规范拼写**（下标 = 键位槽位，顺序 = [`DrumVoice::ALL`]）。
+///
+/// 这是 [`note_slot`] 那张识别名单的**报告用**形状：识别本身仍走 `note_slot`
+/// （仓内有判据按源码读它的 match 臂对账），本表供诊断点名缺键时逐字引用。
+/// 两份名单的一致性由本模块的判据 `note_names_table_matches_note_slot` 钉住。
+pub const DRUM_NOTE_NAMES: [&str; NOTE_SLOTS] = [
+    "kick_note",
+    "snare_note",
+    "closed_hat_note",
+    "open_hat_note",
+    "clap_note",
+];
+
+/// 诊断：这台设备是**鼓机形状但键位不全**时，逐条点名缺的键位名；其余情况 `None`。
+///
+/// **判别规则**（与 [`DrumsParams::from_device`] 的识别口径逐条同款）：
+/// - `kind != InternalInstrument` ⇒ `None`（不是乐器设备，与鼓机无关）；
+/// - 五个键位名**一个都没出现** ⇒ `None`（**不是鼓机**：只写音色旋钮的设备与
+///   没有设备链逐位同解，模块文档 §6 —— 诊断不得把普通复音合成器报成坏鼓机）；
+/// - 至少一个键位名出现、且至少一个槽位缺失或取值非有限 ⇒ `Some(缺的键位名)`，
+///   按槽位顺序、逐字用 [`DRUM_NOTE_NAMES`] 的规范拼写；
+/// - 五个槽位全部写出且有限 ⇒ `None`（映射完整，识别走 [`DrumsParams::from_devices`]）。
+///
+/// 同名参数**后者胜**、名字大小写不敏感，与识别同一口径。`bypassed` **不在**
+/// 本函数的判别内：识别侧跳过旁通设备是"取哪台作音源"的裁决，而本诊断回答的是
+/// "这份参数本身是否写全" —— 旁通的不完整映射在取消旁通的那一刻就是静音陷阱，
+/// 调用方（写入闸门 / 渲染预警）按各自场景决定是否只看非旁通设备。
+#[must_use]
+pub fn incomplete_drum_note_map(device: &DeviceDefinition) -> Option<Vec<&'static str>> {
+    if device.kind != DeviceKind::InternalInstrument {
+        return None;
+    }
+    let mut seen_any = false;
+    let mut notes: [Option<u8>; NOTE_SLOTS] = [None; NOTE_SLOTS];
+    for param in &device.params {
+        let name = param.name.to_ascii_lowercase();
+        if let Some(index) = note_slot(&name) {
+            seen_any = true;
+            notes[index] = note_from_f32(param.value);
+        }
+    }
+    if !seen_any {
+        return None;
+    }
+    let missing: Vec<&'static str> = DRUM_NOTE_NAMES
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| notes[*index].is_none())
+        .map(|(_, name)| *name)
+        .collect();
+    if missing.is_empty() {
+        None
+    } else {
+        Some(missing)
+    }
+}
+
 /// 五个键位在投影中间态里的下标（顺序 = [`DrumVoice::ALL`]）。
 const NOTE_SLOTS: usize = 5;
 
@@ -523,6 +588,103 @@ mod tests {
         let mut params = NOTES.to_vec();
         params.extend_from_slice(extra);
         device(kind, bypassed, &params)
+    }
+
+    /// **诊断点名**（P2-3）：逐个缺键各点名该键 —— 写四个缺一个时，
+    /// [`incomplete_drum_note_map`] 必须恰好返回缺的那个键位名。
+    #[test]
+    fn incomplete_drum_note_map_names_each_missing_key() {
+        for (missing_index, (missing_name, _)) in NOTES.iter().enumerate() {
+            let params: Vec<(&str, f32)> = NOTES
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != missing_index)
+                .map(|(_, pair)| *pair)
+                .collect();
+            let found =
+                incomplete_drum_note_map(&device(DeviceKind::InternalInstrument, false, &params))
+                    .expect("写了四个缺一个必须被诊断点名");
+            assert_eq!(
+                found,
+                vec![*missing_name],
+                "缺哪个键就点名哪个键（本次缺 `{missing_name}`）"
+            );
+        }
+    }
+
+    /// **诊断的阴性面**：完整映射、非鼓机设备、种类不对 ⇒ 一律 `None`。
+    #[test]
+    fn incomplete_drum_note_map_is_none_for_complete_and_non_drum_devices() {
+        // 五键齐全 ⇒ 完整，不是诊断对象。
+        assert!(
+            incomplete_drum_note_map(&kit_device(DeviceKind::InternalInstrument, false, &[]))
+                .is_none(),
+            "五键齐全不得出诊断"
+        );
+        // 一个键位都没写（只有音色旋钮）⇒ 不是鼓机（模块文档 §6 的逐位不变面）。
+        assert!(
+            incomplete_drum_note_map(&device(
+                DeviceKind::InternalInstrument,
+                false,
+                &[("kick_tune_hz", 45.0), ("snare_tone_hz", 200.0)],
+            ))
+            .is_none(),
+            "只写音色旋钮不是坏鼓机"
+        );
+        // 空设备 ⇒ 不是鼓机。
+        assert!(
+            incomplete_drum_note_map(&device(DeviceKind::InternalInstrument, false, &[])).is_none()
+        );
+        // 键位写全但种类是效果器 ⇒ 与鼓机无关。
+        assert!(
+            incomplete_drum_note_map(&kit_device(DeviceKind::InternalEffect, false, &[])).is_none()
+        );
+        // 键位名大小写不敏感（与识别同一口径）：全大写写四个、缺 `clap_note`。
+        assert_eq!(
+            incomplete_drum_note_map(&device(
+                DeviceKind::InternalInstrument,
+                false,
+                &[
+                    ("KICK_NOTE", 36.0),
+                    ("SNARE_NOTE", 38.0),
+                    ("CLOSED_HAT_NOTE", 42.0),
+                    ("OPEN_HAT_NOTE", 46.0),
+                ],
+            )),
+            Some(vec!["clap_note"])
+        );
+    }
+
+    /// 非有限键位 = 缺键（与规则 5 同一口径）：`clap_note = NaN` 时点名 `clap_note`。
+    #[test]
+    fn incomplete_drum_note_map_treats_a_non_finite_key_as_missing() {
+        let mut params = NOTES.to_vec();
+        params[4].1 = f32::NAN;
+        assert_eq!(
+            incomplete_drum_note_map(&device(DeviceKind::InternalInstrument, false, &params)),
+            Some(vec!["clap_note"])
+        );
+    }
+
+    /// 两份名单一致性：[`DRUM_NOTE_NAMES`] 的每个名字经 `note_slot` 必须落回自己的下标。
+    #[test]
+    fn note_names_table_matches_note_slot() {
+        for (index, name) in DRUM_NOTE_NAMES.iter().enumerate() {
+            assert_eq!(note_slot(name), Some(index), "`{name}` 的槽位必须自洽");
+        }
+    }
+
+    /// 交叉对账：鼓机形状的设备上，诊断与识别**恰一成立** ——
+    /// 诊断说缺键 ⇔ 识别不认；五键齐全 ⇔ 识别认且诊断沉默。
+    #[test]
+    fn incomplete_drum_note_map_complements_recognition() {
+        let complete = kit_device(DeviceKind::InternalInstrument, false, &[]);
+        assert!(DrumsParams::from_devices(std::slice::from_ref(&complete)).is_some());
+        assert!(incomplete_drum_note_map(&complete).is_none());
+
+        let partial = device(DeviceKind::InternalInstrument, false, &NOTES[..4]);
+        assert!(DrumsParams::from_devices(std::slice::from_ref(&partial)).is_none());
+        assert_eq!(incomplete_drum_note_map(&partial), Some(vec!["clap_note"]));
     }
 
     /// **默认口径**：映射不完整 ⇒ 不是鼓机（模块文档 §3.1）。

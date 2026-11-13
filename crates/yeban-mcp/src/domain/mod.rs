@@ -6436,6 +6436,59 @@ fn auto_merge_failure_proof(fault: Fault, proposal_id: EntityId) -> Fault {
 /// 逐字交出词表才是**当场可修**的信息。⛔ 这里不发明任何名字：
 /// 表内容由 `tests/trap_175.rs` 与 `effect_params` 的 `insert.rs` 对账判据两头钉住。
 ///
+/// 鼓机键位名的规范拼写（顺序 = 引擎的槽位顺序）。
+///
+/// ⚠ 本 crate ⛔ 不依赖 `yeban-engine`（依赖纪律见 `Cargo.toml`），因此这份名单
+/// 在此**手抄一份**，并由本模块的判据
+/// `drum_note_names_match_the_engines_note_slot` 按源码读
+/// `crates/yeban-engine/src/drums.rs::note_slot` 的 match 臂逐字对账
+/// （与 `yeban-model` 的同名判据同一手法）：引擎改名 ⇒ 判据红，⛔ 不许静默漂移。
+pub(crate) const DRUM_NOTE_NAMES: [&str; 5] = [
+    "kick_note",
+    "snare_note",
+    "closed_hat_note",
+    "open_hat_note",
+    "clap_note",
+];
+
+/// 诊断：设备是**鼓机形状但键位不全**时返回缺的键位名（规范拼写、槽位顺序）；
+/// 不是鼓机形状（种类不对 / 一个键位名都没写）或五键齐全且有限 ⇒ `None`。
+///
+/// 与引擎 `DrumsParams::from_devices` 的识别口径逐条同款（名字大小写不敏感、
+/// 同名后者胜、非有限 = 缺键），但**只诊断、不识别**：识别仍由引擎在快照/渲染
+/// 侧完成，本函数只供工具面点名 —— 写入侧（[`notes::parse_device`] 的
+/// `incompleteDrumNoteMap` 闸门）与渲染回执（`render` 的同名预警）共用这一份，
+/// ⛔ 不许两处各写一份判别。`bypassed` 不在判别内（理由见引擎侧同名函数的文档：
+/// 旁通的不完整映射在取消旁通时就是静音陷阱），调用方按场景自行决定是否跳过。
+pub(crate) fn incomplete_drum_note_names(device: &DeviceDefinition) -> Option<Vec<&'static str>> {
+    if device.kind != DeviceKind::InternalInstrument {
+        return None;
+    }
+    let mut seen_any = false;
+    let mut present: [bool; 5] = [false; 5];
+    for param in &device.params {
+        let lowered = param.name.to_ascii_lowercase();
+        if let Some(index) = DRUM_NOTE_NAMES.iter().position(|known| *known == lowered) {
+            seen_any = true;
+            present[index] = param.value.is_finite();
+        }
+    }
+    if !seen_any {
+        return None;
+    }
+    let missing: Vec<&'static str> = DRUM_NOTE_NAMES
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !present[*index])
+        .map(|(_, name)| *name)
+        .collect();
+    if missing.is_empty() {
+        None
+    } else {
+        Some(missing)
+    }
+}
+
 /// ⚠ `code` 不是故障码（`reason`），它只是这条警告的稳定标识 ——
 /// 调用**没有**失败，工程也照旧没变。
 fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
@@ -6911,6 +6964,110 @@ mod tests {
     use std::sync::OnceLock;
 
     use crate::tools::ToolCall;
+
+    /// ⭐ **名字表对账**（P2-3）：本 crate 手抄的 [`DRUM_NOTE_NAMES`] 必须逐字等于
+    /// 引擎 `crates/yeban-engine/src/drums.rs::note_slot` 的 match 臂 ——
+    /// 与 `yeban-model` 的同名判据同一手法（读源码、⛔ 不靠自觉同步）。
+    /// 引擎改名而本表没跟 ⇒ 本判据红，写入闸门与渲染预警不会静默点错名。
+    #[test]
+    fn drum_note_names_match_the_engines_note_slot() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("crates")
+            .join("yeban-engine")
+            .join("src")
+            .join("drums.rs");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("读取引擎源码 {} 失败: {error}", path.display()));
+        let signature = "fn note_slot(name: &str) -> Option<usize> {";
+        let start = source.find(signature).unwrap_or_else(|| {
+            panic!("引擎源码里找不到 `{signature}` —— 识别约定已经改形，请显式更新本判据")
+        });
+        let body = &source[start..];
+        let end = body
+            .find("\n}")
+            .unwrap_or_else(|| panic!("`fn note_slot` 的函数体没有以顶格 `}}` 收尾"));
+        let mut recognised = std::collections::BTreeSet::new();
+        for line in body[..end].lines() {
+            let trimmed = line.trim_start();
+            let Some(rest) = trimmed.strip_prefix('"') else {
+                continue;
+            };
+            let Some(close) = rest.find('"') else {
+                panic!("`fn note_slot` 里出现没有收尾引号的字面量：{line}");
+            };
+            recognised.insert(&rest[..close]);
+        }
+        let fixture: std::collections::BTreeSet<&str> = DRUM_NOTE_NAMES.iter().copied().collect();
+        assert_eq!(
+            recognised, fixture,
+            "引擎 `drums.rs::note_slot` 认的键位名与本 crate 的手抄名单不一致"
+        );
+    }
+
+    /// 诊断读数本身（P2-3）：缺键点名、无键位不报、种类不对不报。
+    #[test]
+    fn incomplete_drum_note_names_diagnoses_only_partial_maps() {
+        let device = |kind: DeviceKind, params: &[(&str, f32)]| DeviceDefinition {
+            id: EntityId::new(),
+            name: "Kit".to_owned(),
+            kind,
+            bypassed: false,
+            params: params
+                .iter()
+                .map(|(name, value)| yeban_model::ParameterValue {
+                    name: (*name).to_owned(),
+                    value: *value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+            plugin: None,
+        };
+        // 缺 `clap_note` ⇒ 恰点名它。
+        assert_eq!(
+            incomplete_drum_note_names(&device(
+                DeviceKind::InternalInstrument,
+                &[
+                    ("kick_note", 36.0),
+                    ("snare_note", 38.0),
+                    ("closed_hat_note", 42.0),
+                    ("open_hat_note", 46.0),
+                ],
+            )),
+            Some(vec!["clap_note"])
+        );
+        // 一个键位都没写 ⇒ 不是鼓机形状。
+        assert!(
+            incomplete_drum_note_names(&device(
+                DeviceKind::InternalInstrument,
+                &[("kick_tune_hz", 45.0)],
+            ))
+            .is_none()
+        );
+        // 五键齐全 ⇒ 无诊断。
+        assert!(
+            incomplete_drum_note_names(&device(
+                DeviceKind::InternalInstrument,
+                &[
+                    ("kick_note", 36.0),
+                    ("snare_note", 38.0),
+                    ("closed_hat_note", 42.0),
+                    ("open_hat_note", 46.0),
+                    ("clap_note", 39.0),
+                ],
+            ))
+            .is_none()
+        );
+        // 种类是效果器 ⇒ 与鼓机无关。
+        assert!(
+            incomplete_drum_note_names(
+                &device(DeviceKind::InternalEffect, &[("kick_note", 36.0)],)
+            )
+            .is_none()
+        );
+    }
 
     /// 一个**保证不存在**的工程路径（父目录也没建）。
     ///
