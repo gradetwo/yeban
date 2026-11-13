@@ -350,7 +350,8 @@ fn the_small_local_tables_are_probed_without_a_wildcard() {
         StaticLane::TrackPan,
         StaticLane::DeviceParam {
             slot_index: 0,
-            param_index: 0,
+            param_index: Some(0),
+            param_name: None,
         },
     ]
     .into_iter()

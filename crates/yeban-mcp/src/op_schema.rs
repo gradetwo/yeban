@@ -719,7 +719,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setParam",
-                "写**静态**参数：`lane:\"TrackVolume\"`（dB，有限值）/ `lane:\"TrackPan\"`（-1.0..=1.0）/ `lane:\"DeviceParam\"`（设备参数，另需 `slotIndex` + `paramIndex`）。目标音轨缺省是工具顶层的 `trackId`，`trackId` 可逐条点名另一条音轨；设备参数的 `value` 必须是离线渲染器**真的消费**的名字所指的那个参数（名字不在白名单 ⇒ `paramNotSupported`，⛔ 不静默写入）；其余多余键被静默忽略",
+                "写**静态**参数：`lane:\"TrackVolume\"`（dB，有限值）/ `lane:\"TrackPan\"`（-1.0..=1.0）/ `lane:\"DeviceParam\"`（设备参数，另需 `slotIndex` + `paramIndex`，或 `slotIndex` + `paramName` 按名寻址）。目标音轨缺省是工具顶层的 `trackId`，`trackId` 可逐条点名另一条音轨；设备参数的 `value` 必须是离线渲染器**真的消费**的名字所指的那个参数（名字不在白名单 ⇒ `paramNotSupported`，⛔ 不静默写入）；其余多余键被静默忽略",
                 &["kind", "lane", "value"],
                 json!({
                     "kind": kind("setParam"),
@@ -737,7 +737,11 @@ pub fn ops_items() -> Value {
                     "paramIndex": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "仅 `lane:\"DeviceParam\"`：该设备 `params` 的参数下标（必填，越界 ⇒ `paramIndexOutOfRange`）",
+                        "description": "仅 `lane:\"DeviceParam\"`：该设备 `params` 的参数下标（与 `paramName` 至少给一个，越界 ⇒ `paramIndexOutOfRange`）",
+                    },
+                    "paramName": {
+                        "type": "string",
+                        "description": "仅 `lane:\"DeviceParam\"`：按名寻址的参数名（大小写不敏感，按目标设备自己的 `params` 定下标；与 `paramIndex` 并存时必须指向同一个参数，不一致 ⇒ `paramNameIndexMismatch`；名字不存在 ⇒ `paramNameNotFound` 并列出可用名全集；同名参数多个 ⇒ `paramNameAmbiguous`）。落盘的模型目标仍是纯下标",
                     },
                     "value": {
                         "type": "number",

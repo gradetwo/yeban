@@ -1159,6 +1159,10 @@
               "type": "integer",
               "description": "DeviceParam: 参数下标 (默认 0)"
             },
+            "paramName": {
+              "type": "string",
+              "description": "DeviceParam: 按参数名寻址 (与 paramIndex 二选一或并存; 并存必须指向同一个参数, 不一致响亮拒绝; 名字不存在时报错并列出该设备可用名全集)。落盘目标仍是下标形态; 成功响应以 resolvedParamName 回显落点规范名"
+            },
             "macroIndex": {
               "type": "integer",
               "description": "Macro: 宏下标 (默认 0)"

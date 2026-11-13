@@ -1709,6 +1709,9 @@ fn edit_automation() -> Value {
              `appliedInOfflineRender: false` 的含义是\"没有可求值点 / 读开关关闭\"（与\"有落点但没生效\"\
              分开，⛔ 不拿一个残差类冒充）。`dryRun` 预览与真做**共用同一个拼装函数** ⇒ 两种调用不可能漂移。\
              `offlineRenderError` 只在**离线导出本身失败**时非 `null`（同一处会报 `RENDER_FAILED`）。\
+             `resolvedParamName` 是 `DeviceParam` 目标的落点规范名（与母带回执 \
+             `data.automation[].resolvedParamName` 同名同口径，唯一解析入口给出），\
+             其余目标恒 `null` —— 它是 `paramName` 按名寻址的回读面，也是纯下标调用的落点核对面。\
              `origin.kind` 恒 `\"McpEdit\"`：MCP 直接编辑不创建提案。\
              ⭐ 本校验器**会递归**（s29 起）⇒ 下面 `lane` / `read` / `origin` 的嵌套键是**可执行断言**：\
              逐键核 `type`、该层 `required` 缺席即红、路径带下标（形如 `$.lane.points[0]`）。\
@@ -1726,6 +1729,7 @@ fn edit_automation() -> Value {
             "target",
             "targetLabel",
             "laneKind",
+            "resolvedParamName",
             "readOnly",
             "lane",
             "read",
@@ -1748,6 +1752,7 @@ fn edit_automation() -> Value {
             },
             "targetLabel": {"type": "string"},
             "laneKind": {"type": "string"},
+            "resolvedParamName": {"type": ["string", "null"]},
             "readOnly": {"type": "boolean"},
             "lane": {
                 "type": "object",
