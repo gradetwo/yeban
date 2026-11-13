@@ -1109,7 +1109,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省多线程；`threads` 实参可指定线程数，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); ⭐ 鼓机键位写了但没写全的存量设备另由**一条** `code:\"incompleteDrumNoteMap\"` 逐台点名 (`devices[]` 带 `missingNoteNames` / `hint`, 非阻断、不自动修); 各条来源都不出现时 `warnings` 是**空数组**。⛔ 读数与预警**不自动改增益** —— 只是读数 + 建议; 本工具唯一会改增益的是显式 `targetLufs` (与 CLI `--loudness-target` 同一伺服, 见该实参); 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
+        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省多线程；`threads` 实参可指定线程数，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); ⭐ 鼓机键位写了但没写全的存量设备另由**一条** `code:\"incompleteDrumNoteMap\"` 逐台点名 (`devices[]` 带 `missingNoteNames` / `hint`, 非阻断、不自动修); 各条来源都不出现时 `warnings` 是**空数组**。⛔ 读数与预警**不自动改增益** —— 只是读数 + 建议; 本工具唯一会改增益的是显式 `targetLufs` (与 CLI `--loudness-target` 同一伺服, 见该实参); 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节 ⭐ 部分渲染: 可选 `startTick` / `endTick` (tick) 圈定区间 —— 先渲全程、再按工程速度表换算成帧切出该区间的原样切片 (产物负载与全程产物同区间逐字节相同; 回执 `data.renderRange` 回显请求的 tick 与实际帧区间), 响度/峰值/削波统计只算切出的区间, `targetLufs` 施加于区间 (先切后施加); ⛔ 成本仍是一次全程渲染, 不是局部渲染; 两个实参都不给时产物逐字节不变",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1156,10 +1156,22 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "⭐ 显式总时长 (秒, 有限且 > 0)。帧数 = round(秒 × sampleRate) (请求的采样率, ⛔ 不是工程采样率)。与 `frames` 二选一 (同给必须一致); 换算后 0 帧或超过 172800000 帧 ⇒ 显式拒绝",
             ),
             param(
+                "startTick",
+                "integer",
+                false,
+                "⭐ 部分渲染区间起点 (tick, ≥ 0, 左闭)。与 `endTick` 一起圈定区间: 先按现有路径渲**全程**, 再按工程速度表换算成帧切出 [startTick, endTick) —— 产物是全程混音在该区间的原样切片 (TPDF 抖动与全程同相位, 负载字节与全程产物同区间逐字节相同), ⛔ 不是局部渲染, 成本仍是一次全程渲染。缺省 = 工程起点 (0); 只给一端时另一端取工程首/尾。回执 `data.renderRange` 回显请求的 tick 与实际帧区间; `peak` / `loudness` 等统计与 `targetLufs` 施加全部只算切出的区间。负数 / 小数 / `startTick >= endTick` / 与 `contributions` 同给 ⇒ INVALID_PARAMETER_RANGE; 换算成帧后为空或超出工程总长 ⇒ RENDER_FAILED 且不落盘",
+            ),
+            param(
+                "endTick",
+                "integer",
+                false,
+                "⭐ 部分渲染区间终点 (tick, ≥ 0, 右开)。语义与校验见 `startTick`; 缺省 = 本次全程渲染的末端",
+            ),
+            param(
                 "contributions",
                 "boolean",
                 false,
-                "⭐ `ADR-0020`: 逐轨贡献读数。缺省 false = 不额外渲染 (`data.contributions` 不出现, 写盘字节与加这个实参之前逐字节相同)。true = 对每条非 master 轨各渲染一次\"只静音该轨\", 在 `data.contributions[]` 报 `{trackId, name, alreadyMuted, deltaRmsDbfs, deltaPeakDbfs}` (两次**未归一化**母带逐样本差的 RMS / 峰值, dBFS; 逐样本无差异或渲染前已静音 ⇒ null), 口径见 `data.contributionsBasis`。⛔ 不改写盘字节; 成本 = 1 + 未静音轨数 次额外渲染",
+                "⭐ `ADR-0020`: 逐轨贡献读数。缺省 false = 不额外渲染 (`data.contributions` 不出现, 写盘字节与加这个实参之前逐字节相同)。true = 对每条非 master 轨各渲染一次\"只静音该轨\", 在 `data.contributions[]` 报 `{trackId, name, alreadyMuted, deltaRmsDbfs, deltaPeakDbfs}` (两次**未归一化**母带逐样本差的 RMS / 峰值, dBFS; 逐样本无差异或渲染前已静音 ⇒ null), 口径见 `data.contributionsBasis`。⛔ 不改写盘字节; 成本 = 1 + 未静音轨数 次额外渲染。与 `startTick` / `endTick` 同给 ⇒ INVALID_PARAMETER_RANGE (贡献是全程口径, 与区间没有合成语义)",
             ),
             param(
                 "threads",

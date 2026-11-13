@@ -5151,6 +5151,8 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             project,
             "wav",
             false,
+            // SFZ 导出恒全程编码 ⇒ 抖动不跳相位（0 = 与此前逐字节相同）。
+            0,
         )?;
     let path = request.path.clone();
     Ok(Plan::RenderSfzWav {

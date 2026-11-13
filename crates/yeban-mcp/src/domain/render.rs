@@ -14,6 +14,7 @@
 //!   ├─ 每个源节点注入一个 AudioSource                       MIDI 合成源 ⊕ 音频片段源
 //!   ├─ RenderPlan::execute(...)                             Rayon 并行 + 固定顺序归约 [ARCH-DET-002]
 //!   ├─ 母带增益 + (可选) 峰值归一化
+//!   ├─ （可选）区间切片（`startTick` / `endTick`；之后的统计与响度施加只算区间）
 //!   ├─ TPDF 抖动 → 24-bit PCM                              [ARCH-FMT-001]
 //!   └─ RIFF / RF64 / BW64 容器 + bext 元数据               [ARCH-FMT-001]
 //!        └─ 原子落盘: 同目录 .tmp + sync_all + rename      [ARCH-SEC-004]
@@ -376,6 +377,37 @@
 //! ⛔ 本切片**不**改任何缺省：既有钉死常量一位不动（判据
 //! `the_default_rendering_path_stays_bit_identical_with_an_explicit_frame_count`）。
 //!
+//! ## 部分渲染（⭐ 区间参数 `startTick` / `endTick`，⛔ 缺省不变）
+//!
+//! 此前本工具只能渲**全程**：`frames` / `durationSeconds` 只能定总长，渲不了
+//! "中间一段"（实测问题清单 P1-2）。本节给的是 DAW 的**区域渲染**语义：
+//!
+//! | 实参 | 类型 | 语义 |
+//! | :--- | :--- | :--- |
+//! | `startTick` | 整数（tick，≥ 0） | 区间起点（含）；缺省 = 0 |
+//! | `endTick` | 整数（tick，≥ 0） | 区间终点（不含）；缺省 = 本次全程渲染的末端 |
+//!
+//! - **产物 = 全程混音在该区间的原样切片**：先按现有路径渲全程，再按工程速度表
+//!   把 tick 换算成帧（[`math::frames_at_tick`]，与缺省帧数同一份换算）切出
+//!   `[startFrame, endFrame)`。⛔ **成本仍是一次全程渲染** —— 回执
+//!   `data.renderRange.method` 如实写明，不假装局部渲染；
+//! - **切片点在归一化与响度施加之前**（[`build`] 的 9b 步，母带增益之后）：
+//!   `peak` / `clippedSamples` / `truePeakDbfs` 与 `loudness` 全部只算切出的
+//!   区间；给了 `targetLufs` 时增益**施加于区间**（先切后施加），判据
+//!   `the_loudness_target_applies_to_the_slice_not_the_full_mix` 钉死这一顺序；
+//! - **量化与全程同相位**：TPDF 抖动每样本消耗随机源两次，切片时按区间起点
+//!   之前的样本数跳过等量抽样 ⇒ 区间产物的负载字节与全程产物同区间的负载
+//!   **逐字节相同**（不是"差 ≤ 1 LSB 的近似切片"）；
+//! - **校验分工**：形状（非负整数）与 `startTick >= endTick`、以及与
+//!   `contributions` 同给（逐轨贡献是全程口径，与区间没有合成语义）在
+//!   [`validate`] 拒（`INVALID_PARAMETER_RANGE`）；换算到帧后为空、或终点超出
+//!   本次全程渲染帧数，只能在 [`build`] 里对着实际帧数判（`RENDER_FAILED`，
+//!   报文带 tick 原值与换算帧数，⛔ 不落盘；与 [`frame_ceiling`] 同一条纪律，
+//!   不新增 `reason` 词）；
+//! - 两个实参都不给 ⇒ **默认路径**：不切片、响应里没有 `renderRange` 键、
+//!   产物逐字节不变（`data.request` 回显多两个 `null` 键，与 `frames` 等
+//!   既有可选实参的回显口径一致）。
+//!
 //! ## 逐轨贡献（⭐ `ADR-0020`；`contributions`，⛔ 缺省不变）
 //!
 //! `sources[].peak` 只给**一次渲染**里的逐源峰值；"拿掉这条轨后母带变了多少"此前
@@ -408,9 +440,9 @@
 //!
 //! | 状况 | 出口 |
 //! | :--- | :--- |
-//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / **`contributions` 非布尔** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
+//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / **`contributions` 非布尔** / **⭐ `startTick` / `endTick` 不是非负整数、或 `startTick >= endTick`、或与 `contributions` 同给** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
-//! | 0 帧、**显式帧数或工程末端推导**超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID；超限带 `maxFrames`） |
+//! | 0 帧、**显式帧数或工程末端推导**超出帧数上限、**⭐ 渲染区间换算到帧后为空或超出本次全程渲染帧数**、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID；超限带 `maxFrames`；区间越界带 tick 原值与换算帧数） |
 //! | **母带响度施加后仍未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带 `reasonKind` 原因分类/施加前实测/目标/已施加增益/绑定约束/复测值/差值/容差，上限绑定时带建议 trim） |
 //! | 片段引用的资产既不在会话 CAS 池里、工程 `assets` 索引里也没有 | `RENDER_FAILED`（`data.reason = "assetMissing"`） |
 //! | 会话 CAS 池里的字节与它声明的 SHA-256 不符（完整性破坏） | `RENDER_FAILED`（`data.reason = "assetHashMismatch"`） |
@@ -454,7 +486,7 @@ use yeban_model::{
     AssetHash, AutomationTarget, AutomationWriteMode, ClipContent, DeviceKind, EntityId, PPQ,
     RoutingKind, SampleRate, TrackV3, YebanProjectV1,
 };
-use yeban_render::dither::{BitDepth, quantize};
+use yeban_render::dither::{BitDepth, DitherRng, quantize};
 // ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
 // 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
 use yeban_plugin_host::PluginInstance;
@@ -838,6 +870,13 @@ pub struct RenderRequest {
     /// ⚠ 逐轨记账（[`sfz::TrackSampleCache`]）；已解码 PCM 由
     /// [`sfz::SampleStore`] 跨轨共享 ⇒ 峰值内存 ≈ 不同样本之和。
     pub sample_limits: sfz::SampleLimits,
+    /// ⭐ 部分渲染区间起点（tick；`None` = 工程起点 0）。
+    ///
+    /// 语义见模块头「部分渲染」节：先渲全程、再按工程速度表换算成帧切出区间。
+    /// 换算与验界在 [`build`] 里对着**实际**全程帧数做（这里只存调用方原值）。
+    pub start_tick: Option<u64>,
+    /// ⭐ 部分渲染区间终点（tick，不含；`None` = 本次全程渲染的末端）。
+    pub end_tick: Option<u64>,
 }
 
 impl RenderRequest {
@@ -876,6 +915,12 @@ impl RenderRequest {
         }
     }
 
+    /// 是否请求了部分渲染区间（`startTick` / `endTick` 任意一个给了）。
+    #[must_use]
+    pub fn has_render_range(&self) -> bool {
+        self.start_tick.is_some() || self.end_tick.is_some()
+    }
+
     /// 诚实描述这次请求（`dryRun` 与响应共用的 `request` 字段）。
     #[must_use]
     pub fn to_value(&self) -> Value {
@@ -888,6 +933,10 @@ impl RenderRequest {
             "frames": self.frames,
             "durationSeconds": self.duration_seconds(),
             "framesSource": self.frames_source(),
+            // ⭐ 部分渲染区间（`null` = 该端没给、取缺省：起点 0 / 终点全程末端）；
+            //   换算后的实际帧区间在 `data.renderRange`（只在给了区间时出现）。
+            "startTick": self.start_tick,
+            "endTick": self.end_tick,
             "targetLufs": self.target_lufs(),
             "targetToleranceLu": if self.target_lufs_bits.is_some() {
                 Some(TARGET_TOLERANCE_LU)
@@ -1570,6 +1619,31 @@ fn incomplete_drum_note_map_warning(
     }))
 }
 
+/// 解析一个 tick 实参（`startTick` / `endTick`）：非负整数或缺省（`None`）。
+///
+/// # Errors
+///
+/// 给了但不是非负整数（负数 / 小数 / 字符串…）⇒ `INVALID_PARAMETER_RANGE`
+/// 点名该实参 —— 与 `frames` 的形状校验同一口径：⛔ 不静默取整、不静默忽略。
+fn parse_tick_argument(
+    arguments: &Map<String, Value>,
+    name: &'static str,
+) -> Result<Option<u64>, Fault> {
+    match arguments.get(name) {
+        None => Ok(None),
+        Some(Value::Number(number)) => number.as_u64().map(Some).ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`{name}` 必须是 ≥ 0 的整数 tick, 实际收到 {number}"),
+            )
+        }),
+        Some(other) => Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{name}` 必须是 ≥ 0 的整数 tick, 实际收到 {other}"),
+        )),
+    }
+}
+
 /// 校验渲染参数。
 ///
 /// # Errors
@@ -1581,7 +1655,9 @@ fn incomplete_drum_note_map_warning(
 ///   `INVALID_PARAMETER_RANGE`（带区间）；
 /// - ⭐ `#252`：`frames` 不是 `> 0` 的整数 / `durationSeconds` 不是有限正数 /
 ///   两者换算到**不同**帧数 → `INVALID_PARAMETER_RANGE`；显式帧数超过
-///   单次渲染帧数上限 → 与工程末端推导同一个 `RENDER_FAILED`（带 `maxFrames`）。
+///   单次渲染帧数上限 → 与工程末端推导同一个 `RENDER_FAILED`（带 `maxFrames`）；
+/// - ⭐ 部分渲染：`startTick` / `endTick` 不是非负整数 / `startTick >= endTick` /
+///   与 `contributions` 同给 → `INVALID_PARAMETER_RANGE`。
 pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> {
     let format = arguments
         .get("format")
@@ -1747,6 +1823,24 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         // 上限与工程末端推导**同一处**闸门（`RENDER_FAILED` + `maxFrames`）。
         frame_ceiling(frames)?;
     }
+    // ⭐ 部分渲染区间（`startTick` / `endTick`，tick 口径）：这里只校验形状与
+    //    两端同给时的先后；只给一端时另一端在 [`build`] 里取缺省（起点 0 /
+    //    终点本次全程渲染末端）。换算到帧后的验界（空区间 / 超出全程帧数）
+    //    依赖工程速度表与实际帧数，只能在 `build` 里判 —— 与 `frame_ceiling`
+    //    的"参数层 vs 渲染层"分工一致。
+    let start_tick = parse_tick_argument(arguments, "startTick")?;
+    let end_tick = parse_tick_argument(arguments, "endTick")?;
+    if let (Some(start), Some(end)) = (start_tick, end_tick)
+        && start >= end
+    {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`startTick` = {start} 必须小于 `endTick` = {end} (区间是左闭右开的 [startTick, endTick))"
+            ),
+            serde_json::json!({ "startTick": start, "endTick": end }),
+        ));
+    }
     // ⭐ `ADR-0020`：逐轨贡献开关。缺省 `false` ⇒ 渲染路径与响应逐字节不变。
     let contributions = match arguments.get("contributions") {
         None => false,
@@ -1758,6 +1852,20 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    // ⭐ 区间 × 逐轨贡献互斥：贡献按**全程**口径逐轨各渲一次（基线帧数钉成
+    //    母带长度），与"只交付一个区间"的口径没有合成语义 ⇒ 同给响亮拒绝，
+    //    ⛔ 不悄悄选一个、不悄悄忽略另一个。
+    if contributions && (start_tick.is_some() || end_tick.is_some()) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`contributions` 与 `startTick` / `endTick` 不能同时给: 逐轨贡献按全程口径逐轨渲染, 部分渲染只交付一个区间",
+            serde_json::json!({
+                "contributions": true,
+                "startTick": start_tick,
+                "endTick": end_tick,
+            }),
+        ));
+    }
     // ⭐ 审评 2026-10-31（P1-1）：显式线程数。缺省 `None` ⇒ 多线程默认路径；
     // 给值必须是正整数（0 / 负数 / 非整数 ⇒ 显式拒绝，⛔ 不静默钳制、不静默忽略）。
     let threads = match arguments.get("threads") {
@@ -1800,6 +1908,8 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         threads,
         sample_format: SampleFormat::Pcm24,
         sample_limits,
+        start_tick,
+        end_tick,
     })
 }
 
@@ -2462,6 +2572,49 @@ impl TrackContribution {
     }
 }
 
+/// ⭐ 部分渲染的**已解析区间**（回执 `data.renderRange` 的形状）。
+///
+/// tick 是调用方给的原值（`None` = 该端没给、取的缺省）；帧区间是按工程速度表
+/// 换算、并对着本次全程渲染帧数验过界的**实际**切片 —— 两者一起回显，调用方
+/// 因此能核对"要的区间"与"切的区间"是同一段。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderRange {
+    /// 请求的起点 tick（`None` = 缺省 0）。
+    pub start_tick: Option<u64>,
+    /// 请求的终点 tick（`None` = 缺省本次全程渲染的末端帧）。
+    pub end_tick: Option<u64>,
+    /// 实际切出的起始帧（含）。
+    pub start_frame: u64,
+    /// 实际切出的结束帧（不含）。
+    pub end_frame: u64,
+    /// 本次全程渲染的总帧数（区间的参照系）。
+    pub full_frames: u64,
+}
+
+impl RenderRange {
+    /// 区间帧数。
+    #[must_use]
+    pub fn frames(&self) -> u64 {
+        self.end_frame - self.start_frame
+    }
+
+    /// 响应里的形状（拼装点唯一：[`RenderArtifact::details`]）。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "startTick": self.start_tick,
+            "endTick": self.end_tick,
+            "startFrame": self.start_frame,
+            "endFrame": self.end_frame,
+            "frames": self.frames(),
+            "fullFrames": self.full_frames,
+            "method": "先按现有路径渲全程, 再切出 [startFrame, endFrame) (成本 = 一次全程渲染, ⛔ 不是局部渲染)",
+            "statsScope": "peak / clippedSamples / truePeakDbfs / loudness 与 targetLufs 施加全部只算切出的区间",
+            "ditherPhase": "TPDF 抖动与全程渲染同相位 (跳过切片之前的抽样) ⇒ 负载字节与全程产物同区间切片逐字节相同",
+        })
+    }
+}
+
 /// 渲染产物：**已经编码好的容器字节** + 全部实测数字。
 ///
 /// 它由 [`build`] 产出（只读计算），由 `domain::apply` 落盘。
@@ -2515,6 +2668,9 @@ pub struct RenderArtifact {
     /// 由 `plan_render_master` 在 [`build`] 之后调 [`track_contributions`] 填 ——
     /// ⛔ 不在 `build` 里做，因为 `build` 是"一次渲染"，而这里要 `N + 1` 次。
     pub contributions: Option<Vec<TrackContribution>>,
+    /// ⭐ 部分渲染区间；`None` = 全程渲染（响应里没有 `renderRange` 键 ⇒
+    /// 缺省响应逐字节不变）。由 [`build`] 的 9b 步切片时填。
+    pub render_range: Option<RenderRange>,
     /// **真的参与渲染**的音频片段摆放数（全部源节点合计）。
     pub audio_clips: u64,
     /// 被**确定性**概率判定判为"不触发"、因而不发声的 MIDI 音符数
@@ -2878,6 +3034,11 @@ impl RenderArtifact {
         );
         // 响度：**永远**给出读数（默认路径也一样），判定只在给了 `targetLufs` 时有意义。
         map.insert("loudness".to_owned(), self.loudness.to_value());
+        // ⭐ 部分渲染区间：**只在**请求给了 `startTick` / `endTick` 时出现；
+        //    缺省时整块不出现 ⇒ 响应与加区间之前逐字节相同（`request` 回显除外）。
+        if let Some(range) = &self.render_range {
+            map.insert("renderRange".to_owned(), range.to_value());
+        }
         map.insert("atomic".to_owned(), Value::from(true));
         map.insert(
             "strategy".to_owned(),
@@ -2992,6 +3153,62 @@ type PendingSource = (EntityId, TrackSource, Option<Box<dyn PluginInstance>>);
 /// 轨源装配产物：轨源＋可选宿主效果器实例＋收据。
 /// （乐器实例不住在这里 —— 它在装配期内已包进 `TrackSource.plugin`。）
 type SourceAssembly = (TrackSource, Option<Box<dyn PluginInstance>>, SourceReport);
+
+/// ⭐ 把请求的 tick 区间解析成帧区间，并对着**本次全程渲染**的帧数验界。
+///
+/// 换算走 [`math::frames_at_tick`]（工程速度表，与 [`build`] 第 7 步缺省帧数
+/// 同一份换算）。两个实参都没给 ⇒ `Ok(None)`（全程，默认路径）。
+///
+/// # Errors
+///
+/// 换算后区间为空（`startFrame >= endFrame`，含"起点恰好落在全程末端"）或
+/// 终点超出全程帧数 ⇒ `RENDER_FAILED`（带 tick 原值与换算帧数；与
+/// [`frame_ceiling`] 同一条纪律：⛔ 不新增 `reason` 词）。`build` 出错即不
+/// 落盘 ⇒ 非法区间不会留下产物文件。
+fn resolve_render_range(
+    request: &RenderRequest,
+    tempo: &yeban_model::time_math::TempoMap,
+    sample_rate: u32,
+    full_frames: u64,
+) -> Result<Option<RenderRange>, Fault> {
+    if !request.has_render_range() {
+        return Ok(None);
+    }
+    let start_frame = request.start_tick.map_or(0, |tick| {
+        math::frames_at_tick(tick, PPQ, tempo, sample_rate)
+    });
+    let end_frame = request.end_tick.map_or(full_frames, |tick| {
+        math::frames_at_tick(tick, PPQ, tempo, sample_rate)
+    });
+    if start_frame >= end_frame || end_frame > full_frames {
+        let start_label = request
+            .start_tick
+            .map_or_else(|| "缺省(0)".to_owned(), |tick| tick.to_string());
+        let end_label = request
+            .end_tick
+            .map_or_else(|| "缺省(全程末端)".to_owned(), |tick| tick.to_string());
+        return Err(render_failed(
+            format!(
+                "渲染区间 [startTick = {start_label}, endTick = {end_label}) 换算为帧区间 \
+                 [{start_frame}, {end_frame}), 落不在本次全程渲染的 {full_frames} 帧之内 (或换算后为空)"
+            ),
+            serde_json::json!({
+                "startTick": request.start_tick,
+                "endTick": request.end_tick,
+                "startFrame": start_frame,
+                "endFrame": end_frame,
+                "fullFrames": full_frames,
+            }),
+        ));
+    }
+    Ok(Some(RenderRange {
+        start_tick: request.start_tick,
+        end_tick: request.end_tick,
+        start_frame,
+        end_frame,
+        full_frames,
+    }))
+}
 
 /// 从工程构造一份**已编码**的母带产物（只读、不落盘）。
 ///
@@ -3536,6 +3753,24 @@ pub fn build(
             sampler.voice_steals = counter.load(Ordering::Relaxed);
         }
     }
+    // 9b. ⭐ 部分渲染：把全程样本切到请求区间（[`resolve_render_range`]）。
+    //     位置在母带增益/自动化（第 9 步）与逐源读数（9a）之后、归一化与响度
+    //     施加（第 10 / 10-pre 步）之前 ⇒ 之后的峰值、削波、真峰值与响度读数
+    //     **只描述区间**，`targetLufs` 的增益也只施加于区间（先切后施加）。
+    //     `blocks` / `longest_path_frames` 保留全程渲染的实测值 —— 成本就是
+    //     一次全程渲染，回执不假装省了。没给区间 ⇒ `None`，一个样本都不碰。
+    let render_range = resolve_render_range(request, &project.tempo(), sample_rate, output.frames)?;
+    if let Some(range) = render_range {
+        let start_sample = usize::try_from(range.start_frame * MASTER_CHANNELS as u64)
+            .map_err(|_| render_failed("渲染区间起点帧数超出本机可表示范围", range.to_value()))?;
+        let keep_samples = usize::try_from(range.frames() * MASTER_CHANNELS as u64)
+            .map_err(|_| render_failed("渲染区间帧数超出本机可表示范围", range.to_value()))?;
+        output.samples.drain(..start_sample);
+        output.samples.truncate(keep_samples);
+        output.frames = range.frames();
+        // 切片改了样本 ⇒ 按第 9 步同一纪律重算摘要（不让摘要描述全程）。
+        output.digest = RenderOutput::digest_of(&output.samples);
+    }
     // 10. 峰值归一化(抖动之前)。
     let peak_before = math::peak_of(&output.samples);
     let mut normalize_applied = false;
@@ -3646,6 +3881,11 @@ pub fn build(
     }
     // 11. 抖动/量化 → 容器（母带 24-bit 整数 PCM 与分轨 32-bit 浮点**共用同一个**容器写入器，
     //     见 [`encode_container_with_format`] —— 头构造只有一份实现，不可能漂移）。
+    // ⭐ 部分渲染的抖动相位对齐：量化前要跳过的**样本**数（区间起点之前的
+    //    样本数；TPDF 每样本消耗随机源两次，跳过逻辑在编码器里）。全程渲染
+    //    为 0 ⇒ 编码逐字节不变；Float32 无抖动，该值被忽略。
+    let dither_skip_samples =
+        render_range.map_or(0, |range| range.start_frame * MASTER_CHANNELS as u64);
     let (
         bytes,
         container_kind,
@@ -3663,12 +3903,17 @@ pub fn build(
             request.format(),
             // 母带导出写 BWF 元数据（与 SFZ 导出刻意不同的**唯一**一处，见该函数的表）。
             true,
+            dither_skip_samples,
         )?,
         // ⭐ `ADR-0030` D2：分轨 = 32-bit IEEE 浮点、无抖动、**不写 `bext`**
         // （`coding history` 里的 W 随之如实写成 32）。
-        SampleFormat::Float32 => {
-            write_stem_container(&output.samples, sample_rate, project, request.format())?
-        }
+        SampleFormat::Float32 => write_stem_container(
+            &output.samples,
+            sample_rate,
+            project,
+            request.format(),
+            dither_skip_samples,
+        )?,
     };
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
@@ -3698,6 +3943,8 @@ pub fn build(
         // ⭐ `ADR-0020`：一次渲染给不出"拿掉某轨差多少"；由调用方（`plan_render_master`）
         // 在 `build` 之后按需填。这样 `build` 仍然只做**一次**渲染。
         contributions: None,
+        // ⭐ 部分渲染区间（9b 步切片时解析；`None` = 全程渲染）。
+        render_range,
         audio_clips,
         notes_silenced,
         notes_ratcheted,
@@ -3763,6 +4010,10 @@ pub fn track_contributions(
         // ⭐ 逐轨贡献的额外渲染必须与母带**同一份**预算，否则"拿掉某轨"的差值
         // 会掺进"预算不同"的差异（读数就不再是那一轨的贡献）。
         sample_limits: request.sample_limits,
+        // ⭐ 贡献恒按**全程**口径：`validate` 已拒绝 `contributions` 与区间同给，
+        //    这里再钉死 `None`，防内部调用方把区间带进基线渲染。
+        start_tick: None,
+        end_tick: None,
     };
     let baseline = build(project, project_path, &basis, now_ms, assets)?;
     let reference = decode_master_payload(&baseline)?;
@@ -3890,6 +4141,10 @@ fn dbfs(amplitude: f64) -> Option<f64> {
 ///
 /// 它只是 [`encode_container_with_format`] 的一层薄封装（把格式钉成
 /// [`SampleFormat::Pcm24`]）—— ⛔ 头构造没有第二份实现。
+///
+/// `dither_skip_samples`：⭐ 部分渲染时量化前要跳过的**样本**数（区间起点
+/// 之前的样本数，见 [`encode_container_with_format`] 的相位对齐说明）；
+/// 全程渲染与 SFZ 导出恒传 0。
 #[allow(clippy::type_complexity)]
 pub(super) fn write_master_container(
     samples: &[f32],
@@ -3897,6 +4152,7 @@ pub(super) fn write_master_container(
     project: &YebanProjectV1,
     format: &str,
     with_bext: bool,
+    dither_skip_samples: u64,
 ) -> Result<
     (
         Vec<u8>,
@@ -3917,6 +4173,7 @@ pub(super) fn write_master_container(
         format,
         with_bext,
         SampleFormat::Pcm24,
+        dither_skip_samples,
     )
 }
 
@@ -3939,6 +4196,7 @@ pub(super) fn write_stem_container(
     sample_rate: u32,
     project: &YebanProjectV1,
     format: &str,
+    dither_skip_samples: u64,
 ) -> Result<
     (
         Vec<u8>,
@@ -3959,6 +4217,7 @@ pub(super) fn write_stem_container(
         format,
         false,
         SampleFormat::Float32,
+        dither_skip_samples,
     )
 }
 
@@ -4005,6 +4264,7 @@ fn encode_container_with_format(
     format: &str,
     with_bext: bool,
     sample_format: SampleFormat,
+    dither_skip_samples: u64,
 ) -> Result<
     (
         Vec<u8>,
@@ -4019,6 +4279,15 @@ fn encode_container_with_format(
     Fault,
 > {
     let mut rng = dither_rng_for(project.rng_seed, project.master_bus_track_id);
+    // ⭐ 部分渲染的抖动相位对齐：TPDF 每样本消耗随机源**两次**（见
+    //    `yeban-render` 的 `dither::tpdf_lsb`）—— 跳过区间起点之前那些样本
+    //    本应消耗的抽样，区间产物的量化就与全程产物同区间**逐位相同**；
+    //    否则切片从随机流中段开始抽，负载会与全程切片差 ≤ 1 LSB 的抖动噪声。
+    //    `dither_skip_samples == 0`（全程渲染 / 分轨 / SFZ 导出）⇒ 一次都不跳，
+    //    逐字节不变；Float32 直通分支不消费随机源，跳过与否结果相同。
+    for _ in 0..dither_skip_samples.saturating_mul(2) {
+        rng.next_unit();
+    }
     let pcm = quantize(samples, sample_format.quantize_to(), &mut rng);
     let payload = pcm.to_le_bytes();
     let (origination_date, origination_time) = if with_bext {
@@ -5889,6 +6158,130 @@ mod tests {
         assert_eq!(echoed["frames"], Value::Null);
         assert_eq!(echoed["durationSeconds"], Value::Null);
         assert_eq!(echoed["framesSource"], "projectEnd");
+    }
+
+    #[test]
+    fn render_range_arguments_parse_and_echo() {
+        // 两端都给：原值进请求、回显同值。
+        let request = validate(&args(serde_json::json!({
+            "format": "wav", "sampleRate": 48000, "startTick": 480, "endTick": 1440,
+        })))
+        .expect("合法区间");
+        assert_eq!(request.start_tick, Some(480));
+        assert_eq!(request.end_tick, Some(1440));
+        assert!(request.has_render_range());
+        let echoed = request.to_value();
+        assert_eq!(echoed["startTick"], 480);
+        assert_eq!(echoed["endTick"], 1440);
+        // 只给一端：另一端保持缺省（`None`），不在参数层臆造工程首/尾。
+        let start_only = validate(&args(serde_json::json!({
+            "format": "wav", "sampleRate": 48000, "startTick": 960,
+        })))
+        .expect("只给起点合法");
+        assert_eq!(start_only.start_tick, Some(960));
+        assert_eq!(start_only.end_tick, None);
+        let end_only = validate(&args(serde_json::json!({
+            "format": "wav", "sampleRate": 48000, "endTick": 960,
+        })))
+        .expect("只给终点合法");
+        assert_eq!(end_only.start_tick, None);
+        assert_eq!(end_only.end_tick, Some(960));
+        // 都不给：默认路径 —— 两个字段都是 `None`、回显是 `null`。
+        let default = validate(&args(
+            serde_json::json!({"format": "wav", "sampleRate": 48000}),
+        ))
+        .expect("合法");
+        assert!(!default.has_render_range());
+        assert_eq!(default.to_value()["startTick"], Value::Null);
+        assert_eq!(default.to_value()["endTick"], Value::Null);
+    }
+
+    #[test]
+    fn render_range_arguments_are_refused_when_malformed() {
+        let refused = |arguments: Value| {
+            validate(&args(arguments))
+                .expect_err("必须拒绝")
+                .domain_code()
+        };
+        // 起点不小于终点（逆序与零长都算）。
+        assert_eq!(
+            refused(serde_json::json!({
+                "format": "wav", "sampleRate": 48000, "startTick": 1440, "endTick": 480,
+            })),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+        assert_eq!(
+            refused(serde_json::json!({
+                "format": "wav", "sampleRate": 48000, "startTick": 960, "endTick": 960,
+            })),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+        // 负数 / 小数 / 字符串 / 布尔：⛔ 不静默取整、不静默忽略。
+        for bad in [
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "startTick": -1}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "endTick": 1.5}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "startTick": "480"}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "endTick": true}),
+        ] {
+            assert_eq!(
+                refused(bad),
+                Some(ErrorCode::InvalidParameterRange),
+                "形状非法的 tick 必须拒绝"
+            );
+        }
+        // 与逐轨贡献同给：两个口径没有合成语义 ⇒ 拒绝（不悄悄选一个）。
+        assert_eq!(
+            refused(serde_json::json!({
+                "format": "wav", "sampleRate": 48000, "contributions": true, "startTick": 480,
+            })),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+    }
+
+    #[test]
+    fn resolve_render_range_uses_the_tempo_map_and_the_full_length() {
+        let tempo = yeban_model::time_math::TempoMap::constant(120.0);
+        let request = |arguments: Value| validate(&args(arguments)).expect("合法");
+        let base = serde_json::json!({"format": "wav", "sampleRate": 48000});
+        // 无区间 ⇒ None（默认路径）。
+        assert_eq!(
+            resolve_render_range(&request(base.clone()), &tempo, 48_000, 48_000)
+                .expect("无区间不报错"),
+            None
+        );
+        // 120 BPM / 960 PPQ / 48 kHz ⇒ 25 帧/tick：[480, 1440) → [12000, 36000)。
+        let mut ranged = base.clone();
+        ranged["startTick"] = serde_json::json!(480);
+        ranged["endTick"] = serde_json::json!(1440);
+        let range = resolve_render_range(&request(ranged), &tempo, 48_000, 48_000)
+            .expect("界内区间")
+            .expect("有区间");
+        assert_eq!(range.start_frame, 12_000);
+        assert_eq!(range.end_frame, 36_000);
+        assert_eq!(range.frames(), 24_000);
+        assert_eq!(range.full_frames, 48_000);
+        // 只给终点 ⇒ 起点 0；终点恰好等于全程帧数是合法的（右开区间）。
+        let mut end_only = base.clone();
+        end_only["endTick"] = serde_json::json!(1920);
+        let range = resolve_render_range(&request(end_only), &tempo, 48_000, 48_000)
+            .expect("终点贴全程末端合法")
+            .expect("有区间");
+        assert_eq!((range.start_frame, range.end_frame), (0, 48_000));
+        // 终点超出全程 ⇒ RENDER_FAILED，报文带换算帧数与全程帧数。
+        let mut beyond = base.clone();
+        beyond["endTick"] = serde_json::json!(1921);
+        let fault = resolve_render_range(&request(beyond), &tempo, 48_000, 48_000)
+            .expect_err("终点超出全程必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::RenderFailed));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["endFrame"], 48_025);
+        assert_eq!(value["error"]["data"]["fullFrames"], 48_000);
+        // 起点恰好落在全程末端 ⇒ 换算后为空 ⇒ 同样拒绝。
+        let mut at_end = base;
+        at_end["startTick"] = serde_json::json!(1920);
+        let fault = resolve_render_range(&request(at_end), &tempo, 48_000, 48_000)
+            .expect_err("空区间必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::RenderFailed));
     }
 
     #[test]

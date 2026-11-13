@@ -843,10 +843,13 @@ fn source_items() -> Value {
 // 契约变了，值得让判据红。散文键（`method` / `semantics` / `note`）只声明 `type` —— 改一个
 // 逗号不该强迫改 schema，而把文案钉成 `const` 换来的是"改措辞时必红"，不是"说谎时必红"。
 
-/// ⭐ s31：`data.request` —— 本次请求的回显（15 键，全部**恒发**）。
+/// ⭐ s31：`data.request` —— 本次请求的回显（17 键，全部**恒发**）。
 /// 拼装点唯一（`domain/render.rs` 的 `RenderRequest::to_value`）。
 /// ⚠ `null` 在这里是**语义**而非缺席：`frames: null` = "没给显式帧数、按工程末端推导"，
-/// 与 `data.frames`（实际长度）不是同一个含义（`#252`）。
+/// 与 `data.frames`（实际长度）不是同一个含义（`#252`）；`startTick` / `endTick`
+/// 的 `null` = "该端没给、取缺省（起点 0 / 终点全程末端）"。
+/// ⚠ 既有不一致（登记在案，不在本线范围）：`to_value` 还恒发 `sampleLimits`，
+/// 本名册未收录它 —— 校验器不查多余键 ⇒ 不影响校验，但名册与回显并不严格同集。
 #[must_use]
 fn render_request_roster() -> Value {
     roster(&[
@@ -856,6 +859,8 @@ fn render_request_roster() -> Value {
         ("frames", json!({"type": ["integer", "null"]})),
         ("durationSeconds", json!({"type": ["number", "null"]})),
         ("framesSource", json!({"type": "string"})),
+        ("startTick", json!({"type": ["integer", "null"]})),
+        ("endTick", json!({"type": ["integer", "null"]})),
         ("targetLufs", json!({"type": ["number", "null"]})),
         ("targetToleranceLu", json!({"type": ["number", "null"]})),
         ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
@@ -865,6 +870,24 @@ fn render_request_roster() -> Value {
         ("channels", json!({"type": "integer"})),
         ("contributions", json!({"type": "boolean"})),
         ("threads", json!({"type": ["integer", "null"]})),
+    ])
+}
+
+/// ⭐ `data.renderRange` —— 部分渲染的已解析区间（9 键，**条件出现**：
+/// 只在请求给了 `startTick` / `endTick` 时；缺省整块不出现 ⇒ 不进 `required`）。
+/// 拼装点唯一（`domain/render.rs` 的 `RenderRange::to_value`）。
+#[must_use]
+fn render_range_roster() -> Value {
+    roster(&[
+        ("startTick", json!({"type": ["integer", "null"]})),
+        ("endTick", json!({"type": ["integer", "null"]})),
+        ("startFrame", json!({"type": "integer"})),
+        ("endFrame", json!({"type": "integer"})),
+        ("frames", json!({"type": "integer"})),
+        ("fullFrames", json!({"type": "integer"})),
+        ("method", json!({"type": "string"})),
+        ("statsScope", json!({"type": "string"})),
+        ("ditherPhase", json!({"type": "string"})),
     ])
 }
 
@@ -1916,6 +1939,10 @@ fn render_master() -> Value {
              单位 dBFS；逐样本无差异或渲染前已静音 ⇒ null）与 `contributionsBasis`\
              （口径说明 + `renders` = 实际渲染次数）。缺省时**两个键都不出现**\
              ⇒ 不在 `required` 列表里；开关⛔ 不改写盘字节。\
+             ⭐ 部分渲染：请求给 `startTick` / `endTick` 时**额外**出现 `renderRange`\\\
+             （请求的 tick 原值 + 按工程速度表换算的实际帧区间 + 全程帧数）；\\\
+             产物是全程混音在该区间的原样切片，统计与 `targetLufs` 施加只算区间，\\\
+             ⛔ 成本仍是一次全程渲染。缺省时该键不出现 ⇒ 不在 `required` 列表里。\\\
              ⭐ s32：`automation` 是**每次成功渲染都发**的逐泳道读数（`tracks[]` 只列有泳道的轨，\
              每条 `lanes[]` 一行给 `evaluable` / `supported` / `applied` 三个布尔与首末点读数）；\
              空泳道与关掉读开关的泳道**也在这份读数里**，其首末点与三个 `resolved*` 是 `null`。",
@@ -2052,6 +2079,9 @@ fn render_master() -> Value {
             "contributionsBasis".to_owned(),
             contributions_basis_roster(),
         );
+        // ⭐ 部分渲染：同样是条件键（只在请求给了 `startTick` / `endTick` 时
+        //    出现）⇒ ⛔ 不进 `required`。
+        properties.insert("renderRange".to_owned(), render_range_roster());
     }
     with_commit_model(schema)
 }
@@ -3108,7 +3138,7 @@ mod tests {
     fn the_eleven_render_master_slots_delegate_to_their_rosters() {
         let schema = render_master();
         let cases: [(&str, Value, usize); 11] = [
-            ("request", render_request_roster(), 15),
+            ("request", render_request_roster(), 17),
             ("probability", probability_roster(), 5),
             ("ratchet", ratchet_roster(), 8),
             ("audio", audio_roster(), 8),
@@ -3192,6 +3222,7 @@ mod tests {
         let request = json!({
             "format": "wav", "sampleRate": 48_000, "normalize": true,
             "frames": null, "durationSeconds": 30.0, "framesSource": "durationSeconds",
+            "startTick": null, "endTick": null,
             "targetLufs": -14.0, "targetToleranceLu": 0.5, "truePeakCeilingDbtp": -1.0, "path": null,
             "pathRule": "<工程文件 stem>.master.<format>, 与工程同目录",
             "bitDepth": 24, "channels": 2, "contributions": false, "threads": null
@@ -3431,7 +3462,8 @@ mod tests {
         nulls["targetToleranceLu"] = Value::Null;
         nulls["truePeakCeilingDbtp"] = Value::Null;
         nulls["threads"] = Value::Null;
-        validate(&render_request_roster(), &nulls).expect("默认请求的六个 null 都是常态");
+        validate(&render_request_roster(), &nulls)
+            .expect("默认请求的 null 都是常态 (含 startTick / endTick 的缺省 null)");
         let mut nulls = loudness.clone();
         nulls["measuredIntegratedLufs"] = Value::Null;
         nulls["deltaLu"] = Value::Null;
