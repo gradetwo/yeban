@@ -386,10 +386,6 @@ export component MainWindow inherits Window {
             }
             if (!event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt && (event.text == "t" || event.text == "T")) {
                 Theme.show-tooltips = !Theme.show-tooltips;
-                if (!Theme.show-tooltips) {
-                    Theme.hover-tip = "";
-                    Theme.has-hover-tip = false;
-                }
                 return accept;
             }
             if (event.modifiers.alt && (event.modifiers.control || event.modifiers.meta) && (event.text == "m" || event.text == "M")) {
@@ -749,10 +745,6 @@ export component MainWindow inherits Window {
                 else if (id == "toggle-hotspots") { root.show-hotspots = !root.show-hotspots; }
                 else if (id == "toggle-tooltips") {
                     Theme.show-tooltips = !Theme.show-tooltips;
-                    if (!Theme.show-tooltips) {
-                        Theme.hover-tip = "";
-                        Theme.has-hover-tip = false;
-                    }
                 }
                 else if (id == "tab-stacked") { root.show-lower-dock = true; Theme.active-dock-tab = "stacked"; }
                 else if (id == "tab-devices") { root.show-lower-dock = true; Theme.active-dock-tab = "devices"; }
@@ -771,6 +763,45 @@ export component MainWindow inherits Window {
         ToastBanner {
             toast-text: root.toast-message;
             show-toast: root.show-floating-toast;
+        }
+
+        // Global Floating Tooltip Overlay (Near Hover Target, Clamped & Auto-flip)
+        if (Theme.show-tooltips && Theme.has-hover-tip && Theme.hover-tip != "") : Rectangle {
+            z: 10000;
+            width: tip-layout.min-width;
+            height: 22px;
+            x: Math.max(8px, Math.min(root.width - self.width - 8px, Theme.hover-tip-x - self.width / 2));
+            y: (Theme.hover-tip-y + Theme.hover-tip-target-h + 34px > root.height) ?
+                Math.max(6px, Theme.hover-tip-y - self.height - 6px) :
+                (Theme.hover-tip-y + Theme.hover-tip-target-h + 6px);
+            background: #090e1cf8;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #38bdf888;
+
+            tip-layout := HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 6px;
+                alignment: center;
+
+                Rectangle {
+                    width: 4px;
+                    height: 4px;
+                    border-radius: 2px;
+                    background: Theme.accent;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Text {
+                    text: Theme.hover-tip;
+                    font-family: Tokens.font-ui;
+                    font-size: Tokens.font-size-xs;
+                    font-weight: 600;
+                    color: #f8fafc;
+                    vertical-alignment: center;
+                }
+            }
         }
 
         // Compatibility Forwarding Block for Automated Criteria Tests

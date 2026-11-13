@@ -1315,10 +1315,6 @@ export component TransportHeaderBar inherits Rectangle {
                     mouse-cursor: MouseCursor.pointer;
                     clicked => {
                         Theme.show-tooltips = !Theme.show-tooltips;
-                        if (!Theme.show-tooltips) {
-                            Theme.hover-tip = "";
-                            Theme.has-hover-tip = false;
-                        }
                     }
                 }
                 TooltipBubble { text: Theme.show-tooltips ? "悬浮提示: 已开启 (点击关闭) [T]" : "悬浮提示: 已关闭 (点击开启) [T]"; is-visible: touch_tips.has-hover; tip-offset-x: -40px; }
