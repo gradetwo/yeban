@@ -691,11 +691,59 @@ jobs:
           df -h . || true
           du -sh target 2>/dev/null || true
 
-      - name: test --workspace
+      # ⭐ 2026-11-13 二轮：`test --workspace` 分块 + 块间裁剪。
+      #
+      # ## 实证（分支 CI run 43388952571，job 131764086858，日志已读回）
+      #
+      # 第一轮（回收加固 + clippy 后 trim + 三处读数）落地后，读数步把死点抓实：
+      # clippy 后 target 仅 1315 MB、可用 109G（clippy 是 check 构建、只产 rmeta，
+      # 没有已链接二进制可裁 ⇒ clippy 后的 trim 只释放了 1 MB）；红死在单条
+      # `cargo test --workspace --all-targets` 步**内部** —— 该步把 target 从
+      # 1.3G 涨到 **110G**，145G 盘用满（剩 48M），日志逐字：
+      # `couldn't create a temp dir: No space left on device (os error 28)` +
+      # `ld terminated with signal 7 [Bus error]`，与主干 run 43224008777 同死法。
+      # ⇒ 步间 trim 救不了单步内部的爆涨：把这一步本身拆成 4 块，每块跑完立即
+      # trim，已链接测试二进制不跨块累积（`.rlib` 保留，后续块不重编）。
+      #
+      # ## 为什么不用 `debug = 0`
+      #
+      # 同本 job 盘回收注释的既有裁决：关 debuginfo 能压链接体积，但它**改变了
+      # 被构建的东西**（panic 回溯失去行号）。分块只改执行顺序与裁剪时机，
+      # 构建产物逐字不变，语义上惰性。
+      #
+      # 成员清单由 `cargo metadata` 现推（⛔ 不手抄包名，增删 crate 自动跟随）；
+      # 结尾断言已跑数 == 成员总数，日志里可核对覆盖无漏无重；成员数为 0 时
+      # 直接判红，⛔ 不许空跑假绿。
+      - name: test --workspace（分块 + 块间裁剪）
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test --workspace --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+          # 成员清单由 cargo metadata 现推（⛔ 不手抄包名：增删 crate 自动跟随）。
+          members_text="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[].name' | sort)"
+          mapfile -t members <<< "$members_text"
+          total="${#members[@]}"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::cargo metadata 未推出任何成员包，分块计划为空 ⇒ 拒绝空跑"
+            exit 1
+          fi
+          chunks=4
+          per=$(( (total + chunks - 1) / chunks ))
+          echo "== 分块计划：workspace 成员 ${total} 个，均分 ${chunks} 块（每块 ≤ ${per} 个） =="
+          tested=0
+          for ((start = 0; start < total; start += per)); do
+            chunk=("${members[@]:start:per}")
+            args=()
+            for pkg in "${chunk[@]}"; do args+=(-p "$pkg"); done
+            echo "== test 块 $((start / per + 1)): ${chunk[*]} =="
+            cargo test "${args[@]}" --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+            tested=$((tested + ${#chunk[@]}))
+            bash scripts/dev/trim-target.sh \
+              || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本块未裁剪"
+            df -h . || true
+            du -sh target 2>/dev/null || true
+          done
+          echo "== 分块覆盖校验：已跑 ${tested}/${total} 个成员包 =="
+          [ "$tested" -eq "$total" ]
 
       - name: 盘读数 (test --workspace 之后)
         if: always()
