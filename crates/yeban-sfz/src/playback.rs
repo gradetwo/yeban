@@ -1179,6 +1179,8 @@ mod tests {
                             pan: 0.0,
                             seq_position: 1,
                             seq_length: 1,
+                            lorand: crate::instrument::LORAND_DEFAULT,
+                            hirand: crate::instrument::HIRAND_DEFAULT,
                             group: 0,
                             off_by: 0,
                             note_polyphony: NotePolyphony::UNLIMITED,

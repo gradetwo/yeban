@@ -127,6 +127,16 @@ keyswitch / include / define / CC gate / 轮替的**语义**，全部用 Rust �
    该状态由 `RegionQuery::held_notes` 传入；严格策略下**不提供就不匹配**
    （与 keyswitch / CC 门控同一条口径）。引擎侧必须提供该状态，否则这两类 region 不发声。
 6. **随机轮替** `lorand`/`hirand`：**故意不实现**，因为 `ARCH-DET-001` 禁止随机数。
+   ⭐ **追加修订段（随机轮替片）—— 被修订的是本条**：已实现。修订的依据是
+   `ARCH-DET-001` 禁的是「同一输入得到不同结果」，而随机数可以做成触发身份的
+   **纯函数**（与 `seq_*` 的确定性轮替同一条路）：`yeban_sfz::instrument::trigger_rand`
+   以 `(occurrence, note, channel)` 为种子材料、splitmix64 终混派生 `[0, 1)`，
+   同次触发全部 region 共用一值。⇒ 规范语义（随机 round-robin）与确定性契约
+   同时成立。解析（缺省 (0, 1)、越界 `FloatOutOfRange`）与两侧选择（`yeban-sfz`
+   的 `region_for_with`、引擎实时 `SfzVoicePool::trigger_note`、离线
+   `render_note_with`）均已接线，判据见 `yeban-sfz` 的 instrument 单元测试与
+   `yeban-engine/tests/sfz_rand_round_robin.rs`（G1–G7）。语料面：第 11 节普查
+   `lorand` / `hirand` 各出现 44 次。
 7. **参数化宏** `#define $F(a) …`：未实现（规范正文未定义，记为缺口）。
 8. **递归宏展开**：只做「定义时一层 + 使用处单遍」，不做递归 —— 这是为了杜绝
    `#define $A $A` 类的爆炸与死循环。
