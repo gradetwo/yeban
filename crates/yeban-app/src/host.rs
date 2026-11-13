@@ -56,8 +56,8 @@ use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolutio
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
 use crate::ui::{MainWindow, ThemeState, YebanTheme};
-use crate::undo::{UiAction, UndoPort};
 use crate::ui::{PianoRollNote, TimelineBlockData, TrackData};
+use crate::undo::{UiAction, UndoPort};
 
 /// [`wire_save`] 的**装配输入**：保存到哪 + 拿不到活会话时用哪一份工程。
 ///
@@ -16733,7 +16733,11 @@ pub fn sync_aether_display(ui: &MainWindow) {
     ui.set_is_recording(ui.get_recording());
     ui.set_is_looping(ui.get_cycle_enabled());
     ui.set_timecode_text(ui.get_timecode());
-    let bpm = ui.get_bpm_display().as_str().parse::<f32>().unwrap_or(120.0);
+    let bpm = ui
+        .get_bpm_display()
+        .as_str()
+        .parse::<f32>()
+        .unwrap_or(120.0);
     ui.set_bpm_val(bpm as i32);
     let level = ui.get_master_meter_level();
     ui.set_master_meter_l(level);
@@ -16755,15 +16759,27 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
     // ---- 走带 ----
     ui.on_transport_toggle_play({
         let w = weak.clone();
-        move || { if let Some(ui) = w.upgrade() { ui.invoke_toggle_play(); } }
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_toggle_play();
+            }
+        }
     });
     ui.on_transport_toggle_rec({
         let w = weak.clone();
-        move || { if let Some(ui) = w.upgrade() { ui.invoke_toggle_record(); } }
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_toggle_record();
+            }
+        }
     });
     ui.on_transport_rewind({
         let w = weak.clone();
-        move || { if let Some(ui) = w.upgrade() { ui.invoke_stop(); } }
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_stop();
+            }
+        }
     });
     ui.on_transport_set_bpm({
         let w = weak.clone();
@@ -16802,19 +16818,35 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
     // ---- 轨道 / 混音 (新 UI 传 1-based TrackData.id, 旧回调要 0-based 索引) ----
     ui.on_track_toggle_mute({
         let w = weak.clone();
-        move |id: i32| { if let Some(ui) = w.upgrade() { ui.invoke_mixer_mute_toggle(id - 1); } }
+        move |id: i32| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_mixer_mute_toggle(id - 1);
+            }
+        }
     });
     ui.on_track_toggle_solo({
         let w = weak.clone();
-        move |id: i32| { if let Some(ui) = w.upgrade() { ui.invoke_mixer_solo_toggle(id - 1); } }
+        move |id: i32| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_mixer_solo_toggle(id - 1);
+            }
+        }
     });
     ui.on_track_toggle_arm({
         let w = weak.clone();
-        move |id: i32| { if let Some(ui) = w.upgrade() { ui.invoke_track_arm_toggle(id - 1); } }
+        move |id: i32| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_track_arm_toggle(id - 1);
+            }
+        }
     });
     ui.on_track_add_requested({
         let w = weak.clone();
-        move || { if let Some(ui) = w.upgrade() { ui.invoke_track_create_midi(); } }
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_track_create_midi();
+            }
+        }
     });
     ui.on_track_selected({
         let w = weak.clone();
@@ -16831,9 +16863,15 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
         let w = weak.clone();
         let port = Rc::clone(&port);
         move |id: i32, db: f32| {
-            let Some(ui) = w.upgrade() else { return; };
-            let Some(track_id) = track_id_at(&ui, id - 1) else { return; };
-            let Ok(tid) = track_id.parse::<yeban_model::EntityId>() else { return; };
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(track_id) = track_id_at(&ui, id - 1) else {
+                return;
+            };
+            let Ok(tid) = track_id.parse::<yeban_model::EntityId>() else {
+                return;
+            };
             let old_val = mixer_track_state(&port, &track_id).map_or(0.0, |state| state.volume_db);
             let op = yeban_model::Op::SetParam {
                 target: yeban_model::AutomationTarget::TrackVolume { track_id: tid },
@@ -16855,7 +16893,11 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
         move |tool| {
             if let Some(ui) = w.upgrade() {
                 let digit = match tool.as_str() {
-                    "pointer" => 1, "range" => 2, "split" => 3, "draw" => 4, _ => 1,
+                    "pointer" => 1,
+                    "range" => 2,
+                    "split" => 3,
+                    "draw" => 4,
+                    _ => 1,
                 };
                 ui.invoke_tool_selected(digit);
             }
@@ -16866,28 +16908,47 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
     ui.on_command_execute({
         let w = weak.clone();
         move |cmd| {
-            let Some(ui) = w.upgrade() else { return; };
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
             let c = cmd.as_str();
-            if c.contains("保存") || c.contains("save") { ui.invoke_save_project(); }
-            else if c.contains("打开") || c.contains("open") { ui.invoke_open_project(); }
-            else if c.contains("新建") || c.contains("new") { ui.invoke_new_project(); }
-            else if c.contains("撤销") || c.contains("undo") { ui.invoke_undo_step(); }
-            else if c.contains("重做") || c.contains("redo") { ui.invoke_redo_step(); }
-            else if c.contains("导出") && c.contains("WAV") { ui.invoke_open_export_wav(); }
-            else if c.contains("导出") && c.contains("MIDI") { ui.invoke_export_midi(); }
-            else if c.contains("导入") && c.contains("音频") { ui.invoke_import_audio(); }
-            else if c.contains("导入") && c.contains("MIDI") { ui.invoke_import_midi(); }
-            else if c.contains("SFZ") || c.contains("音色") { ui.invoke_load_sfz(); }
-            else if c.contains("录音") || c.contains("record") { ui.invoke_record_wav(); }
-            else if c.contains("播放") || c.contains("play") { ui.invoke_toggle_play(); }
-            else { ui.set_toast_message(format!("[命令] {}", c).into()); }
+            if c.contains("保存") || c.contains("save") {
+                ui.invoke_save_project();
+            } else if c.contains("打开") || c.contains("open") {
+                ui.invoke_open_project();
+            } else if c.contains("新建") || c.contains("new") {
+                ui.invoke_new_project();
+            } else if c.contains("撤销") || c.contains("undo") {
+                ui.invoke_undo_step();
+            } else if c.contains("重做") || c.contains("redo") {
+                ui.invoke_redo_step();
+            } else if c.contains("导出") && c.contains("WAV") {
+                ui.invoke_open_export_wav();
+            } else if c.contains("导出") && c.contains("MIDI") {
+                ui.invoke_export_midi();
+            } else if c.contains("导入") && c.contains("音频") {
+                ui.invoke_import_audio();
+            } else if c.contains("导入") && c.contains("MIDI") {
+                ui.invoke_import_midi();
+            } else if c.contains("SFZ") || c.contains("音色") {
+                ui.invoke_load_sfz();
+            } else if c.contains("录音") || c.contains("record") {
+                ui.invoke_record_wav();
+            } else if c.contains("播放") || c.contains("play") {
+                ui.invoke_toggle_play();
+            } else {
+                ui.set_toast_message(format!("[命令] {}", c).into());
+            }
         }
     });
 
     // 回滚按钮 -> 撤销一步(与 Cmd+Z 同一个 UndoPort)。
     ui.on_revert_to_last_commit({
         let w = weak.clone();
-        move || { if let Some(ui) = w.upgrade() { ui.invoke_undo_step(); } }
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_undo_step();
+            }
+        }
     });
 }
-
