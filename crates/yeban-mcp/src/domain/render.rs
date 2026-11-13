@@ -279,7 +279,7 @@
 //! `suggestedTrimDb` 是**母带级**建议（减母带增益保证不削波）；只减最响的一条源
 //! ⛔ **不保证**母带不削波（其余源仍在求和）—— 这句话逐字进 `warnings[].hint`。
 //!
-//! ## `targetLufs` 的口径（本切片新增；"能测的那一半"）
+//! ## `targetLufs` 的口径（测 + 施加；与 CLI 同一实现）
 //!
 //! **响度目标不是一个新工具，是 `yeban_render_master` 的一个可选参数**，因为
 //! 交付形态是"一次渲染 + 一份实测-对-目标的报告"，而渲染入口已经存在
@@ -287,22 +287,37 @@
 //!
 //! ```text
 //! 不给 targetLufs  → 只报实测读数; verdict = "noTarget"   ← **默认路径, 逐字节不变**
-//! 给 targetLufs    → 报读数 + 判定; |实测 − 目标| ≤ 0.5 LU ⇒ "pass"
-//!                                            否则           ⇒ "fail" + RENDER_FAILED
+//! 给 targetLufs    → 先按 CLI 同一伺服施加增益, 再复测判定; |复测 − 目标| ≤ 0.5 LU ⇒ "pass"
+//!                                            否则           ⇒ "fail" + RENDER_FAILED (不落盘)
 //! 测不出（静音 / 采样率无核验系数）          ⇒ "unmeasurable" + RENDER_FAILED
 //! ```
 //!
+//! ⭐ **2026-11-13 变更（实测问题清单 #17 的裁决）**：本节初版刻意"只测不调"
+//! （原文写"能测的那一半"）。实测里这让 `targetLufs` 在真实工程上**永远命中不了**：
+//! 母带响度由工程本身决定，调用方除了改工程没有任何手段让它达标，而 CLI
+//! `--loudness-target` 早已是施加语义 —— 同一个目标在两个交付面上行为相反。
+//! ⇒ 裁决：MCP 改为**施加**，且不另写第二份伺服：直接调
+//! [`mastering::ExportPreset::apply`]（增益 = 目标 − 实测、真峰值上限让步、
+//! 施加后复测），与 CLI 逐语义一致。本工具没有上限参数 ⇒ 上限恒用母带缺省值
+//! [`mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP`]（与两个内置预设同值），
+//! 在请求回显（`data.request.truePeakCeilingDbtp`）与响度块里如实报出。
+//! 失败报文同步改为**可执行诊断**（清单 §五.3）：带 `reasonKind` 原因分类、
+//! 施加前实测、实际增益与绑定约束、复测值，上限绑定时再给建议 trim。
+//!
 //! 五件事写死在这里，都是**刻意的**：
 //!
-//! 1. **不做响度归一化**（不像 `normalize` 那样去改样本）：规范只要求"显示 LUFS"，
-//!    没有任何文字要求按 LUFS 目标改变增益（见下方"规范沉默"）。做归一化会改变
-//!    母带字节，而**默认路径必须逐字节不变**（`MUST-GATE-002` 的 L1 位级渲染）。
+//! 1. **施加只发生在给了 `targetLufs` 时**（显式意图，不像削波预警那样是读数
+//!    推断）：没给目标的**默认路径必须逐字节不变**（`MUST-GATE-002` 的 L1 位级
+//!    渲染）；给了已达标的目标时增益恒为 `0.0`，产物也逐字节不变。规范对响度
+//!    目标本身沉默（见下方"规范沉默"），施加语义的依据是 CLI 的既有实现与
+//!    2026-11-13 的修复裁决，不是规范条文。
 //! 2. **测量对象是抖动/量化之前的浮点母带**（与 `normalize` 同一作用域）：响度计量的
 //!    对象是母带信号本身，抖动是"降位深"的伴生步骤。
-//! 3. **测量在 [`RenderArtifact::build`] 里做**（`plan` 阶段，只读）；`apply` 只落盘 ⇒
-//!    `dryRun` 与真调用拿到的是**同一份**判定。
+//! 3. **测量与施加都在 [`RenderArtifact::build`] 里做**（`plan` 阶段）；`apply` 只落盘 ⇒
+//!    `dryRun` 与真调用拿到的是**同一份**判定与同一组施加后字节。
 //! 4. **未达标不写文件**：`RENDER_FAILED` 从 `build` 里返回，`apply` 根本不会被调用。
-//! 5. **判定是只读的**：`bytes` / `sha256` / `masterDigest` 与不给目标时逐位相同，
+//! 5. **只读性只对没给目标成立**：给了目标且增益非 0 时 `bytes` / `sha256` /
+//!    `masterDigest` 必然不同（那正是"施加"的含义）；增益为 0 时逐位相同，
 //!    判据 `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached`。
 //!
 //! ### 规范沉默处（**这是工程选择，必须登记**）
@@ -396,7 +411,7 @@
 //! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / **`contributions` 非布尔** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
 //! | 0 帧、**显式帧数或工程末端推导**超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID；超限带 `maxFrames`） |
-//! | **母带响度未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带实测/目标/差值/容差） |
+//! | **母带响度施加后仍未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带 `reasonKind` 原因分类/施加前实测/目标/已施加增益/绑定约束/复测值/差值/容差，上限绑定时带建议 trim） |
 //! | 片段引用的资产既不在会话 CAS 池里、工程 `assets` 索引里也没有 | `RENDER_FAILED`（`data.reason = "assetMissing"`） |
 //! | 会话 CAS 池里的字节与它声明的 SHA-256 不符（完整性破坏） | `RENDER_FAILED`（`data.reason = "assetHashMismatch"`） |
 //! | 资产解码失败（坏/截断/不支持的容器） | `RENDER_FAILED`（`data.reason = "assetDecodeFailed"` + 分类）；解码器报的是 I/O 错时走 `IO_ERROR` |
@@ -600,6 +615,48 @@ pub const NOTE_SILENT_MASTER: &str = "纯静音母带: 门限积分的读数为�
 /// 见 [`NOTE_SILENT_MASTER`]；这一条是采样率不在四档核验表里。
 pub const NOTE_UNVERIFIED_SAMPLE_RATE: &str =
     "该采样率没有核验过的 K 加权系数 (44.1/48/88.2/96 kHz 四档), 拒绝硬套 48 kHz 系数";
+/// 见 [`NOTE_SILENT_MASTER`]；这一条是**施加后**才测不出：增益把整段压到绝对门限之下。
+pub const NOTE_POST_GAIN_BELOW_ABSOLUTE_GATE: &str =
+    "施加增益后整段低于 BS.1770 绝对门限 (−70 LUFS), 复测无读数";
+
+/// 施加的增益是被**哪个约束**定下的（进响应 `loudness.gainBound`）。
+///
+/// 与 `yeban_render::mastering::GainBound` 一一对应的**字符串面**（⛔ 不在 MCP 里
+/// 另立一份枚举）：CLI `--loudness-target` 的报告用的也是同一组语义。
+pub const BOUND_LOUDNESS_TARGET: &str = "loudnessTarget";
+/// 见 [`BOUND_LOUDNESS_TARGET`]；真峰值上限赢了 ⇒ 目标没达到。
+pub const BOUND_TRUE_PEAK_CEILING: &str = "truePeakCeiling";
+/// 见 [`BOUND_LOUDNESS_TARGET`]；没有约束需要改动样本（增益 0 dB）。
+pub const BOUND_NOTHING_TO_DO: &str = "nothingToDo";
+
+/// ⭐ `gainBound` 的**唯一名册**（`outputSchema` 的 `loudness.gainBound.enum` 引用它，
+/// 与 [`VERDICT_VALUES`] 同一条理由）。
+pub const BOUND_VALUES: [&str; 3] = [
+    BOUND_LOUDNESS_TARGET,
+    BOUND_TRUE_PEAK_CEILING,
+    BOUND_NOTHING_TO_DO,
+];
+
+/// 未达标的原因分类（进失败报文 `data.reasonKind`；`reason` 恒为
+/// `"loudnessTargetMissed"`，这一键回答"**为什么**到不了"）。
+///
+/// 真峰值上限绑定：需要的增益被上限截断，复测仍够不到目标。
+pub const MISS_KIND_TRUE_PEAK_CEILING_BOUND: &str = "truePeakCeilingBound";
+/// 见 [`MISS_KIND_TRUE_PEAK_CEILING_BOUND`]；增益已按目标足额施加，复测仍偏离容差
+/// （门限积分对增益非严格线性，残差超过容差）。
+pub const MISS_KIND_POST_GAIN_OUT_OF_TOLERANCE: &str = "postGainOutOfTolerance";
+/// 见 [`MISS_KIND_TRUE_PEAK_CEILING_BOUND`]；母带测不出（静音 / 采样率无核验系数），
+/// 任何增益都够不到目标。
+pub const MISS_KIND_UNMEASURABLE: &str = "unmeasurableMaster";
+
+/// `mastering::GainBound` → 响应字符串（[`BOUND_VALUES`] 之一）。
+fn gain_bound_name(bound: mastering::GainBound) -> &'static str {
+    match bound {
+        mastering::GainBound::LoudnessTarget => BOUND_LOUDNESS_TARGET,
+        mastering::GainBound::TruePeakCeiling => BOUND_TRUE_PEAK_CEILING,
+        mastering::GainBound::NothingToDo => BOUND_NOTHING_TO_DO,
+    }
+}
 
 // ---------------------------------------------------------------------------
 /// 单次渲染的帧数上限：1 小时 @ 48 kHz。
@@ -837,6 +894,13 @@ impl RenderRequest {
             } else {
                 None
             },
+            // ⭐ 给了目标时施加级的真峰值上限（本工具没有上限参数, 恒为母带缺省值;
+            //   没给目标时没有施加级 ⇒ `null`）。
+            "truePeakCeilingDbtp": if self.target_lufs_bits.is_some() {
+                Some(mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP)
+            } else {
+                None
+            },
             "path": self.path.as_ref().map(|path| path.display().to_string()),
             "pathRule": if self.path.is_some() {
                 "显式 path 参数"
@@ -887,11 +951,15 @@ impl RenderRequest {
 /// 也就是 `yeban_query_engine_state` 的 `integratedLufs` 字段背后**同一个**计量器。
 /// 本类型只加两件计量器没有的东西：**目标**与**比较**。
 ///
-/// ## 它为什么**不**改渲染
+/// ## 它与渲染的关系（⭐ 2026-11-13 改：给了目标就**施加**）
 ///
-/// 判定发生在抖动/量化**之前的浮点母带**上，且**只读**：它不改一个样本、不参与
-/// 容器编码。[`RenderArtifact::bytes`] 与 `sha256`／`masterDigest` 因此与不给
-/// `targetLufs` 时**逐字节相同**（判据
+/// 没给 `targetLufs` 时它仍然只读：不改一个样本、不参与容器编码，[`RenderArtifact::bytes`]
+/// 与 `sha256`／`masterDigest` 与本切片之前逐字节相同。
+///
+/// 给了 `targetLufs` 时它**就是**施加级的结果：增益在抖动/量化**之前的浮点母带**上
+/// 施加（与 CLI `--loudness-target` 同一实现，见 [`Self::from_apply`]），判定按
+/// **施加后复测**的读数下。已达标的目标 ⇒ 增益恒为 `0.0` ⇒ 产物仍与不给目标时
+/// **逐字节相同**（判据
 /// `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached`）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoudnessTarget {
@@ -900,6 +968,9 @@ pub struct LoudnessTarget {
     /// 容差（LU）。
     pub tolerance_lu: f32,
     /// 实测的**门限积分**响度（LUFS）；测不出时 `None`。
+    ///
+    /// 给了目标时这是**施加后复测**的读数（= 交付物的读数）；施加前的读数在
+    /// [`Self::before_gain_lufs`]。没给目标时就是母带本身的读数。
     pub measured_lufs: Option<f32>,
     /// `measured − target`（LU）；两者有一缺就 `None`。
     pub delta_lu: Option<f32>,
@@ -908,6 +979,21 @@ pub struct LoudnessTarget {
     pub verdict: &'static str,
     /// 测不出读数时的原因（[`NOTE_SILENT_MASTER`] / [`NOTE_UNVERIFIED_SAMPLE_RATE`]）。
     pub measurement_note: Option<&'static str>,
+    /// ⭐ 实际施加的增益（dB）；`None` = 没给目标（**没有施加级**）。
+    ///
+    /// 给了目标时恒有值（含 `0.0`：已达标、或测不出而没动样本）。
+    pub applied_gain_db: Option<f32>,
+    /// 定下增益的约束（[`BOUND_LOUDNESS_TARGET`] / [`BOUND_TRUE_PEAK_CEILING`] /
+    /// [`BOUND_NOTHING_TO_DO`]）；`None` = 没给目标。
+    pub gain_bound: Option<&'static str>,
+    /// 施加**之前**的实测（LUFS）；仅给了目标且施加前测得出时有值。
+    ///
+    /// 响应的 `measuredIntegratedLufs` 是**交付物**（施加后）的读数；这一键让
+    /// "进来时是多少"也可查，两个数之差应 ≈ [`Self::applied_gain_db`]。
+    pub before_gain_lufs: Option<f32>,
+    /// 施加时的真峰值上限（dBTP）；仅给了目标时有值（本工具没有上限参数，
+    /// 恒为 `mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP`，回显让口径可见）。
+    pub true_peak_ceiling_dbtp: Option<f32>,
 }
 
 impl LoudnessTarget {
@@ -961,6 +1047,98 @@ impl LoudnessTarget {
             delta_lu,
             verdict,
             measurement_note,
+            applied_gain_db: None,
+            gain_bound: None,
+            before_gain_lufs: None,
+            true_peak_ceiling_dbtp: None,
+        }
+    }
+
+    /// ⭐ 给了 `targetLufs` 时的构造：吃 [`mastering::ExportPreset::apply`] 的结果
+    /// （CLI `--loudness-target` 的**同一份**伺服：增益 = 目标 − 实测，真峰值上限
+    /// 让步，施加后复测）。
+    ///
+    /// `outcome == None` ⇔ 采样率不在核验表里（`apply` 拒绝硬套系数 ⇒ 没有施加、
+    /// 没有读数）。判定按**复测**值下：`|复测 − 目标| ≤ 容差` ⇒ `pass`。
+    ///
+    /// 施加前测得出、施加后测不出只有一条路：增益把整段压到绝对门限之下
+    /// （目标贴着 `−70 LUFS` 下界）⇒ 判 `fail`（施加前测得出，⛔ 不冒充
+    /// `unmeasurable`），原因写进 `measurement_note`。
+    #[must_use]
+    pub fn from_apply(target: f32, outcome: Option<mastering::NormalizeOutcome>) -> Self {
+        let ceiling = mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP;
+        let Some(outcome) = outcome else {
+            return Self {
+                target_lufs: Some(target),
+                tolerance_lu: TARGET_TOLERANCE_LU,
+                measured_lufs: None,
+                delta_lu: None,
+                verdict: VERDICT_UNMEASURABLE,
+                measurement_note: Some(NOTE_UNVERIFIED_SAMPLE_RATE),
+                applied_gain_db: Some(0.0),
+                gain_bound: Some(BOUND_NOTHING_TO_DO),
+                before_gain_lufs: None,
+                true_peak_ceiling_dbtp: Some(ceiling),
+            };
+        };
+        let before = outcome
+            .before
+            .integrated_is_measurable()
+            .then_some(outcome.before.integrated_lufs);
+        let after = outcome
+            .after
+            .integrated_is_measurable()
+            .then_some(outcome.after.integrated_lufs);
+        let base = Self {
+            target_lufs: Some(target),
+            tolerance_lu: TARGET_TOLERANCE_LU,
+            measured_lufs: after,
+            delta_lu: None,
+            verdict: VERDICT_UNMEASURABLE,
+            measurement_note: None,
+            applied_gain_db: Some(outcome.gain_db),
+            gain_bound: Some(gain_bound_name(outcome.bound)),
+            before_gain_lufs: before,
+            true_peak_ceiling_dbtp: Some(ceiling),
+        };
+        if before.is_none() {
+            // 静音：`apply` 不动样本（增益 0），测不出 ⇒ 无法判定（与只测时代同一出口）。
+            return Self {
+                measurement_note: Some(NOTE_SILENT_MASTER),
+                ..base
+            };
+        }
+        match after {
+            Some(got) => {
+                let delta = got - target;
+                Self {
+                    delta_lu: Some(delta),
+                    verdict: if delta.abs() <= TARGET_TOLERANCE_LU {
+                        VERDICT_PASS
+                    } else {
+                        VERDICT_FAIL
+                    },
+                    ..base
+                }
+            }
+            None => Self {
+                verdict: VERDICT_FAIL,
+                measurement_note: Some(NOTE_POST_GAIN_BELOW_ABSOLUTE_GATE),
+                ..base
+            },
+        }
+    }
+
+    /// 未达标的**原因分类**（[`MISS_KIND_*`]）；达标 / 没给目标时 `None`。
+    #[must_use]
+    pub fn miss_kind(&self) -> Option<&'static str> {
+        match self.verdict {
+            VERDICT_UNMEASURABLE => Some(MISS_KIND_UNMEASURABLE),
+            VERDICT_FAIL if self.gain_bound == Some(BOUND_TRUE_PEAK_CEILING) => {
+                Some(MISS_KIND_TRUE_PEAK_CEILING_BOUND)
+            }
+            VERDICT_FAIL => Some(MISS_KIND_POST_GAIN_OUT_OF_TOLERANCE),
+            _ => None,
         }
     }
 
@@ -975,6 +1153,11 @@ impl LoudnessTarget {
             "verdict": self.verdict,
             "measured": self.measured_lufs.is_some(),
             "measurementNote": self.measurement_note,
+            // ⭐ 施加级的四键：没给目标时恒 `null`（没有施加级，不是"增益为 0"）。
+            "appliedGainDb": json_f32(self.applied_gain_db),
+            "gainBound": self.gain_bound,
+            "beforeGainLufs": json_f32(self.before_gain_lufs),
+            "truePeakCeilingDbtp": json_f32(self.true_peak_ceiling_dbtp),
             "algorithm": "ITU-R BS.1770-4 (K-weighted, gated integrated: Γa = −70 LUFS, Γr = −10 LU)",
             "implementation": "yeban-dsp::loudness::GatedLoudness (与 yeban_query_engine_state 的 integratedLufs 同一计量器)",
             "specId": "ARCH-UI-002",
@@ -986,35 +1169,97 @@ impl LoudnessTarget {
     ///
     /// 只在 `verdict` 是 [`VERDICT_FAIL`] 或 [`VERDICT_UNMEASURABLE`] 时调用。
     /// `RENDER_FAILED` 的语义是"渲染没有产出可交付的母带"，两句都字面成立：
-    /// 母带**渲染成功了，但它不达标**（或根本测不出响度），调用方拿到的不是能发布的
-    /// 东西。报文里逐字给出实测值、目标、差值与容差 —— 它不是一个只说"失败了"的码。
+    /// 母带**渲染成功了，但施加增益后仍不达标**（或根本测不出响度），调用方拿到的
+    /// 不是能发布的东西。
+    ///
+    /// ⭐ 报文必须**可执行**（实测问题清单 #17 + §五.3 的裁决）：除了实测/目标/差值/
+    /// 容差，还要给出 `reasonKind`（到不了的原因分类）、实际施加的增益与定下它的
+    /// 约束、复测值；真峰值上限绑定时再给 `suggestedTrimDb` —— 把真峰值（不是母带
+    /// 电平）至少再压低这么多 dB，上限才放行足额增益。公式与削波预警同一条
+    /// （[`math::suggested_trim_db`]：向上取整到 0.5 dB 再取负），操作数是
+    /// **缺口**（需要的增益 − 实际施加的增益）。
     #[must_use]
     pub fn failure(&self) -> Fault {
         let target = self.target_lufs.unwrap_or(f32::NAN);
-        let message = match self.measured_lufs {
-            Some(measured) => {
-                let delta = self.delta_lu.unwrap_or(f32::NAN);
-                format!(
-                    "母带响度未达标: 实测 {measured} LUFS, 目标 {target} LUFS, 差 {delta} LU \
-                     (容差 ±{} LU)",
-                    self.tolerance_lu
-                )
-            }
-            // 测不出 ⇒ 无法判定 ⇒ 也不能算"通过"。原因句**原样**给出, 不编一个数字。
-            None => format!(
+        let kind = self
+            .miss_kind()
+            .unwrap_or(MISS_KIND_POST_GAIN_OUT_OF_TOLERANCE);
+        let gain = self.applied_gain_db.unwrap_or(0.0);
+        // 缺口只有在"上限绑定"时才有定义：需要的增益 − 实际施加的增益（> 容差 > 0）。
+        let shortfall_db = match (self.before_gain_lufs, self.target_lufs) {
+            (Some(before), Some(want)) => (want - before) - gain,
+            _ => 0.0,
+        };
+        let suggested_trim_db = if kind == MISS_KIND_TRUE_PEAK_CEILING_BOUND {
+            Some(math::suggested_trim_db(shortfall_db))
+        } else {
+            None
+        };
+        let message = match kind {
+            MISS_KIND_UNMEASURABLE => format!(
                 "母带响度无法测量, 因此无法判定目标 {target} LUFS 是否达成: {}",
                 self.measurement_note.unwrap_or("(未给出原因)")
             ),
+            MISS_KIND_TRUE_PEAK_CEILING_BOUND => {
+                let before = self.before_gain_lufs.unwrap_or(f32::NAN);
+                let needed = target - before;
+                // 复测测不出（增益把整段压到绝对门限之下）时如实说测不出，
+                // ⛔ 不把 `NaN` 印进报文（那不是合法读数，见 3b-vi 的同一条纪律）。
+                let after = match self.measured_lufs {
+                    Some(value) => format!("{value} LUFS"),
+                    None => "测不出".to_owned(),
+                };
+                let delta = self.delta_lu.unwrap_or(f32::NAN);
+                let trim = suggested_trim_db.unwrap_or(0.0);
+                format!(
+                    "母带响度未达标: 真峰值上限 {} dBTP 绑定了增益 —— 施加前实测 {before} LUFS, \
+                     达到目标 {target} LUFS 需要 {needed:+} dB, 上限只放行 {gain:+} dB, \
+                     施加后复测 {after}, 差 {delta} LU (容差 ±{} LU); \
+                     先把真峰值压低至少 {} dB (如用限制器) 或降低目标后重试",
+                    self.true_peak_ceiling_dbtp.unwrap_or(f32::NAN),
+                    self.tolerance_lu,
+                    -trim,
+                )
+            }
+            _ => match self.measured_lufs {
+                Some(after) => {
+                    let delta = self.delta_lu.unwrap_or(f32::NAN);
+                    format!(
+                        "母带响度未达标: 已施加 {gain:+} dB, 复测 {after} LUFS, 目标 {target} LUFS, \
+                         差 {delta} LU (容差 ±{} LU); 门限积分对增益非严格线性, \
+                         可按差值微调母带电平或目标后重试",
+                        self.tolerance_lu
+                    )
+                }
+                // 施加后测不出（增益把整段压到绝对门限之下）：原因在
+                // `measurement_note` 里，报文照它说，⛔ 不印 `NaN`、不给"按差值微调"
+                // 这种没有差值可依的建议。
+                None => format!(
+                    "母带响度未达标: 已施加 {gain:+} dB 后复测无读数: {}; \
+                     施加前实测 {} LUFS, 目标 {target} LUFS —— 目标已贴着绝对门限, \
+                     提高目标后重试",
+                    self.measurement_note.unwrap_or("(未给出原因)"),
+                    self.before_gain_lufs.unwrap_or(f32::NAN),
+                ),
+            },
         };
         Fault::domain_with_data(
             ErrorCode::RenderFailed,
             message,
             serde_json::json!({
                 "reason": "loudnessTargetMissed",
-                "measuredIntegratedLufs": json_f32(self.measured_lufs),
+                "reasonKind": kind,
+                // 施加**前**的实测（与成功响应的 `beforeGainLufs` 同一读数）。
+                "measuredIntegratedLufs": json_f32(self.before_gain_lufs),
                 "targetLufs": target,
+                "appliedGainDb": json_f32(self.applied_gain_db),
+                "gainBound": self.gain_bound,
+                // 施加**后**的复测（测不出时 `null`）。
+                "achievedIntegratedLufs": json_f32(self.measured_lufs),
                 "deltaLu": json_f32(self.delta_lu),
                 "toleranceLu": self.tolerance_lu,
+                "truePeakCeilingDbtp": json_f32(self.true_peak_ceiling_dbtp),
+                "suggestedTrimDb": json_f32(suggested_trim_db),
                 "measurementNote": self.measurement_note,
                 "algorithm": "ITU-R BS.1770-4",
             }),
@@ -2272,11 +2517,12 @@ pub struct RenderArtifact {
     pub normalize_applied: bool,
     /// 归一化的补充说明（全零信号等边界）。
     pub normalize_note: Option<&'static str>,
-    /// **实测**的门限积分响度 + 对 `targetLufs` 的判定。
+    /// **实测**的门限积分响度 + 对 `targetLufs` 的判定（给了目标时含施加结果）。
     ///
     /// 它在**抖动/量化之前**的浮点母带上测量（与响度计量"作用在母带信号上"的口径
-    /// 一致），且只读 ⇒ 不改变 [`Self::bytes`]。默认路径（不给 `targetLufs`）也报读数，
-    /// 只是 [`VERDICT_NO_TARGET`]。
+    /// 一致）。默认路径（不给 `targetLufs`）只读、不改变 [`Self::bytes`]，也报读数，
+    /// 只是 [`VERDICT_NO_TARGET`]；给了目标时增益已施加进 [`Self::bytes`]，
+    /// 读数是施加后复测值（见 [`LoudnessTarget::from_apply`]）。
     pub loudness: LoudnessTarget,
     /// `bext` 的 `OriginatorReference`（工程 ULID，`ARCH-FMT-001` 要求的映射）。
     pub originator_reference: String,
@@ -3239,6 +3485,39 @@ pub fn build(
             normalize_note = Some("全零信号: 峰值为 0, 归一化不改动任何样本");
         }
     }
+    // 10-pre. ⭐ 响度目标增益（**只在给了 `targetLufs` 时**）：与 CLI
+    // `--loudness-target` + `--true-peak-ceiling` 同一条实现
+    // （[`mastering::ExportPreset::apply`]：增益伺服 + 真峰值上限让步 + 施加后复测）。
+    // 本工具没有上限参数 ⇒ 上限恒用母带缺省值
+    // [`mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP`]（与两个内置预设同值），
+    // 并在请求回显与响度块里如实报出。
+    // 位置在峰值归一化**之后**、削波/真峰值读数（10a）**之前** ⇒ 10a 起的全部
+    // 读数描述的都是**最终**样本。增益真的改了样本时，按第 9 步同一纪律重算摘要；
+    // 增益为 0（已达标 / 静音 / 测不出）时一个样本都不碰。
+    let mut loudness_outcome: Option<mastering::NormalizeOutcome> = None;
+    if let Some(target) = request.target_lufs() {
+        let frames = output.samples.len() / MASTER_CHANNELS;
+        let mut left = Vec::with_capacity(frames);
+        let mut right = Vec::with_capacity(frames);
+        for index in 0..frames {
+            left.push(output.samples[index * MASTER_CHANNELS]);
+            right.push(output.samples[index * MASTER_CHANNELS + 1]);
+        }
+        let preset = mastering::ExportPreset::new(
+            Some(target),
+            Some(mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP),
+        );
+        if let Some(outcome) = preset.apply(sample_rate, &mut left, &mut right) {
+            if outcome.gain_db != 0.0 {
+                for index in 0..frames {
+                    output.samples[index * MASTER_CHANNELS] = left[index];
+                    output.samples[index * MASTER_CHANNELS + 1] = right[index];
+                }
+                output.digest = RenderOutput::digest_of(&output.samples);
+            }
+            loudness_outcome = Some(outcome);
+        }
+    }
     let peak_after = math::peak_of(&output.samples);
     // 10a. ⭐ #175（#174 坑⑧）：削波与真峰值读数（**只读**：不改一个样本、不进 `bytes`/摘要）。
     //      - `clipped_samples` 数的是"会被 24-bit 量化器钳住"的样本（`|s| > 1.0`）；
@@ -3282,16 +3561,15 @@ pub fn build(
         &source_nodes,
     ))
     .collect();
-    // 10b. 响度读数 + 对 `targetLufs` 的判定（**只读**：在抖动之前的浮点母带上测）。
+    // 10b. 响度读数 + 对 `targetLufs` 的判定（在抖动之前的浮点母带上）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是
     //      "降位深"的伴生步骤（与 `normalize` 同一条理由, 见模块文档）。
-    //      `with_master_gain` 之后、`normalize` 之后的这一份就是响度口径下的母带。
-    let loudness = LoudnessTarget::measure(
-        sample_rate,
-        MASTER_CHANNELS,
-        &output.samples,
-        request.target_lufs(),
-    );
+    //      没给目标 ⇒ 只测（默认路径, 逐字节不变）; 给了目标 ⇒ 用 10-pre 的
+    //      施加结果（**复测**值）判定, `measuredIntegratedLufs` 报交付物的读数。
+    let loudness = match request.target_lufs() {
+        Some(target) => LoudnessTarget::from_apply(target, loudness_outcome),
+        None => LoudnessTarget::measure(sample_rate, MASTER_CHANNELS, &output.samples, None),
+    };
     // 判定的两个否定出口都**不落盘**：`fail`（不达标）与 `unmeasurable`（测不出 ⇒
     // 无法判定 ⇒ 不能算通过）。判据用"失败时目录里没有产品"钉住这一点。
     if matches!(loudness.verdict, VERDICT_FAIL | VERDICT_UNMEASURABLE) {
@@ -6344,5 +6622,203 @@ mod tests {
             vec![0.9, 0.8, 0.7, 0.6],
             "有覆盖时必须逐位渲染 warped PCM，而不是原素材"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `targetLufs` 施加语义（2026-11-13，清单 #17）：`LoudnessTarget::from_apply`
+    // 的判定、原因分类与失败报文。增益伺服本体在 `yeban-render::mastering`
+    // 有自己的判据，这里只钉 MCP 这一侧：容差是闭区间、原因分类跟约束走、
+    // 失败报文带齐诊断键、测不出时不印 `NaN`。
+    // ------------------------------------------------------------------
+
+    /// 造一份 [`mastering::NormalizeOutcome`]（只填判定用到的字段）。
+    fn loudness_outcome(
+        before_lufs: f32,
+        after_lufs: f32,
+        gain_db: f32,
+        bound: mastering::GainBound,
+    ) -> mastering::NormalizeOutcome {
+        let reading = |integrated_lufs: f32| mastering::MasterLoudness {
+            integrated_lufs,
+            loudness_range_lu: None,
+            max_momentary_lufs: f32::NEG_INFINITY,
+            max_short_term_lufs: f32::NEG_INFINITY,
+            true_peak_dbtp: f32::NEG_INFINITY,
+            oversampling: mastering::MASTERING_TRUE_PEAK_OVERSAMPLING,
+        };
+        mastering::NormalizeOutcome {
+            gain_db,
+            bound,
+            before: reading(before_lufs),
+            after: reading(after_lufs),
+        }
+    }
+
+    #[test]
+    fn the_applied_loudness_tolerance_boundary_is_inclusive() {
+        // 复测恰好偏一个容差 ⇒ pass（闭区间，与只测时代同一条比较）。
+        let at = LoudnessTarget::from_apply(
+            -10.0,
+            Some(loudness_outcome(
+                -10.0,
+                -9.5,
+                0.5,
+                mastering::GainBound::LoudnessTarget,
+            )),
+        );
+        assert_eq!(at.verdict, VERDICT_PASS);
+        assert_eq!(at.delta_lu, Some(0.5));
+        assert_eq!(at.applied_gain_db, Some(0.5));
+        assert_eq!(at.gain_bound, Some(BOUND_LOUDNESS_TARGET));
+        assert_eq!(at.before_gain_lufs, Some(-10.0));
+        assert_eq!(at.measured_lufs, Some(-9.5));
+        assert_eq!(at.true_peak_ceiling_dbtp, Some(-1.0));
+        assert_eq!(at.miss_kind(), None);
+        // 一格之外 ⇒ fail，原因分类是"足额施加仍偏离"。
+        let over = LoudnessTarget::from_apply(
+            -10.0,
+            Some(loudness_outcome(
+                -10.0,
+                -9.4,
+                0.6,
+                mastering::GainBound::LoudnessTarget,
+            )),
+        );
+        assert_eq!(over.verdict, VERDICT_FAIL);
+        assert_eq!(over.miss_kind(), Some(MISS_KIND_POST_GAIN_OUT_OF_TOLERANCE));
+    }
+
+    #[test]
+    fn a_ceiling_bound_miss_reports_the_trim_diagnosis() {
+        // 施加前 −14、目标 −10（需要 +4 dB），上限只放行 +2 dB ⇒ 复测 −12。
+        let miss = LoudnessTarget::from_apply(
+            -10.0,
+            Some(loudness_outcome(
+                -14.0,
+                -12.0,
+                2.0,
+                mastering::GainBound::TruePeakCeiling,
+            )),
+        );
+        assert_eq!(miss.verdict, VERDICT_FAIL);
+        assert_eq!(miss.miss_kind(), Some(MISS_KIND_TRUE_PEAK_CEILING_BOUND));
+        let value = miss.failure().into_result().expect("带内错误");
+        assert_eq!(value["error"]["code"], "RENDER_FAILED");
+        let data = &value["error"]["data"];
+        assert_eq!(data["reason"], "loudnessTargetMissed");
+        assert_eq!(data["reasonKind"], "truePeakCeilingBound");
+        // `measuredIntegratedLufs` 在失败报文里保持施加**前**的读数（与旧报文同义），
+        // 施加后的复测另走 `achievedIntegratedLufs`。
+        assert_eq!(data["measuredIntegratedLufs"], -14.0);
+        assert_eq!(data["achievedIntegratedLufs"], -12.0);
+        assert_eq!(data["appliedGainDb"], 2.0);
+        assert_eq!(data["gainBound"], "truePeakCeiling");
+        assert_eq!(data["truePeakCeilingDbtp"], -1.0);
+        // 缺口 = 需要的 +4 − 放行的 +2 = 2 dB ⇒ 建议 trim −2.0（0.5 dB 向上取整后取负）。
+        assert_eq!(data["suggestedTrimDb"], -2.0);
+        let message = value["error"]["message"].as_str().expect("报文");
+        assert!(message.contains("真峰值上限"), "{message}");
+        assert!(!message.contains("NaN"), "{message}");
+    }
+
+    #[test]
+    fn an_unmeasurable_master_stays_unmeasurable_after_apply() {
+        // 静音：`apply` 给得出 outcome（增益 0），但施加前测不出 ⇒ 无法判定。
+        let silent = LoudnessTarget::from_apply(
+            -14.0,
+            Some(loudness_outcome(
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+                0.0,
+                mastering::GainBound::NothingToDo,
+            )),
+        );
+        assert_eq!(silent.verdict, VERDICT_UNMEASURABLE);
+        assert_eq!(silent.measurement_note, Some(NOTE_SILENT_MASTER));
+        assert_eq!(silent.miss_kind(), Some(MISS_KIND_UNMEASURABLE));
+        assert_eq!(silent.measured_lufs, None);
+        assert_eq!(silent.applied_gain_db, Some(0.0));
+        // 采样率无核验系数：`apply` 直接给 `None` ⇒ 同一出口、另一句原因。
+        let unverified = LoudnessTarget::from_apply(-14.0, None);
+        assert_eq!(unverified.verdict, VERDICT_UNMEASURABLE);
+        assert_eq!(
+            unverified.measurement_note,
+            Some(NOTE_UNVERIFIED_SAMPLE_RATE)
+        );
+        assert_eq!(unverified.applied_gain_db, Some(0.0));
+        assert_eq!(unverified.true_peak_ceiling_dbtp, Some(-1.0));
+    }
+
+    #[test]
+    fn a_post_gain_below_gate_miss_never_prints_nan() {
+        // 施加前测得出、施加后跌破绝对门限：判 fail（⛔ 不冒充"测不出"），
+        // 报文走原因句，全文不许出现 `NaN`。
+        let miss = LoudnessTarget::from_apply(
+            -69.0,
+            Some(loudness_outcome(
+                -4.0,
+                f32::NEG_INFINITY,
+                -65.0,
+                mastering::GainBound::LoudnessTarget,
+            )),
+        );
+        assert_eq!(miss.verdict, VERDICT_FAIL);
+        assert_eq!(
+            miss.measurement_note,
+            Some(NOTE_POST_GAIN_BELOW_ABSOLUTE_GATE)
+        );
+        assert_eq!(miss.miss_kind(), Some(MISS_KIND_POST_GAIN_OUT_OF_TOLERANCE));
+        let value = miss.failure().into_result().expect("带内错误");
+        assert_eq!(
+            value["error"]["data"]["achievedIntegratedLufs"],
+            Value::Null
+        );
+        assert_eq!(value["error"]["data"]["measuredIntegratedLufs"], -4.0);
+        let text = value.to_string();
+        assert!(!text.contains("NaN"), "{text}");
+    }
+
+    #[test]
+    fn the_applied_loudness_block_has_the_fifteen_roster_keys() {
+        // 与 `output_schema::loudness_roster` 逐键同集（广播侧另有判据核对）。
+        let value = LoudnessTarget::from_apply(
+            -10.0,
+            Some(loudness_outcome(
+                -12.0,
+                -10.0,
+                2.0,
+                mastering::GainBound::LoudnessTarget,
+            )),
+        )
+        .to_value();
+        let object = value.as_object().expect("响度块必须是对象");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "algorithm",
+                "appliedGainDb",
+                "beforeGainLufs",
+                "deltaLu",
+                "gainBound",
+                "implementation",
+                "measured",
+                "measuredIntegratedLufs",
+                "measurementNote",
+                "specId",
+                "specSilentOnTolerance",
+                "targetLufs",
+                "toleranceLu",
+                "truePeakCeilingDbtp",
+                "verdict",
+            ]
+        );
+        // 没给目标的只读块：施加四键恒 `null`（没有施加级，不等于"增益为 0"）。
+        let plain = LoudnessTarget::measure(48_000, MASTER_CHANNELS, &[0.0; 8], None).to_value();
+        assert_eq!(plain["appliedGainDb"], Value::Null);
+        assert_eq!(plain["gainBound"], Value::Null);
+        assert_eq!(plain["beforeGainLufs"], Value::Null);
+        assert_eq!(plain["truePeakCeilingDbtp"], Value::Null);
     }
 }

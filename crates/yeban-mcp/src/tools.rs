@@ -1109,7 +1109,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省多线程；`threads` 实参可指定线程数，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); 两条来源都不出现时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
+        summary: "触发 `yeban-render` 离线导出广播级 WAV 并返回哈希与路径（缺省多线程；`threads` 实参可指定线程数，逐字节相同）; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; ⭐ 可闻、排了内容、却 `peak == 0.0` (源节点一个非零样本都没出) 的源另由**一条** `code:\"silentSources\"` 逐条点名 (`count` / `sources[]` / `hint`, 非阻断、不自动修); 两条来源都不出现时 `warnings` 是**空数组**。⛔ 读数与预警**不自动改增益** —— 只是读数 + 建议; 本工具唯一会改增益的是显式 `targetLufs` (与 CLI `--loudness-target` 同一伺服, 见该实参); 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-frames` 的帧数**逐帧**对齐。⭐ `ADR-0020`: 可选 `contributions: true` 让响应额外带逐轨贡献读数 (`data.contributions` / `data.contributionsBasis`, 见该实参), ⛔ 不改写盘字节",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -1135,7 +1135,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "targetLufs",
                 "number",
                 false,
-                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就按 ±0.5 LU 容差判定: 未达标返回 RENDER_FAILED; 不给则只报实测读数 (默认路径)",
+                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就**施加增益**去够它: 与 CLI `--loudness-target` 同一份伺服 (增益 = 目标 − 实测, 真峰值上限 −1.0 dBTP 让步, 上限回显在 `data.request.truePeakCeilingDbtp`), 施加后按 ±0.5 LU 容差复测判定。施加结果在 `data.loudness` (`appliedGainDb` / `gainBound` / `beforeGainLufs`); 已达标时增益恒为 0、产物逐字节不变。施加后仍未达标 ⇒ RENDER_FAILED, 报文带 `reasonKind` 原因分类与可执行诊断 (上限绑定时含 `suggestedTrimDb`); 不给则只报实测读数 (默认路径)",
             ),
             param(
                 "path",
