@@ -65,7 +65,8 @@ export component UnifiedLowerDock inherits Rectangle {
     callback delete-note(int);
     callback velocity-changed(int, int);
 
-    height: 328px;
+    in-out property <length> dock-height: 320px;
+    height: root.dock-height;
     background: Theme.bg-panel;
     border-color: Theme.border-subtle;
 

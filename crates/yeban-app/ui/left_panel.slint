@@ -2,10 +2,12 @@ import { Theme, BrowserItemData, Tokens } from "tokens.slint";
 
 export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> active-tab: "inspector"; // "inspector" | "browser"
+    in-out property <int> selected-track-id: 3;
     in-out property <color> selected-track-color: #387691;
     in-out property <string> selected-track-name: "01. Lead Neuro Bass";
     in-out property <string> selected-track-badge: "TRK 01 · SYNTH";
     in-out property <string> selected-track-bus: "Bus 1 (Synth Grp)";
+    in-out property <string> selected-track-pan: "C";
     in-out property <float> selected-track-vol: -2.5;
     in-out property <float> selected-track-peak: 0.65;
     in-out property <[string]> selected-track-inserts: ["Wavetable MPE", "Pro-QLinear 8", "Glue Comp VCA"];
@@ -35,7 +37,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     callback load-item(string);
     callback focus-devices();
 
-    width: 256px;
+    in-out property <length> panel-width: 256px;
+    width: root.panel-width;
     background: Theme.bg-panel;
     border-color: Theme.border-subtle;
 
@@ -225,12 +228,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
             }
 
-            // Dual Channel Strips Side-by-Side
+            // Dual Channel Strips Side-by-Side (Top-to-Bottom Signal Flow)
             HorizontalLayout {
                 spacing: 8px;
                 vertical-stretch: 1;
 
-                // Strip 1: Selected Track Strip
+                // Strip 1: Selected Track Strip (Professional Signal Flow: Inserts -> EQ -> Pan -> Fader/Meter)
                 Rectangle {
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
@@ -240,53 +243,104 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                     VerticalLayout {
                         padding: 8px;
-                        spacing: 5px;
+                        spacing: 6px;
+                        alignment: start;
 
-                        Text {
-                            text: "选中轨";
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.selected-track-color;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "INSERTS";
-                            font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.8px;
-                            color: #64748b;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                        }
-
-                        // Inserts items
-                        for ins in root.selected-track-inserts : Rectangle {
-                            height: 22px;
-                            background: #10141d;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                padding-left: 5px;
-                                padding-right: 5px;
-                                Text {
-                                    text: ins;
-                                    font-family: Tokens.font-ui;
-                                    font-size: 9px;
-                                    color: #f1f5f9;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    overflow: elide;
+                        // Section 1: Channel Strip Header
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: "当前通道";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: root.selected-track-color;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                background: root.selected-track-color.with-alpha(0.18);
+                                border-radius: 2px;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "CH 0" + root.selected-track-id;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: 800;
+                                        color: root.selected-track-color;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
-                            TouchArea { clicked => { root.focus-devices(); } }
                         }
 
-                        // EQ Thumbnail Path
+                        // Section 2: Inserts / Effect Slots (Top-to-bottom signal flow)
+                        VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: "效果器插槽 (INSERTS)";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    letter-spacing: 0.6px;
+                                    color: #94a3b8;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "PRE-FADER";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 7px;
+                                    color: #64748b;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            for ins[idx] in root.selected-track-inserts : Rectangle {
+                                height: 22px;
+                                background: #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: "" + (idx + 1);
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: ins;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9px;
+                                        color: #f1f5f9;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        border-radius: 2.5px;
+                                        background: root.selected-track-color;
+                                        y: 8.5px;
+                                    }
+                                }
+                                TouchArea { clicked => { root.focus-devices(); } }
+                            }
+                        }
+
+                        // Section 3: EQ Curve Thumbnail Preview
                         Rectangle {
-                            height: 42px;
+                            height: 38px;
                             background: #06080d;
                             border-radius: 3px;
                             border-width: 1px;
@@ -294,27 +348,89 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             clip: true;
 
                             Path {
-                                commands: "M 0 30 Q 20 27, 35 14 T 70 20 T 100 26";
+                                commands: "M 0 28 Q 20 25, 35 12 T 70 18 T 100 24";
                                 stroke: root.selected-track-color;
                                 stroke-width: 1.8px;
                             }
-                            Text {
-                                x: 5px;
-                                y: 3px;
-                                text: "EQ THUMB";
-                                font-family: Tokens.font-mono;
-                                font-size: 7px;
-                                letter-spacing: 0.5px;
-                                color: #475569;
-                                font-weight: 700;
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-top: 3px;
+                                Text {
+                                    text: "EQ CURVE";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 7px;
+                                    letter-spacing: 0.5px;
+                                    color: #94a3b8;
+                                    font-weight: 700;
+                                }
                             }
                         }
 
-                        // Fader + Meter (Fixed tactile dimensions, non-stretching studio fader)
+                        // Section 4: Pan (声像) Balance Control
+                        Rectangle {
+                            height: 22px;
+                            background: #0a0d14;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                alignment: space-between;
+                                Text {
+                                    text: "PAN";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    font-weight: 700;
+                                    color: #94a3b8;
+                                    vertical-alignment: center;
+                                }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    // Center detent balance bar with dynamic pan position
+                                    Rectangle {
+                                        width: 24px;
+                                        height: 4px;
+                                        y: 9px;
+                                        background: #141a24;
+                                        border-radius: 2px;
+                                        Rectangle {
+                                            x: root.selected-track-pan == "C" ? 10px : (root.selected-track-pan == "12L" ? 4px : (root.selected-track-pan == "18R" ? 16px : 10px));
+                                            width: 4px;
+                                            height: 4px;
+                                            border-radius: 2px;
+                                            background: root.selected-track-color;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.selected-track-pan;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 800;
+                                        color: #f1f5f9;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section 5: Fader + Meter with clear dB calibration markings
                         HorizontalLayout {
                             alignment: center;
-                            spacing: 8px;
-                            height: 104px;
+                            spacing: 6px;
+                            height: 108px;
+
+                            // Left dB numerical scale ruler
+                            VerticalLayout {
+                                alignment: space-between;
+                                height: 104px;
+                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 7px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 7px; font-weight: 800; color: #f8fafc; horizontal-alignment: right; }
+                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 7px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 7px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 7px; color: #64748b; horizontal-alignment: right; }
+                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 7px; color: #64748b; horizontal-alignment: right; }
+                            }
 
                             // Fader rail
                             Rectangle {
@@ -335,16 +451,16 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     border-radius: 1px;
                                 }
 
-                                // dB scale markings
+                                // dB scale tick marks
                                 for tick_y in [18px, 36px, 54px, 72px, 90px] : Rectangle {
                                     x: 3px;
                                     y: tick_y;
                                     width: 18px;
                                     height: 1px;
-                                    background: #ffffff10;
+                                    background: #ffffff14;
                                 }
 
-                                // Tactile fader cap (fixed size 22px x 15px)
+                                // Tactile fader cap
                                 Rectangle {
                                     x: 1px;
                                     y: root.selected-track-vol == -2.5 ? 42px : (root.selected-track-vol == 0.0 ? 22px : 64px);
@@ -368,7 +484,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                             }
 
-                            // Meter bar (Fixed 104px height)
+                            // Meter bar
                             Rectangle {
                                 width: 8px;
                                 height: 104px;
@@ -389,13 +505,24 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        Text {
-                            text: "" + root.selected-track-vol + " dB";
-                            font-family: Tokens.font-mono;
-                            font-size: 10px;
-                            font-weight: 800;
-                            color: root.selected-track-color;
-                            horizontal-alignment: center;
+                        // Volume dB numerical badge
+                        Rectangle {
+                            height: 20px;
+                            background: #0a0d14;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "" + root.selected-track-vol + " dB";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 10px;
+                                    font-weight: 800;
+                                    color: root.selected-track-color;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                 }
@@ -410,52 +537,90 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                     VerticalLayout {
                         padding: 8px;
-                        spacing: 5px;
+                        spacing: 6px;
+                        alignment: start;
 
-                        Text {
-                            text: root.bus-name;
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: Theme.track-bus;
-                            horizontal-alignment: center;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: "BUS INSERTS";
-                            font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.8px;
-                            color: #64748b;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                        }
-
-                        for ins in root.bus-inserts : Rectangle {
-                            height: 22px;
-                            background: #10141d;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            HorizontalLayout {
-                                padding-left: 5px;
-                                padding-right: 5px;
-                                Text {
-                                    text: ins;
-                                    font-family: Tokens.font-ui;
-                                    font-size: 9px;
-                                    color: #f1f5f9;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    overflow: elide;
+                        // Section 1: Header
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: root.bus-name;
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: Theme.track-bus;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Rectangle {
+                                background: Theme.track-bus.with-alpha(0.18);
+                                border-radius: 2px;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "BUS";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7px;
+                                        font-weight: 800;
+                                        color: Theme.track-bus;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
 
-                        // Bus Comp Thumbnail Path
+                        // Section 2: Bus Inserts
+                        VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: "总线效果器 (BUS INSERTS)";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    letter-spacing: 0.6px;
+                                    color: #94a3b8;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            for ins[idx] in root.bus-inserts : Rectangle {
+                                height: 22px;
+                                background: #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: "" + (idx + 1);
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8px;
+                                        font-weight: 700;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: ins;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9px;
+                                        color: #f1f5f9;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section 3: Bus Comp Preview
                         Rectangle {
-                            height: 42px;
+                            height: 38px;
                             background: #06080d;
                             border-radius: 3px;
                             border-width: 1px;
@@ -463,27 +628,70 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             clip: true;
 
                             Path {
-                                commands: "M 0 22 Q 35 20, 55 14 T 100 18";
+                                commands: "M 0 20 Q 35 18, 55 12 T 100 16";
                                 stroke: Theme.track-bus;
                                 stroke-width: 1.8px;
                             }
-                            Text {
-                                x: 5px;
-                                y: 3px;
-                                text: "BUS COMP";
-                                font-family: Tokens.font-mono;
-                                font-size: 7px;
-                                letter-spacing: 0.5px;
-                                color: #475569;
-                                font-weight: 700;
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-top: 3px;
+                                Text {
+                                    text: "BUS COMP";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 7px;
+                                    letter-spacing: 0.5px;
+                                    color: #94a3b8;
+                                    font-weight: 700;
+                                }
                             }
                         }
 
-                        // Bus Fader + Meter (Fixed tactile dimensions, non-stretching studio fader)
+                        // Section 4: Bus Pan
+                        Rectangle {
+                            height: 22px;
+                            background: #0a0d14;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                alignment: space-between;
+                                Text {
+                                    text: "PAN";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    font-weight: 700;
+                                    color: #94a3b8;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "C";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 9px;
+                                    font-weight: 800;
+                                    color: #f1f5f9;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Section 5: Bus Fader + Meter with dB scale
                         HorizontalLayout {
                             alignment: center;
-                            spacing: 8px;
-                            height: 104px;
+                            spacing: 6px;
+                            height: 108px;
+
+                            VerticalLayout {
+                                alignment: space-between;
+                                height: 104px;
+                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 7px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 7px; font-weight: 800; color: #f8fafc; horizontal-alignment: right; }
+                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 7px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 7px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 7px; color: #64748b; horizontal-alignment: right; }
+                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 7px; color: #64748b; horizontal-alignment: right; }
+                            }
 
                             Rectangle {
                                 width: 24px;
@@ -493,7 +701,6 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
 
-                                // Center groove
                                 Rectangle {
                                     x: 10px;
                                     y: 4px;
@@ -503,16 +710,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     border-radius: 1px;
                                 }
 
-                                // dB scale markings
                                 for tick_y in [18px, 36px, 54px, 72px, 90px] : Rectangle {
                                     x: 3px;
                                     y: tick_y;
                                     width: 18px;
                                     height: 1px;
-                                    background: #ffffff10;
+                                    background: #ffffff14;
                                 }
 
-                                // Tactile fader cap (fixed size 22px x 15px)
                                 Rectangle {
                                     x: 1px;
                                     y: root.bus-track-vol == -1.0 ? 36px : (root.bus-track-vol == 0.0 ? 22px : 64px);
@@ -536,7 +741,6 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                             }
 
-                            // Meter bar (Fixed 104px height)
                             Rectangle {
                                 width: 8px;
                                 height: 104px;
@@ -557,13 +761,24 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
                         }
 
-                        Text {
-                            text: "" + root.bus-track-vol + " dB";
-                            font-family: Tokens.font-mono;
-                            font-size: 10px;
-                            font-weight: 800;
-                            color: Theme.track-bus;
-                            horizontal-alignment: center;
+                        // Bus Volume dB badge
+                        Rectangle {
+                            height: 20px;
+                            background: #0a0d14;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "" + root.bus-track-vol + " dB";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 10px;
+                                    font-weight: 800;
+                                    color: Theme.track-bus;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                 }

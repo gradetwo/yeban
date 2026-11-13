@@ -10,13 +10,14 @@ export component ControlRoomMeters inherits Rectangle {
     in-out property <bool> is-side: false;
     in-out property <float> master-meter-l: 0.68;
     in-out property <float> master-meter-r: 0.64;
+    in-out property <length> panel-width: 192px;
 
     callback switch-monitor(string);
     callback toggle-dim();
     callback toggle-mono();
     callback toggle-side();
 
-    width: 192px;
+    width: root.panel-width;
     background: Theme.bg-panel;
     border-color: Theme.border-subtle;
 
