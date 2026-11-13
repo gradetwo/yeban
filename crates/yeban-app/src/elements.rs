@@ -2813,7 +2813,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 19] = [
+    const SLINT_MANIFEST: [&str; 26] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2842,6 +2842,14 @@ mod tests {
         "dialogs/macro_panel.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
+        // 旗舰桌面 UI 重构组件清单
+        "arrangement.slint",
+        "clip_matrix.slint",
+        "control_room.slint",
+        "left_panel.slint",
+        "lower_dock.slint",
+        "modals.slint",
+        "transport_bar.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {
