@@ -630,8 +630,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 2_240,
-        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＝ 2240 B"
+        pool, 2_560,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＝ 2560 B"
     );
     assert_eq!(
         region, 6_176,
