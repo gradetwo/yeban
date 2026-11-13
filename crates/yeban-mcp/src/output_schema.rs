@@ -2780,7 +2780,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 7, "契约名册现读 7 枚: {contract:?}");
+        assert_eq!(contract.len(), 8, "契约名册现读 8 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
