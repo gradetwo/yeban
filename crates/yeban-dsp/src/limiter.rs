@@ -45,7 +45,7 @@
 //!
 //! ```text
 //! peak = max(|x[n-L+1]| … |x[n]|)          // 单调队列队首，O(1) 摊还 → IEEE 精确类
-//! target = min(1, threshold / peak)         // 除法 + min       → IEEE 精确类
+//! target = min(1, cap / peak)               // 除法 + min       → IEEE 精确类（cap 见 §4.1）
 //! gain = max(ramp(gain, target), target)    // 乘 + max         → IEEE 精确类
 //! y[n-L] = x[n-L] * gain                    // 乘               → IEEE 精确类
 //! ```
@@ -81,7 +81,9 @@
 //! ## 3. 峰值上界证明（判据 `limited_peak_never_exceeds_threshold` 的依据）
 //!
 //! 记 `W(n) = max(|x[n-L+1]| … |x[n]|)`，`G(n)` 为本次输出样本所用的增益
-//! （`G` 单调、被钳在 `target` 与上一增益之间），`T` 为阈值。实现里
+//! （`G` 单调、被钳在 `target` 与上一增益之间），`T` 为**有效上限**
+//! `cap = min(threshold, ceiling)`（母线 `ceiling > threshold` ⇒ `cap == threshold`，
+//! 与旧口径逐位相同）。实现里
 //! **先算 `G(n)` 再取** `x[n-L]`，且 `G(n) <= target(n) = min(1, T/W(n))`。
 //! 另外 `W(n) >= |x[n-L]|`（被延迟的那个样本就在窗口里，`L >= 1`）。于是：
 //!
@@ -109,6 +111,27 @@
 //! 与 [`crate::math::soft_limit`] 的关系：那个是**全局**软限幅（膝点 0.82、
 //! 天花板 1.0、给所有信号用）；本函数是**母线限制器专用**的（阈值可注入），
 //! 因此不能共用 —— 但形状同族，参数不同。
+//!
+//! ### 4.1 天花板 ≤ 阈值（插入器件）：ceiling 是真的峰值上限，不是过冲余量
+//!
+//! 旧语义（P0-1 实测推翻）：增益目标恒为 `threshold / peak`，稳态峰值被钉在
+//! **阈值**上；`ceiling` 只兜延迟样本的过冲。于是 `threshold = 0 dB、ceiling = −1 dB`
+//! 的实测峰值是 −0.01 dBFS —— 用户拧的天花板完全不生效。更糟的是
+//! `sanitised()` 在 `ceiling ≤ threshold` 时**静默**把天花板抬到阈值之上，
+//! 把这个合法输入改写成了另一个输入。
+//!
+//! 现语义（本节即判据 `ceiling_is_the_output_peak_bound_for_the_five_reported_pairs`
+//! 的口径）：
+//!
+//! - **增益压限的起始点仍是阈值**：窗口峰值 `> threshold` 才产生增益动作；
+//! - **压峰目标是有效上限** `cap = min(threshold, ceiling)`：稳态峰值落在 `cap` 上；
+//! - **软膝渐近线恒为 `ceiling`** ⇒ 输出峰值**永不**超过 `ceiling`（过冲保护不变）。
+//!   `ceiling > threshold` 时软膝起点 = 阈值（母线与旧行为逐位相同）；
+//!   `ceiling ≤ threshold` 时起点 = `ceiling − ceiling · [CEILING_KNEE_FRACTION]`，
+//!   增益先把峰值样本送到 `ceiling`、软膝再把它拉低 `≤ ceiling · FRACTION / e`
+//!   （≈ 0.07 dB）—— 稳态峰值因此落在天花板之下 0.07 dB 以内，判据容差按此写明；
+//! - `ceiling ≤ threshold` 是**合法且有意义**的输入：两处 `sanitised()` 与
+//!   `set_threshold` 都不得再改写它（非有限 / 非正等非法值仍按原规则退回默认）。
 //!
 //! ## 5. 实时侧禁令自检（[AGENTS.md §2 红线 7] / `MUST-GATE-001`）
 //!
@@ -184,6 +207,15 @@ pub const LIMITER_THRESHOLD: f32 = 0.9;
 /// 实测：3.0 的尖峰只到 0.90015（硬钳位会把它按在 0.9，但在 0.9 处留一个折点）。
 pub const LIMITER_CEILING: f32 = 0.95;
 
+/// `ceiling ≤ threshold` 时软膝起点的下移量（占 `ceiling` 的比例，线性）。
+///
+/// 这一格里软膝的渐近线仍是 `ceiling` 本人，起点必须严格低于它（起点 == 渐近线
+/// ⇒ 膝宽 0、除零），所以起点取 `ceiling · (1 − FRACTION)`。取 2% 的理由：
+/// 增益已把稳态峰值样本送到 `ceiling`，软膝只兜过冲，宽度越小、稳态峰值被
+/// 软膝再拉低的量越小（`≤ ceiling · 0.02 / e ≈ 0.07 dB`，见模块文档 §4.1）；
+/// 而它仍是一条一阶连续的指数膝，不是硬钳（硬钳会在天花板处留折点）。
+pub const CEILING_KNEE_FRACTION: f32 = 0.02;
+
 /// 释放速率上限（**每样本**的增益回升量）。
 ///
 /// `5e-5`/样本 ⇒ 从 0 回到 1.0 需要 `1 / 5e-5 = 20,000` 帧 ≈ **0.42 s @48k**。
@@ -215,9 +247,10 @@ const fn deque_capacity<const W: usize>() -> usize {
 /// 因为器件本身**不持有采样率**。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LimiterConfig {
-    /// 阈值（线性，`0 < threshold < ceiling ≤ 1`）。
+    /// 阈值（线性，`0 < threshold ≤ 1`）：增益压限的起始点。
     pub threshold: f32,
-    /// 输出天花板（线性，`threshold < ceiling ≤ 1`）：软膝渐近到它。
+    /// 输出天花板（线性，`0 < ceiling ≤ 1`）：软膝渐近到它，输出永不超过它。
+    /// **可 ≤ 阈值**：此时它就是稳态峰值上限（有效上限取两者中较低者，见模块文档 §4.1）。
     pub ceiling: f32,
     /// 每样本最大增益回升量。
     pub release_per_sample: f32,
@@ -250,8 +283,11 @@ impl LimiterConfig {
     ///
     /// 三条规则，每条都有"不这么做的后果"：
     /// 1. `threshold` 非有限或 `≤ 0` ⇒ 退回默认：`0` 会把整条链压成静音；
-    /// 2. `ceiling ≤ threshold` ⇒ 抬到 `threshold + 1e-4`：软膝宽度为 0 时
-    ///    `knee = 0` 会让映射除零；
+    /// 2. `ceiling` 非有限或 `≤ 0` ⇒ 退回默认：`0` 同样会把输出压成静音。
+    ///    ⚠ `ceiling ≤ threshold` **不再改写**：旧规则把它抬到 `threshold + 1e-4`，
+    ///    理由是"膝宽为 0 会除零"—— 但膝宽已改由 [`CEILING_KNEE_FRACTION`]
+    ///    在 `ceiling ≤ threshold` 一格里单独给出（见模块文档 §4.1），除零不再可能；
+    ///    而静默抬天花板正是 P0-1 里"ceiling 是死参数"的一半成因；
     /// 3. `lookahead` 钳到 `1..=LIMITER_MAX_LOOKAHEAD`：`0` 会让环长退化，
     ///    读位置与写位置重合 ⇒ 输出不再是被延迟的样本。
     #[must_use]
@@ -261,10 +297,10 @@ impl LimiterConfig {
         } else {
             LIMITER_THRESHOLD
         };
-        let ceiling = if self.ceiling.is_finite() && self.ceiling > threshold {
+        let ceiling = if self.ceiling.is_finite() && self.ceiling > 0.0 {
             self.ceiling.min(1.0)
         } else {
-            (threshold + 1.0e-4).min(1.0)
+            LIMITER_CEILING
         };
         let release_per_sample =
             if self.release_per_sample.is_finite() && self.release_per_sample >= 0.0 {
@@ -329,13 +365,9 @@ impl LimiterParams {
         } else {
             Self::DEFAULT.ceiling_db
         };
-        // 天花板必须严格高于阈值，否则软膝宽度为 0（除零）。把天花板抬到阈值之上
-        // 1e-3 dB —— 比"把阈值压下来"更符合用户意图（他拧的是天花板）。
-        let ceiling_db = if ceiling_db <= threshold_db {
-            (threshold_db + 1.0e-3).min(0.0)
-        } else {
-            ceiling_db
-        };
+        // ⚠ 天花板 ≤ 阈值**不**改写（旧规则抬到阈值之上 1e-3 dB，已删）：
+        // 它是合法且有意义的输入 —— 天花板成为稳态峰值上限（模块文档 §4.1）。
+        // 静默抬天花板会让用户拧的旋钮变成死参数（P0-1）。
         let release_ms = if self.release_ms.is_finite() {
             self.release_ms.clamp(10.0, 1000.0)
         } else {
@@ -597,11 +629,9 @@ impl<const W: usize> Limiter<W> {
         } else {
             LIMITER_THRESHOLD
         };
-        // 阈值抬到天花板之上会把软膝的宽度变成非正数（`knee <= 0` ⇒ 除零）。
-        // 这里连同天花板一起抬，保持"阈值 < 天花板"这条不变量。
-        if self.ceiling <= self.threshold {
-            self.ceiling = (self.threshold + 1.0e-4).min(1.0);
-        }
+        // ⚠ 不再连带抬天花板（旧规则保持"阈值 < 天花板"不变量，已删）：
+        // 阈值高于天花板是合法状态 —— 有效上限取两者中较低者（模块文档 §4.1），
+        // 软膝在那一格的膝宽由 `CEILING_KNEE_FRACTION` 给出，不存在除零。
     }
 
     /// 覆盖每样本释放量（**判据/注入用**；0.0 = 增益只降不升）。
@@ -627,6 +657,11 @@ impl<const W: usize> Limiter<W> {
         }
         let threshold = self.threshold;
         let ceiling = self.ceiling;
+        // 有效上限与软膝形状（模块文档 §4.1）：压峰目标取两者中较低者；
+        // 软膝渐近线恒为天花板，起点在天花板高于阈值时是阈值本人，
+        // 否则下移到天花板之下 `CEILING_KNEE_FRACTION` 处。
+        let cap = threshold.min(ceiling);
+        let (knee_start, knee_top) = soft_knee_span(threshold, ceiling);
         let release = self.release_per_sample;
         let lookahead = self.lookahead;
         let true_peak = self.true_peak;
@@ -697,13 +732,15 @@ impl<const W: usize> Limiter<W> {
             let peak = self.peak_deque[self.deque_head].1;
 
             // ---- 目标增益：窗口峰值不超阈值时为 1.0（完全透明） ----
-            // 增益被钳在 `T / W(n)` 之上（下面那一句）。窗口比被延迟的样本晚一格
+            // 增益被钳在 `cap / W(n)` 之上（下面那一句），`cap = min(阈值, 天花板)`
+            // ⇒ 稳态峰值落在**有效上限**上：天花板高于阈值时就是阈值（旧行为），
+            // 天花板低于阈值时就是天花板（P0-1 修复，§4.1）。窗口比被延迟的样本晚一格
             // （`W(n)` 覆盖 `x[n-lookahead+1] … x[n]`，而输出的是 `x[n-lookahead]`），
-            // 因此"输出 ≤ 阈值"的**逐样本**保证由 [`soft_knee`] 的天花板负责，
+            // 因此"输出 ≤ 天花板"的**逐样本**保证由 [`soft_knee`] 的渐近线负责，
             // 增益只负责把绝大多数样本提前压到位 —— 与母线实现同一口径（§3、§4）。
             let target = if peak > threshold {
                 self.engaged = true;
-                threshold / peak
+                cap / peak
             } else {
                 1.0
             };
@@ -736,8 +773,8 @@ impl<const W: usize> Limiter<W> {
             if self.gain < 1.0 {
                 self.reductions = self.reductions.saturating_add(1);
             }
-            left[frame] = soft_knee(sample_l * self.gain, threshold, ceiling);
-            right[frame] = soft_knee(sample_r * self.gain, threshold, ceiling);
+            left[frame] = soft_knee(sample_l * self.gain, knee_start, knee_top);
+            right[frame] = soft_knee(sample_r * self.gain, knee_start, knee_top);
 
             // 真峰值估计的历史窗口（只看最后三点；`[0]` 最老）。
             self.history[0] = [self.history[0][1], self.history[0][2], input_l];
@@ -761,8 +798,26 @@ impl<const W: usize> Default for Limiter<W> {
     }
 }
 
-/// 软膝天花板：`|v| <= LIMITER_THRESHOLD` 时**逐位恒等**，之上指数渐近到
-/// [`LIMITER_CEILING`] ⇒ 输出**严格**不超过天花板，且在阈值处**没有折点**。
+/// 软膝的（起点，渐近线）：决定 [`soft_knee`] 在哪一格开始弯、弯向哪个上限。
+///
+/// - `ceiling > threshold`（母线与常规母带）：`(threshold, ceiling)` —— 与旧行为
+///   逐位相同；
+/// - `ceiling ≤ threshold`：`(ceiling · (1 − CEILING_KNEE_FRACTION), ceiling)` ——
+///   渐近线仍是天花板本人，起点下移到它之下（模块文档 §4.1）。
+#[inline]
+#[must_use]
+fn soft_knee_span(threshold: f32, ceiling: f32) -> (f32, f32) {
+    if ceiling > threshold {
+        (threshold, ceiling)
+    } else {
+        (ceiling * (1.0 - CEILING_KNEE_FRACTION), ceiling)
+    }
+}
+
+/// 软膝天花板：`|v| <= 起点` 时**逐位恒等**，之上指数渐近到**渐近线**
+/// ⇒ 输出**严格**不超过渐近线，且在起点处**没有折点**。
+/// 母线一格里起点/渐近线就是 [`LIMITER_THRESHOLD`] / [`LIMITER_CEILING`]；
+/// 两者的取法见 [`soft_knee_span`]。
 ///
 /// 它**就是**"峰值不越界"这条保证的机制（模块文档 §4）：增益只负责平滑，
 /// 边界由这里的映射负责。把映射写成"阈值以上指数渐近到天花板"而不是"硬钳到阈值"，
@@ -778,18 +833,18 @@ impl<const W: usize> Default for Limiter<W> {
 /// 因此不能共用 —— 但形状同族，参数不同。
 #[inline]
 #[must_use]
-fn soft_knee(sample: f32, threshold: f32, ceiling: f32) -> f32 {
+fn soft_knee(sample: f32, start: f32, asymptote: f32) -> f32 {
     let magnitude = sample.abs();
-    // 阈值以下**逐位恒等**（这一句是"未超阈值不改写"的实现本体）。
-    if magnitude <= threshold {
+    // 起点以下**逐位恒等**（这一句是"未超阈值不改写"的实现本体）。
+    if magnitude <= start {
         return sample;
     }
-    let knee = ceiling - threshold;
-    // ⚠ 形状在 `magnitude == 阈值` 处从 `阈值` 起步：`1 - exp(0) == 0` 在那里给出
-    // `LIMITER_THRESHOLD` 本身。**不要**用 `1e-6` 之类的小量做保护 ——
-    // 那会在阈值处引入一个 1e-6 量级的下陷（实测：`soft_knee(0.9) == 0.89999986`），
+    let knee = asymptote - start;
+    // ⚠ 形状在 `magnitude == 起点` 处从 `起点` 起步：`1 - exp(0) == 0` 在那里给出
+    // 起点本身。**不要**用 `1e-6` 之类的小量做保护 ——
+    // 那会在起点处引入一个 1e-6 量级的下陷（实测：`soft_knee(0.9) == 0.89999986`），
     // 让函数在边界上不单调，而判据 `>` 与 `<=` 在同一处断言时就会互相打架。
-    let shaped = threshold + knee * (1.0 - libm::expf(-(magnitude - threshold) / knee));
+    let shaped = start + knee * (1.0 - libm::expf(-(magnitude - start) / knee));
     shaped.copysign(sample)
 }
 
@@ -1693,6 +1748,134 @@ mod tests {
         assert!(
             peak_on < peak_off,
             "真峰值限制后的峰值 {peak_on} 不低于关闭时的 {peak_off}"
+        );
+    }
+
+    /// **判据（新写，可红）**：问题报告 P0-1 的五组 `(threshold, ceiling)` ——
+    /// `ceiling` 必须真的成为输出峰值上限，稳态峰值落在 `min(threshold, ceiling)` 上。
+    ///
+    /// 量什么：2.0 幅度（+6 dB）的 100 Hz 正弦过 [`InsertLimiter`]
+    /// （参数走 [`LimiterParams::config`] 的 dB 换算，与工具面同一条路），
+    /// 2 秒输出的样本峰值（单位：dBFS）。
+    ///
+    /// 报告原文实测（旧实现）：`(0, −1) → −0.01`、`(0, −6) → −0.01` —— 峰值被钉在
+    /// **阈值**上，天花板是死参数；其余三组因阈值更低而"碰巧对"。
+    /// 本判据在旧实现下第 1、4 组必红（峰值 −0.01 对期望 −1 / −6）。
+    ///
+    /// 容差（写明）：硬断言 `peak ≤ ceiling + 0.02 dB`（"永不超过天花板"，
+    /// 0.02 是给真峰值检波估计误差留的）；稳态断言
+    /// `|peak − min(threshold, ceiling)| ≤ 0.15 dB` —— 其中
+    /// `ceiling ≤ threshold` 一格的软膝会把峰值再拉低 ≤ 0.07 dB（模块文档 §4.1），
+    /// 真峰值检波对 100 Hz 正弦的估计偏差同量级，两者合计 < 0.15 dB。
+    #[test]
+    fn ceiling_is_the_output_peak_bound_for_the_five_reported_pairs() {
+        let pairs = [
+            (0.0f32, -1.0f32),
+            (-1.0, -1.0),
+            (-6.0, -1.0),
+            (0.0, -6.0),
+            (-6.0, -3.0),
+        ];
+        for (threshold_db, ceiling_db) in pairs {
+            let params = LimiterParams {
+                threshold_db,
+                ceiling_db,
+                ..LimiterParams::DEFAULT
+            };
+            let mut limiter = InsertLimiter::with_config(params.config(48_000.0));
+            let mut left = [0.0f32; FRAMES];
+            let mut right = [0.0f32; FRAMES];
+            let mut phase = 0.0f32;
+            let mut peak = 0.0f32;
+            // 2 秒：释放（默认 80 ms）在稳态正弦上早已收敛，量的就是稳态峰值。
+            for _ in 0..750 {
+                for frame in 0..FRAMES {
+                    let value = 2.0 * phase.sin();
+                    phase += core::f32::consts::TAU * 100.0 / 48_000.0;
+                    left[frame] = value;
+                    right[frame] = value;
+                }
+                limiter.process_stereo(&mut left, &mut right);
+                for sample in left.iter().chain(right.iter()) {
+                    peak = peak.max(sample.abs());
+                }
+            }
+            assert!(
+                limiter.engaged(),
+                "({threshold_db}, {ceiling_db})：夹具必须真的驱动限制器"
+            );
+            let peak_db = 20.0 * peak.log10();
+            let expected_db = threshold_db.min(ceiling_db);
+            assert!(
+                peak_db <= ceiling_db + 0.02,
+                "({threshold_db}, {ceiling_db})：峰值 {peak_db} dBFS 越过天花板 {ceiling_db} dB"
+            );
+            assert!(
+                (peak_db - expected_db).abs() <= 0.15,
+                "({threshold_db}, {ceiling_db})：稳态峰值 {peak_db} dBFS 与有效上限 \
+                 {expected_db} dB 差 {} dB（容差 0.15）",
+                (peak_db - expected_db).abs()
+            );
+        }
+    }
+
+    /// **判据（新写，可红）**：`ceiling ≤ threshold` 不再被任何一层 `sanitised`
+    /// 静默改写；非法值（非有限）仍按原规则退回默认。
+    ///
+    /// 量什么：[`LimiterParams::sanitised`] 与 [`LimiterConfig::sanitised`] 的
+    /// 字段读回（单位：dBFS / 线性）。旧实现下 `ceiling_db = −6, threshold_db = 0`
+    /// 会被抬成 `+1e-3 dB`（钳后 0.0）、线性层会被抬成 `threshold + 1e-4` ⇒ 必红。
+    #[test]
+    fn a_ceiling_at_or_below_the_threshold_is_no_longer_rewritten() {
+        let params = LimiterParams {
+            threshold_db: 0.0,
+            ceiling_db: -6.0,
+            ..LimiterParams::DEFAULT
+        }
+        .sanitised();
+        assert_eq!(params.threshold_db.to_bits(), 0.0f32.to_bits());
+        assert_eq!(
+            params.ceiling_db.to_bits(),
+            (-6.0f32).to_bits(),
+            "天花板 −6 dB 必须原样保留（旧实现抬到阈值之上）"
+        );
+        let config = LimiterConfig {
+            threshold: 0.9,
+            ceiling: 0.5,
+            ..LimiterConfig::DEFAULT
+        }
+        .sanitised();
+        assert_eq!(
+            config.ceiling.to_bits(),
+            0.5f32.to_bits(),
+            "线性层天花板 0.5 < 阈值 0.9 必须原样保留"
+        );
+        assert_eq!(config.threshold.to_bits(), 0.9f32.to_bits());
+        // 非法值仍退回默认（这一半的旧规则保留）。
+        let params = LimiterParams {
+            ceiling_db: f32::NAN,
+            ..LimiterParams::DEFAULT
+        }
+        .sanitised();
+        assert_eq!(
+            params.ceiling_db.to_bits(),
+            LimiterParams::DEFAULT.ceiling_db.to_bits()
+        );
+        let config = LimiterConfig {
+            ceiling: f32::INFINITY,
+            ..LimiterConfig::DEFAULT
+        }
+        .sanitised();
+        assert_eq!(config.ceiling.to_bits(), LIMITER_CEILING.to_bits());
+        let config = LimiterConfig {
+            ceiling: 0.0,
+            ..LimiterConfig::DEFAULT
+        }
+        .sanitised();
+        assert_eq!(
+            config.ceiling.to_bits(),
+            LIMITER_CEILING.to_bits(),
+            "天花板 0 会把输出压成静音 ⇒ 退回默认"
         );
     }
 }
