@@ -194,7 +194,7 @@ export component HotspotOverlay inherits Rectangle {
             // Top Header
             Rectangle {
                 height: 44px;
-                border-color: #a67c3b40;
+                border-color: Theme.track-drum.with-alpha(0.40);
 
                 HorizontalLayout {
                     alignment: space-between;
@@ -202,7 +202,7 @@ export component HotspotOverlay inherits Rectangle {
                     HorizontalLayout {
                         spacing: 10px;
                         Rectangle {
-                            background: #a67c3b;
+                            background: Theme.track-drum;
                             border-radius: 4px;
                             HorizontalLayout {
                                 padding-left: 10px;
@@ -289,7 +289,7 @@ export component HotspotOverlay inherits Rectangle {
                     background: #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
-                    border-color: #3b856a;
+                    border-color: Theme.status-ok;
 
                     VerticalLayout {
                         padding: 16px;
@@ -299,7 +299,7 @@ export component HotspotOverlay inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 12px;
                             font-weight: 800;
-                            color: #3b856a;
+                            color: Theme.status-ok;
                             wrap: word-wrap;
                         }
                         Text {
@@ -319,7 +319,7 @@ export component HotspotOverlay inherits Rectangle {
                     background: #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
-                    border-color: #a67c3b;
+                    border-color: Theme.track-drum;
 
                     VerticalLayout {
                         padding: 16px;
@@ -329,7 +329,7 @@ export component HotspotOverlay inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 12px;
                             font-weight: 800;
-                            color: #a88344;
+                            color: Theme.track-drum;
                             wrap: word-wrap;
                         }
                         Text {

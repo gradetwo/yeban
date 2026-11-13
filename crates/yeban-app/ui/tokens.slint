@@ -1002,37 +1002,51 @@ export struct PianoStepRow {
 export global Theme {
     in-out property <PersonaMode> persona: PersonaMode.YebanDefault;
 
+    // -------------------------------------------------------------------------
+    // 东方美学与国色雅阶 · 音乐轨道色彩秩序 (Traditional Chinese Mineral Spectrum)
+    // 雅致、低饱和、低刺激、纯净清晰。建立音乐轨道的视觉认知秩序与美学体系。
+    // -------------------------------------------------------------------------
+    out property <color> track-synth:  #387691; // 黛蓝 (Lead / Wavetable / MPE 旋律主奏)
+    out property <color> track-drum:   #9a6a38; // 赭石 (Drums / Percussion / 律动鼓组)
+    out property <color> track-pad:    #705e88; // 紫苏 (Granular / Pad / 氛围和声铺底)
+    out property <color> track-vocal:  #347864; // 沧浪 (Vocal / Acoustic / 原声领唱)
+    out property <color> track-seq:    #8a4f6d; // 檀木 (Arpeggiator / Step / 序列特效)
+    out property <color> track-bass:   #2e536b; // 玄青 (Sub Bass / 极低频基底)
+    out property <color> track-bus:    #526377; // 凝脂霜灰 (Group Bus / 总线汇集)
+
+    // 辅助语义色彩 (低刺激、护眼平衡)
+    out property <color> status-ok:    #347864; // 沧浪青 (正常/播放/电平安全)
+    out property <color> status-warn:  #9a6a38; // 赭石金 (轻微压缩/警示)
+    out property <color> status-alert: #a44848; // 丹砂红 (静音/过载/录音触发)
+
     // 响应式专业录音室设计 Token (柔和低饱和专业工作站配色)
     out property <color> bg-canvas:
         persona == PersonaMode.AbletonLive ? #11141a :
         persona == PersonaMode.LogicPro    ? #0e1117 :
-        persona == PersonaMode.CubasePro   ? #0b0d13 : #0a0c12;
+        persona == PersonaMode.CubasePro   ? #0b0d13 : #090b10;
 
     out property <color> bg-panel:
         persona == PersonaMode.AbletonLive ? #161922 :
         persona == PersonaMode.LogicPro    ? #131620 :
-        persona == PersonaMode.CubasePro   ? #10131a : #0f1219;
+        persona == PersonaMode.CubasePro   ? #10131a : #0e1118;
 
     out property <color> bg-surface:
         persona == PersonaMode.AbletonLive ? #1c212c :
         persona == PersonaMode.LogicPro    ? #191e28 :
-        persona == PersonaMode.CubasePro   ? #151922 : #151924;
+        persona == PersonaMode.CubasePro   ? #151922 : #141822;
 
     out property <color> border-subtle:
         persona == PersonaMode.AbletonLive ? #202532 :
         persona == PersonaMode.LogicPro    ? #1c212c :
-        persona == PersonaMode.CubasePro   ? #181d26 : #1a1f2b;
+        persona == PersonaMode.CubasePro   ? #181d26 : #191f2c;
 
     // 低饱和度护眼沉浸主色 (避免刺眼眩光，专业录音室级低反差)
     out property <color> accent:
         persona == PersonaMode.AbletonLive ? #a66046 :
         persona == PersonaMode.LogicPro    ? #436f9e :
-        persona == PersonaMode.CubasePro   ? #38889e : #368094;
+        persona == PersonaMode.CubasePro   ? #38889e : #387691;
 
-    out property <color> accent-glow:
-        persona == PersonaMode.AbletonLive ? #a6604618 :
-        persona == PersonaMode.LogicPro    ? #436f9e18 :
-        persona == PersonaMode.CubasePro   ? #38889e18 : #36809418;
+    out property <color> accent-glow: accent.with-alpha(0.08);
 
     out property <length> radius:
         persona == PersonaMode.AbletonLive ? 3px :
@@ -1040,9 +1054,9 @@ export global Theme {
         persona == PersonaMode.CubasePro   ? 3px : 4px;
 
     out property <color> header-bg:
-        persona == PersonaMode.AbletonLive ? #141720 :
+        persona == PersonaMode.AbletonLive ? #10141d :
         persona == PersonaMode.LogicPro    ? #11141c :
-        persona == PersonaMode.CubasePro   ? #0d1016 : #0d1017;
+        persona == PersonaMode.CubasePro   ? #0d1016 : #0c0f16;
 
     // 演出激发模式下可将轨道头切换至右侧，默认旗舰保持在左侧黄金视线区
     in-out property <bool> track-headers-on-right:

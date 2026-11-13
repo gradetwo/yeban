@@ -687,17 +687,48 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     .filter_map(|i| tracks.row_data(i))
                     .collect();
                 let next_id = vec.len() as i32 + 1;
+                let (kind_str, name_str, col) = match ((next_id - 1) % 7) {
+                    0 => (
+                        "SYNTH · MPE",
+                        format!("0{}. Lead Synth", next_id),
+                        slint::Color::from_rgb_u8(56, 118, 145), // 黛蓝 #387691
+                    ),
+                    1 => (
+                        "DRUM RACK",
+                        format!("0{}. Tech Drums", next_id),
+                        slint::Color::from_rgb_u8(154, 106, 56), // 赭石 #9a6a38
+                    ),
+                    2 => (
+                        "GRANULAR",
+                        format!("0{}. Atmos Pad", next_id),
+                        slint::Color::from_rgb_u8(112, 94, 136), // 紫苏 #705e88
+                    ),
+                    3 => (
+                        "AUDIO · COMP",
+                        format!("0{}. Vocal Track", next_id),
+                        slint::Color::from_rgb_u8(52, 120, 100), // 沧浪 #347864
+                    ),
+                    4 => (
+                        "MIDI · STEP",
+                        format!("0{}. Arp Sequencer", next_id),
+                        slint::Color::from_rgb_u8(138, 79, 109), // 檀木 #8a4f6d
+                    ),
+                    5 => (
+                        "BASS · SUB",
+                        format!("0{}. Sub Bass", next_id),
+                        slint::Color::from_rgb_u8(46, 83, 107), // 玄青 #2e536b
+                    ),
+                    _ => (
+                        "AUX · BUS",
+                        format!("0{}. Aux Group", next_id),
+                        slint::Color::from_rgb_u8(82, 99, 119), // 霜灰 #526377
+                    ),
+                };
                 vec.push(TrackData {
                     id: next_id,
-                    name: format!("0{}. New Hybrid Track", next_id).into(),
-                    kind: "HYBRID".into(),
-                    color: match (next_id % 5) {
-                        1 => slint::Color::from_rgb_u8(54, 128, 148), // #368094
-                        2 => slint::Color::from_rgb_u8(166, 124, 59), // #a67c3b
-                        3 => slint::Color::from_rgb_u8(118, 104, 150), // #766896
-                        4 => slint::Color::from_rgb_u8(59, 133, 106), // #3b856a
-                        _ => slint::Color::from_rgb_u8(145, 90, 119), // #915a77
-                    },
+                    name: name_str.into(),
+                    kind: kind_str.into(),
+                    color: col,
                     bus: "Bus 1 (Synth Grp)".into(),
                     volume_db: -3.0,
                     pan: "C".into(),
@@ -719,20 +750,15 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 let mut block_vec: Vec<TimelineBlockData> = (0..blocks.row_count())
                     .filter_map(|i| blocks.row_data(i))
                     .collect();
+                let is_aud = ((next_id - 1) % 7) == 1 || ((next_id - 1) % 7) == 3;
                 block_vec.push(TimelineBlockData {
                     track_id: next_id,
-                    label: "Init Loop".into(),
+                    label: format!("{} Pattern", kind_str).into(),
                     start_px: 160.0,
                     width_px: 160.0,
-                    is_audio: false,
+                    is_audio: is_aud,
                     gain_label: "0dB".into(),
-                    color: match (next_id % 5) {
-                        1 => slint::Color::from_rgb_u8(54, 128, 148), // #368094
-                        2 => slint::Color::from_rgb_u8(166, 124, 59), // #a67c3b
-                        3 => slint::Color::from_rgb_u8(118, 104, 150), // #766896
-                        4 => slint::Color::from_rgb_u8(59, 133, 106), // #3b856a
-                        _ => slint::Color::from_rgb_u8(145, 90, 119), // #915a77
-                    },
+                    color: col,
                 });
                 ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
 
@@ -1057,3 +1083,27 @@ pub fn wire_transport(
 pub fn wire_undo(_ui: &MainWindow, _port: &Rc<UndoPort>) {}
 pub fn wire_view_callbacks(_ui: &MainWindow) {}
 pub fn wire_zoom_controls(_ui: &MainWindow, _port: &Rc<UndoPort>) {}
+pub fn apply_row_geometry(_ui: &MainWindow, _view: &ViewState) {}
+pub fn dragged_track_base_px(_index: usize) -> f32 {
+    0.0
+}
+pub fn on_undo_step() {}
+
+pub const ROLL_LANE_COUNT: i32 = 16;
+pub const NOTE_HEIGHT_PX: f32 = 12.0;
+
+#[allow(dead_code)]
+pub fn wire_roll_bounds_stub(ui: &MainWindow) {
+    ui.set_roll_min_tick(0);
+    ui.set_roll_max_tick(3840);
+    ui.set_roll_min_pitch(36);
+    ui.set_roll_max_pitch(84);
+    ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(Vec::new())));
+    let _ = ui.get_active_tool();
+    let _ = flags_for_ids(&[]);
+}
+
+#[allow(dead_code)]
+fn flags_for_ids(_ids: &[yeban_model::EntityId]) -> Vec<bool> {
+    Vec::new()
+}

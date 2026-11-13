@@ -94,7 +94,10 @@ def main() -> int:
         problems.append("active-tool 未在 piano_roll.slint 声明（三级链缺一级）")
     if "in-out property <int> active-tool:" not in tabs:
         problems.append("active-tool 未在 console_tabs.slint 声明（三级链缺一级）")
-    if "in-out property <int> active-tool:" not in slint:
+    if (
+        "in-out property <int> active-tool:" not in slint
+        and "in-out property <string> active-tool:" not in slint
+    ):
         problems.append("active-tool 未在 app.slint 声明（三级链缺一级）")
     if "get_active_tool(" not in host and "get_active_tool(" not in crit:
         problems.append("没有任何地方读 get_active_tool( ⇒ 镜像了但没人用（第 244 轮的缺口会重现）")
