@@ -6797,9 +6797,12 @@ impl SfzVoicePool {
         self.render_into_with_probes(plan, position, out, cc, None);
     }
 
-    /// ⭐ **带弯音探针的逐块渲染**（本单新增）：在 [`Self::render_into_with_cc`]
-    /// 之上多带弯音探针 `pitch` —— 与复音合成器 `render_with_pitch` 的探针
+    /// ⭐ **带音高探针的逐块渲染**（弯音线新增）：在 [`Self::render_into_with_cc`]
+    /// 之上多带音高探针 `pitch` —— 与复音合成器 `render_with_pitch` 的探针
     /// **同一个形状、同一份语义**：`(形状下标, 音符局部样本偏移) -> 音分`。
+    /// ⚠ 探针回的是**总音分**：弯音 ＋ 音符滑音 `slide`（`ADR-0012` D9
+    /// 相加，`PitchShape::cents_at` 一处求值）⇒ 本入口**同时**是采样器消费
+    /// 音符滑音的通路（判据 `tests/sfz_portamento.rs`），⛔ 不许窄化成只回弯音。
     ///
     /// * `pitch == None` ⇒ 与 [`Self::render_into_with_cc`] **逐位相同**
     ///   （该包装就传这个值）；
@@ -6962,12 +6965,14 @@ impl SfzVoicePool {
             }
             None => (readings.rate, readings.rate),
         };
-        // ⭐ **弯音曲线的块内速率**（本单新增）：与 portamento **同一个合成点** ——
+        // ⭐ **音高形状的块内速率**（弯音线新增）：与 portamento **同一个合成点** ——
         // 探针在块首/块末各求一次（局部时间 = 本段绝对位置 − 音符起始帧，与复音
         // 探针的 `local` 同一基准），音分经 [`bend_ratio`] 换乘子乘进速率，块内
-        // 由 `mix_span_into` 线性 ramp。⚠ 形状下标是 [`NO_PITCH_SHAPE`] ⇒ 探针
+        // 由 `mix_span_into` 线性 ramp。⚠ 探针回的是**总音分**（弯音 ＋ 滑音
+        // 相加）⇒ 滑音在**同一点**生效，不另设合成点（判据
+        // `tests/sfz_portamento.rs`）。⚠ 形状下标是 [`NO_PITCH_SHAPE`] ⇒ 探针
         // **一次都不调**；探针恒回 `0.0` ⇒ 乘子恰 `1.0`（IEEE 精确）—— 两条都与
-        // 接线前**逐位相同**。淡出段（上面第 1 步）⛔ 不施加弯音 —— 与
+        // 接线前**逐位相同**。淡出段（上面第 1 步）⛔ 不施加音高形状 —— 与
         // portamento 同一口径（它的音高轨在淡出段同样只走 `readings.rate`）。
         let (rate, rate_end) = match pitch {
             Some(probe) if self.pitch_shape[index] != NO_PITCH_SHAPE => {
