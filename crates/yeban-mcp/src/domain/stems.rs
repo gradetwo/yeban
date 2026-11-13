@@ -904,6 +904,9 @@ fn stem_render_request(
         // 分轨与母带**同一份**预算：`stems` 没有预算实参 ⇒ 用缺省（缺省必须容得下
         // 真实乐器，见 `SampleLimits` 的文档）⇒ 分轨出的每一轨与母带里那一轨逐位同源。
         sample_limits: render::SampleLimits::default(),
+        // 分轨没有区间实参 ⇒ 恒全程渲染（部分渲染只在 `yeban_render_master`）。
+        start_tick: None,
+        end_tick: None,
     }
 }
 

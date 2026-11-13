@@ -31,6 +31,7 @@
 //! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
 //! | 14 | ⭐ `#315`/`#337` 侧链边的**三个读数**：`sidechainEdgesSummedAsOrdinaryAudio`（真的被当普通音频边求和了几条，取自 `RenderPlan::edge_ids()`；`#337` 起恒 `0`）/ `sidechainEdgesInRoutingGraph`（路由图里声明了几条）/ `sidechainEdgesDeclaredWithoutKeyInput`（声明了但**没有键输入路径**的条数）。A `(0,0,0)`；B 平行侧链 `(0,1,1)` 且母带与 A 逐字节相同；B2 `(0,2,2)`；D 悬挂边 `(0,1,1)` 且 `unsupported` 仍报 `sidechainRouting` | 把侧链边当音频边求和（B 与 A 的字节不再相等，且求和读数变 1）/ 从路由图数求和条数 / 把"没有键输入路径"读数恒写成 0 / 让 `bus_nodes` 把侧链边当成音频入边（推子位置改变 ⇒ 加侧链与去侧链母带不同） |
 //! | 15 | ⭐ `ADR-0020`：`contributions: true` 报的逐轨贡献 == **独立**"只静音该轨 + 再渲染"的本地逐样本差（< 1e-9 dB）；开关不改 `sha256` / `masterDigest` / 磁盘字节；渲染前已静音的轨 ⇒ `alreadyMuted: true` + `null`，且不为它渲染 | 读数是估读/常数 / 开关参与母带构建 / 在归一化后的母带上比 |
+//! | 16 | ⭐ 部分渲染（`startTick` / `endTick`）：中间区间产物负载 == 全程产物同区间**逐字节**；只给一端时另一端取工程首/尾；非法区间（逆序/零长/负数/与 `contributions` 同给/换算后为空或超长）拒且不落盘；`targetLufs` 施加于**区间**（先切后施加），增益 ≈ 全程与区间的响度差 | 切片后从随机流中段重新抖动（相位错位）/ 响度在全程上施加（区间复测必不达标）/ 非法区间仍落盘 |
 //!
 //! ## 临时目录纪律
 //!
@@ -981,6 +982,409 @@ fn illegal_explicit_frames_are_refused_without_writing_a_file() {
         entries(&scratch.dir).is_empty(),
         "被拒绝的渲染不得留下任何文件: {:?}",
         entries(&scratch.dir)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 部分渲染（render_range：`startTick` / `endTick`）
+//
+// 帧换算锚点：默认夹具 120 BPM / 960 PPQ / 48 kHz ⇒ 25 帧/tick，
+// 工程总长 1920 tick = 48 000 帧。
+// ---------------------------------------------------------------------------
+
+/// ⭐ 部分渲染判据 1（**中间区间 = 全程的原样切片**）：区间产物的负载字节与
+/// 全程产物同区间的负载**逐字节相同**（TPDF 抖动同相位，不是"差 ≤ 1 LSB"）；
+/// 回执 `renderRange` 回显请求的 tick 与换算后的实际帧区间；缺省调用没有
+/// `renderRange` 键、`request` 回显的两个 tick 是 `null`。
+#[test]
+fn a_middle_range_is_the_full_render_sliced_byte_for_byte() {
+    let scratch = Scratch::new("render-range-middle");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let full_path = scratch.join("full.wav");
+    let range_path = scratch.join("range.wav");
+
+    let full = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": full_path.display().to_string()}),
+    );
+    assert_eq!(full["status"], "success", "{full}");
+    assert_eq!(full["data"]["frames"], 48_000);
+    assert!(
+        full["data"].get("renderRange").is_none(),
+        "缺省响应不得出现 renderRange: {full}"
+    );
+    assert_eq!(full["data"]["request"]["startTick"], Value::Null);
+    assert_eq!(full["data"]["request"]["endTick"], Value::Null);
+    let full_samples = verify_file_shape(&full, &full_path);
+    let full_bytes = fs::read(&full_path).expect("全程产物");
+    let full_header =
+        usize::try_from(full["data"]["headerBytes"].as_u64().expect("headerBytes")).expect("尺寸");
+    let full_payload = &full_bytes[full_header..full_header + 48_000 * 6];
+
+    let ranged = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000,
+            "startTick": 480, "endTick": 1440,
+            "path": range_path.display().to_string(),
+        }),
+    );
+    assert_eq!(ranged["status"], "success", "{ranged}");
+    assert_eq!(ranged["data"]["frames"], 24_000);
+    assert_eq!(ranged["data"]["durationSeconds"], 0.5);
+    let range = &ranged["data"]["renderRange"];
+    assert_eq!(range["startTick"], 480);
+    assert_eq!(range["endTick"], 1440);
+    assert_eq!(range["startFrame"], 12_000);
+    assert_eq!(range["endFrame"], 36_000);
+    assert_eq!(range["frames"], 24_000);
+    assert_eq!(range["fullFrames"], 48_000);
+    assert_eq!(ranged["data"]["request"]["startTick"], 480);
+    assert_eq!(ranged["data"]["request"]["endTick"], 1440);
+    let range_samples = verify_file_shape(&ranged, &range_path);
+    // 解码样本逐个相同：区间 = 全程的帧 [12000, 36000) = 交错样本 [24000, 72000)。
+    assert_eq!(range_samples, full_samples[24_000..72_000]);
+    // 负载字节逐字节相同（24-bit 立体声 = 6 字节/帧；两份文件的头长相同）。
+    let range_bytes = fs::read(&range_path).expect("区间产物");
+    let header = usize::try_from(ranged["data"]["headerBytes"].as_u64().expect("headerBytes"))
+        .expect("尺寸");
+    assert_eq!(header, full_header, "区间产物的头长必须与全程相同");
+    let payload = usize::try_from(
+        ranged["data"]["payloadBytes"]
+            .as_u64()
+            .expect("payloadBytes"),
+    )
+    .expect("尺寸");
+    assert_eq!(payload, 24_000 * 6);
+    assert_eq!(
+        &range_bytes[header..header + payload],
+        &full_payload[12_000 * 6..36_000 * 6],
+        "区间负载必须与全程产物同区间逐字节相同（抖动同相位）"
+    );
+    // 统计只算区间：区间峰值（浮点域）≈ 全程解码样本在该窗口的峰值（量化误差内），
+    // 且小于全程峰值（起始处的起音不在窗口内）。
+    let window = window_peak(&full_samples, 2, 12_000, 24_000);
+    let ranged_peak = ranged["data"]["peak"]["after"].as_f64().expect("区间峰值");
+    assert!(
+        (ranged_peak - f64::from(window)).abs() < 1e-5,
+        "区间峰值 {ranged_peak} 必须 ≈ 窗口峰值 {window}"
+    );
+    // `dryRun` 预览同一口径：帧数与 renderRange 都是区间的。
+    let preview = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000,
+            "startTick": 480, "endTick": 1440, "dryRun": true,
+        }),
+    );
+    let preview = &preview["data"]["preview"];
+    assert_eq!(preview["frames"], 24_000);
+    assert_eq!(preview["wouldWrite"]["frames"], 24_000);
+    assert_eq!(preview["renderRange"]["frames"], 24_000);
+}
+
+/// ⭐ 部分渲染判据 2（**只给一端**）：另一端取工程首/尾，产物仍是全程的原样切片。
+#[test]
+fn a_range_with_only_one_end_uses_the_project_edge_for_the_other() {
+    let scratch = Scratch::new("render-range-one-end");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let full_path = scratch.join("full.wav");
+    let full = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": full_path.display().to_string()}),
+    );
+    assert_eq!(full["status"], "success", "{full}");
+    let full_samples = verify_file_shape(&full, &full_path);
+
+    // 只给起点 ⇒ 切到工程尾。
+    let tail_path = scratch.join("tail.wav");
+    let tail = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000, "startTick": 960,
+            "path": tail_path.display().to_string(),
+        }),
+    );
+    assert_eq!(tail["status"], "success", "{tail}");
+    assert_eq!(tail["data"]["frames"], 24_000);
+    let range = &tail["data"]["renderRange"];
+    assert_eq!(range["startTick"], 960);
+    assert_eq!(range["endTick"], Value::Null);
+    assert_eq!(range["startFrame"], 24_000);
+    assert_eq!(range["endFrame"], 48_000);
+    let tail_samples = verify_file_shape(&tail, &tail_path);
+    assert_eq!(tail_samples, full_samples[48_000..96_000]);
+
+    // 只给终点 ⇒ 从 0 切。
+    let head_path = scratch.join("head.wav");
+    let head = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000, "endTick": 960,
+            "path": head_path.display().to_string(),
+        }),
+    );
+    assert_eq!(head["status"], "success", "{head}");
+    assert_eq!(head["data"]["frames"], 24_000);
+    let range = &head["data"]["renderRange"];
+    assert_eq!(range["startTick"], Value::Null);
+    assert_eq!(range["endTick"], 960);
+    assert_eq!(range["startFrame"], 0);
+    assert_eq!(range["endFrame"], 24_000);
+    let head_samples = verify_file_shape(&head, &head_path);
+    assert_eq!(head_samples, full_samples[..48_000]);
+}
+
+/// ⭐ 部分渲染判据 3（**非法区间被拒且不落盘**）：参数层拒形状与顺序错误，
+/// 渲染层拒换算后为空 / 超出全程；任何一种都不得留下文件。
+#[test]
+fn illegal_ranges_are_refused_without_writing_a_file() {
+    let scratch = Scratch::new("render-range-illegal");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let out = scratch.join("master.wav");
+    let path = out.display().to_string();
+
+    // 参数层：起点不小于终点（逆序与零长）。
+    for (arguments, label) in [
+        (
+            json!({"startTick": 1440, "endTick": 480}),
+            "startTick > endTick",
+        ),
+        (
+            json!({"startTick": 960, "endTick": 960}),
+            "startTick == endTick",
+        ),
+        (json!({"startTick": -1}), "负数 startTick"),
+        (
+            json!({"contributions": true, "startTick": 480}),
+            "与 contributions 同给",
+        ),
+    ] {
+        let mut full_arguments = json!({"format": "wav", "sampleRate": 48000, "path": path});
+        full_arguments
+            .as_object_mut()
+            .expect("对象")
+            .extend(arguments.as_object().expect("对象").clone());
+        let refused = call(&mut dispatcher, &auth, full_arguments);
+        assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", label);
+    }
+
+    // 渲染层：终点换算成帧后超出工程总长（1921 tick ⇒ 48 025 帧 > 48 000）。
+    let beyond = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000, "endTick": 1921, "path": path,
+        }),
+    );
+    assert_domain_error(&beyond, "RENDER_FAILED", "endTick 超出工程总长");
+    assert_eq!(beyond["error"]["data"]["endFrame"], 48_025);
+    assert_eq!(beyond["error"]["data"]["fullFrames"], 48_000);
+    assert_eq!(beyond["error"]["data"]["endTick"], 1921);
+
+    // 渲染层：起点恰好落在工程末端 ⇒ 换算后区间为空。
+    let empty = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000, "startTick": 1920, "path": path,
+        }),
+    );
+    assert_domain_error(&empty, "RENDER_FAILED", "起点在工程末端");
+
+    assert!(
+        entries(&scratch.dir).is_empty(),
+        "被拒绝的区间渲染不得留下任何文件: {:?}",
+        entries(&scratch.dir)
+    );
+}
+
+/// 前半静、后半响的工程（响度顺序判据专用）：轨 B（音量 −10 dB）在 0..1920
+/// tick 放一个力度 100 的音符；轨 A（音量 0 dB）在 1920..3840 tick 放同一个
+/// 音符。区间取**前半** [0, 1920)。工程总长 3840 tick = 96 000 帧。
+///
+/// 两条实测教训决定了这个形状：
+/// - 用**轨音量**造响度差而不用力度：合成器的力度→真峰值几乎平坦（力度 16
+///   的音符真峰值仍有 −5.3 dBTP），靠力度差造出的区间需要 +14.9 dB 增益、
+///   必然被 −1 dBTP 真峰值上限绑定 —— 判据就测成了上限让步而不是施加顺序。
+///   轨音量是纯增益：两半的响度差 ≈ 峰值差 ≈ 10 dB，区间需要的增益
+///   （≈ 10 − 3.01 ≈ 7 dB）小于上限放行量（≈ 10 + 1.2 ≈ 11 dB），不绑定；
+/// - 静半段必须在**前**：响音符的释放尾音不随轨音量缩放（实测尾音在后半段
+///   仍有 −5.24 dBTP），若静半段在后，它的真峰值会被尾音顶住、增益照样被
+///   上限绑定。区间在响音符开始之前 ⇒ 尾音一帧都进不了区间。
+fn loud_then_quiet_project() -> YebanProjectV1 {
+    let mut project = project(&Spec {
+        end_tick: 1_920,
+        velocity: 100,
+        ..Spec::default()
+    });
+    // 轨 A（夹具自带，0 dB）：把它的摆放从 0..1920 挪到 1920..3840（响半段）。
+    let lead = id(2);
+    let lead_placement = id(20);
+    project
+        .tracks
+        .get_mut(&lead)
+        .expect("夹具轨必须在")
+        .clips
+        .get_mut(&lead_placement)
+        .expect("夹具摆放必须在")
+        .start_tick = 1_920;
+    let quiet_track = id(3);
+    let quiet_clip = id(11);
+    let quiet_placement = id(21);
+    let quiet_note = id(31);
+    let quiet_edge = id(41);
+    let master = project.master_bus_track_id;
+    let mut notes = BTreeMap::new();
+    notes.insert(
+        quiet_note,
+        MidiNote {
+            velocity: 100,
+            // 音符时间是片段本地坐标：起点 0、时长 1920（摆放负责挪到后半段）。
+            ..MidiNote::new(quiet_note, 0, 69, 1_920)
+        },
+    );
+    project.clip_pool.insert(
+        quiet_clip,
+        ClipPoolEntry {
+            id: quiet_clip,
+            name: "QuietClip".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    let mut track = TrackV3 {
+        id: quiet_track,
+        name: "Quiet".to_owned(),
+        kind: TrackKind::Midi,
+        volume_db: -10.0,
+        ..TrackV3::default()
+    };
+    track.clips.insert(
+        quiet_placement,
+        ClipPlacement {
+            id: quiet_placement,
+            clip_id: quiet_clip,
+            start_tick: 0,
+            duration_ticks: 1_920,
+            loop_config: LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        },
+    );
+    project.tracks.insert(quiet_track, track);
+    project.routing_graph.nodes.push(quiet_track);
+    project.routing_graph.edges.insert(
+        quiet_edge,
+        RoutingEdge {
+            id: quiet_edge,
+            source_node: quiet_track,
+            destination_node: master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    project.validate().expect("夹具工程必须合法");
+    project
+}
+
+/// ⭐ 部分渲染判据 4（**响度施加于区间：先切后施加**）：目标取全程实测响度。
+/// 若增益施加于全程（增益 ≈ 0），静半段的区间复测必不达标 ⇒ 本判据变红；
+/// 施加于区间 ⇒ `pass`，且增益 ≈ 全程与区间的响度差、施加前读数 == 区间自测。
+#[test]
+fn the_loudness_target_applies_to_the_slice_not_the_full_mix() {
+    let scratch = Scratch::new("render-range-loudness");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&loud_then_quiet_project(), &scratch.join("demo.yeban"));
+    let path = |name: &str| scratch.join(name).display().to_string();
+
+    // 全程实测响度（无目标，只测）。
+    let full = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": path("full.wav")}),
+    );
+    assert_eq!(full["status"], "success", "{full}");
+    assert_eq!(full["data"]["frames"], 96_000);
+    let full_lufs = full["data"]["loudness"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("全程响度可测");
+
+    // 前半（静的那半）单独渲：响度必须明显低于全程（夹具的前提，先验明）。
+    let quiet = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000,
+            "startTick": 0, "endTick": 1920, "path": path("quiet.wav"),
+        }),
+    );
+    assert_eq!(quiet["status"], "success", "{quiet}");
+    assert_eq!(quiet["data"]["frames"], 48_000);
+    let quiet_lufs = quiet["data"]["loudness"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("区间响度可测");
+    assert!(
+        quiet_lufs < full_lufs - 2.0,
+        "静半段响度 {quiet_lufs} 必须明显低于全程 {full_lufs}（夹具前提）"
+    );
+
+    // 对照：全程 + targetLufs = 全程实测 ⇒ 已达标，增益 ≈ 0。
+    let control = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000,
+            "targetLufs": full_lufs, "path": path("control.wav"),
+        }),
+    );
+    assert_eq!(control["status"], "success", "{control}");
+    let control_gain = control["data"]["loudness"]["appliedGainDb"]
+        .as_f64()
+        .expect("对照增益");
+    assert!(
+        control_gain.abs() < 0.05,
+        "全程已达标时增益应 ≈ 0, 实际 {control_gain}"
+    );
+
+    // 区间 + 同一个目标：施加于区间才可能达标。
+    let ranged = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000,
+            "startTick": 0, "endTick": 1920,
+            "targetLufs": full_lufs, "path": path("ranged.wav"),
+        }),
+    );
+    assert_eq!(
+        ranged["status"], "success",
+        "区间响度施加必须达标: {ranged}"
+    );
+    assert_eq!(ranged["data"]["frames"], 48_000);
+    assert_eq!(ranged["data"]["loudness"]["verdict"], "pass");
+    let gain = ranged["data"]["loudness"]["appliedGainDb"]
+        .as_f64()
+        .expect("区间施加增益");
+    let expected = full_lufs - quiet_lufs;
+    assert!(
+        (gain - expected).abs() < 0.6,
+        "区间增益 {gain} 必须 ≈ 全程与区间的响度差 {expected}（施加于区间，不是全程）"
+    );
+    let before = ranged["data"]["loudness"]["beforeGainLufs"]
+        .as_f64()
+        .expect("施加前读数");
+    assert!(
+        (before - quiet_lufs).abs() < 0.3,
+        "施加前测的必须是区间本身: {before} vs 区间自测 {quiet_lufs}"
     );
 }
 
