@@ -101,6 +101,23 @@ cargo build --release                     # builds the whole workspace (Slint + 
 cargo build --release -p yeban-app        # just the desktop GUI binary
 ```
 
+#### Small-memory machines
+
+The default `release` profile uses thin LTO with a single codegen unit, so code
+generation and the final link of a large workspace can need a lot of RAM at their
+peak. On a memory-tight machine (a small VM, an 8 GB build box), build with the
+`release-small` profile instead:
+
+```bash
+cargo build --profile release-small -p yeban-app
+```
+
+`release-small` inherits `release` and changes only two settings — LTO off and
+`codegen-units = 16` — which cuts the peak memory of both steps substantially.
+The trade-off: without cross-crate LTO the binaries are a bit larger and can run
+a bit slower. Use it when a machine cannot finish a `release` build; shipped
+releases and nightly builds keep using `release` / `dist`.
+
 ### Run
 
 ```bash
