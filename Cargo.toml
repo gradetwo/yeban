@@ -140,6 +140,22 @@ lto = "fat"
 panic = "abort"
 codegen-units = 1
 
+# 小内存构建：给内存吃紧的机器用（本机虚拟机、8 GB 级构建盒等）。
+# 相对 release 只改两项，两项都冲着 codegen 与链接期的峰值内存：
+#   - lto = false：thin LTO 在链接期要把全工作区的中间表示读进链接
+#     进程，是大工程链接被 OOM 杀掉的主要来源；关掉后链接退回普通的
+#     逐 crate 链接，峰值内存随单个 crate 而非全程序走。
+#   - codegen-units = 16：release 的单 codegen unit 使一个 rustc 进程
+#     独吞整 crate 的优化与代码生成，进程峰值内存最高；拆成 16 个单元
+#     后单进程峰值显著下降，且各单元可并行。
+# 其余设置（overflow-checks、debug = 1 等）全部继承 release，语义不变。
+# 代价：没有 LTO 的跨 crate 优化，产物略大、运行时略慢。本 profile 只
+# 解决“在小内存机器上编得出来”，正式发布与 nightly 仍走 release/dist。
+[profile.release-small]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 # ---------------------------------------------------------------------------
 # crates.io 补丁（vendor）
 # ---------------------------------------------------------------------------

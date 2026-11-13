@@ -109,6 +109,21 @@ cargo build --release                     # 构建整个工作区（Slint + wini
 cargo build --release -p yeban-app        # 只构建桌面 GUI 二进制
 ```
 
+#### 小内存机器
+
+缺省 `release` profile 用 thin LTO 加单个 codegen unit，大工作区的代码生成
+与最终链接的内存峰值较高。内存吃紧的机器（小虚拟机、8 GB 构建盒等）改用
+`release-small` profile 构建：
+
+```bash
+cargo build --profile release-small -p yeban-app
+```
+
+`release-small` 继承 `release`，只改两项——关 LTO、`codegen-units` 提到
+16——两步的内存峰值都会显著下降。代价：没有 LTO 的跨 crate 优化，产物略
+大、运行时略慢。适用于编不出 `release` 的机器；正式发布与 nightly 仍走
+`release` / `dist`。
+
 ### 运行
 
 ```bash
