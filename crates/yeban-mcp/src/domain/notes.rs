@@ -6943,6 +6943,9 @@ fn reject_remove_device_fields(object: &Map<String, Value>) -> Result<(), Fault>
 /// - ⭐ `params[].name` 与某个已识别拼写**只差一两个字符**（拼错） →
 ///   `INVALID_PARAMETER_RANGE`（`data.reason = "unknownEffectParam"`，带最近邻）——
 ///   见 [`reject_misspelled_effect_params`]；
+/// - ⭐ `kind == InternalInstrument` 且写了**部分**鼓机键位名（五个 `*_note` 缺一） →
+///   `INVALID_PARAMETER_RANGE`（`data.reason = "incompleteDrumNoteMap"`，
+///   逐条点名缺的键）—— 见 [`reject_incomplete_drum_note_map`]；
 /// - `name` 是空串 → `INVALID_PARAMETER_RANGE`（`data.reason = "deviceNameRequired"`）。
 fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault> {
     let mut unknown: Vec<&str> = payload
@@ -7069,7 +7072,7 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
     };
     // ⭐ #175：拼错的参数名在**写入时**就响亮失败（⛔ 不再"存下来、静默不生效"）。
     reject_misspelled_effect_params(&name, &params)?;
-    Ok(DeviceDefinition {
+    let device = DeviceDefinition {
         id,
         name,
         kind,
@@ -7077,7 +7080,68 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
         params,
         latency_samples,
         plugin: None,
-    })
+    };
+    // ⭐ P2-3：鼓机键位写了但没写全 ⇒ 同样在**写入时**响亮失败（见函数文档）。
+    reject_incomplete_drum_note_map(&device)?;
+    Ok(device)
+}
+
+/// 拒绝"鼓机键位写了但没写全"的内置乐器设备（**P2-3**）。
+///
+/// ## 为什么需要它（实测，⛔ 不是假想）
+///
+/// 引擎只在五个键位名（`kick_note` / `snare_note` / `closed_hat_note` /
+/// `open_hat_note` / `clap_note`）**全部**写出且取值有限时才把一台
+/// `InternalInstrument` 识别为鼓机（`yeban-engine` 的 `DrumsParams::from_devices`
+/// 规则 5）。漏写一个 ⇒ 整台设备不被识别 ⇒ 该轨改走复音合成器，而写入与渲染
+/// **全链路无任何报错** —— 用户以为装好了鼓机，渲染回执也正常，整轨鼓机静音。
+///
+/// ## 判据：写了才管，⛔ 不是"不全就拒绝一切"
+///
+/// 判别只有一条（[`super::incomplete_drum_note_names`]，与引擎识别同一口径）：
+/// **至少一个**键位名出现、且至少一个缺失或非有限 ⇒ 拒绝并逐条点名缺的键。
+/// 一个键位名都没写的设备**照旧接受**：那是普通复音合成器（只写音色旋钮的
+/// 设备与没有设备链逐位同解，是引擎模块文档 §6 钉住的既有口径），本闸门
+/// ⛔ 不许把"不是鼓机"误报成"坏鼓机"。`bypassed` 不豁免：设备参数在本工具面
+/// 写入后不可局部修改（改参数只能删了重插），旁通的不完整映射在取消旁通时
+/// 就是静音陷阱，写入时一次说清。
+///
+/// # Errors
+///
+/// 命中判据 ⇒ `INVALID_PARAMETER_RANGE`（`data.reason = "incompleteDrumNoteMap"`；
+/// `data.missingNoteNames` 逐条点名缺的键，`data.presentNoteNames` 给已写的键）。
+fn reject_incomplete_drum_note_map(device: &DeviceDefinition) -> Result<(), Fault> {
+    let Some(missing) = super::incomplete_drum_note_names(device) else {
+        return Ok(());
+    };
+    let present: Vec<&'static str> = super::DRUM_NOTE_NAMES
+        .iter()
+        .copied()
+        .filter(|name| !missing.contains(name))
+        .collect();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`device.params` 的鼓机键位映射不完整（设备 `{}`）: 缺 {}。\
+             引擎只在五个键位名 {} 全部写出且取值有限时才把一台 \
+             `InternalInstrument` 识别为鼓机；缺一个 ⇒ 整台设备不被识别、\
+             该轨改走复音合成器 ⇒ 渲染成功但鼓机不出声。\
+             请补全缺的键位，或把已写的 `*_note` 名字全部删掉\
+             （一个都不写 = 普通复音合成器，不受本闸门影响）。",
+            device.name,
+            missing.join(", "),
+            super::DRUM_NOTE_NAMES.join(", "),
+        ),
+        serde_json::json!({
+            "reason": "incompleteDrumNoteMap",
+            "deviceName": device.name,
+            "missingNoteNames": missing,
+            "presentNoteNames": present,
+            "hint": "五个键位名 kick_note / snare_note / closed_hat_note / open_hat_note / \
+                     clap_note 必须全写且取值有限，缺哪个就在 missingNoteNames 里点名哪个；\
+                     只写一部分会被本闸门拒绝，一个都不写则按普通复音合成器处理",
+        }),
+    ))
 }
 
 /// 拒绝"与某个已识别拼写只差一两个字符"的设备参数名（**#175 坑⑤**）。
@@ -17982,6 +18046,79 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), TRACK_KINDS.len(), "四项必须互不相同");
+    }
+
+    /// ⭐ P2-3：鼓机键位写了但没写全 ⇒ **解析期**响亮拒绝，逐个缺键各点名该键；
+    /// 五键齐全与一个键位都不写（普通复音合成器）都必须放行。
+    ///
+    /// 注入（预期红）：删掉 [`parse_device`] 尾部的 `reject_incomplete_drum_note_map`
+    /// 调用 ⇒ 五条缺键断言全红（解析一路成功）；把判据的 `seen_any` 改成恒真
+    /// ⇒ 阴性面红（普通复音合成器被误伤）。
+    #[test]
+    fn insert_device_rejects_an_incomplete_drum_note_map_and_names_the_missing_key() {
+        let project = filled_project();
+        let track = device_track(&project);
+        const ALL: [(&str, f64); 5] = [
+            ("kick_note", 36.0),
+            ("snare_note", 38.0),
+            ("closed_hat_note", 42.0),
+            ("open_hat_note", 46.0),
+            ("clap_note", 39.0),
+        ];
+        let op_with = |params: Vec<Value>| {
+            serde_json::json!([{
+                "kind": INSERT_DEVICE_KIND,
+                "trackId": track.to_canonical_string(),
+                "device": {
+                    "deviceId": "01J8ZQ00000000000000000DEV",
+                    "name": "Kit",
+                    "kind": "InternalInstrument",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": params,
+                }
+            }])
+        };
+        // 逐个缺键：各被拒绝，且 `missingNoteNames` 与人话信息都点名该键。
+        for (missing, (missing_name, _)) in ALL.iter().enumerate() {
+            let params: Vec<Value> = ALL
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != missing)
+                .map(|(_, (name, value))| serde_json::json!({"name": name, "value": value}))
+                .collect();
+            let fault = parse_ops(&op_with(params)).expect_err("写四个缺一个必须在解析期被拒绝");
+            let Fault::Domain { code, message, .. } = &fault else {
+                panic!("必须是领域失败, 实际 {fault:?}");
+            };
+            assert_eq!(*code, ErrorCode::InvalidParameterRange);
+            let data = lane_fault_data(&fault);
+            assert_eq!(data["reason"], "incompleteDrumNoteMap", "{data}");
+            assert_eq!(
+                data["missingNoteNames"],
+                serde_json::json!([missing_name]),
+                "缺哪个键就点名哪个键（本次缺 `{missing_name}`）: {data}"
+            );
+            assert!(
+                message.contains(missing_name),
+                "人话信息必须点名缺的键 `{missing_name}`: {message}"
+            );
+        }
+        // 五键齐全 ⇒ 放行。
+        let full: Vec<Value> = ALL
+            .iter()
+            .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+            .collect();
+        assert!(parse_ops(&op_with(full)).is_ok(), "五键齐全不得被闸门拦");
+        // 一个键位都不写（只有振荡器/滤波参数）⇒ 普通复音合成器，放行。
+        let plain = vec![
+            serde_json::json!({"name": "cutoff_hz", "value": 800.0}),
+            serde_json::json!({"name": "osc1_level", "value": 0.5}),
+        ];
+        assert!(
+            parse_ops(&op_with(plain)).is_ok(),
+            "不是鼓机的设备不得被闸门误伤"
+        );
     }
 
     /// `insertDevice` 缺省**追加到链尾**；给了 `slotIndex` 就落在那一格；

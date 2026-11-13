@@ -1265,6 +1265,66 @@ fn ignored_strip_devices_warning(
     }))
 }
 
+/// ⭐ P2-3：**鼓机键位不全**的设备预警（`data.warnings[]` 的一条来源）。
+///
+/// 引擎只在五个键位名全部写出且取值有限时才把一台 `InternalInstrument`
+/// 识别为鼓机；缺一个 ⇒ 整台设备不被识别、该轨改走复音合成器 ⇒ **渲染成功
+/// 但鼓机不出声**。写入面已被 `insertDevice` 的解析期闸门拦住
+/// （`incompleteDrumNoteMap`），但存量工程与其它写入面（应用侧、预制、手工
+/// 改过的工程文件）仍可能把不完整映射带到渲染这里 ⇒ 本预警是渲染侧的兜底
+/// 点名：逐台给轨 / 设备 / `missingNoteNames`。
+/// 判别与写入闸门共用 [`super::incomplete_drum_note_names`]（⛔ 不许两处各写一份）。
+/// 作用域与 [`ignored_strip_devices_warning`] 一致：只看渲染源节点，且只看
+/// **非旁通**设备（旁通设备本就不作音源，与引擎识别跳过旁通同一口径）。
+/// ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`（与削波预警同一条纪律）。
+/// 空 ⇒ `None`（**没有这条预警**，不是恒报）。
+fn incomplete_drum_note_map_warning(
+    tracks: &BTreeMap<EntityId, TrackV3>,
+    source_nodes: &[EntityId],
+) -> Option<Value> {
+    let mut devices: Vec<Value> = Vec::new();
+    for node in source_nodes {
+        let Some(track) = tracks.get(node) else {
+            continue;
+        };
+        for (slot, device) in track.devices.iter().enumerate() {
+            if device.bypassed {
+                continue;
+            }
+            if let Some(missing) = super::incomplete_drum_note_names(device) {
+                devices.push(serde_json::json!({
+                    "track": track.name,
+                    "trackNode": node.to_canonical_string(),
+                    "slot": slot,
+                    "device": device.name,
+                    "deviceId": device.id.to_canonical_string(),
+                    "missingNoteNames": missing,
+                }));
+            }
+        }
+    }
+    if devices.is_empty() {
+        return None;
+    }
+    let count = devices.len();
+    let hint = format!(
+        "本次渲染里有 {count} 台设备的鼓机键位映射**不完整**：引擎只在五个键位名 \
+         （kick_note / snare_note / closed_hat_note / open_hat_note / clap_note）\
+         全部写出且取值有限时才识别为鼓机，缺一个 ⇒ 整台设备不被识别、该轨改走 \
+         复音合成器 ⇒ 渲染成功但鼓机不出声。请逐条补全 `missingNoteNames` 点名的 \
+         键位，或删掉该设备全部 `*_note` 参数（按普通复音合成器用）。\
+         ⛔ 本工具**不自动修**，音频一个字节都没动。"
+    );
+    Some(serde_json::json!({
+        "code": "incompleteDrumNoteMap",
+        "severity": "warning",
+        "blocking": false,
+        "count": count,
+        "devices": devices,
+        "hint": hint,
+    }))
+}
+
 /// 校验渲染参数。
 ///
 /// # Errors
@@ -2259,11 +2319,15 @@ pub struct RenderArtifact {
     pub headroom_db: Option<f32>,
     /// ⭐ `#225`：**结果质量**提示（`data.warnings[]`，非阻断）。
     ///
-    /// 两条来源（两条都不出现 ⇒ **空数组**，⛔ 不是恒报）：
+    /// 来源（都不出现 ⇒ **空数组**，⛔ 不是恒报）：
     /// - `code:"exportClipping"`（`clippedSamples > 0`，含 `clippedSamples` /
     ///   `truePeakDbfs` / `suggestedTrimDb` / `loudestSource`）—— 见 [`clipping_warning`]；
     /// - `code:"silentSources"`（可闻、排了内容、却 `peak == 0.0` 的源逐条点名）——
-    ///   见 [`silent_sources_warning`]。
+    ///   见 [`silent_sources_warning`]；
+    /// - `code:"ignoredStripDevices"`（通道条来源规则未采纳的设备逐台点名）——
+    ///   见 [`ignored_strip_devices_warning`]；
+    /// - `code:"incompleteDrumNoteMap"`（鼓机键位写了但没写全的设备逐台点名，
+    ///   带 `missingNoteNames`）—— 见 [`incomplete_drum_note_map_warning`]。
     ///
     /// ⚠ 它们**不是** `unsupported`：那份清单的口径是"我们会静默少做什么"，
     /// 削波是"算对了、但结果过载"，静音源是"排了内容却没进母带"。判据与消费者都不同。
@@ -3278,6 +3342,11 @@ pub fn build(
     .chain(silent_sources_warning(&reports))
     // ⭐ 本修复：通道条来源规则忽略的设备必须被点名（见 `ignored_strip_devices_warning`）。
     .chain(ignored_strip_devices_warning(
+        &project.tracks,
+        &source_nodes,
+    ))
+    // ⭐ P2-3：鼓机键位不全的设备必须被点名（见 `incomplete_drum_note_map_warning`）。
+    .chain(incomplete_drum_note_map_warning(
         &project.tracks,
         &source_nodes,
     ))
@@ -6283,6 +6352,79 @@ mod tests {
         // 轨不在源节点里 ⇒ None（作用域与 deviceChainDsp 登记一致）。
         assert!(
             ignored_strip_devices_warning(&project.tracks, &[]).is_none(),
+            "未进渲染图的轨不预警"
+        );
+    }
+
+    /// 判据（P2-3）：回执的 `incompleteDrumNoteMap` 预警必须点名轨 / 设备 / 缺的键。
+    ///
+    /// 只测预警 builder 本身（纯函数，不渲染音频）：缺 `clap_note` 的鼓机设备 ⇒
+    /// 预警出一条；五键齐全、一个键位都没写、旁通、轨不在源节点里 ⇒ `None`。
+    #[test]
+    fn incomplete_drum_note_map_warning_names_track_device_and_missing_keys() {
+        let mut kit = device(
+            node(11),
+            &[
+                ("kick_note", 36.0),
+                ("snare_note", 38.0),
+                ("closed_hat_note", 42.0),
+                ("open_hat_note", 46.0),
+            ],
+        );
+        kit.kind = DeviceKind::InternalInstrument;
+        let (project, track_id) = project_with(vec![kit], &[]);
+        let warning = incomplete_drum_note_map_warning(&project.tracks, &[track_id])
+            .expect("缺一个键位必须出预警");
+        assert_eq!(warning["code"], "incompleteDrumNoteMap");
+        assert_eq!(warning["severity"], "warning");
+        assert_eq!(warning["blocking"], false);
+        assert_eq!(warning["count"], 1);
+        assert_eq!(warning["devices"][0]["track"], "Lead");
+        assert_eq!(warning["devices"][0]["slot"], 0);
+        assert_eq!(warning["devices"][0]["device"], "dev");
+        assert_eq!(
+            warning["devices"][0]["missingNoteNames"],
+            serde_json::json!(["clap_note"]),
+            "缺哪个键就点名哪个键: {warning}"
+        );
+
+        // 五键齐全 ⇒ None。
+        let mut full = device(
+            node(12),
+            &[
+                ("kick_note", 36.0),
+                ("snare_note", 38.0),
+                ("closed_hat_note", 42.0),
+                ("open_hat_note", 46.0),
+                ("clap_note", 39.0),
+            ],
+        );
+        full.kind = DeviceKind::InternalInstrument;
+        let (full_project, full_id) = project_with(vec![full], &[]);
+        assert!(
+            incomplete_drum_note_map_warning(&full_project.tracks, &[full_id]).is_none(),
+            "五键齐全不是预警"
+        );
+        // 一个键位都没写（普通复音合成器）⇒ None。
+        let mut plain = device(node(13), &[("cutoff_hz", 800.0)]);
+        plain.kind = DeviceKind::InternalInstrument;
+        let (plain_project, plain_id) = project_with(vec![plain], &[]);
+        assert!(
+            incomplete_drum_note_map_warning(&plain_project.tracks, &[plain_id]).is_none(),
+            "不是鼓机的设备不预警"
+        );
+        // 旁通的不完整设备 ⇒ None（本就不作音源，与引擎识别跳过旁通同一口径）。
+        let mut bypassed = device(node(14), &[("kick_note", 36.0)]);
+        bypassed.kind = DeviceKind::InternalInstrument;
+        bypassed.bypassed = true;
+        let (bypassed_project, bypassed_id) = project_with(vec![bypassed], &[]);
+        assert!(
+            incomplete_drum_note_map_warning(&bypassed_project.tracks, &[bypassed_id]).is_none(),
+            "旁通设备不预警"
+        );
+        // 轨不在源节点里 ⇒ None（作用域与 deviceChainDsp 登记一致）。
+        assert!(
+            incomplete_drum_note_map_warning(&project.tracks, &[]).is_none(),
             "未进渲染图的轨不预警"
         );
     }
