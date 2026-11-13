@@ -1,4 +1,4 @@
-import { Theme, Tokens } from "tokens.slint";
+import { Theme, Tokens, TooltipBubble } from "tokens.slint";
 
 export component ControlRoomMeters inherits Rectangle {
     in-out property <string> lufs-integrated: "-9.4 LUFS";
@@ -154,7 +154,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : #10141d;
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : (mon_a_touch.has-hover ? #182030 : #10141d);
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "main" ? 1px : 0;
                         border-color: Theme.accent;
@@ -172,17 +172,23 @@ export component ControlRoomMeters inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea {
+                        mon_a_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 root.active-monitor = "main";
                                 root.switch-monitor("main");
                             }
                         }
+                        TooltipBubble {
+                            text: "切换至 A 组全频近场立体声监听音箱";
+                            is-visible: mon_a_touch.has-hover;
+                            y: 28px;
+                        }
                     }
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : #10141d;
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : (mon_b_touch.has-hover ? #182030 : #10141d);
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "alt" ? 1px : 0;
                         border-color: Theme.accent;
@@ -200,11 +206,17 @@ export component ControlRoomMeters inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        TouchArea {
+                        mon_b_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 root.active-monitor = "alt";
                                 root.switch-monitor("alt");
                             }
+                        }
+                        TooltipBubble {
+                            text: "切换至 B 组小振膜单声道参考音箱";
+                            is-visible: mon_b_touch.has-hover;
+                            y: 28px;
                         }
                     }
                 }
@@ -214,7 +226,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : #10141d;
+                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : (dim_touch.has-hover ? #182030 : #10141d);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-dim ? Theme.status-warn : Theme.border-subtle;
@@ -227,17 +239,23 @@ export component ControlRoomMeters inherits Rectangle {
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
-                        TouchArea {
+                        dim_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 root.is-dim = !root.is-dim;
                                 root.toggle-dim();
                             }
                         }
+                        TooltipBubble {
+                            text: "DIM 衰减监听电平 (-20 dB)";
+                            is-visible: dim_touch.has-hover;
+                            y: 26px;
+                        }
                     }
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : #10141d;
+                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : (mono_touch.has-hover ? #182030 : #10141d);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-mono ? Theme.accent : Theme.border-subtle;
@@ -250,17 +268,23 @@ export component ControlRoomMeters inherits Rectangle {
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
-                        TouchArea {
+                        mono_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 root.is-mono = !root.is-mono;
                                 root.toggle-mono();
                             }
                         }
+                        TooltipBubble {
+                            text: "MONO 单声道求和检验相位互消";
+                            is-visible: mono_touch.has-hover;
+                            y: 26px;
+                        }
                     }
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : #10141d;
+                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : (side_touch.has-hover ? #182030 : #10141d);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-side ? Theme.status-alert : Theme.border-subtle;
@@ -273,11 +297,17 @@ export component ControlRoomMeters inherits Rectangle {
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
-                        TouchArea {
+                        side_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
                             clicked => {
                                 root.is-side = !root.is-side;
                                 root.toggle-side();
                             }
+                        }
+                        TooltipBubble {
+                            text: "SIDE 仅监听立体声差信号 (S=L-R)";
+                            is-visible: side_touch.has-hover;
+                            y: 26px;
                         }
                     }
                 }

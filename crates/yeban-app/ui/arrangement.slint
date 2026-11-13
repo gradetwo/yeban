@@ -1,4 +1,4 @@
-import { Theme, TrackData, TimelineBlockData, Tokens } from "tokens.slint";
+import { Theme, TrackData, TimelineBlockData, Tokens, TooltipBubble } from "tokens.slint";
 
 export component ArrangementViewport inherits Rectangle {
     in-out property <[TrackData]> tracks;
@@ -60,7 +60,7 @@ export component ArrangementViewport inherits Rectangle {
                                 spacing: 4px;
                                 // Chord Track fold toggle
                                 Rectangle {
-                                    background: root.show-chord-track ? Theme.accent.with-alpha(0.25) : transparent;
+                                    background: root.show-chord-track ? Theme.accent.with-alpha(0.25) : (chord-toggle-touch.has-hover ? #ffffff0d : transparent);
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: root.show-chord-track ? Theme.accent : #ffffff14;
@@ -77,10 +77,18 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.show-chord-track = !root.show-chord-track; } }
+                                    chord-toggle-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.show-chord-track = !root.show-chord-track; }
+                                    }
+                                    TooltipBubble {
+                                        text: root.show-chord-track ? "折叠和弦音轨" : "展开和弦音轨";
+                                        is-visible: chord-toggle-touch.has-hover;
+                                        tip-offset-y: 22px;
+                                    }
                                 }
                                 Rectangle {
-                                    background: Theme.accent.with-alpha(0.20);
+                                    background: add-track-top-touch.has-hover ? Theme.accent.with-alpha(0.35) : Theme.accent.with-alpha(0.20);
                                     border-radius: 3px;
                                     border-width: 1px;
                                     border-color: Theme.accent.with-alpha(0.6);
@@ -97,7 +105,15 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.add-track(); } }
+                                    add-track-top-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.add-track(); }
+                                    }
+                                    TooltipBubble {
+                                        text: "添加新音轨 [Cmd+T]";
+                                        is-visible: add-track-top-touch.has-hover;
+                                        tip-offset-y: 22px;
+                                    }
                                 }
                             }
                         }
@@ -193,6 +209,7 @@ export component ArrangementViewport inherits Rectangle {
                             }
 
                             TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.scrub-timeline(self.mouse-x); }
                             }
                         }
@@ -209,10 +226,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: #1b283818;
+                                    background: chord-1-touch.has-hover ? #1b283835 : #1b283818;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #38769135;
+                                    border-color: chord-1-touch.has-hover ? #38769170 : #38769135;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -234,16 +251,24 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.audition-chord("Cm9"); } }
+                                    chord-1-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.audition-chord("Cm9"); }
+                                    }
+                                    TooltipBubble {
+                                        text: "试听 Cm9 (主和弦) 配置";
+                                        is-visible: chord-1-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
 
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: #2d203818;
+                                    background: chord-2-touch.has-hover ? #2d203835 : #2d203818;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #705e8835;
+                                    border-color: chord-2-touch.has-hover ? #705e8870 : #705e8835;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -265,16 +290,24 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.audition-chord("AbMaj7"); } }
+                                    chord-2-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.audition-chord("AbMaj7"); }
+                                    }
+                                    TooltipBubble {
+                                        text: "试听 AbMaj7 (下中音和弦) 配置";
+                                        is-visible: chord-2-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
 
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: #182c2618;
+                                    background: chord-3-touch.has-hover ? #182c2635 : #182c2618;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #34786435;
+                                    border-color: chord-3-touch.has-hover ? #34786470 : #34786435;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -296,16 +329,24 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.audition-chord("Fm11"); } }
+                                    chord-3-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.audition-chord("Fm11"); }
+                                    }
+                                    TooltipBubble {
+                                        text: "试听 Fm11 (下属和弦) 配置";
+                                        is-visible: chord-3-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
 
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: #34261618;
+                                    background: chord-4-touch.has-hover ? #34261635 : #34261618;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #9a6a3835;
+                                    border-color: chord-4-touch.has-hover ? #9a6a3870 : #9a6a3835;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -327,16 +368,24 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.audition-chord("G7#9"); } }
+                                    chord-4-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.audition-chord("G7#9"); }
+                                    }
+                                    TooltipBubble {
+                                        text: "试听 G7#9 (属和弦变化音) 配置";
+                                        is-visible: chord-4-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
 
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: #1b283818;
+                                    background: chord-5-touch.has-hover ? #1b283835 : #1b283818;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: #38769135;
+                                    border-color: chord-5-touch.has-hover ? #38769170 : #38769135;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -358,7 +407,15 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.audition-chord("Cm11"); } }
+                                    chord-5-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.audition-chord("Cm11"); }
+                                    }
+                                    TooltipBubble {
+                                        text: "试听 Cm11 (扩展主和弦) 配置";
+                                        is-visible: chord-5-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
                             }
                         }
@@ -410,7 +467,7 @@ export component ArrangementViewport inherits Rectangle {
                                 vertical-alignment: center;
                             }
                             Rectangle {
-                                background: Theme.accent.with-alpha(0.18);
+                                background: add-track-right-touch.has-hover ? Theme.accent.with-alpha(0.35) : Theme.accent.with-alpha(0.18);
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.accent;
@@ -427,7 +484,15 @@ export component ArrangementViewport inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                TouchArea { clicked => { root.add-track(); } }
+                                add-track-right-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.add-track(); }
+                                }
+                                TooltipBubble {
+                                    text: "添加新音轨 [Cmd+T]";
+                                    is-visible: add-track-right-touch.has-hover;
+                                    tip-offset-y: 22px;
+                                }
                             }
                         }
 
@@ -537,7 +602,7 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #f59e0b : #141822;
+                                            background: trk.muted ? #f59e0b : (m-btn-touch.has-hover ? #1f2432 : #141822);
                                             border-width: 1px;
                                             border-color: trk.muted ? #d97706 : #ffffff14;
                                             Text {
@@ -545,18 +610,26 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.muted ? #0f172a : #94a3b8;
+                                                color: trk.muted ? #0f172a : (m-btn-touch.has-hover ? #f8fafc : #94a3b8);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
-                                            TouchArea { clicked => { root.toggle-mute(trk.id); } }
+                                            m-btn-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.toggle-mute(trk.id); }
+                                            }
+                                            TooltipBubble {
+                                                text: trk.muted ? "取消静音 [M]" : "静音轨道 [M]";
+                                                is-visible: m-btn-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
 
                                         Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? #eab308 : #141822;
+                                            background: trk.soloed ? #eab308 : (s-btn-touch.has-hover ? #1f2432 : #141822);
                                             border-width: 1px;
                                             border-color: trk.soloed ? #ca8a04 : #ffffff14;
                                             Text {
@@ -564,18 +637,26 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.soloed ? #0f172a : #94a3b8;
+                                                color: trk.soloed ? #0f172a : (s-btn-touch.has-hover ? #f8fafc : #94a3b8);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
-                                            TouchArea { clicked => { root.toggle-solo(trk.id); } }
+                                            s-btn-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.toggle-solo(trk.id); }
+                                            }
+                                            TooltipBubble {
+                                                text: trk.soloed ? "取消独奏 [S]" : "独奏轨道 [S]";
+                                                is-visible: s-btn-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
 
                                         Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #ef4444 : #141822;
+                                            background: trk.armed ? #ef4444 : (r-btn-touch.has-hover ? #1f2432 : #141822);
                                             border-width: 1px;
                                             border-color: trk.armed ? #dc2626 : #ffffff14;
                                             Text {
@@ -583,11 +664,19 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.armed ? #ffffff : #94a3b8;
+                                                color: trk.armed ? #ffffff : (r-btn-touch.has-hover ? #f8fafc : #94a3b8);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
-                                            TouchArea { clicked => { root.toggle-arm(trk.id); } }
+                                            r-btn-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.toggle-arm(trk.id); }
+                                            }
+                                            TooltipBubble {
+                                                text: trk.armed ? "取消录音准备 [R]" : "录音准备 (Arm) [R]";
+                                                is-visible: r-btn-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
                                     }
 
@@ -600,7 +689,7 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 38px;
                                             height: 20px;
-                                            background: #10141e;
+                                            background: pan-touch.has-hover ? #182030 : #10141e;
                                             border-radius: 3px;
                                             border-width: 1px;
                                             border-color: #ffffff14;
@@ -624,16 +713,43 @@ export component ArrangementViewport inherits Rectangle {
                                                     vertical-alignment: center;
                                                 }
                                             }
+                                            pan-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                            }
+                                            TooltipBubble {
+                                                text: "声像: " + trk.pan;
+                                                is-visible: pan-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
 
                                         // Volume dB text
-                                        Text {
-                                            text: "" + trk.volume_db + "dB";
-                                            font-family: Tokens.font-mono;
-                                            font-size: 8.5px;
-                                            color: #cbd5e1;
-                                            font-weight: 700;
-                                            vertical-alignment: center;
+                                        Rectangle {
+                                            width: 44px;
+                                            height: 20px;
+                                            background: vol-touch.has-hover ? #182030 : transparent;
+                                            border-radius: 3px;
+                                            border-width: vol-touch.has-hover ? 1px : 0px;
+                                            border-color: #ffffff14;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: "" + trk.volume_db + "dB";
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 8.5px;
+                                                    color: #cbd5e1;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            vol-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                            }
+                                            TooltipBubble {
+                                                text: "推子增益: " + trk.volume_db + " dB";
+                                                is-visible: vol-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
 
                                         // Vertical Level Meter with Peak Indicator
@@ -947,7 +1063,7 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #f59e0b : #141822;
+                                            background: trk.muted ? #f59e0b : (m-btn-r-touch.has-hover ? #1f2432 : #141822);
                                             border-width: 1px;
                                             border-color: trk.muted ? #d97706 : #ffffff14;
                                             Text {
@@ -955,17 +1071,25 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.muted ? #0f172a : #94a3b8;
+                                                color: trk.muted ? #0f172a : (m-btn-r-touch.has-hover ? #f8fafc : #94a3b8);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
-                                            TouchArea { clicked => { root.toggle-mute(trk.id); } }
+                                            m-btn-r-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.toggle-mute(trk.id); }
+                                            }
+                                            TooltipBubble {
+                                                text: trk.muted ? "取消静音 [M]" : "静音轨道 [M]";
+                                                is-visible: m-btn-r-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
                                         Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? #eab308 : #141822;
+                                            background: trk.soloed ? #eab308 : (s-btn-r-touch.has-hover ? #1f2432 : #141822);
                                             border-width: 1px;
                                             border-color: trk.soloed ? #ca8a04 : #ffffff14;
                                             Text {
@@ -973,17 +1097,25 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.soloed ? #0f172a : #94a3b8;
+                                                color: trk.soloed ? #0f172a : (s-btn-r-touch.has-hover ? #f8fafc : #94a3b8);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
-                                            TouchArea { clicked => { root.toggle-solo(trk.id); } }
+                                            s-btn-r-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.toggle-solo(trk.id); }
+                                            }
+                                            TooltipBubble {
+                                                text: trk.soloed ? "取消独奏 [S]" : "独奏轨道 [S]";
+                                                is-visible: s-btn-r-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
                                         Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #ef4444 : #141822;
+                                            background: trk.armed ? #ef4444 : (r-btn-r-touch.has-hover ? #1f2432 : #141822);
                                             border-width: 1px;
                                             border-color: trk.armed ? #dc2626 : #ffffff14;
                                             Text {
@@ -991,11 +1123,19 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.armed ? #ffffff : #94a3b8;
+                                                color: trk.armed ? #ffffff : (r-btn-r-touch.has-hover ? #f8fafc : #94a3b8);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
-                                            TouchArea { clicked => { root.toggle-arm(trk.id); } }
+                                            r-btn-r-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.toggle-arm(trk.id); }
+                                            }
+                                            TooltipBubble {
+                                                text: trk.armed ? "取消录音准备 [R]" : "录音准备 (Arm) [R]";
+                                                is-visible: r-btn-r-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
                                     }
 
@@ -1006,7 +1146,7 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 38px;
                                             height: 20px;
-                                            background: #10141e;
+                                            background: pan-r-touch.has-hover ? #182030 : #10141e;
                                             border-radius: 3px;
                                             border-width: 1px;
                                             border-color: #ffffff14;
@@ -1030,15 +1170,42 @@ export component ArrangementViewport inherits Rectangle {
                                                     vertical-alignment: center;
                                                 }
                                             }
+                                            pan-r-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                            }
+                                            TooltipBubble {
+                                                text: "声像: " + trk.pan;
+                                                is-visible: pan-r-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
 
-                                        Text {
-                                            text: "" + trk.volume_db + "dB";
-                                            font-family: Tokens.font-mono;
-                                            font-size: 8.5px;
-                                            color: #cbd5e1;
-                                            font-weight: 700;
-                                            vertical-alignment: center;
+                                        Rectangle {
+                                            width: 44px;
+                                            height: 20px;
+                                            background: vol-r-touch.has-hover ? #182030 : transparent;
+                                            border-radius: 3px;
+                                            border-width: vol-r-touch.has-hover ? 1px : 0px;
+                                            border-color: #ffffff14;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: "" + trk.volume_db + "dB";
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 8.5px;
+                                                    color: #cbd5e1;
+                                                    font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            vol-r-touch := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                            }
+                                            TooltipBubble {
+                                                text: "推子增益: " + trk.volume_db + " dB";
+                                                is-visible: vol-r-touch.has-hover;
+                                                tip-offset-y: 24px;
+                                            }
                                         }
 
                                         Rectangle {
@@ -1085,7 +1252,7 @@ export component ArrangementViewport inherits Rectangle {
                                 alignment: center;
                                 Rectangle {
                                     height: 24px;
-                                    background: #141a24;
+                                    background: add-track-btm-touch.has-hover ? #1f2736 : #141a24;
                                     border-radius: 4px;
                                     border-width: 1px;
                                     border-color: #ffffff14;
@@ -1101,9 +1268,17 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
+                                    add-track-btm-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.add-track(); }
+                                    }
+                                    TooltipBubble {
+                                        text: "创建新音频或MIDI轨道 [Cmd+T]";
+                                        is-visible: add-track-btm-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
                             }
-                            TouchArea { clicked => { root.add-track(); } }
                         }
 
                         // Splitter Divider between Left Placeholder and Bottom Grid Area
@@ -1153,7 +1328,15 @@ export component ArrangementViewport inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            TouchArea { clicked => { root.add-track(); } }
+                            drop_zone_touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.add-track(); }
+                            }
+                            TooltipBubble {
+                                text: "双击或点击此区域添加新轨道 [Cmd+T]";
+                                is-visible: drop_zone_touch.has-hover;
+                                tip-offset-y: 20px;
+                            }
                         }
 
                         // Splitter Divider between Bottom Grid Area and Right Placeholder
@@ -1187,7 +1370,7 @@ export component ArrangementViewport inherits Rectangle {
                                 alignment: center;
                                 Rectangle {
                                     height: 24px;
-                                    background: #141a24;
+                                    background: add-track-btm-r-touch.has-hover ? #1f2736 : #141a24;
                                     border-radius: 4px;
                                     border-width: 1px;
                                     border-color: #ffffff14;
@@ -1203,9 +1386,17 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
+                                    add-track-btm-r-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.add-track(); }
+                                    }
+                                    TooltipBubble {
+                                        text: "创建新音频或MIDI轨道 [Cmd+T]";
+                                        is-visible: add-track-btm-r-touch.has-hover;
+                                        tip-offset-y: 28px;
+                                    }
                                 }
                             }
-                            TouchArea { clicked => { root.add-track(); } }
                         }
                     }
                 }
