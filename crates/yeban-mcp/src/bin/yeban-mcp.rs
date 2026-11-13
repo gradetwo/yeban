@@ -211,6 +211,11 @@ fn execute(config: &Config) -> Result<(), Failure> {
     // 领域层刻意不自取时钟（模型层同样如此：`Commit::created_at` 与 `StampedOp::timestamp`
     // 由调用方提供，以便可测试）。形态 B 在这里注入一次系统时间。
     dispatcher.domain_mut().set_now_ms(now_ms());
+    // 形态 B 自带真实 provider（整曲总览 + 自动相位对齐）：实现住在
+    // `yeban-mcp` 库里（与形态 A 的进程内控制面同一份），上下文由 Domain
+    // 按当前活跃工程托管同步 —— 不装的话这两个工具只能响亮报
+    // `providerUnavailable`（清单 05_yeban.md #3 / #4）。
+    dispatcher.domain_mut().install_real_providers();
     match startup {
         HttpStartup::Enabled => serve_http(dispatcher),
         HttpStartup::Disabled => {

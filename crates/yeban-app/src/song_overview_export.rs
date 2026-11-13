@@ -71,7 +71,7 @@ use yeban_mcp::domain::song_overview::{
 use yeban_model::{AssetHash, YebanProjectV1};
 
 use crate::save::{SaveError, SaveReport, write_file_atomically};
-use crate::song_overview_provider::RealSongOverviewProvider;
+use yeban_mcp::song_overview_provider::{ProviderContext, RealSongOverviewProvider};
 
 /// 导出成功后回执行的第一段（稳定前缀，判据与脚本据此切片）。
 pub const RECEIPT_PREFIX: &str = "exported-song-overview:";
@@ -335,8 +335,10 @@ fn compute_overview(
     // 这份 `Arc<BTreeMap>` 只活这一次调用，不存在"多轨共享"之外的复用诉求。
     let pool: Arc<BTreeMap<AssetHash, Vec<u8>>> =
         Arc::new(assets.iter().cloned().collect::<BTreeMap<_, _>>());
-    let provider =
-        RealSongOverviewProvider::new(project_dir.map(Path::to_path_buf), Arc::clone(&pool));
+    let provider = RealSongOverviewProvider::new(ProviderContext::shared(
+        project_dir.map(Path::to_path_buf),
+        Arc::clone(&pool),
+    ));
     let request = SongOverviewRequest {
         resolution: Resolution::Bar,
         profile: Profile::Default,
@@ -347,7 +349,7 @@ fn compute_overview(
         RenderMode::Full => provider
             .overview(project, &request)
             .map_err(|fault| OverviewExportError::Render(Box::new(fault)))?,
-        RenderMode::ScoreOnly => crate::song_overview_provider::score_only_overview(project)
+        RenderMode::ScoreOnly => yeban_mcp::song_overview_provider::score_only_overview(project)
             .map_err(|fault| OverviewExportError::Render(Box::new(fault)))?,
     };
     // §8.2 取整：**同一个**函数（见模块文档的逐字节契约）。

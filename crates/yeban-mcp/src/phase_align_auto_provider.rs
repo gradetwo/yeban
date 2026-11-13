@@ -1,15 +1,17 @@
 //! `yeban_auto_align_tracks` 的**真实 provider**（自动相位对齐，手动层第二层）：
-//! `yeban-app` 侧的接线，把 `yeban_render::phase_align_auto::measure_stem_delay`
-//! （两轨 solo 渲染 → 单声道混音 → `yeban-dsp` 归一化互相关）的输出映射成
-//! MCP 的 [`PhaseDelayMeasurement`]。
+//! 把 `yeban_render::phase_align_auto::measure_stem_delay`（两轨 solo 渲染 →
+//! 单声道混音 → `yeban-dsp` 归一化互相关）的输出映射成 MCP 的
+//! [`PhaseDelayMeasurement`]。
 //!
-//! ## 为什么住在这里（不在 `yeban-mcp` 里）
+//! ## 为什么住在这里（`yeban-mcp`，两种形态共用同一份实现）
 //!
-//! 与 [`crate::song_overview_provider`] 同一条纪律：`yeban-mcp` 不依赖
-//! `yeban-dsp` / `yeban-render`（守卫 `check_mcp_dependency_direction.py`），
-//! app 能同时依赖三者，因此 provider 住在这里，挂载时经
-//! `Domain::set_phase_align_auto_provider` 注入
-//! （`crate::mcp_mount::session_dispatcher`）。
+//! 与 [`crate::song_overview_provider`] 同一条裁决：本模块原住 `yeban-app`，
+//! 形态 B（独立 stdio 二进制）注入不到 ⇒ 工具恒回 `providerUnavailable`
+//! （清单 `05_yeban.md` #3 / #4）。迁入后两种形态构造同一个 provider；
+//! 依赖方向上只用 `yeban-render`（已登记例外那条边）与本 crate 的领域层，
+//! ⛔ 不直接依赖 `yeban-dsp` / `yeban-engine`（守卫
+//! `check_mcp_dependency_direction.py`）。上下文（工程目录 + CAS 池）的
+//! 两种接法见 [`crate::song_overview_provider::ProviderContext`]。
 //!
 //! ## SFZ 武装复用总览 provider 的预检
 //!
@@ -23,51 +25,42 @@
 //! ## 失败映射
 //!
 //! 渲染 / 测量失败统一报 `RENDER_FAILED` + `reason: "renderFailed"` +
-//! `cause`（细节串）—— 抄总览 provider 的先例：`fault_vocabulary` 只扫描
-//! `yeban-mcp/src`，app 侧新立的 reason 进不了词表，因此不在 app 侧立
-//! `silentTrack` / `signalTooShort` 等新 reason，细节放进 `cause`。
-
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+//! `cause`（细节串）—— 抄总览 provider 的先例：`fault_vocabulary` 只认
+//! 已登记的 reason，因此不在这里立 `silentTrack` / `signalTooShort`
+//! 等新 reason，细节放进 `cause`。
 
 use serde_json::json;
 
-use yeban_mcp::domain::error::Fault;
-use yeban_mcp::domain::phase_align_auto::{
-    MeasurementConfidence, PhaseAlignAutoProvider, PhaseDelayMeasurement,
-};
-use yeban_mcp::tools::ErrorCode;
-use yeban_model::{AssetHash, EntityId, YebanProjectV1};
+use yeban_model::{EntityId, YebanProjectV1};
 use yeban_render::engine_source::ArmedSfzInput;
 use yeban_render::phase_align_auto::measure_stem_delay;
 use yeban_render::song_overview::RenderSettings;
 
-use crate::song_overview_provider::RealSongOverviewProvider;
+use crate::domain::error::Fault;
+use crate::domain::phase_align_auto::{
+    MeasurementConfidence, PhaseAlignAutoProvider, PhaseDelayMeasurement,
+};
+use crate::song_overview_provider::{RealSongOverviewProvider, SharedProviderContext};
+use crate::tools::ErrorCode;
 
 /// 真实 provider 的自述名（进响应 `data.provider`；stub 的是 `"stub"`）。
 pub const PROVIDER_NAME: &str = "real";
 
 /// 自动相位对齐的真实 provider：两轨 solo 渲染 + 互相关测量。
 ///
-/// 只在 `in-process-mcp` feature 下编译（见 `crate::phase_align_auto_provider`
-/// 的 `cfg` 门）。`Debug` 是 trait 约束的一部分（`Domain` 派生 `Debug`）。
+/// `Debug` 是 trait 约束的一部分（`Domain` 派生 `Debug`）。
 #[derive(Debug)]
 pub struct RealPhaseAlignAutoProvider {
-    /// 磁盘腿 SFZ 解析的工程目录（`None` = 内存会话 / 无磁盘对应物）。
-    project_dir: Option<PathBuf>,
-    /// 会话 CAS 池（内嵌腿的 SFZ 文本与样本由此取；挂载时的一份拷贝）。
-    assets: Arc<BTreeMap<AssetHash, Vec<u8>>>,
+    /// 会话上下文（工程目录 + CAS 池；与总览 provider 共用同一份共享单元）。
+    context: SharedProviderContext,
 }
 
 impl RealPhaseAlignAutoProvider {
-    /// 造一个真实 provider（入参与 [`RealSongOverviewProvider::new`] 同口径）。
+    /// 造一个真实 provider（上下文的两种接法见
+    /// [`crate::song_overview_provider::ProviderContext`]）。
     #[must_use]
-    pub fn new(project_dir: Option<PathBuf>, assets: Arc<BTreeMap<AssetHash, Vec<u8>>>) -> Self {
-        Self {
-            project_dir,
-            assets,
-        }
+    pub fn new(context: SharedProviderContext) -> Self {
+        Self { context }
     }
 }
 
@@ -86,7 +79,7 @@ impl PhaseAlignAutoProvider for RealPhaseAlignAutoProvider {
         let sample_rate_hz = project.audio_config.sample_rate.hz();
         let settings = RenderSettings::new(sample_rate_hz, 0);
         // 预检先行（见模块文档）：武装复用总览 provider 的唯一实现。
-        let armer = RealSongOverviewProvider::new(self.project_dir.clone(), self.assets.clone());
+        let armer = RealSongOverviewProvider::new(self.context.clone());
         let armed = armer.arm_all(project, sample_rate_hz as f32)?;
         let measured = measure_stem_delay(
             project,

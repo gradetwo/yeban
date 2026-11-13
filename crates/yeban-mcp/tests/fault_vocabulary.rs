@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 284 | 1227 | `bc14e6753f3c46d1ad788898678fb772e8febeee06d392f9999b88cc7dca575b` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 285 | 1230 | `a0c3c8c932d8a48162aa13a4d1303a2a476dd1e5fdd1c6bc932e587c5e0f2fba` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -173,6 +173,14 @@
 //! （`name` / `reason` / `trackId` 3 键）⇒ reason 数 278 → 279、
 //! 规范行数 1176 → 1180（1 reason 行 ＋ 3 键行）；`reason` 键站点 321 → 322；
 //! 数值按判据报出（新摘要见本表）。
+//!
+//! ⚠ stdio provider 接线（本支）：真实 provider 自 `yeban-app` 迁入本 crate
+//! ⇒ 生产区 `.rs` 文件 55 → 57（新增 `src/song_overview_provider.rs` /
+//! `src/phase_align_auto_provider.rs`）；随之迁入 3 处字面站点
+//! （`samplerUnreadable` 1 处，键集与既有登记同形 ⇒ 规范行数不变；
+//! `renderFailed` 2 处、`cause` / `reason` 2 键，本 crate 生产面新词）
+//! ⇒ reason 数 279 → 280、规范行数 1180 → 1183（1 reason 行 ＋ 2 键行）；
+//! `reason` 键站点 322 → 325；新摘要照抄判据自己的报出值（见本表）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -184,7 +192,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 280] = [
+pub const GOLDEN_REASONS: [&str; 281] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -335,6 +343,9 @@ pub const GOLDEN_REASONS: [&str; 280] = [
     "removeTakesNoProperties",
     "removeTrackIsNotPlacement",
     "removeTrackTakesNoOtherOps",
+    // ⭐ stdio provider 接线（本支）：真实 provider 自 `yeban-app` 迁入本 crate
+    // 后，它报渲染失败用的 `renderFailed`（带 `cause`）进入本 crate 的生产面。
+    "renderFailed",
     "routingEdgeAlreadyExists",
     "routingEdgeNotFound",
     "routingNodeAlreadyExists",
@@ -1713,13 +1724,19 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // `incompleteDrumNoteMap` 渲染预警 ⇒ 出现 325 → 334、键站点 322 → 331、
 // 字面站点 311 → 320（恒等式仍闭合：331 = 字面 320 ＋ 可解析 `let` 2 ＋
 // 运行时 6 ＋ 传播 3；334 = 331 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 334;
+// stdio provider 接线（本合入）：真实 provider 自 `yeban-app` 迁入本 crate
+// （新增 `src/song_overview_provider.rs` / `src/phase_align_auto_provider.rs`），
+// 随之迁入 3 处字面站点（`samplerUnreadable` 1 处、`renderFailed` 2 处）
+// ⇒ 出现 334 → 337、键站点 331 → 334、字面站点 320 → 323
+// （恒等式仍闭合：334 = 字面 323 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；
+// 337 = 334 ＋ 参数名 3。）
+const REASON_OCCURRENCES_TOTAL: usize = 337;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 331;
-const REASON_LITERAL_SITES_TOTAL: usize = 320;
+const REASON_KEY_SITES_TOTAL: usize = 334;
+const REASON_LITERAL_SITES_TOTAL: usize = 323;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2042,7 +2059,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 280] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 281] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2470,6 +2487,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 280] = [
         "removeTrackTakesNoOtherOps",
         &["hint", "opKinds", "reason", "trackId"],
     ),
+    ("renderFailed", &["cause", "reason"]),
     ("routingEdgeAlreadyExists", &["edgeId", "hint", "reason"]),
     ("routingEdgeNotFound", &["edgeId", "hint", "reason"]),
     ("routingNodeAlreadyExists", &["hint", "nodeId", "reason"]),
@@ -3473,15 +3491,21 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 进入规范文本，另 `slotOutOfRange` / `paramIndexOutOfRange` 在该入口多两个
 /// 发射站点 ⇒ 280 → **284** 个 reason、1186 → **1227** 行。另同批补齐响度施加线（F3）漏更新的
 /// `loudnessTargetMissed` 载荷行（实发 13 键，表里只登记了旧 7 键）。
-/// 新摘要 `bc14e6753f3c46d1ad788898678fb772e8febeee06d392f9999b88cc7dca575b`
+/// 新摘要 `a0c3c8c932d8a48162aa13a4d1303a2a476dd1e5fdd1c6bc932e587c5e0f2fba`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⭐ **stdio provider 接线**（本合入）重钉：真实 provider 迁入带进新词
+/// `renderFailed`（`cause` / `reason` 2 键）⇒ 284 → **285** 个 reason、
+/// 1227 → **1230** 行（1 reason 行 ＋ 2 键行；同批迁入的 `samplerUnreadable`
+/// 站点键集与既有登记同形，不增行）。新摘要
+/// `a0c3c8c932d8a48162aa13a4d1303a2a476dd1e5fdd1c6bc932e587c5e0f2fba`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "bc14e6753f3c46d1ad788898678fb772e8febeee06d392f9999b88cc7dca575b";
+    "a0c3c8c932d8a48162aa13a4d1303a2a476dd1e5fdd1c6bc932e587c5e0f2fba";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 284;
+pub const REASON_SURFACE_REASONS: usize = 285;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1227;
+pub const REASON_SURFACE_LINES: usize = 1230;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -3659,7 +3683,9 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
     // ⇒ 本条只证明"分母变了一位"。
     // OTCP（本支）：新增 `src/domain/otcp.rs` ⇒ 52 → 53（该文件带 `reason` 键，摘要同批重钉）。
     // 自动相位对齐（本支）：新增 `src/domain/phase_align_auto.rs` ⇒ 54 → 55（该文件带 `reason` 键，摘要同批重钉）。
-    assert_eq!(files.len(), 55, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    // stdio provider 接线（本支）：新增 `src/song_overview_provider.rs` 与
+    // `src/phase_align_auto_provider.rs`（自 yeban-app 迁入）⇒ 55 → 57（两文件都带 `reason` 键，摘要同批重钉）。
+    assert_eq!(files.len(), 57, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

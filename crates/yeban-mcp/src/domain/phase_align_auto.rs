@@ -18,9 +18,12 @@
 //! ## 架构落点：`PhaseAlignAutoProvider` trait + 宿主注入
 //!
 //! 与 `get_song_overview` 的 `SongOverviewProvider` 同一条纪律：分析住在
-//! `yeban-dsp`，`yeban-mcp` **不**依赖 `yeban-dsp`（守卫
-//! `check_mcp_dependency_direction.py`），真实实现由 `yeban-app` 在挂载时
-//! 注入；未注入 ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回假测量。
+//! `yeban-dsp`，`yeban-mcp` **不**直接依赖 `yeban-dsp`（守卫
+//! `check_mcp_dependency_direction.py`），真实实现住在本 crate 的
+//! [`crate::phase_align_auto_provider`]（经 `yeban-render` 调用测量入口），
+//! 两种形态共用：形态 A 由 `yeban-app` 在挂载时注入，形态 B 由独立
+//! 二进制经 [`super::Domain::install_real_providers`] 装上；两者都没做
+//! ⇒ `CONFLICT` + `providerUnavailable`，⛔ 不返回假测量。
 //!
 //! ## 符号约定与补偿规则
 //!
@@ -144,7 +147,7 @@ impl PhaseDelayMeasurement {
 
 /// 两轨相位测量的**唯一**入口。
 ///
-/// 实现方（`yeban-app` 的真实 provider，或测试里的 stub）只做一件事：对
+/// 实现方（本 crate 的真实 provider，或测试里的 stub）只做一件事：对
 /// 当前活跃工程里的两条轨做一次测量。`Debug` 是 trait 约束的一部分 ——
 /// [`Domain`] 派生 `Debug`，provider 以 `Arc<dyn PhaseAlignAutoProvider>`
 /// 住在会话运行态里。
@@ -351,14 +354,15 @@ pub fn plan_auto_align_tracks(domain: &Domain, call: &ToolCall) -> Result<super:
     let provider = domain.phase_align_auto_provider().ok_or_else(|| {
         Fault::domain_with_data(
             ErrorCode::Conflict,
-            "本形态没有相位测量 provider：独立 stdio 进程（形态 B）不托管 yeban-dsp 分析，\
-             yeban_auto_align_tracks 无法测量。",
+            "本会话没有相位测量 provider：宿主既没有注入 provider、也没有装上本 crate \
+             自带的真实 provider，yeban_auto_align_tracks 无法测量。",
             serde_json::json!({
                 "reason": PROVIDER_UNAVAILABLE_REASON,
                 "form": "stdio",
                 "providerAttached": false,
-                "hint": "请在形态 A（yeban-app 的进程内控制面）里调用；\
-                         真实 provider 由 yeban-app 挂载时注入",
+                "hint": "宿主应在启动时经 Domain::set_phase_align_auto_provider 注入 provider，\
+                         或调用 Domain::install_real_providers 装上自带实现\
+                         （独立 stdio 二进制与 yeban-app 都已这样接线）",
             }),
         )
     })?;
