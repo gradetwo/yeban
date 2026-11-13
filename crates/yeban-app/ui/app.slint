@@ -168,8 +168,8 @@ export component MainWindow inherits Window {
         { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #8a4f6d }
     ];
 
-    in-out property <int> selected-track-id: 3;
-    property <int> safe-selected-idx: root.tracks.length > 0 ? Math.max(0, Math.min(root.tracks.length - 1, root.selected-track-id - 1)) : 0;
+    in-out property <int> selected-track-index: 3;
+    property <int> safe-selected-idx: root.tracks.length > 0 ? Math.max(0, Math.min(root.tracks.length - 1, root.selected-track-index - 1)) : 0;
     in-out property <string> left-panel-tab: "inspector";
 
     // Dynamic Sizing with Min/Max Bounds (拖拽调整区域尺寸)
@@ -187,7 +187,7 @@ export component MainWindow inherits Window {
     in-out property <bool> show-control-room: Theme.persona == PersonaMode.CubasePro;
 
     // Transport & Playback State
-    in-out property <string> active-tool: "pointer";
+    in-out property <string> active-tool-name: "pointer";
     in-out property <bool> is-playing: false;
     in-out property <bool> is-recording: false;
     in-out property <bool> is-looping: true;
@@ -318,6 +318,377 @@ export component MainWindow inherits Window {
     in-out property <bool> musical-pr-resolve-available: false;
     in-out property <string> musical-pr-resolve-reason: "";
 
+    // ---- 契约兼容面: 新 UI 视觉组件树保留, 数据/控制面与 main 对齐 ----
+    // 由 main 版 MainWindow 顶层 property/callback 声明机械补全: 字面量初值原样保留,
+    // 绑定表达式(依赖旧组件树)改用类型默认值。host.rs 接线层与判据的唯一契约面。
+    in-out property <int> active-tool: 1;
+    in-out property <bool> ai-drawer-open: false;
+    in-out property <float> arrangement-content-px: 0.0;
+    in-out property <bool> arrangement-view: true;
+    in-out property <[string]> asset-pool-details: [];
+    in-out property <[string]> asset-pool-kinds: [];
+    in-out property <[string]> asset-pool-names: [];
+    in-out property <[string]> automation-lane-axis-labels: [];
+    in-out property <[string]> automation-lane-badges: [];
+    in-out property <[string]> automation-lane-labels: [];
+    in-out property <[bool]> automation-lane-read-enabled: [];
+    in-out property <[string]> automation-lane-target-keys: [];
+    in-out property <[int]> automation-lane-track-indexes: [];
+    in-out property <bool> automation-visible: true;
+    in-out property <[length]> bar-positions: [];
+    in-out property <string> bpm-display: "120.00";
+    in-out property <bool> bpm-field-editing: false;
+    in-out property <string> branch-name: "main";
+    in-out property <bool> clip-create-available: false;
+    in-out property <string> clip-create-reason: "";
+    in-out property <float> clip-drag-origin-x: 0.0;
+    in-out property <float> clip-drag-preview-dx: 0.0;
+    in-out property <string> clip-drag-ulid: "";
+    in-out property <[string]> clip-labels: [];
+    in-out property <[bool]> clip-mutes: [];
+    in-out property <[length]> clip-positions: [];
+    in-out property <[string]> clip-ulids: [];
+    in-out property <[length]> clip-widths: [];
+    in-out property <bool> compact: false;
+    in-out property <bool> compressor-available: false;
+    in-out property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
+    in-out property <bool> console-fixed: false;
+    in-out property <int> console-height-px: 0;
+    in-out property <length> console-height-readout: 0px;
+    in-out property <int> console-tab: 0;
+    in-out property <int> current-scene-index: -1;
+    in-out property <string> current-scene-name: "";
+    in-out property <bool> cycle-enabled: false;
+    in-out property <int> cycle-end-ticks: 15360;
+    in-out property <int> cycle-start-ticks: 0;
+    in-out property <[bool]> device-bypassed: [];
+    in-out property <bool> device-eq-available: false;
+    in-out property <string> device-eq-device-id: "";
+    in-out property <float> device-eq-gain-db: 0.0;
+    in-out property <float> device-eq-max-db: 0.0;
+    in-out property <float> device-eq-min-db: 0.0;
+    in-out property <[string]> device-ids: [];
+    in-out property <bool> device-insert-available: false;
+    in-out property <string> device-insert-reason: "";
+    in-out property <[string]> device-names: [];
+    in-out property <[string]> device-recognised: [];
+    in-out property <string> device-track-label: "";
+    in-out property <[string]> device-unrecognised: [];
+    in-out property <string> engine-error: "";
+    in-out property <string> eq-curve-fill-svg: "";
+    in-out property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    in-out property <string> eq-curve-svg: "M 0 50 L 420 50";
+    in-out property <string> export-wav-bit-depth: "24";
+    in-out property <int> export-wav-focused-control: 0;
+    in-out property <int> export-wav-focused-field: 0;
+    in-out property <bool> export-wav-limiter: false;
+    in-out property <bool> export-wav-open: false;
+    in-out property <string> export-wav-path: "";
+    in-out property <string> export-wav-sample-rate: "auto";
+    in-out property <string> export-wav-seconds: "";
+    in-out property <string> humanize-error: "";
+    in-out property <int> humanize-focus-section: 0;
+    in-out property <int> humanize-focused-control: 0;
+    in-out property <int> humanize-focused-field: 0;
+    in-out property <string> humanize-grid: "";
+    in-out property <bool> humanize-open: false;
+    in-out property <string> humanize-seed: "";
+    in-out property <string> humanize-strength: "";
+    in-out property <string> humanize-time-jitter: "";
+    in-out property <string> humanize-velocity-jitter: "";
+    in-out property <bool> instrument-install-available: false;
+    in-out property <string> instrument-install-reason: "";
+    in-out property <string> instrument-install-status: "";
+    in-out property <string> instrument-label: "未装乐器";
+    in-out property <[string]> instrument-names: [];
+    in-out property <bool> limiter-available: false;
+    in-out property <string> limiter-info: "限制器: 阈值 -0.1 dBTP · 状态 正常";
+    in-out property <[string]> macro-names: [];
+    in-out property <bool> macro-panel-open: false;
+    in-out property <[string]> macro-value-labels: [];
+    in-out property <[float]> macro-values: [];
+    in-out property <bool> metronome-on: false;
+    in-out property <bool> mixer-drag-active: false;
+    in-out property <string> module-clipping-warning: "";
+    in-out property <string> module-import-losses: "";
+    in-out property <string> module-midi-in-status: "";
+    in-out property <bool> module-midi-in-status-succeeded: false;
+    in-out property <string> module-status: "";
+    in-out property <bool> module-status-succeeded: false;
+    in-out property <bool> musical-pr-open: false;
+    in-out property <bool> note-drag-active: false;
+    in-out property <float> note-drag-origin-x: 0.0;
+    in-out property <float> note-drag-origin-y: 0.0;
+    in-out property <float> note-drag-preview-dx: 0.0;
+    in-out property <float> note-drag-preview-dy: 0.0;
+    in-out property <float> note-drag-preview-velocity: 0.0;
+    in-out property <string> note-drag-ulid: "";
+    in-out property <[length]> note-positions: [];
+    in-out property <[string]> note-ulids: [];
+    in-out property <[float]> note-velocities: [];
+    in-out property <[length]> note-widths: [];
+    in-out property <[length]> note-ys: [];
+    in-out property <int> playhead-ticks: 0;
+    in-out property <bool> playing: false;
+    in-out property <bool> recording: false;
+    in-out property <string> roll-edit-status: "";
+    in-out property <float> roll-scroll-x: 0.0;
+    in-out property <int> roll-ticks-per-pixel: 30;
+    in-out property <length> roll-velocity-lane-top: 0px;
+    in-out property <string> routing-count-label: "";
+    in-out property <bool> routing-create-available: false;
+    in-out property <bool> routing-delete-available: false;
+    in-out property <string> routing-delete-reason: "";
+    in-out property <string> routing-master-label: "";
+    in-out property <bool> sample-library-download-visible: false;
+    in-out property <bool> sample-library-installed: false;
+    in-out property <string> sample-library-notice: "";
+    in-out property <string> sample-library-root: "";
+    in-out property <string> sample-library-status: "";
+    in-out property <string> save-status: "";
+    in-out property <bool> save-succeeded: false;
+    in-out property <[string]> scene-color-labels: [];
+    in-out property <[color]> scene-colors: [];
+    in-out property <string> scene-launch-status: "";
+    in-out property <[string]> scene-names: [];
+    in-out property <[string]> section-color-labels: [];
+    in-out property <[color]> section-colors: [];
+    in-out property <[string]> section-names: [];
+    in-out property <[length]> section-positions: [];
+    in-out property <[length]> section-widths: [];
+    in-out property <string> selected-clip-ulid: "";
+    in-out property <int> selected-note-count: 0;
+    in-out property <string> selected-track-id: "";
+    in-out property <[string]> selected-ulids: [];
+    in-out property <bool> send-create-available: false;
+    in-out property <string> send-create-reason: "";
+    in-out property <[string]> send-destination-names: [];
+    in-out property <[string]> send-edge-ids: [];
+    in-out property <[float]> send-gain-dbs: [];
+    in-out property <[string]> send-gain-labels: [];
+    in-out property <float> send-gain-max-db: 0.0;
+    in-out property <float> send-gain-min-db: 0.0;
+    in-out property <bool> shaper-available: false;
+    in-out property <string> shaper-info: "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)";
+    in-out property <bool> shortcut-layer-focused: false;
+    in-out property <int> sidebar-category: 0;
+    in-out property <bool> sidebar-collapsed: false;
+    in-out property <string> sidebar-empty-reason: "";
+    in-out property <int> sidebar-item: 0;
+    in-out property <[string]> sidebar-items: [];
+    in-out property <string> sidebar-search: "";
+    in-out property <bool> sidebar-search-focused: false;
+    in-out property <bool> sidechain-available: false;
+    in-out property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
+    in-out property <[color]> song-overview-band-colors: [];
+    in-out property <int> song-overview-band-solo: -1;
+    in-out property <bool> song-overview-collapsed: false;
+    in-out property <[float]> song-overview-density-duty: [];
+    in-out property <[float]> song-overview-density-perc: [];
+    in-out property <[float]> song-overview-density-pitched: [];
+    in-out property <[bool]> song-overview-envelope-alert: [];
+    in-out property <[float]> song-overview-envelope-hi: [];
+    in-out property <[float]> song-overview-envelope-lo: [];
+    in-out property <float> song-overview-hover-fraction: 0.0;
+    in-out property <string> song-overview-hover-text: "";
+    in-out property <bool> song-overview-hover-visible: false;
+    in-out property <string> song-overview-key-signature: "";
+    in-out property <[float]> song-overview-lufs: [];
+    in-out property <string> song-overview-profile: "均衡";
+    in-out property <[string]> song-overview-ruler-labels: [];
+    in-out property <[float]> song-overview-score-dyn: [];
+    in-out property <[string]> song-overview-section-names: [];
+    in-out property <[int]> song-overview-section-start-bars: [];
+    in-out property <bool> song-overview-show-bands: true;
+    in-out property <bool> song-overview-show-density: true;
+    in-out property <bool> song-overview-show-energy: true;
+    in-out property <bool> song-overview-show-tension: true;
+    in-out property <int> song-overview-span-ticks: 0;
+    in-out property <[float]> song-overview-tension: [];
+    in-out property <[color]> song-overview-tension-colors: [];
+    in-out property <int> song-overview-total-bars: 0;
+    in-out property <bool> splitter-dragging: false;
+    in-out property <length> splitter-press-y: 0px;
+    in-out property <string> status-device: "—";
+    in-out property <string> status-selection: "选区 无";
+    in-out property <string> timecode: "001.01.000";
+    in-out property <int> timecode-ticks-bar: 0;
+    in-out property <int> timecode-ticks-beat: 0;
+    in-out property <[bool]> track-arms: [];
+    in-out property <bool> track-height-drag-active: false;
+    in-out property <int> track-height-drag-start-px: 0;
+    in-out property <float> track-height-drag-start-y: 0.0;
+    in-out property <string> track-height-drag-track: "";
+    in-out property <[string]> track-height-override-ids: [];
+    in-out property <[length]> track-height-override-pxs: [];
+    in-out property <int> track-height-percent: 100;
+    in-out property <bool> track-reorder-active: false;
+    in-out property <int> track-reorder-index: 0;
+    in-out property <int> track-reorder-preview-index: -1;
+    in-out property <float> track-reorder-preview-y: 0.0;
+    in-out property <float> track-reorder-start-y: 0.0;
+    in-out property <string> track-reorder-track: "";
+    in-out property <bool> undo-can-redo: false;
+    in-out property <bool> undo-can-undo: false;
+    in-out property <int> undo-commit-count: 0;
+    in-out property <int> undo-depth: 0;
+    in-out property <int> undo-node-count: 0;
+    in-out property <int> undo-node-hidden: 0;
+    in-out property <[string]> undo-node-labels: [];
+    in-out property <bool> undo-tree-focus-trapped: false;
+    in-out property <bool> undo-tree-open: false;
+    in-out property <int> undo-undone: 0;
+    in-out property <bool> velocity-drag-active: false;
+    in-out property <string> window-title: "夜半 Yeban";
+    in-out property <float> zoom-h-fraction: 0.495;
+    in-out property <float> zoom-v-fraction: 0.231;
+    callback apply-humanize();
+    callback apply-quantize();
+    callback arrangement-scroll-to(length);
+    callback arrangement-wheel(length, length, bool, bool);
+    callback automation-lane-click(length, length);
+    callback back-to-arrangement();
+    callback bpm-commit(string);
+    callback browse-export-wav-path();
+    callback clicked(length, length);
+    callback clip-create();
+    callback clip-double-click(string);
+    callback clip-drag-cancel();
+    callback clip-drag-grab(string, length) -> bool;
+    callback clip-drag-move(string, length);
+    callback clip-drag-release(string, length);
+    callback clip-select(string);
+    callback close-export-wav();
+    callback close-humanize();
+    callback close-undo-tree();
+    callback compressor-cycle-ratio();
+    callback console-height-requested(int);
+    callback console-height-reset();
+    callback device-bypass-toggle(string);
+    callback device-eq-drag(float);
+    callback device-eq-grab(string, float);
+    callback device-eq-release();
+    callback device-insert-eq();
+    callback device-insert-reverb();
+    callback device-remove(string);
+    callback double-clicked(length, length);
+    callback eq-curve-drag(float, float);
+    callback eq-curve-release();
+    callback export-midi();
+    callback export-wav();
+    callback ime-composition-changed(bool);
+    callback ime-focus-changed(bool);
+    callback import-audio();
+    callback import-midi();
+    callback instrument-install(int);
+    callback instrument-probe-drain-requested();
+    callback key-action(string, bool, bool, bool, bool) -> bool;
+    callback load-sfz();
+    callback macro-drag(int, float);
+    callback macro-grab(int, float);
+    callback macro-release(int);
+    callback master-device-bypass-toggle(string);
+    callback master-device-eq-drag(float);
+    callback master-device-eq-grab(string, float);
+    callback master-device-eq-release();
+    callback master-device-insert-eq();
+    callback master-device-insert-reverb();
+    callback master-device-remove(string);
+    callback midi-in();
+    callback midi-in-drain-requested();
+    callback mixer-cancel-gesture() -> bool;
+    callback mixer-fader-drag(int, length);
+    callback mixer-fader-grab(int, length);
+    callback mixer-fader-release(int);
+    callback mixer-fader-reset(int);
+    callback mixer-master-fader-drag(length);
+    callback mixer-master-fader-grab(length);
+    callback mixer-master-fader-release();
+    callback mixer-master-fader-reset();
+    callback mixer-master-mute-toggle();
+    callback mixer-master-pan-drag(length);
+    callback mixer-master-pan-grab(length);
+    callback mixer-master-pan-release();
+    callback mixer-master-pan-reset();
+    callback mixer-master-solo-toggle();
+    callback mixer-mute-toggle(int);
+    callback mixer-pan-drag(int, length);
+    callback mixer-pan-grab(int, length);
+    callback mixer-pan-release(int);
+    callback mixer-pan-reset(int);
+    callback mixer-sampler-browse(int);
+    callback mixer-sampler-clear(int);
+    callback mixer-sampler-set(int, string);
+    callback mixer-solo-toggle(int);
+    callback new-project();
+    callback note-drag-cancel();
+    callback note-drag-grab(length, length) -> bool;
+    callback note-drag-move(length, length);
+    callback note-drag-release(length, length);
+    callback open-export-wav();
+    callback open-humanize();
+    callback open-project();
+    callback open-quantize();
+    callback record-wav();
+    callback redo-step();
+    callback ruler-seek(length);
+    callback ruler-seek-bar(string);
+    callback ruler-step(int);
+    callback sample-library-download();
+    callback sample-library-download-drain-requested();
+    callback save-project();
+    callback save-project-as();
+    callback scene-launch(int);
+    callback scroll-requested(length);
+    callback section-seek(int);
+    callback select-sidebar-category(int);
+    callback select-sidebar-item(int);
+    callback send-create();
+    callback send-gain-drag(string, float);
+    callback send-gain-grab(string, float);
+    callback send-gain-release(string);
+    callback send-remove(string);
+    callback sidebar-search-changed(string);
+    callback sidechain-cycle();
+    callback song-overview-band-solo-requested(int);
+    callback song-overview-hover(float);
+    callback song-overview-layer-solo(int);
+    callback song-overview-layer-toggle(int);
+    callback song-overview-profile-cycle();
+    callback song-overview-seek(float);
+    callback song-overview-target-cycle(int);
+    callback song-overview-toggle-collapsed();
+    callback song-overview-toggle-fullscreen();
+    callback song-overview-viewport-scroll(float);
+    callback song-overview-viewport-zoom(int);
+    callback stop();
+    callback toggle-ai-drawer();
+    callback toggle-metronome();
+    callback toggle-sidebar();
+    callback toggle-undo-tree();
+    callback toggle-view();
+    callback tool-selected(int);
+    callback track-arm-toggle(int);
+    callback track-create-audio();
+    callback track-create-aux();
+    callback track-create-midi();
+    callback track-delete();
+    callback track-height-drag(int, length);
+    callback track-height-grab(int, length);
+    callback track-height-release(int);
+    callback track-rename(int, string);
+    callback track-reorder-drag(int, length);
+    callback track-reorder-grab(int, length);
+    callback track-reorder-release(int);
+    callback track-reorder-step(int, int);
+    callback track-select(int);
+    callback undo-node-selected(int);
+    callback undo-step();
+    callback zoom-h-slider(float);
+    callback zoom-h-step(bool);
+    callback zoom-v-slider(float);
+    callback zoom-v-step(bool);
+
     // Global Key Guard FocusScope
     FocusScope {
         key-pressed(event) => {
@@ -335,22 +706,22 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == "1") {
-                root.active-tool = "pointer";
+                root.active-tool-name = "pointer";
                 root.edit-tool-selected("pointer");
                 return accept;
             }
             if (event.text == "2") {
-                root.active-tool = "range";
+                root.active-tool-name = "range";
                 root.edit-tool-selected("range");
                 return accept;
             }
             if (event.text == "3") {
-                root.active-tool = "split";
+                root.active-tool-name = "split";
                 root.edit-tool-selected("split");
                 return accept;
             }
             if (event.text == "4" || event.text == "b" || event.text == "B") {
-                root.active-tool = "draw";
+                root.active-tool-name = "draw";
                 root.edit-tool-selected("draw");
                 return accept;
             }
@@ -436,7 +807,7 @@ export component MainWindow inherits Window {
                 show-clipmatrix: root.show-clip-matrix;
                 show-lower-dock: root.show-lower-dock;
                 show-control-room: root.show-control-room;
-                active-tool: root.active-tool;
+                active-tool: root.active-tool-name;
                 is-playing: root.is-playing;
                 is-recording: root.is-recording;
                 is-looping: root.is-looping;
@@ -454,7 +825,7 @@ export component MainWindow inherits Window {
                     root.zone-toggle(z);
                 }
                 select-tool(t) => {
-                    root.active-tool = t;
+                    root.active-tool-name = t;
                     root.edit-tool-selected(t);
                 }
                 toggle-play() => { root.toggle-play(); root.transport-toggle-play(); }
@@ -522,10 +893,10 @@ export component MainWindow inherits Window {
                     panel-width: root.left-panel-width;
                     active-tab: root.left-panel-tab;
                     switch-tab(t) => { root.left-panel-tab = t; }
-                    selected-track-id: root.selected-track-id;
+                    selected-track-id: root.selected-track-index;
                     selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                     selected-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
-                    selected-track-badge: root.tracks.length > 0 ? ("TRK 0" + root.selected-track-id + " · " + root.tracks[root.safe-selected-idx].kind) : "";
+                    selected-track-badge: root.tracks.length > 0 ? ("TRK 0" + root.selected-track-index + " · " + root.tracks[root.safe-selected-idx].kind) : "";
                     selected-track-bus: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].bus : "";
                     selected-track-pan: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].pan : "C";
                     selected-track-vol: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].volume_db : 0.0;
@@ -537,7 +908,7 @@ export component MainWindow inherits Window {
                     ] : [];
 
                     normalize-heights() => { root.normalize-track-heights(); }
-                    fader-changed(vol) => { root.track-volume-changed(root.selected-track-id, vol); }
+                    fader-changed(vol) => { root.track-volume-changed(root.selected-track-index, vol); }
                     bus-fader-changed(vol) => { root.track-volume-changed(0, vol); }
                     load-item(name) => { root.browser-item-load(name); }
                     focus-devices() => {
@@ -572,12 +943,12 @@ export component MainWindow inherits Window {
                 if root.show-clip-matrix : HybridClipMatrixDrawer {
                     panel-width: root.clip-matrix-width;
                     tracks: root.tracks;
-                    selected-track-id: root.selected-track-id;
+                    selected-track-id: root.selected-track-index;
 
                     trigger-scene(s-idx) => { root.scene-trigger(s-idx); }
                     trigger-clip(t-id, c-idx) => { root.clip-trigger(t-id, c-idx); }
                     select-track(t-id) => {
-                        root.selected-track-id = t-id;
+                        root.selected-track-index = t-id;
                         root.track-selected(t-id);
                     }
                 }
@@ -610,12 +981,12 @@ export component MainWindow inherits Window {
                     headers-width: root.track-headers-width;
                     tracks: root.tracks;
                     timeline-blocks: root.timeline-blocks;
-                    selected-track-id: root.selected-track-id;
+                    selected-track-id: root.selected-track-index;
                     playhead-px: root.playhead-px;
                     is-looping: root.is-looping;
 
                     select-track(t-id) => {
-                        root.selected-track-id = t-id;
+                        root.selected-track-index = t-id;
                         root.track-selected(t-id);
                     }
                     toggle-mute(t-id) => { root.track-toggle-mute(t-id); }
@@ -698,7 +1069,7 @@ export component MainWindow inherits Window {
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                 tracks: root.tracks;
-                selected-track-id: root.selected-track-id;
+                selected-track-id: root.selected-track-index;
                 notes: root.notes;
                 playhead-px: root.playhead-px;
 
@@ -707,7 +1078,7 @@ export component MainWindow inherits Window {
                     root.dock-tab-selected(t);
                 }
                 select-track(t-id) => {
-                    root.selected-track-id = t-id;
+                    root.selected-track-index = t-id;
                     root.track-selected(t-id);
                 }
                 toggle-track-mute(t-id) => { root.track-toggle-mute(t-id); }
