@@ -1260,7 +1260,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-AUTOMATION",
         name: "yeban_edit_automation",
-        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。⭐ 遮蔽：有自动化值时用自动化值，静态值被遮蔽（不叠加）；无自动化值时退回静态值。",
+        summary: "读某条自动化泳道的点与值 (唯一求值入口) 并写入一个点 (Op, 可逆)。⭐ 给 `point` 时**本调用直接提交**到当前文档 (`OpOrigin::McpEdit`): ⛔ 不创建提案、没有 `proposalId`、不需要 `yeban_merge_proposal`; 成功响应 `data.applied` 为 `true`。⭐ 遮蔽：有自动化值时用自动化值，静态值被遮蔽（不叠加）；无自动化值时退回静态值。⚠ **序列化形状** (手写/直改工程 JSON 时必读)：泳道的 `points` 是「点 id (ULID) → 点对象」的**对象映射** (`BTreeMap<EntityId, AutomationPoint>` 的序列化)，⛔ 不是数组；空泳道写作 `{}`，且 `points` 是**必需**字段、缺键即非法文档。本工具的**读响应**则把点报成 `lane.points[]` **数组** (每项带 `id`/`tick`/`value`/`curve`) —— 两种形状分属工程文件格式与工具响应格式，不要互相套用。",
         scope: Scope::AppAdmin,
         // 按**最坏情况**声明：给了 `point` 就改工程状态。只读调用在响应里如实标
         // `readOnly: true`（不给 `point` 时一位都不改）。
@@ -1764,7 +1764,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-EXPORT-STEMS",
         name: "yeban_export_stems",
-        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (`ADR-0030`; 母带那条 24-bit 整数 + TPDF 抖动路径逐字节不变)。实现口径 = 克隆工程 → 只留目标轨可闻 → 复用 `yeban_render_master` 的 `render::build`, ⛔ 不另起渲染器 ⇒ 代价是 **`N + 1`** 次整工程长度渲染 (多出的 1 次是批次公共帧数的基线探针, 见 `data.stemsBasis`)。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 `false` (归一化是母带动作, 逐轨各归一次会让轨间电平关系失真)。文件名 = `<index>.<清洗后的轨名>.wav` (保留 Unicode 字母/数字与 `._-`, 其余换 `_`, 首尾 `.`/`_` 去掉, 空结果回退 `track`, 总长封顶 255 字节、超限按整字截断) ⇒ 同一工程两次导出**逐字节同名**。⭐ 试听状态 (`mute`/`solo`) **不参与**批次选取: 批次内容恒定, 每条如实回报 `sourceMute` / `sourceSolo` + 批次级 `auditionStateIgnored: true`。⚠ 目标文件**已在盘上** ⇒ 整批拒绝 (`INVALID_PARAMETER_RANGE` + `conflictingPaths`), 不做隐式改名也不覆盖; 主总线/分组轨不出文件, 在 `data.skippedTracks[]` 里点名 (`reason:\"masterBusTrack\"` / `\"notASourceNode\"`)。⚠ 写盘中途失败是**一等公民**而非静默: `IO_ERROR` + `data.errorKind:\"stemWriteFailed\"` 带 `completedStems` / `failedTrackId` / `failedReason` / 实测的 `orphanedFiles` / 可直接回放的 `resumeFrom`。`dryRun` 给全部测量读数 (字节数 / sha256 / 帧数 / 容器头) 但一个字节都不写。",
+        summary: "一次调用把活跃工程的**每条源节点轨**弹成一个独立的 32-bit IEEE float WAV 分轨 (`ADR-0030`; 母带那条 24-bit 整数 + TPDF 抖动路径逐字节不变)。实现口径 = 克隆工程 → 只留目标轨可闻 → 复用 `yeban_render_master` 的 `render::build`, ⛔ 不另起渲染器 ⇒ 代价是 **`N + 1`** 次整工程长度渲染 (多出的 1 次是批次公共帧数的基线探针, 见 `data.stemsBasis`)。每条 stem: 无抖动、不重定目标响度、`normalize` 恒 `false` (归一化是母带动作, 逐轨各归一次会让轨间电平关系失真)。文件名 = `<index>.<清洗后的轨名>.wav` (保留 Unicode 字母/数字与 `._-`, 其余换 `_`, 首尾 `.`/`_` 去掉, 空结果回退 `track`, 总长封顶 255 字节、超限按整字截断) ⇒ 同一工程两次导出**逐字节同名**。⭐ 试听状态 (`mute`/`solo`) **不参与**批次选取: 批次内容恒定, 每条如实回报 `sourceMute` / `sourceSolo` + 批次级 `auditionStateIgnored: true`。⚠ 目标文件**已在盘上** ⇒ 整批拒绝 (`INVALID_PARAMETER_RANGE` + `conflictingPaths`), 不做隐式改名也不覆盖; 主总线/分组轨不出文件, 在 `data.skippedTracks[]` 里点名 (`reason:\"masterBusTrack\"` / `\"notASourceNode\"`)。⚠ 写盘中途失败是**一等公民**而非静默: `IO_ERROR` + `data.errorKind:\"stemWriteFailed\"` 带 `completedStems` / `failedTrackId` / `failedReason` / 实测的 `orphanedFiles` / 可直接回放的 `resumeFrom`。⭐ 某轨样本峰值**超过 0 dBFS** 时，该轨回执条件出现 `peakWarning`（`code: peakAboveFullScale`，带 `peak` / `peakDbfs` / `truePeakDbfs` 与说明）：32-bit float 文件原样容纳这些样本、不削波，但转 24-bit 整数会硬削平 ⇒ 先压电平再转；不超限的轨**没有**这个键。`dryRun` 给全部测量读数 (字节数 / sha256 / 帧数 / 容器头) 但一个字节都不写。",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
