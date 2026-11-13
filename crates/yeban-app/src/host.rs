@@ -1828,5 +1828,14 @@ mod tests {
         let trk3 = tracks.iter().find(|t| t.id == 3).unwrap();
         assert_eq!(trk3.kind, "GRANULAR");
         assert_eq!(trk3.pan, "12L");
+
+        // 11. 验证添加音轨回调 (Cmd+T 映射)
+        let initial_track_count = ui.get_tracks().row_count();
+        ui.invoke_track_add_requested();
+        assert_eq!(
+            ui.get_tracks().row_count(),
+            initial_track_count + 1,
+            "调用 track-add-requested 必须新增一条音轨"
+        );
     }
 }

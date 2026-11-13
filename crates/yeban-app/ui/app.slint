@@ -380,7 +380,11 @@ export component MainWindow inherits Window {
                 root.show-hotspots = !root.show-hotspots;
                 return accept;
             }
-            if (event.text == "t" || event.text == "T") {
+            if ((event.modifiers.control || event.modifiers.meta) && (event.text == "t" || event.text == "T")) {
+                root.track-add-requested();
+                return accept;
+            }
+            if (!event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt && (event.text == "t" || event.text == "T")) {
                 Theme.show-tooltips = !Theme.show-tooltips;
                 if (!Theme.show-tooltips) {
                     Theme.hover-tip = "";
