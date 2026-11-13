@@ -6634,6 +6634,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         if let Some(note) = report.loudness_note() {
             lines.push(note);
         }
+        // ⭐ 音频片段被跳过时**逐条多打一行**（原文照印：轨/摆放 ID、片段名、资产哈希、
+        //    逐字原因都在 `audio_clips_skipped` 的自由文本里）。此前该明细只进报告结构、
+        //    CLI 从不读 ⇒ 生成后被丢弃，用户只看得到 `skipped=N` 的计数。
+        //    ⛔ 一条跳过都没有时**一行都不多** ⇒ `--export-wav` 的既有 stdout 逐字不变
+        //    （与上面削波／响度两行同一范式；不加新开关）。
+        for skipped in &report.audio_clips_skipped {
+            lines.push(format!("audio-clip-skipped: {skipped}"));
+        }
     }
 
     // ⭐ `--export-stems` —— 分轨导出是**导出** ⇒ 在 `--export-wav` 之后（同是音频渲染，

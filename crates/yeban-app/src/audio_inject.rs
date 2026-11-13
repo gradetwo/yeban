@@ -56,7 +56,7 @@
 //! # 与离线路径的关系
 //!
 //! 解码**复用** [`crate::audio_clip`] 的 `decode_wav_bytes`（同一个
-//! `yeban_render::wav::read_plain_wav`、同一张归一化表）；本模块只多了"按哈希缓存"、
+//! `yeban_decode::decode_bytes`，与 MCP 腿共用入口与归一化口径）；本模块只多了"按哈希缓存"、
 //! "必要时重采样"与"把结果搬进引擎形状"三件事。⛔ 没有第二份 WAV 解析器、
 //! ⛔ 没有第二份重采样器、⛔ 没有新依赖（`yeban-decode` 早在 `#85` 就是本 crate 的依赖）。
 //!

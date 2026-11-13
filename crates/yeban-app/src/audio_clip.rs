@@ -21,10 +21,16 @@
 //!
 //! ## 三条**如实登记**的 app 侧差异（⛔ 不假装与 MCP 完全一致）
 //!
-//! 1. **读字节要过临时文件**：`yeban-render` 只公开 `read_plain_wav(path)`（没有内存读取器），
-//!    而资产字节在 `ProjectArchive.assets` 里。⇒ 本模块把字节写进 `std::env::temp_dir()` 的
-//!    唯一临时名、用**本仓唯一的 WAV 读取器**解码、随即删除（`TempFile` 的 `Drop`）。
-//!    ⛔ 不新增 `yeban-render` 的函数、⛔ 不引入新依赖边、⛔ 不另写第二份 WAV 解析器。
+//! 1. **WAV 解码与 MCP 共用同一个入口**：资产字节在 `ProjectArchive.assets` 里（内存），
+//!    本模块的 WAV 腿直接调 `yeban_decode::decode_bytes`（symphonia）—— 与 MCP 渲染腿
+//!    （`crates/yeban-mcp/src/domain/render.rs`）**同一个函数、同一份 `DecodeOptions::default()`**。
+//!    此前本腿写临时文件走 `hound` 的 `read_plain_wav`，它对 `byteRate ≠ block_align × 采样率`
+//!    的 WAV 直接拒绝，而 symphonia 不校验 `byteRate`、解码成功 ⇒ 同一资产在 CLI 静默跳过、
+//!    在 MCP 正常出声。统一到**宽容腿**后两腿判定一致（判据见本文件单元测试
+//!    `a_wav_with_a_wrong_byte_rate_decodes_like_the_mcp_leg` 与
+//!    `tests/export_wav_audio_clips.rs` 的同名集成判据）。
+//!    ⛔ 不另写第二份 WAV 解析器；AIFF 仍走本模块自己的 `decode_aiff_bytes`
+//!    （`yeban-decode` 明确不启用 AIFF，见该函数的文档）。
 //! 2. **离线导出这条支路也重采样**（⭐ 任务单 `#141` 闭合了 `#138` 留下的另一半）：
 //!    解码后的素材率 ≠ 导出率时，`decode_checked` 调用**实时注入侧同一个**
 //!    [`crate::audio_inject::resample_to_target`]（＝ `yeban_decode::resample_interleaved`，
@@ -35,9 +41,9 @@
 //!    坏 WAV、重采样失败 ⇒ 逐字原因进 `audio_clips_skipped`，且导出报告里
 //!    `audio-clips(rendered=… skipped=…)` 的计数**明说少了几段**（⛔ 不静默少一段）。
 //! 3. **多声道归一化**：共享的 `read_plain_wav_mono_f32` 会把多声道折成**第 0 声道**，
-//!    而 MCP 支持 `Identity`（立体声素材进立体声母线）。⇒ 本模块用 `read_plain_wav` 取
-//!    **保留声道数**的交织样本，并用**同一张归一化表**（`BitDepth::scale` ＝ `2^(bits-1)`；
-//!    浮点直用）折成 `f32`。这张表就是 `read_plain_wav_mono_f32` 文档里那张。
+//!    而 MCP 支持 `Identity`（立体声素材进立体声母线）。⇒ 本模块取 `decode_bytes` 的
+//!    **保留声道数**的交织 `f32` 样本。归一化由 symphonia 完成，分母同为 `2^(bits-1)`
+//!    （`#254` 已实测两侧对整数素材逐位相同），⛔ 本模块不再自带第二张归一化表。
 //!
 //! ## 本模块只服务**离线导出**（实时那半在 `crate::audio_inject`）
 //!
@@ -797,11 +803,58 @@ fn read_extended_80(bytes: &[u8]) -> Result<u32, String> {
     Ok(value.round() as u32)
 }
 
-/// 把资产字节写进唯一临时文件、用**本仓唯一的 WAV 读取器**解码、随即删除。
+/// WAV 解码：与 MCP 渲染腿共用 `yeban_decode::decode_bytes`（symphonia）这**同一个入口**。
 ///
-/// ⛔ 不新增 `yeban-render` 的内存读取器（那是另一个 crate 的公开面）；用临时文件这条
-/// **纯 app 内**的路子。
+/// 此前本腿写临时文件走 `hound` 的 `read_plain_wav`：`hound` 对
+/// `byteRate ≠ block_align × 采样率` 的 WAV 直接拒绝，而 symphonia 不校验 `byteRate`、
+/// 解码成功 ⇒ 同一资产 CLI 跳过、MCP 出声。统一到宽容腿后，两腿共用同一解码与
+/// 同一容忍口径（`DecodeOptions::default()`，与 MCP 的 `domain/render.rs` 逐字相同）。
+///
+/// 格式覆盖核对（改前 ⇒ 改后，⛔ 不得回退的面全部保持或扩大）：
+/// - 旧腿（`read_plain_wav`）只收 Int16 / Int24 / Float32，其余位深一律
+///   `UnsupportedDepth`；新腿经 symphonia 收 8 / 16 / 24 / 32-bit 整数与
+///   32 / 64-bit 浮点 ⇒ **严格扩大**，旧腿能解的三种逐一仍能解。
+/// - 归一化分母同为 `2^(bits-1)`（`#254` 已实测两侧对整数素材逐位相同）⇒
+///   样本值不变；声道数与采样率原样保留，后续 `decode_checked` 的重采样衔接不变。
+/// - 新腿多出的闸门与 MCP 腿**同款**（这正是"共用校验"的含义）：解码预算
+///   （`PcmBudget`：声道 ≤ 64、采样率 ≤ 768 kHz，与本模块 AIFF 腿的既有上限相同）、
+///   声明帧数与实解帧数对账、浮点非有限样本拒绝（旧腿 `is_in_range` 同样拒绝
+///   NaN / ±∞ 的浮点样本）。
+/// - 唯一保留的旧腿回退：**零帧 WAV**。`yeban-decode` 按设计拒绝零帧资产，
+///   而本腿注入侧的既有判据钉住「0 帧素材必须能注入」⇒ 只对 `EmptyStream`
+///   的 RIFF/WAVE 输入回退 `hound` 腿取空结果（见函数内注）。
 fn decode_wav_bytes(bytes: &[u8]) -> Result<DecodedAsset, String> {
+    let decoded = match yeban_decode::decode_bytes(bytes, &yeban_decode::DecodeOptions::default()) {
+        Ok(decoded) => decoded,
+        Err(yeban_decode::DecodeError::EmptyStream)
+            if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE" =>
+        {
+            // ⭐ 零帧 WAV 的既有口径（⛔ 不是第二套判定）：`yeban-decode` 按其设计
+            // **拒绝**零帧资产（`EmptyStream`：「夜半不导入零长资产」），但本腿的
+            // 注入侧判据（`audio_inject::tests::degenerate_lengths_stay_exact_and_do_not_panic`）
+            // 钉住「0 帧素材必须能注入、帧数读数 = 0」。⇒ 只有这一类输入回退到
+            // 旧 `hound` 腿取空结果；一切非空内容仍只走上面的 symphonia 入口，
+            // `byteRate` 等头字段的容忍口径不因回退而改变（零帧文件没有样本，
+            // 无所谓音高/帧数分歧）。
+            return decode_wav_bytes_via_plain_reader(bytes);
+        }
+        Err(error) => return Err(format!("WAV 解码失败: {error}")),
+    };
+    Ok(DecodedAsset {
+        samples: decoded.samples().to_vec(),
+        source_channels: decoded.channels().max(1),
+        sample_rate: decoded.sample_rate(),
+        frames: decoded.frame_count(),
+    })
+}
+
+/// 把资产字节写进唯一临时文件、用 `hound` 的 `read_plain_wav` 解码、随即删除。
+///
+/// ⛔ 只剩一个调用方：上面 `decode_wav_bytes` 对**零帧 WAV** 的回退
+/// （`yeban-decode` 按设计拒绝零帧、本腿注入侧判据要求能注入）。非空内容
+/// 一律走 symphonia，⛔ 不得把本函数重新变成主腿（那会把 `byteRate` 的
+/// 两腿两口径带回来）。
+fn decode_wav_bytes_via_plain_reader(bytes: &[u8]) -> Result<DecodedAsset, String> {
     use std::io::Write;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -858,13 +911,10 @@ impl Drop for TempFile {
 
 /// 交织 PCM ⇒ 归一化 `f32`（**保留声道数**）。
 ///
-/// 归一化表与 [`yeban_render::wav::read_plain_wav_mono_f32`] 的文档**逐条相同**
-/// （浮点直用；`Int16` / `Int24` 除以 `BitDepth::scale` ＝ `2^(bits-1)`），
-/// 差异只在"不折成单声道"。
-///
-/// ⚠ `#254`：分母从前是 `full_scale_max`（`2^(n-1) - 1`），它把 `-32768` 映射成
-/// `-1.0000305`（越出满量程 1 LSB），并且与 MCP／`symphonia` 腿的 `2^(n-1)` 差一个
-/// `32768/32767` 的常数因子。⛔ 不要改回 `full_scale_max`。
+/// ⛔ 只服务上面的零帧回退腿。归一化表与
+/// [`yeban_render::wav::read_plain_wav_mono_f32`] 的文档**逐条相同**
+/// （浮点直用；`Int16` / `Int24` 除以 `BitDepth::scale` ＝ `2^(bits-1)`；
+/// `#254`：分母不得改回 `2^(n-1) - 1`）。
 fn normalize_samples(buffer: &PcmBuffer) -> Vec<f32> {
     let scale = match buffer.depth() {
         BitDepth::Float32 => 1.0_f32,
@@ -884,6 +934,7 @@ fn normalize_samples(buffer: &PcmBuffer) -> Vec<f32> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use yeban_render::dither::PcmBuffer;
     use yeban_render::rf64::PcmFormat;
     use yeban_render::wav::write_plain_wav;
 
@@ -970,6 +1021,46 @@ mod tests {
         let bytes = std::fs::read(&path).expect("读夹具 WAV");
         std::fs::remove_file(&path).expect("删夹具 WAV");
         bytes
+    }
+
+    /// 判据（CLI/MCP WAV 判定统一）：`byteRate` 写错的 WAV 必须能解码，且与 MCP 腿
+    /// （`yeban_decode::decode_bytes`）帧数、声道、采样率、样本**逐项一致**。
+    ///
+    /// 夹具：48 kHz / 16-bit / 单声道 ⇒ 正确 `byteRate` = 48000 × 2 = 96000；
+    /// 这里把 `fmt ` 块的 `byteRate` 字段（RIFF 偏移 28）改写成 144000。
+    /// 旧腿（`hound` 的 `read_plain_wav`）对这类文件直接拒绝（CLI 静默跳过），
+    /// symphonia 不校验 `byteRate` ⇒ 解码成功。⛔ 不许改回两腿两口径。
+    #[test]
+    fn a_wav_with_a_wrong_byte_rate_decodes_like_the_mcp_leg() {
+        let mut bytes = wav_bytes("byterate", 48_000, 4_800);
+        // RIFF 头 12 字节 + `fmt ` 块头 8 字节 + audio_format(2) + channels(2)
+        // + sample_rate(4) ⇒ byteRate 在偏移 28..32（小端）。
+        assert_eq!(
+            u32::from_le_bytes(bytes[28..32].try_into().expect("偏移 28 是 byteRate")),
+            96_000,
+            "夹具前提：原 byteRate 必须是 48000 × 2 = 96000"
+        );
+        bytes[28..32].copy_from_slice(&144_000u32.to_le_bytes());
+        let hash = AssetHash::of_bytes(&bytes);
+        let cli = decode_asset_bytes(&hash, &bytes).expect("byteRate 写错的 WAV 必须能解码");
+        let mcp = yeban_decode::decode_bytes(&bytes, &yeban_decode::DecodeOptions::default())
+            .expect("MCP 腿必须能解码同一份字节");
+        assert_eq!(cli.frames, mcp.frame_count(), "帧数必须与 MCP 腿一致");
+        assert_eq!(cli.frames, 4_800);
+        assert_eq!(cli.source_channels, mcp.channels());
+        assert_eq!(cli.sample_rate, mcp.sample_rate());
+        assert_eq!(
+            cli.samples.len(),
+            mcp.samples().len(),
+            "样本数必须与 MCP 腿一致"
+        );
+        let cli_bits: Vec<u32> = cli.samples.iter().map(|value| value.to_bits()).collect();
+        let mcp_bits: Vec<u32> = mcp.samples().iter().map(|value| value.to_bits()).collect();
+        assert_eq!(cli_bits, mcp_bits, "样本必须与 MCP 腿逐位相同");
+        println!(
+            "[cli-wav/byte-rate] byteRate=144000（真值 96000）⇒ frames={} channels={} rate={}",
+            cli.frames, cli.source_channels, cli.sample_rate
+        );
     }
 
     /// 判据 §4③（单元级）：48k 素材 + 48k 导出 ⇒ **逐位相同**（`f32::to_bits`），

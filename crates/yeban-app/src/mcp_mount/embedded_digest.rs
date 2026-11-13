@@ -764,6 +764,11 @@ fn the_pure_audio_fixture_digests_are_identical_when_the_preconditions_hold() {
 /// 实测：只把 `read_plain_wav_mono_f32` 改回 `/32767` ⇒ **本条不红**（它只影响 SFZ／WAV
 /// 素材腿）；把 `normalize_samples` 改回 `/32767` ⇒ 本条立刻红。⇒ 两侧分母都在 `#254` 里改了。
 ///
+/// ⭐ **后续（CLI/MCP WAV 判定统一）**：CLI 腿已改走 `yeban_decode::decode_bytes`，
+/// 与 MCP 是**同一个解码函数**，归一化分母同为 symphonia 的 `2^(n-1)` ⇒ 本判据的
+/// 断言（两侧摘要逐字相同）不变。`normalize_samples` 只剩零帧 WAV 回退一处调用
+/// （`yeban-decode` 按设计拒绝零帧、注入侧判据要求能注入），非空内容不再经过它。
+///
 /// `#253` 首次测出：MCP 走 `yeban_decode`（symphonia：整数 `/32768`），CLI 走
 /// `full_scale_max` 那一路（`/32767`）⇒ 母带差一个 `32768/32767` 的常数因子。
 /// 当时的实测（本机 stable，`main` @ `f510a1a0`）：

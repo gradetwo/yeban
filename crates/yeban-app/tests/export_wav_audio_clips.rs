@@ -330,6 +330,14 @@ fn a_placed_audio_clip_is_audible_inside_its_frame_window_and_silent_outside() {
         exported.contains("audio-clips(rendered=1"),
         "报告行必须如实登记渲染了 1 个音频摆放: {exported}"
     );
+    // ⭐ 判据（CLI 跳过明细出口）：一条跳过都没有 ⇒ ⛔ 不许多出 `audio-clip-skipped:` 行
+    //    （`--export-wav` 的既有 stdout 逐字不变是既有契约）。
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.starts_with("audio-clip-skipped:")),
+        "无跳过时不得出现 audio-clip-skipped 行: {lines:?}"
+    );
 
     let left = left_channel_of(&out);
     assert_eq!(left.len(), 48_000 * 8, "默认导出的帧数变了 ⇒ 本判据需同步");
@@ -646,6 +654,26 @@ fn a_three_channel_asset_is_skipped_loudly_and_counted() {
         "CLI 报告行必须明说 skipped=1: {exported}"
     );
     println!("[export-audio/#141] 3 声道 CLI 报告行：{exported}");
+    // ⭐ 判据（CLI 跳过明细出口）：skipped 非空 ⇒ 逐条多推一行 `audio-clip-skipped: <原文>`，
+    //    原文与报告里的自由文本**逐字相同**（此前 CLI 从不读该明细、生成后被丢弃）。
+    let skipped_lines: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.starts_with("audio-clip-skipped: "))
+        .collect();
+    assert_eq!(
+        skipped_lines.len(),
+        1,
+        "1 条跳过必须恰好多推 1 行明细: {lines:?}"
+    );
+    assert_eq!(
+        skipped_lines[0],
+        &format!("audio-clip-skipped: {reason}"),
+        "明细行必须是报告原文照印（逐字）"
+    );
+    println!(
+        "[export-audio/skipped-line] CLI 明细行：{}",
+        skipped_lines[0]
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -678,13 +706,101 @@ fn a_corrupt_wav_is_skipped_loudly_and_counted() {
     assert_eq!(report.audio_clips_rendered, 0);
     assert_eq!(report.audio_clips_skipped.len(), 1);
     assert!(
-        reason.contains("读临时 WAV 失败"),
+        reason.contains("WAV 解码失败"),
         "原因必须逐字点名 WAV 解码失败: {reason}"
     );
     assert!(
         report.source.contains("audio-clips(rendered=0 skipped=1)"),
         "报告行必须明说少了一段（rendered=0 skipped=1）: {}",
         report.source
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 判据 8（CLI/MCP WAV 判定统一）：`byteRate` 写错的 WAV，CLI 导出必须与 MCP 腿同判
+// ---------------------------------------------------------------------------
+
+/// 合成一份 **24-bit / 立体声 / 0.25 常量**素材并把 `byteRate` 改错：
+/// 48 kHz × 2 声道 × 3 字节 ⇒ 正确值 288000，改写成 144000。
+///
+/// 旧 CLI 腿（`hound` 的 `read_plain_wav`）对 `byteRate ≠ block_align × 采样率`
+/// 直接拒绝 ⇒ 该摆放被跳过；MCP 腿（symphonia）不校验 `byteRate` ⇒ 正常出声。
+/// 统一到 `yeban_decode::decode_bytes` 后，CLI 必须同样解码成功、渲染该摆放，
+/// 且解码帧数与 MCP 腿一致。
+#[test]
+fn a_wav_with_a_wrong_byte_rate_is_rendered_by_the_cli_like_the_mcp_leg() {
+    let dir = scratch("byterate");
+    let path = dir.join("take-wrong-byterate.wav");
+    let frames = ASSET_FRAMES;
+    let samples: Vec<i32> = vec![2_097_152; frames * 2];
+    write_plain_wav(
+        &path,
+        &PcmFormat::integer(2, EXPORT_RATE, 24),
+        &PcmBuffer::Int24(samples),
+    )
+    .expect("写 24-bit 立体声夹具 WAV");
+    let mut bytes = std::fs::read(&path).expect("读夹具 WAV");
+    // `byteRate` 在 RIFF 偏移 28..32（小端）：12（RIFF 头）+ 8（`fmt ` 块头）
+    // + 2（格式）+ 2（声道）+ 4（采样率）。
+    assert_eq!(
+        u32::from_le_bytes(bytes[28..32].try_into().expect("偏移 28 是 byteRate")),
+        288_000,
+        "夹具前提：原 byteRate 必须是 48000 × 2 × 3 = 288000"
+    );
+    bytes[28..32].copy_from_slice(&144_000u32.to_le_bytes());
+
+    // MCP 腿的帧数（同一份字节、同一个入口）。
+    let mcp = yeban_decode::decode_bytes(&bytes, &yeban_decode::DecodeOptions::default())
+        .expect("MCP 腿必须能解码 byteRate 写错的 WAV");
+    assert_eq!(mcp.frame_count(), frames as u64, "MCP 腿帧数 = 夹具帧数");
+    assert_eq!(mcp.channels(), 2);
+
+    let hash = AssetHash::of_bytes(&bytes);
+    let project = project_with_audio_clip(hash.clone(), CLIP_GAIN_DB);
+    let out = dir.join("wrong-byterate.wav");
+    let report = export_wav_with_sfz_file_and_assets(
+        &project,
+        &out,
+        WavExportOptions::default(),
+        None,
+        &[(hash.clone(), bytes.clone())],
+    )
+    .expect("byteRate 写错只是一处头字段写错，⛔ 不让整次导出失败");
+    println!(
+        "[export-audio/byte-rate] rendered={} skipped={:?} source={}",
+        report.audio_clips_rendered, report.audio_clips_skipped, report.source
+    );
+    assert_eq!(
+        report.audio_clips_rendered, 1,
+        "byteRate 写错的素材必须被渲染（与 MCP 腿同判，⛔ 不再跳过）"
+    );
+    assert!(
+        report.audio_clips_skipped.is_empty(),
+        "byteRate 写错不得进跳过报告: {:?}",
+        report.audio_clips_skipped
+    );
+
+    // 产物帧数：导出总长仍是默认 8 秒；摆放窗口 12000 帧**全程**可闻 ⇒ CLI 解码出的
+    // 素材帧数不少于窗口长度（与 MCP 腿的 {frames} 帧一致，⛔ 不是截断解码）。
+    let left = left_channel_of(&out);
+    assert_eq!(left.len(), 48_000 * 8, "默认导出的帧数变了 ⇒ 本判据需同步");
+    let start = usize::try_from(frames_of(START_TICK)).expect("窗口起点");
+    let end = start + WINDOW_FRAMES.min(12_000);
+    let expected = 0.25_f32 * db_to_linear(CLIP_GAIN_DB);
+    let head_peak = peak_in(&left, start..start + 1_000);
+    let tail_peak = peak_in(&left, end - 1_000..end);
+    println!(
+        "[export-audio/byte-rate] 窗口 [{start}, {end}) 头峰值 {head_peak:.6} 尾峰值 {tail_peak:.6}（期望 {expected:.6}）"
+    );
+    assert!(
+        (head_peak - expected).abs() <= 0.02 * expected,
+        "窗口头部峰值必须 ≈ 源样本 × 增益：实测 {head_peak}，期望 {expected}"
+    );
+    assert!(
+        (tail_peak - expected).abs() <= 0.02 * expected,
+        "窗口尾部峰值必须 ≈ 源样本 × 增益（解码帧数须覆盖整个窗口）：实测 {tail_peak}，期望 {expected}"
     );
 
     std::fs::remove_dir_all(&dir).ok();
