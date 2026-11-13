@@ -1,25 +1,49 @@
 //! `get_song_overview` 的**真实 provider**（设计稿 `yeban-songmap-design.md`
-//! §8，Phase 1）：`yeban-app` 侧的接线，把 B 线管线
-//! （`yeban_render::song_overview::cached_overview`：谱面映射 → 离线渲染 →
-//! dsp 四层分析 → 整曲哈希缓存）的输出映射成 MCP 的 §8.2 JSON structs。
+//! §8，Phase 1）：把 B 线管线（`yeban_render::song_overview::cached_overview`：
+//! 谱面映射 → 离线渲染 → dsp 四层分析 → 整曲哈希缓存）的输出映射成
+//! MCP 的 §8.2 JSON structs。
 //!
-//! ## 为什么住在这里（不在 `yeban-mcp` 里）
+//! ## 为什么住在这里（`yeban-mcp`，两种形态共用同一份实现）
 //!
-//! `yeban-mcp` 是轻量 crate：守卫禁它依赖 `yeban-dsp`（见
-//! `crates/yeban-mcp/src/domain/song_overview.rs` 模块头的三条证据）。
-//! app 能同时依赖 `yeban-dsp` 与 `yeban-mcp`，因此 provider 住在这里，
-//! 挂载时经 `Domain::set_song_overview_provider` 注入
-//! （`crate::mcp_mount::session_dispatcher`）。
+//! 本模块原住 `yeban-app`，于是只有形态 A（进程内控制面）能注入它，
+//! 形态 B（独立 stdio 二进制）里 `get_song_overview` 恒回
+//! `providerUnavailable`（清单 `05_yeban.md` #3 / #4）。迁入 `yeban-mcp`
+//! 后果：两个形态构造的是**同一个** provider，测量语义只有一份。
 //!
-//! ## 调用链（每一步都有现成的唯一实现，⛔ 不复制第二份）
+//! 迁入时依赖方向逐条对过守卫
+//! `scripts/gates/check_mcp_dependency_direction.py`（`FORBIDDEN` 逐字含
+//! `yeban-dsp` / `yeban-engine` 的**直接**边）：
 //!
-//! ```text
-//! provider.overview(project, request)
-//!   → 整曲哈希命中？直接返回缓存的映射结果（不渲染、不解码）
-//!   → 预检：逐条武装待摊平的 SFZ（见 `arm_all`）
-//!   → cached_overview（渲染 → 分析 → 存缓存）
-//!   → map_song_overview（dsp 列式 → MCP 行式，拍级展开见下）
-//! ```
+//! - 分析类型与入口（`AnalysisOptions` / `TensionProfile` /
+//!   `analyze_song_overview_with_options`）经 `yeban-render` 的**再导出**
+//!   取得 —— `yeban-mcp → yeban-render` 是已登记例外那条边，再导出不新增
+//!   依赖边（`yeban_render::song_overview` 模块头有同款先例）；
+//! - SFZ 武装不再走 `yeban-engine` 的 `SfzInstrument` + app 私有的
+//!   `sfz_load`，改走 [`crate::domain::sfz`] 的装载实现
+//!   （[`load_with`](crate::domain::sfz::load_with) /
+//!   [`load_with_embedded`](crate::domain::sfz::load_with_embedded)）——
+//!   与 `yeban_render_master` 的 `prepare_sampler_track` **同一份**装载：
+//!   同一条路径解析（[`crate::domain::render::resolve_sampler_path`]：
+//!   工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd）、同一份 `#include` 展开、
+//!   同一条样本解码分派（WAV 走 hound 腿、其余走 `yeban-decode`）。
+//!   两处与渲染路径的**刻意**差别：⛔ 不带需求过滤（`wanted: None` ——
+//!   总览/测量要的是整份乐器的提供表，与旧 app provider 的 `arm_all`
+//!   全集口径一致），⛔ 不带样本预算上限（预算是 `yeban_render_master`
+//!   的实参语义，不是分析的语义）。
+//!
+//! ## 上下文（工程目录 + CAS 池）从哪来：[`ProviderContext`]
+//!
+//! provider 的磁盘腿要工程目录、内嵌腿要会话 CAS 池 —— 两者都是
+//! **会话状态**，不是构造期常量。宿主两种接法：
+//!
+//! - **固定快照**：形态 A 挂载时按当次工程构造一份
+//!   [`ProviderContext::shared`] 交进来（会话与工程一对一，快照不会过期）；
+//!   `--export-song-overview` 批处理同款（一次性进程）；
+//! - **Domain 托管**：形态 B 在启动时调
+//!   [`crate::domain::Domain::install_real_providers`]，provider 读的是
+//!   `Domain` 的那份共享单元；`Domain` 在每次工具取 provider 时按**当前
+//!   活跃工程**同步它（路径 + 资产键集变化才真换池），因此 stdio 会话里
+//!   开/换工程不需要重装 provider。
 //!
 //! ## 预检为什么必须在 `cached_overview` 之前
 //!
@@ -35,20 +59,19 @@
 //! 的轨（`EngineSnapshot::from_project` 原样抄进 `sfz_pending` 的规则），
 //! 因此"预检过了、武装时又冒出一轨"不可能发生。
 //!
-//! ## SFZ 两条腿（与 MCP `prepare_sampler_track`、app `decode_sfz_plan` 同口径）
+//! ## SFZ 两条腿（与 MCP `prepare_sampler_track` 同口径）
 //!
-//! - **磁盘腿**：`resolve_sampler_path`（app 唯一解析：工程目录 ⇒ 采样库根 ⇒
-//!   仓库根 ⇒ cwd，见 `crate::sfz_load`）→ `load_sfz_with_instrument`
-//!   （`--sfz` 装载同一个函数，`#include` 在此展开）→
-//!   `referenced_sample_paths` 全集 → 逐个 `read_sample_file` 解码。
-//! - **内嵌腿**：绑定登记在 `project.embedded_samples` 里 ⇒ SFZ 文本与样本
-//!   都从会话 CAS 池取（`decode_bytes` 解码）；含 `#include` 的内嵌文本
-//!   Phase 1 响亮拒绝（`SfzInstrument::load` 不展开 include，
-//!   静默忽略会改区域表 —— 见 `ArmedSfzInput::sfz_text` 的文档）。
+//! - **磁盘腿**：[`crate::domain::render::resolve_sampler_path`] 解析绑定
+//!   路径 → [`crate::domain::sfz::load_with`] 一次解析同时产出装载读数与
+//!   提供表 → 读不到的样本不进提供表（引擎标 `NO_SAMPLE`），SFZ 文件
+//!   本身读不到 / 文本非法 ⇒ 响亮失败（`samplerUnreadable`）。
+//! - **内嵌腿**：绑定登记在 `project.embedded_samples` 里 ⇒ SFZ 文本与
+//!   样本都从会话 CAS 池取（[`crate::domain::sfz::load_with_embedded`]）；
+//!   含 `#include` 的内嵌文本响亮拒绝（保存侧从不内嵌这类 SFZ，
+//!   静默忽略会改区域表）。
 //!
-//! **缺样本不是错误**（两条腿一致，`decode_sfz_plan` 同口径）：某份 `sample=`
-//! 读不到 ⇒ 不进提供表，引擎把该区域标 `NO_SAMPLE`（触发时不建声部）＋
-//! 计数。SFZ **文件本身**读不到 / 文本非法 ⇒ 响亮失败（`samplerUnreadable`）。
+//! **缺样本不是错误**（两条腿一致）：某份 `sample=` 读不到 ⇒ 不进提供表，
+//! 引擎把该区域标 `NO_SAMPLE`（触发时不建声部）＋计数。
 //!
 //! ## 无音频（纯谱面）
 //!
@@ -64,66 +87,141 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde_json::{Value, json};
 
-use yeban_decode::{DecodeOptions, decode_bytes};
-use yeban_dsp::song_overview::{
-    AnalysisOptions, ClashSeverity as DspClashSeverity, NO_ENVELOPE,
-    SongOverview as DspSongOverview, TensionProfile, analyze_song_overview_with_options,
-};
-use yeban_engine::sfz_instrument::SfzInstrument;
-use yeban_mcp::domain::error::Fault;
-use yeban_mcp::domain::song_overview::{
-    Profile as McpProfile, Resolution, SongOverviewProvider, SongOverviewRequest,
-};
-use yeban_mcp::output_schema::{
-    BAND_DEFINITIONS_HZ, BarOverlap, BarRow, BestMatch, ClashTrackRef, DetectedAnomaly,
-    FrequencyClashEntry, FrequencyClashSummary, RepeatedPassage, RepetitionSummary, SongMeta,
-    SongOverview as McpSongOverview, StructuralSummary,
-};
-use yeban_mcp::tools::ErrorCode;
 use yeban_model::song_overview::score_input_from_project;
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample};
 use yeban_render::song_overview::{
-    RenderSettings, SongOverviewCache, cached_overview, song_overview_hash,
+    AnalysisOptions, ClashSeverity as DspClashSeverity, NO_ENVELOPE, RenderSettings,
+    SongOverview as DspSongOverview, SongOverviewCache, TensionProfile,
+    analyze_song_overview_with_options, cached_overview, song_overview_hash,
 };
-use yeban_sfz::instrument::is_builtin_silence_sample;
-use yeban_sfz::parser::ParseLimits;
 
-use crate::sfz_load::{SfzRoots, load_sfz_with_instrument, read_sample_file, resolve_sampler_path};
+use crate::domain::error::Fault;
+use crate::domain::render::resolve_sampler_path;
+use crate::domain::sfz::{
+    SampleLimits, SampleStore, SampledProviderTable, TrackSampleCache, load_with,
+    load_with_embedded,
+};
+use crate::domain::song_overview::{
+    Profile as McpProfile, Resolution, SongOverviewProvider, SongOverviewRequest,
+};
+use crate::output_schema::{
+    BAND_DEFINITIONS_HZ, BarOverlap, BarRow, BestMatch, ClashTrackRef, DetectedAnomaly,
+    FrequencyClashEntry, FrequencyClashSummary, RepeatedPassage, RepetitionSummary, SongMeta,
+    SongOverview as McpSongOverview, StructuralSummary,
+};
+use crate::tools::ErrorCode;
 
 /// 真实 provider 的自述名（进响应 `data.provider`；stub 的是 `"stub"`）。
 pub const PROVIDER_NAME: &str = "real";
 
+/// provider 的会话上下文：磁盘腿的工程目录 + 内嵌腿的会话 CAS 池。
+///
+/// 它是**会话运行态**（`MODEL-ISO-001` 第 2 层）：不进 `project.json`、
+/// 不进 `history.dag`。宿主经 [`ProviderContext::shared`] 造一份共享单元
+/// 交给 provider；`Domain` 托管形态下（见模块文档）由 `Domain` 在每次取
+/// provider 时调 [`ProviderContext::sync_from`] 按活跃工程刷新 ——
+/// 刷新按（工程路径、资产键集）判定，键没变就不动池（⛔ 不逐调用深拷 CAS）。
+#[derive(Debug)]
+pub struct ProviderContext {
+    /// 磁盘腿 SFZ 解析的工程目录（`None` = 内存会话 / 无磁盘对应物）。
+    project_dir: Option<PathBuf>,
+    /// 会话 CAS 池（内嵌腿的 SFZ 文本与样本由此取；没有内嵌绑定时一次都不读）。
+    assets: Arc<BTreeMap<AssetHash, Vec<u8>>>,
+    /// 上一次 [`ProviderContext::sync_from`] 记下的同步键
+    /// （活跃工程路径 + 资产键集）；固定快照形态下恒为 `None`（从不步）。
+    synced_key: Option<(Option<PathBuf>, Vec<AssetHash>)>,
+}
+
+/// [`ProviderContext`] 的共享单元（宿主与 provider 各持一份句柄）。
+pub type SharedProviderContext = Arc<RwLock<ProviderContext>>;
+
+impl ProviderContext {
+    /// 造一份固定快照的共享上下文（形态 A 挂载 / 批处理导出用）。
+    #[must_use]
+    pub fn shared(
+        project_dir: Option<PathBuf>,
+        assets: Arc<BTreeMap<AssetHash, Vec<u8>>>,
+    ) -> SharedProviderContext {
+        Arc::new(RwLock::new(Self {
+            project_dir,
+            assets,
+            synced_key: None,
+        }))
+    }
+
+    /// 磁盘腿 SFZ 解析的工程目录。
+    #[must_use]
+    pub fn project_dir(&self) -> Option<&Path> {
+        self.project_dir.as_deref()
+    }
+
+    /// 会话 CAS 池（共享句柄；克隆只加引用计数）。
+    #[must_use]
+    pub fn assets(&self) -> Arc<BTreeMap<AssetHash, Vec<u8>>> {
+        Arc::clone(&self.assets)
+    }
+
+    /// 按**当前活跃工程**同步（`Domain` 托管形态专用）：工程路径或资产
+    /// 键集变了才真换目录与池；没变就原样返回（⛔ 不深拷）。
+    ///
+    /// 工程目录的推导与形态 A 挂载时同一条：工程文件路径的父目录，
+    /// 空父目录（纯文件名）视为没有目录。
+    pub(crate) fn sync_from(
+        &mut self,
+        active_path: Option<&Path>,
+        assets: Option<&BTreeMap<AssetHash, Vec<u8>>>,
+    ) {
+        let key = (
+            active_path.map(Path::to_path_buf),
+            assets
+                .map(|pool| pool.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
+        if self.synced_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.project_dir = active_path
+            .and_then(Path::parent)
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf);
+        self.assets = Arc::new(assets.cloned().unwrap_or_default());
+        self.synced_key = Some(key);
+    }
+}
+
+/// 武装时的样本预算：不限（`0` = 不限，见 [`SampleLimits`] 的字段口径）。
+///
+/// 总览/测量的武装与 `yeban_render_master` 不同：渲染的预算是**调用方
+/// 实参**，分析没有这个实参，旧 app provider 的 `arm_all` 也从不带预算 ——
+/// 迁入后保持同一口径，⛔ 不在这里发明一个上限。
+const UNLIMITED_SAMPLE_LIMITS: SampleLimits = SampleLimits {
+    max_files: 0,
+    max_frames: 0,
+};
+
 /// 整曲总览图的真实 provider：B 线管线 + §8.2 映射 + 整曲哈希缓存。
 ///
-/// 只在 `in-process-mcp` feature 下编译（见 `crate::song_overview_provider`
-/// 的 `cfg` 门）。`Debug` 是 trait 约束的一部分（`Domain` 派生 `Debug`）。
+/// `Debug` 是 trait 约束的一部分（`Domain` 派生 `Debug`）。
 #[derive(Debug)]
 pub struct RealSongOverviewProvider {
     /// 整曲哈希缓存（`cached_overview` 的那一份；命中时不渲染、不解码）。
     cache: Mutex<SongOverviewCache>,
-    /// 磁盘腿 SFZ 解析的工程目录（`None` = 内存会话 / 无磁盘对应物）。
-    project_dir: Option<PathBuf>,
-    /// 会话 CAS 池（内嵌腿的 SFZ 文本与样本由此取；挂载时的一份拷贝，
-    /// 只在有内嵌绑定时才读）。
-    assets: Arc<BTreeMap<AssetHash, Vec<u8>>>,
+    /// 会话上下文（工程目录 + CAS 池；见 [`ProviderContext`]）。
+    context: SharedProviderContext,
 }
 
 impl RealSongOverviewProvider {
-    /// 造一个真实 provider。
-    ///
-    /// `project_dir` 是会话工程文件所在目录（`None` = 内存会话）；
-    /// `assets` 是会话 CAS 池（内嵌腿用；没有内嵌绑定时一次都不读）。
+    /// 造一个真实 provider（上下文的两种接法见 [`ProviderContext`]）。
     #[must_use]
-    pub fn new(project_dir: Option<PathBuf>, assets: Arc<BTreeMap<AssetHash, Vec<u8>>>) -> Self {
+    pub fn new(context: SharedProviderContext) -> Self {
         Self {
             cache: Mutex::new(SongOverviewCache::new()),
-            project_dir,
-            assets,
+            context,
         }
     }
 
@@ -145,6 +243,18 @@ impl RealSongOverviewProvider {
             .misses()
     }
 
+    /// 此刻的上下文快照（工程目录 + CAS 池句柄；只克隆句柄，不克隆字节）。
+    fn context_snapshot(&self) -> (Option<PathBuf>, Arc<BTreeMap<AssetHash, Vec<u8>>>) {
+        let context = self
+            .context
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            context.project_dir().map(Path::to_path_buf),
+            context.assets(),
+        )
+    }
+
     /// 预检：把工程里全部待摊平的 SFZ 武装成 `ArmedSfzInput`。
     ///
     /// # Errors
@@ -157,13 +267,24 @@ impl RealSongOverviewProvider {
         project: &YebanProjectV1,
         engine_hz: f32,
     ) -> Result<BTreeMap<EntityId, ArmedSfzInput>, Fault> {
+        let (project_dir, assets) = self.context_snapshot();
+        // 一次武装共享一个 SampleStore：同一份样本被多条轨引用时只解码一次
+        // （与 `yeban_render_master` 的渲染期口径相同）。
+        let mut store = SampleStore::new();
         let mut armed = BTreeMap::new();
         for (track, binding) in project
             .tracks
             .iter()
             .filter_map(|(id, track)| track.sampler.as_ref().map(|sampler| (id, sampler)))
         {
-            let input = self.arm_track(&binding.path, project, engine_hz)?;
+            let input = self.arm_track(
+                &binding.path,
+                project,
+                engine_hz,
+                &mut store,
+                project_dir.as_deref(),
+                &assets,
+            )?;
             armed.insert(*track, input);
         }
         Ok(armed)
@@ -175,49 +296,46 @@ impl RealSongOverviewProvider {
         raw: &str,
         project: &YebanProjectV1,
         engine_hz: f32,
+        store: &mut SampleStore,
+        project_dir: Option<&Path>,
+        assets: &BTreeMap<AssetHash, Vec<u8>>,
     ) -> Result<ArmedSfzInput, Fault> {
         if project.embedded_samples.contains_key(raw) {
-            self.arm_embedded(raw, project, engine_hz)
+            self.arm_embedded(raw, project, engine_hz, assets)
         } else {
-            self.arm_disk(raw, engine_hz)
+            self.arm_disk(raw, engine_hz, store, project_dir)
         }
     }
 
-    /// 磁盘腿：解析 → 读盘解析 → 逐样本解码。
-    fn arm_disk(&self, raw: &str, engine_hz: f32) -> Result<ArmedSfzInput, Fault> {
-        let roots = match &self.project_dir {
-            Some(dir) => SfzRoots::under_project(dir),
-            None => SfzRoots::none(),
+    /// 磁盘腿：解析 → 一次装载（解析 + 逐样本解码）→ 提供表。
+    fn arm_disk(
+        &self,
+        raw: &str,
+        engine_hz: f32,
+        store: &mut SampleStore,
+        project_dir: Option<&Path>,
+    ) -> Result<ArmedSfzInput, Fault> {
+        // `resolve_sampler_path` 收的是**工程文件**路径、内部取 `parent()`
+        // 当工程目录 ⇒ 这里按 `domain::sfz::resolve_load_path` 同一条补锚点：
+        // 有目录时补一个文件名；没有时给不存在的相对名（`parent()` 为空
+        // ⇒ 工程目录档整档跳过）。
+        let anchor = match project_dir {
+            Some(dir) => dir.join("__active_project__.yeban"),
+            None => PathBuf::from("__no_project__"),
         };
-        let resolved = resolve_sampler_path(raw, roots).map_err(|error| {
-            let tried = error
-                .tried()
-                .iter()
-                .map(|candidate| candidate.display().to_string())
-                .collect::<Vec<_>>()
-                .join("、");
-            sampler_fault(
-                raw,
-                format!("采样器定义文件解析不到（试过：{tried}）"),
-                None,
-            )
-        })?;
-        let (_report, instrument) =
-            load_sfz_with_instrument(&resolved, None, engine_hz).map_err(|error| {
+        // 解析失败的 Fault 本身就是 `RENDER_FAILED` + `samplerUnreadable`
+        // + `tried` 全集（`domain::render` 的唯一实现），原样透出。
+        let resolved = resolve_sampler_path(raw, &anchor)?;
+        let mut cache = TrackSampleCache::with_limits(store, UNLIMITED_SAMPLE_LIMITS);
+        let (load, table) =
+            load_with(&resolved, engine_hz, 0, false, &mut cache, None).map_err(|fault| {
                 sampler_fault(
                     raw,
-                    format!("采样器定义文件读不到或解析不了: {error}"),
+                    format!("采样器定义文件读不到或解析不了: {}", fault_message(&fault)),
                     Some(resolved.display().to_string()),
                 )
             })?;
-        let samples = decode_disk_samples(&instrument, &resolved).map_err(|error| {
-            sampler_fault(
-                raw,
-                format!("采样器区域表读不到样本路径: {error}"),
-                Some(resolved.display().to_string()),
-            )
-        })?;
-        Ok(ArmedSfzInput::new(resolved, samples))
+        Ok(ArmedSfzInput::new(load.path, samples_from_table(table)))
     }
 
     /// 内嵌腿：SFZ 文本与样本全从会话 CAS 池取，⛔ 不读盘。
@@ -225,7 +343,8 @@ impl RealSongOverviewProvider {
         &self,
         raw: &str,
         project: &YebanProjectV1,
-        _engine_hz: f32,
+        engine_hz: f32,
+        assets: &BTreeMap<AssetHash, Vec<u8>>,
     ) -> Result<ArmedSfzInput, Fault> {
         let hash_text = project
             .embedded_samples
@@ -238,7 +357,7 @@ impl RealSongOverviewProvider {
                 None,
             )
         })?;
-        let bytes = self.assets.get(&hash).ok_or_else(|| {
+        let bytes = assets.get(&hash).ok_or_else(|| {
             sampler_fault(
                 raw,
                 format!("内嵌采样器定义文件 `{raw}` 的资产 `{hash}` 不在会话 CAS 池里"),
@@ -252,9 +371,9 @@ impl RealSongOverviewProvider {
                 None,
             )
         })?;
-        // `SfzInstrument::load` 不展开 `#include`：含它的内嵌文本若静默解析，
-        // 区域表会被改写成另一份。保存侧从不内嵌这类 SFZ（见
-        // `ArmedSfzInput::sfz_text` 的文档），这里响亮拒绝。
+        // `load_with_embedded` 同样会拒绝 `#include`（它走真实的 include
+        // 探测）；这里先按行扫一遍，是为了给出与旧 app provider 逐字相同的
+        // 报文（保存侧从不内嵌这类 SFZ，静默忽略会改区域表）。
         if text
             .lines()
             .any(|line| line.trim_start().starts_with("#include"))
@@ -265,45 +384,29 @@ impl RealSongOverviewProvider {
                 None,
             ));
         }
-        let instrument =
-            SfzInstrument::load(text.clone(), &ParseLimits::default()).map_err(|error| {
-                sampler_fault(
-                    raw,
-                    format!("内嵌采样器定义文件 `{raw}` 文本非法: {error}"),
-                    None,
-                )
-            })?;
-        let referenced = instrument.referenced_sample_paths().map_err(|error| {
-            sampler_fault(raw, format!("采样器区域表读不到样本路径: {error}"), None)
+        let (load, table) = load_with_embedded(
+            text.clone(),
+            hash_text.clone(),
+            raw,
+            &project.embedded_samples,
+            assets,
+            engine_hz,
+            0,
+            false,
+            UNLIMITED_SAMPLE_LIMITS,
+            None,
+        )
+        .map_err(|fault| {
+            sampler_fault(
+                raw,
+                format!(
+                    "内嵌采样器定义文件 `{raw}` 文本非法: {}",
+                    fault_message(&fault)
+                ),
+                None,
+            )
         })?;
-        let mut samples = Vec::new();
-        for raw_sample in &referenced {
-            if is_builtin_silence_sample(raw_sample) {
-                continue;
-            }
-            // 内嵌腿的样本只从 CAS 池取：没登记 ⇒ 缺样本（静音 ＋ 计数），
-            // ⛔ 不回退读盘（那会把"容器里没有"伪装成"盘上有"）。
-            let Some(sample_hash_text) = project.embedded_samples.get(raw_sample) else {
-                continue;
-            };
-            let Ok(sample_hash) = AssetHash::parse(sample_hash_text) else {
-                continue;
-            };
-            let Some(sample_bytes) = self.assets.get(&sample_hash) else {
-                continue;
-            };
-            let Ok(decoded) = decode_bytes(sample_bytes, &DecodeOptions::default()) else {
-                continue;
-            };
-            let Some(mono) = fold_channel_zero(&decoded) else {
-                continue;
-            };
-            samples.push((
-                raw_sample.clone(),
-                (Arc::new(mono), decoded.sample_rate() as f32),
-            ));
-        }
-        Ok(ArmedSfzInput::new(PathBuf::from(raw), samples).with_sfz_text(text))
+        Ok(ArmedSfzInput::new(load.path, samples_from_table(table)).with_sfz_text(text))
     }
 }
 
@@ -381,11 +484,12 @@ impl SongOverviewProvider for RealSongOverviewProvider {
 ///
 /// `--export-song-overview --overview-score-only`（批处理）要一份"只有谱面"的总览，
 /// 且要它在 JSON 上与全量那一份**同构**（同一套字段、同一套取整）。GUI 面板的回退分支
-/// （`crate::song_overview::refresh_song_overview` 的 `Err(_)` 一支）算的也是同一件事 ——
-/// 但那一支住在 UI 侧（它要画图），批处理够不着，因此这里给它一个**纯函数**出口。
+/// （`yeban-app` 的 `song_overview::refresh_song_overview` 的 `Err(_)` 一支）算的也是
+/// 同一件事 —— 但那一支住在 UI 侧（它要画图），批处理够不着，因此这里给它一个
+/// **纯函数**出口。
 ///
 /// ⛔ 它不是"渲染失败时偷偷用一下"的兜底：调用方必须**显式**要它
-/// （见 [`crate::song_overview_export`] 的模块文档"失败语义"）。
+/// （见 `yeban-app` 的 `song_overview_export` 模块文档"失败语义"）。
 ///
 /// # Errors
 ///
@@ -418,83 +522,27 @@ fn sampler_fault(raw: &str, detail: String, resolved: Option<String>) -> Fault {
     )
 }
 
-/// 磁盘腿的样本解码：`referenced_sample_paths` 全集 → 逐个读盘解码。
-///
-/// 缺样本 ⇒ 跳过（不进提供表，引擎标 `NO_SAMPLE`，见模块文档）；
-/// 只有区域表本身读不到才算错。
-fn decode_disk_samples(
-    instrument: &SfzInstrument,
-    sfz_path: &Path,
-) -> Result<Vec<ArmedSfzSample>, yeban_sfz::error::SfzError> {
-    let referenced = instrument.referenced_sample_paths()?;
-    let mut samples = Vec::new();
-    for raw_sample in &referenced {
-        if is_builtin_silence_sample(raw_sample) {
-            continue;
-        }
-        let resolved = resolve_sample_path(sfz_path, Path::new(raw_sample));
-        // 读不到 ⇒ 缺样本（静音 ＋ 计数），⛔ 不让整份总览失败。
-        if let Ok((sample, _frames, _describe)) = read_sample_file(&resolved) {
-            samples.push((
-                raw_sample.clone(),
-                (Arc::clone(&sample.pcm), sample.sample_hz),
-            ));
-        }
-    }
-    Ok(samples)
-}
-
-/// 把一个 `sample=` 路径解析成真路径（与 `crate::sfz_load::resolve_sample_path`
-/// 同一条语义：相对路径相对 SFZ 文件所在目录；绝对路径原样；`\\` 先归一成 `/`）。
-///
-/// ⚠ 复制的原因：那份实现是 `sfz_load.rs` 的**私有**函数，而本文件与它同属
-/// `yeban-app`、不在同一模块。复制点只有这两条小规则（归一 + 盘符判定），
-/// 与源头逐字对过；若源头改语义，这里必须同步改（本注释就是同步的锚点）。
-/// 统一成公开函数的重构是另一片的事，⛔ 不在本轮顺手做。
-fn resolve_sample_path(sfz_path: &Path, sample: &Path) -> PathBuf {
-    let normalized = normalize_sample_path(sample);
-    if normalized.is_absolute() || is_windows_drive_absolute(&normalized) {
-        normalized.into_owned()
-    } else if let Some(parent) = sfz_path.parent() {
-        parent.join(normalized)
-    } else {
-        normalized.into_owned()
+/// 一份 [`Fault`] 的人话信息（领域失败取 `message`；实现级状况取错误对象
+/// 的 `message`）—— 只用于把装载层的失败**转述**进 [`sampler_fault`] 的
+/// detail，⛔ 不改变失败的码与 reason（那由 `sampler_fault` 统一给）。
+fn fault_message(fault: &Fault) -> String {
+    match fault {
+        Fault::Domain { message, .. } => message.clone(),
+        Fault::Impl { error } => error.message.clone(),
     }
 }
 
-/// `sample=` 里的 `\\` 按分隔符归一成 `/`（`sfz_load.rs` 同名函数的逐字复制）。
-fn normalize_sample_path(sample: &Path) -> std::borrow::Cow<'_, Path> {
-    match sample.to_str() {
-        Some(text) if text.contains('\\') => {
-            std::borrow::Cow::Owned(PathBuf::from(text.replace('\\', "/")))
-        }
-        _ => std::borrow::Cow::Borrowed(sample),
-    }
-}
-
-/// 归一之后，`C:/…` 形式（盘符 ＋ 分隔符）算绝对路径 —— 即使宿主是 Unix
-///（`sfz_load.rs` 同名函数的逐字复制）。
-fn is_windows_drive_absolute(sample: &Path) -> bool {
-    sample.to_str().is_some_and(|text| {
-        let bytes = text.as_bytes();
-        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
-    })
-}
-
-/// 交错多声道 PCM 折单声道：取声道 0（与 `read_sample_file` 同一口径）。
-///
-/// `None` = 声道数为 0（解码器不应产出；防呆，不 panic）。
-fn fold_channel_zero(decoded: &yeban_decode::DecodedAsset) -> Option<Vec<f32>> {
-    let channels = usize::from(decoded.channels());
-    if channels == 0 {
-        return None;
-    }
-    let samples = decoded.samples();
-    let mut mono = Vec::with_capacity(samples.len() / channels);
-    for frame in samples.chunks_exact(channels) {
-        mono.push(frame[0]);
-    }
-    Some(mono)
+/// 提供表 → 引擎武装样本：读到的进表（`Arc` 共享同一份 PCM），读不到的
+/// 跳过（缺样本不是错误，见模块文档：引擎标 `NO_SAMPLE` ＋ 计数）。
+fn samples_from_table(table: SampledProviderTable) -> Vec<ArmedSfzSample> {
+    table
+        .into_iter()
+        .filter_map(|(raw_path, outcome)| {
+            outcome
+                .ok()
+                .map(|reading| (raw_path, (Arc::clone(&reading.pcm), reading.sample_hz)))
+        })
+        .collect()
 }
 
 /// dsp 列式总览 → MCP 行式 §8.2 structs。
@@ -731,16 +779,17 @@ fn expand_to_beats(bar_series: Vec<BarRow>, beats_per_bar: u32, base_bpm: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yeban_dsp::song_overview::{
-        Anomaly, AnomalyType, BarOverlap as DspBarOverlap, BarSeries, BestMatch as DspBestMatch,
+    use yeban_model::SamplerBinding;
+    use yeban_model::samples::demo_project;
+    use yeban_render::song_overview::{
+        Anomaly, AnomalyType, BAND_DEFINITIONS_HZ as DSP_BAND_DEFINITIONS_HZ,
+        BarOverlap as DspBarOverlap, BarSeries, BestMatch as DspBestMatch,
         ClashSeverity as DspClashSeverity, ClashTrackRef as DspClashTrackRef,
         FrequencyClashEntry as DspFrequencyClashEntry,
         FrequencyClashSummary as DspFrequencyClashSummary, RepeatedPassage as DspRepeatedPassage,
         RepetitionSummary as DspRepetitionSummary, SongMeta as DspSongMeta,
         StructuralSummary as DspStructuralSummary,
     };
-    use yeban_model::SamplerBinding;
-    use yeban_model::samples::demo_project;
 
     /// 两小节的手算 dsp 夹具（列式；与 `map_song_overview` 的输入形状一致）。
     fn two_bar_dsp_overview() -> DspSongOverview {
@@ -753,7 +802,7 @@ mod tests {
                 key_signature: "D minor".to_owned(),
                 profile: "default".to_owned(),
             },
-            band_definitions_hz: yeban_dsp::song_overview::BAND_DEFINITIONS_HZ,
+            band_definitions_hz: DSP_BAND_DEFINITIONS_HZ,
             // Phase 2：自适应权重（本夹具无死特征 = 缺省档原权重）与包络列
             // （第 1 小节 Intro L3 带 [0.35, 0.65]、张力 0.42 带内偏离 0；
             // 第 2 小节 Verse 无等级 = 哨兵、偏离 0）。
@@ -830,7 +879,7 @@ mod tests {
     }
 
     fn provider() -> RealSongOverviewProvider {
-        RealSongOverviewProvider::new(None, Arc::new(BTreeMap::new()))
+        RealSongOverviewProvider::new(ProviderContext::shared(None, Arc::new(BTreeMap::new())))
     }
 
     #[test]
@@ -1005,7 +1054,7 @@ mod tests {
                 key_signature: "C major".to_owned(),
                 profile: "default".to_owned(),
             },
-            band_definitions_hz: yeban_dsp::song_overview::BAND_DEFINITIONS_HZ,
+            band_definitions_hz: DSP_BAND_DEFINITIONS_HZ,
             effective_weights: [0.30, 0.20, 0.20, 0.15, 0.15],
             structural_summary: DspStructuralSummary {
                 climax_bar: 0,
@@ -1112,31 +1161,33 @@ mod tests {
     }
 
     #[test]
-    fn sample_path_resolution_matches_the_sfz_loader_rules() {
-        // 与 `crate::sfz_load::resolve_sample_path` 逐字对过的三条规则：
-        // 相对路径相对 SFZ 目录；`\\` 归一；`C:/` 算绝对路径。
-        let sfz = Path::new("/lib/piano/piano.sfz");
-        assert_eq!(
-            resolve_sample_path(sfz, Path::new("samples/c4.wav")),
-            PathBuf::from("/lib/piano/samples/c4.wav")
-        );
-        assert_eq!(
-            resolve_sample_path(sfz, Path::new("samples\\c4.wav")),
-            PathBuf::from("/lib/piano/samples/c4.wav")
-        );
-        assert_eq!(
-            resolve_sample_path(sfz, Path::new("/abs/c4.wav")),
-            PathBuf::from("/abs/c4.wav")
-        );
-        assert_eq!(
-            resolve_sample_path(sfz, Path::new("C:\\lib\\c4.wav")),
-            PathBuf::from("C:/lib/c4.wav")
-        );
-    }
-
-    #[test]
     fn provider_name_is_real_not_stub() {
         assert_eq!(provider().name(), "real");
         assert_eq!(PROVIDER_NAME, "real");
+    }
+
+    #[test]
+    fn context_sync_follows_the_active_project_and_asset_keys() {
+        // Domain 托管形态的同步口径：路径/键集没变 ⇒ 不换池（同一 Arc）；
+        // 路径变 ⇒ 工程目录跟随；键集变 ⇒ 换池。
+        let mut context = ProviderContext {
+            project_dir: None,
+            assets: Arc::new(BTreeMap::new()),
+            synced_key: None,
+        };
+        let pool: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        context.sync_from(Some(Path::new("/music/song/song.yeban")), Some(&pool));
+        assert_eq!(context.project_dir(), Some(Path::new("/music/song")));
+        let first_pool = context.assets();
+        context.sync_from(Some(Path::new("/music/song/song.yeban")), Some(&pool));
+        assert!(
+            Arc::ptr_eq(&first_pool, &context.assets()),
+            "同步键没变时不得换池"
+        );
+        context.sync_from(Some(Path::new("/music/other/other.yeban")), Some(&pool));
+        assert_eq!(context.project_dir(), Some(Path::new("/music/other")));
+        context.sync_from(None, None);
+        assert_eq!(context.project_dir(), None);
+        assert!(context.assets().is_empty());
     }
 }

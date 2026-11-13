@@ -48,10 +48,6 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/midi_notes.rs", include_str!("../src/midi_notes.rs")),
     ("src/scene.rs", include_str!("../src/scene.rs")),
     (
-        "src/song_overview_provider.rs",
-        include_str!("../src/song_overview_provider.rs"),
-    ),
-    (
         "src/test_port_adapter.rs",
         include_str!("../src/test_port_adapter.rs"),
     ),
@@ -120,7 +116,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 30;
+const MIN_SOURCES: usize = 29;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -131,18 +127,11 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// ⚠ **本条守卫不做"内容锚必须唯一"检查**：`tests/tools_e2e.rs` 里有两处**逐字符相同**的
 /// 内层站点（`!= pool_clip` 那两处），它们**共用同一条理由**；唯一性检查会把这对刻意同形的
 /// 站点判成歧义。冒充风险由 [`stale_entries`] 兜住：任一处已经**有界**仍登记 ⇒ 直接红。
-const ALLOWLIST: &[(&str, &str, &str)] = &[
-    (
-        "src/audio_inject.rs",
-        ".all(|s| (*s - 0.25).abs() < 1e-6),",
-        "Phase 1 warped 缓存测试：同一测试内先断言 stored.pcm.frames() == 44_100（夹具 vec![0.25; 44_100] 定长构造），.all 迭代的集合长度已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
-    ),
-    (
-        "src/song_overview_provider.rs",
-        "assert!(row.bands_tilted_db.iter().all(|db| db.is_finite()));",
-        "整曲总览图演示工程测试：`bands_tilted_db` 是 `[f64; 8]` 定长数组（`output_schema.rs`），.all 恒迭代 8 个元素，长度由类型钉死，空集真空风险不存在；审计的 has_bound 只认断言体内的界，故登记为例外。",
-    ),
-];
+const ALLOWLIST: &[(&str, &str, &str)] = &[(
+    "src/audio_inject.rs",
+    ".all(|s| (*s - 0.25).abs() < 1e-6),",
+    "Phase 1 warped 缓存测试：同一测试内先断言 stored.pcm.frames() == 44_100（夹具 vec![0.25; 44_100] 定长构造），.all 迭代的集合长度已被相邻断言钉死，空集真空风险不存在；审计的 has_bound 只认同一断言体内的界，故登记为例外。",
+)];
 
 /// ⭐ **R207／R209②**：可检索标记（`eprintln!`：断言消息在**通过时**不打印）。
 fn mark(id: &str, detail: &str) {

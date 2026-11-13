@@ -24,10 +24,13 @@
 //! - [`SongOverviewProvider`] trait（方法返回那份形状），
 //! - [`plan_song_overview`]（参数校验 + 取 provider + 按 §8.2 量化取整 + 组装）。
 //!
-//! 真实现由 `yeban-app`（挂载时经 [`super::Domain::set_song_overview_provider`]
-//! 注入；app 能同时依赖 `yeban-dsp` 与 `yeban-mcp`，负责把 dsp 输出映射成
-//! §8.2 的 JSON）提供；dsp 线落地后由协调员派人接真实 provider，
-//! 本轮不新建那条依赖边、也不等它。
+//! 真实现住在本 crate 的 [`crate::song_overview_provider`]（经
+//! `yeban-render` 的再导出取得 dsp 分析入口，⛔ 不新建 `yeban-dsp` 直接
+//! 依赖边）：形态 A 由 `yeban-app` 在挂载时经
+//! [`super::Domain::set_song_overview_provider`] 注入固定上下文的那份，
+//! 形态 B 由独立二进制在启动时经
+//! [`super::Domain::install_real_providers`] 装上 —— 两种形态的测量
+//! 语义同一份实现。
 //!
 //! ## provider 怎么拿到工程（round 2 的接线口径）
 //!
@@ -581,14 +584,16 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
     let provider = domain.song_overview_provider().ok_or_else(|| {
         Fault::domain_with_data(
             ErrorCode::Conflict,
-            "本形态没有总览分析 provider：独立 stdio 进程（形态 B）不托管 yeban-dsp 分析，\
-             get_song_overview 无法计算总览。",
+            "本会话没有总览分析 provider：宿主既没有注入 provider、也没有装上本 crate \
+             自带的真实 provider，get_song_overview 无法计算总览。",
             serde_json::json!({
                 "reason": PROVIDER_UNAVAILABLE_REASON,
                 "form": "stdio",
                 "providerAttached": false,
-                "hint": "请在形态 A（yeban-app 的进程内控制面）里调用；\
-                         真实 provider 由 yeban-dsp 线提供，经 Domain::set_song_overview_provider 注入",
+                "hint": "宿主应在启动时经 Domain::set_song_overview_provider 注入 provider，\
+                         或调用 Domain::install_real_providers 装上自带实现\
+                         （分析住在 yeban-dsp、经 yeban-render 接入；\
+                         独立 stdio 二进制与 yeban-app 都已这样接线）",
             }),
         )
     })?;

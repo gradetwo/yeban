@@ -151,8 +151,8 @@ use yeban_mcp::undo_session::UndoDisplay;
 use yeban_model::{AssetHash, CommitGraph, YebanProjectV1};
 
 use crate::engine_host::{EngineHost, SceneLaunchRequest as EngineSceneLaunchRequest};
-use crate::phase_align_auto_provider::RealPhaseAlignAutoProvider;
-use crate::song_overview_provider::RealSongOverviewProvider;
+use yeban_mcp::phase_align_auto_provider::RealPhaseAlignAutoProvider;
+use yeban_mcp::song_overview_provider::{ProviderContext, RealSongOverviewProvider};
 
 // ---------------------------------------------------------------------------
 // 两道开关（第二道）与时间常量
@@ -1079,16 +1079,14 @@ pub(crate) fn session_dispatcher(
     dispatcher
         .domain_mut()
         .set_song_overview_provider(Arc::new(RealSongOverviewProvider::new(
-            project_dir.clone(),
-            provider_assets.clone(),
+            ProviderContext::shared(project_dir.clone(), provider_assets.clone()),
         )));
     // ⭐ 自动相位对齐：注入真实 provider（两轨 solo 渲染 + 互相关测量）。
     // 磁盘腿工程目录与 CAS 池与总览 provider 共用同一份挂载时入参。
     dispatcher
         .domain_mut()
         .set_phase_align_auto_provider(Arc::new(RealPhaseAlignAutoProvider::new(
-            project_dir,
-            provider_assets,
+            ProviderContext::shared(project_dir, provider_assets),
         )));
     Ok(dispatcher)
 }

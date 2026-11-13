@@ -188,13 +188,10 @@ pub mod undo;
 #[cfg(feature = "in-process-mcp")]
 pub mod mcp_mount;
 
-/// 整曲总览图真实 provider（设计稿 §8，Phase 1）—— 只在 `in-process-mcp`
-/// 下编译，与 `mcp_mount` 同一个 `cfg` 门：没有控制面就没有要注入的 provider。
-#[cfg(feature = "in-process-mcp")]
-pub mod phase_align_auto_provider;
-
-#[cfg(feature = "in-process-mcp")]
-pub mod song_overview_provider;
+/// 整曲总览图 / 自动相位对齐的真实 provider（设计稿 §8，Phase 1）住在
+/// `yeban-mcp`（`yeban_mcp::song_overview_provider` /
+/// `yeban_mcp::phase_align_auto_provider`）：两种形态共用同一份实现，
+/// 本 crate 只在挂载时构造并注入（见 `mcp_mount::session_dispatcher`）。
 
 /// `--export-song-overview`：总览图的**批处理**出口。
 ///

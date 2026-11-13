@@ -250,11 +250,13 @@ pub struct Domain {
     scene_launches_applied: Option<u64>,
     /// 宿主注入的整曲总览分析 provider（`get_song_overview` 的唯一分析来源）。
     ///
-    /// `None` = 宿主没有注入（形态 B 的独立 stdio 进程，或 dsp 线尚未落地）
+    /// `None` = 宿主既没有注入、也没有调 [`Self::install_real_providers`]
     /// ⇒ 工具响亮报 `CONFLICT` + `reason: "providerUnavailable"`，⛔ 不返回
-    /// 空总览。真实实现由 `yeban-app` 在挂载时注入（app 能同时依赖
-    /// `yeban-dsp` 与 `yeban-mcp`）；`yeban-mcp` 自身**不**依赖 `yeban-dsp`
-    /// （见 `domain::song_overview` 模块头的证据）。
+    /// 空总览。真实实现住在本 crate 的 [`crate::song_overview_provider`]
+    /// （两种形态共用同一份）：形态 A 由 `yeban-app` 在挂载时注入固定
+    /// 上下文的那份，形态 B 由独立二进制在启动时经
+    /// [`Self::install_real_providers`] 装上；`yeban-mcp` 自身**不**直接
+    /// 依赖 `yeban-dsp`（见 `domain::song_overview` 模块头的证据）。
     ///
     /// 它是**宿主能力**，不是工程状态：打开 / 关闭工程**不**重置它（与
     /// [`Self::engine`] 的引擎读数镜像同一口径 —— 换一份工程不等于换一台
@@ -262,10 +264,18 @@ pub struct Domain {
     song_overview_provider: Option<Arc<dyn song_overview::SongOverviewProvider>>,
     /// 宿主注入的两轨相位测量 provider（`yeban_auto_align_tracks` 的唯一测量来源）。
     ///
-    /// `None` = 宿主没有注入（形态 B 的独立 stdio 进程）⇒ 工具响亮报 `CONFLICT` +
-    /// `reason: "providerUnavailable"`，⛔ 不返回假测量。与 `song_overview_provider`
-    /// 同一条口径：宿主能力，不是工程状态，打开 / 关闭工程不重置它。
+    /// `None` = 宿主既没有注入、也没有调 [`Self::install_real_providers`]
+    /// ⇒ 工具响亮报 `CONFLICT` + `reason: "providerUnavailable"`，⛔ 不返回
+    /// 假测量。与 `song_overview_provider` 同一条口径：宿主能力，不是工程
+    /// 状态，打开 / 关闭工程不重置它。
     phase_align_auto_provider: Option<Arc<dyn phase_align_auto::PhaseAlignAutoProvider>>,
+    /// 本 crate 自带真实 provider 的**共享上下文**（工程目录 + 会话 CAS 池）。
+    ///
+    /// [`Self::install_real_providers`] 装的两个 provider 读的就是这一份；
+    /// 它由 [`Self::sync_provider_context`] 在每次取 provider 时按**当前活跃
+    /// 工程**刷新（键 = 工程路径 + 资产键集，没变就不动）。宿主自己构造
+    /// provider 注入时（形态 A）用的是宿主那份上下文，本字段不参与。
+    provider_context: crate::song_overview_provider::SharedProviderContext,
     now_ms: u64,
     /// **会话内已装载的 SFZ 乐器**（`yeban_load_sfz` 的登记表），键 = instrumentId。
     ///
@@ -329,6 +339,10 @@ impl Domain {
             scene_launches_applied: None,
             song_overview_provider: None,
             phase_align_auto_provider: None,
+            provider_context: crate::song_overview_provider::ProviderContext::shared(
+                None,
+                Arc::new(BTreeMap::new()),
+            ),
             now_ms: 0,
             sfz_instruments: BTreeMap::new(),
             sfz_next_id: 1,
@@ -536,9 +550,12 @@ impl Domain {
     /// 宿主注入的整曲总览分析 provider（`None` = 未注入）。
     ///
     /// **只对宿主开放**：没有任何工具会写它（判据 `tests/song_overview.rs`
-    /// 用"调用前后 provider 句柄逐位相同"钉住）。
+    /// 用"调用前后 provider 句柄逐位相同"钉住）。取之前先按活跃工程同步
+    /// 本 crate 自带 provider 的共享上下文（见 [`Self::sync_provider_context`]；
+    /// 同步只写上下文单元，⛔ 不换 provider 句柄）。
     #[must_use]
     pub fn song_overview_provider(&self) -> Option<Arc<dyn song_overview::SongOverviewProvider>> {
+        self.sync_provider_context();
         self.song_overview_provider.clone()
     }
 
@@ -556,11 +573,13 @@ impl Domain {
 
     /// 宿主注入的两轨相位测量 provider（`None` = 未注入）。
     ///
-    /// 与 [`Self::song_overview_provider`] 同一条口径：没有任何工具会写它。
+    /// 与 [`Self::song_overview_provider`] 同一条口径：没有任何工具会写它；
+    /// 取之前同样先同步共享上下文。
     #[must_use]
     pub fn phase_align_auto_provider(
         &self,
     ) -> Option<Arc<dyn phase_align_auto::PhaseAlignAutoProvider>> {
+        self.sync_provider_context();
         self.phase_align_auto_provider.clone()
     }
 
@@ -574,6 +593,48 @@ impl Domain {
         provider: Arc<dyn phase_align_auto::PhaseAlignAutoProvider>,
     ) {
         self.phase_align_auto_provider = Some(provider);
+    }
+
+    /// 装上本 crate 自带的真实 provider（整曲总览 + 自动相位对齐）。
+    ///
+    /// 形态 B 的独立二进制在启动时调用：两个 provider 读
+    /// [`Self::provider_context`] 那份共享单元，单元由
+    /// [`Self::sync_provider_context`] 按当前活跃工程维护，因此会话里
+    /// 开 / 换 / 关工程都不需要重装。形态 A 的 `yeban-app` 不走这里 ——
+    /// 它在挂载时用固定上下文构造同一份实现、经两个 setter 注入。
+    ///
+    /// 与 setter 一样是**宿主能力声明**：不推进 `apply_revision`、不动
+    /// 提交图谱；之后再调 setter 注入会覆盖这里装的那份。
+    pub fn install_real_providers(&mut self) {
+        self.song_overview_provider = Some(Arc::new(
+            crate::song_overview_provider::RealSongOverviewProvider::new(
+                self.provider_context.clone(),
+            ),
+        ));
+        self.phase_align_auto_provider = Some(Arc::new(
+            crate::phase_align_auto_provider::RealPhaseAlignAutoProvider::new(
+                self.provider_context.clone(),
+            ),
+        ));
+    }
+
+    /// 把共享 provider 上下文按**当前活跃工程**同步一次（没有活跃工程
+    /// ⇒ 工程目录 `None` + 空池）。
+    ///
+    /// 同步键是（工程路径、资产键集）：两者都没变时
+    /// [`ProviderContext::sync_from`](crate::song_overview_provider::ProviderContext)
+    /// 原样返回，⛔ 不逐调用深拷 CAS 池。宿主自己注入的 provider 用的是
+    /// 宿主那份上下文，不读这一份 ⇒ 本同步对形态 A 无副作用。
+    fn sync_provider_context(&self) {
+        let (path, assets) = match &self.active {
+            Some(active) => (Some(active.path.as_path()), Some(&active.assets)),
+            None => (None, None),
+        };
+        let mut context = self
+            .provider_context
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        context.sync_from(path, assets);
     }
 
     /// 把模型会话态里那份**撤销游标镜像**同步成权威值（见 [`Domain::session`]）。

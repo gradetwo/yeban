@@ -59,10 +59,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 use yeban_dsp::song_overview::{
-    AnalysisOptions, AudioInput, StemInput, analyze_song_overview_with_stems,
+    AudioInput, StemInput, analyze_song_overview_with_stems,
     analyze_song_overview_with_stems_cached, bar_hashes,
 };
 
+/// 同上：真实 provider 的分析选项与纯谱面分析入口（`yeban-mcp` 的
+/// `song_overview_provider` 用：曲风档、期望等级表、只吃谱面的分析函数、
+/// 频段定义常量；与上条同款已登记例外，不新增依赖边）。`AnalysisOptions`
+/// 原本只是本模块的私有 `use`，随这次再导出升为 `pub use`（同一份导入，
+/// ⛔ 不写第二条）。
+pub use yeban_dsp::song_overview::{
+    AnalysisOptions, BAND_DEFINITIONS_HZ, TensionProfile, analyze_song_overview_with_options,
+};
 /// `yeban-dsp` 总览类型的再导出：`yeban-mcp` 经本 crate 调用 dsp 的 HTML 渲染器
 /// （`yeban-mcp → yeban-render` 是已登记例外；`pub use yeban_dsp::loudness` 同款先例
 /// 在 `crate::loudness`）。再导出不新增任何依赖边：`yeban-mcp` 的清单里不出现
