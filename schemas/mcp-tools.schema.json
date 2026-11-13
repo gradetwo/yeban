@@ -11,6 +11,7 @@
         "deviceOnSilentTrack",
         "exportClipping",
         "ignoredStripDevices",
+        "incompleteDrumNoteMap",
         "sfzSamplesUnreadable",
         "silentSources",
         "unrecognisedEffectParam"
