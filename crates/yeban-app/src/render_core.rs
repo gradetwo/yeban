@@ -1395,6 +1395,73 @@ mod tests {
         );
     }
 
+    /// ⭐ **未入图轨判据**：有摆放、不在路由图里的轨必须进
+    /// [`RenderProjectOutput::unrouted_tracks`] 并追加进 `source_label`，
+    /// 且样本逐个不变；全入图工程两处都为空/逐字不变。
+    #[test]
+    fn unrouted_tracks_are_named_and_change_no_sample() {
+        use std::str::FromStr as _;
+
+        use yeban_model::{ClipPlacement, LoopConfig};
+
+        fn render_full(project: &YebanProjectV1) -> RenderProjectOutput {
+            let options = WavExportOptions {
+                frames: 24_000,
+                ..Default::default()
+            };
+            render_project_f32_with_assets(project, options, None, &[]).expect("渲染必须成功")
+        }
+
+        let base = yeban_model::samples::filled_project();
+        let base_out = render_full(&base);
+        assert!(
+            base_out.unrouted_tracks.is_empty(),
+            "全入图工程的孤儿集必须为空: {:?}",
+            base_out.unrouted_tracks
+        );
+        assert!(
+            !base_out.source_label.contains("unrouted-tracks"),
+            "孤儿集为空时 source_label 逐字不变: {}",
+            base_out.source_label
+        );
+
+        let orphan_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P0ZZ").expect("ULID");
+        let clip_id = *base.clip_pool.keys().next().expect("池里有片段");
+        let placement_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P0ZY").expect("ULID");
+        let mut orphan = TrackV3 {
+            id: orphan_id,
+            name: "未入图音效".to_owned(),
+            ..TrackV3::default()
+        };
+        orphan.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        let mut with_orphan = base.clone();
+        with_orphan.insert_track(orphan).expect("插孤儿轨");
+        let out = render_full(&with_orphan);
+        assert_eq!(
+            out.unrouted_tracks,
+            vec![(orphan_id, "未入图音效".to_owned())],
+            "孤儿集必须逐轨点名（身份 + 轨名）"
+        );
+        assert!(
+            out.source_label.contains("unrouted-tracks(count=1"),
+            "source_label 必须追加点名: {}",
+            out.source_label
+        );
+        assert_eq!(out.samples, base_out.samples, "孤儿轨不许改一个样本");
+        assert_eq!(out.digest, base_out.digest, "摘要必须一致");
+    }
+
     /// 夹具：`filled_project` 里那条**带 MIDI 音符**的非主总线轨（＝ 工程里唯一会发声的
     /// 可渲染轨：另一条音频轨没有资产池 ⇒ 被如实跳过），把三个自变量写进去。
     fn fixture(volume_db: f32, mute: bool, solo_elsewhere: bool) -> (YebanProjectV1, EntityId) {

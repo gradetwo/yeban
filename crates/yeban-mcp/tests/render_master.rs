@@ -9859,7 +9859,7 @@ fn empty_tracks_are_named_but_never_become_sources() {
 #[test]
 fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
     let scratch = Scratch::new("unrouted");
-    let mut project = project(&Spec::default());
+    let mut proj = project(&Spec::default());
     // 未入图轨：有摆放（复用池里的片段），身份不进 routing_graph.nodes。
     let orphan = id(3);
     let mut orphan_track = TrackV3 {
@@ -9880,7 +9880,7 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
             offset_samples: None,
         },
     );
-    project.tracks.insert(orphan, orphan_track);
+    proj.tracks.insert(orphan, orphan_track);
     // 被剪枝轨：身份进 nodes，但没有任何边通往主总线。
     let pruned = id(4);
     let mut pruned_track = TrackV3 {
@@ -9901,13 +9901,12 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
             offset_samples: None,
         },
     );
-    project.tracks.insert(pruned, pruned_track);
-    project.routing_graph.nodes.push(pruned);
-    project
-        .validate()
+    proj.tracks.insert(pruned, pruned_track);
+    proj.routing_graph.nodes.push(pruned);
+    proj.validate()
         .unwrap_or_else(|error| panic!("带孤儿轨的夹具工程必须合法: {error}"));
 
-    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("demo.yeban"));
+    let (mut dispatcher, auth) = dispatcher_with(&proj, &scratch.join("demo.yeban"));
     let out = scratch.join("master.wav");
     let result = call(
         &mut dispatcher,

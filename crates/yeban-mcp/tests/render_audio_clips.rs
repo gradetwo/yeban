@@ -4162,3 +4162,117 @@ fn an_opentune_effect_passes_audio_through_and_leaves_the_receipt() {
         "输出 F0 应 ≈440 Hz，实为 {f0:.1} Hz"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 判据 16：`addTrack` 新建音频轨已自动接线 ⇒ import_audio 落片段后直接出声
+// ---------------------------------------------------------------------------
+
+/// `yeban_edit_notes` 的 `addTrack`（Audio）→ 合并提案 → `yeban_import_audio`
+/// 落片段到新轨 → `yeban_render_master`：新轨必须出现在 `sources` 里、
+/// 片段真的进母带、且**没有** `unroutedTracks` 预警。
+/// 修前（addTrack 只建轨不接线）：新轨不在路由图里，渲染时完全静默。
+#[test]
+fn an_add_track_audio_track_renders_after_import_without_manual_routing() {
+    let scratch = Scratch::new("addtrack-wired");
+    let samples = vec![0.5f32; 4_800];
+    let bytes = wav_f32(1, 48_000, &samples);
+    let fixture = empty_audio_project_around(&bytes);
+    let wav = scratch.join("sfx.wav");
+    fs::write(&wav, &bytes).expect("写素材文件");
+    let out = scratch.join("master.wav");
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("demo.yeban"));
+    let new_track = id(7);
+
+    // ---- ① addTrack 建音频轨（只给 addTrack，不手工补任何路由 op） ----
+    let proposed = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": id(2).to_canonical_string(),
+            "dryRun": false,
+            "ops": [{
+                "kind": "addTrack",
+                "trackId": new_track.to_canonical_string(),
+                "name": "SFX New",
+                "trackKind": "Audio",
+            }],
+        }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    let proposal_id = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal_id}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    // 工程侧：新轨已进路由图，且有一条到主总线的 TrackToBus 边。
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    assert!(
+        project.routing_graph.nodes.contains(&new_track),
+        "addTrack 后新轨必须在 routing_graph.nodes 里"
+    );
+    assert!(
+        project.routing_graph.edges.values().any(|edge| {
+            edge.source_node == new_track
+                && edge.destination_node == project.master_bus_track_id
+                && edge.kind == RoutingKind::TrackToBus
+        }),
+        "addTrack 后必须有一条新轨 → 主总线的 TrackToBus 边"
+    );
+
+    // ---- ② import_audio 把片段落到新轨上 ----
+    let imported = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_import_audio",
+        json!({ "license": "CC0-1.0",
+            "name": "Sfx",
+            "path": wav.display().to_string(),
+            "trackId": new_track.to_canonical_string(),
+            "startTick": 0,
+            "gainDb": 0.0,
+        }),
+    );
+    assert_eq!(imported["status"], "success", "{imported}");
+    assert_eq!(imported["data"]["placement"]["placed"], true, "{imported}");
+
+    // ---- ③ render_master：新轨出声、进 sources、无未入图预警 ----
+    let rendered = call_named(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    assert_eq!(data["audio"]["clipsRendered"], 1, "{data}");
+    let source = data["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .find(|source| source["node"] == new_track.to_canonical_string())
+        .expect("新建音频轨必须在 sources 里");
+    assert_eq!(source["audioClips"], 1, "{source}");
+    let warnings = data["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| warning["code"] != "unroutedTracks"),
+        "已自动接线的新轨不许触发 unroutedTracks 预警: {warnings:?}"
+    );
+    let produced = fs::read(&out).expect("读产物");
+    let parsed = parse_container(&produced).expect("产物必须是合法 WAVE 容器");
+    let rendered_samples = decode_i24(&produced[parsed.data.clone()]);
+    assert!(
+        (peak(&rendered_samples) - 0.5f32).abs() < 1.0e-3,
+        "素材电平 0.5 必须出现在母带里: 实测 {}",
+        peak(&rendered_samples)
+    );
+}
