@@ -360,34 +360,67 @@ export component HotspotOverlay inherits Rectangle {
 
 export component ToastBanner inherits Rectangle {
     in-out property <string> toast-text: "";
+    in-out property <bool> show-toast: true;
     width: 100%;
     height: 100%;
 
-    if root.toast-text != "" : Rectangle {
-        x: parent.width - 320px;
-        y: parent.height - 56px;
-        width: 300px;
-        height: 36px;
-        background: #0e1422f2;
+    if root.show-toast && root.toast-text != "" : Rectangle {
+        x: parent.width - 324px;
+        y: 54px; // 移至右上角顶部栏下方，避免覆盖低轨道主工作区
+        width: 310px;
+        height: 34px;
+        background: #0e1422f6;
         border-radius: 6px;
         border-width: 1px;
-        border-color: Theme.accent;
+        border-color: Theme.accent.with-alpha(0.6);
 
         HorizontalLayout {
             padding-left: 12px;
-            padding-right: 12px;
+            padding-right: 10px;
             spacing: 8px;
-            alignment: start;
+            alignment: space-between;
 
-            Rectangle { width: 7px; height: 7px; border-radius: 3.5px; background: Theme.accent; }
-            Text {
-                text: root.toast-text;
-                font-family: Tokens.font-ui;
-                font-size: 10px;
-                font-weight: 600;
-                color: #f8fafc;
-                vertical-alignment: center;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    y: 14px;
+                    border-radius: 3px;
+                    background: Theme.accent;
+                }
+                Text {
+                    text: root.toast-text;
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: #f8fafc;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                y: 8px;
+                border-radius: 9px;
+                background: #ffffff14;
+                Text {
+                    text: "✕";
+                    font-family: Tokens.font-ui;
+                    font-size: 9px;
+                    color: #94a3b8;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    clicked => {
+                        root.toast-text = "";
+                        root.show-toast = false;
+                    }
+                }
             }
         }
     }

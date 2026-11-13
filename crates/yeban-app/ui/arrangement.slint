@@ -7,6 +7,7 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <length> playhead-px: 360px;
     in-out property <bool> is-looping: true;
     in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
+    in-out property <length> headers-width: 216px; // 支持拖拽调整大小 [min: 170px, max: 300px]
 
     callback select-track(int);
     callback toggle-mute(int);
@@ -34,7 +35,7 @@ export component ArrangementViewport inherits Rectangle {
 
                 // Left top box (if headers on left)
                 if !Theme.track-headers-on-right : Rectangle {
-                    width: 208px;
+                    width: root.headers-width;
                     border-color: Theme.border-subtle;
 
                     VerticalLayout {
@@ -47,12 +48,12 @@ export component ArrangementViewport inherits Rectangle {
                         HorizontalLayout {
                             alignment: space-between;
                             Text {
-                                text: "TRACK HEADERS";
+                                text: "轨道控制头 (TRACKS)";
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
                                 font-weight: 700;
                                 letter-spacing: 0.8px;
-                                color: #64748b;
+                                color: #94a3b8;
                                 vertical-alignment: center;
                             }
                             HorizontalLayout {
@@ -72,17 +73,17 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             font-weight: 600;
-                                            color: root.show-chord-track ? Theme.accent : #94a3b8;
+                                            color: root.show-chord-track ? Theme.accent : #cbd5e1;
                                             vertical-alignment: center;
                                         }
                                     }
                                     TouchArea { clicked => { root.show-chord-track = !root.show-chord-track; } }
                                 }
                                 Rectangle {
-                                    background: Theme.accent.with-alpha(0.15);
+                                    background: Theme.accent.with-alpha(0.20);
                                     border-radius: 3px;
                                     border-width: 1px;
-                                    border-color: Theme.accent.with-alpha(0.5);
+                                    border-color: Theme.accent.with-alpha(0.6);
                                     height: 18px;
                                     HorizontalLayout {
                                         padding-left: 6px;
@@ -117,17 +118,39 @@ export component ArrangementViewport inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     font-weight: 700;
-                                    color: #94a3b8;
+                                    color: #cbd5e1;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: "智能和声声学";
                                     font-family: Tokens.font-ui;
                                     font-size: 8px;
-                                    color: #64748b;
+                                    color: #94a3b8;
                                     vertical-alignment: center;
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Splitter Divider between Left Track Header top box and Timeline Ruler
+                if !Theme.track-headers-on-right : Rectangle {
+                    width: 5px;
+                    background: transparent;
+                    Rectangle {
+                        x: 2px;
+                        width: 1px;
+                        height: parent.height;
+                        background: split-header-top-left.has-hover ? Theme.accent : Theme.border-subtle;
+                    }
+                    split-header-top-left := TouchArea {
+                        mouse-cursor: MouseCursor.col-resize;
+                        moved => {
+                            let delta = self.mouse-x - self.pressed-x;
+                            root.headers-width = Math.min(320px, Math.max(180px, root.headers-width + delta));
+                        }
+                        double-clicked => {
+                            root.headers-width = 240px;
                         }
                     }
                 }
@@ -139,7 +162,7 @@ export component ArrangementViewport inherits Rectangle {
                     VerticalLayout {
                         spacing: 0px;
 
-                        // Ruler (24px) - Spans across 24 bars
+                        // Ruler (24px) - Spans across 24 bars (High contrast WCAG AA labels)
                         Rectangle {
                             height: 24px;
                             background: #06080d;
@@ -153,8 +176,8 @@ export component ArrangementViewport inherits Rectangle {
                                     text: bar;
                                     font-family: Tokens.font-mono;
                                     font-size: 9px;
-                                    font-weight: bar == "3 (Loop)" ? 800 : 500;
-                                    color: bar == "3 (Loop)" ? Theme.accent : #64748b;
+                                    font-weight: bar == "3 (Loop)" ? 800 : 600;
+                                    color: bar == "3 (Loop)" ? Theme.accent : #cbd5e1;
                                     vertical-alignment: center;
                                 }
                             }
@@ -342,9 +365,31 @@ export component ArrangementViewport inherits Rectangle {
                     }
                 }
 
+                // Splitter Divider between Timeline Ruler and Right Track Header top box
+                if Theme.track-headers-on-right : Rectangle {
+                    width: 5px;
+                    background: transparent;
+                    Rectangle {
+                        x: 2px;
+                        width: 1px;
+                        height: parent.height;
+                        background: split-header-top-right.has-hover ? Theme.accent : Theme.border-subtle;
+                    }
+                    split-header-top-right := TouchArea {
+                        mouse-cursor: MouseCursor.col-resize;
+                        moved => {
+                            let delta = self.mouse-x - self.pressed-x;
+                            root.headers-width = Math.min(320px, Math.max(180px, root.headers-width - delta));
+                        }
+                        double-clicked => {
+                            root.headers-width = 240px;
+                        }
+                    }
+                }
+
                 // Right top box (if headers on right)
                 if Theme.track-headers-on-right : Rectangle {
-                    width: 208px;
+                    width: root.headers-width;
                     border-color: Theme.border-subtle;
 
                     VerticalLayout {
@@ -357,7 +402,7 @@ export component ArrangementViewport inherits Rectangle {
                         HorizontalLayout {
                             alignment: space-between;
                             Text {
-                                text: "TRACK HEADERS (右置)";
+                                text: "轨道控制头 (右置)";
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
                                 font-weight: 700;
@@ -418,22 +463,24 @@ export component ArrangementViewport inherits Rectangle {
                     vertical-stretch: 1;
                     min-height: 64px;
                     max-height: 160px;
-                    background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.06) : transparent;
-                    border-color: #ffffff0a;
+                    background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.14) : transparent;
+                    border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : #ffffff0a;
+                    border-width: trk.id == root.selected-track-id ? 1.5px : 1px;
 
                     HorizontalLayout {
                         spacing: 0px;
 
                         // Left Track Header (if not headers on right)
                         if !Theme.track-headers-on-right : Rectangle {
-                            width: 208px;
-                            border-color: Theme.border-subtle;
+                            width: root.headers-width;
+                            background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.20) : #0b0e16;
+                            border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : Theme.border-subtle;
 
-                            // Left color strip
+                            // Left color strip (illuminated on focus)
                             Rectangle {
                                 x: 0;
                                 y: 0;
-                                width: 4px;
+                                width: trk.id == root.selected-track-id ? 5px : 3.5px;
                                 height: parent.height;
                                 background: trk.color;
                             }
@@ -447,27 +494,29 @@ export component ArrangementViewport inherits Rectangle {
 
                                 HorizontalLayout {
                                     alignment: space-between;
+                                    spacing: 4px;
                                     Text {
                                         text: trk.name;
                                         font-family: Tokens.font-ui;
-                                        font-size: 12px;
+                                        font-size: 11px;
                                         font-weight: 700;
                                         color: trk.id == root.selected-track-id ? #ffffff : #cbd5e1;
                                         overflow: elide;
                                         vertical-alignment: center;
+                                        horizontal-stretch: 1;
                                     }
                                     Rectangle {
-                                        background: #00000040;
+                                        background: #00000050;
                                         border-radius: 2px;
                                         border-width: 1px;
-                                        border-color: #ffffff0a;
+                                        border-color: #ffffff14;
                                         HorizontalLayout {
-                                            padding-left: 4px;
-                                            padding-right: 4px;
+                                            padding-left: 3px;
+                                            padding-right: 3px;
                                             Text {
                                                 text: trk.kind;
                                                 font-family: Tokens.font-mono;
-                                                font-size: 7px;
+                                                font-size: 7.5px;
                                                 color: #94a3b8;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
@@ -480,7 +529,7 @@ export component ArrangementViewport inherits Rectangle {
                                     spacing: 4px;
                                     alignment: space-between;
 
-                                    // M S R buttons (subdued studio colors)
+                                    // M S R buttons (Studio colors: Amber / Gold / Crimson)
                                     HorizontalLayout {
                                         spacing: 3px;
 
@@ -488,15 +537,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #9a6a38 : #12151e;
+                                            background: trk.muted ? #f59e0b : #141822;
                                             border-width: 1px;
-                                            border-color: trk.muted ? #825828 : #ffffff10;
+                                            border-color: trk.muted ? #d97706 : #ffffff14;
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.muted ? #020617 : #94a3b8;
+                                                color: trk.muted ? #0f172a : #94a3b8;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -507,15 +556,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? Theme.accent : #12151e;
+                                            background: trk.soloed ? #eab308 : #141822;
                                             border-width: 1px;
-                                            border-color: trk.soloed ? Theme.accent : #ffffff10;
+                                            border-color: trk.soloed ? #ca8a04 : #ffffff14;
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.soloed ? #020617 : #94a3b8;
+                                                color: trk.soloed ? #0f172a : #94a3b8;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -526,9 +575,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #a44848 : #12151e;
+                                            background: trk.armed ? #ef4444 : #141822;
                                             border-width: 1px;
-                                            border-color: trk.armed ? #8c3b3b : #ffffff10;
+                                            border-color: trk.armed ? #dc2626 : #ffffff14;
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
@@ -542,39 +591,96 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
 
-                                    // Volume and mini meter
+                                    // Pan widget + Volume dB + Vertical precision meter
                                     HorizontalLayout {
                                         spacing: 4px;
                                         alignment: end;
 
+                                        // Pan widget
+                                        Rectangle {
+                                            width: 38px;
+                                            height: 20px;
+                                            background: #10141e;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: #ffffff14;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                spacing: 2px;
+                                                Text {
+                                                    text: "P";
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 7.5px;
+                                                    font-weight: 700;
+                                                    color: #94a3b8;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: trk.pan;
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 8px;
+                                                    font-weight: 700;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        // Volume dB text
                                         Text {
                                             text: "" + trk.volume_db + "dB";
                                             font-family: Tokens.font-mono;
-                                            font-size: 9px;
-                                            color: #94a3b8;
+                                            font-size: 8.5px;
+                                            color: #cbd5e1;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
 
+                                        // Vertical Level Meter with Peak Indicator
                                         Rectangle {
-                                            width: 36px;
-                                            height: 6px;
+                                            width: 6px;
+                                            height: 20px;
                                             background: #06080d;
-                                            border-radius: 3px;
-                                            border-width: 1px;
-                                            border-color: #ffffff0a;
+                                            border-radius: 1.5px;
+                                            border-width: 0.8px;
+                                            border-color: #ffffff14;
+                                            clip: true;
+
                                             Rectangle {
                                                 x: 0;
-                                                width: trk.muted ? 0px : trk.meter_peak * 36px;
-                                                height: 6px;
-                                                border-radius: 3px;
-                                                background: trk.color;
+                                                y: parent.height - (trk.muted ? 0px : (trk.meter_peak * parent.height));
+                                                width: 6px;
+                                                height: trk.muted ? 0px : (trk.meter_peak * parent.height);
+                                                border-radius: 1px;
+                                                background: trk.meter_peak > 0.8 ? #ef4444 : (trk.meter_peak > 0.6 ? #f59e0b : #10b981);
                                             }
                                         }
                                     }
                                 }
                             }
                             TouchArea { clicked => { root.select-track(trk.id); } }
+                        }
+
+                        // Splitter Divider between Left Track Header and Timeline Lane
+                        if !Theme.track-headers-on-right : Rectangle {
+                            width: 5px;
+                            background: transparent;
+                            Rectangle {
+                                x: 2px;
+                                width: 1px;
+                                height: parent.height;
+                                background: split-header-left.has-hover ? Theme.accent : Theme.border-subtle;
+                            }
+                            split-header-left := TouchArea {
+                                mouse-cursor: MouseCursor.col-resize;
+                                moved => {
+                                    let delta = self.mouse-x - self.pressed-x;
+                                    root.headers-width = Math.min(320px, Math.max(180px, root.headers-width + delta));
+                                }
+                                double-clicked => {
+                                    root.headers-width = 240px;
+                                }
+                            }
                         }
 
                         // Center Timeline Lane
@@ -620,7 +726,8 @@ export component ArrangementViewport inherits Rectangle {
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
-                                            Text {
+                                            // 自动隐藏规则：宽度不足 110px 时隐藏 Gain 标签，优先完整显示标题，避免截断遮挡
+                                            if blk.width_px >= 110px : Text {
                                                 text: blk.gain_label;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8px;
@@ -630,7 +737,7 @@ export component ArrangementViewport inherits Rectangle {
                                             }
                                         }
 
-                                        // Audio Waveform: Dynamic Transient Contours + 0dB Centerline + Subtle Automation Curve
+                                        // Audio Waveform: Dynamic Transient Contours + 0dB Centerline
                                         if blk.is_audio : Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
@@ -657,24 +764,6 @@ export component ArrangementViewport inherits Rectangle {
                                                 stroke: trk.color.with-alpha(0.45);
                                                 stroke-width: 1.1px;
                                             }
-
-                                            // Automation Curve (Delicate Filter / Gain envelope with interactive node)
-                                            Path {
-                                                commands: "M 0 19 Q 80 21, 160 14 T 320 8 T 480 16";
-                                                stroke: #e2e8f0.with-alpha(0.35);
-                                                stroke-width: 1.2px;
-                                            }
-
-                                            Rectangle {
-                                                x: Math.min(blk.width_px - 28px, 160px);
-                                                y: 12px;
-                                                width: 5px;
-                                                height: 5px;
-                                                border-radius: 2.5px;
-                                                background: #f8fafc;
-                                                border-width: 1px;
-                                                border-color: trk.color;
-                                            }
                                         }
 
                                         // MIDI Polyphonic Score Display
@@ -691,42 +780,77 @@ export component ArrangementViewport inherits Rectangle {
                                                 background: trk.color.with-alpha(0.15);
                                             }
 
-                                            // Melody notes (upper pitch layer)
-                                            HorizontalLayout {
-                                                x: 4px;
-                                                y: 2px;
-                                                spacing: 8px;
-                                                for w in [18px, 12px, 28px, 16px, 22px, 14px, 32px, 20px, 16px] : Rectangle {
+                                            // Track 1 (Lead Neuro Bass): 低频区厚重低音线条
+                                            if blk.track_id == 1 : HorizontalLayout {
+                                                x: 2px;
+                                                y: 13px;
+                                                spacing: 12px;
+                                                for w in [54px, 36px, 62px, 42px, 48px, 30px] : Rectangle {
                                                     width: w;
-                                                    height: 4px;
-                                                    border-radius: 1px;
+                                                    height: 6px;
+                                                    border-radius: 1.5px;
                                                     background: trk.color;
                                                 }
                                             }
 
-                                            // Harmony notes (mid pitch layer)
-                                            HorizontalLayout {
-                                                x: 14px;
-                                                y: 8px;
-                                                spacing: 12px;
-                                                for w in [14px, 22px, 16px, 30px, 18px, 24px, 12px, 20px] : Rectangle {
-                                                    width: w;
-                                                    height: 3.5px;
-                                                    border-radius: 1px;
-                                                    background: trk.color.with-alpha(0.80);
+                                            // Track 3 (Atmos Granular Pad): 多声部密集粒子铺底垫音块
+                                            if blk.track_id == 3 : VerticalLayout {
+                                                padding-top: 3px;
+                                                spacing: 4px;
+                                                HorizontalLayout {
+                                                    spacing: 16px;
+                                                    for w in [70px, 85px, 60px, 90px] : Rectangle {
+                                                        width: w;
+                                                        height: 3.5px;
+                                                        border-radius: 1px;
+                                                        background: trk.color.with-alpha(0.85);
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    padding-left: 10px;
+                                                    spacing: 20px;
+                                                    for w in [55px, 95px, 75px, 80px] : Rectangle {
+                                                        width: w;
+                                                        height: 3.5px;
+                                                        border-radius: 1px;
+                                                        background: trk.color;
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    padding-left: 4px;
+                                                    spacing: 14px;
+                                                    for w in [80px, 65px, 90px, 70px] : Rectangle {
+                                                        width: w;
+                                                        height: 3.5px;
+                                                        border-radius: 1px;
+                                                        background: trk.color.with-alpha(0.70);
+                                                    }
                                                 }
                                             }
 
-                                            // Bass foundation notes (lower pitch layer)
-                                            HorizontalLayout {
-                                                x: 0px;
-                                                y: 15px;
-                                                spacing: 16px;
-                                                for w in [36px, 28px, 44px, 32px, 40px] : Rectangle {
-                                                    width: w;
-                                                    height: 4px;
-                                                    border-radius: 1px;
-                                                    background: trk.color.with-alpha(0.60);
+                                            // Default / Track 5 (Arp Pluck Sequencer): 16分音符快速跑动音符步进
+                                            if blk.track_id != 1 && blk.track_id != 3 : VerticalLayout {
+                                                padding-top: 2px;
+                                                spacing: 3px;
+                                                HorizontalLayout {
+                                                    x: 4px;
+                                                    spacing: 6px;
+                                                    for w in [16px, 12px, 20px, 14px, 18px, 12px, 24px, 16px] : Rectangle {
+                                                        width: w;
+                                                        height: 3.5px;
+                                                        border-radius: 1px;
+                                                        background: trk.color;
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    x: 12px;
+                                                    spacing: 8px;
+                                                    for w in [14px, 18px, 12px, 22px, 16px, 14px, 20px] : Rectangle {
+                                                        width: w;
+                                                        height: 3.5px;
+                                                        border-radius: 1px;
+                                                        background: trk.color.with-alpha(0.80);
+                                                    }
                                                 }
                                             }
                                         }
@@ -737,15 +861,38 @@ export component ArrangementViewport inherits Rectangle {
                             TouchArea { clicked => { root.select-track(trk.id); } }
                         }
 
+                        // Splitter Divider between Timeline Lane and Right Track Header
+                        if Theme.track-headers-on-right : Rectangle {
+                            width: 5px;
+                            background: transparent;
+                            Rectangle {
+                                x: 2px;
+                                width: 1px;
+                                height: parent.height;
+                                background: split-header-right.has-hover ? Theme.accent : Theme.border-subtle;
+                            }
+                            split-header-right := TouchArea {
+                                mouse-cursor: MouseCursor.col-resize;
+                                moved => {
+                                    let delta = self.mouse-x - self.pressed-x;
+                                    root.headers-width = Math.min(320px, Math.max(180px, root.headers-width - delta));
+                                }
+                                double-clicked => {
+                                    root.headers-width = 240px;
+                                }
+                            }
+                        }
+
                         // Right Track Header (if right mode)
                         if Theme.track-headers-on-right : Rectangle {
-                            width: 208px;
-                            border-color: Theme.border-subtle;
+                            width: root.headers-width;
+                            background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.20) : #0b0e16;
+                            border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : Theme.border-subtle;
 
                             Rectangle {
-                                x: 204px;
+                                x: parent.width - 4px;
                                 y: 0;
-                                width: 4px;
+                                width: trk.id == root.selected-track-id ? 5px : 3.5px;
                                 height: parent.height;
                                 background: trk.color;
                             }
@@ -759,27 +906,29 @@ export component ArrangementViewport inherits Rectangle {
 
                                 HorizontalLayout {
                                     alignment: space-between;
+                                    spacing: 4px;
                                     Text {
                                         text: trk.name;
                                         font-family: Tokens.font-ui;
-                                        font-size: 12px;
+                                        font-size: 11px;
                                         font-weight: 700;
                                         color: trk.id == root.selected-track-id ? #ffffff : #cbd5e1;
                                         overflow: elide;
                                         vertical-alignment: center;
+                                        horizontal-stretch: 1;
                                     }
                                     Rectangle {
-                                        background: #00000040;
+                                        background: #00000050;
                                         border-radius: 2px;
                                         border-width: 1px;
-                                        border-color: #ffffff0a;
+                                        border-color: #ffffff14;
                                         HorizontalLayout {
-                                            padding-left: 4px;
-                                            padding-right: 4px;
+                                            padding-left: 3px;
+                                            padding-right: 3px;
                                             Text {
                                                 text: trk.kind;
                                                 font-family: Tokens.font-mono;
-                                                font-size: 7px;
+                                                font-size: 7.5px;
                                                 color: #94a3b8;
                                                 font-weight: 700;
                                                 vertical-alignment: center;
@@ -798,15 +947,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #9a6a38 : #12151e;
+                                            background: trk.muted ? #f59e0b : #141822;
                                             border-width: 1px;
-                                            border-color: trk.muted ? #825828 : #ffffff10;
+                                            border-color: trk.muted ? #d97706 : #ffffff14;
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.muted ? #020617 : #94a3b8;
+                                                color: trk.muted ? #0f172a : #94a3b8;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -816,15 +965,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? Theme.accent : #12151e;
+                                            background: trk.soloed ? #eab308 : #141822;
                                             border-width: 1px;
-                                            border-color: trk.soloed ? Theme.accent : #ffffff10;
+                                            border-color: trk.soloed ? #ca8a04 : #ffffff14;
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 font-weight: 800;
-                                                color: trk.soloed ? #020617 : #94a3b8;
+                                                color: trk.soloed ? #0f172a : #94a3b8;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -834,9 +983,9 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #a44848 : #12151e;
+                                            background: trk.armed ? #ef4444 : #141822;
                                             border-width: 1px;
-                                            border-color: trk.armed ? #8c3b3b : #ffffff10;
+                                            border-color: trk.armed ? #dc2626 : #ffffff14;
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
@@ -853,27 +1002,61 @@ export component ArrangementViewport inherits Rectangle {
                                     HorizontalLayout {
                                         spacing: 4px;
                                         alignment: end;
+
+                                        Rectangle {
+                                            width: 38px;
+                                            height: 20px;
+                                            background: #10141e;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: #ffffff14;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                spacing: 2px;
+                                                Text {
+                                                    text: "P";
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 7.5px;
+                                                    font-weight: 700;
+                                                    color: #94a3b8;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: trk.pan;
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 8px;
+                                                    font-weight: 700;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
                                         Text {
                                             text: "" + trk.volume_db + "dB";
                                             font-family: Tokens.font-mono;
-                                            font-size: 9px;
-                                            color: #94a3b8;
+                                            font-size: 8.5px;
+                                            color: #cbd5e1;
                                             font-weight: 700;
                                             vertical-alignment: center;
                                         }
+
                                         Rectangle {
-                                            width: 36px;
-                                            height: 6px;
+                                            width: 6px;
+                                            height: 20px;
                                             background: #06080d;
-                                            border-radius: 3px;
-                                            border-width: 1px;
-                                            border-color: #ffffff0a;
+                                            border-radius: 1.5px;
+                                            border-width: 0.8px;
+                                            border-color: #ffffff14;
+                                            clip: true;
+
                                             Rectangle {
                                                 x: 0;
-                                                width: trk.muted ? 0px : trk.meter_peak * 36px;
-                                                height: 6px;
-                                                border-radius: 3px;
-                                                background: trk.color;
+                                                y: parent.height - (trk.muted ? 0px : (trk.meter_peak * parent.height));
+                                                width: 6px;
+                                                height: trk.muted ? 0px : (trk.meter_peak * parent.height);
+                                                border-radius: 1px;
+                                                background: trk.meter_peak > 0.8 ? #ef4444 : (trk.meter_peak > 0.6 ? #f59e0b : #10b981);
                                             }
                                         }
                                     }
@@ -895,20 +1078,54 @@ export component ArrangementViewport inherits Rectangle {
 
                         // Left Header Box placeholder
                         if !Theme.track-headers-on-right : Rectangle {
-                            width: 208px;
+                            width: root.headers-width;
                             border-color: Theme.border-subtle;
 
                             HorizontalLayout {
                                 alignment: center;
-                                Text {
-                                    text: "+ 点击添加新轨道";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 10px;
-                                    color: #475569;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    height: 24px;
+                                    background: #141a24;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #ffffff14;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "+ 点击添加新轨道";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: #cbd5e1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                             TouchArea { clicked => { root.add-track(); } }
+                        }
+
+                        // Splitter Divider between Left Placeholder and Bottom Grid Area
+                        if !Theme.track-headers-on-right : Rectangle {
+                            width: 5px;
+                            background: transparent;
+                            Rectangle {
+                                x: 2px;
+                                width: 1px;
+                                height: parent.height;
+                                background: split-header-btm-left.has-hover ? Theme.accent : Theme.border-subtle;
+                            }
+                            split-header-btm-left := TouchArea {
+                                mouse-cursor: MouseCursor.col-resize;
+                                moved => {
+                                    let delta = self.mouse-x - self.pressed-x;
+                                    root.headers-width = Math.min(320px, Math.max(180px, root.headers-width + delta));
+                                }
+                                double-clicked => {
+                                    root.headers-width = 240px;
+                                }
+                            }
                         }
 
                         // Center Grid Area
@@ -931,26 +1148,61 @@ export component ArrangementViewport inherits Rectangle {
                                     text: "在此区域拖拽音频、MIDI 文件或双击以新增轨道";
                                     font-family: Tokens.font-ui;
                                     font-size: 10px;
-                                    color: #334155;
+                                    font-weight: 500;
+                                    color: #94a3b8;
                                     vertical-alignment: center;
                                 }
                             }
                             TouchArea { clicked => { root.add-track(); } }
                         }
 
+                        // Splitter Divider between Bottom Grid Area and Right Placeholder
+                        if Theme.track-headers-on-right : Rectangle {
+                            width: 5px;
+                            background: transparent;
+                            Rectangle {
+                                x: 2px;
+                                width: 1px;
+                                height: parent.height;
+                                background: split-header-btm-right.has-hover ? Theme.accent : Theme.border-subtle;
+                            }
+                            split-header-btm-right := TouchArea {
+                                mouse-cursor: MouseCursor.col-resize;
+                                moved => {
+                                    let delta = self.mouse-x - self.pressed-x;
+                                    root.headers-width = Math.min(320px, Math.max(180px, root.headers-width - delta));
+                                }
+                                double-clicked => {
+                                    root.headers-width = 240px;
+                                }
+                            }
+                        }
+
                         // Right Header Box placeholder (if right mode)
                         if Theme.track-headers-on-right : Rectangle {
-                            width: 208px;
+                            width: root.headers-width;
                             border-color: Theme.border-subtle;
 
                             HorizontalLayout {
                                 alignment: center;
-                                Text {
-                                    text: "+ 点击添加新轨道";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 10px;
-                                    color: #475569;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    height: 24px;
+                                    background: #141a24;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #ffffff14;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "+ 点击添加新轨道";
+                                            font-family: Tokens.font-ui;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: #cbd5e1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                             TouchArea { clicked => { root.add-track(); } }
@@ -961,7 +1213,7 @@ export component ArrangementViewport inherits Rectangle {
 
             // Animated Playhead Line (adaptive offset relative to left/right headers)
             Rectangle {
-                x: (Theme.track-headers-on-right ? 0px : 208px) + root.playhead-px;
+                x: (Theme.track-headers-on-right ? 0px : root.headers-width) + root.playhead-px;
                 y: 0px;
                 width: 2px;
                 height: parent.height;

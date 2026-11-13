@@ -3,12 +3,13 @@ import { Theme, TrackData, Tokens } from "tokens.slint";
 export component HybridClipMatrixDrawer inherits Rectangle {
     in-out property <[TrackData]> tracks;
     in-out property <int> selected-track-id: 1;
+    in-out property <length> panel-width: 220px;
 
     callback trigger-scene(int);
     callback trigger-clip(int, int);
     callback select-track(int);
 
-    width: 220px;
+    width: root.panel-width;
     background: Theme.bg-panel;
     border-color: Theme.border-subtle;
 

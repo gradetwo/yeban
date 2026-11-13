@@ -46,7 +46,7 @@ export component MainWindow inherits Window {
             pan: "C",
             muted: false,
             soloed: false,
-            armed: true,
+            armed: false,
             meter_peak: 0.65,
             insert1: "Wavetable MPE",
             insert2: "Pro-QLinear 8",
@@ -150,10 +150,10 @@ export component MainWindow inherits Window {
         { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #9a6a38 },
         { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38 },
         { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #9a6a38 },
-        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: true, gain_label: "Gain: -2dB", color: #705e88 },
-        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: true, gain_label: "Gain: -1.5dB", color: #705e88 },
-        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: true, gain_label: "Gain: -3dB", color: #705e88 },
-        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: true, gain_label: "Gain: -2dB", color: #705e88 },
+        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #705e88 },
+        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: false, gain_label: "0dB", color: #705e88 },
+        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #705e88 },
+        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: false, gain_label: "0dB", color: #705e88 },
         { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
         { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
         { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
@@ -165,9 +165,17 @@ export component MainWindow inherits Window {
         { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #8a4f6d }
     ];
 
-    in-out property <int> selected-track-id: 1;
+    in-out property <int> selected-track-id: 3;
     property <int> safe-selected-idx: root.tracks.length > 0 ? Math.max(0, Math.min(root.tracks.length - 1, root.selected-track-id - 1)) : 0;
     in-out property <string> left-panel-tab: "inspector";
+
+    // Dynamic Sizing with Min/Max Bounds (拖拽调整区域尺寸)
+    in-out property <length> left-panel-width: 256px;   // [min: 200px, max: 380px]
+    in-out property <length> clip-matrix-width: 240px;  // [min: 180px, max: 360px]
+    in-out property <length> control-room-width: 200px; // [min: 160px, max: 300px]
+    in-out property <length> lower-dock-height: 320px;  // [min: 180px, max: 480px]
+    in-out property <length> track-headers-width: 240px;// [min: 180px, max: 320px]
+    in-out property <bool> show-floating-toast: false;
 
     // Zone Visibility State (Default: clean arrangement workspace with side/dock panels folded)
     in-out property <bool> show-left-inspector: true;
@@ -393,14 +401,17 @@ export component MainWindow inherits Window {
                 spacing: 0px;
                 vertical-stretch: 1;
 
-                // Zone A: Dual Inspector & Browser (Left, 256px)
+                // Zone A: Dual Inspector & Browser (Left, Resizable [min: 200px, max: 380px])
                 if root.show-left-inspector : ZoneBrowserAndInspector {
+                    panel-width: root.left-panel-width;
                     active-tab: root.left-panel-tab;
                     switch-tab(t) => { root.left-panel-tab = t; }
+                    selected-track-id: root.selected-track-id;
                     selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                     selected-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                     selected-track-badge: root.tracks.length > 0 ? ("TRK 0" + root.selected-track-id + " · " + root.tracks[root.safe-selected-idx].kind) : "";
                     selected-track-bus: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].bus : "";
+                    selected-track-pan: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].pan : "C";
                     selected-track-vol: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].volume_db : 0.0;
                     selected-track-peak: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].meter_peak : 0.0;
                     selected-track-inserts: root.tracks.length > 0 ? [
@@ -419,14 +430,31 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Zone A-to-B/C Divider
+                // Zone A-to-B/C Resizing Splitter Bar
                 if root.show-left-inspector : Rectangle {
-                    width: 1px;
-                    background: Theme.border-subtle;
+                    width: 5px;
+                    background: transparent;
+                    Rectangle {
+                        x: 2px;
+                        width: 1px;
+                        height: parent.height;
+                        background: split-a-touch.has-hover ? Theme.accent : Theme.border-subtle;
+                    }
+                    split-a-touch := TouchArea {
+                        mouse-cursor: MouseCursor.col-resize;
+                        moved => {
+                            let delta = self.mouse-x - self.pressed-x;
+                            root.left-panel-width = Math.min(380px, Math.max(200px, root.left-panel-width + delta));
+                        }
+                        double-clicked => {
+                            root.left-panel-width = 256px;
+                        }
+                    }
                 }
 
-                // Zone B: Hybrid Clip Matrix Drawer (220px)
+                // Zone B: Hybrid Clip Matrix Drawer (Resizable [min: 180px, max: 360px])
                 if root.show-clip-matrix : HybridClipMatrixDrawer {
+                    panel-width: root.clip-matrix-width;
                     tracks: root.tracks;
                     selected-track-id: root.selected-track-id;
 
@@ -438,15 +466,32 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Zone B-to-C Divider
+                // Zone B-to-C Resizing Splitter Bar
                 if root.show-clip-matrix : Rectangle {
-                    width: 1px;
-                    background: Theme.border-subtle;
+                    width: 5px;
+                    background: transparent;
+                    Rectangle {
+                        x: 2px;
+                        width: 1px;
+                        height: parent.height;
+                        background: split-b-touch.has-hover ? Theme.accent : Theme.border-subtle;
+                    }
+                    split-b-touch := TouchArea {
+                        mouse-cursor: MouseCursor.col-resize;
+                        moved => {
+                            let delta = self.mouse-x - self.pressed-x;
+                            root.clip-matrix-width = Math.min(360px, Math.max(180px, root.clip-matrix-width + delta));
+                        }
+                        double-clicked => {
+                            root.clip-matrix-width = 240px;
+                        }
+                    }
                 }
 
                 // Zone C: Center Linear Arrangement & Track Headers
                 ArrangementViewport {
                     horizontal-stretch: 1;
+                    headers-width: root.track-headers-width;
                     tracks: root.tracks;
                     timeline-blocks: root.timeline-blocks;
                     selected-track-id: root.selected-track-id;
@@ -465,14 +510,31 @@ export component MainWindow inherits Window {
                     scrub-timeline(pos) => { root.playhead-px = pos; }
                 }
 
-                // Zone C-to-D Divider
+                // Zone C-to-D Resizing Splitter Bar
                 if root.show-control-room : Rectangle {
-                    width: 1px;
-                    background: Theme.border-subtle;
+                    width: 5px;
+                    background: transparent;
+                    Rectangle {
+                        x: 2px;
+                        width: 1px;
+                        height: parent.height;
+                        background: split-d-touch.has-hover ? Theme.accent : Theme.border-subtle;
+                    }
+                    split-d-touch := TouchArea {
+                        mouse-cursor: MouseCursor.col-resize;
+                        moved => {
+                            let delta = self.mouse-x - self.pressed-x;
+                            root.control-room-width = Math.min(300px, Math.max(160px, root.control-room-width - delta));
+                        }
+                        double-clicked => {
+                            root.control-room-width = 200px;
+                        }
+                    }
                 }
 
-                // Zone D: Right Control Room & Master Loudness Meter (192px)
+                // Zone D: Right Control Room & Master Loudness Meter (Resizable [min: 160px, max: 300px])
                 if root.show-control-room : ControlRoomMeters {
+                    panel-width: root.control-room-width;
                     lufs-integrated: root.lufs-integrated;
                     lufs-short: root.lufs-short;
                     lufs-peak: root.lufs-peak;
@@ -483,14 +545,31 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Workspace-to-Dock Divider
+            // Workspace-to-Dock Resizing Splitter Bar (min: 180px, max: 480px)
             if root.show-lower-dock : Rectangle {
-                height: 1px;
-                background: Theme.border-subtle;
+                height: 5px;
+                background: transparent;
+                Rectangle {
+                    y: 2px;
+                    width: parent.width;
+                    height: 1px;
+                    background: dock-split-touch.has-hover ? Theme.accent : Theme.border-subtle;
+                }
+                dock-split-touch := TouchArea {
+                    mouse-cursor: MouseCursor.row-resize;
+                    moved => {
+                        let delta = self.mouse-y - self.pressed-y;
+                        root.lower-dock-height = Math.min(480px, Math.max(180px, root.lower-dock-height - delta));
+                    }
+                    double-clicked => {
+                        root.lower-dock-height = 320px;
+                    }
+                }
             }
 
-            // 3. BOTTOM UNIFIED MULTI-MODAL DOCK
+            // 3. BOTTOM UNIFIED MULTI-MODAL DOCK (Resizable Height)
             if root.show-lower-dock : UnifiedLowerDock {
+                dock-height: root.lower-dock-height;
                 active-tab: Theme.active-dock-tab;
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
@@ -555,6 +634,7 @@ export component MainWindow inherits Window {
 
         ToastBanner {
             toast-text: root.toast-message;
+            show-toast: root.show-floating-toast;
         }
     }
 }

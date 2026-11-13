@@ -485,6 +485,87 @@ component IconEyeInsight inherits Rectangle {
     }
 }
 
+// --- 5. Transport Cluster Vector Icons ---
+
+component IconTransportRewind inherits Rectangle {
+    in property <color> icon-color: #cbd5e1;
+    width: 13px;
+    height: 10px;
+
+    Path {
+        x: 0px;
+        y: 0px;
+        width: 6px;
+        height: 10px;
+        commands: "M 6 0 L 0 5 L 6 10 Z";
+        fill: root.icon-color;
+    }
+    Path {
+        x: 6.5px;
+        y: 0px;
+        width: 6px;
+        height: 10px;
+        commands: "M 6 0 L 0 5 L 6 10 Z";
+        fill: root.icon-color;
+    }
+}
+
+component IconTransportStop inherits Rectangle {
+    in property <color> icon-color: #cbd5e1;
+    width: 9px;
+    height: 9px;
+
+    Rectangle {
+        width: 9px;
+        height: 9px;
+        border-radius: 1.5px;
+        background: root.icon-color;
+    }
+}
+
+component IconTransportPlay inherits Rectangle {
+    in property <color> icon-color: #10b981;
+    width: 10px;
+    height: 11px;
+
+    Path {
+        x: 0px;
+        y: 0px;
+        width: 10px;
+        height: 11px;
+        commands: "M 0 0 L 10 5.5 L 0 11 Z";
+        fill: root.icon-color;
+    }
+}
+
+component IconTransportRecord inherits Rectangle {
+    in property <color> icon-color: #ef4444;
+    width: 9px;
+    height: 9px;
+
+    Rectangle {
+        width: 9px;
+        height: 9px;
+        border-radius: 4.5px;
+        background: root.icon-color;
+    }
+}
+
+component IconTransportLoop inherits Rectangle {
+    in property <color> icon-color: #94a3b8;
+    width: 12px;
+    height: 10px;
+
+    Path {
+        x: 0px;
+        y: 0px;
+        width: 12px;
+        height: 10px;
+        commands: "M 3 2 A 4 4 0 1 1 1.5 6 L 0 6 L 2.5 9 L 5 6 L 3.5 6 A 2.5 2.5 0 1 0 3.5 3 Z";
+        fill: root.icon-color;
+    }
+}
+
 export component TransportHeaderBar inherits Rectangle {
     in-out property <bool> show-browser: true;
     in-out property <bool> show-clipmatrix: true;
@@ -525,12 +606,12 @@ export component TransportHeaderBar inherits Rectangle {
         padding-bottom: 10px;
         spacing: 12px;
 
-        // 1. Brand Mark & Zone Toggles & Edit Tools
+        // 1. Left Logic 12 Island: Brand & Zone Toggles & Edit Tools (Separated Groups)
         HorizontalLayout {
-            spacing: 8px;
+            spacing: 12px;
             alignment: start;
 
-            // Brand Mark: 夜半 Studio
+            // Group A: Brand Mark (夜半 Studio)
             Rectangle {
                 background: #10131a;
                 border-radius: 4px;
@@ -539,28 +620,16 @@ export component TransportHeaderBar inherits Rectangle {
                 height: 28px;
 
                 HorizontalLayout {
-                    padding-left: 9px;
+                    padding-left: 8px;
                     padding-right: 9px;
                     spacing: 7px;
                     alignment: center;
 
-                    // Studio emblem badge
-                    Rectangle {
-                        width: 16px;
-                        height: 16px;
-                        border-radius: 3px;
-                        background: Theme.accent.with-alpha(0.18);
-                        border-width: 1px;
-                        border-color: Theme.accent.with-alpha(0.45);
-                        Text {
-                            text: "夜";
-                            font-family: Tokens.font-ui;
-                            font-size: 9px;
-                            font-weight: 800;
-                            color: Theme.accent;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                    // Studio brand logo image from assets/brand
+                    Image {
+                        source: @image-url("../../../assets/brand/png/yeban-dark-64.png");
+                        width: 18px;
+                        height: 18px;
                     }
 
                     Text {
@@ -590,12 +659,12 @@ export component TransportHeaderBar inherits Rectangle {
                 }
             }
 
-            // Zone visibility toggles (检查器, Clip 矩阵, 底栏, 监听室)
+            // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [F3], 监听室 [F4])
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #ffffff12;
+                border-color: #ffffff14;
                 height: 28px;
 
                 HorizontalLayout {
@@ -607,14 +676,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-browser ? Theme.accent.with-alpha(0.18) : transparent;
+                        background: root.show-browser ? #132636 : transparent;
                         border-radius: 3px;
                         border-width: root.show-browser ? 1px : 0;
-                        border-color: Theme.accent;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconInspectorToggle {
                             active: root.show-browser;
                             active-color: Theme.accent;
-                            inactive-color: #64748b;
+                            inactive-color: #94a3b8;
                         }
                         TouchArea { clicked => { root.toggle-zone("browser"); } }
                     }
@@ -623,14 +692,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-clipmatrix ? Theme.accent.with-alpha(0.18) : transparent;
+                        background: root.show-clipmatrix ? #132636 : transparent;
                         border-radius: 3px;
                         border-width: root.show-clipmatrix ? 1px : 0;
-                        border-color: Theme.accent;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconClipMatrixToggle {
                             active: root.show-clipmatrix;
                             active-color: Theme.accent;
-                            inactive-color: #64748b;
+                            inactive-color: #94a3b8;
                         }
                         TouchArea { clicked => { root.toggle-zone("clipmatrix"); } }
                     }
@@ -639,14 +708,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-lower-dock ? Theme.accent.with-alpha(0.18) : transparent;
+                        background: root.show-lower-dock ? #132636 : transparent;
                         border-radius: 3px;
                         border-width: root.show-lower-dock ? 1px : 0;
-                        border-color: Theme.accent;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconLowerDockToggle {
                             active: root.show-lower-dock;
                             active-color: Theme.accent;
-                            inactive-color: #64748b;
+                            inactive-color: #94a3b8;
                         }
                         TouchArea { clicked => { root.toggle-zone("lower"); } }
                     }
@@ -655,26 +724,26 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-control-room ? Theme.accent.with-alpha(0.18) : transparent;
+                        background: root.show-control-room ? #132636 : transparent;
                         border-radius: 3px;
                         border-width: root.show-control-room ? 1px : 0;
-                        border-color: Theme.accent;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconControlRoomToggle {
                             active: root.show-control-room;
                             active-color: Theme.accent;
-                            inactive-color: #64748b;
+                            inactive-color: #94a3b8;
                         }
                         TouchArea { clicked => { root.toggle-zone("right"); } }
                     }
                 }
             }
 
-            // Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
+            // Group C: Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #ffffff12;
+                border-color: #ffffff14;
                 height: 28px;
 
                 HorizontalLayout {
@@ -686,11 +755,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "pointer" ? Theme.accent : transparent;
+                        background: root.active-tool == "pointer" ? #132636 : transparent;
                         border-radius: 3px;
+                        border-width: root.active-tool == "pointer" ? 1px : 0;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconToolPointer {
                             selected: root.active-tool == "pointer";
-                            icon-color: root.active-tool == "pointer" ? #020617 : #94a3b8;
+                            icon-color: root.active-tool == "pointer" ? Theme.accent : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("pointer"); } }
                     }
@@ -699,11 +770,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "range" ? Theme.accent : transparent;
+                        background: root.active-tool == "range" ? #132636 : transparent;
                         border-radius: 3px;
+                        border-width: root.active-tool == "range" ? 1px : 0;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconToolRange {
                             selected: root.active-tool == "range";
-                            icon-color: root.active-tool == "range" ? #020617 : #94a3b8;
+                            icon-color: root.active-tool == "range" ? Theme.accent : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("range"); } }
                     }
@@ -712,11 +785,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "split" ? Theme.accent : transparent;
+                        background: root.active-tool == "split" ? #132636 : transparent;
                         border-radius: 3px;
+                        border-width: root.active-tool == "split" ? 1px : 0;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconToolSplit {
                             selected: root.active-tool == "split";
-                            icon-color: root.active-tool == "split" ? #020617 : #94a3b8;
+                            icon-color: root.active-tool == "split" ? Theme.accent : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("split"); } }
                     }
@@ -725,11 +800,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "draw" ? Theme.accent : transparent;
+                        background: root.active-tool == "draw" ? #132636 : transparent;
                         border-radius: 3px;
+                        border-width: root.active-tool == "draw" ? 1px : 0;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconToolDraw {
                             selected: root.active-tool == "draw";
-                            icon-color: root.active-tool == "draw" ? #020617 : #94a3b8;
+                            icon-color: root.active-tool == "draw" ? Theme.accent : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-tool("draw"); } }
                     }
@@ -737,108 +814,117 @@ export component TransportHeaderBar inherits Rectangle {
             }
         }
 
-        // 2. Transport Center Controls + Digital LCD Precision HUD
+        // 2. Center Logic 12 Island: Unified Transport & Precision Digital LCD (Separated by Spacing)
         HorizontalLayout {
             horizontal-stretch: 1;
-            spacing: 8px;
+            spacing: 14px;
             alignment: center;
 
-            // Physical Hardware Transport Buttons
-            HorizontalLayout {
-                spacing: 4px;
-                alignment: center;
+            // Group D: Cohesive Logic 12 Transport Control Cluster (Unified height, styling, vector iconography, and balanced visual weight)
+            Rectangle {
+                background: #090c12;
+                border-radius: 5px;
+                border-width: 1px;
+                border-color: #1c2333;
+                height: 28px;
 
-                // Rewind
-                Rectangle {
-                    width: 28px;
-                    height: 28px;
-                    border-radius: 4px;
-                    background: #10141d;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    Text {
-                        text: "◀◀";
-                        font-family: Tokens.font-ui;
-                        font-size: 9px;
-                        font-weight: 800;
-                        color: #cbd5e1;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    TouchArea { clicked => { root.rewind(); } }
-                }
+                HorizontalLayout {
+                    padding: 2px;
+                    spacing: 2px;
+                    alignment: center;
 
-                // Play / Stop
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: root.is-playing ? Theme.status-ok : Theme.status-ok.with-alpha(0.18);
-                    border-width: 1px;
-                    border-color: root.is-playing ? Theme.status-ok : Theme.status-ok.with-alpha(0.40);
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        Text {
-                            text: root.is-playing ? "■ 停止" : "▶ 播放";
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.is-playing ? #020617 : Theme.status-ok;
-                            vertical-alignment: center;
+                    // 1. Rewind / Return to Zero (⏮)
+                    btn_rewind := Rectangle {
+                        width: 32px;
+                        height: 24px;
+                        border-radius: 3px;
+                        background: btn_rewind_touch.has-hover ? #161e2e : transparent;
+                        border-width: btn_rewind_touch.has-hover ? 1px : 0;
+                        border-color: #334155;
+                        IconTransportRewind {
+                            icon-color: btn_rewind_touch.has-hover ? #f8fafc : #cbd5e1;
+                        }
+                        btn_rewind_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.rewind(); }
                         }
                     }
-                    TouchArea { clicked => { root.toggle-play(); } }
-                }
 
-                // Rec
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: root.is-recording ? Theme.status-alert : Theme.status-alert.with-alpha(0.18);
-                    border-width: 1px;
-                    border-color: root.is-recording ? Theme.status-alert : Theme.status-alert.with-alpha(0.40);
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        Text {
-                            text: "● 录音";
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: root.is-recording ? #ffffff : Theme.status-alert;
-                            vertical-alignment: center;
+                    // 2. Stop Button (■)
+                    btn_stop := Rectangle {
+                        width: 32px;
+                        height: 24px;
+                        border-radius: 3px;
+                        background: (!root.is-playing && !root.is-recording) ? #161f30 : (btn_stop_touch.has-hover ? #141b29 : transparent);
+                        border-width: (!root.is-playing && !root.is-recording) ? 1px : (btn_stop_touch.has-hover ? 1px : 0);
+                        border-color: (!root.is-playing && !root.is-recording) ? #2e3d55 : #253347;
+                        IconTransportStop {
+                            icon-color: (!root.is-playing && !root.is-recording) ? #f8fafc : (btn_stop_touch.has-hover ? #cbd5e1 : #94a3b8);
+                        }
+                        btn_stop_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                if root.is-playing { root.toggle-play(); }
+                                else if root.is-recording { root.toggle-rec(); }
+                                else { root.rewind(); }
+                            }
                         }
                     }
-                    TouchArea { clicked => { root.toggle-rec(); } }
-                }
 
-                // Loop
-                Rectangle {
-                    height: 28px;
-                    border-radius: 4px;
-                    background: root.is-looping ? Theme.accent.with-alpha(0.2) : #10141d;
-                    border-width: 1px;
-                    border-color: root.is-looping ? Theme.accent : Theme.border-subtle;
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        Text {
-                            text: "↻ 循环";
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: root.is-looping ? Theme.accent : #94a3b8;
-                            vertical-alignment: center;
+                    // 3. Play / Pause Button (▶)
+                    btn_play := Rectangle {
+                        width: 36px;
+                        height: 24px;
+                        border-radius: 3px;
+                        background: root.is-playing ? #10b981 : (btn_play_touch.has-hover ? #10b981.with-alpha(0.28) : #10b981.with-alpha(0.18));
+                        border-width: 1px;
+                        border-color: root.is-playing ? #059669 : #10b981.with-alpha(0.45);
+                        IconTransportPlay {
+                            icon-color: root.is-playing ? #020617 : #10b981;
+                        }
+                        btn_play_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-play(); }
                         }
                     }
-                    TouchArea { clicked => { root.toggle-loop(); } }
+
+                    // 4. Record Arm / Punch-in Button (●)
+                    btn_rec := Rectangle {
+                        width: 32px;
+                        height: 24px;
+                        border-radius: 3px;
+                        background: root.is-recording ? #ef4444 : (btn_rec_touch.has-hover ? #ef4444.with-alpha(0.28) : #ef4444.with-alpha(0.18));
+                        border-width: 1px;
+                        border-color: root.is-recording ? #dc2626 : #ef4444.with-alpha(0.45);
+                        IconTransportRecord {
+                            icon-color: root.is-recording ? #ffffff : #ef4444;
+                        }
+                        btn_rec_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-rec(); }
+                        }
+                    }
+
+                    // 5. Loop / Cycle Toggle Button (↻)
+                    btn_loop := Rectangle {
+                        width: 32px;
+                        height: 24px;
+                        border-radius: 3px;
+                        background: root.is-looping ? Theme.accent.with-alpha(0.22) : (btn_loop_touch.has-hover ? #161e2e : transparent);
+                        border-width: root.is-looping ? 1px : (btn_loop_touch.has-hover ? 1px : 0);
+                        border-color: root.is-looping ? Theme.accent.with-alpha(0.70) : #334155;
+                        IconTransportLoop {
+                            icon-color: root.is-looping ? Theme.accent : (btn_loop_touch.has-hover ? #cbd5e1 : #94a3b8);
+                        }
+                        btn_loop_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-loop(); }
+                        }
+                    }
                 }
             }
 
-            // Digital Precision LCD HUD Display Bezel (Height: 28px aligned)
+            // Group E: Digital Precision LCD HUD Display Bezel (High-contrast WCAG AA)
             Rectangle {
                 height: 28px;
                 background: #05070a;
@@ -857,11 +943,11 @@ export component TransportHeaderBar inherits Rectangle {
                         alignment: center;
                         spacing: 0px;
                         Text {
-                            text: "TIME";
+                            text: "BAR / BEAT";
                             font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.8px;
-                            color: #64748b;
+                            font-size: 7.5px;
+                            letter-spacing: 0.6px;
+                            color: #94a3b8;
                             font-weight: 700;
                         }
                         Text {
@@ -880,15 +966,15 @@ export component TransportHeaderBar inherits Rectangle {
                         alignment: center;
                         spacing: 0px;
                         Text {
-                            text: "BPM";
+                            text: "TEMPO";
                             font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.8px;
-                            color: #64748b;
+                            font-size: 7.5px;
+                            letter-spacing: 0.6px;
+                            color: #94a3b8;
                             font-weight: 700;
                         }
                         Text {
-                            text: "" + root.bpm-val;
+                            text: "" + root.bpm-val + ".00";
                             font-family: Tokens.font-mono;
                             font-size: 12px;
                             color: Theme.track-drum;
@@ -911,9 +997,9 @@ export component TransportHeaderBar inherits Rectangle {
                         Text {
                             text: "KEY / SCALE";
                             font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.8px;
-                            color: #64748b;
+                            font-size: 7.5px;
+                            letter-spacing: 0.6px;
+                            color: #94a3b8;
                             font-weight: 700;
                         }
                         Text {
@@ -934,17 +1020,17 @@ export component TransportHeaderBar inherits Rectangle {
             }
         }
 
-        // 3. Audio Engine & Workspace Persona Switcher
+        // 3. Right Logic 12 Island: Audio Engine & Workspace Persona Switcher
         HorizontalLayout {
-            spacing: 6px;
+            spacing: 8px;
             alignment: end;
 
-            // Zero reload buffer switcher
+            // Group F: Zero reload buffer switcher (High-contrast labels)
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #ffffff12;
+                border-color: #ffffff14;
                 height: 28px;
 
                 HorizontalLayout {
@@ -957,7 +1043,7 @@ export component TransportHeaderBar inherits Rectangle {
                         font-family: Tokens.font-mono;
                         font-size: 8px;
                         letter-spacing: 0.5px;
-                        color: #64748b;
+                        color: #94a3b8;
                         font-weight: 700;
                         vertical-alignment: center;
                     }
@@ -980,13 +1066,13 @@ export component TransportHeaderBar inherits Rectangle {
                 }
             }
 
-            // DSP CPU Gauge
+            // Group G: DSP CPU Gauge (High-contrast)
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #ffffff12;
-                width: 76px;
+                border-color: #ffffff14;
+                width: 78px;
                 height: 28px;
 
                 VerticalLayout {
@@ -1000,7 +1086,7 @@ export component TransportHeaderBar inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 8px;
                             letter-spacing: 0.5px;
-                            color: #64748b;
+                            color: #94a3b8;
                             font-weight: 700;
                         }
                         Text {
@@ -1018,7 +1104,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-radius: 1.5px;
                         Rectangle {
                             x: 0;
-                            width: (root.dsp-cpu-percent * 60px) / 100;
+                            width: (root.dsp-cpu-percent * 62px) / 100;
                             height: 3px;
                             border-radius: 1.5px;
                             background: Theme.status-ok;
@@ -1027,12 +1113,12 @@ export component TransportHeaderBar inherits Rectangle {
                 }
             }
 
-            // Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
+            // Group H: Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
             Rectangle {
                 background: #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: #ffffff12;
+                border-color: #ffffff14;
                 height: 28px;
 
                 HorizontalLayout {
@@ -1044,11 +1130,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : transparent;
+                        background: Theme.persona == PersonaMode.YebanDefault ? #132636 : transparent;
                         border-radius: 3px;
+                        border-width: Theme.persona == PersonaMode.YebanDefault ? 1px : 0;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconPersonaDefault {
                             selected: Theme.persona == PersonaMode.YebanDefault;
-                            icon-color: Theme.persona == PersonaMode.YebanDefault ? #020617 : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.YebanDefault); } }
                     }
@@ -1057,11 +1145,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : transparent;
+                        background: Theme.persona == PersonaMode.AbletonLive ? #2d2014 : transparent;
                         border-radius: 3px;
+                        border-width: Theme.persona == PersonaMode.AbletonLive ? 1px : 0;
+                        border-color: Theme.track-drum.with-alpha(0.6);
                         IconPersonaPerformance {
                             selected: Theme.persona == PersonaMode.AbletonLive;
-                            icon-color: Theme.persona == PersonaMode.AbletonLive ? #020617 : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.AbletonLive); } }
                     }
@@ -1070,11 +1160,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.LogicPro ? Theme.accent : transparent;
+                        background: Theme.persona == PersonaMode.LogicPro ? #132636 : transparent;
                         border-radius: 3px;
+                        border-width: Theme.persona == PersonaMode.LogicPro ? 1px : 0;
+                        border-color: Theme.accent.with-alpha(0.6);
                         IconPersonaArranger {
                             selected: Theme.persona == PersonaMode.LogicPro;
-                            icon-color: Theme.persona == PersonaMode.LogicPro ? #ffffff : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.LogicPro ? Theme.accent : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.LogicPro); } }
                     }
@@ -1083,18 +1175,20 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : transparent;
+                        background: Theme.persona == PersonaMode.CubasePro ? #162620 : transparent;
                         border-radius: 3px;
+                        border-width: Theme.persona == PersonaMode.CubasePro ? 1px : 0;
+                        border-color: Theme.track-vocal.with-alpha(0.6);
                         IconPersonaMixer {
                             selected: Theme.persona == PersonaMode.CubasePro;
-                            icon-color: Theme.persona == PersonaMode.CubasePro ? #020617 : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : #94a3b8;
                         }
                         TouchArea { clicked => { root.select-persona(PersonaMode.CubasePro); } }
                     }
                 }
             }
 
-            // Command palette button
+            // Group I: Command palette button
             Rectangle {
                 width: 34px;
                 height: 28px;
@@ -1114,7 +1208,7 @@ export component TransportHeaderBar inherits Rectangle {
                 TouchArea { clicked => { root.open-cmd-palette(); } }
             }
 
-            // Architecture insights toggle
+            // Group J: Architecture insights toggle
             Rectangle {
                 width: 28px;
                 height: 28px;

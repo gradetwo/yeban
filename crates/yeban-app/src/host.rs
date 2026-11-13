@@ -418,6 +418,15 @@ pub fn build_main_window(
     Ok(ui)
 }
 
+/// 更新通知状态：高频走带/录音/循环操作避免触发遮挡工作区的浮动弹窗，其他关键指令正常提示
+fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
+    let s: SharedString = msg.into();
+    let is_high_frequency =
+        s.starts_with("[走带]") || s.starts_with("[录音]") || s.starts_with("[循环]");
+    ui.set_show_floating_toast(!is_high_frequency);
+    ui.set_toast_message(s);
+}
+
 /// 为主窗口挂接核心用户交互闭包。
 fn wire_core_callbacks(ui: &MainWindow) {
     let weak = ui.as_weak();
@@ -435,12 +444,12 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     _ => 4,
                 };
                 ui.set_dsp_cpu_percent(cpu_load);
-                ui.set_toast_message(
+                update_toast(
+                    &ui,
                     format!(
                         "[音频] 已无损热切换 Buffer 为 {} smp (0ms 即时生效，无需重载插件)",
                         samples
-                    )
-                    .into(),
+                    ),
                 );
             }
         }
@@ -454,35 +463,35 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 if text == " " {
                     let playing = !ui.get_is_playing();
                     ui.set_is_playing(playing);
-                    ui.set_toast_message(
+                    update_toast(
+                        &ui,
                         if playing {
                             "[走带] 播放走带已启动"
                         } else {
                             "[走带] 走带已停止"
-                        }
-                        .into(),
+                        },
                     );
                 } else if text == "r" || text == "R" {
                     let rec = !ui.get_is_recording();
                     ui.set_is_recording(rec);
-                    ui.set_toast_message(
+                    update_toast(
+                        &ui,
                         if rec {
                             "[录音] 录音与回溯捕获已开启"
                         } else {
                             "[录音] 录音已停止"
-                        }
-                        .into(),
+                        },
                     );
                 } else if text == "c" || text == "C" {
                     let loop_on = !ui.get_is_looping();
                     ui.set_is_looping(loop_on);
-                    ui.set_toast_message(
+                    update_toast(
+                        &ui,
                         if loop_on {
                             "[循环] 循环已开启"
                         } else {
                             "[循环] 循环已关闭"
-                        }
-                        .into(),
+                        },
                     );
                 }
             }
@@ -496,13 +505,13 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 let playing = !ui.get_is_playing();
                 ui.set_is_playing(playing);
-                ui.set_toast_message(
+                update_toast(
+                    &ui,
                     if playing {
                         "[走带] 走带与 60FPS 频谱遥测已启动"
                     } else {
                         "[走带] 走带已停止"
-                    }
-                    .into(),
+                    },
                 );
             }
         }
@@ -514,13 +523,13 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 let rec = !ui.get_is_recording();
                 ui.set_is_recording(rec);
-                ui.set_toast_message(
+                update_toast(
+                    &ui,
                     if rec {
                         "[录音] 录音与回溯捕获已激活"
                     } else {
                         "[录音] 录音已关闭"
-                    }
-                    .into(),
+                    },
                 );
             }
         }
@@ -532,13 +541,13 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 let loop_on = !ui.get_is_looping();
                 ui.set_is_looping(loop_on);
-                ui.set_toast_message(
+                update_toast(
+                    &ui,
                     if loop_on {
                         "[循环] 循环已开启"
                     } else {
                         "[循环] 循环已关闭"
-                    }
-                    .into(),
+                    },
                 );
             }
         }
@@ -550,7 +559,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 ui.set_playhead_px(40.0);
                 ui.set_timecode_text("001.01.01".into());
-                ui.set_toast_message("[走带] 播放头已归零至 001.01.01".into());
+                update_toast(&ui, "[走带] 播放头已归零至 001.01.01");
             }
         }
     });
@@ -560,7 +569,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |bpm| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_bpm_val(bpm);
-                ui.set_toast_message(format!("[速度] 工程速度已同步为 {} BPM", bpm).into());
+                update_toast(&ui, format!("[速度] 工程速度已同步为 {} BPM", bpm));
             }
         }
     });
@@ -570,7 +579,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |scale| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_scale_text(scale.clone());
-                ui.set_toast_message(format!("[调式] 全局调式已锁定为: {}", scale).into());
+                update_toast(&ui, format!("[调式] 全局调式已锁定为: {}", scale));
             }
         }
     });
@@ -581,7 +590,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |tool| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_active_tool(tool.clone());
-                ui.set_toast_message(format!("[工具] 当前编辑工具已切换为: {}", tool).into());
+                update_toast(&ui, format!("[工具] 当前编辑工具已切换为: {}", tool));
             }
         }
     });
@@ -611,7 +620,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
                         t.name,
                         if t.muted { "开启" } else { "关闭" }
                     );
-                    ui.set_toast_message(msg.into());
+                    update_toast(&ui, msg);
                 }
                 ui.set_tracks(ModelRc::new(VecModel::from(vec)));
             }
@@ -633,7 +642,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
                         t.name,
                         if t.soloed { "开启" } else { "关闭" }
                     );
-                    ui.set_toast_message(msg.into());
+                    update_toast(&ui, msg);
                 }
                 ui.set_tracks(ModelRc::new(VecModel::from(vec)));
             }
@@ -655,7 +664,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
                         t.name,
                         if t.armed { "开启" } else { "关闭" }
                     );
-                    ui.set_toast_message(msg.into());
+                    update_toast(&ui, msg);
                 }
                 ui.set_tracks(ModelRc::new(VecModel::from(vec)));
             }
@@ -1347,14 +1356,59 @@ mod tests {
         ui.invoke_piano_key_audition("C5".into(), 0);
         assert_eq!(ui.get_toast_message(), "[卷帘] 琴键试听: C5 (行 0)");
 
-        // 8. 走带与快捷键无 Emoji 格式验证
+        // 8. 走带与快捷键无 Emoji 格式验证与工作区浮动弹窗防遮挡抑制验证
         ui.invoke_transport_toggle_play();
         assert_eq!(ui.get_toast_message(), "[走带] 走带与 60FPS 频谱遥测已启动");
+        assert!(
+            !ui.get_show_floating_toast(),
+            "高频走带操作必须隐藏工作区浮动遮挡弹窗"
+        );
         ui.invoke_transport_toggle_play();
         assert_eq!(ui.get_toast_message(), "[走带] 走带已停止");
+        assert!(!ui.get_show_floating_toast());
         ui.invoke_transport_toggle_rec();
         assert_eq!(ui.get_toast_message(), "[录音] 录音与回溯捕获已激活");
+        assert!(
+            !ui.get_show_floating_toast(),
+            "高频录音操作必须隐藏工作区浮动遮挡弹窗"
+        );
+        ui.invoke_transport_toggle_loop();
+        assert_eq!(ui.get_toast_message(), "[循环] 循环已关闭");
+        assert!(
+            !ui.get_show_floating_toast(),
+            "高频循环切换必须隐藏工作区浮动遮挡弹窗"
+        );
         ui.invoke_transport_rewind();
         assert_eq!(ui.get_toast_message(), "[走带] 播放头已归零至 001.01.01");
+        assert!(
+            !ui.get_show_floating_toast(),
+            "高频归零操作必须隐藏工作区浮动遮挡弹窗"
+        );
+
+        // 9. 关键配置变更仍正常展示浮动弹窗
+        ui.invoke_hot_swap_buffer_size(512);
+        assert!(
+            ui.get_show_floating_toast(),
+            "音频 Buffer 调整属于关键配置提示，必须显示浮动弹窗"
+        );
+
+        // 10. 验证面板尺寸默认值与选中轨道状态
+        assert_eq!(ui.get_left_panel_width(), 256.0);
+        assert_eq!(ui.get_clip_matrix_width(), 240.0);
+        assert_eq!(ui.get_control_room_width(), 200.0);
+        assert_eq!(ui.get_lower_dock_height(), 320.0);
+        assert_eq!(ui.get_track_headers_width(), 240.0);
+        assert_eq!(
+            ui.get_selected_track_id(),
+            3,
+            "默认选中轨道必须为 Track 3 (Atmos Granular Pad)"
+        );
+
+        let tracks = ui.get_tracks();
+        let trk1 = tracks.iter().find(|t| t.id == 1).unwrap();
+        assert!(!trk1.armed, "Track 1 不得误亮录音预备红灯");
+        let trk3 = tracks.iter().find(|t| t.id == 3).unwrap();
+        assert_eq!(trk3.kind, "GRANULAR");
+        assert_eq!(trk3.pan, "12L");
     }
 }
