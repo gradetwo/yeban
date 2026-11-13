@@ -12,7 +12,7 @@
 //! | [`list_proposals_is_discoverable_and_the_counts_move_with_it`] | `tools/list` 里的工具数 / `TOOL_COUNT` / 样本 `registry.count` / 契约 enum | **工具个数**（44） |
 //! | [`a_pending_proposal_is_listed_and_disappears_after_merge`] | `yeban_list_proposals` 的 `openCount` | **提案条数**（1 → 0） |
 //! | [`the_empty_state_is_an_empty_array_plus_one_sentence`] | 空态响应 | 1 个空数组 + 1 句逐字 `note` |
-//! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**，每份都被自己的响应反校 |
+//! | [`ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy`] | [`COVERED_TOOLS`](yeban_mcp::output_schema::COVERED_TOOLS) 那十个工具的真实 `data` | **10 份 schema**（`yeban_render_master` 两份互斥形状各跑 `validate`，其余九份跑 `validate_complete`） |
 //! | [`the_validator_can_go_red_and_the_schema_is_not_idealised`] | 校验器 | 5 种注入（少 required / 错类型 / 声明字段缺席 / 违 `const` / 违 `enum`）各 1 条 |
 //! | [`the_58_published_spellings_are_still_all_there`] | `insertDevice.device.params.items` | **拼写个数**（113） |
 //!
@@ -386,7 +386,8 @@ fn the_empty_state_is_an_empty_array_plus_one_sentence() {
 /// 真实响应全部来自 `tools/call`（不是手写夹具）；每个工具打印一条读数。
 /// 提案类三工具（`propose_section` / `edit_notes` / `set_macro`）各跑**两种形状**：
 /// 全字段（`autoMerge: true`，供 `validate_complete`）＋ 缺省（供 `validate`，
-/// 见判据末尾）。
+/// 见判据末尾）。`yeban_render_master` 也跑**两种形状**（逐轨贡献一份、区间一份，
+/// 各供 `validate`，见判据末尾）—— 两形状互斥，单份响应恒过不了 `validate_complete`。
 #[test]
 fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
     let (mut dispatcher, auth, project) = dispatcher();
@@ -432,6 +433,25 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
         }),
     );
     assert_eq!(rendered["status"], "success", "{rendered}");
+    // ④b `yeban_render_master` 的**区间形状**（与 ④ 互斥的第二份成功形状）：
+    // 逐轨贡献按全程口径逐轨各渲一次，与"只交付一个区间"没有合成语义 ⇒
+    // `contributions` 与 `startTick` / `endTick` 同给会被响亮拒绝
+    // （`domain/render.rs` 的区间×贡献互斥），因此没有任何一次响应能同时含
+    // `contributions` / `contributionsBasis` 与 `renderRange`。这份响应跑
+    // `validate`（见判据末尾的 render_master 两形状段），不跑 `validate_complete`。
+    let rendered_range = call(
+        &mut render_dispatcher,
+        &render_auth,
+        "yeban_render_master",
+        json!({
+            "format": "wav",
+            "sampleRate": 48_000,
+            "path": scratch.join("master-range.wav").display().to_string(),
+            "startTick": 480,
+            "endTick": 1440,
+        }),
+    );
+    assert_eq!(rendered_range["status"], "success", "{rendered_range}");
     // ⑤ `yeban_undo`（撤销刚才那次合并）
     let undo = call(&mut dispatcher, &auth, "yeban_undo", json!({"steps": 1}));
     assert_eq!(undo["status"], "success", "{undo}");
@@ -597,7 +617,9 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
         "{automation_preview}"
     );
 
-    let responses: [(&str, &Value, &[&str]); 10] = [
+    // ⚠ `yeban_render_master` 不在此表（它跑两份互斥形状，各供 `validate`，见判据末尾）——
+    // 此表只剩九工具，全跑 `validate_complete`。
+    let responses: [(&str, &Value, &[&str]); 9] = [
         (
             "yeban_propose_section",
             &propose,
@@ -640,18 +662,6 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
             "yeban_query_engine_state",
             &engine_state,
             &["engine", "session", "stateSources", "track"],
-        ),
-        (
-            "yeban_render_master",
-            &rendered,
-            &[
-                "clippedSamples",
-                "contributions",
-                "contributionsBasis",
-                "truePeakDbfs",
-                "peak",
-                "sha256",
-            ],
         ),
         (
             "yeban_undo",
@@ -734,6 +744,70 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
             );
         }
     }
+
+    // `yeban_render_master` 的**两种成功形状**（各跑 `validate`，不跑 `validate_complete`）：
+    // 逐轨贡献（④，全程口径）与区间渲染（④b）互斥 —— `contributions` 与
+    // `startTick` / `endTick` 同给会被响亮拒绝（`domain/render.rs` 的区间×贡献互斥：
+    // 逐轨贡献按全程口径逐轨各渲一次，与"只交付一个区间"没有合成语义），因此没有任何
+    // 一次响应能同时含 `contributions` / `contributionsBasis` 与 `renderRange`；
+    // 而 `validate_complete` 要求 properties 声明的每个字段都出现（与 `required` 无关），
+    // 单份 spot 恒不可能通过。两份形状的字段分别由 `tests/render_master.rs` 的集成测试
+    // 覆盖（区间逐字节等同、非法区间拒绝、响度施加于区间）。
+    let render_schema = output_schema::for_tool("yeban_render_master").expect("schema");
+    for (label, data, present, absent) in [
+        (
+            "逐轨贡献形状（contributions: true）",
+            &rendered["data"],
+            [
+                "clippedSamples",
+                "contributions",
+                "contributionsBasis",
+                "truePeakDbfs",
+                "peak",
+                "sha256",
+            ]
+            .as_slice(),
+            ["renderRange"].as_slice(),
+        ),
+        (
+            "区间形状（startTick: 480 / endTick: 1440）",
+            &rendered_range["data"],
+            [
+                "clippedSamples",
+                "renderRange",
+                "truePeakDbfs",
+                "peak",
+                "sha256",
+            ]
+            .as_slice(),
+            ["contributions", "contributionsBasis"].as_slice(),
+        ),
+    ] {
+        output_schema::validate(&render_schema, data).unwrap_or_else(|violation| {
+            panic!("`yeban_render_master` {label}违反自己的 schema: {violation}\n{data}")
+        });
+        for field in present {
+            assert!(
+                data.get(*field).is_some(),
+                "`yeban_render_master` {label}必须含 `{field}`"
+            );
+        }
+        for field in absent {
+            assert!(
+                data.get(*field).is_none(),
+                "`yeban_render_master` {label}必须没有 `{field}`（与另一形状互斥）"
+            );
+        }
+        println!("### `yeban_render_master` {label}（validate 通过）");
+    }
+    assert_eq!(
+        rendered_range["data"]["renderRange"]["startTick"], 480,
+        "{rendered_range}"
+    );
+    assert_eq!(
+        rendered_range["data"]["renderRange"]["endTick"], 1440,
+        "{rendered_range}"
+    );
 
     // ⭐ s30 的非空核对：上面那份 `validate_complete` 对**空数组**是**空绿**的
     // （`items` 只在真有元素时被逐个核对），所以这三处**逐键名册**要能被真实响应跑到，
