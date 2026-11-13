@@ -537,6 +537,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     None
                 };
                 let tick = production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
+                // 新 UI 的显示态(is-playing / timecode / 电平 / 播放头)与
+                // 契约面(旧接线写入)对齐; 数据数组同名, apply_view 已直接驱动组件树。
+                host::sync_aether_display(&ui_tick);
                 // ⭐ **墙钟泵送**（控制面模式）：播放时按真实时间推量子（无声）。
                 //
                 // 只挂在生产 16 ms 定时器上（⛔ 不进 `ProductionLoop::tick`）：tick 是
@@ -919,6 +922,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     *midi_live_state.borrow_mut() = Some(midi_state);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);
+    // 生产桥接层: 放在全部 wire_* 之后, 用 on_* 覆盖语义接管新 UI 独有回调,
+    // 转发到已接线的旧回调 / 真实 Op。测试装配(只 build_main_window)不跑这一段。
+    host::wire_aether_actions(&ui, Rc::clone(&undo_port));
     let undo_display = undo_port.display();
     cli::emit(&[format!(
         "撤销: 可撤销 {} 步 · 已撤销 {} 步 · 分支 {} · 实现 = undo_session (与 MCP 的 yeban_undo 同一份源码)",
