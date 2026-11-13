@@ -1,5 +1,5 @@
 //! 视图状态与实时音频引擎 → Slint `MainWindow` 的双向桥接与宿主实现。
-//! 遵循夜半 DAW 原生跨平台桌面 UI 设计方案。
+//! 遵循夜半原生跨平台桌面 UI 设计方案。
 #![allow(missing_docs)]
 #![allow(unused)]
 
@@ -405,7 +405,7 @@ pub fn now_ms() -> u64 {
         .map_or(0, |e| e.as_millis() as u64)
 }
 
-/// 构造并初始化夜半 DAW 主窗口。
+/// 构造并初始化夜半主窗口。
 pub fn build_main_window(
     _view: &ViewState,
     _scene: &DemoScene,
@@ -437,7 +437,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 ui.set_dsp_cpu_percent(cpu_load);
                 ui.set_toast_message(
                     format!(
-                        "⚡ 已无损热切换 Buffer 为 {} smp (0ms 即时生效，无需重载插件)",
+                        "[音频] 已无损热切换 Buffer 为 {} smp (0ms 即时生效，无需重载插件)",
                         samples
                     )
                     .into(),
@@ -478,9 +478,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     ui.set_is_looping(loop_on);
                     ui.set_toast_message(
                         if loop_on {
-                            "🔁 循环已开启"
+                            "[循环] 循环已开启"
                         } else {
-                            "循环已关闭"
+                            "[循环] 循环已关闭"
                         }
                         .into(),
                     );
@@ -534,9 +534,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 ui.set_is_looping(loop_on);
                 ui.set_toast_message(
                     if loop_on {
-                        "🔁 循环已开启"
+                        "[循环] 循环已开启"
                     } else {
-                        "循环已关闭"
+                        "[循环] 循环已关闭"
                     }
                     .into(),
                 );
@@ -550,7 +550,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 ui.set_playhead_px(40.0);
                 ui.set_timecode_text("001.01.01".into());
-                ui.set_toast_message("⏮ 播放头已归零至 001.01.01".into());
+                ui.set_toast_message("|◀ 播放头已归零至 001.01.01".into());
             }
         }
     });
@@ -560,7 +560,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |bpm| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_bpm_val(bpm);
-                ui.set_toast_message(format!("⏱️ 工程速度已同步为 {} BPM", bpm).into());
+                ui.set_toast_message(format!("[速度] 工程速度已同步为 {} BPM", bpm).into());
             }
         }
     });
@@ -570,7 +570,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |scale| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_scale_text(scale.clone());
-                ui.set_toast_message(format!("🎼 全局调式已锁定为: {}", scale).into());
+                ui.set_toast_message(format!("[调式] 全局调式已锁定为: {}", scale).into());
             }
         }
     });
@@ -581,7 +581,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |tool| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_active_tool(tool.clone());
-                ui.set_toast_message(format!("🛠️ 当前编辑工具已切换为: {}", tool).into());
+                ui.set_toast_message(format!("[工具] 当前编辑工具已切换为: {}", tool).into());
             }
         }
     });
@@ -736,8 +736,8 @@ fn wire_core_callbacks(ui: &MainWindow) {
                     soloed: false,
                     armed: false,
                     meter_peak: 0.50,
-                    insert1: "⚡ Wavetable MPE".into(),
-                    insert2: "📈 Pro-QLinear 8".into(),
+                    insert1: "Wavetable MPE".into(),
+                    insert2: "Pro-QLinear 8".into(),
                     insert3: "".into(),
                     clip1: "Init Loop".into(),
                     clip2: "".into(),
@@ -763,7 +763,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
 
                 ui.set_toast_message(
-                    format!("✅ 已新增第 {} 轨 (同时支持音频与 MIDI 混排)", next_id).into(),
+                    format!("[轨道] 已新增第 {} 轨 (同时支持音频与 MIDI 混排)", next_id).into(),
                 );
             }
         }
@@ -777,7 +777,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
                 ui.set_is_playing(true);
                 ui.set_toast_message(
                     format!(
-                        "⚡ 触发轨道 TRK {:02} 第 {} 个 Clip 播放",
+                        "[播放] 触发轨道 TRK {:02} 第 {} 个 Clip 播放",
                         track_id,
                         clip_idx + 1
                     )
@@ -793,7 +793,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
             if let Some(ui) = weak.upgrade() {
                 ui.set_is_playing(true);
                 ui.set_toast_message(
-                    format!("🚀 已同步触发 Scene {} 整行 Clip 矩阵", scene_idx + 1).into(),
+                    format!("[播放] 已同步触发 Scene {} 整行 Clip 矩阵", scene_idx + 1).into(),
                 );
             }
         }
@@ -804,7 +804,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |chord| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(format!("🎼 正在试听全局和弦轨: {}", chord).into());
+                ui.set_toast_message(format!("[和弦] 正在试听全局和弦轨: {}", chord).into());
             }
         }
     });
@@ -814,7 +814,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |item_name| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(format!("🔌 已将 [{}] 挂载至内联设备机架", item_name).into());
+                ui.set_toast_message(format!("[设备] 已将 [{}] 挂载至设备机架", item_name).into());
             }
         }
     });
@@ -824,7 +824,9 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |mon| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(format!("🔊 Control Room 监听输出已切换至: {}", mon).into());
+                ui.set_toast_message(
+                    format!("[监听] Control Room 监听输出已切换至: {}", mon).into(),
+                );
             }
         }
     });
@@ -834,9 +836,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(
-                    "📏 已触发 Logic 12.4 新特性：一键归一化所有轨道高度！".into(),
-                );
+                ui.set_toast_message("[轨道] 已一键归一化所有轨道高度".into());
             }
         }
     });
@@ -846,7 +846,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move |cmd| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(format!("⚡ 已执行命令: {}", cmd).into());
+                ui.set_toast_message(format!("[命令] 已执行命令: {}", cmd).into());
             }
         }
     });
@@ -857,7 +857,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |dev, param, val| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_toast_message(
-                    format!("🎛️ {} 参数 {} 调整为: {:.1}", dev, param, val).into(),
+                    format!("[参数] {} 参数 {} 调整为: {:.1}", dev, param, val).into(),
                 );
             }
         }
@@ -869,7 +869,7 @@ fn wire_core_callbacks(ui: &MainWindow) {
         move |row, step| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_toast_message(
-                    format!("🎹 切换钢琴卷帘音高行 {} 第 {} 步", row, step + 1).into(),
+                    format!("[卷帘] 切换钢琴卷帘音高行 {} 第 {} 步", row, step + 1).into(),
                 );
             }
         }

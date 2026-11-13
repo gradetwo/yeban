@@ -8,12 +8,13 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> selected-track-bus: "Bus 1 (Synth Grp)";
     in-out property <float> selected-track-vol: -2.5;
     in-out property <float> selected-track-peak: 0.65;
-    in-out property <[string]> selected-track-inserts: ["⚡ Wavetable MPE", "📈 Pro-QLinear 8", "🔥 Glue Comp VCA"];
+    in-out property <[string]> selected-track-inserts: ["Wavetable MPE", "Pro-QLinear 8", "Glue Comp VCA"];
 
     in-out property <string> bus-name: "Bus 1 · Synth";
     in-out property <float> bus-track-vol: -1.0;
     in-out property <float> bus-track-peak: 0.55;
-    in-out property <[string]> bus-inserts: ["🎛️ Tape Saturator", "🌊 Vintage Verb", "+ 添加总线效果"];
+    in-out property <[string]> bus-inserts: ["Tape Saturator", "Vintage Verb", "+ 添加总线效果"];
+    in-out property <bool> show-bus-strip: false; // 默认折叠总线通道条，收缩至专注单轨检查器
 
     in-out property <string> search-query: "";
     in-out property <string> active-tag: "all"; // all, Synth, Drums, DSP, MPE
@@ -61,7 +62,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         Text {
-                            text: "🎛️ 通道检查器";
+                            text: "通道检查器";
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             font-weight: 700;
@@ -86,7 +87,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         Text {
-                            text: "🏷️ 智能音色库";
+                            text: "智能音色库";
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             font-weight: 700;
@@ -155,7 +156,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 padding-left: 6px;
                                 padding-right: 6px;
                                 Text {
-                                    text: "↕ 12.4等高";
+                                    text: "均分高度";
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     font-weight: 700;
@@ -177,23 +178,48 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     }
 
                     HorizontalLayout {
-                        spacing: 4px;
-                        Text {
-                            text: "ROUTING:";
-                            font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.5px;
-                            color: #64748b;
-                            font-weight: 700;
-                            vertical-alignment: center;
+                        alignment: space-between;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "ROUTING:";
+                                font-family: Tokens.font-mono;
+                                font-size: 8px;
+                                letter-spacing: 0.5px;
+                                color: #64748b;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "→ " + root.selected-track-bus;
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: Theme.track-bus;
+                                vertical-alignment: center;
+                            }
                         }
-                        Text {
-                            text: "→ " + root.selected-track-bus;
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: Theme.track-bus;
-                            vertical-alignment: center;
+
+                        // Bus strip toggle button (collapsible)
+                        Rectangle {
+                            background: root.show-bus-strip ? Theme.track-bus.with-alpha(0.25) : transparent;
+                            border-radius: 2px;
+                            border-width: 1px;
+                            border-color: root.show-bus-strip ? Theme.track-bus : #ffffff15;
+                            height: 16px;
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-right: 5px;
+                                Text {
+                                    text: root.show-bus-strip ? "折叠总线" : "展开总线";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 8px;
+                                    font-weight: 600;
+                                    color: root.show-bus-strip ? Theme.track-bus : #94a3b8;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.show-bus-strip = !root.show-bus-strip; } }
                         }
                     }
                 }
@@ -358,8 +384,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     }
                 }
 
-                // Strip 2: Target Group Bus Strip
-                Rectangle {
+                // Strip 2: Target Group Bus Strip (Collapsible)
+                if root.show-bus-strip : Rectangle {
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
@@ -528,7 +554,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     padding-left: 10px;
                     padding-right: 10px;
                     spacing: 6px;
-                    Text { text: "🔍"; font-size: 11px; vertical-alignment: center; }
+                    Text {
+                        text: "⌕";
+                        font-family: Tokens.font-mono;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #64748b;
+                        vertical-alignment: center;
+                    }
                     Text {
                         text: "搜索音色、插件、采样包...";
                         font-family: Tokens.font-ui;

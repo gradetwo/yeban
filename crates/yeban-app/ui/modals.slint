@@ -4,12 +4,12 @@ export component CommandPaletteModal inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <string> filter-text: "";
     in-out property <[CommandPaletteItem]> commands: [
-        { id: "persona-default", title: "切换至：夜半全景工作区 (旗舰混合 Production)", category: "Layout", shortcut: "1" },
+        { id: "persona-default", title: "切换至：夜半全景工作区 (默认 Production)", category: "Layout", shortcut: "1" },
         { id: "persona-ableton", title: "切换至：现场激发工作区 (Clip 矩阵 Performance)", category: "Layout", shortcut: "2" },
         { id: "persona-logic",   title: "切换至：线性编曲工作区 (时间轴编曲 Arrange)", category: "Layout", shortcut: "3" },
         { id: "persona-cubase",  title: "切换至：混音控制台工作区 (母带监听 Mix & Master)", category: "Layout", shortcut: "4" },
         { id: "toggle-hotspots", title: "打开/关闭 创新工作流与架构透视 (Insights)", category: "Help", shortcut: "H" },
-        { id: "tab-stacked",     title: "切换底栏：旗舰设备与混音堆叠 (Stacked Devices+Mixer)", category: "View", shortcut: "F3" },
+        { id: "tab-stacked",     title: "切换底栏：设备与混音堆叠 (Stacked Devices+Mixer)", category: "View", shortcut: "F3" },
         { id: "tab-devices",     title: "切换底栏：内联 DSP 设备机架 (Inline Devices)", category: "View", shortcut: "Shift+Tab" },
         { id: "tab-mixer",       title: "切换底栏：MixConsole 混音控制台 (Mixer)", category: "View", shortcut: "X" },
         { id: "tab-pianoroll",   title: "切换底栏：MPE 钢琴卷帘编辑器 (Piano Roll)", category: "View", shortcut: "P" },
@@ -208,7 +208,7 @@ export component HotspotOverlay inherits Rectangle {
                                 padding-left: 10px;
                                 padding-right: 10px;
                                 Text {
-                                    text: "夜半 DAW 专业工作流与现代声学架构";
+                                    text: "夜半 专业工作流与现代声学架构";
                                     font-family: Tokens.font-ui;
                                     font-size: 11px;
                                     font-weight: 800;
@@ -234,7 +234,7 @@ export component HotspotOverlay inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "✕ 关闭透视";
+                                text: "关闭透视";
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 800;
@@ -347,7 +347,7 @@ export component HotspotOverlay inherits Rectangle {
             Rectangle {
                 height: 24px;
                 Text {
-                    text: "提示：您可以随时点击顶栏「旗舰 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。";
+                    text: "提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。";
                     font-family: Tokens.font-ui;
                     font-size: 10px;
                     color: #94a3b8;

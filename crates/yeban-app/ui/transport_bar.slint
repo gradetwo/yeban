@@ -45,7 +45,7 @@ export component TransportHeaderBar inherits Rectangle {
             spacing: 8px;
             alignment: start;
 
-            // Brand Mark: 夜半 DAW Studio
+            // Brand Mark: 夜半 Studio
             Rectangle {
                 background: #10131a;
                 border-radius: 4px;
@@ -68,9 +68,10 @@ export component TransportHeaderBar inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.accent.with-alpha(0.45);
                         Text {
-                            text: "✦";
+                            text: "夜";
                             font-family: Tokens.font-ui;
-                            font-size: 10px;
+                            font-size: 9px;
+                            font-weight: 800;
                             color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -78,7 +79,7 @@ export component TransportHeaderBar inherits Rectangle {
                     }
 
                     Text {
-                        text: "夜半 DAW";
+                        text: "夜半";
                         font-family: Tokens.font-ui;
                         font-size: 11px;
                         font-weight: 700;
@@ -211,65 +212,77 @@ export component TransportHeaderBar inherits Rectangle {
                     spacing: 2px;
 
                     Rectangle {
-                        width: 26px;
                         background: root.active-tool == "pointer" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        Text {
-                            text: "↖ 1";
-                            font-family: Tokens.font-mono;
-                            font-size: 10px;
-                            color: root.active-tool == "pointer" ? #020617 : #94a3b8;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "选区";
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                color: root.active-tool == "pointer" ? #020617 : #94a3b8;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                         TouchArea { clicked => { root.select-tool("pointer"); } }
                     }
 
                     Rectangle {
-                        width: 26px;
                         background: root.active-tool == "range" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        Text {
-                            text: "⌶ 2";
-                            font-family: Tokens.font-mono;
-                            font-size: 10px;
-                            color: root.active-tool == "range" ? #020617 : #94a3b8;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "范围";
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                color: root.active-tool == "range" ? #020617 : #94a3b8;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                         TouchArea { clicked => { root.select-tool("range"); } }
                     }
 
                     Rectangle {
-                        width: 26px;
                         background: root.active-tool == "split" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        Text {
-                            text: "✂ 3";
-                            font-family: Tokens.font-mono;
-                            font-size: 10px;
-                            color: root.active-tool == "split" ? #020617 : #94a3b8;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "切分";
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                color: root.active-tool == "split" ? #020617 : #94a3b8;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                         TouchArea { clicked => { root.select-tool("split"); } }
                     }
 
                     Rectangle {
-                        width: 26px;
                         background: root.active-tool == "draw" ? Theme.accent : transparent;
                         border-radius: 3px;
-                        Text {
-                            text: "✎ 4";
-                            font-family: Tokens.font-mono;
-                            font-size: 10px;
-                            color: root.active-tool == "draw" ? #020617 : #94a3b8;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: "画笔";
+                                font-family: Tokens.font-ui;
+                                font-size: 9px;
+                                color: root.active-tool == "draw" ? #020617 : #94a3b8;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                         TouchArea { clicked => { root.select-tool("draw"); } }
                     }
@@ -297,9 +310,10 @@ export component TransportHeaderBar inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.border-subtle;
                     Text {
-                        text: "⏮";
-                        font-family: Tokens.font-ui;
-                        font-size: 11px;
+                        text: "|◀";
+                        font-family: Tokens.font-mono;
+                        font-size: 10px;
+                        font-weight: 700;
                         color: #cbd5e1;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -319,7 +333,7 @@ export component TransportHeaderBar inherits Rectangle {
                         padding-left: 10px;
                         padding-right: 10px;
                         Text {
-                            text: root.is-playing ? "⏸ 停止" : "▶ 播放";
+                            text: root.is-playing ? "■ 停止" : "▶ 播放";
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 700;
@@ -365,7 +379,7 @@ export component TransportHeaderBar inherits Rectangle {
                         padding-left: 8px;
                         padding-right: 8px;
                         Text {
-                            text: "🔁 循环";
+                            text: "↻ 循环";
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             font-weight: 600;
@@ -578,7 +592,7 @@ export component TransportHeaderBar inherits Rectangle {
                     padding: 2px;
                     spacing: 2px;
 
-                    // 1. 旗舰全景 (Default Production Studio)
+                    // 1. 默认全景 (Default Production Studio)
                     Rectangle {
                         background: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : transparent;
                         border-radius: 3px;
@@ -586,7 +600,7 @@ export component TransportHeaderBar inherits Rectangle {
                             padding-left: 8px;
                             padding-right: 8px;
                             Text {
-                                text: "旗舰";
+                                text: "默认";
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -676,20 +690,25 @@ export component TransportHeaderBar inherits Rectangle {
                 TouchArea { clicked => { root.open-cmd-palette(); } }
             }
 
-            // Hotspot architecture insights toggle
+            // Architecture insights toggle
             Rectangle {
-                width: 28px;
                 height: 28px;
                 background: Theme.status-warn.with-alpha(0.18);
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.status-warn.with-alpha(0.35);
-                Text {
-                    text: "💡";
-                    font-family: Tokens.font-ui;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                HorizontalLayout {
+                    padding-left: 7px;
+                    padding-right: 7px;
+                    Text {
+                        text: "透视";
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: Theme.status-warn;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
                 TouchArea { clicked => { root.toggle-hotspots(); } }
             }
