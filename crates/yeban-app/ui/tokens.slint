@@ -1075,21 +1075,23 @@ export global Theme {
     in-out property <string> active-tool: "pointer"; // "pointer" | "range" | "split" | "draw"
     in-out property <string> active-dock-tab: persona == PersonaMode.AbletonLive ? "devices" : (persona == PersonaMode.LogicPro || persona == PersonaMode.CubasePro ? "mixer" : "devices");
 
-    // 全局无遮挡无裁剪提示系统 (Global HUD & Status Bar Tooltip System)
+    // 全局无遮挡提示系统与开关 (Floating Tooltips System & Toggle)
+    in-out property <bool> show-tooltips: true;
     in-out property <string> hover-tip: "";
     in-out property <bool> has-hover-tip: false;
 }
 
 // Compact minimalist DAW tooltip pill component (Zero shadow, crisp border, WCAG AA compliant)
-// 挂接全局 Theme.hover-tip，由顶层 MainWindow 统一在顶层 Overlay 与底部状态栏进行无遮挡、无裁剪渲染
+// 挂接全局 Theme.show-tooltips 与 Theme.hover-tip，在悬停控件附近直接渲染紧凑浮动气泡，不占据整行空间
 export component TooltipBubble inherits Rectangle {
     in property <string> text: "";
     in property <bool> is-visible: false;
     in property <length> tip-offset-y: 22px;
     in property <length> tip-offset-x: 0px;
+    z: 9999;
 
     changed is-visible => {
-        if (root.is-visible && root.text != "") {
+        if (Theme.show-tooltips && root.is-visible && root.text != "") {
             Theme.hover-tip = root.text;
             Theme.has-hover-tip = true;
         } else if (Theme.hover-tip == root.text) {
@@ -1099,9 +1101,44 @@ export component TooltipBubble inherits Rectangle {
     }
 
     changed text => {
-        if (root.is-visible && root.text != "") {
+        if (Theme.show-tooltips && root.is-visible && root.text != "") {
             Theme.hover-tip = root.text;
             Theme.has-hover-tip = true;
+        }
+    }
+
+    if (Theme.show-tooltips && root.is-visible && root.text != "") : Rectangle {
+        x: (parent.width - self.width) / 2 + root.tip-offset-x;
+        y: root.tip-offset-y;
+        z: 9999;
+        height: 20px;
+        background: #090e1cf8;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: #38bdf888;
+
+        HorizontalLayout {
+            padding-left: 7px;
+            padding-right: 7px;
+            spacing: 5px;
+            alignment: center;
+
+            Rectangle {
+                width: 4px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.accent;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Text {
+                text: root.text;
+                font-family: Tokens.font-ui;
+                font-size: Tokens.font-size-xs;
+                font-weight: 600;
+                color: #f8fafc;
+                vertical-alignment: center;
+            }
         }
     }
 }

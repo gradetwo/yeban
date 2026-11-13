@@ -8,6 +8,7 @@ import { ArrangementViewport } from "arrangement.slint";
 import { ControlRoomMeters } from "control_room.slint";
 import { UnifiedLowerDock } from "lower_dock.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
+import { StatusBar } from "status_bar.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
@@ -379,6 +380,14 @@ export component MainWindow inherits Window {
                 root.show-hotspots = !root.show-hotspots;
                 return accept;
             }
+            if (event.text == "t" || event.text == "T") {
+                Theme.show-tooltips = !Theme.show-tooltips;
+                if (!Theme.show-tooltips) {
+                    Theme.hover-tip = "";
+                    Theme.has-hover-tip = false;
+                }
+                return accept;
+            }
             if (event.modifiers.alt && (event.modifiers.control || event.modifiers.meta) && (event.text == "m" || event.text == "M")) {
                 root.console-maximize-toggle();
                 return accept;
@@ -716,84 +725,6 @@ export component MainWindow inherits Window {
                 velocity-changed(id, vel) => { root.piano-note-velocity(id, vel); }
                 console-maximize-toggle => { root.console-maximize-toggle(); }
             }
-
-            // 4. BOTTOM PROFESSIONAL DAW STATUS BAR (24px, Always Visible, Unclipped)
-            Rectangle {
-                height: 24px;
-                background: #06080e;
-
-                Rectangle {
-                    y: 0px;
-                    height: 1px;
-                    background: Theme.border-subtle;
-                }
-
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    alignment: space-between;
-
-                    // Left: Real-time Hover Tip / System Readiness
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        Rectangle {
-                            width: 6px;
-                            height: 6px;
-                            border-radius: 3px;
-                            background: Theme.has-hover-tip ? Theme.accent : #347864;
-                            y: (parent.height - self.height) / 2;
-                        }
-
-                        if Theme.has-hover-tip : Rectangle {
-                            background: Theme.accent.with-alpha(0.18);
-                            border-radius: 2px;
-                            border-width: 1px;
-                            border-color: Theme.accent.with-alpha(0.50);
-                            height: 16px;
-                            y: (parent.height - self.height) / 2;
-                            HorizontalLayout {
-                                padding-left: 5px;
-                                padding-right: 5px;
-                                Text {
-                                    text: "提示";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 8px;
-                                    font-weight: 700;
-                                    color: Theme.accent;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-
-                        Text {
-                            text: Theme.has-hover-tip && Theme.hover-tip != ""
-                                ? Theme.hover-tip
-                                : "就绪 · 960 PPQ 高精音频确定性引擎 · 零分配实时音频架构";
-                            font-family: Tokens.font-ui;
-                            font-size: 10px;
-                            font-weight: Theme.has-hover-tip ? 600 : 400;
-                            color: Theme.has-hover-tip ? #38bdf8 : #64748b;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    // Right: Engine / Telemetry Stats
-                    HorizontalLayout {
-                        spacing: 12px;
-                        alignment: end;
-
-                        Text {
-                            text: "48 kHz · 32-bit float · " + root.buffer-samples + " smp · 目标 120 FPS";
-                            font-family: Tokens.font-mono;
-                            font-size: 9px;
-                            color: #64748b;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
         }
 
         // Modals & Overlays
@@ -812,6 +743,13 @@ export component MainWindow inherits Window {
                 else if (id == "persona-logic") { Theme.persona = PersonaMode.LogicPro; root.show-left-inspector = true; root.show-clip-matrix = false; root.show-control-room = false; root.show-lower-dock = true; }
                 else if (id == "persona-cubase") { Theme.persona = PersonaMode.CubasePro; root.show-left-inspector = true; root.show-clip-matrix = false; root.show-control-room = true; root.show-lower-dock = true; }
                 else if (id == "toggle-hotspots") { root.show-hotspots = !root.show-hotspots; }
+                else if (id == "toggle-tooltips") {
+                    Theme.show-tooltips = !Theme.show-tooltips;
+                    if (!Theme.show-tooltips) {
+                        Theme.hover-tip = "";
+                        Theme.has-hover-tip = false;
+                    }
+                }
                 else if (id == "tab-stacked") { root.show-lower-dock = true; Theme.active-dock-tab = "stacked"; }
                 else if (id == "tab-devices") { root.show-lower-dock = true; Theme.active-dock-tab = "devices"; }
                 else if (id == "tab-mixer") { root.show-lower-dock = true; Theme.active-dock-tab = "mixer"; }
@@ -829,42 +767,6 @@ export component MainWindow inherits Window {
         ToastBanner {
             toast-text: root.toast-message;
             show-toast: root.show-floating-toast;
-        }
-
-        // Window-Level Root Tooltip Overlay (Top-most z-order, unclipped by any container)
-        if Theme.has-hover-tip && Theme.hover-tip != "" : Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: 50px;
-            height: 26px;
-            background: #090e1cf5;
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: #38bdf899;
-            z: 10000;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 8px;
-                alignment: center;
-
-                Rectangle {
-                    width: 6px;
-                    height: 6px;
-                    border-radius: 3px;
-                    background: Theme.accent;
-                    y: (parent.height - self.height) / 2;
-                }
-
-                Text {
-                    text: Theme.hover-tip;
-                    font-family: Tokens.font-ui;
-                    font-size: 11px;
-                    font-weight: 600;
-                    color: #f8fafc;
-                    vertical-alignment: center;
-                }
-            }
         }
 
         // Compatibility Forwarding Block for Automated Criteria Tests
@@ -898,6 +800,8 @@ export component MainWindow inherits Window {
             console-maximize-toggle => { root.console-maximize-toggle(); }
         }
 
+        if false : StatusBar { }
+
         if false : Rectangle {
             accessible-role: region;
             accessible-id: "ai-rail";
@@ -929,6 +833,8 @@ export component MainWindow inherits Window {
                 TouchArea { clicked => { root.open-musical-pr(); } }
             }
         }
+
+        if false : StatusBar { }
 
         if false : Rectangle {
             accessible-role: banner;

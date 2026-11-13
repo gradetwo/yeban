@@ -2842,7 +2842,7 @@ mod tests {
         "dialogs/macro_panel.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
-        // 旗舰桌面 UI 重构组件清单
+        // 桌面 UI 重构组件清单
         "arrangement.slint",
         "clip_matrix.slint",
         "control_room.slint",
