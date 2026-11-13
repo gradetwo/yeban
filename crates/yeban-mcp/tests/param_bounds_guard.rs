@@ -87,7 +87,7 @@ enum BoundStatus {
 }
 
 /// 47 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 49] = [
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 50] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -172,6 +172,17 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 49] = [
         "stylePreset",
         BoundStatus::Unbounded(
             "风格预设名：同 `scale`（未知值走词表校验），长度维无界。收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        // DeviceParam 按名寻址（P0-2 残留）：取值必须命中**目标设备实例自己的**
+        // `params` 名集（大小写不敏感），未命中由唯一解析入口以 `paramNameNotFound`
+        // 拒绝并回列全集 ⇒ 界的形态是「该设备的名集」而不是长度；这里的无界只指
+        // 「长度」这一维。名字本身**永不落盘**（落盘的只有解析出的下标），后果限于
+        // 该次调用的解析与错误报文长度。收口面：`schemas/**` 的 `maxLength`。
+        "paramName",
+        BoundStatus::Unbounded(
+            "设备参数名：未知值走目标设备名集校验（`paramNameNotFound` + 可用名全集），长度维无界；名字不落盘。收口面：`schemas/**`。",
         ),
     ),
     // ADR-0016：`yeban_propose_section` 的两个新增可选实参。

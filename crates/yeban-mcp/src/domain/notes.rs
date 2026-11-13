@@ -1234,6 +1234,14 @@ pub const SET_PARAM_SLOT_FIELD: &str = "slotIndex";
 /// 与 `yeban_edit_automation` 的同一字段逐字同词：它们是同一份 `device.params` 的同一个序数。
 pub const SET_PARAM_PARAM_FIELD: &str = "paramIndex";
 
+/// `setParam` 写**设备参数**时的**按名寻址**字段名（`ops[].paramName`，可选）。
+///
+/// 与 `yeban_edit_automation` 的 `paramName` 实参逐字同词（`ADR-0001` D48）：
+/// 给了它，`paramIndex` 降为可选（两者至少给一个；并存时必须指向同一个参数）。
+/// 名字在编译期按目标设备实例自己的 `params` 解析成下标，落盘的模型目标
+/// 仍然是纯下标形态 —— 工程文件里不新增任何字段。
+pub const SET_PARAM_PARAM_NAME_FIELD: &str = "paramName";
+
 /// `setParam` 的**可选逐条目标音轨**字段名（`ops[].trackId`，缺省 = 顶层 `trackId`）。
 ///
 /// 与 `insertDevice` / `removeTrack` / `setTrackName` 的同一字段逐字同词
@@ -1484,13 +1492,14 @@ pub const NOTE_LEVEL_KINDS: &[&str] = &[
 /// `Op::SetRoutingGain`）；`Macro` 的静态写入在本工具面**没有**通路。用类型把
 /// "哪两个不可写"变成**不可表达**，比在 `compile` 里补一条不可达分支更诚实。
 ///
-/// `DeviceParam` 是**设备级**目标：寻址是两个下标（`slotIndex` / `paramIndex`），
-/// 因此变体自带这两个字段；参数名是否被离线渲染器消费由
-/// `yeban_render::inserts::resolve_device_param` 回答（⛔ 本层不复制白名单）。
+/// `DeviceParam` 是**设备级**目标：寻址是槽位下标（`slotIndex`）＋参数下标
+/// （`paramIndex`），或以参数名（`paramName`）替代/复核参数下标；参数名是否
+/// 被离线渲染器消费由 `yeban_render::inserts::resolve_device_param` 回答
+/// （⛔ 本层不复制白名单）。
 ///
 /// `SendGain` 的静态增益由 [`SET_ROUTING_GAIN_KIND`] 承载（那是**另一个**模型变体，
 /// 因此仍然**不**属于本枚举 —— 把它并进来就是让本枚举的名字说谎）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaticLane {
     /// 音轨静态音量（`TrackV3::volume_db`，单位 dB，有限值）。
     TrackVolume,
@@ -1500,8 +1509,12 @@ pub enum StaticLane {
     DeviceParam {
         /// `track.devices` 里的槽位下标。
         slot_index: usize,
-        /// 该设备 `params` 里的参数下标。
-        param_index: usize,
+        /// 该设备 `params` 里的参数下标；`None` = 调用方只给了 `paramName`，
+        /// 下标要由 [`resolve_set_param_device`] 在编译期解析出来。
+        param_index: Option<usize>,
+        /// 调用方给的参数名（`paramName`）；编译期被消费（解析/一致性核对）
+        /// 后即清空 —— 落盘的模型目标只有下标，工程文件形状不变。
+        param_name: Option<String>,
     },
 }
 
@@ -1516,6 +1529,12 @@ impl StaticLane {
     ];
 
     /// 把目标落到具体音轨上（[`Op::SetParam`] 的载荷）。
+    ///
+    /// ⚠ 调用前提：`DeviceParam` 的 `param_name` 必须已经由
+    /// [`resolve_set_param_device`] 消费、`param_index` 必然是 `Some` ——
+    /// 本函数在全仓只有一个调用点（`compile` 的解析之后），未解析的名字
+    /// 走到这里是编程错误而不是用户错误，因此用 `expect` 把不变量钉死，
+    /// ⛔ 不静默退回下标 0。
     #[must_use]
     pub fn target(self, track_id: EntityId) -> AutomationTarget {
         match self {
@@ -1524,10 +1543,12 @@ impl StaticLane {
             Self::DeviceParam {
                 slot_index,
                 param_index,
+                ..
             } => AutomationTarget::DeviceParam {
                 track_id,
                 slot_index,
-                param_index,
+                param_index: param_index
+                    .expect("DeviceParam 的 paramName 必须先经 compile 解析成下标"),
             },
         }
     }
@@ -7533,6 +7554,30 @@ fn read_routing_gain(object: &Map<String, Value>) -> Result<Option<f32>, Fault> 
     read_number(object, SET_ROUTING_GAIN_VALUE_FIELD).map(Some)
 }
 
+/// 读 `setParam` 的可选 `paramName`（缺键 = `None`；给了必须是字符串）。
+///
+/// 空字符串不在这里拦：它只是一个注定查不到的名字，会在编译期的按名解析
+/// 里以 `paramNameNotFound` 连同可用名全集一起被拒 —— 在解析期另发明一条
+/// 「空名」规则只会让同一个失败有两副面孔。
+fn read_optional_param_name(object: &Map<String, Value>) -> Result<Option<String>, Fault> {
+    let Some(raw) = object.get(SET_PARAM_PARAM_NAME_FIELD) else {
+        return Ok(None);
+    };
+    raw.as_str()
+        .map(|text| Some(text.to_owned()))
+        .ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{SET_PARAM_PARAM_NAME_FIELD}` 必须是字符串, 实际收到 {raw}"),
+                serde_json::json!({
+                    "field": SET_PARAM_PARAM_NAME_FIELD,
+                    "reason": "paramNameMustBeString",
+                    "received": raw,
+                }),
+            )
+        })
+}
+
 /// 解析 `setParam` 的 `lane`（只认 [`StaticLane::NAMES`]）。
 ///
 /// 词汇表与 `yeban_edit_automation` **同一份**（[`LaneKind`]）：已知但不可写的两个目标是
@@ -7544,7 +7589,13 @@ fn read_routing_gain(object: &Map<String, Value>) -> Result<Option<f32>, Fault> 
 /// | 名字是另外两个自动化目标（`SendGain` / `Macro`） | `staticLaneNotApplicable` |
 /// | 名字不在 [`LaneKind`] 的词汇表里（别名 / 拼错） | `unknownStaticLane` |
 /// | `lane` 缺失 | 统一的缺字段错误（无 `data`） |
-/// | `lane == "DeviceParam"` 而 `slotIndex` / `paramIndex` 缺失或不是非负整数 | 统一的缺字段 / 非负整数错误 |
+/// | `lane == "DeviceParam"` 而 `slotIndex` 缺失或不是非负整数 | 统一的缺字段 / 非负整数错误 |
+/// | `paramIndex` 与 `paramName` 都不给 | 统一的缺字段错误（指 `paramIndex`，与旧口径一致） |
+/// | `paramName` 给了但不是字符串 | `paramNameMustBeString` |
+///
+/// `paramName` 的**解析**（名字→下标、双给一致性）不在这里：解析期没有工程
+/// 在手，统一由编译期的 [`resolve_set_param_device`] 做（与 `yeban_edit_automation`
+/// 共用 [`super::automation::resolve_device_param_address`] 一份实现）。
 fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
     let raw = object
         .get(SET_PARAM_LANE_FIELD)
@@ -7579,10 +7630,19 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
         LaneKind::TrackVolume => Ok(StaticLane::TrackVolume),
         LaneKind::TrackPan => Ok(StaticLane::TrackPan),
         LaneKind::DeviceParam => Ok(StaticLane::DeviceParam {
-            // ⚠ 两个下标都**必填**（缺省不是 0）：缺一个却静默写第 0 槽 / 第 0 个参数
+            // ⚠ `slotIndex` **必填**（缺省不是 0）：缺了却静默写第 0 槽
             // 会改到调用方没点名的东西。
             slot_index: read_usize(object, SET_PARAM_SLOT_FIELD)?,
-            param_index: read_usize(object, SET_PARAM_PARAM_FIELD)?,
+            // `paramIndex` 与 `paramName` 至少给一个：给了名字，下标可以缺；
+            // 两个都不给 ⇒ 与旧口径逐字相同的缺字段错误（指 `paramIndex`）。
+            param_index: if object.contains_key(SET_PARAM_PARAM_FIELD) {
+                Some(read_usize(object, SET_PARAM_PARAM_FIELD)?)
+            } else if object.contains_key(SET_PARAM_PARAM_NAME_FIELD) {
+                None
+            } else {
+                return Err(missing(SET_PARAM_PARAM_FIELD, "非负整数"));
+            },
+            param_name: read_optional_param_name(object)?,
         }),
         LaneKind::SendGain => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -7620,14 +7680,35 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
 ///   的**唯一字面量** `paramNotSupported` —— 写完导出不会变声的参数，必须在**提案期**
 ///   就响亮拒绝，而不是让调用方以为写进去了。
 ///
-/// 返回值永远是**已确认可写**的 `StaticLane::DeviceParam`；`device_id` 只用于错误读数
-/// （模型 `Op::SetParam` 的寻址仍是两个序数，与 `#263` 的解析口径一致）。
+/// 寻址本身分两步：调用方给了 `paramName` 时，先经
+/// [`super::automation::resolve_device_param_address`]（与 `yeban_edit_automation`
+/// 共用的一份）把名字解析成下标（或核对与 `paramIndex` 的一致性）；纯下标
+/// 调用**跳过这一步**，下面的判定与旧实现逐字相同。名字只活在提案期 ——
+/// 返回值永远是**已确认可写、下标已定**的 `StaticLane::DeviceParam`
+/// （`param_name` 已清空）；`device_id` 只用于错误读数（模型 `Op::SetParam`
+/// 的寻址仍是两个序数，与 `#263` 的解析口径一致）。
 fn resolve_set_param_device(
     project: &YebanProjectV1,
     track_id: EntityId,
     slot_index: usize,
-    param_index: usize,
+    param_index: Option<usize>,
+    param_name: Option<&str>,
 ) -> Result<StaticLane, Fault> {
+    let param_index = match (param_index, param_name) {
+        // 纯下标：完全走旧路（下面的唯一解析入口全套判定）。
+        (Some(index), None) => index,
+        // 名字参与寻址（只给名字 / 双给）：先共用解析定下标，再落回旧路做白名单。
+        _ => {
+            super::automation::resolve_device_param_address(
+                project,
+                track_id,
+                slot_index,
+                param_index,
+                param_name,
+            )?
+            .0
+        }
+    };
     let track_text = track_id.to_canonical_string();
     let resolved = match resolve_device_param(project, track_id, slot_index, param_index) {
         Ok(resolved) => resolved,
@@ -7697,7 +7778,8 @@ fn resolve_set_param_device(
     }
     Ok(StaticLane::DeviceParam {
         slot_index,
-        param_index,
+        param_index: Some(param_index),
+        param_name: None,
     })
 }
 
@@ -9815,12 +9897,19 @@ pub fn compile(
                 }
                 // 设备参数先过 render 的**唯一**解析入口（越界 / 名字不在白名单都在这里
                 // 变成带 `reason` 的领域错误），再落到模型目标上。
-                let lane = match *lane {
+                let lane = match lane {
                     StaticLane::DeviceParam {
                         slot_index,
                         param_index,
-                    } => resolve_set_param_device(&project, target_track, slot_index, param_index)?,
-                    other => other,
+                        param_name,
+                    } => resolve_set_param_device(
+                        &project,
+                        target_track,
+                        *slot_index,
+                        *param_index,
+                        param_name.as_deref(),
+                    )?,
+                    other => other.clone(),
                 };
                 let target = lane.target(target_track);
                 // 撤销载荷来自**唯一**的静态值入口 (`AutomationTarget::static_value`)：
@@ -13235,6 +13324,149 @@ mod tests {
         let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("参数下标越界必须被拒");
         assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
         assert_eq!(lane_fault_data(&fault)["reason"], "paramIndexOutOfRange");
+    }
+
+    /// ⭐ `setParam` 的 `paramName` 按名寻址（P0-2 残留）：
+    ///
+    /// - 只给名字 ⇒ 与给下标编译出**逐字相同**的 `Op::SetParam`（同一目标、
+    ///   同一撤销载荷），施加后写进同一个参数槽；
+    /// - 名字不存在 ⇒ `paramNameNotFound`，报文带该设备可用名全集；
+    /// - 双给不一致 ⇒ `paramNameIndexMismatch`，点名下标指向谁、名字指向谁；
+    /// - 双给一致 ⇒ 通过；同名参数 ⇒ `paramNameAmbiguous`；
+    /// - `paramName` 不是字符串 ⇒ 解析期 `paramNameMustBeString`；
+    /// - 两个都不给 ⇒ 与旧口径相同的缺字段错误（指 `paramIndex`）。
+    ///
+    /// 夹具与上一条判据相同：lead 第 0 槽 `params[0] = cutoff`（不在白名单）、
+    /// `params[1] = resonance`（在白名单）。
+    #[test]
+    fn set_param_addresses_a_device_parameter_by_name() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        // 按名编译 ⇒ 与按下标记编出的 op 逐字相同。
+        let by_name = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "resonance", "value": 0.8}
+        ]))
+        .expect("按名形状必须被接受");
+        let by_index = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 1, "value": 0.8}
+        ]))
+        .expect("下标形状必须被接受");
+        let compiled_name = compile(&project, &track_id, &clip_id, &by_name).expect("按名编译");
+        let compiled_index = compile(&project, &track_id, &clip_id, &by_index).expect("下标编译");
+        assert_eq!(
+            compiled_name, compiled_index,
+            "按名与按下标记编出的 op 必须逐字相同 (落盘只有下标)"
+        );
+        // 大小写不敏感: 大写名字落到同一个槽。
+        let upper = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "RESONANCE", "value": 0.8}
+        ]))
+        .expect("大写名字");
+        assert_eq!(
+            compile(&project, &track_id, &clip_id, &upper).expect("大写编译"),
+            compiled_index
+        );
+        // 施加按名编译的 op ⇒ 写的正是 params[1]。
+        Op::Batch {
+            ops: compiled_name,
+            description: "setParam(DeviceParam by name)".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        assert_eq!(
+            project.track(&track_id).expect("音轨").devices[0].params[1].value,
+            0.8,
+            "按名写入必须落进 resonance 的槽"
+        );
+
+        // 名字存在于设备但不在渲染白名单 ⇒ 仍走 paramNotSupported (与下标路径同口径)。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "cutoff", "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("白名单外必须拒绝");
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "paramNotSupported", "{data}");
+        assert_eq!(data["paramName"], "cutoff", "{data}");
+
+        // 名字不存在 ⇒ paramNameNotFound + 全集。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "cutoff_hz", "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("不存在的名字必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "paramNameNotFound", "{data}");
+        assert_eq!(
+            data["availableParamNames"],
+            serde_json::json!(["cutoff", "resonance"]),
+            "{data}"
+        );
+
+        // 双给不一致 ⇒ paramNameIndexMismatch, 点名两边。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 0, "paramName": "resonance", "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("双给不一致必须拒绝");
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "paramNameIndexMismatch", "{data}");
+        assert_eq!(data["paramNameAtIndex"], "cutoff", "{data}");
+        assert_eq!(data["paramNameIndices"], serde_json::json!([1]), "{data}");
+
+        // 双给一致 ⇒ 通过。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 1, "paramName": "resonance", "value": 0.5}
+        ]))
+        .expect("形状合法");
+        compile(&project, &track_id, &clip_id, &ops).expect("双给一致必须通过");
+
+        // 同名参数 ⇒ paramNameAmbiguous + 命中下标。
+        let mut duplicated = filled_project();
+        let (dup_track, dup_clip) = lead_clip(&duplicated);
+        let device = &mut duplicated.tracks.get_mut(&dup_track).expect("音轨").devices[0];
+        let mut extra = device.params[1].clone();
+        extra.value = 0.9;
+        device.params.push(extra);
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "resonance", "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault =
+            compile(&duplicated, &dup_track, &dup_clip, &ops).expect_err("同名参数必须报歧义");
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "paramNameAmbiguous", "{data}");
+        assert_eq!(data["matchingIndices"], serde_json::json!([1, 2]), "{data}");
+
+        // paramName 不是字符串 ⇒ 解析期就拒。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": 7, "value": 0.5}
+        ]))
+        .expect_err("非字符串名字必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(lane_fault_data(&fault)["reason"], "paramNameMustBeString");
+
+        // 两个都不给 ⇒ 缺字段 (与旧口径一致, 无 data)。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam", "slotIndex": 0, "value": 0.5}
+        ]))
+        .expect_err("两个都不给必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        match &fault {
+            Fault::Domain { data, .. } => assert!(data.is_none(), "缺字段错误不带 data"),
+            Fault::Impl { error } => panic!("应当是领域失败, 实际是 {error:?}"),
+        }
     }
 
     /// ⭐ `#179`：`is_note_level()` **恰好**是九个音符形态（ADR-0019 起，`ADR-0034` 加 `transposeClip`）。
