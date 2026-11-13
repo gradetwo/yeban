@@ -1074,36 +1074,27 @@ export global Theme {
 
     in-out property <string> active-tool: "pointer"; // "pointer" | "range" | "split" | "draw"
     in-out property <string> active-dock-tab: persona == PersonaMode.AbletonLive ? "devices" : (persona == PersonaMode.LogicPro || persona == PersonaMode.CubasePro ? "mixer" : "devices");
+
+    // 全局无遮挡无裁剪提示系统 (Global HUD & Status Bar Tooltip System)
+    in-out property <string> hover-tip: "";
+    in-out property <bool> has-hover-tip: false;
 }
 
 // Compact minimalist DAW tooltip pill component (Zero shadow, crisp border, WCAG AA compliant)
+// 挂接全局 Theme.hover-tip，由顶层 MainWindow 统一在顶层 Overlay 与底部状态栏进行无遮挡、无裁剪渲染
 export component TooltipBubble inherits Rectangle {
     in property <string> text: "";
     in property <bool> is-visible: false;
     in property <length> tip-offset-y: 22px;
     in property <length> tip-offset-x: 0px;
 
-    if root.is-visible && root.text != "" : Rectangle {
-        x: (parent.width - self.width) / 2 + root.tip-offset-x;
-        y: root.tip-offset-y;
-        z: 999;
-        height: 20px;
-        background: #090d16;
-        border-radius: 4px;
-        border-width: 1px;
-        border-color: #3b4860;
-        HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            alignment: center;
-            Text {
-                text: root.text;
-                font-family: Tokens.font-ui;
-                font-size: Tokens.font-size-xs;
-                font-weight: 600;
-                color: #f8fafc;
-                vertical-alignment: center;
-            }
+    changed is-visible => {
+        if (root.is-visible && root.text != "") {
+            Theme.hover-tip = root.text;
+            Theme.has-hover-tip = true;
+        } else if (Theme.hover-tip == root.text) {
+            Theme.hover-tip = "";
+            Theme.has-hover-tip = false;
         }
     }
 }

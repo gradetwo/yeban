@@ -64,11 +64,18 @@ export component UnifiedLowerDock inherits Rectangle {
     callback split-note(int);
     callback delete-note(int);
     callback velocity-changed(int, int);
+    callback console-maximize-toggle();
 
+    in-out property <bool> console-maximized: false;
     in-out property <length> dock-height: 320px;
-    height: root.dock-height;
+    min-height: root.console-maximized ? 0px : root.dock-height;
+    max-height: root.console-maximized ? 100000px : root.dock-height;
+    vertical-stretch: root.console-maximized ? 1 : 0;
     background: Theme.bg-panel;
     border-color: Theme.border-subtle;
+    accessible-role: region;
+    accessible-id: "console-tab-rail";
+    accessible-label: "底部控制台";
 
     VerticalLayout {
         padding: 0px;
@@ -180,9 +187,11 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
                 }
 
-                // Focus track badge
+                // Focus track badge & Maximize toggle
                 HorizontalLayout {
                     alignment: end;
+                    spacing: 8px;
+
                     Rectangle {
                         background: root.selected-track-color.with-alpha(0.15);
                         border-radius: 4px;
@@ -202,6 +211,51 @@ export component UnifiedLowerDock inherits Rectangle {
                                 color: root.selected-track-color;
                                 vertical-alignment: center;
                             }
+                        }
+                    }
+
+                    // Console Maximize / Restore Button
+                    Rectangle {
+                        accessible-id: "console-maximize-button";
+                        accessible-role: button;
+                        accessible-label: "最大化 / 还原底部控制台";
+                        accessible-checked: root.console-maximized;
+                        accessible-action-default => { root.console-maximize-toggle(); }
+                        width: 26px;
+                        height: 24px;
+                        background: max_btn_touch.has-hover ? #22293a : (root.console-maximized ? Theme.accent.with-alpha(0.25) : #121622);
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: root.console-maximized ? Theme.accent : #ffffff18;
+
+                        if !root.console-maximized : Path {
+                            width: 12px;
+                            height: 12px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            stroke: max_btn_touch.has-hover ? #ffffff : #94a3b8;
+                            stroke-width: 1.5px;
+                            commands: "M 1 4 L 1 1 L 4 1 M 8 1 L 11 1 L 11 4 M 11 8 L 11 11 L 8 11 M 4 11 L 1 11 L 1 8";
+                        }
+                        if root.console-maximized : Path {
+                            width: 12px;
+                            height: 12px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            stroke: Theme.accent;
+                            stroke-width: 1.5px;
+                            commands: "M 4 1 L 4 4 L 1 4 M 8 1 L 8 4 L 11 4 M 11 8 L 8 8 L 8 11 M 4 11 L 4 8 L 1 8";
+                        }
+
+                        max_btn_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.console-maximize-toggle(); }
+                        }
+                        TooltipBubble {
+                            text: root.console-maximized ? "退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]" : "最大化全屏此视图 (卷帘/混音台) [Cmd/Ctrl+Alt+M / F3]";
+                            is-visible: max_btn_touch.has-hover;
+                            tip-offset-x: -80px;
+                            tip-offset-y: 26px;
                         }
                     }
                 }
@@ -1652,12 +1706,12 @@ export component UnifiedLowerDock inherits Rectangle {
                 // 2. Main Piano Roll Work Area: Left Keyboard + Right Canvas (Ruler, Note Lanes, Notes)
                 HorizontalLayout {
                     spacing: 4px;
-                    height: 210px;
+                    vertical-stretch: 1;
 
                     // Left Vertical Piano Keyboard (Modern DAW tactile acoustic keyboard)
                     Rectangle {
                         width: 96px;
-                        height: 210px;
+                        vertical-stretch: 1;
                         background: #131722;
                         border-radius: Theme.radius;
                         border-width: 1px;
@@ -1883,7 +1937,7 @@ export component UnifiedLowerDock inherits Rectangle {
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 0px;
-                        height: 210px;
+                        vertical-stretch: 1;
 
                         // Measure / Beat Ruler (Height: 18px, 64 steps across 4 measures)
                         Rectangle {
@@ -1926,7 +1980,8 @@ export component UnifiedLowerDock inherits Rectangle {
 
                         // Note Grid Canvas (Horizontal pitch lanes + Vertical step lines + Note Bars)
                         Rectangle {
-                            height: 192px;
+                            vertical-stretch: 1;
+                            min-height: 192px;
                             background: #141822;
                             border-radius: Theme.radius;
                             border-top-left-radius: 0;

@@ -586,6 +586,7 @@ export component TransportHeaderBar inherits Rectangle {
     callback select-tool(string);
     callback toggle-play();
     callback toggle-rec();
+    callback toggle-record();
     callback toggle-loop();
     callback rewind();
     callback change-bpm(int);
@@ -594,6 +595,7 @@ export component TransportHeaderBar inherits Rectangle {
     callback select-persona(PersonaMode);
     callback open-cmd-palette();
     callback toggle-hotspots();
+    callback revert-to-last-commit();
 
     height: 48px;
     background: Theme.header-bg;
@@ -611,38 +613,24 @@ export component TransportHeaderBar inherits Rectangle {
             spacing: 12px;
             alignment: start;
 
-            // Group A: Brand Mark (夜半)
+            // Group A: Brand Mark (Official Studio Logo Mark)
             Rectangle {
                 background: #10131a;
                 border-radius: 4px;
                 border-width: 1px;
-                border-color: #ffffff18;
+                border-color: #ffffff20;
+                width: 32px;
                 height: 28px;
 
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 9px;
-                    spacing: 7px;
-                    alignment: center;
-
-                    // Studio brand logo image from assets/brand
-                    Image {
-                        source: @image-url("../../../assets/brand/png/yeban-dark-64.png");
-                        width: 18px;
-                        height: 18px;
-                    }
-
-                    Text {
-                        text: "夜半";
-                        font-family: Tokens.font-ui;
-                        font-size: 11px;
-                        font-weight: 700;
-                        color: #f1f5f9;
-                        vertical-alignment: center;
-                    }
+                Image {
+                    source: @image-url("../../../assets/brand/png/yeban-dark-64.png");
+                    width: 22px;
+                    height: 22px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
                 brand_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
-                TooltipBubble { text: "夜半"; is-visible: brand_touch.has-hover; tip-offset-x: 20px; }
+                TooltipBubble { text: "夜半 DAW (Yeban Studio)"; is-visible: brand_touch.has-hover; }
             }
 
             // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
@@ -922,7 +910,10 @@ export component TransportHeaderBar inherits Rectangle {
                         }
                         btn_rec_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
-                            clicked => { root.toggle-rec(); }
+                            clicked => {
+                                root.toggle-rec();
+                                root.toggle-record();
+                            }
                         }
                         TooltipBubble { text: "录音准备 / 穿插录音 [R]"; is-visible: btn_rec_touch.has-hover; }
                     }
