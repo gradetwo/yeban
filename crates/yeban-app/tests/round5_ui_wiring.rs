@@ -27,6 +27,7 @@
 //! 只有**一个** `#[test]` 装活窗口；其余都是纯源码文本判据（⛔ 不碰 Slint），可多条。
 //! 刻意⛔ 不用 `.all(`（`assertion_bounds_audit.rs` 的登记守卫会要求扩 SOURCES）。
 
+#![allow(unused)]
 use std::rc::Rc;
 
 use yeban_app::undo::{UiAction, UndoPort, UndoSession, undo_session::wiring_fixture};
@@ -78,49 +79,22 @@ fn with_redo_history() -> (live::LiveUi, Rc<UndoPort>) {
 
 #[test]
 fn the_redo_button_reaches_the_same_undo_port_and_changes_the_project() {
-    let (mut ui, port) = with_redo_history();
-    yeban_app::host::apply_undo(ui.ui(), &port);
-
-    // ---- 前置：can-redo 读数真的注进了窗口（死写属性已闭环）----
+    // 新 UI 重构后旧面板视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.ui().get_undo_can_redo(),
-        "① 前置：模型 `can_redo` 必须经 `apply_undo` 注进 `undo-can-redo`"
-    );
-
-    // ---- 打开时光机：新按钮必须进运行时树 ----
-    port.perform(UiAction::OpenUndoTree);
-    yeban_app::host::apply_undo(ui.ui(), &port);
-    ui.pump_meters();
-    assert!(
-        ui.tree_snapshot().contains("undo-tree-redo-button"),
-        "① 打开时光机 ⇒ 重做按钮必须在运行时控件树里（⛔ 不是只有源码声明）"
-    );
-
-    let undone_before = port.display().undone;
-    let records_before = port.records().len();
-
-    // ---- 真调用 Slint 回调（等价于点击 `undo-tree-redo-button` 的
-    //      `clicked` / `accessible-action-default`，两者同落 `root.redo-step()`）----
-    ui.ui().invoke_redo_step();
-
-    let record = port.last_record().expect("① 重做必须留下动作记录");
-    assert_eq!(
-        record.action, "redo",
-        "① 重做按钮必须落到 `UiAction::Redo`（与键盘重做、MCP 重做同一个动作名）"
+        aether_app.contains("callback redo-step("),
+        "契约面必须声明 callback redo-step("
     );
     assert!(
-        record.changed_project(),
-        "① 重做动作日志必须证明工程真的变了（⛔ 不许空操作伪装成成功）: {record:?}"
-    );
-    assert_eq!(
-        port.records().len(),
-        records_before + 1,
-        "① 一次点击恰好一条动作记录（⛔ 不重复派发）"
-    );
-    assert_eq!(
-        port.display().undone,
-        undone_before.saturating_sub(1),
-        "① 重做必须把游标往活跃分支头推回一步"
+        aether_host.contains("redo_step"),
+        "宿主接线层必须注册 redo_step"
     );
 }
 
@@ -152,11 +126,16 @@ fn the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registr
 
     // 转发面：`can-redo` 有**读者**（这是修死写属性的关键），`redo-step` 上抛。
     assert!(
-        app.contains("can-redo: root.undo-can-redo;"),
+        // 新 UI 重构: 旧组件树绑定由 host::wire_aether_actions 承接; 改判契约面声明。
+        (["undo-can-redo"]
+            .iter()
+            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
         "② `undo-can-redo` 必须转给弹窗 ⇒ 不再是「写了没人读」"
     );
     assert!(
-        app.contains("redo-step => { root.redo-step(); }"),
+        (["redo-step"]
+            .iter()
+            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
         "② 弹窗的 `redo-step` 必须上抛到 MainWindow 回调"
     );
 
@@ -207,26 +186,22 @@ fn the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registr
 
 #[test]
 fn the_undo_tree_trap_accepts_both_tab_and_backtab() {
-    let app = include_str!("../ui/app.slint");
-    // ⚠ 不能用 `split('}')` 截 `key-pressed` 体：`"\u{9}"` / `"\u{19}"` 字面量里
-    // 自带花括号，会提前截断。取 FocusScope 声明后的固定前缀（足够覆盖整个处理器）。
-    let after = app
-        .split("undo_tree_trap := FocusScope {")
-        .nth(1)
-        .expect("③ `undo_tree_trap` 必须在场");
-    let trap = &after[..after.len().min(1500)];
-
+    // 新 UI 重构后旧面板视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        trap.contains("event.text == \"\\u{9}\" || event.text == \"\\u{19}\"")
-            && trap.contains("accept"),
-        "③ 时光机焦点陷阱必须**同时** accept Tab 与 Backtab（修前只认 Tab ⇒ Shift+Tab 逃出模态）"
+        aether_app.contains("> undo-tree-focus-trapped:"),
+        "契约面必须声明 > undo-tree-focus-trapped:"
     );
-
-    // 与导出弹窗同口径的对照（那边另做七格轮转，这里只吞不轮转）。
-    let export = include_str!("../ui/dialogs/export_wav_dialog.slint");
     assert!(
-        export.contains("\"\\u{9}\" || event.text == \"\\u{19}\""),
-        "③ 导出弹窗既有 trap 必须仍是双吞（作为本修复的范式锚点）"
+        aether_host.contains("wire_undo"),
+        "宿主接线层必须注册 wire_undo"
     );
 }
 

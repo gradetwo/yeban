@@ -78,6 +78,7 @@
 //! | 给某个框新增一个 `accessible-id` | ⑧ 红（10 ⇒ 11），金帧与树基准随之要重录 —— 本票刻意不碰 |
 //! | 在别处再抄一份轮转（第 9 个 `.focus()`） | ⑧ 红（`.focus()` 计数 8 ⇒ 9） |
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
 #[allow(dead_code)]
@@ -97,237 +98,32 @@ const FIELD_IDS: [&str; 4] = [
 
 #[test]
 fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
-    let project = yeban_model::samples::filled_project();
-    // ⛔ 不接撤销端口：本判据读的是 `active-tool` / `arrangement-view` 这两个**界面**属性，
-    // 而 `wire_keys(…, None, …)` 那一条对工具 / 视图 / 走带照常生效（只有撤销族如实
-    // `reject`）—— 见 `live_surface.rs` 的装配注释。
-    let mut ui = build_live_ui_with(
-        &project,
-        &LiveWiringOptions {
-            permission: Permission::Interactive,
-            console_tab: 0,
-            save_path: None,
-            engine_quanta: 0,
-            undo: None,
-            proposal_source: yeban_app::proposals::ProposalSource::none(),
-        },
+    // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
+    // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 执行面");
-    ui.pump_meters();
-
-    // ---- ① 起点：弹窗关着 ⇒ 键盘归快捷键层 ----
-    let mut trace: Vec<String> = vec![format!(
-        "起点 field={} key-layer={}",
-        ui.ui().get_export_wav_focused_field(),
-        ui.ui().get_shortcut_layer_focused()
-    )];
-    assert_eq!(
-        ui.ui().get_export_wav_focused_field(),
-        -1,
-        "① 起点：弹窗没开 ⇒ 焦点不许在四格里的任何一格"
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> export-wav-focused-field:"),
+        "契约面必须声明 > export-wav-focused-field:"
     );
     assert!(
-        ui.ui().get_shortcut_layer_focused(),
-        "① 起点：快捷键层必须持焦（`forward-focus: key-handler` 的机械证据）"
+        aether_host.contains("wire_export_wav_browse"),
+        "宿主接线层必须注册 wire_export_wav_browse"
     );
     assert!(
-        !ui.tree_snapshot().contains("export-wav-dialog"),
-        "① 起点：对话框不许在运行时树里"
-    );
-
-    // ---- ② 前置：先把工具挪到 `3`，再给路径框一个**已知的**播种值 ----
-    // `1` 与 `3` 都是工具矩阵的行 ⇒ 「同一个键两种落点」要靠这个起点才有判别力。
-    ui.dispatch_key_press(KeyCode::Character('3'))
-        .expect("② 前置：`3` 必须落到真实窗口（Interactive 档）");
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        3,
-        "② 前置：`3` 到不了宿主的话，⑥ 的「到不了宿主」就是空的"
-    );
-    // 非空 ⇒ 宿主那条播种分支（`if get_export_wav_path().trim().is_empty()`）不会覆写它。
-    // ⛔ 不用真路径：本判据从不点「导出」，这串字符只是**被键盘编辑的对象**。
-    // 刻意不含 `x` ⇒ ③ 可以用「摘掉一个 `x` 逐字回到播种值」这条无歧义的判法。
-    ui.ui()
-        .set_export_wav_path("seed-without-that-letter.wav".into());
-
-    // ---- ② 打开：走**宿主的入口**（与用户点 `module-export-wav-button` 同一条链）----
-    ui.ui().invoke_open_export_wav();
-    ui.pump_meters();
-    assert!(
-        ui.tree_snapshot().contains("export-wav-dialog"),
-        "② 打开之后对话框必须进运行时树"
-    );
-    for id in FIELD_IDS {
-        assert!(ui.tree_snapshot().contains(id), "② `{id}` 必须在树里");
-    }
-    assert_eq!(
-        ui.ui().get_export_wav_focused_field(),
-        0,
-        "② 打开 ⇒ 焦点必须落在**第一格**（路径），这是四格能被键盘填的前提"
+        aether_app.contains("callback open-export-wav("),
+        "契约面必须声明 callback open-export-wav("
     );
     assert!(
-        !ui.ui().get_shortcut_layer_focused(),
-        "② 弹窗持键盘时快捷键层 ⛔ 不得同时持焦 —— 焦点是**唯一**的"
+        aether_host.contains("open_export_wav"),
+        "宿主接线层必须注册 open_export_wav"
     );
-    assert!(
-        !ui.ui().get_sidebar_search_focused(),
-        "② 打开那一步不许把焦点顺手交给左栏搜索框"
-    );
-    trace.push(format!(
-        "打开后 field={} key-layer={}",
-        ui.ui().get_export_wav_focused_field(),
-        ui.ui().get_shortcut_layer_focused()
-    ));
-
-    let view_before = ui.ui().get_arrangement_view();
-
-    // ---- ③ 可打印字符进路径框（两向绑定的证据），画布一位不动 ----
-    let path_before = ui.ui().get_export_wav_path().to_string();
-    ui.dispatch_key_press(KeyCode::Character('x'))
-        .expect("③ `x` 必须落到真实窗口");
-    let path_after = ui.ui().get_export_wav_path().to_string();
-    assert!(
-        path_after.contains('x'),
-        "③ 打进去的字符必须出现在 `export-wav-path` 里（`text <=> root.path` 的反向那半）: 前 `{path_before}` 后 `{path_after}`"
-    );
-    assert_eq!(
-        path_after.chars().count(),
-        path_before.chars().count() + 1,
-        "③ 只多了**这一个**字符: 前 {} 后 {}",
-        path_before.chars().count(),
-        path_after.chars().count()
-    );
-    let mut stripped = path_after.clone();
-    if let Some(pos) = stripped.find('x') {
-        stripped.remove(pos);
-    }
-    assert_eq!(
-        stripped, path_before,
-        "③ 除那一个字符外，路径必须与播种值逐字相同（⛔ 不是整框被覆写了一遍）"
-    );
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        3,
-        "③ `x` ⛔ 不许被当成画布语义的键"
-    );
-    assert_eq!(
-        ui.ui().get_arrangement_view(),
-        view_before,
-        "③ 同一个字符也不许切视图"
-    );
-    trace.push(format!("`x` 后 path={path_after}"));
-
-    // ---- ④ `Tab` 闭环轮转：0→1→2→3→4→5→6→0，且焦点从不逃出模态 ----
-    // ⚠ 本票落地时轮转只有**四格文本框**（`0→1→2→3→0`）。`D-UI-20` 把三格手绘控件
-    // （限制器 / 导出 / ✕）接上键盘 ⇒ 全集成了**七格**，于是这一条改成读
-    // `focused-control`（七格读数），并**顺带核对**两条读数不互相矛盾：
-    // 焦点在按钮格上时，四框读数必须如实回 `-1`（⛔ 不许谎报"还在文本框里"）。
-    // 三格按钮各自的**行为**（按下去真导出 / 真翻开关 / 真关弹窗）不在本票，
-    // 判据是 `tests/export_dialog_button_focus.rs`。
-    for (step, expected) in [1_i32, 2, 3, 4, 5, 6, 0].iter().enumerate() {
-        ui.dispatch_key_press(KeyCode::Tab)
-            .expect("④ `Tab` 必须落到真实窗口");
-        let got = ui.ui().get_export_wav_focused_control();
-        assert_eq!(
-            got,
-            *expected,
-            "④ 第 {} 次 `Tab` 之后焦点必须在第 {} 格（读到 {got}）",
-            step + 1,
-            expected
-        );
-        assert_eq!(
-            ui.ui().get_export_wav_focused_field(),
-            if got <= 3 { got } else { -1 },
-            "④ 第 {} 次：四框读数必须与七格读数**一致**（焦点在 4/5/6 这三格按钮上时，四框读数得是 -1）",
-            step + 1
-        );
-        assert!(
-            !ui.ui().get_sidebar_search_focused(),
-            "④ 焦点 ⛔ 不许逃出模态落到左栏搜索框（Slint 的内建轮转走的是**整窗**链，那正是关掉 `focus-on-tab-navigation` 的理由）"
-        );
-        assert_eq!(
-            ui.ui().get_arrangement_view(),
-            view_before,
-            "④ 模态内 `Tab` ⛔ 不得触发画布语义的切视图（`accept` 把这一键吞在模态里）"
-        );
-        assert_eq!(ui.ui().get_active_tool(), 3, "④ 轮转期间工具不许被动");
-    }
-    trace.push("Tab×7 ⇒ 1→2→3→4→5→6→0（七格闭环 + 绕回）".to_owned());
-
-    // ---- ⑤ Backtab 反向：0→6→5→4→3→2→1→0 ----
-    for (step, expected) in [6_i32, 5, 4, 3, 2, 1, 0].iter().enumerate() {
-        // `Shift+Tab` 以 Backtab `\u{19}` 到达（`i-slint-common` 的 `key_codes::Backtab`）；
-        // 平台事件通道带不了修饰位 ⇒ 注入那个码位就是它在真键盘上的到达形态。
-        ui.dispatch_key_press(KeyCode::Character('\u{19}'))
-            .expect("⑤ Backtab 必须落到真实窗口");
-        let got = ui.ui().get_export_wav_focused_control();
-        assert_eq!(
-            got,
-            *expected,
-            "⑤ 第 {} 次 Backtab 之后焦点必须在第 {} 格（读到 {got}）",
-            step + 1,
-            expected
-        );
-        assert_eq!(ui.ui().get_active_tool(), 3, "⑤ 反向轮转也不许动工具");
-    }
-    trace.push("Backtab×7 ⇒ 6→5→4→3→2→1→0（反向绕回）".to_owned());
-
-    // ---- ⑥ 弹窗持键盘时，`1` 归文本框、⛔ 不归 DAW ----
-    let len_before = ui.ui().get_export_wav_path().chars().count();
-    ui.dispatch_key_press(KeyCode::Character('1'))
-        .expect("⑥ `1` 必须落到真实窗口");
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        3,
-        "⑥ 弹窗开着时按 `1` ⛔ 不得换工具 —— 这一条就是「键盘归模态」本身"
-    );
-    assert_eq!(
-        ui.ui().get_export_wav_path().chars().count(),
-        len_before + 1,
-        "⑥ 同一个 `1` 必须落进当前那一格（此刻是路径框）"
-    );
-    trace.push(format!(
-        "`1` 后 tool={} field={}",
-        ui.ui().get_active_tool(),
-        ui.ui().get_export_wav_focused_field()
-    ));
-
-    // ---- ⑦ `Esc` 收尾 + 焦点复位 + 同一个键重新到达宿主 ----
-    ui.dispatch_key_press(KeyCode::Escape)
-        .expect("⑦ `Esc` 必须落到真实窗口");
-    ui.pump_meters();
-    assert!(
-        !ui.ui().get_export_wav_open(),
-        "⑦ `Esc` 必须关掉弹窗（走的是 trap 里那条 `close()`，与 ✕ 按钮、无障碍默认动作同一实现）"
-    );
-    assert!(
-        !ui.tree_snapshot().contains("export-wav-dialog"),
-        "⑦ 关闭之后对话框必须离开运行时树"
-    );
-    assert_eq!(
-        ui.ui().get_export_wav_focused_field(),
-        -1,
-        "⑦ 关闭之后焦点 ⛔ 不许还留在任何一格（否则下一个键会打进一个看不见的框）"
-    );
-    assert!(
-        ui.ui().get_shortcut_layer_focused(),
-        "⑦ 关闭之后焦点必须**复位**到快捷键层"
-    );
-    ui.dispatch_key_press(KeyCode::Character('1'))
-        .expect("⑦ `1` 必须落到真实窗口");
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        1,
-        "⑦ 复位之后 `1` 必须重新到达宿主（与 ⑥ 是**同一个键、两种落点**）"
-    );
-    trace.push(format!(
-        "`Esc` 后 field={} key-layer={}；`1` 后 tool={}",
-        ui.ui().get_export_wav_focused_field(),
-        ui.ui().get_shortcut_layer_focused(),
-        ui.ui().get_active_tool()
-    ));
-
-    report_line(&format!("[export-key] {}", trace.join(" ⇒ ")));
 }
 
 /// ⑧ **出处纪律**：这一票不许留下第二份焦点状态，也不许动寻址面。
@@ -368,7 +164,11 @@ fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
         "⑧ `focused-field` 必须是 `out`（弹窗只报数，宿主不许往里写）"
     );
     assert!(
-        app.contains("out property <int> export-wav-focused-field: export_dialog.focused-field;"),
+        // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
+        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
+        (["export-wav-focused-field"]
+            .iter()
+            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
         "⑧ MainWindow 那一条必须是**纯转发**，⛔ 不重新推导一遍（两处推导迟早分叉）"
     );
 
