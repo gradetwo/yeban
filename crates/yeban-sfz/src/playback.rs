@@ -46,8 +46,10 @@
 //! [`PlaybackSpec::gain`] 只含 `volume`（dB → 线性）；力度 → 振幅是**另一段**，
 //! 由 [`PlaybackSpec::velocity_gain`] 携带（`amp_velcurve_N` 点表优先，否则
 //! `amp_veltrack` 幂律；全部出处与工程裁决见 [`crate::velocity`]）。
+//! 键位 → 振幅是**第三段**，由 [`PlaybackSpec::keytrack_gain`] 携带
+//! （`amp_keytrack` × 键距，见 [`keytrack_gain_factor`]）。
 //! 合并值是 [`PlaybackSpec::total_gain`]。这样分段是为了不静默改变既有消费方的电平：
-//! 加这个字段之前 `gain` 就只含 `volume`。
+//! 加这些字段之前 `gain` 就只含 `volume`。
 //!
 //! # 刻意不做的换算（避免发明语义）
 //!
@@ -218,6 +220,13 @@ pub struct PlaybackSpec {
     pub transpose: i32,
     /// 该 region 的微调（音分）。
     pub tune: i32,
+    /// 该 region 的 `pitch_keytrack`（音分/键，原样；缺省
+    /// [`crate::PITCH_KEYTRACK_DEFAULT`]）。
+    ///
+    /// 单独带出是为了让消费方能自己换算：它已折进
+    /// [`PlaybackSpec::pitch_ratio`] / [`PlaybackSpec::rate`]，消费方
+    /// ⛔ 不需要（也不应该）再乘一次。
+    pub pitch_keytrack: i32,
     /// 该 region 的 `bend_up`（音分，原样；缺省 [`crate::BEND_UP_DEFAULT_CENTS`]）。
     ///
     /// 弯音范围**不是**每样本都用的量：调用方把它与弯音轮值一起送进
@@ -228,7 +237,8 @@ pub struct PlaybackSpec {
     ///
     /// 允许为正（规范正文明写正值可用于齐特琴 / 吉他），见 [`Region::bend_down`]。
     pub bend_down: i32,
-    /// 音高比：`2 ^ (((note - pitch_keycenter + transpose) * 100 + tune) / 1200)`。
+    /// 音高比：
+    /// `2 ^ ((pitch_keytrack * (note - pitch_keycenter) + transpose * 100 + tune) / 1200)`。
     pub pitch_ratio: f32,
     /// 步进比：每输出一个采样前进的源采样个数（已含采样率换算）。
     pub rate: f32,
@@ -266,6 +276,17 @@ pub struct PlaybackSpec {
     /// [`Region::crossfade_gain`] 并传入当时的 CC 状态。未提供 CC 状态的构造路径
     /// （[`Region::playback_spec`]）只折键盘与力度两个轴。
     pub crossfade_gain: f32,
+    /// 键位跟踪 → **线性振幅**的因子（1.0 = 该键无偏移）。
+    ///
+    /// 就是 [`Region::keytrack_gain`] 在触发音符上的读数：
+    /// `10 ^ ((amp_keytrack * (note - amp_keycenter)) / 20)`。
+    /// `amp_keytrack` 缺省 0 ⇒ 恒为 1.0，因此合并值
+    /// [`PlaybackSpec::total_gain`] 对没有该 opcode 的 region 逐位不变。
+    ///
+    /// **刻意不折进 [`PlaybackSpec::gain`]**：与力度段同一条理由 ——
+    /// `gain` 只含 `volume`，既有消费方按那个口径读。要用合并值请调
+    /// [`PlaybackSpec::total_gain`]。
+    pub keytrack_gain: f32,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
     /// 该 region 的 `trigger`（原样）。
@@ -311,16 +332,23 @@ pub struct PlaybackSpec {
 }
 
 impl PlaybackSpec {
-    /// `volume`、力度与交叉淡化三段的**合并**线性增益：
-    /// `gain * velocity_gain * crossfade_gain`。
+    /// `volume`、力度、交叉淡化与键位跟踪四段的**合并**线性增益：
+    /// `((gain * velocity_gain) * crossfade_gain) * keytrack_gain`。
     ///
-    /// 三段刻意分开（见 [`PlaybackSpec::gain`] / [`PlaybackSpec::velocity_gain`] /
-    /// [`PlaybackSpec::crossfade_gain`] 的文档）；本方法是唯一的合并点。逐样本路径上
-    /// 是两次乘法，不分配、不加锁。没有 `xfin_*` / `xfout_*` 的 region 的
-    /// `crossfade_gain` 恰为 1.0，乘以它**逐位不变**。
+    /// 四段刻意分开（见 [`PlaybackSpec::gain`] / [`PlaybackSpec::velocity_gain`] /
+    /// [`PlaybackSpec::crossfade_gain`] / [`PlaybackSpec::keytrack_gain`] 的文档）；
+    /// 本方法是唯一的合并点。逐样本路径上是三次乘法，不分配、不加锁。
+    /// 没有 `xfin_*` / `xfout_*` 的 region 的 `crossfade_gain` 恰为 1.0、
+    /// 没有 `amp_keytrack` 的 region 的 `keytrack_gain` 恰为 1.0，
+    /// 乘以它们**逐位不变**。
+    ///
+    /// ⚠ **结合序是契约的一部分**：键位跟踪段在交叉淡化之后、`amplitude`
+    /// 等最外层乘子（引擎侧，见 `yeban-engine` 的 `PreparedRegion::gain_at`）
+    /// 之前。摊平路径按同一次序现算同一因子（共用
+    /// [`keytrack_gain_factor`]），两条路逐位一致。
     #[must_use]
     pub fn total_gain(&self) -> f32 {
-        self.gain * self.velocity_gain * self.crossfade_gain
+        self.gain * self.velocity_gain * self.crossfade_gain * self.keytrack_gain
     }
 
     /// 是否循环（`loop_mode` 要求循环**且**窗口有效）。
@@ -385,15 +413,47 @@ pub struct RegionPlay<'i, 'a> {
     pub spec: PlaybackSpec,
 }
 
+/// `amp_keytrack` 在给定键上的**线性**增益因子：
+/// `10 ^ ((amp_keytrack * (note - amp_keycenter)) / 20)`。
+///
+/// 规范语义（<https://sfzformat.com/opcodes/amp_keytrack/>、
+/// <https://sfzformat.com/opcodes/amp_keycenter/>）：增益偏移（dB）＝
+/// `amp_keytrack × (note − amp_keycenter)`，中心键上恰为 0 dB ⇒ 因子 1.0。
+/// 换算形状与 [`Region::linear_gain`] 同一条（dB → 线性，`f64` 求值后收窄）。
+///
+/// ⭐ **为什么是自由函数**：引擎的摊平表（`PreparedRegion`）只带
+/// (`amp_keytrack`, `amp_keycenter`) 两个标量、不持有 `Region`，它在
+/// `gain_at` 里调本函数 ⇒ 离线（[`PlaybackSpec::total_gain`]）与摊平两条路
+/// 用**同一份**公式，⛔ 不许在引擎侧再抄一份。
+///
+/// 解析路径保证 `amp_keytrack` 有限且在 -96..=12 内（见
+/// [`Region::amp_keytrack`]），因此解析得到的 region 不会返回 `NaN`；
+/// 手工传入非有限值时结果是 IEEE 语义的 `NaN` / `inf`（与
+/// [`Region::linear_gain`] 同口径，⛔ 不发明钳制）。
+/// `amp_keytrack == 0` 时指数恰为 ±0.0 ⇒ 因子恰 `1.0`（含中心两侧），
+/// 乘它逐位不变。零分配，可在实时路径调用。
+#[must_use]
+pub fn keytrack_gain_factor(amp_keytrack: f32, amp_keycenter: i32, note: u8) -> f32 {
+    let db = f64::from(amp_keytrack) * f64::from(i32::from(note) - amp_keycenter);
+    (db * std::f64::consts::LOG2_10 / 20.0).exp2() as f32
+}
+
 impl<'a> Region<'a> {
-    /// 音高比：`2 ^ (((note - pitch_keycenter + transpose) * 100 + tune) / 1200)`。
+    /// 音高比：
+    /// `2 ^ ((pitch_keytrack * (note - pitch_keycenter) + transpose * 100 + tune) / 1200)`。
+    ///
+    /// ⭐ `pitch_keytrack`（音分/键，缺省 100）只缩放**键距**那一段；
+    /// `transpose`（半音）与 `tune`（音分）按各自单位原样相加，⛔ 不被它缩放。
+    /// 缺省 100 时式子化为接线前的
+    /// `((note - pitch_keycenter + transpose) * 100 + tune)`：两式在 `f64` 里
+    /// 都是小整数的精确运算（乘积与和都远未触及 2^53）⇒ **逐位相同**。
     ///
     /// 全程 `f64` 计算后收窄到 `f32`。零分配，可在实时路径调用。
     #[must_use]
     pub fn pitch_ratio(&self, note: u8) -> f32 {
-        let semitones = f64::from(i32::from(note)) - f64::from(self.pitch_keycenter)
-            + f64::from(self.transpose);
-        let cents = semitones * 100.0 + f64::from(self.tune);
+        let keyed_cents =
+            f64::from(i32::from(note) - self.pitch_keycenter) * f64::from(self.pitch_keytrack);
+        let cents = keyed_cents + f64::from(self.transpose) * 100.0 + f64::from(self.tune);
         (cents / CENTS_PER_OCTAVE).exp2() as f32
     }
 
@@ -487,6 +547,16 @@ impl<'a> Region<'a> {
         (f64::from(self.volume) * std::f64::consts::LOG2_10 / 20.0).exp2() as f32
     }
 
+    /// `amp_keytrack` 在 `note` 处的**线性**增益因子（见
+    /// [`keytrack_gain_factor`]）：就是本 region 的
+    /// (`amp_keytrack`, `amp_keycenter`) 在该键上的读数。
+    ///
+    /// 零分配，可在实时路径调用。
+    #[must_use]
+    pub fn keytrack_gain(&self, note: u8) -> f32 {
+        keytrack_gain_factor(self.amp_keytrack, self.amp_keycenter, note)
+    }
+
     /// 有效循环窗口。
     ///
     /// 返回 `Some` 的条件：**生效的**循环模式（[`Region::effective_loop_mode`]，
@@ -575,6 +645,7 @@ impl<'a> Region<'a> {
             pitch_keycenter: self.pitch_keycenter,
             transpose: self.transpose,
             tune: self.tune,
+            pitch_keytrack: self.pitch_keytrack,
             bend_up: self.bend_up,
             bend_down: self.bend_down,
             pitch_ratio: self.pitch_ratio(note),
@@ -584,6 +655,7 @@ impl<'a> Region<'a> {
             amp_veltrack: self.amp_veltrack,
             velocity_gain: self.velocity_gain(velocity),
             crossfade_gain: self.crossfade_gain(query),
+            keytrack_gain: self.keytrack_gain(note),
             pan: self.pan,
             trigger: self.trigger,
             off_mode: self.off_mode,
@@ -663,6 +735,123 @@ mod tests {
             close(region.pitch_ratio(61), 2.0f32.powf(1.0 / 12.0), 1.0e-6),
             "one semitone must be 2^(1/12)"
         );
+    }
+
+    #[test]
+    fn pitch_ratio_with_zero_keytrack_is_constant_over_the_keyboard() {
+        // 规范正文：keytrack=0 ⇒ 全键盘同音高（打击乐/音效层的标准写法）。
+        let instrument = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 pitch_keytrack=0",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        for note in 0..=127u8 {
+            assert_eq!(region.pitch_ratio(note), 1.0, "note {note}");
+        }
+    }
+
+    #[test]
+    fn pitch_ratio_keytrack_scales_only_the_key_distance() {
+        // keytrack=50：12 键 = 600 音分 = 半个八度；keytrack=200：6 键 = 一个八度。
+        let half = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 pitch_keytrack=50",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(close(
+            half.regions()[0].pitch_ratio(72),
+            std::f32::consts::SQRT_2,
+            1.0e-6
+        ));
+        let double = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 pitch_keytrack=200",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(double.regions()[0].pitch_ratio(66), 2.0);
+        // transpose / tune 不被 keytrack 缩放：中心键上 keytrack 不起作用，
+        // transpose=1 半音的读数与 keytrack 取值无关。
+        for keytrack in [0, 100, 300] {
+            let source = format!(
+                "<region>sample=a.wav pitch_keycenter=60 pitch_keytrack={keytrack} transpose=1"
+            );
+            let instrument = parse_text(&source, &Default::default()).expect("parses");
+            assert!(
+                close(
+                    instrument.regions()[0].pitch_ratio(60),
+                    2.0f32.powf(1.0 / 12.0),
+                    1.0e-6
+                ),
+                "keytrack {keytrack} must not scale transpose at the center key"
+            );
+        }
+    }
+
+    #[test]
+    fn pitch_ratio_with_negative_keytrack_reverses_the_keyboard() {
+        // 规范正文：负 keytrack 是合法用法（音高随键位反转）。
+        let instrument = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60 pitch_keytrack=-100",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.pitch_ratio(60), 1.0);
+        assert_eq!(region.pitch_ratio(72), 0.5, "an octave up must halve");
+        assert_eq!(region.pitch_ratio(48), 2.0, "an octave down must double");
+    }
+
+    #[test]
+    fn keytrack_gain_is_unity_at_the_center_and_linear_in_db() {
+        // amp_keytrack=2 dB/键、中心 60：中心恰 1.0；+10 键 = +20 dB = ×10；
+        // -10 键 = -20 dB = ×0.1（dB 域线性、两侧对称）。
+        let instrument = parse_text(
+            "<region>sample=a.wav amp_keytrack=2 amp_keycenter=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.keytrack_gain(60), 1.0);
+        assert!(close(region.keytrack_gain(70), 10.0, 1.0e-4));
+        assert!(close(region.keytrack_gain(50), 0.1, 1.0e-6));
+        // 规范示例形状的小数跟踪量：-1.4 dB/键，+10 键 = -14 dB。
+        let sloped = parse_text(
+            "<region>sample=a.wav amp_keytrack=-1.4 amp_keycenter=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        let expected = 10.0f32.powf(-14.0 / 20.0);
+        assert!(close(
+            sloped.regions()[0].keytrack_gain(70),
+            expected,
+            1.0e-6
+        ));
+        // 缺省（没有 amp_keytrack）：全键盘恒 1.0。
+        let plain = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        for note in 0..=127u8 {
+            assert_eq!(plain.regions()[0].keytrack_gain(note), 1.0, "note {note}");
+        }
+    }
+
+    #[test]
+    fn total_gain_includes_the_keytrack_segment() {
+        // volume=0 dB、amp_veltrack=0（力度段 = 1）⇒ total_gain 恰是键位段：
+        // amp_keytrack=1、中心 60、note 70 ⇒ 10 dB ⇒ 10^(10/20) = √10。
+        let instrument = parse_text(
+            "<region>sample=a.wav amp_veltrack=0 amp_keytrack=1",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        let spec = region.playback_spec(70, 127, RATES_EQUAL);
+        assert_eq!(spec.pitch_keytrack, crate::PITCH_KEYTRACK_DEFAULT);
+        assert!(close(spec.keytrack_gain, 10.0f32.sqrt(), 1.0e-5));
+        assert!(close(spec.total_gain(), 10.0f32.sqrt(), 1.0e-5));
+        // 中心键上键位段为 1.0 ⇒ total_gain 与接线前同为 1.0。
+        let centered = region.playback_spec(60, 127, RATES_EQUAL);
+        assert_eq!(centered.keytrack_gain, 1.0);
+        assert_eq!(centered.total_gain(), 1.0);
     }
 
     #[test]
@@ -1156,6 +1345,8 @@ mod tests {
                             hichan: 16,
                             amp_veltrack: crate::velocity::AMP_VELTRACK_DEFAULT,
                             velocity_curve: None,
+                            amp_keytrack: crate::instrument::AMP_KEYTRACK_DEFAULT,
+                            amp_keycenter: crate::instrument::AMP_KEYCENTER_DEFAULT,
                             loop_start: 0,
                             loop_end: 0,
                             loop_mode: LoopMode::NoLoop,
@@ -1172,6 +1363,7 @@ mod tests {
                             direction: PlayDirection::Forward,
                             tune,
                             transpose,
+                            pitch_keytrack: crate::instrument::PITCH_KEYTRACK_DEFAULT,
                             bend_up: crate::BEND_UP_DEFAULT_CENTS,
                             bend_down: crate::BEND_DOWN_DEFAULT_CENTS,
                             volume: 0.0,

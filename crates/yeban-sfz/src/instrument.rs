@@ -11,7 +11,7 @@
 //! 默认值全部取自 sfzformat 的机器可读 opcode 表 `_data/sfz/syntax.yml`
 //! （`pitch_keycenter` 默认 60、`lokey` 0、`hikey` 127、`lovel` 0、`hivel` 127、
 //! `lochan` 1、`hichan` 16、`seq_length` 1、`seq_position` 1、`lorand` 0、`hirand` 1、
-//! `tune` 0、`transpose` 0）。
+//! `tune` 0、`transpose` 0、`pitch_keytrack` 100、`amp_keytrack` 0、`amp_keycenter` 60）。
 //!
 //! ## ⚠ 三处**登记在案**的缺省偏离（⛔ 不是静默降级）
 //!
@@ -283,6 +283,41 @@ pub const LORAND_DEFAULT: f32 = 0.0;
 /// （`hirand`｜SFZ v1｜float｜**Default = 1**｜Range = 0 to 1）。
 /// 触发随机数恒落在 `[0, 1)`（见 [`trigger_rand`]）⇒ 上界 `1` 永不截断。
 pub const HIRAND_DEFAULT: f32 = 1.0;
+
+/// ⭐ **`pitch_keytrack` 的规范缺省**：**100**（音分/键）。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/pitch_keytrack/> 的表行
+/// （`pitch_keytrack`｜SFZ v1｜integer｜**Default = 100**｜Range = -1200 to 1200｜
+/// Unit = cents）；同页正文："Setting this value to zero means that all notes
+/// in the region will play the same pitch"。
+///
+/// 取 `100` 的效果：每键恰好一个半音 ⇒ 与接线前的速率公式
+/// （恒按 100 计算，见 [`Region::pitch_ratio`]）在全键盘上**逐位相同**。
+pub const PITCH_KEYTRACK_DEFAULT: i32 = 100;
+
+/// ⭐ **`amp_keytrack` 的规范缺省**：**0**（dB/键）。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/amp_keytrack/> 的表行
+/// （`amp_keytrack`｜SFZ v1｜float｜**Default = 0**｜Range = -96 to 12｜Unit = dB）。
+///
+/// 取 `0` 的效果：键位增益偏移恒 0 dB ⇒ 因子恰 `1.0` ⇒ 没有该 opcode 的
+/// 文件在增益链上**逐位不变**（见 [`crate::playback::keytrack_gain_factor`]）。
+pub const AMP_KEYTRACK_DEFAULT: f32 = 0.0;
+
+/// `amp_keytrack` 的规范取值下界（dB/键；格式页 Range `-96 to 12`）。
+///
+/// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位（与 `amp_veltrack` 同一条口径）。
+pub const AMP_KEYTRACK_MIN: f32 = -96.0;
+
+/// `amp_keytrack` 的规范取值上界（dB/键；格式页 Range `-96 to 12`）。
+pub const AMP_KEYTRACK_MAX: f32 = 12.0;
+
+/// ⭐ **`amp_keycenter` 的规范缺省**：**60**。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/amp_keycenter/> 的表行
+/// （`amp_keycenter`｜SFZ v1｜integer｜**Default = 60**｜Range = 0 to 127）；
+/// 同页正文："In this key, the amplifier keyboard tracking will have no effect."
+pub const AMP_KEYCENTER_DEFAULT: i32 = 60;
 
 /// `ampeg_attack` / `ampeg_hold` / `ampeg_decay` / `ampeg_release` 的规范取值上界，
 /// 单位**秒**（四个格式页的 Range 都是 `0 to 100`）。
@@ -559,6 +594,28 @@ pub struct Region<'a> {
     /// `amp_velcurve_0 = 0`、`amp_velcurve_127 = 1`（见
     /// [`VelocityCurve::from_points`]）。
     pub velocity_curve: Option<VelocityCurve>,
+    /// `amp_keytrack`：键位 → 振幅的跟踪量（**dB/键**，规范范围 -96..=12，缺省 0）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/amp_keytrack/> 的表格行
+    /// （Type = float，Default = 0，Range = -96 to 12，Unit = dB）；同页正文：
+    /// "Amplifier keyboard tracking (change in amplitude per key) in decibels."
+    /// 缺省值 [`AMP_KEYTRACK_DEFAULT`]；越界是明确 `Err`（不静默钳位）。
+    ///
+    /// 增益偏移（dB）＝ `amp_keytrack × (note − amp_keycenter)`，求值见
+    /// [`crate::playback::keytrack_gain_factor`]：它是增益乘积链里与
+    /// [`Region::amp_veltrack`] **同层**的一段（键轴，不是力度轴），
+    /// ⛔ 不折进力度曲线。
+    pub amp_keytrack: f32,
+    /// `amp_keycenter`：键位跟踪的中心键（MIDI 号，规范范围 0..=127，缺省 60）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/amp_keycenter/> 的表格行
+    /// （Type = integer，Default = 60，Range = 0 to 127）；在该键上
+    /// [`Region::amp_keytrack`] 的增益偏移恰为 0 dB。缺省值
+    /// [`AMP_KEYCENTER_DEFAULT`]；越界是明确 `Err`（不静默钳位）。
+    ///
+    /// ⚠ 与 [`Region::pitch_keycenter`] 是**两个独立**的中心：音高跟踪绕
+    /// `pitch_keycenter`、振幅跟踪绕本字段，文件可以给两者不同的值。
+    pub amp_keycenter: i32,
     /// 循环起点（采样点）。
     pub loop_start: u32,
     /// 循环终点（采样点）。
@@ -648,6 +705,20 @@ pub struct Region<'a> {
     pub tune: i32,
     /// 移调（半音，规范范围 -127..=127）。
     pub transpose: i32,
+    /// `pitch_keytrack`：键位 → 音高的跟踪量（**音分/键**，规范范围
+    /// -1200..=1200，缺省 100）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/pitch_keytrack/> 的表格行
+    /// （Type = integer，Default = 100，Range = -1200 to 1200，Unit = cents）；
+    /// 同页正文："values above 100 or negative values are occasionally useful"
+    /// ⇒ **允许负值**（音高随键位反转）与大于 100 的值，⛔ 不做符号校验。
+    /// 缺省值 [`PITCH_KEYTRACK_DEFAULT`]；越界是明确 `Err`（不静默钳位）。
+    ///
+    /// 音高偏移（音分）＝ `pitch_keytrack × (note − pitch_keycenter)`，
+    /// 求值见 [`Region::pitch_ratio`]：它只缩放**键距**那一段，
+    /// `transpose`（半音）与 [`Region::tune`]（音分）仍按各自单位相加，
+    /// ⛔ 不被本字段缩放。
+    pub pitch_keytrack: i32,
     /// `bend_up`：弯音轮**向上**时的弯音范围，单位音分（规范缺省
     /// [`BEND_UP_DEFAULT_CENTS`]，范围 -9600..=9600）。
     ///
@@ -1861,6 +1932,32 @@ pub(crate) fn build_region<'a>(
     };
     let velocity_curve = read_velocity_curve(&scopes, line)?;
 
+    // ---- 键位 → 振幅（`amp_keytrack` / `amp_keycenter`） ----
+    // 规范：`amp_keytrack` Default = 0、Range = -96 to 12（dB/键）；
+    // `amp_keycenter` Default = 60、Range = 0 to 127
+    // （<https://sfzformat.com/opcodes/amp_keytrack/>、
+    // <https://sfzformat.com/opcodes/amp_keycenter/>）。
+    // 与 `amp_veltrack` 同一条口径：**缺失** ⇒ 缺省值；**出现但越界** ⇒ 明确
+    // `Err`（⛔ 不钳位）。作用域链与其它 opcode 相同（`scopes` 已按
+    // region → group → master → global 归约）。
+    let amp_keytrack = match scopes.get("amp_keytrack") {
+        Some(value) => {
+            let tracked = value.as_f32()?;
+            if !(AMP_KEYTRACK_MIN..=AMP_KEYTRACK_MAX).contains(&tracked) {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "amp_keytrack".to_string(),
+                    value: tracked,
+                    min: AMP_KEYTRACK_MIN,
+                    max: AMP_KEYTRACK_MAX,
+                });
+            }
+            tracked
+        }
+        None => AMP_KEYTRACK_DEFAULT,
+    };
+    let amp_keycenter = read_i32(&scopes, "amp_keycenter", 0, 127, AMP_KEYCENTER_DEFAULT)?;
+
     // ---- 键映射 ----
     let key = match scopes.get("key") {
         Some(value) => Some(value.as_note(-1, 127)?),
@@ -1936,6 +2033,17 @@ pub(crate) fn build_region<'a>(
     // ---- 音高 / 电平 ----
     let tune = read_i32(&scopes, "tune", -100, 100, 0)?;
     let transpose = read_i32(&scopes, "transpose", -127, 127, 0)?;
+    // `pitch_keytrack`：Default = 100、Range = -1200 to 1200（音分/键，Type
+    // = integer；<https://sfzformat.com/opcodes/pitch_keytrack/>）。走与
+    // `tune` / `transpose` 同一条 `read_i32` 路径：缺失 ⇒ 缺省、越界 ⇒
+    // 明确 `Err`（⛔ 不钳位）。
+    let pitch_keytrack = read_i32(
+        &scopes,
+        "pitch_keytrack",
+        -1200,
+        1200,
+        PITCH_KEYTRACK_DEFAULT,
+    )?;
     // 弯音范围：两个端点各自独立，规范缺省 200 / -200，Range 都是 ±9600 音分
     // （<https://sfzformat.com/opcodes/bend_up/>、<https://sfzformat.com/opcodes/bend_down/>）。
     let bend_up = read_i32(
@@ -2078,6 +2186,8 @@ pub(crate) fn build_region<'a>(
         hichan,
         amp_veltrack,
         velocity_curve,
+        amp_keytrack,
+        amp_keycenter,
         loop_start,
         loop_end,
         loop_mode,
@@ -2094,6 +2204,7 @@ pub(crate) fn build_region<'a>(
         direction,
         tune,
         transpose,
+        pitch_keytrack,
         bend_up,
         bend_down,
         volume,
@@ -3001,6 +3112,8 @@ mod tests {
             hichan: 16,
             amp_veltrack: AMP_VELTRACK_DEFAULT,
             velocity_curve: None,
+            amp_keytrack: AMP_KEYTRACK_DEFAULT,
+            amp_keycenter: AMP_KEYCENTER_DEFAULT,
             loop_start: 0,
             loop_end: 0,
             loop_mode: LoopMode::NoLoop,
@@ -3017,6 +3130,7 @@ mod tests {
             direction: PlayDirection::Forward,
             tune: 0,
             transpose: 0,
+            pitch_keytrack: PITCH_KEYTRACK_DEFAULT,
             bend_up: BEND_UP_DEFAULT_CENTS,
             bend_down: BEND_DOWN_DEFAULT_CENTS,
             volume: 0.0,
@@ -6885,6 +6999,113 @@ v127=1
             parse_text("<region>sample=a.wav hirand=inf", &Default::default()),
             Err(SfzError::NonFiniteFloat { .. })
         ));
+    }
+
+    #[test]
+    fn keytrack_opcodes_default_to_the_spec_values() {
+        // 缺省三元组 (100, 0, 60)：规范表行 Default
+        // （pitch_keytrack=100 音分/键、amp_keytrack=0 dB/键、amp_keycenter=60）
+        // ⇒ 音高恒按半音、增益恒 1.0，与接线前逐位相同。
+        let region = first_region("<region>sample=a.wav");
+        assert_eq!(region.pitch_keytrack, PITCH_KEYTRACK_DEFAULT);
+        assert_eq!(region.amp_keytrack, AMP_KEYTRACK_DEFAULT);
+        assert_eq!(region.amp_keycenter, AMP_KEYCENTER_DEFAULT);
+        // 显式值原样读入（负 pitch_keytrack 与小数 amp_keytrack 都是规范内形状）。
+        let explicit = first_region(
+            "<region>sample=a.wav pitch_keytrack=-100 amp_keytrack=-1.4 amp_keycenter=48",
+        );
+        assert_eq!(explicit.pitch_keytrack, -100);
+        assert_eq!(explicit.amp_keytrack, -1.4);
+        assert_eq!(explicit.amp_keycenter, 48);
+        // 边界值合法：±1200 音分、-96 / +12 dB、0 / 127 键。
+        let edges = first_region(
+            "<region>sample=a.wav pitch_keytrack=1200 amp_keytrack=12 amp_keycenter=127",
+        );
+        assert_eq!(
+            (
+                edges.pitch_keytrack,
+                edges.amp_keytrack,
+                edges.amp_keycenter
+            ),
+            (1200, 12.0, 127)
+        );
+        let edges = first_region(
+            "<region>sample=a.wav pitch_keytrack=-1200 amp_keytrack=-96 amp_keycenter=0",
+        );
+        assert_eq!(
+            (
+                edges.pitch_keytrack,
+                edges.amp_keytrack,
+                edges.amp_keycenter
+            ),
+            (-1200, -96.0, 0)
+        );
+    }
+
+    #[test]
+    fn keytrack_opcodes_follow_the_scope_chain() {
+        // header 级（global / group）设定被 region 继承，region 可单独覆写。
+        let inherited = first_region(
+            "<global>pitch_keytrack=50 amp_keytrack=1.5\n\
+             <group>amp_keycenter=48\n\
+             <region>sample=a.wav",
+        );
+        assert_eq!(
+            (
+                inherited.pitch_keytrack,
+                inherited.amp_keytrack,
+                inherited.amp_keycenter
+            ),
+            (50, 1.5, 48)
+        );
+        let overridden = first_region(
+            "<group>pitch_keytrack=50 amp_keytrack=1.5 amp_keycenter=48\n\
+             <region>sample=a.wav pitch_keytrack=0 amp_keycenter=60",
+        );
+        assert_eq!(
+            (
+                overridden.pitch_keytrack,
+                overridden.amp_keytrack,
+                overridden.amp_keycenter
+            ),
+            (0, 1.5, 60)
+        );
+    }
+
+    #[test]
+    fn keytrack_opcodes_out_of_range_are_loud_errors() {
+        // pitch_keytrack 越出 -1200..=1200 ⇒ IntegerOutOfRange（read_i32 路径，⛔ 不钳位）。
+        for text in [
+            "<region>sample=a.wav pitch_keytrack=1201",
+            "<region>sample=a.wav pitch_keytrack=-1201",
+            "<region>sample=a.wav amp_keycenter=128",
+            "<region>sample=a.wav amp_keycenter=-1",
+        ] {
+            let outcome = parse_text(text, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::IntegerOutOfRange { .. })),
+                "`{text}` 必须 Err(IntegerOutOfRange)，实得 {outcome:?}"
+            );
+        }
+        // amp_keytrack 越出 -96..=12 ⇒ FloatOutOfRange（与 `amp_veltrack` 同口径）。
+        for text in [
+            "<region>sample=a.wav amp_keytrack=12.5",
+            "<region>sample=a.wav amp_keytrack=-96.5",
+        ] {
+            let outcome = parse_text(text, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::FloatOutOfRange { .. })),
+                "`{text}` 必须 Err(FloatOutOfRange)，实得 {outcome:?}"
+            );
+        }
+        // pitch_keytrack 是 integer 型：小数文本认不出 ⇒ 响亮错误（⛔ 不静默取整）。
+        assert!(
+            parse_text(
+                "<region>sample=a.wav pitch_keytrack=99.5",
+                &Default::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]

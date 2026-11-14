@@ -98,7 +98,7 @@ keyswitch / include / define / CC gate / 轮替的**语义**，全部用 Rust �
 （一行多个）、取值去引号、`#define $VAR`（定义时展开一层 + 使用处单遍替换）、`#include`
 （相对路径 + glob + 沙箱 + 环/深度/数量上限）、`key`/`lokey`/`hikey`/`pitch_keycenter`/
 `lovel`/`hivel`/`lochan`/`hichan`/`loop_start`/`loop_end`/`loop_mode`/`tune`/`transpose`/
-`volume`(=`gain`)/`pan`/`seq_position`/`seq_length`/`group`(=`polyphony_group`)/`off_by`(=`offby`)、
+`pitch_keytrack`/`volume`(=`gain`)/`amp_keytrack`/`amp_keycenter`/`pan`/`seq_position`/`seq_length`/`group`(=`polyphony_group`)/`off_by`(=`offby`)、
 `sw_last`/`sw_lokey`/`sw_hikey`/`sw_down`/`sw_up`、`loccN`/`hiccN` CC 门控、
 `offset`/`end`/`direction`（进入可渲染采样区间）、`trigger`（事件门控，含
 `release`/`release_key` 强制 `loop_mode=one_shot` 的规范覆盖）、
@@ -145,6 +145,20 @@ keyswitch / include / define / CC gate / 轮替的**语义**，全部用 Rust �
 10. **`note_offset`/`octave_offset`/`set_ccN`/`sw_note_offset`** 未实现（CC 门控只读 `loccN`/`hiccN`）。
 11. **段头只能出现在行首**（其后可紧跟 opcode）。`…<region>…` 出现在取值中间时会被当成取值的一部分。
 12. **音名八度**固定 IPN（`C4 = 60`）；不提供 Yamaha/`C3 = 60` 兼容开关（见第 6 节）。
+13. **键盘跟踪** `pitch_keytrack`/`amp_keytrack`/`amp_keycenter`：本节旧版未单列
+    （2026-11-14 的 opcode 审计记为 C15/C16「整族未解析、静默忽略」）。
+    ⭐ **已实现（keytrack 片）**：解析在 `yeban-sfz`（三者走四级作用域链；
+    `pitch_keytrack` integer、缺省 100、域 -1200..=1200 音分/键；
+    `amp_keytrack` float、缺省 0、域 -96..=12 dB/键；`amp_keycenter`
+    integer、缺省 60、域 0..=127；越界一律响亮报错、⛔ 不钳位）。
+    音高偏移折进 `Region::pitch_ratio` 同一条归约（摊平 `rate_per_note`
+    自动带上）；振幅偏移是增益乘积链里与 `amp_veltrack` 同层的一段，
+    离线在 `PlaybackSpec::total_gain` 末段、摊平在
+    `PreparedRegion::gain_at_with_cc` 的同一结合位置，共用
+    `keytrack_gain_factor` 一份公式。缺省三元组 (100, 0, 60) 下既有
+    输出逐位不变。判据见 `yeban-sfz` 的 instrument/playback 单元测试与
+    `yeban-engine/tests/sfz_keytrack.rs`（K1–K5）。同族未做（仍属审计
+    在册缺口）：`pitch_random`/`pitch_veltrack`/`amp_random`。
 
 ---
 

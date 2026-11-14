@@ -366,10 +366,11 @@ pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};
 pub use error::SfzError;
 pub use instrument::{
+    AMP_KEYCENTER_DEFAULT, AMP_KEYTRACK_DEFAULT, AMP_KEYTRACK_MAX, AMP_KEYTRACK_MIN,
     BEND_DOWN_DEFAULT_CENTS, BEND_RANGE_MAX_CENTS, BEND_UP_DEFAULT_CENTS, CcGate, HIRAND_DEFAULT,
     Instrument, LORAND_DEFAULT, LoopMode, NotePolyphony, OFF_TIME_DEFAULT_SECONDS, OffMode,
-    PITCH_BEND_CENTER, PlayDirection, Region, RegionQuery, SampleEnd, Trigger, TriggerEvent,
-    trigger_rand,
+    PITCH_BEND_CENTER, PITCH_KEYTRACK_DEFAULT, PlayDirection, Region, RegionQuery, SampleEnd,
+    Trigger, TriggerEvent, trigger_rand,
 };
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use midi::{MidiOpcode, MidiSection};
@@ -380,6 +381,7 @@ pub use parser::{
 pub use pitch_eg::{PitchEg, PitchEgSource};
 pub use playback::{
     FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates, SampleSpan,
+    keytrack_gain_factor,
 };
 pub use velocity::{
     AMP_VELTRACK_DEFAULT, AMP_VELTRACK_MAX, AMP_VELTRACK_MIN, MAX_VELCURVE_AMPLITUDE,
