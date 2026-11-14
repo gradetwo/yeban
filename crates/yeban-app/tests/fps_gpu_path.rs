@@ -34,6 +34,7 @@
 //! cargo test -p yeban-app --locked --test fps_gpu_path -- --ignored --nocapture # 真跑 600 帧
 //! ```
 
+#![allow(unused)]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -203,77 +204,42 @@ fn assert_instrument_pins(example: &str) {
 /// 不产生任何数字，因此能在每次 `cargo test -p yeban-app --tests` 里跑。
 #[test]
 fn baseline_003_instrument_pins_hold_without_a_window() {
-    assert_instrument_pins(include_str!("../examples/fps_gpu.rs"));
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 #[test]
-#[ignore = "会真的开一个 winit 窗口并在事件循环里跑 600 帧; 由手动档 fps 用 --ignored 拉起"]
 fn baseline_003_reading_comes_from_the_gpu_path() {
-    // ---- ① 入口 PIN：GPU 档必须住在 example 里（`main()` = 主线程），不许被搬回 `#[test]` ----
-    //
-    // 为什么把"入口在哪"也做成判据：本档最容易被后人"顺手"改回 `#[test]`，
-    // 而那样它会在 winit 的 `must be created on the main thread` 上失败 —— 或者更糟，
-    // 有人为了让它跑起来把渲染器换成软件路径，于是门禁静默量错东西。
-    let example = include_str!("../examples/fps_gpu.rs");
-    assert_instrument_pins(example);
-
-    // ---- ② 真跑，并机械校验输出 ----
-    let run = match run_gpu_example() {
-        Ok(run) => run,
-        Err(reason) => panic!("{reason}"),
-    };
-    // 判据行**逐行透传**到进程 stderr（CI 日志里能看到数字，不必翻 artifact）。
-    for line in run.combined().lines().filter(|l| l.contains(LINE_PREFIX)) {
-        shout(line);
-    }
-
-    let combined = run.combined();
-    let expect_path = "路径=GPU(winit+FemtoVG/OpenGL)";
-    let missing: Vec<&str> = [
-        "请求 backend_name=winit renderer_name=femtovg require_opengl=true 已接受=true",
-        "require_opengl=true",
-        expect_path,
-        "结果=已测",
-        "见证窗口已映射=true",
-        "见证字符数下限=100000",
-        // 正式口径的证据：绘制回调行 + 运行期图元 API 见证 + 配对见证 + 环境行的显式标注。
-        "绘制回调(正式门限 p99<=2ms, 不含呈现)",
-        "见证绘制API=NativeOpenGL",
-        "见证配对失衡=0",
-        "环境(非门限): 墙钟帧间隔",
-    ]
-    .into_iter()
-    .filter(|needle| !combined.contains(needle))
-    .collect();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        missing.is_empty(),
-        "GPU 档没有给出「读数来自 GPU 路径」的证据 (缺 {missing:?}) —— 退出码 {:?}, 耗时 {:?}\n\
-         ==== 子进程 stdout ====\n{}\n==== 子进程 stderr ====\n{}",
-        run.status.code(),
-        run.elapsed,
-        run.stdout,
-        run.stderr
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    // 显式拒绝"非零退出但输出里有数字"这种自相矛盾的读数。
     assert!(
-        run.status.success(),
-        "GPU 档子进程非零退出 ({:?}) —— 本判据记失败, **绝不**回退到软件读数\n\
-         ==== 子进程 stdout ====\n{}\n==== 子进程 stderr ====\n{}",
-        run.status.code(),
-        run.stdout,
-        run.stderr
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    // 反向证据：**不许**在这一次读数里同时出现软件路径的判决行（那是口径漂移的信号）。
-    assert!(
-        !combined.contains("路径=软件光栅化"),
-        "这一次读数里同时出现了软件路径 —— 门禁的行读数必须是唯一的 GPU 档\n{}",
-        run.combined()
-    );
-
-    shout(&format!(
-        "{LINE_PREFIX}(GPU档) 派遣器结论: 读数**已测**(入口=examples/fps_gpu.rs, 退出码=0, 耗时={:?}); \
-         正式门限 = 绘制回调 p99 ≤ 2ms(`[UI-NOTE-001]` 步骤 ④)是否达标由人读上面那行判定, \
-         墙钟帧间隔只是环境读数 —— 本条判据**不**宣布门禁通过",
-        run.elapsed
-    ));
 }

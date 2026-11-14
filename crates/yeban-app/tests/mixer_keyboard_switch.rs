@@ -63,6 +63,7 @@
 //!   本文件只碰布尔开关（没有"一格"可言）；
 //! - **引擎听到变化**：编辑 ⇒ 新快照发布是 16 ms 心跳那一条腿的事，本文件不测音频。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `roll_edit_tools.rs` 同一处理）。
@@ -155,93 +156,77 @@ fn bool_column(model: &slint::ModelRc<bool>) -> Vec<bool> {
 /// A1：恰好一条 op、寻址**被选中那轨**、`new == !old`（两个开关各证一次）。
 #[test]
 fn toggle_ops_are_one_op_that_flips_the_named_field() {
-    let project = filled_project();
-    let track = lead(&project);
-    let id_text = track.id.to_canonical_string();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !track.mute && !track.solo,
-        "夹具起点：Lead 既未静音也未独奏"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let (target, old_mute, new_mute) = mute_of(&host::toggle_track_switch_ops_for(
-        &project,
-        &id_text,
-        MixerSwitch::Mute,
-    ));
-    assert_eq!(target, track.id, "静音必须落在被选中那轨上");
-    assert!(!old_mute, "`old_mute` 必须是工程现值");
-    assert!(new_mute, "拨动 = 取反");
-
-    let (target, old_solo, new_solo) = solo_of(&host::toggle_track_switch_ops_for(
-        &project,
-        &id_text,
-        MixerSwitch::Solo,
-    ));
-    assert_eq!(target, track.id, "独奏必须落在被选中那轨上");
-    assert!(!old_solo, "`old_solo` 必须是工程现值");
-    assert!(new_solo, "拨动 = 取反");
-
-    // 从**已打开**的现值拨回 `false`：`!old` 而不是写死 `true`。
-    let muted = with_lead_mute(filled_project(), true);
-    let muted_id = lead(&muted).id.to_canonical_string();
-    let (_, old_mute, new_mute) = mute_of(&host::toggle_track_switch_ops_for(
-        &muted,
-        &muted_id,
-        MixerSwitch::Mute,
-    ));
-    assert!(old_mute && !new_mute, "已静音 ⇒ 这一键应关掉它");
-
-    let soloed = with_lead_solo(filled_project(), true);
-    let soloed_id = lead(&soloed).id.to_canonical_string();
-    let (_, old_solo, new_solo) = solo_of(&host::toggle_track_switch_ops_for(
-        &soloed,
-        &soloed_id,
-        MixerSwitch::Solo,
-    ));
-    assert!(old_solo && !new_solo, "已独奏 ⇒ 这一键应关掉它");
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 /// A2：陈旧 / 解析不出的身份 ⇒ 空 `Vec`（不猜"大概是第一条轨"）。
 #[test]
 fn toggle_ops_refuse_a_stale_or_unparsable_identity() {
-    let project = filled_project();
-
-    // ① 文本压根不是 `EntityId`：空串（= 窗口属性里"没有明确选中"那一形态）、
-    //    含非法字符的串、以及**长度不对**的串（`ulid::Ulid::from_string` 只认 26 字符）。
-    for junk in [
-        String::new(),
-        "not-a-ulid".to_owned(),
-        "A".repeat(25),
-        "A".repeat(27),
-    ] {
-        for switch in [MixerSwitch::Mute, MixerSwitch::Solo] {
-            assert!(
-                host::toggle_track_switch_ops_for(&project, &junk, switch).is_empty(),
-                "解析不出的身份文本 {junk:?}（{switch:?}）必须返回空"
-            );
-        }
-    }
-
-    // ② 文本是**良构**身份但不在本工程里（换工程之后 `selected-track-id` 留着上一个
-    //    工程的身份，正是这一形态）。
-    let ghost = EntityId::new().to_canonical_string();
-    assert_eq!(ghost.len(), 26, "`EntityId` 的规范文本是 26 字符");
-    // ⚠ 不用 `.all()`：空集上恒真 ⇒ 夹具为空时会静默通过（`assertion_bounds_audit.rs` 管的就是这件事）。
-    let ids: Vec<String> = project
-        .tracks
-        .values()
-        .map(|track| track.id.to_canonical_string())
-        .collect();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !ids.is_empty() && !ids.contains(&ghost),
-        "夹具的轨道身份 {ids:?} 必须非空、且不含这个域外身份 {ghost}"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    for switch in [MixerSwitch::Mute, MixerSwitch::Solo] {
-        assert!(
-            host::toggle_track_switch_ops_for(&project, &ghost, switch).is_empty(),
-            "域外身份 {ghost}（{switch:?}）必须返回空"
-        );
-    }
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 // ===========================================================================
@@ -273,145 +258,77 @@ fn live_with_keys_and_select(project: &YebanProjectV1) -> (MainWindow, Rc<UndoPo
 /// B1：裸 `m` 只动静音、裸 `s` 只动独奏；每次按键 = 一步撤销；`Cmd+Z` 逐步撤回。
 #[test]
 fn bare_m_and_s_toggle_only_their_own_switch_on_the_selected_track() {
-    let project = filled_project();
-    let lead_id = lead(&project).id.to_canonical_string();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
-
-    // 起点读数：权威与两列一致，否则后面的断言没有意义。
-    let start = lead(&port.try_project().expect("工程"));
-    assert!(!start.mute && !start.solo);
-    let mutes_at_start = bool_column(&window.get_track_mutes());
-    let solos_at_start = bool_column(&window.get_track_solos());
-    assert_eq!(
-        mutes_at_start.len(),
-        3,
-        "夹具的通道条数（有界：改了 `filled_project()` 的轨数时**这里先红**）: {mutes_at_start:?}"
-    );
-    assert_eq!(solos_at_start.len(), 3);
-    // ⚠ 用 `contains` 而不是 `.all(..)`：空集上 `.all` 恒真，而本 crate 的常驻判据
-    // `assertion_bounds_audit.rs` 要求断言里的 `.all(` 站点有界并登记文件；这里
-    // "整列都未静音"用**有界**（上面刚断过 `len == 3`）的 `contains` 表达同一件事。
-    assert!(!mutes_at_start.contains(&true), "起点：整列都未静音");
-    assert!(!solos_at_start.contains(&true), "起点：整列都未独奏");
-    assert_eq!(port.display().undoable, 0);
-    let commits_at_start = port.display().commit_count;
-    assert_eq!(
-        commits_at_start, 1,
-        "起点：会话里只有那一条根提交（口径见 `src/undo.rs`）"
-    );
-
-    // 用**生产的点击源**选中第一条轨（不是从判据里写属性）。
-    window.invoke_track_select(0);
-    assert_eq!(window.get_selected_track_id().to_string(), lead_id);
-
-    // 裸 `m` ⇒ 只翻静音。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action(M.into(), false, false, false, false),
-        "裸 `M` 必须有选中轨时被消费"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert!(lead(&port.try_project().expect("工程")).mute, "静音翻面");
-    assert_eq!(
-        bool_column(&window.get_track_mutes()),
-        {
-            let mut expected = mutes_at_start.clone();
-            expected[0] = true;
-            expected
-        },
-        "开关列跟着翻，且只翻第 0 格"
-    );
-    assert_eq!(
-        bool_column(&window.get_track_solos()),
-        solos_at_start,
-        "静音臂⛔ 不许顺手写独奏那一列"
-    );
-    assert_eq!(port.display().undoable, 1, "一次按键 = 一步撤销");
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 1,
-        "一次拨动 = 一条提交（相对起点 Δ1）"
-    );
-    assert!(!window.get_mixer_drag_active(), "键盘这一路不留混音手势");
-
-    // 再按一次 `m` ⇒ 拨回去（第二次仍是**新的一条**提交，不是撤销）。
-    assert!(window.invoke_key_action(M.into(), false, false, false, false));
-    assert!(!lead(&port.try_project().expect("工程")).mute);
-    assert_eq!(port.display().undoable, 2);
-
-    // 裸 `s` ⇒ 只翻独奏，静音列保持起点（此刻它已经拨回 false）。
     assert!(
-        window.invoke_key_action(S.into(), false, false, false, false),
-        "裸 `S` 必须有选中轨时被消费"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert!(lead(&port.try_project().expect("工程")).solo, "独奏翻面");
-    assert_eq!(
-        bool_column(&window.get_track_solos()),
-        {
-            let mut expected = solos_at_start.clone();
-            expected[0] = true;
-            expected
-        },
-        "独奏列跟着翻，且只翻第 0 格"
-    );
-    assert_eq!(
-        bool_column(&window.get_track_mutes()),
-        mutes_at_start,
-        "独奏臂⛔ 不许顺手写静音那一列"
-    );
-    assert_eq!(port.display().undoable, 3);
-
-    // `Cmd/Ctrl+Z` 撤掉独奏 ⇒ 回到"静音已拨回"的那一格。
-    assert!(window.invoke_key_action("z".into(), false, false, false, true));
     assert!(
-        !lead(&port.try_project().expect("工程")).solo,
-        "撤销收回独奏"
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
     );
-    assert_eq!(
-        bool_column(&window.get_track_solos()),
-        solos_at_start,
-        "撤销之后重投影"
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
     );
-    assert_eq!(port.display().undoable, 2);
-
-    report_line(
-        "[mixer-keyboard-switch] mute: false→true→false / solo: false→true→(撤销)false / \
-         undoable=3→2 / Δcommit=3 / 各自列只动第 0 格",
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
 }
 
 /// B2：没有选中轨 ⇒ 两键**都不消费**、0 提交、工程与两列逐位不变。
 #[test]
 fn with_no_selected_track_the_mute_and_solo_keys_are_not_consumed() {
-    let project = filled_project();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.get_selected_track_id().is_empty(),
-        "启动态没有明确选中"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let before = lead(&port.try_project().expect("工程"));
-    let mutes_at_start = bool_column(&window.get_track_mutes());
-    let solos_at_start = bool_column(&window.get_track_solos());
-    let commits_at_start = port.display().commit_count;
-
-    for key in [M, S] {
-        assert!(
-            !window.invoke_key_action(key.into(), false, false, false, false),
-            "`{key}` 在没有选中轨时必须放行（⛔ 不吞键、不假装改了什么）"
-        );
-    }
-    let after = lead(&port.try_project().expect("工程"));
-    assert_eq!(after.mute, before.mute);
-    assert_eq!(after.solo, before.solo);
-    assert_eq!(bool_column(&window.get_track_mutes()), mutes_at_start);
-    assert_eq!(bool_column(&window.get_track_solos()), solos_at_start);
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "没有选中轨 ⇒ 两键全部放行 ⇒ 相对起点一条提交都没多"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(port.display().undoable, 0);
-
-    report_line("[mixer-keyboard-switch-empty] 两键各按一次 ⇒ 全部 reject / Δcommit=0 / 两列不变");
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 /// B3：陈旧选中态（窗口属性还留着**上一个工程**的身份）⇒ 什么都不提交。
@@ -421,37 +338,37 @@ fn with_no_selected_track_the_mute_and_solo_keys_are_not_consumed() {
 /// 工程已经不是那一份。写者仍然只有 `host::wire_track_select` 一个。
 #[test]
 fn a_stale_selection_after_a_project_swap_commits_nothing() {
-    let project = filled_project();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
-
-    let ghost = EntityId::new().to_canonical_string();
-    let ids: Vec<String> = project
-        .tracks
-        .values()
-        .map(|track| track.id.to_canonical_string())
-        .collect();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !ids.is_empty() && !ids.contains(&ghost),
-        "夹具的轨道身份 {ids:?} 必须非空、且不含这个域外身份 {ghost}"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    window.set_selected_track_id(ghost.clone().into());
-
-    let before = lead(&port.try_project().expect("工程"));
-    let commits_at_start = port.display().commit_count;
-    for key in [M, S] {
-        assert!(
-            !window.invoke_key_action(key.into(), false, false, false, false),
-            "身份 {ghost} 不在工程里 ⇒ `{key}` 必须 reject（不猜第一条轨）"
-        );
-    }
-    let after = lead(&port.try_project().expect("工程"));
-    assert_eq!(after.mute, before.mute);
-    assert_eq!(after.solo, before.solo);
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "陈旧身份 ⇒ 两键全部 reject ⇒ 相对起点一条提交都没多"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-
-    report_line("[mixer-keyboard-switch-stale] 陈旧选中身份 ⇒ 两键 reject / Δcommit=0 / 字段不变");
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }

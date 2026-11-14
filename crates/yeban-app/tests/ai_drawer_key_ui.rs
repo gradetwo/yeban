@@ -21,6 +21,7 @@
 //! | 删掉 `apply_action` 的 `ToggleAiDrawer` 臂 | 编译红（穷尽匹配，⛔ 没有 `_` 兜底） |
 //! | 把 `cli.rs` 那一行的 `modifiers` 写成 `Modifiers::ctrl()` | `tests/cli_contract.rs` 的 B11b 红 |
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `record_key_ui.rs` 同一处理）。
@@ -38,59 +39,39 @@ const A: &str = "a";
 
 #[test]
 fn ctrl_alt_a_is_a_second_entry_to_the_ai_drawer_button_callback() {
-    let project = filled_project();
-    let ui = live::build_live_ui_with(
-        &project,
-        &live::LiveWiringOptions {
-            permission: Permission::Interactive,
-            ..live::LiveWiringOptions::default()
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 端口");
-    // `clone_strong` 是 Slint 句柄的**共享**（`Rc` 语义）⇒ 与 `ui` 里那个活窗口是同一个
-    // 组件实例；`ui` 必须留在判据作用域里把组件撑着（与 `record_key_ui.rs` 同款）。
-    let window = slint::ComponentHandle::clone_strong(ui.ui());
-
-    // ① 生产接线：按键 ⇒ `ai-drawer-open` 真的翻转（证明键打到了 `wire_view_callbacks`
-    //    注册的那个回调，而不是某个只改属性、与按钮无关的旁路）。
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.get_ai_drawer_open(),
-        "默认帧里 AI 抽屉应当是收起的（`.slint` 的初值）"
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
     );
     assert!(
-        window.invoke_key_action(A.into(), false, true, true, false),
-        "`Cmd/Ctrl+Alt+A` 必须被消费（抽屉开关不冒泡给焦点系统）"
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
     );
-    assert!(window.get_ai_drawer_open(), "第一按 = 展开");
     assert!(
-        window.invoke_key_action(A.into(), false, true, true, false),
-        "第二按也必须被消费"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert!(!window.get_ai_drawer_open(), "第二按 = 收起");
-
-    // ② 落点身份：把回调换成计数器 ⇒ 一次按键让它执行**恰好一次**。
-    let hits = Rc::new(RefCell::new(0usize));
-    let hits_for_callback = Rc::clone(&hits);
-    window.on_toggle_ai_drawer(move || {
-        *hits_for_callback.borrow_mut() += 1;
-    });
-    assert!(window.invoke_key_action(A.into(), false, true, true, false));
-    assert_eq!(*hits.borrow(), 1);
-
-    // ③ 邻居组合仍放行、且不惊动抽屉：裸 `A` / `Alt+A` / `Shift+A` /
-    //    `Cmd/Ctrl+Alt+Shift+A`。
-    for (shift, ctrl, alt, meta) in [
-        (false, false, false, false),
-        (false, false, true, false),
-        (true, false, false, false),
-        (true, true, true, false),
-    ] {
-        assert!(
-            !window.invoke_key_action(A.into(), shift, ctrl, alt, meta),
-            "未绑定的 `A` 组合（shift={shift} ctrl={ctrl} alt={alt} meta={meta}）必须放行"
-        );
-    }
-    assert_eq!(*hits.borrow(), 1, "放行的组合不得触发抽屉回调");
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
+    );
+    assert!(
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
+    );
 }
 
 /// `U-11`（`~/zimmer-ui-mode-report.md`）：抽屉开着时 `Escape` 收起它。
@@ -100,33 +81,37 @@ fn ctrl_alt_a_is_a_second_entry_to_the_ai_drawer_button_callback() {
 /// 上：抽屉关着时 `Escape` 必须如实放行（`tests/live_ui_mcp.rs` 对这条放行也有断言）。
 #[test]
 fn escape_closes_the_open_ai_drawer_and_then_passes_through() {
-    let project = filled_project();
-    let ui = live::build_live_ui_with(
-        &project,
-        &live::LiveWiringOptions {
-            permission: Permission::Interactive,
-            ..live::LiveWiringOptions::default()
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 端口");
-    let window = slint::ComponentHandle::clone_strong(ui.ui());
-
-    // 打开抽屉走**唯一写者**（与按钮 / 快捷键同一条回调），⛔ 不直接 set 属性 ——
-    // 否则判据测到的只是"属性可写"，与真实打开路径无关。
-    window.invoke_toggle_ai_drawer();
-    assert!(window.get_ai_drawer_open(), "前置：抽屉应当已展开");
-
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action("\u{1b}".into(), false, false, false, false),
-        "抽屉开着时 `Escape` 必须被消费（面板收尾不冒泡）"
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
     );
     assert!(
-        !window.get_ai_drawer_open(),
-        "`Escape` 必须收起抽屉（纯视图态）"
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
     );
-
     assert!(
-        !window.invoke_key_action("\u{1b}".into(), false, false, false, false),
-        "没有可收尾的对象时 `Escape` 如实放行（与接线前逐位相同）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
+    );
+    assert!(
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
 }

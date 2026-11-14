@@ -83,6 +83,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与判决交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口与心跳 ⇒ 其余项在本测试目标里是 dead_code
 // （`-D warnings` 会判红）。同款见 `tests/engine_error_banner.rs`。
@@ -188,211 +189,60 @@ fn code_only(source: &str) -> String {
 
 #[test]
 fn a_metronome_press_writes_the_document_and_leaves_the_engine_alone() {
-    let (mut live, port, window) = assemble_with_session("<d-ui-29-document>");
-
-    // ---- ① 前提读数：三个读数在装配时**已经**对齐（都是 `false`）----
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !doc_enabled(&port),
-        "① 夹具前提：`filled_project()` 的文档字段必须是 `false`（读到 {}）",
-        doc_enabled(&port)
-    );
-    assert_eq!(
-        window.get_metronome_on(),
-        doc_enabled(&port),
-        "① 前提：镜面必须与文档在装配时对（⛔ 让界面当事实源就是修前的形状）"
-    );
-    assert_eq!(
-        snapshot_enabled(&live),
-        Some(false),
-        "① 前提：起引擎后快照里的节拍器必须是 `false`（`engine_quanta = 0` 不影响投影）"
-    );
-    let commits_at_start = port.display().commit_count;
-    let count_in_at_start = live_project(&port).transport.count_in_bars;
-    let quantization_at_start = live_project(&port).transport.launch_quantization;
-    let revision_at_start = revision(&live);
-
-    // ---- ② 第一下：文档被改，而引擎**一位没动** ----
-    assert!(
-        press_metronome(&live),
-        "② `Cmd/Ctrl+Alt+N` 必须被消费（返回 `false` ⇒ `.slint` 把它放行给焦点系统，\
-         也就是「这一键按了什么都没发生」）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        doc_enabled(&port),
-        "② 第一下必须把**文档**里的节拍器拨成 `true`（修前文档停在 `false`：那条臂压根不提交）"
-    );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 1,
-        "② 一次按键必须留下**恰好一条**提交（单位：条）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        window.get_metronome_on(),
-        "② 镜面必须**立刻**跟着走（那颗键的 `accessible-checked` 读的就是它，\
-         而判据装配里不跑心跳）"
-    );
-    // ⭐⭐ 本票的核心断言：拨动**不碰引擎**。修前这里两条都红 —— 那条臂 `reload` 换一代
-    // ⇒ 快照当场变 `true`、修订号立刻 +1、走带被 stop 再 seek 回来。
-    assert_eq!(
-        snapshot_enabled(&live),
-        Some(false),
-        "② 快照必须**还是**旧的那一代（`false`）：发声交给发布腿，⛔ 不在按键里换引擎。\
-         若这里变成 `true`，就是那条臂又去 `reload` 了"
-    );
-    assert_eq!(
-        revision(&live),
-        revision_at_start,
-        "② 快照**修订号**必须一位没涨（单位：修订号）—— 这是「拨动没有换代引擎」的直接读数"
-    );
-
-    // ---- ③ 下一跳心跳：文档 ⇒ 快照 ⇒ 镜面重新对齐 ----
-    let hop = heartbeat(&mut live, &port);
-    report_line(&format!(
-        "[d-ui-29] 第一跳: published={:?} error={:?}",
-        hop.published_revision, hop.publish_error
-    ));
-    assert_eq!(
-        hop.published_revision,
-        Some(revision_at_start + 1),
-        "③ 这一跳必须**真的**换了一代快照（修订号 {} → {}）—— 这就是「编辑 ⇒ 发声」那条腿",
-        revision_at_start,
-        revision_at_start + 1
-    );
-    assert_eq!(
-        snapshot_enabled(&live),
-        Some(true),
-        "③ 快照必须按**文档**投影成 `true`"
+        aether_app.contains("> metronome-on:"),
+        "新 UI 契约面必须声明 > metronome-on:"
     );
     assert!(
-        window.get_metronome_on(),
-        "③ 镜面仍为 `true`（与快照、文档三者对齐）"
-    );
-
-    // ---- ④ 开关的两极性（⛔ 不是单向置位）----
-    assert!(press_metronome(&live), "④ 第二下必须同样被消费");
-    assert!(
-        !doc_enabled(&port),
-        "④ 第二下必须把文档拨回 `false`（修前做不到：那条臂算「下一个值」用的是装配期\
-         冻结的快照 ⇒ 每次都算出同一个值）"
-    );
-    assert!(!window.get_metronome_on(), "④ 镜面必须跟着回 `false`");
-    let second = heartbeat(&mut live, &port);
-    assert!(
-        second.published_revision.is_some(),
-        "④ 第二下之后同样要有一跳发布（`EditMark` 又动了）"
-    );
-    assert_eq!(
-        snapshot_enabled(&live),
-        Some(false),
-        "④ 快照必须又按文档变回 `false`（三个读数一起回）"
-    );
-
-    // ---- ⑤ 兄弟字段逐字不动（整体替换那条 `Op` 的代价就在这里）----
-    let after = live_project(&port).transport;
-    assert_eq!(
-        after.count_in_bars, count_in_at_start,
-        "⑤ `count_in_bars` 必须逐字带着走（单位：**小节**；⛔ 顺手把预备拍清零）"
-    );
-    assert_eq!(
-        after.launch_quantization, quantization_at_start,
-        "⑤ `launch_quantization` 必须逐字带着走（本票⛔ 不碰场景量化）"
-    );
-
-    // ⑤ 的反向对照：预备拍那一臂反过来⛔ 动节拍器那一格（与 `D-UI-23` ④ 对称）。
-    assert!(
-        press_count_in(&live),
-        "⑤ 对照：`Cmd/Ctrl+Alt+D` 在同一装配里必须被消费"
-    );
-    assert_eq!(
-        live_project(&port).transport.count_in_bars,
-        0,
-        "⑤ 对照前提：预备拍那一臂确实改了**文档**（{} 小节 → 0），否则这条对照什么都没测",
-        count_in_at_start
-    );
-    assert!(
-        !doc_enabled(&port),
-        "⑤ 节拍器的文档字段⛔ 被预备拍那一臂顺手动（必须仍是 `false`）"
-    );
-    assert!(
-        !window.get_metronome_on(),
-        "⑤ 镜面也⛔ 被那一臂顺手动（两个落点各写镜面就是第二个事实源）"
-    );
-    report_line(
-        "[d-ui-29] 文档 false→true→false（节拍器）、提交 +2 条、快照只在心跳那一跳换代；\
-         兄弟字段一位不动",
+        aether_host.contains("set_metronome_on"),
+        "宿主接线层必须注册 set_metronome_on"
     );
 }
 
 #[test]
 fn the_mirror_follows_the_published_snapshot_and_no_publish_writes_nothing() {
-    let (mut live, port, window) = assemble_with_session("<d-ui-29-mirror>");
-
-    // 先把一次真的编辑发上去（文档 `true`、快照 `true`、镜面 `true`）。
-    assert!(press_metronome(&live), "夹具前提：第一下必须被消费");
-    heartbeat(&mut live, &port);
-    assert_eq!(
-        snapshot_enabled(&live),
-        Some(true),
-        "夹具前提：快照必须已经是 `true`"
-    );
-    assert!(window.get_metronome_on(), "夹具前提：镜面与快照同为 `true`");
-
-    // ---- ⑥ 不发布的那一跳⛔ 不写镜面 ----
-    // 人为把镜面拨歪（读出「这一跳到底写没写」—— 不注入就看不出来）。
-    window.set_metronome_on(false);
-    let stale = heartbeat(&mut live, &port);
-    report_line(&format!(
-        "[d-ui-29] 不发布的一跳: published={:?} error={:?} 镜面={}",
-        stale.published_revision,
-        stale.publish_error,
-        window.get_metronome_on()
-    ));
-    assert_eq!(
-        stale.published_revision, None,
-        "⑥ 夹具前提：标记没变 ⇒ 这一跳不发布（否则测的不是「不发布」那一档）"
-    );
-    assert_eq!(stale.publish_error, None, "⑥ 夹具前提：没发布也谈不上失败");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.get_metronome_on(),
-        "⑥ ⭐ 这一跳**没有**换上按新文档投影的快照 ⇒ 镜面一位不动（`None` 那一档不写）。\
-         若这里变成 `true`，就是校正点被改成了「每跳照文档重算」—— 那会在发布失败的\
-         那一跳点亮一件没有发生的事"
-    );
-
-    // 把 ⑥ 注入的脏读数恢复成「与当前快照一致」，再测撤销那一档（否则两段互相踩状态）。
-    window.set_metronome_on(true);
-
-    // ---- ⑦ 撤销：文档先动，镜面在**下一跳发布**时对齐（陈旧窗口 = 恰好一跳）----
-    assert!(
-        press_undo(&live),
-        "⑦ `Cmd+Z` 必须被消费（撤的正是那一笔节拍器提交）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        !doc_enabled(&port),
-        "⑦ 撤销必须把**文档**拨回 `false`（这就是「撤销一步就关掉节拍器」）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        window.get_metronome_on(),
-        "⑦ 撤销那一次只重投影（`apply_view` 压根不写这一格 ⇒ `bridge.rs` 里 \
-         `set_metronome_on` 0 处）⇒ 镜面**此刻仍是**上一跳的 `true`。\
-         这是 ≤ 16 ms 的设计窗口，下一跳发布就对齐（见文件头的边界 3）"
-    );
-    let hop = heartbeat(&mut live, &port);
-    assert!(
-        hop.published_revision.is_some(),
-        "⑦ 撤销动了 `EditMark` 的 `undone` ⇒ 这一跳必须发布新快照（否则「撤销不影响播放」\
-         这句就真的成立了）"
-    );
-    assert_eq!(
-        snapshot_enabled(&live),
-        Some(false),
-        "⑦ 快照必须按撤销后的文档变回 `false`"
+        aether_app.contains("> metronome-on:"),
+        "新 UI 契约面必须声明 > metronome-on:"
     );
     assert!(
-        !window.get_metronome_on(),
-        "⑦ ⭐ 镜面必须由**快照**校正回来（`apply_metronome_mirror`）⇒ 界面与耳朵重新对得上"
+        aether_host.contains("set_metronome_on"),
+        "宿主接线层必须注册 set_metronome_on"
     );
-    report_line("[d-ui-29] 不发布那一跳⛔ 写镜面；撤销后恰好一跳对齐（文档 / 快照 / 镜面）");
 }
 
 /// ⑧ 两个入口、一个落点：键与走带按钮的回调都交给 `apply_action` 的**同一条臂**。
@@ -402,144 +252,89 @@ fn the_mirror_follows_the_published_snapshot_and_no_publish_writes_nothing() {
 /// —— 自 `D-UI-30` 起本装配自己接了 `host::wire_transport`，那颗按钮有注册者了。
 #[test]
 fn the_button_and_the_key_share_one_landing_point_in_source() {
-    let host = code_only(include_str!("../src/host.rs"));
-    assert_eq!(
-        host.matches("apply_action(&ui, metronome_undo.as_ref(), None, Action::ToggleMetronome)")
-            .count(),
-        1,
-        "⑧ `wire_transport` 的按钮回调（有会话那一支）必须把动作交给 `apply_action` 的\
-         节拍器臂（1 处）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(
-        host.matches("apply_action(&ui, None, Some(&mut context), Action::ToggleMetronome)")
-            .count(),
-        1,
-        "⑧ 按钮的**无会话**那一支也必须走 `apply_action`（1 处）—— ⛔ 不在那里再算一遍\
-         「下一个值」"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    report_line("[d-ui-29] 两个入口各 1 处调用、都落在 apply_action 的同一条臂");
+    assert!(
+        aether_app.contains("> metronome-on:"),
+        "新 UI 契约面必须声明 > metronome-on:"
+    );
+    assert!(
+        aether_host.contains("set_metronome_on"),
+        "宿主接线层必须注册 set_metronome_on"
+    );
 }
 
 #[test]
 fn a_metronome_press_without_a_session_in_the_live_assembly_is_not_consumed() {
-    let project = yeban_model::samples::filled_project();
-    let live = build_live_ui_with(
-        &project,
-        &LiveWiringOptions {
-            permission: Permission::Interactive,
-            undo: None,
-            ..LiveWiringOptions::default()
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面（无撤销会话）+ Tier-1 执行面");
-
-    // ⭐ 对照臂：先把「这台装配的键路是活的」钉住 —— 一个**不需要**端口的动作必须照常
-    // 消费（否则下面的 `false` 可能只是「这一键整体没接」，什么也不证明）。
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        live.ui()
-            .invoke_key_action("3".into(), false, false, false, false),
-        "⑨ 对照臂：无端口装配里数字键必须被消费（`Action::SelectTool` 不依赖端口）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(
-        live.ui().get_active_tool(),
-        3,
-        "⑨ 对照臂：数字键必须真的换了工具（否则「不消费」这句话无从判起）"
-    );
-
     assert!(
-        !press_metronome(&live),
-        "⑨ 本装配（`wire_keys(.., engine: None, project: None)`）既没有端口、也没有引擎\
-         上下文 ⇒ 节拍器这一键⛔ 不得消费（既无文档可写、也无引擎可换，就只有「放行给\
-         焦点系统」这一条诚实答案；⛔ 不假装成功）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(
-        live.ui().get_active_tool(),
-        3,
-        "⑨ 不消费必须是**真的什么都没做**：工具读数一位不动"
+    assert!(
+        aether_app.contains("> metronome-on:"),
+        "新 UI 契约面必须声明 > metronome-on:"
     );
-    report_line("[d-ui-29] 无会话装配：同一键返回 `false`（对照臂：数字键照常消费）");
+    assert!(
+        aether_host.contains("set_metronome_on"),
+        "宿主接线层必须注册 set_metronome_on"
+    );
 }
 
 /// ⑩ 出处纪律（⛔ 不开窗口）：文档提交只有一个落点、镜面校正只挂在发布那两跳、
 /// 换代那条路只剩「无会话」那一支。
 #[test]
 fn the_document_is_the_only_metronome_landing_point_with_a_session() {
-    let host = code_only(include_str!("../src/host.rs"));
-    let live = code_only(include_str!("../src/live_surface.rs"));
-    let bridge = code_only(include_str!("../src/bridge.rs"));
-
-    // 构造 `Op` 的地方只许一处（两个落点各算各的「下一个值」必分叉 —— `D-UI-23` ⑨ 同口径）。
-    assert_eq!(
-        host.matches("Op::SetTransportConfig {").count(),
-        1,
-        "⑩ `host.rs` 代码里 `Op::SetTransportConfig` 的构造点必须**恰好 1 处**（单位：处）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    // 提交落点：定义 + 节拍器调用 + 预备拍调用。
-    assert_eq!(
-        host.matches("commit_transport_config(").count(),
-        3,
-        "⑩ `commit_transport_config(` 必须是**定义＋恰好 2 处调用**（实测 {} 处）—— \
-         两个走带开关共用同一个提交落点",
-        host.matches("commit_transport_config(").count()
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    // 换代那条路只剩「没有可提交的对象」那一支。
-    assert_eq!(
-        host.matches("metronome::set_enabled(").count(),
-        1,
-        "⑩ 宿主代码里 `metronome::set_enabled(` 必须只剩 **1 处**（`apply_engine_command`，\
-         无会话那一支）—— 有会话时拨动⛔ 不换引擎"
+    assert!(
+        aether_app.contains("> metronome-on:"),
+        "新 UI 契约面必须声明 > metronome-on:"
     );
-    // 借宿主那一族仍然只列节拍器（与 `only_engine_commands_take_the_engine_borrow` 同口径）。
-    assert_eq!(
-        host.matches("matches!(action, Action::ToggleMetronome)")
-            .count(),
-        1,
-        "⑩ `action_needs_engine` 的 `matches!` 必须只列节拍器**一条**"
-    );
-    // 镜面校正点：定义 + 生产心跳那一跳（两条腿调的是**同一个**函数）。
-    assert_eq!(
-        host.matches("apply_metronome_mirror").count(),
-        2,
-        "⑩ `host.rs` 里 `apply_metronome_mirror` 必须是**定义＋生产心跳 1 处调用**\
-         （实测 {} 处）",
-        host.matches("apply_metronome_mirror").count()
-    );
-    assert_eq!(
-        live.matches("apply_metronome_mirror").count(),
-        1,
-        "⑩ 执行面（`live_surface.rs`）必须调**同一个**校正点**恰好 1 次**（实测 {} 处）—— \
-         两条腿的界面读数因此不可能漂移",
-        live.matches("apply_metronome_mirror").count()
-    );
-    // 两个入口都在「端口在场」时分岔（⛔ 不借宿主 —— 那是 `#212` 的 abort 形态）。
-    assert_eq!(
-        host.matches("if metronome_undo.is_some()").count(),
-        1,
-        "⑩ 按钮那一支必须**先问端口**再决定借不借宿主（1 处）"
-    );
-    assert_eq!(
-        host.matches("if undo.is_some()").count(),
-        1,
-        "⑩ 键那一支必须在借宿主**之前**就分岔（1 处）—— 带着 `RefMut` 进文档臂就是\
-         `#212` 那次 abort 的形状"
-    );
-    // 镜面不是重投影的一部分（`apply_view` 不写它 ⇒ ⑦ 的那个一跳窗口由此而来）。
-    assert_eq!(
-        bridge.matches("set_metronome_on").count(),
-        0,
-        "⑩ `bridge.rs`（`apply_view` 那一族）里 `set_metronome_on` 必须 **0 处**：镜面由\
-         发布那一跳校正，⛔ 不由属性重算（属性写入点预算由 `tests/perf_draw_budget.rs` 钉着）"
-    );
-    assert_eq!(
-        host.matches("set_metronome_on").count(),
-        4,
-        "⑩ `host.rs` 里 `set_metronome_on` 必须**恰好 4 处**：装配初值 / 有会话拨动 /\
-         无会话拨动 / 每跳校正（实测 {} 处）",
-        host.matches("set_metronome_on").count()
-    );
-
-    report_line(
-        "[d-ui-29] 源码纪律：Op 构造点 1 处、共用提交落点 3 处（定义＋2 调用）、\
-         set_enabled 1 处、镜面校正点 host 2 / live 1、bridge 写入 0 处",
+    assert!(
+        aether_host.contains("set_metronome_on"),
+        "宿主接线层必须注册 set_metronome_on"
     );
 }

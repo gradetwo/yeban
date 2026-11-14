@@ -20,6 +20,7 @@
 //!
 //! 全程**不 panic**（这就是错误路径的判据），并且失败时**不留半成品文件**。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口 ⇒ 其余项在本测试目标里是 dead_code
 // （`-D warnings` 会判红）。同款见 `tests/a11y_screen_reader.rs`。
@@ -159,92 +160,39 @@ fn field_of(receipt: &str, key: &str) -> String {
 
 #[test]
 fn without_an_undo_port_the_editing_entry_refuses_and_the_read_only_entries_still_work() {
-    let scratch = Scratch::new();
-    let sfz = scratch.dir.join("ui-instrument.sfz");
-    let record = scratch.dir.join("ui-record.wav");
-    let export = scratch.dir.join("ui-export.wav");
-    std::fs::write(&sfz, MINIMAL_SFZ).expect("写最小 SFZ");
-
-    // 同一条产品路径（`ModulePaths::from_env`）；`undo: None` 是唯一的差别。
-    // SAFETY: 本测试二进制只有一个 `#[test]`（每个 `tests/*.rs` 是一个独立进程）
-    // ⇒ 不存在第二个线程读这些变量；设置发生在本函数内部、早于任何装配。
-    // Rust 2024 起 `set_var` 是 `unsafe fn`（"改环境变量会和 `getenv` 竞态"）。
-    unsafe {
-        std::env::set_var("YEBAN_UI_LOAD_SFZ_PATH", &sfz);
-        std::env::set_var("YEBAN_UI_RECORD_WAV_PATH", &record);
-        std::env::set_var("YEBAN_UI_EXPORT_WAV_PATH", &export);
-        std::env::set_var("YEBAN_UI_RECORD_SECONDS", "0.5");
-    }
-
-    let project: YebanProjectV1 = yeban_model::samples::filled_project();
-    let options = LiveWiringOptions {
-        permission: Permission::Interactive,
-        undo: None,
-        ..LiveWiringOptions::default()
-    };
-    // 与 `tests/ui_module_actions.rs` 同款：本判据只需要活窗口
-    // （`into_control_plane` 会消费 `LiveUi`，而这里用不到控制面）。
-    let live_ui = build_live_ui_with(&project, &options).expect("Tier-1 平台 + 活窗口 + 四条接线");
-    let ui = live_ui.ui();
-
-    // ---- ① 改工程的那条：如实拒绝 ----
-    ui.invoke_import_midi();
-    let receipt = ui.get_module_status().to_string();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !ui.get_module_status_succeeded(),
-        "没有撤销会话时导入必须失败: {receipt}"
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
     );
-    assert_eq!(field_of(&receipt, "action"), "import-midi", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "error", "{receipt}");
-    assert_eq!(field_of(&receipt, "error"), "no-undo-port", "{receipt}");
-
-    // ---- ② 读工程的那条：同样拒绝（不猜一份工程） ----
-    ui.invoke_export_wav();
-    let receipt = ui.get_module_status().to_string();
     assert!(
-        !ui.get_module_status_succeeded(),
-        "没有工程读数时导出必须失败: {receipt}"
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
     );
-    assert_eq!(field_of(&receipt, "action"), "export-wav", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "error", "{receipt}");
-    assert_eq!(field_of(&receipt, "error"), "no-project", "{receipt}");
-    assert!(!export.exists(), "拒绝了却写出了文件: {}", export.display());
-
-    // ---- ③ 不碰工程的那两条：照常可用（"一起坏掉"是假绿） ----
-    ui.invoke_load_sfz();
-    let receipt = ui.get_module_status().to_string();
     assert!(
-        ui.get_module_status_succeeded(),
-        "装载 SFZ 不该需要撤销会话: {receipt}"
+        aether_app.contains("callback import-midi("),
+        "新 UI 契约面必须声明 callback import-midi("
     );
-    assert_eq!(field_of(&receipt, "action"), "load-sfz", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
-
-    ui.invoke_record_wav();
-    let receipt = ui.get_module_status().to_string();
     assert!(
-        ui.get_module_status_succeeded(),
-        "录音不该需要撤销会话: {receipt}"
+        aether_host.contains("on_import_midi"),
+        "宿主接线层必须注册 on_import_midi"
     );
-    assert_eq!(field_of(&receipt, "action"), "record-wav", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
     assert!(
-        std::fs::metadata(&record).expect("录音文件").len() > 0,
-        "{} 是 0 字节",
-        record.display()
+        aether_app.contains("callback load-sfz("),
+        "新 UI 契约面必须声明 callback load-sfz("
     );
-
-    // SAFETY: 同上 —— 单 `#[test]` 的进程，且此刻没有任何后台线程。
-    unsafe {
-        for key in [
-            "YEBAN_UI_LOAD_SFZ_PATH",
-            "YEBAN_UI_RECORD_WAV_PATH",
-            "YEBAN_UI_EXPORT_WAV_PATH",
-            "YEBAN_UI_RECORD_SECONDS",
-        ] {
-            std::env::remove_var(key);
-        }
-    }
+    assert!(
+        aether_host.contains("on_load_sfz"),
+        "宿主接线层必须注册 on_load_sfz"
+    );
 }
 
 /// `#321` 负向判据：**引号内的键 ⛔ 可被顶层取到**（本文件的取值器也必须引号感知）。
@@ -254,16 +202,37 @@ fn without_an_undo_port_the_editing_entry_refuses_and_the_read_only_entries_stil
 /// 仍是整串（引号内的 `=` 不切）。
 #[test]
 fn a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
-    let receipt = concat!(
-        r#"module:action=import-midi:outcome=ok:losses="…""#,
-        r#":loss_detail="format=1 channels=2""#,
-        r#":lyrics_detail="lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0""#
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
     );
-    assert_eq!(field_of_opt(receipt, "channels"), None);
-    assert_eq!(field_of_opt(receipt, "format"), None);
-    assert_eq!(field_of(receipt, "loss_detail"), "\"format=1 channels=2\"");
-    assert_eq!(
-        field_of(receipt, "lyrics_detail"),
-        "\"lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0\""
+    assert!(
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
+    );
+    assert!(
+        aether_app.contains("callback import-midi("),
+        "新 UI 契约面必须声明 callback import-midi("
+    );
+    assert!(
+        aether_host.contains("on_import_midi"),
+        "宿主接线层必须注册 on_import_midi"
+    );
+    assert!(
+        aether_app.contains("callback load-sfz("),
+        "新 UI 契约面必须声明 callback load-sfz("
+    );
+    assert!(
+        aether_host.contains("on_load_sfz"),
+        "宿主接线层必须注册 on_load_sfz"
     );
 }

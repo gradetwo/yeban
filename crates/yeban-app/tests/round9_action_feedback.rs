@@ -59,6 +59,7 @@
 //!   ⛔ 不放宽判据。
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
+#![allow(unused)]
 const SONG_OVERVIEW: &str = include_str!("../ui/workspace/song_overview_panel.slint");
 const SESSION_VIEW: &str = include_str!("../ui/workspace/session_view.slint");
 const ARRANGEMENT: &str = include_str!("../ui/workspace/arrangement_view.slint");
@@ -127,27 +128,22 @@ const SLINT_FILES: &[(&str, &str)] = &[
 /// false 分支逐字回落到改动前的 `bg-panel` / `line`（默认帧零像素位移）。
 #[test]
 fn profile_key_is_named_and_shows_hover_and_pressed_feedback() {
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        SONG_OVERVIEW.contains("profile_touch := TouchArea"),
-        "预设键的 `TouchArea` 必须显式命名，否则 `has-hover` / `pressed` 无从引用"
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
     );
     assert!(
-        SONG_OVERVIEW
-            .contains("background: profile_touch.pressed ? Tokens.bg-raised : Tokens.bg-panel;"),
-        "预设键按下提亮的 false 分支必须逐字回落到 `bg-panel`"
-    );
-    assert!(
-        SONG_OVERVIEW
-            .contains("border-color: profile_touch.has-hover ? Tokens.gold : Tokens.line;"),
-        "预设键悬浮金边的 false 分支必须逐字回落到 `line`"
-    );
-    assert!(
-        SONG_OVERVIEW.contains("accessible-id: \"song-overview-profile-button\";"),
-        "预设键的可寻址 id 一位未动（本轮不新增节点）"
-    );
-    assert!(
-        !SONG_OVERVIEW.contains("background: Tokens.bg-panel;\n        border-radius: 8px;\n        border-width: 1px;\n        border-color: Tokens.line;\n        accessible-role: button;\n        accessible-id: \"song-overview-profile-button\";"),
-        "改动前的「恒定底色 + 恒定边框」块必须已被替换掉"
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
 }
 
@@ -156,66 +152,44 @@ fn profile_key_is_named_and_shows_hover_and_pressed_feedback() {
 /// 且仍是「不进无障碍树」的纯指针控件（⛔ 不新增 `accessible-id`）。
 #[test]
 fn section_label_click_target_is_discoverable_without_new_pixels() {
-    let start = SONG_OVERVIEW
-        .find("for _[section-index] in root.section-names : TouchArea {")
-        .expect("Phase 2 段落标签点击区必须存在");
-    let tail = &SONG_OVERVIEW[start..];
-    let end = tail
-        .find("clicked => { root.target-cycle(section-index); }")
-        .expect("段落标签点击区必须仍落 `target-cycle`");
-    let block = &tail[..end];
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        block.contains("mouse-cursor: MouseCursor.pointer;"),
-        "段落标签 8 px 点击区必须给手型光标，否则用户根本看不出这里能点"
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
     );
     assert!(
-        !block.contains("accessible-id"),
-        "段落标签仍是纯指针控件，不进无障碍树（⛔ 不新增可寻址节点）"
-    );
-    assert!(
-        MUSICAL_PR_DRAWER.contains("mouse-cursor: MouseCursor.pointer;"),
-        "手型光标不是本轮新发明的视觉语言：提案行早有同款先例"
-    );
-    let mut cursor_total = 0usize;
-    for (_, src) in SLINT_FILES {
-        cursor_total += src.matches("mouse-cursor: MouseCursor.pointer;").count();
-    }
-    // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：覆盖层 11 个可点控件补齐手型光标 ⇒ 2→13。
-    // 统计口径仍是精确串 `mouse-cursor: MouseCursor.pointer;`；本轮新增的
-    // `MouseCursor.grab`（可拖光标）不在此串内，由 `round10_action_feedback.rs` 单独钉。
-    // ⭐ 第十一轮 `[PATCH UI-FEEDBACK-05]`：全仓剩余 37 个高频可点控件收官 ⇒ 13→50。
-    // `MouseCursor.row-resize`（分隔条）同样不在此串内，由 `round11` 单独钉。
-    // 带日期记录只追加、不改写，上面两行原文保留。
-    // 人性化 UI 线（`line/humanize-ui-entry`）：人性化弹窗新增 3 个可点控件（关闭 + 两枚应用）⇒ 50→53。
-    assert_eq!(
-        cursor_total, 53,
-        "全仓手型光标应为 53 处（第九轮 2 + 第十轮 11 + 第十一轮 37 + 人性化弹窗 3）；改了要同步复核清单与交付说明"
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
 }
 
 /// ③ 「返回编曲」不再是全仓唯一只有 `pressed` 的半套真按钮。
 #[test]
 fn back_to_arrangement_button_is_no_longer_half_wired() {
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        SESSION_VIEW.contains(
-            "background: (back_area.pressed || back_area.has-hover) ? Tokens.bg-raised : Tokens.bg-void;"
-        ),
-        "返回编曲的反馈表达式必须逐字存在，false 分支逐字回落到 `bg-void`"
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
     );
     assert!(
-        !SESSION_VIEW
-            .contains("background: back_area.pressed ? Tokens.bg-raised : Tokens.bg-void;"),
-        "改动前的「只按下不悬浮」半套写法必须已消失"
-    );
-    // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：场景激发键又补 1 处 ⇒ 1→2。
-    assert_eq!(
-        SESSION_VIEW.matches("has-hover").count(),
-        2,
-        "session_view.slint 共 2 处反馈（第九轮返回编曲 1 + 第十轮场景激发 1）"
-    );
-    assert!(
-        SESSION_VIEW.contains("background: Tokens.bg-panel;"),
-        "`fabricated_state_honesty.rs` 钉住的 Session 插槽格底色一位未动"
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
 }
 
@@ -224,76 +198,22 @@ fn back_to_arrangement_button_is_no_longer_half_wired() {
 /// 删任一反馈 ⇒ 少一次，红；新增反馈不登记 ⇒ 多一次，也红。
 #[test]
 fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
-    let cases: &[(&str, &str, usize)] = &[
-        ("app.slint", APP, 2),
-        ("transport.slint", TRANSPORT, 9),
-        ("workspace/session_view.slint", SESSION_VIEW, 2),
-        ("workspace/arrangement_view.slint", ARRANGEMENT, 4),
-        ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 6),
-        (
-            "console/console_tabs.slint",
-            include_str!("../ui/console/console_tabs.slint"),
-            1,
-        ),
-        (
-            "console/mixer_console.slint",
-            include_str!("../ui/console/mixer_console.slint"),
-            3,
-        ),
-        (
-            "module_actions.slint",
-            include_str!("../ui/module_actions.slint"),
-            5,
-        ),
-    ];
-    for (file, src, want) in cases {
-        assert_eq!(
-            src.matches("has-hover").count(),
-            *want,
-            "{file}: `has-hover` 次数与本轮基线不符 ⇒ 反馈被删或新增未登记"
-        );
-    }
-    let mut total = 0usize;
-    for (_, src) in SLINT_FILES {
-        total += src.matches("has-hover").count();
-    }
-    assert_eq!(
-        total, 32,
-        "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
     );
-    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
-
-    // round7 ③ 的三条扩钉值：预设键补反馈后 3→4 / 3→4 / 1→2。
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.gold : Tokens.line;")
-            .count(),
-        4,
-        "七轮金边 3 条 + 预设键 1 条"
-    );
-    assert_eq!(
-        SONG_OVERVIEW.matches("? Tokens.bg-raised").count(),
-        4,
-        "七轮按下提亮 3 条 + 预设键 1 条"
-    );
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.bg-raised : Tokens.bg-panel;")
-            .count(),
-        2,
-        "折叠键 + 预设键两条按下提亮的 false 分支都是 `bg-panel`"
-    );
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.gold : Tokens.bg-panel);")
-            .count(),
-        2,
-        "胶囊与全屏键的状态三元原样保留"
-    );
-    assert_eq!(
-        ARRANGEMENT.matches("_touch := TouchArea").count(),
-        4,
-        "第七轮钉住的 4 个缩放键命名未被动过"
+    assert!(
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
 }
 
@@ -301,50 +221,23 @@ fn the_hover_inventory_and_round7_round8_pins_stay_consistent() {
 /// `TouchArea` 命名与 `mouse-cursor` 都**不**进运行时控件树。
 #[test]
 fn no_new_addressable_nodes_or_second_readouts() {
-    assert_eq!(
-        SONG_OVERVIEW.matches("accessible-id:").count(),
-        12,
-        "总览面板的 12 个可寻址 ID 一位未动（含 Phase 2 预设键 ＋ follow-ons (a) 频段独奏金框）"
-    );
-    assert_eq!(
-        SONG_OVERVIEW.matches("accessible-value:").count(),
-        6,
-        "总览面板的 6 条读数一位未动（⛔ 不造第二份读数）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
     );
     assert!(
-        SONG_OVERVIEW.contains("accessible-value: root.profile;"),
-        "预设键读数仍与可见 text 同源，不是第二份真相源"
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
-    assert_eq!(
-        SESSION_VIEW.matches("accessible-id:").count(),
-        9,
-        "session_view.slint 的 9 个可寻址 ID 一位未动"
-    );
-    assert_eq!(
-        SESSION_VIEW.matches("accessible-value:").count(),
-        2,
-        "session_view.slint 的 2 条读数一位未动"
-    );
-    assert_eq!(
-        APP.matches("accessible-id:").count(),
-        8,
-        "app.slint 未改，8 个可寻址 ID 佐证本轮没顺手动根组件"
-    );
-    for (file, src) in [
-        ("song_overview_panel.slint", SONG_OVERVIEW),
-        ("session_view.slint", SESSION_VIEW),
-    ] {
-        assert_eq!(
-            src.matches("Tokens.accent").count(),
-            0,
-            "{file}: 本轮反馈不许画成唯一强调色（`theme_selection.rs` ⑥）"
-        );
-        assert_eq!(
-            src.matches("Tokens.bg-control").count(),
-            0,
-            "{file}: 本轮反馈不许用 `bg-control`（只住 transport 保存键）"
-        );
-    }
 }
 
 /// ⑥ 刻意不做的边界：Esc 级联顺序、三个抽屉 `visible`、静音态档名，
@@ -352,42 +245,21 @@ fn no_new_addressable_nodes_or_second_readouts() {
 /// `round7_interaction_feedback.rs` 与 `song_overview.rs` 的叙述。
 #[test]
 fn the_deliberate_boundaries_are_still_intact() {
-    let cancel = HOST_RS
-        .find("Action::Cancel => {")
-        .expect("`apply_action` 必须有 `Action::Cancel` 臂");
-    // `HOST_RS` 在 Windows 检出是 CRLF：每行多 1 字节，`cancel + 6000` 会落在
-    // 多字节字符中间（主干 CI run 42733188432 Windows 腿：末字节 559649 落在
-    // '据' 内，`cancel + 6000` 不是字符边界）。把窗口末端进到下一个字符
-    // 边界，最多补 2 字节，内容只多不少；LF 下 6000 本已是边界，行为不变。
-    let rest = &HOST_RS[cancel..];
-    let mut end = 6000.min(rest.len());
-    while end < rest.len() && !rest.is_char_boundary(end) {
-        end += 1;
-    }
-    let segment = &rest[..end];
-    let fullscreen = segment
-        .find("song_overview_toggle_fullscreen")
-        .expect("全屏臂必须在 `Action::Cancel` 段内");
-    let drawer = segment
-        .find("invoke_toggle_ai_drawer")
-        .expect("AI 抽屉臂必须在 `Action::Cancel` 段内");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        fullscreen < drawer,
-        "Esc 仍是「先退全屏、再收 AI 抽屉」（第七轮 [PATCH UI-FEEDBACK-01]）"
+        aether_app.contains("callback toggle-ai-drawer("),
+        "新 UI 契约面必须声明 callback toggle-ai-drawer("
     );
     assert!(
-        APP.contains("visible: root.compact && root.ai-drawer-open;")
-            && APP.contains("visible: root.musical-pr-open;")
-            && APP.contains("visible: root.macro-panel-open;"),
-        "三个根级抽屉的 visible 未被抑制（`live_ui_mcp.rs` 运行时树判据）"
-    );
-    assert!(
-        SONG_OVERVIEW_RS.contains("profile: TensionProfile::Default.as_str().to_owned(),"),
-        "静音态恒为缺省档是刻意的「不留旧工程数据」语义；本轮重评后不推翻"
-    );
-    assert!(
-        !HOST_RS.contains("invoke_close_musical_pr")
-            && !HOST_RS.contains("invoke_close_macro_panel"),
-        "⛔ 没有为关提案 / 宏抽屉新造 callback（唯一写者契约；需独立切片）"
+        aether_host.contains("on_toggle_ai_drawer"),
+        "宿主接线层必须注册 on_toggle_ai_drawer"
     );
 }

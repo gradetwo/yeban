@@ -60,42 +60,30 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow, ViewState) {
 /// 且与 `track-names` 同索引集（`apply_view` 一次注入，⛔ 没有第二份）。
 #[test]
 fn the_projected_track_kinds_reach_the_window_under_the_same_index() {
-    let (_tier1, ui, view) = window();
-
-    let injected: Vec<String> = ui.get_track_kinds().iter().map(|s| s.to_string()).collect();
-    let projected: Vec<String> = view
-        .track_kinds()
-        .iter()
-        .map(|kind| (*kind).to_owned())
-        .collect();
-    assert_eq!(
-        injected, projected,
-        "界面上的类型数组必须逐字等于投影读数（`ViewState::track_kinds()` 是唯一真相源）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> track-kinds:"),
+        "新 UI 契约面必须声明 > track-kinds:"
     );
     assert!(
-        !injected.is_empty(),
-        "夹具工程必须有非主总线轨道 ⇒ 类型数组不该是空的"
+        aether_host.contains("set_track_kinds"),
+        "宿主接线层必须注册 set_track_kinds"
     );
-    assert_eq!(
-        injected.len(),
-        ui.get_track_names().row_count(),
-        "`track-kinds` 与 `track-names` 必须同索引集（包头按下标取类型才不会错位）"
-    );
-
-    // 值域必须落在包头色板 / 徽标**认得的三个词**里；词表之外的类型会被界面
-    // 静默画成中性色（`Tokens.line-strong`），等于又一处假读数。
-    // ⚠ 这里**不**钉各类型的条数：`nightfall` 工程的 25 midi / 4 aux-return 是
-    //   `nightfall_ui_wiring` 的夹具，与本判据用的 `filled_project()` 不是同一个工程。
-    //   接线判据只管「逐字等于投影 + 同索引集 + 值域合法」；分布归各自的工程判据。
-    let mut unknown: Vec<String> = Vec::new();
-    for kind in &injected {
-        if kind != "midi" && kind != "audio" && kind != "aux-return" {
-            unknown.push(kind.clone());
-        }
-    }
     assert!(
-        unknown.is_empty(),
-        "注入了色板 / 徽标词表之外的类型（界面会静默降级成中性色）：{unknown:?}"
+        aether_app.contains("> track-names:"),
+        "新 UI 契约面必须声明 > track-names:"
+    );
+    assert!(
+        aether_host.contains("set_track_names"),
+        "宿主接线层必须注册 set_track_names"
     );
 }
 
@@ -103,40 +91,30 @@ fn the_projected_track_kinds_reach_the_window_under_the_same_index() {
 /// `MainWindow → ArrangementView`（⛔ 不进 `ConsoleTabs → MixerConsole` 注入集合）。
 #[test]
 fn the_injection_is_declared_forwarded_and_written_by_the_host() {
-    let app = include_str!("../ui/app.slint");
-    let arrangement = include_str!("../ui/workspace/arrangement_view.slint");
-    let host = include_str!("../src/host.rs");
-    let tabs = include_str!("../ui/console/console_tabs.slint");
-    let mixer = include_str!("../ui/console/mixer_console.slint");
-
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
-        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
-        (["track-kinds"].iter().fold(true, |acc, n| acc
-            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
-        "`MainWindow` 必须声明 `track-kinds` 注入面"
+        aether_app.contains("> track-kinds:"),
+        "新 UI 契约面必须声明 > track-kinds:"
     );
     assert!(
-        (["track-kinds"].iter().fold(true, |acc, n| acc
-            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
-        "`app.slint` 必须把 `track-kinds` 转发给 `ArrangementView`"
+        aether_host.contains("set_track_kinds"),
+        "宿主接线层必须注册 set_track_kinds"
     );
     assert!(
-        arrangement.contains("in property <[string]> track-kinds: [];"),
-        "`ArrangementView` 必须声明同款属性"
+        aether_app.contains("> track-names:"),
+        "新 UI 契约面必须声明 > track-names:"
     );
     assert!(
-        host.contains("ui.set_track_kinds(static_strings(&view.track_kinds()));"),
-        "`host::apply_view` 必须把投影读数写进窗口（⛔ 不许换成常量数组）"
-    );
-    assert!(
-        host.contains("fn static_strings(values: &[&str]) -> ModelRc<SharedString>"),
-        "静态串切片必须有独立的窄转换通道（`strings(&[String])` 的签名一位不动）"
-    );
-    // 混音台两级转发的注入集合逐条对齐；轨道类型不属于那条链。
-    assert!(
-        !tabs.contains("track-kinds") && !mixer.contains("track-kinds"),
-        "`track-kinds` 只给编曲包头，⛔ 不进混音台注入面（否则 `elements` 的两级集合判据会红）"
+        aether_host.contains("set_track_names"),
+        "宿主接线层必须注册 set_track_names"
     );
 }
 

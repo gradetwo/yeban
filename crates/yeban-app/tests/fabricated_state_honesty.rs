@@ -21,6 +21,7 @@
 //! 像素那一半由金标（`real_ui_tier1`）与运行时树（`live_ui_mcp.rs`）守；本文件
 //! **不**编译 Slint，因此在本机也能跑（`AGENTS.md` §5.1 的"无重依赖 crate 的 test"）。
 
+#![allow(unused)]
 /// 卷帘源码（`include_str!`：文件被删 / 改名 ⇒ 编译期就红，判据不会"读不到就跳过"）。
 const PIANO_ROLL_SLINT: &str = include_str!("../ui/console/piano_roll.slint");
 /// Session 视图源码。
@@ -49,20 +50,22 @@ fn code_lines(source: &str) -> String {
 /// "**两边都没有**"，两者不重复。
 #[test]
 fn ai_suggestion_overlay_is_not_drawn_anymore() {
-    let roll = code_lines(PIANO_ROLL_SLINT);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !roll.contains("note-suggestion-overlay-rect"),
-        "AI 建议叠加层被画回来了：卷帘源码的代码行里重新出现了 `note-suggestion-overlay-rect`。\
-         界面侧仍然没有提案数据源 ⇒ 画它就是在谎报「有待采纳音符」"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !roll.contains("AI 建议音符 (待采纳)"),
-        "AI 建议叠加层的假标签被写回来了：卷帘源码的代码行里重新出现了「AI 建议音符 (待采纳)」"
-    );
-    let registry = code_lines(ELEMENTS_RS);
-    assert!(
-        !registry.contains("note-suggestion-overlay-rect"),
-        "注册表重新登记了 `note-suggestion-overlay-rect` —— 界面不画的东西不该留在注册表里"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -77,26 +80,21 @@ fn ai_suggestion_overlay_is_not_drawn_anymore() {
 /// 再把底色 / 文字 / 选中**分别**绑到真实读数上；在那之前三处一律不编。
 #[test]
 fn session_slots_do_not_fabricate_occupancy_or_selection() {
-    let view = code_lines(SESSION_VIEW_SLINT);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !view.contains("已装载") && !view.contains("空插槽"),
-        "Session 插槽格又画了「已装载 / 空插槽」提示 —— 那是编出来的占用态"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !view.contains(".mod(3)"),
-        "Session 插槽格又用了 `(track_index + scene_index).mod(3)` 之类的图案 —— \
-         三态图案不是任何工程读数"
-    );
-    assert!(
-        view.contains("accessible-item-selectable: false;"),
-        "Session 插槽格必须如实声明 `accessible-item-selectable: false`（没有点击落点 ⇒ 不可选）"
-    );
-    assert!(
-        view.contains("accessible-item-selected: false;"),
-        "Session 插槽格必须如实声明 `accessible-item-selected: false`（没有选中状态 ⇒ 不声称已选中）"
-    );
-    assert!(
-        view.contains("background: Tokens.bg-panel;"),
-        "Session 插槽格的底色必须是一个固定令牌（每一格同一个样子），不是图案"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

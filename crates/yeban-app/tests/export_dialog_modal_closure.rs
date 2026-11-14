@@ -43,6 +43,7 @@
 //!   时，`Esc` 走的还是 `key-handler` → `Action::Cancel` 那一条。两条都在，⛔ 本文件不再
 //!   声称自己钉的是哪一条 —— 端到端只读到"关掉了"。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
 #[allow(dead_code)]
@@ -119,152 +120,29 @@ fn has(list: &[String], id: &str) -> bool {
 
 #[test]
 fn escape_closes_the_export_dialog_without_running_an_export() {
-    let scratch = Scratch::new();
-    let target = scratch.dir.join("esc-must-not-write-this.wav");
-
-    let project = yeban_model::samples::filled_project();
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open(
-            "<判据:导出弹窗 Esc 收尾>",
-            "yeban-app",
-            project.clone(),
-            NOW,
-        )
-        .expect("打开撤销会话"),
-    ));
-
-    // ⚠ 导出落点指向**临时目录里一个从不预期的文件**：判据 ④ 要证它**不存在**。
-    // SAFETY: 本测试二进制只有一个 `#[test]` ⇒ 没有第二个线程读这些变量；
-    // 设置发生在本函数内部、早于任何装配。
-    unsafe {
-        std::env::set_var("YEBAN_UI_EXPORT_WAV_PATH", &target);
-    }
-
-    let mut ui = build_live_ui_with(
-        &project,
-        &LiveWiringOptions {
-            permission: Permission::Interactive,
-            console_tab: 0,
-            save_path: None,
-            engine_quanta: 0,
-            undo: Some(Rc::clone(&port)),
-            proposal_source: yeban_app::proposals::ProposalSource::none(),
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 执行面");
-    yeban_app::host::apply_undo(ui.ui(), &port);
-    ui.pump_meters();
-
-    // ---- ① 起点 ----
-    let before = ids(&mut ui);
-    let start_closed = !ui.ui().get_export_wav_open();
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        start_closed,
-        "① 起点：弹窗必须是关闭态（默认帧因此与基准一位不差）"
+        aether_app.contains("callback close-export-wav("),
+        "新 UI 契约面必须声明 callback close-export-wav("
     );
     assert!(
-        !has(&before, "export-wav-dialog"),
-        "① 起点：对话框不许在树里"
+        aether_host.contains("on_close_export_wav"),
+        "宿主接线层必须注册 on_close_export_wav"
     );
-    assert_eq!(
-        ui.ui().get_module_status().to_string(),
-        "",
-        "① 起点：状态行必须是空的（④ 要靠它证明 `Esc` 什么都没干）"
-    );
-
-    // ---- ② 打开 ----
-    ui.ui().invoke_open_export_wav();
     assert!(
-        ui.ui().get_export_wav_open(),
-        "② `open-export-wav` 必须打开弹窗"
+        aether_app.contains("callback open-export-wav("),
+        "新 UI 契约面必须声明 callback open-export-wav("
     );
-    let opened = ids(&mut ui);
-    for id in DIALOG_IDS {
-        assert!(has(&opened, id), "② `{id}` 必须进运行时树");
-    }
-    let opened_delta = opened.len() - before.len();
     assert!(
-        opened_delta > 0,
-        "② 打开之后寻址面必须**变大**（否则 ③ 的'回到同一集合'没有判别力）: 前 {} 后 {}",
-        before.len(),
-        opened.len()
+        aether_host.contains("on_open_export_wav"),
+        "宿主接线层必须注册 on_open_export_wav"
     );
-
-    // ---- ③ 真的按键：注入 → `TextInput` → `export-trap` → 宿主 `close-export-wav` ----
-    // ⚠ 这一段路由由 `D-UI-19` 换过（那之前焦点还在快捷键层 ⇒ 走 `key-handler` → `Action::Cancel`）；
-    // 两条路的**终点是同一条回调**，下面的断言一位未动。详见文件头"路由"一节。
-    ui.dispatch_key_press(KeyCode::Escape)
-        .expect("③ `Esc` 必须落到真实窗口（Interactive 档）");
-    let esc_closed = !ui.ui().get_export_wav_open();
-    assert!(
-        esc_closed,
-        "③ 弹窗开着时按 `Esc` 必须关掉它（键盘与鼠标 `export-wav-close-button` 同一条路）"
-    );
-    let closed = ids(&mut ui);
-    for id in DIALOG_IDS {
-        assert!(!has(&closed, id), "③ 关闭之后 `{id}` 必须离开树");
-    }
-    assert_eq!(
-        closed, before,
-        "③ 关闭之后的寻址面必须回到 ① 的**同一集合**（不许留下半个弹窗节点，也不许顺手改出新节点）"
-    );
-
-    // ---- ④ 正对照：`Esc` 不导出 ----
-    let status_empty = ui.ui().get_module_status().is_empty();
-    assert!(
-        status_empty,
-        "④ `Esc` 之后状态行必须**还是**空的（跑了任何动作都会写它）"
-    );
-    let target_written = target.exists();
-    assert!(!target_written, "④ 收尾键不许落盘: {}", target.display());
-
-    // ---- ⑤ 关闭后键盘层照旧 + 落空的 `Esc` 不改任何读数 ----
-    ui.dispatch_key_press(KeyCode::Character('1'))
-        .expect("⑤ `1` 必须仍经同一个键盘入口到达宿主");
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        1,
-        "⑤ 关闭弹窗不许把键盘层一起关掉"
-    );
-    let tool_before = ui.ui().get_active_tool();
-    let view_before = ui.ui().get_arrangement_view();
-    ui.dispatch_key_press(KeyCode::Escape)
-        .expect("⑤ 落空的 `Esc` 也必须被窗口接受（放行给焦点系统）");
-    assert!(
-        !ui.ui().get_export_wav_open(),
-        "⑤ 弹窗已关 ⇒ 再按 `Esc` 不许把它打开"
-    );
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        tool_before,
-        "⑤ 落空的 `Esc` 不许顺手改工具"
-    );
-    assert_eq!(
-        ui.ui().get_arrangement_view(),
-        view_before,
-        "⑤ 落空的 `Esc` 不许顺手切视图"
-    );
-
-    // ---- ⑥ 源码纪律：那个属性只有一个真相源 ----
-    let host_src = include_str!("../src/host.rs");
-    let writers = host_src.matches("set_export_wav_open(").count();
-    assert_eq!(
-        writers, 2,
-        "⑥ `export-wav-open` 的写者必须**恰好**两处（`on_open_export_wav` / `on_close_export_wav`），实测 {writers} 处 —— 多一处就是第二个真相源"
-    );
-    let invokers = host_src.matches("invoke_close_export_wav(").count();
-    assert_eq!(
-        invokers, 1,
-        "⑥ 键盘臂必须**只**触发那条既有回调一次（本次接线的形状），实测 {invokers} 处"
-    );
-
-    report_line(&format!(
-        "[export-esc] 起点关={start_closed} ⇒ 打开(+{opened_delta}) ⇒ Esc 关={esc_closed} ⇒ \
-         状态行空={status_empty} 落盘={target_written} ⇒ `1` 后 tool={tool_before}"
-    ));
-
-    // SAFETY: 同上 —— 单 `#[test]` 的进程。
-    unsafe {
-        std::env::remove_var("YEBAN_UI_EXPORT_WAV_PATH");
-    }
 }

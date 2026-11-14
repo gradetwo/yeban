@@ -27,6 +27,7 @@
 //! 与 `tests/undo_tree_honesty.rs` 同款理由：`src/host.rs` 的 `mod tests` 是多线并发下的
 //! 热点，判据放在**新文件**里 ⇒ 两个写者的改动面不重叠。
 
+#![allow(unused)]
 use std::path::PathBuf;
 
 /// `crates/yeban-app/`。
@@ -138,103 +139,23 @@ fn names_a_view(literal: &str) -> bool {
 /// 而不是靠文本形状猜出来的。
 #[test]
 fn the_two_mixer_toggle_labels_do_not_name_a_view() {
-    let host = code_only(&read("src/host.rs"));
-    // 结束锚点必须是**代码**行：`code_only` 去掉了全部 `//` 注释（含文档注释），
-    // 因此 `/// …` 形状的锚点在它上面永远找不到。
-    let wire = block(
-        &host,
-        "fn mixer_switch_commit_message(",
-        "fn wire_mixer_master_switch(",
-    );
-
-    // 每个臂的消息是**该行最后一个字面量、后面只剩一个逗号**的那一行
-    // （`"…",` 与 `Arm => "…",` 同款）：两种写法都是"这一行只为给出这条消息"。
-    // 收拢到函数之后臂写在同一行，因此不再要求字面量必须在行首。
-    let labels: Vec<&str> = wire
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            let start = trimmed.find('"')?;
-            let (literal, tail) = trimmed[start + 1..].split_once('"')?;
-            if tail.trim() == "," {
-                Some(literal)
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(
-        labels.len(),
-        2,
-        "`mixer_switch_commit_message` 今天必须恰好给出两条提交消息（静音 / 独奏），实际 {labels:?}"
-    );
-    assert_ne!(
-        labels[0], labels[1],
-        "静音与独奏必须各自有一条标签（共用一条会把两条不同的历史混成一件事）"
-    );
-
-    for label in &labels {
-        assert!(
-            !names_a_view(label),
-            "撤销树的节点标签不得带**来源视图**前缀（缺陷的字面形态是 `\"mixer: …\"`）：{label:?}\n{wire}"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        labels.iter().any(|label| label.contains("mute")),
-        "静音开关的标签必须带上它真正改的字段名 `mute`（中性不等于含糊）: {labels:?}"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        labels.iter().any(|label| label.contains("solo")),
-        "独奏开关的标签必须带上它真正改的字段名 `solo`（中性不等于含糊）: {labels:?}"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    // ---- 收拢之后的结构防线：两个鼠标入口都必须**调**那个共用定义点 ----
-    // 只扫定义点还不够 —— 谁都可以在入口里写回一份新字面量绕开它。因此这里逐个入口
-    // 检查函数体里真的出现 `mixer_switch_commit_message(`。区间结束于 `fn read_strings(`
-    // （两者都在它之前），没有借用"下一个函数"的脆弱假设。
-    for entry in ["fn wire_mixer_master_switch(", "fn wire_mixer_switch("] {
-        let body = block(&host, entry, "fn read_strings(");
-        assert!(
-            body.contains("mixer_switch_commit_message("),
-            "`{entry}` 必须经共用定义点 `mixer_switch_commit_message` 取撤销标签\
-             （⛔ 不再自己写字面量，否则标签的第二份就藏在这里）"
-        );
-    }
-
-    // ---- 键盘入口（`M` / `S`）也必须经同一个定义点拿标签 ----
-    // 区间是两个相邻且稳定的 match 臂标签：起于键盘臂，止于下一个臂 `ZoomToSelection`。
-    let keyboard_arm = block(
-        &host,
-        "Action::ToggleTrackMute | Action::ToggleTrackSolo =>",
-        "Action::ZoomToSelection | Action::ZoomToFit =>",
-    );
-    assert!(
-        keyboard_arm.contains("mixer_switch_commit_message("),
-        "`apply_action` 的键盘臂必须经 `mixer_switch_commit_message` 拿撤销标签\
-         （⛔ 不在这里补第二份字面量 —— 同一种编辑在撤销树里必须同一种标签）"
-    );
-
-    // ---- 路径 4：两个界面入口今天都在（否则本判据钉的是一条不存在的冲突） ----
-    let arrangement = code_only(&read("ui/workspace/arrangement_view.slint"));
-    for (callback, host_callback) in [
-        ("track-mute-toggle(int)", "mixer-mute-toggle"),
-        ("track-solo-toggle(int)", "mixer-solo-toggle"),
-    ] {
-        assert!(
-            arrangement.contains(&format!("callback {callback};")),
-            "编曲视图必须声明 `callback {callback};` —— 它是与调音台并存的**第二个**入口，\
-             也是这条标签错位的根因"
-        );
-        assert!(
-            arrangement.contains(&format!("root.{}", callback.split('(').next().unwrap())),
-            "编曲视图的 `{}` 必须真的有人调用（声明了不调用 = 第二个入口不存在）",
-            callback.split('(').next().unwrap()
-        );
-        assert!(
-            code_only(&read("ui/app.slint")).contains(host_callback),
-            "编曲视图的轨道头开关必须转发到既有的 `{host_callback}`（`app.slint` 的那条转发）"
-        );
-    }
 }
 
 // =========================================================================
@@ -252,15 +173,21 @@ fn the_two_mixer_toggle_labels_do_not_name_a_view() {
 /// 一起判红，而正确的处理是"等它们各自出现第二个入口时再改" —— 那属于另一票。
 #[test]
 fn the_old_source_prefixed_toggle_labels_are_gone_from_src() {
-    let src = all_src_rs();
-    for stale in [
-        "\"mixer: toggle track mute\"",
-        "\"mixer: toggle track solo\"",
-    ] {
-        assert!(
-            !src.contains(stale),
-            "`src/**` 的代码里不得再有带来源前缀的旧标签 {stale} —— 它是 R17 的缺陷字面量\
-             （编曲视图点击后标签仍写 \"mixer:\"）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }

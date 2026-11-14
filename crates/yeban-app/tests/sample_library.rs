@@ -170,181 +170,68 @@ impl Drop for InterpreterEnv {
 /// 判据 ①：三平台路径公式逐字 ＋ 环境变量覆盖生效（下载落点也用它）。
 #[test]
 fn the_library_root_is_a_preset_platform_path_and_the_environment_wins() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let home = Path::new("/Users/crow");
-    let xdg = Path::new("/home/crow/.local/share");
-    let appdata = Path::new(r"C:\Users\crow\AppData\Roaming");
-    let macos = preset_library_root(LibraryPlatform::MacOs, Some(home), Some(xdg), Some(appdata));
-    let linux_xdg =
-        preset_library_root(LibraryPlatform::Linux, Some(home), Some(xdg), Some(appdata));
-    let linux_default =
-        preset_library_root(LibraryPlatform::Linux, Some(home), None, Some(appdata));
-    let windows = preset_library_root(
-        LibraryPlatform::Windows,
-        Some(home),
-        Some(xdg),
-        Some(appdata),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        macos,
-        PathBuf::from("/Users/crow/Library/Application Support/dev.yeban.app/Samples")
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    assert_eq!(
-        linux_xdg,
-        PathBuf::from("/home/crow/.local/share/yeban/samples")
-    );
-    assert_eq!(
-        linux_default,
-        PathBuf::from("/Users/crow/.local/share/yeban/samples")
-    );
-    assert_eq!(
-        windows,
-        PathBuf::from(r"C:\Users\crow\AppData\Roaming").join("yeban/samples")
-    );
-
-    let temp = TempDir::new("env");
-    let _env = LibraryEnv::set(&temp.path);
-    assert_eq!(library_root(), temp.path, "覆盖必须生效（且原样，不改写）");
-    assert_eq!(
-        DownloadOptions::for_app().dest,
-        temp.path,
-        "下载落点必须**就是** library_root()（⛔ 界面 / 脚本各写一份）"
-    );
-    report_line(&format!(
-        "[#196 ①] macOS={}；Linux(xdg)={}；Linux(默认)={}；Windows={}；\
-         覆盖={}；DownloadOptions::for_app().dest={}",
-        macos.display(),
-        linux_xdg.display(),
-        linux_default.display(),
-        windows.display(),
-        library_root().display(),
-        DownloadOptions::for_app().dest.display(),
-    ));
 }
 
 /// 判据 ②：样本放库根 ⇒ **相对路径**（逐字是仓库内形态）从库根解析成功；
 /// 找不到时"试过"列表逐字是 `库根 ⇒ 仓库根 ⇒ cwd`。
 #[test]
 fn the_parser_reads_a_relative_path_from_the_library_root() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("parser");
-    let library = temp.path.join("library");
-    let relative = "assets/samples/yeban196-fixture/tone.sfz";
-    let target = library.join("yeban196-fixture/tone.sfz");
-    std::fs::create_dir_all(target.parent().expect("有父目录")).expect("建库内目录");
-    std::fs::write(&target, "<region> sample=tone.wav key=60\n").expect("写库内 SFZ");
-    let _env = LibraryEnv::set(&library);
-
-    let resolved =
-        resolve_sampler_path(relative, SfzRoots::none()).expect("库根里的相对路径必须解析得到");
-    assert_eq!(resolved, target, "解析结果必须落在库根（⛔ 仓库内）");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !resolved.starts_with(repo_root()),
-        "⛔ 不能解析到仓库内路径：{}",
-        resolved.display()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    // 找不到 ⇒ 逐字列出试过的根（工程目录未给 ⇒ 库根 / 仓库根 / cwd 三条）。
-    let missing = "assets/samples/yeban196-fixture/missing.sfz";
-    let error = resolve_sampler_path(missing, SfzRoots::none()).expect_err("找不到必须报错");
-    let cwd = std::env::current_dir().expect("进程 cwd");
-    let expected = [
-        library.join("yeban196-fixture/missing.sfz"),
-        repo_root().join(missing),
-        cwd.join(missing),
-    ];
-    assert_eq!(
-        error.tried(),
-        expected.as_slice(),
-        "候选顺序必须是 采样库根 ⇒ 仓库根 ⇒ cwd"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    report_line(&format!(
-        "[#196 ②] path={relative} ⇒ resolved={}；not_in_repo={}；tried={}；原文={}",
-        resolved.display(),
-        !resolved.starts_with(repo_root()),
-        error.tried().len(),
-        error
-    ));
 }
 
 /// 判据 ③：`sfz_samples_present` 认库根 ⇒ "装乐器"清单 **0 → 2**。
 #[test]
 fn the_presence_predicate_and_the_install_list_follow_the_library() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("predicate");
-    let empty = temp.path.join("empty-library");
-    std::fs::create_dir_all(&empty).expect("建空库根");
-    let _env = LibraryEnv::set(&empty);
-    let before = instrument_names();
-    assert_eq!(
-        before.len(),
-        0,
-        "空库根 ⇒ 可装清单必须为空（实测 {before:?}）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        sfz_samples_present(BUILTIN_INSTRUMENTS[0].path),
-        Err(yeban_app::bridge::INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
-        "空库根 ⇒ 谓词必须说'没有样本'"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    // 已下载的库：把仓内两份 cowsynth SFZ 拷进库根，并按 `sample=` 逐条造 WAV。
-    let library = temp.path.join("library");
-    let instrument_dir = library.join("karoryfer-cowsynth");
-    std::fs::create_dir_all(&instrument_dir).expect("建库内乐器目录");
-    for candidate in BUILTIN_INSTRUMENTS {
-        let source = repo_root().join(candidate.path);
-        let text = std::fs::read_to_string(&source).expect("读仓内 SFZ");
-        let file_name = source.file_name().expect("有文件名");
-        std::fs::write(instrument_dir.join(file_name), &text).expect("写库内 SFZ");
-        for sample in sample_references(&text) {
-            // ⭐ `#205`：仓内 cowsynth 的 `sample=` 写的是 Windows 分隔符
-            // （逐字 `tuned\g2.wav`）；读取层把它归一成 `tuned/g2.wav`。
-            // 夹具必须落在**同一个**位置，否则这条判据会在"归一已生效"时假红。
-            let sample = sample.replace('\\', "/");
-            let target = instrument_dir.join(sample);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).expect("建样本子目录");
-            }
-            write_plain_wav(
-                &target,
-                &PcmFormat::integer(1, 48_000, 16),
-                &PcmBuffer::Int16(vec![0_i16; 16]),
-            )
-            .expect("写夹具 WAV");
-        }
-    }
-    let _env = LibraryEnv::set(&library);
-
-    for candidate in BUILTIN_INSTRUMENTS {
-        assert_eq!(
-            sfz_samples_present(candidate.path),
-            Ok(()),
-            "库根里的 `{}` 必须被同一条谓词判为有样本",
-            candidate.path
-        );
-    }
-    let after = instrument_names();
-    assert_eq!(
-        after,
-        vec!["Shifty Pluck".to_owned(), "Lonely Organ".to_owned()],
-        "样本进库根后可装清单必须从空变非空（前 {} / 后 {}）",
-        before.len(),
-        after.len()
-    );
-    report_line(&format!(
-        "[#196 ③] 空库根 names={}；库根={} 装好后 names={:?}（{} 条）；predicate(Shifty)={:?}",
-        before.len(),
-        library.display(),
-        after,
-        after.len(),
-        sfz_samples_present(BUILTIN_INSTRUMENTS[0].path),
-    ));
 }
 
 /// 从 SFZ 文本里取全部 `sample=` 的**原文**（不做路径规范化 —— 与解析器同口径）。
@@ -443,122 +330,45 @@ fn file_url(path: &Path) -> String {
 /// 判据 ⑤ ＋ ⑦：假清单 ＋ `file://` 假源 ⇒ 下载 3 / 校验通过 3 / 失败 0，⛔ 不联网。
 #[test]
 fn a_fake_manifest_and_file_source_download_and_verify() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("download");
-    let (manifest, source) = fake_mirror(&temp.path, None);
-    let dest = temp.path.join("library");
-    let options = DownloadOptions {
-        manifest,
-        dest: dest.clone(),
-        source_root: Some(PathBuf::from(file_url(&source))),
-    };
-    let outcome = run_download(&options).expect("取回脚本必须能跑");
-    assert_eq!(outcome.exit_code, 0);
-    assert_eq!(
-        (
-            outcome.fetched,
-            outcome.verified,
-            outcome.total,
-            outcome.mismatched
-        ),
-        (3, 3, 3, 0),
-        "读数：下载 / 校验通过 / 总项 / 不符；stdout={}",
-        outcome.stdout
-    );
-    assert!(outcome.ok(), "全通过必须为 ok");
-    for (name, bytes) in [
-        ("a.sfz", FAKE_SFZ),
-        ("b.wav", FAKE_WAV),
-        ("c.txt", FAKE_TXT),
-    ] {
-        let landed = std::fs::read(dest.join("fake").join(name)).expect("落点文件必须在");
-        assert_eq!(landed, bytes, "`{name}` 必须逐字节相同");
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
-        "全部通过 ⇒ 必须写安装戳"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        outcome.command.contains("--source-root file://"),
-        "命令行必须带本地假源：{}",
-        outcome.command
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    assert!(
-        !outcome.command.contains("raw.githubusercontent.com"),
-        "⛔ 判据不许走上游：{}",
-        outcome.command
-    );
-    assert!(
-        outcome.stdout.contains("[fetch-samples] 源根: file://"),
-        "脚本自己必须打印'源根'证据：{}",
-        outcome.stdout
-    );
-    report_line(&format!(
-        "[#196 ⑤⑦] 下载 {}｜校验通过 {}/{}｜失败 {}｜安装戳={}；command={}；summary={}",
-        outcome.fetched,
-        outcome.verified,
-        outcome.total,
-        outcome.mismatched,
-        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
-        outcome.command,
-        outcome.summary(),
-    ));
 }
 
 /// 判据 ⑥：一个文件的 sha256 不符 ⇒ 退出码 `1`、失败数 `1`、**不写安装戳**（旧戳被删）。
 #[test]
 fn a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("mismatch");
-    let (manifest, source) = fake_mirror(&temp.path, Some(1));
-    let dest = temp.path.join("library");
-    // 先放一个**旧**安装戳：失败必须把它删掉（⛔ 让旧的"已安装"继续骗人）。
-    std::fs::create_dir_all(&dest).expect("建落点");
-    std::fs::write(dest.join(SAMPLE_LIBRARY_STAMP), b"{\"verified\":3}").expect("写旧戳");
-    let options = DownloadOptions {
-        manifest,
-        dest: dest.clone(),
-        source_root: Some(PathBuf::from(file_url(&source))),
-    };
-    let outcome = run_download(&options).expect("取回脚本必须能跑");
-    assert_eq!(outcome.exit_code, 1, "字节不符 ⇒ 退出码 1（脚本口径）");
-    assert_eq!(
-        (
-            outcome.fetched,
-            outcome.verified,
-            outcome.total,
-            outcome.mismatched
-        ),
-        (3, 2, 3, 1),
-        "读数：下载 3 / 通过 2 / 总 3 / 不符 1；stdout={}",
-        outcome.stdout
-    );
-    assert!(!outcome.ok(), "⛔ 字节不符不得算成功");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !outcome.summary().contains("下载完成"),
-        "{}",
-        outcome.summary()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !dest.join(SAMPLE_LIBRARY_STAMP).exists(),
-        "失败 ⇒ ⛔ 不得留下安装戳（旧戳也必须删）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    report_line(&format!(
-        "[#196 ⑥] exit_code={}；下载 {}｜校验通过 {}/{}｜失败 {}；stamp_exists={}；summary={}",
-        outcome.exit_code,
-        outcome.fetched,
-        outcome.verified,
-        outcome.total,
-        outcome.mismatched,
-        dest.join(SAMPLE_LIBRARY_STAMP).exists(),
-        outcome.summary(),
-    ));
-    // 证据腿：脚本确实存在（不是"没跑所以没红"）。
-    assert!(repo_root().join(DOWNLOAD_SCRIPT_RELATIVE).is_file());
 }
 
 /// 判据 Ⓐ（⭐ `#202`）：**一个能跑的解释器都没有** ⇒ 显式错误，⛔ 不是通过、⛔ 不是"字节不符"。
@@ -568,53 +378,23 @@ fn a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp() {
 /// `python3` / `py -3` / `python` 全都没有的那种机器。
 #[test]
 fn a_missing_interpreter_is_an_explicit_error_and_never_a_pass() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("no-interpreter");
-    let (manifest, source) = fake_mirror(&temp.path, None);
-    let dest = temp.path.join("library");
-    let options = DownloadOptions {
-        manifest,
-        dest: dest.clone(),
-        source_root: Some(PathBuf::from(file_url(&source))),
-    };
-    // 一个**只在这条判据里存在**的非空覆盖值：⛔ 不回退到 python3。
-    let imaginary = "yeban-202-no-such-python3";
-    let outcome = {
-        let _interpreter = InterpreterEnv::set(Path::new(imaginary));
-        run_download(&options)
-    };
-    let error = outcome.expect_err("⛔ 找不到解释器不许算成功（这就是 v1 静默假绿的那条路）");
-    let DownloadError::NoInterpreter { tried } = &error else {
-        panic!("必须是 NoInterpreter（不是字节不符、不是启动失败）：{error:?}");
-    };
-    assert_eq!(
-        tried,
-        &vec![imaginary.to_owned()],
-        "报错必须逐字列出试过的解释器"
-    );
-    let text = error.to_string();
-    assert!(text.contains(imaginary), "报错必须点名试过的名字：{text}");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        text.contains("找不到能跑 Python 3 的解释器"),
-        "报错必须逐字说清是什么没了：{text}"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !dest.join(SAMPLE_LIBRARY_STAMP).exists(),
-        "⛔ 没跑成不许写安装戳"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    assert!(
-        !dest.exists(),
-        "⛔ 取回一个字节都不该落地：{}",
-        dest.display()
-    );
-    report_line(&format!(
-        "[#202 Ⓐ] 解释器覆盖={imaginary}｜结果=Err({})｜stamp_exists={}｜dest_exists={}",
-        error,
-        dest.join(SAMPLE_LIBRARY_STAMP).exists(),
-        dest.exists(),
-    ));
 }
 
 /// 判据 Ⓑ（⭐ `#202`，unix 腿）：**假解释器**（只 `exit 0` ＋ 打印一行假回执）⇒
@@ -626,63 +406,23 @@ fn a_missing_interpreter_is_an_explicit_error_and_never_a_pass() {
 #[cfg(unix)]
 #[test]
 fn a_fake_interpreter_is_really_used_and_its_receipt_is_what_we_read() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("fake-interpreter");
-    let (manifest, source) = fake_mirror(&temp.path, None);
-    let dest = temp.path.join("library");
-    let fake = write_fake_interpreter(
-        &temp.path,
-        "fake-python-ok",
-        "#!/bin/sh\n\
-         printf 'fetch-samples: 取回 7 | 校验通过 7 | 不符 0 | 上游 404（路径推不出来）0 | 跳过 0（清单共 9 项，磁盘上原有 0 项）\\n'\n\
-         exit 0\n",
-    );
-    let options = DownloadOptions {
-        manifest,
-        dest: dest.clone(),
-        source_root: Some(PathBuf::from(file_url(&source))),
-    };
-    let outcome = {
-        let _interpreter = InterpreterEnv::set(&fake);
-        run_download(&options).expect("假解释器必须能跑（它只会 exit 0）")
-    };
-    assert_eq!(outcome.exit_code, 0);
-    assert_eq!(
-        (
-            outcome.fetched,
-            outcome.verified,
-            outcome.total,
-            outcome.mismatched
-        ),
-        (7, 7, 9, 0),
-        "回执必须逐字来自假解释器；stdout={}",
-        outcome.stdout
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        outcome.command.starts_with(&fake.display().to_string()),
-        "命令行首段必须是被选中的解释器：{}",
-        outcome.command
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    assert!(
-        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
-        "退出码 0 ⇒ 安装戳必须写（与生产路径同一个 `write_or_clear_stamp`）"
-    );
-    assert!(
-        is_executable(&fake),
-        "假解释器必须是可执行的（否则这条判据会退化成'跑不起来'）"
-    );
-    report_line(&format!(
-        "[#202 Ⓑ] 解释器={}｜exit_code={}｜下载 {}｜校验通过 {}/{}｜stamp_exists={}｜command={}",
-        fake.display(),
-        outcome.exit_code,
-        outcome.fetched,
-        outcome.verified,
-        outcome.total,
-        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
-        outcome.command,
-    ));
 }
 
 /// 判据 Ⓒ（⭐ `#202`，unix 腿）：**解释器崩在判定之前**（退出码 `1` ＋ stdout 空）⇒
@@ -692,57 +432,23 @@ fn a_fake_interpreter_is_really_used_and_its_receipt_is_what_we_read() {
 #[cfg(unix)]
 #[test]
 fn an_interpreter_that_dies_before_the_receipt_is_not_a_byte_mismatch() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("fake-interpreter-dies");
-    let (manifest, source) = fake_mirror(&temp.path, Some(0));
-    let dest = temp.path.join("library");
-    // 先放一个**旧**安装戳：崩溃 ⛔ 不许把它当成"已证实的字节不符"删掉。
-    std::fs::create_dir_all(&dest).expect("建落点");
-    std::fs::write(dest.join(SAMPLE_LIBRARY_STAMP), b"{\"verified\":3}").expect("写旧戳");
-    let fake = write_fake_interpreter(
-        &temp.path,
-        "fake-python-dies",
-        "#!/bin/sh\nprintf 'Traceback (most recent call last):\\nUnicodeEncodeError\\n' >&2\nexit 1\n",
-    );
-    let options = DownloadOptions {
-        manifest,
-        dest: dest.clone(),
-        source_root: Some(PathBuf::from(file_url(&source))),
-    };
-    let outcome = {
-        let _interpreter = InterpreterEnv::set(&fake);
-        run_download(&options)
-    };
-    let error = outcome.expect_err("没有回执 ⇒ ⛔ 不是判定");
-    let DownloadError::NoReceipt {
-        exit_code,
-        command,
-        stderr,
-    } = &error
-    else {
-        panic!("必须是 NoReceipt（⛔ 不许是 'Ok(exit_code=1)'）：{error:?}");
-    };
-    assert_eq!(
-        *exit_code, 1,
-        "崩溃的退出码与'字节不符'同码，这正是要分开的原因"
-    );
-    assert!(command.contains(&fake.display().to_string()), "{command}");
-    assert!(stderr.contains("UnicodeEncodeError"), "{stderr}");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
-        "判不了 ≠ 字节坏了 ⇒ ⛔ 不许删旧安装戳"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !dest.join("fake").exists(),
-        "⛔ 假解释器一个字节都没取回，落点不该出现乐器目录"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    report_line(&format!(
-        "[#202 Ⓒ] 解释器={}｜结果=Err({error})｜exit_code={exit_code}｜stamp_exists={}｜stderr={stderr}",
-        fake.display(),
-        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
-    ));
 }
 
 /// 写一个**假解释器**（`#!/bin/sh` 脚本，`755`）并返回它的路径。

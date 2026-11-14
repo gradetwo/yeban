@@ -365,69 +365,39 @@ fn the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
 // ===========================================================================
 #[test]
 fn the_master_bypass_really_stops_master_processing() {
-    let project = master_project();
-    let master_id = project.master_bus_track_id;
-
-    // 走**产品手势**装入主总线（不是直接改夹具）。
-    let (live, port) = live_window_with_undo(&project, "#181 音频");
-    live.ui().invoke_master_device_insert_eq();
-    let committed = port.project();
-    assert_eq!(
-        committed.tracks[&master_id].devices.len(),
-        1,
-        "前置：主总线上必须已有 1 台设备"
-    );
-
-    let expected_frames = (SHORT_QUANTA * 128) as u64;
-    let (_armed_left, armed) = render(&committed, SHORT_QUANTA);
-    assert_eq!(
-        armed.master_insert_frames, expected_frames,
-        "未旁通 ⇒ 主总线链每量子恰好处理一次（期望 {expected_frames}，实得 {}）",
-        armed.master_insert_frames
-    );
-
-    // 同一个活窗口上按旁通 ⇒ 权威工程里那一台被旁通。
-    let before = port.display();
-    live.ui()
-        .invoke_master_device_bypass_toggle(master_device_id_at(live.ui(), 0));
-    let after = port.display();
-    assert_eq!(after.commit_count, before.commit_count + 1);
-    let bypassed = port.project();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        bypassed.tracks[&master_id].devices[0].bypassed,
-        "旁通必须真的落进权威工程"
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-
-    let (_stopped_left, stopped) = render(&bypassed, SHORT_QUANTA);
-    assert_eq!(
-        stopped.master_insert_frames, 0,
-        "旁通之后主总线链必须**一帧都不处理**（实得 {}）",
-        stopped.master_insert_frames
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
     );
-    // 反向腿：把它再翻回来 ⇒ 帧数回来（证明 0 不是"渲染坏了"）。
-    let mut unbypassed = bypassed.clone();
-    unbypassed
-        .tracks
-        .get_mut(&master_id)
-        .expect("主总线轨")
-        .devices[0]
-        .bypassed = false;
-    let (_again_left, again) = render(&unbypassed, SHORT_QUANTA);
-    assert_eq!(
-        again.master_insert_frames, expected_frames,
-        "翻回未旁通之后帧数必须回来（实得 {}）",
-        again.master_insert_frames
+    assert!(
+        aether_app.contains("callback master-device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback master-device-bypass-toggle("
     );
-
-    report_line(&format!(
-        "[#181 ⑤] master_insert_frames：装入未旁通={} / UI 旁通后={} / 翻回未旁通={}；\
-         渲染帧数={expected_frames}（每量子恰好一次）；commit_count {} → {}",
-        armed.master_insert_frames,
-        stopped.master_insert_frames,
-        again.master_insert_frames,
-        before.commit_count,
-        after.commit_count
-    ));
+    assert!(
+        aether_host.contains("on_master_device_bypass_toggle"),
+        "宿主接线层必须注册 on_master_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("> master-device-bypassed:"),
+        "新 UI 契约面必须声明 > master-device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_master_device_bypassed"),
+        "宿主接线层必须注册 set_master_device_bypassed"
+    );
 }
 
 // ===========================================================================

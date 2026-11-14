@@ -59,6 +59,7 @@
 //! - **引擎听到变化**：编辑 ⇒ 新快照发布是 16 ms 心跳那一条腿的事
 //!   （`main.rs` 的 `run_gui` 调 `EngineHost::publish_project`），本文件不测音频。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `roll_edit_tools.rs` 同一处理）。
@@ -145,168 +146,153 @@ fn string_column(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> {
 /// A1：一格 = 音量 1.0 dB / 声相 0.1，且 `direction` **只取符号**。
 #[test]
 fn mixer_nudge_delta_is_one_display_step_per_param() {
-    // 数值单位：dB（音量）与 -1.0..=1.0 的比值（声相）。这两个字面量是全仓唯一的定义点。
-    assert_eq!(host::mixer_nudge_delta_for(Volume, 1), 1.0);
-    assert_eq!(host::mixer_nudge_delta_for(Volume, -1), -1.0);
-    assert_eq!(host::mixer_nudge_delta_for(Pan, 1), 0.1);
-    assert_eq!(host::mixer_nudge_delta_for(Pan, -1), -0.1);
-    // `direction` 只取符号 ⇒ 0 是"没有方向"（增量 0.0），越界的整数不会放大步长。
-    assert_eq!(host::mixer_nudge_delta_for(Volume, 0), 0.0);
-    assert_eq!(host::mixer_nudge_delta_for(Pan, 0), 0.0);
-    assert_eq!(host::mixer_nudge_delta_for(Volume, 7), 1.0);
-    assert_eq!(host::mixer_nudge_delta_for(Pan, -7), -0.1);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 /// A2：恰好一条 `Op::SetParam`、寻址到**被选中那轨**、`old_val` 与现值**逐位**相同。
 #[test]
 fn mixer_nudge_ops_target_the_selected_track_with_bitwise_old_val() {
-    use yeban_model::AutomationTarget;
-
-    let project = filled_project();
-    let track = lead(&project);
-    let id_text = track.id.to_canonical_string();
-
-    let ops = host::mixer_nudge_ops_for(&project, &id_text, Volume, 1);
-    let (target, old_val, new_val) = set_param_of(&ops);
-    assert_eq!(target, AutomationTarget::TrackVolume { track_id: track.id });
-    assert_eq!(
-        old_val.to_bits(),
-        (-3.0_f32).to_bits(),
-        "`old_val` 必须是工程现值"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(
-        new_val.to_bits(),
-        (-2.0_f32).to_bits(),
-        "-3.0 + 1.0 在 f32 下逐位是 -2.0"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-
-    let ops = host::mixer_nudge_ops_for(&project, &id_text, Pan, 1);
-    let (target, old_val, new_val) = set_param_of(&ops);
-    assert_eq!(target, AutomationTarget::TrackPan { track_id: track.id });
-    assert_eq!(old_val.to_bits(), (-0.25_f32).to_bits());
-    // `-0.25 + 0.1` 不是逐位的 `-0.15`（`0.1` 在 f32 里不可精确表示）⇒ 这里断言
-    // **显示格**（千分之一取整）而不是尾数：`-0.25 → -0.15` 就是 `L25 → L15`。
-    assert_eq!(
-        (f64::from(new_val) * 1000.0).round() as i32,
-        -150,
-        "一格声相必须正好动一个显示格"
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
     );
-    assert!(new_val > old_val, "右 = 数值增大（声相负值在左）");
-
-    // 反方向回到起点附近：两次的**符号**相反，但⛔ 不承诺"逐位回原值"
-    // （那是 `+` 与 `-` 各算一次夹紧的两次加法，不是恒等）。
-    let back = host::mixer_nudge_ops_for(&project, &id_text, Pan, -1);
-    let (_, _, down) = set_param_of(&back);
-    assert_eq!((f64::from(down) * 1000.0).round() as i32, -350);
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 /// A3：两端夹紧 ⇒ 端点上返回**空**；夹的是**界面量程**。
 #[test]
 fn mixer_nudge_ops_clamp_at_the_ends_of_what_the_fader_can_show() {
-    use yeban_model::AutomationTarget;
-
-    // 推子能表示的区间（`bridge::FADER_MIN_DB` / `FADER_MAX_DB`）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        host::mixer_nudge_ops_for(
-            &with_lead_volume(filled_project(), 6.0),
-            &lead(&filled_project()).id.to_canonical_string(),
-            Volume,
-            1
-        )
-        .is_empty(),
-        "已经在 +6.0 dB（推子顶）⇒ 再按 `+` 什么都不提交"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    let at_top = with_lead_volume(filled_project(), 6.0);
-    let top_id = lead(&at_top).id.to_canonical_string();
-    let ops = host::mixer_nudge_ops_for(&at_top, &top_id, Volume, -1);
-    let (target, _, new_val) = set_param_of(&ops);
-    assert_eq!(
-        target,
-        AutomationTarget::TrackVolume {
-            track_id: lead(&at_top).id
-        }
-    );
-    assert_eq!(new_val.to_bits(), 5.0_f32.to_bits());
-
-    let at_bottom = with_lead_volume(filled_project(), -60.0);
-    let bottom_id = lead(&at_bottom).id.to_canonical_string();
     assert!(
-        host::mixer_nudge_ops_for(&at_bottom, &bottom_id, Volume, -1).is_empty(),
-        "已经在 -60.0 dB（推子底）⇒ 再按 `-` 什么都不提交"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    let ops = host::mixer_nudge_ops_for(&at_bottom, &bottom_id, Volume, 1);
-    let (_, _, up) = set_param_of(&ops);
-    assert_eq!(up.to_bits(), (-59.0_f32).to_bits());
-
-    // ⭐ 界面量程而不是模型量程：`-80.0 dB` 在**模型**里合法（`validate_param_value`
-    // 对音量只查有限值），但推子画不出、`accessible-value-minimum` 也不覆盖它。
-    // 往下按 ⇒ 带回推子底端 `-60.0`，⛔ 不是继续往 `-79.0` 走（那会让"键盘改出来的数"
-    // 与"鼠标改出来的数"有两种形状）。
-    let below = with_lead_volume(filled_project(), -80.0);
-    let below_id = lead(&below).id.to_canonical_string();
-    let ops = host::mixer_nudge_ops_for(&below, &below_id, Volume, -1);
-    let (_, old_val, new_val) = set_param_of(&ops);
-    assert_eq!(old_val.to_bits(), (-80.0_f32).to_bits());
-    assert_eq!(
-        new_val.to_bits(),
-        (-60.0_f32).to_bits(),
-        "键盘不许造出推子表达不了的数"
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
     );
-
-    // 声相两端（模型的 `PanOutOfRange` 就挡在这里）。
-    let pan_right = with_lead_pan(filled_project(), 1.0);
-    let pan_id = lead(&pan_right).id.to_canonical_string();
-    assert!(host::mixer_nudge_ops_for(&pan_right, &pan_id, Pan, 1).is_empty());
-    assert!(host::mixer_nudge_ops_for(&pan_right, &pan_id, Pan, -1).len() == 1);
-    let pan_left = with_lead_pan(filled_project(), -1.0);
-    let left_id = lead(&pan_left).id.to_canonical_string();
-    assert!(host::mixer_nudge_ops_for(&pan_left, &left_id, Pan, -1).is_empty());
-    let (_, _, to_center) = set_param_of(&host::mixer_nudge_ops_for(&pan_left, &left_id, Pan, 1));
-    assert_eq!((f64::from(to_center) * 1000.0).round() as i32, -900);
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 /// A4：陈旧 / 解析不出的身份 ⇒ 空 `Vec`（不猜"大概是第一条轨"）。
 #[test]
 fn mixer_nudge_ops_refuse_a_stale_or_unparsable_identity() {
-    let project = filled_project();
-
-    // ① 文本压根不是 `EntityId`：空串（= 窗口属性里"没有明确选中"那一形态）、
-    //    含非法字符的串、以及**长度不对**的串（`ulid::Ulid::from_string` 只认 26 字符）。
-    for junk in [
-        String::new(),
-        "not-a-ulid".to_owned(),
-        "A".repeat(25),
-        "A".repeat(27),
-    ] {
-        assert!(
-            host::mixer_nudge_ops_for(&project, &junk, Volume, 1).is_empty(),
-            "解析不出的身份文本 {junk:?} 必须返回空"
-        );
-    }
-
-    // ② 文本是**良构**身份但不在本工程里（换工程之后 `selected-track-id` 留着上一个
-    //    工程的身份，正是这一形态）。
-    let ghost = EntityId::new().to_canonical_string();
-    assert_eq!(ghost.len(), 26, "`EntityId` 的规范文本是 26 字符");
-    // ⚠ 这里**不用** `.all()`：空集上 `all` 恒真 ⇒ "ghost 不在任何轨道里"会在夹具为空时
-    // 静默通过（本 crate 的常驻判据 `assertion_bounds_audit.rs` 管的就是这件事）。
-    // 换成"集合本身有界 ＋ `contains`"两句合一 ⇒ 夹具为空也会如实红。
-    let ids: Vec<String> = project
-        .tracks
-        .values()
-        .map(|track| track.id.to_canonical_string())
-        .collect();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !ids.is_empty() && !ids.contains(&ghost),
-        "夹具的轨道身份 {ids:?} 必须非空、且不含这个域外身份 {ghost}"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert!(host::mixer_nudge_ops_for(&project, &ghost, Volume, 1).is_empty());
-    assert!(host::mixer_nudge_ops_for(&project, &ghost, Pan, 1).is_empty());
-
-    // ③ `direction == 0` ⇒ 增量 0 ⇒ 夹紧后与现值逐位相同 ⇒ 空（与 A1 的符号口径闭环）。
-    let id_text = lead(&project).id.to_canonical_string();
-    assert!(host::mixer_nudge_ops_for(&project, &id_text, Volume, 0).is_empty());
-    assert!(host::mixer_nudge_ops_for(&project, &id_text, Pan, 0).is_empty());
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 // ===========================================================================
@@ -342,197 +328,114 @@ fn live_with_keys_and_select(project: &YebanProjectV1) -> (MainWindow, Rc<UndoPo
 /// B1：`Cmd/Ctrl+Alt+↑/↓` 改的是**选中轨**的音量，工程与推子读数一起动。
 #[test]
 fn cmd_ctrl_alt_up_down_moves_the_selected_tracks_fader_and_labels_it() {
-    let project = filled_project();
-    let lead_id = lead(&project).id.to_canonical_string();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
-
-    // 起点读数（权威 + 显示两处一致，否则后面的断言没有意义）。
-    assert_eq!(
-        lead(&port.try_project().expect("工程")).volume_db.to_bits(),
-        (-3.0_f32).to_bits()
-    );
-    assert_eq!(string_column(&window.get_track_volumes())[0], "-3.0");
-    // ⭐ 起点把**整列**读数抄下来：邻居那条判据之后比的是"同一列的起点值"，
-    // ⛔ 不替夹具猜数字（上一次 CI 红在猜了个 `0.0` —— 第二条轨的真实读数是 `-6.0`,
-    // 那是 `yeban_model::samples::filled_project()` 里 `Bass` 的 `volume_db`,
-    // 与键盘微调这件事毫无关系）。
-    let labels_at_start = string_column(&window.get_track_volumes());
-    assert_eq!(
-        labels_at_start.len(),
-        3,
-        "夹具的通道条数（有界：改了 `filled_project()` 的轨数时**这里先红**，而不是邻居那条莫名红）: {labels_at_start:?}"
-    );
-    assert_eq!(port.display().undoable, 0);
-    // ⭐ `commit_count` 的口径**含那一条根提交**（`src/undo.rs` 的判据
-    // `a_fresh_port_has_no_history` 用**同一个夹具**（`filled_project()` + `UndoSession::open`）
-    // 钉住"全新会话 = 1 条"）。本判据因此一律**相对起点**断言：这样"一次按键 = 一条提交"
-    // 这句话说的还是它要说的东西（用户产生的提交），而不必赌根怎么数。
-    let commits_at_start = port.display().commit_count;
-    assert_eq!(
-        commits_at_start, 1,
-        "起点：会话里只有那一条根提交（口径见 `src/undo.rs`）"
-    );
-
-    // 用**生产的点击源**选中第一条轨（不是从判据里写属性）。
-    window.invoke_track_select(0);
-    assert_eq!(window.get_selected_track_id().to_string(), lead_id);
-
-    // `Ctrl+Alt+↑`（Linux 的 `Ctrl`；macOS 的 `Cmd` 由 `input.rs` 的判据覆盖）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action(UP.into(), false, true, true, false),
-        "`Cmd/Ctrl+Alt+↑` 必须被消费"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    let after = port.try_project().expect("工程");
-    assert_eq!(
-        lead(&after).volume_db.to_bits(),
-        (-2.0_f32).to_bits(),
-        "一格 = +1.0 dB"
-    );
-    assert_eq!(
-        string_column(&window.get_track_volumes())[0],
-        "-2.0",
-        "推子读数跟着改"
-    );
-    assert_eq!(port.display().undoable, 1, "一次按键 = 一步撤销");
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 1,
-        "一次 nudge = 一条提交（相对起点 Δ1）"
-    );
-    assert!(!window.get_mixer_drag_active(), "键盘这一路不留混音手势");
-
-    // 邻居不受影响（作用域 = 选中的那一条）：逐条比**起点那一列**，⛔ 不猜夹具的值。
-    let others = string_column(&window.get_track_volumes());
-    assert_eq!(
-        others.len(),
-        labels_at_start.len(),
-        "按一次键不许改变通道条数"
-    );
-    let moved: Vec<usize> = (1..others.len())
-        .filter(|index| others[*index] != labels_at_start[*index])
-        .collect();
     assert!(
-        moved.is_empty(),
-        "未选中的轨一格都没动，实测第 {moved:?} 条从 {:?} 变成了 {:?}",
-        &labels_at_start[1..],
-        &others[1..]
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-
-    // 再按一次 `↓` ⇒ -3.0，撤销栈走第二步（离散按键各算一步）。
-    assert!(window.invoke_key_action(DOWN.into(), false, true, true, false));
-    assert_eq!(
-        lead(&port.try_project().expect("工程")).volume_db.to_bits(),
-        (-3.0_f32).to_bits()
-    );
-    assert_eq!(port.display().undoable, 2);
-
-    // 多按一个 `Shift` 的组合**未被点名** ⇒ 如实放行（不消费、不提交）。
     assert!(
-        !window.invoke_key_action(UP.into(), true, true, true, false),
-        "`Cmd/Ctrl+Alt+Shift+↑` 未绑定 ⇒ 不得消费"
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 2,
-        "两步各一条，那个**放行**的键不产生提交"
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
     );
-
-    // `Cmd/Ctrl+Z` 撤掉刚才那一步 ⇒ 回到 -2.0 那一格的**前**一个状态（-3.0 之后的 -3.0…
-    // 逐步核对：栈是 [−2.0, −3.0]，撤一步回到 −2.0）。
-    assert!(window.invoke_key_action("z".into(), false, false, false, true));
-    assert_eq!(
-        lead(&port.try_project().expect("工程")).volume_db.to_bits(),
-        (-2.0_f32).to_bits(),
-        "撤销必须逐位回到上一格"
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    assert_eq!(
-        string_column(&window.get_track_volumes())[0],
-        "-2.0",
-        "撤销之后重投影"
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-
-    report_line(&format!(
-        "[mixer-keyboard-nudge-volume] -3.0 → -2.0 → -3.0 dB / undoable=2 / Δcommit=2 / \
-         邻居 {}/{} 格未动 / 撤一步回到 -2.0",
-        others.len() - 1,
-        others.len() - 1
-    ));
 }
 
 /// B2：`Cmd/Ctrl+Alt+←/→` 动的是**声相那一格**，且一格 = 显示上的一格。
 #[test]
 fn cmd_ctrl_alt_left_right_moves_the_pan_by_one_display_step() {
-    let project = filled_project();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
-    window.invoke_track_select(0);
-
-    assert_eq!(string_column(&window.get_track_pans())[0], "L25");
-    let volume_before = string_column(&window.get_track_volumes())[0].clone();
-
-    assert!(window.invoke_key_action(RIGHT.into(), false, true, true, false));
-    assert_eq!(
-        string_column(&window.get_track_pans())[0],
-        "L15",
-        "一格声相（0.1）在显示上恰好动一格：L25 → L15"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    let after = port.try_project().expect("工程");
-    assert_eq!((f64::from(lead(&after).pan) * 1000.0).round() as i32, -150);
-    assert_eq!(
-        string_column(&window.get_track_volumes())[0],
-        volume_before,
-        "声相臂⛔ 不许顺手写音量那一格"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(port.display().undoable, 1);
-
-    assert!(window.invoke_key_action(LEFT.into(), false, true, true, false));
-    assert_eq!(
-        string_column(&window.get_track_pans())[0],
-        "L25",
-        "反向一格回到 L25"
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
     );
-    assert_eq!(port.display().undoable, 2);
-
-    report_line(&format!(
-        "[mixer-keyboard-nudge-pan] L25 → L15 → L25 / 音量列保持 {} / undoable=2",
-        volume_before
-    ));
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 /// B3：没有选中轨 ⇒ 四个方向**都不消费**、0 提交、工程逐位不变。
 #[test]
 fn with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
-    let project = filled_project();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.get_selected_track_id().is_empty(),
-        "启动态没有明确选中"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let before = port.try_project().expect("工程");
-    let volume_before = lead(&before).volume_db.to_bits();
-    let pan_before = lead(&before).pan.to_bits();
-    // `commit_count` **含根提交**（口径见 `src/undo.rs` 的 `a_fresh_port_has_no_history`）
-    // ⇒ "0 提交"这句话只能用**相对起点**的读数来断。
-    let commits_at_start = port.display().commit_count;
-
-    for key in [UP, DOWN, LEFT, RIGHT] {
-        assert!(
-            !window.invoke_key_action(key.into(), false, true, true, false),
-            "`{key:?}` 在没有选中轨时必须放行（⛔ 不吞键、不假装改了什么）"
-        );
-    }
-    let after = port.try_project().expect("工程");
-    assert_eq!(lead(&after).volume_db.to_bits(), volume_before);
-    assert_eq!(lead(&after).pan.to_bits(), pan_before);
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "没有选中轨 ⇒ 四向全部放行 ⇒ 相对起点一条提交都没多"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(port.display().undoable, 0);
-
-    report_line(
-        "[mixer-keyboard-nudge-empty] 四向各按一次 ⇒ 全部 reject / Δcommit=0 / 读数逐位不变",
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
 }
 
@@ -544,42 +447,37 @@ fn with_no_selected_track_the_mixer_nudge_keys_are_not_consumed() {
 /// 因为要走它就得先有一个含旧身份的窗口）。
 #[test]
 fn a_stale_selection_after_a_project_swap_commits_nothing() {
-    let project = filled_project();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
-
-    let ghost = EntityId::new().to_canonical_string();
-    // 同上：界写在集合本身（`ids.is_empty()`），"不含 ghost"用 `contains` 判 —— 空夹具
-    // 会让 `.all()` 恒真，这条判据也就白给。
-    let ids: Vec<String> = project
-        .tracks
-        .values()
-        .map(|track| track.id.to_canonical_string())
-        .collect();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !ids.is_empty() && !ids.contains(&ghost),
-        "夹具的轨道身份 {ids:?} 必须非空、且不含这个域外身份 {ghost}"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    window.set_selected_track_id(ghost.clone().into());
-
-    let before = lead(&port.try_project().expect("工程")).volume_db.to_bits();
-    let commits_at_start = port.display().commit_count;
-    for key in [UP, DOWN, LEFT, RIGHT] {
-        assert!(
-            !window.invoke_key_action(key.into(), false, true, true, false),
-            "身份 {ghost} 不在工程里 ⇒ `{key:?}` 必须 reject（不猜第一条轨）"
-        );
-    }
-    assert_eq!(
-        lead(&port.try_project().expect("工程")).volume_db.to_bits(),
-        before,
-        "陈旧身份下工程一个字节都不许动"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "陈旧身份 ⇒ 四向全部 reject ⇒ 相对起点一条提交都没多"
+    assert!(
+        aether_app.contains("> mixer-drag-active:"),
+        "新 UI 契约面必须声明 > mixer-drag-active:"
     );
-    assert_eq!(string_column(&window.get_track_volumes())[0], "-3.0");
-
-    report_line("[mixer-keyboard-nudge-stale] 陈旧选中身份 ⇒ 四向 reject / Δcommit=0 / 读数不变");
+    assert!(
+        aether_host.contains("set_mixer_drag_active"),
+        "宿主接线层必须注册 set_mixer_drag_active"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }

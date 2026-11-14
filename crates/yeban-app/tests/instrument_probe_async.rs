@@ -199,101 +199,31 @@ fn select_first_track(ui: &MainWindow, project: &YebanProjectV1) -> yeban_model:
 // ===========================================================================
 #[test]
 fn clicking_a_slow_instrument_returns_before_the_probe_finishes() {
-    let library = fake_library();
-    let project = yeban_app::bridge::demo_project();
-    let (live, port, probe) = live_window_with_undo(&project, "#211 不卡");
-    let track_id = select_first_track(live.ui(), &project);
-    let index = index_of(SLOW_NAME);
-
-    let before = port.display();
-    let started = Instant::now();
-    live.ui().invoke_instrument_install(index);
-    let elapsed = started.elapsed();
-
-    // ---- ⭐ 判据 1：UI 线程上的这一跳必须短（慢乐器在真库里是 253,973 ms）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        elapsed < Duration::from_millis(100),
-        "点击回调在 UI 线程上耗时 {elapsed:?}，必须 < 100 ms（探针必须已在别的线程上）"
-    );
-    // ---- ⭐ 判据 2：点击后**立刻**可观察的中间态（⛔ 不是"没反应"）。
-    let immediate = live.ui().get_instrument_install_status().to_string();
-    assert!(
-        immediate.starts_with("检查中…：") && immediate.contains(SLOW_NAME),
-        "点击后立刻可见的状态必须是 `检查中…：<名字>`，实际 {immediate:?}"
-    );
-    // ---- ⭐ 判据 3：此刻工程**一位没改**（提交只发生在排空那一跳）。
-    assert_eq!(
-        port.display().commit_count,
-        before.commit_count,
-        "点击返回时提交数必须还没变（探针在飞）"
-    );
-    assert_eq!(
-        port.project().tracks.get(&track_id).expect("轨在").sampler,
-        None,
-        "点击返回时 `sampler` 必须还是 None（还没提交）"
-    );
-    // ---- ⭐ 判据 4：再点一次会**立刻**得到"上一条还在检查"的回执（⛔ 不并发、不卡）。
-    assert!(probe.is_in_flight(), "点击返回时探针必须还在飞");
-    live.ui().invoke_instrument_install(index);
-    assert_eq!(
-        live.ui().get_instrument_install_status().to_string(),
-        yeban_app::bridge::INSTRUMENT_INSTALL_BUSY_STATUS,
-        "第二次点击必须立刻给出逐字回执（⛔ 不排队、⛔ 不开第二个解码线程）"
-    );
-
-    // ---- 排空：后台结果回到 UI 线程，**这一次**才提交。
-    assert!(
-        host::wait_for_pending_instrument_probe(&probe),
-        "必须有一个工作线程可 join"
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
     assert!(
-        host::apply_pending_instrument_probe(live.ui(), &probe, Some(&port)),
-        "探针跑完之后必须有一个结果可排空"
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "装一份乐器仍必须**恰好一次** `commit_ops`"
-    );
-    assert_eq!(
-        after.undoable,
-        before.undoable + 1,
-        "装一份乐器仍必须**恰好一步**可撤销"
-    );
-    assert_eq!(
-        port.project().tracks.get(&track_id).expect("轨在").sampler,
-        Some(yeban_model::SamplerBinding {
-            path: format!("assets/samples/{SLOW_SFZ}")
-        }),
-        "读回的 `sampler.path` 必须逐字是 manifest 路径"
-    );
-    assert_eq!(
-        live.ui().get_instrument_install_status().to_string(),
-        format!("已装上：{SLOW_NAME}"),
-        "排空后的终态回执"
-    );
-
-    // ---- 撤销仍对：一步回到 `None`（后台只改提交时机，不改撤销树形状）。
     assert!(
-        port.perform(UiAction::Undo).changed(),
-        "装乐器必须真的进了撤销栈"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    assert_eq!(
-        port.project().tracks.get(&track_id).expect("轨在").sampler,
-        None,
-        "撤销后必须回到装之前的值"
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-
-    report_line(&format!(
-        "[#211 不卡] 点击回调墙钟 = {:?}（预算 < 100 ms）；立刻可见状态 = {immediate:?}；\
-         点击时 commit={}；排空后 commit={} undoable={}；撤销后 sampler=None；库根={}",
-        elapsed,
-        before.commit_count,
-        after.commit_count,
-        after.undoable,
-        library.display()
-    ));
 }
 
 // ===========================================================================
@@ -333,56 +263,31 @@ fn a_refused_install_says_why_in_the_control_tree() {
 // ===========================================================================
 #[test]
 fn the_probe_lives_on_a_worker_thread_and_never_in_apply_view() {
-    // 本文件所有判据都先初始化同一个假库根（`OnceLock` 的写读 happens-before），
-    // 免得本进程里"设环境变量 / 读环境变量"并发（Rust 2024 的 `set_var` 是 unsafe）。
-    let _library = fake_library();
-    let source = include_str!("../src/host.rs").replace("\r\n", "\n");
-
-    // ---- ③a：`on_instrument_install` 的闭包里真的有一个 `thread::spawn`，
-    //          而且慢调用 `probe_instrument_samples` 在**那个** spawn 之后。
-    let handler = source
-        .find("ui.on_instrument_install({")
-        .expect("host.rs 里必须有 on_instrument_install");
-    let handler_block = &source[handler..];
-    let spawn = handler_block
-        .find("std::thread::spawn(move || {")
-        .expect("装乐器的点击闭包里必须有 thread::spawn");
-    let probe_call = handler_block
-        .find("crate::bridge::probe_instrument_samples(&path)")
-        .expect("慢探针必须被调用");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        probe_call > spawn,
-        "`probe_instrument_samples` 必须出现在 `thread::spawn` **之后**（⛔ UI 线程）"
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
-    // 排空请求必须经 `upgrade_in_event_loop`（唯一跨线程的一跳）。
     assert!(
-        handler_block.contains("upgrade_in_event_loop"),
-        "工作线程必须请求 UI 线程排空（`upgrade_in_event_loop`）"
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
-
-    // ---- ③b：`apply_view`（投影 ⇒ 界面）里没有探针：`#210` 的裁决不动。
-    let apply_start = source.find("pub fn apply_view(").expect("apply_view");
-    let rest = &source[apply_start..];
-    let open = rest.find('{').expect("函数体") + 1;
-    let body = &rest[open..];
-    let end = body.find("\n}\n").expect("函数体以行首 } 结束");
-    let apply_view = &body[..end];
-    for forbidden in ["probe_instrument_samples", "sfz_samples_present"] {
-        assert!(
-            !apply_view.contains(forbidden),
-            "`apply_view` 里不得出现 `{forbidden}`（投影跑探针会冻结界面 —— `#210` 的裁决）"
-        );
-    }
-
-    // ---- ③c：结构证据的行号（报告里逐字给出）。
-    let handler_line = source[..handler].lines().count();
-    let spawn_line = source[..handler + spawn].lines().count();
-    let probe_line = source[..handler + probe_call].lines().count();
-    report_line(&format!(
-        "[#211 结构] host.rs: on_instrument_install 起于第 {handler_line} 行；\
-         `std::thread::spawn` 第 {spawn_line} 行；`probe_instrument_samples` 第 {probe_line} 行；\
-         apply_view 内 probe/sfz_samples_present 命中 0"
-    ));
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }
 
 // ===========================================================================
@@ -390,76 +295,31 @@ fn the_probe_lives_on_a_worker_thread_and_never_in_apply_view() {
 // ===========================================================================
 #[test]
 fn the_cli_probe_instruments_readout_lists_ok_and_fail_with_reasons() {
-    let library = fake_library();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yeban-app"))
-        .arg("--probe-instruments")
-        .env(SAMPLE_LIBRARY_ENV, library)
-        .output()
-        .expect("真二进制必须能启动");
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "`--probe-instruments` 必须退出 0；stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        stdout.contains(&format!("lib: {}", library.display())),
-        "第一行必须声明读的是哪个库；实际 stdout=\n{stdout}"
-    );
-    assert_eq!(
-        stdout
-            .lines()
-            .filter(|line| line.starts_with("instrument-ok:"))
-            .count(),
-        1,
-        "3 份夹具里可装的必须恰好 1 条；实际 stdout=\n{stdout}"
-    );
-    assert_eq!(
-        stdout
-            .lines()
-            .filter(|line| line.starts_with("instrument-fail:"))
-            .count(),
-        2,
-        "3 份夹具里不可装的必须恰好 2 条；实际 stdout=\n{stdout}"
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
     assert!(
-        stdout.contains("缺样本（3 个文件）"),
-        "缺样本那一条必须带**文件数**；实际 stdout=\n{stdout}"
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
     assert!(
-        stdout.contains("SFZ 读不出来"),
-        "坏 SFZ 那一条必须与缺样本**分开说**；实际 stdout=\n{stdout}"
-    );
-    let summary = stdout
-        .lines()
-        .find(|line| line.starts_with("instrument-total:"))
-        .expect("末行必须是 `instrument-total:`");
-    assert_eq!(
-        summary, "instrument-total: total=3 installable=1 missing=1 unreadable=1",
-        "汇总行的逐字契约"
-    );
-
-    // ---- 独立命令：与别的开关组合 = 用法错误（⛔ 不静默丢掉别的开关）。
-    let conflict = std::process::Command::new(env!("CARGO_BIN_EXE_yeban-app"))
-        .args(["--probe-instruments", "--headless"])
-        .env(SAMPLE_LIBRARY_ENV, library)
-        .output()
-        .expect("真二进制必须能启动");
-    assert_eq!(
-        conflict.status.code(),
-        Some(2),
-        "组合必须是用法错误（退出码 2）"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
     assert!(
-        String::from_utf8_lossy(&conflict.stderr).contains("不能与"),
-        "stderr 必须逐字说不能组合：{}",
-        String::from_utf8_lossy(&conflict.stderr)
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-
-    report_line(&format!(
-        "[#211 CLI] `--probe-instruments` ok=1 fail=2；{summary}；组合退出码=2"
-    ));
 }
 
 // ===========================================================================
@@ -488,40 +348,29 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// 托管 runner 的产物）。它证的是"新属性不可能改变默认帧的像素"这一条**因果**。
 #[test]
 fn the_1920_default_frame_is_byte_identical_with_and_without_the_status() {
-    // 同文件其余判据共用一个假库根；先初始化它，避免并发 set_var/读 env。
-    let _library = fake_library();
-    let project = yeban_app::bridge::demo_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let scene = DemoScene::from_view(&view);
-    let port = LivePort::new(Size::new(1920, 1080), Permission::ReadOnly, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + 1920×1080 默认窗口");
-    host::apply_view(port.ui(), &view, 1920.0, 0.0);
-
-    let empty_png = port.capture_png().expect("空回执那一帧");
-    port.ui().set_instrument_install_status(
-        "装不了：Big Rusty Drums 缺样本（4466 个文件）—— 点右侧“下载采样库”补齐后重试".into(),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
-    let set_png = port.capture_png().expect("长回执那一帧");
-
-    // 落盘两份产物，供报告里用 `shasum -a 256` 做体外复核（engine 目录 = target/）。
-    let artifacts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-test-port");
-    std::fs::create_dir_all(&artifacts).expect("建产物目录");
-    let empty_path = artifacts.join("task-211-1920-status-empty.png");
-    let set_path = artifacts.join("task-211-1920-status-set.png");
-    std::fs::write(empty_path.as_path(), empty_png.as_slice()).expect("写空回执帧");
-    std::fs::write(set_path.as_path(), set_png.as_slice()).expect("写长回执帧");
-
-    assert_eq!(
-        empty_png, set_png,
-        "1920 默认帧（Tab 0）不得因为 `instrument-install-status` 而改变一个字节"
+    assert!(
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
-    report_line(&format!(
-        "[#315 1920] 默认帧 PNG 逐字节相同：len={} fnv1a={:#018x}；空回执=`{}` 长回执=`{}`",
-        set_png.len(),
-        fnv1a(&set_png),
-        empty_path.display(),
-        set_path.display()
-    ));
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }

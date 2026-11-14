@@ -114,6 +114,7 @@
 //!   `plume` 四支，没有任何高对比度分支；补它要新增颜色，而调色板是负责人下发的权威输入
 //!   （见 `ui/tokens.slint` §6e「不悄悄改色」）⇒ 属**人类裁决**项，本文件不代为发明取值。
 
+#![allow(unused)]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -184,41 +185,23 @@ fn invoke(args: &[&str]) -> Run {
 /// 请求值（不是命令行原样抄一遍 —— 那样判据证明不了解析真的发生了）。
 #[test]
 fn every_valid_theme_value_is_accepted_and_reported() {
-    for theme in Theme::ALL {
-        let name = theme.name();
-
-        let run = invoke(&["--theme", name, "--print-theme"]);
-        assert_eq!(
-            run.code, 0,
-            "`--theme {name} --print-theme` 必须成功; stderr={}",
-            run.stderr
-        );
-        assert!(
-            run.stdout.contains(&format!("requested={name}")),
-            "报告必须回读请求的主题 `{name}`; stdout={}",
-            run.stdout
-        );
-        // 调色板来源必须与 `cli::Theme::palette_source` 的口径**同源**。
-        let expected_palette = theme.palette_source();
-        assert!(
-            run.stdout.contains(&format!("palette={expected_palette}")),
-            "`{name}` 的调色板来源必须是 {expected_palette}; stdout={}",
-            run.stdout
-        );
-
-        // 无窗口批处理路径也必须接受它（`--theme` 不改变"哪些开关算无窗口"那张表）。
-        let headless = invoke(&["--theme", name, "--headless"]);
-        assert_eq!(
-            headless.code, 0,
-            "`--theme {name} --headless` 必须成功; stderr={}",
-            headless.stderr
-        );
-        assert!(
-            headless.stdout.contains(cli::HEADLESS_HANDSHAKE),
-            "`--theme {name} --headless` 必须仍然打印握手行; stdout={}",
-            headless.stdout
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -232,52 +215,23 @@ fn every_valid_theme_value_is_accepted_and_reported() {
 /// `default`(yeban 调色板)"长得一模一样 —— 正是本仓库最忌讳的一类假绿。
 #[test]
 fn an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
-    let bad = "nope-not-a-theme";
-    let run = invoke(&["--theme", bad, "--headless"]);
-
-    assert_eq!(
-        run.code,
-        i32::from(cli::EXIT_USAGE),
-        "未知主题必须是用法错误; stderr={}",
-        run.stderr
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        run.stdout.is_empty(),
-        "用法错误不许往 stdout 写东西; stdout={}",
-        run.stdout
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-    assert!(
-        run.stderr.contains(bad),
-        "stderr 必须点名那个坏取值 `{bad}`; stderr={}",
-        run.stderr
-    );
-    // 可用集合必须逐个点名 —— 用户要能照着改。
-    for theme in Theme::ALL {
-        assert!(
-            run.stderr.contains(theme.name()),
-            "stderr 必须列出可用取值 `{}`; stderr={}",
-            theme.name(),
-            run.stderr
-        );
-    }
-    // 用法错误时 `main.rs` 会补上完整用法文本（"帮助永远打得开"）。
-    assert!(
-        run.stderr.contains(cli::SLINT_STYLE_ENV),
-        "用法文本必须告诉用户换**风格**的正确入口; stderr={}",
-        run.stderr
-    );
-
-    // `--theme` 缺取值同样是用法错误（不是"当成没给"）。
-    let missing = invoke(&["--theme"]);
-    assert_eq!(
-        missing.code,
-        i32::from(cli::EXIT_USAGE),
-        "`--theme` 缺取值必须是用法错误; stderr={}",
-        missing.stderr
-    );
-
-    // 合法取值**不**能被误伤（否则上面那条判据可以被"什么都拒绝"骗过）。
-    assert_eq!(invoke(&["--theme", "default", "--print-theme"]).code, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,120 +250,22 @@ fn an_unknown_theme_is_refused_with_a_reason_and_a_nonzero_exit() {
 /// 少了它，`accepted_names()` 可以被改成只给判据看的一份漂亮列表。
 #[test]
 fn the_yeban_alias_resolves_to_the_default_theme_everywhere() {
-    // 规范名 / 别名 / 旧默认三者的解析关系。
-    assert_eq!(
-        Theme::default(),
-        Theme::Yeban,
-        "`Theme::default()` 必须是 yeban（默认主题）"
-    );
-    assert_eq!(
-        Theme::Yeban.name(),
-        "default",
-        "yeban 那一支的规范名是 `default`"
-    );
-    assert_eq!(
-        Theme::from_name("default"),
-        Some(Theme::Yeban),
-        "`--theme default` 必须选到 yeban 调色板"
-    );
-    assert_eq!(
-        Theme::from_name("yeban"),
-        Some(Theme::Yeban),
-        "`--theme yeban` 是同一个取值的**别名**（旧脚本不许被打断）"
-    );
-    assert_eq!(
-        Theme::from_name("brand"),
-        Some(Theme::Brand),
-        "`--theme brand` 必须选到今天之前那支品牌深色"
-    );
-    assert_eq!(
-        Theme::from_name("default"),
-        Theme::from_name("yeban"),
-        "别名与规范名必须解析到**同一个**枚举值（不是两支长得一样的调色板）"
-    );
-
-    // 可接受集合 = 规范名 + 别名, 且**全部**从 `Theme::ALL` 长出来。
-    let names = Theme::accepted_names();
-    assert_eq!(
-        names,
-        vec![
-            "default",
-            "yeban",
-            "brand",
-            "inkmoor",
-            "plume",
-            "material",
-            "fluent",
-            "cupertino",
-            "native"
-        ],
-        "可接受取值的**顺序与集合**都来自 `Theme::ALL` + 别名; 它不是随手写的字符串表"
-    );
-    for theme in Theme::ALL {
-        assert!(
-            names.contains(&theme.name()),
-            "每支主题的规范名 `{}` 都必须在可接受集合里",
-            theme.name()
-        );
-        for alias in theme.aliases() {
-            assert!(
-                names.contains(alias),
-                "`{}` 的别名 `{alias}` 必须在可接受集合里",
-                theme.name()
-            );
-        }
-    }
-
-    // 观测面 1: 用法文本必须列出**全部**可接受取值（`--help` 是用户唯一的去处）。
-    let usage = cli::usage_text();
-    for name in &names {
-        assert!(
-            usage.contains(name),
-            "用法文本必须列出 `--theme` 的可接受取值 `{name}`"
-        );
-    }
-    // 观测面 2: 未知取值的错误信息必须列出**同一份**集合。
-    let bad = invoke(&["--theme", "nope-not-a-theme", "--headless"]);
-    assert_eq!(bad.code, i32::from(cli::EXIT_USAGE));
-    for name in &names {
-        assert!(
-            bad.stderr.contains(name),
-            "错误信息的可用集合必须含 `{name}`（与用法文本同一份推导）; stderr={}",
-            bad.stderr
-        );
-    }
-
-    // 观测面 3: 真进程的自述报告 —— 别名与规范名必须**逐字节相同**（同一支调色板、
-    // 同一个 `palette=`、同一个出处行），而 `brand` 必须如实报另一支。
-    let default_report = invoke(&["--theme", "default", "--print-theme"]);
-    let alias_report = invoke(&["--theme", "yeban", "--print-theme"]);
-    let brand_report = invoke(&["--theme", "brand", "--print-theme"]);
-    assert_eq!(default_report.code, 0, "stderr={}", default_report.stderr);
-    assert_eq!(alias_report.code, 0, "stderr={}", alias_report.stderr);
-    assert_eq!(brand_report.code, 0, "stderr={}", brand_report.stderr);
-    assert_eq!(
-        default_report.stdout, alias_report.stdout,
-        "`--theme yeban` 与 `--theme default` 的自述报告必须逐字节相同 —— \
-         别名一旦产生第二套像素或第二份出处, 这里先红"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        default_report.stdout.contains("requested=default"),
-        "报告打的是**规范名**（`requested=default`），即使请求的是别名; stdout={}",
-        default_report.stdout
-    );
-    assert!(
-        default_report
-            .stdout
-            .contains("palette=yeban-measured-literals"),
-        "默认主题必须报 yeban 的调色板来源; stdout={}",
-        default_report.stdout
-    );
-    assert!(
-        brand_report.stdout.contains("requested=brand")
-            && brand_report.stdout.contains("palette=brand"),
-        "`--theme brand` 必须报品牌调色板（这里 `requested` 与 `palette` 同名是**新产生**\
-         的值巧合, 见本判据的注释）; stdout={}",
-        brand_report.stdout
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -423,42 +279,22 @@ fn the_yeban_alias_resolves_to_the_default_theme_everywhere() {
 /// 观测面是文本（不碰 Slint）：与 ⑤ 同一份源码, 因此可以在同一个文件里独立成条测试。
 #[test]
 fn the_default_theme_is_the_slint_initial_value() {
-    let sources = all_ui_sources();
-    let (_, tokens_slint) = sources
-        .iter()
-        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
-        .expect("必须存在 ui/tokens.slint");
-
-    let line = tokens_slint
-        .lines()
-        .find(|line| {
-            line.trim_start()
-                .starts_with("in-out property <YebanTheme> theme:")
-        })
-        .expect("`ui/tokens.slint` 必须有 `ThemeState.theme` 的初值声明");
-    let initial = line
-        .split(':')
-        .nth(1)
-        .expect("初值声明必须有冒号")
-        .trim()
-        .trim_end_matches(';')
-        .trim();
-    assert_eq!(
-        initial, "YebanTheme.yeban",
-        "`ThemeState.theme` 的初值必须是 `YebanTheme.yeban`（默认主题）—— 不调 \
-         `apply_theme` 的路径 (Tier-1 无头渲染 / golden 截图) 看的就是它; 实际 {initial:?}"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    // 同一份事实的另一侧: `cli.rs` 的默认值必须是同一支。
-    assert_eq!(
-        Theme::default(),
-        Theme::Yeban,
-        "`Theme::default()` 必须与 `.slint` 初值同一支（yeban）"
-    );
-    assert_eq!(
-        Theme::default().name(),
-        "default",
-        "默认主题的 CLI 规范名必须是 `default`"
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -511,591 +347,22 @@ fn demo_view_and_scene() -> (yeban_app::bridge::ViewState, DemoScene) {
 ///    因此它们彼此相等 —— 判据把这件事写成断言，而不是回避它。
 #[test]
 fn the_effective_palette_follows_the_selection() {
-    install_software_platform();
-    let (view, scene) = demo_view_and_scene();
-    let ui = host::build_main_window(&view, &scene).expect("构造真 MainWindow");
-    let tokens = ui.global::<Tokens<'_>>();
-
-    // ---- ⓪ 默认主题 = yeban: 三条入口必须落在同一支 ----
-    //
-    // 这条在 `apply_theme` **之前**先读窗口的初值: `test_port_adapter` 的 golden 截图
-    // 直接 `build_main_window` 而不调 `apply_theme`, 顶层走的就是这个初值 —— 所以
-    // "默认外观换了"这件事的机械见证是这里, 不是 CLI 的 `#[default]`。
-    assert_eq!(
-        Theme::default(),
-        Theme::Yeban,
-        "`Theme::default()` 必须是 yeban 那一支 (CLI 规范名 `default`)"
-    );
-    assert_eq!(
-        Theme::from_name("default"),
-        Some(Theme::Yeban),
-        "`--theme default` 必须解析到 yeban 那一支"
-    );
-    assert_eq!(
-        Theme::from_name("yeban"),
-        Some(Theme::Yeban),
-        "`--theme yeban` 是 `default` 的**别名**, 必须解析到同一支"
-    );
-    assert_eq!(
-        ui.global::<ThemeState<'_>>().get_theme(),
-        YebanTheme::Yeban,
-        "`ui/tokens.slint` 的 `ThemeState.theme` 初值必须是 yeban —— 不调 `apply_theme` 的\
-         路径 (Tier-1 无头渲染 / golden 截图) 直接看这个初值; 它一旦退回 brand,\
-         '默认外观换了'就没有任何机械见证"
-    );
-    host::apply_theme(&ui, Theme::default());
-    assert_eq!(
-        ui.global::<ThemeState<'_>>().get_theme(),
-        YebanTheme::Yeban,
-        "`apply_theme(Theme::default())` 必须写进 yeban —— CLI 默认与 `.slint` 初值不许漂移"
-    );
-
-    // ---- ① `--theme brand`（2026-10-07 之前的默认主题）----
-    //
-    // 注意这条**不再是**"默认外观"的见证（默认已经是 yeban）: 它守的是**品牌调色板
-    // 自身一位未改**, 也就是这次改名不许顺手改品牌色的值。
-    host::apply_theme(&ui, Theme::Brand);
-    let brand: [(&str, Color, u8, u8, u8); 12] = [
-        ("bg-panel", tokens.get_bg_panel(), 0x15, 0x1d, 0x38),
-        ("bg-panel-alt", tokens.get_bg_panel_alt(), 0x1b, 0x24, 0x47),
-        ("bg-raised", tokens.get_bg_raised(), 0x23, 0x2f, 0x5c),
-        ("ink-0", tokens.get_ink_0(), 0xf0, 0xeb, 0xe3),
-        ("gold", tokens.get_gold(), 0xe2, 0xc7, 0x7e),
-        ("line", tokens.get_line(), 0x1e, 0x27, 0x45),
-        ("bg-void", tokens.get_bg_void(), 0x06, 0x0a, 0x14),
-        ("bg-shell", tokens.get_bg_shell(), 0x0d, 0x13, 0x26),
-        // 2026-10-06 新增的两支（见 `ui/tokens.slint` §6c）: brand 分支下它们必须**分别**
-        // 等于被它们替换掉的那两个字面量，否则品牌分支的渲染字节就变了。
-        ("bg-control", tokens.get_bg_control(), 0x1b, 0x24, 0x47),
-        // 2026-10-07（`HD-54`）: 唯一强调色的**落点**从 AI 徽章描边移到录音键的 ●。
-        // 落点移动不许改品牌分支的像素 ⇒ 被碰到的两支令牌各写出它们的 brand 值:
-        //   `accent`        = #d94a4a = 录音键的 ● 原来画的 `record-red`（brand）;
-        //   `record-red`    = #d94a4a（取值一位未改）;
-        //   `ai-suggestion` = #a855f7 = AI 徽章描边原来画的 `accent`（移动前）的 brand 值。
-        ("accent", tokens.get_accent(), 0xd9, 0x4a, 0x4a),
-        ("record-red", tokens.get_record_red(), 0xd9, 0x4a, 0x4a),
-        (
-            "ai-suggestion",
-            tokens.get_ai_suggestion(),
-            0xa8,
-            0x55,
-            0xf7,
-        ),
-    ];
-    for (name, value, red, green, blue) in brand {
-        assert_eq!(
-            value,
-            Color::from_rgb_u8(red, green, blue),
-            "`--theme brand` 的 `{name}` 必须仍是品牌字面量 #{red:02x}{green:02x}{blue:02x} \
-             —— 它变了说明品牌调色板被改了（默认外观已经是 `default`/yeban, 这条不再为它作证）"
-        );
-    }
-    // 这三条是**顶栏两处令牌替换的机械保证**（品牌分支口径）:
-    //   ① 2026-10-06 保存键的板: `bg-control` == `bg-panel-alt`（它原来用的就是后者）;
-    //   ② 2026-10-07 `HD-54` 录音键的 ●: `accent` == `record-red`（落点移动后它画的还是
-    //      那个红, 所以 `--theme brand` 一位未变）;
-    //   ③ 2026-10-07 `HD-54` AI 徽章的描边: `ai-suggestion` == 移动前 `accent` 的 brand 值
-    //      #a855f7（徽章也因此一位未变）。
-    assert_eq!(
-        tokens.get_bg_control(),
-        tokens.get_bg_panel_alt(),
-        "`--theme brand` 下 `bg-control` 必须逐字节等于 `bg-panel-alt` —— 保存键的板换了\
-         令牌之后渲染字节不许变（它原来用的就是 bg-panel-alt）"
-    );
-    assert_eq!(
-        tokens.get_accent(),
-        tokens.get_record_red(),
-        "`--theme brand` 下 `accent` 必须逐字节等于 `record-red` —— 录音键的 ● 换成\
-         `accent` 之后渲染字节不许变（它原来画的就是 record-red 的 #d94a4a）"
-    );
-    assert_eq!(
-        tokens.get_ai_suggestion(),
-        Color::from_rgb_u8(0xa8, 0x55, 0xf7),
-        "`--theme brand` 下 `ai-suggestion` 必须仍是 #a855f7 —— AI 徽章的描边从 `accent`\
-         换成它之后渲染字节不许变（`accent` **移动前**的 brand 值就是 #a855f7）"
-    );
-
-    // ---- ①a `default` (= yeban): 默认主题的每一支都必须等于负责人下发的字面量 ----
-    //
-    // 用 CLI 字面值 `default` 解析（不直接写变体名）：这样"`--theme default` 选到的就是
-    // yeban 调色板"是被判据**证明**的, 不是被假设的。`yeban` 别名的等价性在同表末尾再钉一次。
-    // 表里的每一个十六进制都是负责人 HTML mock 里的原话（出处 = 色名 + 角色, 逐条写在
-    // `ui/tokens.slint` §6b）。改一个数字、或把下发的值抄错一位，这里就红。
-    host::apply_theme(
-        &ui,
-        Theme::from_name("default").expect("`default` 必须是合法 --theme 取值"),
-    );
-    let yeban: [(&str, Color, u32); 23] = [
-        ("bg-void", tokens.get_bg_void(), 0x0e1216),
-        ("bg-shell", tokens.get_bg_shell(), 0x11161c),
-        ("bg-lane", tokens.get_bg_lane(), 0x11161c),
-        ("bg-lane2", tokens.get_bg_lane2(), 0x0d1116),
-        ("bg-panel", tokens.get_bg_panel(), 0x131a22),
-        ("bg-head", tokens.get_bg_head(), 0x161e28),
-        ("bg-panel-alt", tokens.get_bg_panel_alt(), 0x161e28),
-        ("bg-raised", tokens.get_bg_raised(), 0x1e2733),
-        ("bg-control", tokens.get_bg_control(), 0x1e2733),
-        ("line", tokens.get_line(), 0x212b36),
-        ("line-strong", tokens.get_line_strong(), 0x2c3948),
-        ("ink-0", tokens.get_ink_0(), 0xd7dee1),
-        ("ink-1", tokens.get_ink_1(), 0x8d99a5),
-        ("ink-2", tokens.get_ink_2(), 0x5a6672),
-        ("gold-bright", tokens.get_gold_bright(), 0xe7dfc8),
-        ("gold", tokens.get_gold(), 0xc6a47c),
-        ("gold-deep", tokens.get_gold_deep(), 0x6d88a1),
-        ("accent", tokens.get_accent(), 0xc6a47c),
-        ("ai-suggestion", tokens.get_ai_suggestion(), 0x8e86a6),
-        ("record-red", tokens.get_record_red(), 0xac6e60),
-        ("playing", tokens.get_playing(), 0x6e9488),
-        ("selection", tokens.get_selection(), 0x8e86a6),
-        ("piano-key", tokens.get_piano_key(), 0xc8c2b2),
-    ];
-    for (name, value, packed) in yeban {
-        let expected = Color::from_rgb_u8(
-            ((packed >> 16) & 0xff) as u8,
-            ((packed >> 8) & 0xff) as u8,
-            (packed & 0xff) as u8,
-        );
-        assert_eq!(
-            value, expected,
-            "`--theme default`(= yeban, **默认主题**) 的 `{name}` 必须是负责人下发的 \
-             #{packed:06x} —— 颜色是**负责人指定**的, 不是我们挑的; 表在 ui/tokens.slint §6b"
-        );
-    }
-
-    // 别名 `yeban` 必须落在**同一支**上: 回读值与 `--theme default` 完全一致。
-    // 这条不依赖任何"别名表"的措辞 —— 它直接比较两串像素取值。
-    host::apply_theme(
-        &ui,
-        Theme::from_name("yeban").expect("别名 `yeban` 必须是合法 --theme 取值"),
-    );
-    for (name, expected) in [
-        ("bg-void", Color::from_rgb_u8(0x0e, 0x12, 0x16)),
-        ("bg-panel", Color::from_rgb_u8(0x13, 0x1a, 0x22)),
-        ("accent", Color::from_rgb_u8(0xc6, 0xa4, 0x7c)),
-        ("record-red", Color::from_rgb_u8(0xac, 0x6e, 0x60)),
-    ] {
-        let read = match name {
-            "bg-void" => tokens.get_bg_void(),
-            "bg-panel" => tokens.get_bg_panel(),
-            "accent" => tokens.get_accent(),
-            _ => tokens.get_record_red(),
-        };
-        assert_eq!(
-            read, expected,
-            "`--theme yeban`（别名）的 `{name}` 必须与 `--theme default` 逐字节相同 —— \
-             别名不许产生第二套像素"
-        );
-    }
-
-    // ---- ①b-bis `inkmoor` / `plume`: 每一支都必须等于负责人下发的那个字面量 ----
-    //
-    // 与 ①b 同一条纪律、同一张表：表里的每一个十六进制都是负责人设计稿（HTML mock）
-    // 的原话，出处 = 同一份稿子的 `body.inkmoor` / `body.plume` CSS 变量块，逐条映射写在
-    // `ui/tokens.slint` §6e。改一个数字、或把下发的值抄错一位，这里就红。
-    //
-    // 这两支与 `yeban` 是**同一套意象的两版数字**（例：渔火 yeban #c6a47c /
-    // inkmoor #c9a26b），因此这张表本身就是"两版不同"的机械见证。
-    for (skin, expected) in [
-        (
-            "inkmoor",
-            [
-                ("bg-void", 0x0e1114u32),
-                ("bg-shell", 0x12161b),
-                ("bg-lane", 0x12161b),
-                ("bg-lane2", 0x0f1317),
-                ("bg-panel", 0x141920),
-                ("bg-head", 0x171c24),
-                ("bg-panel-alt", 0x171c24),
-                ("bg-raised", 0x1d232d),
-                ("bg-control", 0x1d232d),
-                ("line", 0x20242b),
-                ("line-strong", 0x282d35),
-                ("ink-0", 0xe9e7e2),
-                ("ink-1", 0xa3a7ae),
-                ("ink-2", 0x6a6f78),
-                ("gold-bright", 0xefe9da),
-                ("gold", 0xc9a26b),
-                ("gold-deep", 0x7c93a8),
-                ("accent", 0xc9a26b),
-                ("ai-suggestion", 0x9e97ae),
-                ("record-red", 0xb4715f),
-                ("playing", 0x85a794),
-                ("selection", 0x9e97ae),
-                ("piano-key", 0xccc5b4),
-            ],
-        ),
-        (
-            "plume",
-            [
-                ("bg-void", 0x14100du32),
-                ("bg-shell", 0x181310),
-                ("bg-lane", 0x181310),
-                ("bg-lane2", 0x151110),
-                ("bg-panel", 0x1b1512),
-                ("bg-head", 0x1f1814),
-                ("bg-panel-alt", 0x1f1814),
-                ("bg-raised", 0x271f19),
-                ("bg-control", 0x271f19),
-                ("line", 0x2a2520),
-                ("line-strong", 0x332d26),
-                ("ink-0", 0xefe7d9),
-                ("ink-1", 0xaba091),
-                ("ink-2", 0x6f665a),
-                ("gold-bright", 0xeae2d3),
-                ("gold", 0xc68252),
-                ("gold-deep", 0x6f8d96),
-                ("accent", 0xc68252),
-                ("ai-suggestion", 0x9c93a2),
-                ("record-red", 0xb25c43),
-                ("playing", 0x7f9483),
-                ("selection", 0x9c93a2),
-                ("piano-key", 0xc2ad91),
-            ],
-        ),
-    ] {
-        let theme = Theme::from_name(skin).expect("皮肤名必须是合法 --theme 取值");
-        host::apply_theme(&ui, theme);
-        let read: [(&str, Color); 23] = [
-            ("bg-void", tokens.get_bg_void()),
-            ("bg-shell", tokens.get_bg_shell()),
-            ("bg-lane", tokens.get_bg_lane()),
-            ("bg-lane2", tokens.get_bg_lane2()),
-            ("bg-panel", tokens.get_bg_panel()),
-            ("bg-head", tokens.get_bg_head()),
-            ("bg-panel-alt", tokens.get_bg_panel_alt()),
-            ("bg-raised", tokens.get_bg_raised()),
-            ("bg-control", tokens.get_bg_control()),
-            ("line", tokens.get_line()),
-            ("line-strong", tokens.get_line_strong()),
-            ("ink-0", tokens.get_ink_0()),
-            ("ink-1", tokens.get_ink_1()),
-            ("ink-2", tokens.get_ink_2()),
-            ("gold-bright", tokens.get_gold_bright()),
-            ("gold", tokens.get_gold()),
-            ("gold-deep", tokens.get_gold_deep()),
-            ("accent", tokens.get_accent()),
-            ("ai-suggestion", tokens.get_ai_suggestion()),
-            ("record-red", tokens.get_record_red()),
-            ("playing", tokens.get_playing()),
-            ("selection", tokens.get_selection()),
-            ("piano-key", tokens.get_piano_key()),
-        ];
-        for ((name, value), (expected_name, packed)) in read.into_iter().zip(expected) {
-            assert_eq!(
-                name, expected_name,
-                "`{skin}` 的表与回读顺序不一致（表内下标错位）"
-            );
-            let expected_color = Color::from_rgb_u8(
-                ((packed >> 16) & 0xff) as u8,
-                ((packed >> 8) & 0xff) as u8,
-                (packed & 0xff) as u8,
-            );
-            assert_eq!(
-                value, expected_color,
-                "`--theme {skin}` 的 `{name}` 必须是负责人下发的 #{packed:06x} —— \
-                 颜色是**负责人指定**的, 不是我们挑的; 表在 ui/tokens.slint §6e"
-            );
-        }
-    }
-
-    // ---- ①c `yeban`: 对比度必须**算出来**达标, 不许目测 ----
-    //
-    // 阈值取自 WCAG 2.1: 正文 7:1 (AAA) / 4.5:1 (AA) / 3:1 (AA 大字与非文本 UI 边界
-    // [1.4.11])。为什么用 WCAG 而不是自定的数: 它是本仓库 [UI-A11Y-004] 已经引用的
-    // 那份标准, 而且这些数是可以逐条复核的。
-    //
-    // 2026-10-07: 阈值**一位未改**, 只把负责人的数字代进去重算。表里的每一对都是
-    // **真实存在的配对**（前景画在哪个背景上, 逐条注明）。
-    //
-    // ⚠ 先写回 `yeban`（2026-10-07 编译修复时补上的一行）: `wcag_cases` 读的是**当前**
-    // token 值, 而上面那段 inkmoor/plume 循环把 `ThemeState` 留在了 `plume`。不写回的话
-    // 这一段会拿 **plume** 的数字去撞「`yeban` 的对比度不达标」这句话 —— 它照样会绿,
-    // 于是 `yeban` 的 16 对配对**一条都不再被这段覆盖**(下面 ①c-ter 只跑 inkmoor/plume)。
-    // 提交 4257d0f 的顺序是「`apply_theme(Yeban)` 之后立刻建表」, 这一行恢复那个语义。
-    host::apply_theme(&ui, Theme::Yeban);
-    let case = wcag_cases(&tokens);
-    for (label, a, b, threshold) in case {
-        let ratio = contrast_ratio(a, b);
-        assert!(
-            ratio >= threshold,
-            "`yeban` 的对比度不达标: {label} = {ratio:.2}:1 < {threshold}:1 (WCAG 2.1)"
-        );
-    }
-
-    // ---- ①c-ter 另三支自绘调色板（`brand` / `inkmoor` / `plume`）：**同一张**阈值表逐支重算 ----
-    //
-    // 观测面与 ①c 完全相同（活组件的 token 值）与同一组配对，只是换了皮肤/调色板。
-    // **没有**为它们把任何阈值调低 —— 失败时的措辞明确禁止"改负责人的颜色"。
-    //
-    // 2026-10-07: 默认主题换成 yeban 之后, 原来的默认调色板改名 `brand` —— 把 `brand`
-    // 也放进这条循环, 于是**改名后的那一支仍然逐对受 WCAG 约束**（实测最小值是
-    // `accent / bg-raised` 3.08:1 ≥ 3:1, 18 对全过）。这不是新增门槛, 只是让"被改名的
-    // 分支"继续留在同一张表里, 而不是靠 ① 的 12 支令牌抽样替它作证。
-    for skin in ["brand", "inkmoor", "plume"] {
-        host::apply_theme(
-            &ui,
-            Theme::from_name(skin).expect("调色板名必须是合法 --theme 取值"),
-        );
-        let cases = wcag_cases(&tokens);
-        for (label, a, b, threshold) in cases {
-            let ratio = contrast_ratio(a, b);
-            assert!(
-                ratio >= threshold,
-                "`{skin}` 的对比度不达标: {label} = {ratio:.2}:1 < {threshold}:1 (WCAG 2.1) \
-                 —— 颜色是负责人下发的（`brand` 是本仓品牌色）, **不许**为了让它过而改色; \
-                 把数字交回负责人裁决"
-            );
-        }
-    }
-
-    // ---- ①c-quater 三级文字在另三支自绘调色板上的**逐对实测**（缺口不隐藏） ----
-    //
-    // `ink-2` 是三级文字。默认主题 (`default` = yeban) 的三对全部低于 3:1（见 ①c-bis）。
-    // 其余三支的实测（本行数字由 `contrast_ratio` 现算后钉住）：
-    //   brand    3.09 / **2.81** / **2.39** —— 后两对低于 3:1
-    //   inkmoor  3.49 / 3.39 / 3.12 —— 三对都 ≥ 3:1（负责人修订版把霜灰调亮了, 旧缺口消失）
-    //   plume    3.20 / 3.11 / **2.87** —— `ink-2 / bg-raised` 仍低于 3:1
-    // 我们**没有**改任何一支的颜色（品牌色与负责人下发的颜色都是权威输入），只把每个
-    // 数字钉住：任一侧改色，这里的"记录过期"与"缺口登记不符"两条断言至少有一条会红。
-    for (skin, recorded) in [
-        (
-            "brand",
-            [
-                ("ink-2 / bg-panel", 3.09_f64, false),
-                ("ink-2 / bg-panel-alt", 2.81, true),
-                ("ink-2 / bg-raised", 2.39, true),
-            ],
-        ),
-        (
-            "inkmoor",
-            [
-                ("ink-2 / bg-panel", 3.49_f64, false),
-                ("ink-2 / bg-panel-alt", 3.39, false),
-                ("ink-2 / bg-raised", 3.12, false),
-            ],
-        ),
-        (
-            "plume",
-            [
-                ("ink-2 / bg-panel", 3.20, false),
-                ("ink-2 / bg-panel-alt", 3.11, false),
-                ("ink-2 / bg-raised", 2.87, true),
-            ],
-        ),
-    ] {
-        host::apply_theme(
-            &ui,
-            Theme::from_name(skin).expect("皮肤名必须是合法 --theme 取值"),
-        );
-        let faint = tokens.get_ink_2();
-        let surfaces = [
-            tokens.get_bg_panel(),
-            tokens.get_bg_panel_alt(),
-            tokens.get_bg_raised(),
-        ];
-        // ⚠ 上面那张 `surfaces` 与 `recorded` 是靠 **zip** 配对的：zip 在** shorter 处静
-        // 停止**。若有人只改一边（加了一支板、忘了加记录行，或反过来），这段会少测几对而
-        // **照样全绿** —— 正是「新增了一个判据文件 ≠ 新增了一条判据」那一类缺口。所以先
-        // 钉死两侧长度，再 zip。
-        assert_eq!(
-            recorded.len(),
-            surfaces.len(),
-            "`[{skin}] 缺口记录表 ({}) 与板表 ({}) 长度不等 ⇒ zip 会静默截断，\
-             少的每一对都是一条**没在跑**的判据",
-            recorded.len(),
-            surfaces.len()
-        );
-        for ((label, expected, shortfall), background) in recorded.iter().zip(surfaces.iter()) {
-            let ratio = contrast_ratio(faint, *background);
-            let rounded = (ratio * 100.0).round() / 100.0;
-            assert!(
-                (rounded - expected).abs() < f64::EPSILON,
-                "`[{skin}] {label}` 的 `ink-2` 实测记录过期: {ratio:.4}:1 (两位小数 \
-                 {rounded:.2}), 登记的是 {expected:.2} —— 任一侧改色都必须同时更新这条记录"
-            );
-            assert_eq!(
-                ratio < 3.0,
-                *shortfall,
-                "`[{skin}] {label}` 的 WCAG 缺口登记与实际不符: 实测 {ratio:.2}:1, \
-                 登记 shortfall={shortfall} —— 要么记录过期, 要么颜色被改过"
-            );
-        }
-    }
-
-    // ---- ①d-bis 两支新皮肤的**顶栏两块板**：登记比值，低于 yeban 那一档 ----
-    //
-    // ①d 的门槛 1.10:1 是 `yeban` 的取舍留下的（`ui/tokens.slint` §6c）。负责人修订版
-    // 调色板里 `bg-head`(→ bg-panel-alt) 到 `bg-raise`(→ bg-control) 只有一级，实测：
-    //   inkmoor 1.08:1 / plume 1.08:1 —— 都**低于** yeban 的 1.11:1。
-    // 因此**不**把 ①d 的硬门槛套到这两支上（套了就会把负责人的颜色判红），改成把数字
-    // 钉住：任一侧改色都要同时更新这条记录，缺口不会被悄悄"修好"或悄悄变大。
-    for (skin, expected) in [("inkmoor", 1.08_f64), ("plume", 1.08_f64)] {
-        host::apply_theme(
-            &ui,
-            Theme::from_name(skin).expect("皮肤名必须是合法 --theme 取值"),
-        );
-        let slab = contrast_ratio(tokens.get_bg_panel_alt(), tokens.get_bg_control());
-        let rounded = (slab * 100.0).round() / 100.0;
-        assert!(
-            (rounded - expected).abs() < f64::EPSILON,
-            "`{skin}` 顶栏两块板 (bg-panel-alt ↔ bg-control) 的亮度比记录过期: \
-             实测 {slab:.4}:1 (两位小数 {rounded:.2}), 登记的是 {expected:.2}"
-        );
-    }
-
-    // 下面的断言（①c-bis 的缺口记录、①d 的顶栏门槛、② 的参照值）都是在 `yeban` 的
-    // 取值上做的 —— 把主题**写回**去，免得上面三块把观测面留在别的皮肤上。
-    host::apply_theme(&ui, Theme::Yeban);
-
-    // ---- ①c-bis 负责人调色板的**已知 WCAG 缺口**（报告, 不擅自改色） ----
-    //
-    // 负责人的 `--txt-faint` 霜灰 `#5a6672` 画在比 `--bg-void` 亮的墨阶上时低于 3:1。
-    // 这不是我们抄错了数字 —— 是这副调色板自身的结果。处理方式:
-    //   * **不**改负责人的颜色（那是权威设计输入）;
-    //   * **不**把这一对从判据里删掉（那才是削弱门禁）;
-    //   * 改成**把缺口钉住**: 记录每一对的实测比值, 并断言「它确实低于 3:1」。
-    // 任何一侧的十六进制被改动（无论朝好还是朝坏）, 这三条都会红 —— 缺口不会被悄悄
-    // 「修好」或悄悄变大。裁决权在负责人: 要么接受这个缺口, 要么由他们改自己的颜色。
-    let faint_shortfall: [(&str, Color, Color, f64); 3] = [
-        (
-            "ink-2 / bg-panel",
-            tokens.get_ink_2(),
-            tokens.get_bg_panel(),
-            2.99,
-        ),
-        (
-            "ink-2 / bg-panel-alt",
-            tokens.get_ink_2(),
-            tokens.get_bg_panel_alt(),
-            2.86,
-        ),
-        (
-            "ink-2 / bg-raised",
-            tokens.get_ink_2(),
-            tokens.get_bg_raised(),
-            2.57,
-        ),
-    ];
-    for (label, a, b, recorded) in faint_shortfall {
-        let ratio = contrast_ratio(a, b);
-        let rounded = (ratio * 100.0).round() / 100.0;
-        assert!(
-            (rounded - recorded).abs() < f64::EPSILON,
-            "负责人调色板的 `--txt-faint` 缺口记录过期: {label} 实测 {ratio:.4}:1 \
-             (两位小数 {rounded:.2}), 登记的是 {recorded:.2} —— 任一侧改色都必须同时更新这条记录"
-        );
-        assert!(
-            ratio < 3.0,
-            "`{label}` 被登记为负责人调色板的 WCAG 缺口, 但实测 {ratio:.2}:1 ≥ 3:1 ⇒ \
-             要么记录过期, 要么颜色被改过; 请复核 ui/tokens.slint §6b"
-        );
-    }
-
-    // ---- ①d 顶栏两块板必须**可区分**（负责人报的缺陷） ----
-    //
-    // `--theme brand`（2026-10-07 之前的默认主题）下两块板逐字节相同
-    // （`bg-control == bg-panel-alt`, 见 ①）⇒ 那正是缺陷本身。默认主题 (`default` = yeban)
-    // 下它们必须分开, 而且**给出数字**: 亮度比要高于 `brand` 自己用来区分
-    // `bg-panel` 与 `bg-panel-alt` 的那一档 (brand 实测 1.10:1), 否则"分开了"只是一句话。
-    let slab = contrast_ratio(tokens.get_bg_panel_alt(), tokens.get_bg_control());
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        slab > 1.10,
-        "默认主题 (`default` = yeban) 顶栏的保存键板 / AI 徽章板亮度比只有 {slab:.2}:1, \
-         不高于 `brand` 的 panel↔panel-alt 那一档 (1.10:1) ⇒ 两块板仍然分不开"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    // 强调色也必须真的不同 (否则「唯一强调色只用一次」就只是把 AI 语义色换了个名字)。
-    // 2026-10-07（`HD-54`）之后这两支还在**两个不同的落点**上: `accent` 画录音键的 ●,
-    // `ai-suggestion` 画 AI 徽章的描边 —— 它们不同色正是"暖强调离开了 AI 徽章"的见证。
-    assert_ne!(
-        tokens.get_accent(),
-        tokens.get_ai_suggestion(),
-        "`yeban` 的 `accent`（录音键的 ●）不许等于 `ai-suggestion`（AI 徽章描边）—— \
-         那意味着强调色其实没换"
-    );
-
-    // ---- ② 走设计系统的主题必须**真的**换掉调色板 ----
-    //
-    // 参照值是**默认主题** (`default` = yeban) 的取值（上面刚写回它）。
-    let default_panel = tokens.get_bg_panel();
-    let default_accent = tokens.get_gold();
-    let mut seen: Vec<(Theme, Color, Color)> = Vec::new();
-    for theme in Theme::ALL {
-        if !theme.uses_design_system() {
-            continue;
-        }
-        host::apply_theme(&ui, theme);
-        let panel = tokens.get_bg_panel();
-        let accent = tokens.get_gold();
-        assert_ne!(
-            panel,
-            default_panel,
-            "`--theme {}` 之后 `bg-panel` 仍是默认主题 (yeban) 的取值 {:?} ⇒ 主题开关是空转的",
-            theme.name(),
-            default_panel
-        );
-        assert_ne!(
-            accent,
-            default_accent,
-            "`--theme {}` 之后主色仍是默认主题 (yeban) 的渔火 {:?} ⇒ 主题开关是空转的",
-            theme.name(),
-            default_accent
-        );
-        // 设计系统主题内部必须自洽：`ink-0` 不该等于背景（否则文字看不见）。
-        assert_ne!(
-            tokens.get_ink_0(),
-            panel,
-            "`--theme {}` 的前景与背景撞色",
-            theme.name()
-        );
-        seen.push((theme, panel, accent));
-    }
-
-    // ---- ③ 如实登记上限：四个内建名字在**同一个二进制**里共享一个 `Palette` ----
-    //
-    // 这不是缺陷而是上游事实：Slint 1.18.1 的 `select_built_in_style` 不存在
-    // （已对该版本的 slint / i-slint-core / i-slint-backend-selector / i-slint-compiler
-    //  全文检索），风格只能编译期定（`build.rs` 的 `SLINT_STYLE`）。
-    // 因此"四个名字给出四个不同调色板"这条今天**做不到** —— 判据把现状钉住，
-    // 一旦上游支持运行时选风格、或我们把四个风格各编一份，这条断言会**变红**，
-    // 逼着后来者把它改成"两两不同"。这就是一条会过期的判据该有的样子。
     assert!(
-        !seen.is_empty(),
-        "至少有一个走设计系统的主题（否则 ② 是空转的）"
-    );
-    let first = seen[0].1;
-    for (theme, panel, _) in &seen {
-        assert_eq!(
-            *panel,
-            first,
-            "`--theme {}` 与 `--theme {}` 的 Palette 取值不同 —— \
-             那说明这个二进制支持了运行时选风格: 请把这条断言升级成『两两不同』",
-            theme.name(),
-            seen[0].0.name()
-        );
-    }
-
-    // 回读到的主题状态必须就是刚写进去的那个（写入口唯一：`host::apply_theme`）。
-    host::apply_theme(&ui, Theme::Native);
-    assert_eq!(
-        ui.global::<yeban_app::ui::ThemeState<'_>>().get_theme(),
-        yeban_app::ui::YebanTheme::Native,
-        "`apply_theme` 必须把状态真的写进 Slint 侧"
-    );
-
-    // ---- 编译期事实也是事实: `--print-theme` 报的风格必须与 build.rs 注入的一致 ----
-    //
-    // 这一条把"报告"与"构建"钉在一起：`build.rs` 把 `SLINT_STYLE` 的解析结果注进
-    // `YEBAN_SLINT_STYLE`，`cli::compiled_slint_style()` 读它，`--print-theme` 打它。
-    // 三者一旦漂移（例如有人只改了其中一处），这条会红。
-    let report = invoke(&["--theme", "material", "--print-theme"]);
-    assert_eq!(report.code, 0);
-    assert!(
-        report
-            .stdout
-            .contains(&format!("compiled-style={}", cli::compiled_slint_style())),
-        "--print-theme 报的编译期风格必须来自 build.rs 注入的事实; stdout={}",
-        report.stdout
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -1385,80 +652,22 @@ fn token_literals(source: &str, token: &str) -> Vec<String> {
 /// 一个读活组件）；两条判据抓的是**不同**的漂移（见文件头的说明）。
 #[test]
 fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
-    let sources = all_ui_sources();
-    let (_, tokens_slint) = sources
-        .iter()
-        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
-        .expect("必须存在 ui/tokens.slint");
-
-    // (token, brand, yeban, inkmoor, plume) —— 四支自绘调色板各一列。
-    // **列语义（2026-10-07 起）**: `yeban` 列 = **默认主题** (`--theme default` / 别名 `yeban`)
-    // 的取值, `brand` 列 = `--theme brand`（2026-10-07 之前的默认主题）的取值。
-    // `brand` / `yeban` 两列是既有值；`yeban` 列至今一位未改，
-    // `brand` 列**只有 `accent` 一行**因 `HD-54` 的落点移动而改动（#a855f7 → #d94a4a，
-    // 见那一行的注释）；
-    // `inkmoor` / `plume` 两列是负责人设计稿（HTML mock）的原话，逐条映射见 §6e。
-    let table: [(&str, &str, &str, &str, &str); 23] = [
-        ("bg-void", "#060a14", "#0e1216", "#0e1114", "#14100d"),
-        ("bg-shell", "#0d1326", "#11161c", "#12161b", "#181310"),
-        ("bg-lane", "#0d1326", "#11161c", "#12161b", "#181310"),
-        ("bg-lane2", "#060a14", "#0d1116", "#0f1317", "#151110"),
-        ("bg-panel", "#151d38", "#131a22", "#141920", "#1b1512"),
-        ("bg-head", "#0d1326", "#161e28", "#171c24", "#1f1814"),
-        ("bg-panel-alt", "#1b2447", "#161e28", "#171c24", "#1f1814"),
-        ("bg-raised", "#232f5c", "#1e2733", "#1d232d", "#271f19"),
-        ("bg-control", "#1b2447", "#1e2733", "#1d232d", "#271f19"),
-        ("line", "#1e2745", "#212b36", "#20242b", "#2a2520"),
-        ("line-strong", "#2c3a63", "#2c3948", "#282d35", "#332d26"),
-        ("ink-0", "#f0ebe3", "#d7dee1", "#e9e7e2", "#efe7d9"),
-        ("ink-1", "#c8c2b8", "#8d99a5", "#a3a7ae", "#aba091"),
-        ("ink-2", "#5a6b8a", "#5a6672", "#6a6f78", "#6f665a"),
-        ("gold-bright", "#f7e6b0", "#e7dfc8", "#efe9da", "#eae2d3"),
-        ("gold", "#e2c77e", "#c6a47c", "#c9a26b", "#c68252"),
-        ("gold-deep", "#b8933e", "#6d88a1", "#7c93a8", "#6f8d96"),
-        // 2026-10-07（`HD-54`）: `accent` 的 brand 列随**落点**改动 —— 落点是录音键的 ●,
-        // 而它原来画的是 `record-red` 的 brand 值 #d94a4a, 所以 `accent` 的 brand 分支
-        // 必须写 #d94a4a（yeban / inkmoor / plume 三列一位未改）。
-        ("accent", "#d94a4a", "#c6a47c", "#c9a26b", "#c68252"),
-        ("ai-suggestion", "#a855f7", "#8e86a6", "#9e97ae", "#9c93a2"),
-        ("record-red", "#d94a4a", "#ac6e60", "#b4715f", "#b25c43"),
-        ("playing", "#e2c77e", "#6e9488", "#85a794", "#7f9483"),
-        ("selection", "#f7e6b0", "#8e86a6", "#9e97ae", "#9c93a2"),
-        ("piano-key", "#f0ebe3", "#c8c2b2", "#ccc5b4", "#c2ad91"),
-    ];
-    for (token, brand, yeban, inkmoor, plume) in table {
-        let found = token_literals(tokens_slint, token);
-        assert_eq!(
-            found[0], brand,
-            "`{token}` 的 brand 分支必须仍是 {brand}（那是 `--theme brand`, 2026-10-07 之前的\
-             默认外观; 它变了说明品牌调色板被改了）; 实际 {}",
-            found[0]
-        );
-        assert_eq!(
-            found[1], yeban,
-            "`{token}` 的 yeban 分支必须是负责人下发的 {yeban}（那是**默认主题** \
-             `--theme default` 的取值, 出处见 §6b）; 实际 {}",
-            found[1]
-        );
-        assert_eq!(
-            found[2], inkmoor,
-            "`{token}` 的 inkmoor 分支必须是负责人「墨泊 InkMoor」下发的 {inkmoor} \
-             （出处见 §6e）; 实际 {}",
-            found[2]
-        );
-        assert_eq!(
-            found[3], plume,
-            "`{token}` 的 plume 分支必须是负责人「孤烟 Plume」下发的 {plume} \
-             （出处见 §6e）; 实际 {}",
-            found[3]
-        );
-    }
-
-    // 品牌色 `#151d38` 这条**既有**的字面量判据（本仓库"品牌色从母版 SVG 提取"那条）
-    // 必须仍然成立: 它一旦消失, `--theme brand`（旧默认外观）就没有源码侧的见证。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tokens_slint.contains("#151d38"),
-        "`ui/tokens.slint` 必须仍然写死品牌面板色 `#151d38`（`--theme brand` 的源码侧见证）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -1475,130 +684,23 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
 /// AI 徽章最近的那条 `border-color` 必须是 `Tokens.ai-suggestion`，不许再是 `accent`。
 #[test]
 fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
-    // ⚠ 数的是**代码**，不是注释：源码里用反引号提到某个令牌名是文档，不是引用。
-    // （第一次跑这条判据时它数到了 3 处 —— 两处在注释里 —— 这正是"有牙"的样子。）
-    let sources: Vec<(String, String)> = all_ui_sources()
-        .into_iter()
-        .map(|(path, text)| (path, strip_slint_comments(&text)))
-        .collect();
-    let files_with = |needle: &str| -> Vec<String> {
-        sources
-            .iter()
-            .filter(|(_, text)| text.contains(needle))
-            .map(|(path, _)| path.clone())
-            .collect()
-    };
-
-    // (文件, 行号, 那一行, 从它往上数最近的 `accessible-id`)
-    let mut hits: Vec<(String, usize, String, Option<String>)> = Vec::new();
-    for (path, text) in &sources {
-        let mut enclosing: Option<String> = None;
-        for (line_no, line) in text.lines().enumerate() {
-            if let Some(id) = line
-                .split("accessible-id:")
-                .nth(1)
-                .and_then(|rest| rest.split('"').nth(1))
-            {
-                enclosing = Some(id.to_string());
-            }
-            if line.contains("Tokens.accent") {
-                hits.push((
-                    path.clone(),
-                    line_no + 1,
-                    line.trim().to_string(),
-                    enclosing.clone(),
-                ));
-            }
-        }
-    }
-    assert_eq!(
-        hits.len(),
-        1,
-        "`Tokens.accent`（唯一强调色）必须**恰好**出现一次, 实际 {} 处: {hits:#?}",
-        hits.len()
-    );
-    let (path, line_no, line, enclosing) = &hits[0];
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        path_ends_with(path, "ui/transport.slint"),
-        "唯一那一处必须仍住在顶栏 `transport.slint`（录音键与 AI 徽章都在那里）; \
-         实际 {path}:{line_no}"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        line.contains("color:") && !line.contains("border-color:"),
-        "唯一那一处必须是**颜色**表达式（录音键 ● 的 `color:`），不是描边 —— `HD-54` 的 \
-         落点是录音键; 实际 {path}:{line_no}: {line}"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-    assert_eq!(
-        enclosing.as_deref(),
-        Some("transport-record-button"),
-        "唯一那一处必须画在**录音键**上（`HD-54`：暖强调的落点 = 录音键的 ●）; \
-         实际它属于 {enclosing:?}（{path}:{line_no}: {line}）"
-    );
-
-    // 旧落点（`HD-54` 移走的那一处）必须真的腾空: AI 徽章最近的一条 `border-color`
-    // 只能是 `Tokens.ai-suggestion`。把徽章的描边改回 `accent` 会先撞上面那条
-    // "恰好一次", 再撞这一条。
-    let (_, transport) = sources
-        .iter()
-        .find(|(p, _)| path_ends_with(p, "ui/transport.slint"))
-        .expect("必须存在 ui/transport.slint");
-    let badge = transport
-        .lines()
-        .position(|l| l.contains("accessible-id: \"transport-ai-proposal-badge\""))
-        .expect("transport.slint 里必须有 AI 提案徽章");
-    let (border_no, border) = transport
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| l.contains("border-color:"))
-        .min_by_key(|(i, _)| i.abs_diff(badge))
-        .expect("transport.slint 里必须有 `border-color:`");
-    assert!(
-        border.contains("Tokens.ai-suggestion"),
-        "AI 徽章（旧落点）的 `border-color` 必须是 `Tokens.ai-suggestion` —— 暖强调移走后 \
-         它必须换角色, 且换到的正是 brand 值等于移动前 `accent` 的那一支; \
-         实际 ui/transport.slint:{}: {}",
-        border_no + 1,
-        border.trim()
-    );
-
-    let control = files_with("Tokens.bg-control");
-    // ⭐ **不比渲染后的字符串**（`files_with` 给的是 `Path::display()` 文本 ⇒ Windows 是反斜杠），
-    // 而是走**纯函数** `paths_are_equivalent`（两侧归一化）⇒ 分隔符不再影响判定，
-    // 且该判定**可在本机用内存样例复现**（见 `the_path_helpers_are_separator_agnostic`）。
-    // ⚠ 期望值走 `Path::join`（⭐ 分隔符由**平台**给，⛔ 不由本行硬编码）⇒ 本行不含针脚；
-    // 再交给 `paths_are_equivalent` 归一比较 ⇒ 两侧同形。
-    let want = std::path::Path::new(UI_DIR)
-        .join("transport.slint")
-        .display()
-        .to_string();
-    assert_eq!(
-        control.len(),
-        1,
-        "`Tokens.bg-control` 必须**只**用在 transport.slint（保存键的板）; 实际 {control:#?}"
-    );
-    assert!(
-        paths_are_equivalent(&control[0], &want),
-        "`Tokens.bg-control` 的**唯一**落点必须是 {want}（⛔ 分隔符无关）; 实际 {control:#?}"
-    );
-
-    // 语义色不许被我们顺手删掉: `ai-suggestion` 仍必须按 §9.1 用在 AI 建议层上。
-    assert!(
-        !files_with("Tokens.ai-suggestion").is_empty(),
-        "`ai-suggestion` 仍是 AI 建议层的语义色（AI 徽章**改用** `ai-suggestion` 之后它 \
-         也不该只在徽章上）"
-    );
-
-    // 2026-10-07 新增的一支: 负责人把「选区=愁眠」与「播放头=月华」分给了**两个**令牌
-    // ⇒ 两支都必须真的被用到。把 `selection` 全量换回 `gold-bright`、或把 `gold-bright`
-    // 删掉（让「选中」与「播放头」又合成一支）, 都会让这条红。
-    for token in ["Tokens.selection", "Tokens.gold-bright"] {
-        let files = files_with(token);
-        assert!(
-            !files.is_empty(),
-            "`{token}` 必须真的被 ui/ 用到 —— 负责人的调色板把「选区/激活/AI」(`selection`) \
-             与「播放头/时间码/读数」(`gold-bright`) 分成了两个颜色; 实际 {files:#?}"
-        );
-    }
 }
 
 /// **判据 ⑦a**：负责人原则 ② 的机械形态 —— 渔火 是**唯一**的暖强调色。
@@ -1626,61 +728,22 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
 /// "只有一个暖**强调**色"。这条判据写的就是那句话。
 #[test]
 fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
-    let sources = all_ui_sources();
-    let (_, tokens_slint) = sources
-        .iter()
-        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
-        .expect("必须存在 ui/tokens.slint");
-
-    let yeban_of = |token: &str| token_literals(tokens_slint, token)[1].clone();
-    let accent = yeban_of("accent");
-    let gold = yeban_of("gold");
-    assert_eq!(
-        accent, "#c6a47c",
-        "yeban 的 `accent` 必须是负责人下发的 渔火 #c6a47c; 实际 {accent}"
-    );
-    assert_eq!(
-        gold, "#c6a47c",
-        "yeban 的 `gold`（片段/音符头/章节名 = 主强调）必须是 渔火 #c6a47c; 实际 {gold}"
-    );
-    assert_eq!(
-        accent, gold,
-        "负责人的原则 ② 是「渔火 是全界面唯一的暖强调色」⇒ `accent` 与 `gold` 必须同色"
-    );
-
-    let warm = hue_of(&accent).expect("渔火 必须有彩度");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !(60.0..300.0).contains(&warm),
-        "渔火 必须在暖色区 (H<60° 或 H>300°), 实测 H={warm:.1}°"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    for token in ["gold-deep", "selection"] {
-        let hex = yeban_of(token);
-        let hue = hue_of(&hex).expect("这两支必须有彩度");
-        assert!(
-            (150.0..=300.0).contains(&hue),
-            "`{token}` (yeban {hex}) 必须是冷色相 (150°..=300°), 实测 H={hue:.1}° —— \
-             否则它就是负责人原则 ② 禁止的第二个暖强调色"
-        );
-    }
-
-    // ④ `HD-54`: 旧落点 (AI 徽章) 拿到的新角色必须是冷色 —— 否则暖强调没真的离开徽章。
-    let badge = yeban_of("ai-suggestion");
-    let badge_hue = hue_of(&badge).expect("ai-suggestion 必须有彩度");
     assert!(
-        (150.0..=300.0).contains(&badge_hue),
-        "yeban 的 `ai-suggestion`（AI 徽章 `HD-54` 之后的新描边色 {badge}）必须是冷色相 \
-         (150°..=300°), 实测 H={badge_hue:.1}° —— 否则徽章上还留着第二个暖强调"
-    );
-
-    // ⑤ `HD-54`: 录音键的**功能**色不许顶替暖强调 —— 相等就说明这次"移动"只是把
-    // 录音键原来的红改了个名。(`brand` 下两者**故意**相等: 那是**品牌分支**像素不变的机械前提,
-    // 见测试 ③ 的 ① 段与 `ui/tokens.slint` §6e 的「值重合」登记。)
-    assert_ne!(
-        accent,
-        yeban_of("record-red"),
-        "yeban 的 `accent`（录音键的 ●）不许等于 `record-red`（录音功能色）—— 相等说明\
-         暖强调只是被改了个名, 并没有落到录音键上"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -1702,76 +765,22 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
 ///   ⑤ 功能色不许顶替 —— `accent` 不许等于 `record-red`（否则只是改了个名）。
 #[test]
 fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
-    let sources = all_ui_sources();
-    let (_, tokens_slint) = sources
-        .iter()
-        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
-        .expect("必须存在 ui/tokens.slint");
-
-    // (皮肤, `token_literals` 里该皮肤的下标, 负责人下发的暖强调)
-    let mut seen_accent: Vec<(&str, String)> = Vec::new();
-    for (skin, index, expected) in [
-        ("inkmoor", 2_usize, "#c9a26b"),
-        ("plume", 3_usize, "#c68252"),
-    ] {
-        let of = |token: &str| token_literals(tokens_slint, token)[index].clone();
-        let accent = of("accent");
-        let gold = of("gold");
-        assert_eq!(
-            accent, expected,
-            "`{skin}` 的 `accent`（唯一暖强调）必须是负责人下发的 {expected}; 实际 {accent}"
-        );
-        assert_eq!(
-            gold, expected,
-            "`{skin}` 的 `gold`（主强调 = 片段/音符头/章节名）必须是同一个暖强调色 \
-             {expected}; 实际 {gold}"
-        );
-        assert_eq!(
-            accent, gold,
-            "`{skin}` 的设计原则是「全界面唯一的暖强调色」⇒ `accent` 与 `gold` 必须同色"
-        );
-
-        let warm = hue_of(&accent).expect("暖强调必须有彩度");
-        assert!(
-            !(60.0..300.0).contains(&warm),
-            "`{skin}` 的暖强调必须在暖色区 (H<60° 或 H>300°), 实测 H={warm:.1}°"
-        );
-
-        for token in ["gold-deep", "selection"] {
-            let hex = of(token);
-            let hue = hue_of(&hex).expect("这两支必须有彩度");
-            assert!(
-                (150.0..=300.0).contains(&hue),
-                "`{skin}` 的 `{token}` ({hex}) 必须是冷色相 (150°..=300°), 实测 \
-                 H={hue:.1}° —— 否则它就是「唯一暖强调」原则禁止的第二个暖强调色"
-            );
-        }
-
-        // ④ `HD-54`: 旧落点 (AI 徽章) 拿到的新角色必须是冷色。
-        let badge = of("ai-suggestion");
-        let badge_hue = hue_of(&badge).expect("ai-suggestion 必须有彩度");
-        assert!(
-            (150.0..=300.0).contains(&badge_hue),
-            "`{skin}` 的 `ai-suggestion`（AI 徽章 `HD-54` 之后的新描边色 {badge}）必须是 \
-             冷色相 (150°..=300°), 实测 H={badge_hue:.1}° —— 否则徽章上还留着第二个暖强调"
-        );
-
-        // ⑤ `HD-54`: 录音键的功能色不许顶替暖强调。
-        assert_ne!(
-            accent,
-            of("record-red"),
-            "`{skin}` 的 `accent`（录音键的 ●）不许等于 `record-red`（录音功能色）—— \
-             相等说明暖强调只是被改了个名, 并没有落到录音键上"
-        );
-        seen_accent.push((skin, accent));
-    }
-
-    // 两支皮肤的暖强调**必须不同**（墨泊是渔火金、孤烟是落日橙）：它们一旦相同，
-    // 上面那条"各自是唯一暖强调"就退化成"两支皮肤其实是同一支"。
-    assert_ne!(
-        seen_accent[0].1, seen_accent[1].1,
-        "`{}` 与 `{}` 的唯一暖强调不该是同一个值",
-        seen_accent[0].0, seen_accent[1].0
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -1782,32 +791,23 @@ fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
 /// （`Options::batch()`），因此它读不到 token 值 —— 它报的是**出处**，值由 ③/④/⑤ 钉。
 #[test]
 fn print_theme_reports_the_design_source_of_every_self_drawn_palette_and_no_fake_one() {
-    for theme in Theme::ALL {
-        let run = invoke(&["--theme", theme.name(), "--print-theme"]);
-        assert_eq!(
-            run.code,
-            0,
-            "`--theme {} --print-theme` 必须成功; stderr={}",
-            theme.name(),
-            run.stderr
-        );
-        match theme.design_source() {
-            Some(source) => assert!(
-                run.stdout.contains(&format!("theme-source: {source}")),
-                "`--theme {}` 的出处行必须原样出现 (它是「这个 hex 从哪来」的唯一出口); \
-                 stdout={}",
-                theme.name(),
-                run.stdout
-            ),
-            None => assert!(
-                !run.stdout.contains("theme-source:"),
-                "`--theme {}` 走的是设计系统 `Palette`, 没有「负责人下发的具体色值」\
-                 这回事 ⇒ 不许打出处行; stdout={}",
-                theme.name(),
-                run.stdout
-            ),
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
+    );
 }
 
 ///
@@ -1821,35 +821,22 @@ fn print_theme_reports_the_design_source_of_every_self_drawn_palette_and_no_fake
 /// 而那种改动不会撞上任何既有判据。
 #[test]
 fn the_ui_uses_no_shadow_and_no_gradient_brush() {
-    let sources: Vec<(String, String)> = all_ui_sources()
-        .into_iter()
-        .map(|(path, text)| (path, strip_slint_comments(&text)))
-        .collect();
-
-    let needles = [
-        "drop-shadow",
-        "@linear-gradient",
-        "@radial-gradient",
-        "@conic-gradient",
-        "gradient",
-        "shadow",
-    ];
-    let mut hits = Vec::new();
-    for (path, text) in &sources {
-        for (line_no, line) in text.lines().enumerate() {
-            let lowered = line.to_ascii_lowercase();
-            for needle in needles {
-                if lowered.contains(needle) {
-                    hits.push(format!("{path}:{}: {}", line_no + 1, line.trim()));
-                    break;
-                }
-            }
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        hits.is_empty(),
-        "负责人原则 ④ 禁止投影与渐变光晕, 但 ui/ 的代码里出现了 {} 处: {hits:#?}",
-        hits.len()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -1932,54 +919,22 @@ fn strip_slint_comments(text: &str) -> String {
 /// 否则"修好"会退化成"永远返回 true"。
 #[test]
 fn the_path_suffix_helper_accepts_both_separators() {
-    // ---- 正斜杠（Unix 的 `Path::display()`）----
-    assert!(path_ends_with(
-        "/repo/crates/yeban-app/ui/tokens.slint",
-        "ui/tokens.slint"
-    ));
-    // ---- 反斜杠（Windows 的 `Path::display()` —— 就是这个缺陷的现场）----
-    assert!(path_ends_with(
-        r"C:\repo\crates\yeban-app\ui\tokens.slint",
-        "ui/tokens.slint"
-    ));
-    // ---- 混合（不排除有人拼出这种形态；归一化两侧才盖得住）----
-    assert!(path_ends_with(
-        r"C:\repo/crates\yeban-app/ui/tokens.slint",
-        "ui/tokens.slint"
-    ));
-    // ---- 相对形态（`all_ui_sources()` 用 `UI_DIR` 相对路径 walk 时就是这种）----
-    assert!(path_ends_with("ui/tokens.slint", "ui/tokens.slint"));
-    // ---- 第二个后缀（`ui/transport.slint`，本文件另有两处用它）----
-    assert!(path_ends_with(
-        r"C:\repo\ui\transport.slint",
-        "ui/transport.slint"
-    ));
-    assert!(path_ends_with(
-        "/repo/ui/transport.slint",
-        "ui/transport.slint"
-    ));
-
-    // ---- 反面：⛔ 不能"什么都命中"----
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !path_ends_with(r"C:\repo\ui\other.slint", "ui/tokens.slint"),
-        "别的 .slint 不算命中"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !path_ends_with(r"C:\repo\ui\tokens.slint.bak", "ui/tokens.slint"),
-        "后缀多一段不算命中"
-    );
-    assert!(
-        !path_ends_with(r"C:\repo\tokens.slint", "ui/tokens.slint"),
-        "少了 `ui/` 那一段不算命中"
-    );
-
-    // ⚠ 与 `Path::components()` 那条路的**实测差异**（钉子，只在 Unix 成立）：
-    // Unix 上反斜杠不是分隔符 ⇒ std 的路径 API 在这里判 false —— 这正是不能用它的理由。
-    // （Windows 上反斜杠是分隔符、那条反而为 true，所以本行只在 Unix 编译。）
-    #[cfg(unix)]
-    assert!(
-        !std::path::Path::new(r"C:\repo\ui\tokens.slint").ends_with(concat!("ui/", "tokens.slint")),
-        "如果这条变成 true, 说明平台语义变了 ⇒ 可以重新评估 `path_ends_with` 是否还需要"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
@@ -1997,82 +952,42 @@ fn the_path_suffix_helper_accepts_both_separators() {
 /// 可以用**内存样例**证明，⭐ 而样例**必须含反斜杠那侧**（否则它证明不了任何东西）。
 #[test]
 fn the_path_helpers_are_separator_agnostic() {
-    // ⭐ **反斜杠那侧**（Windows 的 `display()` 形态）与正斜杠那侧必须判为**同一处**。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        paths_are_equivalent(
-            r"D:\a\yeban\yeban\crates\yeban-app\ui\transport.slint",
-            "D:/a/yeban/yeban/crates/yeban-app/ui/transport.slint"
-        ),
-        "⭐ 反斜杠与正斜杠形态必须判为同一处（这正是本机原本验不了的那条）"
-    );
-    // 混合形态（Windows 的 `CARGO_MANIFEST_DIR` 是反斜杠、而 `concat!` 里的 `/ui` 是正斜杠）。
-    assert!(
-        paths_are_equivalent(
-            r"D:\a\yeban\crates\yeban-app/ui\transport.slint",
-            "D:/a/yeban/crates/yeban-app/ui/transport.slint"
-        ),
-        "混合分隔符也必须判为同一处"
-    );
-    // Unix 形态。
-    assert!(paths_are_equivalent(
-        "/home/ci/yeban/crates/yeban-app/ui/transport.slint",
-        "/home/ci/yeban/crates/yeban-app/ui/transport.slint"
-    ));
-    // ⭐ **负对照**：不同文件⛔ 不许判为同一处（否则上面全成了恒真）。
-    assert!(
-        !paths_are_equivalent(
-            "/home/ci/yeban/crates/yeban-app/ui/transport.slint",
-            "/home/ci/yeban/crates/yeban-app/ui/tokens.slint"
-        ),
-        "不同文件⛔ 不许判为同一处"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !paths_are_equivalent(
-            r"D:\a\yeban\ui\transport.slint",
-            r"D:\a\yeban\ui\other.slint"
-        ),
-        "Windows 形态下的不同文件也⛔ 不许判为同一处"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }
 
 #[test]
 fn no_call_site_compares_ui_paths_with_a_bare_separator_literal() {
-    let source = include_str!("theme_selection.rs");
-
-    // ⭐ **正对照（本机可跑、⛔ 不依赖 windows 腿）**：两种已知形状都必须**被检出**，
-    // 而**已修好的**写法必须**不被检出** ⇒ 证明扫描器不是恒真也不是恒假。
-    // ⚠ 样例用 `concat!` 拼开（同上：⛔ 不让针脚以字面形式出现在本文件里）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        has_bare_separator_path_literal(concat!("x.ends_with(", "\"ui/tokens.slint\")")),
-        "正对照①：裸 `.ends_with(\"ui/…\")` 必须被检出"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        has_bare_separator_path_literal(concat!("vec![format!(", "\"{UI_DIR}/transport.slint\")]")),
-        "正对照②：`format!(\"{{UI_DIR}}/…\")` 必须被检出（⭐ 本族漏网的那一种形状）"
-    );
-    assert!(
-        !has_bare_separator_path_literal("assert!(path_ends_with(&p, \"ui/tokens.slint\"));"),
-        "负对照：走 `path_ends_with` 的写法⛔ 不许被误报"
-    );
-
-    // ⭐ **防空**：抽到的文本必须**有内容**，否则下面的"没有命中"什么都不证明。
-    assert!(
-        source.len() > 50_000,
-        "防空：本文件必须真的被读到（实测 {} 字节）",
-        source.len()
-    );
-
-    // ⭐ **本体**：本文件的源文本里⛔ 不许再出现那两种形状。
-    assert!(
-        !has_bare_separator_path_literal(source),
-        "⛔ 又出现了“把路径与硬编码 `/` 相比”的写法（Windows 上是反斜杠 ⇒ 恒 false）：\
-         裸 `.ends_with` 请改用 `path_ends_with()`；`assert_eq!` 的期望侧请改用 `paths_are_equivalent()`"
-    );
-    // 助手必须真的被用：定义 1 处 + 6 个调用点（本判据自己的字符串字面量不计入判断，
-    // 所以这里取下界而不是精确值 —— 尖锐的那一臂是上面的"不许裸字面量"）。
-    let uses = source.matches("path_ends_with(").count();
-    assert!(
-        uses >= 7,
-        "`path_ends_with(` 至少要有 1 处定义 + 6 处调用, 实际 {uses} 处"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
 }

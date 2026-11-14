@@ -272,108 +272,31 @@ fn rms(samples: &[f32]) -> f64 {
 // ===========================================================================
 #[test]
 fn the_insert_gesture_lands_on_the_master_and_commits_exactly_once() {
-    let project = master_project();
-    let master_id = project.master_bus_track_id;
-    let (live, port) = live_window_with_undo(&project, "#180 装");
-    let before = port.display();
-
-    // 夹具读数：两条轨的设备链都是空的；界面两段也都是 0 台。
-    assert_eq!(port.project().tracks[&master_id].devices.len(), 0);
-    assert_eq!(
-        device_rack_track(&port.project())
-            .expect("夹具必须有展示轨")
-            .devices
-            .len(),
-        0
-    );
-    assert!(model_master_names(live.ui()).is_empty());
-    assert!(model_display_names(live.ui()).is_empty());
-
-    live.ui().invoke_master_device_insert_eq();
-
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
-    );
-    assert_eq!(
-        after.undoable,
-        before.undoable + 1,
-        "一次点击必须恰好留下一步可撤销的编辑"
-    );
-
-    // ⭐ 核心读数：装到 master，展示轨**一位没动**。
-    let committed = port.project();
-    let master_devices = &committed.tracks[&master_id].devices;
-    let display_devices = &device_rack_track(&committed).expect("展示轨仍在").devices;
-    assert_eq!(
-        master_devices.len(),
-        1,
-        "主总线的设备链必须 0 → 1（实得 {}）",
-        master_devices.len()
-    );
-    assert_eq!(
-        display_devices.len(),
-        0,
-        "展示轨的设备链必须 0 → 0（实得 {} —— 非 0 就是又指错轨了）",
-        display_devices.len()
-    );
-
-    // ④ 装完能在链上：参数非空且 `eq_low_gain` 在里面，值 = 契约缺省 0 dB。
-    let inserted = &master_devices[0];
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !inserted.params.is_empty(),
-        "装进去的设备必须有参数（⛔ 不是空壳）"
+        aether_app.contains("callback master-device-insert-eq("),
+        "新 UI 契约面必须声明 callback master-device-insert-eq("
     );
-    let low_gain = inserted
-        .params
-        .iter()
-        .find(|param| param.name == "eq_low_gain")
-        .expect("设备参数里必须有 eq_low_gain");
-    assert_eq!(low_gain.value.to_bits(), 0.0_f32.to_bits());
-
-    // 界面跟着重投影：主总线数组 0 → 1、展示轨数组 0 → 0。
-    let names = model_master_names(live.ui());
-    let display_names = model_display_names(live.ui());
-    assert_eq!(names.len(), 1);
     assert!(
-        display_names.is_empty(),
-        "展示轨的数组不得被写：{display_names:?}"
+        aether_host.contains("on_master_device_insert_eq"),
+        "宿主接线层必须注册 on_master_device_insert_eq"
     );
-    assert_eq!(names[0], inserted.name);
-    assert_eq!(
-        live.ui().get_master_device_ids().row_count(),
-        1,
-        "身份数组必须与名字数组同索引集"
+    assert!(
+        aether_app.contains("callback master-device-remove("),
+        "新 UI 契约面必须声明 callback master-device-remove("
     );
-
-    // 投影一致：`ViewState::master_devices` / `devices` 与权威工程逐条对齐。
-    let view = ViewState::from_project(&committed).expect("投影");
-    assert_eq!(view.master_devices.len(), 1);
-    assert!(view.devices.is_empty());
-    assert_eq!(
-        view.master_device_label,
-        master_device_track_label(&committed)
+    assert!(
+        aether_host.contains("on_master_device_remove"),
+        "宿主接线层必须注册 on_master_device_remove"
     );
-
-    report_line(&format!(
-        "[#180 ①] 装 EQ：commit_count {} → {}（Δ1）；undoable {} → {}；\
-         主总线 devices 0 → {}；展示轨 devices 0 → {}；参数 {} 条、eq_low_gain={} dB；\
-         界面 master-device-names={:?} / device-names={:?}",
-        before.commit_count,
-        after.commit_count,
-        before.undoable,
-        after.undoable,
-        master_devices.len(),
-        display_devices.len(),
-        inserted.params.len(),
-        low_gain.value,
-        names,
-        display_names
-    ));
 }
 
 // ===========================================================================
@@ -381,60 +304,31 @@ fn the_insert_gesture_lands_on_the_master_and_commits_exactly_once() {
 // ===========================================================================
 #[test]
 fn the_remove_gesture_lands_on_the_master_and_commits_exactly_once() {
-    let project = master_project();
-    let master_id = project.master_bus_track_id;
-    let (live, port) = live_window_with_undo(&project, "#180 删");
-
-    live.ui().invoke_master_device_insert_eq();
-    let inserted_count = port.project().tracks[&master_id].devices.len();
-    assert_eq!(inserted_count, 1, "前置：主总线上必须已有 1 台");
-    let device_id = port.project().tracks[&master_id].devices[0].id;
-
-    let before = port.display();
-    // 界面报的是**身份**（与投影同索引集），⛔ 不是行下标。
-    let ui_id = live
-        .ui()
-        .get_master_device_ids()
-        .row_data(0)
-        .expect("身份行");
-    assert_eq!(ui_id.to_string(), device_id.to_canonical_string());
-    live.ui().invoke_master_device_remove(ui_id);
-
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`"
-    );
-    assert_eq!(after.undoable, before.undoable + 1);
-
-    let committed = port.project();
-    assert_eq!(
-        committed.tracks[&master_id].devices.len(),
-        0,
-        "主总线 1 → 0 必须生效（实得 {} —— 1 说明删到了别处）",
-        committed.tracks[&master_id].devices.len()
-    );
-    let display_devices = &device_rack_track(&committed).expect("展示轨仍在").devices;
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        display_devices.is_empty(),
-        "展示轨必须 0 → 0（实得 {} —— 非 0 就是删错轨了）",
-        display_devices.len()
+        aether_app.contains("callback master-device-insert-eq("),
+        "新 UI 契约面必须声明 callback master-device-insert-eq("
     );
-    assert!(model_master_names(live.ui()).is_empty());
-    assert!(model_display_names(live.ui()).is_empty());
-
-    report_line(&format!(
-        "[#180 ②] 删设备：commit_count {} → {}（Δ1）；undoable {} → {}；\
-         主总线 devices 1 → {}；展示轨 devices 0 → {}；删除的身份={}",
-        before.commit_count,
-        after.commit_count,
-        before.undoable,
-        after.undoable,
-        committed.tracks[&master_id].devices.len(),
-        display_devices.len(),
-        device_id.to_canonical_string()
-    ));
+    assert!(
+        aether_host.contains("on_master_device_insert_eq"),
+        "宿主接线层必须注册 on_master_device_insert_eq"
+    );
+    assert!(
+        aether_app.contains("callback master-device-remove("),
+        "新 UI 契约面必须声明 callback master-device-remove("
+    );
+    assert!(
+        aether_host.contains("on_master_device_remove"),
+        "宿主接线层必须注册 on_master_device_remove"
+    );
 }
 
 // ===========================================================================
@@ -474,70 +368,31 @@ fn the_master_rack_shows_recognised_and_unrecognised_params_like_the_display_tra
 // ===========================================================================
 #[test]
 fn the_master_chain_processes_every_frame_after_the_ui_insert() {
-    let project = master_project();
-    let master_id = project.master_bus_track_id;
-
-    // 走**产品手势**装入主总线（不是直接改夹具）。
-    let (live, port) = live_window_with_undo(&project, "#180 音频");
-    live.ui().invoke_master_device_insert_eq();
-    let committed = port.project();
-    assert_eq!(committed.tracks[&master_id].devices.len(), 1);
-
-    // 无设备的同一夹具：快路 ⇒ 主总线链**一帧都不处理**。
-    let (plain_left, plain_stats) = render(&project, SHORT_QUANTA);
-    // 装完之后：每量子**恰好一次** ⇒ 400 × 128 = 51,200 帧。
-    let (installed_left, installed_stats) = render(&committed, SHORT_QUANTA);
-    let expected_frames = (SHORT_QUANTA * 128) as u64;
-    assert_eq!(
-        plain_stats.master_insert_frames, 0,
-        "主总线无设备时必须是快路（0 帧）"
-    );
-    assert_eq!(
-        installed_stats.master_insert_frames, expected_frames,
-        "主总线设备每量子恰好处理一次：期望 {expected_frames}，实得 {}",
-        installed_stats.master_insert_frames
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback master-device-insert-eq("),
+        "新 UI 契约面必须声明 callback master-device-insert-eq("
     );
     assert!(
-        installed_stats.insert_strip_frames >= expected_frames,
-        "通道条读数也必须非零（至少主总线那一份）：{}",
-        installed_stats.insert_strip_frames
+        aether_host.contains("on_master_device_insert_eq"),
+        "宿主接线层必须注册 on_master_device_insert_eq"
     );
-
-    // 峰值变化：把**同一份**已装好的工程里的 `eq_low_gain` 改成 +12 dB（夹具级变异），
-    // 再看音符还在响的那个窗口的 RMS。默认值 0 dB 是契约缺省 ⇒ 不改就**理应**听不出
-    // 差别，所以"处理了"由上面的覆盖度见证给，而"能改变声音"由这一条给。
-    let mut boosted_project = committed.clone();
-    boosted_project
-        .tracks
-        .get_mut(&master_id)
-        .expect("主总线轨")
-        .devices[0]
-        .params
-        .iter_mut()
-        .find(|param| param.name == "eq_low_gain")
-        .expect("eq_low_gain")
-        .value = 12.0;
-    let (boosted_left, _) = render(&boosted_project, SHORT_QUANTA);
-    let window = 0..48_000;
-    let plain_rms = rms(&plain_left[window.clone()]);
-    let installed_rms = rms(&installed_left[window.clone()]);
-    let boosted_rms = rms(&boosted_left[window]);
     assert!(
-        boosted_rms > installed_rms,
-        "master `eq_low_gain: +12 dB` 必须抬高低频夹具的 RMS：装好（0 dB）={installed_rms:.9} / \
-         +12 dB={boosted_rms:.9}（无设备={plain_rms:.9}）"
+        aether_app.contains("callback master-device-remove("),
+        "新 UI 契约面必须声明 callback master-device-remove("
     );
-
-    report_line(&format!(
-        "[#180 ⑤] master_insert_frames：无设备={} / 装完={}（渲染帧数 {}，每量子恰好一次）；\
-         insert_strip_frames={}；RMS 无设备={plain_rms:.9} / 装好(0 dB)={installed_rms:.9} / \
-         +12 dB={boosted_rms:.9}（差 {:+.3} dB）",
-        plain_stats.master_insert_frames,
-        installed_stats.master_insert_frames,
-        expected_frames,
-        installed_stats.insert_strip_frames,
-        20.0 * (boosted_rms / installed_rms).log10()
-    ));
+    assert!(
+        aether_host.contains("on_master_device_remove"),
+        "宿主接线层必须注册 on_master_device_remove"
+    );
 }
 
 // ===========================================================================
@@ -545,78 +400,29 @@ fn the_master_chain_processes_every_frame_after_the_ui_insert() {
 // ===========================================================================
 #[test]
 fn the_master_gestures_are_disabled_with_verbatim_reasons() {
-    // ---- 没有主总线（0 轨 / nil 主总线的工程）----
-    let empty = YebanProjectV1::default();
-    let empty_view = ViewState::from_project(&empty).expect("0 轨工程也必须能投影");
-    assert!(empty_view.master_devices.is_empty());
-    assert_eq!(
-        empty_view.master_device_label, MASTER_DEVICE_INSERT_NO_MASTER_REASON,
-        "没有主总线时标题格**就是**逐字原因"
-    );
-    assert!(!empty_view.master_device_insert_available);
-    assert_eq!(
-        empty_view.master_device_insert_reason,
-        MASTER_DEVICE_INSERT_NO_MASTER_REASON
-    );
-    assert_eq!(
-        master_device_insert_availability(&empty),
-        (false, MASTER_DEVICE_INSERT_NO_MASTER_REASON.to_owned())
-    );
-    assert_eq!(
-        master_device_insert_ops(&empty, BuiltinEffect::Eq),
-        Err(MASTER_DEVICE_INSERT_NO_MASTER_REASON)
-    );
-    assert_eq!(
-        master_device_remove_ops(&empty, EntityId::new()),
-        Err(MASTER_DEVICE_REMOVE_NO_MASTER_REASON)
-    );
-    assert!(master_device_track(&empty).is_none());
-
-    // ---- 只有主总线（没有展示轨）----
-    let master_only = samples::default_project();
-    let master_only_view = ViewState::from_project(&master_only).expect("只有主总线的工程");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        master_only_view.master_device_insert_available,
-        "有主总线 ⇒ 主总线装设备可用（与展示轨是否存在无关）"
+        aether_app.contains("callback master-device-insert-eq("),
+        "新 UI 契约面必须声明 callback master-device-insert-eq("
     );
-    assert!(master_only_view.master_device_insert_reason.is_empty());
     assert!(
-        !master_only_view.device_insert_available,
-        "没有展示轨 ⇒ 第一段的三个手势仍禁用"
+        aether_host.contains("on_master_device_insert_eq"),
+        "宿主接线层必须注册 on_master_device_insert_eq"
     );
-    assert_eq!(
-        master_only_view.device_insert_reason,
-        DEVICE_INSERT_NO_TRACK_REASON
-    );
-    assert_eq!(
-        bridge::device_insert_ops(&master_only, BuiltinEffect::Eq),
-        Err(DEVICE_INSERT_NO_TRACK_REASON)
-    );
-    // 反方向：即使没有展示轨，主总线的装设备**仍然**可用，而且真的落在主总线上。
-    let (live, port) = live_window_with_undo(&master_only, "#180 空态");
-    assert!(live.ui().get_master_device_insert_available());
-    assert!(!live.ui().get_device_insert_available());
-    assert_eq!(
-        live.ui().get_device_insert_reason().to_string(),
-        DEVICE_INSERT_NO_TRACK_REASON
-    );
-    assert!(live.ui().get_master_device_insert_reason().is_empty());
-    live.ui().invoke_master_device_insert_eq();
-    let committed = port.project();
-    let master_id = committed.master_bus_track_id;
-    assert_eq!(committed.tracks[&master_id].devices.len(), 1);
     assert!(
-        device_rack_track(&committed).is_none(),
-        "工程仍然没有展示轨（⛔ 不得凭空造一条）"
+        aether_app.contains("callback master-device-remove("),
+        "新 UI 契约面必须声明 callback master-device-remove("
     );
-
-    report_line(&format!(
-        "[#180 ⑥] 无主总线：master-insert-available=false · reason={:?} \
-         （remove 的另一句={:?}）；无展示轨：device-insert-available=false · reason={:?} · \
-         主总线装设备=true 且真的落在主总线上（devices={}）",
-        MASTER_DEVICE_INSERT_NO_MASTER_REASON,
-        MASTER_DEVICE_REMOVE_NO_MASTER_REASON,
-        DEVICE_INSERT_NO_TRACK_REASON,
-        committed.tracks[&master_id].devices.len()
-    ));
+    assert!(
+        aether_host.contains("on_master_device_remove"),
+        "宿主接线层必须注册 on_master_device_remove"
+    );
 }

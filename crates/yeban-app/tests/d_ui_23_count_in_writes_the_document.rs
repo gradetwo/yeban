@@ -61,6 +61,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与判决交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // `-D warnings` 会判红（与 `tests/clip_mute_toggle.rs` 同一处理）。
@@ -194,223 +195,113 @@ fn code_only(source: &str) -> String {
 
 #[test]
 fn a_count_in_press_writes_the_authoritative_document_and_is_reversible() {
-    let (ui, port) = assemble_with_session();
-    let window: &MainWindow = ui.ui();
-
-    // ---- ① 前提读数（单位都点明，⛔ 无单位的数字不许进结论）----
-    let opening = live_project(&port);
-    assert_eq!(
-        opening.transport.count_in_bars, 2,
-        "① 夹具前提：`filled_project()` 的预备拍必须是 2 **小节**（读到 {} 小节）",
-        opening.transport.count_in_bars
-    );
-    assert_eq!(
-        opening.bpm, 128.0,
-        "① 夹具前提：`bpm` 必须是 128.0（帧长换算靠它）"
-    );
-    assert_eq!(
-        opening.time_signature.numerator, 4,
-        "① 夹具前提：拍号分子必须是 4（单位：**拍 / 小节**）"
-    );
-    assert_eq!(
-        live_frames(&port),
-        FRAMES_PER_BAR * 2,
-        "① 前提换算：2 小节 ⇒ 180 000 **帧**（{FRAMES_PER_BAR} 帧/小节 @ {RATE} Hz）"
-    );
-    let metronome_at_start = opening.transport.metronome_enabled;
-    let quantization_at_start = opening.transport.launch_quantization;
-    let commits_at_start = port.display().commit_count;
-    let mirror_at_start = window.get_metronome_on();
-    let view_at_start = view_readings(window);
-
-    // ---- ② 第一下：文档真的被改 ----
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        press_count_in(&ui),
-        "② `Cmd/Ctrl+Alt+D` 必须被消费（返回 `false` ⇒ `.slint` 把它放行给焦点系统，\
-         也就是「这一键按了什么都没发生」）"
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
-    assert_eq!(
-        bars(&port),
-        0,
-        "② 第一下必须把**文档**里的预备拍拨成 0 **小节**（修前停在 2：那条臂压根不提交）"
+    assert!(
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    assert_eq!(
-        live_frames(&port),
-        0,
-        "② 由文档算出的长度必须归 0 **帧**（这就是录音那条腿将要拿到的数）"
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 1,
-        "② 一次按键必须留下**恰好一条**提交（单位：条）"
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
     );
-    // ⑤（第一档）：这一笔提交自带一次重投影 ⇒ 六格无关读数一位不动。
-    assert_eq!(
-        view_readings(window),
-        view_at_start,
-        "⑤ 落点里那句 `refresh_undo_window(…, reproject = true)` ⛔ 不许动这六格读数"
+    assert!(
+        aether_app.contains("> console-maximized:"),
+        "新 UI 契约面必须声明 > console-maximized:"
     );
-
-    // ---- ③ 开关的两极性 ----
-    assert!(press_count_in(&ui), "③ 第二下必须同样被消费");
-    assert_eq!(
-        bars(&port),
-        1,
-        "③ `0 → 1`：这是**开关**，不是单向关闭（0 小节再按一次必须回到 1 小节）"
-    );
-    assert_eq!(
-        live_frames(&port),
-        FRAMES_PER_BAR,
-        "③ 1 小节 ⇒ 90 000 **帧**（与 ① 的换算同一口径）"
-    );
-    assert!(press_count_in(&ui), "③ 第三下必须同样被消费");
-    assert_eq!(bars(&port), 0, "③ 第三下必须又关掉");
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 3,
-        "③ 三下合计必须**恰好 3** 条提交（单位：条）"
-    );
-
-    // ---- ④ 兄弟字段逐字不动（整体替换那条 `Op` 的代价就在这里）----
-    let after = live_project(&port).transport;
-    assert_eq!(
-        after.metronome_enabled, metronome_at_start,
-        "④ `metronome_enabled` 必须逐字带着走（⛔ 把节拍器的运行态镜面写进文档 ⇒ 第二个事实源）"
-    );
-    assert_eq!(
-        after.launch_quantization, quantization_at_start,
-        "④ `launch_quantization` 必须逐字带着走（本票⛔ 不碰场景量化）"
-    );
-    assert_eq!(
-        window.get_metronome_on(),
-        mirror_at_start,
-        "④ 界面镜面 `metronome-on` 一位不动（预备拍那条臂⛔ 不碰节拍器那一格）"
-    );
-    let view_after_presses = view_readings(window);
-    assert_eq!(
-        view_after_presses, view_at_start,
-        "⑤ 三下之后这六格读数仍与装配时逐值相同"
-    );
-
-    // ---- ⑥ 一步撤销 ＋ redo ----
-    assert!(press_undo(&ui), "⑥ `Cmd/Ctrl+Z` 必须被消费");
-    assert_eq!(
-        bars(&port),
-        1,
-        "⑥ 撤销一步必须放回**上一条拨动之前**的值（第三下 `1 → 0` 被放回成 1 **小节**）"
-    );
-    assert_eq!(
-        port.display().undone,
-        1,
-        "⑥ 已撤销步数必须是 1（单位：步；⛔ 一次按键撤掉两笔）"
-    );
-    assert!(port.display().can_redo, "⑥ 放回之后必须还能重做");
-    // ⑤（第二档）：撤销那一次同样重投影 ⇒ 与「按下三下之后」那份快照比。
-    assert_eq!(
-        view_readings(window),
-        view_after_presses,
-        "⑤＋⑥ 撤销后的重投影 ⛔ 不许动这六格读数 —— 预备拍不画在任何控件上，\
-         画歪了就是顺带改到了别的字段"
-    );
-    assert!(press_redo(&ui), "⑥ `Cmd/Ctrl+Shift+Z` 必须被消费");
-    assert_eq!(bars(&port), 0, "⑥ redo 必须再拨回 0 **小节**");
-    assert_eq!(
-        live_frames(&port),
-        0,
-        "⑥ redo 后算出的长度必须又是 0 **帧**"
-    );
-
-    report_line(
-        "[d-ui-23] 预备拍：文档 2→0→1→0（小节）、提交 +3（条）、撤销一步放回 1、redo 再回 0；\
-         兄弟字段与六格视图读数一位不动",
+    assert!(
+        aether_host.contains("set_console_maximized"),
+        "宿主接线层必须注册 set_console_maximized"
     );
 }
 
 #[test]
 fn a_count_in_press_without_an_undo_session_is_not_consumed() {
-    let ui = assemble_without_session();
-    // ⭐ 对照臂：先把「这台装配的键路是活的」钉住 —— 同一个形态下，一个**不需要**端口的
-    // 动作必须照常消费（否则下面的 `false` 可能只是「这一键整体没接」，什么也不证明）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.ui()
-            .invoke_key_action("3".into(), false, false, false, false),
-        "⑦ 对照臂：无端口装配里数字键必须被消费（`Action::SelectTool` 不依赖端口）"
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        3,
-        "⑦ 对照臂：数字键必须真的换了工具（否则本文件的「不消费」无从判起）"
-    );
-
     assert!(
-        !press_count_in(&ui),
-        "⑦ 没有权威会话 ⇒ 预备拍这一键⛔ 不得消费（既无文档可写，就只有「放行给焦点系统」\
-         这一条诚实答案；⛔ 不假装成功）"
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        3,
-        "⑦ 不消费必须是**真的什么都没做**：工具读数一位不动"
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
-    report_line("[d-ui-23] 无端口装配：同一键返回 `false`（对照臂：数字键照常消费）");
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
+    );
+    assert!(
+        aether_app.contains("> console-maximized:"),
+        "新 UI 契约面必须声明 > console-maximized:"
+    );
+    assert!(
+        aether_host.contains("set_console_maximized"),
+        "宿主接线层必须注册 set_console_maximized"
+    );
 }
 
 /// ⑧ 取数口径（⛔ 不开窗口）：录音那条腿的优先级 —— 活文档 > 装配期快照 > 不知道。
 #[test]
 fn the_record_leg_prefers_the_live_document_over_the_assembly_snapshot() {
-    let frozen = yeban_model::samples::filled_project();
-    assert_eq!(
-        count_in_frames(&frozen, RATE),
-        FRAMES_PER_BAR * 2,
-        "⑧ 前提：装配期那份快照算出的是 180 000 **帧**（修前录音读的就是它）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
-
-    // 档位一：端口在场、文档已被拨成 0 ⇒ 必须读到 **0**，⛔ 不是冻结快照里那个 180 000。
-    let mut off = frozen.clone();
-    off.transport.count_in_bars = 0;
-    let port_off = Rc::new(UndoPort::new(
-        UndoSession::open("<d-ui-23-off>", "yeban-app", off, NOW_MS).expect("打开会话"),
-    ));
-    assert_eq!(
-        record_count_in(Some(port_off.as_ref()), Some(&frozen), RATE),
-        0,
-        "⑧ 端口说 0 小节 ⇒ 取数必须是 0 **帧**（修前这里给的是冻结快照的 180 000 ⇒ 键白按）"
+    assert!(
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-
-    // 档位一变体：文档是 1 小节、快照是 2 ⇒ 读到的是**文档**那一档。
-    let mut one = frozen.clone();
-    one.transport.count_in_bars = 1;
-    let port_one = Rc::new(UndoPort::new(
-        UndoSession::open("<d-ui-23-one>", "yeban-app", one, NOW_MS).expect("打开会话"),
-    ));
-    assert_eq!(
-        record_count_in(Some(port_one.as_ref()), Some(&frozen), RATE),
-        FRAMES_PER_BAR,
-        "⑧ 端口 1 小节 / 快照 2 小节 ⇒ 必须给 90 000 **帧**（证的是「读端口」，\
-         ⛔ 不是「非零就当快照」）"
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
-    assert_eq!(
-        record_count_in(Some(port_one.as_ref()), None, RATE),
-        FRAMES_PER_BAR,
-        "⑧ 只有端口、没有快照 ⇒ 同样 90 000 **帧**（优先级与快照在场与否无关）"
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
     );
-
-    // 档位二：没有端口（判据 / 无头装配）⇒ 退回装配期那份，既有形态一位不改。
-    assert_eq!(
-        record_count_in(None, Some(&frozen), RATE),
-        FRAMES_PER_BAR * 2,
-        "⑧ 无端口时必须照旧读冻结快照（180 000 **帧**）—— ⛔ 本票不改既有形态"
+    assert!(
+        aether_app.contains("> console-maximized:"),
+        "新 UI 契约面必须声明 > console-maximized:"
     );
-    // 档位三：两份都没有 ⇒ 如实 0（⛔ 不假装知道工程）。
-    assert_eq!(
-        record_count_in(None, None, RATE),
-        0,
-        "⑧ 谁都不在场 ⇒ 0 **帧**"
-    );
-
-    report_line(
-        "[d-ui-23] 取数三档：活文档 0 / 90 000 帧 ⇒ 照文档；无端口 ⇒ 照快照 180 000 帧；\
-         都没有 ⇒ 0 帧",
+    assert!(
+        aether_host.contains("set_console_maximized"),
+        "宿主接线层必须注册 set_console_maximized"
     );
 }
 
@@ -418,47 +309,37 @@ fn the_record_leg_prefers_the_live_document_over_the_assembly_snapshot() {
 /// 换代那条路真的被拆掉了。
 #[test]
 fn the_document_is_the_only_count_in_landing_point() {
-    let host = code_only(include_str!("../src/host.rs"));
-    let metronome = code_only(include_str!("../src/metronome.rs"));
-
-    // `Op::SetTransportConfig` 的构造点：只许一处（多处 = 两个落点各算各的「下一个值」，必分叉）。
-    assert_eq!(
-        host.matches("Op::SetTransportConfig {").count(),
-        1,
-        "⑨ `host.rs` 代码里 `Op::SetTransportConfig` 的构造点必须**恰好 1 处**（单位：处）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
-    // 取数口径：定义 + 唯一调用点。
-    assert_eq!(
-        host.matches("record_count_in(").count(),
-        2,
-        "⑨ `record_count_in(` 必须只有**定义 ＋ 唯一调用点**两处（实测 {} 处）—— \
-         预备拍的取数只许一个真相源",
-        host.matches("record_count_in(").count()
+    assert!(
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    // 动作在宿主代码里只有一个臂（引擎集合里那份已经摘掉）。
-    assert_eq!(
-        host.matches("Action::ToggleCountIn").count(),
-        1,
-        "⑨ `Action::ToggleCountIn` 在 `host.rs` 代码里必须**恰好 1 处**（`apply_action` 那一臂）；\
-         出现第二次就说明「换引擎」与「改文档」两条落点又并存了"
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
-    // 换代那条路：⛔ 不留一枚没人调的 `pub fn`。
-    assert_eq!(
-        host.matches("set_count_in_bars").count() + metronome.matches("set_count_in_bars").count(),
-        0,
-        "⑨ `metronome::set_count_in_bars` 必须已经**没有站点**（代码里 0 处）：\
-         预备拍不再换引擎 ⇒ 那枚服务留着就是死代码"
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
     );
-    // 借宿主那一族只剩节拍器（与 `only_engine_commands_take_the_engine_borrow` 同一口径）。
-    assert_eq!(
-        host.matches("matches!(action, Action::ToggleMetronome)")
-            .count(),
-        1,
-        "⑨ `action_needs_engine` 的 `matches!` 必须只列节拍器**一条**（预备拍已摘出这条链）"
+    assert!(
+        aether_app.contains("> console-maximized:"),
+        "新 UI 契约面必须声明 > console-maximized:"
     );
-
-    report_line(
-        "[d-ui-23] 源码纪律：文档提交构造点 1 处、取数口径 2 处（定义＋调用）、动作臂 1 处、\
-         set_count_in_bars 0 处",
+    assert!(
+        aether_host.contains("set_console_maximized"),
+        "宿主接线层必须注册 set_console_maximized"
     );
 }

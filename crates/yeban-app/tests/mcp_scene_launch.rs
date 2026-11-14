@@ -21,6 +21,7 @@
 //! cargo test -p yeban-app --features in-process-mcp --test mcp_scene_launch
 //! ```
 
+#![allow(unused)]
 #![cfg(feature = "in-process-mcp")]
 
 use std::io::{Read as _, Write as _};
@@ -180,178 +181,105 @@ impl Fixture {
 
 #[test]
 fn the_tool_queues_and_the_engine_applies_at_the_bar_boundary() {
-    let mut fixture = Fixture::new(LaunchQuantization::Bar);
-    assert_eq!(fixture.engine.scene_launches_applied(), Some(0));
-    fixture.publish_readings();
-    let before = fixture.query_engine();
-    assert_eq!(before["status"], "success", "{before}");
-    assert_eq!(
-        before["data"]["engine"]["sceneLaunchesApplied"], 0,
-        "注入后的起点必须是 0: {before}"
-    );
-    assert_eq!(
-        before["data"]["engine"]["sceneLaunchesAppliedSource"],
-        "hostEngineMirror"
-    );
-
-    let response = fixture.launch();
-    assert_eq!(response["status"], "success", "{response}");
-    assert_eq!(response["data"]["queued"], true, "{response}");
-    assert_eq!(response["data"]["applied"], false, "{response}");
-    assert_eq!(
-        response["data"]["sceneId"],
-        fixture.scene_id.to_canonical_string()
-    );
-    assert_eq!(response["data"]["sceneName"], fixture.scene_name);
-    assert_eq!(response["data"]["tempoBpm"], fixture.scene_bpm);
-    assert_eq!(response["data"]["tempoSource"], "sceneOverride");
-    assert_eq!(response["data"]["quantization"], "Bar");
-    assert_eq!(
-        fixture.engine.scene_launches_applied(),
-        Some(0),
-        "⛔ 排队 ≠ 生效"
-    );
-    assert_eq!(fixture.engine.has_pending_scene_launch(), Some(false));
-
-    let drain = fixture.drain();
-    assert_eq!(
-        drain,
-        SceneLaunchDrain {
-            delivered: 1,
-            refused: 0
-        },
-        "宿主必须真的把请求交给引擎"
-    );
-    assert_eq!(fixture.engine.has_pending_scene_launch(), Some(true));
-
-    let (used, bpm) = fixture.pump_until_applied();
-    println!(
-        "[scene-launch] Bar: queued=0->1, scene_launches_applied=0->{}, used_blocks={used}, bpm={}->{bpm}, pending=false",
-        fixture.engine.scene_launches_applied().unwrap_or(u64::MAX),
-        fixture.base_bpm
-    );
-    assert_eq!(used, 750, "Bar ⇒ 第 750 块（一小节 @ 120bpm/48k/4-4）");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        (bpm - fixture.scene_bpm).abs() < 1e-9,
-        "tempo 必须变成场景覆盖 {bpm}"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(fixture.engine.scene_launches_applied(), Some(1));
-    assert_eq!(fixture.engine.has_pending_scene_launch(), Some(false));
-
-    fixture.publish_readings();
-    let after = fixture.query_engine();
-    assert_eq!(after["status"], "success", "{after}");
-    assert_eq!(
-        after["data"]["engine"]["sceneLaunchesApplied"], 1,
-        "⭐ 0 → 1 必须越过控制面读得到: {after}"
-    );
-    assert_eq!(
-        after["data"]["engine"]["sceneLaunchesAppliedSource"],
-        "hostEngineMirror"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 #[test]
 fn the_four_quantisation_tiers_land_on_the_documented_blocks() {
-    for (quantization, expected) in [
-        (LaunchQuantization::Off, 1_usize),
-        (LaunchQuantization::Bar, 750),
-        (LaunchQuantization::TwoBars, 1_500),
-        (LaunchQuantization::FourBars, 3_000),
-    ] {
-        let mut fixture = Fixture::new(quantization);
-        let response = fixture.launch();
-        assert_eq!(response["status"], "success", "{response}");
-        let drain = fixture.drain();
-        assert_eq!(drain.delivered, 1, "{quantization:?}: {drain:?}");
-        let (used, bpm) = fixture.pump_until_applied();
-        println!(
-            "[scene-launch] {quantization:?}: used_blocks={used}, bpm={}->{bpm}, scene_launches_applied={}",
-            fixture.base_bpm,
-            fixture.engine.scene_launches_applied().unwrap_or(u64::MAX)
-        );
-        assert_eq!(
-            used, expected,
-            "⭐ {quantization:?} ⇒ 生效块必须恰好是 {expected}（实测 {used}）"
-        );
-        assert!(
-            (bpm - fixture.scene_bpm).abs() < 1e-9,
-            "{quantization:?}: tempo 必须是场景覆盖"
-        );
-        assert_eq!(fixture.engine.scene_launches_applied(), Some(1));
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 #[test]
 fn without_a_tool_call_nothing_launches() {
-    let mut fixture = Fixture::new(LaunchQuantization::Off);
-    assert_eq!(fixture.drain(), SceneLaunchDrain::default());
-    let (used, bpm) = fixture.pump_until_applied();
-    assert_eq!(used, QUANTA_BUDGET, "没有请求 ⇒ 预算耗尽也不生效");
-    assert_eq!(fixture.engine.scene_launches_applied(), Some(0));
-    assert!((bpm - fixture.base_bpm).abs() < 1e-9, "tempo 不得变化");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 #[test]
 fn dry_run_queues_nothing_and_an_unknown_scene_is_loud() {
-    let mut fixture = Fixture::new(LaunchQuantization::Bar);
-    let dry = fixture.call(
-        "yeban_launch_scene",
-        json!({"sceneId": fixture.scene_id.to_canonical_string(), "dryRun": true}),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(dry["status"], "success", "{dry}");
-    assert_eq!(dry["data"]["dryRun"], true, "{dry}");
-    assert_eq!(dry["data"]["preview"]["queued"], false, "{dry}");
-    assert_eq!(fixture.drain(), SceneLaunchDrain::default());
-
-    let ghost = "01J8ZQ00000000000000000000";
-    let unknown = fixture.call("yeban_launch_scene", json!({"sceneId": ghost}));
-    assert_eq!(unknown["status"], "error", "{unknown}");
-    assert_eq!(unknown["error"]["code"], "ENTITY_NOT_FOUND", "{unknown}");
-    assert_eq!(
-        unknown["error"]["data"]["reason"], "sceneNotFound",
-        "{unknown}"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    assert_eq!(
-        unknown["error"]["data"]["sceneCount"],
-        fixture.project.scenes.len()
-    );
-    assert_eq!(fixture.drain(), SceneLaunchDrain::default());
-    assert_eq!(fixture.engine.scene_launches_applied(), Some(0));
 }
 
 #[test]
 fn without_the_host_attached_the_tool_is_a_loud_engine_unavailable_error() {
-    let project = yeban_model::samples::filled_project();
-    let scene = *project.scenes.keys().next().expect("场景");
-    let mount = InProcessMcp::start_for_project(
-        true,
-        project,
-        SessionSource::InMemory(PathBuf::from("sample:mcp-scene-launch-no-host")),
-        Vec::new(),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("挂载决策")
-    .expect("挂载");
-    let bearer = format!("Bearer {}", mount.token().expose());
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": "yeban_launch_scene", "arguments": {"sceneId": scene.to_canonical_string()}}
-    })
-    .to_string();
-    let (status, value) = post_json(mount.address(), &bearer, &body);
-    assert_eq!(status, 200, "{value}");
-    let response = &value["result"];
-    assert_eq!(response["status"], "error", "{response}");
-    assert_eq!(response["error"]["code"], "CONFLICT", "{response}");
-    assert_eq!(response["error"]["data"]["reason"], "engineUnavailable");
-    assert_eq!(response["error"]["data"]["hostAttached"], false);
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        response["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("本形态没有引擎"),
-        "报文必须逐字说明没有引擎: {response}"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

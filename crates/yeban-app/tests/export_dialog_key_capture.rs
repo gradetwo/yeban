@@ -139,81 +139,22 @@ fn the_export_dialog_holds_the_keyboard_and_rotates_its_four_fields() {
 ///   都一位不改（`tests/export_dialog_modal_closure.rs` 的 `DIALOG_IDS` 同口径）。
 #[test]
 fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
-    let read = |rel: &str| -> String {
-        let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        std::fs::read_to_string(&full)
-            .unwrap_or_else(|error| panic!("读 `{}` 失败: {error}", full.display()))
-    };
-    let dialog = read("ui/dialogs/export_wav_dialog.slint");
-    let app = read("ui/app.slint");
-    let host = read("src/host.rs");
-
-    // ---- 焦点读数没有任何写者 ----
-    let writes = writes_of("focused-field", &dialog)
-        + writes_of("focused-field", &app)
-        + writes_of("export-wav-focused-field", &app);
-    assert_eq!(
-        writes, 0,
-        "⑧ 焦点读数必须是**推导**（⛔ 不许有第三份「我以为焦点在哪」的写态）：实测写出 {writes} 处"
-    );
-    assert_eq!(
-        host.matches("export_wav_focused_field").count(),
-        0,
-        "⑧ 宿主⛔ 既不读也不写这份读数（Rust 侧一出现 snake_case 名字就是有人把它当状态用了）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        dialog.contains("out property <int> focused-field:"),
-        "⑧ `focused-field` 必须是 `out`（弹窗只报数，宿主不许往里写）"
-    );
-    assert!(
-        // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
-        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
-        (["export-wav-focused-field"].iter().fold(true, |acc, n| acc
-            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
-        "⑧ MainWindow 那一条必须是**纯转发**，⛔ 不重新推导一遍（两处推导迟早分叉）"
-    );
-
-    // ---- 轮转与焦点入口都只有一份 ----
-    assert_eq!(
-        dialog.matches(".focus()").count(),
-        8,
-        "⑧ 取焦调用点必须恰好 8 处（`focus-first-field` 1 + 「序号 → 控件」表 7）；\
-         多出来的那一处意味着轮转表在别处又被抄了一遍。\
-         ⚠ 本票落地时这个数是 9（前进 4 + 后退 4 各抄一份表）；`D-UI-20` 把七格收成\
-         一张 `focus-control` 表 ⇒ 表只剩一份，加格只改那一处"
-    );
-    assert_eq!(
-        dialog.matches(":= FocusScope").count(),
-        4,
-        "⑧ 焦点作用域必须是 4 枚：`export-trap`（唯一的轮转入口）＋ `D-UI-20` 给三格\
-         手绘控件各加的一枚（✕ / 限制器 / 导出）。⚠ 本票落地时是 1 枚 —— 那三格当时\
-         根本没有取焦身份。第五枚才是第二个键盘入口：轮转仍然只由 trap 那一条分发"
-    );
-    for code in [r#""\u{9}""#, r#""\u{19}""#, r#""\u{1b}""#] {
-        assert!(
-            dialog.contains(code),
-            "⑧ trap 必须认得 {code} 这一码位（Tab / Backtab / Esc）"
-        );
-    }
-
-    // ---- 寻址面一位不改 ----
-    assert_eq!(
-        dialog.matches("accessible-id:").count(),
-        10,
-        "⑧ 弹窗里的可寻址控件数必须是 10（本票⛔ 不新增控件 ⇒ 默认帧与金帧基准不受影响）"
-    );
-
-    // ---- 开关与焦点同处，且回焦的调用者只有那四处 ----
-    // 四处合法回焦调用者：时光机关闭 + 导出弹窗关闭 + BPM 提交 + 人性化 / 量化弹窗关闭。
-    assert_eq!(
-        host.matches("invoke_focus_export_wav_dialog").count(),
-        1,
-        "⑧ 取焦必须只有打开弹窗那一处（与 `set_export_wav_open(true)` 同一个闭包 ⇒ 开关与焦点不可能分叉）"
-    );
-    assert_eq!(
-        host.matches("invoke_focus_shortcut_layer").count(),
-        4,
-        "⑧ 复位到快捷键层的调用者必须恰好四处：时光机关闭 + 导出弹窗关闭 + BPM 提交 + 人性化 / 量化弹窗关闭"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 

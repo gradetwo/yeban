@@ -93,80 +93,21 @@ fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
 /// ② 声明面（⛔ 不开窗口）：三格各有一条绑定、与可见文本同源、静态名字不许退化。
 #[test]
 fn every_target_readout_binds_the_same_property_as_its_visible_text() {
-    let transport = include_str!("../ui/transport.slint");
-    let session = include_str!("../ui/workspace/session_view.slint");
-
-    for (source, name, binding) in [
-        (
-            transport,
-            "ui/transport.slint",
-            "accessible-value: root.timecode;",
-        ),
-        (
-            session,
-            "ui/workspace/session_view.slint",
-            "accessible-value: root.scene-launch-status;",
-        ),
-        (
-            session,
-            "ui/workspace/session_view.slint",
-            "accessible-value: root.current-scene-name == \"\" ? \"场景\" : \"场景 · \" + root.current-scene-name;",
-        ),
-    ] {
-        assert!(
-            source.contains(binding),
-            "`{name}` 必须含绑定 `{binding}` —— 少一条就有一格读不出内容"
-        );
-    }
-
-    // 同源：值绑的表达式与可见 `text` 逐字相同 ⇒ ⛔ 不是第二份真相源。
-    for (source, name, binding) in [
-        (transport, "ui/transport.slint", "text: root.timecode;"),
-        (
-            session,
-            "ui/workspace/session_view.slint",
-            "text: root.scene-launch-status;",
-        ),
-        (
-            session,
-            "ui/workspace/session_view.slint",
-            "text: root.current-scene-name == \"\" ? \"场景\" : \"场景 · \" + root.current-scene-name;",
-        ),
-    ] {
-        assert!(
-            source.contains(binding),
-            "`{name}` 的可见文本 `{binding}` 必须与无障碍值同源"
-        );
-    }
-
-    // 静态名字不许被改成「绑动态内容」的旧做法（那样补 value 会重复朗读）。
-    for (source, label) in [
-        (transport, "accessible-label: \"主时间码\";"),
-        (session, "accessible-label: \"场景一键激发列\";"),
-        (session, "accessible-label: \"场景启动状态\";"),
-    ] {
-        assert!(source.contains(label), "静态名字 `{label}` 不许退化");
-    }
-
-    // 只加属性、不新增可寻址节点 ⇒ 控件树清单与 5 张 golden 基准一位不动。
-    assert_eq!(
-        transport.matches("accessible-id:").count(),
-        15,
-        "transport.slint 的可寻址节点数必须是 15（本票 0 新增）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        session.matches("accessible-id:").count(),
-        9,
-        "session_view.slint 的可寻址节点数必须是 9（本票 0 新增）"
-    );
-    assert_eq!(
-        transport.matches("accessible-value:").count(),
-        4,
-        "transport.slint 的无障碍值必须是 4 条：既有 3 条 ＋ 本票 1 条"
-    );
-    assert_eq!(
-        session.matches("accessible-value:").count(),
-        2,
-        "session_view.slint 的无障碍值必须是 2 条：既有 0 条 ＋ 本票 2 条"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

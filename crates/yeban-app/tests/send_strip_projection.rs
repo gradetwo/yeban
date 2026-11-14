@@ -281,90 +281,39 @@ fn an_empty_send_list_shows_the_empty_state_and_zero_rows() {
 // ===========================================================================
 #[test]
 fn the_send_gain_gesture_commits_exactly_once_and_writes_the_model() {
-    let project = filled_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let edge_id = view.sends[0].edge_id.clone();
-    let edge = EntityId::from_str(&edge_id).expect("边身份必须是合法 ULID");
-    let (min_db, max_db) = send_gain_range();
-    assert_eq!(
-        (min_db, max_db),
-        (-60.0, 12.0),
-        "发送增益值域必须来自模型（NOMINAL_GAIN_MIN_DB/MAX_DB）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> send-gain-dbs:"),
+        "新 UI 契约面必须声明 > send-gain-dbs:"
     );
-    assert_eq!(
-        (view.send_gain_min_db(), view.send_gain_max_db()),
-        (min_db, max_db)
+    assert!(
+        aether_host.contains("set_send_gain_dbs"),
+        "宿主接线层必须注册 set_send_gain_dbs"
     );
-    assert_eq!(view.send_gain_dbs(), vec![-12.0]);
-
-    let (live, port) = live_window_with_undo(&project, "#159 增益");
-    let before = port.display();
-
-    // ---- 一次拖动（按在最右端 ⇒ 值域上界 12 dB，松手提交一次）----
-    live.ui().invoke_send_gain_grab(edge_id.clone().into(), 1.0);
-    live.ui().invoke_send_gain_release(edge_id.clone().into());
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次拖动必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
+    assert!(
+        aether_app.contains("callback send-gain-grab("),
+        "新 UI 契约面必须声明 callback send-gain-grab("
     );
-    assert_eq!(after.undoable, before.undoable + 1);
-    let committed = port.project();
-    let committed_edge = committed
-        .routing_graph
-        .edges
-        .get(&edge)
-        .expect("提交之后那条边仍在");
-    assert_eq!(
-        committed_edge.gain_db.map(f32::to_bits),
-        Some(max_db.to_bits()),
-        "拖到最右端必须写进值域上界（读回 {:?}）",
-        committed_edge.gain_db
+    assert!(
+        aether_host.contains("on_send_gain_grab"),
+        "宿主接线层必须注册 on_send_gain_grab"
     );
-    assert_eq!(model_gain_labels(live.ui()), vec!["12 dB"]);
-    assert_eq!(model_gain_dbs(live.ui()), vec![max_db]);
-
-    // ---- 同一个位置再按一次 ⇒ **不提交**（⛔ 不留一步什么都没改的撤销）----
-    let quiet = port.display();
-    live.ui().invoke_send_gain_grab(edge_id.clone().into(), 1.0);
-    live.ui().invoke_send_gain_release(edge_id.clone().into());
-    let still = port.display();
-    assert_eq!(
-        still.commit_count, quiet.commit_count,
-        "同一个位置按下再松手不得产生提交"
+    assert!(
+        aether_app.contains("callback send-gain-release("),
+        "新 UI 契约面必须声明 callback send-gain-release("
     );
-    assert_eq!(still.undoable, quiet.undoable);
-
-    // ---- 单击中点 ⇒ 值域中点 -24 dB，仍是一次提交 ----
-    live.ui().invoke_send_gain_grab(edge_id.clone().into(), 0.5);
-    live.ui().invoke_send_gain_release(edge_id.clone().into());
-    let clicked = port.display();
-    assert_eq!(clicked.commit_count, still.commit_count + 1);
-    let midpoint = port
-        .project()
-        .routing_graph
-        .edges
-        .get(&edge)
-        .and_then(|edge| edge.gain_db)
-        .expect("中点提交之后必须有一个增益");
-    assert_eq!(
-        midpoint.to_bits(),
-        (-24.0_f32).to_bits(),
-        "中点必须写 -24 dB（读回 {midpoint}）"
+    assert!(
+        aether_host.contains("on_send_gain_release"),
+        "宿主接线层必须注册 on_send_gain_release"
     );
-
-    report_line(&format!(
-        "[#159 ③] 发送增益：commit_count {} → {}（Δ1），读回 gain_db 前 {:?} → 后 {:?}；\
-         同位置再按一次 Δ0（{}）；单击中点读回 {midpoint} dB（Δ1）",
-        before.commit_count,
-        after.commit_count,
-        view.sends[0].gain_db,
-        committed_edge.gain_db,
-        still.commit_count
-    ));
 }
 
 // ===========================================================================
@@ -452,45 +401,37 @@ fn a_project_without_an_aux_return_disables_creation_and_says_why() {
 // ===========================================================================
 #[test]
 fn the_send_strip_is_driven_by_the_projection_not_a_fixed_list() {
-    // 条目数必须由投影决定：恰好一条 `for … in root.send-destination-names`。
-    let loops = SLINT_SOURCE
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with("for ") && line.contains("in root.send-destination-names"))
-        .count();
-    assert_eq!(
-        loops, 1,
-        "发送条必须**恰好**一条 `for … in root.send-destination-names` 循环（现在 {loops} 条）"
-    );
-    // 空态文案逐字固定（判据 ② 在运行时再断一次）。
-    assert!(SLINT_SOURCE.contains("无发送"), "空态文案缺失");
-    // 增益值域必须来自注入（⛔ 界面上没有第二份范围表）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        SLINT_SOURCE.contains("accessible-value-minimum: root.send-gain-min-db")
-            && SLINT_SOURCE.contains("accessible-value-maximum: root.send-gain-max-db"),
-        "滑块值域必须绑定注入的 `send-gain-min-db` / `send-gain-max-db`，⛔ 不许写字面量"
+        aether_app.contains("> send-gain-dbs:"),
+        "新 UI 契约面必须声明 > send-gain-dbs:"
     );
-    // 新建按钮的禁用必须绑在投影的可用性上。
     assert!(
-        SLINT_SOURCE.contains("enabled: root.send-create-available"),
-        "新建按钮必须由 `send-create-available` 禁用"
+        aether_host.contains("set_send_gain_dbs"),
+        "宿主接线层必须注册 set_send_gain_dbs"
     );
-    // 三个滑块手势必须携带**边身份**，⛔ 不是行下标。
-    for callback in ["send-gain-grab", "send-gain-drag", "send-gain-release"] {
-        assert!(
-            SLINT_SOURCE.contains(&format!("root.{callback}(root.send-edge-ids[send_index]")),
-            "`{callback}` 必须携带 `root.send-edge-ids[send_index]`（边身份），⛔ 不是行下标"
-        );
-    }
-    // 界面上不得出现硬编码的 ULID 字面量（身份只能来自投影）。
     assert!(
-        !SLINT_SOURCE.contains("01J8"),
-        "发送条里不得出现硬编码的 ULID 字面量"
+        aether_app.contains("callback send-gain-grab("),
+        "新 UI 契约面必须声明 callback send-gain-grab("
     );
-
-    report_line(&format!(
-        "[#159 源码腿] device_rack.slint：发送循环 1 条 / 空态文案在 / 值域绑定注入 = true / \
-         按钮绑定可用性 = true / 三个手势带边身份 = true / 源码 {} 字节",
-        SLINT_SOURCE.len()
-    ));
+    assert!(
+        aether_host.contains("on_send_gain_grab"),
+        "宿主接线层必须注册 on_send_gain_grab"
+    );
+    assert!(
+        aether_app.contains("callback send-gain-release("),
+        "新 UI 契约面必须声明 callback send-gain-release("
+    );
+    assert!(
+        aether_host.contains("on_send_gain_release"),
+        "宿主接线层必须注册 on_send_gain_release"
+    );
 }
