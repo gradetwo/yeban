@@ -13,6 +13,12 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <length> cycle-end-px: 0px;
     in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
     in-out property <length> headers-width: 216px; // 支持拖拽调整大小 [min: 170px, max: 300px]
+    // ⭐ 轨道行几何 / 内容高 / 横向滚动：全部来自宿主投影（track-ys / track-heights /
+    // arrangement-sheet-height / roll-scroll-x），界面⛔ 不自己乘行高、⛔ 不自己算内容高。
+    in-out property <[length]> track-ys: [];
+    in-out property <[length]> track-heights: [];
+    in-out property <length> sheet-height: 0px;
+    in-out property <length> scroll-x: 0px;
 
     callback select-track(int);
     callback toggle-mute(int);
@@ -21,6 +27,11 @@ export component ArrangementViewport inherits Rectangle {
     callback add-track();
     callback audition-chord(string);
     callback scrub-timeline(length);
+    /// 滚轮分流：`shift` = 横向滚动、`alt` = 纵向缩放、`shift+alt` = 横向缩放。
+    /// 无修饰由界面 `reject` ⇒ 冒泡给 `Flickable` 做纵向滚动。
+    callback arrangement-wheel(length, length, bool, bool);
+    callback zoom-h-step(bool);
+    callback zoom-v-step(bool);
 
     background: Theme.bg-canvas;
     clip: true;
@@ -196,7 +207,7 @@ export component ArrangementViewport inherits Rectangle {
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个
                             // 水平刻度（`blk.start_px = tick / ticks_per_pixel`）。
                             for i in root.bar-count : Text {
-                                x: i * root.bar-width-px;
+                                x: i * root.bar-width-px - root.scroll-x;
                                 y: 0px;
                                 width: root.bar-width-px;
                                 height: parent.height;
@@ -212,7 +223,7 @@ export component ArrangementViewport inherits Rectangle {
                             // 循环指示带：区间来自视图态（`cycle-start/end-ticks`），
                             // ⛔ 不再是写死的 `x: 150px / width: 220px`。
                             if root.is-looping && root.cycle-end-px > root.cycle-start-px : Rectangle {
-                                x: root.cycle-start-px;
+                                x: root.cycle-start-px - root.scroll-x;
                                 y: 0px;
                                 width: root.cycle-end-px - root.cycle-start-px;
                                 height: 3px;
@@ -222,7 +233,68 @@ export component ArrangementViewport inherits Rectangle {
 
                             TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.scrub-timeline(self.mouse-x); }
+                                clicked => { root.scrub-timeline(self.mouse-x + root.scroll-x); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
+
+                            // ⭐ 可见缩放控件：横向 / 纵向各一对（与滚轮、快捷键同一条宿主入口
+                            // `zoom-h-step` / `zoom-v-step`）。滚轮 / 快捷键仍可用。
+                            Rectangle {
+                                x: parent.width - 120px;
+                                y: 2px;
+                                width: 114px;
+                                height: 20px;
+                                background: #0b0e16cc;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: #ffffff14;
+
+                                HorizontalLayout {
+                                    padding-left: 3px;
+                                    padding-right: 3px;
+                                    spacing: 2px;
+                                    alignment: space-between;
+
+                                    Rectangle {
+                                        width: 25px;
+                                        height: 16px;
+                                        border-radius: 2px;
+                                        background: hz-out-touch.has-hover ? #1f2736 : transparent;
+                                        Text { text: "H−"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        hz-out-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(false); } }
+                                    }
+                                    Rectangle {
+                                        width: 25px;
+                                        height: 16px;
+                                        border-radius: 2px;
+                                        background: hz-in-touch.has-hover ? #1f2736 : transparent;
+                                        Text { text: "H+"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        hz-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(true); } }
+                                    }
+                                    Rectangle {
+                                        width: 25px;
+                                        height: 16px;
+                                        border-radius: 2px;
+                                        background: vt-out-touch.has-hover ? #1f2736 : transparent;
+                                        Text { text: "V−"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        vt-out-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-v-step(false); } }
+                                    }
+                                    Rectangle {
+                                        width: 25px;
+                                        height: 16px;
+                                        border-radius: 2px;
+                                        background: vt-in-touch.has-hover ? #1f2736 : transparent;
+                                        Text { text: "V+"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        vt-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-v-step(true); } }
+                                    }
+                                }
                             }
                         }
 
@@ -532,14 +604,23 @@ export component ArrangementViewport inherits Rectangle {
         // TRACK LANES CONTAINER
         Rectangle {
             vertical-stretch: 1;
+            clip: true;
 
-            VerticalLayout {
-                spacing: 0px;
+            // ⭐ 轨道一多（16 轨 × 56px = 896px）时，固定高度的 VerticalLayout 会把
+            // 内容撑出工作区、把下方钢琴卷帘/混音台顶出窗口。这里改成纵向 Flickable：
+            // 内容高 = 投影的 `sheet-height`，行 y / 行高 = 投影的 `track-ys` /
+            // `track-heights` ⇒ 轨道再多也只在自己的窗口里滚动，⛔ 不挤占下坞。
+            Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: max(self.height, root.sheet-height);
+                interactive: true;
 
-                for trk in root.tracks : Rectangle {
-                    vertical-stretch: 1;
-                    min-height: 64px;
-                    max-height: 160px;
+                for trk[idx] in root.tracks : Rectangle {
+                    y: root.track-ys[idx];
+                    height: root.track-heights[idx];
+                    width: parent.width;
                     background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.14) : transparent;
                     border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : #ffffff0a;
                     border-width: trk.id == root.selected-track-id ? 1.5px : 1px;
@@ -786,7 +867,17 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                             }
-                            TouchArea { clicked => { root.select-track(trk.id); } }
+                            TouchArea {
+                                clicked => { root.select-track(trk.id); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
                         }
 
                         // Splitter Divider between Left Track Header and Timeline Lane
@@ -818,7 +909,7 @@ export component ArrangementViewport inherits Rectangle {
                             // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
                             // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
                             for i in root.bar-count : Rectangle {
-                                x: i * root.bar-width-px;
+                                x: i * root.bar-width-px - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
@@ -828,7 +919,7 @@ export component ArrangementViewport inherits Rectangle {
                             // Timeline Clips for this track
                             for blk in root.timeline-blocks : Rectangle {
                                 if blk.track_id == trk.id : Rectangle {
-                                    x: blk.start_px;
+                                    x: blk.start_px - root.scroll-x;
                                     y: 4px;
                                     width: blk.width_px;
                                     height: Math.max(52px, parent.height - 8px);
@@ -986,7 +1077,17 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
 
-                            TouchArea { clicked => { root.select-track(trk.id); } }
+                            TouchArea {
+                                clicked => { root.select-track(trk.id); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
                         }
 
                         // Splitter Divider between Timeline Lane and Right Track Header
@@ -1241,7 +1342,17 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                             }
-                            TouchArea { clicked => { root.select-track(trk.id); } }
+                            TouchArea {
+                                clicked => { root.select-track(trk.id); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1319,14 +1430,13 @@ export component ArrangementViewport inherits Rectangle {
                         Rectangle {
                             horizontal-stretch: 1;
 
-                            // Grid lines continuing down
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                spacing: 64px;
-                                for _ in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] : Rectangle {
-                                    width: 1px;
-                                    background: #ffffff04;
-                                }
+                            // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
+                            for _i in root.bar-count : Rectangle {
+                                x: _i * root.bar-width-px - root.scroll-x;
+                                y: 0px;
+                                width: 1px;
+                                height: parent.height;
+                                background: #ffffff04;
                             }
 
                             HorizontalLayout {
@@ -1416,7 +1526,7 @@ export component ArrangementViewport inherits Rectangle {
 
             // Animated Playhead Line (adaptive offset relative to left/right headers)
             Rectangle {
-                x: (Theme.track-headers-on-right ? 0px : root.headers-width) + root.playhead-px;
+                x: (Theme.track-headers-on-right ? 0px : root.headers-width) + root.playhead-px - root.scroll-x;
                 y: 0px;
                 width: 2px;
                 height: parent.height;
