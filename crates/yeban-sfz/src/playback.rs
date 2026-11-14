@@ -895,7 +895,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn filter_cutoff_folds_keytrack_and_veltrack_in_cents() {
         // 没有 `cutoff` ⇒ None（禁用）；`cutoff=0` ⇒ None（ARIA 口径）。
         let plain = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
