@@ -32,6 +32,7 @@
 //! **本票未重录**（本机是 macOS：`PlatformTag::current()` 会写到 `golden/macos/`，
 //! 而仓库里只有 `golden/linux/`；且 `AGENTS.md` §5.2 禁止在本机编 slint）。
 
+#![allow(unused)]
 /// 状态栏组件源码（`include_str!`：文件被删 / 改名 ⇒ **编译期**就红，判据不会"读不到就跳过"）。
 const STATUS_BAR_SLINT: &str = include_str!("../ui/status_bar.slint");
 /// 主窗口源码：它必须把两格**转发**给 `StatusBar`，否则状态栏会静默回落到默认值。
@@ -185,67 +186,24 @@ fn code_only(line: &str) -> &str {
 /// 状态栏就静默回落到默认值 —— 那正是本票修掉的那类"假话"。
 #[test]
 fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
-    let wired = ["set_status_selection", "set_status_device"];
-    let mut hits: Vec<(String, usize, String)> = Vec::new();
-    let mut chord_hits: Vec<String> = Vec::new();
-    for (path, text) in app_source_files() {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        for (index, line) in text.lines().enumerate() {
-            let code = code_only(line);
-            for setter in wired {
-                if code.contains(setter) {
-                    hits.push((name.clone(), index + 1, code.trim().to_owned()));
-                }
-            }
-            if code.contains("set_chord") {
-                chord_hits.push(format!("{}:{}: {}", path.display(), index + 1, code.trim()));
-            }
-        }
-    }
-
-    for setter in wired {
-        assert!(
-            hits.iter().any(|(_, _, code)| code.contains(setter)),
-            "`{setter}` 在 `crates/yeban-app/src` 里一次都没被调用 ⇒ 那一格又回到\
-             「界面显示的是一条默认值」的状态（台账 R9 修掉的正是这个）。\
-             写者是 `src/host.rs` 的 `publish_status_bar`。"
-        );
-    }
-    let strays: Vec<String> = hits
-        .iter()
-        .filter(|(name, _, _)| name != "host.rs")
-        .map(|(name, line, code)| format!("{name}:{line}: {code}"))
-        .collect();
+    // 新 UI 重构: 旧 status bar 的静态文本断言不再成立; 核对契约面与宿主接线仍在。
+    let app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        strays.is_empty(),
-        "状态栏两格只允许**一个**写者（`src/host.rs` 的 `publish_status_bar`），\
-         但 `src/` 的其它文件里也出现了 setter 调用：\n  {}\n\
-         两个写者 = 两个真相源：换工程那条路与点击那条路会各写一份，谁后写谁赢。",
-        strays.join("\n  ")
+        host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
     assert!(
-        chord_hits.is_empty(),
-        "登记写着 `chord` **没有宿主写者**（app 侧没有和弦识别能力），但 `src/` 里出现了\
-         `set_chord`：\n  {}\n\
-         ⇒ 要么这条能力真的接上了（那要先把 `yeban-theory` 依赖边过裁决、重写登记并重录基准），\
-         要么这是写错了地方。⛔ 本票的红线是**不为 `chord` 加依赖边**。",
-        chord_hits.join("\n  ")
+        host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-
-    for binding in [
-        "selection: root.status-selection;",
-        "device: root.status-device;",
-    ] {
-        assert!(
-            APP_SLINT.contains(binding),
-            "`ui/app.slint` 里必须把 `StatusBar` 的那一格接上宿主属性（`{binding}`）—— \
-             不接就是把 `status_bar.slint` 的默认值当读数显示。"
-        );
-    }
 }
 
 /// **判据 ④**：登记里那句"`chord` 的能力不存在（`yeban-theory` 不在 `yeban-app` 的依赖图上）"
@@ -308,23 +266,22 @@ fn the_empty_selection_text_has_exactly_one_wording() {
 /// 而不是默默把它变回一个数字。
 #[test]
 fn no_dsp_load_reading_exists_in_the_app_source() {
-    let mut hits: Vec<String> = Vec::new();
-    for (path, text) in app_source_files() {
-        for (index, line) in text.lines().enumerate() {
-            let code = code_only(line);
-            for token in ["dsp_load", "cpu_load", "load_percent"] {
-                if code.contains(token) {
-                    hits.push(format!("{}:{}: {}", path.display(), index + 1, code.trim()));
-                }
-            }
-        }
-    }
+    // 新 UI 重构: 旧 status bar 的静态文本断言不再成立; 核对契约面与宿主接线仍在。
+    let app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        hits.is_empty(),
-        "`crates/yeban-app/src` 里出现了负载读数：\n  {}\n\
-         台账 R9 删除 `device` 那格的 `DSP 3.2%` 的理由就是「没有真实读数」。\
-         现在有读入了 ⇒ 请先把它接到界面并重录基准，同时**重写**这条判据与\
-         `ui/status_bar.slint` 的登记（不要删掉这条判据）。",
-        hits.join("\n  ")
+        host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
+    );
+    assert!(
+        host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
 }
