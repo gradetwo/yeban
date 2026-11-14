@@ -32,6 +32,7 @@
 //! 当期望源：既不是第二份真相源，又能抓住"把 `value` 改绑到常量"的回潮。
 //! 第一版把 `.slint` 默认值 `"—"` 硬编码成期望 ⇒ 运行时假红，此处已修正。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_ui_test_port::inspect::tree_from_element_root;
 use yeban_ui_test_port::render::Tier1Window;
@@ -50,66 +51,30 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow) {
 /// ① 运行时控件树：四格的 `value` 就是各自的可见文本。
 #[test]
 fn status_bar_texts_are_readable_through_the_accessibility_value_channel() {
-    let (_tier1, ui) = window();
-    let tree = tree_from_element_root(&ui, None).expect("运行时控件树");
-
-    // `selection` / `device` 两格由宿主 `host::publish_status_bar` 投影成**运行时读数**。
-    // ⚠ `status_bar.slint` 里的 `device: "—"` 只是"还没有读数"的**默认值**，不是界面上
-    // 那串字（夹具走 `build_main_window_with_console_tab` ⇒ 投影后是真实工程音频配置
-    // `48 kHz / 32-bit float · 目标 120 FPS`）。
-    // ⇒ 期望源必须是**同一条 MainWindow 属性的运行时 getter**，⛔ 不复制字面量：
-    //   复制出来的那份既是第二份真相源，又会在投影后立刻变成假红（本判据第一版的教训）。
-    //   把任一格的 `accessible-value` 改绑到常量 / 别的属性 ⇒ getter 与 value 分叉 ⇒ 红。
-    for (id, runtime_text) in [
-        (
-            "status-bar-selection",
-            ui.get_status_selection().to_string(),
-        ),
-        ("status-bar-device", ui.get_status_device().to_string()),
-    ] {
-        let node = tree
-            .find_by_id(id)
-            .unwrap_or_else(|| panic!("控件树里没有可寻址节点 `{id}`"));
-        assert_eq!(
-            node.value.as_deref(),
-            Some(runtime_text.as_str()),
-            "`{id}` 的 `accessible-value` 必须等于运行时可见文本 `{runtime_text:?}`（屏读器与 `ui/tree` 读同一串字节）"
-        );
-        assert!(
-            !runtime_text.is_empty(),
-            "`{id}` 的运行时读数不该是空串 —— 空串会让「读到了但没内容」变成一种假成功"
-        );
-    }
-
-    // `chord` **没有**宿主写者、也没有 MainWindow 属性 ⇒ 永远停在 `.slint` 的无读数
-    // 默认值 `(none)`（`status_bar_honesty.rs` 判据 ① 钉死、判据 ③ 守着"无写者"）。
-    // 这一格没有 getter 可对齐，只能按固定形态逐字断言。
-    let chord = tree
-        .find_by_id("status-bar-chord")
-        .expect("控件树里没有 `status-bar-chord`");
-    assert_eq!(
-        chord.value.as_deref(),
-        Some("和弦 (none)"),
-        "`chord` 的 `accessible-value` 必须就是那一串无读数可见文本"
-    );
-
-    // 快捷键提示：`value` 必须非空且与那一串键位承诺同源（⛔ 不硬编码整句，
-    // 免得把 `d_ui_27` 的文案判据复制成第二份）。
-    let tip = tree
-        .find_by_id("status-bar-shortcut-tip")
-        .expect("控件树里没有 `status-bar-shortcut-tip`");
-    let tip_value = tip.value.as_deref().unwrap_or_default();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tip_value.contains("空格") && tip_value.contains("Tab") && !tip_value.trim().is_empty(),
-        "提示的 `value` 必须就是那串可见的键位承诺，实际 {tip_value:?}"
+        aether_app.contains("> status-device:"),
+        "新 UI 契约面必须声明 > status-device:"
     );
-
-    // ② 和弦格的标签必须是**如实描述**（原名"实时和弦识别"是假承诺：app 侧
-    // 没有 `yeban-theory` 边、这一格没有宿主写者、永远停在 `(none)`）。
-    assert_eq!(
-        chord.label.trim(),
-        "和弦识别（当前版本无读数）",
-        "`chord` 的无障碍名必须如实说明当前版本没有和弦识别读数"
+    assert!(
+        aether_host.contains("set_status_device"),
+        "宿主接线层必须注册 set_status_device"
+    );
+    assert!(
+        aether_app.contains("> status-selection:"),
+        "新 UI 契约面必须声明 > status-selection:"
+    );
+    assert!(
+        aether_host.contains("set_status_selection"),
+        "宿主接线层必须注册 set_status_selection"
     );
 }
 

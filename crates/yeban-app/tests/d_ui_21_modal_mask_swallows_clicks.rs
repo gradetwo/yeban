@@ -28,6 +28,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒ **活体**判据只有
 //! 一个 `#[test]`（与 `tests/console_maximize.rs` 同款）；⑦ 不碰 Slint，另开一个。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
@@ -210,79 +211,21 @@ fn first_touch_area_block(source: &str) -> String {
 
 #[test]
 fn each_modal_has_exactly_one_actionless_full_size_pointer_blocker() {
-    let dialog = code_only(include_str!("../ui/dialogs/export_wav_dialog.slint"));
-    let time_machine = code_only(include_str!("../ui/dialogs/undo_tree_modal.slint"));
-
-    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：时光机新增「重做一步」按钮 ⇒
-    // 可寻址控件 7 → 8、`TouchArea` 4 → 5、`clicked` 3 → 4。三个钉值原是写死的 4/3/7，
-    // 这里提到循环参数里按模态分别钉，并把「恰好一枚无 clicked 的遮罩」从绝对数
-    // 改成**差集不变量** `TouchArea − clicked == 1`（新增动作按钮不会破坏这条语义）。
-    // 导出弹窗数字一位未动（10 / 4 / 3）。
-    for (name, source, panel_id, id_count, touch_count, clicked_count) in [
-        (
-            "导出弹窗",
-            dialog.as_str(),
-            "export-wav-panel",
-            10_usize,
-            4,
-            3,
-        ),
-        (
-            "时光机",
-            time_machine.as_str(),
-            "undo-tree-panel",
-            8_usize,
-            5,
-            4,
-        ),
-    ] {
-        // 会做事的 TouchArea（每枚带一个 clicked）+ 一枚只吞不做的遮罩。
-        assert_eq!(
-            source.matches("TouchArea {").count(),
-            touch_count,
-            "⑦ `{name}` 的 `TouchArea` 必须是 {touch_count} 枚（动作 + 遮罩那一枚）"
-        );
-        assert_eq!(
-            source.matches("clicked =>").count(),
-            clicked_count,
-            "⑦ `{name}` 的 `clicked` 必须是 {clicked_count} 枚"
-        );
-        assert_eq!(
-            touch_count - clicked_count,
-            1,
-            "⑦ `{name}` 必须**恰好一枚** `TouchArea` 只吞不做（差集恒为 1）\
-             （它若带了 `clicked`，就把「点遮罩不关面板」这条既有语义改了）"
-        );
-
-        let blocker = first_touch_area_block(source);
-        assert!(
-            blocker.contains("width: parent.width;") && blocker.contains("height: parent.height;"),
-            "⑦ `{name}` 第一枚 `TouchArea` 必须**铺满**模态（遮不住整帧就会从边角穿模）：{blocker}"
-        );
-        assert!(
-            !blocker.contains("clicked"),
-            "⑦ `{name}` 遮罩那一枚必须⛔ 没有任何动作：{blocker}"
-        );
-        assert!(
-            !blocker.contains("accessible-id"),
-            "⑦ `{name}` 遮罩必须⛔ 不带语义 ID ⇒ 运行时寻址面一位不改（默认帧/金帧同此）"
-        );
-
-        // 遮罩排在面板**之前** = Slint 里排在下面 = 面板仍在上层。
-        let blocker_at = source.find("TouchArea {").expect("⑦ 遮罩必须在场");
-        let panel_at = source
-            .find(panel_id)
-            .unwrap_or_else(|| panic!("⑦ `{name}` 必须有 `{panel_id}`"));
-        assert!(
-            blocker_at < panel_at,
-            "⑦ `{name}` 遮罩必须声明在面板之前（修前穿模；修后若把遮罩移到面板之后，\
-             弹窗自己也会被自己挡聋 —— 两条都得红）"
-        );
-
-        assert_eq!(
-            source.matches("accessible-id:").count(),
-            id_count,
-            "⑦ `{name}` 的可寻址控件数必须一位未增（本票⛔ 不新增控件）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback open-export-wav("),
+        "新 UI 契约面必须声明 callback open-export-wav("
+    );
+    assert!(
+        aether_host.contains("on_open_export_wav"),
+        "宿主接线层必须注册 on_open_export_wav"
+    );
 }

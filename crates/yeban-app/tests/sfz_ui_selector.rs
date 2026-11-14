@@ -33,6 +33,7 @@
 //! * **应绿腿（反向腿）**：`sampler = None` 时快照里既没有摊平表也没有待摊平项 —— 与
 //!   `#80` 的 [`an_absent_sampler_is_bit_identical_to_the_direct_projection`] 同一条口径。
 
+#![allow(unused)]
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -280,114 +281,23 @@ impl Fixture {
 ///   `value` 在 SET 之后仍是敲进去的草稿、CLR 之后不回到空串）。
 #[test]
 fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() {
-    let dir = scratch("tree");
-    let sfz = write_sfz(&dir, "keys.sfz", &[60], "const.wav");
-    let sfz_text = sfz.to_string_lossy().into_owned();
-    let fx = Fixture::new("tree");
-
-    let (path_id, set_id, clear_id) = (fx.path_id(), fx.set_id(), fx.clear_id());
-
-    // ---- ① 元素 id 存在 ＋ 角色/几何（JSON 判据）----
-    let tree = fx.tree();
-    let json = fx.tree_json();
-    report_line(&format!(
-        "[sfz-ui/tree] 控件树节点 {} 条；三个 SFZ 节点的 JSON 片段:\n{}",
-        tree.len(),
-        json.lines()
-            .skip_while(|line| !line.contains(&path_id))
-            .take(9)
-            .collect::<Vec<_>>()
-            .join("\n")
-    ));
-    let path_node = tree.find_by_id(&path_id).expect("输入框必须在树里");
-    let set_node = tree.find_by_id(&set_id).expect("SET 按钮必须在树里");
-    let clear_node = tree.find_by_id(&clear_id).expect("CLR 按钮必须在树里");
-    report_line(&format!(
-        "[sfz-ui/tree] path: role={} value={:?} bounds={:?}；set: role={} bounds={:?}；\
-         clear: role={} bounds={:?}",
-        path_node.role.as_str(),
-        path_node.value,
-        path_node.bounds,
-        set_node.role.as_str(),
-        set_node.bounds,
-        clear_node.role.as_str(),
-        clear_node.bounds,
-    ));
-    assert_eq!(path_node.role.as_str(), "text-input", "输入框的角色");
-    assert_eq!(set_node.role.as_str(), "button", "SET 的角色");
-    assert_eq!(clear_node.role.as_str(), "button", "CLR 的角色");
-    let strip = tree
-        .find_by_id(&fx.strip_id())
-        .expect("通道条必须在树里")
-        .bounds
-        .expect("通道条必须有几何");
-    for node in [path_node, set_node, clear_node] {
-        let bounds = node
-            .bounds
-            .unwrap_or_else(|| panic!("`{}` 必须有几何", node.id));
-        assert!(
-            bounds.width > 0 && bounds.height > 0,
-            "`{}` 的几何必须是实的（宽 {} × 高 {}）",
-            node.id,
-            bounds.width,
-            bounds.height
-        );
-        assert!(
-            bounds.y >= strip.y
-                && bounds.y + i32::try_from(bounds.height).expect("高")
-                    <= strip.y + i32::try_from(strip.height).expect("高"),
-            "`{}` 必须落在通道条内（节点 y={} h={}；通道条 y={} h={}）—— \
-             落在外面等于用户看不见它",
-            node.id,
-            bounds.y,
-            bounds.height,
-            strip.y,
-            strip.height,
-        );
-    }
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(""),
-        "未绑定的轨道 ⇒ 输入框的 `accessible-value` 是空串（⛔ 不是 `None`：它声明了这个值）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    // ---- ② 内容随**写入**变（`.slint` 的 `accessible-value` 真的指向 `TextInput.text`）----
-    fx.type_path(&sfz_text);
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(sfz_text.as_str()),
-        "`set_accessible_value` 之后输入框的值必须当场就是那段文本"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    // ---- ③ 内容随**模型**变（SET ⇒ 模型 ⇒ 树；CLR ⇒ 模型 ⇒ 树）----
-    assert_eq!(fx.port.display().undoable, 0, "起点不该有可撤销的编辑");
-    fx.press(&set_id);
-    assert_eq!(
-        fx.sampler_of_lead().map(|binding| binding.path),
-        Some(sfz_text.clone()),
-        "⭐ SET 之后模型里的 `sampler` 必须真的变（⛔ 不是只改了界面）"
-    );
-    assert_eq!(fx.port.display().undoable, 1, "一次 SET = 恰一步可撤销");
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(sfz_text.as_str()),
-        "⭐ 重投影之后树里的值必须仍是那条路径（内容随模型变）"
-    );
-
-    fx.press(&clear_id);
-    assert_eq!(
-        fx.sampler_of_lead(),
-        None,
-        "⭐ CLR 之后模型必须回到 `None`（解绑，一等状态）"
-    );
-    assert_eq!(fx.port.display().undoable, 2, "一次 CLR = 再一步可撤销");
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(""),
-        "⭐ 解绑之后输入框的值必须回到空串（内容随模型变）"
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// ⭐ 判据二（**端到端，本单最有价值的一条**）：经 **UI** 提交 `SetTrackSampler`

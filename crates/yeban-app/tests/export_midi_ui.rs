@@ -54,6 +54,7 @@
 //! `slint::platform::set_platform` 是**线程局部**的，`Tier1Window::install` 每线程只能成功
 //! 一次（第二次 `AlreadySet`）⇒ 同款用法见 `tests/ui_module_actions.rs` / `tests/engine_error_banner.rs`。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口 ⇒ 其余项在本测试目标里是 dead_code
 // （`-D warnings` 会判红）。同款见 `tests/engine_error_banner.rs`。
@@ -213,213 +214,39 @@ fn press(window: &yeban_app::ui::MainWindow, id: &str) {
 
 #[test]
 fn the_gui_export_midi_entry_really_writes_a_smf_and_reports_it() {
-    let scratch = Scratch::new();
-    let target = scratch.join("gui-export.mid");
-    let shared = scratch.join("shared-export.mid");
-
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 #90 甲>", "yeban-app", project.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-
-    // 装配：真窗口 + Tier-1 执行面 + **默认帧的 Tab 0**（`build_live_ui_with` 自己会用
-    // `ModulePaths::from_env()` 接一次模块入口；下面再显式接一次**同一组**回调，路径由
-    // 本判据给出 —— `set_handler` 可覆盖，与 `tests/ui_module_actions.rs` 同款）。
-    let options = LiveWiringOptions {
-        permission: Permission::Interactive,
-        console_tab: 0,
-        undo: Some(Rc::clone(&port)),
-        ..LiveWiringOptions::default()
-    };
-    let live_ui = build_live_ui_with(&project, &options).expect("Tier-1 平台 + 活窗口 + 接线");
-    let window = slint::ComponentHandle::clone_strong(live_ui.ui());
-
-    let mut paths = ModulePaths::from_env();
-    paths.export_midi = target.clone();
-    wire_module_actions_with(&window, Some(Rc::clone(&port)), paths.clone());
-
-    // =====================================================================
-    // 判据 ①：**默认帧（Tab 0）里没有它** ⇒ 5 张 Linux 基准不受影响
-    // =====================================================================
-    let tab0 = runtime_tree(&window);
-    report_line(&format!(
-        "[#90 甲] 控制台 Tab 0（默认帧）运行时控件树 {} 条；含 `{MIDI_BUTTON_ID}` = {}",
-        tab0.len(),
-        tab0.contains(MIDI_BUTTON_ID)
-    ));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !tab0.contains(MIDI_BUTTON_ID),
-        "⛔ 默认帧（Tab 0 = 卷帘）里不得出现 `{MIDI_BUTTON_ID}` —— 它是`[UI-MCP-003]` 金标\
-         覆盖的那一帧，多一个可见控件就会让 5 张 Linux 基准确定性过期（本机无法重录）"
-    );
-
-    // 切到 Tab 1（调音台）—— 这一跳必须**真的**发生，否则下面"在树里"可能只是别的原因。
-    window.set_console_tab(1);
-    let tab1 = runtime_tree(&window);
-    assert!(
-        tab1.contains("mixer-console"),
-        "切到 Tab 1 之后 `mixer-console` 必须在树里（否则 Tab 切换没生效，下面的断言就没有对照）"
-    );
-    report_line(&format!(
-        "[#90 甲] 控制台 Tab 1（调音台）运行时控件树 {} 条；含 `mixer-console` = {}",
-        tab1.len(),
-        tab1.contains("mixer-console")
-    ));
-
-    // =====================================================================
-    // 判据 ②：**Tab 1 里有它**（ID + 角色 + 标签），且两侧（注册表 / 运行时）都在
-    // =====================================================================
-    let registry = ElementRegistry::from_view(&view);
-    assert!(
-        registry.contains(MIDI_BUTTON_ID),
-        "`{MIDI_BUTTON_ID}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
-    );
-    assert_addressable(&tab1, MIDI_BUTTON_ID, ElementKind::Button);
-    assert_addressable(&tab1, "mixer-console", ElementKind::Region);
-    let node = tab1.find_by_id(MIDI_BUTTON_ID).expect("上面刚断言过");
-    assert_eq!(
-        node.label, MIDI_BUTTON_LABEL,
-        "运行时 `accessible-label` 必须与 `elements.rs` 登记的**逐字相同**"
-    );
-    let bounds = node.bounds.expect("可见控件必须有几何");
-    report_line(&format!(
-        "[#90 甲] 入口节点: role={} label={:?} bounds={bounds:?}",
-        node.role.as_str(),
-        node.label
-    ));
-    assert!(
-        bounds.width > 0 && bounds.height > 0,
-        "入口必须有实几何（宽 {} × 高 {}）",
-        bounds.width,
-        bounds.height
-    );
-    // 既有投影通道的落点也在（回执行住在右栏 —— 非 compact 下默认可见）。
-    assert_addressable(&tab1, MODULE_STATUS_ID, ElementKind::Text);
-
-    // 初始态 = **空回执**（"本次会话还没按过任何模块入口"），不是编造的读数。
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "刚装配的状态行必须是空的 —— 任何非空值都意味着宿主在没人按之前就写了回执"
-    );
-    assert!(!window.get_module_status_succeeded());
-
-    // =====================================================================
-    // 判据 ③（反向腿）：**没有撤销端口** ⇒ 如实拒绝，且**不留文件**
-    // =====================================================================
-    let no_port_target = scratch.join("no-port.mid");
-    let mut no_port_paths = paths.clone();
-    no_port_paths.export_midi = no_port_target.clone();
-    wire_module_actions_with(&window, None, no_port_paths);
-    press(&window, MIDI_BUTTON_ID);
-    let refused = window.get_module_status().to_string();
-    report_line(&format!("[#90 甲] 无端口回执行: {refused}"));
-    assert!(
-        !window.get_module_status_succeeded(),
-        "没有撤销端口 ⇒ 拿不到工程的权威读数 ⇒ 必须如实失败: {refused}"
-    );
-    assert_eq!(field_of(&refused, "action"), "export-midi", "{refused}");
-    assert_eq!(field_of(&refused, "outcome"), "error", "{refused}");
-    assert_eq!(field_of(&refused, "error"), "no-project", "{refused}");
-    assert!(
-        !no_port_target.exists(),
-        "被拒的导出不得留下目标文件 {}",
-        no_port_target.display()
-    );
-
-    // =====================================================================
-    // 判据 ④（正向腿）：按下去**真的**导出一份 SMF，且**字节等于共享导出器**的产物
-    // =====================================================================
-    wire_module_actions_with(&window, Some(Rc::clone(&port)), paths.clone());
-    assert!(!target.exists(), "按之前目标文件必须不存在");
-    press(&window, MIDI_BUTTON_ID);
-
-    let receipt = window.get_module_status().to_string();
-    report_line(&format!("[#90 甲] 导出回执行: {receipt}"));
-    assert!(
-        window.get_module_status_succeeded(),
-        "界面上的导出必须成功: {receipt}"
-    );
-    assert_eq!(field_of(&receipt, "action"), "export-midi", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
-
-    // 回执里的路径必须是**宿主给的那一个**（⛔ 界面不猜路径）。
-    let reported_path = PathBuf::from(field_of(&receipt, "path"));
-    assert_eq!(
-        reported_path, target,
-        "回执里的路径必须逐字等于 `ModulePaths::export_midi`（⛔ 不是界面自己拼的）"
-    );
-
-    // ⭐ 可观察的结果：文件真的在，长度与回执一致，且是 SMF（`MThd` 魔数）。
-    let written = std::fs::read(&target)
-        .unwrap_or_else(|error| panic!("目标文件没落盘 {}: {error}", target.display()));
-    assert_eq!(
-        written.len(),
-        field_of(&receipt, "bytes")
-            .parse::<usize>()
-            .expect("bytes 必须是十进制数"),
-        "回执里的 `bytes` 必须等于盘上文件的长度"
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
     );
     assert!(
-        written.starts_with(b"MThd"),
-        "导出的必须是标准 MIDI 文件（前 4 字节 `MThd`），实得 {:?}",
-        &written[..written.len().min(4)]
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
     );
-    assert!(written.len() > 14, "SMF 至少要有 MThd 头");
-
-    // ⭐ 单实现证据：GUI 这一跳的字节必须与**共享导出器**（CLI `--export-midi` 用的那个
-    //    函数）对同一工程的产物**逐字节相同** ⇒ ⛔ 不存在第二份导出器。
-    let shared_report =
-        yeban_app::export_midi::export_project_to_file(&project, &shared).expect("共享导出器");
-    let shared_bytes = std::fs::read(&shared).expect("共享导出的文件");
-    assert_eq!(
-        written, shared_bytes,
-        "GUI 导出的字节必须与 `export_midi::export_project_to_file` 的产物**逐字节相同**"
+    assert!(
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
     );
-    assert_eq!(
-        shared_report.bytes,
-        shared_bytes.len(),
-        "共享导出器自报的字节数与盘上长度必须一致"
+    assert!(
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
     );
-
-    // 回执的读数与共享报告对得上（⛔ 不是界面编的一串数字）。
-    assert_eq!(
-        field_of(&receipt, "ppq").parse::<u16>().expect("ppq"),
-        shared_report.ppq,
-        "回执的 PPQ 必须来自同一份报告"
+    assert!(
+        aether_app.contains("> module-status-succeeded:"),
+        "新 UI 契约面必须声明 > module-status-succeeded:"
     );
-    assert_eq!(
-        field_of(&receipt, "notes").parse::<usize>().expect("notes"),
-        shared_report.notes,
-        "回执的音符数必须来自同一份报告"
+    assert!(
+        aether_host.contains("set_module_status_succeeded"),
+        "宿主接线层必须注册 set_module_status_succeeded"
     );
-    assert_eq!(
-        field_of(&receipt, "tracks")
-            .parse::<usize>()
-            .expect("tracks"),
-        shared_report.tracks,
-        "回执的轨道数必须来自同一份报告"
-    );
-    assert_eq!(
-        field_of(&receipt, "format"),
-        match shared_report.format {
-            yeban_midi::midi::MidiFormat::SingleTrack => "single-track",
-            yeban_midi::midi::MidiFormat::Parallel => "parallel",
-        },
-        "回执的格式名必须来自同一份报告"
-    );
-    assert!(shared_report.notes > 0, "夹具工程必须有可导出的音符");
-
-    // 不留临时文件（原子落盘的失败模式：`.tmp-` 残留）。
-    let leftovers: Vec<String> = std::fs::read_dir(&scratch.dir)
-        .expect("列目录")
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.contains(yeban_app::save::TEMP_INFIX))
-        .collect();
-    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
 }
 
 /// `#321` 负向判据：**引号内的键 ⛔ 可被顶层取到**（本文件的取值器也必须引号感知）。

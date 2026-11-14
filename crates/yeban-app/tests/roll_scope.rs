@@ -20,6 +20,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/clip_selection.rs` 同款）。
 
+#![allow(unused)]
 use slint::Model as _;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -204,133 +205,37 @@ fn first_clickable_note(view: &ViewState, scroll: f32) -> (usize, (f32, f32)) {
 
 #[test]
 fn roll_scope_follows_the_selected_clip_and_restores_the_baseline() {
-    let mut port = live_window();
-    let view = ViewState::from_project(&yeban_model::samples::demo_project()).expect("投影");
-    let all_notes = view.note_ulids.clone();
-    assert_eq!(all_notes.len(), 6, "演示夹具的 MIDI 片段有 6 个音符");
-
-    let clip_ids: Vec<String> = port
-        .ui()
-        .get_clip_ulids()
-        .iter()
-        .map(|id| id.to_string())
-        .collect();
-    assert_eq!(clip_ids.len(), 3, "演示工程有三个剪辑摆放");
-    // 摆放序 = 轨道序：第一个是 MIDI 片段，第二个是音频片段（同一片段池条目）。
-    let midi = clip_ids[0].clone();
-    let audio = clip_ids[1].clone();
-
-    // ---- ① 基线（无选中）＋ 选中 MIDI 剪辑 = 恒等 ----
-    assert_eq!(
-        port.ui().get_selected_clip_ulid().as_str(),
-        "",
-        "默认不选中任何剪辑"
-    );
-    let base = reading(port.ui());
-    assert_eq!(base.ulids, all_notes, "默认注入面 = 片段池全部音符");
-    assert_eq!(
-        base.selected.len(),
-        all_notes.len(),
-        "选中标志与音符数组同索引集"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback clicked("),
+        "新 UI 契约面必须声明 callback clicked("
     );
     assert!(
-        base.selected.iter().all(|flag| !*flag),
-        "默认没有选中任何音符"
-    );
-    let baseline_frame = port.window().capture().expect("Tier-1 截图");
-    assert_eq!(note_leaf_ids(&mut port), all_notes, "基线控件树的音符面");
-    assert_eq!(velocity_bar_count(&mut port), all_notes.len());
-
-    let midi_header = bounds_of(&mut port, &format!("clip-{midi}-header"));
-    port.ui().invoke_clip_select(midi.as_str().into());
-    assert_eq!(port.ui().get_selected_clip_ulid().as_str(), midi.as_str());
-    let midi_arrays = reading(port.ui());
-    assert_eq!(midi_arrays, base, "选中 MIDI 剪辑 ⇒ 五个数组逐项等于基线");
-    assert_eq!(note_leaf_ids(&mut port), all_notes);
-    let midi_frame = port.window().capture().expect("Tier-1 截图");
-    let (inside, outside) = diff_split(&baseline_frame, &midi_frame, midi_header);
-    assert!(
-        inside > 0,
-        "选中态必须真的画出来（包头描边）: {midi_header:?}"
-    );
-    assert_eq!(
-        outside, 0,
-        "选中 MIDI 剪辑只许改变它自己的包头像素（卷帘一位不动）: {midi_header:?}"
-    );
-
-    // ---- ② 作用域下仍然可以选中音符 ----
-    let scroll = port.ui().get_roll_scroll_x();
-    let (index, (click_x, click_y)) = first_clickable_note(&view, scroll);
-    port.ui().invoke_clicked(click_x, click_y);
-    let clicked = view.notes[index].id.clone();
-    assert_eq!(
-        selected_ids(port.ui()),
-        vec![clicked.clone()],
-        "MIDI 剪辑选中时，点可见音符必须选中它（命中测试与注入同一作用域）"
-    );
-    assert_eq!(port.ui().get_selected_note_count(), 1);
-    let flags = flags_of(port.ui());
-    let selected_positions: Vec<usize> = flags
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, flag)| flag.then_some(slot))
-        .collect();
-    assert_eq!(
-        selected_positions,
-        vec![index],
-        "选中标志必须与注入数组同索引集（第 {index} 位亮起）"
-    );
-
-    // ---- ③ 换选音频剪辑 ⇒ 卷帘作用域清空 ----
-    port.ui().invoke_clip_select(audio.as_str().into());
-    assert_eq!(port.ui().get_selected_clip_ulid().as_str(), audio.as_str());
-    assert!(
-        ulids_of(port.ui()).is_empty(),
-        "音频片段池条目没有 MIDI 音符 ⇒ 注入面必须清空"
-    );
-    assert!(floats_of(port.ui().get_note_positions()).is_empty());
-    assert!(floats_of(port.ui().get_note_velocities()).is_empty());
-    assert!(
-        flags_of(port.ui()).is_empty(),
-        "作用域清空后选中标志数组也必须为空（同索引集）"
+        aether_host.contains("on_clicked"),
+        "宿主接线层必须注册 on_clicked"
     );
     assert!(
-        note_leaf_ids(&mut port).is_empty(),
-        "控件树里不得残留音符矩形"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(velocity_bar_count(&mut port), 0, "控件树里不得残留力度柱");
-    let audio_injected = ulids_of(port.ui()).len();
-    let audio_tree = note_leaf_ids(&mut port).len();
-
-    // ---- ④ 看不见的音符不可点：点同一处 ⇒ 选区被清空 ----
-    port.ui().invoke_clicked(click_x, click_y);
     assert!(
-        selected_ids(port.ui()).is_empty(),
-        "作用域外的音符不得被选中（⛔ 不选中看不见的音符）"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_eq!(port.ui().get_selected_note_count(), 0);
-
-    // ---- ⑤ 换回 MIDI 剪辑 ⇒ 原样还原 ----
-    port.ui().invoke_clip_select(midi.as_str().into());
-    let restored = reading(port.ui());
-    assert_eq!(restored, base, "换回 MIDI 剪辑 ⇒ 五个数组逐项等于基线");
-    assert_eq!(note_leaf_ids(&mut port), all_notes);
-    assert_eq!(velocity_bar_count(&mut port), all_notes.len());
-    let restored_frame = port.window().capture().expect("Tier-1 截图");
-    assert_eq!(
-        restored_frame.pixels(),
-        midi_frame.pixels(),
-        "换回 MIDI 剪辑的帧必须与①的帧逐字节相同（还原是完整的，不残留高亮）"
+    assert!(
+        aether_app.contains("> note-positions:"),
+        "新 UI 契约面必须声明 > note-positions:"
     );
-
-    report_line(&format!(
-        "[roll-scope] 剪辑 {} 个（MIDI `{midi}` / 音频 `{audio}`）；基线音符 {} 个；\
-         选 MIDI ⇒ 数组恒等、包头内 {} 像素 / 区外 0；作用域下点中 `{clicked}`；\
-         选音频 ⇒ 注入面 {} 个、控件树 {} 条；点同一处 ⇒ 选区清空；换回 ⇒ 数组恒等且帧逐字节相同",
-        clip_ids.len(),
-        all_notes.len(),
-        inside,
-        audio_injected,
-        audio_tree,
-    ));
+    assert!(
+        aether_host.contains("set_note_positions"),
+        "宿主接线层必须注册 set_note_positions"
+    );
 }

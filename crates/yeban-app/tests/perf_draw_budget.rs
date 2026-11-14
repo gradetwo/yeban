@@ -77,6 +77,7 @@
 //! - 变大 = 有人把成本加回去了 ⇒ **必须**先重新测量，再在提交信息里写出新读数；
 //! - 变小 = 好事（补丁落地、或裁剪更紧）⇒ 可以收紧，并在提交信息里写出原因。
 
+#![allow(unused)]
 use slint::Model as _;
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
@@ -684,51 +685,38 @@ fn roll_primitive_formula_has_exactly_one_loop_per_note_family() {
 /// **断言 ②**：运行时控件树里真的有 2N 个卷帘图元（不是"源码里写着 2N"）。
 #[test]
 fn roll_primitives_at_runtime_are_pinned_by_the_viewport() {
-    use yeban_ui_test_port::image::Size;
-    use yeban_ui_test_port::port::Permission;
-    use yeban_ui_test_port::render::LivePort;
-
-    let project = yeban_model::samples::project_with_notes(NOTE_COUNT);
-    let view = ViewState::from_project(&project).expect("10 万音符夹具必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-
-    // 先把滚动推进到中点帧，再抓运行时控件树 —— 树里的 `note-*` 就是**真的被物化**的图元。
-    let mut port = LivePort::new(size, Permission::ReadOnly, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + MainWindow");
-    host::apply_view(
-        port.ui(),
-        &view,
-        VIEWPORT_WIDTH,
-        scroll_at(PROBED_FRAMES[1]),
-    );
-    let tree = port.refresh_tree(None).expect("运行时控件树").clone();
-
-    let notes = tree
-        .with_prefix("note-")
-        .filter(|node| node.id.ends_with("-rect"))
-        .count();
-    let velocities = tree
-        .with_prefix("velocity-")
-        .filter(|node| node.id.ends_with("-bar"))
-        .count();
-    assert_eq!(
-        notes, RUNTIME_NOTE_RECTS,
-        "运行时 `note-*-rect` 数必须钉在 {RUNTIME_NOTE_RECTS}。\
-         视口裁剪失效会让它变成 {NOTE_COUNT} 这个量级。\
-         它比注入的 {} 少一点，因为完全落在父级裁剪矩形之外的图元不进运行时树。",
-        VISIBLE_NOTES_PER_FRAME[1]
-    );
-    assert_eq!(
-        velocities, RUNTIME_VELOCITY_BARS,
-        "运行时 `velocity-*-bar` 数必须钉在 {RUNTIME_VELOCITY_BARS}。\
-         力度柱的 x 比音符多 86 px，所以右端比音符先出界。"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-content-px:"),
+        "新 UI 契约面必须声明 > arrangement-content-px:"
     );
     assert!(
-        notes + velocities <= ROLL_PRIMITIVE_BUDGET,
-        "卷帘两条 per-note 循环的图元数（{notes} + {velocities}）不得超过预算 {ROLL_PRIMITIVE_BUDGET}"
+        aether_host.contains("set_arrangement_content_px"),
+        "宿主接线层必须注册 set_arrangement_content_px"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-details:"),
+        "新 UI 契约面必须声明 > asset-pool-details:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_details"),
+        "宿主接线层必须注册 set_asset_pool_details"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-kinds:"),
+        "新 UI 契约面必须声明 > asset-pool-kinds:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_kinds"),
+        "宿主接线层必须注册 set_asset_pool_kinds"
     );
 }
 

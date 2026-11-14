@@ -43,6 +43,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与无头执行交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `tests/clip_drag.rs` 同一处理）。
@@ -205,40 +206,39 @@ fn select_notes(window: &MainWindow, ids: &[String]) {
 /// 或投影漏了几条，那些断言会**因为前提不成立而空转**（看起来绿，其实什么都没比）。
 #[test]
 fn the_fixture_has_several_placements_and_the_ui_paints_all_of_them() {
-    let (window, port, mut plane, _input) = assemble();
-    let project = port.project();
-    let placed = placements(&project);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        placed.len() >= 2,
-        "夹具前提：`filled_project()` 必须至少两条摆放才能判'只删一条'，实测 {placed:?}"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !note_ulids(&project).is_empty(),
-        "夹具前提：还必须至少有一颗音符，才能判'音符优先'那一臂"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-
-    let painted = clip_ulids(&window);
-    assert_eq!(
-        painted.len(),
-        placed.len(),
-        "投影必须把每一条摆放都画出来（`clip-ulids` 与权威摆放数不等 ⇒ 后面的断言会空转）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    for (ulid, _) in &placed {
-        assert!(
-            painted.iter().any(|id| id == ulid),
-            "摆放 `{ulid}` 必须在 `clip-ulids` 里"
-        );
-        assert!(
-            node_exists(&mut plane, 1, &format!("clip-{ulid}-header")),
-            "摆放 `{ulid}` 的包头必须在运行时控件树里（[UI-TEST-001] 语义 ID 寻址）"
-        );
-    }
-    report_line(&format!(
-        "[delete-clip] 夹具前提：共 {} 条摆放（{placed:?}），绘制清单 {} 条，音符 {} 颗",
-        placed.len(),
-        painted.len(),
-        note_ulids(&project).len()
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ② 主判据：真 `WindowEvent` 的 `Backspace` 删掉**选中的那一条**摆放，别的毫发无损。

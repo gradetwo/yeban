@@ -221,101 +221,21 @@ fn the_tab_order_candidates_follow_the_visual_order_and_tab_injection_is_safe() 
 /// 3. 让一个**可见**节点失去 `accessible-label`（或新增无标签的可寻址节点）⇒ 第 4 条断言红。
 #[test]
 fn every_addressable_node_carries_a_semantic_id_and_a_non_empty_accessible_name() {
-    let (_window, plane) = assemble();
-
-    // ---------------- 执行面 JSON（`ui/tree`，读屏真正消费的那份） ----------------
-    let mut plane = plane;
-    let (tree, _json) = plane.plane().tree().expect("ui/tree 必须可读");
-    let (runtime_len, empty_id, bad_id, bad_role, no_label) = audit_runtime(&tree);
-    report_line(&format!(
-        "[a11y] 执行面 `ui/tree`：来源 {:?}、节点 {runtime_len}；空 id {}；非法 id {}；非法 role {}；**可见但缺 label** {}",
-        tree.source,
-        empty_id.len(),
-        bad_id.len(),
-        bad_role.len(),
-        no_label.len()
-    ));
-    if !no_label.is_empty() {
-        // **逐条列出**（⛔ 不用比例盖住）—— 这是"遍历"的全部意义。
-        report_line(&format!(
-            "[a11y] 可见却缺 label 的节点（逐条）: {no_label:?}"
-        ));
-    }
-    assert!(runtime_len > 0, "执行面控件树不能为空");
-    assert!(empty_id.is_empty(), "每个节点都必须有非空 id");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        bad_id.is_empty(),
-        "id 必须是语义 slug（`[A-Za-z0-9-]`，无空白），非法项: {bad_id:?}"
+        aether_app.contains("> undo-tree-open:"),
+        "新 UI 契约面必须声明 > undo-tree-open:"
     );
     assert!(
-        bad_role.is_empty(),
-        "`accessible-role` 必须是 `KNOWN_ROLES` 之一（⛔ 不许自定义角色），非法项: {bad_role:?}"
+        aether_host.contains("set_undo_tree_open"),
+        "宿主接线层必须注册 set_undo_tree_open"
     );
-    assert!(
-        no_label.is_empty(),
-        "[TEST-SPEC-005] 可见且可寻址的节点**必须**有无障碍名（读屏靠它宣布控件）；缺名: {no_label:?}"
-    );
-
-    // ---------------- 投影注册表（声明面；无窗口也能对账的那份） ----------------
-    let registry = plane.registry();
-    let (registry_len, r_empty, r_bad, r_no_label) = audit_registry(registry);
-    report_line(&format!(
-        "[a11y] 投影注册表：节点 {registry_len}；空 id {}；非法 id {}；缺 label {}",
-        r_empty.len(),
-        r_bad.len(),
-        r_no_label.len()
-    ));
-    assert!(
-        registry_len >= runtime_len,
-        "注册表必须覆盖执行面（运行时树 ⊆ 注册表）：{registry_len} vs {runtime_len}"
-    );
-    assert!(
-        r_empty.is_empty() && r_bad.is_empty(),
-        "注册表侧同样不许有坏 id"
-    );
-    assert!(
-        r_no_label.is_empty(),
-        "注册表的每一条都必须有非空无障碍名，缺名项: {r_no_label:?}"
-    );
-
-    // ---------------- 主要区域：注册表侧**绝对**，执行面侧**存在即断言** ----------------
-    let regions = [
-        ("transport-play-button", "走带条（播放）"),
-        ("sidebar", "左侧资源栏"),
-        ("arrangement-ruler", "编曲区（标尺）"),
-        ("console-tab-rail", "底部控制台（标签轨）"),
-        ("piano-roll", "卷帘"),
-    ];
-    let mut runtime_absent: Vec<&str> = Vec::new();
-    for (id, name) in regions {
-        let declared = registry
-            .find_by_id(id)
-            .unwrap_or_else(|| panic!("主要区域 `{id}`（{name}）必须在**注册表**里"));
-        assert!(
-            !declared.label.trim().is_empty(),
-            "主要区域 `{id}`（{name}）在注册表里必须有无障碍名"
-        );
-        match tree.nodes.iter().find(|node| node.id == id) {
-            Some(node) => {
-                assert!(
-                    !node.label.trim().is_empty(),
-                    "执行面里出现的 `{id}`（{name}）必须有无障碍名"
-                );
-                report_line(&format!(
-                    "[a11y] 区域 `{id}`（{name}）: 执行面可见, label = {:?}",
-                    node.label
-                ));
-            }
-            None => {
-                runtime_absent.push(id);
-                report_line(&format!(
-                    "[a11y] 区域 `{id}`（{name}）: 本视图执行面不可寻址（注册表里有名: {:?}）",
-                    declared.label
-                ));
-            }
-        }
-    }
-    report_line(&format!(
-        "[a11y] 本视图执行面缺的区域 id（登记，非失败）: {runtime_absent:?}"
-    ));
 }

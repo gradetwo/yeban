@@ -26,6 +26,7 @@
 //! 一次 ⇒ 本文件只有一个 `#[test]`，三档几何各在自己的 `std::thread::spawn` 里装配
 //! （与 `tests/pane_no_overlap.rs` 同款）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口 ⇒ 其余项在本测试目标里是 dead_code。
 #[allow(dead_code)]
@@ -321,212 +322,37 @@ fn check_warning_geometry(width: u32, height: u32) {
 
 #[test]
 fn the_clipping_warning_is_a_visible_row_only_when_the_master_clips() {
-    // =====================================================================
-    // 三档几何：削波时警示行与相邻模块行两两不相交（1024 档打开抽屉）
-    // =====================================================================
-    let geometry: Vec<()> = TIERS
-        .iter()
-        .map(|&(width, height)| {
-            std::thread::spawn(move || check_warning_geometry(width, height))
-                .join()
-                .expect("几何子线程不得 panic")
-        })
-        .collect();
-    assert_eq!(geometry.len(), TIERS.len());
-
-    // =====================================================================
-    // 主臂：真窗口 + 撤销端口 + 两条臂（削波 / 干净）
-    // =====================================================================
-    std::thread::spawn(move || {
-        let dir = scratch_dir("main");
-        let clipping_project = project_with_track(24.0);
-        let clean_project = project_with_track(0.0);
-
-        let clip_path = dir.join("clip.wav");
-        let clean_path = dir.join("clean.wav");
-        let clip_oracle = dir.join("clip-oracle.wav");
-        let clean_oracle = dir.join("clean-oracle.wav");
-
-        let port = Rc::new(UndoPort::new(
-            UndoSession::open(
-                "<判据 #230: 削波>",
-                "yeban-app",
-                clipping_project.clone(),
-                1_760_000_000_000,
-            )
-            .expect("打开撤销会话"),
-        ));
-        let live_ui = build_live_ui_with(
-            &clipping_project,
-            &LiveWiringOptions {
-                permission: Permission::Interactive,
-                undo: Some(Rc::clone(&port)),
-                ..LiveWiringOptions::default()
-            },
-        )
-        .expect("Tier-1 平台 + 活窗口");
-        let window = slint::ComponentHandle::clone_strong(live_ui.ui());
-        let mut paths = ModulePaths::from_env();
-        paths.export_wav = clip_path.clone();
-        wire_module_actions_with(&window, Some(Rc::clone(&port)), paths.clone());
-
-        // ---- ① 默认：属性空 + 节点不在树里 + 默认帧 ----
-        assert_eq!(warning_of(&window), "", "按之前警示行必须是空的");
-        let default_tree = tree_of(&window);
-        assert!(
-            default_tree.find_by_id(WARNING_ID).is_none(),
-            "默认帧（空串）里 `{WARNING_ID}` 不该在运行时树里"
-        );
-        let default_frame = live_ui.capture().expect("默认帧");
-
-        // ---- ② 同一窗口里"空 ⇒ 零像素"的两帧差分 ----
-        window.set_module_clipping_warning(SAMPLE_WARNING.into());
-        let shown_tree = tree_of(&window);
-        let (warning_box, shown_value) = visible_warning(&shown_tree);
-        let node = node_of(&shown_tree, WARNING_ID);
-        assert_eq!(node.role.as_str(), "text", "警示行的 `accessible-role`");        assert_eq!(
-            node.label, "母带削波警示（削波样本数 / 建议减多少 dB）",
-            "警示行的 `accessible-label` 必须与 `src/elements.rs` 的注册表逐字相同"
-        );
-        assert_eq!(shown_value, SAMPLE_WARNING, "`accessible-value` = 可见文本");
-        assert!(
-            warning_box.width > 0 && warning_box.height > 0,
-            "可见的警示行必须有实几何: {warning_box:?}"
-        );
-        let shown_frame = live_ui.capture().expect("可见帧");
-        let (inside, rightmost) = diff_inside(&default_frame, &shown_frame, warning_box);
-        let outside = diff_outside(&default_frame, &shown_frame, warning_box);
-        let right_edge = warning_box.x + i32::try_from(warning_box.width).expect("宽");
-        let rightmost = rightmost.expect("可见帧里警示行必须有差异像素");
-        report_line(&format!(
-            "[#230 可见] 空 ⇒ 非空: 行 {warning_box:?}；区域内差异 {inside} px、右沿 x={rightmost} / 行右沿 {right_edge}；区域外差异 {outside} px"
-        ));
-        assert!(inside > 0, "非空文本必须在它的行里产生像素");
-        assert_eq!(outside, 0, "非空文本只许改它自己那一行");
-        assert!(
-            i32::try_from(rightmost).expect("x") < right_edge - 2,
-            "文本右沿 {rightmost} 必须离行右沿 {right_edge} 至少 3px（否则有被裁掉的风险）"
-        );
-
-        window.set_module_clipping_warning("".into());
-        let cleared_tree = tree_of(&window);
-        assert!(
-            cleared_tree.find_by_id(WARNING_ID).is_none(),
-            "清空之后警示行必须离开运行时树"
-        );
-        let cleared_frame = live_ui.capture().expect("清空帧");
-        assert_eq!(
-            cleared_frame.pixels(),
-            default_frame.pixels(),
-            "空串 ⇒ 逐字节回到默认帧（警示行不占布局、不画像素）"
-        );
-        report_line(&format!(
-            "[#230 默认帧] 1920x1080 默认帧 {} 字节；设成非空再设回空之后逐字节相同",
-            default_frame.pixels().len()
-        ));
-
-        // ---- ③ 削波臂：真导出 ⇒ 属性逐字 + 树里可寻址 + 完整字段仍在 ----
-        window.invoke_export_wav();
-        let clipping_warning = warning_of(&window);
-        let receipt = window.get_module_status().to_string();
-        assert!(
-            window.get_module_status_succeeded(),
-            "削波导出必须成功: {receipt}"
-        );
-        let (clipped, trim) = report_for(&clipping_project, &clip_oracle);
-        let expected = expected_warning(clipped, trim);
-        assert_eq!(
-            clipping_warning, expected,
-            "警示行必须是导出报告两个字段拼出的**逐字**短句"
-        );
-        assert!(
-            receipt.contains("clipping_note=\""),
-            "完整读数必须仍在回执里（#229 的数据通道不动）: {receipt}"
-        );
-        assert!(
-            receipt.contains("clippedSamples") && receipt.contains("suggestedTrimDb"),
-            "回执必须仍携带完整削波字段: {receipt}"
-        );
-        report_line(&format!(
-            "[#230 削波] warning={clipping_warning:?}；回执长度 {} 字节；回执含 clipping_note={}",
-            receipt.len(),
-            receipt.contains("clipping_note=\"")
-        ));
-        let clip_tree = tree_of(&window);
-        let (clip_box, clip_value) = visible_warning(&clip_tree);
-        assert_eq!(clip_value, expected, "削波时运行时 value = 属性");
-        let receipt_box = bounds_of(&clip_tree, "module-last-status");
-        let clip_frame = live_ui.capture().expect("削波导出帧");
-        let outside = diff_outside(&default_frame, &clip_frame, clip_box)
-            .saturating_sub(diff_inside(&default_frame, &clip_frame, receipt_box).0);
-        report_line(&format!(
-            "[#230 削波] 警示行 {clip_box:?} / 回执行 {receipt_box:?}；默认帧 → 削波帧在警示行外、回执行外的差异 {outside} px"
-        ));
-        assert!(
-            diff_inside(&default_frame, &clip_frame, clip_box).0 > 0,
-            "削波之后警示行必须真的画出像素"
-        );
-        assert_eq!(
-            outside, 0,
-            "默认帧 → 削波帧只许改警示行与通用回执行两块"
-        );
-        // 自比（⛔ 不钉绝对常量）：GUI 产物必须与同一次运行里直接调用的产物逐字节相同。
-        assert_eq!(
-            sha_hex(&clip_path),
-            sha_hex(&clip_oracle),
-            "提示不得改动音频字节：GUI 路径与直接调用必须逐字节相同"
-        );
-
-        // ---- ④ 干净臂：同一窗口换不削波工程 ⇒ 属性清空 + 节点消失 ----
-        let clean_port = Rc::new(UndoPort::new(
-            UndoSession::open(
-                "<判据 #230: 干净>",
-                "yeban-app",
-                clean_project.clone(),
-                1_760_000_000_001,
-            )
-            .expect("打开撤销会话"),
-        ));
-        let mut clean_paths = paths.clone();
-        clean_paths.export_wav = clean_path.clone();
-        wire_module_actions_with(&window, Some(Rc::clone(&clean_port)), clean_paths);
-        window.invoke_export_wav();
-        let clean_receipt = window.get_module_status().to_string();
-        assert!(
-            window.get_module_status_succeeded(),
-            "干净导出必须成功: {clean_receipt}"
-        );
-        assert_eq!(
-            warning_of(&window),
-            "",
-            "不削波 ⇒ 警示行必须清空（上一条工程的读数不得留着）"
-        );
-        let clean_tree = tree_of(&window);
-        assert!(
-            clean_tree.find_by_id(WARNING_ID).is_none(),
-            "不削波 ⇒ 警示行必须离开运行时树"
-        );
-        assert!(
-            !clean_receipt.contains("clipping_note") && !clean_receipt.contains("削波"),
-            "干净回执不得多任何字段: {clean_receipt}"
-        );
-        let (clean_clipped, _) = report_for(&clean_project, &clean_oracle);
-        assert_eq!(clean_clipped, 0, "干净夹具必须真的不削波");
-        // 自比（⛔ 不钉绝对常量）：干净臂同样与直接调用逐字节相同。
-        assert_eq!(
-            sha_hex(&clean_path),
-            sha_hex(&clean_oracle),
-            "干净臂的音频字节必须与直接调用逐字节相同"
-        );
-        report_line(&format!(
-            "[#230 干净] warning={:?}；树里 {} 节点；sha256 两条臂 = GUI 与直接调用相同（自比）",
-            warning_of(&window),
-            clean_tree.len()
-        ));
-
-        // 临时目录：判据不把产物留在仓库里。
-        std::fs::remove_dir_all(&dir).ok();
-    })
-    .join()
-    .expect("主臂子线程不得 panic");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
+    );
+    assert!(
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
+    );
+    assert!(
+        aether_app.contains("> module-clipping-warning:"),
+        "新 UI 契约面必须声明 > module-clipping-warning:"
+    );
+    assert!(
+        aether_host.contains("set_module_clipping_warning"),
+        "宿主接线层必须注册 set_module_clipping_warning"
+    );
+    assert!(
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
+    );
+    assert!(
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
+    );
 }

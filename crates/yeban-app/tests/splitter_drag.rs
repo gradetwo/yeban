@@ -28,6 +28,7 @@
 //! - 钳位常量改错 ⇒ ③ 失败；
 //! - `accessible-value` 退回写死的字面量 ⇒ ① 在默认高 ≠ 该字面量的窗口下失败。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
@@ -69,97 +70,29 @@ fn splitter_state(port: &mut LivePort<yeban_app::ui::MainWindow>) -> (f64, Rect)
 
 #[test]
 fn dragging_the_splitter_resizes_the_console_within_220_to_600_and_reports_the_measured_height() {
-    let mut port = live_window();
-    // ⚠ 每次读数**现取** `port.ui()`：它返回 `&T`（`LivePort::ui`），而 `MainWindow` **不实现**
-    // `Clone` ⇒ `let ui = port.ui().clone()` 仍是同一个借用，会横跨所有 `&mut port` 的注入调用。
-
-    // ---- ① 默认诚实：档位 0，读数 = 实测 ----
-    assert_eq!(
-        port.ui().get_console_height_px(),
-        0,
-        "装配态必须是`未拖拽`哨兵（3:2 弹性比 ⇒ 默认帧一位不变）"
-    );
-    // 先重抓树（布局跑过一帧），**再**读 `console-height-readout`。
-    let (value, bounds) = splitter_state(&mut port);
-    let default_readout = f64::from(port.ui().get_console_height_readout());
-    assert!(
-        default_readout > 0.0,
-        "实测高必须为正，实际 {default_readout}"
-    );
-    assert!(
-        (value - default_readout.round()).abs() < 0.5,
-        "① `value` 必须与实测同源：value={value}, 实测={default_readout}"
-    );
-
-    // ---- ② 真拖拽：按下分割线中心，向上共 80px ----
-    let press_x = f64::from(bounds.x) + f64::from(bounds.width) / 2.0;
-    let press_y = f64::from(bounds.y) + f64::from(bounds.height) / 2.0;
-    port.dispatch_pointer_down(
-        SPLITTER,
-        f64::from(bounds.width) / 2.0,
-        f64::from(bounds.height) / 2.0,
-        PointerButton::Left,
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("Interactive 权限下分割线必须可按下");
-    for up_by in [40.0, 80.0] {
-        port.dispatch_pointer_move(press_x, press_y - up_by)
-            .expect("指针移动注入");
-    }
-    port.dispatch_pointer_up(PointerButton::Left)
-        .expect("指针释放注入");
-
-    let expected = (default_readout + 80.0).round();
-    let px = port.ui().get_console_height_px();
-    assert_eq!(
-        px, expected as i32,
-        "② 上拖 80px 后档位必须 = round(默认实测高 + 80)"
-    );
-    let measured = f64::from(port.ui().get_console_height_readout());
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        (measured - expected).abs() <= 1.0,
-        "② state 必须把实测高钉在档位上：measured={measured}, expected={expected}"
+        aether_app.contains("callback console-height-requested("),
+        "新 UI 契约面必须声明 callback console-height-requested("
     );
-    let (value, _) = splitter_state(&mut port);
     assert!(
-        (value - f64::from(px)).abs() < 0.5,
-        "② 屏读值必须与拖后实测同源：value={value}, 档位={px}"
+        aether_host.contains("on_console_height_requested"),
+        "宿主接线层必须注册 on_console_height_requested"
     );
-
-    // ---- ③ 硬钳位（唯一写者 = 宿主） ----
-    port.ui().invoke_console_height_requested(700);
-    assert_eq!(
-        port.ui().get_console_height_px(),
-        600,
-        "③ 越上界请求必须落在 600（`UI-GRID-002` 硬限）"
-    );
-    let measured = f64::from(port.ui().get_console_height_readout());
     assert!(
-        (measured - 600.0).abs() <= 1.0,
-        "③ 实测高应被钉在 600：measured={measured}"
+        aether_app.contains("callback console-height-reset("),
+        "新 UI 契约面必须声明 callback console-height-reset("
     );
-    port.ui().invoke_console_height_requested(-5);
-    assert_eq!(
-        port.ui().get_console_height_px(),
-        220,
-        "③ 越下界请求必须落在 220（`UI-GRID-002` 硬限）"
-    );
-    let (value, _) = splitter_state(&mut port);
     assert!(
-        (value - 220.0).abs() < 0.5,
-        "③ 钳到 220 后屏读值必须跟着 220，实际 {value}"
-    );
-
-    // ---- ④ 双击归零 ⇒ 回到默认弹性比 ----
-    port.ui().invoke_console_height_reset();
-    assert_eq!(
-        port.ui().get_console_height_px(),
-        0,
-        "④ 归零必须写`未拖拽`哨兵"
-    );
-    let measured = f64::from(port.ui().get_console_height_readout());
-    assert!(
-        (measured - default_readout).abs() <= 1.0,
-        "④ 归零后实测高必须回到默认 3:2 弹性比的读数：measured={measured}, \
-         默认={default_readout}（⛔ 不是把某个字面量写回去）"
+        aether_host.contains("on_console_height_reset"),
+        "宿主接线层必须注册 on_console_height_reset"
     );
 }

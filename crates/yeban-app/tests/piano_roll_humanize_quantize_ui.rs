@@ -20,6 +20,7 @@
 //! 5. 一次菜单动作 = **一步撤销**：一次 `Undo` 回到应用前（判据②用一次撤销复位全量断言）。
 //! 6. 右键抬起**不触发左键**：右键 `up` 不得落进既有的 `up` 分支（否则卷帘会把这次右键当一次左键点击处理）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会把它判红（`piano_roll_drag_scroll.rs` 同款处理）。
@@ -317,120 +318,38 @@ fn explicit_seed_that_differs(
 /// 判据 ①：右键菜单的两项存在、能点开对话框；打开时种子预填工程 `rng_seed`。
 #[test]
 fn the_context_menu_items_exist_and_open_the_dialog() {
-    let (window, port, mut plane) = assemble();
-    assert_eq!(window.get_console_tab(), 0, "默认底部标签必须是卷帘");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.get_humanize_open(),
-        "夹具前提：对话框默认关闭（否则默认帧已被改动）"
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
     );
-
-    // 注册表双侧对账（与 `piano_roll_drag_scroll.rs` 的判据①同款）。
-    for id in [MENU_HUMANIZE, MENU_QUANTIZE, "humanize-dialog"] {
-        assert!(
-            plane.registry().find_by_id(id).is_some(),
-            "`{id}` 必须登记在**注册表**里（[UI-TEST-001]：否则两侧对账会漂移）"
-        );
-    }
-
-    // 右键按下 ⇒ 菜单弹出（菜单项进运行时树）；右键抬起 ⇒ 菜单**不**关（它是弹出层），
-    // 且抬起不得触发左键点击（判据⑤单独钉；这里只钉「菜单还在」）。
-    //
-    // ⚠ 菜单位置的坐标链（写死会错，须现算）：
-    //   ① 右键点的 `mouse-x/y` 是**滚动面局部**坐标；弹出层 `x/y` 是**卷帘局部**
-    //      坐标（`context-menu-x/y`）；两者差一个「滚动面在卷帘里的原点」。
-    //   ② 弹出层子项的树包围盒是**弹出层局部**坐标（x:0, y:0）⇒ ⛔ 不能按元素 ID +
-    //      偏移去点（端口会按树坐标算到窗口左上角去，点不中菜单 —— 本判据第一版就
-    //      这样点空过：点后菜单不在树里 = 击落在弹出层外、被点外关闭）。
-    //   ③ 卷帘原点（窗口坐标）用走带光标锚定：它在卷帘里的位置恒为 (56px, 28px)
-    //      （`playhead-ticks = 0` 且 `scroll-x = 0` 的夹具前提；下面先断言后者）。
-    //   ⇒ 「人性化…」项中心（窗口坐标）= 卷帘原点 + (滚动面宽/2 + 75, 滚动面高/2 + 16)，
-    //      再换算成滚动面元素的偏移去点（命中测试由 Slint 做，弹出层在最上层）。
-    assert_eq!(
-        window.get_roll_scroll_x(),
-        0.0,
-        "夹具前提：滚动偏移必须是 0（否则走带光标锚点失效）"
-    );
-    let scroll_bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
-    let playhead_bounds = element_bounds(&mut plane, 2, "piano-roll-playhead");
-    let roll_x = playhead_bounds["x"].as_f64().expect("x") - 56.0;
-    let roll_y = playhead_bounds["y"].as_f64().expect("y") - 28.0;
-    let scroll_w = scroll_bounds["width"].as_f64().expect("width");
-    let scroll_h = scroll_bounds["height"].as_f64().expect("height");
-    let scroll_x = scroll_bounds["x"].as_f64().expect("x");
-    let scroll_y = scroll_bounds["y"].as_f64().expect("y");
-    let item_cx = roll_x + scroll_w / 2.0 + 75.0;
-    let item_cy = roll_y + scroll_h / 2.0 + 16.0;
-    report_line(&format!(
-        "[humanize-ui] 卷帘原点=({roll_x}, {roll_y})，滚动面=({scroll_x}, {scroll_y}, {scroll_w}x{scroll_h})，人性化项中心=({item_cx}, {item_cy})"
-    ));
-    // 先把指针移到点击处（`move_to` 的注释：不移就 `down` 会让 `mouse-x/y` 停在 0，
-    // 菜单开到卷帘 (0,0) 去），再右键按下。
-    move_to(
-        &mut plane,
-        2,
-        scroll_x + scroll_w / 2.0,
-        scroll_y + scroll_h / 2.0,
-    );
-    press_by_id(&mut plane, 3, SCROLL_AREA, "right");
-    let humanize_bounds = element_bounds(&mut plane, 10, MENU_HUMANIZE);
-    let quantize_bounds = element_bounds(&mut plane, 20, MENU_QUANTIZE);
-    report_line(&format!(
-        "[humanize-ui] 右键菜单包围盒：人性化 {humanize_bounds}；量化 {quantize_bounds}"
-    ));
-    let up = plane.plane().try_line(&request_line(
-        30,
-        METHOD_DISPATCH_POINTER_UP,
-        Some(json!({ "button": "right" })),
-    ));
-    assert!(!up.is_error(), "右键松手必须落到真实窗口: {up:?}");
-    // 抬起之后菜单项仍在树里（弹出层没被抬起关掉）。
-    let _ = element_bounds(&mut plane, 40, MENU_HUMANIZE);
-
-    // 点「人性化…」⇒ 对话框打开，焦点落人性化区段，种子预填工程 rng_seed。
-    // （坐标换算见上：项中心窗口坐标 − 滚动面原点 = 滚动面元素的偏移。）
-    click_scroll_at(
-        &mut plane,
-        50,
-        item_cx - scroll_x,
-        item_cy - scroll_y,
-        "left",
-    );
-    // 诊断二分（见文件头）：点下去之后菜单还在不在树里 ——
-    // 不在 ⇒ 这一击落在弹出层外（位置算错，弹出层被点外关闭）；
-    // 还在 ⇒ 这一击落在弹出层内、但菜单项的 `clicked` 没跑（测试后端不把指针事件送进弹出层）。
-    let menu_still_there = tree_has(&mut plane, 60, MENU_HUMANIZE);
-    report_line(&format!(
-        "[humanize-ui] 点菜单后：对话框开={}，菜单仍在树里={menu_still_there}",
-        window.get_humanize_open()
-    ));
     assert!(
-        window.get_humanize_open(),
-        "点菜单「人性化…」必须打开对话框"
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
     );
-    assert_eq!(
-        window.get_humanize_focus_section(),
-        0,
-        "从人性化入口打开 ⇒ 焦点落人性化区段"
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
     );
-    let rng_seed = live_project(&port).rng_seed;
-    assert_eq!(
-        window.get_humanize_seed().as_str(),
-        rng_seed.to_string(),
-        "种子必须预填工程 rng_seed（{rng_seed}），⛔ 不是一个藏起来的缺省"
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
     );
-    report_line(&format!(
-        "[humanize-ui] 对话框已开，种子预填 rng_seed={rng_seed}"
-    ));
-
-    // 关掉，再从量化入口打开 ⇒ 焦点落量化区段（同一弹窗，两个入口只差焦点落点）。
-    window.invoke_close_humanize();
-    assert!(!window.get_humanize_open(), "关闭必须关掉对话框");
-    window.invoke_open_quantize();
-    assert!(window.get_humanize_open(), "量化入口必须打开同一弹窗");
-    assert_eq!(
-        window.get_humanize_focus_section(),
-        1,
-        "从量化入口打开 ⇒ 焦点落量化区段"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
 }
 

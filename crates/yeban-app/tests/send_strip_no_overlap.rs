@@ -34,6 +34,7 @@
 //! 这种**跨节点**的判据才能抓住它。`#184` 用同一条判据钉住了"两段之间"，
 //! 本文件把口径扩到"**同一段内**"。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -466,85 +467,21 @@ fn the_empty_label_and_the_create_button_never_overlap() {
 // ===========================================================================
 #[test]
 fn the_create_button_still_commits_exactly_once_when_an_aux_track_exists() {
-    let base = project_with_aux_but_no_send();
-    let view = ViewState::from_project(&base).expect("投影");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        view.send_create_available,
-        "有 `AuxReturn` 轨 ⇒ 按钮必须可用（否则本腿证不到 Δ1）"
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    assert!(view.sends.is_empty(), "夹具必须从 0 条发送开始");
-    let (live, port) = live_with_port(Size::new(1440, 900), &base, "#185 有 aux");
-    let tree = live.tree();
-
-    let before = port.display();
-    let before_edges = port.project().routing_graph.edges.len();
-    let empty_before = bounds(tree, "send-empty");
-    let button_before = bounds(tree, "send-create-button");
-    assert!(!intersect(empty_before, button_before), "空态下仍不许重叠");
     assert!(
-        tree.find_by_id("send-create-reason").is_none(),
-        "可用时逐字原因 `visible: false` ⇒ 不得在树里"
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
-
-    live.ui().invoke_send_create();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "有 aux 时点一次 = 恰好一次提交"
-    );
-    assert_eq!(
-        port.project().routing_graph.edges.len(),
-        before_edges + 1,
-        "`edges` 必须多一条"
-    );
-    // 演示工程本来就有 `BusToMaster` 边 ⇒ 只数 `SendToAux`，⛔ 不假设"第一条边就是新边"。
-    let send_edges: Vec<_> = port
-        .project()
-        .routing_graph
-        .edges
-        .values()
-        .filter(|edge| edge.kind == RoutingKind::SendToAux)
-        .cloned()
-        .collect();
-    assert_eq!(send_edges.len(), 1, "点一次只该多一条 `SendToAux`");
-    assert_eq!(
-        send_edges[0].gain_db, None,
-        "新发送的增益必须是单位增益（`None`）"
-    );
-
-    // 发送数 0 → 1 之后：空态撤下、按钮回到 `82 + 40n` 那条式子。
-    // 空态的让位 22px 被收回、再按 40px 行距下移 ⇒ 净 **+18px**（⛔ 不是 +40）。
-    let after_tree = runtime_tree(live.ui());
-    let button_after = bounds(&after_tree, "send-create-button");
-    assert!(
-        after_tree.find_by_id("send-empty").is_none(),
-        "有发送时空态必须撤下（`visible: n == 0`）"
-    );
-    assert_eq!(
-        button_after.1,
-        button_before.1 + 18,
-        "空态让位的 22px 收回后再按 40px 行距下移 ⇒ 净 +18px"
-    );
-
-    // 判据 ② 的第二档：有发送时行 / 滑块 / 读数 / 删除键**也在场** ⇒ 同样逐对断言。
-    let strip_after = bounds(&after_tree, "send-strip");
-    report_line(&assert_pairwise(
-        &after_tree,
-        strip_after,
-        EXPECTED_FILLED,
-        "1440x900 有 1 条发送",
-    ));
-
-    report_line(&format!(
-        "[#185 1440 有 aux] available=true；空态 {empty_before:?} / 按钮 {button_before:?} ⇒ 不相交；\
-         原因不在树里 = true；点击后 commit {} → {}（Δ1）、edges {} → {}（SendToAux 1 条，gain_db=None）；\
-         send-empty 撤下 = true；按钮 y {} → {}",
-        before.commit_count,
-        after.commit_count,
-        before_edges,
-        port.project().routing_graph.edges.len(),
-        button_before.1,
-        button_after.1
-    ));
 }

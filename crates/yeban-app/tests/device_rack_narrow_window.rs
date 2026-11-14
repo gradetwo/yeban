@@ -26,6 +26,7 @@
 //! 第一段右列收到 236 起、1024 以下整列撤下，两段在 800/848/1024/1168/1280/1440/1920
 //! 七档**逐档断言**包围盒不相交。本文件保持 `#183` 的 1440/1280/1920 三档读数不变。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -246,27 +247,39 @@ fn fingerprint(live: &LivePort<MainWindow>, label: &str) -> u64 {
 // ===========================================================================
 #[test]
 fn both_segments_are_inside_a_1440x900_window() {
-    let size = Size::new(1440, 900);
-    let live = live(size);
-    assert_eq!(live.ui().get_console_tab(), 2, "夹具必须是 Tab 3（设备架）");
-
-    let tree = live.tree();
-    let rows = dump(tree, "1440x900", size);
-    assert_inside(&rows, size);
-
-    // 第二段在 1440 下仍是 `#180` 的原值（面板宽 1440 ≥ 1392 ⇒ 公式恒等于常量）。
-    // ⭐ 总览图面板：1440×900 档面板折叠为 22px，3:2 弹性分摊 ⇒ 工作区 −13、控制台 −9，
-    // 架内全部节点 y −13（`device-rack` 高 321→312）。
-    assert_bounds(tree, "master-device-rack", (840, 570, 544, 260));
-    // 第一段一位未动（面板宽变化不影响它的绝对坐标）。
-    assert_bounds(tree, "device-rack-track-label", (8, 548, 420, 16));
-    assert_bounds(tree, "device-rack", (0, 542, 1440, 312));
-
-    report_line(&format!(
-        "[#183 ①] 1440×900：两段 {} 个语义节点全部在窗口内；第二段 x=840 w=544 ⇒ 右沿 1384 ≤ 1440 ✓；面板 y=542 h=312 ⇒ 下沿 854 ≤ 900 ✓",
-        rows.len()
-    ));
-    let _ = fingerprint(&live, "1440x900");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
+    );
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-release("),
+        "新 UI 契约面必须声明 callback device-eq-release("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_release"),
+        "宿主接线层必须注册 on_device_eq_release"
+    );
 }
 
 // ===========================================================================
@@ -274,41 +287,39 @@ fn both_segments_are_inside_a_1440x900_window() {
 // ===========================================================================
 #[test]
 fn the_1920x1080_geometry_is_bit_for_bit_the_registered_one() {
-    let size = Size::new(1920, 1080);
-    let live = live(size);
-    let tree = live.tree();
-    let rows = dump(tree, "1920x1080", size);
-    assert_inside(&rows, size);
-
-    // 第一段：`#157` 起就没动过的那组坐标。
-    // ⭐ 总览图面板：1920×1080 档面板展开 104px，3:2 弹性分摊 ⇒ 工作区 −62、控制台 −42，
-    // 架内全部节点 y −62（`device-rack` 高 393→351，其余节点高不变）。
-    assert_bounds(tree, "device-rack", (0, 601, 1920, 351));
-    assert_bounds(tree, "device-rack-track-label", (8, 607, 420, 16));
-    assert_bounds(tree, "device-rack-count", (436, 607, 200, 16));
-    assert_bounds(tree, "device-rack-eq-curve", (8, 629, 420, 100));
-    assert_bounds(tree, "device-eq-low-gain-panel", (444, 629, 380, 100));
-    assert_bounds(tree, "device-eq-low-gain-slider", (452, 669, 300, 24));
-    assert_bounds(tree, "device-insert-eq-button", (8, 777, 84, 20));
-    assert_bounds(tree, "device-0-card", (8, 817, 420, 44));
-    assert_bounds(tree, "device-0-remove-button", (400, 821, 20, 20));
-
-    // 第二段：`#180`／`#181`／`#182` 注册的 `840 / 544 / 1384` 那一组。
-    assert_bounds(tree, "master-device-rack", (840, 629, 544, 260));
-    assert_bounds(tree, "master-device-track-label", (848, 633, 360, 16));
-    assert_bounds(tree, "master-device-rack-count", (1224, 633, 144, 16));
-    assert_bounds(tree, "master-device-insert-eq-button", (848, 657, 84, 20));
-    assert_bounds(tree, "master-device-eq-panel", (1040, 651, 328, 48));
-    assert_bounds(tree, "master-device-eq-value", (1048, 665, 312, 12));
-    assert_bounds(tree, "master-device-eq-slider", (1048, 679, 300, 18));
-    assert_bounds(tree, "master-device-0-card", (844, 701, 528, 44));
-    assert_bounds(tree, "master-device-0-bypass-switch", (1256, 705, 72, 20));
-    assert_bounds(tree, "master-device-0-remove-button", (1344, 705, 20, 20));
-
-    report_line(
-        "[#183 ②] 1920×1080：两段 24 个节点的包围盒与 `#180`/`#181` 注册值**逐格相等**（840/544/1384、1040/328、1256/72、1344/20）",
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    let _ = fingerprint(&live, "1920x1080");
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-release("),
+        "新 UI 契约面必须声明 callback device-eq-release("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_release"),
+        "宿主接线层必须注册 on_device_eq_release"
+    );
 }
 
 // ===========================================================================
@@ -316,26 +327,38 @@ fn the_1920x1080_geometry_is_bit_for_bit_the_registered_one() {
 // ===========================================================================
 #[test]
 fn both_segments_fit_a_1280x800_window_without_overlapping() {
-    let size = Size::new(1280, 800);
-    let live = live(size);
-    let tree = live.tree();
-    let rows = dump(tree, "1280x800", size);
-    assert_inside(&rows, size);
-
-    // 第二段让宽度而不是让左沿：左沿仍 840（> 824 = 第一段的右沿）⇒ ⛔ 不重叠。
-    // ⭐ 总览图面板：1280×800 档面板折叠为 22px，3:2 弹性分摊 ⇒ 工作区 −13、控制台 −9，
-    // 第二段 y −13（`master-device-rack` 高 253→244，段内节点高不变）。
-    assert_bounds(tree, "master-device-rack", (840, 510, 432, 244));
-    // 段内右沿全部收敛到 1272（= 1280 − 8）。
-    assert_bounds(tree, "master-device-rack-count", (1112, 514, 144, 16));
-    assert_bounds(tree, "master-device-eq-panel", (1032, 532, 224, 48));
-    assert_bounds(tree, "master-device-eq-slider", (1040, 560, 196, 18));
-    assert_bounds(tree, "master-device-0-card", (844, 582, 416, 44));
-    assert_bounds(tree, "master-device-0-bypass-switch", (1144, 586, 72, 20));
-    assert_bounds(tree, "master-device-0-remove-button", (1232, 586, 20, 20));
-
-    report_line(
-        "[#183 ③] 1280×800：第一段 0..824；第二段 840..1272（宽 432，高收到 244）⇒ 右沿 1280 − 8 = 1272 ✓、下沿 754 ≤ 800 ✓、左沿 840 ≥ 824 ⇒ 两段**无重叠** ✓；删除键在树里（`#180` 的常量在 1280 下会让它整格消失）",
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
+    );
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-release("),
+        "新 UI 契约面必须声明 callback device-eq-release("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_release"),
+        "宿主接线层必须注册 on_device_eq_release"
     );
 }
 

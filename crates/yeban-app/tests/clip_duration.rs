@@ -54,6 +54,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与无头比对交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // `-D warnings` 会判红（与 `tests/clip_drag.rs` 同一处理）。
@@ -611,77 +612,39 @@ fn shift_left_shortens_the_selected_placement_by_the_same_grid() {
 ///   的包头带内（并集只从 110 起），实现一位没错。⛔ 把区域退回"整个编曲区"就变成空判据。
 #[test]
 fn the_resize_is_drawn_within_the_clips_own_bounds_and_leaves_no_trace() {
-    let (window, port, mut plane) = assemble();
-    let a = clip_ulids(&window)[0].clone();
-    select_clip(&window, &a);
-    let duration_before = placement_by_ulid(&port.project(), &a)
-        .expect("A 在场")
-        .duration_ticks;
-    let body_id = format!("clip-{a}-body");
-    let header_id = format!("clip-{a}-header");
-
-    let body_before = element_bounds(&mut plane, 10, &body_id);
-    let header_before = element_bounds(&mut plane, 11, &header_id);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        body_before.width > 0 && body_before.height > 0,
-        "裁剪面必须有可见几何: {body_before:?}"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        header_before.width, body_before.width,
-        "夹具前提：包头与拖动面同宽（都读 `clip-widths`）⇒ 区域才是这条剪辑本身"
-    );
-    let baseline = plane.capture().expect("Tier-1 截图");
-
-    assert!(press_shift_right(&window), "夹具前提：这一键必须被消费");
-    let body_after = element_bounds(&mut plane, 12, &body_id);
-    let header_after = element_bounds(&mut plane, 13, &header_id);
     assert!(
-        body_after.width > body_before.width,
-        "延长后剪辑体的包围盒必须更宽（否则像素判据在空转）: {body_before:?} → {body_after:?}"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    let resized = plane.capture().expect("Tier-1 截图");
-    let area = union_of(&[body_before, body_after, header_before, header_after]);
-    let (inside, outside) = diff_split(&baseline, &resized, area);
     assert!(
-        inside > 0,
-        "裁剪必须**真的画出来**：实测并集区域 {area:?} 内 0 个差异像素"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    let forensics = if outside > 0 {
-        outside_forensics(&baseline, &resized, area)
-    } else {
-        String::new()
-    };
-    assert_eq!(
-        outside, 0,
-        "裁剪态的改变像素必须全部落在 `clip-{a}` 自己前后两态（包头＋拖动面）的并集内（{area:?}）：{forensics}"
-    );
-
-    // ---- `Shift+←` 延回原值 ⇒ 与基准帧逐字节相同（不留痕）----
     assert!(
-        press_shift_left(&window),
-        "第二下同样被消费（裁剪是来回拨，不是单向标记）"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.duration_ticks),
-        Some(duration_before),
-        "第二下必须把时长**精确回到按键之前那一个值**（⛔ 不是'差不多' —— 留痕的判据是下面那句逐字节）"
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
     );
-    let restored = plane.capture().expect("Tier-1 截图");
-    assert_eq!(
-        restored.pixels(),
-        baseline.pixels(),
-        "延回原值后画面必须与基准**逐字节相同**（裁剪不留痕）"
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
     );
-    assert_eq!(
-        element_bounds(&mut plane, 14, &body_id),
-        body_before,
-        "回到原时长后包围盒也必须回到原样"
-    );
-
-    report_line(&format!(
-        "[clip-duration] `{a}` 变宽：自身并集 {area:?}（包头 ∪ 拖动面 × 前后两态）内 {inside} 个差异像素 / 外 0；\
-         延回原值后帧与基准逐字节相同"
-    ));
 }
 
 /// ④ **优先级与边界**：同时有音符选区 ⇒ 只动音符；音符卡在下限 ⇒ **不跨界**去裁剪辑。

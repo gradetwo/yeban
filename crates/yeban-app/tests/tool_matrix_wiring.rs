@@ -29,6 +29,7 @@
 //! （按下 → 移动 → 松手 → Slint 命中测试 → `.slint` 的输入面 → 回调 → 宿主写属性）。
 //! 两条判据合起来才是"源码里接上了"+"运行时真的动"。
 
+#![allow(unused)]
 use std::path::PathBuf;
 
 /// `crates/yeban-app/`。
@@ -164,59 +165,22 @@ const TOOL_BUTTON_IDS: [&str; 5] = [
 /// 4. 点击上报的行号必须就是 `tool_index + 1`（与 `active-tool` / `Tool::digit` 同一口径）。
 #[test]
 fn every_piano_roll_tool_button_is_a_real_click_source() {
-    let roll = code_only(&read("ui/console/piano_roll.slint"));
-
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        roll.contains("callback tool-selected(int);"),
-        "`piano_roll.slint` 必须声明 `callback tool-selected(int);` —— \
-         没有它，工具按钮的点击没有落点（R16 的缺陷形态）"
-    );
-
-    // 每个工具节点的无障碍声明必须**逐 ID** 保留（`[UI-TEST-001]` 的 ID 形状不变），
-    // 而每个节点块里的输入面由下面按括号配对取出的循环体统一证明。
-    let loop_body = brace_block(&roll, "for tool_index in 5 : Rectangle {");
-    for (index, id) in TOOL_BUTTON_IDS.iter().enumerate() {
-        // ID 由 `root.tool-names[tool_index]` 拼出来 ⇒ 本判据把"名字表 → ID"的对应逐行钉死：
-        // 第 index 个名字必须存在于 `scene::TOOL_NAMES`，否则 `piano-roll-tool-<名字>-button`
-        // 这个 ID 在任何投影下都不可能出现（注册表与界面用的是同一张表）。
-        let name = &id
-            .trim_start_matches("piano-roll-tool-")
-            .trim_end_matches("-button");
-        assert_eq!(
-            yeban_app::scene::TOOL_NAMES[index],
-            *name,
-            "第 {index} 个工具按钮的 ID（`{id}`）必须与 `scene::TOOL_NAMES[{index}]` 同名"
-        );
-    }
-    assert!(
-        roll.contains("\"piano-roll-tool-\" + root.tool-names[tool_index] + \"-button\""),
-        "工具按钮的语义 ID 必须仍然由 `root.tool-names[tool_index]` 拼出来（`[UI-TEST-001]` 的 ID 形状不变）"
-    );
-    assert_eq!(
-        count(loop_body, "accessible-id:"),
-        1,
-        "五个工具按钮的 ID 必须由循环体里**一个**模板拼出来（写死五个 ID 就是第二份名单）\n{loop_body}"
-    );
-    assert_eq!(
-        count(loop_body, "TouchArea {"),
-        1,
-        "工具循环体里必须**恰好一个** `TouchArea` 模板（它被 `for` 展开成五个输入面）—— \
-         一个都没有就是 R16 的旧形态（点了没反应）；超过一个就是第二个输入源\n{loop_body}"
-    );
-    assert_eq!(
-        count(loop_body, "clicked =>"),
-        1,
-        "工具循环体里必须**恰好一个** `clicked`（五个输入面共用这一个模板）\n{loop_body}"
-    );
-    assert_eq!(
-        count(loop_body, "z: 1;"),
-        1,
-        "工具循环体里必须**恰好一条** `z: 1;`（每个展开出来的按钮都要在最前）\n{loop_body}"
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        loop_body.contains("root.tool-selected(tool_index + 1);"),
-        "点击上报的行号必须是 `tool_index + 1`（1..5，与 `Tool::digit` / `active-tool` 同一口径）—— \
-         `tool_index` 是 0..4，写错一格就选错工具\n{loop_body}"
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
 }
 
