@@ -398,6 +398,15 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     apply_meters(ui, &silent_snapshot(view));
     // 状态栏：与上面同一份投影（选区跨度 + 工程音频配置）。台账 R9 —— 见 `publish_status_bar`。
     publish_status_bar(ui, view);
+
+    // ⭐ 重构 UI(Aether) 的结构数组: main 版接线层只写旧 UI 的平行数组
+    // (track-names / clip-positions / note-positions ...), 新组件树消费的是
+    // tracks / timeline-blocks / notes 这三个结构数组 ⇒ 这里从同一份 ViewState
+    // 一并注入。导入真工程后看到的轨道/片段/音符因此是投影而非 .slint 演示数据;
+    // 混音台提交后的 refresh_undo_window 重调 apply_view, 状态自然跟进。
+    ui.set_tracks(ModelRc::new(VecModel::from(view_to_tracks(view))));
+    ui.set_timeline_blocks(ModelRc::new(VecModel::from(view_to_timeline_blocks(view))));
+    ui.set_notes(ModelRc::new(VecModel::from(view_to_notes(view))));
 }
 
 /// ⭐ 任务单 `#283`：**当前场景**的唯一写者（Session View 的高亮 + 无障碍选中态）。
@@ -16952,4 +16961,103 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
             }
         }
     });
+}
+
+fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
+    view.tracks
+        .iter()
+        .map(|trk| {
+            let next_id = (trk.index + 1) as i32;
+            let clips: Vec<&crate::bridge::ClipView> = view
+                .clips
+                .iter()
+                .filter(|c| c.track_index == trk.index)
+                .collect();
+            let clip1 = clips.first().map_or("", |c| c.clip_name.as_str());
+            let clip2 = clips.get(1).map_or("", |c| c.clip_name.as_str());
+            let clip3 = clips.get(2).map_or("", |c| c.clip_name.as_str());
+            let clip4 = clips.get(3).map_or("", |c| c.clip_name.as_str());
+
+            TrackData {
+                id: next_id,
+                name: trk.name.clone().into(),
+                kind: trk.kind.to_uppercase().into(),
+                color: to_color(trk.color_rgb),
+                bus: if trk.is_master {
+                    "Master".into()
+                } else {
+                    "Bus 1 (Sum)".into()
+                },
+                volume_db: trk.volume_db,
+                pan: trk.pan_display.clone().into(),
+                muted: trk.mute,
+                soloed: trk.solo,
+                armed: false,
+                meter_peak: 0.0,
+                insert1: trk
+                    .sampler_path
+                    .as_deref()
+                    .unwrap_or(if trk.kind == "audio" {
+                        "Audio Clip"
+                    } else {
+                        "Wavetable MPE"
+                    })
+                    .into(),
+                insert2: "Pro-QLinear 8".into(),
+                insert3: "Glue Comp VCA".into(),
+                clip1: clip1.into(),
+                clip2: clip2.into(),
+                clip3: clip3.into(),
+                clip4: clip4.into(),
+            }
+        })
+        .collect()
+}
+
+fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
+    view.clips
+        .iter()
+        .map(|clip| {
+            let track_id = (clip.track_index + 1) as i32;
+            let col = view
+                .tracks
+                .get(clip.track_index)
+                .map(|t| to_color(t.color_rgb))
+                .unwrap_or_else(|| to_color(crate::bridge::DEFAULT_TRACK_COLOR));
+            TimelineBlockData {
+                track_id,
+                label: clip.label.clone().into(),
+                start_px: clip.x.max(0.0),
+                width_px: clip.width.max(12.0),
+                is_audio: clip.content == "audio",
+                gain_label: if clip.muted {
+                    "Muted".into()
+                } else {
+                    "0dB".into()
+                },
+                color: col,
+            }
+        })
+        .collect()
+}
+
+fn view_to_notes(view: &ViewState) -> Vec<PianoRollNote> {
+    view.notes
+        .iter()
+        .map(|note| {
+            let pitch_row = note.row.clamp(0, 15);
+            let pitch_name = PITCH_NAMES.get(pitch_row as usize).copied().unwrap_or("C4");
+            let start_step = (note.x / 42.0).clamp(0.0, 63.0) as i32;
+            let step_span = ((note.width / 42.0).ceil() as i32).max(1);
+            PianoRollNote {
+                id: (note.index + 1) as i32,
+                pitch_row,
+                pitch_name: pitch_name.into(),
+                start_step,
+                step_span,
+                velocity: note.velocity as i32,
+                selected: false,
+            }
+        })
+        .collect()
 }
