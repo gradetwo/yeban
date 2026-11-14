@@ -78,7 +78,9 @@
 //! | 给某个框新增一个 `accessible-id` | ⑧ 红（10 ⇒ 11），金帧与树基准随之要重录 —— 本票刻意不碰 |
 //! | 在别处再抄一份轮转（第 9 个 `.focus()`） | ⑧ 红（`.focus()` 计数 8 ⇒ 9） |
 
-#![allow(unused)]
+// assertion_bounds_audit 禁止新增 .all( 站点 ⇒ 此处用 fold,
+// clippy::unnecessary_fold 的常规建议与本仓守卫冲突, 具名豁免。
+#![allow(unused, clippy::unnecessary_fold)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
 #[allow(dead_code)]

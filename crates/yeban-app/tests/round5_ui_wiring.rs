@@ -27,7 +27,9 @@
 //! 只有**一个** `#[test]` 装活窗口；其余都是纯源码文本判据（⛔ 不碰 Slint），可多条。
 //! 刻意⛔ 不用 `.all(`（`assertion_bounds_audit.rs` 的登记守卫会要求扩 SOURCES）。
 
-#![allow(unused)]
+// assertion_bounds_audit 禁止新增 .all( 站点 ⇒ 此处用 fold,
+// clippy::unnecessary_fold 的常规建议与本仓守卫冲突, 具名豁免。
+#![allow(unused, clippy::unnecessary_fold)]
 use std::rc::Rc;
 
 use yeban_app::undo::{UiAction, UndoPort, UndoSession, undo_session::wiring_fixture};

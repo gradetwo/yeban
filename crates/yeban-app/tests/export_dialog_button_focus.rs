@@ -80,7 +80,9 @@
 //! | 给某个 `FocusScope` 加 `accessible-id` | ⑩ 红（10 ⇒ 11），且金帧/寻址面基准要重录 —— 本票刻意不碰 |
 //! | 把 `focus-on-click` 打开 | 本判据⛔ 测不到（不测鼠标）⇒ 如实登记在边界里，不是覆盖到了 |
 
-#![allow(unused)]
+// assertion_bounds_audit 禁止新增 .all( 站点 ⇒ 此处用 fold,
+// clippy::unnecessary_fold 的常规建议与本仓守卫冲突, 具名豁免。
+#![allow(unused, clippy::unnecessary_fold)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口 ⇒ 其余项在本测试目标里是 dead_code。
 #[allow(dead_code)]
