@@ -998,6 +998,11 @@ export component MainWindow inherits Window {
                     bar-width-px: root.bar-width-px;
                     cycle-start-px: (root.cycle-start-ticks / root.roll-ticks-per-pixel) * 1px;
                     cycle-end-px: (root.cycle-end-ticks / root.roll-ticks-per-pixel) * 1px;
+                    // 轨道行几何 / 内容高 / 横向滚动：全部来自投影（同一份事实源）。
+                    track-ys: root.track-ys;
+                    track-heights: root.track-heights;
+                    sheet-height: root.arrangement-sheet-height;
+                    scroll-x: root.roll-scroll-x * 1px;
 
                     select-track(t-id) => {
                         root.selected-track-index = t-id;
@@ -1009,6 +1014,11 @@ export component MainWindow inherits Window {
                     add-track() => { root.track-add-requested(); }
                     audition-chord(name) => { root.chord-audition(name); }
                     scrub-timeline(pos) => { root.playhead-px = pos; }
+                    arrangement-wheel(dx, dy, shift, alt) => {
+                        root.arrangement-wheel(dx, dy, shift, alt);
+                    }
+                    zoom-h-step(zoom-in) => { root.zoom-h-step(zoom-in); }
+                    zoom-v-step(zoom-in) => { root.zoom-v-step(zoom-in); }
                 }
 
                 // Zone C-to-D Resizing Splitter Bar
