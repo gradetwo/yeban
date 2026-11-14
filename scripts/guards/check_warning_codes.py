@@ -19,7 +19,7 @@ from pathlib import Path
 
 CAMEL = re.compile(r"^[a-z]+[A-Za-z0-9]*$")
 SITE = re.compile(r'"code"\s*:\s*"([A-Za-z][A-Za-z0-9]*)"')
-LOWER_BOUND = 9
+LOWER_BOUND = 10
 
 
 def fail(msg: str) -> None:

@@ -4067,8 +4067,16 @@ pub enum NoteOp {
     /// 模型的前置条件是"音轨自校验通过 + `id` 不重复"：`compile` 提前报"这个身份
     /// 已经在 `tracks` 里"（`projectAlreadyExists`），与 [`Self::RemoveTrack`] 提前报
     /// `trackNotFound` 同一条口径。
-    /// ⚠ 模型 `apply` 只 `insert_track` —— 它**不**自动把身份加进
-    /// `routing_graph.nodes`、也**不**建边（那是 [`Self::AddRoutingNode`] 的事）。
+    /// ⭐ **接线口径（2026-11-14 行为变更，推翻本变体此前的文档决定）**：模型
+    /// `Op::AddTrack` 本身只 `insert_track`（**不改模型**：改它会让其逆操作
+    /// `RemoveTrack` 留下孤儿节点）；但本形态的**编译**展开为一个批次
+    /// ［`AddTrack`, `AddRoutingNode`, `ConnectRouting`(→ 主总线)］⇒ 经本形态
+    /// 新建的轨**直接进路由图、直接可渲染**。此前"只建轨不接线"的口径让
+    /// 未入图轨在母带里完全静默且无告警（实测报告 P0-①），故推翻。
+    /// 边 kind 按轨 kind 分派（`Midi`/`Audio` ⇒ `TrackToBus`，`AuxReturn` ⇒
+    /// `BusToMaster`，`Master` 不接线）；节点/边已存在时不重复发。
+    /// ⚠ 因此 `addTrack` 之后**不要**再显式补 `addRoutingNode`：会撞
+    /// `routingNodeAlreadyExists` 的响亮拒绝（预期行为）。
     AddTrack {
         /// 要新建的音轨（四个集合与两个可选字段已是空形状）。
         track: TrackV3,
@@ -4090,8 +4098,9 @@ pub enum NoteOp {
     /// ⚠ **本形态⛔ 不要求这个身份是一条真实音轨** —— 那是**决定**不是疏忽：
     /// 模型只做**数据层**的校验（[`RoutingGraph::validate`] 查节点重复、以及每条边的
     /// 两端**都在** `nodes` 里），它⛔ **不**要求节点能对应到 `project.tracks` 的条目。
-    /// 同一族的先例: `addTrack` 同样只把一条新音轨加进 `tracks`、**不**自动把它的身份
-    /// 加进 `nodes`（两份集合各有自己的 `Op`）。本层照抄模型口径 ⇒ 一个**拼错**的
+    /// 同一族的先例: 模型 `Op::AddTrack` 同样只把一条新音轨加进 `tracks`
+    ///（两份集合各有自己的 `Op`；`addTrack` 形态的**编译层**另行展开接线批次，
+    /// 见 [`Self::AddTrack`]）。本层照抄模型口径 ⇒ 一个**拼错**的
     /// `nodeId` 会被接受并落地，且引擎侧看不到它所属的音轨 —— 这条边界**如实登记在
     /// 本变体的文档里**，⛔ 不在此处发明一条模型没有的前置条件。
     ///
@@ -6697,7 +6706,7 @@ fn reject_add_routing_node_fields(object: &Map<String, Value>) -> Result<(), Fau
             "hint": "本形态的载荷是空的 (只认 `kind` 与 `nodeId`); 节点身份由 \
                      `yeban_query_project` 的 `routing_graph.nodes` 报出 —— ⚠ 模型**不要求**\
                      它对应一条真实音轨 (只查节点不重复、且每条边的两端都在 `nodes` 里), \
-                     所以新音轨要先 `addRoutingNode` 才成为节点; 边由 `edgeId` \
+                     所以存量音轨要先 `addRoutingNode` 才成为节点 (`addTrack` 新建的轨已自动接线); 边由 `edgeId` \
                      寻址 (节点与边是两种实体)",
         }),
     ))
@@ -10833,8 +10842,81 @@ pub fn compile(
                         }),
                     ));
                 }
-                Op::AddTrack {
-                    track: track.clone(),
+                // ⭐ **自动补图**（实测报告 P0-① 的行为变更）：模型 `Op::AddTrack`
+                // 本身**不改**（它只 `insert_track`；改它会让其逆操作 `RemoveTrack`
+                // 留下孤儿节点）⇒ 接线在本编译层展开：一条 `addTrack` 编译成一个
+                // `Op::Batch`［`AddTrack`, `AddRoutingNode`(新轨),
+                // (主总线不在图里时) `AddRoutingNode`(主总线),
+                // `ConnectRouting`(新轨 → 主总线)］。批次逆操作按序反转
+                // （断边 → 摘节点 → 删轨）⇒ 撤销不留孤儿节点。
+                // 形状照抄既有全套（`project_create.rs` 的建批与 app
+                // `bridge::track_create_ops`）：边增益 `None`、边身份确定性派生。
+                // 边 kind 按轨 kind 分派（照抄 UI 侧 `routing_kind()`）：
+                // `Midi` / `Audio` ⇒ `TrackToBus`；`AuxReturn` ⇒ `BusToMaster`；
+                // `Master` **不接线**（主总线身份由 `master_bus_track_id` 决定，
+                // UI 建轨先例里没有 `Master`，第二条 Master 轨不是声学出口）。
+                // 缺项补齐（照抄配器 `section_build.rs` 的写法）：节点已在图里
+                // 或同源同宿同 kind 的边已存在 ⇒ 不重复发那一条；工程没有主总线
+                // 轨时无从接线 ⇒ 退回单条 `AddTrack`（渲染时由 `unroutedTracks`
+                // 预警点名，不在这里发明失败）。
+                // ⚠ 幂等冲突面：已有脚本在 `addTrack` 后显式再补 `addRoutingNode`
+                // 会撞 `routingNodeAlreadyExists` 的既有响亮拒绝 —— 那是**预期**
+                // 行为（`addTrack` 已含接线，见工具说明）。
+                let master_id = project.master_bus_track_id;
+                let routing_kind = match track.kind {
+                    TrackKind::Midi | TrackKind::Audio => Some(RoutingKind::TrackToBus),
+                    TrackKind::AuxReturn => Some(RoutingKind::BusToMaster),
+                    TrackKind::Master => None,
+                };
+                match routing_kind.filter(|_| project.tracks.contains_key(&master_id)) {
+                    None => Op::AddTrack {
+                        track: track.clone(),
+                    },
+                    Some(kind) => {
+                        let mut batch: Vec<Op> = vec![Op::AddTrack {
+                            track: track.clone(),
+                        }];
+                        if !project.routing_graph.nodes.contains(&track.id) {
+                            batch.push(Op::AddRoutingNode { node: track.id });
+                        }
+                        if !project.routing_graph.nodes.contains(&master_id) {
+                            batch.push(Op::AddRoutingNode { node: master_id });
+                        }
+                        let edge_id = deterministic_id(&format!(
+                            "add-track-route:{}:{}",
+                            track.id.to_canonical_string(),
+                            master_id.to_canonical_string()
+                        ));
+                        let edge_exists = project.routing_graph.edges.values().any(|edge| {
+                            edge.source_node == track.id
+                                && edge.destination_node == master_id
+                                && edge.kind == kind
+                        }) || project.routing_graph.edges.contains_key(&edge_id);
+                        if !edge_exists {
+                            batch.push(Op::ConnectRouting {
+                                edge: RoutingEdge {
+                                    id: edge_id,
+                                    source_node: track.id,
+                                    destination_node: master_id,
+                                    kind,
+                                    gain_db: None,
+                                },
+                            });
+                        }
+                        if batch.len() == 1 {
+                            Op::AddTrack {
+                                track: track.clone(),
+                            }
+                        } else {
+                            Op::Batch {
+                                description: format!(
+                                    "addTrack {}（含路由接线）",
+                                    track.id.to_canonical_string()
+                                ),
+                                ops: batch,
+                            }
+                        }
+                    }
                 }
             }
             NoteOp::AddRoutingNode { node_id } => {
@@ -10851,7 +10933,8 @@ pub fn compile(
                 // ⚠ **⛔ 不**在这里要求"这个身份是一条真实音轨"：模型只做数据层校验
                 // （`RoutingGraph::validate` 查节点重复、以及每条边的两端都在 `nodes`
                 // 里），它⛔ 不要求节点能对应到 `project.tracks` —— 而同一族的先例是
-                // `addTrack` 只把音轨加进 `tracks`、**不**自动把身份加进 `nodes`。
+                // 模型 `Op::AddTrack` 只把音轨加进 `tracks`（接线由 `addTrack`
+                // 形态的编译层展开，模型层两份集合各有自己的 `Op`）。
                 // 本层照抄模型口径（见 `NoteOp::AddRoutingNode` 的文档）。
                 if project.routing_graph.nodes.contains(node_id) {
                     return Err(Fault::domain_with_data(
@@ -15119,8 +15202,9 @@ mod tests {
         let add_only = compile(&project, &nil, &nil, &add_only).expect("占位身份编译");
         assert_eq!(add_only.len(), 1);
         assert!(
-            matches!(&add_only[0], Op::AddTrack { track } if track.id.to_canonical_string() == new_track),
-            "编译出的必须是 AddTrack，身份是操作对象自带的"
+            matches!(&add_only[0], Op::Batch { ops, .. } if matches!(&ops[0], Op::AddTrack { track } if track.id.to_canonical_string() == new_track)),
+            "编译出的必须是含 AddTrack 的接线批次（首条身份是操作对象自带的）: {:?}",
+            add_only[0]
         );
         // ⑤′ `addTrack` + 一条回退形态 ⇒ 批谓词为假，顶层身份照旧必填。
         let mixed_add = parse_ops(&serde_json::json!([
@@ -22585,22 +22669,40 @@ mod tests {
                     "`{label}` 应恰好产出 {expected_len} 条 `Op`"
                 );
             }
-            // 展开形态允许的产物变体集（`invertClip` 删+加成对、`humanizeClip`
-            // 微时值+力度成对；其余形态就是行尾登记的单一变体）。
-            let allowed: &[&str] = match kind {
-                QUANTIZE_CLIP_KIND | RETROGRADE_CLIP_KIND => &["SetNoteTiming"],
-                INVERT_CLIP_KIND => &["DeleteNote", "AddNote"],
-                HUMANIZE_CLIP_KIND => &["SetNoteExpression", "ModifyNoteVelocity"],
-                VELOCITY_SHAPE_CLIP_KIND => &["ModifyNoteVelocity"],
-                CHORD_STAGGER_CLIP_KIND => &["SetNoteExpression"],
-                _ => std::slice::from_ref(&expected),
-            };
-            for op in &compiled {
-                assert!(
-                    allowed.contains(&op.name()),
-                    "`{label}` 的每一条都必须落到登记的 `Op` 变体, 实际 {}",
-                    op.name()
-                );
+            if kind == ADD_TRACK_KIND {
+                // `addTrack` 编译为**接线批次**（行为变更，本线决定）：外层是
+                // 一条 `Batch`，内层恰好是 [AddTrack, AddRoutingNode,
+                // ConnectRouting]；`seen` 仍按行尾登记的 `AddTrack` 记账
+                // （批次是接线包装，不是新变体）。
+                match &compiled[0] {
+                    Op::Batch { ops: batch, .. } => {
+                        let inner: Vec<&str> = batch.iter().map(Op::name).collect();
+                        assert_eq!(
+                            inner,
+                            ["AddTrack", "AddRoutingNode", "ConnectRouting"],
+                            "`{label}` 的批次内层必须是接线三件套"
+                        );
+                    }
+                    other => panic!("`{label}` 必须编译为接线批次, 实际 {}", other.name()),
+                }
+            } else {
+                // 展开形态允许的产物变体集（`invertClip` 删+加成对、`humanizeClip`
+                // 微时值+力度成对；其余形态就是行尾登记的单一变体）。
+                let allowed: &[&str] = match kind {
+                    QUANTIZE_CLIP_KIND | RETROGRADE_CLIP_KIND => &["SetNoteTiming"],
+                    INVERT_CLIP_KIND => &["DeleteNote", "AddNote"],
+                    HUMANIZE_CLIP_KIND => &["SetNoteExpression", "ModifyNoteVelocity"],
+                    VELOCITY_SHAPE_CLIP_KIND => &["ModifyNoteVelocity"],
+                    CHORD_STAGGER_CLIP_KIND => &["SetNoteExpression"],
+                    _ => std::slice::from_ref(&expected),
+                };
+                for op in &compiled {
+                    assert!(
+                        allowed.contains(&op.name()),
+                        "`{label}` 的每一条都必须落到登记的 `Op` 变体, 实际 {}",
+                        op.name()
+                    );
+                }
             }
             if matches!(
                 kind,
@@ -22765,8 +22867,9 @@ mod tests {
         let (track_id, clip_id) = lead_clip(&project);
         // ⚠ 夹具前提：要用一个**还没在** `nodes` 里的身份 —— 样本的图很完整（每条音轨
         // 都已在 `nodes` 里），所以这里取一个**新建音轨**那种"还没进图"的身份。
-        // 这正是本形态的**真实用途**：`addTrack` 只把音轨加进 `tracks`，⛔ **不**自动
-        // 把它的身份加进 `nodes`（两份集合各有自己的 `Op`）⇒ 没有本形态，这样一条
+        // 这正是本形态的**真实用途**：存量轨（其它入口建的、或接线被摘掉的）
+        // 只在 `tracks` 里、不自动进 `nodes`（模型层两份集合各有自己的 `Op`；
+        // `addTrack` 形态自带接线，但它救不了存量轨）⇒ 没有本形态，这样一条
         // 音轨**永远**不会成为路由节点。
         let node = EntityId::from_str("01J8ZQ0000000000000000FR5H").expect("ULID");
         assert!(
@@ -22861,8 +22964,8 @@ mod tests {
         );
     }
 
-    /// `addTrack`：解析 → 编译到**正是** `Op::AddTrack` → 撤销一步恢复原状；
-    /// 并钉住"空形状是**决定**"与"新轨不改混音"。
+    /// `addTrack`：解析 → 编译到**接线批次**（`AddTrack`＋节点＋边）→ 撤销一步
+    /// 恢复原状（无孤儿节点）；并钉住"空形状是**决定**"与"新轨不改混音"。
     ///
     /// 注入（实测红）：① 编译成 `RemoveTrack` ⇒ 音轨数不减反增那条断言红；
     /// ② 把空形状换个非默认的 `volume_db`/`mute` ⇒ 第 ② 条判据红；
@@ -22926,15 +23029,38 @@ mod tests {
             "solo_safe 必须是默认值"
         );
 
-        // ---- ③ 编译到**正是** `Op::AddTrack` ----
+        // ---- ③ 编译到**接线批次**［AddTrack, AddRoutingNode, ConnectRouting］ ----
+        // ⭐ 2026-11-14 行为变更：旧判据钉的是"编译到正是 Op::AddTrack 且不进图"，
+        //    那条决定已被实测报告 P0-① 推翻（未入图轨母带静默无告警）⇒ 本节改钉新形状。
         let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
         assert_eq!(compiled.len(), 1);
+        let master_id = project.master_bus_track_id;
         match &compiled[0] {
-            Op::AddTrack { track } => assert_eq!(track, &parsed_track),
-            other => panic!("应当是 AddTrack: {other:?}"),
+            Op::Batch { ops: batch, .. } => {
+                assert_eq!(batch.len(), 3, "批次必须是三条: {batch:?}");
+                match &batch[0] {
+                    Op::AddTrack { track } => assert_eq!(track, &parsed_track),
+                    other => panic!("批次首条应当是 AddTrack: {other:?}"),
+                }
+                assert!(
+                    matches!(&batch[1], Op::AddRoutingNode { node } if *node == new_id),
+                    "第二条必须是新轨的 AddRoutingNode: {:?}",
+                    batch[1]
+                );
+                match &batch[2] {
+                    Op::ConnectRouting { edge } => {
+                        assert_eq!(edge.source_node, new_id);
+                        assert_eq!(edge.destination_node, master_id);
+                        assert_eq!(edge.kind, RoutingKind::TrackToBus, "Audio 轨用 TrackToBus");
+                        assert_eq!(edge.gain_db, None);
+                    }
+                    other => panic!("第三条应当是 ConnectRouting: {other:?}"),
+                }
+            }
+            other => panic!("应当是接线批次 Batch: {other:?}"),
         }
 
-        // ---- ④ 应用：音轨真的进 `tracks`，且工程仍然合法 ----
+        // ---- ④ 应用：音轨进 `tracks`、身份进 `nodes`、边连到主总线 ----
         compiled[0].apply(&mut project).expect("新建");
         assert!(
             project.tracks.contains_key(&new_id),
@@ -22942,10 +23068,21 @@ mod tests {
         );
         assert_eq!(project.tracks.len(), tracks_before + 1);
         assert!(project.validate().is_ok(), "新建之后工程必须仍然合法");
-        // ⚠ 模型 `apply` **不**自动把身份加进 `nodes`（那是 addRoutingNode 的事）。
         assert!(
-            !project.routing_graph.nodes.contains(&new_id),
-            "`addTrack` ⛔ 不自动把身份加进 routing_graph.nodes"
+            project.routing_graph.nodes.contains(&new_id),
+            "`addTrack` 必须自动把身份加进 routing_graph.nodes（2026-11-14 行为变更）"
+        );
+        assert!(
+            project.routing_graph.edges.values().any(|edge| {
+                edge.source_node == new_id
+                    && edge.destination_node == master_id
+                    && edge.kind == RoutingKind::TrackToBus
+            }),
+            "必须有一条新轨 → 主总线的 TrackToBus 边"
+        );
+        assert!(
+            !project.routing_graph.edges.is_empty(),
+            "自动接线必须先建边，否则 ⑤ 的“无孤儿边”断言是真空通过"
         );
 
         // ---- ⑤ **撤销一步**必须恢复原状（逐字节） ----
@@ -22955,10 +23092,69 @@ mod tests {
             !project.tracks.contains_key(&new_id),
             "逆操作必须把这条音轨摘掉"
         );
+        assert!(
+            !project.routing_graph.nodes.contains(&new_id),
+            "逆操作必须把路由节点一并摘掉（⛔ 不留孤儿节点）"
+        );
+        assert!(
+            project
+                .routing_graph
+                .edges
+                .values()
+                .all(|edge| edge.source_node != new_id && edge.destination_node != new_id),
+            "逆操作必须把接线边一并断开（⛔ 不留孤儿边）"
+        );
         assert_eq!(
             serde_json::to_string(&project).expect("序列化"),
             bytes_before,
             "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// `addTrack` 接线的 kind 分派：`AuxReturn` ⇒ `BusToMaster` 边；
+    /// `Master` ⇒ **不接线**（单条 `Op::AddTrack`，保持旧形状）。
+    #[test]
+    fn add_track_wiring_dispatches_on_track_kind() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let master_id = project.master_bus_track_id;
+
+        // ---- AuxReturn ⇒ BusToMaster ----
+        let aux_ops = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": "01J8ZQ000000000000000000AX",
+             "name": "Aux New", "trackKind": "AuxReturn"}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &aux_ops).expect("编译");
+        match &compiled[0] {
+            Op::Batch { ops: batch, .. } => {
+                assert_eq!(batch.len(), 3, "批次必须是三条: {batch:?}");
+                match &batch[2] {
+                    Op::ConnectRouting { edge } => {
+                        assert_eq!(edge.destination_node, master_id);
+                        assert_eq!(
+                            edge.kind,
+                            RoutingKind::BusToMaster,
+                            "AuxReturn 用 BusToMaster"
+                        );
+                    }
+                    other => panic!("第三条应当是 ConnectRouting: {other:?}"),
+                }
+            }
+            other => panic!("应当是接线批次 Batch: {other:?}"),
+        }
+
+        // ---- Master ⇒ 不接线（单条 AddTrack） ----
+        let master_ops = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": "01J8ZQ000000000000000000M5",
+             "name": "Second Master", "trackKind": "Master"}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &track_id, &clip_id, &master_ops).expect("编译");
+        assert!(
+            matches!(&compiled[0], Op::AddTrack { .. }),
+            "Master 轨不接线，必须保持单条 AddTrack: {:?}",
+            compiled[0]
         );
     }
 

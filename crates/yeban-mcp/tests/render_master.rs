@@ -9848,3 +9848,152 @@ fn empty_tracks_are_named_but_never_become_sources() {
         "整份文件逐字节相同"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 未入路由图音轨告警（P0-①）：排了内容却不在路由子图里的轨必须被点名
+// ---------------------------------------------------------------------------
+
+/// ① 未入图轨（不在 `routing_graph.nodes`）与在图但被剪枝的轨（有节点、无边到
+/// 主总线）都被同一条 `unroutedTracks` 预警点名（身份 + 轨名）；
+/// ② 全入图工程不出现这条预警，且产物与不带孤儿轨的工程逐字节相同。
+#[test]
+fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
+    let scratch = Scratch::new("unrouted");
+    let mut proj = project(&Spec::default());
+    // 未入图轨：有摆放（复用池里的片段），身份不进 routing_graph.nodes。
+    let orphan = id(3);
+    let mut orphan_track = TrackV3 {
+        id: orphan,
+        name: "SFX Unrouted".to_owned(),
+        kind: TrackKind::Audio,
+        ..TrackV3::default()
+    };
+    orphan_track.clips.insert(
+        id(21),
+        ClipPlacement {
+            id: id(21),
+            clip_id: id(10),
+            start_tick: 0,
+            duration_ticks: 1_920,
+            loop_config: LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        },
+    );
+    proj.tracks.insert(orphan, orphan_track);
+    // 被剪枝轨：身份进 nodes，但没有任何边通往主总线。
+    let pruned = id(4);
+    let mut pruned_track = TrackV3 {
+        id: pruned,
+        name: "Pruned Track".to_owned(),
+        kind: TrackKind::Midi,
+        ..TrackV3::default()
+    };
+    pruned_track.clips.insert(
+        id(22),
+        ClipPlacement {
+            id: id(22),
+            clip_id: id(10),
+            start_tick: 0,
+            duration_ticks: 1_920,
+            loop_config: LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        },
+    );
+    proj.tracks.insert(pruned, pruned_track);
+    proj.routing_graph.nodes.push(pruned);
+    proj.validate()
+        .unwrap_or_else(|error| panic!("带孤儿轨的夹具工程必须合法: {error}"));
+
+    let (mut dispatcher, auth) = dispatcher_with(&proj, &scratch.join("demo.yeban"));
+    let out = scratch.join("master.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let data = &result["data"];
+    let warnings = data["warnings"].as_array().expect("warnings 必须是数组");
+    let unrouted: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "unroutedTracks")
+        .collect();
+    assert_eq!(
+        unrouted.len(),
+        1,
+        "必须恰好一条 unroutedTracks 预警: {warnings:?}"
+    );
+    let warning = unrouted[0];
+    assert_eq!(warning["count"], 2, "两条孤儿轨都要点名: {warning}");
+    assert_eq!(
+        warning["trackIds"],
+        json!([orphan.to_canonical_string(), pruned.to_canonical_string()]),
+        "trackIds 必须逐条点名（确定序）: {warning}"
+    );
+    let names: Vec<&str> = warning["tracks"]
+        .as_array()
+        .expect("tracks 必须是数组")
+        .iter()
+        .map(|entry| entry["name"].as_str().expect("逐轨 name"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["SFX Unrouted", "Pruned Track"],
+        "逐轨 name: {warning}"
+    );
+    // 孤儿轨不在 sources 里（它们没有被渲染）。
+    let source_tracks: Vec<&str> = data["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|source| source["track"].as_str().expect("source track"))
+        .collect();
+    assert!(
+        !source_tracks.contains(&"SFX Unrouted") && !source_tracks.contains(&"Pruned Track"),
+        "孤儿轨不许出现在 sources 里: {source_tracks:?}"
+    );
+
+    // 对照：不带孤儿轨的同一工程 —— 没有这条预警，产物逐字节相同。
+    let bare = project(&Spec::default());
+    let (mut bare_dispatcher, bare_auth) = dispatcher_with(&bare, &scratch.join("bare.yeban"));
+    let bare_out = scratch.join("bare.wav");
+    let bare_result = call(
+        &mut bare_dispatcher,
+        &bare_auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": bare_out.display().to_string(),
+        }),
+    );
+    assert_eq!(bare_result["status"], "success", "{bare_result}");
+    let bare_warnings = bare_result["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组");
+    assert_eq!(
+        bare_warnings.len(),
+        0,
+        "全入图对照工程应零预警（有界断言：集合规模已钉死，下一行的 .all 不真空）"
+    );
+    assert!(
+        bare_warnings
+            .iter()
+            .all(|warning| warning["code"] != "unroutedTracks"),
+        "全入图工程不许出现 unroutedTracks 预警: {bare_warnings:?}"
+    );
+    assert_eq!(
+        data["sha256"], bare_result["data"]["sha256"],
+        "孤儿轨不许改一个字节的音频"
+    );
+    assert_eq!(
+        fs::read(&out).expect("带孤儿轨的产物"),
+        fs::read(&bare_out).expect("不带孤儿轨的产物"),
+        "整份文件逐字节相同"
+    );
+}

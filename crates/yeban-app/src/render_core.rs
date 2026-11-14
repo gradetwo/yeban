@@ -338,6 +338,13 @@ pub struct RenderProjectOutput {
     /// （判据 `reporting_readings_does_not_change_a_single_byte` 用加读数之前的
     /// 整文件 `sha256` 常量钉住）。
     pub source_peaks: Vec<(EntityId, f32)>,
+    /// ⭐ **未入路由图音轨**点名（与 MCP `render_master` 的 `unroutedTracks`
+    /// 预警同一判据）：非主总线轨 ∧（`clips` 非空 ∨ 绑了采样器）∧ 身份不在
+    /// 渲染计划节点里（不在图与在图但被剪枝两种情形都算）。这些轨在产物里
+    /// **完全静默**；此前 CLI 只报 `audio-clips(rendered=0 skipped=…)` 的计数，
+    /// 不点名是哪条轨。逐轨 `(身份, 轨名)`，按 `project.tracks` 的确定序。
+    /// 空 = 有内容的轨全部进了渲染计划（此时 `source_label` 逐字不变）。
+    pub unrouted_tracks: Vec<(EntityId, String)>,
 }
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
@@ -772,6 +779,21 @@ pub fn render_project_f32_with_plans_under(
         .nodes()
         .into_iter()
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
+        .collect();
+    // ⭐ **未入路由图音轨**点名（与 MCP `render_master` 的 `unroutedTracks` 预警
+    //    同一判据）：`renderable` 是计划剪枝后的节点集 ⇒ 身份不在里面的有内容轨
+    //    在产物里完全静默。此前它们连 `audio-clips(skipped=…)` 都不进（片段解析
+    //    循环只遍历 `renderable`），计数与点名双缺。⛔ 只读读数，不动样本；
+    //    孤儿集为空时 `source_label` 与产物逐字不变（见函数末尾的追加点）。
+    let unrouted_tracks: Vec<(EntityId, String)> = project
+        .tracks
+        .iter()
+        .filter(|(track_id, track)| {
+            **track_id != project.master_bus_track_id
+                && (!track.clips.is_empty() || track.sampler.is_some())
+                && !renderable.contains(track_id)
+        })
+        .map(|(track_id, track)| (*track_id, track.name.clone()))
         .collect();
     // ⭐⭐ **空轨不建源**（内存缺陷修复）。
     //
@@ -1223,6 +1245,19 @@ pub fn render_project_f32_with_plans_under(
         use core::fmt::Write;
         let _ = write!(digest, "{byte:02x}");
     }
+    // ⭐ 未入图轨点名追加进 `source_label`（CLI 回执与导出报告都读这一份文案）；
+    //    孤儿集为空时**一个字都不追加** ⇒ 既有输出逐字不变。
+    if !unrouted_tracks.is_empty() {
+        let ids: Vec<String> = unrouted_tracks
+            .iter()
+            .map(|(track_id, _name)| track_id.to_canonical_string())
+            .collect();
+        source_label.push_str(&format!(
+            " + unrouted-tracks(count={} ids=[{}])",
+            unrouted_tracks.len(),
+            ids.join(",")
+        ));
+    }
     Ok(RenderProjectOutput {
         samples: output.samples,
         frames: output.frames,
@@ -1234,6 +1269,7 @@ pub fn render_project_f32_with_plans_under(
         sfz_decoded,
         source_peaks,
         limiter_reductions,
+        unrouted_tracks,
     })
 }
 
@@ -1357,6 +1393,73 @@ mod tests {
             reference, with_empty_samples,
             "8 条空轨必须**逐样本**不改变母带（它们是确定输出 0 的静音源）"
         );
+    }
+
+    /// ⭐ **未入图轨判据**：有摆放、不在路由图里的轨必须进
+    /// [`RenderProjectOutput::unrouted_tracks`] 并追加进 `source_label`，
+    /// 且样本逐个不变；全入图工程两处都为空/逐字不变。
+    #[test]
+    fn unrouted_tracks_are_named_and_change_no_sample() {
+        use std::str::FromStr as _;
+
+        use yeban_model::{ClipPlacement, LoopConfig};
+
+        fn render_full(project: &YebanProjectV1) -> RenderProjectOutput {
+            let options = WavExportOptions {
+                frames: 24_000,
+                ..Default::default()
+            };
+            render_project_f32_with_assets(project, options, None, &[]).expect("渲染必须成功")
+        }
+
+        let base = yeban_model::samples::filled_project();
+        let base_out = render_full(&base);
+        assert!(
+            base_out.unrouted_tracks.is_empty(),
+            "全入图工程的孤儿集必须为空: {:?}",
+            base_out.unrouted_tracks
+        );
+        assert!(
+            !base_out.source_label.contains("unrouted-tracks"),
+            "孤儿集为空时 source_label 逐字不变: {}",
+            base_out.source_label
+        );
+
+        let orphan_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P0ZZ").expect("ULID");
+        let clip_id = *base.clip_pool.keys().next().expect("池里有片段");
+        let placement_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P0ZY").expect("ULID");
+        let mut orphan = TrackV3 {
+            id: orphan_id,
+            name: "未入图音效".to_owned(),
+            ..TrackV3::default()
+        };
+        orphan.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        let mut with_orphan = base.clone();
+        with_orphan.insert_track(orphan).expect("插孤儿轨");
+        let out = render_full(&with_orphan);
+        assert_eq!(
+            out.unrouted_tracks,
+            vec![(orphan_id, "未入图音效".to_owned())],
+            "孤儿集必须逐轨点名（身份 + 轨名）"
+        );
+        assert!(
+            out.source_label.contains("unrouted-tracks(count=1"),
+            "source_label 必须追加点名: {}",
+            out.source_label
+        );
+        assert_eq!(out.samples, base_out.samples, "孤儿轨不许改一个样本");
+        assert_eq!(out.digest, base_out.digest, "摘要必须一致");
     }
 
     /// 夹具：`filled_project` 里那条**带 MIDI 音符**的非主总线轨（＝ 工程里唯一会发声的

@@ -106,6 +106,10 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/record_wav_tool.rs",
         include_str!("record_wav_tool.rs"),
     ),
+    (
+        "tests/render_audio_clips.rs",
+        include_str!("render_audio_clips.rs"),
+    ),
     ("tests/render_master.rs", include_str!("render_master.rs")),
     (
         "tests/section_melody_range.rs",

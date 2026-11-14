@@ -194,6 +194,10 @@ pub struct SkippedTrack {
     pub name: String,
     /// 为什么不出文件。
     pub reason: SkipReason,
+    /// 修法提示（只在 `notASourceNode` 时有值）：区分「不在路由图」与
+    /// 「在图里但无边到主总线」两种情形 —— 两者的修法不同（先加节点 vs 只补边）。
+    /// 其余 reason 为 `None`，回执形状逐字不变。
+    pub hint: Option<String>,
 }
 
 impl SkippedTrack {
@@ -201,7 +205,7 @@ impl SkippedTrack {
     fn to_value(&self) -> Value {
         let track_id = self.track_id.to_canonical_string();
         // 字面量 `reason`（`crates/yeban-mcp/tests/fault_vocabulary.rs` 的冻结面只认字面站点）。
-        match self.reason {
+        let mut value = match self.reason {
             SkipReason::MasterBusTrack => json!({
                 "trackId": track_id,
                 "name": self.name,
@@ -217,7 +221,14 @@ impl SkippedTrack {
                 "name": self.name,
                 "reason": "emptyTrack",
             }),
+        };
+        if let Some(hint) = &self.hint {
+            value
+                .as_object_mut()
+                .expect("跳过行是对象")
+                .insert("hint".to_owned(), json!(hint));
         }
+        value
     }
 }
 
@@ -588,6 +599,7 @@ fn export_with_sink(
                 track_id,
                 name: track.name.clone(),
                 reason: SkipReason::MasterBusTrack,
+                hint: None,
             });
             continue;
         }
@@ -607,6 +619,7 @@ fn export_with_sink(
                 track_id,
                 name: track.name.clone(),
                 reason: SkipReason::EmptyTrack,
+                hint: None,
             });
             continue;
         }
@@ -624,10 +637,26 @@ fn export_with_sink(
     let mut planned: Vec<(EntityId, String, String, PathBuf)> = Vec::with_capacity(queue.len());
     for (index, track_id, name) in queue {
         if !source_nodes.contains(&track_id) {
+            // ⭐ `notASourceNode` 的修法分两种情形，`hint` 必须区分（否则调用方
+            //    分不清是缺节点还是缺边）：身份不在 `routing_graph.nodes` 里 ⇒
+            //    先加节点再补边；在图里但不在基线源集里 ⇒ 只缺通往主总线的边。
+            let hint = if project.routing_graph.nodes.contains(&track_id) {
+                "这条轨在 routing_graph.nodes 里，但没有通往主总线的可用边（无边或边已断开），\
+                 因此不是渲染源节点。修法：用 yeban_edit_notes 的 connectRouting 建一条到主总线\
+                 的边（普通音轨 edgeKind 用 TrackToBus，AuxReturn 用 BusToMaster）。"
+                    .to_owned()
+            } else {
+                "这条轨不在 routing_graph.nodes 里，因此不是渲染源节点。修法：先用 \
+                 yeban_edit_notes 的 addRoutingNode 把它加进路由图，再用 connectRouting 建一条\
+                 到主总线的边（普通音轨 edgeKind 用 TrackToBus，AuxReturn 用 BusToMaster）。\
+                 经 addTrack 新建的轨已自动接线，本情形针对未入图的存量轨。"
+                    .to_owned()
+            };
             skipped.push(SkippedTrack {
                 track_id,
                 name: name.to_owned(),
                 reason: SkipReason::NotASourceNode,
+                hint: Some(hint),
             });
             continue;
         }
@@ -1032,6 +1061,7 @@ mod tests {
                 track_id,
                 name: "Lead".to_owned(),
                 reason,
+                hint: None,
             }
             .to_value();
             assert_eq!(row["reason"], json!(label));
@@ -1044,5 +1074,27 @@ mod tests {
                 "同级键集合必须和黄金表一致（字典序 = BTreeMap 承载）"
             );
         }
+    }
+
+    /// `notASourceNode` 行带 `hint` 时，`hint` 作为第四个同级键出现，且两种
+    /// 情形（不在图 / 无边到 master）的文案必须可区分。
+    #[test]
+    fn not_a_source_node_row_carries_its_hint_as_a_fourth_key() {
+        use std::str::FromStr;
+        let track_id = EntityId::from_str("01J8ZR00000000000000000001").expect("合法 ULID");
+        let row = SkippedTrack {
+            track_id,
+            name: "Lead".to_owned(),
+            reason: SkipReason::NotASourceNode,
+            hint: Some("这条轨不在 routing_graph.nodes 里".to_owned()),
+        }
+        .to_value();
+        assert_eq!(row["reason"], json!("notASourceNode"));
+        assert_eq!(row["hint"], json!("这条轨不在 routing_graph.nodes 里"));
+        assert_eq!(
+            row.as_object().expect("对象").keys().collect::<Vec<_>>(),
+            vec!["hint", "name", "reason", "trackId"],
+            "带 hint 的行必须是四键（字典序 = BTreeMap 承载）"
+        );
     }
 }
