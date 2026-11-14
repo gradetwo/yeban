@@ -35,6 +35,8 @@
 //!   （`dispatch_key_chord` 走的是 `invoke_key_action`，不是 `FocusScope` 的平台事件通道，
 //!   带上修饰位注入不到 `export-trap` —— 那是测试端口的既有边界，不是本切片的缺口）。
 
+// assertion_bounds_audit 禁止新增 .all( 站点 ⇒ 此处用 fold。
+#![allow(unused, clippy::unnecessary_fold)]
 use std::path::PathBuf;
 
 use yeban_app::bridge::ViewState;

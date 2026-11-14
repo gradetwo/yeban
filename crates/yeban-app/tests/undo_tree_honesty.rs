@@ -13,7 +13,9 @@
 //! 工作线共用同一个 worktree，`src/elements.rs` 的 `mod tests` 尾部由那条线在改
 //! （见本票报告）。判据放在新文件里 ⇒ 两个写者的改动面不重叠。
 
-#![allow(unused)]
+// assertion_bounds_audit 禁止新增 .all( 站点 ⇒ 此处用 fold,
+// clippy::unnecessary_fold 的常规建议与本仓守卫冲突, 具名豁免。
+#![allow(unused, clippy::unnecessary_fold)]
 use std::path::{Path, PathBuf};
 
 use yeban_app::elements::DEMO_UNDO_TREE_LITERALS;

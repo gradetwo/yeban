@@ -36,7 +36,9 @@
 //!   （本机按 `AGENTS.md` §5.2 ⛔ 不产出 Linux golden）。本判据只钉**接线与边界**；
 //! * `session_view.slint` 的列头 / 混音台通道条本切片刻意不改（见交付说明的 ROI 取舍）。
 
-#![allow(unused)]
+// assertion_bounds_audit 禁止新增 .all( 站点 ⇒ 此处用 fold,
+// clippy::unnecessary_fold 的常规建议与本仓守卫冲突, 具名豁免。
+#![allow(unused, clippy::unnecessary_fold)]
 use slint::Model as _;
 
 use yeban_app::bridge::ViewState;
