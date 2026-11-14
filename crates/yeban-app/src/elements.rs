@@ -3757,9 +3757,14 @@ mod tests {
             );
         }
         // 反向：每一个**注入面**属性都必须被某个 setter 写过（`track-` / `master-` 两族）。
+        // ⭐ 重构 UI(Aether) 的具名例外：`track-headers-width` 是 .slint 里 splitter
+        // 拖拽两向绑定的视图态（不进 .yeban、不进撤销栈），由组件树自己写 ⇒ 不是
+        // host 注入面。⛔ 只放这一个名字，不用通配前缀把整族放过去。
+        const AETHER_VIEW_STATE_EXCEPTIONS: &[&str] = &["track-headers-width"];
         for name in declared
             .iter()
             .filter(|name| name.starts_with("track-") || name.starts_with("master-"))
+            .filter(|name| !AETHER_VIEW_STATE_EXCEPTIONS.contains(&name.as_str()))
         {
             assert!(
                 setters.contains(name),
