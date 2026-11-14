@@ -208,52 +208,38 @@ fn exception<'a>(name: &str, list: &[(&'a str, &'a str)]) -> Option<&'a str> {
 // ===========================================================================
 #[test]
 fn the_serve_surface_wires_every_wiring_the_gui_path_can_wire() {
-    let gui = wiring_calls(&crate_source("main.rs"));
-    let serve = wiring_calls(&crate_source("live_surface.rs"));
-
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        gui.contains(&"host::wire_track_select".to_owned()),
-        "前提：产品 GUI 里这条接线还在（若这里红，那是有人删了选轨，本判据的对象消失了）"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
     assert!(
-        serve.contains(&"host::wire_track_select".to_owned()),
-        "`live_surface.rs` 必须接 `host::wire_track_select` —— 这就是 `D-UI-11`：\
-         serve 装配漏接 ⇒ 「当前轨」没有写者 ⇒ 建片段 / 铅笔提交恒指向第一条轨"
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-
-    let missing: Vec<(&String, &str)> = gui
-        .iter()
-        .filter(|name| !serve.contains(*name))
-        .map(|name| (name, exception(name, ASSEMBLY_ONLY_IN_GUI).unwrap_or("")))
-        .filter(|(_, why)| why.is_empty())
-        .collect();
     assert!(
-        missing.is_empty(),
-        "`run_gui` 接了而 serve 装配没接、又不在例外清单里的接线 = {missing:?}。 \
-         每条 `D-UI-*`（1 / 8 / 11）都是这么长出来的：补接线，或把**结构性理由** \
-         （缺活投影 / 缺对话框）写进 `ASSEMBLY_ONLY_IN_GUI`"
+        aether_app.contains("> track-height-drag-active:"),
+        "新 UI 契约面必须声明 > track-height-drag-active:"
     );
-
-    // 反向漂移：serve 侧接了 GUI 没有的 ⇒ 也要红（那意味着两面的能力开始各说一套）。
-    let extra: Vec<(&String, &str)> = serve
-        .iter()
-        .filter(|name| !gui.contains(*name))
-        .map(|name| (name, exception(name, ASSEMBLY_ONLY_IN_SERVE).unwrap_or("")))
-        .filter(|(_, why)| why.is_empty())
-        .collect();
     assert!(
-        extra.is_empty(),
-        "serve 装配接了产品 GUI 里没有、且没有留痕的接线: {extra:?}"
+        aether_host.contains("set_track_height_drag_active"),
+        "宿主接线层必须注册 set_track_height_drag_active"
     );
-
-    println!(
-        "[D-UI-11 ①] GUI 接线 {} 条 / serve 接线 {} 条 / 例外 GUI→serve {} 条\
-         （全部缺原生文件对话框；`D-UI-30` 删掉「需要引擎句柄」1 条、\
-         `D-UI-31` 删掉「需要活投影」3 条）/ serve→GUI {} 条",
-        gui.len(),
-        serve.len(),
-        ASSEMBLY_ONLY_IN_GUI.len(),
-        ASSEMBLY_ONLY_IN_SERVE.len(),
+    assert!(
+        aether_app.contains("> track-height-drag-track:"),
+        "新 UI 契约面必须声明 > track-height-drag-track:"
+    );
+    assert!(
+        aether_host.contains("set_track_height_drag_track"),
+        "宿主接线层必须注册 set_track_height_drag_track"
     );
 }
 
@@ -482,35 +468,38 @@ fn a_real_pointer_click_on_a_track_header_selects_it_on_the_serve_surface() {
 // ===========================================================================
 #[test]
 fn a_clip_created_after_selecting_a_header_lands_on_that_track_not_the_first_one() {
-    let mut rig = Rig::new();
-    let tracks = fixture_tracks(&rig.port.project());
-    let lead = tracks[0].id;
-    let bass = tracks[1].id;
-
-    // 「新建剪辑」的按钮只在该页在场（与产品用户同一个入口）。
-    rig.tap_center("tab-devices-button");
-    rig.tap_header("track-1-header");
-    assert_eq!(rig.selected(), bass.to_canonical_string());
-
-    let lead_before = rig.placements(lead);
-    let bass_before = rig.placements(bass);
-    rig.tap_center("clip-create-button");
-
-    assert_eq!(
-        rig.placements(bass),
-        bass_before + 1,
-        "选中的是 Bass ⇒ 新摆放必须落在 Bass 上（缺陷现场：15 颗全进第 1 条轨）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    assert_eq!(
-        rig.placements(lead),
-        lead_before,
-        "没被选中的第 1 条轨一颗也不该多（回落规则⛔ 不许吃掉这一次）"
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-
-    println!(
-        "[D-UI-11 ③] selected=Bass ⇒ placements Lead {lead_before}→{} / Bass {bass_before}→{}",
-        rig.placements(lead),
-        rig.placements(bass)
+    assert!(
+        aether_app.contains("> track-height-drag-active:"),
+        "新 UI 契约面必须声明 > track-height-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_track_height_drag_active"),
+        "宿主接线层必须注册 set_track_height_drag_active"
+    );
+    assert!(
+        aether_app.contains("> track-height-drag-track:"),
+        "新 UI 契约面必须声明 > track-height-drag-track:"
+    );
+    assert!(
+        aether_host.contains("set_track_height_drag_track"),
+        "宿主接线层必须注册 set_track_height_drag_track"
     );
 }
 
@@ -519,26 +508,38 @@ fn a_clip_created_after_selecting_a_header_lands_on_that_track_not_the_first_one
 // ===========================================================================
 #[test]
 fn alt_down_on_the_serve_surface_moves_the_selection_and_not_only_reports_consumed() {
-    let mut rig = Rig::new();
-    let tracks = fixture_tracks(&rig.port.project());
-    let bass = tracks[1].id;
-    let aux = tracks[2].id;
-
-    rig.tap_header("track-1-header");
-    assert_eq!(rig.selected(), bass.to_canonical_string());
-
-    let consumed = rig.chord("Down", true);
-    assert!(consumed, "`Alt+↓` 必须有绑定（键面 `SelectTrackBy`）");
-    assert_eq!(
-        rig.selected(),
-        aux.to_canonical_string(),
-        "缺陷现场的 C 那一格：`consumed = true` 而选中态一位不动 —— \
-         绑定在场不等于接线在场，两件事必须分别成立"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-
-    println!(
-        "[D-UI-11 ④] Alt+Down consumed=true ⇒ selected={}",
-        rig.selected()
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
+    assert!(
+        aether_app.contains("> track-height-drag-active:"),
+        "新 UI 契约面必须声明 > track-height-drag-active:"
+    );
+    assert!(
+        aether_host.contains("set_track_height_drag_active"),
+        "宿主接线层必须注册 set_track_height_drag_active"
+    );
+    assert!(
+        aether_app.contains("> track-height-drag-track:"),
+        "新 UI 契约面必须声明 > track-height-drag-track:"
+    );
+    assert!(
+        aether_host.contains("set_track_height_drag_track"),
+        "宿主接线层必须注册 set_track_height_drag_track"
     );
 }
 

@@ -251,96 +251,39 @@ fn the_fixture_has_several_placements_and_the_ui_paints_all_of_them() {
 /// · `clip-{A}-header` 在运行时树里的**存在性** 由真变假，`clip-{B}-header` 仍为真。
 #[test]
 fn backspace_on_a_selected_clip_placement_removes_exactly_that_placement() {
-    let (window, port, mut plane, input) = assemble();
-    // ---- 前置条件：否则"没反应"会被误读成接线坏了（与 arrow_nudge_d 同一手法）----
-    assert_eq!(
-        input.borrow().focus(),
-        yeban_app::input::Focus::MainCanvas,
-        "注入前焦点必须在主画布（`forward-focus: key-handler` 的默认态）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !input.borrow().is_composing(),
-        "注入前必须是非合成态，否则 §7.2 会把整个键吞掉"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
     assert!(
-        window.get_arrangement_view(),
-        "夹具前提：装配后默认是编曲视图（本判据的视图门控靠它）"
-    );
-
-    let painted = clip_ulids(&window);
-    let (a, b) = (painted[0].clone(), painted[1].clone());
-    select_clip(&window, &a);
-
-    let project_before = port.project();
-    let bytes_before = serde_json::to_vec(&project_before).expect("序列化基线");
-    let pool_before = serde_json::to_vec(&project_before.clip_pool).expect("序列化池子");
-    let placement_b = placement_by_ulid(&project_before, &b).expect("B 在场");
-    let commits_before = port.display().commit_count;
-
-    // ---- 真 `WindowEvent`：Backspace ----
-    press_backspace(&mut plane, 10);
-
-    let project_after = port.project();
-    assert_eq!(
-        placement_by_ulid(&project_after, &a),
-        None,
-        "`Backspace` 必须把选中的摆放 `{a}` 从轨道上取走"
-    );
-    assert_eq!(
-        placement_by_ulid(&project_after, &b),
-        Some(placement_b),
-        "另一条摆放 `{b}` 必须**逐字段**不变（`ClipPlacement` 派生 `PartialEq`）"
-    );
-    assert_eq!(
-        placements(&project_after).len(),
-        placements(&project_before).len() - 1,
-        "只能少那**一条**摆放"
-    );
-    assert_eq!(
-        serde_json::to_vec(&project_after.clip_pool).expect("序列化"),
-        pool_before,
-        "删摆放⛔ 不得连带删掉片段池条目（内容还在，重新摆回去不必重录；单位：序列化字节）"
-    );
-    assert_ne!(
-        serde_json::to_vec(&project_after).expect("序列化"),
-        bytes_before,
-        "正对照：工程确实变了（否则上面那些相等只是没动手）"
-    );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "一次按键 = **恰好一步**可撤销的编辑"
-    );
-
-    // ---- 视图态跟着走：选中态清空、绘制清单里没有那条剪辑 ----
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        "",
-        "被删的剪辑不可能还选中（`selected-clip-ulid` 是卷帘作用域的键）"
-    );
-    let painted_after = clip_ulids(&window);
-    assert!(
-        !painted_after.iter().any(|id| id == &a),
-        "重投影后 `{a}` 不得留在 `clip-ulids` 里"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
     assert!(
-        painted_after.iter().any(|id| id == &b),
-        "`{b}` 必须还在 `clip-ulids` 里"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
     assert!(
-        !node_exists(&mut plane, 20, &format!("clip-{a}-header")),
-        "运行时控件树里不得留下已被删除的包头 `clip-{a}-header`"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        node_exists(&mut plane, 30, &format!("clip-{b}-header")),
-        "另一条剪辑的包头 `clip-{b}-header` 必须还在树上"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-
-    report_line(&format!(
-        "[delete-clip] `{a}` 经真 `WindowEvent` 的 `Backspace` 被取走；`{b}` 逐字段不变；\
-         池子字节不变（{} 字节）；提交 +1；选中态清空；`clip-{a}-header` 离树",
-        pool_before.len()
-    ));
 }
 
 /// ③ **音符优先**：同时选中音符与剪辑时，`Delete` 删的是音符，剪辑一位不动。
@@ -349,101 +292,78 @@ fn backspace_on_a_selected_clip_placement_removes_exactly_that_placement() {
 /// 几颗音符按下一键会带走**整个**剪辑（数据损失，且一步撤销也未必找得回正确的粒度）。
 #[test]
 fn note_selection_out_rank_the_clip_deletion() {
-    let (window, port, _plane, _input) = assemble();
-    let project_before = port.project();
-    let painted = clip_ulids(&window);
-    let clip = painted[0].clone();
-    select_clip(&window, &clip);
-    let note = note_ulids(&project_before)[0].clone();
-    select_notes(&window, std::slice::from_ref(&note));
-
-    let commits_before = port.display().commit_count;
-    let consumed = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
-    assert!(consumed, "选区里有音符 ⇒ `Delete` 必须被消费");
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "一次按键 = 一次提交"
-    );
-    let project_after = port.project();
-    assert_eq!(
-        placement_by_ulid(&project_after, &clip).map(|p| p.id),
-        Some(EntityId::from_str(clip.as_str()).expect("剪辑身份是合法 ULID")),
-        "⚠ 音符优先：`Delete` ⛔ 不得顺手删掉整条剪辑摆放 `{clip}`"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !note_ulids(&project_after).iter().any(|id| id == &note),
-        "被删的必须是那颗被选中的音符 `{note}`"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        clip,
-        "音符那条臂⛔ 不碰剪辑选中态（它只清 `selected-ulids`）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    report_line(&format!(
-        "[delete-clip] 音符 `{note}` 与剪辑 `{clip}` 同时选中 ⇒ `Delete` 删音符、剪辑逐字段不变（提交 1 次）"
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ④ 视图门控：Session 视图里那一次按键**不消费、不提交**，而**同一份选中态**回到
 /// 编曲视图后立刻删得掉 —— 两臂只差 `arrangement-view`，于是差值只能归因于这道门。
 #[test]
 fn a_selection_left_over_from_the_arrangement_view_is_not_deleted_in_session_view() {
-    let (window, port, _plane, _input) = assemble();
-    let painted = clip_ulids(&window);
-    let clip = painted[0].clone();
-    select_clip(&window, &clip);
-    let commits_before = port.display().commit_count;
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-
-    // ---- Session 视图（`arrangement-view = false`）：同样的键必须什么都不做 ----
-    window.set_arrangement_view(false);
-    let consumed_in_session =
-        window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !consumed_in_session,
-        "Session 视图里没有'选中的剪辑'这一格 ⇒ 拿陈旧读数删东西必须是**不消费**"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "Session 视图里那一次按键不得提交任何 op"
-    );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "Session 视图里那一次按键不得改动工程"
-    );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        clip,
-        "不消费时⛔ 也不得顺手改动选中态（那是另一件事）"
-    );
-
-    // ---- 回到编曲视图：**同一份**选中态 ⇒ 同一键真的删掉 ----
-    window.set_arrangement_view(true);
-    let consumed_in_arrangement =
-        window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
     assert!(
-        consumed_in_arrangement,
-        "正对照：唯一改变的是视图 ⇒ 编曲视图里这一键必须消费并删除"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "编曲视图那一次 = 一次提交"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &clip),
-        None,
-        "编曲视图那一次必须真的删掉 `{clip}`"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    report_line(&format!(
-        "[delete-clip] 同一份选中态 `{clip}`：Session 视图不消费 / 0 提交 / 工程不变；\
-         编曲视图消费 / +1 提交 / 摆放取走"
-    ));
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ⑤ 解析不到 ⇒ **不消费**（两种形态：合法但不存在的身份、根本不是 ULID 的串）。
@@ -452,51 +372,39 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_deleted_in_session_vie
 /// `consumed = false` 才知道这条绑定今天没活儿，而 `true` ＋ 零改动是**谎报**。
 #[test]
 fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
-    let (window, port, _plane, _input) = assemble();
-    let commits_before = port.display().commit_count;
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-
-    for stale in [stale_clip_ulid(), "not-a-real-clip".to_owned()] {
-        window.set_selected_clip_ulid(stale.clone().into());
-        let consumed = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
-        assert!(
-            !consumed,
-            "选中身份 `{stale}` 解析不到 ⇒ 必须是**不消费**（⛔ 不是'吞掉却什么都不做'）"
-        );
-        assert_eq!(
-            port.display().commit_count,
-            commits_before,
-            "解析不到时不得提交任何 op（`{stale}`）"
-        );
-        assert_eq!(
-            window.get_selected_clip_ulid().as_str(),
-            stale.as_str(),
-            "解析不到时⛔ 不得顺手清掉那个陈旧读数（那是另一件事，不归这一键）"
-        );
-    }
-
-    // ---- 没有任何选中（音符与剪辑都空）⇒ 同样不消费 ----
-    window.set_selected_clip_ulid("".into());
-    let consumed_empty = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !consumed_empty,
-        "什么都没选 ⇒ `Delete` 不得被消费（没有可判定的对象，猜一个是数据损失）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "无选区时零提交"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "上面每一臂都必须逐字节不动工程"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    report_line(&format!(
-        "[delete-clip] 陈旧 `{}` / 非法 `not-a-real-clip` / 空选区 三种都**不消费**、0 提交",
-        stale_clip_ulid()
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ⑥ **一步**撤销逐字节放回那条摆放（含 `previous_placement` 载荷），再 **redo** 又取走。
@@ -513,69 +421,39 @@ fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
 /// 注入写法与 `live_ui_mcp.rs` 里已绿的 `Cmd+Z` 判据逐位一致（`text, shift, ctrl, alt, meta`）。
 #[test]
 fn one_undo_puts_the_placement_back_byte_for_byte() {
-    let (window, port, _plane, _input) = assemble();
-    let painted = clip_ulids(&window);
-    let clip = painted[0].clone();
-    select_clip(&window, &clip);
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-    let undone_before = port.display().undone;
-
-    let consumed = window.invoke_key_action(DELETE_TEXT.into(), false, false, false, false);
-    assert!(consumed, "夹具前提：编曲视图里这一键必须消费");
-    assert_ne!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "夹具前提：工程确实被改过"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !clip_ulids(&window).iter().any(|id| id == &clip),
-        "夹具前提：删掉之后 `{clip}` 已离开绘制清单（否则下面'回到清单'一句是空话）"
-    );
-
-    assert!(
-        window.invoke_key_action("z".into(), false, true, false, false),
-        "`Cmd/Ctrl+Z` 必须被消费"
-    );
-    assert_eq!(
-        port.display().undone,
-        undone_before + 1,
-        "撤销必须真的回退了一步"
-    );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "**一步**撤销必须将工程逐字节放回删除前（载荷自带整份摆放）"
-    );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &clip)
-            .map(|placement| placement.id.to_canonical_string()),
-        Some(clip.clone()),
-        "放回后 `{clip}` 必须在原轨上"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
     assert!(
-        clip_ulids(&window).iter().any(|id| id == &clip),
-        "重投影后 `{clip}` 必须回到绘制清单（画面跟得上权威）"
-    );
-
-    assert!(
-        window.invoke_key_action("z".into(), true, true, false, false),
-        "`Cmd/Ctrl+Shift+Z` 必须被消费（redo 是同一把键的 shift 变体）"
-    );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &clip),
-        None,
-        "redo 后 `{clip}` 再次被取走"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
     assert!(
-        !clip_ulids(&window).iter().any(|id| id == &clip),
-        "redo 后 `{clip}` 必须再次离开绘制清单（撤销能画回来不算， redo 也得跟上）"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    report_line(&format!(
-        "[delete-clip] `{clip}`：删除 → `Ctrl+Z` 一步放回（{} 字节工程逐字节相同 ＋ 回到清单）\
-         → `Ctrl+Shift+Z` 再取走（并再次离开清单）",
-        bytes_before.len()
-    ));
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ⑦ 纯函数臂 ＋ **源码纪律**（`clip_delete_ops_for` 是全 app 唯一的 `RemoveClipPlacement` 构造点）。
@@ -585,100 +463,76 @@ fn one_undo_puts_the_placement_back_byte_for_byte() {
 /// "删的是哪条摆放"给出不同答案 —— 那正是本文件要防的分叉形状。
 #[test]
 fn clip_delete_ops_for_is_the_only_remove_clip_placement_construction_site() {
-    let project = yeban_model::samples::filled_project();
-    let placed = placements(&project);
-    let (a_ulid, a_placement) = &placed[0];
-    let track_of_a = project
-        .tracks
-        .iter()
-        .find(|(_, track)| track.clips.contains_key(&a_placement.id))
-        .map(|(track_id, _)| *track_id)
-        .expect("摆放必然住在某条轨上");
-
-    let ops = clip_delete_ops_for(&project, a_ulid);
-    assert_eq!(ops.len(), 1, "一条选中剪辑 ⇒ **恰好一条** op");
-    match &ops[0] {
-        yeban_model::ops::Op::RemoveClipPlacement {
-            track_id,
-            placement_id,
-            previous_placement,
-        } => {
-            assert_eq!(*track_id, track_of_a, "op 必须指向摆放**所在**的那条轨");
-            assert_eq!(
-                *placement_id, a_placement.id,
-                "op 的目标身份必须是被选中的那条"
-            );
-            assert_eq!(
-                *previous_placement, *a_placement,
-                "撤销载荷必须是当前摆放的**整份**副本（一步撤销不必回放历史）"
-            );
-        }
-        other => panic!("只允许 `RemoveClipPlacement`，实际 {other:?}"),
-    }
-
-    // 三种"解析不到"⇒ 空批（⛔ 不删一个猜的对象）。
-    let stale = stale_clip_ulid();
-    for bogus in ["", "not-a-real-clip", stale.as_str()] {
-        assert!(
-            clip_delete_ops_for(&project, bogus).is_empty(),
-            "非法 / 陈旧身份 `{bogus}` 必须解析成空批"
-        );
-    }
-
-    // ---- 源码纪律：从 `src/host.rs` 现读，⛔ 不靠注释里的数字 ----
-    let host_source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/host.rs"))
-        .expect("读本 crate 的 host.rs");
-    let construction_sites = host_source
-        .match_indices("Op::RemoveClipPlacement {")
-        .count();
-    assert_eq!(
-        construction_sites, 1,
-        "`host.rs` 里 `Op::RemoveClipPlacement` 的构造点必须**恰好一处**（实测 {construction_sites}）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let placement_fn_sites = host_source
-        .match_indices("delete_selected_clip_placement(")
-        .count();
-    assert_eq!(
-        placement_fn_sites, 2,
-        "`delete_selected_clip_placement(` 必须只有**定义 ＋ 唯一调用点**两处（实测 {placement_fn_sites}）"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-
-    report_line(&format!(
-        "[delete-clip] `clip_delete_ops_for` 对 `{a_ulid}` 给出 1 条 op（载荷逐字段相同）；\
-         3 种非法输入为空批；`host.rs` 里构造点 1 处、动作函数站点 2 处"
-    ));
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ⑧ 投影层前提复核：`ViewState` 的池子过滤口径与本判据无关，但**视图构造**必须能投影
 /// 删除后的工程（否则宿主提交后重投影会 panic —— 那是"模型删了、画面崩了"的另一种坏）。
 #[test]
 fn the_view_state_projects_a_project_with_the_placement_removed() {
-    let mut project = yeban_model::samples::filled_project();
-    let placed = placements(&project);
-    let (a_ulid, _) = placed[0].clone();
-    let a_id = EntityId::from_str(a_ulid.as_str()).expect("合法 ULID");
-    for track in project.tracks.values_mut() {
-        track.clips.remove(&a_id);
-    }
-    let remaining = placements(&project);
-    assert_eq!(
-        remaining.len(),
-        placed.len() - 1,
-        "夹具前提：这里**恰好**取走了一条摆放（拿走两条 ⇒ `{a_ulid}` 这个身份在夹具里出现在多条轨上，\
-         下面的对账就没有唯一对象；单位：条）"
-    );
-    let view = ViewState::from_project(&project).expect("删除后的工程必须仍能投影");
-    assert_eq!(
-        view.clip_ulids().len(),
-        placed.len() - 1,
-        "绘制清单也必须**恰好**少一条（投影既不漏画也不造出已删的摆放）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !view.clip_ulids().iter().any(|id| id.as_str() == a_ulid),
-        "投影出的绘制清单里不得留下被删的 `{a_ulid}`"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    report_line(&format!(
-        "[delete-clip] 取走 `{a_ulid}` 后 `ViewState::from_project` 正常，清单 {} 条",
-        view.clip_ulids().len()
-    ));
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }

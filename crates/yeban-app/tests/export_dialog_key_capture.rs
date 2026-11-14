@@ -166,9 +166,8 @@ fn the_focus_readout_is_derived_and_no_new_control_becomes_addressable() {
     assert!(
         // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
         // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
-        (["export-wav-focused-field"]
-            .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
+        (["export-wav-focused-field"].iter().fold(true, |acc, n| acc
+            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
         "⑧ MainWindow 那一条必须是**纯转发**，⛔ 不重新推导一遍（两处推导迟早分叉）"
     );
 

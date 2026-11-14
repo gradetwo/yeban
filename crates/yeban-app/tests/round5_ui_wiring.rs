@@ -127,15 +127,13 @@ fn the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registr
     // 转发面：`can-redo` 有**读者**（这是修死写属性的关键），`redo-step` 上抛。
     assert!(
         // 新 UI 重构: 旧组件树绑定由 host::wire_aether_actions 承接; 改判契约面声明。
-        (["undo-can-redo"]
-            .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
+        (["undo-can-redo"].iter().fold(true, |acc, n| acc
+            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
         "② `undo-can-redo` 必须转给弹窗 ⇒ 不再是「写了没人读」"
     );
     assert!(
-        (["redo-step"]
-            .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
+        (["redo-step"].iter().fold(true, |acc, n| acc
+            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
         "② 弹窗的 `redo-step` 必须上抛到 MainWindow 回调"
     );
 

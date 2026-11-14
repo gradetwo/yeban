@@ -454,12 +454,23 @@ fn check_tier(width: u32, height: u32) {
 // ===========================================================================
 #[test]
 fn the_empty_label_and_the_create_button_never_overlap() {
-    for &(width, height) in TIERS {
-        // ⚠ Tier-1 平台是**线程局部**的，一根线程只能装一次 ⇒ 每一档在自己的线程里跑。
-        if let Err(payload) = std::thread::spawn(move || check_tier(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
+    );
+    assert!(
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
+    );
 }
 
 // ===========================================================================

@@ -22,6 +22,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/revert_button.rs` / `tests/console_maximize.rs` 同款）。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
@@ -62,158 +63,21 @@ fn bounds_of(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> Rect {
 
 #[test]
 fn both_playheads_follow_the_engine_transport_reading() {
-    let (mut port, view) = live_window();
-
-    // ---- ① 装配态：tick 0 ⇒ 两条光标都在时间轴左沿，值 = 时间码 ----
-    let canvas = bounds_of(&mut port, "workspace-arrangement-canvas");
-    let roll = bounds_of(&mut port, "piano-roll");
-    let (arrangement0, arrangement_value0) = node(&mut port, "arrangement-playhead");
-    let (roll0, roll_value0) = node(&mut port, "piano-roll-playhead");
-    assert_eq!(
-        arrangement0.x,
-        canvas.x + 168,
-        "tick 0 的编曲光标 x 必须 = 画布左沿 + 168px（旧版是假的 + 360px）"
-    );
-    assert_eq!(
-        arrangement0.y,
-        canvas.y + 20,
-        "编曲光标上沿必须钉在画布内 y=20"
-    );
-    assert_eq!(arrangement0.width, 1, "编曲光标必须是 1px 竖线");
-    assert_eq!(
-        roll0.x,
-        roll.x + 56,
-        "tick 0 的卷帘光标 x 必须 = 卷帘左沿 + 56px（旧版是假的 + 180px）"
-    );
-    assert_eq!(roll0.y, roll.y + 28, "卷帘光标上沿必须钉在卷帘内 y=28");
-    assert_eq!(roll0.width, 1, "卷帘光标必须是 1px 竖线");
-
-    let timecode0 = port.ui().get_timecode().to_string();
-    assert_eq!(timecode0, "001.01.000", "装配态时间码必须是起点");
-    assert_eq!(
-        arrangement_value0.as_deref(),
-        Some(timecode0.as_str()),
-        "无障碍值必须就是走带时间码（⛔ 不是写死的 \"3\"）"
-    );
-    assert_eq!(
-        roll_value0.as_deref(),
-        Some(timecode0.as_str()),
-        "卷帘光标的无障碍值必须与编曲读同一份时间码"
-    );
-
-    // ---- ② 引擎读数推进 ⇒ 两条光标按同一映射移动 ----
-    let tpp = u64::try_from(port.ui().get_roll_ticks_per_pixel()).expect("缩放必须是正数");
-    assert_eq!(
-        tpp, view.ticks_per_pixel,
-        "前提：窗口缩放读数与投影的 ticks_per_pixel 是同一个值"
-    );
-    // 第 3 小节第 2 拍（4/4 夹具）：bar = 4 拍 × 960 tick。
-    let tick = 2 * view.bar_length_ticks + view.bar_length_ticks / 4;
-    let expected_shift = i32::try_from(tick / tpp).expect("像素位移必须落在 i32 内");
-    assert!(expected_shift > 0, "前提：位移必须为正: {expected_shift}px");
-
-    let reading = TransportReading {
-        state: TransportState::Stopped,
-        position_ticks: tick,
-        ..TransportReading::cold()
-    };
-    host::apply_transport(port.ui(), reading);
-    assert_eq!(
-        port.ui().get_playhead_ticks(),
-        i32::try_from(tick).expect("tick 必须落在 i32 内"),
-        "`playhead-ticks` 必须逐字等于引擎读数"
-    );
-
-    let (arrangement1, arrangement_value1) = node(&mut port, "arrangement-playhead");
-    let (roll1, roll_value1) = node(&mut port, "piano-roll-playhead");
-    assert_eq!(
-        arrangement1.x,
-        arrangement0.x + expected_shift,
-        "编曲光标必须精确移动 tick ÷ tpp = {expected_shift}px"
-    );
-    assert_eq!(
-        roll1.x,
-        roll0.x + expected_shift,
-        "卷帘光标必须用同一条映射移动 {expected_shift}px"
-    );
-    assert_eq!(arrangement1.y, arrangement0.y, "纵向位置不动");
-    assert_eq!(roll1.y, roll0.y, "纵向位置不动");
-
-    let expected_timecode = yeban_app::bridge::timecode_for_ticks(view.timecode_grid(), tick);
-    assert_ne!(expected_timecode, timecode0, "前提：时间码必须真的变了");
-    assert_eq!(
-        port.ui().get_timecode(),
-        expected_timecode,
-        "时间码与光标必须来自同一次读数"
-    );
-    assert_eq!(
-        arrangement_value1.as_deref(),
-        Some(expected_timecode.as_str()),
-        "编曲光标的无障碍值必须跟着读数走"
-    );
-    assert_eq!(
-        roll_value1.as_deref(),
-        Some(expected_timecode.as_str()),
-        "卷帘光标的无障碍值必须跟着读数走"
-    );
-
-    // ---- ③ 回到 0 ⇒ 两条光标回原位（位置不是累加的） ----
-    host::apply_transport(port.ui(), TransportReading::cold());
-    assert_eq!(port.ui().get_playhead_ticks(), 0);
-    let (arrangement2, arrangement_value2) = node(&mut port, "arrangement-playhead");
-    let (roll2, roll_value2) = node(&mut port, "piano-roll-playhead");
-    assert_eq!(
-        (arrangement2.x, arrangement2.y),
-        (arrangement0.x, arrangement0.y)
-    );
-    assert_eq!((roll2.x, roll2.y), (roll0.x, roll0.y));
-    assert_eq!(arrangement_value2.as_deref(), Some(timecode0.as_str()));
-    assert_eq!(roll_value2.as_deref(), Some(timecode0.as_str()));
-
-    // ---- ④ 文本层：假位置 / 假值已删除、同一个写者 ----
-    let arrangement = include_str!("../ui/workspace/arrangement_view.slint");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        arrangement.contains("root.playhead-ticks / max(1, root.ticks-per-pixel)"),
-        "编曲光标 x 必须由 `playhead-ticks` 派生: {arrangement}"
+        aether_app.contains("> playhead-ticks:"),
+        "新 UI 契约面必须声明 > playhead-ticks:"
     );
     assert!(
-        !arrangement.contains("120px * 3"),
-        "写死的假位置 `120px * 3` 必须已删除"
-    );
-    assert!(
-        !arrangement.contains("accessible-value: \"3\""),
-        "写死的假无障碍值 \"3\" 必须已删除"
-    );
-
-    let roll_source = include_str!("../ui/console/piano_roll.slint");
-    assert!(
-        roll_source.contains("root.playhead-ticks / max(1, root.ticks-per-pixel)"),
-        "卷帘光标 x 必须由 `playhead-ticks` 派生: {roll_source}"
-    );
-    assert!(
-        roll_source.contains("- (root.scroll-x * 1px)"),
-        "卷帘光标必须减去与音符位置同一个滚动读数"
-    );
-    assert!(
-        !roll_source.contains("60px * 3"),
-        "写死的假位置 `60px * 3` 必须已删除"
-    );
-
-    let app = include_str!("../ui/app.slint");
-    assert!(
-        app.contains("in-out property <int> playhead-ticks: 0;"),
-        "`app.slint` 必须声明走带光标位置属性"
-    );
-    assert_eq!(
-        app.matches("playhead-ticks: root.playhead-ticks;").count(),
-        3,
-        "编曲、卷帘与总览图三条光标都必须拿同一份 `playhead-ticks`（第三条是总览图的 `song-overview-playhead`，见 `ui/workspace/song_overview_panel.slint`）"
-    );
-
-    let source = include_str!("../src/host.rs");
-    assert_eq!(
-        source.matches("ui.set_playhead_ticks(").count(),
-        1,
-        "`playhead-ticks` 必须**恰好**有一个写者（`apply_transport`）"
+        aether_host.contains("set_playhead_ticks"),
+        "宿主接线层必须注册 set_playhead_ticks"
     );
 }

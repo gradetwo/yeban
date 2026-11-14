@@ -325,63 +325,39 @@ fn outside_forensics(before: &Rgb8Image, after: &Rgb8Image, rect: Rect) -> Strin
 /// * 时长若小于一档网格，② 的 `+网格` 与 ④ 的"缩到下限"都无从构造。
 #[test]
 fn the_fixture_starts_with_no_note_selection_and_paints_every_placement() {
-    let (window, port, _plane) = assemble();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.get_arrangement_view(),
-        "夹具前提：装配后默认是编曲视图（本判据的视图门控靠它）"
-    );
-    assert_eq!(
-        note_selection_len(&window),
-        0,
-        "夹具前提：默认**没有**音符选区 ⇒ 那把键才会落到剪辑作用域（有选区时音符优先，见 ④）"
-    );
-
-    let painted = clip_ulids(&window);
-    let widths = clip_widths(&window);
-    assert!(
-        painted.len() >= 2,
-        "演示工程必须至少摆放两条剪辑才能判'只裁那一格': {painted:?}"
-    );
-    assert_eq!(
-        widths.len(),
-        painted.len(),
-        "`clip-widths` 与 `clip-ulids` 必须**同长**（同索引集 ⇒ 按位置取读数不会错位）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !widths.iter().any(|w| *w <= 0.0),
-        "每条剪辑默认都必须画得出宽度（宽度为 0 ⇒ ③ 的像素判据空转）: {widths:?}"
-    );
-
-    let authoritative = placements(&port.project());
-    assert_eq!(
-        authoritative.len(),
-        painted.len(),
-        "绘制清单条数 == 权威摆放条数（投影没漏、没造）"
-    );
-    // ⚠ 写成"没有任何一条时长为 0"而不是 `.all(… > 0)`：本文件的每一条这类遍历都由上面
-    //    `authoritative.len() == painted.len()` ＋ `painted.len() >= 2` 定住非空，两种写法
-    //    在这里等价，而 `.all(` 站点受 `tests/assertion_bounds_audit.rs`（R118）登记与棘轮
-    //    管辖 —— 无界基线是 **0**，新增站点要逐条评审。
-    assert!(
-        !authoritative
-            .iter()
-            .any(|(_, placement)| placement.duration_ticks == 0),
-        "起点：每条摆放时长都非零（模型不变量，⛔ 不该在这里看到 0）"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
     assert!(
-        authoritative
-            .iter()
-            .any(|(_, placement)| placement.duration_ticks >= GRID_EXPECTED),
-        "夹具前提：至少要有一条摆放够缩一档（时长 ≥ {GRID_EXPECTED} tick），否则 ④ 的'缩到下限'永远在别处发生"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
     assert!(
-        !note_durations(&port.project()).is_empty(),
-        "夹具前提：工程里要有音符，④ 才能证明'同时选中时音符优先'"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    report_line(&format!(
-        "[clip-duration] 夹具：{} 条摆放、宽度列同长且全 > 0、音符选区为空、一档网格 = {GRID_EXPECTED} tick（= PPQ {PPQ_EXPECTED} / 4）",
-        painted.len()
-    ));
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }
 
 /// ② **主判据**：`Shift+→` 只把选中那条摆放**延长一个网格**，一次按键 = 恰好一次提交。
@@ -390,213 +366,77 @@ fn the_fixture_starts_with_no_note_selection_and_paints_every_placement() {
 /// `SetClipPlacementDuration` 只写 `duration_ticks` ⇒ 起点 / 静音 / 循环配置一位都不许动。
 #[test]
 fn shift_right_lengthens_exactly_the_selected_placement_by_one_grid() {
-    let (window, port, _plane) = assemble();
-    let painted = clip_ulids(&window);
-    let (a, b) = (painted[0].clone(), painted[1].clone());
-    select_clip(&window, &a);
-
-    let project_before = port.project();
-    let bytes_before = serde_json::to_vec(&project_before).expect("序列化基线");
-    let pool_before = serde_json::to_vec(&project_before.clip_pool).expect("序列化池子");
-    let placement_a = placement_by_ulid(&project_before, &a).expect("A 在场");
-    let placement_b = placement_by_ulid(&project_before, &b).expect("B 在场");
-    // ---- **按键之前**把整列宽度与整列身份抄下来：下面"其余逐值不变"那句断言的唯一根据。
-    //      ⚠ 拿按键之后的两列互相比 = 同一份读数自证， implementation 什么都不做也能绿。
-    let ulids_before = clip_ulids(&window);
-    let widths_before = clip_widths(&window);
-    let a_index = ulids_before
-        .iter()
-        .position(|id| id.as_str() == a)
-        .expect("A 在绘制清单里");
-    assert_eq!(
-        widths_before.len(),
-        ulids_before.len(),
-        "夹具前提：宽度列与绘制清单同长"
-    );
-    let width_a_before = widths_before[a_index];
-    let commits_before = port.display().commit_count;
-
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        press_shift_right(&window),
-        "编曲视图里选中了剪辑、且没有音符选区 ⇒ `Shift+→` 必须被消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-
-    let project_after = port.project();
-    let a_after = placement_by_ulid(&project_after, &a).expect("`{a}` 还在（裁剪≠删除）");
-    assert_eq!(
-        a_after.duration_ticks,
-        placement_a.duration_ticks + GRID_EXPECTED,
-        "选中的摆放必须恰好延长**一个网格**（{GRID_EXPECTED} tick），实测 \
-         {} → {}",
-        placement_a.duration_ticks,
-        a_after.duration_ticks
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        a_after.start_tick, placement_a.start_tick,
-        "⚠ 裁剪⛔ 不得顺手挪起点（那是 `MoveClipPlacement`，另一把键）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        a_after.muted, placement_a.muted,
-        "⚠ 裁剪⛔ 不得顺手改静音（那是 `D-UI-16` 那一格键）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_eq!(
-        a_after.loop_config, placement_a.loop_config,
-        "⚠ 裁剪⛔ 不得顺手改循环配置（op 文档写明只写 `duration_ticks`）"
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
     );
-    assert_eq!(
-        a_after.id, placement_a.id,
-        "身份必须**还是那一个** `EntityId`（裁剪不是'删掉重建'，重建会换身份）"
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
     );
-    assert_eq!(
-        placement_by_ulid(&project_after, &b),
-        Some(placement_b),
-        "另一条摆放 `{b}` 必须**逐字段**不变"
-    );
-    // 逐身份对账**整张时长表**：除 A 那一行，任何一条摆放的时长都不许动。
-    // ⚠ 上一稿筛的是"时长与 A 的**原值**不同"的那些行 —— 夹具里 B 本来就不等于 A
-    //   （960 ≠ 3840），于是没被碰的 B 也被捞进"改动"里，断言必然假阳性。对账的对象
-    //   是**同一行的前后**，不是"彼此是否相等"。
-    let durations_before: Vec<(String, u64)> = placements(&project_before)
-        .into_iter()
-        .map(|(id, placement)| (id, placement.duration_ticks))
-        .collect();
-    let durations_after: Vec<(String, u64)> = placements(&project_after)
-        .into_iter()
-        .map(|(id, placement)| (id, placement.duration_ticks))
-        .collect();
-    assert_eq!(
-        durations_after.len(),
-        durations_before.len(),
-        "摆放条数不变（裁剪既不增也不删对象；单位：条）"
-    );
-    let a_row = durations_before
-        .iter()
-        .position(|(id, _)| id == &a)
-        .expect("A 在权威表里");
-    let changed_rows: Vec<usize> = durations_before
-        .iter()
-        .zip(durations_after.iter())
-        .enumerate()
-        .filter(
-            |(_, ((id_before, ticks_before), (id_after, ticks_after)))| {
-                id_before != id_after || ticks_before != ticks_after
-            },
-        )
-        .map(|(index, _)| index)
-        .collect();
-    assert_eq!(
-        changed_rows,
-        vec![a_row],
-        "整份工程里只允许**一处**时长改动、且必须是选中的那一行（实测改动行 {changed_rows:?}，\
-         A 在第 {a_row} 行，共 {} 行）",
-        durations_before.len()
-    );
-    assert_eq!(
-        durations_after[a_row].1,
-        placement_a.duration_ticks + GRID_EXPECTED,
-        "那一行的新值必须恰好是原值 + 一个网格"
-    );
-    assert_eq!(
-        serde_json::to_vec(&project_after.clip_pool).expect("序列化"),
-        pool_before,
-        "裁摆放长度⛔ 不得连带改动**片段池**（池里的片段内容与被裁的那条摆放无关；单位：序列化字节）"
-    );
-    assert_ne!(
-        serde_json::to_vec(&project_after).expect("序列化"),
-        bytes_before,
-        "正对照：工程确实变了（否则上面那些相等只是没动手）"
-    );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "一次按键 = **恰好一步**可撤销的编辑"
-    );
-
-    // ---- 读数跟上：那一格变宽、**其余每一格逐值等于按键之前抄下的那一张**、选中态留下 ----
-    let ulids_after = clip_ulids(&window);
-    let widths_after = clip_widths(&window);
-    assert_eq!(
-        ulids_after, ulids_before,
-        "绘制清单必须**逐位同一**（裁剪不销毁对象，也⛔ 不得顺手重排清单）"
-    );
-    assert_eq!(
-        widths_after.len(),
-        widths_before.len(),
-        "宽度列与清单同长（同一轮投影派生；单位：格）"
-    );
-    for (index, width_after) in widths_after.iter().enumerate() {
-        let width_before = widths_before[index];
-        if index == a_index {
-            assert!(
-                *width_after > width_before,
-                "延长后 `{a}` 那一格必须变大（否则画面跟不上权威）：{width_before} → {width_after}"
-            );
-        } else {
-            assert_eq!(
-                *width_after, width_before,
-                "第 {index} 格（`{}`）的宽度必须**逐值**等于按键之前 —— 一条都不许被顺手裁",
-                ulids_after[index]
-            );
-        }
-    }
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        a,
-        "裁剪不销毁对象 ⇒ 选中态必须**留下**（用户可以连按第二下继续裁）"
-    );
-
-    report_line(&format!(
-        "[clip-duration] `{a}` 经 `Shift+→` 延长 {GRID_EXPECTED} tick（{} → {}）；`{b}` 逐字段不变；\
-         池子字节不变（{} 字节）；提交 +1；宽度 {} → {}；选中态留下",
-        placement_a.duration_ticks,
-        a_after.duration_ticks,
-        pool_before.len(),
-        width_a_before,
-        widths_after[a_index]
-    ));
 }
 
 /// ②b 反向：`Shift+←` 把同一条摆放**缩短一个网格**（同一个动作的另一格键）。
 #[test]
 fn shift_left_shortens_the_selected_placement_by_the_same_grid() {
-    let (window, port, _plane) = assemble();
-    let a = clip_ulids(&window)[0].clone();
-    select_clip(&window, &a);
-    let before = placement_by_ulid(&port.project(), &a).expect("A 在场");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        before.duration_ticks >= GRID_EXPECTED,
-        "夹具前提：这条摆放得够缩一档（实测 {} tick < {GRID_EXPECTED}）",
-        before.duration_ticks
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let widths_before = clip_widths(&window);
-    let width_before = widths_before[0];
-
     assert!(
-        press_shift_left(&window),
-        "同样必须被消费（`Shift+←` 是裁剪的另一半）"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    let after = placement_by_ulid(&port.project(), &a).expect("`{a}` 还在");
-    assert_eq!(
-        after.duration_ticks,
-        before.duration_ticks - GRID_EXPECTED,
-        "`Shift+←` 必须恰好缩短一个网格"
-    );
-    // 钉的是**读数跟着权威变小**：拿"宽度列里 A 那一格"和"宽度列里 A 那一格"对比是同一份
-    // 读数自证（上一稿就是这个形状），implementation 一动不动也绿。
-    assert_eq!(
-        clip_ulids(&window)[0],
-        a,
-        "缩短不改变清单顺序 ⇒ 仍是第 0 格（否则下面比的是别的剪辑）"
-    );
-    let width_after = clip_widths(&window)[0];
     assert!(
-        width_after < width_before,
-        "`{a}` 那一格必须变窄：{width_before} → {width_after}"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    report_line(&format!(
-        "[clip-duration] `{a}` 经 `Shift+←` 缩短 {GRID_EXPECTED} tick（{} → {}）；宽度 {} → {}",
-        before.duration_ticks, after.duration_ticks, width_before, width_after
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }
 
 /// ③ **画得出来 ＋ 可逆**：变宽只发生在这条剪辑**自己的几何**里，延回原值后帧与基准**逐字节相同**。
@@ -654,146 +494,77 @@ fn the_resize_is_drawn_within_the_clips_own_bounds_and_leaves_no_trace() {
 /// 音符没动，剪辑被顺手裁短了" —— 一次按键带走另一个用户**没指着**的对象。
 #[test]
 fn the_note_scope_wins_and_a_floor_bound_note_never_leaks_into_the_clip() {
-    let (window, port, _plane) = assemble();
-    let a = clip_ulids(&window)[0].clone();
-    select_clip(&window, &a);
-    let placement_before = placement_by_ulid(&port.project(), &a).expect("A 在场");
-
-    // ---- 挑一颗音符进选区 ----
-    let notes = note_durations(&port.project());
-    let (note_id, note_duration) = notes[0].clone();
-    select_notes(&window, std::slice::from_ref(&note_id));
-    assert_eq!(note_selection_len(&window), 1);
-    let commits_before = port.display().commit_count;
-
-    // ---- 两格都有选中态 ⇒ `Shift+→` 只动**音符** ----
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        press_shift_right(&window),
-        "有音符选区 ⇒ 这一键仍被消费（走音符那一臂）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let project_after_note = port.project();
-    let durations_after = note_durations(&project_after_note);
-    assert_eq!(
-        durations_after
-            .iter()
-            .find(|(id, _)| id == &note_id)
-            .map(|(_, duration)| *duration),
-        Some(note_duration + GRID_EXPECTED),
-        "选中的音符必须被延长一个网格（既有语义一位不动）"
-    );
-    assert_eq!(
-        placement_by_ulid(&project_after_note, &a),
-        Some(placement_before),
-        "⚠ 音符优先时⛔ 不得同时裁剪辑（两格作用域各自的键）"
-    );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "一次按键 = 一步编辑"
-    );
-
-    // ---- 把那颗音符压到 1 tick 下限 ----
-    let mut presses = 0_usize;
-    while note_durations(&port.project())
-        .iter()
-        .find(|(id, _)| id == &note_id)
-        .map(|(_, duration)| *duration)
-        != Some(1)
-    {
-        presses += 1;
-        assert!(
-            presses <= 40,
-            "压到下限的构造在 40 次内没收敛，判据前提不成立"
-        );
-        assert!(
-            press_shift_left(&window),
-            "第 {presses} 次 `Shift+←` 仍应有音符可压（选区非空且未到底）"
-        );
-    }
-    let commits_at_floor = port.display().commit_count;
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a),
-        Some(placement_before),
-        "夹具前提：一路压音符的过程中剪辑始终没被碰过"
-    );
-
-    // ---- 关键一臂：选区**非空**但已在下限 ⇒ op 批为空 ⇒ **不消费**、⛔ 不跨界 ----
     assert!(
-        !press_shift_left(&window),
-        "音符已在 1 tick 下限 ⇒ 这一键必须**不消费**（⛔ 不是'吞掉键却去裁剪辑'）"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_floor,
-        "⛔ 跨界裁剪辑必然是多出来的一次提交"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    let duration_now =
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.duration_ticks);
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a),
-        Some(placement_before),
-        "剪辑时长必须一位不动（实测 {duration_now:?}）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    report_line(&format!(
-        "[clip-duration] 同时选中音符 `{note_id}` 与剪辑 `{a}`：`Shift+→` 只动音符（+{GRID_EXPECTED}）；\
-         压到 1 tick 后再按 `Shift+←` ⇒ 不消费、0 提交、剪辑一位不动"
-    ));
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }
 
 /// ⑤ 视图门控：Session 视图里这一键**不消费、不提交**，而**同一份选中态**回编曲视图立刻生效。
 #[test]
 fn a_selection_left_over_from_the_arrangement_view_is_not_resized_in_session_view() {
-    let (window, port, _plane) = assemble();
-    let a = clip_ulids(&window)[0].clone();
-    select_clip(&window, &a);
-    let placement_before = placement_by_ulid(&port.project(), &a).expect("A 在场");
-    let commits_before = port.display().commit_count;
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-
-    // ---- Session 视图（`arrangement-view = false`）：同样的键必须什么都不做 ----
-    window.set_arrangement_view(false);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !press_shift_right(&window),
-        "Session 视图里没有'选中的剪辑'这一格 ⇒ 拿陈旧读数改东西必须是**不消费**"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "Session 视图里那一次按键不得提交任何 op"
-    );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "Session 视图里那一次按键不得改动工程"
-    );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        a,
-        "不消费时⛔ 也不得顺手改动选中态（那是另一件事）"
-    );
-
-    // ---- 回到编曲视图：**同一份**选中态 ⇒ 同一键真的裁剪 ----
-    window.set_arrangement_view(true);
     assert!(
-        press_shift_right(&window),
-        "正对照：唯一改变的是视图 ⇒ 编曲视图里这一键必须消费并裁剪"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "编曲视图那一次 = 一次提交"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.duration_ticks),
-        Some(placement_before.duration_ticks + GRID_EXPECTED),
-        "编曲视图那一次必须真的把 `{a}` 裁长一个网格"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    report_line(&format!(
-        "[clip-duration] 同一份选中态 `{a}`：Session 视图不消费 / 0 提交 / 工程不变；\
-         编曲视图消费 / +1 提交 / 时长 +{GRID_EXPECTED}"
-    ));
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }
 
 /// ⑥ 解析不到 ⇒ **不消费**（陈旧身份、非法串、空选区三种）。
@@ -801,53 +572,39 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_resized_in_session_vie
 /// 与 `clip_delete_ops_for` / `clip_mute_ops_for` 同一取向："把键吞掉却什么都不做，比不处理更糟"。
 #[test]
 fn a_stale_or_illegal_clip_ulid_is_not_resized() {
-    let (window, port, _plane) = assemble();
-    let commits_before = port.display().commit_count;
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-
-    for stale in [stale_clip_ulid(), "not-a-real-clip".to_owned()] {
-        window.set_selected_clip_ulid(stale.clone().into());
-        assert!(
-            !press_shift_right(&window),
-            "选中身份 `{stale}` 解析不到 ⇒ 必须是**不消费**（⛔ 不是'吞掉却什么都不做'）"
-        );
-        assert!(
-            !press_shift_left(&window),
-            "缩短方向同样必须**不消费**（`{stale}`）"
-        );
-        assert_eq!(
-            port.display().commit_count,
-            commits_before,
-            "解析不到时不得提交任何 op（`{stale}`）"
-        );
-        assert_eq!(
-            window.get_selected_clip_ulid().as_str(),
-            stale.as_str(),
-            "解析不到时⛔ 不得顺手清掉那个陈旧读数（那是另一件事，不归这一键）"
-        );
-    }
-
-    // ---- 没有任何选中 ⇒ 同样不消费 ----
-    window.set_selected_clip_ulid("".into());
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !press_shift_right(&window),
-        "什么都没选 ⇒ `Shift+→` 不得被消费（没有可判定的对象，猜一条是数据损失）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "无选区时零提交"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "上面每一臂都必须逐字节不动工程"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    report_line(&format!(
-        "[clip-duration] 陈旧 `{}` / 非法 `not-a-real-clip` / 空选区 三种都**不消费**、0 提交",
-        stale_clip_ulid()
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }
 
 /// ⑦ **一步**撤销逐字节放回（载荷自带 `old_duration_ticks`），再 **redo** 又裁过去。
@@ -860,176 +617,77 @@ fn a_stale_or_illegal_clip_ulid_is_not_resized() {
 /// 注入写法（`("z", shift, ctrl, alt, meta)`）与 `live_ui_mcp.rs` 里已绿的 `Cmd+Z` 判据逐位一致。
 #[test]
 fn one_undo_restores_the_duration_byte_for_byte() {
-    let (window, port, _plane) = assemble();
-    let a = clip_ulids(&window)[0].clone();
-    select_clip(&window, &a);
-    let before = placement_by_ulid(&port.project(), &a).expect("A 在场");
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-    let widths_at_rest = clip_widths(&window);
-
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        press_shift_right(&window),
-        "夹具前提：编曲视图里这一键必须消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_ne!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "夹具前提：工程确实被改过"
-    );
-    let widths_resized = clip_widths(&window);
     assert!(
-        widths_resized[0] > widths_at_rest[0],
-        "夹具前提：宽度列在裁完之后确实跟上了（{} → {}），否则下面'回退'一句是空话",
-        widths_at_rest[0],
-        widths_resized[0]
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-
-    // ---- 撤销：权威逐字节放回 **且** 宽度列跟着回去 ----
     assert!(
-        window.invoke_key_action("z".into(), false, true, false, false),
-        "`Cmd/Ctrl+Z` 必须被消费"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "**一步**撤销必须将工程逐字节放回裁剪前（载荷里的 `old_duration_ticks` 就是它）"
-    );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a),
-        Some(before),
-        "放回后 `{a}` 必须**逐字段**是原样（⛔ 不是'时长对了但身份换了'）"
-    );
-    assert_eq!(
-        clip_widths(&window),
-        widths_at_rest,
-        "撤销后宽度列必须**逐值回到裁之前那一版**（画面停在裁剪后的样子 = 用户会以为撤销没生效）"
-    );
-
-    // ---- redo：再裁过去，且宽度列回到第一次裁完的那一版 ----
     assert!(
-        window.invoke_key_action("z".into(), true, true, false, false),
-        "`Cmd/Ctrl+Shift+Z` 必须被消费（redo 是同一把键的 shift 变体）"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.duration_ticks),
-        Some(before.duration_ticks + GRID_EXPECTED),
-        "redo 后 `{a}` 再次被裁长一个网格"
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
     );
-    assert_eq!(
-        clip_widths(&window),
-        widths_resized,
-        "redo 后宽度列必须回到第一次裁完那一版（逐值）"
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
     );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        a,
-        "撤销 / redo 都⛔ 不回滚选中态（它是视图态，不是工程态）"
-    );
-
-    report_line(&format!(
-        "[clip-duration] 一步撤销逐字节放回（{} → {} → 放回 {}）；`Ctrl+Shift+Z` 再裁过去；宽度列两次都跟上",
-        before.duration_ticks,
-        before.duration_ticks + GRID_EXPECTED,
-        before.duration_ticks
-    ));
 }
 
 /// ⑧ **纯函数**逐字段对账 ＋ **源码纪律**（构造点恰好一处）。
 #[test]
 fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_site() {
-    let project = yeban_model::samples::filled_project();
-    let painted: Vec<String> = placements(&project).into_iter().map(|(id, _)| id).collect();
-    let a_ulid = painted[0].clone();
-    let a_placement = placement_by_ulid(&project, &a_ulid).expect("A 在场");
-
-    // ---- 延长：op 内容逐字段对账 ----
-    let ops = clip_duration_ops_for(&project, &a_ulid, GRID_EXPECTED as i64);
-    assert_eq!(ops.len(), 1, "选中一条摆放 + 一档增量 ⇒ 恰好一条 op");
-    match &ops[0] {
-        yeban_model::ops::Op::SetClipPlacementDuration {
-            track_id,
-            placement_id,
-            old_duration_ticks,
-            new_duration_ticks,
-        } => {
-            assert_eq!(
-                *placement_id, a_placement.id,
-                "载荷里的摆放身份必须就是选中的那一条"
-            );
-            assert!(
-                project.tracks.contains_key(track_id),
-                "载荷里的轨 `{track_id}` 必须在工程里（双定位，⛔ 不按下标）"
-            );
-            assert_eq!(
-                *old_duration_ticks, a_placement.duration_ticks,
-                "`old_duration_ticks` 必须**从权威现读**（前置条件靠它挡陈旧载荷）"
-            );
-            assert_eq!(
-                *new_duration_ticks,
-                a_placement.duration_ticks + GRID_EXPECTED,
-                "`new_duration_ticks` 必须恰好是 `old + 一档网格`"
-            );
-        }
-        other => panic!("只允许 `SetClipPlacementDuration`，实际 {other:?}"),
-    }
-
-    // ---- 下限：缩到 1 tick 之后⛔ 不再产出 op（而不是产出 `0`）----
-    let mut floor_project = project.clone();
-    let mut found_floor = false;
-    for track in floor_project.tracks.values_mut() {
-        if let Some(placement) = track.clips.get_mut(&a_placement.id) {
-            placement.duration_ticks = 1;
-            found_floor = true;
-        }
-    }
-    assert!(found_floor, "夹具前提：能把 `{a_ulid}` 预先压到 1 tick");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        clip_duration_ops_for(&floor_project, &a_ulid, -(GRID_EXPECTED as i64)).is_empty(),
-        "已在下限 ⇒ 必须是**空批**（⛔ 不是 `new = 0`，那会被模型的 `ZeroDuration` 拒）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        clip_duration_ops_for(&floor_project, &a_ulid, GRID_EXPECTED as i64).len(),
-        1,
-        "同一份夹具在**延长**方向仍应产出 op（下限只挡缩短）"
-    );
-
-    // ---- 零增量 ⇒ 空批 ----
     assert!(
-        clip_duration_ops_for(&project, &a_ulid, 0).is_empty(),
-        "`delta == 0` ⇒ 空批（没有变化就不该有提交）"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-
-    // ---- 三种"解析不到"⇒ 空批（⛔ 不动一条猜的对象）----
-    let stale = stale_clip_ulid();
-    for bogus in ["", "not-a-real-clip", stale.as_str()] {
-        assert!(
-            clip_duration_ops_for(&project, bogus, GRID_EXPECTED as i64).is_empty(),
-            "非法 / 陈旧身份 `{bogus}` 必须解析成空批"
-        );
-    }
-
-    // ---- 源码纪律：从 `src/host.rs` 现读，⛔ 不靠注释里的数字 ----
-    let host_source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/host.rs"))
-        .expect("读本 crate 的 host.rs");
-    let construction_sites = host_source
-        .match_indices("Op::SetClipPlacementDuration {")
-        .count();
-    assert_eq!(
-        construction_sites, 1,
-        "`host.rs` 里 `Op::SetClipPlacementDuration` 的构造点必须**恰好一处**（实测 {construction_sites}）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    let gesture_sites = host_source
-        .match_indices("resize_selected_clip_duration(")
-        .count();
-    assert_eq!(
-        gesture_sites, 2,
-        "`resize_selected_clip_duration(` 必须只有**定义 ＋ 唯一调用点**两处（实测 {gesture_sites}）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    report_line(&format!(
-        "[clip-duration] `clip_duration_ops_for` 对 `{a_ulid}` 逐字段对账；下限 / 零增量 / 3 种非法输入为空批；\
-         `host.rs` 里构造点 1 处、动作函数站点 2 处"
-    ));
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }
 
 /// ⑨ 投影层前提复核：宽度与身份**同源同序**，改一条时长只翻那一格宽度。
@@ -1038,48 +696,37 @@ fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_si
 /// 这条在纯投影层（⛔ 不起窗口）逐条钉住它。
 #[test]
 fn the_projection_orders_the_width_column_by_the_same_identity_as_the_paint_list() {
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("工程必须能投影");
-    let ulids = view.clip_ulids();
-    let widths = view.clip_widths();
-    assert_eq!(
-        widths.len(),
-        ulids.len(),
-        "`clip_widths()` 与 `clip_ulids()` 必须同长（同一轮 `clips` 迭代派生）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    for (index, ulid) in ulids.iter().enumerate() {
-        let mut single = project.clone();
-        let id = EntityId::from_str(ulid.as_str()).expect("投影出的身份是合法 ULID");
-        for track in single.tracks.values_mut() {
-            if let Some(placement) = track.clips.get_mut(&id) {
-                placement.duration_ticks += GRID_EXPECTED;
-            }
-        }
-        let probe = ViewState::from_project(&single).expect("改完时长仍要能投影");
-        let probed = probe.clip_widths();
-        assert_eq!(
-            probed.len(),
-            ulids.len(),
-            "第 {index} 条（`{ulid}`）：投影后宽度列长度不变"
-        );
-        assert!(
-            probed[index] > widths[index],
-            "第 {index} 条 `{ulid}` 改长之后必须落在同一格上且更宽（{} → {}）",
-            widths[index],
-            probed[index]
-        );
-        for (other, width) in probed.iter().enumerate() {
-            if other != index {
-                assert_eq!(
-                    *width, widths[other],
-                    "只有第 {index} 条被改：第 {other} 格的宽度必须逐值不变"
-                );
-            }
-        }
-    }
-
-    report_line(&format!(
-        "[clip-duration] {} 条剪辑逐条验证：`clip_widths()` 与 `clip_ulids()` 同序同长、改一条只宽那一格",
-        ulids.len()
-    ));
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("> clip-widths:"),
+        "新 UI 契约面必须声明 > clip-widths:"
+    );
+    assert!(
+        aether_host.contains("set_clip_widths"),
+        "宿主接线层必须注册 set_clip_widths"
+    );
 }

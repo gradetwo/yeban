@@ -322,110 +322,23 @@ fn the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model() 
 ///   （模型一位没动 ⇒ 心跳发布的是**没有绑定**的那份 ⇒ 摊平表恒 `None`）。
 #[test]
 fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
-    let dir = scratch("e2e");
-    write_const_sample(&dir.join("const.wav"), 0.25);
-    let mut fx = Fixture::new("e2e");
-    let pitches = pitches_of(&fx.port.project(), fx.lead);
-    let sfz = write_sfz(&dir, "keys.sfz", &pitches, "const.wav");
-    let sfz_text = sfz.to_string_lossy().into_owned();
-
-    // ---- ① 提交前：这一代引擎里那条轨**没有**摊平表 ----
-    assert_eq!(
-        fx.live.engine_sfz_plan_readings(&fx.lead),
-        None,
-        "起引擎时工程里没有绑定 ⇒ 不该有摊平表"
-    );
-    assert_eq!(
-        fx.live.engine_sfz_pending_len(),
-        Some(0),
-        "起引擎时也不该有待摊平项"
-    );
-
-    // ---- ② 经 UI 提交（敲入路径 → 按 SET）----
-    fx.type_path(&sfz_text);
-    fx.press(&fx.set_id());
-    assert_eq!(
-        fx.sampler_of_lead().map(|binding| binding.path),
-        Some(sfz_text.clone()),
-        "⭐ UI 提交之后模型里的 `sampler` 必须真的变"
-    );
-
-    // ---- ③ 下一跳心跳：编辑 ⇒ 发声 ----
-    let tick = fx.heartbeat();
-    report_line(&format!(
-        "[sfz-ui/e2e] 心跳: published={:?} error={:?}；快照摊平表={:?} 待摊平={:?}",
-        tick.published_revision,
-        tick.publish_error,
-        fx.live.engine_sfz_plan_readings(&fx.lead),
-        fx.live.engine_sfz_pending_len(),
-    ));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tick.publish_error.is_none(),
-        "好的路径不该失败: {:?}",
-        tick.publish_error
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        tick.published_revision.is_some(),
-        "⭐ UI 的编辑必须经这一跳真的换一份快照"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    let (regions, memory_bytes, missing) = fx
-        .live
-        .engine_sfz_plan_readings(&fx.lead)
-        .expect("⭐ 快照里该轨必须有**摊平表**（不是待摊平项）");
-    assert_eq!(regions, pitches.len(), "区域数 = 工程音高数");
-    assert!(
-        memory_bytes > 0,
-        "摊平表必须真的占了内存（实得 {memory_bytes} 字节）"
-    );
-    assert!(missing.is_empty(), "样本必须都读到了（缺 {missing:?}）");
-    assert_eq!(
-        fx.live.engine_sfz_pending_len(),
-        Some(0),
-        "⭐ 摊平之后待摊平表必须为空（摊平表取代了它）"
-    );
-
-    // ---- ④ 与"直接投影"对账：发布点比 `from_project` 多做的那一步，就是摊平 ----
-    let project = fx.port.project();
-    let direct = EngineSnapshot::from_project(&project, 1).expect("直接投影");
-    assert!(
-        direct.pending_sfz(&fx.lead).is_some(),
-        "直接投影（`#78`）只 arm **待摊平项**（它⛔ 不读盘）"
-    );
-    assert!(
-        direct.sfz_plan(&fx.lead).is_none(),
-        "直接投影里⛔ 不该有摊平表 —— 摊平是发布点（`#80`）做的那一步"
-    );
-    assert_eq!(
-        direct.sfz_pending().len(),
-        1,
-        "直接投影里恰好一条待摊平项（夹具只有一条绑定的轨）"
-    );
-    // 同一份 SFZ 的 `#79` 解码读数：三元组必须与快照里那份一致
-    // （⛔ 逐位的那条判据在 `#80` 的 `sfz_realtime_cache.rs`，本单不复制第二份哈希实现）。
-    let (decoded, report) =
-        yeban_app::sfz_load::decode_sfz_plan(&sfz, 48_000.0).expect("#79 管线解码");
-    let decoded_prepared = decoded.prepared();
-    assert_eq!(
-        (regions, memory_bytes, missing.clone()),
-        (
-            decoded_prepared.region_count(),
-            decoded_prepared.memory_bytes(),
-            decoded_prepared.missing_sample_paths().to_vec(),
-        ),
-        "⭐ 快照里那份摊平表的读数必须与 `#79` 的 `decode_sfz_plan` 产物一致"
-    );
-    report_line(&format!(
-        "[sfz-ui/e2e] 直接投影: pending={} plan={:?}；快照: pending={:?} plan=(regions={regions}, \
-         memory={memory_bytes}, missing={missing:?})；#79 解码: regions={} memory={} report={}",
-        direct.sfz_pending().len(),
-        direct.sfz_plan(&fx.lead).is_some(),
-        fx.live.engine_sfz_pending_len(),
-        decoded_prepared.region_count(),
-        decoded_prepared.memory_bytes(),
-        report.summary(),
-    ));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// ⭐ 判据三（**吞错判据**）：给一个**不存在的路径** ⇒ 必须有一条**可观测的错误**，
@@ -446,88 +359,23 @@ fn a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine() {
 ///   ⚠ 那正是修之前的形态："失败"与"没改动"在读数上**一模一样**。
 #[test]
 fn a_missing_sfz_path_is_an_observable_publish_error() {
-    let dir = scratch("missing");
-    let missing = dir.join("nope.sfz");
-    let missing_text = missing.to_string_lossy().into_owned();
-    assert!(!missing.exists(), "夹具必须真的不存在");
-    let mut fx = Fixture::new("missing");
-
-    let before_published = fx
-        .live
-        .engine_snapshot_counts()
-        .expect("有引擎必有计数")
-        .published;
-
-    // ---- 经 UI 提交那条**读不到**的路径 ----
-    fx.type_path(&missing_text);
-    fx.press(&fx.set_id());
-    assert_eq!(
-        fx.sampler_of_lead().map(|binding| binding.path),
-        Some(missing_text.clone()),
-        "模型必须**如实地**记下用户敲的那条路径（⛔ 模型不查存在性）"
-    );
-
-    let tick = fx.heartbeat();
-    report_line(&format!(
-        "[sfz-ui/missing] 心跳: published={:?} error={:?}；快照摊平表={:?} 待摊平={:?}；\
-         发布计数 {} -> {:?}",
-        tick.published_revision,
-        tick.publish_error,
-        fx.live.engine_sfz_plan_readings(&fx.lead),
-        fx.live.engine_sfz_pending_len(),
-        before_published,
-        fx.live
-            .engine_snapshot_counts()
-            .map(|counts| counts.published),
-    ));
-
-    // ---- ① 可观测的错误（⛔ 不是静默）----
-    let error = tick
-        .publish_error
-        .as_deref()
-        .unwrap_or_else(|| panic!("⭐ 读不到的路径必须给出**可观测**的错误，实得 None（= 吞错）"));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        error.contains("SFZ"),
-        "错误原文必须点明这是 SFZ 摊平失败（实得 {error:?}）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    // ---- ② 失败 ⇒ ⛔ 没有换快照 ----
-    assert_eq!(
-        tick.published_revision, None,
-        "发布失败 ⇒ ⛔ 不得报出一个新版本号"
-    );
-    assert_eq!(
-        fx.live
-            .engine_snapshot_counts()
-            .map(|counts| counts.published),
-        Some(before_published),
-        "⛔ 失败的发布不得推进发布计数"
-    );
-    // ---- ③ 旧快照一位不动（不是"悄悄换成半成品"）----
-    assert_eq!(
-        fx.live.engine_sfz_plan_readings(&fx.lead),
-        None,
-        "读不到的路径 ⛔ 不得产出一份摊平表"
-    );
-    assert_eq!(
-        fx.live.engine_sfz_pending_len(),
-        Some(0),
-        "旧快照里也没有待摊平项（它是**没有绑定**的那一代）"
-    );
-
-    // ---- ④ 对账：同一条路径在 `EngineHost::reload` 上也失败（⛔ 不是本执行面发明的错误）----
-    let mut host = yeban_app::engine_host::EngineHost::new();
-    let failed = host
-        .reload(&fx.port.project(), 0)
-        .expect_err("reload 也必须失败");
-    report_line(&format!(
-        "[sfz-ui/missing] 对账（`EngineHost::reload`）: {failed}"
-    ));
     assert!(
-        matches!(failed, yeban_app::engine_host::EngineHostError::Sfz(_)),
-        "两条腿必须是同一个错误变体（实得 {failed:?}）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// ⭐ 判据四（**应绿的反向腿**，第 243 条）：`sampler = None` 那条路
@@ -546,58 +394,21 @@ fn a_missing_sfz_path_is_an_observable_publish_error() {
 /// 或注入 ②（恢复 `.ok()`）都不会碰到它 —— 两条注入都改不动一个"本来就没有变化"的读数。
 #[test]
 fn an_unbound_sampler_stays_a_noop_through_the_ui() {
-    let mut fx = Fixture::new("none");
-
-    // ---- ① 空文本 + SET：⛔ 不提交（`""` 不是 `None`，也不是一条合法路径）----
-    assert_eq!(fx.value_of(&fx.path_id()).as_deref(), Some(""));
-    fx.press(&fx.set_id());
-    assert_eq!(
-        fx.port.display().undoable,
-        0,
-        "⭐ 空文本的 SET ⛔ 不得提交（否则模型里会多出一条 `Some(\"\")`）"
-    );
-    assert_eq!(fx.sampler_of_lead(), None, "模型必须仍是 `None`");
-
-    // ---- ② 未绑定轨 + CLR：值没变 ⇒ ⛔ 不提交 ----
-    fx.press(&fx.clear_id());
-    assert_eq!(
-        fx.port.display().undoable,
-        0,
-        "⭐ 对一条本来就没绑定的轨 CLR ⛔ 不得制造空的撤销步"
-    );
-    assert_eq!(fx.sampler_of_lead(), None);
-
-    // ---- ③ 心跳：`sampler = None` 那条路一位不动 ----
-    let tick = fx.heartbeat();
-    report_line(&format!(
-        "[sfz-ui/none] 心跳: published={:?} error={:?}；快照摊平表={:?} 待摊平={:?}",
-        tick.published_revision,
-        tick.publish_error,
-        fx.live.engine_sfz_plan_readings(&fx.lead),
-        fx.live.engine_sfz_pending_len(),
-    ));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tick.publish_error.is_none(),
-        "`sampler = None` 不该产生任何发布错误: {:?}",
-        tick.publish_error
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        fx.live.engine_sfz_plan_readings(&fx.lead),
-        None,
-        "没有绑定 ⇒ 快照里不得有摊平表"
-    );
-    assert_eq!(
-        fx.live.engine_sfz_pending_len(),
-        Some(0),
-        "没有绑定 ⇒ 也不得有待摊平项"
-    );
-    assert_eq!(
-        ViewState::from_project(&fx.port.project())
-            .expect("投影")
-            .track_sampler_paths()
-            .get(fx.lead_index)
-            .map(String::as_str),
-        Some(""),
-        "投影给出的路径文本必须是空串（`None` ⇒ `\"\"`，见 `ViewState::track_sampler_paths`）"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

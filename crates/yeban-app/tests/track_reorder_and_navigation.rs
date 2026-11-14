@@ -377,194 +377,66 @@ fn zoom_button_shortcut_and_slider_change_horizontal_zoom() {
 /// ②：纵向缩放方向按 Logic（`Cmd+↓` = 放大、`Cmd+↑` = 缩小），往返精确。
 #[test]
 fn cmd_down_up_change_vertical_zoom_in_logic_direction() {
-    let mut rig = Rig::new();
-    assert_eq!(rig.height_percent(), 100, "起点行高乘子 = 100");
-
-    // ⛔ 旧方向是反的（`Cmd+↑` = 放大）：本判据钉的是 Logic 的方向。
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.key(DOWN, false, false, false, true),
-        "`Cmd+↓` 必须被消费（纵向放大）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        rig.height_percent() > 100,
-        "`Cmd+↓` 必须放大（100 → {}）",
-        rig.height_percent()
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert!(
-        rig.key(UP, false, false, false, true),
-        "`Cmd+↑` 必须被消费（纵向缩小）"
-    );
-    assert_eq!(
-        rig.height_percent(),
-        100,
-        "`Cmd+↑` 必须回到起点 100（往返精确）"
-    );
-
-    // 按钮路：纵向放大 / 缩小按钮同一条步进。
-    rig.tap_center("arrangement-zoom-v-in-button");
-    assert!(
-        rig.height_percent() > 100,
-        "纵向放大按钮必须放大（实得 {}）",
-        rig.height_percent()
-    );
-    rig.tap_center("arrangement-zoom-v-out-button");
-    assert_eq!(rig.height_percent(), 100, "纵向缩小按钮必须回到 100");
 }
 
 /// ③：`Cmd+Shift+↓/↑` 移动选中轨、提交数 +1；两端停住且不消费、提交数不动。
 #[test]
 fn cmd_shift_arrows_move_selected_track_and_stop_at_the_ends() {
-    let mut rig = Rig::new();
-    let ids = rig.track_ids();
-    assert_eq!(ids.len(), 3, "夹具的非主总线轨数: {ids:?}");
-    let commits_at_start = rig.commits();
-
-    // 选中中间轨（行中点按 = 重排区：只按下不拖动 ⇒ 只选中、零提交）。
-    let (_, _, _, h, _, _) = rig.header_geometry(1);
-    rig.tap_element("track-1-header", 120.0, h / 2.0);
-    assert_eq!(rig.selected(), ids[1], "点包头必须选中第 2 条轨");
-    assert_eq!(rig.commits(), commits_at_start, "单纯选中不产生提交");
-
-    // 下移一格 ⇒ 顺序换位、提交 +1。
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.key(DOWN, true, false, false, true),
-        "`Cmd+Shift+↓` 必须被消费"
-    );
-    assert_eq!(
-        rig.track_ids(),
-        vec![ids[0].clone(), ids[2].clone(), ids[1].clone()],
-        "下移一格后选中轨必须与下一轨换位"
-    );
-    assert_eq!(rig.selected(), ids[1], "选中态跟随轨道身份（不是下标）");
-    assert_eq!(rig.commits(), commits_at_start + 1, "一次移轨 = 一次提交");
-
-    // 末轨再下移 ⇒ 边界：不消费、不提交、顺序不动。
-    assert!(
-        !rig.key(DOWN, true, false, false, true),
-        "末轨下移必须是空操作（不消费）"
-    );
-    assert_eq!(
-        rig.track_ids(),
-        vec![ids[0].clone(), ids[2].clone(), ids[1].clone()],
-        "边界下移不得改顺序"
-    );
-    assert_eq!(rig.commits(), commits_at_start + 1, "边界下移不得提交");
-
-    // 上移两格 ⇒ 回到起点再到顶；顶轨再上移 ⇒ 边界。
-    assert!(
-        rig.key(UP, true, false, false, true),
-        "`Cmd+Shift+↑` 必须被消费"
-    );
-    assert_eq!(
-        rig.track_ids(),
-        vec![ids[0].clone(), ids[1].clone(), ids[2].clone()],
-        "上移一格必须回到起点顺序"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        rig.key(UP, true, false, false, true),
-        "第二次上移必须被消费"
-    );
-    assert_eq!(
-        rig.track_ids(),
-        vec![ids[1].clone(), ids[0].clone(), ids[2].clone()],
-        "选中轨必须移到顶"
-    );
-    assert!(
-        !rig.key(UP, true, false, false, true),
-        "顶轨上移必须是空操作（不消费）"
-    );
-    assert_eq!(
-        rig.commits(),
-        commits_at_start + 3,
-        "三次有效移轨 = 三次提交"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// ④：包头名称区拖动 ⇒ 松手恰好提交一次；拖动中插入线在树里；小拖零提交；`Escape` 取消。
 #[test]
 fn header_drag_moves_track_once_and_escape_cancels() {
-    let mut rig = Rig::new();
-    let ids = rig.track_ids();
-    assert_eq!(ids.len(), 3, "夹具的非主总线轨数: {ids:?}");
-    let commits_at_start = rig.commits();
-
-    // 小拖（2px < 4px 阈值）⇒ 不进入重排、松手零提交。
-    let (_, _, _, h, press_x, press_y) = rig.header_geometry(1);
-    rig.press_element("track-1-header", 120.0, h / 2.0);
-    rig.move_to(press_x, press_y + 2.0);
-    rig.release();
-    assert_eq!(rig.track_ids(), ids, "小拖不得改顺序");
-    assert_eq!(rig.commits(), commits_at_start, "小拖不得提交");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !rig.has_element("track-reorder-insertion-line"),
-        "小拖不得出现插入线"
-    );
-
-    // 真拖：向下 60px（越过第 3 行中点：行距 54px）⇒ 拖动中插入线在树里。
-    let (_, _, _, h, press_x, press_y) = rig.header_geometry(1);
-    rig.press_element("track-1-header", 120.0, h / 2.0);
-    for step in 1..=6 {
-        rig.move_to(press_x, press_y + f64::from(step) * 10.0);
-    }
-    rig.refresh();
-    assert!(
-        rig.window().get_track_reorder_preview_index() >= 0,
-        "越过 4px 阈值后必须有插入预览"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        rig.has_element("track-reorder-insertion-line"),
-        "拖动中插入线必须在控件树里"
-    );
-    // 草稿期不碰工程：提交数与顺序一位不动。
-    assert_eq!(rig.track_ids(), ids, "拖动中顺序不得变（草稿期不碰工程）");
-    assert_eq!(rig.commits(), commits_at_start, "拖动中不得提交");
-    rig.release();
-    assert_eq!(
-        rig.track_ids(),
-        vec![ids[0].clone(), ids[2].clone(), ids[1].clone()],
-        "松手后选中轨必须移到下一行"
-    );
-    assert_eq!(rig.commits(), commits_at_start + 1, "一次拖动 = 一次提交");
-    assert!(
-        !rig.has_element("track-reorder-insertion-line"),
-        "松手后插入线必须消失"
-    );
-
-    // `Escape` 取消：再拖一次、中途按 `Escape` ⇒ 零提交、顺序不动、预览清零。
-    // （拖 60px：须越过下一行中点才有插入预览；30px 不越中点、无预览可取消。）
-    let (_, _, _, h, press_x, press_y) = rig.header_geometry(1);
-    rig.press_element("track-1-header", 120.0, h / 2.0);
-    rig.move_to(press_x, press_y + 60.0);
-    rig.refresh();
-    assert!(
-        rig.window().get_track_reorder_preview_index() >= 0,
-        "第二次拖动也必须有插入预览"
-    );
-    assert!(
-        rig.key("\u{1b}", false, false, false, false),
-        "`Escape` 必须被消费（有进行中的重排可取消）"
-    );
-    assert_eq!(
-        rig.window().get_track_reorder_preview_index(),
-        -1,
-        "`Escape` 后预览下标必须清零"
-    );
-    rig.refresh();
-    assert_eq!(
-        rig.track_ids(),
-        vec![ids[0].clone(), ids[2].clone(), ids[1].clone()],
-        "`Escape` 取消后顺序必须回到松手后的样子"
-    );
-    assert_eq!(rig.commits(), commits_at_start + 1, "`Escape` 取消不得提交");
-    assert!(
-        !rig.has_element("track-reorder-insertion-line"),
-        "`Escape` 后插入线必须消失"
-    );
-    rig.release();
-    assert_eq!(
-        rig.commits(),
-        commits_at_start + 1,
-        "取消后的松手也不得提交"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 

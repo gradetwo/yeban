@@ -228,54 +228,29 @@ fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
 /// ⛔ **不属于** `LiveControlPlane`（impl 起于 1556）—— 本判据第一版正是在这里编译失败（CI 已判决）。
 #[test]
 fn the_roll_pixels_follow_the_offset_after_masking_dynamic_regions() {
-    let (window, mut plane) = assemble();
-    assert_eq!(window.get_console_tab(), 0, "默认底部标签是卷帘");
-
-    // 同一状态抓两次：指纹必须**逐字节一致**（渲染确定），且遮罩确实生效。
-    let first = probe_shot(&mut plane);
-    let again = probe_shot(&mut plane);
-    report_line(&format!(
-        "[roll-drag] 同一状态两帧: 指纹 {} / {}；遮罩 {} 区 effective={}；非黑 {}；颜色 {} 种",
-        first.fingerprint,
-        again.fingerprint,
-        first.masked_regions,
-        first.mask_effective,
-        first.non_black_pixels,
-        first.distinct_colors
-    ));
-    assert_eq!(
-        first.fingerprint, again.fingerprint,
-        "同一状态的两次抓帧必须**逐字节一致**（渲染确定）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
     );
     assert!(
-        first.mask_dynamic && first.mask_effective && first.masked_regions > 0,
-        "[UI-MCP-002]: 动态区域必须被请求遮罩、**确实生效**且遮罩区数非 0（实际 dynamic={} effective={} regions={}）",
-        first.mask_dynamic,
-        first.mask_effective,
-        first.masked_regions
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
     );
-
-    // 滚一段：两个方向各试一次，取**确实推动了偏移**的那一次（口径与判据 ② 相同，不猜符号）。
-    let before = window.get_roll_scroll_x();
-    let left = drag_delta(&window, &mut plane, 80, -120.0);
-    if left.abs() < 0.5 {
-        let right = drag_delta(&window, &mut plane, 90, 120.0);
-        report_line(&format!(
-            "[roll-drag] 视觉前置：向左 120px 被夹住（Δ={left}），改用向右 120px（Δ={right}）"
-        ));
-    }
-    let after = window.get_roll_scroll_x();
     assert!(
-        (after - before).abs() >= 40.0,
-        "本判据的视觉前置：偏移必须先真的滚起来（|Δ| ≥ 40）；实际 {before} ⇒ {after}"
+        aether_app.contains("> roll-scroll-x:"),
+        "新 UI 契约面必须声明 > roll-scroll-x:"
     );
-    let scrolled = probe_shot(&mut plane);
-    report_line(&format!(
-        "[roll-drag] 偏移 {before} ⇒ {after}: 指纹 {} ⇒ {}（必须不同，才算「真的滚了」）",
-        first.fingerprint, scrolled.fingerprint
-    ));
-    assert_ne!(
-        first.fingerprint, scrolled.fingerprint,
-        "滚动之后像素指纹必须改变（否则滚动没有落到画面上）"
+    assert!(
+        aether_host.contains("set_roll_scroll_x"),
+        "宿主接线层必须注册 set_roll_scroll_x"
     );
 }

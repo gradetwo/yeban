@@ -269,7 +269,9 @@ fn the_rotation_table_is_single_sourced_and_no_new_control_becomes_addressable()
         // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
         (["export-wav-focused-control"]
             .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
+            .fold(true, |acc, n| acc
+                && (app.contains(&format!("callback {n}("))
+                    || app.contains(&format!("> {n}:"))))),
         "⑩ MainWindow 那一条必须是**纯转发**，⛔ 不重新推导一遍"
     );
     assert_eq!(

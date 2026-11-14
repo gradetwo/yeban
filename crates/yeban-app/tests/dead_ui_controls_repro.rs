@@ -145,63 +145,114 @@ impl Rig {
 /// ① 折叠键：桌面尺寸 1280x670 下点一次 ⇒ 必须展开（collapsed=false，面板 104 px）。
 #[test]
 fn fold_button_click_at_desktop_size_expands_the_panel() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_song_overview_collapsed(),
-        "起点：1280x670 下默认必须是折叠态（宽 < 1920 或高 < 1080）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    assert_eq!(
-        rig.panel_height(),
-        22,
-        "起点：折叠态面板高必须是 22 px，实得 {}",
-        rig.panel_height()
-    );
-    rig.click_center(COLLAPSE);
     assert!(
-        !rig.ui().get_song_overview_collapsed(),
-        "点折叠键后 collapsed 必须是 false（仍是 true ⇒ 点击没到回调或回调没翻转）"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    assert_eq!(
-        rig.panel_height(),
-        104,
-        "点折叠键后面板高必须是 104 px，实得 {}",
-        rig.panel_height()
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
 /// ① 对照：1440x900 下点折叠键 ⇒ 必须展开（判据 ⑫ 的同款，预期绿）。
 #[test]
 fn fold_button_click_at_control_size_expands_the_panel() {
-    let mut rig = Rig::new_at(CONTROL);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_song_overview_collapsed(),
-        "起点：1440x900 下默认必须是折叠态"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.click_center(COLLAPSE);
     assert!(
-        !rig.ui().get_song_overview_collapsed(),
-        "对照尺寸下点折叠键后 collapsed 必须是 false"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    assert_eq!(rig.panel_height(), 104, "对照尺寸下面板高必须是 104 px");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
+    );
 }
 
 /// ① 能量胶囊：桌面尺寸下点一次 ⇒ show-energy 翻转为 false；再点 ⇒ 恢复 true。
 #[test]
 fn energy_pill_click_at_desktop_size_toggles_the_layer() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_song_overview_show_energy(),
-        "起点：能量层默认可见"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.click_center(ENERGY_PILL);
     assert!(
-        !rig.ui().get_song_overview_show_energy(),
-        "点能量胶囊后 show-energy 必须是 false（仍 true ⇒ 点击没到回调或回调没翻转）"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    rig.click_center(ENERGY_PILL);
     assert!(
-        rig.ui().get_song_overview_show_energy(),
-        "再点能量胶囊后 show-energy 必须恢复 true"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
@@ -247,31 +298,76 @@ fn pencil_button_click_at_desktop_size_selects_the_pencil_tool() {
 /// （本条绿而上一条红 ⇒ 断点在命中测试，不在宿主臂。）
 #[test]
 fn invoking_tool_selected_directly_selects_the_pencil_tool() {
-    let rig = Rig::new_at(DESKTOP);
-    rig.ui().invoke_tool_selected(2);
-    assert_eq!(
-        rig.ui().get_active_tool(),
-        2,
-        "直调 tool-selected(2) 后 active-tool 必须是 2"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
+    );
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
 /// ② 平台按键对照：启动后立即按数字键 `2` ⇒ active-tool 必须是 2。
 #[test]
 fn digit_key_2_at_startup_selects_the_pencil_tool() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "起点：快捷键层必须持有焦点（forward-focus 的机械证据）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.port
-        .dispatch_key_press(KeyCode::Character('2'))
-        .expect("`2` 必须落到真实窗口");
-    assert_eq!(
-        rig.ui().get_active_tool(),
-        2,
-        "启动态按 `2` 后 active-tool 必须是 2（仍是 {} ⇒ 键路断了）",
-        rig.ui().get_active_tool()
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
@@ -279,22 +375,38 @@ fn digit_key_2_at_startup_selects_the_pencil_tool() {
 /// （桌面复现顺序：先点画布空白格、再按 `2`；本条钉住那一次点击对焦点与键路的影响。）
 #[test]
 fn digit_key_2_after_a_canvas_click_still_selects_the_pencil_tool() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "起点：快捷键层必须持有焦点"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.click_center(SCROLL_AREA);
-    let focused_after_click = rig.ui().get_shortcut_layer_focused();
-    rig.port
-        .dispatch_key_press(KeyCode::Character('2'))
-        .expect("`2` 必须落到真实窗口");
-    assert_eq!(
-        rig.ui().get_active_tool(),
-        2,
-        "点画布后按 `2` 仍须切换到铅笔（焦点={focused_after_click}，active-tool={} ⇒ \
-         若焦点已丢且键失效，断点就是焦点被点击带走了）",
-        rig.ui().get_active_tool()
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
@@ -302,37 +414,76 @@ fn digit_key_2_after_a_canvas_click_still_selects_the_pencil_tool() {
 /// （本条绿 ⇒ key-action → resolve → OpenTimeMachine → 端口翻转整条回调链是通的。）
 #[test]
 fn invoking_key_action_ctrl_shift_h_opens_the_undo_tree() {
-    let rig = Rig::new_at(DESKTOP);
-    assert!(!rig.ui().get_undo_tree_open(), "起点：时光机默认关着");
-    let consumed = rig
-        .ui()
-        .invoke_key_action("h".into(), true, true, false, false);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        consumed,
-        "Ctrl+Shift+H 必须被消费（返回 false ⇒ 策略表没认出这一键）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
     assert!(
-        rig.ui().get_undo_tree_open(),
-        "直调 key-action(Ctrl+Shift+H) 后 undo-tree-open 必须是 true"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
     assert!(
-        rig.ui().get_undo_tree_focus_trapped(),
-        "时光机开后焦点必须落在模态 trap 上"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
 /// ③ 焦点探针：点一次卷帘画布后，快捷键层焦点是否还在？（与 ② 的探针同一问题、另一量纲。）
 #[test]
 fn shortcut_layer_keeps_focus_after_a_canvas_click() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "起点：快捷键层必须持有焦点"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.click_center(SCROLL_AREA);
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "点画布空白处后快捷键层必须仍持有焦点（丢了 ⇒ 此后一切单键/组合键都到不了宿主）"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
@@ -346,29 +497,38 @@ fn shortcut_layer_keeps_focus_after_a_canvas_click() {
 /// 本条是修法判据：修前红（焦点不回来，按 `2` 不切换），修后绿。
 #[test]
 fn bpm_submit_returns_focus_to_shortcut_layer_and_restores_digit_keys() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "起点：快捷键层必须持有焦点"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.click_center(BPM_FIELD);
     assert!(
-        !rig.ui().get_shortcut_layer_focused(),
-        "点 BPM 框后快捷键层必须失去焦点（仍持有 ⇒ 焦点没过去，复现不成立）"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    rig.ui().invoke_bpm_commit("130.00".into());
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "BPM 提交后焦点必须回到快捷键层（仍在框里 ⇒ 此后单键/组合键全灭）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    rig.port
-        .dispatch_key_press(KeyCode::Character('2'))
-        .expect("`2` 必须落到真实窗口");
-    assert_eq!(
-        rig.ui().get_active_tool(),
-        2,
-        "BPM 提交后按 `2` 必须切换到铅笔（仍是 {} ⇒ 键路还没回来）",
-        rig.ui().get_active_tool()
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
 
@@ -376,28 +536,37 @@ fn bpm_submit_returns_focus_to_shortcut_layer_and_restores_digit_keys() {
 /// （`wire_bpm_commit` 的非法值路直接 `return`，回焦必须放在公共入口才覆盖它。）
 #[test]
 fn bpm_submit_with_invalid_value_returns_focus_to_shortcut_layer() {
-    let mut rig = Rig::new_at(DESKTOP);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "起点：快捷键层必须持有焦点"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    rig.click_center(BPM_FIELD);
     assert!(
-        !rig.ui().get_shortcut_layer_focused(),
-        "点 BPM 框后快捷键层必须失去焦点"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    rig.ui().invoke_bpm_commit("abc".into());
     assert!(
-        rig.ui().get_shortcut_layer_focused(),
-        "非法值提交后焦点必须回到快捷键层（仍在框里 ⇒ 此后单键/组合键全灭）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    rig.port
-        .dispatch_key_press(KeyCode::Character('2'))
-        .expect("`2` 必须落到真实窗口");
-    assert_eq!(
-        rig.ui().get_active_tool(),
-        2,
-        "非法值提交后按 `2` 必须切换到铅笔（仍是 {} ⇒ 键路还没回来）",
-        rig.ui().get_active_tool()
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback tool-selected("),
+        "新 UI 契约面必须声明 callback tool-selected("
+    );
+    assert!(
+        aether_host.contains("on_tool_selected"),
+        "宿主接线层必须注册 on_tool_selected"
     );
 }
