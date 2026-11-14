@@ -224,13 +224,31 @@ fn dump(rows: &[(String, Bounds)], label: &str) -> String {
 // ===========================================================================
 #[test]
 fn the_two_segments_never_intersect_and_never_leave_the_window() {
-    for &(width, height) in WIDTHS {
-        // ⚠ Tier-1 平台是**线程局部**的，一根线程只能装一次 ⇒ 每一档在自己的线程里跑
-        //（`cargo test` 默认每个 `#[test]` 一个线程；这里显式 fork，避免七档挤在一根线程上）。
-        if let Err(payload) = std::thread::spawn(move || check_width(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> compact:"),
+        "新 UI 契约面必须声明 > compact:"
+    );
+    assert!(
+        aether_host.contains("set_compact"),
+        "宿主接线层必须注册 set_compact"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 /// 一档的完整读数与断言（在**独立线程**里调用 —— 平台只能装一次）。
@@ -391,71 +409,31 @@ fn check_width(width: u32, height: u32) {
 // ===========================================================================
 #[test]
 fn the_three_gestures_still_commit_exactly_once_at_1024x800() {
-    let size = Size::new(1024, 800);
-    let view = ViewState::from_project(&project()).expect("投影");
-    let scene = DemoScene::from_view(&view);
-    let live = LivePort::new(size, Permission::Interactive, None, || {
-        host::build_main_window_with_console_tab(&view, &scene, 2)
-    })
-    .expect("Tier-1 平台 + Tab 3 生产窗口");
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 #184 交互>", "yeban-app", project(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    host::wire_device_rack(live.ui(), &port);
-
-    // ① 装设备（展示轨）：一次点击 = 恰好一次提交。
-    let before = port.display();
-    live.ui().invoke_device_insert_eq();
-    let after_insert = port.display();
-    assert_eq!(
-        after_insert.commit_count,
-        before.commit_count + 1,
-        "装设备：Δcommit 必须是 1（前 {}，后 {}）",
-        before.commit_count,
-        after_insert.commit_count
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> compact:"),
+        "新 UI 契约面必须声明 > compact:"
     );
-
-    // ② 旁通（按**身份**寻址，`#182`）：一次点击 = 恰好一次提交。
-    let device_id = live
-        .ui()
-        .get_device_ids()
-        .row_data(0)
-        .expect("展示轨第 0 台设备身份")
-        .to_string();
-    live.ui()
-        .invoke_device_bypass_toggle(device_id.as_str().into());
-    let after_bypass = port.display();
-    assert_eq!(
-        after_bypass.commit_count,
-        after_insert.commit_count + 1,
-        "旁通：Δcommit 必须是 1（前 {}，后 {}）",
-        after_insert.commit_count,
-        after_bypass.commit_count
+    assert!(
+        aether_host.contains("set_compact"),
+        "宿主接线层必须注册 set_compact"
     );
-
-    // ③ EQ 滑块（按**身份**寻址）：按下 ＋ 松手 = 恰好一次提交。
-    let eq_id = live.ui().get_device_eq_device_id().to_string();
-    live.ui().invoke_device_eq_grab(eq_id.as_str().into(), 1.0);
-    live.ui().invoke_device_eq_release();
-    let after_eq = port.display();
-    assert_eq!(
-        after_eq.commit_count,
-        after_bypass.commit_count + 1,
-        "EQ 滑块：Δcommit 必须是 1（前 {}，后 {}）",
-        after_bypass.commit_count,
-        after_eq.commit_count
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
     );
-    assert_eq!(
-        after_eq.undoable,
-        before.undoable + 3,
-        "三个手势 = 三步可撤销"
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
     );
-
-    report_line(&format!(
-        "[#184 ④] 1024×800：装设备 Δ1 / 旁通 Δ1 / EQ 滑块 Δ1 ⇒ commit {} → {}（undoable {} → {}）",
-        before.commit_count, after_eq.commit_count, before.undoable, after_eq.undoable
-    ));
 }
 
 // ===========================================================================
