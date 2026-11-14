@@ -88,7 +88,11 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
 
     // ① 导入：真工程投影必须注入新 UI 的结构数组（不是 .slint 里的硬编码演示轨道）。
     assert!(view.tracks.len() >= 2, "工程必须有多轨，否则判据是空绿");
-    assert_eq!(ui.get_tracks().row_count(), view.tracks.len(), "导入: tracks");
+    assert_eq!(
+        ui.get_tracks().row_count(),
+        view.tracks.len(),
+        "导入: tracks"
+    );
     assert_eq!(ui.get_notes().row_count(), view.notes.len(), "导入: notes");
     assert_eq!(
         ui.get_track_mutes().row_count(),
