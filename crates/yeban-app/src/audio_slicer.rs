@@ -546,6 +546,10 @@ fn write_slice_wavs(
 }
 
 /// 显式切点（秒）→ 帧边界 `[0] + 切点 + [frames]`（严格升序去重）。
+///
+/// ⭐ 第五份报告 B-3：切点 `0` 合法 —— 它就是文件起点（首片从 0 开始），
+/// 与首边界去重后不产生空片；换算后落到帧 0 的小切点同此处理。
+/// 负切点与"换算后落到文件终点"的切点仍响亮拒绝。
 fn explicit_boundaries(
     cuts: &[f64],
     frames: usize,
@@ -560,10 +564,10 @@ fn explicit_boundaries(
                 reason: "不是有限数",
             });
         }
-        if seconds <= 0.0 {
+        if seconds < 0.0 {
             return Err(AudioSlicerError::InvalidCut {
                 seconds,
-                reason: "须 > 0（0 秒即文件起点，不是切点）",
+                reason: "须 >= 0（0 秒 = 文件起点）",
             });
         }
         if seconds >= duration_s {
@@ -574,13 +578,16 @@ fn explicit_boundaries(
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let at = (seconds * sample_rate as f64).round() as usize;
-        if at == 0 || at >= frames {
+        if at >= frames {
             return Err(AudioSlicerError::InvalidCut {
                 seconds,
-                reason: "换算后落在文件两端",
+                reason: "换算后落在文件终点",
             });
         }
-        points.push(at);
+        // 帧 0 = 起点边界（已在表头），不重复登记 ⇒ 不产生零长首片。
+        if at > 0 {
+            points.push(at);
+        }
     }
     points.sort_unstable();
     points.dedup();
