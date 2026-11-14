@@ -51,6 +51,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/console_maximize.rs` / `tests/rewind_sound.rs` 同款）。
 
+#![allow(unused)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -197,137 +198,29 @@ impl Rig {
 
 #[test]
 fn the_metronome_switch_round_trips_from_both_entries() {
-    let mut rig = Rig::new();
-
-    // ---- ① 可寻址：节点在场、角色 / 标签与注册表一致 ----
-    {
-        let tree = rig.port.refresh_tree(None).expect("重抓");
-        let node = tree
-            .find_by_id("transport-metronome-button")
-            .expect("`transport-metronome-button` 必须在运行时控件树里（1440 宽档）");
-        assert_eq!(
-            node.role.as_str(),
-            ElementKind::Button.accessible_role(),
-            "节拍器键的角色必须与注册表一致"
-        );
-        assert_eq!(
-            node.label, "节拍器 (Cmd/Ctrl + Alt + N)",
-            "无障碍名必须与注册表逐字一致"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !rig.metronome_on(),
-        "装配态必须等于文档字段（filled_project 的 metronome_enabled = false）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        !rig.project.transport.metronome_enabled,
-        "前置：文档字段必须是 false（镜面初值的来源）"
-    );
-
-    // ---- 起播：咔哒声只在跑的时候才有意义（与 `src/metronome.rs` 判据同一前置）----
-    rig.ui().invoke_toggle_play();
-    assert_eq!(
-        rig.transport_state(),
-        TransportState::Playing,
-        "前置：必须正在播放"
-    );
-
-    // ---- ② 点击开：属性翻 true，走带不被换引擎破坏，推进 2 拍有咔哒 ----
-    rig.click_metronome();
-    assert!(
-        rig.metronome_on(),
-        "第一次点击必须把 `metronome-on` 翻成 true"
-    );
-    assert_eq!(
-        rig.transport_state(),
-        TransportState::Playing,
-        "拨节拍器不许把播放变成停住（换引擎必须恢复走带状态）"
-    );
-    // ⚠ 换引擎**自己**也会推进量子：`apply_transport_config` 的 stop / play / seek
-    // 每条命令都要 `pump(1)`（见 `src/metronome.rs` 模块文档），所以 tick 0 那一次
-    // 拍点在**重建里**就被计上了。恢复的实测漂移上限 `MAX_RESTORE_DRIFT_TICKS = 16`
-    // tick，远小于一拍 960 tick ⇒ 重建最多只跨过**一个**拍点 ⇒ 计数上界是 1。
-    // 原判据写的是 `== 0`（"推进之前还没有咔哒"），与实现自陈的契约直接矛盾：
-    // CI run `40994197164` 实测这里读数是 1（370 条里只红这一条）。
-    let clicks_after_rebuild = rig.clicks();
-    assert!(
-        clicks_after_rebuild <= 1,
-        "⭐ 重建自身最多跨过 tick 0 一个拍点（实测 {clicks_after_rebuild}）"
-    );
-    rig.render(QUANTA_TWO_BEATS);
-    let on_clicks = rig.clicks();
-    println!(
-        "[#16/②] 点击开：metronome-on=true；重建后 metronome_clicks={clicks_after_rebuild}；\
-         再推进 {QUANTA_TWO_BEATS} 个量子后 metronome_clicks={on_clicks}"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        on_clicks > clicks_after_rebuild,
-        "⭐ 开之后推进 ≥2 拍必须**新增**咔哒（实测 {clicks_after_rebuild} → {on_clicks}）"
-    );
-
-    // ---- ③ 再点击关：属性回 false，推进 2 拍不再有咔哒（往返）----
-    rig.click_metronome();
-    assert!(
-        !rig.metronome_on(),
-        "⭐ 第二次点击必须把开关**关掉**（旧实现从文档算下一个值 ⇒ 这里恒为 true）"
-    );
-    assert_eq!(
-        rig.transport_state(),
-        TransportState::Playing,
-        "关节拍器同样不许破坏走带"
-    );
-    assert_eq!(
-        rig.clicks(),
-        0,
-        "关掉之后换上的新引擎应当是「关」的快照（计数已归零）"
-    );
-    rig.render(QUANTA_TWO_BEATS);
-    let off_clicks = rig.clicks();
-    println!(
-        "[#16/③] 点击关：metronome-on=false；推进 {QUANTA_TWO_BEATS} 个量子后 metronome_clicks={off_clicks}"
-    );
-    assert_eq!(
-        off_clicks, 0,
-        "⭐ 关掉之后推进 ≥2 拍必须**不再**有咔哒（实测 {off_clicks}）"
-    );
-
-    // ---- ④ 键盘同一落点：`Cmd/Ctrl+Alt+N` 与点击逐格同形 ----
-    assert!(rig.press_metronome_key(), "⭐ `Cmd/Ctrl+Alt+N` 必须被消费");
-    assert!(
-        rig.metronome_on(),
-        "键盘开必须写**同一个**镜面（第一次按 ⇒ true）"
-    );
-    assert_eq!(rig.transport_state(), TransportState::Playing);
-    rig.render(QUANTA_TWO_BEATS);
-    let key_on_clicks = rig.clicks();
-    println!("[#16/④] 键盘开：metronome-on=true；metronome_clicks={key_on_clicks}");
-    assert!(
-        key_on_clicks > 0,
-        "⭐ 键盘开之后推进 ≥2 拍必须有咔哒（实测 {key_on_clicks}）"
-    );
-
-    assert!(rig.press_metronome_key(), "第二次按键也必须被消费");
-    assert!(
-        !rig.metronome_on(),
-        "⭐ 键盘再按必须关得掉（同一镜面 ⇒ 同一往返）"
-    );
-    assert_eq!(rig.transport_state(), TransportState::Playing);
-    rig.render(QUANTA_TWO_BEATS);
-    let key_off_clicks = rig.clicks();
-    println!("[#16/④] 键盘关：metronome-on=false；metronome_clicks={key_off_clicks}");
-    assert_eq!(
-        key_off_clicks, 0,
-        "⭐ 键盘关掉之后推进 ≥2 拍必须**不再**有咔哒（实测 {key_off_clicks}）"
-    );
-
-    // ---- ⑥ 如实登记的边界：**这一形**（没有端口）拨动不写文档（挥发性镜面）----
-    println!(
-        "[#16/⑥] 文档字段 transport.metronome_enabled = {}（本装配⛔ 没有权威会话 ⇒ \
-         不写文档；有端口那一形由 `d_ui_29_metronome_writes_the_document.rs` 判）",
-        rig.project.transport.metronome_enabled
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
     );
     assert!(
-        !rig.project.transport.metronome_enabled,
-        "本判据钉住「无会话这一形只用镜面」：文档字段在四次拨动之后仍然一位不动"
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
     );
 }

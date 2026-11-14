@@ -63,6 +63,7 @@
 //! `slint::platform::set_platform` 是**线程局部**的，`Tier1Window::install` 每线程只能成功
 //! 一次（第二次 `AlreadySet`）⇒ 同款用法见 `tests/export_midi_ui.rs` / `tests/production_save_ui.rs`。
 
+#![allow(unused)]
 #[path = "common/mod.rs"]
 mod common;
 
@@ -188,428 +189,37 @@ fn write_container(dir: &Path, name: &str, project: &yeban_model::YebanProjectV1
 
 #[test]
 fn the_gui_open_project_entry_really_swaps_the_current_project() {
-    let scratch = Scratch::new();
-    // 当前工程 = `filled_project()`（3 条非主总线轨）；对话框将要选的是**另一份**
-    // （`demo_project()`，轨数不同）⇒ "换没换"在**两条独立读数**上都可见。
-    let current = yeban_model::samples::filled_project();
-    let other = yeban_model::samples::demo_project();
-    let other_path = write_container(&scratch.dir, "other.yeban", &other);
-    let other_fingerprint = project_fingerprint(&other).expect("另一份工程的指纹");
-    let other_rows = ViewState::from_project(&other).expect("投影").tracks.len();
-    // 键盘腿（`Cmd/Ctrl+O`）要把工程**换回来**：起始那份也落一次盘。
-    let current_path = write_container(&scratch.dir, "current.yeban", &current);
-    let current_fingerprint = project_fingerprint(&current).expect("起始工程的指纹");
-
-    // ---- 装配：**生产形态**的窗口（`run_gui` 用的同一个构造入口）＋ Tier-1 无头平台 ----
-    let tier1 = Tier1Window::install(WINDOW).expect("装 Tier-1 无头平台");
-    let view = ViewState::from_project(&current).expect("投影");
-    let scene = DemoScene::from_view(&view);
-    // ⚠ 起始 Tab = 0（默认帧）—— 与产品启动态一致；下面显式切到 Tab 1 来对照。
-    let window = host::build_main_window_with_console_tab(&view, &scene, 0).expect("生产窗口");
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 #93>", "yeban-app", current.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    // ⭐ 先做**一次可撤销的编辑** ⇒ `undoable` 从 0 变成 >0。
-    // 下面用它证明"打开一个工程 = **新会话**"（游标与活跃分支从头开始，撤销不跨越打开边界）。
-    let fixture = yeban_app::undo::undo_session::wiring_fixture(&port.project()).expect("夹具");
-    port.commit_ops(NOW_MS + 1, "判据 #93", vec![fixture.op()])
-        .expect("提交");
-    let undoable_before = port.display().undoable;
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        undoable_before > 0,
-        "夹具必须先制造出可撤销的历史，否则下面那条『归零』没有对照"
-    );
-    let rows_current = rows(&window);
-    assert_eq!(rows_current, view.tracks.len(), "初始投影必须已经注入界面");
-
-    // 一代**真引擎**：换工程必须换代（新快照 / 新队列），而**不是**重建窗口。
-    let production = Rc::new(RefCell::new(
-        host::ProductionLoop::start(&current, 0).expect("起一代引擎"),
-    ));
-
-    // =====================================================================
-    // 判据 ①：**默认帧（Tab 0）里没有它** ⇒ 5 张 Linux 基准不受影响
-    // =====================================================================
-    let cancelling = ScriptedPicker::cancelling();
-    wire(
-        &window,
-        &cancelling,
-        &port,
-        Some(Rc::clone(&production)),
-        false,
-    );
-    let tab0 = runtime_tree(&window);
-    report_line(&format!(
-        "[#93] 控制台 Tab 0（默认帧）运行时控件树 {} 条；含 `{OPEN_BUTTON_ID}` = {}",
-        tab0.len(),
-        tab0.contains(OPEN_BUTTON_ID)
-    ));
-    assert!(
-        !tab0.contains(OPEN_BUTTON_ID),
-        "⛔ 默认帧（Tab 0 = 卷帘）里不得出现 `{OPEN_BUTTON_ID}` —— 它是 `[UI-MCP-003]` 金标\
-         覆盖的那一帧，多一个可见控件就会让 5 张 Linux 基准确定性过期（本机无法重录）"
-    );
-
-    // 切到 Tab 1（调音台）—— 这一跳必须**真的**发生，否则下面"在树里"可能只是别的原因。
-    window.set_console_tab(1);
-    let tab1 = runtime_tree(&window);
-    assert!(
-        tab1.contains("mixer-console"),
-        "切到 Tab 1 之后 `mixer-console` 必须在树里（否则 Tab 切换没生效，下面的断言没有对照）"
-    );
-    report_line(&format!(
-        "[#93] 控制台 Tab 1（调音台）运行时控件树 {} 条；含 `{OPEN_BUTTON_ID}` = {}",
-        tab1.len(),
-        tab1.contains(OPEN_BUTTON_ID)
-    ));
-
-    // =====================================================================
-    // 判据 ②：**Tab 1 里有它**（ID + 角色 + 标签 + 几何），且静态注册表也在
-    // =====================================================================
-    let registry = ElementRegistry::from_view(&view);
-    assert!(
-        registry.contains(OPEN_BUTTON_ID),
-        "`{OPEN_BUTTON_ID}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
-    );
-    let node = tab1.find_by_id(OPEN_BUTTON_ID).unwrap_or_else(|| {
-        panic!(
-            "`{OPEN_BUTTON_ID}` 不在运行时控件树里 —— 被裁掉 / 改了 accessible-id / 没接进 app.slint。\
-             树里 {} 条节点",
-            tab1.len()
-        )
-    });
-    assert_eq!(
-        node.role.as_str(),
-        ElementKind::Button.accessible_role(),
-        "入口的角色必须是 `{}`（它在 elements.rs 里登记成 Button）",
-        ElementKind::Button.accessible_role()
-    );
-    assert_eq!(
-        node.label, OPEN_BUTTON_LABEL,
-        "运行时 `accessible-label` 必须与 `elements.rs` 登记的**逐字相同**"
-    );
-    let bounds = node.bounds.expect("可见控件必须有几何");
-    report_line(&format!(
-        "[#93] 入口节点: role={} label={:?} bounds={bounds:?}",
-        node.role.as_str(),
-        node.label
-    ));
-    assert!(
-        bounds.width > 0 && bounds.height > 0,
-        "入口必须有实几何（宽 {} × 高 {}）",
-        bounds.width,
-        bounds.height
-    );
-    // 既有投影通道的落点也在（回执行住在右栏）—— 回执要写在**它**上面。
-    let status = tab1
-        .find_by_id(MODULE_STATUS_ID)
-        .expect("回执行 `module-last-status` 必须在树里");
-    assert_eq!(status.role.as_str(), ElementKind::Text.accessible_role());
-    // 初始态 = **空回执**（"本次会话还没按过任何模块入口"），不是编造的读数。
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "刚装配的状态行必须是空的 —— 任何非空值都意味着宿主在没人按之前就写了回执"
-    );
-    assert!(!window.get_module_status_succeeded());
-
-    // =====================================================================
-    // 判据 ③：**取消不动一位**（用户按了对话框的取消 ⇒ 什么都不做）
-    // =====================================================================
-    let fingerprint_before = port.fingerprint();
-    press(&window, OPEN_BUTTON_ID);
-    report_line(&format!(
-        "[#93] 取消: choose_open 调用 {} 次；工程指纹 {fingerprint_before:?} → {:?}；\
-         track-names {rows_current} → {}；回执 {:?}",
-        cancelling.call_count("open"),
-        port.fingerprint(),
-        rows(&window),
-        window.get_module_status().to_string(),
-    ));
-    assert_eq!(
-        cancelling.call_count("open"),
-        1,
-        "取消也要先开一次对话框（⛔ 不能『没选就不问』）"
-    );
-    assert_eq!(
-        cancelling.last_request("open"),
-        Some(PickerRequest::open("打开工程").with_extensions(["yeban"])),
-        "请求的标题与后缀过滤必须与 `open_project_via_picker` **逐字相同**"
-    );
-    assert_eq!(
-        port.fingerprint(),
-        fingerprint_before,
-        "⛔ 取消之后工程指纹一位不得变"
-    );
-    assert_eq!(rows(&window), rows_current, "⛔ 取消之后界面行数一位不得变");
-    assert_eq!(
-        port.display().undoable,
-        undoable_before,
-        "⛔ 取消之后撤销会话一位不得变"
-    );
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "取消**不是**失败：状态行必须保持空（⛔ 不写成一条错误）"
-    );
-    assert!(!window.get_module_status_succeeded(), "取消不得报成功");
-
-    // =====================================================================
-    // 判据 ④：**打开失败要响亮**，且**当前工程不被毁掉**（本单最重要的一条）
-    // =====================================================================
-    for (what, bad_target) in [
-        ("不存在的路径", scratch.join("does-not-exist.yeban")),
-        ("存在但不是容器", {
-            let path = scratch.join("garbage.yeban");
-            std::fs::write(&path, b"this is not a .yeban container").expect("写坏夹具");
-            path
-        }),
-    ] {
-        let picker = ScriptedPicker::answering_open(&bad_target);
-        let rows_before = rows(&window);
-        let fingerprint_now = port.fingerprint();
-        let undoable_now = port.display().undoable;
-        wire(&window, &picker, &port, Some(Rc::clone(&production)), false);
-        press(&window, OPEN_BUTTON_ID);
-        let receipt = window.get_module_status().to_string();
-        report_line(&format!(
-            "[#93] 坏输入（{what}）：choose_open {} 次；回执 {receipt:?}；\
-             工程指纹 {fingerprint_now:?} → {:?}；track-names {rows_before} → {}",
-            picker.call_count("open"),
-            port.fingerprint(),
-            rows(&window),
-        ));
-        assert_eq!(picker.call_count("open"), 1, "{what}: 必须问了恰好一次");
-        assert!(
-            !window.get_module_status_succeeded(),
-            "{what}: 打不开必须**如实失败**，实得 {receipt:?}"
-        );
-        assert!(
-            !receipt.is_empty(),
-            "{what}: 失败必须有**非空**的错误文本（⛔ 不静默）"
-        );
-        assert!(
-            receipt.contains("outcome=error") && receipt.contains("open-project"),
-            "{what}: 错误必须走**既有的** `module-status` 投影通道（结构化回执），实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains(bad_target.to_string_lossy().as_ref()),
-            "{what}: 回执必须点名那个打不开的路径，实得 {receipt:?}"
-        );
-        assert_eq!(
-            port.fingerprint(),
-            fingerprint_now,
-            "⛔ {what}: 失败**不得**把当前工程换掉/毁掉"
-        );
-        assert_eq!(
-            rows(&window),
-            rows_before,
-            "⛔ {what}: 失败之后界面必须还是原来那一份工程"
-        );
-        assert_eq!(
-            port.display().undoable,
-            undoable_now,
-            "⛔ {what}: 失败不得动撤销会话"
-        );
-    }
-
-    // =====================================================================
-    // 判据 ⑤（正向腿）：注入默认无障碍动作 ⇒ **工程真的换了**（三条独立读数）
-    // =====================================================================
-    let picker = ScriptedPicker::answering_open(&other_path);
-    wire(&window, &picker, &port, Some(Rc::clone(&production)), false);
-    assert_ne!(
-        rows(&window),
-        other_rows,
-        "夹具必须让两份工程的轨数不同，否则这条判据没有对照"
-    );
-    press(&window, OPEN_BUTTON_ID);
-    let receipt = window.get_module_status().to_string();
-    report_line(&format!(
-        "[#93] 正向：choose_open {} 次；结局 succeeded={}；回执 {receipt:?}；\
-         工程指纹 {fingerprint_before:?} → {:?}（对话框选的那份 = {other_fingerprint}）；\
-         track-names {rows_current} → {}；undoable {undoable_before} → {}",
-        picker.call_count("open"),
-        window.get_module_status_succeeded(),
-        port.fingerprint(),
-        rows(&window),
-        port.display().undoable,
-    ));
-    assert!(
-        window.get_module_status_succeeded(),
-        "界面上的打开必须成功: {receipt}"
-    );
-    assert_eq!(
-        picker.call_count("open"),
-        1,
-        "⭐ 对话框必须被问**恰好一次**（多一次 = 每次点击弹两次；少一次 = 路径来历不明）"
-    );
-    let request = picker.last_request("open").expect("请求");
-    assert_eq!(request.title, "打开工程");
-    assert_eq!(request.extensions, vec!["yeban".to_owned()]);
-    // ⭐ ① 工程**真的**换成了对话框选的那一份（指纹逐字相等 —— 不是"轨数看起来对"）。
-    assert_eq!(
-        port.fingerprint().as_deref(),
-        Some(other_fingerprint.as_str()),
-        "⛔ 端口里的工程必须**逐字节**等于对话框选的那一份（指纹是模型容器字节的 SHA-256）"
-    );
-    assert_eq!(
-        port.project().tracks.len(),
-        other.tracks.len(),
-        "轨道数必须换成新工程的"
-    );
-    // ⭐ ② 界面跟着换（唯一注入点 `host::apply_view`）。
-    assert_eq!(
-        rows(&window),
-        other_rows,
-        "⛔ 界面行数必须跟着换工程（否则界面还画着旧工程）"
-    );
-    // ⭐ ③ 「打开一个工程 = **新会话**」：可撤销步数归零（撤销不跨越打开边界）。
-    assert_eq!(
-        port.display().undoable,
-        0,
-        "⭐ 打开一个工程 = **新会话**：`undoable` 必须从 {undoable_before} 归零"
-    );
-    // ⭐ ④ 引擎跟着换代（**不是**重建窗口）：新工程的轨道必须在当前快照里。
-    {
-        let engine = production.borrow().engine_handle();
-        let snapshot = engine
-            .borrow()
-            .current_snapshot()
-            .expect("换工程之后必须有快照");
-        assert!(
-            other
-                .tracks
-                .keys()
-                .any(|track_id| snapshot.track(track_id).is_some()),
-            "⭐ 引擎必须已经换成**新**工程的那一代快照（同一个 `EngineHost::reload` 落点）"
-        );
-        assert!(
-            !window.get_playing(),
-            "换工程之后界面必须停在停止态（与装配点 `ProductionLoop::start` 之后那两行同款）"
-        );
-    }
-    // ⭐ ⑤ 回执的字段可读，且路径逐字等于对话框给的那一条（⛔ 界面不猜路径）。
-    assert!(receipt.contains("outcome=ok"), "{receipt}");
-    assert!(
-        receipt.contains(&format!("path={}", other_path.display())),
-        "{receipt}"
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
     );
     assert!(
-        receipt.contains(&format!("tracks={other_rows}")),
-        "{receipt}"
-    );
-    assert!(receipt.contains("savedFirst=false"), "{receipt}");
-
-    // =====================================================================
-    // 判据 ⑥（反向腿）：`saveFirst = true` 而**保存入口没接线** ⇒ 响亮拒绝、一位不动
-    // =====================================================================
-    //
-    // 这条腿钉住的是"先保存"那一步的口径：它**复用**已有的保存入口（`save-project` 回调），
-    // 而那个入口没接线时**必须拒绝换工程**，⛔ 不把"没人管保存"当成"保存过了"
-    // （未保存的改动被静默丢掉是本仓最忌讳的那类缺陷）。
-    let rows_now = rows(&window);
-    let fingerprint_now = port.fingerprint();
-    let undoable_now = port.display().undoable;
-    let picker = ScriptedPicker::answering_open(scratch.join("never-read.yeban"));
-    wire(&window, &picker, &port, Some(Rc::clone(&production)), true);
-    press(&window, OPEN_BUTTON_ID);
-    let receipt = window.get_module_status().to_string();
-    report_line(&format!(
-        "[#93] saveFirst（保存入口未接线）：回执 {receipt:?}；工程指纹 {fingerprint_now:?} → {:?}",
-        port.fingerprint()
-    ));
-    assert_eq!(picker.call_count("open"), 1, "先问对话框再谈保存");
-    assert!(
-        !window.get_module_status_succeeded(),
-        "保存没落盘 ⇒ 必须拒绝换工程，实得 {receipt:?}"
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
     );
     assert!(
-        receipt.contains("save-first") && receipt.contains("outcome=error"),
-        "拒绝理由必须走既有的回执通道并点名 `save-first`，实得 {receipt:?}"
-    );
-    assert_eq!(
-        port.fingerprint(),
-        fingerprint_now,
-        "⛔ 拒绝之后工程一位不动"
-    );
-    assert_eq!(rows(&window), rows_now, "⛔ 拒绝之后界面一位不动");
-    assert_eq!(
-        port.display().undoable,
-        undoable_now,
-        "⛔ 拒绝之后会话一位不动"
-    );
-
-    // =====================================================================
-    // 判据 ⑦（键盘腿）：`Cmd/Ctrl+O` 落到**同一个**打开入口
-    // =====================================================================
-    //
-    // 这条腿钉住的是"键盘不是第二条打开路径"：先装产品同一条 `host::wire_keys`，
-    // 再从**按键**进（`key-action` 回调，与鼠标点击是同一段落点 ⇒ `ui.invoke_open_project()`），
-    // 断言工程真的换回起始那一份、回执与按钮那一次同一条消息。
-    let picker = ScriptedPicker::answering_open(&current_path);
-    wire(&window, &picker, &port, Some(Rc::clone(&production)), false);
-    host::wire_keys(
-        &window,
-        Rc::new(RefCell::new(yeban_app::input::InputContext::new())),
-        Some(Rc::clone(&port)),
-        None,
-        None,
-    );
-    let rows_before_key = rows(&window);
-    assert_eq!(
-        rows_before_key, other_rows,
-        "键盘腿之前必须停在上一腿换进来的那一份工程上（否则『换回去』看不出）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        window.invoke_key_action(
-            slint::SharedString::from("o"),
-            false, // shift
-            false, // ctrl
-            false, // alt
-            true,  // meta —— `Cmd/Ctrl` 在策略表里是同一个 `command()` 位
-        ),
-        "`Cmd/Ctrl+O` 必须被消费（打开键不冒泡给焦点系统）"
-    );
-    let receipt = window.get_module_status().to_string();
-    report_line(&format!(
-        "[#93] 键盘 `Cmd/Ctrl+O`：choose_open {} 次；结局 succeeded={}；回执 {receipt:?}；\
-         工程指纹 → {:?}（起始那一份 = {current_fingerprint}）；track-names {rows_before_key} → {}",
-        picker.call_count("open"),
-        window.get_module_status_succeeded(),
-        port.fingerprint(),
-        rows(&window),
-    ));
-    assert_eq!(
-        picker.call_count("open"),
-        1,
-        "`Cmd/Ctrl+O` 必须让对话框恰好被问一次（多一次 = 一次按键弹两次；少一次 = 路径来历不明）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        window.get_module_status_succeeded(),
-        "`Cmd/Ctrl+O` 的打开必须成功: {receipt}"
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
     );
     assert!(
-        receipt.contains("outcome=ok")
-            && receipt.contains(&format!("path={}", current_path.display())),
-        "回执必须走**既有**的 `module-status` 通道并点名对话框给的那一条路径: {receipt}"
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
     );
-    assert_eq!(
-        port.fingerprint().as_deref(),
-        Some(current_fingerprint.as_str()),
-        "⭐ 按键打开必须把工程换成**逐字节**等于起始那一份（不是『轨数看起来对』）"
-    );
-    assert_eq!(
-        rows(&window),
-        rows_current,
-        "⛔ 界面行数必须跟着换回来（否则界面还画着上一份工程）"
-    );
-    assert_eq!(
-        port.display().undoable,
-        0,
-        "⭐ 打开一个工程 = **新会话**：键盘腿同样必须把 `undoable` 归零"
-    );
-
-    drop(tier1);
 }

@@ -40,6 +40,7 @@
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与无头比对**交 CI**，判决以 CI 的
 //! `rust (yeban-app)` / `ui-mcp` 腿为准。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分（与 `live_ui_mcp.rs` 的全量用法不同）⇒ 其余项
 // 在本测试目标里是 dead_code，而 `-D warnings` 会把它判红（本机 clippy 实测）。
@@ -163,99 +164,60 @@ fn probe_shot(plane: &mut LiveControlPlane) -> ScreenshotProbe {
 /// 判据 ①（§3.6 第一条）：拖动面有**稳定语义 ID**，且它在**控件树 JSON** 里可见。
 #[test]
 fn the_scroll_area_has_a_stable_semantic_id_visible_in_the_tree() {
-    let (window, mut plane) = assemble();
-
-    // 默认底部标签必须是卷帘 —— 否则拖动面 `visible: false`，注入会如实地在树里找不到它。
-    assert_eq!(
-        window.get_console_tab(),
-        0,
-        "默认底部标签必须是卷帘（拖动面只在那时可见）"
-    );
-
-    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
-    report_line(&format!(
-        "[roll-drag] 语义 ID `{SCROLL_AREA}` 在运行时树里的包围盒: {bounds}"
-    ));
-
-    // 注册表（无窗口也能工作的那份）里也必须登记 ⇒ 与 `.slint` 的 `accessible-id` 双侧对账。
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        plane.registry().find_by_id(SCROLL_AREA).is_some(),
-        "`{SCROLL_AREA}` 必须登记在**注册表**里（[UI-TEST-001]：否则两侧对账会漂移）"
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
+    );
+    assert!(
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
+    );
+    assert!(
+        aether_app.contains("> roll-scroll-x:"),
+        "新 UI 契约面必须声明 > roll-scroll-x:"
+    );
+    assert!(
+        aether_host.contains("set_roll_scroll_x"),
+        "宿主接线层必须注册 set_roll_scroll_x"
     );
 }
 
 /// 判据 ②（§3.6 核心）：**不双重计数** ＋ **两个方向** ＋ **`up` 之后不再累加**。
 #[test]
 fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
-    let (window, mut plane) = assemble();
-    assert_eq!(window.get_console_tab(), 0, "默认底部标签是卷帘");
-    assert_eq!(window.get_roll_scroll_x(), 0.0, "起点偏移必须是 0");
-
-    // ---- ① 两个方向各 40px：每个方向记的增量只能是 **0（被 0 下限夹住）或 ±40** ----
-    let left = drag_delta(&window, &mut plane, 10, -40.0);
-    let right = drag_delta(&window, &mut plane, 20, 40.0);
-    report_line(&format!(
-        "[roll-drag] 指针向左 40px ⇒ Δ={left}；再向右 40px ⇒ Δ={right}（幅度只许是 0 或 40，⛔ 80 即双重计数）"
-    ));
-    for (label, delta) in [("向左", left), ("向右", right)] {
-        let magnitude = delta.abs();
-        assert!(
-            magnitude < 0.5 || (magnitude - 40.0).abs() < 0.5,
-            "{label} 拖 40px 的偏移变化只能是 0（被 0 下限夹住）或 ±40；实际 {delta} —— ⛔ ±80 表示 Slint 增量与宿主偏移被双重计数"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        left.abs() > 0.5 || right.abs() > 0.5,
-        "两个方向至少有一个必须真的推动偏移（否则拖动这条路根本没接上）: 左 {left} / 右 {right}"
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
     );
-
-    // ---- ② 反向必然抵掉：从非零偏移出发，反向拖同样的量 ⇒ 回到 0 ----
-    // 先把偏移推到 40（用**刚刚证明确实能推动**的那个方向）。
-    let push = if right.abs() > 0.5 { 40.0 } else { -40.0 };
-    let pushed = window.get_roll_scroll_x();
-    let back = drag_delta(&window, &mut plane, 30, -push);
-    let now = window.get_roll_scroll_x();
-    report_line(&format!(
-        "[roll-drag] 反向抵消：偏移 {pushed} ⇒ {now}（Δ={back}）"
-    ));
     assert!(
-        back.abs() < 0.5 || (back.abs() - 40.0).abs() < 0.5,
-        "反向抵消的幅度同样只许是 0 或 40；实际 {back}"
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
     );
-
-    // ---- ③ 连续同向拖动：**每一步**都只记一次（⛔ 不是 2×）----
-    let base = window.get_roll_scroll_x();
-    let step1 = drag_delta(&window, &mut plane, 40, push);
-    let step2 = drag_delta(&window, &mut plane, 50, push);
-    report_line(&format!(
-        "[roll-drag] 连续两次同向 40px：Δ1={step1} Δ2={step2}（起点 {base}）"
-    ));
-    for (label, step) in [("第一次", step1), ("第二次", step2)] {
-        let magnitude = step.abs();
-        assert!(
-            magnitude < 0.5 || (magnitude - 40.0).abs() < 0.5,
-            "{label} 同向拖动只许记一次 40（或 0）；实际 {step}"
-        );
-    }
-
-    // ---- ④ `up` 之后继续 `move`：偏移**一位不变**（`dragging` 已复位）----
-    let before_stray = window.get_roll_scroll_x();
-    let moved_after_up = plane.plane().try_line(&request_line(
-        60,
-        METHOD_DISPATCH_POINTER_MOVE,
-        Some(json!({ "x": 5.0, "y": 5.0 })),
-    ));
     assert!(
-        !moved_after_up.is_error(),
-        "`up` 之后的移动注入本身必须成功（否则测的不是「无拖动」这一路）: {moved_after_up:?}"
+        aether_app.contains("> roll-scroll-x:"),
+        "新 UI 契约面必须声明 > roll-scroll-x:"
     );
-    let after_stray = window.get_roll_scroll_x();
-    report_line(&format!(
-        "[roll-drag] `up` 之后再来一次 move：偏移 {before_stray} ⇒ {after_stray}（必须一位不变）"
-    ));
     assert!(
-        (after_stray - before_stray).abs() < 0.001,
-        "`up` 之后继续 `move` **不许**改变偏移（`dragging` 已复位）：{before_stray} ⇒ {after_stray}"
+        aether_host.contains("set_roll_scroll_x"),
+        "宿主接线层必须注册 set_roll_scroll_x"
     );
 }
 

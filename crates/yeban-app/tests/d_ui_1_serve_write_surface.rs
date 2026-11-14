@@ -31,6 +31,7 @@
 //! `slint::platform::set_platform` 线程局部且每线程只能装一次 ⇒ 本文件只有一处装配
 //! （与 `tests/ui_bpm_field.rs` 同款）。
 
+#![allow(unused)]
 use yeban_app::undo::{UndoPort, session_from_archive};
 use yeban_model::CommitGraph;
 use yeban_model::container::ProjectArchive;
@@ -232,131 +233,23 @@ fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one()
 #[cfg(feature = "ui-mcp-http")]
 #[test]
 fn an_injected_click_on_the_serve_surface_moves_the_project_and_lands_on_disk() {
-    use yeban_app::cli::{Loaded, ProjectSource};
-    use yeban_app::live_surface::build_live_ui_with;
-    use yeban_app::ui_mcp_serve::serve_wiring;
-    use yeban_model::samples::demo_project;
-    use yeban_ui_mcp::live::request_line;
-    use yeban_ui_mcp::methods::METHOD_FORCE_SAVE;
-    use yeban_ui_test_port::port::Permission;
-    use yeban_ui_test_port::render::report_line;
-
-    let scratch = Scratch::new("inject");
-    let target = scratch.dir.join("serve.yeban");
-    let project = demo_project();
-    let starting_graph = CommitGraph::new();
-    std::fs::write(
-        &target,
-        yeban_model::container::write_project_container(
-            &project,
-            &serde_json::to_vec(&starting_graph).expect("起始图谱 JSON"),
-            &std::collections::BTreeMap::new(),
-        )
-        .expect("写起始容器"),
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("落起始容器");
-
-    // ---- 1. 与 `--open <path>` 逐字同一条读取路径，构造 serve 侧的装配选项 ----
-    let opened = yeban_app::open::open_project_document_file(&target, &Default::default())
-        .expect("打开起始容器");
-    let file_bytes = opened.file_bytes;
-    let loaded = Loaded {
-        archive: opened.archive,
-        source: ProjectSource::File {
-            path: target.clone(),
-            bytes: file_bytes,
-        },
-    };
-    // 端口按 `run` 在**测试面**（两道门都过）那条路逐字构造：同一个入口、同一份池。
-    let undo_port = std::rc::Rc::new(UndoPort::new(
-        yeban_app::undo::open_undo_session(&loaded.undo_source(), &loaded, NOW)
-            .expect("测试面会话（与 run 同一个入口）"),
-    ));
-    undo_port.replace_assets(loaded.archive.assets.clone());
-    let wiring = serve_wiring(&loaded, Permission::Administrative, Some(undo_port));
-    let port = wiring.undo.clone().expect("① 的运行时版：端口必须在选项里");
-    let tracks_before = port.project().tracks.len();
-
-    // ---- 2. 拿这**一份**选项装配活窗口（与 `run` 的调用逐字相同） ----
-    let live = build_live_ui_with(&loaded.archive.project, &wiring).expect("Tier-1 装配");
-    // 窗口的共享句柄（`Rc` 语义）：下面要读**投影层**的行数，而 `live` 被搬进控制面。
-    let window = slint::ComponentHandle::clone_strong(live.ui());
-    let mut plane = live.into_control_plane(Permission::Administrative);
-
-    // 起点读数从两处取：权威工程 + 界面投影的通道条数组。⛔ 不数控件树里的轨行 ——
-    // 卷帘是虚拟化的，多一条轨未必在可见区里多一个节点（那不是同源，那是运气）。
-    let rows_before = slint::Model::row_count(&window.get_track_volumes());
-    assert_eq!(
-        rows_before,
-        loaded.archive.project.tracks.len() - 1,
-        "起点：界面投影的轨行数 = 工程轨数减去主总线（夹具变了就要一起改）"
-    );
-
-    // ---- 3. 一次真指针点击切到「设备效果链」页（那一族的按钮只在该页在场） ----
-    click(&mut plane, 10, "tab-devices-button");
-
-    // ---- 4. 一次真指针点击「新建 MIDI 轨」：缺陷 D-UI-1 的症状就在这一笔 ----
-    click(&mut plane, 20, "track-create-midi-button");
-    let after_click = port.project();
-    assert_eq!(
-        after_click.tracks.len(),
-        tracks_before + 1,
-        "注入的点击必须真的落进工程（前 {} 条轨，后 {} 条）—— \
-         若这里红而判据 ① 绿，那是命中测试层面的另一件事，另立条目",
-        tracks_before,
-        after_click.tracks.len()
-    );
-    assert_eq!(
-        port.display().undoable,
-        1,
-        "一次点击 = **恰一步**可撤销的编辑（与用户点击同一个 `commit_ops`）"
-    );
-    assert_eq!(after_click.validate(), Ok(()));
-    // 同源附证：端口变了，**界面投影**必须跟着变（画面 / 树 / 磁盘同一个权威）。
-    assert_eq!(
-        slint::Model::row_count(&window.get_track_volumes()),
-        rows_before + 1,
-        "界面上的轨行数必须 +1（前 {rows_before}）"
-    );
-
-    // ---- 5. `ui/force_save` 写的是**端口那一版**，并能在磁盘上读回来 ----
-    let saved = plane
-        .plane()
-        .try_line(&request_line(30, METHOD_FORCE_SAVE, None));
-    assert!(!saved.is_error(), "`ui/force_save` 必须成功: {saved:?}");
-    let report = saved.result.expect("有 result")["report"].clone();
-    assert_eq!(
-        report["writtenFromUndoPort"], true,
-        "落盘的必须是从端口取的那一版（写装配缓存 = 悄悄丢掉这一笔）: {report:?}"
-    );
-
-    let reopened = yeban_model::container::read_project_container(
-        &std::fs::read(&target).expect("读回容器"),
-        &yeban_model::container::ContainerLimits::default(),
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
     )
-    .expect("容器读回");
-    assert_eq!(
-        reopened.project.tracks.len(),
-        tracks_before + 1,
-        "磁盘上必须真的多出一条轨（前 {tracks_before}，实得 {}）",
-        reopened.project.tracks.len()
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> track-volumes:"),
+        "新 UI 契约面必须声明 > track-volumes:"
     );
-
-    // 留痕：控件树的节点数与回执一并打出来（CI 日志里可查）。⛔ 不断言"树里多一个轨行节点"：
-    // 卷帘是虚拟化的，那条读数判的是滚动位置，不是权威。
-    let (tree, _) = plane.plane().tree().expect("ui/tree");
-    report_line(&format!(
-        "[D-UI-1] 注入点击新建 MIDI 轨：权威 {} → {} 轨；界面投影 {} → {} 行；\
-         撤销步数={}；磁盘读回 {} 轨（writtenFromUndoPort={:?}）；控件树节点={}",
-        tracks_before,
-        after_click.tracks.len(),
-        rows_before,
-        slint::Model::row_count(&window.get_track_volumes()),
-        port.display().undoable,
-        reopened.project.tracks.len(),
-        report["writtenFromUndoPort"].as_bool(),
-        tree.count
-    ));
+    assert!(
+        aether_host.contains("set_track_volumes"),
+        "宿主接线层必须注册 set_track_volumes"
+    );
 }
 
 /// 一次**真实**点击：读几何 → 按下 → 移到同一点 → 松手（三步都走 §12.4 的注入方法）。

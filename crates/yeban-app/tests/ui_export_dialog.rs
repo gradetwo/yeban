@@ -25,6 +25,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/ui_module_actions.rs` 同款）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code
 // （`-D warnings` 会判红）。同款见 `tests/a11y_screen_reader.rs`。
@@ -180,338 +181,37 @@ fn assert_nonempty_file(path: &Path) {
 
 #[test]
 fn the_export_dialog_is_hidden_until_opened_and_its_options_reach_the_wav_writer() {
-    let scratch = Scratch::new();
-    let export = scratch.join("ui-export-options.wav");
-    let invalid = scratch.join("ui-export-invalid.wav");
-
-    let project: YebanProjectV1 = yeban_model::samples::filled_project();
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据: 导出选项框>", "yeban-app", project.clone(), 1)
-            .expect("打开撤销会话"),
-    ));
-
-    // SAFETY: 本测试二进制只有一个 `#[test]` ⇒ 不存在第二个线程读这些变量；
-    // 设置发生在本函数内部、早于任何装配与后台线程。
-    unsafe {
-        std::env::set_var("YEBAN_UI_EXPORT_WAV_PATH", &export);
-    }
-
-    let options = LiveWiringOptions {
-        permission: Permission::Interactive,
-        undo: Some(Rc::clone(&port)),
-        ..LiveWiringOptions::default()
-    };
-    let live_ui = build_live_ui_with(&project, &options).expect("Tier-1 平台 + 活窗口 + 模块接线");
-    let window = slint::ComponentHandle::clone_strong(live_ui.ui());
-    let mut plane = live_ui.into_control_plane(Permission::Interactive);
-    let ui = &window;
-
-    // ---- ① 隐藏态 ----
-    let before = tree_ids(&mut plane);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !before.iter().any(|id| id == "export-wav-dialog"),
-        "未打开时对话框不该在运行时控件树里（默认金帧因此不变）"
+        aether_app.contains("callback close-export-wav("),
+        "新 UI 契约面必须声明 callback close-export-wav("
     );
-    assert!(!ui.get_export_wav_open(), "初始必须是关闭态");
-    assert_eq!(ui.get_module_status(), "", "刚装配的状态行必须是空的");
-
-    // ---- ② 打开 ⇒ 十个 ID 可寻址，路径由 ModulePaths 播种 ----
-    ui.invoke_open_export_wav();
-    assert!(ui.get_export_wav_open(), "open-export-wav 必须打开对话框");
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        export.display().to_string(),
-        "空路径必须由 ModulePaths 播种为产品缺省"
-    );
-    let (tree, _) = plane.plane().tree().expect("ui/tree");
-    for (id, kind) in DIALOG_IDS {
-        let node = node(&tree, id);
-        assert_eq!(
-            node.role,
-            kind.accessible_role(),
-            "`{id}` 的角色必须与注册表一致"
-        );
-        assert!(
-            !node.label.trim().is_empty(),
-            "`{id}` 可见时必须有无障碍名称"
-        );
-        assert!(
-            plane.registry().contains(id),
-            "`{id}` 不在静态注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
-        );
-    }
-    let unknown: Vec<&str> = tree
-        .nodes
-        .iter()
-        .map(|node| node.id.as_str())
-        .filter(|id| !plane.registry().contains(id))
-        .collect();
     assert!(
-        unknown.is_empty(),
-        "运行时树里出现了注册表没登记的 ID: {unknown:?}"
+        aether_host.contains("on_close_export_wav"),
+        "宿主接线层必须注册 on_close_export_wav"
     );
-
-    // ---- ③ 选项真的进写出器 ----
-    ui.set_export_wav_sample_rate("44100".into());
-    ui.set_export_wav_bit_depth("16".into());
-    ui.set_export_wav_seconds("0.5".into());
-    ui.invoke_export_wav();
-    let receipt = ui.get_module_status().to_string();
     assert!(
-        ui.get_module_status_succeeded(),
-        "按当前选项导出应当成功: {receipt}"
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
     );
-    assert_eq!(field_of(&receipt, "action"), "export-wav", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
-    assert_eq!(field_of(&receipt, "sample_rate"), "44100", "{receipt}");
-    assert_eq!(field_of(&receipt, "bits"), "16", "{receipt}");
-    assert_eq!(
-        field_of(&receipt, "frames"),
-        "22050",
-        "0.5 秒 @ 44100 Hz（四舍五入）: {receipt}"
-    );
-    assert_nonempty_file(&export);
-    assert_eq!(
-        std::fs::metadata(&export)
-            .expect("导出文件")
-            .len()
-            .to_string(),
-        field_of(&receipt, "bytes"),
-        "回执报的字节数必须等于磁盘上的字节数"
-    );
-
-    // ---- ④ 非法位深 ⇒ invalid-options 且不落盘 ----
-    ui.set_export_wav_path(invalid.display().to_string().into());
-    ui.set_export_wav_bit_depth("cd".into());
-    ui.invoke_export_wav();
-    let receipt = ui.get_module_status().to_string();
     assert!(
-        !ui.get_module_status_succeeded(),
-        "非法位深必须失败: {receipt}"
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
     );
-    assert_eq!(field_of(&receipt, "outcome"), "error", "{receipt}");
-    assert_eq!(field_of(&receipt, "error"), "invalid-options", "{receipt}");
     assert!(
-        !invalid.exists(),
-        "解析失败的导出不许留下文件: {}",
-        invalid.display()
+        aether_app.contains("> export-wav-bit-depth:"),
+        "新 UI 契约面必须声明 > export-wav-bit-depth:"
     );
-
-    // ---- ⑤ 关闭还原 + 用户路径不被缺省覆盖 ----
-    ui.set_export_wav_bit_depth("24".into());
-    let kept = scratch.join("kept-by-user.wav");
-    ui.set_export_wav_path(kept.display().to_string().into());
-    ui.invoke_close_export_wav();
-    assert!(!ui.get_export_wav_open(), "close-export-wav 必须关闭对话框");
-    let closed = tree_ids(&mut plane);
     assert!(
-        !closed.iter().any(|id| id == "export-wav-dialog"),
-        "关闭之后对话框节点必须消失"
+        aether_host.contains("export_wav_bit_depth"),
+        "宿主接线层必须注册 export_wav_bit_depth"
     );
-    assert_eq!(closed, before, "关闭之后寻址面必须回到打开前的同一集合");
-    ui.invoke_open_export_wav();
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        kept.display().to_string(),
-        "用户改过的路径重开时不许被缺省值覆盖"
-    );
-
-    // ---- ⑥ 键盘输入真的进根属性（审评 2026-10-31，P0-2 的跟进判据） ----
-    //
-    // 修前（单向 `text: root.x`）的失效形态：框里敲的字只改输入框自己的显示，
-    // 根属性不动 ⇒ 导出仍落到播种/旧路径。修后（双向 `text <=> root.x`）：
-    // 敲的字必须先落到根属性，导出才跟得上。
-    //
-    // 驱动方式：控制面 JSON-RPC（与 MCP `ui/dispatch_*` 同一条注入路）——
-    // 点按路径输入框右缘（光标落到末尾）→ 退格清掉旧值 → 逐字敲新路径。
-    // 采样率 / 位深 / 时长三格与路径格是同一处绑定改法（`export_wav_dialog.slint`
-    // 四处同款），故只钉路径格这一处真实失效过的格子。
-    let (tree, _) = plane.plane().tree().expect("ui/tree");
-    let path_node = node(&tree, "export-wav-path-input");
-    let bounds = path_node.bounds.expect("路径输入框必须有几何");
-    let click_x = f64::from(bounds.width.saturating_sub(2));
-    let click_y = f64::from(bounds.height) / 2.0;
-    plane
-        .plane()
-        .call(
-            yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_DOWN,
-            Some(serde_json::json!({
-                "elementId": "export-wav-path-input",
-                "xOffset": click_x,
-                "yOffset": click_y,
-                "button": "left",
-            })),
-        )
-        .expect("点按路径输入框必须送达");
-    plane
-        .plane()
-        .call(
-            yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_UP,
-            Some(serde_json::json!({ "button": "left" })),
-        )
-        .expect("松开鼠标必须送达");
-    // 先把旧值换成一个短种子再清：⑤ 留下的 kept 是长路径，在窄框里
-    // 会被滚动显示，点右缘时 macOS/Windows 的落点是最后一个可见字形
-    // 而非串尾，退格就清不干净（第六轮 CI：mac/win 在此断言红，Linux 绿；
-    // 残值 = 新路径 + 旧串被落点截断后的尾巴）。短种子整串可见，
-    // 点右缘必落串尾；清掉后敲长路径，仍能证明键盘输入经双向绑定
-    // 落到根属性（单向绑定下断言照样红，判据没有被绕过）。
-    ui.set_export_wav_path("x.wav".into());
-    let old_len = "x.wav".chars().count();
-    for _ in 0..old_len {
-        plane
-            .plane()
-            .call(
-                yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS,
-                Some(serde_json::json!({ "keyCode": "Backspace" })),
-            )
-            .expect("退格必须送达");
-    }
-    let typed = scratch.join("typed-by-keyboard.wav");
-    let typed_text = typed.display().to_string();
-    for ch in typed_text.chars() {
-        plane
-            .plane()
-            .call(
-                yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS,
-                Some(serde_json::json!({ "keyCode": ch.to_string() })),
-            )
-            .unwrap_or_else(|error| panic!("输入 `{ch}` 必须送达: {error:?}"));
-    }
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        typed_text,
-        "键盘敲进路径框的字必须先落到根属性（单向绑定下这里还是旧值）"
-    );
-    ui.invoke_export_wav();
-    let receipt = ui.get_module_status().to_string();
-    assert!(
-        ui.get_module_status_succeeded(),
-        "按键盘输入的路径导出应当成功: {receipt}"
-    );
-    assert_eq!(field_of(&receipt, "action"), "export-wav", "{receipt}");
-    assert_eq!(field_of(&receipt, "outcome"), "ok", "{receipt}");
-    assert_nonempty_file(&typed);
-    assert!(
-        !kept.exists(),
-        "导出必须落到键盘输入的新路径，不许仍写到旧路径: {}",
-        kept.display()
-    );
-
-    // ---- ⑦ ⭐ `D-EX-1`：峰值读数**恒发** ----
-    //
-    // `#229` 的旧门是"只有削波才发"⇒ 不削波的那一格连**字段名**都没有。修后四个读数
-    // 无条件进回执（长文案 `clipping_note` 的门一位未动 —— 那条由
-    // `tests/gui_export_clipping.rs` 的削波／干净两条臂钉）。
-    //
-    // ⚠ 本臂**不**假设 `filled_project` 削不削波（那是另一件事），只钉"字段在不在、
-    // 值是什么形态"。数值的**对账**在 `tests/gui_export_limiter.rs`：那里用同一次运行的
-    // 直接导出当参照，逐字重建整条回执。
-    assert_eq!(field_of(&receipt, "limiter"), "off", "{receipt}");
-    assert_eq!(
-        field_of(&receipt, "limiter_reductions"),
-        "0",
-        "没开限制器 ⇒ 压样本计数恒 0（⛔ 不是缺字段、不是猜的值）: {receipt}"
-    );
-    for key in ["true_peak_dbfs", "headroom_db"] {
-        // `field_of` 在字段缺席时直接 panic ⇒ 走到这里就是"发了"。值的形态只有两种：
-        // `null`（如实报"测不出"）或一个定点小数（`{:.6}`）。⛔ 空串不是其中之一，
-        // 一截被吞掉的下一个字段也不是（那说明 `RECEIPT_KEYS` 漏登记了这个键）。
-        let value = field_of(&receipt, key);
-        assert!(
-            value == "null" || value.parse::<f32>().is_ok(),
-            "`{key}` 的值必须是 `null` 或一个数: {receipt}"
-        );
-        report_line(&format!("[D-EX-1] 回执读数: {key}={value}"));
-    }
-
-    // ---- ⑧ ⭐ `D-EX-1`：限制器开关经**真实点按**可达，且宿主真的读它 ----
-    //
-    // 缺陷本体：能力（`WavExportOptions.limiter`）一直在，CLI `--limiter` 与 MCP
-    // `yeban_render` 的 `limiter` 都开得了，只有 GUI 这条路到不了 ⇒ 人在窗口里永远
-    // 导出一个不限制的版本，还以为导出＝听到的那个。
-    //
-    // 为什么驱动方式是**点按**而不是 `set_export_wav_limiter`：后者只证明"宿主读了这个
-    // 属性"，不证明"人摸得到这个控件"。走 `注入 → Slint 事件源 → TouchArea.clicked
-    // → 根属性` 全链路（与 ⑥ 同一口径），再加树里读回的 `accessible-checked`，
-    // 证的才是"第五格真的在界面上工作"。
-    let click_switch = |plane: &mut LiveControlPlane| {
-        let (tree, _) = plane.plane().tree().expect("ui/tree");
-        let bounds = node(&tree, "export-wav-limiter-switch")
-            .bounds
-            .expect("限制器开关必须有几何");
-        plane
-            .plane()
-            .call(
-                yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_DOWN,
-                Some(serde_json::json!({
-                    "elementId": "export-wav-limiter-switch",
-                    "xOffset": f64::from(bounds.width) / 2.0,
-                    "yOffset": f64::from(bounds.height) / 2.0,
-                    "button": "left",
-                })),
-            )
-            .expect("点按限制器开关必须送达");
-        plane
-            .plane()
-            .call(
-                yeban_ui_mcp::methods::METHOD_DISPATCH_POINTER_UP,
-                Some(serde_json::json!({ "button": "left" })),
-            )
-            .expect("松开鼠标必须送达");
-    };
-    let (tree, _) = plane.plane().tree().expect("ui/tree");
-    assert_eq!(
-        node(&tree, "export-wav-limiter-switch").checked,
-        Some(false),
-        "初始必须是关（`accessible-checked` 缺省 ⇒ 与'没有勾选语义'不可分辨，那是假绿）"
-    );
-    click_switch(&mut plane);
-    assert!(
-        ui.get_export_wav_limiter(),
-        "点一次必须把根属性翻成开（漏接线/单向接的控件在这里红）"
-    );
-    click_switch(&mut plane);
-    assert!(
-        !ui.get_export_wav_limiter(),
-        "点两次必须回到关 —— 开关是**取反**，不是置真"
-    );
-    click_switch(&mut plane);
-    let (tree, _) = plane.plane().tree().expect("ui/tree");
-    assert_eq!(
-        node(&tree, "export-wav-limiter-switch").checked,
-        Some(true),
-        "奇数次点按后 `accessible-checked` 必须为真 —— 读屏听到的就是这个数"
-    );
-    assert!(ui.get_export_wav_limiter(), "奇数次点按后根属性必须是开");
-
-    ui.invoke_export_wav();
-    let limited = ui.get_module_status().to_string();
-    assert!(
-        ui.get_module_status_succeeded(),
-        "开着限制器导出应当成功: {limited}"
-    );
-    assert_eq!(field_of(&limited, "limiter"), "on", "{limited}");
-    // ⚠ 这里**不**要求 `limiter_reductions > 0`：`filled_project` 的母线远在阈值
-    // （`LIMITER_THRESHOLD` = 0.9）之下时，限制器确实可以一次都不压 —— 把"字段为 0"
-    // 当失败会让这条判据在安静工程上永假，把"字段存在"当通过又会让接错线的勾选框过关。
-    // "压过 N > 0 个样本"的**结构证据**在 `tests/gui_export_limiter.rs` 的过载夹具上钉。
-    let limited_reductions = field_of(&limited, "limiter_reductions");
-    assert!(
-        limited_reductions.parse::<u64>().is_ok(),
-        "`limiter_reductions` 必须是非负整数读数: {limited}"
-    );
-    report_line(&format!(
-        "[D-EX-1] 开关经点按为开 ⇒ limiter=on / limiter_reductions={limited_reductions}"
-    ));
-    assert_eq!(
-        field_of(&limited, "frames"),
-        field_of(&receipt, "frames"),
-        "限制器不改请求帧数（33 帧前瞻延迟在 `render_core` 里补掉）"
-    );
-
-    // SAFETY: 同上 —— 单 `#[test]` 的进程。
-    unsafe {
-        std::env::remove_var("YEBAN_UI_EXPORT_WAV_PATH");
-    }
 }

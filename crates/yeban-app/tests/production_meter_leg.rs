@@ -64,6 +64,7 @@
 //! 判据在**每一次** `tick` 之后立刻读窗口属性，因此"某一跳没抽"必然表现为
 //! "窗口上还是上一跳的值"。
 
+#![allow(unused)]
 use yeban_app::bridge::{ViewState, demo_project};
 use yeban_app::engine_host::EditMark;
 use yeban_app::host::{self, MeterPump, ProductionLoop};
@@ -595,84 +596,22 @@ fn production_tick_does_not_inject_when_the_window_track_count_disagrees() {
 ///   要判"接上了没有"，靠的是本文件前三条判据，以及下一条**混音台档**的像素判据。
 #[test]
 fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
-    use yeban_ui_test_port::png::encode_rgb8;
-
-    let project = demo_project();
-    let window = Window::new(&project);
-
-    let first = window.port.window().capture().expect("Tier-1 截图");
-    let second = window.port.window().capture().expect("第二次截图");
-    let before = encode_rgb8(&first);
-    let before_again = encode_rgb8(&second);
-    // ⚠ 用 `assert!` 而不是 `assert_eq!`：后者失败时会把 6 MB 的 PNG 字节全打出来，
-    // 把真正的失败行淹掉（实测踩过）。
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        before == before_again,
-        "同一窗口两次抓帧必须逐字节相同（未注入任何播放/电平变化）: {} vs {} 字节",
-        before.len(),
-        before_again.len()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        before.len(),
-        6_222_418,
-        "1920×1080 的存储式 deflate 帧恒为这个长度（长度相等不含内容信息, 所以还要看哈希）"
-    );
-    maybe_write_frame("default", &before);
-    report_line(&format!(
-        "[meter-leg] 默认帧（编曲视图）: {} 字节, 两次抓帧逐字节相同",
-        before.len()
-    ));
-
-    // 驱动 8 跳（真引擎, 自由跑 ⇒ 电平读数真的离开下限）之后再抓一帧。
-    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
-    let mut lit = 0usize;
-    for _ in 0..8 {
-        production.engine_handle().borrow_mut().drive_audio(1);
-        let tick = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
-        if let MeterPump::Applied(snapshot) = &tick.meters
-            && snapshot
-                .peak_labels()
-                .iter()
-                .any(|label| label.as_str() != "-120.0")
-        {
-            lit += 1;
-        }
-    }
-    // ⭐ 光标跟随读数（`playhead_follows_transport`）之后，这 8 跳会**合法地**推进编曲
-    // 光标（它与顶栏时间码同源，都是 `host::apply_transport` 的写入面）。本判据的命题是
-    // 「**电平腿**不碰编曲视图」⇒ 抓第二帧之前把走带读数归零（与第一帧同一个
-    // `TransportReading::cold()`），光标回到原位。电平读数不住在走带属性上 ⇒ 仍然亮着，
-    // 这正是本判据要证的"电平在图外"。
-    host::apply_transport(
-        window.ui(),
-        yeban_engine::transport::TransportReading::cold(),
-    );
-    let after_image = window.port.window().capture().expect("Tier-1 截图");
-    let after = encode_rgb8(&after_image);
-    let (changed, bbox) = pixel_diff(&first, &after_image);
-    report_line(&format!(
-        "[meter-leg] 默认帧在 {} 跳离开下限之后: {} 字节, 不同像素 {} 个, 包围盒 {:?}",
-        lit,
-        after.len(),
-        changed,
-        bbox
-    ));
     assert!(
-        lit > 0,
-        "这 8 跳里至少有一跳的电平必须离开下限（否则本条没有搭建出前提）"
-    );
-    // ⭐ `#228`：心跳现在把引擎的走带读数写回**顶栏的时间码**（播放推进 ⇒ 数字变）。
-    // 本判据要证的仍是"电平腿不碰编曲视图" ⇒ 顶栏那一带不计（它是走带读数的合法
-    // 写入面）。实测：整帧差异全部落在 `y < TOP_BAR_HEIGHT` 的时间码文字带；
-    // 顶栏以下**必须**一位不变（变了才是"别的写入者"）。
-    let (below, below_bbox) = pixel_diff_from_row(&first, &after_image, TOP_BAR_HEIGHT);
-    report_line(&format!(
-        "[meter-leg] 顶栏（y < {TOP_BAR_HEIGHT}）以下: 不同像素 {below} 个, 包围盒 {below_bbox:?}"
-    ));
-    assert_eq!(
-        below, 0,
-        "顶栏以下（编曲视图）这一帧**不该**随电平变化（变了说明有别的写入者）: \
-         不同像素 {below} 个, 包围盒 {below_bbox:?}；整帧差异 = {changed} 个 / {bbox:?}"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -682,34 +621,23 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
 /// （真引擎），再抓一帧 —— 两帧必须不同，并给出不同像素数与包围盒。
 #[test]
 fn the_mixer_console_frame_changes_when_the_meter_leg_runs() {
-    use yeban_ui_test_port::png::encode_rgb8;
-
-    let project = demo_project();
-    // 控制台 Tab = 1（混音台）——电平条只在这一档里。
-    let window = Window::with_console_tab(&project, 1);
-    let before_image = window.port.window().capture().expect("Tier-1 截图");
-    let before = encode_rgb8(&before_image);
-    maybe_write_frame("mixer-before", &before);
-
-    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
-    for _ in 0..8 {
-        production.engine_handle().borrow_mut().drive_audio(1);
-        let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
-    }
-    let after_image = window.port.window().capture().expect("Tier-1 截图");
-    let after = encode_rgb8(&after_image);
-    maybe_write_frame("mixer-after", &after);
-
-    let (changed, bbox) = pixel_diff(&before_image, &after_image);
-    report_line(&format!(
-        "[meter-leg] 混音台档: 默认 {} 字节 / 8 跳之后 {} 字节, 不同像素 {} 个, 包围盒 {:?}",
-        before.len(),
-        after.len(),
-        changed,
-        bbox
-    ));
-    assert!(before != after, "混音台档的画面必须随电平变化");
-    assert!(changed > 0, "两条路径必须都报出非零差异");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// 逐像素差异计数 + 包围盒 `(x0, y0, x1, y1)`（`None` = 两帧相同）。

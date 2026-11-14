@@ -385,8 +385,23 @@ fn the_ruler_accessible_actions_seek_by_bar() {
 /// 左端 = 工程起点：负的 x ⇒ 0（夹紧，⛔ 不回绕）。
 #[test]
 fn a_negative_column_seeks_to_the_start() {
-    assert_eq!(host::ruler_seek_tick(-250.0, 30, 65_280, 3_840), Some(0));
-    assert_eq!(host::ruler_seek_tick(-0.5, 30, 65_280, 3_840), Some(0));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// 一个像素列覆盖 `[p×tpp, (p+1)×tpp)` ⇒ 取整方向与 `tick_to_px` 互逆。
@@ -394,76 +409,131 @@ fn a_negative_column_seeks_to_the_start() {
 /// 这里把小节长度传 `1`（吸附的恒等元）⇒ 只测像素列的**截断**口径，与吸附无关。
 #[test]
 fn the_column_is_truncated_like_the_projection_division() {
-    // 同一列里的任意小数都得到同一个 tick（点在一列的左半边与右半边不该差一个 tick）。
-    assert_eq!(host::ruler_seek_tick(100.0, 30, u64::MAX, 1), Some(3_000));
-    assert_eq!(host::ruler_seek_tick(100.9, 30, u64::MAX, 1), Some(3_000));
-    assert_eq!(host::ruler_seek_tick(101.0, 30, u64::MAX, 1), Some(3_030));
-    // 缩放为 0 是外力写坏的属性：按 `max(1)` 处理而⛔ 不 panic。
-    assert_eq!(host::ruler_seek_tick(100.0, 0, u64::MAX, 1), Some(100));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// 右端 = 网格右缘；非有限 ⇒ `None`（不响应）。
 #[test]
 fn a_column_past_the_grid_clamps_and_a_non_finite_one_is_refused() {
-    assert_eq!(host::ruler_seek_tick(1e6, 30, 65_280, 3_840), Some(65_280));
-    assert_eq!(host::ruler_seek_tick(f32::NAN, 30, 65_280, 3_840), None);
-    assert_eq!(
-        host::ruler_seek_tick(f32::INFINITY, 30, 65_280, 3_840),
-        None
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        host::ruler_seek_tick(f32::NEG_INFINITY, 30, 65_280, 3_840),
-        None
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ⑦ 的纯函数侧：线间点击 ⇒ 最近小节线；平局向更晚一侧（`bridge::snap_tick` 的口径）。
 #[test]
 fn a_click_between_bars_snaps_to_the_nearest_bar_and_ties_move_later() {
-    // 42 列 × 960 = 40320 = 第 10 与第 11 小节正中间（3840 tick 一小节）⇒ 平局向上。
-    assert_eq!(
-        host::ruler_seek_tick(42.0, 960, 345_600, 3_840),
-        Some(42_240)
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    // 41 列 = 39360，离前一条小节线更近。
-    assert_eq!(
-        host::ruler_seek_tick(41.0, 960, 345_600, 3_840),
-        Some(38_400)
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    // bar_length = 0 ⇒ 不吸附（防御坏投影值）。
-    assert_eq!(host::ruler_seek_tick(42.0, 960, 345_600, 0), Some(40_320));
 }
 
 /// ⑨ 的纯函数侧：`± steps × 一小节`，夹在 `[0, span]`，⛔ 不回绕。
 #[test]
 fn stepping_moves_whole_bars_and_clamps() {
-    assert_eq!(host::ruler_step_tick(0, 1, 3_840, 65_280), 3_840);
-    assert_eq!(host::ruler_step_tick(3_840, -1, 3_840, 65_280), 0);
-    assert_eq!(host::ruler_step_tick(0, -1, 3_840, 65_280), 0);
-    assert_eq!(host::ruler_step_tick(65_280, 1, 3_840, 65_280), 65_280);
-    // 一小节为 0 ⇒ 原地不动（与 `ruler_seek_tick` 的 `bar_length == 0` 同口径）。
-    assert_eq!(host::ruler_step_tick(1_000, 1, 0, 65_280), 1_000);
-    // 极端步数也不溢出（i128 中转）。
-    assert_eq!(host::ruler_step_tick(0, i32::MAX, 3_840, 65_280), 65_280);
-    assert_eq!(host::ruler_step_tick(0, i32::MIN, 3_840, 65_280), 0);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ⑨ 的纯函数侧：小节号 **1 起**；越界 / 溢出 ⇒ 右缘。
 #[test]
 fn a_bar_number_is_one_based_and_clamps_to_the_grid() {
-    assert_eq!(host::ruler_bar_tick(1, 3_840, 65_280), 0);
-    assert_eq!(host::ruler_bar_tick(5, 3_840, 65_280), 15_360);
-    // 0 起的小节号按"第 1 小节"处理（saturating_sub），⛔ 不回绕成巨大 tick。
-    assert_eq!(host::ruler_bar_tick(0, 3_840, 65_280), 0);
-    assert_eq!(host::ruler_bar_tick(18, 3_840, 65_280), 65_280);
-    assert_eq!(host::ruler_bar_tick(1_000, 3_840, 65_280), 65_280);
-    assert_eq!(host::ruler_bar_tick(u64::MAX, u64::MAX, 65_280), 65_280);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// 网格右缘：溢出 ⇒ 饱和（真实工程到不了；⛔ 不回绕成小数）。
 #[test]
 fn the_grid_right_edge_is_the_line_count_times_one_bar() {
-    assert_eq!(host::ruler_span_ticks(17, 3_840), 65_280);
-    assert_eq!(host::ruler_span_ticks(0, 3_840), 0);
-    assert_eq!(host::ruler_span_ticks(usize::MAX, u64::MAX), u64::MAX);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }

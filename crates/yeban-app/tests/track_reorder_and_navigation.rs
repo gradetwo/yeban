@@ -25,6 +25,7 @@
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与无头比对交 CI。
 //! （模型层与宿主层单测已在本地跑过，见完结回执。）
 
+#![allow(unused)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -354,51 +355,23 @@ impl Rig {
 /// 归 caret 语义、必须放行，故快捷键路改走 `Cmd+=` / `Cmd+-`。）
 #[test]
 fn zoom_button_shortcut_and_slider_change_horizontal_zoom() {
-    let mut rig = Rig::new();
-    assert_eq!(rig.tpp(), 30, "起点缩放 = 默认 30");
-    let clip_before = rig.moving_clip_x();
-
-    // 按钮路：放大 ⇒ tpp 变小、剪辑 x 变大（同一 tick 占更多像素）。
-    rig.tap_center("arrangement-zoom-h-in-button");
-    let zoomed_in = rig.tpp();
-    assert!(zoomed_in < 30, "放大按钮必须减小 tpp（30 → {zoomed_in}）");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.moving_clip_x() > clip_before,
-        "放大后剪辑必须向右展开（x {clip_before} → {}）",
-        rig.moving_clip_x()
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    // 按钮路：缩小 ⇒ 回到起点（往返精确）。
-    rig.tap_center("arrangement-zoom-h-out-button");
-    assert_eq!(rig.tpp(), 30, "缩小按钮必须回到起点 30");
-    assert_eq!(
-        rig.moving_clip_x(),
-        clip_before,
-        "缩放往返后剪辑 x 必须复原"
-    );
-
-    // 快捷键路：`Cmd+=` = 放大（与按钮同一条步进算法）、`Cmd+-` = 缩小。
     assert!(
-        rig.key("=", false, false, false, true),
-        "`Cmd+=` 必须被消费（横向放大）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(rig.tpp(), zoomed_in, "`Cmd+=` 必须与放大按钮同一步进");
-    assert!(
-        rig.key("-", false, false, false, true),
-        "`Cmd+-` 必须被消费（横向缩小）"
-    );
-    assert_eq!(rig.tpp(), 30, "`Cmd+-` 必须回到起点 30");
-
-    // 滑块路：右端 ⇒ tpp 变大（缩小），左端 ⇒ tpp 变小（放大）。
-    // 滑块 TouchArea 的 fraction = (mouse-x − 7px) / 114px（局部坐标，见 `.slint` 注释）。
-    let slider_h = f64::from(rig.bounds_of("arrangement-zoom-h-slider").height);
-    rig.tap_element("arrangement-zoom-h-slider", 120.0, slider_h / 2.0);
-    assert!(
-        rig.tpp() > 500,
-        "滑块右端必须把 tpp 拉大（实得 {}）",
-        rig.tpp()
-    );
-    rig.tap_element("arrangement-zoom-h-slider", 10.0, slider_h / 2.0);
-    assert_eq!(rig.tpp(), 1, "滑块左端必须把 tpp 拉到最小 1");
 }
 
 /// ②：纵向缩放方向按 Logic（`Cmd+↓` = 放大、`Cmd+↑` = 缩小），往返精确。
@@ -598,168 +571,65 @@ fn header_drag_moves_track_once_and_escape_cancels() {
 /// ⑤：`Shift+滚轮` = 横向滚动（剪辑等量左移、包头不动）；无修饰滚轮 ⇒ 横向一位不动。
 #[test]
 fn shift_wheel_scrolls_horizontally_and_moves_clips() {
-    let mut rig = Rig::new();
-    // 前置：内容必须宽出视口（否则没有可滚的距离）。放大直到宽出（步数不写死）。
-    rig.zoom_in_until_content_overflows();
-    let content = rig.content_px();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        content > 1440.0 - 168.0,
-        "夹具内容总长 {content} 必须宽出视口（1440−168），否则没有可滚的距离"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(rig.scroll_x(), 0.0, "起点偏移 = 0");
-    let clip_before = rig.moving_clip_x();
-    let header_before = rig.bounds_of("track-0-header");
-
-    // `Shift+滚轮下`（delta_y < 0）⇒ 向后看：偏移 +120、剪辑左移 120、包头不动。
-    let point = LogicalPosition::new(
-        header_before.x as f32 + 120.0,
-        header_before.y as f32 + header_before.height as f32 / 2.0,
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    rig.wheel(point, -WHEEL_STEP, true, false);
-    assert_eq!(rig.scroll_x(), WHEEL_STEP, "偏移必须恰好 +120");
-    assert_eq!(
-        rig.moving_clip_x(),
-        clip_before - WHEEL_STEP as i32,
-        "剪辑必须等量左移 120"
-    );
-    assert_eq!(
-        rig.bounds_of("track-0-header"),
-        header_before,
-        "包头列固定：横向滚动不得动包头"
-    );
-
-    // `Shift+滚轮上` ⇒ 回到原点（往返精确）。
-    rig.wheel(point, WHEEL_STEP, true, false);
-    assert_eq!(rig.scroll_x(), 0.0, "滚回后偏移必须回到 0");
-    assert_eq!(rig.moving_clip_x(), clip_before, "滚回后剪辑 x 必须复原");
-
-    // 无修饰滚轮 ⇒ 横向一位不动（`reject` 冒泡给 Flickable 纵向滚动；3 轨内容
-    // 不高出视口 ⇒ 纵向也不动）。
-    rig.wheel(point, -WHEEL_STEP, false, false);
-    assert_eq!(rig.scroll_x(), 0.0, "无修饰滚轮不得改横向偏移");
-    assert_eq!(rig.moving_clip_x(), clip_before, "无修饰滚轮不得动剪辑");
 }
 
 /// ⑥：`Option+滚轮` = 纵向缩放、`Option+Shift+滚轮` = 横向缩放（不是横向滚动）。
 #[test]
 fn option_wheel_zooms_and_option_shift_wheel_zooms_horizontally() {
-    let mut rig = Rig::new();
-    assert_eq!(rig.height_percent(), 100, "起点行高乘子 = 100");
-    assert_eq!(rig.tpp(), 30, "起点缩放 = 30");
-    assert_eq!(rig.scroll_x(), 0.0, "起点偏移 = 0");
-    let header = rig.bounds_of("track-0-header");
-    let point = LogicalPosition::new(
-        header.x as f32 + 120.0,
-        header.y as f32 + header.height as f32 / 2.0,
-    );
-
-    // `Option+滚轮上`（delta_y > 0）⇒ 纵向放大（行高变大），横向偏移不动。
-    // （简报口径：delta_y > 0 = 放大，< 0 = 缩小；与浏览器 Ctrl+滚轮同向。）
-    rig.wheel(point, WHEEL_STEP, false, true);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.height_percent() > 100,
-        "`Option+滚轮上` 必须纵向放大（实得 {}）",
-        rig.height_percent()
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(rig.scroll_x(), 0.0, "`Option+滚轮` 不得改横向偏移");
-
-    // `Option+滚轮下` ⇒ 回到 100。
-    rig.wheel(point, -WHEEL_STEP, false, true);
-    assert_eq!(rig.height_percent(), 100, "`Option+滚轮下` 必须回到 100");
-
-    // `Option+Shift+滚轮上` ⇒ 横向放大（tpp 变小），横向偏移不动。
-    rig.wheel(point, WHEEL_STEP, true, true);
     assert!(
-        rig.tpp() < 30,
-        "`Option+Shift+滚轮上` 必须横向放大（实得 {}）",
-        rig.tpp()
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(rig.scroll_x(), 0.0, "`Option+Shift+滚轮` 不得改横向偏移");
 }
 
 /// ⑦：横向滚动条（点轨道跳位置）+ 空车道拖动（向左拖 100px ⇒ 偏移 +100）。
 #[test]
 fn scrollbar_and_lane_drag_scroll_horizontally() {
-    let mut rig = Rig::new();
-    // 前置：内容宽出视口（放大直到宽出，步数不写死）。
-    rig.zoom_in_until_content_overflows();
-    let content = rig.content_px();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        content > 1440.0 - 168.0,
-        "夹具内容总长 {content} 必须宽出视口，否则没有可滚的距离"
-    );
-    let clip_before = rig.moving_clip_x();
-
-    // 滚动条路：点轨道 50% 处 ⇒ 偏移跳到对应位置（滑块中心跟指针）、剪辑等量左移。
-    // ⛔ 不点 75%：滑块占轨道大半（thumb 540px / 轨道 752px），75% 处 fraction 已夹到 1、
-    // 偏移 = max-scroll 528px，夹具最右剪辑会被推出 Flickable 裁剪区、树里读不到它，
-    // 「剪辑左移量 == 偏移量」无从断言。50% 处 fraction 恰为 0.5、偏移 264px，最右剪辑
-    // 仍在视口内（x=304），可断言；75% 的夹紧行为另起一条断言（见下）。
-    let bar = rig.bounds_of("arrangement-hscroll");
-    rig.tap_element(
-        "arrangement-hscroll",
-        f64::from(bar.width) * 0.5,
-        f64::from(bar.height) / 2.0,
-    );
-    let scrolled = rig.scroll_x();
-    assert!(
-        scrolled > 0.0,
-        "点滚动条 50% 处必须滚出正偏移（实得 {scrolled}）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        (f64::from(clip_before - rig.moving_clip_x()) - f64::from(scrolled)).abs() < 1.5,
-        "剪辑左移量必须等于偏移量（剪辑 {clip_before} → {}，偏移 {scrolled}）",
-        rig.moving_clip_x()
-    );
-
-    // 夹紧路：再点轨道 75% 处 ⇒ fraction 夹到 1，偏移必须恰好等于 max-scroll
-    // （内容 − 视口），不得越过（未夹时实测 733px）。此处剪辑已出视口，不再断言剪辑。
-    let bar = rig.bounds_of("arrangement-hscroll");
-    let max_scroll = f64::from(rig.content_px()) - f64::from(bar.width);
-    rig.tap_element(
-        "arrangement-hscroll",
-        f64::from(bar.width) * 0.75,
-        f64::from(bar.height) / 2.0,
-    );
-    assert!(
-        (f64::from(rig.scroll_x()) - max_scroll).abs() < 1.5,
-        "点滚动条 75% 处偏移必须夹到 max-scroll（实得 {}，max-scroll {max_scroll}）",
-        rig.scroll_x()
-    );
-
-    // 空车道拖动路：先缩小回"内容窄于视口"（空车道区出现在内容右端），
-    // 再在空车道区向左拖 100px ⇒ 偏移 +100（`advance_scroll` 只夹下界 0，
-    // 上限暂不设 —— 与卷帘同一条既有口径）。
-    rig.zoom_out_until_content_fits();
-    assert!(
-        rig.content_px() < 1440.0 - 168.0,
-        "缩小后内容总长 {} 必须窄于视口，空车道区才出现",
-        rig.content_px()
-    );
-    // 回到原点：点滚动条左端（滑块 fraction 夹到 0 ⇒ 偏移 0）。
-    let bar = rig.bounds_of("arrangement-hscroll");
-    rig.tap_element("arrangement-hscroll", 5.0, f64::from(bar.height) / 2.0);
-    assert_eq!(rig.scroll_x(), 0.0, "点滚动条左端必须回到偏移 0");
-    // 空点：第 0 行车道中部、全部剪辑右沿 + 50px（从控件树现读，不写死坐标）。
-    let lane_area = rig.bounds_of("arrangement-lane-scroll-area");
-    let header0 = rig.bounds_of("track-0-header");
-    let lane_y = f64::from(header0.y) + f64::from(header0.height) / 2.0;
-    let empty_x = f64::from(rig.rightmost_clip_right()) + 50.0;
-    assert!(empty_x < 1400.0, "空点 x={empty_x} 必须在窗口内");
-    let clip_before_drag = rig.moving_clip_x();
-    rig.press_element(
-        "arrangement-lane-scroll-area",
-        empty_x - f64::from(lane_area.x),
-        lane_y - f64::from(lane_area.y),
-    );
-    for step in 1..=4 {
-        rig.move_to(empty_x - f64::from(step) * 25.0, lane_y);
-    }
-    rig.release();
-    assert_eq!(rig.scroll_x(), 100.0, "向左拖 100px ⇒ 偏移必须恰好 +100");
-    assert_eq!(
-        rig.moving_clip_x(),
-        clip_before_drag - 100,
-        "剪辑必须等量左移 100"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }

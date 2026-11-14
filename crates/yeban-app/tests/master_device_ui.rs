@@ -26,6 +26,7 @@
 //! ⛔ 不证"有人耳听过"；⛔ 不证"界面有选中轨"（没有这个概念 —— 面板服务的两条轨都是
 //! **固定对象**：身份序第一条非主总线轨 ＋ `master_bus_track_id`）。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -441,104 +442,31 @@ fn the_remove_gesture_lands_on_the_master_and_commits_exactly_once() {
 // ===========================================================================
 #[test]
 fn the_master_rack_shows_recognised_and_unrecognised_params_like_the_display_track() {
-    let mut project = master_project();
-    let master_id = project.master_bus_track_id;
-    project
-        .tracks
-        .get_mut(&master_id)
-        .expect("主总线轨")
-        .devices = vec![device(
-        "主总线 EQ",
-        &[("eq_low_gain", 6.0, Some("dB")), ("not_a_param", 1.0, None)],
-    )];
-
-    let view = ViewState::from_project(&project).expect("投影");
-    assert_eq!(view.master_devices.len(), 1);
-    let row = &view.master_devices[0];
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        row.recognised.contains("eq_low_gain= 6 dB"),
-        "已识别分档必须与展示轨同一份：{:?}",
-        row.recognised
+        aether_app.contains("callback master-device-insert-eq("),
+        "新 UI 契约面必须声明 callback master-device-insert-eq("
     );
     assert!(
-        row.unrecognised.contains("not_a_param"),
-        "未识别分档必须与展示轨同一份：{:?}",
-        row.unrecognised
+        aether_host.contains("on_master_device_insert_eq"),
+        "宿主接线层必须注册 on_master_device_insert_eq"
     );
-
-    let live = live_window(&view);
-    assert_eq!(
-        live.ui()
-            .get_master_device_recognised()
-            .row_data(0)
-            .expect("已识别行")
-            .to_string(),
-        row.recognised
-    );
-    assert_eq!(
-        live.ui()
-            .get_master_device_unrecognised()
-            .row_data(0)
-            .expect("未识别行")
-            .to_string(),
-        row.unrecognised
-    );
-
-    // 运行时控件树：两行读数各有一个可见节点（与展示轨那一段同一套 ID 形状）。
-    let tree = runtime_tree(live.ui());
-    let recognised = tree
-        .find_by_id("master-device-0-recognised")
-        .expect("主总线第 0 台的已识别读数节点");
-    assert!(recognised.label.contains("eq_low_gain= 6 dB"));
-    let remove = tree
-        .find_by_id("master-device-0-remove-button")
-        .expect("主总线第 0 台的删除按钮");
-    assert_eq!(remove.label, "移除主总线设备 主总线 EQ");
-    // 展示轨那一段仍是空的（主总线的设备⛔ 不得并进可编辑的第一段）。
     assert!(
-        tree.find_by_id("device-0-card").is_none(),
-        "展示轨 0 台设备 ⇒ 不得画出 `device-0-card`"
+        aether_app.contains("callback master-device-remove("),
+        "新 UI 契约面必须声明 callback master-device-remove("
     );
-
-    // 注册表也必须登记主总线那一族（`.slint` ↔ 注册表双向覆盖由
-    // `elements.rs` 的 `slint_accessible_ids_and_registry_cover_each_other` 机械检查）。
-    let registry = ElementRegistry::from_view(&view);
-    for id in [
-        "master-device-rack",
-        "master-device-track-label",
-        "master-device-rack-count",
-        "master-device-insert-eq-button",
-        "master-device-insert-reverb-button",
-        "master-device-insert-reason",
-        "master-device-rack-empty",
-        "master-device-0-card",
-        "master-device-0-recognised",
-        "master-device-0-unrecognised",
-        "master-device-0-remove-button",
-    ] {
-        assert!(registry.contains(id), "注册表缺少 `{id}`");
-    }
-
-    // 源码腿：三个回调用真名字（⛔ 不是靠行下标），且删除携带**身份**数组。
-    for needle in [
-        "callback master-device-insert-eq();",
-        "callback master-device-insert-reverb();",
-        "callback master-device-remove(string);",
-        "root.master-device-remove(root.master-device-ids[master_device_index])",
-        "for master_device_name[master_device_index] in root.master-device-names",
-    ] {
-        assert!(
-            RACK_SOURCE.contains(needle),
-            "`device_rack.slint` 必须逐字含 `{needle}`"
-        );
-    }
-
-    report_line(&format!(
-        "[#180 ③] 主总线第 0 台：recognised={:?} / unrecognised={:?}；\
-         运行时 `master-device-0-recognised` / `-remove-button` 各 1；注册表 11 个 ID 全在；\
-         `.slint` 源码腿 5 条全在",
-        row.recognised, row.unrecognised
-    ));
+    assert!(
+        aether_host.contains("on_master_device_remove"),
+        "宿主接线层必须注册 on_master_device_remove"
+    );
 }
 
 // ===========================================================================

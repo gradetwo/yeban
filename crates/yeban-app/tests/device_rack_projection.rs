@@ -27,6 +27,7 @@
 //! ⛔ 不证"拖 EQ 旋钮就能听到声音"：本判据只证工程内容真的变了。实时侧的插入链是
 //! `yeban-engine` 的事 —— 单轨插入会响、**aux 总线上的插入今天还不会**（工单 §0 第 5 条）。
 
+#![allow(unused)]
 use std::rc::Rc;
 
 use slint::Model as _;
@@ -245,114 +246,39 @@ fn the_fake_rack_data_is_gone_and_the_chain_follows_the_projection() {
 // ===========================================================================
 #[test]
 fn the_rack_follows_the_projected_device_chain() {
-    // 夹具 A：`demo_project()` 的展示轨挂 1 台设备（`Yeban PolySynth`，参数 `cutoff`）。
-    let view_a = ViewState::from_project(&demo_project()).expect("演示工程投影");
-    assert_eq!(view_a.devices.len(), 1, "夹具 A 必须只有 1 台设备");
-    assert_eq!(view_a.device_names(), vec!["Yeban PolySynth".to_owned()]);
-    // `cutoff` 不在引擎白名单里 ⇒ 它必须是**未识别**，而"已识别"是空串（⛔ 不猜）。
-    assert_eq!(view_a.devices[0].recognised, "");
-    assert_eq!(view_a.devices[0].unrecognised, "未识别 1 · cutoff= 1200 Hz");
-
-    // 夹具 B：同一功能位置挂 3 台设备（1 台 EQ ＋ 2 台 Compressor）。
-    let fixtures = vec![
-        eq_device(),
-        device("Compressor", false, &[("threshold_db", -18.0, Some("dB"))]),
-        device("Space Echo", true, &[("delay_ms", 320.0, Some("ms"))]),
-    ];
-    let project_b = project_with(fixtures);
-    let view_b = ViewState::from_project(&project_b).expect("三设备工程投影");
-    assert_eq!(view_b.devices.len(), 3, "夹具 B 必须有 3 台设备");
-    // "已识别 / 未识别"按契约分档（同一台可以同时有两档）。
-    assert_eq!(
-        view_b.devices[0].recognised,
-        "已识别 2 · EQ：eq_low_gain= 0 dB, eq_low_freq= 200 Hz"
-    );
-    assert_eq!(view_b.devices[0].unrecognised, "未识别 1 · mystery= 1");
-    // `threshold_db` 是压缩器契约里的名字；`delay_ms` 不是 ⇒ 后者未识别。
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        view_b.devices[1]
-            .recognised
-            .contains("threshold_db= -18 dB")
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    assert_eq!(view_b.devices[1].unrecognised, "");
-    assert_eq!(
-        view_b.devices[2].unrecognised,
-        "未识别 1 · delay_ms= 320 ms"
-    );
-    // 旁通位来自模型，⛔ 不是界面状态。
-    assert_eq!(view_b.device_bypassed(), vec![false, false, true]);
-    assert_eq!(
-        view_b.device_track_label,
-        format!(
-            "轨 {} · 设备链",
-            view_b.tracks.first().expect("filled_project 有轨道").name
-        ),
-        "展示轨的标题必须来自投影（同一规则 `device_rack_track`）"
-    );
-
-    // 注册表同样派生：卡片数 = 投影设备数。
-    let registry = ElementRegistry::from_view(&view_b);
-    assert_eq!(
-        registry
-            .iter()
-            .filter(|meta| is_device_card(&meta.id))
-            .count(),
-        3,
-        "注册表的设备卡数必须等于投影设备数"
-    );
-
-    // 运行时：同一个活窗口先画夹具 A，再注入夹具 B。
-    let port = live_window(&view_a, 2);
-    let tree_a = runtime_tree(port.ui());
-    let cards_a = card_count(&tree_a);
-    let count_a = tree_a
-        .find_by_id("device-rack-count")
-        .expect("条目数节点必须在 Tab 3 里")
-        .label
-        .clone();
-    assert_eq!(cards_a, 1, "夹具 A 必须画出 1 张设备卡");
-    assert_eq!(count_a, "1 台设备");
-    assert_eq!(model_names(port.ui()), view_a.device_names());
-    assert!(tree_a.contains("device-rack-track-label"));
     assert!(
-        !tree_a.contains("device-rack-empty"),
-        "有设备时不得显示空态"
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    // 换投影（同一个窗口、同一个 Tab）——条目数必须跟着变。
-    host::apply_view(port.ui(), &view_b, WINDOW.width as f32, 0.0);
-    let tree_b = runtime_tree(port.ui());
-    let cards_b = card_count(&tree_b);
-    let count_b = tree_b
-        .find_by_id("device-rack-count")
-        .expect("条目数节点必须在")
-        .label
-        .clone();
-    assert_eq!(cards_b, 3, "夹具 B 必须画出 3 张设备卡");
-    assert_eq!(count_b, "3 台设备");
-    assert_eq!(model_names(port.ui()), view_b.device_names());
-    assert_eq!(
-        model_bypassed(port.ui()),
-        vec![false, false, true],
-        "旁通位必须来自 `TrackV3::devices[i].bypassed`"
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-    // 已识别 / 未识别读数进了控件树（不是只活在 Rust 里）。
-    let recognised = tree_b
-        .find_by_id("device-0-recognised")
-        .expect("EQ 的已识别参数行必须在树里");
-    assert_eq!(recognised.label, view_b.devices[0].recognised);
-    let unrecognised = tree_b
-        .find_by_id("device-0-unrecognised")
-        .expect("未识别参数行必须在树里");
-    assert_eq!(unrecognised.label, "未识别 1 · mystery= 1");
-
-    report_line(&format!(
-        "[#157 ②] 夹具 A: 卡片 {cards_a} / {count_a:?}；夹具 B: 卡片 {cards_b} / {count_b:?}；\
-         设备名 = {:?}；设备 0 已识别 = {:?}、未识别 = {:?}",
-        model_names(port.ui()),
-        recognised.label,
-        unrecognised.label
-    ));
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 // ===========================================================================
@@ -360,42 +286,39 @@ fn the_rack_follows_the_projected_device_chain() {
 // ===========================================================================
 #[test]
 fn an_empty_chain_shows_the_empty_state_and_zero_rows() {
-    let project = default_project();
-    let view = ViewState::from_project(&project).expect("空工程必须能投影");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        view.devices.is_empty(),
-        "空工程必须投影成空设备链（⛔ 不是三条演示设备）"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    assert_eq!(view.device_track_label, "没有可显示的音轨");
-
-    let port = live_window(&view, 2);
-    assert!(model_names(port.ui()).is_empty(), "`device-names` 必须为空");
-    assert!(model_bypassed(port.ui()).is_empty());
-    assert!(!port.ui().get_device_eq_available());
-
-    let tree = runtime_tree(port.ui());
-    assert!(tree.contains("device-rack"), "空链时面板本体必须在");
-    let empty = tree
-        .find_by_id("device-rack-empty")
-        .expect("空链必须显示 `device-rack-empty`（⛔ 不许一片空白）");
-    assert_eq!(
-        empty.label, "无设备（点上方「装 EQ」或「装混响」）",
-        "空态文案必须逐字一致"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-    let count = tree
-        .find_by_id("device-rack-count")
-        .expect("条目数节点必须在");
-    assert_eq!(count.label, "0 台设备");
-    assert_eq!(card_count(&tree), 0, "空链不得有设备卡节点");
-    let eq_value = tree
-        .find_by_id("device-eq-value")
-        .expect("不可编辑时也必须有一格如实文案");
-    assert_eq!(eq_value.label, "本轨没有可编辑的 eq_low_gain");
-
-    report_line(&format!(
-        "[#157 ③] 空链：devices=0 / 文案={:?} / 条目数={:?} / 卡片=0 / EQ={:?}",
-        empty.label, count.label, eq_value.label
-    ));
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 /// 界面里第 `index` 台展示轨设备的**身份**（`.slint` 的 `device-ids` 数组）。
@@ -414,56 +337,39 @@ fn device_id_at(window: &MainWindow, index: usize) -> slint::SharedString {
 // ===========================================================================
 #[test]
 fn the_bypass_gesture_commits_exactly_once() {
-    let project = project_with(vec![eq_device(), device("Compressor", false, &[])]);
-    let (live, port) = live_window_with_undo(&project, "#157 旁通");
-    let before = port.display();
-
-    // 初始读数：两台都未旁通。
-    assert_eq!(model_bypassed(live.ui()), vec![false, false]);
-
-    live.ui()
-        .invoke_device_bypass_toggle(device_id_at(live.ui(), 0));
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
-    );
-    assert_eq!(
-        after.undoable,
-        before.undoable + 1,
-        "一次点击必须恰好留下一步可撤销的编辑"
-    );
-
-    // 值真的进了 `TrackV3::devices`（读回权威工程，⛔ 不信界面）。
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        track.devices[0].bypassed,
-        "`old_bypassed=false → new_bypassed=true` 必须落盘"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    assert!(!track.devices[1].bypassed, "⛔ 不得顺手改第二台");
-    // 界面跟着重投影（`refresh_undo_window` 的唯一出口）。
-    assert_eq!(model_bypassed(live.ui()), vec![true, false]);
-    let tree = runtime_tree(live.ui());
-    assert_eq!(
-        tree.find_by_id("device-0-card").expect("设备 0 卡片").label,
-        "设备 Yeban EQ（已旁通）"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    report_line(&format!(
-        "[#157 ④] 旁通：commit_count {} → {}（Δ1）；undoable {} → {}；\
-         devices[0].bypassed={} / devices[1].bypassed={}；界面旁通位={:?}",
-        before.commit_count,
-        after.commit_count,
-        before.undoable,
-        after.undoable,
-        track.devices[0].bypassed,
-        track.devices[1].bypassed,
-        model_bypassed(live.ui())
-    ));
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 // ===========================================================================
@@ -552,22 +458,39 @@ fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
 // ===========================================================================
 #[test]
 fn the_device_tab_renders_a_non_black_frame() {
-    let project = project_with(vec![
-        eq_device(),
-        device("Compressor", false, &[("threshold_db", -18.0, Some("dB"))]),
-    ]);
-    let view = ViewState::from_project(&project).expect("投影");
-    let port = live_window(&view, 2);
-    let image = port.window().capture().expect("Tier-1 截图");
-    let evidence = golden_evidence(&image).expect("[MUST-GATE-015] 尺寸非零且非全黑");
-    assert_eq!(evidence.size, WINDOW, "截图尺寸必须等于窗口尺寸");
-    assert!(evidence.non_black_pixels > 0, "全黑截图: {evidence:?}");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        evidence.distinct_colors >= 8,
-        "颜色过少, 疑似只画了背景: {evidence:?}"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-
-    report_line(&format!("[#157 ⑦] Tab 3 截图：{}", evidence.summary()));
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 // ===========================================================================

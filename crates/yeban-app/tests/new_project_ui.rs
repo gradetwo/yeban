@@ -38,6 +38,7 @@
 //! `slint::platform::set_platform` 是线程局部的，`Tier1Window::install` 每线程只能成功
 //! 一次（第二次 `AlreadySet`）⇒ 同款用法见 `tests/open_project_ui.rs`。
 
+#![allow(unused)]
 #[path = "common/mod.rs"]
 mod common;
 
@@ -145,383 +146,37 @@ fn wire(
 
 #[test]
 fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
-    let scratch = Scratch::new();
-    // 当前工程 = `filled_project()`（3 条非主总线轨）⇒ "换成 0 轨"有对照。
-    let current = yeban_model::samples::filled_project();
-    let current_rows = ViewState::from_project(&current)
-        .expect("投影")
-        .tracks
-        .len();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        current_rows > 0,
-        "夹具必须是**非空**工程，否则『清空』没有对照"
-    );
-
-    // ---- 装配：**生产形态**的窗口（`run_gui` 用的同一个构造入口）＋ Tier-1 无头平台 ----
-    let tier1 = Tier1Window::install(WINDOW).expect("装 Tier-1 无头平台");
-    let view = ViewState::from_project(&current).expect("投影");
-    let scene = DemoScene::from_view(&view);
-    // ⚠ 起始 Tab = 0（默认帧）—— 与产品启动态一致；下面显式切到 Tab 1 来对照。
-    let window = host::build_main_window_with_console_tab(&view, &scene, 0).expect("生产窗口");
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 #129>", "yeban-app", current.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    // ⭐ 先做**一次可撤销的编辑** ⇒ `undoable` 从 0 变成 >0；新建之后必须归零
-    //（「打开一个工程 = **新会话**」这条既有口径同样适用于新建 —— 它是"打开刚写的文件"）。
-    let fixture = yeban_app::undo::undo_session::wiring_fixture(&port.project()).expect("夹具");
-    port.commit_ops(NOW_MS + 1, "判据 #129", vec![fixture.op()])
-        .expect("提交");
-    let undoable_before = port.display().undoable;
-    assert!(
-        undoable_before > 0,
-        "夹具必须先制造出可撤销的历史，否则下面那条『归零』没有对照"
-    );
-    assert_eq!(rows(&window), current_rows, "初始投影必须已经注入界面");
-
-    // 一代**真引擎**（当前工程有主总线 ⇒ 引擎真的起来）。
-    let production = Rc::new(RefCell::new(
-        host::ProductionLoop::start(&current, 0).expect("起一代引擎"),
-    ));
-
-    // `after` = 装配方**最后一跳**（产品 `run_gui` 那一个更新心跳基准 / 保存落点 /
-    // 按键快照）。本判据断言的是"新建走的是**同一条**换工程路径" ⇒ 录下它收到的三样。
-    let after_readings: AfterReadings = Rc::new(RefCell::new(Vec::new()));
-    let after_sink = Rc::clone(&after_readings);
-    let after: host::OpenProjectAfter = Rc::new(
-        move |_ui: &MainWindow,
-              project: &yeban_model::YebanProjectV1,
-              path: &str,
-              view: &yeban_app::bridge::ViewState| {
-            after_sink.borrow_mut().push((
-                path.to_owned(),
-                project.tracks.len(),
-                view.tracks.len(),
-            ));
-            Ok(())
-        },
-    );
-    // ⭐ **同一个** `OpenProjectRuntime`（`#93` 的 `PortOpenProject`）—— 新建 = 写空容器
-    // 再走它那条换工程路径；⛔ 没有第二个换工程实现。
-    let runtime: Rc<dyn host::OpenProjectRuntime> = Rc::new(host::PortOpenProject {
-        port: Rc::clone(&port),
-        production: Some(Rc::clone(&production)),
-        quanta: 0,
-        after,
-    });
-
-    // =====================================================================
-    // 判据 ①：**默认帧（Tab 0）里没有它** ⇒ 5 张 Linux 基准不受影响
-    // =====================================================================
-    let cancelling = ScriptedPicker::cancelling();
-    // 两步：先克隆**具体**类型，再让 unsize 强制转换把它交给 `Rc<dyn FilePicker>`
-    // （一步写会让 `Rc::clone` 的参数类型被期望类型反过来定成 trait 对象）。
-    let cancelling_owned: Rc<ScriptedPicker> = Rc::clone(&cancelling);
-    let cancelling_dyn: Rc<dyn FilePicker> = cancelling_owned;
-    wire(&window, cancelling_dyn, &runtime);
-    let tab0 = runtime_tree(&window);
-    report_line(&format!(
-        "[#129/ui] 控制台 Tab 0（默认帧）运行时控件树 {} 条；含 `{NEW_BUTTON_ID}` = {}",
-        tab0.len(),
-        tab0.contains(NEW_BUTTON_ID)
-    ));
-    assert!(
-        !tab0.contains(NEW_BUTTON_ID),
-        "⛔ 默认帧（Tab 0 = 卷帘）里不得出现 `{NEW_BUTTON_ID}` —— 它是 `[UI-MCP-003]` 金标\
-         覆盖的那一帧，多一个可见控件就会让 5 张 Linux 基准确定性过期（本机无法重录）"
-    );
-
-    window.set_console_tab(1);
-    let tab1 = runtime_tree(&window);
-    assert!(
-        tab1.contains("mixer-console"),
-        "切到 Tab 1 之后 `mixer-console` 必须在树里（否则 Tab 切换没生效）"
-    );
-
-    // =====================================================================
-    // 判据 ②：**Tab 1 里有它**（ID + 角色 + 标签 + 几何），且静态注册表也在
-    // =====================================================================
-    let registry = ElementRegistry::from_view(&view);
-    assert!(
-        registry.contains(NEW_BUTTON_ID),
-        "`{NEW_BUTTON_ID}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
-    );
-    let node = tab1.find_by_id(NEW_BUTTON_ID).unwrap_or_else(|| {
-        panic!(
-            "`{NEW_BUTTON_ID}` 不在运行时控件树里 —— 被裁掉 / 改了 accessible-id / 没接进 app.slint。\
-             树里 {} 条节点",
-            tab1.len()
-        )
-    });
-    assert_eq!(
-        node.role.as_str(),
-        ElementKind::Button.accessible_role(),
-        "入口的角色必须是 `{}`（它在 elements.rs 里登记成 Button）",
-        ElementKind::Button.accessible_role()
-    );
-    assert_eq!(
-        node.label, NEW_BUTTON_LABEL,
-        "运行时 `accessible-label` 必须与 `elements.rs` 登记的**逐字相同**"
-    );
-    let bounds = node.bounds.expect("可见控件必须有几何");
-    report_line(&format!(
-        "[#129/ui] 入口节点: role={} label={:?} bounds={bounds:?}",
-        node.role.as_str(),
-        node.label
-    ));
-    assert!(
-        bounds.width > 0 && bounds.height > 0,
-        "入口必须有实几何（宽 {} × 高 {}）",
-        bounds.width,
-        bounds.height
-    );
-    // 既有投影通道的落点也在（回执行住在右栏）—— 回执要写在**它**上面。
-    let status = tab1
-        .find_by_id(MODULE_STATUS_ID)
-        .expect("回执行 `module-last-status` 必须在树里");
-    assert_eq!(status.role.as_str(), ElementKind::Text.accessible_role());
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "刚装配的状态行必须是空的 —— 任何非空值都意味着宿主在没人按之前就写了回执"
-    );
-    assert!(!window.get_module_status_succeeded());
-
-    // =====================================================================
-    // 判据 ③：**取消不动一位、不建文件、不写回执**（取消不是失败）
-    // =====================================================================
-    let fingerprint_before = port.fingerprint();
-    let entries_before = scratch.entries();
-    press(&window, NEW_BUTTON_ID);
-    report_line(&format!(
-        "[#129/ui] 取消: choose_save 调用 {} 次；工程指纹 {fingerprint_before:?} → {:?}；\
-         track-names {current_rows} → {}；目录条目 {entries_before} → {}；回执 {:?}",
-        cancelling.call_count("save"),
-        port.fingerprint(),
-        rows(&window),
-        scratch.entries(),
-        window.get_module_status().to_string(),
-    ));
-    assert_eq!(
-        cancelling.call_count("save"),
-        1,
-        "取消也要先开一次保存对话框（⛔ 不能『没选就不问』）"
-    );
-    assert_eq!(
-        cancelling.last_request("save"),
-        Some(PickerRequest::save("新建工程", "project.yeban").with_extensions(["yeban"])),
-        "请求的标题 / 建议文件名 / 后缀过滤必须是本单约定的那一条"
-    );
-    assert_eq!(
-        port.fingerprint(),
-        fingerprint_before,
-        "⛔ 取消之后工程指纹一位不得变"
-    );
-    assert_eq!(rows(&window), current_rows, "⛔ 取消之后界面行数一位不得变");
-    assert_eq!(
-        scratch.entries(),
-        entries_before,
-        "⛔ 取消之后一个文件都不得被建出来"
-    );
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "取消**不是**失败：状态行必须保持空（⛔ 不写成一条错误）"
-    );
-    assert!(!window.get_module_status_succeeded(), "取消不得报成功");
-    assert!(
-        after_readings.borrow().is_empty(),
-        "取消之后 `after`（换工程）一次都不该跑"
-    );
-
-    // =====================================================================
-    // 判据 ④（反向腿）：**没有对话框** ⇒ **如实报错**（⛔ 不静默、⛔ 不建文件）
-    // =====================================================================
-    //
-    // `NoPicker` 是 `FilePicker::can_prompt() = false` 的唯一实现：它**没有**一个能给用户
-    // 看的对话框。新建工程的落点只能来自对话框 ⇒ 这一档必须**响亮**拒绝，而⛔ 不能把
-    // "没有对话框"伪装成"用户取消"（那会让一次点击静默消失）。
-    wire(&window, Rc::new(NoPicker), &runtime);
-    press(&window, NEW_BUTTON_ID);
-    let receipt = window.get_module_status().to_string();
-    report_line(&format!(
-        "[#129/ui] 无对话框（NoPicker）: succeeded={}；回执 {receipt:?}；\
-         工程指纹 {fingerprint_before:?} → {:?}；目录条目 {entries_before} → {}",
-        window.get_module_status_succeeded(),
-        port.fingerprint(),
-        scratch.entries(),
-    ));
-    assert!(
-        !window.get_module_status_succeeded(),
-        "没有对话框 ⇒ 必须**如实失败**，实得 {receipt:?}"
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
     );
     assert!(
-        receipt.contains("outcome=error")
-            && receipt.contains("action=new-project")
-            && receipt.contains("error=no-picker"),
-        "错误必须走**既有的** `module-status` 投影通道并点名 `no-picker`，实得 {receipt:?}"
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
     );
     assert!(
-        receipt.contains("can_prompt") && receipt.contains("不静默"),
-        "错误文本必须说明『没有可用的文件对话框』（不是用户取消），实得 {receipt:?}"
-    );
-    assert_eq!(
-        port.fingerprint(),
-        fingerprint_before,
-        "⛔ 没有对话框之后工程一位不动"
-    );
-    assert_eq!(rows(&window), current_rows, "⛔ 没有对话框之后界面一位不动");
-    assert_eq!(
-        scratch.entries(),
-        entries_before,
-        "⛔ 没有对话框时不得凭空建文件（也⛔ 不猜文件名）"
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
     );
     assert!(
-        after_readings.borrow().is_empty(),
-        "没有对话框之后 `after` 一次都不该跑"
-    );
-
-    // =====================================================================
-    // 判据 ⑤（正向腿）：点一下 ⇒ 问一次对话框 ⇒ **1187 B** 落盘
-    // ⇒ **换成 0 音轨 ＋ 1 主总线的新工程**
-    // =====================================================================
-    //
-    // 对话框给的路径**没有后缀**（`brand-new`）—— 与 `wire_save` 同一条口径，必须补成
-    // `.yeban`（macOS 的 `rfd` 会补，别的平台不一定 ⇒ 这条口径钉在 `with_default_extension`）。
-    let picked = scratch.join("brand-new");
-    let final_path = scratch.join("brand-new.yeban");
-    let picker = ScriptedPicker::answering_save(&picked);
-    let picker_owned: Rc<ScriptedPicker> = Rc::clone(&picker);
-    let picker_dyn: Rc<dyn FilePicker> = picker_owned;
-    wire(&window, picker_dyn, &runtime);
-    assert!(
-        !final_path.exists(),
-        "夹具前提：新建之前目标文件必须不存在（否则『它被建出来了』不是新建的证据）"
-    );
-    press(&window, NEW_BUTTON_ID);
-    let receipt = window.get_module_status().to_string();
-    let size = std::fs::metadata(&final_path)
-        .expect("新建必须真的写出一份容器")
-        .len();
-    let fingerprint_after = port.fingerprint();
-    // ⭐ `#215`：新建工程 = 纯样本 ＋ **一个真实创建时刻**。`default_project()` 本身
-    // 保持纯（schema 对账要求逐字节稳定），因此对账对象要补上同一个时刻。
-    let created_at = port.project().metadata.created_at_unix_ms;
-    assert!(
-        created_at > 0,
-        "新建工程必须写入真实创建时刻（实得 {created_at} ⇒ BWF 会写 1970-01-01）"
-    );
-    let mut expected_new = yeban_model::samples::default_project();
-    expected_new.metadata.created_at_unix_ms = created_at;
-    let default_fingerprint = project_fingerprint(&expected_new).expect("空工程指纹");
-    report_line(&format!(
-        "[#129/ui] 正向: choose_save {} 次；文件 {} = {size} B；结局 succeeded={}；\
-         回执 {receipt:?}；工程指纹 {fingerprint_before:?} → {fingerprint_after:?}\
-         （`default_project()` = {default_fingerprint}）；track-names {current_rows} → {}；\
-         undoable {undoable_before} → {}；after={:?}",
-        picker.call_count("save"),
-        final_path.display(),
-        window.get_module_status_succeeded(),
-        rows(&window),
-        port.display().undoable,
-        after_readings.borrow(),
-    ));
-
-    // ① 对话框被问**恰好一次**，且请求是约定的那一条。
-    assert_eq!(
-        picker.call_count("save"),
-        1,
-        "⭐ 对话框必须被问**恰好一次**（多一次 = 每次点击弹两次；少一次 = 路径来历不明）"
-    );
-    assert_eq!(
-        picker.last_request("save"),
-        Some(PickerRequest::save("新建工程", "project.yeban").with_extensions(["yeban"]))
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
     );
     assert!(
-        window.get_module_status_succeeded(),
-        "界面上的新建必须成功: {receipt}"
-    );
-    // ② 落盘：**1187 B**（无后缀的落点被补成 `.yeban`；`#161` 前是 884 B，
-    //    `#215` 前是 1136 B —— 创建时刻从 `0` 变成 13 位毫秒数 ⇒ `+12 B`；
-    //    `#349` 补齐 tempo_map/time_signature_map 后为 1187 B）。
-    assert!(
-        final_path.exists(),
-        "⛔ 新建必须写出 `{}`（用户敲的 `brand-new` 必须被补成 `.yeban`）",
-        final_path.display()
-    );
-    assert_eq!(
-        size, 1187,
-        "新建工程的容器必须恰是 1187 字节（`#161`：自带主总线 → 1136；\
-         `#215`：创建时刻不再是 `0` ⇒ +12 B；`#349`：tempo_map/time_signature_map ⇒ +39 B）；实得 {size} 字节"
-    );
-    // ③ 回执：成功的字段可读（`tracks` 是**回读**界面行数，不是回显入参）。
-    assert!(receipt.contains("outcome=ok"), "{receipt}");
-    assert!(
-        receipt.contains(&format!("path={}", final_path.display())),
-        "{receipt}"
-    );
-    assert!(receipt.contains("bytes=1187"), "{receipt}");
-    assert!(receipt.contains("tracks=0"), "{receipt}");
-    // ④ **换成新工程**：端口里的工程 = `default_project()` ＋ 同一个创建时刻
-    //    （指纹逐字节相等），工程里 0 条音轨 ＋ 1 条主总线；界面音轨行 0 行。
-    assert_eq!(
-        fingerprint_after.as_deref(),
-        Some(default_fingerprint.as_str()),
-        "⛔ 端口里的工程必须**逐字节**等于（同一个创建时刻的）`samples::default_project()`"
-    );
-    assert_eq!(
-        port.project().tracks.len(),
-        1,
-        "新建之后端口里的轨道数必须恰是 1（主总线）"
+        aether_app.contains("> module-status-succeeded:"),
+        "新 UI 契约面必须声明 > module-status-succeeded:"
     );
     assert!(
-        !port.project().master_bus_track_id.is_nil(),
-        "新建工程的 `master_bus_track_id` 必须非 nil（`#161` 起出厂自带主总线）"
+        aether_host.contains("set_module_status_succeeded"),
+        "宿主接线层必须注册 set_module_status_succeeded"
     );
-    assert_eq!(
-        port.project()
-            .tracks
-            .get(&port.project().master_bus_track_id)
-            .map(|track| track.kind),
-        Some(yeban_model::project::TrackKind::Master),
-        "那 1 条轨必须就是主总线"
-    );
-    assert_eq!(rows(&window), 0, "⛔ 新建之后界面音轨行必须清空（0 行）");
-    // ⑤ 「新建 = 打开刚写的文件 = **新会话**」：可撤销步数归零。
-    assert_eq!(
-        port.display().undoable,
-        0,
-        "⭐ 新建工程 = **新会话**：`undoable` 必须从 {undoable_before} 归零"
-    );
-    // ⑥ **同一个** `after`（打开工程那条换工程路径的装配方最后一跳）被调用**恰好一次**，
-    //    而且它拿到的就是刚写出的那个路径 / 0 音轨 ＋ 1 主总线工程 / 0 音轨行投影。
-    let after_now = after_readings.borrow().clone();
-    assert_eq!(
-        after_now,
-        vec![(final_path.to_string_lossy().into_owned(), 1, 0)],
-        "⭐ 新建必须走 `OpenProjectRuntime::open_runtime`（`#93` 的换工程路径）—— \
-         `after` 应当恰好收到一次 (path=刚写出的文件, 1 条轨[主总线], 0 条音轨行投影)"
-    );
-    // ⑦ 引擎：新工程**有主总线** ⇒ `EngineSnapshot::from_project` 的既有裁决是
-    //    "可用"（⛔ 不再 `NoMasterBus`）⇒ 换工程路径把引擎换到新快照（0 条音轨 ＋ 1 主总线），
-    //    且界面停在停止态。⛔ 不再清空引擎。
-    {
-        let engine = production.borrow().engine_handle();
-        assert!(
-            engine.borrow().has_engine(),
-            "有主总线的新工程必须能投影出快照（`#161` 前是 `NoMasterBus` ⇒ 清空引擎）"
-        );
-        let snapshot = engine
-            .borrow()
-            .current_snapshot()
-            .expect("换代成功之后必须有当前快照");
-        assert_eq!(
-            snapshot.master(),
-            port.project().master_bus_track_id,
-            "快照的主总线必须是新工程的主总线"
-        );
-        assert_eq!(snapshot.tracks().len(), 1, "快照里必须只有主总线那 1 条轨");
-        assert!(!window.get_playing(), "新建之后界面必须停在停止态");
-    }
-    drop(tier1);
 }

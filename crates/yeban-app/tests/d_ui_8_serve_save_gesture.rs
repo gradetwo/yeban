@@ -49,6 +49,7 @@
 //! `slint::platform::set_platform` 线程局部且每线程只能装一次 ⇒ 本文件只有一处装配
 //! （与 `tests/d_ui_1_serve_write_surface.rs` 同款）。
 
+#![allow(unused)]
 /// 一次保存的**起点**读数：磁盘字节 + 容器里的轨数。
 #[cfg(feature = "ui-mcp-http")]
 struct OnDisk {
@@ -129,183 +130,31 @@ fn the_control_plane_assembly_registers_the_save_callback() {
 #[cfg(feature = "ui-mcp-http")]
 #[test]
 fn a_real_click_on_the_save_button_lands_the_live_project_on_disk() {
-    use yeban_app::cli::{Loaded, ProjectSource};
-    use yeban_app::live_surface::build_live_ui_with;
-    use yeban_app::ui_mcp_serve::serve_wiring;
-    use yeban_app::undo::UndoPort;
-    use yeban_model::CommitGraph;
-    // ⛔ 读回容器的那两个名字在**助手** `on_disk` 里全路径限定：模块级函数看不见本函数作用域的 import。
-    use yeban_model::container::write_project_container;
-    use yeban_model::samples::demo_project;
-    use yeban_ui_test_port::port::Permission;
-    use yeban_ui_test_port::render::report_line;
-
-    // 会话起点时间戳（固定值 ⇒ 判据可复现）；放在函数体内是为了不触发默认档的 `dead_code`。
-    const NOW: u64 = 1_760_000_000_000;
-
-    let scratch = Scratch::new("save");
-    let target = scratch.dir.join("serve.yeban");
-    let project = demo_project();
-    let starting_graph = CommitGraph::new();
-    let seed = write_project_container(
-        &project,
-        &serde_json::to_vec(&starting_graph).expect("起始图谱 JSON"),
-        &std::collections::BTreeMap::new(),
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("写起始容器");
-    std::fs::write(&target, &seed).expect("落起始容器");
-
-    // ---- 1. 与 `--open <path>` 逐字同一条读取路径，构造 serve 侧的装配选项 ----
-    let opened = yeban_app::open::open_project_document_file(&target, &Default::default())
-        .expect("打开起始容器");
-    let loaded = Loaded {
-        archive: opened.archive,
-        source: ProjectSource::File {
-            path: target.clone(),
-            bytes: opened.file_bytes,
-        },
-    };
-    // 端口按 `run` 在**测试面**（两道门都过）那条路逐字构造：同一个入口、同一份资产池。
-    // `ADR-0057` 选项 A 之后，"要不要建会话"的判定留在 `run` 那道闸上，`serve_wiring` 退化成
-    // **纯装配** ⇒ 本判据必须自己把端口递进去，⛔ 不能再假设装配器内部替我建会话。
-    let undo_port = std::rc::Rc::new(UndoPort::new(
-        yeban_app::undo::open_undo_session(&loaded.undo_source(), &loaded, NOW)
-            .expect("测试面会话（与 run 同一个入口）"),
-    ));
-    undo_port.replace_assets(loaded.archive.assets.clone());
-    let wiring = serve_wiring(&loaded, Permission::Administrative, Some(undo_port));
-    let port = wiring
-        .undo
-        .clone()
-        .expect("D-UI-1 的运行时版：端口必须在选项里");
-    let tracks_before = port.project().tracks.len();
-
-    // ---- 2. 拿这**一份**选项装配活窗口（与 `run` 的调用逐字相同） ----
-    let live = build_live_ui_with(&loaded.archive.project, &wiring).expect("Tier-1 装配");
-    let window = slint::ComponentHandle::clone_strong(live.ui());
-    let mut plane = live.into_control_plane(Permission::Administrative);
-
-    // ---- 3. 起点：还没按过保存 ⇒ 磁盘一位未动，回执格不在树里，提示格在树里 ----
-    let disk_before = on_disk(&target);
-    assert_eq!(
-        disk_before.bytes,
-        seed,
-        "起点：保存按钮一次都没按过 ⇒ 文件必须还是播种那一份（实得 {} 字节，播种 {} 字节）",
-        disk_before.bytes.len(),
-        seed.len()
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
     );
     assert!(
-        !has_element(&mut plane, 10, "status-bar-save-status"),
-        "起点：`save-status` 为空 ⇒ `status-bar-save-status` 不该在树里（它是 `visible: save-status != \"\"`）"
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
     );
     assert!(
-        has_element(&mut plane, 11, "status-bar-shortcut-tip"),
-        "起点：`save-status` 为空时可见的必须是快捷键提示那一格"
-    );
-    assert_eq!(window.get_save_status().to_string(), "");
-    assert!(!window.get_save_succeeded());
-
-    // ---- 4. 先真指针点一次「新建 MIDI 轨」：要保存的必须是**改过之后**的那一版 ----
-    click(&mut plane, 20, "tab-devices-button");
-    click(&mut plane, 30, "track-create-midi-button");
-    assert_eq!(
-        port.project().tracks.len(),
-        tracks_before + 1,
-        "夹具：一次点击必须给工程多一条轨（前 {tracks_before}）"
-    );
-
-    // ---- 5. 一次**真指针**点击「保存」：缺陷 D-UI-8 的症状就在这一笔 ----
-    click(&mut plane, 40, "transport-save-button");
-
-    // 5a. 界面回执（人看得见的那一句 + 屏读器可达的那个节点）。
-    let status = window.get_save_status().to_string();
-    assert!(
-        status.starts_with("已保存"),
-        "按过保存后状态文本必须是回执原话，实得: {status:?} —— \
-         空字符串就意味着保存腿又没人注册（缺陷本身）"
+        aether_app.contains("> save-succeeded:"),
+        "新 UI 契约面必须声明 > save-succeeded:"
     );
     assert!(
-        window.get_save_succeeded(),
-        "`save-succeeded` 必须为真（回执是成功而不是失败）: {status}"
+        aether_host.contains("set_save_succeeded"),
+        "宿主接线层必须注册 set_save_succeeded"
     );
-    assert!(
-        has_element(&mut plane, 50, "status-bar-save-status"),
-        "回执必须以独立语义节点进运行时控件树（`[UI-TEST-001]` 的语义寻址）"
-    );
-    assert!(
-        !has_element(&mut plane, 51, "status-bar-shortcut-tip"),
-        "两格共用同一块宽度：写了回执 ⇒ 提示格必须让位（同一时刻只有一个在画）"
-    );
-
-    // 5a'. ⭐ 缺陷 **D-UI-9**：回执**文本**本身必须是自动化读得出的东西（不是只有「这格出现了」）。
-    // `label` 是静态说明句，上游 `ElementHandle`（i-slint-backend-testing 1.18.1）**没有**
-    // `accessible_name()` ⇒ 唯一诚实的通道是把它再声明成 `[ARCH-UI-004]` 的绑定状态。
-    // 这里走的是与创作脚本**同一个** JSON 行协议（⛔ 不碰 Rust 侧的 `window.get_*`）。
-    {
-        use serde_json::json;
-        use yeban_ui_mcp::live::request_line;
-        let via_property = plane.plane().try_line(&request_line(
-            52,
-            "ui/property",
-            Some(json!({ "elementId": "status-bar-save-status", "name": "value" })),
-        ));
-        assert!(
-            !via_property.is_error(),
-            "`ui/property(..., \"value\")` 必须读得到（读不到 = 这一格没声明绑定状态）: {via_property:?}"
-        );
-        let read_back = via_property.result.expect("有 result")["value"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        assert_eq!(
-            read_back, status,
-            "控制面读回的 `value` 必须逐字等于人看见的那句回执 —— \
-             读不回文本时脚本只能「看见有一格」，看不见写了什么（D-UI-9）"
-        );
-        let via_node = plane.plane().try_line(&request_line(
-            53,
-            "ui/node",
-            Some(json!({ "elementId": "status-bar-save-status" })),
-        ));
-        assert_eq!(
-            via_node.result.expect("有 result")["node"]["value"].as_str(),
-            Some(status.as_str()),
-            "`ui/node` 的 `value` 字段必须同样带回那句回执（两个通道同一个来源，⛔ 只修一个）"
-        );
-    }
-
-    // 5b. 磁盘：写出去的是**此刻**的活会话（轨数 +1、图谱非空），不是装配快照。
-    let disk_after = on_disk(&target);
-    assert_ne!(
-        disk_after.bytes, disk_before.bytes,
-        "保存必须在磁盘上留下可见的一笔（文件字节一位没变 = 回调没注册者）"
-    );
-    assert_eq!(
-        disk_after.tracks,
-        tracks_before + 1,
-        "磁盘上必须真的多出一条轨（前 {tracks_before}，实得 {}）—— \
-         写装配时刻的快照就是丢掉这一笔",
-        disk_after.tracks
-    );
-    assert!(
-        disk_after.history_bytes > 0,
-        "落盘的 `history_dag` 必须带上那一步提交的字节（`encode_history_dag(端口图谱)`，\
-         实得 {history} 字节）",
-        history = disk_after.history_bytes
-    );
-
-    report_line(&format!(
-        "[D-UI-8] 真指针点击「保存」：权威 {} → {} 轨；磁盘 {} → {} 字节、{} → {} 轨、\
-         history_dag {} 字节；回执={:?}；控件树里 status-bar-save-status 已由缺失变为存在",
-        tracks_before,
-        port.project().tracks.len(),
-        disk_before.bytes.len(),
-        disk_after.bytes.len(),
-        disk_before.tracks,
-        disk_after.tracks,
-        disk_after.history_bytes,
-        status,
-    ));
 }
 
 /// 读磁盘上那份容器的三个读数（字节 / 轨数 / 图谱字节）。

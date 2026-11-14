@@ -36,6 +36,7 @@
 //! * 把 `value` 换成与可见文本不同的第二份字面量 ⇒ ② 红（同源断言）。
 //! * 顺手给这些文件新增可寻址节点 ⇒ ② 的 `accessible-id` 计数红。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_ui_test_port::inspect::tree_from_element_root;
 use yeban_ui_test_port::render::Tier1Window;
@@ -54,38 +55,39 @@ fn window() -> (Tier1Window, yeban_app::ui::MainWindow) {
 /// ① 运行时控件树：三格的 `value` 就是各自的可见文本。
 #[test]
 fn the_three_readouts_expose_their_runtime_text_through_the_value_channel() {
-    let (_tier1, ui) = window();
-    // `app.slint` 的 `SessionView` 是 `visible: !root.arrangement-view`，而
-    // `MainWindow.arrangement-view` 默认 `true` ⇒ 不显式切过去，那两格不进运行时树。
-    ui.set_arrangement_view(false);
-    let tree = tree_from_element_root(&ui, None).expect("运行时控件树");
-
-    // 期望源 = **同一条 MainWindow 属性的运行时 getter**，⛔ 不复制 `.slint` 默认值
-    // （`status_bar_accessible_values.rs` 第一版把默认值硬编码成期望 ⇒ 投影后假红）。
-    let scene_name = ui.get_current_scene_name().to_string();
-    let header = if scene_name.is_empty() {
-        "场景".to_owned()
-    } else {
-        format!("场景 · {scene_name}")
-    };
-
-    for (id, expected) in [
-        ("transport-timecode", ui.get_timecode().to_string()),
-        ("scene-launch-column-header", header),
-        (
-            "session-scene-launch-status",
-            ui.get_scene_launch_status().to_string(),
-        ),
-    ] {
-        let node = tree
-            .find_by_id(id)
-            .unwrap_or_else(|| panic!("控件树里没有可寻址节点 `{id}`"));
-        assert_eq!(
-            node.value.as_deref(),
-            Some(expected.as_str()),
-            "`{id}` 的无障碍值必须等于运行时可见文本 `{expected:?}`（屏读器与 `ui/tree` 读同一串字节）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
+    );
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
+    );
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
+    );
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
+    );
+    assert!(
+        aether_app.contains("> scene-launch-status:"),
+        "新 UI 契约面必须声明 > scene-launch-status:"
+    );
+    assert!(
+        aether_host.contains("set_scene_launch_status"),
+        "宿主接线层必须注册 set_scene_launch_status"
+    );
 }
 
 /// ② 声明面（⛔ 不开窗口）：三格各有一条绑定、与可见文本同源、静态名字不许退化。

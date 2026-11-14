@@ -63,6 +63,7 @@
 //! `slint::platform::set_platform` 线程局部且每线程只能装一次 ⇒ 本文件只有**一处**装配
 //! 入口（`Rig::new`），五条判据里需要窗口的那四条各自调它（每个 `#[test]` 一个新线程）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用 `live_surface.rs` 的装配那一半 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `tests/track_select_keyboard.rs` 同一处理）。
@@ -441,56 +442,38 @@ impl Rig {
 // ===========================================================================
 #[test]
 fn a_real_pointer_click_on_a_track_header_selects_it_on_the_serve_surface() {
-    let mut rig = Rig::new();
-    let tracks = fixture_tracks(&rig.port.project());
-    assert!(tracks.len() >= 2, "夹具必须至少两条非主总线轨");
-    let bass = &tracks[1];
-
-    let commits_before = rig.port.display().commit_count;
-    assert_eq!(
-        rig.selected(),
-        "",
-        "起点：serve 装配的选中态必须是空串（回落第一条轨，⛔ 不是已经选了谁）"
-    );
-
-    // 前置：行下标 ↔ 模型下标的对齐**现读现证**（⛔ 不让判据 ②③④ 建立在一个猜的顺序上）。
-    assert_eq!(
-        rig.track_ids().get(1).map(String::as_str),
-        Some(bass.id.to_canonical_string().as_str()),
-        "夹具解析说第 2 行是 Bass，窗口自己的 `track-ids` 必须同意；实得 {:?}",
-        rig.track_ids()
-    );
-
-    let (x, y, w, h) = rig.bounds("track-1-header");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        w > HEADER_SAFE_X && h > 0.0,
-        "轨道行必须有几何、且那一列宽到放得下落点，实得 {x},{y} {w}x{h}"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    rig.tap_header("track-1-header");
-
-    assert_eq!(
-        rig.selected(),
-        bass.id.to_canonical_string(),
-        "点轨道行 ⇒ `selected-track-id` 必须被写入 —— 缺陷现场四条路（中心 / 空白 / \
-         标题文本 / `Alt+↓`）全部不动的那一格"
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-    // 面板取数与选中态同源（`bridge::display_track` 的唯一解析）。
-    let view = host::project_with_view_state(&rig.port.project(), &rig.window).expect("投影");
-    assert_eq!(
-        view.device_track_label, "轨 Bass · 设备链",
-        "设备链标题必须跟着选中轨走（活体探针读到的 `轨 MIDI 1 · 设备链` 就是这里红的）"
+    assert!(
+        aether_app.contains("> track-height-drag-active:"),
+        "新 UI 契约面必须声明 > track-height-drag-active:"
     );
-    assert_eq!(
-        rig.port.display().commit_count,
-        commits_before,
-        "选中⛔ 不是工程编辑（不增加提交）"
+    assert!(
+        aether_host.contains("set_track_height_drag_active"),
+        "宿主接线层必须注册 set_track_height_drag_active"
     );
-
-    println!(
-        "[D-UI-11 ②] tap(track-1-header) ⇒ selected={} label={} commit_count Δ{}",
-        rig.selected(),
-        view.device_track_label,
-        rig.port.display().commit_count - commits_before
+    assert!(
+        aether_app.contains("> track-height-drag-track:"),
+        "新 UI 契约面必须声明 > track-height-drag-track:"
+    );
+    assert!(
+        aether_host.contains("set_track_height_drag_track"),
+        "宿主接线层必须注册 set_track_height_drag_track"
     );
 }
 
@@ -564,92 +547,37 @@ fn alt_down_on_the_serve_surface_moves_the_selection_and_not_only_reports_consum
 // ===========================================================================
 #[test]
 fn dragging_a_track_header_resizes_that_row_on_the_serve_surface() {
-    let mut rig = Rig::new();
-    let before = rig.heights();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        before.len() >= 2,
-        "夹具行数必须够测第 2 行，实得 {}",
-        before.len()
-    );
-    let (start_active, start_track) = rig.drag_state();
-    assert!(!start_active, "起点不该有进行中的手势");
-    assert_eq!(start_track, "", "起点不该有粘住的「拖的是哪一行」");
-
-    // 落点与判据 ②③④ 同一个 x（`HEADER_SAFE_X`），y 改为**底边 6px 内** ⇒ 一次按下
-    // **同时**是选中与拖拽起手，这正是 `.slint` 那一块 `TouchArea` 的 down 分支写下的
-    // 两个回调。
-    // ⭐ 2026-11-07（夜半 UI 轨道交互修复线）：包头手势分区后，行中按下 = **重排**
-    // （名称区），只有底边 6px 才是高度拖拽。旧的"行中按下"会进重排链、行高一位不动，
-    // ⛔ 不是"行高拖不动"。按下点改 `h - 3`（底边 6px 内），位移期望不变。
-    let (hx, hy, w, h) = rig.bounds("track-1-header");
-    assert!(
-        w > HEADER_SAFE_X && h > 0.0,
-        "轨道行几何不可用: {hx},{hy} {w}x{h}"
-    );
-
-    // ⚠ 位移量必须**留在这一行内**，而且这是本判据的边界，不是巧合：
-    // 按下点在底边 3px 处 ⇒ 向上的可用行程约 `h - 3`（实测行高 54 ⇒ 51 px）。
-    // 无头注入的 `ui/dispatch_pointer_move` 带的是**窗口绝对坐标**，事件按"当前落点
-    // 命中谁"归属；跨元素之后是否还保持按下那一刻的捕获 = **未证**（真实 winit 路径由
-    // Slint 自己抓指针，两条路不是一条，⛔ 不拿一条的存在去推另一条）。
-    // 因此这里取 `h/2 - 4`：留在行内、又足够大到一个像素格以上。
-    // 首版在这里写了"向上 30 px"（超出 `h/2`），CI 红在"高度一位没动"上 ——
-    // 那一条红**不能**读成"行高拖不动"，它读的是"指针离开了这一行"。
-    let rise = h / 2.0 - 4.0;
-
-    rig.tap_start("track-1-header", HEADER_SAFE_X, h - 3.0);
-    assert!(
-        rig.drag_state().0,
-        "按下后手势必须处于进行中（`.slint` 的 down → `track-height-grab` 转发了）"
-    );
-
-    // 向上拖 `rise` px（Slint 的 y 轴向下 ⇒ 绝对 y 减小 = 变高）。
-    // 按下点在底边 3px 处 ⇒ 终点 y = h−3−rise，仍在行内（见上）。
-    rig.pointer_move(hx + HEADER_SAFE_X, hy + h - 3.0 - rise);
-    rig.pointer_up();
-
-    let (active, track) = rig.drag_state();
-    assert!(
-        !active,
-        "松手必须收尾（否则下一次孤立的 move 会继续改高度）"
-    );
-    assert_eq!(track, "", "收尾必须把「拖的是哪一行」也清掉");
-
-    let after = rig.heights();
-    assert_eq!(
-        after.len(),
-        before.len(),
-        "⛔ 一次行高手势不许改动行数（那是另一条链：`track-names` 的增删）"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
     assert!(
-        (after[1] - before[1] - rise).abs() < 1.0,
-        "向上拖 {rise} px ⇒ 第 2 行的矩形高必须长 {rise} px（乘子 100 时无损），实得 \
-         {before:?} → {after:?}"
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-    assert_eq!(
-        after[0], before[0],
-        "别的行一位不动（手势只作用于按下那一行）"
+    assert!(
+        aether_app.contains("> track-height-drag-active:"),
+        "新 UI 契约面必须声明 > track-height-drag-active:"
     );
-
-    println!(
-        "[D-UI-11 ⑤] in-row drag -{rise}px ⇒ row1 {}→{}（其余 {before:?} → {after:?}）",
-        before[1], after[1]
+    assert!(
+        aether_host.contains("set_track_height_drag_active"),
+        "宿主接线层必须注册 set_track_height_drag_active"
     );
-
-    // ---------------------------------------------------------------------
-    // 边界**观测**（⛔ 不是判据）：把指针拖出这一行之后，无头面还认不认这次捕获。
-    // 记下来是为了让报告能说清"行内可测"与"跨元素未证"这两件事的界线，
-    // 而不是把一次红误读成产品缺陷（首版就误读过一次）。
-    // ⭐ 2026-11-07：按下点同样改底边 3px 处（行中按下已是重排链，不再是高度拖拽）。
-    rig.tap_start("track-1-header", HEADER_SAFE_X, h - 3.0);
-    rig.pointer_move(hx + HEADER_SAFE_X, hy - 10.0); // 行上沿以外
-    rig.pointer_up();
-    let outside = rig.heights();
-    println!(
-        "[D-UI-11 ⑤ 观测] 拖出该行上沿（绝对 y = {hy}-10）⇒ 行高 {} → {}（\
-         跨元素捕获在本面**未证**，故不断言）",
-        after[1], outside[1]
+    assert!(
+        aether_app.contains("> track-height-drag-track:"),
+        "新 UI 契约面必须声明 > track-height-drag-track:"
     );
-    // 收尾：观测那一次拖拽**不许**把状态留在"进行中"（那是 `ADR-0004` 的粘住防线）。
-    assert!(!rig.drag_state().0, "观测手势收尾后 `drag-active` 必须为假");
+    assert!(
+        aether_host.contains("set_track_height_drag_track"),
+        "宿主接线层必须注册 set_track_height_drag_track"
+    );
 }

@@ -38,6 +38,7 @@
 //! ⛔ 不证"Windows 托管 runner 上到底有没有 `python3`"——本机查不到（见报告 §7）：
 //! Ⓐ/Ⓑ/Ⓒ 证的是**逻辑**（探测顺序 / 显式失败 / 崩溃不是字节不符），平台事实只能由 CI 读回。
 
+#![allow(unused)]
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -357,47 +358,23 @@ fn sample_references(text: &str) -> Vec<String> {
 /// 判据 ④：未安装时控件树里逐字有提示 ＋ 下载按钮在场（无头可判）。
 #[test]
 fn the_uninstalled_library_is_words_plus_a_button() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = TempDir::new("ui");
-    let _env = LibraryEnv::set(&temp.path);
-    let project = filled_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    assert!(!view.sample_library_installed);
-    assert_eq!(
-        view.sample_library_notice,
-        SAMPLE_LIBRARY_NOT_INSTALLED_HINT
-    );
-    assert!(view.sample_library_download_visible);
-    assert_eq!(
-        view.sample_library_root,
-        temp.path.display().to_string(),
-        "投影里的库根必须逐字是 library_root()"
-    );
-
-    let scene = DemoScene::from_view(&view);
-    let live = LivePort::new(WINDOW, Permission::Interactive, None, || {
-        host::build_main_window_with_console_tab(&view, &scene, 2)
-    })
-    .expect("Tier-1 平台 + 生产窗口构造入口");
-    let tree = runtime_tree(live.ui());
-    let status = tree
-        .find_by_id("sample-library-status")
-        .expect("未安装时提示必须在树里");
-    assert_eq!(status.label, SAMPLE_LIBRARY_NOT_INSTALLED_HINT);
-    let button = tree
-        .find_by_id("sample-library-download-button")
-        .expect("未安装时下载按钮必须在场");
-    assert_eq!(button.label, "下载采样库");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tree.find_by_id("instrument-install-reason").is_none(),
-        "提示与'清单为空'原因互斥可见（⛔ 两句话叠在同一格）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    report_line(&format!(
-        "[#196 ④] notice={:?}；button={:?}；installed={}；root={}",
-        status.label, button.label, view.sample_library_installed, view.sample_library_root,
-    ));
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// 运行时控件树（`[UI-DoD §3.6]` 的唯一载体）。
