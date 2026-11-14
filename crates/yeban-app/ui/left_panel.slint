@@ -10,7 +10,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> selected-track-pan: "C";
     in-out property <float> selected-track-vol: -2.5;
     in-out property <float> selected-track-peak: 0.65;
-    in-out property <[string]> selected-track-inserts: ["Wavetable MPE", "Pro-QLinear 8", "Glue Comp VCA"];
+    in-out property <[string]> selected-track-inserts: [];
 
     in-out property <string> bus-name: "Bus 1 · Synth";
     in-out property <float> bus-track-vol: -1.0;
@@ -311,6 +311,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             }
 
                             for ins[idx] in root.selected-track-inserts : Rectangle {
+                                // [Q4] 空槽不画：投影只给**真实设备链**，没有设备就没有这一行。
+                                visible: ins != "";
                                 height: 22px;
                                 background: #10141d;
                                 border-radius: 3px;

@@ -190,7 +190,7 @@ export component MainWindow inherits Window {
     in-out property <string> active-tool-name: "pointer";
     in-out property <bool> is-playing: false;
     in-out property <bool> is-recording: false;
-    in-out property <bool> is-looping: true;
+    in-out property <bool> is-looping: false;
     in-out property <string> timecode-text: "003.02.01";
     in-out property <int> bpm-val: 124;
     in-out property <string> scale-text: "C Minor (自然小调)";
@@ -343,6 +343,9 @@ export component MainWindow inherits Window {
     in-out property <[int]> automation-lane-track-indexes: [];
     in-out property <bool> automation-visible: true;
     in-out property <[length]> bar-positions: [];
+    // [Q6] 标尺 / 网格的可见小节数与小节宽（由 host::apply_view 从同一份投影写入）。
+    in-out property <int> bar-count: 0;
+    in-out property <length> bar-width-px: 0px;
     in-out property <string> bpm-display: "120.00";
     in-out property <bool> bpm-field-editing: false;
     in-out property <string> branch-name: "main";
@@ -991,6 +994,10 @@ export component MainWindow inherits Window {
                     selected-track-id: root.selected-track-index;
                     playhead-px: root.playhead-px;
                     is-looping: root.is-looping;
+                    bar-count: root.bar-count;
+                    bar-width-px: root.bar-width-px;
+                    cycle-start-px: (root.cycle-start-ticks / root.roll-ticks-per-pixel) * 1px;
+                    cycle-end-px: (root.cycle-end-ticks / root.roll-ticks-per-pixel) * 1px;
 
                     select-track(t-id) => {
                         root.selected-track-index = t-id;

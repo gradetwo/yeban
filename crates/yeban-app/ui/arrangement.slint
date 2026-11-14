@@ -5,7 +5,12 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <[TimelineBlockData]> timeline-blocks;
     in-out property <int> selected-track-id: 1;
     in-out property <length> playhead-px: 360px;
-    in-out property <bool> is-looping: true;
+    in-out property <bool> is-looping: false;
+    // [Q6] 标尺读数：可见小节数 / 小节宽 / 循环区间（全部由宿主从投影写入）。
+    in-out property <int> bar-count: 0;
+    in-out property <length> bar-width-px: 128px;
+    in-out property <length> cycle-start-px: 0px;
+    in-out property <length> cycle-end-px: 0px;
     in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
     in-out property <length> headers-width: 216px; // 支持拖拽调整大小 [min: 170px, max: 300px]
 
@@ -187,25 +192,29 @@ export component ArrangementViewport inherits Rectangle {
                             background: #06080d;
                             border-color: #ffffff0a;
 
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                spacing: 64px;
-
-                                for bar in ["1", "2", "3 (Loop)", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36"] : Text {
-                                    text: bar;
-                                    font-family: Tokens.font-mono;
-                                    font-size: 9px;
-                                    font-weight: bar == "3 (Loop)" ? 800 : 600;
-                                    color: bar == "3 (Loop)" ? Theme.accent : #cbd5e1;
-                                    vertical-alignment: center;
-                                }
+                            // [Q6] 标尺格数与间距来自投影（`host::apply_view` 的
+                            // `bar-count` / `bar-width-px`），与下方片段块共用同一个
+                            // 水平刻度（`blk.start_px = tick / ticks_per_pixel`）。
+                            for i in root.bar-count : Text {
+                                x: i * root.bar-width-px;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                horizontal-alignment: left;
+                                text: "" + (i + 1);
+                                font-family: Tokens.font-mono;
+                                font-size: 9px;
+                                font-weight: 600;
+                                color: #cbd5e1;
+                                vertical-alignment: center;
                             }
 
-                            // Loop brace
-                            if root.is-looping : Rectangle {
-                                x: 150px;
+                            // 循环指示带：区间来自视图态（`cycle-start/end-ticks`），
+                            // ⛔ 不再是写死的 `x: 150px / width: 220px`。
+                            if root.is-looping && root.cycle-end-px > root.cycle-start-px : Rectangle {
+                                x: root.cycle-start-px;
                                 y: 0px;
-                                width: 220px;
+                                width: root.cycle-end-px - root.cycle-start-px;
                                 height: 3px;
                                 background: Theme.accent;
                                 border-radius: 1.5px;
@@ -806,14 +815,14 @@ export component ArrangementViewport inherits Rectangle {
                         Rectangle {
                             horizontal-stretch: 1;
 
-                            // Timeline Grid lines spanning 36 bars with subtle 4-bar hierarchy
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                spacing: 64px;
-                                for bar_idx in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] : Rectangle {
-                                    width: 1px;
-                                    background: (bar_idx == 1 || bar_idx == 5 || bar_idx == 9 || bar_idx == 13 || bar_idx == 17 || bar_idx == 21 || bar_idx == 25 || bar_idx == 29 || bar_idx == 33) ? #ffffff0d : #ffffff04;
-                                }
+                            // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
+                            // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
+                            for i in root.bar-count : Rectangle {
+                                x: i * root.bar-width-px;
+                                y: 0px;
+                                width: 1px;
+                                height: parent.height;
+                                background: i.mod(4) == 0 ? #ffffff0d : #ffffff04;
                             }
 
                             // Timeline Clips for this track
