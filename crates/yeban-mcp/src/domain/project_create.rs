@@ -176,6 +176,10 @@ pub struct CreatedProject {
     /// 自动加载追加的 op——`SetTrackPreset` / `InsertDevice` / `SetMacro` 等，
     /// 只在命中默认预制时出现），用于响应 `data.seed`。
     pub ops: Vec<Op>,
+    /// 种子音轨身份（模板建出的内容轨，**不含**主总线），按创建顺序；
+    /// `build_with_clock` 收集的 `track_ids` 原样带出，供 `seed_summary`
+    /// 报 `seedTrackIds`（此前响应里只有 `trackCount` 计数、没有身份）。
+    pub seed_track_ids: Vec<EntityId>,
 }
 
 /// 解析 `"N/D"` 形状的拍号文本（`arguments.timeSignature`，可选；缺省 = 模型默认 `4/4`）。
@@ -511,6 +515,7 @@ pub fn build_with_clock(
         project,
         master_bus_track_id: master_id,
         ops,
+        seed_track_ids: track_ids,
     })
 }
 
@@ -533,6 +538,11 @@ pub fn seed_summary(created: &CreatedProject) -> Value {
     serde_json::json!({
         "template": "master-bus + one midi track",
         "masterBusTrackId": created.master_bus_track_id.to_canonical_string(),
+        "seedTrackIds": created
+            .seed_track_ids
+            .iter()
+            .map(|id| id.to_canonical_string())
+            .collect::<Vec<_>>(),
         "masterBusInRoutingGraph": created
             .project
             .routing_graph

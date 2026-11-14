@@ -140,6 +140,7 @@
 //! `harness = false`）钉住；器件自身另有一条
 //! `crates/yeban-dsp/tests/polysynth_rt_zero_alloc.rs`。
 
+#[cfg(debug_assertions)]
 use yeban_dsp::envelope::AdsrStage;
 use yeban_dsp::filter::LadderFilter;
 use yeban_dsp::math::db_to_gain;

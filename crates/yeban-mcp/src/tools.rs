@@ -1288,7 +1288,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "lane",
                 "string",
                 true,
-                "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro | MidiCc (与 project.json 同一份词汇表; 不接受别名)",
+                "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro | MidiCc (与 project.json 同一份词汇表; 不接受别名)。各泳道的固有值域 (模型 `AutomationTarget::nominal_domain`): `TrackVolume` 与 `SendGain` 为 [-60, +12] dB, `TrackPan` 为 [-1, 1], `Macro` 为 [0, 1]; `DeviceParam` 无固有值域 (模型不声明设备参数的合法区间, 由目标设备参数自身决定); `MidiCc` 点值域为 0..=127",
             ),
             param("edgeId", "string", false, "SendGain 必需: 路由边 EntityId"),
             param(
