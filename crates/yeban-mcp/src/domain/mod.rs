@@ -1298,6 +1298,13 @@ pub enum Plan {
         /// 内容寻址。`dryRun` 不走 `apply` ⇒ 不登记；其余提案工具恒 `None`，
         /// 行为逐字不变。
         sfz_load: Option<Box<sfz::SfzLoad>>,
+        /// ⭐ 第五份报告 A-3：`yeban_edit_notes` 的 `setParam`（`DeviceParam`）
+        /// 在**编译期**命中的参数回显（`notes::ParamEcho` 的 JSON 形状）。
+        ///
+        /// 与 `warnings` 同一条纪律：它是**响应的形状**、不是提案的领域内容，
+        /// 且只能在 `plan` 阶段由那一次解析产生 ⇒ 放在 [`Plan`] 上随响应走，
+        /// 预览与真正创建读同一份。其余提案工具恒为空（响应不带该键）。
+        param_echoes: Vec<Value>,
     },
     /// `yeban_merge_proposal`
     Merge {
@@ -2097,6 +2104,7 @@ impl Plan {
                 include_ops,
                 warnings,
                 auto_merge,
+                param_echoes,
                 ..
             } => {
                 preview.insert("kind".to_owned(), Value::from(draft.kind));
@@ -2110,6 +2118,14 @@ impl Plan {
                     Value::from(draft.base_commit.to_canonical_string()),
                 );
                 preview.insert("opCount".to_owned(), Value::from(draft.ops.len()));
+                // ⭐ 第五份报告 A-3：预览与真正创建读**同一份**命中回显
+                // （非空才带，与 `apply_propose` 的 `resolvedParams` 同口径）。
+                if !param_echoes.is_empty() {
+                    preview.insert(
+                        "resolvedParams".to_owned(),
+                        Value::Array(param_echoes.clone()),
+                    );
+                }
                 // 完整 op 载荷是**可选**的（`arguments.includeOps`，缺省 false）：
                 // `[BASELINE-006]` 要求 16 小节段落生成的往返 JSON ≤ 4 KB 且
                 // "结构化字段传输"，而逐条 op 载荷正是把这条判据顶破的那一块。
@@ -3470,6 +3486,7 @@ fn propose_draft(
         auto_merge: arg_bool(call, "autoMerge", false),
         merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
         sfz_load: None,
+        param_echoes: Vec::new(),
     })
 }
 
@@ -3811,6 +3828,10 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let removing_clip = matches!(note_ops.as_slice(), [notes::NoteOp::RemoveClip]);
     notes::reject_remove_clip_conflicts(&note_ops, placement.is_some())?;
     // 顺序 = 施加顺序: 先改音符, 再施加（此刻内容已确定的）摆放编辑。
+    // ⭐ 第五份报告 A-3：编译走带回显的变体 —— 每条 `setParam`（`DeviceParam`）
+    // 命中的参数名随回执 `data.resolvedParams` 回给调用方（与
+    // `yeban_edit_automation` 的 `resolvedParamName` 同名同义）。
+    let mut param_echoes: Vec<Value> = Vec::new();
     let mut compiled = if note_ops.is_empty() {
         Vec::new()
     } else {
@@ -3819,7 +3840,10 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         notes::reject_duplicate_lane_targets(&track_id, &note_ops)?;
         // 同一个**场景**同理（`setScene` 的 `old_scene` 也从调用前的文档读）。
         notes::reject_duplicate_scene_targets(&note_ops)?;
-        notes::compile(project, &track_id, &clip_id, &note_ops)?
+        let (compiled, echoes) =
+            notes::compile_with_param_echoes(project, &track_id, &clip_id, &note_ops)?;
+        param_echoes = echoes.iter().map(notes::ParamEcho::to_value).collect();
+        compiled
     };
     // ⭐ G2：取走音轨必须连带清掉它在路由图里的边与节点 —— 否则孤儿节点让
     // `yeban_render_master` 整体失败（"路由图里的源节点没有对应的音轨"）。
@@ -3976,7 +4000,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         // 描述里点名自动加载的预制（提案摘要随响应回传）。
         description.push_str(&format!("；自动加载默认预制：{}", names.join("、")));
     }
-    propose_draft(
+    let mut plan = propose_draft(
         domain,
         project,
         "notes",
@@ -3984,7 +4008,15 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("edit_notes {title_target}"),
         compiled,
         call,
-    )
+    )?;
+    // ⭐ 第五份报告 A-3：把编译期命中的参数回显随计划带到响应（`data.resolvedParams`）。
+    if let Plan::Propose {
+        param_echoes: slot, ..
+    } = &mut plan
+    {
+        *slot = param_echoes;
+    }
+    Ok(plan)
 }
 
 /// `yeban_set_macro`。
@@ -5846,6 +5878,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             auto_merge,
             merge_commit_message,
             sfz_load,
+            param_echoes,
         } => apply_propose(
             domain,
             *draft,
@@ -5854,6 +5887,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             auto_merge,
             merge_commit_message,
             sfz_load.map(|load| *load),
+            &param_echoes,
         ),
         Plan::Merge {
             proposal_id,
@@ -6492,6 +6526,11 @@ fn apply_close(
 ///
 /// `warnings` 是 `plan` 阶段算好的那一份（`#178`）：本函数**不**重算，因此 `dryRun`
 /// 预览与真正创建提案的 `warnings[]` 是同一批读数。
+///
+/// `param_echoes` 是 A-3 的 `setParam` 命中回显：只在非空时以 `resolvedParams`
+/// 进 `data`（其余提案工具恒空 ⇒ 响应逐字节不变）。
+// 参数面与 [`Plan::Propose`] 的字段一一对应（草稿＋响应形状），不另打包结构体。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_propose(
     domain: &mut Domain,
     draft: ProposalDraft,
@@ -6500,6 +6539,7 @@ pub(crate) fn apply_propose(
     auto_merge: bool,
     merge_commit_message: Option<String>,
     sfz_load: Option<sfz::SfzLoad>,
+    param_echoes: &[Value],
 ) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
@@ -6599,6 +6639,17 @@ pub(crate) fn apply_propose(
         "warnings": Value::Array(warnings.to_vec()),
         "proposal": wire_projection,
     });
+    // ⭐ 第五份报告 A-3：`setParam`（`DeviceParam`）的命中回显只在非空时带
+    // （其余提案工具恒空 ⇒ 响应逐字节不变）。键名 `resolvedParams`，元素内
+    // `resolvedParamName` 与母带回执 `data.automation[]` 同名同义。
+    if !param_echoes.is_empty()
+        && let Some(object) = data.as_object_mut()
+    {
+        object.insert(
+            "resolvedParams".to_owned(),
+            Value::Array(param_echoes.to_vec()),
+        );
+    }
 
     // ⭐ [ADR-0029] D2：`autoMerge` 走的是**现有** `apply_merge`（同一预演、同一
     // `commit_merge`、同一多父图谱语义），在同一把锁内背靠背 ⇒ "autoMerge 合并的"

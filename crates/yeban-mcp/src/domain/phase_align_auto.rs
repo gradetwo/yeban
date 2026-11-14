@@ -537,6 +537,7 @@ pub(crate) fn apply_phase_align_auto(
         auto_merge,
         merge_commit_message,
         None,
+        &[],
     )?;
     // 提案响应 data 是对象：把测量键并进去（键集合无交集，见模块文档）。
     match response {

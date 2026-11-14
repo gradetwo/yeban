@@ -8005,7 +8005,7 @@ fn resolve_set_param_device(
     slot_index: usize,
     param_index: Option<usize>,
     param_name: Option<&str>,
-) -> Result<StaticLane, Fault> {
+) -> Result<(StaticLane, String), Fault> {
     let param_index = match (param_index, param_name) {
         // 纯下标：完全走旧路（下面的唯一解析入口全套判定）。
         (Some(index), None) => index,
@@ -8088,11 +8088,18 @@ fn resolve_set_param_device(
             }),
         ));
     }
-    Ok(StaticLane::DeviceParam {
-        slot_index,
-        param_index: Some(param_index),
-        param_name: None,
-    })
+    // ⭐ 第五份报告 A-3：命中参数的**规范名**随解析结果一并带出（回执回显用）。
+    // 名字只有一个来源 —— 渲染器解析入口给出的 `resolved.param_name`（设备定义里
+    // 存的原文），与 `yeban_edit_automation` 回执的 `resolvedParamName` 同一口径。
+    let resolved_param_name = resolved.param_name.clone();
+    Ok((
+        StaticLane::DeviceParam {
+            slot_index,
+            param_index: Some(param_index),
+            param_name: None,
+        },
+        resolved_param_name,
+    ))
 }
 
 /// 读一个**音轨开关**的目标态（`ops[].value`，只收 JSON 布尔）。
@@ -9817,6 +9824,72 @@ fn expand_clip_level_op(
 /// 从当前文档读**整条**场景当撤销载荷（`previous_scene`），并且**先**查"场景真的在
 /// `project.scenes` 里"（模型报的是 `SceneNotFound`，同样只在提案模拟那一步跑）。
 ///
+/// ⭐ 第五份报告 A-3：一次 `setParam`（`DeviceParam` 泳道）在编译期命中的参数回显。
+///
+/// 名字与下标都来自编译期那一次解析（[`resolve_set_param_device`]，与
+/// `yeban_edit_automation` 共用 [`super::automation::resolve_device_param_address`]），
+/// ⛔ 不在响应层重算 —— 回执说的就是编译时真正落盘的那个参数。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamEcho {
+    /// 目标音轨（逐条 `ops[].trackId` 优先于顶层 `trackId`，与编译口径一致）。
+    pub track_id: EntityId,
+    /// 设备槽位下标。
+    pub slot_index: usize,
+    /// 命中的参数下标（解析后）。
+    pub param_index: usize,
+    /// 命中的参数**规范名**（设备定义里存的原文；与母带回执
+    /// `data.automation[].resolvedParamName` 同名同义）。
+    pub resolved_param_name: String,
+}
+
+impl ParamEcho {
+    /// 进响应的 JSON 形状（`data.resolvedParams[]` 的一个元素）。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "trackId": self.track_id.to_canonical_string(),
+            "slotIndex": self.slot_index,
+            "paramIndex": self.param_index,
+            "resolvedParamName": self.resolved_param_name,
+        })
+    }
+}
+
+/// [`compile`] 的带回显变体（第五份报告 A-3）：除编译出的 `Op` 外，还按出现顺序
+/// 返回每条 `setParam`（`DeviceParam`）命中的参数回显（[`ParamEcho`]）。
+///
+/// # Errors
+///
+/// 与 [`compile`] 相同。
+pub fn compile_with_param_echoes(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    ops: &[NoteOp],
+) -> Result<(Vec<Op>, Vec<ParamEcho>), Fault> {
+    let mut echoes = Vec::new();
+    let compiled = compile_inner(project, track_id, clip_id, ops, Some(&mut echoes))?;
+    Ok((compiled, echoes))
+}
+
+/// 把一批 [`NoteOp`] 编译成模型 `Op`（错误表见 [`compile_inner`]）。
+///
+/// 需要 `setParam` 命中回显的调用方走 [`compile_with_param_echoes`]。
+///
+/// # Errors
+///
+/// 与 [`compile_inner`] 相同。
+pub fn compile(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    ops: &[NoteOp],
+) -> Result<Vec<Op>, Fault> {
+    compile_inner(project, track_id, clip_id, ops, None)
+}
+
+/// `compile` 的实现本体（错误表见此）。
+///
 /// # Errors
 ///
 /// - 音轨不存在 → `TRACK_NOT_FOUND`；
@@ -9832,11 +9905,12 @@ fn expand_clip_level_op(
 ///   一批即可；顺序不对仍按本表响亮拒绝。
 /// - 目标是主总线（`removeRoutingNode`）→ `CONFLICT`（`masterBusNodeCannotBeRemoved`）；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
-pub fn compile(
+fn compile_inner(
     project: &YebanProjectV1,
     track_id: &EntityId,
     clip_id: &EntityId,
     ops: &[NoteOp],
+    mut param_echoes: Option<&mut Vec<ParamEcho>>,
 ) -> Result<Vec<Op>, Fault> {
     // 音轨实体级形态（`removeTrack`）自带寻址，而且一个音符都不读：它不需要顶层
     // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
@@ -10214,13 +10288,34 @@ pub fn compile(
                         slot_index,
                         param_index,
                         param_name,
-                    } => resolve_set_param_device(
-                        &project,
-                        target_track,
-                        *slot_index,
-                        *param_index,
-                        param_name.as_deref(),
-                    )?,
+                    } => {
+                        let (resolved_lane, resolved_param_name) = resolve_set_param_device(
+                            &project,
+                            target_track,
+                            *slot_index,
+                            *param_index,
+                            param_name.as_deref(),
+                        )?;
+                        // ⭐ 第五份报告 A-3：命中回显（只要调用方要，就把这一次解析
+                        // 命中的下标与规范名记下来 ⇒ 进 `data.resolvedParams`）。
+                        if let Some(echoes) = param_echoes.as_deref_mut() {
+                            let StaticLane::DeviceParam {
+                                slot_index: echo_slot,
+                                param_index: echo_index,
+                                ..
+                            } = resolved_lane
+                            else {
+                                unreachable!("resolve_set_param_device 恒返回 DeviceParam 泳道");
+                            };
+                            echoes.push(ParamEcho {
+                                track_id: target_track,
+                                slot_index: echo_slot,
+                                param_index: echo_index.expect("解析后的 DeviceParam 下标必然已定"),
+                                resolved_param_name,
+                            });
+                        }
+                        resolved_lane
+                    }
                     other => other.clone(),
                 };
                 let target = lane.target(target_track);
@@ -13985,6 +14080,53 @@ mod tests {
             Fault::Domain { data, .. } => assert!(data.is_none(), "缺字段错误不带 data"),
             Fault::Impl { error } => panic!("应当是领域失败, 实际是 {error:?}"),
         }
+    }
+
+    /// ⭐ 第五份报告 A-3：`compile_with_param_echoes` 回显每条 `setParam`
+    /// （`DeviceParam`）命中的参数 —— 按名、按下标记、大写名字三种寻址回显
+    /// **同一个**规范名与下标；非设备泳道不产生回显。
+    ///
+    /// 注入（实测红）：把编译臂里的回显收集删掉 ⇒ 三条回显断言全红；
+    /// 回显若改从调用方给的名字抄（而不是解析出的规范名）⇒ 大写一格红。
+    #[test]
+    fn set_param_compile_echoes_the_resolved_param_name() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        for shape in [
+            serde_json::json!({"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "resonance", "value": 0.8}),
+            serde_json::json!({"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramName": "RESONANCE", "value": 0.8}),
+            serde_json::json!({"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 1, "value": 0.8}),
+        ] {
+            let ops = parse_ops(&serde_json::json!([shape])).expect("形状合法");
+            let (_compiled, echoes) =
+                compile_with_param_echoes(&project, &track_id, &clip_id, &ops).expect("编译");
+            assert_eq!(echoes.len(), 1, "一条设备 setParam 必须恰好一条回显");
+            let echo = &echoes[0];
+            assert_eq!(echo.track_id, track_id);
+            assert_eq!(echo.slot_index, 0);
+            assert_eq!(echo.param_index, 1);
+            assert_eq!(echo.resolved_param_name, "resonance");
+            assert_eq!(
+                echo.to_value(),
+                serde_json::json!({
+                    "trackId": track_id.to_canonical_string(),
+                    "slotIndex": 0,
+                    "paramIndex": 1,
+                    "resolvedParamName": "resonance",
+                })
+            );
+        }
+        // 非设备泳道（TrackVolume）不产生回显。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "TrackVolume", "value": -3.0}
+        ]))
+        .expect("形状合法");
+        let (_compiled, echoes) =
+            compile_with_param_echoes(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert!(echoes.is_empty(), "TrackVolume 不是设备参数, 不得产生回显");
     }
 
     /// ⭐ `#179`：`is_note_level()` **恰好**是九个音符形态（ADR-0019 起，`ADR-0034` 加 `transposeClip`）。

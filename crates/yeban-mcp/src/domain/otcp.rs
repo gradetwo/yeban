@@ -282,6 +282,7 @@ pub(crate) fn apply_deliver(
         auto_merge,
         merge_commit_message,
         None,
+        &[],
     )?;
     let proposal_id = match &response {
         ToolResponse::Success { data } => data
