@@ -69,6 +69,10 @@ The original six phases are done; current work deepens capabilities beyond that 
 
 macOS and Linux are fully tested. Windows is not yet thoroughly tested. The UI layer is still being refined.
 
+### Windows console encoding
+
+Yeban's command-line output is UTF-8. The default Windows console code page can render it as mojibake, so run `chcp 65001` in the console first to switch the code page to UTF-8 before running Yeban commands.
+
 ---
 
 ---

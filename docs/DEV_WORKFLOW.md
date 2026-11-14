@@ -86,6 +86,7 @@ scripts/dev/worktree.sh rm model-core --purge   # 显式废弃：删树 + 删分
 **硬规则**
 
 - 两条线**永不**共用一棵工作树；一个文件同一时刻只能有一个写者。
+- 本仓的 fetch refspec 只跟踪 `main`：缺省 `git fetch` 拉不到工作线分支的远端尖端，多分支工作流须显式 `git fetch origin <branch>`。
 - 工作线**短命**：小步落地，提交越小、变红时追查越短。
 - 被取代的线**显式废弃**（打标签 → 打包 → 删分支）。陈旧分支是负债，不是备份。
 - 冲突高发文件（根 `Cargo.toml`、`.github/**`、`scripts/**`、`docs/DEVELOPMENT_LEDGER.md`）
