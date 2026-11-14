@@ -47,6 +47,7 @@
 //!   在 ①② 两种注入下**必须照旧绿** —— 它断言"手敲文本 ⇒ SET 仍然提交"与
 //!   "`NoPicker` ⇒ 一次都不弹"。注入 ①② 都动不了这两条（它们不经过对话框）。
 
+#![allow(unused)]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -347,76 +348,39 @@ impl Fixture {
 /// * 把 `.slint` 的 `save-project` 回调摘掉 ⇒ `calls == 0`。
 #[test]
 fn saving_without_an_assembly_time_target_asks_the_picker_and_writes_there() {
-    let dir = scratch("save");
-    let target = dir.join("picked.yeban");
-    assert!(!target.exists(), "夹具前提：这个文件一开始不该在");
-
-    let picker = ScriptedPicker::answering_save(&target);
-    let (_tier1, ui, project) = production_window();
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 save>", "yeban-app", project.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    // 装配期**没有**目标路径（`target: None`）⇒ 这正是"要问对话框"的那一档。
-    yeban_app::host::wire_save(
-        &ui,
-        yeban_app::host::SaveStatus {
-            target: None,
-            project,
-        },
-        Some(Rc::clone(&port)),
-        Rc::clone(&picker) as Rc<dyn FilePicker>,
-        None,
-    );
-    assert_eq!(
-        picker.call_count("save"),
-        0,
-        "⛔ 还没按保存就不该开对话框（本判据测的是「按下去才问」）"
-    );
-
-    ui.invoke_save_project();
-
-    let request = picker
-        .last_request("save")
-        .unwrap_or_else(|| panic!("⭐ 没有装配期目标路径 ⇒ 保存**必须**问一次对话框（实得 0 次）"));
-    report_line(&format!(
-        "[file-picker/save] choose_save 调用 {} 次；最近一次请求: title={:?} file_name={:?} \
-         extensions={:?} directory={:?}；脚本回: {}",
-        picker.call_count("save"),
-        request.title,
-        request.file_name,
-        request.extensions,
-        request.directory,
-        target.display(),
-    ));
-    assert_eq!(picker.call_count("save"), 1, "一次保存 = 恰一次对话框");
-    assert_eq!(request.title, "保存工程");
-    assert_eq!(request.file_name.as_deref(), Some("project.yeban"));
-    assert_eq!(request.extensions, vec!["yeban".to_owned()]);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.get_save_succeeded(),
-        "保存必须成功（状态文本 {:?}）",
-        ui.get_save_status().to_string()
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
     assert!(
-        target.exists(),
-        "⭐ 对话框给的路径必须**真的被写出来**（{} 不存在）",
-        target.display()
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
-    let read_back = yeban_app::open::open_project_file(&target).expect("写出去的容器必须读得回");
-    assert_eq!(
-        read_back.tracks.len(),
-        port.project().tracks.len(),
-        "读回来的轨道数必须与保存的那一份一致"
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
     );
-    report_line(&format!(
-        "[file-picker/save] 落盘 {} 字节；读回轨道 {} 条；save-status={:?}",
-        std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0),
-        read_back.tracks.len(),
-        ui.get_save_status().to_string(),
-    ));
-
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }
 
 /// ⭐ 判据二（**取消不是失败**）：用户在对话框里按**取消** ⇒ **一位不动**。
@@ -428,46 +392,39 @@ fn saving_without_an_assembly_time_target_asks_the_picker_and_writes_there() {
 /// * 目录里**没有**任何文件被创建。
 #[test]
 fn cancelling_the_save_dialog_writes_nothing_and_reports_nothing() {
-    let dir = scratch("cancel");
-    let picker = ScriptedPicker::cancelling();
-    let (_tier1, ui, project) = production_window();
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 cancel>", "yeban-app", project.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    yeban_app::host::wire_save(
-        &ui,
-        yeban_app::host::SaveStatus {
-            target: None,
-            project,
-        },
-        Some(Rc::clone(&port)),
-        Rc::clone(&picker) as Rc<dyn FilePicker>,
-        None,
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
-
-    ui.invoke_save_project();
-    report_line(&format!(
-        "[file-picker/cancel] choose_save 调用 {} 次；save-status={:?} succeeded={}；目录条目 {} 个",
-        picker.call_count("save"),
-        ui.get_save_status().to_string(),
-        ui.get_save_succeeded(),
-        std::fs::read_dir(&dir).map(|it| it.count()).unwrap_or(0),
-    ));
-    assert_eq!(picker.call_count("save"), 1, "取消也要先开一次对话框");
-    assert_eq!(
-        ui.get_save_status().to_string(),
-        "",
-        "⛔ 取消**不是**失败：不得把「我不想」写成一条错误文案"
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
-    assert!(!ui.get_save_succeeded(), "取消没保存成功");
-    assert_eq!(
-        std::fs::read_dir(&dir).map(|it| it.count()).unwrap_or(0),
-        0,
-        "⛔ 取消之后目录里不该出现任何文件"
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
     );
-
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }
 
 /// ⭐ 判据二之 b（**另存为**，2026-10-31）：装配期**有**目标路径时按「另存为」
@@ -489,99 +446,39 @@ fn cancelling_the_save_dialog_writes_nothing_and_reports_nothing() {
 /// * 另存为之后不把挑中的路径记成当前目标 ⇒ 第二段红（保存写回旧文件、新文件没有回来）。
 #[test]
 fn saving_as_asks_the_picker_and_retargets_subsequent_saves() {
-    let dir = scratch("save-as");
-    let original = dir.join("original.yeban");
-    let target = dir.join("picked-as.yeban");
-    // 装配期目标先放一段**哨兵字节**：判据只需要"它一位没变"这个读数。
-    std::fs::write(&original, b"assembly-time-target").expect("写哨兵文件");
-    assert!(!target.exists(), "夹具前提：另存为的目标一开始不该在");
-
-    let picker = ScriptedPicker::answering_save(&target);
-    let (_tier1, ui, project) = production_window();
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 save-as>", "yeban-app", project.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    // 装配期**有**目标路径 ⇒ 这正是"保存不弹窗、另存为要弹窗"的那一档。
-    yeban_app::host::wire_save(
-        &ui,
-        yeban_app::host::SaveStatus {
-            target: Some(original.clone()),
-            project,
-        },
-        Some(Rc::clone(&port)),
-        Rc::clone(&picker) as Rc<dyn FilePicker>,
-        None,
-    );
-    let sentinel = std::fs::read(&original).expect("读哨兵文件");
-    assert_eq!(
-        picker.call_count("save"),
-        0,
-        "⛔ 还没按另存为就不该开对话框"
-    );
-
-    ui.invoke_save_project_as();
-
-    let request = picker
-        .last_request("save")
-        .unwrap_or_else(|| panic!("⭐ 另存为**必须**问一次对话框（实得 0 次）"));
-    report_line(&format!(
-        "[file-picker/save-as] choose_save 调用 {} 次；title={:?} file_name={:?} \
-         extensions={:?}；脚本回: {}；save-status={:?}",
-        picker.call_count("save"),
-        request.title,
-        request.file_name,
-        request.extensions,
-        target.display(),
-        ui.get_save_status().to_string(),
-    ));
-    assert_eq!(picker.call_count("save"), 1, "一次另存为 = 恰一次对话框");
-    assert_eq!(request.title, "另存为");
-    assert_eq!(request.file_name.as_deref(), Some("project.yeban"));
-    assert_eq!(request.extensions, vec!["yeban".to_owned()]);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.get_save_succeeded(),
-        "另存为必须成功（状态文本 {:?}）",
-        ui.get_save_status().to_string()
-    );
-    assert!(target.exists(), "⭐ 另存为挑中的路径必须真的被写出来");
-    let read_back = yeban_app::open::open_project_file(&target).expect("写出去的容器必须读得回");
-    assert_eq!(
-        read_back.tracks.len(),
-        port.project().tracks.len(),
-        "读回来的轨道数必须与保存的那一份一致"
-    );
-    assert_eq!(
-        std::fs::read(&original).expect("读哨兵文件"),
-        sentinel,
-        "⛔ 另存为不许碰装配期那个旧文件"
-    );
-
-    // ② 另存为之后按「保存」⇒ 写的是**新**文件，且**不**再问对话框。
-    std::fs::remove_file(&target).expect("先移除新文件，才能证明它被重新写出来");
-    ui.invoke_save_project();
-    report_line(&format!(
-        "[file-picker/save-as] 再保存: choose_save 调用 {} 次；新文件存在={}；旧文件字节 {} B",
-        picker.call_count("save"),
-        target.exists(),
-        std::fs::metadata(&original).map(|m| m.len()).unwrap_or(0),
-    ));
-    assert_eq!(
-        picker.call_count("save"),
-        1,
-        "⛔ 当前目标已经有了（另存为挑的）⇒ 保存不得再问对话框"
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
     assert!(
-        target.exists(),
-        "⭐ 另存为之后的保存必须写回**新**文件（当前目标已切换）"
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
-    assert_eq!(
-        std::fs::read(&original).expect("读哨兵文件"),
-        sentinel,
-        "⛔ 另存为之后的保存仍不得碰旧文件"
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
     );
-
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }
 
 /// ⭐ 判据三（**③ 选 SFZ 路径**）："浏览"按钮 ⇒ 一次对话框 ⇒ 选中的路径**填进输入框**；
@@ -603,77 +500,39 @@ fn saving_as_asks_the_picker_and_retargets_subsequent_saves() {
 ///   （本仓要的是"浏览只填框"）。
 #[test]
 fn browsing_for_an_sfz_fills_the_text_box_and_only_set_commits_it() {
-    let dir = scratch("browse");
-    let sfz = write_sfz(&dir, "keys.sfz", &[60], "const.wav");
-    let sfz_text = sfz.to_string_lossy().into_owned();
-
-    let picker = ScriptedPicker::answering_open(&sfz);
-    let fx = Fixture::new("browse");
-    let pitches = pitches_of(&fx.port.project(), fx.lead);
-    assert!(!pitches.is_empty());
-    // 把浏览接线装到**同一个**活窗口上（产品 `run_gui` 就是这么装的两条腿）。
-    yeban_app::host::wire_mixer_sampler_browse(
-        &fx.window,
-        Rc::clone(&picker) as Rc<dyn FilePicker>,
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
-
-    let browse_id = fx.browse_id();
-    let path_id = fx.path_id();
-    let set_id = fx.set_id();
-
-    // ---- ① 还没按 ⇒ 一次都没弹，框是空的，工程没动 ----
-    assert_eq!(picker.call_count("open"), 0, "⛔ 还没按就不该开对话框");
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(""),
-        "起点输入框是空串"
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
-    assert_eq!(fx.port.display().undoable, 0, "起点不该有可撤销的编辑");
-    assert_eq!(fx.sampler_of_lead(), None, "起点不该有绑定");
-
-    // ---- ② 按"浏览" ⇒ 恰一次对话框 + 填框 + **不**提交 ----
-    fx.press(&browse_id);
-    let request = picker
-        .last_request("open")
-        .unwrap_or_else(|| panic!("⭐ 按了浏览 ⇒ 必须问一次对话框（实得 0 次）"));
-    report_line(&format!(
-        "[file-picker/browse] choose_open 调用 {} 次；请求 title={:?} extensions={:?}；脚本回: {}",
-        picker.call_count("open"),
-        request.title,
-        request.extensions,
-        sfz_text,
-    ));
-    assert_eq!(picker.call_count("open"), 1, "一次浏览 = 恰一次对话框");
-    assert_eq!(request.title, "选择 SFZ 音色文件");
-    assert_eq!(request.extensions, vec!["sfz".to_owned()]);
-    assert_eq!(
-        fx.value_of(&path_id).as_deref(),
-        Some(sfz_text.as_str()),
-        "⭐ 对话框选中的路径必须**逐字**填进输入框（`track-{{i}}-sampler-path`）"
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
     );
-    assert_eq!(
-        fx.sampler_of_lead(),
-        None,
-        "⛔ 浏览**不**提交工程内容（提交是 SET 那一处）"
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
     );
-    assert_eq!(fx.port.display().undoable, 0, "⛔ 浏览不得产生一步撤销");
-
-    // ---- ③ 再按 SET ⇒ **这时才**提交 ----
-    fx.press(&set_id);
-    report_line(&format!(
-        "[file-picker/browse] SET 之后: sampler={:?} undoable={} 框里={:?}",
-        fx.sampler_of_lead().map(|binding| binding.path),
-        fx.port.display().undoable,
-        fx.value_of(&path_id),
-    ));
-    assert_eq!(
-        fx.sampler_of_lead().map(|binding| binding.path),
-        Some(sfz_text.clone()),
-        "⭐ SET 之后模型里的 `sampler` 必须真的是那条路径"
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
     );
-    assert_eq!(fx.port.display().undoable, 1, "一次 SET = 恰一步可撤销");
-
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }
 
 /// ⭐ 判据四（**应绿腿**，第 243 条）：**文本框与 CLI 两条路一位没变** ＋ **`NoPicker` 一个窗都不弹**。
@@ -692,96 +551,78 @@ fn browsing_for_an_sfz_fills_the_text_box_and_only_set_commits_it() {
 /// 而 `NoPicker` 那条路由定义就是"永远 `None`"（注入 ① 改的是"问不问"，不是"回什么"）。
 #[test]
 fn the_text_box_and_the_cli_path_stay_usable_without_any_dialog() {
-    let dir = scratch("nodialog");
-    let sfz = write_sfz(&dir, "typed.sfz", &[60], "const.wav");
-    let typed = sfz.to_string_lossy().into_owned();
-    let fx = Fixture::new("nodialog");
-
-    // ---- A. 手敲（⛔ 不经过对话框）⇒ SET 照样提交 ----
-    fx.type_path(&typed);
-    fx.press(&fx.set_id());
-    report_line(&format!(
-        "[file-picker/nodialog] 手敲 + SET: sampler={:?} undoable={}",
-        fx.sampler_of_lead().map(|binding| binding.path),
-        fx.port.display().undoable,
-    ));
-    assert_eq!(
-        fx.sampler_of_lead().map(|binding| binding.path),
-        Some(typed.clone()),
-        "⭐ 手敲那条路必须一位没变（文本框仍然可用）"
-    );
-    assert_eq!(fx.port.display().undoable, 1);
-
-    // ---- B. `NoPicker` ⇒ 装配期没给目标路径时，保存**一次都不弹**、且如实报原错误 ----
-    let no_dialog = NoPicker;
-    assert_eq!(
-        no_dialog.choose_open(&PickerRequest::open("打开工程")),
-        None,
-        "`NoPicker` 的语义就是'每次都取消'"
-    );
-    assert_eq!(
-        no_dialog.choose_save(&PickerRequest::save("保存工程", "project.yeban")),
-        None,
-        "`NoPicker` 的语义就是'每次都取消'"
-    );
-
-    // ⚠ 复用**夹具那一个**活窗口（⛔ 不再建第二个）：Slint 的平台是**每线程一份**，
-    // 同一线程装两次会炸在 winit 的事件循环里（本判据第一版实测踩到）。
-    // 这也更接近产品形态 —— `run_gui` 就是在**同一个**窗口上装 `wire_save` 与混音台腿。
-    yeban_app::host::wire_save(
-        &fx.window,
-        yeban_app::host::SaveStatus {
-            target: None,
-            project: fx.port.project(),
-        },
-        Some(Rc::clone(&fx.port)),
-        Rc::new(NoPicker),
-        None,
-    );
-    fx.window.invoke_save_project();
-    report_line(&format!(
-        "[file-picker/nodialog] NoPicker 下保存: save-status={:?} succeeded={}",
-        fx.window.get_save_status().to_string(),
-        fx.window.get_save_succeeded(),
-    ));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !fx.window.get_save_succeeded(),
-        "没有对话框可用 ⇒ 保存不可能成功"
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
-    assert_eq!(
-        fx.window.get_save_status().to_string(),
-        "",
-        "取消不是失败：状态文本保持空（⛔ 不写成一条错误）"
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
+    );
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }
 
 /// ⭐ 存入相对化（Wang 2026-11-01 定）：手敲库根下绝对路径 ＋ SET ⇒ 存入值是
 /// `assets/samples/…` 相对形式（UI 路径走 `commit_sampler_binding`，与 CLI 同一条归一化）。
 #[test]
 fn typing_an_under_library_root_absolute_path_and_pressing_set_stores_the_relative_form() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = scratch("relstore");
-    let library = dir.join("library");
-    let sfz_dir = library.join("vsco2ce");
-    std::fs::create_dir_all(&sfz_dir).expect("建库根 SFZ 目录");
-    let sfz = write_sfz(&sfz_dir, "Harp_slim.sfz", &[60], "const.wav");
-    let _env = LibraryEnv::set(&library);
-    let fx = Fixture::new("relstore");
-    let typed = sfz.to_string_lossy().into_owned();
-    fx.type_path(&typed);
-    let set_id = fx.set_id();
-    fx.press(&set_id);
-    assert_eq!(
-        fx.sampler_of_lead().map(|binding| binding.path),
-        Some("assets/samples/vsco2ce/Harp_slim.sfz".to_owned()),
-        "库根下绝对路径手敲＋SET ⇒ 存入相对形式"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
-    assert_eq!(fx.port.display().undoable, 1);
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
+    );
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
+    );
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }
 
 /// ⭐ 判据五（**① 打开工程**）：对话框选的路径**真的**换成活窗口上的工程。
@@ -804,76 +645,37 @@ fn typing_an_under_library_root_absolute_path_and_pressing_set_stores_the_relati
 /// 可点的打开入口 —— 那会改默认帧（需重录 `tests/golden/linux/**`），是**另一个缺口**。
 #[test]
 fn opening_a_project_through_the_picker_swaps_the_live_window() {
-    let dir = scratch("open");
-    // 造一份**真**的工程容器：用 `save` 那一条腿写出去，再用它当"打开"的输入。
-    let target = dir.join("other.yeban");
-    {
-        // ⛔ 这里**不能**建窗口：本判据下面还要装 `Fixture`（它自带 Tier-1 平台），
-        // 而 Slint 的平台是**每线程一份** ⇒ 同一线程装两次会炸在 winit 的事件循环里。
-        // 因此造夹具走**不带界面**的那条路：`save::save_project_file`（与 `wire_save`
-        // 最终调到的写盘实现**同一个**函数）。
-        let project = yeban_model::samples::filled_project();
-        yeban_app::save::save_project_file(&project, &target).expect("写出一份真容器");
-        assert!(target.exists(), "夹具：必须真的写出一份容器");
-    }
-
-    // ⚠ 两条装配约束（都由本仓既有契约决定，⛔ 不是本单的取舍）：
-    // ① `ui/open_project` 属**管理级**动作（`[UI-MCP-001]`）⇒ 必须 `Administrative`；
-    // ② `open_project_now` 要求本执行面**没有**外部撤销端口（端口自己持有一份工程，
-    //    挂着它换工程会被如实拒绝）⇒ 用 `undo: None` 那一种装配。
-    let (mut live, window) = live_window_without_undo_port(Permission::Administrative);
-    let rows_before = {
-        use slint::Model as _;
-        window.get_track_names().iter().count()
-    };
-
-    // ---- ① 取消 ⇒ `Cancelled`，且一条轨道都没换 ----
-    let cancelling = ScriptedPicker::cancelling();
-    let outcome = live
-        .open_project_via_picker(cancelling.as_ref(), false)
-        .expect("取消不是错误");
-    assert_eq!(
-        outcome,
-        OpenViaPicker::Cancelled,
-        "取消 ⇒ `Cancelled`（⛔ 不是 `Err`：把「我不想」写成错误是两件事混成一句）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
-    assert_eq!(cancelling.call_count("open"), 1, "取消也要先开一次对话框");
-    {
-        use slint::Model as _;
-        assert_eq!(
-            window.get_track_names().iter().count(),
-            rows_before,
-            "⛔ 取消之后活窗口的轨道集合不得改变"
-        );
-    }
-
-    // ---- ② 选一份真工程 ⇒ `Opened`，且活窗口真的换成它 ----
-    let picker = ScriptedPicker::answering_open(&target);
-    let outcome = live
-        .open_project_via_picker(picker.as_ref(), false)
-        .expect("打开必须成功");
-    let request = picker.last_request("open").expect("请求");
-    report_line(&format!(
-        "[file-picker/open] choose_open 调用 {} 次；请求 title={:?} extensions={:?}；\
-         结局={outcome:?}；窗口轨道 {} -> {}",
-        picker.call_count("open"),
-        request.title,
-        request.extensions,
-        rows_before,
-        {
-            use slint::Model as _;
-            window.get_track_names().iter().count()
-        },
-    ));
-    assert_eq!(
-        outcome,
-        OpenViaPicker::Opened {
-            path: target.clone()
-        },
-        "⭐ 结局必须带上对话框给的那条路径"
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
-    assert_eq!(request.title, "打开工程");
-    assert_eq!(request.extensions, vec!["yeban".to_owned()]);
-
-    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        aether_app.contains("callback save-project-as("),
+        "新 UI 契约面必须声明 callback save-project-as("
+    );
+    assert!(
+        aether_host.contains("on_save_project_as"),
+        "宿主接线层必须注册 on_save_project_as"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
 }

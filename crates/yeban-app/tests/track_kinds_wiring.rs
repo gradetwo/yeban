@@ -110,15 +110,13 @@ fn the_injection_is_declared_forwarded_and_written_by_the_host() {
     assert!(
         // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
         // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
-        (["track-kinds"]
-            .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
+        (["track-kinds"].iter().fold(true, |acc, n| acc
+            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
         "`MainWindow` 必须声明 `track-kinds` 注入面"
     );
     assert!(
-        (["track-kinds"]
-            .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
+        (["track-kinds"].iter().fold(true, |acc, n| acc
+            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
         "`app.slint` 必须把 `track-kinds` 转发给 `ArrangementView`"
     );
     assert!(

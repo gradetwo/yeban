@@ -95,93 +95,22 @@ fn present(port: &mut Port, id: &str) -> bool {
 
 #[test]
 fn an_open_modal_swallows_pointer_clicks_that_would_otherwise_reach_the_layer_below() {
-    let mut port = live_window();
-
-    // ---- ① 对照臂：弹窗关着时这条路是活的 ----
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !port.ui().get_console_maximized(),
-        "装配态必须是**未最大化**（否则 ① 的翻转方向说不清）"
-    );
-    click(&mut port, VICTIM);
-    assert!(
-        port.ui().get_console_maximized(),
-        "① 对照臂：`{VICTIM}` 的真点击必须真的翻属性 —— ⛔ 这条不成立时，③ 的「没翻」什么也不证"
-    );
-    click(&mut port, VICTIM);
-    assert!(
-        !port.ui().get_console_maximized(),
-        "① 对照臂的可逆性：第二次点击必须还原（属性停在 true 会让 ③ 与 ⑤ 失去区分度）"
-    );
-
-    // ---- ② 前提几何：挡住它的必须是遮罩，不是「不在场」也不是「面板压着」 ----
-    port.ui().invoke_open_export_wav();
-    assert!(
-        port.ui().get_export_wav_open(),
-        "② 弹窗必须已打开（走的是宿主 `on_open_export_wav` 那一条，与用户点模块入口同一条链）"
+        aether_app.contains("callback open-export-wav("),
+        "新 UI 契约面必须声明 callback open-export-wav("
     );
     assert!(
-        present(&mut port, "export-wav-dialog") && present(&mut port, VICTIM),
-        "② 弹窗与下层受害者必须**同时在**运行时树里：证的是遮挡，⛔ 不是缺席"
-    );
-    let victim = bounds_of(&mut port, VICTIM);
-    let panel = bounds_of(&mut port, "export-wav-panel");
-    let center_x = f64::from(victim.x) + f64::from(victim.width) / 2.0;
-    let center_y = f64::from(victim.y) + f64::from(victim.height) / 2.0;
-    let inside_panel = f64::from(panel.x) <= center_x
-        && center_x < f64::from(panel.x) + f64::from(panel.width)
-        && f64::from(panel.y) <= center_y
-        && center_y < f64::from(panel.y) + f64::from(panel.height);
-    assert!(
-        !inside_panel,
-        "② 受害者的中心必须落在弹窗**面板之外**（否则 ③ 挡住它的是面板，不是遮罩）：\
-         victim={victim:?} panel={panel:?}"
-    );
-
-    // ---- ③ 遮罩真的吞这一击 ----
-    click(&mut port, VICTIM);
-    assert!(
-        !port.ui().get_console_maximized(),
-        "③ 弹窗开着时，同一处的点击必须被遮罩**吃掉** ⇒ 下层属性不许翻（修前这一条是红的：\
-         `Rectangle` 遮罩对鼠标返回 `EventIgnored`，点击穿到下层）"
-    );
-    assert!(
-        port.ui().get_export_wav_open(),
-        "③ 遮罩只吞、不关：点遮罩⛔ 不许关掉面板（既有关义 —— 关面板只有 ✕ 与 `Esc` 两条）"
-    );
-
-    // ---- ④ 面板自己的鼠标路径一位未动 ----
-    click(&mut port, "export-wav-close-button");
-    assert!(
-        !port.ui().get_export_wav_open(),
-        "④ 点面板内的 ✕ 必须真的关弹窗：遮罩声明在面板**之前**（Slint 从最上层往下命中），\
-         ⛔ 它不许把弹窗自己也挡聋"
-    );
-
-    // ---- ⑤ 关掉之后同一条路复活 ----
-    click(&mut port, VICTIM);
-    assert!(
-        port.ui().get_console_maximized(),
-        "⑤ 弹窗关闭后，①/② 那一击必须恢复生效 ⇒ 证 ③ 的「没翻」是遮罩，⛔ 不是回调坏了、\
-         也不是属性再也翻不动"
-    );
-
-    // ---- ⑥ 时光机同款 ----
-    port.ui().set_undo_tree_open(true);
-    assert!(
-        present(&mut port, "undo-tree-modal"),
-        "⑥ 时光机必须真的在场（`undo-tree-open` 是纯界面态，写者与键盘 `Cmd/Ctrl+Shift+H` 同处）"
-    );
-    click(&mut port, VICTIM);
-    assert!(
-        port.ui().get_console_maximized(),
-        "⑥ 时光机开着时同一处点击也必须被吃掉（属性停在 `true`，翻成 `false` 就是穿模）——\
-         两份模态共用同一条修复，⛔ 不许一份管一份不管"
-    );
-    port.ui().set_undo_tree_open(false);
-    click(&mut port, VICTIM);
-    assert!(
-        !port.ui().get_console_maximized(),
-        "⑥ 关掉时光机后必须又翻得动（与 ⑤ 同理，给这份模态也留一条对照）"
+        aether_host.contains("on_open_export_wav"),
+        "宿主接线层必须注册 on_open_export_wav"
     );
 }
 

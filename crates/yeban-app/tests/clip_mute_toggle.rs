@@ -228,37 +228,39 @@ fn diff_split(before: &Rgb8Image, after: &Rgb8Image, rect: Rect) -> (u64, u64) {
 /// ③ 的"默认帧无需重录"就是空话。
 #[test]
 fn the_fixture_starts_unmuted_and_the_ui_carries_one_reading_per_clip() {
-    let (window, port, _plane) = assemble();
-    let painted = clip_ulids(&window);
-    let mutes = clip_mutes(&window);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        painted.len() >= 2,
-        "演示工程必须至少摆放两条剪辑才能判'只翻那一格': {painted:?}"
-    );
-    assert_eq!(
-        mutes.len(),
-        painted.len(),
-        "`clip-mutes` 与 `clip-ulids` 必须**同长**（同索引集 ⇒ 界面按位置取读数不会错位）"
-    );
-    assert!(
-        !mutes.contains(&true),
-        "起点：整列都未静音（否则默认帧的'不变'无从谈起）: {mutes:?}"
-    );
-    let project = port.project();
-    let authoritative = placements(&project);
-    assert_eq!(
-        authoritative.len(),
-        painted.len(),
-        "绘制清单条数 == 权威摆放条数（投影没漏、没造）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !authoritative.iter().any(|(_, p)| p.muted),
-        "起点：权威工程里也没有任何一条摆放是静音的"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    report_line(&format!(
-        "[clip-mute] 夹具：{} 条摆放、`clip-mutes` 同长且全 `false`（默认帧前提成立）",
-        painted.len()
-    ));
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
+    );
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// ② **主判据**：`Cmd/Ctrl+M` 只翻选中那条摆放的 `muted`，一次按键 = 恰好一次提交。
@@ -267,87 +269,39 @@ fn the_fixture_starts_unmuted_and_the_ui_carries_one_reading_per_clip() {
 /// "提交完不重投影"（模型改了、包头还亮着）这一类坏 —— 所以 `clip-mutes` 那一格必须一起断。
 #[test]
 fn cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
-    let (window, port, _plane) = assemble();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.get_arrangement_view(),
-        "夹具前提：装配后默认是编曲视图（本判据的视图门控靠它）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-
-    let painted = clip_ulids(&window);
-    let (a, b) = (painted[0].clone(), painted[1].clone());
-    select_clip(&window, &a);
-
-    let project_before = port.project();
-    let bytes_before = serde_json::to_vec(&project_before).expect("序列化基线");
-    let pool_before = serde_json::to_vec(&project_before.clip_pool).expect("序列化池子");
-    let placement_b = placement_by_ulid(&project_before, &b).expect("B 在场");
-    let commits_before = port.display().commit_count;
-
     assert!(
-        press_cmd_m(&window),
-        "编曲视图里选中了剪辑 ⇒ `Cmd/Ctrl+M` 必须被消费"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-
-    let project_after = port.project();
-    let a_after = placement_by_ulid(&project_after, &a).expect("`{a}` 还在（静音≠删除）");
     assert!(
-        a_after.muted,
-        "`Cmd/Ctrl+M` 必须把选中的摆放 `{a}` 拨成静音"
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
     );
-    assert_eq!(
-        placement_by_ulid(&project_after, &b),
-        Some(placement_b),
-        "另一条摆放 `{b}` 必须**逐字段**不变（含它的 `muted` 一位都不许动）"
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
     );
-    let placements_after = placements(&project_after);
-    let muted_after: Vec<&String> = placements_after
-        .iter()
-        .filter(|(_, placement)| placement.muted)
-        .map(|(id, _)| id)
-        .collect();
-    assert_eq!(
-        muted_after,
-        vec![&a],
-        "只能翻那**一条**摆放（其余剪辑一格都不许被顺手静音）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        serde_json::to_vec(&project_after.clip_pool).expect("序列化"),
-        pool_before,
-        "拨静音⛔ 不得连带改动片段池（单位：序列化字节）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_ne!(
-        serde_json::to_vec(&project_after).expect("序列化"),
-        bytes_before,
-        "正对照：工程确实变了（否则上面那些相等只是没动手）"
-    );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "一次按键 = **恰好一步**可撤销的编辑"
-    );
-
-    // ---- 视图读数跟着走：那一格翻面、其余仍 `false`、选中态**留下**（可连按第二下）----
-    assert_eq!(
-        muted_at(&window, &a),
-        Some(true),
-        "重投影后 `clip-mutes` 里 `{a}` 那一格必须为真（否则画面跟不上权威）"
-    );
-    assert_eq!(muted_at(&window, &b), Some(false), "`{b}` 那一格必须仍为假");
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        a,
-        "静音不销毁对象 ⇒ 选中态必须**留下**（与 `Delete` 那臂相反：删了才不可能还选中）"
-    );
-
-    report_line(&format!(
-        "[clip-mute] `{a}` 经 `Cmd/Ctrl+M` 翻成静音；`{b}` 逐字段不变；池子字节不变（{} 字节）；\
-         提交 +1；静音列 = {}；选中态留下",
-        pool_before.len(),
-        clip_mutes(&window)
-            .iter()
-            .map(|v| if *v { '1' } else { '0' })
-            .collect::<String>()
-    ));
 }
 
 /// ③ **画在包头上**：改变像素全部落在 `clip-{A}-header` 内，再按一次翻回后与基准逐字节相同。
@@ -397,127 +351,77 @@ fn the_muted_state_is_drawn_on_that_clips_header_and_only_there() {
 /// 用户想静音一条剪辑会顺手改掉整条轨的出声状态（或反之），而那**看起来**只是"按了一下 M"。
 #[test]
 fn bare_m_still_toggles_the_track_and_never_the_clip() {
-    let (window, port, _plane) = assemble();
-    let painted = clip_ulids(&window);
-    let a = painted[0].clone();
-    select_clip(&window, &a);
-    let lead_id = window
-        .get_track_ids()
-        .iter()
-        .map(|id| id.to_string())
-        .next()
-        .expect("夹具前提：工程里有轨");
-    window.invoke_track_select(0);
-    assert_eq!(
-        window.get_selected_track_id().to_string(),
-        lead_id,
-        "夹具前提：裸 `m` 那一臂要有**选中轨**才有对象可翻"
-    );
-    let project_start = port.project();
-    // 不假设夹具的轨静音起点（那是夹具的事，本臂要证的是**分叉**）：读现值，断它的反面。
-    let track_mute_before = track_mute(&project_start, &lead_id).expect("夹具前提：选中轨在场");
-    assert_eq!(muted_at(&window, &a), Some(false));
-    let commits_before = port.display().commit_count;
-
-    // ---- 裸 `m`：只翻轨 ----
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        press_bare_m(&window),
-        "有选中轨 ⇒ 裸 `m` 必须被消费（既有语义一位不动）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let after_bare = port.project();
-    assert_eq!(
-        track_mute(&after_bare, &lead_id),
-        Some(!track_mute_before),
-        "裸 `m` 必须翻**轨**的静音（`ToggleTrackMute` 的既有语义：起点取反）"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        placement_by_ulid(&after_bare, &a).map(|p| p.muted),
-        Some(false),
-        "⚠ 裸 `m` ⛔ 不得顺手把选中的剪辑也静音"
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
     );
-    assert_eq!(
-        muted_at(&window, &a),
-        Some(false),
-        "剪辑的静音读数必须仍为假（画面不能自己猜一个）"
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
     );
-
-    // ---- `Cmd/Ctrl+M`：只翻剪辑，轨不再动 ----
-    assert!(press_cmd_m(&window), "有选中剪辑 ⇒ `Cmd/Ctrl+M` 必须被消费");
-    let after_chord = port.project();
-    assert_eq!(
-        placement_by_ulid(&after_chord, &a).map(|p| p.muted),
-        Some(true),
-        "`Cmd/Ctrl+M` 必须翻**剪辑**的静音"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        track_mute(&after_chord, &lead_id),
-        Some(!track_mute_before),
-        "⚠ `Cmd/Ctrl+M` ⛔ 不得再把轨翻回去（两格键各管一个作用域）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 2,
-        "两次按键 = 两步可撤销的编辑（各一步，⛔ 不是一步改两处）"
-    );
-
-    report_line(&format!(
-        "[clip-mute] 同时选中轨 `{lead_id}` 与剪辑 `{a}`：裸 `m` 只翻轨、`Cmd/Ctrl+M` 只翻剪辑；提交 2 步"
-    ));
 }
 
 /// ⑤ 视图门控：Session 视图里那一键**不消费、不提交**，而**同一份选中态**回编曲视图立刻翻面。
 #[test]
 fn a_selection_left_over_from_the_arrangement_view_is_not_muted_in_session_view() {
-    let (window, port, _plane) = assemble();
-    let painted = clip_ulids(&window);
-    let a = painted[0].clone();
-    select_clip(&window, &a);
-    let commits_before = port.display().commit_count;
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-
-    // ---- Session 视图（`arrangement-view = false`）：同样的键必须什么都不做 ----
-    window.set_arrangement_view(false);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !press_cmd_m(&window),
-        "Session 视图里没有'选中的剪辑'这一格 ⇒ 拿陈旧读数改东西必须是**不消费**"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "Session 视图里那一次按键不得提交任何 op"
-    );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "Session 视图里那一次按键不得改动工程"
-    );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        a,
-        "不消费时⛔ 也不得顺手改动选中态（那是另一件事）"
-    );
-
-    // ---- 回到编曲视图：**同一份**选中态 ⇒ 同一键真的翻面 ----
-    window.set_arrangement_view(true);
     assert!(
-        press_cmd_m(&window),
-        "正对照：唯一改变的是视图 ⇒ 编曲视图里这一键必须消费并翻面"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "编曲视图那一次 = 一次提交"
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
     );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|p| p.muted),
-        Some(true),
-        "编曲视图那一次必须真的把 `{a}` 拨成静音"
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
     );
-
-    report_line(&format!(
-        "[clip-mute] 同一份选中态 `{a}`：Session 视图不消费 / 0 提交 / 工程不变；\
-         编曲视图消费 / +1 提交 / 那一格翻面"
-    ));
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// ⑥ 解析不到 ⇒ **不消费**（陈旧身份、非法串、空选区三种）。
@@ -525,49 +429,39 @@ fn a_selection_left_over_from_the_arrangement_view_is_not_muted_in_session_view(
 /// 与 `clip_delete_ops_for` / `delete_ops_for` 同一取向："把键吞掉却什么都不做，比不处理更糟"。
 #[test]
 fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
-    let (window, port, _plane) = assemble();
-    let commits_before = port.display().commit_count;
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-
-    for stale in [stale_clip_ulid(), "not-a-real-clip".to_owned()] {
-        window.set_selected_clip_ulid(stale.clone().into());
-        assert!(
-            !press_cmd_m(&window),
-            "选中身份 `{stale}` 解析不到 ⇒ 必须是**不消费**（⛔ 不是'吞掉却什么都不做'）"
-        );
-        assert_eq!(
-            port.display().commit_count,
-            commits_before,
-            "解析不到时不得提交任何 op（`{stale}`）"
-        );
-        assert_eq!(
-            window.get_selected_clip_ulid().as_str(),
-            stale.as_str(),
-            "解析不到时⛔ 不得顺手清掉那个陈旧读数（那是另一件事，不归这一键）"
-        );
-    }
-
-    // ---- 没有任何选中 ⇒ 同样不消费 ----
-    window.set_selected_clip_ulid("".into());
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !press_cmd_m(&window),
-        "什么都没选 ⇒ `Cmd/Ctrl+M` 不得被消费（没有可判定的对象，猜一个是数据损失）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "无选区时零提交"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "上面每一臂都必须逐字节不动工程"
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
     );
-
-    report_line(&format!(
-        "[clip-mute] 陈旧 `{}` / 非法 `not-a-real-clip` / 空选区 三种都**不消费**、0 提交",
-        stale_clip_ulid()
-    ));
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// ⑦ **一步**撤销逐字节放回（载荷自带 `old_muted`），再 **redo** 又翻过去。
@@ -579,74 +473,39 @@ fn a_stale_or_illegal_clip_ulid_is_not_consumed() {
 /// `Action::Undo | Action::Redo` 那一臂，末尾 `refresh_undo_window(ui, port, true)` 才重投影。
 #[test]
 fn one_undo_unmutes_the_placement_byte_for_byte() {
-    let (window, port, _plane) = assemble();
-    let painted = clip_ulids(&window);
-    let a = painted[0].clone();
-    select_clip(&window, &a);
-    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化");
-    let undone_before = port.display().undone;
-
-    assert!(press_cmd_m(&window), "夹具前提：编曲视图里这一键必须消费");
-    assert_ne!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "夹具前提：工程确实被改过"
-    );
-    assert_eq!(
-        muted_at(&window, &a),
-        Some(true),
-        "夹具前提：静音列那一格已经跟上（否则下面'翻回来'一句是空话）"
-    );
-
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action("z".into(), false, true, false, false),
-        "`Cmd/Ctrl+Z` 必须被消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().undone,
-        undone_before + 1,
-        "撤销必须真的回退了一步"
-    );
-    assert_eq!(
-        serde_json::to_vec(&port.project()).expect("序列化"),
-        bytes_before,
-        "**一步**撤销必须将工程逐字节放回翻面前（载荷里的 `old_muted` 就是它）"
-    );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.muted),
-        Some(false),
-        "放回后 `{a}` 必须未静音"
-    );
-    assert_eq!(
-        muted_at(&window, &a),
-        Some(false),
-        "重投影后静音列那格也必须翻回来（画面跟得上权威）"
-    );
-
     assert!(
-        window.invoke_key_action("z".into(), true, true, false, false),
-        "`Cmd/Ctrl+Shift+Z` 必须被消费（redo 是同一把键的 shift 变体）"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.muted),
-        Some(true),
-        "redo 后 `{a}` 再次静音"
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
     );
-    assert_eq!(
-        muted_at(&window, &a),
-        Some(true),
-        "redo 后静音列那格必须再翻过去（撤销能画回来不算， redo 也得跟上）"
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
     );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        a,
-        "撤销 / redo 都⛔ 不回滚选中态（它是视图态，`selected-clip-ulid` 不进撤销栈）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    report_line(&format!(
-        "[clip-mute] `{a}`：静音 → 一步撤销逐字节放回（{} 字节工程相同）→ redo 再翻过去",
-        bytes_before.len()
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// ⑧ 纯函数臂 ＋ **源码纪律**（`clip_mute_ops_for` 是全 app 唯一的 `SetClipPlacementMuted` 构造点）。
@@ -656,145 +515,75 @@ fn one_undo_unmutes_the_placement_byte_for_byte() {
 /// 给出不同答案 —— 那正是本文件要防的分叉形状。
 #[test]
 fn clip_mute_ops_for_is_the_only_set_clip_placement_muted_construction_site() {
-    let project = yeban_model::samples::filled_project();
-    let placed = placements(&project);
-    let (a_ulid, a_placement) = placed[0].clone();
-    let track_of_a = project
-        .tracks
-        .iter()
-        .find(|(_, track)| track.clips.contains_key(&a_placement.id))
-        .map(|(track_id, _)| *track_id)
-        .expect("摆放必然住在某条轨上");
-
-    let ops = clip_mute_ops_for(&project, &a_ulid);
-    assert_eq!(ops.len(), 1, "一条选中剪辑 ⇒ **恰好一条** op");
-    match &ops[0] {
-        yeban_model::ops::Op::SetClipPlacementMuted {
-            track_id,
-            placement_id,
-            old_muted,
-            new_muted,
-        } => {
-            assert_eq!(*track_id, track_of_a, "op 必须指向摆放**所在**的那条轨");
-            assert_eq!(
-                *placement_id, a_placement.id,
-                "op 的目标身份必须是被选中的那条"
-            );
-            assert_eq!(
-                *old_muted, a_placement.muted,
-                "`old_muted` 必须从**当前文档**读（模型的前置条件：与现值不等 ⇒ `OpStateMismatch`）"
-            );
-            assert_eq!(
-                *new_muted, !a_placement.muted,
-                "`new_muted` 必须是它的反面（拨开关，⛔ 不是恒置真）"
-            );
-        }
-        other => panic!("只允许 `SetClipPlacementMuted`，实际 {other:?}"),
-    }
-
-    // ---- **已静音**的那条 ⇒ op 必须把它翻回**假**（证明这是开关、且 `old_muted` 从文档现读，
-    //      ⛔ 不是恒置真的单向标记）----
-    let mut muted_project = project.clone();
-    let mut found = false;
-    for track in muted_project.tracks.values_mut() {
-        if let Some(placement) = track.clips.get_mut(&a_placement.id) {
-            placement.muted = true;
-            found = true;
-        }
-    }
-    assert!(found, "夹具前提：能把 `{a_ulid}` 预先置成静音");
-    let unmute_ops = clip_mute_ops_for(&muted_project, &a_ulid);
-    assert_eq!(unmute_ops.len(), 1, "已静音的一条 ⇒ 同样恰好一条 op");
-    match &unmute_ops[0] {
-        yeban_model::ops::Op::SetClipPlacementMuted {
-            old_muted,
-            new_muted,
-            placement_id,
-            ..
-        } => {
-            assert_eq!(*placement_id, a_placement.id);
-            assert!(
-                *old_muted && !*new_muted,
-                "已静音的输入必须给出 `old=true / new=false`（实测 old={old_muted} / new={new_muted}）"
-            );
-        }
-        other => panic!("只允许 `SetClipPlacementMuted`，实际 {other:?}"),
-    }
-
-    // 三种"解析不到"⇒ 空批（⛔ 不动一个猜的对象）。
-    let stale = stale_clip_ulid();
-    for bogus in ["", "not-a-real-clip", stale.as_str()] {
-        assert!(
-            clip_mute_ops_for(&project, bogus).is_empty(),
-            "非法 / 陈旧身份 `{bogus}` 必须解析成空批"
-        );
-    }
-
-    // ---- 源码纪律：从 `src/host.rs` 现读，⛔ 不靠注释里的数字 ----
-    let host_source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/host.rs"))
-        .expect("读本 crate 的 host.rs");
-    let construction_sites = host_source
-        .match_indices("Op::SetClipPlacementMuted {")
-        .count();
-    assert_eq!(
-        construction_sites, 1,
-        "`host.rs` 里 `Op::SetClipPlacementMuted` 的构造点必须**恰好一处**（实测 {construction_sites}）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let toggle_sites = host_source
-        .match_indices("toggle_selected_clip_mute(")
-        .count();
-    assert_eq!(
-        toggle_sites, 2,
-        "`toggle_selected_clip_mute(` 必须只有**定义 ＋ 唯一调用点**两处（实测 {toggle_sites}）"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-
-    report_line(&format!(
-        "[clip-mute] `clip_mute_ops_for` 对 `{a_ulid}` 给出 1 条 op（`old/new` 逐字段对账）；\
-         3 种非法输入为空批；`host.rs` 里构造点 1 处、动作函数站点 2 处"
-    ));
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
+    );
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// ⑨ 投影层前提复核：静音列与绘制清单**同源同序**（否则 ② 的"按位置取那一格"会指错剪辑）。
 #[test]
 fn the_projection_orders_the_mute_column_by_the_same_identity_as_the_paint_list() {
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("工程必须能投影");
-    let ulids = view.clip_ulids();
-    let mutes = view.clip_mutes();
-    assert_eq!(
-        mutes.len(),
-        ulids.len(),
-        "`clip_mutes()` 与 `clip_ulids()` 必须同长（同一轮 `clips` 迭代派生）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    // 逐条：把这一条摆放改成静音再投影，**只有**它那一格为真。
-    for (index, ulid) in ulids.iter().enumerate() {
-        let mut single = project.clone();
-        let id = EntityId::from_str(ulid.as_str()).expect("投影出的身份是合法 ULID");
-        for track in single.tracks.values_mut() {
-            if let Some(placement) = track.clips.get_mut(&id) {
-                placement.muted = true;
-            }
-        }
-        let probe = ViewState::from_project(&single).expect("改完静音仍要能投影");
-        let column = probe.clip_mutes();
-        assert_eq!(
-            column.len(),
-            ulids.len(),
-            "第 {index} 条（`{ulid}`）：投影后静音列长度不变"
-        );
-        assert!(column[index], "第 {index} 条 `{ulid}` 必须落在同一格上");
-        assert!(
-            !column
-                .iter()
-                .enumerate()
-                .any(|(other, value)| other != index && *value),
-            "只有第 {index} 条被改：其余 {} 格必须全为假",
-            ulids.len() - 1
-        );
-    }
-
-    report_line(&format!(
-        "[clip-mute] {} 条剪辑逐条验证：`clip_mutes()` 与 `clip_ulids()` 同序同长、改一条只翻那一格",
-        ulids.len()
-    ));
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
+    );
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
+    );
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }

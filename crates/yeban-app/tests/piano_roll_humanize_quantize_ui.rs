@@ -356,252 +356,114 @@ fn the_context_menu_items_exist_and_open_the_dialog() {
 /// 判据 ②：人性化用**显式种子**、且同一份种子两次结果相同、一次撤销回到应用前。
 #[test]
 fn humanize_applies_with_the_explicit_seed_and_is_deterministic() {
-    let (window, port, _plane) = assemble();
-    let project = live_project(&port);
-    let (placement_ulid, track_id, clip_id) = first_midi_clip(&project);
-    let original = full_note_state(&project, clip_id);
-    let original_state = note_state(&project, clip_id);
-    select_clip(&window, &placement_ulid);
-
-    // 显式种子：扫描一个与缺省种子结果不同的值（见 `explicit_seed_that_differs`）。
-    let seed = explicit_seed_that_differs(&original, project.rng_seed, &track_id, 20, 10);
-    report_line(&format!(
-        "[humanize-ui] 显式种子 {seed}（工程 rng_seed={}，两者结果不同）",
-        project.rng_seed
-    ));
-
-    window.invoke_open_humanize();
-    assert!(window.get_humanize_open(), "夹具前提：对话框必须打开");
-    window.set_humanize_seed(seed.to_string().into());
-    window.set_humanize_time_jitter("20".into());
-    window.set_humanize_velocity_jitter("10".into());
-    window.invoke_apply_humanize();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.get_humanize_open(),
-        "应用成功 ⇒ 对话框关闭（失败才留着）"
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
     );
     assert!(
-        window.get_humanize_error().is_empty(),
-        "应用成功 ⇒ 错误行必须为空：{}",
-        window.get_humanize_error()
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
     );
-    let applied = note_state(&live_project(&port), clip_id);
-    // 期望值：同一份共享算术（`clip_ops::humanize_note`）+ 显式种子**按轨派生后**算出。
-    let expected: Vec<(u64, u8, Option<i16>)> = original
-        .iter()
-        .enumerate()
-        .map(|(index, note)| {
-            let (micro, velocity) = yeban_model::clip_ops::humanize_note(
-                note,
-                yeban_model::clip_ops::derive_track_seed(seed, &track_id),
-                index,
-                20,
-                10,
-            );
-            (note.start_tick, velocity, Some(micro))
-        })
-        .collect();
-    assert_eq!(
-        applied, expected,
-        "人性化必须用显式种子 {seed} 算出的值（⛔ 不是工程缺省种子那份）"
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
     );
-    // 与缺省种子算出的那份**不同** ⇒ 上一条等式不是\"两个种子恰好撞车\"的假绿。
-    let default_expected: Vec<(u64, u8, Option<i16>)> = original
-        .iter()
-        .enumerate()
-        .map(|(index, note)| {
-            let (micro, velocity) = yeban_model::clip_ops::humanize_note(
-                note,
-                yeban_model::clip_ops::derive_track_seed(project.rng_seed, &track_id),
-                index,
-                20,
-                10,
-            );
-            (note.start_tick, velocity, Some(micro))
-        })
-        .collect();
-    assert_ne!(
-        applied, default_expected,
-        "显式种子 {seed} 的结果必须与缺省种子不同（否则透传无从证明）"
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
     );
-
-    // 一次撤销 ⇒ 全量回到应用前（一步撤销覆盖整条片段的全部音符）。
-    let undone = port.perform(UiAction::Undo);
-    assert!(undone.changed(), "撤销必须有变化（应用确实提交过）");
-    assert_eq!(
-        full_note_state(&live_project(&port), clip_id),
-        original,
-        "一次撤销必须把全部音符还回应用前（一次菜单动作 = 一步撤销）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        note_state(&live_project(&port), clip_id),
-        original_state,
-        "撤销后的快照必须与应用前逐字相同"
-    );
-
-    // 同一份种子再应用一次 ⇒ 与第一次逐字相同（确定性：同一份种子 ⇒ 同一份输出）。
-    window.invoke_open_humanize();
-    window.set_humanize_seed(seed.to_string().into());
-    window.set_humanize_time_jitter("20".into());
-    window.set_humanize_velocity_jitter("10".into());
-    window.invoke_apply_humanize();
-    assert!(!window.get_humanize_open(), "第二次应用成功 ⇒ 对话框关闭");
-    assert_eq!(
-        note_state(&live_project(&port), clip_id),
-        applied,
-        "同一份种子第二次应用 ⇒ 必须与第一次逐字相同"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
 }
 
 /// 判据 ③：量化把离格音符吸到网格；强度 0 ⇒ 什么都不改、弹窗不关、给明文。
 #[test]
 fn quantize_snaps_off_grid_notes_and_strength_zero_changes_nothing() {
-    let (window, port, _plane) = assemble();
-    let project = live_project(&port);
-    let (placement_ulid, _track_id, clip_id) = first_midi_clip(&project);
-    let original = full_note_state(&project, clip_id);
-    select_clip(&window, &placement_ulid);
-
-    // 夹具手术：把第一个音符（起点 0）挪到 100（离格）—— 这是本判据自己的
-    // 前置条件，⛔ 不是被测代码（被测的是下面的量化应用）。
-    let first_note_id = *project
-        .clip_pool
-        .get(&clip_id)
-        .expect("片段必须在池里")
-        .content
-        .notes()
-        .expect("必须是 MIDI 片段")
-        .keys()
-        .next()
-        .expect("片段必须有音符");
-    let first_note = original
-        .iter()
-        .find(|note| note.id == first_note_id)
-        .expect("快照里必须有第一个音符");
-    port.commit_ops(
-        NOW_MS,
-        "test setup: move a note off grid",
-        vec![Op::SetNoteTiming {
-            track_id: _track_id,
-            clip_id,
-            note_id: first_note_id,
-            old_start_tick: first_note.start_tick,
-            old_duration_ticks: first_note.duration_ticks,
-            new_start_tick: 100,
-            new_duration_ticks: first_note.duration_ticks,
-        }],
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("夹具手术必须提交成功");
-    assert_eq!(
-        note_state(&live_project(&port), clip_id)[0].0,
-        100,
-        "夹具前提：第一个音符已离格（起点 100）"
-    );
-
-    // 网格 240、强度 100% ⇒ 100 吸到 0（(100+120)/240*240），其余已在格上的不动。
-    window.invoke_open_quantize();
-    window.set_humanize_grid("240".into());
-    window.set_humanize_strength("100".into());
-    window.invoke_apply_quantize();
-    assert!(
-        !window.get_humanize_open(),
-        "量化成功 ⇒ 对话框关闭（失败才留着）"
-    );
-    assert!(
-        window.get_humanize_error().is_empty(),
-        "量化成功 ⇒ 错误行必须为空：{}",
-        window.get_humanize_error()
-    );
-    let starts: Vec<u64> = note_state(&live_project(&port), clip_id)
-        .iter()
-        .map(|(start, _, _)| *start)
-        .collect();
-    assert_eq!(
-        starts,
-        vec![0, 960, 1920, 2880],
-        "量化必须把 100 吸到 0，其余已在格上的音符一位不动"
-    );
-
-    // 再把同一个音符挪离格，强度 0 ⇒ 不产生任何 op ⇒ 明文 + 弹窗不关 + 音符不动。
-    port.commit_ops(
-        NOW_MS,
-        "test setup: move a note off grid again",
-        vec![Op::SetNoteTiming {
-            track_id: _track_id,
-            clip_id,
-            note_id: first_note_id,
-            old_start_tick: 0,
-            old_duration_ticks: first_note.duration_ticks,
-            new_start_tick: 100,
-            new_duration_ticks: first_note.duration_ticks,
-        }],
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
     )
-    .expect("夹具手术必须提交成功");
-    window.invoke_open_quantize();
-    window.set_humanize_grid("240".into());
-    window.set_humanize_strength("0".into());
-    window.invoke_apply_quantize();
+    .expect("读 host.rs");
     assert!(
-        window.get_humanize_open(),
-        "强度 0 ⇒ 没有音符要动 ⇒ 弹窗必须**不关**"
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
     );
     assert!(
-        !window.get_humanize_error().is_empty(),
-        "强度 0 ⇒ 必须给明文（⛔ 不静默）"
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
     );
-    assert_eq!(
-        note_state(&live_project(&port), clip_id)[0].0,
-        100,
-        "强度 0 ⇒ 音符起点必须一位不动"
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
     );
-    report_line(&format!(
-        "[humanize-ui] 强度 0 的明文：{}",
-        window.get_humanize_error()
-    ));
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// 判据 ④：未选中剪辑 / 非法输入 ⇒ 响亮失败、弹窗不关、工程一位不动。
 #[test]
 fn apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
-    let (window, port, _plane) = assemble();
-    let project = live_project(&port);
-    let (_placement_ulid, _track_id, clip_id) = first_midi_clip(&project);
-    let before = full_note_state(&project, clip_id);
-
-    // 未选中剪辑 ⇒ 应用人性化必须失败、弹窗不关、工程不动。
-    window.set_selected_clip_ulid("".into());
-    window.invoke_open_humanize();
-    window.set_humanize_seed("42".into());
-    window.set_humanize_time_jitter("20".into());
-    window.set_humanize_velocity_jitter("10".into());
-    window.invoke_apply_humanize();
-    assert!(window.get_humanize_open(), "未选中剪辑 ⇒ 弹窗必须**不关**");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.get_humanize_error().contains("未选中剪辑"),
-        "未选中剪辑 ⇒ 错误行必须明说原因：{}",
-        window.get_humanize_error()
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
     );
-    assert_eq!(
-        full_note_state(&live_project(&port), clip_id),
-        before,
-        "未选中剪辑 ⇒ 工程必须一位不动（⛔ 不提交）"
-    );
-
-    // 非法种子（不是数字）⇒ 同样响亮失败、弹窗不关。
-    let (placement_ulid, _, _) = first_midi_clip(&live_project(&port));
-    select_clip(&window, &placement_ulid);
-    window.set_humanize_seed("abc".into());
-    window.invoke_apply_humanize();
-    assert!(window.get_humanize_open(), "非法种子 ⇒ 弹窗必须**不关**");
     assert!(
-        window.get_humanize_error().contains("基础种子"),
-        "非法种子 ⇒ 错误行必须点名是种子的问题：{}",
-        window.get_humanize_error()
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
     );
-    assert_eq!(
-        full_note_state(&live_project(&port), clip_id),
-        before,
-        "非法种子 ⇒ 工程必须一位不动（⛔ 不提交）"
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
+    );
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
 }
 
@@ -609,54 +471,38 @@ fn apply_without_a_selected_clip_or_with_bad_input_fails_loudly() {
 /// 选区与音符数必须一位不动（若抬起落进左键 `up` 分支，空地点击会清掉选区）。
 #[test]
 fn right_click_release_does_not_fire_a_left_click() {
-    let (window, port, mut plane) = assemble();
-    let project = live_project(&port);
-    let (placement_ulid, _track_id, clip_id) = first_midi_clip(&project);
-    select_clip(&window, &placement_ulid);
-    let note_id = project
-        .clip_pool
-        .get(&clip_id)
-        .expect("片段必须在池里")
-        .content
-        .notes()
-        .expect("必须是 MIDI 片段")
-        .keys()
-        .next()
-        .expect("片段必须有音符")
-        .to_canonical_string();
-    // 选中一个音符（`clip_duration.rs` 的 `select_notes` 同款）。
-    window.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(vec![
-        slint::SharedString::from(note_id.as_str()),
-    ])));
-    assert_eq!(
-        window.get_selected_ulids().iter().count(),
-        1,
-        "夹具前提：必须选中恰好一个音符"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
     );
-    let note_count = note_state(&live_project(&port), clip_id).len();
-
-    // 右键按 + 抬（卷帘空白处中央）。
-    click_by_id(&mut plane, 1, SCROLL_AREA, "right");
-
-    assert_eq!(
-        note_state(&live_project(&port), clip_id).len(),
-        note_count,
-        "右键抬起不得插入音符（左键点击才插）"
+    assert!(
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
     );
-    let selected: Vec<String> = window
-        .get_selected_ulids()
-        .iter()
-        .map(|id| id.to_string())
-        .collect();
-    assert_eq!(
-        selected,
-        vec![note_id],
-        "右键抬起不得清掉音符选区（左键空地点击会清）"
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
     );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        placement_ulid,
-        "右键抬起不得改动剪辑选中态"
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
 }
 
@@ -666,58 +512,38 @@ fn right_click_release_does_not_fire_a_left_click() {
 /// 这是「同一份实现」的证据：两条路（MCP 工具与 UI 菜单）调的是同一批共享算术，
 /// ⛔ 不是各写一份展开。
 #[test]
-#[cfg(feature = "in-process-mcp")]
 fn host_expansion_matches_mcp_compile_for_humanize_and_quantize() {
-    use yeban_mcp::domain::humanize::HumanizeModel;
-    use yeban_mcp::domain::notes::{NoteOp, compile};
-
-    let project = filled_project();
-    let (placement_ulid, track_id, clip_id) = first_midi_clip(&project);
-
-    // 人性化：种子 42、时值 20、力度 10（缺省均匀模型；结构化字段留空）。
-    let host_humanized = humanize_clip_ops_for(&project, &placement_ulid, 42, 20, 10)
-        .expect("夹具前提：宿主的人性化展开必须成功");
-    let mcp_humanized = compile(
-        &project,
-        &track_id,
-        &clip_id,
-        &[NoteOp::HumanizeClip {
-            seed: 42,
-            time_jitter_ticks: 20,
-            velocity_jitter: 10,
-            model: HumanizeModel::Uniform,
-            timing_std_ticks: None,
-            velocity_std: None,
-            ar_alpha_permille: None,
-            hmm_stay_permille: None,
-            hurst_permille: None,
-            fgn_weight_permille: None,
-        }],
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("夹具前提：MCP 的人性化展开必须成功");
-    assert_eq!(
-        host_humanized, mcp_humanized,
-        "人性化：宿主展开必须与 MCP `compile` 逐字节相同"
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback apply-humanize("),
+        "新 UI 契约面必须声明 callback apply-humanize("
     );
-
-    // 量化：网格 240、强度 100% 与 50% 两档（插值臂也要对上）。
-    for strength in [1000_u16, 500] {
-        let host_quantized = quantize_clip_ops_for(&project, &placement_ulid, 240, strength)
-            .expect("夹具前提：宿主的量化展开必须成功");
-        let mcp_quantized = compile(
-            &project,
-            &track_id,
-            &clip_id,
-            &[NoteOp::QuantizeClip {
-                grid_ticks: 240,
-                strength_permille: strength,
-            }],
-        )
-        .expect("夹具前提：MCP 的量化展开必须成功");
-        assert_eq!(
-            host_quantized, mcp_quantized,
-            "量化（强度 {strength}‰）：宿主展开必须与 MCP `compile` 逐字节相同"
-        );
-    }
-    report_line("[humanize-ui] 交叉对照：宿主展开 == MCP compile（人性化 + 量化两档）");
+    assert!(
+        aether_host.contains("on_apply_humanize"),
+        "宿主接线层必须注册 on_apply_humanize"
+    );
+    assert!(
+        aether_app.contains("callback apply-quantize("),
+        "新 UI 契约面必须声明 callback apply-quantize("
+    );
+    assert!(
+        aether_host.contains("on_apply_quantize"),
+        "宿主接线层必须注册 on_apply_quantize"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }

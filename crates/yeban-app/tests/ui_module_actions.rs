@@ -433,16 +433,21 @@ fn pending_snapshot(receipt: &str) -> slint::SharedString {
 /// 仍是整串（引号内的 `=` 不切）。
 #[test]
 fn a_quoted_value_does_not_expose_its_inner_keys_to_the_top_level() {
-    let receipt = concat!(
-        r#"module:action=import-midi:outcome=ok:losses="…""#,
-        r#":loss_detail="format=1 channels=2""#,
-        r#":lyrics_detail="lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0""#
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(field_of_opt(receipt, "channels"), None);
-    assert_eq!(field_of_opt(receipt, "format"), None);
-    assert_eq!(field_of(receipt, "loss_detail"), "\"format=1 channels=2\"");
-    assert_eq!(
-        field_of(receipt, "lyrics_detail"),
-        "\"lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0\""
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

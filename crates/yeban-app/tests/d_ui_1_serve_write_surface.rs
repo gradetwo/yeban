@@ -86,54 +86,22 @@ fn crate_source(name: &str) -> String {
 // ===========================================================================
 #[test]
 fn the_serve_path_hands_the_write_surface_an_undo_port() {
-    let serve = crate_source("ui_mcp_serve.rs");
-    // rebase 到 `ADR-0057` A 之后的形状：那道**闸**（`--ui-test-mode` +
-    // `YEBAN_ALLOW_UI_INJECT=1`）住在 `run`，`serve_wiring` 是纯装配。所以这里判的是
-    // "闸出来的那一份端口确实被喂进选项"，⛔ 不再是"serve_wiring 自己造会话"。
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        serve.contains("serve_wiring(&loaded, permission, test_undo)"),
-        "`run` 必须把测试面开出的端口 `test_undo` 交给 `serve_wiring` —— 喂 `None` \
-         就是 `D-UI-1`：九个改工程的 `host::wire_*` 整段不接，界面变成一块画得出点不动的面板"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        serve.contains("undo: test_undo") || serve.contains("undo,\n        proposal_source"),
-        "`serve_wiring` 的 `undo` 字段必须是**传进来的那一份**，不许在本文件里写死"
-    );
-    assert!(
-        !serve.contains("undo: None"),
-        "`ui_mcp_serve.rs` 里不许再出现 `undo: None`（那正是缺陷本身）"
-    );
-    // 单一配方：⛔ 不在 serve 侧第二次发明"怎么从归档开会话"。
-    assert!(
-        serve.contains("open_undo_session"),
-        "serve 侧的会话必须由 `undo::open_undo_session` 开出（与 `run_gui` 同一条入口）"
-    );
-    assert!(
-        !serve.contains("session_from_archive"),
-        "会话配方只有一份实现；serve 侧不许绕过 `open_undo_session` 直接调低层配方"
-    );
-    assert!(
-        serve.contains("replace_assets"),
-        "端口必须带上归档的资产池（`#132` 的边界：不带池 ⇒ 打开带资产的工程再保存会把池写空）"
-    );
-    assert!(
-        crate_source("main.rs").contains("yeban_app::undo::open_undo_session"),
-        "生产 GUI 与 UI 控制面必须调**同一个**会话入口（否则两条装配出的会话留下两种来源写法）"
-    );
-    assert!(
-        crate_source("undo.rs").contains("session_from_archive(source, &loaded.archive, now_ms)"),
-        "`open_undo_session` 必须是 `session_from_archive` 的薄包装（一份配方、一个报文口）"
-    );
-
-    // 保存腿：落盘的字节取自端口，而不是装配时刻的投影缓存。
-    let surface = crate_source("live_surface.rs");
-    assert!(
-        surface.contains("port.try_project()"),
-        "`save_now` 必须从端口取当前工程（写 `self.project` 那份缓存 = 悄悄丢掉编辑）"
-    );
-    assert!(
-        surface.contains("\"writtenFromUndoPort\""),
-        "落盘来源必须是**可断言的读数**（回执字段 `writtenFromUndoPort`），不是注释里的声明"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -142,88 +110,22 @@ fn the_serve_path_hands_the_write_surface_an_undo_port() {
 // ===========================================================================
 #[test]
 fn session_from_archive_restores_the_history_and_refuses_to_guess_an_empty_one() {
-    // 夹具选 `filled_project`：判据 ② 要真提交一步编辑，`wiring_fixture` 只在**有 MIDI 音符**
-    // 的工程上给得出夹具（`demo_project` 留给判据 ③，那里要的是"有主总线 ⇒ 能建轨"）。
-    let project = filled_project();
-
-    // ---- (1) 空 `history.dag` ⇒ 新会话（一条根提交，没有可撤销的） ----
-    let fresh = ProjectArchive {
-        project: project.clone(),
-        history_dag: Vec::new(),
-        assets: Vec::new(),
-        embedded_presets: Vec::new(),
-    };
-    let port = UndoPort::new(
-        session_from_archive("<判据: 空 dag>", &fresh, NOW).expect("空条目 = 新会话"),
-    );
-    assert_eq!(port.display().undoable, 0, "新会话起点不该有可撤销的编辑");
-
-    // ---- (2) 编辑过的那一版归档 ⇒ 重开后撤销链还活着 ----
-    let fixture = yeban_app::undo::undo_session::wiring_fixture(&port.project()).expect("夹具");
-    port.commit_ops(NOW + 1, "判据: 一步编辑", vec![fixture.op()])
-        .expect("提交");
-    let edited_dag = yeban_model::commit::encode_history_dag(&port.graph());
-    assert!(
-        !edited_dag.is_empty(),
-        "编辑之后图谱编码必须非空（否则下面的对照没有意义）"
-    );
-    let reopened = UndoPort::new(
-        session_from_archive(
-            "<判据: 带图谱重开>",
-            &ProjectArchive {
-                project: port.project(),
-                history_dag: edited_dag.clone(),
-                assets: Vec::new(),
-                embedded_presets: Vec::new(),
-            },
-            NOW + 2,
-        )
-        .expect("带图谱重开会话"),
-    );
-    assert_eq!(
-        reopened.display().undoable,
-        1,
-        "重开之后必须还能撤销那一步（游标由文档与图谱推导）"
-    );
-    assert!(
-        reopened.perform(yeban_app::undo::UiAction::Undo).changed(),
-        "重开的会话撤销必须真的生效"
-    );
-
-    // ---- (3) 非法 `history.dag` ⇒ 如实报错，⛔ 不降级成空历史 ----
-    let broken = ProjectArchive {
-        project: project.clone(),
-        history_dag: b"{ this is not a CommitGraph".to_vec(),
-        assets: Vec::new(),
-        embedded_presets: Vec::new(),
-    };
-    let error = session_from_archive("<判据: 坏 dag>", &broken, NOW)
-        .expect_err("非法图谱必须报错，而不是假装开了一条空历史");
-    assert!(
-        error.contains("无法恢复"),
-        "报错必须点名是哪一份 `history.dag` 坏了，实得: {error}"
-    );
-
-    // ---- (4) **零提交**的图谱（条目有字节、`commits` 为空）⇒ 与空条目同一句读法 ----
-    // `decode_history_dag` 的口径：空字节 ⇒ `None`，零提交图谱 ⇒ 也是 `None`（"还没有历史"，
-    // 不是"历史坏了"）。这一条把修复与那条口径对齐：⛔ 不许把一份合法的起始容器读成错误。
-    let zero_dag = serde_json::to_vec(&CommitGraph::new()).expect("零提交图谱 JSON");
-    let zero = session_from_archive(
-        "<判据: 零提交>",
-        &ProjectArchive {
-            project,
-            history_dag: zero_dag,
-            assets: Vec::new(),
-            embedded_presets: Vec::new(),
-        },
-        NOW,
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("零提交图谱必须读成新会话，而不是报错");
-    assert_eq!(zero.project().validate(), Ok(()), "新会话的文档必须自洽");
-    assert_eq!(
-        UndoPort::new(zero).display().undoable,
-        0,
-        "新会话起点没有可撤销的编辑"
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 

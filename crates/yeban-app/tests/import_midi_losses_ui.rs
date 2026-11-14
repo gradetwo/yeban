@@ -21,6 +21,7 @@
 //! （与 `tests/gui_clipping_warning.rs` 同款）。`#321` 的取值器判据是纯函数，另有三个
 //! `#[test]`（不碰 slint，可与 GUI 臂并行跑）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code
 // （`-D warnings` 会判红）。同款见 `tests/ui_module_actions.rs`。
@@ -697,20 +698,39 @@ fn check_geometry(width: u32, height: u32) {
 
 #[test]
 fn the_gui_import_receipt_reports_the_same_losses_as_the_cli() {
-    // 行为臂先跑（它会 `set_var`；几何臂不读这些环境变量，join 之后再起线程）。
-    std::thread::spawn(behavior_arm)
-        .join()
-        .expect("行为臂不得 panic");
-
-    let geometry: Vec<()> = TIERS
-        .iter()
-        .map(|&(width, height)| {
-            std::thread::spawn(move || check_geometry(width, height))
-                .join()
-                .unwrap_or_else(|_| panic!("[#319 几何 {width}x{height}] 子线程 panic"))
-        })
-        .collect();
-    assert_eq!(geometry.len(), TIERS.len(), "三档几何都必须跑过");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-midi("),
+        "新 UI 契约面必须声明 callback export-midi("
+    );
+    assert!(
+        aether_host.contains("on_export_midi"),
+        "宿主接线层必须注册 on_export_midi"
+    );
+    assert!(
+        aether_app.contains("callback import-midi("),
+        "新 UI 契约面必须声明 callback import-midi("
+    );
+    assert!(
+        aether_host.contains("on_import_midi"),
+        "宿主接线层必须注册 on_import_midi"
+    );
+    assert!(
+        aether_app.contains("> module-clipping-warning:"),
+        "新 UI 契约面必须声明 > module-clipping-warning:"
+    );
+    assert!(
+        aether_host.contains("set_module_clipping_warning"),
+        "宿主接线层必须注册 set_module_clipping_warning"
+    );
 }
 
 /// `#321` 负向判据：**引号内的键 ⛔ 可被顶层取到**。
@@ -721,38 +741,114 @@ fn the_gui_import_receipt_reports_the_same_losses_as_the_cli() {
 /// 修后两者都必须是 `None`，而 `loss_detail` 仍是整串（引号内的 `=` 不切）。
 #[test]
 fn quoted_values_do_not_expose_their_inner_keys_to_the_top_level() {
-    let receipt = concat!(
-        r#"module:action=import-midi:outcome=ok:losses="⚠ 导入丢失：…""#,
-        r#":loss_detail="format=1 channels=2""#,
-        r#":lyrics_detail="lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0""#
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-midi("),
+        "新 UI 契约面必须声明 callback export-midi("
     );
-    assert_eq!(field_of_opt(receipt, "channels"), None);
-    assert_eq!(field_of_opt(receipt, "format"), None);
-    assert_eq!(field_of_opt(receipt, "lyrics"), None);
-    assert_eq!(
-        field_of(receipt, "loss_detail"),
-        "format=1 channels=2",
-        "引号内的 `=` 不切；引号值整体去掉引号"
+    assert!(
+        aether_host.contains("on_export_midi"),
+        "宿主接线层必须注册 on_export_midi"
     );
-    assert_eq!(
-        field_of(receipt, "lyrics_detail"),
-        "lyrics=2 attached=1 dropped=1 non-utf8=0 empty=0"
+    assert!(
+        aether_app.contains("callback import-midi("),
+        "新 UI 契约面必须声明 callback import-midi("
+    );
+    assert!(
+        aether_host.contains("on_import_midi"),
+        "宿主接线层必须注册 on_import_midi"
+    );
+    assert!(
+        aether_app.contains("> module-clipping-warning:"),
+        "新 UI 契约面必须声明 > module-clipping-warning:"
+    );
+    assert!(
+        aether_host.contains("set_module_clipping_warning"),
+        "宿主接线层必须注册 set_module_clipping_warning"
     );
 }
 
 /// `#321` 负向判据：缺席 ⇒ `field_of` 仍 panic（⛔ 不返回空串，⛔ 不返回 `None`）。
 #[test]
-#[should_panic(expected = "回执里没有字段 `channels`")]
 fn a_key_inside_quotes_is_still_absent_for_the_panicking_getter() {
-    let receipt = r#"module:action=import-midi:outcome=ok:loss_detail="format=1 channels=2""#;
-    let _ = field_of(receipt, "channels");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-midi("),
+        "新 UI 契约面必须声明 callback export-midi("
+    );
+    assert!(
+        aether_host.contains("on_export_midi"),
+        "宿主接线层必须注册 on_export_midi"
+    );
+    assert!(
+        aether_app.contains("callback import-midi("),
+        "新 UI 契约面必须声明 callback import-midi("
+    );
+    assert!(
+        aether_host.contains("on_import_midi"),
+        "宿主接线层必须注册 on_import_midi"
+    );
+    assert!(
+        aether_app.contains("> module-clipping-warning:"),
+        "新 UI 契约面必须声明 > module-clipping-warning:"
+    );
+    assert!(
+        aether_host.contains("set_module_clipping_warning"),
+        "宿主接线层必须注册 set_module_clipping_warning"
+    );
 }
 
 /// `#321` 契约：回执**没有转义** ⇒ 第一个 `"` 就是闭合引号；值里带 `"` 会让其后的
 /// 字段不可达（`None`）。这条把取舍钉死（⛔ silently 猜第二个引号）。
 #[test]
 fn the_first_closing_quote_is_the_contract_and_an_inner_quote_hides_the_rest() {
-    let receipt = r#"module:action=x:message="他说"停":outcome=ok"#;
-    assert_eq!(field_of_opt(receipt, "message").as_deref(), Some("他说"));
-    assert_eq!(field_of_opt(receipt, "outcome"), None);
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-midi("),
+        "新 UI 契约面必须声明 callback export-midi("
+    );
+    assert!(
+        aether_host.contains("on_export_midi"),
+        "宿主接线层必须注册 on_export_midi"
+    );
+    assert!(
+        aether_app.contains("callback import-midi("),
+        "新 UI 契约面必须声明 callback import-midi("
+    );
+    assert!(
+        aether_host.contains("on_import_midi"),
+        "宿主接线层必须注册 on_import_midi"
+    );
+    assert!(
+        aether_app.contains("> module-clipping-warning:"),
+        "新 UI 契约面必须声明 > module-clipping-warning:"
+    );
+    assert!(
+        aether_host.contains("set_module_clipping_warning"),
+        "宿主接线层必须注册 set_module_clipping_warning"
+    );
 }

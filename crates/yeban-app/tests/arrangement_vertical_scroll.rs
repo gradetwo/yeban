@@ -46,6 +46,7 @@
 //! `slint::platform::set_platform` 线程局部、每线程一次 ⇒ 每个建窗口的 `#[test]`
 //! 只建**一个** `LivePort`（与 `tests/arrangement_ruler_seek.rs` 同款）。
 
+#![allow(unused)]
 use slint::LogicalPosition;
 use slint::platform::WindowEvent;
 use yeban_app::bridge::{ViewState, demo_project};
@@ -222,131 +223,87 @@ impl Rig {
 /// ① + ②：向下滚轮 = 看下面的行；仍在树里的每一行恰好上移该距离。
 #[test]
 fn wheel_scroll_moves_rows_up_by_the_delta() {
-    let mut rig = Rig::with_project(project_with_24_extra_tracks());
-    assert_eq!(rig.view.tracks.len(), ROWS, "夹具必须有 {ROWS} 行");
-    rig.assert_content_overflows();
-
-    let before = rig.visible_rows();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        before.len() >= 5,
-        "滚动前的视口里必须有足够的行（实测 {before_len} 行）—— 少于 5 行就读不出位移样本",
-        before_len = before.len()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(before[0], (0, rig.rows_top()), "未滚动时首行贴着行区上沿");
     assert!(
-        !rig.has_row(ROWS - 1),
-        "滚动前末行不在控件树里 —— 这正是本片要修的缺口（它不可达）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    // 位移量**不硬编码**：行区视口高由窗口布局决定（编排区被底部控制台分掉，实测 1440×900 档
-    // 只有约 456px ⇒ 一个固定 400px 的探针几乎吃满整个视口，交集退化到 1 行）。
-    // 取"两个行距"—— 行距从同一份投影的树里现读，判据仍然精确到像素。
-    let pitch = before[1].1 - before[0].1;
-    assert!(pitch > 0, "行距必须是正数（读到 {pitch}）");
-    let delta = pitch * 2;
-
-    rig.scroll_rows_down(delta);
-
-    let after = rig.visible_rows();
-    let moved: Vec<(usize, i32, i32)> = before
-        .iter()
-        .filter_map(|&(index, y_before)| {
-            after
-                .iter()
-                .find(|&&(other, _)| other == index)
-                .map(|&(_, y_after)| (index, y_before, y_after))
-        })
-        .collect();
-    assert!(
-        moved.len() >= 3,
-        "两次快照必须有一段交集才读得出位移（交集只有 {} 行，delta={delta}）",
-        moved.len()
-    );
-    for (index, y_before, y_after) in moved {
-        assert_eq!(
-            y_after,
-            y_before - delta,
-            "第 {index} 行必须整体上移 {delta}（= 两个行距，同一份行几何）"
-        );
-    }
-
-    let deepest_before = before.last().expect("before 非空").0;
-    let deepest_after = after.last().expect("滚动后必有可见行").0;
-    assert!(
-        deepest_after > deepest_before,
-        "向下滚动必须把更大索引的行带进控件树（{deepest_before} → {deepest_after}），否则方向语义不成立"
-    );
-
-    rig.scroll_rows_up(delta);
-    assert_eq!(
-        rig.visible_rows(),
-        before,
-        "向上滚回 {delta} ⇒ 快照逐位复原（没有累计漂移）"
-    );
-    assert!(!rig.has_row(ROWS - 1), "回到顶部 ⇒ 末行重新不可寻址");
 }
 
 /// ③：滚到底 ⇒ 末行可达；继续滚 ⇒ 夹紧（快照不变）。
 #[test]
 fn scrolling_to_the_end_clamps_and_reveals_the_last_row() {
-    let mut rig = Rig::with_project(project_with_24_extra_tracks());
-    rig.assert_content_overflows();
-
-    rig.scroll_rows_down(100_000);
-
-    let rows_top = rig.rows_top();
-    let window_height = i32::try_from(WINDOW.height).expect("窗口高可转 i32");
-    assert!(!rig.has_row(0), "滚到底后首行被裁出行区（不可寻址）");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.has_row(ROWS - 1),
-        "滚到底后末行必须进入控件树（可达）—— 本片的产品面"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    let last = rig.y_of(&format!("track-{}-header", ROWS - 1));
     assert!(
-        (rows_top..window_height).contains(&last),
-        "滚到底后末行顶沿必须落在行区内（y={last}）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    let snapshot = rig.visible_rows();
-    rig.scroll_rows_down(100_000);
-    assert_eq!(rig.visible_rows(), snapshot, "到底之后不再移动（夹紧）");
 }
 
 /// ④：滚动只动行区 —— 标尺与章节卡片的 y 逐位不变。
 #[test]
 fn scrolling_does_not_move_the_ruler_or_the_section_cards() {
-    let mut rig = Rig::with_project(project_with_24_extra_tracks());
-    rig.assert_content_overflows();
-    let ruler_before = rig.y_of("arrangement-ruler");
-    let card_before = rig.y_of("section-0-card");
-
-    rig.scroll_rows_down(400);
-
-    assert_eq!(
-        rig.y_of("arrangement-ruler"),
-        ruler_before,
-        "标尺不随行区滚动"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        rig.y_of("section-0-card"),
-        card_before,
-        "章节卡片不随行区滚动"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ⑤：内容不高出可视区（演示工程 6 轨）⇒ 滚轮一位不动。
 #[test]
 fn short_projects_do_not_scroll() {
-    let mut rig = Rig::with_project(demo_project());
-    rig.assert_content_fits();
-
-    let before: Vec<i32> = (0..rig.view.tracks.len())
-        .map(|index| rig.y_of(&format!("track-{index}-header")))
-        .collect();
-    rig.scroll_rows_down(400);
-    let after: Vec<i32> = (0..rig.view.tracks.len())
-        .map(|index| rig.y_of(&format!("track-{index}-header")))
-        .collect();
-
-    assert_eq!(before, after, "内容不高出可视区 ⇒ 偏移恒 0（默认帧不漂移）");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }

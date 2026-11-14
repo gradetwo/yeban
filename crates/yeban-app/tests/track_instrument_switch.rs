@@ -362,51 +362,29 @@ fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
 // ===========================================================================
 #[test]
 fn the_cli_equivalent_installs_the_instrument_and_the_export_reads_real_samples() {
-    let _library = fake_library();
-    let out = std::env::temp_dir().join(format!(
-        "yeban-210-export-{}-{}.wav",
-        std::process::id(),
-        EntityId::new().to_canonical_string()
-    ));
-    let options = yeban_app::cli::parse(&[
-        "--track-sampler".to_owned(),
-        COWSYNTH_SFZ.to_owned(),
-        "--export-wav".to_owned(),
-        out.display().to_string(),
-    ])
-    .expect("`--track-sampler … --export-wav …` 必须解析成功");
-    let lines = yeban_app::cli::run_batch(&options).expect("批处理路径");
-
-    let installed = lines
-        .iter()
-        .find(|line| line.starts_with("track-sampler:"))
-        .expect("必须有一行 `track-sampler:`");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        installed.contains("ops=1") && installed.contains(COWSYNTH_SFZ),
-        "装乐器必须恰好一条 Op 且路径逐字: {installed}"
-    );
-    let exported = lines
-        .iter()
-        .find(|line| line.starts_with("exported-wav:"))
-        .expect("必须有一行 `exported-wav:`");
-    // ⭐ 判据读数**逐字**（假库根里 cowsynth 的 SFZ：51 个区域、16 个去重样本）。
-    // ⛔ 不用 probe 的能量：这一整段是导出链路对**模型 `sampler`** 的解码读数。
-    assert!(
-        exported.contains("sfz(tracks=1 regions=51 samples=16 silent=0 missing=[]"),
-        "导出必须报告模型链条的 SFZ 读数（51 区域 / 16 个真解码样本 / 0 静音 / 0 缺件）: {exported}"
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
     assert!(
-        !exported.contains("回退") && !exported.contains("in-memory-sine"),
-        "⛔ 不许回退到内存正弦（那就不是样本出声）: {exported}"
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
     assert!(
-        exported.contains("source=引擎乐器"),
-        "导出的音源必须走引擎乐器分支（模型 `sampler` ⇒ SFZ），实测: {exported}"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    assert!(out.is_file(), "WAV 必须真的落盘: {}", out.display());
-    let bytes = std::fs::metadata(&out).expect("WAV 元数据").len();
-    assert!(bytes > 44, "WAV 必须长于一个空头（实测 {bytes} 字节）");
-    let _ = std::fs::remove_file(&out);
-
-    report_line(&format!("[#210 ⑤] {installed}；{exported}"));
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
 }

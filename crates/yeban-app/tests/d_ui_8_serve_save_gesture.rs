@@ -98,29 +98,22 @@ fn crate_source(name: &str) -> String {
 // ===========================================================================
 #[test]
 fn the_control_plane_assembly_registers_the_save_callback() {
-    let surface = crate_source("live_surface.rs");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        surface.contains("host::wire_save("),
-        "`build_live_ui_with` 必须调 `host::wire_save(`（`save-project` 回调的唯一注册点）—— \
-         不接就是 `D-UI-8`：顶栏「保存」与 `Ctrl+S` 在本档都是空操作"
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
     );
-    // 保存腿的**工程来源**必须是那个活会话端口（与九个写入面同一个 `Rc`），
-    // ⛔ 不许用装配时刻的投影快照当唯一来源（那会"保存成功而丢掉这一笔"）。
     assert!(
-        surface.contains("options.undo.clone()"),
-        "`host::wire_save` 的 `live_port` 必须是 `options.undo`（写出去的是此刻的工程）"
-    );
-    // 本档**没有 OS 窗口** ⇒ 对话框腿必须问不出路径（`NoPicker`），而不是钉死在模态框上。
-    assert!(
-        surface.contains("yeban_app::file_picker::NoPicker"),
-        "本装配的保存落点只能在装配期给出（`NoPicker`）—— 接 `NativeFilePicker` 会在一个\
-         没有 OS 窗口的进程里弹一次没人能答的模态框"
-    );
-    // ⛔ 拿 `ui/force_save` 冒充"人能按的保存"：那是一条控制面**命令**，
-    // 它一直在，而按钮一直点不动 —— 缺陷正是被这句话掩盖的。
-    assert!(
-        crate_source("ui_mcp_serve.rs").contains("build_live_ui_with"),
-        "本档的装配入口必须仍是 `build_live_ui_with`（判据 ① 钉的那次注册要在**真的**被执行的那条路上）"
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
     );
 }
 

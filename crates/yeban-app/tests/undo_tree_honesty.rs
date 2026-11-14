@@ -319,9 +319,8 @@ fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
     // 转发到**已存在**的宿主动作（不另造落点）。
     let app = code_only(&read("ui/app.slint"));
     assert!(
-        (["undo-node-count"]
-            .iter()
-            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))
+        (["undo-node-count"].iter().fold(true, |acc, n| acc
+            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))))
             && app.contains("root.open-musical-pr();"),
         "`app.slint` 必须把 `open-ai-proposals` 转到既有的 `open-musical-pr` \
          （`musical-pr-open` 的唯一写者仍是宿主）"

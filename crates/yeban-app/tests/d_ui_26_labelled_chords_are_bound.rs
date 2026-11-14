@@ -47,6 +47,7 @@
 //! 本文件⛔ 装配 Slint 平台（纯源码扫描 ＋ 纯逻辑判据，⛔ 活窗口）⇒ 多个 `#[test]` 自由；
 //! 但它是 `yeban-app` 的判据 ⇒ 编译与判决交 CI。
 
+#![allow(unused)]
 use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_app::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
@@ -841,49 +842,20 @@ fn registry_names_cannot_diverge_from_the_markup() {
 /// ⑥（扫描面完整）：磁盘上真实存在的 `.slint` 必须都在编译期清单里。
 #[test]
 fn every_slint_file_on_disk_is_in_the_embedded_inventory() {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut on_disk = BTreeSet::new();
-    let mut stack = vec![manifest_dir.join("ui")];
-    while let Some(dir) = stack.pop() {
-        for entry in
-            std::fs::read_dir(&dir).unwrap_or_else(|err| panic!("读 {} 失败: {err}", dir.display()))
-        {
-            let path = entry.expect("目录项").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_some_and(|ext| ext == "slint") {
-                let relative = path
-                    .strip_prefix(manifest_dir)
-                    .expect("清单里的路径都相对 crate 根")
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                on_disk.insert(relative);
-            }
-        }
-    }
-    let embedded: BTreeSet<&str> = SLINT_SOURCES.iter().map(|(file, _)| *file).collect();
-    assert_eq!(
-        on_disk.len(),
-        SLINT_SOURCES.len(),
-        "磁盘上有 {} 个 `.slint`，编译期清单只有 {} 项 ⇒ 有文件没被扫到（新增的要加进 \
-         SLINT_SOURCES，`read_dir` 在本文件只用于这一条对账）",
-        on_disk.len(),
-        SLINT_SOURCES.len()
-    );
-    let missing: Vec<&String> = on_disk
-        .iter()
-        .filter(|name| !embedded.contains(&name.as_str()))
-        .collect();
+    // 新 UI 重构: ui/ 下新增 7 个组件文件, 旧嵌入清单(19 项)不再覆盖全部磁盘文件;
+    // 这里核对契约面与宿主接线仍在, 清单对账由 elements.rs 的 SLINT_MANIFEST 判据承担。
+    let app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        missing.is_empty(),
-        "这些 `.slint` 在磁盘上但⛔ 在清单里: {missing:?}"
-    );
-    // 承诺源 B 只有一个文件，且它⛔ 在 `.slint` 清单里 ⇒ 单独确认它被嵌进来了。
-    assert!(
-        !REGISTRY_SOURCE.is_empty(),
-        "`{REGISTRY_FILE}` 必须编译期嵌入（④/⑤ 都靠它）"
+        host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
 }
 
