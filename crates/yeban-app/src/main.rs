@@ -924,7 +924,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     host::apply_undo(&ui, &undo_port);
     // 生产桥接层: 放在全部 wire_* 之后, 用 on_* 覆盖语义接管新 UI 独有回调,
     // 转发到已接线的旧回调 / 真实 Op。测试装配(只 build_main_window)不跑这一段。
-    host::wire_aether_actions(&ui, Rc::clone(&undo_port));
+    host::wire_aether_actions(
+        &ui,
+        Rc::clone(&undo_port),
+        production.borrow().engine_handle(),
+        Rc::clone(&view_cell),
+    );
     let undo_display = undo_port.display();
     cli::emit(&[format!(
         "撤销: 可撤销 {} 步 · 已撤销 {} 步 · 分支 {} · 实现 = undo_session (与 MCP 的 yeban_undo 同一份源码)",

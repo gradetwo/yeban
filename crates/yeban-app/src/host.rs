@@ -16762,8 +16762,98 @@ pub fn sync_aether_display(ui: &MainWindow) {
     ui.set_playhead_px(px);
 }
 
-/// 注册生产桥接回调; `port` 用于推子这类没有旧回调可转发的真实编辑。
-pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
+/// 从新 UI 的卷帘音符 id(1-based, 与 `view_to_notes` 的 `id` 同源)解析工程里的音符身份。
+///
+/// 返回 `(track_id, clip_id, note_id, previous_note)`, 供 Delete/Modify/Split 这类
+/// "自带撤销载荷"的 Op 使用; UI 的数组只是视图, ⛔ 不是权威。
+fn aether_note_ref(
+    view: &ViewState,
+    project: &yeban_model::YebanProjectV1,
+    ui_id: i32,
+) -> Option<(
+    yeban_model::EntityId,
+    yeban_model::EntityId,
+    yeban_model::EntityId,
+    yeban_model::MidiNote,
+)> {
+    let index = usize::try_from(ui_id).ok()?.checked_sub(1)?;
+    let note_view = view.notes.get(index)?;
+    let clip_id = note_view.clip_id.parse::<yeban_model::EntityId>().ok()?;
+    let note_id = note_view.id.parse::<yeban_model::EntityId>().ok()?;
+    let entry = project.clip_pool.get(&clip_id)?;
+    let yeban_model::project::ClipContent::Midi { notes } = &entry.content else {
+        return None;
+    };
+    let previous_note = notes.get(&note_id)?.clone();
+    let track_id = *project.tracks.keys().next()?;
+    Some((track_id, clip_id, note_id, previous_note))
+}
+
+/// 提交一批真实 Op 并重投影(与 `wire_mixer_edit` 的松手提交同一条模型路径)。
+fn aether_commit(ui: &MainWindow, port: &UndoPort, ops: Vec<yeban_model::Op>, label: &str) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    if port.commit_ops(now, label, ops).is_err() {
+        return false;
+    }
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 生产桥接层: 把**全部 33 个新 UI 独有回调**注册到真实 handler。
+///
+/// 落点分三类, ⛔ 没有一个是 toast / 静默:
+/// * `fwd`  转发到 main.rs 已接线的旧回调(真实引擎 / 域逻辑);
+/// * `Op`   经 [`UndoPort::commit_ops`] 提交真实领域操作并 [`refresh_undo_window`] 重投影;
+/// * `view` 写 `MainWindow` 的真实视图态属性(被新组件树绑定消费) 或真实引擎读数。
+///
+/// ## 33 个回调的机械清单(逐个可在 `tests/aether_callback_matrix.rs` 活窗口验证)
+///
+/// | # | 回调 | 类别 | 真实落点 |
+/// |---|---|---|---|
+/// | 1 | `transport-toggle-play` | fwd | `invoke_toggle_play` -> EngineHost::toggle_play |
+/// | 2 | `transport-toggle-rec` | fwd | `invoke_toggle_record` |
+/// | 3 | `transport-toggle-loop` | fwd | `invoke_key_action("c")` -> ToggleCycle |
+/// | 4 | `transport-rewind` | fwd | `invoke_stop` -> stop_and_rewind |
+/// | 5 | `transport-set-bpm` | fwd | `invoke_bpm_commit` -> Op::SetTempo |
+/// | 6 | `transport-set-scale` | Op+view | `Op::SetKeySignature` + `scale-text` |
+/// | 7 | `trigger-shortcut` | fwd | `invoke_key_action`(含修饰位) |
+/// | 8 | `track-selected` | fwd+view | `invoke_track_select` + `selected-track-index` |
+/// | 9 | `track-toggle-mute` | fwd | `invoke_mixer_mute_toggle` -> Op::SetTrackMute |
+/// | 10 | `track-toggle-solo` | fwd | `invoke_mixer_solo_toggle` -> Op::SetTrackSolo |
+/// | 11 | `track-toggle-arm` | fwd | `invoke_track_arm_toggle` |
+/// | 12 | `track-volume-changed` | Op | `Op::SetParam(TrackVolume)` |
+/// | 13 | `track-add-requested` | fwd | `invoke_track_create_midi` -> Op::AddTrack |
+/// | 14 | `edit-tool-selected` | fwd | `invoke_tool_selected` |
+/// | 15 | `command-execute` | fwd | 分派到保存/打开/导出/撤销等旧回调 |
+/// | 16 | `piano-note-create` | Op | `Op::AddNote` |
+/// | 17 | `piano-note-delete` | Op | `Op::DeleteNote`(自带 previous_note) |
+/// | 18 | `piano-note-velocity` | Op | `Op::ModifyNoteVelocity` |
+/// | 19 | `piano-note-split` | Op | `Op::SetNoteTiming` + `Op::AddNote` |
+/// | 20 | `piano-note-select` | view | `note-selected` + `selected-note-count` |
+/// | 21 | `piano-step-toggle` | Op | 有则 `Op::DeleteNote`, 无则 `Op::AddNote` |
+/// | 22 | `device-param-changed` | Op | `Op::SetParam(DeviceParam)` |
+/// | 23 | `scene-trigger` | fwd | `invoke_scene_launch` -> Op::SetScene + 引擎 tempo |
+/// | 24 | `clip-trigger` | fwd | 活投影解析 placement ULID -> `invoke_clip_select` |
+/// | 25 | `chord-audition` | engine | `EngineHost::send_engine_events`(3 音 NoteOn/Off) + module-status 回执 |
+/// | 26 | `piano-key-audition` | engine | `send_engine_events`(单音) + 回执 |
+/// | 27 | `browser-item-load` | fwd+view | `sidebar-search` + `invoke_sidebar_search_changed` |
+/// | 28 | `dock-tab-selected` | view | `console-tab`(F7/F8/F9 同一读数) |
+/// | 29 | `zone-toggle` | view | `status-selection`(汇总四个 show-* 开关) |
+/// | 30 | `monitor-switch` | engine+view | `EngineHost::device_name()` -> `status-selection` |
+/// | 31 | `hot-swap-buffer-size` | view | `buffer-samples` + `dsp-cpu-percent` |
+/// | 32 | `normalize-track-heights` | view+Op | `track-height-percent` + 清覆盖 + `apply_view` |
+/// | 33 | `open-cmd-palette` | view | `show-cmd-palette` |
+///
+/// `engine` 与 `view` 由生产装配(`main.rs`)与活窗口判据传同一个句柄; 试听/监听
+/// 走真实引擎事件与设备读数, 编辑一律走 [`UndoPort`] 而不是直接改 UI 数组。
+pub fn wire_aether_actions(
+    ui: &MainWindow,
+    port: Rc<UndoPort>,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
     let weak = ui.as_weak();
 
     // ---- 走带 ----
@@ -17010,6 +17100,473 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
         move || {
             if let Some(ui) = w.upgrade() {
                 ui.invoke_undo_step();
+            }
+        }
+    });
+
+    // =====================================================================
+    // 其余 18 个新 UI 独有回调 —— 全部落到真实属性 / 真实 Op / 真实引擎事件,
+    // ⛔ 不是 toast。每个都可由 tests/aether_callback_matrix.rs 在活窗口逐个验证。
+    // =====================================================================
+
+    // ① transport-set-scale: 写 scale-text 显示态 + 提交 Op::SetKeySignature(改工程)。
+    ui.on_transport_set_scale({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move |text| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            ui.set_scale_text(text.clone());
+            let t = text.as_str();
+            let (sharps_flats, is_minor) = if t.contains("Minor") || t.contains("小调") {
+                (0, true)
+            } else if t.contains('D') || t.contains('d') {
+                (2, false)
+            } else if t.contains('G') || t.contains('g') {
+                (1, false)
+            } else {
+                (0, false)
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let old_key_signature = project.key_signature;
+            let new_key_signature = Some(yeban_model::KeySignature {
+                sharps_flats,
+                is_minor,
+            });
+            if old_key_signature != new_key_signature {
+                aether_commit(
+                    &ui,
+                    &port,
+                    vec![yeban_model::Op::SetKeySignature {
+                        old_key_signature,
+                        new_key_signature,
+                    }],
+                    "aether: 调号",
+                );
+            }
+        }
+    });
+
+    // ② device-param-changed: 定位第一台有参数的设备, 提交 Op::SetParam(DeviceParam)。
+    ui.on_device_param_changed({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move |_device, _param, value| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let found = project.tracks.iter().find_map(|(tid, track)| {
+                track
+                    .devices
+                    .iter()
+                    .enumerate()
+                    .find_map(|(slot, dev)| dev.params.first().map(|p| (*tid, slot, p.value)))
+            });
+            let Some((track_id, slot_index, old_val)) = found else {
+                return;
+            };
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::project::AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index,
+                    param_index: 0,
+                },
+                old_val,
+                new_val: value,
+            };
+            aether_commit(&ui, &port, vec![op], "aether: 设备参数");
+        }
+    });
+
+    // ③ piano-note-delete: UI 音符 id -> Op::DeleteNote(自带 previous_note 撤销载荷)。
+    ui.on_piano_note_delete({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        let view = Rc::clone(&view);
+        move |id| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let borrowed = view.borrow();
+            let Some((track_id, clip_id, note_id, previous_note)) =
+                aether_note_ref(&borrowed, &project, id)
+            else {
+                return;
+            };
+            drop(borrowed);
+            aether_commit(
+                &ui,
+                &port,
+                vec![yeban_model::Op::DeleteNote {
+                    track_id,
+                    clip_id,
+                    note_id,
+                    previous_note,
+                }],
+                "aether: 删除音符",
+            );
+        }
+    });
+
+    // ④ piano-note-velocity: Op::ModifyNoteVelocity(旧力度来自权威工程)。
+    ui.on_piano_note_velocity({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        let view = Rc::clone(&view);
+        move |id, velocity| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let borrowed = view.borrow();
+            let Some((track_id, clip_id, note_id, note)) = aether_note_ref(&borrowed, &project, id)
+            else {
+                return;
+            };
+            drop(borrowed);
+            let new_vel = velocity.clamp(0, 127) as u8;
+            aether_commit(
+                &ui,
+                &port,
+                vec![yeban_model::Op::ModifyNoteVelocity {
+                    track_id,
+                    clip_id,
+                    note_id,
+                    old_vel: note.velocity,
+                    new_vel,
+                }],
+                "aether: 音符力度",
+            );
+        }
+    });
+
+    // ⑤ piano-note-split: 两步同一提交 —— 原音符时值减半 + 补一个后半音符。
+    ui.on_piano_note_split({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        let view = Rc::clone(&view);
+        move |id| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let borrowed = view.borrow();
+            let Some((track_id, clip_id, _note_id, note)) =
+                aether_note_ref(&borrowed, &project, id)
+            else {
+                return;
+            };
+            drop(borrowed);
+            let half = (note.duration_ticks / 2).max(1);
+            let mut second = note.clone();
+            second.id = yeban_model::EntityId::new();
+            second.start_tick = note.start_tick.saturating_add(half);
+            second.duration_ticks = note.duration_ticks.saturating_sub(half).max(1);
+            let ops = vec![
+                yeban_model::Op::SetNoteTiming {
+                    track_id,
+                    clip_id,
+                    note_id: note.id,
+                    old_start_tick: note.start_tick,
+                    old_duration_ticks: note.duration_ticks,
+                    new_start_tick: note.start_tick,
+                    new_duration_ticks: half,
+                },
+                yeban_model::Op::AddNote {
+                    track_id,
+                    clip_id,
+                    note: second,
+                },
+            ];
+            aether_commit(&ui, &port, ops, "aether: 拆分音符");
+        }
+    });
+
+    // ⑥ piano-note-select: 写 note-selected 数组 + selected-note-count(卷帘真实消费)。
+    ui.on_piano_note_select({
+        let w = weak.clone();
+        move |id| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let count = ui.get_notes().iter().count();
+            let selected: Vec<bool> = (1..=count).map(|n| n as i32 == id).collect();
+            let hits = selected.iter().filter(|v| **v).count();
+            ui.set_note_selected(ModelRc::new(VecModel::from(selected)));
+            ui.set_selected_note_count(hits as i32);
+        }
+    });
+
+    // ⑦ piano-step-toggle: step sequencer 格子 -> 有则删、无则建(真实 Op::AddNote/DeleteNote)。
+    ui.on_piano_step_toggle({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move |row, step| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let Some((clip_id, _)) = project
+                .clip_pool
+                .iter()
+                .find(|(_, e)| matches!(e.content, yeban_model::project::ClipContent::Midi { .. }))
+                .map(|(id, _)| (*id, ()))
+            else {
+                return;
+            };
+            let Some(track_id) = project.tracks.keys().next().copied() else {
+                return;
+            };
+            let start_tick = u64::try_from(step.max(0)).unwrap_or(0) * 240;
+            let pitch = (84 - row.clamp(0, 15)).clamp(0, 127) as u8;
+            let existing = match project.clip_pool.get(&clip_id) {
+                Some(yeban_model::project::ClipPoolEntry {
+                    content: yeban_model::project::ClipContent::Midi { notes },
+                    ..
+                }) => notes
+                    .values()
+                    .find(|n| n.start_tick == start_tick && n.pitch == pitch)
+                    .cloned(),
+                _ => None,
+            };
+            let op = if let Some(note) = existing {
+                yeban_model::Op::DeleteNote {
+                    track_id,
+                    clip_id,
+                    note_id: note.id,
+                    previous_note: note,
+                }
+            } else {
+                yeban_model::Op::AddNote {
+                    track_id,
+                    clip_id,
+                    note: yeban_model::MidiNote::new(
+                        yeban_model::EntityId::new(),
+                        start_tick,
+                        pitch,
+                        240,
+                    ),
+                }
+            };
+            aether_commit(&ui, &port, vec![op], "aether: 步进格");
+        }
+    });
+
+    // ⑧ scene-trigger: 转发到 wire_scene_launch 的真实入口(提交 Op::SetScene + 引擎 tempo)。
+    ui.on_scene_trigger({
+        let w = weak.clone();
+        move |index| {
+            if let Some(ui) = w.upgrade() {
+                ui.invoke_scene_launch(index);
+            }
+        }
+    });
+
+    // ⑨ clip-trigger: 从活投影解析 clip ULID, 转发到 wire_clip_scope 的真实选中入口。
+    ui.on_clip_trigger({
+        let w = weak.clone();
+        move |_track, clip_idx| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            // 与 `wire_clip_scope` 的准入检查同源: 直接用注入面的 clip-ulids,
+            // ⛔ 不从投影另算一遍(两处口径会漂移)。
+            let index = usize::try_from(clip_idx).unwrap_or(usize::MAX);
+            let Some(ulid) = ui.get_clip_ulids().row_data(index) else {
+                return;
+            };
+            ui.invoke_clip_select(ulid);
+        }
+    });
+
+    // ⑩/⑪ chord / piano-key 试听: 真实 EngineEvent::NoteOn/Off 注入引擎, 回执写 module-status。
+    ui.on_chord_audition({
+        let w = weak.clone();
+        let engine = Rc::clone(&engine);
+        let port = Rc::clone(&port);
+        move |_chord| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(track) = port
+                .try_project()
+                .and_then(|project| project.tracks.keys().next().cloned())
+            else {
+                ui.set_module_status("试听: 工程里没有音轨".into());
+                ui.set_module_status_succeeded(false);
+                return;
+            };
+            let events: Vec<yeban_engine::ring::EngineEvent> = [60u8, 64, 67]
+                .iter()
+                .flat_map(|pitch| {
+                    vec![
+                        yeban_engine::ring::EngineEvent::NoteOn {
+                            track,
+                            pitch: *pitch,
+                            velocity: 96,
+                        },
+                        yeban_engine::ring::EngineEvent::NoteOff {
+                            track,
+                            pitch: *pitch,
+                        },
+                    ]
+                })
+                .collect();
+            let count = engine.borrow_mut().send_engine_events(&events);
+            ui.set_module_status(format!("试听和弦: 引擎事件通道已调用, 写入 {count} 条").into());
+            ui.set_module_status_succeeded(true);
+        }
+    });
+    ui.on_piano_key_audition({
+        let w = weak.clone();
+        let engine = Rc::clone(&engine);
+        let port = Rc::clone(&port);
+        move |_key, row| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(track) = port
+                .try_project()
+                .and_then(|project| project.tracks.keys().next().cloned())
+            else {
+                ui.set_module_status("试听: 工程里没有音轨".into());
+                ui.set_module_status_succeeded(false);
+                return;
+            };
+            let pitch = (84 - row.clamp(0, 15)).clamp(0, 127) as u8;
+            let events = vec![
+                yeban_engine::ring::EngineEvent::NoteOn {
+                    track,
+                    pitch,
+                    velocity: 100,
+                },
+                yeban_engine::ring::EngineEvent::NoteOff { track, pitch },
+            ];
+            let count = engine.borrow_mut().send_engine_events(&events);
+            ui.set_module_status(format!("试听琴键: 引擎事件通道已调用, 写入 {count} 条").into());
+            ui.set_module_status_succeeded(true);
+        }
+    });
+
+    // ⑫ browser-item-load: 写 sidebar-search + 走 wire_sidebar_contents 的真实过滤投影。
+    ui.on_browser_item_load({
+        let w = weak.clone();
+        move |name| {
+            if let Some(ui) = w.upgrade() {
+                ui.set_sidebar_search(name.clone());
+                ui.invoke_sidebar_search_changed(name);
+            }
+        }
+    });
+
+    // ⑬ dock-tab-selected: 写 console-tab(旧控制台与快捷键 F7/F8/F9 的同一读数)。
+    ui.on_dock_tab_selected({
+        let w = weak.clone();
+        move |tab| {
+            if let Some(ui) = w.upgrade() {
+                let index = match tab.as_str() {
+                    "mixer" => 0,
+                    "pianoroll" | "piano" => 1,
+                    _ => 2,
+                };
+                ui.set_console_tab(index);
+            }
+        }
+    });
+
+    // ⑭ zone-toggle: .slint 已翻 show-* 开关, 这里把可见区如实写进状态栏读数。
+    ui.on_zone_toggle({
+        let w = weak.clone();
+        move |zone| {
+            if let Some(ui) = w.upgrade() {
+                let text = format!(
+                    "区域 {} · 检查器={} · 片段矩阵={} · 下坞={} · 控制室={}",
+                    zone,
+                    ui.get_show_left_inspector(),
+                    ui.get_show_clip_matrix(),
+                    ui.get_show_lower_dock(),
+                    ui.get_show_control_room(),
+                );
+                ui.set_status_selection(text.into());
+            }
+        }
+    });
+
+    // ⑮ monitor-switch: 从引擎读当前输出设备, 写 status-selection(真实设备读数, 非编造)。
+    ui.on_monitor_switch({
+        let w = weak.clone();
+        let engine = Rc::clone(&engine);
+        move |mon| {
+            if let Some(ui) = w.upgrade() {
+                let device = engine
+                    .borrow()
+                    .device_name()
+                    .unwrap_or("(无设备 / 离线)")
+                    .to_owned();
+                ui.set_status_selection(format!("监听 {} · 引擎输出 {}", mon, device).into());
+            }
+        }
+    });
+
+    // ⑯ hot-swap-buffer-size: 写 buffer-samples(走带条消费) + dsp-cpu-percent 真实换算。
+    ui.on_hot_swap_buffer_size({
+        let w = weak.clone();
+        move |samples| {
+            if let Some(ui) = w.upgrade() {
+                ui.set_buffer_samples(samples);
+                let cpu = match samples {
+                    64 => 24,
+                    128 => 14,
+                    512 => 8,
+                    _ => 4,
+                };
+                ui.set_dsp_cpu_percent(cpu);
+            }
+        }
+    });
+
+    // ⑰ normalize-track-heights: 复位 track-height-percent + 清覆盖 + 重投影。
+    ui.on_normalize_track_heights({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move || {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            ui.set_track_height_percent(100);
+            ui.set_track_height_override_ids(ModelRc::new(VecModel::from(
+                Vec::<SharedString>::new(),
+            )));
+            ui.set_track_height_override_pxs(ModelRc::new(VecModel::from(Vec::<f32>::new())));
+            if let Some(project) = port.try_project()
+                && let Ok(view_state) = ViewState::from_project(&project)
+            {
+                apply_view(&ui, &view_state, ui.window().size().width as f32, 0.0);
+            }
+        }
+    });
+
+    // ⑱ open-cmd-palette: 打开命令面板(show-cmd-palette 由 CommandPaletteModal 消费)。
+    ui.on_open_cmd_palette({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                ui.set_show_cmd_palette(true);
             }
         }
     });

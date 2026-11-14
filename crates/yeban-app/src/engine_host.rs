@@ -2296,6 +2296,20 @@ impl EngineHost {
     /// ⭐ 引擎侧自 `eca718ab` 起**真的消费** `NoteOn` / `NoteOff`
     /// （`rt.rs` 的两条分支 + `SynthEngine::note_on/note_off`）⇒ 写进去就会**作用到合成**。
     ///
+    /// 已向引擎事件通道发起的批量写调用数(结构性读数)。
+    ///
+    /// ⚠ `send_engine_events` 的返回值是"本次真正写进环形缓冲的条数", 队列满时可为 0;
+    /// 但 `EventSender::publish` 对**每次调用**都记账 ⇒ 判据用本读数证明"试听回调
+    /// 真的走到了引擎事件通道", ⛔ 不依赖队列此刻是否有空位。
+    #[must_use]
+    pub fn event_bulk_push_calls(&self) -> u64 {
+        self.events
+            .as_ref()
+            .map_or(0, |sender| sender.bulk_push_calls())
+    }
+
+    /// 把音符/参数事件推给实时引擎(与 `--midi-in` 的"弹一下就响"同一条通道)。
+    ///
     /// 返回**真正写进环**的条数（环满时少写 ⇒ 调用方能看出"没全进去"，⛔ 不假装成功）。
     pub fn send_engine_events(&mut self, events: &[EngineEvent]) -> usize {
         match self.events.as_mut() {
