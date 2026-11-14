@@ -1054,12 +1054,12 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
     // 共 6 B —— ⭐ 现值由 `size_of` 现读：见判据 `S85`）。
     let gate_bytes = CC_GATE_CAP * std::mem::size_of::<CcGate>();
     assert!(
-        (5768 + gate_bytes..=5768 + gate_bytes + 40)
+        (5768 + gate_bytes..=5768 + gate_bytes + 64)
             .contains(&std::mem::size_of::<PreparedRegion>()),
         "⭐ `#109` 的每区域代价 ＝ `CC_GATE_CAP × size_of::<CcGate>()`（＝ {gate_bytes} B）\
          ＋ 条数 `u8` ＋ 尾部对齐（≤ 8 B）＋ ⭐ **round-robin 的两个 `u32`（8 B）**\
          → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 上界 6168 → 6176（＋16 的余量改为 ＋24，\
-         多出的 8 是 `off_time`，⛔ 不是放宽判据——下界 5768 ＋ 384 未动）** → ⭐ **随机轮替片再修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 上界 6176 → 6184（＋24 的余量改为 ＋32，多出的 8 是 rand 两字段，下界未动）** → ⭐ **keytrack 片再修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 上界 6184 → 6192（＋32 的余量改为 ＋40，多出的 8 是 keytrack 两字段，下界未动）**"
+         多出的 8 是 `off_time`，⛔ 不是放宽判据——下界 5768 ＋ 384 未动）** → ⭐ **随机轮替片再修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 上界 6176 → 6184（＋24 的余量改为 ＋32，多出的 8 是 rand 两字段，下界未动）** → ⭐ **keytrack 片再修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 上界 6184 → 6192（＋32 的余量改为 ＋40，多出的 8 是 keytrack 两字段，下界未动）** → ⭐ **滤波片再修订：滤波六字段再 ＋24 ⇒ 上界 6192 → 6216（＋40 的余量改为 ＋64，多出的 24 是滤波六字段，下界未动）**"
     );
     // ⚠ `SfzVoice::gain` 本片**改了名**（→ `SfzVoice::track_gain`）而**⛔ 没有加字段**：
     // 它只存**引擎层**那一份，乐器层（含 CC 轴交叉淡化）由逐块路径现算 —— 见判据 `S68`／`S71`。
@@ -1070,10 +1070,10 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_200_kib() {
          ＝ 144 字节（定长、全 `Copy`、⛔ 无 `Vec`／`HashMap`）"
     );
     assert_eq!(
-        pool, 2560,
+        pool, 3968,
         "声部池 = 16 槽 ×（声部 40 ＋ 挂起 40 ＋ 淡出 16 ＋ 序号 8）＋ 挂起标志 16 \
          ＋ 计数器 28（序号舵 8 ＋ 丢弃 8 ＋ 窃取 8 ＋ 淡出帧数 4）⇒ 对齐到 1712；\
-         ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224，再加 `#341` held_notes `Option<u32>` ＋8 ＝ 2232，再加 portamento 池级四字段 ＋8 ＝ 2240，再加弯音旁表四数组 ＋320 ＝ 2560**"
+         ⭐ **round-robin 的每键 `u32` 计数器 `[u32; 128]` ⇒ ＋512 ＝ 2224，再加 `#341` held_notes `Option<u32>` ＋8 ＝ 2232，再加 portamento 池级四字段 ＋8 ＝ 2240，再加弯音旁表四数组 ＋320 ＝ 2560** → ⭐ **滤波片再修订：每槽一只 `VoiceFilter`（88 B）× 16 槽 ＝ ＋1408 ⇒ 3968**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -7620,8 +7620,8 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -8094,8 +8094,8 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert!(
         runtime < 200 * 1024,
@@ -9097,25 +9097,26 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     // 上面两条 `88 → 240` 的腿整条有效）；⛔ `SfzVoice` / 池 / `EngineRuntime` 三条
     // **＋0 边界一条未动**（下面三条断言逐字保留）。
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ `#113` 后的**绝对值**基线（`6152 ＋ 8`；⛔ 三条实时边界仍 ＋0）；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(
         region,
-        6152 + 16 + 8 + 8 + 8,
+        6152 + 16 + 8 + 8 + 8 + 24,
         "⭐ `#113` 的**增量** ＝ `direction: PlayDirection` ＋ 尾部对齐（⛔ 不是 `per-table` 那一份）；\
          ⭐ 现读 `6152 ＋ 16`：后 8 B 是 **round-robin** 的两个 `u32`\
          → ⭐ **`#331` 修订：再加 `off_time: f32` 的 8 B ⇒ `6152 ＋ 16 ＋ 8`。\
          ⚠ 原文的 `6152 ＋ 16` 逐字保留在式子里（⛔ 不是把式子改成 `6152 ＋ 24` 了事），\
          这样「多出来的 8 是谁」在代码里就能看出来**；\
          → ⭐ **keytrack 片再修订：随机轮替片再加 `lorand` / `hirand` 的 8 B（式子里第三个加数），\
-         本片再加 `amp_keytrack` / `amp_keycenter` 的 8 B ⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8`**"
+         本片再加 `amp_keytrack` / `amp_keycenter` 的 8 B ⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8`**\
+         → ⭐ **滤波片再 ＋24（滤波六标量）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8 ＋ 24`**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         cc_state, 144,
@@ -9892,23 +9893,24 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
         200 * 1024 - runtime
     );
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ 本单唯一的代价：`PreparedRegion` `6152 → 6160`（＋8 ＝ `direction` ＋ 对齐；摊平期）；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(
         region,
-        6152 + 16 + 8 + 8 + 8,
+        6152 + 16 + 8 + 8 + 8 + 24,
         "⭐ 增量腿：`direction: PlayDirection`（`size_of` ＝ 1）＋ 尾部对齐 ＝ ＋8；\
          ⭐ **round-robin 的两个 `u32`** 再 ＋8 ⇒ 合计 `6152 ＋ 16`\
          → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ `6152 ＋ 16 ＋ 8`（原文式子保留在式子里）**\
          → ⭐ **随机轮替片再 ＋8（`lorand` / `hirand`）⇒ `6152 ＋ 16 ＋ 8 ＋ 8`**\
-         → ⭐ **keytrack 片再 ＋8（`amp_keytrack` / `amp_keycenter`）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8`**"
+         → ⭐ **keytrack 片再 ＋8（`amp_keytrack` / `amp_keycenter`）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8`**\
+         → ⭐ **滤波片再 ＋24（滤波六标量）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8 ＋ 24`**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512），再加 held_notes ＋8 ⇒ 2232 B，再加 portamento ＋8 ⇒ 2240 B，再加弯音旁表 ＋320 ⇒ 2560 B**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0；⭐ **round-robin ⇒ 2224 B（＋512），再加 held_notes ＋8 ⇒ 2232 B，再加 portamento ＋8 ⇒ 2240 B，再加弯音旁表 ＋320 ⇒ 2560 B → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -10207,14 +10209,14 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ `#115` 的 `amplitude: f32` 落进既有尾部对齐空隙 ⇒ `PreparedRegion` **＋0**；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -10836,15 +10838,15 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ `#116` ⛔ 没有新增任何每区域字段（基准 `tune` 早在 `rate_per_note` 里、\
          调制项早在 `cc_mods` 里）⇒ `PreparedRegion` **＋0**；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -11828,14 +11830,14 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
         200 * 1024
     );
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ `#117` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -12900,14 +12902,14 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ `#118` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -13825,14 +13827,14 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6192,
+        region, 6216,
         "⭐ `#119` 没新增任何每区域字段（`volume` 基准早在 `volume_gain` 里、乘子是栈上值）\
-         ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192**"
+         ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
-        pool, 2560,
-        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320）**"
+        pool, 3968,
+        "⛔ `SfzVoicePool` 必须 ＋0（1712 B）；⭐ **round-robin 片的每键 `u32` 计数器 ⇒ 2224 B（＋512），再加 `#341` held_notes `Option<u32>` ⇒ 2232 B（＋8），再加 portamento 池级四字段 ⇒ 2240 B（＋8），再加弯音旁表四数组 ⇒ 2560 B（＋320） → ⭐ **滤波片修订：filters 数组 ＋1408 ⇒ 3968 B**"
     );
     assert_eq!(
         runtime, ENGINE_RUNTIME_BYTES,
@@ -14372,8 +14374,8 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6192, 40, 2560, ENGINE_RUNTIME_BYTES),
-        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；②③④ 仍 ＋0"
+        (6216, 40, 3968, ENGINE_RUNTIME_BYTES),
+        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**"
     );
 }
 
@@ -14988,8 +14990,8 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6192, 40, 2560, ENGINE_RUNTIME_BYTES),
-        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；②③④ 仍 ＋0"
+        (6216, 40, 3968, ENGINE_RUNTIME_BYTES),
+        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**"
     );
 }
 
@@ -15948,8 +15950,8 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6192, 40, 2560, ENGINE_RUNTIME_BYTES),
-        "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；②③④ 仍 ＋0"
+        (6216, 40, 3968, ENGINE_RUNTIME_BYTES),
+        "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
@@ -16160,11 +16162,15 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 0,
             needle: "`pan_oncc*` ／ `cutoff_oncc*` 那两项整条有效**（仍未做，另开单）",
-            verdict: "仍成立（`cutoff` 全族不在本仓）",
-            basis: "`cutoff*`（含 `cutoff_*ccN` 六个调制行）在 `yeban-sfz`／`yeban-engine` 的\
-                    **代码**里**一个 token 都没有**；`yeban-engine/src/synth.rs` 的 `cutoff_hz` \
-                    是**内部振荡器音色参数**，⛔ 与 SFZ 的 `cutoff` 不是同一个东西",
-            check: SweepCheck::NotInCode(0, &["cutoff"]),
+            verdict: "⭐ **滤波静态族片已关闭静态那一支**（原文保留：本条曾判「仍成立（`cutoff` 全族不在本仓）」）",
+            basis: "⭐ **滤波静态族片修订段**：静态族已落进引擎 —— `PreparedRegion` 的六个\
+                    标量（`fil_type`／`cutoff`／`resonance`／`fil_keytrack`／`fil_keycenter`／\
+                    `fil_veltrack`）＋ `PreparedRegion::voice_filter` ＋ `mix_span_into` 的\
+                    滤波段 ⇒ 剥注释后引擎代码里**有** `cutoff` 这个标识符；⚠ 本条因此从\
+                    `NotInCode` **翻转**成 `InCode`（⛔ 不是删行：同 `off_time` 那条的牙）。\
+                    仍未做的只剩 `cutoff_oncc*` **调制**那一支（下一条 `NotRecognized` 仍\
+                    成立）与 `pan_oncc*`（第一条仍成立）",
+            check: SweepCheck::InCode(0, "cutoff"),
         },
         SweepRow {
             file: 0,
@@ -16627,8 +16633,8 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6192, 40, 2560, ENGINE_RUNTIME_BYTES),
-        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；②③④ 仍 ＋0"
+        (6216, 40, 3968, ENGINE_RUNTIME_BYTES),
+        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0 ／ ⭐ `#331` 修订：① `PreparedRegion` ＋8（`off_time: f32`）⇒ 6176（不是 ＋0）／ ⭐ 随机轮替片修订：① 再 ＋8（`lorand` / `hirand` 两个 `f32`）⇒ 6192；⭐ **滤波片修订：① 再 ＋24（滤波六字段）⇒ 6216、③ 再 ＋1408（filters 数组）⇒ 3968；②④ 仍 ＋0**"
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }

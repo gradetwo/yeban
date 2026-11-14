@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 318 条：collection_size 66 ／ value_bound 240 ／ element_value_bound 5 ／ condition_counter 7
+# 合计 320 条：collection_size 66 ／ value_bound 242 ／ element_value_bound 5 ／ condition_counter 7
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -321,3 +321,5 @@ src/vocal_timemap.rs|render_burst_alignment_identity_and_stretched|value_bound|a
 src/vocal_timemap.rs|render_identity_is_deterministic|collection_size|assert_eq!(a.len(), sr / 2
 src/vocal_timemap.rs|render_same_seed_deterministic_across_seeds|value_bound|assert_eq!(seed0_a, seed0_b, "seed 0 renders must be identical"
 src/vocal_timemap.rs|render_silence_stays_silence|value_bound|assert!(peak < 1e-4, "silence in must stay silence, peak {peak}"
+src/voice_filter.rs|one_pole_lowpass|value_bound|assert!((y - 1.0).abs() < 1e-3, "阶跃终值应趋近 1，实测 {y}"
+src/voice_filter.rs|resonance_is_the_gain_at_cutoff|value_bound|assert!(                 (at_cutoff - 12.0).abs() < 0.5,                 "{kind:?} 在截止处应约 

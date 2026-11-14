@@ -117,6 +117,7 @@ pub mod vocal_pitch_route;
 pub mod vocal_pitch_shift;
 pub mod vocal_refine;
 pub mod vocal_timemap;
+pub mod voice_filter;
 
 /// 采样率的合法性下限（Hz）。所有需要采样率的构造/配置入口都用它做钳制，
 /// 以免调用方传 0 或负数时把系数算成 `NaN`/`inf` [ARCH-DSP-001]。

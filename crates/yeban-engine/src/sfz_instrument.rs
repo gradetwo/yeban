@@ -843,6 +843,53 @@
 //! * 两个中心**互相独立**：音高绕 `pitch_keycenter`、振幅绕
 //!   `amp_keycenter`，文件给不同值时各自生效，⛔ 不互相借用。
 //!
+//! # ⭐ 滤波静态族（`fil_type` / `cutoff` / `resonance` / `fil_keytrack` / `fil_keycenter` / `fil_veltrack`）
+//!
+//! ## 规范逐字（2026-11-14 现读）
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | --- | --- | --- | --- | --- | --- |
+//! | fil\_type | SFZ v1 | string | lpf_2p | （见 [`FilterType`] 文档） | N/A |
+//! | cutoff | SFZ v1 | float | **filter disabled** | 0 to SampleRate/2 | Hz |
+//! | resonance | SFZ v1 | float | 0 | 0 to 40 | dB |
+//! | fil\_keytrack | SFZ v1 | integer | 0 | 0 to 1200 | cents |
+//! | fil\_keycenter | SFZ v1 | integer | 60 | 0 to 127 | N/A |
+//! | fil\_veltrack | SFZ v1 | integer | 0 | -9600 to 9600 | cents |
+//!
+//! （各行分别出自 <https://sfzformat.com/opcodes/fil_type/>、
+//! <https://sfzformat.com/opcodes/cutoff/>、
+//! <https://sfzformat.com/opcodes/resonance/>、
+//! <https://sfzformat.com/opcodes/fil_keytrack/>、
+//! <https://sfzformat.com/opcodes/fil_keycenter/>、
+//! <https://sfzformat.com/opcodes/fil_veltrack/>。）
+//!
+//! ## 实现口径（解析在 `yeban-sfz`，系数/递推在 `yeban-dsp`，本 crate 只接线）
+//!
+//! * **启用条件只有一个**：`cutoff` 给出且 > 0。缺失 ⇒ 规范缺省
+//!   "filter disabled"；`cutoff=0` ⇒ `cutoff` 页 Practical Considerations
+//!   记的播放器分歧里取 **ARIA 口径**（disabled），归约在
+//!   [`yeban_sfz::playback::filter_cutoff_hz`]。禁用 ⇒
+//!   [`VoiceFilter::BYPASSED`] ⇒ 渲染**逐位不变**（第一判据）。
+//! * **静态折算**：有效截止 ＝ `cutoff × 2^((fil_keytrack×(note−fil_keycenter)
+//!   + fil_veltrack×velocity/127) / 1200)`，触发期按 (note, velocity)
+//!   算**一次**；离线/摊平/实时三条路共用 `yeban-sfz` 的同一份自由函数
+//!   （离线读数即 [`PlaybackSpec::filter_cutoff`]），⛔ 引擎不另抄、
+//!   ⛔ 不做逐采样调制（`*_onccN` / `fileg_*` / LFO 属后续线）。
+//! * **信号序**：插值采样 → 滤波 → `× gain × fade × env`
+//!   （[`mix_span_into`] 内，全仓唯一的逐样本循环，三条路共用）。
+//! * **状态持有**：递推状态是**声部状态** ⇒ 放池侧 `SfzVoicePool::filters`
+//!   （每槽一只，88 B），`SfzVoice` **不加字段**（判据 `S9` 仍 40 B）；
+//!   配置时机 ＝ 直接落槽/硬窃取在触发期、软窃取在提升期（用被提升
+//!   声部自己的区域/音高/力度，⛔ 无 pending 侧数组）、淡出段沿用
+//!   victim 自己那只、退休时复位直通。一次性路径（离线/摊平）每
+//!   region 新建一只（状态自零起 ＝ note-on 语义）。
+//! * **类型子集**：实现 10 个（v1 六个 ＋ `lpf_4p`/`hpf_4p`/`lpf_6p`/`hpf_6p`
+//!   级联）；其余规范值（`*_sv` / `pkf_2p` / `lsh` / `hsh` / `peq` /
+//!   `comb` / `pink` / `bpf_1p` / `brf_1p` / `apf_1p`）在 `yeban-sfz`
+//!   解析期**响亮报错**，⛔ 不静默近似（清单与理由见 [`FilterType`]）。
+//! * **不在本线**：`fil2_*` 第二滤波器、`fil_random`、`fil_gain`、
+//!   `fil_mode`、EQ 族 —— 审计报告 §8 子集外，不扩围。
+//!
 //! # ⭐ 播放方向（`direction`，任务单 `#113`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是三处"`direction` 仍未做"的登记**：
@@ -1792,11 +1839,15 @@ use std::sync::Arc;
 // ⭐ 窃取淡出的**帧数口径**：引擎里 PolySynth 用的就是这一个（3 ms × 采样率，
 // 上限 0.5 s、下限 1 帧）⇒ SFZ 池与复音池共用**同一个**舵，⛔ 不是第二份常数。
 use yeban_dsp::polysynth::{NO_PITCH_SHAPE, steal_fade_frames_for};
+// ⭐ 逐声部静态滤波器（SFZ 滤波静态族）：系数与递推在 `yeban-dsp`，
+// 本模块只做 (类型映射, 有效截止折算后的配置, 池侧持有)，见
+// [`PreparedRegion::voice_filter`] 与模块头「滤波静态族」一节。
+use yeban_dsp::voice_filter::{VoiceFilter, VoiceFilterKind};
 use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
-    CcGate, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery,
-    Trigger,
+    CcGate, FilterType, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region,
+    RegionQuery, Trigger,
 };
 // ⭐ 任务单 `#104`：CC 调制（`ccN` / `_ccN` / `_onccN` / `_curveccN`）；
 // ⭐ 任务单 `#115`：目标从五个 `ampeg_*` 推广成 [`ModTarget`]（首个增益族目标
@@ -2514,6 +2565,16 @@ impl SfzInstrument {
                         loop_during_release,
                     )
                 });
+                // ⭐ 滤波静态族（离线一次性路径）：每 region 一只新滤波器
+                // （状态自零起 ＝ note-on 语义，与实时声部触发期配置同口径；
+                // 有效截止走 [`Region::filter_cutoff`]，与摊平路同一份公式）。
+                // 无 `cutoff` ⇒ [`VoiceFilter::BYPASSED`] ⇒ 逐位不变。
+                let mut filter = match region.filter_cutoff(note, velocity) {
+                    Some(hz) => {
+                        configured_voice_filter(region.fil_type, hz, region.resonance, engine_hz)
+                    }
+                    None => VoiceFilter::BYPASSED,
+                };
                 let region_written = mix_span_into(
                     &source.pcm,
                     &mut position,
@@ -2524,6 +2585,7 @@ impl SfzInstrument {
                     loop_window,
                     &mut fade,
                     &mut env,
+                    &mut filter,
                     out,
                 );
                 written = written.max(region_written);
@@ -3530,6 +3592,32 @@ pub struct PreparedRegion {
     /// ⭐ **振幅键位跟踪中心键**（`amp_keycenter`，缺省 60）。口径同
     /// [`Self::amp_keytrack`]：该键上增益偏移恰为 0 dB。
     amp_keycenter: i32,
+    /// ⭐ **滤波器类型**（`fil_type`，缺省 `lpf_2p`）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里**已落地**（[`Region::fil_type`]，
+    /// 未实现的规范值是响亮 `InvalidOption`）⇒ 本字段只把那份枚举搬进
+    /// 摊平表，⛔ 不新增解析。消费见 [`Self::voice_filter`]。
+    fil_type: FilterType,
+    /// ⭐ **滤波截止频率**（`cutoff`，**Hz**；`None` ＝ 滤波禁用）。
+    ///
+    /// 口径同 [`Self::amp_keytrack`]：解析在 `yeban-sfz`（[`Region::cutoff`]，
+    /// 缺省即 `None`、负值响亮报错），本字段原样搬运。⚠ **它是"区域
+    /// 参数"、⛔ 不是"声部状态"**：逐声部的递推状态在池侧
+    /// （`SfzVoicePool::filters`），`SfzVoice` 一个字段都不加（`S9` 仍 40 B）。
+    cutoff: Option<f32>,
+    /// ⭐ **滤波谐振**（`resonance`，**dB**，缺省 0）。口径同
+    /// [`Self::cutoff`]（[`Region::resonance`]，越界响亮报错）。
+    resonance: f32,
+    /// ⭐ **滤波键位跟踪量**（`fil_keytrack`，**音分/键**，缺省 0）。
+    /// 与 [`Self::fil_keycenter`] / [`Self::fil_veltrack`] 一起喂
+    /// [`yeban_sfz::playback::filter_cutoff_hz`]（与离线
+    /// [`PlaybackSpec::filter_cutoff`] **同一份公式**），⛔ 不烘焙每键表
+    /// （与 `amp_keytrack` 同一条"只存标量"纪律）。
+    fil_keytrack: i32,
+    /// ⭐ **滤波键位跟踪中心键**（`fil_keycenter`，缺省 60）。
+    fil_keycenter: i32,
+    /// ⭐ **滤波力度跟踪量**（`fil_veltrack`，**音分**，缺省 0）。
+    fil_veltrack: i32,
 }
 
 impl PreparedRegion {
@@ -3688,6 +3776,67 @@ impl PreparedRegion {
     #[must_use]
     pub fn keytrack_gain(&self, note: u8) -> f32 {
         yeban_sfz::playback::keytrack_gain_factor(self.amp_keytrack, self.amp_keycenter, note)
+    }
+
+    /// ⭐ **滤波器类型**（`fil_type`，原样）。
+    #[must_use]
+    pub const fn fil_type(&self) -> FilterType {
+        self.fil_type
+    }
+
+    /// ⭐ **滤波截止频率**（`cutoff`，Hz，原样；`None` ＝ 未给出）。
+    #[must_use]
+    pub const fn cutoff(&self) -> Option<f32> {
+        self.cutoff
+    }
+
+    /// ⭐ **滤波谐振**（`resonance`，dB，原样）。
+    #[must_use]
+    pub const fn resonance(&self) -> f32 {
+        self.resonance
+    }
+
+    /// ⭐ **滤波键位跟踪量**（`fil_keytrack`，音分/键，原样）。
+    #[must_use]
+    pub const fn fil_keytrack(&self) -> i32 {
+        self.fil_keytrack
+    }
+
+    /// ⭐ **滤波键位跟踪中心键**（`fil_keycenter`，原样）。
+    #[must_use]
+    pub const fn fil_keycenter(&self) -> i32 {
+        self.fil_keycenter
+    }
+
+    /// ⭐ **滤波力度跟踪量**（`fil_veltrack`，音分，原样）。
+    #[must_use]
+    pub const fn fil_veltrack(&self) -> i32 {
+        self.fil_veltrack
+    }
+
+    /// ⭐ 本区域在 `(note, velocity)` 上的一只**已配置**声部滤波器
+    /// （`yeban-dsp` 的 [`VoiceFilter`]，递推状态清零 ＝ note-on 语义）。
+    ///
+    /// 有效截止经 [`yeban_sfz::playback::filter_cutoff_hz`] 折算 —— 与
+    /// 离线 [`PlaybackSpec::filter_cutoff`] **同一份公式**（⛔ 引擎不另抄）；
+    /// 滤波禁用（无 `cutoff`，或 `cutoff=0` 的 ARIA 口径）⇒
+    /// [`VoiceFilter::BYPASSED`]（逐位直通）。系数域的采样率钳制在
+    /// dsp 侧（见 `VoiceFilter::configured` 文档）。
+    ///
+    /// 触发期/提升期调用（每声部一次），⛔ 不进逐样本路径。
+    #[must_use]
+    pub fn voice_filter(&self, sample_rate: f32, note: u8, velocity: u8) -> VoiceFilter {
+        let Some(hz) = yeban_sfz::playback::filter_cutoff_hz(
+            self.cutoff,
+            self.fil_keytrack,
+            self.fil_keycenter,
+            self.fil_veltrack,
+            note,
+            velocity,
+        ) else {
+            return VoiceFilter::BYPASSED;
+        };
+        configured_voice_filter(self.fil_type, hz, self.resonance, sample_rate)
     }
 
     /// ⭐ 本区域有没有**生效的**随机轮替门（与 `yeban-sfz` 的
@@ -5073,6 +5222,10 @@ impl PreparedSfz {
             let mut env = region
                 .ampeg_run_with_cc_and_velocity(self.engine_hz, velocity, cc)
                 .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
+            // ⭐ 滤波静态族（摊平一次性路径）：每 region 一只新滤波器
+            // （状态自零起 ＝ note-on 语义；配置走 [`PreparedRegion::voice_filter`]，
+            // 与实时声部触发期**同一份**折算）。无 `cutoff` ⇒ 直通 ⇒ 逐位不变。
+            let mut filter = region.voice_filter(self.engine_hz, note, velocity);
             let region_written = mix_span_into(
                 pcm,
                 &mut position,
@@ -5083,6 +5236,7 @@ impl PreparedSfz {
                 loop_window,
                 &mut fade,
                 &mut env,
+                &mut filter,
                 out,
             );
             written = written.max(region_written);
@@ -5356,6 +5510,17 @@ fn flatten_regions(
                 hirand: region.hirand,
                 amp_keytrack: region.amp_keytrack,
                 amp_keycenter: region.amp_keycenter,
+                // ⭐ 滤波静态族（`fil_type` / `cutoff` / `resonance` /
+                // `fil_keytrack` / `fil_keycenter` / `fil_veltrack`）：
+                // `yeban-sfz` 早已解析并判过取值域 ⇒ 本片只**搬运**六个
+                // 标量，⛔ 不新增解析、⛔ 不折叠（`cutoff` 的 `None` 与
+                // `Some(0.0)` 在谓词层同义但模型层分开，折叠会丢信息）。
+                fil_type: region.fil_type,
+                cutoff: region.cutoff,
+                resonance: region.resonance,
+                fil_keytrack: region.fil_keytrack,
+                fil_keycenter: region.fil_keycenter,
+                fil_veltrack: region.fil_veltrack,
             });
         }
         (regions, cc_seeds, builtin_silent_regions, pitch_egs)
@@ -5673,6 +5838,34 @@ impl EnvRun {
     }
 }
 
+/// ⭐ **滤波类型映射 ＋ 系数配置**（SFZ 滤波静态族）：`yeban-sfz` 的
+/// [`FilterType`] 与 `yeban-dsp` 的 [`VoiceFilterKind`] 一一对应
+/// （两个 crate 互不依赖，映射只能住在引擎层）。
+///
+/// 离线 [`Region::filter_cutoff`] 与摊平 [`PreparedRegion::voice_filter`]
+/// 两条路共用本函数 ⇒ 类型映射只有一份（⛔ 不许两份实现）。
+/// `cutoff_hz` 必须是**已折算**的有效截止（钳制在 dsp 侧）。
+fn configured_voice_filter(
+    fil_type: FilterType,
+    cutoff_hz: f32,
+    resonance_db: f32,
+    sample_rate: f32,
+) -> VoiceFilter {
+    let kind = match fil_type {
+        FilterType::Lowpass1p => VoiceFilterKind::Lowpass1p,
+        FilterType::Highpass1p => VoiceFilterKind::Highpass1p,
+        FilterType::Lowpass2p => VoiceFilterKind::Lowpass2p,
+        FilterType::Highpass2p => VoiceFilterKind::Highpass2p,
+        FilterType::Bandpass2p => VoiceFilterKind::Bandpass2p,
+        FilterType::Bandreject2p => VoiceFilterKind::Bandreject2p,
+        FilterType::Lowpass4p => VoiceFilterKind::Lowpass4p,
+        FilterType::Highpass4p => VoiceFilterKind::Highpass4p,
+        FilterType::Lowpass6p => VoiceFilterKind::Lowpass6p,
+        FilterType::Highpass6p => VoiceFilterKind::Highpass6p,
+    };
+    VoiceFilter::configured(kind, cutoff_hz, resonance_db, sample_rate)
+}
+
 /// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点 ＋ 幅度包络）。
 ///
 /// `position` 是**可变**的源采样位置 ⇒ 无状态的一次性调用
@@ -5720,6 +5913,13 @@ impl EnvRun {
 /// ⭐ `fade` 是**窃取淡出**：非淡出传 [`FadeRamp::NONE`]（`× 1.0` 逐位不变）；
 /// 淡出中**写满 `remaining` 帧就返回**（`written == remaining`）⇒ 调用方可以就地
 /// 提升挂起声部、用**同一段**代码继续写剩下的帧。
+///
+/// ⭐ `filter` 是**逐声部静态滤波**（SFZ 滤波静态族）：信号序为
+/// 「插值采样 → 滤波 → `× gain × fade × env`」（滤波是声部音色的一部分，
+/// 增益是电平，⛔ 不交换次序）。直通时传 [`VoiceFilter::BYPASSED`]
+/// ⇒ `process` 原样返回 ⇒ 写出表达式与接线前**逐位相同**。
+/// 配置（触发期一次）见 [`PreparedRegion::voice_filter`]，状态持有见
+/// `SfzVoicePool::filters`；本函数只逐样本调 `process`。
 ///
 /// ⚠ **零分配、零锁、零 I/O**：只读 `pcm`、原地写 `out` [MUST-GATE-001]。
 ///
@@ -5780,6 +5980,7 @@ pub(crate) fn mix_span_into(
     loop_window: Option<LoopWindow>,
     fade: &mut FadeRamp,
     env: &mut Option<EnvRun>,
+    filter: &mut VoiceFilter,
     out: &mut [f32],
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
@@ -5888,7 +6089,9 @@ pub(crate) fn mix_span_into(
         let sample = pcm[index] * (1.0 - frac) + pcm[next] * frac;
         // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
-        *slot += sample * gain * fade.gain * env_gain;
+        // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
+        // 原样返回 `sample` ⇒ 整个表达式与接线前逐位相同。
+        *slot += filter.process(sample) * gain * fade.gain * env_gain;
         *position += rate_now;
         rate_now += rate_step;
         written += 1;
@@ -6308,6 +6511,28 @@ pub struct SfzVoicePool {
     /// ⭐ 挂起声部的音符起始帧（与 [`Self::pending`] 同步写入、提升时同步搬运；
     /// 128 B / 池）。
     pending_note_start: [u64; SFZ_VOICES_PER_TRACK],
+    /// ⭐ **每槽声部的静态滤波器**（SFZ 滤波静态族；`yeban-dsp` 的
+    /// [`VoiceFilter`]，88 B × 16 ＝ 1408 B / 池）。
+    ///
+    /// # 为什么在池上而不是在 [`SfzVoice`] 里
+    ///
+    /// 与 [`Self::pitch_shape`] 同一条理由：`SfzVoice` 必须保持 **40 B**
+    /// （判据 `S9`），逐声部的伴随状态放池级**每槽数组**。滤波递推状态
+    /// 是声部状态、⛔ 不是区域参数 ⇒ 不进 [`PreparedRegion`]。
+    ///
+    /// # 配置时机（⛔ 没有 pending 侧数组）
+    ///
+    /// * **直接落槽 / 硬窃取**：触发期按 (区域, note, velocity) 配置
+    ///   （[`PreparedRegion::voice_filter`]，采样率取 `plan.engine_hz()`）；
+    /// * **软窃取挂起**：挂起声部**不**预配置 —— 提升（`render_slot` 第 2 步）
+    ///   时用被提升声部自己的 (region_index, note, velocity) 现场配置
+    ///   ⇒ 不需要 `pending_filters` 数组，挂起者被换掉时也没有残留状态；
+    /// * **淡出段**：victim 继续用**它自己**那只（触发/提升时已配置），
+    ///   滤波随淡出一起结束，⛔ 不在淡出期重配；
+    /// * **退休**（[`Self::silence_slot`]）：复位 [`VoiceFilter::BYPASSED`]
+    ///   （池的 `PartialEq` 是确定性判据的一部分，残留会让两次渲染分家，
+    ///   与 `pitch_shape` 的退休纪律同一条）。
+    filters: [VoiceFilter; SFZ_VOICES_PER_TRACK],
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -6430,6 +6655,7 @@ impl SfzVoicePool {
             pending_pitch_shape: [NO_PITCH_SHAPE; SFZ_VOICES_PER_TRACK],
             note_start: [0; SFZ_VOICES_PER_TRACK],
             pending_note_start: [0; SFZ_VOICES_PER_TRACK],
+            filters: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
         }
     }
 
@@ -6740,6 +6966,12 @@ impl SfzVoicePool {
                     self.pending_pitch_shape[index] = NO_PITCH_SHAPE;
                     self.pending_active[index] = false;
                     self.fade[index] = FadeRamp::NONE;
+                    // ⭐ 滤波与声部**同刻**配置（区域 ＋ 本次 note/velocity
+                    // 折算，见 [`PreparedRegion::voice_filter`]；无 `cutoff`
+                    // ⇒ [`VoiceFilter::BYPASSED`]）。采样率取摊平表的
+                    // `engine_hz`（与 `rate_per_note` 同一条纪律：换采样率
+                    // 须重新摊平）。
+                    self.filters[index] = region.voice_filter(plan.engine_hz(), note, velocity);
                     // ⭐ **portamento**（本单）：这条区域带 `egN_pitch_oncc140|141`
                     // ⇒ 记下"哪个槽在滑、从哪个音滑过来、滑了多久"。
                     // ⚠ 池级单槽语义（见 [`Self::porta_slot`] 的文档）。
@@ -6752,7 +6984,7 @@ impl SfzVoicePool {
                     created += 1;
                 }
                 // ⭐ 池满 ⇒ **窃取**（sfz-needs-2 的落地点）；⛔ 不再丢弃。
-                None => self.steal(voice, pitch_shape, start_sample),
+                None => self.steal(plan, voice, pitch_shape, start_sample),
             }
         }
         created
@@ -7009,7 +7241,7 @@ impl SfzVoicePool {
     ///
     /// ⚠ 若选中的 victim **已经有挂起者**（还没轮到发声），那个挂起者被换掉
     /// ⇒ 它是一次**真丢弃**：计入 [`Self::dropped`]（⛔ 不静默）。
-    fn steal(&mut self, voice: SfzVoice, pitch_shape: u16, note_start: u64) {
+    fn steal(&mut self, plan: &PreparedSfz, voice: SfzVoice, pitch_shape: u16, note_start: u64) {
         let Some(victim) = self.select_victim() else {
             // 不可达：容量 ≥ 1 且"池满"意味至少一个槽 active。
             self.dropped = self.dropped.saturating_add(1);
@@ -7029,6 +7261,16 @@ impl SfzVoicePool {
             self.order[victim] = order;
             self.pending_active[victim] = false;
             self.fade[victim] = FadeRamp::NONE;
+            // ⭐ 滤波随声部一起换（硬窃取：新声部立刻是活声部 ⇒ 当场按
+            // 它自己的区域/音高/力度配置；区域查不到 ⇒ 直通兜底，
+            // 与 `render_slot` 查不到区域时如实退休是两条路 —— 这里
+            // 声部已入槽，下一块 `slot_readings` 落空自会退休）。
+            self.filters[victim] = plan
+                .regions()
+                .get(usize::from(voice.region_index))
+                .map_or(VoiceFilter::BYPASSED, |region| {
+                    region.voice_filter(plan.engine_hz(), voice.note(), voice.velocity())
+                });
             return;
         }
         if self.pending_active[victim] {
@@ -7196,6 +7438,9 @@ impl SfzVoicePool {
             };
             let mut local = voice.position;
             let mut fade = self.fade[index];
+            // ⭐ victim 用**它自己**那只滤波（触发/提升时已配置）：本地
+            // 副本推进递推、写完回写（与 `fade` 同一条纪律）。
+            let mut filter = self.filters[index];
             let mut env = readings.env.map(|run| {
                 EnvRun::new(
                     run,
@@ -7216,11 +7461,13 @@ impl SfzVoicePool {
                 readings.loop_window,
                 &mut fade,
                 &mut env,
+                &mut filter,
                 &mut out[..limit],
             );
-            // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出照旧回写。
+            // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出/滤波照旧回写。
             self.voices[index].position = local;
             self.fade[index] = fade;
+            self.filters[index] = filter;
             offset = written;
             // 源/引擎终点在淡出走完之前先到 ⇒ victim 已经静音（见下面第 2 步）。
             victim_stopped = written < limit;
@@ -7233,6 +7480,17 @@ impl SfzVoicePool {
             self.note_start[index] = self.pending_note_start[index];
             self.pending_active[index] = false;
             self.fade[index] = FadeRamp::NONE;
+            // ⭐ 滤波在**提升这一刻**配置：用被提升声部自己的
+            // (region_index, note, velocity) 现场折算（⛔ 没有 pending 侧
+            // 滤波数组：挂起期不持有递推状态，见 `filters` 字段文档）。
+            // 区域查不到 ⇒ 直通兜底（下一段 `slot_readings` 落空自会退休）。
+            let promoted = self.voices[index];
+            self.filters[index] = plan
+                .regions()
+                .get(usize::from(promoted.region_index))
+                .map_or(VoiceFilter::BYPASSED, |region| {
+                    region.voice_filter(plan.engine_hz(), promoted.note(), promoted.velocity())
+                });
         }
         // --- 3) 正常段：本槽现在的声部写本块剩余帧 ---
         let voice = self.voices[index];
@@ -7259,6 +7517,9 @@ impl SfzVoicePool {
         };
         let mut local = voice.position;
         let mut fade = self.fade[index];
+        // ⭐ 本槽声部的滤波：本地副本推进递推、写完回写（跨块延续，
+        // 与 `fade` 同一条纪律）；直通时 `process` 恒等 ⇒ 逐位不变。
+        let mut filter = self.filters[index];
         let mut env = readings.env.map(|run| {
             EnvRun::new(
                 run,
@@ -7322,10 +7583,12 @@ impl SfzVoicePool {
             readings.loop_window,
             &mut fade,
             &mut env,
+            &mut filter,
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;
         self.fade[index] = fade;
+        self.filters[index] = filter;
         // ⭐ portamento 的时间源推进（`pitch == None` 时 `eg_frame` 恒 `0`，
         // 这次 `saturating_add` 不改变任何读数）。
         if self.porta_slot as usize == index {
@@ -7495,6 +7758,8 @@ impl SfzVoicePool {
         self.pending_note_start[index] = 0;
         self.pending_active[index] = false;
         self.fade[index] = FadeRamp::NONE;
+        // ⭐ 滤波状态一并退休（理由同上：池相等是确定性判据的一部分）。
+        self.filters[index] = VoiceFilter::BYPASSED;
     }
 
     /// 释放**全部**声部（`seek` / 换音源 ⇒ ⛔ 不留上一件音源的尾巴）。
