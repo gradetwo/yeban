@@ -630,12 +630,12 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 3_968,
-        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＝ 3968 B"
+        pool, 4_608,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＋ 包络族片 eg_states 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）512 B ＋ filters 随 `VoiceFilter` 88 → 96 B 增 128 B ＝ 4608 B"
     );
     assert_eq!(
-        region, 6_216,
-        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＋ 随机轮替 lorand/hirand 两个 f32 的 8 B ＋ 键盘跟踪 amp_keytrack/amp_keycenter 两字段的 8 B ＋ 滤波片滤波六字段的 24 B ＝ 6216 B"
+        region, 6_248,
+        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＋ 随机轮替 lorand/hirand 两个 f32 的 8 B ＋ 键盘跟踪 amp_keytrack/amp_keycenter 两字段的 8 B ＋ 滤波片滤波六字段的 24 B ＋ 包络族片 ampeg_delay/ampeg_start 两 f32 与 fileg_eg/pitcheg_eg 两 u16 下标的 32 B ＝ 6248 B"
     );
     assert!(runtime < 204_800, "EngineRuntime 必须 < 200 KiB");
 }

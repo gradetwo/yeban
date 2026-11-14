@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use crate::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBus};
+use crate::eg::{EgDef, EgParam, EgParams};
 use crate::error::SfzError;
 use crate::label::{Labels, cc_label_index};
 use crate::midi::MidiSection;
@@ -298,6 +299,31 @@ pub const AMPEG_TIME_DEFAULT_SECONDS: f32 = 0.0;
 /// 出处：<https://sfzformat.com/opcodes/ampeg_sustain/> 的表格行
 /// （Type = float，Default = 100，Range = 0 to 100，Unit = %）。
 pub const AMPEG_SUSTAIN_DEFAULT_PERCENT: f32 = 100.0;
+
+/// ⭐ `ampeg_start` 的规范缺省值，单位**百分比**（`0`；SFZ 包络族片）。
+///
+/// 出处：<https://sfzformat.com/opcodes/ampeg_start/> 的表格行
+/// （Type = float，Default = 0，Range = 0 to 100，Unit = %）。
+/// ⚠ 与 [`AMPEG_SUSTAIN_DEFAULT_PERCENT`] 不同：`start` 是包络的**起始**电平，
+/// 缺省 0 ＝ 从静默起音（与接线前逐位相同）。
+pub const AMPEG_START_DEFAULT_PERCENT: f32 = 0.0;
+
+/// ⭐ `fileg_sustain` / `pitcheg_sustain` 的规范缺省值，单位**百分比**（`0`）。
+///
+/// 出处：<https://sfzformat.com/opcodes/fileg_sustain/> 的表格行
+/// （Type = float，Default = **0**，Range = 0 to 100，Unit = %）。
+/// ⚠ 与 `ampeg_sustain` 的 100 **不同**（调制包络的静止位是 `start`，见 [`crate::eg`]）。
+pub const EG_SUSTAIN_DEFAULT_PERCENT: f32 = 0.0;
+
+/// ⭐ `fileg_depth` / `pitcheg_depth` 的规范缺省（音分，`0`）与取值域（整数）。
+///
+/// 出处：<https://sfzformat.com/opcodes/fileg_depth/> 的表格行
+/// （Type = **integer**，Default = 0，Range = **-12000 to 12000**，Unit = cents）。
+pub const EG_DEPTH_DEFAULT_CENTS: i32 = 0;
+/// `fileg_depth` / `pitcheg_depth` 的规范下界（音分）。
+pub const EG_DEPTH_MIN_CENTS: i32 = -12000;
+/// `fileg_depth` / `pitcheg_depth` 的规范上界（音分）。
+pub const EG_DEPTH_MAX_CENTS: i32 = 12000;
 
 /// ⭐ `ampeg_release` 的**本仓**缺省值，单位**秒**（`0`）—— ⚠ **与规范缺省 `0.001` 不同**。
 ///
@@ -783,12 +809,26 @@ pub struct Region<'a> {
     /// ⚠ 与 [`Region::off_time`] 的区别：`off_time` 是 **voice-stealing** 的淡化时长
     /// （`off_mode=time`），本字段是 **note-off** 之后的释放段时长 —— 两个量、⛔ 不互相改写。
     pub ampeg_release: f32,
+    /// ⭐ `ampeg_delay`：延迟段时长（**秒**；规范 Range 0..=100，Default 0；SFZ 包络族片）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/ampeg_delay/>。延迟段内电平恒
+    /// ＝ [`Region::ampeg_start`]；本仓没有 region 级 `delay`（审计 C11 未做）
+    /// ⇒ EG 的 delay 自 note-on 起算（格式页注记的分工见 [`crate::eg`]）。
+    pub ampeg_delay: f32,
+    /// ⭐ `ampeg_start`：起始电平（**百分比**；规范 Range 0..=100，Default **0**）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/ampeg_start/>（页注：`start = 100`
+    /// 等价于 `attack = 0` 且 attack 并入 hold）。attack 段自本电平线性升到 1；
+    /// 释放段**仍归零**（幅度包络的既有口径，本片⛔ 不改）。
+    pub ampeg_start: f32,
     /// ⭐ **CC 调制项**（`ccN` / `_ccN` / `_onccN` / `_curveccN`；任务单 `#104`，
     /// ⭐ `#115` 把目标从五个 `ampeg_*` 推广成 [`ModTarget`]）。
     ///
     /// 顺序**固定**：按 [`ModTarget`] 的声明序（[`ModTarget::ALL`]：五个 `ampeg_*` 在前、
     /// `amplitude` 在末尾），同一目标内按 CC 号升序 ⇒ 同一输入得到同一个 `Vec`
     /// （二进制浮点加法不结合，求和顺序必须唯一 [ARCH-DET-001]）。
+    /// ⭐ **包络族片注**：`AmpegParam` 尾加 `Delay`／`Start` 后 ampeg 目标是**七个**
+    /// （仍在 `amplitude` 之前、相对序不变）⇒ 上面「五个」按七个读。
     ///
     /// 元素是**解析层**的形状（[`CcMod`]：`curve` 是**下标**而不是曲线本体）——
     /// `<curve>` 段可以出现在 `<region>` **之后**，所以解析期拿不到曲线本体；
@@ -814,7 +854,26 @@ pub struct Region<'a> {
     ///
     /// 取值域 `-100..=100`（五个 opcode 页 Modulation 表 Range 列**逐字相同**）、
     /// 单位与目标同单位（时间 = 秒、`sustain` = 百分比）。
+    ///
+    /// ⭐ **追加修订段（SFZ 包络族片）**：`ampeg_vel2delay` / `ampeg_vel2start`
+    /// 随 [`AmpegParam`] 尾加自动进本表（下标 5／6），域与单位随参数
+    /// （delay = 秒、start = %，各页 Modulation 表 Range 同为 `-100 to 100`）。
     pub ampeg_vel2: [Option<f32>; AmpegParam::COUNT],
+    /// ⭐ **滤波包络**（`fileg_*` 全族；SFZ 包络族片，审计 C19）。
+    ///
+    /// 形状与求值口径见 [`crate::eg`]（[`EgDef`]）：八个静态参 ＋ `vel2*`；
+    /// 引擎在触发期把有效电平换算成对静态有效截止的音分偏移。
+    /// 空定义（[`EgDef::EMPTY`]）＝ 该族一个 opcode 都没出现 ⇒ 逐位不变。
+    /// ⚠ **生效前提**：region 有 [`Region::cutoff`]（无滤波可调时整体透明，
+    /// 裁决见 [`crate::eg`] 的「播放器分歧」一节）。
+    pub fileg: EgDef,
+    /// ⭐ **音高包络**（`pitcheg_*` 全族；SFZ 包络族片，审计 C20）。
+    ///
+    /// 与 [`Region::fileg`] 同构（[`EgDef`]）；引擎把有效电平换算成速率乘子
+    /// `2^(level × depth / 1200)`，与 `tune`／弯音乘子同层相乘。
+    /// ⚠ 与 [`Region::pitch_eg`]（portamento 专用的 egN 子集）是**两套机制**，
+    /// ⛔ 不共用形状。
+    pub pitcheg: EgDef,
     /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
     pub offset: u32,
     /// 采样播放终点（`end`，规范默认 `unspecified`）。
@@ -1225,6 +1284,8 @@ impl<'a> Region<'a> {
             AmpegParam::Decay => self.ampeg_decay,
             AmpegParam::Sustain => self.ampeg_sustain,
             AmpegParam::Release => self.ampeg_release,
+            AmpegParam::Delay => self.ampeg_delay,
+            AmpegParam::Start => self.ampeg_start,
         }
     }
 
@@ -2202,6 +2263,12 @@ pub(crate) fn build_region<'a>(
     let ampeg_sustain =
         read_ampeg_sustain(&scopes, "ampeg_sustain", AMPEG_SUSTAIN_DEFAULT_PERCENT)?;
     let ampeg_release = read_ampeg_time(&scopes, "ampeg_release", AMPEG_RELEASE_DEFAULT_SECONDS)?;
+    // ⭐ 延迟／起始（`ampeg_delay` / `ampeg_start`；SFZ 包络族片，审计 C24）：
+    // 与五参同一口径（缺失 ⇒ 规范缺省；越界 ⇒ 明确 Err）。delay 是时长
+    // （走时间读，负值 `InvalidDuration`）；start 是电平（走百分比读，
+    // 负值 `FloatOutOfRange`，与 sustain 同款）。
+    let ampeg_delay = read_ampeg_time(&scopes, "ampeg_delay", AMPEG_TIME_DEFAULT_SECONDS)?;
+    let ampeg_start = read_ampeg_sustain(&scopes, "ampeg_start", AMPEG_START_DEFAULT_PERCENT)?;
     // ⭐ CC 调制（`ampeg_*ccN` / `_onccN` / `_curveccN` ＋ `#115` 的 `amplitude_*`）：
     // 与基准值**分开**归约（调制量不是取值；缺失 ⇒ 空表 ⇒ 无调制）。
     let cc_mods = read_cc_mods(&scopes, line)?;
@@ -2304,6 +2371,13 @@ pub(crate) fn build_region<'a>(
         i64::from(FIL_VELTRACK_MAX),
         FIL_VELTRACK_DEFAULT,
     )?;
+    // ---- ⭐ 调制包络（`fileg_*` / `pitcheg_*`；SFZ 包络族片，审计 C19／C20）----
+    // 两族同构（[`read_eg`] 一份实现，⛔ 不写两套）：段参走与 `ampeg_*` 同形的
+    // 时间／百分比读（缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err）；`depth` 是**整数**
+    // 音分（走 [`read_i32`]，带小数点 ⇒ 响亮报错）；`vel2*` 单独归约
+    // （[`read_eg_vel2`]）。`*_onccN` 一族⛔ 不在本片（见 [`crate::eg`] 的范围裁决）。
+    let fileg = read_eg(&scopes, "fileg", line)?;
+    let pitcheg = read_eg(&scopes, "pitcheg", line)?;
     // 弯音范围：两个端点各自独立，规范缺省 200 / -200，Range 都是 ±9600 音分
     // （<https://sfzformat.com/opcodes/bend_up/>、<https://sfzformat.com/opcodes/bend_down/>）。
     let bend_up = read_i32(
@@ -2456,8 +2530,12 @@ pub(crate) fn build_region<'a>(
         ampeg_decay,
         ampeg_sustain,
         ampeg_release,
+        ampeg_delay,
+        ampeg_start,
         cc_mods,
         ampeg_vel2,
+        fileg,
+        pitcheg,
         pitch_eg,
         offset,
         end,
@@ -3069,6 +3147,7 @@ fn read_rand_bound(
 ///
 /// 顺序**确定**：`BTreeMap` 的键序 ＝ [`ModTarget`] 声明序（五个 `ampeg_*` 在前、
 /// `amplitude` 在末尾）× CC 号升序（[ARCH-DET-001]）。
+/// ⭐ **包络族片注**：ampeg 目标现为**七个**（尾加 `delay`／`start`），同上按七个读。
 fn read_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<CcMod>, SfzError> {
     // 键 = (目标, CC 号)；值 = (delta, curve 下标)。两个分量各自独立合并。
     let mut table: BTreeMap<(ModTarget, u8), (Option<f32>, Option<u8>)> = BTreeMap::new();
@@ -3165,6 +3244,164 @@ fn read_ampeg_vel2_mods(
         }
     }
     Ok(table)
+}
+
+/// ⭐ `fileg_<param>` / `pitcheg_<param>` 的全名（`&'static str`；
+/// [`Scopes::get`] 与 [`read_i32`] 都要静态名 ⇒ 这里逐字列全 16 个，⛔ 不拼字符串）。
+fn eg_opcode_name(prefix: &str, param: EgParam) -> &'static str {
+    match (prefix, param) {
+        ("fileg", EgParam::Delay) => "fileg_delay",
+        ("fileg", EgParam::Start) => "fileg_start",
+        ("fileg", EgParam::Attack) => "fileg_attack",
+        ("fileg", EgParam::Hold) => "fileg_hold",
+        ("fileg", EgParam::Decay) => "fileg_decay",
+        ("fileg", EgParam::Sustain) => "fileg_sustain",
+        ("fileg", EgParam::Release) => "fileg_release",
+        ("fileg", EgParam::Depth) => "fileg_depth",
+        ("pitcheg", EgParam::Delay) => "pitcheg_delay",
+        ("pitcheg", EgParam::Start) => "pitcheg_start",
+        ("pitcheg", EgParam::Attack) => "pitcheg_attack",
+        ("pitcheg", EgParam::Hold) => "pitcheg_hold",
+        ("pitcheg", EgParam::Decay) => "pitcheg_decay",
+        ("pitcheg", EgParam::Sustain) => "pitcheg_sustain",
+        ("pitcheg", EgParam::Release) => "pitcheg_release",
+        ("pitcheg", EgParam::Depth) => "pitcheg_depth",
+        // 调用点只传 "fileg" / "pitcheg"（本文件内的两个字面量）⇒ 其余不可达；
+        // 兜底给前缀本身，让错误信息至少点名族（⛔ 不 panic：解析路径不许崩）。
+        _ => "eg",
+    }
+}
+
+/// ⭐ 归约一族调制包络（`fileg_*` 或 `pitcheg_*`；SFZ 包络族片）。
+///
+/// 与 `ampeg_*` 的读取**同一口径**（⛔ 不另立政策）：
+/// * 段时（delay/attack/hold/decay/release）走 [`read_ampeg_time`]
+///   （缺失 ⇒ 0、负值 ⇒ `InvalidDuration`、越界 0..=100 ⇒ `FloatOutOfRange`）；
+/// * 电平（start/sustain）走 [`read_ampeg_sustain`]（缺失 ⇒ 各自缺省：
+///   start ＝ 0、sustain ＝ [`EG_SUSTAIN_DEFAULT_PERCENT`] ＝ **0**）；
+/// * `depth` 是**整数**音分，走 [`read_i32`]（−12000..=12000；带小数 ⇒ 响亮报错，
+///   与 `fil_keytrack` 同款）；
+/// * `vel2*` 走 [`read_eg_vel2`] 单独归约（与基准分开，与 `ampeg_vel2` 同形）。
+fn read_eg(scopes: &Scopes<'_, '_>, prefix: &'static str, line: usize) -> Result<EgDef, SfzError> {
+    let time = |param: EgParam| {
+        read_ampeg_time(
+            scopes,
+            eg_opcode_name(prefix, param),
+            AMPEG_TIME_DEFAULT_SECONDS,
+        )
+    };
+    let params = EgParams {
+        delay: time(EgParam::Delay)?,
+        start: read_ampeg_sustain(
+            scopes,
+            eg_opcode_name(prefix, EgParam::Start),
+            AMPEG_START_DEFAULT_PERCENT,
+        )?,
+        attack: time(EgParam::Attack)?,
+        hold: time(EgParam::Hold)?,
+        decay: time(EgParam::Decay)?,
+        sustain: read_ampeg_sustain(
+            scopes,
+            eg_opcode_name(prefix, EgParam::Sustain),
+            EG_SUSTAIN_DEFAULT_PERCENT,
+        )?,
+        release: time(EgParam::Release)?,
+        depth: read_i32(
+            scopes,
+            eg_opcode_name(prefix, EgParam::Depth),
+            i64::from(EG_DEPTH_MIN_CENTS),
+            i64::from(EG_DEPTH_MAX_CENTS),
+            EG_DEPTH_DEFAULT_CENTS,
+        )? as f32,
+    };
+    Ok(EgDef {
+        params,
+        vel2: read_eg_vel2(scopes, prefix, line)?,
+    })
+}
+
+/// ⭐ 归约一族的 `*_vel2<param>`（力度调制；与 [`read_ampeg_vel2_mods`] 同形）。
+///
+/// * **作用域链**：`global → master → group → region`（弱到强），同一参数后者胜；
+/// * **下标 ＝ 参数**：每参数至多一条 ⇒ `[Option<f32>; EgParam::COUNT]`；
+/// * **缺失 ⇒ `None`**（无调制，求值期一项算术都不做）；
+/// * **越界/畸形 ⇒ 明确 `Err`**：域与后缀政策走 [`read_eg_vel2_delta`]
+///   （随参数单位：时间／百分比 ±100、depth ±12000 音分）。
+///
+/// ⚠ 名字识别**不走** [`parse_modulation_name`]：本族⛔ 不进 `ModTarget`
+/// （范围裁决见 [`crate::eg`]）⇒ `fileg_vel2attack` 在调制层仍是 `None`
+/// （巡检 S118 的反例照旧），只有本函数认它。
+fn read_eg_vel2(
+    scopes: &Scopes<'_, '_>,
+    prefix: &str,
+    line: usize,
+) -> Result<[Option<f32>; EgParam::COUNT], SfzError> {
+    let vel2_prefix = if prefix == "fileg" {
+        "fileg_vel2"
+    } else {
+        "pitcheg_vel2"
+    };
+    let mut table: [Option<f32>; EgParam::COUNT] = [None; EgParam::COUNT];
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let name = name.as_ref();
+            let Some(param_name) = name.strip_prefix(vel2_prefix) else {
+                continue;
+            };
+            let Some(param) = EgParam::from_name(param_name) else {
+                continue;
+            };
+            table[param.index()] = Some(read_eg_vel2_delta(value.as_ref(), name, param, line)?);
+        }
+    }
+    Ok(table)
+}
+
+/// 读一个 `*_vel2<param>` 的 `delta`（政策与 [`read_modulation_delta`] 同形，
+/// 只是域与单位随 [`EgParam`] 而不是 [`ModTarget`]）：
+///
+/// * 秒：认 `ms` / `s` 后缀；百分比：认 `%`；音分：⛔ 不剥任何后缀；
+/// * 认不出 ⇒ [`SfzError::InvalidFloat`]；非有限 ⇒ [`SfzError::NonFiniteFloat`]；
+/// * 越界 ⇒ [`SfzError::FloatOutOfRange`]（域 ＝ [`EgParam::vel2_range`]）。
+fn read_eg_vel2_delta(raw: &str, name: &str, param: EgParam, line: usize) -> Result<f32, SfzError> {
+    let raw = raw.trim();
+    let (number, scale) = match param.mod_unit() {
+        ModUnit::Seconds => {
+            if let Some(number) = strip_unit(raw, "ms") {
+                (number, 1.0e-3_f32)
+            } else if let Some(number) = strip_unit(raw, "s") {
+                (number, 1.0_f32)
+            } else {
+                (raw, 1.0_f32)
+            }
+        }
+        ModUnit::Percent => (strip_unit(raw, "%").unwrap_or(raw), 1.0_f32),
+        _ => (raw, 1.0_f32),
+    };
+    let parsed = parse_modulation_float(number).ok_or_else(|| SfzError::InvalidFloat {
+        line,
+        opcode: name.to_string(),
+        value: raw.to_string(),
+    })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line,
+            opcode: name.to_string(),
+            value: raw.to_string(),
+        });
+    }
+    let value = parsed * scale;
+    let (min, max) = param.vel2_range();
+    if !(min..=max).contains(&value) {
+        return Err(SfzError::FloatOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value,
+            min,
+            max,
+        });
+    }
+    Ok(value)
 }
 
 /// 解析 `ccN` / `_onccN` / `_curveccN` 里的 **CC 号**（`0..=255`，见
@@ -3408,9 +3645,13 @@ mod tests {
             ampeg_decay: AMPEG_TIME_DEFAULT_SECONDS,
             ampeg_sustain: AMPEG_SUSTAIN_DEFAULT_PERCENT,
             ampeg_release: AMPEG_RELEASE_DEFAULT_SECONDS,
+            ampeg_delay: AMPEG_TIME_DEFAULT_SECONDS,
+            ampeg_start: AMPEG_START_DEFAULT_PERCENT,
             cc_mods: Vec::new(),
             amplitude: AMPLITUDE_DEFAULT_PERCENT,
             ampeg_vel2: [None; AmpegParam::COUNT],
+            fileg: EgDef::EMPTY,
+            pitcheg: EgDef::EMPTY,
             offset: 0,
             end: SampleEnd::Unspecified,
             direction: PlayDirection::Forward,

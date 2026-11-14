@@ -11,6 +11,13 @@
 //!   采样率) 一次性配置，之后逐样本只跑递推，**不做逐采样调制**
 //!   （`cutoff_onccN` / `fileg_*` / LFO 属后续线，届时另加调制入口，
 //!   ⛔ 不在本结构里预埋）。
+//!
+//!   ⭐ ⭐ **追加修订段（SFZ 包络族片）—— 被修订的是上面这句里 `fileg_*`
+//!   那一支**（⛔ 原文一字未删）：`fileg_*` 已由本片落地 ⇒ 调制入口就是
+//!   [`VoiceFilter::retune_cutoff`]：只换系数、**保留递推状态**（与
+//!   [`VoiceFilter::configured`] 的"状态清零 ＝ note-on 语义"相对）。
+//!   为此本结构自带 (类型, 谐振, 采样率) 三个配置标量（尺寸 88 → 96 B）。
+//!   `cutoff_onccN` 与 LFO 两支**仍未做**，原文对它们继续成立。
 //! * 既有 [`crate::filter::LadderFilter`] 是 0..1 旋钮语义的合成器梯形
 //!   滤波，[`crate::shaping::Biquad`] 是 `pub(crate)` 的通道条 EQ 节 ——
 //!   两者都不是 SFZ 的 (Hz, dB) 参数面，故另立本模块；系数表与
@@ -98,6 +105,41 @@ impl VoiceFilterKind {
             | VoiceFilterKind::Bandreject2p => 1,
             VoiceFilterKind::Lowpass4p | VoiceFilterKind::Highpass4p => 2,
             VoiceFilterKind::Lowpass6p | VoiceFilterKind::Highpass6p => 3,
+        }
+    }
+
+    /// ⭐ 紧凑编码（[`VoiceFilter`] 自带配置用；`0` ＝ 无类型/直通）。
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            VoiceFilterKind::Lowpass1p => 1,
+            VoiceFilterKind::Highpass1p => 2,
+            VoiceFilterKind::Lowpass2p => 3,
+            VoiceFilterKind::Highpass2p => 4,
+            VoiceFilterKind::Bandpass2p => 5,
+            VoiceFilterKind::Bandreject2p => 6,
+            VoiceFilterKind::Lowpass4p => 7,
+            VoiceFilterKind::Highpass4p => 8,
+            VoiceFilterKind::Lowpass6p => 9,
+            VoiceFilterKind::Highpass6p => 10,
+        }
+    }
+
+    /// [`Self::code`] 的逆（认不出 ⇒ `None`）。
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(VoiceFilterKind::Lowpass1p),
+            2 => Some(VoiceFilterKind::Highpass1p),
+            3 => Some(VoiceFilterKind::Lowpass2p),
+            4 => Some(VoiceFilterKind::Highpass2p),
+            5 => Some(VoiceFilterKind::Bandpass2p),
+            6 => Some(VoiceFilterKind::Bandreject2p),
+            7 => Some(VoiceFilterKind::Lowpass4p),
+            8 => Some(VoiceFilterKind::Highpass4p),
+            9 => Some(VoiceFilterKind::Lowpass6p),
+            10 => Some(VoiceFilterKind::Highpass6p),
+            _ => None,
         }
     }
 }
@@ -209,14 +251,23 @@ impl Section {
 
 /// 一只声部的静态滤波器：至多 3 节级联，单声道，`Copy`。
 ///
-/// 尺寸 88 B（3 节 × 28 B ＋ 节数标记），可整数组放进声部池侧
+/// 尺寸 96 B（3 节 × 28 B ＋ 节数标记 ＋ 自带配置三标量；SFZ 包络族片
+/// 为 [`VoiceFilter::retune_cutoff`] 加的 (类型码, 谐振, 采样率) ——
+/// 滤波静态族时是 88 B，净增 8 B：类型码占原对齐空隙），可整数组放进声部池侧
 /// （引擎 `SfzVoicePool`），⛔ 不进逐声部结构体本身。
 /// 构造只有两条路：[`VoiceFilter::BYPASSED`]（直通）与
-/// [`VoiceFilter::configured`]（按参数算系数、状态清零 ＝ note-on 语义）。
+/// [`VoiceFilter::configured`]（按参数算系数、状态清零 ＝ note-on 语义）；
+/// 配置之后改截止走 [`VoiceFilter::retune_cutoff`]（保状态）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceFilter {
     sections: [Section; 3],
     active: u8,
+    /// ⭐ 配置类型码（[`VoiceFilterKind::code`]；`0` ＝ 直通）。
+    kind_code: u8,
+    /// ⭐ 配置时的谐振（dB，已钳进规范域；retune 时原样复用）。
+    resonance_db: f32,
+    /// ⭐ 配置时的采样率（已 [`sanitise_sample_rate`]；retune 时原样复用）。
+    sample_rate: f32,
 }
 
 impl VoiceFilter {
@@ -224,6 +275,9 @@ impl VoiceFilter {
     pub const BYPASSED: VoiceFilter = VoiceFilter {
         sections: [Section::IDENTITY; 3],
         active: 0,
+        kind_code: 0,
+        resonance_db: 0.0,
+        sample_rate: 0.0,
     };
 
     /// 按 (类型, 有效截止 Hz, 谐振 dB, 采样率) 配置一只新滤波器
@@ -254,6 +308,11 @@ impl VoiceFilter {
         let q = 10.0f32.powf(db / f32::from(sections as u8) / 20.0);
         let mut filter = VoiceFilter::BYPASSED;
         filter.active = sections as u8;
+        // ⭐ 自带配置（retune 复用同一份 (类型, 谐振, 采样率)；存的是
+        // **归一后**的值 ⇒ retune 重跑 `configured` 幂等、系数逐位相同）。
+        filter.kind_code = kind.code();
+        filter.resonance_db = db;
+        filter.sample_rate = sample_rate;
         for section in filter.sections.iter_mut().take(sections) {
             match kind {
                 VoiceFilterKind::Lowpass1p => section.lowpass_1p(sample_rate, freq),
@@ -275,6 +334,34 @@ impl VoiceFilter {
     #[must_use]
     pub fn is_bypassed(&self) -> bool {
         self.active == 0
+    }
+
+    /// ⭐ **调制入口**（SFZ 包络族片，`fileg_*` 的落点）：换截止、**保状态**。
+    ///
+    /// 用自带的 (类型, 谐振, 采样率) 按新截止重算系数（与 [`Self::configured`]
+    /// **同一份**系数代码与钳制），然后把三节的递推状态 `(v1, v2)` 原样装回
+    /// ⇒ 包络扫频时没有系数重置的爆音/断层。直通（`active == 0`）或新截止
+    /// 非有限 ⇒ 什么都不做（⛔ 不让 NaN 进递推，与 `configured` 的口径一致）。
+    ///
+    /// ⚠ 调用方的节流义务：系数重算含 `sin_cos`/`powf`，只应在目标截止
+    /// **真的变了**时调用（引擎在电平变化时才调，恒定段零重算）。
+    pub fn retune_cutoff(&mut self, cutoff_hz: f32) {
+        if self.active == 0 || !cutoff_hz.is_finite() {
+            return;
+        }
+        let Some(kind) = VoiceFilterKind::from_code(self.kind_code) else {
+            return;
+        };
+        let states = [
+            (self.sections[0].v1, self.sections[0].v2),
+            (self.sections[1].v1, self.sections[1].v2),
+            (self.sections[2].v1, self.sections[2].v2),
+        ];
+        *self = VoiceFilter::configured(kind, cutoff_hz, self.resonance_db, self.sample_rate);
+        for (section, (v1, v2)) in self.sections.iter_mut().zip(states) {
+            section.v1 = v1;
+            section.v2 = v2;
+        }
     }
 
     /// 复位为直通（退休一个声部槽时调用；与重新 `configured` 等价于换新）。
@@ -334,6 +421,14 @@ mod tests {
     use super::*;
 
     const SR: f32 = 48_000.0;
+
+    /// 尺寸钉：3 节 × 28 B ＋ `active`/`kind_code` 各 1 B ＋ 对齐 2 B ＋
+    /// 配置两标量 × 4 B = **96 B**（滤波静态族时 88 B；包络族片自带配置
+    /// 三标量里的类型码占的是原对齐空隙，净增只有谐振/采样率 8 B）。
+    #[test]
+    fn voice_filter_size_is_pinned() {
+        assert_eq!(std::mem::size_of::<VoiceFilter>(), 96);
+    }
 
     /// 第一判据：直通逐位恒等（含符号位与 NaN 之外的任意位型）。
     #[test]
