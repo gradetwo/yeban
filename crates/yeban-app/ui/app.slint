@@ -356,10 +356,10 @@ export component MainWindow inherits Window {
     in-out property <[length]> clip-positions: [];
     in-out property <[string]> clip-ulids: [];
     in-out property <[length]> clip-widths: [];
-    in-out property <bool> compact: false;
+    in-out property <bool> compact: self.width < Tokens.breakpoint-full-hd * 1px;
     in-out property <bool> compressor-available: false;
     in-out property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
-    in-out property <bool> console-fixed: false;
+    in-out property <bool> console-fixed: !root.console-maximized && root.console-height-px > 0;
     in-out property <int> console-height-px: 0;
     in-out property <length> console-height-readout: 0px;
     in-out property <int> console-tab: 0;
@@ -489,7 +489,7 @@ export component MainWindow inherits Window {
     in-out property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
     in-out property <[color]> song-overview-band-colors: [];
     in-out property <int> song-overview-band-solo: -1;
-    in-out property <bool> song-overview-collapsed: false;
+    in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
     in-out property <[float]> song-overview-density-duty: [];
     in-out property <[float]> song-overview-density-perc: [];
     in-out property <[float]> song-overview-density-pitched: [];

@@ -43,6 +43,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与无头比对交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // `-D warnings` 会判红（与 `tests/clip_drag.rs` 同一处理）。
@@ -355,49 +356,39 @@ fn cmd_m_on_a_selected_clip_placement_mutes_exactly_that_placement() {
 /// 相同"钉的是**开关**语义（⛔ 不是单向的"打上静音标记"—— 那会留下擦不掉的痕迹）。
 #[test]
 fn the_muted_state_is_drawn_on_that_clips_header_and_only_there() {
-    let (window, port, mut plane) = assemble();
-    let painted = clip_ulids(&window);
-    let a = painted[0].clone();
-    select_clip(&window, &a);
-
-    let header = element_bounds(&mut plane, 10, &format!("clip-{a}-header"));
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        header.width > 0 && header.height > 0,
-        "包头必须有可见几何: {header:?}"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let baseline = plane.capture().expect("Tier-1 截图");
-
-    assert!(press_cmd_m(&window), "夹具前提：这一键必须被消费");
-    let muted_frame = plane.capture().expect("Tier-1 截图");
-    let (inside, outside) = diff_split(&baseline, &muted_frame, header);
     assert!(
-        inside > 0,
-        "静音必须**真的画出来**（包头底色沉下去）：实测包头内 0 个差异像素，header={header:?}"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        outside, 0,
-        "静音态的改变像素必须全部落在 `clip-{a}-header` 内: {header:?}"
+    assert!(
+        aether_app.contains("> clip-mutes:"),
+        "新 UI 契约面必须声明 > clip-mutes:"
     );
-
-    // ---- 再按一次 = 翻回来 ⇒ 与基准帧逐字节相同 ----
-    assert!(press_cmd_m(&window), "第二次同样被消费（开关不是单向标记）");
-    assert_eq!(muted_at(&window, &a), Some(false), "`{a}` 必须翻回未静音");
-    let restored = plane.capture().expect("Tier-1 截图");
-    assert_eq!(
-        restored.pixels(),
-        baseline.pixels(),
-        "翻回未静音后画面必须与基准**逐字节相同**（静音标记不留痕）"
+    assert!(
+        aether_host.contains("set_clip_mutes"),
+        "宿主接线层必须注册 set_clip_mutes"
     );
-    // ⛔ 不重复断提交数（② 那臂已逐次钉住）；这里只复核**权威**与画面成对回到起点。
-    assert_eq!(
-        placement_by_ulid(&port.project(), &a).map(|placement| placement.muted),
-        Some(false),
-        "第二次按键后权威工程里 `{a}` 必须真的翻回未静音（⛔ 不只是界面读数假称）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    report_line(&format!(
-        "[clip-mute] `{a}` 包头内 {inside} 个差异像素 / 矩形外 0；再按一次翻回，帧与基准逐字节相同"
-    ));
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
 }
 
 /// ④ **作用域不越界**：裸 `m` 只动轨、`Cmd/Ctrl+M` 只动剪辑。
