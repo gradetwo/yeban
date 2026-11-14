@@ -16921,11 +16921,11 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
                         yeban_model::project::ClipContent::Midi { .. }
                     )
                 })
-                .map(|(id, _)| id.clone())
+                .map(|(id, _)| *id)
             else {
                 return;
             };
-            let Some(track_id) = project.tracks.keys().next().cloned() else {
+            let Some(track_id) = project.tracks.keys().next().copied() else {
                 return;
             };
             // 16 行音名网格(行 0 最高, 与 PITCH_NAMES 同序); 每步 = 十六分音符(960 PPQ / 4)。
