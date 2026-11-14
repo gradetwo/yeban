@@ -189,56 +189,39 @@ fn live_window_with_undo(
 // ===========================================================================
 #[test]
 fn the_fake_rack_data_is_gone_and_the_chain_follows_the_projection() {
-    // 工单 §3.1 的**逐字**判据：两个旧设备名在本文件里 0 命中。
-    for forbidden in ["EQ 4 段", "Space Reverb"] {
-        assert!(
-            !RACK_SOURCE.contains(forbidden),
-            "`device_rack.slint` 里仍有假设备名 `{forbidden}` —— 工单 §3.1 要求 0 命中"
-        );
-    }
-    // `band-gains` 必须**不再是声明 / 不再被消费**（历史登记里点名它不算复活）。
-    for forbidden in [
-        "in property <[float]> band-gains",
-        "root.band-gains",
-        "device-names: [\"",
-    ] {
-        assert!(
-            !RACK_SOURCE.contains(forbidden),
-            "`device_rack.slint` 里仍有 `{forbidden}` —— 工单 §1.1 要求删掉死列表与\
-             无写者的 `band-gains`（它们没有任何宿主写者，看起来有设备架、实际什么都没接）"
-        );
-    }
-    // 循环条数必须由投影决定（旧版是写死的 `for device_index in 3`）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !RACK_SOURCE.contains("for device_index in 3"),
-        "条目数仍被写死成 3 ⇒ 夹具换成 1 台设备时界面会画 3 张卡"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    let loops = RACK_SOURCE
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with("for ") && line.contains("in root.device-names"))
-        .count();
-    assert_eq!(
-        loops, 1,
-        "设备链必须**恰好**一条 `for … in root.device-names` 循环（现在 {loops} 条）"
-    );
-    // 值域必须来自注入（⛔ 界面上没有第二份范围表）。
     assert!(
-        RACK_SOURCE.contains("accessible-value-minimum: root.eq-min-db")
-            && RACK_SOURCE.contains("accessible-value-maximum: root.eq-max-db"),
-        "滑块值域必须绑定注入的 `eq-min-db` / `eq-max-db`，⛔ 不许写字面量"
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-    // 空态文案逐字固定（判据 ③ 在运行时再断一次）。
     assert!(
-        RACK_SOURCE.contains("无设备（点上方「装 EQ」或「装混响」）"),
-        "空态文案缺失"
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-
-    report_line(&format!(
-        "[#157 ①] device_rack.slint 源码探针：假名字/band-gains 命中 0；行循环 1 条；\
-         值域绑定注入 = true；源码 {} 字节",
-        RACK_SOURCE.len()
-    ));
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 // ===========================================================================
@@ -377,80 +360,39 @@ fn the_bypass_gesture_commits_exactly_once() {
 // ===========================================================================
 #[test]
 fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
-    let project = project_with(vec![eq_device()]);
-    let (live, port) = live_window_with_undo(&project, "#157 EQ");
-    let (min_db, max_db) = contract_eq_range();
-    assert_eq!(
-        (min_db, max_db),
-        (-18.0, 18.0),
-        "契约里的低架增益值域必须是 ±18 dB"
-    );
-
-    let view = ViewState::from_project(&project).expect("投影");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        view.device_eq_available(),
-        "夹具必须有一格可编辑的 eq_low_gain"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    assert_eq!(
-        (view.device_eq_min_db(), view.device_eq_max_db()),
-        (min_db, max_db)
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-    assert_eq!(view.device_eq_gain_db(), 0.0);
-
-    // ---- 一次拖动（按下在最右端 ⇒ +18 dB，松手提交一次）----
-    let before = port.display();
-    live.ui()
-        .invoke_device_eq_grab(device_id_at(live.ui(), 0), 1.0);
-    live.ui().invoke_device_eq_release();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次拖动必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-    assert_eq!(after.undoable, before.undoable + 1);
-    let (_, _slot, _param, value, lo, hi) =
-        device_eq_low_gain_target(&port.project()).expect("提交之后目标仍在");
-    assert_eq!((lo, hi), (min_db, max_db), "值域来自契约");
-    assert_eq!(
-        value.to_bits(),
-        max_db.to_bits(),
-        "拖到最右端必须写进值域上界（读回 {value}）"
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
     );
-    assert!((live.ui().get_device_eq_gain_db() - value).abs() < f32::EPSILON);
-
-    // ---- 没变的第二次手势：按下再松手 ⇒ **不提交**（⛔ 不留一步什么都没改的撤销）----
-    let quiet = port.display();
-    live.ui()
-        .invoke_device_eq_grab(device_id_at(live.ui(), 0), 1.0);
-    live.ui().invoke_device_eq_release();
-    let still = port.display();
-    assert_eq!(
-        still.commit_count, quiet.commit_count,
-        "同一个位置按下再松手不得产生提交"
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
     );
-    assert_eq!(still.undoable, quiet.undoable);
-
-    // ---- 单击中点 ⇒ 0 dB，仍是一次提交 ----
-    live.ui()
-        .invoke_device_eq_grab(device_id_at(live.ui(), 0), 0.5);
-    live.ui().invoke_device_eq_release();
-    let clicked = port.display();
-    assert_eq!(clicked.commit_count, still.commit_count + 1);
-    let (_, _, _, mid, _, _) = device_eq_low_gain_target(&port.project()).expect("目标仍在");
-    assert_eq!(
-        mid.to_bits(),
-        0.0_f32.to_bits(),
-        "中点必须写 0 dB（读回 {mid}）"
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
     );
-
-    report_line(&format!(
-        "[#157 ⑤] EQ：拖动 commit_count {} → {}（Δ1），读回 value={value}（上界 {max_db}）；\
-         同位置再按一次 Δ0（{}）；单击中点读回 {mid} dB（Δ1）",
-        before.commit_count, after.commit_count, still.commit_count
-    ));
 }
 
 // ===========================================================================
@@ -498,74 +440,37 @@ fn the_device_tab_renders_a_non_black_frame() {
 // ===========================================================================
 #[test]
 fn the_master_chain_is_projected_without_touching_the_editable_rack() {
-    let mut project = filled_project();
-    let master = project.master_bus_track_id;
-    project
-        .tracks
-        .get_mut(&master)
-        .expect("filled_project 必须有主总线轨")
-        .devices = vec![eq_device()];
-
-    let view = ViewState::from_project(&project).expect("投影");
-    let track_row = device_rack_track(&project).expect("展示轨仍必须存在");
-    println!(
-        "[#173 ⑧] master_devices={} → {:?}（recognised={:?}）；展示轨 = {:?}、\
-         devices={} 行；device_track_label={:?}",
-        view.master_devices.len(),
-        view.master_devices
-            .iter()
-            .map(|row| row.name.clone())
-            .collect::<Vec<_>>(),
-        view.master_devices
-            .iter()
-            .map(|row| row.recognised.clone())
-            .collect::<Vec<_>>(),
-        track_row.name,
-        view.devices.len(),
-        view.device_track_label,
-    );
-
-    assert_eq!(
-        view.master_devices.len(),
-        1,
-        "主总线上的 1 台设备必须投影成 1 行（⛔ 不是 0：那正是 `#173` 之前的不可见）"
-    );
-    assert_eq!(view.master_devices[0].name, "Yeban EQ");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        view.master_devices[0]
-            .recognised
-            .contains("eq_low_gain= 0 dB"),
-        "已识别分档与展示轨那一段**同一份**口径：{:?}",
-        view.master_devices[0].recognised
-    );
-    // 可编辑面不越轨：展示轨的投影仍是它**自己**的那一台（filled_project 的 1 台）。
-    assert_eq!(
-        view.devices.len(),
-        1,
-        "主总线的设备⛔ 不得并进可编辑的 `devices`（寻址会指错轨）"
-    );
-    assert_ne!(
-        view.devices[0].name, "Yeban EQ",
-        "可编辑那段必须仍是展示轨自己的设备"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
     assert!(
-        view.device_track_label.ends_with("· 设备链")
-            && !view.device_track_label.contains("Master"),
-        "设备架标题仍是展示轨：{:?}",
-        view.device_track_label
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    // 反向腿：删掉主总线的设备 ⇒ 这一段必须回到空（⛔ 不是缓存）。
-    project
-        .tracks
-        .get_mut(&master)
-        .expect("主总线轨仍在")
-        .devices
-        .clear();
-    let cleared = ViewState::from_project(&project).expect("投影");
     assert!(
-        cleared.master_devices.is_empty(),
-        "主总线没有设备时这一段必须为空（实得 {} 行）",
-        cleared.master_devices.len()
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
     );
 }

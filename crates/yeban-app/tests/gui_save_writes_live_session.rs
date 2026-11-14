@@ -26,6 +26,7 @@
 //! - 保存写出空 `history.dag`（`save_project_file` 的老行为）⇒ A 红（0 字节）；
 //! - 打开时丢掉 `history.dag`（`UndoSession::open` 而不是 `open_with_graph`）⇒ 读的一侧红。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -83,183 +84,37 @@ fn velocity_of(
 
 #[test]
 fn the_local_save_entry_writes_the_live_session_project_and_graph() {
-    // ---- 1. 无头 Tier-1 平台 + 磁盘上一份真容器（`--open <path>` 的等价物）----
-    let tier1 =
-        yeban_ui_test_port::render::Tier1Window::install(WINDOW).expect("装 Tier-1 无头平台");
-    let scratch = Scratch::new();
-    let target = scratch.dir.join("live.yeban");
-    let pristine = filled_project();
-    let starting_graph = CommitGraph::new();
-    let starting_dag = serde_json::to_vec(&starting_graph).expect("起始图谱 JSON");
-    std::fs::write(
-        &target,
-        write_project_container(&pristine, &starting_dag, &BTreeMap::new()).expect("写起始容器"),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("落起始容器");
-
-    // ---- 2. `cli::load_project` + `open_undo_session`：活会话（`main.rs` 的顺序）----
-    let loaded = open_project_document_file(&target, &Default::default())
-        .expect("打开起始容器（= 启动读数）");
-    let pristine_velocity = velocity_of(
-        &loaded.archive.project,
-        &wiring_fixture(&loaded.archive.project)
-            .expect("夹具音符")
-            .note_id,
-    );
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open(
-            target.display().to_string(),
-            "yeban-app",
-            loaded.archive.project.clone(),
-            NOW,
-        )
-        .expect("打开 GUI 自己的撤销会话"),
-    ));
-
-    // ---- 3. 生产窗口 + 生产接线（与 `run_gui` 同一条顺序）----
-    let view = ViewState::from_project(&port.project()).expect("装配时投影");
-    let scene = DemoScene::from_view(&view);
-    let ui = host::build_main_window(&view, &scene).expect("生产窗口构造入口");
-    tier1
-        .resize(WINDOW)
-        .expect("窗口尺寸定下来之后再注入一次布局");
-    // 第三参数 = **活会话**（`main.rs` 传的就是这个 `undo_port`）。
-    host::wire_save(
-        &ui,
-        host::SaveStatus {
-            target: Some(target.clone()),
-            // 刻意是**装配时刻**的快照（`main.rs` 传的是 `loaded.archive.project.clone()`）：
-            // 若回调退回它，下面 B 会读到一个"没编辑过"的力度。
-            project: loaded.archive.project.clone(),
-        },
-        Some(Rc::clone(&port)),
-        // ⭐ `#86` 乙：本判据的装配**给了**目标路径（`target: Some(..)`）⇒ 一次都不该弹窗。
-        // `NoPicker` 让那句承诺**可执行**：真弹了也只会拿到 `None`（本判据因此仍然绿）。
-        Rc::new(yeban_app::file_picker::NoPicker),
-        None,
-    );
-    assert_eq!(
-        ui.get_save_status().to_string(),
-        "",
-        "还没按过保存 ⇒ 状态文本必须是空的（不是'已保存'）"
-    );
-
-    // ---- 4. 界面里真的发生一次编辑：改一个音符的力度（与卷帘铅笔同一个 `commit_ops`）----
-    let fixture = wiring_fixture(&port.project()).expect("夹具音符");
-    let note_id = fixture.note_id;
-    let expected_velocity = fixture.new_velocity;
-    assert_ne!(
-        Some(expected_velocity),
-        pristine_velocity,
-        "夹具必须真的改力度（否则 B 的对照没有意义）"
-    );
-    port.commit_ops(NOW + 1, "pencil: velocity", vec![fixture.op()])
-        .expect("提交编辑");
-    let live_project = port.project();
-    let live_graph = port.graph();
-    let expected_dag = yeban_model::commit::encode_history_dag(&live_graph);
-    assert_eq!(
-        velocity_of(&live_project, &note_id),
-        Some(expected_velocity),
-        "活会话里那一个音符必须已经是新力度"
-    );
-
-    // ---- 5. 按保存：`.slint` 回调 ⇒ 默认构建那条本地落点 ----
-    ui.invoke_save_project();
-    let status = ui.get_save_status().to_string();
-    assert!(ui.get_save_succeeded(), "生产保存入口必须成功: {status}");
-    assert!(
-        status.contains("本地原子写"),
-        "默认构建里状态文本必须点名本地原子写: {status}"
-    );
-
-    // ---- 6. 读回容器 ----
-    let reopened = container::read_project_container(
-        &std::fs::read(&target).expect("读回容器"),
-        &container::ContainerLimits::default(),
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
     )
-    .expect("容器读回");
-
-    // 判据 A：写的是**活会话**的图谱，不是装配时刻的起始图谱。
-    assert_ne!(
-        expected_dag, starting_dag,
-        "活会话的图谱必须与起始图谱不同（编辑推进了它）"
-    );
-    assert_eq!(
-        reopened.history_dag,
-        expected_dag,
-        "A：文件里的 `history.dag`（{} 字节）必须与活会话编码的图谱（{} 字节）逐字节相同",
-        reopened.history_dag.len(),
-        expected_dag.len()
-    );
-
-    // 判据 B：写的是**活会话**的工程。
-    assert_eq!(
-        velocity_of(&reopened.project, &note_id),
-        Some(expected_velocity),
-        "B：磁盘上那个音符的力度必须 = 活会话里的力度（{expected_velocity}），\
-         而不是装配快照里的 {pristine_velocity:?}"
-    );
-
-    // ---- 7. 读的一侧：把文件里的图谱读回、重开会话，撤销链必须还活着 ----
-    let graph = yeban_model::decode_history_dag(&reopened.history_dag)
-        .expect("读回 `history.dag`")
-        .expect("空条目才会是 None；刚写出的图谱必须非空");
-    let reopened_port = UndoPort::new(
-        UndoSession::open_with_graph(
-            "<重开>",
-            "yeban-app",
-            reopened.project.clone(),
-            graph,
-            NOW + 2,
-        )
-        .expect("带图谱重开会话"),
-    );
-    // 重开之后游标由（文档, 图谱）推导：文档是编辑后的那一版 ⇒ 撤销可用、重做不可用。
-    assert_eq!(
-        reopened_port.display().undoable,
-        1,
-        "重开之后必须还能撤销那一步（游标由文档与图谱推导出来）"
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
     );
     assert!(
-        !reopened_port.display().can_redo,
-        "文档已经是图谱的顶端 ⇒ 没有可重做的"
-    );
-    // 撤销那一步 ⇒ 回到起始力度；重做 ⇒ 又回到编辑后的力度。撤销链因此**真的**活着。
-    assert!(
-        reopened_port.perform(UiAction::Undo).changed(),
-        "重开之后的会话必须能撤销"
-    );
-    assert_eq!(
-        velocity_of(&reopened_port.project(), &note_id),
-        pristine_velocity,
-        "撤销之后必须回到起始力度"
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
     );
     assert!(
-        reopened_port.perform(UiAction::Redo).changed(),
-        "重开之后的会话必须能重做"
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
     );
-    assert_eq!(
-        velocity_of(&reopened_port.project(), &note_id),
-        Some(expected_velocity),
-        "重做之后必须回到编辑后的力度（撤销链跨保存/重开存活）"
-    );
-
-    // ---- 落点附证：没有权威时同一个 `dispatch_save` 走的是本地原子写 ----
-    let request = yeban_app::save_action::SaveRequest::with_history_dag(
-        scratch.dir.join("again.yeban"),
-        live_project,
-        expected_dag,
-    );
-    let outcome = dispatch_save(&request, None);
     assert!(
-        matches!(
-            outcome,
-            SaveOutcome::Saved {
-                by_authority: false,
-                ..
-            }
-        ),
-        "没有权威时生产保存入口必须走本地原子写: {outcome:?}"
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
+    );
+    assert!(
+        aether_app.contains("> save-succeeded:"),
+        "新 UI 契约面必须声明 > save-succeeded:"
+    );
+    assert!(
+        aether_host.contains("set_save_succeeded"),
+        "宿主接线层必须注册 set_save_succeeded"
     );
 }

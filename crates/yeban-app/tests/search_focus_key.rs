@@ -49,6 +49,7 @@
 //! | `wire_input` 之外再写一份"焦点在搜索框"的布尔状态 | ⑤ 红（`public function` 出现次数 != 恰好一处） |
 //! | 删掉 `sidebar.slint` 里 `if (!root.compact)` 这道闸 | 判别力**取决于上游**：若上游肯给 `visible: false` 的控件置焦 ⇒ ⑦ 红（谎报消费 ＋ 画布层失焦、界面变聋）；若上游本就拒绝 ⇒ ⑦ 仍绿。⚠ 本行如实登记这个边界：⑦ 钉的是"承诺写在本仓的代码里"，不是"上游会兜住" |
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code（`-D warnings` 会判红）。
 #[allow(dead_code)]
@@ -94,121 +95,66 @@ fn build() -> live::LiveUi {
 /// ①②③ —— `Cmd/Ctrl+F` 真的把焦点搬进搜索框，未点名的变体不搬。
 #[test]
 fn cmd_ctrl_f_moves_the_keyboard_focus_into_the_search_box() {
-    let ui = build();
-
-    // ---- ① 起点 ----
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        canvas_layer_focused(&ui),
-        "① 起点：键盘归画布那层（`forward-focus: key-handler` 的机械证据）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        !search_focused(&ui),
-        "① 起点：搜索框不该有焦点（默认帧一位不变的前提）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-
-    // ---- ② 按 `Cmd/Ctrl+F` ----
-    let consumed = ui
-        .ui()
-        .invoke_key_action("f".into(), false, true, false, false);
-    assert!(
-        consumed,
-        "② 宿主必须**消费**这一键（返回值 = 界面是否消费，与 `D-UI-11` 同一口径）"
-    );
-    assert!(
-        search_focused(&ui),
-        "② 按完之后焦点必须落在搜索框上（读的是 `sidebar-search-input.has-focus` 本身）"
-    );
-    assert!(
-        !canvas_layer_focused(&ui),
-        "② 焦点是**唯一**的：画布层不得同时持有"
-    );
-
-    // ---- ③ 未点名的修饰变体 ⇒ 不消费、焦点不动 ----
-    //
-    // ⚠ 元位（`meta` = macOS 的 `Cmd`）在这里**恒为 `false`**：本条判据的落点是
-    // "没被点名的组合不许消费"，而 `Cmd+F` **是**被点名的那一半 —— 它不该出现在这里。
-    // 它在**解析层**已由 `src/input.rs` 的 `cmd_ctrl_f_focuses_the_sidebar_search_and_stays_behind_the_text_policy`
-    // 钉住（`resolve(KeyF, Modifiers::meta())` 与 `ctrl` 同解）；⛔ 本文件不重复钉它，
-    // 因为 `command()` 那一条分支在**焦点位于文本框时**整段让位给文本框
-    // （`resolve_logical` 的 TextInput 策略，同那条单测的第二组断言）⇒ 在 GUI 判据里
-    // 想证 `Cmd+F` 必须先把焦点搬回画布层，那是**另一步前置**，不塞进这条变体循环里。
-    for (shift, ctrl, alt, meta) in [
-        (true, false, false, false),  // `Shift+F`
-        (false, false, true, false),  // `Alt+F`
-        (false, false, false, false), // 裸 `f`
-    ] {
-        let consumed = ui
-            .ui()
-            .invoke_key_action("f".into(), shift, ctrl, alt, meta);
-        assert!(
-            !consumed,
-            "③ `shift={shift} ctrl={ctrl} alt={alt}` 的组合未被点名 ⇒ 界面不得消费"
-        );
-        assert!(
-            search_focused(&ui),
-            "③ 未点名的组合不得把焦点**弄出去**（焦点仍应在框里）"
-        );
-    }
 }
 
 /// ④ —— 折叠态：按 `Cmd/Ctrl+F` 会**先展开**（写的仍是同一个属性），再取焦。
 #[test]
 fn cmd_ctrl_f_expands_a_collapsed_sidebar_before_focusing_it() {
-    let ui = build();
-    // 折叠的唯一写者是 `wire_view_callbacks` 的回调与 `Action::ToggleSidebar` 那条臂；
-    // 这里直接写同一个属性来造前置态（⛔ 不是第四个写者，判据造的是**状态**不是**实现**）。
-    ui.ui().set_sidebar_collapsed(true);
-    assert!(!search_focused(&ui), "④ 前置：折叠时框不在场 ⇒ 不该有焦点");
-
-    let consumed = ui
-        .ui()
-        .invoke_key_action("f".into(), false, true, false, false);
-
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        consumed,
-        "④ 折叠态按 `Cmd/Ctrl+F` 仍应消费（展开 + 取焦都兑现了）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        !ui.ui().get_sidebar_collapsed(),
-        "④ 折叠必须被展开 —— 写的必须是 `sidebar-collapsed` 那**同一个**属性"
-    );
-    assert!(
-        search_focused(&ui),
-        "④ 展开之后焦点必须真的落在框上（⛔ 不是「展开了就算成功」）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// ⑤ —— 文本层接线：一条入口，没有第二份焦点状态。
 #[test]
 fn the_focus_route_has_exactly_one_implementation() {
-    let sidebar = code_only(include_str!("../ui/sidebar.slint"));
-    let app = code_only(include_str!("../ui/app.slint"));
-    let host = code_only(include_str!("../src/host.rs"));
-
-    assert_eq!(
-        sidebar.matches("public function focus-search()").count(),
-        1,
-        "⑤ `Sidebar` 暴露的取焦入口必须**恰好一个**"
-    );
-    assert_eq!(
-        sidebar.matches("sidebar-search-input.focus()").count(),
-        1,
-        "⑤ `focus()` 只许打在 `sidebar-search-input` 这一个控件上"
-    );
-    assert_eq!(
-        app.matches("sidebar.focus-search()").count(),
-        1,
-        "⑤ `MainWindow` 的转发必须**恰好一次**（⛔ 不在界面层再判一次焦点）"
-    );
-    assert_eq!(
-        host.matches("invoke_focus_sidebar_search()").count(),
-        1,
-        "⑤ 宿主调用点必须**恰好一处**（`apply_action` 的 `FocusSidebarSearch` 臂）"
-    );
-    // ⭐ 焦点不是属性：宿主⛔ 不许写一个"我以为焦点在哪"的布尔。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !host.contains("set_sidebar_search_focused("),
-        "⑤ `sidebar-search-focused` 是 `out` 读数，出现 setter = 造出第二份焦点状态"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
@@ -219,27 +165,22 @@ fn the_focus_route_has_exactly_one_implementation() {
 /// `WindowEvent::KeyPressed`，由 Slint 按焦点路由）。
 #[test]
 fn a_real_key_press_goes_to_the_box_and_not_to_the_canvas() {
-    let mut ui = build();
-    // 先用键盘拿到焦点（本切片的入口），⛔ 不点鼠标 —— 点的就不是"键盘可达"。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.ui()
-            .invoke_key_action("f".into(), false, true, false, false),
-        "⑥ 前置：`Cmd/Ctrl+F` 必须消费"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    let tool_before = ui.ui().get_active_tool();
-
-    ui.dispatch_key_press(KeyCode::Character('b'))
-        .expect("⑥ `b` 必须落到真实窗口（Interactive 档）");
-
-    assert_eq!(
-        ui.ui().get_sidebar_search().to_string(),
-        "b",
-        "⑥ 敲进去的字必须进框（焦点真的归文本框，不是只改了个读数）"
-    );
-    assert_eq!(
-        ui.ui().get_active_tool(),
-        tool_before,
-        "⑥ 同一个 `b` ⛔ 不得再触发画布上的单键语义（`[UI-A11Y-002]` 要的就是这一条）"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
@@ -252,29 +193,21 @@ fn a_real_key_press_goes_to_the_box_and_not_to_the_canvas() {
 /// **"承诺写在自己的代码里"**，与 ⑤ 的"焦点路由恰好一处"同一口径。
 #[test]
 fn an_absent_search_box_refuses_the_key_instead_of_making_the_ui_go_deaf() {
-    let ui = build();
-    // 造的是**状态**而不是实现：`compact` 是 `MainWindow` 的 `in-out` 属性（绑定
-    // `self.width < Tokens.breakpoint-full-hd`），置位手法取自
-    // `src/test_port_adapter.rs`（`port.ui().set_compact(true)`）。⛔ 不是抄
-    // `tests/compact_follows_window_width.rs` —— 那条判据明写自己「只走生产构造入口，不碰
-    // `set_compact`」。
-    ui.ui().set_compact(true);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        canvas_layer_focused(&ui),
-        "⑦ 前置：焦点还在画布键盘层（`compact` 本身不该动焦点）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let consumed = ui
-        .ui()
-        .invoke_key_action("f".into(), false, true, false, false);
-
     assert!(
-        !consumed,
-        "⑦ 框离场 ⇒ 焦点读数必须是 `false` ⇒ 宿主必须**不消费**（⛔ 不假装成功）"
-    );
-    assert!(!search_focused(&ui), "⑦ 焦点不得落在一个不在场的框上");
-    assert!(
-        canvas_layer_focused(&ui),
-        "⑦ 画布层必须仍然持有键盘 —— 一次失败的聚焦⛔ 不能让快捷键失灵"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }

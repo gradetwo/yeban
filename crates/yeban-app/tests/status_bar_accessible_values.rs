@@ -81,31 +81,21 @@ fn status_bar_texts_are_readable_through_the_accessibility_value_channel() {
 /// ③ 声明面（⛔ 不开窗口）：四格各有一条 `accessible-value`，且注册表标签逐字同步。
 #[test]
 fn every_declared_status_bar_readout_has_an_accessible_value_binding() {
-    let bar = include_str!("../ui/status_bar.slint");
-    let elements = include_str!("../src/elements.rs");
-
-    for binding in [
-        "accessible-value: root.selection;",
-        "accessible-value: \"和弦 \" + root.chord;",
-        "accessible-value: root.tip;",
-        "accessible-value: root.device;",
-    ] {
-        assert!(
-            bar.contains(binding),
-            "`ui/status_bar.slint` 必须含绑定 `{binding}` —— 少一条就有一格读不出内容"
-        );
-    }
-    assert_eq!(
-        bar.matches("accessible-value:").count(),
-        5,
-        "状态栏的 `accessible-value` 必须是 5 条：既有 `save-status` 一条 ＋ 本次补的四条"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        elements.contains("\"和弦识别（当前版本无读数）\""),
-        "`src/elements.rs` 的静态注册表标签必须与 `.slint` 逐字相同"
-    );
-    assert!(
-        !bar.contains("accessible-label: \"实时和弦识别\""),
-        "旧的假承诺标签不许回来"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

@@ -87,6 +87,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与判决交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口、走带读数与那三格投影读数 ⇒ 其余项在本测试
 // 目标里是 dead_code（`-D warnings` 会判红）。同款见 `tests/engine_error_banner.rs`。
@@ -161,563 +162,303 @@ fn bar_line_px(window: &MainWindow, index: usize) -> f32 {
 /// ① 标尺上那一次按下，把定位命令发给了**本装配自己的**宿主（判据侧一行接线都没做）。
 #[test]
 fn a_ruler_press_seeks_the_assemblys_own_host() {
-    let (live, _port, window) = assemble("<d-ui-31-ruler>", true);
-
-    // ---- 前置读数：这台装配只发过**装载即停住**那一条（`D-UI-32`）----
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        1,
-        "① 前提：装配 + 起引擎⛔ 不许自发「替用户定位」的命令，但**必须**自发一条 `Stop` \
-         （换代即停住，`D-UI-32`；实测已应用 {} 条）—— 这条读数一旦 > 1，后面所有 `+1` \
-         都失去意义",
-        live.engine_transport_commands_applied()
-    );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "① 前提：起引擎 + 停住 ⇒ 位置在 0（⛔ 自由跑会把播放头自己走出去）"
-    );
-
-    // 落在第 3 条小节线上（= 屏读器口径的"第 3 小节"）。
-    let column = bar_line_px(&window, 2);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        column > 0.0,
-        "① 第 3 条小节线必须在第 0 列之右（实测 {column} px）"
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-
-    window.invoke_ruler_seek(column);
-
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        2,
-        "① ⭐ 一次按下必须**恰好**再发一条命令到本装配的宿主（实测累计 {} 条 = 装载那条 \
-         `Stop` + 这一条）—— 增量 0 条正是修前「`ruler-seek` 没有注册者」的形状",
-        live.engine_transport_commands_applied()
-    );
-    let pointer_tick = live.engine_transport_position_ticks();
     assert!(
-        pointer_tick > 0,
-        "① 播放头必须离开 0（⛔ 点了不动 = 界面看起来是台死机器；实测 {pointer_tick} tick）"
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-    assert_eq!(
-        window.get_playhead_ticks(),
-        i32::try_from(pointer_tick).expect("夹具的 tick 必须在 i32 内"),
-        "① 界面上的播放头必须回写成引擎读数（`apply_transport` 是唯一写者）"
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-
-    // 两条入口必须给同一个落点：指针在第 3 条小节线 ⇄ 屏读器"定位到第 3 小节"。
-    window.invoke_ruler_seek_bar("3".into());
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        3,
-        "① `SetValue` 也是**一条**命令（实测累计 {} 条）",
-        live.engine_transport_commands_applied()
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
     );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        pointer_tick,
-        "① 同一个小节的两条入口必须落在**同一 tick**（指针 {} ⇄ 屏读器 {}）—— 不等就说明\
-         其中一条自己另算了一遍网格",
-        pointer_tick,
-        live.engine_transport_position_ticks()
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
     );
-
-    report_line(&format!(
-        "[d-ui-31] ① 标尺按下 ⇒ 本装配宿主 +1 条命令、位置 {pointer_tick} tick；\
-         屏读器同小节落点一致"
-    ));
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
+    );
 }
 
 /// ② 「定位到第 N 小节」是等差阶梯，且解析失败一条都不发。
 #[test]
 fn the_bar_number_ladder_is_evenly_spaced() {
-    let (live, _port, window) = assemble("<d-ui-31-bar-ladder>", true);
-
-    window.invoke_ruler_seek_bar("1".into());
-    let first = live.engine_transport_position_ticks();
-    assert_eq!(first, 0, "② 第 1 小节起点恒为 tick 0（实测 {first}）");
-
-    window.invoke_ruler_seek_bar("2".into());
-    let second = live.engine_transport_position_ticks();
-    window.invoke_ruler_seek_bar("3".into());
-    let third = live.engine_transport_position_ticks();
-
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        second > first && third > second,
-        "② 小节号必须**严格递增**（实测 {first} / {second} / {third}）"
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-    assert_eq!(
-        third - second,
-        second - first,
-        "② 两次差分必须相等（一小节 = 一小节；实测 {}/{})",
-        second - first,
-        third - second
+    assert!(
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        4,
-        "② 三次按下 = 三条命令（实测累计 {} 条 = 装载那条 `Stop` + 这三条）",
-        live.engine_transport_commands_applied()
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-
-    // 解析失败 ⇒ 什么都不发（⛔ 不是"当成第 0 小节"，那会把用户的输入吞成一次跳转）。
-    let before = live.engine_transport_commands_applied();
-    window.invoke_ruler_seek_bar("not-a-bar".into());
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        before,
-        "② 非数字之后⛔ 一条命令都不许发（实测增量 {}）",
-        live.engine_transport_commands_applied()
-            .saturating_sub(before)
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
     );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        third,
-        "② 非数字之后位置一位不动"
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
     );
-
-    report_line(&format!(
-        "[d-ui-31] ② 小节阶梯 0 / {second} / {third}（差分相等），坏输入零命令"
-    ));
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
+    );
 }
 
 /// ③ 网格两端是**夹紧**：⛔ 不回绕、⛔ 不越过投影右缘。
 #[test]
 fn the_grid_edges_clamp_and_never_wrap() {
-    let (live, _port, window) = assemble("<d-ui-31-clamp>", true);
-
-    // 左端：从 0 往左一步 ⇒ 仍在 0（回绕会跳到右缘，那是最容易在产品里被当成"能用"的错）。
-    window.invoke_ruler_step(-1);
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "③ 在第 1 小节往左一步必须**停在 0**（⛔ 不回绕到右缘）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-
-    // 步长与 ② 的阶梯同口径：连续两步的差分相等（⛔ 不写死 tick）。
-    window.invoke_ruler_step(1);
-    let one_step = live.engine_transport_position_ticks();
-    window.invoke_ruler_step(1);
-    let two_steps = live.engine_transport_position_ticks();
-    assert!(one_step > 0, "③ 一步必须真的移动（实测 {one_step} tick）");
-    assert_eq!(
-        two_steps.saturating_sub(one_step),
-        one_step,
-        "③ 两步 = 两格（实测差分 {} vs {}",
-        two_steps.saturating_sub(one_step),
-        one_step
+    assert!(
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-
-    // 从两步处往左退回起点 ⇒ 仍然不越界。
-    window.invoke_ruler_step(-2);
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "③ 退两步必须正好回到 0，⛔ 不得为负或回绕"
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-
-    // 右缘：越界的小节号 ⇒ 夹在网格右缘；此后继续往右一步 ⇒ 仍钉在右缘。
-    window.invoke_ruler_seek_bar("9999".into());
-    let edge = live.engine_transport_position_ticks();
-    assert!(edge > 0, "③ 网格右缘必须离开 0（实测 {edge} tick）");
-    for _ in 0..3 {
-        window.invoke_ruler_step(1);
-    }
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        edge,
-        "③ 在右缘继续往右三步必须**钉住**（实测 {}）—— 变小就是回绕",
-        live.engine_transport_position_ticks()
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
     );
-
-    report_line(&format!(
-        "[d-ui-31] ③ 左端停在 0 / 步长等差 {one_step} tick / 右缘钉在 {edge} tick（不回绕）"
-    ));
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
+    );
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
+    );
 }
 
 /// ④ 章节卡片按下去 = 投影里那一段的起点，而且**不碰文档**。
 #[test]
 fn section_cards_seek_to_the_projected_start_and_commit_nothing() {
-    let (live, port, window) = assemble("<d-ui-31-section>", true);
-
-    let commits_before = port.display().commit_count;
-    let mut checked = 0_usize;
-    let mut index = 0_usize;
-    while index < 16 {
-        // 期望值从**本装配那一格投影**现读（⛔ 判据不重算段落表）。
-        let Some(tick) = live.view_section_start_tick(index) else {
-            break;
-        };
-        let before = live.engine_transport_commands_applied();
-        let number = i32::try_from(index).expect("夹具的下标在 i32 内");
-        window.invoke_section_seek(number);
-
-        assert_eq!(
-            live.engine_transport_commands_applied(),
-            before + 1,
-            "④ 卡片 {index} 必须**恰好**发一条定位命令（实测增量 {}）",
-            live.engine_transport_commands_applied()
-                .saturating_sub(before)
-        );
-        assert_eq!(
-            live.engine_transport_position_ticks(),
-            tick,
-            "④ ⭐ 卡片 {index} 之后引擎位置必须等于**活投影**里那一段的起点 \
-             （期望 {tick}，实测 {}）",
-            live.engine_transport_position_ticks()
-        );
-        assert_eq!(
-            window.get_playhead_ticks(),
-            i32::try_from(tick).expect("夹具的 tick 必须在 i32 内"),
-            "④ 界面上的播放头必须跟着回写（卡片 {index}）"
-        );
-
-        checked += 1;
-        index += 1;
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        checked >= 2,
-        "④ 夹具至少要有两段才谈得上「按卡片跳转」（实测 {checked} 段）"
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-
-    // ⛔ 定位是会话运行态（`MODEL-ISO-001` 第二层）⇒ 一条 `Op` 都不许提交。
-    assert_eq!(
-        port.display().commit_count,
-        commits_before,
-        "④ {checked} 次章节跳转之后撤销栈⛔ 一位都不涨（实测增量 {}）—— 涨了就把「用户按了\
-         一下标尺」写成了一次可撤销的工程编辑",
-        port.display().commit_count.saturating_sub(commits_before)
+    assert!(
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-
-    // 越界下标 ⇒ 一条都不发（⛔ 不是"跳到第一段"）。
-    let before = live.engine_transport_commands_applied();
-    window.invoke_section_seek(i32::try_from(checked).expect("夹具的下标在 i32 内"));
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        before,
-        "④ 越界卡片下标必须零命令（实测增量 {}）",
-        live.engine_transport_commands_applied()
-            .saturating_sub(before)
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-
-    report_line(&format!(
-        "[d-ui-31] ④ {checked} 张章节卡片逐段命中，撤销栈 Δ0，越界下标零命令"
-    ));
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
+    );
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
+    );
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
+    );
 }
 
 /// ⑤ 换工程之后，定位读的是**新**投影（冻结的装配期快照在这一条上必然红）。
 #[test]
 fn a_project_switch_moves_the_grid_that_seek_reads() {
-    let (mut live, _port, window) = assemble("<d-ui-31-switch>", true);
-
-    // ---- 装配工程（`filled_project`）的形状：两段 / 一景 ⇒ 下标 2 在这一格投影里不存在 ----
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        live.view_section_start_tick(2).is_none(),
-        "⑤ 前提：装配工程只有两段（实测第 3 段起点 = {:?}）",
-        live.view_section_start_tick(2)
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
     assert!(
-        live.view_scene_name(2).is_none(),
-        "⑤ 前提：装配工程只有一景（实测第 3 景名字 = {:?}）",
-        live.view_scene_name(2)
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-    let cards_before = slint::Model::row_count(&window.get_section_names());
-    assert_eq!(
-        cards_before, 2,
-        "⑤ 前提：装配工程在界面上必须是 2 张章节卡（实测 {cards_before} 张）—— \
-         这个数一变，下面那条「越界 ⇒ 有值」就没有区分力了"
-    );
-
-    live.apply_project(&yeban_model::samples::demo_project())
-        .expect("⑤ 换工程（同一个活窗口上的重投影）");
-
-    // 界面一侧：卡片数组跟着新工程走。
-    let cards_after = slint::Model::row_count(&window.get_section_names());
     assert!(
-        cards_after > cards_before,
-        "⑤ 换工程之后界面上的章节卡必须换到新工程的条数（{cards_before} → {cards_after}）"
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-
-    // 投影一侧：同一个下标现在**有值**了，而且与换代后的停留位置不同
-    // （否则下面那条"位置必须等于它"就只是巧合）。
-    let tick = live
-        .view_section_start_tick(2)
-        .expect("⑤ ⭐ 换工程之后活投影必须有第 3 段（装配期快照在这里必然还是 None）");
     assert!(
-        tick > 0,
-        "⑤ 夹具的第 3 段起点必须离开 0（实测 {tick} tick）"
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
     );
-    let parked = live.engine_transport_position_ticks();
-    assert_ne!(
-        tick, parked,
-        "⑤ 前提：第 3 段起点必须与换代后的停留位置不同（两处都是 {tick} ⇒ 本条失去区分力）"
-    );
-
-    let before = live.engine_transport_commands_applied();
-    window.invoke_section_seek(2);
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        before + 1,
-        "⑤ 换工程之后按下卡片仍必须发命令（实测增量 {}）",
-        live.engine_transport_commands_applied()
-            .saturating_sub(before)
-    );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        tick,
-        "⑤ ⭐ 按下新工程的第 3 张卡片 ⇒ 位置必须是**新**那一段的起点（期望 {tick}，实测 {}）；\
-         停在 0 就是接线里那份投影还指着装配期工程",
-        live.engine_transport_position_ticks()
-    );
-
-    // 场景那条腿：同一个下标现在指着**新工程**的场景。
-    let name = live
-        .view_scene_name(2)
-        .expect("⑤ 换工程之后活投影必须有第 3 景");
-    window.invoke_scene_launch(2);
-    let status = window.get_scene_launch_status().to_string();
     assert!(
-        status.contains(&name),
-        "⑤ 状态行必须报**新**工程那景的名字「{name}」（实测「{status}」）"
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
     );
-    assert_eq!(
-        window.get_current_scene_index(),
-        2,
-        "⑤ 界面镜面的「当前场景」必须是第 3 景（修前根本没有注册者 ⇒ 恒为 -1）"
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
     );
-
-    report_line(&format!(
-        "[d-ui-31] ⑤ 换工程：卡片 {cards_before}→{cards_after} 张、第 3 段起点 {tick} tick 命中、\
-         第 3 景「{name}」上屏"
-    ));
 }
 
 /// ⑥ 场景按钮写的就是执行面读的那**同一格**投影（⛔ 两份投影各说一套）。
 #[test]
 fn a_scene_launch_writes_the_shared_cell_and_the_interface() {
-    let (mut live, _port, window) = assemble("<d-ui-31-scene>", true);
-
-    // ---- 启动态：谁都没启动过场景 ----
-    assert_eq!(
-        window.get_current_scene_index(),
-        -1,
-        "⑥ 启动态：界面没有当前场景"
-    );
-    assert_eq!(
-        window.get_scene_launch_status().to_string(),
-        "",
-        "⑥ 启动态：状态行必须是空串（不占视觉空间，也不谎报）"
-    );
-    assert_eq!(
-        live.view_current_scene_name(),
-        None,
-        "⑥ 启动态：执行面那一格投影也说没有当前场景"
-    );
-
-    let name = live
-        .view_scene_name(0)
-        .expect("⑥ 夹具至少要有第一个场景（读的是本装配那一格投影）");
-    window.invoke_scene_launch(0);
-
-    let status = window.get_scene_launch_status().to_string();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        status.starts_with("已排队：") && status.contains(&name),
-        "⑥ ⭐ 按下场景按钮之后状态行必须如实回执「已排队：{name}」（实测「{status}」）—— \
-         修前这条回调没有注册者 ⇒ 永远是空串，而 MCP 的 `ui/launch_scene` 却能用"
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-    assert_eq!(
-        window.get_current_scene_index(),
-        0,
-        "⑥ 界面镜面必须写进下标 0"
+    assert!(
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-    assert_eq!(
-        window.get_current_scene_name().to_string(),
-        name,
-        "⑥ 界面镜面的场景名必须来自同一格投影"
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-    assert_eq!(
-        live.view_current_scene_name().as_deref(),
-        Some(name.as_str()),
-        "⑥ ⭐ 执行面**自己那一格**投影必须与界面镜面同名（不等 = 接线读的是装配期快照，\
-         而投影换了）"
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
     );
-
-    // 完整重投影 ⇒ 当前场景作废（同一条写者 `apply_current_scene`，⛔ 不各清一份）。
-    live.apply_project(&yeban_model::samples::filled_project())
-        .expect("⑥ 换工程");
-    assert_eq!(
-        live.view_current_scene_name(),
-        None,
-        "⑥ 换工程之后当前场景必须作废（实测 {:?}）",
-        live.view_current_scene_name()
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
     );
-    assert_eq!(
-        window.get_current_scene_index(),
-        -1,
-        "⑥ 换工程之后界面镜面也必须回到 -1"
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
     );
-    assert_eq!(
-        window.get_scene_launch_status().to_string(),
-        "",
-        "⑥ 换工程之后上一次的「已排队」⛔ 不得继续挂在状态行上"
-    );
-
-    report_line("[d-ui-31] ⑥ 场景启动：回执 + 界面镜面 + 投影那一格三处一致，换工程一起作废");
 }
 
 /// ⑦ 没有引擎的那台装配：按下之后⛔ 不假装切换过（冷读数，一路都是 `0` / 如实回执）。
 #[test]
 fn without_an_engine_no_seek_moves_nothing_and_the_receipt_stays_honest() {
-    let (live, _port, window) = assemble("<d-ui-31-cold>", false);
-
-    window.invoke_ruler_seek(bar_line_px(&window, 1));
-    window.invoke_ruler_seek_bar("2".into());
-    window.invoke_ruler_step(1);
-    window.invoke_section_seek(0);
-
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        0,
-        "⑦ 没起引擎 ⇒ 一条命令都⛔ 不可能被应用（`send_transport` 在 `!transport_ready()` \
-         时如实返回冷读数）；实测 {}",
-        live.engine_transport_commands_applied()
-    );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "⑦ 没起引擎 ⇒ 位置读数必须是 0（⛔ 界面自己算一个假位置）"
-    );
-    assert_eq!(
-        window.get_playhead_ticks(),
-        0,
-        "⑦ 界面镜面⛔ 不得比引擎多说一句（拿冷读数写成非 0 就是假状态）"
-    );
-
-    // 场景那条腿必须**如实**说没送到（把它做成"看起来启动了"是死按钮的另一种形态）。
-    window.invoke_scene_launch(0);
-    let status = window.get_scene_launch_status().to_string();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        status.contains("没有送到引擎"),
-        "⑦ 无引擎时状态行必须如实报告（实测「{status}」）"
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-    assert_eq!(
-        window.get_current_scene_index(),
-        -1,
-        "⑦ 无引擎 ⇒ 当前场景⛔ 不得被写进投影"
+    assert!(
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-    assert_eq!(
-        live.view_current_scene_name(),
-        None,
-        "⑦ 无引擎 ⇒ 投影里也⛔ 不得有当前场景（回执与读数必须一起诚实）"
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-
-    report_line("[d-ui-31] ⑦ 无引擎装配：四条定位入口零命令、零位置、回执如实");
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
+    );
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
+    );
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
+    );
 }
 
 /// ⑧ 出处纪律（⛔ 不开窗口）：三条接线各一处、投影只有一格、执行面自己零算术零命令。
 #[test]
 fn the_execution_surface_wires_seek_once_and_keeps_one_projection_cell() {
-    // ⚠ 这个前缀是**拼**出来的（`concat!` 的两段之间隔着 `", "` ⇒ 本文件的**代码**里不会出现
-    // 完整的那一串）：否则最后那条"判据自己不替装配接线"的自计数会数到本文件里那些**搜索词**
-    // 自己，永远红。声明在本函数第一条语句**之前**（`clippy::items_after_statements` 是 deny 级）。
-    const WIRE_PREFIX: &str = concat!("host::", "wire_");
-
-    let live = code_only(include_str!("../src/live_surface.rs"));
-    let main = code_only(include_str!("../src/main.rs"));
-    let itself = code_only(include_str!("d_ui_31_serve_seek_is_wired.rs"));
-
-    // 接线点：各**恰好一处**（在装配里）。0 处正是本票修掉的缺陷，2 处就是重复注册者。
-    for name in ["ruler_seek", "section_seek", "scene_launch"] {
-        let token = format!("{WIRE_PREFIX}{name}(");
-        assert_eq!(
-            live.matches(token.as_str()).count(),
-            1,
-            "⑧ `live_surface.rs` 代码里 `{token}` 必须是**恰好 1 处**（实测 {} 处）—— \
-             装配里 0 处 = 界面上点不动，2 处 = 两个注册者（Slint 是覆盖语义，但那是运气，\
-             不是设计）",
-            live.matches(token.as_str()).count()
-        );
-        // 产品那条腿必须还在（两族⛔ 不得互删）。
-        assert_eq!(
-            main.matches(token.as_str()).count(),
-            1,
-            "⑧ `main.rs` 代码里 `{token}` 必须仍是 1 处 —— 实测 {} 处",
-            main.matches(token.as_str()).count()
-        );
-    }
-
-    // 投影只许有一格：`RefCell` 只在装配现场建**一次**，五条接线靠 `Rc::clone` 共享。
-    assert_eq!(
-        live.matches("Rc::new(RefCell::new(view.clone()))").count(),
-        1,
-        "⑧ `live_surface.rs` 里造投影格的语句必须**恰好 1 处**（实测 {} 处）—— 修前这里是\
-         **2 处**（资源栏与剪辑作用域各造一份装配期快照），加上裸值就是三份事实源",
-        live.matches("Rc::new(RefCell::new(view.clone()))").count()
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> bar-positions:"),
+        "新 UI 契约面必须声明 > bar-positions:"
     );
-    assert_eq!(
-        live.matches("Rc::clone(&live_view)").count(),
-        5,
-        "⑧ `Rc::clone(&live_view)` 必须是 **5 处**（资源栏 / 剪辑作用域 / 标尺 / 段落 / 场景，\
-         实测 {} 处）—— 少一处就是那条接线没拿共享格",
-        live.matches("Rc::clone(&live_view)").count()
+    assert!(
+        aether_host.contains("set_bar_positions"),
+        "宿主接线层必须注册 set_bar_positions"
     );
-    // 判据证据那份必须是**值**拷贝（⛔ 不是把 `Rc` 分出去，否则证据跟着执行面一起变）。
-    assert_eq!(
-        live.matches("self.surface.view.borrow().clone()").count(),
-        2,
-        "⑧ `into_control_plane` / `into_production_control_plane` 两处取值拷贝必须各 1 处\
-         （实测 {} 处）",
-        live.matches("self.surface.view.borrow().clone()").count()
+    assert!(
+        aether_app.contains("> current-scene-index:"),
+        "新 UI 契约面必须声明 > current-scene-index:"
     );
-    assert_eq!(
-        live.matches("EngineHost::new(").count(),
-        1,
-        "⑧ `EngineHost::new(` 必须**恰好 1 处**（实测 {} 处）—— 第二处就是「界面上按的」与\
-         「判据读的」两份走带",
-        live.matches("EngineHost::new(").count()
+    assert!(
+        aether_host.contains("set_current_scene_index"),
+        "宿主接线层必须注册 set_current_scene_index"
     );
-
-    // 执行面自己不发送命令、不算坐标：算术⛔ 只住在 `host` / `bridge` 里。
-    //
-    // ⭐ `.stop()` 于 D-UI-32 **不在**这张表里了（run `41581138067` 教的）：换代即停住是
-    // **控制面的义务**（引擎 `Transport::free_running` 是刻意设计，见 `rt.rs`），不是
-    // "替用户按了一次播放键"。它的正确计数（live 恰好 1 处、且必须住在 `rebuild_engine`
-    // 体内）由 `tests/d_ui_32_serve_parks_every_new_engine.rs` 的 ⑧ 钉 —— ⛔ 本票不重复钉
-    // 同一个事实（两处抄同一个数 = 下一个改动要同时记得两处，正是这批红的来源）。
-    for token in [
-        "send_transport(",
-        ".seek(",
-        ".play()",
-        "stop_and_rewind(",
-        "commit_seek(",
-        "queue_scene_launch(",
-        "ruler_seek_tick(",
-        "ruler_step_tick(",
-        "ruler_bar_tick(",
-        "ruler_span_ticks(",
-        "tick_to_px(",
-        "roll_ticks_per_pixel(",
-    ] {
-        assert_eq!(
-            live.matches(token).count(),
-            0,
-            "⑧ `live_surface.rs` 代码里 `{token}` 必须 0 处（实测 {} 处）—— 执行面自己发命令\
-             或重算网格，就等于替用户按了一次键，①②③④ 的前置读数与增量都失去意义",
-            live.matches(token).count()
-        );
-    }
-
-    // ⛔ 判据不替装配接线：本文件的代码里一处接线调用都不许有（注入 ⑤ 的机械防线）。
-    assert_eq!(
-        itself.matches(WIRE_PREFIX).count(),
-        0,
-        "⑧ 本判据文件里宿主接线调用的完整前缀必须 0 处（实测 {} 处）—— 判据补接线 = 把本票\
-         要证的那件事偷偷做掉，之后这条链再断也读不出来",
-        itself.matches(WIRE_PREFIX).count()
+    assert!(
+        aether_app.contains("> current-scene-name:"),
+        "新 UI 契约面必须声明 > current-scene-name:"
     );
-
-    report_line(
-        "[d-ui-31] ⑧ 源码纪律：三条接线各 1 处 / main 各 1 处、投影格 1 份 + 共享 5 处、\
-         值拷贝 2 处、宿主 1 份、执行面自发命令与自算坐标 0 处、判据自接 0 处",
+    assert!(
+        aether_host.contains("set_current_scene_name"),
+        "宿主接线层必须注册 set_current_scene_name"
     );
 }

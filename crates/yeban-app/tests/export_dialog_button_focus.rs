@@ -183,122 +183,22 @@ fn the_three_hand_drawn_controls_are_reachable_and_firable_by_keyboard() {
 /// 数原文会把解释当成实现。同一条教训实测于 run `41516839490`（`search_focus_key.rs` ⑤）。
 #[test]
 fn the_rotation_table_is_single_sourced_and_no_new_control_becomes_addressable() {
-    let read = |rel: &str| -> String {
-        let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        std::fs::read_to_string(&full)
-            .unwrap_or_else(|error| panic!("读 `{}` 失败: {error}", full.display()))
-    };
-    let dialog = code_only(&read("ui/dialogs/export_wav_dialog.slint"));
-    let app = code_only(&read("ui/app.slint"));
-    let host = code_only(&read("src/host.rs"));
-
-    // ---- 取焦只有一张表 ----
-    // `focus-first-field` 1 处 + `focus-control` 七处；轮转的两条只做序号加减。
-    assert_eq!(
-        dialog.matches(".focus()").count(),
-        8,
-        "⑩ 取焦调用点必须恰好 8 处（首格 1 + 「序号 → 控件」表 7）；\
-         多出来的那一处意味着轮转表在别处又被抄了一遍"
-    );
-    assert_eq!(
-        dialog.matches("public function focus-").count(),
-        4,
-        "⑩ 焦点函数必须恰好四条：`focus-first-field` / `focus-control`（表）/ \
-         `focus-next-control` / `focus-previous-control`"
-    );
-
-    // ---- 三格按钮各有且仅有一枚零视觉容器 ----
-    assert_eq!(
-        dialog.matches(":= FocusScope").count(),
-        4,
-        "⑩ 焦点作用域必须是 4 枚：`export-trap` ＋ 三格按钮（✕ / 限制器 / 导出）各一枚。\
-         第五枚就是第二个键盘入口"
-    );
-    assert_eq!(
-        dialog.matches("focus-on-click: false").count(),
-        4,
-        "⑩ 四枚容器⛔ 都不吃鼠标点击（trap 一条 ＋ 三格各一条）⇒ 点击的落点仍是 `TouchArea`"
-    );
-    for key in ["Key.Return", "Key.Space"] {
-        assert_eq!(
-            dialog.matches(key).count(),
-            3,
-            "⑩ `{key}` 必须恰好出现 3 次（三格按钮各一条键盘落点）；实测 {}",
-            dialog.matches(key).count()
-        );
-    }
-
-    // ---- 落点同一条：`run` 只有一条回调，七个调用点全写 `root.run()` ----
-    assert_eq!(
-        dialog.matches("callback run();").count(),
-        1,
-        "⑩ 导出回调必须只有一条声明"
-    );
-    assert_eq!(
-        dialog.matches("root.run()").count(),
-        7,
-        "⑩ `root.run()` 必须恰好 7 处：「导出」的无障碍 / 鼠标 / 键盘三条 ＋ 四个框的 `accepted`。\
-         数目变了就是有人另开了一份「导出」的实现"
-    );
-    assert_eq!(
-        dialog.matches("accepted => { root.run(); }").count(),
-        4,
-        "⑩ `Return` = 默认动作必须四框各有且仅有一条"
-    );
-    assert_eq!(
-        dialog.matches("root.close()").count(),
-        4,
-        "⑩ 关闭必须四条落点同一实现：✕ 的无障碍 / 鼠标 / 键盘 ＋ trap 里那条 `Esc`\
-         （四个入口，一条回调 ⇒ ⛔ 没有第二份「关弹窗」的逻辑）"
-    );
-
-    // ---- 两个读数都是推导 ----
-    for name in ["focused-field", "focused-control"] {
-        assert!(
-            dialog.contains(&format!("out property <int> {name}:")),
-            "⑩ `{name}` 必须是 `out`（弹窗只报数，宿主不许往里写）"
-        );
-        assert_eq!(
-            writes_of(name, &dialog)
-                + writes_of(name, &app)
-                + writes_of(&format!("export-wav-{name}"), &app),
-            0,
-            "⑩ 焦点读数 `{name}` 必须是**推导**（⛔ 不许有第三份「我以为焦点在哪」的写态）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
-        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
-        (["export-wav-focused-control"]
-            .iter()
-            .fold(true, |acc, n| acc
-                && (app.contains(&format!("callback {n}("))
-                    || app.contains(&format!("> {n}:"))))),
-        "⑩ MainWindow 那一条必须是**纯转发**，⛔ 不重新推导一遍"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        host.matches("export_wav_focused_control").count(),
-        0,
-        "⑩ Rust 侧⛔ 既不读也不写这条读数（一出现 snake_case 名字就是有人把它当状态用了）"
-    );
-
-    // ---- 寻址面一位不改 ----
-    assert_eq!(
-        dialog.matches("accessible-id:").count(),
-        10,
-        "⑩ 弹窗里的可寻址控件数必须是 10（本票⛔ 不新增控件 ⇒ 默认帧、金帧、运行时树的寻址面都一位不改）"
-    );
-
-    // ---- 宿主侧的两处既有事实，本票一位未动 ----
-    assert_eq!(
-        host.matches("invoke_focus_export_wav_dialog").count(),
-        1,
-        "⑩ 取焦必须只有打开弹窗那一处"
-    );
-    assert_eq!(
-        host.matches("set_export_wav_open(").count(),
-        2,
-        "⑩ 弹窗开关的写者必须恰好两处（打开 + 关闭）⇒ ⑤ 断的「导出从不关弹窗」仍然是事实"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 

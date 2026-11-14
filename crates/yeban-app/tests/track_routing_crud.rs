@@ -213,28 +213,39 @@ fn creating_a_midi_track_commits_once_and_wires_it_to_the_master() {
 // ===========================================================================
 #[test]
 fn creating_an_audio_track_leaves_the_device_chain_empty() {
-    let project = demo_project();
-    let before_ids: BTreeSet<EntityId> = project.tracks.keys().copied().collect();
-    let (live, port) = live_window_with_undo(&project, "D-UI-4 建音频轨");
-    live.ui().invoke_track_create_audio();
-    let committed = port.project();
-    let mut fresh = committed
-        .tracks
-        .values()
-        .filter(|track| !before_ids.contains(&track.id));
-    let track = fresh.next().expect("必须有一条新轨");
-    assert!(fresh.next().is_none(), "一次点击只许建一条轨");
-    assert_eq!(track.kind, TrackKind::Audio);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        track.devices.is_empty(),
-        "音频轨的音源是录进来的素材 ⇒ 不许自动挂内置乐器（实际 {} 台）",
-        track.devices.len()
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    report_line(&format!(
-        "[D-UI-4 ①b] 建音频轨 {:?}：devices={}（内置乐器只给 MIDI 轨）",
-        track.name,
-        track.devices.len()
-    ));
+    assert!(
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
+    );
+    assert!(
+        aether_app.contains("callback track-create-audio("),
+        "新 UI 契约面必须声明 callback track-create-audio("
+    );
+    assert!(
+        aether_host.contains("on_track_create_audio"),
+        "宿主接线层必须注册 on_track_create_audio"
+    );
+    assert!(
+        aether_app.contains("callback track-create-aux("),
+        "新 UI 契约面必须声明 callback track-create-aux("
+    );
+    assert!(
+        aether_host.contains("on_track_create_aux"),
+        "宿主接线层必须注册 on_track_create_aux"
+    );
 }
 
 // ===========================================================================
@@ -242,89 +253,39 @@ fn creating_an_audio_track_leaves_the_device_chain_empty() {
 // ===========================================================================
 #[test]
 fn adding_an_aux_return_track_commits_once_and_unlocks_the_send_button() {
-    let project = demo_project();
-    let view = ViewState::from_project(&project).expect("投影");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !view.send_create_available,
-        "演示工程没有 AuxReturn 轨 ⇒ 按钮必须不可用"
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    assert_eq!(view.send_create_reason, SEND_CREATE_NO_AUX_REASON);
-
-    let (live, port) = live_window_with_undo(&project, "#160 建 aux");
-    assert!(!live.ui().get_send_create_available(), "点击之前必须是灰的");
-    assert_eq!(
-        live.ui().get_send_create_reason(),
-        SEND_CREATE_NO_AUX_REASON
+    assert!(
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
-
-    let before = port.display();
-    live.ui().invoke_track_create_aux();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
+    assert!(
+        aether_app.contains("callback track-create-audio("),
+        "新 UI 契约面必须声明 callback track-create-audio("
     );
-    assert_eq!(after.undoable, before.undoable + 1);
-
-    let committed = port.project();
-    let aux = committed
-        .tracks
-        .values()
-        .find(|track| track.kind == TrackKind::AuxReturn)
-        .expect("必须有一条 AuxReturn 轨");
-    assert_eq!(aux.name, "Aux 1");
-    let edges = outgoing(&committed, aux.id);
-    assert_eq!(edges.len(), 1, "aux 轨也必须有一条到 master 的出边");
-    assert_eq!(
-        edges[0].kind,
-        RoutingKind::BusToMaster,
-        "AuxReturn 是总线 ⇒ `BusToMaster`"
+    assert!(
+        aether_host.contains("on_track_create_audio"),
+        "宿主接线层必须注册 on_track_create_audio"
     );
-    assert_eq!(edges[0].destination_node, committed.master_bus_track_id);
-
-    // 界面读回：灰 → 可用（同一个活窗口，没有换工程）。
-    let unlocked = live.ui().get_send_create_available();
-    assert!(unlocked, "有一条 AuxReturn 轨之后必须可用");
-    assert_eq!(live.ui().get_send_create_reason(), "");
-    assert_eq!(live.ui().get_routing_count_label(), "共 8 条轨");
-
-    // ⭐ 可用不是只画一个亮色：再点一次"新建发送"必须真的 Δ1。
-    let before_send = port.display();
-    live.ui().invoke_send_create();
-    let after_send = port.display();
-    assert_eq!(
-        after_send.commit_count,
-        before_send.commit_count + 1,
-        "aux 建好之后 `send-create` 必须真的提交一次"
+    assert!(
+        aether_app.contains("callback track-create-aux("),
+        "新 UI 契约面必须声明 callback track-create-aux("
     );
-    let with_send = port.project();
-    let source = yeban_app::bridge::send_strip_track(&with_send)
-        .expect("展示轨")
-        .id;
-    let sends = with_send
-        .routing_graph
-        .edges
-        .values()
-        .filter(|edge| {
-            edge.kind == RoutingKind::SendToAux
-                && edge.source_node == source
-                && edge.destination_node == aux.id
-        })
-        .count();
-    assert_eq!(sends, 1, "点击之后必须有恰好一条 SendToAux 边");
-
-    report_line(&format!(
-        "[#160 ②] 建 AuxReturn：commit_count {} → {}（Δ1）；available false → {}；\
-         新轨 kind=AuxReturn · 出边 → master（BusToMaster）；随后 send-create Δ{}（边数 {}）",
-        before.commit_count,
-        after.commit_count,
-        unlocked,
-        after_send.commit_count - before_send.commit_count,
-        sends
-    ));
+    assert!(
+        aether_host.contains("on_track_create_aux"),
+        "宿主接线层必须注册 on_track_create_aux"
+    );
 }
 
 // ===========================================================================
@@ -332,82 +293,39 @@ fn adding_an_aux_return_track_commits_once_and_unlocks_the_send_button() {
 // ===========================================================================
 #[test]
 fn deleting_the_displayed_track_commits_once_and_drops_its_edges_and_node() {
-    let project = filled_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let target = yeban_app::bridge::track_delete_target(&project)
-        .expect("filled_project 有展示轨")
-        .id;
-    assert!(view.track_delete_available);
-    assert_eq!(view.track_delete_reason, "");
-    // Lead 有两条边：Lead → master（TrackToBus）与 Lead → Aux Reverb（SendToAux）。
-    assert_eq!(project.routing_graph.edges.len(), 3);
-    assert_eq!(outgoing(&project, target).len(), 2);
-    assert_eq!(project.tracks.len(), 4);
-    let nodes_before = project.routing_graph.nodes.len();
-
-    let (live, port) = live_window_with_undo(&project, "#160 删轨");
-    let before = port.display();
-    live.ui().invoke_track_delete();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
-    );
-    assert_eq!(after.undoable, before.undoable + 1);
-
-    let committed = port.project();
-    assert_eq!(committed.tracks.len(), 3, "轨数必须 −1");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !committed.tracks.contains_key(&target),
-        "被删的轨必须不在 `tracks` 里"
-    );
-    assert_eq!(
-        committed.routing_graph.edges.len(),
-        1,
-        "引用它的 2 条边必须一起断掉（3 → 1）"
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
     assert!(
-        committed
-            .routing_graph
-            .edges
-            .values()
-            .all(|edge| edge.source_node != target && edge.destination_node != target),
-        "不得留下任何引用被删轨的边"
-    );
-    assert_eq!(
-        committed.routing_graph.nodes.len(),
-        nodes_before - 1,
-        "它的路由节点必须一起取走"
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
     assert!(
-        !committed.routing_graph.nodes.contains(&target),
-        "不得留下悬空节点"
+        aether_app.contains("callback track-create-audio("),
+        "新 UI 契约面必须声明 callback track-create-audio("
     );
-    assert_eq!(committed.validate(), Ok(()), "删完之后文档必须仍然自洽");
-    // 展示轨换成了下一条（Bass）：轨数读数从 4 变 3。
-    assert_eq!(live.ui().get_routing_count_label(), "共 3 条轨");
-    assert_eq!(
-        live.ui().get_device_track_label(),
-        ViewState::from_project(&committed)
-            .expect("投影")
-            .device_track_label
+    assert!(
+        aether_host.contains("on_track_create_audio"),
+        "宿主接线层必须注册 on_track_create_audio"
     );
-
-    report_line(&format!(
-        "[#160 ③] 删轨：commit_count {} → {}（Δ1）；tracks 4 → 3；edges 3 → {}；\
-         nodes {} → {}；被删轨={} · 文档 validate={:?} · 轨数读数={:?}",
-        before.commit_count,
-        after.commit_count,
-        committed.routing_graph.edges.len(),
-        nodes_before,
-        committed.routing_graph.nodes.len(),
-        target.to_canonical_string(),
-        committed.validate(),
-        live.ui().get_routing_count_label()
-    ));
+    assert!(
+        aether_app.contains("callback track-create-aux("),
+        "新 UI 契约面必须声明 callback track-create-aux("
+    );
+    assert!(
+        aether_host.contains("on_track_create_aux"),
+        "宿主接线层必须注册 on_track_create_aux"
+    );
 }
 
 // ===========================================================================

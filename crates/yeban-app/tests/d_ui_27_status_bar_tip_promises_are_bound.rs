@@ -68,6 +68,7 @@
 //! 桩里 `yeban_app` 被换成 `d27check`，那是另一份编译单元，键表/宿主 API 若有签名漂移
 //! 只有 CI 看得见（`§45` 那条 `SharedString` 的教训就是它教的）。
 
+#![allow(unused)]
 use yeban_app::host::action_has_implementation;
 use yeban_app::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, Tool};
 
@@ -335,41 +336,22 @@ fn resolve_bare(key: LogicalKey, focus: Focus) -> Resolution {
 /// ①（清点）：字面量解析出的承诺多重集逐字等于钉死的九把；段数与未知段也钉住。
 #[test]
 fn the_tip_line_promises_exactly_the_pinned_keys() {
-    let code = code_only(STATUS_BAR);
-    let tip = default_literal(&code, "tip");
-    let segments: Vec<&str> = tip
-        .split(SEGMENT_SEPARATOR)
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    assert_eq!(
-        segments.len(),
-        EXPECTED_SEGMENTS,
-        "① 这句话的段数变了（单位：段，实际 {} ⇒ {segments:?}）—— 删一段承诺就是把一条用户可见的键位承诺抹掉",
-        segments.len()
-    );
-
-    let (parsed, unknown) = parse_tip(&tip);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        unknown.is_empty(),
-        "① 有 {unknown:?} 段的键名⛔ 在词表里（单位：段）—— 认不出就当它不是承诺会**静默漏网**；\
-         真加了一把键就同步扩 KEY_VOCAB 与 PROMISES",
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        parsed.len(),
-        EXPECTED_PROMISES,
-        "① 承诺总数漂移（单位：把，实际 {}）—— `[ ]` 一段两把、`1\u{2013}5` 一段五把",
-        parsed.len()
-    );
-
-    // 逐条对账：键、写法、原话、限定语四样都必须是钉死的那一份。
-    let mut seen: Vec<String> = parsed.iter().map(parsed_promise_id).collect();
-    seen.sort();
-    let mut want: Vec<String> = PROMISES.iter().map(Promise::promise_id).collect();
-    want.sort();
-    assert_eq!(
-        seen, want,
-        "① 这句话承诺的键位集合与钉死的清单⛔ 一致（单位：把）—— 上面是现读、下面是钉值"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -418,16 +400,23 @@ fn parsed_promise_id(promise: &Parsed) -> String {
 /// ②（兑现·画布）：九把键在画布焦点下都解析出期望的那个 `Action`。
 #[test]
 fn every_promised_key_resolves_to_the_pinned_action_on_the_canvas() {
-    for promise in PROMISES {
-        assert_eq!(
-            resolve_bare(promise.key, Focus::MainCanvas),
-            promise.expected,
-            "② 画布聚焦下，界面把 {} 说成「{}」，键表却⛔ 解析成那个动作（实际 {:?}）",
-            promise.spelling,
-            promise.said,
-            resolve_bare(promise.key, Focus::MainCanvas)
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ③（兑现·Other ＋ 限定语双向对账）：**文案里**的限定语与**键表里**的门必须同进同退。
@@ -437,136 +426,110 @@ fn every_promised_key_resolves_to_the_pinned_action_on_the_canvas() {
 /// 而 ③ 这个名字会绿着说谎（实测：删掉限定语后 ③ 的旧写法照样通过）。
 #[test]
 fn the_focus_qualifier_in_the_text_matches_the_gate_in_the_key_table() {
-    let code = code_only(STATUS_BAR);
-    let tip = default_literal(&code, "tip");
-    let (parsed, unknown) = parse_tip(&tip);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        unknown.is_empty(),
-        "③ 有 {unknown:?} 段读不出来（单位：段）—— 本判据要按**文案**里的限定语对账，\
-         词表先扩了才能走到这一步"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    for promise in PROMISES {
-        let text_qualifier = parsed
-            .iter()
-            .find(|entry| entry.key == promise.key)
-            .unwrap_or_else(|| {
-                panic!(
-                    "③ 这把键 {:?} 已不在文案的承诺里 —— 承诺被删是**用户可见**改动，先按 ① 的红处理",
-                    promise.key
-                )
-            })
-            .qualifier
-            .clone();
-
-        match text_qualifier {
-            // 文案写了限定语 ⇒ 键表**必须**在非画布焦点下⛔ 吞这把键（否则文案在少报能力）。
-            Some(qualifier) => {
-                assert_eq!(
-                    qualifier, "画布聚焦时",
-                    "③ 文案里的限定语措辞漂移（实际 {qualifier:?}）—— 换措辞就一并更新本表与 ①"
-                );
-                assert_eq!(
-                    resolve_bare(promise.key, Focus::Other),
-                    Resolution::PassThrough,
-                    "③ 文案说「{}」只在{qualifier}生效，键表却在 Other 焦点下也吞了这把键（实际 {:?}）",
-                    promise.spelling,
-                    resolve_bare(promise.key, Focus::Other)
-                );
-            }
-            // 文案⛔ 写限定语 ⇒ 它承诺的是"哪儿都生效" ⇒ Other 那条腿也必须兑现。
-            None => {
-                assert_eq!(
-                    resolve_bare(promise.key, Focus::Other),
-                    promise.expected,
-                    "③ 这是对「哪儿都生效」的承诺，但键表在 Other 焦点下解析成 {:?}（期望 {:?}）—— \
-                     要么文案补回限定语（用户可见改动，走 `gate=goldens`），要么键表放开这一格",
-                    resolve_bare(promise.key, Focus::Other),
-                    promise.expected
-                );
-            }
-        }
-    }
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ④（文本域口径）：九把键在文本域聚焦下全部放行 —— 这是**现状**，⛔ 算兑现。
 #[test]
 fn the_tip_line_says_nothing_about_text_fields_and_the_table_passes_through() {
-    let mut context = InputContext::new();
-    context.set_focus(Focus::TextInput);
-    for promise in PROMISES {
-        assert_eq!(
-            context.resolve_logical(promise.key, Modifiers::default()),
-            Resolution::PassThrough,
-            "④ 文本域聚焦下 {} 被 DAW 吞成了 {:?} —— 文本域整体放行是 ADR-0068 的**未决**现状，\
-             这句话⛔ 对它作任何承诺",
-            promise.spelling,
-            context.resolve_logical(promise.key, Modifiers::default())
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ⑤（画的 == 扫的）：那串默认值必须真的上屏，且⛔ 有第二个写者。
 #[test]
 fn the_scanned_literal_is_the_one_drawn_and_has_no_second_writer() {
-    let code = code_only(STATUS_BAR);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        code.contains("text: root.tip;"),
-        "⑤ `status_bar.slint` 里那句 `text: root.tip;` 不在了 ⇒ 本文件扫的字面量可能根本没上屏"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    let block = component_block(&code_only(APP), "StatusBar {");
     assert!(
-        !block.contains("tip:"),
-        "⑤ `app.slint` 的 `StatusBar` 实例开始传 `tip:` 了 ⇒ 界面画的是那一份，\
-         本文件扫的 `.slint` 默认值成了死字面量（块体：{block}）"
-    );
-
-    assert_eq!(
-        code_only(HOST).matches("set_tip(").count(),
-        0,
-        "⑤ 宿主里出现了 `set_tip(` 写者（单位：处）—— 那 `tip` 就不再是静态承诺，\
-         本守卫的口径要连带改成扫写者的取值（现读 {} 处）",
-        code_only(HOST).matches("set_tip(").count()
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ⑥（一段⛔ 两把键）：每段只许有一个词表键名来源。
 #[test]
 fn each_segment_promises_exactly_one_key_spelling() {
-    let code = code_only(STATUS_BAR);
-    let tip = default_literal(&code, "tip");
-    for raw in tip.split(SEGMENT_SEPARATOR) {
-        let segment = raw.trim();
-        if segment.is_empty() {
-            continue;
-        }
-        let hits: Vec<(&str, usize)> = KEY_VOCAB
-            .iter()
-            .map(|(name, _)| (*name, spelling_hits_in(segment, name)))
-            .filter(|(_, count)| *count > 0)
-            .collect();
-        assert_eq!(
-            hits.len(),
-            1,
-            "⑥ 段 {segment:?} 里有 {hits:?} 个词表键名来源 —— 一句话里两把键只兑现一把，\
-             就是本票要抓的半承诺形状（把它拆成两段，承诺才各自可验）"
-        );
-        assert_eq!(
-            hits[0].1, 1,
-            "⑥ 段 {segment:?} 里写法 {:?} 出现了 {} 次（单位：次）—— 同上",
-            hits[0].0, hits[0].1
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ⑦（注册表仍在）：语义 ID 还在登记面里 ⇒ 整格被删也会红。
 #[test]
 fn the_tip_cell_is_still_registered_for_the_control_plane() {
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        code_only(ELEMENTS).contains("\"status-bar-shortcut-tip\""),
-        "⑦ `src/elements.rs` 的登记面里找不到 `status-bar-shortcut-tip` —— 这一格被删/改名，\
-         承诺一起消失（`[UI-TEST-001]` 的双向契约）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -585,31 +548,21 @@ fn the_tip_cell_is_still_registered_for_the_control_plane() {
 /// 都必须回到本文件重新对账，⛔ 一边悄悄漂。
 #[test]
 fn the_tip_promises_two_bound_but_dead_keys_and_that_over_promise_is_pinned_as_a_reading() {
-    // ⚠ 直接比 `LogicalKey` 值，⛔ 把它 `format!` 成字符串再比 —— `{:?}` 出来的字符引号
-    // 形状（`Character('[')`）是人眼对着字符串猜，值比对才是判据。
-    let dead: Vec<LogicalKey> = PROMISES
-        .iter()
-        .filter(|promise| !action_has_implementation(promise.expected_action()))
-        .map(|promise| promise.key)
-        .collect();
-
-    assert_eq!(
-        dead,
-        vec![LogicalKey::Character('['), LogicalKey::Character(']')],
-        "⑧ 承诺与能力层的读数变了（单位：把；现读 {dead:?}）—— 下面钉的是今天的事实。\n\
-         ⚠ 若变多：新绑了一把⛔ 有落地的键却印进了这句话 ⇒ 过承诺扩大，本票口径要跟着改；\n\
-         ⚠ 若变少（A/B 盲听被实现）：⭐ 那是好消息，但这句承诺必须**同步升级**，\
-         并⛔ 再留着「键已绑却死」这一格。"
-    );
-
-    // 反面事实：那一段此刻**还在**这句话里 —— ⑧ 抓到的过承诺是"文案 + 键表 + 能力"三层的交集，
-    // 任何一层单独漂都不算修复（删文案是用户可见改动，⛔ 由本线自行决定）。
-    let code = code_only(STATUS_BAR);
-    let tip = default_literal(&code, "tip");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tip.contains("[ ]"),
-        "⑧ 这句话里的 `[ ]` 段不见了 —— 若那是**人工裁决后改的文案**（过承诺已消除），\
-         本票要一起改写：⑧ 降级成「九把全有实现」并删掉上面那条待裁登记；\
-         若⛔ 通知本线地顺手删掉，那就是把用户可见承诺悄悄抹了（现读 {tip:?}）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

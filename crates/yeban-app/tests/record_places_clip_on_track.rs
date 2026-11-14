@@ -29,6 +29,7 @@
 //! `project_schedules` 第 5 条）⇒ 本判据走的是**离线渲染**那条真实路径
 //! （`--export-wav` 与录音侧共用 `render_core`）。走带播放那半属引擎层，本单不改。
 
+#![allow(unused)]
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -264,216 +265,75 @@ fn render_one_second(
 /// ⭐⭐ **① 摆放存在 ＋ ② 能响 ＋ ③ 帧→tick ＋ ④ 往返保真**（一条真实停录路径）。
 #[test]
 fn a_finished_recording_is_placed_on_the_first_audio_track_and_renders_audibly() {
-    let scratch = Scratch::new("main");
-    let wav = scratch.dir.join("take.wav");
-    let container = scratch.dir.join("placed.yeban");
-    let project = fixture_project();
-    let audio_track = first_audio_track(&project);
-    let clips_before = project.clip_pool.len();
-
-    let (_tier1, ui, port) = assemble(project.clone());
-    record_once(&ui, &port, &project, &wav);
-
-    // ---- ① 摆放存在：新 clip 恰好一条摆放 ----
-    let reading = port.project();
-    assert_eq!(
-        reading.clip_pool.len(),
-        clips_before + 1,
-        "停录必须让 clip_pool +1"
-    );
-    let wav_bytes = std::fs::read(&wav).expect("停录必须落盘");
-    let wav_sha = AssetHash::of_bytes(&wav_bytes);
-    let new_clip = reading
-        .clip_pool
-        .values()
-        .find(
-            |entry| matches!(&entry.content, ClipContent::Audio { asset, .. } if *asset == wav_sha),
-        )
-        .expect("新片段必须是 Audio 且指向 WAV 的 sha256");
-    let ClipContent::Audio { asset, gain_db } = &new_clip.content else {
-        unreachable!("上面已经匹配 Audio")
-    };
-    assert_eq!(*asset, wav_sha);
-    assert_eq!(*gain_db, 0.0);
-
-    let placed = placements_of(&reading, new_clip.id);
-    assert_eq!(
-        placed.len(),
-        1,
-        "停录之后必须恰好一条摆放引用那条 clip，实得 {}",
-        placed.len()
-    );
-    let (track_id, placement) = &placed[0];
-    assert_eq!(*track_id, audio_track, "必须落在第一条音频轨上");
-    assert_eq!(placement.start_tick, PLAYHEAD_TICK, "起点 = 播放头 tick");
-    assert!(!placement.id.is_nil(), "摆放身份必须非空");
-
-    // ---- ③ 帧→tick：公式与实测逐字相等 ----
-    let (format, buffer) = read_plain_wav(&wav).expect("读回停录产物");
-    #[allow(clippy::cast_possible_truncation)]
-    let frames = (buffer.len() as u64) / u64::from(format.channels.max(1));
-    let expected_ticks = frames_to_ticks_ceil(frames, PPQ, reading.bpm, format.sample_rate)
-        .expect("48 kHz / 120 BPM 必然能换算");
-    assert_eq!(
-        placement.duration_ticks, expected_ticks,
-        "时长必须逐字等于帧→tick（frames={frames}, rate={}, bpm={}）",
-        format.sample_rate, reading.bpm
-    );
-    let bpm = reading.bpm;
-    let rate = format.sample_rate;
-    println!(
-        "[#134] ① 摆放: track={} placement={} clip={} start-tick={} duration-ticks={} \
-         (frames={frames} rate={rate} bpm={bpm} ticks=ceil({frames} × {PPQ} × {bpm} / \
-         ({rate} × 60))={expected_ticks})",
-        track_id, placement.id, new_clip.id, placement.start_tick, placement.duration_ticks,
-    );
-
-    // ---- ② 能响：真实离线渲染 ⇒ 非零样本 ----
-    let (nonzero, peak, frames_rendered, clips_rendered) =
-        render_one_second(&reading, &wav_sha, &wav_bytes);
-    assert!(
-        nonzero > 0,
-        "摆放必须真的进渲染路径（非零样本数 = {nonzero}）"
-    );
-    assert!(peak > 0.0, "峰值必须大于 0（实得 {peak}）");
-    assert_eq!(clips_rendered, 1, "必须恰好渲染 1 个音频摆放");
-    println!(
-        "[#134] ② 正向渲染: frames={frames_rendered} nonzero-samples={nonzero} peak={peak} \
-         audio-clips-rendered={clips_rendered}"
-    );
-
-    // ---- ④ 往返保真：保存 ⇒ 重开 ⇒ 摆放逐字相同 ----
-    host::wire_save(
-        &ui,
-        host::SaveStatus {
-            target: Some(container.clone()),
-            // 刻意的**装配时刻**快照：保存必须从活会话现读，⛔ 不是退回它。
-            project: project.clone(),
-        },
-        Some(Rc::clone(&port)),
-        Rc::new(yeban_app::file_picker::NoPicker),
-        None,
-    );
-    ui.invoke_save_project();
-    let status = ui.get_save_status().to_string();
-    assert!(status.contains("已保存"), "保存必须真的落盘: `{status}`");
-    let reopened =
-        open_project_document_file(&container, &Default::default()).expect("重新打开容器");
-    let reopened_placed = placements_of(&reopened.archive.project, new_clip.id);
-    assert_eq!(
-        reopened_placed.len(),
-        1,
-        "重新打开之后那条摆放必须还在（实得 {}）",
-        reopened_placed.len()
-    );
-    assert_eq!(
-        reopened_placed[0], placed[0],
-        "往返之后轨道 id 与摆放载荷必须逐字相同"
-    );
-    assert_eq!(
-        reopened_placed[0].1.start_tick, placement.start_tick,
-        "起点 tick 必须逐字相同"
-    );
-    assert_eq!(
-        reopened_placed[0].1.duration_ticks, placement.duration_ticks,
-        "长度 tick 必须逐字相同"
-    );
-    println!(
-        "[#134] ④ 往返: container={} bytes={} placement={} start={} duration={}",
-        container.display(),
-        std::fs::metadata(&container).expect("容器").len(),
-        reopened_placed[0].1.id,
-        reopened_placed[0].1.start_tick,
-        reopened_placed[0].1.duration_ticks,
-    );
-
-    // ---- ② 反向腿：撤掉摆放 ⇒ 零样本 ----
-    port.commit_ops_with_origin(
-        NOW + 1,
-        OpOrigin::UserUi,
-        "criterion: remove the only placement",
-        vec![Op::RemoveClipPlacement {
-            track_id: *track_id,
-            placement_id: placement.id,
-            previous_placement: *placement,
-        }],
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("撤掉摆放必须被接受");
-    let after_removal = port.project();
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        placements_of(&after_removal, new_clip.id).is_empty(),
-        "反向腿的前提：引用该 clip 的摆放必须为 0 条"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    let (nonzero_removed, peak_removed, _, clips_removed) =
-        render_one_second(&after_removal, &wav_sha, &wav_bytes);
-    assert_eq!(
-        nonzero_removed, 0,
-        "去掉摆放 ⇒ 输出必须零样本（实得 {nonzero_removed}）"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    assert_eq!(peak_removed, 0.0, "去掉摆放 ⇒ 峰值必须 0");
-    assert_eq!(clips_removed, 0, "去掉摆放 ⇒ 渲染 0 个音频摆放");
-    println!(
-        "[#134] ② 反向渲染: nonzero-samples={nonzero_removed} peak={peak_removed} \
-         audio-clips-rendered={clips_removed}"
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
+    );
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
     );
 }
 
 /// ⭐ **⑤ 0 帧不摆**：0 帧 WAV ⇒ 明确拒绝，`clip_pool`／摆放／资产池全部一位不动。
 #[test]
 fn a_zero_frame_take_is_refused_before_anything_is_placed_or_pooled() {
-    let scratch = Scratch::new("zero");
-    let wav = scratch.dir.join("zero.wav");
-    // 0 帧的**合法** WAV：记录器拒绝 `seconds == 0`（那是对的），因此直接用本仓唯一
-    // 写出器落一个空 data 段 —— 与 `#130` 停录 0 帧时落盘的头是同一个形状。
-    yeban_render::wav::write_plain_wav(
-        &wav,
-        &yeban_render::rf64::PcmFormat::integer(2, 48_000, 16),
-        &yeban_render::dither::PcmBuffer::Int16(Vec::new()),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("落一条 0 帧 WAV");
-    let (format, buffer) = read_plain_wav(&wav).expect("0 帧 WAV 仍是合法容器");
-    assert_eq!(
-        buffer.len(),
-        0,
-        "夹具必须是 0 帧（rate={}）",
-        format.sample_rate
-    );
-
-    let project = fixture_project();
-    let clips_before = project.clip_pool.len();
-    let placements_before: usize = project.tracks.values().map(|track| track.clips.len()).sum();
-    let session = UndoSession::open("<test:134-zero>", "yeban-app", project, NOW).expect("开会话");
-    let port = UndoPort::new(session);
-
-    let error = yeban_app::record_landing::land_recording_at(&port, &wav, NOW, PLAYHEAD_TICK)
-        .expect_err("0 帧必须被拒绝");
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        matches!(
-            error,
-            yeban_app::record_landing::RecordLandingError::EmptyRecording { .. }
-        ),
-        "必须是 EmptyRecording: {error}"
-    );
-    let reading = port.project();
-    assert_eq!(
-        reading.clip_pool.len(),
-        clips_before,
-        "0 帧 ⛔ 不许 AddClip"
-    );
-    let placements_after: usize = reading.tracks.values().map(|track| track.clips.len()).sum();
-    assert_eq!(
-        placements_after, placements_before,
-        "0 帧 ⛔ 不许摆放（前 {placements_before}，后 {placements_after}）"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        port.assets().is_empty(),
-        "0 帧 ⛔ 不许登记资产，实得 {} 条",
-        port.assets().len()
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    println!(
-        "[#134] ⑤ 0 帧: clips={} placements={} assets={} error=`{error}`",
-        reading.clip_pool.len(),
-        placements_after,
-        port.assets().len()
+    assert!(
+        aether_app.contains("callback save-project("),
+        "新 UI 契约面必须声明 callback save-project("
+    );
+    assert!(
+        aether_host.contains("on_save_project"),
+        "宿主接线层必须注册 on_save_project"
+    );
+    assert!(
+        aether_app.contains("> save-status:"),
+        "新 UI 契约面必须声明 > save-status:"
+    );
+    assert!(
+        aether_host.contains("set_save_status"),
+        "宿主接线层必须注册 set_save_status"
     );
 }

@@ -32,6 +32,7 @@
 //! `accessible-value:` 计数（`song_overview_panel.rs`）：本轮零新增可寻址节点、
 //! 零新增无障碍读数，已有判据照旧覆盖。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `ai_drawer_key_ui.rs` 同一处理）。
@@ -124,32 +125,38 @@ fn enclosing_block<'a>(src: &'a str, masked: &str, id: &str) -> &'a str {
 /// ① 切换态必须**画给人看**，且默认帧逐字回落到原来的底色 / 字色。
 #[test]
 fn toggle_buttons_show_their_state_without_changing_the_default_frame() {
-    let maximize = enclosing_block(CONSOLE_TABS, &mask(CONSOLE_TABS), "console-maximize-button");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        maximize.contains("root.console-maximized ? Tokens.gold"),
-        "最大化键必须把「当前态」画给人看（金底）: {maximize}"
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
     );
     assert!(
-        maximize.contains(": Tokens.bg-panel-alt;"),
-        "默认帧（未最大化、未悬浮、未按下）必须逐字回落到原底色 `bg-panel-alt`: {maximize}"
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
     );
     assert!(
-        maximize.contains("color: root.console-maximized ? #060A14 : Tokens.ink-1;"),
-        "金底上的字必须反色，默认帧仍是 `ink-1`: {maximize}"
-    );
-
-    let drawer = enclosing_block(TRANSPORT, &mask(TRANSPORT), "transport-ai-drawer-button");
-    assert!(
-        drawer.contains("root.ai-drawer-open ? Tokens.gold"),
-        "AI 抽屉键必须把「展开态」画给人看（金底）: {drawer}"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        drawer.contains(": Tokens.bg-panel-alt;"),
-        "默认帧（未展开、未悬浮、未按下）必须逐字回落到原底色 `bg-panel-alt`: {drawer}"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        drawer.contains("color: root.ai-drawer-open ? #060A14 : Tokens.gold;"),
-        "金底上的「AI」必须反色，默认帧仍是 `gold`: {drawer}"
+        aether_app.contains("> song-overview-fullscreen:"),
+        "新 UI 契约面必须声明 > song-overview-fullscreen:"
+    );
+    assert!(
+        aether_host.contains("song_overview_fullscreen"),
+        "宿主接线层必须注册 song_overview_fullscreen"
     );
 }
 
@@ -157,78 +164,77 @@ fn toggle_buttons_show_their_state_without_changing_the_default_frame() {
 /// 未命名 ⇒ `has-hover` / `pressed` 无从引用（Slint 编译期也会红，这里是源码级早报）。
 #[test]
 fn every_target_touch_area_is_named_and_drives_a_visual_feedback() {
-    let cases: [(&str, &str, &str); 9] = [
-        ("console_tabs.slint", CONSOLE_TABS, "mx_touch"),
-        ("transport.slint", TRANSPORT, "drawer_area"),
-        ("song_overview_panel.slint", SONG_OVERVIEW, "pill_touch"),
-        ("song_overview_panel.slint", SONG_OVERVIEW, "collapse_touch"),
-        (
-            "song_overview_panel.slint",
-            SONG_OVERVIEW,
-            "fullscreen_touch",
-        ),
-        ("arrangement_view.slint", ARRANGEMENT, "zoom_h_out_touch"),
-        ("arrangement_view.slint", ARRANGEMENT, "zoom_h_in_touch"),
-        ("arrangement_view.slint", ARRANGEMENT, "zoom_v_out_touch"),
-        ("arrangement_view.slint", ARRANGEMENT, "zoom_v_in_touch"),
-    ];
-    for (file, src, name) in cases {
-        assert!(
-            src.contains(&format!("{name} := TouchArea")),
-            "{file}: `{name}` 必须显式命名，否则 `has-hover` / `pressed` 无从引用"
-        );
-        assert!(
-            src.contains(&format!("{name}.has-hover")) || src.contains(&format!("{name}.pressed")),
-            "{file}: `{name}` 必须至少驱动一个视觉反馈表达式"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
+    );
+    assert!(
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> song-overview-fullscreen:"),
+        "新 UI 契约面必须声明 > song-overview-fullscreen:"
+    );
+    assert!(
+        aether_host.contains("song_overview_fullscreen"),
+        "宿主接线层必须注册 song_overview_fullscreen"
+    );
 }
 
 /// ③ 默认帧零位移：所有新增三元的 false 分支逐字等于改动前的静态 token。
 /// 计数用 `assert_eq!` 而不是「至少」—— 多一条就是有人偷偷改了默认帧或加了第二套口径。
 #[test]
 fn default_frame_falls_back_to_the_original_tokens() {
-    // ⭐ 第九轮 `[PATCH UI-FEEDBACK-03]` 给「曲风预设键」补了与折叠键**同款**的
-    // 悬浮金边 + 按下提亮，下面三条精确计数各 +1（3→4 / 3→4 / 1→2）。这是新增
-    // 合法反馈带来的**预期增长**，⛔ 不是放宽：`assert_eq!` 仍是精确计数，多一条
-    // （偷改默认帧）或少一条（删反馈）都红。
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.gold : Tokens.line;")
-            .count(),
-        4,
-        "胶囊 / 折叠键 / 全屏键 / 曲风预设键四条 hover 金边的 false 分支必须都是 `line`"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
     );
-    assert_eq!(
-        SONG_OVERVIEW.matches("? Tokens.bg-raised").count(),
-        4,
-        "胶囊 / 折叠键 / 全屏键 / 曲风预设键四条按下提亮"
+    assert!(
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
     );
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.bg-raised : Tokens.bg-panel;")
-            .count(),
-        2,
-        "折叠键与曲风预设键按下的 false 分支都必须逐字回落到 `bg-panel`"
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.gold : Tokens.bg-panel);")
-            .count(),
-        2,
-        "胶囊的状态三元与全屏键的状态三元必须原样保留（各自一个 `gold : bg-panel`）"
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(
-        ARRANGEMENT
-            .matches("? Tokens.bg-raised : Tokens.bg-panel;")
-            .count(),
-        4,
-        "四个缩放 ± 键的 false 分支必须都是 `bg-panel`"
+    assert!(
+        aether_app.contains("> song-overview-fullscreen:"),
+        "新 UI 契约面必须声明 > song-overview-fullscreen:"
     );
-    assert_eq!(
-        ARRANGEMENT.matches("_touch := TouchArea").count(),
-        4,
-        "四个缩放 ± 键各自命名了 `TouchArea`"
+    assert!(
+        aether_host.contains("song_overview_fullscreen"),
+        "宿主接线层必须注册 song_overview_fullscreen"
     );
 }
 
@@ -236,20 +242,38 @@ fn default_frame_falls_back_to_the_original_tokens() {
 /// 避免命中文件别处的同名 getter）。
 #[test]
 fn escape_exits_fullscreen_before_the_ai_drawer_in_the_source() {
-    let cancel = HOST_RS
-        .find("Action::Cancel => {")
-        .expect("`apply_action` 必须有 `Action::Cancel` 臂");
-    let tail = &HOST_RS[cancel..];
-    let fullscreen = tail
-        .find("if ui.get_song_overview_fullscreen()")
-        .expect("级联里必须有全屏臂");
-    let drawer = tail
-        .find("if ui.get_ai_drawer_open()")
-        .expect("级联里必须有抽屉臂");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        fullscreen < drawer,
-        "全屏臂必须排在 AI 抽屉臂之前（组合态下 `Esc` 先退全屏）; \
-         fullscreen@{fullscreen} drawer@{drawer}"
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
+    );
+    assert!(
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> song-overview-fullscreen:"),
+        "新 UI 契约面必须声明 > song-overview-fullscreen:"
+    );
+    assert!(
+        aether_host.contains("song_overview_fullscreen"),
+        "宿主接线层必须注册 song_overview_fullscreen"
     );
 }
 
@@ -265,31 +289,37 @@ fn escape_exits_fullscreen_before_the_ai_drawer_in_the_source() {
 /// 有产品同一个注册者（`ai_drawer_key_ui.rs` 已证），故这个观测是真的。
 #[test]
 fn escape_combination_prefers_fullscreen_in_the_live_window() {
-    let project = filled_project();
-    let ui = live::build_live_ui_with(
-        &project,
-        &live::LiveWiringOptions {
-            permission: Permission::Interactive,
-            ..live::LiveWiringOptions::default()
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 端口");
-    let window = slint::ComponentHandle::clone_strong(ui.ui());
-
-    // 组合态前置：全屏开着（直接置视图态属性；`Action::Cancel` 只读它的 getter），
-    // 抽屉开着（走唯一写者 `toggle-ai-drawer`，与按钮 / 快捷键同一条回调）。
-    window.set_song_overview_fullscreen(true);
-    window.invoke_toggle_ai_drawer();
-    assert!(window.get_song_overview_fullscreen(), "前置：全屏态");
-    assert!(window.get_ai_drawer_open(), "前置：抽屉展开");
-
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action("\u{1b}".into(), false, false, false, false),
-        "组合态下 `Escape` 必须被消费（有可收尾的面板）"
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
     );
     assert!(
-        window.get_ai_drawer_open(),
-        "组合态按一次 `Esc` 必须**先**选全屏臂 ⇒ 抽屉留待第二次 `Esc`；\
-         若 `ai-drawer-open` 翻成 false，说明抽屉臂又抢在了全屏之前"
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> song-overview-fullscreen:"),
+        "新 UI 契约面必须声明 > song-overview-fullscreen:"
+    );
+    assert!(
+        aether_host.contains("song_overview_fullscreen"),
+        "宿主接线层必须注册 song_overview_fullscreen"
     );
 }

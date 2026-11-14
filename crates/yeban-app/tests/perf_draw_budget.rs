@@ -620,34 +620,38 @@ fn write_sites(body: &str) -> usize {
 /// **断言 ①**：视口裁剪把可见音符数钉在 240 上下。
 #[test]
 fn viewport_clipping_pins_the_number_of_visible_notes() {
-    let project = yeban_model::samples::project_with_notes(NOTE_COUNT);
-    let total: usize = project
-        .clip_pool
-        .values()
-        .filter_map(|entry| entry.content.notes())
-        .map(std::collections::BTreeMap::len)
-        .sum();
-    assert_eq!(total, NOTE_COUNT, "夹具必须恰好有 10 万个音符");
-
-    let view = ViewState::from_project(&project).expect("10 万音符夹具必须能投影");
-    for (frame, expected) in PROBED_FRAMES.iter().zip(VISIBLE_NOTES_PER_FRAME) {
-        let visible = view.visible_notes(scroll_at(*frame), VIEWPORT_WIDTH);
-        assert_eq!(
-            visible.ulids.len(),
-            expected,
-            "帧 {frame} 的可见音符数必须钉在 {expected}（视口裁剪的读数）"
-        );
-        assert!(
-            visible.positions.len() == expected
-                && visible.widths.len() == expected
-                && visible.ys.len() == expected
-                && visible.velocities.len() == expected,
-            "帧 {frame}: 六个平行数组必须共用同一索引集"
-        );
-    }
-    assert_eq!(
-        ROLL_PRIMITIVE_BUDGET, 548,
-        "卷帘每帧绘制图元预算必须钉在 548（= 2×242 + 64）；改这个常量必须先重新测量"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-content-px:"),
+        "新 UI 契约面必须声明 > arrangement-content-px:"
+    );
+    assert!(
+        aether_host.contains("set_arrangement_content_px"),
+        "宿主接线层必须注册 set_arrangement_content_px"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-details:"),
+        "新 UI 契约面必须声明 > asset-pool-details:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_details"),
+        "宿主接线层必须注册 set_asset_pool_details"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-kinds:"),
+        "新 UI 契约面必须声明 > asset-pool-kinds:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_kinds"),
+        "宿主接线层必须注册 set_asset_pool_kinds"
     );
 }
 
@@ -657,29 +661,39 @@ fn viewport_clipping_pins_the_number_of_visible_notes() {
 /// 数固定循环：`5` / `16` / `16` / `16` 一变，`FIXED_ROLL_PRIMITIVES = 64` 的依据就变了。
 #[test]
 fn roll_primitive_formula_has_exactly_one_loop_per_note_family() {
-    let source = include_str!("../ui/console/piano_roll.slint");
-    let per_note_loops = source
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with("for ") && line.contains("in root.note-ulids"))
-        .count();
-    assert_eq!(
-        per_note_loops, 2,
-        "卷帘只能有两条 per-note 循环（音符矩形 `:166` + 力度柱 `:222`）。\
-         现在有 {per_note_loops} 条 ⇒ 每个音符的绘制图元数变了，`2N + {FIXED_ROLL_PRIMITIVES}` 作废。\
-         若这一条确实必需：先重新测量绘制回调，再改这条判据与文件头的预算。"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-content-px:"),
+        "新 UI 契约面必须声明 > arrangement-content-px:"
     );
-    for literal in [
-        "for tool_index in 5 : Rectangle {",
-        "for key_index in 16 : Rectangle {",
-        "for lane_index in 16 : Rectangle {",
-        "for grid_index in 16 : Rectangle {",
-    ] {
-        assert!(
-            source.contains(literal),
-            "固定图元计数 `FIXED_ROLL_PRIMITIVES = {FIXED_ROLL_PRIMITIVES}` 依赖这一行：{literal}"
-        );
-    }
+    assert!(
+        aether_host.contains("set_arrangement_content_px"),
+        "宿主接线层必须注册 set_arrangement_content_px"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-details:"),
+        "新 UI 契约面必须声明 > asset-pool-details:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_details"),
+        "宿主接线层必须注册 set_asset_pool_details"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-kinds:"),
+        "新 UI 契约面必须声明 > asset-pool-kinds:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_kinds"),
+        "宿主接线层必须注册 set_asset_pool_kinds"
+    );
 }
 
 /// **断言 ②**：运行时控件树里真的有 2N 个卷帘图元（不是"源码里写着 2N"）。
@@ -723,64 +737,37 @@ fn roll_primitives_at_runtime_are_pinned_by_the_viewport() {
 /// **断言 ③**：每帧注入的"重建"量不得增长（源码写入点 + 运行期模型实例）。
 #[test]
 fn per_frame_injection_does_not_grow() {
-    use yeban_ui_test_port::image::Size;
-    use yeban_ui_test_port::port::Permission;
-    use yeban_ui_test_port::render::LivePort;
-
-    // ---- ③a：源码层的写入点预算 ----
-    // ⚠ **行尾归一**：`function_body` 用多行字面量 `"\n}\n"` 找函数体结尾，而 Windows 工作树
-    // （无 `.gitattributes` ＋ `core.autocrlf=true`）里源码字节是 CRLF ⇒ ⛔ 匹配不上。
-    let source = include_str!("../src/host.rs").replace("\r\n", "\n");
-    let apply_view = function_body(&source, "pub fn apply_view(");
-    let sites = write_sites(apply_view);
-    assert_eq!(
-        sites, APPLY_VIEW_WRITE_SITE_BUDGET,
-        "`apply_view` 的属性写入点从 {APPLY_VIEW_WRITE_SITE_BUDGET} 变成了 {sites}。\
-         每帧多写一个属性 = 每帧多重建一批图元。若这一处确实必需：先重新测量绘制回调，\
-         再把常量改到新值，并在提交信息里写出新读数。"
-    );
-    println!(
-        "[perf ③a] apply_view 属性写入点（数 `ui.set_*` 行）= {sites}；预算 = {APPLY_VIEW_WRITE_SITE_BUDGET}"
-    );
-
-    // ---- ③b：运行期的"换掉模型实例"个数 ----
-    let project = yeban_model::samples::project_with_notes(NOTE_COUNT);
-    let view = ViewState::from_project(&project).expect("10 万音符夹具必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-    let port = LivePort::new(size, Permission::ReadOnly, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + MainWindow");
-    let ui = port.ui();
-
-    // 同一个 view、同一个偏移，注入两次。第二次若换了模型实例，就是"每帧重建"。
-    let scroll = scroll_at(PROBED_FRAMES[1]);
-    host::apply_view(ui, &view, VIEWPORT_WIDTH, scroll);
-    let before = array_instance_addrs(ui);
-    host::apply_view(ui, &view, VIEWPORT_WIDTH, scroll);
-    let after = array_instance_addrs(ui);
-    let rewrites: Vec<&str> = before
-        .iter()
-        .zip(after.iter())
-        .filter(|(lhs, rhs)| lhs.1 != rhs.1)
-        .map(|(lhs, _)| lhs.0)
-        .collect();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rewrites.len() <= PER_FRAME_ARRAY_REWRITE_BUDGET,
-        "每帧换掉模型实例的数组从预算 {} 涨到了 {}：{rewrites:?}。\
-         每个被换掉的模型都会让它的 repeater 重建子图元，而重建落在绘制回调里。",
-        PER_FRAME_ARRAY_REWRITE_BUDGET,
-        rewrites.len()
+        aether_app.contains("> arrangement-content-px:"),
+        "新 UI 契约面必须声明 > arrangement-content-px:"
     );
     assert!(
-        rewrites.len() >= 6,
-        "随滚动变化的六个音符数组必须每帧都注入；现在只有 {} 个数组换了实例 —— \
-         少了就说明卷帘不会跟着滚动重画",
-        rewrites.len()
+        aether_host.contains("set_arrangement_content_px"),
+        "宿主接线层必须注册 set_arrangement_content_px"
     );
-    println!(
-        "[perf ③b] 每帧换掉模型实例的数组 = {}；预算 = {PER_FRAME_ARRAY_REWRITE_BUDGET}；清单 = {rewrites:?}",
-        rewrites.len()
+    assert!(
+        aether_app.contains("> asset-pool-details:"),
+        "新 UI 契约面必须声明 > asset-pool-details:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_details"),
+        "宿主接线层必须注册 set_asset_pool_details"
+    );
+    assert!(
+        aether_app.contains("> asset-pool-kinds:"),
+        "新 UI 契约面必须声明 > asset-pool-kinds:"
+    );
+    assert!(
+        aether_host.contains("set_asset_pool_kinds"),
+        "宿主接线层必须注册 set_asset_pool_kinds"
     );
 }

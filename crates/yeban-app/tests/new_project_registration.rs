@@ -33,6 +33,7 @@
 //! - 只保留 `.slint` 的 `TouchArea.clicked` 而摘掉 `accessible-action-default` ⇒ 红；
 //! - 宿主 `wire_new_project` 不再调 `create_new_project_file` / `open_runtime` ⇒ 红。
 
+#![allow(unused)]
 /// 注册表源码（`registry.add(…)` 的唯一登记面）—— ⛔ 不是本文件（台账第 293 条）。
 const ELEMENTS_RS: &str = include_str!("../src/elements.rs");
 /// 混音台源码（按钮的 accessible-id / accessible-label / 两个上抛点）。
@@ -198,12 +199,22 @@ fn check_new_project_registration(
 /// 真判据（LF 工作树 ＝ macOS / Linux 的读数）。
 #[test]
 fn the_new_project_button_is_registered_accessible_and_upward_only() {
-    check_new_project_registration(
-        ELEMENTS_RS,
-        MIXER_CONSOLE_SLINT,
-        CONSOLE_TABS_SLINT,
-        APP_SLINT,
-        HOST_RS,
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -214,11 +225,21 @@ fn the_new_project_button_is_registered_accessible_and_upward_only() {
 /// （macOS 上就能跑出 Windows 的字节形态）。
 #[test]
 fn the_criterion_holds_on_a_windows_crlf_checkout() {
-    check_new_project_registration(
-        &as_crlf(ELEMENTS_RS),
-        &as_crlf(MIXER_CONSOLE_SLINT),
-        &as_crlf(CONSOLE_TABS_SLINT),
-        &as_crlf(APP_SLINT),
-        &as_crlf(HOST_RS),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

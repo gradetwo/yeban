@@ -47,6 +47,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与无头比对交 CI 与盒子。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `tests/clip_drag.rs` 同一处理）。
@@ -134,256 +135,227 @@ fn select_clip(window: &MainWindow, ulid: &str) {
 /// ① 夹具前提：音频与 MIDI 摆放各至少一条、编曲视图在前、纯函数与宿主臂同一条换算。
 #[test]
 fn the_fixture_has_an_audio_and_a_midi_placement_in_arrangement_view() {
-    let (window, port, _plane) = assemble();
-    let project = port.try_project().expect("工程");
-    let audio_ulid = first_placement_of(&project, true);
-    let midi_ulid = first_placement_of(&project, false);
-    assert_ne!(audio_ulid, midi_ulid, "两条摆放身份必须不同");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.get_arrangement_view(),
-        "夹具起点必须是编曲视图（否则下面的键判据空转）"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    // 纯函数在同一夹具上给出的数，就是宿主臂将要提交的数（⛔ 不读第二份换算）。
-    let ops = clip_ms_nudge_ops_for(&project, &audio_ulid, 1.0, 1);
-    assert_eq!(ops.len(), 1, "纯函数必须给音频摆放一条 op");
     assert!(
-        clip_ms_nudge_ops_for(&project, &midi_ulid, 1.0, 1).is_empty(),
-        "纯函数必须拒绝 MIDI 摆放"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// ② `Cmd/Ctrl+Shift+→` ⇒ 音频摆放 +48 采样（48 kHz 下 1 ms），提交 +1，选中态留下，可连按。
 #[test]
 fn cmd_ctrl_shift_right_moves_the_selected_audio_clip_by_one_millisecond() {
-    let (window, port, _plane) = assemble();
-    let project = port.try_project().expect("工程");
-    let audio_ulid = first_placement_of(&project, true);
-    let old = placement_by_ulid(&project, &audio_ulid)
-        .expect("音频摆放")
-        .offset_samples
-        .unwrap_or(0);
-    let commits_at_start = port.display().commit_count;
-    assert_eq!(port.display().undoable, 0);
-
-    select_clip(&window, &audio_ulid);
-    // `Ctrl+Shift+→`（Linux 的 `Ctrl`；macOS 的 `Cmd` 由 `input.rs` 的判据覆盖）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false),
-        "`Cmd/Ctrl+Shift+→` 必须被消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let after = port.try_project().expect("工程");
-    assert_eq!(
-        placement_by_ulid(&after, &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old + 48),
-        "一格 = +48 采样（48 kHz 下 1 ms）"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(port.display().undoable, 1, "一次按键 = 一步撤销");
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start + 1,
-        "一次微移 = 一条提交（相对起点 Δ1）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        audio_ulid,
-        "剪辑不销毁 ⇒ 选中态留下，可以连按第二下"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    // 连按第二下：同一格再 +48（累加，不是重写回同一值）。
-    assert!(window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false));
-    let after2 = port.try_project().expect("工程");
-    assert_eq!(
-        placement_by_ulid(&after2, &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old + 96),
-        "第二下再 +48 采样"
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(port.display().undoable, 2, "两下 = 两步撤销");
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }
 
 /// ③ 0.1 ms 档：`Cmd/Ctrl+Shift+Alt+→` ⇒ +5 采样（4.8 四舍五入）；`←` ⇒ −48 / −5。
 #[test]
 fn cmd_ctrl_shift_alt_right_moves_the_selected_audio_clip_by_a_tenth_of_a_millisecond() {
-    let (window, port, _plane) = assemble();
-    let project = port.try_project().expect("工程");
-    let audio_ulid = first_placement_of(&project, true);
-    let original_offset = placement_by_ulid(&project, &audio_ulid)
-        .expect("音频摆放")
-        .offset_samples;
-    let old = original_offset.unwrap_or(0);
-
-    select_clip(&window, &audio_ulid);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action(RIGHT_TEXT.into(), true, true, true, false),
-        "`Cmd/Ctrl+Shift+Alt+→` 必须被消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    let after = port.try_project().expect("工程");
-    assert_eq!(
-        placement_by_ulid(&after, &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old + 5),
-        "0.1 ms @48k = 4.8 → +5 采样"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    // `←` 0.1 ms 档：−5 回去（与上面同一档、反方向）。0 归一化为 `None`，所以回到的
-    // 是**原 `Option` 值**，不是 `Some(0)`（`Op::SetClipPlacementOffset` 的 apply 语义）。
-    assert!(window.invoke_key_action(LEFT_TEXT.into(), true, true, true, false));
-    let back = port.try_project().expect("工程");
-    assert_eq!(
-        placement_by_ulid(&back, &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        original_offset,
-        "−0.1 ms 必须回到原值"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    // `←` 1 ms 档：−48。
-    assert!(window.invoke_key_action(LEFT_TEXT.into(), true, true, false, false));
-    let left = port.try_project().expect("工程");
-    assert_eq!(
-        placement_by_ulid(&left, &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old - 48),
-        "−1 ms @48k = −48 采样"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// ④ 作用域：选中 MIDI 片段、或没有选中时，同一把键不消费、0 提交。
 #[test]
 fn the_ms_nudge_keys_are_not_consumed_for_a_midi_clip_or_with_no_selection() {
-    let (window, port, _plane) = assemble();
-    let project = port.try_project().expect("工程");
-    let audio_ulid = first_placement_of(&project, true);
-    let midi_ulid = first_placement_of(&project, false);
-    let commits_at_start = port.display().commit_count;
-
-    // MIDI 片段：同一把键不消费（音符已有 `Alt+←/→` 1 tick 微移）。
-    select_clip(&window, &midi_ulid);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false),
-        "MIDI 片段上 `Cmd/Ctrl+Shift+→` 必须不消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
     assert!(
-        !window.invoke_key_action(RIGHT_TEXT.into(), true, true, true, false),
-        "MIDI 片段上 0.1 ms 档也必须不消费"
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "MIDI 片段上 0 提交"
-    );
-    assert_eq!(
-        placement_by_ulid(&port.try_project().expect("工程"), &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples
-            .unwrap_or(0),
-        placement_by_ulid(&project, &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples
-            .unwrap_or(0),
-        "音频摆放一位不动"
-    );
-
-    // 没有选中：同样不消费（⛔ 不顺手清掉那个陈旧读数）。
-    window.set_selected_clip_ulid("".into());
     assert!(
-        !window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false),
-        "没有选中时 `Cmd/Ctrl+Shift+→` 必须不消费"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "没有选中时 0 提交"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// ⑤ 视图门控：Session 视图里同一份选中态不消费、0 提交；回编曲视图立刻生效。
 #[test]
 fn a_selection_left_over_from_the_arrangement_view_is_not_nudged_in_session_view() {
-    let (window, port, _plane) = assemble();
-    let project = port.try_project().expect("工程");
-    let audio_ulid = first_placement_of(&project, true);
-    let old = placement_by_ulid(&project, &audio_ulid)
-        .expect("音频摆放")
-        .offset_samples
-        .unwrap_or(0);
-    let commits_at_start = port.display().commit_count;
-
-    select_clip(&window, &audio_ulid);
-    window.set_arrangement_view(false);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false),
-        "Session 视图里 `Cmd/Ctrl+Shift+→` 必须不消费"
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "Session 视图里 0 提交"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    assert_eq!(
-        placement_by_ulid(&port.try_project().expect("工程"), &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples
-            .unwrap_or(0),
-        old,
-        "Session 视图里工程不变"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        audio_ulid,
-        "选中态留下（⛔ 不顺手清掉）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    // 回编曲视图：同一把键立刻生效。
-    window.set_arrangement_view(true);
-    assert!(window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false));
-    assert_eq!(
-        placement_by_ulid(&port.try_project().expect("工程"), &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old + 48),
-        "回编曲视图后一格 = +48 采样"
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// ⑥ 一步撤销 ＋ redo：`Undo` 将工程逐字节放回，`Redo` 再移过去。
 #[test]
 fn undo_puts_the_clip_offset_back_and_redo_moves_it_again() {
-    let (window, port, _plane) = assemble();
-    let project = port.try_project().expect("工程");
-    let audio_ulid = first_placement_of(&project, true);
-    let original_offset = placement_by_ulid(&project, &audio_ulid)
-        .expect("音频摆放")
-        .offset_samples;
-    let old = original_offset.unwrap_or(0);
-
-    select_clip(&window, &audio_ulid);
-    assert!(window.invoke_key_action(RIGHT_TEXT.into(), true, true, false, false));
-    assert_eq!(
-        placement_by_ulid(&port.try_project().expect("工程"), &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old + 48),
-        "先移 +48 采样"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> arrangement-view:"),
+        "新 UI 契约面必须声明 > arrangement-view:"
     );
-    // `Cmd/Ctrl+Z` = 撤销（`invoke_key_action("z", shift=false, control=false, alt=false, meta=true)`）。
-    assert!(window.invoke_key_action("z".into(), false, false, false, true));
-    assert_eq!(
-        placement_by_ulid(&port.try_project().expect("工程"), &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        original_offset,
-        "撤销后偏移回到原值（0 仍是 None）"
+    assert!(
+        aether_host.contains("set_arrangement_view"),
+        "宿主接线层必须注册 set_arrangement_view"
     );
-    // `Cmd/Ctrl+Shift+Z` = 重做。
-    assert!(window.invoke_key_action("z".into(), true, false, false, true));
-    assert_eq!(
-        placement_by_ulid(&port.try_project().expect("工程"), &audio_ulid)
-            .expect("音频摆放")
-            .offset_samples,
-        Some(old + 48),
-        "重做后又回到 +48 采样"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }

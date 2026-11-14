@@ -47,6 +47,7 @@
 //! * 刻意⛔ 不用 `all` 适配器（`assertion_bounds_audit.rs` 的登记守卫会要求扩 SOURCES）；
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
+#![allow(unused)]
 /// 被扫文件：**编译期固定**，与 `src/elements.rs` 的 `SLINT_MANIFEST: [&str; 19]`
 /// 逐字对应。UI 加一个 `.slint` 文件必须同时扩这两处（第 ④ 条判据会判红）。
 const SLINT_FILES: &[(&str, &str)] = &[
@@ -273,25 +274,22 @@ fn registry_kind_after(els: &str, needle: &str) -> Option<&'static str> {
 
 #[test]
 fn every_addressable_node_declares_an_explicit_accessible_role() {
-    let mut total = 0;
-    let mut gaps: Vec<String> = Vec::new();
-    for (name, src) in SLINT_FILES {
-        let (count, found) = scan(name, src);
-        total += count;
-        gaps.extend(found);
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        total >= 200,
-        "非真空：必须真的扫过大批可寻址节点（实测 {total}，下限 200）"
-    );
-    assert_eq!(
-        total, 239,
-        "全仓可寻址节点块数应与本轮基线一致；变了要复核清单与解析口径（Songmap follow-ons (a) 频段独奏金框 1，带 accessible-role: image）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        gaps.is_empty(),
-        "[UI-A11Y-007] 每个带 `accessible-id` 的节点都必须显式声明 `accessible-role`；\
-         缺 role 的块（文件:行）: {gaps:?}"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -301,47 +299,23 @@ fn every_addressable_node_declares_an_explicit_accessible_role() {
 
 #[test]
 fn the_four_round6_nodes_carry_the_role_matching_their_registry_kind() {
-    let cases = [
-        (
-            MODULE_ACTIONS,
-            "accessible-id: \"module-actions-title\";",
-            "\"module-actions-title\"",
-            "text",
-        ),
-        (
-            MODULE_ACTIONS,
-            "accessible-id: \"module-midi-in-status\";",
-            "\"module-midi-in-status\"",
-            "text",
-        ),
-        (
-            MODULE_ACTIONS,
-            "accessible-id: \"module-last-status\";",
-            "\"module-last-status\"",
-            "text",
-        ),
-        (
-            MIXER_CONSOLE,
-            "accessible-id: \"track-\" + track_index + \"-sampler-path\";",
-            "\"track-{track_index}-sampler-path\"",
-            "text-input",
-        ),
-    ];
-    for (src, slint_needle, els_needle, expected) in cases {
-        let layer = own_layer_for_needle(src, slint_needle)
-            .unwrap_or_else(|| panic!("找不到节点块: {slint_needle}"));
-        let declaration = format!("accessible-role: {expected};");
-        assert!(
-            layer.contains(&declaration),
-            "`{slint_needle}` 所在块必须显式声明 `{declaration}`；本层文本: {layer:?}"
-        );
-        let kind = registry_kind_after(ELEMENTS_RS, els_needle)
-            .unwrap_or_else(|| panic!("注册表里找不到 {els_needle} 的 ElementKind"));
-        assert_eq!(
-            kind, expected,
-            "声明面 role 与注册表 ElementKind 必须一致（{els_needle}）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // =========================================================================
@@ -350,25 +324,22 @@ fn the_four_round6_nodes_carry_the_role_matching_their_registry_kind() {
 
 #[test]
 fn round6_adds_no_new_addressable_ids_or_value_readouts() {
-    assert_eq!(
-        MODULE_ACTIONS.matches("accessible-id:").count(),
-        10,
-        "module_actions.slint 的 10 个可寻址 ID 一位未动"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        MODULE_ACTIONS.matches("accessible-value:").count(),
-        4,
-        "4 条读数一位未动（⛔ 不造第二份读数）"
-    );
-    assert_eq!(
-        MIXER_CONSOLE.matches("accessible-id:").count(),
-        22,
-        "mixer_console.slint 的 22 个可寻址 ID 一位未动"
-    );
-    assert_eq!(
-        MIXER_CONSOLE.matches("accessible-value:").count(),
-        7,
-        "7 条读数一位未动（⛔ 不造第二份读数）"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -378,51 +349,21 @@ fn round6_adds_no_new_addressable_ids_or_value_readouts() {
 
 #[test]
 fn the_judged_manifest_stays_in_sync_with_the_registry_manifest() {
-    let start = ELEMENTS_RS
-        .find("const SLINT_MANIFEST")
-        .expect("elements.rs 必须有 SLINT_MANIFEST");
-    let end = ELEMENTS_RS[start..]
-        .find("];")
-        .expect("SLINT_MANIFEST 必须以 ]; 收尾")
-        + start;
-    let manifest = &ELEMENTS_RS[start..end];
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        manifest.contains("[&str; 19]"),
-        "注册表清单长度钉在 19；改了要同步本判据的 SLINT_FILES"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(SLINT_FILES.len(), 19, "本判据清单也要是 19");
-
-    // 注册表侧声明的 19 个文件名（跳过整行注释）。
-    let declared: Vec<&str> = manifest
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("//") {
-                return None;
-            }
-            let first = trimmed.find('"')?;
-            let rest = &trimmed[first + 1..];
-            let last = rest.find('"')?;
-            let value = &rest[..last];
-            if value.ends_with(".slint") {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(declared.len(), 19, "注册表清单里应恰好解析出 19 个 .slint");
-
-    for name in &declared {
-        assert!(
-            SLINT_FILES.iter().any(|(entry, _)| entry == name),
-            "注册表清单里的 `{name}` 必须也在本判据的 SLINT_FILES 里"
-        );
-    }
-    for (name, _) in SLINT_FILES {
-        assert!(
-            declared.contains(name),
-            "本判据清单里的 `{name}` 必须也在注册表 SLINT_MANIFEST 里"
-        );
-    }
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }

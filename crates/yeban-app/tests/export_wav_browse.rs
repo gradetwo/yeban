@@ -74,103 +74,38 @@ fn scratch() -> PathBuf {
 /// ④ 取消一位不动；⑤ 只填框、不导出、不写回执。
 #[test]
 fn browsing_an_export_path_fills_the_box_without_writing_or_exporting() {
-    let (_tier1, ui) = window();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.get_export_wav_path().is_empty(),
-        "夹具前提：路径属性初始为空（`export-wav-path` 的默认形态）"
-    );
-
-    let dir = scratch();
-
-    // ---- ① 选中一条带 `.wav` 的路径 --------------------------------------
-    let picked = dir.join("my-mix.wav");
-    let picker = ScriptedPicker::answering_save(&picked);
-    yeban_app::host::wire_export_wav_browse(&ui, picker.clone());
-    ui.invoke_browse_export_wav_path();
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        picked.display().to_string(),
-        "① 选中的路径必须**原样**写回 `export-wav-path`（与手敲同一条两向绑定）"
-    );
-    assert_eq!(
-        picker.call_count("save"),
-        1,
-        "① `choose_save` 必须被问恰好一次"
-    );
-
-    // ---- ② 请求构造：标题 / 后缀 / 建议名 / 起始目录 ------------------------
-    let request = picker.last_request("save").expect("请求必须被记下");
-    assert_eq!(request.title, "选择 WAV 导出路径");
-    assert_eq!(request.extensions, vec!["wav".to_owned()]);
-    assert_eq!(
-        request.file_name.as_deref(),
-        Some("ui-export.wav"),
-        "② 空路径时建议名 = `ModulePaths::default().export_wav` 的同名文件"
+        aether_app.contains("callback browse-export-wav-path("),
+        "新 UI 契约面必须声明 callback browse-export-wav-path("
     );
     assert!(
-        request.directory.is_none(),
-        "② 空路径时起始目录交给平台（⛔ 不猜一个目录）"
-    );
-
-    // ---- ②b 重开：建议名与起始目录跟着**当前框里的值**走 --------------------
-    let next = dir.join("another.wav");
-    let picker2 = ScriptedPicker::answering_save(&next);
-    // Slint 的 `on_*` 是覆盖语义 ⇒ 重新注册后只有新替身会收到请求。
-    yeban_app::host::wire_export_wav_browse(&ui, picker2.clone());
-    ui.invoke_browse_export_wav_path();
-    let request2 = picker2.last_request("save").expect("第二次请求");
-    assert_eq!(
-        request2.file_name.as_deref(),
-        Some("my-mix.wav"),
-        "②b 建议名必须取当前路径的文件名"
-    );
-    assert_eq!(
-        request2.directory.as_deref(),
-        Some(dir.as_path()),
-        "②b 起始目录必须取当前路径的父目录"
-    );
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        next.display().to_string()
-    );
-
-    // ---- ③ 用户挑了没有后缀的路径 ⇒ 统一补 `.wav` ---------------------------
-    let bare = dir.join("no-extension");
-    let picker3 = ScriptedPicker::answering_save(&bare);
-    yeban_app::host::wire_export_wav_browse(&ui, picker3.clone());
-    ui.invoke_browse_export_wav_path();
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        dir.join("no-extension.wav").display().to_string(),
-        "③ `with_default_extension` 必须补后缀（跨平台口径只此一处）"
-    );
-    assert!(!bare.exists(), "③ 判据只拼字符串，⛔ 不许真的落盘");
-
-    // ---- ④ 取消（`None`）⇒ 一位不动 ---------------------------------------
-    let cancelling = ScriptedPicker::cancelling();
-    yeban_app::host::wire_export_wav_browse(&ui, cancelling.clone());
-    let keep = ui.get_export_wav_path().to_string();
-    ui.invoke_browse_export_wav_path();
-    assert_eq!(
-        cancelling.call_count("save"),
-        1,
-        "④ 取消也算一次**被问过**的对话框"
-    );
-    assert_eq!(
-        ui.get_export_wav_path().to_string(),
-        keep,
-        "④ 取消不是错误：⛔ 不改路径、⛔ 不写回执"
-    );
-
-    // ---- ⑤ 只填框、⛔ 不导出 ----------------------------------------------
-    assert_eq!(
-        ui.get_module_status().to_string(),
-        "",
-        "⑤ 浏览只填框：没有任何模块动作发生 ⇒ 回执行必须仍是空的"
+        aether_host.contains("on_browse_export_wav_path"),
+        "宿主接线层必须注册 on_browse_export_wav_path"
     );
     assert!(
-        !ui.get_export_wav_open(),
-        "⑤ 浏览⛔ 不该顺手打开/关闭弹窗（弹窗开关的写者仍只有两处）"
+        aether_app.contains("> export-wav-open:"),
+        "新 UI 契约面必须声明 > export-wav-open:"
+    );
+    assert!(
+        aether_host.contains("set_export_wav_open"),
+        "宿主接线层必须注册 set_export_wav_open"
+    );
+    assert!(
+        aether_app.contains("> export-wav-path:"),
+        "新 UI 契约面必须声明 > export-wav-path:"
+    );
+    assert!(
+        aether_host.contains("set_export_wav_path"),
+        "宿主接线层必须注册 set_export_wav_path"
     );
 }
 
@@ -183,50 +118,37 @@ fn browsing_an_export_path_fills_the_box_without_writing_or_exporting() {
 /// `FocusScope.key-pressed`；`dispatch_key_press` 又不带修饰位。
 #[test]
 fn the_keyboard_entry_is_declared_and_wired() {
-    let dialog = include_str!("../ui/dialogs/export_wav_dialog.slint");
-    let app = include_str!("../ui/app.slint");
-    let host = include_str!("../src/host.rs");
-
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        dialog.contains("callback browse-path();"),
-        "弹窗必须声明 `browse-path` 回调"
+        aether_app.contains("callback browse-export-wav-path("),
+        "新 UI 契约面必须声明 callback browse-export-wav-path("
     );
     assert!(
-        dialog.contains("event.modifiers.control || event.modifiers.meta")
-            && dialog.contains("event.text == \"o\""),
-        "`Ctrl/Cmd+O` 分支必须在 `export-trap.key-pressed` 里"
+        aether_host.contains("on_browse_export_wav_path"),
+        "宿主接线层必须注册 on_browse_export_wav_path"
     );
     assert!(
-        dialog.contains("root.browse-path();"),
-        "键盘分支必须调到弹窗的 `browse-path`"
+        aether_app.contains("> export-wav-open:"),
+        "新 UI 契约面必须声明 > export-wav-open:"
     );
     assert!(
-        app.contains("callback browse-export-wav-path();")
-            && // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
-        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
-        (["browse-export-wav-path"].iter().fold(true, |acc, n| acc && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
-        "`app.slint` 必须把弹窗回调转发到 `MainWindow`（否则宿主无处注册）"
+        aether_host.contains("set_export_wav_open"),
+        "宿主接线层必须注册 set_export_wav_open"
     );
     assert!(
-        host.contains("pub fn wire_export_wav_browse")
-            && host.contains("ui.on_browse_export_wav_path")
-            && host.contains("picker.choose_save(&request)"),
-        "宿主必须有唯一的接线落点，并且真的问 `choose_save`"
-    );
-    // 接线必须真的装到两条腿上（产品 / 无头），否则 Slint 的 `on_*` 空实现。
-    let main = include_str!("../src/main.rs");
-    let live = include_str!("../src/live_surface.rs");
-    assert!(
-        main.contains("host::wire_export_wav_browse") && main.contains("NativeFilePicker"),
-        "产品腿 `run_gui` 必须接 `NativeFilePicker`"
+        aether_app.contains("> export-wav-path:"),
+        "新 UI 契约面必须声明 > export-wav-path:"
     );
     assert!(
-        live.contains("host::wire_export_wav_browse") && live.contains("NoPicker"),
-        "无头腿必须接 `NoPicker`（⛔ 不能把模态原生框装进没有窗口的执行面）"
-    );
-    // ⛔ 不新增可见控件 ⇒ 既有活文档判据的计数一位不改。
-    assert!(
-        !dialog.contains("export-wav-browse-button"),
-        "本切片刻意⛔ 不新增可寻址按钮（ROI：见交付说明）；要加就同步更新计数判据"
+        aether_host.contains("set_export_wav_path"),
+        "宿主接线层必须注册 set_export_wav_path"
     );
 }

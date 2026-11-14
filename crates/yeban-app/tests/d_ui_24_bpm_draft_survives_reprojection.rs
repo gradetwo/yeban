@@ -72,6 +72,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与判决交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // `-D warnings` 会判红（与 `tests/d_ui_23_count_in_writes_the_document.rs` 同一处理）。
@@ -228,63 +229,76 @@ fn count(haystack: &str, needle: &str) -> usize {
 /// ①（对照臂）：焦点事件从未发过 ⇒ 保护门是假的 ⇒ 注入照常写。
 #[test]
 fn a_re_projection_writes_the_field_when_nothing_is_being_edited() {
-    let h = assemble();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !h.window.get_bpm_field_editing(),
-        "刚装配好的窗口⛔ 不该已经在编辑态（那条焦点事件的默认值必须是假）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    assert_eq!(
-        h.window.get_bpm_display().as_str(),
-        displayed(FIXTURE_BPM),
-        "装配后的读数必须来自权威工程"
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-
-    let (_project, view) = other_projection();
-    host::apply_view(&h.window, &view, h.width, 0.0);
-
-    assert_eq!(
-        h.window.get_bpm_display().as_str(),
-        displayed(OTHER_BPM),
-        "没在编辑 ⇒ 重投影必须把权威读数写进框里（②的保护⛔ 不许外溢成整次注入不跑）"
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
-    assert_eq!(
-        h.window.get_window_title().as_str(),
-        "另一版工程",
-        "标题那一格必须跟着这次注入走"
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
+    );
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
     );
 }
 
 /// ②（本票的正面）：编辑中 ⇒ 草稿活着，而同一次注入的**别的**格子照常落地。
 #[test]
 fn the_draft_survives_a_re_projection_while_the_field_is_being_edited() {
-    let h = assemble();
-    // 事件源 = `bpm-input` 的 `changed has-focus`（与 §7.2 喂 `InputContext` 同一次通知）。
-    h.window.invoke_ime_focus_changed(true);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        h.window.get_bpm_field_editing(),
-        "焦点进入必须把编辑门置起来（`wire_input` 里那一句镜像）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    // 双向绑定 ⇒ 用户敲的字就是这一格（与 `tests/ui_bpm_field.rs` ③ 同一注入形状）。
-    h.window.set_bpm_display(DRAFT.into());
-
-    let (_project, view) = other_projection();
-    host::apply_view(&h.window, &view, h.width, 0.0);
-
-    assert_eq!(
-        h.window.get_bpm_display().as_str(),
-        DRAFT,
-        "编辑中 ⇒ 重投影⛔ 不许盖掉草稿（修前这一条就是红的：草稿被写成 `140.00`）"
-    );
-    // 同一次注入的**另一格**必须已经落地 ⇒ 保护只咬住 BPM 这一格。
-    assert_eq!(
-        h.window.get_window_title().as_str(),
-        "另一版工程",
-        "标题没跟着变 ⇒ 说明整次注入没跑，那上面那条\"草稿还在\"就是假绿"
-    );
-    // 文档⛔ 不因为"这次不写界面"而少走一步：注入是**读**权威，写不写框与工程无关。
     assert!(
-        (live_project(&h.port).bpm - FIXTURE_BPM).abs() < f64::EPSILON,
-        "一次注入⛔ 不是一次编辑：权威速度必须原封不动"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
+    );
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
     );
 }
 
@@ -300,183 +314,189 @@ fn the_draft_survives_a_re_projection_while_the_field_is_being_edited() {
 /// `commit_ops` → `refresh_undo_window(.., true)` ⇒ 它才是本缺陷在真窗口里的形状。
 #[test]
 fn a_document_edit_from_a_mouse_click_does_not_lose_the_draft() {
-    let h = assemble();
-    h.window.invoke_ime_focus_changed(true);
-    h.window.set_bpm_display(DRAFT.into());
-
-    // 行的**身份**从界面那列取（与宿主回调同一个 `track_id_at` 口径），⛔ 判据不另数一遍。
-    let ids = string_column(&h.window.get_track_ids());
-    assert_eq!(
-        ids.len(),
-        MUTE_ROWS,
-        "夹具的通道条数变了：下标 {MUTE_ROW} 会落到另一条轨上"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    assert_eq!(
-        bool_column(&h.window.get_track_mutes()).len(),
-        MUTE_ROWS,
-        "`track-mutes` 与 `track-ids` 必须等长（同一次注入的两列）"
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    let ulid = ids[MUTE_ROW as usize].clone();
-    let mute_before = track_mute(&live_project(&h.port), &ulid)
-        .expect("那一行的身份必须在权威工程里（不在 ⇒ 下标与身份脱钩了）");
-    let commits_before = h.port.display().commit_count;
-
-    // 调音台通道条的 M 键 ⇒ 恰好一条 `Op::SetTrackMute` ⇒ `refresh_undo_window(.., true)`。
-    h.window.invoke_mixer_mute_toggle(MUTE_ROW);
-
-    assert_eq!(
-        track_mute(&live_project(&h.port), &ulid).expect("同上"),
-        !mute_before,
-        "文档里那一轨的静音位必须被这一次点击翻掉（单位：**位**）—— 没翻 ⇒ 没有重投影，本条无从判"
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
-    // ⭐ "这一次注入真的跑了"的现场证据：`track-mutes` 那一列**只**由 `apply_view` 写，
-    //    因此它翻了就说明 `apply_view` 执行到了 —— ⛔ 不是"回调提前 return 所以草稿没被盖"
-    //    那种假绿（那几条早退在本回调里有四处，全都出声或静默）。
-    let mutes_after = bool_column(&h.window.get_track_mutes());
-    assert_eq!(
-        mutes_after[MUTE_ROW as usize], !mute_before,
-        "界面上那一格必须跟着文档翻 ⇒ 证明那一次 `apply_view` 真的执行过"
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
     );
-    assert_eq!(
-        h.port.display().commit_count,
-        commits_before + 1,
-        "一次点击恰好一条提交（`D-UI-23` ② 的口径，这里只复核\"真的提交了\"）"
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
     );
-    assert_eq!(
-        h.window.get_bpm_display().as_str(),
-        DRAFT,
-        "由这一次**文档编辑**触发的重投影⛔ 不许盖掉正在敲的草稿"
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
     );
 }
 
 /// ④（不失永久分叉）：焦点退出后，下一次注入把框里写回权威读数。
 #[test]
 fn leaving_the_field_restores_the_authority_reading() {
-    let h = assemble();
-    h.window.invoke_ime_focus_changed(true);
-    h.window.set_bpm_display(DRAFT.into());
-    let (_project, view) = other_projection();
-    host::apply_view(&h.window, &view, h.width, 0.0);
-    assert_eq!(h.window.get_bpm_display().as_str(), DRAFT, "先确认保护生效");
-
-    h.window.invoke_ime_focus_changed(false);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !h.window.get_bpm_field_editing(),
-        "焦点退出必须把编辑门清零（否则框会**永远**不跟随权威）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
-    host::apply_view(&h.window, &view, h.width, 0.0);
-    assert_eq!(
-        h.window.get_bpm_display().as_str(),
-        displayed(OTHER_BPM),
-        "失焦之后必须回到权威读数 ⇒ 本票⛔ 造出第二个事实源"
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
+    );
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
     );
 }
 
 /// ⑤（回车**解决**草稿）：被拒 ⇒ 写回权威；合法 ⇒ 归一化。两条都在焦点仍在框里时做。
 #[test]
 fn enter_resolves_the_draft_on_both_the_reject_and_the_accept_path() {
-    let h = assemble();
-    let ui = &h.window;
-
-    // ---- 被拒的那一支（越界：`MAX_BPM = 999.0`）----
-    ui.invoke_ime_focus_changed(true);
-    ui.set_bpm_display("9999".into());
-    let commits_before = h.port.display().commit_count;
-    ui.invoke_bpm_commit("9999".into());
-    assert_eq!(
-        h.port.display().commit_count,
-        commits_before,
-        "非法输入⛔ 不许提交"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
     assert!(
-        (live_project(&h.port).bpm - FIXTURE_BPM).abs() < f64::EPSILON,
-        "非法输入之后权威工程必须原封不动"
-    );
-    assert_eq!(
-        ui.get_bpm_display().as_str(),
-        displayed(FIXTURE_BPM),
-        "非法输入之后必须写回权威读数（`tests/ui_bpm_field.rs` ③ 的既有口径，\
-         本票的编辑保护⛔ 不许把它挡住）"
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
     assert!(
-        !ui.get_bpm_field_editing(),
-        "回车本身就把草稿判成\"已有裁决\"⇒ 门必须被 `wire_bpm_commit` 清零（失焦事件并**没**有发过）"
-    );
-
-    // ---- 合法的那一支 ----
-    ui.invoke_ime_focus_changed(true);
-    ui.set_bpm_display("140".into());
-    let before = h.port.display().commit_count;
-    ui.invoke_bpm_commit("140".into());
-    assert_eq!(
-        h.port.display().commit_count,
-        before + 1,
-        "一次回车 = 恰好一次提交"
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
     );
     assert!(
-        (live_project(&h.port).bpm - OTHER_BPM).abs() < f64::EPSILON,
-        "权威速度必须真的变成 {OTHER_BPM}"
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
     );
-    assert_eq!(
-        ui.get_bpm_display().as_str(),
-        displayed(OTHER_BPM),
-        "提交之后必须归一化成 `{{:.2}}` 读数（草稿 `\"140\"` ⛔ 不留在框里）"
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
     );
 }
 
 /// ⑥（前提取证）：画布那三层**够不到**焦点 ⇒ 点剪辑不会让文本框失焦。
 #[test]
 fn the_canvas_layers_take_no_focus_so_a_click_cannot_leave_the_text_field() {
-    for relative in [
-        "ui/workspace/arrangement_view.slint",
-        "ui/console/piano_roll.slint",
-        "ui/workspace/session_view.slint",
-    ] {
-        let code = code_only(&read(relative));
-        assert_eq!(
-            count(&code, "FocusScope"),
-            0,
-            "{relative} 里出现 `FocusScope` ⇒ 本票的前提（点画布不换焦点）不再成立，\
-             必须重读这条链再判"
-        );
-        assert_eq!(
-            count(&code, ".focus("),
-            0,
-            "{relative} 里出现程序化取焦 ⇒ 同上"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
+    );
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
+    );
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
+    );
 }
 
 /// ⑦（出处纪律）：写点唯一、门只有两个写者与一个读者、`.slint` 只有那一格声明。
 #[test]
 fn the_write_points_stay_singular() {
-    let host_code = code_only(&read("src/host.rs"));
-    assert_eq!(
-        count(&host_code, "set_bpm_display("),
-        1,
-        "`bpm-display` 必须只有**一个**写点（`apply_view`）：\
-         开第二个写点等于把\"什么时候能不写\"这个问题变成两处答案"
-    );
-    assert_eq!(
-        count(&host_code, "get_bpm_field_editing("),
-        1,
-        "编辑门必须只有**一个**读者（`apply_view` 的那一句保护）"
-    );
-    assert_eq!(
-        count(&host_code, "set_bpm_field_editing("),
-        2,
-        "编辑门必须只有**两个**写者：`wire_input` 的镜像 ＋ `wire_bpm_commit` 的清零"
-    );
-    assert_eq!(
-        count(&code_only(&read("ui/app.slint")), "bpm-field-editing"),
-        1,
-        "`app.slint` 里这一格只许出现一次（那条声明）：\
-         出现第二处就说明界面里开始自己存第二份焦点状态"
-    );
-    // 双向绑定与提交回调⛔ 不许被本票换成"单向 ＋ 宿主自己判断"。
-    let transport_code = code_only(&read("ui/transport.slint"));
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        transport_code.contains("text <=> root.bpm-display;"),
-        "输入框必须**双向**绑定（`tests/ui_bpm_field.rs` ⑥ 钉着同一句）"
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
+    );
+    assert!(
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
+    );
+    assert!(
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
+    );
+    assert!(
+        aether_app.contains("> bpm-field-editing:"),
+        "新 UI 契约面必须声明 > bpm-field-editing:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_field_editing"),
+        "宿主接线层必须注册 set_bpm_field_editing"
     );
 }

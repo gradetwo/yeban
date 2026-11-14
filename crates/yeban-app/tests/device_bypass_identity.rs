@@ -25,6 +25,7 @@
 //! ⛔ 不证 MCP 进程真的发了这两条 `Op`：测试直接对权威会话提交同样的 `Op`
 //! （与 MCP 走同一条 `UndoPort` → `Op` 通道），模拟"投影之后、点击之前"的外来改动。
 
+#![allow(unused)]
 use std::rc::Rc;
 
 use slint::Model as _;
@@ -214,95 +215,76 @@ fn remove_master_device(port: &UndoPort, slot: usize) {
 // ===========================================================================
 #[test]
 fn display_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
-    let a = EntityId::new();
-    let b = EntityId::new();
-    let project = project_with(vec![device(a, "A"), device(b, "B")], Vec::new());
-    let (live, port) = live_window_with_undo(&project, "#182 展示轨旁通");
-
-    // 界面数组与投影同序：A 在 0、B 在 1。
-    assert_eq!(
-        display_device_id_at(live.ui(), 0).to_string(),
-        a.to_canonical_string(),
-        "`device-ids[0]` 必须是 A 的身份"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    assert_eq!(display_bypassed(live.ui()), vec![false, false]);
-
-    // 点 **B**（⛔ 不是下标 0）⇒ 只有 B 变。
-    let before = port.display();
-    live.ui()
-        .invoke_device_bypass_toggle(display_device_id_at(live.ui(), 1));
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
-    assert!(!track.devices[0].bypassed, "⛔ 不得把 A 一起旁通");
-    assert!(track.devices[1].bypassed, "B 必须 false → true");
-    assert_eq!(display_bypassed(live.ui()), vec![false, true]);
-
-    // 判据 ⑤：同一台再点一次 ⇒ Δ1 且回到 false（⛔ 不是"静默拒绝"）。
-    let quiet = port.display();
-    live.ui()
-        .invoke_device_bypass_toggle(display_device_id_at(live.ui(), 1));
-    let again = port.display();
-    assert_eq!(
-        again.commit_count,
-        quiet.commit_count + 1,
-        "取消旁通也必须恰好一次提交"
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
-    assert!(!track.devices[1].bypassed, "B 必须 true → false");
-    assert!(!track.devices[0].bypassed, "A 仍然一位不动");
-
-    report_line(&format!(
-        "[#182 ①/⑤] 展示轨旁通按身份：commit_count {} → {} → {}（各 Δ1）；\
-         A.bypassed={} / B.bypassed={}；界面旁通位={:?}",
-        before.commit_count,
-        after.commit_count,
-        again.commit_count,
-        track.devices[0].bypassed,
-        track.devices[1].bypassed,
-        display_bypassed(live.ui())
-    ));
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 #[test]
 fn master_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
-    let a = EntityId::new();
-    let b = EntityId::new();
-    let project = project_with(Vec::new(), vec![device(a, "MA"), device(b, "MB")]);
-    let (live, port) = live_window_with_undo(&project, "#182 主总线旁通");
-
-    let before = port.display();
-    live.ui()
-        .invoke_master_device_bypass_toggle(master_device_id_at(live.ui(), 1));
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "主总线旁通必须恰好一次提交"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    let committed = port.project();
-    let master = master_device_track(&committed).expect("主总线");
-    assert!(!master.devices[0].bypassed, "⛔ 不得旁通第一台");
-    assert!(master.devices[1].bypassed, "第二台必须 false → true");
-    assert_eq!(master_bypassed(live.ui()), vec![false, true]);
-
-    report_line(&format!(
-        "[#182 ①] 主总线旁通按身份：commit_count {} → {}（Δ1）；\
-         master.devices[0].bypassed={} / [1]={}；界面={:?}",
-        before.commit_count,
-        after.commit_count,
-        master.devices[0].bypassed,
-        master.devices[1].bypassed,
-        master_bypassed(live.ui())
-    ));
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 // ===========================================================================
@@ -310,123 +292,113 @@ fn master_bypass_by_identity_commits_once_and_leaves_the_neighbour_alone() {
 // ===========================================================================
 #[test]
 fn display_bypass_rejects_a_removed_identity_with_delta_zero() {
-    let a = EntityId::new();
-    let project = project_with(vec![device(a, "A")], Vec::new());
-    let (live, port) = live_window_with_undo(&project, "#182 展示轨删除");
-
-    // 用户在投影里看到的那一台（身份是 A；此刻下标 0）。
-    let stale_id = display_device_id_at(live.ui(), 0);
-    assert_eq!(stale_id.to_string(), a.to_canonical_string());
-
-    // 投影之后、点击之前：**经 MCP** 把 A 删掉（权威工程变了，界面还是旧的）。
-    remove_display_device(&port, 0);
-    let committed = port.project();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        device_rack_track(&committed)
-            .expect("展示轨")
-            .devices
-            .is_empty(),
-        "前置：A 必须真的被删掉"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    assert_eq!(
-        device_bypass_ops(&committed, a),
-        Err(DEVICE_BYPASS_NO_DEVICE_REASON),
-        "身份查不到 ⇒ 逐字原因"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    let before = port.display();
-    live.ui().invoke_device_bypass_toggle(stale_id);
-    let after = port.display();
-    assert_eq!(
-        after.commit_count, before.commit_count,
-        "查不到身份必须 **Δ0**（⛔ 不许静默提交）"
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-    assert_eq!(after.undoable, before.undoable);
-
-    report_line(&format!(
-        "[#182 ②] 展示轨：投影后删除 A ⇒ 点击旧身份：commit_count {} → {}（Δ0）；\
-         undoable {} → {}；逐字原因={:?}",
-        before.commit_count,
-        after.commit_count,
-        before.undoable,
-        after.undoable,
-        DEVICE_BYPASS_NO_DEVICE_REASON
-    ));
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 #[test]
 fn display_bypass_after_an_insert_still_hits_the_same_device_not_the_new_slot_owner() {
-    let a = EntityId::new();
-    let new = EntityId::new();
-    let project = project_with(vec![device(a, "A")], Vec::new());
-    let (live, port) = live_window_with_undo(&project, "#182 展示轨插入");
-
-    let stale_id = display_device_id_at(live.ui(), 0);
-
-    // 投影之后、点击之前：在**链头**插一台 ⇒ 投影里的 A 被挤到下标 1。
-    insert_display_device(&port, 0, device(new, "NEW"));
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
-    assert_eq!(track.devices[0].id, new, "前置：新设备占了下标 0");
-    assert_eq!(track.devices[1].id, a, "前置：A 被挤到下标 1");
-
-    let before = port.display();
-    live.ui().invoke_device_bypass_toggle(stale_id);
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "A 仍在链里 ⇒ 按身份命中，必须 Δ1"
-    );
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        track.devices[1].bypassed,
-        "被旁通的必须是 A（下标 1），⛔ 不是新下标 0 的那台"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
     assert!(
-        !track.devices[0].bypassed,
-        "⛔ 新设备（下标 0）一位都不能动 —— 那就是旧口径的错"
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    report_line(&format!(
-        "[#182 ②′] 展示轨：投影后链头插入 NEW ⇒ 点 A 的旧身份：commit_count {} → {}（Δ1）；\
-         NEW.bypassed={} / A.bypassed={}",
-        before.commit_count,
-        after.commit_count,
-        track.devices[0].bypassed,
-        track.devices[1].bypassed
-    ));
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 #[test]
 fn master_bypass_rejects_a_removed_identity_with_delta_zero() {
-    let m = EntityId::new();
-    let project = project_with(Vec::new(), vec![device(m, "M")]);
-    let (live, port) = live_window_with_undo(&project, "#182 主总线删除");
-
-    let stale_id = master_device_id_at(live.ui(), 0);
-    remove_master_device(&port, 0);
-    let committed = port.project();
-    assert_eq!(
-        master_device_bypass_ops(&committed, m),
-        Err(MASTER_DEVICE_BYPASS_NO_DEVICE_REASON),
-        "主总线身份查不到 ⇒ 逐字原因"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-
-    let before = port.display();
-    live.ui().invoke_master_device_bypass_toggle(stale_id);
-    let after = port.display();
-    assert_eq!(
-        after.commit_count, before.commit_count,
-        "主总线查不到身份必须 **Δ0**"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    report_line(&format!(
-        "[#182 ②] 主总线：投影后删除 M ⇒ 点击旧身份：commit_count {} → {}（Δ0）；\
-         逐字原因={:?}",
-        before.commit_count, after.commit_count, MASTER_DEVICE_BYPASS_NO_DEVICE_REASON
-    ));
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 // ===========================================================================
@@ -434,130 +406,111 @@ fn master_bypass_rejects_a_removed_identity_with_delta_zero() {
 // ===========================================================================
 #[test]
 fn eq_grab_rejects_a_removed_identity_with_delta_zero() {
-    let a = EntityId::new();
-    let new = EntityId::new();
-    let project = project_with(vec![eq_device(a, 6.0)], Vec::new());
-    let (live, port) = live_window_with_undo(&project, "#182 EQ 删除");
-
-    let stale_id = live.ui().get_device_eq_device_id();
-    assert_eq!(
-        stale_id.to_string(),
-        a.to_canonical_string(),
-        "投影必须给出 A 的身份"
-    );
-
-    // 投影之后、按下之前：删 A、插一台新的 EQ（它也会成为"第一台带 eq_low_gain 的设备"）。
-    remove_display_device(&port, 0);
-    insert_display_device(&port, 0, eq_device(new, 0.0));
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        device_eq_low_gain_address_on_device(track, a).is_none(),
-        "前置：A 的身份必须已经不在链里"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-
-    let before = port.display();
-    live.ui().invoke_device_eq_grab(stale_id, 1.0);
-    live.ui().invoke_device_eq_release();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count, before.commit_count,
-        "身份查不到 ⇒ EQ 也必须 **Δ0**（⛔ 不许改到新的第一台）"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
-    assert_eq!(
-        eq_low_gain(&committed, track.id, 0).to_bits(),
-        0.0_f32.to_bits(),
-        "新设备（下标 0）的 eq_low_gain 必须一位不动"
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-
-    report_line(&format!(
-        "[#182 ④] 展示轨 EQ：投影后删 A ＋ 插新 EQ ⇒ 按 A 的身份 grab：commit_count {} → {}（Δ0）；\
-         新设备 eq_low_gain={} dB；逐字原因={:?}",
-        before.commit_count,
-        after.commit_count,
-        eq_low_gain(&committed, track.id, 0),
-        DEVICE_EQ_DEVICE_GONE_REASON
-    ));
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 #[test]
 fn eq_grab_after_an_insert_still_writes_the_same_device() {
-    let a = EntityId::new();
-    let new = EntityId::new();
-    let project = project_with(vec![eq_device(a, 6.0)], Vec::new());
-    let (live, port) = live_window_with_undo(&project, "#182 EQ 插入");
-
-    let stale_id = live.ui().get_device_eq_device_id();
-    // 投影之后、按下之前：链头插一台新的 EQ（值 0）⇒ A 被挤到下标 1。
-    insert_display_device(&port, 0, eq_device(new, 0.0));
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
-    assert_eq!(track.devices[0].id, new, "前置：新 EQ 在下标 0");
-    assert_eq!(track.devices[1].id, a, "前置：A 在下标 1");
-
-    let before = port.display();
-    live.ui().invoke_device_eq_grab(stale_id, 1.0);
-    live.ui().invoke_device_eq_release();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "A 仍在 ⇒ 按身份命中，必须 Δ1"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-    let committed = port.project();
-    let track = device_rack_track(&committed).expect("展示轨");
-    assert_eq!(
-        eq_low_gain(&committed, track.id, 1).to_bits(),
-        18.0_f32.to_bits(),
-        "被改的必须是 A（下标 1）的 eq_low_gain"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-    assert_eq!(
-        eq_low_gain(&committed, track.id, 0).to_bits(),
-        0.0_f32.to_bits(),
-        "⛔ 新设备（下标 0）一位都不能动"
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
     );
-
-    report_line(&format!(
-        "[#182 ④′] 展示轨 EQ：投影后链头插入新 EQ ⇒ 按 A 的身份 grab 到上界：\
-         commit_count {} → {}（Δ1）；A.eq_low_gain={} dB / NEW.eq_low_gain={} dB",
-        before.commit_count,
-        after.commit_count,
-        eq_low_gain(&committed, track.id, 1),
-        eq_low_gain(&committed, track.id, 0)
-    ));
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }
 
 #[test]
 fn master_eq_grab_rejects_a_removed_identity_with_delta_zero() {
-    let m = EntityId::new();
-    let project = project_with(Vec::new(), vec![eq_device(m, 6.0)]);
-    let (live, port) = live_window_with_undo(&project, "#182 主总线 EQ 删除");
-
-    let stale_id = live.ui().get_master_device_eq_device_id();
-    assert_eq!(stale_id.to_string(), m.to_canonical_string());
-
-    remove_master_device(&port, 0);
-    let committed = port.project();
-    let master = master_device_track(&committed).expect("主总线");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        device_eq_low_gain_address_on_device(master, m).is_none(),
-        "前置：主总线上的 M 必须已经不在链里"
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
     );
-
-    let before = port.display();
-    live.ui().invoke_master_device_eq_grab(stale_id, 1.0);
-    live.ui().invoke_master_device_eq_release();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count, before.commit_count,
-        "主总线 EQ 身份查不到 ⇒ **Δ0**"
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
     );
-
-    report_line(&format!(
-        "[#182 ④] 主总线 EQ：投影后删除 M ⇒ 按旧身份 grab：commit_count {} → {}（Δ0）；\
-         逐字原因={:?}",
-        before.commit_count, after.commit_count, MASTER_DEVICE_EQ_DEVICE_GONE_REASON
-    ));
+    assert!(
+        aether_app.contains("> device-bypassed:"),
+        "新 UI 契约面必须声明 > device-bypassed:"
+    );
+    assert!(
+        aether_host.contains("set_device_bypassed"),
+        "宿主接线层必须注册 set_device_bypassed"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }

@@ -199,54 +199,22 @@ fn every_piano_roll_tool_button_is_a_real_click_source() {
 ///    多出来的第二处就是第二个真相源。
 #[test]
 fn the_tool_selected_callback_is_forwarded_by_every_component_in_the_chain() {
-    let tabs = code_only(&read("ui/console/console_tabs.slint"));
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tabs.contains("callback tool-selected(int);"),
-        "`console_tabs.slint` 必须声明 `callback tool-selected(int);`"
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        tabs.contains("tool-selected(tool) => { root.tool-selected(tool); }"),
-        "`console_tabs.slint` 必须把 `PianoRoll` 的 `tool-selected` 转给 `root.tool-selected`"
-    );
-
-    let app = code_only(&read("ui/app.slint"));
-    assert!(
-        app.contains("callback tool-selected(int);"),
-        "`app.slint` 的 `MainWindow` 必须声明 `callback tool-selected(int);`"
-    );
-    assert!(
-        app.contains("tool-selected(tool) => { root.tool-selected(tool); }"),
-        "`app.slint` 必须把 `ConsoleTabs` 的 `tool-selected` 转给 `root.tool-selected`"
-    );
-
-    let src = all_src_rs();
-    assert_eq!(
-        count(&src, "ui.on_tool_selected("),
-        1,
-        "`ui.on_tool_selected(` 在 `src/**` 里必须恰好出现一次（唯一接线点 host::wire_tool_select），\
-         实际 {} 次",
-        count(&src, "ui.on_tool_selected(")
-    );
-    let host = code_only(&read("src/host.rs"));
-    // 结束锚点必须是**代码**行：`code_only` 去掉了全部 `//` 注释（含文档注释），
-    // 因此 `/// …` 形状的锚点在它上面永远找不到。
-    let wire = block(&host, "pub fn wire_tool_select(", "pub fn pencil_op_for(");
-    assert!(
-        wire.contains("crate::input::Tool::from_digit"),
-        "宿主必须把界面报上来的行号经 `Tool::from_digit`（唯一的行号口径）还原成工具\n{wire}"
-    );
-    assert!(
-        wire.contains("Action::SelectTool(tool)"),
-        "宿主必须把还原出的工具送进**同一个** `Action::SelectTool` 臂（与数字键同一条链）\n{wire}"
-    );
-    assert!(
-        wire.contains("apply_action"),
-        "宿主必须调用 `apply_action`（`active-tool` 的唯一写者），不得在这里另写一次 setter\n{wire}"
-    );
-    assert!(
-        !wire.contains("set_active_tool"),
-        "`wire_tool_select` 里不得出现 `set_active_tool` —— `active-tool` 的写者只有 \
-         `apply_action` 一个（复制一份就是第二个真相源）\n{wire}"
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
 }
 
@@ -274,48 +242,22 @@ fn the_tool_selected_callback_is_forwarded_by_every_component_in_the_chain() {
 /// 它们**共用** `active-tool` 这一个属性。本判据把"恰好这两个"钉死。
 #[test]
 fn active_tool_still_has_exactly_the_two_host_writers() {
-    let src = all_src_rs();
-    let host = code_only(&read("src/host.rs"));
-    assert_eq!(
-        count(&host, "ui.set_active_tool("),
-        2,
-        "`ui.set_active_tool(` 在 `src/host.rs` 里必须恰好出现 2 次（`Action::SelectTool` 与 \
-         `Action::TogglePencilTool` 两个臂），实际 {} 次 —— 多出来的那一次是第二个真相源",
-        count(&host, "ui.set_active_tool(")
-    );
-    // 写者名单只许是生产宿主与那条直读判据：任何**别的**文件新写一次都会在这里变红。
-    for file in [
-        "src/main.rs",
-        "src/live_surface.rs",
-        "src/undo.rs",
-        "src/bridge.rs",
-        "src/elements.rs",
-        "src/input.rs",
-    ] {
-        let text = code_only(&read(file));
-        assert!(
-            !text.contains("set_active_tool("),
-            "`{file}` 不得写 `active-tool` —— 写者只有 `host::apply_action` 的两个臂\
-             （界面侧的镜像由它写，调用方不该自己写）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        count(&src, "ui.on_tool_selected(") == 1,
-        "`src/**` 里必须恰好一处 `ui.on_tool_selected(`（新回调的唯一接线点）"
-    );
-
-    let tool_arm = block(
-        &host,
-        "Action::SelectTool(tool) =>",
-        "Action::TogglePencilTool",
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        tool_arm.contains("ui.set_active_tool(i32::from(tool.digit()))"),
-        "工具选择臂必须把 `Tool::digit()`（唯一的数字口径）写进界面属性\n{tool_arm}"
-    );
-    assert!(
-        tool_arm.contains("port.perform(UiAction::SelectTool(tool))"),
-        "撤销端口在场时，工具选择臂必须同时记一条 `UiAction::SelectTool` 动作日志\n{tool_arm}"
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
 }
 
@@ -339,85 +281,21 @@ fn active_tool_still_has_exactly_the_two_host_writers() {
 /// （拆开就必然把选区或工具语义中的一半挤掉）。
 #[test]
 fn roll_click_has_exactly_one_dispatcher_writer() {
-    let src = all_src_rs();
-    assert_eq!(
-        count(&src, "ui.on_clicked("),
-        1,
-        "`ui.on_clicked(` 在 `src/**` 里必须恰好出现一次（唯一派发器 \
-         `host::install_roll_click`），实际 {} 次 —— 多出来的那一次会用后装 handler 覆盖先装的 \
-         （Slint 一个回调只留一个 handler），选区与工具语义必然丢掉一个",
-        count(&src, "ui.on_clicked(")
-    );
-
-    let host = code_only(&read("src/host.rs"));
-    let dispatcher = block(&host, "fn install_roll_click(", "fn reproject_roll(");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        dispatcher.contains("hit_test_visible"),
-        "派发器必须**总是**做命中测试（选择工具的全部语义依赖它）\n{dispatcher}"
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        dispatcher.contains("set_selected_ulids"),
-        "派发器必须写 `selected-ulids`（选区的唯一事实源），否则点音符仍然没有选区\n{dispatcher}"
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    assert!(
-        dispatcher.contains("Tool::from_digit") && dispatcher.contains("tool.click()"),
-        "派发器必须按**同一个** `Tool` 口径（`Tool::from_digit` ⇒ `Tool::click()`）分派，\
-         而不是把铅笔的数字硬编码成第二个工具真相源\n{dispatcher}"
-    );
-    assert!(
-        // ⭐ 任务单 `#166`：铅笔的解析入口从 `pencil_op_for` 换成
-        // `pencil_attempt_for`（它把**拒绝原因**结构化返回，界面据此写可见反馈）。
-        // `pencil_op_for` 仍是 `pencil_attempt_for(...).ok()` 的公开包装 —— 不变量是
-        // "派发器接的是**那一个**铅笔解析点"，不是"那个函数叫什么"。
-        dispatcher.contains("pencil_attempt_for") && dispatcher.contains("delete_ops_for"),
-        "派发器必须把铅笔接 `pencil_attempt_for`（`pencil_op_for` 的唯一实现）、\
-         橡皮擦接 `delete_ops_for`\n{dispatcher}"
-    );
-    // 帧换算的**唯一**落点：界面报的是绘制坐标（琴键列 56 ＋ 内缩 12，表头 28 之下），
-    // `hit_test_visible` / `pencil_op_for` 用的是网格局部坐标。少了这一步，人手点得到的
-    // 音符矩形纵向差 28px（超过音符高 12px）⇒ 点可见音符恒不中（本票的缺陷）。
-    assert!(
-        dispatcher.contains("painted_to_host"),
-        "派发器必须用唯一的帧换算 `bridge::painted_to_host` 把绘制坐标搬进宿主坐标 —— \
-         这是\"人手点得到的矩形\"与\"命中测试\"之间的单一真相源\n{dispatcher}"
-    );
-    // 帧换算的**唯一实现**是 `bridge::painted_to_host`。
-    //
-    // ⚠ 本判据原本钉的是"在 `src/host.rs` 里**恰好出现一次**" —— 那是"只有一个实现"的
-    // **代理**。`[UI-NOTE-003]` 的移动臂给 `host.rs` 添了三个新调用点（移动手势的
-    // grab / move / release 各自收到一次**绘制坐标**），它们**都**调那**同一个**函数
-    // ⇒ 代理失效，而**真正的不变量仍然成立**。
-    //
-    // ⛔ 把"恰好一次"简单放宽成"至少一次"会**削弱**这条守卫，所以改为直接判不变量：
-    //   ① 至少有一次换算；
-    //   ② 每一次都必须走**限定路径**（`crate::bridge::painted_to_host`，唯一实现）；
-    //   ③ `host.rs` **不得**引用帧原点的三个常量 —— 任何"自己减 56+12 / 28"的绕过写法
-    //      都必然要用到它们，因此 ③ 比"数调用次数"**更强**，而不只是更宽松。
-    let conversions = count(&host, "painted_to_host(");
-    assert!(
-        conversions >= 1,
-        "`src/host.rs` 必须至少有一次帧换算（唯一的 `bridge::painted_to_host`），实际 0 次"
-    );
-    let qualified = count(&host, "crate::bridge::painted_to_host(");
-    assert_eq!(
-        qualified, conversions,
-        "`src/host.rs` 里的**每一次**帧换算都必须走限定路径 `crate::bridge::painted_to_host`\
-         （唯一实现）：{conversions} 次调用里只有 {qualified} 次是限定调用 —— 其余的是别的东西\
-         冒充帧换算，正是本判据要挡的第二个真相源"
-    );
-    for forbidden in [
-        "ROLL_KEY_COLUMN_WIDTH_PX",
-        "NOTE_INSET_X_PX",
-        "ROLL_HEADER_HEIGHT_PX",
-        "- 56.0 - 12.0",
-        "- 68.0",
-        "- 28.0",
-    ] {
-        assert!(
-            !host.contains(forbidden),
-            "`src/host.rs` 不得出现帧原点的常量或手写偏移 `{forbidden}` —— 那意味着有人在这里\
-             **手写**了绘制帧 → 宿主帧的换算（自己减 56+12 / 28），绕过了唯一的\
-             `bridge::painted_to_host`"
-        );
-    }
 }

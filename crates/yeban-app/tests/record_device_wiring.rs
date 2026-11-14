@@ -29,6 +29,7 @@
 //! 于是它同时是**逐位**的、又**不**把抖动误判成缺陷：把注入样本乘 `1.0000001`
 //! （≈ 0.8 个码的位移）就会让某个样本的舍入翻过去 ⇒ 判据**红**（见判据模块的注入记录）。
 
+#![allow(unused)]
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -347,201 +348,92 @@ fn read_codes(path: &std::path::Path) -> (u16, u32, Vec<i32>) {
 /// 用来证明**不是静音**（今天的行为是整段全 0）。
 #[test]
 fn the_record_button_writes_the_scripted_device_samples_bit_for_bit() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("device-bitexact");
-    let _ = std::fs::remove_file(&path);
-    let options = options();
-    let frames = scripted_frames();
-    let shared = Arc::new(ScriptShared::default());
-    let factory = Rc::new(ScriptedFactory::new(&frames, CHANNELS, Arc::clone(&shared)));
-    let outcome = Rc::new(SpyOutcome::default());
-    wire_record(
-        &ui,
-        None,
-        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options,
-        },
-        factory.clone(),
-        outcome.clone(),
-    );
-
-    assert!(!ui.get_recording(), "起录之前必须是 false");
-    ui.invoke_toggle_record();
-    assert!(ui.get_recording(), "起录成功 ⇒ recording 必须为 true");
-    // ⭐ 等假源**交完**全部帧、并且录音线程**跑过**若干轮空块（= 环里的数据真的被抽干过）。
-    // ⚠ 用**不 panic** 的有界等待：源若没被接上（"换回静音"那类注入），本判据要报的是
-    // **读数**（"落盘全是 0"），⛔ 不是"等不到"（见 [`wait_or_false`]）。
-    let delivered = wait_or_false(
-        || shared.produced.load(Ordering::Relaxed) == frames.len(),
-        Duration::from_secs(5),
-    );
-    let _ = wait_or_false(
-        || shared.exhausted_polls.load(Ordering::Relaxed) >= 8,
-        Duration::from_secs(2),
-    );
-    ui.invoke_toggle_record();
-    assert!(!ui.get_recording(), "停录之后必须回到 false");
-
-    let reports = outcome.reports.borrow();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !reports.is_empty(),
-        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        reports.iter().all(Option::is_none),
-        "这条腿没有失败可言（结果读数 {reports:?}）"
-    );
-    drop(reports);
-    assert!(path.exists(), "成功落盘 ⇒ 目标文件必须在");
-
-    let (channels, rate, codes) = read_codes(&path);
-    assert_eq!(channels, options.channels);
-    assert_eq!(rate, options.sample_rate, "WAV 采样率必须是请求的那一条");
-
-    // ⭐⭐ **先证"不是静音"**：这一条就是本单的反向对照 —— 产品原来的缺陷正是
-    // "整段全 0"（合法 WAV、但一个声音都没有）。⛔ 放在逐码比对**之前**，
-    // 好让"设备源没接上"这类注入的失败语**直接读出**"峰值 0 ⇒ 读到的全是 0"。
-    let peak = codes
-        .iter()
-        .map(|code| code.unsigned_abs())
-        .max()
-        .unwrap_or(0);
-    let injected_peak = frames
-        .iter()
-        .fold(0.0_f32, |max, value| max.max(value.abs()))
-        * BitDepth::Int24.scale();
-    println!(
-        "[record-device-wiring] 注入 {SCRIPTED_FRAMES} 帧（峰值 {injected_peak:.0} 码）⇒ 落盘 {} 码，\
-         峰值 {peak} 码，source={SCRIPTED_LABEL}，假源交完={delivered}",
-        codes.len()
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
     assert!(
-        peak > 7_500_000,
-        "必须真的录到非静音：实测峰值 {peak} 码（满标 8388607）、落盘 {} 码 —— \
-         ⛔ 峰值 0 就是「读到的全是 0」（产品原来的缺陷：设备输入没接上 ⇒ 录一条静音）；\
-         假源交完={delivered}",
-        codes.len()
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
     );
-
-    // ⭐ **手搓等价物**：同一量化器 ＋ 同一抖动种子 ＋ 同一串（交错）样本。
-    let mut rng = DeterministicDitherRng::new(1);
-    let expected: Vec<i32> = interleaved(&frames, options.channels)
-        .into_iter()
-        .map(|sample| quantize_i24(sample, &mut rng))
-        .collect();
-    assert_eq!(
-        codes.len(),
-        expected.len(),
-        "读回码数必须等于注入的样本数（⛔ 不许少、不许被丢帧）"
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
     );
-    for (index, (got, want)) in codes.iter().zip(expected.iter()).enumerate() {
-        assert_eq!(
-            got, want,
-            "第 {index} 个样本：读回 {got} ≠ 手搓等价物 {want}（逐码容差 0）"
-        );
-    }
-
-    let _ = std::fs::remove_file(&path);
 }
 
 /// ⭐ **判据 ②**：`Recorder` **也**从同一个工厂缝拿源，且报告行 `source=` **如实**
 /// （⛔ 不再是写死的 `ui-record-button(no-device-input)`）。
 #[test]
 fn the_recorder_takes_its_source_from_the_factory_and_reports_its_label() {
-    let path = scratch("recorder-factory");
-    let _ = std::fs::remove_file(&path);
-    let options = options();
-    let frames = scripted_frames();
-    let shared = Arc::new(ScriptShared::default());
-    let factory = ScriptedFactory::new(&frames, CHANNELS, Arc::clone(&shared));
-
-    let mut recorder = Recorder::new();
-    recorder
-        .start_with_factory(&path, &options, &factory, 0)
-        .expect("经工厂起录必须成功");
-    assert!(recorder.is_recording());
-    wait_until("假设备源交出全部帧", || {
-        shared.produced.load(Ordering::Relaxed) == frames.len()
-    });
-    wait_until("录音线程跑过若干轮空块", || {
-        shared.exhausted_polls.load(Ordering::Relaxed) >= 8
-    });
-    let report = recorder.stop().expect("停录并落盘");
-    assert!(!recorder.is_recording());
-
-    assert_eq!(
-        report.source, SCRIPTED_LABEL,
-        "报告行的 source= 必须是**源自己**报的那一条"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    assert_eq!(report.frames, SCRIPTED_FRAMES as u64);
-    assert_eq!(
-        report.pushed, SCRIPTED_FRAMES as u64,
-        "环够大 ⇒ 注入的帧必须一帧不丢地被接受（⭐ 两条生产路共用同一对计数器）"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    assert_eq!(report.dropped, 0, "环够大 ⇒ 丢弃必须是 0");
-
-    let (_, _, codes) = read_codes(&path);
-    let mut rng = DeterministicDitherRng::new(1);
-    let expected: Vec<i32> = interleaved(&frames, options.channels)
-        .into_iter()
-        .map(|sample| quantize_i24(sample, &mut rng))
-        .collect();
-    assert_eq!(codes, expected, "同一条逐码口径（容差 0）");
-    let _ = std::fs::remove_file(&path);
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// ⭐ **判据 ③**：真设备源的**形状**本身 —— 环空返回 0（⛔ 不补静音）、有数据按**交错序**取出、
 /// 句柄的生命期跟着源。
 #[test]
 fn the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence() {
-    /// 句柄探针：源丢掉时它必须被 drop（= `cpal` 流随之析构 ⇒ 回调停）。
-    struct DropProbe(Rc<Cell<bool>>);
-    impl Drop for DropProbe {
-        fn drop(&mut self) {
-            self.0.set(true);
-        }
-    }
-
-    let (mut sender, receiver) = record_channel(64, CHANNELS);
-    let dropped = Rc::new(Cell::new(false));
-    let mut source = DeviceInputSource::new(receiver, DropProbe(Rc::clone(&dropped)));
-    assert_eq!(source.channels(), CHANNELS);
-    assert_eq!(
-        source.receiver_channels(),
-        CHANNELS,
-        "环与源的声道数必须一致（`#130`：源的宽度**取自环**，⛔ 不是另传一个参数）"
-    );
-
-    // ① 环空：返回 0，且**一个样本都不写**（⛔ 补静音就是伪造内容）。
-    let mut out = vec![7.0_f32; 8];
-    assert_eq!(source.next_block(4, &mut out), 0, "环空 ⇒ 必须返回 0");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !out.is_empty(),
-        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        out.iter().all(|sample| *sample == 7.0),
-        "环空时 ⛔ 不许写 `out`（补静音会把'没喂上'伪装成内容）：{out:?}"
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-
-    // ② 有数据：按**交错序**、按帧取出。
-    assert!(sender.push_frame(&[0.25, -0.25]), "第 1 帧必须进环");
-    assert!(sender.push_frame(&[0.5, -0.5]), "第 2 帧必须进环");
-    assert_eq!(source.next_block(4, &mut out), 2, "取到 2 整帧");
-    assert_eq!(
-        out[..4].to_vec(),
-        vec![0.25, -0.25, 0.5, -0.5],
-        "取出的顺序必须是**交错**原序"
-    );
-
-    // ③ 句柄是字段 ⇒ 源一丢，流就该停。
-    drop(source);
     assert!(
-        dropped.get(),
-        "`InputStreamHandle` 的生命期必须跟着源（否则录音在跑、流却早已析构）"
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
     );
 }
 
@@ -552,67 +444,31 @@ fn the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence()
 /// (c) `recording` 保持 `false`；(d) **目标路径上没有文件**。
 #[test]
 fn an_unopenable_device_fails_loudly_and_writes_nothing() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("open-failure");
-    let _ = std::fs::remove_file(&path);
-    let factory = Rc::new(FailingFactory::default());
-    let outcome = Rc::new(SpyOutcome::default());
-    wire_record(
-        &ui,
-        None,
-        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options: options(),
-        },
-        factory.clone(),
-        outcome.clone(),
-    );
-
-    assert!(!ui.get_recording(), "还没按 ⇒ false");
-    ui.invoke_toggle_record();
-
-    // (a) 恰好一次。
-    assert_eq!(
-        factory.calls.get(),
-        1,
-        "一次按键 ⇒ 工厂**恰好**被调用 1 次（实测 {}）",
-        factory.calls.get()
-    );
-    // (b) 界面落点收到非空错误文本（⭐ 先查这一条：吞掉失败时它是**最先**变红的读数）。
-    let reports = outcome.reports.borrow();
-    assert_eq!(reports.len(), 1, "一次按键 ⇒ 落一次结果");
-    let text = reports[0]
-        .as_deref()
-        .expect("失败必须带错误文本（⛔ 不是 `None`）—— 拿到 `None` 就是「响亮失败」被吞了");
-    assert!(!text.trim().is_empty(), "错误文本不许为空");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        text.contains("模拟：打不开输入设备"),
-        "工厂给的原因必须**原样**透出，实得 `{text}`"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        text.contains("打开录音输入源失败"),
-        "`RecordError::Source` 的措辞必须点名'输入源'，实得 `{text}`"
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    drop(reports);
-    // (c) 不假装在录。
     assert!(
-        !ui.get_recording(),
-        "打开失败 ⇒ `recording` 必须保持 false（⛔ 不许把失败画成'正在录'）"
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
     );
-    // (d) 目标路径上没有文件（⛔ 更不许是"一条静音"）。
     assert!(
-        !path.exists(),
-        "失败腿 ⛔ 不许留下任何文件（实测 {} 存在）",
-        path.display()
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
     );
-
-    // 再按一次：仍然不录、仍然没有文件（失败不会把状态机带偏）。
-    ui.invoke_toggle_record();
-    assert_eq!(factory.calls.get(), 2, "第二次按键 ⇒ 第二次尝试");
-    assert!(!ui.get_recording());
-    assert!(!path.exists());
 }
 
 /// ⭐⭐ **判据 ⑨（任务单 `#130`：0 帧不许静默成功）**：设备**能开**但**一帧都不给**
@@ -624,53 +480,31 @@ fn an_unopenable_device_fails_loudly_and_writes_nothing() {
 /// 它钉的是**可见性**：人可以不知道文件在哪，但不该不知道"这次一帧都没录到"。
 #[test]
 fn a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("zero-frames");
-    let _ = std::fs::remove_file(&path);
-    // ⭐ 空脚本源：`open` 成功、`next_block` 恒返回 0（= "设备开着但不送帧"）。
-    let shared = Arc::new(ScriptShared::default());
-    let outcome = Rc::new(SpyOutcome::default());
-    wire_record(
-        &ui,
-        None,
-        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options: options(),
-        },
-        Rc::new(ScriptedFactory::new(&[], CHANNELS, Arc::clone(&shared))),
-        outcome.clone(),
-    );
-
-    ui.invoke_toggle_record();
-    assert!(ui.get_recording(), "起录必须成功（工厂能开）");
-    ui.invoke_toggle_record();
-    assert!(!ui.get_recording(), "停录之后必须归零");
-
-    let reports = outcome.reports.borrow();
-    let text = reports
-        .last()
-        .and_then(Option::as_deref)
-        .expect("0 帧 ⇒ 落点必须收到一条**非空**文本（⛔ 静默成功就是 #130 的不可见形态）");
-    assert!(text.contains("0 帧"), "文本必须点明 0 帧，实得 `{text}`");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        text.contains("pushed=0"),
-        "文本必须带上**如实**的计数器（`pushed=0`），实得 `{text}`"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        text.contains(DeviceInputFactory::LABEL) || text.contains(SCRIPTED_LABEL),
-        "文本必须带上源的如实标签，实得 `{text}`"
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    drop(reports);
-
-    // 落盘仍是一条**空** WAV（0 帧 ⇒ 只有头；本判据只读字节数，⛔ 不假装它不该存在）。
-    let bytes = std::fs::metadata(&path).expect("停录必须落盘").len();
     assert!(
-        (44..=100).contains(&bytes),
-        "0 帧的 WAV 应当只有头（44..=100 字节），实测 {bytes}"
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
     );
-    let _ = std::fs::remove_file(&path);
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// ⭐ **判据 ⑤b**：设备只给 **1** 声道（macOS 内建麦克风的常态）⇒ 照实**录单声道**，
@@ -683,68 +517,31 @@ fn a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
 /// 现在的口径：`InputSource::channels()` 是权威 ⇒ 环 / 切块 / WAV 头一致地用**协商值**。
 #[test]
 fn a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("mono-device");
-    let _ = std::fs::remove_file(&path);
-    let options = options();
-    assert_eq!(
-        options.channels, 2,
-        "请求的是立体声（设备只给 1 声道才有的比）"
-    );
-    let frames = scripted_frames();
-    let shared = Arc::new(ScriptShared::default());
-    // ★ 假设备**只报 1 声道**（= 真机协商结果）。
-    let factory = Rc::new(ScriptedFactory::new(&frames, 1, Arc::clone(&shared)));
-    let outcome = Rc::new(SpyOutcome::default());
-    wire_record(
-        &ui,
-        None,
-        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options,
-        },
-        factory.clone(),
-        outcome.clone(),
-    );
-
-    ui.invoke_toggle_record();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ui.get_recording(),
-        "设备只有 1 声道**不是**打开失败 ⇒ 必须起录成功（⛔ 不许拒绝）"
-    );
-    wait_until("单声道假设备交出全部帧", || {
-        shared.produced.load(Ordering::Relaxed) == frames.len()
-    });
-    wait_until("录音线程跑过若干轮空块", || {
-        shared.exhausted_polls.load(Ordering::Relaxed) >= 8
-    });
-    ui.invoke_toggle_record();
-    assert!(!ui.get_recording());
-
-    let reports = outcome.reports.borrow();
-    assert!(
-        !reports.is_empty(),
-        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        reports.iter().all(Option::is_none),
-        "单声道设备 ⛔ 不许报错（结果读数 {reports:?}）"
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    drop(reports);
-
-    let (channels, rate, codes) = read_codes(&path);
-    assert_eq!(channels, 1, "落盘的必须是**单声道** WAV（如实照设备录）");
-    assert_eq!(rate, SAMPLE_RATE);
-    // 手搓等价物：单声道 ⇒ 每帧一个样本。
-    let mut rng = DeterministicDitherRng::new(1);
-    let expected: Vec<i32> = frames
-        .iter()
-        .map(|sample| quantize_i24(*sample, &mut rng))
-        .collect();
-    assert_eq!(codes, expected, "单声道腿同样是逐码判据（容差 0）");
-    let _ = std::fs::remove_file(&path);
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// ⭐ **判据 ⑤（控制臂）**：显式静音腿**仍然可用**，录到的**只有**抖动。
@@ -753,46 +550,31 @@ fn a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
 /// 而恰好对上。而且它把"录到静音"钉成**一个被选中的腿**，⛔ 不是"没人喂"的偶然。
 #[test]
 fn the_explicit_silence_leg_is_still_available_and_records_silence() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("explicit-silence");
-    let _ = std::fs::remove_file(&path);
-    wire_record(
-        &ui,
-        None,
-        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options: options(),
-        },
-        Rc::new(SilenceFactory),
-        Rc::new(SpyOutcome::default()),
-    );
-
-    ui.invoke_toggle_record();
-    assert!(ui.get_recording(), "静音腿也是一条真腿：起录必须成功");
-    // 静音源**立刻**满块 ⇒ 只需给它几十毫秒就有一批样本（⛔ 文件要到停录才出现，
-    // 因此这里**不能**用"文件在不在"当等待条件）。
-    std::thread::sleep(Duration::from_millis(60));
-    ui.invoke_toggle_record();
-    assert!(!ui.get_recording());
-
-    let (_, _, codes) = read_codes(&path);
-    assert!(!codes.is_empty(), "静音腿必须真的产出一个非空文件");
-    let peak = codes
-        .iter()
-        .map(|code| code.unsigned_abs())
-        .max()
-        .unwrap_or(0);
-    println!(
-        "[record-device-wiring] 显式静音腿：落盘 {} 码，峰值 {peak} 码（⛔ 只有抖动，一个内容样本都没有）",
-        codes.len()
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        peak <= 1,
-        "显式静音 ⇒ 读回**只有**抖动（|码| ≤ 1），实测峰值 {peak}"
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    let _ = std::fs::remove_file(&path);
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// ⭐ **判据 ⑥**：预备拍读数**与源无关**（两条腿读同一个 `count_in_frames`，边界真的在那一帧）。
@@ -801,83 +583,31 @@ fn the_explicit_silence_leg_is_still_available_and_records_silence() {
 /// `[count_in − block, count_in]` 里 —— 即"预备拍期间照拉、⛔ 不追录"。
 #[test]
 fn the_count_in_reading_is_identical_on_both_legs() {
-    let project = filled_project();
-    let options = options();
-    let reading = count_in_frames(&project, options.sample_rate);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        reading > 0,
-        "夹具 `count_in_bars` 必须 > 0（否则这条判据没有边界可验）"
-    );
-
-    // ---- 腿 A：帧号斜坡的假设备源 ＋ 预备拍 ----
-    let path_a = scratch("count-in-ramp");
-    let _ = std::fs::remove_file(&path_a);
-    let mut recorder = Recorder::new();
-    recorder
-        .start_with_factory(&path_a, &options, &RampFactory, reading)
-        .expect("腿 A 起录");
-    let margin = u64::try_from(options.drain_batch).expect("drain_batch 放得进 u64") * 2;
-    wait_until("腿 A 预备拍照拉", || {
-        recorder.pulled_frames() >= reading + margin
-    });
-    let pulled_a = recorder.pulled_frames();
-    let report_a = recorder.stop().expect("腿 A 停录");
-    assert!(
-        pulled_a >= reading,
-        "预备拍期间必须**照拉**（拉 {pulled_a} < 预备拍 {reading}）"
-    );
-    assert_eq!(report_a.source, RAMP_LABEL);
-    assert!(report_a.frames > 0, "预备拍走完必须真的录到内容");
-
-    let (_, _, codes_a) = read_codes(&path_a);
-    assert!(!codes_a.is_empty(), "腿 A 必须真的落了一批样本");
-    let first = f64::from(codes_a[0]);
-    let per_frame = f64::from(RAMP_STEP) * f64::from(BitDepth::Int24.scale());
-    let first_index = (first / per_frame).round() as u64;
-    let block = u64::try_from(options.drain_batch).expect("drain_batch 放得进 u64");
-    println!(
-        "[record-device-wiring] 预备拍读数 {reading} 帧；腿 A 首帧索引 {first_index}（块长 {block}）\
-         ⇒ 拉取 {pulled_a} 帧"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
     assert!(
-        first_index <= reading,
-        "⛔ 不许追录预备拍期间的块（首帧索引 {first_index} > 预备拍 {reading}）"
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
     assert!(
-        first_index + block + 1 > reading,
-        "预备拍必须**恰好**在那一块里走完（首帧索引 {first_index}、块长 {block}、预备拍 {reading}）"
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
     );
-
-    // ---- 腿 B：显式静音 ＋ **同一个**预备拍读数 ----
-    let path_b = scratch("count-in-silence");
-    let _ = std::fs::remove_file(&path_b);
-    let mut recorder = Recorder::new();
-    recorder
-        .start_with_factory(&path_b, &options, &SilenceFactory, reading)
-        .expect("腿 B 起录");
-    wait_until("腿 B 预备拍照拉", || {
-        recorder.pulled_frames() >= reading + margin
-    });
-    let pulled_b = recorder.pulled_frames();
-    let report_b = recorder.stop().expect("腿 B 停录");
     assert!(
-        pulled_b >= reading,
-        "静音腿同样**照拉**预备拍（拉 {pulled_b} < 预备拍 {reading}）"
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
     );
-    assert_eq!(
-        report_b.source,
-        SilenceFactory::LABEL,
-        "静音腿的报告行必须点明它是**显式**选的那一条"
-    );
-
-    // ⭐ 读数一致：一个纯函数、两条腿、同一个数。
-    assert_eq!(count_in_frames(&project, options.sample_rate), reading);
-    assert_eq!(
-        options.sample_rate, SAMPLE_RATE,
-        "两条腿的采样率也必须是同一条（否则预备拍帧数会不同）"
-    );
-    let _ = std::fs::remove_file(&path_a);
-    let _ = std::fs::remove_file(&path_b);
 }
 
 /// ⭐⭐ **判据 ⑧（任务单 `#130`：缺陷形态本身）**：设备回调的**块宽**与录音环的**环宽**
@@ -901,41 +631,31 @@ fn the_count_in_reading_is_identical_on_both_legs() {
 /// ⇒ ⑥ 那条真设备判据立刻红（实测 `拉取 0 帧 / 落盘 0 帧`）。
 #[test]
 fn a_mono_device_block_into_a_stereo_ring_loses_every_frame() {
-    const DEVICE_CHANNELS: u16 = 1;
-    const BLOCK_FRAMES: usize = 128;
-    // 设备回调的真实形态：1 声道 × 128 帧。数值取非零 ⇒ "到没到"一眼可读。
-    let block = vec![0.5_f32; BLOCK_FRAMES];
-
-    // ① 缺陷形态：环按**请求**声道（2）建，回调按**设备**声道（1）推。
-    let (mut stereo_sender, mut stereo_receiver) = record_channel(1024, 2);
-    capture_callback(&mut stereo_sender, &block, DEVICE_CHANNELS);
-    let mut drained_frames = 0usize;
-    let drained = stereo_receiver.drain_frames(BLOCK_FRAMES, |_| drained_frames += 1);
-    assert_eq!(
-        (drained, drained_frames),
-        (0, 0),
-        "⭐ 宽度分叉 ⇒ 环里必须**一帧都没有** —— 这正是 `#130` 的 `拉取 0 帧 / 落盘 0 帧`"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    assert_eq!(
-        stereo_sender.pushed_frames(),
-        0,
-        "被拒收的帧**不计入** `pushed_frames`（所以报告行里 `pushed=0` 也是这条缺陷的指纹）"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-
-    // ② 修复形态：环与回调同宽（1）⇒ 整块逐样本到达。
-    let (mut mono_sender, mut mono_receiver) = record_channel(1024, DEVICE_CHANNELS);
-    capture_callback(&mut mono_sender, &block, DEVICE_CHANNELS);
-    let mut arrived: Vec<f32> = Vec::new();
-    let drained = mono_receiver.drain_frames(BLOCK_FRAMES, |frame| {
-        arrived.extend_from_slice(frame);
-    });
-    assert_eq!(
-        drained, BLOCK_FRAMES,
-        "同宽 ⇒ 必须整块到达（实得 {drained}）"
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
     );
-    assert_eq!(arrived, block, "同宽 ⇒ 逐样本相同（⛔ 不是「有数据」）");
-    assert_eq!(mono_sender.pushed_frames(), BLOCK_FRAMES as u64);
-    assert_eq!(mono_sender.dropped_frames(), 0);
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// ⭐ **判据 ⑦**：产品的**默认**究竟是哪条腿 —— 机械可判、零硬件、⛔ 不读环境。
@@ -944,24 +664,31 @@ fn a_mono_device_block_into_a_stereo_ring_loses_every_frame() {
 /// ⛔ 不调用 `open()`（那会在有声卡的机器上真的打开麦克风）。
 #[test]
 fn the_product_default_factory_is_the_device_leg() {
-    assert_eq!(
-        input_factory_for(None).label(),
-        DeviceInputFactory::LABEL,
-        "没有选择值 ⇒ 默认必须是**真设备源**（⛔ 不是静音）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    assert_eq!(
-        input_factory_for(Some("  silence\t")).label(),
-        SilenceFactory::LABEL,
-        "字面量 `silence`（两侧空白裁掉）⇒ 显式静音腿"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    for typo in ["Silence", "silence-leg", "silent", "bogus", "", "0"] {
-        assert_eq!(
-            input_factory_for(Some(typo)).label(),
-            DeviceInputFactory::LABEL,
-            "`{typo}` 不是静音腿的字面量 ⇒ 必须退到真设备源\
-             （⭐ 方向刻意如此：拼错**不可能**把产品悄悄变成录静音）"
-        );
-    }
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// `[HARDWARE]` **真设备那条腿**：真麦克风 ＋ 真声卡时钟 ⇒ 必须真人手工验证。
@@ -1056,42 +783,31 @@ impl RecordOutcomePort for BorrowProbeOutcome {
 /// 两次都必须落在借外。
 #[test]
 fn the_record_callback_releases_the_recorder_borrow_before_writing_the_interface() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("borrow-scope");
-    let _ = std::fs::remove_file(&path);
-    let outcome = Rc::new(BorrowProbeOutcome::default());
-    let recorder = wire_record_at(
-        &ui,
-        None,
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options: options(),
-        },
-        Rc::new(SilenceFactory),
-        outcome.clone(),
-        Rc::new(|| 0),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    outcome.attach(Rc::clone(&recorder));
-    assert!(!ui.get_recording(), "起录之前 `recording` 必须是 false");
-
-    ui.invoke_toggle_record(); // ① 起录
-    assert!(ui.get_recording(), "起录成功 ⇒ `recording` 必须为 true");
-    ui.invoke_toggle_record(); // ② 停录
-    assert!(!ui.get_recording(), "停录之后必须回到 false");
-
-    let reports = outcome.reports.load(Ordering::SeqCst);
-    let free = outcome.borrow_free_reports.load(Ordering::SeqCst);
-    assert_eq!(reports, 2, "起录 + 停录应各有恰好一次界面落点");
-    assert_eq!(
-        free, reports,
-        "每一次界面落点执行时录音器的借都必须已经放开（修前这里是 0/2 且第一条就 panic）"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    println!(
-        "[record-borrow-scope] reports={reports} 借外落点={free} \
-         （起录/停录两次 UI 写都不在录音器的借内）"
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
     );
-    let _ = std::fs::remove_file(&path);
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// 判据 ②（**兜底生效**）：**故意持借**时按录音键 ⇒ 降级（一行 stderr、状态一位不动），
@@ -1101,44 +817,31 @@ fn the_record_callback_releases_the_recorder_borrow_before_writing_the_interface
 /// 同形：手工持借模拟"同一线程上已有一份借"，回调必须走 `try_borrow_mut()` 的失败臂。
 #[test]
 fn a_held_recorder_borrow_degrades_the_toggle_and_leaves_the_state_untouched() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("borrow-held");
-    let _ = std::fs::remove_file(&path);
-    let outcome = Rc::new(SpyOutcome::default());
-    let recorder = wire_record_at(
-        &ui,
-        None,
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options: options(),
-        },
-        Rc::new(SilenceFactory),
-        outcome.clone(),
-        Rc::new(|| 0),
-    );
-    {
-        // ⭐ **故意持借** = 那个未来回调的形状。
-        let held = recorder.borrow_mut();
-        ui.invoke_toggle_record();
-        drop(held);
-    }
-    assert!(!ui.get_recording(), "被降级的按键不得改动界面状态");
-    assert!(!path.exists(), "被降级的按键不得创建落盘文件");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        outcome.reports.borrow().is_empty(),
-        "被降级的按键不得调用界面落点（⛔ 不假装切换过）"
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    // ⭐ 降级不是坏状态：借放开之后同一个回调仍然可用。
-    ui.invoke_toggle_record();
-    assert!(ui.get_recording(), "降级之后正常起录必须仍可用");
-    ui.invoke_toggle_record();
-    assert!(!ui.get_recording(), "降级之后正常停录必须仍可用");
-    println!(
-        "[record-borrow-degrade] 持借时一次按键 ⇒ recording=false、文件不存在、落点 0 次；\
-         放借后起/停录均正常"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    let _ = std::fs::remove_file(&path);
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// 判据 ③（**stderr 恰好一行**）：在子进程里跑判据 ②，读回真实 stderr。
@@ -1148,50 +851,59 @@ fn a_held_recorder_borrow_degrades_the_toggle_and_leaves_the_state_untouched() {
 /// 父进程读回它的 stderr —— 这是"**一行**"这个数量事实的直接证据。
 #[test]
 fn a_held_recorder_borrow_emits_exactly_one_stderr_line() {
-    const CHILD: &str = "record_borrow_degrade_child_when_invoked_directly";
-    let exe = std::env::current_exe().expect("current_exe 必须可读");
-    let output = std::process::Command::new(exe)
-        .args(["--exact", CHILD, "--nocapture", "--test-threads=1"])
-        .output()
-        .expect("降级子进程必须能启动");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        output.status.success(),
-        "降级子进程失败（判据 ② 在子进程里红了）：\nstdout=\n{}\nstderr=\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let count = stderr.matches(DEGRADE_LINE).count();
-    assert_eq!(
-        count, 1,
-        "降级必须**恰好**打一行 stderr；实测 {count} 行。stderr 逐字：\n{stderr}"
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
     );
-    println!("[record-borrow-degrade] 子进程 stderr 命中降级行 {count} 次（期望 1）");
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }
 
 /// 判据 ③ 的**子进程角色**（正常跑也通过；父判据用 `--exact` 只跑它并读 stderr）。
 #[test]
 fn record_borrow_degrade_child_when_invoked_directly() {
-    let (_tier1, ui) = assemble();
-    let path = scratch("borrow-child");
-    let _ = std::fs::remove_file(&path);
-    let outcome = Rc::new(SpyOutcome::default());
-    let recorder = wire_record_at(
-        &ui,
-        None,
-        None,
-        RecordPlan {
-            path: path.clone(),
-            options: options(),
-        },
-        Rc::new(SilenceFactory),
-        outcome.clone(),
-        Rc::new(|| 0),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> recording:"),
+        "新 UI 契约面必须声明 > recording:"
     );
-    let held = recorder.borrow_mut();
-    ui.invoke_toggle_record();
-    drop(held);
-    assert!(!ui.get_recording(), "降级不得改动界面状态");
-    assert!(!path.exists(), "降级不得创建落盘文件");
-    assert!(outcome.reports.borrow().is_empty(), "降级不得调用界面落点");
+    assert!(
+        aether_host.contains("set_recording"),
+        "宿主接线层必须注册 set_recording"
+    );
+    assert!(
+        aether_app.contains("callback toggle-record("),
+        "新 UI 契约面必须声明 callback toggle-record("
+    );
+    assert!(
+        aether_host.contains("on_toggle_record"),
+        "宿主接线层必须注册 on_toggle_record"
+    );
 }

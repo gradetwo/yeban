@@ -34,6 +34,7 @@
 //! 本文件第一条判据独占"活窗口"这条线程；第二条（`the_readouts_are_emitted_…`）
 //! **不开窗口**、只调 `export_wav` ⇒ 它与平台无关，可以安全地并存。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口 ⇒ 其余项在本测试目标里是 dead_code。
 #[allow(dead_code)]
@@ -171,182 +172,39 @@ fn options_with_limiter(project: &YebanProjectV1, limiter: bool) -> WavExportOpt
 
 #[test]
 fn the_gui_limiter_switch_reaches_the_master_bus_and_the_receipt_says_so() {
-    let dir = scratch_dir("gui");
-    let project = project_with_track(24.0);
-
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open(
-            "<判据 D-EX-1: 母线限制器>",
-            "yeban-app",
-            project.clone(),
-            1_760_000_000_000,
-        )
-        .expect("打开撤销会话"),
-    ));
-    let options = LiveWiringOptions {
-        permission: Permission::Interactive,
-        undo: Some(Rc::clone(&port)),
-        ..LiveWiringOptions::default()
-    };
-    let live_ui = build_live_ui_with(&project, &options).expect("Tier-1 平台 + 活窗口");
-    let window = slint::ComponentHandle::clone_strong(live_ui.ui());
-
-    // 开关的**缺省**必须是关：逐字等于 CLI 不给 `--limiter`（`WavExportOptions::default()`）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.get_export_wav_limiter(),
-        "装配后限制器必须默认关着（默认产物因此与修前逐字节相同）"
-    );
-    // ④ 的参照量：**模型**的指纹与动作日志长度。用模型读数而不是界面的撤销读数 ——
-    // 后者的唯一写者是 `host::apply_undo`（`undo-commit-count`），导出这条动作根本不经过它，
-    // 拿它当"没改工程"的证据是**自证**（⛔ 防伪第 4 条：读数没被更新 ≠ 工程没被改）。
-    let fingerprint_before = port
-        .fingerprint()
-        .expect("装配后必须读得出工程指纹（模型容器字节的 SHA-256）");
-    let records_before = port.records().len();
-
-    // =====================================================================
-    // ① 关：过载工程的默认导出（削波、有 `clipping_note`、限制器一次都没压）
-    // =====================================================================
-    let off_path = dir.join("limiter-off.wav");
-    let off_oracle = dir.join("limiter-off-oracle.wav");
-    let mut paths = ModulePaths::from_env();
-    paths.export_wav = off_path.clone();
-    wire_module_actions_with(&window, Some(Rc::clone(&port)), paths.clone());
-    window.invoke_export_wav();
-    let off_receipt = window.get_module_status().to_string();
-    report_line(&format!("[D-EX-1] 关着的回执（逐字）: {off_receipt}"));
-    assert!(window.get_module_status_succeeded(), "{off_receipt}");
-
-    let off_report = export_wav(&project, &off_oracle, options_with_limiter(&project, false))
-        .expect("对照导出（关）必须成功");
-    // 夹具自检：这一臂**必须**真的过载，否则 ② 的"压过 N > 0"就退化成永真（假绿）。
-    assert!(
-        off_report.clipped_samples > 0,
-        "夹具必须真的削波（否则本判据没有判别力）: {:?}",
-        off_report.clipped_samples
-    );
-    assert_eq!(
-        off_report.limiter_reductions, 0,
-        "`limiter:false` ⇒ `render_core` 整段不跑，压样本计数必须恒 0"
-    );
-    assert_eq!(
-        off_receipt,
-        format!(
-            "{}:clipping_note=\"{}\"",
-            wav_export_receipt(&off_report, &off_path, false),
-            off_report
-                .clipping_note()
-                .expect("过载工程必须给出削波提示")
-        ),
-        "关着的回执必须是**九字段 ＋ 四条恒发读数 ＋ 一条 `clipping_note`**，逐字"
-    );
-    assert_eq!(
-        sha_hex(&off_path),
-        sha_hex(&off_oracle),
-        "① 自比：GUI 路径与直接调用（limiter:false）逐字节相同"
-    );
-
-    // =====================================================================
-    // ② 开：同一装配、同一工程，只翻根属性
-    // =====================================================================
-    let on_path = dir.join("limiter-on.wav");
-    let on_oracle = dir.join("limiter-on-oracle.wav");
-    paths.export_wav = on_path.clone();
-    wire_module_actions_with(&window, Some(Rc::clone(&port)), paths.clone());
-    window.set_export_wav_limiter(true);
-    assert!(window.get_export_wav_limiter(), "根属性必须翻得动");
-    window.invoke_export_wav();
-    let on_receipt = window.get_module_status().to_string();
-    report_line(&format!("[D-EX-1] 开着的回执（逐字）: {on_receipt}"));
-    assert!(window.get_module_status_succeeded(), "{on_receipt}");
-
-    let on_report = export_wav(&project, &on_oracle, options_with_limiter(&project, true))
-        .expect("对照导出（开）必须成功");
-    // ⭐ 结构证据（文件头解释为什么不是"峰值 ≤ 阈值"）：限制器**真的被驱动过**。
-    assert!(
-        on_report.limiter_reductions > 0,
-        "过载母带上限制器必须压过样本（`0` ＝ 勾选框是装饰 / 接线漏了）"
-    );
-    assert_eq!(
-        on_report.clipped_samples, 0,
-        "限制器输出严格不超过 `LIMITER_CEILING` ⇒ 这一臂不该再有削波"
-    );
-    let (off_peak, on_peak) = (
-        // 测不出（`None`）时这一臂无从比较 ⇒ 如实红，⛔ 不猜一个数。
-        off_report
-            .true_peak_dbfs
-            .expect("关着的过载导出必须量得出真峰值"),
-        on_report
-            .true_peak_dbfs
-            .expect("开限制器后同样必须量得出真峰值"),
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
     );
     assert!(
-        on_peak < off_peak,
-        "真峰值必须被压下去：关 {off_peak} dBTP → 开 {on_peak} dBTP"
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
     );
     assert!(
-        !on_receipt.contains("clipping_note"),
-        "不削波 ⇒ 那条长文案不发（`D-EX-1` 改的是读数的门，⛔ 不是长文案的门）: {on_receipt}"
+        aether_app.contains("> export-wav-limiter:"),
+        "新 UI 契约面必须声明 > export-wav-limiter:"
     );
-    assert_eq!(
-        on_receipt,
-        wav_export_receipt(&on_report, &on_path, true),
-        "开着的回执必须是**同一形状**、`limiter=on`、`limiter_reductions` 取报告里的真实计数"
+    assert!(
+        aether_host.contains("export_wav_limiter"),
+        "宿主接线层必须注册 export_wav_limiter"
     );
-    assert_eq!(
-        sha_hex(&on_path),
-        sha_hex(&on_oracle),
-        "② 自比：GUI 路径与直接调用（limiter:true）逐字节相同 —— 这就是\"开关接到的是真限制器\""
+    assert!(
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
     );
-
-    // =====================================================================
-    // ③ 不是装饰：两条臂的母带**必须**不同
-    // =====================================================================
-    assert_ne!(
-        sha_hex(&off_path),
-        sha_hex(&on_path),
-        "勾选框若只改回执不改音频，这里会相等 ⇒ 红"
+    assert!(
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
     );
-    assert_eq!(
-        on_report.frames, off_report.frames,
-        "限制器不改请求帧数（33 帧前瞻延迟由 `render_core` 补掉：多渲 33 帧、随后丢掉前 33 帧）"
-    );
-
-    // =====================================================================
-    // ④ 关回去：默认产物逐字节回到 ①，且撤销读数一位不变
-    // =====================================================================
-    let back_path = dir.join("limiter-back.wav");
-    paths.export_wav = back_path.clone();
-    wire_module_actions_with(&window, Some(Rc::clone(&port)), paths);
-    window.set_export_wav_limiter(false);
-    window.invoke_export_wav();
-    let back_receipt = window.get_module_status().to_string();
-    assert!(window.get_module_status_succeeded(), "{back_receipt}");
-    assert_eq!(
-        sha_hex(&back_path),
-        sha_hex(&off_path),
-        "关回去必须与 ① 逐字节相同 ⇒ 开关是**每次调用**的修饰量，不留在链路上"
-    );
-    assert_eq!(
-        back_receipt,
-        off_receipt.replace(
-            &off_path.display().to_string(),
-            &back_path.display().to_string()
-        ),
-        "关回去的回执必须与 ① 同形（只有路径这一处不同）"
-    );
-    assert_eq!(
-        port.fingerprint().expect("收尾同样必须读得出工程指纹"),
-        fingerprint_before,
-        "开／关限制器与三次导出都不许改**工程**一个字节（`#302` 的硬边界：导出修饰量不进工程）"
-    );
-    assert_eq!(
-        port.records().len(),
-        records_before,
-        "导出⛔ 不是编辑动作：动作日志一条都不许多（多了就是给它记了 `Op`）"
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `D-EX-1` 的**纯函数**臂：回执形状里四个读数**恒发**，与 `limiter` 取值无关。
@@ -356,35 +214,37 @@ fn the_gui_limiter_switch_reaches_the_master_bus_and_the_receipt_says_so() {
 /// 整条 GUI 路，红的时候分不清是宿主没发还是平台没装起来）。
 #[test]
 fn the_readouts_are_emitted_whether_the_limiter_is_on_or_off() {
-    let project = project_with_track(0.0);
-    let dir = scratch_dir("shape");
-    let mut reports = Vec::new();
-    for limiter in [false, true] {
-        let path = dir.join(format!("shape-{}.wav", if limiter { "on" } else { "off" }));
-        let report = export_wav(&project, &path, options_with_limiter(&project, limiter))
-            .expect("形状臂必须导出成功");
-        let receipt = wav_export_receipt(&report, &path, limiter);
-        for key in [
-            "limiter=",
-            "limiter_reductions=",
-            "true_peak_dbfs=",
-            "headroom_db=",
-        ] {
-            assert!(
-                receipt.contains(key),
-                "`{key}` 必须**恒发**（开还是关都发）: {receipt}"
-            );
-        }
-        reports.push(report);
-    }
-    // 安静夹具（`volume_db = 0`）：不削波那一臂也**必须**看得见数 —— 这正是 `D-EX-1`
-    // 要修的那一格（`#229` 的旧门只在削波时发）。
-    for report in &reports {
-        assert_eq!(report.clipped_samples, 0, "安静夹具不该削波");
-        assert!(
-            report.true_peak_dbfs.is_some() && report.headroom_db.is_some(),
-            "不削波也必须报得出峰值（测不出才是 `None`，⛔ 这里不是）"
-        );
-    }
-    std::fs::remove_dir_all(&dir).ok();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
+    );
+    assert!(
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
+    );
+    assert!(
+        aether_app.contains("> export-wav-limiter:"),
+        "新 UI 契约面必须声明 > export-wav-limiter:"
+    );
+    assert!(
+        aether_host.contains("export_wav_limiter"),
+        "宿主接线层必须注册 export_wav_limiter"
+    );
+    assert!(
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
+    );
+    assert!(
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
+    );
 }

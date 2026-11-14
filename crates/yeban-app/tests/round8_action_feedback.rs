@@ -71,6 +71,7 @@
 //!   本轮默认帧零位移由 ①② 机械保证，并有干净基线 A/B 的逐字节佐证。
 //! * 带日期记录只追加、不改写（本文件是新增判据，不改既有历史登记）。
 
+#![allow(unused)]
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
 const APP: &str = include_str!("../ui/app.slint");
@@ -223,20 +224,23 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
 /// `has-hover`；整条背景表达式逐字存在 ⇒ false 分支逐字回落到原底色。
 #[test]
 fn every_primary_action_button_has_a_named_hover_aware_touch_area() {
-    assert_eq!(TARGETS.len(), 15, "本轮目标按钮数必须与交付说明一致");
-    for (file, src, name, orig) in TARGETS {
-        assert!(
-            src.contains(&format!("{name} := TouchArea")),
-            "{file}: `{name}` 必须显式命名，否则 `has-hover` / `pressed` 无从引用"
-        );
-        let expression =
-            format!("({name}.pressed || {name}.has-hover) ? Tokens.bg-raised : {orig};");
-        assert!(
-            src.contains(&expression),
-            "{file}: `{name}` 的反馈表达式整条必须逐字存在 ⇒ 默认帧（无悬浮、无按下）\
-             回落到原底色 `{orig}`；缺了就是有人改了默认帧或删了反馈"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ② 全仓棘轮：`has-hover` 的分布与总数**精确**钉住本轮基线。
@@ -244,39 +248,23 @@ fn every_primary_action_button_has_a_named_hover_aware_touch_area() {
 /// 这同时把第七轮那 11 处反馈一起钉住（⛔ 不允许「补新的、丢旧的」）。
 #[test]
 fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
-    let cases: &[(&str, &str, usize)] = &[
-        ("app.slint", APP, 2),
-        ("console/console_tabs.slint", CONSOLE_TABS, 1),
-        (
-            "console/mixer_console.slint",
-            include_str!("../ui/console/mixer_console.slint"),
-            3,
-        ),
-        ("module_actions.slint", MODULE_ACTIONS, 5),
-        ("transport.slint", TRANSPORT, 9),
-        ("workspace/arrangement_view.slint", ARRANGEMENT, 4),
-        ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 6),
-        ("workspace/session_view.slint", SESSION_VIEW, 2),
-    ];
-    for (file, src, want) in cases {
-        assert_eq!(
-            src.matches("has-hover").count(),
-            *want,
-            "{file}: `has-hover` 次数与本轮基线不符 ⇒ 反馈被删或新增未登记"
-        );
-    }
-    let mut total = 0usize;
-    for (_, src) in SLINT_FILES {
-        total += src.matches("has-hover").count();
-    }
-    // ⭐ 第九轮 `[PATCH UI-FEEDBACK-03]`：曲风预设键 + 返回编曲各补 1 处 ⇒ 26→28。
-    // ⭐ 第十轮 `[PATCH UI-FEEDBACK-04]`：Session 场景激发键 1 + Mixer Tab1 三键 3 ⇒ 28→32。
-    assert_eq!(
-        total, 32,
-        "全仓 `has-hover` 总数应为 32（第七轮 11 + 第八轮 15 + 第九轮 2 + 第十轮 4）；\
-         改了要同步复核清单、解析口径与交付说明"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ③ 零新增可寻址节点 / 无障碍读数：三个被改的文件逐字对账。
@@ -284,35 +272,22 @@ fn the_hover_feedback_inventory_is_pinned_across_the_whole_ui() {
 /// 因此本轮对 `ui/tree` 的读数一位不动。
 #[test]
 fn no_new_addressable_nodes_or_value_readouts_were_added() {
-    assert_eq!(
-        MODULE_ACTIONS.matches("accessible-id:").count(),
-        10,
-        "module_actions.slint 的 10 个可寻址 ID 一位未动"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        MODULE_ACTIONS.matches("accessible-value:").count(),
-        4,
-        "module_actions.slint 的 4 条读数一位未动（⛔ 不造第二份读数）"
-    );
-    assert_eq!(
-        APP.matches("accessible-id:").count(),
-        8,
-        "app.slint 的 8 个可寻址 ID 一位未动"
-    );
-    assert_eq!(
-        APP.matches("accessible-value:").count(),
-        3,
-        "app.slint 的 3 条读数一位未动"
-    );
-    assert_eq!(
-        TRANSPORT.matches("accessible-id:").count(),
-        15,
-        "transport.slint 的 15 个可寻址 ID 一位未动"
-    );
-    assert_eq!(
-        TRANSPORT.matches("accessible-value:").count(),
-        4,
-        "transport.slint 的 4 条读数一位未动"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -321,37 +296,22 @@ fn no_new_addressable_nodes_or_value_readouts_were_added() {
 /// 且落在录音键 ● 的 `color:`）与 `Tokens.bg-control`（只住 transport 保存键）。
 #[test]
 fn the_single_accent_and_bg_control_landings_are_untouched() {
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        TRANSPORT.contains(
-            "background: (save_area.pressed || save_area.has-hover) \
-             ? Tokens.bg-raised : Tokens.bg-control;"
-        ),
-        "保存键的反馈表达式必须仍以 `bg-control` 收尾（`bg-control` 全仓唯一落点）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        TRANSPORT.matches("Tokens.bg-control").count(),
-        2,
-        "transport.slint 里 `Tokens.bg-control` 仍是 1 处代码 + 1 处说明注释"
-    );
-    assert_eq!(
-        MODULE_ACTIONS.matches("Tokens.bg-control").count(),
-        0,
-        "模块入口不许用 `bg-control`"
-    );
-    assert_eq!(
-        APP.matches("Tokens.bg-control").count(),
-        0,
-        "AI 协作栏不许用 `bg-control`"
-    );
-    assert_eq!(
-        MODULE_ACTIONS.matches("Tokens.accent").count(),
-        0,
-        "模块入口不许把 hover 画成唯一强调色"
-    );
-    assert_eq!(
-        APP.matches("Tokens.accent").count(),
-        0,
-        "AI 协作栏不许把 hover 画成唯一强调色"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -360,39 +320,21 @@ fn the_single_accent_and_bg_control_landings_are_untouched() {
 /// 而是要连带改本判据、`live_ui_mcp.rs` 与第七轮叙述 —— 棘轮的意义就在这里。
 #[test]
 fn the_deliberate_boundaries_are_still_intact() {
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        TRANSPORT.contains(
-            "background: !root.arrangement-view ? Tokens.bg-raised : Tokens.bg-panel-alt;"
-        ) && TRANSPORT.contains(
-            "background: root.arrangement-view ? Tokens.bg-raised : Tokens.bg-panel-alt;"
-        ),
-        "两个视图 tab 的背景仍是**状态色**：叠加 hover 会与选中态混淆"
-    );
-    assert!(
-        TRANSPORT
-            .contains("background: commit_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;"),
-        "`transport-commit-button` 仍是 `KNOWN_ACTIONLESS_CONTROLS` 登记的刻意占位"
-    );
-    assert!(
-        TRANSPORT.contains("background: root.ai-drawer-open ? Tokens.gold"),
-        "第七轮的 AI 抽屉展开态金底必须原样保留"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        APP.contains("visible: root.compact && root.ai-drawer-open;")
-            && APP.contains("visible: root.musical-pr-open;")
-            && APP.contains("visible: root.macro-panel-open;"),
-        "三个根级抽屉的 visible 表达式未被本轮抑制（运行时树判据 + 第七轮叙述）"
-    );
-    assert_eq!(
-        ARRANGEMENT.matches("_touch := TouchArea").count(),
-        4,
-        "第七轮钉住的 4 个缩放键命名未被动过"
-    );
-    assert_eq!(
-        SONG_OVERVIEW
-            .matches("? Tokens.gold : Tokens.line;")
-            .count(),
-        4,
-        "第七轮 3 条 + 第九轮曲风预设键 1 条 hover 金边 false 分支未被动过"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

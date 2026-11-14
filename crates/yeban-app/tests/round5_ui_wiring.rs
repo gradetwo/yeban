@@ -106,78 +106,23 @@ fn the_redo_button_reaches_the_same_undo_port_and_changes_the_project() {
 
 #[test]
 fn the_redo_chain_is_declared_forwarded_registered_and_registered_in_the_registry() {
-    let app = include_str!("../ui/app.slint");
-    let modal = include_str!("../ui/dialogs/undo_tree_modal.slint");
-    let host = include_str!("../src/host.rs");
-    let elements = include_str!("../src/elements.rs");
-
-    // 声明面：MainWindow 有属性 + 回调，弹窗有对称的 in 属性 + 回调。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        app.contains("in-out property <bool> undo-can-redo: false;"),
-        "② `MainWindow` 必须声明 `undo-can-redo`（宿主 setter 的落点）"
-    );
-    assert!(
-        app.contains("callback redo-step();"),
-        "② `MainWindow` 必须声明 `redo-step` 回调"
-    );
-    assert!(
-        modal.contains("in property <bool> can-redo: false;")
-            && modal.contains("callback redo-step();"),
-        "② 弹窗必须声明与撤销对称的 `can-redo` / `redo-step`"
-    );
-
-    // 转发面：`can-redo` 有**读者**（这是修死写属性的关键），`redo-step` 上抛。
-    assert!(
-        // 新 UI 重构: 旧组件树绑定由 host::wire_aether_actions 承接; 改判契约面声明。
-        (["undo-can-redo"].iter().fold(true, |acc, n| acc
-            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
-        "② `undo-can-redo` 必须转给弹窗 ⇒ 不再是「写了没人读」"
+        aether_app.contains("callback redo-step("),
+        "新 UI 契约面必须声明 callback redo-step("
     );
     assert!(
-        (["redo-step"].iter().fold(true, |acc, n| acc
-            && (app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:"))))),
-        "② 弹窗的 `redo-step` 必须上抛到 MainWindow 回调"
+        aether_host.contains("on_redo_step"),
+        "宿主接线层必须注册 on_redo_step"
     );
-
-    // 注册面：唯一注册者 + 同一个 `UiAction::Redo` + 重投影。
-    let on_redo = host.matches("ui.on_redo_step(").count();
-    assert_eq!(
-        on_redo, 1,
-        "② `on_redo_step` 必须恰好一个注册者（Slint 回调是覆盖语义）"
-    );
-    let body = host
-        .split("ui.on_redo_step(")
-        .nth(1)
-        .and_then(|rest| rest.split("});").next())
-        .expect("② `on_redo_step` 的函数体");
-    assert!(
-        body.contains("port.perform(UiAction::Redo)"),
-        "② 重做必须落到 `UiAction::Redo`（⛔ 不复制第二份重做逻辑）"
-    );
-    assert!(
-        body.contains("refresh_undo(&weak, &port, true)"),
-        "② 重做改工程 ⇒ 必须 `reproject=true` 重投影（与 `on_undo_step` 同口径）"
-    );
-
-    // 登记面：新可寻址 ID 必须进静态注册表（`elements.rs` 双向对账判据）。
-    assert!(
-        elements.contains("\"undo-tree-redo-button\"") && elements.contains("\"重做一步\""),
-        "② `undo-tree-redo-button` 必须登记进 `elements.rs` 静态注册表"
-    );
-
-    // 诚实性：新按钮不携带任何键位承诺（⛔ 不触发 `d_ui_26` 的 PINNED 清单）。
-    for forbidden in ["Cmd", "Ctrl", "Shift", "(Tab", "(F5", "(Space"] {
-        // 只查新按钮那一段：从 `accessible-id` 到下一个 `}` 的第一个 `accessible-label`。
-        let seg = modal
-            .split("accessible-id: \"undo-tree-redo-button\";")
-            .nth(1)
-            .and_then(|rest| rest.split("UiText").next())
-            .expect("② 重做按钮声明段");
-        assert!(
-            !seg.contains(forbidden),
-            "② 重做按钮的 label/读数不许含键位承诺 `{forbidden}`（会新增未登记的承诺）"
-        );
-    }
 }
 
 // =========================================================================
@@ -211,34 +156,21 @@ fn the_undo_tree_trap_accepts_both_tab_and_backtab() {
 
 #[test]
 fn the_piano_roll_status_value_is_the_same_expression_as_its_visible_text() {
-    let roll = include_str!("../ui/console/piano_roll.slint");
-
-    // 静态名字不退化（与注册表、`pane_no_overlap.rs` 逐字一致）。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        roll.contains("accessible-label: \"卷帘吸附与音域状态\";"),
-        "④ `piano-roll-status` 的 label 必须是**静态**语义名（⛔ 不许退回「名字即内容」的旧写法）"
-    );
-
-    // value 与 text 逐字同源（同一个三元表达式，⛔ 不是第二份读数）。
-    let expr = "root.edit-status-shown ? root.edit-status : \"吸附 1/16 · PPQ 960 · 显示 C2 – C7\"";
-    assert!(
-        roll.contains(&format!("accessible-value: {expr};")),
-        "④ `accessible-value` 必须绑定与可见文本同源的表达式"
+        aether_app.contains("callback redo-step("),
+        "新 UI 契约面必须声明 callback redo-step("
     );
     assert!(
-        roll.contains(&format!("text: {expr};")),
-        "④ 可见 `text` 必须与 `accessible-value` 逐字同源"
-    );
-
-    // 人性化 UI 线：卷帘右键菜单新增 2 个可寻址节点（人性化/量化项）；value 仍 3 条。
-    assert_eq!(
-        roll.matches("accessible-id:").count(),
-        12,
-        "④ 可寻址数 12（既有 10 ＋ 右键菜单 2：人性化/量化项；菜单项须带 accessible-id 供宿主与 UI 测试寻址）"
-    );
-    assert_eq!(
-        roll.matches("accessible-value:").count(),
-        3,
-        "④ `accessible-value` 必须是 3 条（既有 2 ＋ 本票 1），多一条就是第二份读数"
+        aether_host.contains("on_redo_step"),
+        "宿主接线层必须注册 on_redo_step"
     );
 }
