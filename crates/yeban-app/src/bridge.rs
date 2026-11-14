@@ -1168,6 +1168,12 @@ pub struct TrackView {
     pub pan_display: String,
     /// 该轨道上的摆放数量（`TrackV3::clips` 的长度）。
     pub clip_count: usize,
+    /// 该轨真实设备链的显示名（`TrackV3::devices` 的 `DeviceDefinition::name`，链序）。
+    ///
+    /// ⭐ 通道检查器的插入槽**只**读这一格（`host::view_to_tracks` 取前三格）：
+    /// 空链 ⇒ 空数组 ⇒ 界面显示空槽，⛔ 不再按轨道类型编造 "Wavetable MPE" /
+    /// "Pro-QLinear 8" / "Glue Comp VCA" 这类工程里不存在的设备。
+    pub devices: Vec<String>,
     /// 是否为 `master_bus_track_id` 指向的主总线。
     pub is_master: bool,
     /// 编排车道的**行顶沿 y**（逻辑像素）—— 由 [`track_rows`] 的前缀和给出。
@@ -5399,6 +5405,11 @@ fn track_view(
         pan_millis,
         pan_display: pan_display(pan_millis),
         clip_count: track.clips.len(),
+        devices: track
+            .devices
+            .iter()
+            .map(|device| device.name.clone())
+            .collect(),
         is_master,
         y,
         height,

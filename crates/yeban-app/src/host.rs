@@ -134,6 +134,36 @@ fn to_color(color: RgbColor) -> slint::Color {
     slint::Color::from_rgb_u8(color.red, color.green, color.blue)
 }
 
+/// 标尺要画的小节数与一小节的像素宽（`ViewState::bar_positions` 的读数）。
+///
+/// [Q6] 重构 UI 的标尺曾把 `1..36` 与 64px 间距写死在 `.slint` 里，与片段块
+/// （`ClipView::x = tick / ticks_per_pixel`）用两套水平刻度 —— 真实工程 88 小节
+/// 也照样只标 1..13。这里从**同一份投影**求 `(可见小节数, 小节宽 px)`：
+/// 宽 = 相邻两条小节线的差；只为**可见范围**生成节点（长工程不把上千条网格线
+/// 塞进控件树），因此标尺 / 网格 / 片段块三者用同一个水平刻度。
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32) -> (i32, f32) {
+    let bar_width = match bar_positions {
+        [first, second, ..] => (second - first).max(0.0),
+        _ => 0.0,
+    };
+    if bar_width <= 0.0 {
+        return (
+            i32::try_from(bar_positions.len()).unwrap_or(i32::MAX),
+            bar_width,
+        );
+    }
+    let fit = if viewport_width.is_finite() && viewport_width > 0.0 {
+        ((viewport_width / bar_width).ceil().clamp(0.0, 4096.0) as usize).saturating_add(2)
+    } else {
+        bar_positions.len()
+    };
+    (
+        i32::try_from(bar_positions.len().min(fit)).unwrap_or(i32::MAX),
+        bar_width,
+    )
+}
+
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。
 ///
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
@@ -156,6 +186,11 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     if !ui.get_bpm_field_editing() {
         ui.set_bpm_display(view.bpm_display.clone().into());
     }
+    // [Q3] 走带条的 TEMPO 读数：`.slint` 的 `bpm-val` 曾停在默认 124，三条投影路径
+    // 都不写它 ⇒ 打开 92/120/150 BPM 的工程仍显示 124。这里从**同一份** `ViewState`
+    // 写整数 BPM（四舍五入；显示文本仍由 `bpm-display` 给两位小数）。
+    // ⛔ 编辑中不回填整数读数之外的草稿：`bpm-val` 只表示权威工程的整数速度。
+    ui.set_bpm_val(i32::try_from((view.bpm_millis + 500) / 1000).unwrap_or(0));
     // 时间码的拍号网格：**唯一**的注入点（本函数）。`None`（模型层拒绝该拍号）
     // 一律写 0，`apply_transport` 见到 0 就如实退回 tick 文本 —— 见 `timecode_grid_of`。
     let grid = view.timecode_grid();
@@ -335,6 +370,11 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
+    // [Q6] 标尺 / 网格 / 片段块共用同一条水平刻度：小节数与小节宽都从
+    // `bar_positions` 求，`.slint` 不再写死 `1..36` 与 64px。
+    let (bar_count, bar_width_px) = bar_ruler_readout(&view.bar_positions, viewport_width);
+    ui.set_bar_count(bar_count);
+    ui.set_bar_width_px(bar_width_px);
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
     // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
@@ -14891,6 +14931,8 @@ pub fn build_main_window_with_console_tab(
     ui.set_branch_name(scene.branch_name.clone().into());
     ui.set_arrangement_view(scene.arrangement_by_default);
     ui.set_playing(false);
+    // 循环指示带与 `cycle-enabled` 同一个事实源（初值 false）⇒ 首帧不再画演示循环区间。
+    ui.set_is_looping(ui.get_cycle_enabled());
     ui.set_console_tab(console_tab);
     ui.set_track_arms(booleans(&vec![false; view.tracks.len()]));
     // ⭐ `#191`：这里**不再**写 `compact`。`ui/app.slint` 的 `MainWindow.compact` 是
@@ -17603,17 +17645,19 @@ fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
                 soloed: trk.solo,
                 armed: false,
                 meter_peak: 0.0,
+                // ⭐ 插入槽 = **该轨真实设备链**（`TrackView::devices` 的前三格）。
+                // 空链时只保留两种**真实**读数：SFZ 采样器绑定路径（若有）与空串；
+                // ⛔ 不再按轨道类型编造 "Wavetable MPE" / "Pro-QLinear 8" /
+                // "Glue Comp VCA" —— 工程里没有的设备不该出现在检查器里。
                 insert1: trk
-                    .sampler_path
-                    .as_deref()
-                    .unwrap_or(if trk.kind == "audio" {
-                        "Audio Clip"
-                    } else {
-                        "Wavetable MPE"
-                    })
+                    .devices
+                    .first()
+                    .map(String::as_str)
+                    .or(trk.sampler_path.as_deref())
+                    .unwrap_or("")
                     .into(),
-                insert2: "Pro-QLinear 8".into(),
-                insert3: "Glue Comp VCA".into(),
+                insert2: trk.devices.get(1).map_or("", String::as_str).into(),
+                insert3: trk.devices.get(2).map_or("", String::as_str).into(),
                 clip1: clip1.into(),
                 clip2: clip2.into(),
                 clip3: clip3.into(),
