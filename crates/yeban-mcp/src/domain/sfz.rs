@@ -99,8 +99,8 @@ use std::sync::Arc;
 use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
 use yeban_render::wav::{read_plain_wav_mono_f32, read_plain_wav_mono_f32_from_bytes};
 use yeban_sfz::SampleEnd;
-use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, Instrument, Region, Trigger};
-use yeban_sfz::modulation::ModTarget;
+use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, CcGate, Instrument, Region, Trigger};
+use yeban_sfz::modulation::{CcMod, ModTarget};
 use yeban_sfz::parser::{
     IncludeIssue, IncludeIssueKind, IncludeResolver, ParseLimits, SfzSource, parse_sources,
     parse_text,
@@ -734,6 +734,15 @@ pub struct RegionSummary {
     /// 路径回退内存正弦；绑到采样器轨（`yeban_render_master`）则该轨整轨静音）；
     /// ⭐ 内建静音则是 [`BUILTIN_SILENCE_SOURCE`]（没有文件可读）。
     pub sample_file_state: String,
+    /// ⭐ CC 门控（`loccN` / `hiccN` 归约后的闭区间，解析产物 [`Region::cc_gates`]
+    /// 的原样抄录）。缺省 CC 状态（每路 CC = 0）下区间不含 0 的区域不会发声，
+    /// 见 [`CcGateCensus`]。
+    pub cc_gates: Vec<CcGate>,
+    /// ⭐ `amplitude` 基值（线性百分比，缺省 [`AMPLITUDE_DEFAULT_PERCENT`] = 100）。
+    pub amplitude: f32,
+    /// ⭐ `amplitude` 族的 CC 调制项（[`Region::cc_modulations`] 里
+    /// `target == ModTarget::Amplitude` 的子集，原样抄录）。
+    pub amplitude_cc_mods: Vec<CcMod>,
 }
 
 impl RegionSummary {
@@ -748,8 +757,103 @@ impl RegionSummary {
             "loops": self.loops,
             "builtinSilence": self.builtin_silence,
             "sampleFileState": self.sample_file_state,
+            "ccGates": self.cc_gates.iter().map(|gate| serde_json::json!({
+                "cc": gate.cc,
+                "lo": gate.lo,
+                "hi": gate.hi,
+            })).collect::<Vec<_>>(),
+            "amplitude": self.amplitude,
+            "amplitudeCcMods": self.amplitude_cc_mods.iter().map(|m| serde_json::json!({
+                "cc": m.cc,
+                "delta": m.delta,
+                "curve": m.curve,
+            })).collect::<Vec<_>>(),
         })
     }
+}
+
+/// ⭐ **缺省 CC 状态下的门控普查**（装载期一次算清，⛔ 不是渲染期判定）。
+///
+/// 口径：调用方没有给任何 CC 状态时，每路控制器取 MIDI 缺省值 `0`
+/// （与 [`DemandLoadFilter::wants`] 的无探针口径、引擎摊平的 `(0, 0)` 读法同一句）。
+/// 一条区域在缺省状态下**不可发声**，当且仅当下面两条之一成立：
+///
+/// - **门控（gate）**：某个 `loccN` / `hiccN` 区间的下界 `lo > 0` ⇒ 值 `0` 不在
+///   `[lo, hi]` 内（`lo ≤ hi` 且 `lo ≥ 0` ⇒ 含 0 ⟺ `lo == 0`）；
+/// - **振幅（amplitude）**：`amplitude` 基值 ＋ 各 `amplitude_*ccN` 调制项在
+///   CC = 0 处的值（`delta × curve(0)`，曲线解析不到的项不贡献 —— 求值走
+///   `Instrument::amplitude_value_with_cc`）恰为 `0` ⇒ 有效增益 `value / 100 == 0`。
+///
+/// ⚠ 只写 `amplitude_ccN=100` 而基值缺省 100 的区域**不算**静音：曲线 0 在
+/// `x = 0` 处为 `0` ⇒ 有效值仍是 `100`、增益恰 `1.0`（`modulation.rs` §5 的裁决）。
+/// ⚠ 交叉淡化（`xfin_*` / `xfout_*`）不在本普查内：那是逐块增益，不是区域门控。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CcGateCensus {
+    /// 缺省 CC 下不可发声的区域总数（门控与振幅的**并集**，同一区域只计一次）。
+    pub silent_regions: usize,
+    /// 其中因 CC 门控不含 0 而静音的区域数。
+    pub gate_silent_regions: usize,
+    /// 其中因有效振幅为 0 而静音的区域数。
+    pub amplitude_silent_regions: usize,
+    /// 涉及的 CC 号（升序去重）：静音区域的门控 CC ＋ 振幅调制 CC。
+    pub cc_numbers: Vec<u8>,
+}
+
+impl CcGateCensus {
+    /// 回执形态（`response_data` / `preview` 的 `ccGateCensus` 键）。
+    #[must_use]
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "silentAtDefaultCc": self.silent_regions,
+            "byGate": self.gate_silent_regions,
+            "byAmplitude": self.amplitude_silent_regions,
+            "ccNumbers": self.cc_numbers,
+        })
+    }
+}
+
+/// 一条区域的 `amplitude` 在缺省 CC（全 0）下的有效值（单位 %）。
+///
+/// 求值属主是 `yeban-sfz` 的 [`Instrument::amplitude_value_with_cc`]：公式、
+/// 曲线解析与「解析不到的项不贡献」都在那一处，本函数只把探针钉成全 `0`
+/// （与 [`DemandLoadFilter::wants`] 的无探针口径同一句），⛔ 不在这里
+/// 自己求值曲线。
+fn amplitude_at_default_cc(instrument: &Instrument<'_>, region: &Region<'_>) -> f32 {
+    instrument.amplitude_value_with_cc(region, &|_| 0).0
+}
+
+/// 对一整件乐器做 [`CcGateCensus`] 普查（纯函数：只读解析产物，⛔ 不碰文件系统）。
+#[must_use]
+pub fn cc_gate_census(instrument: &Instrument<'_>) -> CcGateCensus {
+    let mut census = CcGateCensus::default();
+    let mut cc_numbers: BTreeSet<u8> = BTreeSet::new();
+    for region in instrument.regions() {
+        let gate_hit = region.cc_gates.iter().any(|gate| gate.lo > 0);
+        let amplitude_hit = amplitude_at_default_cc(instrument, region) == 0.0;
+        if gate_hit {
+            census.gate_silent_regions += 1;
+            for gate in &region.cc_gates {
+                if gate.lo > 0 {
+                    cc_numbers.insert(gate.cc);
+                }
+            }
+        }
+        if amplitude_hit {
+            census.amplitude_silent_regions += 1;
+            for m in region
+                .cc_modulations()
+                .iter()
+                .filter(|m| m.target == ModTarget::Amplitude)
+            {
+                cc_numbers.insert(m.cc);
+            }
+        }
+        if gate_hit || amplitude_hit {
+            census.silent_regions += 1;
+        }
+    }
+    census.cc_numbers = cc_numbers.into_iter().collect();
+    census
 }
 
 /// 一次 SFZ 装载的**已解析**产物（`plan` 的产物；`apply` 把它放进会话 registry）。
@@ -809,6 +913,8 @@ pub struct SfzLoad {
     /// ⭐ 本次装载**用的**预算（回显；`sampleReadsTruncated` 是不是"被这条预算"截的，
     /// 只有把它一起报出来才能判）。
     pub limits: SampleLimits,
+    /// ⭐ 缺省 CC 状态下的门控普查（[`cc_gate_census`]，装载期与摘要同一次解析算出）。
+    pub cc_census: CcGateCensus,
 }
 
 impl SfzLoad {
@@ -902,6 +1008,52 @@ impl SfzLoad {
         }))
     }
 
+    /// ⭐ 缺省 CC 下有区域不发声时的**非阻塞警告**（与 [`Self::samples_warning`] 同型）。
+    ///
+    /// `loaded: true` 只说解析与注册成功；分层选奏法的库（`loccN` 分层）在一件
+    /// 没有 CC 泳道的工程里，缺省层之外的区域**本来就不发声** —— 这不是错误，
+    /// 但调用方若不知道，就会把"没声"误诊成装载失败。因此普查非 0 时点名：
+    /// 数量、原因分计、涉及的 CC 号，以及怎么让它发声（注入 `MidiCc` 泳道，
+    /// 或文件自带 `<control> set_ccN` 初值走实时路径）。⛔ 不阻断、⛔ 不自动改。
+    #[must_use]
+    pub fn cc_gate_warning(&self) -> Option<serde_json::Value> {
+        if self.cc_census.silent_regions == 0 {
+            return None;
+        }
+        Some(serde_json::json!({
+            "code": "sfzCcGatedSilence",
+            "severity": "warning",
+            "blocking": false,
+            "count": self.cc_census.silent_regions,
+            "byGate": self.cc_census.gate_silent_regions,
+            "byAmplitude": self.cc_census.amplitude_silent_regions,
+            "ccNumbers": self.cc_census.cc_numbers,
+            "hint": format!(
+                "该乐器有 {} 个区域在缺省 CC 下不发声（门控 {} 个、振幅 {} 个；涉及 CC {:?}）\
+                 ：这些区域要求控制器离开缺省值 0 才发声。需要 CC 校准 —— 给工程加对应的 \
+                 `MidiCc` 自动化泳道，或让文件自带 `<control> set_ccN` 初值（实时路径会播种）。\
+                 ⛔ 这不是装载失败：解析与注册已成功，本警告不阻断任何操作。",
+                self.cc_census.silent_regions,
+                self.cc_census.gate_silent_regions,
+                self.cc_census.amplitude_silent_regions,
+                self.cc_census.cc_numbers,
+            ),
+        }))
+    }
+
+    /// 本次装载的全部非阻塞警告（样本读不到 ＋ CC 门控普查，顺序固定）。
+    #[must_use]
+    pub fn all_warnings(&self) -> Vec<serde_json::Value> {
+        let mut warnings: Vec<serde_json::Value> = Vec::new();
+        if let Some(warning) = self.samples_warning() {
+            warnings.push(warning);
+        }
+        if let Some(warning) = self.cc_gate_warning() {
+            warnings.push(warning);
+        }
+        warnings
+    }
+
     /// 真调用响应的 `data`。
     #[must_use]
     pub fn response_data(&self) -> serde_json::Value {
@@ -927,7 +1079,8 @@ impl SfzLoad {
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleLimits": self.limits.to_value(),
             "sampleHz": self.sample_hz,
-            "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
+            "ccGateCensus": self.cc_census.to_value(),
+            "warnings": self.all_warnings(),
             "sessionScoped": true,
             "contentAddressed": true,
             "reused": self.reused,
@@ -957,7 +1110,8 @@ impl SfzLoad {
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleLimits": self.limits.to_value(),
             "sampleHz": self.sample_hz,
-            "warnings": self.samples_warning().into_iter().collect::<Vec<_>>(),
+            "ccGateCensus": self.cc_census.to_value(),
+            "warnings": self.all_warnings(),
             "wouldRegister": {
                 "instrumentId": self.id,
                 "sessionScoped": true,
@@ -1559,11 +1713,14 @@ fn load_with_resolved(
         sample_reads_truncated,
         sample_frames_loaded,
         provider,
+        cc_census,
     ) = {
         let instrument = match resolution.as_ref() {
             Some((sources, _)) => parse_expanded(&text, Some(sources.as_slice())),
             None => parse_expanded(&text, None),
         }?;
+        // ⭐ CC 门控普查与摘要在**同一次解析**里算（⛔ 不为普查再解析一遍）。
+        let cc_census = cc_gate_census(&instrument);
         let mut regions: Vec<RegionSummary> = Vec::new();
         // ⭐ `#276`：提供表在**同一次**区域遍历里产出（⛔ 第二遍解析的替代品）。
         let mut provider: SampledProviderTable = Vec::new();
@@ -1651,6 +1808,7 @@ fn load_with_resolved(
             cache.truncated(),
             cache.frames_loaded(),
             provider,
+            cc_census,
         )
     };
     // 片段序列随装载一起登记：渲染路径的 `with_instrument` 必须重放**同一份**展开结果。
@@ -1679,6 +1837,7 @@ fn load_with_resolved(
             sample_frames_loaded,
             // ⭐ 预算随装载一起登记：读数的"截没截"必须能对回是哪一条预算判的。
             limits: cache.limits(),
+            cc_census,
         },
         provider,
     ))
@@ -2081,6 +2240,16 @@ fn summarize(index: usize, region: &Region<'_>) -> RegionSummary {
         builtin_silence: region.is_builtin_silence(),
         // 由 `load` 的读盘那一步填（`summarize` 只做纯解析摘要，⛔ 不碰文件系统）。
         sample_file_state: "notProbed".to_owned(),
+        // ⭐ CC 门控与 amplitude 族调制：解析产物的原样抄录（普查在
+        // [`cc_gate_census`] 里按整件乐器算，本摘要只携带逐区域原料）。
+        cc_gates: region.cc_gates.clone(),
+        amplitude: region.amplitude,
+        amplitude_cc_mods: region
+            .cc_modulations()
+            .iter()
+            .copied()
+            .filter(|m| m.target == ModTarget::Amplitude)
+            .collect(),
     }
 }
 
@@ -3854,5 +4023,60 @@ mod tests {
             "内嵌文本腿：含 include ⇒ None"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐ CC 门控普查：门控与振幅两族按缺省 CC（全 0）分计，并集只计一次。
+    ///
+    /// 夹具逐条：a 门控不含 0 ⇒ gate；b 门控含 0 ⇒ 不计；c `amplitude=0` ⇒
+    /// amplitude（无 CC 涉及）；d 只写 `amplitude_oncc7=100`、基值缺省 100 ⇒
+    /// **不计**（曲线 0 在 0 处为 0 ⇒ 有效值仍 100、增益 1.0）；e 基值 0 ＋
+    /// `amplitude_oncc7=100` ⇒ CC=0 处有效值 0 ⇒ amplitude、涉及 CC7；
+    /// f 门控 ＋ 振幅双中 ⇒ 两族各计一次、总数只计一次；g 无门控 ⇒ 不计。
+    #[test]
+    fn cc_gate_census_counts_gate_and_amplitude_at_default_cc() {
+        let text = "<region> sample=a.wav key=60 locc1=64 hicc1=127\n\
+                    <region> sample=b.wav key=61 hicc1=63\n\
+                    <region> sample=c.wav key=62 amplitude=0\n\
+                    <region> sample=d.wav key=63 amplitude_oncc7=100\n\
+                    <region> sample=e.wav key=64 amplitude=0 amplitude_oncc7=100\n\
+                    <region> sample=f.wav key=65 locc2=10 amplitude=0\n\
+                    <region> sample=g.wav key=66\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let census = cc_gate_census(&instrument);
+        assert_eq!(census.silent_regions, 4, "并集 = a/c/e/f: {census:?}");
+        assert_eq!(census.gate_silent_regions, 2, "门控 = a/f: {census:?}");
+        assert_eq!(
+            census.amplitude_silent_regions, 3,
+            "振幅 = c/e/f: {census:?}"
+        );
+        assert_eq!(
+            census.cc_numbers,
+            vec![1, 2, 7],
+            "涉及 CC 升序去重: {census:?}"
+        );
+        // 回执形态同值。
+        let value = census.to_value();
+        assert_eq!(value["silentAtDefaultCc"], 4);
+        assert_eq!(value["byGate"], 2);
+        assert_eq!(value["byAmplitude"], 3);
+        assert_eq!(value["ccNumbers"], serde_json::json!([1, 2, 7]));
+    }
+
+    /// ⭐ CC 门控普查：无门控库普查为 0（摘要仍带原料字段，值为空/缺省）。
+    #[test]
+    fn cc_gate_census_is_zero_for_a_plain_library() {
+        let text =
+            "<region> sample=a.wav key=60\n<region> sample=b.wav key=64 amplitude_oncc7=100\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let census = cc_gate_census(&instrument);
+        assert_eq!(census, CcGateCensus::default(), "无门控 ⇒ 全 0: {census:?}");
+        // 逐区域摘要的原料：无门控区域 cc_gates 为空、amplitude 为缺省 100。
+        let plain = summarize(0, &instrument.regions()[0]);
+        assert!(plain.cc_gates.is_empty());
+        assert_eq!(plain.amplitude, AMPLITUDE_DEFAULT_PERCENT);
+        assert!(plain.amplitude_cc_mods.is_empty());
+        let modulated = summarize(1, &instrument.regions()[1]);
+        assert_eq!(modulated.amplitude_cc_mods.len(), 1);
+        assert_eq!(modulated.amplitude_cc_mods[0].cc, 7);
     }
 }

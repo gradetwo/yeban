@@ -1308,3 +1308,92 @@ fn the_two_new_tools_are_discoverable_and_use_d25_codes() {
     );
     assert_eq!(tools::EXTENSION_NAMES.len(), tools::EXTENSION_TOOL_COUNT);
 }
+
+/// ⭐ CC 门控普查（装载回执）：带 `locc` 门控与 `amplitude=0` 的库装载后，
+/// `ccGateCensus` 给出分计数字、`warnings[]` 出现非阻塞的 `sfzCcGatedSilence`；
+/// 无门控库普查为 0、无该警告、既有字段不变。
+///
+/// 夹具用 `sample=*silence`（内建静音、不读盘）⇒ 不触发 `sfzSamplesUnreadable`，
+/// 警告数组里只会有本线这一条，计数可逐字钉。
+#[test]
+fn load_sfz_reports_the_cc_gate_census_and_its_warning() {
+    let scratch = Scratch::new("cc-census");
+    let gated = scratch.write_sfz(
+        "gated.sfz",
+        "<region> sample=*silence key=60 locc1=64 hicc1=127\n\
+         <region> sample=*silence key=62 hicc1=63\n\
+         <region> sample=*silence key=64 amplitude=0\n\
+         <region> sample=*silence key=65 amplitude_oncc7=100\n\
+         <region> sample=*silence key=67\n",
+    );
+    let plain = scratch.write_sfz("plain.sfz", "<region> sample=*silence key=60\n");
+    let mut dispatcher = dispatcher_with_project(filled_project());
+
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": gated.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let data = &loaded["data"];
+    assert_eq!(data["regions"], 5, "{data}");
+    // 普查：门控 1（locc1=64）＋振幅 1（amplitude=0）；含 0 的门控与
+    // 「只写 amplitude_oncc、基值缺省 100」的区域都不计。
+    assert_eq!(data["ccGateCensus"]["silentAtDefaultCc"], 2, "{data}");
+    assert_eq!(data["ccGateCensus"]["byGate"], 1, "{data}");
+    assert_eq!(data["ccGateCensus"]["byAmplitude"], 1, "{data}");
+    assert_eq!(
+        data["ccGateCensus"]["ccNumbers"],
+        serde_json::json!([1]),
+        "{data}"
+    );
+    // 警告：恰一条、非阻塞、点名 CC 校准。
+    let warnings = data["warnings"].as_array().expect("warnings 数组");
+    assert_eq!(warnings.len(), 1, "门控库 ⇒ 恰好一条 CC 警告: {data}");
+    assert_eq!(warnings[0]["code"], "sfzCcGatedSilence");
+    assert_eq!(warnings[0]["severity"], "warning");
+    assert_eq!(warnings[0]["blocking"], false);
+    assert_eq!(warnings[0]["count"], 2);
+    assert!(
+        warnings[0]["hint"]
+            .as_str()
+            .expect("hint")
+            .contains("CC 校准"),
+        "hint 必须说清需要 CC 校准: {data}"
+    );
+    // 逐区域原料进 regionDetails。
+    let details = data["regionDetails"].as_array().expect("regionDetails");
+    assert_eq!(
+        details[0]["ccGates"],
+        serde_json::json!([{ "cc": 1, "lo": 64, "hi": 127 }]),
+        "{data}"
+    );
+    assert_eq!(details[3]["amplitudeCcMods"][0]["cc"], 7, "{data}");
+
+    // 无门控库：普查全 0、无警告。
+    let loaded_plain = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": plain.display().to_string() }),
+    );
+    let plain_data = &loaded_plain["data"];
+    assert_eq!(
+        plain_data["ccGateCensus"]["silentAtDefaultCc"], 0,
+        "{plain_data}"
+    );
+    assert_eq!(plain_data["ccGateCensus"]["byGate"], 0, "{plain_data}");
+    assert_eq!(plain_data["ccGateCensus"]["byAmplitude"], 0, "{plain_data}");
+    assert_eq!(
+        plain_data["ccGateCensus"]["ccNumbers"],
+        serde_json::json!([]),
+        "{plain_data}"
+    );
+    assert_eq!(
+        plain_data["warnings"]
+            .as_array()
+            .expect("warnings 数组")
+            .len(),
+        0,
+        "无门控库不得出现任何警告: {plain_data}"
+    );
+}

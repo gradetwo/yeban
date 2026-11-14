@@ -5124,15 +5124,18 @@ fn non_cc_gates_open(region: &Region<'_>, note: u8, velocity: u8) -> bool {
         // 无法判定 ⇒ 这里**不再**按 `held_notes_ok(None)` 清零掩码（那会让这两族
         // 区域**永久静默且不报错**）。改由触发期的 `held_notes_ok(self.held_notes)` 裁决。
         && {
-            // keyswitch：与 `region_matches` 的**同一串**判定
-            // （`sw_last` 无 `sw_default` ⇒ 严格策略不过；`sw_down`/`sw_up` 无探针 ⇒ 不过）。
+            // keyswitch：与 `region_matches` 的**同一串**判定，逐项同形于
+            // `keyswitch_ok(None, |_| false)`（`sw_last` 无 `sw_default` ⇒ 严格策略
+            // 不过；`sw_down` 无探针 ⇒ 不过；⭐ `sw_up` 无探针 ⇒ `down` 恒假 ⇒
+            // 「要求未按下」恰成立 ⇒ **过** —— ⛔ 不再单独清零：修前把 `sw_up`
+            // 列入清零支，与 `keyswitch_ok` 及 `DemandLoadFilter::wants` 两侧
+            // 不一致，纯 `sw_up` 区域在摊平侧永不触发、样本却被装载）。
             // ⚠ 两支的结论**同值**（都不过）⇒ 合成一条 `||`（⛔ 不是两条 `if`：clippy 的
             // `if_same_then_else` 正确地点出了那条冗余；语义一个字没变）。
             if !region.has_keyswitch_gate() {
                 true
             } else if (region.sw_last.is_some() && region.sw_default.is_none())
                 || region.sw_down.is_some()
-                || region.sw_up.is_some()
             {
                 false
             } else {
@@ -7489,6 +7492,56 @@ mod tests {
         )
         .expect("单区域必须解析成功");
         assert_eq!(one.region_count(), 1, "单区域 ⇒ 1");
+    }
+
+    /// ⭐ 判据（sw_up 口径统一）：纯 `sw_up` 区域在摊平侧与 `keyswitch_ok` 两侧同判。
+    ///
+    /// 修前 [`non_cc_gates_open`] 把 `sw_up.is_some()` 单独列入清零支 ⇒ 纯 `sw_up`
+    /// 区域摊平永不触发（而 `keyswitch_ok(None, |_| false)` 判过、`wants()` 判过）。
+    /// 本判据把四种 keyswitch 形态逐条对齐：两侧结论必须逐字相同。
+    #[test]
+    fn non_cc_gates_open_agrees_with_keyswitch_ok_including_pure_sw_up() {
+        let text = "<region> sample=a.wav key=60 sw_up=61\n\
+                    <region> sample=b.wav key=60 sw_down=61\n\
+                    <region> sample=c.wav key=60 sw_last=61\n\
+                    <region> sample=d.wav key=60 sw_last=61 sw_default=61\n\
+                    <region> sample=e.wav key=60\n";
+        let instrument = SfzInstrument::load(text.to_owned(), &ParseLimits::default())
+            .expect("判据 SFZ 必须解析成功");
+        instrument
+            .with_instrument(|i| {
+                let regions = i.regions();
+                assert_eq!(regions.len(), 5, "五条区域");
+                // 纯 sw_up：down 恒假 ⇒ 「要求未按下」成立 ⇒ 两侧都判过。
+                assert!(
+                    regions[0].keyswitch_ok(None, |_| false),
+                    "纯 sw_up 在 keyswitch_ok 侧必须判过"
+                );
+                assert!(
+                    non_cc_gates_open(&regions[0], 60, 100),
+                    "纯 sw_up 在摊平侧必须判过（修前恒假）"
+                );
+                // 其余形态：两侧逐条同判。
+                for (index, region) in regions.iter().enumerate() {
+                    assert_eq!(
+                        non_cc_gates_open(region, 60, 100),
+                        region.keyswitch_ok(None, |_| false),
+                        "区域 {index}（sample={}）两侧必须同判",
+                        region.sample.as_ref()
+                    );
+                }
+                // 对照钉：sw_down 与无缺省的 sw_last 两侧都判不过。
+                assert!(!non_cc_gates_open(&regions[1], 60, 100), "sw_down 判不过");
+                assert!(
+                    !non_cc_gates_open(&regions[2], 60, 100),
+                    "sw_last 无 sw_default 判不过"
+                );
+                assert!(
+                    non_cc_gates_open(&regions[3], 60, 100),
+                    "sw_last == sw_default 判过"
+                );
+            })
+            .expect("闭包式访问");
     }
 
     /// [ROAD-M2-005] 判据 ②：`with_instrument` 能在给定 note/velocity 下查到区域。

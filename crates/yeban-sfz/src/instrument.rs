@@ -1436,6 +1436,46 @@ impl<'a> Instrument<'a> {
         )
     }
 
+    /// ⭐ **求某区域 `amplitude` 在给定 CC 探针下的有效值**（单位 %）：
+    /// `amplitude + Σ delta × curve(probe(cc))`，只计
+    /// [`ModTarget::Amplitude`] 的调制项（公式与逐字出处见
+    /// [`crate::modulation`] 模块文档 §5）。
+    ///
+    /// 与 [`Instrument::ampeg_value_with_cc`] 的分工：那支服务 `ampeg_*` 五个
+    /// 参数，曲线经 [`Instrument::modulation_curve`] 烘焙后求和；本支逐项走
+    /// [`Instrument::curve_value_at`]、按 [`Region::cc_modulations`] 的原序
+    /// 相加。两条曲线解析次序在本仓**不可能分叉**：内建曲线只有 `0..=3`
+    /// 有公式，文件 `<curve>` 的下标 `≤ 6` 又在解析期被拒
+    /// （`ReservedCurveIndex`）⇒ 任一下标至多只有一个来源。
+    ///
+    /// * `curve` 解析不到的项**不贡献**，并计进第二个返回值
+    ///   （⛔ 不当成曲线 0 —— 与 `ampeg_value_with_cc` 的计数口径一致）；
+    /// * 返回 `(有效值, 未施加的调制项数)`。
+    ///
+    /// ⚠ 这是**装载期/离线**读法（MCP 装载普查问"缺省 CC 下有效增益是否为
+    /// 0"就走它）：实时与摊平路径的振幅走烘焙表
+    /// （`cc_value_with_baked_and_vel2`，判据 `S103` 钉三路一致），⛔ 不经本方法。
+    #[must_use]
+    pub fn amplitude_value_with_cc(
+        &self,
+        region: &Region<'_>,
+        probe: &dyn Fn(u8) -> u8,
+    ) -> (f32, usize) {
+        let mut value = region.amplitude;
+        let mut unresolved = 0usize;
+        for m in region
+            .cc_modulations()
+            .iter()
+            .filter(|m| m.target == ModTarget::Amplitude)
+        {
+            match self.curve_value_at(m.curve, f32::from(probe(m.cc))) {
+                Some(curve_value) => value += m.delta * curve_value,
+                None => unresolved += 1,
+            }
+        }
+        (value, unresolved)
+    }
+
     /// 「当前生效的 keyswitch」对应的 `sw_label`（ARIA 的 GUI 行为）。
     ///
     /// 规范出处 <https://sfzformat.com/opcodes/sw_label/> 的 "Practical
@@ -7499,6 +7539,67 @@ v127=1
                 .ampeg_value_with_cc_and_velocity(region, AmpegParam::Attack, 0, None)
                 .0,
             0.5
+        );
+    }
+
+    /// ⭐ `amplitude_value_with_cc`：只计 `amplitude` 目标、按探针逐项
+    /// `delta × curve(cc)` 相加；解析不到的曲线不贡献且计进未施加数。
+    #[test]
+    fn amplitude_value_with_cc_sums_amplitude_mods_and_counts_unresolved() {
+        // 基值缺省 100 ＋ `amplitude_oncc7=100`（曲线缺省 0 = 线性）：
+        // 探针全 0 ⇒ curve(0) = 0 ⇒ 恰 100（MCP 普查「只写 amplitude_ccN、
+        // 基值缺省 100 不算静音」钉的就是这个数）；探针 127 ⇒ 200。
+        let instrument = parse_text(
+            "<region> sample=a.wav amplitude_oncc7=100",
+            &Default::default(),
+        )
+        .expect("解析");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            instrument.amplitude_value_with_cc(region, &|_| 0),
+            (100.0, 0)
+        );
+        assert_eq!(
+            instrument.amplitude_value_with_cc(region, &|_| 127),
+            (200.0, 0)
+        );
+
+        // ⭐ 恰为 0 的判定：基值 100 ＋ delta −100 × curve0(127) = 0。
+        let instrument = parse_text(
+            "<region> sample=a.wav amplitude=100 amplitude_oncc1=-100",
+            &Default::default(),
+        )
+        .expect("解析");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            instrument.amplitude_value_with_cc(region, &|_| 127),
+            (0.0, 0)
+        );
+
+        // 探针按 CC 号取：cc1 给 127、cc2 给 0 ⇒ 只吃 cc1 那项（10 ＋ 30）。
+        let instrument = parse_text(
+            "<region> sample=a.wav amplitude=10 amplitude_oncc1=30 amplitude_oncc2=50",
+            &Default::default(),
+        )
+        .expect("解析");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            instrument.amplitude_value_with_cc(region, &|cc| u8::from(cc == 1) * 127),
+            (40.0, 0)
+        );
+
+        // 曲线下标 200 未定义 ⇒ 该项不贡献、计进未施加数；
+        // `ampeg_*` 目标的调制项不进本求值。
+        let instrument = parse_text(
+            "<region> sample=a.wav amplitude=25 amplitude_oncc3=80 amplitude_curvecc3=200 \
+             ampeg_attack_oncc4=50",
+            &Default::default(),
+        )
+        .expect("解析");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            instrument.amplitude_value_with_cc(region, &|_| 127),
+            (25.0, 1)
         );
     }
 

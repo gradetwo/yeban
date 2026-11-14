@@ -463,10 +463,11 @@ fn undo_display_schema() -> Value {
 /// `effect_param_warnings` ＋ `device_on_silent_track_warnings`）的唯一调用点是 `propose_draft`，
 /// 而 `propose_draft` 的读数经 `apply_propose` 拼装点同时喂给 `propose_section` / `edit_notes` /
 /// `set_macro` ⇒ 这三个工具只会发这两枚。
-/// ⚠ 名册里唯一不广播的 `sfzSamplesUnreadable` ⛔ 不在任何子集里 —— 它只出自 `yeban_load_sfz` /
-/// `yeban_render_sfz_wav`（`domain/sfz.rs` 的 `samples_warning`，唯一两个调用点在该文件的响应构造器里），
+/// ⚠ 名册里不广播的 SFZ 两枚（`sfzSamplesUnreadable` / `sfzCcGatedSilence`）⛔ 不在任何子集里
+/// —— 它们只出自 `yeban_load_sfz` 的响应构造器（`domain/sfz.rs` 的 `samples_warning` /
+/// `cc_gate_warning`，经 `all_warnings` 装配），
 /// 而 `for_tool` 对扩展工具返回 `None`（不广播 outputSchema，常驻判据
-/// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它由契约名册兜住，⛔ 不许为凑等式造假 schema。
+/// `a_missing_schema_is_none_not_an_empty_object` 就在钉这条）⇒ 它们由契约名册兜住，⛔ 不许为凑等式造假 schema。
 const PROPOSAL_WARNING_CODES: [&str; 2] = ["deviceOnSilentTrack", "unrecognisedEffectParam"];
 
 /// ⭐ `data.warnings[].code` 的逐工具子集（母带）。四条来源 `clipping_warning` +
@@ -2810,7 +2811,7 @@ mod tests {
                 .iter()
                 .map(|code| code.as_str().expect("code 是字符串").to_owned())
                 .collect();
-        assert_eq!(contract.len(), 8, "契约名册现读 8 枚: {contract:?}");
+        assert_eq!(contract.len(), 9, "契约名册现读 9 枚: {contract:?}");
 
         let broadcast = |tool: &str| -> std::collections::BTreeSet<String> {
             let schema = for_tool(tool).expect("schema");
@@ -2866,19 +2867,21 @@ mod tests {
             "广播侧发明了契约外的 code: {invented:?}"
         );
 
-        // ⭐ `sfzSamplesUnreadable` 与 `peakAboveFullScale` **故意**不在任何子集里：
-        // 前者只出自两个扩展工具，而扩展工具不广播 outputSchema；后者只出自
-        // `yeban_export_stems` 的逐轨 `peakWarning`（`StemRow` 内嵌键），不在顶层
-        // `warnings[]` 里，而 `export_stems` 不在 [`COVERED_TOOLS`] 之列。
-        // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是这两枚。
+        // ⭐ `sfzSamplesUnreadable`、`sfzCcGatedSilence` 与 `peakAboveFullScale`
+        // **故意**不在任何子集里：前两枚只出自 SFZ 装载一族扩展工具，而扩展工具
+        // 不广播 outputSchema；后者只出自 `yeban_export_stems` 的逐轨
+        // `peakWarning`（`StemRow` 内嵌键），不在顶层 `warnings[]` 里，而
+        // `export_stems` 不在 [`COVERED_TOOLS`] 之列。
+        // 这一条把那句话钉成读数：契约与广播的差集必须**恰好**是这三枚。
         let unbroadcast: Vec<String> = contract.difference(&all).cloned().collect();
         assert_eq!(
             unbroadcast,
             [
                 "peakAboveFullScale".to_owned(),
+                "sfzCcGatedSilence".to_owned(),
                 "sfzSamplesUnreadable".to_owned()
             ],
-            "契约里不该被广播的 code 必须是 peakAboveFullScale 与 sfzSamplesUnreadable（其余六枚都必须广播）"
+            "契约里不该被广播的 code 必须是 peakAboveFullScale、sfzCcGatedSilence 与 sfzSamplesUnreadable（其余六枚都必须广播）"
         );
     }
 
