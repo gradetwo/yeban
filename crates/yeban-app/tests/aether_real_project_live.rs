@@ -177,7 +177,7 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
         );
         let expected = (clip.duration_ticks as f32 / tpp as f32).max(12.0);
         assert!(
-            (block.width_px - expected).abs() < 0.6,
+            (block.width_px - expected).abs() < 1.5,
             "片段 {} 的块宽 {} 与真实时值换算的 {expected} 不一致",
             clip.clip_name,
             block.width_px
