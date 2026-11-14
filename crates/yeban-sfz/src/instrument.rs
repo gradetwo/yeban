@@ -11,7 +11,9 @@
 //! 默认值全部取自 sfzformat 的机器可读 opcode 表 `_data/sfz/syntax.yml`
 //! （`pitch_keycenter` 默认 60、`lokey` 0、`hikey` 127、`lovel` 0、`hivel` 127、
 //! `lochan` 1、`hichan` 16、`seq_length` 1、`seq_position` 1、`lorand` 0、`hirand` 1、
-//! `tune` 0、`transpose` 0、`pitch_keytrack` 100、`amp_keytrack` 0、`amp_keycenter` 60）。
+//! `tune` 0、`transpose` 0、`pitch_keytrack` 100、`amp_keytrack` 0、`amp_keycenter` 60、
+//! `fil_type` `lpf_2p`、`resonance` 0、`fil_keytrack` 0、`fil_keycenter` 60、
+//! `fil_veltrack` 0；`cutoff` **无数值缺省**——缺失即滤波禁用，见 [`Region::cutoff`]）。
 //!
 //! ## ⚠ 三处**登记在案**的缺省偏离（⛔ 不是静默降级）
 //!
@@ -109,6 +111,66 @@ impl PlayDirection {
 
     /// 用于错误信息的允许值列表。
     pub const ALLOWED: &'static str = "forward, reverse";
+}
+
+/// 滤波器类型（`fil_type` opcode，SFZ v1/v2，默认 `lpf_2p`）。
+///
+/// 出处：<https://sfzformat.com/opcodes/fil_type/>。v1 选项六个
+/// （`lpf_1p` / `hpf_1p` / `lpf_2p` / `hpf_2p` / `bpf_2p` / `brf_2p`）；
+/// v2 追加 `bpf_1p` / `brf_1p` / `apf_1p` / `lpf_2p_sv` / `hpf_2p_sv` /
+/// `bpf_2p_sv` / `brf_2p_sv` / `pkf_2p` / `lpf_4p` / `hpf_4p` / `lpf_6p` /
+/// `hpf_6p` / `comb` / `pink`；ARIA 追加 `lsh` / `hsh` / `peq`。
+///
+/// ⭐ **本仓实现子集（10 个）**：v1 六个 ＋ v2 的 `lpf_4p` / `hpf_4p` /
+/// `lpf_6p` / `hpf_6p`（RBJ 双二阶节级联，见 `yeban-dsp` 的 `VoiceFilter`）。
+/// 其余规范值**响亮报错**（[`SfzError::InvalidOption`]），⛔ 不静默替换成近似
+/// 类型：`*_sv` 是状态变量拓扑（与 RBJ 的相位/谐振行为不同，另立项）、
+/// `pkf_2p` / `lsh` / `hsh` / `peq` 依赖 `fil_gain`（不在滤波静态族一期
+/// 范围）、`comb` / `pink` 不是截止频率型滤波、`bpf_1p` / `brf_1p` /
+/// `apf_1p` 语料罕见（另立项）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterType {
+    /// `lpf_1p`：一阶低通（单极点 RC 形）。
+    Lowpass1p,
+    /// `hpf_1p`：一阶高通（单极点 RC 形）。
+    Highpass1p,
+    /// `lpf_2p`：二阶低通（RBJ 双二阶；规范缺省）。
+    Lowpass2p,
+    /// `hpf_2p`：二阶高通（RBJ 双二阶）。
+    Highpass2p,
+    /// `bpf_2p`：二阶带通（RBJ，恒 0 dB 峰值增益形）。
+    Bandpass2p,
+    /// `brf_2p`：二阶带阻 / 陷波（RBJ）。
+    Bandreject2p,
+    /// `lpf_4p`：四阶低通（两节 RBJ 级联）。
+    Lowpass4p,
+    /// `hpf_4p`：四阶高通（两节 RBJ 级联）。
+    Highpass4p,
+    /// `lpf_6p`：六阶低通（三节 RBJ 级联）。
+    Lowpass6p,
+    /// `hpf_6p`：六阶高通（三节 RBJ 级联）。
+    Highpass6p,
+}
+
+impl FilterType {
+    /// 白名单（`opcode=value` 的大小写不敏感匹配集合）。
+    pub const OPTIONS: &'static [(&'static str, FilterType)] = &[
+        ("lpf_1p", FilterType::Lowpass1p),
+        ("hpf_1p", FilterType::Highpass1p),
+        ("lpf_2p", FilterType::Lowpass2p),
+        ("hpf_2p", FilterType::Highpass2p),
+        ("bpf_2p", FilterType::Bandpass2p),
+        ("brf_2p", FilterType::Bandreject2p),
+        ("lpf_4p", FilterType::Lowpass4p),
+        ("hpf_4p", FilterType::Highpass4p),
+        ("lpf_6p", FilterType::Lowpass6p),
+        ("hpf_6p", FilterType::Highpass6p),
+    ];
+
+    /// 用于错误信息的允许值列表（**只列本仓实现的子集**：未实现值与
+    /// 未知值同样报错，差别只在调用方查文档时的登记说明，见枚举文档）。
+    pub const ALLOWED: &'static str =
+        "lpf_1p, hpf_1p, lpf_2p, hpf_2p, bpf_2p, brf_2p, lpf_4p, hpf_4p, lpf_6p, hpf_6p";
 }
 
 /// region 收到的 MIDI 事件：`trigger` 门控的**事件口径**。
@@ -318,6 +380,64 @@ pub const AMP_KEYTRACK_MAX: f32 = 12.0;
 /// （`amp_keycenter`｜SFZ v1｜integer｜**Default = 60**｜Range = 0 to 127）；
 /// 同页正文："In this key, the amplifier keyboard tracking will have no effect."
 pub const AMP_KEYCENTER_DEFAULT: i32 = 60;
+
+/// ⭐ **`fil_type` 的规范缺省**：`lpf_2p`。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/fil_type/> 的表行
+/// （`fil_type`｜SFZ v1｜string｜**Default = lpf_2p**）。
+/// ⚠ 缺省类型只在 `cutoff` **出现**时才有意义：`cutoff` 缺失 ⇒ 滤波禁用
+/// （见 [`Region::cutoff`]），类型字段本身不激活任何处理。
+pub const FIL_TYPE_DEFAULT: FilterType = FilterType::Lowpass2p;
+
+/// ⭐ **`resonance` 的规范缺省**：**0**（dB）。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/resonance/> 的表行
+/// （`resonance`｜SFZ v1｜float｜**Default = 0**｜Range = 0 to 40｜Unit = dB）。
+pub const RESONANCE_DEFAULT_DB: f32 = 0.0;
+
+/// `resonance` 的规范取值下界（dB；格式页 Range `0 to 40`）。
+///
+/// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位（与 `amp_keytrack` 同一条口径）。
+pub const RESONANCE_MIN_DB: f32 = 0.0;
+
+/// `resonance` 的规范取值上界（dB；格式页 Range `0 to 40`）。
+pub const RESONANCE_MAX_DB: f32 = 40.0;
+
+/// ⭐ **`fil_keytrack` 的规范缺省**：**0**（音分/键）。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/fil_keytrack/> 的表行
+/// （`fil_keytrack`｜SFZ v1｜integer｜**Default = 0**｜Range = 0 to 1200｜
+/// Unit = cents）。⚠ 格式页注明 sforzando 接受负值；本仓按表 Range 校验，
+/// 负值响亮报错（分歧登记在此，⛔ 不静默放行）。
+pub const FIL_KEYTRACK_DEFAULT: i32 = 0;
+
+/// `fil_keytrack` 的规范取值下界（音分/键；格式页 Range `0 to 1200`）。
+pub const FIL_KEYTRACK_MIN: i32 = 0;
+
+/// `fil_keytrack` 的规范取值上界（音分/键；格式页 Range `0 to 1200`）。
+pub const FIL_KEYTRACK_MAX: i32 = 1200;
+
+/// ⭐ **`fil_keycenter` 的规范缺省**：**60**。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/fil_keycenter/> 的表行
+/// （`fil_keycenter`｜SFZ v1｜integer｜**Default = 60**｜Range = 0 to 127）；
+/// 同页示例含音名写法（`fil_keycenter=E3`）⇒ 走 `as_note` 路径，与
+/// `sw_default` 同一条口径。
+pub const FIL_KEYCENTER_DEFAULT: i32 = 60;
+
+/// ⭐ **`fil_veltrack` 的规范缺省**：**0**（音分）。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/fil_veltrack/> 的表行
+/// （`fil_veltrack`｜SFZ v1｜integer｜**Default = 0**｜Range = -9600 to 9600｜
+/// Unit = cents）。语义：力度 0→127 时截止频率总偏移量（音分），求值见
+/// [`crate::playback::filter_cutoff_hz`]。
+pub const FIL_VELTRACK_DEFAULT: i32 = 0;
+
+/// `fil_veltrack` 的规范取值下界（音分；格式页 Range `-9600 to 9600`）。
+pub const FIL_VELTRACK_MIN: i32 = -9600;
+
+/// `fil_veltrack` 的规范取值上界（音分；格式页 Range `-9600 to 9600`）。
+pub const FIL_VELTRACK_MAX: i32 = 9600;
 
 /// `ampeg_attack` / `ampeg_hold` / `ampeg_decay` / `ampeg_release` 的规范取值上界，
 /// 单位**秒**（四个格式页的 Range 都是 `0 to 100`）。
@@ -719,6 +839,59 @@ pub struct Region<'a> {
     /// `transpose`（半音）与 [`Region::tune`]（音分）仍按各自单位相加，
     /// ⛔ 不被本字段缩放。
     pub pitch_keytrack: i32,
+    /// `fil_type`：滤波器类型（规范缺省 [`FIL_TYPE_DEFAULT`] ＝ `lpf_2p`）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/fil_type/>。⚠ 本字段**单独出现不
+    /// 激活任何处理**：滤波是否启用只看 [`Region::cutoff`] 是否给出
+    /// （`cutoff` 的规范缺省是 "filter disabled"，无数值缺省）。
+    /// 未实现的规范值在解析期响亮报错（见 [`FilterType`] 文档）。
+    pub fil_type: FilterType,
+    /// `cutoff`：滤波截止频率（**Hz**）；`None` ＝ **滤波禁用**。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/cutoff/> 的表行（Type = float、
+    /// **Default = filter disabled**、Range = 0 to SampleRate/2、Unit = Hz）
+    /// ⇒ 规范没有数值缺省，因此存 `Option`：缺失即 `None`，渲染逐位不变。
+    ///
+    /// ⚠ **`cutoff=0` 的裁决**：同页 Practical Considerations 记各播放器
+    /// 分歧（ARIA/sforzando ＝ filter disabled；sfizz ＝ no sound；
+    /// Dimension Pro ＝ lowest cutoff；rgc/BassMidi ＝ filter off）。
+    /// 本仓取 **ARIA 口径**：`0` 与缺失同义（禁用），归约在
+    /// [`crate::playback::filter_cutoff_hz`]（返回 `None`）。解析层原样
+    /// 存 `Some(0.0)`，⛔ 不在此改写（"显式 0"与"没写"在模型层仍可区分）。
+    ///
+    /// ⚠ 上界（SampleRate/2）依赖采样率、解析期未知 ⇒ 解析层只验
+    /// **有限且 ≥ 0**（负值 ⇒ [`SfzError::FloatOutOfRange`]）；系数计算时
+    /// 由 `yeban-dsp` 的 `VoiceFilter` 按采样率钳制（文档明记）。
+    pub cutoff: Option<f32>,
+    /// `resonance`：滤波谐振（**dB**，规范范围 0..=40，缺省
+    /// [`RESONANCE_DEFAULT_DB`] ＝ 0）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/resonance/>。语义换算：RBJ
+    /// 双二阶在截止频率处的幅值恰为 Q（线性）⇒ `Q = 10^(dB/20)`；
+    /// 级联型（`lpf_4p` 等）把总 dB 在各节均分，使截止处**总**峰值增益
+    /// 等于本字段。换算在 `yeban-dsp` 的 `VoiceFilter::configure`。
+    pub resonance: f32,
+    /// `fil_keytrack`：键位 → 截止频率的跟踪量（**音分/键**，规范范围
+    /// 0..=1200，缺省 [`FIL_KEYTRACK_DEFAULT`] ＝ 0）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/fil_keytrack/>。截止偏移（音分）
+    /// ＝ `fil_keytrack × (note − fil_keycenter)`，求值见
+    /// [`crate::playback::filter_cutoff_hz`]。⚠ 与 `pitch_keytrack` 不同，
+    /// 本 opcode 的表 Range **不含负值**（sforzando 接受负值属分歧，
+    /// 见 [`FIL_KEYTRACK_MIN`] 文档）⇒ 负值解析期响亮报错。
+    pub fil_keytrack: i32,
+    /// `fil_keycenter`：`fil_keytrack` 的锚点键（规范范围 0..=127，缺省
+    /// [`FIL_KEYCENTER_DEFAULT`] ＝ 60；接受音名写法，与 `sw_default` 同路）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/fil_keycenter/>。
+    pub fil_keycenter: i32,
+    /// `fil_veltrack`：力度 → 截止频率的跟踪量（**音分**，规范范围
+    /// -9600..=9600，缺省 [`FIL_VELTRACK_DEFAULT`] ＝ 0）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/fil_veltrack/>。语义：力度从 0
+    /// 到 127 时截止频率的总偏移（音分），按 `velocity / 127` 线性折算，
+    /// 求值见 [`crate::playback::filter_cutoff_hz`]。
+    pub fil_veltrack: i32,
     /// `bend_up`：弯音轮**向上**时的弯音范围，单位音分（规范缺省
     /// [`BEND_UP_DEFAULT_CENTS`]，范围 -9600..=9600）。
     ///
@@ -2066,6 +2239,71 @@ pub(crate) fn build_region<'a>(
         1200,
         PITCH_KEYTRACK_DEFAULT,
     )?;
+    // ---- 滤波静态族（`fil_type` / `cutoff` / `resonance` / `fil_keytrack` /
+    //      `fil_keycenter` / `fil_veltrack`） ----
+    // 规范：`fil_type` Default = lpf_2p；`cutoff` Default = **filter disabled**
+    // （无数值缺省 ⇒ `Option`，缺失 = `None`）；`resonance` Default = 0、
+    // Range = 0 to 40 dB；`fil_keytrack` Default = 0、Range = 0 to 1200 音分；
+    // `fil_keycenter` Default = 60、Range = 0 to 127；`fil_veltrack`
+    // Default = 0、Range = -9600 to 9600 音分（各页出处见对应常量文档）。
+    // 与 `amp_keytrack` 同一条口径：缺失 ⇒ 缺省；出现但越界 ⇒ 明确 `Err`
+    // （⛔ 不钳位）。`cutoff` 上界 SampleRate/2 在解析期未知 ⇒ 只验 ≥ 0
+    // （见 [`Region::cutoff`] 文档）。`fil_keycenter` 接受音名（格式页示例
+    // `fil_keycenter=E3`）⇒ 走 `as_note`，与 `sw_default` 同路。
+    let fil_type = match scopes.get("fil_type") {
+        Some(value) => value.as_option(FilterType::OPTIONS, FilterType::ALLOWED)?,
+        None => FIL_TYPE_DEFAULT,
+    };
+    let cutoff = match scopes.get("cutoff") {
+        Some(value) => {
+            let hz = value.as_f32()?;
+            if hz < 0.0 {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "cutoff".to_string(),
+                    value: hz,
+                    min: 0.0,
+                    max: f32::MAX,
+                });
+            }
+            Some(hz)
+        }
+        None => None,
+    };
+    let resonance = match scopes.get("resonance") {
+        Some(value) => {
+            let db = value.as_f32()?;
+            if !(RESONANCE_MIN_DB..=RESONANCE_MAX_DB).contains(&db) {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "resonance".to_string(),
+                    value: db,
+                    min: RESONANCE_MIN_DB,
+                    max: RESONANCE_MAX_DB,
+                });
+            }
+            db
+        }
+        None => RESONANCE_DEFAULT_DB,
+    };
+    let fil_keytrack = read_i32(
+        &scopes,
+        "fil_keytrack",
+        i64::from(FIL_KEYTRACK_MIN),
+        i64::from(FIL_KEYTRACK_MAX),
+        FIL_KEYTRACK_DEFAULT,
+    )?;
+    let fil_keycenter = match scopes.get("fil_keycenter") {
+        Some(value) => value.as_note(0, 127)?,
+        None => FIL_KEYCENTER_DEFAULT,
+    };
+    let fil_veltrack = read_i32(
+        &scopes,
+        "fil_veltrack",
+        i64::from(FIL_VELTRACK_MIN),
+        i64::from(FIL_VELTRACK_MAX),
+        FIL_VELTRACK_DEFAULT,
+    )?;
     // 弯音范围：两个端点各自独立，规范缺省 200 / -200，Range 都是 ±9600 音分
     // （<https://sfzformat.com/opcodes/bend_up/>、<https://sfzformat.com/opcodes/bend_down/>）。
     let bend_up = read_i32(
@@ -2227,6 +2465,12 @@ pub(crate) fn build_region<'a>(
         tune,
         transpose,
         pitch_keytrack,
+        fil_type,
+        cutoff,
+        resonance,
+        fil_keytrack,
+        fil_keycenter,
+        fil_veltrack,
         bend_up,
         bend_down,
         volume,
@@ -3173,6 +3417,12 @@ mod tests {
             tune: 0,
             transpose: 0,
             pitch_keytrack: PITCH_KEYTRACK_DEFAULT,
+            fil_type: FIL_TYPE_DEFAULT,
+            cutoff: None,
+            resonance: RESONANCE_DEFAULT_DB,
+            fil_keytrack: FIL_KEYTRACK_DEFAULT,
+            fil_keycenter: FIL_KEYCENTER_DEFAULT,
+            fil_veltrack: FIL_VELTRACK_DEFAULT,
             bend_up: BEND_UP_DEFAULT_CENTS,
             bend_down: BEND_DOWN_DEFAULT_CENTS,
             volume: 0.0,
@@ -7148,6 +7398,102 @@ v127=1
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn filter_opcodes_default_to_a_disabled_filter() {
+        // 规范缺省：`cutoff` 缺失 ＝ filter disabled（无数值缺省）；
+        // 其余五个取各自表行缺省。类型缺省 `lpf_2p` 本身不激活处理。
+        let region = first_region("<region>sample=a.wav");
+        assert_eq!(region.fil_type, FilterType::Lowpass2p);
+        assert_eq!(region.cutoff, None, "没有 `cutoff` ⇒ 滤波禁用");
+        assert_eq!(region.resonance, 0.0);
+        assert_eq!(region.fil_keytrack, 0);
+        assert_eq!(region.fil_keycenter, 60);
+        assert_eq!(region.fil_veltrack, 0);
+    }
+
+    #[test]
+    fn filter_opcodes_are_read_verbatim_and_inherit() {
+        let explicit = first_region(
+            "<region>sample=a.wav cutoff=1000 resonance=6 fil_type=hpf_2p \
+             fil_keytrack=100 fil_keycenter=E3 fil_veltrack=-1200",
+        );
+        assert_eq!(explicit.cutoff, Some(1000.0));
+        assert_eq!(explicit.resonance, 6.0);
+        assert_eq!(explicit.fil_type, FilterType::Highpass2p);
+        assert_eq!(explicit.fil_keytrack, 100);
+        // 音名写法（格式页示例 `fil_keycenter=E3`）：E3 = 52。
+        assert_eq!(explicit.fil_keycenter, 52);
+        assert_eq!(explicit.fil_veltrack, -1200);
+        // 作用域链与其它 opcode 相同（global → region 覆盖）。
+        let inherited = first_region("<global>cutoff=500 fil_type=bpf_2p\n<region>sample=a.wav");
+        assert_eq!(inherited.cutoff, Some(500.0));
+        assert_eq!(inherited.fil_type, FilterType::Bandpass2p);
+        let overridden = first_region("<global>cutoff=500\n<region>sample=a.wav cutoff=250.5");
+        assert_eq!(overridden.cutoff, Some(250.5));
+        // `cutoff=0` 原样存 Some(0.0)：解析层不改写，"0 ＝ 禁用"的 ARIA
+        // 口径归约在 playback 的 `filter_cutoff_hz`（见 Region::cutoff 文档）。
+        assert_eq!(
+            first_region("<region>sample=a.wav cutoff=0").cutoff,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn filter_opcodes_out_of_range_are_loud_errors() {
+        // 浮点族越界 ⇒ FloatOutOfRange（⛔ 不钳位）。
+        for text in [
+            "<region>sample=a.wav cutoff=-1",
+            "<region>sample=a.wav resonance=40.5",
+            "<region>sample=a.wav resonance=-0.5",
+        ] {
+            let outcome = parse_text(text, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::FloatOutOfRange { .. })),
+                "`{text}` 必须 Err(FloatOutOfRange)，实得 {outcome:?}"
+            );
+        }
+        // 整数族越界 ⇒ IntegerOutOfRange；`fil_keytrack` 负值按表 Range
+        // （0..=1200）同样报错（与 sforzando 的分歧登记在常量文档）。
+        for text in [
+            "<region>sample=a.wav fil_keytrack=1201",
+            "<region>sample=a.wav fil_keytrack=-1",
+            "<region>sample=a.wav fil_keycenter=128",
+            "<region>sample=a.wav fil_veltrack=9601",
+            "<region>sample=a.wav fil_veltrack=-9601",
+        ] {
+            let outcome = parse_text(text, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::IntegerOutOfRange { .. })),
+                "`{text}` 必须 Err(IntegerOutOfRange)，实得 {outcome:?}"
+            );
+        }
+        // 未实现的规范 fil_type 与未知值同样响亮报错（⛔ 不静默近似）。
+        for text in [
+            "<region>sample=a.wav fil_type=lpf_2p_sv",
+            "<region>sample=a.wav fil_type=pkf_2p",
+            "<region>sample=a.wav fil_type=comb",
+            "<region>sample=a.wav fil_type=lsh",
+            "<region>sample=a.wav fil_type=bogus",
+        ] {
+            let outcome = parse_text(text, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::InvalidOption { .. })),
+                "`{text}` 必须 Err(InvalidOption)，实得 {outcome:?}"
+            );
+        }
+        // 边界值全部合法。
+        for text in [
+            "<region>sample=a.wav resonance=40 fil_keytrack=1200 fil_veltrack=9600",
+            "<region>sample=a.wav fil_veltrack=-9600 fil_keycenter=0",
+            "<region>sample=a.wav fil_type=lpf_6p cutoff=0.5",
+        ] {
+            assert!(
+                parse_text(text, &Default::default()).is_ok(),
+                "`{text}` 在规范域边界内，必须解析成功"
+            );
+        }
     }
 
     #[test]

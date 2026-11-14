@@ -73,8 +73,8 @@
 //! 跨架构逐位一致性 (ARCH-DET-002) 未验证，与 `StealFade` 登记在同一条 pending 上。
 
 use crate::instrument::{
-    Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery, SampleEnd,
-    Trigger,
+    FilterType, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery,
+    SampleEnd, Trigger,
 };
 
 /// 采样率回退值 (Hz)：输入采样率非有限或非正时使用，与
@@ -287,6 +287,26 @@ pub struct PlaybackSpec {
     /// `gain` 只含 `volume`，既有消费方按那个口径读。要用合并值请调
     /// [`PlaybackSpec::total_gain`]。
     pub keytrack_gain: f32,
+    /// 该 region 的 `fil_type`（原样；缺省 [`crate::FIL_TYPE_DEFAULT`]）。
+    ///
+    /// 只在 [`PlaybackSpec::filter_cutoff`] 为 `Some` 时有消费意义。
+    pub fil_type: FilterType,
+    /// 该 region 的 `cutoff`（Hz，**原样**；`None` ＝ 源文件未给出）。
+    ///
+    /// 原始取值，**不**做跟踪折算：生效值见 [`PlaybackSpec::filter_cutoff`]。
+    pub cutoff: Option<f32>,
+    /// 该 region 的 `resonance`（dB，原样；缺省
+    /// [`crate::RESONANCE_DEFAULT_DB`]）。
+    pub resonance: f32,
+    /// 滤波静态族的**有效截止频率**（Hz）：`cutoff` 经 `fil_keytrack` /
+    /// `fil_veltrack` 在触发音符/力度上折算后的值，就是
+    /// [`Region::filter_cutoff`] 的读数（见 [`filter_cutoff_hz`]）。
+    ///
+    /// `None` ＝ 滤波禁用 ⇒ 消费方必须走**逐位不变**的直通路径。
+    /// `Some` 时消费方按 ([`PlaybackSpec::fil_type`],
+    /// [`PlaybackSpec::resonance`], 本值) 配置逐声部滤波器；采样率相关
+    /// 的钳制在系数计算处做（本值是钳制前的原始 Hz）。
+    pub filter_cutoff: Option<f32>,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
     /// 该 region 的 `trigger`（原样）。
@@ -438,6 +458,55 @@ pub fn keytrack_gain_factor(amp_keytrack: f32, amp_keycenter: i32, note: u8) -> 
     (db * std::f64::consts::LOG2_10 / 20.0).exp2() as f32
 }
 
+/// 滤波静态族在给定音符/力度上的**有效截止频率**（Hz）：
+/// `cutoff × 2 ^ ((fil_keytrack × (note − fil_keycenter) + fil_veltrack × velocity / 127) / 1200)`。
+///
+/// 规范语义（<https://sfzformat.com/opcodes/cutoff/>、
+/// <https://sfzformat.com/opcodes/fil_keytrack/>、
+/// <https://sfzformat.com/opcodes/fil_keycenter/>、
+/// <https://sfzformat.com/opcodes/fil_veltrack/>）：`fil_keytrack` 是
+/// 音分/键、`fil_keycenter` 是跟踪锚点、`fil_veltrack` 是力度 0→127 的
+/// **总**偏移（音分），三者与 `cutoff`（Hz）合成每声部的静态截止频率。
+/// 本线只做**准备期折算**：触发时按 (note, velocity) 算一次，渲染期不
+/// 再调制（CC/包络/LFO 调制属后续线）。
+///
+/// 返回 `None` ＝ **滤波禁用**，两种来源：
+/// * `cutoff` 本身是 `None`（opcode 缺失；规范缺省 "filter disabled"）；
+/// * `cutoff` ≤ 0 —— `cutoff=0` 的播放器分歧见 [`Region::cutoff`] 文档，
+///   本仓取 ARIA 口径（禁用）；负值在解析期已被拒，此处只为手工构造的
+///   region 兜底，与 0 同径处理（⛔ 不发明"极低截止"的替代语义）。
+///
+/// ⭐ **为什么是自由函数**：与 [`keytrack_gain_factor`] 同一条理由 ——
+/// 引擎的摊平表（`PreparedRegion`）只带原始标量、不持有 `Region`，
+/// 它在声部配置时调本函数 ⇒ 离线（[`PlaybackSpec::filter_cutoff`]）与
+/// 摊平两条路用**同一份**公式，⛔ 不许在引擎侧再抄一份。
+///
+/// `fil_keytrack == 0` 且 `fil_veltrack == 0` 时指数恰为 ±0.0 ⇒ 结果与
+/// `cutoff` **逐位相同**。解析路径保证各输入在规范域内（见
+/// [`Region::cutoff`] 等字段文档），结果恒为有限正数（最大偏移
+/// ±(1200×127 + 9600) 音分 ⇒ 因子 ≤ 2^13.5，`cutoff` ≤ `f32::MAX` 时
+/// 乘积可溢出为 `inf` —— 那是采样率钳制前的原始 Hz，消费方的系数
+/// 计算会按采样率钳制，见 `yeban-dsp` 的 `VoiceFilter`）。全程 `f64`
+/// 计算后收窄。零分配，可在实时路径调用。
+#[must_use]
+pub fn filter_cutoff_hz(
+    cutoff: Option<f32>,
+    fil_keytrack: i32,
+    fil_keycenter: i32,
+    fil_veltrack: i32,
+    note: u8,
+    velocity: u8,
+) -> Option<f32> {
+    let cutoff = cutoff?;
+    if cutoff <= 0.0 {
+        return None;
+    }
+    let keyed_cents = f64::from(fil_keytrack) * f64::from(i32::from(note) - fil_keycenter);
+    let veled_cents = f64::from(fil_veltrack) * (f64::from(velocity) / 127.0);
+    let cents = keyed_cents + veled_cents;
+    Some((f64::from(cutoff) * (cents / CENTS_PER_OCTAVE).exp2()) as f32)
+}
+
 impl<'a> Region<'a> {
     /// 音高比：
     /// `2 ^ ((pitch_keytrack * (note - pitch_keycenter) + transpose * 100 + tune) / 1200)`。
@@ -557,6 +626,25 @@ impl<'a> Region<'a> {
         keytrack_gain_factor(self.amp_keytrack, self.amp_keycenter, note)
     }
 
+    /// 滤波静态族在 `(note, velocity)` 上的**有效截止频率**（见
+    /// [`filter_cutoff_hz`]）：就是本 region 的
+    /// (`cutoff`, `fil_keytrack`, `fil_keycenter`, `fil_veltrack`) 在该
+    /// 触发点上的读数。`None` ＝ 滤波禁用（无 `cutoff`，或 `cutoff=0`
+    /// 的 ARIA 口径）。
+    ///
+    /// 零分配，可在实时路径调用。
+    #[must_use]
+    pub fn filter_cutoff(&self, note: u8, velocity: u8) -> Option<f32> {
+        filter_cutoff_hz(
+            self.cutoff,
+            self.fil_keytrack,
+            self.fil_keycenter,
+            self.fil_veltrack,
+            note,
+            velocity,
+        )
+    }
+
     /// 有效循环窗口。
     ///
     /// 返回 `Some` 的条件：**生效的**循环模式（[`Region::effective_loop_mode`]，
@@ -656,6 +744,10 @@ impl<'a> Region<'a> {
             velocity_gain: self.velocity_gain(velocity),
             crossfade_gain: self.crossfade_gain(query),
             keytrack_gain: self.keytrack_gain(note),
+            fil_type: self.fil_type,
+            cutoff: self.cutoff,
+            resonance: self.resonance,
+            filter_cutoff: self.filter_cutoff(note, velocity),
             pan: self.pan,
             trigger: self.trigger,
             off_mode: self.off_mode,
@@ -800,6 +892,78 @@ mod tests {
         assert_eq!(region.pitch_ratio(60), 1.0);
         assert_eq!(region.pitch_ratio(72), 0.5, "an octave up must halve");
         assert_eq!(region.pitch_ratio(48), 2.0, "an octave down must double");
+    }
+
+    #[test]
+    #[test]
+    fn filter_cutoff_folds_keytrack_and_veltrack_in_cents() {
+        // 没有 `cutoff` ⇒ None（禁用）；`cutoff=0` ⇒ None（ARIA 口径）。
+        let plain = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(plain.regions()[0].filter_cutoff(60, 127), None);
+        let zero =
+            parse_text("<region>sample=a.wav cutoff=0", &Default::default()).expect("parses");
+        assert_eq!(zero.regions()[0].filter_cutoff(60, 127), None);
+        // 无跟踪量 ⇒ 与 `cutoff` 逐位相同（指数恰 ±0.0）。
+        let flat =
+            parse_text("<region>sample=a.wav cutoff=1000", &Default::default()).expect("parses");
+        assert_eq!(flat.regions()[0].filter_cutoff(72, 127), Some(1000.0));
+        // fil_keytrack=100（每键一个半音）、中心 60：+12 键 ⇒ ×2；中心 ⇒ ×1。
+        let keyed = parse_text(
+            "<region>sample=a.wav cutoff=1000 fil_keytrack=100 fil_keycenter=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &keyed.regions()[0];
+        assert_eq!(region.filter_cutoff(60, 0), Some(1000.0));
+        assert!(close(
+            region.filter_cutoff(72, 0).expect("enabled"),
+            2000.0,
+            0.01
+        ));
+        assert!(close(
+            region.filter_cutoff(48, 0).expect("enabled"),
+            500.0,
+            0.01
+        ));
+        // fil_veltrack=1200：力度 127 ⇒ ×2；力度 0 ⇒ ×1（按 velocity/127 线性折算）。
+        let veled = parse_text(
+            "<region>sample=a.wav cutoff=800 fil_veltrack=1200",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &veled.regions()[0];
+        assert_eq!(region.filter_cutoff(60, 0), Some(800.0));
+        assert!(close(
+            region.filter_cutoff(60, 127).expect("enabled"),
+            1600.0,
+            0.01
+        ));
+        // 自由函数与 Region 方法同值（引擎摊平路走自由函数）。
+        assert_eq!(
+            filter_cutoff_hz(Some(800.0), 0, 60, 1200, 60, 127),
+            region.filter_cutoff(60, 127)
+        );
+    }
+
+    #[test]
+    fn playback_spec_carries_the_filter_family() {
+        let instrument = parse_text(
+            "<region>sample=a.wav cutoff=1000 fil_type=hpf_4p resonance=6 \
+             fil_keytrack=100 fil_keycenter=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        let spec = instrument.regions()[0].playback_spec(72, 100, RATES_EQUAL);
+        assert_eq!(spec.fil_type, crate::instrument::FilterType::Highpass4p);
+        assert_eq!(spec.cutoff, Some(1000.0), "原始 cutoff 原样带出");
+        assert_eq!(spec.resonance, 6.0);
+        // 有效值已折键位跟踪：+12 键 × 100 音分/键 ⇒ ×2。
+        assert!(close(spec.filter_cutoff.expect("enabled"), 2000.0, 0.01));
+        // 无 `cutoff` 的 region：filter_cutoff 为 None（消费方走直通）。
+        let plain = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let spec = plain.regions()[0].playback_spec(60, 100, RATES_EQUAL);
+        assert_eq!(spec.filter_cutoff, None);
+        assert_eq!(spec.cutoff, None);
     }
 
     #[test]
@@ -1364,6 +1528,12 @@ mod tests {
                             tune,
                             transpose,
                             pitch_keytrack: crate::instrument::PITCH_KEYTRACK_DEFAULT,
+                            fil_type: crate::instrument::FIL_TYPE_DEFAULT,
+                            cutoff: None,
+                            resonance: crate::instrument::RESONANCE_DEFAULT_DB,
+                            fil_keytrack: crate::instrument::FIL_KEYTRACK_DEFAULT,
+                            fil_keycenter: crate::instrument::FIL_KEYCENTER_DEFAULT,
+                            fil_veltrack: crate::instrument::FIL_VELTRACK_DEFAULT,
                             bend_up: crate::BEND_UP_DEFAULT_CENTS,
                             bend_down: crate::BEND_DOWN_DEFAULT_CENTS,
                             volume: 0.0,
