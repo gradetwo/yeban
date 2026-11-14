@@ -207,7 +207,7 @@ pub const APPLY_OPS_SWITCH: &str = "--apply-ops";
 ///
 /// 与 [`SONG_OVERVIEW_SWITCH`] 同一个理由：默认构建的用法文本与"没编译它"的
 /// 错误信息都要打得出来，因此字面值住在这里，而不住在会被 `cfg` 掉的
-/// [`crate::export_stems`] 里。值是输出目录（**必须已存在**，不自动创建）。
+/// [`crate::export_stems`] 里。值是输出目录（不存在时写盘时创建）。
 pub const EXPORT_STEMS_SWITCH: &str = "--export-stems";
 
 /// `--dry-run` 的字面值（只修饰 [`APPLY_OPS_SWITCH`] 的布尔开关：模拟，不写盘）。
@@ -604,8 +604,8 @@ pub fn usage_text() -> String {
                            文件名 `{{序号}}.{{清洗后的轨名}}.wav` (序号最小 4 位, 保留
                            Unicode 字母/数字与 `._-` (汉字原样保留), 其余逐个换 `_`,
                            总长封顶 255 字节); 主总线与非源节点轨**不出文件**
-                           但在回执里各有一行 `stem-skipped:` (⛔ 不静默丢轨); 目录**必须已存在**
-                           (⛔ 不自动创建), 目标文件已存在时整批拒绝 (⛔ 不覆盖); 落盘逐条原子,
+                           但在回执里各有一行 `stem-skipped:` (⛔ 不静默丢轨); 目录不存在时
+                           写盘时创建, 目标文件已存在时整批拒绝 (⛔ 不覆盖); 落盘逐条原子,
                            第 k 条失败时前 k−1 条保留、回执带续跑起点 (D5 部分成功是一等状态);
                            回执: `exported-stems:` 汇总 + 每条 `stem:`; **默认构建里
                            存在** (`{export_stems_feature}` 自 2026-11-12 起为默认
@@ -1571,7 +1571,7 @@ pub struct Options {
     ///
     /// 后端与 `yeban_export_stems` 同一份（`stems::export` / `stems::write`）：
     /// 文件名 `{序号}.{清洗后的轨名}.wav`，主总线与非源节点轨不出文件但点名。
-    /// 目录**必须已存在**（⛔ 不自动创建），目标文件已存在时整批拒绝。
+    /// 目录不存在时写盘时创建，目标文件已存在时整批拒绝。
     ///
     /// 只在 `in-process-mcp` 构建里可执行（渲染与落盘住在 `yeban-mcp`）。
     pub export_stems: Option<PathBuf>,

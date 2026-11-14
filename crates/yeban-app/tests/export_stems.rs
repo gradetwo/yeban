@@ -14,7 +14,7 @@
 //! | :--- | :--- |
 //! | `export_stems` 里绕过 `stems::export` 自己渲染 | `each_track_gets_one_valid_float_wav` |
 //! | 跳过的轨不点名 | `each_track_gets_one_valid_float_wav`（`stems + skipped == 7`） |
-//! | 目录不存在时自动创建 | `a_missing_directory_is_refused_loudly` |
+//! | 目录不存在时拒绝导出（退回 B6 前语义） | `a_missing_directory_is_created_and_export_succeeds` |
 //! | 目标已存在时覆盖或跳过 | `an_existing_target_refuses_the_whole_batch` |
 #![cfg(feature = "in-process-mcp")]
 
@@ -178,25 +178,41 @@ fn each_track_gets_one_valid_float_wav() {
     assert_eq!(stem_lines.len(), stems, "stem: 行数必须等于 stems={stems}");
 }
 
-/// **响亮失败判据**：输出目录不存在 = 导出失败（退出码 5），⛔ 不自动创建。
+/// **B6 判据（2026-11-14）**：输出目录不存在 ⇒ 写盘时创建、导出成功。
+///
+/// B6 前本条钉的是"响亮失败（退出码 5）＋⛔ 不自动创建"；第四份报告 B6 把
+/// CLI 口径与 `--export-wav` 对齐（那边父目录不存在从不预检）后随之翻钉：
+/// 现在**拒绝**才是红，静默不建目录也是红。
 #[test]
-fn a_missing_directory_is_refused_loudly() {
+fn a_missing_directory_is_created_and_export_succeeds() {
     let dir = scratch("missing-dir");
     let out = dir.join("does-not-exist");
     assert!(!out.exists(), "测试前置：目录必须不存在");
-    let error = run_batch(&[
+    let lines = run_batch(&[
         "--project-sample",
         "default",
         "--export-stems",
         &out.display().to_string(),
     ])
-    .expect_err("不存在的目录必须失败");
-    assert_eq!(error.exit_code(), 5, "导出失败是退出码 5（EXIT_EXPORT）");
-    assert!(
-        error.to_string().contains(&out.display().to_string()),
-        "错误文案必须点名那个目录，实为: {error}"
+    .expect("不存在的目录必须被创建并完成导出");
+    assert!(out.is_dir(), "导出后目录必须已被创建");
+    let summary = lines
+        .iter()
+        .find(|line| line.starts_with("exported-stems:"))
+        .expect("回执里必须有 exported-stems: 一行");
+    let stems: usize = summary_field(summary, "stems")
+        .parse()
+        .expect("stems 必须是整数");
+    assert!(stems > 0, "必须真导出分轨，汇总行: {summary}");
+    let wav_count = std::fs::read_dir(&out)
+        .expect("读新建目录")
+        .map(|entry| entry.expect("目录项").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "wav"))
+        .count();
+    assert_eq!(
+        wav_count, stems,
+        "新建目录里的 .wav 数必须等于 stems={stems}"
     );
-    assert!(!out.exists(), "失败时不能顺手把目录建出来");
 }
 
 /// **响亮失败判据**：目标文件已存在时整批拒绝（退出码 5），且不产出其它分轨。

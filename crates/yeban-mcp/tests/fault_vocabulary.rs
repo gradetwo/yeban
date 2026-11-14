@@ -1625,8 +1625,9 @@ struct ReasonArgumentNameUse {
     why: &'static str,
 }
 
-/// 生产区实测 **3 处**（2026-10-25，#340 开工）：它们都不是故障数据的 reason 值。
-const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
+/// 生产区实测 **4 处**（2026-10-25 #340 开工 3 处；2026-11-14 B2 加第 4 处）：
+/// 它们都不是故障数据的 reason 值。
+const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
     ReasonArgumentNameUse {
         file: "tools.rs",
         marker: "param(\"reason\", \"string\"",
@@ -1644,6 +1645,15 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
         marker: "arg_str(call, \"reason\")",
         occurrences: 1,
         why: "读取调用方入参的**键名** `reason`；值本身由调用方给出，不是本层的词。",
+    },
+    ReasonArgumentNameUse {
+        file: "domain/mod.rs",
+        marker: "data.get(\"reason\")",
+        occurrences: 1,
+        why: "B2（2026-11-14）：`with_unsaved_change_stats` 按**已构造失败**的 \
+              `data.reason` 判别要不要并入未保存编辑统计，读的是键名；值 \
+              （`samplerUnreadable`）有自己的字面站点（`domain/embed_samples.rs`），\
+              不是本层的词。",
     },
 ];
 
@@ -1744,7 +1754,10 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 3] = [
 // 的 MidiCc 臂复用既有 `staticLaneNotApplicable` 1 处新字面站点 ⇒ 出现 337 → 343、
 // 键站点 334 → 340、字面站点 323 → 329（恒等式仍闭合：340 = 字面 329 ＋ 可解析
 // `let` 2 ＋ 运行时 6 ＋ 传播 3；343 = 340 ＋ 参数名 3。）
-const REASON_OCCURRENCES_TOTAL: usize = 343;
+// B2（2026-11-14）：`with_unsaved_change_stats` 的 `data.get("reason")` 是第 4 处
+// **参数名**站点（已登记进 [`REASON_ARGUMENT_NAME_USES`]）⇒ 参数名 3 → 4、
+// 总出现 343 → 344（键站点 340 不动；344 = 340 ＋ 参数名 4）。
+const REASON_OCCURRENCES_TOTAL: usize = 344;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
@@ -1754,7 +1767,7 @@ const REASON_LITERAL_SITES_TOTAL: usize = 329;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
-const REASON_ARGUMENT_NAME_TOTAL: usize = 3;
+const REASON_ARGUMENT_NAME_TOTAL: usize = 4;
 
 /// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
 /// 任何 `Unclassified` **都点名 file:line**；陈旧的登记项同样变红。
