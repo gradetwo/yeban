@@ -307,6 +307,19 @@ pub struct PlaybackSpec {
     /// [`PlaybackSpec::resonance`], 本值) 配置逐声部滤波器；采样率相关
     /// 的钳制在系数计算处做（本值是钳制前的原始 Hz）。
     pub filter_cutoff: Option<f32>,
+    /// ⭐ 该 region 的**滤波包络**定义（`fileg_*`；原样带出，SFZ 包络族片）。
+    ///
+    /// 与 [`PlaybackSpec::filter_cutoff`] 的分工：那是触发期的**静态**有效截止，
+    /// 本字段是随时间变化的**调制形状**（[`crate::eg::EgDef`]，含 `vel2*`，
+    /// 消费方按 [`PlaybackSpec::velocity`] 折算）。引擎的逐样本接线在
+    /// `yeban-engine`（同一份定义）；本字段让只拿 `PlaybackSpec` 的消费方
+    /// 也能跑同一条包络。空定义 ＝ 无包络。
+    pub fileg: crate::eg::EgDef,
+    /// ⭐ 该 region 的**音高包络**定义（`pitcheg_*`；原样带出，SFZ 包络族片）。
+    ///
+    /// 语义同 [`PlaybackSpec::fileg`]（形状见 [`crate::eg::EgDef`]），
+    /// 调制对象是播放速率而不是截止。
+    pub pitcheg: crate::eg::EgDef,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
     /// 该 region 的 `trigger`（原样）。
@@ -748,6 +761,8 @@ impl<'a> Region<'a> {
             cutoff: self.cutoff,
             resonance: self.resonance,
             filter_cutoff: self.filter_cutoff(note, velocity),
+            fileg: self.fileg,
+            pitcheg: self.pitcheg,
             pan: self.pan,
             trigger: self.trigger,
             off_mode: self.off_mode,
@@ -1518,9 +1533,13 @@ mod tests {
                             ampeg_decay: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
                             ampeg_sustain: crate::instrument::AMPEG_SUSTAIN_DEFAULT_PERCENT,
                             ampeg_release: crate::instrument::AMPEG_RELEASE_DEFAULT_SECONDS,
+                            ampeg_delay: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
+                            ampeg_start: crate::instrument::AMPEG_START_DEFAULT_PERCENT,
                             cc_mods: Vec::new(),
                             // ⭐ 任务单 `#106`：力度调制量（`None` ＝ 该 opcode 没出现）。
                             ampeg_vel2: [None; crate::modulation::AmpegParam::COUNT],
+                            fileg: crate::eg::EgDef::EMPTY,
+                            pitcheg: crate::eg::EgDef::EMPTY,
                             offset: 0,
                             end: SampleEnd::Unspecified,
                             direction: PlayDirection::Forward,

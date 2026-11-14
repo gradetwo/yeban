@@ -696,6 +696,14 @@ use crate::curve::{Curve, CurvePoint, curve_value_at};
 ///
 /// 声明顺序就是**求和顺序**（见模块文档第 5 条裁决）：`Attack < Hold < Decay < Sustain
 /// < Release`。与 [`crate::instrument::Region`] 上五个字段一一对应。
+/// ⭐ ⭐ **追加修订段（SFZ 包络族片）—— 被修订的是上面那句「与 [`crate::instrument::Region`]
+/// 上五个字段一一对应」那一支**（⛔ 原文一字未删，口径同台账第 278 条）：本片补齐
+/// `ampeg_delay` / `ampeg_start` 两参（审计 C24）⇒ 参数变**七个**，Region 上同步加两个字段。
+/// ⭐ **新参一律尾加**（`Delay` 下标 5、`Start` 下标 6）：五个既有参数的下标、
+/// [`ModTarget`] 的求和序与位模式**逐位不变**（判据 S106 的相对断言
+/// `Amplitude.index() == AmpegParam::COUNT` 随之自洽地移到 7）。
+/// ⚠ `Start` 是**百分比**（规范表行 Unit ＝ %）⇒ [`Self::is_time`] 对它返回 `false`，
+/// 与 `Sustain` 同支；`Delay` 是秒 ⇒ `true`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AmpegParam {
     /// `ampeg_attack`（秒）。
@@ -708,22 +716,30 @@ pub enum AmpegParam {
     Sustain,
     /// `ampeg_release`（秒）。
     Release,
+    /// ⭐ `ampeg_delay`（秒；SFZ 包络族片尾加，下标 5）。
+    Delay,
+    /// ⭐ `ampeg_start`（百分比；SFZ 包络族片尾加，下标 6）。
+    Start,
 }
 
 impl AmpegParam {
     /// 参数个数（`[T; AmpegParam::COUNT]` 的下标域 ＝ `0..COUNT`）。
-    pub const COUNT: usize = 5;
+    ///
+    /// ⭐ SFZ 包络族片起为 **7**（`#104`～`#106` 时是 5；新参尾加，既有下标不动）。
+    pub const COUNT: usize = 7;
 
-    /// 全部五个参数（声明序；判据与遍历用）。
-    pub const ALL: [Self; 5] = [
+    /// 全部七个参数（声明序；判据与遍历用）。
+    pub const ALL: [Self; 7] = [
         Self::Attack,
         Self::Hold,
         Self::Decay,
         Self::Sustain,
         Self::Release,
+        Self::Delay,
+        Self::Start,
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=4`）。
+    /// 在 [`Self::ALL`] 里的下标（`0..=6`）。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -732,6 +748,8 @@ impl AmpegParam {
             Self::Decay => 2,
             Self::Sustain => 3,
             Self::Release => 4,
+            Self::Delay => 5,
+            Self::Start => 6,
         }
     }
 
@@ -744,13 +762,15 @@ impl AmpegParam {
             Self::Decay => "decay",
             Self::Sustain => "sustain",
             Self::Release => "release",
+            Self::Delay => "delay",
+            Self::Start => "start",
         }
     }
 
-    /// 该参数是不是**时间**（秒）；`false` ⇒ 百分比（只有 `sustain`）。
+    /// 该参数是不是**时间**（秒）；`false` ⇒ 百分比（`sustain` 与 ⭐ `start`）。
     #[must_use]
     pub const fn is_time(self) -> bool {
-        !matches!(self, Self::Sustain)
+        !matches!(self, Self::Sustain | Self::Start)
     }
 
     /// 按 [`Self::ALL`] 的顺序取第 `index` 个（越界 ⇒ `None`）。
@@ -762,6 +782,8 @@ impl AmpegParam {
             2 => Some(Self::Decay),
             3 => Some(Self::Sustain),
             4 => Some(Self::Release),
+            5 => Some(Self::Delay),
+            6 => Some(Self::Start),
             _ => None,
         }
     }
@@ -912,22 +934,33 @@ impl ModTarget {
     /// ⭐ **沿革（任务单 `#119`）**：`#115` 登记 `6`、`#116`／`#118` 登记 `7`
     /// （后两者⛔ 不加变体）。`#119` 加上 [`Self::Volume`] ⇒ **`8`**。
     /// ⚠ 被修订的只是**这个数**：既有七个目标的**下标与位模式逐位不变**。
-    pub const COUNT: usize = 8;
+    ///
+    /// ⭐ ⭐ **追加修订段（SFZ 包络族片）—— 被修订的是上面这个数那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条）：`AmpegParam` 尾加 `Delay`／`Start`
+    /// ⇒ [`Self::ALL`] 里 `Ampeg(..)` 条目变七个、总数变 **10**。
+    /// ⭐ **被修订的只是条目数**：五个既有 ampeg 目标的下标（0..=4）逐位不变；
+    /// `Amplitude`／`Tune`／`Volume` 的下标由 [`AmpegParam::COUNT`] 派生（7／8／9），
+    /// 相对序不变 ⇒ 每个目标**自身**的求和序（同目标内按 CC 升序）逐位不变。
+    pub const COUNT: usize = 10;
 
-    /// 全部八个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 8] = [
+    /// 全部十个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 10] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
         Self::Ampeg(AmpegParam::Sustain),
         Self::Ampeg(AmpegParam::Release),
+        // ⭐ SFZ 包络族片：`ampeg_delay` / `ampeg_start` 两目标（尾加在五个既有
+        // ampeg 目标之后、`Amplitude` 之前 ⇒ 既有下标的相对序不变）。
+        Self::Ampeg(AmpegParam::Delay),
+        Self::Ampeg(AmpegParam::Start),
         Self::Amplitude,
         Self::Tune,
         // ⭐⭐ `#119` 的**新增目标**（⛔ 加在末尾 ⇒ 既有七个下标一个都不动）。
         Self::Volume,
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=7`）；**这个序就是求和序**。
+    /// 在 [`Self::ALL`] 里的下标（`0..=9`）；**这个序就是求和序**。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -947,6 +980,8 @@ impl ModTarget {
             Self::Ampeg(AmpegParam::Decay) => "ampeg_decay",
             Self::Ampeg(AmpegParam::Sustain) => "ampeg_sustain",
             Self::Ampeg(AmpegParam::Release) => "ampeg_release",
+            Self::Ampeg(AmpegParam::Delay) => "ampeg_delay",
+            Self::Ampeg(AmpegParam::Start) => "ampeg_start",
             Self::Amplitude => "amplitude",
             Self::Tune => "tune",
             Self::Volume => "volume",
@@ -2030,7 +2065,19 @@ mod tests {
             assert_eq!(target.index(), position, "声明序与 index 必须一致");
         }
         assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
-        assert_eq!(ModTarget::ALL[5], ModTarget::Amplitude, "新目标必须在末尾");
+        // ⭐⭐ **追加修订段（SFZ 包络族片）—— 被修订的是下面这条 `#115` 原断言里的
+        // 下标 `5`**（⛔ 口径同台账第 278 条：点名被修订的支）：原断言
+        // `assert_eq!(ModTarget::ALL[5], ModTarget::Amplitude, "新目标必须在末尾");`
+        // 里的 `5` 是当时的 `AmpegParam::COUNT`；本片把 `AmpegParam` 尾加
+        // `Delay`／`Start`（5 → 7）⇒ `Amplitude` 的下标随公式派生移到 `7`。
+        // ⭐ **存续的不变量**是「`Amplitude` 紧跟 ampeg 族、其后依次 `Tune`／`Volume`」，
+        // 故断言改钉 `ALL[AmpegParam::COUNT]`（⛔ 不是把 `5` 硬改成 `7`：
+        // 下次 ampeg 族再扩编时这条自动跟随，钉死字面值只会再红一次）。
+        assert_eq!(
+            ModTarget::ALL[AmpegParam::COUNT],
+            ModTarget::Amplitude,
+            "新目标必须紧跟 ampeg 族"
+        );
         // ⭐⭐ 任务单 `#116`：`#115` 那句"新目标必须在末尾"里的 `ALL[5]` 断言
         // **原样保留**（它现在钉的是"既有目标的下标一个都没动"）；新目标 `Tune`
         // 加在**它之后**（下标 6 ＝ 当时的 `COUNT − 1`）。

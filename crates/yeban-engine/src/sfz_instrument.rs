@@ -414,6 +414,9 @@
 //!
 //! * **每区域**的 ADSR **时间与电平**（秒 / 百分比）进 [`PreparedRegion`]
 //!   （`ampeg_attack/hold/decay/sustain/release` 五个字段，另见 [`AmpegRun`] 的帧口径归约）；
+//!   ⭐ **SFZ 包络族片注**：`ampeg_delay` / `ampeg_start` 两字段同片加入（同为每区域标量）；
+//!   `fileg_*` / `pitcheg_*` 的定义走**侧表**（`PreparedSfz` 的 EG 定义表 ＋ 区域里两个
+//!   `u16` 下标），⛔ 不摊进每区域布局 —— 尺寸账见 `tests/sfz_instrument.rs` 的 S118 ⑦。
 //! * **每声部**只有**推进状态**：段位（`u8`）＋ 段内计数（`u32`）＝ **5 字节**，
 //!   落在 [`SfzVoice`] 既有的**填充字节**里 ⇒ 尺寸 **+0 字节**（`S9` 仍钉 `40 B`）；
 //! * ⭐ 释放段的**起点电平不需要另存**：段位里记着"收到 note-off 时在哪一段"，
@@ -515,7 +518,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（规范说的是**一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**；⭐ 本仓**不读 per-region `off_time`**；`off_time` 不在本片范围；⛔ 不是静默降级；见 `ADR-0008` 裁决 **C**）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（规范说的是**一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**；⭐ 本仓**不读 per-region `off_time`**；`off_time` 不在本片范围；⛔ 不是静默降级；见 `ADR-0008` 裁决 **C**）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节）。⭐ ⭐ **追加修订段（SFZ 包络族片）—— 被修订的是这份清单里的 `fileg_*` / `pitcheg_*` 那两项**（⛔ 原文与 `#113` 修订段一字未删）：两族**已接线** —— 静态八参 ＋ `*_vel2*` 由 `yeban-sfz` 的 `read_eg` 解析、引擎以 [`EgRun`]／[`ModEgRun`] 在 [`mix_span_into`] 逐样本调制（`fileg` 调截止、`pitcheg` 调位置步进），判据在 `tests/sfz_eg.rs`；同片还补全了 `ampeg_delay` / `ampeg_start`（解析 ＋ 归约 ＋ 三路求值随 `AmpegParam` 尾加自动跟随）。⛔ **仍未做的是两族的 CC 支**（`*_ccN` / `*_onccN` / `*_curveccN` 不进 `ModTarget`，范围裁决见 `yeban_sfz::eg`）；`off_time` / `pan` 两项**仍未做**（原文对这两项继续成立） |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场）　⭐ ⭐ **追加修订段（任务单 `#279`）—— 被修订的是 ③ 里的「整段 clone …无 `Arc` 共享」**（⛔ 原文一字未删）：`PreparedSample.pcm` 已是 `Arc<Vec<f32>>`、`prepare_with_samples` 只 `Arc::clone` 调用方那份 ⇒ **同一份 PCM 只有一份字节**（⛔ 不再是 N 份），峰值的"第 4 份副本"因此消失；⚠ **仍未做**：流式解码、字节预算的强制执行（本条 ①② 的口径不变）。 |
 //!
@@ -1844,6 +1847,7 @@ use yeban_dsp::polysynth::{NO_PITCH_SHAPE, steal_fade_frames_for};
 // [`PreparedRegion::voice_filter`] 与模块头「滤波静态族」一节。
 use yeban_dsp::voice_filter::{VoiceFilter, VoiceFilterKind};
 use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
+use yeban_sfz::eg::{EgDef, EgParam};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
     CcGate, FilterType, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region,
@@ -2514,12 +2518,14 @@ impl SfzInstrument {
                     )
                     .0
                 };
-                let (attack, hold, decay, sustain, release) = (
+                let (attack, hold, decay, sustain, release, delay, start) = (
                     value(AmpegParam::Attack),
                     value(AmpegParam::Hold),
                     value(AmpegParam::Decay),
                     value(AmpegParam::Sustain),
                     value(AmpegParam::Release),
+                    value(AmpegParam::Delay),
+                    value(AmpegParam::Start),
                 );
                 // ⭐⭐ **note-off**（任务 `#310`）：`held_frames = Some(n)` ⇒ `EnvRun::frame`
                 // 就是第 `n` 帧 ⇒ [`EnvRun::advance`] 在 `abs_frame >= n` 处把段位打上
@@ -2548,13 +2554,14 @@ impl SfzInstrument {
                 //    在本仓取 0 的那条登记裁决）。
                 //    ⚠ 只在 `held == Some` 时造 ⇒ 旧入口（`held_frames = None`）仍是
                 //    `env = None`，逐位不变。
-                let run = ampeg_run_from(attack, hold, decay, sustain, release, engine_hz).or_else(
-                    || {
-                        held.and_then(|_| {
-                            ampeg_run_from(0.0, 0.0, 0.0, 100.0, f32::EPSILON, engine_hz)
-                        })
-                    },
-                );
+                let run = ampeg_run_from(
+                    attack, hold, decay, sustain, release, delay, start, engine_hz,
+                )
+                .or_else(|| {
+                    held.and_then(|_| {
+                        ampeg_run_from(0.0, 0.0, 0.0, 100.0, f32::EPSILON, 0.0, 0.0, engine_hz)
+                    })
+                });
                 let mut env = run.map(|run| {
                     EnvRun::new(
                         run,
@@ -2569,7 +2576,23 @@ impl SfzInstrument {
                 // （状态自零起 ＝ note-on 语义，与实时声部触发期配置同口径；
                 // 有效截止走 [`Region::filter_cutoff`]，与摊平路同一份公式）。
                 // 无 `cutoff` ⇒ [`VoiceFilter::BYPASSED`] ⇒ 逐位不变。
-                let mut filter = match region.filter_cutoff(note, velocity) {
+                // ⭐ 调制包络（`fileg_*` / `pitcheg_*`；SFZ 包络族片）：与摊平/实时
+                // 两条路**同一份归约**（[`eg_run_from`]）。note-off 帧与 ampeg 读
+                // 同一个 `held` ⇒ 三族的释放同时开始；`abs_base = 0` 与 `env` 同基。
+                // fileg 的在场前提是 region 有静态有效截止（`base_hz`）——
+                // 与下面 `filter` 的配置用**同一个**读数（⛔ 不许第二份折算）。
+                let base_hz = region.filter_cutoff(note, velocity);
+                let eg_frame = held.unwrap_or(u64::MAX);
+                let mut egs = EgSpan {
+                    fil: base_hz.and_then(|_| {
+                        eg_run_from(&region.fileg, velocity, engine_hz)
+                            .map(|run| ModEgRun::new(run, eg_frame, 0))
+                    }),
+                    pitch: eg_run_from(&region.pitcheg, velocity, engine_hz)
+                        .map(|run| ModEgRun::new(run, eg_frame, 0)),
+                    base_cutoff_hz: base_hz.unwrap_or(0.0),
+                };
+                let mut filter = match base_hz {
                     Some(hz) => {
                         configured_voice_filter(region.fil_type, hz, region.resonance, engine_hz)
                     }
@@ -2586,6 +2609,7 @@ impl SfzInstrument {
                     &mut fade,
                     &mut env,
                     &mut filter,
+                    &mut egs,
                     out,
                 );
                 written = written.max(region_written);
@@ -2826,6 +2850,8 @@ pub fn reduce_loop_window(
 /// （见 [`EnvRun::may_wrap`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmpegStage {
+    /// ⭐ 延迟段：恒定 `ampeg_start`（时长 ＝ `ampeg_delay`；SFZ 包络族片新增）。
+    Delay,
     /// 起音段：线性上升 `0 → 1`（时长 ＝ `ampeg_attack`）。
     Attack,
     /// 保持段：恒定 `1`（时长 ＝ `ampeg_hold`）。
@@ -2848,6 +2874,9 @@ const ENV_STAGE_ATTACK: u8 = 1;
 const ENV_STAGE_HOLD: u8 = 2;
 const ENV_STAGE_DECAY: u8 = 3;
 const ENV_STAGE_SUSTAIN: u8 = 4;
+/// ⭐ 延迟段（SFZ 包络族片）：`ampeg_delay` 期，电平恒 ＝ `ampeg_start`。
+/// 调制包络（[`EgRun`]）共用同一套段位编码（5 是低 3 位里最后一个空位）。
+const ENV_STAGE_DELAY: u8 = 5;
 /// 「释放中」位：`段位 = ENV_RELEASING | (收到 note-off 时所在的段)`。
 const ENV_RELEASING: u8 = 0x80;
 /// 段位（低 3 位）的掩码。
@@ -2855,7 +2884,9 @@ const ENV_STAGE_MASK: u8 = 0x07;
 
 /// 把 `t`（自触发起的帧数）落在哪一段编码成低位段位。
 fn env_held_stage_byte(run: &AmpegRun, t: u32) -> u8 {
-    if t < run.attack_frames() {
+    if t < run.delay_end {
+        ENV_STAGE_DELAY
+    } else if t < run.attack_end {
         ENV_STAGE_ATTACK
     } else if t < run.hold_end {
         ENV_STAGE_HOLD
@@ -2875,6 +2906,7 @@ const fn env_stage_of(byte: u8) -> Option<AmpegStage> {
         return Some(AmpegStage::Release);
     }
     match byte & ENV_STAGE_MASK {
+        ENV_STAGE_DELAY => Some(AmpegStage::Delay),
         ENV_STAGE_ATTACK => Some(AmpegStage::Attack),
         ENV_STAGE_HOLD => Some(AmpegStage::Hold),
         ENV_STAGE_DECAY => Some(AmpegStage::Decay),
@@ -2895,13 +2927,24 @@ const fn env_stage_of(byte: u8) -> Option<AmpegStage> {
 /// ⚠ 本类型**不带任何逐声部状态**：段位与段内计数在 [`SfzVoice`]（⛔ 不在按区域的参数里）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AmpegRun {
-    /// 起音段终点（帧；`0` ＝ 零长段 ⇒ 跳过）。
+    /// ⭐ 延迟段终点（帧；＝ 延迟段帧数，段自 0 起；SFZ 包络族片）。
+    ///
+    /// 延迟段内电平恒 ＝ [`Self::start`]。`0` ＝ 无延迟（与接线前逐位相同）。
+    delay_end: u32,
+    /// 起音段终点（帧；＝ 延迟 ＋ 起音）。
     attack_end: u32,
     /// 保持段终点（帧；＝ 起音 ＋ 保持）。
     hold_end: u32,
     /// 衰减段终点（帧；＝ 起音 ＋ 保持 ＋ 衰减）。
     decay_end: u32,
-    /// `1 / attack_end`（`attack_end == 0` 时不会被读到）。
+    /// ⭐ 起始电平（0..1 的线性增益；`ampeg_start` 百分比 ÷ 100；SFZ 包络族片）。
+    ///
+    /// 延迟段恒为它、起音段自它线性升到 1。释放段**不**用它（仍归零，
+    /// 见 [`Self::level_at`] 的裁决注记）。
+    start: f32,
+    /// `1 − start`（起音段的落差；预存 ⇒ 逐样本只做乘加）。
+    attack_span: f32,
+    /// `1 / 起音段帧数`（起音段为 0 帧时不会被读到）。
     attack_inv: f32,
     /// `1 / 衰减段帧数`（零长时不会被读到）。
     decay_inv: f32,
@@ -2916,10 +2959,22 @@ pub struct AmpegRun {
 }
 
 impl AmpegRun {
+    /// ⭐ 延迟段帧数（`ampeg_delay × engine_hz`，四舍五入；SFZ 包络族片）。
+    #[must_use]
+    pub const fn delay_frames(&self) -> u32 {
+        self.delay_end
+    }
+
+    /// ⭐ 起始电平（0..1 的线性增益；`ampeg_start` 百分比 ÷ 100）。
+    #[must_use]
+    pub const fn start_level(&self) -> f32 {
+        self.start
+    }
+
     /// 起音段帧数（`ampeg_attack × engine_hz`，四舍五入）。
     #[must_use]
     pub const fn attack_frames(&self) -> u32 {
-        self.attack_end
+        self.attack_end - self.delay_end
     }
 
     /// 保持段帧数。
@@ -2956,7 +3011,15 @@ impl AmpegRun {
     /// ⛔ 不是"降级政策"（见模块头）。
     fn level_at(&self, stage_byte: u8, t: u32) -> f32 {
         match stage_byte & ENV_STAGE_MASK {
-            ENV_STAGE_ATTACK => t as f32 * self.attack_inv,
+            // ⭐ 延迟段：恒 ＝ 起始电平（SFZ 包络族片）。
+            ENV_STAGE_DELAY => self.start,
+            // ⭐ 起音段自 `start` 起升：`start + (1 − start) × 进度`。
+            // `delay == 0 && start == 0` 时本式 ＝ `0 + 1 × (t × inv)`，
+            // 与接线前的 `t as f32 * attack_inv` **逐位相同**
+            // （整数减 0、浮点加 0、乘 1 都是恒等）。
+            ENV_STAGE_ATTACK => {
+                self.start + self.attack_span * ((t - self.delay_end) as f32 * self.attack_inv)
+            }
             ENV_STAGE_HOLD => 1.0,
             ENV_STAGE_DECAY => {
                 1.0 - self.decay_span * ((t - self.hold_end) as f32 * self.decay_inv)
@@ -3009,7 +3072,8 @@ pub fn seconds_to_frames(seconds: f32, engine_hz: f32) -> u32 {
 ///
 /// # 判定次序（逐条可判）
 ///
-/// 1. **透明**：五个值都恰好在透明缺省（各段 `0` 秒、`sustain` 100 %、`release` 0 秒）
+/// 1. **透明**：七个值都恰好在透明缺省（各段 `0` 秒、`sustain` 100 %、`release` 0 秒、
+///    ⭐ `delay` 0 秒、`start` 0 % —— SFZ 包络族片追加的两条）
 ///    ⇒ `None` ＝ **逐样本路径一个浮点运算都不加**（"没有 `ampeg_*`" ⇒ 与接线前逐位相同）；
 /// 2. **换算**：`frames = round(秒 × engine_hz)`（⛔ 不是截断：`0.01 s @ 48 kHz` 截断会得到
 ///    479 而不是 480）；
@@ -3017,12 +3081,17 @@ pub fn seconds_to_frames(seconds: f32, engine_hz: f32) -> u32 {
 ///    ⛔ 不 panic、⛔ 不产出 `NaN` —— 与 `crate::synth` 的 `sanitise_sample_rate` 同一精神）；
 /// 4. 换算后**为 0 帧**的段 ＝ 零长段，由 [`AmpegRun::level_at`] 自然跳过。
 #[must_use]
+// 八个标量入参 ＝ 七个包络参数 ＋ 采样率：与 `yeban-sfz` 侧的归约入参同形，
+// ⛔ 不为压参数个数把它们包成结构体（调用点全是逐个命名的读数）。
+#[allow(clippy::too_many_arguments)]
 pub fn ampeg_run_from(
     attack_seconds: f32,
     hold_seconds: f32,
     decay_seconds: f32,
     sustain_percent: f32,
     release_seconds: f32,
+    delay_seconds: f32,
+    start_percent: f32,
     engine_hz: f32,
 ) -> Option<AmpegRun> {
     if attack_seconds == 0.0
@@ -3030,19 +3099,27 @@ pub fn ampeg_run_from(
         && decay_seconds == 0.0
         && sustain_percent == 100.0
         && release_seconds == 0.0
+        && delay_seconds == 0.0
+        && start_percent == 0.0
     {
         return None;
     }
+    let delay = seconds_to_frames(delay_seconds, engine_hz);
     let attack = seconds_to_frames(attack_seconds, engine_hz);
     let hold = seconds_to_frames(hold_seconds, engine_hz);
     let decay = seconds_to_frames(decay_seconds, engine_hz);
     let release = seconds_to_frames(release_seconds, engine_hz);
     let sustain = (sustain_percent / 100.0).clamp(0.0, 1.0);
-    let hold_end = attack.saturating_add(hold);
+    let start = (start_percent / 100.0).clamp(0.0, 1.0);
+    let attack_end = delay.saturating_add(attack);
+    let hold_end = attack_end.saturating_add(hold);
     Some(AmpegRun {
-        attack_end: attack,
+        delay_end: delay,
+        attack_end,
         hold_end,
         decay_end: hold_end.saturating_add(decay),
+        start,
+        attack_span: 1.0 - start,
         attack_inv: if attack == 0 {
             0.0
         } else {
@@ -3058,6 +3135,355 @@ pub fn ampeg_run_from(
             1.0 / release as f32
         },
     })
+}
+
+/// ⭐ **引擎帧口径**的调制包络形状（`fileg_*` / `pitcheg_*` 共用；SFZ 包络族片）。
+///
+/// 与 [`AmpegRun`] 同形（分段线性、帧口径、倒数预存），三处**刻意**不同：
+/// * sustain 缺省 **0**（不是 100）—— 透明判定因此只看 `depth`（见 [`eg_run_from`]）；
+/// * 多一个 [`Self::depth`]（音分）：电平的调制总量，偏移 ＝ `level × depth`；
+/// * 释放段回到 [`Self::start`]（静止位）而不是 0 —— 见 [`yeban_sfz::eg`] 的裁决。
+///
+/// ⚠ 本类型**不带逐声部状态**（状态在 [`ModEgRun`]）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EgRun {
+    /// 延迟段终点（帧；段自 0 起）。延迟段内电平恒 ＝ [`Self::start`]()。
+    delay_end: u32,
+    /// 起音段终点（帧；＝ 延迟 ＋ 起音）。
+    attack_end: u32,
+    /// 保持段终点（帧；＝ 起音段终点 ＋ 保持）。
+    hold_end: u32,
+    /// 衰减段终点（帧；＝ 保持段终点 ＋ 衰减）。
+    decay_end: u32,
+    /// 起始／静止电平（0..1；`*_start` 百分比 ÷ 100）。
+    start: f32,
+    /// `1 − start`（起音段落差）。
+    attack_span: f32,
+    /// `1 / 起音段帧数`（零长时不会被读到）。
+    attack_inv: f32,
+    /// `1 / 衰减段帧数`（零长时不会被读到）。
+    decay_inv: f32,
+    /// `1 − sustain`（衰减段落差）。
+    decay_span: f32,
+    /// 保持电平（0..1；`*_sustain` 百分比 ÷ 100）。
+    sustain: f32,
+    /// 释放段帧数（`0` ⇒ note-off 当帧直接落回 [`Self::start`]()）。
+    release_frames: u32,
+    /// `1 / release_frames`（零长时不会被读到）。
+    release_inv: f32,
+    /// 调制深度（音分；已按力度折算并钳进 −12000..=12000）。
+    depth: f32,
+}
+
+impl EgRun {
+    /// 全零形状（池侧占位；`depth == 0` ⇒ 永不被推进，见 [`ModEgRun::INERT`]）。
+    pub const ZERO: EgRun = EgRun {
+        delay_end: 0,
+        attack_end: 0,
+        hold_end: 0,
+        decay_end: 0,
+        start: 0.0,
+        attack_span: 0.0,
+        attack_inv: 0.0,
+        decay_inv: 0.0,
+        decay_span: 0.0,
+        sustain: 0.0,
+        release_frames: 0,
+        release_inv: 0.0,
+        depth: 0.0,
+    };
+
+    /// 调制深度（音分）。
+    #[must_use]
+    pub const fn depth(&self) -> f32 {
+        self.depth
+    }
+
+    /// 起始／静止电平（0..1）。
+    #[must_use]
+    pub const fn start_level(&self) -> f32 {
+        self.start
+    }
+
+    /// **未释放阶段的电平**（唯一求值处；与 [`AmpegRun::level_at`] 同形，
+    /// 只是起音自 `start` 起升、延迟段恒为 `start`）。
+    fn level_at(&self, stage_byte: u8, t: u32) -> f32 {
+        match stage_byte & ENV_STAGE_MASK {
+            ENV_STAGE_DELAY => self.start,
+            ENV_STAGE_ATTACK => {
+                self.start + self.attack_span * ((t - self.delay_end) as f32 * self.attack_inv)
+            }
+            ENV_STAGE_HOLD => 1.0,
+            ENV_STAGE_DECAY => {
+                1.0 - self.decay_span * ((t - self.hold_end) as f32 * self.decay_inv)
+            }
+            _ => self.sustain,
+        }
+    }
+
+    /// **释放段的电平**：自 note-off 时刻的电平 `held_level` 线性回到
+    /// [`Self::start`]（`k` ＝ 释放已走帧数；缩放 `(R − k) / R` 与
+    /// [`AmpegRun::release_scale`] 同一份算术）。`k >= R` 或 `R == 0`
+    /// ⇒ 恰好是 `start`（释放走完后恒停在静止位，⛔ 不退休 —— 包络不决定声部生死）。
+    fn release_level(&self, held_level: f32, k: u64) -> f32 {
+        if self.release_frames == 0 || k >= u64::from(self.release_frames) {
+            return self.start;
+        }
+        let scale = (self.release_frames - k as u32) as f32 * self.release_inv;
+        self.start + (held_level - self.start) * scale
+    }
+}
+
+/// 把 `t` 落在哪一段编码成低位段位（调制包络版；与 [`env_held_stage_byte`] 同梯）。
+fn eg_held_stage_byte(run: &EgRun, t: u32) -> u8 {
+    if t < run.delay_end {
+        ENV_STAGE_DELAY
+    } else if t < run.attack_end {
+        ENV_STAGE_ATTACK
+    } else if t < run.hold_end {
+        ENV_STAGE_HOLD
+    } else if t < run.decay_end {
+        ENV_STAGE_DECAY
+    } else {
+        ENV_STAGE_SUSTAIN
+    }
+}
+
+/// ⭐ **调制包络归约的唯一实现**（SFZ 包络族片）：把一族 [`EgDef`] 按力度
+/// 折算成帧口径的 [`EgRun`]。三条路共用（与 [`ampeg_run_from`] 同形）。
+///
+/// **透明判定**：有效 `depth == 0` ⇒ `None`（电平再怎么走，偏移恒 0
+/// ⇒ 逐样本路径一项运算都不加、输出逐位不变）。其余参数即使全缺省也
+/// 产出运行束（例：只有 `depth` 与 `start` —— 电平恒 ＝ start，是真偏移）。
+/// 钳制与换算同 `ampeg`：时间走 [`seconds_to_frames`]（非正 ⇒ 0 帧），
+/// 电平 `(percent / 100).clamp(0, 1)`，`depth` 钳进规范域 ±12000。
+#[must_use]
+pub fn eg_run_from(def: &EgDef, velocity: u8, engine_hz: f32) -> Option<EgRun> {
+    let depth = def.value(EgParam::Depth, velocity).clamp(-12000.0, 12000.0);
+    if depth == 0.0 {
+        return None;
+    }
+    let delay = seconds_to_frames(def.value(EgParam::Delay, velocity), engine_hz);
+    let attack = seconds_to_frames(def.value(EgParam::Attack, velocity), engine_hz);
+    let hold = seconds_to_frames(def.value(EgParam::Hold, velocity), engine_hz);
+    let decay = seconds_to_frames(def.value(EgParam::Decay, velocity), engine_hz);
+    let release = seconds_to_frames(def.value(EgParam::Release, velocity), engine_hz);
+    let start = (def.value(EgParam::Start, velocity) / 100.0).clamp(0.0, 1.0);
+    let sustain = (def.value(EgParam::Sustain, velocity) / 100.0).clamp(0.0, 1.0);
+    let attack_end = delay.saturating_add(attack);
+    let hold_end = attack_end.saturating_add(hold);
+    Some(EgRun {
+        delay_end: delay,
+        attack_end,
+        hold_end,
+        decay_end: hold_end.saturating_add(decay),
+        start,
+        attack_span: 1.0 - start,
+        attack_inv: if attack == 0 {
+            0.0
+        } else {
+            1.0 / attack as f32
+        },
+        decay_inv: if decay == 0 { 0.0 } else { 1.0 / decay as f32 },
+        decay_span: 1.0 - sustain,
+        sustain,
+        release_frames: release,
+        release_inv: if release == 0 {
+            0.0
+        } else {
+            1.0 / release as f32
+        },
+        depth,
+    })
+}
+
+/// ⭐ 一族调制包络在一个声部槽上的**持久状态**（池侧存放；镜像 `EnvRun`
+/// 写回 `SfzVoice` 三格的分工，但⛔ 不进 `SfzVoice` ⇒ 声部仍 40 B）。
+///
+/// 只存"跨块延续"的那四样：段位、计数、释放起点电平、上次调谐点。
+/// 形状（[`EgRun`]）与 note-off 帧**不在这里**：形状逐块由 `PreparedRegion`
+/// 重建（确定性、与力度绑定），note-off 帧读声部的 `end_sample`
+/// （与 ampeg 的 [`EnvRun`] 读同一格 ⇒ 三族包络的 note-off 时刻必然一致）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EgVoiceState {
+    /// 段位字节（`ENV_STAGE_*` ＋ `ENV_RELEASING` 位）。
+    pub stage: u8,
+    /// 自触发起的帧计数（释放期冻结）。
+    pub counter: u32,
+    /// note-off 时刻的电平（释放段起点）。
+    pub release_from: f32,
+    /// fileg 上次调谐到的目标截止（Hz；`-1.0` ＝ 还没调过 —— 目标恒 > 0
+    /// ⇒ 不会撞；⛔ 不用 `NaN`：池派生 `PartialEq`，`NaN != NaN` 会让
+    /// 两个同为缺省的状态比较出「不相等」）。
+    pub last_target: f32,
+}
+
+impl EgVoiceState {
+    /// 惰性缺省（新槽/退休槽；推进与否由外层在场标记决定，⛔ 不靠值判断）。
+    pub const INERT: EgVoiceState = EgVoiceState {
+        stage: ENV_STAGE_IDLE,
+        counter: 0,
+        release_from: 0.0,
+        last_target: -1.0,
+    };
+}
+
+/// ⭐ 一族调制包络的**逐块运行束**（镜像 [`EnvRun`] 的自有状态形制）。
+///
+/// 逐块由 [`ModEgRun::from_state`] 从池侧 [`EgVoiceState`] ＋ 本块重建的
+/// [`EgRun`] 组装，推进完由 [`ModEgRun::write_back`] 写回 —— 与 `EnvRun`
+/// 的 (stage, counter, frame) 写回声部三格是同一条纪律，只是落点不同。
+/// `frame` 一格两用与 `EnvRun` 同款：未释放时是 note-off 帧
+/// （`u64::MAX` ＝ 还没收到），进释放后在本束内改写成释放 epoch
+/// （⛔ 不写回池侧：epoch 与 note-off 帧同值，逐块从 `end_sample` 重读即可）。
+#[derive(Debug, Clone, Copy)]
+pub struct ModEgRun {
+    /// 帧口径形状（本块重建，束内不变）。
+    run: EgRun,
+    /// 段位字节（`ENV_STAGE_*` ＋ `ENV_RELEASING` 位）。
+    stage: u8,
+    /// 自触发起的帧计数（释放期冻结，与 [`EnvRun`] 同款）。
+    counter: u32,
+    /// note-off 帧或释放 epoch（语义由段位的释放位决定）。
+    frame: u64,
+    /// 本束的引擎绝对帧基（逐块由调用方给；离线/摊平是本地基）。
+    abs_base: u64,
+    /// note-off 时刻的电平（释放段的起点；进释放那一帧捕获，之后不变）。
+    release_from: f32,
+    /// ⭐ fileg 上次实际调谐到的目标截止（Hz；`-1.0` ＝ 还没调过）。
+    ///
+    /// 电平恒定 ⇒ 目标不变 ⇒ 不重算系数（逐样本零额外开销的那一半）；
+    /// 目标恒 > 0 ⇒ `-1.0` 与任何真目标都不等 ⇒ 首帧必调一次，
+    /// 与静态配置的系数逐位相同。
+    last_target: f32,
+}
+
+impl ModEgRun {
+    /// 构造（触发/逐块一次；⛔ 不在逐样本路径上）。全新声部用：
+    /// 段位 IDLE、计数 0、无释放捕获。
+    pub(crate) const fn new(run: EgRun, frame: u64, abs_base: u64) -> Self {
+        ModEgRun {
+            run,
+            stage: ENV_STAGE_IDLE,
+            counter: 0,
+            frame,
+            abs_base,
+            release_from: 0.0,
+            last_target: -1.0,
+        }
+    }
+
+    /// 从池侧状态组装本块的运行束（段位/计数/释放起点/调谐点全保留；
+    /// `frame` 是声部当前的 note-off 帧，`abs_base` 是本块第一帧的绝对帧）。
+    pub(crate) const fn from_state(
+        run: EgRun,
+        state: EgVoiceState,
+        frame: u64,
+        abs_base: u64,
+    ) -> Self {
+        ModEgRun {
+            run,
+            stage: state.stage,
+            counter: state.counter,
+            frame,
+            abs_base,
+            release_from: state.release_from,
+            last_target: state.last_target,
+        }
+    }
+
+    /// 把跨块状态写回池侧（逐块一次；与 [`EnvRun::write_back`] 同形）。
+    pub(crate) fn write_back(&self, state: &mut EgVoiceState) {
+        state.stage = self.stage;
+        state.counter = self.counter;
+        state.release_from = self.release_from;
+        state.last_target = self.last_target;
+    }
+
+    /// 本束的形状（诊断/判据用）。
+    #[must_use]
+    pub const fn run(&self) -> &EgRun {
+        &self.run
+    }
+
+    /// 调制深度（音分；逐样本合成偏移时读）。
+    #[must_use]
+    pub const fn depth(&self) -> f32 {
+        self.run.depth
+    }
+
+    /// 本束第一帧的引擎绝对帧（逐样本的绝对帧 ＝ 它 ＋ 已写帧数）。
+    #[must_use]
+    pub const fn abs_base(&self) -> u64 {
+        self.abs_base
+    }
+
+    /// fileg 上次调谐到的目标截止（`-1.0` ＝ 未调过）。
+    #[must_use]
+    pub const fn last_target(&self) -> f32 {
+        self.last_target
+    }
+
+    /// 记下 fileg 本次调谐到的目标截止。
+    pub fn set_last_target(&mut self, hz: f32) {
+        self.last_target = hz;
+    }
+
+    /// ⭐ **推进一帧并给出该帧的电平**（镜像 [`EnvRun::advance`] 的判定次序，
+    /// 两处刻意不同：① 释放走完**不**退休（返回 `start` 并恒停在静止位，
+    /// 包络⛔ 不决定声部生死）；② note-off 那一帧把当时电平捕获进
+    /// [`Self::release_from`]，释放段自它回落到 `start`）。
+    pub fn advance(&mut self, abs_frame: u64) -> f32 {
+        let t = self.counter;
+        let mut byte = self.stage;
+        if byte == ENV_STAGE_IDLE {
+            byte = ENV_STAGE_ATTACK;
+        }
+        if byte & ENV_RELEASING == 0 {
+            byte = eg_held_stage_byte(&self.run, t);
+            if abs_frame >= self.frame {
+                byte |= ENV_RELEASING;
+                self.frame = abs_frame;
+                self.release_from = self.run.level_at(byte, t);
+            }
+        }
+        let level = if byte & ENV_RELEASING != 0 {
+            self.run
+                .release_level(self.release_from, abs_frame.saturating_sub(self.frame))
+        } else {
+            self.run.level_at(byte, t)
+        };
+        if byte & ENV_RELEASING == 0 {
+            self.counter = t.saturating_add(1);
+        }
+        self.stage = byte;
+        level
+    }
+}
+
+/// ⭐ 一段渲染里两族调制包络的运行束（[`mix_span_into`] 的入参束）。
+///
+/// `fil` 在场 ⇒ 逐样本按电平调谐 `filter`（基 ＝ [`Self::base_cutoff_hz`]，
+/// 必须是**配置滤波器时用的那同一个**静态有效截止）；`pitch` 在场 ⇒
+/// 逐样本把 `2^(level × depth / 1200)` 乘进位置步进。两者都缺席
+/// （[`Self::NONE`]）⇒ 逐样本路径**一项运算都不加**、输出逐位不变。
+#[derive(Debug, Clone, Copy)]
+pub struct EgSpan {
+    /// 滤波包络运行束。
+    pub fil: Option<ModEgRun>,
+    /// 音高包络运行束。
+    pub pitch: Option<ModEgRun>,
+    /// fileg 的基准截止（Hz；`fil` 在场时才有意义）。
+    pub base_cutoff_hz: f32,
+}
+
+impl EgSpan {
+    /// 两族都缺席（无 `fileg_*` / `pitcheg_*` 的区域走这条 ⇒ 逐位不变）。
+    pub const NONE: EgSpan = EgSpan {
+        fil: None,
+        pitch: None,
+        base_cutoff_hz: 0.0,
+    };
 }
 
 /// ⭐ **每区域的 CC 轴交叉淡化段数上界**（任务单 `#108`；摊平表的**定长**容器）。
@@ -3370,6 +3796,13 @@ pub struct PreparedRegion {
     /// 本字段只在 note-off **真的**到达时才起作用（且 `release == 0` ⇒ 释放段零长 ⇒ 立即退休，
     /// 即"今天的 `end_sample` 硬停"）。
     ampeg_release: f32,
+    /// ⭐ **延迟段时长**（`ampeg_delay`，**秒**；规范缺省 0；SFZ 包络族片）。
+    ///
+    /// 延迟段内电平恒 ＝ [`Self::ampeg_start`]。与五参同款原样承载
+    /// （换算在 [`Self::ampeg_run`] 里做）。
+    ampeg_delay: f32,
+    /// ⭐ **起始电平**（`ampeg_start`，**百分比** 0..=100；规范缺省 **0**）。
+    ampeg_start: f32,
     /// ⭐ **CC 调制项**（任务单 `#104`；⭐ `#115` 起目标由 [`ModTarget`] 区分）：
     /// `ccN` / `_ccN` / `_onccN` / `_curveccN` 的归约结果，**曲线已烘进本结构**
     /// （[`BakedCcMod`] / [`BakedCurve`]）⇒ 求值不再需要 `Instrument`，
@@ -3408,6 +3841,17 @@ pub struct PreparedRegion {
     /// 换成 `u16` 后落在既有尾部填充里 ⇒ **+0 B**（判据 `S100` 现读 6168）。
     /// ⚠ 它是**区域参数**、不是声部状态：时间源与 key delta 在池里（`porta_*`）。
     pitch_eg: u16,
+    /// ⭐ **滤波包络的定义下标**（`u16::MAX` ＝ 该区域没有 `fileg_*`；SFZ 包络族片）。
+    ///
+    /// 指向 [`PreparedSfz::eg_defs`]（与 [`Self::pitch_eg`] 同款侧表：[`EgDef`]
+    /// 是 96 B，内联会把每区域成本抬两个数量级）。⚠ 它是**区域参数**、
+    /// 不是声部状态：逐声部状态在池侧 `eg_states`（见 [`EgVoiceState`]）。
+    fileg_eg: u16,
+    /// ⭐ **音高包络的定义下标**（`u16::MAX` ＝ 该区域没有 `pitcheg_*`）。
+    ///
+    /// 与 [`Self::fileg_eg`] 共用同一张 [`PreparedSfz::eg_defs`] 侧表
+    /// （两族形状同为 [`EgDef`]，⛔ 不开第二张表）。
+    pitcheg_eg: u16,
     /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` 一族；任务单 `#106`）。
     ///
     /// 下标 ＝ [`AmpegParam`] 的声明序；`None` ＝ 该参数的 `ampeg_vel2…` opcode
@@ -3826,17 +4270,64 @@ impl PreparedRegion {
     /// 触发期/提升期调用（每声部一次），⛔ 不进逐样本路径。
     #[must_use]
     pub fn voice_filter(&self, sample_rate: f32, note: u8, velocity: u8) -> VoiceFilter {
-        let Some(hz) = yeban_sfz::playback::filter_cutoff_hz(
+        let Some(hz) = self.base_cutoff_hz(note, velocity) else {
+            return VoiceFilter::BYPASSED;
+        };
+        configured_voice_filter(self.fil_type, hz, self.resonance, sample_rate)
+    }
+
+    /// ⭐ 本区域在 (note, velocity) 上的**静态有效截止**（Hz；
+    /// [`Self::voice_filter`] 配置时用的那同一个值 —— fileg 的调制基准
+    /// 必须与它逐位相同，⛔ 不许第二份折算）。`None` ＝ 无滤波
+    /// （⇒ fileg 整体透明，见 [`yeban_sfz::eg`] 的范围裁决）。
+    #[must_use]
+    pub fn base_cutoff_hz(&self, note: u8, velocity: u8) -> Option<f32> {
+        yeban_sfz::playback::filter_cutoff_hz(
             self.cutoff,
             self.fil_keytrack,
             self.fil_keycenter,
             self.fil_veltrack,
             note,
             velocity,
-        ) else {
-            return VoiceFilter::BYPASSED;
-        };
-        configured_voice_filter(self.fil_type, hz, self.resonance, sample_rate)
+        )
+    }
+
+    /// ⭐ 本区域的**滤波包络**定义（`fileg_*`；SFZ 包络族片）。
+    ///
+    /// 指向 [`PreparedSfz::eg_defs`]（与 [`Self::pitch_eg`] 同款侧表：
+    /// `u16::MAX` ＝ 该区域没有这一族）。需要 `plan` 才能解析下标。
+    #[must_use]
+    pub fn fileg_def(&self, plan: &PreparedSfz) -> Option<EgDef> {
+        plan.eg_defs.get(usize::from(self.fileg_eg)).copied()
+    }
+
+    /// ⭐ 本区域的**音高包络**定义（`pitcheg_*`；与 [`Self::fileg_def`] 同形）。
+    #[must_use]
+    pub fn pitcheg_def(&self, plan: &PreparedSfz) -> Option<EgDef> {
+        plan.eg_defs.get(usize::from(self.pitcheg_eg)).copied()
+    }
+
+    /// ⭐ 本区域在给定力度下的**滤波包络运行束**（[`eg_run_from`] 的唯一归约；
+    /// `None` ＝ 透明：无定义、或有效 depth ＝ 0、或**无静态截止可调**）。
+    #[must_use]
+    pub fn fileg_run(
+        &self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        engine_hz: f32,
+    ) -> Option<EgRun> {
+        self.base_cutoff_hz(note, velocity)?;
+        self.fileg_def(plan)
+            .and_then(|def| eg_run_from(&def, velocity, engine_hz))
+    }
+
+    /// ⭐ 本区域在给定力度下的**音高包络运行束**（透明判定同 [`eg_run_from`]，
+    /// 不依赖滤波在场）。
+    #[must_use]
+    pub fn pitcheg_run(&self, plan: &PreparedSfz, velocity: u8, engine_hz: f32) -> Option<EgRun> {
+        self.pitcheg_def(plan)
+            .and_then(|def| eg_run_from(&def, velocity, engine_hz))
     }
 
     /// ⭐ 本区域有没有**生效的**随机轮替门（与 `yeban-sfz` 的
@@ -4172,6 +4663,8 @@ impl PreparedRegion {
             AmpegParam::Decay => self.ampeg_decay,
             AmpegParam::Sustain => self.ampeg_sustain,
             AmpegParam::Release => self.ampeg_release,
+            AmpegParam::Delay => self.ampeg_delay,
+            AmpegParam::Start => self.ampeg_start,
         }
     }
 
@@ -4331,17 +4824,26 @@ impl PreparedRegion {
                 self.ampeg_decay,
                 self.ampeg_sustain,
                 self.ampeg_release,
+                self.ampeg_delay,
+                self.ampeg_start,
                 engine_hz,
             );
         }
         let probe = probe?;
-        // `AmpegParam::ALL` 是声明序 ⇒ 五个读数各自独立求值，顺序确定。
-        let mut values = [0.0f32; 5];
+        // `AmpegParam::ALL` 是声明序 ⇒ 七个读数各自独立求值，顺序确定。
+        let mut values = [0.0f32; AmpegParam::COUNT];
         for param in AmpegParam::ALL {
             values[param.index()] = self.ampeg_value_with_cc(param, Some(probe)).0;
         }
         ampeg_run_from(
-            values[0], values[1], values[2], values[3], values[4], engine_hz,
+            values[AmpegParam::Attack.index()],
+            values[AmpegParam::Hold.index()],
+            values[AmpegParam::Decay.index()],
+            values[AmpegParam::Sustain.index()],
+            values[AmpegParam::Release.index()],
+            values[AmpegParam::Delay.index()],
+            values[AmpegParam::Start.index()],
+            engine_hz,
         )
     }
 
@@ -4402,18 +4904,27 @@ impl PreparedRegion {
                 self.ampeg_decay,
                 self.ampeg_sustain,
                 self.ampeg_release,
+                self.ampeg_delay,
+                self.ampeg_start,
                 engine_hz,
             );
         }
-        // `AmpegParam::ALL` 是声明序 ⇒ 五个读数各自独立求值，顺序确定。
-        let mut values = [0.0f32; 5];
+        // `AmpegParam::ALL` 是声明序 ⇒ 七个读数各自独立求值，顺序确定。
+        let mut values = [0.0f32; AmpegParam::COUNT];
         for param in AmpegParam::ALL {
             values[param.index()] = self
                 .ampeg_value_with_cc_and_velocity(param, velocity, probe)
                 .0;
         }
         ampeg_run_from(
-            values[0], values[1], values[2], values[3], values[4], engine_hz,
+            values[AmpegParam::Attack.index()],
+            values[AmpegParam::Hold.index()],
+            values[AmpegParam::Decay.index()],
+            values[AmpegParam::Sustain.index()],
+            values[AmpegParam::Release.index()],
+            values[AmpegParam::Delay.index()],
+            values[AmpegParam::Start.index()],
+            engine_hz,
         )
     }
 }
@@ -4445,6 +4956,12 @@ pub struct PreparedSfz {
     ///
     /// 摊平期按需 push（没有 `egN_pitch_oncc140|141` 的语料 ⇒ 表为空 ⇒ 一个字节都不占）。
     pitch_egs: Vec<PitchEg>,
+    /// ⭐ **调制包络定义表**（`fileg_*` / `pitcheg_*` 共用；SFZ 包络族片）。
+    ///
+    /// 摊平期按需 push（没有这两族 opcode 的语料 ⇒ 表为空）。与 `pitch_egs`
+    /// 同款**不进** `byte_usage` 的三项读数（区域表读数 ＝ `size_of × N`，
+    /// 见 S25 的口径）。
+    eg_defs: Vec<EgDef>,
     /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
     broadcast: bool,
     /// ⭐ **不产生采样输出**的区域数（**计数**，⛔ 不静默）。
@@ -4789,7 +5306,7 @@ impl PreparedSfz {
         // 广播：只有**一份**样本（路径身份为空串），所有区域都指它。
         let samples = vec![PreparedSample::from_in_memory(String::new(), source)];
         let sample_hz = source.sample_hz;
-        let (regions, cc_seeds, builtin_silent_regions, pitch_egs) =
+        let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
         let has_rand = regions.iter().any(|region| region.has_rand_gate());
@@ -4797,6 +5314,7 @@ impl PreparedSfz {
             regions,
             samples,
             pitch_egs,
+            eg_defs,
             broadcast: true,
             // ⭐ `#217`：广播重载也**不**把内建静音 region 指向 `samples[0]` ——
             // `flatten_regions` 已把它们标成 `NO_SAMPLE`，这里只把计数带出来。
@@ -4852,7 +5370,7 @@ impl PreparedSfz {
         // ⚠ 这里只数**缺样本**的区域；内建静音由 `flatten_regions` 另行计数
         // （两者在 `Self::silent_region_count` 里相加，`missing` 只收前者）。
         let mut missing_regions = 0usize;
-        let (regions, cc_seeds, builtin_silent_regions, pitch_egs) =
+        let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs) =
             flatten_regions(instrument, engine_hz, |region| {
                 let path = region.sample_path();
                 // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
@@ -4883,6 +5401,7 @@ impl PreparedSfz {
             regions,
             samples,
             pitch_egs,
+            eg_defs,
             broadcast: false,
             // ⭐ 两类静音分开数、报告里合并：`silent = 缺样本 + 内建静音`；
             // `missing_samples` **只**收缺样本的路径（`#217`：`*silence` 绝不在其中）。
@@ -5226,6 +5745,19 @@ impl PreparedSfz {
             // （状态自零起 ＝ note-on 语义；配置走 [`PreparedRegion::voice_filter`]，
             // 与实时声部触发期**同一份**折算）。无 `cutoff` ⇒ 直通 ⇒ 逐位不变。
             let mut filter = region.voice_filter(self.engine_hz, note, velocity);
+            // ⭐ 调制包络（SFZ 包络族片）：与离线/实时两条路**同一份归约**
+            // （[`PreparedRegion::fileg_run`] / [`PreparedRegion::pitcheg_run`]）。
+            // 一次性调用没有 note-off ⇒ `frame = u64::MAX`（与 `env` 同款）；
+            // fileg 的基准与 `filter` 的配置用同一个 [`PreparedRegion::base_cutoff_hz`]。
+            let mut egs = EgSpan {
+                fil: region
+                    .fileg_run(self, note, velocity, self.engine_hz)
+                    .map(|run| ModEgRun::new(run, u64::MAX, 0)),
+                pitch: region
+                    .pitcheg_run(self, velocity, self.engine_hz)
+                    .map(|run| ModEgRun::new(run, u64::MAX, 0)),
+                base_cutoff_hz: region.base_cutoff_hz(note, velocity).unwrap_or(0.0),
+            };
             let region_written = mix_span_into(
                 pcm,
                 &mut position,
@@ -5237,6 +5769,7 @@ impl PreparedSfz {
                 &mut fade,
                 &mut env,
                 &mut filter,
+                &mut egs,
                 out,
             );
             written = written.max(region_written);
@@ -5257,11 +5790,22 @@ impl PreparedSfz {
 /// ⭐ **返回的第二项是 `set_ccN` 的播种表**（任务单 `#110`）：它与区域表来自**同一次解析**
 /// （`with_instrument` 会重新解析 ⇒ ⛔ 不在这里开第二次），因此"文件里真的写了 `set_ccN`"
 /// 与"摊平表里真的带了初值"是同一个事实（判据 S86／S87／S92）。
+/// ⭐ 摊平产出束（单独起别名是 clippy 的要求：`clippy::type_complexity` 在
+/// `-D warnings` 下是硬错误 —— SFZ 包络族片给元组加了第五元
+/// `Vec<EgDef>` 后逐字签名越线；字段序与原元组逐字相同）。
+type FlattenedRegions = (
+    Vec<PreparedRegion>,
+    CcSeedTable,
+    usize,
+    Vec<PitchEg>,
+    Vec<EgDef>,
+);
+
 fn flatten_regions(
     instrument: &SfzInstrument,
     engine_hz: f32,
     mut resolve: impl FnMut(&Region<'_>) -> (u16, f32),
-) -> Result<(Vec<PreparedRegion>, CcSeedTable, usize, Vec<PitchEg>), SfzError> {
+) -> Result<FlattenedRegions, SfzError> {
     instrument.with_instrument(|parsed| {
         // ⭐ `set_ccN` 的初值：`<control>` 作用域、同名后者覆盖前者（解析层已归约）
         // ⇒ 这里只做"抄进会话 CC 域"与"域外计数"（见 [`CcSeedTable`]）。
@@ -5270,6 +5814,11 @@ fn flatten_regions(
         // ⭐ portamento 的 pitch 包络表：区域用 `u16` 下标指进来（见 `PreparedRegion::pitch_eg`）。
         // 只有带 `egN_pitch_oncc140|141` 的区域才 push ⇒ 既有语料里这张表恒为空。
         let mut pitch_egs: Vec<PitchEg> = Vec::new();
+        // ⭐ 调制包络定义表（`fileg_*` / `pitcheg_*` 共用；SFZ 包络族片）：
+        // 与 `pitch_egs` 同款——只有静态不透明的定义才 push，区域用 `u16`
+        // 下标指进来（见 `PreparedRegion::fileg_eg`）。没有这两族 opcode 的
+        // 语料 ⇒ 表为空 ⇒ 一个字节都不占。
+        let mut eg_defs: Vec<EgDef> = Vec::new();
         // ⭐ 任务单 `#217`：内建静音伪样本（`sample=*silence`）的区域数。
         // 它在**调用方的解析闭包之前**被截住 ⇒ 既⛔ 不会被当成文件路径去查提供表
         // （⇒ 不进 `missing`），也不受广播重载影响（⇒ 广播它也不会播 `samples[0]`）。
@@ -5393,6 +5942,23 @@ fn flatten_regions(
                 }
                 _ => u16::MAX,
             };
+            // ⭐ 调制包络（SFZ 包络族片）：与 pitch_eg 同款——静态透明
+            // （全缺省且无 vel2）⇒ `u16::MAX`；越界（≥ 65535 条不同定义，
+            // 语料里不存在）按「无该族包络」退休，⛔ 不 panic。
+            let fileg_eg_index =
+                if !region.fileg.is_transparent() && eg_defs.len() < usize::from(u16::MAX) {
+                    eg_defs.push(region.fileg);
+                    u16::try_from(eg_defs.len() - 1).unwrap_or(u16::MAX)
+                } else {
+                    u16::MAX
+                };
+            let pitcheg_eg_index =
+                if !region.pitcheg.is_transparent() && eg_defs.len() < usize::from(u16::MAX) {
+                    eg_defs.push(region.pitcheg);
+                    u16::try_from(eg_defs.len() - 1).unwrap_or(u16::MAX)
+                } else {
+                    u16::MAX
+                };
             let mut velocity_gain = [0.0f32; 128];
             for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
                 *slot = region.velocity_gain(velocity as u8);
@@ -5443,6 +6009,9 @@ fn flatten_regions(
                 ampeg_decay: region.ampeg_decay,
                 ampeg_sustain: region.ampeg_sustain,
                 ampeg_release: region.ampeg_release,
+                // ⭐ 延迟／起始（SFZ 包络族片）：与五参同款原样搬运。
+                ampeg_delay: region.ampeg_delay,
+                ampeg_start: region.ampeg_start,
                 // ⭐ CC 调制（任务单 `#104`；⭐ `#115` 起目标由 `ModTarget` 区分）：
                 // 归约结果（含烘好的曲线）搬进摊平表。
                 // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
@@ -5455,6 +6024,9 @@ fn flatten_regions(
                 // ⭐ portamento 的 pitch 包络（本单）：表项下标（表在 `PreparedSfz::pitch_egs`）。
                 // ⚠ 只有 `u16`（+0 B）—— `Option<PitchEg>` 内联会撑破实时内存门槛。
                 pitch_eg: pitch_eg_index,
+                // ⭐ 调制包络定义下标（SFZ 包络族片）：表在 `PreparedSfz::eg_defs`。
+                fileg_eg: fileg_eg_index,
+                pitcheg_eg: pitcheg_eg_index,
                 // ⭐ 力度调制（任务单 `#106`）：五个**每参数**的力度调制量原样搬进
                 // 摊平表（`[Option<f32>; 5]`：`None` ＝ 该 opcode 没出现 ⇒ 求值期
                 // 一项算术都不做）。同样是**区域参数**、⛔ 不是声部状态
@@ -5523,7 +6095,13 @@ fn flatten_regions(
                 fil_veltrack: region.fil_veltrack,
             });
         }
-        (regions, cc_seeds, builtin_silent_regions, pitch_egs)
+        (
+            regions,
+            cc_seeds,
+            builtin_silent_regions,
+            pitch_egs,
+            eg_defs,
+        )
     })
 }
 
@@ -5921,6 +6499,13 @@ fn configured_voice_filter(
 /// 配置（触发期一次）见 [`PreparedRegion::voice_filter`]，状态持有见
 /// `SfzVoicePool::filters`；本函数只逐样本调 `process`。
 ///
+/// ⭐ `egs` 是**调制包络束**（SFZ 包络族片）：`fileg` 在滤波之前按电平
+/// 调谐（基准 ＝ 配置滤波器时用的同一个静态有效截止，目标变了才重算系数、
+/// 状态保留）；`pitcheg` 把速率乘子乘进位置步进。两者都缺席
+/// （[`EgSpan::NONE`]）⇒ 本函数逐样本不加任何运算、输出逐位不变。
+/// ⚠ EG 只调制、⛔ 不决定声部生死：退休仍由 `env`（ampeg 释放走完）与
+/// 样本终点闸门决定（裁决见 [`yeban_sfz::eg`]）。
+///
 /// ⚠ **零分配、零锁、零 I/O**：只读 `pcm`、原地写 `out` [MUST-GATE-001]。
 ///
 /// # ⭐ 循环（本单新增；`sfz-needs-6` 的"循环"那一半）
@@ -5960,7 +6545,7 @@ fn configured_voice_filter(
 /// * ⭐ **代价**：钳位腿的**逐样本**增量只有一次 `.min()` 与一次"是不是钳位腿"的
 ///   `Option` 判别（`pcm.len()` 那一侧的判断在**函数开头**算一次）
 ///   ⇒ 纯算术、⛔ 零分配、⛔ 零锁、⛔ 零 I/O [MUST-GATE-001]。
-// ⚠ 9 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
+// ⚠ 10 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
 // （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 与 `env` 是仅有的**静态**入参
 // （触发期/构造期/块首定好），⛔ 不在逐样本路径上构造。
 #[allow(clippy::too_many_arguments)]
@@ -5981,6 +6566,9 @@ pub(crate) fn mix_span_into(
     fade: &mut FadeRamp,
     env: &mut Option<EnvRun>,
     filter: &mut VoiceFilter,
+    // ⭐ 调制包络束（`fileg_*` / `pitcheg_*`；SFZ 包络族片）：两族都缺席
+    // （[`EgSpan::NONE`]）⇒ 逐样本**一项运算都不加**、输出逐位不变。
+    egs: &mut EgSpan,
     out: &mut [f32],
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
@@ -6084,6 +6672,28 @@ pub(crate) fn mix_span_into(
             },
             None => 1.0,
         };
+        // ⭐ 调制包络（SFZ 包络族片）：在滤波**之前**推进（fileg 的调谐必须
+        // 先于本样本的 `filter.process`）。绝对帧各束自带基（`abs_base`），
+        // 与 ampeg 的 `abs_frame` 是同一个引擎帧轴（构造方保证同基）。
+        // * `fileg`：目标 ＝ 基准 × 2^(level × depth / 1200)；只在目标
+        //   **变了**才重算系数（电平恒定段零重算；状态保留，见
+        //   [`VoiceFilter::retune_cutoff`]）。
+        // * `pitcheg`：乘子 ＝ 2^(level × depth / 1200)，只作用于下面的
+        //   位置步进（与 `rate` 的 ramp 相乘，⛔ 不改 `rate_now` 本身 ——
+        //   ramp 的步长是块级事实，包络是逐样本事实）。
+        let mut pitch_mult = 1.0f32;
+        if let Some(fil) = egs.fil.as_mut() {
+            let level = fil.advance(fil.abs_base() + written as u64);
+            let target = egs.base_cutoff_hz * (level * fil.depth() / 1200.0).exp2();
+            if target != fil.last_target() {
+                filter.retune_cutoff(target);
+                fil.set_last_target(target);
+            }
+        }
+        if let Some(pitch) = egs.pitch.as_mut() {
+            let level = pitch.advance(pitch.abs_base() + written as u64);
+            pitch_mult = (level * pitch.depth() / 1200.0).exp2();
+        }
         let frac = *position - index as f32;
         // ⚠ `next`（⭐ 钳位腿上是最后一格）⛔ 不是 `index + 1`：越界读一次都不允许。
         let sample = pcm[index] * (1.0 - frac) + pcm[next] * frac;
@@ -6092,7 +6702,12 @@ pub(crate) fn mix_span_into(
         // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
         // 原样返回 `sample` ⇒ 整个表达式与接线前逐位相同。
         *slot += filter.process(sample) * gain * fade.gain * env_gain;
-        *position += rate_now;
+        // ⭐ 音高包络在场时步进乘包络乘子（缺席时走原表达式，逐位不变）。
+        if egs.pitch.is_some() {
+            *position += rate_now * pitch_mult;
+        } else {
+            *position += rate_now;
+        }
         rate_now += rate_step;
         written += 1;
         if fade.fading && !fade.advance() {
@@ -6533,6 +7148,27 @@ pub struct SfzVoicePool {
     ///   （池的 `PartialEq` 是确定性判据的一部分，残留会让两次渲染分家，
     ///   与 `pitch_shape` 的退休纪律同一条）。
     filters: [VoiceFilter; SFZ_VOICES_PER_TRACK],
+    /// ⭐ **每槽两族调制包络的持久状态**（SFZ 包络族片；`[fil, pitch]` 各一份
+    /// [`EgVoiceState`]，16 × 2 × 20 B ＝ 640 B / 池）。
+    ///
+    /// # 为什么在池上而不是在 [`SfzVoice`] 里
+    ///
+    /// 与 [`Self::filters`] 同一条理由：`SfzVoice` 必须保持 **40 B**
+    /// （判据 `S9`），逐声部的伴随状态放池级**每槽数组**。形状（[`EgRun`]）
+    /// 逐块由 [`PreparedRegion::fileg_run`] / [`PreparedRegion::pitcheg_run`]
+    /// 重建（确定性、与声部力度绑定），这里只存跨块延续的段位/计数/
+    /// 释放起点/调谐点。
+    ///
+    /// # 生命周期（与 `filters` 对齐）
+    ///
+    /// * **直接落槽 / 硬窃取**：触发期清零（新声部自 IDLE 起）；
+    /// * **软窃取挂起**：挂起者**不**预置 —— 提升时清零（包络自提升那一刻
+    ///   起算，与 ampeg 在提升时以 IDLE 组装 `EnvRun` 同款）⇒ 没有 pending 侧数组；
+    /// * **淡出段**：victim 用它自己的那份推进，但⛔ **不回写**（它马上被
+    ///   接管，与包络状态在淡出段不回写的既有纪律同一条）；
+    /// * **退休**（[`Self::silence_slot`]）：复位 [`EgVoiceState::INERT`]
+    ///   （池的 `PartialEq` 是确定性判据的一部分，与 `filters` 同一条）。
+    eg_states: [(EgVoiceState, EgVoiceState); SFZ_VOICES_PER_TRACK],
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -6574,6 +7210,15 @@ struct SlotReadings {
     env: Option<AmpegRun>,
     /// ⭐ **portamento 的 pitch 轨迹**；`None` ＝ 该区域音高不随时间变化。
     pitch: Option<PitchTrack>,
+    /// ⭐ **滤波包络的帧口径形状**（SFZ 包络族片）；`None` ＝ 透明或无滤波可调。
+    ///
+    /// 逐块由 [`PreparedRegion::fileg_run`] 重建（确定性；状态不在这里，
+    /// 在池的 `eg_states`，由 `render_slot` 组装成 [`ModEgRun`]）。
+    fil_run: Option<EgRun>,
+    /// ⭐ **音高包络的帧口径形状**（[`PreparedRegion::pitcheg_run`]；同上）。
+    pitch_run: Option<EgRun>,
+    /// ⭐ fileg 的调制基准（Hz）＝ 配置本槽滤波时用的同一个静态有效截止。
+    base_cutoff_hz: f32,
 }
 
 /// ⭐ **一个声部的 pitch 轨迹**（portamento）：包络 ＋ key delta ＋ 已走帧数。
@@ -6656,6 +7301,7 @@ impl SfzVoicePool {
             note_start: [0; SFZ_VOICES_PER_TRACK],
             pending_note_start: [0; SFZ_VOICES_PER_TRACK],
             filters: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
+            eg_states: [(EgVoiceState::INERT, EgVoiceState::INERT); SFZ_VOICES_PER_TRACK],
         }
     }
 
@@ -6972,6 +7618,8 @@ impl SfzVoicePool {
                     // `engine_hz`（与 `rate_per_note` 同一条纪律：换采样率
                     // 须重新摊平）。
                     self.filters[index] = region.voice_filter(plan.engine_hz(), note, velocity);
+                    // ⭐ 调制包络状态与声部**同刻**清零（新声部自 IDLE 起）。
+                    self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
                     // ⭐ **portamento**（本单）：这条区域带 `egN_pitch_oncc140|141`
                     // ⇒ 记下"哪个槽在滑、从哪个音滑过来、滑了多久"。
                     // ⚠ 池级单槽语义（见 [`Self::porta_slot`] 的文档）。
@@ -7271,6 +7919,8 @@ impl SfzVoicePool {
                 .map_or(VoiceFilter::BYPASSED, |region| {
                     region.voice_filter(plan.engine_hz(), voice.note(), voice.velocity())
                 });
+            // ⭐ 调制包络状态随声部一起换（硬窃取：新声部自 IDLE 起）。
+            self.eg_states[victim] = (EgVoiceState::INERT, EgVoiceState::INERT);
             return;
         }
         if self.pending_active[victim] {
@@ -7451,6 +8101,18 @@ impl SfzVoicePool {
                     readings.loop_during_release,
                 )
             });
+            // ⭐ victim 的调制包络：用它自己的池侧状态组装（推进但⛔ 不回写
+            // —— 与包络状态在淡出段不回写的既有纪律同一条）。
+            let victim_states = self.eg_states[index];
+            let mut egs = EgSpan {
+                fil: readings.fil_run.map(|run| {
+                    ModEgRun::from_state(run, victim_states.0, readings.note_off, position)
+                }),
+                pitch: readings.pitch_run.map(|run| {
+                    ModEgRun::from_state(run, victim_states.1, readings.note_off, position)
+                }),
+                base_cutoff_hz: readings.base_cutoff_hz,
+            };
             let written = mix_span_into(
                 sample.pcm(),
                 &mut local,
@@ -7462,6 +8124,7 @@ impl SfzVoicePool {
                 &mut fade,
                 &mut env,
                 &mut filter,
+                &mut egs,
                 &mut out[..limit],
             );
             // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出/滤波照旧回写。
@@ -7491,6 +8154,10 @@ impl SfzVoicePool {
                 .map_or(VoiceFilter::BYPASSED, |region| {
                     region.voice_filter(plan.engine_hz(), promoted.note(), promoted.velocity())
                 });
+            // ⭐ 调制包络状态在**提升这一刻**清零：被提升声部的包络自接管
+            // 那一帧起算（与 ampeg 在提升后以 IDLE/0 组装 `EnvRun` 同款；
+            // victim 的残余状态随淡出段一起结束，⛔ 不继承）。
+            self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
         }
         // --- 3) 正常段：本槽现在的声部写本块剩余帧 ---
         let voice = self.voices[index];
@@ -7530,6 +8197,20 @@ impl SfzVoicePool {
                 readings.loop_during_release,
             )
         });
+        // ⭐ 本槽声部的调制包络：池侧状态组装成本块运行束（写完回写，
+        // 与 `env` 的 write-back 同一条纪律）。绝对帧基与 `env` 同基
+        // （`position + offset`）⇒ 三族包络逐帧对齐。
+        let slot_states = self.eg_states[index];
+        let abs_base = position + offset as u64;
+        let mut egs = EgSpan {
+            fil: readings
+                .fil_run
+                .map(|run| ModEgRun::from_state(run, slot_states.0, readings.note_off, abs_base)),
+            pitch: readings
+                .pitch_run
+                .map(|run| ModEgRun::from_state(run, slot_states.1, readings.note_off, abs_base)),
+            base_cutoff_hz: readings.base_cutoff_hz,
+        };
         // ⭐ **portamento 的块内速率**（本单）：块首 / 块末各求一次包络，中间线性 ramp
         // （[`mix_span_into`] 的 `rate_end`）。`pitch == None` ⇒ 两者相等 ⇒ 与接线前逐位相同。
         let frames = remaining.saturating_sub(offset);
@@ -7584,6 +8265,7 @@ impl SfzVoicePool {
             &mut fade,
             &mut env,
             &mut filter,
+            &mut egs,
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;
@@ -7597,6 +8279,13 @@ impl SfzVoicePool {
         if let Some(run) = env {
             // ⭐ 包络状态**跨块延续**：段位 / 段内计数 / note-off↔释放 epoch。
             run.write_back(&mut self.voices[index]);
+        }
+        // ⭐ 调制包络状态**跨块延续**（段位/计数/释放起点/调谐点回池侧）。
+        if let Some(fil) = &egs.fil {
+            fil.write_back(&mut self.eg_states[index].0);
+        }
+        if let Some(pitch) = &egs.pitch {
+            pitch.write_back(&mut self.eg_states[index].1);
         }
         // ⭐ 用样本自然结束：源位置走完 ⇒ 退休。⚠ 有循环窗口时这一条**不可达**
         // （回绕把位置压在窗口内）⇒ 循环声部只由 `end_sample`（无包络）
@@ -7744,6 +8433,14 @@ impl SfzVoicePool {
                 && loop_window.is_some(),
             env,
             pitch,
+            // ⭐ 调制包络（SFZ 包络族片）：形状逐块重建（与离线/摊平同一份
+            // 归约）；`one_shot` 的 note-off 屏蔽在组装 `ModEgRun` 时经
+            // `note_off` 字段生效（与 `env` 同一条裁决，⛔ 不在这里另判）。
+            fil_run: region.fileg_run(plan, voice.note(), voice.velocity(), engine_hz),
+            pitch_run: region.pitcheg_run(plan, voice.velocity(), engine_hz),
+            base_cutoff_hz: region
+                .base_cutoff_hz(voice.note(), voice.velocity())
+                .unwrap_or(0.0),
         })
     }
 
@@ -7760,6 +8457,8 @@ impl SfzVoicePool {
         self.fade[index] = FadeRamp::NONE;
         // ⭐ 滤波状态一并退休（理由同上：池相等是确定性判据的一部分）。
         self.filters[index] = VoiceFilter::BYPASSED;
+        // ⭐ 调制包络状态一并退休（理由同上）。
+        self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
     }
 
     /// 释放**全部**声部（`seek` / 换音源 ⇒ ⛔ 不留上一件音源的尾巴）。

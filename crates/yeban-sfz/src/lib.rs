@@ -349,6 +349,7 @@ pub mod control;
 pub mod crossfade;
 pub mod curve;
 pub mod effect;
+pub mod eg;
 pub mod error;
 pub mod instrument;
 pub mod label;
