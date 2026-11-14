@@ -1148,7 +1148,7 @@
             },
             "lane": {
               "type": "string",
-              "description": "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro"
+              "description": "自动化目标变体名: TrackVolume | TrackPan | SendGain | DeviceParam | Macro | MidiCc"
             },
             "edgeId": {
               "type": "string",
@@ -1169,6 +1169,10 @@
             "macroIndex": {
               "type": "integer",
               "description": "Macro: 宏下标 (默认 0)"
+            },
+            "controller": {
+              "type": "integer",
+              "description": "MidiCc 必需: MIDI 控制器号 0..=127 (点值的值域同样是 0..=127)"
             },
             "ticks": {
               "type": "array",

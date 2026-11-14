@@ -198,6 +198,10 @@ impl AutomationTarget {
                 // `None` 表示单位增益，`Some(0.0)` 与它必须可区分。
                 Ok(edge.gain_db.unwrap_or(0.0))
             }
+            // `MidiCc` 没有文档里的静态参数（`read_param` 因此拒绝它），但读模式
+            // 需要一个确定的缺省读数：控制器原始值的缺省就是 0（与渲染侧
+            // `CcProbe` 对无泳道控制器的 0 读数同一口径）。
+            Self::MidiCc { .. } => Ok(0.0),
             other => crate::ops::read_param(doc, *other),
         }
     }

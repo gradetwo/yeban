@@ -1384,6 +1384,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
     SET_TITLE_KIND,
+    SET_LYRICS_KIND,
     SET_TIME_SIGNATURE_KIND,
     SET_KEY_SIGNATURE_KIND,
     SET_TEMPO_POINT_KIND,
@@ -1420,7 +1421,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 58 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 59 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -1464,7 +1465,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 58 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 59 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &[
@@ -1735,12 +1736,13 @@ pub const LANE_REMOVE_FIELD: &str = "remove";
 /// 与 [`parse_lane_edit`] 真正读取的键**同源**（判据 `lane_field_names_are_pinned`
 /// 钉住"不多报"）：集合之外的键一律**响亮拒绝**（`unknownLaneField`），
 /// 绝不静默丢弃 —— 与 [`NOTE_FIELDS`] / [`TRACK_FLAG_FIELDS`] 同一口径。
-pub const SET_AUTOMATION_LANE_FIELDS: [&str; 9] = [
+pub const SET_AUTOMATION_LANE_FIELDS: [&str; 10] = [
     SET_AUTOMATION_LANE_FIELD,
     "edgeId",
     "slotIndex",
     "paramIndex",
     "macroIndex",
+    "controller",
     LANE_READ_ENABLED_FIELD,
     LANE_WRITE_MODE_FIELD,
     LANE_DOMAIN_FIELD,
@@ -1781,30 +1783,32 @@ pub const REMOVE_POINT_ID_FIELD: &str = "pointId";
 
 /// `ops[].point` 对象**允许**出现的全部键。
 ///
-/// 前五个是**泳道寻址**（与 [`LANE_TARGET_FIELDS`] 同源，由判据钉住），后两个是
+/// 前六个是**泳道寻址**（与 [`LANE_TARGET_FIELDS`] 同源，由判据钉住），后两个是
 /// **点寻址**。集合之外的键一律**响亮拒绝**，绝不静默丢弃 ——
 /// 与 [`NOTE_FIELDS`] / [`TRACK_FLAG_FIELDS`] / [`SET_AUTOMATION_LANE_FIELDS`] 同一口径。
-pub const REMOVE_POINT_FIELDS: [&str; 7] = [
+pub const REMOVE_POINT_FIELDS: [&str; 8] = [
     SET_AUTOMATION_LANE_FIELD,
     "edgeId",
     "slotIndex",
     "paramIndex",
     "macroIndex",
+    "controller",
     REMOVE_POINT_TICK_FIELD,
     REMOVE_POINT_ID_FIELD,
 ];
 
-/// 泳道**寻址**字段（[`SET_AUTOMATION_LANE_FIELDS`] 的前五个）。
+/// 泳道**寻址**字段（[`SET_AUTOMATION_LANE_FIELDS`] 的前六个）。
 ///
 /// 单列一个常量是为了让"`point` 对象允许的泳道键"与"`lane` 对象允许的泳道键"
-/// **只有一份**真相：[`REMOVE_POINT_FIELDS`] 的前五项**就是**本表，判据
+/// **只有一份**真相：[`REMOVE_POINT_FIELDS`] 的前六项**就是**本表，判据
 /// `point_removal_field_names_are_pinned` 机械钉住这条关系（不靠人去比对）。
-pub const LANE_TARGET_FIELDS: [&str; 5] = [
+pub const LANE_TARGET_FIELDS: [&str; 6] = [
     SET_AUTOMATION_LANE_FIELD,
     "edgeId",
     "slotIndex",
     "paramIndex",
     "macroIndex",
+    "controller",
 ];
 
 /// `removeAutomationPoint` 的**操作对象**允许出现的全部键（判别键 + 载荷对象）。
@@ -2033,6 +2037,36 @@ pub const SET_TITLE_TITLE_FIELD: &str = "title";
 
 /// 设置标题形态允许出现的**全部**键（判别键 + 一个必填）。
 pub const SET_TITLE_FIELDS: [&str; 2] = ["kind", SET_TITLE_TITLE_FIELD];
+
+/// `ops[].kind` 的**整体替换歌词时间轴**形态名（写 [`Op::SetLyrics`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetLyrics` 的小驼峰），与 [`SET_TITLE_KIND`] 同一条规则。
+///
+/// ⚠ 它是**顶层文档字段**形态（与 [`SET_TITLE_KIND`] 同族）：不读不写音符，
+/// 也不寻址音轨。载荷是**整体替换**（⛔ 不是逐行 patch）。
+pub const SET_LYRICS_KIND: &str = "setLyrics";
+
+/// 歌词形态的**行数组**字段名（`ops[].lines`，形态一必填，`[{startTick, text}]`）。
+pub const SET_LYRICS_LINES_FIELD: &str = "lines";
+
+/// 歌词形态的 **LRC 文本**字段名（`ops[].lrcText`，形态二必填，字符串）。
+///
+/// 与形态一**恰好二选一**：同给 ⇒ 响亮拒绝（`lyricsFormAmbiguous`），
+/// 都不给 ⇒ 响亮拒绝（`lyricsFormRequired`）。解析走模型既有
+/// [`yeban_model::lyrics::parse_lrc`]（⛔ 本层不写第二个 LRC 解析器）。
+pub const SET_LYRICS_LRC_FIELD: &str = "lrcText";
+
+/// 歌词形态允许出现的**全部**键（判别键 + 两个互斥载荷键）。
+pub const SET_LYRICS_FIELDS: [&str; 3] = ["kind", SET_LYRICS_LINES_FIELD, SET_LYRICS_LRC_FIELD];
+
+/// 歌词行对象的**起始 tick**字段名（`ops[].lines[].startTick`，必填，非负整数）。
+pub const LYRIC_LINE_START_TICK_FIELD: &str = "startTick";
+
+/// 歌词行对象的**整行文本**字段名（`ops[].lines[].text`，必填，字符串）。
+pub const LYRIC_LINE_TEXT_FIELD: &str = "text";
+
+/// 歌词行对象允许出现的**全部**键。
+pub const LYRIC_LINE_FIELDS: [&str; 2] = [LYRIC_LINE_START_TICK_FIELD, LYRIC_LINE_TEXT_FIELD];
 
 /// `ops[].kind` 的**设置工程拍号**形态名（写 [`Op::SetTimeSignature`]）。
 ///
@@ -3010,6 +3044,8 @@ pub struct LaneTargetSpec {
     pub param_index: usize,
     /// `Macro` 的宏下标（其余变体不用，恒 0）。
     pub macro_index: usize,
+    /// `MidiCc` 的控制器号（其余变体不用，恒 0）。
+    pub controller: u8,
 }
 
 impl LaneTargetSpec {
@@ -3093,12 +3129,29 @@ impl LaneTargetSpec {
         } else {
             0
         };
+        let controller = if kind.needs_controller() {
+            let raw = read_usize(lane, "controller")?;
+            // 模型字段是 `u8`：>255 是形状错误在本层拒绝；128..=255 交模型
+            // `validate_against` 的既有 0..=127 判定（与 `yeban_edit_automation`
+            // 的 `parse_target` 同一分工）。
+            if raw > usize::from(u8::MAX) {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`controller` 超出 u8 表示范围: {raw}"),
+                    serde_json::json!({ "field": "controller", "value": raw }),
+                ));
+            }
+            u8::try_from(raw).unwrap_or(u8::MAX)
+        } else {
+            0
+        };
         Ok(Self {
             kind,
             edge_id,
             slot_index,
             param_index,
             macro_index,
+            controller,
         })
     }
 
@@ -3126,6 +3179,10 @@ impl LaneTargetSpec {
             LaneKind::Macro => AutomationTarget::Macro {
                 track_id,
                 macro_index: self.macro_index,
+            },
+            LaneKind::MidiCc => AutomationTarget::MidiCc {
+                track_id,
+                controller: self.controller,
             },
         }
     }
@@ -3653,6 +3710,29 @@ pub enum NoteOp {
         old_title: String,
         /// 修改后的标题。
         new_title: String,
+    },
+    /// 整体替换**歌词时间轴**（[`Op::SetLyrics`]，顶层 `lyrics`）。
+    ///
+    /// 与 [`Self::SetTitle`] 同族（**顶层文档字段**，不读不写音符、不寻址音轨）。
+    ///
+    /// ⚠ **载荷只有新值**（与 [`Self::SetTitle`] 同口径）：线上没有旧值键 ——
+    /// 旧表由 [`compile`] 从**当前文档**读（`project.lyrics`），⛔ 不信调用方声明。
+    /// 把旧值写进载荷是**未知键**，由 [`reject_set_lyrics_fields`] 响亮拒绝
+    /// （`unknownSetLyricsField`）。
+    ///
+    /// ⚠ 两种载荷形态**恰好二选一**：`lines`（行数组，解析期直接成表）或
+    /// `lrcText`（LRC 文本，**编译期**才走模型 [`yeban_model::lyrics::parse_lrc`]
+    /// —— 它需要工程的速度映射与采样率，解析期没有工程在手）。
+    /// 新表的值域（空文本 / tick 严格升序）由模型
+    /// [`yeban_model::lyrics::validate_lyrics`] 在编译期判，⛔ 本层不复制。
+    SetLyrics {
+        /// 修改前的歌词时间轴（**占位**：真值由 [`compile`] 从当前文档读）。
+        old_lines: Vec<yeban_model::lyrics::LyricLine>,
+        /// 修改后的歌词时间轴（`lines` 形态的解析产物；`lrcText` 形态为空，
+        /// 真值由 [`compile`] 解析 `lrc_text` 得到）。
+        new_lines: Vec<yeban_model::lyrics::LyricLine>,
+        /// `lrcText` 形态的原文（`lines` 形态为 `None`）。
+        lrc_text: Option<String>,
     },
     /// 设置**工程拍号**（[`Op::SetTimeSignature`]，顶层 `time_signature`）。
     ///
@@ -4408,6 +4488,7 @@ impl NoteOp {
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
             Self::SetTitle { .. } => SET_TITLE_KIND,
+            Self::SetLyrics { .. } => SET_LYRICS_KIND,
             Self::SetTimeSignature { .. } => SET_TIME_SIGNATURE_KIND,
             Self::SetKeySignature { .. } => SET_KEY_SIGNATURE_KIND,
             Self::SetTempoPoint { .. } => SET_TEMPO_POINT_KIND,
@@ -5506,6 +5587,39 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_title: read_required_string(object, SET_TITLE_TITLE_FIELD)?,
             })
         }
+        SET_LYRICS_KIND => {
+            reject_set_lyrics_fields(object)?;
+            match (
+                object.get(SET_LYRICS_LINES_FIELD),
+                object.get(SET_LYRICS_LRC_FIELD),
+            ) {
+                (Some(_), Some(_)) => Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_LYRICS_LINES_FIELD}` 与 `{SET_LYRICS_LRC_FIELD}` 必须**恰好给一个**（两个都给了）"
+                    ),
+                    serde_json::json!({ "reason": "lyricsFormAmbiguous" }),
+                )),
+                (None, None) => Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_LYRICS_LINES_FIELD}` 与 `{SET_LYRICS_LRC_FIELD}` 必须**恰好给一个**（两个都没给）"
+                    ),
+                    serde_json::json!({ "reason": "lyricsFormRequired" }),
+                )),
+                (Some(lines), None) => Ok(NoteOp::SetLyrics {
+                    // ⚠ `old_lines` 是**占位**：真值由 `compile` 从当前文档读。
+                    old_lines: Vec::new(),
+                    new_lines: parse_lyric_lines(lines)?,
+                    lrc_text: None,
+                }),
+                (None, Some(_)) => Ok(NoteOp::SetLyrics {
+                    old_lines: Vec::new(),
+                    new_lines: Vec::new(),
+                    lrc_text: Some(read_required_string(object, SET_LYRICS_LRC_FIELD)?),
+                }),
+            }
+        }
         SET_TIME_SIGNATURE_KIND => {
             reject_set_time_signature_fields(object)?;
             // ⚠ **缺键 ⛔ 不等于"用默认 4/4"**：`parse_time_signature(None)` 的缺省语义
@@ -6264,6 +6378,61 @@ fn reject_set_title_fields(object: &Map<String, Value>) -> Result<(), Fault> {
         SET_TITLE_KIND,
         "unknownSetTitleField",
     )
+}
+
+/// 拒绝 `setLyrics` 里 [`SET_LYRICS_FIELDS`] 之外的键。
+///
+/// 最像"写对了"的错法是把旧值写进载荷（`oldLines` / `old_lines`）—— 旧表由
+/// [`compile`] 从当前文档读，写在这里只会被静默忽略 ⇒ **响亮拒绝**。
+fn reject_set_lyrics_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_LYRICS_FIELDS,
+        SET_LYRICS_KIND,
+        "unknownSetLyricsField",
+    )
+}
+
+/// 解析 `setLyrics` 的 `lines` 数组（每行 `{startTick, text}`，整体替换）。
+///
+/// 本层只判**形状**（数组 / 对象 / 键集合 / 字段类型）；值域（空文本、
+/// tick 严格升序）由模型 [`yeban_model::lyrics::validate_lyrics`] 在
+/// [`compile`] 里判，⛔ 不在这里复制。
+fn parse_lyric_lines(raw: &Value) -> Result<Vec<yeban_model::lyrics::LyricLine>, Fault> {
+    let items = raw.as_array().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SET_LYRICS_LINES_FIELD}` 必须是数组, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": SET_LYRICS_LINES_FIELD,
+                "reason": "lyricsLinesMustBeArray",
+            }),
+        )
+    })?;
+    let mut lines = Vec::with_capacity(items.len());
+    for item in items {
+        let object = item.as_object().ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`{SET_LYRICS_LINES_FIELD}` 的每一行必须是对象, 实际收到 {item}"),
+                serde_json::json!({
+                    "field": SET_LYRICS_LINES_FIELD,
+                    "reason": "lyricLineMustBeObject",
+                }),
+            )
+        })?;
+        reject_unknown_keys(
+            object,
+            &LYRIC_LINE_FIELDS,
+            SET_LYRICS_KIND,
+            "unknownSetLyricsField",
+        )?;
+        lines.push(yeban_model::lyrics::LyricLine {
+            start_tick: read_required_u64(object, LYRIC_LINE_START_TICK_FIELD)?,
+            text: read_required_string(object, LYRIC_LINE_TEXT_FIELD)?,
+        });
+    }
+    Ok(lines)
 }
 
 /// 拒绝 `setTimeSignature` 里 [`SET_TIME_SIGNATURE_FIELDS`] 之外的键。
@@ -7733,6 +7902,20 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
             format!(
                 "`{SET_PARAM_KIND}` 不接受目标 `{}`: 本形态写音轨静态音量/声相与设备参数; \
                  宏的静态写入在工具面没有通路",
+                kind.as_str()
+            ),
+            serde_json::json!({
+                "field": SET_PARAM_LANE_FIELD,
+                "reason": "staticLaneNotApplicable",
+                "received": kind.as_str(),
+                "allowed": StaticLane::NAMES,
+            }),
+        )),
+        LaneKind::MidiCc => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{SET_PARAM_KIND}` 不接受目标 `{}`: `MidiCc` 没有静态参数可写 \
+                 (它的值就是泳道曲线本身); 控制器自动化走 `yeban_edit_automation` 的 `MidiCc` 泳道",
                 kind.as_str()
             ),
             serde_json::json!({
@@ -10461,6 +10644,38 @@ pub fn compile(
                 Op::SetTitle {
                     old_title: project.title.clone(),
                     new_title: new_title.clone(),
+                }
+            }
+            NoteOp::SetLyrics {
+                new_lines,
+                lrc_text,
+                ..
+            } => {
+                // `lrcText` 形态在**编译期**才解析：`parse_lrc` 需要工程的
+                // 速度映射与采样率（解析期没有工程在手）。
+                let resolved: Vec<yeban_model::lyrics::LyricLine> = match lrc_text {
+                    Some(text) => yeban_model::lyrics::parse_lrc(
+                        text,
+                        &project.tempo(),
+                        project.audio_config.sample_rate.hz(),
+                    )
+                    .map_err(|error| {
+                        Fault::domain_with_data(
+                            ErrorCode::InvalidParameterRange,
+                            format!("`{SET_LYRICS_LRC_FIELD}` 解析失败: {error}"),
+                            serde_json::json!({ "reason": "lyricsParseFailed" }),
+                        )
+                    })?,
+                    None => new_lines.clone(),
+                };
+                // 值域走模型**唯一**校验器（与 `Op::SetLyrics` 前置条件同一份，
+                // 在这里提前拒是为了不编译出一条 `apply` 必被拒的 op，
+                // 与 `setTimeSignature` 在 `compile` 里重查同一条口径）。
+                yeban_model::lyrics::validate_lyrics(&resolved)
+                    .map_err(|error| from_model("歌词校验", &error))?;
+                Op::SetLyrics {
+                    old_lines: project.lyrics.clone(),
+                    new_lines: resolved,
                 }
             }
             NoteOp::SetTimeSignature {
@@ -15286,7 +15501,8 @@ mod tests {
         // 本票（手动相位对齐）新增 setTrackDelay / setTrackPolarity /
         // setClipPlacementOffset 三个 kind 后为 56 —— 同样与真实 `kind` 同步。
         // 本票（人性化 ROI）新增 velocityShapeClip / chordStaggerClip 两个 kind 后为 58 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 58);
+        // 本票新增 `setLyrics`（顶层文档字段，整体替换歌词时间轴）后为 59 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 59);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(
             TrackFlag::NAMES,
@@ -15329,6 +15545,7 @@ mod tests {
                 "slotIndex",
                 "paramIndex",
                 "macroIndex",
+                "controller",
                 "readEnabled",
                 "writeMode",
                 "domain",
@@ -15353,7 +15570,8 @@ mod tests {
                 "TrackPan",
                 "SendGain",
                 "DeviceParam",
-                "Macro"
+                "Macro",
+                "MidiCc"
             ]
         );
     }
@@ -15639,14 +15857,14 @@ mod tests {
         assert_eq!(REMOVE_POINT_FIELD, "point");
         assert_eq!(REMOVE_POINT_TICK_FIELD, "tick");
         assert_eq!(REMOVE_POINT_ID_FIELD, "pointId");
-        assert_eq!(REMOVE_POINT_FIELDS.len(), 7);
+        assert_eq!(REMOVE_POINT_FIELDS.len(), 8);
         assert_eq!(REMOVE_POINT_OP_FIELDS, ["kind", REMOVE_POINT_FIELD]);
-        // 前五项 = 泳道寻址 = `lane` 对象的前五项（一份真相）。
-        assert_eq!(LANE_TARGET_FIELDS, SET_AUTOMATION_LANE_FIELDS[..5]);
-        assert_eq!(REMOVE_POINT_FIELDS[..5], LANE_TARGET_FIELDS);
+        // 前六项 = 泳道寻址 = `lane` 对象的前六项（一份真相）。
+        assert_eq!(LANE_TARGET_FIELDS, SET_AUTOMATION_LANE_FIELDS[..6]);
+        assert_eq!(REMOVE_POINT_FIELDS[..6], LANE_TARGET_FIELDS);
         // 后两项 = 点寻址（恰好二选一）。
         assert_eq!(
-            REMOVE_POINT_FIELDS[5..],
+            REMOVE_POINT_FIELDS[6..],
             [REMOVE_POINT_TICK_FIELD, REMOVE_POINT_ID_FIELD]
         );
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
@@ -21455,7 +21673,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 58] = [
+        let table: [(&str, serde_json::Value); 59] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -21562,6 +21780,10 @@ mod tests {
             ("setTempo", serde_json::json!({"bpm": 140.0})),
             ("setAuthor", serde_json::json!({"author": "A"})),
             ("setTitle", serde_json::json!({"title": "T"})),
+            (
+                "setLyrics",
+                serde_json::json!({"lines": [{"startTick": 0, "text": "第一行"}]}),
+            ),
             (
                 "setTimeSignature",
                 serde_json::json!({"timeSignature": "6/8"}),
@@ -21718,6 +21940,7 @@ mod tests {
                 "setTempo",
                 "setAuthor",
                 "setTitle",
+                "setLyrics",
                 "setTimeSignature",
                 "setKeySignature",
                 "setTempoPoint",
@@ -21766,7 +21989,7 @@ mod tests {
                 "解析出来的 `NoteOp` 必须回环到同一个 `kind`"
             );
             // ⭐ `#177` 坑④：发布的"读顶层 `clipId` 的 kind 清单"必须与谓词**在全部
-            // 58 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
+            // 59 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
             // 全集，谓词是 `compile` 真正用的那一份）。任一方向漂移都会在这里变红：
             // 清单里多一个 ⇒ `reads_envelope_clip` 为 `false`；谓词里多一个而清单
             // 没跟上 ⇒ 清单漏报（调用方会以为它不需要，而 `compile` 会读）。
@@ -22103,7 +22326,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 59] = [
+        let rows: [Row<'_>; 60] = [
             (
                 "add",
                 None,
@@ -22361,6 +22584,13 @@ mod tests {
                 "SetTitle",
             ),
             (
+                "setLyrics",
+                None,
+                None,
+                serde_json::json!({"lines": [{"startTick": 0, "text": "第一行"}]}),
+                "SetLyrics",
+            ),
+            (
                 "setTimeSignature",
                 None,
                 None,
@@ -22602,11 +22832,11 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "58 个 kind ＋ 1 个额外载荷分支"
+            "59 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 58 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 59 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -22739,7 +22969,8 @@ mod tests {
         // `setClipPlacementOffset`（各独占一个变体）⇒ 49 → **52**。
         // 本票（人性化 ROI）的 `velocityShapeClip` / `chordStaggerClip` 是展开形态
         // （产 `ModifyNoteVelocity` / `SetNoteExpression`，已有变体）⇒ 52 不变。
-        assert_eq!(seen.len(), 52);
+        // 本票的 `setLyrics`（独占 `SetLyrics` 变体）⇒ 52 → **53**。
+        assert_eq!(seen.len(), 53);
         // ⭐ `#179`：音符级分支集合**恰好是十五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -23790,6 +24021,157 @@ mod tests {
         let not_string = parse_ops(&serde_json::json!([{"kind": SET_TITLE_KIND, "title": 3}]))
             .expect_err("非字符串必须被拒");
         assert_eq!(reason_of(&not_string).as_deref(), Some("valueMustBeString"));
+    }
+
+    /// `setLyrics`：解析（`lines` 形态）→ 编译到**正是** `Op::SetLyrics` →
+    /// `old_lines` 来自**当前文档** → query 的 `lyrics` 选择器读回一致、LRC
+    /// 导出消费同一份数据 → 一步撤销逐字节复原；`lrcText` 形态与 `lines`
+    /// 形态产物**逐项一致**；两形态同给/都不给、写进载荷的旧值类键、非法
+    /// 歌词（空文本/不升序）全部响亮拒绝。
+    #[test]
+    fn set_lyrics_compiles_reads_back_exports_and_inverts() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        assert!(project.lyrics.is_empty(), "夹具缺省无歌词");
+
+        let lines = serde_json::json!([
+            {"startTick": 0, "text": "第一行"},
+            {"startTick": 1920, "text": "第二行"},
+        ]);
+        let ops = parse_ops(&serde_json::json!([{"kind": SET_LYRICS_KIND, "lines": lines}]))
+            .expect("lines 形态必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_LYRICS_KIND);
+        assert!(!ops[0].is_note_level(), "顶层文档字段不读不写音符");
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetLyrics {
+                old_lines,
+                new_lines,
+            } => {
+                assert!(old_lines.is_empty(), "old 必须等于文档现值（空表）");
+                assert_eq!(new_lines.len(), 2);
+                assert_eq!(new_lines[0].text, "第一行");
+                assert_eq!(new_lines[1].start_tick, 1920);
+            }
+            other => panic!("应当是 SetLyrics: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("写歌词");
+        // query 的 lyrics 选择器读回（视图白名单的顶层键）。
+        let view = crate::domain::view::project_view(&project, &["lyrics".to_owned()])
+            .expect("lyrics 选择器必须可用");
+        assert_eq!(view["lyrics"][0]["text"], "第一行");
+        assert_eq!(view["lyrics"][1]["text"], "第二行");
+        // LRC 导出消费同一份数据。
+        let lrc = yeban_model::lyrics::lyrics_to_lrc(&project, None).expect("LRC 导出");
+        assert!(lrc.contains("[00:00.00]第一行"), "导出必须含首行: {lrc}");
+        assert!(lrc.contains("第二行"), "导出必须含次行: {lrc}");
+        assert!(project.validate().is_ok());
+        // 一步撤销逐字节复原。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "撤销必须逐字节回到原状"
+        );
+
+        // lrcText 形态：与 lines 形态产物逐项一致（期望值由模型自己的
+        // `parse_lrc` 在同一工程口径下算出，⛔ 不手算 tick）。
+        let lrc_text = "[00:00.00]第一行\n[00:01.00]第二行";
+        let expected = yeban_model::lyrics::parse_lrc(
+            lrc_text,
+            &project.tempo(),
+            project.audio_config.sample_rate.hz(),
+        )
+        .expect("LRC 必须可解析");
+        let via_lrc = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lrcText": lrc_text}
+        ]))
+        .expect("lrcText 形态必须被接受");
+        let compiled_lrc = compile(&project, &track_id, &clip_id, &via_lrc).expect("编译");
+        match &compiled_lrc[0] {
+            Op::SetLyrics { new_lines, .. } => {
+                assert_eq!(new_lines, &expected, "lrcText 产物必须等于 parse_lrc 口径");
+            }
+            other => panic!("应当是 SetLyrics: {other:?}"),
+        }
+        let via_lines = parse_ops(&serde_json::json!([{
+            "kind": SET_LYRICS_KIND,
+            "lines": expected
+                .iter()
+                .map(|line| serde_json::json!({"startTick": line.start_tick, "text": line.text}))
+                .collect::<Vec<_>>(),
+        }]))
+        .expect("等价 lines 形态必须被接受");
+        let compiled_lines = compile(&project, &track_id, &clip_id, &via_lines).expect("编译");
+        assert_eq!(compiled_lrc, compiled_lines, "两形态必须编译出同一个 Op");
+
+        // 两形态同给 / 都不给 ⇒ 响亮拒绝。
+        let both = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lines": [], "lrcText": "[00:00.00]x"}
+        ]))
+        .expect_err("同给必须被拒");
+        assert_eq!(reason_of(&both).as_deref(), Some("lyricsFormAmbiguous"));
+        let neither =
+            parse_ops(&serde_json::json!([{"kind": SET_LYRICS_KIND}])).expect_err("都不给必须被拒");
+        assert_eq!(reason_of(&neither).as_deref(), Some("lyricsFormRequired"));
+        // 写进载荷的旧值类键 ⇒ unknownSetLyricsField。
+        let old_key = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lines": [], "oldLines": []}
+        ]))
+        .expect_err("旧值类键必须被拒");
+        assert_eq!(
+            reason_of(&old_key).as_deref(),
+            Some("unknownSetLyricsField")
+        );
+        // `lines` 不是数组 / 行不是对象 ⇒ 解析期响亮拒绝（形状 reason）。
+        let not_array = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lines": {"startTick": 0, "text": "x"}}
+        ]))
+        .expect_err("lines 非数组必须被拒");
+        assert_eq!(
+            reason_of(&not_array).as_deref(),
+            Some("lyricsLinesMustBeArray")
+        );
+        let not_object = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lines": ["第一行"]}
+        ]))
+        .expect_err("行非对象必须被拒");
+        assert_eq!(
+            reason_of(&not_object).as_deref(),
+            Some("lyricLineMustBeObject")
+        );
+        // `lrcText` 解析失败 ⇒ 编译期响亮拒绝（未闭合的时间戳）。
+        let bad_lrc = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lrcText": "[00:00.00"}
+        ]))
+        .expect("未闭合时间戳只判形状，解析期放行");
+        let bad_lrc_compiled = compile(&project, &track_id, &clip_id, &bad_lrc);
+        let fault = bad_lrc_compiled.expect_err("坏 LRC 必须在编译期被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("lyricsParseFailed"));
+        // 非法歌词在编译期被模型校验拒绝（空文本）。
+        let bad = parse_ops(&serde_json::json!([
+            {"kind": SET_LYRICS_KIND, "lines": [{"startTick": 0, "text": ""}]}
+        ]))
+        .expect("空文本只判形状，解析期放行");
+        assert!(
+            compile(&project, &track_id, &clip_id, &bad).is_err(),
+            "空文本必须在编译期被 validate_lyrics 拒绝"
+        );
+        // 陈旧 old_lines ⇒ OpStateMismatch 且文档不动。
+        let stale = Op::SetLyrics {
+            old_lines: vec![yeban_model::lyrics::LyricLine {
+                start_tick: 0,
+                text: "别的歌词".to_owned(),
+            }],
+            new_lines: Vec::new(),
+        };
+        let mut doc = project.clone();
+        assert!(stale.apply(&mut doc).is_err(), "陈旧歌词表必须被拒");
+        assert_eq!(doc, project, "被拒之后文档必须不动");
     }
 
     /// `setTimeSignature`：解析 → 编译到**正是** `Op::SetTimeSignature` → `old_*` 来自

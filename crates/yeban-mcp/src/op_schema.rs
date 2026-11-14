@@ -267,6 +267,7 @@ fn lane_object() -> Value {
             "slotIndex": uint("DeviceParam 的设备链插槽下标"),
             "paramIndex": uint("DeviceParam 的参数下标"),
             "macroIndex": uint("Macro 的宏下标"),
+            "controller": uint("MidiCc 的控制器号（该目标必填，0..=127）"),
             "readEnabled": {
                 "type": "boolean",
                 "description": "读开关（可选；缺省 = 保留现值）",
@@ -312,6 +313,7 @@ fn point_object() -> Value {
             "slotIndex": uint("DeviceParam 的设备链插槽下标"),
             "paramIndex": uint("DeviceParam 的参数下标"),
             "macroIndex": uint("Macro 的宏下标"),
+            "controller": uint("MidiCc 的控制器号（该目标必填，0..=127）"),
             "tick": uint("点的时间位置（与 `pointId` 恰好给一个）"),
             "pointId": id("点的显式身份（与 `tick` 恰好给一个）"),
         },
@@ -1014,6 +1016,32 @@ pub fn ops_items() -> Value {
                 json!({
                     "kind": kind("setTitle"),
                     "title": { "type": "string", "description": "新标题（可空串）" },
+                }),
+                true,
+            ),
+            op(
+                "setLyrics",
+                "整体替换工程歌词时间轴（顶层 `lyrics`；`lines` 与 `lrcText` 恰好二选一，旧值由服务端从当前文档读）",
+                &["kind"],
+                json!({
+                    "kind": kind("setLyrics"),
+                    "lines": {
+                        "type": "array",
+                        "description": "行数组形态：每行 {startTick, text}，整体替换。与 `lrcText` 恰好二选一（同给 ⇒ `lyricsFormAmbiguous`，都不给 ⇒ `lyricsFormRequired`）",
+                        "items": {
+                            "type": "object",
+                            "required": ["startTick", "text"],
+                            "properties": {
+                                "startTick": { "type": "integer", "minimum": 0, "description": "起始 tick（960 PPQ）" },
+                                "text": { "type": "string", "description": "整行词（非空；值域由模型 `validate_lyrics` 判）" },
+                            },
+                            "additionalProperties": false,
+                        },
+                    },
+                    "lrcText": {
+                        "type": "string",
+                        "description": "LRC 文本形态：走模型既有 `parse_lrc`（按工程速度映射换算 tick），产物与 `lines` 形态一致。与 `lines` 恰好二选一",
+                    },
                 }),
                 true,
             ),

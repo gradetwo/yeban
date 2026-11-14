@@ -925,6 +925,27 @@ pub enum Op {
         /// 修改后的标题。
         new_title: String,
     },
+    /// 整体替换**歌词时间轴**（顶层 `lyrics`，`Vec<LyricLine>`）。
+    ///
+    /// 为什么必须有这个变体：`lyrics` 是顶层一等字段（[`crate::lyrics`]），
+    /// 有真实消费者（LRC 导出 [`crate::lyrics::lyrics_to_lrc`]、查询面），
+    /// 但 `Op` 全集此前**没有任何变体写得进它** ⇒ 工程建得出、歌词改不了。
+    /// 它与 [`Op::SetTitle`] 同族（顶层文档字段、整体替换），载荷是两份
+    /// **整表**（⛔ 不是逐行 patch）：撤销不需要回放历史，逆操作就是交换两表。
+    ///
+    /// ⚠ 前置条件两条：① `new_lines` 必须过既有校验器
+    /// [`crate::lyrics::validate_lyrics`]（空文本 / tick 不严格升序，错误变体
+    /// 现成，⛔ 不造新词）；② 文档现值必须与 `old_lines` **逐项相等**
+    /// （`Vec<LyricLine>` 的派生 `PartialEq`），否则
+    /// [`ModelError::OpStateMismatch`]（陈旧载荷）。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTitle`]）。
+    SetLyrics {
+        /// 修改前的歌词时间轴（整表）。
+        old_lines: Vec<crate::lyrics::LyricLine>,
+        /// 修改后的歌词时间轴（整表）。
+        new_lines: Vec<crate::lyrics::LyricLine>,
+    },
     /// 设置**工程拍号**（顶层 `time_signature`，`[MODEL-AST-002]`）。
     ///
     /// 为什么必须有这个变体：`YebanProjectV1::time_signature` 是模型层**一等字段**，
@@ -1426,6 +1447,7 @@ impl Op {
             Self::SetTempoPoint { .. } => "SetTempoPoint",
             Self::SetAuthor { .. } => "SetAuthor",
             Self::SetTitle { .. } => "SetTitle",
+            Self::SetLyrics { .. } => "SetLyrics",
             Self::SetTimeSignature { .. } => "SetTimeSignature",
             Self::SetTimeSignaturePoint { .. } => "SetTimeSignaturePoint",
             Self::SetKeySignature { .. } => "SetKeySignature",
@@ -2301,6 +2323,20 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetLyrics {
+                old_lines,
+                new_lines,
+            } => {
+                // ① 新表自身必须合法 —— 走歌词的**唯一**校验器（⛔ 不复制
+                //    空文本 / 升序那张表）。
+                crate::lyrics::validate_lyrics(new_lines)?;
+                // ② 文档现值必须与 `old_lines` 逐项相等（派生 `PartialEq`：
+                //    每行的 tick 与文本都比），陈旧载荷必被拒。
+                if doc.lyrics != *old_lines {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetTimeSignature {
                 old_time_signature,
                 new_time_signature,
@@ -2893,6 +2929,14 @@ impl Op {
             } => Self::SetTitle {
                 old_title: new_title.clone(),
                 new_title: old_title.clone(),
+            },
+            // 同 `SetTitle`：`Vec<LyricLine>` 不是 `Copy` ⇒ 克隆交换整表。
+            Self::SetLyrics {
+                old_lines,
+                new_lines,
+            } => Self::SetLyrics {
+                old_lines: new_lines.clone(),
+                new_lines: old_lines.clone(),
             },
             // 纯结构化取反：只交换"前 / 后"两个拍号（与 `SetTempo` 同型）。
             // `TimeSignature` 是 `Copy` ⇒ 直接解引用，⛔ 不需要克隆。
@@ -3595,6 +3639,12 @@ impl Op {
             // 只写那**一个**顶层字段：⛔ 不碰 `author`、⛔ 不碰 `bpm`、⛔ 不碰 `id`。
             Self::SetTitle { new_title, .. } => {
                 doc.title = new_title.clone();
+                Ok(())
+            }
+            // 只写那**一个**顶层字段（整表替换）：⛔ 不碰音符的 `syllable`
+            //（那是音符级字段，与行级时间轴不互相推导，见 `lyrics` 模块文档）。
+            Self::SetLyrics { new_lines, .. } => {
+                doc.lyrics = new_lines.clone();
                 Ok(())
             }
             // 只写那**一个**顶层字段：⛔ 不碰 `bpm` / `title` / `author` / `transport` /
@@ -4543,6 +4593,15 @@ mod tests {
             Op::SetTitle {
                 old_title: "Ops Fixture".to_owned(),
                 new_title: "夜半 · Yeban".to_owned(),
+            },
+            // 歌词：夹具的 `lyrics` 是缺省空表（`YebanProjectV1::default()`）⇒
+            // `old_lines` 取空表，前置条件成立；新表过 `validate_lyrics`。
+            Op::SetLyrics {
+                old_lines: Vec::new(),
+                new_lines: vec![crate::lyrics::LyricLine {
+                    start_tick: 0,
+                    text: "第一行".to_owned(),
+                }],
             },
             // 拍号：夹具的 `time_signature` 是 `YebanProjectV1::default()`（4/4）⇒
             // 前置条件成立。⭐ 本变体补的是「建得出、改不了」的顶层字段（创建之后
@@ -10591,7 +10650,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 61] = [
+        const FROZEN: [(&str, &[&str]); 62] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -10630,6 +10689,7 @@ mod tests {
             ("SetDeviceBypassed", &["tracks"]),
             ("SetDeviceName", &["tracks"]),
             ("SetKeySignature", &["key_signature"]),
+            ("SetLyrics", &["lyrics"]),
             ("SetMacro", &["tracks"]),
             ("SetNoteExpression", &["clip_pool"]),
             ("SetNotePitchBendPoint", &["clip_pool"]),
@@ -10862,7 +10922,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 61] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 62] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -10901,6 +10961,7 @@ mod tests {
             ("SetDeviceBypassed", &["bypassed"]),
             ("SetDeviceName", &["name"]),
             ("SetKeySignature", &["key_signature"]),
+            ("SetLyrics", &["lyrics"]),
             ("SetMacro", &["value"]),
             (
                 "SetNoteExpression",
