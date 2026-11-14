@@ -1211,7 +1211,12 @@ export component MainWindow inherits Window {
             master-meter-level: root.master-meter-level;
             console-maximized: root.console-maximized;
             console-maximize-toggle => { root.console-maximize-toggle(); }
-        }
+                    selected-track-id: root.selected-track-id;
+            track-select(track_index) => {
+                root.track-select(track_index);
+            }
+            tool-selected(tool) => { root.tool-selected(tool); }
+}
 
         if false : StatusBar { }
 
