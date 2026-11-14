@@ -7,6 +7,7 @@
 //! | 同内容复用 | 第二次装载的 `initialCc` 不生效、回报首次登记的那份（内容寻址既有口径） |
 //! | 非法控制器 / 值 | 形状层（非整数 / 负数 / >255）与域层（128..=255）都响亮拒绝 |
 //! | 预制 `cc` 段 apply | 与 `load_sfz` 同一条登记路：回执 `initialCcSeeded` 与装载口径一致 |
+//! | 取消旁通重播 `cc` | 新会话（空 registry）取消旁通 ⇒ 同 apply 口径重新登记播种；旁通方向与 `dryRun` 不播种 |
 //! | `dryRun` apply | 不登记（随后装载 `reused == false`） |
 //! | save → apply 往返 | 会话里带 `initialCc` 装载过绑定文件 ⇒ 另存的预制带 `cc` 段，新会话 apply 重播同一份种子 |
 
@@ -323,6 +324,94 @@ fn apply_preset_with_cc_seeds_the_same_table_as_load_sfz() {
     // 的正是 apply 登记的那份（初始 CC 与普查都随登记走）。
     let loaded = call(
         &mut dispatcher,
+        "yeban_load_sfz",
+        json!({"path": sfz.display().to_string()}),
+    );
+    assert_eq!(loaded["reused"], true, "{loaded}");
+    assert_eq!(loaded["initialCc"], json!({"1": 100}), "{loaded}");
+    assert_eq!(loaded["ccGateCensus"]["silentAtDefaultCc"], 0, "{loaded}");
+}
+
+/// ⭐ 取消旁通重播初始 CC（initialCc 合入留项）：registry 是会话态、不随
+/// 工程持久化 —— 会话一里 apply + 旁通后，会话二（空 registry）对同一工程
+/// 取消旁通，必须与 apply 同口径重新登记播种；否则该乐器的种子停留在
+/// “从未登记”状态，随后装载只能走文件缺省口径（门控静音）。旁通方向与
+/// `dryRun` 都不得播种。
+#[test]
+fn un_bypass_replays_preset_initial_cc_in_a_fresh_session() {
+    let scratch = Scratch::new("unbypass");
+    let _home = HomeGuard::redirect(&scratch.dir);
+    let sfz = write_gated_sfz(&scratch);
+    let preset_id = write_user_preset_with_cc(&scratch.dir, &sfz);
+
+    // 会话一：apply（播种）→ 旁通（不播种）。工程留下 preset_id 与
+    // bypassed=true，registry 随会话结束消失。
+    let mut first = dispatcher_with_project();
+    let lead = track_id(&first, "Lead");
+    let applied = call(
+        &mut first,
+        "yeban_apply_preset",
+        json!({"trackId": lead, "presetId": preset_id, "autoMerge": true}),
+    );
+    assert_eq!(
+        applied["initialCcSeeded"]["initialCc"],
+        json!({"1": 100}),
+        "{applied}"
+    );
+    let bypassed = call(
+        &mut first,
+        "yeban_preset_bypass",
+        json!({"trackId": lead, "bypassed": true, "autoMerge": true}),
+    );
+    assert!(
+        bypassed.get("initialCcSeeded").is_none(),
+        "旁通方向不得播种: {bypassed}"
+    );
+    let project = first.domain().active_project().expect("工程").clone();
+
+    // 会话二：同一工程、空 registry。
+    let mut second = dispatcher_bare();
+    second
+        .domain_mut()
+        .open_in_memory(
+            std::env::temp_dir().join(format!(
+                "yeban-mcp-initialcc-unbypass-{}.yeban",
+                std::process::id()
+            )),
+            project,
+            false,
+        )
+        .expect("注入旁通态工程");
+    let lead = track_id(&second, "Lead");
+    // dryRun 取消旁通：只预览、不登记。
+    let data = call(
+        &mut second,
+        "yeban_preset_bypass",
+        json!({"trackId": lead, "bypassed": false, "dryRun": true}),
+    );
+    assert!(
+        data.get("initialCcSeeded").is_none(),
+        "dryRun 不得播种: {data}"
+    );
+    // 真取消旁通（autoMerge）：回执带重播的种子登记。
+    let data = call(
+        &mut second,
+        "yeban_preset_bypass",
+        json!({"trackId": lead, "bypassed": false, "autoMerge": true}),
+    );
+    assert_eq!(
+        data["initialCcSeeded"]["initialCc"],
+        json!({"1": 100}),
+        "{data}"
+    );
+    assert_eq!(
+        data["initialCcSeeded"]["ccSeedDefaults"],
+        json!({"1": 100}),
+        "{data}"
+    );
+    // registry 里的确是重播的那份：随后装载命中内容寻址复用、普查按种子算。
+    let loaded = call(
+        &mut second,
         "yeban_load_sfz",
         json!({"path": sfz.display().to_string()}),
     );

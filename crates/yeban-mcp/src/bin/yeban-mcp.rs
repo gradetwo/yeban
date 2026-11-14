@@ -100,9 +100,12 @@ struct Config {
 impl Config {
     /// 令牌文件路径（默认 `~/.yeban/session.token`）。
     ///
+    /// 默认路径的家目录按 `HOME` → `USERPROFILE` → 临时目录解析（报告 ⑤），
+    /// 恒能得到结果。
+    ///
     /// # Errors
     ///
-    /// 未显式指定且找不到家目录。
+    /// 现不产生错误（签名兼容保留）。
     fn token_path(&self) -> Result<PathBuf, String> {
         match &self.token_file {
             Some(path) => Ok(path.clone()),
