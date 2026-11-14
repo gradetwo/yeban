@@ -111,6 +111,15 @@ fn all_33_aether_callbacks_reach_real_handlers_in_a_live_window() {
     host::wire_scene_launch(ui, Rc::clone(&engine), Rc::clone(&view_cell));
     host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
     host::wire_sidebar_contents(ui, Rc::clone(&view_cell));
+    // 录音腿用显式静音源工厂: 与 CI/本机有没有声卡无关, 状态机一定被真实驱动。
+    let recorder = host::wire_record(
+        ui,
+        Some(Rc::clone(&project_rc)),
+        Some(Rc::clone(&undo)),
+        yeban_app::record_wav::RecordPlan::production(),
+        Rc::new(yeban_app::record_device::SilenceFactory),
+        Rc::new(host::UiRecordOutcome),
+    );
     // 生产桥接层最后注册(覆盖语义)。
     host::wire_aether_actions(
         ui,
@@ -138,17 +147,17 @@ fn all_33_aether_callbacks_reach_real_handlers_in_a_live_window() {
         format!("引擎命令日志 {} -> {}", before, journal())
     );
 
-    // 02 transport-toggle-rec -> 真实启停录音(写 recording 属性), 第二击配对停止。
+    // 02 transport-toggle-rec -> 真实驱动 Recorder 状态机(与设备无关)。
+    let before = recorder.borrow().is_recording();
     ui.invoke_transport_toggle_rec();
-    let started = ui.get_recording();
-    ui.invoke_transport_toggle_rec();
-    let stopped = !ui.get_recording();
+    let after = recorder.borrow().is_recording();
+    ui.invoke_transport_toggle_rec(); // 配对停止
     hit!(
         "transport-toggle-rec",
-        started && stopped,
+        before != after,
         format!(
-            "起录 recording={started}, 停录后 recording={}",
-            ui.get_recording()
+            "Recorder.is_recording {before} -> {after}, 停录后 {}",
+            recorder.borrow().is_recording()
         )
     );
 
