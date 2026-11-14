@@ -735,8 +735,8 @@ pub struct RegionSummary {
     /// ⭐ 内建静音则是 [`BUILTIN_SILENCE_SOURCE`]（没有文件可读）。
     pub sample_file_state: String,
     /// ⭐ CC 门控（`loccN` / `hiccN` 归约后的闭区间，解析产物 [`Region::cc_gates`]
-    /// 的原样抄录）。缺省 CC 状态（每路 CC = 0）下区间不含 0 的区域不会发声，
-    /// 见 [`CcGateCensus`]。
+    /// 的原样抄录）。乐器初值状态（`set_ccN` 种子，未声明的 CC = 0）下初值落在
+    /// 区间外的区域不会发声，见 [`CcGateCensus`]。
     pub cc_gates: Vec<CcGate>,
     /// ⭐ `amplitude` 基值（线性百分比，缺省 [`AMPLITUDE_DEFAULT_PERCENT`] = 100）。
     pub amplitude: f32,
@@ -772,16 +772,21 @@ impl RegionSummary {
     }
 }
 
-/// ⭐ **缺省 CC 状态下的门控普查**（装载期一次算清，⛔ 不是渲染期判定）。
+/// ⭐ **乐器初值状态下的门控普查**（装载期一次算清，⛔ 不是渲染期判定）。
 ///
-/// 口径：调用方没有给任何 CC 状态时，每路控制器取 MIDI 缺省值 `0`
-/// （与 [`DemandLoadFilter::wants`] 的无探针口径、引擎摊平的 `(0, 0)` 读法同一句）。
-/// 一条区域在缺省状态下**不可发声**，当且仅当下面两条之一成立：
+/// 口径：每路控制器取乐器初值 —— 文件 `<control>` 里 `set_ccN` 声明了的取
+/// 种子值，没声明的取 MIDI 缺省值 `0`。这正是离线渲染探针的种子层
+/// （`CcProbe`，路线 a）与 [`DemandLoadFilter::wants`] 并入种子后的可达集
+/// 在「无泳道」时的同一份状态：普查说静音的区域，就是离线渲染里（无泳道
+/// 干预时）真的不会发声的区域。没有 `set_ccN` 的乐器初值全 `0`，普查结果
+/// 与旧「全 0」口径逐条相同。回执键名 `silentAtDefaultCc` 是既有 wire 形状，
+/// 沿用不改（其语义自路线 a 起是「乐器初值」）。
+/// 一条区域在初值状态下**不可发声**，当且仅当下面两条之一成立：
 ///
-/// - **门控（gate）**：某个 `loccN` / `hiccN` 区间的下界 `lo > 0` ⇒ 值 `0` 不在
-///   `[lo, hi]` 内（`lo ≤ hi` 且 `lo ≥ 0` ⇒ 含 0 ⟺ `lo == 0`）；
+/// - **门控（gate）**：某个 `loccN` / `hiccN` 区间不含该控制器的初值
+///   （初值 `< lo` 或 `> hi`）；
 /// - **振幅（amplitude）**：`amplitude` 基值 ＋ 各 `amplitude_*ccN` 调制项在
-///   CC = 0 处的值（`delta × curve(0)`，曲线解析不到的项不贡献 —— 求值走
+///   初值处的值（`delta × curve(初值 / 127)`，曲线解析不到的项不贡献 —— 求值走
 ///   `Instrument::amplitude_value_with_cc`）恰为 `0` ⇒ 有效增益 `value / 100 == 0`。
 ///
 /// ⚠ 只写 `amplitude_ccN=100` 而基值缺省 100 的区域**不算**静音：曲线 0 在
@@ -789,9 +794,9 @@ impl RegionSummary {
 /// ⚠ 交叉淡化（`xfin_*` / `xfout_*`）不在本普查内：那是逐块增益，不是区域门控。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CcGateCensus {
-    /// 缺省 CC 下不可发声的区域总数（门控与振幅的**并集**，同一区域只计一次）。
+    /// 乐器初值下不可发声的区域总数（门控与振幅的**并集**，同一区域只计一次）。
     pub silent_regions: usize,
-    /// 其中因 CC 门控不含 0 而静音的区域数。
+    /// 其中因 CC 门控不含初值而静音的区域数。
     pub gate_silent_regions: usize,
     /// 其中因有效振幅为 0 而静音的区域数。
     pub amplitude_silent_regions: usize,
@@ -812,14 +817,25 @@ impl CcGateCensus {
     }
 }
 
-/// 一条区域的 `amplitude` 在缺省 CC（全 0）下的有效值（单位 %）。
+/// 乐器初值状态下某控制器的值：`set_ccN` 声明了的取种子值，没声明的取 MIDI 缺省 `0`。
+///
+/// 种子值在解析期已被限定在 `0..=127`（越界是解析错误，见 `yeban-sfz` 的
+/// `set_cc_declaration`），因此本读数与引擎摊平的 `CcSeedTable` 逐值相同；
+/// 本 crate ⛔ 不依赖 `yeban-engine`（见 `Cargo.toml` 的依赖纪律），故在这里
+/// 直接读解析产物，不复用引擎的表类型。
+fn initial_cc_value(instrument: &Instrument<'_>, cc: u8) -> u8 {
+    instrument.cc_default(u16::from(cc)).unwrap_or(0)
+}
+
+/// 一条区域的 `amplitude` 在乐器初值 CC 下的有效值（单位 %）。
 ///
 /// 求值属主是 `yeban-sfz` 的 [`Instrument::amplitude_value_with_cc`]：公式、
-/// 曲线解析与「解析不到的项不贡献」都在那一处，本函数只把探针钉成全 `0`
-/// （与 [`DemandLoadFilter::wants`] 的无探针口径同一句），⛔ 不在这里
-/// 自己求值曲线。
-fn amplitude_at_default_cc(instrument: &Instrument<'_>, region: &Region<'_>) -> f32 {
-    instrument.amplitude_value_with_cc(region, &|_| 0).0
+/// 曲线解析与「解析不到的项不贡献」都在那一处，本函数只把探针钉成乐器初值
+/// （`set_ccN` 种子，未声明的控制器为 `0`），⛔ 不在这里自己求值曲线。
+fn amplitude_at_initial_cc(instrument: &Instrument<'_>, region: &Region<'_>) -> f32 {
+    instrument
+        .amplitude_value_with_cc(region, &|cc| initial_cc_value(instrument, cc))
+        .0
 }
 
 /// 对一整件乐器做 [`CcGateCensus`] 普查（纯函数：只读解析产物，⛔ 不碰文件系统）。
@@ -828,12 +844,16 @@ pub fn cc_gate_census(instrument: &Instrument<'_>) -> CcGateCensus {
     let mut census = CcGateCensus::default();
     let mut cc_numbers: BTreeSet<u8> = BTreeSet::new();
     for region in instrument.regions() {
-        let gate_hit = region.cc_gates.iter().any(|gate| gate.lo > 0);
-        let amplitude_hit = amplitude_at_default_cc(instrument, region) == 0.0;
+        let gate_missed = |gate: &CcGate| {
+            let value = initial_cc_value(instrument, gate.cc);
+            value < gate.lo || value > gate.hi
+        };
+        let gate_hit = region.cc_gates.iter().any(gate_missed);
+        let amplitude_hit = amplitude_at_initial_cc(instrument, region) == 0.0;
         if gate_hit {
             census.gate_silent_regions += 1;
             for gate in &region.cc_gates {
-                if gate.lo > 0 {
+                if gate_missed(gate) {
                     cc_numbers.insert(gate.cc);
                 }
             }
@@ -913,7 +933,7 @@ pub struct SfzLoad {
     /// ⭐ 本次装载**用的**预算（回显；`sampleReadsTruncated` 是不是"被这条预算"截的，
     /// 只有把它一起报出来才能判）。
     pub limits: SampleLimits,
-    /// ⭐ 缺省 CC 状态下的门控普查（[`cc_gate_census`]，装载期与摘要同一次解析算出）。
+    /// ⭐ 乐器初值状态下的门控普查（[`cc_gate_census`]，装载期与摘要同一次解析算出）。
     pub cc_census: CcGateCensus,
 }
 
@@ -1008,13 +1028,13 @@ impl SfzLoad {
         }))
     }
 
-    /// ⭐ 缺省 CC 下有区域不发声时的**非阻塞警告**（与 [`Self::samples_warning`] 同型）。
+    /// ⭐ 乐器初值下有区域不发声时的**非阻塞警告**（与 [`Self::samples_warning`] 同型）。
     ///
-    /// `loaded: true` 只说解析与注册成功；分层选奏法的库（`loccN` 分层）在一件
-    /// 没有 CC 泳道的工程里，缺省层之外的区域**本来就不发声** —— 这不是错误，
-    /// 但调用方若不知道，就会把"没声"误诊成装载失败。因此普查非 0 时点名：
-    /// 数量、原因分计、涉及的 CC 号，以及怎么让它发声（注入 `MidiCc` 泳道，
-    /// 或文件自带 `<control> set_ccN` 初值走实时路径）。⛔ 不阻断、⛔ 不自动改。
+    /// `loaded: true` 只说解析与注册成功；分层选奏法的库（`loccN` 分层）在初值层
+    /// 之外的区域**本来就不发声** —— 这不是错误，但调用方若不知道，就会把
+    /// "没声"误诊成装载失败。因此普查非 0 时点名：数量、原因分计、涉及的 CC 号，
+    /// 以及怎么让它发声（注入 `MidiCc` 泳道；泳道值覆于 `set_ccN` 种子之上）。
+    /// ⛔ 不阻断、⛔ 不自动改。
     #[must_use]
     pub fn cc_gate_warning(&self) -> Option<serde_json::Value> {
         if self.cc_census.silent_regions == 0 {
@@ -1029,9 +1049,9 @@ impl SfzLoad {
             "byAmplitude": self.cc_census.amplitude_silent_regions,
             "ccNumbers": self.cc_census.cc_numbers,
             "hint": format!(
-                "该乐器有 {} 个区域在缺省 CC 下不发声（门控 {} 个、振幅 {} 个；涉及 CC {:?}）\
-                 ：这些区域要求控制器离开缺省值 0 才发声。需要 CC 校准 —— 给工程加对应的 \
-                 `MidiCc` 自动化泳道，或让文件自带 `<control> set_ccN` 初值（实时路径会播种）。\
+                "该乐器有 {} 个区域在乐器初值下不发声（门控 {} 个、振幅 {} 个；涉及 CC {:?}）\
+                 ：这些区域要求控制器离开初值（`<control> set_ccN` 种子，未声明者为 0）才发声。\
+                 需要 CC 校准 —— 给工程加对应的 `MidiCc` 自动化泳道（泳道值覆于种子之上）。\
                  ⛔ 这不是装载失败：解析与注册已成功，本警告不阻断任何操作。",
                 self.cc_census.silent_regions,
                 self.cc_census.gate_silent_regions,
@@ -1383,14 +1403,19 @@ pub type SampledProviderTable = Vec<SampledProviderEntry>;
 /// - **通道**：采样器路径不传通道，摊平固定通道 `1` ⇒ 区域必须含通道 `1`。
 /// - **键位切换**（摊平期 `last=None`、`down≡false` 时的 `keyswitch_ok`）：`sw_down` ⇒ 永假；
 ///   `sw_last` 有值且与 `sw_default` 不等（含无缺省）⇒ 假；`sw_up` 不挡；无门控 ⇒ 过。
-/// - **CC 门控**：离线探针只来自本轨 `MidiCc` 泳道 ＋ 宏级联（`CcProbe`；`set_ccN` 种子只进
-///   实时会话 CC 域，⛔ 不进离线触发探针）。**没有探针不等于控制器不可达**：MIDI CC 的
-///   缺省值是 `0`，所以无探针时每一路控制器都按 `(0, 0)` 参与门控判定 —— 含 `0` 的区间
-///   （例如 `hicc105=63`、`locc1=0 hicc1=127`）照常发声，不含 `0` 的区间（例如
-///   `locc105=64`）不发声。有探针时，无泳道的控制器同样恒 `0`，有泳道的控制器取值落在
-///   「曲线值域 ＋ 宏偏移值域」内（`value_at` 首末保持、段内插值 ⇒ 值恒在点值域内；
-///   宏偏移 ＝ 各路 `depth × 宏曲线值` 之和）。CC 门控一控制器一门 ⇒ 逐门区间交集
-///   判定是精确的（各控制器取值独立选取）。
+/// - **CC 门控**：离线探针来自本轨 `MidiCc` 泳道 ＋ 宏级联 ＋ 本乐器自带的 `set_ccN`
+///   种子（`CcProbe` 的种子层，路线 a —— 推翻 `#112` 的「种子只进实时会话」旧口径，
+///   Wang 2026-11-14 裁决）。种子在本构造器之外并入（[`Self::with_cc_seeds`]，
+///   装载点拿到解析产物时调用；本构造器不读文件），优先级与探针组表一致：
+///   **有有效泳道／级联的控制器以泳道可达集为准，种子不并入；没有泳道的控制器
+///   以种子值 `(v, v)` 为可达集；两者都没有的控制器恒 `(0, 0)`**。
+///   **没有条目不等于控制器不可达**：MIDI CC 的缺省值是 `0`，所以无条目时每一路
+///   控制器都按 `(0, 0)` 参与门控判定 —— 含 `0` 的区间（例如 `hicc105=63`、
+///   `locc1=0 hicc1=127`）照常发声，不含 `0` 的区间（例如 `locc105=64`）在没有
+///   种子与泳道时不发声。有泳道的控制器取值落在「曲线值域 ＋ 宏偏移值域」内
+///   （`value_at` 首末保持、段内插值 ⇒ 值恒在点值域内；宏偏移 ＝ 各路
+///   `depth × 宏曲线值` 之和）。CC 门控一控制器一门 ⇒ 逐门区间交集判定是精确的
+///   （各控制器取值独立选取）。
 ///
 ///   ⚠ 修前这一条写的是「无有效探针 ⇒ 门控区域一律不发声」。实测后果：`locc/hicc`
 ///   分层选奏法的库（`cithara-barbarica` 的 `locc105=64`/`hicc105=63`、
@@ -1408,6 +1433,7 @@ pub type SampledProviderTable = Vec<SampledProviderEntry>;
 ///   轮询变体（`seq_*`）不在区域判定里：同一音高的全部变体按同一音符命中 ⇒ 全计入。
 ///
 /// 构造只读工程模型（音符、泳道、宏映射），⛔ 不碰文件系统、不解码。
+#[derive(Clone)]
 pub struct DemandLoadFilter {
     /// 本轨全部 MIDI 音符的 `(pitch, velocity)`（含静音摆放的音符，见超集安全）。
     notes: Vec<(u8, u8)>,
@@ -1415,6 +1441,7 @@ pub struct DemandLoadFilter {
     total_notes: usize,
     /// 每路控制器的离线探针可达整数区间 `[lo, hi]`（已 clamp 到 `0..=127`）。
     /// 无条目的控制器恒 `0`（与「没有探针」同一条缺省，见 `wants` 的 CC 分支）。
+    /// 经 [`Self::with_cc_seeds`] 并入种子后，无泳道控制器的条目是种子值 `(v, v)`。
     cc_reachable: BTreeMap<u8, (u8, u8)>,
 }
 
@@ -1547,6 +1574,28 @@ impl DemandLoadFilter {
         }
     }
 
+    /// 并入一份乐器自带的 `set_ccN` 种子表（`Instrument::cc_defaults()`），返回新判定器。
+    ///
+    /// 并集口径与 `CcProbe` 的组表**逐条一致**（泳道赢）：`cc_reachable` 已有条目
+    /// （＝该控制器有有效泳道／宏级联）的控制器**不动**；没有条目的控制器若有
+    /// 种子 `(cc, v)`（`cc ≤ 127`；域外声明不进 CC 域，与 `CcSeedTable` 同口径），
+    /// 插入 `(v, v)` —— 探针在该控制器上恒读种子值，可达集就是单点。
+    /// 空种子表 ⇒ 返回的判定器与 `self` 逐字段相同（无 `set_ccN` 的工程装载
+    /// 行为与接线前一致）。
+    #[must_use]
+    pub fn with_cc_seeds(&self, defaults: &BTreeMap<u16, u8>) -> Self {
+        let mut next = self.clone();
+        for (cc, value) in defaults {
+            // CC 域只有 0..=127：域外声明（`set_cc200` 等）不进可达集，
+            // 与引擎侧 `CcSeedTable` 的「只计数、不进表」同口径。
+            if *cc <= 127 {
+                let cc = u8::try_from(*cc).expect("≤127 必能进 u8");
+                next.cc_reachable.entry(cc).or_insert((*value, *value));
+            }
+        }
+        next
+    }
+
     /// 该区域在本次离线渲染里会不会发声（见结构体文档的语义逐条）。
     #[must_use]
     pub fn wants(&self, region: &Region<'_>) -> bool {
@@ -1563,7 +1612,7 @@ impl DemandLoadFilter {
         {
             return false;
         }
-        // CC 门控。⚠ 无探针时**不是**"一律不发声"：MIDI CC 的缺省值是 0，
+        // CC 门控。⚠ 无条目（无泳道、无种子）时**不是**"一律不发声"：MIDI CC 的缺省值是 0，
         // `locc/hicc` 的常见写法正是「0..63 一层、64..127 另一层」，缺省 0 落在第一层。
         // 修前这里 `if !probe_exists { return false }` 把整件库判死（见结构体文档）。
         for gate in &region.cc_gates {
@@ -1719,6 +1768,17 @@ fn load_with_resolved(
             Some((sources, _)) => parse_expanded(&text, Some(sources.as_slice())),
             None => parse_expanded(&text, None),
         }?;
+        // ⭐ set_ccN 离线播种（路线 a）：需求过滤器的 CC 可达集在这里并入本乐器的
+        // 种子表 —— 与探针的种子层同一次解析、同一个来源（`cc_defaults()`），
+        // 装载侧与渲染侧自此读同一份初值（泳道赢的优先级在 `with_cc_seeds` 里）。
+        let wanted_owned;
+        let wanted = match wanted {
+            Some(filter) => {
+                wanted_owned = filter.with_cc_seeds(instrument.cc_defaults());
+                Some(&wanted_owned)
+            }
+            None => None,
+        };
         // ⭐ CC 门控普查与摘要在**同一次解析**里算（⛔ 不为普查再解析一遍）。
         let cc_census = cc_gate_census(&instrument);
         let mut regions: Vec<RegionSummary> = Vec::new();
@@ -2172,6 +2232,9 @@ pub(crate) fn triggered_sample_keys(
     // ⚠ `resolution` 只活在 `Some` 分支里 —— `Instrument` 借它，因此触发集
     // 必须在**同一分支内**算完（⛔ 不能把 `instrument` 带出 match）。
     let triggered = |instrument: &Instrument<'_>| {
+        // ⭐ set_ccN 离线播种（路线 a）：与 `load_with_resolved` 同一条并集 ——
+        // 保存路径收集的样本集必须与渲染装载的命中集同口径（种子 ∪ 泳道，泳道赢）。
+        let filter = filter.with_cc_seeds(instrument.cc_defaults());
         let mut out: BTreeSet<(String, String)> = BTreeSet::new();
         for region in instrument.regions().iter() {
             if !filter.wants(region) {
@@ -3685,6 +3748,43 @@ mod tests {
         );
     }
 
+    /// P1（路线 a）：`set_ccN` 种子并入可达集 —— 无泳道时种子值就是可达集；
+    /// 有泳道时**泳道赢**，种子不得把已由泳道决定的可达集撑大；
+    /// 空种子表逐条不变。
+    #[test]
+    fn demand_load_cc_gates_include_set_cc_seeds() {
+        let track_id = demand_uid(1006);
+        let text = "<region> sample=a.wav key=60 locc1=64 hicc1=127\n\
+                    <region> sample=b.wav key=60 hicc1=63\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let regions = instrument.regions();
+        let mut seeds = BTreeMap::new();
+        seeds.insert(1u16, 64u8);
+
+        // 无泳道：并入前按缺省 0 判定（a 假、b 真）；并入种子 64 后翻转（a 真、b 假）。
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        assert!(!filter.wants(&regions[0]), "并入前：0 不在 [64,127]");
+        assert!(filter.wants(&regions[1]), "并入前：0 在 [..,63]");
+        let filter = filter.with_cc_seeds(&seeds);
+        assert!(filter.wants(&regions[0]), "种子 64 在 [64,127] ⇒ 发声");
+        assert!(!filter.wants(&regions[1]), "种子 64 不在 [..,63] ⇒ 该层熄");
+
+        // 有泳道（值域单点 0）：可达集已有条目 ⇒ 种子不并入 ⇒ 判定不变（泳道赢）。
+        let mut project = demand_project(track_id, &[(60, 100)]);
+        demand_cc_lane(&mut project, track_id, 1, &[(0, 0.0)], true);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id).with_cc_seeds(&seeds);
+        assert!(!filter.wants(&regions[0]), "泳道 0 赢：种子不得撑开可达集");
+        assert!(filter.wants(&regions[1]), "泳道 0 赢：[..,63] 仍命中");
+
+        // 空种子表：逐条不变。
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id)
+            .with_cc_seeds(&BTreeMap::new());
+        assert!(!filter.wants(&regions[0]), "空种子 ⇒ 与并入前一致");
+        assert!(filter.wants(&regions[1]), "空种子 ⇒ 与并入前一致");
+    }
+
     /// P1：宏级联进离线探针（偏移值域 ＝ depth × 宏曲线值域；全零点 ⇒ 级联为零）。
     #[test]
     fn demand_load_macro_cascade_feeds_cc_probe() {
@@ -4060,6 +4160,35 @@ mod tests {
         assert_eq!(value["byGate"], 2);
         assert_eq!(value["byAmplitude"], 3);
         assert_eq!(value["ccNumbers"], serde_json::json!([1, 2, 7]));
+    }
+
+    /// ⭐ CC 门控普查（路线 a）：探针取**乐器初值** —— `set_cc1=64` 让
+    /// `locc1=64` 的区域离开静音集；种子落在门外的区域仍计静音；振幅臂同样
+    /// 按初值求值（`set_cc7=127` 让 `amplitude=0 amplitude_oncc7=100` 的区域
+    /// 有效值离开 0）。与离线播种同口径：普查说静音 ⇔ 无泳道时离线不发声。
+    #[test]
+    fn cc_gate_census_uses_set_cc_initial_values() {
+        let text = "<control> set_cc1=64 set_cc7=127\n\
+                    <region> sample=a.wav key=60 locc1=64 hicc1=127\n\
+                    <region> sample=b.wav key=61 locc1=100 hicc1=127\n\
+                    <region> sample=c.wav key=62 amplitude=0 amplitude_oncc7=100\n\
+                    <region> sample=d.wav key=63 amplitude=0\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let census = cc_gate_census(&instrument);
+        assert_eq!(census.silent_regions, 2, "并集 = b/d: {census:?}");
+        assert_eq!(
+            census.gate_silent_regions, 1,
+            "门控 = b（种子 64 < 100）: {census:?}"
+        );
+        assert_eq!(
+            census.amplitude_silent_regions, 1,
+            "振幅 = d（c 被种子 127 抬离 0）: {census:?}"
+        );
+        assert_eq!(
+            census.cc_numbers,
+            vec![1],
+            "只有 b 的门控 CC 进名册: {census:?}"
+        );
     }
 
     /// ⭐ CC 门控普查：无门控库普查为 0（摘要仍带原料字段，值为空/缺省）。

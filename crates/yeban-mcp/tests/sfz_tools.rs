@@ -1397,3 +1397,40 @@ fn load_sfz_reports_the_cc_gate_census_and_its_warning() {
         "无门控库不得出现任何警告: {plain_data}"
     );
 }
+
+/// ⭐ CC 门控普查（路线 a）：普查探针取**乐器初值** —— 带 `<control> set_cc1=64`
+/// 的库里，`locc1=64` 的区域不再计静音（种子已让它在离线渲染里发声，普查
+/// 不得与新行为矛盾）；种子落在门外的区域（`locc1=100`）仍计静音。
+#[test]
+fn load_sfz_census_follows_set_cc_initial_values() {
+    let scratch = Scratch::new("cc-census-seeded");
+    let seeded = scratch.write_sfz(
+        "seeded.sfz",
+        "<control> set_cc1=64\n\
+         <region> sample=*silence key=60 locc1=64 hicc1=127\n\
+         <region> sample=*silence key=62 locc1=100 hicc1=127\n\
+         <region> sample=*silence key=64 amplitude=0\n",
+    );
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": seeded.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let data = &loaded["data"];
+    assert_eq!(data["regions"], 3, "{data}");
+    // 普查：静音 = locc1=100 的门控 1 ＋ amplitude=0 的振幅 1；locc1=64 被种子救下。
+    assert_eq!(data["ccGateCensus"]["silentAtDefaultCc"], 2, "{data}");
+    assert_eq!(data["ccGateCensus"]["byGate"], 1, "{data}");
+    assert_eq!(data["ccGateCensus"]["byAmplitude"], 1, "{data}");
+    assert_eq!(
+        data["ccGateCensus"]["ccNumbers"],
+        serde_json::json!([1]),
+        "{data}"
+    );
+    let warnings = data["warnings"].as_array().expect("warnings 数组");
+    assert_eq!(warnings.len(), 1, "仍恰好一条 CC 警告: {data}");
+    assert_eq!(warnings[0]["code"], "sfzCcGatedSilence");
+    assert_eq!(warnings[0]["count"], 2);
+}

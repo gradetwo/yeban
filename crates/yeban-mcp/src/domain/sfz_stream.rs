@@ -957,7 +957,10 @@ pub fn preview_sources(
     instrument: &Instrument<'_>,
     filter: &DemandLoadFilter,
 ) -> Vec<PathBuf> {
-    collect_sources(sfz_path, instrument, Some(filter))
+    // ⭐ set_ccN 离线播种（路线 a）：与 `load_with_resolved` 同一条并集 ——
+    // 预览预载集必须与 P1 装载的命中集同口径（种子 ∪ 泳道，泳道赢）。
+    let filter = filter.with_cc_seeds(instrument.cc_defaults());
+    collect_sources(sfz_path, instrument, Some(&filter))
 }
 
 /// 实时预载源：整件乐器的样本文件（去重、路径排序），不看谱子。

@@ -1550,7 +1550,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出缺省 CC (全 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道或文件自带 set_ccN)",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出乐器初值 (文件 <control> 的 set_ccN 种子, 未声明者 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道, 泳道值覆于种子之上)",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。

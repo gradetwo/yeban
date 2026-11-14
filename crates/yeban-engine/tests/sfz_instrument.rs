@@ -9126,9 +9126,18 @@ fn silent_seed_plan(control: &str, sample: &InMemorySample) -> PreparedSfz {
     )
 }
 
-/// ⭐ S93（任务单 `#112`；§2② 的**(b) 登记为有意边界** ＋ §2③ 的**维持登记**）：
+/// ⭐ S93（任务单 `#112`；§2② 的**(b) 登记为有意边界** ＋ §2③ 的**离线腿改判**）：
 /// **一条轨的 `set_ccN` 会经会话表把另一条没有 `set_ccN` 的轨的门控带走** ——
 /// 本判据把这个行为**钉死**（它是有意的、被登记的边界，⛔ 不是"读者自己猜"）。
+///
+/// ⭐ §2③ 离线腿**改判**（set_ccN 离线播种「路线 a」，Wang 2026-11-14 裁决，
+/// 推翻 `#112` 的维持登记）：离线产品行为（带 `set_ccN` 的乐器在离线渲染里
+/// 按种子发声、`MidiCc` 泳道覆于种子之上）已由控制侧实现并由控制侧判据钉住
+/// （`yeban-render` 的 `CcProbe` 种子层与 `with_cc` 接线判据、`yeban-mcp` 的
+/// 装载过滤／普查种子判据与端到端渲染判据）。本腿自此只钉**引擎分工事实**：
+/// `render_track` 逐位等于 `render_track_with_cc(…, None)` ⇒ 引擎内**没有**
+/// 第二套按表播种机制；同一份表在探针被喂成 `cc_seeds` 时发声 ⇒ 控制侧只差
+/// 这一个探针，且已经接上。实时一腿（§2② 的跨轨外溢）一字不动。
 ///
 /// # 量什么（对象 ＋ 单位，先说再跑）
 ///
@@ -9236,10 +9245,12 @@ fn s93_a_track_without_set_cc_is_carried_by_another_tracks_seed() {
         CC_SEED_IGNORED_RUNTIME_FINGERPRINT,
     );
 
-    // ---- §2③ 离线腿：`SynthEngine::render_track` 仍传 `cc = None`（维持登记） ----
+    // ---- §2③ 离线腿：引擎分工守卫（路线 a 改判，原「维持登记」） ----
     //
-    // 对象 ＝ 同一条轨、同一份带 `set_ccN` 的摊平表经**离线入口**渲染的 512 帧；
+    // 对象 ＝ 同一条轨、同一份带 `set_ccN` 的摊平表经**引擎离线入口**渲染的 512 帧；
     // 单位 ＝ 非零帧数（帧）＋ 位模式（逐帧 `u32`）。
+    // ⭐ 本腿量的是**引擎**：无探针的入口不播种（分工事实），探针喂成种子即发声
+    // （控制侧路线 a 接的正是这个探针；产品行为判据在 yeban-render / yeban-mcp）。
     let offline_track = EntityId::new();
     let offline_plan = prepare_with(CC_SEED_GATE_SEEDED, &sample);
     assert_eq!(
@@ -9287,21 +9298,24 @@ fn s93_a_track_without_set_cc_is_carried_by_another_tracks_seed() {
     assert_eq!(
         bits(&via_render_track),
         bits(&via_none),
-        "⭐ 维持登记：`render_track` 仍**逐位等于** `render_track_with_cc(…, None)`"
+        "⭐ 引擎分工守卫：`render_track` **逐位等于** `render_track_with_cc(…, None)` \
+         ⇒ 引擎内没有第二套按表播种（路线 a：播种只发生在控制侧探针的组表处）"
     );
     assert_eq!(
         nonzero_frames(&via_render_track),
         0,
-        "⭐ `set_cc1=64` 的 `locc1=64` 门控在离线入口下**不**成立 ⇒ 逐位静音"
+        "⭐ 引擎入口本身不播种：无探针 ⇒ `set_cc1=64` 的 `locc1=64` 门控不成立 \
+         ⇒ 逐位静音（播种是控制侧探针的职责，不是引擎入口的）"
     );
     assert!(
         nonzero_frames(&via_probe) > 0,
-        "⭐ 有牙：把探针喂成同表的 `cc_seeds` ⇒ 同一份表**会**发声（离线路径只差这一个探针）"
+        "⭐ 有牙：把探针喂成同表的 `cc_seeds` ⇒ 同一份表**会**发声 \
+         —— 控制侧路线 a 接的正是这一个探针（产品判据在 yeban-render / yeban-mcp）"
     );
     assert_ne!(
         bits(&via_render_track),
         bits(&via_probe),
-        "⭐ 有牙：离线入口与探针臂必须**逐位不同**（否则这条登记无意义）"
+        "⭐ 有牙：无探针入口与探针臂必须**逐位不同**（否则播种分工无从谈起）"
     );
 }
 
