@@ -16893,6 +16893,58 @@ pub fn wire_aether_actions(ui: &MainWindow, port: Rc<UndoPort>) {
                 .map_or(0, |elapsed| elapsed.as_millis() as u64);
             if port.commit_ops(now, "aether: 推子", vec![op]).is_err() {
                 ui.set_toast_message("推子提交被拒绝(工程未改)".into());
+            } else {
+                refresh_undo_window(&ui, &port, true);
+            }
+        }
+    });
+
+    // ---- 音符编辑: 新 UI 的 16 行 × 64 步网格 -> 真实 Op::AddNote ----
+    // 一次点击 = 一步可撤销编辑; 提交后由 refresh_undo_window 重投影,
+    // UI 的 notes 数组(apply_view 注入)随即反映新工程, 不是只改视图态。
+    ui.on_piano_note_create({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move |row: i32, step: i32| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let Some(clip_id) = project
+                .clip_pool
+                .iter()
+                .find(|(_, entry)| {
+                    matches!(
+                        entry.content,
+                        yeban_model::project::ClipContent::Midi { .. }
+                    )
+                })
+                .map(|(id, _)| id.clone())
+            else {
+                return;
+            };
+            let Some(track_id) = project.tracks.keys().next().cloned() else {
+                return;
+            };
+            // 16 行音名网格(行 0 最高, 与 PITCH_NAMES 同序); 每步 = 十六分音符(960 PPQ / 4)。
+            let pitch = (84 - row.clamp(0, 15)).clamp(0, 127) as u8;
+            let start_tick = u64::try_from(step.clamp(0, 63)).unwrap_or(0) * 240;
+            let note =
+                yeban_model::MidiNote::new(yeban_model::EntityId::new(), start_tick, pitch, 240);
+            let op = yeban_model::Op::AddNote {
+                track_id,
+                clip_id,
+                note,
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            if port.commit_ops(now, "aether: 新建音符", vec![op]).is_err() {
+                ui.set_toast_message("新建音符被拒绝(工程未改)".into());
+            } else {
+                refresh_undo_window(&ui, &port, true);
             }
         }
     });
