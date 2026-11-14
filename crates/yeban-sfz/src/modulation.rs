@@ -1230,6 +1230,19 @@ pub fn tune_ratio_with_baked(mods: &[BakedCcMod], probe: Option<&dyn Fn(u8) -> u
     (cents / TUNE_CENTS_PER_OCTAVE).exp2()
 }
 
+/// ⭐⭐ 轨级调律偏移（B8，第四份报告）的**同一份换算**：恒定音分 → 音高比乘子。
+///
+/// 与 [`tune_ratio_with_baked`] **同一个算式**（`2 ^ (cents / 1200)`），只差输入来源：
+/// 这里是轨的 `tune_offset_cents`（[`yeban_model::TrackV3::tune_offset_cents`]），
+/// 那里是 CC 调制求和。`0.0` ⇒ `exp2(0)` 恰为 `1.0` ⇒ 乘它逐位不变（缺省轨不改渲染）。
+///
+/// ⚠ 消费方与 `tune` 调制**同一条**速率守卫（`rate_is_usable`）：本函数只产乘子，
+/// ⛔ 不在这里判可用性。
+#[must_use]
+pub fn tune_ratio_from_cents(cents: f32) -> f32 {
+    (cents / TUNE_CENTS_PER_OCTAVE).exp2()
+}
+
 /// 摊平表里**烘进**一条曲线的点数上限（[`BakedCurve`]）。
 ///
 /// 依据是登记语料普查：1398 个 `.sfz` 里 `_curveccN` 真正引用到的 `<curve>` 段最多

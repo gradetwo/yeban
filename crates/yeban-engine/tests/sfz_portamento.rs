@@ -153,7 +153,7 @@ fn the_pool_follows_a_slide_only_shape_to_its_target() {
     )]);
     let probe = |shape: u16, local: u64| -> f32 { schedule.cents_at(shape, local) };
     let mut pool = SfzVoicePool::new(HZ);
-    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 0);
+    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 0, 0.0);
     let out = render_probed(&mut pool, &plan, 13, Some(&probe));
     let head = frequency_of(&out[1_000..1_000 + WINDOW]);
     let middle = frequency_of(&out[12_000..12_000 + WINDOW]);
@@ -198,7 +198,7 @@ fn a_zero_cent_slide_shape_matches_the_baseline_bit_for_bit() {
     )]);
     let probe = |shape: u16, local: u64| -> f32 { schedule.cents_at(shape, local) };
     let mut pool = SfzVoicePool::new(HZ);
-    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 0);
+    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 0, 0.0);
     let out = render_probed(&mut pool, &plan, 4, Some(&probe));
     assert_bit_identical("G2 零音分滑音", &out, &baseline);
 }

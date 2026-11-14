@@ -138,7 +138,7 @@ fn a_constant_100_cent_bend_raises_the_sampler_pitch_by_100_cents() {
     };
     let mut pool = SfzVoicePool::new(HZ);
     // 形状下标故意用 5（不是 0）：钉住"触发时给的下标原样到达探针"。
-    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 5);
+    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 5, 0.0);
     let out = render_probed(&mut pool, &plan, 4, Some(&probe));
     let measured = frequency_of(&out[2 * BLOCK..2 * BLOCK + WINDOW]);
     println!("[sfz-bend/P1] +100 cents 实测 {measured:.2} Hz（期望 466.16）");
@@ -157,7 +157,7 @@ fn a_ramp_bend_is_followed_through_the_middle_of_the_note() {
     // 探针即"曲线本身"：局部样本 → 线性 0..1200 cents（1 秒走完，之后钳住）。
     let probe = |_shape: u16, local: u64| -> f32 { ((local as f32 / HZ) * 1200.0).min(1200.0) };
     let mut pool = SfzVoicePool::new(HZ);
-    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 2);
+    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 2, 0.0);
     let out = render_probed(&mut pool, &plan, 13, Some(&probe));
     let head = frequency_of(&out[0..WINDOW]);
     let middle = frequency_of(&out[6 * BLOCK..6 * BLOCK + WINDOW]);
@@ -201,7 +201,17 @@ fn the_sentinel_shape_never_calls_the_probe_and_matches_the_baseline_bit_for_bit
     };
     let mut pool = SfzVoicePool::new(HZ);
     // 起始帧故意给非零（12345）：哨兵形状下它**从不被读**，输出仍须逐位相同。
-    pool.trigger_note_with_pitch(&plan, 60, 127, 12_345, u64::MAX, 1.0, None, NO_PITCH_SHAPE);
+    pool.trigger_note_with_pitch(
+        &plan,
+        60,
+        127,
+        12_345,
+        u64::MAX,
+        1.0,
+        None,
+        NO_PITCH_SHAPE,
+        0.0,
+    );
     let out = render_probed(&mut pool, &plan, 4, Some(&probe));
     assert_eq!(calls.get(), 0, "哨兵形状 ⇒ 探针一次都不许被调用");
     assert_bit_identical("P3 哨兵+探针", &out, &baseline);
@@ -217,7 +227,7 @@ fn a_zero_cent_probe_matches_the_baseline_bit_for_bit() {
 
     let probe = |_shape: u16, _local: u64| -> f32 { 0.0 };
     let mut pool = SfzVoicePool::new(HZ);
-    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 9);
+    pool.trigger_note_with_pitch(&plan, 60, 127, 0, u64::MAX, 1.0, None, 9, 0.0);
     let out = render_probed(&mut pool, &plan, 4, Some(&probe));
     assert_bit_identical("P4 零音分探针", &out, &baseline);
 }

@@ -87,6 +87,20 @@ pub enum ModelError {
         value: i32,
     },
 
+    /// 轨调律偏移越界（允许 -100..=100 音分）。
+    ///
+    /// 区间来自 [`crate::music::TRACK_TUNE_MAX_ABS_CENTS`]，与 SFZ `tune`
+    /// opcode 自己的域（`-100..=100`）对齐。
+    #[error(
+        "track tune {value} cents out of range -{}..={}",
+        crate::music::TRACK_TUNE_MAX_ABS_CENTS,
+        crate::music::TRACK_TUNE_MAX_ABS_CENTS
+    )]
+    TrackTuneOutOfRange {
+        /// 实际收到的音分偏移。
+        value: f64,
+    },
+
     /// 片段偏移越界（允许 -4800..=4800 采样，即 48 kHz 下 ±100 ms）。
     ///
     /// 区间来自 [`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`]。

@@ -592,6 +592,16 @@
         },
         {
           "required": [
+            "SetTrackTune"
+          ],
+          "properties": {
+            "SetTrackTune": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetTrackPolarity"
           ],
           "properties": {

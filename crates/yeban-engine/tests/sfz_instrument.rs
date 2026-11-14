@@ -5912,10 +5912,10 @@ fn s55_two_cc_values_change_the_envelope_by_the_specification_formula() {
         let probe = move |_: u8| cc;
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), 0.0, &mut offline, HZ)
             .expect("离线渲染");
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut flat);
         assert_eq!(written_offline, FRAMES, "离线整段写满");
         assert_eq!(written_flat, FRAMES, "摊平整段写满");
         // ⭐ 两条离线路走**同一份**求值（`ampeg_value_with_baked`）⇒ 必须逐位相同。
@@ -6026,7 +6026,7 @@ fn s56_without_a_probe_the_readings_are_bit_identical_and_the_fingerprints_hold(
 
     // ---- ② 无探针 ⇒ 逐位不变（新入口 vs 旧入口）----
     let mut probe_none = vec![0.0f32; BLOCK];
-    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, &mut probe_none);
+    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut probe_none);
     assert_eq!(none_frames, legacy_frames);
     assert_eq!(
         bits(&legacy_block),
@@ -6043,7 +6043,7 @@ fn s56_without_a_probe_the_readings_are_bit_identical_and_the_fingerprints_hold(
         .render_note_into(&sample, 60, 127, &mut offline_legacy, 48_000.0)
         .expect("离线旧入口");
     instrument
-        .render_note_into_with_cc(&sample, 60, 127, None, &mut offline_none, 48_000.0)
+        .render_note_into_with_cc(&sample, 60, 127, None, 0.0, &mut offline_none, 48_000.0)
         .expect("离线新入口");
     assert_eq!(
         bits(&offline_legacy),
@@ -6084,7 +6084,7 @@ fn s57_the_fixture_can_actually_show_the_difference() {
         let probe = move |_: u8| cc;
         let mut out = vec![0.0f32; FRAMES];
         instrument
-            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut out, HZ)
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), 0.0, &mut out, HZ)
             .expect("渲染");
         measured_attack_frames(&out)
     };
@@ -6381,10 +6381,10 @@ fn s60_two_velocities_change_the_envelope_by_the_specification_formula() {
     for (index, velocity) in [1u8, 127].into_iter().enumerate() {
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, velocity, None, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, velocity, None, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, velocity, None, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, velocity, None, 0.0, &mut flat);
         assert_eq!(written_offline, FRAMES, "离线整段写满");
         assert_eq!(written_flat, FRAMES, "摊平整段写满");
         // ⭐ 两条离线路走**同一份**求值（`ampeg_value_with_baked_and_vel2`）⇒ 必须逐位相同。
@@ -6471,11 +6471,11 @@ fn s61_the_realtime_path_matches_the_flat_path_bit_for_bit_at_the_same_velocity(
         // ① 离线
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, velocity, None, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, velocity, None, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         // ② 摊平表
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, velocity, None, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, velocity, None, 0.0, &mut flat);
         // ③ ⭐ 实时池（逐声部力度就是本函数的 `velocity` 参数）
         let mut pool = SfzVoicePool::new(HZ);
         let created = pool.trigger_note(&plan, 60, velocity, u64::MAX, 1.0, None);
@@ -6555,7 +6555,7 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let measure = |text: &str, velocity: u8| -> (usize, Vec<f32>) {
         let plan = prepare_with(text, &sample);
         let mut out = vec![0.0f32; FRAMES];
-        plan.render_block_into_with_cc(60, velocity, None, &mut out);
+        plan.render_block_into_with_cc(60, velocity, None, 0.0, &mut out);
         (measured_attack_frames(&out), out)
     };
     let with = [measure(WITH_MOD, 1), measure(WITH_MOD, 127)];
@@ -6641,7 +6641,7 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
 
     // ---- ④ 无 `vel2` 的**新入口**与旧入口逐位相同（缺省 ⇒ 与接线前逐位相同）----
     let mut probe_none = vec![0.0f32; BLOCK];
-    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, &mut probe_none);
+    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut probe_none);
     assert_eq!(none_frames, legacy_frames);
     assert_eq!(
         bits(&legacy_block),
@@ -6825,11 +6825,11 @@ fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
         // ① 离线（`SfzInstrument` 的一次性渲染）
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         // ② 摊平表（`PreparedSfz` 的一次性渲染）
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut flat);
         // ③ ⭐ 实时声部池（本单接线的那条路）
         let mut pool = SfzVoicePool::new(HZ);
         assert_eq!(
@@ -6943,7 +6943,7 @@ fn s65_the_new_entry_points_leave_the_three_load_bearing_fingerprints_untouched(
     let mut legacy_block = vec![0.0f32; BLOCK];
     let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
     let mut probe_none = vec![0.0f32; BLOCK];
-    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, &mut probe_none);
+    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut probe_none);
     assert_eq!(none_frames, legacy_frames);
     assert_eq!(
         bits(&legacy_block),
@@ -7105,7 +7105,7 @@ fn s67_the_cc_axis_fade_follows_the_specification_formula_on_the_offline_path() 
             let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
             let mut out = vec![0.0f32; FRAMES];
             let written = instrument
-                .render_note_into_with_cc(&sample, 60, VELOCITY, Some(&probe), &mut out, HZ)
+                .render_note_into_with_cc(&sample, 60, VELOCITY, Some(&probe), 0.0, &mut out, HZ)
                 .expect("离线渲染");
             assert_eq!(written, FRAMES);
             let want = expected_cc_fade_in(value, HIGH, power);
@@ -7141,7 +7141,7 @@ fn s67_the_cc_axis_fade_follows_the_specification_formula_on_the_offline_path() 
         let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
         let mut out = vec![0.0f32; FRAMES];
         power
-            .render_note_into_with_cc(&sample, 60, VELOCITY, Some(&probe), &mut out, HZ)
+            .render_note_into_with_cc(&sample, 60, VELOCITY, Some(&probe), 0.0, &mut out, HZ)
             .expect("离线渲染");
         out[0]
     };
@@ -7202,11 +7202,11 @@ fn s68_the_three_paths_agree_bit_for_bit_at_the_same_cc_on_the_crossfade_axis() 
         // ① 离线
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         // ② 摊平表
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut flat);
         // ③ 实时声部池
         // ⭐ `#109`：`trigger_note` 现在**也**收 `cc`；本夹具**没有** CC 门控
         // ⇒ 门控一项都不查，声部数与 `cc = None` 时**同一个**（下面三条路逐位相同
@@ -7333,7 +7333,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
             None => None,
         };
         let mut out = vec![0.0f32; FRAMES];
-        bare.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut out);
+        bare.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut out);
         out
     };
     let (bare_none, bare_a, bare_b) = (
@@ -7361,7 +7361,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let render_one_line = |value: u8| -> Vec<f32> {
         let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
         let mut out = vec![0.0f32; FRAMES];
-        one_line.render_block_into_with_cc(60, VELOCITY, Some(&probe), &mut out);
+        one_line.render_block_into_with_cc(60, VELOCITY, Some(&probe), 0.0, &mut out);
         out
     };
     let (out_low, out_high) = (render_one_line(64), render_one_line(127));
@@ -7379,7 +7379,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let render_removed = |value: u8| -> Vec<f32> {
         let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
         let mut out = vec![0.0f32; FRAMES];
-        removed.render_block_into_with_cc(60, VELOCITY, Some(&probe), &mut out);
+        removed.render_block_into_with_cc(60, VELOCITY, Some(&probe), 0.0, &mut out);
         out
     };
     assert_eq!(
@@ -7393,7 +7393,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let render_no_locc = |value: u8| -> Vec<f32> {
         let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
         let mut out = vec![0.0f32; FRAMES];
-        no_locc.render_block_into_with_cc(60, VELOCITY, Some(&probe), &mut out);
+        no_locc.render_block_into_with_cc(60, VELOCITY, Some(&probe), 0.0, &mut out);
         out
     };
     let (only_hicc_a, only_hicc_b) = (render_no_locc(25), render_no_locc(100));
@@ -7446,7 +7446,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     }
     let broadcast = prepare(TWO_MATCH_ONE_MISS);
     let mut block = vec![0.0f32; BLOCK];
-    broadcast.render_block_into_with_cc(60, 127, None, &mut block);
+    broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut block);
     let legacy = fnv1a_64(&block);
     println!(
         "[engine-sfz/S69] S33／S14 广播路径：指纹 = 0x{legacy:016x}\
@@ -7525,7 +7525,7 @@ fn s76_the_key_and_velocity_axes_are_undisturbed_by_the_cc_geometry() {
     // ⭐ 渲染层面的同一件事：带 CC 的区域在 `cc = None` 时与不带 CC 的**逐位相同**。
     let render_flat = |plan: &PreparedSfz| -> Vec<f32> {
         let mut out = vec![0.0f32; BLOCK];
-        plan.render_block_into_with_cc(60, 100, None, &mut out);
+        plan.render_block_into_with_cc(60, 100, None, 0.0, &mut out);
         out
     };
     assert_eq!(
@@ -7761,11 +7761,11 @@ fn s81_the_cc_gate_is_live_on_all_three_paths() {
         // ① 离线
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         // ② 摊平表
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut flat);
         // ③ 实时
         let (voices, realtime, _) = render(value, FRAMES);
         assert_eq!(
@@ -7861,7 +7861,7 @@ fn s82_removing_the_gate_lines_makes_the_two_cc_values_bit_identical() {
     }
     let broadcast = prepare(TWO_MATCH_ONE_MISS);
     let mut legacy = vec![0.0f32; BLOCK];
-    broadcast.render_block_into_with_cc(60, 127, None, &mut legacy);
+    broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut legacy);
     println!(
         "[engine-sfz/S82] S82 → S33／S14 广播路径：指纹 = 0x{:016x}（承重 = 0x{:016x}）",
         fnv1a_64(&legacy),
@@ -8486,7 +8486,7 @@ fn s87_without_set_cc_the_seeding_moves_no_byte() {
     }
     let broadcast = prepare(TWO_MATCH_ONE_MISS);
     let mut legacy = vec![0.0f32; BLOCK];
-    broadcast.render_block_into_with_cc(60, 127, None, &mut legacy);
+    broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut legacy);
     println!(
         "[engine-sfz/S87] S87 → S33／S14 广播路径：指纹 = 0x{:016x}（承重 = 0x{:016x}）",
         fnv1a_64(&legacy),
@@ -8532,11 +8532,11 @@ fn s88_the_three_paths_agree_with_the_probe_read_back_from_the_seeded_session_ta
     // ① 离线
     let mut offline = vec![0.0f32; FRAMES];
     let written_offline = instrument
-        .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+        .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, 0.0, &mut offline, HZ)
         .expect("离线渲染");
     // ② 摊平
     let mut flat = vec![0.0f32; FRAMES];
-    let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+    let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut flat);
     // ③ 实时（声部池）
     let mut pool = SfzVoicePool::new(HZ);
     let voices = pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, cc_arg);
@@ -8562,7 +8562,15 @@ fn s88_the_three_paths_agree_with_the_probe_read_back_from_the_seeded_session_ta
     let closed_arg: Option<&dyn Fn(u8) -> u8> = Some(&closed);
     let mut closed_offline = vec![0.0f32; FRAMES];
     instrument
-        .render_note_into_with_cc(&sample, 60, VELOCITY, closed_arg, &mut closed_offline, HZ)
+        .render_note_into_with_cc(
+            &sample,
+            60,
+            VELOCITY,
+            closed_arg,
+            0.0,
+            &mut closed_offline,
+            HZ,
+        )
         .expect("离线渲染");
     assert_eq!(nonzero_frames(&closed_offline), 0);
     assert_ne!(
@@ -8702,8 +8710,8 @@ fn s90_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let arg_0: Option<&dyn Fn(u8) -> u8> = Some(&blind_probe_0);
     let mut out_64 = vec![0.0f32; BLOCK];
     let mut out_0 = vec![0.0f32; BLOCK];
-    blind_64.render_block_into_with_cc(60, 100, arg_64, &mut out_64);
-    blind_0.render_block_into_with_cc(60, 100, arg_0, &mut out_0);
+    blind_64.render_block_into_with_cc(60, 100, arg_64, 0.0, &mut out_64);
+    blind_0.render_block_into_with_cc(60, 100, arg_0, 0.0, &mut out_0);
     println!(
         "[engine-sfz/S90] CC-blind 区域：初值 64 ⇒ 0x{:016x}（非零 {}）／初值 0 ⇒ 0x{:016x}\
          （非零 {}）",
@@ -8731,8 +8739,8 @@ fn s90_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     let gate_arg_0: Option<&dyn Fn(u8) -> u8> = Some(&gate_probe_0);
     let mut gate_out_64 = vec![0.0f32; BLOCK];
     let mut gate_out_0 = vec![0.0f32; BLOCK];
-    gate_64.render_block_into_with_cc(60, 100, gate_arg_64, &mut gate_out_64);
-    gate_0.render_block_into_with_cc(60, 100, gate_arg_0, &mut gate_out_0);
+    gate_64.render_block_into_with_cc(60, 100, gate_arg_64, 0.0, &mut gate_out_64);
+    gate_0.render_block_into_with_cc(60, 100, gate_arg_0, 0.0, &mut gate_out_0);
     assert_ne!(
         bits(&gate_out_64),
         bits(&gate_out_0),
@@ -8769,7 +8777,7 @@ fn s90_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     }
     let broadcast = prepare(TWO_MATCH_ONE_MISS);
     let mut legacy = vec![0.0f32; BLOCK];
-    broadcast.render_block_into_with_cc(60, 127, None, &mut legacy);
+    broadcast.render_block_into_with_cc(60, 127, None, 0.0, &mut legacy);
     let legacy_hash = fnv1a_64(&legacy);
     println!(
         "[engine-sfz/S90] S90 → S33／S14 广播路径：指纹 = 0x{legacy_hash:016x}\
@@ -10233,7 +10241,7 @@ fn s101_amplitude_parses_its_domain_errs_are_loud_and_absence_is_a_no_op() {
     let mut without = vec![0.0f32; BLOCK];
     let mut with_cc = vec![0.0f32; BLOCK];
     let written = plan.render_block_into(60, 127, &mut without);
-    let written_cc = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut with_cc);
+    let written_cc = plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut with_cc);
     assert_eq!(written, written_cc);
     assert_eq!(
         bits(&without),
@@ -10249,7 +10257,15 @@ fn s101_amplitude_parses_its_domain_errs_are_loud_and_absence_is_a_no_op() {
         .render_note_into(&sample, 60, 127, &mut offline_none, 48_000.0)
         .expect("离线旧入口");
     instrument
-        .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut offline_cc, 48_000.0)
+        .render_note_into_with_cc(
+            &sample,
+            60,
+            127,
+            Some(&probe),
+            0.0,
+            &mut offline_cc,
+            48_000.0,
+        )
         .expect("离线新入口");
     assert_eq!(
         bits(&offline_none),
@@ -10284,7 +10300,7 @@ fn s102_amplitude_really_modulates_and_matches_the_formula() {
         let gain = plan.regions()[0].amplitude_gain_with_cc(Some(&probe));
         let mut out = vec![0.0f32; FRAMES];
         let written = instrument
-            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut out, HZ)
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), 0.0, &mut out, HZ)
             .expect("离线渲染");
         assert_eq!(written, FRAMES);
         assert_eq!(
@@ -10339,10 +10355,10 @@ fn s103_the_three_paths_agree_bit_for_bit_for_amplitude() {
         let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut flat);
         let mut pool = SfzVoicePool::new(HZ);
         assert_eq!(
             pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, None),
@@ -10407,10 +10423,10 @@ fn s104_the_curve_shapes_the_controller_input_and_an_unresolved_curve_contribute
                 .expect("解析");
         let mut offline = vec![0.0f32; FRAMES];
         instrument
-            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), 0.0, &mut offline, HZ)
             .expect("离线");
         let mut flat = vec![0.0f32; FRAMES];
-        plan.render_block_into_with_cc(60, 127, Some(&probe), &mut flat);
+        plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut flat);
         assert_eq!(
             bits(&offline),
             bits(&flat),
@@ -10497,7 +10513,7 @@ fn s105_the_reverse_leg_the_three_fingerprints_and_ampeg_are_untouched() {
     let render = |plan: &PreparedSfz, cc: u8| -> Vec<u32> {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
         let mut out = vec![0.0f32; BLOCK];
-        plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         bits(&out)
     };
     let mod_zero = render(&with_mod, 0);
@@ -10880,7 +10896,7 @@ fn s107_tune_parses_its_domain_errs_are_loud_and_absence_is_a_no_op() {
             "⭐ cc = {cc_value}：空表 ⇒ 乘子逐位是 1.0（`0.0f32.exp2()`）"
         );
         let mut out = vec![0.0f32; BLOCK];
-        plain.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plain.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         arms.push(bits(&out));
     }
     assert!(
@@ -10926,7 +10942,7 @@ fn s108_tune_really_shifts_the_rate_and_matches_the_formula() {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
         let ratio = plan.regions()[0].tune_ratio_with_cc(Some(&probe));
         let mut out = vec![0.0f32; BLOCK];
-        let written = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        let written = plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         assert_eq!(written, BLOCK);
 
         // ⭐ 逐位等于公式：`2 ^ (delta × curve0(cc) / 1200)`（`curve0(cc) == cc/127`）。
@@ -11007,10 +11023,10 @@ fn s109_the_three_paths_agree_bit_for_bit_for_tune() {
         let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
         let mut offline = vec![0.0f32; FRAMES];
         let written_offline = instrument
-            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, 0.0, &mut offline, HZ)
             .expect("离线渲染");
         let mut flat = vec![0.0f32; FRAMES];
-        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, 0.0, &mut flat);
         let mut pool = SfzVoicePool::new(HZ);
         assert_eq!(
             pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, None),
@@ -11123,7 +11139,7 @@ fn s110_the_reverse_leg_the_three_fingerprints_and_the_existing_families() {
     let render = |plan: &PreparedSfz, cc: u8| -> Vec<u32> {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
         let mut out = vec![0.0f32; BLOCK];
-        plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         bits(&out)
     };
     let mod_zero = render(&with_mod, 0);
@@ -11380,10 +11396,10 @@ fn tune_three_paths(
     let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
     let mut offline = vec![0.0f32; FRAMES];
     let written_offline = instrument
-        .render_note_into_with_cc(sample, 60, 127, cc_arg, &mut offline, 48_000.0)
+        .render_note_into_with_cc(sample, 60, 127, cc_arg, 0.0, &mut offline, 48_000.0)
         .expect("离线渲染");
     let mut flat = vec![0.0f32; FRAMES];
-    let written_flat = plan.render_block_into_with_cc(60, 127, cc_arg, &mut flat);
+    let written_flat = plan.render_block_into_with_cc(60, 127, cc_arg, 0.0, &mut flat);
     let mut pool = SfzVoicePool::new(48_000.0);
     assert_eq!(
         pool.trigger_note(plan, 60, 127, u64::MAX, 1.0, None),
@@ -12355,7 +12371,7 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
             "⭐ cc = {cc_value}：空表 ⇒ 乘子逐位是 1.0"
         );
         let mut out = vec![0.0f32; BLOCK];
-        plain.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plain.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         absent_arms.push(bits(&out));
     }
     assert!(
@@ -12372,7 +12388,7 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
         let ratio = plan.regions()[0].tune_ratio_with_cc(Some(&probe));
         let mut out = vec![0.0f32; BLOCK];
-        let written = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        let written = plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         assert_eq!(written, BLOCK);
         let cents = mods[0].delta * mods[0].curve.value_at(f32::from(cc));
         let want = (cents / 1200.0).exp2();
@@ -12638,7 +12654,7 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
     let render = |plan: &PreparedSfz, cc: u8| -> Vec<u32> {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
         let mut out = vec![0.0f32; BLOCK];
-        plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         bits(&out)
     };
     assert_ne!(
@@ -13383,7 +13399,7 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
             "⭐ cc = {cc_value}：空表 ⇒ 乘子逐位是 1.0"
         );
         let mut out = vec![0.0f32; BLOCK];
-        plain.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plain.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         absent_arms.push(bits(&out));
     }
     assert!(
@@ -13400,7 +13416,7 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
         let ratio = plan.regions()[0].volume_ratio_with_cc(Some(&probe));
         let mut out = vec![0.0f32; BLOCK];
-        let written = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        let written = plan.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         assert_eq!(written, BLOCK);
         let decibels = mods[0].delta * mods[0].curve.value_at(f32::from(cc));
         let want = (decibels * std::f32::consts::LOG2_10 / 20.0).exp2();
@@ -13557,8 +13573,8 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc_value } else { 0 } };
         let mut a = vec![0.0f32; BLOCK];
         let mut b = vec![0.0f32; BLOCK];
-        with_line.render_block_into_with_cc(60, 127, Some(&probe), &mut a);
-        without_line.render_block_into_with_cc(60, 127, Some(&probe), &mut b);
+        with_line.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut a);
+        without_line.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut b);
         with_arms.push(bits(&a));
         without_arms.push(bits(&b));
     }
@@ -15556,7 +15572,7 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
             "⭐ cc = {cc_value}：空表 ⇒ 乘子逐位是 1.0"
         );
         let mut out = vec![0.0f32; BLOCK];
-        plain.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        plain.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut out);
         absent_arms.push(bits(&out));
     }
     assert!(
@@ -15699,8 +15715,8 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
         let probe = |controller: u8| -> u8 { if controller == 1 { cc_value } else { 0 } };
         let mut a = vec![0.0f32; BLOCK];
         let mut b = vec![0.0f32; BLOCK];
-        with_line.render_block_into_with_cc(60, 127, Some(&probe), &mut a);
-        without_line.render_block_into_with_cc(60, 127, Some(&probe), &mut b);
+        with_line.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut a);
+        without_line.render_block_into_with_cc(60, 127, Some(&probe), 0.0, &mut b);
         with_arms.push(bits(&a));
         without_arms.push(bits(&b));
     }

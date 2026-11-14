@@ -4571,7 +4571,7 @@ fn prepared_sfz_amplitude_callback_path_allocates_nothing() {
             flat_out.fill(0.0);
             rt_out.fill(0.0);
             if block % 8 == 0 {
-                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
                 let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
             }
             pool.render_into_with_cc(
@@ -4585,7 +4585,7 @@ fn prepared_sfz_amplitude_callback_path_allocates_nothing() {
     // ⚠ 见证在**窗口外**数（同 `[sfz-reverse]` 的口径）。
     let mut nonzero = 0usize;
     flat_out.fill(0.0);
-    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
     nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
     println!(
         "[sfz-amplitude] 回调窗口：allocations={} deallocations={} lock_blocking={} io_ops={}",
@@ -4648,7 +4648,7 @@ fn prepared_sfz_tune_callback_path_allocates_nothing() {
             flat_out.fill(0.0);
             rt_out.fill(0.0);
             if block % 8 == 0 {
-                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
                 let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
             }
             pool.render_into_with_cc(
@@ -4662,7 +4662,7 @@ fn prepared_sfz_tune_callback_path_allocates_nothing() {
     // ⚠ 见证在**窗口外**数（同 `[sfz-reverse]` 的口径）。
     let mut nonzero = 0usize;
     flat_out.fill(0.0);
-    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
     nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
     // ⭐ 有牙：同一个探针下乘子必须**真的不是 1.0**（否则本场景测的是一条死支）。
     let ratio = prepared.regions()[0].tune_ratio_with_cc(cc_arg);
@@ -4733,7 +4733,7 @@ fn prepared_sfz_pitch_callback_path_allocates_nothing() {
             flat_out.fill(0.0);
             rt_out.fill(0.0);
             if block % 8 == 0 {
-                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
                 let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
             }
             pool.render_into_with_cc(
@@ -4747,7 +4747,7 @@ fn prepared_sfz_pitch_callback_path_allocates_nothing() {
     // ⚠ 见证在**窗口外**数（同 `[sfz-reverse]` 的口径）。
     let mut nonzero = 0usize;
     flat_out.fill(0.0);
-    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
     nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
     // ⭐ 有牙：同一个探针下乘子必须**真的不是 1.0**（否则本场景测的是一条死支）。
     let ratio = prepared.regions()[0].tune_ratio_with_cc(cc_arg);
@@ -4818,7 +4818,7 @@ fn prepared_sfz_volume_callback_path_allocates_nothing() {
             flat_out.fill(0.0);
             rt_out.fill(0.0);
             if block % 8 == 0 {
-                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
                 let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
             }
             pool.render_into_with_cc(
@@ -4832,7 +4832,7 @@ fn prepared_sfz_volume_callback_path_allocates_nothing() {
     // ⚠ 见证在**窗口外**数（同 `[sfz-pitch]` 的口径）。
     let mut nonzero = 0usize;
     flat_out.fill(0.0);
-    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
     nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
     // ⭐ 有牙：同一个探针下乘子必须**真的不是 1.0**（否则本场景测的是一条死支）。
     let ratio = prepared.regions()[0].volume_ratio_with_cc(cc_arg);
@@ -4904,7 +4904,7 @@ fn prepared_sfz_gain_callback_path_allocates_nothing() {
             flat_out.fill(0.0);
             rt_out.fill(0.0);
             if block % 8 == 0 {
-                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
                 let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
             }
             pool.render_into_with_cc(
@@ -4918,7 +4918,7 @@ fn prepared_sfz_gain_callback_path_allocates_nothing() {
     // ⚠ 见证在**窗口外**数（同 `[sfz-volume]` 的口径）。
     let mut nonzero = 0usize;
     flat_out.fill(0.0);
-    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, 0.0, &mut flat_out);
     nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
     // ⭐ 有牙：同一个探针下乘子必须**真的不是 1.0**（否则本场景测的是一条死支）。
     let ratio = prepared.regions()[0].volume_ratio_with_cc(cc_arg);
