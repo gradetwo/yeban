@@ -330,6 +330,10 @@ fn a_placed_audio_clip_is_audible_inside_its_frame_window_and_silent_outside() {
         exported.contains("audio-clips(rendered=1"),
         "报告行必须如实登记渲染了 1 个音频摆放: {exported}"
     );
+    // 界（R115/R118）：`.all(` 遍历的 `lines` 必须非空，否则空集恒真、什么都没测。
+    // 上方 `.find(...).expect(...)` 已保证至少有一行 exported-wav，但守卫只认显式规模界，
+    // 故在此明文钉住。
+    assert!(!lines.is_empty(), "CLI 至少输出一行报告行: {lines:?}");
     // ⭐ 判据（CLI 跳过明细出口）：一条跳过都没有 ⇒ ⛔ 不许多出 `audio-clip-skipped:` 行
     //    （`--export-wav` 的既有 stdout 逐字不变是既有契约）。
     assert!(
