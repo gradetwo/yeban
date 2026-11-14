@@ -9976,6 +9976,11 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
     let bare_warnings = bare_result["data"]["warnings"]
         .as_array()
         .expect("warnings 必须是数组");
+    assert_eq!(
+        bare_warnings.len(),
+        0,
+        "全入图对照工程应零预警（有界断言：集合规模已钉死，下一行的 .all 不真空）"
+    );
     assert!(
         bare_warnings
             .iter()

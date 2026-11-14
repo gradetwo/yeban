@@ -23080,6 +23080,10 @@ mod tests {
             }),
             "必须有一条新轨 → 主总线的 TrackToBus 边"
         );
+        assert!(
+            !project.routing_graph.edges.is_empty(),
+            "自动接线必须先建边，否则 ⑤ 的“无孤儿边”断言是真空通过"
+        );
 
         // ---- ⑤ **撤销一步**必须恢复原状（逐字节） ----
         compiled[0].apply_inverse(&mut project).expect("逆操作");

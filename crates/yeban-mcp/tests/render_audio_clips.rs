@@ -4261,6 +4261,11 @@ fn an_add_track_audio_track_renders_after_import_without_manual_routing() {
         .expect("新建音频轨必须在 sources 里");
     assert_eq!(source["audioClips"], 1, "{source}");
     let warnings = data["warnings"].as_array().expect("warnings");
+    assert_eq!(
+        warnings.len(),
+        0,
+        "已自动接线的新轨渲染应零预警（有界断言：集合规模已钉死，下一行的 .all 不真空）"
+    );
     assert!(
         warnings
             .iter()
