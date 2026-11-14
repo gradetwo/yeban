@@ -8,12 +8,14 @@
 //! 片段）走**完全相同的链路**。⛔ 这不是跳过：两种输入下每一条断言都真跑、真改工程、
 //! 真读回 UI 属性；区别只在工程规模。
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use slint::Model;
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
+use yeban_app::host::ProductionLoop;
 use yeban_app::open::open_project_file;
 use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
@@ -84,7 +86,15 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
     .expect("Tier-1 活窗口必须装配成功");
     let ui = live.ui();
     host::wire_mixer_edit(ui, &undo);
-    host::wire_aether_actions(ui, Rc::clone(&undo));
+    let production = ProductionLoop::start(&project, 0).expect("引擎重建");
+    let engine = production.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+    host::wire_aether_actions(
+        ui,
+        Rc::clone(&undo),
+        Rc::clone(&engine),
+        Rc::clone(&view_cell),
+    );
 
     // ① 导入：真工程投影必须注入新 UI 的结构数组（不是 .slint 里的硬编码演示轨道）。
     assert!(view.tracks.len() >= 2, "工程必须有多轨，否则判据是空绿");
