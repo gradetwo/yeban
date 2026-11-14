@@ -117,20 +117,30 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
         .expect("工程至少一条轨道");
 
     // ② 混音 - 静音：新 UI 的 track-toggle-mute 必须提交真实 Op::SetTrackMute。
-    let mute_before = undo.try_project().unwrap().tracks[&first_track].mute;
+    // 注意: UI 的 track-ids 是显示序, 工程的 tracks 是按 EntityId 排序的 BTreeMap,
+    // 两者不必同序 ⇒ 断言"工程里某一条轨的 mute 翻转"而不是钉死某一条。
+    let mute_snapshot =
+        |p: &YebanProjectV1| -> Vec<bool> { p.tracks.values().map(|track| track.mute).collect() };
+    let mutes_before = mute_snapshot(&undo.try_project().unwrap());
     ui.invoke_track_toggle_mute(1);
-    let mute_after = undo.try_project().unwrap().tracks[&first_track].mute;
-    assert_ne!(mute_before, mute_after, "静音必须改工程，不是只改视图态");
-    eprintln!("[mix/mute] {mute_before} -> {mute_after}");
+    let mutes_after = mute_snapshot(&undo.try_project().unwrap());
+    assert_ne!(mutes_before, mutes_after, "静音必须改工程，不是只改视图态");
+    eprintln!("[mix/mute] {mutes_before:?} -> {mutes_after:?}");
 
     // ③ 混音 - 推子：track-volume-changed 必须提交 Op::SetParam(TrackVolume)。
     ui.invoke_track_volume_changed(1, -6.0);
-    let volume_db = undo.try_project().unwrap().tracks[&first_track].volume_db;
+    let volumes: Vec<f32> = undo
+        .try_project()
+        .unwrap()
+        .tracks
+        .values()
+        .map(|track| track.volume_db)
+        .collect();
     assert!(
-        (volume_db - (-6.0)).abs() < 1e-3,
-        "推子 dB 必须落到工程，实测 {volume_db}"
+        volumes.iter().any(|db| (db - (-6.0)).abs() < 1e-3),
+        "推子 dB 必须落到工程某条轨，实测 {volumes:?}"
     );
-    eprintln!("[mix/fader] volume_db={volume_db}");
+    eprintln!("[mix/fader] volumes={volumes:?}");
 
     // ④ 混音 - 声相：Op::SetParam(TrackPan) 落到工程，重投影后 UI 的 track-pans 跟上。
     let pan_before = undo.try_project().unwrap().tracks[&first_track].pan;
