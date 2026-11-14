@@ -99,6 +99,15 @@ pub struct MidiExportTrack {
     /// 通道取本轨的 `channel`；空表 ⇒ **一个 CC 事件都不写** ⇒ 没有自动化泳道的工程
     /// 导出字节与改动前逐位相同。
     pub control_changes: Vec<ExportControlChange>,
+    /// ⭐ 第五份报告 C-2：本轨弯音范围（半音，2..=24）。
+    ///
+    /// 2 = SMF 通行缺省（ADR-0014 D3 的换算逐位不变，⛔ 不写 RPN）。
+    /// 大于 2 只由**映射层**在轨内有 `slide` 折入的宽弯音时给出
+    /// （`yeban-midi::export` 按折入曲线的最大 |音分| 算）；编码器据此在
+    /// 用到弯音的通道 tick 0 写 RPN 弯音灵敏度并按新范围换算。
+    /// 纯 `pitch_bend_curve` 内容**不**抬范围 —— 它在 ±2 内钳位的既有
+    /// 口径（D3 判据）不因本字段改变。
+    pub bend_range_semitones: u8,
 }
 
 /// tempo map 里的一条记录。
@@ -402,12 +411,28 @@ enum RawEvent {
         tick: u64,
         text: String,
     },
-    /// ⭐ ADR-0014 D3：通道弯音（`E0`）。`cents` 是音分（±2 半音的默认弯音范围），
-    /// 由音符的 `pitch_bend_curve` 逐点展开；同一通道内的先后由 tick 全序决定。
+    /// ⭐ ADR-0014 D3：通道弯音（`E0`）。`cents` 是音分；`range_semitones` 是
+    /// 本轨的弯音范围（半音）—— 编码时按它换算 14 位值（缺省 2 = SMF 通行
+    /// 缺省，1 音分 = 8192/200）。
+    ///
+    /// ⭐ 第五份报告 C-2：范围不再恒为 2 —— 轨内弯音（原曲线或 `slide` 折入
+    /// 的曲线）超过 ±2 半音时，[`track_events`] 先在本通道 tick 0 放一条
+    /// [`Self::BendRange`]（展开成 RPN 灵敏度四条 CC），再按新范围换算；
+    /// 范围 ≤ 2 半音的轨不写 RPN、换算与改前逐位相同。
     PitchBend {
         tick: u64,
         channel: u8,
         cents: i16,
+        range_semitones: u8,
+    },
+    /// ⭐ 第五份报告 C-2：弯音范围设定（RPN 弯音灵敏度）。只由
+    /// [`track_events`] 在排序后**就地展开**成四条 [`Self::ControlChange`]
+    /// （CC 101=0、CC 100=0、CC 6=`semitones`、CC 38=0），⛔ 不进编码器；
+    /// 排序键让它落在同通道弯音之前（同为 rank 2、组内序 0）。
+    BendRange {
+        tick: u64,
+        channel: u8,
+        semitones: u8,
     },
     /// ⭐ ADR-0015 D3/D4：控制器改变（`B0`）。`controller` / `value` 都是 7 位线值
     /// （0..=127），由泳道换算而来（CC 7 = 音量、CC 10 = 声相、其余 = `MidiCc`
@@ -453,6 +478,7 @@ impl RawEvent {
             | Self::NoteOff { tick, .. }
             | Self::Lyric { tick, .. }
             | Self::PitchBend { tick, .. }
+            | Self::BendRange { tick, .. }
             | Self::ControlChange { tick, .. }
             | Self::Tempo { tick, .. }
             | Self::TimeSignature { tick, .. }
@@ -492,11 +518,16 @@ impl RawEvent {
             Self::PitchBend { channel, cents, .. } => (
                 2,
                 u32::from(*channel),
-                0,
+                // 组内序 1：同 tick 同通道的 `BendRange`（组内序 0）先落盘，
+                // 范围先于用它的弯音（第五份报告 C-2）。
+                1,
                 // 平移到非负：i16::MIN ⇒ 0，保持音分大小的升序全序。
                 (i32::from(*cents) - i32::from(i16::MIN)) as u32,
                 "",
             ),
+            Self::BendRange {
+                channel, semitones, ..
+            } => (2, u32::from(*channel), 0, u32::from(*semitones), ""),
             Self::ControlChange {
                 channel,
                 controller,
@@ -622,6 +653,30 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
             value: cc.value,
         });
     }
+    // ⭐ 第五份报告 C-2：弯音范围由映射层经 `track.bend_range_semitones`
+    // 给出（只为 `slide` 折入的宽弯音抬高，见该字段）。范围 ≤ 2 时不写
+    // RPN、换算逐位旧；超过时先在每个用到弯音的通道 tick 0 放
+    // `BendRange`（排序后展开成 RPN 四条 CC），全部弯音按新范围换算。
+    let range_semitones = track.bend_range_semitones.clamp(2, 24);
+    if range_semitones > 2 {
+        let mut channels: Vec<u8> = Vec::new();
+        for note in &track.notes {
+            if !note.pitch_bend_curve.is_empty() {
+                let channel = note.channel.unwrap_or(track.channel);
+                if !channels.contains(&channel) {
+                    channels.push(channel);
+                }
+            }
+        }
+        channels.sort_unstable();
+        for channel in channels {
+            events.push(RawEvent::BendRange {
+                tick: 0,
+                channel,
+                semitones: range_semitones,
+            });
+        }
+    }
     for note in &track.notes {
         let channel = note.channel.unwrap_or(track.channel);
         validate_note(note, channel)?;
@@ -644,6 +699,7 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
                     tick: start.saturating_add(rel_tick),
                     channel,
                     cents,
+                    range_semitones,
                 });
             }
             if last_cents != 0 {
@@ -651,6 +707,7 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
                     tick: end,
                     channel,
                     cents: 0,
+                    range_semitones,
                 });
             }
         }
@@ -667,7 +724,43 @@ fn track_events(track: &MidiExportTrack) -> Result<Vec<RawEvent>, MidiError> {
         });
     }
     sort_events(&mut events);
+    // ⭐ 第五份报告 C-2：`BendRange` 在排序后就地展开成 RPN 四条 CC ——
+    // 展开继承它排好的位置（同通道弯音之前），四条的相对顺序即 RPN 协议
+    // 顺序（101 → 100 → 6 → 38）。
+    expand_bend_ranges(&mut events);
     Ok(events)
+}
+
+/// 把 [`RawEvent::BendRange`] 就地展开成 RPN 弯音灵敏度的四条 CC
+/// （CC 101=0、CC 100=0、CC 6=半音数、CC 38=0），其余事件原样保留。
+fn expand_bend_ranges(events: &mut Vec<RawEvent>) {
+    if !events
+        .iter()
+        .any(|event| matches!(event, RawEvent::BendRange { .. }))
+    {
+        return;
+    }
+    let mut expanded = Vec::with_capacity(events.len() + 3);
+    for event in events.drain(..) {
+        match event {
+            RawEvent::BendRange {
+                tick,
+                channel,
+                semitones,
+            } => {
+                for (controller, value) in [(101, 0), (100, 0), (6, semitones), (38, 0)] {
+                    expanded.push(RawEvent::ControlChange {
+                        tick,
+                        channel,
+                        controller,
+                        value,
+                    });
+                }
+            }
+            other => expanded.push(other),
+        }
+    }
+    *events = expanded;
 }
 
 /// 按 `(tick, tie_break)` 全序排序 —— 导出字节因此只由内容决定。
@@ -845,13 +938,30 @@ impl MidiExport {
                         TrackEventKind::Meta(MetaMessage::Lyric(text.as_bytes()))
                     }
                     // ⭐ ADR-0014 D3：音分 ⇒ `midly` 的**居中** 14-bit 值（0 = 中心）。
-                    // ±2 半音默认范围：1 音分 = 8192/200；整除截断，越界钳位。
-                    RawEvent::PitchBend { channel, cents, .. } => TrackEventKind::Midi {
+                    // 换算按事件自带的弯音范围（半音）：范围 2 时 1 音分 = 8192/200
+                    // （与改前逐位相同）；整除截断，越界钳位。
+                    RawEvent::PitchBend {
+                        channel,
+                        cents,
+                        range_semitones,
+                        ..
+                    } => TrackEventKind::Midi {
                         channel: u4::new(*channel),
                         message: MidiMessage::PitchBend {
                             bend: PitchBend::from_int(
-                                (i32::from(*cents) * 8192 / 200).clamp(-8192, 8191) as i16,
+                                (i32::from(*cents) * 8192 / (i32::from(*range_semitones) * 100))
+                                    .clamp(-8192, 8191) as i16,
                             ),
+                        },
+                    },
+                    // ⭐ 第五份报告 C-2：`BendRange` 恒由 `track_events` 在排序后
+                    // 展开成四条 CC，⛔ 到不了编码器；本臂只是穷尽匹配的兜底，
+                    // 按 RPN 序列的第一条（CC 101=0）编码。
+                    RawEvent::BendRange { channel, .. } => TrackEventKind::Midi {
+                        channel: u4::new(*channel),
+                        message: MidiMessage::Controller {
+                            controller: u7::new(101),
+                            value: u7::new(0),
                         },
                     },
                     // ⭐ ADR-0015 D3：`B0` 控制器事件。两个字节都是 7 位线
@@ -1509,6 +1619,10 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                             aux_events.record(MidiAuxEventKind::PitchBend);
                             // `as_int()` 已是**居中**的 14-bit 值（-8192..=8191，0 = 中心）；
                             // SMF 弯音默认范围 ±2 半音 ⇒ 换算成音分并截断到 ±1200。
+                            // ⚠ 第五份报告 C-2 登记的缺口：本读取点**不解析 RPN
+                            // 弯音灵敏度** —— 导出侧对超 ±2 半音的轨写了 RPN 并
+                            // 按新范围换算，这类文件回读时音分会被按 ±2 压回
+                            // （往返不对称，修复另行立项，⛔ 不在本条范围）。
                             let cents =
                                 (i32::from(bend.as_int()) * 200 / 8192).clamp(-1200, 1200) as i16;
                             pitch_bends.push(ParsedPitchBend {
@@ -1745,6 +1859,7 @@ pub fn track_from_notes(
         channel,
         notes: notes.to_vec(),
         control_changes: Vec::new(),
+        bend_range_semitones: 2,
     }
 }
 
@@ -3178,6 +3293,8 @@ mod tests {
                         controller: 7,
                         value: 100,
                     }],
+
+                    bend_range_semitones: 2,
                 },
             ],
         );
@@ -3419,6 +3536,8 @@ mod tests {
                 channel: 16,
                 notes: vec![note(0, 200, 480, 100)],
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             }],
             key_signature: None,
             title: None,
@@ -3519,9 +3638,12 @@ mod tests {
                     channel: 0,
                     notes: Vec::new(),
                     control_changes: Vec::new(),
+
+                    bend_range_semitones: 2,
                 }
             ),
-            "MidiExportTrack { name: \"A\", channel: 0, notes: [], control_changes: [] }"
+            "MidiExportTrack { name: \"A\", channel: 0, notes: [], control_changes: [], \
+                bend_range_semitones: 2 }"
         );
         assert_eq!(
             format!(
@@ -3633,6 +3755,8 @@ mod tests {
                 ..MidiNote::new(note_id, 0, 60, 480)
             }],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         };
         assert!(
             with_nan() != with_nan(),
@@ -3662,6 +3786,8 @@ mod tests {
                 ..MidiNote::new(note_id, 0, 60, 480)
             }],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         };
         assert!(finite() == finite(), "有限概率 ⇒ 两份相同的轨道必须相等");
     }
@@ -3684,6 +3810,8 @@ mod tests {
                 ..MidiNote::new(note_id, 0, 60, 480)
             }],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         };
 
         // IEEE：`-0.0 == 0.0` ⇒ 两个**符号位不同**的轨道必须相等。
@@ -3711,6 +3839,8 @@ mod tests {
             channel: 0,
             notes: vec![MidiNote::new(note_id, 0, 60, 480)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         };
         assert!(none != track(0.0), "None 与 Some(0.0) 必须不等");
     }
@@ -3735,6 +3865,8 @@ mod tests {
             channel: 3,
             notes: vec![note],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         };
 
         let mut clone = original.clone();
@@ -3771,6 +3903,8 @@ mod tests {
             channel,
             notes: Vec::new(),
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         };
         let forward = MidiExport {
             format: MidiFormat::Parallel,

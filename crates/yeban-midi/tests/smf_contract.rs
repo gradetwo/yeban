@@ -433,6 +433,8 @@ fn encoder_boundaries_are_rejected_precisely() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,
@@ -459,6 +461,8 @@ fn encoder_boundaries_are_rejected_precisely() {
             channel: 0,
             notes: vec![note(beyond, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         ..base.clone()
     };
@@ -477,6 +481,8 @@ fn encoder_boundaries_are_rejected_precisely() {
             channel: 16,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         ..base
     };
@@ -500,6 +506,8 @@ fn encoder_boundaries_are_rejected_precisely() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,
@@ -528,6 +536,8 @@ fn single_track_export(ppq: u16) -> MidiExport {
             channel: 0,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,
@@ -614,6 +624,8 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
                 channel: 0,
                 notes: vec![note(0, 60, 120)],
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             }],
             key_signature: None,
             title: None,
@@ -645,6 +657,8 @@ fn half_a_time_signature_is_rejected_instead_of_dropped() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,
@@ -838,6 +852,8 @@ fn a_note_at_the_end_of_the_tick_axis_is_refused_not_wrapped() {
             channel: 0,
             notes: vec![note(u64::MAX, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -923,12 +939,16 @@ fn format_zero_with_several_tracks_writes_no_track_name() {
                 channel: 0,
                 notes: vec![note(0, 60, 120)],
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             },
             MidiExportTrack {
                 name: "B".to_owned(),
                 channel: 1,
                 notes: vec![note(0, 64, 120)],
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             },
         ],
         ..single_track_export(DEFAULT_PPQ)
@@ -946,6 +966,8 @@ fn format_zero_with_several_tracks_writes_no_track_name() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -968,6 +990,8 @@ fn pitch_127_is_accepted_and_128_is_rejected() {
             channel: 0,
             notes: vec![note(0, 127, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -980,6 +1004,8 @@ fn pitch_127_is_accepted_and_128_is_rejected() {
             channel: 0,
             notes: vec![note(0, 128, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         ..single_track_export(DEFAULT_PPQ)
     };
@@ -1154,6 +1180,8 @@ fn time_signature_meta_fields_round_trip_at_their_extremes() {
             channel: 0,
             notes: vec![note(0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,
@@ -1381,6 +1409,8 @@ fn a_minimal_export_is_pinned_byte_for_byte() {
             channel: 0,
             notes: vec![note(0, 60, 480)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,
