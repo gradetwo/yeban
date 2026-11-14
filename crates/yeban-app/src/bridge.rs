@@ -746,6 +746,8 @@ pub fn timecode_for_ticks(grid: Option<TimecodeGrid>, ticks: u64) -> String {
 /// 所以一次取走一份，由本结构保证各数组长度相同。
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleNotes {
+    /// 每条音符所属的**片段池条目身份**（与其余数组同索引集；只用于作用域过滤）。
+    pub clip_ids: Vec<String>,
     /// 音符块左沿 x。
     pub positions: Vec<f32>,
     /// 音符块宽。
@@ -780,6 +782,26 @@ pub struct VisibleNotes {
 }
 
 impl VisibleNotes {
+    /// 只保留 clip_ids 落在 allowed 里的音符（作用域 = 选中轨）。
+    ///
+    /// 与 visible_notes_scoped 同一条“过滤在装数组之前”的顺序：
+    /// 调用方先用 None 取全部可见音符，再按选中轨的片段集合收窄。
+    pub fn retain_clip_ids(&mut self, allowed: &BTreeSet<&str>) {
+        let keep: Vec<usize> = (0..self.ulids.len())
+            .filter(|&index| allowed.contains(self.clip_ids[index].as_str()))
+            .collect();
+        if keep.len() == self.ulids.len() {
+            return;
+        }
+        self.clip_ids = keep.iter().map(|&i| self.clip_ids[i].clone()).collect();
+        self.positions = keep.iter().map(|&i| self.positions[i]).collect();
+        self.widths = keep.iter().map(|&i| self.widths[i]).collect();
+        self.ys = keep.iter().map(|&i| self.ys[i]).collect();
+        self.rows = keep.iter().map(|&i| self.rows[i]).collect();
+        self.ulids = keep.iter().map(|&i| self.ulids[i].clone()).collect();
+        self.velocities = keep.iter().map(|&i| self.velocities[i]).collect();
+    }
+
     /// 可见音符数（各数组长度相同，故用一个函数报告）。
     #[must_use]
     pub fn len(&self) -> usize {
@@ -4902,6 +4924,7 @@ impl ViewState {
             indices.retain(|&index| self.notes[index].clip_id.as_str() == scope);
         }
         let mut out = VisibleNotes {
+            clip_ids: Vec::with_capacity(indices.len()),
             positions: Vec::with_capacity(indices.len()),
             widths: Vec::with_capacity(indices.len()),
             ys: Vec::with_capacity(indices.len()),
@@ -4916,47 +4939,7 @@ impl ViewState {
             out.widths.push(note.width);
             out.ys.push(note.y);
             out.rows.push(note.row);
-            out.ulids.push(note.id.clone());
-            out.velocities.push(note.velocity_normalized);
-        }
-        out
-    }
-
-    /// 选中轨兜底作用域：只保留**落在该轨摆放里**的片段池条目的音符。
-    ///
-    /// 卷帘在"没有选中片段"时的默认作用域就是**当前选中的轨道** —— 旧口径是
-    /// "片段池全部音符"，多轨工程里会让用户看到别的轨的音符（报告反馈③）。
-    /// 过滤发生在裁剪之后、装数组之前，六条平行数组仍同索引集。
-    #[must_use]
-    pub fn visible_notes_on_track(
-        &self,
-        scroll_x: f32,
-        viewport_width: f32,
-        track_index: usize,
-    ) -> VisibleNotes {
-        let clip_ids: BTreeSet<&str> = self
-            .clips
-            .iter()
-            .filter(|clip| clip.track_index == track_index)
-            .map(|clip| clip.clip_id.as_str())
-            .collect();
-        let left = scroll_x.max(0.0);
-        let mut indices = self.notes_visible_in(scroll_x, viewport_width);
-        indices.retain(|&index| clip_ids.contains(self.notes[index].clip_id.as_str()));
-        let mut out = VisibleNotes {
-            positions: Vec::with_capacity(indices.len()),
-            widths: Vec::with_capacity(indices.len()),
-            ys: Vec::with_capacity(indices.len()),
-            rows: Vec::with_capacity(indices.len()),
-            ulids: Vec::with_capacity(indices.len()),
-            velocities: Vec::with_capacity(indices.len()),
-        };
-        for index in indices {
-            let note = &self.notes[index];
-            out.positions.push(note.x - left);
-            out.widths.push(note.width);
-            out.ys.push(note.y);
-            out.rows.push(note.row);
+            out.clip_ids.push(note.clip_id.clone());
             out.ulids.push(note.id.clone());
             out.velocities.push(note.velocity_normalized);
         }

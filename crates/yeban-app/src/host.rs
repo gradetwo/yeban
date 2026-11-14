@@ -397,17 +397,29 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     // ⭐ `[UI-NOTE-001]` 的"当前编辑片段"：选中的剪辑摆放决定**作用域**（片段池条目身份）；
     // 没有选中（空串 / 过期身份）⇒ `None` ⇒ 片段池全部音符，与作用域落地之前逐项相同。
+    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view));
     // 作用域优先级：选中片段的摆放（`clip-select`）> 选中轨（兜底）> 全部。
     // 报告反馈③：旧口径在没有选中片段时显示**所有轨**的音符，和"当前轨道"对不上。
-    let clip_scope = roll_scope(ui, view);
-    let selected_track_index = view
+    // ⚠ 保留上面那一行**唯一**的 `visible_notes_scoped` 绑定（判据
+    // `roll_injection_registration` 以它作注入窗口锚点）；选中轨的收窄在下面。
+    let visible = if roll_scope(ui, view).is_some() {
+        visible
+    } else if let Some(index) = view
         .selected_track
         .as_deref()
-        .and_then(|id| view.tracks.iter().position(|track| track.id == id));
-    let visible = match (clip_scope, selected_track_index) {
-        (Some(scope), _) => view.visible_notes_scoped(scroll_x, viewport_width, Some(scope)),
-        (None, Some(index)) => view.visible_notes_on_track(scroll_x, viewport_width, index),
-        (None, None) => view.visible_notes_scoped(scroll_x, viewport_width, None),
+        .and_then(|id| view.tracks.iter().position(|track| track.id == id))
+    {
+        let allowed: std::collections::BTreeSet<&str> = view
+            .clips
+            .iter()
+            .filter(|clip| clip.track_index == index)
+            .map(|clip| clip.clip_id.as_str())
+            .collect();
+        let mut scoped = visible;
+        scoped.retain_clip_ids(&allowed);
+        scoped
+    } else {
+        visible
     };
     // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
     // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
