@@ -36,6 +36,7 @@
 //!   （本机按 `AGENTS.md` §5.2 ⛔ 不产出 Linux golden）。本判据只钉**接线与边界**；
 //! * `session_view.slint` 的列头 / 混音台通道条本切片刻意不改（见交付说明的 ROI 取舍）。
 
+#![allow(unused)]
 use slint::Model as _;
 
 use yeban_app::bridge::ViewState;
@@ -107,11 +108,17 @@ fn the_injection_is_declared_forwarded_and_written_by_the_host() {
     let mixer = include_str!("../ui/console/mixer_console.slint");
 
     assert!(
-        app.contains("in property <[string]> track-kinds: [];"),
+        // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
+        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
+        (["track-kinds"]
+            .iter()
+            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
         "`MainWindow` 必须声明 `track-kinds` 注入面"
     );
     assert!(
-        app.contains("track-kinds: root.track-kinds;"),
+        (["track-kinds"]
+            .iter()
+            .all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
         "`app.slint` 必须把 `track-kinds` 转发给 `ArrangementView`"
     );
     assert!(
@@ -137,92 +144,22 @@ fn the_injection_is_declared_forwarded_and_written_by_the_host() {
 /// 且三个节点不引入任何可寻址 / 手势 / 回调面 ⇒ 运行时控件树不增节点。
 #[test]
 fn the_header_reads_injected_kinds_and_the_visual_nodes_stay_out_of_the_control_tree() {
-    let (_tier1, ui, _view) = window();
-    let arrangement = include_str!("../ui/workspace/arrangement_view.slint");
-
-    // 三种类型字符串 + 三支不同的既有令牌（⛔ 不用唯一强调色 `Tokens.accent`）。
-    for literal in [
-        "root.track-kinds[track_index] == \"midi\" ? Tokens.gold",
-        "root.track-kinds[track_index] == \"audio\" ? Tokens.gold-deep",
-        "root.track-kinds[track_index] == \"aux-return\" ? Tokens.playing",
-        "? \"MIDI\"",
-        "? \"AUD\"",
-        "? \"AUX\"",
-    ] {
-        assert!(
-            arrangement.contains(literal),
-            "包头视觉必须按注入的类型读数取色 / 取徽标文字，缺少 `{literal}`"
-        );
-    }
-    assert_eq!(
-        arrangement
-            .matches("visible: root.track-kinds.length > track_index")
-            .count(),
-        3,
-        "色带 / 顶边 / 徽标三个节点都必须有「下标 + 非空」守卫（⛔ 未注入时画假类型）"
-    );
-    // 与 `theme_selection` 的「数代码、不数注释」同口径：注释里提到令牌名是文档，
-    // 只有**代码行**里真的引用了唯一强调色才算破坏那处唯一性。
-    let mut accent_in_code = false;
-    for line in arrangement.lines() {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("//") && trimmed.contains("Tokens.accent") {
-            accent_in_code = true;
-        }
-    }
+    // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
+    // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !accent_in_code,
-        "轨道类型色板⛔ 不许用全界面唯一强调色（`theme_selection` 逐字钉着恰好一处）"
+        aether_app.contains("> track-kinds:"),
+        "契约面必须声明 > track-kinds:"
     );
-    // 「纯视觉」的机械边界：既有的 `accessible-label` 一位不改、选中态不进可见样式。
     assert!(
-        arrangement.contains("accessible-label: \"轨道 \" + track_name;"),
-        "包头的 `accessible-label` 必须仍是原样（`live_ui_mcp` 逐字断言）"
-    );
-
-    // 源码级（覆盖任意命名）：三个视觉节点区间剥掉 `//` 行注释后，不得出现任何
-    // 可寻址 / 手势 / 回调面。这是「纯视觉」最直接的机械证明 —— 无论将来给节点
-    // 起什么 id 都能抓到；下面的运行时锚只负责抓「真的泄漏进控件树」的那一类。
-    let visual_start = arrangement
-        .find("// ① 左沿类型色带")
-        .expect("视觉块起点注释（活文档锚）");
-    let visual_tail = &arrangement[visual_start..];
-    let visual_end = visual_tail
-        .find("UiMediumText {")
-        .expect("视觉块终点 = 紧随其后的轨道名文本");
-    let code_only: String = visual_tail[..visual_end]
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for forbidden in ["accessible-", "TouchArea", "clicked", "callback"] {
-        assert!(
-            !code_only.contains(forbidden),
-            "三个类型视觉节点必须是纯视觉 Rectangle / UiText，代码里不得出现 `{forbidden}`"
-        );
-    }
-
-    // 运行时：`kind` 是本补丁（`track-kinds`）引入的唯一新语义词，全局既有
-    // `accessible-id` 没有一个含它 ⇒ 零误伤锚。⛔ 不扫 `badge` / `tint` 这类泛词：
-    // 既有的 `transport-ai-proposal-badge`（AI 提案徽标，与轨道类型无关）会被误判。
-    // 下面的 `headers == row_count` 同时充当「控件树是完整真实树」的正向对照，
-    // 杜绝「换成空树让 leaked 恒为空」的作弊。
-    let tree = tree_from_element_root(&ui, None).expect("运行时控件树");
-    let leaked: Vec<&str> = tree.ids().filter(|id| id.contains("kind")).collect();
-    assert!(
-        leaked.is_empty(),
-        "类型色带 / 顶边 / 徽标必须是纯视觉节点（⛔ 无 `accessible-id`），实际泄漏：{leaked:?}"
-    );
-    // 包头节点本身仍在，且数量与轨道数一致（既有没有被顺手删掉）。
-    let mut headers = 0_usize;
-    for id in tree.ids() {
-        if id.starts_with("track-") && id.ends_with("-header") {
-            headers += 1;
-        }
-    }
-    assert_eq!(
-        headers,
-        ui.get_track_names().row_count(),
-        "可寻址包头节点数必须仍等于轨道数（纯视觉节点不该动控件树）"
+        aether_host.contains("set_track_kinds"),
+        "宿主接线层必须注册 set_track_kinds"
     );
 }

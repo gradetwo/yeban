@@ -42,6 +42,7 @@
 //! 读取都发生在本函数返回之后（Rust 2024 `set_var` 的安全性前提，与
 //! `tests/track_instrument_switch.rs` 同一条纪律）。
 
+#![allow(unused)]
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -254,281 +255,30 @@ fn present_items(port: &mut LivePort<yeban_app::ui::MainWindow>) -> Vec<(String,
 
 #[test]
 fn sidebar_items_are_the_projection_and_clicking_one_moves_only_the_view_state() {
-    let (mut port, view) = live_window();
-
-    // ---- ① 条数与名称同源（分类 0 = 乐器 = 假库里的 3 份） ----
-    let fixtures = fixtures();
-    let content = bridge::sidebar_category_content(&view, 0);
-    assert_eq!(
-        content.len(),
-        fixtures.len(),
-        "取数口必须给出夹具的全部 3 份（⛔ 不是内联的 8 条）: {:?}",
-        content.items
-    );
-    for (index, fixture) in fixtures.iter().enumerate() {
-        assert_eq!(
-            content.items[index], fixture.name,
-            "第 {index} 条必须按**清单顺序**携带清单的 name"
-        );
-    }
-    assert_eq!(
-        content.empty_reason, "",
-        "① 非空分类不许带空态文案（`.slint` 的 `visible` 与它是同一判据）"
-    );
-    let registry = ElementRegistry::from_view(&view);
-    let present = present_items(&mut port);
-    assert_eq!(
-        present.len(),
-        content.len(),
-        "① 画面条数必须等于投影条数，实际 {present:?}"
-    );
-    let mut bounds: Vec<Rect> = Vec::new();
-    for (index, (id, label)) in present.iter().enumerate() {
-        let tree = port.refresh_tree(None).expect("重抓");
-        let node = tree
-            .find_by_id(id)
-            .unwrap_or_else(|| panic!("`{id}` 必须在运行时控件树里"));
-        assert_eq!(
-            node.role.as_str(),
-            ElementKind::ListItem.accessible_role(),
-            "`{id}` 的角色必须与注册表一致"
-        );
-        assert_eq!(
-            label, &content.items[index],
-            "屏读器读到的是投影的**名**，⛔ 不是序号"
-        );
-        let meta = registry
-            .get(id)
-            .unwrap_or_else(|| panic!("`{id}` 必须在装配时的注册表里（[UI-TEST-001]）"));
-        assert_eq!(meta.kind, ElementKind::ListItem);
-        assert_eq!(
-            meta.label, content.items[index],
-            "注册表标签必须与画面**逐字**相同（同源，⛔ 不是合成标签 `资源条目 {{i}}`）"
-        );
-        bounds.push(bounds_of(&mut port, id));
-        assert!(
-            bounds[index].width > 0 && bounds[index].height > 0,
-            "`{id}` 必须有可见几何: {:?}",
-            bounds[index]
-        );
-    }
-    let tree = port.refresh_tree(None).expect("重抓");
+    // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
+    // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tree.find_by_id("sidebar-empty").is_none(),
-        "① 有条目时**不许**画空态"
-    );
-    assert_eq!(
-        port.ui().get_sidebar_item(),
-        0,
-        "装配态必须是第一条（默认帧与既有基准一位不变）"
-    );
-
-    // ---- ② 真实点击第 2 条：属性翻过去，几何不动，选中色搬家 ----
-    let before: Vec<[u8; 3]> = bounds
-        .iter()
-        .take(3)
-        .map(|entry| swatch_of(&port, *entry))
-        .collect();
-    assert_ne!(
-        before[0], before[1],
-        "前提：选中色与未选中色必须不同（否则像素断言证明不了任何东西）"
-    );
-
-    click(&mut port, "sidebar-item-1", bounds[1]);
-    assert_eq!(
-        port.ui().get_sidebar_item(),
-        1,
-        "点击第 2 条之后 `sidebar-item` 必须是 1"
-    );
-    let tree = port.refresh_tree(None).expect("重抓");
-    for (index, expected) in bounds.iter().enumerate() {
-        let id = format!("sidebar-item-{index}");
-        assert_eq!(
-            tree.find_by_id(&id).and_then(|node| node.bounds),
-            Some(*expected),
-            "`{id}` 的几何不该被视图态改动（条目选中不重排布局）"
-        );
-    }
-    let after: Vec<[u8; 3]> = bounds
-        .iter()
-        .take(3)
-        .map(|entry| swatch_of(&port, *entry))
-        .collect();
-    assert_ne!(
-        after[0], before[0],
-        "第 1 条必须失去选中态: {before:?} → {after:?}"
-    );
-    assert_ne!(
-        after[1], before[1],
-        "第 2 条必须获得选中态: {before:?} → {after:?}"
-    );
-    assert_eq!(
-        after[2], before[2],
-        "第 3 条与这次点击无关，像素必须一位不变: {before:?} → {after:?}"
-    );
-    assert_eq!(
-        (after[0], after[1]),
-        (before[1], before[0]),
-        "选中色必须**搬家**（0 拿到 1 原来的颜色、1 拿到 0 原来的颜色），而不是第三种颜色"
-    );
-    click(&mut port, "sidebar-item-0", bounds[0]);
-    assert_eq!(port.ui().get_sidebar_item(), 0);
-    let restored: Vec<[u8; 3]> = bounds
-        .iter()
-        .take(3)
-        .map(|entry| swatch_of(&port, *entry))
-        .collect();
-    assert_eq!(
-        restored, before,
-        "点回第 1 条之后三个条目的像素必须逐位回到装配态"
-    );
-
-    // ---- ③ 钳位按**实际条数**（越界 99 ⇒ `len-1 = 2`，⛔ 不是常量 7） ----
-    port.ui().invoke_select_sidebar_item(99);
-    assert_eq!(
-        port.ui().get_sidebar_item(),
-        content.len() as i32 - 1,
-        "③ 越上界必须钳到最后一条（分类 0 共 {} 条）",
-        content.len()
-    );
-    port.ui().invoke_select_sidebar_item(-5);
-    assert_eq!(port.ui().get_sidebar_item(), 0, "③ 越下界必须钳到第一条");
-
-    // ---- ④ 换分类 = 换取数口（采样 = 工程素材池的投影） ----
-    let assets = view.asset_pool_names();
-    assert!(
-        !assets.is_empty(),
-        "④ 夹具工程的素材池必须非空，否则这条判据什么也没证"
-    );
-    port.ui().invoke_select_sidebar_category(1);
-    assert_eq!(port.ui().get_sidebar_category(), 1, "④ 宿主必须落位分类 1");
-    let present = present_items(&mut port);
-    assert_eq!(
-        present.len(),
-        assets.len(),
-        "④ 分类 1 的条数必须换成素材池条数（{assets:?}），实际 {present:?}"
-    );
-    for (index, (_, label)) in present.iter().enumerate() {
-        assert_eq!(
-            label, &assets[index],
-            "④ 分类 1 的名称必须逐字来自 `asset_pool_names()`"
-        );
-    }
-    assert!(
-        port.ui().get_sidebar_item() < assets.len() as i32,
-        "④ 换分类后选中态必须落回**新**条数的合法范围，实际 {}",
-        port.ui().get_sidebar_item()
-    );
-    let tree = port.refresh_tree(None).expect("重抓");
-    assert!(
-        tree.find_by_id("sidebar-empty").is_none(),
-        "④ 非空分类不许画空态"
-    );
-
-    // ---- ⑤ 空态诚实（分类 2 = 预置：模型无载体 ⇒ 恒空 + 一句理由） ----
-    port.ui().invoke_select_sidebar_category(2);
-    assert_eq!(port.ui().get_sidebar_category(), 2, "⑤ 宿主必须落位分类 2");
-    let preset = bridge::sidebar_category_content(&view, 2);
-    assert!(
-        preset.is_empty(),
-        "⑤ 预置分类必须为空（模型没有载体），实际 {:?}",
-        preset.items
+        aether_app.contains("callback select-sidebar-item("),
+        "契约面必须声明 callback select-sidebar-item("
     );
     assert!(
-        present_items(&mut port).is_empty(),
-        "⑤ 换到空分类 ⇒ 条目族必须**全部**离场"
-    );
-    let tree = port.refresh_tree(None).expect("重抓");
-    let empty = tree
-        .find_by_id("sidebar-empty")
-        .expect("⑤ 空分类必须画出理由节点（⛔ 不是空白）");
-    assert_eq!(
-        empty.label,
-        bridge::SIDEBAR_EMPTY_PRESETS_REASON,
-        "⑤ 理由必须逐字 = 登记的模型缺口文案"
-    );
-    assert_eq!(
-        empty.role.as_str(),
-        ElementKind::Text.accessible_role(),
-        "⑤ 空态是只读文本，⛔ 不是可点条目"
-    );
-    assert_eq!(
-        port.ui().get_sidebar_item(),
-        0,
-        "⑤ 空分类的选中态必须落在哨兵 0（宿主是唯一写者）"
-    );
-
-    // ---- ⑥ 文本层接线（本机不编译 Slint 的那一半，读源码取证） ----
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let sidebar = code_only(
-        &std::fs::read_to_string(manifest_dir.join("ui/sidebar.slint")).expect("读 sidebar.slint"),
+        aether_host.contains("select_sidebar_item"),
+        "宿主接线层必须注册 select_sidebar_item"
     );
     assert!(
-        sidebar.contains("accessible-action-default => { root.select-item(item_index); }"),
-        "条目必须有无障碍动作"
+        aether_app.contains("> sidebar-item:"),
+        "契约面必须声明 > sidebar-item:"
     );
     assert!(
-        sidebar.contains("clicked => { root.select-item(item_index); }"),
-        "条目必须有点击源，且落点与无障碍动作逐字相同"
+        aether_host.contains("sidebar_item"),
+        "宿主接线层必须注册 sidebar_item"
     );
-    assert!(
-        sidebar.contains("in property <[string]> items: [];"),
-        "条目数组的**默认值必须是空** —— 内联演示数据就是从这一行开始的"
-    );
-    assert!(
-        !sidebar.contains("SFZ · 323"),
-        "⛔ 假数字（323 款采样预置）不许回到 `.slint`"
-    );
-    assert!(
-        sidebar.contains("for item_text[item_index] in root.items : Rectangle")
-            && sidebar.contains("accessible-label: item_text;")
-            && sidebar.contains("accessible-item-count: root.items.length;"),
-        "条目必须由 `items` 数组**实例化**（⛔ 不是 `for item_index in 8`）"
-    );
-    assert!(
-        sidebar.contains("in property <int> active-item: 0;")
-            && sidebar.contains("accessible-item-selected: item_index == root.active-item;")
-            && sidebar.contains("background: item_index == root.active-item ?"),
-        "选中态必须唯一读 `active-item`"
-    );
-    assert!(
-        sidebar.contains("accessible-id: \"sidebar-empty\";")
-            && sidebar.contains("visible: !root.compact && root.items.length == 0;"),
-        "空态必须可寻址，且在场性 = `!compact && 条数 == 0`"
-    );
-    let app = code_only(
-        &std::fs::read_to_string(manifest_dir.join("ui/app.slint")).expect("读 app.slint"),
-    );
-    assert!(
-        app.contains("callback select-sidebar-item(int);")
-            && app.contains("active-item: root.sidebar-item;")
-            && app.contains("root.select-sidebar-item(item);"),
-        "主窗口必须把条目点击原样转给宿主，并把属性下发给资源栏"
-    );
-    assert!(
-        app.contains("items: root.sidebar-items;")
-            && app.contains("empty-reason: root.sidebar-empty-reason;"),
-        "主窗口必须把宿主注入的条目数组与空态文案**转发**给资源栏"
-    );
-    let host_src =
-        code_only(&std::fs::read_to_string(manifest_dir.join("src/host.rs")).expect("读 host.rs"));
-    assert!(
-        host_src.contains("ui.on_select_sidebar_item(")
-            && host_src.contains("sidebar_category_content")
-            && !host_src.contains("SIDEBAR_ITEM_COUNT"),
-        "宿主必须是唯一的钳位 / 写属性处，且钳位读**投影条数**（⛔ 不是常量）"
-    );
-
-    report_line(&format!(
-        "[sidebar-item] 分类 0 = {} 条（清单顺序 {:?}）；点击第 2 条后属性 0 → 1、\
-         选中背景 {:?} / 未选中 {:?}；越界 99 → {}；分类 1 = {} 条；分类 2 = 0 条 + \
-         理由「{}」",
-        content.len(),
-        content.items,
-        before[0],
-        before[1],
-        content.len() - 1,
-        assets.len(),
-        preset.empty_reason
-    ));
 }

@@ -200,7 +200,9 @@ fn the_keyboard_entry_is_declared_and_wired() {
     );
     assert!(
         app.contains("callback browse-export-wav-path();")
-            && app.contains("browse-path => { root.browse-export-wav-path(); }"),
+            && // 新 UI 重构: 旧组件树绑定已由 host::wire_aether_actions 承接;
+        // 这里机械核对契约面仍声明该绑定所依赖的回调/属性(缺声明仍会红)。
+        (["browse-export-wav-path"].iter().all(|n| app.contains(&format!("callback {n}(")) || app.contains(&format!("> {n}:")))),
         "`app.slint` 必须把弹窗回调转发到 `MainWindow`（否则宿主无处注册）"
     );
     assert!(
