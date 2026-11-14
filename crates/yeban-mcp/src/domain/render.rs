@@ -5067,27 +5067,35 @@ fn prepare_sampler_track(
         // ② 磁盘腿（旧工程回退）：原样。
         let resolved = resolve_sampler_path(raw, project_path)?;
         let mut cache = sfz::TrackSampleCache::with_limits(store, limits);
-        let (load, table) =
-            sfz::load_with(&resolved, sample_hz, 0, false, &mut cache, Some(&filter)).map_err(
-                |fault| {
-                    let cause = fault.into_result().map_or_else(
-                        |error| serde_json::json!({ "code": error.code, "message": error.message }),
-                        |value| value["error"].clone(),
-                    );
-                    render_failed(
-                        format!(
-                            "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{raw}`)",
-                            resolved.display()
-                        ),
-                        serde_json::json!({
-                            "reason": "samplerUnreadable",
-                            "path": raw,
-                            "resolvedPath": resolved.display().to_string(),
-                            "cause": cause,
-                        }),
-                    )
-                },
-            )?;
+        let (load, table) = sfz::load_with(
+            &resolved,
+            sample_hz,
+            0,
+            false,
+            &mut cache,
+            Some(&filter),
+            // 渲染路不带用户初始 CC（种子接入由离线播种线负责）⇒ 空表，
+            // 与改前逐字一致。
+            &BTreeMap::new(),
+        )
+        .map_err(|fault| {
+            let cause = fault.into_result().map_or_else(
+                |error| serde_json::json!({ "code": error.code, "message": error.message }),
+                |value| value["error"].clone(),
+            );
+            render_failed(
+                format!(
+                    "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{raw}`)",
+                    resolved.display()
+                ),
+                serde_json::json!({
+                    "reason": "samplerUnreadable",
+                    "path": raw,
+                    "resolvedPath": resolved.display().to_string(),
+                    "cause": cause,
+                }),
+            )
+        })?;
         (load, table, None)
     };
     // 读不到 ⇒ 不进提供表（引擎按缺样本处理），原因已在 `SfzLoad::sample_failures`

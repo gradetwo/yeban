@@ -136,7 +136,8 @@ fn load_once(
 ) -> (SfzLoad, Vec<(String, bool, String, u64)>) {
     let mut store = SampleStore::new();
     let mut cache = TrackSampleCache::with_limits(&mut store, limits);
-    let (load, table) = load_with(sfz, 48000.0, 0, false, &mut cache, filter).expect("装载");
+    let (load, table) =
+        load_with(sfz, 48000.0, 0, false, &mut cache, filter, &BTreeMap::new()).expect("装载");
     let table_summary = table
         .iter()
         .map(|(path, outcome)| {

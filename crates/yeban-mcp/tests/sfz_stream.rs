@@ -146,7 +146,8 @@ fn project_with_notes(track_id: EntityId, notes: &[(u8, u8)]) -> YebanProjectV1 
 fn load_once(sfz: &Path, filter: Option<&DemandLoadFilter>) -> SfzLoad {
     let mut store = SampleStore::new();
     let mut cache = TrackSampleCache::with_limits(&mut store, SampleLimits::default());
-    let (load, _) = load_with(sfz, 48000.0, 0, false, &mut cache, filter).expect("装载");
+    let (load, _) =
+        load_with(sfz, 48000.0, 0, false, &mut cache, filter, &BTreeMap::new()).expect("装载");
     load
 }
 

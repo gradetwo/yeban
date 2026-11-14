@@ -812,28 +812,72 @@ impl CcGateCensus {
     }
 }
 
-/// 一条区域的 `amplitude` 在缺省 CC（全 0）下的有效值（单位 %）。
-///
-/// 求值属主是 `yeban-sfz` 的 [`Instrument::amplitude_value_with_cc`]：公式、
-/// 曲线解析与「解析不到的项不贡献」都在那一处，本函数只把探针钉成全 `0`
-/// （与 [`DemandLoadFilter::wants`] 的无探针口径同一句），⛔ 不在这里
-/// 自己求值曲线。
-fn amplitude_at_default_cc(instrument: &Instrument<'_>, region: &Region<'_>) -> f32 {
-    instrument.amplitude_value_with_cc(region, &|_| 0).0
+/// `initialCc` 的回执形态：控制器号 → 值（JSON 对象键 = 十进制字符串；
+/// `BTreeMap` 迭代序 = 控制器号升序，两次回执逐字一致）。
+pub fn initial_cc_value(initial_cc: &BTreeMap<u8, u8>) -> serde_json::Value {
+    serde_json::Value::Object(
+        initial_cc
+            .iter()
+            .map(|(controller, value)| (controller.to_string(), serde_json::Value::from(*value)))
+            .collect(),
+    )
 }
 
 /// 对一整件乐器做 [`CcGateCensus`] 普查（纯函数：只读解析产物，⛔ 不碰文件系统）。
+///
+/// 振幅求值属主是 `yeban-sfz` 的 [`Instrument::amplitude_value_with_cc`]：
+/// 公式、曲线解析与「解析不到的项不贡献」都在那一处，本普查只给探针，
+/// ⛔ 不在这里自己求值曲线。
 #[must_use]
 pub fn cc_gate_census(instrument: &Instrument<'_>) -> CcGateCensus {
+    cc_gate_census_with_probe(instrument, &|_| 0)
+}
+
+/// ⭐ **带用户初始 CC 的门控普查**：探针 = 生效种子值（用户初始值 ?? 文件
+/// `set_ccN` 初值 ?? `0`，即 [`yeban_sfz::instrument::merged_cc_defaults`]
+/// 的逐项读法）。
+///
+/// 装载带 `initialCc` 时，回执普查必须按**将要播种**的值算：否则会出现
+/// 「摘要说静音、实际已播种发声」的矛盾。`initial_cc` 为空时**不得**走本
+/// 函数（调用方走 [`cc_gate_census`]，与改前逐字一致）。
+#[must_use]
+pub fn cc_gate_census_seeded(
+    instrument: &Instrument<'_>,
+    initial_cc: &BTreeMap<u8, u8>,
+) -> CcGateCensus {
+    let probe = |cc: u8| {
+        initial_cc
+            .get(&cc)
+            .copied()
+            .or_else(|| instrument.cc_default(u16::from(cc)))
+            .unwrap_or(0)
+    };
+    cc_gate_census_with_probe(instrument, &probe)
+}
+
+/// 在给定 CC 探针下对一整件乐器做 [`CcGateCensus`] 普查（纯函数：只读解析
+/// 产物，⛔ 不碰文件系统）。
+///
+/// 门控口径：探针值落在某门控的 `[lo, hi]` 之外 ⇒ 该门控关着 ⇒ 区域计门控
+/// 静音、该门控的 CC 进 `cc_numbers`。探针全 `0` 时「`0` 不在 `[lo, hi]`
+/// 内」与 `lo > 0` 等价 ⇒ 与 [`cc_gate_census`] 的历史口径逐项一致；
+/// 振幅口径同理（探针全 `0` 即在 CC = 0 处求值）。
+fn cc_gate_census_with_probe(
+    instrument: &Instrument<'_>,
+    probe: &dyn Fn(u8) -> u8,
+) -> CcGateCensus {
     let mut census = CcGateCensus::default();
     let mut cc_numbers: BTreeSet<u8> = BTreeSet::new();
     for region in instrument.regions() {
-        let gate_hit = region.cc_gates.iter().any(|gate| gate.lo > 0);
-        let amplitude_hit = amplitude_at_default_cc(instrument, region) == 0.0;
+        let gate_hit = region
+            .cc_gates
+            .iter()
+            .any(|gate| !(gate.lo <= probe(gate.cc) && probe(gate.cc) <= gate.hi));
+        let amplitude_hit = instrument.amplitude_value_with_cc(region, probe).0 == 0.0;
         if gate_hit {
             census.gate_silent_regions += 1;
             for gate in &region.cc_gates {
-                if gate.lo > 0 {
+                if !(gate.lo <= probe(gate.cc) && probe(gate.cc) <= gate.hi) {
                     cc_numbers.insert(gate.cc);
                 }
             }
@@ -914,7 +958,21 @@ pub struct SfzLoad {
     /// 只有把它一起报出来才能判）。
     pub limits: SampleLimits,
     /// ⭐ 缺省 CC 状态下的门控普查（[`cc_gate_census`]，装载期与摘要同一次解析算出）。
+    ///
+    /// ⚠ 本次装载带 [`Self::initial_cc`] 时，普查改走 [`cc_gate_census_seeded`]
+    /// （按将要播种的生效值算），字段语义随之为「初始 CC 生效后仍不可发声
+    /// 的区域数」—— 不得出现摘要说静音、实际已播种的矛盾。
     pub cc_census: CcGateCensus,
+    /// ⭐ 用户显式初始 CC（`yeban_load_sfz.initialCc` / 预制 `cc` 段；空表 =
+    /// 未给）。域校验与预制段共用 `yeban_model::preset::validate_initial_cc`。
+    pub initial_cc: BTreeMap<u8, u8>,
+    /// ⭐ **生效 CC 种子缺省表** = 文件 `<control> set_ccN` ⊕ 用户初始 CC
+    /// （用户覆盖文件），由全仓唯一的合并实现
+    /// [`yeban_sfz::instrument::merged_cc_defaults`] 在装载期算出；这正是
+    /// 引擎种子表（`CcSeedTable::from_cc_defaults`）的入参形态 —— 消费侧
+    /// （实时快照边界播种）读它，用户值与文件值进同一张表。
+    /// `initial_cc` 为空时与文件 `cc_defaults()` 逐项相等。
+    pub cc_seed_defaults: BTreeMap<u16, u8>,
 }
 
 impl SfzLoad {
@@ -1057,7 +1115,7 @@ impl SfzLoad {
     /// 真调用响应的 `data`。
     #[must_use]
     pub fn response_data(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut data = serde_json::json!({
             "loaded": true,
             "instrumentId": self.id,
             "path": self.path.display().to_string(),
@@ -1084,13 +1142,19 @@ impl SfzLoad {
             "sessionScoped": true,
             "contentAddressed": true,
             "reused": self.reused,
-        })
+        });
+        // ⭐ 用户初始 CC 只在非空时回显（不带参装载的回执与改前逐字一致）；
+        // 复用登记时回报的是**登记时**的那份（与 `path` / `sampleHz` 同口径）。
+        if !self.initial_cc.is_empty() {
+            data["initialCc"] = initial_cc_value(&self.initial_cc);
+        }
+        data
     }
 
     /// `dryRun` 预览：同一批实测数字 + `wouldRegister`（**不注册**）。
     #[must_use]
     pub fn preview(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut data = serde_json::json!({
             "path": self.path.display().to_string(),
             "bytes": self.bytes,
             "sha256": self.digest,
@@ -1118,7 +1182,11 @@ impl SfzLoad {
                 "contentAddressed": true,
                 "reused": self.reused,
             },
-        })
+        });
+        if !self.initial_cc.is_empty() {
+            data["initialCc"] = initial_cc_value(&self.initial_cc);
+        }
+        data
     }
 }
 
@@ -1323,6 +1391,91 @@ pub fn parse_load_arguments(
     Ok((resolve_load_path(path, project_dir), sample_hz))
 }
 
+/// 解析 `yeban_load_sfz` 的可选 `initialCc`（用户初始 CC：控制器号 → 值）。
+///
+/// 校验分工照 `MidiCc` 自动化写入口的先例（形状层 / 模型层两段）：
+/// - **形状层（本函数）**：必须是 JSON 对象；键必须是十进制整数字符串，
+///   值必须是整数；键或值装不进 `u8`（负数 / 非整数 / `> 255`）⇒ 在这里
+///   响亮拒绝，`data` 带 `{field, controller, value}` 便于定位；
+/// - **域层（共享实现）**：键/值落在 `128..=255`（装得进 `u8`、不在 MIDI
+///   CC 域 `0..=127` 内）⇒ 交全仓唯一的域校验
+///   `yeban_model::preset::validate_initial_cc` 拒绝（与预制 `cc` 段同一份），
+///   ⛔ 不在这里再写一份、⛔ 不钳位。
+///
+/// 未给 / `null` ⇒ 空表（不播种任何用户值，行为与改前逐字一致）。
+///
+/// # Errors
+///
+/// 非对象、键非十进制整数、值非整数或装不进 `u8`、键/值越出 CC 域。
+pub fn parse_initial_cc(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<BTreeMap<u8, u8>, Fault> {
+    let Some(raw) = arguments.get("initialCc") else {
+        return Ok(BTreeMap::new());
+    };
+    if raw.is_null() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(object) = raw.as_object() else {
+        return Err(Fault::domain_with_data(
+            CODE_RANGE,
+            format!("`initialCc` 必须是对象（控制器号 → 值），实际收到 {raw}"),
+            serde_json::json!({ "field": "initialCc", "value": raw }),
+        ));
+    };
+    let mut out: BTreeMap<u8, u8> = BTreeMap::new();
+    for (key, value) in object {
+        let controller: u64 = key.parse().map_err(|_| {
+            Fault::domain_with_data(
+                CODE_RANGE,
+                format!("`initialCc` 的键必须是十进制控制器号，实际收到 `{key}`"),
+                serde_json::json!({ "field": "initialCc", "controller": key }),
+            )
+        })?;
+        if controller > u64::from(u8::MAX) {
+            return Err(Fault::domain_with_data(
+                CODE_RANGE,
+                format!("`initialCc` 的控制器号 {controller} 装不进 u8（形状上界 255）"),
+                serde_json::json!({ "field": "initialCc", "controller": controller }),
+            ));
+        }
+        let Some(number) = value.as_u64() else {
+            return Err(Fault::domain_with_data(
+                CODE_RANGE,
+                format!("`initialCc` 中控制器 {controller} 的值必须是整数，实际收到 {value}"),
+                serde_json::json!({
+                    "field": "initialCc",
+                    "controller": controller,
+                    "value": value,
+                }),
+            ));
+        };
+        if number > u64::from(u8::MAX) {
+            return Err(Fault::domain_with_data(
+                CODE_RANGE,
+                format!(
+                    "`initialCc` 中控制器 {controller} 的值 {number} 装不进 u8（形状上界 255）"
+                ),
+                serde_json::json!({
+                    "field": "initialCc",
+                    "controller": controller,
+                    "value": number,
+                }),
+            ));
+        }
+        out.insert(controller as u8, number as u8);
+    }
+    // 域层：与预制 `cc` 段共用同一份校验（128..=255 在这里响亮拒绝）。
+    yeban_model::preset::validate_initial_cc(&out).map_err(|error| {
+        Fault::domain_with_data(
+            CODE_RANGE,
+            format!("`initialCc` 域校验失败：{error}"),
+            serde_json::json!({ "field": "initialCc" }),
+        )
+    })?;
+    Ok(out)
+}
+
 /// `path` → **真的存在**的那份文件；解析不出（四档都不中）⇒ 原样返回。
 ///
 /// 与 [`super::render::resolve_sampler_path`] 是**同一个函数**（⛔ 不复制候选表）：
@@ -1359,9 +1512,13 @@ pub fn load(
     assign_id: u64,
     reused: bool,
     limits: SampleLimits,
+    initial_cc: &BTreeMap<u8, u8>,
 ) -> Result<SfzLoad, Fault> {
     let mut cache = SampleCache::with_limits(limits);
-    load_with(path, sample_hz, assign_id, reused, &mut cache, None).map(|(load, _)| load)
+    load_with(
+        path, sample_hz, assign_id, reused, &mut cache, None, initial_cc,
+    )
+    .map(|(load, _)| load)
 }
 
 /// 提供表的一行：`sample=` 的**原样字符串** ＋ 该文件的读取结果（读不到 ⇒ `Err`）。
@@ -1613,6 +1770,7 @@ pub fn load_with(
     reused: bool,
     cache: &mut dyn SampleReads,
     wanted: Option<&DemandLoadFilter>,
+    initial_cc: &BTreeMap<u8, u8>,
 ) -> Result<(SfzLoad, SampledProviderTable), Fault> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         Fault::domain_with_data(
@@ -1673,6 +1831,7 @@ pub fn load_with(
         reused,
         cache,
         wanted,
+        initial_cc,
     )
 }
 
@@ -1696,6 +1855,7 @@ fn load_with_resolved(
     reused: bool,
     cache: &mut dyn SampleReads,
     wanted: Option<&DemandLoadFilter>,
+    initial_cc: &BTreeMap<u8, u8>,
 ) -> Result<(SfzLoad, SampledProviderTable), Fault> {
     // ---- 逐区域**真读** `sample=<path>`（有界；读不到如实回退，⛔ 不让装载失败）----
     // ⭐ `#218`：`sample=*silence` **⛔ 不读盘**（它不是文件）—— 区域状态记内建静音，
@@ -1714,13 +1874,23 @@ fn load_with_resolved(
         sample_frames_loaded,
         provider,
         cc_census,
+        cc_seed_defaults,
     ) = {
         let instrument = match resolution.as_ref() {
             Some((sources, _)) => parse_expanded(&text, Some(sources.as_slice())),
             None => parse_expanded(&text, None),
         }?;
         // ⭐ CC 门控普查与摘要在**同一次解析**里算（⛔ 不为普查再解析一遍）。
-        let cc_census = cc_gate_census(&instrument);
+        // 带用户初始 CC 时普查按**生效种子**算（[`cc_gate_census_seeded`]），
+        // 不带时走缺省口径 —— 与改前逐字一致。
+        let cc_census = if initial_cc.is_empty() {
+            cc_gate_census(&instrument)
+        } else {
+            cc_gate_census_seeded(&instrument, initial_cc)
+        };
+        // ⭐ 生效种子表在同一次解析里算出（唯一合并实现，用户覆盖文件）。
+        let cc_seed_defaults =
+            yeban_sfz::instrument::merged_cc_defaults(instrument.cc_defaults(), initial_cc);
         let mut regions: Vec<RegionSummary> = Vec::new();
         // ⭐ `#276`：提供表在**同一次**区域遍历里产出（⛔ 第二遍解析的替代品）。
         let mut provider: SampledProviderTable = Vec::new();
@@ -1809,6 +1979,7 @@ fn load_with_resolved(
             cache.frames_loaded(),
             provider,
             cc_census,
+            cc_seed_defaults,
         )
     };
     // 片段序列随装载一起登记：渲染路径的 `with_instrument` 必须重放**同一份**展开结果。
@@ -1838,6 +2009,8 @@ fn load_with_resolved(
             // ⭐ 预算随装载一起登记：读数的"截没截"必须能对回是哪一条预算判的。
             limits: cache.limits(),
             cc_census,
+            initial_cc: initial_cc.clone(),
+            cc_seed_defaults,
         },
         provider,
     ))
@@ -2100,6 +2273,8 @@ pub(crate) fn load_with_embedded(
     }
     let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
     let mut cache = EmbeddedSampleCache::with_limits(map, assets, limits);
+    // 内嵌渲染路没有用户初始 CC 入口（容器里的定义按文件自身 `set_ccN`
+    // 播种）⇒ 传空表，普查与种子表与改前逐字一致。
     load_with_resolved(
         text,
         byte_len,
@@ -2111,6 +2286,7 @@ pub(crate) fn load_with_embedded(
         reused,
         &mut cache,
         wanted,
+        &BTreeMap::new(),
     )
 }
 
@@ -4060,6 +4236,137 @@ mod tests {
         assert_eq!(value["byGate"], 2);
         assert_eq!(value["byAmplitude"], 3);
         assert_eq!(value["ccNumbers"], serde_json::json!([1, 2, 7]));
+    }
+
+    /// ⭐ 带用户初始 CC 的普查按**生效种子**算：探针 = 用户值 ?? 文件
+    /// `set_ccN` ?? 0；缺省普查口径不因文件 `set_ccN` 改变（逐字一致）。
+    #[test]
+    fn cc_gate_census_seeded_uses_effective_seed_values() {
+        let text = "<control> set_cc1=10 set_cc2=32\n\
+                    <region> sample=a.wav key=60 locc1=64 hicc1=127\n\
+                    <region> sample=b.wav key=61 locc2=10 hicc2=127\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        // 缺省（全 0）口径：两条都静音 —— 文件 set_ccN 不进缺省探针。
+        let plain = cc_gate_census(&instrument);
+        assert_eq!(plain.silent_regions, 2, "{plain:?}");
+        assert_eq!(plain.cc_numbers, vec![1, 2]);
+        // 用户只给无关的 CC3：CC1 探针 = 文件初值 10（仍关）、CC2 = 文件
+        // 初值 32（开）⇒ 只剩 a 静音。
+        let seeded = cc_gate_census_seeded(&instrument, &BTreeMap::from([(3u8, 5u8)]));
+        assert_eq!(seeded.silent_regions, 1, "{seeded:?}");
+        assert_eq!(seeded.gate_silent_regions, 1);
+        assert_eq!(seeded.cc_numbers, vec![1]);
+        // 用户覆盖 CC1=100 ⇒ a 也打开 ⇒ 全不静音。
+        let opened = cc_gate_census_seeded(&instrument, &BTreeMap::from([(1u8, 100u8)]));
+        assert_eq!(opened, CcGateCensus::default(), "{opened:?}");
+    }
+
+    /// ⭐ `initialCc` 解析的两段拒绝分工（照 `MidiCc` 写入口先例）：
+    /// 形状层拒非对象 / 键非十进制整数 / 值非整数 / 负数 / `> 255`；
+    /// 域层（与预制 `cc` 段共享的校验）拒 `128..=255`。都不钳位。
+    #[test]
+    fn parse_initial_cc_shape_and_domain_layers() {
+        let args = |value: serde_json::Value| {
+            let mut map = serde_json::Map::new();
+            map.insert("path".to_owned(), serde_json::json!("x.sfz"));
+            map.insert("initialCc".to_owned(), value);
+            map
+        };
+        // 未给 / null ⇒ 空表。
+        let mut bare = serde_json::Map::new();
+        bare.insert("path".to_owned(), serde_json::json!("x.sfz"));
+        assert!(parse_initial_cc(&bare).expect("未给").is_empty());
+        assert!(
+            parse_initial_cc(&args(serde_json::Value::Null))
+                .expect("null")
+                .is_empty()
+        );
+        // 合法（含边界 0 与 127）。
+        let ok = parse_initial_cc(&args(serde_json::json!({"1": 64, "11": 0, "127": 127})))
+            .expect("合法");
+        assert_eq!(ok, BTreeMap::from([(1u8, 64u8), (11, 0), (127, 127)]));
+        // 形状层。
+        for bad in [
+            serde_json::json!([1, 2]),
+            serde_json::json!({"x": 1}),
+            serde_json::json!({"1.5": 1}),
+            serde_json::json!({"1": 1.5}),
+            serde_json::json!({"1": -1}),
+            serde_json::json!({"-1": 1}),
+            serde_json::json!({"256": 1}),
+            serde_json::json!({"1": 256}),
+            serde_json::json!({"1": "64"}),
+        ] {
+            assert!(
+                parse_initial_cc(&args(bad.clone())).is_err(),
+                "形状层须拒 {bad}"
+            );
+        }
+        // 域层：128..=255 装得进 u8、出 CC 域。
+        for bad in [
+            serde_json::json!({"128": 1}),
+            serde_json::json!({"1": 128}),
+            serde_json::json!({"200": 200}),
+        ] {
+            assert!(
+                parse_initial_cc(&args(bad.clone())).is_err(),
+                "域层须拒 {bad}"
+            );
+        }
+    }
+
+    /// ⭐ 装载带 `initialCc`：生效种子表 = 文件 ⊕ 用户（用户覆盖）、普查按
+    /// 生效种子算、回执回显 `initialCc`；不带参时三处与改前逐字一致。
+    #[test]
+    fn load_with_initial_cc_seeds_merges_and_reports() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-initialcc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("gated.sfz");
+        std::fs::write(
+            &path,
+            "<control> set_cc1=10\n<region> sample=*silence key=60 locc1=64 hicc1=127\n",
+        )
+        .expect("写夹具 SFZ");
+        let limits = parse_sample_limits(&serde_json::Map::new()).expect("缺省预算");
+
+        // 不带参：种子表 = 文件原值；普查 = 缺省口径（门控关着 ⇒ 1 条）；
+        // 回执无 initialCc 键。
+        let plain = load(&path, 48_000.0, 1, false, limits, &BTreeMap::new()).expect("装载");
+        assert!(plain.initial_cc.is_empty());
+        assert_eq!(plain.cc_seed_defaults, BTreeMap::from([(1u16, 10u8)]));
+        assert_eq!(plain.cc_census.silent_regions, 1, "{:?}", plain.cc_census);
+        let plain_data = plain.response_data();
+        assert!(
+            plain_data.get("initialCc").is_none(),
+            "不带参回执不得出现 initialCc: {plain_data}"
+        );
+        assert_eq!(plain_data["ccGateCensus"]["silentAtDefaultCc"], 1);
+
+        // 带 {1: 100}：种子表被用户值覆盖；普查按生效种子 ⇒ 门控打开、
+        // 0 条静音；回执回显 initialCc。
+        let seeded = load(
+            &path,
+            48_000.0,
+            2,
+            false,
+            limits,
+            &BTreeMap::from([(1u8, 100u8)]),
+        )
+        .expect("带参装载");
+        assert_eq!(seeded.initial_cc, BTreeMap::from([(1u8, 100u8)]));
+        assert_eq!(seeded.cc_seed_defaults, BTreeMap::from([(1u16, 100u8)]));
+        assert_eq!(seeded.cc_census.silent_regions, 0, "{:?}", seeded.cc_census);
+        let seeded_data = seeded.response_data();
+        assert_eq!(seeded_data["initialCc"], serde_json::json!({"1": 100}));
+        assert_eq!(seeded_data["ccGateCensus"]["silentAtDefaultCc"], 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ⭐ CC 门控普查：无门控库普查为 0（摘要仍带原料字段，值为空/缺省）。

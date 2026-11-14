@@ -11,6 +11,7 @@
 //! 本模块是**纯数据**：不读盘、不解码采样、不进 RT 回调。预制加载成本只是解析
 //! JSON 加投影（构造期纯函数），应用时不触发采样解码。
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,42 @@ pub struct Preset {
     /// 宏数组（绑定到通道条或发送参数）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub macros: Vec<MacroParameter>,
+    /// 乐器初始 CC（控制器号 → 值，键与值均须在 MIDI CC 域 `0..=127` 内）：
+    /// 应用本预制时并入该乐器的 CC 种子表（与文件 `<control> set_ccN` 同一张
+    /// 表，用户值覆盖文件值），与 `yeban_load_sfz` 的 `initialCc` 参数同语义、
+    /// 共用同一份域校验（[`validate_initial_cc`]）与合并实现
+    /// （`yeban_sfz::instrument::merged_cc_defaults`）。空表 = 不播种用户值，
+    /// 序列化时整段省略 ⇒ 旧预制文件与不带本段的预制逐字不变（不升 format）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cc: BTreeMap<u8, u8>,
+}
+
+/// 一份「用户初始 CC」的域校验（控制器号与值均须落在 MIDI CC 域 `0..=127`）。
+///
+/// 这是初始 CC 的**唯一**域校验实现：[`Preset::validate`] 调它，
+/// `yeban_load_sfz.initialCc` 的解析层（MCP 形状层先挡住装不进 `u8` 的
+/// 键/值）也调它。越界 ⇒ 响亮拒绝（⛔ 不钳位），与 `MidiCc` 自动化写入口
+/// 的模型层口径一致（形状层管「装不装得进」，模型层管「在不在域内」）。
+///
+/// # Errors
+///
+/// 任一控制器号或值 `> 127` ⇒ [`PresetError::InvalidField`]（`field = "cc"`）。
+pub fn validate_initial_cc(cc: &BTreeMap<u8, u8>) -> Result<(), PresetError> {
+    for (controller, value) in cc {
+        if *controller > 127 {
+            return Err(PresetError::InvalidField {
+                field: "cc",
+                detail: format!("初始 CC 控制器号 {controller} 越界（合法域 0..=127）"),
+            });
+        }
+        if *value > 127 {
+            return Err(PresetError::InvalidField {
+                field: "cc",
+                detail: format!("初始 CC{controller} 的值 {value} 越界（合法域 0..=127）"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn default_preset_version() -> String {
@@ -232,6 +269,7 @@ impl Preset {
                 detail: "乐器 SFZ 路径不得为空".to_owned(),
             });
         }
+        validate_initial_cc(&self.cc)?;
         if !self.strip.is_object() {
             return Err(PresetError::InvalidField {
                 field: "strip",

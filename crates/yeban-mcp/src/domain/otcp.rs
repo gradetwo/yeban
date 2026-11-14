@@ -281,6 +281,7 @@ pub(crate) fn apply_deliver(
         warnings,
         auto_merge,
         merge_commit_message,
+        None,
     )?;
     let proposal_id = match &response {
         ToolResponse::Success { data } => data

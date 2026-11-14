@@ -826,6 +826,28 @@ pub fn is_builtin_silence_sample(sample: &str) -> bool {
     sample == BUILTIN_SILENCE_SAMPLE
 }
 
+/// ⭐ **CC 种子表的唯一合并实现**：文件 `<control> set_ccN` 初值 ⊕ 用户显式
+/// 初始 CC（`yeban_load_sfz.initialCc` / 预制 `cc` 段），**用户值覆盖文件值**。
+///
+/// 产物就是引擎种子表（`CcSeedTable::from_cc_defaults`）的入参形态 —— 用户值
+/// 与文件值进的是**同一张表**，⛔ 不存在第二份平行 CC 状态。两处入口
+/// （工具参数与预制段）共用本函数与同一份域校验
+/// （`yeban_model::preset::validate_initial_cc`），不得各写一份合并。
+///
+/// `user` 的键/值由调用方保证已过域校验（`0..=127`）；本函数不钳位、不拒绝，
+/// 只做覆盖合并。`user` 为空 ⇒ 返回值与 `file_defaults` 逐项相等。
+#[must_use]
+pub fn merged_cc_defaults(
+    file_defaults: &BTreeMap<u16, u8>,
+    user: &BTreeMap<u8, u8>,
+) -> BTreeMap<u16, u8> {
+    let mut merged = file_defaults.clone();
+    for (controller, value) in user {
+        merged.insert(u16::from(*controller), *value);
+    }
+    merged
+}
+
 impl<'a> Region<'a> {
     /// 本区域的 `sample=` 是不是**内建静音伪样本** [`BUILTIN_SILENCE_SAMPLE`]
     /// （⭐ 任务单 `#217`）。
@@ -2982,6 +3004,26 @@ mod tests {
     use crate::curve::CurvePoint;
     use crate::midi::MidiOpcode;
     use crate::parser::{Header, ParseLimits, SfzSource, parse_sources, parse_text};
+
+    /// ⭐ `merged_cc_defaults`：用户值覆盖文件值、新增键并入、空用户表逐项
+    /// 不变（种子合并的唯一实现，两处入口共用）。
+    #[test]
+    fn merged_cc_defaults_user_values_override_file_values() {
+        let file = BTreeMap::from([(1u16, 10u8), (2, 32), (200, 7)]);
+        // 空用户表 ⇒ 与文件表逐项相等。
+        assert_eq!(merged_cc_defaults(&file, &BTreeMap::new()), file);
+        // 覆盖 + 新增；文件独有键（含域外 N=200，合并层不裁决域）原样保留。
+        let user = BTreeMap::from([(1u8, 100u8), (7, 64)]);
+        assert_eq!(
+            merged_cc_defaults(&file, &user),
+            BTreeMap::from([(1u16, 100u8), (2, 32), (7, 64), (200, 7)])
+        );
+        // 文件为空 ⇒ 结果 = 用户表（键抬到 u16）。
+        assert_eq!(
+            merged_cc_defaults(&BTreeMap::new(), &user),
+            BTreeMap::from([(1u16, 100u8), (7, 64)])
+        );
+    }
 
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
         Region {

@@ -942,6 +942,10 @@ pub fn build_save_preset(
             None
         },
         macros: track.macros.clone(),
+        // 初始 CC 不在轨状态里：由 `plan_save_preset` 在构造后按会话登记
+        // 捕获（轨绑定文件的内容摘要 → registry 里那份装载的 `initial_cc`），
+        // 这里先给空表（序列化时整段省略，与改前逐字一致）。
+        cc: BTreeMap::new(),
     };
     for (kind, slot) in [
         ("saturation", &mut preset.saturation),

@@ -327,14 +327,22 @@ impl RealSongOverviewProvider {
         // + `tried` 全集（`domain::render` 的唯一实现），原样透出。
         let resolved = resolve_sampler_path(raw, &anchor)?;
         let mut cache = TrackSampleCache::with_limits(store, UNLIMITED_SAMPLE_LIMITS);
-        let (load, table) =
-            load_with(&resolved, engine_hz, 0, false, &mut cache, None).map_err(|fault| {
-                sampler_fault(
-                    raw,
-                    format!("采样器定义文件读不到或解析不了: {}", fault_message(&fault)),
-                    Some(resolved.display().to_string()),
-                )
-            })?;
+        let (load, table) = load_with(
+            &resolved,
+            engine_hz,
+            0,
+            false,
+            &mut cache,
+            None,
+            &BTreeMap::new(),
+        )
+        .map_err(|fault| {
+            sampler_fault(
+                raw,
+                format!("采样器定义文件读不到或解析不了: {}", fault_message(&fault)),
+                Some(resolved.display().to_string()),
+            )
+        })?;
         Ok(ArmedSfzInput::new(load.path, samples_from_table(table)))
     }
 

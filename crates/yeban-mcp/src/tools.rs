@@ -1550,7 +1550,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出缺省 CC (全 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道或文件自带 set_ccN)",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出缺省 CC (全 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道或文件自带 set_ccN); ⭐ 可选 initialCc: 用户初始 CC 并入同一种子表播种 (覆盖文件 set_ccN), 普查改按生效种子算、响应回显 data.initialCc",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。
@@ -1588,6 +1588,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "integer",
                 false,
                 "本次装载最多读入多少帧 (所有文件合计, 按**解码后**规模算); 缺省 64000000, `0` = 不限。旧缺省 8000000 帧只够 181 s 单声道, 而 VSCO-2-CE 的 FHornSus 一件就要 1266 万帧 ⇒ 读数 `regions=29 samples=17 silent=12`。新缺省按「最重的一件真实乐器 (GM-StylePerc 3682 万帧) × 1.7 余量」取",
+            ),
+            param(
+                "initialCc",
+                "object",
+                false,
+                "用户初始 CC (控制器号 → 值, 如 `{\"1\": 64}`): 与文件 `<control> set_ccN` 并入**同一张** CC 种子表 (用户值覆盖文件值), 装载时播种。控制器号与值合法域均为 0..=127: 形状层拒非整数/负数/>255, 域层拒 128..=255 (与预制 `cc` 段共用同一份校验), 越界响亮拒绝、⛔ 不钳位。给了它时 `data.ccGateCensus` 按生效种子值算 (不再是全 0 口径), 响应回显 `data.initialCc` (登记时的那份; 同内容复用时以首次登记为准)。不给 ⇒ 行为与读数与改前逐字一致",
             ),
         ],
         errors: &[
@@ -2118,7 +2124,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-APPLY-PRESET",
         name: "yeban_apply_preset",
-        summary: "把一份预制应用到指定音轨（夜半原生预制机制一期，提案路径）：通道条与四件落成 `Preset: …` 设备（确定性身份），发送只改已有边的增益（不增边、不删边、不建 Aux），宏只调已有的宏位（超出跳过并报告），乐器绑定变化时写 `SetTrackSampler`，最后写 `track.preset`（`previous` = 应用前快照）。`categories` 缺省全开（instrument/strip/effects/sends/macros），未知类名 ⇒ `INVALID_PARAMETER_RANGE`。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。预制查不到 ⇒ `ENTITY_NOT_FOUND`，响亮报错，不静默回干声。",
+        summary: "把一份预制应用到指定音轨（夜半原生预制机制一期，提案路径）：通道条与四件落成 `Preset: …` 设备（确定性身份），发送只改已有边的增益（不增边、不删边、不建 Aux），宏只调已有的宏位（超出跳过并报告），乐器绑定变化时写 `SetTrackSampler`，最后写 `track.preset`（`previous` = 应用前快照）。`categories` 缺省全开（instrument/strip/effects/sends/macros），未知类名 ⇒ `INVALID_PARAMETER_RANGE`。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。预制查不到 ⇒ `ENTITY_NOT_FOUND`，响亮报错，不静默回干声。预制带 `cc` 段（初始 CC）且本次含 instrument 类别时，提案落地后把该乐器按 `yeban_load_sfz` 同一条路登记进会话并播种，回执带 `initialCcSeeded`（生效种子以登记为准）。",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -2165,7 +2171,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SAVE-PRESET",
         name: "yeban_save_preset",
-        summary: "把当前轨状态另存为一份用户预制（夜半原生预制机制一期）：从轨上的 `Preset:` 设备收通道条与四件、从 `SendToAux` 边收发送、取轨宏数组，写进用户预制库（`~/Music/Audio Music Apps/Patches/<ulid>.json`，抄 Logic），标识 `user:<ulid>`。不改工程、不动提交图谱；要进工程包须保存工程（导出缺省带出用户预制）。名重复 ⇒ `CONFLICT`（`overwrite: true` 才覆盖同一标识的文件）。单份超 64 KiB ⇒ 拒绝保存。轨未绑定已知乐器 ⇒ `INVALID_PARAMETER_RANGE`。",
+        summary: "把当前轨状态另存为一份用户预制（夜半原生预制机制一期）：从轨上的 `Preset:` 设备收通道条与四件、从 `SendToAux` 边收发送、取轨宏数组，写进用户预制库（`~/Music/Audio Music Apps/Patches/<ulid>.json`，抄 Logic），标识 `user:<ulid>`。不改工程、不动提交图谱；要进工程包须保存工程（导出缺省带出用户预制）。名重复 ⇒ `CONFLICT`（`overwrite: true` 才覆盖同一标识的文件）。单份超 64 KiB ⇒ 拒绝保存。轨未绑定已知乐器 ⇒ `INVALID_PARAMETER_RANGE`。若本会话登记过该轨绑定文件的装载且带 `initialCc`，初始 CC 一并捕获进预制的 `cc` 段（按内容摘要匹配），之后 apply 能重播同一份种子。",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
