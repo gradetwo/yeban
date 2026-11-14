@@ -3220,7 +3220,8 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     // `includeUserPresets` 缺省 `true`（设计稿 §5：导出缺省带出用户预制）。
     let include_user_presets = arg_bool(call, "includeUserPresets", true);
-    let material = save_material(domain, include_user_presets)?;
+    let material = save_material(domain, include_user_presets)
+        .map_err(|fault| with_unsaved_change_stats(domain, fault))?;
     Ok(Plan::Save {
         path: active.path.clone(),
         changed: material.digest != active.saved_digest,
@@ -3234,6 +3235,51 @@ fn plan_save(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         embedded_preset_bytes: material.embedded_preset_bytes,
         include_user_presets,
     })
+}
+
+/// B2（第四份报告，2026-11-14）：`yeban_save_project` 因采样不可读被拒时，
+/// 把"内存里还有多少未保存编辑"的证据并入错误载荷。
+///
+/// 报告场景：保存 fail-fast、磁盘保持旧态（有意的原子语义，`ARCH-SEC-004`），
+/// 但旧载荷只有 `reason` + `path`，调用方无从判断这次失败有没有丢编辑。
+/// 内存编辑其实不丢（失败不触会话态），缺的只是证据。本函数只读计算内存
+/// 摘要并与 `saved_digest` 对照，把 `unsavedChanges` / `memoryDigest` /
+/// `savedDigest` 并入 `samplerUnreadable` 的 `data`；口径与
+/// [`Domain::is_dirty`] / [`Domain::project_digest`] 同一条（只读序列化，
+/// 不写盘、不改会话态，plan 只读契约不变）。其它失败原样返回。
+fn with_unsaved_change_stats(domain: &Domain, fault: Fault) -> Fault {
+    let is_sampler_unreadable = matches!(
+        &fault,
+        Fault::Domain { data: Some(data), .. }
+            if data.get("reason").and_then(Value::as_str) == Some("samplerUnreadable")
+    );
+    if !is_sampler_unreadable {
+        return fault;
+    }
+    let (Some(active), Some(memory_digest)) = (domain.active.as_ref(), domain.project_digest())
+    else {
+        return fault;
+    };
+    let saved_digest = active.saved_digest.clone();
+    let Fault::Domain {
+        code,
+        message,
+        data: Some(Value::Object(mut data)),
+    } = fault
+    else {
+        return fault;
+    };
+    data.insert(
+        "unsavedChanges".to_owned(),
+        Value::from(memory_digest != saved_digest),
+    );
+    data.insert("memoryDigest".to_owned(), Value::from(memory_digest));
+    data.insert("savedDigest".to_owned(), Value::from(saved_digest));
+    Fault::Domain {
+        code,
+        message,
+        data: Some(Value::Object(data)),
+    }
 }
 
 /// [`save_material`] 的产物：一次保存要写出的全部实测数字（容器字节 ＋ 摘要 ＋
@@ -7599,14 +7645,16 @@ mod tests {
                 }),
             ),
             // ⭐ `ADR-0030`：分轨导出 —— 这条只证明"有规划臂、绝不 -32005"。
-            // `outDir` 指向一个**不存在**的目录 ⇒ 规划阶段在**任何渲染之前**响亮拒绝
-            // （D7：⛔ 不 `create_dir_all`）。正向的 `N + 1` 次渲染与十条判据在
-            // `crates/yeban-mcp/tests/export_stems.rs`，本条因此刻意不付渲染代价。
+            // `outDir` 指向**当前可执行文件本身**（一个已存在的文件）⇒ 规划阶段
+            // 在**任何渲染之前**响亮拒绝。B6（2026-11-14）后"不存在"已不拒绝
+            // （写盘时创建），故拒绝路径改用"是文件"来钉。正向的 `N + 1` 次渲染
+            // 与十条判据在 `crates/yeban-mcp/tests/export_stems.rs`，本条因此
+            // 刻意不付渲染代价。
             (
                 "yeban_export_stems",
                 serde_json::json!({
-                    "outDir": std::env::temp_dir()
-                        .join(format!("yeban-stems-absent-{}", std::process::id()))
+                    "outDir": std::env::current_exe()
+                        .expect("当前可执行文件路径")
                         .display()
                         .to_string(),
                     "trackIds": [track.to_canonical_string()],
@@ -7832,14 +7880,16 @@ mod tests {
                     );
                 }
                 "yeban_export_stems" => {
-                    // `ADR-0030` D7：`outDir` 必须**已存在** ⇒ 规划阶段在任何渲染之前
-                    // 点名缺席的目录（带 `data.missing`），⛔ 不是 -32005、⛔ 不 `create_dir_all`。
-                    let fault = outcome.expect_err("分轨目录不存在");
+                    // B6（2026-11-14）：`outDir` 是**已存在的文件** ⇒ 规划阶段在
+                    // 任何渲染之前点名拒绝（带 `data.notADirectory`），⛔ 不是
+                    // -32005。"不存在"的放行（写盘时创建）与 `dryRun` 不建目录
+                    // 在 `tests/export_stems.rs` 判据 7。
+                    let fault = outcome.expect_err("outDir 是文件必须拒绝");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
                     let rendered = format!("{fault:?}");
                     assert!(
-                        rendered.contains("missing"),
-                        "目录缺席必须带 `data.missing`: {rendered}"
+                        rendered.contains("notADirectory"),
+                        "是文件必须带 `data.notADirectory`: {rendered}"
                     );
                 }
                 "synthesize_singing" | "svs_job" => {

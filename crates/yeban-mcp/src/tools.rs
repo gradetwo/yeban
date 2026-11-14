@@ -1796,7 +1796,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "outDir",
                 "string",
                 true,
-                "分轨落盘的目录。必须是**已存在**的目录 —— 本工具刻意不 `create_dir_all` (批量写文件时把目录建错位置比单个文件更贵); 不存在 ⇒ `INVALID_PARAMETER_RANGE` 带 `missing` / `why`",
+                "分轨落盘的目录。不存在时在**写盘时**创建 (`validate` 只读不建, `dryRun` 不创建); 已存在但不是目录 ⇒ `INVALID_PARAMETER_RANGE` 带 `notADirectory`",
             ),
             param(
                 "trackIds",

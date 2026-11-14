@@ -71,7 +71,11 @@ pub const STEMS_BASIS_TEXT: &str = "per-track re-render of the full project wind
 /// 一次已校验的分轨导出请求（**还没有渲染**）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StemRequest {
-    /// 输出目录：**必须已存在**（⛔ 不 `create_dir_all`：分轨是写一堆文件，目录写错位置比单文件更贵）。
+    /// 输出目录：调用方给定；**不存在时在写盘口创建**（[`write`] /
+    /// [`export_streaming`] 的 `create_dir_all`，B6 修订，2026-11-14 —— 与
+    /// `--export-wav` 的口径对齐）。[`validate`] 只读不建（plan 只读契约，
+    /// `dryRun` 同走 plan ⇒ 不落盘也不建目录）；已存在但**不是目录**仍被
+    /// [`validate`] 响亮拒绝。
     pub out_dir: PathBuf,
     /// 选中的轨；`None` = 工程里**全部**非 master 轨（D4：批次内容不随试听状态漂移）。
     pub track_ids: Option<Vec<EntityId>>,
@@ -98,7 +102,8 @@ impl StemRequest {
 ///
 /// # Errors
 ///
-/// - `INVALID_PARAMETER_RANGE`：`outDir` 缺失/空/非字符串/不存在/不是目录；
+/// - `INVALID_PARAMETER_RANGE`：`outDir` 缺失/空/非字符串，或已存在但不是目录
+///   （不存在**不再**拒绝 —— 目录由写盘口创建，见 [`StemRequest::out_dir`]）；
 ///   `trackIds` 不是字符串数组或含非法 ULID。
 pub fn validate(arguments: &Map<String, Value>) -> Result<StemRequest, Fault> {
     let out_dir = match arguments.get("outDir") {
@@ -106,7 +111,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<StemRequest, Fault> {
         Some(other) => {
             return Err(Fault::domain_with_data(
                 ErrorCode::InvalidParameterRange,
-                "`outDir` 必须是非空字符串 (分轨要写 N 个文件, 目录必须由调用方给定且已存在)",
+                "`outDir` 必须是非空字符串 (分轨要写 N 个文件, 目录由调用方给定; 不存在时写盘时创建)",
                 json!({ "field": "outDir", "received": other }),
             ));
         }
@@ -117,14 +122,12 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<StemRequest, Fault> {
             ));
         }
     };
-    if !out_dir.exists() {
-        return Err(Fault::domain_with_data(
-            ErrorCode::InvalidParameterRange,
-            format!("`outDir` 不存在: {}", out_dir.display()),
-            json!({ "missing": out_dir.display().to_string(), "why": "分轨导出刻意不创建目录: 批量写文件时把目录建错位置比单个文件更贵" }),
-        ));
-    }
-    if !out_dir.is_dir() {
+    // B6（2026-11-14）：不存在**不再拒绝** —— 目录在写盘口创建（[`write`] /
+    // [`export_streaming`]），与 `--export-wav` 的口径对齐。⛔ 不在这里建：
+    // `validate` 是 plan 的只读一半，`dryRun` 同走 plan，在这里建目录就是
+    // 让只读规划产生落盘副作用。已存在但不是目录仍响亮拒绝（把文件当目录
+    // 继续写，只会得到更晚、更糊的 IO 错误）。
+    if out_dir.exists() && !out_dir.is_dir() {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("`outDir` 不是目录: {}", out_dir.display()),
@@ -536,6 +539,11 @@ pub fn export_streaming(
     now_ms: u64,
     assets: &dyn render::AssetStore,
 ) -> Result<StemBatch, Fault> {
+    // B6（2026-11-14）：写盘口建目录（[`validate`] 只读不建）。流式路径的
+    // 第一笔写发生在本函数内，因此创建也在这里、且在任何渲染之前 ——
+    // 目录建不出来就不必先付 `N + 1` 次渲染的代价。
+    std::fs::create_dir_all(&request.out_dir)
+        .map_err(|error| super::error::from_io("创建分轨输出目录", &error))?;
     export_with_sink(
         project,
         project_path,
@@ -756,6 +764,10 @@ pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
     if batch.streamed {
         return Ok(batch.response_data(&batch.stems));
     }
+    // B6（2026-11-14）：写盘口建目录（[`validate`] 只读不建；`dryRun` 不走到
+    // 这里 ⇒ 预览不落盘也不建目录）。
+    std::fs::create_dir_all(&batch.request.out_dir)
+        .map_err(|error| super::error::from_io("创建分轨输出目录", &error))?;
     for (position, row) in batch.stems.iter().enumerate() {
         if let Err(fault) = store::write_project_atomic(&row.path, &row.artifact.bytes) {
             let remaining = batch.stems[position..]
@@ -881,7 +893,7 @@ fn collisions_fault(paths: &[&PathBuf], why: &str) -> Fault {
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>(),
             "why": why,
-            "hint": "换一个已存在的空目录 (outDir), 或先移走这些文件",
+            "hint": "换一个空目录 (outDir), 或先移走这些文件",
         }),
     )
 }

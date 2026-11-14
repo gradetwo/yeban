@@ -167,6 +167,14 @@
 - `outDir` 必填且必须是**已存在**的目录，否则拒绝。⚠ **就地更正（2026-10-27，实测两层落点）**：「否则」在实现里分成两层 —— **缺失**由 `schemas/mcp-tools.schema.json` 的 `required` 在参数校验层先拒（JSON-RPC `-32602` + `data.detail` 点名 `outDir`，请求根本走不到领域层，口径同 `tests/effect_contract.rs` 判据 ⑤）；**给了但不是目录**（不存在 / 是文件）才走领域层 `INVALID_PARAMETER_RANGE`。原判据把两者写成同一条 ⇒ CI Run `40485603721` 实测为协议层错误，已按两层改写（`tests/export_stems.rs` 判据 7）。
   带 `missing` / `why`（不 `create_dir_all` 到任意深度：分轨是写一堆文件，
   目录写错位置比单文件更贵）。
+  ⚠ **就地更正（2026-11-14，第四份报告 B6）**：本条已被推翻 —— `outDir`
+  不存在不再拒绝：`validate` 只保留"已存在但不是目录 ⇒ 拒绝"，目录改在
+  **写盘口**创建（两阶段路径在 `stems::write` 开头、流式路径在
+  `stems::export_streaming` 开头各一处 `create_dir_all`）。理由：与
+  `--export-wav` 的口径不一致（那边父目录不存在只在渲染后以 IO 错误失败，
+  更晚更糊），且"路径打错"的代价由目标文件防覆盖预检兜住。`validate`
+  仍**只读不建**（plan 只读契约，`dryRun` 同走 plan ⇒ 预览不建目录）；
+  参数**缺失**仍由协议层 `-32602` 先拒，本条两层落点中只有领域层一层反转。
   ⚠ 参数名**复用**已登记的 `outDir`（`param_bounds_guard` 的 `STRING_PARAM_BOUNDS`
   里已是 `Unbounded`），⛔ 不新造 `outputDir` —— 新名字要同步动那条由 G13 线在飞的
   29 元组，白白造一个跨线写者冲突。

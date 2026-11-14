@@ -14,7 +14,7 @@
 //! | 4 | 第 2 条写失败：`IO_ERROR` + `completedStems` 长度 1 且**仍在盘上**、`failedTrackId` 如实、`orphanedFiles` 实测（D5） | "要么全有要么全无"的假话、静默删掉已写文件 |
 //! | 5 | `stemsBasis.renders == N + 1` 且每条分轨 `frames` 相等（D3a 的基线那一次） | 报 `N` 制造免费的错觉 / 各条长度不齐 |
 //! | 6 | `dryRun` 不落盘任何文件，预览给全部实测字节 | dryRun 真写盘 |
-//! | 7 | `outDir` 缺失 ⇒ 协议层 `-32602`（schema 的 `required` 先拒）；不存在 / 是文件 ⇒ `INVALID_PARAMETER_RANGE`（⛔ 不 `create_dir_all`） | 擅自建目录 |
+//! | 7 | `outDir` 缺失 ⇒ 协议层 `-32602`（schema 的 `required` 先拒）；不存在 ⇒ 写盘时创建并导出成功、`dryRun` 不创建；是文件 ⇒ `INVALID_PARAMETER_RANGE` | 在 `validate`（plan）里建目录 / 把文件当目录放行 |
 //! | 8 | `trackIds` 筛选子集；陌生身份 ⇒ `TRACK_NOT_FOUND`（⛔ 不静默忽略） | 拼错的 ULID 被吞掉 |
 //! | 9 | 文件名确定：同一工程两次导出**同名**；轨名里的 `/`、`..`、全角被清洗成安全字符，无目录穿越 | 直接把轨名当文件名 |
 //!
@@ -560,9 +560,10 @@ fn dry_run_previews_measured_bytes_without_writing_any_file() {
 }
 
 /// 判据 7：`outDir` **缺失** ⇒ 协议层 `-32602`（schema 的 `required` 先拒）；
-/// **不存在 / 是文件** ⇒ 领域层 `INVALID_PARAMETER_RANGE`。两种落点都**不**建目录。
+/// **不存在** ⇒ 写盘时创建、导出成功（B6，2026-11-14），但 `dryRun` 只预览
+/// **不**创建（plan 只读契约）；**是文件** ⇒ 领域层 `INVALID_PARAMETER_RANGE`。
 #[test]
-fn out_dir_must_be_an_existing_directory_and_is_never_created() {
+fn out_dir_missing_is_created_at_write_time_but_a_file_is_refused() {
     let scratch = Scratch::new("outdir");
     let a_file = scratch.dir.join("a-file");
     fs::write(&a_file, b"x").expect("写一个文件");
@@ -584,18 +585,30 @@ fn out_dir_must_be_an_existing_directory_and_is_never_created() {
         "被拒的调用不许留下任何目录（`Scratch::stems_dir` 本条没调过）"
     );
 
-    // 不存在 ⇒ ⛔ 不 `create_dir_all`。
+    // 不存在 ⇒ 先 `dryRun`：预览照常成功（照付 `N + 1` 次渲染），但目录
+    // **不得**出现 —— 创建只发生在写盘口，`dryRun` 不走到那里。
     let would_be = scratch.dir.join("deep").join("nested");
-    let response = call(
-        &mut dispatcher,
-        &auth,
-        json!({"outDir": would_be.display().to_string()}),
+    let preview = export(&mut dispatcher, &auth, &would_be, json!({"dryRun": true}));
+    // `dryRun` 的实测预览住在 `data.preview` 里（判据 6 的口径先例），
+    // ⛔ 不是真导出的 `data.stems` 形状。
+    assert_eq!(
+        array_len(&preview["preview"], "stems"),
+        3,
+        "预览必须报全部 3 条分轨: {preview}"
     );
-    assert_eq!(response["status"], "error", "{response}");
-    assert_eq!(response["error"]["code"], json!("INVALID_PARAMETER_RANGE"));
-    assert!(!would_be.exists(), "分轨导出不得替调用方创建目录");
+    assert!(!would_be.exists(), "dryRun 不得创建 outDir（plan 只读）");
 
-    // 是文件而不是目录。
+    // 不存在 ⇒ 真导出：写盘口 `create_dir_all`，目录与三条分轨都落地。
+    let data = export(&mut dispatcher, &auth, &would_be, json!({}));
+    assert_eq!(array_len(&data, "stems"), 3);
+    assert!(would_be.is_dir(), "真导出必须创建 outDir");
+    assert_eq!(
+        entries(&would_be),
+        vec!["0001.Lead.wav", "0002.Pad.wav", "0003.Bass.wav"],
+        "创建出的目录里必须恰好是三条分轨"
+    );
+
+    // 是文件而不是目录 ⇒ 仍然响亮拒绝（B6 只放行"不存在"这一种）。
     let response = call(
         &mut dispatcher,
         &auth,
@@ -603,6 +616,11 @@ fn out_dir_must_be_an_existing_directory_and_is_never_created() {
     );
     assert_eq!(response["status"], "error", "{response}");
     assert_eq!(response["error"]["code"], json!("INVALID_PARAMETER_RANGE"));
+    assert_eq!(
+        response["error"]["data"]["notADirectory"],
+        json!(a_file.display().to_string()),
+        "是文件的拒绝必须带 `notADirectory` 点名: {response}"
+    );
 }
 
 /// 判据 8：`trackIds` 只导出点名的子集；陌生身份 ⇒ `TRACK_NOT_FOUND`（⛔ 不静默忽略）。

@@ -93,7 +93,7 @@
 | `--export-elements` / `--dump-elements` | 无头元素树导出 | 无对应工具（UI 内省面） | 无（常开） |
 | `--export-song-overview` | 整曲总览 JSON；内容与 `get_song_overview` 响应 `data` **逐字节相同** | `get_song_overview`（`format:"json"`） | `in-process-mcp`（缺省开） |
 | `--export-song-overview-html` | 同一份总览的单文件 HTML 报告 | `get_song_overview`（`format:"html"`） | `in-process-mcp`（缺省开） |
-| `--export-stems` | 分轨导出；后端与工具同一份（`stems::export` / `stems::write`），值是**必须已存在**的输出目录 | `yeban_export_stems` | `in-process-mcp`（缺省开） |
+| `--export-stems` | 分轨导出；后端与工具同一份（`stems::export` / `stems::write`），值是输出目录（不存在时写盘时创建） | `yeban_export_stems` | `in-process-mcp`（缺省开） |
 | `--apply-ops` | 批量执行 ops 文件；文件格式就是 `yeban_edit_notes` 的实参对象，执行管线（`parse_ops` / `compile` / 提交）住在 `yeban-mcp`；`--dry-run` 是它的修饰器 | `yeban_edit_notes` | `in-process-mcp`（缺省开） |
 | `--edit-samples` | 采样库批处理编辑（`sample_editor.rs`） | 无对应工具 | 无（常开） |
 | `--slice-audio` | 音频切片批处理（`audio_slicer.rs`；`tape` 变速变调 / `shift` 移调时长不变 / `stretch` 拉伸音高不变） | 无对应工具 | 无（常开） |

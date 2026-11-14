@@ -4,11 +4,13 @@
 //! `assets/samples/kit/001.sfz`，SFZ 与样本都在 `<scratch>/proj/assets/samples/kit/` 下
 //!（`resolve_sampler_path` 候选 ① 工程目录命中）。
 //!
-//! 四条判据：
+//! 五条判据：
 //! 1. 保存只收触发集（逐项相等，无多收无漏收；多力度层只收触发到的层）；重存幂等（跳过）。
 //! 2. 跨机证明：删掉盘上采样库后，用全新会话从容器打开再渲染，摘要与有库渲染逐位相同。
 //! 3. 反向对照：同一工程无映射表时，空库渲染响亮失败（证明 2 的摘要相同不是静音）。
 //! 4. 无采样轨的工程保存后不写 `embedded_samples` 键。
+//! 5. B2（第四份报告）：保存因采样不可读被拒时，错误载荷带未保存编辑统计
+//!    （`unsavedChanges` / `memoryDigest` / `savedDigest`），磁盘保持旧态、内存编辑不丢。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -440,4 +442,133 @@ fn save_without_sampler_tracks_writes_no_map() {
         "无采样轨 ⇒ 表必须为空"
     );
     assert!(loaded.assets.is_empty(), "无采样轨 ⇒ 容器不得多出资产");
+}
+
+/// B2（第四份报告）：save 因采样不可读被拒时，错误载荷带未保存编辑统计。
+///
+/// 场景设计有两条实测前提（`embed_samples::collect` 的口径）：
+/// ① 收集是"盘上优先、否则内嵌复用"——样本只要在盘上或已内嵌任一处，
+///    保存就成功；要撞出 `samplerUnreadable`，样本必须**两处都缺**。
+/// ② 无编辑的保存被"与磁盘一致"短路跳过（`saved:false` / `skipped:true`），
+///    走不到收集；强制落盘（`force: true`）才进收集。
+/// 据此断言两半：
+/// ① 无编辑半（独立会话，从未保存）：删库后强制保存被拒，
+///    `unsavedChanges=false` 且两摘要相等、都等于打开时的摘要；
+/// ② 有编辑半（主会话）：先成功保存一次（基线，只内嵌被触发的
+///    tone60/low），删库，再加一个音 pitch 61——它触发的 tone61.wav
+///    从未内嵌、盘上又已删 ⇒ 保存被拒；`unsavedChanges=true`、
+///    `memoryDigest` 是编辑后的摘要、`savedDigest` 仍是基线；
+///    失败后磁盘字节逐位不变、内存编辑不丢（会话摘要仍是编辑后的值）。
+/// 摘要的期望值一律取自会话自己的只读口径（`project_digest`），⛔ 不复算
+/// 被测的那条并入逻辑。
+#[test]
+fn save_failure_reports_unsaved_change_stats() {
+    let scratch = Scratch::new("savestats");
+    let (project, _sfz_text, project_path) = fixture(&scratch, &[(60, 100), (72, 32)]);
+    let lead = project
+        .tracks
+        .values()
+        .find(|track| track.name == "Lead")
+        .expect("filled_project 必须有 Lead 轨");
+    let lead_id = lead.id;
+    let lead_clip = lead.clips.values().next().expect("Lead 必须有片段").clip_id;
+    let (mut dispatcher, auth) = fresh_dispatcher();
+    dispatcher
+        .domain_mut()
+        .open_in_memory(project_path.clone(), project, false)
+        .expect("注入夹具工程");
+
+    // 基线：先成功保存一次。此后 `savedDigest` 的标尺 = 会话自己的只读摘要。
+    let saved = call_tool(&mut dispatcher, &auth, "yeban_save_project", json!({}));
+    assert_eq!(saved["data"]["saved"], true, "基线保存必须落盘: {saved}");
+    let disk_bytes = fs::read(&project_path).expect("读基线容器");
+    let saved_digest = dispatcher
+        .domain()
+        .project_digest()
+        .expect("活跃工程必须有摘要");
+    assert!(!dispatcher.domain().is_dirty(), "刚保存完必须无未保存改动");
+
+    // ① 无编辑半（独立会话，从未保存）：删库后强制保存 —— 样本盘上、内嵌
+    // 两处都缺 ⇒ 被拒；无编辑 ⇒ `unsavedChanges=false`，两摘要相等。
+    {
+        let clean_scratch = Scratch::new("savestats-clean");
+        let (clean_project, _sfz, clean_path) = fixture(&clean_scratch, &[(60, 100), (72, 32)]);
+        let (mut clean_dispatcher, clean_auth) = fresh_dispatcher();
+        clean_dispatcher
+            .domain_mut()
+            .open_in_memory(clean_path, clean_project, false)
+            .expect("注入夹具工程（无编辑半）");
+        let open_digest = clean_dispatcher
+            .domain()
+            .project_digest()
+            .expect("活跃工程必须有摘要");
+        assert!(
+            !clean_dispatcher.domain().is_dirty(),
+            "刚打开必须无未保存改动"
+        );
+        fs::remove_dir_all(clean_scratch.join("proj").join("assets")).expect("删采样库");
+        let response = call_tool_raw(
+            &mut clean_dispatcher,
+            &clean_auth,
+            "yeban_save_project",
+            json!({"force": true}),
+        );
+        let result = response.result.expect("失败以带内 error 形态返回");
+        assert_eq!(result["status"], "error", "{result}");
+        let data = &result["error"]["data"];
+        assert_eq!(data["reason"], "samplerUnreadable", "{result}");
+        assert_eq!(data["path"], BINDING, "原有字段必须原样保留: {result}");
+        assert_eq!(data["unsavedChanges"], json!(false), "{result}");
+        assert_eq!(data["memoryDigest"], json!(open_digest), "{result}");
+        assert_eq!(data["savedDigest"], json!(open_digest), "{result}");
+    }
+
+    // ② 有编辑半：删掉盘上采样库，再加一个音 pitch 61 —— tone61.wav 从未
+    // 被触发、从未内嵌，盘上又已删 ⇒ 下一次保存的收集必然被拒。
+    fs::remove_dir_all(scratch.join("proj").join("assets")).expect("删采样库");
+    let edited = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead_id.to_canonical_string(),
+            "clipId": lead_clip.to_canonical_string(),
+            "ops": [{"kind": "add", "note": {
+                "startTick": 0,
+                "pitch": 61,
+                "durationTicks": 960,
+                "velocity": 100,
+            }}],
+            "autoMerge": true,
+        }),
+    );
+    assert_eq!(edited["status"], "success", "{edited}");
+    assert!(dispatcher.domain().is_dirty(), "编辑后必须有未保存改动");
+    let memory_digest = dispatcher
+        .domain()
+        .project_digest()
+        .expect("活跃工程必须有摘要");
+    assert_ne!(memory_digest, saved_digest, "编辑必须改变内存摘要");
+
+    // 再失败：三项如实 —— 有未保存编辑、内存摘要是编辑后的、已保存摘要仍是基线。
+    let response = call_tool_raw(&mut dispatcher, &auth, "yeban_save_project", json!({}));
+    let result = response.result.expect("失败以带内 error 形态返回");
+    assert_eq!(result["status"], "error", "{result}");
+    let data = &result["error"]["data"];
+    assert_eq!(data["reason"], "samplerUnreadable", "{result}");
+    assert_eq!(data["path"], BINDING, "原有字段必须原样保留: {result}");
+    assert_eq!(data["unsavedChanges"], json!(true), "{result}");
+    assert_eq!(data["memoryDigest"], json!(memory_digest), "{result}");
+    assert_eq!(data["savedDigest"], json!(saved_digest), "{result}");
+    assert_eq!(
+        fs::read(&project_path).expect("读容器"),
+        disk_bytes,
+        "失败后磁盘必须保持旧态"
+    );
+    // 内存编辑不丢：失败没有回滚会话，会话摘要仍是编辑后的值。
+    assert_eq!(
+        dispatcher.domain().project_digest().expect("摘要"),
+        memory_digest,
+        "失败后内存编辑必须还在"
+    );
 }
