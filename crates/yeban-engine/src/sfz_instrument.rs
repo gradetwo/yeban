@@ -802,6 +802,47 @@
 //!
 //! [`Instrument::region_for_with`]: yeban_sfz::instrument::Instrument::region_for_with
 //!
+//! # ⭐ 键盘跟踪（`pitch_keytrack` / `amp_keytrack` / `amp_keycenter`）
+//!
+//! ## 规范逐字（2026-11-14 现读）
+//!
+//! <https://sfzformat.com/opcodes/pitch_keytrack/>：
+//!
+//! > Default value is 100, which means pitch will change one hundred cents
+//! > (one semitone) per played note. Setting this value to zero means that
+//! > all notes in the region will play the same pitch.
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | --- | --- | --- | --- | --- | --- |
+//! | pitch\_keytrack | SFZ v1 | integer | 100 | -1200 to 1200 | cents |
+//! | amp\_keytrack | SFZ v1 | float | 0 | -96 to 12 | dB |
+//! | amp\_keycenter | SFZ v1 | integer | 60 | 0 to 127 | N/A |
+//!
+//! （后两行分别出自 <https://sfzformat.com/opcodes/amp_keytrack/> 与
+//! <https://sfzformat.com/opcodes/amp_keycenter/>；`amp_keycenter` 正文：
+//! "In this key, the amplifier keyboard tracking will have no effect."）
+//!
+//! ## 实现口径（解析在 `yeban-sfz`，本 crate 只消费）
+//!
+//! * **音高**：偏移（音分）＝ `pitch_keytrack × (note − pitch_keycenter)`，
+//!   折进 [`Region::pitch_ratio`] 的同一条归约 ⇒ 摊平表的
+//!   `rate_per_note[n]`（构造期由 `playback_rate` 求值）**自动带上**，
+//!   本 crate ⛔ 不新增任何音高侧字段、⛔ 不改速率公式。缺省 100 时与
+//!   接线前（公式恒按 100）逐位相同。
+//! * **振幅**：偏移（dB）＝ `amp_keytrack × (note − amp_keycenter)`，是
+//!   增益乘积链里与 `amp_veltrack` **同层**的一段（键轴 ≠ 力度轴）。
+//!   离线口径是 [`PlaybackSpec::total_gain`] 的最后一段；摊平口径由
+//!   [`PreparedRegion::gain_at_with_cc`] 在**同一结合位置**（交叉淡化
+//!   之后、`amplitude` 之前）乘 [`PreparedRegion::keytrack_gain`]，
+//!   两条路共用 [`yeban_sfz::playback::keytrack_gain_factor`] 一份公式
+//!   ⇒ 逐位一致。缺省 0 ⇒ 因子恰 `1.0` ⇒ 逐位不变。
+//! * [`PreparedRegion`] 只承载 `amp_keytrack` / `amp_keycenter` 两个
+//!   **标量**（⛔ 不烘焙每键增益表）：字节实测 `PreparedRegion`
+//!   6184 → **6192 B**（＋8 ＝ 一个 `f32` ＋ 一个 `i32`）；
+//!   `SfzVoice` **不加字段**（跟踪量是区域参数、不是声部状态）。
+//! * 两个中心**互相独立**：音高绕 `pitch_keycenter`、振幅绕
+//!   `amp_keycenter`，文件给不同值时各自生效，⛔ 不互相借用。
+//!
 //! # ⭐ 播放方向（`direction`，任务单 `#113`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是三处"`direction` 仍未做"的登记**：
@@ -3148,6 +3189,9 @@ const INERT_CC_GATE: CcGate = CcGate {
 /// 增益按 `PlaybackSpec::total_gain()` 的乘积结构拆成五份（`volume`／力度／键轴淡化／
 /// 力度轴淡化／**CC 轴淡化**），使回调侧的相乘顺序与离线路径**逐位相同**：
 /// `(volume × 力度) × ((((键轴 × 力度淡入) × 力度淡出) × cc₀) × cc₁ …)`。
+/// ⭐ `total_gain` 的最后一段**键位跟踪**（`amp_keytrack`）⛔ 不进这五份表：
+/// 它只由 (`amp_keytrack`, `amp_keycenter`) 两标量决定，由
+/// [`Self::gain_at_with_cc`] 在同一结合位置现算（见 [`Self::amp_keytrack`]）。
 /// 因此 `(note, velocity)` 的取值**不再冻结**在 `(60, 100)`，
 /// 而 CC 轴（任务单 `#108`）由 [`Self::cc_crossfades`] 承载、**逐块**按探针求值。
 #[derive(Debug, Clone, PartialEq)]
@@ -3429,6 +3473,23 @@ pub struct PreparedRegion {
     lorand: f32,
     /// ⭐ **随机轮替上界**（`hirand`，缺省 1）。口径同 [`Self::lorand`]。
     hirand: f32,
+    /// ⭐ **振幅键位跟踪量**（`amp_keytrack`，**dB/键**，缺省 0）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里**已落地**（[`Region::amp_keytrack`]，
+    /// 越界是响亮 `FloatOutOfRange`）⇒ 本字段只把那份 `f32` 搬进摊平表，
+    /// ⛔ 不新增解析、⛔ 不改取值域。
+    ///
+    /// ⚠ **只存标量、⛔ 不烘焙每键表**：因子由 [`Self::gain_at_with_cc`] 在
+    /// 读数时经 [`yeban_sfz::playback::keytrack_gain_factor`] 现算（与离线
+    /// [`PlaybackSpec::total_gain`] **同一份公式**）⇒ 本字段与
+    /// [`Self::amp_keycenter`] 合计只占 8 B，⛔ 不像 `velocity_gain` 那样
+    /// 占一张 128 元表。
+    ///
+    /// ⚠ **它是"区域参数"、⛔ 不是"声部状态"** ⇒ `SfzVoice` 一个字段都不加。
+    amp_keytrack: f32,
+    /// ⭐ **振幅键位跟踪中心键**（`amp_keycenter`，缺省 60）。口径同
+    /// [`Self::amp_keytrack`]：该键上增益偏移恰为 0 dB。
+    amp_keycenter: i32,
 }
 
 impl PreparedRegion {
@@ -3566,6 +3627,27 @@ impl PreparedRegion {
     #[must_use]
     pub const fn hirand(&self) -> f32 {
         self.hirand
+    }
+
+    /// ⭐ **振幅键位跟踪量**（`amp_keytrack`，**dB/键**，缺省 0；原样）。
+    #[must_use]
+    pub const fn amp_keytrack(&self) -> f32 {
+        self.amp_keytrack
+    }
+
+    /// ⭐ **振幅键位跟踪中心键**（`amp_keycenter`，缺省 60；原样）。
+    #[must_use]
+    pub const fn amp_keycenter(&self) -> i32 {
+        self.amp_keycenter
+    }
+
+    /// ⭐ 本区域在 `note` 上的**键位跟踪线性增益因子**：与离线
+    /// [`Region::keytrack_gain`] **同一份公式**（共用
+    /// [`yeban_sfz::playback::keytrack_gain_factor`]，⛔ 引擎不另抄）。
+    /// `amp_keytrack == 0` 时恒 `1.0`。
+    #[must_use]
+    pub fn keytrack_gain(&self, note: u8) -> f32 {
+        yeban_sfz::playback::keytrack_gain_factor(self.amp_keytrack, self.amp_keycenter, note)
     }
 
     /// ⭐ 本区域有没有**生效的**随机轮替门（与 `yeban-sfz` 的
@@ -3752,8 +3834,16 @@ impl PreparedRegion {
     /// base      = volume_gain * velocity_gain[v]
     /// crossfade = (key_crossfade[n] * velocity_fade_in[v]) * velocity_fade_out[v]
     /// 逐段：crossfade *= cc_crossfades[i].gain_at(probe(cc_i))   // i 递增
-    /// 结果       = (base * crossfade) * amplitude_gain           // ⭐ #115 最外层
+    /// 结果       = (((base * crossfade) * keytrack_gain[n]) * amplitude_gain) * volume_ratio
     /// ```
+    ///
+    /// ⭐ **键位跟踪（`amp_keytrack`）**：`keytrack_gain[n]` ＝
+    /// [`Self::keytrack_gain`]（`10 ^ (amp_keytrack × (n − amp_keycenter) / 20)`，
+    /// 与 [`Region::keytrack_gain`] 共用同一份公式）。它在离线口径里是
+    /// [`yeban_sfz::playback::PlaybackSpec::total_gain`] 的**最后一段**
+    /// （交叉淡化之后、`amplitude` 之前）⇒ 本方法在同一位置乘它，
+    /// 两条路逐位一致。⚠ 缺省 `amp_keytrack == 0` ⇒ 因子恰 `1.0`
+    /// ⇒ 乘它**逐位不变**。
     ///
     /// ⭐ **振幅（任务单 `#115`）**：`amplitude_gain` ＝
     /// [`Self::amplitude_gain_with_cc`]（`(amplitude + Σ delta × curve(cc)) / 100`）。
@@ -3786,12 +3876,18 @@ impl PreparedRegion {
                 }
             }
         }
+        // ⭐ 键位跟踪（`amp_keytrack`）：排在交叉淡化之后、`amplitude` 之前，
+        // 与离线 `PlaybackSpec::total_gain` 的结合序**逐字相同**
+        // （`((gain × velocity) × crossfade) × keytrack_gain`）。缺省
+        // `amp_keytrack = 0` ⇒ 因子恰 `1.0` ⇒ 对没有该 opcode 的区域
+        // **逐位不变**（IEEE：× `1.0` 恒等）。
         // ⭐ 振幅（任务单 `#115`）：最外层线性乘子；缺省 `amplitude = 100` ⇒ 因子 `1.0`
         // ⇒ 这一句对没有 `amplitude` 的区域**逐位不变**（IEEE：× `1.0` 恒等）。
         // ⭐⭐ 音量调制（任务单 `#119`）：**新的最外层**线性乘子；缺省（无 `volume_*ccN`）
         // ⇒ 因子恰 `1.0` ⇒ 同样**逐位不变**。结合序与离线那条路**逐字相同**
         // （`(… × amplitude_gain) × volume_ratio`，判据 `S114`）。
-        ((base * crossfade) * self.amplitude_gain_with_cc(cc)) * self.volume_ratio_with_cc(cc)
+        (((base * crossfade) * self.keytrack_gain(note)) * self.amplitude_gain_with_cc(cc))
+            * self.volume_ratio_with_cc(cc)
     }
 
     /// ⭐ 本区域承载的 CC 轴交叉淡化段数（判据用：`0` ＝ 这条区域没有该轴）。
@@ -5214,6 +5310,8 @@ fn flatten_regions(
                 // 与「没写」在谓词层分叉。
                 lorand: region.lorand,
                 hirand: region.hirand,
+                amp_keytrack: region.amp_keytrack,
+                amp_keycenter: region.amp_keycenter,
             });
         }
         (regions, cc_seeds, builtin_silent_regions, pitch_egs)
