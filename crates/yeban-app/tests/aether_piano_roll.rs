@@ -83,7 +83,7 @@ fn piano_roll_shows_the_selected_clip_and_edits_reach_the_project() {
         .find(|clip| clip.clip_id == clip_id.to_canonical_string())
         .map(|clip| (clip.placement_id.clone(), clip.track_index))
         .expect("片段必须有摆放");
-    ui.invoke_clip_select(placement.0.into());
+    ui.invoke_clip_select(placement.0.clone().into());
     let drawn = ui.get_note_ulids();
     let drawn_ids: Vec<String> = drawn.iter().map(|id| id.to_string()).collect();
     assert_eq!(
@@ -105,6 +105,40 @@ fn piano_roll_shows_the_selected_clip_and_edits_reach_the_project() {
         clip_notes.len(),
         drawn_ids.len()
     );
+
+    // ①b 没有选中片段时，兜底作用域 = **选中轨**（不是全工程）。
+    ui.set_selected_clip_ulid("".into());
+    let selected_track = view.tracks[placement.1].id.clone();
+    ui.set_selected_track_id(selected_track.clone().into());
+    let track_view = host::project_with_view_state(&project, ui).expect("按选中轨重投影");
+    host::apply_view(ui, &track_view, 1440.0, 0.0);
+    let track_clip_ids: std::collections::BTreeSet<String> = view
+        .clips
+        .iter()
+        .filter(|clip| clip.track_index == placement.1)
+        .map(|clip| clip.clip_id.clone())
+        .collect();
+    let track_notes: usize = project
+        .clip_pool
+        .iter()
+        .filter(|(id, _)| track_clip_ids.contains(&id.to_canonical_string()))
+        .map(|(_, entry)| match &entry.content {
+            ClipContent::Midi { notes } => notes.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(
+        ui.get_note_ulids().row_count(),
+        track_notes,
+        "没有选中片段时，卷帘必须只画选中轨的音符（不是全工程 {}）",
+        note_count(&project)
+    );
+    eprintln!(
+        "[roll/track] 选中轨 {track_notes} 条音符 -> 卷帘 {} 条",
+        ui.get_note_ulids().row_count()
+    );
+    // 回到片段作用域继续编辑断言。
+    ui.invoke_clip_select(placement.0.clone().into());
 
     // ② 铅笔点击：坐标按卷帘的键盘列 / 行头 / 泳道换算；提交到同一片段。
     let notes_before = note_count(&undo.try_project().unwrap());
