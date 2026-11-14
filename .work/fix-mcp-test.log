@@ -1,0 +1,221 @@
+   Compiling bitflags v2.13.2
+   Compiling log v0.4.34
+   Compiling memchr v2.8.3
+   Compiling bytemuck v1.25.2
+   Compiling lazy_static v1.5.1
+   Compiling smallvec v1.16.2
+   Compiling symphonia-core v0.6.1
+   Compiling nom v7.1.3
+   Compiling cexpr v0.6.0
+   Compiling bindgen v0.70.1
+   Compiling regex-lite v0.1.9
+   Compiling symphonia-metadata v0.6.1
+   Compiling serde_json v1.0.151
+   Compiling symphonia-common v0.6.1
+   Compiling signalsmith-stretch v0.1.3 (/home/hatch/workspace/tmp-wt-yeban-main-merge/vendor/signalsmith-stretch)
+   Compiling crc32fast v1.5.2
+   Compiling audio-codec-algorithms v0.8.1
+   Compiling audioadapter-sample v5.2.0
+   Compiling extended v0.1.0
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling audioadapter v5.0.0
+   Compiling audioadapter-buffers v5.2.0
+   Compiling indexmap v2.14.2
+   Compiling symphonia-format-riff v0.6.1
+   Compiling symphonia-format-ogg v0.6.1
+   Compiling yeban-dsp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-dsp)
+   Compiling symphonia-bundle-flac v0.6.1
+   Compiling symphonia-codec-vorbis v0.6.1
+   Compiling symphonia-codec-adpcm v0.6.1
+   Compiling symphonia-codec-pcm v0.6.1
+   Compiling yeban-model v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-model)
+   Compiling visibility v0.1.1
+   Compiling windowfunctions v0.1.1
+   Compiling typed-path v0.12.3
+   Compiling zip v9.0.3
+   Compiling yeban-midi v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-midi)
+   Compiling rubato v5.0.1
+   Compiling yeban-engine v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-engine)
+   Compiling symphonia v0.6.1
+   Compiling yeban-decode v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-decode)
+   Compiling yeban-render v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-render)
+   Compiling yeban-diagnostics v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-diagnostics)
+   Compiling yeban-otcp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-otcp)
+   Compiling yeban-theory v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-theory)
+   Compiling yeban-mcp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 40s
+     Running tests/assertion_bounds_audit.rs (target/debug/deps/assertion_bounds_audit-7d3ec8bfa0131ab3)
+
+running 5 tests
+test every_all_assertion_in_this_crate_is_bounded_or_allowlisted ... ok
+test every_file_that_contains_all_is_registered ... ok
+test production_predicates_are_not_criteria_and_only_assertions_need_bounds ... ok
+test the_bound_recogniser_has_both_teeth_and_silence ... ok
+test the_window_is_the_function_body_and_negation_is_its_own_class ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.68s
+
+     Running tests/export_stems.rs (target/debug/deps/export_stems-b5ff80f747db4c6c)
+
+running 11 tests
+test audition_state_does_not_change_the_batch ... ok
+test dry_run_previews_measured_bytes_without_writing_any_file ... ok
+test export_without_an_active_project_fails_as_no_active_project ... ok
+test file_names_are_deterministic_and_carry_no_path_from_the_track_name ... ok
+test master_and_bus_tracks_are_named_in_skips_instead_of_vanishing ... ok
+test one_call_writes_every_track_as_a_32_bit_float_stem ... ok
+test out_dir_must_be_an_existing_directory_and_is_never_created ... ok
+test streaming_export_writes_the_same_bytes_and_releases_the_buffers ... ok
+test streaming_failure_keeps_completed_files_and_reports_the_true_remainder ... ok
+test the_second_stem_failing_reports_what_is_already_on_disk ... ok
+test track_ids_filters_the_batch_and_unknown_ids_fail_loudly ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 45.18s
+
+     Running tests/fault_vocabulary.rs (target/debug/deps/fault_vocabulary-e504c4d021a6f0fa)
+
+running 13 tests
+test a_reason_outside_the_frozen_set_is_still_a_violation ... ok
+test an_unclassifiable_reason_site_is_red_naming_file_and_line ... ok
+test every_reason_is_asserted_somewhere ... ok
+test every_reason_occurrence_is_classified_or_explicitly_registered ... ok
+test relative_to_src_normalises_windows_separators ... ok
+test the_propagated_reason_sites_publish_their_call_site_literals ... ok
+test the_reason_character_filter_rejects_nothing ... ok
+test the_reason_payload_shape_is_the_published_table ... ok
+test the_reason_scanners_skip_comments_and_string_intervals ... ok
+test the_reason_site_scanner_classifies_every_known_shape ... ok
+test the_reason_surface_digest_is_frozen_and_documented ... ok
+test the_reason_vocabulary_is_the_published_list ... ok
+test unclassified_reason_sites_and_all_key_syntaxes_are_covered ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 29.12s
+
+     Running tests/render_master.rs (target/debug/deps/render_master-7b1b7f5068f5884a)
+
+running 105 tests
+test a_bend_written_through_the_tool_surface_bends_the_master ... ok
+test a_bound_sampler_changes_the_export_and_the_per_track_reading_says_so ... ok
+test a_bus_is_muted_by_another_tracks_solo_unless_it_is_solo_safe ... ok
+test a_bus_mute_silences_the_whole_bus ... ok
+test a_bus_pan_lane_is_applied_at_the_output_stage ... ok
+test a_bus_static_pan_moves_the_whole_bus ... ok
+test a_clipping_master_gets_a_clipping_warning_with_a_trim_suggestion ... ok
+test a_clipping_master_reports_clipped_samples_and_true_peak ... ok
+test a_compressed_track_source_peak_is_taken_before_the_insert_chain ... ok
+test a_device_parameter_written_through_the_tool_face_changes_the_master ... ok
+test a_disabled_volume_lane_is_byte_identical_to_removing_it ... ok
+test a_huge_volume_lane_on_an_ordinary_track_stays_source_side ... ok
+test a_lane_that_is_flat_at_the_static_value_is_byte_identical_to_no_lane ... ok
+test a_loop_is_expanded_into_n_repetitions ... ok
+test a_loop_shorter_than_the_placement_is_expanded ... ok
+test a_loop_that_does_not_wrap_before_the_placement_ends_is_bit_identical ... ok
+test a_master_pan_lane_moves_the_master_stereo_image ... ok
+test a_master_volume_ramp_is_monotonic_and_applied ... ok
+test a_mute_written_through_the_tool_face_silences_the_source_in_the_master ... ok
+test a_neutral_bus_is_bit_identical_to_the_direct_baseline ... ok
+test a_no_fader_project_gets_a_clipping_warning_through_the_tool_chain ... ok
+test a_normal_master_reports_an_empty_warnings_array ... ok
+test a_normal_master_reports_zero_clipped_samples_and_no_overshoot ... ok
+test a_note_that_does_not_trigger_contributes_no_ratchet_pulses ... ok
+test a_one_note_change_moves_the_file_hash ... ok
+test a_pitch_shape_written_in_place_by_the_tool_surface_bends_the_master ... ok
+test a_pre_muted_track_reports_null_contributions ... ok
+test a_reachable_bus_volume_lane_is_applied_at_the_output_stage ... ok
+test a_sampler_track_over_sixteen_voices_reports_its_steals ... ok
+test a_sampler_track_with_pan_applies_the_same_curve_as_midi ... ok
+test a_sampler_with_missing_sample_files_is_named_in_silent_sources ... ok
+test a_saturated_start_tick_from_the_tool_face_is_a_contract_error_not_a_panic ... ok
+test a_sidechain_edge_adds_nothing_to_the_master ... ok
+test a_sidechain_only_project_has_no_audible_route ... ok
+test a_silent_master_cannot_meet_a_loudness_target_and_never_reports_infinity ... ok
+test a_source_that_renders_silence_in_the_window_is_named_in_a_warning ... ok
+test a_static_master_pan_is_applied_and_not_reported ... ok
+test a_tempo_point_changes_the_master_length_and_onset ... ok
+test a_volume_ramp_is_strictly_monotonic_and_the_last_window_is_at_least_three_times_the_first ... ok
+test a_zero_db_lane_does_not_resurrect_a_muted_track ... ok
+test absent_contributions_is_byte_identical_to_explicit_false ... ok
+test an_armed_destination_evaluates_its_sidechain_edge ... ok
+test an_empty_lane_is_visible_in_the_reading_but_not_reported_as_unsupported ... ok
+test an_explicit_frame_count_really_sets_the_output_length ... ok
+test an_impossible_loudness_target_is_an_invalid_parameter ... ok
+test an_instrument_wave_choice_changes_the_master_and_stops_registering_device_chain_dsp ... ok
+test an_ordinary_edge_to_the_same_destination_changes_the_master ... ok
+test an_unreadable_sampler_path_is_a_loud_failure_not_a_silent_sine ... ok
+test contributions_match_an_independent_mute_render ... ok
+test dry_run_preview_and_the_real_call_agree_on_the_loudness_verdict ... ok
+test dry_run_writes_nothing_and_says_where_it_would_write ... ok
+test empty_tracks_are_named_but_never_become_sources ... ok
+test every_impossible_request_returns_a_contract_error_code ... ok
+test every_source_in_a_twenty_four_track_project_sounds ... ok
+test illegal_explicit_frames_are_refused_without_writing_a_file ... ok
+test load_and_render_receipts_agree_on_the_silent_region_count_of_a_sampleless_sfz ... ok
+test longest_path_latency_comes_from_the_device_definitions ... ok
+test loudness_reading_is_reported_on_the_default_path_without_a_target ... ok
+test normalize_hits_full_scale_and_leaves_all_zero_signal_alone ... ok
+test offline_inserts_consume_gain_filter_and_the_compressor ... ok
+test one_second_of_stereo_master_is_header_plus_frames_times_channels_times_depth ... ok
+test output_path_may_not_be_the_project_or_the_lock_file ... ok
+test points_past_the_end_do_not_extend_the_master ... ok
+test probability_endpoints_and_the_seed_are_load_bearing ... ok
+test probability_renders_are_bit_identical_and_seed_sensitive ... ok
+test ratchet_expands_one_note_into_exactly_n_pulses_on_the_engines_grid ... ok
+test ratchet_renders_are_bit_identical_and_the_default_path_is_unchanged ... ok
+test read_only_output_directory_is_an_io_error_and_keeps_the_previous_file ... FAILED
+test sfz_amplitude_is_reported_only_for_the_cc_half ... ok
+test sfz_region_layering_is_applied_and_no_longer_reported ... ok
+test sidechain_readings_are_declared_in_the_output_schema ... ok
+test sidechain_readings_separate_declared_edges_from_summed_edges ... ok
+test the_audio_export_carries_no_author_metadata ... ok
+test the_audio_export_never_embeds_the_project_author_bytes ... ok
+test the_clipping_warning_does_not_change_a_single_byte ... ok
+test the_compression_amount_does_not_depend_on_pan ... ok
+test the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached ... ok
+test the_default_rendering_path_stays_bit_identical_with_an_explicit_frame_count ... ok
+test the_engine_source_failure_reason_is_registered_in_the_vocabulary ... ok
+test the_frame_ceiling_gate_uses_the_constant_itself ... ok
+test the_known_unsupported_list_is_not_decoration ... ok
+test the_loudest_source_is_the_loudest_track ... ok
+test the_loudness_reading_follows_the_master_level ... ok
+test the_loudness_target_has_teeth ... ok
+test the_loudness_tolerance_boundary_is_inclusive ... ok
+test the_master_bends_from_440_to_880_and_the_empty_curve_stays_bit_identical ... ok
+test the_master_is_not_silent_and_panning_moves_the_image ... ok
+test the_midi_export_embeds_the_project_author_as_conductor_copyright ... ok
+test the_probability_decision_follows_the_note_identity_not_its_position ... ok
+test the_probability_decision_is_the_models_own_triggers_function ... ok
+test the_ratchet_grid_uses_integer_division_and_leaves_the_remainder_silent ... ok
+test the_render_frame_ceiling_is_the_published_hour ... ok
+test the_requested_format_changes_the_container_but_not_the_audio ... ok
+test the_same_idempotency_key_does_not_render_twice ... ok
+test the_target_changes_the_verdict_so_it_cannot_be_ignored ... ok
+test the_tool_surface_binds_two_different_samplers_and_query_reads_them_back ... ok
+test the_wall_clock_reaches_the_report_but_not_the_file ... ok
+test threads_param_is_guarded_and_changes_only_time_not_bytes ... ok
+test tick_conversion_is_shared_and_keeps_the_48_and_96_khz_summaries ... ok
+test time_signature_change_leaves_master_audio_bit_identical ... ok
+test two_renders_of_the_same_project_are_byte_identical ... ok
+test two_renders_under_different_wall_clocks_are_byte_identical_chunk_by_chunk ... ok
+test unsupported_features_are_named_and_counted_only_when_present ... ok
+test volume_automation_is_deterministic_across_two_renders ... ok
+test without_the_volume_lane_the_four_windows_are_equal_and_the_baseline_digest_is_unchanged ... ok
+
+failures:
+
+---- read_only_output_directory_is_an_io_error_and_keeps_the_previous_file stdout ----
+
+thread 'read_only_output_directory_is_an_io_error_and_keeps_the_previous_file' (41374) panicked at crates/yeban-mcp/tests/render_master.rs:526:5:
+assertion `left == right` failed: 只读目录: {"data":{"atomic":true,"audio":{"assets":[],"assetsReferenced":0,"bitExactness":{"identityRate":"bit-exact (无滤波, 逐位透传)","resampled":"同架构同工具链逐位; 跨架构按 ADR-0001 D32 给数值预算 (不承诺位级)"},"clipsRendered":0,"resampler":{"adr":"ADR-0001 D26","method":"rubato Async::<f32>::new_sinc, 窗 BlackmanHarris2, sinc_len=256, chunk=1024, max_relative_ratio=1.0, 前置延迟已被上游 process_all_into_buffer 裁掉","specId":"ARCH-DSP-002"},"supported":"WAV (PCM 8/16/24/32-bit 与 f32, 含 ADPCM) / FLAC / Ogg-Vorbis; 1-2 声道","unsupported":"Matroska / AIFF / CAF / ISO-MP4 / MP3 / AAC / ALAC (feature 未启用); 声道数 > 2","wired":true},"automation":{"appliedDeviceParamNames":["input_gain_db","input_gain","trim_db","output_gain_db","output_gain","fader_db","eq_enabled","filter_enabled","eq_low_gain","low_gain","eq_low_freq","low_freq","eq_mid_gain","mid_gain","eq_mid_freq","mid_freq","eq_mid_q","mid_q","eq_high_gain","high_gain","eq_high_freq","high_freq","cutoff_hz","resonance","filter_resonance","drive","filter_drive","compressor_enabled","threshold_db","threshold","ratio","knee_db","knee","detector_s","detector","attack_s","attack","release_s","release","makeup_db","makeup","hpf_hz","high_pass_hz","deq_freq","dyn_eq_freq","deq_threshold_db","dyn_eq_threshold_db","deq_cut_db","dyn_eq_cut_db","strip_width","channel_width","mono_below_hz","mono_maker_hz","deq_q","dyn_eq_q","deq_ratio","dyn_eq_ratio","ms_mid_gain_db","ms_mid_gain","ms_mid_freq_hz","ms_mid_freq","reverb_size","reverb_damp","reverb_wet","reverb_wet_mix","reverb_predelay","reverb_predelay_s","conv_predelay_s","conv_pre_delay_s","conv_predelay","conv_dry","conv_wet","conv_wet_mix","conv_ir_gain_db","conv_ir_gain","delay_time_s","delay_time","delay_feedback","delay_fb","delay_mix","delay_wet","delay_damp","delay_damping","delay_ping_pong","delay_pingpong","delay_sync_enabled","delay_sync","delay_sync_num","delay_sync_den","delay_sync_dotted","tape_drive","saturation_drive","tape_mix","saturation_mix","tape_trim_db","saturation_trim_db","tape_hf_hz","saturation_hf_hz","tape_asym","saturation_asym","limiter_threshold_db","limiter_ceiling_db","limiter_release_ms","limiter_lookahead","limiter_true_peak"],"appliedLanes":0,"domainTransfer":{"adr":"R55","denominator":"静态值（⛔ 不是 mute/solo 之后的增益；TrackVolume 静音时为 0.0 会除零）","ratio":"db_to_linear(自动化 dB) / db_to_linear(静态值 dB)（TrackVolume 取 track.volume_db；SendGain 取 edge.gain_db.unwrap_or(0.0)）；TrackPan 不换域：平滑的是位置（-1..=1），乘的是等功率曲线的绝对左右增益；DeviceParam 不换域：原生绝对值（dB）直接交给器件参数"},"evaluableLanes":0,"evaluator":"YebanProjectV1::automation_value_at","granularity":{"blockSize":128,"curve":"每块起点取一次曲线值（tick = floor(frame * PPQ * bpm / (sample_rate * 60))）","smoothing":"TrackVolume / SendGain / TrackPan：块内逐样本一阶低通（时间常数 5 ms）；DeviceParam：只在块边界 set_params（⛔ 不逐样本插值，⛔ 没有平滑器）"},"lanes":0,"smoother":"yeban_dsp::smoothing::ParamSmoother","targetsSupported":["TrackVolume","TrackPan","SendGain","DeviceParam","MidiCc"],"targetsUnsupported":["Macro"],"timeConstantSeconds":0.005,"tracks":[],"unsupportedLanes":0,"wired":true},"bitDepth":24,"blockSize":128,"blocks":375,"bwf":{"codingHistory":"A=PCM,F=48000,W=24,M=stereo,T=Yeban-MCP","loudness":"unknown (bext v2 哨兵)","originationDate":"2023-11-14","originationTime":"22:13:20","originator":"Yeban DAW","originatorReference":"01J8ZR00000000000000000999"},"bytes":288694,"channels":2,"clippedSamples":0,"commitModel":"none","container":"RIFF","dither":"TPDF (ARCH-FMT-001)","durationSeconds":1.0,"emptySources":{"count":0,"trackIds":[],"why":"该轨既没有片段摆放也没有采样器, 确定输出 0; 不建源、不进 sources[]"},"format":"wav","frames":48000,"headerBytes":694,"headroomDb":2.189579486846924,"latencySource":"DeviceDefinition::latency_samples (track_latencies)","longestPathFrames":0,"loudness":{"algorithm":"ITU-R BS.1770-4 (K-weighted, gated integrated: Γa = −70 LUFS, Γr = −10 LU)","deltaLu":null,"implementation":"yeban-dsp::loudness::GatedLoudness (与 yeban_query_engine_state 的 integratedLufs 同一计量器)","measured":true,"measuredIntegratedLufs":-3.8652892112731934,"measurementNote":null,"specId":"ARCH-UI-002","specSilentOnTolerance":true,"targetLufs":null,"toleranceLu":0.5,"verdict":"noTarget"},"masterDigest":"17e3db373cd2815ae8fa43e0605654be36d37f47e027501174cd9b3c50834997","midiSource":{"adr":"ADR-0011","appliesTo":"sources[].kind == \"engine-instrument\"","engine":"yeban_engine::synth::SynthEngine（HOLLOW 加法波表 + ADSR + 双振荡器）","engineTimbre":true,"kind":"engine-instrument","label":"yeban-engine SynthEngine（引擎音色）","note":"MCP 的 MIDI 音符音源是 yeban-engine 的 SynthEngine，与界面/CLI 的`--export-wav` **同一个音色、同一条快照投影**（ADR-0011）；本工具⛔ 不再使用内置正弦振荡器。绑定了 SFZ 采样器的轨由采样器发声（与 CLI 的 `--sfz` 旁路同形），见 sources[].sampler。"},"nodeCount":2,"normalize":{"applied":false,"domain":"抖动/量化之前的浮点母带","note":null,"requested":false,"target":1.0},"path":"/tmp/yeban-mcp-render-40459-readonly-1794473990168724399-79/locked/master.wav","payloadBytes":288000,"peak":{"after":0.7763871550559998,"before":0.7763871550559998,"domain":"TPDF 抖动 / 24-bit 量化之前的浮点母带","semantics":"before = 归一化**前**的样本峰值 (max |sample|), after = 归一化**后**的样本峰值; 两者都作用在 TPDF 抖动 / 24-bit 量化**之前**的浮点母带上。⛔ 不是文件峰值 (写盘的那份经过抖动与量化; 见 top-level `clippedSamples`), ⛔ 也不是真峰值 (样本间的过冲见 top-level `truePeakDbfs`)。","target":1.0,"truePeakDbfs":-2.189579486846924,"truePeakOversampling":16,"unit":"full-scale (线性幅度; 1.0 = 0 dBFS, 不是 dB)"},"probability":{"adr":"ADR-0001 (ARCH-DET-001)","decision":"MidiNote::triggers(project.rng_seed)","notesSilenced":0,"rngSeed":6432620491017551873,"specId":"MODEL-AST-005"},"projectDigest":"67d466a786fea8e4eea1dc062e95b50c6c370263fea5b39614a7429984ef6e24","ratchet":{"engineParity":"yeban-engine/src/snapshot.rs 的 project_schedules","grid":"step = (duration_ticks / ratchet).max(1); pulse p starts at p * step","maxPerNote":16,"minPerNote":1,"notesExpanded":0,"pulses":0,"ruling":"docs/ledger/engine-sound-notes.md 的 ratchet 语义 (整数除法等分时值, 余数不补)","specId":"MODEL-AST-005"},"rendered":true,"renderedAtUnixMs":1760000000000,"request":{"bitDepth":24,"channels":2,"contributions":false,"durationSeconds":null,"format":"wav","frames":null,"framesSource":"projectEnd","normalize":false,"path":"/tmp/yeban-mcp-render-40459-readonly-1794473990168724399-79/locked/master.wav","pathRule":"显式 path 参数","sampleLimits":{"maxSampleFiles":512,"maxSampleFrames":64000000,"unlimited":false},"sampleRate":48000,"targetLufs":null,"targetToleranceLu":null,"threads":null},"sampleRate":48000,"sha256":"837db980db0866f8da53b968a124f1b45494e55b20c3ba86e5697b1e1e99d3b8","sidechainEdgesDeclaredWithoutKeyInput":0,"sidechainEdgesInRoutingGraph":0,"sidechainEdgesSummedAsOrdinaryAudio":0,"sourceNodes":["01J8ZR00000000000000000002"],"sources":[{"audible":true,"audioClips":0,"audioClipsGated":0,"audioClipsUnrendered":0,"endTick":1920,"kind":"engine-instrument","node":"01J8ZR00000000000000000002","notes":1,"notesRatcheted":0,"notesSilenced":0,"peak":0.7763871550559998,"peakDbfs":-2.1984331607818604,"ratchetPulses":0,"sampler":null,"track":"Lead"}],"strategy":"同目录 .tmp-{ulid} + File::sync_all + rename (ARCH-SEC-004)","truePeakDbfs":-2.189579486846924,"unsupported":[],"unsupportedCounts":{},"warnings":[]},"status":"success"}
+  left: String("success")
+ right: "error"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    read_only_output_directory_is_an_io_error_and_keeps_the_previous_file
+
+test result: FAILED. 104 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 199.13s
+
+error: test failed, to rerun pass `-p yeban-mcp --test render_master`
+MCP_EXIT=101

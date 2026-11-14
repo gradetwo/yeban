@@ -2,6 +2,7 @@
 //! `Op::SetTrackPreset` 只写一个字段且可逆、预制格式校验（64 KiB / major /
 //! 标识）、工厂登记映射、容器内嵌往返。
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use yeban_model::container::{
     ContainerLimits, ProjectArchive, read_project_container,
@@ -282,5 +283,50 @@ fn embedded_user_preset_round_trips_through_the_container() {
             )],
         )
         .is_err()
+    );
+}
+
+/// ⭐ 预制 `cc` 段（用户初始 CC）：往返保真、空表不落盘、越域响亮拒绝。
+///
+/// 判据：① 不带 `cc` 的旧文件解析出空表，序列化后仍无 `cc` 键（不升
+/// format、逐字兼容）；② 带 `cc` 的文件解析与再序列化往返一致；
+/// ③ 控制器号或值落在 `128..=255`（装得进 `u8`、出 MIDI CC 域）⇒
+/// `Preset::parse` 以 `InvalidField { field: "cc" }` 拒绝（不钳位）。
+#[test]
+fn preset_cc_segment_round_trips_and_validates_domain() {
+    let good = serde_json::to_vec(&minimal_preset_json()).expect("序列化");
+    let preset = Preset::parse(&good).expect("合法预制必须通过");
+    assert!(preset.cc.is_empty(), "旧文件无 cc 段 ⇒ 空表");
+    let text = serde_json::to_string(&preset).expect("序列化");
+    assert!(
+        !text.contains("\"cc\":"),
+        "空 cc 不得进序列化形态（旧形态逐字不变）: {text}"
+    );
+
+    let mut with_cc = minimal_preset_json();
+    with_cc["cc"] = serde_json::json!({"1": 64, "11": 127});
+    let preset =
+        Preset::parse(&serde_json::to_vec(&with_cc).expect("序列化")).expect("带 cc 的合法预制");
+    assert_eq!(preset.cc, BTreeMap::from([(1u8, 64u8), (11, 127)]));
+    let round = Preset::parse(&serde_json::to_vec(&preset).expect("序列化")).expect("往返必须通过");
+    assert_eq!(round.cc, preset.cc, "cc 段往返一致");
+
+    let mut bad_key = minimal_preset_json();
+    bad_key["cc"] = serde_json::json!({"200": 1});
+    assert!(
+        matches!(
+            Preset::parse(&serde_json::to_vec(&bad_key).expect("序列化")),
+            Err(yeban_model::preset::PresetError::InvalidField { field: "cc", .. })
+        ),
+        "控制器号 200 越出 CC 域必须响亮拒绝"
+    );
+    let mut bad_value = minimal_preset_json();
+    bad_value["cc"] = serde_json::json!({"1": 200});
+    assert!(
+        matches!(
+            Preset::parse(&serde_json::to_vec(&bad_value).expect("序列化")),
+            Err(yeban_model::preset::PresetError::InvalidField { field: "cc", .. })
+        ),
+        "值 200 越出 CC 域必须响亮拒绝"
     );
 }

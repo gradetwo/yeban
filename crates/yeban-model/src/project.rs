@@ -4801,6 +4801,7 @@ mod tests {
             aux: None,
             mix: None,
             macros: Vec::new(),
+            cc: BTreeMap::new(),
         }
     }
 

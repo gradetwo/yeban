@@ -8416,6 +8416,73 @@ fn s86_the_seeded_initial_value_reaches_the_session_state_and_the_probe() {
     assert_ne!(seeded_attack, base_attack, "⭐ 有牙：两个读数必须不同");
 }
 
+/// ⭐ 用户初始 CC（`initialCc` 线）：**用户值经共享合并进同一张种子表后，
+/// CC 门控区域在实时声部池里真的发声**。
+///
+/// 链路（与产品路径逐环同构）：SFZ 文本（文件 `set_cc1=10`、门控
+/// `locc1=64`）→ `yeban_sfz::instrument::merged_cc_defaults`（全仓唯一的
+/// 种子合并实现）把用户 `{1: 100}` 并入文件缺省 →
+/// `CcSeedTable::from_cc_defaults` → 按 `rt.rs` 快照边界的同一循环
+/// `for_each(seed)` 播进 `ControlChangeState` → 探针喂
+/// `SfzVoicePool::trigger_note` / `render_into_with_cc`。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 同一份摊平表在两种探针下的触发声部数（个）与渲染非零样本数
+/// （个）：文件种子（10 ＜ 64 ⇒ 门关、0 声部）／用户合并种子（100 ⇒ 门开、
+/// 1 声部、非零 ＞ 0）。
+#[test]
+fn user_initial_cc_merged_seed_opens_the_gate_end_to_end() {
+    const HZ: f32 = 48_000.0;
+    const TEXT: &str = "<control> set_cc1=10\n\
+                        <region> sample=a.wav key=60 pitch_keycenter=60 \
+                        amp_veltrack=0 locc1=64 hicc1=127\n";
+    let sample = constant_sample(4_096);
+    let plan = prepare_with(TEXT, &sample);
+
+    // 文件自身的种子表：只有 `set_cc1=10` ⇒ 门控（≥ 64）不开、0 声部。
+    assert_eq!(plan.cc_seeds().value(1), Some(10));
+    let file_probe = |controller: u8| plan.cc_seeds().value(controller).unwrap_or(0);
+    let file_arg: Option<&dyn Fn(u8) -> u8> = Some(&file_probe);
+    let mut pool = SfzVoicePool::new(HZ);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, file_arg),
+        0,
+        "文件初值 10 < 门控下界 64 ⇒ 不发声"
+    );
+
+    // 用户初始 CC 经共享合并进同一张表（用户覆盖文件）。
+    let instrument = SfzInstrument::load(TEXT.to_owned(), &Default::default()).expect("解析");
+    let file_defaults = instrument
+        .with_instrument(|parsed| parsed.cc_defaults().clone())
+        .expect("读文件缺省");
+    let user = std::collections::BTreeMap::from([(1u8, 100u8)]);
+    let merged = yeban_sfz::instrument::merged_cc_defaults(&file_defaults, &user);
+    let table = yeban_engine::sfz_instrument::CcSeedTable::from_cc_defaults(&merged);
+    assert_eq!(table.value(1), Some(100), "用户值覆盖文件值进同一张表");
+
+    // `rt.rs` 快照边界的同一播种循环 ⇒ 会话 CC 状态。
+    let mut state = yeban_engine::cc_state::ControlChangeState::new();
+    table.for_each(|cc, value| {
+        state.seed(cc, value);
+    });
+    assert_eq!(state.received(1), Some(100));
+    let state_probe = |controller: u8| state.value(controller);
+    let state_arg: Option<&dyn Fn(u8) -> u8> = Some(&state_probe);
+    let mut pool = SfzVoicePool::new(HZ);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, state_arg),
+        1,
+        "用户初值 100 落在门控 [64, 127] 内 ⇒ 建 1 个声部"
+    );
+    let mut out = vec![0.0f32; 512];
+    pool.render_into_with_cc(&plan, 0, &mut out, state_arg);
+    assert!(
+        out.iter().any(|sample| *sample != 0.0),
+        "门控区域按用户值真的发声（非零样本 > 0）"
+    );
+}
+
 /// ⭐ S87（任务单 `#110`；§5.3 保命不变量）：**没有 `set_ccN` 的夹具 ⇒ 播种机制一个
 /// 字节都不动** —— 会话表不 armed、收到过的控制器 0 个、端到端指纹等于**改动前实测**，
 /// 且三个**承重指纹**逐字不变。

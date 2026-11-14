@@ -1,0 +1,149 @@
+   Compiling yeban-app v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 19s
+     Running tests/apply_ops.rs (target/debug/deps/apply_ops-4d43c11a8abc43d2)
+
+running 9 tests
+test apply_ops_without_save_as_is_a_usage_error ... ok
+test an_unknown_kind_fails_loudly_and_writes_nothing ... ok
+test a_missing_track_fails_loudly_and_writes_nothing ... ok
+test dry_run_with_save_as_is_a_usage_error ... ok
+test dry_run_without_apply_ops_is_a_usage_error ... ok
+test dry_run_reports_a_domain_failure_instead_of_faking_success ... ok
+test a_self_addressed_batch_needs_no_envelope_ids ... ok
+test the_rename_round_trips_through_save_as ... ok
+test dry_run_writes_nothing ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/assertion_bounds_audit.rs (target/debug/deps/assertion_bounds_audit-1ffa4cd641fd9f36)
+
+running 5 tests
+test production_predicates_are_not_criteria_and_only_assertions_need_bounds ... ok
+test the_window_is_the_function_body_and_negation_is_its_own_class ... ok
+test the_bound_recogniser_has_both_teeth_and_silence ... ok
+test every_all_assertion_in_this_crate_is_bounded_or_allowlisted ... ok
+test every_file_that_contains_all_is_registered ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+
+     Running tests/audio_slicer.rs (target/debug/deps/audio_slicer-944834b863583583)
+
+running 8 tests
+test bad_input_fails_loudly_without_leaving_files ... ok
+test explicit_cuts_override_detection ... ok
+test sliced_regions_parse_and_load ... ok
+test slices_start_and_end_with_fades ... ok
+test tape_doubles_pitch_and_halves_duration ... ok
+test shift_raises_pitch_an_octave_without_changing_duration ... ok
+test stretch_doubles_duration_without_changing_pitch ... ok
+test cli_slices_audio_end_to_end ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-ddc7e4291955a2a1)
+
+running 29 tests
+test default_artifact_refuses_the_experimental_logic_switch ... ok
+test default_artifact_refuses_the_ui_mcp_http_switch ... ok
+test default_artifact_refuses_the_experimental_als_switch ... ok
+test broken_inputs_exit_non_zero_without_panicking ... ok
+test delete_selection_is_implemented_in_the_host_table_and_rendered_output ... ok
+test duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output ... ok
+test export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary ... ok
+test export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing ... ok
+test empty_sample_reports_zero_audio_tracks_and_default_reports_six ... ok
+test export_elements_matches_dump_elements ... ok
+test export_wav_loudness_switches_are_guarded_and_reach_the_target ... ok
+test headless_handshake_appears_exactly_once_and_names_the_source ... ok
+test export_wav_runs_on_the_windowless_path_from_the_real_binary ... ok
+test help_and_version_are_real_and_short_circuit ... ok
+test open_rejects_a_bare_project_json_with_a_precise_reason ... ok
+test open_reports_the_real_project_counts ... ok
+test headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness ... ok
+test save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file ... ok
+test save_as_is_refused_while_the_project_lock_is_held ... ok
+test print_shortcuts_is_a_batch_command ... ok
+test save_as_round_trips_and_is_deterministic_from_the_real_binary ... ok
+test save_as_without_open_says_it_saved_the_demo_project ... ok
+test shortcut_table_status_matches_the_resolution_and_host_pipeline ... ok
+test slint_backend_headless_sentinel_alone_keeps_the_window_closed ... ok
+test unknown_switches_exit_two_with_usage_on_stderr ... ok
+test the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented ... ok
+test zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output ... ok
+test export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible ... ok
+test export_wav_render_threads_change_only_time_not_bytes ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.10s
+
+     Running tests/export_stems.rs (target/debug/deps/export_stems-2d9487a9030b93b8)
+
+running 4 tests
+test a_missing_directory_is_refused_loudly ... ok
+test stems_after_apply_ops_use_the_edited_names ... ok
+test each_track_gets_one_valid_float_wav ... ok
+test an_existing_target_refuses_the_whole_batch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.74s
+
+     Running tests/in_process_mcp.rs (target/debug/deps/in_process_mcp-4a04d11d4645fc21)
+
+running 3 tests
+test the_switch_off_builds_nothing_at_all ... ok
+test a_client_receives_loudness_updates_over_the_in_process_control_plane ... ok
+test the_round_trip_stops_leaving_nothing_listening ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/in_process_mcp_lock.rs (target/debug/deps/in_process_mcp_lock-e9ad2f5973945766)
+
+running 5 tests
+test lock_child_process_opens_the_project_and_holds_it ... ok
+test a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file ... ok
+test a_mount_is_refused_while_another_form_holds_the_project_exclusively ... ok
+test the_mounted_control_plane_excludes_writers_and_shares_with_readers ... ok
+test the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/lyrics_export.rs (target/debug/deps/lyrics_export-716f2506abcd637f)
+
+running 5 tests
+test export_lyrics_conflicts_with_headless_idle ... ok
+test export_lyrics_without_lyrics_is_header_only ... ok
+test export_lyrics_to_an_unwritable_path_fails_loudly ... ok
+test export_lyrics_writes_the_reference_format ... ok
+test help_lists_export_lyrics ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/sample_editor.rs (target/debug/deps/sample_editor-9e0b7c298b7e2504)
+
+running 10 tests
+test help_lists_edit_samples ... ok
+test layers_out_of_vocabulary_is_usage_error ... ok
+test edit_samples_without_out_dir_is_usage_error ... ok
+test out_dir_alone_is_usage_error ... ok
+test missing_input_fails_loudly_with_stable_code ... ok
+test rms_out_of_range_is_usage_error ... ok
+test report_only_writes_no_audio ... ok
+test sfz_mode_emits_edited_sfz_with_layer_regions ... ok
+test dir_mode_tunes_to_within_half_a_cent_and_normalizes ... ok
+test run_twice_is_deterministic ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.85s
+
+     Running tests/song_overview_export.rs (target/debug/deps/song_overview_export-4ac39c3a010d610f)
+
+running 8 tests
+test a_missing_sampler_fails_loudly_and_writes_nothing ... ok
+test score_only_html_export_also_works ... ok
+test score_only_says_so_in_the_file_and_the_receipt ... ok
+test an_unwritable_target_fails_with_the_intended_path ... ok
+test a_silent_full_render_says_so_without_failing ... ok
+test the_batch_export_is_the_same_data_as_the_tool_response ... ok
+test json_and_html_switches_together_write_both_files ... ok
+test the_html_export_is_the_same_report_as_the_tool_html ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.43s
+
+INTEG_EXIT=0

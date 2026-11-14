@@ -1,0 +1,786 @@
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.190
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling dasp_sample v0.11.0
+   Compiling autocfg v1.5.1
+   Compiling dasp_frame v0.11.0
+   Compiling num-traits v0.2.19
+   Compiling glob v0.3.4
+   Compiling clang-sys v1.9.1
+   Compiling memchr v2.8.3
+   Compiling prettyplease v0.2.37
+   Compiling regex-syntax v0.8.11
+   Compiling dasp_ring_buffer v0.11.0
+   Compiling minimal-lexical v0.2.1
+   Compiling either v1.18.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling regex-automata v0.4.18
+   Compiling nom v7.1.3
+   Compiling syn v2.0.119
+   Compiling libloading v0.8.9
+   Compiling bindgen v0.70.1
+   Compiling crossbeam-epoch v0.9.21
+   Compiling cexpr v0.6.0
+   Compiling regex v1.13.1
+   Compiling itertools v0.13.0
+   Compiling dasp_rms v0.11.0
+   Compiling num-integer v0.1.47
+   Compiling dasp_peak v0.11.0
+   Compiling syn v3.0.6
+   Compiling log v0.4.34
+   Compiling rustc-hash v1.1.0
+   Compiling rand_core v0.10.1
+   Compiling typenum v1.20.1
+   Compiling crossbeam-deque v0.8.8
+   Compiling getrandom v0.4.3
+   Compiling bitflags v2.13.2
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v1.3.0
+   Compiling cc v1.6.0
+   Compiling hybrid-array v0.4.15
+   Compiling dasp_envelope v0.11.0
+   Compiling dasp_interpolate v0.11.0
+   Compiling dasp_window v0.11.1
+   Compiling rayon-core v1.13.0
+   Compiling strength_reduce v0.2.4
+   Compiling cpufeatures v0.3.1
+   Compiling serde_core v1.0.229
+   Compiling transpose v0.2.3
+   Compiling dasp_signal v0.11.0
+   Compiling primal-check v0.3.4
+   Compiling num-complex v0.4.6
+   Compiling dasp_slice v0.11.0
+   Compiling libm v0.2.16
+   Compiling thiserror v2.0.21
+   Compiling getrandom v0.3.4
+   Compiling zmij v1.0.23
+   Compiling dasp v0.11.0
+   Compiling rustfft v6.4.1
+   Compiling signalsmith-stretch v0.1.3 (/home/hatch/workspace/tmp-wt-yeban-main-merge/vendor/signalsmith-stretch)
+   Compiling chacha20 v0.10.2
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling thiserror-impl v2.0.21
+   Compiling const-oid v0.10.2
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling digest v0.11.3
+   Compiling rand v0.10.3
+   Compiling rayon v1.12.0
+   Compiling realfft v3.5.1
+   Compiling serde_derive v1.0.229
+   Compiling itoa v1.0.18
+   Compiling zerocopy v0.8.59
+   Compiling rand_core v0.9.5
+   Compiling yeban-dsp v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-dsp)
+   Compiling ulid v3.0.0
+   Compiling sha2 v0.11.0
+   Compiling yeban-model v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-model)
+   Compiling rtrb v0.4.0
+   Compiling rustix v1.1.5
+   Compiling yeban-record v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-record)
+   Compiling ppv-lite86 v0.2.21
+   Compiling yeban-sfz v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-sfz)
+   Compiling linux-raw-sys v0.12.1
+   Compiling midly v0.5.3
+   Compiling yeban-midi v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-midi)
+   Compiling yeban-engine v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-engine)
+   Compiling rand_chacha v0.9.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.5
+   Compiling once_cell v1.21.4
+   Compiling unarray v0.1.4
+   Compiling yeban-plugin-host v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-plugin-host)
+   Compiling hound v3.5.1
+   Compiling fastrand v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling proptest v1.11.0
+   Compiling yeban-render v0.0.1 (/home/hatch/workspace/tmp-wt-yeban-main-merge/crates/yeban-render)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 08s
+     Running unittests src/lib.rs (target/debug/deps/yeban_render-c1d8a6628fae4b58)
+
+running 315 tests
+test automation::tests::a_bypassed_or_unapplied_device_param_lane_is_never_applicable ... ok
+test automation::tests::a_device_param_ramp_is_evaluated_once_per_block_and_touches_no_sample ... ok
+test automation::tests::a_constant_pan_lane_matches_the_static_pan_curve ... ok
+test automation::tests::a_disabled_lane_is_the_identity ... ok
+test automation::tests::a_disabled_or_flat_device_param_lane_is_the_identity ... ok
+test automation::tests::a_disabled_send_lane_is_the_identity ... ok
+test automation::tests::a_lane_that_is_flat_at_the_static_value_is_the_identity ... ok
+test automation::tests::a_macro_lane_cascades_in_target_units_and_zero_is_identity ... ok
+test automation::tests::a_muted_source_is_not_resurrected_by_a_zero_db_lane ... ok
+test automation::tests::a_pan_lane_flat_at_the_static_pan_is_the_identity ... ok
+test automation::tests::a_send_lane_flat_at_the_static_edge_gain_is_the_identity ... ok
+test automation::tests::a_send_lane_whose_edge_is_missing_is_the_identity ... ok
+test automation::tests::a_send_lane_with_no_points_is_the_identity ... ok
+test automation::tests::a_single_point_holds_its_value_everywhere ... ok
+test automation::tests::an_empty_lane_is_the_identity ... ok
+test automation::tests::an_empty_or_disabled_pan_lane_is_the_identity ... ok
+test automation::tests::every_applied_name_is_applied_and_ramps_monotonically ... ok
+test automation::tests::a_pan_ramp_moves_left_to_right ... ok
+test automation::tests::macro_lane_lands_only_when_every_mapping_lands ... ok
+test automation::tests::a_ramp_is_evaluated_and_moves_the_gain ... ok
+test automation::tests::only_the_strip_source_device_can_be_automated ... ok
+test automation::tests::a_send_ramp_moves_the_accumulated_gain_and_uses_the_model_entry_point ... ok
+test automation::tests::pan_automations_finds_one_evaluator_per_track ... ok
+test automation::tests::every_applied_name_is_identity_when_flat_or_disabled ... ok
+test automation::tests::the_cc_probe_evaluates_lanes_and_clamps_to_the_seven_bit_domain ... ok
+test automation::tests::send_gain_automations_finds_one_evaluator_per_edge ... ok
+test automation::tests::the_cc_probe_ignores_out_of_range_controllers ... ok
+test automation::tests::the_cc_probe_is_absent_without_a_cc_lane ... ok
+test automation::tests::the_identity_compares_the_clamped_value_and_rejects_other_names ... ok
+test automation::tests::the_identity_seam_still_holds_for_the_gain_fields ... ok
+test automation::tests::the_pan_identity_fast_path_does_not_touch_bits ... ok
+test automation::tests::the_scanner_forces_a_strip_only_for_non_identity_device_param_lanes ... ok
+test automation::tests::tick_at_frame_is_the_inverse_of_the_maestro_grid ... ok
+test automation::tests::the_scanner_forces_each_family_separately ... ok
+test contract_tests::container_payload_length_agrees_with_the_buffer_depth ... ok
+test contract_tests::error_source_chains_and_conversions_are_pinned ... ok
+test contract_tests::every_diagnostic_message_is_pinned_in_one_golden_table ... ok
+test automation::tests::the_identity_fast_path_does_not_touch_negative_zero_or_nan_bits ... ok
+test contract_tests::render_digest_is_sha256_over_ieee754_bits ... ok
+test contract_tests::sum_kernel_matches_the_shared_dsp_primitive_bit_for_bit ... ok
+test automation::tests::the_applied_names_and_the_field_table_agree ... ok
+test dither::tests::depth_reporting_is_consistent ... ok
+test dither::tests::float32_path_is_bit_transparent ... ok
+test dither::tests::no_dc_offset ... ok
+test contract_tests::full_lint_to_master_chain_is_thread_count_invariant ... ok
+test dither::tests::output_stays_inside_legal_range ... ok
+test dither::tests::positive_full_scale_does_not_wrap_around ... ok
+test dither::tests::constant_input_is_unbiased ... ok
+test dither::tests::quantization_is_reproducible_for_a_fixed_seed ... ok
+test dither::tests::one_sided_rpdf_dither_would_be_rejected ... ok
+test dither::tests::twenty_four_bit_payload_is_three_bytes_little_endian ... ok
+test dither::tests::tpdf_is_bounded_by_one_lsb ... ok
+test dither::tests::the_tpdf_peak_constant_matches_the_actual_bound ... ok
+test engine_source::tests::an_offline_source_arms_exactly_one_track_slot ... ok
+test engine_source::tests::full_snapshot_arming_is_what_silenced_the_seventeenth_track ... ok
+test engine_source::tests::the_armed_entry_flattens_pending_sfz_and_reports_the_same_numbers_as_the_engine ... ok
+test engine_source::tests::the_advance_contract_is_enforced ... ok
+test engine_source::tests::the_digest_is_not_a_constant ... ok
+test inserts::tests::a_forced_strip_without_a_source_uses_the_identity_params ... ok
+test inserts::tests::a_strip_with_only_a_switchless_stage_still_builds_a_channel_strip ... ok
+test inserts::tests::aliases_resolve_to_the_same_field ... ok
+test inserts::tests::convolution_field_clamp_is_the_device_clamp ... ok
+test inserts::tests::delay_apply_updates_device_fields_but_not_sync_time ... ok
+test inserts::tests::delay_device_clamps_match_the_table ... ok
+test inserts::tests::delay_field_sanitise_grid ... ok
+test inserts::tests::delay_first_source_wins_and_bypassed_ignored ... ok
+test inserts::tests::delay_mix_zero_skips_bit_exact ... ok
+test inserts::tests::delay_of_converts_sync_at_projection ... ok
+test inserts::tests::delay_ping_pong_alternates_at_runtime ... ok
+test inserts::tests::every_applied_name_projects_to_its_own_field ... ok
+test inserts::tests::forced_convolution_keeps_a_wet_zero_instance_alive ... ok
+test inserts::tests::forced_delay_keeps_a_mix_zero_instance_alive ... ok
+test inserts::tests::forced_reverb_keeps_a_wet_zero_instance_alive ... ok
+test inserts::tests::forced_saturation_keeps_a_mix_zero_instance_alive ... ok
+test inserts::tests::non_applied_names_are_not_device_param_fields ... ok
+test inserts::tests::reverb_field_clamp_is_the_device_clamp ... ok
+test inserts::tests::sample_delay_projection_takes_first_recognised_device ... ok
+test inserts::tests::sample_delay_stage_shifts_pulse_and_inverts ... ok
+test inserts::tests::tape_field_clamp_is_the_device_clamp ... ok
+test inserts::tests::tape_names_project_and_source_slot_agrees ... ok
+test inserts::tests::tape_runtime_saturates_and_drops_an_inactive_stage ... ok
+test inserts::tests::the_field_clamp_is_the_device_clamp ... ok
+test engine_source::tests::the_block_split_does_not_change_a_single_sample ... ok
+test mastering::tests::a_measurable_lra_reaches_the_bext_block_scaled_not_as_a_constant ... ok
+test engine_source::tests::every_track_source_sounds_beyond_the_sixteen_slot_cap ... ok
+test mastering::tests::a_non_finite_loudness_range_becomes_the_unknown_sentinel ... ok
+test mastering::tests::a_non_finite_master_is_refused_before_the_quantizer_can_zero_it ... ok
+test contract_tests::a_rendered_master_lands_in_a_file_with_a_measured_loudness_block ... ok
+test mastering::tests::a_mono_signal_in_a_stereo_device_is_three_lufs_louder_when_both_channels_carry_it ... ok
+test mastering::tests::a_signal_shorter_than_the_window_has_no_lra ... ok
+test mastering::tests::a_satisfied_ceiling_changes_nothing ... ok
+test mastering::tests::a_silent_master_with_only_a_ceiling_stays_untouched ... ok
+test mastering::tests::a_finite_target_at_the_top_of_the_range_is_not_already_met ... ok
+test mastering::tests::a_subnormal_amplitude_is_a_measurement_not_silence ... ok
+test mastering::tests::a_true_peak_ceiling_is_really_achieved_on_ragged_channels ... ok
+test mastering::tests::a_silent_master_writes_unknown_in_every_loudness_field ... ok
+test mastering::tests::a_non_finite_target_or_ceiling_is_not_a_constraint ... ok
+test mastering::tests::a_zero_gain_preset_leaves_every_sample_bit_identical ... ok
+test mastering::tests::both_oversampling_choices_are_supported_by_the_detector ... ok
+test mastering::tests::both_normalize_readings_share_one_oversampling ... ok
+test mastering::tests::everything_below_the_absolute_gate_has_no_lra ... ok
+test mastering::tests::lra_of_two_levels_is_hand_computable ... ok
+test mastering::tests::malformed_exports_are_refused_instead_of_silently_degraded ... ok
+test mastering::tests::percentile_interpolates_between_order_statistics ... ok
+test mastering::tests::short_term_values_match_a_hand_driven_meter ... ok
+test mastering::tests::applying_the_same_preset_twice_is_a_bit_exact_no_op ... ok
+test mastering::tests::the_absolute_gate_is_a_strict_lower_bound ... ok
+test mastering::tests::a_streaming_target_lifts_minus_twenty_to_minus_fourteen ... ok
+test mastering::tests::silence_is_never_normalized_and_never_becomes_nan ... ok
+test mastering::tests::the_container_frame_count_comes_from_the_buffer_not_the_field ... ok
+test mastering::tests::the_calibration_tone_reads_minus_twenty_lufs ... ok
+test mastering::tests::the_bext_bridge_scales_finite_readings_and_sentinels_the_rest ... ok
+test mastering::tests::the_explicit_eight_times_entry_matches_the_detector_default ... ok
+test mastering::tests::the_ebu_r128_preset_attenuates_a_hot_master ... ok
+test mastering::tests::the_export_embeds_the_measured_loudness_of_the_normalized_master ... ok
+test mastering::tests::the_export_lands_the_sixteen_times_true_peak_in_the_bext ... ok
+test mastering::tests::the_export_lands_the_real_format_in_the_coding_history ... ok
+test mastering::tests::the_export_refuses_a_bext_version_the_reader_cannot_read ... ok
+test mastering::tests::the_first_two_short_term_readings_are_the_unfilled_window ... ok
+test mastering::tests::the_gain_bound_and_oversampling_equality_are_pinned ... ok
+test mastering::tests::the_export_refuses_a_bext_field_the_reader_cannot_read_back ... ok
+test mastering::tests::the_measurement_resolution_uses_the_larger_operand_and_its_upper_spacing ... ok
+test mastering::tests::the_named_presets_expose_their_engineering_choices ... ok
+test mastering::tests::every_container_and_depth_combination_round_trips_with_the_loudness_block has been running for over 60 seconds
+test mastering::tests::the_mastering_true_peak_uses_the_sixteen_times_oversampling ... ok
+test mastering::tests::the_relative_gate_drops_the_quiet_tail ... ok
+test mastering::tests::the_export_refuses_a_gain_that_overflows_the_master ... ok
+test mastering::tests::every_container_and_depth_combination_round_trips_with_the_loudness_block ... ok
+test mastering::tests::the_normalized_master_digest_never_goes_stale ... ok
+test mastering::tests::the_same_master_exported_twice_is_byte_identical ... ok
+test mastering::tests::the_true_peak_of_a_ragged_pair_comes_from_the_shorter_channel ... ok
+test mastering::tests::unsupported_sample_rates_are_rejected ... ok
+test pdc::tests::a_cycle_anywhere_makes_the_whole_graph_a_cycle ... ok
+test pdc::tests::a_deeper_bus_uses_its_own_arrival_not_the_master_critical_path ... ok
+test pdc::tests::a_mixed_chain_and_diamond_saturates_at_several_levels ... ok
+test pdc::tests::a_self_loop_is_a_cycle_not_a_zero_compensation_edge ... ok
+test pdc::tests::a_silent_channel_stays_bit_zero_and_does_not_borrow_its_neighbour ... ok
+test pdc::tests::accumulated_latency_saturates_at_u32_max_instead_of_wrapping ... ok
+test pdc::tests::cycles_are_rejected ... ok
+test pdc::tests::dangling_edges_and_unknown_master_are_rejected ... ok
+test pdc::tests::delay_line_bypass_copies_the_shortest_length_bit_for_bit ... ok
+test pdc::tests::delay_line_bypass_is_a_bit_copy ... ok
+test pdc::tests::delay_line_delays_by_exactly_the_requested_frames ... ok
+test pdc::tests::delay_line_is_block_size_invariant ... ok
+test pdc::tests::delay_line_keeps_channels_separate ... ok
+test pdc::tests::delay_line_passes_a_ragged_tail_through_across_unequal_lengths ... ok
+test pdc::tests::delay_line_takes_the_shortest_of_the_two_slices ... ok
+test pdc::tests::delay_line_tolerates_ragged_blocks ... ok
+test pdc::tests::delay_line_with_zero_channels_writes_nothing ... ok
+test pdc::tests::diamond_aligns_both_branches_to_the_longest_path ... ok
+test pdc::tests::every_branch_arrives_at_its_summing_node_together ... ok
+test pdc::tests::every_branch_arrives_at_master_at_exactly_l_max ... ok
+test pdc::tests::latency_budget_table_matches_the_spec ... ok
+test pdc::tests::reset_returns_the_line_to_its_fresh_state ... ok
+test pdc::tests::resetting_twice_is_the_same_as_resetting_once ... ok
+test pdc::tests::saturation_keeps_saturating_on_a_longer_chain ... ok
+test pdc::tests::saturation_propagates_through_a_longer_chain_and_a_diamond ... ok
+test pdc::tests::serial_latency_accumulates_along_the_path ... ok
+test pdc::tests::shorter_branch_gets_the_larger_compensation ... ok
+test pdc::tests::source_nodes_have_zero_arrival ... ok
+test pdc::tests::topological_order_is_independent_of_input_order ... ok
+test pdc::tests::zero_latency_graph_needs_no_compensation ... ok
+test plugin_effect::tests::effect_source_mono_mixes_down ... ok
+test plugin_effect::tests::effect_source_rejects_skipped_blocks ... ok
+test plugin_effect::tests::effect_source_scales_inner_output_and_advances ... ok
+test plugin_effect::tests::effect_source_unity_gain_passes_through ... ok
+test plugin_effect::tests::effect_source_with_instrument_instance_fails_loudly_on_first_block ... ok
+test plugin_source::tests::plugin_source_applies_track_gain_and_pan ... ok
+test plugin_source::tests::plugin_source_mono_mixes_down ... ok
+test plugin_source::tests::plugin_source_none_schedule_is_silent_but_advances ... ok
+test plugin_source::tests::plugin_source_rejects_skipped_blocks ... ok
+test plugin_source::tests::plugin_source_renders_stub_sine_and_advances ... ok
+test render::tests::a_mono_source_does_not_leak_into_the_other_channel ... ok
+test render::tests::a_rejected_source_map_loads_nothing ... ok
+test render::tests::a_second_execution_does_not_reuse_sources_from_the_first ... ok
+test render::tests::a_second_execution_matches_a_fresh_plan ... ok
+test render::tests::a_track_latency_sum_saturates_instead_of_overflowing ... ok
+test render::tests::an_extreme_block_size_is_rejected_instead_of_overflowing ... ok
+test render::tests::both_channels_carry_the_same_signal_bit_for_bit ... ok
+test render::tests::bus_sum_matches_the_hand_computed_fixed_order ... ok
+test render::tests::completion_order_reduction_is_detectably_different ... ok
+test render::tests::cyclic_graph_is_rejected ... ok
+test render::tests::default_options_render_matches_single_thread ... ok
+test render::tests::first_sidechain_edge_wins_per_destination ... ok
+test render::tests::invalid_inputs_are_rejected ... ok
+test render::tests::key_route_evaluated_only_for_armed_destination_with_earlier_layer_source ... ok
+test render::tests::key_route_rejected_for_unarmed_destination ... ok
+test render::tests::key_route_rejected_when_source_layer_not_strictly_earlier ... ok
+test render::tests::key_route_rejected_when_source_outside_retained_subgraph ... ok
+test render::tests::keyed_bus_compressor_ducks_program_when_key_is_loud ... ok
+test render::tests::levels_are_correct_and_contiguous ... ok
+test render::tests::master_only_graph_renders ... ok
+test render::tests::master_reduction_order_is_entity_id_lexicographic ... ok
+test render::tests::missing_source_is_rejected_and_a_bus_can_carry_its_own_source ... ok
+test render::tests::multichannel_output_is_interleaved_from_the_master_slot ... ok
+test render::tests::nodes_not_reaching_master_are_pruned ... ok
+test render::tests::output_is_bit_identical_across_thread_counts ... ok
+test render::tests::partial_last_block_is_split_correctly ... ok
+test render::tests::pdc_compensation_delays_the_short_branch ... ok
+test render::tests::pdc_compensation_is_inserted_only_where_branches_merge ... ok
+test render::tests::registering_a_pruned_node_is_an_explicit_error ... ok
+test render::tests::repeated_runs_agree ... ok
+test render::tests::sidechain_edges_carry_no_audio_into_their_destination ... ok
+test render::tests::source_errors_propagate ... ok
+test render::tests::the_hand_written_render_plan_debug_shape_is_pinned ... ok
+test render::tests::the_l1_block_size_and_the_default_options_are_the_spec_shape ... ok
+test render::tests::the_render_error_equality_reads_every_variant_and_payload ... ok
+test render::tests::track_latencies_sum_unbypassed_devices_only ... ok
+test rf64::tests::a_bext_payload_shorter_than_the_fixed_prefix_is_a_clean_error ... ok
+test rf64::tests::a_bext_text_field_that_cannot_round_trip_is_refused_before_any_byte ... ok
+test rf64::tests::a_bit_depth_that_is_not_a_multiple_of_eight_rounds_up ... ok
+test rf64::tests::a_byte_rate_that_overflows_saturates_instead_of_panicking ... ok
+test rf64::tests::a_chunk_that_declares_the_max_u32_length_is_rejected ... ok
+test rf64::tests::a_format_the_writer_accepts_the_reader_reads_back_identically ... ok
+test rf64::tests::a_leading_nul_in_the_coding_history_is_data_not_padding ... ok
+test rf64::tests::a_multibyte_text_field_that_fits_is_written_whole ... ok
+test rf64::tests::a_start_timecode_becomes_the_time_reference_in_samples ... ok
+test rf64::tests::a_timecode_field_must_be_exactly_two_ascii_digits ... ok
+test rf64::tests::a_valid_bits_per_sample_below_the_container_is_adopted ... ok
+test rf64::tests::a_zero_bit_depth_is_refused_before_any_byte ... ok
+test rf64::tests::a_zero_sample_rate_is_refused_before_any_byte ... ok
+test rf64::tests::a_zero_valid_bits_field_falls_back_to_the_container_depth ... ok
+test rf64::tests::a_zero_valid_bits_per_sample_falls_back_to_the_container_bit_depth ... ok
+test rf64::tests::an_explicit_channel_mask_forces_extensible_on_a_stereo_format ... ok
+test rf64::tests::an_extensible_fmt_payload_shorter_than_forty_bytes_is_rejected ... ok
+test rf64::tests::an_impossible_payload_length_saturates_instead_of_panicking ... ok
+test rf64::tests::an_interior_nul_in_the_coding_history_still_round_trips ... ok
+test rf64::tests::an_odd_coding_history_stays_readable_by_a_third_party_reader ... ok
+test rf64::tests::an_oversized_declared_length_is_rejected_instead_of_overflowing ... ok
+test rf64::tests::an_unimplemented_chunk_is_skipped_not_rejected ... ok
+test rf64::tests::bext_sits_between_fmt_and_data_and_carries_the_ulid ... ok
+test rf64::tests::bext_version_one_has_602_byte_prefix ... ok
+test rf64::tests::bext_version_two_round_trips ... ok
+test rf64::tests::bext_version_zero_is_refused ... ok
+test rf64::tests::both_coding_history_flavours_land_at_offset_602_and_round_trip ... ok
+test rf64::tests::container_kind_fourcc_round_trips ... ok
+test rf64::tests::data_chunk_size_field_is_sentinel_only_for_ds64_containers ... ok
+test rf64::tests::every_bext_shape_the_writer_accepts_the_reader_reads_back ... ok
+test rf64::tests::every_container_kind_round_trips_through_our_reader ... ok
+test rf64::tests::every_documented_default_channel_mask_is_pinned ... ok
+test rf64::tests::every_member_of_the_reader_rejection_family_is_pinned ... ok
+test rf64::tests::every_single_byte_mutation_returns_a_result_instead_of_panicking ... ok
+test rf64::tests::every_unimplemented_chunk_shape_is_skipped ... ok
+test rf64::tests::every_version_the_writer_accepts_round_trips ... ok
+test rf64::tests::extensible_container_round_trips ... ok
+test rf64::tests::fact_degrades_to_the_sentinel_only_when_the_frame_count_does_not_fit ... ok
+test rf64::tests::fmt_chunk_switches_to_extensible_for_multichannel ... ok
+test rf64::tests::four_gib_boundary_is_exact ... ok
+test rf64::tests::loudness_scaling_is_hundredths_and_saturates ... ok
+test rf64::tests::malformed_inputs_are_rejected_without_panicking ... ok
+test rf64::tests::non_pcm_containers_carry_the_mandatory_fact_chunk ... ok
+test rf64::tests::odd_bext_coding_history_is_padded_inside_the_chunk ... ok
+test rf64::tests::odd_payload_gets_a_pad_byte_not_counted_in_the_chunk_size ... ok
+test rf64::tests::overlong_multibyte_text_fields_are_cut_on_a_character_boundary ... ok
+test rf64::tests::overlong_text_fields_are_truncated_not_panicking ... ok
+test rf64::tests::payload_beyond_four_gib_switches_to_rf64 ... ok
+test rf64::tests::project_templates_never_write_placeholder_coding_history ... ok
+test rf64::tests::reader_refuses_a_file_shorter_than_its_ds64_declaration ... ok
+test rf64::tests::rf64_header_fields_and_chunk_order_are_correct ... ok
+test rf64::tests::riff_with_bext_round_trips ... ok
+test rf64::tests::the_bext_and_container_kind_equality_read_every_field ... ok
+test rf64::tests::the_block_align_boundary_is_u16_max_inclusive ... ok
+test rf64::tests::the_frame_count_divides_by_the_exact_block_align ... ok
+test rf64::tests::the_payload_length_must_match_the_declared_data_length ... ok
+test rf64::tests::the_pcm_format_equality_reads_every_field ... ok
+test rf64::tests::the_plan_rejection_family_names_its_variant_per_shape ... ok
+test rf64::tests::the_public_bext_default_is_pinned_field_by_field ... ok
+test rf64::tests::the_raw_block_writer_refuses_a_field_that_would_be_truncated - should panic ... ok
+test rf64::tests::the_riff_top_level_size_field_is_the_file_length_minus_eight ... ok
+test rf64::tests::the_seven_point_one_default_mask_has_all_eight_bits ... ok
+test rf64::tests::the_writer_refuses_a_version_the_reader_cannot_read - should panic ... ok
+test rf64::tests::the_written_container_bytes_are_pinned ... ok
+test rf64::tests::the_written_container_bytes_at_the_size_extremes_are_pinned ... ok
+test rf64::tests::unrepresentable_block_align_is_rejected ... ok
+test rng::tests::adapter_is_deterministic_and_zero_mean ... ok
+test rng::tests::different_nodes_produce_different_dither_sequences ... ok
+test rng::tests::float_path_does_not_consume_the_rng ... ok
+test rng::tests::seeds_are_stable_per_node_and_distinct_across_nodes ... ok
+test rng::tests::state_can_be_checkpointed_and_resumed ... ok
+test sum::tests::accumulate_respects_gain_and_shortest_length ... ok
+test sum::tests::composite_keys_are_unique ... ok
+test sum::tests::fingerprint_distinguishes_signed_zero ... ok
+test sum::tests::fixed_order_is_invariant_under_input_permutation ... ok
+test sum::tests::fixed_order_rejects_duplicate_keys - should panic ... ok
+test sum::tests::reduction_is_bit_identical_regardless_of_production_order ... ok
+test sum::tests::unsorted_reduction_is_detectably_different ... ok
+test wav::tests::a_thirty_two_bit_integer_format_does_not_accept_a_float_buffer ... ok
+test wav::tests::a_zero_channel_count_is_refused_before_any_file_exists ... ok
+test wav::tests::empty_buffer_round_trips ... ok
+test wav::tests::every_bit_depth_round_trips_through_hound ... ok
+test wav::tests::format_of_agrees_with_check_match ... ok
+test wav::tests::format_of_covers_every_buffer_variant ... ok
+test wav::tests::format_of_pairs_every_depth_with_the_checker ... ok
+test wav::tests::hound_accepts_our_extensible_six_channel_header ... ok
+test wav::tests::hound_reads_the_float_riff_that_carries_our_fact_chunk ... ok
+test wav::tests::hound_reads_the_wav_written_by_our_rf64_module ... ok
+test wav::tests::mismatched_format_and_buffer_are_rejected ... ok
+test wav::tests::negative_full_scale_maps_to_exactly_minus_one_for_both_depths ... ok
+test wav::tests::our_reader_parses_the_wav_written_by_hound ... ok
+test wav::tests::paged_wav_partial_reads_are_windowed_correctly ... ok
+test wav::tests::paged_wav_reads_bit_identical_to_the_whole_file_leg_for_each_depth ... ok
+test wav::tests::paged_wav_rejects_formats_outside_its_acceptance_surface ... ok
+test wav::tests::paged_wav_skips_a_junk_chunk_before_data ... ok
+test wav::tests::paged_wav_takes_the_first_channel_of_stereo ... ok
+test wav::tests::pcm_buffer_knows_its_legal_sample_range ... ok
+test wav::tests::read_plain_wav_mono_f32_from_bytes_matches_the_path_leg_bit_exactly ... ok
+test wav::tests::read_plain_wav_mono_f32_normalizes_each_depth_and_takes_the_first_channel ... ok
+test wav::tests::the_hound_written_wav_bytes_are_pinned ... ok
+test wav::tests::the_hound_written_wav_bytes_at_the_size_extremes_are_pinned ... ok
+test wav::tests::the_reader_refuses_a_file_that_carries_a_non_finite_float_sample ... ok
+test wav::tests::the_reader_refuses_a_file_that_declares_a_zero_sample_rate ... ok
+test wav::tests::the_two_writers_in_this_crate_agree_on_a_zero_bit_depth ... ok
+test wav::tests::the_wav_error_equality_reads_every_variant_and_payload ... ok
+test mastering::tests::the_tail_still_reaches_the_momentary_and_short_term_maxima ... ok
+test mastering::tests::the_same_seed_is_byte_identical_and_a_different_seed_is_not ... ok
+test mastering::tests::the_true_peak_ceiling_wins_over_the_loudness_target ... ok
+
+test result: ok. 315 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 135.70s
+
+     Running tests/device_param_address.rs (target/debug/deps/device_param_address-8def19aff3f6c760)
+
+running 5 tests
+test inserting_a_device_at_slot_zero_moves_the_resolved_identity ... ok
+test a_name_outside_the_whitelist_is_still_reported ... ok
+test a_resolvable_address_reports_the_device_identity_and_the_param_name ... ok
+test out_of_range_addresses_report_the_model_reasons_verbatim ... ok
+test whitelist_matching_is_case_insensitive_like_the_insert_projection ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/diagnostic_exhaustive_probe.rs (target/debug/deps/diagnostic_exhaustive_probe-2929cc281104f909)
+
+running 1 test
+test every_golden_table_enum_variant_has_an_exhaustive_label ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/insert_chain.rs (target/debug/deps/insert_chain-89030ceca446728c)
+
+running 32 tests
+test a_forced_strip_exists_even_when_the_projection_is_the_identity ... ok
+test a_non_stereo_target_refuses_a_non_empty_insert_chain ... ok
+test a_project_without_compressor_params_keeps_its_master_bytes ... ok
+test a_low_shelf_raises_the_fundamental_band_by_more_than_six_db ... ok
+test compressing_nodes_with_lanes_counts_only_a_nonidentity_compressor_enabled_lane ... ok
+test delay_names_are_the_projection_whitelist ... ok
+test delay_projection_uses_the_project_bpm ... ok
+test forcing_one_track_does_not_materialise_other_tracks ... ok
+test ignored_strip_devices_boundary_cases ... ok
+test a_compressor_adds_no_latency_and_does_not_touch_pdc ... ok
+test an_explicitly_disabled_compressor_is_applied_but_has_zero_gr ... ok
+test second_strip_device_is_reported_not_silently_ignored ... ok
+test statically_compressing_nodes_agree_with_the_compiled_chains ... ok
+test strip_names_are_the_engine_whitelist ... ok
+test strip_source_lookup_matches_the_projection_source ... ok
+test an_automated_compressor_threshold_changes_the_compression_amount_and_the_master ... ok
+test master_bus_inserts_are_applied ... ok
+test the_dynamic_eq_q_and_ratio_survive_the_projection ... ok
+test the_compressor_reduces_above_threshold_and_is_transparent_below_it ... ok
+test pub_functions_about_compression_say_whether_they_mean_statically ... ok
+test the_ms_mid_fields_survive_the_projection ... ok
+test the_projection_recognises_only_the_documented_names ... ok
+test the_gain_stages_scale_the_master_by_the_written_db ... ok
+test the_low_pass_filter_shapes_the_master ... ok
+test the_reverb_on_the_aux_return_keeps_ringing_after_the_note_ends ... ok
+test the_strip_projection_mirrors_the_engine_whitelist ... ok
+test the_source_and_the_incoming_edge_are_summed_before_the_insert_chain ... ok
+test unhandled_device_classification_matches_the_slice_boundary ... ok
+test unknown_or_bypassed_devices_leave_the_audio_bit_identical ... ok
+test the_convolution_on_the_aux_return_rings_for_the_length_of_its_ir ... ok
+test two_renders_of_the_same_project_have_the_same_sha256 ... ok
+test the_stereo_convolution_switch_decorrelates_the_aux_return ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s
+
+     Running tests/key_sidechain_audio.rs (target/debug/deps/key_sidechain_audio-f50bdc047f3ed321)
+
+running 3 tests
+test without_the_compressor_the_key_changes_nothing_bit_for_bit ... ok
+test the_key_reaches_the_compressor_through_the_whole_render_chain ... ok
+test the_sidechain_edge_gain_scales_the_key ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/l1_digest_contract.rs (target/debug/deps/l1_digest_contract-95a51de944806ea1)
+
+running 10 tests
+test a_one_ulp_transcendental_perturbation_lands_in_the_l2_budget ... ok
+test gain_fixture_declares_transcendental_ops ... ok
+test ieee_only_fixture_declares_no_transcendental_ops ... ok
+test latency_injection_actually_changes_the_audio ... ok
+test longest_path_frames_matches_the_injected_l_max ... ok
+test receipt_readings_come_from_the_render_output ... ok
+test receipt_self_identifies_the_target ... ok
+test receipt_text_round_trips ... ok
+test thread_counts_do_not_change_the_digest ... ok
+test two_real_exports_are_byte_identical ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/l1_digest_parity.rs (target/debug/deps/l1_digest_parity-8fa54e747198048c)
+
+running 19 tests
+test an_internally_inconsistent_record_is_not_a_usable_baseline ... ok
+test a_wrong_isa_on_the_same_platform_is_a_hard_fail ... ok
+test a_tampered_digest_is_a_hard_fail ... ok
+test a_different_seed_necessarily_changes_the_digest ... ok
+test cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass ... ok
+test local_recomputation_matches_the_archived_reference ... ok
+test the_archived_reference_is_exactly_its_canonical_form ... ok
+test the_archived_reference_is_self_consistent ... ok
+test recorded_only_changes_still_pass ... ok
+test the_foreign_baseline_is_read_by_the_automatic_gate_too ... ok
+test the_record_parser_refuses_what_it_does_not_understand ... ok
+test generation_is_byte_identical_and_round_trips ... ok
+test the_digest_is_the_sha256_of_the_wav_bit_stream ... ok
+test the_toolchain_lock_requires_both_release_and_host ... ok
+test the_wav_container_header_matches_the_documented_layout ... ok
+test the_wav_is_readable_by_an_independent_reader ... ok
+test really_rerendering_with_another_seed_changes_the_digest ... ok
+test two_real_runs_produce_byte_identical_records ... ok
+test thread_policy_never_changes_the_digest ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.58s
+
+     Running tests/logic_inspect.rs (target/debug/deps/logic_inspect-7fd922766fe5d6c9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase_align.rs (target/debug/deps/phase_align-1ca3d3da9fe1b15d)
+
+running 6 tests
+test delay_and_invert_compose ... ok
+test negative_delay_advances_relatively ... ok
+test project_phase_align_skips_identity_tracks ... ok
+test identity_phase_is_bitwise_identical ... ok
+test invert_polarity_negates_signal ... ok
+test track_delay_shifts_impulse_by_exact_samples ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/phase_align_auto.rs (target/debug/deps/phase_align_auto-359a544201683c11)
+
+running 4 tests
+test master_bus_is_not_a_source_track ... ok
+test silent_track_is_refused ... ok
+test shifted_copy_measures_the_exact_offset ... ok
+test identical_copies_measure_zero_lag ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+
+     Running tests/pure_modules_scaffold.rs (target/debug/deps/pure_modules_scaffold-a1d316919fd56495)
+
+running 128 tests
+test pure_modules_scaffold::dither::tests::float32_path_is_bit_transparent ... ok
+test pure_modules_scaffold::dither::tests::depth_reporting_is_consistent ... ok
+test pure_modules_scaffold::dither::tests::output_stays_inside_legal_range ... ok
+test pure_modules_scaffold::dither::tests::positive_full_scale_does_not_wrap_around ... ok
+test pure_modules_scaffold::dither::tests::quantization_is_reproducible_for_a_fixed_seed ... ok
+test pure_modules_scaffold::dither::tests::no_dc_offset ... ok
+test pure_modules_scaffold::dither::tests::one_sided_rpdf_dither_would_be_rejected ... ok
+test pure_modules_scaffold::dither::tests::twenty_four_bit_payload_is_three_bytes_little_endian ... ok
+test pure_modules_scaffold::dither::tests::tpdf_is_bounded_by_one_lsb ... ok
+test pure_modules_scaffold::pdc::tests::a_deeper_bus_uses_its_own_arrival_not_the_master_critical_path ... ok
+test pure_modules_scaffold::pdc::tests::a_mixed_chain_and_diamond_saturates_at_several_levels ... ok
+test pure_modules_scaffold::pdc::tests::a_self_loop_is_a_cycle_not_a_zero_compensation_edge ... ok
+test pure_modules_scaffold::pdc::tests::a_cycle_anywhere_makes_the_whole_graph_a_cycle ... ok
+test pure_modules_scaffold::pdc::tests::a_silent_channel_stays_bit_zero_and_does_not_borrow_its_neighbour ... ok
+test pure_modules_scaffold::pdc::tests::accumulated_latency_saturates_at_u32_max_instead_of_wrapping ... ok
+test pure_modules_scaffold::pdc::tests::dangling_edges_and_unknown_master_are_rejected ... ok
+test pure_modules_scaffold::dither::tests::constant_input_is_unbiased ... ok
+test pure_modules_scaffold::pdc::tests::cycles_are_rejected ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_bypass_copies_the_shortest_length_bit_for_bit ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_bypass_is_a_bit_copy ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_delays_by_exactly_the_requested_frames ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_is_block_size_invariant ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_keeps_channels_separate ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_passes_a_ragged_tail_through_across_unequal_lengths ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_takes_the_shortest_of_the_two_slices ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_tolerates_ragged_blocks ... ok
+test pure_modules_scaffold::pdc::tests::delay_line_with_zero_channels_writes_nothing ... ok
+test pure_modules_scaffold::pdc::tests::diamond_aligns_both_branches_to_the_longest_path ... ok
+test pure_modules_scaffold::pdc::tests::every_branch_arrives_at_its_summing_node_together ... ok
+test pure_modules_scaffold::pdc::tests::every_branch_arrives_at_master_at_exactly_l_max ... ok
+test pure_modules_scaffold::dither::tests::the_tpdf_peak_constant_matches_the_actual_bound ... ok
+test pure_modules_scaffold::pdc::tests::reset_returns_the_line_to_its_fresh_state ... ok
+test pure_modules_scaffold::pdc::tests::resetting_twice_is_the_same_as_resetting_once ... ok
+test pure_modules_scaffold::pdc::tests::saturation_keeps_saturating_on_a_longer_chain ... ok
+test pure_modules_scaffold::pdc::tests::serial_latency_accumulates_along_the_path ... ok
+test pure_modules_scaffold::pdc::tests::shorter_branch_gets_the_larger_compensation ... ok
+test pure_modules_scaffold::pdc::tests::saturation_propagates_through_a_longer_chain_and_a_diamond ... ok
+test pure_modules_scaffold::pdc::tests::source_nodes_have_zero_arrival ... ok
+test pure_modules_scaffold::pdc::tests::zero_latency_graph_needs_no_compensation ... ok
+test pure_modules_scaffold::pdc::tests::latency_budget_table_matches_the_spec ... ok
+test pure_modules_scaffold::rf64::tests::a_bext_payload_shorter_than_the_fixed_prefix_is_a_clean_error ... ok
+test pure_modules_scaffold::pdc::tests::topological_order_is_independent_of_input_order ... ok
+test pure_modules_scaffold::rf64::tests::a_bit_depth_that_is_not_a_multiple_of_eight_rounds_up ... ok
+test pure_modules_scaffold::rf64::tests::a_byte_rate_that_overflows_saturates_instead_of_panicking ... ok
+test pure_modules_scaffold::rf64::tests::a_bext_text_field_that_cannot_round_trip_is_refused_before_any_byte ... ok
+test pure_modules_scaffold::rf64::tests::a_format_the_writer_accepts_the_reader_reads_back_identically ... ok
+test pure_modules_scaffold::rf64::tests::a_chunk_that_declares_the_max_u32_length_is_rejected ... ok
+test pure_modules_scaffold::rf64::tests::a_leading_nul_in_the_coding_history_is_data_not_padding ... ok
+test pure_modules_scaffold::rf64::tests::a_multibyte_text_field_that_fits_is_written_whole ... ok
+test pure_modules_scaffold::rf64::tests::a_valid_bits_per_sample_below_the_container_is_adopted ... ok
+test pure_modules_scaffold::rf64::tests::a_timecode_field_must_be_exactly_two_ascii_digits ... ok
+test pure_modules_scaffold::rf64::tests::a_start_timecode_becomes_the_time_reference_in_samples ... ok
+test pure_modules_scaffold::rf64::tests::a_zero_valid_bits_field_falls_back_to_the_container_depth ... ok
+test pure_modules_scaffold::rf64::tests::a_zero_bit_depth_is_refused_before_any_byte ... ok
+test pure_modules_scaffold::rf64::tests::a_zero_valid_bits_per_sample_falls_back_to_the_container_bit_depth ... ok
+test pure_modules_scaffold::rf64::tests::a_zero_sample_rate_is_refused_before_any_byte ... ok
+test pure_modules_scaffold::rf64::tests::an_explicit_channel_mask_forces_extensible_on_a_stereo_format ... ok
+test pure_modules_scaffold::rf64::tests::an_impossible_payload_length_saturates_instead_of_panicking ... ok
+test pure_modules_scaffold::rf64::tests::an_extensible_fmt_payload_shorter_than_forty_bytes_is_rejected ... ok
+test pure_modules_scaffold::rf64::tests::an_interior_nul_in_the_coding_history_still_round_trips ... ok
+test pure_modules_scaffold::rf64::tests::an_oversized_declared_length_is_rejected_instead_of_overflowing ... ok
+test pure_modules_scaffold::rf64::tests::an_odd_coding_history_stays_readable_by_a_third_party_reader ... ok
+test pure_modules_scaffold::rf64::tests::bext_sits_between_fmt_and_data_and_carries_the_ulid ... ok
+test pure_modules_scaffold::rf64::tests::an_unimplemented_chunk_is_skipped_not_rejected ... ok
+test pure_modules_scaffold::rf64::tests::bext_version_one_has_602_byte_prefix ... ok
+test pure_modules_scaffold::rf64::tests::bext_version_zero_is_refused ... ok
+test pure_modules_scaffold::rf64::tests::bext_version_two_round_trips ... ok
+test pure_modules_scaffold::rf64::tests::both_coding_history_flavours_land_at_offset_602_and_round_trip ... ok
+test pure_modules_scaffold::rf64::tests::data_chunk_size_field_is_sentinel_only_for_ds64_containers ... ok
+test pure_modules_scaffold::rf64::tests::container_kind_fourcc_round_trips ... ok
+test pure_modules_scaffold::rf64::tests::every_documented_default_channel_mask_is_pinned ... ok
+test pure_modules_scaffold::rf64::tests::every_bext_shape_the_writer_accepts_the_reader_reads_back ... ok
+test pure_modules_scaffold::rf64::tests::every_member_of_the_reader_rejection_family_is_pinned ... ok
+test pure_modules_scaffold::rf64::tests::every_container_kind_round_trips_through_our_reader ... ok
+test pure_modules_scaffold::rf64::tests::every_version_the_writer_accepts_round_trips ... ok
+test pure_modules_scaffold::rf64::tests::every_unimplemented_chunk_shape_is_skipped ... ok
+test pure_modules_scaffold::rf64::tests::extensible_container_round_trips ... ok
+test pure_modules_scaffold::rf64::tests::four_gib_boundary_is_exact ... ok
+test pure_modules_scaffold::rf64::tests::fact_degrades_to_the_sentinel_only_when_the_frame_count_does_not_fit ... ok
+test pure_modules_scaffold::rf64::tests::fmt_chunk_switches_to_extensible_for_multichannel ... ok
+test pure_modules_scaffold::rf64::tests::loudness_scaling_is_hundredths_and_saturates ... ok
+test pure_modules_scaffold::rf64::tests::malformed_inputs_are_rejected_without_panicking ... ok
+test pure_modules_scaffold::rf64::tests::non_pcm_containers_carry_the_mandatory_fact_chunk ... ok
+test pure_modules_scaffold::rf64::tests::odd_payload_gets_a_pad_byte_not_counted_in_the_chunk_size ... ok
+test pure_modules_scaffold::rf64::tests::overlong_multibyte_text_fields_are_cut_on_a_character_boundary ... ok
+test pure_modules_scaffold::rf64::tests::odd_bext_coding_history_is_padded_inside_the_chunk ... ok
+test pure_modules_scaffold::rf64::tests::overlong_text_fields_are_truncated_not_panicking ... ok
+test pure_modules_scaffold::rf64::tests::payload_beyond_four_gib_switches_to_rf64 ... ok
+test pure_modules_scaffold::rf64::tests::project_templates_never_write_placeholder_coding_history ... ok
+test pure_modules_scaffold::rf64::tests::riff_with_bext_round_trips ... ok
+test pure_modules_scaffold::rf64::tests::reader_refuses_a_file_shorter_than_its_ds64_declaration ... ok
+test pure_modules_scaffold::rf64::tests::rf64_header_fields_and_chunk_order_are_correct ... ok
+test pure_modules_scaffold::rf64::tests::the_bext_and_container_kind_equality_read_every_field ... ok
+test pure_modules_scaffold::rf64::tests::the_frame_count_divides_by_the_exact_block_align ... ok
+test pure_modules_scaffold::rf64::tests::the_block_align_boundary_is_u16_max_inclusive ... ok
+test pure_modules_scaffold::rf64::tests::the_payload_length_must_match_the_declared_data_length ... ok
+test pure_modules_scaffold::rf64::tests::the_pcm_format_equality_reads_every_field ... ok
+test pure_modules_scaffold::rf64::tests::the_plan_rejection_family_names_its_variant_per_shape ... ok
+test pure_modules_scaffold::rf64::tests::the_public_bext_default_is_pinned_field_by_field ... ok
+test pure_modules_scaffold::rf64::tests::the_riff_top_level_size_field_is_the_file_length_minus_eight ... ok
+test pure_modules_scaffold::rf64::tests::the_seven_point_one_default_mask_has_all_eight_bits ... ok
+test pure_modules_scaffold::rf64::tests::the_writer_refuses_a_version_the_reader_cannot_read - should panic ... ok
+test pure_modules_scaffold::rf64::tests::the_written_container_bytes_are_pinned ... ok
+test pure_modules_scaffold::rf64::tests::the_written_container_bytes_at_the_size_extremes_are_pinned ... ok
+test pure_modules_scaffold::rf64::tests::unrepresentable_block_align_is_rejected ... ok
+test pure_modules_scaffold::rf64::tests::the_raw_block_writer_refuses_a_field_that_would_be_truncated - should panic ... ok
+test pure_modules_scaffold::scaffold_tests::completion_order_reduction_is_detectably_different ... ok
+test pure_modules_scaffold::scaffold_tests::fingerprint_is_bit_exact_not_value_approximate ... ok
+test pure_modules_scaffold::scaffold_tests::master_bytes_are_bit_identical_across_completion_orders ... ok
+test pure_modules_scaffold::rf64::tests::every_single_byte_mutation_returns_a_result_instead_of_panicking ... ok
+test pure_modules_scaffold::scaffold_tests::master_bytes_are_reproducible ... ok
+test pure_modules_scaffold::scaffold_tests::vlq_boundary_matches_the_constant_used_by_the_midi_export ... ok
+test pure_modules_scaffold::scaffold_tests::public_surface_constants_are_self_consistent ... ok
+test pure_modules_scaffold::sum::tests::accumulate_respects_gain_and_shortest_length ... ok
+test pure_modules_scaffold::sum::tests::composite_keys_are_unique ... ok
+test pure_modules_scaffold::sum::tests::fixed_order_is_invariant_under_input_permutation ... ok
+test pure_modules_scaffold::sum::tests::fingerprint_distinguishes_signed_zero ... ok
+test pure_modules_scaffold::sum::tests::fixed_order_rejects_duplicate_keys - should panic ... ok
+test pure_modules_scaffold::sum::tests::reduction_is_bit_identical_regardless_of_production_order ... ok
+test pure_modules_scaffold::vlq::tests::decode_rejects_five_continuation_bytes ... ok
+test pure_modules_scaffold::vlq::tests::decode_does_not_advance_pos_on_rejection_by_more_than_scanned ... ok
+test pure_modules_scaffold::scaffold_tests::vlq_rejects_values_beyond_28_bits - should panic ... ok
+test pure_modules_scaffold::vlq::tests::decode_rejects_truncated_input ... ok
+test pure_modules_scaffold::vlq::tests::encodes_known_spec_vectors ... ok
+test pure_modules_scaffold::vlq::tests::every_encoded_value_round_trips ... ok
+test pure_modules_scaffold::vlq::tests::max_value_uses_exactly_four_bytes ... ok
+test pure_modules_scaffold::sum::tests::unsorted_reduction_is_detectably_different ... ok
+test pure_modules_scaffold::vlq::tests::write_into_panics_one_past_the_vlq_maximum - should panic ... ok
+
+test result: ok. 128 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/quantifier_lower_bounds.rs (target/debug/deps/quantifier_lower_bounds-0c3183fba112fe27)
+
+running 19 tests
+test arm_inventory_reports_first_failure_coverage ... ok
+test char_literal_fixture_is_refereed_byte_by_byte ... ok
+test bound_form_registry_is_bidirectionally_zeroed ... ok
+test checker_has_teeth ... ok
+test each_registered_form_is_individually_witnessed ... ok
+test every_arm_sample_proves_its_own_shape ... ok
+test every_form_control_hits_all_required_needles ... ok
+test every_recognised_bound_form_has_a_paired_known_red ... ok
+test every_standing_criterion_has_a_synthetic_green_and_red_arm ... ok
+test masking_check_reddens_when_the_masker_drops_bytes ... ok
+test masking_is_byte_length_preserving_for_every_source_file ... ok
+test masking_survives_adversarial_constructs ... ok
+test no_unbounded_quantifier_assertion_in_this_crate ... ok
+test scan_lower_bounds_reject_broken_inputs ... ok
+test site_floor_reddens_when_the_searched_set_collapses ... ok
+test value_and_near_miss_bounds_are_not_accepted ... ok
+test corpus_precheck_reports_the_trigger_surface_of_every_construct ... ok
+test count_floors_cannot_see_defects_in_either_direction ... ok
+test each_registered_form_has_its_own_lower_bound ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.24s
+
+     Running tests/song_overview_pipeline.rs (target/debug/deps/song_overview_pipeline-07111f973677f503)
+
+running 10 tests
+test an_empty_project_is_a_loud_error_not_silence ... ok
+test project_bar_hashes_are_deterministic_and_separate_score_from_audio ... ok
+test rendering_the_demo_project_produces_a_real_master ... ok
+test sample_rate_mismatch_is_a_loud_error ... ok
+test stems_render_each_source_track_solo ... ok
+test cached_overview_reports_frequency_clash_for_the_demo ... ok
+test the_hash_changes_when_the_project_or_the_settings_change ... ok
+test the_cached_pipeline_analyses_the_demo_end_to_end ... ok
+test incremental_pipeline_matches_cached_overview_and_reports_stats ... ok
+test profile_and_expected_levels_flow_through_the_cache ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.49s
+
+     Running tests/support_scaffolds.rs (target/debug/deps/support_scaffolds-f7749bf27a06257c)
+
+running 38 tests
+test l1_digest_record_scaffold::a_changed_digest_with_identical_parameters_is_a_hard_fail ... ok
+test l1_digest_record_scaffold::a_different_toolchain_release_is_skipped_with_its_own_reason ... ok
+test l1_digest_record_scaffold::a_cross_platform_reference_is_skipped_not_failed ... ok
+test l1_digest_record_scaffold::a_different_seed_necessarily_changes_the_digest ... ok
+test l1_digest_record_scaffold::a_digest_that_contradicts_the_sample_digest_is_refused ... ok
+test l1_digest_record_scaffold::a_malformed_reference_is_a_clear_error ... ok
+test l1_digest_record_scaffold::a_wrong_isa_on_the_same_platform_is_a_hard_fail ... ok
+test l1_digest_record_scaffold::a_schema_mismatch_refuses_to_judge ... ok
+test l1_digest_record_scaffold::cross_platform_policy_is_explicit_and_distinguishable ... ok
+test l1_digest_record_scaffold::latency_tokens_are_order_independent_and_deterministic ... ok
+test l1_digest_record_scaffold::identical_records_pass_even_with_recorded_only_differences ... ok
+test l1_digest_record_scaffold::field_table_matches_the_serialized_record ... ok
+test l1_digest_record_scaffold::lossy_encoding_is_refused_by_validation ... ok
+test l1_digest_record_scaffold::rustc_version_splitting_never_invents_fields ... ok
+test l1_digest_record_scaffold::utc_formatting_matches_known_instants ... ok
+test l1_digest_record_scaffold::wav_bytes_always_counts_the_whole_file ... ok
+test l1_digest_record_scaffold::malformed_records_are_errors_not_panics ... ok
+test l1_digest_record_scaffold::generation_is_byte_identical_for_the_same_input ... ok
+test l1_digest_record_scaffold::wav_payload_is_byte_identical_to_the_sample_bits ... ok
+test l1_receipt_scaffold::digest_sample_contradiction_is_incomparable ... ok
+test l1_receipt_scaffold::a_large_deviation_fails_and_names_the_sample ... ok
+test l1_receipt_scaffold::d32_ulp_budget_fails_even_when_the_absolute_budget_passes ... ok
+test l1_receipt_scaffold::extreme_bit_patterns_round_trip ... ok
+test l1_receipt_scaffold::identical_receipts_are_l1_bit_exact ... ok
+test l1_receipt_scaffold::fingerprint_mismatch_is_incomparable ... ok
+test l1_receipt_scaffold::missing_required_fields_are_clear_errors ... ok
+test l1_receipt_scaffold::malformed_receipts_are_errors_not_panics ... ok
+test l1_receipt_scaffold::one_ulp_on_a_transcendental_sample_is_within_budget ... ok
+test l1_receipt_scaffold::one_ulp_on_an_ieee_exact_sample_fails ... ok
+test l1_receipt_scaffold::pdc_inconsistency_is_refused ... ok
+test l1_receipt_scaffold::report_is_machine_readable_and_names_offenders ... ok
+test l1_receipt_scaffold::receipt_carries_a_non_empty_target_identity ... ok
+test l1_receipt_scaffold::thread_count_does_not_make_receipts_incomparable ... ok
+test l1_receipt_scaffold::round_trip_is_byte_exact ... ok
+test l1_receipt_scaffold::sampled_or_truncated_receipts_are_refused ... ok
+test l1_receipt_scaffold::transcendental_sample_without_declaration_is_refused ... ok
+test l1_receipt_scaffold::two_exports_of_the_same_input_are_byte_identical ... ok
+test l1_digest_record_scaffold::sha256_matches_the_fips_vectors ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+   Doc-tests yeban_render
+
+running 1 test
+test crates/yeban-render/src/mastering.rs - mastering (line 110) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s
+
+all doctests ran in 2.66s; merged doctests compilation took 1.34s
+RENDER_EXIT=0

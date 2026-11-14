@@ -1399,6 +1399,15 @@
               "minimum": 0,
               "description": "本次装载最多读入多少帧（所有文件合计，按**解码后**规模算）；缺省 64000000，`0` = 不限。旧缺省 8000000 帧只够 181 s 单声道，而 `FHornSus` 一件就要 1266 万帧 ⇒ 读数 `regions=29 samples=17 silent=12`。新缺省 = 最重的一件真实乐器（`GM-StylePerc` 3682 万帧）× 1.7 余量。"
             },
+            "initialCc": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "description": "用户初始 CC（控制器号 → 值，如 `{\"1\": 64}`）：与文件 `<control> set_ccN` 并入同一张 CC 种子表（用户值覆盖文件值），装载时播种。控制器号与值的合法域均为 0..=127 —— 本 schema 的 0..=255 只是形状层（装得进 u8）；128..=255 由领域层响亮拒绝（与预制 `cc` 段共用同一份域校验），不钳位。给了它时 `data.ccGateCensus` 按生效种子值算，响应回显 `data.initialCc`（登记时的那份；同内容复用时以首次登记为准）。"
+            },
             "dryRun": {
               "type": "boolean",
               "default": false

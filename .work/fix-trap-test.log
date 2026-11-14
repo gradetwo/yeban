@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.24s
+     Running tests/trap_178.rs (target/debug/deps/trap_178-cf0044f94ef984d9)
+
+running 10 tests
+test a_device_on_a_bus_fed_by_sounding_source_has_no_warning ... ok
+test a_device_on_a_bus_fed_only_by_silent_tracks_still_warns ... ok
+test a_device_on_a_track_with_notes_has_no_warning ... ok
+test a_device_on_a_transitive_bus_has_no_warning ... ok
+test a_device_on_an_empty_track_warns_and_does_not_block ... ok
+test a_device_on_master_never_warns ... ok
+test a_device_on_master_never_warns_even_when_everything_is_silent ... ok
+test an_empty_note_clip_is_silent_too_with_its_own_reading ... ok
+test dry_run_preview_carries_the_same_warning ... ok
+test the_warned_track_is_named_in_empty_sources_in_render_master ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+TRAP_EXIT=0

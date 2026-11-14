@@ -1292,6 +1292,12 @@ pub enum Plan {
         /// [ADR-0029] `arguments.mergeCommitMessage`：只随 `auto_merge` 生效；
         /// 缺省口径与 `plan_merge` 相同（`"merge proposal {id}"`）。
         merge_commit_message: Option<String>,
+        /// ⭐ 预制初始 CC 的播种登记（只有 `yeban_apply_preset` 在预制带 `cc`
+        /// 段且本次应用含乐器类别时非空）：`apply` 在提案落地后把这份装载
+        /// 登记进会话 registry —— 与 `yeban_load_sfz` 同一条登记路、同一
+        /// 内容寻址。`dryRun` 不走 `apply` ⇒ 不登记；其余提案工具恒 `None`，
+        /// 行为逐字不变。
+        sfz_load: Option<Box<sfz::SfzLoad>>,
     },
     /// `yeban_merge_proposal`
     Merge {
@@ -3463,6 +3469,7 @@ fn propose_draft(
         warnings,
         auto_merge: arg_bool(call, "autoMerge", false),
         merge_commit_message: arg_str(call, "mergeCommitMessage").map(str::to_owned),
+        sfz_load: None,
     })
 }
 
@@ -4137,7 +4144,34 @@ fn plan_apply_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             plan.macros_skipped
         ));
     }
-    propose_draft(
+    // ⭐ 预制 `cc` 段（初始 CC）：与 `yeban_load_sfz.initialCc` 同一语义 ——
+    // 域校验已在预制解析期由 `Preset::validate` 用共享实现把过关；这里在
+    // 本次应用含乐器类别时，按**同一条登记构造**（`plan_sfz_registration`）
+    // 备好装载，`apply` 落地提案后登记进会话 registry 并播种（生效种子表
+    // 随回执 `initialCcSeeded` 回报）。不含乐器类别 ⇒ 不播种（如实写进描述）。
+    let applies_instrument = plan
+        .categories
+        .iter()
+        .any(|category| category.as_str() == "instrument");
+    let seed_load = if preset.cc.is_empty() {
+        None
+    } else if !applies_instrument {
+        description.push_str("；预制带初始 CC，但本次未应用乐器类别 ⇒ 不播种");
+        None
+    } else {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "path".to_owned(),
+            Value::from(preset.instrument_sfz.clone()),
+        );
+        let load = plan_sfz_registration(domain, &arguments, &preset.cc)?;
+        description.push_str(&format!(
+            "；初始 CC 播种（生效值以登记为准）：{}",
+            sfz::initial_cc_value(&load.initial_cc)
+        ));
+        Some(Box::new(load))
+    };
+    let mut drafted = propose_draft(
         domain,
         project,
         "preset",
@@ -4145,7 +4179,11 @@ fn plan_apply_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("apply_preset {track_id} {preset_id}"),
         plan.ops,
         call,
-    )
+    )?;
+    if let Plan::Propose { sfz_load, .. } = &mut drafted {
+        *sfz_load = seed_load;
+    }
+    Ok(drafted)
 }
 
 /// `yeban_save_preset`（写用户库，不改工程；`plan` 只构造校验好的预制，`apply`
@@ -4169,8 +4207,33 @@ fn plan_save_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         }
     };
     let overwrite = arg_bool(call, "overwrite", false);
-    let (preset, path, overwritten) =
+    let (mut preset, path, overwritten) =
         preset::build_save_preset(project, &track_id, name, scope, overwrite)?;
+    // ⭐ 初始 CC 捕获：轨状态本身不带 CC —— 若本会话登记过这条轨所绑文件
+    // 的装载、且那份装载带 `initialCc`，把初始 CC 抄进预制的 `cc` 段，
+    // 此后 `apply_preset` 能重播同一份种子（存 / 用效果一致）。匹配按内容
+    // 摘要（与 registry 的内容寻址同一把尺）；文件读不到 / 从未装载过 ⇒
+    // 预制不带 `cc` 段（与改前逐字一致），不因此让另存失败。
+    {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "path".to_owned(),
+            Value::from(preset.instrument_sfz.clone()),
+        );
+        let project_dir = domain
+            .active_path()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        if let Ok((resolved, _)) = sfz::parse_load_arguments(&arguments, project_dir.as_deref())
+            && let Ok(bytes) = std::fs::read(&resolved)
+        {
+            let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
+            if let Some(load) = domain.sfz_instrument_by_digest(&digest)
+                && !load.initial_cc.is_empty()
+            {
+                preset.cc = load.initial_cc.clone();
+            }
+        }
+    }
     Ok(Plan::SavePreset {
         preset: Box::new(preset),
         path,
@@ -5102,6 +5165,23 @@ fn plan_import_midi(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// **不碰工程状态**、**不落盘**。读盘是"装载"这件事本身的语义（与
 /// `yeban_open_project` 的 `plan` 真的读盘同一条口径）。
 fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    // ⭐ 用户初始 CC（可选）：形状/域两段校验在 `sfz::parse_initial_cc` 里
+    // （与预制 `cc` 段共用同一份域校验），越界响亮拒绝、⛔ 不钳位。
+    let initial_cc = sfz::parse_initial_cc(&call.arguments)?;
+    let load = plan_sfz_registration(domain, &call.arguments, &initial_cc)?;
+    Ok(Plan::LoadSfz {
+        load: Box::new(load),
+    })
+}
+
+/// 会话 SFZ 登记的计划侧构造（`yeban_load_sfz` 与 `yeban_apply_preset` 的
+/// 播种登记共用一份，⛔ 不许两处各写一份）：路径解析 → 读字节算摘要 →
+/// 内容寻址复用或真装载（带用户初始 CC）。
+fn plan_sfz_registration(
+    domain: &Domain,
+    arguments: &serde_json::Map<String, Value>,
+    initial_cc: &std::collections::BTreeMap<u8, u8>,
+) -> Result<sfz::SfzLoad, Fault> {
     // ⭐ 补丁 `P1`：**相对路径**（`assets/samples/<乐器>/…`）先按渲染侧那**四档**
     // 解析成一份找得到的文件（工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd），再交给 `load`。
     // 修前本行是 `parse_load_arguments(&call.arguments)?`，返回的 `PathBuf` 原样
@@ -5109,10 +5189,10 @@ fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project_dir = domain
         .active_path()
         .and_then(|path| path.parent().map(Path::to_path_buf));
-    let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments, project_dir.as_deref())?;
+    let (path, sample_hz) = sfz::parse_load_arguments(arguments, project_dir.as_deref())?;
     // ⭐ 样本读取预算（`maxSampleFiles` / `maxSampleFrames`；缺省 = 合理默认值）。
     // 与 `yeban_render_master` 的**同一份**解析实现 ⇒ 两个工具对同一条预算说同一句话。
-    let limits = sfz::parse_sample_limits(&call.arguments)?;
+    let limits = sfz::parse_sample_limits(arguments)?;
     // 先算内容摘要（`load` 内部会算），因此这里先用文件字节判重用。
     let bytes = std::fs::read(&path).map_err(|error| {
         Fault::domain_with_data(
@@ -5132,19 +5212,25 @@ fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // 与登记记录不同（同内容的副本旁边可能有不同的样本文件）⇒ `dryRun` 预览与真做
     // 对同一份内容说两套数字。内容寻址保证 `id` 相同，因此直接克隆登记记录，只把
     // `reused` 置真（与 `apply_load_sfz` 对响应的改动一致）。
-    // **代价如实登记**：同一份内容第二次装载时，本次的 `sampleHz` 与路径都不生效
-    // （`ADR-0016` 的"缺省逐字节"只保护首次登记）。
+    // **代价如实登记**：同一份内容第二次装载时，本次的 `sampleHz`、路径与
+    // `initialCc` 都不生效（`ADR-0016` 的"缺省逐字节"只保护首次登记）——
+    // 回执里的 `initialCc` 回报的是登记时的那份，调用方据此能看出差别。
     let load = match existing {
         Some(instrument) => {
             let mut record = instrument.clone();
             record.reused = true;
             record
         }
-        None => sfz::load(&path, sample_hz, domain.sfz_next_id(), false, limits)?,
+        None => sfz::load(
+            &path,
+            sample_hz,
+            domain.sfz_next_id(),
+            false,
+            limits,
+            initial_cc,
+        )?,
     };
-    Ok(Plan::LoadSfz {
-        load: Box::new(load),
-    })
+    Ok(load)
 }
 
 /// `yeban_render_sfz_wav`：用**已装载**的 SFZ 音色把活跃工程的 MIDI 音符导出成 WAV。
@@ -5716,6 +5802,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             warnings,
             auto_merge,
             merge_commit_message,
+            sfz_load,
         } => apply_propose(
             domain,
             *draft,
@@ -5723,6 +5810,7 @@ fn apply_plan_model(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fau
             &warnings,
             auto_merge,
             merge_commit_message,
+            sfz_load.map(|load| *load),
         ),
         Plan::Merge {
             proposal_id,
@@ -5956,12 +6044,31 @@ fn apply_render(artifact: render::RenderArtifact) -> Result<ToolResponse, Fault>
     Ok(ToolResponse::success(artifact.response_data()))
 }
 
+/// 把一份已解析的装载登记进会话 registry（`yeban_load_sfz` 与预制应用的
+/// 播种登记共用同一条路）。
+///
+/// 内容寻址：同一份文本（同一个 SHA-256）已经在 registry 里时**不重复插入**
+/// （不覆盖旧条目 —— 旧条目的路径可能来自另一个位置，覆盖会让调用方看到
+/// 的 `path` 与它装载时的路径不一致；同理，复用时本次的 `sampleHz` / 路径 /
+/// `initialCc` 都不生效，以登记时的那份为准）。
+///
+/// 返回 `true` = 本次真的登记了新条目；`false` = 同摘要已在册、未动。
+fn register_sfz_load(domain: &mut Domain, load: sfz::SfzLoad) -> bool {
+    if domain.sfz_instrument_by_digest(&load.digest).is_some() {
+        return false;
+    }
+    let id = load.id;
+    domain.sfz_instruments.insert(id, load);
+    // 单调推进下一个 id：只在**真的登记**了新条目时前进（复用不消耗 id）。
+    domain.sfz_next_id = domain.sfz_next_id.max(id.saturating_add(1));
+    true
+}
+
 /// `yeban_load_sfz` 的施加：把**已经解析好**的装载产物登记进会话 registry。
 ///
 /// 内容寻址：同一份文本（同一个 SHA-256）已经在 registry 里时**不重复插入**
 /// （`plan` 已经把 `instrumentId` 定成那一份的 id），响应里的 `reused` 如实说明。
 fn apply_load_sfz(domain: &mut Domain, load: sfz::SfzLoad) -> Result<ToolResponse, Fault> {
-    let id = load.id;
     let digest = load.digest.clone();
     if let Some(existing) = domain.sfz_instrument_by_digest(&digest) {
         // 同一份内容：不覆盖旧条目（旧条目的路径可能来自另一个位置，覆盖会让
@@ -5975,9 +6082,7 @@ fn apply_load_sfz(domain: &mut Domain, load: sfz::SfzLoad) -> Result<ToolRespons
         return Ok(ToolResponse::success(response));
     }
     let response = load.response_data();
-    domain.sfz_instruments.insert(id, load);
-    // 单调推进下一个 id：只在**真的登记**了新条目时前进（复用不消耗 id）。
-    domain.sfz_next_id = domain.sfz_next_id.max(id.saturating_add(1));
+    register_sfz_load(domain, load);
     Ok(ToolResponse::success(response))
 }
 
@@ -6351,6 +6456,7 @@ pub(crate) fn apply_propose(
     warnings: &[Value],
     auto_merge: bool,
     merge_commit_message: Option<String>,
+    sfz_load: Option<sfz::SfzLoad>,
 ) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
@@ -6492,6 +6598,32 @@ pub(crate) fn apply_propose(
                         }
                     });
             object.insert("proposal".to_owned(), updated_projection);
+        }
+    }
+    // ⭐ 预制初始 CC 的播种登记（只有 `yeban_apply_preset` 带 `cc` 段时到
+    // 这里）：提案落地后把该乐器的装载登记进会话 registry —— 与
+    // `yeban_load_sfz` 同一条登记路、同一内容寻址（同摘要已在册 ⇒ 不覆盖，
+    // 回执回报**在册那份**的初始 CC，即真正会播种的值）。registry 是会话
+    // 态、不写工程：提案日后被拒也不回滚这份登记（与单独调一次
+    // `yeban_load_sfz` 等价）。
+    if let Some(load) = sfz_load {
+        let digest = load.digest.clone();
+        register_sfz_load(domain, load);
+        if let Some(registered) = domain.sfz_instrument_by_digest(&digest)
+            && let Some(object) = data.as_object_mut()
+        {
+            object.insert(
+                "initialCcSeeded".to_owned(),
+                serde_json::json!({
+                    "instrumentId": registered.id,
+                    "initialCc": sfz::initial_cc_value(&registered.initial_cc),
+                    "ccSeedDefaults": registered
+                        .cc_seed_defaults
+                        .iter()
+                        .map(|(cc, value)| (cc.to_string(), Value::from(*value)))
+                        .collect::<serde_json::Map<String, Value>>(),
+                }),
+            );
         }
     }
     Ok(ToolResponse::success(data))

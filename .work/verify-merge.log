@@ -1,0 +1,18 @@
+== fmt
+FMT_EXIT=0
+== r77 regen (R77_WRITE=1)
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.58s
+R77_EXIT=0
+== fault_vocabulary
+test the_reason_scanners_skip_comments_and_string_intervals ... FAILED
+test the_reason_surface_digest_is_frozen_and_documented ... FAILED
+thread 'the_reason_scanners_skip_comments_and_string_intervals' (22773) panicked at crates/yeban-mcp/tests/fault_vocabulary.rs:3637:5:
+  left: 278
+ right: 276
+thread 'the_reason_surface_digest_is_frozen_and_documented' (22783) panicked at crates/yeban-mcp/tests/fault_vocabulary.rs:3550:5:
+  left: "9426f748765eb5971bb414fc75281d496980ba2f10bbbd9ba5cd5d451be8b2ac"
+ right: "d2749bc5fc25b3d54979307591f10d37bdb57d571378fb29ef5a41d47cd090a4"
+test result: FAILED. 11 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.84s
+error: test failed, to rerun pass `-p yeban-mcp --test fault_vocabulary`
+FAULT_EXIT=101
+VERIFY_MERGE_DONE
