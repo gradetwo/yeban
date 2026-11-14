@@ -3391,6 +3391,12 @@ pub enum NoteOp {
     Delete {
         /// 音符身份。
         note_id: EntityId,
+        /// ⭐ 第五份报告 B-4：操作自带的目标片段（可选）。
+        ///
+        /// 给了 ⇒ 本条不读工具顶层 `clipId`（顶层降为同批其它形态的缺省）；
+        /// 没给 ⇒ 沿旧口径读顶层 `clipId`。寻址纪律与逐条 `trackId` 同族：
+        /// 自带优先，顶层只是缺省。
+        clip_id: Option<EntityId>,
     },
     /// 平移音符。
     Move {
@@ -4745,6 +4751,11 @@ impl NoteOp {
     /// `crate::op_schema::ops_items` 广播给 `tools/list` 的逐 kind 标记都从它派生。
     #[must_use]
     pub const fn reads_envelope_clip(&self) -> bool {
+        // ⭐ 第五份报告 B-4：`delete` 自带 `clipId` 时不读顶层（逐条判定，
+        // 不是 kind 级判定 —— 没给 `clipId` 的 `delete` 照旧读顶层）。
+        if let Self::Delete { clip_id, .. } = self {
+            return clip_id.is_none();
+        }
         matches!(
             self,
             Self::Add { .. }
@@ -4997,6 +5008,8 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         }
         "delete" => Ok(NoteOp::Delete {
             note_id: read_id(object, "noteId")?,
+            // ⭐ 第五份报告 B-4：可选的自带片段寻址（缺省 = 读顶层 `clipId`）。
+            clip_id: read_optional_id(object, "clipId")?,
         }),
         "move" => Ok(NoteOp::Move {
             note_id: read_id(object, "noteId")?,
@@ -9537,7 +9550,10 @@ fn expand_clip_level_op(
                         }),
                     ));
                 }
-                pairs.push(NoteOp::Delete { note_id: *note_id });
+                pairs.push(NoteOp::Delete {
+                    note_id: *note_id,
+                    clip_id: None,
+                });
                 let mut note = note.clone();
                 note.pitch = mirrored as u8;
                 pairs.push(NoteOp::Add {
@@ -9928,14 +9944,19 @@ pub fn compile(
                 clip_id: *clip_id,
                 note: (**note).clone(),
             },
-            NoteOp::Delete { note_id } => {
+            NoteOp::Delete {
+                note_id,
+                clip_id: op_clip_id,
+            } => {
+                // ⭐ 第五份报告 B-4：目标片段 = 操作自带（优先）或顶层缺省。
+                let target_clip = op_clip_id.unwrap_or(*clip_id);
                 let previous_note = project
-                    .note(clip_id, note_id)
+                    .note(&target_clip, note_id)
                     .map_err(|error| from_model("音符查找", &error))?
                     .clone();
                 Op::DeleteNote {
                     track_id: *track_id,
-                    clip_id: *clip_id,
+                    clip_id: target_clip,
                     note_id: *note_id,
                     previous_note,
                 }
@@ -13257,6 +13278,86 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
     }
 
+    /// ⭐ 第五份报告 B-4：`delete` 自带 `clipId` 时不读顶层 `clipId`。
+    ///
+    /// - 解析：带 `clipId` ⇒ `reads_envelope_clip() == false`、整批
+    ///   `envelope_clip_required == false`；不带 ⇒ 沿旧口径为真；
+    /// - 编译：顶层传**占位**片段（nil）时，自带寻址的 `delete` 仍从自己的
+    ///   片段里读撤销载荷并产出指向该片段的 `Op::DeleteNote`；
+    /// - 混合批：同批有 `add`（读顶层）时整批照旧要求顶层 `clipId`。
+    ///
+    /// 注入（实测红）：谓词改回 kind 级（自带也算读顶层）⇒ 第一条断言红；
+    /// 编译臂改回只读顶层 ⇒ 占位片段查不到音符、编译红。
+    #[test]
+    fn delete_with_its_own_clip_id_does_not_read_the_envelope_clip() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let note_id = project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI")
+            .keys()
+            .next()
+            .copied()
+            .expect("至少一个音符");
+        let note_text = note_id.to_canonical_string();
+        let clip_text = clip_id.to_canonical_string();
+
+        let with = parse_ops(&serde_json::json!([
+            {"kind": "delete", "noteId": note_text, "clipId": clip_text}
+        ]))
+        .expect("自带 clipId 的 delete 必须可解析");
+        assert!(
+            !with[0].reads_envelope_clip(),
+            "自带 clipId 的 delete 不得再读顶层 clipId"
+        );
+        assert!(
+            !NoteOp::envelope_clip_required(&with),
+            "整批只有自带寻址的 delete 时顶层 clipId 不必需"
+        );
+        let without = parse_ops(&serde_json::json!([
+            {"kind": "delete", "noteId": note_text}
+        ]))
+        .expect("旧形状必须可解析");
+        assert!(
+            without[0].reads_envelope_clip(),
+            "没给 clipId 的 delete 沿旧口径读顶层"
+        );
+
+        // 编译：顶层片段是占位 nil —— 自带寻址必须自己找到音符。
+        let placeholder = EntityId::default();
+        let ops = compile(&project, &track_id, &placeholder, &with).expect("编译");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            Op::DeleteNote {
+                clip_id: target,
+                note_id: deleted,
+                previous_note,
+                ..
+            } => {
+                assert_eq!(*target, clip_id, "DeleteNote 必须指向操作自带的片段");
+                assert_eq!(*deleted, note_id);
+                assert_eq!(
+                    previous_note,
+                    project.note(&clip_id, &note_id).expect("音符"),
+                    "撤销载荷必须来自自带片段的当前文档"
+                );
+            }
+            other => panic!("应当是 DeleteNote: {other:?}"),
+        }
+
+        // 混合批：`add` 读顶层 ⇒ 整批照旧要求顶层 clipId。
+        let mixed = parse_ops(&serde_json::json!([
+            {"kind": "delete", "noteId": note_text, "clipId": clip_text},
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}
+        ]))
+        .expect("混合批必须可解析");
+        assert!(
+            NoteOp::envelope_clip_required(&mixed),
+            "同批有 add 时顶层 clipId 照旧必需"
+        );
+    }
+
     #[test]
     fn compile_reads_the_undo_payload_from_the_document() {
         let project = filled_project();
@@ -13269,8 +13370,16 @@ mod tests {
             .next()
             .copied()
             .expect("至少一个音符");
-        let ops =
-            compile(&project, &track_id, &clip_id, &[NoteOp::Delete { note_id }]).expect("编译");
+        let ops = compile(
+            &project,
+            &track_id,
+            &clip_id,
+            &[NoteOp::Delete {
+                note_id,
+                clip_id: None,
+            }],
+        )
+        .expect("编译");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             Op::DeleteNote { previous_note, .. } => {

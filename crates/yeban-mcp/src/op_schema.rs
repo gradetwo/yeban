@@ -390,11 +390,12 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "delete",
-                "按键身份删除一个音符；多余键被静默忽略",
+                "按键身份删除一个音符；多余键被静默忽略。可选 `clipId` 自带目标片段（第五份报告 B-4）：给了 ⇒ 本条不读工具顶层 `clipId`（顶层降为同批其它形态的缺省）；没给 ⇒ 沿旧口径读顶层",
                 &["kind", "noteId"],
                 json!({
                     "kind": kind("delete"),
                     "noteId": id("要删除的音符身份"),
+                    "clipId": id("可选：目标片段（自带寻址，给了就不读顶层 `clipId`）"),
                 }),
                 false,
             ),
