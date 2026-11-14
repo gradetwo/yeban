@@ -756,6 +756,50 @@
 //! * 跨键共享的轮替进度（每键独立推进，与 ARIA 的实测行为一致）；
 //! * 力度层切换时**重置**序列（不重置：序列属于键，⛔ 不属于层）。
 //!
+//! # ⭐ 随机轮替（`lorand` / `hirand`）
+//!
+//! ⭐ **追加登记段 —— 本节是随机轮替片的新增登记**（此前两 opcode 在全仓
+//! **零实现**：解析层不认、引擎不判，未知 opcode 静默忽略 ⇒ 写了四段随机
+//! 轮替的库四个 region 无条件全匹配、同相位叠加发声。本片补齐。）
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/lorand/>，2026-11-14 现读）
+//!
+//! > The region will play if the random number is equal to or higher than
+//! > `lorand`, and lower than `hirand`. … The player will generate a new
+//! > random number on every note-on event, in the range 0 to 1.
+//!
+//! 表行：`lorand` / `hirand` 均 SFZ v1、float、Range 0 to 1，缺省
+//! 分别为 **0** / **1**。规范同页点名 ARIA 的实现是**反例**：「a separate
+//! random number is generated for each region」⇒ 多麦克风层会错位；
+//! 本片同次触发**只派生一个数、全部区域共用**。
+//!
+//! ## 确定性口径（本仓裁决，⛔ 不用真随机）
+//!
+//! 离线渲染必须可复现（[ARCH-DET-001]）：随机数是触发身份的**纯函数**
+//! （[`yeban_sfz::instrument::trigger_rand`]：splitmix64 终混，种子材料 ＝
+//! 每键触发计数 `occurrence` ＋ 音高 ＋ 通道）。⇒ 同一工程同一触发序列
+//! 逐次选出同一变体；实时（本节路径）与离线（`render_note_with`）用同一
+//! 公式、同一计数粒度（每键）⇒ 两侧选出同一 region。乐器实例标识不在
+//! 种子里（触发层不持有它，后果与理由见 `trigger_rand` 的文档）。
+//!
+//! ## 接线形状（与 `seq_*` 同构）
+//!
+//! * [`PreparedRegion`] 承载 `lorand` / `hirand` 两个 `f32`（解析与取值域
+//!   在 `yeban-sfz`：缺省 (0, 1)、越界响亮 `FloatOutOfRange`、写反 ＝ 空
+//!   区间不报错）；推进量仍是声部池的每键计数 ⇒ `SfzVoice` **不加字段**。
+//!   字节实测：`PreparedRegion` 6176 → **6184 B**（＋8 ＝ 两个 `f32`）；
+//!   `PreparedSfz` **仍是 264 B**（`has_rand: bool` 落进 `has_round_robin`
+//!   旁的既有填充，＋0）。
+//! * 计数推进条件由 `has_round_robin()` 扩为 `has_round_robin() ||
+//!   has_rand()`：只有随机门的库也必须逐注推进，否则随机数恒定、永远
+//!   只响同一段。两样都没有的库一个新分支都不走（逐位不变）。
+//! * 随机门**没有兜底**：覆盖留缝 ⇒ 该注静音（规范明示；「有时发声」
+//!   写法全靠它）。`round_robin_fallback` 只赦免 `seq_position` 落空。
+//! * 与 `seq_*` 组合 ＝ 规范示例形状：`occurrence` 先定 `seq_position`
+//!   子集，随机门在子集内选段，两门同过才建声部。
+//! * 离线 `occurrence = None` ⇒ 随机互斥整段跳过（与 `seq_*` 同一条），
+//!   接线前的「全部叠加」逐位不变。
+//!
 //! [`Instrument::region_for_with`]: yeban_sfz::instrument::Instrument::region_for_with
 //!
 //! # ⭐ 播放方向（`direction`，任务单 `#113`）
@@ -2177,6 +2221,10 @@ impl SfzInstrument {
         };
         self.with_instrument(|instrument| {
             let mut written = 0usize;
+            // ⭐ 本次触发的随机数（`lorand` / `hirand` 用）：循环外派生一次、
+            // 全部 region 共用；`occurrence = None` ⇒ 不启用随机互斥。
+            let rand =
+                occurrence.map(|k| yeban_sfz::instrument::trigger_rand(u64::from(k), note, 1));
             for region in instrument.regions() {
                 if !region.matches_query(&query) {
                     continue;
@@ -2190,6 +2238,18 @@ impl SfzInstrument {
                 if let Some(occurrence) = occurrence
                     && region.seq_length > 1
                     && region.seq_position != occurrence % region.seq_length + 1
+                {
+                    continue;
+                }
+                // ⭐ **随机轮替互斥**（`lorand` / `hirand`）：与实时路径
+                //    [`PreparedRegion::selects_rand`] **同一条判据**，随机数
+                //    在循环外由同一个纯函数按 `(occurrence, note, 通道 1)`
+                //    派生一次、全部 region 共用 ⇒ 同一触发身份离线/实时选出
+                //    同一 region。缺省区间恒通过 ⇒ 没有随机门的库逐位不变；
+                //    `occurrence = None` ⇒ `rand` 为 `None` ⇒ 与 `seq_*`
+                //    同一条：整段跳过、照旧叠加。
+                if let Some(rand) = rand
+                    && !region.accepts_rand(rand)
                 {
                     continue;
                 }
@@ -3356,6 +3416,19 @@ pub struct PreparedRegion {
     /// ⇒ 它照旧参与"多匹配 ＝ 叠加"。⭐ 这条是**后向兼容的全部**：`seq_length <= 1`
     /// 的区域在触发路径上**一个新分支都不走**（判据见 `trigger_note`）。
     seq_length: u32,
+    /// ⭐ **随机轮替下界**（`lorand`，缺省 0）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里**早已落地**（[`Region::lorand`]，越界是
+    /// 响亮 `FloatOutOfRange`）⇒ 本字段只把那份 `f32` 搬进摊平表，
+    /// ⛔ 不新增解析、⛔ 不改取值域。
+    ///
+    /// ⚠ **它是"区域参数"、⛔ 不是"声部状态"**：随机数由触发身份**纯函数**
+    /// 派生（[`yeban_sfz::instrument::trigger_rand`]，种子 ＝ 每键触发计数
+    /// ＋ 音高 ＋ 通道），不推进任何 RNG 状态 ⇒ `SfzVoice` 一个字段都不加。
+    /// 选择规则见 [`Self::selects_rand`]。
+    lorand: f32,
+    /// ⭐ **随机轮替上界**（`hirand`，缺省 1）。口径同 [`Self::lorand`]。
+    hirand: f32,
 }
 
 impl PreparedRegion {
@@ -3481,6 +3554,43 @@ impl PreparedRegion {
             return true;
         }
         self.seq_position == occurrence % self.seq_length + 1
+    }
+
+    /// ⭐ **随机轮替下界**（`lorand`，缺省 0）。
+    #[must_use]
+    pub const fn lorand(&self) -> f32 {
+        self.lorand
+    }
+
+    /// ⭐ **随机轮替上界**（`hirand`，缺省 1）。
+    #[must_use]
+    pub const fn hirand(&self) -> f32 {
+        self.hirand
+    }
+
+    /// ⭐ 本区域有没有**生效的**随机轮替门（与 `yeban-sfz` 的
+    /// [`Region::has_rand_gate`] 同一条判形：缺省对 `(0, 1)` 不是门）。
+    #[must_use]
+    pub fn has_rand_gate(&self) -> bool {
+        self.lorand > yeban_sfz::instrument::LORAND_DEFAULT
+            || self.hirand < yeban_sfz::instrument::HIRAND_DEFAULT
+    }
+
+    /// ⭐ 本次触发的随机数 `rand` 该不该由本区域发声。
+    ///
+    /// 规则与 `yeban-sfz` 的 [`Region::accepts_rand`] **同一条语义**：
+    /// `lorand <= rand < hirand`。缺省对 `(0, 1)` 对 `[0, 1)` 内的任何
+    /// `rand` 恒 `true` ⇒ 没写 `lorand` / `hirand` 的区域照旧叠加
+    /// （后向兼容的全部）。`rand` 由
+    /// [`yeban_sfz::instrument::trigger_rand`] 按触发身份派生、同次触发
+    /// 全部区域共用一个值 ⇒ 首尾相接的区间组恰好一个命中。
+    ///
+    /// ⚠ **随机门没有兜底**（与 `seq_*` 的 `round_robin_fallback` 不同）：
+    /// 覆盖留缝 ⇒ 该次触发静音，是规范明示的语义（「有时发声」类写法
+    /// 全靠它），⛔ 不许退回第一个区域把缝填上。
+    #[must_use]
+    pub const fn selects_rand(&self, rand: f32) -> bool {
+        rand >= self.lorand && rand < self.hirand
     }
 
     /// ⭐ **`span` 的归约结果**：`(源起点, 源终点)`（半开）；`None` ＝ 不产生采样输出。
@@ -4091,6 +4201,13 @@ pub struct PreparedSfz {
     /// `PreparedSfz` 的字节数是判据 `S9`／`S91` 现读的量 ⇒ 多存一个 `usize`
     /// 会白白推高它 8 B。要计数请用 [`Self::round_robin_region_count`]（现算，O(区域数)）。
     has_round_robin: bool,
+    /// ⭐ **本条乐器有没有随机轮替区域**（`lorand` / `hirand` 写窄了的条数 > 0）。
+    ///
+    /// 与 [`Self::has_round_robin`] 同形：实时触发路径拿它当"要不要推进
+    /// 每键计数（随机数派生挂在同一个计数上）／要不要判随机门"的开关 ⇒
+    /// 没有随机门的语料在触发路径上**一个新分支都不走**。同样是 `bool`
+    /// 而不是计数（理由同上）。
+    has_rand: bool,
 }
 
 /// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
@@ -4390,6 +4507,7 @@ impl PreparedSfz {
         let (regions, cc_seeds, builtin_silent_regions, pitch_egs) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
+        let has_rand = regions.iter().any(|region| region.has_rand_gate());
         Ok(Self {
             regions,
             samples,
@@ -4402,6 +4520,7 @@ impl PreparedSfz {
             engine_hz,
             cc_seeds,
             has_round_robin,
+            has_rand,
         })
     }
 
@@ -4474,6 +4593,7 @@ impl PreparedSfz {
         missing.sort();
         missing.dedup();
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
+        let has_rand = regions.iter().any(|region| region.has_rand_gate());
         Ok(Self {
             regions,
             samples,
@@ -4486,6 +4606,7 @@ impl PreparedSfz {
             engine_hz,
             cc_seeds,
             has_round_robin,
+            has_rand,
         })
     }
 
@@ -4624,6 +4745,12 @@ impl PreparedSfz {
     #[must_use]
     pub const fn has_round_robin(&self) -> bool {
         self.has_round_robin
+    }
+
+    /// ⭐ 这条乐器是否**有**随机轮替区域（实时路径读的就是这一位）。
+    #[must_use]
+    pub const fn has_rand(&self) -> bool {
+        self.has_rand
     }
 
     /// ⭐ 摊平后的**样本表**（去重后；**只读借用**：实时侧⛔ 不 clone）。
@@ -5080,6 +5207,13 @@ fn flatten_regions(
                 // 推进量（第几次触发）在声部池的每键计数器里 ⇒ `SfzVoice` 仍是 40 B。
                 seq_position: region.seq_position,
                 seq_length: region.seq_length.max(1),
+                // ⭐ 随机轮替（`lorand` / `hirand`）：`yeban-sfz` 早已解析并
+                // 判过取值域 ⇒ 本片只**搬运**两个 `f32`，⛔ 不新增解析。
+                // 缺省对 (0, 1) 原样搬（⛔ 不折叠成标记位）：选择谓词
+                // `selects_rand` 靠原始区间判，折叠会让「显式写全区间」
+                // 与「没写」在谓词层分叉。
+                lorand: region.lorand,
+                hirand: region.hirand,
             });
         }
         (regions, cc_seeds, builtin_silent_regions, pitch_egs)
@@ -6322,12 +6456,34 @@ impl SfzVoicePool {
         // ⚠ **后向兼容的全部**：没有 `seq_*` 的库（语料绝大多数）`seq_length == 1`
         // ⇒ `has_round_robin()` 为 `false` ⇒ **计数器不推进、兜底不扫描**，
         // 循环里每区域只多一次 `u32` 比较（恒 `true`）⇒ 建声部序列与接线前**逐位相同**。
-        let (occurrence, rr_fallback) = if plan.has_round_robin() {
+        //
+        // ⭐ **随机轮替**（`lorand` / `hirand`）共用同一个计数：随机数由
+        // `(occurrence, note, 通道 1)` 纯函数派生（[`yeban_sfz::instrument::trigger_rand`]）
+        // ⇒ 只有随机门、没有 `seq_*` 的库也必须推进计数，否则每注派生出
+        // 同一个随机数、永远只响同一段。兜底仍是 `seq_*` 专属（随机门
+        // 留缝 ＝ 规范明示的静音，见 [`PreparedRegion::selects_rand`]）。
+        // 两样都没有的库：计数不推进、随机数不派生、循环里一个新分支都不走。
+        let (occurrence, rr_fallback) = if plan.has_round_robin() || plan.has_rand() {
             let occurrence = self.next_occurrence(note);
-            let fallback = self.round_robin_fallback(plan, note, velocity, occurrence, cc);
+            let fallback = if plan.has_round_robin() {
+                self.round_robin_fallback(plan, note, velocity, occurrence, cc)
+            } else {
+                None
+            };
             (occurrence, fallback)
         } else {
             (0, None)
+        };
+        // ⭐ 本次触发的随机数（只派生一次、全部区域共用）；无随机门的库为
+        // `None` ⇒ 循环里的随机门分支整段跳过。
+        let rand = if plan.has_rand() {
+            Some(yeban_sfz::instrument::trigger_rand(
+                u64::from(occurrence),
+                note,
+                1,
+            ))
+        } else {
+            None
         };
         for (region_index, region) in plan.regions().iter().enumerate() {
             if !region.accepts(note, velocity) {
@@ -6339,6 +6495,14 @@ impl SfzVoicePool {
             // 去关掉别人（与上面 `cc_gates_ok` 那条同一条理由）。
             if !region.selects_occurrence(occurrence)
                 && rr_fallback != u16::try_from(region_index).ok()
+            {
+                continue;
+            }
+            // ⭐ 随机轮替筛选（`lorand` / `hirand`）：与轮替筛选同一条理由
+            // （位置在 `off_by` 关断之前）。⚠ 兜底**不**豁免本条：`rr_fallback`
+            // 只赦免 `seq_position` 落空，随机门落缝是规范明示的静音。
+            if let Some(rand) = rand
+                && !region.selects_rand(rand)
             {
                 continue;
             }

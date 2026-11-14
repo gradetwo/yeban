@@ -620,7 +620,7 @@ fn r6_sizes_stay_under_the_200_kib_red_line() {
         "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＝ 2560 B"
     );
     assert_eq!(
-        region, 6_176,
-        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＝ 6176 B"
+        region, 6_184,
+        "PreparedRegion 必须仍是 6160 B ＋ round-robin 的 8 B ＋ #331 off_time f32 的 8 B ＋ 随机轮替 lorand/hirand 两个 f32 的 8 B ＝ 6184 B"
     );
 }

@@ -10,7 +10,8 @@
 //!
 //! 默认值全部取自 sfzformat 的机器可读 opcode 表 `_data/sfz/syntax.yml`
 //! （`pitch_keycenter` 默认 60、`lokey` 0、`hikey` 127、`lovel` 0、`hivel` 127、
-//! `lochan` 1、`hichan` 16、`seq_length` 1、`seq_position` 1、`tune` 0、`transpose` 0）。
+//! `lochan` 1、`hichan` 16、`seq_length` 1、`seq_position` 1、`lorand` 0、`hirand` 1、
+//! `tune` 0、`transpose` 0）。
 //!
 //! ## ⚠ 三处**登记在案**的缺省偏离（⛔ 不是静默降级）
 //!
@@ -265,6 +266,23 @@ pub const AMPEG_RELEASE_DEFAULT_SECONDS: f32 = 0.0;
 /// ⚠ **显式写出**时（含 `amplitude=0`）一律按 [`Region::amplitude`] 原样读入、⛔ 不钳位
 /// （规范自己记了 "some players … do not clamp"）。
 pub const AMPLITUDE_DEFAULT_PERCENT: f32 = 100.0;
+
+/// ⭐ **`lorand` 的规范缺省**：**0**。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/lorand> 的表行
+/// （`lorand`｜SFZ v1｜float｜**Default = 0**｜Range = 0 to 1）。
+///
+/// 取 `0` 的效果：与 [`HIRAND_DEFAULT`] 合起来，缺省区间恰是完整的 `[0, 1)`
+/// ⇒ 没有 `lorand` / `hirand` 的文件在随机轮替门上**恒通过**（见
+/// [`Region::accepts_rand`]），既有选择结果逐位不变。
+pub const LORAND_DEFAULT: f32 = 0.0;
+
+/// ⭐ **`hirand` 的规范缺省**：**1**。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/hirand> 的表行
+/// （`hirand`｜SFZ v1｜float｜**Default = 1**｜Range = 0 to 1）。
+/// 触发随机数恒落在 `[0, 1)`（见 [`trigger_rand`]）⇒ 上界 `1` 永不截断。
+pub const HIRAND_DEFAULT: f32 = 1.0;
 
 /// `ampeg_attack` / `ampeg_hold` / `ampeg_decay` / `ampeg_release` 的规范取值上界，
 /// 单位**秒**（四个格式页的 Range 都是 `0 to 100`）。
@@ -675,6 +693,28 @@ pub struct Region<'a> {
     pub seq_position: u32,
     /// 轮替长度（`seq_length`，默认 1）。
     pub seq_length: u32,
+    /// ⭐ **随机轮替下界**（`lorand`，缺省 [`LORAND_DEFAULT`] ＝ 0）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/lorand/>：正文 "The region will
+    /// play if the random number is equal to or higher than `lorand`, and lower
+    /// than `hirand`."，表行 Type = float、Default = 0、Range = 0 to 1。
+    /// 每次 note-on 只派生**一个**随机数、同次触发的全部候选 region 共用
+    /// （派生口径见 [`trigger_rand`]）⇒ 相邻区间 `[lorand, hirand)` 首尾相接时
+    /// **恰好一个** region 命中 —— 这正是随机 round-robin 的标准写法。
+    ///
+    /// ⚠ `lorand > hirand` **不报错**：与 `lovel > hivel`、`lokey > hikey`
+    /// 同一条既有口径（成对端点不做交叉校验），区间为空 ⇒ 本 region 永不
+    /// 被随机门选中。取值越界（不在 `0..=1`）则是响亮
+    /// [`SfzError::FloatOutOfRange`]（见 `read_rand_bound`，⛔ 不静默钳位）。
+    pub lorand: f32,
+    /// ⭐ **随机轮替上界**（`hirand`，缺省 [`HIRAND_DEFAULT`] ＝ 1）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/hirand/>：表行 Type = float、
+    /// Default = 1、Range = 0 to 1；语义与 [`Region::lorand`] 同页成对定义
+    /// （`lorand <= r < hirand`，上界**开**区间 —— 规范示例特意警告
+    /// `hirand=0.249` 与下一段 `lorand=0.25` 之间留缝会让随机数落空、整音
+    /// 静音，本实现按规范原样：落缝 ⇒ 不发声，⛔ 不兜底改选别的 region）。
+    pub hirand: f32,
     /// 独占组（`group`）。
     pub group: u32,
     /// 被谁关掉（`off_by`）。
@@ -976,6 +1016,36 @@ impl<'a> Region<'a> {
     #[must_use]
     pub fn matches_query(&self, query: &RegionQuery<'_>) -> bool {
         region_matches(self, query)
+    }
+
+    /// ⭐ 本 region 有没有**生效的**随机轮替门（`lorand` / `hirand`）。
+    ///
+    /// 缺省对 `(0, 1)` 覆盖整个 `[0, 1)` ⇒ 不是门（[`Self::accepts_rand`]
+    /// 恒 `true`）。只有文件真的写窄了区间才算有门 —— 消费方（引擎摊平表
+    /// 的 `has_rand`、触发计数推进条件）用它区分「语料绝大多数」的零成本
+    /// 情形，与 `seq_length > 1` 之于 `seq_*` 是同一条判形。
+    #[must_use]
+    pub fn has_rand_gate(&self) -> bool {
+        self.lorand > LORAND_DEFAULT || self.hirand < HIRAND_DEFAULT
+    }
+
+    /// ⭐ 本次触发的随机数 `rand` 是否落在本 region 的 `[lorand, hirand)` 内。
+    ///
+    /// 规范口径（<https://sfzformat.com/opcodes/lorand/>）：`lorand <= r`
+    /// 且 `r < hirand`。`rand` 必须由 [`trigger_rand`] 派生（`[0, 1)`），
+    /// 同一次触发只派生一次、全部候选共用 —— ⛔ 不许逐 region 各抽一个
+    /// （那是格式页点名的 ARIA 反例：多麦克风层会抽到不同段而错位）。
+    ///
+    /// ⚠ 本判定**不在** [`Self::matches_query`] 里：与 `seq_*` 同理，随机门
+    /// 是**触发期选择**层（依赖「第几次触发」），不是静态门控；把它塞进
+    /// 静态谓词会让按需装载 / 摊平掩码这类「还没发生触发」的消费方按某一个
+    /// 固定随机数误杀 region。选择入口 [`Instrument::region_for_with`] 与
+    /// 引擎触发路径各自在选择层调用本方法。
+    ///
+    /// 零分配、无状态，可在实时路径调用。
+    #[must_use]
+    pub fn accepts_rand(&self, rand: f32) -> bool {
+        rand >= self.lorand && rand < self.hirand
     }
 
     /// `amp_veltrack` 标准曲线的力度 → 线性振幅（[`veltrack_gain`] 的绑定版）。
@@ -1537,11 +1607,19 @@ impl<'a> Instrument<'a> {
 
     /// 带完整上下文（轮替序号 / 通道 / keyswitch / CC）确定性地选择 region。
     ///
-    /// 轮替算法（**不使用随机数**，满足 [ARCH-DET-001]）：
-    /// 1. 在候选里找第一个完整匹配的 region，取它的 `seq_length` 作为组长 `L`；
-    /// 2. 目标序号 `target = (occurrence % L) + 1`；
-    /// 3. 返回第一个 `seq_position == target` 且完整匹配的 region；
-    /// 4. 若无人命中，退回「第一个完整匹配」。
+    /// 轮替算法（**不使用不可复现的随机数**，满足 [ARCH-DET-001]）：
+    /// 1. 由查询的触发身份派生本次触发的随机数（[`trigger_rand`]，同次触发
+    ///    全部候选共用一个值）；
+    /// 2. 在候选里找第一个「完整匹配 ＋ 随机门通过」的 region，取它的
+    ///    `seq_length` 作为组长 `L`；
+    /// 3. 目标序号 `target = (occurrence % L) + 1`；
+    /// 4. 返回第一个 `seq_position == target` 且完整匹配、随机门通过的 region；
+    /// 5. 若无人命中，退回「第一个完整匹配且随机门通过」的 region。
+    ///
+    /// ⭐ 随机门（`lorand` / `hirand`）在三段扫描里**都**生效：覆盖留缝时
+    /// 第 5 步同样无人命中 ⇒ 返回 `None`（规范明示的「落缝即静音」，
+    /// ⛔ 不兜底改选）。与 `seq_*` 的组合即规范示例的形状：`seq` 先按
+    /// `target` 定子集，随机门在子集内选段，两门同过才命中。
     ///
     /// 全过程只做三次线性扫描，**零分配**，可在实时路径调用。
     #[must_use]
@@ -1557,10 +1635,15 @@ impl<'a> Instrument<'a> {
     pub(crate) fn region_for_query(&self, query: &RegionQuery<'_>) -> Option<&Region<'a>> {
         let bucket = self.key_buckets.get(query.note as usize)?;
 
+        // ⭐ 本次触发的随机数：只派生**一次**，三段扫描的全部候选共用
+        // （规范要求；逐 region 各抽一个是格式页点名的 ARIA 反例）。
+        // 没有随机门的候选恒通过（缺省区间覆盖 [0, 1)）⇒ 既有行为逐位不变。
+        let rand = trigger_rand(query.occurrence, query.note, query.channel);
+
         let mut seq_length = 1u32;
         for &index in bucket {
             let region = &self.regions[index as usize];
-            if region_matches(region, query) {
+            if region_matches(region, query) && region.accepts_rand(rand) {
                 seq_length = region.seq_length.max(1);
                 break;
             }
@@ -1569,19 +1652,58 @@ impl<'a> Instrument<'a> {
         let target = (query.occurrence % u64::from(seq_length)) as u32 + 1;
         for &index in bucket {
             let region = &self.regions[index as usize];
-            if region.seq_position == target && region_matches(region, query) {
+            if region.seq_position == target
+                && region_matches(region, query)
+                && region.accepts_rand(rand)
+            {
                 return Some(region);
             }
         }
 
         for &index in bucket {
             let region = &self.regions[index as usize];
-            if region_matches(region, query) {
+            if region_matches(region, query) && region.accepts_rand(rand) {
                 return Some(region);
             }
         }
         None
     }
+}
+
+/// ⭐ **一次触发的确定性随机数**（`lorand` / `hirand` 的唯一派生点）。
+///
+/// 规范（<https://sfzformat.com/opcodes/lorand/>）只要求：每次 note-on 生成
+/// 一个 `[0, 1)` 的新随机数、同次触发的全部 region 共用。本仓的离线渲染
+/// 必须可复现（[ARCH-DET-001]、种子绑定常驻口径），因此这里**不抽真随机**，
+/// 而是把随机数定义成触发身份的纯函数：
+///
+/// * **种子材料** ＝ `(occurrence, note, channel)` —— `occurrence` 是该键的
+///   第几次触发（与 `seq_*` 轮替同一个计数事件），逐次触发必然换值；
+///   `note` / `channel` 让不同键、不同通道的同序触发互不相关。
+/// * **算法** ＝ splitmix64 终混（纯整数乘加与移位，跨平台逐位一致），
+///   取高 24 位映射到 `[0, 1)`（`f32` 尾数恰 24 位 ⇒ 无舍入偏倚）。
+///
+/// ⚠ **乐器实例标识不在种子里**：触发层（[`RegionQuery`]、引擎声部池、
+/// 离线采样器）都不持有实例标识，本函数签名如实只收触发身份。后果是两件
+/// 加载了**同一份库**、收到**同一串音符**的乐器会选出同一串变体 —— 音乐上
+/// 无害（每件乐器各自仍是随机轮替），登记在此，⛔ 不用加载顺序计数器之类
+/// 的不可复现来源硬凑实例区分。实时与离线两侧都经本函数派生（引擎触发
+/// 路径的通道恒为 1，与 [`RegionQuery::new`] 的缺省一致）⇒ 同一触发身份
+/// 两侧选出同一 region。
+///
+/// 零分配、无状态、无熵源，可在实时路径调用。
+#[must_use]
+pub fn trigger_rand(occurrence: u64, note: u8, channel: u8) -> f32 {
+    let mut z = occurrence
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(u64::from(note) << 32)
+        .wrapping_add(u64::from(channel) << 48)
+        .wrapping_add(0xD1B5_4A32_D192_ED03);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // 高 24 位 → [0, 1)：`2^-24` 是精确的 2 的幂，乘法无舍入。
+    ((z >> 40) as f32) * (1.0 / 16_777_216.0)
 }
 
 /// 单个 region 是否满足查询（严格门控策略见 [`RegionQuery`]）。
@@ -1848,6 +1970,11 @@ pub(crate) fn build_region<'a>(
     // ---- 轮替 / 分组 ----
     let seq_position = read_u32(&scopes, "seq_position", None, 1)?;
     let seq_length = read_u32(&scopes, "seq_length", None, 1)?;
+    // ⭐ 随机轮替（`lorand` / `hirand`）：与 `seq_*` 同层（触发期选择），
+    // 作用域链同走 `region → group → master → global`（格式页把两者都列在
+    // Region Logic，group 级写 rand 区间是 round-robin 库的常见形状）。
+    let lorand = read_rand_bound(&scopes, "lorand", LORAND_DEFAULT)?;
+    let hirand = read_rand_bound(&scopes, "hirand", HIRAND_DEFAULT)?;
     let group = read_u32(&scopes, "group", Some("polyphony_group"), 0)?;
     let off_by = read_u32(&scopes, "off_by", Some("offby"), 0)?;
 
@@ -1974,6 +2101,8 @@ pub(crate) fn build_region<'a>(
         pan,
         seq_position,
         seq_length,
+        lorand,
+        hirand,
         group,
         off_by,
         note_polyphony,
@@ -2493,6 +2622,50 @@ fn read_ampeg_sustain(
     Ok(parsed)
 }
 
+/// 读 `lorand` / `hirand`（无量纲概率边界）：政策与 [`read_ampeg_sustain`]
+/// 同一形状（缺失 ⇒ 缺省；认不出 ⇒ [`SfzError::InvalidFloat`]；非有限 ⇒
+/// [`SfzError::NonFiniteFloat`]；越界 `0..=1` ⇒ [`SfzError::FloatOutOfRange`]，
+/// ⛔ 不静默钳位 —— 与 `amp_veltrack` / `ampeg_*` 同一条口径）。
+///
+/// ⚠ 只校验**各自**的取值域，⛔ 不做 `lorand <= hirand` 的交叉校验：
+/// 成对端点的既有口径（`lovel` / `hivel`、`lokey` / `hikey`、CC 门
+/// `lo` / `hi`）从不交叉报错，写反了就是空区间（见 [`Region::lorand`]）。
+fn read_rand_bound(
+    scopes: &Scopes<'_, '_>,
+    name: &'static str,
+    fallback: f32,
+) -> Result<f32, SfzError> {
+    let Some(value) = scopes.get(name) else {
+        return Ok(fallback);
+    };
+    let parsed = value
+        .as_str()
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| SfzError::InvalidFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        });
+    }
+    if !(0.0..=1.0).contains(&parsed) {
+        return Err(SfzError::FloatOutOfRange {
+            line: value.line,
+            opcode: name.to_string(),
+            value: parsed,
+            min: 0.0,
+            max: 1.0,
+        });
+    }
+    Ok(parsed)
+}
+
 // ---------------------------------------------------------------------------
 // ⭐ CC 调制（任务单 `#104`；⭐ `#115` 把目标推广成 `ModTarget`）
 // ---------------------------------------------------------------------------
@@ -2850,6 +3023,8 @@ mod tests {
             pan: 0.0,
             seq_position,
             seq_length,
+            lorand: LORAND_DEFAULT,
+            hirand: HIRAND_DEFAULT,
             group: 0,
             off_by: 0,
             note_polyphony: NotePolyphony::UNLIMITED,
@@ -6661,6 +6836,208 @@ v127=1
                 .map(|region| region.sample.to_string());
             assert_eq!(picked.as_deref(), Some("a.wav"), "occurrence {occurrence}");
         }
+    }
+
+    #[test]
+    fn rand_bounds_default_to_the_full_unit_interval() {
+        // 缺省对 (0, 1)：规范表行 Default（lorand=0 / hirand=1）⇒ 不是门。
+        let region = first_region("<region>sample=a.wav");
+        assert_eq!((region.lorand, region.hirand), (0.0, 1.0));
+        assert!(!region.has_rand_gate());
+        // 显式值原样读入。
+        let explicit = first_region("<region>sample=a.wav lorand=0.25 hirand=0.5");
+        assert_eq!((explicit.lorand, explicit.hirand), (0.25, 0.5));
+        assert!(explicit.has_rand_gate());
+    }
+
+    #[test]
+    fn rand_bounds_follow_the_scope_chain() {
+        // global 给下界、group 给上界、region 只覆写下界 ⇒ (0.3, 0.9)。
+        let region = first_region(
+            "<global>lorand=0.1\n\
+             <group>hirand=0.9\n\
+             <region>sample=a.wav lorand=0.3",
+        );
+        assert_eq!((region.lorand, region.hirand), (0.3, 0.9));
+    }
+
+    #[test]
+    fn rand_bounds_out_of_range_are_loud_errors() {
+        // 越界（不在 0..=1）⇒ FloatOutOfRange（与 `ampeg_*` 同口径，⛔ 不钳位）。
+        for text in [
+            "<region>sample=a.wav lorand=1.5",
+            "<region>sample=a.wav lorand=-0.25",
+            "<region>sample=a.wav hirand=1.01",
+            "<region>sample=a.wav hirand=-1",
+        ] {
+            let outcome = parse_text(text, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::FloatOutOfRange { .. })),
+                "`{text}` 必须 Err(FloatOutOfRange)，实得 {outcome:?}"
+            );
+        }
+        // 认不出 ⇒ InvalidFloat；非有限 ⇒ NonFiniteFloat。
+        assert!(matches!(
+            parse_text("<region>sample=a.wav lorand=abc", &Default::default()),
+            Err(SfzError::InvalidFloat { .. })
+        ));
+        assert!(matches!(
+            parse_text("<region>sample=a.wav hirand=inf", &Default::default()),
+            Err(SfzError::NonFiniteFloat { .. })
+        ));
+    }
+
+    #[test]
+    fn a_reversed_rand_interval_is_an_empty_interval_not_an_error() {
+        // `lorand > hirand` 与 `lovel > hivel` 同口径：不报错，区间为空 ⇒ 永不选中。
+        let instrument = parse_text(
+            "<region>sample=a.wav lorand=0.75 hirand=0.25",
+            &Default::default(),
+        )
+        .expect("parses");
+        for occurrence in 0..16u64 {
+            assert!(
+                instrument
+                    .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                    .is_none(),
+                "occurrence {occurrence} 不该选中空区间 region"
+            );
+        }
+    }
+
+    #[test]
+    fn trigger_rand_stays_in_the_unit_interval_and_varies() {
+        let mut seen = std::collections::BTreeSet::new();
+        for occurrence in 0..2048u64 {
+            let rand = trigger_rand(occurrence, 60, 1);
+            assert!((0.0..1.0).contains(&rand), "rand {rand} 必须落在 [0, 1)");
+            seen.insert(rand.to_bits());
+        }
+        // 2048 次派生在 2^24 的值域里应近乎全互异（哈希退化成立柱即红）。
+        assert!(seen.len() > 1900, "distinct {} / 2048", seen.len());
+        // 纯函数：同输入同输出（可复现的地基）。
+        assert_eq!(trigger_rand(7, 60, 1), trigger_rand(7, 60, 1));
+        assert_ne!(trigger_rand(7, 60, 1), trigger_rand(7, 61, 1));
+    }
+
+    #[test]
+    fn two_region_random_round_robin_never_doubles_and_covers_both() {
+        // 最小复现（原始缺陷：两段随机轮替被静默忽略 ⇒ 两层同相位叠加）。
+        let instrument = parse_text(
+            "<region>sample=a.wav hirand=0.25\n\
+             <region>sample=b.wav lorand=0.25 hirand=0.5",
+            &Default::default(),
+        )
+        .expect("parses");
+        let mut picked_a = 0usize;
+        let mut picked_b = 0usize;
+        for occurrence in 0..256u64 {
+            let rand = trigger_rand(occurrence, 60, 1);
+            // 同次触发至多一个 region 接受这个随机数（区间不重叠）。
+            let accepting = instrument
+                .regions()
+                .iter()
+                .filter(|region| region.accepts_rand(rand))
+                .count();
+            assert!(
+                accepting <= 1,
+                "occurrence {occurrence} 有 {accepting} 个接受者"
+            );
+            // 选择结果与接受者一致：有人接受 ⇒ 恰选它；无人接受（落进
+            // [0.5, 1) 的覆盖缝）⇒ 不发声（规范明示，⛔ 不兜底改选）。
+            let picked = instrument
+                .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                .map(|region| region.sample.to_string());
+            match (accepting, picked.as_deref()) {
+                (1, Some("a.wav")) => picked_a += 1,
+                (1, Some("b.wav")) => picked_b += 1,
+                (0, None) => {}
+                other => panic!("occurrence {occurrence} 选择不一致：{other:?}"),
+            }
+        }
+        assert!(picked_a > 0, "a.wav 应被选到过（256 次触发）");
+        assert!(picked_b > 0, "b.wav 应被选到过（256 次触发）");
+    }
+
+    #[test]
+    fn a_tiling_random_round_robin_picks_exactly_one_per_trigger() {
+        // 两段首尾相接铺满 [0, 1)：每次触发恰好一个，两个都被选到过。
+        let instrument = parse_text(
+            "<region>sample=a.wav hirand=0.25\n\
+             <region>sample=b.wav lorand=0.25",
+            &Default::default(),
+        )
+        .expect("parses");
+        let mut counts = [0usize; 2];
+        for occurrence in 0..256u64 {
+            let picked = instrument
+                .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                .expect("铺满区间 ⇒ 每次必有命中");
+            match &*picked.sample {
+                "a.wav" => counts[0] += 1,
+                "b.wav" => counts[1] += 1,
+                other => panic!("未登记的 sample {other}"),
+            }
+        }
+        assert!(counts[0] > 0 && counts[1] > 0, "两段都应被选到：{counts:?}");
+    }
+
+    #[test]
+    fn rand_selection_is_reproducible_across_runs() {
+        // 同一触发序列跑两遍 ⇒ 选择序列逐一相同（种子绑定，⛔ 不用真随机）。
+        let instrument = parse_text(
+            "<region>sample=a.wav hirand=0.25\n\
+             <region>sample=b.wav lorand=0.25 hirand=0.5\n\
+             <region>sample=c.wav lorand=0.5 hirand=0.75\n\
+             <region>sample=d.wav lorand=0.75",
+            &Default::default(),
+        )
+        .expect("parses");
+        let sweep = |instrument: &Instrument<'_>| {
+            (0..128u64)
+                .map(|occurrence| {
+                    instrument
+                        .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                        .map(|region| region.sample.to_string())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sweep(&instrument), sweep(&instrument));
+    }
+
+    #[test]
+    fn seq_and_rand_compose_as_in_the_spec_example() {
+        // 规范示例（sfzformat lorand 页）：seq_length=2 先分两个子集，
+        // 每个子集内 rand 四等分 ⇒ 每注恰好一个命中，且子集由 occurrence 定。
+        let instrument = parse_text(
+            "<region>sample=rr1.wav seq_length=2 seq_position=1 hirand=0.25\n\
+             <region>sample=rr2.wav seq_length=2 seq_position=1 lorand=0.25 hirand=0.5\n\
+             <region>sample=rr3.wav seq_length=2 seq_position=1 lorand=0.5 hirand=0.75\n\
+             <region>sample=rr4.wav seq_length=2 seq_position=1 lorand=0.75\n\
+             <region>sample=rr5.wav seq_length=2 seq_position=2 hirand=0.25\n\
+             <region>sample=rr6.wav seq_length=2 seq_position=2 lorand=0.25 hirand=0.5\n\
+             <region>sample=rr7.wav seq_length=2 seq_position=2 lorand=0.5 hirand=0.75\n\
+             <region>sample=rr8.wav seq_length=2 seq_position=2 lorand=0.75",
+            &Default::default(),
+        )
+        .expect("parses");
+        let mut seen = std::collections::BTreeSet::new();
+        for occurrence in 0..128u64 {
+            let picked = instrument
+                .region_for_with(RegionQuery::new(60, 100).with_occurrence(occurrence))
+                .expect("规范示例每注恰好一个命中");
+            assert_eq!(
+                picked.seq_position,
+                (occurrence % 2) as u32 + 1,
+                "occurrence {occurrence} 的子集应由 seq 定"
+            );
+            assert!(
+                picked.accepts_rand(trigger_rand(occurrence, 60, 1)),
+                "occurrence {occurrence} 的命中必须通过本次随机门"
+            );
+            seen.insert(picked.sample.to_string());
+        }
+        assert_eq!(seen.len(), 8, "128 次触发应覆盖全部 8 个变体：{seen:?}");
     }
 
     #[test]

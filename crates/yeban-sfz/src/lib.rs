@@ -366,9 +366,10 @@ pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};
 pub use error::SfzError;
 pub use instrument::{
-    BEND_DOWN_DEFAULT_CENTS, BEND_RANGE_MAX_CENTS, BEND_UP_DEFAULT_CENTS, CcGate, Instrument,
-    LoopMode, NotePolyphony, OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PlayDirection,
-    Region, RegionQuery, SampleEnd, Trigger, TriggerEvent,
+    BEND_DOWN_DEFAULT_CENTS, BEND_RANGE_MAX_CENTS, BEND_UP_DEFAULT_CENTS, CcGate, HIRAND_DEFAULT,
+    Instrument, LORAND_DEFAULT, LoopMode, NotePolyphony, OFF_TIME_DEFAULT_SECONDS, OffMode,
+    PITCH_BEND_CENTER, PlayDirection, Region, RegionQuery, SampleEnd, Trigger, TriggerEvent,
+    trigger_rand,
 };
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use midi::{MidiOpcode, MidiSection};
