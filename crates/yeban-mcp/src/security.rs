@@ -33,6 +33,7 @@
 //! [`SecurityError::UnsupportedPlatform`] —— **明确拒绝，而不是静默放过**。
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fmt;
 #[cfg(unix)]
 use std::fs;
@@ -126,6 +127,10 @@ pub enum SecurityError {
     #[error("非 Unix 平台不支持 POSIX 0600 权限校验: 明确拒绝而不是静默放过")]
     UnsupportedPlatform,
     /// 找不到家目录。
+    ///
+    /// 家目录解析链（[`resolve_home_dir`]）已含 `USERPROFILE` 与临时目录两级回退，
+    /// 因此 [`TokenFile::default_path`] 不再产生此错误；变体保留是公开 API 兼容，
+    /// 不删除以免破坏既有匹配代码。
     #[error("无法定位家目录 (HOME 未设置)")]
     HomeDirectoryUnavailable,
     /// 令牌文件 I/O 失败。
@@ -792,6 +797,35 @@ pub fn authorize(
     }
 }
 
+/// 家目录解析（问题报告 ⑤）：`HOME` → `USERPROFILE` → 系统临时目录。
+///
+/// Windows 默认 PowerShell 会话里没有 `HOME`，惯例是 `USERPROFILE`；只认 `HOME`
+/// 会让裸起 `yeban-mcp --stdio` 直接死在"无法定位家目录"。两级都缺失时按报告
+/// 口径回退临时目录，而不是拒绝启动。
+fn home_dir() -> PathBuf {
+    resolve_home_dir(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+        &std::env::temp_dir(),
+    )
+}
+
+/// [`home_dir`] 的纯函数本体：依次取第一个**非空**候选，全缺则 `temp_dir`。
+///
+/// 空串视为未设置：空 `HOME` 拼出的会是相对路径，令牌文件会落到当前目录 ——
+/// 比报错更糟。拆成纯函数是为了让三级回退在任何平台上都能被单测构造，
+/// 不依赖测试进程真实改环境变量。
+fn resolve_home_dir(home: Option<&OsStr>, userprofile: Option<&OsStr>, temp_dir: &Path) -> PathBuf {
+    for candidate in [home, userprofile] {
+        if let Some(value) = candidate
+            && !value.is_empty()
+        {
+            return PathBuf::from(value);
+        }
+    }
+    temp_dir.to_path_buf()
+}
+
 /// `~/.yeban/session.token` 的读写（POSIX `0600`）[ARCH-SEC-002]。
 #[derive(Clone, Debug)]
 pub struct TokenFile {
@@ -807,21 +841,22 @@ impl TokenFile {
 
     /// 规范默认路径 `~/.yeban/session.token`。
     ///
+    /// 家目录按 [`home_dir`] 的解析链取（`HOME` → `USERPROFILE` → 临时目录），
+    /// 链尾恒有结果，因此本函数不再因家目录缺失失败；`Result` 形状保留是
+    /// 公开 API 兼容。
+    ///
     /// # Errors
     ///
-    /// `HOME` 未设置。
+    /// 不产生错误（签名兼容保留）。
     pub fn default_path() -> Result<PathBuf, SecurityError> {
-        let home = std::env::var_os("HOME").ok_or(SecurityError::HomeDirectoryUnavailable)?;
-        Ok(PathBuf::from(home)
-            .join(TOKEN_DIR_NAME)
-            .join(TOKEN_FILE_NAME))
+        Ok(home_dir().join(TOKEN_DIR_NAME).join(TOKEN_FILE_NAME))
     }
 
     /// 规范默认位置的令牌文件。
     ///
     /// # Errors
     ///
-    /// `HOME` 未设置。
+    /// 同 [`TokenFile::default_path`]（现不产生错误）。
     pub fn at_default_path() -> Result<Self, SecurityError> {
         Ok(Self::new(Self::default_path()?))
     }
@@ -1787,6 +1822,44 @@ mod tests {
         let path = TokenFile::default_path().expect("HOME 通常存在");
         assert!(path.ends_with(TOKEN_DIR_NAME.to_owned() + "/" + TOKEN_FILE_NAME));
         assert!(path.is_absolute());
+    }
+
+    /// 报告 ⑤ 的三级回退逐级钉住（纯函数构造，不动进程环境变量）：
+    /// `HOME` 优先；`HOME` 缺失走 `USERPROFILE`（Windows 默认 PowerShell 形状）；
+    /// 两级全缺走临时目录；空串与缺失同等对待（空 `HOME` 会拼出相对路径）。
+    #[test]
+    fn home_resolution_follows_home_userprofile_temp_order() {
+        use std::ffi::OsString;
+        let temp = PathBuf::from("/tmp-fallback");
+        let home = OsString::from("/home/someone");
+        let profile = OsString::from("C:\\Users\\someone");
+
+        assert_eq!(
+            resolve_home_dir(Some(home.as_os_str()), Some(profile.as_os_str()), &temp),
+            PathBuf::from("/home/someone"),
+            "HOME 在时优先 HOME"
+        );
+        assert_eq!(
+            resolve_home_dir(None, Some(profile.as_os_str()), &temp),
+            PathBuf::from("C:\\Users\\someone"),
+            "HOME 缺失时回退 USERPROFILE"
+        );
+        assert_eq!(
+            resolve_home_dir(None, None, &temp),
+            temp,
+            "两级全缺时回退临时目录"
+        );
+        let empty = OsString::new();
+        assert_eq!(
+            resolve_home_dir(Some(empty.as_os_str()), Some(profile.as_os_str()), &temp),
+            PathBuf::from("C:\\Users\\someone"),
+            "空 HOME 视为未设置"
+        );
+        assert_eq!(
+            resolve_home_dir(Some(empty.as_os_str()), Some(empty.as_os_str()), &temp),
+            temp,
+            "空 USERPROFILE 同样视为未设置"
+        );
     }
 
     #[test]

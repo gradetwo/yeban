@@ -4245,7 +4245,9 @@ fn plan_save_preset(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// `yeban_preset_bypass`（提案路径；`autoMerge: true` 可一次调用落 main）。
 ///
 /// `bypassed = true`：恢复 `previous` 快照，只旁通处理、不换乐器；
-/// `bypassed = false`：按当前 `preset_id` 重新应用该预制。
+/// `bypassed = false`：按当前 `preset_id` 重新应用该预制；预制带 `cc` 段时
+/// 与 [`plan_apply_preset`] 同口径重播初始 CC 种子（initialCc 合入留项 ——
+/// 此前取消旁通只重应用设备/发送/宏/绑定，CC 种子停留在旁通前的登记上）。
 fn plan_preset_bypass(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = arg_id(call, "trackId")?;
@@ -4274,7 +4276,44 @@ fn plan_preset_bypass(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             "；跳过的宏（超出当前宏位数）：{macros_skipped} 个"
         ));
     }
-    propose_draft(
+    // ⭐ 取消旁通重播初始 CC：`bypassed = false` 是全类别重新应用
+    // （`build_bypass_ops` 内部走 `build_apply_ops`，含乐器类别），因此与
+    // `plan_apply_preset` 走同一条登记构造（`plan_sfz_registration`）备好
+    // 装载，提案落地后登记进会话 registry 并播种（回执 `initialCcSeeded`
+    // 回报）。旁通方向不播种：它恢复应用前快照、乐器不变，种子表不归它管。
+    let seed_load = if bypassed {
+        None
+    } else {
+        let preset_id = project
+            .tracks
+            .get(&track_id)
+            .and_then(|track| track.preset.as_deref())
+            .and_then(|state| state.preset_id.clone());
+        match preset_id {
+            Some(id) => {
+                let preset = preset::resolve_preset(&domain.embedded_presets, &id)?;
+                if preset.cc.is_empty() {
+                    None
+                } else {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(
+                        "path".to_owned(),
+                        Value::from(preset.instrument_sfz.clone()),
+                    );
+                    let load = plan_sfz_registration(domain, &arguments, &preset.cc)?;
+                    description.push_str(&format!(
+                        "；取消旁通重播初始 CC 播种（生效值以登记为准）：{}",
+                        sfz::initial_cc_value(&load.initial_cc)
+                    ));
+                    Some(Box::new(load))
+                }
+            }
+            // `build_bypass_ops` 已先行校验：取消旁通时预制状态与当前预制
+            // 标识必然在册，到不了这一支；防御性地不播种，不新造错误路径。
+            None => None,
+        }
+    };
+    let mut drafted = propose_draft(
         domain,
         project,
         "preset",
@@ -4282,7 +4321,11 @@ fn plan_preset_bypass(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("preset_bypass {track_id} bypassed={bypassed}"),
         ops,
         call,
-    )
+    )?;
+    if let Plan::Propose { sfz_load, .. } = &mut drafted {
+        *sfz_load = seed_load;
+    }
+    Ok(drafted)
 }
 
 /// `arguments.includeOps`（缺省 `false`）—— 三个提案类工具共用的**响应形状**开关
@@ -6600,8 +6643,9 @@ pub(crate) fn apply_propose(
             object.insert("proposal".to_owned(), updated_projection);
         }
     }
-    // ⭐ 预制初始 CC 的播种登记（只有 `yeban_apply_preset` 带 `cc` 段时到
-    // 这里）：提案落地后把该乐器的装载登记进会话 registry —— 与
+    // ⭐ 预制初始 CC 的播种登记（`yeban_apply_preset` 带 `cc` 段、或
+    // `yeban_preset_bypass` 取消旁通重播时到这里）：提案落地后把该乐器的
+    // 装载登记进会话 registry —— 与
     // `yeban_load_sfz` 同一条登记路、同一内容寻址（同摘要已在册 ⇒ 不覆盖，
     // 回执回报**在册那份**的初始 CC，即真正会播种的值）。registry 是会话
     // 态、不写工程：提案日后被拒也不回滚这份登记（与单独调一次

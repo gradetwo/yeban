@@ -2211,7 +2211,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-PRESET-BYPASS",
         name: "yeban_preset_bypass",
-        summary: "开关一条轨的预制旁通（夜半原生预制机制一期，提案路径）：`bypassed: true` = 恢复 `previous` 快照（通道条、四件、发送、宏），只旁通处理、不换乐器；没有快照 ⇒ 响亮拒绝。`bypassed: false` = 按当前 `preset_id` 重新应用该预制。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。",
+        summary: "开关一条轨的预制旁通（夜半原生预制机制一期，提案路径）：`bypassed: true` = 恢复 `previous` 快照（通道条、四件、发送、宏），只旁通处理、不换乐器；没有快照 ⇒ 响亮拒绝。`bypassed: false` = 按当前 `preset_id` 重新应用该预制（预制带 `cc` 段时同 apply 口径重播初始 CC 种子）。跳过的发送 / 宏写进提案描述。缺省建提案；`autoMerge` 为真时当场落 main，与 `yeban_edit_notes` 同一条提案纪律。",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
