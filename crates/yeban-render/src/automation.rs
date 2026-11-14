@@ -68,6 +68,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::ChannelStripParams;
 use yeban_dsp::smoothing::ParamSmoother;
+use yeban_engine::sfz_instrument::CcSeedTable;
 use yeban_model::time_math::TempoMap;
 use yeban_model::{AutomationLane, AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
@@ -2039,10 +2040,24 @@ fn automation_ratio(automation_db: f32, static_gain: f32) -> f32 {
 ///
 /// `controller > 127` 的泳道（`u8` 允许到 255）**整条忽略** —— 模型层不拦它
 /// （见 `AutomationTarget::MidiCc` 的文档），消费侧也不猜"最接近的控制器"。
+///
+/// # 种子层（`set_ccN` 离线播种，路线 a）
+///
+/// 探针的表有**两层**：底层是本轨乐器自带的 `set_ccN` 初值表
+/// （[`CcSeedTable`]，由 [`Self::with_seeds`] 注入，来源是该轨摊平表的
+/// `PreparedSfz::cc_seeds()`），上层是工程 `MidiCc` 泳道的逐块求值。
+/// **泳道赢**：同一控制器只要有泳道项，它的求值（含"读禁用且无宏级联 ⇒ 不进表"
+/// 的既有口径）就完全决定该格，种子不参与；没有泳道的控制器才读种子值，
+/// 两者都没有的格保持 `0`。这与实时会话的播种语义同构：`set_ccN` 是乐器的
+/// **初始状态**，演奏数据（这里是泳道）到达后即以演奏数据为准。
+/// 空种子表 ⇒ `with_seeds` 是 no-op，探针行为与接线前**逐位相同**
+/// （没有 `set_ccN` 的工程离线渲染不变，见 `setcc` 判据族）。
 #[derive(Clone, Debug)]
 pub struct CcProbe {
     /// 每个被自动化的控制器一项（按控制器号升序 ⇒ 逐块求值顺序确定）。
     lanes: Vec<CcLane>,
+    /// 乐器自带的 `set_ccN` 初值表（种子层）；`None` = 未注入或空表。
+    seeds: Option<CcSeedTable>,
     /// 工程速度表（tick ↔ 帧；空表 = 恒定 `project.bpm`）。
     tempo: TempoMap,
     /// 采样率。
@@ -2096,16 +2111,32 @@ impl CcProbe {
         lanes.sort_by_key(|lane| lane.controller);
         Self {
             lanes,
+            seeds: None,
             tempo: project.tempo(),
             sample_rate,
             blocks: 0,
         }
     }
 
-    /// 本轨是否**没有**任何 CC 自动化（⇒ 调用方走不带探针的快路径）。
+    /// 注入乐器自带的 `set_ccN` 初值表作探针**底层**（路线 a 的离线播种）。
+    ///
+    /// 空表 ⇒ no-op（保持 `None`）：没有 `set_ccN` 的乐器一个字节都不动，
+    /// 调用方据 [`Self::is_empty`] 仍可走不带探针的快路径。
+    /// 注入后即使本轨没有任何 `MidiCc` 泳道，探针也不再为空 —— 带 `set_ccN`
+    /// 的乐器第一次在离线渲染里吃到自己的初值（推翻任务单 `#112` 的等待状态，
+    /// Wang 2026-11-14 裁决；引擎侧零改动，播种只发生在本探针的组表处）。
+    #[must_use]
+    pub fn with_seeds(mut self, seeds: CcSeedTable) -> Self {
+        if !seeds.is_empty() {
+            self.seeds = Some(seeds);
+        }
+        self
+    }
+
+    /// 本轨是否**没有**任何 CC 来源（泳道与种子都空 ⇒ 调用方走不带探针的快路径）。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lanes.is_empty()
+        self.lanes.is_empty() && self.seeds.is_none()
     }
 
     /// 被自动化的控制器个数（读数用）。
@@ -2122,10 +2153,11 @@ impl CcProbe {
 
     /// 取 `first_frame` 所在块的 128 项 CC 表。
     ///
-    /// 没有任何 CC 泳道 ⇒ `None`：调用方**必须**走 `render_track`，
+    /// 没有任何 CC 来源（泳道与种子都空）⇒ `None`：调用方**必须**走 `render_track`，
     /// 于是未使用 CC 的工程与接线前**逐位相同**。
+    /// 组表顺序：先铺种子层，再用泳道求值逐格覆写（泳道赢，见类型文档）。
     pub fn table_at(&mut self, first_frame: u64) -> Option<[u8; 128]> {
-        if self.lanes.is_empty() {
+        if self.is_empty() {
             return None;
         }
         self.blocks = self.blocks.saturating_add(1);
@@ -2134,6 +2166,9 @@ impl CcProbe {
             .ticks_at_frame(first_frame, PPQ, self.sample_rate)
             .unwrap_or(0);
         let mut table = [0u8; 128];
+        if let Some(seeds) = &self.seeds {
+            seeds.for_each(|cc, value| table[usize::from(cc)] = value);
+        }
         for lane in &self.lanes {
             let base = lane.lane.as_ref().and_then(|curve| curve.value_at(tick));
             let offset = lane.cascade.offset_at(tick);
@@ -3663,5 +3698,88 @@ mod tests {
         let mut probe = CcProbe::new(&project, track_id, 48_000);
         assert!(probe.is_empty(), "controller 200 不是合法控制器号");
         assert!(probe.table_at(0).is_none());
+    }
+
+    /// 种子表夹具：`set_cc1=64` ＋ `set_cc2=30`。
+    fn seed_table() -> CcSeedTable {
+        let mut defaults = std::collections::BTreeMap::new();
+        defaults.insert(1u16, 64u8);
+        defaults.insert(2u16, 30u8);
+        CcSeedTable::from_cc_defaults(&defaults)
+    }
+
+    /// ⭐ set_ccN 离线播种（路线 a）：**没有泳道**时探针只靠种子层出表。
+    ///
+    /// 这是推翻 `#112` 等待状态的核心一格：带 `set_ccN` 的乐器在离线渲染里
+    /// 第一次吃到自己的初值 —— `locc1=64` 这类不含 0 的门自此可达。
+    #[test]
+    fn the_cc_probe_seeds_from_the_instrument_when_no_lane_exists() {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P005").expect("ULID");
+        let track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        let mut project = YebanProjectV1::default();
+        project.tracks.insert(track_id, track);
+
+        let mut probe = CcProbe::new(&project, track_id, 48_000).with_seeds(seed_table());
+        assert!(!probe.is_empty(), "只有种子也算有 CC 来源");
+        assert_eq!(probe.controllers(), 0, "种子不冒充泳道读数");
+        let table = probe.table_at(0).expect("有种子 ⇒ 有表");
+        assert_eq!(table[1], 64, "set_cc1=64 必须进表");
+        assert_eq!(table[2], 30, "set_cc2=30 必须进表");
+        assert_eq!(table[7], 0, "没声明的控制器仍是 0");
+    }
+
+    /// ⭐ set_ccN 离线播种（路线 a）：**泳道赢** —— 同一控制器有泳道时种子被覆写，
+    /// 没有泳道的控制器仍由种子填。
+    #[test]
+    fn the_cc_probe_lane_value_overrides_the_seed() {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P006").expect("ULID");
+        let target = AutomationTarget::MidiCc {
+            track_id,
+            controller: 1,
+        };
+        let only = point(4, 0, 10.0);
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(only.id, only);
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        track.automation_lanes.insert(
+            target,
+            AutomationLane {
+                target,
+                points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+        let mut project = YebanProjectV1::default();
+        project.tracks.insert(track_id, track);
+
+        let mut probe = CcProbe::new(&project, track_id, 48_000).with_seeds(seed_table());
+        let table = probe.table_at(0).expect("有泳道与种子 ⇒ 有表");
+        assert_eq!(table[1], 10, "泳道值 10 必须覆写种子 64（泳道赢）");
+        assert_eq!(table[2], 30, "无泳道的控制器仍读种子 30");
+    }
+
+    /// ⭐ set_ccN 离线播种（路线 a）：**空种子表是 no-op** —— 没有 `set_ccN` 的
+    /// 乐器注入后探针仍为空、仍返回 `None`（无 `set_ccN` 工程逐位不变的入口条件）。
+    #[test]
+    fn the_cc_probe_with_an_empty_seed_table_stays_absent() {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P007").expect("ULID");
+        let track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        let mut project = YebanProjectV1::default();
+        project.tracks.insert(track_id, track);
+
+        let mut probe = CcProbe::new(&project, track_id, 48_000).with_seeds(CcSeedTable::new());
+        assert!(probe.is_empty(), "空种子表不得让探针凭空出现");
+        assert!(probe.table_at(0).is_none(), "空种子表必须仍返回 None");
     }
 }

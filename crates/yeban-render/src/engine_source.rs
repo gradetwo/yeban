@@ -555,10 +555,20 @@ impl EngineTrackSource {
     ///
     /// 没有 `MidiCc` 泳道 ⇒ 内部仍是 `None` ⇒ `render_block` 走 `render_track`
     /// ⇒ 输出与接线前**逐位相同**（判据 `cc_probe_is_bit_identical_when_unused`）。
+    ///
+    /// ⭐ set_ccN 离线播种（路线 a，推翻 `#112` 等待状态）：本轨在快照里有 SFZ
+    /// 摊平表时，把摊平表自带的种子表（`PreparedSfz::cc_seeds()`，源头是文件
+    /// `<control> set_ccN`）注入探针作**底层**，泳道覆于其上（泳道赢，见
+    /// [`CcProbe`] 的种子层文档）。种子来源与 `render_block` 的 SFZ 分派读的是
+    /// **同一张**快照表 ⇒ 不存在"探针的乐器"与"发声的乐器"不是同一份的窗口。
+    /// 没有摊平表、或种子表为空 ⇒ 探针与接线前逐位相同。
     #[must_use]
     pub fn with_cc(mut self, project: &YebanProjectV1) -> Self {
         let sample_rate = self.snapshot.sample_rate();
-        let probe = CcProbe::new(project, self.track, sample_rate);
+        let mut probe = CcProbe::new(project, self.track, sample_rate);
+        if let Some(plan) = self.snapshot.sfz().get(&self.track) {
+            probe = probe.with_seeds(*plan.prepared().cc_seeds());
+        }
         self.cc = (!probe.is_empty()).then_some(probe);
         self
     }
@@ -808,6 +818,99 @@ mod tests {
             "缺样本 ⇒ 该区域不产生采样输出（引擎口径）"
         );
         assert_eq!(summary.missing_samples, vec!["tone.wav".to_owned()]);
+    }
+
+    /// ⭐ set_ccN 离线播种（路线 a）：`with_cc` 把武装乐器的种子表接进离线探针。
+    ///
+    /// 三条腿（同一单轨夹具：音高 48 的一个音符；区域 `key=48 locc1=64 hicc1=127`）：
+    /// 1. SFZ 带 `<control>set_cc1=64` ⇒ 门控区域离线**发声**（峰值 > 0）；
+    /// 2. 同一 SFZ 去掉 `set_cc` 行 ⇒ 门把区域挡住 ⇒ **峰值恰为 0**（`#112` 的旧行为）；
+    /// 3. 带 `set_cc` ＋ 工程给 CC1 加一条值为 0 的 `MidiCc` 泳道 ⇒ **泳道赢** ⇒ 峰值恰为 0。
+    ///
+    /// 引擎侧零改动：三条腿走的都是既有 `render_track_with_cc` 入口，
+    ///差别只在控制侧探针的组表（见 [`CcProbe`] 的种子层文档）。
+    #[test]
+    fn the_offline_probe_seeds_set_cc_gates_from_the_armed_instrument() {
+        use std::str::FromStr as _;
+
+        let dir = tempfile::tempdir().expect("临时目录");
+        let sfz_path = dir.path().join("gated.sfz");
+
+        let render = |sfz_text: &str, lane_zero: bool| -> f32 {
+            std::fs::write(&sfz_path, sfz_text).expect("写 SFZ");
+            let (mut project, ids) = many_track_project(1);
+            let track = ids[0];
+            project.tracks.get_mut(&track).expect("轨").sampler =
+                Some(yeban_model::SamplerBinding {
+                    path: sfz_path.display().to_string(),
+                });
+            if lane_zero {
+                let target = yeban_model::AutomationTarget::MidiCc {
+                    track_id: track,
+                    controller: 1,
+                };
+                let point_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P201").expect("ULID");
+                let mut points = BTreeMap::new();
+                points.insert(
+                    point_id,
+                    yeban_model::AutomationPoint {
+                        id: point_id,
+                        tick: 0,
+                        value: 0.0,
+                        curve: yeban_model::CurveType::Linear,
+                    },
+                );
+                project
+                    .tracks
+                    .get_mut(&track)
+                    .expect("轨")
+                    .automation_lanes
+                    .insert(
+                        target,
+                        yeban_model::AutomationLane {
+                            target,
+                            points,
+                            read_enabled: true,
+                            write_mode: yeban_model::AutomationWriteMode::Off,
+                            domain: None,
+                        },
+                    );
+            }
+            project.validate().expect("播种夹具必须合法");
+            let timbre = EngineTimbre::from_project_armed(&project, 48_000.0, |_, _| {
+                ArmedSfzInput::new(
+                    sfz_path.clone(),
+                    vec![(
+                        "tone.wav".to_owned(),
+                        (Arc::new(vec![0.25_f32; 4_800]), 48_000.0),
+                    )],
+                )
+            })
+            .expect("武装必须成功");
+            let mut source = timbre
+                .track_source(track)
+                .expect("必须能武装")
+                .with_cc(&project);
+            render_peak(&mut source, 48_000)
+        };
+
+        let seeded = "<control>set_cc1=64\n<region> sample=tone.wav key=48 \
+                      amp_veltrack=0 locc1=64 hicc1=127\n";
+        let unseeded = "<region> sample=tone.wav key=48 amp_veltrack=0 locc1=64 hicc1=127\n";
+
+        let peak_seeded = render(seeded, false);
+        let peak_unseeded = render(unseeded, false);
+        let peak_lane = render(seeded, true);
+        println!(
+            "### [setcc-seed] seeded={peak_seeded:.6} unseeded={peak_unseeded:.6} \
+             lane0={peak_lane:.6}"
+        );
+        assert!(
+            peak_seeded > 0.0,
+            "set_cc1=64 必须让 locc1=64 的区域在离线渲染里发声"
+        );
+        assert_eq!(peak_unseeded, 0.0, "无 set_ccN 时门控区域必须仍被挡住");
+        assert_eq!(peak_lane, 0.0, "MidiCc 泳道值 0 必须覆写种子 64（泳道赢）");
     }
 
     /// 演示工程的第一个有声轨 + 一份快照（与 app 的离线装配同一条入口）。

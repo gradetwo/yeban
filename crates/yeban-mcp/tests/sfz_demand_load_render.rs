@@ -13,7 +13,10 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::samples::filled_project;
-use yeban_model::{ClipContent, EntityId, SamplerBinding, YebanProjectV1};
+use yeban_model::{
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent, CurveType,
+    EntityId, SamplerBinding, YebanProjectV1,
+};
 
 /// 一个临时目录，`Drop` 时删除自己。
 struct Scratch {
@@ -237,6 +240,121 @@ fn full_score_reads_everything() {
         "全量谱子帧数全计: {result}"
     );
     assert_eq!(sampler["sampleFailures"], json!([]), "无读失败: {result}");
+}
+
+/// 找到绑定了给定采样器路径的那条源的输出峰值（源节点口径，见 `#225`）。
+fn source_peak(result: &Value, raw: &str) -> f64 {
+    let sources = result["data"]["sources"]
+        .as_array()
+        .unwrap_or_else(|| panic!("渲染必须成功并报 sources: {result}"));
+    sources
+        .iter()
+        .find(|source| source["sampler"]["path"].as_str() == Some(raw))
+        .map(|source| source["peak"].as_f64().expect("源峰值是数字"))
+        .unwrap_or_else(|| panic!("找不到绑定 {raw} 的源读数: {result}"))
+}
+
+/// 给 `filled_project()` 的 Lead 轨加一条值恒 0 的 `MidiCc` CC1 泳道。
+fn add_zero_cc1_lane(project: &mut YebanProjectV1) {
+    let lead = project
+        .tracks
+        .iter()
+        .find(|(_, track)| track.name == "Lead")
+        .map(|(id, _)| *id)
+        .expect("filled_project 必须有 Lead 轨");
+    let target = AutomationTarget::MidiCc {
+        track_id: lead,
+        controller: 1,
+    };
+    let point_id = EntityId::new();
+    let mut points = std::collections::BTreeMap::new();
+    points.insert(
+        point_id,
+        AutomationPoint {
+            id: point_id,
+            tick: 0,
+            value: 0.0,
+            curve: CurveType::Linear,
+        },
+    );
+    project
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead")
+        .automation_lanes
+        .insert(
+            target,
+            AutomationLane {
+                target,
+                points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    project.validate().expect("加泳道后夹具必须合法");
+}
+
+/// ⭐ 路线 a（set_ccN 离线播种）：`<control> set_cc1=64` 的门控区域在离线渲染里
+/// 按种子**装载并发声**；去掉 `set_cc` 行 ⇒ 装载侧跳过、渲染侧静音（`#112` 旧行为）；
+/// 加值 0 的 `MidiCc` 泳道 ⇒ **泳道赢**：装载侧仍跳过、渲染侧仍静音，两侧同口径。
+#[test]
+fn set_cc_seed_opens_the_gate_offline_and_the_lane_still_wins() {
+    let scratch = Scratch::new("setcc");
+    let dir = scratch.join("inst");
+    fs::create_dir_all(&dir).expect("建 SFZ 目录");
+    write_constant_wav(&dir.join("tone.wav"), 0.5, 4800);
+    let seeded = dir.join("seeded.sfz");
+    fs::write(
+        &seeded,
+        "<control> set_cc1=64\n\
+         <region> sample=tone.wav key=60 amp_veltrack=0 locc1=64 hicc1=127\n",
+    )
+    .expect("写 SFZ");
+    let unseeded = dir.join("unseeded.sfz");
+    fs::write(
+        &unseeded,
+        "<region> sample=tone.wav key=60 amp_veltrack=0 locc1=64 hicc1=127\n",
+    )
+    .expect("写 SFZ");
+    let project_path = scratch.join("project").join("song.yeban");
+    fs::create_dir_all(project_path.parent().expect("有父目录")).expect("建工程目录");
+
+    let run = |sfz: &Path, lane_zero: bool, out_name: &str| {
+        let mut project = project_with_notes_and_sampler(&[(60, 100)], sfz);
+        if lane_zero {
+            add_zero_cc1_lane(&mut project);
+        }
+        let out = scratch.join(out_name);
+        let result = render(project, &project_path, &out, Value::Null);
+        let raw = sfz.display().to_string();
+        (
+            sampler_report(&result, &raw).clone(),
+            source_peak(&result, &raw),
+        )
+    };
+
+    // 1. 带种子：区域被装载（不跳过、帧数全计）且真的发声。
+    let (sampler, peak) = run(&seeded, false, "seeded.wav");
+    assert_eq!(sampler["skippedRegions"], 0, "种子命中 ⇒ 不跳过: {sampler}");
+    assert_eq!(
+        sampler["sampleFramesLoaded"], 4800,
+        "命中文件帧数全计: {sampler}"
+    );
+    assert!(peak > 0.0, "种子命中 ⇒ 离线渲染发声（峰值 {peak}）");
+
+    // 2. 无种子：同一区域回到旧行为 —— 装载跳过、渲染静音。
+    let (sampler, peak) = run(&unseeded, false, "unseeded.wav");
+    assert_eq!(sampler["skippedRegions"], 1, "无种子 ⇒ 跳过: {sampler}");
+    assert_eq!(peak, 0.0, "无种子 ⇒ 门控区域静音（峰值 {peak}）");
+
+    // 3. 带种子 ＋ 泳道 0：泳道赢 —— 装载跳过、渲染静音。
+    let (sampler, peak) = run(&seeded, true, "lane.wav");
+    assert_eq!(
+        sampler["skippedRegions"], 1,
+        "泳道 0 覆写种子 ⇒ 装载侧同口径跳过: {sampler}"
+    );
+    assert_eq!(peak, 0.0, "泳道 0 覆写种子 ⇒ 渲染静音（峰值 {peak}）");
 }
 
 /// 稀疏谱子在小预算下也不截断：预算只对已用子集记账（整件乐器 13 文件 > 2）。
