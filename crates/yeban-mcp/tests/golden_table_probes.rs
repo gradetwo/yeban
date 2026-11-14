@@ -18,7 +18,7 @@
 //! | `ErrorCode::{ALL, SCHEMA_CONTRACT, SCHEMA_ONLY, DOCUMENTED_TOOL_CODES}` | `ErrorCode`（本地 21） | `code_name` 21 臂 |
 //! | `Scope::ALL` | `Scope`（本地 6） | `scope_name` 6 臂 |
 //! | `BuildCode::ALL` | `BuildCode`（本地 7） | `build_code_name` 7 臂 |
-//! | `LANE_NAMES` | `LaneKind`（本地 5） | `lane_name` 5 臂 |
+//! | `LANE_NAMES` | `LaneKind`（本地 6） | `lane_name` 6 臂 |
 //! | `CURVE_NAMES` | `CurveType`（**模型** 4） | `curve_name` 4 臂 |
 //! | `LANE_WRITE_MODES` | `AutomationWriteMode`（**模型** 4） | `write_mode` 4 臂 |
 //! | `DEVICE_KINDS` | `DeviceKind`（**模型** 4） | `device_kind` 4 臂 |
@@ -98,6 +98,7 @@ fn lane_kind_name(kind: LaneKind) -> &'static str {
         LaneKind::SendGain => "SendGain",
         LaneKind::DeviceParam => "DeviceParam",
         LaneKind::Macro => "Macro",
+        LaneKind::MidiCc => "MidiCc",
     }
 }
 
@@ -258,7 +259,7 @@ fn the_build_code_table_is_probed_without_a_wildcard() {
 
 #[test]
 fn the_lane_kind_table_is_probed_without_a_wildcard() {
-    assert_eq!(LANE_NAMES.len(), 5);
+    assert_eq!(LANE_NAMES.len(), 6);
     let mut names = BTreeSet::new();
     for kind in [
         LaneKind::TrackVolume,
@@ -266,6 +267,7 @@ fn the_lane_kind_table_is_probed_without_a_wildcard() {
         LaneKind::SendGain,
         LaneKind::DeviceParam,
         LaneKind::Macro,
+        LaneKind::MidiCc,
     ] {
         let name = lane_kind_name(kind);
         assert!(names.insert(name), "泳道名重复: {kind:?}");

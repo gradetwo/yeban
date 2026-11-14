@@ -47,15 +47,18 @@ pub enum LaneKind {
     DeviceParam,
     /// `AutomationTarget::Macro`：宏（额外需要 `macroIndex`）。
     Macro,
+    /// `AutomationTarget::MidiCc`：MIDI 控制器（额外需要 `controller`）。
+    MidiCc,
 }
 
 /// 全部目标变体名，**规范顺序**（与 `AutomationTarget` 的声明顺序一致）。
-pub const LANE_NAMES: [&str; 5] = [
+pub const LANE_NAMES: [&str; 6] = [
     "TrackVolume",
     "TrackPan",
     "SendGain",
     "DeviceParam",
     "Macro",
+    "MidiCc",
 ];
 
 impl LaneKind {
@@ -68,6 +71,7 @@ impl LaneKind {
             "SendGain" => Some(Self::SendGain),
             "DeviceParam" => Some(Self::DeviceParam),
             "Macro" => Some(Self::Macro),
+            "MidiCc" => Some(Self::MidiCc),
             _ => None,
         }
     }
@@ -81,6 +85,7 @@ impl LaneKind {
             Self::SendGain => "SendGain",
             Self::DeviceParam => "DeviceParam",
             Self::Macro => "Macro",
+            Self::MidiCc => "MidiCc",
         }
     }
 
@@ -101,6 +106,12 @@ impl LaneKind {
     pub const fn needs_macro_index(self) -> bool {
         matches!(self, Self::Macro)
     }
+
+    /// 该目标是否**必须**携带 `controller`。
+    #[must_use]
+    pub const fn needs_controller(self) -> bool {
+        matches!(self, Self::MidiCc)
+    }
 }
 
 /// 目标的确定性标签（点身份的派生输入；同一目标 ⇒ 同一标签 ⇒ 同一点身份）。
@@ -115,6 +126,7 @@ pub fn target_label(
     slot_index: u64,
     param_index: u64,
     macro_index: u64,
+    controller: u64,
 ) -> String {
     match kind {
         // `format!("{track_id}")`（单变量、无其他文本）会被 clippy 判成 `useless_format`。
@@ -122,6 +134,7 @@ pub fn target_label(
         LaneKind::SendGain => format!("{track_id}->{}", edge_id.unwrap_or("")),
         LaneKind::DeviceParam => format!("{track_id}#{slot_index}:{param_index}"),
         LaneKind::Macro => format!("{track_id}@{macro_index}"),
+        LaneKind::MidiCc => format!("{track_id}#cc{controller}"),
     }
 }
 
@@ -277,42 +290,57 @@ mod tests {
             .copied()
             .filter(|name| {
                 let kind = LaneKind::parse(name).expect("已知变体");
-                kind.needs_edge_id() || kind.needs_device_slot() || kind.needs_macro_index()
+                kind.needs_edge_id()
+                    || kind.needs_device_slot()
+                    || kind.needs_macro_index()
+                    || kind.needs_controller()
             })
             .collect();
-        assert_eq!(extras, vec!["SendGain", "DeviceParam", "Macro"]);
+        assert_eq!(extras, vec!["SendGain", "DeviceParam", "Macro", "MidiCc"]);
     }
 
     #[test]
     fn target_labels_only_use_the_components_the_variant_addresses() {
-        let volume = target_label(LaneKind::TrackVolume, "T1", None, 3, 4, 5);
+        let volume = target_label(LaneKind::TrackVolume, "T1", None, 3, 4, 5, 0);
         assert_eq!(volume, "T1", "音量泳道不该把 slot/macro 写进身份");
-        let pan = target_label(LaneKind::TrackPan, "T1", None, 3, 4, 5);
+        let pan = target_label(LaneKind::TrackPan, "T1", None, 3, 4, 5, 0);
         assert_eq!(pan, volume, "两种推子类目标按同一音轨寻址");
         assert_eq!(
-            target_label(LaneKind::SendGain, "T1", Some("E9"), 0, 0, 0),
+            target_label(LaneKind::SendGain, "T1", Some("E9"), 0, 0, 0, 0),
             "T1->E9"
         );
         assert_eq!(
-            target_label(LaneKind::DeviceParam, "T1", None, 1, 2, 0),
+            target_label(LaneKind::DeviceParam, "T1", None, 1, 2, 0, 0),
             "T1#1:2"
         );
-        assert_eq!(target_label(LaneKind::Macro, "T1", None, 0, 0, 7), "T1@7");
+        assert_eq!(
+            target_label(LaneKind::Macro, "T1", None, 0, 0, 7, 0),
+            "T1@7"
+        );
         // 设备参数的两个下标都必须进身份, 否则 (1,2) 与 (2,1) 会撞成同一个点。
         assert_ne!(
-            target_label(LaneKind::DeviceParam, "T1", None, 1, 2, 0),
-            target_label(LaneKind::DeviceParam, "T1", None, 2, 1, 0)
+            target_label(LaneKind::DeviceParam, "T1", None, 1, 2, 0, 0),
+            target_label(LaneKind::DeviceParam, "T1", None, 2, 1, 0, 0)
         );
         // 缺 edgeId 的 SendGain 标签仍是确定的（空串占位），不会 panic。
         assert_eq!(
-            target_label(LaneKind::SendGain, "T1", None, 0, 0, 0),
+            target_label(LaneKind::SendGain, "T1", None, 0, 0, 0, 0),
             "T1->"
+        );
+        // MidiCc 的控制器号必须进身份, 否则不同控制器会撞成同一个点。
+        assert_eq!(
+            target_label(LaneKind::MidiCc, "T1", None, 0, 0, 0, 64),
+            "T1#cc64"
+        );
+        assert_ne!(
+            target_label(LaneKind::MidiCc, "T1", None, 0, 0, 0, 64),
+            target_label(LaneKind::MidiCc, "T1", None, 0, 0, 0, 11)
         );
     }
 
     #[test]
     fn point_label_is_stable_and_tick_sensitive() {
-        let target = target_label(LaneKind::TrackVolume, "T1", None, 0, 0, 0);
+        let target = target_label(LaneKind::TrackVolume, "T1", None, 0, 0, 0, 0);
         // R75: 纯函数自比（同输入两次必须同值）—— 牙长在**确定性**上：函数若不纯它就会红。
         assert_eq!(point_label(&target, 960), point_label(&target, 960));
         assert_ne!(point_label(&target, 960), point_label(&target, 961));

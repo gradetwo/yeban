@@ -457,6 +457,27 @@ pub fn parse_target(
     } else {
         0
     };
+    let controller = if kind.needs_controller() {
+        if !arguments.contains_key("controller") {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                "`MidiCc` 目标必须给定 `controller` (MIDI 控制器号)",
+            ));
+        }
+        let raw = parse_index(arguments, "controller")?;
+        // 模型字段是 `u8`：>255 是**形状**错误，在本层拒绝；128..=255 能装进
+        // `u8`，交给模型 `validate_against` 的既有 0..=127 判定拒绝。
+        if raw > u64::from(u8::MAX) {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                format!("`controller` 超出 u8 表示范围: {raw}"),
+                serde_json::json!({ "field": "controller", "value": raw }),
+            ));
+        }
+        u8::try_from(raw).unwrap_or(u8::MAX)
+    } else {
+        0
+    };
     let slot = to_usize("slotIndex", slot)?;
     let param = to_usize("paramIndex", param)?;
     let macro_index = to_usize("macroIndex", macro_index)?;
@@ -482,6 +503,10 @@ pub fn parse_target(
             track_id: call_track,
             macro_index,
         },
+        LaneKind::MidiCc => AutomationTarget::MidiCc {
+            track_id: call_track,
+            controller,
+        },
     };
     let label = extension_pure::target_label(
         kind,
@@ -490,6 +515,7 @@ pub fn parse_target(
         u64::from(u32::try_from(slot).unwrap_or(u32::MAX)),
         u64::from(u32::try_from(param).unwrap_or(u32::MAX)),
         u64::from(u32::try_from(macro_index).unwrap_or(u32::MAX)),
+        u64::from(controller),
     );
     Ok((target, kind, label))
 }
@@ -771,6 +797,7 @@ fn apply_param_name(
         None,
         u64::from(u32::try_from(slot_index).unwrap_or(u32::MAX)),
         u64::from(u32::try_from(resolved_index).unwrap_or(u32::MAX)),
+        0,
         0,
     );
     Ok((target, label))
@@ -1243,6 +1270,112 @@ mod tests {
         // 逆操作回到起点（模型自己的 invert）。
         write.op.apply_inverse(&mut simulated).expect("撤销");
         assert_eq!(simulated, project, "逆操作必须逐字节回退");
+    }
+
+    #[test]
+    fn midi_cc_points_write_read_back_and_bounds_are_loud() {
+        let project = filled_project();
+        let track = lead(&project);
+        // 写前读：没有 MidiCc 泳道 ⇒ 求值 None ⇒ 退回静态值 0.0
+        // （模型 `static_value` 的 MidiCc 特判臂；`read_param` 本身拒绝它）。
+        let before = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("MidiCc")),
+                ("controller", Value::from(64)),
+                ("ticks", serde_json::json!([0])),
+            ]),
+            track,
+        )
+        .expect("写前规划");
+        assert_eq!(
+            before.target_label,
+            format!("{}#cc64", track.to_canonical_string())
+        );
+        assert_eq!(before.values_before[0].automation_value, None);
+        assert_eq!(before.values_before[0].static_value, 0.0);
+        assert_eq!(before.values_before[0].effective_value, 0.0);
+        assert_eq!(before.values_before[0].source, "static");
+        assert_eq!(before.domain, Some((0.0, 127.0)));
+
+        // 写一个点（延音踏板 CC64 = 100）⇒ 同一规划的写后读数就是该值。
+        let planned = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("MidiCc")),
+                ("controller", Value::from(64)),
+                ("point", serde_json::json!({"tick": 0, "value": 100.0})),
+                ("ticks", serde_json::json!([0, 480])),
+            ]),
+            track,
+        )
+        .expect("写点规划");
+        let write = planned.write.as_ref().expect("必须有一个点");
+        let mut after = project.clone();
+        write.op.apply(&mut after).expect("施加");
+        // 带 ticks 的读模式回读一致（唯一求值入口）。
+        let reread = plan(
+            &after,
+            &args(&[
+                ("lane", Value::from("MidiCc")),
+                ("controller", Value::from(64)),
+                ("ticks", serde_json::json!([0, 480])),
+            ]),
+            track,
+        )
+        .expect("回读规划");
+        assert_eq!(reread.values_before[0].automation_value, Some(100.0));
+        assert_eq!(reread.values_before[0].effective_value, 100.0);
+        assert_eq!(reread.values_before[1].automation_value, Some(100.0));
+        // 渲染侧 CcProbe 消费同一条泳道（值钳到 0..=127 的 u8 表）。
+        let mut probe = yeban_render::automation::CcProbe::new(&after, track, 48_000);
+        assert_eq!(probe.controllers(), 1);
+        let table = probe.table_at(0).expect("有 CC 泳道必须有表");
+        assert_eq!(table[64], 100, "CC64 在 tick 0 的表值必须是写入的 100");
+        assert_eq!(table[11], 0, "没有泳道的控制器读 0");
+        // 逆操作逐字节回退。
+        write.op.apply_inverse(&mut after).expect("撤销");
+        assert_eq!(after, project);
+
+        // controller 越界两段：128..=255 能装进 u8 ⇒ 模型对账拒绝；
+        // >255 是形状错误 ⇒ 解析期拒绝；缺 controller ⇒ 解析期拒绝。
+        let fault = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("MidiCc")),
+                ("controller", Value::from(128)),
+            ]),
+            track,
+        )
+        .expect_err("128 必须被模型对账拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        for bad in [256_u64, 300] {
+            let fault = plan(
+                &project,
+                &args(&[
+                    ("lane", Value::from("MidiCc")),
+                    ("controller", Value::from(bad)),
+                ]),
+                track,
+            )
+            .expect_err(">255 必须在解析期拒绝");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        }
+        let fault = plan(&project, &args(&[("lane", Value::from("MidiCc"))]), track)
+            .expect_err("缺 controller 必须拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        // 点值越出 [0, 127] ⇒ OUT_OF_RANGE。
+        let fault = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("MidiCc")),
+                ("controller", Value::from(64)),
+                ("point", serde_json::json!({"tick": 0, "value": 128.0})),
+            ]),
+            track,
+        )
+        .expect_err("点值越界");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
     }
 
     #[test]
