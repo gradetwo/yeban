@@ -1141,8 +1141,21 @@ pub struct SfzDecodeReport {
     pub referenced_sample_paths: Vec<String>,
     /// 真的解码成功、进了提供表的样本**份数**。
     pub decoded_samples: usize,
-    /// ⭐ 缺样本的**路径**（排序 ＋ 去重，元素是 `sample=` 原样字符串）。
+    /// ⭐ **文件不存在**的样本路径（排序 ＋ 去重，元素是 `sample=` 原样字符串）。
+    ///
+    /// ⭐ 第五份报告 A-2 起的新口径：修前本字段直接抄引擎摊平表的
+    /// `missing_sample_paths`，把"文件不存在"与"解码失败"混成一桶（引擎只知道
+    /// 提供表里没有，不知道为什么没有）；自此只收读失败理由 =
+    /// [`SampleReadFailure::NotFound`] 的那些路径，与
+    /// [`Self::unreadable_not_found_count`] 恒等。解码失败的路径只进
+    /// [`Self::unreadable_sample_reasons`]，⛔ 不再进 `missing`。
     pub missing_sample_paths: Vec<String>,
+    /// ⭐ 第五份报告 A-2：**未加载**的样本路径（排序 ＋ 去重）。
+    ///
+    /// 本解码路（`decode_sfz_plan`）逐个真读全部引用路径 ⇒ 本字段恒为空；
+    /// 字段存在是为了让 `sfz(...)` label 与 MCP 渲染侧（有按需装载）**逐字
+    /// 同形**（`#221` 判据比的是同一份形态）。
+    pub not_loaded_sample_paths: Vec<String>,
     /// ⭐ **不产生采样输出**的**区域数**（引擎口径）：缺样本 ＋ 内建静音（`#217`）。
     ///
     /// ⚠ 它与 [`Self::missing_sample_paths`] **不是**同义词：内建静音
@@ -1471,6 +1484,10 @@ pub fn decode_sfz_plan(
     // ④：逐个真读（复用 `decode_sample_classified`；解析规则与 `region_sample_for` 共用）。
     let mut provided: Vec<(String, InMemorySample)> = Vec::new();
     let mut unreadable_sample_reasons: Vec<UnreadableSample> = Vec::new();
+    // ⭐ 第五份报告 A-2：失败的**原始路径＋理由**平行登记一份 ——
+    // `UnreadableSample` 只带解析后路径，`missing` 新口径要的是 `sample=`
+    // 原样字符串，只能在还握着 `raw` 的这一层算。
+    let mut referenced_failures: Vec<(String, SampleReadFailure)> = Vec::new();
     for raw in &referenced {
         // ⭐ 任务单 `#217`：`sample=*silence` 是**内建静音**，⛔ 不是文件 ——
         // ① ⛔ 不读盘（不增加 `sample_decodes`）、② ⛔ 不进 `unreadable`、
@@ -1484,7 +1501,10 @@ pub fn decode_sfz_plan(
             Ok((sample, _frames, _describe)) => provided.push((raw.clone(), sample)),
             // ⭐ 读不到 ⇒ **不放进提供表**（⇒ 引擎按缺样本处理），但把原因**如实登记**
             //    ＋ **可判别理由**（任务单 `#83`：文件不存在 / 格式不受支持 / 读不动）。
-            Err(failure) => unreadable_sample_reasons.push(failure),
+            Err(failure) => {
+                referenced_failures.push((raw.clone(), failure.reason));
+                unreadable_sample_reasons.push(failure);
+            }
         }
     }
     // ⭐ 旧的字符串形态由结构化登记**导出**（⛔ 不写第二份 ⇒ 两者不可能不一致）。
@@ -1507,13 +1527,23 @@ pub fn decode_sfz_plan(
     let plan = SfzPlan::prepare_with_samples(&instrument, &provided, engine_hz)
         .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
     let prepared = plan.prepared();
+    // ⭐ 第五份报告 A-2：`missing` 只收**文件不存在**（理由 = NotFound 的原始
+    // 路径；`referenced` 已排序去重 ⇒ 本表同序）。引擎摊平表的
+    // `missing_sample_paths` 仍是"提供表里没有"的全集（静音判定靠它），
+    // ⛔ 不再直接抄进报告的 `missing`。
+    let missing_sample_paths: Vec<String> = referenced_failures
+        .iter()
+        .filter(|(_, reason)| *reason == SampleReadFailure::NotFound)
+        .map(|(raw, _)| raw.clone())
+        .collect();
     let report = SfzDecodeReport {
         path: sfz_path.to_path_buf(),
         bytes: load.bytes,
         regions: load.regions,
         referenced_sample_paths: referenced,
         decoded_samples: provided.len(),
-        missing_sample_paths: prepared.missing_sample_paths().to_vec(),
+        missing_sample_paths,
+        not_loaded_sample_paths: Vec::new(),
         silent_region_count: prepared.silent_region_count(),
         builtin_silent_region_count,
         unreadable_samples,
