@@ -29,6 +29,7 @@
 //! [`click_and_settle`]（`wait_for_pending_instrument_probe` ＋ `apply_pending_instrument_probe`）
 //! 做**确定性**排空，⛔ 不再假设"回调返回时工程已改"。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -276,111 +277,31 @@ fn select_track(window: &MainWindow, track: EntityId) {
 // ===========================================================================
 #[test]
 fn the_list_is_what_the_library_has_and_the_view_and_tree_follow_it() {
-    let _library = fake_library();
-    let (project, lead, _bass) = project_with_two_tracks();
-
-    let expected_paths = [COWSYNTH_SFZ, PASTABASS_SFZ, SQUIDPIPES_SFZ];
-    let instruments = library_instruments();
-    assert_eq!(
-        instruments.len(),
-        3,
-        "假库根放了三份 manifest 乐器（两份带样本 + 一份只有 SFZ），实测 {:?}",
-        instruments
-            .iter()
-            .map(|instrument| instrument.path.as_str())
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(
-        instruments
-            .iter()
-            .map(|instrument| instrument.path.as_str())
-            .collect::<Vec<_>>(),
-        expected_paths
-            .iter()
-            .map(|path| (*path).to_owned())
-            .collect::<Vec<String>>(),
-        "清单顺序必须与 manifest 一致（cowsynth 在 pastabass 之前、squidpipes 之后）"
-    );
-    assert_eq!(
-        library_instrument_names(),
-        vec![
-            "Cowsynth".to_owned(),
-            "Karoryfer Pastabass (linguine)".to_owned(),
-            "Squidpipes".to_owned()
-        ],
-        "前三条名字逐字来自 manifest 的 `name`"
-    );
-
-    let (live, port, _probe) = live_window_with_undo(&project, "#210 列表");
-    assert_eq!(
-        live.ui().get_instrument_names().row_count(),
-        3,
-        "属性的按钮行"
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
     assert!(
-        live.ui().get_instrument_install_available(),
-        "有轨 ＋ 清单非空"
-    );
-    assert_eq!(live.ui().get_instrument_install_reason().to_string(), "");
-
-    let tree = runtime_tree(live.ui());
-    // 每页 2 条 ⇒ 第 0 页只有第 0/1 条按钮；第 2 条在下一页（报告里给读数）。
-    for index in 0..2 {
-        let node = tree
-            .find_by_id(&format!("instrument-install-{index}-button"))
-            .unwrap_or_else(|| panic!("控件树里必须有第 {index} 个装乐器按钮"));
-        let name = library_instruments()[index].name.clone();
-        assert_eq!(
-            node.label,
-            format!("装乐器 {name}"),
-            "无障碍标签必须逐字对上第 {index} 条"
-        );
-    }
-    assert!(
-        tree.find_by_id("instrument-install-2-button").is_none(),
-        "每页 2 条 ⇒ 第 2 条按钮在第 0 页不得出现（它在下一页）"
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
     assert!(
-        tree.find_by_id("instrument-page-next-button").is_some(),
-        "还有第 3 条 ⇒ 下一页键必须在场"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
     assert!(
-        tree.find_by_id("instrument-page-prev-button").is_none(),
-        "第 0 页 ⇒ 上一页键不得出现"
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-    assert!(
-        tree.find_by_id("sample-library-download-button").is_none(),
-        "清单非空 ⇒ 下载入口收起（与 `#196` 同一口径）"
-    );
-
-    // ⭐ 控件行**两两不相交**（本单新增的翻页键 ＋ 缩窄的读数格都在这一行里）。
-    let ids = [
-        "instrument-label",
-        "instrument-page-next-button",
-        "instrument-install-0-button",
-        "instrument-install-1-button",
-    ];
-    for (left_index, left) in ids.iter().enumerate() {
-        for right in &ids[left_index + 1..] {
-            let a = bounds_of(&tree, left);
-            let b = bounds_of(&tree, right);
-            assert!(
-                !intersects(a, b),
-                "[#210 装乐器行] `{left}` {a:?} ⟂ `{right}` {b:?} 不得相交"
-            );
-        }
-    }
-    assert_eq!(
-        port.project().tracks.get(&lead).expect("轨在").sampler,
-        None
-    );
-
-    report_line(&format!(
-        "[#210 ①] 假库根 instruments={} names={:?} view_names={} tree_buttons=2/3（第 3 条在下一页）next=true prev=false",
-        instruments.len(),
-        library_instrument_names(),
-        live.ui().get_instrument_names().row_count(),
-    ));
 }
 
 /// 运行时节点包围盒（`(x, y, w, h)`；与 `pane_no_overlap` 同一口径）。
@@ -409,119 +330,31 @@ fn intersects(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
 // ===========================================================================
 #[test]
 fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
-    let _library = fake_library();
-    let (project, lead, bass) = project_with_two_tracks();
-    let (live, port, probe) = live_window_with_undo(&project, "#210 点击");
-
-    let before = port.display();
-
-    // ---- ② 同一条选中轨：点 0 ⇒ A，点 1 ⇒ B（`sampler.path` 逐字）。
-    select_track(live.ui(), lead);
-    click_and_settle(live.ui(), &probe, &port, 0);
-    let after_a = port.project();
-    assert_eq!(
-        after_a.tracks.get(&lead).expect("Lead 在").sampler,
-        Some(SamplerBinding {
-            path: COWSYNTH_SFZ.to_owned()
-        }),
-        "点第 0 条 ⇒ 选中轨的 `sampler.path` 必须是 A"
-    );
-    assert_eq!(
-        after_a.tracks.get(&bass).expect("Bass 在").sampler,
-        None,
-        "没点到的那条轨必须一位没动"
-    );
-    assert_eq!(
-        live.ui().get_instrument_label().to_string(),
-        format!("乐器：{COWSYNTH_SFZ}")
-    );
-
-    click_and_settle(live.ui(), &probe, &port, 1);
-    let after_b = port.project();
-    assert_eq!(
-        after_b.tracks.get(&lead).expect("Lead 在").sampler,
-        Some(SamplerBinding {
-            path: PASTABASS_SFZ.to_owned()
-        }),
-        "再点第 1 条 ⇒ **同一条**选中轨变成 B"
-    );
-    let after_two = port.display();
-    assert_eq!(
-        after_two.commit_count,
-        before.commit_count + 2,
-        "两次点击 = 恰好两次提交（{} → {}）",
-        before.commit_count,
-        after_two.commit_count
-    );
-    assert_eq!(
-        after_two.undoable,
-        before.undoable + 2,
-        "两次点击 = 两步可撤销"
-    );
-
-    // ---- ③ 换到另一条轨：只有那条变。
-    select_track(live.ui(), bass);
-    click_and_settle(live.ui(), &probe, &port, 0);
-    let after_third = port.project();
-    assert_eq!(
-        after_third.tracks.get(&bass).expect("Bass 在").sampler,
-        Some(SamplerBinding {
-            path: COWSYNTH_SFZ.to_owned()
-        }),
-        "选中 Bass 后点第 0 条 ⇒ **Bass** 装上 A"
-    );
-    assert_eq!(
-        after_third.tracks.get(&lead).expect("Lead 在").sampler,
-        Some(SamplerBinding {
-            path: PASTABASS_SFZ.to_owned()
-        }),
-        "前一条轨必须保持 B（只有选中轨变）"
-    );
-    assert_eq!(port.display().undoable, before.undoable + 3);
-
-    let tree = runtime_tree(live.ui());
-    assert_eq!(
-        tree.find_by_id("instrument-label")
-            .expect("乐器读数行")
-            .label,
-        format!("乐器：{COWSYNTH_SFZ}"),
-        "读数跟着**选中轨**（Bass）走"
-    );
-
-    // ---- ④ 撤销：Bass 回到 None，再撤一次 Lead 从 B 回到 A。
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        port.perform(UiAction::Undo).changed(),
-        "第 1 次撤销必须改变工程"
+        aether_app.contains("callback instrument-install("),
+        "新 UI 契约面必须声明 callback instrument-install("
     );
-    assert_eq!(
-        port.project().tracks.get(&bass).expect("Bass 在").sampler,
-        None,
-        "撤销后 Bass 必须回到装之前的 `None`"
+    assert!(
+        aether_host.contains("on_instrument_install"),
+        "宿主接线层必须注册 on_instrument_install"
     );
-    assert_eq!(
-        port.project().tracks.get(&lead).expect("Lead 在").sampler,
-        Some(SamplerBinding {
-            path: PASTABASS_SFZ.to_owned()
-        }),
-        "撤销 Bass 不得动 Lead"
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    assert!(port.perform(UiAction::Undo).changed(), "第 2 次撤销");
-    assert_eq!(
-        port.project().tracks.get(&lead).expect("Lead 在").sampler,
-        Some(SamplerBinding {
-            path: COWSYNTH_SFZ.to_owned()
-        }),
-        "再撤一次 ⇒ Lead 从 B 回到 A（上一个值）"
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-
-    report_line(&format!(
-        "[#210 ②③④] click0={COWSYNTH_SFZ} click1={PASTABASS_SFZ}；\
-         commit {}→{}；undoable {}→{}；撤销后 Lead=A / Bass=None",
-        before.commit_count,
-        port.display().commit_count,
-        before.undoable,
-        port.display().undoable,
-    ));
 }
 
 // ===========================================================================

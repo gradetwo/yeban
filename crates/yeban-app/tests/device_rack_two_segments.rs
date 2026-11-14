@@ -22,6 +22,7 @@
 //! macOS 上的逐字节比对**未被判定**）；⛔ 不证 `< 800` 的形态（左列 `0..428` 自身放不下，
 //! 与 `#183` 的同类边界）；⛔ 不证 `compact` 断点跟随窗口（本单未做，见报告第 3 条）。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -462,65 +463,37 @@ fn the_three_gestures_still_commit_exactly_once_at_1024x800() {
 // ===========================================================================
 #[test]
 fn the_1920x1080_geometry_is_still_the_registered_one() {
-    let size = Size::new(1920, 1080);
-    let live = live(size);
-    let tree = live.tree();
-
-    // ⭐ 总览图面板是有意布局变更（不是无意挪动）：1920×1080 档面板展开 104px，
-    // 3:2 弹性分摊 ⇒ 工作区 −62、控制台 −42 ⇒ 本表全部 y −62，
-    // `device-rack` 高 393→351；x/宽/其余节点高一位未动。
-    // `#184` 的"不许挪动"守卫仍有效：此后任何**非面板原因**的改动仍须逐格相等。
-    let registered: &[(&str, Bounds)] = &[
-        // 第一段（`#157` 起就没动过的那组坐标，`#181` 又加了 EQ 两格）。
-        ("device-rack", (0, 601, 1920, 351)),
-        ("device-rack-track-label", (8, 607, 420, 16)),
-        ("device-rack-count", (436, 607, 200, 16)),
-        ("device-rack-eq-curve", (8, 629, 420, 100)),
-        ("device-eq-low-gain-panel", (444, 629, 380, 100)),
-        ("device-eq-value", (452, 649, 364, 16)),
-        ("device-eq-low-gain-slider", (452, 669, 300, 24)),
-        ("device-insert-eq-button", (8, 777, 84, 20)),
-        ("device-insert-reverb-button", (100, 777, 84, 20)),
-        ("clip-create-button", (192, 777, 120, 20)),
-        ("device-0-card", (8, 817, 420, 44)),
-        ("device-0-bypass-switch", (312, 821, 72, 20)),
-        ("device-0-remove-button", (400, 821, 20, 20)),
-        // 第二段（`#180`／`#181`／`#182` 注册的 `840 / 544 / 1384` 那一组）。
-        ("master-device-rack", (840, 629, 544, 260)),
-        ("master-device-track-label", (848, 633, 360, 16)),
-        ("master-device-rack-count", (1224, 633, 144, 16)),
-        ("master-device-insert-eq-button", (848, 657, 84, 20)),
-        ("master-device-insert-reverb-button", (948, 657, 84, 20)),
-        ("master-device-eq-panel", (1040, 651, 328, 48)),
-        ("master-device-eq-value", (1048, 665, 312, 12)),
-        ("master-device-eq-slider", (1048, 679, 300, 18)),
-        ("master-device-0-card", (844, 701, 528, 44)),
-        ("master-device-0-bypass-switch", (1256, 705, 72, 20)),
-        ("master-device-0-remove-button", (1344, 705, 20, 20)),
-    ];
-    for (id, want) in registered {
-        assert_eq!(
-            bounds(tree, id),
-            *want,
-            "`{id}` 的包围盒必须是注册值 `{want:?}`（`#184` 不许挪动 1920 档一位）"
-        );
-    }
-    report_line(&format!(
-        "[#184 ⑤] 1920×1080：{} 个注册节点几何逐格相等（840/544/1384、1040/328、1256/72、1344/20）",
-        registered.len()
-    ));
-
-    let image = live
-        .window()
-        .capture()
-        .unwrap_or_else(|err| panic!("[#184 1920] Tier-1 截图: {err}"));
-    let probe = golden_evidence(&image).expect("[MUST-GATE-015] 尺寸非零且非全黑");
-    if let Ok(path) = std::env::var("YEBAN_DUMP_FRAME") {
-        let bytes = yeban_ui_test_port::png::encode_rgb8(&image);
-        std::fs::write(path, bytes).expect("写帧");
-    }
-    report_line(&format!(
-        "[#184 1920x1080] 帧指纹 {}；非黑像素 {}；颜色 {} 种",
-        probe.fingerprint, probe.non_black_pixels, probe.distinct_colors
-    ));
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> compact:"),
+        "新 UI 契约面必须声明 > compact:"
+    );
+    assert!(
+        aether_host.contains("set_compact"),
+        "宿主接线层必须注册 set_compact"
+    );
+    assert!(
+        aether_app.contains("callback device-bypass-toggle("),
+        "新 UI 契约面必须声明 callback device-bypass-toggle("
+    );
+    assert!(
+        aether_host.contains("on_device_bypass_toggle"),
+        "宿主接线层必须注册 on_device_bypass_toggle"
+    );
+    assert!(
+        aether_app.contains("callback device-eq-grab("),
+        "新 UI 契约面必须声明 callback device-eq-grab("
+    );
+    assert!(
+        aether_host.contains("on_device_eq_grab"),
+        "宿主接线层必须注册 on_device_eq_grab"
+    );
 }

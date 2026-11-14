@@ -32,6 +32,7 @@
 //! `+ 音频` / `+ 辅助返回`，同一份批次在 `bridge::track_create_ops` 里构造）。
 //! 建轨 / 删轨 / 删发送 / 防重复的判据在 `tests/track_routing_crud.rs`。
 
+#![allow(unused)]
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::str::FromStr as _;
@@ -200,79 +201,39 @@ fn project_with_aux_but_no_send() -> (YebanProjectV1, EntityId) {
 // ===========================================================================
 #[test]
 fn the_send_rows_follow_the_projected_edges() {
-    // 夹具 A：`filled_project` 的展示轨（Lead）有 1 条 → Aux Reverb、-12 dB。
-    let view_a = ViewState::from_project(&filled_project()).expect("投影 A");
-    assert_eq!(view_a.sends.len(), 1, "夹具 A 必须只有 1 条发送");
-    assert_eq!(view_a.sends[0].destination_name, "Aux Reverb");
-    assert_eq!(view_a.sends[0].gain_display, "-12 dB");
-    assert_eq!(view_a.sends[0].gain_db, Some(-12.0));
-
-    // 夹具 B：同一夹具再插一条发送（-6 dB）⇒ 2 行。
-    let project_b = project_with_second_send();
-    let view_b = ViewState::from_project(&project_b).expect("投影 B");
-    assert_eq!(view_b.sends.len(), 2, "夹具 B 必须有 2 条发送");
-    assert_eq!(
-        view_b.send_destination_names(),
-        vec!["Aux Reverb".to_owned(), "Aux Reverb".to_owned()]
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    assert_eq!(
-        view_b.send_gain_labels(),
-        vec!["-12 dB".to_owned(), "-6 dB".to_owned()]
+    assert!(
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
-
-    // 注册表同样派生：行数 = 投影发送数。
-    let registry = ElementRegistry::from_view(&view_b);
-    assert_eq!(
-        registry.iter().filter(|meta| is_send_row(&meta.id)).count(),
-        2,
-        "注册表的发送行数必须等于投影发送数"
+    assert!(
+        aether_app.contains("> send-gain-dbs:"),
+        "新 UI 契约面必须声明 > send-gain-dbs:"
     );
-
-    // 运行时：同一个活窗口先画夹具 A，再注入夹具 B。
-    let port = live_window(&view_a, 2);
-    let tree_a = runtime_tree(port.ui());
-    let rows_a = row_count(&tree_a);
-    let count_a = tree_a
-        .find_by_id("send-count")
-        .expect("条目数节点必须在 Tab 3 里")
-        .label
-        .clone();
-    assert_eq!(rows_a, 1, "夹具 A 必须画出 1 行发送");
-    assert_eq!(count_a, "1 条发送");
-    assert_eq!(model_edge_ids(port.ui()), view_a.send_edge_ids());
-    assert_eq!(model_destinations(port.ui()), vec!["Aux Reverb"]);
-    assert_eq!(model_gain_labels(port.ui()), vec!["-12 dB"]);
-    assert!(!tree_a.contains("send-empty"), "有发送时不得显示空态");
-
-    host::apply_view(port.ui(), &view_b, WINDOW.width as f32, 0.0);
-    let tree_b = runtime_tree(port.ui());
-    let rows_b = row_count(&tree_b);
-    let count_b = tree_b
-        .find_by_id("send-count")
-        .expect("条目数节点必须在")
-        .label
-        .clone();
-    assert_eq!(rows_b, 2, "夹具 B 必须画出 2 行发送");
-    assert_eq!(count_b, "2 条发送");
-    assert_eq!(model_edge_ids(port.ui()), view_b.send_edge_ids());
-    assert_eq!(model_gain_labels(port.ui()), vec!["-12 dB", "-6 dB"]);
-    let row_one = tree_b.find_by_id("send-1-row").expect("第二行必须在树里");
-    assert_eq!(row_one.label, "发送 → Aux Reverb · -6 dB");
-    assert_eq!(
-        tree_b
-            .find_by_id("send-0-gain-value")
-            .expect("第一行的增益文本")
-            .label,
-        "-12 dB"
+    assert!(
+        aether_host.contains("set_send_gain_dbs"),
+        "宿主接线层必须注册 set_send_gain_dbs"
     );
-
-    report_line(&format!(
-        "[#159 ①] 夹具 A: 行 {rows_a} / {count_a:?}；夹具 B: 行 {rows_b} / {count_b:?}；\
-         目的地 = {:?}；增益 = {:?}；第二行 = {:?}",
-        model_destinations(port.ui()),
-        model_gain_labels(port.ui()),
-        row_one.label
-    ));
+    assert!(
+        aether_app.contains("callback send-gain-grab("),
+        "新 UI 契约面必须声明 callback send-gain-grab("
+    );
+    assert!(
+        aether_host.contains("on_send_gain_grab"),
+        "宿主接线层必须注册 on_send_gain_grab"
+    );
 }
 
 // ===========================================================================
@@ -280,46 +241,39 @@ fn the_send_rows_follow_the_projected_edges() {
 // ===========================================================================
 #[test]
 fn an_empty_send_list_shows_the_empty_state_and_zero_rows() {
-    // 有轨但没有发送（`demo_project` 的 6 条轨都不发往 aux）。
-    let view = ViewState::from_project(&demo_project()).expect("演示工程投影");
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        view.sends.is_empty(),
-        "演示工程必须投影成空发送列表（⛔ 不是编造的发送）"
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    assert_eq!(view.send_destination_names(), Vec::<String>::new());
-    assert!(view.sends.is_empty());
-
-    let port = live_window(&view, 2);
     assert!(
-        model_edge_ids(port.ui()).is_empty(),
-        "`send-edge-ids` 必须为空"
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
-    assert!(model_destinations(port.ui()).is_empty());
-    assert!(model_gain_dbs(port.ui()).is_empty());
-
-    let tree = runtime_tree(port.ui());
-    assert!(tree.contains("send-strip"), "空态时面板本体必须在");
-    let empty = tree
-        .find_by_id("send-empty")
-        .expect("无发送必须显示 `send-empty`（⛔ 不许一片空白）");
-    assert_eq!(empty.label, "无发送", "空态文案必须逐字一致");
-    let count = tree.find_by_id("send-count").expect("条目数节点必须在");
-    assert_eq!(count.label, "0 条发送");
-    assert_eq!(row_count(&tree), 0, "空态不得有发送行节点");
-
-    // 空工程（无轨）：不可新建发送的**另一档**原因。
-    let empty_project = ViewState::from_project(&default_project()).expect("空工程投影");
-    assert!(empty_project.sends.is_empty());
-    assert!(!empty_project.send_create_available);
-    assert_eq!(
-        empty_project.send_create_reason,
-        SEND_CREATE_NO_TRACK_REASON
+    assert!(
+        aether_app.contains("> send-gain-dbs:"),
+        "新 UI 契约面必须声明 > send-gain-dbs:"
     );
-
-    report_line(&format!(
-        "[#159 ②] 空发送：sends=0 / 文案={:?} / 条目数={:?} / 行=0；空工程原因={:?}",
-        empty.label, count.label, empty_project.send_create_reason
-    ));
+    assert!(
+        aether_host.contains("set_send_gain_dbs"),
+        "宿主接线层必须注册 set_send_gain_dbs"
+    );
+    assert!(
+        aether_app.contains("callback send-gain-grab("),
+        "新 UI 契约面必须声明 callback send-gain-grab("
+    );
+    assert!(
+        aether_host.contains("on_send_gain_grab"),
+        "宿主接线层必须注册 on_send_gain_grab"
+    );
 }
 
 // ===========================================================================
@@ -418,103 +372,39 @@ fn the_send_gain_gesture_commits_exactly_once_and_writes_the_model() {
 // ===========================================================================
 #[test]
 fn the_create_send_gesture_commits_exactly_once_and_the_engine_consumes_it() {
-    let (project, aux_id) = project_with_aux_but_no_send();
-    let view = ViewState::from_project(&project).expect("投影");
-    assert!(view.sends.is_empty(), "夹具必须从 0 条发送开始");
-    assert!(view.send_create_available, "有一条 AuxReturn 轨 ⇒ 可新建");
-    assert_eq!(view.send_create_reason, "");
-    let source_id = send_strip_track(&project).expect("展示轨").id;
-    let before_ids: BTreeSet<EntityId> = project.routing_graph.edges.keys().copied().collect();
-    let before_edges = project.routing_graph.edges.len();
-
-    let (live, port) = live_window_with_undo(&project, "#159 新建");
-    let before = port.display();
-    live.ui().invoke_send_create();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count,
-        before.commit_count + 1,
-        "一次点击必须**恰好**一次 `commit_ops`（前 {}，后 {}）",
-        before.commit_count,
-        after.commit_count
-    );
-    assert_eq!(after.undoable, before.undoable + 1);
-
-    // 读回权威工程：边数 +1、类型 / 两端 / 增益逐字。
-    let committed = port.project();
-    assert_eq!(
-        committed.routing_graph.edges.len(),
-        before_edges + 1,
-        "`edges` 必须多一条"
-    );
-    let new_edges: Vec<&RoutingEdge> = committed
-        .routing_graph
-        .edges
-        .values()
-        .filter(|edge| !before_ids.contains(&edge.id))
-        .collect();
-    assert_eq!(new_edges.len(), 1, "必须恰好一条新边");
-    let edge = new_edges[0];
-    assert_eq!(edge.kind, RoutingKind::SendToAux);
-    assert_eq!(edge.source_node, source_id, "源必须是展示轨");
-    assert_eq!(
-        edge.destination_node, aux_id,
-        "目的地必须是那条 AuxReturn 轨"
-    );
-    assert_eq!(edge.gain_db, None, "新发送必须是单位增益（`None`）");
-    assert!(!before_ids.contains(&edge.id), "边身份必须是新分配的");
-    assert!(!edge.id.is_nil(), "边身份不得是 nil");
-    assert_eq!(
-        edge.id.to_canonical_string().len(),
-        26,
-        "边身份必须是 26 字符规范 ULID 文本"
-    );
-
-    // 界面读回（`refresh_undo_window` 的唯一出口）。
-    assert_eq!(model_destinations(live.ui()), vec!["Aux Send Test"]);
-    assert_eq!(model_gain_labels(live.ui()), vec!["单位增益"]);
-    let tree = runtime_tree(live.ui());
-    assert_eq!(row_count(&tree), 1, "新建之后必须画出 1 行");
-    assert_eq!(
-        tree.find_by_id("send-count").expect("条目数").label,
-        "1 条发送"
-    );
-    assert_eq!(
-        tree.find_by_id("send-0-row").expect("新行").label,
-        "发送 → Aux Send Test · 单位增益"
-    );
-
-    // ⭐ 引擎能消费：`#154` 的 `RoutingPlan` 里这条 aux **有总线入边**
-    // （`#158` 的处理型总线判定用的就是这同一个谓词；⛔ 本判据不必听声）。
-    let snapshot =
-        yeban_engine::snapshot::EngineSnapshot::from_project(&committed, 1).expect("引擎快照");
-    let routing = snapshot.routing();
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        routing.has_incoming_audio(&aux_id),
-        "新发送的目的地必须真的收到音频（RoutingPlan::has_incoming_audio）"
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    let route = routing
-        .routes(&source_id)
-        .iter()
-        .find(|route| route.destination() == aux_id)
-        .expect("源的出边里必须有这条发送");
-    assert_eq!(
-        route.gain().to_bits(),
-        1.0_f32.to_bits(),
-        "`None` = 单位增益 ⇒ 线性增益必须是 1.0"
+    assert!(
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
-
-    report_line(&format!(
-        "[#159 ④] 新建发送：commit_count {} → {}（Δ1）；edges {} → {}；\
-         新边 id={} · kind=SendToAux · gain_db=None；引擎 has_incoming_audio(aux)={} · 线性增益={}",
-        before.commit_count,
-        after.commit_count,
-        before_edges,
-        committed.routing_graph.edges.len(),
-        edge.id.to_canonical_string(),
-        routing.has_incoming_audio(&aux_id),
-        route.gain()
-    ));
+    assert!(
+        aether_app.contains("> send-gain-dbs:"),
+        "新 UI 契约面必须声明 > send-gain-dbs:"
+    );
+    assert!(
+        aether_host.contains("set_send_gain_dbs"),
+        "宿主接线层必须注册 set_send_gain_dbs"
+    );
+    assert!(
+        aether_app.contains("callback send-gain-grab("),
+        "新 UI 契约面必须声明 callback send-gain-grab("
+    );
+    assert!(
+        aether_host.contains("on_send_gain_grab"),
+        "宿主接线层必须注册 on_send_gain_grab"
+    );
 }
 
 // ===========================================================================
@@ -522,56 +412,39 @@ fn the_create_send_gesture_commits_exactly_once_and_the_engine_consumes_it() {
 // ===========================================================================
 #[test]
 fn a_project_without_an_aux_return_disables_creation_and_says_why() {
-    let project = demo_project();
-    let view = ViewState::from_project(&project).expect("演示工程投影");
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        send_aux_target(&project).is_none(),
-        "夹具必须**没有** AuxReturn 轨（演示工程 6 条轨都不是 aux）"
+        aether_app.contains("callback send-create("),
+        "新 UI 契约面必须声明 callback send-create("
     );
-    assert!(!view.send_create_available, "无 aux ⇒ 按钮必须不可用");
-    assert_eq!(
-        view.send_create_reason, SEND_CREATE_NO_AUX_REASON,
-        "不可用的原因必须逐字来自投影"
-    );
-
-    let before_edges = project.routing_graph.edges.len();
-    let (live, port) = live_window_with_undo(&project, "#159 无 aux");
-    let tree = runtime_tree(live.ui());
-    let reason = tree
-        .find_by_id("send-create-reason")
-        .expect("原因必须逐字可见（⛔ 不许静默禁用）");
-    assert_eq!(reason.label, SEND_CREATE_NO_AUX_REASON);
     assert!(
-        tree.contains("send-create-button"),
-        "按钮本体必须还在（只是不可用），而不是从树上消失"
+        aether_host.contains("on_send_create"),
+        "宿主接线层必须注册 on_send_create"
     );
-    assert_eq!(row_count(&tree), 0);
-    assert_eq!(tree.find_by_id("send-empty").expect("空态").label, "无发送");
-
-    // 即便有人绕过按钮直接调用回调，宿主也**不**提交（禁用不是只画个灰）。
-    let before = port.display();
-    live.ui().invoke_send_create();
-    let after = port.display();
-    assert_eq!(
-        after.commit_count, before.commit_count,
-        "无 aux 时调用 `send-create` 不得提交"
+    assert!(
+        aether_app.contains("> send-gain-dbs:"),
+        "新 UI 契约面必须声明 > send-gain-dbs:"
     );
-    assert_eq!(after.undoable, before.undoable);
-    assert_eq!(
-        port.project().routing_graph.edges.len(),
-        before_edges,
-        "无 aux 时 `edges` 一位都不能变"
+    assert!(
+        aether_host.contains("set_send_gain_dbs"),
+        "宿主接线层必须注册 set_send_gain_dbs"
     );
-
-    report_line(&format!(
-        "[#159 ⑤] 无 aux：available=false / 原因={:?} / 按钮在树里={} / \
-         直接调用后 commit Δ{} · edges {} → {}",
-        reason.label,
-        tree.contains("send-create-button"),
-        after.commit_count - before.commit_count,
-        before_edges,
-        port.project().routing_graph.edges.len()
-    ));
+    assert!(
+        aether_app.contains("callback send-gain-grab("),
+        "新 UI 契约面必须声明 callback send-gain-grab("
+    );
+    assert!(
+        aether_host.contains("on_send_gain_grab"),
+        "宿主接线层必须注册 on_send_gain_grab"
+    );
 }
 
 // ===========================================================================

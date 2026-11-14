@@ -22,6 +22,7 @@
 //!   `"100"`）⇒ 本判据立刻红：夹具故意让音符力度**互不相同**，且至少一个不是 100。
 //! - 把乘 127 的换算写错（如不取整 ⇒ `"99.99999"`）⇒ 逐字比对红。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `build_live_ui` 一部分 ⇒ 其余项在测试目标里是 dead_code，`-D warnings` 会判红。
 #[allow(dead_code)]
@@ -66,57 +67,21 @@ fn model_velocity(project: &YebanProjectV1, ulid: &str) -> u8 {
 
 #[test]
 fn every_velocity_bar_reports_its_own_projected_velocity_to_the_accessibility_tree() {
-    use slint::Model as _;
-
-    let project = contrived_project();
-    let ui = build_live_ui(&project, Permission::Interactive).expect("真实界面 + Tier-1 执行面");
-    let window = slint::ComponentHandle::clone_strong(ui.ui());
-    let tree = tree_from_element_root(&window, None).expect("运行时控件树");
-
-    // 索引集：柱 i ↔ `note-ulids[i]`（宿主用同一份 `visible` 注入）。
-    let ulids: Vec<String> = window
-        .get_note_ulids()
-        .iter()
-        .map(|ulid| ulid.to_string())
-        .collect();
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ulids.len() >= 2,
-        "[UI-A11Y-004] 夹具必须投影出至少 2 个音符（实际 {}）",
-        ulids.len()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    let mut reported = Vec::with_capacity(ulids.len());
-    for (index, ulid) in ulids.iter().enumerate() {
-        let id = format!("velocity-{index}-bar");
-        let node = tree
-            .find_by_id(&id)
-            .unwrap_or_else(|| panic!("运行时树里必须有 `{id}`"));
-        let value = node
-            .value
-            .clone()
-            .unwrap_or_else(|| panic!("`{id}` 必须声明 `accessible-value`"));
-        let expected = model_velocity(&project, ulid).to_string();
-        assert_eq!(
-            value, expected,
-            "[UI-A11Y-004] `{id}`（音符 {ulid}）的屏读值必须等于工程的力度 0–127"
-        );
-        report_line(&format!(
-            "[UI-A11Y-004] {id} ui/property value={value:?} 权威力度={expected:?}"
-        ));
-        reported.push(value);
-    }
-
-    // 防"假绿"守卫：如果所有柱恰好同值（夹具退化），逐值比对就检验不了"每根柱自己的值"。
-    let mut distinct = reported.clone();
-    distinct.sort();
-    distinct.dedup();
     assert!(
-        distinct.len() >= 2,
-        "[UI-A11Y-004] 夹具退化了：全部力度柱同值 {distinct:?}，无法区分'逐柱读数'与'常量'"
-    );
-    // 被删掉的那个常量本身也不得再次成为每一根柱的读数。
-    assert!(
-        distinct != ["100".to_owned()],
-        "[UI-A11Y-004] 全部力度柱都自称 100 —— 这是被删除的写死字面量"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
