@@ -84,6 +84,7 @@ use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, BlockSize, ClipContent, EntityId, MidiNote,
     ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
 };
+use yeban_sfz::modulation::tune_ratio_from_cents;
 
 use crate::audio_clip::{
     AudioClipError, AudioClipSchedule, AudioPcm, project_audio_clips_with_tempo,
@@ -225,6 +226,8 @@ pub struct TrackParams {
     delay_samples: i32,
     /// 手动相位对齐第一层：极性反转（`None` = 不反转）。
     invert_polarity: bool,
+    /// B8 轨级调律偏移（音分，±100；`None` = 0.0 的原值）。
+    tune_offset_cents: f32,
 }
 
 impl TrackParams {
@@ -248,6 +251,7 @@ impl TrackParams {
             latency_samples,
             delay_samples: track.delay_samples.unwrap_or(0),
             invert_polarity: track.invert_polarity.unwrap_or(false),
+            tune_offset_cents: track.tune_offset_cents.unwrap_or(0.0) as f32,
         }
     }
 
@@ -312,6 +316,15 @@ impl TrackParams {
     #[must_use]
     pub const fn invert_polarity(&self) -> bool {
         self.invert_polarity
+    }
+
+    /// B8 轨级调律偏移（音分；原始值，未换算）。
+    ///
+    /// 换算（音分 → 音高比乘子）在消费点做（[`tune_ratio_from_cents`]），
+    /// 与 `delay_samples` 的"原始值在此、平移在武装期"同一条纪律。
+    #[must_use]
+    pub const fn tune_offset_cents(&self) -> f32 {
+        self.tune_offset_cents
     }
 
     /// 本轨的**源侧**声相增益 `(左, 右)`：由 `pan` 与**声相定律**在**构造期**算出。
@@ -1627,6 +1640,11 @@ fn project_schedules(
             any_solo,
             track.volume_db,
         );
+        // ⭐ B8：轨调律偏移（音分；`None` = 0.0）。与 `gain` 同一次投影、
+        // **同一个**音分值 ⇒ 复音（`note.freq_hz`）与 SFZ（调度表 `tune_cents`）
+        // 两条路听到的偏移一致；`0.0` ⇒ 乘子恰 `1.0` ⇒ 频率逐位不变。
+        let tune_cents = track.tune_offset_cents.unwrap_or(0.0) as f32;
+        let tune_ratio = tune_ratio_from_cents(tune_cents);
         let mut notes: Vec<ScheduledNote> = Vec::new();
         // ⭐ `#311b`：本轨的**音高形状旁表**（`ScheduledNote::pitch_shape` 是它的下标）。
         // 一个音符的曲线只在这里建**一次**，它的 `ratchet` 子脉冲与循环副本共享同一下标
@@ -1755,7 +1773,7 @@ fn project_schedules(
                                 end_sample,
                                 note.pitch,
                                 note.velocity,
-                                note_to_hz(f32::from(note.pitch)),
+                                note_to_hz(f32::from(note.pitch)) * tune_ratio,
                                 velocity_gain(note.velocity) * gain,
                                 sample_rate_f32,
                             )
@@ -1776,6 +1794,7 @@ fn project_schedules(
             *id,
             NoteSchedule::from_sorted(notes)
                 .with_track_gain(gain)
+                .with_tune_cents(tune_cents)
                 // ⭐ `#311b`：旁表随调度表一起进快照（空表 ⇒ 复音支路传 `None` 探针）。
                 .with_pitch_shapes(pitch_shapes),
         );

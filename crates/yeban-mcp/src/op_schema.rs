@@ -806,6 +806,22 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setTrackTune",
+                "写目标音轨的 `tune_offset_cents`（轨级调律偏移，B8；目标缺省 = 顶层 `trackId`，`trackId` 可逐条点名另一条音轨）",
+                &["kind", "tuneCents"],
+                json!({
+                    "kind": kind("setTrackTune"),
+                    "trackId": id("目标音轨身份（可选；缺省 = 工具顶层的 `trackId`）"),
+                    "tuneCents": {
+                        "type": "number",
+                        "minimum": -100,
+                        "maximum": 100,
+                        "description": "目标调律偏移（音分；恒定，全轨音符共用；与 SFZ `tune` 域 −100..=100 对齐；−100 覆盖 ixox 长笛库偏差，约 −31.8 覆盖 432 Hz 基准；0 = 无偏移）",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "setTransportConfig",
                 "整体替换走带配置（三个字段全部必填）",
                 &["kind", "metronomeEnabled", "countInBars", "launchQuantization"],

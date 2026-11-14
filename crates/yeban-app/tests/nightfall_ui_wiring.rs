@@ -60,6 +60,7 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
         solo_safe: false,
         delay_samples: None,
         invert_polarity: None,
+        tune_offset_cents: None,
         folder_id: None,
         color: None,
         sampler: None,

@@ -1320,6 +1320,22 @@ pub struct TrackV3 {
     /// ⇒ **默认（不反转）的工程逐字节不变**。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invert_polarity: Option<bool>,
+    /// 轨级调律偏移（单位：音分，有符号；恒定，全轨音符共用）。
+    ///
+    /// B8（第四份报告，本轮最想要）：一条轨整体偏离标准音高时（库录偏、
+    /// 非 440 Hz 基准如 432 Hz）在轨上一次性修正，⛔ 不用逐键弯音补偿。
+    /// 渲染时把它当**增量**加进音分换算：SFZ 侧 `playback_rate` 的 `tune` 之上
+    /// 再乘 `2^(cents/1200)`，复音侧 `note_to_hz` 之上乘同一乘子（同一份换算，
+    /// 见 `yeban-sfz` 的 `tune_ratio_from_cents`）。
+    ///
+    /// `None` 是一等状态（"无偏移"），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]，并与 `skip_serializing_if` 对偶
+    /// ⇒ **默认（无偏移）的工程逐字节不变**：本字段为 `None` 时**不落盘**。
+    /// 值域 ±[`crate::music::TRACK_TUNE_MAX_ABS_CENTS`]（与 SFZ `tune`
+    /// opcode 域 `-100..=100` 对齐；覆盖 −100 与约 −31.8 两个实测锚点）。
+    /// 只做轨级，⛔ 不做库级：SFZ region 自带的 `tune` 已存在且不动，两者相加。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tune_offset_cents: Option<f64>,
     /// 所属折叠文件夹（**仅界面语义**）。
     ///
     /// `None` 是**一等状态**（"不折叠进任何文件夹"），保留 `#[serde(default)]`
@@ -1391,6 +1407,7 @@ impl Default for TrackV3 {
             solo_safe: false,
             delay_samples: None,
             invert_polarity: None,
+            tune_offset_cents: None,
             folder_id: None,
             color: None,
             sampler: None,
@@ -1435,6 +1452,19 @@ impl TrackV3 {
                 .contains(&delay)
         {
             return Err(ModelError::TrackDelayOutOfRange { value: delay });
+        }
+        if let Some(cents) = self.tune_offset_cents {
+            if !cents.is_finite() {
+                return Err(ModelError::NonFiniteValue {
+                    field: "track.tune_offset_cents",
+                    value: cents,
+                });
+            }
+            if !(-crate::music::TRACK_TUNE_MAX_ABS_CENTS..=crate::music::TRACK_TUNE_MAX_ABS_CENTS)
+                .contains(&cents)
+            {
+                return Err(ModelError::TrackTuneOutOfRange { value: cents });
+            }
         }
         for device in &self.devices {
             device.validate()?;
@@ -3744,7 +3774,7 @@ mod tests {
     ///
     /// 量什么：`crates/yeban-model/src/**/*.rs` 里**承载数值**的字段声明条数 ——
     /// 类型原文里出现 `f32`／`f64` 标识符（含 `Option<f32>`／`Vec<f32>`／`[f64; 4]`），
-    /// 或类型是数值类型别名（`type X = f32;`）。单位：条（实测 36）。
+    /// 或类型是数值类型别名（`type X = f32;`）。单位：条（实测 40）。
     const NUMERIC_FIELD_INVENTORY: &[&str] = &[
         // `ModelError` 的 `value` 是**输出载体**（错误里携带的被拒值），不是入口：
         // 它不进文档、不需要判据，故在 `NUMERIC_FIELD_POLICY` 里显式豁免。
@@ -3754,6 +3784,7 @@ mod tests {
         "src/error.rs::ModelError::PanOutOfRange.value",
         "src/error.rs::ModelError::MacroValueOutOfRange.value",
         "src/error.rs::ModelError::MacroDepthOutOfRange.value",
+        "src/error.rs::ModelError::TrackTuneOutOfRange.value",
         // 持久化实体与 Op 载荷
         "src/music.rs::MidiNote::probability",
         "src/ops.rs::Op::SetRoutingGain.old_gain_db",
@@ -3770,6 +3801,8 @@ mod tests {
         "src/ops.rs::Op::SetTempo.new_bpm",
         "src/ops.rs::Op::SetTempoPoint.new_bpm",
         "src/ops.rs::Op::SetTempoPoint.old_bpm",
+        "src/ops.rs::Op::SetTrackTune.old_tune_cents",
+        "src/ops.rs::Op::SetTrackTune.new_tune_cents",
         "src/preset.rs::PresetSend::gain_db",
         "src/project.rs::ParameterValue::value",
         "src/project.rs::MacroMapping::depth",
@@ -3784,6 +3817,7 @@ mod tests {
         "src/project.rs::ClipContent::Audio.gain_db",
         "src/project.rs::TrackV3::volume_db",
         "src/project.rs::TrackV3::pan",
+        "src/project.rs::TrackV3::tune_offset_cents",
         "src/project.rs::SceneV3::tempo",
         "src/project.rs::RoutingEdge::gain_db",
         "src/project.rs::YebanProjectV1::bpm",
@@ -3797,7 +3831,7 @@ mod tests {
     /// **逐项判定表**：清单里除 `ModelError` 输出载体之外的每一个数值字段一行。
     ///
     /// 行 = `(清单键, 判定结论, 探针)`。键集合必须**恰好**等于
-    /// `NUMERIC_FIELD_INVENTORY` 减去那 6 个输出载体（多一行、少一行都红）。
+    /// `NUMERIC_FIELD_INVENTORY` 减去那 7 个输出载体（多一行、少一行都红）。
     const NUMERIC_FIELD_POLICY: &[(&str, &str, NumericProbe)] = &[
         (
             "src/music.rs::MidiNote::probability",
@@ -3875,6 +3909,16 @@ mod tests {
             probe_set_tempo_point_old,
         ),
         (
+            "src/ops.rs::Op::SetTrackTune.old_tune_cents",
+            "旧值只做逐位比较：NaN ⇒ OpStateMismatch（None 视作 0.0 的解出值）",
+            probe_set_track_tune_old,
+        ),
+        (
+            "src/ops.rs::Op::SetTrackTune.new_tune_cents",
+            "非有限与 ±100 外都报 TrackTuneOutOfRange；区间端点接受",
+            probe_set_track_tune_new,
+        ),
+        (
             "src/preset.rs::PresetSend::gain_db",
             "非有限拒绝（Preset::validate 的 sends 校验）；有限极值接受（dB 无模型级范围）；None=单位增益",
             probe_preset_send_gain,
@@ -3933,6 +3977,11 @@ mod tests {
             "src/project.rs::TrackV3::pan",
             "非有限拒绝（track.pan）；-1.0..=1.0 外报 PanOutOfRange",
             probe_track_pan,
+        ),
+        (
+            "src/project.rs::TrackV3::tune_offset_cents",
+            "非有限报 NonFiniteValue；±100 外报 TrackTuneOutOfRange；None=无偏移",
+            probe_track_tune_offset_cents,
         ),
         (
             "src/project.rs::SceneV3::tempo",
@@ -4677,6 +4726,26 @@ mod tests {
         Ok(())
     }
 
+    fn probe_track_tune_offset_cents() -> Result<(), String> {
+        let track = |tune_offset_cents| TrackV3 {
+            tune_offset_cents,
+            ..midi_track(fixture_id(1))
+        };
+        rejects_non_finite_f64("track.tune_offset_cents", |value| {
+            track(Some(value)).validate()
+        })?;
+        for bad in [100.5_f64, -100.5, 200.0] {
+            rejects_matching("调律偏移越界", track(Some(bad)).validate(), |error| {
+                matches!(error, ModelError::TrackTuneOutOfRange { .. })
+            })?;
+        }
+        accepts("None（无偏移）", track(None).validate())?;
+        for edge in [-100.0_f64, 0.0, 100.0] {
+            accepts("闭区间调律端点", track(Some(edge)).validate())?;
+        }
+        Ok(())
+    }
+
     fn probe_scene_tempo() -> Result<(), String> {
         let scene = |tempo| SceneV3 {
             id: fixture_id(4),
@@ -5197,6 +5266,92 @@ mod tests {
                 .map_err(|error| format!("端点 {value} 必须被接受, 实际 {error:?}"))?;
             if probe.bpm != value {
                 return Err(format!("端点 {value} 必须被写进文档"));
+            }
+        }
+        Ok(())
+    }
+
+    fn probe_set_track_tune_old() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        for value in NON_FINITE_F64 {
+            let op = Op::SetTrackTune {
+                track_id: f.master,
+                old_tune_cents: value,
+                new_tune_cents: -100.0,
+            };
+            match apply_rejected(&mut doc, &op, "SetTrackTune(old_tune_cents 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("非有限旧值必须报 OpStateMismatch, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 有限但**不等于文档现值**的旧值也必须被拒（陈旧载荷；夹具轨无偏移 ⇒ 现值 0.0）。
+        let op = Op::SetTrackTune {
+            track_id: f.master,
+            old_tune_cents: 1.0,
+            new_tune_cents: -100.0,
+        };
+        match apply_rejected(&mut doc, &op, "SetTrackTune(old_tune_cents 陈旧)") {
+            Ok(ModelError::OpStateMismatch { .. }) => Ok(()),
+            Ok(other) => Err(format!("陈旧旧值必须报 OpStateMismatch, 实际 {other:?}")),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    fn probe_set_track_tune_new() -> Result<(), String> {
+        let (mut doc, f) = numeric_fixture();
+        let max = crate::music::TRACK_TUNE_MAX_ABS_CENTS;
+        for value in NON_FINITE_F64 {
+            let op = Op::SetTrackTune {
+                track_id: f.master,
+                old_tune_cents: 0.0,
+                new_tune_cents: value,
+            };
+            match apply_rejected(&mut doc, &op, "SetTrackTune(new_tune_cents 非有限)") {
+                Ok(ModelError::TrackTuneOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "非有限新值必须报 TrackTuneOutOfRange, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 区间外两侧都被拒。
+        for value in [max + 0.5, -max - 0.5, 200.0] {
+            let op = Op::SetTrackTune {
+                track_id: f.master,
+                old_tune_cents: 0.0,
+                new_tune_cents: value,
+            };
+            match apply_rejected(&mut doc, &op, "SetTrackTune(new_tune_cents 越界)") {
+                Ok(ModelError::TrackTuneOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!(
+                        "越界新值必须报 TrackTuneOutOfRange, 实际 {other:?}"
+                    ));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 区间**端点**必须被接受（不是开区间）。
+        for value in [-max, max] {
+            let (mut probe, fx) = numeric_fixture();
+            let op = Op::SetTrackTune {
+                track_id: fx.master,
+                old_tune_cents: 0.0,
+                new_tune_cents: value,
+            };
+            op.apply(&mut probe)
+                .map_err(|error| format!("端点 {value} 必须被接受, 实际 {error:?}"))?;
+            let written = probe
+                .track(&fx.master)
+                .map_err(|error| format!("端点 {value} 写后读轨失败: {error:?}"))?
+                .tune_offset_cents;
+            if written != Some(value) {
+                return Err(format!("端点 {value} 必须被写进文档, 实际 {written:?}"));
             }
         }
         Ok(())
@@ -5864,8 +6019,8 @@ mod tests {
 
     /// 逐项判定：清单里每个**入口**字段都有一行判定，且该行的探针必须真的成立。
     ///
-    /// `ModelError` 的 6 个 `value` 字段是错误输出载体（不是入口），
-    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 6 条），不能悄悄扩大。
+    /// `ModelError` 的 7 个 `value` 字段是错误输出载体（不是入口），
+    /// 因此被**显式**豁免 —— 豁免集合本身也被钉住（恰好 7 条），不能悄悄扩大。
     #[test]
     fn every_numeric_entry_point_has_a_passing_policy_probe() {
         let inventory: std::collections::BTreeSet<&str> =
@@ -5877,8 +6032,8 @@ mod tests {
             .collect();
         assert_eq!(
             outputs.len(),
-            6,
-            "输出载体豁免必须恰好 6 条（ModelError 的 value 字段）: {outputs:?}"
+            7,
+            "输出载体豁免必须恰好 7 条（ModelError 的 value 字段）: {outputs:?}"
         );
         let expected: std::collections::BTreeSet<&str> =
             inventory.difference(&outputs).copied().collect();

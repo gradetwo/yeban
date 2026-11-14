@@ -52,6 +52,17 @@ pub const MICRO_TIMING_MAX_ABS: i16 = 240;
 /// 毫秒→采样的换算口径见 `yeban-dsp` 的 `SampleDelay::millis_to_samples`。
 pub const PHASE_ALIGN_MAX_ABS_SAMPLES: i32 = 4800;
 
+/// 轨级调律偏移的合法绝对值上界（含，单位：音分）：±100 音分。
+///
+/// 与 SFZ `tune` opcode 自己的域（`-100..=100`，见 `yeban-sfz` 的
+/// `tune` 表行）**对齐**：同一量、同一窗口 ⇒ 库自带 `tune` 与轨级偏移
+/// 可以直接相加比较，不用换算。覆盖两个实测锚点：`-100`（ixox 长笛库
+/// 全键区约 −100 音分的系统性偏差，第四份报告 B1）与约 `-31.8`
+///（`432 Hz` 相对 `440 Hz`：`1200·log₂(432/440) ≈ −31.77`）。
+/// 拓宽（例如 ±1200）须另立裁决：本窗口是"一轨一库的恒定失谐"，
+/// 不是弯音（弯音另有 ±1200 的 `pitch_bend_curve` 通路）。
+pub const TRACK_TUNE_MAX_ABS_CENTS: f64 = 100.0;
+
 /// `probability` 的合法下界（含）。
 ///
 /// 与 [`PROBABILITY_MAX`] 一起是概率值域的**唯一**机械载体：模型的两处校验

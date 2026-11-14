@@ -1211,6 +1211,33 @@ pub enum Op {
         /// ±[`crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES`] 内）。
         new_delay_samples: i32,
     },
+    /// 设置音轨**调律偏移**（[`TrackV3::tune_offset_cents`]）。
+    ///
+    /// B8（第四份报告，本轮最想要）：一条轨整体偏离标准音高时在轨上一次性修正。
+    /// 与 [`Op::SetTrackDelay`] 同族（音轨级静态混音/音高标量，`old_*` / `new_*`
+    /// 载荷），但单位是**音分**（`f64`，可带小数：`432 Hz` 相对 `440 Hz` 约 `−31.77`）。
+    ///
+    /// ⚠ **前置条件**：① 音轨必须存在；② 文档**当前**的 `tune_offset_cents`
+    /// （`None` 视作 0.0）必须**逐位**等于 `old_tune_cents`（`same_f64`，与
+    /// [`Op::SetTempo`] 同口径：`−0.0` 与 `0.0` 位不同 ⇒ 陈旧载荷必被拒），否则
+    /// [`ModelError::OpStateMismatch`]；③ 新值必须有限且在
+    /// ±[`crate::music::TRACK_TUNE_MAX_ABS_CENTS`] 内，否则
+    /// [`ModelError::TrackTuneOutOfRange`]（与 [`TrackV3::validate`] 同一条口径）。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `volume_db` / `pan` / `mute` / `solo` /
+    /// `delay_samples` / `invert_polarity`。`apply` 时 `0.0` 归一化为 `None`
+    /// （缺省即无偏移，落盘不变）。⛔ 不改 SFZ region 自带的 `tune`（那是库文件值），
+    /// 两者在渲染时**相加**（轨偏移是增量）。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类），⛔ 不是 `previous_*`。
+    SetTrackTune {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前调律偏移（音分；`None` 视作 0.0 的解出值）。
+        old_tune_cents: f64,
+        /// 修改后调律偏移（音分，必须有限且在
+        /// ±[`crate::music::TRACK_TUNE_MAX_ABS_CENTS`] 内）。
+        new_tune_cents: f64,
+    },
     /// 设置音轨**极性反转**（[`TrackV3::invert_polarity`]）。
     ///
     /// 手动相位对齐第一层。与 [`Op::SetTrackMute`] 同族：
@@ -1455,6 +1482,7 @@ impl Op {
             Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
             Self::SetTrackDelay { .. } => "SetTrackDelay",
+            Self::SetTrackTune { .. } => "SetTrackTune",
             Self::SetTrackPolarity { .. } => "SetTrackPolarity",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
@@ -2208,6 +2236,31 @@ impl Op {
                 {
                     return Err(ModelError::TrackDelayOutOfRange {
                         value: *new_delay_samples,
+                    });
+                }
+                Ok(())
+            }
+            Self::SetTrackTune {
+                track_id,
+                old_tune_cents,
+                new_tune_cents,
+            } => {
+                // ⚠ `None` 视作 0.0 的解出值比较（逐位，与 `SetTempo` 同口径）⇒ 陈旧载荷必被拒。
+                if !same_f64(
+                    doc.track(track_id)?.tune_offset_cents.unwrap_or(0.0),
+                    *old_tune_cents,
+                ) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ 新值必须有限且在窗口内：与 [`TrackV3::validate`] 同一条口径
+                // （非有限与越界走同一个错误码，与 `SetTempo` 的 `BpmOutOfRange` 同口径）。
+                if !new_tune_cents.is_finite()
+                    || !(-crate::music::TRACK_TUNE_MAX_ABS_CENTS
+                        ..=crate::music::TRACK_TUNE_MAX_ABS_CENTS)
+                        .contains(new_tune_cents)
+                {
+                    return Err(ModelError::TrackTuneOutOfRange {
+                        value: *new_tune_cents,
                     });
                 }
                 Ok(())
@@ -3056,6 +3109,15 @@ impl Op {
                 old_delay_samples: *new_delay_samples,
                 new_delay_samples: *old_delay_samples,
             },
+            Self::SetTrackTune {
+                track_id,
+                old_tune_cents,
+                new_tune_cents,
+            } => Self::SetTrackTune {
+                track_id: *track_id,
+                old_tune_cents: *new_tune_cents,
+                new_tune_cents: *old_tune_cents,
+            },
             Self::SetTrackPolarity {
                 track_id,
                 old_invert,
@@ -3596,6 +3658,20 @@ impl Op {
                     None
                 } else {
                     Some(*new_delay_samples)
+                };
+                Ok(())
+            }
+            // 只写那**一个**调律偏移字段：⛔ 不碰 `volume_db` / `pan` / `mute` / `solo` /
+            // `delay_samples` / `invert_polarity`。0.0 归一化为 `None`（缺省即无偏移，落盘不变）。
+            Self::SetTrackTune {
+                track_id,
+                new_tune_cents,
+                ..
+            } => {
+                doc.track_mut(track_id)?.tune_offset_cents = if *new_tune_cents == 0.0 {
+                    None
+                } else {
+                    Some(*new_tune_cents)
                 };
                 Ok(())
             }
@@ -4556,6 +4632,12 @@ mod tests {
                 // 48 kHz 下 5 ms。
                 new_delay_samples: 240,
             },
+            Op::SetTrackTune {
+                track_id: f.lead,
+                old_tune_cents: 0.0,
+                // ixox 长笛库全键区约 −100 音分的系统性偏差（第四份报告 B1）。
+                new_tune_cents: -100.0,
+            },
             Op::SetTrackPolarity {
                 track_id: f.lead,
                 old_invert: false,
@@ -4887,6 +4969,7 @@ mod tests {
             "SetTrackMute",
             "SetTrackSolo",
             "SetTrackDelay",
+            "SetTrackTune",
             "SetTrackPolarity",
             "SetMacro",
             "SetAutomationPoint",
@@ -5494,8 +5577,8 @@ mod tests {
         assert_eq!(noop_doc, fixture_document(), "无操作不得改变文档的任何一位");
     }
 
-    /// 判据（手动相位对齐第一层）：`SetTrackDelay` / `SetTrackPolarity` /
-    /// `SetClipPlacementOffset` 的四条硬性质 —— **可逆** / **前置条件走既有错误码** /
+    /// 判据（手动相位对齐第一层 ＋ 轨级调律 B8）：`SetTrackDelay` / `SetTrackPolarity` /
+    /// `SetClipPlacementOffset` / `SetTrackTune` 的四条硬性质 —— **可逆** / **前置条件走既有错误码** /
     /// **范围越界走模型校验口径** / **0 与 false 归一化为 `None`**。
     ///
     /// 怎么变红：
@@ -5540,6 +5623,24 @@ mod tests {
             .apply(&mut doc)
             .expect("逆应用");
         assert_eq!(doc, before, "延时的逆必须逐位还原（含归一化为 None）");
+
+        // B8：调律偏移同样可逆，且小数（432 Hz 约 −31.77 音分）逐位还原。
+        let tune = Op::SetTrackTune {
+            track_id: f.lead,
+            old_tune_cents: 0.0,
+            new_tune_cents: -31.766_068,
+        };
+        tune.apply(&mut doc).expect("调律偏移必须可应用");
+        assert_eq!(
+            doc.track(&f.lead).expect("lead").tune_offset_cents,
+            Some(-31.766_068),
+            "必须真的写成 −31.766068"
+        );
+        tune.invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("逆应用");
+        assert_eq!(doc, before, "调律偏移的逆必须逐位还原（含归一化为 None）");
 
         let polarity = Op::SetTrackPolarity {
             track_id: f.lead,
@@ -5597,6 +5698,16 @@ mod tests {
             "文档现值是 0 而载荷说 240 ⇒ 必须拒绝"
         );
         assert_eq!(
+            Op::SetTrackTune {
+                track_id: f.lead,
+                old_tune_cents: -31.766_068,
+                new_tune_cents: 0.0,
+            }
+            .apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "SetTrackTune" }),
+            "文档现值是 0.0 而载荷说 −31.766068 ⇒ 必须拒绝"
+        );
+        assert_eq!(
             Op::SetTrackPolarity {
                 track_id: f.lead,
                 old_invert: true,
@@ -5632,6 +5743,30 @@ mod tests {
             Err(ModelError::TrackDelayOutOfRange {
                 value: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES + 1
             })
+        );
+        assert_eq!(
+            Op::SetTrackTune {
+                track_id: f.lead,
+                old_tune_cents: 0.0,
+                new_tune_cents: crate::music::TRACK_TUNE_MAX_ABS_CENTS + 0.5,
+            }
+            .apply(&mut doc),
+            Err(ModelError::TrackTuneOutOfRange {
+                value: crate::music::TRACK_TUNE_MAX_ABS_CENTS + 0.5
+            })
+        );
+        // ⚠ NaN 不能用 `assert_eq!` 比（`NaN != NaN`）：只认变体。
+        assert!(
+            matches!(
+                Op::SetTrackTune {
+                    track_id: f.lead,
+                    old_tune_cents: 0.0,
+                    new_tune_cents: f64::NAN,
+                }
+                .apply(&mut doc),
+                Err(ModelError::TrackTuneOutOfRange { .. })
+            ),
+            "非有限调律偏移必须拒绝"
         );
         assert_eq!(
             Op::SetClipPlacementOffset {
@@ -5670,6 +5805,13 @@ mod tests {
         };
         assert_eq!(noop.apply(&mut doc), Ok(()), "无操作必须被放行");
         assert_eq!(doc, before, "无操作不得改变文档的任何一位");
+        let tune_noop = Op::SetTrackTune {
+            track_id: f.lead,
+            old_tune_cents: 0.0,
+            new_tune_cents: 0.0,
+        };
+        assert_eq!(tune_noop.apply(&mut doc), Ok(()), "调律无操作必须被放行");
+        assert_eq!(doc, before, "调律无操作不得改变文档的任何一位");
     }
 
     /// 判据：轨延时与片段偏移的范围校验（`TrackV3::validate` /
@@ -5689,6 +5831,27 @@ mod tests {
             Err(ModelError::TrackDelayOutOfRange {
                 value: crate::music::PHASE_ALIGN_MAX_ABS_SAMPLES + 1
             })
+        );
+
+        // B8：调律偏移的边界值（±100 音分放行，之外拒绝；非有限拒绝）。
+        let mut tuned = TrackV3 {
+            tune_offset_cents: Some(crate::music::TRACK_TUNE_MAX_ABS_CENTS),
+            ..Default::default()
+        };
+        assert!(tuned.validate().is_ok(), "边界值必须合法");
+        tuned.tune_offset_cents = Some(-crate::music::TRACK_TUNE_MAX_ABS_CENTS);
+        assert!(tuned.validate().is_ok(), "负边界值必须合法");
+        tuned.tune_offset_cents = Some(crate::music::TRACK_TUNE_MAX_ABS_CENTS + 0.5);
+        assert_eq!(
+            tuned.validate(),
+            Err(ModelError::TrackTuneOutOfRange {
+                value: crate::music::TRACK_TUNE_MAX_ABS_CENTS + 0.5
+            })
+        );
+        tuned.tune_offset_cents = Some(f64::NAN);
+        assert!(
+            matches!(tuned.validate(), Err(ModelError::NonFiniteValue { .. })),
+            "非有限调律偏移必须拒绝"
         );
 
         let mut placement = ClipPlacement {
@@ -10650,7 +10813,7 @@ mod tests {
     #[test]
     fn op_write_differential_root_keys_match_frozen_table() {
         /// 冻结读数：变体名 → 它改动的**顶层字段**（每行右侧已按字典序）。
-        const FROZEN: [(&str, &[&str]); 62] = [
+        const FROZEN: [(&str, &[&str]); 63] = [
             ("AddClip", &["clip_pool"]),
             ("AddClipPlacement", &["tracks"]),
             ("AddNote", &["clip_pool"]),
@@ -10712,6 +10875,7 @@ mod tests {
             ("SetTrackSampler", &["tracks"]),
             ("SetTrackPreset", &["tracks"]),
             ("SetTrackSolo", &["tracks"]),
+            ("SetTrackTune", &["tracks"]),
             ("SetTransportConfig", &["transport"]),
         ];
         let rows = op_write_differential();
@@ -10922,7 +11086,7 @@ mod tests {
         ///
         /// 空表 `&[]` 的 14 行⛔ 表示"这个变体什么都不改"，而表示"它改的是**一条容器记录**
         /// （新增／删除），末端段是那条记录的身份"—— 上面第 2 条断言就是用来证明这一点的。
-        const FROZEN_LEAVES: [(&str, &[&str]); 62] = [
+        const FROZEN_LEAVES: [(&str, &[&str]); 63] = [
             ("AddClip", &[]),
             ("AddClipPlacement", &[]),
             ("AddNote", &[]),
@@ -10987,6 +11151,7 @@ mod tests {
             ("SetTrackSampler", &["sampler"]),
             ("SetTrackPreset", &["preset"]),
             ("SetTrackSolo", &["solo"]),
+            ("SetTrackTune", &["tune_offset_cents"]),
             (
                 "SetTransportConfig",
                 &["count_in_bars", "launch_quantization", "metronome_enabled"],

@@ -1808,7 +1808,8 @@ use yeban_sfz::instrument::{
 // [`volume_ratio_with_baked`]（同样是 `yeban-sfz` 的**同一份**实现）。
 use yeban_sfz::modulation::{
     AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
-    cc_value_with_baked_and_vel2, tune_ratio_with_baked, volume_ratio_with_baked,
+    cc_value_with_baked_and_vel2, tune_ratio_from_cents, tune_ratio_with_baked,
+    volume_ratio_with_baked,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
@@ -2113,6 +2114,8 @@ struct NoteInputs<'a> {
     held_frames: Option<u64>,
     /// 轮替序号（第几次触发同一音高）；`None` ⇒ 不启用互斥。
     occurrence: Option<u32>,
+    /// 轨级调律偏移（音分；B8）。`0.0` ⇒ 乘子恰 `1.0` ⇒ 速率逐位不变。
+    tune_cents: f32,
 }
 
 impl SfzInstrument {
@@ -2152,7 +2155,7 @@ impl SfzInstrument {
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
-        self.render_note_into_with_cc(source, note, velocity, None, out, engine_hz)
+        self.render_note_into_with_cc(source, note, velocity, None, 0.0, out, engine_hz)
     }
 
     /// ⭐ **离线渲染 ＋ CC 探针**（任务单 `#104`）：与 [`Self::render_note_into`]
@@ -2161,6 +2164,8 @@ impl SfzInstrument {
     /// * `cc == None` ⇒ 与 [`Self::render_note_into`] **逐位相同**
     ///   （既有的 `loccN`/`hiccN` 门控走"未提供状态 ⇒ 不匹配"的严格策略，
     ///   `ampeg_*` 走基准值）；
+    /// * `tune_cents` —— B8 轨级调律偏移（音分；`0.0` ⇒ 乘子恰 `1.0` ⇒
+    ///   与 [`Self::render_note_into`] **逐位相同**）。
     /// * `cc == Some(probe)` ⇒ ① 探针同时喂给**既有**的
     ///   [`RegionQuery::with_cc`]（CC 门控生效）；② `ampeg_*` 按
     ///   `base + Σ delta × curve(cc)` 求值（公式与逐字出处见
@@ -2178,12 +2183,18 @@ impl SfzInstrument {
     ///
     /// # Errors
     /// 同 [`Self::render_note_into`]。
+    // ⚠ `clippy::too_many_arguments`：这 8 个是**互不相关的输入维度**（样本 / 音高 /
+    //    力度 / CC 探针 / 轨调律偏移 / 输出缓冲 / 采样率），合并成结构体只会让调用点
+    //    写样板。内层 [`Self::render_note_with`] 收的就是结构体（[`NoteInputs`]）——
+    //    本函数是**公开便利入口**，不是实现体。B8 加 `tune_cents` 后由 7 个涨到 8 个。
+    #[allow(clippy::too_many_arguments)]
     pub fn render_note_into_with_cc(
         &self,
         source: &InMemorySample,
         note: u8,
         velocity: u8,
         cc: Option<&dyn Fn(u8) -> u8>,
+        tune_cents: f32,
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
@@ -2196,6 +2207,7 @@ impl SfzInstrument {
                 cc,
                 held_frames: None,
                 occurrence: None,
+                tune_cents,
             },
             out,
             engine_hz,
@@ -2254,6 +2266,8 @@ impl SfzInstrument {
                 cc: None,
                 held_frames,
                 occurrence,
+                // ⚠ 本入口没有轨上下文（裸乐器试听）⇒ 调律偏移恒 0（逐位不变）。
+                tune_cents: 0.0,
             },
             out,
             engine_hz,
@@ -2275,6 +2289,7 @@ impl SfzInstrument {
             cc,
             held_frames,
             occurrence,
+            tune_cents,
         } = inp;
         let query = RegionQuery::new(note, velocity);
         // ⭐ 探针同时注入**既有**的 CC 门控（`loccN`/`hiccN`）；`None` ⇒ 严格策略不变。
@@ -2371,8 +2386,11 @@ impl SfzInstrument {
                 // 再乘上 `yeban-sfz` 的 [`tune_ratio_with_baked`]（**同一份**换算，
                 // 与摊平表 `render_block_into_with_cc`、实时 `slot_readings` 共用）。
                 // ⚠ `cc == None` ⇒ 乘子恰 `1.0` ⇒ `rate × 1.0` 与接线前**逐位相同**。
+                // ⭐⭐ B8 轨级调律：再乘轨偏移的同一份换算
+                // [`tune_ratio_from_cents`]（`0.0` ⇒ 恰 `1.0` ⇒ 缺省轨逐位不变）。
                 let rate = region.playback_rate(note, rates)
-                    * tune_ratio_with_baked(baked.as_deref().unwrap_or(&[]), cc);
+                    * tune_ratio_with_baked(baked.as_deref().unwrap_or(&[]), cc)
+                    * tune_ratio_from_cents(tune_cents);
                 let amplitude_gain = cc_value_with_baked_and_vel2(
                     region.amplitude,
                     ModTarget::Amplitude,
@@ -4953,7 +4971,7 @@ impl PreparedSfz {
     /// 在 `min(span.end, PCM 长度)` 停（[`PreparedRegion::span_bounds`] ⇒ [`reduce_span`]）
     /// ⇒ 与离线侧、与实时声部的**逐样本最大绝对差为 0**，且覆盖**整段**（含显式 `end`）。
     pub fn render_block_into(&self, note: u8, velocity: u8, out: &mut [f32]) -> usize {
-        self.render_block_into_with_cc(note, velocity, None, out)
+        self.render_block_into_with_cc(note, velocity, None, 0.0, out)
     }
 
     /// ⭐ **回调侧渲染 ＋ CC 探针**（任务单 `#104`）：与 [`Self::render_block_into`]
@@ -4995,6 +5013,7 @@ impl PreparedSfz {
         note: u8,
         velocity: u8,
         cc: Option<&dyn Fn(u8) -> u8>,
+        tune_cents: f32,
         out: &mut [f32],
     ) -> usize {
         let n = note as usize;
@@ -5025,7 +5044,10 @@ impl PreparedSfz {
             // （与实时 `slot_readings`、离线 `render_note_into_with_cc` **同一份**换算）。
             // ⚠ `cc == None` ⇒ 乘子恰 `1.0` ⇒ `rate` 与接线前**逐位相同**。
             // ⚠ 非法速率（乘子上溢/下溢）**沿用下面那条既有守卫**（⛔ 不加第二条谓词）。
-            let rate = region.rate_per_note[n] * region.tune_ratio_with_cc(cc);
+            // ⭐⭐ B8 轨级调律：再乘轨偏移的同一份换算（`0.0` ⇒ 恰 `1.0` ⇒ 缺省轨逐位不变）。
+            let rate = region.rate_per_note[n]
+                * region.tune_ratio_with_cc(cc)
+                * tune_ratio_from_cents(tune_cents);
             // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
             if !rate_is_usable(rate) || pcm.is_empty() {
                 continue;
@@ -6512,6 +6534,7 @@ impl SfzVoicePool {
             track_gain,
             cc,
             NO_PITCH_SHAPE,
+            0.0,
         )
     }
 
@@ -6528,8 +6551,13 @@ impl SfzVoicePool {
     /// 其余语义（区域选择、关断、窃取、轮替计数）与 [`Self::trigger_note`]
     /// 的文档**逐字共用** —— 本函数就是它的函数体，⛔ 没有第二份触发实现。
     ///
-    /// ⚠ 参数 9 个（`trigger_note` 的 7 个 ＋ 起始帧/形状下标两件调度事实）：
-    /// 拆结构体只会把触发 API 劈成两种形状，故按仓内惯例就地 `allow`。
+    /// ⚠ 参数 10 个（`trigger_note` 的 7 个 ＋ 起始帧/形状下标两件调度事实 ＋
+    /// 轨调律偏移 1 个）：拆结构体只会把触发 API 劈成两种形状，故按仓内惯例就地 `allow`。
+    ///
+    /// ⚠ B8：末参 `tune_cents` 是轨级调律偏移（音分；`0.0` ⇒ 乘子恰 `1.0` ⇒
+    /// 触发出的声部速率与接线前**逐位相同**）。它只乘触发期抄下的基准步进
+    /// （[`PreparedRegion::rate_per_note`]），⛔ 不进 `SfzVoice` 的字段
+    /// （声部仍 **40 B**，判据 `S9`）。
     #[allow(clippy::too_many_arguments)]
     pub fn trigger_note_with_pitch(
         &mut self,
@@ -6541,6 +6569,7 @@ impl SfzVoicePool {
         track_gain: f32,
         cc: Option<&dyn Fn(u8) -> u8>,
         pitch_shape: u16,
+        tune_cents: f32,
     ) -> usize {
         let n = note as usize;
         // ⭐ **portamento 的 key delta**（CC140 的引擎侧来源）：当前音 − 上一个触发音。
@@ -6656,7 +6685,9 @@ impl SfzVoicePool {
                 continue;
             };
             let pcm_len = sample.pcm().len();
-            let rate = region.rate_per_note[n];
+            // ⭐⭐ B8 轨级调律：触发期把轨偏移乘进基准步进（同一份换算；
+            // `0.0` ⇒ 恰 `1.0` ⇒ 速率与接线前逐位相同）。乘子恒正 ⇒ 不改行进方向。
+            let rate = region.rate_per_note[n] * tune_ratio_from_cents(tune_cents);
             // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
             if !rate_is_usable(rate) || pcm_len == 0 {
                 continue;

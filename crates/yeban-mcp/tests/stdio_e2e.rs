@@ -611,7 +611,7 @@ fn a_looping_container_project_renders_n_times_over_stdio() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **19 个 `ops[].kind` 逐个走一次真 `tools/call`**（真进程 / 真 stdio 批处理）。
+/// **23 个 `ops[].kind` 逐个走一次真 `tools/call`**（真进程 / 真 stdio 批处理）。
 ///
 /// 单位 = 一次 `tools/call` 的**响应对象**（以及 [`session`] 已经断言的**子进程退出码 0**）。
 /// 判定的不是"这次调用成功"，而是"它**走到了领域实现**"：
@@ -621,9 +621,9 @@ fn a_looping_container_project_renders_n_times_over_stdio() {
 ///   （`-32603`）/ 协议级（`-32601` / `-32602`）出口 ⇒ 本判据红；
 /// * 带内失败的码必须在 `ErrorCode::SCHEMA_CONTRACT` 里（不发明新码）。
 ///
-/// 为什么用**两段会话**：批处理没有交互往返，而 22 个形态里有 13 个需要夹具里**真实的
+/// 为什么用**两段会话**：批处理没有交互往返，而 23 个形态里有 13 个需要夹具里**真实的
 /// 身份**（音符 / 设备 / 路由边 / 场景 / 段落 / 池条目 / 摆放）。第一段只用三条请求把这些身份
-/// 读出来，第二段才发 22 条 —— 两段都是真进程。
+/// 读出来，第二段才发 23 条 —— 两段都是真进程。
 ///
 /// 注入（实测红）：把 `parse_one` 的任一条臂删掉 ⇒ 那一个 `kind` 会得到「未知 `kind`」
 /// 的带内错（仍算可达）但**提案数量**少一条 ⇒ 末尾的"成功 ≥ N"下界变红；
@@ -794,6 +794,10 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
             serde_json::json!({"kind": "setTrackDelay", "delaySamples": 240}),
         ),
         (
+            "setTrackTune",
+            serde_json::json!({"kind": "setTrackTune", "tuneCents": -100.0}),
+        ),
+        (
             "setClipPlacementOffset",
             serde_json::json!({"kind": "setClipPlacementOffset", "trackId": lead,
             "placementId": placement, "offsetSamples": 48}),
@@ -834,7 +838,7 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
             "scene": {"sceneId": scene, "tempo": 128.0}}),
         ),
     ];
-    assert_eq!(ops.len(), 22, "目录是 22 个 kind");
+    assert_eq!(ops.len(), 23, "目录是 23 个 kind");
 
     let mut requests = vec![
         req(1, "initialize", serde_json::json!({})),
@@ -858,7 +862,7 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
         ));
     }
     let res = session(&requests);
-    assert_eq!(res.len(), 24, "1 个握手 + 1 次打开 + 22 次调用: {res:?}");
+    assert_eq!(res.len(), 25, "1 个握手 + 1 次打开 + 23 次调用: {res:?}");
 
     let mut reached = 0usize;
     let mut succeeded = 0usize;
@@ -891,9 +895,9 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
         }
         reached += 1;
     }
-    assert_eq!(reached, 22, "22 个形态都必须走到领域实现");
+    assert_eq!(reached, 23, "23 个形态都必须走到领域实现");
     // 下界是**非平凡**的（不是 0）：夹具必须让大多数形态真的建成提案，
-    // 否则"22 个都可达"可以靠"全都报带内错"骗过去。
+    // 否则"23 个都可达"可以靠"全都报带内错"骗过去。
     let refusals: Vec<String> = ops
         .iter()
         .enumerate()
@@ -901,8 +905,8 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
         .map(|(_, (kind, _))| (*kind).to_owned())
         .collect();
     assert_eq!(
-        succeeded, 20,
-        "20 / 22 真的建成提案；另外 2 条是**带内**领域拒绝（不是实现级出口）：\
+        succeeded, 21,
+        "21 / 23 真的建成提案；另外 2 条是**带内**领域拒绝（不是实现级出口）：\
          `removeClip`（池条目仍被摆放引用）与 `removeRoutingNode`（节点仍被边引用）—— \
          模型的前置条件，判据 `the_declared...` 之外由它们各自的用例覆盖。\
          实际 {succeeded}; 被拒的形态 = {refusals:?}"
@@ -914,13 +918,13 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
     );
 }
 
-/// **方向 1：22 个 `kind` 的响亮失败路径**（真进程 / 真 stdio）。
+/// **方向 1：23 个 `kind` 的响亮失败路径**（真进程 / 真 stdio）。
 ///
 /// 上一条判据证明"每个 `kind` 都走得到领域实现"（正向）；本条证明**反向**也走得到：
 /// 每个 `kind` 至少喂一条**缺字段 / 类型错 / 身份不存在**的载荷，并断言
 /// 1. 顶层**不得**出现 JSON-RPC `error`（失败必须是**带内**的）；
 /// 2. 失败码**逐行等于登记值**，且都在 `ErrorCode::SCHEMA_CONTRACT` 里；
-/// 3. 22 次被拒之后，工程的 JSON 与调用**之前**逐字节相同（被拒的调用不留痕）。
+/// 3. 23 次被拒之后，工程的 JSON 与调用**之前**逐字节相同（被拒的调用不留痕）。
 ///
 /// 单位 = 一次 `tools/call` 的响应对象（子进程退出码由 `session` 断言为 0）。
 ///
@@ -1072,6 +1076,11 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
             "INVALID_PARAMETER_RANGE",
         ),
         (
+            "setTrackTune",
+            serde_json::json!({"tuneCents": "high"}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
             "setClipPlacementOffset",
             serde_json::json!({"trackId": lead, "placementId": placement,
             "offsetSamples": "48"}),
@@ -1119,7 +1128,7 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
             "INVALID_PARAMETER_RANGE",
         ),
     ];
-    assert_eq!(cases.len(), 22, "22 个 kind 各一条失败路径");
+    assert_eq!(cases.len(), 23, "23 个 kind 各一条失败路径");
 
     let mut requests = vec![
         req(1, "initialize", serde_json::json!({})),
@@ -1158,8 +1167,8 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
     let res = session(&requests);
     assert_eq!(
         res.len(),
-        25,
-        "1 握手 + 1 打开 + 22 次调用 + 1 次回读: {res:?}"
+        26,
+        "1 握手 + 1 打开 + 23 次调用 + 1 次回读: {res:?}"
     );
 
     for (index, (kind, _payload, expected)) in cases.iter().enumerate() {
@@ -1186,8 +1195,8 @@ fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
             "带内失败必须给出结构化的 `error.data`（哪怕是 null）"
         );
     }
-    // 22 次被拒之后，工程一个字节都没变。
-    let after = serde_json::to_string(&res[24]["result"]["data"]["project"]).expect("JSON");
+    // 23 次被拒之后，工程一个字节都没变。
+    let after = serde_json::to_string(&res[25]["result"]["data"]["project"]).expect("JSON");
     assert_eq!(after, before, "被拒的调用不得改动工程");
 }
 

@@ -152,6 +152,7 @@ use yeban_dsp::polysynth::{
 // 引擎的判据不必各自写一遍"没有形状"的魔数。
 pub use yeban_dsp::polysynth::NO_PITCH_SHAPE;
 use yeban_model::{CurveType, DeviceDefinition, DeviceKind, EntityId, PPQ};
+use yeban_sfz::modulation::tune_ratio_from_cents;
 
 use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumsParams};
 use crate::sfz_instrument::{PreparedSfz, SfzVoicePool};
@@ -1050,6 +1051,13 @@ pub struct NoteSchedule {
     /// "没有轨参数"就是"不衰减"。⚠ 产品路径的值由
     /// [`crate::snapshot::project_schedules`] 写入（与 `note.gain` 里那一份同源）。
     track_gain: f32,
+    /// ⭐ B8 轨级调律偏移（音分；缺省 `0.0` ⇒ 乘子恰 `1.0`）。
+    ///
+    /// 默认 **`0.0`（无偏移）** ⇒ 用手工构造的调度表（测试夹具、离线拼接）驱动时，
+    /// "没有轨参数"就是"不移调"。⚠ 产品路径的值由
+    /// [`crate::snapshot::project_schedules`] 写入（与 `note.freq_hz` 里那一份同源：
+    /// 同一次投影、**同一个**音分值 ⇒ 复音与 SFZ 两条路听到的偏移一致）。
+    tune_cents: f32,
     /// ⭐ **音高形状旁表**（`#311b`）：`ScheduledNote::pitch_shape` 是它的下标。
     ///
     /// 空 = 本轨没有一个音符带弯音/滑音 ⇒ 引擎传 `None` 探针 ⇒ 器件走**今天这条**
@@ -1059,18 +1067,19 @@ pub struct NoteSchedule {
 }
 
 impl Default for NoteSchedule {
-    /// 空表 ＋ **单位轨增益**（`1.0`，⛔ 不是 `0.0`：默认不是静音）。
+    /// 空表 ＋ **单位轨增益**（`1.0`，⛔ 不是 `0.0`：默认不是静音）＋ **零调律偏移**。
     fn default() -> Self {
         Self {
             notes: Vec::new(),
             track_gain: 1.0,
+            tune_cents: 0.0,
             pitch_shapes: Vec::new(),
         }
     }
 }
 
 impl NoteSchedule {
-    /// 由**已排序**的音符序列构造（轨增益门 ＝ **单位增益** `1.0`）。
+    /// 由**已排序**的音符序列构造（轨增益门 ＝ **单位增益** `1.0`；调律偏移 ＝ `0.0`）。
     ///
     /// `notes` 必须按 `start_sample` 升序；[`crate::snapshot`] 的投影负责排序
     /// （实时侧的游标只向前推进，乱序会让音符被永久跳过）。
@@ -1079,6 +1088,7 @@ impl NoteSchedule {
         Self {
             notes,
             track_gain: 1.0,
+            tune_cents: 0.0,
             pitch_shapes: Vec::new(),
         }
     }
@@ -1127,6 +1137,27 @@ impl NoteSchedule {
     #[must_use]
     pub const fn track_gain(&self) -> f32 {
         self.track_gain
+    }
+
+    /// ⭐ 写入本轨的**调律偏移**（构造期；见 [`Self::tune_cents`]）。
+    #[must_use]
+    pub const fn with_tune_cents(mut self, tune_cents: f32) -> Self {
+        self.tune_cents = tune_cents;
+        self
+    }
+
+    /// ⭐ 本轨的**调律偏移**（音分；`0.0` ＝ 无偏移）。
+    #[must_use]
+    pub const fn tune_cents(&self) -> f32 {
+        self.tune_cents
+    }
+
+    /// ⭐ 本轨调律偏移的**音高比乘子**（与 `note.freq_hz` 里那一份同一份换算）。
+    ///
+    /// `0.0` ⇒ 恰 `1.0`。触发期每轨算**一次**（调用方缓存），⛔ 不逐音符重算。
+    #[must_use]
+    pub fn tune_ratio(&self) -> f32 {
+        tune_ratio_from_cents(self.tune_cents)
     }
 
     /// 音符条数。
@@ -2455,6 +2486,7 @@ impl SynthEngine {
                                 schedule.track_gain(),
                                 cc,
                                 note.pitch_shape,
+                                schedule.tune_cents(),
                             ) > 0
                         {
                             *notes_triggered = notes_triggered.saturating_add(1);
@@ -2533,6 +2565,7 @@ impl SynthEngine {
                                     schedule.track_gain(),
                                     cc,
                                     note.pitch_shape,
+                                    schedule.tune_cents(),
                                 ) > 0
                                 {
                                     *notes_triggered = notes_triggered.saturating_add(1);

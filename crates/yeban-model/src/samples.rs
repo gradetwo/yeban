@@ -827,6 +827,7 @@ pub fn demo_project() -> YebanProjectV1 {
                 solo_safe: false,
                 delay_samples: None,
                 invert_polarity: None,
+                tune_offset_cents: None,
                 folder_id: None,
                 color: track_colors[slot].map(str::to_owned),
                 sampler: None,

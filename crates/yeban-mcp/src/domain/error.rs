@@ -164,6 +164,8 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         // 手动相位对齐第一层：轨延时与片段 offset 越界，与 `micro_timing` 同组。
         | ModelError::TrackDelayOutOfRange { .. }
         | ModelError::ClipOffsetOutOfRange { .. }
+        // B8 轨级调律偏移越界：与轨延时同组（同是音轨级标量）。
+        | ModelError::TrackTuneOutOfRange { .. }
         | ModelError::ZeroDuration
         | ModelError::BpmOutOfRange { .. }
         | ModelError::TimeSignatureNumeratorOutOfRange { .. }

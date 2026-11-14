@@ -1291,6 +1291,22 @@ pub const SET_TRACK_DELAY_FIELDS: [&str; 4] = [
     SET_TRACK_DELAY_MS_FIELD,
 ];
 
+/// `ops[].kind` 的**轨调律偏移**形态名（写 [`Op::SetTrackTune`]）。
+///
+/// B8（第四份报告，本轮最想要）。载荷是 `tuneCents`（音分，`f64`，必填）：
+/// 恒定偏移，全轨音符共用；值域 ±100（与 SFZ `tune` opcode 域对齐；
+/// 覆盖 −100 与约 −31.8 两个实测锚点）。
+pub const SET_TRACK_TUNE_KIND: &str = "setTrackTune";
+
+/// `setTrackTune` 的**音分**字段名（`ops[].tuneCents`，必填，有限音分）。
+pub const SET_TRACK_TUNE_CENTS_FIELD: &str = "tuneCents";
+
+/// `setTrackTune` 允许出现的**全部**键（判别键 + 可选的目标音轨 + 音分字段）。
+///
+/// `trackId` 是**可选**的：省略时目标音轨就是工具顶层的 `trackId`（与开关形态同口径）。
+pub const SET_TRACK_TUNE_FIELDS: [&str; 3] =
+    ["kind", TRACK_FLAG_TRACK_FIELD, SET_TRACK_TUNE_CENTS_FIELD];
+
 /// `ops[].kind` 的**走带配置**形态名（写 [`Op::SetTransportConfig`]）。
 ///
 /// 与模型 `Op` 变体名同词（`SetTransportConfig` 的小驼峰），与 [`SET_TRACK_MUTE_KIND`]
@@ -1380,6 +1396,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_TRACK_SOLO_KIND,
     SET_TRACK_POLARITY_KIND,
     SET_TRACK_DELAY_KIND,
+    SET_TRACK_TUNE_KIND,
     SET_TRANSPORT_CONFIG_KIND,
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
@@ -1421,7 +1438,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 59 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 60 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
@@ -3653,6 +3670,22 @@ pub enum NoteOp {
         /// 目标延时（毫秒；与 `delay_samples` 二选一，恰好一个为 `Some`）。
         delay_ms: Option<f64>,
     },
+    /// 写一条音轨的**调律偏移**（[`Op::SetTrackTune`]，单位：音分）。
+    ///
+    /// B8。与 [`Self::SetTrackDelay`] 同族（音轨级、目标缺省由顶层
+    /// `trackId` 给出，`ops[].trackId` 可逐条覆盖），载荷是一个 `f64` 音分值
+    /// （必填，有限且在 ±100 内；越界在 [`compile`] 里提前拒，
+    /// 与 `SetTrackDelay` / `SetTempo` 的"提前拒"同口径）。
+    /// 撤销载荷 `old_tune_cents` 由 [`compile`] 从**当前文档**读（`None` 视作 0.0），
+    /// 不是调用方声明。
+    SetTrackTune {
+        /// 可选的**逐条目标音轨**（`ops[].trackId`）；`None` = 回退到顶层 `trackId`。
+        track_id: Option<EntityId>,
+        /// 修改前调律偏移（音分；占位，真值由 [`compile`] 从当前文档读）。
+        old_tune_cents: f64,
+        /// 修改后调律偏移（音分；必填，有限且在 ±100 内）。
+        new_tune_cents: f64,
+    },
     /// 设置**走带配置**（[`Op::SetTransportConfig`]）。
     ///
     /// 与 [`Self::SetTrackFlag`] 同族（不读不写音符），但载荷是**三个字段的整体**
@@ -4484,6 +4517,7 @@ impl NoteOp {
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetTrackDelay { .. } => SET_TRACK_DELAY_KIND,
+            Self::SetTrackTune { .. } => SET_TRACK_TUNE_KIND,
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
@@ -4643,11 +4677,11 @@ impl NoteOp {
 
     /// 该形态**本条**是否自带了目标音轨（`ops[].trackId` 给了值）。
     ///
-    /// 只对三个音轨属性形态为真（[`Self::SetParam`] / [`Self::SetTrackFlag`] /
-    /// [`Self::SetTrackDelay`]），且**仅当**
+    /// 只对四个音轨属性形态为真（[`Self::SetParam`] / [`Self::SetTrackFlag`] /
+    /// [`Self::SetTrackDelay`] / [`Self::SetTrackTune`]），且**仅当**
     /// `track_id` 为 `Some` —— 省略时它们照旧回退到顶层 `trackId`（⛔ 不是自带寻址）。
     /// 与 [`Self::is_self_addressed`] 的同类形态（`removeTrack` / 设备）不同：那几个**永远**
-    /// 自带 `trackId`，这三个是**调用方选择**是否逐条点名。
+    /// 自带 `trackId`，这四个是**调用方选择**是否逐条点名。
     #[must_use]
     pub const fn addresses_own_track(&self) -> bool {
         matches!(
@@ -4659,6 +4693,9 @@ impl NoteOp {
                 track_id: Some(_),
                 ..
             } | Self::SetTrackDelay {
+                track_id: Some(_),
+                ..
+            } | Self::SetTrackTune {
                 track_id: Some(_),
                 ..
             }
@@ -5411,6 +5448,15 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 delay_ms,
             })
         }
+        SET_TRACK_TUNE_KIND => {
+            reject_set_track_tune_fields(object)?;
+            Ok(NoteOp::SetTrackTune {
+                track_id: read_optional_id(object, TRACK_FLAG_TRACK_FIELD)?,
+                // ⚠ `old_tune_cents` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
+                old_tune_cents: 0.0,
+                new_tune_cents: read_required_finite_f64(object, SET_TRACK_TUNE_CENTS_FIELD)?,
+            })
+        }
         SET_TEMPO_KIND => {
             reject_set_tempo_fields(object)?;
             Ok(NoteOp::SetTempo {
@@ -6109,6 +6155,16 @@ fn reject_set_track_delay_fields(object: &Map<String, Value>) -> Result<(), Faul
         &SET_TRACK_DELAY_FIELDS,
         SET_TRACK_DELAY_KIND,
         "unknownSetTrackDelayField",
+    )
+}
+
+/// 拒绝 `setTrackTune` 里 [`SET_TRACK_TUNE_FIELDS`] 之外的键。
+fn reject_set_track_tune_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TRACK_TUNE_FIELDS,
+        SET_TRACK_TUNE_KIND,
+        "unknownSetTrackTuneField",
     )
 }
 
@@ -10242,6 +10298,40 @@ pub fn compile(
                     new_delay_samples,
                 }
             }
+            NoteOp::SetTrackTune {
+                track_id: op_track_id,
+                new_tune_cents,
+                ..
+            } => {
+                // 目标音轨解析与 `SetTrackDelay` 同一条（逐条 `trackId` 优先于顶层）。
+                let target_track = op_track_id.unwrap_or(*track_id);
+                let current = match op_track_id {
+                    Some(_) => project
+                        .track(&target_track)
+                        .map_err(|error| from_model("音轨查找", &error))?,
+                    None => track.expect("批内有回退形态时必查顶层音轨"),
+                };
+                // ⚠ 区间在**这里提前拒**（与 `SetTempo` 的"提前拒"同口径）：模型自己也会拒
+                // 同一区间（`TrackTuneOutOfRange`），这里让越界在编译期就带上 `reason`。
+                // `new_tune_cents` 已在解析期判过有限（`read_required_finite_f64`），
+                // 这里只判区间。
+                if !(-yeban_model::music::TRACK_TUNE_MAX_ABS_CENTS
+                    ..=yeban_model::music::TRACK_TUNE_MAX_ABS_CENTS)
+                    .contains(new_tune_cents)
+                {
+                    return Err(from_model(
+                        "轨调律偏移",
+                        &yeban_model::ModelError::TrackTuneOutOfRange {
+                            value: *new_tune_cents,
+                        },
+                    ));
+                }
+                Op::SetTrackTune {
+                    track_id: target_track,
+                    old_tune_cents: current.tune_offset_cents.unwrap_or(0.0),
+                    new_tune_cents: *new_tune_cents,
+                }
+            }
             NoteOp::SetTempo { new_bpm, .. } => {
                 // 撤销载荷来自**当前文档**（模型的前提条件读同一个字段、且是**逐位**比较）
                 // ⇒ 本层不采信调用方声明的旧状态。
@@ -13443,6 +13533,72 @@ mod tests {
             let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("越界必须拒");
             assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
         }
+
+        // --- B8 `setTrackTune`：解析、编译、逆操作与越界 ---
+        // 未知键有自己的 reason；缺 `tuneCents` 响亮拒绝。
+        let fault = parse_ops(&serde_json::json!([
+            {"kind": "setTrackTune", "tuneCents": -100.0, "tune": -100.0}
+        ]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownSetTrackTuneField"
+        );
+        let fault = parse_ops(&serde_json::json!([{"kind": "setTrackTune"}]))
+            .expect_err("缺 tuneCents 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        // 编译：撤销载荷来自文档（夹具轨无偏移 ⇒ old 0.0）；施加后逆操作逐字节回原。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackTune", "tuneCents": -100.0}
+        ]))
+        .expect("规范形状必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetTrackTune {
+                track_id: target,
+                old_tune_cents,
+                new_tune_cents,
+            } => {
+                assert_eq!(*target, track_id);
+                assert_eq!(*old_tune_cents, 0.0, "撤销载荷必须来自当前文档");
+                assert_eq!(*new_tune_cents, -100.0);
+            }
+            other => panic!("应当是 SetTrackTune: {other:?}"),
+        }
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "trackTune".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        assert_eq!(
+            project.track(&track_id).expect("音轨").tune_offset_cents,
+            Some(-100.0),
+            "调律偏移必须落进音轨"
+        );
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            project.track(&track_id).expect("音轨").tune_offset_cents,
+            None,
+            "调律偏移必须逐字节回原值"
+        );
+        // 越界在编译期就拒（±100 音分）；边界值放行。
+        for broken in [
+            serde_json::json!([{"kind": "setTrackTune", "tuneCents": 100.5}]),
+            serde_json::json!([{"kind": "setTrackTune", "tuneCents": -100.5}]),
+        ] {
+            let ops = parse_ops(&broken).expect("形状本身合法");
+            let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("越界必须拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        }
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setTrackTune", "tuneCents": 100.0}
+        ]))
+        .expect("边界形状必须被接受");
+        compile(&project, &track_id, &clip_id, &ops).expect("边界值必须放行");
     }
 
     /// 声相值域**不在本层**：越界的 `value` 在模型自己的 `validate_param_value` 处
@@ -15502,7 +15658,8 @@ mod tests {
         // setClipPlacementOffset 三个 kind 后为 56 —— 同样与真实 `kind` 同步。
         // 本票（人性化 ROI）新增 velocityShapeClip / chordStaggerClip 两个 kind 后为 58 —— 同样与真实 `kind` 同步。
         // 本票新增 `setLyrics`（顶层文档字段，整体替换歌词时间轴）后为 59 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 59);
+        // 本票新增 `setTrackTune`（音轨属性，写 `tune_offset_cents`）后为 60 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 60);
         assert!(OP_KINDS.contains(&SET_KEY_SIGNATURE_KIND));
         assert_eq!(
             TrackFlag::NAMES,
@@ -21673,7 +21830,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 59] = [
+        let table: [(&str, serde_json::Value); 60] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -21769,6 +21926,7 @@ mod tests {
             ("setTrackSolo", serde_json::json!({"value": false})),
             ("setTrackPolarity", serde_json::json!({"value": true})),
             ("setTrackDelay", serde_json::json!({"delaySamples": 240})),
+            ("setTrackTune", serde_json::json!({"tuneCents": -100.0})),
             (
                 "setTransportConfig",
                 serde_json::json!({
@@ -21936,6 +22094,7 @@ mod tests {
                 "setTrackSolo",
                 "setTrackPolarity",
                 "setTrackDelay",
+                "setTrackTune",
                 "setTransportConfig",
                 "setTempo",
                 "setAuthor",
@@ -22326,7 +22485,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 60] = [
+        let rows: [Row<'_>; 61] = [
             (
                 "add",
                 None,
@@ -22550,6 +22709,13 @@ mod tests {
                 None,
                 serde_json::json!({"delaySamples": 240}),
                 "SetTrackDelay",
+            ),
+            (
+                "setTrackTune",
+                None,
+                None,
+                serde_json::json!({"tuneCents": -100.0}),
+                "SetTrackTune",
             ),
             (
                 "setTransportConfig",
@@ -22970,7 +23136,8 @@ mod tests {
         // 本票（人性化 ROI）的 `velocityShapeClip` / `chordStaggerClip` 是展开形态
         // （产 `ModifyNoteVelocity` / `SetNoteExpression`，已有变体）⇒ 52 不变。
         // 本票的 `setLyrics`（独占 `SetLyrics` 变体）⇒ 52 → **53**。
-        assert_eq!(seen.len(), 53);
+        // 本票的 `setTrackTune`（独占 `SetTrackTune` 变体）⇒ 53 → **54**。
+        assert_eq!(seen.len(), 54);
         // ⭐ `#179`：音符级分支集合**恰好是十五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
