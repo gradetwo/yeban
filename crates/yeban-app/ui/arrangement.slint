@@ -7,6 +7,7 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <length> playhead-px: 360px;
     in-out property <bool> is-looping: false;
     // [Q6] 标尺读数：可见小节数 / 小节宽 / 循环区间（全部由宿主从投影写入）。
+    in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 128px;
     in-out property <length> cycle-start-px: 0px;
@@ -19,6 +20,8 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <[length]> track-heights: [];
     in-out property <length> sheet-height: 0px;
     in-out property <length> scroll-x: 0px;
+    /// 当前选中的**剪辑摆放身份**（空串 = 没有选中）—— 块边框高亮与点击回填共用。
+    in-out property <string> selected-clip-ulid: "";
 
     callback select-track(int);
     callback toggle-mute(int);
@@ -32,6 +35,8 @@ export component ArrangementViewport inherits Rectangle {
     callback arrangement-wheel(length, length, bool, bool);
     callback zoom-h-step(bool);
     callback zoom-v-step(bool);
+    /// 点击时间线块：只报**摆放身份**（`host::wire_clip_scope` 用它把卷帘作用域切到该片段）。
+    callback clip-select(string);
 
     background: Theme.bg-canvas;
     clip: true;
@@ -207,12 +212,12 @@ export component ArrangementViewport inherits Rectangle {
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个
                             // 水平刻度（`blk.start_px = tick / ticks_per_pixel`）。
                             for i in root.bar-count : Text {
-                                x: i * root.bar-width-px - root.scroll-x;
+                                x: (root.bar-start-index + i) * root.bar-width-px - root.scroll-x;
                                 y: 0px;
                                 width: root.bar-width-px;
                                 height: parent.height;
                                 horizontal-alignment: left;
-                                text: "" + (i + 1);
+                                text: "" + (root.bar-start-index + i + 1);
                                 font-family: Tokens.font-mono;
                                 font-size: 9px;
                                 font-weight: 600;
@@ -909,11 +914,11 @@ export component ArrangementViewport inherits Rectangle {
                             // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
                             // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
                             for i in root.bar-count : Rectangle {
-                                x: i * root.bar-width-px - root.scroll-x;
+                                x: (root.bar-start-index + i) * root.bar-width-px - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
-                                background: i.mod(4) == 0 ? #ffffff0d : #ffffff04;
+                                background: (root.bar-start-index + i).mod(4) == 0 ? #ffffff0d : #ffffff04;
                             }
 
                             // Timeline Clips for this track
@@ -925,8 +930,8 @@ export component ArrangementViewport inherits Rectangle {
                                     height: Math.max(52px, parent.height - 8px);
                                     border-radius: 4px;
                                     background: trk.color.with-alpha(0.12);
-                                    border-width: 1px;
-                                    border-color: trk.color.with-alpha(0.55);
+                                    border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 1px;
+                                    border-color: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? #ffffff : trk.color.with-alpha(0.55);
                                     clip: true;
 
                                     VerticalLayout {
@@ -1073,6 +1078,15 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                         }
+                                    }
+
+                                    // ⭐ 点击片段 = 选中该**摆放**：卷帘作用域随 `clip-select` 切到它
+                                    // （⛔ 不再"所有轨道的全部音符混在一起"）。
+                                    TouchArea {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.clip-select(blk.clip_ulid); }
                                     }
                                 }
                             }
@@ -1432,7 +1446,7 @@ export component ArrangementViewport inherits Rectangle {
 
                             // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
                             for _i in root.bar-count : Rectangle {
-                                x: _i * root.bar-width-px - root.scroll-x;
+                                x: (root.bar-start-index + _i) * root.bar-width-px - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;

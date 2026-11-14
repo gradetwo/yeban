@@ -142,24 +142,34 @@ fn to_color(color: RgbColor) -> slint::Color {
 /// 宽 = 相邻两条小节线的差；只为**可见范围**生成节点（长工程不把上千条网格线
 /// 塞进控件树），因此标尺 / 网格 / 片段块三者用同一个水平刻度。
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32) -> (i32, f32) {
+fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32, scroll_x: f32) -> (i32, i32, f32) {
     let bar_width = match bar_positions {
         [first, second, ..] => (second - first).max(0.0),
         _ => 0.0,
     };
     if bar_width <= 0.0 {
         return (
+            0,
             i32::try_from(bar_positions.len()).unwrap_or(i32::MAX),
             bar_width,
         );
     }
+    // 横向滚动后标尺必须继续往右标：只生成**当前可见窗口**内的格子，
+    // 起点用 scroll_x / 小节宽就地算出（⛔ 不是永远从第 1 小节开始）。
+    let start = if scroll_x.is_finite() && scroll_x > 0.0 {
+        ((scroll_x / bar_width).floor().clamp(0.0, 1_000_000.0) as usize).min(bar_positions.len())
+    } else {
+        0
+    };
     let fit = if viewport_width.is_finite() && viewport_width > 0.0 {
         ((viewport_width / bar_width).ceil().clamp(0.0, 4096.0) as usize).saturating_add(2)
     } else {
         bar_positions.len()
     };
+    let count = bar_positions.len().saturating_sub(start).min(fit);
     (
-        i32::try_from(bar_positions.len().min(fit)).unwrap_or(i32::MAX),
+        i32::try_from(start).unwrap_or(i32::MAX),
+        i32::try_from(count).unwrap_or(i32::MAX),
         bar_width,
     )
 }
@@ -372,7 +382,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_bar_positions(lengths(&view.bar_positions));
     // [Q6] 标尺 / 网格 / 片段块共用同一条水平刻度：小节数与小节宽都从
     // `bar_positions` 求，`.slint` 不再写死 `1..36` 与 64px。
-    let (bar_count, bar_width_px) = bar_ruler_readout(&view.bar_positions, viewport_width);
+    let (bar_start, bar_count, bar_width_px) =
+        bar_ruler_readout(&view.bar_positions, viewport_width, scroll_x);
+    ui.set_bar_start_index(bar_start);
     ui.set_bar_count(bar_count);
     ui.set_bar_width_px(bar_width_px);
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
@@ -385,7 +397,18 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     // ⭐ `[UI-NOTE-001]` 的"当前编辑片段"：选中的剪辑摆放决定**作用域**（片段池条目身份）；
     // 没有选中（空串 / 过期身份）⇒ `None` ⇒ 片段池全部音符，与作用域落地之前逐项相同。
-    let visible = view.visible_notes_scoped(scroll_x, viewport_width, roll_scope(ui, view));
+    // 作用域优先级：选中片段的摆放（`clip-select`）> 选中轨（兜底）> 全部。
+    // 报告反馈③：旧口径在没有选中片段时显示**所有轨**的音符，和"当前轨道"对不上。
+    let clip_scope = roll_scope(ui, view);
+    let selected_track_index = view
+        .selected_track
+        .as_deref()
+        .and_then(|id| view.tracks.iter().position(|track| track.id == id));
+    let visible = match (clip_scope, selected_track_index) {
+        (Some(scope), _) => view.visible_notes_scoped(scroll_x, viewport_width, Some(scope)),
+        (None, Some(index)) => view.visible_notes_on_track(scroll_x, viewport_width, index),
+        (None, None) => view.visible_notes_scoped(scroll_x, viewport_width, None),
+    };
     // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
     // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
     // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
@@ -13013,6 +13036,16 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                         None => true,
                     });
             }
+            // ⭐ 与**注入面**同源：卷帘只画 `note-ulids` 里的音符（选中轨 / 选中片段作用域），
+            // 命中落在这批之外 ⇒ 丢弃。否则多轨工程里会"选中一个屏幕上不存在音符"。
+            if let Some(index) = hit {
+                let hit_id = view.notes[index].id.clone();
+                let drawn = ui.get_note_ulids();
+                let visible_hit = drawn.iter().any(|id| id.as_str() == hit_id);
+                if !visible_hit {
+                    hit = None;
+                }
+            }
             // ⭐ `#212`：**借只包住选区的内存镜像** —— 先算出要写的三个读数，放借，
             // 再写界面。持借调界面（`ui.set_selected_*`）是同一类重入形态：
             // 界面写入若回调到同一份 `RefCell`，`borrow_mut()` 就会 panic。
@@ -16482,6 +16515,7 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                 let is_aud = ((next_id - 1) % 7) == 1 || ((next_id - 1) % 7) == 3;
                 block_vec.push(TimelineBlockData {
                     track_id: next_id,
+                    clip_ulid: "".into(),
                     label: format!("{} Pattern", kind_str).into(),
                     start_px: 160.0,
                     width_px: 160.0,
@@ -17693,6 +17727,7 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                 .unwrap_or_else(|| to_color(crate::bridge::DEFAULT_TRACK_COLOR));
             TimelineBlockData {
                 track_id,
+                clip_ulid: clip.placement_id.clone().into(),
                 label: clip.label.clone().into(),
                 start_px: clip.x.max(0.0),
                 width_px: clip.width.max(12.0),

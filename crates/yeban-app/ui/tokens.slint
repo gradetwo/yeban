@@ -950,6 +950,8 @@ export struct TrackData {
 
 export struct TimelineBlockData {
     track_id: int,
+    /// 摆放身份（`ClipPlacement::id` 的规范文本）——点击块时交给 `clip-select`。
+    clip_ulid: string,
     label: string,
     start_px: length,
     width_px: length,

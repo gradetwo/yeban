@@ -162,6 +162,32 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
         ui.get_notes().row_count()
     );
 
+    // ①a 片段块：身份 = 摆放身份，宽度 = 真实时值 / 当前缩放（报告反馈②）。
+    let blocks = ui.get_timeline_blocks();
+    let tpp = u32::try_from(ui.get_roll_ticks_per_pixel())
+        .unwrap_or(1)
+        .max(1);
+    assert_eq!(blocks.row_count(), view.clips.len(), "片段块数量");
+    for (index, clip) in view.clips.iter().enumerate() {
+        let block = blocks.row_data(index).expect("块与投影同序等长");
+        assert_eq!(
+            block.clip_ulid.as_str(),
+            clip.placement_id,
+            "块身份必须是摆放身份（点击靠它选中片段）"
+        );
+        let expected = (clip.duration_ticks as f32 / tpp as f32).max(12.0);
+        assert!(
+            (block.width_px - expected).abs() < 0.6,
+            "片段 {} 的块宽 {} 与真实时值换算的 {expected} 不一致",
+            clip.clip_name,
+            block.width_px
+        );
+    }
+    eprintln!(
+        "[clips] {} 个块的宽度/身份与投影一致 (ticks-per-pixel={tpp})",
+        view.clips.len()
+    );
+
     // ①b [Q3] 走带 TEMPO 读数 = 工程 BPM（`.slint` 默认 124 只能在没有工程时出现）。
     let expected_bpm = i32::try_from((view.bpm_millis + 500) / 1000).unwrap_or(0);
     assert_eq!(

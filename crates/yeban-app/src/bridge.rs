@@ -4922,6 +4922,47 @@ impl ViewState {
         out
     }
 
+    /// 选中轨兜底作用域：只保留**落在该轨摆放里**的片段池条目的音符。
+    ///
+    /// 卷帘在"没有选中片段"时的默认作用域就是**当前选中的轨道** —— 旧口径是
+    /// "片段池全部音符"，多轨工程里会让用户看到别的轨的音符（报告反馈③）。
+    /// 过滤发生在裁剪之后、装数组之前，六条平行数组仍同索引集。
+    #[must_use]
+    pub fn visible_notes_on_track(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        track_index: usize,
+    ) -> VisibleNotes {
+        let clip_ids: BTreeSet<&str> = self
+            .clips
+            .iter()
+            .filter(|clip| clip.track_index == track_index)
+            .map(|clip| clip.clip_id.as_str())
+            .collect();
+        let left = scroll_x.max(0.0);
+        let mut indices = self.notes_visible_in(scroll_x, viewport_width);
+        indices.retain(|&index| clip_ids.contains(self.notes[index].clip_id.as_str()));
+        let mut out = VisibleNotes {
+            positions: Vec::with_capacity(indices.len()),
+            widths: Vec::with_capacity(indices.len()),
+            ys: Vec::with_capacity(indices.len()),
+            rows: Vec::with_capacity(indices.len()),
+            ulids: Vec::with_capacity(indices.len()),
+            velocities: Vec::with_capacity(indices.len()),
+        };
+        for index in indices {
+            let note = &self.notes[index];
+            out.positions.push(note.x - left);
+            out.widths.push(note.width);
+            out.ys.push(note.y);
+            out.rows.push(note.row);
+            out.ulids.push(note.id.clone());
+            out.velocities.push(note.velocity_normalized);
+        }
+        out
+    }
+
     /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
     #[must_use]
     pub fn note_widths(&self) -> Vec<f32> {
