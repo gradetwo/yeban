@@ -17445,6 +17445,13 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
+            // [Q1] 引擎建不起来（缺样本 / 无声卡）时产品照常打开并允许编辑，
+            // 但试听**必须如实报告**“未接线”，⛔ 不假装注入成功。
+            if !engine.borrow().has_engine() {
+                ui.set_module_status("试听: 引擎未接线（工程可继续编辑）".into());
+                ui.set_module_status_succeeded(false);
+                return;
+            }
             let Some(track) = port
                 .try_project()
                 .and_then(|project| project.tracks.keys().next().cloned())
@@ -17482,6 +17489,13 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
+            // [Q1] 引擎建不起来（缺样本 / 无声卡）时产品照常打开并允许编辑，
+            // 但试听**必须如实报告**“未接线”，⛔ 不假装注入成功。
+            if !engine.borrow().has_engine() {
+                ui.set_module_status("试听: 引擎未接线（工程可继续编辑）".into());
+                ui.set_module_status_succeeded(false);
+                return;
+            }
             let Some(track) = port
                 .try_project()
                 .and_then(|project| project.tracks.keys().next().cloned())
