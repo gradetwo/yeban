@@ -160,11 +160,16 @@ fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
     // ⭐ `提案摘要补 description`（审计 2026-10-29，§0.6.0i 对账轴）：`Proposal::summary()`
     // 新增一个键 ⇒ 增量按**形状**算：`"description"`(13) + `:`(1) + 值 `"propose_section Chorus"`
     // 含引号(24) + 逗号(1，13→14 个键) = **+39 B**。⇒ 响应 2,841 → **2,880**（合计 3,076 ≤ 4,096）。
+    // ⭐ `resolvedParams` 恒发（`13ebdc768`，第五份报告 A-3 / props_176）：`yeban_edit_notes`
+    // 的 `resolvedParams` 由"非空才带"改为生产者恒发（空批为空数组），与 `warnings` /
+    // `unwired` 等数组字段同口径；props_176 要求声明字段必现，故不撤回恒发。缺省响应
+    // 因此多一个键 ⇒ 增量按**形状**算：`"resolvedParams"`(16) + `:`(1) + `[]`(2) +
+    // 逗号(1) = **+20 B**。⇒ 响应 2,880 → **2,900**（合计 3,096 ≤ 4,096 的预算不变）。
     assert_eq!(
         reading,
         RoundTripPayload {
             request: 196,
-            response: 2880
+            response: 2900
         },
         "BASELINE-006 的 16 小节缺省读数变了"
     );
