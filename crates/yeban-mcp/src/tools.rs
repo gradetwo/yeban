@@ -1822,15 +1822,24 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-LIST-INSTRUMENTS",
         name: "yeban_list_instruments",
-        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`silentRegionCount` 是**引擎摊平口径**（缺样本 ＋ 内建静音，与 `yeban_render_master` 的 `sampler.silentRegionCount` 同义），`builtinSilentRegionCount` 是其中 `sample=*silence` 的子集；`count` = 条目数；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。",
+        summary: "列出**本会话已装载**的 SFZ 乐器（审计 `N13`：会话 registry 此前没有任何枚举入口，拿到 `instrumentId` 只能靠记 `yeban_load_sfz` 的响应）。响应 `data.instruments[]`：每条给 `instrumentId` / `path` / `regions` / `silentRegionCount` / `builtinSilentRegionCount` / `sha256` / `sampleSource` / `sampleFilesReadCount` / `sampleFilesFailedCount` / `sampleHz`（= 装载响应的同一批读数，少了 `regionDetails` 全文）；`silentRegionCount` 是**引擎摊平口径**（缺样本 ＋ 内建静音，与 `yeban_render_master` 的 `sampler.silentRegionCount` 同义），`builtinSilentRegionCount` 是其中 `sample=*silence` 的子集；`count` = 条目数；`mode` = `session`；空 registry ⇒ `instruments: []` ＋ 一句 `note`（⛔ 不报错 —— 没装载过乐器不是错误）。⚠ registry 是**会话运行态**（不落盘），打开/关闭工程或重启进程后为空 ⇒ `instrumentId` 只能当本会话句柄用，不能跨会话引用。装乐器走 `yeban_load_sfz`（内容寻址 ⇒ 同一文本复用同一 id）；把乐器绑到轨上走 `yeban_edit_notes` 的 `insertDevice`（sampler）。⭐ B7 目录模式：给 `directory` 时改扫磁盘目录（`mode` = `directory`，⛔ 不查 registry、⛔ 不装载）：递归列出目录内每件 `.sfz`（`path` / `regions` / `sha256` / `declaredSampleCount` / `presentSampleCount` / `missingSampleCount`，解析失败的条目带 `parseError` 点名），并回汇总计数（`scannedFileCount` / `sampleFileCount` / `unsupportedFileCount` ＋ 例子 / `parseFailureCount`）；根目录有 `manifest.json` 时附 `manifest` 逐文件 stat 对账（每件乐器的 `presentCount` / `missingCount`）。目录不存在或不是目录 ⇒ `IO_ERROR` 响亮失败；空目录 ⇒ `count: 0` ＋ `note` 点名（⛔ 不报错）。",
         scope: Scope::AppAdmin,
-        // 只读：枚举 `domain.sfz_instruments`，不改工程、不装载、不落盘。
+        // 只读：枚举 `domain.sfz_instruments` 或扫磁盘目录，不改工程、不装载、不落盘。
         side_effect: SideEffect::ReadOnly,
-        params: &[],
-        // 枚举在规划层没有业务失败面（空 registry 是合法状态）；仍声明
-        // `InvalidParameterRange`：契约的实参形状校验（多余键等）走这个码
-        // —— 判据要求每个工具至少声明一个 D25 联集内的码，⛔ 留空。
-        errors: &[ErrorCode::InvalidParameterRange],
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_list_instruments` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "directory",
+                "string",
+                false,
+                "可选: 目录模式的根目录（磁盘路径）；给出时递归扫描该目录的 SFZ 与 manifest，不查会话 registry；不存在/不是目录 ⇒ `IO_ERROR`；不给 = 会话模式（既有行为）",
+            ),
+        ],
+        // 会话模式没有业务失败面（空 registry 是合法状态）；目录模式的
+        // 路径失败走 `IO_ERROR`、空串走 `InvalidParameterRange`。
+        errors: &[ErrorCode::InvalidParameterRange, ErrorCode::IoError],
     },
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SCAN-PLUGINS",

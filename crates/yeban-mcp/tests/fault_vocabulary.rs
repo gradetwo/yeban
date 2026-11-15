@@ -44,7 +44,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 292 | 1250 | `62daafd11c2244d8f3e5e400e9a19f0f55412599c5072189ae659fbc59ed695c` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 296 | 1263 | `56c3519da0d49e5422c39d720abe70039aa7e51c31118ca7da2ec4af91d23d74` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -192,7 +192,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// （2026-10-28 起, 见 [`PROPAGATED_REASON_SITES`]）。⛔ 真看不见的运行时站点不进这张表，
 /// 由 [`EXEMPT_DYNAMIC_REASON_SITES`] 逐条登记。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 288] = [
+pub const GOLDEN_REASONS: [&str; 292] = [
     "araSessionNotFound",
     "assetChannelLayout",
     "assetDecodeFailed",
@@ -270,6 +270,11 @@ pub const GOLDEN_REASONS: [&str; 288] = [
     "licenseNotAllowed",
     "licenseRequired",
     "licenseWhitelistUnavailable",
+    // ⭐ B7（本支）：`yeban_list_instruments` 目录模式的 4 处路径失败站点。
+    "listDirectoryEmpty",
+    "listDirectoryNotDirectory",
+    "listDirectoryNotFound",
+    "listDirectoryReadFailed",
     "loudnessTargetMissed",
     // ⭐ 自动相位对齐第二层：|ρ| < 0.3，峰值不可信，不施加补偿。
     "lowCorrelation",
@@ -1759,13 +1764,18 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
 // B2（2026-11-14）：`with_unsaved_change_stats` 的 `data.get("reason")` 是第 4 处
 // **参数名**站点（已登记进 [`REASON_ARGUMENT_NAME_USES`]）⇒ 参数名 3 → 4、
 // 总出现 343 → 344（键站点 340 不动；344 = 340 ＋ 参数名 4）。
-const REASON_OCCURRENCES_TOTAL: usize = 344;
+// B7（本支）：`yeban_list_instruments` 目录模式在 `domain/mod.rs` 新增 5 处
+// 字面站点（`listDirectoryEmpty` / `listDirectoryNotDirectory` /
+// `listDirectoryNotFound` 各 1 处、`listDirectoryReadFailed` 2 处）⇒ 出现
+// 344 → 349、键站点 340 → 345、字面站点 329 → 334（恒等式仍闭合：
+// 345 = 字面 334 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；349 = 345 ＋ 参数名 4）。
+const REASON_OCCURRENCES_TOTAL: usize = 349;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 340;
-const REASON_LITERAL_SITES_TOTAL: usize = 329;
+const REASON_KEY_SITES_TOTAL: usize = 345;
+const REASON_LITERAL_SITES_TOTAL: usize = 334;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
@@ -2088,7 +2098,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 288] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 292] = [
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
         "assetChannelLayout",
@@ -2253,6 +2263,14 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 288] = [
     ),
     ("licenseRequired", &["field", "hint", "reason"]),
     ("licenseWhitelistUnavailable", &["detail", "hint", "reason"]),
+    // ⭐ B7（本支）：目录模式路径失败的载荷（键集 = 各字面 `json!` 对象的同级键）。
+    ("listDirectoryEmpty", &["reason"]),
+    ("listDirectoryNotDirectory", &["directory", "reason"]),
+    ("listDirectoryNotFound", &["directory", "ioError", "reason"]),
+    (
+        "listDirectoryReadFailed",
+        &["directory", "ioError", "reason"],
+    ),
     (
         // ⭐ 响度施加线 (F3) 把本 reason 的载荷扩成「施加前实测/已施加增益/
         // 绑定约束/复测值/建议 trim」全套, 本行随实发键补齐 (该线漏更新本表)。
@@ -3548,13 +3566,19 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 出现/键/字面总数不变：传播站点不计入那三处总数）。新摘要
 /// `62daafd11c2244d8f3e5e400e9a19f0f55412599c5072189ae659fbc59ed695c`
 /// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
+/// ⚠ B7（本支）：`yeban_list_instruments` 目录模式新增 4 条字面站点
+/// （`listDirectoryEmpty` 1 键、`listDirectoryNotDirectory` 2 键、
+/// `listDirectoryNotFound` / `listDirectoryReadFailed` 各 3 键）⇒ reason 数
+/// 292 → **296**、规范行数 1250 → **1263**（4 reason 行 ＋ 9 键行）。新摘要
+/// `56c3519da0d49e5422c39d720abe70039aa7e51c31118ca7da2ec4af91d23d74`
+/// 由本判据的 `left:` 报出值照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "62daafd11c2244d8f3e5e400e9a19f0f55412599c5072189ae659fbc59ed695c";
+    "56c3519da0d49e5422c39d720abe70039aa7e51c31118ca7da2ec4af91d23d74";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 292;
+pub const REASON_SURFACE_REASONS: usize = 296;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1250;
+pub const REASON_SURFACE_LINES: usize = 1263;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

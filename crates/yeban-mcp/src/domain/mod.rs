@@ -4748,7 +4748,16 @@ fn plan_import_audio(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// 记 `yeban_load_sfz` 的响应）⇒ 调用方一旦丢了 id 就得重载文件。这里照
 /// `yeban_list_proposals` 的同一形状回清单：**不要求活跃工程**（registry 是
 /// 会话态，与工程无关），空 registry 回 `instruments: []` ＋ `note`（⛔ 不报错）。
-fn plan_list_instruments(domain: &Domain, _call: &ToolCall) -> Result<Plan, Fault> {
+///
+/// ⭐ B7 **目录模式**：给可选实参 `directory` 时不查会话 registry，改扫磁盘
+/// 目录（见 [`plan_list_instruments_directory`]）——绑定/装载**之前**就能看见
+/// 「本地有哪些 SFZ、每件声明的样本有几个在盘上、几个缺失」。缺这个信号时，
+/// 登记式分发（`assets/samples/manifest.json` 的 `policy`：官方仓库不随包
+/// 分发采样字节）的库绑上轨才在装载后报 `sfzSamplesUnreadable`，为时已晚。
+fn plan_list_instruments(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    if let Some(directory) = arg_str(call, "directory") {
+        return plan_list_instruments_directory(directory);
+    }
     let instruments: Vec<Value> = domain
         .sfz_instrument_ids()
         .into_iter()
@@ -4784,7 +4793,380 @@ fn plan_list_instruments(domain: &Domain, _call: &ToolCall) -> Result<Plan, Faul
         data: serde_json::json!({
             "instruments": instruments,
             "count": instruments.len(),
+            "mode": "session",
             "loadTool": "yeban_load_sfz",
+            "note": note,
+        }),
+    })
+}
+
+/// 目录模式下算作**样本文件**的扩展名（小写比较）。样本不是乐器定义，
+/// ⛔ 不进 `instruments`、⛔ 不算「不支持」——它们由每件 SFZ 的
+/// present/missing 计数点名；这里只报一个总数供对账。
+const LIST_DIRECTORY_SAMPLE_EXTENSIONS: [&str; 6] = ["wav", "flac", "ogg", "mp3", "aif", "aiff"];
+
+/// 递归收集 `root` 下的全部普通文件（路径升序，确定性）。读目录失败
+/// ⇒ 响亮 `IO_ERROR`（⛔ 不静默跳过子目录，否则计数会悄悄少算）。
+fn collect_directory_files(root: &Path) -> Result<Vec<PathBuf>, Fault> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut entries: Vec<PathBuf> = Vec::new();
+        let read = std::fs::read_dir(&dir).map_err(|error| {
+            Fault::domain_with_data(
+                ErrorCode::IoError,
+                format!("读目录失败: {} ({error})", dir.display()),
+                serde_json::json!({
+                    "reason": "listDirectoryReadFailed",
+                    "directory": dir.display().to_string(),
+                    "ioError": error.kind().to_string(),
+                }),
+            )
+        })?;
+        for entry in read {
+            let entry = entry.map_err(|error| {
+                Fault::domain_with_data(
+                    ErrorCode::IoError,
+                    format!("读目录条目失败: {} ({error})", dir.display()),
+                    serde_json::json!({
+                        "reason": "listDirectoryReadFailed",
+                        "directory": dir.display().to_string(),
+                        "ioError": error.kind().to_string(),
+                    }),
+                )
+            })?;
+            entries.push(entry.path());
+        }
+        entries.sort();
+        for path in entries {
+            let file_type = std::fs::symlink_metadata(&path)
+                .map(|metadata| metadata.file_type())
+                .ok();
+            match file_type {
+                Some(kind) if kind.is_dir() => stack.push(path),
+                Some(kind) if kind.is_symlink() => {
+                    // 符号链接只按它指向的目标定性：指向目录 ⛔ 不跟随
+                    // （防环）；指向普通文件按文件计。
+                    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+                        files.push(path);
+                    }
+                }
+                _ => files.push(path),
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// 一件磁盘 SFZ 的目录模式条目：**只解析文本、只 stat 样本，⛔ 不解码**。
+///
+/// 读不到 / 非 UTF-8 / 解析失败的 SFZ 仍占一条，带 `parseError` 点名原因
+/// （⛔ 不静默丢弃——调用方要能区分「目录里没有这件乐器」与「有但坏了」）。
+fn directory_instrument_entry(path: &Path) -> Value {
+    let base = serde_json::json!({
+        "path": path.display().to_string(),
+        "sessionScoped": false,
+        "loaded": false,
+        "source": "directory",
+    });
+    let fail = |entry: &mut Value, message: String| {
+        entry["regions"] = Value::Null;
+        entry["declaredSampleCount"] = Value::Null;
+        entry["presentSampleCount"] = Value::Null;
+        entry["missingSampleCount"] = Value::Null;
+        entry["missingSampleExamples"] = serde_json::json!([]);
+        entry["parseError"] = Value::from(message);
+        entry.clone()
+    };
+    let mut entry = base;
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return fail(&mut entry, format!("读 SFZ 文件失败: {error}"));
+        }
+    };
+    entry["bytes"] = Value::from(bytes.len());
+    entry["sha256"] = Value::from(AssetHash::of_bytes(&bytes).as_str().to_owned());
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => {
+            return fail(
+                &mut entry,
+                format!(
+                    "SFZ 文件不是合法 UTF-8 文本 (validUpTo={})",
+                    error.utf8_error().valid_up_to()
+                ),
+            );
+        }
+    };
+    let instrument = match sfz::parse(&text) {
+        Ok(instrument) => instrument,
+        Err(fault) => {
+            let detail = match &fault {
+                Fault::Domain { message, .. } => message.clone(),
+                other => format!("{other:?}"),
+            };
+            return fail(&mut entry, format!("SFZ 解析失败: {detail}"));
+        }
+    };
+    // 声明样本按**解析后路径**去重（`sample_path()` 已拼 `default_path=`，
+    // `resolve_sample_path` 再做分隔符归一与相对解析，与装载侧同一口径）；
+    // 内建静音与空 `sample=` 不是文件，⛔ 不计入声明数。
+    let mut declared: BTreeSet<PathBuf> = BTreeSet::new();
+    for region in instrument.regions() {
+        if region.is_builtin_silence() {
+            continue;
+        }
+        let sample = region.sample_path();
+        if sample.trim().is_empty() {
+            continue;
+        }
+        declared.insert(sfz::resolve_sample_path(path, &sample));
+    }
+    let mut missing: Vec<String> = Vec::new();
+    let mut present = 0usize;
+    for candidate in &declared {
+        if candidate.is_file() {
+            present += 1;
+        } else {
+            missing.push(candidate.display().to_string());
+        }
+    }
+    entry["regions"] = Value::from(instrument.regions().len());
+    entry["declaredSampleCount"] = Value::from(declared.len());
+    entry["presentSampleCount"] = Value::from(present);
+    entry["missingSampleCount"] = Value::from(missing.len());
+    entry["missingSampleExamples"] =
+        Value::from(missing.iter().take(5).cloned().collect::<Vec<_>>());
+    entry["parseError"] = Value::Null;
+    entry
+}
+
+/// `manifest.json`（样品根目录）逐文件 stat 的 present/missing 对账（B7）。
+///
+/// 清单条目的 `relative_path` 是**仓库相对**路径（如
+/// `assets/samples/<库>/…`），而 `directory` 可能是仓库根、样品根或单个
+/// 乐器根中的任何一层 ⇒ 每条按三档候选解析（清单原样 / 乐器根基名＋后缀 /
+/// 后缀原样），任一候选是普通文件即算 present，全不中算 missing。
+/// 清单本身读不到 / 不是 JSON / 没有 `items` 数组 ⇒ 回带 `error` 的对象
+/// 点名，⛔ 不静默当作「无清单」。
+fn directory_manifest_report(root: &Path, manifest_path: &Path) -> Value {
+    let fail = |message: String| {
+        serde_json::json!({
+            "path": manifest_path.display().to_string(),
+            "error": message,
+        })
+    };
+    let text = match std::fs::read_to_string(manifest_path) {
+        Ok(text) => text,
+        Err(error) => return fail(format!("读 manifest 失败: {error}")),
+    };
+    let parsed: Value = match serde_json::from_str(&text) {
+        Ok(parsed) => parsed,
+        Err(error) => return fail(format!("manifest 不是合法 JSON: {error}")),
+    };
+    let Some(items) = parsed.get("items").and_then(Value::as_array) else {
+        return fail("manifest 缺 `items` 数组，不是样品清单形状".to_owned());
+    };
+    let instruments_meta: BTreeMap<String, &Value> = parsed
+        .get("instruments")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    row.get("id")
+                        .and_then(Value::as_str)
+                        .map(|id| (id.to_owned(), row))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // 每件乐器：(present, missing)。
+    let mut per_instrument: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut total_present = 0usize;
+    let mut total_missing = 0usize;
+    for item in items {
+        let instrument_id = item
+            .get("instrument")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let relative_path = item
+            .get("relative_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let meta = instruments_meta.get(&instrument_id);
+        let relative_root = meta
+            .and_then(|row| row.get("relative_root"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let suffix = if !relative_root.is_empty() {
+            relative_path
+                .strip_prefix(&format!("{relative_root}/"))
+                .unwrap_or(relative_path)
+        } else {
+            relative_path
+        };
+        let root_base = Path::new(relative_root)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut candidates = vec![root.join(relative_path), root.join(suffix)];
+        if !root_base.is_empty() {
+            candidates.push(root.join(&root_base).join(suffix));
+        }
+        let present = candidates.iter().any(|candidate| candidate.is_file());
+        let counts = per_instrument.entry(instrument_id).or_insert((0, 0));
+        if present {
+            counts.0 += 1;
+            total_present += 1;
+        } else {
+            counts.1 += 1;
+            total_missing += 1;
+        }
+    }
+    let rows: Vec<Value> = per_instrument
+        .iter()
+        .map(|(id, (present, missing))| {
+            let meta = instruments_meta.get(id);
+            serde_json::json!({
+                "id": id,
+                "name": meta.and_then(|row| row.get("name")).cloned().unwrap_or(Value::Null),
+                "sfz": meta.and_then(|row| row.get("sfz")).cloned().unwrap_or(Value::Null),
+                "fileCount": present + missing,
+                "presentCount": present,
+                "missingCount": missing,
+                "allPresent": *missing == 0,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "path": manifest_path.display().to_string(),
+        "instrumentCount": rows.len(),
+        "totalFiles": total_present + total_missing,
+        "presentFiles": total_present,
+        "missingFiles": total_missing,
+        "instruments": rows,
+        "error": Value::Null,
+    })
+}
+
+/// `yeban_list_instruments` 的**目录模式**（B7，只读）。
+///
+/// 语义逐条：
+/// - 目录不存在 ⇒ `IO_ERROR`（`reason=listDirectoryNotFound`）；给的是
+///   普通文件 ⇒ `IO_ERROR`（`reason=listDirectoryNotDirectory`）；空串
+///   ⇒ `INVALID_PARAMETER_RANGE`。⛔ 不把「路径写错」报成空清单。
+/// - 空目录（无 SFZ）⇒ 成功回 `instruments: []` ＋ `count: 0` ＋ `note`
+///   点名目录为空（与空 registry 同口径：没乐器不是错误，但必须说清）。
+/// - 不支持的文件（非 SFZ、非样本音频、非根 `manifest.json`）⛔ 不进
+///   清单、⛔ 不报错，但计数 `unsupportedFileCount` 并给例子点名。
+/// - 根目录有 `manifest.json` 时附 `manifest` 对账（逐文件 stat 的
+///   present/missing，见 [`directory_manifest_report`]）。
+fn plan_list_instruments_directory(directory: &str) -> Result<Plan, Fault> {
+    if directory.trim().is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`directory` 不得为空串",
+            serde_json::json!({ "reason": "listDirectoryEmpty" }),
+        ));
+    }
+    let root = PathBuf::from(directory);
+    let metadata = std::fs::metadata(&root).map_err(|error| {
+        Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!("目录不存在或不可读: {} ({error})", root.display()),
+            serde_json::json!({
+                "reason": "listDirectoryNotFound",
+                "directory": root.display().to_string(),
+                "ioError": error.kind().to_string(),
+            }),
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!("`directory` 不是目录: {}", root.display()),
+            serde_json::json!({
+                "reason": "listDirectoryNotDirectory",
+                "directory": root.display().to_string(),
+            }),
+        ));
+    }
+    let files = collect_directory_files(&root)?;
+    let manifest_path = root.join("manifest.json");
+    let mut instruments: Vec<Value> = Vec::new();
+    let mut sample_file_count = 0usize;
+    let mut unsupported: Vec<String> = Vec::new();
+    let mut parse_failure_count = 0usize;
+    let mut total_declared = 0usize;
+    let mut total_present = 0usize;
+    let mut total_missing = 0usize;
+    for path in &files {
+        if *path == manifest_path {
+            continue;
+        }
+        let extension = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if extension == "sfz" {
+            let entry = directory_instrument_entry(path);
+            if entry["parseError"].is_string() {
+                parse_failure_count += 1;
+            } else {
+                total_declared += entry["declaredSampleCount"].as_u64().unwrap_or(0) as usize;
+                total_present += entry["presentSampleCount"].as_u64().unwrap_or(0) as usize;
+                total_missing += entry["missingSampleCount"].as_u64().unwrap_or(0) as usize;
+            }
+            instruments.push(entry);
+        } else if LIST_DIRECTORY_SAMPLE_EXTENSIONS.contains(&extension.as_str()) {
+            sample_file_count += 1;
+        } else {
+            unsupported.push(path.display().to_string());
+        }
+    }
+    let manifest = if manifest_path.is_file() {
+        directory_manifest_report(&root, &manifest_path)
+    } else {
+        Value::Null
+    };
+    let note = if instruments.is_empty() {
+        format!(
+            "目录 {} 里没有 SFZ 乐器定义（扫到 {} 个文件）; 装载走 `yeban_load_sfz`，\
+             会话内枚举不给 `directory`。",
+            root.display(),
+            files.len()
+        )
+    } else {
+        format!(
+            "目录 {} 里共 {} 件 SFZ 乐器定义; 声明样本 {} 个，本地 present {} 个、\
+             missing {} 个（missing 的乐器绑轨渲染会静音，先按清单/样本来源补齐）。\
+             本模式只读磁盘、⛔ 不装载，`instrumentId` 仍以 `yeban_load_sfz` 装载为准。",
+            root.display(),
+            instruments.len(),
+            total_declared,
+            total_present,
+            total_missing
+        )
+    };
+    Ok(Plan::ListInstruments {
+        data: serde_json::json!({
+            "instruments": instruments,
+            "count": instruments.len(),
+            "mode": "directory",
+            "directory": root.display().to_string(),
+            "loadTool": "yeban_load_sfz",
+            "scannedFileCount": files.len(),
+            "sampleFileCount": sample_file_count,
+            "unsupportedFileCount": unsupported.len(),
+            "unsupportedExamples": unsupported.iter().take(5).cloned().collect::<Vec<_>>(),
+            "parseFailureCount": parse_failure_count,
+            "declaredSampleCount": total_declared,
+            "presentSampleCount": total_present,
+            "missingSampleCount": total_missing,
+            "manifest": manifest,
             "note": note,
         }),
     })

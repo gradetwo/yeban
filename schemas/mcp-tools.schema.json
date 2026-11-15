@@ -1630,8 +1630,12 @@
         "yeban_list_instruments": {
           "title": "yeban_list_instruments",
           "type": "object",
-          "description": "列出本会话已装载的 SFZ 乐器（会话 registry 的只读枚举）。响应 data：instruments[]（每条 = instrumentId / path / regions / silentRegionCount / builtinSilentRegionCount / sha256 / sampleSource / sampleFilesReadCount / sampleFilesFailedCount / sampleHz）/ count；silentRegionCount 是引擎摊平口径（缺样本 + 内建静音，与 yeban_render_master 的 sampler.silentRegionCount 同义），builtinSilentRegionCount 是其中 *silence 的子集；空 registry ⇒ instruments:[] + note（⛔ 不报错）。会话态，重启或开关工程后为空。",
+          "description": "列出本会话已装载的 SFZ 乐器（会话 registry 的只读枚举）。响应 data：instruments[]（每条 = instrumentId / path / regions / silentRegionCount / builtinSilentRegionCount / sha256 / sampleSource / sampleFilesReadCount / sampleFilesFailedCount / sampleHz）/ count / mode=session；silentRegionCount 是引擎摊平口径（缺样本 + 内建静音，与 yeban_render_master 的 sampler.silentRegionCount 同义），builtinSilentRegionCount 是其中 *silence 的子集；空 registry ⇒ instruments:[] + note（⛔ 不报错）。会话态，重启或开关工程后为空。给 directory 时为目录模式（B7，mode=directory）：递归扫描目录内 .sfz 并逐件回 declared/present/missing 样本计数，根 manifest.json 附逐文件 stat 对账；目录不存在/不是目录 ⇒ IO_ERROR；空目录 ⇒ count:0 + note。",
           "properties": {
+            "directory": {
+              "type": "string",
+              "description": "可选: 目录模式的根目录（磁盘路径）；给出时递归扫描该目录的 SFZ 与 manifest，不查会话 registry；不存在/不是目录 ⇒ `IO_ERROR`；不给 = 会话模式（既有行为）"
+            },
             "dryRun": {
               "type": "boolean",
               "default": false
