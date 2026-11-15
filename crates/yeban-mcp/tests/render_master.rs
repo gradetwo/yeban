@@ -9997,3 +9997,84 @@ fn unrouted_tracks_are_named_by_a_warning_and_stay_silent() {
         "整份文件逐字节相同"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 母带推子预警（第五份报告 A-4）：推子在限幅器之后、> 0 dB 必须被点名
+// ---------------------------------------------------------------------------
+
+/// ① 主总线推子 = +2 dB ⇒ 恰好一条 `masterFaderAboveUnity` 预警
+/// （`faderDb` 报实值、点名主总线轨）；② 推子 = 0 dB 的同一工程没有
+/// 这条预警。预警只生成 JSON，⛔ 不改推子、不改拓扑。
+///
+/// 注入（实测红）：装配链漏挂 `master_fader_warning` ⇒ 第一段断言红；
+/// 触发条件写成 `>= 0` ⇒ 对照段（0 dB）误报、判据红。
+#[test]
+fn master_fader_above_unity_is_named_by_a_warning() {
+    let scratch = Scratch::new("master-fader");
+    let mut proj = project(&Spec::default());
+    let master_id = proj.master_bus_track_id;
+    proj.tracks
+        .get_mut(&master_id)
+        .expect("主总线轨必须在")
+        .volume_db = 2.0;
+    proj.validate()
+        .unwrap_or_else(|error| panic!("推子 +2 dB 的夹具工程必须合法: {error}"));
+
+    let (mut dispatcher, auth) = dispatcher_with(&proj, &scratch.join("demo.yeban"));
+    let out = scratch.join("master.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(result["status"], "success", "{result}");
+    let warnings = result["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组");
+    let fader: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "masterFaderAboveUnity")
+        .collect();
+    assert_eq!(
+        fader.len(),
+        1,
+        "推子 +2 dB 必须恰好一条 masterFaderAboveUnity 预警: {warnings:?}"
+    );
+    assert_eq!(fader[0]["faderDb"], 2.0, "预警必须报推子实值: {}", fader[0]);
+    assert_eq!(
+        fader[0]["trackId"],
+        master_id.to_canonical_string(),
+        "预警必须点名主总线轨: {}",
+        fader[0]
+    );
+
+    // 对照：推子 0 dB ⇒ 没有这条预警。
+    let bare = project(&Spec::default());
+    let (mut bare_dispatcher, bare_auth) = dispatcher_with(&bare, &scratch.join("bare.yeban"));
+    let bare_out = scratch.join("bare.wav");
+    let bare_result = call(
+        &mut bare_dispatcher,
+        &bare_auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": bare_out.display().to_string(),
+        }),
+    );
+    assert_eq!(bare_result["status"], "success", "{bare_result}");
+    let bare_warnings = bare_result["data"]["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组");
+    assert_eq!(
+        bare_warnings
+            .iter()
+            .filter(|warning| warning["code"] == "masterFaderAboveUnity")
+            .count(),
+        0,
+        "推子 0 dB 不许出现 masterFaderAboveUnity 预警: {bare_warnings:?}"
+    );
+}

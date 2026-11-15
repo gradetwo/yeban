@@ -1679,7 +1679,39 @@ fn unrouted_tracks_warning(project: &YebanProjectV1, probe_nodes: &[EntityId]) -
     }))
 }
 
-/// 解析一个 tick 实参（`startTick` / `endTick`）：非负整数或缺省（`None`）。
+/// ⭐ 第五份报告 A-4：**母带推子在限幅器之后**且被推过 0 dB 时的预警
+/// （`data.warnings[]` 的一条来源）。
+///
+/// 母带链的顺序是：源/插入链（含限幅器）先算完，主总线轨的推子
+/// （`TrackV3::volume_db`）在第 9 步对整段输出**再乘一次**。推子 > 0 dB
+/// ⇒ 限幅器钉住的上限被推子整体抬高，超过 0 dBFS 的部分在量化时硬削波，
+/// 而削波预警（`exportClipping`）只报"削了多少"，不报"为什么削"。
+/// 本预警补上原因：**推子位置与推子值**。
+///
+/// ⛔ 只生成 JSON：不改拓扑、不移动推子、不改一个样本（与削波预警同一条
+/// 纪律）。推子 ≤ 0 dB ⇒ `None`（**没有这条预警**，不是恒报）。
+fn master_fader_warning(project: &YebanProjectV1) -> Option<Value> {
+    let master = project.tracks.get(&project.master_bus_track_id)?;
+    let fader_db = master.volume_db;
+    if fader_db.is_nan() || fader_db <= 0.0 {
+        return None;
+    }
+    let hint = format!(
+        "主总线推子被推到 +{fader_db:.2} dB。母带链的顺序是限幅器在前、推子在后：\
+         推子把限幅器钉住的输出整体再抬高 {fader_db:.2} dB，超过 0 dBFS 的部分\
+         在量化时被硬削波（削波量见 `exportClipping` 预警）。修法：把主总线推子\
+         回到 ≤ 0 dB，或在推子**之前**（插入链/源增益）降下等量增益。\
+         ⛔ 本工具不自动改推子，音频一个字节都没动。"
+    );
+    Some(serde_json::json!({
+        "code": "masterFaderAboveUnity",
+        "severity": "warning",
+        "blocking": false,
+        "trackId": master.id.to_canonical_string(),
+        "faderDb": json_f32(Some(fader_db)),
+        "hint": hint,
+    }))
+}
 ///
 /// # Errors
 ///
@@ -3955,6 +3987,9 @@ pub fn build(
     ))
     // ⭐ 未入路由图的轨必须被点名（见 `unrouted_tracks_warning`，探针后已算好）。
     .chain(unrouted_warning)
+    // ⭐ 第五份报告 A-4：母带推子（限幅器之后）被推过 0 dB 必须被点名
+    // （见 `master_fader_warning`：削波的**原因**，与削波量分开报）。
+    .chain(master_fader_warning(project))
     .collect();
     // 10b. 响度读数 + 对 `targetLufs` 的判定（在抖动之前的浮点母带上）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是
