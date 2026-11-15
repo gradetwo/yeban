@@ -809,6 +809,7 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
+                root.active-top-menu = "";
                 root.show-cmd-palette = false;
                 root.show-hotspots = false;
                 return accept;
@@ -1259,20 +1260,25 @@ export component MainWindow inherits Window {
             }
 
             Rectangle {
-                x: root.active-top-menu == "file" ? 56px :
+                x: Math.min(parent.width - self.width - 8px,
+                   root.active-top-menu == "file" ? 56px :
                    (root.active-top-menu == "edit" ? 96px :
                    (root.active-top-menu == "track" ? 136px :
                    (root.active-top-menu == "transport" ? 176px :
                    (root.active-top-menu == "mix" ? 216px :
-                   (root.active-top-menu == "view" ? 256px : 296px)))));
+                   (root.active-top-menu == "view" ? 256px : 296px))))));
                 y: 4px;
                 width: 248px;
+                height: Math.min(parent.height - 16px, top_menu_col.preferred-height);
+                clip: true;
                 background: #0d121d;
                 border-radius: 6px;
                 border-width: 1px;
                 border-color: Theme.accent.with-alpha(0.55);
+                drop-shadow-blur: 16px;
+                drop-shadow-color: #000000a0;
 
-                VerticalLayout {
+                top_menu_col := VerticalLayout {
                     padding: 6px;
                     spacing: 3px;
 

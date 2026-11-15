@@ -1892,14 +1892,14 @@ export component UnifiedLowerDock inherits Rectangle {
         x: Math.max(12px, parent.width - 420px);
         y: 38px;
         width: 232px;
-        height: 294px;
+        height: Math.min(parent.height - 44px, dock_inst_menu_col.preferred-height);
         background: #141923;
         border-radius: 6px;
         border-width: 1px;
         border-color: Theme.accent;
         drop-shadow-blur: 16px;
         drop-shadow-color: #000000a0;
-        VerticalLayout {
+        dock_inst_menu_col := VerticalLayout {
             padding: 6px;
             spacing: 2px;
             Text {

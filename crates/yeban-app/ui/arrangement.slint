@@ -1639,14 +1639,14 @@ export component ArrangementViewport inherits Rectangle {
             x: Theme.track-headers-on-right ? parent.width - root.headers-width + 8px : 8px;
             y: 50px;
             width: 196px;
-            height: 222px;
+            height: Math.min(parent.height - 58px, arr_tracks_menu_col.preferred-height);
             background: #141923;
             border-radius: 6px;
             border-width: 1px;
             border-color: Theme.accent;
             drop-shadow-blur: 14px;
             drop-shadow-color: #00000090;
-            VerticalLayout {
+            arr_tracks_menu_col := VerticalLayout {
                 padding: 6px;
                 spacing: 2px;
                 for opt in [
@@ -1687,14 +1687,14 @@ export component ArrangementViewport inherits Rectangle {
             x: Theme.track-headers-on-right ? parent.width - root.headers-width - 10px : 10px;
             y: 54px;
             width: 228px;
-            height: 294px;
+            height: Math.min(parent.height - 62px, arr_inst_menu_col.preferred-height);
             background: #141923;
             border-radius: 6px;
             border-width: 1px;
             border-color: Theme.accent;
             drop-shadow-blur: 16px;
             drop-shadow-color: #000000a0;
-            VerticalLayout {
+            arr_inst_menu_col := VerticalLayout {
                 padding: 6px;
                 spacing: 2px;
                 Text {

@@ -190,3 +190,46 @@ fn transport_and_tool_mapping_do_not_double_toggle() {
     assert_eq!(ui.get_cycle_enabled(), !loop_before);
     assert_eq!(ui.get_is_looping(), !loop_before);
 }
+
+/// 顶部下拉菜单高度按菜单项首选高度收缩，不再竖直拉满整窗，且 Esc 可关闭菜单。
+#[test]
+fn top_menu_dropdown_fits_content_and_closes_on_escape() {
+    let port = build_rig(&ViewState::demo());
+    let ui = port.ui();
+
+    ui.set_active_top_menu("file".into());
+    let with_file = port.window().capture().expect("渲染打开文件菜单帧");
+    // 文件菜单 x=56..304 (10 项 ≈ 285px 高, 位于 y=52..337)。取右侧内边距 x=298 验证纯背景：
+    let top_box_px = with_file.pixel(298, 100).expect("顶部菜单区域像素");
+    assert_eq!(
+        top_box_px,
+        [13, 18, 29],
+        "菜单顶部区域 (298, 100) 应为菜单底色 #0d121d"
+    );
+
+    // 切换为较短的 edit 菜单 (6 项 ≈ 177px 高, 位于 y=52..229)，验证下方窗口区已脱出菜单框
+    ui.set_active_top_menu("edit".into());
+    let with_edit = port.window().capture().expect("渲染打开编辑菜单帧");
+    assert_ne!(
+        with_file.pixel(298, 280),
+        with_edit.pixel(298, 280),
+        "文件菜单(10项)在 y=280 仍在菜单框内，而更短的编辑菜单(6项)已结束"
+    );
+    assert_eq!(
+        with_file.pixel(298, 650),
+        with_edit.pixel(298, 650),
+        "y=650 下半窗区不应被菜单竖直拉满"
+    );
+    assert_ne!(
+        with_file.pixel(298, 650).unwrap(),
+        [13, 18, 29],
+        "文件菜单不得竖直延伸至窗口下部 y=650"
+    );
+
+    port.window().key_press(slint::platform::Key::Escape);
+    assert_eq!(
+        ui.get_active_top_menu().as_str(),
+        "",
+        "Esc 必须关闭顶部菜单"
+    );
+}
