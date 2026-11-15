@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 47 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 50] = [
+/// 51 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 51] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -120,6 +120,13 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 50] = [
         "outDir",
         BoundStatus::Unbounded(
             "同 `path`：诊断包的输出目录，操作员自选。后果限于该次调用的目录创建与报文长度。\n收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        // ⭐ B7：`yeban_list_instruments` 目录模式的根目录，与 `path` 同类。
+        "directory",
+        BoundStatus::Unbounded(
+            "同 `path`：本地操作员自选目录，只读扫描（不改工程、不落盘）。后果限于该次调用的扫描工作量与报文长度。收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
         ),
     ),
     (

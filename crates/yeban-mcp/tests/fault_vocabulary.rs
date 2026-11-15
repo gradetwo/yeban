@@ -1764,13 +1764,18 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
 // B2（2026-11-14）：`with_unsaved_change_stats` 的 `data.get("reason")` 是第 4 处
 // **参数名**站点（已登记进 [`REASON_ARGUMENT_NAME_USES`]）⇒ 参数名 3 → 4、
 // 总出现 343 → 344（键站点 340 不动；344 = 340 ＋ 参数名 4）。
-const REASON_OCCURRENCES_TOTAL: usize = 344;
+// B7（本支）：`yeban_list_instruments` 目录模式在 `domain/mod.rs` 新增 5 处
+// 字面站点（`listDirectoryEmpty` / `listDirectoryNotDirectory` /
+// `listDirectoryNotFound` 各 1 处、`listDirectoryReadFailed` 2 处）⇒ 出现
+// 344 → 349、键站点 340 → 345、字面站点 329 → 334（恒等式仍闭合：
+// 345 = 字面 334 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；349 = 345 ＋ 参数名 4）。
+const REASON_OCCURRENCES_TOTAL: usize = 349;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 340;
-const REASON_LITERAL_SITES_TOTAL: usize = 329;
+const REASON_KEY_SITES_TOTAL: usize = 345;
+const REASON_LITERAL_SITES_TOTAL: usize = 334;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
