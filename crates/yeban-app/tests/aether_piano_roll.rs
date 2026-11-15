@@ -800,3 +800,304 @@ fn piano_roll_preserves_pitch_bounds_and_octave_direction_across_horizontal_scro
     assert_eq!(live.ui().get_roll_min_pitch(), 22);
     assert_eq!(live.ui().get_roll_max_pitch(), 37);
 }
+
+fn assert_no_overlapping_clips(track: &yeban_model::project::TrackV3) {
+    let mut ranges: Vec<(u64, u64)> = track
+        .clips
+        .values()
+        .map(|p| (p.start_tick, p.start_tick.saturating_add(p.duration_ticks)))
+        .collect();
+    ranges.sort_unstable();
+    assert!(!ranges.is_empty(), "断言轨道必须至少有一个片段摆放");
+    for pair in ranges.windows(2) {
+        assert!(
+            pair[0].1 <= pair[1].0,
+            "自动创建/顺延片段不得与同轨已有片段重叠: {ranges:?}"
+        );
+    }
+}
+
+fn add_empty_midi_placement(
+    port: &UndoPort,
+    track_id: EntityId,
+    name: &str,
+    start_tick: u64,
+    duration_ticks: u64,
+) {
+    let clip_id = EntityId::new();
+    let placement_id = EntityId::new();
+    let clip = yeban_model::project::ClipPoolEntry {
+        id: clip_id,
+        name: name.to_owned(),
+        content: ClipContent::Midi {
+            notes: std::collections::BTreeMap::new(),
+        },
+    };
+    let placement = yeban_model::project::ClipPlacement {
+        id: placement_id,
+        clip_id,
+        start_tick,
+        duration_ticks,
+        loop_config: yeban_model::project::LoopConfig::default(),
+        muted: false,
+        offset_samples: None,
+    };
+    port.commit_ops(
+        NOW_MS,
+        "test: seed midi clip",
+        vec![
+            yeban_model::ops::Op::AddClip { clip },
+            yeban_model::ops::Op::AddClipPlacement {
+                track_id,
+                placement,
+            },
+        ],
+    )
+    .expect("测试预置 MIDI 片段必须提交成功");
+}
+
+#[test]
+fn piano_roll_auto_clip_insert_never_overlaps_existing_placements() {
+    let base = yeban_model::samples::default_project();
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<aether-roll-no-overlap>",
+            "yeban-app",
+            base.clone(),
+            NOW_MS,
+        )
+        .expect("撤销会话必须能打开"),
+    ));
+    let create_a =
+        yeban_app::bridge::track_create_ops(&base, yeban_app::bridge::NewTrackKind::Midi)
+            .expect("可建 MIDI 轨 A");
+    let track_a_id = create_a
+        .iter()
+        .find_map(|op| match op {
+            yeban_model::ops::Op::AddTrack { track } => Some(track.id),
+            _ => None,
+        })
+        .expect("含 Track A");
+    undo.commit_ops(NOW_MS, "test: add track A", create_a)
+        .expect("Track A 提交成功");
+    // Case (a): Track A has only [7680..11520)
+    add_empty_midi_placement(&undo, track_a_id, "LateClip", 7680, 3840);
+    // Case (b): Track B has [0..3840) and [7680..11520)
+    let create_b = yeban_app::bridge::track_create_ops(
+        &undo.try_project().unwrap(),
+        yeban_app::bridge::NewTrackKind::Midi,
+    )
+    .expect("可建 MIDI 轨 B");
+    let track_b_id = create_b
+        .iter()
+        .find_map(|op| match op {
+            yeban_model::ops::Op::AddTrack { track } => Some(track.id),
+            _ => None,
+        })
+        .expect("含 Track B");
+    undo.commit_ops(NOW_MS, "test: add track B", create_b)
+        .expect("Track B 提交成功");
+    add_empty_midi_placement(&undo, track_b_id, "EarlyB", 0, 3840);
+    add_empty_midi_placement(&undo, track_b_id, "LateB", 7680, 3840);
+
+    let seeded = undo.try_project().expect("工程存在");
+    let view = ViewState::from_project(&seeded).expect("投影成功");
+    let scene = DemoScene::from_view(&view);
+    let production = ProductionLoop::without_engine();
+    let engine = production.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+
+    let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    let ui = live.ui();
+    host::wire_roll_edit(ui, &undo);
+    host::wire_undo(ui, &undo);
+    host::wire_track_select(ui, &undo);
+    host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
+    host::wire_aether_actions(ui, Rc::clone(&undo), Rc::clone(&engine), view_cell);
+
+    // Subtest (a): Track A [7680..11520) + click at tick 240 -> creates [0..7680), no overlap.
+    ui.set_selected_track_id(track_a_id.to_canonical_string().into());
+    ui.set_selected_clip_ulid("".into());
+    ui.set_roll_scroll_x(0.0);
+    ui.set_active_tool(2);
+    let click_x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 12.0;
+    let click_y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 4.0 + 4.0;
+    ui.invoke_clicked(click_x, click_y);
+    let after_a = undo.try_project().expect("工程存在");
+    let track_a = &after_a.tracks[&track_a_id];
+    assert_eq!(track_a.clips.len(), 2, "Track A 应新建 1 条前置片段");
+    assert_no_overlapping_clips(track_a);
+    let ranges_a: Vec<(u64, u64)> = track_a
+        .clips
+        .values()
+        .map(|p| (p.start_tick, p.start_tick + p.duration_ticks))
+        .collect();
+    assert!(
+        ranges_a.contains(&(0, 7680)),
+        "前置新建片段必须截断在 7680 不越界重叠: {ranges_a:?}"
+    );
+
+    // Subtest (b): Track B [0..3840) + [7680..11520) ->
+    // 1) step 17 (tick 4080) extends [0..3840) to [0..7680) cleanly;
+    // 2) step 49 (tick 11760) creates [11520..26880) cleanly without overlapping [7680..11520).
+    ui.set_selected_track_id(track_b_id.to_canonical_string().into());
+    ui.set_selected_clip_ulid("".into());
+    ui.invoke_piano_note_create(24, 17);
+    let after_b1 = undo.try_project().expect("工程存在");
+    let track_b1 = &after_b1.tracks[&track_b_id];
+    assert_eq!(track_b1.clips.len(), 2, "4080 应顺延既有 [0..3840) 片段");
+    assert_no_overlapping_clips(track_b1);
+    let mut ranges_b1: Vec<(u64, u64)> = track_b1
+        .clips
+        .values()
+        .map(|p| (p.start_tick, p.start_tick + p.duration_ticks))
+        .collect();
+    ranges_b1.sort_unstable();
+    assert_eq!(ranges_b1, vec![(0, 7680), (7680, 11520)]);
+
+    ui.invoke_piano_note_create(24, 49);
+    let after_b2 = undo.try_project().expect("工程存在");
+    let track_b2 = &after_b2.tracks[&track_b_id];
+    assert_eq!(
+        track_b2.clips.len(),
+        3,
+        "11760 应在 [7680..11520) 之后新建独立片段"
+    );
+    assert_no_overlapping_clips(track_b2);
+    let mut ranges_b2: Vec<(u64, u64)> = track_b2
+        .clips
+        .values()
+        .map(|p| (p.start_tick, p.start_tick + p.duration_ticks))
+        .collect();
+    ranges_b2.sort_unstable();
+    assert_eq!(ranges_b2, vec![(0, 7680), (7680, 11520), (11520, 26880)]);
+}
+
+#[test]
+fn piano_roll_audio_track_auditions_with_drums_only_or_muted_midi_and_syncs_track_index() {
+    let mut project = yeban_model::samples::demo_project();
+    let audio_id = project
+        .tracks
+        .values()
+        .find(|t| t.kind == yeban_model::project::TrackKind::Audio)
+        .map(|t| t.id)
+        .expect("demo_project 含音频轨");
+    // Turn Track 0 ("鼓") into a real Drums kit (notes 36/38/39/42/46, not mapping C4=60)
+    // and mute every other MIDI track so no existing MIDI track can play C4.
+    let mut configured_drums = false;
+    let mut muted_non_drum_midi = 0usize;
+    for track in project.tracks.values_mut() {
+        track.solo = false;
+        if track.id != project.master_bus_track_id
+            && track.kind == yeban_model::project::TrackKind::Midi
+        {
+            if !configured_drums {
+                track.devices = vec![yeban_model::project::DeviceDefinition {
+                    id: EntityId::new(),
+                    name: "Yeban Drums".to_owned(),
+                    kind: yeban_model::project::DeviceKind::InternalInstrument,
+                    bypassed: false,
+                    params: vec![
+                        ("kick_note", 36.0),
+                        ("snare_note", 38.0),
+                        ("closed_hat_note", 42.0),
+                        ("open_hat_note", 46.0),
+                        ("clap_note", 39.0),
+                    ]
+                    .into_iter()
+                    .map(|(name, value)| yeban_model::project::ParameterValue {
+                        name: name.to_owned(),
+                        value,
+                        unit: None,
+                    })
+                    .collect(),
+                    latency_samples: 0,
+                    plugin: None,
+                }];
+                assert!(
+                    yeban_engine::drums::DrumsParams::from_devices(&track.devices).is_some(),
+                    "鼓机设备必须被引擎识别"
+                );
+                configured_drums = true;
+            } else {
+                track.mute = true;
+                muted_non_drum_midi += 1;
+            }
+        }
+    }
+    assert!(
+        configured_drums && muted_non_drum_midi >= 1,
+        "demo_project 必须配置一条鼓机轨并静音其余 MIDI 轨"
+    );
+
+    let view = ViewState::from_project(&project).expect("投影成功");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<aether-roll-audio-drums-only>",
+            "yeban-app",
+            project.clone(),
+            NOW_MS,
+        )
+        .expect("撤销会话必须能打开"),
+    ));
+    let production = ProductionLoop::start(&project, 0).expect("启动实时引擎");
+    let engine = production.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+
+    let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    let ui = live.ui();
+    host::wire_roll_edit(ui, &undo);
+    host::wire_undo(ui, &undo);
+    host::wire_mixer_edit(ui, &undo);
+    host::wire_track_select(ui, &undo);
+    host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
+    host::wire_aether_actions(ui, Rc::clone(&undo), Rc::clone(&engine), view_cell);
+
+    let tracks_before = undo.try_project().unwrap().tracks.len();
+    ui.set_selected_track_id(audio_id.to_canonical_string().into());
+    ui.set_selected_clip_ulid("".into());
+
+    // Pitch C4 (lane 15): Drums track doesn't map C4, Track 3 is muted -> must auto-create synth MIDI track and sound.
+    ui.invoke_piano_key_pressed(15);
+    assert!(ui.get_module_status_succeeded());
+    let mut buf = vec![0.0_f32; 512 * 2];
+    engine.borrow_mut().render_into(&mut buf, 2, 4);
+    let peak = buf.iter().copied().fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(
+        peak > 1e-4,
+        "仅有未映射鼓轨与静音 MIDI 轨时，选中音频轨试听琴键必须自动新建合成器轨并发声 (peak={peak})"
+    );
+    ui.invoke_piano_key_released(15);
+    let tail_quanta =
+        ((48_000 * 2) / yeban_app::engine_host::EngineHost::quantum_frames().max(1)) as u64;
+    engine.borrow_mut().pump(tail_quanta);
+    assert_eq!(undo.try_project().unwrap().tracks.len(), tracks_before + 1);
+
+    // Switch back to Audio track and create a note -> auto-created track must sync selected_track_index cleanly.
+    ui.set_selected_track_id(audio_id.to_canonical_string().into());
+    ui.set_selected_clip_ulid("".into());
+    ui.invoke_piano_note_create(24, 1);
+
+    let after_note = undo.try_project().unwrap();
+    assert_eq!(after_note.tracks.len(), tracks_before + 2);
+    let selected_id = ui.get_selected_track_id().to_string();
+    let expected_view = ViewState::from_project(&after_note).expect("重投影成功");
+    let expected_idx = expected_view
+        .tracks
+        .iter()
+        .position(|t| t.id == selected_id)
+        .expect("新建轨道必须出现在视图轨道列表中")
+        + 1;
+    assert_eq!(
+        ui.get_selected_track_index() as usize,
+        expected_idx,
+        "自动建轨后 selected_track_index 必须同步为新轨 1-based 下标"
+    );
+}
