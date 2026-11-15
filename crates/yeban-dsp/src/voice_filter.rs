@@ -346,6 +346,14 @@ impl VoiceFilter {
     /// ⚠ 调用方的节流义务：系数重算含 `sin_cos`/`powf`，只应在目标截止
     /// **真的变了**时调用（引擎在电平变化时才调，恒定段零重算）。
     pub fn retune_cutoff(&mut self, cutoff_hz: f32) {
+        self.retune(cutoff_hz, self.resonance_db);
+    }
+
+    /// ⭐ **调制入口（截止＋谐振版）**（SFZ LFO 片，`lfoN_resonance` 的落点）：
+    /// 与 [`Self::retune_cutoff`] 同一条纪律（保状态、同一份系数代码），
+    /// 只是谐振也换成 `resonance_db`（由 [`Self::configured`] 钳进规范域）。
+    /// `retune_cutoff(hz)` ≡ `retune(hz, 自带谐振)` ⇒ 既有调用逐位不变。
+    pub fn retune(&mut self, cutoff_hz: f32, resonance_db: f32) {
         if self.active == 0 || !cutoff_hz.is_finite() {
             return;
         }
@@ -357,7 +365,7 @@ impl VoiceFilter {
             (self.sections[1].v1, self.sections[1].v2),
             (self.sections[2].v1, self.sections[2].v2),
         ];
-        *self = VoiceFilter::configured(kind, cutoff_hz, self.resonance_db, self.sample_rate);
+        *self = VoiceFilter::configured(kind, cutoff_hz, resonance_db, self.sample_rate);
         for (section, (v1, v2)) in self.sections.iter_mut().zip(states) {
             section.v1 = v1;
             section.v2 = v2;

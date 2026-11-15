@@ -257,11 +257,18 @@ impl V1Lfo {
     /// [`Self::effective_depth`] 即得该目标的偏移量。
     #[must_use]
     pub fn value_at(&self, t: f32, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        self.sample_at(t, self.effective_freq(cc))
+    }
+
+    /// ⭐ **已求值频率版**的 [`Self::value_at`]（引擎逐样本热路径用：
+    /// 频率在一个块内只按探针求一次，逐样本只调本函数；语义与
+    /// [`Self::value_at`] 逐字相同）。
+    #[must_use]
+    pub fn sample_at(&self, t: f32, freq: f32) -> f32 {
         let elapsed = t - self.delay;
         if elapsed < 0.0 {
             return 0.0;
         }
-        let freq = self.effective_freq(cc);
         if freq == 0.0 {
             return 0.0;
         }
@@ -420,12 +427,24 @@ impl GenericLfo {
     /// 按阶梯取电平、否则按 [`Self::wave`] 取波形；`fade` 同 [`V1Lfo::value_at`]。
     #[must_use]
     pub fn value_at(&self, t: f32, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
-        let delay = self.effective_delay(cc);
+        self.sample_at(
+            t,
+            self.effective_freq(cc),
+            self.effective_delay(cc),
+            self.effective_fade(cc),
+            self.effective_phase(cc),
+        )
+    }
+
+    /// ⭐ **已求值参数版**的 [`Self::value_at`]（引擎逐样本热路径用：
+    /// freq/delay/fade/phase 在一个块内只按探针求一次，逐样本只调
+    /// 本函数；语义与 [`Self::value_at`] 逐字相同）。
+    #[must_use]
+    pub fn sample_at(&self, t: f32, freq: f32, delay: f32, fade: f32, phase: f32) -> f32 {
         let elapsed = t - delay;
         if elapsed < 0.0 {
             return 0.0;
         }
-        let freq = self.effective_freq(cc);
         if freq == 0.0 {
             return 0.0;
         }
@@ -435,14 +454,13 @@ impl GenericLfo {
                 return 0.0;
             }
         }
-        let phase = self.effective_phase(cc) + cycles;
+        let phase = phase + cycles;
         let wave = if self.steps.is_empty() {
             self.wave.sample(phase)
         } else {
             let slot = (phase.rem_euclid(1.0) * self.steps.len() as f32) as usize;
             self.steps[slot.min(self.steps.len() - 1)] / 100.0
         };
-        let fade = self.effective_fade(cc);
         if fade > 0.0 {
             wave * (elapsed / fade).min(1.0)
         } else {
