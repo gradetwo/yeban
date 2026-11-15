@@ -446,13 +446,32 @@ fn dry_run_does_not_change_state() {
     // dryRun 不返回同一信封：它返回预览信封（`data.preview.result` = 总览本体，
     // 另有 `stateUnchanged` / `wouldChangeState` / 前后摘要）。比较本体，不比较信封。
     let preview_result = &first["data"]["preview"]["result"];
+    // 线 H：`cacheHit` 是每次调用的实测状态、本就不可能恒等（dryRun 先算
+    // 为 false、正式调用随后命中共享缓存为 true）⇒ 本体比较把它摘掉，
+    // 两个值各自单独钉。共享缓存是会话运行态、不是工程状态：dryRun 把
+    // 算好的总览留给后续调用复用，不算"改状态"（下面的 apply_revision /
+    // 提交数断言才是状态口径）。
+    assert_eq!(preview_result["cacheHit"], false, "dryRun 是首次计算");
+    assert_eq!(
+        second["data"]["cacheHit"], true,
+        "正式调用命中 dryRun 的计算"
+    );
+    let mut preview_data = preview_result.clone();
+    preview_data
+        .as_object_mut()
+        .expect("预览本体是对象")
+        .remove("cacheHit");
     let mut normal_data = second["data"].clone();
     normal_data
         .as_object_mut()
         .expect("data 是对象")
         .remove("commitModel");
+    normal_data
+        .as_object_mut()
+        .expect("data 是对象")
+        .remove("cacheHit");
     assert_eq!(
-        preview_result, &normal_data,
+        preview_data, normal_data,
         "dryRun 预览的总览本体必须与正式调用逐位相同（只读工具无写副作用）"
     );
     assert_eq!(first["data"]["stateUnchanged"], true);
@@ -779,14 +798,27 @@ fn invalid_expected_levels_are_rejected() {
         assert_eq!(code, "INVALID_PARAMETER_RANGE");
         assert_eq!(data["reason"], "invalidExpectedLevels");
     }
-    // 空对象合法 = 无标注（与缺省调用逐位相同）。
+    // 空对象合法 = 无标注（与缺省调用逐位相同，只差线 H 的 `cacheHit`
+    // 实测状态：空对象那次是首次计算 false、缺省那次随后命中 true）。
     let empty = call_tool(
         &mut dispatcher,
         "get_song_overview",
         json!({"expected_levels": {}}),
     );
     let plain = call_tool(&mut dispatcher, "get_song_overview", json!({}));
-    assert_eq!(ok_data(&empty), ok_data(&plain));
+    assert_eq!(ok_data(&empty)["cacheHit"], false);
+    assert_eq!(ok_data(&plain)["cacheHit"], true);
+    let mut empty_data = ok_data(&empty).clone();
+    let mut plain_data = ok_data(&plain).clone();
+    empty_data
+        .as_object_mut()
+        .expect("data 是对象")
+        .remove("cacheHit");
+    plain_data
+        .as_object_mut()
+        .expect("data 是对象")
+        .remove("cacheHit");
+    assert_eq!(empty_data, plain_data, "空对象与缺省调用的本体逐位相同");
 }
 
 // ---------------------------------------------------------------------------
