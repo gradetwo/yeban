@@ -1046,7 +1046,7 @@ export component MainWindow inherits Window {
                     execute-action(id) => { root.command-execute(id); }
                     focus-devices() => {
                         root.show-lower-dock = true;
-                        Theme.active-dock-tab = "devices";
+                        root.apply-dock-tab("devices");
                     }
                 }
 
@@ -1122,6 +1122,7 @@ export component MainWindow inherits Window {
                     ticks-per-pixel: root.roll-ticks-per-pixel;
                     playhead-px: root.playhead-px;
                     is-looping: root.is-looping;
+                    bar-positions: root.bar-positions;
                     bar-start-index: root.bar-start-index;
                     bar-count: root.bar-count;
                     bar-width-px: root.bar-width-px;

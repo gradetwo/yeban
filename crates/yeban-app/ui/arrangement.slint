@@ -14,6 +14,7 @@ export component ArrangementViewport inherits Rectangle {
     out property <length> playhead-origin-x: root.timeline-origin-x;
     out property <length> playhead-screen-x: root.timeline-origin-x + root.playhead-px - root.scroll-x;
     // [Q6] 标尺读数：可见小节数 / 小节宽 / 循环区间（全部由宿主从投影写入）。
+    in-out property <[length]> bar-positions: [];
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 128px;
@@ -301,7 +302,7 @@ export component ArrangementViewport inherits Rectangle {
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个
                             // 水平刻度（`blk.start_px = tick / ticks_per_pixel`）。
                             for i in root.bar-count : Text {
-                                x: (root.bar-start-index + i) * root.bar-width-px - root.scroll-x;
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: root.bar-width-px;
                                 height: parent.height;
@@ -1096,7 +1097,7 @@ export component ArrangementViewport inherits Rectangle {
                             // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
                             // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
                             for i in root.bar-count : Rectangle {
-                                x: (root.bar-start-index + i) * root.bar-width-px - root.scroll-x;
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
@@ -1640,8 +1641,8 @@ export component ArrangementViewport inherits Rectangle {
 
                             // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
                             for _i in root.bar-count : Rectangle {
-                                visible: (root.bar-start-index + _i) * root.bar-width-px - root.scroll-x >= 0px;
-                                x: (root.bar-start-index + _i) * root.bar-width-px - root.scroll-x;
+                                visible: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px;
+                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
