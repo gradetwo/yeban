@@ -18624,6 +18624,190 @@ fn aether_commit(ui: &MainWindow, port: &UndoPort, ops: Vec<yeban_model::Op>, la
     true
 }
 
+fn device_name_matches(dev_name: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return false;
+    }
+    let lower = dev_name.to_ascii_lowercase();
+    lower == needle_lower || lower.contains(needle_lower)
+}
+
+fn param_name_is_alias(param_name: &str, needle_lower: &str) -> bool {
+    matches!(
+        (param_name.to_ascii_lowercase().as_str(), needle_lower),
+        ("cutoff_hz", "cutoff") | ("cutoff", "cutoff_hz")
+    )
+}
+
+fn find_device_param_exact(
+    track: &yeban_model::project::TrackV3,
+    dev_lower: &str,
+    param_lower: &str,
+    allow_alias: bool,
+) -> Option<(usize, usize, f32)> {
+    if dev_lower.is_empty() || param_lower.is_empty() {
+        return None;
+    }
+    track.devices.iter().enumerate().find_map(|(slot, dev)| {
+        device_name_matches(&dev.name, dev_lower)
+            .then(|| {
+                dev.params.iter().enumerate().find_map(|(pidx, p)| {
+                    let matched = if allow_alias {
+                        param_name_is_alias(&p.name, param_lower)
+                    } else {
+                        p.name.eq_ignore_ascii_case(param_lower)
+                    };
+                    matched.then_some((slot, pidx, p.value))
+                })
+            })
+            .flatten()
+    })
+}
+
+fn find_device_param_by_name(
+    track: &yeban_model::project::TrackV3,
+    param_lower: &str,
+    allow_alias: bool,
+) -> Option<(usize, usize, f32)> {
+    if param_lower.is_empty() {
+        return None;
+    }
+    track.devices.iter().enumerate().find_map(|(slot, dev)| {
+        dev.params.iter().enumerate().find_map(|(pidx, p)| {
+            let matched = if allow_alias {
+                param_name_is_alias(&p.name, param_lower)
+            } else {
+                p.name.eq_ignore_ascii_case(param_lower)
+            };
+            matched.then_some((slot, pidx, p.value))
+        })
+    })
+}
+
+fn find_device_param_fallback(
+    track: &yeban_model::project::TrackV3,
+    dev_lower: &str,
+) -> Option<(usize, usize, f32)> {
+    if !dev_lower.is_empty()
+        && let Some(found) = track.devices.iter().enumerate().find_map(|(slot, dev)| {
+            device_name_matches(&dev.name, dev_lower)
+                .then(|| dev.params.first().map(|p| (slot, 0, p.value)))
+                .flatten()
+        })
+    {
+        return Some(found);
+    }
+    track
+        .devices
+        .iter()
+        .enumerate()
+        .find_map(|(slot, dev)| dev.params.first().map(|p| (slot, 0, p.value)))
+}
+
+fn find_param_in_tracks<'a, I>(
+    tracks: I,
+    dev_lower: &str,
+    param_lower: &str,
+) -> Option<(yeban_model::EntityId, usize, usize, f32)>
+where
+    I: Iterator<Item = &'a yeban_model::project::TrackV3> + Clone,
+{
+    for allow_alias in [false, true] {
+        for track in tracks.clone() {
+            if let Some((s, p, v)) =
+                find_device_param_exact(track, dev_lower, param_lower, allow_alias)
+            {
+                return Some((track.id, s, p, v));
+            }
+        }
+    }
+    for allow_alias in [false, true] {
+        for track in tracks.clone() {
+            if let Some((s, p, v)) = find_device_param_by_name(track, param_lower, allow_alias) {
+                return Some((track.id, s, p, v));
+            }
+        }
+    }
+    for track in tracks {
+        if let Some((s, p, v)) = find_device_param_fallback(track, dev_lower) {
+            return Some((track.id, s, p, v));
+        }
+    }
+    None
+}
+
+/// 按严格优先级解析 UI `device-param-changed` 回调的模型目标：
+/// 1) 精确 `(设备名+参数名)`（先选中轨/机架轨，再全工程）
+/// 2) 精确 `(参数名)`（先选中轨/机架轨，再全工程）
+/// 3) 兼容别名 `(cutoff <-> cutoff_hz)`（设备+别名，再别名；同样先选中轨再全工程）
+/// 4) 同设备/首设备首参数回退。
+fn resolve_device_param_target(
+    project: &yeban_model::YebanProjectV1,
+    preferred_track_id: Option<&str>,
+    device: &str,
+    param: &str,
+) -> Option<(yeban_model::EntityId, usize, usize, f32)> {
+    let dev_lower = device.trim().to_ascii_lowercase();
+    let param_lower = param.trim().to_ascii_lowercase();
+    let explicit_track = preferred_track_id
+        .and_then(|s| s.parse::<yeban_model::EntityId>().ok())
+        .and_then(|id| project.tracks.get(&id));
+    let rack_track = crate::bridge::display_track(project, preferred_track_id)
+        .filter(|rack| explicit_track.is_none_or(|exp| exp.id != rack.id));
+    let (pref_storage, pref_len) = match (explicit_track, rack_track) {
+        (Some(a), Some(b)) => ([a, b], 2),
+        (Some(a), None) | (None, Some(a)) => ([a, a], 1),
+        (None, None) => {
+            return find_param_in_tracks(project.tracks.values(), &dev_lower, &param_lower);
+        }
+    };
+    let pref = &pref_storage[..pref_len];
+
+    for allow_alias in [false, true] {
+        if let Some(hit) = pref
+            .iter()
+            .copied()
+            .find_map(|t| {
+                find_device_param_exact(t, &dev_lower, &param_lower, allow_alias)
+                    .map(|(s, p, v)| (t.id, s, p, v))
+            })
+            .or_else(|| {
+                project.tracks.values().find_map(|t| {
+                    find_device_param_exact(t, &dev_lower, &param_lower, allow_alias)
+                        .map(|(s, p, v)| (t.id, s, p, v))
+                })
+            })
+        {
+            return Some(hit);
+        }
+        if let Some(hit) = pref
+            .iter()
+            .copied()
+            .find_map(|t| {
+                find_device_param_by_name(t, &param_lower, allow_alias)
+                    .map(|(s, p, v)| (t.id, s, p, v))
+            })
+            .or_else(|| {
+                project.tracks.values().find_map(|t| {
+                    find_device_param_by_name(t, &param_lower, allow_alias)
+                        .map(|(s, p, v)| (t.id, s, p, v))
+                })
+            })
+        {
+            return Some(hit);
+        }
+    }
+
+    pref.iter()
+        .copied()
+        .find_map(|t| find_device_param_fallback(t, &dev_lower).map(|(s, p, v)| (t.id, s, p, v)))
+        .or_else(|| {
+            project.tracks.values().find_map(|t| {
+                find_device_param_fallback(t, &dev_lower).map(|(s, p, v)| (t.id, s, p, v))
+            })
+        })
+}
+
 /// 生产桥接层: 把**全部 33 个新 UI 独有回调**注册到真实 handler。
 ///
 /// 落点分三类, ⛔ 没有一个是 toast / 静默:
@@ -19118,32 +19302,31 @@ pub fn wire_aether_actions(
         }
     });
 
-    // ② device-param-changed: 定位第一台有参数的设备, 提交 Op::SetParam(DeviceParam)。
+    // ② device-param-changed: 优先按选中轨与设备/参数名精确解析，无果再按 4 层回退定位目标。
     ui.on_device_param_changed({
         let w = weak.clone();
         let port = Rc::clone(&port);
-        move |_device, _param, value| {
+        move |device, param, value| {
             let Some(ui) = w.upgrade() else {
                 return;
             };
             let Some(project) = port.try_project() else {
                 return;
             };
-            let found = project.tracks.iter().find_map(|(tid, track)| {
-                track
-                    .devices
-                    .iter()
-                    .enumerate()
-                    .find_map(|(slot, dev)| dev.params.first().map(|p| (*tid, slot, p.value)))
-            });
-            let Some((track_id, slot_index, old_val)) = found else {
+            let preferred = ui.get_selected_track_id();
+            let Some((track_id, slot_index, param_index, old_val)) = resolve_device_param_target(
+                &project,
+                (!preferred.is_empty()).then_some(preferred.as_str()),
+                device.as_str(),
+                param.as_str(),
+            ) else {
                 return;
             };
             let op = yeban_model::Op::SetParam {
                 target: yeban_model::project::AutomationTarget::DeviceParam {
                     track_id,
                     slot_index,
-                    param_index: 0,
+                    param_index,
                 },
                 old_val,
                 new_val: value,
@@ -19706,9 +19889,14 @@ pub fn wire_aether_actions(
             )));
             ui.set_track_height_override_pxs(ModelRc::new(VecModel::from(Vec::<f32>::new())));
             if let Some(project) = port.try_project()
-                && let Ok(view_state) = ViewState::from_project(&project)
+                && let Ok(view_state) = project_with_view_state(&project, &ui)
             {
-                apply_view(&ui, &view_state, ui.window().size().width as f32, 0.0);
+                apply_view(
+                    &ui,
+                    &view_state,
+                    ui.window().size().width as f32,
+                    ui.get_roll_scroll_x(),
+                );
             }
         }
     });
