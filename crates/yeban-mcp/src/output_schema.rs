@@ -1462,7 +1462,12 @@ fn edit_notes() -> Value {
              拼错的设备参数名（带 `deviceName` / `paramName` / `knownParams` —— \
              后者逐字列出引擎认的全部拼写，可当场改拼写重发）；`code:\"deviceOnSilentTrack\"` = 设备装到了\
              一条没有任何可发声内容的源轨上（主总线与有可发声上游的总线轨不报）（带 `trackId` / `track` / `placements` / `notes` 与逐字 `hint`）。\
-             两者都可能为空数组。",
+             两者都可能为空数组。\
+             ⭐ 第五份报告 A-3：批里含 `setParam`（`DeviceParam` 泳道）时多出 \
+             `resolvedParams`（⛔ 不进 `required`：没有设备参数写入时不带该键）—— \
+             逐条回显编译期命中的 `trackId` / `slotIndex` / `paramIndex` / \
+             `resolvedParamName`（与 `yeban_edit_automation` 回执同名同义，\
+             按名写对与写错从此可辨）。",
         ),
         &[
             "created",
@@ -1489,7 +1494,21 @@ fn edit_notes() -> Value {
             },
             "proposal": proposal_detail_schema(),
             "autoMerged": {"type": "boolean"},
-            "merge": merge_shape_roster()
+            "merge": merge_shape_roster(),
+            "resolvedParams": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["trackId", "slotIndex", "paramIndex", "resolvedParamName"],
+                    "properties": {
+                        "trackId": {"type": "string"},
+                        "slotIndex": {"type": "integer", "minimum": 0},
+                        "paramIndex": {"type": "integer", "minimum": 0},
+                        "resolvedParamName": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                }
+            }
         }),
     ))
 }

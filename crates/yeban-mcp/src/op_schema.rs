@@ -743,7 +743,7 @@ pub fn ops_items() -> Value {
                     },
                     "paramName": {
                         "type": "string",
-                        "description": "仅 `lane:\"DeviceParam\"`：按名寻址的参数名（大小写不敏感，按目标设备自己的 `params` 定下标；与 `paramIndex` 并存时必须指向同一个参数，不一致 ⇒ `paramNameIndexMismatch`；名字不存在 ⇒ `paramNameNotFound` 并列出可用名全集；同名参数多个 ⇒ `paramNameAmbiguous`）。落盘的模型目标仍是纯下标",
+                        "description": "仅 `lane:\"DeviceParam\"`：按名寻址的参数名（大小写不敏感，按目标设备自己的 `params` 定下标；与 `paramIndex` 并存时必须指向同一个参数，不一致 ⇒ `paramNameIndexMismatch`；名字不存在 ⇒ `paramNameNotFound` 并列出可用名全集；同名参数多个 ⇒ `paramNameAmbiguous`）。落盘的模型目标仍是纯下标；成功响应在 `data.resolvedParams[]` 逐条回显命中的 `resolvedParamName` 与下标（按下标寻址同样回显）",
                     },
                     "value": {
                         "type": "number",
