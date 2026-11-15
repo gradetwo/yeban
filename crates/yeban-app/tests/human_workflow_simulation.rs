@@ -188,9 +188,29 @@ fn simulated_human_ui_composition_mixing_and_wav_export_without_mcp() {
     // 3. 选中“导唱长笛”指派合成器，再插 EQ、Reverb 与 Compressor，检验多设备精确改参
     let lead_pos = ui_track_pos(ui, lead_id);
     ui.invoke_track_selected((lead_pos + 1) as i32);
+    // 校验错误/缺失样本的 SFZ 路径会被 Aether 音色菜单安全拒绝，不会把轨道静音成空白采样器
+    ui.invoke_track_instrument_change(
+        (lead_pos + 1) as i32,
+        "sfz:/nonexistent/broken_1930s_kit.sfz".into(),
+    );
+    assert!(
+        !ui.get_module_status_succeeded()
+            && undo.try_project().expect("拒绝后工程仍在").tracks[&lead_id]
+                .sampler
+                .is_none(),
+        "无效 SFZ 必须被安全拒绝而非静默提交"
+    );
     ui.invoke_track_instrument_change((lead_pos + 1) as i32, "synth:hollow".into());
     ui.invoke_device_insert_eq();
     ui.invoke_device_insert_reverb();
+    ui.invoke_track_instrument_change((lead_pos + 1) as i32, "fx:compressor".into());
+    assert!(
+        undo.try_project().expect("插入压缩器后").tracks[&lead_id]
+            .devices
+            .iter()
+            .any(|d| d.name == "压缩器"),
+        "通过 fx:compressor 菜单应能真实插入压缩器"
+    );
     ui.invoke_compressor_cycle_ratio();
 
     // 切到第 2 条钢琴轨也装上 synth:organ（验证 device-param-changed 精确按设备+参数名解析，不误伤他轨也不误覆盖 slot 0）

@@ -784,9 +784,11 @@ export component MainWindow inherits Window {
             MenuItem { title: "+ 新建 MIDI 合成器轨"; activated => { root.command-execute("track-add-midi"); } }
             MenuItem { title: "+ 新建音频轨"; activated => { root.command-execute("track-add-audio"); } }
             MenuItem { title: "+ 新建辅助总线轨"; activated => { root.command-execute("track-add-aux"); } }
+            MenuItem { title: "删除当前选中轨道"; activated => { root.command-execute("track-delete"); } }
             MenuSeparator {}
             MenuItem { title: "给当前轨插入 参量均衡 EQ"; activated => { root.command-execute("insert-eq"); } }
             MenuItem { title: "给当前轨插入 空间混响 Reverb"; activated => { root.command-execute("insert-reverb"); } }
+            MenuItem { title: "给当前轨插入 动态压缩 Compressor"; activated => { root.command-execute("insert-compressor"); } }
             MenuSeparator {}
             MenuItem { title: "均分所有轨道高度"; activated => { root.command-execute("normalize-heights"); } }
         }

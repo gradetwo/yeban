@@ -18033,6 +18033,7 @@ fn instrument_display_label(inst: &str) -> String {
     match inst {
         "fx:eq" => "Parametric EQ".to_owned(),
         "fx:reverb" => "Reverb".to_owned(),
+        "fx:compressor" | "fx:comp" => "Compressor".to_owned(),
         "sfz:default" => "SFZ 采样库...".to_owned(),
         _ => inst
             .strip_prefix("sfz:")
@@ -18457,6 +18458,10 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "new-midi-clip" => ui.invoke_clip_create(),
         "insert-eq" => ui.invoke_device_insert_eq(),
         "insert-reverb" => ui.invoke_device_insert_reverb(),
+        "insert-compressor" => {
+            let id = ui.get_selected_track_index().max(1);
+            ui.invoke_track_instrument_change(id, "fx:compressor".into());
+        }
         "normalize-heights" | "track-equal-heights" => ui.invoke_normalize_track_heights(),
         "track-toggle-headers-side" => {
             let theme = ui.global::<crate::ui::Theme<'_>>();
@@ -19085,6 +19090,16 @@ pub fn wire_aether_actions(
                     ui.invoke_device_insert_reverb();
                     return;
                 }
+                "fx:compressor" | "fx:comp" => {
+                    select_aether_track_for_action(&ui, id);
+                    insert_builtin_device(
+                        &ui,
+                        &port,
+                        crate::bridge::BuiltinEffect::Compressor,
+                        DeviceTarget::DisplayTrack,
+                    );
+                    return;
+                }
                 "sfz:default" => {
                     select_aether_track_for_action(&ui, id);
                     ui.invoke_load_sfz();
@@ -19109,19 +19124,50 @@ pub fn wire_aether_actions(
                 return;
             };
             if let Some(path) = inst_str.strip_prefix("sfz:") {
-                let new_sampler = (!path.trim().is_empty()).then(|| yeban_model::SamplerBinding {
-                    path: path.trim().to_owned(),
-                });
-                let op = yeban_model::Op::SetTrackSampler {
-                    track_id: tid,
-                    old_sampler: track.sampler.clone(),
-                    new_sampler,
-                };
-                if aether_commit(&ui, &port, vec![op], "aether: 更换 SFZ 音色") {
-                    update_toast(
-                        &ui,
-                        format!("[音色] 已加载 SFZ: {}", instrument_display_label(inst_str)),
-                    );
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    let msg = "[音色] SFZ 路径为空，未加载";
+                    ui.set_module_status(msg.into());
+                    ui.set_module_status_succeeded(false);
+                    update_toast(&ui, msg);
+                    return;
+                }
+                match crate::bridge::probe_instrument_samples(trimmed) {
+                    crate::bridge::InstrumentSampleProbe::Installable { decoded_samples } => {
+                        let stored = crate::samples::normalize_sampler_path_for_storage(trimmed);
+                        let op = yeban_model::Op::SetTrackSampler {
+                            track_id: tid,
+                            old_sampler: track.sampler.clone(),
+                            new_sampler: Some(yeban_model::SamplerBinding { path: stored }),
+                        };
+                        if aether_commit(&ui, &port, vec![op], "aether: 更换 SFZ 音色") {
+                            let msg = format!(
+                                "[音色] 已加载 SFZ: {} ({decoded_samples} 样本)",
+                                instrument_display_label(inst_str)
+                            );
+                            ui.set_module_status(msg.clone().into());
+                            ui.set_module_status_succeeded(true);
+                            update_toast(&ui, msg);
+                        }
+                    }
+                    crate::bridge::InstrumentSampleProbe::MissingSamples {
+                        missing_files,
+                        silent_regions,
+                        ..
+                    } => {
+                        let msg = format!(
+                            "[音色] 拒绝加载 SFZ: 缺 {missing_files} 个样本 / {silent_regions} 个静音区域 ({trimmed})"
+                        );
+                        ui.set_module_status(msg.clone().into());
+                        ui.set_module_status_succeeded(false);
+                        update_toast(&ui, msg);
+                    }
+                    crate::bridge::InstrumentSampleProbe::UnreadableSfz => {
+                        let msg = format!("[音色] SFZ 文件不存在或解析失败: {trimmed}");
+                        ui.set_module_status(msg.clone().into());
+                        ui.set_module_status_succeeded(false);
+                        update_toast(&ui, msg);
+                    }
                 }
                 return;
             }
