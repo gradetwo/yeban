@@ -112,18 +112,6 @@ fn sanitize_lrc_text(text: &str) -> String {
     text.replace(['\r', '\n'], " ")
 }
 
-/// 工程的歌词时间轴 ⇒ LRC 文本。
-///
-/// * `total_seconds`：总时长（秒），只有调用方**真的知道**才给 —— 给了就写
-///   `[length:mm:ss.cc]`，不给就不写（⛔ 不从最后一行词推一个假长度：参照 LRC 的
-///   长度比最后一行晚 3.63 秒，那是音频尾巴，不是词的结束）；
-/// * tick ⇒ 秒走工程自己的变速映射（[`YebanProjectV1::tempo`]），与渲染同一条换算。
-///
-/// # Errors
-///
-/// `total_seconds` 非有限或为负 ⇒ [`ModelError::NonFiniteValue`]；某行 tick
-/// 换算不出秒（病态 BPM —— 已校验的工程不会走到这里）⇒
-/// [`ModelError::LyricTimeConversionFailed`]。
 /// 分行间隔（tick）：同一摆放内，相邻音节出现的间隔不超过它时合成一行。
 ///
 /// 一拍（[`PPQ`]）是本设计唯一的分行阈值，见
@@ -244,6 +232,18 @@ pub fn lyrics_to_lrc_converged(
     render_lrc(project, &converged_lyric_lines(project), total_seconds)
 }
 
+/// 工程的歌词时间轴 ⇒ LRC 文本。
+///
+/// * `total_seconds`：总时长（秒），只有调用方**真的知道**才给 —— 给了就写
+///   `[length:mm:ss.cc]`，不给就不写（⛔ 不从最后一行词推一个假长度：参照 LRC 的
+///   长度比最后一行晚 3.63 秒，那是音频尾巴，不是词的结束）；
+/// * tick ⇒ 秒走工程自己的变速映射（[`YebanProjectV1::tempo`]），与渲染同一条换算。
+///
+/// # Errors
+///
+/// `total_seconds` 非有限或为负 ⇒ [`ModelError::NonFiniteValue`]；某行 tick
+/// 换算不出秒（病态 BPM —— 已校验的工程不会走到这里）⇒
+/// [`ModelError::LyricTimeConversionFailed`]。
 pub fn lyrics_to_lrc(
     project: &YebanProjectV1,
     total_seconds: Option<f64>,
