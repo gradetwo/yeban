@@ -2109,6 +2109,142 @@ fn the_loudness_target_has_teeth() {
     );
 }
 
+/// 判据 3b-v：`masteringClipper` —— 削波段真的进了施加级（C-1 遗留入口）。
+///
+/// 配方与 3b-ii 第 4 步同源（目标按真峰值余量现算），只把超出量从 +6 收紧
+/// 到 +1.0：纯增益够不到（残差 1.0 > 容差 0.5 ⇒ `fail`、上限绑定）；同一个
+/// 目标挂上削波段（重驱动）⇒ clipper 先把 crest 削掉 > 1 dB，伺服再补
+/// ⇒ `pass`。两边都开 `normalize` 把峰值钉在满量程附近，保证驱动必然咬住
+/// 膝点（与夹具本身的电平无关）；normalize 在响度施加级之前，对两边同等
+/// 生效。回执三处一起钉：`crestReductionDb` 是实测正数、响度块与请求回显
+/// 的 `masteringClipper` 都等于请求参数（未给的子键回显缺省值）。
+///
+/// 注入：把施加级的 `with_clipper` 摘掉 ⇒ 带 clipper 的调用退回纯增益行为
+/// （`fail` + `crestReductionDb` 归 0）⇒ 本判据红。
+#[test]
+fn mastering_clipper_turns_a_ceiling_bound_miss_into_a_pass() {
+    let scratch = Scratch::new("loudness-clipper");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+
+    // 探测（带 normalize，与下面两边同一前级）。
+    let probe = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "normalize": true, "path": scratch.text("probe.wav")}),
+    );
+    assert_eq!(probe["status"], "success", "{probe}");
+    let measured = probe["data"]["loudness"]["measuredIntegratedLufs"]
+        .as_f64()
+        .expect("实测读数");
+    let true_peak = probe["data"]["truePeakDbfs"].as_f64().expect("真峰值读数");
+    let headroom = -1.0 - true_peak;
+    // 纯增益可达点之上 1.0 LU：残差 1.0 > 容差 0.5 ⇒ 纯增益必败。
+    let target = (measured + headroom + 1.0).min(0.0);
+
+    // 对照：只给目标 ⇒ 上限绑定未达标、不落盘。
+    let plain_path = scratch.join("plain.wav");
+    let plain = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000, "normalize": true,
+            "targetLufs": target, "path": plain_path.display().to_string(),
+        }),
+    );
+    assert_eq!(plain["status"], "error", "{plain}");
+    assert_eq!(plain["error"]["code"], "RENDER_FAILED", "{plain}");
+    assert_eq!(
+        plain["error"]["data"]["reasonKind"], "truePeakCeilingBound",
+        "{plain}"
+    );
+    assert!(!plain_path.exists(), "未达标时不许写出产品");
+
+    // 实验组：同目标 + 削波段（只给 driveDb / kneeDb / mix，其余子键走缺省）。
+    let clipped_path = scratch.join("clipped.wav");
+    let clipped = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav", "sampleRate": 48000, "normalize": true,
+            "targetLufs": target,
+            "masteringClipper": {"driveDb": 24.0, "kneeDb": 6.0, "mix": 1.0},
+            "path": clipped_path.display().to_string(),
+        }),
+    );
+    assert_eq!(
+        clipped["status"], "success",
+        "削波段必须把上限绑定的目标拉达标: {clipped}"
+    );
+    let loudness = &clipped["data"]["loudness"];
+    assert_eq!(loudness["verdict"], "pass", "{clipped}");
+    let crest = loudness["crestReductionDb"]
+        .as_f64()
+        .expect("crest 削减量必须回执");
+    assert!(crest > 1.0, "削波段必须实测削掉 > 1 dB 的 crest: {crest}");
+    // 回显 = 请求参数 + 缺省补齐（ceilingDb −1 / oversample 4）。
+    let expected =
+        json!({"driveDb": 24.0, "ceilingDb": -1.0, "kneeDb": 6.0, "mix": 1.0, "oversample": 4.0});
+    assert_eq!(loudness["masteringClipper"], expected, "{clipped}");
+    assert_eq!(
+        clipped["data"]["request"]["masteringClipper"], expected,
+        "{clipped}"
+    );
+    assert!(clipped_path.exists(), "达标产物必须落盘");
+}
+
+/// 判据 3b-vi：`masteringClipper` 的护栏 —— 五种坏形态全部响亮拒绝。
+///
+/// 施加级的入口纪律与 `targetLufs` 同一条：不与目标同给、子字段越界、
+/// 过采样不在 {1,2,4,8}、未知子键 —— 全部 `INVALID_PARAMETER_RANGE`；
+/// 非对象一只脚先踩到注册表类型校验，协议层 `-32602`（「参数问题有两个
+/// 合法的落点」，见 `export_stems` 判据 7）。五例全部不落盘。
+/// ⛔ 不许静默钳制或忽略：`ClipperParams::sanitised()` 的钳制只作兜底，
+/// 不是参数面。
+#[test]
+fn mastering_clipper_rejects_detached_and_malformed_values() {
+    let scratch = Scratch::new("loudness-clipper-guards");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let path = scratch.text("guarded.wav");
+    // 域内四例：对象形态正确、进领域层才被拒（`INVALID_PARAMETER_RANGE`）。
+    let cases: [serde_json::Value; 4] = [
+        // 没给 targetLufs：没有施加级可挂。
+        json!({"format": "wav", "sampleRate": 48000, "masteringClipper": {"driveDb": 6.0}, "path": path}),
+        // driveDb 越界（合法域 0..=24）。
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -14.0, "masteringClipper": {"driveDb": 30.0}, "path": path}),
+        // oversample 不在 {1,2,4,8}。
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -14.0, "masteringClipper": {"oversample": 3}, "path": path}),
+        // 未知子键。
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -14.0, "masteringClipper": {"bogus": 1}, "path": path}),
+    ];
+    for (index, args) in cases.iter().enumerate() {
+        let result = call(&mut dispatcher, &auth, args.clone());
+        assert_domain_error(
+            &result,
+            "INVALID_PARAMETER_RANGE",
+            &format!("masteringClipper 坏形态 #{index}"),
+        );
+    }
+    // 第五例：非对象 —— 注册表类型校验先于领域层，协议层 `-32602`（口径先例：
+    // `compare_song_snapshots` 判据 ⑥；「参数问题有两个合法的落点」见
+    // `export_stems` 判据 7）。⛔ 不要断言 message 点名：点名在 `data.detail` 里。
+    let (code, detail) = call_raw_error(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -14.0, "masteringClipper": 42, "path": path}),
+    );
+    assert_eq!(
+        code, -32602,
+        "非对象 masteringClipper 必须是 INVALID_PARAMS: {detail}"
+    );
+    assert!(
+        detail.contains("masteringClipper"),
+        "detail 必须点名参数: {detail}"
+    );
+    assert!(!scratch.join("guarded.wav").exists(), "参数被拒时不许落盘");
+}
+
 /// 判据 3b-iv：容差边界在施加语义下的新位置 —— **上限可达点 ± 容差**。
 ///
 /// 只测语义下边界摆在自然读数旁（目标 = 实测 − 0.5 恰达标、− 0.6 未达标）；

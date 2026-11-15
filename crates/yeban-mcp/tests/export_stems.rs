@@ -1376,6 +1376,7 @@ fn bus_stem_matches_the_bus_signal_in_the_mix() {
             frames: Some(frames),
             duration_seconds_bits: None,
             target_lufs_bits: None,
+            mastering_clipper_bits: None,
             path: Some(reference_path.clone()),
             contributions: false,
             threads: None,

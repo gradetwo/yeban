@@ -1135,7 +1135,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "targetLufs",
                 "number",
                 false,
-                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就**施加增益**去够它: 与 CLI `--loudness-target` 同一份伺服 (增益 = 目标 − 实测, 真峰值上限 −1.0 dBTP 让步, 上限回显在 `data.request.truePeakCeilingDbtp`), 施加后按 ±0.5 LU 容差复测判定。施加结果在 `data.loudness` (`appliedGainDb` / `gainBound` / `beforeGainLufs`); 已达标时增益恒为 0、产物逐字节不变。施加后仍未达标 ⇒ RENDER_FAILED, 报文带 `reasonKind` 原因分类与可执行诊断 (上限绑定时含 `suggestedTrimDb`); 不给则只报实测读数 (默认路径)",
+                "响度目标 (LUFS, ITU-R BS.1770-4 门限积分; 闭区间 [−70, 0])。给了就**施加增益**去够它: 与 CLI `--loudness-target` 同一份伺服 (增益 = 目标 − 实测, 真峰值上限 −1.0 dBTP 让步, 上限回显在 `data.request.truePeakCeilingDbtp`), 施加后按 ±0.5 LU 容差复测判定。施加结果在 `data.loudness` (`appliedGainDb` / `gainBound` / `beforeGainLufs`); 已达标时增益恒为 0、产物逐字节不变。施加后仍未达标 ⇒ RENDER_FAILED, 报文带 `reasonKind` 原因分类与可执行诊断 (上限绑定时含 `suggestedTrimDb`); 不给则只报实测读数 (默认路径)。先降 crest 再补增益见 `masteringClipper`",
+            ),
+            param(
+                "masteringClipper",
+                "object",
+                false,
+                "⭐ C-1 软削波段 (响度目标施加级的**增能**一级): 只与 `targetLufs` 同给时生效 (单独给 ⇒ INVALID_PARAMETER_RANGE, 没有施加级可挂)。给了目标时流程 = clipper 先按本段参数降 crest → 增益伺服补剩余增益 → 真峰值上限 −1.0 dBTP 兜底 (与母带链 / CLI 同一条 `ExportPreset::apply` 复测闭环, ⛔ 不另起第二套伺服)。对象子键全可选, 缺省 = 器件缺省: `driveDb` [0, 24] 缺省 6 (输入驱动, 决定削多少瞬态) / `ceilingDb` [−6, 0] 缺省 −1 (削波渐近线) / `kneeDb` [0, 6] 缺省 3 (软膝宽度) / `mix` [0, 1] 缺省 1 (干湿比) / `oversample` 1|2|4|8 缺省 4。未知子键 / 非数字 / 越界 ⇒ INVALID_PARAMETER_RANGE 并点名子键。回执: `data.loudness.masteringClipper` 回显实际参数、`data.loudness.crestReductionDb` 报削掉的 crest (dB)、`data.request.masteringClipper` 同步回显; 不给本实参 ⇒ 施加级与今天逐位一致",
             ),
             param(
                 "path",

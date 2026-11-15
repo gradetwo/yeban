@@ -869,7 +869,7 @@ fn source_items() -> Value {
 // 契约变了，值得让判据红。散文键（`method` / `semantics` / `note`）只声明 `type` —— 改一个
 // 逗号不该强迫改 schema，而把文案钉成 `const` 换来的是"改措辞时必红"，不是"说谎时必红"。
 
-/// ⭐ s31：`data.request` —— 本次请求的回显（17 键，全部**恒发**）。
+/// ⭐ s31：`data.request` —— 本次请求的回显（18 键，全部**恒发**）。
 /// 拼装点唯一（`domain/render.rs` 的 `RenderRequest::to_value`）。
 /// ⚠ `null` 在这里是**语义**而非缺席：`frames: null` = "没给显式帧数、按工程末端推导"，
 /// 与 `data.frames`（实际长度）不是同一个含义（`#252`）；`startTick` / `endTick`
@@ -888,6 +888,7 @@ fn render_request_roster() -> Value {
         ("startTick", json!({"type": ["integer", "null"]})),
         ("endTick", json!({"type": ["integer", "null"]})),
         ("targetLufs", json!({"type": ["number", "null"]})),
+        ("masteringClipper", mastering_clipper_roster()),
         ("targetToleranceLu", json!({"type": ["number", "null"]})),
         ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
         ("path", json!({"type": ["string", "null"]})),
@@ -1058,7 +1059,23 @@ fn normalize_roster() -> Value {
     ])
 }
 
-/// ⭐ s31：`data.loudness`（15 键）。拼装点唯一（`LoudnessTarget::to_value`）。
+/// ⭐ C-1 遗留：`masteringClipper` 回显对象（5 键，全数字）。
+/// 拼装点唯一（`domain/render.rs` 的 `mastering_clipper_value`）。
+/// 请求回显（`data.request.masteringClipper`）与响度块
+/// （`data.loudness.masteringClipper`）共用同一形状、同一名册；两处都**可空**
+/// （没给 ⇒ `null`），故走 [`nullable_roster`]。
+#[must_use]
+fn mastering_clipper_roster() -> Value {
+    nullable_roster(&[
+        ("driveDb", json!({"type": "number"})),
+        ("ceilingDb", json!({"type": "number"})),
+        ("kneeDb", json!({"type": "number"})),
+        ("mix", json!({"type": "number"})),
+        ("oversample", json!({"type": "number"})),
+    ])
+}
+
+/// ⭐ s31：`data.loudness`（17 键）。拼装点唯一（`LoudnessTarget::to_value`）。
 /// ⛔ **不要**把 `LoudnessTarget::failure()` 的那 13 个键并进来：那是带内错误
 /// `RENDER_FAILED` 的载荷（错误面），与本条（响应面）是同一结构体的**两个 `json!` 站点**。
 /// `verdict` 与 `gainBound` 的词表⛔ 不手抄：直接引用
@@ -1096,6 +1113,8 @@ fn loudness_roster() -> Value {
         ),
         ("beforeGainLufs", json!({"type": ["number", "null"]})),
         ("truePeakCeilingDbtp", json!({"type": ["number", "null"]})),
+        ("masteringClipper", mastering_clipper_roster()),
+        ("crestReductionDb", json!({"type": ["number", "null"]})),
         ("algorithm", json!({"type": "string"})),
         ("implementation", json!({"type": "string"})),
         ("specId", json!({"type": "string"})),
@@ -3192,13 +3211,13 @@ mod tests {
     fn the_eleven_render_master_slots_delegate_to_their_rosters() {
         let schema = render_master();
         let cases: [(&str, Value, usize); 11] = [
-            ("request", render_request_roster(), 17),
+            ("request", render_request_roster(), 18),
             ("probability", probability_roster(), 5),
             ("ratchet", ratchet_roster(), 8),
             ("audio", audio_roster(), 8),
             ("peak", peak_roster(), 8),
             ("normalize", normalize_roster(), 5),
-            ("loudness", loudness_roster(), 15),
+            ("loudness", loudness_roster(), 17),
             ("bwf", bwf_roster(), 6),
             ("midiSource", midi_source_roster(), 7),
             (
@@ -3277,7 +3296,7 @@ mod tests {
             "format": "wav", "sampleRate": 48_000, "normalize": true,
             "frames": null, "durationSeconds": 30.0, "framesSource": "durationSeconds",
             "startTick": null, "endTick": null,
-            "targetLufs": -14.0, "targetToleranceLu": 0.5, "truePeakCeilingDbtp": -1.0, "path": null,
+            "targetLufs": -14.0, "masteringClipper": null, "targetToleranceLu": 0.5, "truePeakCeilingDbtp": -1.0, "path": null,
             "pathRule": "<工程文件 stem>.master.<format>, 与工程同目录",
             "bitDepth": 24, "channels": 2, "contributions": false, "threads": null
         });
@@ -3306,7 +3325,7 @@ mod tests {
             "targetLufs": -14.0, "toleranceLu": 0.5, "measuredIntegratedLufs": -14.1,
             "deltaLu": -0.1, "verdict": "pass", "measured": true, "measurementNote": null,
             "appliedGainDb": 0.1, "gainBound": "loudnessTarget", "beforeGainLufs": -14.2,
-            "truePeakCeilingDbtp": -1.0,
+            "truePeakCeilingDbtp": -1.0, "masteringClipper": null, "crestReductionDb": 0.0,
             "algorithm": "ITU-R BS.1770-4", "implementation": "yeban-dsp::loudness::GatedLoudness",
             "specId": "ARCH-UI-002", "specSilentOnTolerance": true
         });

@@ -940,3 +940,22 @@ test result: FAILED. 14 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
 "不拖音频栈进 MCP"是同一族问题，但 `yeban-decode` **不在** `FORBIDDEN` 里，所以它今天不会被
 这条守卫看见，也不受本次例外机制影响。本切片**不**把它加进黑名单：那会当场制造第二条违规、
 把 `light` 重新推红，而"哪条边算音频栈"属于 §12.7 的同一个裁决。登记在此，供裁决时一并考虑。
+
+## 13. 追加（2026-11-15，C-1 遗留切片）：`yeban_render_master` 的 `masteringClipper` 入口
+
+第五份报告 C-1 的 clipper 落地时（`ExportPreset::with_clipper`），MCP 侧只留了
+一句"待 Wang 定"：`render_master` 的响度目标（`LoudnessTarget`）没有给 clipper
+留字段，调用方经 MCP 只能走纯增益伺服，被真峰值上限截断的目标（如 −16.8 LUFS
+天花板）无路可走。2026-11-15 Wang 批准开入口，本节即其登记。
+
+| 面 | 形状 |
+| :--- | :--- |
+| 实参 | `masteringClipper`（对象，注册表实参，与 `targetLufs` 同路径派生，**不**进 `DocumentedToolArguments` —— 与 `startTick` / `endTick` 先例一致） |
+| 子键 | `driveDb` [0, 24] 缺省 6 / `ceilingDb` [−6, 0] 缺省 −1 / `kneeDb` [0, 6] 缺省 3 / `mix` [0, 1] 缺省 1 / `oversample` {1, 2, 4, 8} 缺省 4（= `ClipperParams::DEFAULT`） |
+| 纪律 | 必须与 `targetLufs` 同给；未知子键 / 非数字 / 越界 ⇒ `INVALID_PARAMETER_RANGE` 并点名（⛔ 不静默钳制，`sanitised()` 只作兜底） |
+| 语义 | `ExportPreset::new(..).with_clipper(..)`：clipper 先降 crest → 伺服补剩余增益 → 真峰值上限兜底，同一条复测闭环 |
+| 写回 | 挂 clipper 时伺服增益为 0 也写回样本（削波段已改样本；只看 `gain_db` 会让回执与产物对不上） |
+| 回执 | `data.loudness.masteringClipper`（实际参数）+ `data.loudness.crestReductionDb`（削掉的 crest，dB）；`data.request.masteringClipper` 同步回显。响度块名册 15 → 17 键、请求回显名册 17 → 18 键 |
+| 存储 | `RenderRequest.mastering_clipper_bits: Option<[u32; 5]>`（与 `target_lufs_bits` 同一条 `Eq` 位型纪律） |
+| 判据 | `render_master` 3b-v（上限绑定目标 +1.0 LU：纯增益 `fail`、挂 clipper `pass` 且 crest 削减 > 1 dB、两处回显逐字相等）／3b-vi（五种坏形态全拒且不落盘）；`domain::render` 响度块键集判据改名十七键并补新键断言 |
+| 未动 | CLI `--loudness-target` 仍无 clipper 入口（本切片只开 MCP 面）；缺省路径逐字节不变 |

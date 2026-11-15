@@ -131,7 +131,11 @@ use crate::render::{RenderOutput, db_to_linear};
 use crate::rf64::{
     Bext, ContainerKind, ContainerPlan, Loudness, PcmFormat, Rf64Error, write_container,
 };
-use yeban_dsp::clipper::{Clipper, ClipperParams};
+use yeban_dsp::clipper::Clipper;
+/// 软削波段参数（C-1）：经本模块转出，消费方（如 `yeban-mcp` 的
+/// `masteringClipper` 实参）经 [`ExportPreset::with_clipper`] 挂段即可，
+/// 不必直依赖 `yeban-dsp`。
+pub use yeban_dsp::clipper::ClipperParams;
 use yeban_dsp::meter::TruePeakDetector;
 
 /// LRA 的**相对门限**（LU）: 相对"过了绝对门限的短时值的平均响度"再降 20 LU。
