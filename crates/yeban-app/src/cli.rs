@@ -656,7 +656,8 @@ pub fn usage_text() -> String {
   --slice-base-key <0..127> `--slice-audio` 的**第 0 片根音** (MIDI, 缺省 60 = C4;
                            第 i 片根音 = base_key + i, 超出 127 ⇒ 失败); 单独给 = 用法错误
   --slice-cuts <csv秒>      `--slice-audio` 的**显式切点** (秒, 逗号分隔, 如 0.25,0.5):
-                           给定时覆盖 onset 检测, 第 0 帧起切, 什么都不丢; 单独给 = 用法错误
+                           给定时覆盖 onset 检测, 第 0 帧起切, 什么都不丢;
+                           切点 0 = 文件起点 (合法, 与首边界去重不产生空片); 单独给 = 用法错误
   --slice-min-gap-ms <ms>   `--slice-audio` 的 onset 检测**最小切点间隔** (毫秒, 缺省 80);
                            单独给 = 用法错误
   --slice-threshold-db <db> `--slice-audio` 的 onset 检测**绝对底线** (dBFS, 缺省 -50);

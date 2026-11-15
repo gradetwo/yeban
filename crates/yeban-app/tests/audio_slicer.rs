@@ -283,6 +283,51 @@ fn explicit_cuts_override_detection() {
     }
 }
 
+/// 判据（⭐ 第五份报告 B-3：**切点 0 = 文件起点**）：1.0 s 正弦、切点
+/// `[0, 0.5]` ⇒ 2 片各 24000 帧（0 与首边界去重，⛔ 不产生零长首片）；
+/// 只给 `[0]` ⇒ 1 片全长；负切点仍响亮拒绝。
+///
+/// 注入（实测红）：`seconds <= 0.0` 的旧拒绝带回来 ⇒ 第一段就报错、判据红。
+#[test]
+fn explicit_cut_at_zero_is_the_file_start() {
+    let scratch = Scratch::new("cuts-zero");
+    let input = scratch.dir.join("tone.wav");
+    write_test_wav(&input, &sine(440.0, 0.8, SAMPLE_RATE as usize));
+
+    let out_dir = scratch.dir.join("slices");
+    let options = SliceOptions {
+        cuts: Some(vec![0.0, 0.5]),
+        ..SliceOptions::default()
+    };
+    let report = slice_audio_file(&input, &out_dir, &options).expect("切点 0 必须合法");
+    assert_eq!(report.slices, 2, "切点 [0, 0.5] ⇒ 2 片（0 不产生空片）");
+    assert_eq!(report.dropped_leading_frames, 0, "显式切点模式什么都不丢");
+    for index in 0..2 {
+        let samples = read_slice_wav(&out_dir.join(format!("tone_{index:03}.wav")));
+        assert_eq!(samples.len(), 24_000, "第 {index} 片 0.5 s");
+    }
+
+    let out_dir = scratch.dir.join("slices-zero-only");
+    let options = SliceOptions {
+        cuts: Some(vec![0.0]),
+        ..SliceOptions::default()
+    };
+    let report = slice_audio_file(&input, &out_dir, &options).expect("只给切点 0 必须合法");
+    assert_eq!(report.slices, 1, "只给切点 0 ⇒ 1 片全长");
+    let samples = read_slice_wav(&out_dir.join("tone_000.wav"));
+    assert_eq!(samples.len(), 48_000, "唯一一片是全长 1.0 s");
+
+    let out_dir = scratch.dir.join("slices-negative");
+    let options = SliceOptions {
+        cuts: Some(vec![-0.5]),
+        ..SliceOptions::default()
+    };
+    assert!(
+        slice_audio_file(&input, &out_dir, &options).is_err(),
+        "负切点仍必须响亮拒绝"
+    );
+}
+
 /// 判据（**CLI 端到端**）：`--slice-audio` 经 `cli::parse`＋`run_batch`
 /// 走通，收据一行 `sliced-audio: … slices=3 …`，文件落盘。
 #[test]
