@@ -2043,9 +2043,20 @@ pub struct SamplerReport {
     pub regions_with_envelope: u64,
     /// ⭐ `#274`：**真的解码成功**的去重样本数（＝ 提供表长度；引擎摊平口径）。
     pub decoded_samples: usize,
-    /// ⭐ `#274`：引擎摊平表报出的**缺样本路径**（升序去重；`silent` 里除内建静音
-    /// 以外的那一半）。
+    /// ⭐ 第五份报告 A-2 起的新口径：**文件不存在**的样本路径（升序去重）。
+    ///
+    /// 修前本字段直接抄引擎摊平表的 `missing_sample_paths`，把"未加载"
+    /// （按需装载未触达）与"读不动"（解码失败）一并混装；自此只收
+    /// [`sfz::SampleDisposition::NotFound`]，来源是装载期的处置表
+    /// （[`sfz::SfzLoad::not_found_sample_paths`]）。
     pub missing_sample_paths: Vec<String>,
+    /// ⭐ 第五份报告 A-2：**未加载**的样本路径（升序去重）：按需装载未触达
+    /// 或读盘预算拒绝 —— 文件在不在本次没有验证，⛔ 不进 `missing`。
+    pub not_loaded_sample_paths: Vec<String>,
+    /// ⭐ 第五份报告 A-2：读失败里**格式不受支持**的路径数（单位：条）。
+    pub unreadable_unsupported: usize,
+    /// ⭐ 第五份报告 A-2：读失败里**其余读不动**的路径数（单位：条）。
+    pub unreadable_other: usize,
     /// ⭐ 本次装载用的**样本读取预算**（`null` 字段 ＝ 不限）。
     ///
     /// 为什么与读数一起报：`sampleReadsTruncated` / `silentRegionCount` 都是**相对某条
@@ -2064,29 +2075,37 @@ impl SamplerReport {
     /// ⭐ 与 app 的 `--export-wav` **同形**的 `sfz(...)` 读数行（`#221` 判据 3/4 直接比它）。
     ///
     /// 形态逐字照 `yeban-app` 的 `render_core::sfz_decode_label`：
-    /// `sfz(tracks=1 regions=R samples=S silent=N missing=[…] unreadable(not_found=A,unsupported=B,other=C))`。
+    /// `sfz(tracks=1 regions=R samples=S silent=N missing=[…] not_loaded=[…] unreadable(not_found=A,unsupported=B,other=C))`。
     ///
-    /// ⚠ 两条读数**口径差**如实登记：
-    /// - `samples` 在这里数的是"**真的读到**的不同样本文件数"（`sampleSources` 的长度）；
-    /// - `missing` 数的是"**声明了 `sample=` 却读不到**的不同文件路径"（从
-    ///   `sampleFailures` 里取路径，不是整条原因串）；
-    /// - `unreadable(...)` 的三档分类 MCP 不做（它没有 app 侧的 `SampleReadFailure`
-    ///   分档）：三档恒为 `0`，**原因串**逐条在 `sampleFailures` 里。
+    /// ⭐ 第五份报告 A-2 的口径拆分（修前 `missing` 混装三件事、`unreadable`
+    /// 三档恒 0）：
+    /// - `missing` 只收**文件不存在**的路径（[`Self::missing_sample_paths`]）；
+    /// - `not_loaded` 收**未加载**的路径（按需装载未触达／预算拒绝）；
+    /// - `unreadable` 三档是装载期处置表的真实计数（`not_found` 与 `missing`
+    ///   条数恒等；`unsupported` / `other` 来自
+    ///   [`sfz::SfzLoad::unreadable_counts`]），原因串仍逐条在 `sampleFailures` 里。
     #[must_use]
     pub fn label(&self) -> String {
-        // ⭐ `#274`：`samples` / `missing` 与 `silent` 现在是**引擎摊平表**的口径
-        // （`PreparedSfz` 的 `sample_count` / `missing_sample_paths` /
-        // `silent_region_count`）—— 与 CLI 的 `sfz_decode_label` **同一个来源**，
-        // 因此两侧的 `sfz(...)` 行逐字相同。
         let missing: Vec<&str> = self
             .missing_sample_paths
             .iter()
             .map(String::as_str)
             .collect();
+        let not_loaded: Vec<&str> = self
+            .not_loaded_sample_paths
+            .iter()
+            .map(String::as_str)
+            .collect();
         format!(
             "sfz(tracks=1 regions={} samples={} silent={} missing={missing:?} \
-             unreadable(not_found=0,unsupported=0,other=0))",
-            self.regions, self.decoded_samples, self.silent_regions,
+             not_loaded={not_loaded:?} \
+             unreadable(not_found={},unsupported={},other={}))",
+            self.regions,
+            self.decoded_samples,
+            self.silent_regions,
+            self.missing_sample_paths.len(),
+            self.unreadable_unsupported,
+            self.unreadable_other,
         )
     }
 
@@ -2113,6 +2132,12 @@ impl SamplerReport {
             "regionsWithEnvelope": self.regions_with_envelope,
             "decodedSamples": self.decoded_samples,
             "missingSamplePaths": self.missing_sample_paths,
+            "notLoadedSamplePaths": self.not_loaded_sample_paths,
+            "unreadable": {
+                "notFound": self.missing_sample_paths.len(),
+                "unsupported": self.unreadable_unsupported,
+                "other": self.unreadable_other,
+            },
             "voiceSteals": self.voice_steals,
             "label": self.label(),
         })
@@ -5924,7 +5949,12 @@ fn build_source(
                 budget: armed.load.limits,
                 regions_with_envelope: survey.regions_with_envelope,
                 decoded_samples: summary.samples,
-                missing_sample_paths: summary.missing_samples.clone(),
+                // ⭐ 第五份报告 A-2：`missing` 只收文件不存在（装载处置表），
+                // 未加载与读不动各走各的字段 —— 不再抄引擎摊平的混装表。
+                missing_sample_paths: armed.load.not_found_sample_paths(),
+                not_loaded_sample_paths: armed.load.not_loaded_sample_paths(),
+                unreadable_unsupported: armed.load.unreadable_counts().0,
+                unreadable_other: armed.load.unreadable_counts().1,
                 voice_steals: 0,
             })
         }

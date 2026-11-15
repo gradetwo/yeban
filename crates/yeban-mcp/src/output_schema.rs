@@ -534,7 +534,7 @@ fn render_warning_items() -> Value {
 /// ⭐ s30：把一份**逐键名册**装成对象 schema —— ⛔ 不要用一个大 `json!` 字面量写名册。
 ///
 /// 这条不是风格，是实测换来的（run `41236805286`，2026-11-01）：`sources[]` 那份
-/// "15 键 **含**内层 `sampler` 19 键"的字面量直接
+/// "15 键 **含**内层 `sampler` 21 键"的字面量直接
 /// `error: recursion limit reached while expanding $crate::json_internal!`（⇒ `checks`／
 /// `rust (yeban-mcp)`／`ui-mcp`／`macos`／`windows`／`e2e` 六腿同一处编译错误，判据一条没跑）。
 /// 本文件 `#251`/`#268` 那条"单独插入"的理由是同一个机制，而我当时**低估**了它：
@@ -770,9 +770,11 @@ fn state_sources() -> Value {
     ])
 }
 
-/// ⭐ s30：`data.sources[].sampler` 那一层（19 键，可空对象）。
-/// 拼装点唯一（`domain/render.rs` 的 `SamplerReport::to_value`）；19 键⛔ **一个都可空不了**
+/// ⭐ s30：`data.sources[].sampler` 那一层（21 键，可空对象）。
+/// 拼装点唯一（`domain/render.rs` 的 `SamplerReport::to_value`）；21 键⛔ **一个都可空不了**
 /// （字段表里没有一个 `Option`：`String`/`usize`/`u64`/`bool`/`Vec<String>`）。
+/// ⭐ 第五份报告 A-2 加 `notLoadedSamplePaths` 与 `unreadable` 两键：
+/// `missingSamplePaths` 自此只收**文件不存在**，未加载与读不动各有其位。
 #[must_use]
 fn sampler_items() -> Value {
     nullable_roster(&[
@@ -802,13 +804,30 @@ fn sampler_items() -> Value {
             "missingSamplePaths",
             json!({"type": "array", "items": {"type": "string"}}),
         ),
+        (
+            "notLoadedSamplePaths",
+            json!({"type": "array", "items": {"type": "string"}}),
+        ),
+        (
+            "unreadable",
+            json!({
+                "type": "object",
+                "required": ["notFound", "unsupported", "other"],
+                "properties": {
+                    "notFound": {"type": "integer", "minimum": 0},
+                    "unsupported": {"type": "integer", "minimum": 0},
+                    "other": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            }),
+        ),
         ("voiceSteals", json!({"type": "integer"})),
         ("label", json!({"type": "string"})),
     ])
 }
 
 /// ⭐ s30：`yeban_render_master` 的 `data.sources[]` 逐条形状（15 键），其内
-/// `sampler` 那一层由 [`sampler_items`]（19 键）给出 —— 两层的唯一拼装点都是
+/// `sampler` 那一层由 [`sampler_items`]（21 键）给出 —— 两层的唯一拼装点都是
 /// `domain/render.rs` 的 `to_value`。
 ///
 /// 可空两处：`peakDbfs` = `json_f32(...)`（缺读数为 `null`）、`sampler` = `Option::map`
@@ -2960,12 +2979,12 @@ mod tests {
             );
         }
 
-        // 内层 sampler 那一层也要有数（19 键，⛔ 一个都可空不了）。
+        // 内层 sampler 那一层也要有数（21 键，⛔ 一个都可空不了）。
         let sampler = source_items()["properties"]["sampler"].clone();
         assert_eq!(sampler["type"], json!(["object", "null"]));
         assert_eq!(
             sampler["required"].as_array().expect("required").len(),
-            19,
+            21,
             "sampler 层的键数（现读 `SamplerReport::to_value`）"
         );
 
@@ -3014,8 +3033,10 @@ mod tests {
             "regionsWithEnvelope": 0,
             "decodedSamples": 1,
             "missingSamplePaths": [],
+            "notLoadedSamplePaths": [],
+            "unreadable": {"notFound": 0, "unsupported": 0, "other": 0},
             "voiceSteals": 0,
-            "label": "sfz(tracks=1 regions=1 samples=1 silent=0 missing=[] unreadable(not_found=0,unsupported=0,other=0))"
+            "label": "sfz(tracks=1 regions=1 samples=1 silent=0 missing=[] not_loaded=[] unreadable(not_found=0,unsupported=0,other=0))"
         });
         let mut source = json!({
             "node": "01NODE",

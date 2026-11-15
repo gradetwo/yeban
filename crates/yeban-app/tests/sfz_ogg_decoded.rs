@@ -1173,6 +1173,8 @@ fn a_44k_ogg_vorbis_is_read_at_its_own_rate() {
 ///
 /// 报告行逐字：`regions=3 samples=1 silent=2 missing=["fake.ogg", "truncated.ogg"]
 /// unreadable=2 unreadable_kind(not_found=0,unsupported=1,other=1)`；
+/// ⭐ 第五份报告 A-2 后 `missing` 只收文件不存在 ⇒ 同一夹具的报告行变为
+/// `missing=[]`（两条都是"文件在、读不动"，只进 `unreadable` 两档）；
 /// `truncated.ogg` 的 `detail` 尾部 = `` `…/truncated.ogg`: io error: unexpected end of file ``；
 /// `fake.ogg` 的 `detail` 尾部 = `` `…/fake.ogg`: unrecognised or unsupported container format ``。
 #[test]

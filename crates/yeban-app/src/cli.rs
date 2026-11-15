@@ -6878,6 +6878,13 @@ fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loade
             .iter()
             .flat_map(|(_, entry)| entry.missing_sample_paths.iter().map(String::as_str))
             .collect();
+        // ⭐ 第五份报告 A-2：`not_loaded` 与 `missing` 同形拆分（本路恒空，
+        // 为与渲染侧 label 逐字同形而设）。
+        let not_loaded: Vec<&str> = report
+            .sfz_decoded
+            .iter()
+            .flat_map(|(_, entry)| entry.not_loaded_sample_paths.iter().map(String::as_str))
+            .collect();
         // ⭐ `#83`：读失败的**可判别**计数（not_found / unsupported / other）。
         //    ⇒ FLAC／OGG 这类"格式不受支持"⛔ 不再与"文件不存在"混成同一个数。
         let not_found: usize = report
@@ -6897,6 +6904,7 @@ fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loade
             .sum();
         format!(
             " sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?} \
+             not_loaded={not_loaded:?} \
              unreadable(not_found={not_found},unsupported={unsupported},other={other}))",
             report.sfz_decoded.len()
         )

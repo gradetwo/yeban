@@ -350,6 +350,103 @@ pub(crate) fn is_plain_wav_suffix(path: &Path) -> bool {
         })
 }
 
+/// ⭐ 第五份报告 A-2：一个被引用样本的**处置**（互斥五档，按 `sample=` 有效
+/// 路径登记在 [`SfzLoad::sample_dispositions`]）。
+///
+/// 修前引擎摊平的 `missing_sample_paths` 把三件不同的事混成一桶：文件根本
+/// 不存在、文件在但没读（按需装载未触达／预算拒绝）、文件在但读不动。
+/// 报告与 `missing` 口径自此只认 [`Self::NotFound`]；其余各归各档。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleDisposition {
+    /// 真的读到并解码成功（进了提供表）。
+    Loaded,
+    /// **没读**：按需装载判定本区域不会发声而跳过，或读盘预算拒绝再读。
+    /// 文件在不在、能不能读，本次都没有验证。
+    NotLoaded,
+    /// 读了，但**文件不存在**（内嵌腿 = 映射表无此键 / CAS 池无此资产）。
+    NotFound,
+    /// 文件在，但**格式不受支持**（容器认不出 / 编解码器未启用 / 位深不支持 /
+    /// `.wav` 后缀装着非 WAV 内容）。
+    Unsupported,
+    /// 文件在、格式也认得，但**读不动**（内容损坏、超单文件字节门等）。
+    Other,
+}
+
+impl SampleDisposition {
+    /// 合并优先级（同一路径被多个区域引用时取**信息量最高**的那次结果）：
+    /// 真读结果（`Loaded` 与三档失败）覆盖 `NotLoaded`；同级取先到者。
+    fn rank(self) -> u8 {
+        match self {
+            Self::Loaded => 3,
+            Self::NotFound | Self::Unsupported | Self::Other => 2,
+            Self::NotLoaded => 1,
+        }
+    }
+}
+
+/// 把一次处置记进表（按 [`SampleDisposition::rank`] 合并，见该处说明）。
+fn record_sample_disposition(
+    table: &mut BTreeMap<String, SampleDisposition>,
+    path: String,
+    disposition: SampleDisposition,
+) {
+    match table.get(&path) {
+        Some(existing) if existing.rank() >= disposition.rank() => {}
+        _ => {
+            table.insert(path, disposition);
+        }
+    }
+}
+
+/// 文件头是不是 WAV 家族（`RIFF`/`RF64` ＋ `WAVE`；与 app 的
+/// `sfz_load::looks_like_wav_family` 同一条判定）。
+///
+/// 只读前 12 字节；读不到 ⇒ 不是 WAV 家族。
+fn looks_like_wav_family(path: &Path) -> bool {
+    use std::io::Read as _;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 12];
+    if file.read_exact(&mut head).is_err() {
+        return false;
+    }
+    (&head[0..4] == b"RIFF" || &head[0..4] == b"RF64") && &head[8..12] == b"WAVE"
+}
+
+/// ⭐ 第五份报告 A-2：把一次**读失败**归档（⛔ 不返回 `Loaded`）。
+///
+/// 判定顺序（与 app 的 `classify_sample_failure` / `classify_decode_failure`
+/// 同一口径在本侧字符串接口上的落点）：
+/// 1. 预算拒绝（`cache_get` 的两条固定文案）⇒ 根本没读 ⇒ `NotLoaded`；
+/// 2. 内嵌腿的缺失文案（映射表无键 / CAS 无资产）⇒ `NotFound`；
+/// 3. 解码器自己的"不支持"文案（`yeban-decode` 的容器/编解码器两条、
+///    WAV 腿的位深、hound 失败且文件头不是 WAV 家族）⇒ `Unsupported`；
+/// 4. 解析后路径在盘上不存在 ⇒ `NotFound`；
+/// 5. 其余 ⇒ `Other`。
+fn classify_failed_read(resolved: &Path, reason: &str) -> SampleDisposition {
+    if reason.contains("不再读盘") || reason.contains("拒绝再读") {
+        return SampleDisposition::NotLoaded;
+    }
+    if reason.contains("内嵌映射表里没有样本") || reason.contains("不在会话 CAS 池里")
+    {
+        return SampleDisposition::NotFound;
+    }
+    if reason.contains("unrecognised or unsupported container format")
+        || reason.contains("codec not enabled in this build")
+        || reason.contains("不支持的位深")
+        || reason.contains("UnsupportedDepth")
+        || ((reason.contains("hound 失败") || reason.contains("Hound("))
+            && !looks_like_wav_family(resolved))
+    {
+        return SampleDisposition::Unsupported;
+    }
+    if !resolved.exists() {
+        return SampleDisposition::NotFound;
+    }
+    SampleDisposition::Other
+}
+
 /// `sample=` 的路径解析：绝对路径原样用；相对路径**相对 SFZ 文件所在目录**（SFZ 惯例）。
 #[must_use]
 pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> PathBuf {
@@ -960,6 +1057,13 @@ pub struct SfzLoad {
     pub sample_sources: Vec<String>,
     /// 读失败的样本文件（`unreadable(...)` 摘要，升序）。
     pub sample_failures: Vec<String>,
+    /// ⭐ 第五份报告 A-2：每个被引用样本的**处置**（键 = `sample=` 有效路径
+    /// 原样字符串，与引擎摊平的去重键同一句；`BTreeMap` ⇒ 顺序确定）。
+    ///
+    /// 与 [`Self::sample_failures`] 在**同一次**区域遍历里产出：前者是给人看的
+    /// 原因串，后者是给程序判的互斥五档（见 [`SampleDisposition`]）。
+    /// `missing` 口径自此只收 [`SampleDisposition::NotFound`]。
+    pub sample_dispositions: BTreeMap<String, SampleDisposition>,
     /// 是否命中过读盘上界（文件数 / 累计帧数）。
     pub sample_reads_truncated: bool,
     /// 累计解码帧数（所有读成功的文件之和）。
@@ -1019,6 +1123,46 @@ impl SfzLoad {
             (None, None) if self.builtin_silent_regions > 0 => BUILTIN_SILENCE_SOURCE.to_owned(),
             (None, None) => format!("{SAMPLE_SOURCE} ({SINE_FALLBACK_SCOPE})"),
         }
+    }
+
+    /// ⭐ 第五份报告 A-2：处置 = [`SampleDisposition::NotFound`] 的样本路径
+    /// （升序，去重 —— `sample_dispositions` 的键序即字典序）。
+    ///
+    /// 这是 `missing` 的**唯一**新口径：只有"文件不存在"进 `missing`。
+    #[must_use]
+    pub fn not_found_sample_paths(&self) -> Vec<String> {
+        self.paths_with_disposition(SampleDisposition::NotFound)
+    }
+
+    /// ⭐ 第五份报告 A-2：处置 = [`SampleDisposition::NotLoaded`] 的样本路径
+    /// （升序，去重）：文件在不在本次没有验证 —— 按需装载未触达或预算拒绝。
+    #[must_use]
+    pub fn not_loaded_sample_paths(&self) -> Vec<String> {
+        self.paths_with_disposition(SampleDisposition::NotLoaded)
+    }
+
+    /// ⭐ 第五份报告 A-2：读失败两档的计数 `(unsupported, other)`（单位：路径条数）。
+    #[must_use]
+    pub fn unreadable_counts(&self) -> (usize, usize) {
+        let unsupported = self
+            .sample_dispositions
+            .values()
+            .filter(|d| **d == SampleDisposition::Unsupported)
+            .count();
+        let other = self
+            .sample_dispositions
+            .values()
+            .filter(|d| **d == SampleDisposition::Other)
+            .count();
+        (unsupported, other)
+    }
+
+    fn paths_with_disposition(&self, wanted: SampleDisposition) -> Vec<String> {
+        self.sample_dispositions
+            .iter()
+            .filter(|(_, d)| **d == wanted)
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     /// **只读**地把原文（或已展开的片段序列）交给 `yeban-sfz` 的解析器
@@ -1910,6 +2054,7 @@ fn load_with_resolved(
         skipped_regions,
         sample_sources,
         sample_failures,
+        sample_dispositions,
         sample_reads_truncated,
         sample_frames_loaded,
         provider,
@@ -1946,6 +2091,9 @@ fn load_with_resolved(
         // ⭐ `#276`：提供表在**同一次**区域遍历里产出（⛔ 第二遍解析的替代品）。
         let mut provider: SampledProviderTable = Vec::new();
         let mut provider_seen: BTreeSet<String> = BTreeSet::new();
+        // ⭐ 第五份报告 A-2：样本处置表与区域遍历同一次产出（见
+        // [`SampleDisposition`]）；键 = `sample_path()` 有效路径原样字符串。
+        let mut dispositions: BTreeMap<String, SampleDisposition> = BTreeMap::new();
         let mut silent_regions = 0usize;
         let mut builtin_silent_regions = 0usize;
         let mut skipped_regions = 0usize;
@@ -1959,6 +2107,19 @@ fn load_with_resolved(
             {
                 summary.sample_file_state = "skippedDemandLoad".to_owned();
                 skipped_regions += 1;
+                // ⭐ 第五份报告 A-2：被跳过的样本记 `NotLoaded`（与"文件不存在"
+                // 分开；同一路径若在别的区域真读过，合并时以真读结果为准）。
+                // 内建静音不是文件 ⇒ 不记。
+                if !summary.builtin_silence {
+                    let path = region.sample_path();
+                    if !path.trim().is_empty() {
+                        record_sample_disposition(
+                            &mut dispositions,
+                            path.into_owned(),
+                            SampleDisposition::NotLoaded,
+                        );
+                    }
+                }
                 regions.push(summary);
                 continue;
             }
@@ -1982,16 +2143,29 @@ fn load_with_resolved(
                     // 前缀、⛔ 不规范化）—— 与引擎摊平的去重键同一句。
                     let raw_path = sample.into_owned();
                     if provider_seen.insert(raw_path.clone()) {
-                        provider.push((raw_path, outcome.clone()));
+                        provider.push((raw_path.clone(), outcome.clone()));
                     }
                     match outcome {
                         Ok(reading) => {
                             summary.sample_file_state = reading.describe;
+                            // ⭐ 第五份报告 A-2：处置记账（键与提供表同一句）。
+                            record_sample_disposition(
+                                &mut dispositions,
+                                raw_path.clone(),
+                                SampleDisposition::Loaded,
+                            );
                             false
                         }
                         Err(reason) => {
                             summary.sample_file_state =
                                 format!("unreadable({}): {reason}", resolved.display());
+                            // ⭐ 第五份报告 A-2：失败按可判别理由归档
+                            // （不存在 / 格式不支持 / 读不动 / 预算未读）。
+                            record_sample_disposition(
+                                &mut dispositions,
+                                raw_path.clone(),
+                                classify_failed_read(&resolved, &reason),
+                            );
                             true
                         }
                     }
@@ -2026,6 +2200,7 @@ fn load_with_resolved(
             skipped_regions,
             sample_sources,
             sample_failures,
+            dispositions,
             cache.truncated(),
             cache.frames_loaded(),
             provider,
@@ -2055,6 +2230,7 @@ fn load_with_resolved(
             sample_hz,
             sample_sources,
             sample_failures,
+            sample_dispositions,
             sample_reads_truncated,
             sample_frames_loaded,
             // ⭐ 预算随装载一起登记：读数的"截没截"必须能对回是哪一条预算判的。
@@ -3824,6 +4000,121 @@ mod tests {
         assert!(!filter.wants(&regions[1]), "键 61 不命中");
         assert!(!filter.wants(&regions[2]), "力度下界 101 不命中");
         assert!(!filter.wants(&regions[3]), "力度上界 99 不命中");
+    }
+
+    /// ⭐ 第五份报告 A-2：样本处置三档互斥 —— **未加载**（按需装载未触达）、
+    /// **不存在**（文件没有）、**读不动**（格式不受支持）分开记，`missing`
+    /// 口径（`not_found_sample_paths`）只收不存在。
+    ///
+    /// 夹具四条区域同键位安排：`hit.wav`（真文件、命中）、`skipped.wav`
+    /// （真文件、键 61 不命中 ⇒ 未加载）、`gone.wav`（无文件、命中 ⇒ 不存在）、
+    /// `fake.xyz`（文本文件、命中 ⇒ 格式不受支持）。
+    ///
+    /// 注入（实测红）：处置表若把跳过区域也记成失败、或把失败一律记
+    /// `NotFound` ⇒ 对应断言红；无过滤器重装一格守"未加载只来自过滤器"。
+    #[test]
+    fn sample_dispositions_split_not_loaded_not_found_and_unreadable() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-disposition-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        for name in ["hit.wav", "skipped.wav"] {
+            write_plain_wav(
+                dir.join(name),
+                &PcmFormat::float(1, 48_000, 32),
+                &PcmBuffer::Float32(vec![0.25; 480]),
+            )
+            .expect("写夹具 WAV");
+        }
+        std::fs::write(dir.join("fake.xyz"), b"this is not an audio container\n")
+            .expect("写假容器");
+        let sfz_path = dir.join("choir.sfz");
+        std::fs::write(
+            &sfz_path,
+            "<region> sample=hit.wav key=60\n\
+             <region> sample=skipped.wav key=61\n\
+             <region> sample=gone.wav key=60\n\
+             <region> sample=fake.xyz key=60\n",
+        )
+        .expect("写 SFZ 夹具");
+
+        let track_id = demand_uid(2001);
+        let project = demand_project(track_id, &[(60, 100)]);
+        let filter = DemandLoadFilter::from_project_track(&project, track_id);
+        let mut cache = SampleCache::new();
+        let (load, _provider) = load_with(
+            &sfz_path,
+            48_000.0,
+            1,
+            false,
+            &mut cache,
+            Some(&filter),
+            &BTreeMap::new(),
+        )
+        .expect("装载必须成功（读不到不是错误）");
+        assert_eq!(
+            load.sample_dispositions.get("hit.wav"),
+            Some(&SampleDisposition::Loaded),
+            "命中且读到的样本必须是 Loaded: {:?}",
+            load.sample_dispositions
+        );
+        assert_eq!(
+            load.sample_dispositions.get("skipped.wav"),
+            Some(&SampleDisposition::NotLoaded),
+            "文件在但按需装载未触达必须是 NotLoaded（⛔ 不是 missing）: {:?}",
+            load.sample_dispositions
+        );
+        assert_eq!(
+            load.sample_dispositions.get("gone.wav"),
+            Some(&SampleDisposition::NotFound),
+            "文件不存在必须是 NotFound: {:?}",
+            load.sample_dispositions
+        );
+        assert_eq!(
+            load.sample_dispositions.get("fake.xyz"),
+            Some(&SampleDisposition::Unsupported),
+            "容器认不出必须是 Unsupported: {:?}",
+            load.sample_dispositions
+        );
+        assert_eq!(load.not_found_sample_paths(), ["gone.wav".to_owned()]);
+        assert_eq!(load.not_loaded_sample_paths(), ["skipped.wav".to_owned()]);
+        assert_eq!(
+            load.unreadable_counts(),
+            (1, 0),
+            "unsupported 1 条、other 0 条"
+        );
+
+        // 无过滤器重装：`skipped.wav` 真读 ⇒ NotLoaded 清空。
+        let mut cache = SampleCache::new();
+        let (full, _provider) = load_with(
+            &sfz_path,
+            48_000.0,
+            2,
+            false,
+            &mut cache,
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("全量装载");
+        assert!(
+            full.not_loaded_sample_paths().is_empty(),
+            "没有过滤器时不该有未加载: {:?}",
+            full.sample_dispositions
+        );
+        assert_eq!(
+            full.sample_dispositions.get("skipped.wav"),
+            Some(&SampleDisposition::Loaded)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// P1：通道门固定为 1（采样器路径不传通道）。
