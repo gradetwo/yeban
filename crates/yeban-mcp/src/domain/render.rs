@@ -390,14 +390,16 @@
 //! | `startTick` | 整数（tick，≥ 0） | 区间起点（含）；缺省 = 0 |
 //! | `endTick` | 整数（tick，≥ 0） | 区间终点（不含）；缺省 = 本次全程渲染的末端 |
 //!
-//! - **产物 = 全程混音在该区间的原样切片**：先按现有路径渲全程，再按工程速度表
-//!   把 tick 换算成帧（[`math::frames_at_tick`]，与缺省帧数同一份换算）切出
-//!   `[startFrame, endFrame)`。⛔ **成本仍是一次全程渲染** —— 回执
-//!   `data.renderRange.method` 如实写明，不假装局部渲染；
-//! - **切片点在归一化与响度施加之前**（[`build`] 的 9b 步，母带增益之后）：
-//!   `peak` / `clippedSamples` / `truePeakDbfs` 与 `loudness` 全部只算切出的
-//!   区间；给了 `targetLufs` 时增益**施加于区间**（先切后施加），判据
-//!   `the_loudness_target_applies_to_the_slice_not_the_full_mix` 钉死这一顺序；
+//! - **产物 = 区间自身的真渲染**（⭐ 第五份报告 B-1 起）：tick 先按工程
+//!   速度表换算成帧（[`math::frames_at_tick`]，与缺省帧数同一份换算），
+//!   计划只按区间帧数编译、音源先 `seek` 到起点再从该帧起渲 —— 成本
+//!   ≈ 一次区间渲染。**冷启动语义**：起点前已开始的音符不追补、尾音
+//!   不带入（回执 `data.renderRange.coldStart` 写明）；内容全部源于
+//!   区间内时，产物与全程产物同区间切片逐字节相同；
+//! - **统计与施加只算区间**：`peak` / `clippedSamples` / `truePeakDbfs`
+//!   与 `loudness` 全部只算区间样本；给了 `targetLufs` 时增益**施加于
+//!   区间**，判据 `the_loudness_target_applies_to_the_slice_not_the_full_mix`
+//!   钉死这一顺序；
 //! - **量化与全程同相位**：TPDF 抖动每样本消耗随机源两次，切片时按区间起点
 //!   之前的样本数跳过等量抽样 ⇒ 区间产物的负载字节与全程产物同区间的负载
 //!   **逐字节相同**（不是"差 ≤ 1 LSB 的近似切片"）；
@@ -2635,17 +2637,17 @@ impl TrackContribution {
 /// ⭐ 部分渲染的**已解析区间**（回执 `data.renderRange` 的形状）。
 ///
 /// tick 是调用方给的原值（`None` = 该端没给、取的缺省）；帧区间是按工程速度表
-/// 换算、并对着本次全程渲染帧数验过界的**实际**切片 —— 两者一起回显，调用方
-/// 因此能核对"要的区间"与"切的区间"是同一段。
+/// 换算、并对着本次全程帧数验过界的**实际渲染区间** —— 两者一起回显，调用方
+/// 因此能核对"要的区间"与"渲的区间"是同一段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderRange {
     /// 请求的起点 tick（`None` = 缺省 0）。
     pub start_tick: Option<u64>,
     /// 请求的终点 tick（`None` = 缺省本次全程渲染的末端帧）。
     pub end_tick: Option<u64>,
-    /// 实际切出的起始帧（含）。
+    /// 实际渲染的起始帧（含）。
     pub start_frame: u64,
-    /// 实际切出的结束帧（不含）。
+    /// 实际渲染的结束帧（不含）。
     pub end_frame: u64,
     /// 本次全程渲染的总帧数（区间的参照系）。
     pub full_frames: u64,
@@ -2668,9 +2670,10 @@ impl RenderRange {
             "endFrame": self.end_frame,
             "frames": self.frames(),
             "fullFrames": self.full_frames,
-            "method": "先按现有路径渲全程, 再切出 [startFrame, endFrame) (成本 = 一次全程渲染, ⛔ 不是局部渲染)",
-            "statsScope": "peak / clippedSamples / truePeakDbfs / loudness 与 targetLufs 施加全部只算切出的区间",
-            "ditherPhase": "TPDF 抖动与全程渲染同相位 (跳过切片之前的抽样) ⇒ 负载字节与全程产物同区间切片逐字节相同",
+            "method": "真区间渲染: 计划只按区间帧数编译, 音源先 seek 到 startFrame 再从该帧起渲, 输出缓冲只按区间长度分配 (成本 ≈ 一次区间渲染, ⛔ 不是先渲全程再切)",
+            "statsScope": "peak / clippedSamples / truePeakDbfs / loudness 与 targetLufs 施加全部只算区间内的样本",
+            "coldStart": "冷启动语义: 区间起点之前的内容不带入 —— 起点前已开始的音符不追补发声、效果尾音不延续、图内延迟线与平滑器在起点冷启动; 音频片段按绝对帧寻址, 跨起点的片段出它在区间内的部分; 自动化按绝对帧读曲线",
+            "ditherPhase": "TPDF 抖动与全程渲染同相位 (跳过区间之前的抽样); 区间样本与全程产物同区间切片在「内容全部源于区间内」时逐字节相同, 含跨起点尾音的内容因冷启动语义不同",
         })
     }
 }
@@ -3622,7 +3625,25 @@ pub fn build(
         registry.insert(node, boxed);
     }
     // 8. 真编译 + 真执行。
-    let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
+    // ⭐ 第五份报告 B-1：区间在**编译计划之前**解析（参照系 = 本次全程
+    // 帧数 `frames`），计划直接按区间编译 + 执行 —— 音源先 `seek_to`
+    // 到起点、输出缓冲只按区间长度分配（真区间渲染，见
+    // `yeban_render::RenderOptions::start_frame`）。没给区间 ⇒
+    // `render_range = None`，options 与旧行为逐位相同。
+    let render_range = resolve_render_range(request, &project.tempo(), sample_rate, frames)?;
+    let options = RenderOptions::l1(
+        render_range.map_or(frames, |range| range.frames()),
+        MASTER_CHANNELS,
+        sample_rate,
+        project.rng_seed,
+    );
+    let options = match render_range {
+        Some(range) => RenderOptions {
+            start_frame: range.start_frame,
+            ..options
+        },
+        None => options,
+    };
     // ⭐ 审评 2026-10-31（P1-1）：显式线程数透传；缺省 `None` ⇒ 渲染器按可用并行度
     // 走多线程默认路径（Nightfall v1；输出逐字节不变；并行与否只影响耗时，不影响字节）。
     let options = match request.threads {
@@ -3783,9 +3804,11 @@ pub fn build(
             }
         } else {
             let frames = output.samples.len() / MASTER_CHANNELS;
+            // ⭐ B-1：自动化按**绝对帧**求值 ⇒ 区间渲染时首帧传区间起点
+            // （全程渲染时为 0，与旧行为逐位相同）。
             automation.apply_gain_block(
                 &mut output.samples,
-                0,
+                render_range.map_or(0, |range| range.start_frame),
                 frames,
                 MASTER_CHANNELS,
                 master_gain,
@@ -3795,7 +3818,13 @@ pub fn build(
         // 是**绝对**左右增益，不是比率）。恒等 ⇒ `None`，一个样本都不碰。
         if let Some(automation) = master_pan_automation.as_mut() {
             let frames = output.samples.len() / MASTER_CHANNELS;
-            automation.apply_pan_block(&mut output.samples, 0, frames, MASTER_CHANNELS, pan_gains);
+            automation.apply_pan_block(
+                &mut output.samples,
+                render_range.map_or(0, |range| range.start_frame),
+                frames,
+                MASTER_CHANNELS,
+                pan_gains,
+            );
         }
     }
     // 9-master-digest. 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest`
@@ -3817,24 +3846,12 @@ pub fn build(
             sampler.voice_steals = counter.load(Ordering::Relaxed);
         }
     }
-    // 9b. ⭐ 部分渲染：把全程样本切到请求区间（[`resolve_render_range`]）。
-    //     位置在母带增益/自动化（第 9 步）与逐源读数（9a）之后、归一化与响度
-    //     施加（第 10 / 10-pre 步）之前 ⇒ 之后的峰值、削波、真峰值与响度读数
-    //     **只描述区间**，`targetLufs` 的增益也只施加于区间（先切后施加）。
-    //     `blocks` / `longest_path_frames` 保留全程渲染的实测值 —— 成本就是
-    //     一次全程渲染，回执不假装省了。没给区间 ⇒ `None`，一个样本都不碰。
-    let render_range = resolve_render_range(request, &project.tempo(), sample_rate, output.frames)?;
-    if let Some(range) = render_range {
-        let start_sample = usize::try_from(range.start_frame * MASTER_CHANNELS as u64)
-            .map_err(|_| render_failed("渲染区间起点帧数超出本机可表示范围", range.to_value()))?;
-        let keep_samples = usize::try_from(range.frames() * MASTER_CHANNELS as u64)
-            .map_err(|_| render_failed("渲染区间帧数超出本机可表示范围", range.to_value()))?;
-        output.samples.drain(..start_sample);
-        output.samples.truncate(keep_samples);
-        output.frames = range.frames();
-        // 切片改了样本 ⇒ 按第 9 步同一纪律重算摘要（不让摘要描述全程）。
-        output.digest = RenderOutput::digest_of(&output.samples);
-    }
+    // 9b. ⭐ 第五份报告 B-1：区间已在第 8 步**真渲染**（计划按区间编译、
+    //     音源已定位、输出就是区间长度），本步无切片动作 —— 旧实现在这里
+    //     把全程样本 drain/truncate 到区间（成本 = 一次全程渲染），已删除。
+    //     第 10 步起的峰值/削波/真峰值/响度读数因此天然只描述区间，
+    //     `blocks` 是区间自身的块数（回执 `renderRange.fullFrames` 仍报
+    //     全程帧数作参照系）。没给区间 ⇒ `render_range = None`，逐位旧行为。
     // 10. 峰值归一化(抖动之前)。
     let peak_before = math::peak_of(&output.samples);
     let mut normalize_applied = false;
@@ -4716,6 +4733,15 @@ impl AudioClipSource {
 }
 
 impl AudioSource for AudioClipSource {
+    /// ⭐ 第五份报告 B-1：本源按 `context.first_frame` **绝对寻址**
+    /// （片段区间与素材偏移都是绝对帧算术），没有顺序播放头 ⇒
+    /// 定位恒成功；跨过区间起点已开始的片段照常出它在区间内的部分
+    /// （与引擎音符的冷启动不同 —— 片段是录音材料，起点是切口不是
+    /// 触发点）。
+    fn seek_to(&mut self, _frame: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         let channels = context.channels;
         // Warped 替代优先（与 app 侧同一语义）。
@@ -4848,6 +4874,11 @@ struct PeakTap {
 }
 
 impl AudioSource for PeakTap {
+    /// ⭐ 第五份报告 B-1：定位转发给内层源（探针本身无位置状态）。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.inner.seek_to(frame)
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         self.inner.render_block(context, out)?;
         let peak = math::peak_of(out);
@@ -4897,6 +4928,22 @@ impl TrackSource {
 }
 
 impl AudioSource for TrackSource {
+    /// ⭐ 第五份报告 B-1：定位转发给三路子源（引擎/插件冷启动、
+    /// 片段源绝对寻址恒成功）。本轨的增益/声相自动化按绝对帧读
+    /// 曲线，平滑器随本次构造的初态起步（冷启动语义的一部分）。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        if let Some(midi) = &mut self.midi {
+            midi.seek_to(frame)?;
+        }
+        if let Some(plugin) = &mut self.plugin {
+            plugin.seek_to(frame)?;
+        }
+        for clips in &mut self.clips {
+            clips.seek_to(frame)?;
+        }
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 调用方（`yeban-render` 的 `render_node`）已经把缓冲清零；这里只累加。
         // ⚠ 引擎源是**有状态**的（内部播放头）：它自己 `out.fill(0.0)` 再写单声道，

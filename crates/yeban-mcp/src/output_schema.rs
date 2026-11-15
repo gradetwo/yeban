@@ -876,9 +876,10 @@ fn render_request_roster() -> Value {
     ])
 }
 
-/// ⭐ `data.renderRange` —— 部分渲染的已解析区间（9 键，**条件出现**：
+/// ⭐ `data.renderRange` —— 部分渲染的已解析区间（10 键，**条件出现**：
 /// 只在请求给了 `startTick` / `endTick` 时；缺省整块不出现 ⇒ 不进 `required`）。
 /// 拼装点唯一（`domain/render.rs` 的 `RenderRange::to_value`）。
+/// ⭐ 第五份报告 B-1 加 `coldStart` 键（真区间渲染的冷启动语义声明）。
 #[must_use]
 fn render_range_roster() -> Value {
     roster(&[
@@ -890,6 +891,7 @@ fn render_range_roster() -> Value {
         ("fullFrames", json!({"type": "integer"})),
         ("method", json!({"type": "string"})),
         ("statsScope", json!({"type": "string"})),
+        ("coldStart", json!({"type": "string"})),
         ("ditherPhase", json!({"type": "string"})),
     ])
 }

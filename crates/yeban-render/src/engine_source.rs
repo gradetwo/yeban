@@ -632,6 +632,40 @@ impl EngineTrackSource {
 }
 
 impl AudioSource for EngineTrackSource {
+    /// ⭐ 第五份报告 B-1：冷启动定位。
+    ///
+    /// ⚠ 引擎自己的 `seek` 是**走带语义**：它复位声部并跳播放头，但
+    /// 触发循环对"跨过定位点的音符"（`end_sample > position`）会
+    /// **补触发**（跳进一个正被按住的音符要能听见它）—— 那是实时
+    /// 播放要的，⛔ 不是区间渲染要的。故本函数在 `seek` 之外再把
+    /// 本源的调度表换成只含 `start_sample >= frame` 的音符的副本：
+    /// 跨起点的音符整体不在表里，三条支路（复音/SFZ/鼓机）都无从
+    /// 补触发。音高形状旁表**整张保留**（音符的 `pitch_shape` 是
+    /// 它的下标，压缩会让下标失效）；轨增益门与调律偏移照抄。
+    ///
+    /// 前提：定位发生在任何一块渲染之前（引擎槽位游标仍为 0，
+    /// 与过滤后的表对齐）—— `RenderPlan::execute` 的调用点满足。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.engine.seek(frame);
+        if let Some(schedule) = &self.schedule {
+            let kept: Vec<yeban_engine::synth::ScheduledNote> = schedule
+                .notes()
+                .iter()
+                .copied()
+                .filter(|note| note.start_sample() >= frame)
+                .collect();
+            if kept.len() != schedule.notes().len() {
+                self.schedule = Some(
+                    NoteSchedule::from_sorted(kept)
+                        .with_track_gain(schedule.track_gain())
+                        .with_tune_cents(schedule.tune_cents())
+                        .with_pitch_shapes(schedule.pitch_shapes().to_vec()),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // ⭐ `ADR-0011` 未决 ②：把"块无关是契约性的"落成**可失败的前置条件**。
         //    本源的播放头必须与调用方声明的块起点一致；不一致 ⇒ 指名失败，

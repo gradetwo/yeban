@@ -102,8 +102,17 @@ pub struct RenderOptions {
     pub seed: u64,
     /// 声道数。
     pub channels: usize,
-    /// 总帧数。
+    /// 总帧数（**输出**帧数：从 [`Self::start_frame`] 起要渲染的帧数）。
     pub frames: u64,
+    /// ⭐ 第五份报告 B-1：渲染起点（绝对帧）。`0` = 从头渲染（旧行为
+    /// 逐位不变）；大于 0 时 `execute` 先把每个音源 `seek_to` 到该帧，
+    /// 再从该帧起按块渲染，输出缓冲只按 [`Self::frames`] 分配 ——
+    /// **真区间渲染**，不再先渲全程再切。
+    ///
+    /// 冷启动语义（诚实登记）：区间起点之前的内容不带入 —— 起点前
+    /// 已开始的音符不追补发声、效果尾音不延续；图内延迟线与平滑器
+    /// 在区间起点按复位状态起步。自动化按绝对帧读曲线，读数位置正确。
+    pub start_frame: u64,
     /// 采样率 (Hz)。
     pub sample_rate: u32,
 }
@@ -117,6 +126,7 @@ impl Default for RenderOptions {
             seed: 0,
             channels: 2,
             frames: 0,
+            start_frame: 0,
             sample_rate: 48_000,
         }
     }
@@ -132,6 +142,7 @@ impl RenderOptions {
             seed,
             channels,
             frames,
+            start_frame: 0,
             sample_rate,
         }
     }
@@ -191,6 +202,25 @@ pub trait AudioSource: Send + Sync {
     ///
     /// 源自身失败时返回 [`RenderError::Source`]。
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError>;
+
+    /// ⭐ 第五份报告 B-1：把播放头定位到绝对帧 `frame`（区间渲染的入口）。
+    ///
+    /// 语义是**冷启动定位**：`frame` 之前的内容不带入 —— 已开始的音符
+    /// 不追补、声部/效果状态复位；定位后 `render_block` 的块必须从
+    /// `frame` 起连续升序（与各源的推进契约同一条）。
+    ///
+    /// 缺省实现**响亮拒绝**（返回 `Err(消息)`，由 `execute` 包成
+    /// [`RenderError::Source`] 并点名节点）：一个假装定位成功却按错误
+    /// 位置渲染的源会产出不可复现的母带，⛔ 不许静默。无位置状态
+    /// （按 `context.first_frame` 绝对寻址）的源应显式覆写为 `Ok(())`。
+    ///
+    /// # Errors
+    ///
+    /// 本源不支持定位时返回人话消息。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        let _ = frame;
+        Err("该音源未实现定位（seek_to），不能从非 0 帧起渲染".to_owned())
+    }
 }
 
 /// 一条**确定输出 0** 的音轨源（`clips` 为空且没绑采样器）。
@@ -224,6 +254,11 @@ impl AudioSource for SilentSource {
         _context: BlockContext,
         _out: &mut [f32],
     ) -> Result<(), RenderError> {
+        Ok(())
+    }
+
+    /// 静音没有位置状态 ⇒ 定位恒成功（输出仍是静音）。
+    fn seek_to(&mut self, _frame: u64) -> Result<(), String> {
         Ok(())
     }
 }
@@ -1485,6 +1520,27 @@ impl RenderPlan {
             }
         }
 
+        // ---- 1b. ⭐ 第五份报告 B-1：区间渲染先定位 ----
+        //
+        // `start_frame > 0` 时把每个已装载的源冷启动定位到起点（语义见
+        // [`RenderOptions::start_frame`] 与 [`AudioSource::seek_to`]）；
+        // 任一源拒绝定位 ⇒ 整次执行响亮失败，⛔ 不回退成"从 0 渲再切"
+        // （那正是本条要删掉的假区间渲染）。`start_frame == 0` 时一个
+        // 源都不碰 ⇒ 旧行为逐位不变。
+        let start_frame = self.options.start_frame;
+        if start_frame > 0 {
+            for state in &mut self.states {
+                if let Some(source) = &mut state.source {
+                    source
+                        .seek_to(start_frame)
+                        .map_err(|message| RenderError::Source {
+                            node: state.node,
+                            message: format!("区间渲染定位到帧 {start_frame} 失败: {message}"),
+                        })?;
+                }
+            }
+        }
+
         let pool = rayon::ThreadPoolBuilder::new()
             // ⭐ Nightfall v1（Wang 2026-11-01 定）：离线渲染缺省改多线程。`None`
             // 解析为可用并行度（见 [`default_thread_count`]），与 Rayon 不设
@@ -1508,8 +1564,11 @@ impl RenderPlan {
             let layers = &self.layers;
             let master_slot = self.master_slot;
             for block_index in 0..blocks {
-                let first_frame = block_index * block_size as u64;
-                let frames = ((total_frames - first_frame) as usize).min(block_size);
+                // ⭐ B-1：块从 `start_frame` 起连续推进（源的推进契约读的是
+                // 绝对 `first_frame`）；写进输出缓冲的偏移按**区间内**位置算。
+                let first_frame = start_frame + block_index * block_size as u64;
+                let frames =
+                    ((total_frames - block_index * block_size as u64) as usize).min(block_size);
                 let context = BlockContext {
                     block_index,
                     first_frame,
@@ -1530,7 +1589,7 @@ impl RenderPlan {
                 }
 
                 let master = &states[master_slot].buffer[..width];
-                let offset = (first_frame as usize) * channels;
+                let offset = (block_index as usize) * block_size * channels;
                 samples[offset..offset + width].copy_from_slice(master);
             }
             Ok(())
@@ -1916,6 +1975,118 @@ mod tests {
         assert_eq!(reference.channels, 2);
         assert_eq!(reference.blocks, 16, "2048 / 128 = 16 块");
         assert_eq!(reference.samples.len(), 2_048 * 2);
+    }
+
+    /// ⭐ 第五份报告 B-1 的探针源：`FrameRamp`（按绝对帧算值）＋记录
+    /// `seek_to` 与每块的 `(block_index, first_frame, frames)`。
+    struct SeekProbeSource {
+        log: std::sync::Arc<std::sync::Mutex<Vec<(u64, u64, usize)>>>,
+        seeks: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+
+    impl AudioSource for SeekProbeSource {
+        fn render_block(
+            &mut self,
+            context: BlockContext,
+            out: &mut [f32],
+        ) -> Result<(), RenderError> {
+            self.log.lock().expect("日志锁").push((
+                context.block_index,
+                context.first_frame,
+                context.frames,
+            ));
+            FrameRamp.render_block(context, out)
+        }
+
+        fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+            self.seeks.lock().expect("日志锁").push(frame);
+            Ok(())
+        }
+    }
+
+    /// **判据（⭐ 第五份报告 B-1：真区间渲染）**：`start_frame = 256`、
+    /// 输出 384 帧 ⇒ ① 源被 `seek_to(256)` 一次；② 块的绝对起点是
+    /// 256/384/512（⛔ 不是从 0 渲起再切）；③ 输出只有 384 帧、3 块；
+    /// ④ 样本与全程渲染的 [256, 640) 切片逐位相同（`FrameRamp` 按绝对
+    /// 帧算值 ⇒ 本夹具里冷启动与切片等价，差异只可能来自定位/偏移算错）。
+    ///
+    /// 注入（实测红）：`execute` 不 seek、从 0 起渲 ⇒ ①② 红；输出偏移
+    /// 按绝对帧算 ⇒ ③④ 红（缓冲越界或错位）。
+    #[test]
+    fn range_render_seeks_and_starts_at_start_frame() {
+        let (routing, master, sources) = star_graph(1);
+        let node = sources[0];
+        // 全程参照（1024 帧，同一个探针源形状 ⇒ 样本可比）。
+        let full_options = RenderOptions::l1(1_024, 2, 48_000, 0).with_threads(1);
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seeks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = || SeekProbeSource {
+            log: std::sync::Arc::clone(&log),
+            seeks: std::sync::Arc::clone(&seeks),
+        };
+        let mut full_plan = RenderPlan::compile(&routing, master, full_options).expect("编译");
+        let full = full_plan
+            .execute(BTreeMap::from([(
+                node,
+                Box::new(probe()) as Box<dyn AudioSource>,
+            )]))
+            .expect("全程渲染（探针源）");
+        assert_eq!(full.frames, 1_024);
+        assert!(seeks.lock().expect("锁").is_empty(), "全程渲染不得 seek");
+
+        log.lock().expect("锁").clear();
+        let range_options = RenderOptions {
+            start_frame: 256,
+            ..RenderOptions::l1(384, 2, 48_000, 0)
+        }
+        .with_threads(1);
+        let mut range_plan = RenderPlan::compile(&routing, master, range_options).expect("编译");
+        let range = range_plan
+            .execute(BTreeMap::from([(
+                node,
+                Box::new(probe()) as Box<dyn AudioSource>,
+            )]))
+            .expect("区间渲染");
+        assert_eq!(
+            seeks.lock().expect("锁").as_slice(),
+            [256],
+            "源必须被恰好 seek 到起点一次"
+        );
+        assert_eq!(
+            log.lock().expect("锁").as_slice(),
+            [(0, 256, 128), (1, 384, 128), (2, 512, 128)],
+            "块必须从起点起连续推进（⛔ 不是从 0 渲起）"
+        );
+        assert_eq!(range.frames, 384, "输出帧数 = 区间长度");
+        assert_eq!(range.blocks, 3, "块数 = 区间块数（384 / 128）");
+        assert_eq!(range.samples.len(), 384 * 2);
+        assert_eq!(
+            range.samples,
+            full.samples[256 * 2..640 * 2],
+            "区间样本必须与全程切片逐位相同（本夹具无跨界状态）"
+        );
+    }
+
+    /// **判据（⭐ B-1 的响亮失败）**：源拒绝定位（`seek_to` 缺省实现）
+    /// 且 `start_frame > 0` ⇒ `execute` 整体失败，⛔ 不回退成从 0 渲染。
+    #[test]
+    fn range_render_fails_loudly_when_a_source_cannot_seek() {
+        let (routing, master, sources) = star_graph(1);
+        let options = RenderOptions {
+            start_frame: 128,
+            ..RenderOptions::l1(128, 2, 48_000, 0)
+        }
+        .with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        // `ConstantSource` 不覆写 `seek_to` ⇒ 走缺省的响亮拒绝。
+        let result = plan.execute(BTreeMap::from([(
+            sources[0],
+            Box::new(ConstantSource(0.5)) as Box<dyn AudioSource>,
+        )]));
+        assert!(
+            matches!(result, Err(RenderError::Source { .. })),
+            "不能定位的源必须让区间渲染响亮失败: {result:?}"
+        );
     }
 
     /// ⭐ Nightfall v1：缺省（`threads: None`）走多线程解析，输出仍与单线程逐位相同。
