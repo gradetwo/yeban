@@ -268,6 +268,26 @@ fn directory_that_does_not_exist_is_a_loud_error() {
     );
 }
 
+/// `directory` 给空串 ⇒ 响亮 `INVALID_PARAMETER_RANGE`（⛔ 不当作会话模式）。
+#[test]
+fn directory_empty_string_is_a_loud_error() {
+    let mut dispatcher = dispatcher_with_project();
+    let listed = call_tool(
+        &mut dispatcher,
+        "yeban_list_instruments",
+        serde_json::json!({ "directory": "" }),
+    );
+    assert_eq!(listed["status"], "error", "{listed}");
+    assert_eq!(
+        listed["error"]["code"], "INVALID_PARAMETER_RANGE",
+        "{listed}"
+    );
+    assert_eq!(
+        listed["error"]["data"]["reason"], "listDirectoryEmpty",
+        "{listed}"
+    );
+}
+
 /// `directory` 给的是普通文件 ⇒ 响亮 `IO_ERROR`。
 #[test]
 fn directory_pointing_at_a_file_is_a_loud_error() {
