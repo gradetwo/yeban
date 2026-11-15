@@ -41,6 +41,7 @@ const SOURCES: &[(&str, &str)] = &[
         "src/channel_strip.rs",
         include_str!("../src/channel_strip.rs"),
     ),
+    ("src/clipper.rs", include_str!("../src/clipper.rs")),
     ("src/comb.rs", include_str!("../src/comb.rs")),
     ("src/compressor.rs", include_str!("../src/compressor.rs")),
     ("src/convolution.rs", include_str!("../src/convolution.rs")),

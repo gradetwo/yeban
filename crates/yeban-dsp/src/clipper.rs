@@ -358,6 +358,8 @@ mod tests {
         assert_eq!(clipper_shape(params, -0.25), -0.25);
         let mut c = configured(params);
         let (mut l, mut r) = (vec![0.25f32; 64], vec![-0.25f32; 64]);
+        // 断言判据的规模界：块定长 64（`.all(...)` 的根是 `l` / `r`）。
+        assert_eq!(l.len(), 64);
         c.process(&mut l, &mut r);
         assert!(l.iter().all(|v| *v == 0.25));
         assert!(r.iter().all(|v| *v == -0.25));
@@ -502,7 +504,7 @@ mod tests {
     #[test]
     fn reset_reproduces_a_fresh_device_and_non_finite_input_is_safe() {
         let params = ClipperParams::DEFAULT;
-        let input: Vec<f32> = (0..256).map(|i| ((i as f32 * 0.37).sin() * 0.9)).collect();
+        let input: Vec<f32> = (0..256).map(|i| (i as f32 * 0.37).sin() * 0.9).collect();
         let mut used = configured(params);
         let (mut l, mut r) = (input.clone(), input.clone());
         used.process(&mut l, &mut r);
@@ -517,6 +519,8 @@ mod tests {
 
         let mut unconfigured = Clipper::new();
         let (mut l, mut r) = (vec![0.5f32; 8], vec![0.5f32; 8]);
+        // 断言判据的规模界：块定长 8（`.all(...)` 的根是 `l`）。
+        assert_eq!(l.len(), 8);
         unconfigured.process(&mut l, &mut r);
         assert!(l.iter().all(|v| *v == 0.5));
 
