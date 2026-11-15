@@ -54,9 +54,9 @@
 //! 住在 [`Domain`] 的会话运行态里，`MODEL-ISO-001` 第 2 层）：
 //!
 //! - 键 = 整曲指纹（`yeban-render` 的 `song_overview_hash`：工程确定性 JSON
-//!   + 采样率 + 种子 + 曲风档 + 期望等级表，与真实 provider 的渲染缓存
-//!   **同一把指纹**）+ 分辨率 + provider 名。工程任一位变化 ⇒ 指纹变 ⇒
-//!   未命中、重算（失效不需要显式清缓存）；换 provider / 换分辨率同理。
+//!     + 采样率 + 种子 + 曲风档 + 期望等级表，与真实 provider 的渲染缓存
+//!     **同一把指纹**）+ 分辨率 + provider 名。工程任一位变化 ⇒ 指纹变 ⇒
+//!     未命中、重算（失效不需要显式清缓存）；换 provider / 换分辨率同理。
 //! - 命中时 provider **一次都不调**：JSON 与 HTML 两种呈现共用同一份
 //!   已缓存总览（`format` 与 `include_png_path` 是呈现开关，不进键）。
 //! - JSON 响应带 `cacheHit`（camelCase，与既有 `provider` / `pngPath`
