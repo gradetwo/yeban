@@ -1101,3 +1101,213 @@ fn piano_roll_audio_track_auditions_with_drums_only_or_muted_midi_and_syncs_trac
         "自动建轨后 selected_track_index 必须同步为新轨 1-based 下标"
     );
 }
+
+#[test]
+fn piano_roll_post_gap_auto_clip_aligns_ui_projection_split_and_audio() {
+    use std::collections::BTreeMap;
+    use yeban_app::bridge::{DEFAULT_TICKS_PER_PIXEL, host_to_painted, pitch_lane_y, tick_to_px};
+    use yeban_app::export_wav::{WavExportOptions, export_wav};
+    use yeban_render::wav::read_plain_wav_mono_f32;
+
+    let mut base = yeban_model::samples::demo_project();
+    base.bpm = 120.0;
+    let master = base.master_bus_track_id;
+    for track in base.tracks.values_mut() {
+        if track.id != master {
+            track.mute = true;
+            track.solo = false;
+        }
+    }
+    let seed_ops =
+        yeban_app::bridge::track_create_ops(&base, yeban_app::bridge::NewTrackKind::Midi)
+            .expect("创建测试 MIDI 轨");
+    let target_track_id = seed_ops
+        .iter()
+        .find_map(|op| match op {
+            yeban_model::ops::Op::AddTrack { track } => Some(track.id),
+            _ => None,
+        })
+        .expect("必须拿到新建 MIDI 轨 ID");
+
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<aether-roll-gap-sync>", "yeban-app", base, NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    undo.commit_ops(NOW_MS, "test: add post-gap midi track", seed_ops)
+        .expect("提交新建 MIDI 轨");
+    // 在 0..1920 与 1920..3840 放两段空 MIDI 片段，制造 [3840..9600) 间隔后的跨隙新建片段场景。
+    add_empty_midi_placement(&undo, target_track_id, "Bar1Empty", 0, 1920);
+    add_empty_midi_placement(&undo, target_track_id, "Bar2Empty", 1920, 1920);
+
+    let project = undo.try_project().expect("权威工程");
+    let view = ViewState::from_project(&project).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let production = ProductionLoop::without_engine();
+    let engine = production.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+
+    let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    let ui = live.ui();
+    host::wire_roll_edit(ui, &undo);
+    host::wire_track_select(ui, &undo);
+    host::wire_zoom_controls(ui, &undo);
+    host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
+    host::wire_aether_actions(ui, Rc::clone(&undo), engine, view_cell);
+
+    let track_ulid = target_track_id.to_canonical_string();
+    ui.set_selected_track_id(track_ulid.into());
+    ui.set_selected_clip_ulid("".into());
+    ui.invoke_apply_dock_tab("pianoroll".into());
+
+    let scroll_tick: u64 = 7_680;
+    let target_tick: u64 = 9_600;
+    let scroll_px = tick_to_px(scroll_tick, DEFAULT_TICKS_PER_PIXEL).expect("scroll px") as f32;
+    let target_px = tick_to_px(target_tick, DEFAULT_TICKS_PER_PIXEL).expect("target px") as f32;
+    let host_x = target_px - scroll_px + 1.0;
+    let host_y = pitch_lane_y(64) + 6.0;
+    let (painted_x, painted_y) = host_to_painted(host_x, host_y);
+
+    ui.set_roll_scroll_x(scroll_px);
+    ui.set_active_tool(2); // Pencil
+    ui.invoke_clicked(painted_x, painted_y);
+
+    let after_insert = undo.try_project().expect("落笔后工程");
+    let track = after_insert
+        .tracks
+        .get(&target_track_id)
+        .expect("目标轨存在");
+    let post_gap_placement = track
+        .clips
+        .values()
+        .find(|p| target_tick >= p.start_tick && target_tick < p.start_tick + p.duration_ticks)
+        .expect("必须在 9600 位置自动建出覆盖它的非零起点片段");
+    assert_eq!(
+        post_gap_placement.start_tick, 3_840,
+        "空隙自动新建片段必须紧接前一片段末端 3840 开始"
+    );
+
+    let clip_id_str = post_gap_placement.clip_id.to_canonical_string();
+    let clip_notes = after_insert
+        .clip_pool
+        .get(&post_gap_placement.clip_id)
+        .and_then(|e| e.content.notes())
+        .expect("新建片段必须是 MIDI 片段");
+    assert_eq!(clip_notes.len(), 1, "跨隙落笔应精确插入 1 颗音符");
+    let inserted_note = clip_notes.values().next().unwrap();
+    assert_eq!(
+        inserted_note.start_tick,
+        target_tick - post_gap_placement.start_tick,
+        "模型里的音符起点必须是剪辑局部 tick (9600 - 3840 = 5760)"
+    );
+    assert_eq!(inserted_note.pitch, 64);
+    assert_eq!(inserted_note.duration_ticks, 960);
+
+    // UI 投影侧：NoteView 与 note-positions 必须在时间线 9600 处精确可见且可命中。
+    let proj_view = ViewState::from_project(&after_insert).expect("重投影");
+    let note_view = proj_view
+        .notes
+        .iter()
+        .find(|n| n.clip_id == clip_id_str)
+        .expect("ViewState 必须投影出新建片段里的音符");
+    assert_eq!(note_view.start_tick, target_tick);
+    assert_eq!(note_view.end_tick, target_tick + 960);
+    assert_eq!(note_view.x, target_px);
+
+    host::apply_view(ui, &proj_view, 1440.0, scroll_px);
+    let ui_positions: Vec<f32> = ui.get_note_positions().iter().collect();
+    assert!(
+        ui_positions
+            .iter()
+            .any(|&p| (p - (target_px - scroll_px)).abs() < 0.01),
+        "视口滚动到 {scroll_px} 后，UI note-positions 必须包含相对坐标 {}，实际={ui_positions:?}",
+        target_px - scroll_px
+    );
+    let hit_idx = proj_view.hit_test_visible_scoped_with_base(
+        scroll_px,
+        1440.0,
+        host_x + 1.0,
+        host_y,
+        400.0,
+        Some(&clip_id_str),
+        60,
+    );
+    assert_eq!(
+        hit_idx.map(|i| proj_view.notes[i].id.as_str()),
+        Some(inserted_note.id.to_canonical_string().as_str()),
+        "作用域命中测试必须命中该跨隙音符"
+    );
+
+    // 音频导出侧：120 BPM 下 tick 9600 = 5.000s = 240_000 帧。
+    // 5760 局部 tick (= 3.000s = 144_000 帧) 处及之前必须严格静音，5.00s..5.50s 必须有真实音能。
+    let wav_path = std::env::temp_dir().join(format!(
+        "yeban_post_gap_roll_sync_{}.wav",
+        std::process::id()
+    ));
+    let wav_opts = WavExportOptions {
+        sample_rate: 48_000,
+        frames: 48_000 * 6,
+        ..Default::default()
+    };
+    export_wav(&after_insert, &wav_path, wav_opts).expect("WAV 导出必须成功");
+    let (mono, rate, _) = read_plain_wav_mono_f32(&wav_path).expect("读取导出 WAV");
+    let _ = std::fs::remove_file(&wav_path);
+    assert_eq!(rate, 48_000);
+    let pre_note_peak = mono[..235_000].iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
+    assert!(
+        pre_note_peak < 1e-5,
+        "9600 tick (240000 帧) 之前（含局部 tick 5760 对应的 144000 帧处）必须静音（仅允许 24-bit 量化底噪 <= 1e-5），实测={pre_note_peak}"
+    );
+    let note_peak = mono[240_000..264_000]
+        .iter()
+        .fold(0.0_f32, |m, &s| m.max(s.abs()));
+    assert!(
+        note_peak > 0.005,
+        "9600..10560 tick (240000..264000 帧) 区间必须发声，实测峰值={note_peak}"
+    );
+
+    // 剪刀切分：在时间线 10080 tick 处落刀，应把 [5760..6720) 切成 [5760..6240) 与 [6240..6720)。
+    let split_px = tick_to_px(10_080, DEFAULT_TICKS_PER_PIXEL).expect("split px") as f32;
+    let (split_painted_x, split_painted_y) = host_to_painted(split_px - scroll_px + 1.0, host_y);
+    ui.set_selected_clip_ulid(post_gap_placement.id.to_canonical_string().into());
+    ui.set_active_tool(3); // Knife
+    ui.invoke_clicked(split_painted_x, split_painted_y);
+
+    let after_split = undo.try_project().expect("切分后工程");
+    let split_notes = after_split
+        .clip_pool
+        .get(&post_gap_placement.clip_id)
+        .and_then(|e| e.content.notes())
+        .expect("MIDI 片段");
+    assert_eq!(
+        split_notes.len(),
+        2,
+        "剪刀在 clip_start>0 音符中点切分后必须变成 2 颗音符"
+    );
+    let mut pairs: Vec<(u64, u64)> = split_notes
+        .values()
+        .map(|n| (n.start_tick, n.duration_ticks))
+        .collect();
+    pairs.sort_unstable();
+    assert_eq!(pairs, vec![(5_760, 480), (6_240, 480)]);
+
+    // 撤销切分回到 1 颗 [5760..6720) 音符后，step-toggle(84-64=20, step=40 -> 9600) 必须识别并删除它而非重复插入。
+    let undo_outcome = undo.perform(yeban_app::undo::UiAction::Undo);
+    assert!(
+        matches!(undo_outcome, yeban_app::undo::ActionOutcome::Changed { .. }),
+        "撤销切分必须改变工程回到 1 颗音符，实际={undo_outcome:?}"
+    );
+    ui.invoke_piano_step_toggle(84 - 64, 40);
+    let after_toggle = undo.try_project().expect("步进切换后工程");
+    let toggled_notes: &BTreeMap<_, _> = after_toggle
+        .clip_pool
+        .get(&post_gap_placement.clip_id)
+        .and_then(|e| e.content.notes())
+        .expect("MIDI 片段");
+    assert!(
+        toggled_notes.is_empty(),
+        "piano-step-toggle 落在 clip_start>0 已有音符的时间线 step=40 (9600) 上时必须删除而非叠加重复音符"
+    );
+}

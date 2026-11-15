@@ -12356,8 +12356,21 @@ pub fn pencil_attempt_for_selected_with_base(
         .collect();
     let clip_id = crate::bridge::clip_at_tick(&triples, plan.start_tick)
         .ok_or(PencilRefusal::NoClipOnDisplayedTrack)?;
+    let placement_start = triples
+        .iter()
+        .rev()
+        .find_map(|(start_tick, duration_ticks, candidate_clip_id)| {
+            let end = start_tick.saturating_add(*duration_ticks);
+            (*candidate_clip_id == clip_id
+                && plan.start_tick >= *start_tick
+                && plan.start_tick < end)
+                .then_some(*start_tick)
+        })
+        .unwrap_or(0);
+    let mut local_plan = plan;
+    local_plan.start_tick = plan.start_tick.saturating_sub(placement_start);
     Ok(crate::bridge::plan_to_add_note(
-        plan,
+        local_plan,
         track.id,
         clip_id,
         yeban_model::EntityId::new(),
@@ -12499,11 +12512,13 @@ fn build_roll_note_insert_ops(
                 .saturating_add(placement.duration_ticks);
             start_tick >= placement.start_tick && start_tick < p_end
         }) {
+            let mut local_note = note;
+            local_note.start_tick = start_tick.saturating_sub(placement.start_tick);
             let mut ops = ensure_track_instrument_ops(project, track.id);
             ops.push(yeban_model::ops::Op::AddNote {
                 track_id: track.id,
                 clip_id: placement.clip_id,
-                note,
+                note: local_note,
             });
             return Ok(AutoRollNoteInsert {
                 ops,
@@ -12520,11 +12535,13 @@ fn build_roll_note_insert_ops(
                 .saturating_add(placement.duration_ticks);
             start_tick >= placement.start_tick && start_tick < p_end
         }) {
+            let mut local_note = note;
+            local_note.start_tick = start_tick.saturating_sub(placement.start_tick);
             let mut ops = ensure_track_instrument_ops(project, track.id);
             ops.push(yeban_model::ops::Op::AddNote {
                 track_id: track.id,
                 clip_id: placement.clip_id,
-                note,
+                note: local_note,
             });
             return Ok(AutoRollNoteInsert {
                 ops,
@@ -12581,10 +12598,12 @@ fn build_roll_note_insert_ops(
                         new_duration_ticks: target_duration,
                     });
                 }
+                let mut local_note = note;
+                local_note.start_tick = start_tick.saturating_sub(placement.start_tick);
                 ops.push(yeban_model::ops::Op::AddNote {
                     track_id: track.id,
                     clip_id: placement.clip_id,
-                    note,
+                    note: local_note,
                 });
                 return Ok(AutoRollNoteInsert {
                     ops,
@@ -12631,10 +12650,12 @@ fn build_roll_note_insert_ops(
                 track_id: track.id,
                 placement,
             });
+            let mut local_note = note;
+            local_note.start_tick = start_tick.saturating_sub(clip_start);
             ops.push(yeban_model::ops::Op::AddNote {
                 track_id: track.id,
                 clip_id,
-                note,
+                note: local_note,
             });
             return Ok(AutoRollNoteInsert {
                 ops,
@@ -13719,7 +13740,60 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                         return;
                     };
                     let split_tick = view.snapped_tick_at(scroll, x, ROLL_SNAP_GRID_TICKS);
-                    let ops = split_ops_for(project, &view.notes[index].id, split_tick);
+                    let note_clip_id = view.notes[index].clip_id.as_str();
+                    let placement_start =
+                        <yeban_model::EntityId as std::str::FromStr>::from_str(note_clip_id)
+                            .ok()
+                            .map(|cid| {
+                                let selected_clip = ui.get_selected_clip_ulid();
+                                let selected_track = ui.get_selected_track_id();
+                                let selected_placement_start =
+                                    <yeban_model::EntityId as std::str::FromStr>::from_str(
+                                        selected_clip.as_str(),
+                                    )
+                                    .ok()
+                                    .and_then(|pid| {
+                                        project.tracks.values().find_map(|track| {
+                                            track
+                                                .clips
+                                                .get(&pid)
+                                                .filter(|p| p.clip_id == cid)
+                                                .map(|p| p.start_tick)
+                                        })
+                                    });
+                                selected_placement_start
+                                    .or_else(|| {
+                                        crate::bridge::display_track(
+                                            project,
+                                            Some(selected_track.as_str()),
+                                        )
+                                        .and_then(
+                                            |track| {
+                                                track
+                                                    .clips
+                                                    .values()
+                                                    .filter(|p| p.clip_id == cid)
+                                                    .map(|p| p.start_tick)
+                                                    .min()
+                                            },
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        project
+                                            .tracks
+                                            .values()
+                                            .flat_map(|track| track.clips.values())
+                                            .filter(|p| p.clip_id == cid)
+                                            .map(|p| p.start_tick)
+                                            .min()
+                                    })
+                                    .unwrap_or(0)
+                            })
+                            .unwrap_or(0);
+                    let Some(local_split_tick) = split_tick.checked_sub(placement_start) else {
+                        return;
+                    };
+                    let ops = split_ops_for(project, &view.notes[index].id, local_split_tick);
                     if ops.is_empty() {
                         return;
                     }
@@ -19218,19 +19292,71 @@ pub fn wire_aether_actions(
             };
             let start_tick = u64::try_from(step.max(0)).unwrap_or(0) * 240;
             let pitch = (84 - row).clamp(0, 127) as u8;
-            if let Ok((track_id, clip_id)) = resolve_roll_target(&ui, &project)
-                && let Some(note) =
-                    project
-                        .clip_pool
-                        .get(&clip_id)
-                        .and_then(|entry| match &entry.content {
-                            yeban_model::project::ClipContent::Midi { notes } => notes
-                                .values()
-                                .find(|n| n.start_tick == start_tick && n.pitch == pitch)
-                                .cloned(),
-                            _ => None,
-                        })
+            let existing = if let Ok((track_id, fallback_clip_id)) =
+                resolve_roll_target(&ui, &project)
             {
+                let track = project.tracks.get(&track_id);
+                let selected_clip = ui.get_selected_clip_ulid();
+                let preferred = Some(selected_clip.trim())
+                    .filter(|s| !s.is_empty())
+                    .and_then(|sel| {
+                        track.and_then(|t| {
+                            t.clips.values().find(|p| {
+                                (p.id.to_canonical_string() == sel
+                                    || p.clip_id.to_canonical_string() == sel)
+                                    && start_tick >= p.start_tick
+                                    && start_tick < p.start_tick.saturating_add(p.duration_ticks)
+                                    && matches!(
+                                        project.clip_pool.get(&p.clip_id).map(|e| &e.content),
+                                        Some(yeban_model::project::ClipContent::Midi { .. })
+                                    )
+                            })
+                        })
+                    });
+                let covering = preferred.or_else(|| {
+                    track.and_then(|t| {
+                        t.clips.values().find(|p| {
+                            start_tick >= p.start_tick
+                                && start_tick < p.start_tick.saturating_add(p.duration_ticks)
+                                && matches!(
+                                    project.clip_pool.get(&p.clip_id).map(|e| &e.content),
+                                    Some(yeban_model::project::ClipContent::Midi { .. })
+                                )
+                        })
+                    })
+                });
+                let (target_clip_id, placement_start) = covering
+                    .map(|p| (p.clip_id, p.start_tick))
+                    .unwrap_or_else(|| {
+                        let fallback_start = track
+                            .and_then(|t| {
+                                t.clips
+                                    .values()
+                                    .filter(|p| p.clip_id == fallback_clip_id)
+                                    .map(|p| p.start_tick)
+                                    .min()
+                            })
+                            .unwrap_or(0);
+                        (fallback_clip_id, fallback_start)
+                    });
+                project
+                    .clip_pool
+                    .get(&target_clip_id)
+                    .and_then(|entry| match &entry.content {
+                        yeban_model::project::ClipContent::Midi { notes } => notes
+                            .values()
+                            .find(|n| {
+                                placement_start.saturating_add(n.start_tick) == start_tick
+                                    && n.pitch == pitch
+                            })
+                            .cloned()
+                            .map(|note| (track_id, target_clip_id, note)),
+                        _ => None,
+                    })
+            } else {
+                None
+            };
+            if let Some((track_id, clip_id, note)) = existing {
                 let op = yeban_model::Op::DeleteNote {
                     track_id,
                     clip_id,

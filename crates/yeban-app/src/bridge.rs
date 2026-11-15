@@ -4024,19 +4024,35 @@ impl ViewState {
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
         // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
         // 变换得到（复用 `tick_to_px` 与 `pitch_lane`，不在别处再写一套换算）。
+        let mut clip_start_ticks: BTreeMap<EntityId, u64> = BTreeMap::new();
+        for track in project.tracks.values() {
+            for placement in track.clips.values() {
+                clip_start_ticks
+                    .entry(placement.clip_id)
+                    .and_modify(|earliest| *earliest = (*earliest).min(placement.start_tick))
+                    .or_insert(placement.start_tick);
+            }
+        }
         let mut notes: Vec<NoteView> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for entry in project.clip_pool.values() {
             let Some(entry_notes) = entry.content.notes() else {
                 continue;
             };
+            let placement_start_tick = clip_start_ticks.get(&entry.id).copied().unwrap_or(0);
             for note in entry_notes.values() {
                 let text = note.id.to_canonical_string();
                 if !seen.insert(text.clone()) {
                     continue;
                 }
                 let index = notes.len();
-                notes.push(note_view(entry, note, index, ticks_per_pixel)?);
+                notes.push(note_view(
+                    entry,
+                    note,
+                    placement_start_tick,
+                    index,
+                    ticks_per_pixel,
+                )?);
             }
         }
         // 平行数组一律由 `notes` 派生 —— 只有一个事实源，判据再钉住它们逐项一致。
@@ -5598,10 +5614,16 @@ pub fn pan_display(pan_millis: i32) -> String {
 fn note_view(
     entry: &ClipPoolEntry,
     note: &MidiNote,
+    placement_start_tick: u64,
     index: usize,
     ticks_per_pixel: u64,
 ) -> Result<NoteView, BridgeError> {
-    let start_tick = note.start_tick;
+    let start_tick =
+        placement_start_tick
+            .checked_add(note.start_tick)
+            .ok_or(BridgeError::TickOverflow {
+                start_tick: note.start_tick,
+            })?;
     let end_tick = start_tick
         .checked_add(note.duration_ticks)
         .ok_or(BridgeError::TickOverflow { start_tick })?;
