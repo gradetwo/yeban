@@ -7382,6 +7382,9 @@ mod tests {
             bound,
             before: reading(before_lufs),
             after: reading(after_lufs),
+            crest_reduction_db: 0.0,
+            target_shortfall_db: None,
+            limits_reached: false,
         }
     }
 

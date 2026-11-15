@@ -502,9 +502,7 @@ mod tests {
     #[test]
     fn reset_reproduces_a_fresh_device_and_non_finite_input_is_safe() {
         let params = ClipperParams::DEFAULT;
-        let input: Vec<f32> = (0..256)
-            .map(|i| ((i as f32 * 0.37).sin() * 0.9))
-            .collect();
+        let input: Vec<f32> = (0..256).map(|i| ((i as f32 * 0.37).sin() * 0.9)).collect();
         let mut used = configured(params);
         let (mut l, mut r) = (input.clone(), input.clone());
         used.process(&mut l, &mut r);

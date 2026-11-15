@@ -131,6 +131,7 @@ use crate::render::{RenderOutput, db_to_linear};
 use crate::rf64::{
     Bext, ContainerKind, ContainerPlan, Loudness, PcmFormat, Rf64Error, write_container,
 };
+use yeban_dsp::clipper::{Clipper, ClipperParams};
 use yeban_dsp::meter::TruePeakDetector;
 
 /// LRA 的**相对门限**（LU）: 相对"过了绝对门限的短时值的平均响度"再降 20 LU。
@@ -285,13 +286,26 @@ pub enum GainBound {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NormalizeOutcome {
     /// 实际施加的增益（dB）。`0.0` 表示样本**逐位未改动**。
+    ///
+    /// ⚠ 这是**伺服**增益（clipper 之后补的那一段）；clipper 本身的塑形
+    /// 不计在这里，看 [`Self::crest_reduction_db`]。
     pub gain_db: f32,
     /// 定下这个增益的约束。
     pub bound: GainBound,
-    /// 施加**之前**的测量。
+    /// 施加**之前**的测量（clipper 之前）。
     pub before: MasterLoudness,
     /// 施加**之后**的测量（重新测一遍, 不是推算的）。
     pub after: MasterLoudness,
+    /// clipper 削掉的 crest（dB）= 施加前 crest − clipper 后 crest；
+    /// 没挂 clipper 或测不出时为 `0.0`。crest 口径 = 真峰值 − 积分响度。
+    pub crest_reduction_db: f32,
+    /// **响亮回执**：复测后仍达不到目标时的差距（dB，正数）；
+    /// 达标（容差内）或没给目标时为 `None`。⛔ 不静默归一化了事：
+    /// 调用方拿到 `Some(x)` 必须如实报「距目标差 x dB」。
+    pub target_shortfall_db: Option<f32>,
+    /// 与 [`Self::target_shortfall_db`] 同生：差距存在且 clipper 已挂
+    /// 或增益被真峰值上限顶住 ⇒ 已达削波与限幅上限。
+    pub limits_reached: bool,
 }
 
 /// 导出预设: 目标响度 + 真峰值上限。
@@ -310,16 +324,34 @@ pub struct ExportPreset {
     target_lufs: Option<f32>,
     /// 真峰值上限（dBTP）。
     true_peak_ceiling_dbtp: Option<f32>,
+    /// 可选的软削波段（C-1）：在增益伺服**之前**先降 crest，
+    /// 并入同一条「施加后复测」闭环（⛔ 不另起第二套伺服）。
+    /// 母带链序：Strip → Tape → **Clipper** → Limiter（伺服/限幅兜底）。
+    clipper: Option<ClipperParams>,
 }
 
 impl ExportPreset {
-    /// 由目标与上限构造。
+    /// 由目标与上限构造（无 clipper 段，与旧行为逐位一致）。
     #[must_use]
     pub const fn new(target_lufs: Option<f32>, true_peak_ceiling_dbtp: Option<f32>) -> Self {
         Self {
             target_lufs,
             true_peak_ceiling_dbtp,
+            clipper: None,
         }
+    }
+
+    /// 挂上软削波段（C-1）。参数在施加时 `sanitised()`。
+    #[must_use]
+    pub const fn with_clipper(mut self, clipper: Option<ClipperParams>) -> Self {
+        self.clipper = clipper;
+        self
+    }
+
+    /// 已挂的软削波段参数。
+    #[must_use]
+    pub const fn clipper(&self) -> Option<ClipperParams> {
+        self.clipper
     }
 
     /// 流媒体预设: [`STREAMING_TARGET_LUFS`] + [`DEFAULT_TRUE_PEAK_CEILING_DBTP`]。
@@ -430,6 +462,30 @@ impl ExportPreset {
         oversampling: TruePeakOversampling,
     ) -> Option<NormalizeOutcome> {
         let before = measure_master_at(sample_rate, left, right, oversampling)?;
+        // ⭐ C-1：clipper 段先行（降 crest），复测后伺服只补剩余增益，
+        // limiter 口径的真峰值上限仍在最后兜底 —— 同一条闭环，不另起伺服。
+        let mut crest_reduction_db = 0.0f32;
+        let stage = if let Some(clipper_params) = self.clipper {
+            let mut clipper = Clipper::new();
+            clipper.configure(sample_rate as f32);
+            clipper.set_params(clipper_params);
+            if clipper.is_active() {
+                clipper.process(left, right);
+            }
+            let interim = measure_master_at(sample_rate, left, right, oversampling)?;
+            if before.integrated_is_measurable()
+                && interim.integrated_is_measurable()
+                && before.true_peak_dbtp.is_finite()
+                && interim.true_peak_dbtp.is_finite()
+            {
+                let crest_before = before.true_peak_dbtp - before.integrated_lufs;
+                let crest_after = interim.true_peak_dbtp - interim.integrated_lufs;
+                crest_reduction_db = (crest_before - crest_after).max(0.0);
+            }
+            interim
+        } else {
+            before
+        };
         let mut gain_db = 0.0f32;
         let mut bound = GainBound::NothingToDo;
         // 定下 `gain_db` 的那条约束的**两个操作数**（请求值, 实测值）。它们的量级决定
@@ -439,11 +495,11 @@ impl ExportPreset {
 
         if let Some(target) = self.target_lufs
             && target.is_finite()
-            && before.integrated_is_measurable()
+            && stage.integrated_is_measurable()
         {
-            gain_db = target - before.integrated_lufs;
+            gain_db = target - stage.integrated_lufs;
             bound = GainBound::LoudnessTarget;
-            operands = Some((target, before.integrated_lufs));
+            operands = Some((target, stage.integrated_lufs));
         }
 
         if let Some(ceiling) = self.true_peak_ceiling_dbtp
@@ -458,14 +514,14 @@ impl ExportPreset {
             // `allowed_db = +inf`, 而 `+inf < gain_db` 对任何 `gain_db` 都是假。
             // **若上游那条判据变红或被删除, 本行就变成真防线** —— 请同时复核
             // `within_measurement_resolution` 的文档（它依赖同一条上游契约）。
-            && before.true_peak_dbtp.is_finite()
+            && stage.true_peak_dbtp.is_finite()
         {
             // 上限允许多少增益: 真峰值加上它就正好碰到上限。
-            let allowed_db = ceiling - before.true_peak_dbtp;
+            let allowed_db = ceiling - stage.true_peak_dbtp;
             if allowed_db < gain_db {
                 gain_db = allowed_db;
                 bound = GainBound::TruePeakCeiling;
-                operands = Some((ceiling, before.true_peak_dbtp));
+                operands = Some((ceiling, stage.true_peak_dbtp));
             }
         }
 
@@ -487,11 +543,27 @@ impl ExportPreset {
         }
 
         let after = measure_master_at(sample_rate, left, right, oversampling)?;
+        // 响亮回执（C-1）：复测仍达不到目标 ⇒ 报差距，不静默了事。
+        let target_shortfall_db = match self.target_lufs {
+            Some(target)
+                if target.is_finite()
+                    && after.integrated_is_measurable()
+                    && target - after.integrated_lufs > LOUDNESS_TARGET_TOLERANCE_LU =>
+            {
+                Some(target - after.integrated_lufs)
+            }
+            _ => None,
+        };
+        let limits_reached = target_shortfall_db.is_some()
+            && (self.clipper.is_some() || bound == GainBound::TruePeakCeiling);
         Some(NormalizeOutcome {
             gain_db,
             bound,
             before,
             after,
+            crest_reduction_db,
+            target_shortfall_db,
+            limits_reached,
         })
     }
 }
