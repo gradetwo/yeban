@@ -1166,8 +1166,10 @@ fn float_samples(path: &Path) -> Vec<f32> {
     let parsed = parse_container(&bytes).expect("分轨容器可解析");
     assert!(parsed.format.is_float, "分轨必须是浮点容器");
     bytes[parsed.data]
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("4 字节")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 
