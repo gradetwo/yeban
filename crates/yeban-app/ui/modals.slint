@@ -405,6 +405,10 @@ export component ToastBanner inherits Rectangle {
                     font-weight: 600;
                     color: #f8fafc;
                     vertical-alignment: center;
+                    // report-3 §7 #10：控制室 toast 含 4 个字段，单行只能显示成
+                    // 「· ...」。允许按词换行（两行 10px 字仍在 34px 气泡内），
+                    // elide 仅作超出两行后的兜底。默认帧无 toast ⇒ 不动 golden。
+                    wrap: word-wrap;
                     overflow: elide;
                 }
             }
