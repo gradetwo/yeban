@@ -12,6 +12,7 @@
         "exportClipping",
         "ignoredStripDevices",
         "incompleteDrumNoteMap",
+        "masterFaderAboveUnity",
         "peakAboveFullScale",
         "sfzCcGatedSilence",
         "sfzSamplesUnreadable",
