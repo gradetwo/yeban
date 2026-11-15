@@ -174,6 +174,16 @@ fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32, scroll_x: f32) 
     )
 }
 
+/// 获取窗口当前逻辑宽；若窗口尚未布局（宽度 <= 0，如冷启动首帧），退回传入兜底宽度。
+fn viewport_width_or_fallback(ui: &MainWindow, fallback: f32) -> f32 {
+    let w = ui.window().size().width as f32;
+    if w.is_finite() && w > 0.0 {
+        w
+    } else {
+        fallback
+    }
+}
+
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。
 ///
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
@@ -1552,7 +1562,9 @@ pub fn wire_track_select(ui: &MainWindow, port: &Rc<UndoPort>) {
                 Ok(view) => {
                     // 与撤销刷新同款：复用当前横向偏移，选轨⛔ 不把卷帘滚回起点。
                     let scroll_x = ui.get_roll_scroll_x();
-                    apply_view(&ui, &view, ui.window().size().width as f32, scroll_x);
+                    let width =
+                        viewport_width_or_fallback(&ui, crate::scene::DEMO_VIEWPORT_WIDTH as f32);
+                    apply_view(&ui, &view, width, scroll_x);
                 }
                 Err(error) => {
                     // 投影失败**出声**：选中态在内存里已经变了，但这一帧画不出来。
@@ -15649,7 +15661,8 @@ fn refresh_undo_window(ui: &MainWindow, port: &UndoPort, reproject: bool) {
         Ok(view) => {
             // 复用当前偏移：撤销**不应**把卷帘滚回起点（账本第 200 轮记录的缺陷）。
             let scroll_x = ui.get_roll_scroll_x();
-            apply_view(ui, &view, ui.window().size().width as f32, scroll_x)
+            let width = viewport_width_or_fallback(ui, crate::scene::DEMO_VIEWPORT_WIDTH as f32);
+            apply_view(ui, &view, width, scroll_x)
         }
         Err(error) => {
             // 投影失败**出声**：工程已经在内存里回退了，但这一帧画不出来。
@@ -15797,7 +15810,8 @@ pub fn build_main_window_with_console_tab(
     // `ui.set_compact(scene.compact())`，而 `scene.viewport_width` 恒为 1920
     //（`scene.rs` 的 `DEMO_VIEWPORT_WIDTH`）且只在装配时算一次 —— 那正是
     //"窗口拉窄、左栏不折叠"的根因。
-    apply_view(&ui, view, ui.window().size().width as f32, 0.0);
+    let initial_width = viewport_width_or_fallback(&ui, scene.viewport_width as f32);
+    apply_view(&ui, view, initial_width, 0.0);
     // `[ROAD-M3-002]` 滚动手势（账本第 199 轮）：偏移由**宿主**拥有 —— 因为裁剪也在宿主侧。
     // 卷帘只报告增量, 宿主 clamp + 累加后**重新注入**；不用 `Flickable`, 否则会与宿主偏移双重计算。
     // `[UI-NOTE-003]` 选区与工具派发共用**唯一**的点击派发器 `install_roll_click`：
@@ -20032,7 +20046,7 @@ pub fn wire_aether_actions(
                 apply_view(
                     &ui,
                     &view_state,
-                    ui.window().size().width as f32,
+                    viewport_width_or_fallback(&ui, crate::scene::DEMO_VIEWPORT_WIDTH as f32),
                     ui.get_roll_scroll_x(),
                 );
             }
