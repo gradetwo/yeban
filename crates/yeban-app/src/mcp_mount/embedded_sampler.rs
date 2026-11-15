@@ -805,7 +805,9 @@ fn the_tempo_fix_is_a_no_op_at_sixty_bpm() {
 /// 返回恰好一条 `exportClipping` 预警，带建议 trim 与逐源峰值。
 ///
 /// 夹具：`filled_project` 的**每一条轨**（含母带轨）推子 +24 dB ⇒ 必然过载。
-/// 承重断言：`clippedSamples > 0` ＋ `warnings.len() == 1` ＋ `suggestedTrimDb < 0`。
+/// 承重断言：`clippedSamples > 0` ＋ `exportClipping` 预警恰好一条 ＋ `suggestedTrimDb < 0`。
+/// 注：母带轨推子 +24 dB 同时触发 A-4 的 `masterFaderAboveUnity` 预警，属预期行为，
+/// 本判据只数 `exportClipping`，不断言预警总数。
 #[test]
 fn the_embedded_dispatcher_surfaces_the_clipping_warning() {
     let scratch = Scratch::new("clip-warning");
@@ -834,7 +836,8 @@ fn the_embedded_dispatcher_surfaces_the_clipping_warning() {
         data["clippedSamples"],
         data["truePeakDbfs"],
         warnings
-            .first()
+            .iter()
+            .find(|warning| warning["code"] == "exportClipping")
             .map_or(Value::Null, |warning| warning["suggestedTrimDb"].clone()),
         serde_json::to_string(warnings).expect("warnings")
     );
@@ -842,8 +845,16 @@ fn the_embedded_dispatcher_surfaces_the_clipping_warning() {
         data["clippedSamples"].as_u64().unwrap_or(0) > 0,
         "夹具必须真的削波（否则本条没有前提）: {response}"
     );
-    assert_eq!(warnings.len(), 1, "削波工程必须恰好一条预警: {response}");
-    let warning = &warnings[0];
+    let clipping: Vec<&Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "exportClipping")
+        .collect();
+    assert_eq!(
+        clipping.len(),
+        1,
+        "削波工程必须恰好一条 exportClipping 预警: {response}"
+    );
+    let warning = clipping[0];
     assert_eq!(warning["code"], "exportClipping", "{warning}");
     assert_eq!(
         warning["suggestedTrimDbFormula"], "suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)",
