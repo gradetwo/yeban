@@ -45,7 +45,7 @@
 //!
 //! ```text
 //! peak = max(|x[n-L+1]| … |x[n]|)          // 单调队列队首，O(1) 摊还 → IEEE 精确类
-//! target = min(1, cap / peak)               // 除法 + min       → IEEE 精确类（cap 见 §4.1）
+//! target = min(1, ceiling / peak)           // 除法 + min       → IEEE 精确类（语义见 §4.1）
 //! gain = max(ramp(gain, target), target)    // 乘 + max         → IEEE 精确类
 //! y[n-L] = x[n-L] * gain                    // 乘               → IEEE 精确类
 //! ```
@@ -81,10 +81,10 @@
 //! ## 3. 峰值上界证明（判据 `limited_peak_never_exceeds_threshold` 的依据）
 //!
 //! 记 `W(n) = max(|x[n-L+1]| … |x[n]|)`，`G(n)` 为本次输出样本所用的增益
-//! （`G` 单调、被钳在 `target` 与上一增益之间），`T` 为**有效上限**
-//! `cap = min(threshold, ceiling)`（母线 `ceiling > threshold` ⇒ `cap == threshold`，
-//! 与旧口径逐位相同）。实现里
-//! **先算 `G(n)` 再取** `x[n-L]`，且 `G(n) <= target(n) = min(1, T/W(n))`。
+//! （`G` 单调、被钳在 `target` 与上一增益之间），`T` 为**天花板**
+//! `ceiling`（第五份报告 A-1 语义：阈值只管增益启动点，见 §4.1）。实现里
+//! **先算 `G(n)` 再取** `x[n-L]`，且 `G(n) <= target(n) = min(1, T/W(n))`
+//! （`W(n) > threshold` 时；否则 `target = 1`，结论平凡成立）。
 //! 另外 `W(n) >= |x[n-L]|`（被延迟的那个样本就在窗口里，`L >= 1`）。于是：
 //!
 //! ```text
@@ -97,41 +97,56 @@
 //!
 //! ## 4. 软膝天花板：边界由映射负责，增益只负责平滑
 //!
-//! [`soft_knee`] 在 `|v| <= LIMITER_THRESHOLD` 时**逐位恒等**，之上指数渐近到
-//! [`LIMITER_CEILING`] ⇒ 输出**严格**不超过天花板，且在阈值处**没有折点**。
+//! [`soft_knee`] 在 `|v| <= 天花板 × (1 − [CEILING_KNEE_FRACTION])` 时**逐位恒等**，
+//! 之上指数渐近到 [`LIMITER_CEILING`] ⇒ 输出**严格**不超过天花板，且在起点处
+//! **没有折点**。
 //!
 //! 它**就是**"峰值不越界"这条保证的机制：增益只负责平滑，边界由这里的映射负责。
-//! 把映射写成"阈值以上指数渐近到天花板"而不是"硬钳到阈值"，是因为前者在阈值处
+//! 把映射写成"天花板之下指数渐近"而不是"硬钳到天花板"，是因为前者在起点处
 //! 一阶连续（没有折点），后者会引入一个削波折点 —— 听感差别在母线上是听得出来的。
 //!
-//! 代价：**允许阈值之上有一小段过冲**，上界是 [`LIMITER_CEILING`]（实测最大
-//! 0.90007 / 1.2 幅度尖峰，即阈值之上 0.008%）。这条容差必须写在判据里，
-//! 不能假装"输出 ≤ 0.9"（第一版就是这么写的，判据实测把它打红）。
+//! 代价：**稳态峰值落在天花板之下 ≤ 0.07 dB**（软膝把已送到天花板的样本再
+//! 拉低 `ceiling · FRACTION / e` 量级）。这条容差必须写在判据里，
+//! 不能假装"输出恰好 = 天花板"。
 //!
 //! 与 [`crate::math::soft_limit`] 的关系：那个是**全局**软限幅（膝点 0.82、
 //! 天花板 1.0、给所有信号用）；本函数是**母线限制器专用**的（阈值可注入），
 //! 因此不能共用 —— 但形状同族，参数不同。
 //!
-//! ### 4.1 天花板 ≤ 阈值（插入器件）：ceiling 是真的峰值上限，不是过冲余量
+//! ### 4.1 阈值与天花板的语义（第五份报告 A-1 改版：通行限幅器语义）
 //!
-//! 旧语义（P0-1 实测推翻）：增益目标恒为 `threshold / peak`，稳态峰值被钉在
-//! **阈值**上；`ceiling` 只兜延迟样本的过冲。于是 `threshold = 0 dB、ceiling = −1 dB`
-//! 的实测峰值是 −0.01 dBFS —— 用户拧的天花板完全不生效。更糟的是
-//! `sanitised()` 在 `ceiling ≤ threshold` 时**静默**把天花板抬到阈值之上，
-//! 把这个合法输入改写成了另一个输入。
+//! 历史两版都错过：
+//!
+//! - P0-1 之前：增益目标恒为 `threshold / peak`，稳态峰值被钉在**阈值**上；
+//!   `ceiling` 只兜延迟样本的过冲。`threshold = 0 dB、ceiling = −1 dB` 的实测
+//!   峰值是 −0.01 dBFS —— 用户拧的天花板完全不生效；且 `sanitised()` 在
+//!   `ceiling ≤ threshold` 时**静默**把天花板抬到阈值之上，改写合法输入。
+//! - P0-1 修复（`min` 语义）：目标改成 `min(threshold, ceiling) / peak`，
+//!   天花板在 `ceiling < threshold` 时生效了；但 `threshold < ceiling`
+//!   （用户最常见的拧法，如阈值 −12 dB / 天花板 −1 dB）时输出被钉在
+//!   **阈值**上 —— 探针 01 实测输出 −12.00 dBFS，天花板仍不生效，
+//!   且整段被多压 11 dB。这就是 A-1 点名的毛病。
 //!
 //! 现语义（本节即判据 `ceiling_is_the_output_peak_bound_for_the_five_reported_pairs`
-//! 的口径）：
+//! 与 `a_threshold_below_the_ceiling_no_longer_pins_the_output_to_the_threshold`
+//! 的口径，与通行限幅器一致）：
 //!
-//! - **增益压限的起始点仍是阈值**：窗口峰值 `> threshold` 才产生增益动作；
-//! - **压峰目标是有效上限** `cap = min(threshold, ceiling)`：稳态峰值落在 `cap` 上；
-//! - **软膝渐近线恒为 `ceiling`** ⇒ 输出峰值**永不**超过 `ceiling`（过冲保护不变）。
-//!   `ceiling > threshold` 时软膝起点 = 阈值（母线与旧行为逐位相同）；
-//!   `ceiling ≤ threshold` 时起点 = `ceiling − ceiling · [CEILING_KNEE_FRACTION]`，
-//!   增益先把峰值样本送到 `ceiling`、软膝再把它拉低 `≤ ceiling · FRACTION / e`
-//!   （≈ 0.07 dB）—— 稳态峰值因此落在天花板之下 0.07 dB 以内，判据容差按此写明；
-//! - `ceiling ≤ threshold` 是**合法且有意义**的输入：两处 `sanitised()` 与
-//!   `set_threshold` 都不得再改写它（非有限 / 非正等非法值仍按原规则退回默认）。
+//! - **阈值只决定增益削减的启动点**：窗口峰值 `> threshold` 才产生增益动作；
+//!   峰值 `≤ threshold` 时目标增益恒 1.0（§2.5 的逐位不变不变量不变）；
+//! - **天花板钉死输出上限**：启动后的目标增益是 `min(1, ceiling / peak)`，
+//!   稳态峰值落在 `ceiling` 上（峰值在阈值与天花板之间时目标钳到 1.0，
+//!   ⛔ 不放大）；
+//! - **软膝渐近线恒为 `ceiling`**，起点恒为 `ceiling − ceiling · [CEILING_KNEE_FRACTION]`
+//!   ⇒ 输出峰值**永不**超过 `ceiling`（过冲保护不变）；软膝把稳态峰值再
+//!   拉低 `≤ ceiling · FRACTION / e`（≈ 0.07 dB），判据容差按此写明；
+//! - `ceiling ≤ threshold` 与 `threshold < ceiling` 都是**合法且有意义**的
+//!   输入：两处 `sanitised()` 与 `set_threshold` 都不得改写它（非有限 /
+//!   非正等非法值仍按原规则退回默认）。
+//!
+//! ⚠ **行为变更**：`threshold < ceiling` 的既有工程（含母线缺省
+//! 0.9 / 0.95 与插入缺省 −1 dB / −0.3 dB）在新语义下输出**变响**
+//! （稳态峰值从阈值升到天花板），渲染字节随之改变 —— 这是 A-1 的
+//! 预期结果，不是回归。
 //!
 //! ## 5. 实时侧禁令自检（[AGENTS.md §2 红线 7] / `MUST-GATE-001`）
 //!
@@ -630,8 +645,9 @@ impl<const W: usize> Limiter<W> {
             LIMITER_THRESHOLD
         };
         // ⚠ 不再连带抬天花板（旧规则保持"阈值 < 天花板"不变量，已删）：
-        // 阈值高于天花板是合法状态 —— 有效上限取两者中较低者（模块文档 §4.1），
-        // 软膝在那一格的膝宽由 `CEILING_KNEE_FRACTION` 给出，不存在除零。
+        // 阈值高于天花板是合法状态 —— 阈值只管增益启动点、天花板钉输出
+        // 上限（模块文档 §4.1），软膝膝宽由 `CEILING_KNEE_FRACTION` 给出，
+        // 不存在除零。
     }
 
     /// 覆盖每样本释放量（**判据/注入用**；0.0 = 增益只降不升）。
@@ -657,10 +673,9 @@ impl<const W: usize> Limiter<W> {
         }
         let threshold = self.threshold;
         let ceiling = self.ceiling;
-        // 有效上限与软膝形状（模块文档 §4.1）：压峰目标取两者中较低者；
-        // 软膝渐近线恒为天花板，起点在天花板高于阈值时是阈值本人，
-        // 否则下移到天花板之下 `CEILING_KNEE_FRACTION` 处。
-        let cap = threshold.min(ceiling);
+        // 软膝形状（模块文档 §4.1）：渐近线恒为天花板，起点在天花板之下
+        // `CEILING_KNEE_FRACTION` 处 —— 增益负责把稳态峰值钉到天花板，
+        // 软膝只兜窗口迟到一格的过冲。
         let (knee_start, knee_top) = soft_knee_span(threshold, ceiling);
         let release = self.release_per_sample;
         let lookahead = self.lookahead;
@@ -732,15 +747,21 @@ impl<const W: usize> Limiter<W> {
             let peak = self.peak_deque[self.deque_head].1;
 
             // ---- 目标增益：窗口峰值不超阈值时为 1.0（完全透明） ----
-            // 增益被钳在 `cap / W(n)` 之上（下面那一句），`cap = min(阈值, 天花板)`
-            // ⇒ 稳态峰值落在**有效上限**上：天花板高于阈值时就是阈值（旧行为），
-            // 天花板低于阈值时就是天花板（P0-1 修复，§4.1）。窗口比被延迟的样本晚一格
-            // （`W(n)` 覆盖 `x[n-lookahead+1] … x[n]`，而输出的是 `x[n-lookahead]`），
-            // 因此"输出 ≤ 天花板"的**逐样本**保证由 [`soft_knee`] 的渐近线负责，
-            // 增益只负责把绝大多数样本提前压到位 —— 与母线实现同一口径（§3、§4）。
+            // ⭐ 第五份报告 A-1 起的通行语义（模块文档 §4.1）：**阈值只决定
+            // 增益削减的启动点**（峰值 ≤ 阈值 ⇒ 目标 1.0、逐位透明），
+            // **天花板钉死输出上限** —— 启动之后的目标增益是
+            // `ceiling / W(n)`（钳到 ≤ 1.0：峰值在阈值与天花板之间时不
+            // 放大），稳态峰值因此落在**天花板**上（软膝再拉低 ≤ 0.07 dB，
+            // 见 §4.1）。旧语义把目标写成 `min(threshold, ceiling) / W(n)`：
+            // `threshold < ceiling`（用户最常见的拧法）时输出被钉在阈值上，
+            // 天花板形同虚设 —— 那正是 A-1 点名的毛病。
+            // 窗口比被延迟的样本晚一格（`W(n)` 覆盖 `x[n-lookahead+1] … x[n]`，
+            // 而输出的是 `x[n-lookahead]`），因此"输出 ≤ 天花板"的**逐样本**
+            // 保证由 [`soft_knee`] 的渐近线负责，增益只负责把绝大多数样本
+            // 提前压到位 —— 与母线实现同一口径（§3、§4）。
             let target = if peak > threshold {
                 self.engaged = true;
-                cap / peak
+                (ceiling / peak).min(1.0)
             } else {
                 1.0
             };
@@ -806,12 +827,15 @@ impl<const W: usize> Default for Limiter<W> {
 ///   渐近线仍是天花板本人，起点下移到它之下（模块文档 §4.1）。
 #[inline]
 #[must_use]
-fn soft_knee_span(threshold: f32, ceiling: f32) -> (f32, f32) {
-    if ceiling > threshold {
-        (threshold, ceiling)
-    } else {
-        (ceiling * (1.0 - CEILING_KNEE_FRACTION), ceiling)
-    }
+fn soft_knee_span(_threshold: f32, ceiling: f32) -> (f32, f32) {
+    // ⭐ 第五份报告 A-1：起点恒在天花板之下 `CEILING_KNEE_FRACTION` 处，
+    // 与阈值无关 —— 增益语义改版后（目标 = 天花板/峰值），若起点仍取
+    // 阈值，稳态样本（已被增益送到天花板）会被软膝再压低
+    // `(ceiling − threshold) × (1 − 1/e)`（例：阈值 −12 dB/天花板 −1 dB
+    // 时约 3.7 dB），天花板仍然不生效。阈值只管增益启动点（见
+    // `process_stereo` 的目标增益），⛔ 不再兼任软膝起点。
+    // 参数保留是为了让调用点把两个旋钮都摆在明面上（签名即文档）。
+    (ceiling * (1.0 - CEILING_KNEE_FRACTION), ceiling)
 }
 
 /// 软膝天花板：`|v| <= 起点` 时**逐位恒等**，之上指数渐近到**渐近线**
@@ -1700,6 +1724,11 @@ mod tests {
         let run = |true_peak: bool| {
             let mut limiter = Limiter::<LOOKAHEAD_SAMPLES>::with_config(LimiterConfig {
                 threshold,
+                // ⭐ A-1 语义前提：天花板 0.7 低于真峰值 0.8 —— 检波器
+                // 抓到插值峰后目标增益 = 0.7/0.8 < 1 才有削减可数；
+                // 缺省天花板（0.9）高于真峰值时新语义下本就无可压，
+                // 本判据要证的是"检波器接上了插值"，不是天花板数值。
+                ceiling: 0.7,
                 true_peak,
                 ..LimiterConfig::DEFAULT
             });
@@ -1752,7 +1781,7 @@ mod tests {
     }
 
     /// **判据（新写，可红）**：问题报告 P0-1 的五组 `(threshold, ceiling)` ——
-    /// `ceiling` 必须真的成为输出峰值上限，稳态峰值落在 `min(threshold, ceiling)` 上。
+    /// `ceiling` 必须真的成为输出峰值上限，稳态峰值落在 **`ceiling`** 上。
     ///
     /// 量什么：2.0 幅度（+6 dB）的 100 Hz 正弦过 [`InsertLimiter`]
     /// （参数走 [`LimiterParams::config`] 的 dB 换算，与工具面同一条路），
@@ -1762,11 +1791,18 @@ mod tests {
     /// **阈值**上，天花板是死参数；其余三组因阈值更低而"碰巧对"。
     /// 本判据在旧实现下第 1、4 组必红（峰值 −0.01 对期望 −1 / −6）。
     ///
+    /// ⭐ 第五份报告 A-1 改版（通行语义）：期望从 `min(threshold, ceiling)`
+    /// 改为 **`ceiling` 本人** —— 阈值只决定增益削减的启动点。五组里
+    /// `(−6, −1)` 与 `(−6, −3)` 的期望因此从 −6 改为 −1 / −3：旧 `min`
+    /// 语义下这两组被钉在阈值上（过压 5 dB / 3 dB），正是 A-1 点名的
+    /// 毛病在判据里的落点。A-1 的原始一组（阈值 −12 dB、天花板 −1 dB、
+    /// 输出 −12.00 dBFS）由探针 01 在工具面复现/验收，不在本判据的五组里。
+    ///
     /// 容差（写明）：硬断言 `peak ≤ ceiling + 0.02 dB`（"永不超过天花板"，
     /// 0.02 是给真峰值检波估计误差留的）；稳态断言
-    /// `|peak − min(threshold, ceiling)| ≤ 0.15 dB` —— 其中
-    /// `ceiling ≤ threshold` 一格的软膝会把峰值再拉低 ≤ 0.07 dB（模块文档 §4.1），
-    /// 真峰值检波对 100 Hz 正弦的估计偏差同量级，两者合计 < 0.15 dB。
+    /// `|peak − ceiling| ≤ 0.15 dB` —— 其中软膝会把峰值再拉低 ≤ 0.07 dB
+    /// （模块文档 §4.1），真峰值检波对 100 Hz 正弦的估计偏差同量级，
+    /// 两者合计 < 0.15 dB。
     #[test]
     fn ceiling_is_the_output_peak_bound_for_the_five_reported_pairs() {
         let pairs = [
@@ -1805,18 +1841,62 @@ mod tests {
                 "({threshold_db}, {ceiling_db})：夹具必须真的驱动限制器"
             );
             let peak_db = 20.0 * peak.log10();
-            let expected_db = threshold_db.min(ceiling_db);
+            let expected_db = ceiling_db;
             assert!(
                 peak_db <= ceiling_db + 0.02,
                 "({threshold_db}, {ceiling_db})：峰值 {peak_db} dBFS 越过天花板 {ceiling_db} dB"
             );
             assert!(
                 (peak_db - expected_db).abs() <= 0.15,
-                "({threshold_db}, {ceiling_db})：稳态峰值 {peak_db} dBFS 与有效上限 \
+                "({threshold_db}, {ceiling_db})：稳态峰值 {peak_db} dBFS 与天花板 \
                  {expected_db} dB 差 {} dB（容差 0.15）",
                 (peak_db - expected_db).abs()
             );
         }
+    }
+
+    /// **判据（⭐ 第五份报告 A-1 的原始一组）**：阈值 −12 dB、天花板 −1 dB、
+    /// 输入峰值 0 dBFS 的稳态输出峰值必须落在 **−1 dB**（天花板），
+    /// ⛔ 不是 −12 dB（阈值）。
+    ///
+    /// 报告探针 01 的实测（旧 `min` 语义）：输出 −12.00 dBFS —— 用户把
+    /// 阈值拧低想让限制器早启动，结果整段被多压 11 dB。本判据在旧实现
+    /// 下必红（−12 对 −1，差 11 dB ≫ 容差 0.15）。
+    #[test]
+    fn a_threshold_below_the_ceiling_no_longer_pins_the_output_to_the_threshold() {
+        let params = LimiterParams {
+            threshold_db: -12.0,
+            ceiling_db: -1.0,
+            ..LimiterParams::DEFAULT
+        };
+        let mut limiter = InsertLimiter::with_config(params.config(48_000.0));
+        let mut left = [0.0f32; FRAMES];
+        let mut right = [0.0f32; FRAMES];
+        let mut phase = 0.0f32;
+        let mut peak = 0.0f32;
+        for _ in 0..750 {
+            for frame in 0..FRAMES {
+                let value = 2.0 * phase.sin();
+                phase += core::f32::consts::TAU * 100.0 / 48_000.0;
+                left[frame] = value;
+                right[frame] = value;
+            }
+            limiter.process_stereo(&mut left, &mut right);
+            for sample in left.iter().chain(right.iter()) {
+                peak = peak.max(sample.abs());
+            }
+        }
+        assert!(limiter.engaged(), "夹具必须真的驱动限制器");
+        let peak_db = 20.0 * peak.log10();
+        assert!(
+            peak_db <= -1.0 + 0.02,
+            "峰值 {peak_db} dBFS 越过天花板 −1 dB"
+        );
+        assert!(
+            (peak_db - (-1.0)).abs() <= 0.15,
+            "稳态峰值 {peak_db} dBFS 必须落在天花板 −1 dB（容差 0.15），\
+             旧语义会把它钉在阈值 −12 dB"
+        );
     }
 
     /// **判据（新写，可红）**：`ceiling ≤ threshold` 不再被任何一层 `sanitised`
