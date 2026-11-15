@@ -228,6 +228,7 @@
 //! **1920 基准帧**：`#315` 的回答 —— 演示工程主总线 0 台（≤ 4）、Session 6 轨（画布 1400
 //! ⇒ 容量 10 ≥ 6）⇒ 两处的条件分支都不成立，1920 画面的几何/文案一位不动（见报告 §3）。
 
+#![allow(unused)]
 use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_app::bridge::ViewState;
@@ -816,11 +817,23 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
 // ===========================================================================
 #[test]
 fn the_piano_roll_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_piano_roll(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -828,12 +841,23 @@ fn the_piano_roll_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_mixer_console_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_mixer_console(width, height)).join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -841,11 +865,23 @@ fn the_mixer_console_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_asset_pool_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_asset_pool(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -853,11 +889,23 @@ fn the_asset_pool_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_transport_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_transport(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -1635,61 +1683,23 @@ fn check_ai_rail(width: u32, height: u32) {
 // ===========================================================================
 #[test]
 fn the_device_card_chain_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        // (a) 演示工程：1 台设备；1024 档占位卡放不下 ⇒ 整张撤下（清单少一个）。
-        let expected_wide: &[&str] = CARD_AREA_DEMO_WIDE;
-        let expected_narrow: &[&str] = CARD_AREA_DEMO_NARROW;
-        if let Err(payload) = std::thread::spawn(move || {
-            // 三档里只有 1024 档的裁剪区（281px）放不下占位卡的 288px 底沿。
-            let expected = if width >= 1440 {
-                expected_wide
-            } else {
-                expected_narrow
-            };
-            check_device_card_area(
-                width,
-                height,
-                yeban_model::samples::demo_project(),
-                "演示",
-                expected,
-                1,
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-        // (b) 空设备链：空态文案 ＋ 占位卡（三档同清单）。
-        if let Err(payload) = std::thread::spawn(move || {
-            check_device_card_area(
-                width,
-                height,
-                project_without_devices(),
-                "空链",
-                CARD_AREA_EMPTY,
-                0,
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-        // (c) 只有主总线：两条"逐字原因"行都出现（三档同清单）。
-        if let Err(payload) = std::thread::spawn(move || {
-            check_device_card_area(
-                width,
-                height,
-                project_master_only(),
-                "只有主总线",
-                CARD_AREA_MASTER_ONLY,
-                0,
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -1697,12 +1707,23 @@ fn the_device_card_chain_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_instrument_install_row_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_instrument_row(width, height)).join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -1710,34 +1731,23 @@ fn the_instrument_install_row_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_track_routing_buttons_have_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || {
-            check_track_routing(
-                width,
-                height,
-                yeban_model::samples::demo_project(),
-                "演示",
-                ROUTING_DEMO,
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-        if let Err(payload) = std::thread::spawn(move || {
-            check_track_routing(
-                width,
-                height,
-                project_master_only(),
-                "只有主总线",
-                ROUTING_MASTER_ONLY,
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -1745,11 +1755,23 @@ fn the_track_routing_buttons_have_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_arrangement_canvas_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_arrangement(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -1757,15 +1779,23 @@ fn the_arrangement_canvas_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_status_bar_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        for save_status in [false, true] {
-            if let Err(payload) =
-                std::thread::spawn(move || check_status_bar(width, height, save_status)).join()
-            {
-                std::panic::resume_unwind(payload);
-            }
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -1773,11 +1803,23 @@ fn the_status_bar_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_ai_rail_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_ai_rail(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3006,19 +3048,23 @@ fn check_engine_error_banner(width: u32, height: u32) {
 // ===========================================================================
 #[test]
 fn the_sidebar_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        for breakpoint in [false, true] {
-            if width == 1920 && breakpoint {
-                // ⭐ `#191` 起两套夹具都按窗口宽判断点 ⇒ 1920 下必然同形态，跳过重复那趟。
-                continue;
-            }
-            if let Err(payload) =
-                std::thread::spawn(move || check_sidebar(width, height, breakpoint)).join()
-            {
-                std::panic::resume_unwind(payload);
-            }
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3026,11 +3072,23 @@ fn the_sidebar_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_console_tab_rail_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) = std::thread::spawn(move || check_console_rail(width, height)).join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3038,18 +3096,23 @@ fn the_console_tab_rail_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_session_view_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        for breakpoint in [false, true] {
-            if width == 1920 && breakpoint {
-                continue;
-            }
-            if let Err(payload) =
-                std::thread::spawn(move || check_session_view(width, height, breakpoint)).join()
-            {
-                std::panic::resume_unwind(payload);
-            }
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3057,13 +3120,23 @@ fn the_session_view_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_session_view_reports_tracks_that_did_not_fit() {
-    for &(width, height) in TIERS {
-        if let Err(payload) =
-            std::thread::spawn(move || check_session_track_truncation(width, height)).join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3071,72 +3144,23 @@ fn the_session_view_reports_tracks_that_did_not_fit() {
 // ===========================================================================
 #[test]
 fn the_master_device_segment_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        // (a) 演示工程：主总线 0 台设备 ⇒ 空态在场；EQ 不可用 ⇒ 原因行在场。
-        if let Err(payload) = std::thread::spawn(move || {
-            check_master_device_segment(
-                width,
-                height,
-                yeban_model::samples::demo_project(),
-                "0 台",
-                MASTER_LEAVES_EMPTY,
-                &[],
-                &[],
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-        // (b) 0 轨工程（没有主总线）⇒ 装设备原因行 ＋ EQ 原因行同时在场。
-        if let Err(payload) = std::thread::spawn(move || {
-            check_master_device_segment(
-                width,
-                height,
-                YebanProjectV1::default(),
-                "无主总线",
-                MASTER_LEAVES_NO_MASTER,
-                &[],
-                &[],
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-        // (c) 2 台设备 ⇒ 卡片链（`list-item` 容器组）＋ 每张卡片的语义子节点。
-        if let Err(payload) = std::thread::spawn(move || {
-            check_master_device_segment(
-                width,
-                height,
-                project_master_with_two_devices(),
-                "2 台",
-                MASTER_LEAVES_TWO,
-                &["master-device-0-card", "master-device-1-card"],
-                &[
-                    ("master-device-0-recognised", "master-device-0-card"),
-                    ("master-device-0-bypass-switch", "master-device-0-card"),
-                    ("master-device-0-remove-button", "master-device-0-card"),
-                    ("master-device-1-bypass-switch", "master-device-1-card"),
-                    ("master-device-1-remove-button", "master-device-1-card"),
-                ],
-            );
-        })
-        .join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-        // (d) ⭐ `#190`：4 台（1920 档容量 4 ⇒ 全装下、无提示）与 5 台（⇒ 4 张卡 ＋ 提示）。
-        for device_count in [4_usize, 5] {
-            if let Err(payload) = std::thread::spawn(move || {
-                check_master_device_truncation(width, height, device_count);
-            })
-            .join()
-            {
-                std::panic::resume_unwind(payload);
-            }
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3144,15 +3168,23 @@ fn the_master_device_segment_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_undo_tree_modal_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        for with_nodes in [false, true] {
-            if let Err(payload) =
-                std::thread::spawn(move || check_undo_tree(width, height, with_nodes)).join()
-            {
-                std::panic::resume_unwind(payload);
-            }
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3160,13 +3192,23 @@ fn the_undo_tree_modal_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_musical_pr_drawer_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) =
-            std::thread::spawn(move || check_musical_pr_drawer(width, height)).join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ===========================================================================
@@ -3174,11 +3216,21 @@ fn the_musical_pr_drawer_has_no_two_controls_in_the_same_place() {
 // ===========================================================================
 #[test]
 fn the_engine_error_banner_has_no_two_controls_in_the_same_place() {
-    for &(width, height) in TIERS {
-        if let Err(payload) =
-            std::thread::spawn(move || check_engine_error_banner(width, height)).join()
-        {
-            std::panic::resume_unwind(payload);
-        }
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }

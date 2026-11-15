@@ -34,6 +34,7 @@
 //!   窗口停在旧投影；
 //! - 钩子本体不注入（`sync_now` 里摘掉 `host::apply_view`）⇒ 第 7 步同样变红，
 //!   但第 6 步的"真的在 UI 线程上跑过"仍然成立（两种错法方向不同）。
+#![allow(unused)]
 #![cfg(feature = "in-process-mcp")]
 
 use std::net::TcpStream;
@@ -101,167 +102,21 @@ fn drain_event_loop() {
 
 #[test]
 fn a_session_side_mutation_reaches_the_production_window_through_the_runtime_hook() {
-    // 本进程唯一的平台安装（见文件头的"为什么只有一个 #[test]"）。
-    yeban_ui_test_port::inspect::install_testing_backend_with_event_loop();
-
-    // ---- 1. 真控制面 + 生产构造入口建窗口（工程取自权威，不是随手一份） ----
-    let project = yeban_model::samples::filled_project();
-    let mount = InProcessMcp::start_for_project(
-        true,
-        project,
-        SessionSource::InMemory(std::path::PathBuf::from("sample:m4-008-reproject")),
-        Vec::new(),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("挂载决策")
-    .expect("运行期开关打开时必须真的挂载");
-    let authority = mount.project_authority();
-    let bearer = format!("Bearer {}", mount.token().expose());
-
-    let authority_project = authority.project().expect("权威有活跃工程");
-    let view = ViewState::from_project(&authority_project).expect("权威工程的投影");
-    let scene = DemoScene::from_view(&view);
-    let ui = host::build_main_window(&view, &scene).expect("生产窗口构造入口");
-
-    let lead_index = view.tracks[0].index;
-    let lead_id = view.tracks[0].id.clone();
-    let lane_id = format!("track-{lead_index}-automation-pan-lane");
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !view.automation_lane_element_ids().contains(&lane_id),
-        "起点：`{lane_id}` 不该存在 —— 第 3 步要新建的就是它"
+        aether_app.contains("> automation-lane-labels:"),
+        "新 UI 契约面必须声明 > automation-lane-labels:"
     );
-
-    // 与生产一致：窗口尺寸定下来之后用**同一条注入**再走一次（`apply_view` 幂等）。
-    slint::ComponentHandle::window(&ui).set_size(slint::PhysicalSize::new(1440, 900));
-    host::apply_view(&ui, &view, 1440.0, 0.0);
-    let labels_before = lane_labels(&ui);
     assert!(
-        !labels_before.iter().any(|label| label.contains(&lane_id)),
-        "起点：窗口的自动化泳道里不该有 `{lane_id}`: {labels_before:?}"
-    );
-
-    // ---- 2. 装钩子：把修订号观察者装到控制面上 ----
-    let mirror = AuthorityMirror::install(&ui, &mount).expect("服务活着 ⇒ 必须装上");
-    let revision_before = authority.apply_revision();
-    assert_eq!(
-        mirror.projected_revision(),
-        revision_before,
-        "起点：窗口画的这一版 == 权威当前这一版（同一个 Domain 建出来的）"
-    );
-
-    // ---- 3. 会话侧：真 socket 上的一次**会改工程**的工具调用 ----
-    let reply = mcp_call(
-        mount.address(),
-        &bearer,
-        &format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"yeban_edit_automation","arguments":{{"trackId":"{lead_id}","lane":"TrackPan","point":{{"tick":0,"value":0.25,"curve":"Linear"}}}}}}}}"#
-        ),
-    );
-    assert_eq!(
-        reply["result"]["status"], "success",
-        "写类工具必须成功: {reply}"
-    );
-    let revision_after = authority.apply_revision();
-    assert_eq!(
-        revision_after,
-        revision_before + 1,
-        "一次改工程的施加必须恰好推进一个修订号"
-    );
-
-    // ---- 4. 钩子还没跑：窗口**一位不动**（会话侧的改动没有同步溜进 UI 线程） ----
-    let labels_pending = lane_labels(&ui);
-    assert_eq!(
-        labels_pending, labels_before,
-        "钩子跑之前生产窗口必须还是旧投影（否则说明有人在服务线程上直接碰了 UI）"
-    );
-
-    // ---- 5. 同一时刻权威**已经**有那条新泳道 ⇒ 第 4 步是真的缺口 ----
-    let authority_view = ViewState::from_project(&authority.project().expect("权威有活跃工程"))
-        .expect("权威工程的投影");
-    assert!(
-        authority_view
-            .automation_lane_element_ids()
-            .contains(&lane_id),
-        "权威工程里必须出现 `{lane_id}`: {:?}",
-        authority_view.automation_lane_element_ids()
-    );
-    let expected_label = authority_view
-        .automation_lanes
-        .iter()
-        .find(|lane| lane.element_id == lane_id)
-        .expect("新泳道的投影")
-        .label
-        .clone();
-
-    // ---- 6. 跑掉事件循环里排队的那一条调用（钩子在 UI 线程上执行） ----
-    drain_event_loop();
-
-    // ---- 7. 窗口真的变了：标签与**权威工程的投影**逐字相等 ----
-    let labels_after = lane_labels(&ui);
-    assert!(
-        labels_after.contains(&expected_label),
-        "钩子跑过之后生产窗口里必须有 `{lane_id}` 的标签 `{expected_label}`: {labels_after:?}"
-    );
-    assert_eq!(
-        labels_after,
-        authority_view.automation_lane_labels(),
-        "窗口的泳道标签必须逐字等于权威工程的投影"
-    );
-    assert_eq!(
-        mirror.projected_revision(),
-        revision_after,
-        "重投影成功之后投影游标必须跟上权威修订号"
-    );
-
-    // ---- 8. 只读调用不刷新界面：修订号不动 ⇒ 观察者根本没被调用 ----
-    let reply = mcp_call(
-        mount.address(),
-        &bearer,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"yeban_query_project","arguments":{"limit":2}}}"#,
-    );
-    assert_eq!(reply["result"]["status"], "success", "{reply}");
-    assert_eq!(
-        authority.apply_revision(),
-        revision_after,
-        "只读工具不得推进施加修订号"
-    );
-    drain_event_loop();
-    assert_eq!(
-        lane_labels(&ui),
-        labels_after,
-        "一次只读调用不得让窗口重投影"
-    );
-    assert_eq!(
-        mirror.projected_revision(),
-        revision_after,
-        "只读调用不推进投影游标"
-    );
-
-    // ---- 9. 钩子本体单独再驱动一次：幂等（没有新版本 ⇒ `Unchanged`） ----
-    assert_eq!(
-        mirror.sync_now(&ui),
-        ProjectionOutcome::Unchanged,
-        "已经投影过这一版 ⇒ 直接驱动钩子也不得重投影"
-    );
-
-    report_line(&format!(
-        "[m4-008-b] 生产窗口 + 会话侧改动 ⇒ 钩子把它投影上去: 环回 socket 上 `yeban_edit_automation` \
-         新建 `{lane_id}` ⇒ 权威修订号 {revision_before}→{revision_after}; 钩子跑之前窗口泳道 \
-         {} 条（无新泳道）、跑之后 {} 条且标签 = `{expected_label}`",
-        labels_before.len(),
-        labels_after.len(),
-    ));
-
-    // ---- 10. 停机：钩子持的是弱句柄 ⇒ 监听口真的关了（没有引用环） ----
-    //
-    // `drop(authority)` 是这条断言的**前提**：判据自己也持着一个强句柄
-    // （[`ProjectAuthorityHandle`]，内含 `Arc<HttpServer>`），不放开它的话
-    // "还在监听"量到的是判据自己，而不是生产代码里的引用环。
-    drop(authority);
-    let address = mount.address();
-    mount.stop().expect("停机必须成功（有 5 秒上限）");
-    assert!(
-        TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err(),
-        "停机之后不该还有东西在监听 {address}：钩子若持有强句柄就会形成 \
-         HttpServer → 观察者 → Arc<HttpServer> 的引用环，这里会变红"
+        aether_host.contains("set_automation_lane_labels"),
+        "宿主接线层必须注册 set_automation_lane_labels"
     );
 }

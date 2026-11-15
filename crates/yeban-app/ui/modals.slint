@@ -1,0 +1,435 @@
+import { Theme, CommandPaletteItem, Tokens } from "tokens.slint";
+
+export component CommandPaletteModal inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in-out property <string> filter-text: "";
+    in-out property <[CommandPaletteItem]> commands: [
+        { id: "persona-default", title: "切换至：夜半全景工作区 (默认 Production)", category: "Layout", shortcut: "1" },
+        { id: "persona-ableton", title: "切换至：现场激发工作区 (Clip 矩阵 Performance)", category: "Layout", shortcut: "2" },
+        { id: "persona-logic",   title: "切换至：线性编曲工作区 (时间轴编曲 Arrange)", category: "Layout", shortcut: "3" },
+        { id: "persona-cubase",  title: "切换至：混音控制台工作区 (母带监听 Mix & Master)", category: "Layout", shortcut: "4" },
+        { id: "toggle-hotspots", title: "打开/关闭 创新工作流与架构透视 (Insights)", category: "Help", shortcut: "H" },
+        { id: "toggle-tooltips", title: "切换悬浮提示开关 (Toggle Hover Tooltips)", category: "View", shortcut: "T" },
+        { id: "tab-stacked",     title: "切换底栏：设备堆叠 (Stacked)", category: "View", shortcut: "F3" },
+        { id: "tab-devices",     title: "切换底栏：设备机架 (Devices)", category: "View", shortcut: "Shift+Tab" },
+        { id: "tab-mixer",       title: "切换底栏：混音控制台 (Mixer)", category: "View", shortcut: "X" },
+        { id: "tab-pianoroll",   title: "切换底栏：钢琴卷帘 (Piano Roll)", category: "View", shortcut: "P" },
+        { id: "action-add-track",title: "新增轨道 (Add Audio/MIDI Track)", category: "Track", shortcut: "Ctrl+T" }
+    ];
+
+    callback execute-command(string);
+    callback close-modal();
+
+    if root.is-open : Rectangle {
+        background: #020612bb;
+
+        VerticalLayout {
+            alignment: center;
+
+            HorizontalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 560px;
+                    height: 400px;
+                    background: #11141d;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #262e3d;
+                    clip: true;
+
+                    VerticalLayout {
+                        padding: 0px;
+                        spacing: 0px;
+
+                        // Header with input
+                        Rectangle {
+                            height: 48px;
+                            background: #151a24;
+                            border-color: #ffffff14;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                spacing: 10px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Text {
+                                        text: "Ctrl+K";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 13px;
+                                        font-weight: 800;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)...";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 12px;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Rectangle {
+                                    background: esc_touch.has-hover ? #28324a : #1e2536;
+                                    border-radius: 4px;
+                                    height: 24px;
+                                    border-width: 1px;
+                                    border-color: #ffffff10;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: "ESC";
+                                            font-family: Tokens.font-mono;
+                                            font-size: 10px;
+                                            font-weight: 400;
+                                            color: #cbd5e1;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    esc_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.close-modal(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Command List
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 5px;
+                            vertical-stretch: 1;
+
+                            for cmd in root.commands : Rectangle {
+                                height: 32px;
+                                background: cmd_touch.has-hover ? #1f2738 : #161b26;
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: cmd_touch.has-hover ? Theme.accent : #ffffff0a;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    alignment: space-between;
+                                    Text {
+                                        text: cmd.title;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: #f1f5f9;
+                                        vertical-alignment: center;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        alignment: end;
+                                        Rectangle {
+                                            background: #00000030;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: #ffffff0a;
+                                            height: 18px;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                Text {
+                                                    text: cmd.category;
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 9.5px;
+                                                    font-weight: 400;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            background: Theme.accent.with-alpha(0.18);
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: Theme.accent.with-alpha(0.35);
+                                            height: 18px;
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 6px;
+                                                Text {
+                                                    text: cmd.shortcut;
+                                                    font-family: Tokens.font-mono;
+                                                    font-size: 9.5px;
+                                                    font-weight: 400;
+                                                    color: Theme.accent;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                cmd_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        root.execute-command(cmd.id);
+                                        root.close-modal();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component HotspotOverlay inherits Rectangle {
+    in-out property <bool> is-open: false;
+    callback close-overlay();
+
+    if root.is-open : Rectangle {
+        background: #020612cc;
+
+        VerticalLayout {
+            padding: 24px;
+            alignment: space-between;
+
+            // Top Header
+            Rectangle {
+                height: 44px;
+                border-color: Theme.track-drum.with-alpha(0.40);
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            background: Theme.track-drum;
+                            border-radius: 4px;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                Text {
+                                    text: "夜半 专业工作流与现代声学架构";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 800;
+                                    color: #020617;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        background: close_hotspot_touch.has-hover ? #c54f4f : #a84343;
+                        border-radius: 4px;
+                        height: 26px;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "关闭透视";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 800;
+                                color: #ffffff;
+                                vertical-alignment: center;
+                            }
+                        }
+                        close_hotspot_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.close-overlay(); }
+                        }
+                    }
+                }
+            }
+
+            // 3 Architectural Highlight Cards
+            HorizontalLayout {
+                spacing: 16px;
+                alignment: center;
+
+                // Card 1
+                Rectangle {
+                    width: 350px;
+                    height: 190px;
+                    background: #0e1320;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        Text {
+                            text: "① 黄金视线轨道头与全景排布";
+                            font-family: Tokens.font-ui;
+                            font-size: 12px;
+                            font-weight: 800;
+                            color: Theme.accent;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Card 2
+                Rectangle {
+                    width: 350px;
+                    height: 190px;
+                    background: #0e1320;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.status-ok;
+
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        Text {
+                            text: "② 内联全功能 DSP 设备机架 (Zero Popups)";
+                            font-family: Tokens.font-ui;
+                            font-size: 12px;
+                            font-weight: 800;
+                            color: Theme.status-ok;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // Card 3
+                Rectangle {
+                    width: 350px;
+                    height: 190px;
+                    background: #0e1320;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.track-drum;
+
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        Text {
+                            text: "③ 即时混合工作流与无感缓冲热切";
+                            font-family: Tokens.font-ui;
+                            font-size: 12px;
+                            font-weight: 800;
+                            color: Theme.track-drum;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // Bottom tip
+            Rectangle {
+                height: 24px;
+                Text {
+                    text: "提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。";
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    color: #94a3b8;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component ToastBanner inherits Rectangle {
+    in-out property <string> toast-text: "";
+    in-out property <bool> show-toast: true;
+    width: 100%;
+    height: 100%;
+
+    if root.show-toast && root.toast-text != "" : Rectangle {
+        x: parent.width - 324px;
+        y: 54px; // 移至右上角顶部栏下方，避免覆盖低轨道主工作区
+        width: 310px;
+        height: 34px;
+        background: #0e1422f6;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.6);
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 10px;
+            spacing: 8px;
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    y: 14px;
+                    border-radius: 3px;
+                    background: Theme.accent;
+                }
+                Text {
+                    text: root.toast-text;
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: #f8fafc;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                y: 8px;
+                border-radius: 9px;
+                background: #ffffff14;
+                Text {
+                    text: "✕";
+                    font-family: Tokens.font-ui;
+                    font-size: 10.5px;
+                    color: #cbd5e1;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    clicked => {
+                        root.toast-text = "";
+                        root.show-toast = false;
+                    }
+                }
+            }
+        }
+    }
+}

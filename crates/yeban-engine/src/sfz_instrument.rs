@@ -9098,6 +9098,61 @@ impl SfzVoicePool {
     pub const fn voices(&self) -> &[SfzVoice; SFZ_VOICES_PER_TRACK] {
         &self.voices
     }
+
+    /// 是否有仍在发声（含软窃取挂起与淡出中）的声部（实时止音与停止态渲染门用）。
+    #[must_use]
+    pub fn has_active_voices(&self) -> bool {
+        (0..SFZ_VOICES_PER_TRACK)
+            .any(|i| self.voices[i].active || self.pending_active[i] || self.fade[i].fading)
+    }
+
+    /// 实时 `NoteOff`：把仍在发声（含软窃取挂起）且匹配 `note` 的声部推进到释放点 `note_off_frame`。
+    ///
+    /// * 遵守 SFZ `loop_mode=one_shot` / [`PreparedRegion::ignores_note_off`]（不写 `end_sample`）；
+    /// * 已进入释放阶段或 `end_sample <= note_off_frame` 的声部不重复篡改释放起点；
+    /// * 同一音高若由多层区域同时发声，全部配对释放；
+    /// * 返回是否命中至少一个匹配 `note` 的活跃/挂起声部（未命中时引擎计作孤儿松键）。
+    pub fn release_note(&mut self, plan: &PreparedSfz, note: u8, note_off_frame: u64) -> bool {
+        let mut released = false;
+        let regions = plan.regions();
+        for voice in &mut self.voices {
+            if !voice.active || voice.note() != note {
+                continue;
+            }
+            let ignores = regions
+                .get(usize::from(voice.region_index()))
+                .is_some_and(PreparedRegion::ignores_note_off);
+            if ignores {
+                released = true;
+                continue;
+            }
+            if voice.env_stage & ENV_RELEASING == 0 && voice.end_sample > note_off_frame {
+                voice.end_sample = note_off_frame;
+                released = true;
+            }
+        }
+        for (index, active) in self.pending_active.iter().enumerate() {
+            if !*active {
+                continue;
+            }
+            let pending = &mut self.pending[index];
+            if pending.note() != note {
+                continue;
+            }
+            let ignores = regions
+                .get(usize::from(pending.region_index()))
+                .is_some_and(PreparedRegion::ignores_note_off);
+            if ignores {
+                released = true;
+                continue;
+            }
+            if pending.end_sample > note_off_frame {
+                pending.end_sample = note_off_frame;
+                released = true;
+            }
+        }
+        released
+    }
 }
 
 /// ⭐ **一条轨的"待摊平"SFZ 绑定**：只带路径、**零运行时对象**（任务单 `#78`）。

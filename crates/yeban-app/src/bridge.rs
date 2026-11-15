@@ -210,28 +210,38 @@ pub fn host_to_painted(x: f32, y: f32) -> (f32, f32) {
 /// `pitch < PITCH_LANE_BASE` 落到最下面一条车道（索引 `PITCH_LANE_COUNT - 1`），
 /// `pitch >= PITCH_LANE_BASE + PITCH_LANE_COUNT` 落到最上面一条（索引 `0`）。
 /// 单调性：`pitch` 越大 ⇒ 车道索引越小（屏幕上越靠上），在窗口内**严格**递减。
+/// Map a MIDI pitch to a piano-roll lane index (`0..PITCH_LANE_COUNT`) using an explicit base pitch.
+#[must_use]
+pub fn pitch_lane_with_base(pitch: u8, base_pitch: u8) -> i32 {
+    let offset = i32::from(pitch.saturating_sub(base_pitch)).min(PITCH_LANE_COUNT - 1);
+    PITCH_LANE_COUNT - 1 - offset
+}
+
+/// `[UI-NOTE-002]` Map a MIDI pitch to the default C4 (`PITCH_LANE_BASE`) piano-roll lane index.
 #[must_use]
 pub fn pitch_lane(pitch: u8) -> i32 {
-    let offset = i32::from(pitch.saturating_sub(PITCH_LANE_BASE)).min(PITCH_LANE_COUNT - 1);
-    PITCH_LANE_COUNT - 1 - offset
+    pitch_lane_with_base(pitch, PITCH_LANE_BASE)
 }
 
 /// `[UI-NOTE-002/003]` **泳道 → 音高**（[`pitch_lane`] 的反向）。
 ///
 /// 铅笔要"在某个位置画出音符"就得先回答"这一行是哪个音高"。由 `pitch_lane` 的定义反推：
-/// `offset = PITCH_LANE_COUNT - 1 - lane`，`pitch = PITCH_LANE_BASE + offset`。
-/// 最下面一条泳道对应 `PITCH_LANE_BASE + 15`；比它更低的音高**画不出来**（车道只有 16 条）——
-/// 这不是缺陷而是当前截图的事实, 判据里以"往返"为准。
+/// `offset = PITCH_LANE_COUNT - 1 - lane`，`pitch = base_pitch + offset`。
+/// 最下面一条泳道对应 `base_pitch`；最上面一条泳道对应 `base_pitch + 15`。
 #[must_use]
-pub fn pitch_for_lane(lane: i32) -> Option<u8> {
-    // 用 `Range::contains` 而不是手写比较 —— clippy 的 `manual_range_contains` 正是这么要求的,
-    // 而我上一轮把门禁与提交串在一条命令里 ⇒ 它红着就推出去了（本会话第 172 轮记过这条规矩）。
+pub fn pitch_for_lane_with_base(lane: i32, base_pitch: u8) -> Option<u8> {
     if !(0..PITCH_LANE_COUNT).contains(&lane) {
         return None;
     }
     let offset = PITCH_LANE_COUNT - 1 - lane;
-    let base = i32::from(PITCH_LANE_BASE);
+    let base = i32::from(base_pitch);
     u8::try_from(base + offset).ok()
+}
+
+/// `[UI-NOTE-002/003]` Map a piano-roll lane index (`0..15`) to a MIDI pitch anchored at [`PITCH_LANE_BASE`].
+#[must_use]
+pub fn pitch_for_lane(lane: i32) -> Option<u8> {
+    pitch_for_lane_with_base(lane, PITCH_LANE_BASE)
 }
 
 /// `[UI-NOTE-002/003]` **y → 泳道**：`pitch_lane_y` 的反向, 供铅笔/力度工具把点击落到某一行。
@@ -252,10 +262,16 @@ pub fn lane_at_y(y: f32) -> Option<i32> {
 
 /// 音高 → 音符块顶边的相对 y（逻辑像素）。整数车道索引经**一次**乘法得到，不做累加。
 #[must_use]
-pub fn pitch_lane_y(pitch: u8) -> f32 {
+pub fn pitch_lane_y_with_base(pitch: u8, base_pitch: u8) -> f32 {
     #[allow(clippy::cast_precision_loss)]
-    let lane = pitch_lane(pitch) as f32;
+    let lane = pitch_lane_with_base(pitch, base_pitch) as f32;
     PITCH_LANE_HEIGHT_PX * lane + NOTE_INSET_Y_PX
+}
+
+/// `[UI-NOTE-002]` Map a MIDI pitch to its note top Y coordinate using [`PITCH_LANE_BASE`].
+#[must_use]
+pub fn pitch_lane_y(pitch: u8) -> f32 {
+    pitch_lane_y_with_base(pitch, PITCH_LANE_BASE)
 }
 
 // ---------------------------------------------------------------------------
@@ -526,9 +542,16 @@ impl ViewState {
     /// 只做**决策**（纯函数, 可判据）：真正的模型突变要经过撤销与 MCP, 属于下一层。
     /// `None` 表示"这里画不了"（y 落在 16 条泳道之外, 或 x 出界）。tick 已按 `grid_ticks` 吸附。
     #[must_use]
-    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<NotePlan> {
+    pub fn pencil_plan_with_base(
+        &self,
+        scroll_x: f32,
+        x: f32,
+        y: f32,
+        grid_ticks: u64,
+        base_pitch: u8,
+    ) -> Option<NotePlan> {
         let lane = lane_at_y(y)?;
-        let pitch = pitch_for_lane(lane)?;
+        let pitch = pitch_for_lane_with_base(lane, base_pitch)?;
         let start_tick = self.snapped_tick_at(scroll_x, x, grid_ticks);
         Some(NotePlan {
             start_tick,
@@ -536,6 +559,12 @@ impl ViewState {
             // 规范 `[UI-NOTE-003]`：双击创建"**默认 1 拍**"音符 ⇒ 时值 = 工程的 `ppq`（不是硬编码 960）。
             duration_ticks: self.ppq,
         })
+    }
+
+    /// `[UI-NOTE-003]` **铅笔的决策**（使用默认基准音高 [`PITCH_LANE_BASE`]）。
+    #[must_use]
+    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<NotePlan> {
+        self.pencil_plan_with_base(scroll_x, x, y, grid_ticks, PITCH_LANE_BASE)
     }
 
     /// `[UI-NOTE-003]` **力度柱命中**：车道内的点落在哪个音符的力度柱上。
@@ -746,6 +775,8 @@ pub fn timecode_for_ticks(grid: Option<TimecodeGrid>, ticks: u64) -> String {
 /// 所以一次取走一份，由本结构保证各数组长度相同。
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleNotes {
+    /// 每条音符所属的**片段池条目身份**（与其余数组同索引集；只用于作用域过滤）。
+    pub clip_ids: Vec<String>,
     /// 音符块左沿 x。
     pub positions: Vec<f32>,
     /// 音符块宽。
@@ -780,6 +811,26 @@ pub struct VisibleNotes {
 }
 
 impl VisibleNotes {
+    /// 只保留 clip_ids 落在 allowed 里的音符（作用域 = 选中轨）。
+    ///
+    /// 与 visible_notes_scoped 同一条“过滤在装数组之前”的顺序：
+    /// 调用方先用 None 取全部可见音符，再按选中轨的片段集合收窄。
+    pub fn retain_clip_ids(&mut self, allowed: &BTreeSet<&str>) {
+        let keep: Vec<usize> = (0..self.ulids.len())
+            .filter(|&index| allowed.contains(self.clip_ids[index].as_str()))
+            .collect();
+        if keep.len() == self.ulids.len() {
+            return;
+        }
+        self.clip_ids = keep.iter().map(|&i| self.clip_ids[i].clone()).collect();
+        self.positions = keep.iter().map(|&i| self.positions[i]).collect();
+        self.widths = keep.iter().map(|&i| self.widths[i]).collect();
+        self.ys = keep.iter().map(|&i| self.ys[i]).collect();
+        self.rows = keep.iter().map(|&i| self.rows[i]).collect();
+        self.ulids = keep.iter().map(|&i| self.ulids[i].clone()).collect();
+        self.velocities = keep.iter().map(|&i| self.velocities[i]).collect();
+    }
+
     /// 可见音符数（各数组长度相同，故用一个函数报告）。
     #[must_use]
     pub fn len(&self) -> usize {
@@ -1168,6 +1219,14 @@ pub struct TrackView {
     pub pan_display: String,
     /// 该轨道上的摆放数量（`TrackV3::clips` 的长度）。
     pub clip_count: usize,
+    /// 该轨真实设备链的显示名（`TrackV3::devices` 的 `DeviceDefinition::name`，链序）。
+    ///
+    /// ⭐ 通道检查器的插入槽**只**读这一格（`host::view_to_tracks` 取前三格）：
+    /// 空链 ⇒ 空数组 ⇒ 界面显示空槽，⛔ 不再按轨道类型编造 "Wavetable MPE" /
+    /// "Pro-QLinear 8" / "Glue Comp VCA" 这类工程里不存在的设备。
+    pub devices: Vec<String>,
+    /// 该轨道在路由图中的主输出目标名（如 `"Master"` / `"Strings Bus"` / `"Unrouted"`）。
+    pub bus_name: String,
     /// 是否为 `master_bus_track_id` 指向的主总线。
     pub is_master: bool,
     /// 编排车道的**行顶沿 y**（逻辑像素）—— 由 [`track_rows`] 的前缀和给出。
@@ -2552,6 +2611,77 @@ pub fn clip_create_ops_on(
     ])
 }
 
+/// 解析摆放音频片段的目标轨：显式选中了某轨时尊重用户选择（非 `Audio` 轨由上游拒绝，
+/// 不默默改投到其它轨）；未选中任何轨时优先寻找第一条 `Audio` 轨。
+#[must_use]
+pub fn target_audio_track<'a>(
+    project: &'a YebanProjectV1,
+    selected_track_id: Option<&str>,
+) -> Option<&'a TrackV3> {
+    if let Some(id_str) = selected_track_id.filter(|s| !s.is_empty())
+        && let Ok(id) = id_str.parse::<EntityId>()
+        && let Some(track) = project.tracks.get(&id)
+        && track.id != project.master_bus_track_id
+    {
+        return Some(track);
+    }
+    project
+        .tracks
+        .values()
+        .find(|t| t.kind == TrackKind::Audio)
+        .or_else(|| device_rack_track(project))
+}
+
+/// 把素材池里最近一条音频片段摆放到目标 `Audio` 轨（`place-audio-clip` 命令计划）。
+///
+/// # Errors
+///
+/// 目标轨不存在、不是 `TrackKind::Audio`、或素材池中尚无音频片段时返回人读原因。
+pub fn audio_clip_placement_ops_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+    start_tick: u64,
+    duration_ticks: Option<u64>,
+) -> Result<(Vec<Op>, String, String), &'static str> {
+    let Some(track) = track else {
+        return Err("没有可用的目标音轨");
+    };
+    if track.kind != TrackKind::Audio {
+        return Err("仅 Audio 轨可摆放音频片段，请先选中一条音频轨");
+    }
+    let Some((clip_id, clip_entry)) = project
+        .clip_pool
+        .iter()
+        .rev()
+        .find(|(_, entry)| matches!(entry.content, ClipContent::Audio { .. }))
+    else {
+        return Err("素材池中尚无音频片段，请先导入音频文件");
+    };
+    let duration_ticks = duration_ticks.filter(|&d| d > 0).unwrap_or_else(|| {
+        bar_length_ticks(project.time_signature)
+            .unwrap_or(yeban_model::ids::PPQ * 4)
+            .saturating_mul(CLIP_CREATE_BARS)
+            .max(1)
+    });
+    let placement = ClipPlacement {
+        id: EntityId::new(),
+        clip_id: *clip_id,
+        start_tick,
+        duration_ticks,
+        loop_config: LoopConfig::default(),
+        muted: false,
+        offset_samples: None,
+    };
+    Ok((
+        vec![Op::AddClipPlacement {
+            track_id: track.id,
+            placement,
+        }],
+        clip_entry.name.clone(),
+        track.name.clone(),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // ⭐ 任务单 `#164`：给展示轨**一键装乐器**（`TrackV3::sampler` ⇒ `Op::SetTrackSampler`）
 // ---------------------------------------------------------------------------
@@ -3852,7 +3982,13 @@ impl ViewState {
 
         // 主总线单独挑出（不进 `tracks`，不占行）。
         if let Some(track) = project.tracks.get(&project.master_bus_track_id) {
-            master = Some(track_view(track, 0, true, None));
+            master = Some(track_view(
+                track,
+                0,
+                true,
+                None,
+                resolve_track_bus_name(project, track, true),
+            ));
         }
         // 轨道顺序 = **显示顺序**（`YebanProjectV1::display_track_ids`：显式 `Vec`，
         // 空表时回退到身份升序 ⇒ 未移动过的工程与改动前逐位相同）。`index` 与上面
@@ -3875,7 +4011,8 @@ impl ViewState {
                     row,
                 )?);
             }
-            tracks.push(track_view(track, index, false, row));
+            let bus_name = resolve_track_bus_name(project, track, false);
+            tracks.push(track_view(track, index, false, row, bus_name));
         }
         for (index, clip) in clips.iter_mut().enumerate() {
             clip.index = index;
@@ -3967,19 +4104,35 @@ impl ViewState {
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
         // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
         // 变换得到（复用 `tick_to_px` 与 `pitch_lane`，不在别处再写一套换算）。
+        let mut clip_start_ticks: BTreeMap<EntityId, u64> = BTreeMap::new();
+        for track in project.tracks.values() {
+            for placement in track.clips.values() {
+                clip_start_ticks
+                    .entry(placement.clip_id)
+                    .and_modify(|earliest| *earliest = (*earliest).min(placement.start_tick))
+                    .or_insert(placement.start_tick);
+            }
+        }
         let mut notes: Vec<NoteView> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for entry in project.clip_pool.values() {
             let Some(entry_notes) = entry.content.notes() else {
                 continue;
             };
+            let placement_start_tick = clip_start_ticks.get(&entry.id).copied().unwrap_or(0);
             for note in entry_notes.values() {
                 let text = note.id.to_canonical_string();
                 if !seen.insert(text.clone()) {
                     continue;
                 }
                 let index = notes.len();
-                notes.push(note_view(entry, note, index, ticks_per_pixel)?);
+                notes.push(note_view(
+                    entry,
+                    note,
+                    placement_start_tick,
+                    index,
+                    ticks_per_pixel,
+                )?);
             }
         }
         // 平行数组一律由 `notes` 派生 —— 只有一个事实源，判据再钉住它们逐项一致。
@@ -4815,7 +4968,8 @@ impl ViewState {
     /// 事后过滤成 `None` → 选区为空 → 选择 / 橡皮擦 / 剪刀 / 箭头全部静默失效。
     /// 作用域为 `None` ⇒ 与 [`Self::hit_test_visible`] **逐项相同**。
     #[must_use]
-    pub fn hit_test_visible_scoped(
+    #[allow(clippy::too_many_arguments)]
+    pub fn hit_test_visible_scoped_with_base(
         &self,
         scroll_x: f32,
         viewport_width: f32,
@@ -4823,6 +4977,7 @@ impl ViewState {
         y: f32,
         note_height: f32,
         clip_scope: Option<&str>,
+        base_pitch: u8,
     ) -> Option<usize> {
         let left_edge = scroll_x.max(0.0);
         let mut hit: Option<usize> = None;
@@ -4835,11 +4990,38 @@ impl ViewState {
             // 位置是**相对视口**的（与注入的数组同一口径, 见 `visible_notes`）。
             let left = note.x - left_edge;
             let right = left + note.width;
-            if x >= left && x <= right && y >= note.y && y <= note.y + note_height {
+            let note_y = if base_pitch == PITCH_LANE_BASE {
+                note.y
+            } else {
+                pitch_lane_y_with_base(note.pitch, base_pitch)
+            };
+            if x >= left && x <= right && y >= note_y && y <= note_y + note_height {
                 hit = Some(index);
             }
         }
         hit
+    }
+
+    /// Clip-scoped visible note hit test using [`PITCH_LANE_BASE`].
+    #[must_use]
+    pub fn hit_test_visible_scoped(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        x: f32,
+        y: f32,
+        note_height: f32,
+        clip_scope: Option<&str>,
+    ) -> Option<usize> {
+        self.hit_test_visible_scoped_with_base(
+            scroll_x,
+            viewport_width,
+            x,
+            y,
+            note_height,
+            clip_scope,
+            PITCH_LANE_BASE,
+        )
     }
 
     /// `[UI-NOTE-001]` 步骤 ①：当前视口的 **tick 范围**（`[min_tick, max_tick]`）。
@@ -4896,6 +5078,7 @@ impl ViewState {
             indices.retain(|&index| self.notes[index].clip_id.as_str() == scope);
         }
         let mut out = VisibleNotes {
+            clip_ids: Vec::with_capacity(indices.len()),
             positions: Vec::with_capacity(indices.len()),
             widths: Vec::with_capacity(indices.len()),
             ys: Vec::with_capacity(indices.len()),
@@ -4910,10 +5093,26 @@ impl ViewState {
             out.widths.push(note.width);
             out.ys.push(note.y);
             out.rows.push(note.row);
+            out.clip_ids.push(note.clip_id.clone());
             out.ulids.push(note.id.clone());
             out.velocities.push(note.velocity_normalized);
         }
         out
+    }
+
+    /// Re-project a list of already-filtered visible note Y coordinates using an arbitrary
+    /// piano-roll base MIDI pitch, preserving [`VisibleNotes`] layout invariants.
+    pub fn reproject_note_ys_with_base(&self, ulids: &[String], ys: &mut [f32], base_pitch: u8) {
+        let pitch_by_id: BTreeMap<&str, u8> = self
+            .notes
+            .iter()
+            .map(|note| (note.id.as_str(), note.pitch))
+            .collect();
+        for (id, y) in ulids.iter().zip(ys.iter_mut()) {
+            if let Some(&pitch) = pitch_by_id.get(id.as_str()) {
+                *y = pitch_lane_y_with_base(pitch, base_pitch);
+            }
+        }
     }
 
     /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
@@ -4998,6 +5197,15 @@ impl ViewState {
         self.tracks
             .iter()
             .map(|track| track.pan_display.clone())
+            .collect()
+    }
+
+    /// 非主总线轨道的归一化声相数值（`-1.0..=1.0`，由 `TrackView::pan_millis` 派生）。
+    #[must_use]
+    pub fn track_pan_values(&self) -> Vec<f32> {
+        self.tracks
+            .iter()
+            .map(|track| (track.pan_millis as f32 / 1000.0).clamp(-1.0, 1.0))
             .collect()
     }
 
@@ -5362,6 +5570,36 @@ fn kind_name(kind: TrackKind) -> &'static str {
     }
 }
 
+/// 解析轨道主输出目标在 UI 中显示的总线名。
+fn resolve_track_bus_name(project: &YebanProjectV1, track: &TrackV3, is_master: bool) -> String {
+    if is_master {
+        return "Master".to_owned();
+    }
+    let mut routes_to_master = false;
+    for edge in project.routing_graph.edges.values() {
+        if edge.source_node != track.id {
+            continue;
+        }
+        if !matches!(
+            edge.kind,
+            yeban_model::project::RoutingKind::TrackToBus
+                | yeban_model::project::RoutingKind::BusToMaster
+        ) {
+            continue;
+        }
+        if edge.destination_node == project.master_bus_track_id {
+            routes_to_master = true;
+        } else if let Some(dest) = project.tracks.get(&edge.destination_node) {
+            return dest.name.clone();
+        }
+    }
+    if routes_to_master {
+        "Master".to_owned()
+    } else {
+        "Unrouted".to_owned()
+    }
+}
+
 /// 投影一条轨道。
 ///
 /// `row` 是这条轨道在编排视图里的行几何（`None` = 主总线，它没有编排行）。
@@ -5370,6 +5608,7 @@ fn track_view(
     index: usize,
     is_master: bool,
     row: Option<RowGeometry>,
+    bus_name: String,
 ) -> TrackView {
     #[allow(clippy::cast_possible_truncation)]
     let pan_millis = (f64::from(track.pan) * 1000.0).round() as i32;
@@ -5399,6 +5638,12 @@ fn track_view(
         pan_millis,
         pan_display: pan_display(pan_millis),
         clip_count: track.clips.len(),
+        devices: track
+            .devices
+            .iter()
+            .map(|device| device.name.clone())
+            .collect(),
+        bus_name,
         is_master,
         y,
         height,
@@ -5481,10 +5726,16 @@ pub fn pan_display(pan_millis: i32) -> String {
 fn note_view(
     entry: &ClipPoolEntry,
     note: &MidiNote,
+    placement_start_tick: u64,
     index: usize,
     ticks_per_pixel: u64,
 ) -> Result<NoteView, BridgeError> {
-    let start_tick = note.start_tick;
+    let start_tick =
+        placement_start_tick
+            .checked_add(note.start_tick)
+            .ok_or(BridgeError::TickOverflow {
+                start_tick: note.start_tick,
+            })?;
     let end_tick = start_tick
         .checked_add(note.duration_ticks)
         .ok_or(BridgeError::TickOverflow { start_tick })?;
@@ -9119,5 +9370,201 @@ mod tests {
         assert!(layout.set_percent(200));
         assert!(!layout.set_percent(200));
         assert!(!layout.is_default());
+    }
+
+    #[test]
+    fn piano_roll_with_base_roundtrips_and_reprojects() {
+        // Default base delegates cleanly.
+        for lane in 0..PITCH_LANE_COUNT {
+            let pitch = pitch_for_lane_with_base(lane, PITCH_LANE_BASE).expect("valid lane");
+            assert_eq!(pitch_for_lane(lane), Some(pitch));
+            assert_eq!(pitch_lane_with_base(pitch, PITCH_LANE_BASE), lane);
+            assert_eq!(pitch_lane(pitch), lane);
+            assert_eq!(
+                pitch_lane_y_with_base(pitch, PITCH_LANE_BASE),
+                pitch_lane_y(pitch)
+            );
+        }
+
+        // Low octave (C1 = 24) and high octave (C7 = 96 -> top lane = D#8 = 111).
+        assert_eq!(pitch_for_lane_with_base(15, 24), Some(24));
+        assert_eq!(pitch_for_lane_with_base(0, 24), Some(39));
+        assert_eq!(pitch_for_lane_with_base(15, 96), Some(96));
+        assert_eq!(pitch_for_lane_with_base(0, 96), Some(111));
+        assert_eq!(pitch_for_lane_with_base(-1, 60), None);
+        assert_eq!(pitch_for_lane_with_base(PITCH_LANE_COUNT, 60), None);
+
+        // `pencil_plan_with_base` and `hit_test_visible_scoped_with_base` agree on shifted octave.
+        let view = ViewState::from_project(&filled_project()).expect("view projection");
+        let plan = view
+            .pencil_plan_with_base(0.0, 20.0, pitch_lane_y_with_base(36, 36) + 2.0, 240, 36)
+            .expect("C2 plan at base 36");
+        assert_eq!(plan.pitch, 36);
+
+        if let Some(first_note) = view.notes.first() {
+            let shifted_base = 48;
+            let mut visible = view.visible_notes_scoped(0.0, 4000.0, None);
+            view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, shifted_base);
+            let idx = visible
+                .ulids
+                .iter()
+                .position(|id| id == &first_note.id)
+                .expect("first note visible");
+            let expected_y = pitch_lane_y_with_base(first_note.pitch, shifted_base);
+            assert!((visible.ys[idx] - expected_y).abs() < 0.01);
+
+            let hit = view.hit_test_visible_scoped_with_base(
+                0.0,
+                4000.0,
+                first_note.x + 1.0,
+                expected_y + 2.0,
+                16.0,
+                Some(first_note.clip_id.as_str()),
+                shifted_base,
+            );
+            assert!(hit.is_some(), "hit test must track reprojected Y");
+        }
+    }
+
+    #[test]
+    fn track_view_bus_name_projects_routing_destination() {
+        use yeban_model::{RoutingEdge, RoutingKind, TrackKind, TrackV3};
+
+        let mut project = default_project();
+        let bus_id = EntityId::new();
+        let lead_id = EntityId::new();
+        let unrouted_id = EntityId::new();
+        project
+            .insert_track(TrackV3 {
+                id: bus_id,
+                name: "Strings Bus".to_owned(),
+                kind: TrackKind::AuxReturn,
+                ..TrackV3::default()
+            })
+            .expect("insert bus track");
+        project
+            .insert_track(TrackV3 {
+                id: lead_id,
+                name: "Erhu".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            })
+            .expect("insert lead track");
+        project
+            .insert_track(TrackV3 {
+                id: unrouted_id,
+                name: "Unrouted".to_owned(),
+                kind: TrackKind::Audio,
+                ..TrackV3::default()
+            })
+            .expect("insert unrouted track");
+        project.routing_graph.nodes.push(bus_id);
+        project.routing_graph.nodes.push(lead_id);
+        project.routing_graph.nodes.push(unrouted_id);
+        project.routing_graph.edges.insert(
+            EntityId::new(),
+            RoutingEdge {
+                id: EntityId::new(),
+                source_node: bus_id,
+                destination_node: project.master_bus_track_id,
+                kind: RoutingKind::BusToMaster,
+                gain_db: None,
+            },
+        );
+        project.routing_graph.edges.insert(
+            EntityId::new(),
+            RoutingEdge {
+                id: EntityId::new(),
+                source_node: lead_id,
+                destination_node: bus_id,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+
+        let view = ViewState::from_project(&project).expect("view projection");
+        let bus_view = view
+            .tracks
+            .iter()
+            .find(|t| t.name == "Strings Bus")
+            .unwrap();
+        let lead_view = view.tracks.iter().find(|t| t.name == "Erhu").unwrap();
+        let unrouted_view = view.tracks.iter().find(|t| t.name == "Unrouted").unwrap();
+        assert_eq!(bus_view.bus_name, "Master");
+        assert_eq!(lead_view.bus_name, "Strings Bus");
+        assert_eq!(unrouted_view.bus_name, "Unrouted");
+    }
+
+    #[test]
+    fn audio_clip_placement_targets_audio_track_and_rejects_midi() {
+        let mut project = default_project();
+        let midi_track_id = EntityId::new();
+        project
+            .insert_track(TrackV3 {
+                id: midi_track_id,
+                name: "Erhu".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            })
+            .expect("insert midi track");
+        let audio_track_id = EntityId::new();
+        project
+            .insert_track(TrackV3 {
+                id: audio_track_id,
+                name: "SFX Bed".to_owned(),
+                kind: TrackKind::Audio,
+                ..TrackV3::default()
+            })
+            .expect("insert audio track");
+        let midi_str = midi_track_id.to_canonical_string();
+        let audio_str = audio_track_id.to_canonical_string();
+
+        // No audio clip in pool yet => crisp rejection.
+        let target = target_audio_track(&project, Some(&audio_str));
+        assert_eq!(
+            audio_clip_placement_ops_on(&project, target, 0, None).unwrap_err(),
+            "素材池中尚无音频片段，请先导入音频文件"
+        );
+
+        // Add audio clip to pool.
+        let clip_id = EntityId::new();
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::ClipPoolEntry {
+                id: clip_id,
+                name: "rain_bed.wav".to_owned(),
+                content: ClipContent::Audio {
+                    asset: yeban_model::AssetHash::of_bytes(b"rain"),
+                    gain_db: 0.0,
+                },
+            },
+        );
+
+        // Selecting a MIDI track rejects instead of silently dropping onto another track.
+        let wrong_target = target_audio_track(&project, Some(&midi_str));
+        assert_eq!(
+            audio_clip_placement_ops_on(&project, wrong_target, 960, Some(3840)).unwrap_err(),
+            "仅 Audio 轨可摆放音频片段，请先选中一条音频轨"
+        );
+
+        // No selection picks first Audio track; explicit Audio selection uses selected track.
+        let fallback_target = target_audio_track(&project, None);
+        let (ops, clip_name, track_name) =
+            audio_clip_placement_ops_on(&project, fallback_target, 1920, Some(7680)).unwrap();
+        assert_eq!(clip_name, "rain_bed.wav");
+        assert_eq!(track_name, "SFX Bed");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            Op::AddClipPlacement {
+                track_id,
+                placement,
+            } => {
+                assert_eq!(*track_id, audio_track_id);
+                assert_eq!(placement.clip_id, clip_id);
+                assert_eq!(placement.start_tick, 1920);
+                assert_eq!(placement.duration_ticks, 7680);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
     }
 }

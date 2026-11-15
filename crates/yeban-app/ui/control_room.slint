@@ -1,0 +1,431 @@
+import { Theme, Tokens, TooltipBubble } from "tokens.slint";
+
+export component ControlRoomMeters inherits Rectangle {
+    in-out property <string> lufs-integrated: "-9.4 LUFS";
+    in-out property <string> lufs-short: "-8.8 LUFS";
+    in-out property <string> lufs-peak: "-0.3 dBTP";
+    in-out property <string> active-monitor: "main"; // "main" | "alt"
+    in-out property <bool> is-dim: false;
+    in-out property <bool> is-mono: false;
+    in-out property <bool> is-side: false;
+    in-out property <float> master-meter-l: 0.68;
+    in-out property <float> master-meter-r: 0.64;
+    in-out property <length> panel-width: 192px;
+
+    callback switch-monitor(string);
+    callback toggle-dim();
+    callback toggle-mono();
+    callback toggle-side();
+    callback execute-action(string);
+
+    width: root.panel-width;
+    background: Theme.bg-panel;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+        alignment: space-between;
+
+        // Top Header
+        VerticalLayout {
+            spacing: 6px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "监听控制室";
+                    font-family: Tokens.font-ui;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #f8fafc;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Rectangle {
+                        background: cr_reset_t.has-hover ? Theme.accent.with-alpha(0.25) : #10141d;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 5px; padding-right: 5px;
+                            Text {
+                                text: "归零";
+                                font-family: Tokens.font-ui;
+                                font-size: 9.5px;
+                                font-weight: 600;
+                                color: #e2e8f0;
+                                vertical-alignment: center;
+                            }
+                        }
+                        cr_reset_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.is-dim = false;
+                                root.is-mono = false;
+                                root.is-side = false;
+                                root.execute-action("master-reset-fader");
+                            }
+                        }
+                    }
+                    Rectangle {
+                        background: Theme.status-ok.with-alpha(0.18);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: Theme.status-ok.with-alpha(0.40);
+                        HorizontalLayout {
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            Text {
+                                text: "EBU R128";
+                                font-family: Tokens.font-mono;
+                                font-size: 9px;
+                                font-weight: 400;
+                                color: Theme.status-ok;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Loudness Telemetry Card
+            Rectangle {
+                background: Theme.bg-surface;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "INTEGRATED:";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            letter-spacing: 0.4px;
+                            color: #94a3b8;
+                            font-weight: 400;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lufs-integrated;
+                            font-family: Tokens.font-mono;
+                            font-size: 11.5px;
+                            font-weight: 400;
+                            color: Theme.status-ok;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "SHORT-TERM:";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            letter-spacing: 0.4px;
+                            color: #94a3b8;
+                            font-weight: 400;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lufs-short;
+                            font-family: Tokens.font-mono;
+                            font-size: 11.5px;
+                            font-weight: 400;
+                            color: Theme.accent;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "TRUE PEAK:";
+                            font-family: Tokens.font-mono;
+                            font-size: 9px;
+                            letter-spacing: 0.4px;
+                            color: #94a3b8;
+                            font-weight: 400;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lufs-peak;
+                            font-family: Tokens.font-mono;
+                            font-size: 11.5px;
+                            font-weight: 400;
+                            color: Theme.status-warn;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Speaker Matrix Switcher
+            VerticalLayout {
+                spacing: 5px;
+
+                Text {
+                    text: "MONITOR MATRIX";
+                    font-family: Tokens.font-mono;
+                    font-size: 9px;
+                    letter-spacing: 0.6px;
+                    font-weight: 400;
+                    color: #94a3b8;
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 24px;
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : (mon_a_touch.has-hover ? #182030 : #10141d);
+                        border-radius: Theme.radius;
+                        border-width: root.active-monitor == "main" ? 1px : 0;
+                        border-color: Theme.accent;
+
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            alignment: center;
+                            Text {
+                                text: "A: 近场主箱";
+                                font-family: Tokens.font-ui;
+                                font-size: 9.5px;
+                                font-weight: 600;
+                                color: root.active-monitor == "main" ? Theme.accent : #cbd5e1;
+                                vertical-alignment: center;
+                            }
+                        }
+                        mon_a_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.active-monitor = "main";
+                                root.switch-monitor("main");
+                            }
+                        }
+                        TooltipBubble {
+                            text: "切换至 A 组全频近场立体声监听音箱";
+                            is-visible: mon_a_touch.has-hover;
+                            y: 28px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 24px;
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : (mon_b_touch.has-hover ? #182030 : #10141d);
+                        border-radius: Theme.radius;
+                        border-width: root.active-monitor == "alt" ? 1px : 0;
+                        border-color: Theme.accent;
+
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            alignment: center;
+                            Text {
+                                text: "B: 单声道参考";
+                                font-family: Tokens.font-ui;
+                                font-size: 9.5px;
+                                font-weight: 600;
+                                color: root.active-monitor == "alt" ? Theme.accent : #cbd5e1;
+                                vertical-alignment: center;
+                            }
+                        }
+                        mon_b_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.active-monitor = "alt";
+                                root.switch-monitor("alt");
+                            }
+                        }
+                        TooltipBubble {
+                            text: "切换至 B 组小振膜单声道参考音箱";
+                            is-visible: mon_b_touch.has-hover;
+                            y: 28px;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 22px;
+                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : (dim_touch.has-hover ? #182030 : #10141d);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: root.is-dim ? Theme.status-warn : Theme.border-subtle;
+                        Text {
+                            text: "DIM";
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            color: root.is-dim ? Theme.status-warn : #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        dim_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.is-dim = !root.is-dim;
+                                root.toggle-dim();
+                            }
+                        }
+                        TooltipBubble {
+                            text: "DIM 衰减监听电平 (-20 dB)";
+                            is-visible: dim_touch.has-hover;
+                            y: 26px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 22px;
+                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : (mono_touch.has-hover ? #182030 : #10141d);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: root.is-mono ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: "MONO";
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            color: root.is-mono ? Theme.accent : #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        mono_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.is-mono = !root.is-mono;
+                                root.toggle-mono();
+                            }
+                        }
+                        TooltipBubble {
+                            text: "MONO 单声道求和检验相位互消";
+                            is-visible: mono_touch.has-hover;
+                            y: 26px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 22px;
+                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : (side_touch.has-hover ? #182030 : #10141d);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: root.is-side ? Theme.status-alert : Theme.border-subtle;
+                        Text {
+                            text: "SIDE";
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            color: root.is-side ? Theme.status-alert : #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        side_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.is-side = !root.is-side;
+                                root.toggle-side();
+                            }
+                        }
+                        TooltipBubble {
+                            text: "SIDE 仅监听立体声差信号 (S=L-R)";
+                            is-visible: side_touch.has-hover;
+                            y: 26px;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stereo Master Twin Bar Meters (Precision vertical LED bars)
+        Rectangle {
+            background: #06080d;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            vertical-stretch: 1;
+
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 8px;
+                alignment: center;
+
+                // dB scale markings
+                VerticalLayout {
+                    alignment: space-between;
+                    for mark in ["0", "-6", "-12", "-24", "-48"] : Text {
+                        text: mark;
+                        font-family: Tokens.font-mono;
+                        font-size: 9px;
+                        color: #94a3b8;
+                        font-weight: 400;
+                    }
+                }
+
+                // Left Meter Bar
+                Rectangle {
+                    width: 14px;
+                    background: #0a0d14;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: #ffffff0a;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0;
+                        y: parent.height - (root.master-meter-l * parent.height);
+                        width: 14px;
+                        height: root.master-meter-l * parent.height;
+                        background: root.master-meter-l > 0.85 ? Theme.status-alert : (root.master-meter-l > 0.70 ? Theme.status-warn : Theme.status-ok);
+                        border-radius: 2px;
+                    }
+                }
+
+                // Right Meter Bar
+                Rectangle {
+                    width: 14px;
+                    background: #0a0d14;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: #ffffff0a;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0;
+                        y: parent.height - (root.master-meter-r * parent.height);
+                        width: 14px;
+                        height: root.master-meter-r * parent.height;
+                        background: root.master-meter-r > 0.85 ? Theme.status-alert : (root.master-meter-r > 0.70 ? Theme.status-warn : Theme.status-ok);
+                        border-radius: 2px;
+                    }
+                }
+            }
+        }
+
+        // Master Output Footer
+        Rectangle {
+            height: 24px;
+            background: #080a10;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            Text {
+                text: "MASTER OUT · 32-BIT FLOAT";
+                font-family: Tokens.font-mono;
+                font-size: 9px;
+                letter-spacing: 0.4px;
+                font-weight: 400;
+                color: #94a3b8;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

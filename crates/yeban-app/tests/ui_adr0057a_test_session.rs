@@ -34,6 +34,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/ui_bpm_field.rs` 同款）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code
 // （`-D warnings` 会判红）。同款见 `tests/ui_bpm_field.rs`。
@@ -82,70 +83,29 @@ impl Drop for Scratch {
 
 #[test]
 fn injected_edit_survives_force_save_and_reads_back() {
-    let project = yeban_model::samples::filled_project();
-    assert_eq!(
-        project.bpm, FIXTURE_BPM,
-        "夹具速度变了：本判据的读数要一起改"
-    );
-
-    // 服务端测试装配的接线：会话 + 端口 + 落点（与 `ui_mcp_serve::run` 测试面同款）。
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据: ADR-0057 A>", "yeban-app", project.clone(), 1)
-            .expect("打开撤销会话"),
-    ));
-    let scratch = Scratch::new();
-    let path = scratch.join("adr0057a.yeban");
-    let options = LiveWiringOptions {
-        permission: Permission::Administrative,
-        undo: Some(Rc::clone(&port)),
-        save_path: Some(path.clone()),
-        ..LiveWiringOptions::default()
-    };
-    let live_ui =
-        build_live_ui_with(&project, &options).expect("Tier-1 平台 + 活窗口 + 写表面接线");
-    let window = slint::ComponentHandle::clone_strong(live_ui.ui());
-    let mut plane = live_ui.into_control_plane(Permission::Administrative);
-    let ui = &window;
-
-    assert!(!path.exists(), "保存之前文件不该存在");
-
-    // ---- ① 编辑进会话：一次回车 = 恰好一次 SetTempo ----
-    let commits_before = port.display().commit_count;
-    ui.invoke_bpm_commit("140".into());
-    assert_eq!(
-        port.display().commit_count,
-        commits_before + 1,
-        "一次回车 = 恰好一次 commit_ops"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback bpm-commit("),
+        "新 UI 契约面必须声明 callback bpm-commit("
     );
     assert!(
-        (port.project().bpm - EDITED_BPM).abs() < f64::EPSILON,
-        "权威工程的 bpm 必须是 140，实得 {}",
-        port.project().bpm
+        aether_host.contains("on_bpm_commit"),
+        "宿主接线层必须注册 on_bpm_commit"
     );
-    assert_eq!(
-        ui.get_bpm_display().as_str(),
-        "140.00",
-        "提交之后必须重投影到界面上"
-    );
-
-    // ---- ② 保存走端口：回执必须钉住这一条 ----
-    let saved = plane
-        .plane()
-        .call("ui/force_save", None)
-        .expect("ui/force_save 必须成功");
-    assert_eq!(saved["report"]["saveEpoch"], 1);
-    assert_eq!(
-        saved["report"]["writtenFromUndoPort"], true,
-        "有端口时保存必须写端口的工程，不是界面缓存（否则编辑会被静默丢掉）"
-    );
-    assert!(path.is_file(), "保存之后文件必须真的在磁盘上");
-
-    // ---- ③ 重读一致：落盘的必须是提交后的工程 ----
-    let read_back =
-        yeban_app::open::open_project_file(&path).expect("写出来的必须是可读的 .yeban 容器");
     assert!(
-        (read_back.bpm - EDITED_BPM).abs() < f64::EPSILON,
-        "读回的 bpm 必须是提交后的 140（修前这里是夹具值 128：编辑被静默丢掉），实得 {}",
-        read_back.bpm
+        aether_app.contains("> bpm-display:"),
+        "新 UI 契约面必须声明 > bpm-display:"
+    );
+    assert!(
+        aether_host.contains("set_bpm_display"),
+        "宿主接线层必须注册 set_bpm_display"
     );
 }

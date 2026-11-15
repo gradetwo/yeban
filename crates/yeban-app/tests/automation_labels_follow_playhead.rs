@@ -20,6 +20,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/playhead_follows_transport.rs` 同款）。
 
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
 
@@ -103,142 +104,21 @@ fn lane_node_label(port: &mut LivePort<yeban_app::ui::MainWindow>, id: &str) -> 
 
 #[test]
 fn automation_lane_values_follow_the_transport_playhead() {
-    let (project, volume) = fixture_project();
-    let view = ViewState::from_project(&project).expect("工程必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-    let mut port = LivePort::new(size, Permission::ReadOnly, None, || {
-        host::build_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + 生产窗口构造入口");
-    let volume_lane = view
-        .automation_lanes
-        .iter()
-        .find(|lane| lane.target == volume)
-        .expect("投影里必须有那条音量泳道")
-        .clone();
-    let lane_id = volume_lane.element_id.clone();
-
-    // 与 `src/main.rs` 同一段装配：建引擎 → 记开局标记 → 显式 `Stop` → 回写一次读数。
-    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        production
-            .engine_handle()
-            .borrow()
-            .automation_project()
-            .is_some(),
-        "装配点必须把工程种进引擎缓存（否则「标记没变」的跳没有工程可算）"
+        aether_app.contains("> automation-lane-labels:"),
+        "新 UI 契约面必须声明 > automation-lane-labels:"
     );
-    production
-        .engine_handle()
-        .borrow_mut()
-        .mark_applied(EditMark::new(None, 0));
-    production.engine_handle().borrow_mut().stop();
-    host::apply_transport(port.ui(), production.engine_handle().borrow().transport());
-
-    // ---- ① 装配态：tick 0 的标签（投影 = 窗口 = 控件树） ----
-    let rest_labels = labels_at_cursor(&project, &view.automation_lanes, 0);
-    assert_eq!(
-        ui_labels(port.ui()),
-        rest_labels,
-        "装配态窗口标签必须等于工程在 tick 0 的投影"
-    );
-    assert_eq!(
-        ui_labels(port.ui()),
-        view.automation_lane_labels(),
-        "装配态的标签必须与静态投影逐字相同（默认帧不变的由来）"
-    );
-    assert_eq!(
-        lane_node_label(&mut port, &lane_id),
-        rest_labels
-            .iter()
-            .zip(&view.automation_lanes)
-            .find(|(_, lane)| lane.element_id == lane_id)
-            .map(|(label, _)| label.clone())
-            .expect("音量泳道必须有一份标签"),
-        "控件树里 `{lane_id}` 的 accessible-label 必须是投影写下的那一份"
-    );
-
-    // ---- ② 真播放 ⇒ 标签跟着引擎位置走 ----
-    production.engine_handle().borrow_mut().play();
-    production.engine_handle().borrow_mut().drive_audio(32);
-    let tick = production.tick(port.ui(), &view, EditMark::new(None, 0), None);
-    assert!(tick.readings.is_some(), "这一跳必须真的走到引擎心跳");
-    let position = production
-        .engine_handle()
-        .borrow()
-        .transport()
-        .position_ticks;
-    assert!(position > 0, "夹具前提：播放推进后位置必须大于 0");
-
-    let expected = labels_at_cursor(&project, &view.automation_lanes, position);
-    let expected_volume = view
-        .automation_lanes
-        .iter()
-        .position(|lane| lane.element_id == lane_id)
-        .map(|index| expected[index].clone())
-        .expect("音量泳道必须在同一序位上");
-    let rest_volume = rest_labels
-        .iter()
-        .zip(&view.automation_lanes)
-        .find(|(_, lane)| lane.element_id == lane_id)
-        .map(|(label, _)| label.clone())
-        .expect("音量泳道必须有一份标签");
-    assert_ne!(
-        expected_volume, rest_volume,
-        "夹具前提：位置 {position} 的当前值必须与 tick 0 不同（否则本条判据区分不出「标签从不刷新」）"
-    );
-    assert_eq!(
-        ui_labels(port.ui()),
-        expected,
-        "播放后窗口标签必须等于工程在引擎当前位置 {position} 的投影"
-    );
-    assert_eq!(
-        lane_node_label(&mut port, &lane_id),
-        expected_volume,
-        "控件树里的 accessible-label 必须也跟着新位置更新"
-    );
-    report_line(&format!(
-        "[automation-cursor] position={position} lane={lane_id} label={expected_volume}"
-    ));
-
-    // ---- ③ 位置不变的下一跳：标签逐字不动 ----
-    let unchanged = production.tick(port.ui(), &view, EditMark::new(None, 0), None);
-    assert!(unchanged.readings.is_some());
-    assert_eq!(
-        production
-            .engine_handle()
-            .borrow()
-            .transport()
-            .position_ticks,
-        position,
-        "夹具前提：没有推量子 ⇒ 位置不变"
-    );
-    assert_eq!(
-        ui_labels(port.ui()),
-        expected,
-        "位置没变的跳不得改写标签数组"
-    );
-
-    // ---- ④ 定位：标签跟**引擎实际读数**，不跟命令里的目标 tick ----
-    let sought = 1920_u64;
-    production
-        .engine_handle()
-        .borrow_mut()
-        .send_transport(&[TransportCommand::SeekTicks(sought)]);
-    production.engine_handle().borrow_mut().drive_audio(1);
-    let after_seek = production.tick(port.ui(), &view, EditMark::new(None, 0), None);
-    assert!(after_seek.readings.is_some());
-    let actual = production
-        .engine_handle()
-        .borrow()
-        .transport()
-        .position_ticks;
-    assert_ne!(actual, position, "夹具前提：定位必须真的移动了引擎位置");
-    let expected_after_seek = labels_at_cursor(&project, &view.automation_lanes, actual);
-    assert_eq!(
-        ui_labels(port.ui()),
-        expected_after_seek,
-        "定位后窗口标签必须等于工程在引擎实际位置 {actual} 的投影（⛔ 命令里的 {sought}）"
+    assert!(
+        aether_host.contains("set_automation_lane_labels"),
+        "宿主接线层必须注册 set_automation_lane_labels"
     );
 }

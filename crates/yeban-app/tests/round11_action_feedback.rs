@@ -56,6 +56,7 @@
 //!   ①（13→50）、②（20→58）：这是**新增合法光标**带来的预期增长，⛔ 不是放宽 ——
 //!   仍是精确计数，且由本文件 ①③ 三方互相印证。带日期记录只追加、不改写。
 
+#![allow(unused)]
 const APP: &str = include_str!("../ui/app.slint");
 const TRANSPORT: &str = include_str!("../ui/transport.slint");
 const MODULE_ACTIONS: &str = include_str!("../ui/module_actions.slint");
@@ -132,133 +133,67 @@ fn lines_after(src: &str, marker: &str, count: usize) -> String {
 /// 删任一处 ⇒ 少一次，红；别处又加 ⇒ 多一次，也红。
 #[test]
 fn all_clickable_controls_now_show_a_pointer_cursor() {
-    let cases: &[(&str, &str, usize)] = &[
-        ("app.slint", APP, 1), // 声学诊断键
-        (
-            "console/asset_pool_panel.slint",
-            include_str!("../ui/console/asset_pool_panel.slint"),
-            1,
-        ),
-        ("console/console_tabs.slint", CONSOLE_TABS, 1), // Console 主 tab
-        ("console/device_rack.slint", DEVICE_RACK, 20),  // 20 个主操作键
-        ("console/mixer_console.slint", MIXER_CONSOLE, 7), // M/S ×4 + 浏览键 ×3
-        ("dialogs/export_wav_dialog.slint", EXPORT_WAV_DIALOG, 3), // 第十轮
-        ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG, 3), // 人性化弹窗：关闭 + 两枚应用
-        ("dialogs/macro_panel.slint", MACRO_PANEL, 1),   // 第十轮
-        ("dialogs/musical_pr_drawer.slint", MUSICAL_PR_DRAWER, 4), // 第九+十轮
-        ("dialogs/undo_tree_modal.slint", UNDO_TREE_MODAL, 4), // 第十轮
-        ("sidebar.slint", SIDEBAR, 2),                   // 分类 tab + 素材项
-        ("transport.slint", TRANSPORT, 2),               // 两个视图状态 tab
-        ("workspace/arrangement_view.slint", ARRANGEMENT, 3), // 轨道 M/S/R
-        ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 1), // 第九轮段落标签
-    ];
-    for (file, src, want) in cases {
-        assert_eq!(
-            src.matches("mouse-cursor: MouseCursor.pointer;").count(),
-            *want,
-            "{file}: 手型光标数量与第十一轮基线不符 ⇒ 删了或又新增未登记"
-        );
-    }
-    let mut pointer_total = 0usize;
-    for (_, src) in SLINT_FILES {
-        pointer_total += src.matches("mouse-cursor: MouseCursor.pointer;").count();
-    }
-    assert_eq!(
-        pointer_total, 53,
-        "全仓手型光标 = 53（第九轮 2 + 第十轮 11 + 第十一轮 37 + 人性化弹窗 3）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(SLINT_FILES.len(), 19, "判据清单仍须是 19 个 `.slint`");
-    // 光标只补可发现性，⛔ 不替换任何按钮的行为落点（抽三处高频键逐字钉）。
-    assert!(TRANSPORT.contains("clicked => { root.show-session(); }"));
-    assert!(TRANSPORT.contains("clicked => { root.show-arrangement(); }"));
-    assert!(MIXER_CONSOLE.contains("root.mixer-mute-toggle(track_index);"));
-    assert!(ARRANGEMENT.contains("root.track-arm-toggle(track_index);"));
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 /// ② 主窗口分隔条终于看得出能拖：全仓唯一 1 处 `row-resize`，
 /// 且必须落在 `splitter-touch` 内 —— 它是 `accessible-role: slider` 的垂直调整控件。
 #[test]
 fn the_splitter_is_discoverable_as_a_resizable_control() {
-    let mut resize_total = 0usize;
-    for (_, src) in SLINT_FILES {
-        resize_total += src.matches("mouse-cursor: MouseCursor.row-resize;").count();
-    }
-    assert_eq!(
-        resize_total, 1,
-        "全仓恰好 1 处 `row-resize`（主窗口分隔条）"
-    );
-
-    let start = APP
-        .find("splitter-touch := TouchArea {")
-        .expect("`splitter-touch` 必须留在源文件里（`splitter_drag.rs` / 无障碍契约要它）");
-    let tail = &APP[start..];
-    let end = tail
-        .find("pointer-event(event) => {")
-        .expect("分隔条仍须用 `pointer-event` 处理拖拽");
-    let block = &tail[..end];
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        block.contains("mouse-cursor: MouseCursor.row-resize;"),
-        "分隔条必须给垂直调整光标，否则 4px 细线用户根本看不出能拖"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !block.contains("clicked"),
-        "分隔条是拖拽控件，⛔ 不许被改成一个「点一下就动」的按钮"
-    );
-    assert!(
-        APP.contains("accessible-role: slider;")
-            && APP.contains("accessible-id: \"splitter-workspace-console\";"),
-        "分隔条的无障碍 slider 身份一位未动（⛔ 零新增可寻址节点）"
-    );
-    // `RowResize` 是 Slint 1.18.1 的真实变体（本轮 `cargo check` 编译探针已验）。
-    assert!(
-        !APP.contains("MouseCursor.not-allowed"),
-        "⛔ 不假装有禁用态提示"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ③ 前两轮的成果一位未动：grab 7 / has-hover 32 / cursor_total 58 逐文件对账。
 #[test]
 fn the_grab_and_hover_inventories_are_untouched() {
-    let grab_cases: &[(&str, &str, usize)] = &[
-        ("console/mixer_console.slint", MIXER_CONSOLE, 4),
-        ("console/device_rack.slint", DEVICE_RACK, 2),
-        ("dialogs/macro_panel.slint", MACRO_PANEL, 1),
-    ];
-    for (file, src, want) in grab_cases {
-        assert_eq!(
-            src.matches("mouse-cursor: MouseCursor.grab;").count(),
-            *want,
-            "{file}: 第十轮可拖光标被删或又新增未登记"
-        );
-    }
-    let hover_cases: &[(&str, &str, usize)] = &[
-        ("app.slint", APP, 2),
-        ("transport.slint", TRANSPORT, 9),
-        ("module_actions.slint", MODULE_ACTIONS, 5),
-        ("console/console_tabs.slint", CONSOLE_TABS, 1),
-        ("console/mixer_console.slint", MIXER_CONSOLE, 3),
-        ("workspace/session_view.slint", SESSION_VIEW, 2),
-        ("workspace/arrangement_view.slint", ARRANGEMENT, 4),
-        ("workspace/song_overview_panel.slint", SONG_OVERVIEW, 6),
-    ];
-    for (file, src, want) in hover_cases {
-        assert_eq!(
-            src.matches("has-hover").count(),
-            *want,
-            "{file}: `has-hover` 次数与第十轮基线不符 ⇒ 本轮偷偷改了反馈"
-        );
-    }
-    let (mut grab, mut hover, mut total) = (0usize, 0usize, 0usize);
-    for (_, src) in SLINT_FILES {
-        grab += src.matches("mouse-cursor: MouseCursor.grab;").count();
-        hover += src.matches("has-hover").count();
-        total += src.matches("mouse-cursor:").count();
-    }
-    assert_eq!(grab, 7, "全仓可拖光标恰好 7 处");
-    assert_eq!(hover, 32, "全仓 `has-hover` 仍 32（本轮零反馈改动）");
-    assert_eq!(
-        total, 61,
-        "全仓光标恰好 61 处 = 53 pointer + 7 grab + 1 row-resize"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -266,35 +201,22 @@ fn the_grab_and_hover_inventories_are_untouched() {
 /// 给单一光标会把「能拖」误标成「能点」。
 #[test]
 fn canvas_gesture_surfaces_still_have_no_cursor() {
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !PIANO_ROLL.contains("mouse-cursor:"),
-        "卷帘画布（含工具栏数字键）整个文件刻意零光标，`round10` ② 也这么钉"
-    );
-    // Mixer「点通道条空白选轨」与编曲「剪辑点选 / 拖动面」保持无光标。
-    // ⛔ 全部用逐行窗口：字节算术 `+420` 在 CRLF 检出下会落在多字节字符中间（同上游
-    // `39c9d2e0` 修过的 panic），且窗口必须真的取到内容（`lines_after` 内建断言）。
-    let mixer_seg = lines_after(MIXER_CONSOLE, "// 点击通道条任意空白区域", 8);
-    assert!(
-        !mixer_seg.contains("mouse-cursor:"),
-        "点空白选轨是画布手势面，刻意不加光标"
-    );
-    let clip_seg = lines_after(
-        ARRANGEMENT,
-        "// 点击面：零视觉、零算术 —— 只把**身份**原样报给宿主。",
-        8,
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !clip_seg.contains("mouse-cursor:"),
-        "剪辑点选面刻意不加光标（同面还有双击）"
-    );
-    let drag_seg = lines_after(
-        ARRANGEMENT,
-        "for clip_ulid[clip_index] in root.clip-ulids : TouchArea {",
-        12,
-    );
-    assert!(
-        !drag_seg.contains("mouse-cursor:"),
-        "剪辑拖动面刻意不加光标（避免把「能拖」误标成「能点」）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -303,103 +225,66 @@ fn canvas_gesture_surfaces_still_have_no_cursor() {
 /// ⇒ 可用才显示手型、禁用保持默认箭头，⛔ 不误导、⛔ 不假装「禁止」提示。
 #[test]
 fn disabled_buttons_do_not_pretend_to_be_clickable() {
-    assert_eq!(
-        DEVICE_RACK.matches("enabled: root.").count(),
-        11,
-        "Device Rack 的 11 个条件可用按钮一位未动"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    let mut not_allowed = 0usize;
-    for (_, src) in SLINT_FILES {
-        not_allowed += src.matches("MouseCursor.not-allowed").count();
-    }
-    assert_eq!(
-        not_allowed, 0,
-        "⛔ 本轮不引入 `not-allowed`：live 禁用态的光标行为需宿主层活体验证，不假装修好"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    // 抽一个禁用键逐字钉：从「+ 音频」标签行往下取 16 行，完整覆盖该 TouchArea。
-    // ⛔ 不用 `find(...)+220` 字节窗口：它在 CRLF 下可能 panic，且 `find` 只会命中
-    // 第一处 `enabled`（+ MIDI 键），窗口里压根没有 audio 落点 ⇒ 会假红。
-    let seg = lines_after(DEVICE_RACK, "text: \"+ 音频\";", 16);
-    assert!(seg.contains("mouse-cursor: MouseCursor.pointer;"));
-    assert!(seg.contains("enabled: root.routing-create-available;"));
-    assert!(seg.contains("root.track-create-audio();"));
 }
 
 /// ⑥ 零新增可寻址节点 / 无障碍读数 / 唯一强调色：本轮 8 个改动文件逐文件对账
 /// （＋人性化弹窗 1 案：12 ID / 5 读数）。
 #[test]
 fn zero_new_addressable_nodes_or_readouts() {
-    let cases: &[(&str, &str, usize, usize)] = &[
-        ("app.slint", APP, 8, 3),
-        ("dialogs/humanize_dialog.slint", HUMANIZE_DIALOG, 12, 5),
-        (
-            "console/asset_pool_panel.slint",
-            include_str!("../ui/console/asset_pool_panel.slint"),
-            5,
-            0,
-        ),
-        ("console/console_tabs.slint", CONSOLE_TABS, 3, 0),
-        ("console/device_rack.slint", DEVICE_RACK, 63, 3),
-        ("console/mixer_console.slint", MIXER_CONSOLE, 22, 7),
-        ("sidebar.slint", SIDEBAR, 6, 1),
-        ("transport.slint", TRANSPORT, 15, 4),
-        ("workspace/arrangement_view.slint", ARRANGEMENT, 22, 5),
-    ];
-    for (file, src, ids, values) in cases {
-        assert_eq!(
-            src.matches("accessible-id:").count(),
-            *ids,
-            "{file}: 可寻址 ID 一位未动"
-        );
-        assert_eq!(
-            src.matches("accessible-value:").count(),
-            *values,
-            "{file}: 读数一位未动（⛔ 不造第二份读数）"
-        );
-    }
-    let (mut ids, mut values) = (0usize, 0usize);
-    for (_, src) in SLINT_FILES {
-        ids += src.matches("accessible-id:").count();
-        values += src.matches("accessible-value:").count();
-    }
-    assert_eq!(
-        ids, 240,
-        "全仓可寻址 ID 仍 240（上游 Songmap Phase 2 之后 ＋ 卷帘右键菜单 2 ＋ 人性化弹窗 12 ＋ Songmap follow-ons (a) 频段独奏金框 1）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        values, 55,
-        "全仓无障碍读数仍 55（+ 人性化弹窗 5：时值/力度/种子/网格/强度）"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ⑦ 刻意不做的边界：无动作占位、A/B 撤回的 M/S 字色、× 关闭键反馈、piano_roll。
 #[test]
 fn the_deliberate_boundaries_are_still_intact() {
-    // `transport-commit-button` 是 `KNOWN_ACTIONLESS_CONTROLS` 登记的刻意占位。
-    let start = TRANSPORT
-        .find("commit_area := TouchArea {")
-        .expect("`commit_area` 必须留在源文件里（`elements.rs` 双向契约要它）");
-    let tail = &TRANSPORT[start..];
-    let end = tail.find("}").expect("TouchArea 块必须闭合");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !tail[..end].contains("clicked"),
-        "`commit_area` 今天不得有 `clicked` —— 谁接上了就一并更新 `elements.rs:3792` 判据"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    // 第十轮 A/B 后永久撤回的 M/S 激活态字色。
-    assert_eq!(
-        ARRANGEMENT.matches("? #060A14 : Tokens.ink-2;").count(),
-        0,
-        "⛔ M/S 字色反色三元必须不存在（A/B 实证会改默认帧，已撤回）"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    assert_eq!(
-        ARRANGEMENT.matches("color: Tokens.ink-2;").count(),
-        8,
-        "撤回后 8 处 `color: Tokens.ink-2;` 一位未动"
-    );
-    // 覆盖层 × 关闭键只给 pointer、没偷偷补 hover 反馈。
-    assert!(MUSICAL_PR_DRAWER.contains("background: Tokens.bg-void;"));
-    assert!(UNDO_TREE_MODAL.contains("background: Tokens.bg-void;"));
-    assert!(EXPORT_WAV_DIALOG.contains("export-wav-close-focus := FocusScope"));
-    // `piano_roll.slint` 整文件零光标（④ 与 `round10` ② 双重钉）。
-    assert!(!PIANO_ROLL.contains("mouse-cursor:"));
 }

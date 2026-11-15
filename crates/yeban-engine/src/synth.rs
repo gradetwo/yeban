@@ -1232,6 +1232,13 @@ struct TrackSlot {
     /// ⚠ 池里的声部状态**跨快照连续**（与复音声部池同口径）：本轨暂时不在快照里
     /// 时不释放，等它回来接着响。
     sfz: SfzVoicePool,
+    /// 停止态实时试听推进的本地帧时钟（`Seek`/空闲时对齐到 `SynthEngine::position`，
+    /// 运行态与 `render_track_with_cc` 窗口末端保持单调同步）。
+    live_position: u64,
+    /// 停止态存在由实时 `NoteOn` 触发的 SFZ 试听声部（与时间轴回放尾巴隔离）。
+    live_sfz: bool,
+    /// 停止态存在由实时 `NoteOn` 触发的鼓机试听击音（与时间轴回放尾巴隔离）。
+    live_drum: bool,
 }
 
 impl TrackSlot {
@@ -1249,6 +1256,9 @@ impl TrackSlot {
             // ⭐ 空池（定长数组 ⇒ 零分配；`active` 全 `false` ⇒ 不产生任何样本）。
             // 淡出帧数按本槽的采样率定（与 `PolySynth` 同一个 3 ms 口径）。
             sfz: SfzVoicePool::new(sanitise_sample_rate(sample_rate)),
+            live_position: 0,
+            live_sfz: false,
+            live_drum: false,
         }
     }
 }
@@ -1679,12 +1689,89 @@ impl SynthEngine {
     /// ⇒ ⭐ **松键的活音符照常回收** ✓；⭐ **未松键者持续占声部**（⭐ 这是对的），⭐ 直到池满被窃取
     /// ⇒ ⭐ 有界（⭐ 每槽 ≤ [`VOICES_PER_TRACK`]）。
     pub fn note_on(&mut self, track: EntityId, pitch: u8, velocity: u8) -> bool {
+        self.note_on_with_sources(track, pitch, velocity, None, None, true)
+    }
+
+    /// ⭐ **松一个活音符**（环事件 `EngineEvent::NoteOff` 的落地）。
+    ///
+    /// 返回"⭐ 是否找到了匹配的活跃声部"：⭐ `false` ⇒ ⭐ 调用方按**合并口径**登记
+    /// （⭐ 不区分"⭐ 从未存在"／"⭐ 已被窃取或换音"）。
+    /// ⭐ **实时路径**：零分配、零锁、零 I/O。
+    pub fn note_off(&mut self, track: EntityId, pitch: u8) -> bool {
+        self.note_off_with_sources(track, pitch, None, true)
+    }
+
+    /// 按轨主音源次序（鼓机 ＞ SFZ ＞ 复音）触发实时试听 `NoteOn`（零分配、零锁、零 I/O）。
+    ///
+    /// 返回是否发生声部窃取或同键重触发。
+    pub fn note_on_with_sources(
+        &mut self,
+        track: EntityId,
+        pitch: u8,
+        velocity: u8,
+        sfz: Option<&PreparedSfz>,
+        cc: Option<&dyn Fn(u8) -> u8>,
+        running: bool,
+    ) -> bool {
         let Some(index) = self.slot_index(track) else {
             return false;
         };
         if !self.slots[index].present {
             return false;
         }
+        if !running && !self.has_live_source_at(index) {
+            self.slots[index].live_position = self.position;
+        }
+        let start_clock = if running {
+            self.position
+        } else {
+            self.slots[index].live_position
+        };
+
+        if let Some((_, params)) = self.drum_slots[index] {
+            self.slots[index].sfz.silence();
+            self.slots[index].live_sfz = false;
+            if let Some(voice) = params.notes().voice_for(pitch) {
+                let gain = velocity_gain(velocity) * self.slots[index].gain_scale;
+                let before_steals = self.drums[index].voice_steals();
+                self.drums[index].trigger(DrumHit::new(voice, start_clock, gain));
+                self.slots[index].live_drum = true;
+                self.drum_hits = self.drum_hits.saturating_add(1);
+                self.notes_triggered = self.notes_triggered.saturating_add(1);
+                return self.drums[index].voice_steals() > before_steals;
+            }
+            return false;
+        }
+
+        if let Some(plan) = sfz {
+            let mut held = 0u32;
+            for voice in self.slots[index].sfz.voices() {
+                if voice.is_active() && voice.end_sample() > start_clock {
+                    held = held.saturating_add(1);
+                }
+            }
+            self.slots[index].sfz.set_held_notes(Some(held));
+            let before_steals = self.slots[index].sfz.stolen();
+            let created = self.slots[index].sfz.trigger_note_with_pitch(
+                plan,
+                pitch,
+                velocity,
+                start_clock,
+                u64::MAX,
+                self.slots[index].gain_scale,
+                cc,
+                NO_PITCH_SHAPE,
+                0.0,
+            );
+            if created > 0 {
+                self.slots[index].live_sfz = true;
+                self.notes_triggered = self
+                    .notes_triggered
+                    .saturating_add(u64::try_from(created).unwrap_or(u64::MAX));
+            }
+            return self.slots[index].sfz.stolen() > before_steals;
+        }
+
         let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
         // ⭐ 池满 ⇒ 这一次会走窃取路径（⭐ 触发**之前**量，⭐ 触发之后就不是"满"了）。
         let pool_full = self.slots[index].synth.active_voices() >= VOICES_PER_TRACK;
@@ -1698,17 +1785,41 @@ impl SynthEngine {
         pool_full || retriggered
     }
 
-    /// ⭐ **松一个活音符**（环事件 `EngineEvent::NoteOff` 的落地）。
+    /// 按轨主音源次序释放由实时试听触发的 `NoteOff`（零分配、零锁、零 I/O）。
     ///
-    /// 返回"⭐ 是否找到了匹配的活跃声部"：⭐ `false` ⇒ ⭐ 调用方按**合并口径**登记
-    /// （⭐ 不区分"⭐ 从未存在"／"⭐ 已被窃取或换音"）。
-    /// ⭐ **实时路径**：零分配、零锁、零 I/O。
-    pub fn note_off(&mut self, track: EntityId, pitch: u8) -> bool {
+    /// 返回是否命中了活跃或挂起的试听声部（返回 `false` 时调用方计为孤儿松键）。
+    pub fn note_off_with_sources(
+        &mut self,
+        track: EntityId,
+        pitch: u8,
+        sfz: Option<&PreparedSfz>,
+        running: bool,
+    ) -> bool {
         let Some(index) = self.slot_index(track) else {
             return false;
         };
+        let mut released = false;
         let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
-        self.slots[index].synth.note_off(freq_hz) > 0
+        if self.slots[index].synth.note_off(freq_hz) > 0 {
+            released = true;
+        }
+        if let Some((_, params)) = self.drum_slots[index] {
+            if self.slots[index].live_drum && params.notes().voice_for(pitch).is_some() {
+                released = true;
+            }
+            return released;
+        }
+        if let Some(plan) = sfz {
+            let off_clock = if running {
+                self.position
+            } else {
+                self.slots[index].live_position
+            };
+            if self.slots[index].sfz.release_note(plan, pitch, off_clock) {
+                released = true;
+            }
+        }
+        released
     }
 
     /// ⭐ **是否已经有轨道占过槽位**（⭐ 即"⭐ 本运行时至少武装过一次快照"）。
@@ -2051,9 +2162,93 @@ impl SynthEngine {
         for slot in &mut self.slots {
             slot.synth.reset();
             slot.sfz.silence();
+            slot.live_position = position;
+            slot.live_sfz = false;
+            slot.live_drum = false;
         }
         for machine in &mut self.drums {
             machine.reset();
+        }
+    }
+
+    fn has_live_source_at(&self, index: usize) -> bool {
+        (self.slots[index].live_sfz && self.slots[index].sfz.has_active_voices())
+            || (self.slots[index].live_drum
+                && self.drum_slots[index].is_some()
+                && self.drums[index].active_slots() > 0)
+    }
+
+    /// 判断某轨是否存在由实时 `EngineEvent::NoteOn` 触发的活跃试听声部
+    /// （复音 `end_sample == u64::MAX` / 实时 SFZ / 实时鼓机击音）。时间轴调度尾巴不受此方法影响。
+    /// 零分配、零锁、零 I/O。
+    #[must_use]
+    pub fn has_active_live_voices(&self, track: EntityId) -> bool {
+        let Some(index) = self.slot_index(track) else {
+            return false;
+        };
+        has_live_poly_voice(&self.slots[index].synth) || self.has_live_source_at(index)
+    }
+
+    /// 走带停止状态下渲染某轨的实时 `EngineEvent::NoteOn` 试听声部（兼容旧签名：不含 SFZ 计划与 CC）。
+    pub fn render_live_voices(&mut self, track: EntityId, out: &mut [f32]) {
+        self.render_live_voices_with_sources(track, None, out, None);
+    }
+
+    /// 走带停止状态下渲染某轨的实时 `EngineEvent::NoteOn` 试听声部（支持鼓机 / SFZ / 复音）：
+    /// 不推进时间轴游标、不触发时间轴调度音符，仅推进本槽 `live_position` 以保证包络与释放衰减完整。
+    /// 零分配、零锁、零 I/O。
+    pub fn render_live_voices_with_sources(
+        &mut self,
+        track: EntityId,
+        sfz: Option<&PreparedSfz>,
+        out: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
+        out.fill(0.0);
+        let Some(index) = self.slot_index(track) else {
+            return;
+        };
+        if !self.slots[index].present {
+            return;
+        }
+        let position = self.position;
+        let has_poly = has_live_poly_voice(&self.slots[index].synth);
+        let is_drum = self.slots[index].live_drum && self.drum_slots[index].is_some();
+        let is_sfz = self.slots[index].live_sfz && self.slots[index].sfz.has_active_voices();
+
+        if is_drum {
+            let live_pos = self.slots[index].live_position;
+            self.drums[index].render(live_pos, out);
+            self.slots[index].live_position = live_pos.saturating_add(out.len() as u64);
+            if self.drums[index].active_slots() == 0 {
+                self.slots[index].live_drum = false;
+            }
+            if has_poly {
+                mix_live_poly_voices(&mut self.slots[index].synth, &self.tables, position, out);
+            }
+            return;
+        }
+        if is_sfz {
+            if let Some(plan) = sfz {
+                let live_pos = self.slots[index].live_position;
+                self.slots[index]
+                    .sfz
+                    .render_into_with_probes(plan, live_pos, out, cc, None);
+                self.slots[index].live_position = live_pos.saturating_add(out.len() as u64);
+                if !self.slots[index].sfz.has_active_voices() {
+                    self.slots[index].live_sfz = false;
+                }
+            } else {
+                self.slots[index].sfz.silence();
+                self.slots[index].live_sfz = false;
+            }
+            if has_poly {
+                mix_live_poly_voices(&mut self.slots[index].synth, &self.tables, position, out);
+            }
+            return;
+        }
+        if has_poly {
+            self.slots[index].synth.render(&self.tables, position, out);
         }
     }
 
@@ -2147,6 +2342,7 @@ impl SynthEngine {
                     self.slots[index].assigned = true;
                     self.slots[index].present = true;
                     self.slots[index].id = *track;
+                    self.slots[index].live_position = self.position;
                 }
                 None => self.track_drops = self.track_drops.saturating_add(1),
             }
@@ -2221,9 +2417,12 @@ impl SynthEngine {
                     if !same_track {
                         drums[index].reset();
                         drums[index].set_sample_rate(sample_rate_u32);
+                        slots[index].live_drum = false;
                     } else if sample_rate_changed {
                         drums[index].set_sample_rate(sample_rate_u32);
                     }
+                    slots[index].sfz.silence();
+                    slots[index].live_sfz = false;
                     if !same_track || armed.map(|(_, prev)| prev) != Some(params) {
                         drums[index].set_params(params.kit());
                     }
@@ -2234,6 +2433,7 @@ impl SynthEngine {
                     Some((id, _)) if present_id == Some(id) => {
                         drums[index].reset();
                         drum_slots[index] = None;
+                        slots[index].live_drum = false;
                     }
                     // 本轨暂时不在快照里 ⇒ 保留状态与武装记录。
                     Some(_) if present_id.is_none() => {}
@@ -2241,6 +2441,7 @@ impl SynthEngine {
                     Some(_) => {
                         drums[index].reset();
                         drum_slots[index] = None;
+                        slots[index].live_drum = false;
                     }
                     None => drum_slots[index] = None,
                 },
@@ -2520,6 +2721,11 @@ impl SynthEngine {
                         break;
                     }
                 }
+                mix_live_poly_voices(&mut slot.synth, tables, position, out);
+                slot.live_position = slot.live_position.max(end);
+                if !slot.sfz.has_active_voices() {
+                    slot.live_sfz = false;
+                }
                 return;
             }
             while let Some(note) = notes.get(slot.cursor) {
@@ -2645,6 +2851,55 @@ impl SynthEngine {
                 }
             },
         }
+        if drum_map.is_some() || sfz.is_some() {
+            mix_live_poly_voices(&mut slot.synth, tables, position, out);
+        }
+        slot.live_position = slot.live_position.max(end);
+        if !slot.sfz.has_active_voices() {
+            slot.live_sfz = false;
+        }
+        if drums[index].active_slots() == 0 {
+            slot.live_drum = false;
+        }
+    }
+}
+
+/// 检查某轨复音池内是否存在由实时 `EngineEvent::NoteOn` 触发的活跃试听声部（`end_sample == u64::MAX`）。
+#[inline]
+fn has_live_poly_voice(synth: &PolySynth) -> bool {
+    if synth.active_voices() == 0 {
+        return false;
+    }
+    (0..VOICES_PER_TRACK).any(|idx| matches!(synth.debug_voice(idx), Some((true, u64::MAX, _, _))))
+}
+
+/// 当轨道主音源为鼓机或 SFZ 时，若用户通过实时 `NoteOn` 触发了复音试听声部，
+/// 使用定长栈缓冲叠加渲染，避免主音源覆盖实时键盘试听声部，且保持零堆分配。
+fn mix_live_poly_voices(
+    synth: &mut PolySynth,
+    tables: &PolySynthTables,
+    position: u64,
+    out: &mut [f32],
+) {
+    if !has_live_poly_voice(synth) {
+        return;
+    }
+    let mut live_chunk = [0.0_f32; 256];
+    let mut offset = 0usize;
+    while offset < out.len() {
+        let take = (out.len() - offset).min(live_chunk.len());
+        synth.render(
+            tables,
+            position.saturating_add(offset as u64),
+            &mut live_chunk[..take],
+        );
+        for (dst, src) in out[offset..offset + take]
+            .iter_mut()
+            .zip(live_chunk[..take].iter())
+        {
+            *dst += *src;
+        }
+        offset += take;
     }
 }
 

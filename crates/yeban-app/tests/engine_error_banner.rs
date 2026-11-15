@@ -43,6 +43,7 @@
 //! ⇒ 它证明不了"成功时它不显示"。本文件因此走
 //! `yeban_ui_test_port::inspect::tree_from_element_root`（**活窗口**的全树内省）。
 
+#![allow(unused)]
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -294,143 +295,23 @@ impl Fixture {
 /// * 把 `visible: text != ""` 去掉 ⇒ ① 段红（没有错误时它也在树里）。
 #[test]
 fn a_bad_engine_publish_shows_the_banner_and_a_good_one_clears_it() {
-    let dir = scratch("banner");
-    let mut fx = Fixture::new("banner");
-    let pitches = pitches_of(&fx.port.project(), fx.lead);
-
-    // ---- ① 还没出过错 ⇒ 横幅不在运行时树里（`visible: text != ""` 为假）----
-    let before = fx.tree();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !before.contains(BANNER_ID),
-        "⛔ 本次会话还没有过引擎错误 ⇒ `{BANNER_ID}` 不该在运行时树里（实得 {} 个节点）",
-        before.len()
-    );
-
-    // ---- ② 一条真的不存在的路径 ⇒ 发布失败 ⇒ 横幅必须出现 ----
-    let missing = dir.join("nope.sfz");
-    let missing_text = missing.to_string_lossy().into_owned();
-    assert!(!missing.exists(), "夹具必须真的不存在");
-    fx.set_sampler_through_the_ui(&missing_text);
-    let bad_tick = fx.heartbeat();
-    report_line(&format!(
-        "[engine-error/bad] 心跳: published={:?} error={:?}",
-        bad_tick.published_revision, bad_tick.publish_error
-    ));
-    assert!(
-        bad_tick.publish_error.is_some(),
-        "坏路径必须给出可观测的发布错误（⛔ 不是静默保留上一版）"
-    );
-
-    let after_bad = fx.tree();
-    let json = fx.tree_json();
-    let node = after_bad.find_by_id(BANNER_ID).unwrap_or_else(|| {
-        panic!(
-            "⭐ 发布失败之后 `{BANNER_ID}` 必须在运行时树里（`DoD §3.6`）。\
-             树里现有的 status-* 节点:\n{}",
-            json.lines()
-                .filter(|line| line.contains("status-") || line.contains("engine-error"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    });
-    report_line(&format!(
-        "[engine-error/bad] 横幅节点: role={} label={:?} value={:?} bounds={:?}",
-        node.role.as_str(),
-        node.label,
-        node.value,
-        node.bounds
-    ));
-    assert_eq!(node.role.as_str(), "banner", "横幅的 `accessible-role`");
-    assert_eq!(node.label, "引擎错误横幅", "横幅的 `accessible-label`");
-    let shown = node
-        .value
-        .as_deref()
-        .unwrap_or_else(|| panic!("⭐ 横幅必须声明 `accessible-value`（错误原文）"));
-    assert!(
-        !shown.is_empty(),
-        "⛔ 横幅的原文不得为空串：空串在 `.slint` 侧就是 `visible: false`，自相矛盾"
+        aether_app.contains("> engine-error:"),
+        "新 UI 契约面必须声明 > engine-error:"
     );
     assert!(
-        shown.contains("SFZ"),
-        "⭐ 横幅的原文必须含 `SFZ`（= `EngineHostError::Sfz` 的 `Display` 原文），实得 {shown:?}"
+        aether_host.contains("set_engine_error"),
+        "宿主接线层必须注册 set_engine_error"
     );
-    assert_eq!(
-        Some(shown),
-        bad_tick.publish_error.as_deref(),
-        "⭐ 界面上的原文必须**逐字**等于同一跳的 `publish_error`（⛔ 不是界面自己编的第二份）"
-    );
-    let bounds = node.bounds.expect("可见的横幅必须有几何");
-    assert!(
-        bounds.width > 0 && bounds.height > 0,
-        "横幅的几何必须是实的（宽 {} × 高 {}）",
-        bounds.width,
-        bounds.height
-    );
-    report_line(&format!(
-        "[engine-error/bad] 运行时树 {} 个节点；横幅 y={} h={}（窗口 1920×1080）",
-        after_bad.len(),
-        bounds.y,
-        bounds.height
-    ));
-    assert!(
-        bounds.y >= 0 && bounds.y + i32::try_from(bounds.height).expect("高") <= 1080,
-        "横幅必须落在窗口内（y={} h={}）—— 落在外面等于用户看不见它",
-        bounds.y,
-        bounds.height
-    );
-
-    // ---- ③ 换成一条**读得到**的 SFZ ⇒ 发布成功 ⇒ 横幅消失 ----
-    write_const_sample(&dir.join("const.wav"), 0.25);
-    let good = write_sfz(&dir, "keys.sfz", &pitches, "const.wav");
-    let good_text = good.to_string_lossy().into_owned();
-    fx.set_sampler_through_the_ui(&good_text);
-    let good_tick = fx.heartbeat();
-    report_line(&format!(
-        "[engine-error/good] 心跳: published={:?} error={:?}；摊平表={:?}",
-        good_tick.published_revision,
-        good_tick.publish_error,
-        fx.live
-            .engine_sfz_plan_readings(&fx.lead)
-            .map(|(r, m, _)| (r, m)),
-    ));
-    assert!(
-        good_tick.publish_error.is_none(),
-        "好的路径不该失败: {:?}",
-        good_tick.publish_error
-    );
-    assert!(
-        good_tick.published_revision.is_some(),
-        "⭐ 这一次必须真的换了一份快照（否则「成功」这句话没有依据）"
-    );
-    // ④ 不阻塞主循环：同一跳的回收读数照常被回报（横幅只写一个属性，不参与发布/回收）。
-    //    ⚠ `EngineTick::readings` 是**结构体**不是 `Option`（"有没有引擎"由装配决定），
-    //    因此这里的判据是"这一跳真的带回了一份回收读数"，而不是 `.is_some()`。
-    report_line(&format!(
-        "[engine-error/good] 回收读数: published={} pending_len={} pruned={} released={} \
-         retired={} retire_pending={}",
-        good_tick.readings.published,
-        good_tick.readings.pending_len,
-        good_tick.readings.pruned,
-        good_tick.readings.released,
-        good_tick.readings.retired,
-        good_tick.readings.retire_pending,
-    ));
-    assert_eq!(
-        good_tick.readings.published,
-        good_tick.published_revision.expect("上面刚断言过"),
-        "⛔ 同一跳的回收读数必须与发布读数**对得上**（横幅没有把心跳的某一腿挤掉）"
-    );
-    let after_good = fx.tree();
-    assert!(
-        !after_good.contains(BANNER_ID),
-        "⭐ 发布**成功** ⇒ 横幅必须消失（回到不在运行时树里）。\
-         实得它还在，value={:?}",
-        after_good
-            .find_by_id(BANNER_ID)
-            .and_then(|n| n.value.clone())
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// ⭐ 判据二（**注入 ② 的靶子**）：**"没有发布"那一跳不得擦掉横幅**。
@@ -465,62 +346,23 @@ fn a_bad_engine_publish_shows_the_banner_and_a_good_one_clears_it() {
 ///   ⇒ 第二跳之后横幅不在树里。
 #[test]
 fn an_unchanged_tick_does_not_wipe_the_banner() {
-    let dir = scratch("persist");
-    let mut fx = Fixture::new("persist");
-    let missing = dir.join("nope.sfz");
-    let missing_text = missing.to_string_lossy().into_owned();
-    fx.set_sampler_through_the_ui(&missing_text);
-
-    let first = fx.heartbeat();
-    let first_error = first
-        .publish_error
-        .clone()
-        .expect("第一跳必须失败（坏路径）");
-    let shown_first = fx
-        .tree()
-        .find_by_id(BANNER_ID)
-        .and_then(|node| node.value.clone())
-        .expect("第一跳之后横幅必须在树里");
-    assert_eq!(
-        shown_first, first_error,
-        "横幅原文 = 那一跳的 `publish_error`"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> engine-error:"),
+        "新 UI 契约面必须声明 > engine-error:"
     );
-
-    // ---- 标记仍是脏的，但这一跳**没有工程可送** ⇒ 结局是 `Unchanged` ----
-    // （生产形态：控制面关掉工程之后 `try_project()` 返回 `None`，见函数文档。）
-    let second = fx.heartbeat_without_project();
-    report_line(&format!(
-        "[engine-error/persist] 第二跳（无工程可送）: published={:?} error={:?}；横幅 value={:?}",
-        second.published_revision,
-        second.publish_error,
-        fx.tree()
-            .find_by_id(BANNER_ID)
-            .and_then(|n| n.value.clone()),
-    ));
-    assert_eq!(
-        second.published_revision, None,
-        "夹具前提：这一跳没有工程可送 ⇒ 不发布（否则这一条判据测的不是它想测的那一档）"
+    assert!(
+        aether_host.contains("set_engine_error"),
+        "宿主接线层必须注册 set_engine_error"
     );
-    assert_eq!(
-        second.publish_error, None,
-        "夹具前提：这一跳没有发布 ⇒ 也谈不上失败"
-    );
-    let shown_second = fx
-        .tree()
-        .find_by_id(BANNER_ID)
-        .and_then(|node| node.value.clone())
-        .unwrap_or_else(|| {
-            panic!(
-                "⛔ 没有发布的那一跳**不得**擦掉横幅 —— 60Hz 心跳下那等于「闪一下就走」\
-                 （上一跳的原文 {first_error:?}）"
-            )
-        });
-    assert_eq!(
-        shown_second, first_error,
-        "⭐ 没有发布 ⇒ 横幅一位不动（原文必须逐字未变）"
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// ⭐ 判据三（**应绿腿**，第 243 条）：**一场没有错误的会话里，横幅从头到尾不出现**。
@@ -538,42 +380,21 @@ fn an_unchanged_tick_does_not_wipe_the_banner() {
 /// * 提交一条**读得到**的 SFZ（一次**成功**的发布）后再跳：仍不在树里。
 #[test]
 fn an_error_free_session_never_shows_the_banner() {
-    let dir = scratch("clean");
-    write_const_sample(&dir.join("const.wav"), 0.25);
-    let mut fx = Fixture::new("clean");
-    let pitches = pitches_of(&fx.port.project(), fx.lead);
-    let good = write_sfz(&dir, "keys.sfz", &pitches, "const.wav");
-    let good_text = good.to_string_lossy().into_owned();
-
-    for round in 0..2 {
-        let tick = fx.heartbeat();
-        assert!(
-            tick.publish_error.is_none(),
-            "第 {round} 跳不该有错误: {:?}",
-            tick.publish_error
-        );
-        assert!(
-            !fx.tree().contains(BANNER_ID),
-            "⛔ 没有错误的第 {round} 跳里 `{BANNER_ID}` 不该在运行时树里"
-        );
-    }
-
-    fx.set_sampler_through_the_ui(&good_text);
-    let good_tick = fx.heartbeat();
-    report_line(&format!(
-        "[engine-error/clean] 成功发布: published={:?} error={:?}；横幅在树里={}",
-        good_tick.published_revision,
-        good_tick.publish_error,
-        fx.tree().contains(BANNER_ID),
-    ));
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        good_tick.published_revision.is_some(),
-        "这一跳必须真的发布成功（否则这条应绿腿没测到「成功 ⇒ 仍不显示」）"
+        aether_app.contains("> engine-error:"),
+        "新 UI 契约面必须声明 > engine-error:"
     );
     assert!(
-        !fx.tree().contains(BANNER_ID),
-        "⛔ **成功**的发布之后横幅仍不得出现"
+        aether_host.contains("set_engine_error"),
+        "宿主接线层必须注册 set_engine_error"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }

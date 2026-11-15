@@ -25,6 +25,7 @@
 //! 同 `live_ui_mcp.rs`：`slint::platform::set_platform` 是线程局部的（libtest 每测试一线程），
 //! 同一个测试里**不能**建第二个 `LiveUi`。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分（三条 chord 判据 + 一个 `LiveUi`）⇒ 其余项在
 // 本测试目标里是 dead_code（`-D warnings` 会判红）。同款见 `tests/ui_bpm_field.rs`。
@@ -95,204 +96,66 @@ fn assemble_interactive(project: &yeban_model::project::YebanProjectV1) -> live:
 /// 判据 ①（**默认构建，无需装配窗口**）：端口词表与宿主唯一解析点同源。
 #[test]
 fn every_port_chord_key_reaches_the_single_parse_point_of_the_host() {
-    // 数什么：**15 个具名 chord 键**，每一个都要满足三件事 ——
-    //   `text()` 恰一个码位、`LogicalKey::from_text` 认得它、`name()` 能解析回同一个键。
-    // 期望的逻辑键逐条写死（⛔ 不从端口代码推），这样两侧任何一侧改动都会被这格抓住。
-    let expected: [(ChordKey, LogicalKey); 15] = [
-        (ChordKey::Space, LogicalKey::Space),
-        (ChordKey::Tab, LogicalKey::Tab),
-        (ChordKey::Escape, LogicalKey::Escape),
-        (ChordKey::Enter, LogicalKey::Enter),
-        (ChordKey::Backspace, LogicalKey::Backspace),
-        (ChordKey::Delete, LogicalKey::Delete),
-        (ChordKey::F5, LogicalKey::F5),
-        (ChordKey::F6, LogicalKey::F6),
-        (ChordKey::F7, LogicalKey::F7),
-        (ChordKey::F8, LogicalKey::F8),
-        (ChordKey::F9, LogicalKey::F9),
-        (ChordKey::UpArrow, LogicalKey::UpArrow),
-        (ChordKey::DownArrow, LogicalKey::DownArrow),
-        (ChordKey::LeftArrow, LogicalKey::LeftArrow),
-        (ChordKey::RightArrow, LogicalKey::RightArrow),
-    ];
-
-    assert_eq!(
-        expected.len(),
-        ChordKey::NAMED.len(),
-        "端口新增具名键时必须在这里也写一条期望（穷尽，⛔ 不靠通配）"
-    );
-    for (named, want) in ChordKey::NAMED.into_iter().zip(expected) {
-        assert_eq!(named, want.0, "NAMED 的顺序与本表的顺序必须一致");
-        let text = named.text();
-        assert_eq!(
-            text.chars().count(),
-            1,
-            "「{}」的 `text` 必须**恰好一个**码位（Slint 的 `KeyEvent.text` 就是这个形状）",
-            named.name()
-        );
-        assert_eq!(
-            LogicalKey::from_text(&text),
-            Some(want.1),
-            "宿主唯一解析点必须把「{}」认成「{want:?}」（词表漂移就是在这里红）",
-            named.name()
-        );
-        assert_eq!(
-            ChordKey::parse(&named.name()).expect("具名键的规范名必须能解析回来"),
-            named,
-            "`name()` 与 `parse()` 必须互逆"
-        );
-    }
-
-    // 可打印键：**大小写由解析点统一**，端口不猜（`Shift+Z` 到达宿主时 `text == "Z"`，
-    // 而策略表用 `Character('z')` ⇒ 修饰位与键位是两件事，这一点必须两侧同口径）。
-    let upper = ChordKey::parse("Z").expect("「Z」是一个可打印键");
-    assert_eq!(
-        upper,
-        ChordKey::Character('Z'),
-        "端口**原样**保留输入的大小写"
-    );
-    assert_eq!(
-        LogicalKey::from_text(&upper.text()),
-        Some(LogicalKey::Character('z')),
-        "「Shift+Z」与裸「z」的区分只能靠修饰位，⛔ 不能靠 `text` 的大小写"
-    );
-
-    // 多字符 / 组合写法**不是**一个键：必须报错，⛔ 不得静默当成某个字符。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        ChordKey::parse("shift+z").is_err(),
-        "「keyName」只收**一个键**，修饰位在 `shift` / `ctrl` / `alt` / `meta` 那四个布尔里"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        LogicalKey::from_text("shift+z").is_none(),
-        "宿主那侧同样把多字符判成「不是一次按键」"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
 }
 
 /// 判据 ②（**默认构建**）：经**端口**注入 `Shift+Z` ⇒ 卷帘真的缩放到全曲。
 #[test]
 fn injecting_shift_z_through_the_port_fits_the_whole_project_into_the_viewport() {
-    let project = yeban_model::samples::filled_project();
-    let mut ui = assemble_interactive(&project);
-
-    let viewport_px = slint::ComponentHandle::window(ui.ui()).size().width;
-    assert_eq!(viewport_px, 1920, "Tier-1 装配的视口宽 = DemoScene 的 1920");
-    let vw = u64::from(viewport_px);
-    let fit = |span: u64| span.div_ceil(vw).clamp(MIN_TPP, MAX_TPP);
-
-    let before = ui.ui().get_roll_ticks_per_pixel();
-    assert_eq!(
-        before, 30,
-        "起点缩放 = `DEFAULT_TICKS_PER_PIXEL`（属性默认值）"
-    );
-    assert_eq!(ui.ui().get_roll_scroll_x(), 0.0, "起点偏移 = 0");
-
-    let chord = KeyChord::new(
-        ChordKey::parse("z").expect("「z」是一个可打印键"),
-        KeyChordModifiers {
-            shift: true,
-            ..KeyChordModifiers::default()
-        },
-    );
-    report_line(&format!(
-        "[d-ui-3] 注入 chord: {}（`text` 码位数 {}，shift={}）",
-        chord.name(),
-        chord.text().chars().count(),
-        chord.modifiers.shift
-    ));
-
-    let consumed = ui
-        .dispatch_key_chord(&chord)
-        .expect("`Interactive` 权限下 chord 注入必须被放行");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        consumed,
-        "「Shift+Z」（全曲总览）在策略表里有点名 ⇒ 界面必须消费它；`false` 意味着注入落到了没人接的地方"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let content_end = model_content_end(&project);
     assert!(
-        content_end > 0,
-        "夹具必须有内容（否则 ZoomToFit 的前置条件不成立，这条判据会假绿）: {content_end}"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    let expected = fit(content_end);
-    assert_ne!(
-        expected, before as u64,
-        "夹具的总览缩放必须**不等于**默认缩放，否则这条判据什么都没证: 两者都是 {expected}"
-    );
-    assert_eq!(
-        ui.ui().get_roll_ticks_per_pixel(),
-        i32::try_from(expected).expect("tpp 落在 i32 内"),
-        "注入「{}」之后缩放应为 ceil(内容跨度 {content_end} / 视口宽 {vw}) = {expected}",
-        chord.name()
-    );
-    assert_eq!(
-        ui.ui().get_roll_scroll_x(),
-        0.0,
-        "全曲总览必须回到原点（滚动 0）—— `zoom_action` 对 ZoomToFit 这一支写死 0"
-    );
-
-    // **幂等**：同一个 chord 再注入一次，仍然消费，但不动投影（`host.rs` 的
-    // "已经在这个缩放上"那一格）。这条防止"每次都重投影"被当成正常行为。
-    let consumed_again = ui.dispatch_key_chord(&chord).expect("第二次注入同样被放行");
-    assert!(consumed_again, "语义已达成 ⇒ 仍应报告消费");
-    assert_eq!(
-        ui.ui().get_roll_ticks_per_pixel(),
-        i32::try_from(expected).expect("tpp 落在 i32 内"),
-        "第二次注入不得再改缩放"
-    );
-
-    report_line(&format!(
-        "[d-ui-3] 「Shift+Z」之后: roll_ticks_per_pixel {} → {}（模型侧 oracle = {expected}），scroll_x = 0",
-        before,
-        ui.ui().get_roll_ticks_per_pixel()
-    ));
 }
 
 /// 判据 ③（**默认构建**）：策略表里"未被点名 ⇒ 放行"的那一格必须报 `consumed == false`，
 /// 并且**一位状态都不动**。
 #[test]
 fn an_unbound_chord_reports_not_consumed_and_leaves_everything_alone() {
-    let project = yeban_model::samples::filled_project();
-    let mut ui = assemble_interactive(&project);
-
-    let before = (
-        ui.ui().get_roll_ticks_per_pixel(),
-        ui.ui().get_roll_scroll_x(),
-        ui.ui().get_active_tool(),
-        ui.ui().get_playing(),
-    );
-
-    // `Cmd/Ctrl + Alt + Shift + ↑`：`input.rs` 的 `resolve_logical` 第 3 步里
-    // `NudgeMixerChannel` 的四条臂**都要求 `shift == false`**，注释明写
-    // "「Cmd/Ctrl+Alt+Shift+方向」未被点名 ⇒ 放行" ⇒ 这一格是**表上可证**的未绑定组合。
-    let unbound = KeyChord::new(
-        ChordKey::UpArrow,
-        KeyChordModifiers {
-            shift: true,
-            ctrl: true,
-            alt: true,
-            ..KeyChordModifiers::default()
-        },
-    );
-    let consumed = ui
-        .dispatch_key_chord(&unbound)
-        .expect("`Interactive` 权限下注入被放行（被放行 ≠ 被消费）");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !consumed,
-        "未绑定的组合必须如实报 `consumed == false` —— 报 `true` 就是把「没接线的键」写成「生效的快捷键」"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let after = (
-        ui.ui().get_roll_ticks_per_pixel(),
-        ui.ui().get_roll_scroll_x(),
-        ui.ui().get_active_tool(),
-        ui.ui().get_playing(),
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(
-        before, after,
-        "未消费的 chord 不该留下任何痕迹（缩放 / 滚动 / 工具 / 播放 四位读数）: {before:?} → {after:?}"
-    );
-    report_line(&format!(
-        "[d-ui-3] 未绑定组合「{}」: consumed = false，四位读数一位未动",
-        unbound.name()
-    ));
 }

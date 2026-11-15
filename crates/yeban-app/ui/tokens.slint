@@ -253,7 +253,7 @@ export global Tokens {
     // 于是 `font-mono` / `font-serif` 现在是**打包进来的**族: 逐条登记 (来源 URL /
     // sha256 / 字节 / 许可 / 子集口径) 见 §5c 与 `assets/fonts/LICENSES.md`; `font-ui` 仍是
     // 系统族 `PingFang SC` —— 本次**不**打包 CJK 无衬线, 理由见 §5c。
-    out property <string> font-ui: "PingFang SC";
+    in-out property <string> font-ui: "PingFang SC";
     out property <string> font-mono: "JetBrains Mono";
     out property <string> font-serif: "Noto Serif SC";
 
@@ -914,3 +914,236 @@ import "../../../assets/fonts/NotoSerifSC-Regular-subset.otf";
 // `22-zoom-strip.png` (章节名衬线 + UUID, 2x) /
 // `22-zoom-console.png` (控制台脚注, 4x) /
 // `22-zoom-statusbar.png` (状态栏, 3x)。
+
+
+// =========================================================================
+// 夜半 — 多 Persona 模式与全局专业工作室主题架构
+// =========================================================================
+
+export enum PersonaMode {
+    YebanDefault,
+    AbletonLive,
+    LogicPro,
+    CubasePro,
+}
+
+export struct TrackData {
+    id: int,
+    name: string,
+    kind: string,
+    color: color,
+    bus: string,
+    volume_db: float,
+    pan: string,
+    muted: bool,
+    soloed: bool,
+    armed: bool,
+    meter_peak: float,
+    insert1: string,
+    insert2: string,
+    insert3: string,
+    clip1: string,
+    clip2: string,
+    clip3: string,
+    clip4: string,
+}
+
+export struct TimelineBlockData {
+    track_id: int,
+    /// 摆放身份（`ClipPlacement::id` 的规范文本）——点击块时交给 `clip-select`。
+    clip_ulid: string,
+    label: string,
+    start_px: length,
+    width_px: length,
+    is_audio: bool,
+    gain_label: string,
+    color: color,
+    note_count: int,
+}
+
+export struct BrowserItemData {
+    name: string,
+    desc: string,
+    tag: string,
+    format: string,
+}
+
+export struct ChordBlockData {
+    name: string,
+    roman: string,
+    color: color,
+}
+
+export struct CommandPaletteItem {
+    id: string,
+    title: string,
+    category: string,
+    shortcut: string,
+}
+
+export struct PianoStepRow {
+    pitch_name: string,
+    is_root: bool,
+    step0: bool,
+    step1: bool,
+    step2: bool,
+    step3: bool,
+    step4: bool,
+    step5: bool,
+    step6: bool,
+    step7: bool,
+    step8: bool,
+    step9: bool,
+    step10: bool,
+    step11: bool,
+    step12: bool,
+    step13: bool,
+    step14: bool,
+    step15: bool,
+}
+
+export struct PianoRollNote {
+    id: int,
+    pitch_row: int,
+    pitch_name: string,
+    start_step: int,
+    step_span: int,
+    velocity: int,
+    selected: bool,
+}
+
+export global Theme {
+    in-out property <PersonaMode> persona: PersonaMode.YebanDefault;
+
+    // -------------------------------------------------------------------------
+    // 东方美学与国色雅阶 · 音乐轨道色彩秩序 (Traditional Chinese Mineral Spectrum)
+    // 雅致、低饱和、低刺激、纯净清晰。建立音乐轨道的视觉认知秩序与美学体系。
+    // -------------------------------------------------------------------------
+    out property <color> track-synth:  #387691; // 黛蓝 (Lead / Wavetable / MPE 旋律主奏)
+    out property <color> track-drum:   #9a6a38; // 赭石 (Drums / Percussion / 律动鼓组)
+    out property <color> track-pad:    #705e88; // 紫苏 (Granular / Pad / 氛围和声铺底)
+    out property <color> track-vocal:  #347864; // 沧浪 (Vocal / Acoustic / 原声领唱)
+    out property <color> track-seq:    #8a4f6d; // 檀木 (Arpeggiator / Step / 序列特效)
+    out property <color> track-bass:   #2e536b; // 玄青 (Sub Bass / 极低频基底)
+    out property <color> track-bus:    #526377; // 凝脂霜灰 (Group Bus / 总线汇集)
+
+    // 辅助语义色彩 (低刺激、护眼平衡)
+    out property <color> status-ok:    #347864; // 沧浪青 (正常/播放/电平安全)
+    out property <color> status-warn:  #9a6a38; // 赭石金 (轻微压缩/警示)
+    out property <color> status-alert: #a44848; // 丹砂红 (静音/过载/录音触发)
+
+    // 响应式专业录音室设计 Token (柔和低饱和专业工作站配色)
+    //
+    // ⭐ 主题链路（细节实测 §6）：这里原本只看 `persona`，与 `ThemeState.theme`
+    // 完全无关 —— 而 `--theme` 改的正是 `ThemeState.theme`，于是
+    // `--theme brand / inkmoor / plume` 三组对比 0 像素差异。修法：
+    //   * 默认 `yeban` 仍走**原 persona 表达式** ⇒ 默认外观一位未动（5 张 Linux
+    //     golden 基准不重录，见 main.rs 的 HD-56 说明）；
+    //   * 其余主题改读 `Tokens.*` 的同名角色令牌 —— 它们都是
+    //     `ThemeState.theme` 的多选一表达式 ⇒ 自绘调色板真正流到窗口绘制。
+    // ⛔ 不新增十六进制字面量：所有颜色仍以 `Tokens` 为唯一事实源。
+    out property <color> bg-canvas:
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #11141a :
+            persona == PersonaMode.LogicPro    ? #0e1117 :
+            persona == PersonaMode.CubasePro   ? #0b0d13 : #090b10
+        ) : Tokens.bg-void;
+
+    out property <color> bg-panel:
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #161922 :
+            persona == PersonaMode.LogicPro    ? #131620 :
+            persona == PersonaMode.CubasePro   ? #10131a : #0e1118
+        ) : Tokens.bg-shell;
+
+    out property <color> bg-surface:
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #1c212c :
+            persona == PersonaMode.LogicPro    ? #191e28 :
+            persona == PersonaMode.CubasePro   ? #151922 : #141822
+        ) : Tokens.bg-panel;
+
+    out property <color> border-subtle:
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #202532 :
+            persona == PersonaMode.LogicPro    ? #1c212c :
+            persona == PersonaMode.CubasePro   ? #181d26 : #191f2c
+        ) : Tokens.line;
+
+    // 低饱和度护眼沉浸主色 (避免刺眼眩光，专业录音室级低反差)
+    out property <color> accent:
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #a66046 :
+            persona == PersonaMode.LogicPro    ? #436f9e :
+            persona == PersonaMode.CubasePro   ? #38889e : #387691
+        ) : Tokens.accent;
+
+    out property <color> accent-glow: accent.with-alpha(0.08);
+
+    out property <length> radius:
+        persona == PersonaMode.AbletonLive ? 3px :
+        persona == PersonaMode.LogicPro    ? 5px :
+        persona == PersonaMode.CubasePro   ? 3px : 4px;
+
+    out property <color> header-bg:
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #10141d :
+            persona == PersonaMode.LogicPro    ? #11141c :
+            persona == PersonaMode.CubasePro   ? #0d1016 : #0c0f16
+        ) : Tokens.bg-head;
+
+    // 演出激发模式下可将轨道头切换至右侧，默认布局保持在左侧黄金视线区
+    in-out property <bool> track-headers-on-right:
+        persona == PersonaMode.AbletonLive;
+
+    in-out property <string> active-tool: "pointer"; // "pointer" | "range" | "split" | "draw"
+    in-out property <string> active-dock-tab: "pianoroll";
+
+    // 全局无遮挡提示系统与开关 (Floating Tooltips System & Toggle)
+    in-out property <bool> show-tooltips: true;
+    in-out property <string> hover-tip: "";
+    in-out property <bool> has-hover-tip: false;
+    in-out property <length> hover-tip-x: 0px;
+    in-out property <length> hover-tip-y: 0px;
+    in-out property <length> hover-tip-target-h: 24px;
+}
+
+// Compact minimalist DAW tooltip pill component (Zero shadow, crisp border, WCAG AA compliant)
+// 挂接全局 Theme.show-tooltips 与 Theme.hover-tip，在悬停控件附近直接渲染紧凑浮动气泡，不占据整行空间
+export component TooltipBubble inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> is-visible: false;
+    in property <length> tip-offset-y: 22px;
+    in property <length> tip-offset-x: 0px;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+
+    changed is-visible => {
+        if (root.is-visible && root.text != "") {
+            Theme.hover-tip = root.text;
+            Theme.hover-tip-x = self.absolute-position.x + (self.width > 0px ? self.width / 2 : 14px) + root.tip-offset-x;
+            Theme.hover-tip-y = self.absolute-position.y;
+            Theme.hover-tip-target-h = self.height > 0px ? self.height : 24px;
+            Theme.has-hover-tip = true;
+        } else if (Theme.hover-tip == root.text && Theme.hover-tip-y == self.absolute-position.y) {
+            Theme.hover-tip = "";
+            Theme.has-hover-tip = false;
+        }
+    }
+
+    changed text => {
+        if (root.is-visible && root.text != "") {
+            Theme.hover-tip = root.text;
+            Theme.hover-tip-x = self.absolute-position.x + (self.width > 0px ? self.width / 2 : 14px) + root.tip-offset-x;
+            Theme.hover-tip-y = self.absolute-position.y;
+            Theme.hover-tip-target-h = self.height > 0px ? self.height : 24px;
+            Theme.has-hover-tip = true;
+        } else if (root.is-visible && root.text == "") {
+            if (Theme.hover-tip-y == self.absolute-position.y) {
+                Theme.hover-tip = "";
+                Theme.has-hover-tip = false;
+            }
+        }
+    }
+}

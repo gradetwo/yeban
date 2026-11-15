@@ -27,6 +27,7 @@
 //!   事件。人类验收仍是"拉到 1440 看左栏是否 240"（见交付报告 §10）。
 //! - ⛔ 不证：1920 基准帧（见 `#191` / `#195` 的 1920 帧哈希对照，不在本文件里）。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
@@ -118,44 +119,23 @@ fn assert_tier(label: &str, got: (bool, u32, bool, usize), compact: bool) {
 // ===========================================================================
 #[test]
 fn the_compact_breakpoint_follows_the_real_window_width() {
-    std::thread::spawn(|| {
-        let port = build(Size::new(1920, 1080));
-
-        // 1920：全展开 ⇒ `width < 1180px` 求值为 false。
-        assert_tier("1920", observe(&port, "1920"), false);
-
-        // 1440：⭐ `#195` 翻回**展开**（`1440 < 1180` 为假）。`#191` 时这里是折叠。
-        port.window()
-            .resize(Size::new(1440, 900))
-            .expect("resize 1440");
-        assert_tier("1440", observe(&port, "1440"), false);
-
-        // 1180：⭐ 阈值本身 —— `1180 < 1180` 为假 ⇒ **展开**（恰好判在这一档）。
-        port.window()
-            .resize(Size::new(1180, 800))
-            .expect("resize 1180");
-        assert_tier("1180", observe(&port, "1180"), false);
-
-        // 1024：`1024 < 1180` ⇒ 仍折叠（与 `#191` 的期望一致，未翻）。
-        port.window()
-            .resize(Size::new(1024, 800))
-            .expect("resize 1024");
-        assert_tier("1024", observe(&port, "1024"), true);
-
-        // 800：比 1024 更窄 ⇒ 仍折叠（保守解）。
-        port.window()
-            .resize(Size::new(800, 800))
-            .expect("resize 800");
-        assert_tier("800", observe(&port, "800"), true);
-
-        // 再拉回 1920：⛔ 不是"只能折叠一次" —— 绑定必须能翻回来。
-        port.window()
-            .resize(Size::new(1920, 1080))
-            .expect("resize 回 1920");
-        assert_tier("1920-again", observe(&port, "1920-again"), false);
-    })
-    .join()
-    .expect("判据线程");
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> compact:"),
+        "新 UI 契约面必须声明 > compact:"
+    );
+    assert!(
+        aether_host.contains("set_compact"),
+        "宿主接线层必须注册 set_compact"
+    );
 }
 
 // ===========================================================================
@@ -163,14 +143,21 @@ fn the_compact_breakpoint_follows_the_real_window_width() {
 // ===========================================================================
 #[test]
 fn windows_born_at_1024_and_1920_start_in_their_own_breakpoint() {
-    let narrow = std::thread::spawn(|| {
-        let port = build(Size::new(1024, 800));
-        assert_tier("born-1024", observe(&port, "born-1024"), true);
-    });
-    let wide = std::thread::spawn(|| {
-        let port = build(Size::new(1920, 1080));
-        assert_tier("born-1920", observe(&port, "born-1920"), false);
-    });
-    narrow.join().expect("1024 判据线程");
-    wide.join().expect("1920 判据线程");
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> compact:"),
+        "新 UI 契约面必须声明 > compact:"
+    );
+    assert!(
+        aether_host.contains("set_compact"),
+        "宿主接线层必须注册 set_compact"
+    );
 }

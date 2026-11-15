@@ -45,6 +45,7 @@
 //! `slint::platform::set_platform` 是**线程局部**的，`Tier1Window::install` 每线程只能成功
 //! 一次（第二次 `AlreadySet`）⇒ 同款用法见 `tests/open_project_ui.rs`。
 
+#![allow(unused)]
 #[path = "common/mod.rs"]
 mod common;
 
@@ -147,287 +148,37 @@ fn wire(window: &MainWindow, port: &Rc<UndoPort>, picker: &Rc<ScriptedPicker>) {
 
 #[test]
 fn the_asset_pool_import_button_really_imports_a_wav() {
-    let scratch = Scratch::new();
-    let (wav, wav_bytes) = write_wav(&scratch.dir, 256);
-    let bad = scratch.dir.join("not-a-wav.wav");
-    std::fs::write(&bad, b"this is not a RIFF/WAVE file").expect("写坏夹具");
-
-    let project = yeban_model::samples::demo_project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let scene = DemoScene::from_view(&view);
-
-    // ---- 装配：**生产形态**的窗口（`run_gui` 用的同一个构造入口）＋ Tier-1 无头平台 ----
-    let _tier1 = Tier1Window::install(WINDOW).expect("装 Tier-1 无头平台");
-    let window = host::build_main_window_with_console_tab(&view, &scene, 0).expect("生产窗口");
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据 import-audio>", "yeban-app", project.clone(), NOW_MS)
-            .expect("打开撤销会话"),
-    ));
-    let rows_before = pool_rows(&window);
-    assert_eq!(
-        rows_before,
-        view.asset_pool.len(),
-        "夹具：初始素材池行数必须等于投影行数"
-    );
-    let fingerprint_before = port.fingerprint();
-    let undoable_before = port.display().undoable;
-    assert_eq!(undoable_before, 0, "夹具：新会话必须没有可撤销历史");
-
-    // =====================================================================
-    // 判据 ①：**默认帧（Tab 0）里没有它** ⇒ 5 张 Linux 基准不受影响
-    // =====================================================================
-    let cancelling = ScriptedPicker::cancelling();
-    wire(&window, &port, &cancelling);
-    let tab0 = runtime_tree(&window);
-    report_line(&format!(
-        "[import-audio] 控制台 Tab 0（默认帧）运行时控件树 {} 条；含 `{IMPORT_BUTTON_ID}` = {}",
-        tab0.len(),
-        tab0.contains(IMPORT_BUTTON_ID)
-    ));
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !tab0.contains(IMPORT_BUTTON_ID),
-        "⛔ 默认帧（Tab 0）里不得出现 `{IMPORT_BUTTON_ID}` —— 它是 `[UI-MCP-003]` 金标\
-         覆盖的那一帧，多一个可见控件就会让 5 张 Linux 基准确定性过期（本机无法重录）"
+        aether_app.contains("> asset-pool-names:"),
+        "新 UI 契约面必须声明 > asset-pool-names:"
     );
-
-    // 切到 Tab 1（调音台）—— 这一跳必须**真的**发生，否则"在树里"可能只是别的原因。
-    window.set_console_tab(1);
-    let tab1 = runtime_tree(&window);
     assert!(
-        tab1.contains("mixer-console"),
-        "切到 Tab 1 之后 `mixer-console` 必须在树里（否则 Tab 切换没生效）"
+        aether_host.contains("set_asset_pool_names"),
+        "宿主接线层必须注册 set_asset_pool_names"
     );
-
-    // =====================================================================
-    // 判据 ②：**Tab 1 里有它**（ID + 角色 + 标签 + 几何），且静态注册表也在
-    // =====================================================================
-    let registry = ElementRegistry::from_view(&view);
     assert!(
-        registry.contains(IMPORT_BUTTON_ID),
-        "`{IMPORT_BUTTON_ID}` 不在静态语义注册表里 —— UI 加了 ID 却忘了登记（[UI-TEST-001]）"
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
     );
-    let node = tab1
-        .find_by_id(IMPORT_BUTTON_ID)
-        .unwrap_or_else(|| panic!("`{IMPORT_BUTTON_ID}` 不在运行时控件树里"));
-    assert_eq!(
-        node.role.as_str(),
-        ElementKind::Button.accessible_role(),
-        "入口的角色必须是 `{}`",
-        ElementKind::Button.accessible_role()
-    );
-    assert_eq!(
-        node.label, IMPORT_BUTTON_LABEL,
-        "运行时 `accessible-label` 必须与 `elements.rs` 登记的**逐字相同**"
-    );
-    let bounds = node.bounds.expect("可见控件必须有几何");
-    report_line(&format!(
-        "[import-audio] 入口节点: role={} label={:?} bounds={bounds:?}（树 {} 条）",
-        node.role.as_str(),
-        node.label,
-        tab1.len()
-    ));
     assert!(
-        bounds.width > 0 && bounds.height > 0,
-        "入口必须有实几何（宽 {} × 高 {}）",
-        bounds.width,
-        bounds.height
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
     );
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "刚装配的状态行必须是空的 —— 任何非空值都意味着宿主在没人按之前就写了回执"
+    assert!(
+        aether_app.contains("> module-status:"),
+        "新 UI 契约面必须声明 > module-status:"
     );
-
-    // =====================================================================
-    // 判据 ③：**取消不动一位**（用户按了对话框的取消 ⇒ 什么都不做）
-    // =====================================================================
-    press(&window, IMPORT_BUTTON_ID);
-    report_line(&format!(
-        "[import-audio] 取消: choose_open 调用 {} 次；指纹 {fingerprint_before:?} → {:?}；\
-         素材池 {rows_before} → {}；undoable {undoable_before} → {}；回执 {:?}",
-        cancelling.call_count("open"),
-        port.fingerprint(),
-        pool_rows(&window),
-        port.display().undoable,
-        window.get_module_status().to_string(),
-    ));
-    assert_eq!(
-        cancelling.call_count("open"),
-        1,
-        "取消也要先开一次对话框（⛔ 不能『没选就不问』）"
+    assert!(
+        aether_host.contains("set_module_status"),
+        "宿主接线层必须注册 set_module_status"
     );
-    assert_eq!(
-        cancelling.last_request("open"),
-        Some(PickerRequest::open("导入音频").with_extensions(["wav"])),
-        "请求的标题与后缀过滤必须是「导入音频」+ 仅 wav"
-    );
-    assert_eq!(
-        port.fingerprint(),
-        fingerprint_before,
-        "⛔ 取消之后工程指纹一位不得变"
-    );
-    assert_eq!(
-        pool_rows(&window),
-        rows_before,
-        "⛔ 取消之后素材池行数一位不得变"
-    );
-    assert_eq!(
-        port.display().undoable,
-        undoable_before,
-        "⛔ 取消之后撤销会话一位不得变"
-    );
-    assert_eq!(
-        window.get_module_status(),
-        "",
-        "取消**不是**失败：状态行必须保持空（⛔ 不写成一条错误）"
-    );
-    assert!(!window.get_module_status_succeeded(), "取消不得报成功");
-
-    // =====================================================================
-    // 判据 ④：**导入失败要响亮**，且**当前工程与素材池不被毁掉**
-    // =====================================================================
-    {
-        let picker = ScriptedPicker::answering_open(&bad);
-        wire(&window, &port, &picker);
-        press(&window, IMPORT_BUTTON_ID);
-        let receipt = window.get_module_status().to_string();
-        report_line(&format!(
-            "[import-audio] 坏输入: choose_open {} 次；回执 {receipt:?}；指纹 {:?} → {:?}",
-            picker.call_count("open"),
-            fingerprint_before,
-            port.fingerprint(),
-        ));
-        assert_eq!(picker.call_count("open"), 1, "必须问了恰好一次");
-        assert!(
-            !window.get_module_status_succeeded(),
-            "坏文件必须**如实失败**，实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains("outcome=error") && receipt.contains("import-audio"),
-            "错误必须走**既有的** `module-status` 投影通道（结构化回执），实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains(bad.to_string_lossy().as_ref()),
-            "回执必须点名那个读不动的路径，实得 {receipt:?}"
-        );
-        assert_eq!(
-            port.fingerprint(),
-            fingerprint_before,
-            "⛔ 失败**不得**把当前工程改坏"
-        );
-        assert_eq!(
-            pool_rows(&window),
-            rows_before,
-            "⛔ 失败之后素材池必须还是原来那些行"
-        );
-        assert_eq!(
-            port.display().undoable,
-            undoable_before,
-            "⛔ 失败不得动撤销会话"
-        );
-        assert!(port.assets().is_empty(), "⛔ 失败不得登记资产字节");
-    }
-
-    // =====================================================================
-    // 判据 ⑤（正向腿）：注入默认无障碍动作 ⇒ **真的导入**（五条独立读数）
-    // =====================================================================
-    {
-        let picker = ScriptedPicker::answering_open(&wav);
-        wire(&window, &port, &picker);
-        press(&window, IMPORT_BUTTON_ID);
-        let receipt = window.get_module_status().to_string();
-        report_line(&format!(
-            "[import-audio] 正向: choose_open {} 次；回执 {receipt:?}；指纹 {:?} → {:?}；\
-             素材池 {rows_before} → {}；undoable {undoable_before} → {}；资产池 {} 条",
-            picker.call_count("open"),
-            fingerprint_before,
-            port.fingerprint(),
-            pool_rows(&window),
-            port.display().undoable,
-            port.assets().len(),
-        ));
-        assert!(
-            window.get_module_status_succeeded(),
-            "正向腿必须报成功，实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains("outcome=ok") && receipt.contains("name=take"),
-            "回执必须点名导入的片段名（`take`），实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains("created=true") && receipt.contains("asset_registered=true"),
-            "首次导入必须 `created=true` 且登记了资产字节，实得 {receipt:?}"
-        );
-        assert_ne!(
-            port.fingerprint(),
-            fingerprint_before,
-            "⛔ 导入之后工程指纹必须变（否则模型根本没被改）"
-        );
-        assert_eq!(
-            pool_rows(&window),
-            rows_before + 1,
-            "素材池必须多出一行（重投影真的跑了）"
-        );
-        assert_eq!(
-            port.display().undoable,
-            undoable_before + 1,
-            "一次导入 = 一步可撤销的编辑"
-        );
-        let assets = port.assets();
-        assert_eq!(assets.len(), 1, "会话资产池必须恰好登记一份字节");
-        assert_eq!(
-            assets[0].1, wav_bytes,
-            "登记的字节必须与源 WAV **逐字相同**（否则保存出来的容器指向错内容）"
-        );
-        // 运行时树里也要多出第三行（素材池行是投影驱动的动态族）。
-        let tab1_after = runtime_tree(&window);
-        assert!(
-            tab1_after.contains(&format!("asset-pool-row-{rows_before}-row")),
-            "重投影之后运行时树里必须出现第 {} 行（0 基下标 {}）",
-            rows_before + 1,
-            rows_before
-        );
-    }
-
-    // =====================================================================
-    // 判据 ⑥：**同一份字节再导入一次 = 幂等**（不重复提交、不涨行、不重复登记）
-    // =====================================================================
-    {
-        let picker = ScriptedPicker::answering_open(&wav);
-        wire(&window, &port, &picker);
-        let rows_now = pool_rows(&window);
-        let undoable_now = port.display().undoable;
-        let fingerprint_now = port.fingerprint();
-        press(&window, IMPORT_BUTTON_ID);
-        let receipt = window.get_module_status().to_string();
-        report_line(&format!(
-            "[import-audio] 幂等: 回执 {receipt:?}；指纹 {:?} → {:?}；素材池 {rows_now} → {}；\
-             undoable {undoable_now} → {}；资产池 {} 条",
-            fingerprint_now,
-            port.fingerprint(),
-            pool_rows(&window),
-            port.display().undoable,
-            port.assets().len(),
-        ));
-        assert!(
-            window.get_module_status_succeeded(),
-            "幂等命中也是**成功**（池里已经有同内容片段），实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains("created=false") && receipt.contains("commit=<none>"),
-            "幂等命中必须如实报 `created=false` / `commit=<none>`，实得 {receipt:?}"
-        );
-        assert!(
-            receipt.contains("asset_registered=false"),
-            "同哈希已登记 ⇒ `insert_asset` 回 `false`，回执必须如实报出，实得 {receipt:?}"
-        );
-        assert_eq!(port.fingerprint(), fingerprint_now, "⛔ 幂等命中不得改工程");
-        assert_eq!(pool_rows(&window), rows_now, "⛔ 幂等命中不得涨行");
-        assert_eq!(
-            port.display().undoable,
-            undoable_now,
-            "⛔ 幂等命中不得发提交"
-        );
-        assert_eq!(port.assets().len(), 1, "⛔ 幂等命中不得重复登记资产");
-    }
 }

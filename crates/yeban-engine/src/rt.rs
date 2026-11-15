@@ -1935,8 +1935,17 @@ fn render_branch(
                     &mut share.track_scratch[..frames],
                 );
             }
+        } else if synth.has_active_live_voices(track) {
+            // 停住但存在实时试听音符（钢琴卷帘/键盘 `NoteOn`）：
+            // 按轨主音源渲染实时活跃声部，不触发时间轴调度音符、不推进时间轴游标。
+            synth.render_live_voices_with_sources(
+                track,
+                current.sfz_plan(&track).map(|plan| plan.prepared()),
+                &mut share.track_scratch[..frames],
+                cc,
+            );
         } else {
-            // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
+            // 停住且无实时试听声部：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
             share.track_scratch[..frames].fill(0.0);
         }
         // --- 3a⁰) 参数目标表的**逐轨增益乘子**：逐样本 ---
@@ -4552,7 +4561,11 @@ impl EngineRuntime {
         // [`SynthEngine::realign_cursors`]）—— ⛔ 不在这里重建游标：游标表的
         // 迭代需要快照里的调度表，而那是下一步才借得到的。
         let mut seeked = false;
-        events.drain_with(scratch_events, |event| {
+        let mut event_idx = 0usize;
+        let mut post_seek_start = 0usize;
+        let drained = events.drain_with(scratch_events, |event| {
+            let current_idx = event_idx;
+            event_idx += 1;
             if !event.is_idle() {
                 applied += 1;
             }
@@ -4669,6 +4682,7 @@ impl EngineRuntime {
                 && let TransportEffect::Seeked { frames, .. } = transport.apply(command)
             {
                 synth.seek(frames);
+                post_seek_start = current_idx + 1;
                 // ⭐ `#231`：记下"本量子定位过"。游标的实际搬回在快照借出之后
                 // （见下面 `synth.realign_cursors(...)` 的调用点）。
                 seeked = true;
@@ -4677,23 +4691,8 @@ impl EngineRuntime {
                 // 为 0 = 还没有任何快照被武装 ⇒ `resync` 不发明栅格）。
                 metronome.resync(transport.position_ticks(), *armed_metronome_ticks_per_beat);
             }
-            // ⭐ 环音符事件：⭐ `NoteOn` ⇒ 推活音符；⭐ `NoteOff` ⇒ 松它。
-            // ⚠ ⭐ 计数与 `events_applied` **分开**：⭐ `events_applied` 只数"⭐ 事件到了"，
-            // ⭐ 这两个数"⭐ 窃取了"与"⭐ 松键没找到"（⭐ 判据⛔ 不许拿它们单独举证发声）。
-            if let EngineEvent::NoteOn {
-                track,
-                pitch,
-                velocity,
-            } = event
-                && synth.note_on(track, pitch, velocity)
-            {
-                *note_steals = note_steals.wrapping_add(1);
-            }
-            if let EngineEvent::NoteOff { track, pitch } = event
-                && !synth.note_off(track, pitch)
-            {
-                *orphan_note_offs = orphan_note_offs.wrapping_add(1);
-            }
+            // ⭐ 环音符事件延迟到步骤 2 快照武装之后统一按真实音源（鼓机 ＞ SFZ ＞ 复音）派发，
+            // 同时跳过发生在最后一次 `SeekTicks` 之前的已作废音符。
             // ⭐ **MIDI CC**（任务单 `#107`）：把值推进**会话运行态表**。
             // 它只写两个整数（一次表写 ＋ 一次位或）⇒ 零分配、零锁、零 I/O
             // [MUST-GATE-001]。表本身是 [`EngineRuntime`] 的一个定长字段
@@ -5306,6 +5305,44 @@ impl EngineRuntime {
             }
 
             let running = transport.is_playing();
+            // --- 2c) 实时环音符按真实音源与当前 CC 状态派发（鼓机 ＞ SFZ ＞ 复音） ---
+            {
+                let cc_ref: &ControlChangeState = &*control_change;
+                let cc_probe = |controller: u8| cc_ref.value(controller);
+                let cc: Option<&dyn Fn(u8) -> u8> = if cc_ref.is_armed() {
+                    Some(&cc_probe)
+                } else {
+                    None
+                };
+                for &event in &scratch_events[post_seek_start..drained] {
+                    if let EngineEvent::NoteOn {
+                        track,
+                        pitch,
+                        velocity,
+                    } = event
+                        && synth.note_on_with_sources(
+                            track,
+                            pitch,
+                            velocity,
+                            current.sfz_plan(&track).map(|plan| plan.prepared()),
+                            cc,
+                            running,
+                        )
+                    {
+                        *note_steals = note_steals.wrapping_add(1);
+                    }
+                    if let EngineEvent::NoteOff { track, pitch } = event
+                        && !synth.note_off_with_sources(
+                            track,
+                            pitch,
+                            current.sfz_plan(&track).map(|plan| plan.prepared()),
+                            running,
+                        )
+                    {
+                        *orphan_note_offs = orphan_note_offs.wrapping_add(1);
+                    }
+                }
+            }
             // ⭐ 本量子第一帧的**绝对帧**（走带推进之前读；任务单 `#135`）。
             // 音频摆放的区间是绝对帧 ⇒ 逐轨混合只需要这一个读数，⛔ 不需要任何游标。
             // 停住时 `running == false` ⇒ 该路径整段跳过，本读数不参与任何样本。
@@ -5582,6 +5619,23 @@ impl EngineRuntime {
                 rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
             }
         } else {
+            let running = transport.is_playing();
+            for &event in &scratch_events[post_seek_start..drained] {
+                if let EngineEvent::NoteOn {
+                    track,
+                    pitch,
+                    velocity,
+                } = event
+                    && synth.note_on_with_sources(track, pitch, velocity, None, None, running)
+                {
+                    *note_steals = note_steals.wrapping_add(1);
+                }
+                if let EngineEvent::NoteOff { track, pitch } = event
+                    && !synth.note_off_with_sources(track, pitch, None, running)
+                {
+                    *orphan_note_offs = orphan_note_offs.wrapping_add(1);
+                }
+            }
             // 极端情况（写者尚未发布任何快照）：输出静音但绝不 panic。
             block.silence();
             block.set_frames(frames);
@@ -7873,6 +7927,61 @@ mod tests {
             rig.runtime.stats().orphan_note_offs,
             0,
             "⭐ 这条 `NoteOff` 必须找到声部（⛔ 不是孤儿）"
+        );
+    }
+
+    #[test]
+    fn stopped_engine_plays_live_notes_and_returns_to_silence_after_note_off() {
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut rig = rig_with_snapshot(snapshot);
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::Transport {
+                command: crate::ring::TransportCommand::Stop,
+            }]),
+            1
+        );
+        let mut idle = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut idle, 2);
+        assert_eq!(idle.len(), DEFAULT_BLOCK_FRAMES * 2);
+        assert!(idle.iter().all(|v| *v == 0.0), "停止态无试听应精确全零");
+
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 60,
+                velocity: 112,
+            }]),
+            1
+        );
+        let mut sounding = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        let mut live_peak = 0.0f32;
+        for _ in 0..8 {
+            rig.runtime.process_quantum(&mut sounding, 2);
+            live_peak = live_peak.max(sounding.iter().fold(0.0f32, |a, v| a.max(v.abs())));
+        }
+        assert!(
+            live_peak > 0.01,
+            "停止态通过实时 NoteOn 试听琴键/音符必须发出可听电平（实测 live_peak={live_peak}）"
+        );
+
+        assert_eq!(
+            rig.sender
+                .publish(&[EngineEvent::NoteOff { track, pitch: 60 }]),
+            1
+        );
+        let mut tail = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..256 {
+            rig.runtime.process_quantum(&mut tail, 2);
+        }
+        let tail_rms = (tail
+            .iter()
+            .map(|v| f64::from(*v) * f64::from(*v))
+            .sum::<f64>()
+            / tail.len() as f64)
+            .sqrt();
+        assert!(
+            tail_rms < 1.0e-3,
+            "停止态试听松键后必须完整衰减至静音（RMS={tail_rms}）"
         );
     }
 

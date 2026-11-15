@@ -1150,7 +1150,7 @@ impl ElementRegistry {
             "mixer-console",
             ElementKind::Region,
             "console/mixer_console.slint",
-            "多轨调音台总控",
+            "混音控制台",
             false,
         );
         for (track_index, track) in view.tracks.iter().enumerate() {
@@ -1373,7 +1373,7 @@ impl ElementRegistry {
             "device-rack",
             ElementKind::Region,
             "console/device_rack.slint",
-            "设备效果链",
+            "设备机架",
             false,
         );
         registry.add(
@@ -2813,7 +2813,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 19] = [
+    const SLINT_MANIFEST: [&str; 26] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2842,6 +2842,14 @@ mod tests {
         "dialogs/macro_panel.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
+        // 桌面 UI 重构组件清单
+        "arrangement.slint",
+        "clip_matrix.slint",
+        "control_room.slint",
+        "left_panel.slint",
+        "lower_dock.slint",
+        "modals.slint",
+        "transport_bar.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {
@@ -3749,9 +3757,14 @@ mod tests {
             );
         }
         // 反向：每一个**注入面**属性都必须被某个 setter 写过（`track-` / `master-` 两族）。
+        // ⭐ 重构 UI(Aether) 的具名例外：`track-headers-width` 是 .slint 里 splitter
+        // 拖拽两向绑定的视图态（不进 .yeban、不进撤销栈），由组件树自己写 ⇒ 不是
+        // host 注入面。⛔ 只放这一个名字，不用通配前缀把整族放过去。
+        const AETHER_VIEW_STATE_EXCEPTIONS: &[&str] = &["track-headers-width"];
         for name in declared
             .iter()
             .filter(|name| name.starts_with("track-") || name.starts_with("master-"))
+            .filter(|name| !AETHER_VIEW_STATE_EXCEPTIONS.contains(&name.as_str()))
         {
             assert!(
                 setters.contains(name),

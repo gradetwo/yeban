@@ -1,0 +1,359 @@
+import { Theme, TrackData, Tokens, TooltipBubble } from "tokens.slint";
+
+export component HybridClipMatrixDrawer inherits Rectangle {
+    in-out property <[TrackData]> tracks;
+    in-out property <int> selected-track-id: 1;
+    in-out property <length> panel-width: 220px;
+
+    callback trigger-scene(int);
+    callback trigger-clip(int, int);
+    callback select-track(int);
+    callback execute-action(string);
+
+    width: root.panel-width;
+    background: Theme.bg-panel;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Top Header Row with Scene Launchers
+        Rectangle {
+            height: 54px;
+            background: #080a10;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 6px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 5px;
+                alignment: center;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Clip 激发矩阵";
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: Theme.track-drum;
+                        vertical-alignment: center;
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Rectangle {
+                            height: 18px;
+                            border-radius: 3px;
+                            background: cm_add_t.has-hover ? Theme.accent.with-alpha(0.25) : #10141d;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 6px;
+                                Text { text: "+ 轨道"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #e2e8f0; vertical-alignment: center; }
+                            }
+                            cm_add_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.execute-action("track-add-midi"); }
+                            }
+                        }
+                        Rectangle {
+                            height: 18px;
+                            border-radius: 3px;
+                            background: cm_stop_t.has-hover ? #ef444433 : #10141d;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 6px;
+                                Text { text: "停止"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #fca5a5; vertical-alignment: center; }
+                            }
+                            cm_stop_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.execute-action("transport-stop"); }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 22px;
+                        background: s1_touch.has-hover ? #182030 : #10141d;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: s1_touch.has-hover ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: "▶ S1";
+                            font-family: Tokens.font-mono;
+                            font-size: 10px;
+                            font-weight: 400;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        s1_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.trigger-scene(0); }
+                        }
+                        TooltipBubble {
+                            text: "激发场景 1 (Scene 1) 切片组合";
+                            is-visible: s1_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 22px;
+                        background: s2_touch.has-hover ? #182030 : #10141d;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: s2_touch.has-hover ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: "▶ S2";
+                            font-family: Tokens.font-mono;
+                            font-size: 10px;
+                            font-weight: 400;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        s2_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.trigger-scene(1); }
+                        }
+                        TooltipBubble {
+                            text: "激发场景 2 (Scene 2) 切片组合";
+                            is-visible: s2_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 22px;
+                        background: s3_touch.has-hover ? #182030 : #10141d;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: s3_touch.has-hover ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: "▶ S3";
+                            font-family: Tokens.font-mono;
+                            font-size: 10px;
+                            font-weight: 400;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        s3_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.trigger-scene(2); }
+                        }
+                        TooltipBubble {
+                            text: "激发场景 3 (Scene 3) 切片组合";
+                            is-visible: s3_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 22px;
+                        background: s4_touch.has-hover ? #182030 : #10141d;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: s4_touch.has-hover ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: "▶ S4";
+                            font-family: Tokens.font-mono;
+                            font-size: 10px;
+                            font-weight: 400;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        s4_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.trigger-scene(3); }
+                        }
+                        TooltipBubble {
+                            text: "激发场景 4 (Scene 4) 切片组合";
+                            is-visible: s4_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Track Clip Rows (aligned 1:1 with tracks, flex row height)
+        VerticalLayout {
+            spacing: 0px;
+            vertical-stretch: 1;
+
+            for trk in root.tracks : Rectangle {
+                vertical-stretch: 1;
+                min-height: 64px;
+                max-height: 160px;
+                background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.06) : transparent;
+                border-color: #ffffff0a;
+
+                HorizontalLayout {
+                    padding: 5px;
+                    spacing: 4px;
+
+                    // Clip 1
+                    Rectangle {
+                        background: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip1_touch.has-hover ? #00000045 : #00000025);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip1 != "" ? ("▶ " + trk.clip1) : "+";
+                                font-family: trk.clip1 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip1 != "" ? 10px : 11px;
+                                font-weight: trk.clip1 != "" ? 600 : 400;
+                                color: trk.clip1 != "" ? #f8fafc : #94a3b8;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        clip1_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 0);
+                            }
+                        }
+                        TooltipBubble {
+                            text: trk.clip1 != "" ? ("激发片段: " + trk.clip1) : "创建空白片段";
+                            is-visible: clip1_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+
+                    // Clip 2
+                    Rectangle {
+                        background: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip2_touch.has-hover ? #00000045 : #00000025);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip2 != "" ? ("▶ " + trk.clip2) : "+";
+                                font-family: trk.clip2 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip2 != "" ? 10px : 11px;
+                                font-weight: trk.clip2 != "" ? 600 : 400;
+                                color: trk.clip2 != "" ? #f8fafc : #94a3b8;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        clip2_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 1);
+                            }
+                        }
+                        TooltipBubble {
+                            text: trk.clip2 != "" ? ("激发片段: " + trk.clip2) : "创建空白片段";
+                            is-visible: clip2_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+
+                    // Clip 3
+                    Rectangle {
+                        background: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip3_touch.has-hover ? #00000045 : #00000025);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip3 != "" ? ("▶ " + trk.clip3) : "+";
+                                font-family: trk.clip3 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip3 != "" ? 10px : 11px;
+                                font-weight: trk.clip3 != "" ? 600 : 400;
+                                color: trk.clip3 != "" ? #f8fafc : #94a3b8;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        clip3_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 2);
+                            }
+                        }
+                        TooltipBubble {
+                            text: trk.clip3 != "" ? ("激发片段: " + trk.clip3) : "创建空白片段";
+                            is-visible: clip3_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+
+                    // Clip 4
+                    Rectangle {
+                        background: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip4_touch.has-hover ? #00000045 : #00000025);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            alignment: center;
+                            Text {
+                                text: trk.clip4 != "" ? ("▶ " + trk.clip4) : "+";
+                                font-family: trk.clip4 != "" ? Tokens.font-ui : Tokens.font-mono;
+                                font-size: trk.clip4 != "" ? 10px : 11px;
+                                font-weight: trk.clip4 != "" ? 600 : 400;
+                                color: trk.clip4 != "" ? #f8fafc : #94a3b8;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        clip4_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.select-track(trk.id);
+                                root.trigger-clip(trk.id, 3);
+                            }
+                        }
+                        TooltipBubble {
+                            text: trk.clip4 != "" ? ("激发片段: " + trk.clip4) : "创建空白片段";
+                            is-visible: clip4_touch.has-hover;
+                            tip-offset-y: 24px;
+                        }
+                    }
+                }
+            }
+
+            // Bottom empty placeholder row (matches arrangement empty lane 1:1)
+            Rectangle {
+                vertical-stretch: 0;
+                height: 38px;
+                background: transparent;
+            }
+        }
+    }
+}

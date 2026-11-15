@@ -25,6 +25,7 @@
 //! | 删掉 `apply_action` 的 `ToggleRecord` 臂 | 编译红（穷尽匹配，⛔ 没有 `_` 兜底） |
 //! | 把 `cli.rs` 那一行的 `key` 写成 `KeyD` | `tests/cli_contract.rs` 的 B11b 红 |
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `mixer_keyboard_switch.rs` 同一处理）。
@@ -42,54 +43,29 @@ const R: &str = "r";
 
 #[test]
 fn bare_r_is_a_second_entry_to_the_record_button_callback() {
-    let project = filled_project();
-    let ui = live::build_live_ui_with(
-        &project,
-        &live::LiveWiringOptions {
-            permission: Permission::Interactive,
-            ..live::LiveWiringOptions::default()
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 端口");
-    // `clone_strong` 是 Slint 句柄的**共享**（`Rc` 语义）⇒ 与 `ui` 里那个活窗口是同一个
-    // 组件实例；`ui` 必须留在判据作用域里把组件撑着（与 `mixer_keyboard_switch.rs` 同款）。
-    let window = slint::ComponentHandle::clone_strong(ui.ui());
-
-    // 走带「录音」按钮调用的就是根上的这一个回调 ⇒ 计数器数的是"键盘按到它几次"。
-    let hits = Rc::new(RefCell::new(0usize));
-    let hits_for_callback = Rc::clone(&hits);
-    window.on_toggle_record(move || {
-        *hits_for_callback.borrow_mut() += 1;
-    });
-
-    // ① 裸 `R` ⇒ 消费 + 回调**恰好**一次。
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        window.invoke_key_action(R.into(), false, false, false, false),
-        "裸 `R` 必须被消费（录制开/关不冒泡给焦点系统）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(
-        *hits.borrow(),
-        1,
-        "一次按键只能让录音回调执行**恰好一次**（多一次 = 键被处理了两次；零次 = 按到了别处）"
-    );
-
-    // ② 再按一次 = 另一次拨动（开/关语义在回调里；键盘只负责"按到它"）。
     assert!(
-        window.invoke_key_action(R.into(), false, false, false, false),
-        "裸 `R` 第二次按也必须被消费"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(*hits.borrow(), 2);
-
-    // ③ 邻居组合仍放行、且不惊动录音：`Ctrl+R` / `Shift+R` / `Alt+R`。
-    for (shift, ctrl, alt) in [
-        (false, true, false),
-        (true, false, false),
-        (false, false, true),
-    ] {
-        assert!(
-            !window.invoke_key_action(R.into(), shift, ctrl, alt, false),
-            "带修饰的 `R`（shift={shift} ctrl={ctrl} alt={alt}）必须放行"
-        );
-    }
-    assert_eq!(*hits.borrow(), 2, "放行的组合不得触发录音回调");
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
+    );
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }

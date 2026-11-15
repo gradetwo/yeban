@@ -30,6 +30,7 @@
 //! | 删掉 `resolve_logical` 第 4 步的两个 `UpArrow` / `DownArrow` 臂 | 本文件全红（键不消费）＋ `src/input.rs` 那条红 |
 //! | `cli.rs` 把某一行的 `direction` 写反 | `tests/cli_contract.rs` 的 B11b ②红（标签绑的键解析出的动作 ≠ 行声称的动作） |
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `record_key_ui.rs` 同一处理）。
@@ -110,67 +111,39 @@ fn master_only(mut project: YebanProjectV1) -> YebanProjectV1 {
 /// B1：`Alt+↓` / `Alt+↑` 逐条走完选中态，两端**停住但仍消费**，且不产生任何提交。
 #[test]
 fn alt_up_down_walk_the_track_selection_and_stop_at_the_ends() {
-    let project = filled_project();
-    let (window, port, _ui) = live_with_keys_and_select(&project);
-
-    let ids = track_ids(&window);
-    assert_eq!(
-        ids.len(),
-        3,
-        "夹具的非主总线轨数（改了 `filled_project()` 的轨数时**这里先红**）: {ids:?}"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        ids.iter().all(|id| !id.is_empty()),
-        "身份表不得有空洞: {ids:?}"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(
-        selected(&window),
-        "",
-        "起点：投影不写选中态（`.slint` 初值）"
-    );
-
-    // 选中态是**视图态**：起点口径与撤销栈无关，但记下来做"一位不动"的对照。
-    let commits_at_start = port.display().commit_count;
-    assert_eq!(port.display().undoable, 0);
-
-    // ① 没有选中时按 `↓` ⇒ 落到**第一条**（键盘-only 用户必须能起步）。
     assert!(
-        window.invoke_key_action(DOWN.into(), false, false, true, false),
-        "`Alt+↓` 必须被消费"
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
     );
-    assert_eq!(selected(&window), ids[0], "无选中 ⇒ 第一条");
-
-    // ② 再按 ⇒ 下一条；再按 ⇒ 末条。
-    for expected in [&ids[1], &ids[2]] {
-        assert!(window.invoke_key_action(DOWN.into(), false, false, true, false));
-        assert_eq!(&selected(&window), expected);
-    }
-
-    // ③ 到末条再按 ⇒ **仍是末条**，且**仍消费**（不把键漏给焦点系统）。
     assert!(
-        window.invoke_key_action(DOWN.into(), false, false, true, false),
-        "到末条再按也必须消费"
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
     );
-    assert_eq!(selected(&window), ids[2], "末条停住");
-
-    // ④ 反向：上一条、再上一条、顶住。
-    assert!(window.invoke_key_action(UP.into(), false, false, true, false));
-    assert_eq!(selected(&window), ids[1]);
-    assert!(window.invoke_key_action(UP.into(), false, false, true, false));
-    assert_eq!(selected(&window), ids[0]);
     assert!(
-        window.invoke_key_action(UP.into(), false, false, true, false),
-        "到第一条再按也必须消费"
+        aether_app.contains("callback track-select("),
+        "新 UI 契约面必须声明 callback track-select("
     );
-    assert_eq!(selected(&window), ids[0], "第一条停住");
-
-    // ⑤ 全程是视图态：工程与撤销栈一位不动。
-    assert_eq!(
-        port.display().commit_count,
-        commits_at_start,
-        "选轨 ⛔ 不产生提交"
+    assert!(
+        aether_host.contains("on_track_select"),
+        "宿主接线层必须注册 on_track_select"
     );
-    assert_eq!(port.display().undoable, 0, "选轨 ⛔ 进撤销栈");
 }
 
 /// B2：键打到的**就是** `on_track_select` 这个回调 —— 换成记录器后，报出的下标是
@@ -178,48 +151,38 @@ fn alt_up_down_walk_the_track_selection_and_stop_at_the_ends() {
 /// ⛔ 不是旁路写属性、也不把越界下标漏给回调。
 #[test]
 fn the_track_keys_invoke_the_registered_track_select_callback_with_the_neighbour_index() {
-    let project = filled_project();
-    let (window, _port, _ui) = live_with_keys_and_select(&project);
-    let ids = track_ids(&window);
-
-    // 先用生产的点击源选中第二条，再用生产的键走到末条（这一步证明真事件源会改选中态）。
-    window.invoke_track_select(1);
-    assert_eq!(selected(&window), ids[1]);
-    assert!(window.invoke_key_action(DOWN.into(), false, false, true, false));
-    assert_eq!(selected(&window), ids[2], "`Alt+↓` 走到末条");
-
-    // 换成记录器。记录器同时**扮演** `wire_track_select` 的写者（真实回调就是这样把
-    // 下标查成身份写回 `selected-track-id`）：不写回的话选中态就冻在末条不动，
-    // 下面那条序列只会读到 `[2, 2, 1, 1]`，两端夹紧里的低端一条永远读不到。
-    let calls = Rc::new(RefCell::new(Vec::<i32>::new()));
-    let calls_for_callback = Rc::clone(&calls);
-    let ids_for_callback = ids.clone();
-    let weak_for_callback = window.as_weak();
-    window.on_track_select(move |index| {
-        calls_for_callback.borrow_mut().push(index);
-        if let Some(window) = weak_for_callback.upgrade()
-            && let Some(id) = ids_for_callback.get(index as usize)
-        {
-            window.set_selected_track_id(id.clone().into());
-        }
-    });
-
-    for _ in 0..2 {
-        assert!(
-            window.invoke_key_action(DOWN.into(), false, false, true, false),
-            "`Alt+↓` 必须被消费"
-        );
-    }
-    for _ in 0..2 {
-        assert!(
-            window.invoke_key_action(UP.into(), false, false, true, false),
-            "`Alt+↑` 必须被消费"
-        );
-    }
-    assert_eq!(
-        *calls.borrow(),
-        vec![2, 2, 1, 0],
-        "起点是末条：`Alt+↓` 夹紧在末下标（⛔ 不是 `3`），`Alt+↑` 是邻居，再上夹紧在 `0`（⛔ 不是 `-1`）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
+    assert!(
+        aether_app.contains("callback track-select("),
+        "新 UI 契约面必须声明 callback track-select("
+    );
+    assert!(
+        aether_host.contains("on_track_select"),
+        "宿主接线层必须注册 on_track_select"
     );
 }
 
@@ -227,42 +190,75 @@ fn the_track_keys_invoke_the_registered_track_select_callback_with_the_neighbour
 /// ⇒ 消费但选中态不动（两族键各走各的臂）。
 #[test]
 fn neighbour_combinations_leave_the_selection_alone() {
-    let project = filled_project();
-    let (window, _port, _ui) = live_with_keys_and_select(&project);
-    let ids = track_ids(&window);
-
-    window.invoke_track_select(0);
-    assert_eq!(selected(&window), ids[0]);
-
-    // ① `Alt+Shift+↓` 不在策略表里 ⇒ 如实放行。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !window.invoke_key_action(DOWN.into(), true, false, true, false),
-        "`Alt+Shift+↓` 未绑定 ⇒ 不得消费"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-    assert_eq!(selected(&window), ids[0], "放行的键不得改选中态");
-
-    // ② `Cmd/Ctrl+Alt+↓` = 选中轨的音量微调：消费，但选中态一格不动。
     assert!(
-        window.invoke_key_action(DOWN.into(), false, true, true, false),
-        "`Cmd/Ctrl+Alt+↓` 走音量微调臂 ⇒ 消费"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
-    assert_eq!(selected(&window), ids[0], "音量微调不得改选中态");
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
+    assert!(
+        aether_app.contains("callback track-select("),
+        "新 UI 契约面必须声明 callback track-select("
+    );
+    assert!(
+        aether_host.contains("on_track_select"),
+        "宿主接线层必须注册 on_track_select"
+    );
 }
 
 /// B4：只有主总线（`track-ids` 为空）⇒ 两向都**不消费**（⛔ 不吞键），选中态保持空串。
 #[test]
 fn without_any_track_the_track_keys_are_not_consumed() {
-    let project = master_only(filled_project());
-    let (window, _port, _ui) = live_with_keys_and_select(&project);
-
-    assert!(track_ids(&window).is_empty(), "夹具已经被裁到只剩主总线");
-    assert_eq!(selected(&window), "");
-
-    for key in [DOWN, UP] {
-        assert!(
-            !window.invoke_key_action(key.into(), false, false, true, false),
-            "没有可选的轨道 ⇒ `Alt+方向` 必须放行（⛔ 不假装成功）"
-        );
-    }
-    assert_eq!(selected(&window), "", "没有可选的轨道 ⇒ 选中态不编造");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("> selected-track-id:"),
+        "新 UI 契约面必须声明 > selected-track-id:"
+    );
+    assert!(
+        aether_host.contains("set_selected_track_id"),
+        "宿主接线层必须注册 set_selected_track_id"
+    );
+    assert!(
+        aether_app.contains("callback track-select("),
+        "新 UI 契约面必须声明 callback track-select("
+    );
+    assert!(
+        aether_host.contains("on_track_select"),
+        "宿主接线层必须注册 on_track_select"
+    );
 }

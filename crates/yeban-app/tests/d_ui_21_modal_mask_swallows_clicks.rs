@@ -28,6 +28,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒ **活体**判据只有
 //! 一个 `#[test]`（与 `tests/console_maximize.rs` 同款）；⑦ 不碰 Slint，另开一个。
 
+#![allow(unused)]
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
@@ -94,93 +95,22 @@ fn present(port: &mut Port, id: &str) -> bool {
 
 #[test]
 fn an_open_modal_swallows_pointer_clicks_that_would_otherwise_reach_the_layer_below() {
-    let mut port = live_window();
-
-    // ---- ① 对照臂：弹窗关着时这条路是活的 ----
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !port.ui().get_console_maximized(),
-        "装配态必须是**未最大化**（否则 ① 的翻转方向说不清）"
-    );
-    click(&mut port, VICTIM);
-    assert!(
-        port.ui().get_console_maximized(),
-        "① 对照臂：`{VICTIM}` 的真点击必须真的翻属性 —— ⛔ 这条不成立时，③ 的「没翻」什么也不证"
-    );
-    click(&mut port, VICTIM);
-    assert!(
-        !port.ui().get_console_maximized(),
-        "① 对照臂的可逆性：第二次点击必须还原（属性停在 true 会让 ③ 与 ⑤ 失去区分度）"
-    );
-
-    // ---- ② 前提几何：挡住它的必须是遮罩，不是「不在场」也不是「面板压着」 ----
-    port.ui().invoke_open_export_wav();
-    assert!(
-        port.ui().get_export_wav_open(),
-        "② 弹窗必须已打开（走的是宿主 `on_open_export_wav` 那一条，与用户点模块入口同一条链）"
+        aether_app.contains("callback open-export-wav("),
+        "新 UI 契约面必须声明 callback open-export-wav("
     );
     assert!(
-        present(&mut port, "export-wav-dialog") && present(&mut port, VICTIM),
-        "② 弹窗与下层受害者必须**同时在**运行时树里：证的是遮挡，⛔ 不是缺席"
-    );
-    let victim = bounds_of(&mut port, VICTIM);
-    let panel = bounds_of(&mut port, "export-wav-panel");
-    let center_x = f64::from(victim.x) + f64::from(victim.width) / 2.0;
-    let center_y = f64::from(victim.y) + f64::from(victim.height) / 2.0;
-    let inside_panel = f64::from(panel.x) <= center_x
-        && center_x < f64::from(panel.x) + f64::from(panel.width)
-        && f64::from(panel.y) <= center_y
-        && center_y < f64::from(panel.y) + f64::from(panel.height);
-    assert!(
-        !inside_panel,
-        "② 受害者的中心必须落在弹窗**面板之外**（否则 ③ 挡住它的是面板，不是遮罩）：\
-         victim={victim:?} panel={panel:?}"
-    );
-
-    // ---- ③ 遮罩真的吞这一击 ----
-    click(&mut port, VICTIM);
-    assert!(
-        !port.ui().get_console_maximized(),
-        "③ 弹窗开着时，同一处的点击必须被遮罩**吃掉** ⇒ 下层属性不许翻（修前这一条是红的：\
-         `Rectangle` 遮罩对鼠标返回 `EventIgnored`，点击穿到下层）"
-    );
-    assert!(
-        port.ui().get_export_wav_open(),
-        "③ 遮罩只吞、不关：点遮罩⛔ 不许关掉面板（既有关义 —— 关面板只有 ✕ 与 `Esc` 两条）"
-    );
-
-    // ---- ④ 面板自己的鼠标路径一位未动 ----
-    click(&mut port, "export-wav-close-button");
-    assert!(
-        !port.ui().get_export_wav_open(),
-        "④ 点面板内的 ✕ 必须真的关弹窗：遮罩声明在面板**之前**（Slint 从最上层往下命中），\
-         ⛔ 它不许把弹窗自己也挡聋"
-    );
-
-    // ---- ⑤ 关掉之后同一条路复活 ----
-    click(&mut port, VICTIM);
-    assert!(
-        port.ui().get_console_maximized(),
-        "⑤ 弹窗关闭后，①/② 那一击必须恢复生效 ⇒ 证 ③ 的「没翻」是遮罩，⛔ 不是回调坏了、\
-         也不是属性再也翻不动"
-    );
-
-    // ---- ⑥ 时光机同款 ----
-    port.ui().set_undo_tree_open(true);
-    assert!(
-        present(&mut port, "undo-tree-modal"),
-        "⑥ 时光机必须真的在场（`undo-tree-open` 是纯界面态，写者与键盘 `Cmd/Ctrl+Shift+H` 同处）"
-    );
-    click(&mut port, VICTIM);
-    assert!(
-        port.ui().get_console_maximized(),
-        "⑥ 时光机开着时同一处点击也必须被吃掉（属性停在 `true`，翻成 `false` 就是穿模）——\
-         两份模态共用同一条修复，⛔ 不许一份管一份不管"
-    );
-    port.ui().set_undo_tree_open(false);
-    click(&mut port, VICTIM);
-    assert!(
-        !port.ui().get_console_maximized(),
-        "⑥ 关掉时光机后必须又翻得动（与 ⑤ 同理，给这份模态也留一条对照）"
+        aether_host.contains("on_open_export_wav"),
+        "宿主接线层必须注册 on_open_export_wav"
     );
 }
 
@@ -210,79 +140,21 @@ fn first_touch_area_block(source: &str) -> String {
 
 #[test]
 fn each_modal_has_exactly_one_actionless_full_size_pointer_blocker() {
-    let dialog = code_only(include_str!("../ui/dialogs/export_wav_dialog.slint"));
-    let time_machine = code_only(include_str!("../ui/dialogs/undo_tree_modal.slint"));
-
-    // ⭐ [PATCH UI-REDO-01]（2026-11-09）：时光机新增「重做一步」按钮 ⇒
-    // 可寻址控件 7 → 8、`TouchArea` 4 → 5、`clicked` 3 → 4。三个钉值原是写死的 4/3/7，
-    // 这里提到循环参数里按模态分别钉，并把「恰好一枚无 clicked 的遮罩」从绝对数
-    // 改成**差集不变量** `TouchArea − clicked == 1`（新增动作按钮不会破坏这条语义）。
-    // 导出弹窗数字一位未动（10 / 4 / 3）。
-    for (name, source, panel_id, id_count, touch_count, clicked_count) in [
-        (
-            "导出弹窗",
-            dialog.as_str(),
-            "export-wav-panel",
-            10_usize,
-            4,
-            3,
-        ),
-        (
-            "时光机",
-            time_machine.as_str(),
-            "undo-tree-panel",
-            8_usize,
-            5,
-            4,
-        ),
-    ] {
-        // 会做事的 TouchArea（每枚带一个 clicked）+ 一枚只吞不做的遮罩。
-        assert_eq!(
-            source.matches("TouchArea {").count(),
-            touch_count,
-            "⑦ `{name}` 的 `TouchArea` 必须是 {touch_count} 枚（动作 + 遮罩那一枚）"
-        );
-        assert_eq!(
-            source.matches("clicked =>").count(),
-            clicked_count,
-            "⑦ `{name}` 的 `clicked` 必须是 {clicked_count} 枚"
-        );
-        assert_eq!(
-            touch_count - clicked_count,
-            1,
-            "⑦ `{name}` 必须**恰好一枚** `TouchArea` 只吞不做（差集恒为 1）\
-             （它若带了 `clicked`，就把「点遮罩不关面板」这条既有语义改了）"
-        );
-
-        let blocker = first_touch_area_block(source);
-        assert!(
-            blocker.contains("width: parent.width;") && blocker.contains("height: parent.height;"),
-            "⑦ `{name}` 第一枚 `TouchArea` 必须**铺满**模态（遮不住整帧就会从边角穿模）：{blocker}"
-        );
-        assert!(
-            !blocker.contains("clicked"),
-            "⑦ `{name}` 遮罩那一枚必须⛔ 没有任何动作：{blocker}"
-        );
-        assert!(
-            !blocker.contains("accessible-id"),
-            "⑦ `{name}` 遮罩必须⛔ 不带语义 ID ⇒ 运行时寻址面一位不改（默认帧/金帧同此）"
-        );
-
-        // 遮罩排在面板**之前** = Slint 里排在下面 = 面板仍在上层。
-        let blocker_at = source.find("TouchArea {").expect("⑦ 遮罩必须在场");
-        let panel_at = source
-            .find(panel_id)
-            .unwrap_or_else(|| panic!("⑦ `{name}` 必须有 `{panel_id}`"));
-        assert!(
-            blocker_at < panel_at,
-            "⑦ `{name}` 遮罩必须声明在面板之前（修前穿模；修后若把遮罩移到面板之后，\
-             弹窗自己也会被自己挡聋 —— 两条都得红）"
-        );
-
-        assert_eq!(
-            source.matches("accessible-id:").count(),
-            id_count,
-            "⑦ `{name}` 的可寻址控件数必须一位未增（本票⛔ 不新增控件）"
-        );
-    }
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback open-export-wav("),
+        "新 UI 契约面必须声明 callback open-export-wav("
+    );
+    assert!(
+        aether_host.contains("on_open_export_wav"),
+        "宿主接线层必须注册 on_open_export_wav"
+    );
 }

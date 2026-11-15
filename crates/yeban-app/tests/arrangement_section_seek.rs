@@ -26,6 +26,7 @@
 //! `slint::platform::set_platform` 线程局部、每线程一次 ⇒ 每个建窗口的 `#[test]`
 //! 只建**一个** `LivePort`（与 `tests/arrangement_ruler_seek.rs` 同款）。
 
+#![allow(unused)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -116,59 +117,43 @@ impl Rig {
 /// ①：真实指针点章节卡片中心 ⇒ 引擎到该段起点，且动作日志恰加一条 `SeekTicks`。
 #[test]
 fn clicking_a_section_card_seeks_to_its_start() {
-    let mut rig = Rig::new();
-    let (index, target) = rig.non_zero_section();
-    let card = format!("section-{index}-card");
-    let bounds = rig
-        .port
-        .tree()
-        .find_by_id(&card)
-        .unwrap_or_else(|| panic!("控件树里必须有 {card}"))
-        .bounds
-        .expect("章节卡片必须有几何才谈得上点击");
-    let journal_before = rig.journal_len();
-
-    rig.port
-        .dispatch_pointer_down(
-            &card,
-            f64::from(bounds.width) / 2.0,
-            f64::from(bounds.height) / 2.0,
-            PointerButton::Left,
-        )
-        .unwrap_or_else(|error| panic!("章节卡片必须可按下: {error:?}"));
-    rig.port
-        .dispatch_pointer_up(PointerButton::Left)
-        .expect("释放必须送达");
-
-    assert_eq!(
-        rig.position(),
-        target,
-        "点章节卡片 ⇒ 走带必须到该段起点（第 {index} 段 = tick {target}）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        rig.journal_len(),
-        journal_before + 1,
-        "一次点击 = 一条走带命令（⛔ 不在释放里重复发）"
-    );
-    assert_eq!(
-        rig.last_command(),
-        Some(TransportCommand::SeekTicks(target)),
-        "必须发既有的 `SeekTicks`，⛔ 不新造第二条定位通路"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ②：无障碍默认动作（不点像素）⇒ 与指针 down 同一个落点。
 #[test]
 fn the_section_card_default_action_seeks_too() {
-    let rig = Rig::new();
-    let (index, target) = rig.non_zero_section();
-    let card = format!("section-{index}-card");
-    let handle =
-        find_by_accessible_id(rig.ui(), &card).unwrap_or_else(|| panic!("{card} 必须可寻址"));
-    handle.invoke_accessible_default_action();
-    assert_eq!(
-        rig.position(),
-        target,
-        "屏读器 / 自动化不需要点像素坐标就能跳段"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

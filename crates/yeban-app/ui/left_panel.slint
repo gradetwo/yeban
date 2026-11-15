@@ -1,0 +1,1294 @@
+import { Theme, BrowserItemData, Tokens, TooltipBubble } from "tokens.slint";
+
+export component ZoneBrowserAndInspector inherits Rectangle {
+    in-out property <string> active-tab: "inspector"; // "inspector" | "browser"
+    in-out property <int> selected-track-id: 3;
+    in-out property <color> selected-track-color: #387691;
+    in-out property <string> selected-track-name: "01. Lead Neuro Bass";
+    in-out property <string> selected-track-badge: "TRK 01 · SYNTH";
+    in-out property <string> selected-track-bus: "Bus 1 (Synth Grp)";
+    in-out property <string> selected-track-pan: "C";
+    in property <float> selected-track-pan-value: 0.0;
+    in-out property <float> selected-track-vol: -2.5;
+    in property <string> selected-track-vol-display: "";
+    in-out property <float> selected-track-peak: 0.65;
+    in-out property <[string]> selected-track-inserts: [];
+
+    in-out property <string> bus-name: "Bus 1 · Synth";
+    in-out property <float> bus-track-vol: -1.0;
+    in-out property <float> bus-pan-norm: 0.0;
+    in-out property <float> bus-track-peak: 0.55;
+    private property <bool> bus-dragging: false;
+    private property <length> bus-drag-start-y: 0px;
+    private property <float> bus-drag-start-db: -1.0;
+    private property <bool> bus-pan-dragging: false;
+    private property <length> bus-pan-start-x: 0px;
+    private property <float> bus-pan-start-norm: 0.0;
+    in-out property <[string]> bus-inserts: ["Tape Saturator", "Vintage Verb", "+ 添加总线效果"];
+    in-out property <bool> show-bus-strip: false; // 默认折叠总线通道条，收缩至专注单轨检查器
+
+    in-out property <string> search-query: "";
+    in-out property <string> active-tag: "all"; // all, Synth, Drums, DSP, MPE
+    in-out property <[BrowserItemData]> browser-items: [
+        { name: "Wavetable MPE Synth", desc: "双振荡器 3D 波表合成器", tag: "Synth", format: "Native DSP" },
+        { name: "Pro-QLinear 8", desc: "内联实时频谱零延迟动态 EQ", tag: "DSP", format: "Native DSP" },
+        { name: "Granulator IV Cloud", desc: "支持 MPE 弯音的粒子采样器", tag: "MPE", format: "Native DSP" },
+        { name: "Cyberpunk 124BPM Drum Kit", desc: "含 64 个多麦克风分层鼓组", tag: "Drums", format: "Sample Pack" },
+        { name: "VCA Glue Bus Compressor", desc: "模拟 SSL 4000G 总线粘合压缩", tag: "DSP", format: "CLAP / Native" },
+        { name: "Sub Bass 808 Glide Rack", desc: "带宏旋钮一键失真度映射", tag: "Synth", format: "Instrument Rack" }
+    ];
+
+    in-out property <bool> show-instrument-menu: false;
+
+    callback switch-tab(string);
+    callback normalize-heights();
+    callback fader-changed(float);
+    callback bus-fader-changed(float);
+    callback select-tag(string);
+    callback load-item(string);
+    callback focus-devices();
+    callback track-pan-change(int, float);
+    callback track-instrument-change(int, string);
+    callback mixer-fader-grab(int, length);
+    callback mixer-fader-drag(int, length);
+    callback mixer-fader-release(int);
+    callback mixer-fader-reset(int);
+    callback mixer-pan-grab(int, length);
+    callback mixer-pan-drag(int, length);
+    callback mixer-pan-release(int);
+    callback mixer-pan-reset(int);
+    callback search-changed(string);
+    callback execute-action(string);
+
+    in-out property <length> panel-width: 256px;
+    width: root.panel-width;
+    background: Theme.bg-panel;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Subtab switcher
+        Rectangle {
+            height: 34px;
+            background: #080a10;
+            border-color: Theme.border-subtle;
+
+            HorizontalLayout {
+                padding: 3px;
+                spacing: 4px;
+
+                Rectangle {
+                    background: root.active-tab == "inspector" ? Theme.accent.with-alpha(0.18) : transparent;
+                    border-radius: Theme.radius;
+                    border-width: root.active-tab == "inspector" ? 1px : 0;
+                    border-color: Theme.accent;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: "通道检查器";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: root.active-tab == "inspector" ? Theme.accent : #94a3b8;
+                            vertical-alignment: center;
+                        }
+                    }
+                    tab_insp_touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.active-tab = "inspector";
+                            root.switch-tab("inspector");
+                        }
+                    }
+                    TooltipBubble { text: "当前音轨与总线信号链检查器"; is-visible: tab_insp_touch.has-hover; tip-offset-y: 30px; }
+                }
+
+                Rectangle {
+                    background: root.active-tab == "browser" ? Theme.accent.with-alpha(0.18) : transparent;
+                    border-radius: Theme.radius;
+                    border-width: root.active-tab == "browser" ? 1px : 0;
+                    border-color: Theme.accent;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            text: "智能音色库";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: root.active-tab == "browser" ? Theme.accent : #94a3b8;
+                            vertical-alignment: center;
+                        }
+                    }
+                    tab_brow_touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.active-tab = "browser";
+                            root.switch-tab("browser");
+                        }
+                    }
+                    TooltipBubble { text: "工程资产、音频切片与采样音色库"; is-visible: tab_brow_touch.has-hover; tip-offset-y: 30px; }
+                }
+            }
+        }
+
+        // TAB 1: DUAL INSPECTOR
+        if root.active-tab == "inspector" : insp_flick := Flickable {
+            vertical-stretch: 1;
+            min-height: 120px;
+            content-width: self.width;
+            content-height: Math.max(self.height, insp_body.preferred-height);
+
+            insp_body := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: insp_flick.width;
+                height: Math.max(insp_flick.height, self.preferred-height);
+                padding: 8px;
+                spacing: 8px;
+
+            // Track Header Card
+            Rectangle {
+                background: Theme.bg-surface;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                height: 76px;
+
+                // Color accent bar on left edge
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: 3px;
+                    height: parent.height;
+                    border-top-left-radius: Theme.radius;
+                    border-bottom-left-radius: Theme.radius;
+                    background: root.selected-track-color;
+                }
+
+                VerticalLayout {
+                    padding: 8px;
+                    padding-left: 12px;
+                    padding-right: 10px;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: root.selected-track-badge;
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            letter-spacing: 0.6px;
+                            color: root.selected-track-color;
+                            vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Rectangle {
+                                background: inst_btn_touch.has-hover || root.show-instrument-menu ? Theme.accent.with-alpha(0.28) : Theme.accent.with-alpha(0.14);
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.accent.with-alpha(0.55);
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: "更换音色 [v]";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9.5px;
+                                        font-weight: 600;
+                                        color: #f8fafc;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                inst_btn_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.show-instrument-menu = !root.show-instrument-menu; }
+                                }
+                                TooltipBubble { text: "为当前轨道切换内置合成器音色或插入效果器"; is-visible: inst_btn_touch.has-hover; tip-offset-x: -40px; tip-offset-y: 22px; }
+                            }
+                            Rectangle {
+                                background: root.selected-track-color.with-alpha(0.18);
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: root.selected-track-color.with-alpha(0.40);
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: "均分高度";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9.5px;
+                                        font-weight: 600;
+                                        color: root.selected-track-color;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                touch_norm := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.normalize-heights(); }
+                                }
+                                TooltipBubble { text: "重置所有音轨高度为标准紧凑视图"; is-visible: touch_norm.has-hover; tip-offset-x: -30px; tip-offset-y: 22px; }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.selected-track-name;
+                        font-family: Tokens.font-ui;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #f8fafc;
+                        overflow: elide;
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "ROUTING:";
+                                font-family: Tokens.font-mono;
+                                font-size: 9px;
+                                letter-spacing: 0.4px;
+                                color: #94a3b8;
+                                font-weight: 400;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "→ " + root.selected-track-bus;
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: Theme.track-bus;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Bus strip toggle button (collapsible)
+                        Rectangle {
+                            background: root.show-bus-strip ? Theme.track-bus.with-alpha(0.25) : transparent;
+                            border-radius: 2px;
+                            border-width: 1px;
+                            border-color: root.show-bus-strip ? Theme.track-bus : #ffffff15;
+                            height: 18px;
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-right: 5px;
+                                Text {
+                                    text: root.show-bus-strip ? "折叠总线" : "展开总线";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
+                                    color: root.show-bus-strip ? Theme.track-bus : #cbd5e1;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            touch_bus_toggle := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.show-bus-strip = !root.show-bus-strip; }
+                            }
+                            TooltipBubble { text: "展开/折叠对应分组总线通道条"; is-visible: touch_bus_toggle.has-hover; tip-offset-x: -30px; tip-offset-y: 20px; }
+                        }
+                    }
+                }
+            }
+
+            // Inline Instrument / FX Quick Picker Menu
+            if root.show-instrument-menu : Rectangle {
+                background: #0d121c;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.accent.with-alpha(0.60);
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 3px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "音色与效果器预设"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: Theme.accent; vertical-alignment: center; }
+                        Rectangle {
+                            width: 16px; height: 16px; border-radius: 3px; background: #1e293b;
+                            Text { text: "×"; font-family: Tokens.font-ui; font-size: 11px; color: #f8fafc; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.show-instrument-menu = false; } }
+                        }
+                    }
+                    for opt in [
+                        { id: "synth:hollow",   label: "空灵合成 Pad (Hollow)" },
+                        { id: "synth:organ",    label: "温暖风琴 Organ" },
+                        { id: "synth:vocal",    label: "人声领唱 Vocal" },
+                        { id: "synth:metallic", label: "金属拨弦 Metallic Pluck" },
+                        { id: "synth:glass",    label: "玻璃钟琴 Glass Bell" },
+                        { id: "synth:bass",     label: "深沉贝斯 Neuro Bass" },
+                        { id: "fx:eq",          label: "+ 插入 参量均衡 EQ" },
+                        { id: "fx:reverb",      label: "+ 插入 空间混响 Reverb" },
+                        { id: "fx:compressor",  label: "+ 插入 动态压缩 Compressor" },
+                    ] : Rectangle {
+                        height: 20px;
+                        border-radius: 3px;
+                        background: insp_opt_t.has-hover ? Theme.accent.with-alpha(0.22) : #141926;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            Text { text: opt.label; font-family: Tokens.font-ui; font-size: 9.5px; color: #f1f5f9; vertical-alignment: center; }
+                        }
+                        insp_opt_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.show-instrument-menu = false;
+                                root.track-instrument-change(root.selected-track-id, opt.id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Dual Channel Strips Side-by-Side (Top-to-Bottom Signal Flow)
+            HorizontalLayout {
+                spacing: 8px;
+                vertical-stretch: 1;
+
+                // Strip 1: Selected Track Strip (Professional Signal Flow: Inserts -> EQ -> Pan -> Fader/Meter)
+                Rectangle {
+                    background: Theme.bg-surface;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    horizontal-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+
+                        // Section 1: Channel Strip Header
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: "当前通道";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: root.selected-track-color;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                background: root.selected-track-color.with-alpha(0.18);
+                                border-radius: 2px;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "CH 0" + root.selected-track-id;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 400;
+                                        color: root.selected-track-color;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section 2: Inserts / Effect Slots (Top-to-bottom signal flow)
+                        VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: "效果器插槽 (INSERTS)";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9.5px;
+                                    color: #cbd5e1;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "PRE-FADER";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8.5px;
+                                    color: #94a3b8;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            if root.selected-track-inserts.length == 0
+                                || (root.selected-track-inserts[0] == ""
+                                    && (root.selected-track-inserts.length < 2 || root.selected-track-inserts[1] == "")
+                                    && (root.selected-track-inserts.length < 3 || root.selected-track-inserts[2] == "")) : Rectangle {
+                                height: 24px;
+                                background: empty_ins_touch.has-hover ? Theme.accent.with-alpha(0.18) : #0b0e16;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "点击 + 插入效果器或音色";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9.5px;
+                                        color: #cbd5e1;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                empty_ins_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.show-instrument-menu = true; }
+                                }
+                            }
+
+                            for ins[idx] in root.selected-track-inserts : Rectangle {
+                                // [Q4] 空槽不画：投影只给**真实设备链**，没有设备就没有这一行。
+                                visible: ins != "";
+                                height: ins != "" ? 22px : 0px;
+                                background: #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: "" + (idx + 1);
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 400;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: ins;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 10px;
+                                        color: #f1f5f9;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        border-radius: 2.5px;
+                                        background: root.selected-track-color;
+                                        y: 8.5px;
+                                    }
+                                }
+                                ins_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.focus-devices(); }
+                                }
+                                TooltipBubble { text: "效果器插槽: 点击聚焦底栏设备机架"; is-visible: ins_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 24px; }
+                            }
+                        }
+
+                        // Section 3: EQ Curve Thumbnail Preview
+                        Rectangle {
+                            height: 38px;
+                            background: #06080d;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            clip: true;
+
+                            // 占位：真实 EQ 频响由 bridge::calculate_eq_curve_svg 算好、写在
+                            // MainWindow.eq-curve-svg，但本卡片尚未接那一路。⛔ 不画常量
+                            // 钟形曲线冒充频响；只画基准线并明确标「示意」。
+                            Rectangle {
+                                x: 5px;
+                                y: 19px;
+                                width: parent.width - 10px;
+                                height: 1px;
+                                background: root.selected-track-color.with-alpha(0.35);
+                            }
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-top: 3px;
+                                Text {
+                                    text: "EQ CURVE · 示意";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8.5px;
+                                    letter-spacing: 0.4px;
+                                    color: #94a3b8;
+                                    font-weight: 400;
+                                }
+                            }
+                            eq_touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.track-instrument-change(root.selected-track-id, "fx:eq"); }
+                            }
+                            TooltipBubble { text: "点击为当前轨道追加/聚焦参量均衡 EQ"; is-visible: eq_touch.has-hover; tip-offset-y: 40px; }
+                        }
+
+                        // Section 4: Pan (声像) Balance Control (Compact Centered DAW Widget)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 96px;
+                                height: 20px;
+                                background: #0a0d14;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    alignment: space-between;
+                                    Text {
+                                        text: "PAN";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 400;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        // Center detent balance bar with dynamic pan position
+                                        Rectangle {
+                                            width: 24px;
+                                            height: 4px;
+                                            y: 8px;
+                                            background: #141a24;
+                                            border-radius: 2px;
+                                            Rectangle {
+                                                x: 10px + Math.max(-1.0, Math.min(1.0, root.selected-track-pan-value)) * 10px;
+                                                width: 4px;
+                                                height: 4px;
+                                                border-radius: 2px;
+                                                background: root.selected-track-color;
+                                            }
+                                        }
+                                        Text {
+                                            text: root.selected-track-pan;
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9.5px;
+                                            font-weight: 400;
+                                            color: #f1f5f9;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                pan_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.ew-resize;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down {
+                                            root.mixer-pan-grab(root.selected-track-id - 1, self.mouse-x);
+                                        } else if event.kind == PointerEventKind.move {
+                                            root.mixer-pan-drag(root.selected-track-id - 1, self.mouse-x);
+                                        } else {
+                                            root.mixer-pan-release(root.selected-track-id - 1);
+                                        }
+                                    }
+                                    double-clicked => {
+                                        root.mixer-pan-reset(root.selected-track-id - 1);
+                                    }
+                                }
+                                TooltipBubble { text: "声像平衡: " + root.selected-track-pan + " (左右拖拽调节，双击归中)"; is-visible: pan_touch.has-hover; tip-offset-y: 22px; }
+                            }
+                        }
+
+                        // Section 5: Fader + Meter with clear dB calibration markings
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            height: 108px;
+
+                            // Left dB numerical scale ruler
+                            VerticalLayout {
+                                alignment: space-between;
+                                height: 104px;
+                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 8.5px; color: #f8fafc; horizontal-alignment: right; }
+                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                            }
+
+                            // Fader rail
+                            Rectangle {
+                                width: 24px;
+                                height: 104px;
+                                background: #06080d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                // Center groove
+                                Rectangle {
+                                    x: 10px;
+                                    y: 4px;
+                                    width: 4px;
+                                    height: parent.height - 8px;
+                                    background: #000000;
+                                    border-radius: 1px;
+                                }
+
+                                // dB scale tick marks
+                                for tick_y in [18px, 36px, 54px, 72px, 90px] : Rectangle {
+                                    x: 3px;
+                                    y: tick_y;
+                                    width: 18px;
+                                    height: 1px;
+                                    background: #ffffff14;
+                                }
+
+                                // Tactile fader cap
+                                Rectangle {
+                                    x: 1px;
+                                    y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.selected-track-vol + 60.0) / 66.0)));
+                                    width: 22px;
+                                    height: 15px;
+                                    background: #94a3b8;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
+
+                                    Rectangle {
+                                        x: 0;
+                                        y: 6.5px;
+                                        width: parent.width;
+                                        height: 2px;
+                                        background: root.selected-track-color;
+                                    }
+                                }
+                                fader_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.ns-resize;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down {
+                                            root.mixer-fader-grab(root.selected-track-id - 1, self.mouse-y);
+                                        } else if event.kind == PointerEventKind.move {
+                                            root.mixer-fader-drag(root.selected-track-id - 1, self.mouse-y);
+                                        } else {
+                                            root.mixer-fader-release(root.selected-track-id - 1);
+                                        }
+                                    }
+                                    double-clicked => {
+                                        root.mixer-fader-reset(root.selected-track-id - 1);
+                                    }
+                                }
+                                TooltipBubble { text: "音量推子: " + (root.selected-track-vol-display != "" ? root.selected-track-vol-display : ("" + Math.round(root.selected-track-vol * 10.0) / 10.0)) + " dB (上下拖拽调节，双击归 0dB)"; is-visible: fader_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 106px; }
+                            }
+
+                            // Meter bar
+                            Rectangle {
+                                width: 8px;
+                                height: 104px;
+                                background: #06080d;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                clip: true;
+
+                                Rectangle {
+                                    x: 0;
+                                    y: parent.height - (root.selected-track-peak * parent.height);
+                                    width: 8px;
+                                    height: root.selected-track-peak * parent.height;
+                                    background: root.selected-track-peak > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                    border-radius: 2px;
+                                }
+                            }
+                        }
+
+                        // Volume dB numerical badge (Compact Centered DAW Readout Box)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 58px;
+                                height: 18px;
+                                background: #080c14;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: root.selected-track-vol-display != "" ? (root.selected-track-vol-display + " dB") : ("" + (Math.round(root.selected-track-vol * 10.0) / 10.0) + " dB");
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10px;
+                                        font-weight: 400;
+                                        color: root.selected-track-color;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Strip 2: Target Group Bus Strip (Collapsible)
+                if root.show-bus-strip : Rectangle {
+                    background: Theme.bg-surface;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    horizontal-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+
+                        // Section 1: Header
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: root.bus-name;
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: Theme.track-bus;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Rectangle {
+                                background: Theme.track-bus.with-alpha(0.18);
+                                border-radius: 2px;
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text {
+                                        text: "BUS";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 400;
+                                        color: Theme.track-bus;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section 2: Bus Inserts
+                        VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: "总线效果器 (BUS INSERTS)";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9.5px;
+                                    color: #cbd5e1;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            for ins[idx] in root.bus-inserts : Rectangle {
+                                height: 22px;
+                                background: #10141d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: "" + (idx + 1);
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 400;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: ins;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 10px;
+                                        color: #f1f5f9;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section 3: Bus Comp Preview
+                        Rectangle {
+                            height: 38px;
+                            background: #06080d;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            clip: true;
+
+                            // 占位：总线压缩响应尚未接真实参数（⛔ 不画常量曲线冒充）。
+                            Rectangle {
+                                x: 5px;
+                                y: 19px;
+                                width: parent.width - 10px;
+                                height: 1px;
+                                background: Theme.track-bus.with-alpha(0.35);
+                            }
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-top: 3px;
+                                Text {
+                                    text: "BUS COMP · 示意";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8.5px;
+                                    letter-spacing: 0.4px;
+                                    color: #94a3b8;
+                                    font-weight: 400;
+                                }
+                            }
+                        }
+
+                        // Section 4: Bus Pan (Compact Centered DAW Widget)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 96px;
+                                height: 20px;
+                                background: #0a0d14;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    alignment: space-between;
+                                    Text {
+                                        text: "PAN";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        font-weight: 400;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: Math.round(Math.abs(root.bus-pan-norm) * 100.0) < 1 ? "C" : (root.bus-pan-norm < 0.0 ? ("L" + Math.round(-root.bus-pan-norm * 100.0)) : ("R" + Math.round(root.bus-pan-norm * 100.0)));
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9.5px;
+                                        font-weight: 400;
+                                        color: #f1f5f9;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                bus_pan_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.ew-resize;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down {
+                                            root.bus-pan-dragging = true;
+                                            root.bus-pan-start-x = self.mouse-x;
+                                            root.bus-pan-start-norm = root.bus-pan-norm;
+                                        } else if event.kind == PointerEventKind.move {
+                                            if root.bus-pan-dragging {
+                                                root.bus-pan-norm = Math.max(-1.0, Math.min(1.0, root.bus-pan-start-norm + ((self.mouse-x - root.bus-pan-start-x) / 36px) * 2.0));
+                                            }
+                                        } else {
+                                            root.bus-pan-dragging = false;
+                                        }
+                                    }
+                                    double-clicked => {
+                                        root.bus-pan-dragging = false;
+                                        root.bus-pan-norm = 0.0;
+                                    }
+                                }
+                                TooltipBubble { text: "总线声像 (左右拖拽调节，双击归中)"; is-visible: bus_pan_touch.has-hover; tip-offset-y: 22px; }
+                            }
+                        }
+
+                        // Section 5: Bus Fader + Meter with dB scale
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            height: 108px;
+
+                            VerticalLayout {
+                                alignment: space-between;
+                                height: 104px;
+                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 8.5px; color: #f8fafc; horizontal-alignment: right; }
+                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 8.5px; color: #94a3b8; horizontal-alignment: right; }
+                            }
+
+                            Rectangle {
+                                width: 24px;
+                                height: 104px;
+                                background: #06080d;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+
+                                Rectangle {
+                                    x: 10px;
+                                    y: 4px;
+                                    width: 4px;
+                                    height: parent.height - 8px;
+                                    background: #000000;
+                                    border-radius: 1px;
+                                }
+
+                                for tick_y in [18px, 36px, 54px, 72px, 90px] : Rectangle {
+                                    x: 3px;
+                                    y: tick_y;
+                                    width: 18px;
+                                    height: 1px;
+                                    background: #ffffff14;
+                                }
+
+                                Rectangle {
+                                    x: 1px;
+                                    y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-track-vol + 60.0) / 66.0)));
+                                    width: 22px;
+                                    height: 15px;
+                                    background: #94a3b8;
+                                    border-radius: 2px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
+
+                                    Rectangle {
+                                        x: 0;
+                                        y: 6.5px;
+                                        width: parent.width;
+                                        height: 2px;
+                                        background: Theme.track-bus;
+                                    }
+                                }
+                                bus_fader_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.ns-resize;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down {
+                                            root.bus-dragging = true;
+                                            root.bus-drag-start-y = self.mouse-y;
+                                            root.bus-drag-start-db = root.bus-track-vol;
+                                        } else if event.kind == PointerEventKind.move {
+                                            if root.bus-dragging {
+                                                root.bus-track-vol = Math.round(Math.max(-60.0, Math.min(6.0, root.bus-drag-start-db + ((root.bus-drag-start-y - self.mouse-y) / 1px) * (66.0 / 88.0))) * 10.0) / 10.0;
+                                            }
+                                        } else {
+                                            root.bus-dragging = false;
+                                        }
+                                    }
+                                    double-clicked => {
+                                        root.bus-dragging = false;
+                                        root.bus-track-vol = 0.0;
+                                    }
+                                }
+                                TooltipBubble { text: "总线推子: " + (Math.round(root.bus-track-vol * 10.0) / 10.0) + " dB (上下拖拽调节，双击归 0dB)"; is-visible: bus_fader_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 106px; }
+                            }
+
+                            Rectangle {
+                                width: 8px;
+                                height: 104px;
+                                background: #06080d;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                clip: true;
+
+                                Rectangle {
+                                    x: 0;
+                                    y: parent.height - (root.bus-track-peak * parent.height);
+                                    width: 8px;
+                                    height: root.bus-track-peak * parent.height;
+                                    background: root.bus-track-peak > 0.8 ? Theme.status-warn : Theme.status-ok;
+                                    border-radius: 2px;
+                                }
+                            }
+                        }
+
+                        // Bus Volume dB badge (Compact Centered DAW Readout Box)
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 58px;
+                                height: 18px;
+                                background: #080c14;
+                                border-radius: 2px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "" + (Math.round(root.bus-track-vol * 10.0) / 10.0) + " dB";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10px;
+                                        font-weight: 400;
+                                        color: Theme.track-bus;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            }
+        }
+
+        // TAB 2: SMART TAG BROWSER
+        if root.active-tab == "browser" : browser_flick := Flickable {
+            vertical-stretch: 1;
+            min-height: 120px;
+            content-width: self.width;
+            content-height: Math.max(self.height, browser_body.preferred-height);
+
+            browser_body := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: browser_flick.width;
+                height: Math.max(browser_flick.height, self.preferred-height);
+                padding: 8px;
+            spacing: 8px;
+
+            // Search input field (Real TextInput)
+            Rectangle {
+                height: 30px;
+                background: #06080d;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: browser_search_input.has-focus ? Theme.accent : Theme.border-subtle;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    Text {
+                        text: "检索";
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: #94a3b8;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        if root.search-query == "" : Text {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            text: "搜索音色、插件、采样包...";
+                            font-family: Tokens.font-ui;
+                            font-size: 10.5px;
+                            color: #94a3b8;
+                            vertical-alignment: center;
+                        }
+                        browser_search_input := TextInput {
+                            width: parent.width;
+                            height: parent.height;
+                            text <=> root.search-query;
+                            font-family: Tokens.font-ui;
+                            font-size: 10.5px;
+                            color: #f8fafc;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => {
+                                root.search-changed(self.text);
+                            }
+                        }
+                    }
+                    if root.search-query != "" : Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        y: 6px;
+                        border-radius: 3px;
+                        background: clear_q_t.has-hover ? #1e293b : transparent;
+                        Text {
+                            text: "×";
+                            font-family: Tokens.font-ui;
+                            font-size: 11px;
+                            color: #cbd5e1;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        clear_q_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.search-query = "";
+                                root.search-changed("");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Tag Filter Pills (Harmonized with track mineral color order)
+            HorizontalLayout {
+                spacing: 5px;
+                height: 22px;
+
+                Rectangle {
+                    background: root.active-tag == "all" ? Theme.accent : #10141d;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: root.active-tag == "all" ? Theme.accent : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: "全部";
+                            font-family: Tokens.font-ui;
+                            font-size: 9.5px;
+                            font-weight: 600;
+                            color: root.active-tag == "all" ? #020617 : #cbd5e1;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "all";
+                            root.select-tag("all");
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: root.active-tag == "Synth" ? Theme.track-synth : #10141d;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: root.active-tag == "Synth" ? Theme.track-synth : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: "#Synth";
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            color: root.active-tag == "Synth" ? #020617 : #cbd5e1;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "Synth";
+                            root.select-tag("Synth");
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: root.active-tag == "DSP" ? Theme.status-ok : #10141d;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: root.active-tag == "DSP" ? Theme.status-ok : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: "#DSP";
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            color: root.active-tag == "DSP" ? #020617 : #cbd5e1;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "DSP";
+                            root.select-tag("DSP");
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: root.active-tag == "Drums" ? Theme.track-drum : #10141d;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: root.active-tag == "Drums" ? Theme.track-drum : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: "#Drums";
+                            font-family: Tokens.font-mono;
+                            font-size: 9.5px;
+                            font-weight: 400;
+                            color: root.active-tag == "Drums" ? #020617 : #cbd5e1;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.active-tag = "Drums";
+                            root.select-tag("Drums");
+                        }
+                    }
+                }
+            }
+
+            // Browser Items List
+            VerticalLayout {
+                spacing: 6px;
+                vertical-stretch: 1;
+
+                for item in root.browser-items : Rectangle {
+                    if root.active-tag == "all" || item.tag == root.active-tag : Rectangle {
+                        height: 50px;
+                        background: Theme.bg-surface;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        VerticalLayout {
+                            padding: 6px;
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 2px;
+                            alignment: center;
+
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text {
+                                    text: item.name;
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: #f8fafc;
+                                    overflow: elide;
+                                }
+                                Rectangle {
+                                    background: Theme.accent.with-alpha(0.15);
+                                    border-radius: 3px;
+                                    HorizontalLayout {
+                                        padding-left: 4px;
+                                        padding-right: 4px;
+                                        Text {
+                                            text: "#" + item.tag;
+                                            font-family: Tokens.font-mono;
+                                            font-size: 9px;
+                                            color: Theme.accent;
+                                            font-weight: 400;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: item.desc;
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                color: #cbd5e1;
+                                overflow: elide;
+                            }
+                        }
+                        item_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.load-item(item.name); }
+                        }
+                        TooltipBubble { text: "点击载入 " + item.name + " 至当前轨道"; is-visible: item_touch.has-hover; tip-offset-y: 52px; }
+                    }
+                }
+            }
+            }
+        }
+    }
+}

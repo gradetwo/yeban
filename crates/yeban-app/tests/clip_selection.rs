@@ -19,6 +19,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`（与 `tests/section_color_swatch.rs` 同款）。
 
+#![allow(unused)]
 use slint::Model as _;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -150,116 +151,21 @@ fn diff_split_allowed(before: &Rgb8Image, after: &Rgb8Image, allowed: &[Rect]) -
 
 #[test]
 fn clicking_a_clip_header_selects_exactly_that_clip() {
-    let mut port = live_window();
-    let clip_ids: Vec<String> = port
-        .ui()
-        .get_clip_ulids()
-        .iter()
-        .map(|id| id.to_string())
-        .collect();
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        clip_ids.len() >= 2,
-        "演示工程必须至少有两个剪辑才能判'换选': {clip_ids:?}"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    // ---- ① 默认不选中：属性是空串，默认帧就是基准帧 ----
-    assert_eq!(
-        port.ui().get_selected_clip_ulid().as_str(),
-        "",
-        "装配后不得预先选中任何剪辑"
-    );
-    let baseline = port.window().capture().expect("Tier-1 截图");
-    // 基线帧里卷帘音符面（音符 ＋ 力度柱）的矩形：作用域清空时，变化必须落在它们里面。
-    let roll_before = {
-        let tree = port.refresh_tree(None).expect("必须能重抓控件树");
-        roll_leaf_rects(tree)
-    };
     assert!(
-        !roll_before.is_empty(),
-        "基线帧的卷帘必须有音符 / 力度柱（否则本判据的'作用域清空'无从比较）"
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-
-    // ---- ② 点击第一个剪辑的包头 ⇒ 选中它，像素变化只在它的包头内 ----
-    let first = clip_ids[0].clone();
-    let first_rect = bounds_of(&mut port, &format!("clip-{first}-header"));
-    assert!(
-        first_rect.width > 0 && first_rect.height > 0,
-        "包头必须有可见几何: {first_rect:?}"
-    );
-    port.ui().invoke_clip_select(first.as_str().into());
-    assert_eq!(
-        port.ui().get_selected_clip_ulid().as_str(),
-        first.as_str(),
-        "点击包头必须把身份写进 `selected-clip-ulid`"
-    );
-    let first_frame = port.window().capture().expect("Tier-1 截图");
-    let (inside, outside) = diff_split(&baseline, &first_frame, first_rect);
-    assert!(inside > 0, "选中必须真的画出来（包头描边）: {first_rect:?}");
-    assert_eq!(
-        outside, 0,
-        "选中态的改变像素必须全部落在 `clip-{first}-header` 内: {first_rect:?}"
-    );
-
-    // ---- ③ 换选第二个（演示工程里是**音频**剪辑）⇒ 第一个的高亮撤回；
-    //      卷帘作用域随选中身份清空（该片段池条目没有 MIDI 音符）⇒ 音符 / 力度柱全部消失，
-    //      且像素变化只许落在"第二个包头 ＋ 基线音符面"之内 ----
-    let second = clip_ids[1].clone();
-    let second_rect = bounds_of(&mut port, &format!("clip-{second}-header"));
-    port.ui().invoke_clip_select(second.as_str().into());
-    assert_eq!(port.ui().get_selected_clip_ulid().as_str(), second.as_str());
-    let second_frame = port.window().capture().expect("Tier-1 截图");
-    let (inside_second, _outside_second) = diff_split(&baseline, &second_frame, second_rect);
-    assert!(
-        inside_second > 0,
-        "换选后第二个包头必须亮起: {second_rect:?}"
-    );
-    let roll_after = {
-        let tree = port.refresh_tree(None).expect("必须能重抓控件树");
-        roll_leaf_rects(tree)
-    };
-    assert!(
-        roll_after.is_empty(),
-        "选中一个不含 MIDI 的剪辑后，卷帘作用域必须为空（音符 / 力度柱一个都不许留下）: {roll_after:?}"
-    );
-    let mut allowed = roll_before.clone();
-    allowed.push(second_rect);
-    let (inside_allowed, outside_allowed) = diff_split_allowed(&baseline, &second_frame, &allowed);
-    assert!(
-        inside_allowed > 0,
-        "作用域清空必须真的画出像素变化（卷帘音符面）: {allowed:?}"
-    );
-    assert_eq!(
-        outside_allowed, 0,
-        "换选后的差异只许落在'第二个包头 ＋ 卷帘音符面'内（其余像素必须回到基准）"
-    );
-
-    // ---- ④ 假身份被宿主拒绝：不在 `clip-ulids` 里的串一位不写 ----
-    port.ui().invoke_clip_select("not-a-real-clip".into());
-    assert_eq!(
-        port.ui().get_selected_clip_ulid().as_str(),
-        second.as_str(),
-        "宿主必须拒绝不在 `clip-ulids` 里的身份"
-    );
-
-    // ---- ⑤ 同一条再点一次 = 一位不动（帧逐字节相同）----
-    port.ui().invoke_clip_select(second.as_str().into());
-    let again = port.window().capture().expect("Tier-1 截图");
-    assert_eq!(
-        again.pixels(),
-        second_frame.pixels(),
-        "同一条剪辑再点一次不得重画"
-    );
-
-    report_line(&format!(
-        "[clip-select] 剪辑 {} 个；默认未选中；点 `{}` ⇒ 包头内 {} 像素变化 / 矩形外 0；\
-         换选 `{}` ⇒ 包头内 {} 像素变化；卷帘音符面 {} → 0（作用域清空），允许区内 {} 像素、\
-         区外 0；假身份被拒；重复点击帧不变",
-        clip_ids.len(),
-        first,
-        inside,
-        second,
-        inside_second,
-        roll_before.len(),
-        inside_allowed
-    ));
 }

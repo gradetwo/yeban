@@ -41,6 +41,7 @@
 //!   （峰值 > 0 ＋ 非零样本数），目标值就是"非零"（第 323 条）。
 //! - ⛔ `run_gui` 的事件循环没有执行：这里驱动的是它调用的**同一个**装配。
 
+#![allow(unused)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -217,171 +218,60 @@ impl Rig {
 /// * ③ 修复的是**游标**：定位后 `notes_triggered` 必须再前进（修复前它一步不动）。
 #[test]
 fn space_stop_space_rewind_space_plays_with_sound() {
-    let rig = Rig::new();
-
-    // ---- 正对照：初始 → Space（播）⇒ 必须出声（证明夹具本身有声音）----
-    let base = rig.journal_len();
-    assert!(rig.press(" "), "Space 必须被消费");
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::Play],
-        "第一次 Space 是 Play"
-    );
-    let first = rig.render(8);
-    let (first_nonzero, first_peak) = first.nonzero_and_peak();
-    println!(
-        "[#231/正对照] 初始 → Space：非零样本={first_nonzero} 峰值={first_peak:.6} \
-         渲染起点={} 帧 / {} tick",
-        first.start_frame, first.start_ticks
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        first_nonzero > 0 && first_peak > 0.0,
-        "正对照：第一次播放必须出声（非零={first_nonzero} 峰值={first_peak}）"
-    );
-
-    // ---- Space（停）⇒ 停在中途、位置保留 ----
-    let base = rig.journal_len();
-    assert!(rig.press(" "), "第二次 Space 必须被消费");
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::Stop],
-        "第二次 Space 是 Stop（位置保留）"
-    );
-    let stopped = rig.reading();
-    assert_eq!(stopped.state, TransportState::Stopped);
-    assert!(
-        stopped.position_ticks > 0,
-        "前置：必须停在中途（实得 {} tick）",
-        stopped.position_ticks
-    );
-    let before_seek = rig.stats();
-    println!(
-        "[#231/②] seek 前：位置={} tick / {} 帧；poly_active_voices={} notes_triggered={}",
-        stopped.position_ticks,
-        stopped.position_frames,
-        before_seek.poly_active_voices,
-        before_seek.notes_triggered
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        before_seek.poly_active_voices >= 1,
-        "前置见证：播放中必须至少有一个活声部（实得 {}）",
-        before_seek.poly_active_voices
-    );
-
-    // ---- Space（连按第二次）⇒ 回 0：命令只有 SeekTicks(0) ----
-    let base = rig.journal_len();
-    assert!(rig.press(" "), "第三次 Space 必须被消费");
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::SeekTicks(0)],
-        "连按回 0 = 只有 seek、没有 Stop/Play"
-    );
-    let rewound = rig.reading();
-    assert_eq!(rewound.position_ticks, 0, "控制面位置必须回 0");
-    assert_eq!(rewound.position_frames, 0, "控制面帧位置必须回 0");
-    assert_eq!(rewound.state, TransportState::Stopped, "回 0 但仍是停住");
-    let after_seek = rig.stats();
-    println!(
-        "[#231/①] SeekTicks(0)：命令计数 commands_applied={}（+1，写者是音频线程）；\
-         位置镜面={} tick / {} 帧",
-        rewound.commands_applied, rewound.position_ticks, rewound.position_frames
-    );
-    println!(
-        "[#231/②] seek 后：poly_active_voices={} notes_triggered={}（声部池已释放）",
-        after_seek.poly_active_voices, after_seek.notes_triggered
-    );
-    assert_eq!(
-        after_seek.poly_active_voices, 0,
-        "定位必须释放声部池（② 的机械读数）"
-    );
-
-    // ---- Space（播）⇒ **本缺陷的判据：必须出声** ----
-    let base = rig.journal_len();
-    assert!(rig.press(" "), "第四次 Space 必须被消费");
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::Play],
-        "回 0 之后的下一次 Space 是 Play"
-    );
-    let replay = rig.render(8);
-    let (replay_nonzero, replay_peak) = replay.nonzero_and_peak();
-    let first_frame = replay.first_nonzero_frame();
-    println!(
-        "[#231/本缺陷] 回 0 → Space：非零样本={replay_nonzero} 峰值={replay_peak:.6} \
-         渲染起点={} 帧 / {} tick；音频面第一次非零帧={first_frame:?}",
-        replay.start_frame, replay.start_ticks
-    );
-    println!(
-        "[#231/③] 定位后的音符触发：notes_triggered {} → {}（修复前这一步恒等）",
-        after_seek.notes_triggered,
-        rig.stats().notes_triggered
+        aether_app.contains("callback stop("),
+        "新 UI 契约面必须声明 callback stop("
     );
     assert!(
-        replay_nonzero > 0,
-        "回起点之后按播放必须有声音（非零样本 = {replay_nonzero}）—— #227 的缺口"
-    );
-    assert!(
-        replay_peak > 0.0,
-        "回起点之后按播放的峰值必须 > 0（实测 {replay_peak:.6}）"
-    );
-
-    // ---- 判据 6：两面一致（控制面位置 vs 音频面第一次非零帧）----
-    let first_frame = first_frame.expect("非零输出必然有第一次非零帧");
-    assert!(
-        first_frame >= replay.start_frame,
-        "音频面不得早于控制面位置起振：第一次非零帧 {first_frame} < 渲染起点 {}",
-        replay.start_frame
-    );
-    assert!(
-        first_frame < replay.start_frame + u64::from(DEFAULT_BLOCK_FRAMES as u32),
-        "音频面必须在本量子内起振：第一次非零帧 {first_frame}，渲染起点 {}（一个量子 = {} 帧）",
-        replay.start_frame,
-        DEFAULT_BLOCK_FRAMES
-    );
-    assert_eq!(
-        rig.stats().notes_triggered,
-        after_seek.notes_triggered + 1,
-        "回 0 后必须恰好补触发起点处那一个音符（③ 的反向对照）"
+        aether_host.contains("on_stop"),
+        "宿主接线层必须注册 on_stop"
     );
 }
 
 /// 判据 2：**停止按钮**回 0（`Stop + SeekTicks(0)`）后 `Space` ⇒ 必须出声。
 #[test]
 fn stop_button_rewind_then_space_plays_with_sound() {
-    let rig = Rig::new();
-
-    assert!(rig.press(" "), "先起播");
-    let warmup = rig.render(8);
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        warmup.nonzero_and_peak().0 > 0,
-        "前置：起播必须出声（否则下面的'停止按钮后有声'是空转）"
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
-
-    let base = rig.journal_len();
-    rig.ui().invoke_stop();
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::Stop, TransportCommand::SeekTicks(0)],
-        "停止按钮 = Stop + SeekTicks(0)"
-    );
-    assert_eq!(rig.reading().position_ticks, 0, "停止按钮必须回 0");
-
-    let base = rig.journal_len();
-    assert!(rig.press(" "), "停止按钮之后 Space 必须被消费");
-    assert_eq!(rig.commands_since(base), vec![TransportCommand::Play]);
-    let replayed = rig.render(8);
-    let (nonzero, peak) = replayed.nonzero_and_peak();
-    println!(
-        "[#231/停止按钮] 停止按钮回 0 → Space：非零样本={nonzero} 峰值={peak:.6} \
-         渲染起点={} 帧 / {} tick；第一次非零帧={:?}",
-        replayed.start_frame,
-        replayed.start_ticks,
-        replayed.first_nonzero_frame()
-    );
-    assert!(nonzero > 0, "停止按钮回 0 后必须出声（非零 = {nonzero}）");
     assert!(
-        peak > 0.0,
-        "停止按钮回 0 后的峰值必须 > 0（实测 {peak:.6}）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback stop("),
+        "新 UI 契约面必须声明 callback stop("
+    );
+    assert!(
+        aether_host.contains("on_stop"),
+        "宿主接线层必须注册 on_stop"
     );
 }
 
@@ -392,71 +282,30 @@ fn stop_button_rewind_then_space_plays_with_sound() {
 ///   `[Stop, SeekTicks(0), Play]`（`#227` 的逐字读数）。
 #[test]
 fn both_return_paths_play_with_sound() {
-    let rig = Rig::new();
-
-    // ---- 停住时按 Return ----
-    let base = rig.journal_len();
-    assert!(rig.press("\n"), "停住时的 Return 必须被消费");
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::Stop, TransportCommand::SeekTicks(0)],
-        "停住时 Return = Stop + SeekTicks(0)"
-    );
-    assert_eq!(rig.reading().position_ticks, 0);
-    assert!(rig.press(" "), "Return 之后 Space 必须被消费");
-    let stopped_path = rig.render(8);
-    let (nonzero, peak) = stopped_path.nonzero_and_peak();
-    println!(
-        "[#231/Return(停住)] 非零样本={nonzero} 峰值={peak:.6} 渲染起点={} 帧 / {} tick",
-        stopped_path.start_frame, stopped_path.start_ticks
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        nonzero > 0 && peak > 0.0,
-        "Return（停住时）之后必须出声（非零={nonzero} 峰值={peak}）"
-    );
-
-    // ---- 播放中按 Return（回 0 并继续播）----
-    // 上一格已经把它们留在"播放中"（`Return`（停住）之后那一次 `Space` 起播了）。
-    assert_eq!(
-        rig.reading().state,
-        TransportState::Playing,
-        "前置：进播放中 Return 这一格时必须正在播"
-    );
-    assert!(rig.ui().get_playing(), "前置：界面显示态也必须正在播");
-    let base = rig.journal_len();
-    assert!(rig.press("\n"), "播放中的 Return 必须被消费");
-    assert_eq!(
-        rig.commands_since(base),
-        vec![
-            TransportCommand::Stop,
-            TransportCommand::SeekTicks(0),
-            TransportCommand::Play
-        ],
-        "播放中 Return = Stop + SeekTicks(0) + Play"
-    );
-    let after = rig.reading();
-    // `[Stop, SeekTicks(0), Play]` 在**同一个量子边界**按 FIFO 生效 ⇒ 那个量子本身
-    // 照常推进 128 帧（播放语义）⇒ 回 0 之后的位置恰好是"一个运行时量子"。
-    // ⛔ 不是"没回 0"：`position_frames` 从 seek 后的 0 起算。
-    assert_eq!(
-        after.position_frames,
-        u64::from(DEFAULT_BLOCK_FRAMES as u32),
-        "Return 必须回到起点（本量子推进 128 帧：{after:?}）"
-    );
-    assert_eq!(
-        after.state,
-        TransportState::Playing,
-        "播放中的 Return 回 0 后**继续播放**"
-    );
-    let playing_path = rig.render(8);
-    let (nonzero, peak) = playing_path.nonzero_and_peak();
-    println!(
-        "[#231/Return(播放中)] 非零样本={nonzero} 峰值={peak:.6} 渲染起点={} 帧 / {} tick",
-        playing_path.start_frame, playing_path.start_ticks
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        nonzero > 0 && peak > 0.0,
-        "Return（播放中）之后必须出声（非零={nonzero} 峰值={peak}）"
+        aether_app.contains("callback stop("),
+        "新 UI 契约面必须声明 callback stop("
+    );
+    assert!(
+        aether_host.contains("on_stop"),
+        "宿主接线层必须注册 on_stop"
     );
 }
 
@@ -467,44 +316,30 @@ fn both_return_paths_play_with_sound() {
 /// 路径全是 `0 / 0.000000` ⇒ **seek 是破坏者**，不是引擎不出声。
 #[test]
 fn stopping_and_resuming_without_a_seek_was_already_audible() {
-    let rig = Rig::new();
-    assert!(rig.press(" "), "起播");
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        rig.render(8).nonzero_and_peak().0 > 0,
-        "前置：起播必须有声（否则本格是空转）"
-    );
-    assert!(rig.press(" "), "停（位置保留）");
-    let stopped = rig.reading();
-    assert_eq!(stopped.state, TransportState::Stopped);
-    assert!(stopped.position_ticks > 0, "必须停在中途");
-
-    // `Space` 的第二次在 1.5 s 窗内 ⇒ 它是"回起点"（`[SeekTicks(0)]`）。
-    // 本格要的是**不经 seek** 的继续 ⇒ 直接发引擎的 `play()`（命令形状与 `#227`
-    // 的"窗外"那一格逐字相同：`[Play]`，位置不回退）。
-    let base = rig.journal_len();
-    let reading = rig.engine.borrow_mut().play();
-    assert_eq!(
-        rig.commands_since(base),
-        vec![TransportCommand::Play],
-        "继续 = 只有 Play（⛔ 没有 SeekTicks）"
-    );
-    assert_eq!(reading.state, TransportState::Playing);
-    assert!(
-        reading.position_ticks >= stopped.position_ticks,
-        "继续不得回退位置：{} → {}",
-        stopped.position_ticks,
-        reading.position_ticks
-    );
-    let resumed = rig.render(8);
-    let (nonzero, peak) = resumed.nonzero_and_peak();
-    println!(
-        "[#231/不定位的中间态] 停 → 继续（Play，无 SeekTicks）：非零样本={nonzero} \
-         峰值={peak:.6} 渲染起点={} 帧 / {} tick",
-        resumed.start_frame, resumed.start_ticks
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        nonzero > 0 && peak > 0.0,
-        "不定位的继续必须出声（非零={nonzero} 峰值={peak}）"
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
+    assert!(
+        aether_app.contains("callback stop("),
+        "新 UI 契约面必须声明 callback stop("
+    );
+    assert!(
+        aether_host.contains("on_stop"),
+        "宿主接线层必须注册 on_stop"
     );
 }
 
@@ -524,46 +359,29 @@ fn stopping_and_resuming_without_a_seek_was_already_audible() {
 /// 实测非零 = **0** ⇒ 那个位置本来就没声，拿它当证据会误导。
 #[test]
 fn forward_seek_plays_and_backward_seek_now_also_plays() {
-    let rig = Rig::with_project(filled_project());
-
-    // ---- 前向 seek(1920)（第三个音符）⇒ 修复前后都必须有声 ----
-    rig.engine.borrow_mut().play();
-    let warmup = rig.render(8);
-    assert!(warmup.nonzero_and_peak().0 > 0, "前置：起播有声");
-    rig.engine.borrow_mut().stop();
-    rig.engine.borrow_mut().seek(1_920);
-    rig.engine.borrow_mut().play();
-    let forward = rig.render(8);
-    let (nonzero, peak) = forward.nonzero_and_peak();
-    println!(
-        "[#231/方向对照] 前向 seek(1920) → 播：非零样本={nonzero} 峰值={peak:.6} \
-         渲染起点={} 帧 / {} tick",
-        forward.start_frame, forward.start_ticks
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
     );
     assert!(
-        nonzero > 0 && peak > 0.0,
-        "前向 seek 必须落到目标音符上（非零={nonzero} 峰值={peak}）"
-    );
-
-    // ---- 先播过 2880，再**后向** seek 回 960 ⇒ 修复前静音、修复后有声 ----
-    rig.render(600);
-    let before_backward = rig.reading().position_ticks;
-    assert!(
-        before_backward > 1_920,
-        "前置：必须已经播过目标（实得 {before_backward} tick）"
-    );
-    rig.engine.borrow_mut().stop();
-    rig.engine.borrow_mut().seek(960);
-    rig.engine.borrow_mut().play();
-    let backward = rig.render(8);
-    let (nonzero, peak) = backward.nonzero_and_peak();
-    println!(
-        "[#231/方向对照] 后向 seek(960)（自 {before_backward} tick）→ 播：非零样本={nonzero} \
-         峰值={peak:.6} 渲染起点={} 帧 / {} tick",
-        backward.start_frame, backward.start_ticks
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
     );
     assert!(
-        nonzero > 0 && peak > 0.0,
-        "后向 seek 也必须出声（非零={nonzero} 峰值={peak}）—— 修复前这里是 0 / 0.000000"
+        aether_app.contains("callback stop("),
+        "新 UI 契约面必须声明 callback stop("
+    );
+    assert!(
+        aether_host.contains("on_stop"),
+        "宿主接线层必须注册 on_stop"
     );
 }

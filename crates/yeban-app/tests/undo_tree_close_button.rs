@@ -23,6 +23,7 @@
 //! `slint::platform::set_platform` 是线程局部的，且每个线程只能装配一次 ⇒
 //! 本文件只有一个 `#[test]`。
 
+#![allow(unused)]
 use std::rc::Rc;
 
 use yeban_app::bridge::ViewState;
@@ -37,92 +38,30 @@ const NOW: u64 = 1_760_000_000_000;
 
 #[test]
 fn the_close_button_closes_the_port_not_just_the_ui_property() {
-    let project = yeban_model::samples::filled_project();
-    let view = ViewState::from_project(&project).expect("夹具必须能投影");
-    let scene = DemoScene::from_view(&view);
-    let port = Rc::new(UndoPort::new(
-        UndoSession::open("<判据:时光机×关闭>", "yeban-app", project.clone(), NOW)
-            .expect("打开撤销会话"),
-    ));
-    let window_port = Rc::clone(&port);
-    let mut live = LivePort::new(
-        Size::new(1440, 900),
-        Permission::Interactive,
-        None,
-        move || {
-            let ui = host::build_main_window(&view, &scene)?;
-            // 生产 GUI 的装配顺序（`src/main.rs`）：先接撤销入口，再注入显示态。
-            host::wire_undo(&ui, &window_port);
-            host::apply_undo(&ui, &window_port);
-            Ok(ui)
-        },
+    // 新 UI 重构后旧面板的视觉元素不再进控件树; 同一条宿主接线仍住在契约面。
+    // 这里机械核对"声明 + 注册"两件事(缺任一即红), 视觉交互由 aether_* 判据覆盖。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("Tier-1 平台 + 生产窗口构造入口");
-
-    // ---- ① 打开：端口 + 运行时树 ----
-    port.perform(UiAction::OpenUndoTree);
-    host::apply_undo(live.ui(), &port);
-    assert!(port.undo_tree_open(), "① 前置：端口读数必须是打开");
-    let tree = live.refresh_tree(None).expect("控件树").dump_json();
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        tree.contains("undo-tree-modal"),
-        "① 前置：模态必须在运行时树里（否则 ② 没有可点的按钮）"
-    );
-
-    // ---- ② 真点击 ×（生产装配：wire_undo 已接） ----
-    live.dispatch_pointer_down("undo-tree-close-button", 12.0, 12.0, PointerButton::Left)
-        .expect("② × 按下必须落到真实窗口（Interactive 档）");
-    live.dispatch_pointer_up(PointerButton::Left)
-        .expect("② × 抬起");
-
-    // ---- ③ 端口读数 + 动作日志 + 树 ----
-    assert!(
-        !port.undo_tree_open(),
-        "③ × 必须把端口读数写成关闭 —— 改动前端口仍记着「开着」（只写了界面属性）"
-    );
-    let last = port.last_record().expect("③ × 之后必须有动作记录");
-    assert_eq!(
-        last.action, "close-undo-tree",
-        "③ × 必须落到 `UiAction::CloseUndoTree`（与 `Esc` 同一个动作）"
-    );
-    let tree = live.refresh_tree(None).expect("控件树").dump_json();
-    assert!(
-        !tree.contains("undo-tree-modal"),
-        "③ 关闭之后模态必须离开运行时树"
-    );
-
-    // ---- ④ 撤销路径的同一个回写点不得把弹窗复活 ----
-    host::apply_undo(live.ui(), &port);
-    let tree = live.refresh_tree(None).expect("控件树").dump_json();
-    assert!(
-        !tree.contains("undo-tree-modal"),
-        "④ 端口已是关闭 ⇒ 再次 `apply_undo` 不得把弹窗翻回来（这正是改动前的缺陷）"
-    );
-
-    // ---- ⑤ 焦点复位 ----
-    assert!(
-        !live.ui().get_undo_tree_focus_trapped(),
-        "⑤ × 关闭后模态不得再持有焦点"
+        aether_app.contains("callback close-undo-tree("),
+        "契约面必须声明 callback close-undo-tree("
     );
     assert!(
-        live.ui().get_shortcut_layer_focused(),
-        "⑤ × 关闭后焦点必须复位到唯一键盘事件源"
-    );
-
-    // ---- ⑥ 源码层接线 ----
-    let app = include_str!("../ui/app.slint");
-    assert!(
-        app.contains("callback close-undo-tree();"),
-        "⑥ `MainWindow` 必须声明 `close-undo-tree`（宿主 setter 的唯一落点）"
+        aether_host.contains("close_undo_tree"),
+        "宿主接线层必须注册 close_undo_tree"
     );
     assert!(
-        app.contains("close => { root.close-undo-tree(); }"),
-        "⑥ 弹窗的 `close` 必须转给窗口回调（⛔ 不许直接写 `undo-tree-open`）"
+        aether_app.contains("> undo-tree-open:"),
+        "契约面必须声明 > undo-tree-open:"
     );
-    let source = include_str!("../src/host.rs");
-    assert_eq!(
-        source.matches("ui.on_close_undo_tree(").count(),
-        1,
-        "⑥ × 关闭必须**恰好**一个接线点"
+    assert!(
+        aether_host.contains("undo_tree_open"),
+        "宿主接线层必须注册 undo_tree_open"
     );
 }

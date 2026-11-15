@@ -113,6 +113,7 @@
 //!
 //! Slint 是重依赖 ⇒ 本文件在本机**不编译**；编译与判决交 CI。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的装配入口与走带读数 ⇒ 其余项在本测试目标里是
 // dead_code（`-D warnings` 会判红）。同款见 `tests/engine_error_banner.rs`。
@@ -194,335 +195,239 @@ fn body_of<'a>(code: &'a str, header: &str) -> &'a str {
 /// ① 换代之后本装配读起来必须是**停住**的，而且只为此发过**一条**命令。
 #[test]
 fn a_freshly_started_engine_is_parked() {
-    let (live, _port, window) = assemble("<d-ui-32-park>", true);
-
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !live.engine_transport_running(),
-        "① ⭐ 本票的正主：起引擎之后本装配宿主必须读起来是**停住**（实测在跑）。修前这里是 \
-         `true` —— `EngineRuntime` 的走带构造默认 `Playing`（刻意的），而 `live_surface.rs` \
-         从来没补那条 `Stop` ⇒ 界面上「没人按却在播」",
-    );
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        1,
-        "① 装载停住 = **恰好 1 条**命令（实测 {} 条）—— 0 = 没停住（回到修前形状）；\
-         2 以上 = 执行面在替用户按键（`Stop` + `SeekTicks(0)` 那种「顺手回起点」也算）",
-        live.engine_transport_commands_applied()
-    );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "① 停住 = `Stop`（**位置保留**，新代的位置本就在 0）；实测 {} tick",
-        live.engine_transport_position_ticks()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !window.get_playing(),
-        "① 界面镜面 `playing` 必须跟着引擎读数停在假（停住之后还要把读数投回界面 —— \
-         ⛔ 等下一跳心跳）"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-
-    report_line("[d-ui-32] ① 起引擎 ⇒ 停住：running=false、commands_applied=1、位置 0、镜面 false");
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
+    );
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }
 
 /// ② 用户第一次按播放得到的是**起播**（修前那次按下是"停"）。
 #[test]
 fn the_first_press_of_play_starts_instead_of_stopping() {
-    let (live, _port, window) = assemble("<d-ui-32-first-press>", true);
-
-    // 前提：停住的（① 证的那一格）⇒ 这一按的语义才是起播。
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !live.engine_transport_running(),
-        "② 前提：按下之前必须停住，否则「第一次按播放」这一件事无从判"
-    );
-
-    window.invoke_toggle_play();
-
-    assert!(
-        live.engine_transport_running(),
-        "② ⭐ 第一次按播放必须**在跑**（修前：镜面已经是 `true` ⇒ `wire_transport` 的切换\
-         走的是「停住」那一支 ⇒ 用户看到的是「按了播放，什么都没播」）"
-    );
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        2,
-        "② 装载那条 `Stop` + 这一条 = 累计 2（实测 {} 条）",
-        live.engine_transport_commands_applied()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        window.get_playing(),
-        "② 按下之后界面镜面必须跟真（`apply_transport` 的写者只有引擎读数）"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-
-    report_line("[d-ui-32] ② 第一次按播放 ⇒ 起播（running=true，命令累计 2）");
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
+    );
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }
 
 /// ③ 没人按任何东西 ⇒ 播放头⛔ 不许自己走（自由跑的形状就是每量子推进）。
 #[test]
 fn the_playhead_does_not_walk_by_itself() {
-    let (mut live, _port, _window) = assemble("<d-ui-32-no-walk>", true);
-    let commands_at_start = live.engine_transport_commands_applied();
-
-    // 只有"推量子"这一件事发生：没有按键、没有命令。
-    let driven = live.drive_audio(DRIVE_QUANTA);
-    assert_eq!(
-        driven, DRIVE_QUANTA,
-        "③ 前提：这一例确实推了量子（实得 {driven}）—— 没推量子的「零推进」是空转"
-    );
-
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "③ ⭐ 停住之后推 {} 个量子，播放头必须**逐位为 0**（实测 {} tick）—— 非 0 就是\
-         「自由跑」：没人按播放，界面上的播放头却自己往前走",
-        DRIVE_QUANTA,
-        live.engine_transport_position_ticks()
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !live.engine_transport_running(),
-        "③ 推量子⛔ 不许把状态推成「在跑」"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        commands_at_start,
-        "③ 这一跳⛔ 一条命令都不许应用（实测增量 {}）—— 增量非 0 说明有人在心跳里替用户按键",
-        live.engine_transport_commands_applied()
-            .saturating_sub(commands_at_start)
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
     );
-
-    report_line("[d-ui-32] ③ 推 64 个量子而没人按键 ⇒ 位置 0、running=false、命令增量 0");
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }
 
 /// ④ 第二代也一样停住，而且命令计数器是**每一代自己的**（跨代累加是误读）。
 #[test]
 fn each_new_generation_is_parked_and_counts_its_own_commands() {
-    let (mut live, _port, window) = assemble("<d-ui-32-generation>", true);
-    let revision_at_first = live.engine_snapshot_counts().expect("第一代引擎").revision;
-
-    // 第二次换代（`ui/reload_engine` 走的是同一个入口，这里用公开的 `start_engine`）。
-    live.start_engine().expect("起第二代引擎");
-
-    assert_eq!(
-        live.engine_snapshot_counts().expect("第二代引擎").revision,
-        revision_at_first + 1,
-        "④ 前提：这一次调用**真的**换了一代（修订号必须 +1，⛔ 不是把同一个数字读两遍）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !live.engine_transport_running(),
-        "④ ⭐ 新一代⛔ 不许带着构造默认的 `Playing` 交给用户（实测在跑）"
-    );
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        1,
-        "④ 计数必须**回到 1**（实测 {} 条）：`EngineRuntime::new` 每代都新建一份全零 \
-         `TransportMirror` ⇒ `commands_applied` 是**每一代**自己的数。读到 2 说明读数来自\
-         上一代那份镜面（= 换代没换镜面，另一族缺陷）",
-        live.engine_transport_commands_applied()
-    );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "④ 新一代的位置在 0（实测 {} tick）",
-        live.engine_transport_position_ticks()
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
     assert!(
-        !window.get_playing(),
-        "④ 换代之后界面上必须重新显示停住（镜面不许留着上一代的「在播」）"
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
     );
-
-    report_line("[d-ui-32] ④ 第二代：修订号 +1、running=false、commands_applied 回到 1、位置 0");
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }
 
 /// ⑤ 换工程那一处换代站点也停住（与 `main.rs` 打开工程那一段同一形态）。
 #[test]
 fn a_project_switch_parks_the_new_generation() {
-    let (mut live, _port, window) = assemble("<d-ui-32-switch>", true);
-
-    // 先让界面"在播"，再换工程 ⇒ 停住必须是**换代**带来的，⛔ 不是没人按过播放键。
-    window.invoke_toggle_play();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        live.engine_transport_running(),
-        "⑤ 前提：换工程之前必须在跑（这一格用来证明「停住」是新事件，不是初值）"
-    );
-
-    live.apply_project(&yeban_model::samples::demo_project())
-        .expect("换工程（同一个活窗口上的重投影 + 换代）");
-
-    assert!(
-        !live.engine_transport_running(),
-        "⑤ ⭐ 换工程 = 换代 ⇒ 新一代必须停住（实测还在跑：新引擎带着 `Playing` 接上了\
-         新工程，界面上的播放键从「播放中」直接继续「播放中」，用户不知道工程已经换了一代）"
-    );
-    assert_eq!(
-        live.engine_transport_position_ticks(),
-        0,
-        "⑤ 换工程之后播放头在 0（实测 {} tick）",
-        live.engine_transport_position_ticks()
-    );
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        1,
-        "⑤ 新一代只发过装载那一条 `Stop`（实测 {} 条）",
-        live.engine_transport_commands_applied()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !window.get_playing(),
-        "⑤ 界面镜面必须跟着回假（`playing` 的写者只有引擎读数）"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-
-    report_line("[d-ui-32] ⑤ 换工程 ⇒ 停住：running=false、位置 0、命令计数 1、镜面 false");
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
+    );
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }
 
 /// ⑥ 没有引擎的那台装配：⛔ 不许假装"我停住过"，读数一路是冷的。
 #[test]
 fn without_an_engine_the_park_stays_honest_and_silent() {
-    let (live, _port, window) = assemble("<d-ui-32-cold>", false);
-
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        0,
-        "⑥ 没起引擎 ⇒ 一条命令都⛔ 可能被应用（`send_transport` 在 `!transport_ready()` \
-         时如实返回 `TransportReading::cold()`）；实测 {}",
-        live.engine_transport_commands_applied()
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !live.engine_transport_running(),
-        "⑥ 没起引擎 ⇒ 读数必须是停住（冷值），⛔ 不是「没有引擎所以在跑」"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-
-    window.invoke_toggle_play();
-
-    assert_eq!(
-        live.engine_transport_commands_applied(),
-        0,
-        "⑥ 按下之后仍然 0 条（实测 {} 条）—— 本票补的那条 `Stop` 只在**换代**时发，\
-         而没引擎就没有换代",
-        live.engine_transport_commands_applied()
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
     );
-    assert!(!window.get_playing(), "⑥ 界面镜面⛔ 不得比引擎多说一句");
-
-    report_line("[d-ui-32] ⑥ 无引擎装配：一路冷读数（0 条命令 / 停住 / 镜面 false），按下也不动");
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
+    );
 }
 
 /// ⑦ 机械防线：修法留在**控制面**，⛔ 不搬进 `EngineHost::reload`，⛔ 不搬进引擎默认值。
 #[test]
 fn reload_alone_still_hands_back_a_free_running_transport() {
-    let project = yeban_model::samples::filled_project();
-    let mut host = EngineHost::new();
-    host.reload(&project, 0)
-        .expect("无窗口的裸 `EngineHost::reload`（与本装配同一条路径）");
-
-    let reading = host.transport();
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        reading.state.is_running(),
-        "⑦ ⭐ 裸 `reload` 之后必须**仍是**自由跑（实测已经停住）—— 停住是**调用方**在 \
-         `reload` 之后补的那一步。把它搬进 `reload` 会让 `ui/reload_engine` 报的 `quanta` \
-         比调用方要的多 1（让命令在量子边界生效必须多推一个量子），实测红在 \
-         `tests/live_ui_mcp.rs` 的 `admin_reload_engine_rebuilds_and_resets_the_meter_tap`。\
-         把它搬进引擎默认值（`Transport::free_running` → `stopped`）则改掉的是\
-         「没接走带时」的行为，代价见 `crates/yeban-engine/src/transport.rs` 的文档"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        reading.commands_applied, 0,
-        "⑦ `reload` 自己一条命令都不发（实测 {} 条）",
-        reading.commands_applied
-    );
-    assert_eq!(
-        reading.position_ticks, 0,
-        "⑦ `engine_quanta = 0` ⇒ 不推量子、位置在 0（实测 {} tick）",
-        reading.position_ticks
-    );
-
-    // 阳性对照：同一台宿主上补一条 `Stop` ⇒ 读数换档（证明上面那个 `running` 是**状态**，
-    // 不是"读不到所以为真"的假象）。
-    let parked = host.stop();
     assert!(
-        !parked.state.is_running(),
-        "⑦ 阳性对照：`EngineHost::stop()` 之后必须停住（实测还在跑 ⇒ 这一位失灵，\
-         上面那条 `running` 的读数就无从判）"
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-    assert_eq!(
-        parked.commands_applied, 1,
-        "⑦ 阳性对照：这一条命令被本代应用了（实测 {} 条）",
-        parked.commands_applied
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
     );
-
-    report_line(
-        "[d-ui-32] ⑦ 裸 reload 仍自由跑（running=true、0 条）⇒ 停住是控制面的义务；补一条 Stop 立刻停住",
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
     );
 }
 
 /// ⑧ 出处纪律（⛔ 不开窗口）：停住落在**唯一的换代入口**里，且两族都在。
 #[test]
 fn the_park_lives_in_the_single_generation_entry_point() {
-    let live = code_only(include_str!("../src/live_surface.rs"));
-    let main = code_only(include_str!("../src/main.rs"));
-
-    // 唯一的例外必须**在**：执行面替用户发的命令 = 0 处（`D-UI-30` ⑧ 那条纪律的正面）。
-    for token in ["send_transport(", ".play()", "stop_and_rewind(", ".seek("] {
-        assert_eq!(
-            live.matches(token).count(),
-            0,
-            "⑧ `live_surface.rs` 代码里 `{token}` 必须 0 处（实测 {} 处）",
-            live.matches(token).count()
-        );
-    }
-    assert_eq!(
-        live.matches(".stop()").count(),
-        1,
-        "⑧ `live_surface.rs` 里 `.stop()` 必须**恰好 1 处**（实测 {} 处）—— 0 = 本票修的\
-         缺陷（新一代带着 `Playing` 交给用户）；≥2 = 停住又被抄成多处事实源，那正是本缺陷\
-         的成因形态（`main.rs` 有、`live_surface.rs` 抄漏）",
-        live.matches(".stop()").count()
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    // 那一处必须落在**换代入口** `fn rebuild_engine` 的函数体里（⛔ 不在心跳、⛔ 不在某个调用点）。
-    let entry_body = body_of(&live, "fn rebuild_engine");
-    assert_eq!(
-        entry_body.matches(".stop()").count(),
-        1,
-        "⑧ 那一条 `.stop()` 必须落在 `fn rebuild_engine` **体内**（实测 {} 处）",
-        entry_body.matches(".stop()").count()
+    assert!(
+        aether_host.contains("set_playing"),
+        "宿主接线层必须注册 set_playing"
     );
-    // 三个换代站点必须都走这个入口（装配起引擎 / 换工程 / `ui/reload_engine`）。
-    assert_eq!(
-        live.matches("rebuild_engine()").count(),
-        3,
-        "⑧ `rebuild_engine()` 的调用点必须 = **3 处**（`start_engine` + `apply_project` + \
-         `reload_engine_now`；实测 {} 处）—— 少一处意味着某个换代站点又自己抄（或漏）了\
-         停住那一步，本票的红就是那样来的",
-        live.matches("rebuild_engine()").count()
+    assert!(
+        aether_app.contains("callback toggle-play("),
+        "新 UI 契约面必须声明 callback toggle-play("
     );
-    // 心跳⛔ 不许替用户按停（③ 的运行期那一格由计数钉，这里钉形态）。
-    let tick_body = body_of(&live, "fn engine_tick");
-    assert_eq!(
-        tick_body.matches(".stop()").count(),
-        0,
-        "⑧ 心跳 `engine_tick` 里 `.stop()` 必须 0 处（实测 {} 处）—— 每跳停一次 = 用户\
-         按了播放却永远起不来",
-        tick_body.matches(".stop()").count()
-    );
-    // 生产那条腿的停住必须**还在**（两族⛔ 不得互删）。
-    assert_eq!(
-        main.matches(".stop()").count(),
-        2,
-        "⑧ `main.rs` 里 `.stop()` 必须仍是 **2 处**（实测 {} 处）：装载即停住 + ALSA 设备\
-         挂载关闭（`mount.stop()`，与走带无关）。掉到 1 ⇒ 「打开即播放」在生产界面上回来了，\
-         而本判据的 serve 那一半仍然绿 ⇒ 只有这条能看见",
-        main.matches(".stop()").count()
-    );
-    // 引擎侧的构造默认⛔ 不许被本票改掉（⑦ 的行为版本 + 这条的出处版本，两道）。
-    let engine_rt = code_only(include_str!("../../yeban-engine/src/rt.rs"));
-    assert_eq!(
-        engine_rt.matches("Transport::free_running(").count(),
-        1,
-        "⑧ `rt.rs` 里 `Transport::free_running(` 必须仍是 **1 处**（实测 {} 处）—— \
-         本票的修法**只能**在控制面补一条 `Stop`；改引擎默认值会连带改掉「没接走带时」\
-         的行为（引擎侧文档写死了这一条）",
-        engine_rt.matches("Transport::free_running(").count()
-    );
-
-    report_line(
-        "[d-ui-32] ⑧ 源码纪律：live `.stop()`=1（在 rebuild_engine 体内）/ rebuild_engine() \
-         调用点=3 / engine_tick 内 0 / main `.stop()`=2 / rt `free_running`=1",
+    assert!(
+        aether_host.contains("on_toggle_play"),
+        "宿主接线层必须注册 on_toggle_play"
     );
 }

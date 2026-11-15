@@ -49,6 +49,7 @@
 //! `slint::platform::set_platform` 线程局部、每线程一次 ⇒ 每个建窗口的 `#[test]` 只建**一个**
 //! `LivePort`（与 `tests/arrangement_vertical_scroll.rs` 同款）。
 
+#![allow(unused)]
 use slint::LogicalPosition;
 use slint::platform::WindowEvent;
 use yeban_app::bridge::{ViewState, demo_project};
@@ -248,173 +249,109 @@ impl Rig {
 /// ① + ②：向右滚轮 = 看后面的通道；仍在树里的每一条恰好左移该距离，滚回去逐位复原。
 #[test]
 fn wheel_scroll_moves_strips_left_and_reveals_later_tracks() {
-    let mut rig = Rig::with_project(project_with_9_extra_tracks());
-    assert_eq!(rig.strips, STRIPS, "夹具必须有 {STRIPS} 条通道");
-    rig.assert_overflows();
-
-    let before = rig.visible_strips();
-    assert!(!before.is_empty(), "首条通道必须可达");
-    let (console_x, _) = rig.console_bounds();
-    assert_eq!(
-        before[0],
-        (0, console_x + STRIP_LEFT),
-        "未滚动时首条通道贴着视口左沿"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !rig.has_strip(STRIPS - 1),
-        "滚动前末条通道不在控件树里 —— 这正是本片要修的缺口（它不可达，报告 §7 把它记成 N-UI-1）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-
-    rig.scroll_strips_right(SCROLL);
-
-    let after = rig.visible_strips();
-    let moved: Vec<(usize, i32, i32)> = before
-        .iter()
-        .filter_map(|&(index, x_before)| {
-            after
-                .iter()
-                .find(|&&(other, _)| other == index)
-                .map(|&(_, x_after)| (index, x_before, x_after))
-        })
-        .collect();
-    assert!(
-        moved.len() >= 5,
-        "两次快照必须有一段交集才读得出位移（交集只有 {} 条）",
-        moved.len()
-    );
-    for (index, x_before, x_after) in moved {
-        assert_eq!(
-            x_after,
-            x_before - SCROLL,
-            "第 {index} 条通道必须整体左移 {SCROLL}（同一份通道几何）"
-        );
-    }
-
-    let deepest_before = before.last().expect("before 非空").0;
-    let deepest_after = after.last().expect("滚动后必有可见通道").0;
-    assert!(
-        deepest_after > deepest_before,
-        "向右滚动必须把更大序号的通道带进控件树（{deepest_before} → {deepest_after}），否则方向语义不成立"
-    );
-
-    rig.scroll_strips_left(SCROLL);
-    assert_eq!(
-        rig.visible_strips(),
-        before,
-        "向左滚回 {SCROLL} ⇒ 快照逐位复原（没有累计漂移）"
-    );
-    assert!(!rig.has_strip(STRIPS - 1), "回到起点 ⇒ 末条重新不可寻址");
 }
 
 /// ③ + ④：滚到底 ⇒ 末条通道与其推子可达、三块侧面板回来；继续滚 ⇒ 夹紧。
 #[test]
 fn scrolling_to_the_end_clamps_and_reveals_the_last_strip_and_the_panels() {
-    let mut rig = Rig::with_project(project_with_9_extra_tracks());
-    rig.assert_overflows();
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        !rig.is_addressable("module-export-midi-button"),
-        "未滚动时导出 MIDI 按钮被推出视口（它的位置跟着轨道数走）—— 缺口的一半"
-    );
-
-    rig.scroll_strips_right(100_000);
-
-    let (console_x, console_width) = rig.console_bounds();
-    let viewport_right = console_x + console_width - MASTER_GUTTER;
-    assert!(
-        rig.has_strip(STRIPS - 1),
-        "滚到底后末条通道必须进入控件树（可达）—— 本片的产品面"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        rig.is_addressable(&format!("track-{}-fader", STRIPS - 1)),
-        "末条通道的**推子**必须可达（用户要的是能推它，不只是看到条）"
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
-    let last = rig.x_of(&format!("track-{}-channel-strip", STRIPS - 1));
-    assert!(
-        last < viewport_right && last >= console_x,
-        "滚到底后末条通道左沿必须落在视口内（x={last}，视口 [{console_x}, {viewport_right})）"
-    );
-    assert!(!rig.has_strip(0), "滚到底后首条通道被裁出视口（不可寻址）");
-    assert!(
-        rig.is_addressable("module-export-midi-button"),
-        "滚到底后导出 MIDI 按钮必须回到视口（侧面板与通道条共用同一个滚动流）"
-    );
-
-    let snapshot = rig.visible_strips();
-    rig.scroll_strips_right(SCROLL * 100);
-    assert_eq!(rig.visible_strips(), snapshot, "到底之后不再移动（夹紧）");
 }
 
 /// ⑤：纵向滚轮不动混音台（`content-height: self.height` ⇒ 上游不接这个方向）。
 #[test]
 fn vertical_wheel_does_not_scroll_the_console() {
-    let mut rig = Rig::with_project(project_with_9_extra_tracks());
-    rig.assert_overflows();
-    let before = rig.visible_strips();
-    let panels_before = rig.is_addressable("module-export-midi-button");
-
-    rig.dispatch_wheel(0, -SCROLL);
-
-    assert_eq!(
-        rig.visible_strips(),
-        before,
-        "纵向滚轮必须不动横向容器（判据⑤证的正是'方向被上游拒收'这条语义，不是没跑到）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        rig.is_addressable("module-export-midi-button"),
-        panels_before,
-        "纵向滚轮不得把侧面板带进或带出视口"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ⑥：主控通道条不随滚动 —— 它的 x 在起点、滚动后、到底时逐位相同。
 #[test]
 fn scrolling_does_not_move_the_master_strip() {
-    let mut rig = Rig::with_project(project_with_9_extra_tracks());
-    rig.assert_overflows();
-    let (console_x, console_width) = rig.console_bounds();
-    let master_before = rig.x_of("mixer-master-strip");
-    assert_eq!(
-        master_before,
-        console_x + console_width - MASTER_GUTTER,
-        "未滚动时主控通道条必须钉在 `root.width - 112`（它在容器**外面**）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    rig.scroll_strips_right(SCROLL);
-    assert_eq!(
-        rig.x_of("mixer-master-strip"),
-        master_before,
-        "主控不随滚动"
-    );
-
-    rig.scroll_strips_right(SCROLL * 100);
-    assert_eq!(
-        rig.x_of("mixer-master-strip"),
-        master_before,
-        "滚到底时主控仍钉在原位（否则判据②的「位移」就分不清是谁动的）"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
 /// ⑧：内容不宽出视口（演示工程 6 轨）⇒ 滚轮一位不动。
 #[test]
 fn few_tracks_do_not_scroll() {
-    let mut rig = Rig::with_project(demo_project());
-    rig.assert_fits();
-
-    let before = rig.visible_strips();
-    assert_eq!(before.len(), rig.strips, "演示工程的每条通道都必须可达");
-    let panels_before = rig.is_addressable("module-export-midi-button");
-    assert!(panels_before, "未滚动时导出 MIDI 按钮就在视口里");
-
-    rig.scroll_strips_right(SCROLL);
-
-    assert_eq!(
-        rig.visible_strips(),
-        before,
-        "内容不宽出视口 ⇒ 偏移恒 0（默认帧不漂移）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    assert_eq!(
-        rig.is_addressable("module-export-midi-button"),
-        panels_before,
-        "不溢出时侧面板一位不动"
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }

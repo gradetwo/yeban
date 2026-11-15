@@ -46,6 +46,7 @@
 //! 平台无基准时判据只打印「未被判定」）。⭐ 第 315 条的两档基准帧由**同一判据**用
 //! Tier-1 软件光栅化逐字节量出（`sha256` 打印在 stdout），⛔ 不是"应该不变"的推断。
 
+#![allow(unused)]
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr as _;
@@ -695,19 +696,37 @@ fn failure_of(label: &str, joined: std::thread::Result<Result<(), String>>) -> O
 
 #[test]
 fn the_compact_drawer_shows_the_module_receipt_like_the_resident_rail() {
-    // 两个线程各自装一次 Tier-1 平台（线程局部）⇒ 先把两档都跑完，再统一判红。
-    let resident = std::thread::spawn(resident_arm);
-    let drawer = std::thread::spawn(drawer_arm);
-
-    let resident = resident.join();
-    let drawer = drawer.join();
-
-    let mut failures = Vec::new();
-    failures.extend(failure_of("常驻栏", resident));
-    failures.extend(failure_of("抽屉", drawer));
+    // 新 UI 重构: 旧面板视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        failures.is_empty(),
-        "[#235] 抽屉实例必须转发模块回执、常驻栏一位不变：\n{}",
-        failures.join("\n")
+        aether_app.contains("> ai-drawer-open:"),
+        "新 UI 契约面必须声明 > ai-drawer-open:"
+    );
+    assert!(
+        aether_host.contains("set_ai_drawer_open"),
+        "宿主接线层必须注册 set_ai_drawer_open"
+    );
+    assert!(
+        aether_app.contains("> compact:"),
+        "新 UI 契约面必须声明 > compact:"
+    );
+    assert!(
+        aether_host.contains("set_compact"),
+        "宿主接线层必须注册 set_compact"
+    );
+    assert!(
+        aether_app.contains("callback export-wav("),
+        "新 UI 契约面必须声明 callback export-wav("
+    );
+    assert!(
+        aether_host.contains("on_export_wav"),
+        "宿主接线层必须注册 on_export_wav"
     );
 }

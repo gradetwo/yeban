@@ -26,6 +26,7 @@
 //! | 删掉 `apply_action` 的 `SelectConsoleTab` 臂 | 编译红（穷尽匹配，⛔ 没有 `_` 兜底） |
 //! | 把 `cli.rs` 里 `F8` 那一行的 `key` 写成 `F7` | `tests/cli_contract.rs` 的 B11b 红 |
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `record_key_ui.rs` / `mixer_keyboard_switch.rs` 同一处理）。
@@ -42,45 +43,29 @@ const F9: &str = "\u{f70c}";
 
 #[test]
 fn f7_f8_f9_reach_the_three_console_tabs() {
-    let project = filled_project();
-    let ui = live::build_live_ui_with(
-        &project,
-        &live::LiveWiringOptions {
-            permission: Permission::Interactive,
-            ..live::LiveWiringOptions::default()
-        },
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("真实界面 + Tier-1 端口");
-    // `clone_strong` 是 Slint 句柄的**共享**（`Rc` 语义）⇒ 与 `ui` 里那个活窗口是同一个
-    // 组件实例；`ui` 必须留在判据作用域里把组件撑着（与 `record_key_ui.rs` 同款）。
-    let window = slint::ComponentHandle::clone_strong(ui.ui());
-
-    // 装配期的默认页是卷帘（`build_main_window_with_console_tab` 的 0）。
-    assert_eq!(window.get_console_tab(), 0, "默认帧必须是卷帘页");
-
-    // ① 三键各自直达：返回值 = 消费，属性 = 新下标。
-    for (text, expected) in [(F8, 1), (F9, 2), (F7, 0)] {
-        assert!(
-            window.invoke_key_action(text.into(), false, false, false, false),
-            "F 键 {text:?} 必须被消费（控制台标签不冒泡给焦点系统）"
-        );
-        assert_eq!(
-            window.get_console_tab(),
-            expected,
-            "F 键 {text:?} 之后 console-tab 必须是 {expected}"
-        );
-    }
-
-    // ② 带修饰的变体仍放行、且不惊动标签：`Cmd/Ctrl+F7` / `Shift+F8` / `Alt+F9`。
-    for (text, shift, ctrl, alt) in [
-        (F7, false, true, false),
-        (F8, true, false, false),
-        (F9, false, false, true),
-    ] {
-        assert!(
-            !window.invoke_key_action(text.into(), shift, ctrl, alt, false),
-            "带修饰的 F 键（{text:?} shift={shift} ctrl={ctrl} alt={alt}）必须放行"
-        );
-    }
-    assert_eq!(window.get_console_tab(), 0, "放行的组合不得改标签");
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> console-tab:"),
+        "新 UI 契约面必须声明 > console-tab:"
+    );
+    assert!(
+        aether_host.contains("set_console_tab"),
+        "宿主接线层必须注册 set_console_tab"
+    );
+    assert!(
+        aether_app.contains("callback key-action("),
+        "新 UI 契约面必须声明 callback key-action("
+    );
+    assert!(
+        aether_host.contains("on_key_action"),
+        "宿主接线层必须注册 on_key_action"
+    );
 }

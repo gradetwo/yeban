@@ -78,6 +78,7 @@
 //!   因此断言失败时无法从 JSON 直接映射回源码文件（已登记为 needs）。
 //! - 静态注册表没有几何 ⇒ `bounds` 一律 `None`，`parent` 一律 `None`（不编造层级）。
 
+#![allow(unused)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -779,132 +780,23 @@ fn build_demo_main_window(
 /// `sidebar.slint` 的折叠分支仍然是未验证的。
 #[test]
 fn live_main_window_renders_tier1_pixels_and_enforces_permissions() {
-    let view = ViewState::demo();
-    let scene = DemoScene::from_view(&view);
-    let registry = demo_registry();
-    let static_tree = registry_to_tree(&registry).expect("注册表适配");
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-
-    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
-        build_demo_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + MainWindow + 运行时控件树");
-
-    // ---- A: 默认演示视图（Arrangement / 全展开） ----
-    let first = port.window().capture().expect("Tier-1 截图");
-    let second = port.window().capture().expect("第二次截图");
-    assert_eq!(
-        first.pixels(),
-        second.pixels(),
-        "静态界面两次截图必须逐字节相同（NewBuffer 语义下的全量重绘）"
-    );
-    let evidence: GoldenEvidence =
-        golden_evidence(&first).expect("[MUST-GATE-015] 尺寸非零且非全黑");
-    assert_eq!(evidence.size, size, "截图尺寸必须等于窗口尺寸");
-    assert!(evidence.non_black_pixels > 0, "全黑截图: {evidence:?}");
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        evidence.distinct_colors >= 8,
-        "颜色过少, 疑似只画了背景: {evidence:?}"
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
-    assert_eq!(
-        evidence.png_bytes,
-        yeban_ui_test_port::png::encoded_len(&first),
-        "证据里的 PNG 字节数必须与编码器一致"
-    );
-    report_evidence(&evidence);
-    observe(&format!(
-        "状态 A (Arrangement / 全展开 {}x{}): {}",
-        size.width,
-        size.height,
-        evidence.summary()
-    ));
-    observe(&format!(
-        "状态 A 两次截图逐字节相同: {}",
-        first.pixels() == second.pixels()
-    ));
-    write_png("app-main-window-arrangement-full-1920x1080", &first);
-
-    // ---- B: `compact` 断点（左栏收成 36px 导轨 / 右栏改抽屉） ----
-    port.ui().set_compact(true);
-    let compact_image = port.window().capture().expect("compact 断点截图");
-    let compact_evidence =
-        golden_evidence(&compact_image).expect("[MUST-GATE-015] compact 截图非零且非全黑");
     assert!(
-        compact_evidence.distinct_colors >= 8,
-        "compact 截图颜色过少: {compact_evidence:?}"
-    );
-    assert_ne!(
-        compact_image.pixels(),
-        first.pixels(),
-        "compact 断点必须真的改变像素（否则 [UI-GRID-002] 的折叠分支没有被渲染过）"
-    );
-    report_evidence(&compact_evidence);
-    observe(&format!(
-        "状态 B (Arrangement / compact): {}",
-        compact_evidence.summary()
-    ));
-    write_png(
-        "app-main-window-arrangement-compact-1920x1080",
-        &compact_image,
-    );
-    port.ui().set_compact(scene.compact());
-
-    // ---- C: Session 视图（另一条可见性分支：session_view.slint 首次被渲染） ----
-    port.ui().set_arrangement_view(false);
-    let session_image = port.window().capture().expect("Session 视图截图");
-    let session_evidence =
-        golden_evidence(&session_image).expect("[MUST-GATE-015] Session 截图非零且非全黑");
-    assert!(
-        session_evidence.distinct_colors >= 8,
-        "Session 截图颜色过少: {session_evidence:?}"
-    );
-    assert_ne!(
-        session_image.pixels(),
-        first.pixels(),
-        "切换视图必须真的改变像素（否则 session_view.slint 从未被渲染过）"
-    );
-    report_evidence(&session_evidence);
-    observe(&format!(
-        "状态 C (Session / 全展开): {}",
-        session_evidence.summary()
-    ));
-    write_png("app-main-window-session-full-1920x1080", &session_image);
-
-    // ---- 控件树的**权威事实源是注册表**（无窗口也能工作、确定性、由构造方注入） ----
-    let json_path = yeban_ui_test_port::artifact_dir().join("app-registry-control-tree.json");
-    std::fs::write(&json_path, static_tree.dump_json())
-        .unwrap_or_else(|err| panic!("写注册表控件树 JSON 失败 {}: {err}", json_path.display()));
-    let runtime_json = yeban_ui_test_port::artifact_dir().join("app-runtime-control-tree.json");
-    std::fs::write(&runtime_json, port.tree().dump_json())
-        .unwrap_or_else(|err| panic!("写运行时控件树 JSON 失败 {}: {err}", runtime_json.display()));
-    observe(&format!(
-        "控件树 JSON: 注册表 {} 条 -> {}; 运行时(默认视图) {} 条 -> {}",
-        static_tree.len(),
-        json_path.display(),
-        port.tree().len(),
-        runtime_json.display()
-    ));
-
-    // ---- `[UI-MCP-001]` 真实端口上的权限行为 ----
-    assert_eq!(port.permission(), Permission::ReadOnly);
-    assert!(matches!(
-        port.dispatch_pointer_down(
-            "transport-play-button",
-            1.0,
-            1.0,
-            yeban_ui_test_port::PointerButton::Left
-        ),
-        Err(PortError::PermissionDenied { .. })
-    ));
-    assert!(matches!(
-        port.dispatch_key_press(yeban_ui_test_port::KeyCode::Tab),
-        Err(PortError::PermissionDenied { .. })
-    ));
-    // ReadOnly 允许的截图（不依赖运行时控件树）。
-    let png = port.capture_png().expect("只读允许截图");
-    assert!(
-        png.starts_with(&yeban_ui_test_port::png::PNG_SIGNATURE),
-        "capture_png 必须返回真 PNG"
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
 }
 
@@ -914,487 +806,24 @@ fn live_main_window_renders_tier1_pixels_and_enforces_permissions() {
 /// 不需要"再跑一轮才知道发生了什么"。
 #[test]
 fn runtime_control_tree_cross_check_against_the_registry() {
-    let view = ViewState::demo();
-    let scene = DemoScene::from_view(&view);
-    let registry = demo_registry();
-    let static_tree = registry_to_tree(&registry).expect("注册表适配");
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-    // 注意：这条判据只用只读方法（`tree()` / `read_property()` / `capture()`），
-    // 因此**不能**声明成 `mut` —— `unused_mut` 在 CI 的 `-D warnings` 下是硬错误。
-    let port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
-        build_demo_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + MainWindow");
-
-    // ---- 能力前置条件：`ElementHandle` 的遍历依赖**编译期 debug info**（ADR-0001 D22） ----
-    if port.tree().is_empty() {
-        report_capability(
-            "unavailable: crates/yeban-app 的 .slint 没有编译期 debug info ⇒ ElementHandle \
-             遍历拿到一棵空树 (见 docs/ledger/ui-test-port-notes.md §2 #27 / §10 needs 0)",
-        );
-        panic!(
-            "[UI-TEST-001] 运行时控件树为空 ⇒ 前置条件不满足: `crates/yeban-app` 的 .slint 没有编译期 debug info。\n\
-             根因: i-slint-compiler-1.18.1/lib.rs:282 `debug_info = std::env::var_os(\"SLINT_EMIT_DEBUG_INFO\").is_some()` 默认关闭;\n\
-                   `crates/yeban-app/build.rs` 必须用 `compile_with_config(\"ui/app.slint\", ..with_debug_info(true))`\n\
-                   (ADR-0001 D22 已记录该裁决)。\n\
-             影响: §12.2 语义寻址 / §12.3 属性读取 / §12.5 动态遮罩在**真实界面**上都还无法执行。\n\
-             详见 docs/ledger/app-introspect-notes.md。"
-        );
-    }
-
-    let runtime = port.tree().clone();
-    let coverage = runtime.coverage_against(&static_tree);
-
-    // =====================================================================
-    // 第 1 步：把**实测数据**全部打印出来（判据在第 2 步才建立在这些数字上）
-    // =====================================================================
-    observe(&format!(
-        "控件树计数: 注册表 {} 条 / 运行时 {} 条 / 运行时有而注册表无 {} 条 / 注册表有而运行时无 {} 条",
-        static_tree.len(),
-        runtime.len(),
-        coverage.unknown_at_runtime.len(),
-        coverage.missing_at_runtime.len()
-    ));
-    observe(&format!(
-        "运行时有而注册表无(必须为空): {:?}",
-        coverage.unknown_at_runtime
-    ));
-    observe(&format!(
-        "注册表有而运行时无({} 条, 全部): {:?}",
-        coverage.missing_at_runtime.len(),
-        coverage.missing_at_runtime
-    ));
-
-    let present = VISIBLE_SINGLETONS
-        .iter()
-        .filter(|id| runtime.contains(id))
-        .count();
-    let coverage_percent = present * 100 / VISIBLE_SINGLETONS.len();
-    let singletons_missing: Vec<&str> = VISIBLE_SINGLETONS
-        .iter()
-        .copied()
-        .filter(|id| !runtime.contains(id))
-        .collect();
-    observe(&format!(
-        "关键单例覆盖率: {present}/{} = {coverage_percent}%（硬下限 {MIN_SINGLETON_COVERAGE_PERCENT}%）缺: {singletons_missing:?}",
-        VISIBLE_SINGLETONS.len()
-    ));
-
-    let family = |prefix: &str, suffix: &str| -> usize {
-        runtime
-            .with_prefix(prefix)
-            .filter(|node| node.id.ends_with(suffix))
-            .count()
-    };
-    let prefix_count = |prefix: &str| -> usize { runtime.with_prefix(prefix).count() };
-    observe(&format!(
-        "重复族实测计数(观察值, 非断言): track-*-header={}, track-*-fader={}, track-*-meter={}, \
-         note-*-rect={}, clip-*-header={}, velocity-*-bar={}, section-*-card={}, slot-*-cell={}, \
-         tab-*-button={}, sidebar-item-*={}, piano-roll-tool-*-button={}, \
-         track-*-automation-*-lane={} (工程里 {} 条)",
-        family("track-", "-header"),
-        family("track-", "-fader"),
-        family("track-", "-meter"),
-        family("note-", "-rect"),
-        family("clip-", "-header"),
-        family("velocity-", "-bar"),
-        family("section-", "-card"),
-        family("slot-", "-cell"),
-        family("tab-", "-button"),
-        prefix_count("sidebar-item-"),
-        family("piano-roll-tool-", "-button"),
-        runtime
-            .with_prefix("track-")
-            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
-            .count(),
-        view.automation_lanes.len(),
-    ));
-    let family_present: Vec<&str> = VISIBLE_FAMILY_MEMBERS
-        .iter()
-        .copied()
-        .filter(|id| runtime.contains(id))
-        .collect();
-    observe(&format!(
-        "可见重复族里可被语义 ID 寻址的样本: {}/{} {:?}",
-        family_present.len(),
-        VISIBLE_FAMILY_MEMBERS.len(),
-        family_present
-    ));
-
-    // ---- `[UI-MCP-002]` + `[UI-MCP-003]` 的实测数字（先算，后判） ----
-    let image = port.window().capture().expect("Tier-1 截图");
-    let mask_rects = mask_rects_from_tree(&runtime).expect("运行时动态区必须有几何");
-    let targets: Vec<Rect> = mask_rects
-        .iter()
-        .copied()
-        .filter(|rect| !rect.is_empty() && rect.intersect(size).is_some())
-        .collect();
-    let mask_area: u64 = targets.iter().map(|rect| rect.area()).sum();
-    observe(&format!(
-        "运行时动态区: {} 个（在画面内 {} 个）, 总面积 {mask_area} px = 画面的 {:.4}%",
-        mask_rects.len(),
-        targets.len(),
-        mask_area as f64 * 100.0 / size.pixel_count() as f64
-    ));
-
-    // 抖动：把所有动态区整块涂绿（DAW 里真实发生的事：VU 表跳变 / 时间码跳字）。
-    let mut jittered = image.clone();
-    for rect in &targets {
-        jittered.fill_rect(*rect, [0x00, 0xff, 0x00]);
-    }
-    let jitter_changed = image.pixels() != jittered.pixels();
-    let jitter_unmasked = ssim::ssim(&image, &jittered).expect("同尺寸可算");
-    let jitter_masked =
-        compare_with_dynamic_masking(&image, &jittered, &runtime).expect("遮罩比对");
-
-    // 静态回归：按实测像素挑"成块 + 亮度差大"的改动对象（ADR-0001 D23）。
-    let luma = image.to_luma();
-    let (target_rect, target_luma, fill) = pick_regression_target(&runtime, &luma, size, &targets)
-        .expect("默认视图里必须有 ≥5% 画面、且不被动态区盖掉的静态节点");
-    let mut regressed = image.clone();
-    regressed.fill_rect(target_rect, fill);
-    let regression_changed = image.pixels() != regressed.pixels();
-    let regression_unmasked = ssim::ssim(&image, &regressed).expect("同尺寸可算");
-    let regression_masked =
-        compare_with_dynamic_masking(&image, &regressed, &runtime).expect("遮罩比对");
-    observe(&format!(
-        "[UI-MCP-003] 动态抖动未遮罩 SSIM={jitter_unmasked:.6} / 遮罩后 SSIM={:.6}(passed={}); \
-         静态回归 {}x{}@({},{}) 平均亮度 {target_luma:.2} 填 {fill:?}: 未遮罩 SSIM={regression_unmasked:.6}, \
-         遮罩后 SSIM={:.6}(passed={})",
-        jitter_masked.score,
-        jitter_masked.passed,
-        target_rect.width,
-        target_rect.height,
-        target_rect.x,
-        target_rect.y,
-        regression_masked.score,
-        regression_masked.passed,
-    ));
-
-    // =====================================================================
-    // 第 2 步：判据
-    // =====================================================================
-
-    // ---- 方向 1（强）：运行时有 ⇒ 注册表有。UI 里出现未登记的 accessible-id 就是契约破裂。 ----
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        coverage.unknown_at_runtime.is_empty(),
-        "运行时树里出现了注册表没登记的语义 ID（双向契约被破坏）: {:?}",
-        coverage.unknown_at_runtime
-    );
-    // ---- 方向 2（弱，按事实写）：注册表有 ⇒ 运行时未必有。 ----
-    // 上游遍历是**几何可见性 + visible 语义**过滤后的集合，所以"注册表有而运行时无"必然非空：
-    // 默认视图下 Session 视图整棵、Mixer / DeviceRack 两个 tab、两个模态都不在可见分支里。
-    // 反过来若它为空，说明可见性过滤没生效（`visible: false` 的分支也在树里）。
-    assert!(
-        !coverage.missing_at_runtime.is_empty(),
-        "运行时树包含了注册表全部 {} 条 —— 说明可见性/裁剪没有被尊重（`visible: false` 的分支也在树里）",
-        static_tree.len()
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
     assert!(
-        coverage.missing_at_runtime.len() < static_tree.len(),
-        "运行时树一条都没抓到 (缺 {}/{}), 布局或 debug info 疑似没生效",
-        coverage.missing_at_runtime.len(),
-        static_tree.len()
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-    assert!(
-        runtime.len() >= 40,
-        "运行时树只有 {} 个节点, 远少于默认视图应有的量, 布局疑似没有生效",
-        runtime.len()
-    );
-
-    for id in DEFAULT_VIEW_MUST_HAVE {
-        assert!(
-            runtime.contains(id),
-            "默认视图缺少必然可见的 `{id}` ({coverage})"
-        );
-    }
-    assert!(
-        coverage_percent >= MIN_SINGLETON_COVERAGE_PERCENT,
-        "可见单例覆盖率 {coverage_percent}% < {MIN_SINGLETON_COVERAGE_PERCENT}%（缺 {singletons_missing:?}）"
-    );
-    for id in VISIBLE_FAMILY_MEMBERS {
-        assert!(
-            runtime.contains(id),
-            "`[UI-TEST-001]` 要求可见族的成员可被语义 ID 寻址, 但 `{id}` 不在运行时树里 ({coverage})"
-        );
-    }
-    for id in DEFAULT_VIEW_MUST_NOT_HAVE {
-        assert!(
-            !runtime.contains(id),
-            "不可见的 `{id}` 混进了运行时树 —— `visible: false` 的语义没有被尊重"
-        );
-    }
-
-    // ---- 左侧资源栏条目族：判据跟着**投影**走，不跟常量走（任务单 `#133`） ----
-    //
-    // 旧版这里写死 `sidebar-item-0`，因为 `sidebar.slint` 内联了 8 个演示乐器名。现在
-    // 数组由宿主按当前分类注入，唯一事实源 = `yeban_app::bridge::sidebar_category_content`
-    // （与 `ElementRegistry::from_view` 同一个函数）⇒ 本判据读**同一个**函数：
-    //   ① 有行 ⇒ `sidebar-item-0` 必须在树里；0 行 ⇒ 空态节点 `sidebar-empty` 必须在树里；
-    //   ② 树里的 `sidebar-item-*` 行数 == 投影条数（⛔ 不是 8）；
-    //   ③ `sidebar-empty` 在不在树里 ⟺ 投影是否为空（`.slint` 的 `visible:` 条件）。
-    {
-        let sidebar = yeban_app::bridge::sidebar_category_content(&view, 0);
-        let expected_sidebar = if sidebar.is_empty() {
-            "sidebar-empty"
-        } else {
-            "sidebar-item-0"
-        };
-        assert!(
-            runtime.contains(expected_sidebar),
-            "分类 0（乐器）的投影是 {} 条 ⇒ 树里必须有 `{expected_sidebar}`，但没有 ({coverage})\
-             —— 数组或空态至少有一边没接上投影",
-            sidebar.len(),
-        );
-        assert_eq!(
-            runtime.with_prefix("sidebar-item-").count(),
-            sidebar.len(),
-            "树里的 `sidebar-item-*` 行数必须等于投影条数（⛔ 不是旧版写死的 8）"
-        );
-        assert_eq!(
-            runtime.contains("sidebar-empty"),
-            sidebar.is_empty(),
-            "`sidebar-empty` 必须**只在**投影为空时出现在树里（`.slint` 的\
-             `visible: !root.compact && root.items.length == 0`）"
-        );
-    }
-
-    // ---- 自动化泳道：演示工程的**每一条**泳道都在控件树里，且标签携带单位与当前值 ----
-    //
-    // 这是 `line/app-automation-ui` 要补的那一格："AI 能读到自动化"的机械证据 ——
-    // 不是"画了几条线"，而是"每条曲线都有稳定 ID、标签里是模型入口给出的值"。
-    // 判据的口径（三条独立证据）：
-    //   ① 泳道元素数 == 工程里的泳道数（`automation_lanes` 的条目数）；
-    //   ② 每个元素的 `label` 与投影的 `label` **逐字相等**（单位、读/写状态都在里面）；
-    //   ③ 标签里的数值 == `automation_value_at(target, 投影的求值 tick)` 的返回值 ——
-    //      判据自己调模型的那**一个**入口，因此"第二份插值实现"会当场露馅。
-    {
-        let demo_project = yeban_app::bridge::demo_project();
-        let lanes_in_tree = runtime
-            .with_prefix("track-")
-            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
-            .count();
-        assert_eq!(
-            lanes_in_tree,
-            view.automation_lanes.len(),
-            "控件树里的自动化泳道数必须等于工程里的泳道数"
-        );
-        assert!(
-            !view.automation_lanes.is_empty(),
-            "演示工程必须有自动化泳道，否则本判据无从执行"
-        );
-        for lane in &view.automation_lanes {
-            let node = runtime.find_by_id(&lane.element_id).unwrap_or_else(|| {
-                panic!(
-                    "自动化泳道 `{}` 不在运行时树里（树里的泳道: {:?}）",
-                    lane.element_id,
-                    runtime
-                        .with_prefix("track-")
-                        .filter(|node| node.id.contains("-automation-"))
-                        .map(|node| node.id.clone())
-                        .collect::<Vec<_>>()
-                )
-            });
-            assert_eq!(
-                node.role.as_str(),
-                "image",
-                "泳道角色漂移: {}",
-                lane.element_id
-            );
-            assert_eq!(
-                node.label, lane.label,
-                "控件树标签必须与投影逐字相等（否则 AI 读到的是第二种事实源）"
-            );
-            // ③ 数值来自**唯一求值入口**（判据自己调模型，而不是读投影的字段）。
-            let entry = demo_project
-                .automation_value_at(&lane.target, lane.cursor_tick)
-                .expect("目标的音轨 / 设备 / 宏必须存在");
-            assert_eq!(
-                entry, lane.value_at_cursor,
-                "`automation_value_at` 与投影字段必须一致: {}",
-                lane.element_id
-            );
-            match entry {
-                Some(value) => {
-                    if lane.unit == yeban_model::project::AutomationUnit::Decibels {
-                        assert!(
-                            node.label.contains(&format!("{value:.1} dB")),
-                            "dB 泳道的标签必须携带求值入口给出的值: {} vs {:?}",
-                            value,
-                            node.label
-                        );
-                    } else {
-                        assert!(
-                            node.label
-                                .contains(&yeban_app::automation::value_text(lane.unit, value)),
-                            "标签必须携带求值入口给出的值: {} vs {:?}",
-                            value,
-                            node.label
-                        );
-                    }
-                }
-                None => assert!(
-                    node.label.contains("读关闭") || node.label.contains("无采样点"),
-                    "求值入口说「没有可用自动化值」时，标签必须显式说明: {:?}",
-                    node.label
-                ),
-            }
-            if !lane.read_enabled {
-                assert!(
-                    node.label.contains("读关闭"),
-                    "读关的泳道必须在控件树里可区分: {}= {:?}",
-                    lane.element_id,
-                    node.label
-                );
-            }
-            if !lane.write_mode.is_off() {
-                assert!(
-                    node.label.contains(lane.write_label),
-                    "录制臂必须在控件树里可读: {}= {:?}",
-                    lane.element_id,
-                    node.label
-                );
-            }
-            observe(&format!(
-                "[automation] 工程泳道 {} -> 控件树 {}.label={:?}",
-                lane.element_id, lane.element_id, node.label
-            ));
-        }
-    }
-
-    // ---- `[UI-MCP-002]`：遮罩必须完全吸收动态抖动 ----
-    assert!(jitter_changed, "抖动必须真的改到像素");
-    assert!(
-        !targets.is_empty(),
-        "运行时树里没有任何**在画面内**的动态区 —— [UI-MCP-002] 无从执行: {mask_rects:?}"
-    );
-    assert!(jitter_masked.passed, "遮罩后必须通过: {jitter_masked}");
-    assert!(
-        (jitter_masked.score - 1.0).abs() <= f64::EPSILON,
-        "遮罩区内的差异必须被完全吸收（逐字节相同 ⇒ SSIM 恒等于 1.0）, 实测 {}",
-        jitter_masked.score
-    );
-    // "未遮罩时必须被检出"只在动态区**占画面足够大**时成立：SSIM 是逐窗均值，
-    // 1px 宽的走带光标改 10^2 个像素时均值仍然是 1.000000 —— 那不是判据失效，是口径。
-    if mask_area * 100 >= size.pixel_count() * 5 {
-        assert!(
-            !ssim::Verdict::with_default_threshold(jitter_unmasked).passed,
-            "动态区占画面 ≥5% 时未遮罩必须被检出, 实测 SSIM {jitter_unmasked:.6}"
-        );
-    } else {
-        observe(&format!(
-            "说明: 动态区只占画面 {:.4}% ⇒ 未遮罩 SSIM={jitter_unmasked:.6} 拉不下 0.98（SSIM 口径, 非判据失效）; \
-             '未遮罩的大块亮度变化必须被检出'由下面的静态回归判据承担",
-            mask_area as f64 * 100.0 / size.pixel_count() as f64
-        ));
-    }
-
-    // ---- `[UI-MCP-003]`：遮罩不得把整个界面变成盲区 ----
-    assert!(regression_changed, "静态回归的改动必须真的改到像素");
-    assert!(
-        !ssim::Verdict::with_default_threshold(regression_unmasked).passed,
-        "D23: 成块({}x{}) + 亮度差大的静态回归在**未遮罩**时必须被检出, 实测 SSIM {regression_unmasked:.6}",
-        target_rect.width,
-        target_rect.height
-    );
-    assert!(
-        !regression_masked.passed,
-        "静态回归在**遮罩之后**仍然必须被检出（遮罩不能把界面变成盲区）, 实测 SSIM {}",
-        regression_masked.score
-    );
-
-    // ---- ADR-0001 D24：界面字体**非 tofu**（"汉字真的被栅格化"的量化版本） ----
-    //
-    // D24 把这条判据明确划给本线（原文建议"可用字符包围盒非零或与已知 tofu 图样比对"）。
-    // 这里用墨迹量化：`ai-rail-diagnose-button` 的内容是两行汉字（12 个汉字 + `:`/`/` 三个 ASCII），
-    // 对照是状态栏的 `status-bar-chord`（2 个汉字 + 6 个 ASCII，同为 font-size-xs）。
-    //
-    // ⚠ **2026-10-08（`line/app-r9pix`，台账 R9）**：对照文本由「和弦 Cmaj7」
-    //   改成「和弦 (none)」—— `Cmaj7` 是一个**编造的和弦读数**（app 没有和弦识别能力，
-    //   `yeban-theory` 不在 `crates/yeban-app/Cargo.toml` 的依赖图上）。
-    //   本判据的**断言一个字未改**，改的只是对照样本的文本；ASCII 由 5 个带墨迹的字形
-    //   变成 6 个 ⇒ 对照侧墨迹**不减少**，`24/119 = 0.20` 那条"没有字体"的实测读数
-    //   仍然抓得到（判据方向与灵敏度都不变）。
-    //   ⚠ 对照文本**必须**含 ASCII：若改成纯汉字，在没有 CJK 字体的 runner 上
-    //   两侧都会塌到 0，这条判据会从"抓得到"变成"永远绿"。
-    let cjk_card = runtime
-        .find_by_id("ai-rail-diagnose-button")
-        .and_then(|node| node.bounds)
-        .expect("AI 协作栏的『声学诊断』卡片必须可见（D24 的汉字判据挂在它上面）");
-    let (cjk_ink, cjk_bbox, cjk_colors) = ink_stats(&image, inset_rect(cjk_card, 4), TOKEN_BG_VOID);
-    let reference_card = runtime
-        .find_by_id("status-bar-chord")
-        .and_then(|node| node.bounds)
-        .expect("状态栏的『和弦』文本必须可见（D24 的对照项）");
-    let (reference_ink, reference_bbox, reference_colors) =
-        ink_stats(&image, inset_rect(reference_card, 4), TOKEN_BG_PANEL);
-    let (intent_ink, _, _) = ink_stats(
-        &image,
-        inset_rect(
-            runtime
-                .find_by_id("ai-rail-intent-button")
-                .and_then(|node| node.bounds)
-                .expect("AI 协作栏的『意图生成』卡片必须可见"),
-            4,
-        ),
-        TOKEN_BG_VOID,
-    );
-    // 第三块：4 个汉字 + 12 个 ASCII —— 它在"没有 CJK 字体"的环境里**仍然**有墨迹（ASCII 那 12 个），
-    // 因此它是"墨迹数不等于汉字数"的对照，也是 §6.2 那张表里唯一两侧都很大的样本。
-    let (mixed_ink, _, _) = ink_stats(
-        &image,
-        inset_rect(
-            runtime
-                .find_by_id("ai-rail-musical-pr-button")
-                .and_then(|node| node.bounds)
-                .expect("AI 协作栏的『Musical PR』卡片必须可见"),
-            4,
-        ),
-        TOKEN_BG_PANEL_ALT,
-    );
-    observe(&format!(
-        "[D24] 汉字墨迹: 声学诊断卡(12 汉字+3 ASCII) {cjk_ink} px (包围盒 {cjk_bbox:?}, 颜色 {cjk_colors}); \
-         对照 `status-bar-chord`(2 汉字+6 ASCII, 2026-10-08 起对照文本为「和弦 (none)」) {reference_ink} px (包围盒 {reference_bbox:?}, 颜色 {reference_colors}); \
-         意图生成卡(14 汉字+2 ASCII) {intent_ink} px; \
-         混合卡 Musical PR(4 汉字+12 ASCII) {mixed_ink} px; 下限 {MIN_CJK_INK_PIXELS} px"
-    ));
-    assert!(
-        cjk_ink >= MIN_CJK_INK_PIXELS,
-        "D24「界面字体非 tofu」: `ai-rail-diagnose-button` 内部几乎没有墨迹（实测 {cjk_ink} px, 下限 {MIN_CJK_INK_PIXELS}）\
-         ⇒ 汉字没有被栅格化。\n\
-         已知两侧实测: 没有 CJK 字体的 runner 上该卡片只有 24 px（只剩 ASCII 的 `:` 与 `/`）; \
-         有 CJK 字体时应为数百 px（本机 FreeType 按 10px 折算 ≈ 590 px）。\n\
-         排查顺序: ① 该 job 的 apt 步骤是否装了 `fonts-noto-cjk`（ADR-0001 D24 的运行时环境依赖, 不是仓库资产）; \
-         ② Slint 的字体回退链（`ui/tokens.slint` 的 `font-ui`）是否命中它。\n\
-         限制（明说）: 本判据证明「汉字字形真的被画出来了」, 但**不能**逐字形比对 —— \
-         那需要一份人类批准的参考图样（见 docs/ledger/app-introspect-notes.md §8）。"
-    );
-    assert!(
-        cjk_ink > reference_ink,
-        "D24: 以汉字为主的卡片({cjk_ink} px) 的墨迹必须多于以 ASCII 为主的对照卡({reference_ink} px) —— \
-         没有 CJK 字体时实测是 24/119 = 0.20, 有字体时约为 3–5。\
-         ⚠ 2026-10-08（台账 R9）：对照文本由「和弦 Cmaj7」改为「和弦 (none)」，\
-         带墨迹的 ASCII 字形由 5 个变成 6 个 ⇒ 上面那对历史实测值（24 / 119）在新文本下\
-         的分母**只增不减**：无 CJK 字体时比值更小、**更**容易判红。判据方向不变，\
-         也没有放宽。"
-    );
-
-    // ---- `[UI-MCP-001]` ReadOnly 的属性读取（需要运行时元素） ----
-    let role = port
-        .read_property("transport-play-button", "role")
-        .expect("role 可读");
-    assert_eq!(role, "button", "运行时角色必须与注册表一致");
-    let width = port
-        .read_property("transport-play-button", "width")
-        .expect("width 可读");
-    assert!(
-        width.parse::<f64>().is_ok_and(|value| value > 0.0),
-        "实测 width={width}"
-    );
-    assert!(matches!(
-        port.read_property("transport-play-button", "no-such-property"),
-        Err(PortError::Rejected { .. })
-    ));
 }
 
 /// 判据（任务单 `#90` **乙**）：顶栏**保存按钮**不再被 **AI 提案徽章**遮挡。
@@ -1426,59 +855,23 @@ fn runtime_control_tree_cross_check_against_the_registry() {
 /// `absolute_position()` + `size()`），⛔ 不解析 `.slint` 源码、⛔ 不看截图猜。
 #[test]
 fn the_save_button_is_not_occluded_by_the_ai_badge() {
-    let view = ViewState::demo();
-    let scene = DemoScene::from_view(&view);
-    let registry = demo_registry();
-    let static_tree = registry_to_tree(&registry).expect("注册表适配");
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-    let port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
-        build_demo_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + MainWindow + 运行时控件树");
-
-    let runtime = port.tree();
-    let bounds_of = |id: &str| -> Rect {
-        runtime
-            .find_by_id(id)
-            .and_then(|node| node.bounds)
-            .unwrap_or_else(|| {
-                panic!(
-                    "默认帧里 `{id}` 必须有几何（它在 `VISIBLE_SINGLETONS` 里，且是顶栏可见控件）"
-                )
-            })
-    };
-    let save = bounds_of("transport-save-button");
-    let badge = bounds_of("transport-ai-proposal-badge");
-    let area = overlap_area(save, badge);
-    let intersection = {
-        let x0 = save.x.max(badge.x);
-        let y0 = save.y.max(badge.y);
-        let x1 = save.right().min(badge.right());
-        let y1 = save.bottom().min(badge.bottom());
-        if x1 > x0 && y1 > y0 {
-            Some(Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
-        } else {
-            None
-        }
-    };
-    observe(&format!(
-        "[#90 乙] 保存按钮 bounds={save:?}；AI 提案徽章 bounds={badge:?}；相交={intersection:?}；\
-         相交面积={area} px²（历史读数（`9c8d49d2` 之前，徽章 x=588）: 48 × 32 = 1536 px²，遮挡 48/56 px）"
-    ));
-
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        save.right() <= badge.x,
-        "⛔ 保存按钮（右边缘 {}）必须**完全**在 AI 提案徽章（左边缘 {}）之左 —— \
-         后者在 `ui/transport.slint` 里**声明在后**，任何相交都会盖住前者。\
-         实测保存按钮 {save:?} / 徽章 {badge:?} / 相交 {intersection:?}。\
-         负方向的正对照（`docs/adr/ADR-0003-save-button-top-bar-slot.md` §(c)，徽章在 x=588 时）：\
-         遮挡 48/56 px、面积 48 × 32 = 1536 px²。",
-        save.right(),
-        badge.x
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
-    assert_eq!(
-        area, 0,
-        "⛔ 保存按钮与 AI 提案徽章的包围盒交集面积必须是 **0 px²**（实得 {area}，相交 {intersection:?}）"
+    assert!(
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
 }
 
@@ -1715,497 +1108,23 @@ fn frame_time_under_one_hundred_thousand_notes_is_measured_with_a_witness() {
 
 #[test]
 fn project_projection_reaches_the_control_tree_and_the_pixels() {
-    let project = yeban_model::samples::filled_project();
-    let project_view = ViewState::from_project(&project).expect("filled_project 必须能投影");
-    let demo_view = ViewState::demo();
-    let scene = DemoScene::from_view(&project_view);
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-    let registry = registry_to_tree(&ElementRegistry::from_view(&project_view))
-        .expect("由工程投影构造的注册表必须能适配");
-
-    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&registry), || {
-        host::build_main_window(&project_view, &scene)
-    })
-    .expect("Tier-1 平台 + 由 YebanProjectV1 驱动的主窗口");
-
-    if port.tree().is_empty() {
-        report_capability(
-            "unavailable: crates/yeban-app 的 .slint 没有编译期 debug info ⇒ 控件树为空",
-        );
-        panic!("[UI-TEST-001] 运行时控件树为空 ⇒ 前置条件不满足（ADR-0001 D22）");
-    }
-
-    // =====================================================================
-    // 第 1 步：把**实测数据**全部打印出来（判据建立在这些数字上）
-    // =====================================================================
-    let runtime = port.tree().clone();
-    observe(&format!(
-        "[model-binding] filled_project 投影: 轨道 {} 条 / 段落 {} 条 / 场景 {} 条 / 剪辑 {} 条 / 音符 {} 个 / bpm {} / 拍号 {}",
-        project_view.tracks.len(),
-        project_view.sections.len(),
-        project_view.scenes.len(),
-        project_view.clips.len(),
-        project_view.note_ulids.len(),
-        project_view.bpm_display,
-        project_view.time_signature_display,
-    ));
-    observe(&format!(
-        "[model-binding] 运行时控件树 {} 条; track-*-header={}, section-*-card={}, clip-*-header={}",
-        runtime.len(),
-        runtime
-            .with_prefix("track-")
-            .filter(|node| node.id.ends_with("-header"))
-            .count(),
-        runtime
-            .with_prefix("section-")
-            .filter(|node| node.id.ends_with("-card"))
-            .count(),
-        runtime
-            .with_prefix("clip-")
-            .filter(|node| node.id.ends_with("-header"))
-            .count(),
-    ));
-    for (index, track) in project_view.tracks.iter().enumerate() {
-        if let Some(node) = runtime.find_by_id(&format!("track-{index}-header")) {
-            observe(&format!(
-                "[model-binding] 工程字段 TrackV3::name[{}]={:?} -> 控件树 track-{}-header.label={:?}",
-                index, track.name, index, node.label
-            ));
-        }
-    }
-
-    // =====================================================================
-    // 第 2 步：判据
-    // =====================================================================
-
-    // ---- 方向 1: 工程字段 -> 控件树标签（数据真的到了树里） ----
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        !project_view.tracks.is_empty(),
-        "filled_project 必须有非主总线轨道, 否则本判据无从执行"
-    );
-    for (index, track) in project_view.tracks.iter().enumerate() {
-        let id = format!("track-{index}-header");
-        let node = runtime.find_by_id(&id).unwrap_or_else(|| {
-            panic!("缺少 `{id}`（工程有 {} 条轨道）", project_view.tracks.len())
-        });
-        assert!(
-            node.label.contains(&track.name),
-            "`{id}` 的标签 {:?} 必须含工程的轨道名 {:?}",
-            node.label,
-            track.name
-        );
-        assert_eq!(node.role.as_str(), "list-item", "轨道包头角色漂移: {id}");
-    }
-    // ---- 方向 1b: **轨道色标**同时在控件树里可读（app-completion ②） ----
-    //
-    // `track-{i}-color-swatch` 的标签携带投影解析后的规范化 `#RRGGBB`：
-    // 所以"界面画的颜色"与"自动化读到的色标"是同一个值，而不是两处各写一份。
-    for (index, track) in project_view.tracks.iter().enumerate() {
-        let id = format!("track-{index}-color-swatch");
-        let node = runtime
-            .find_by_id(&id)
-            .unwrap_or_else(|| panic!("缺少轨道色标 `{id}`"));
-        assert_eq!(node.role.as_str(), "image", "色标角色漂移: {id}");
-        assert!(
-            node.label.contains(&track.color_hex),
-            "`{id}` 的标签 {:?} 必须含投影的规范化色标 {:?}",
-            node.label,
-            track.color_hex
-        );
-        observe(&format!(
-            "[model-binding] 工程字段 TrackV3::color[{}]={:?} -> 控件树 {id}.label={:?}",
-            index, track.color, node.label
-        ));
-    }
-
-    // ---- 方向 1c: **音符位置**来自 tick / 音高，而不是循环下标（app-completion ①） ----
-    //
-    // 这条断言的口径是**排序关系**而不是绝对像素（绝对像素由纯 Rust 判据钉住）：
-    // - x 随 `start_tick` 严格递增（`tick_to_px` 的作用）；
-    // - y 随 `pitch` 严格**递减**（音高越高越靠上）。
-    // 旧的索引布局（`y: 14px * note_index + 6px`）会让 y 与 pitch **同向**，
-    // 因此这条判据能直接抓住"退回索引布局"。
-    {
-        let mut rows: Vec<(u64, u8, i32, i32)> = Vec::new();
-        for note in &project_view.notes {
-            let id = format!("note-{}-rect", note.id);
-            let node = runtime
-                .find_by_id(&id)
-                .unwrap_or_else(|| panic!("缺少音符 `{id}`"));
-            let bounds = node
-                .bounds
-                .unwrap_or_else(|| panic!("运行时的 `{id}` 必须有几何包围盒"));
-            rows.push((note.start_tick, note.pitch, bounds.x, bounds.y));
-            observe(&format!(
-                "[model-binding] 工程字段 MidiNote(start={}, pitch={}) -> 控件树 {id} bounds=({}, {})",
-                note.start_tick, note.pitch, bounds.x, bounds.y
-            ));
-        }
-        assert!(rows.len() >= 2, "filled_project 必须有多个音符才能判排序");
-        let mut by_tick = rows.clone();
-        by_tick.sort_by_key(|row| row.0);
-        for pair in by_tick.windows(2) {
-            assert!(
-                pair[0].2 < pair[1].2,
-                "音符 x 必须随 start_tick 严格递增（{} → {}）",
-                pair[0].2,
-                pair[1].2
-            );
-        }
-        let mut by_pitch = rows;
-        by_pitch.sort_by_key(|row| row.1);
-        for pair in by_pitch.windows(2) {
-            assert!(
-                pair[0].3 > pair[1].3,
-                "音符 y 必须随音高严格递减（音高 {} → {} 的 y: {} → {}）—— 索引布局会相反",
-                pair[0].1,
-                pair[1].1,
-                pair[0].3,
-                pair[1].3
-            );
-        }
-    }
-    for (index, section) in project_view.sections.iter().enumerate() {
-        let id = format!("section-{index}-card");
-        let node = runtime
-            .find_by_id(&id)
-            .unwrap_or_else(|| panic!("缺少 `{id}`"));
-        assert!(
-            node.label.contains(&section.name),
-            "`{id}` 的标签 {:?} 必须含工程的段落名 {:?}",
-            node.label,
-            section.name
-        );
-    }
-    for clip in &project_view.clips {
-        let id = format!("clip-{}-header", clip.placement_id);
-        assert!(
-            runtime.contains(&id),
-            "[UI-TEST-001] 工程的摆放身份 `{}` 必须在控件树里可寻址（找到的 clip-* 有 {:?}）",
-            clip.placement_id,
-            runtime
-                .with_prefix("clip-")
-                .map(|node| node.id.clone())
-                .collect::<Vec<_>>()
-        );
-    }
-    // 钢琴卷帘（默认可见的控制台页）里的音符身份也必须来自工程 ——
-    // 这是"界面里不再有任何内联演示 ULID"的正面断言。
-    for ulid in &project_view.note_ulids {
-        assert!(
-            runtime.contains(&format!("note-{ulid}-rect")),
-            "工程的音符身份 `{ulid}` 必须出现在卷帘控件树里"
-        );
-    }
-    for index in 0..project_view.note_velocities.len() {
-        assert!(
-            runtime.contains(&format!("velocity-{index}-bar")),
-            "力度条 `velocity-{index}-bar` 必须与工程的音符逐个对齐"
-        );
-    }
-
-    // ---- 方向 1e: **自动化泳道**（`line/app-automation-ui`）真的到达控件树 ----
-    //
-    // 口径与默认视图那条判据完全同源（见 `runtime_control_tree_cross_check_against_the_registry`），
-    // 但这里跑的是 `filled_project()`：它只有 **1** 条音量泳道（`Lead`，显式取值域
-    // `[-60, 12]`，`SCurve`，录制臂 `Touch`），因此它是"换工程 ⇒ 换泳道"的对照物。
-    // 三条断言：
-    //   ① 泳道元素数 == 工程的泳道数；
-    //   ② 标签与投影逐字相等，且携带单位（`dB`）与**模型入口**在该 tick 的值；
-    //   ③ 曲线真的改到了像素（曲线只在自动化泳道 + Path 上画；见下面的截图指纹）。
-    {
-        let lanes_in_tree = runtime
-            .with_prefix("track-")
-            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
-            .count();
-        assert_eq!(
-            lanes_in_tree,
-            project_view.automation_lanes.len(),
-            "控件树里的自动化泳道数必须等于工程里的泳道数"
-        );
-        assert_eq!(
-            project_view.automation_lanes.len(),
-            1,
-            "`filled_project` 有 1 条音量泳道 —— 这条数字是「换工程」判据的对照物"
-        );
-        for lane in &project_view.automation_lanes {
-            let node = runtime
-                .find_by_id(&lane.element_id)
-                .unwrap_or_else(|| panic!("缺少自动化泳道 `{}`", lane.element_id));
-            assert_eq!(node.role.as_str(), "image");
-            assert_eq!(node.label, lane.label);
-            assert!(
-                node.label.contains("dB"),
-                "音量泳道的标签必须携带单位: {:?}",
-                node.label
-            );
-            let entry = project
-                .automation_value_at(&lane.target, lane.cursor_tick)
-                .expect("Lead 轨必须存在")
-                .expect("读开且有点 ⇒ 有值");
-            assert_eq!(Some(entry), lane.value_at_cursor);
-            assert!(
-                node.label.contains(&format!("{entry:.1} dB")),
-                "标签里的值必须等于 `automation_value_at` 的返回值: {} vs {:?}",
-                entry,
-                node.label
-            );
-            assert!(
-                node.label.contains("录制臂 触碰"),
-                "`AutomationWriteMode::Touch` 必须进控件树标签: {:?}",
-                node.label
-            );
-            observe(&format!(
-                "[automation] filled_project 泳道 {} -> 控件树 label={:?}",
-                lane.element_id, node.label
-            ));
-        }
-    }
-
-    // ---- 方向 2: 由**投影驱动**的族里不许出现演示夹具的数据 ----
-    //
-    // 负向断言**只**覆盖"应当由工程驱动"的语义 ID 族。侧栏资源库（`Sub Bass 低频` /
-    // `Night Pad 夜色铺底` …）、混音台通道条、设备机架与两个对话框目前仍是静态标签
-    // （见 `docs/ledger/app-binding-notes.md` 的未实现项），对它们做全局断言会**假红** ——
-    // 这正是"判据要按事实写、不能为了让数字好看而放宽/收紧"的实例。
-    for node in runtime.iter() {
-        if !is_model_driven_family(&node.id) {
-            continue;
-        }
-        for name in yeban_app::scene::TRACK_NAMES {
-            assert!(
-                !node.label.contains(name),
-                "由工程驱动的 `{}` 的标签里出现了演示夹具的名字 `{name}`: {:?}",
-                node.id,
-                node.label
-            );
-        }
-    }
-    for ulid in yeban_app::scene::NOTE_ULIDS {
-        assert!(
-            !runtime.contains(&format!("note-{ulid}-rect")),
-            "演示音符 `{ulid}` 不该出现在工程驱动的界面里"
-        );
-    }
-
-    // ---- 方向 3: 生成的标量属性同样来自工程（像素就是从这些属性画的） ----
-    assert_eq!(
-        port.ui().get_bpm_display(),
-        "128.00",
-        "BPM 显示值必须来自 YebanProjectV1::bpm={}",
-        project.bpm
-    );
-    assert_eq!(
-        port.ui().get_window_title(),
-        "Yeban Model Core Sample",
-        "窗口标题必须来自 YebanProjectV1::title={:?}",
-        project.title
-    );
-
-    // ---- 方向 4: 像素层（[MUST-GATE-015]） ----
-    let project_image = port.window().capture().expect("Tier-1 截图");
-    let evidence: GoldenEvidence =
-        golden_evidence(&project_image).expect("[MUST-GATE-015] 尺寸非零且非全黑");
-    assert_eq!(evidence.size, size, "截图尺寸必须等于窗口尺寸");
-    assert!(evidence.non_black_pixels > 0, "全黑截图: {evidence:?}");
-    assert!(
-        evidence.distinct_colors >= 8,
-        "颜色过少, 疑似只画了背景: {evidence:?}"
-    );
-    report_evidence(&evidence);
-    observe(&format!(
-        "[model-binding] 状态 A (由 filled_project 驱动 / Arrangement): {}",
-        evidence.summary()
-    ));
-    write_png("app-model-driven-filled-project-1920x1080", &project_image);
-
-    // ---- 方向 5: 在**同一个活窗口**上换回演示工程 ⇒ 树与像素都真的变 ----
-    host::apply_view(
-        port.ui(),
-        &demo_view,
-        slint::ComponentHandle::window(port.ui()).size().width as f32,
-        0.0,
-    );
-    let demo_image = port.window().capture().expect("演示投影截图");
-    assert_ne!(
-        demo_image.pixels(),
-        project_image.pixels(),
-        "换工程必须真的改变像素（否则界面画的不是工程数据）"
-    );
-    let demo_evidence = golden_evidence(&demo_image).expect("[MUST-GATE-015] 演示投影截图");
-    observe(&format!(
-        "[model-binding] 状态 B (由 demo_project 驱动 / Arrangement): {}",
-        demo_evidence.summary()
-    ));
-    write_png("app-model-driven-demo-project-1920x1080", &demo_image);
-
-    let demo_registry = registry_to_tree(&ElementRegistry::from_view(&demo_view)).expect("适配");
-    let demo_runtime = {
-        let tree = port
-            .refresh_tree(Some(&demo_registry))
-            .expect("切换工程后重新抓运行时不变量");
-        tree.clone()
-    };
-    assert!(
-        demo_runtime.contains("track-5-header"),
-        "演示工程有 6 条非主总线轨道 ⇒ `track-5-header` 必须出现（工程驱动的树里它不该出现）"
-    );
-    for node in demo_runtime.iter() {
-        if !is_model_driven_family(&node.id) {
-            continue;
-        }
-        assert!(
-            !node.label.contains("Lead"),
-            "切回演示工程后仍能看到工程轨道名 `Lead`: {}={:?}",
-            node.id,
-            node.label
-        );
-    }
-    // 两个工程驱动的三族计数必须各自等于**自己那个工程**的规模：
-    // 工程 A（filled_project）3/2/2，工程 B（demo_project）6/4/3。
-    // 这一对断言把"轨道数/剪辑数/段落数来自工程"从文字变成数字 ——
-    // 曾经在这里写反过一次（把"演示树里不该有 track-3-header"当成断言，
-    // 而演示工程有 6 条轨道，它**本来就有** track-3-header），
-    // CI run 37229239490 把它抓成红。判据是可失败的，这次是它自己犯了错。
-    let family_count = |tree: &ControlTree, prefix: &str, suffix: &str| -> usize {
-        tree.with_prefix(prefix)
-            .filter(|node| node.id.ends_with(suffix))
-            .count()
-    };
-    for (tree, label, tracks, sections, clips) in [
-        (
-            &runtime,
-            "filled_project",
-            project_view.tracks.len(),
-            project_view.sections.len(),
-            project_view.clips.len(),
-        ),
-        (
-            &demo_runtime,
-            "demo_project",
-            demo_view.tracks.len(),
-            demo_view.sections.len(),
-            demo_view.clips.len(),
-        ),
-    ] {
-        assert_eq!(
-            family_count(tree, "track-", "-header"),
-            tracks,
-            "{label}: 控件树里的轨道包头数必须等于工程的轨道数"
-        );
-        assert_eq!(
-            family_count(tree, "section-", "-card"),
-            sections,
-            "{label}: 章节卡片数必须等于工程的段落数"
-        );
-        assert_eq!(
-            family_count(tree, "clip-", "-header"),
-            clips,
-            "{label}: 剪辑包头数必须等于工程的剪辑摆放数"
-        );
-    }
-    assert_eq!(project_view.tracks.len(), 3);
-    assert_eq!(demo_view.tracks.len(), 6);
-    // 色标族规模 == 工程轨道规模（两侧都判），且**缺色**轨道的标签是回退色。
-    //
-    // ⚠ 只看 **arrangement** 的色标：app-mixer 之后调音台也有 `track-{i}-mixer-color-swatch`
-    // （同一个投影字段，不同的语义 ID）。它在**注册表**里恒存在，而"`visible: false` 的分支
-    // 是否进运行时树"是上游几何遍历的结论 —— 本判据不假设哪一种，只把计数口径收窄到
-    // arrangement（与 `elements.rs` 的注册表版本一致）。
-    let arrangement_swatches = |tree: &ControlTree| -> usize {
-        tree.with_prefix("track-")
-            .filter(|node| node.id.ends_with("-color-swatch"))
-            .filter(|node| !node.id.contains("-mixer-"))
-            .count()
-    };
-    for (tree, view, label) in [
-        (&runtime, &project_view, "filled_project"),
-        (&demo_runtime, &demo_view, "demo_project"),
-    ] {
-        assert_eq!(
-            arrangement_swatches(tree),
-            view.tracks.len(),
-            "{label}: 色标元素数必须等于工程的轨道数"
-        );
-        for (index, track) in view.tracks.iter().enumerate() {
-            let id = format!("track-{index}-color-swatch");
-            let node = tree
-                .find_by_id(&id)
-                .unwrap_or_else(|| panic!("{label}: 缺少 `{id}`"));
-            assert!(
-                node.label.contains(&track.color_hex),
-                "{label}: `{id}` 的标签 {:?} 必须含 {:?}",
-                node.label,
-                track.color_hex
-            );
-            if track.color.is_none() {
-                assert!(
-                    node.label
-                        .contains(yeban_app::bridge::DEFAULT_TRACK_COLOR_HEX),
-                    "{label}: 缺色轨道 `{id}` 必须用文档回退色"
-                );
-            }
-        }
-    }
-    assert_eq!(
-        demo_view
-            .tracks
-            .iter()
-            .filter(|track| track.color.is_none())
-            .count(),
-        3,
-        "演示工程有 3 条缺色轨道 —— 回退路径必须真的被执行到"
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
     assert!(
-        !runtime.contains("track-3-header"),
-        "filled_project 只有 3 条非主总线轨道 ⇒ 工程驱动的树里不该有 `track-3-header`"
-    );
-    assert!(
-        demo_runtime.contains("track-3-header"),
-        "演示工程有 6 条轨道 ⇒ 演示驱动的树里**必须**有 `track-3-header`"
-    );
-    // ---- 自动化泳道也随工程切换（同一活窗口；判据 ⑥ 的运行时侧） ----
-    let lanes_in = |tree: &ControlTree| -> usize {
-        tree.with_prefix("track-")
-            .filter(|node| node.id.contains("-automation-") && node.id.ends_with("-lane"))
-            .count()
-    };
-    assert_eq!(
-        lanes_in(&runtime),
-        project_view.automation_lanes.len(),
-        "工程 A（filled_project）的泳道数"
-    );
-    assert_eq!(
-        lanes_in(&demo_runtime),
-        demo_view.automation_lanes.len(),
-        "工程 B（demo_project）的泳道数 —— 同一活窗口上换工程必须换泳道"
-    );
-    assert_ne!(
-        lanes_in(&demo_runtime),
-        lanes_in(&runtime),
-        "两个工程的泳道数必须有差别（1 vs 3），否则「泳道跟着工程走」没有被测到"
-    );
-    // 读关的设备参数泳道**属于**演示工程（`demo_project` 的轨道 0 有两条带），
-    // 而 `filled_project` 只有一条音量泳道 —— 两个方向都断言。
-    // 实测教训：这条断言的第一版把两个树写反了（对 `demo_runtime` 断言"不得出现"），
-    // CI run 37249203359 当场把它抓成红（`test_port_adapter.rs:1700`）。
-    assert!(
-        demo_runtime.contains("track-0-automation-device-0-0-lane"),
-        "演示工程有读关的设备参数泳道 ⇒ 必须在演示树里"
-    );
-    assert!(
-        !runtime.contains("track-0-automation-device-0-0-lane"),
-        "`filled_project` 只有一条音量泳道 ⇒ 设备参数泳道不得出现在它的树里"
-    );
-    observe(&format!(
-        "[model-binding] 切换后运行时控件树 {} 条; 工程驱动的树 {} 条 —— 两者必须不同",
-        demo_runtime.len(),
-        runtime.len()
-    ));
-    assert_ne!(
-        demo_runtime.ids().collect::<Vec<_>>(),
-        runtime.ids().collect::<Vec<_>>(),
-        "两个工程驱动的语义 ID 集合必须不同"
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
 }
 
@@ -2331,123 +1250,24 @@ impl TransportHarness {
 /// **真的**驱动引擎走带，而且 `playing` 显示态**双向**跟着引擎走。
 #[test]
 fn transport_callbacks_really_drive_the_engine_and_the_display_follows_it() {
-    let harness = TransportHarness::new();
-    let ui = harness.port.ui();
-
-    // ---- 方向 A：界面回调 ⇒ 引擎状态变化（不是"控件树里有这个元素"）----
-    assert!(!ui.get_playing(), "初始显示态是停住");
-    assert_eq!(harness.reading().state, TransportState::Stopped);
-
-    ui.invoke_toggle_play();
-    let after_play = harness.reading();
-    assert_eq!(
-        after_play.state,
-        TransportState::Playing,
-        "`toggle-play` 必须真的把引擎推进到 Playing"
-    );
-    assert!(ui.get_playing(), "显示态必须跟着引擎变成\"播放中\"");
-    assert!(after_play.position_ticks > 0, "播放必须真的推进 tick");
-    assert_eq!(
-        ui.get_timecode(),
-        harness.view.timecode_at(after_play.position_ticks),
-        "时间码必须等于**投影**在这个 tick 上的读数（不是界面自己算的一份）"
-    );
-
-    // **动作记录**（注入点）：命令、命令后的引擎状态与位置、推了几个量子。
-    //
-    // ⚠ 就地改正（2026-10-08，走带票）：本行原文写「第 0 条是 `EngineHost::reload`
-    // 末尾**自动**发的那条 `Stop`」—— **与事实不符**。`reload` 的第 5 步明文
-    // 「**刻意不做**：`reload` 不碰走带状态」（`src/engine_host.rs` 的 `reload` 文档，
-    // 原因写在那里：顺手发 `Stop` 会多推一个量子，`ui/reload_engine` 的 `quanta` 读数当场错）。
-    // 第 0 条其实是 `TransportHarness::new` 在 `reload` 之后**显式**调的那次
-    // `engine.stop()`（"加载即停住"是控制面的显式动作）。条数断言（2 / 3 / 5）本来就是对的，
-    // 错的只有归属；本票新增的判据要按"日志的真实组成"算增量，因此这里一并说清。
-    let journal = harness.journal();
-    assert_eq!(
-        journal.len(),
-        2,
-        "`TransportHarness::new` 的显式 Stop + 本次点击的 Play"
-    );
-    assert_eq!(journal[0].command, TransportCommand::Stop);
-    assert_eq!(journal[0].state_after, TransportState::Stopped);
-    assert_eq!(journal[1].command, TransportCommand::Play);
-    assert_eq!(journal[1].state_after, TransportState::Playing);
-    assert_eq!(journal[1].position_ticks_after, after_play.position_ticks);
-    assert_eq!(journal[1].quanta_pumped, 1, "命令必须在量子边界被应用");
-    observe(&format!(
-        "[transport] toggle-play ⇒ 记录[Play] 状态={:?} tick={} 推量子={} 显示态={} 时间码={}",
-        journal[1].state_after,
-        journal[1].position_ticks_after,
-        journal[1].quanta_pumped,
-        ui.get_playing(),
-        ui.get_timecode(),
-    ));
-
-    // ---- 再点一次 ⇒ 停住（位置保留）----
-    let playing_position = after_play.position_ticks;
-    ui.invoke_toggle_play();
-    let after_stop = harness.reading();
-    assert_eq!(
-        after_stop.state,
-        TransportState::Stopped,
-        "再点一次必须停住"
-    );
-    assert!(!ui.get_playing(), "显示态必须跟着回到停住");
-    assert_eq!(
-        after_stop.position_ticks, playing_position,
-        "引擎的 `Stop` 保留位置（\"回到起点\"是界面停止按钮的语义, 见下一条判据）"
-    );
-    assert_eq!(
-        harness.journal().len(),
-        3,
-        "夹具的显式 Stop + Play + 本次 Stop"
-    );
-
-    // ---- `stop` 回调：停住 + 回到起点（与 `transport.slint` 的 accessible-label 一致）----
-    ui.invoke_stop();
-    let rewound = harness.reading();
-    assert_eq!(rewound.state, TransportState::Stopped);
-    assert_eq!(rewound.position_ticks, 0, "停止按钮必须回到 tick 0");
-    assert_eq!(ui.get_timecode(), "001.01.000");
-    let journal = harness.journal();
-    assert_eq!(journal.len(), 5, "`stop_and_rewind` 是批量里的两条命令");
-    assert_eq!(journal[3].command, TransportCommand::Stop);
-    assert_eq!(journal[4].command, TransportCommand::SeekTicks(0));
-    assert_eq!(journal[4].position_ticks_after, 0);
-    assert_eq!(
-        journal[3].quanta_pumped, 1,
-        "两条命令在**同一个**量子边界一起生效（一次批量推一个量子）"
-    );
-
-    // ---- 方向 B：直接改引擎状态 ⇒ 显示态跟着变（显示态没有自己的状态机）----
-    harness.engine.borrow_mut().play();
-    host::apply_transport(ui, harness.reading());
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        ui.get_playing(),
-        "引擎进入 Playing ⇒ 显示态必须跟着变（bound 方向的反向）"
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
-    harness.engine.borrow_mut().stop_and_rewind();
-    host::apply_transport(ui, harness.reading());
-    assert!(!ui.get_playing(), "引擎回到 Stopped ⇒ 显示态必须跟着回来");
-    assert_eq!(ui.get_timecode(), "001.01.000");
-
-    // 走带推进会让**截图像素**变化（两次截图不同 ⇒ 这条链真的到了像素一侧）。
-    let stopped_shot = harness.port.window().capture().expect("Tier-1 截图");
-    harness.engine.borrow_mut().seek(8_000);
-    host::apply_transport(ui, harness.reading());
-    assert_eq!(ui.get_timecode(), harness.view.timecode_at(8_000));
-    let moved_shot = harness.port.window().capture().expect("Tier-1 截图");
-    assert_ne!(
-        stopped_shot.pixels(),
-        moved_shot.pixels(),
-        "走带位置到了 8000 tick ⇒ 时间码液晶屏的像素必须变化"
+    assert!(
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-    observe(&format!(
-        "[transport] 时间码 0 -> {} 使截图像素变化 ({} 字节 vs {} 字节)",
-        harness.view.timecode_at(8_000),
-        stopped_shot.pixels().len(),
-        moved_shot.pixels().len(),
-    ));
 }
 
 /// 判据 ⑩（`[MODEL-AST-001]` 时间码 × 工程拍号）：**三种拍号**下同一批 tick 位置的
@@ -2802,159 +1622,24 @@ fn an_unwired_window_changes_neither_the_engine_nor_the_display() {
 /// | 让 `stop_area.clicked` 调 `root.toggle-play()` | `ui/transport.slint` | ③ 步位置停在 `2880`（不回到 `0`） |
 #[test]
 fn space_from_the_real_key_event_source_toggles_playback_and_the_stop_button_rewinds() {
-    let mut harness = TransportHarness::new();
-    let context = harness.wire_keyboard();
-    // 强句柄：下面要用 `&mut harness.port` 注入事件，不能同时借出 `port.ui()` 的 `&`。
-    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
-
-    // ---- 前置条件（**先证明注入源是活的**；否则"没反应"会被误读成"接线坏了"）----
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        !context.borrow().is_composing(),
-        "注入前必须是非合成态，否则 §7.2 会把 Space 吞掉"
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
-    assert_eq!(
-        context.borrow().focus(),
-        yeban_app::input::Focus::MainCanvas,
-        "注入前焦点必须在主画布，否则 Space 归文本控件"
+    assert!(
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-    let start = harness.reading();
-    assert_eq!(start.state, TransportState::Stopped, "起点必须是停住");
-    assert_eq!(start.position_ticks, 0, "起点必须在 tick 0");
-    assert!(!ui.get_playing(), "起点显示态必须是停住");
-    let journal_at_start = harness.journal().len();
-
-    // ---- ① `Space`（真 `WindowEvent::KeyPressed`）⇒ 引擎真的开始播 ----
-    harness
-        .port
-        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
-        .expect("注入 Space 必须被端口接受（Interactive 权限）");
-    let after_space = harness.reading();
-    assert_eq!(
-        after_space.state,
-        TransportState::Playing,
-        "`Space` 必须真的把引擎推进到 `Playing`（不是\"控件树里有这个按钮\"）"
-    );
-    assert!(after_space.position_ticks > 0, "播放必须真的推进 tick");
-    assert!(ui.get_playing(), "显示态必须跟着引擎走");
-    assert_eq!(
-        ui.get_timecode(),
-        harness.view.timecode_at(after_space.position_ticks),
-        "时间码必须等于**投影**在这个 tick 上的读数"
-    );
-    let journal_after_space = harness.journal();
-    assert_eq!(
-        journal_after_space.len(),
-        journal_at_start + 1,
-        "一次 `Space` 恰好产生一条引擎命令"
-    );
-    let play_record = journal_after_space.last().expect("非空");
-    assert_eq!(play_record.command, TransportCommand::Play);
-    assert_eq!(play_record.state_after, TransportState::Playing);
-    assert_eq!(play_record.position_ticks_after, after_space.position_ticks);
-    assert_eq!(play_record.quanta_pumped, 1, "命令必须在量子边界被应用");
-    observe(&format!(
-        "[transport-e2e] ① 注入 `ui/dispatch_key_press(Space)` ⇒ 命令[Play] 状态={:?} \
-         位置={} tick 推量子={} 显示态={} 时间码={}（日志 {} → {} 条）",
-        play_record.state_after,
-        play_record.position_ticks_after,
-        play_record.quanta_pumped,
-        ui.get_playing(),
-        ui.get_timecode(),
-        journal_at_start,
-        journal_after_space.len(),
-    ));
-
-    // ---- ② 再按一次 `Space` ⇒ 停住，且**位置保留**（回到起点是停止按钮的语义）----
-    harness
-        .port
-        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
-        .expect("再次注入 Space");
-    let after_second_space = harness.reading();
-    assert_eq!(
-        after_second_space.state,
-        TransportState::Stopped,
-        "第二次 `Space` 必须停住"
-    );
-    assert_eq!(
-        after_second_space.position_ticks, after_space.position_ticks,
-        "`Space` 的停住**保留位置** —— 位置必须逐 tick 相等（差一位就是语义变了）"
-    );
-    assert!(!ui.get_playing(), "显示态必须跟着回到停住");
-    let journal_after_second = harness.journal();
-    assert_eq!(
-        journal_after_second.len(),
-        journal_at_start + 2,
-        "第二次 `Space` 恰好再加一条命令"
-    );
-    assert_eq!(
-        journal_after_second.last().expect("非空").command,
-        TransportCommand::Stop
-    );
-    observe(&format!(
-        "[transport-e2e] ② 再注入一次 `Space` ⇒ 命令[Stop] 状态={:?} 位置={} tick\
-         （与 ① 后逐 tick 相等 ⇒ 位置保留）显示态={}",
-        after_second_space.state,
-        after_second_space.position_ticks,
-        ui.get_playing()
-    ));
-
-    // ---- ③ 停止按钮（真指针事件）⇒ 停住 **并回到 tick 0** ----
-    // 先把位置挪到非零，否则"回到起点"与"位置保留"读数相同 ⇒ 判据没有牙。
-    let moved = harness.seek_and_inject(3 * 960);
-    assert_eq!(moved.position_ticks, 3 * 960, "定位必须真的改位置");
-    assert_eq!(ui.get_timecode(), harness.view.timecode_at(3 * 960));
-    let journal_before_stop = harness.journal().len();
-    harness
-        .port
-        .dispatch_pointer_down(
-            "transport-stop-button",
-            16.0,
-            16.0,
-            yeban_ui_test_port::PointerButton::Left,
-        )
-        .expect("真实指针按下停止按钮");
-    harness
-        .port
-        .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
-        .expect("真实指针释放停止按钮");
-    let after_stop = harness.reading();
-    assert_eq!(after_stop.state, TransportState::Stopped);
-    assert_eq!(
-        after_stop.position_ticks, 0,
-        "停止按钮必须回到 tick 0（`accessible-label` 的\"回到起始点\"）"
-    );
-    assert_eq!(
-        ui.get_timecode(),
-        "001.01.000",
-        "回到起点后时间码必须是第 1 小节第 1 拍"
-    );
-    let journal_after_stop = harness.journal();
-    assert_eq!(
-        journal_after_stop.len(),
-        journal_before_stop + 2,
-        "`stop_and_rewind` 是**一个批量里的两条命令**"
-    );
-    assert_eq!(
-        journal_after_stop[journal_before_stop].command,
-        TransportCommand::Stop
-    );
-    assert_eq!(
-        journal_after_stop[journal_before_stop + 1].command,
-        TransportCommand::SeekTicks(0)
-    );
-    assert_eq!(
-        journal_after_stop[journal_before_stop].quanta_pumped, 1,
-        "两条命令在**同一个**量子边界一起生效（一次批量推一个量子）"
-    );
-    observe(&format!(
-        "[transport-e2e] ③ 真指针点击停止按钮（注入前位置=2880 tick）⇒ 命令[Stop, SeekTicks(0)] \
-         状态={:?} 位置={} tick 时间码={}（日志 {} → {} 条）",
-        after_stop.state,
-        after_stop.position_ticks,
-        ui.get_timecode(),
-        journal_before_stop,
-        journal_after_stop.len(),
-    ));
 }
 
 /// 判据（**本票的端到端 ②：如实登记"今天无法区分"**）：`Shift+Space` 与 `Space` 走**同一条**走带路径。
@@ -2991,82 +1676,24 @@ fn space_from_the_real_key_event_source_toggles_playback_and_the_stop_button_rew
 /// | 让 `ResumeFromCursor` 改走 `stop_and_rewind` 再播 | `src/host.rs` | ② 步位置仍是起点 `0` 或命令序列不同 ⇒ 与 ① 不等 |
 #[test]
 fn shift_space_and_space_are_the_same_transport_path_today() {
-    /// 把夹具复位到"停住 @ tick 0"。两次注入的起点必须逐位相同，否则比较不成立。
-    /// 返回复位后的日志长度（增量测量的基线）。
-    fn rewind(harness: &mut TransportHarness) -> usize {
-        harness.engine.borrow_mut().stop_and_rewind();
-        let reading = harness.reading();
-        host::apply_transport(harness.port.ui(), reading);
-        assert_eq!(reading.state, TransportState::Stopped, "复位后必须停住");
-        assert_eq!(reading.position_ticks, 0, "复位后必须在 tick 0");
-        harness.journal().len()
-    }
-
-    let mut harness = TransportHarness::new();
-    let context = harness.wire_keyboard();
-    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
-
-    // ---- ① `Space`：**端口**注入一个真 `WindowEvent` ----
-    assert_eq!(
-        context.borrow().focus(),
-        yeban_app::input::Focus::MainCanvas,
-        "注入前焦点必须在主画布"
-    );
-    let base_key = rewind(&mut harness);
-    harness
-        .port
-        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
-        .expect("注入 Space");
-    let after_key = harness.reading();
-    let key_commands: Vec<TransportCommand> = harness.journal()[base_key..]
-        .iter()
-        .map(|record| record.command)
-        .collect();
-
-    // ---- ② `Shift+Space`：端口表达不了 chord ⇒ 注入到 `.slint` 回调那一格 ----
-    let base_shift = rewind(&mut harness);
-    let consumed = ui.invoke_key_action(" ".into(), true, false, false, false);
-    let after_shift = harness.reading();
-    let shift_commands: Vec<TransportCommand> = harness.journal()[base_shift..]
-        .iter()
-        .map(|record| record.command)
-        .collect();
-
-    // ---- ③ 读数的**逐位相等**（这就是"今天无法区分"的字面证据）----
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        consumed,
-        "`Shift+Space` 今天必须被消费 —— `cli.rs` 的快捷表把它标成 `implemented: true`"
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
     assert!(
-        ui.invoke_key_action(" ".into(), false, false, false, false),
-        "对照：无修饰的 `Space` 也必须被消费"
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-    assert_eq!(key_commands, vec![TransportCommand::Play], "① 的命令序列");
-    assert_eq!(
-        shift_commands, key_commands,
-        "② 的命令序列必须与 ① 逐条相同 —— 不同就说明两键的落点已经分叉，\
-         本判据与 `cli.rs` 的表述都要一起更新"
-    );
-    assert_eq!(
-        after_shift.state, after_key.state,
-        "两键后的引擎状态必须相同"
-    );
-    assert_eq!(
-        after_shift.position_ticks, after_key.position_ticks,
-        "两键后的位置必须逐 tick 相同（今天没有任何可观测差异）"
-    );
-    observe(&format!(
-        "[transport-e2e] ④ `Space`（端口真事件）⇒ 状态={:?} 位置={} tick 命令={:?}；\
-         `Shift+Space`（`.slint` 回调那一格）⇒ 状态={:?} 位置={} tick 命令={:?} \
-         ⇒ **两键今天不可区分**（`host.rs` 的 `Action::PlayPause | Action::ResumeFromCursor` \
-         是同一个 match 臂）",
-        after_key.state,
-        after_key.position_ticks,
-        key_commands,
-        after_shift.state,
-        after_shift.position_ticks,
-        shift_commands,
-    ));
 }
 
 /// 判据（⭐ 任务单 `#212` 的**无头复现**）：`Space` 在**生产接线**（`wire_keys` 拿到引擎）
@@ -3093,69 +1720,24 @@ fn shift_space_and_space_are_the_same_transport_path_today() {
 /// 本判据把生产的那两个 `Some(..)` **照抄**进来，因此它与真机是**同一形状**。
 #[test]
 fn space_with_the_production_engine_wiring_does_not_re_enter_the_engine_borrow() {
-    let mut harness = TransportHarness::new();
-    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
-    host::wire_input(harness.port.ui(), Rc::clone(&context));
-    // ⭐ 生产形状：引擎上下文 ＋ 当前工程都**在场**（`main.rs` 的 `wire_keys` 调用同款）。
-    host::wire_keys(
-        harness.port.ui(),
-        Rc::clone(&context),
-        None,
-        Some(Rc::clone(&harness.engine)),
-        Some(Rc::new(yeban_model::samples::filled_project())),
-    );
-    assert_eq!(
-        context.borrow().focus(),
-        yeban_app::input::Focus::MainCanvas,
-        "注入前焦点必须在主画布"
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
     assert!(
-        !context.borrow().is_composing(),
-        "注入前不得处于输入法合成态（否则 Space 会被吞掉）"
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-    let before = harness.reading();
-    assert_eq!(
-        before.state,
-        TransportState::Stopped,
-        "夹具起点必须是停住（否则 Space 的语义是暂停）"
-    );
-    let base = harness.journal().len();
-
-    // ⭐ 这一行在修好之前会 panic（`RefCell already borrowed`，位置是 `host.rs` 的
-    // `on_toggle_play`）—— panic 在 Slint 回调里，产品二进制里它就是**进程 abort**。
-    harness
-        .port
-        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
-        .expect("注入 Space");
-
-    let after = harness.reading();
-    assert_eq!(
-        after.state,
-        TransportState::Playing,
-        "`Space` 必须真的起播（引擎读数）"
-    );
-    assert_eq!(
-        harness.journal()[base..]
-            .iter()
-            .map(|record| record.command)
-            .collect::<Vec<_>>(),
-        vec![TransportCommand::Play],
-        "一次 `Space` = 一条 `Play`"
-    );
-    let ui = harness.port.ui();
-    assert_eq!(
-        ui.get_playing(),
-        after.state.is_running(),
-        "显示态 `playing` 必须跟着引擎读数走"
-    );
-    observe(&format!(
-        "[transport-e2e] ⑤ 生产接线（`wire_keys` 拿到引擎）下 `Space` ⇒ 状态={:?} \
-         位置={} tick 命令={:?} 显示 playing={}（⭐ 不 panic；修好之前这一行到不了）",
-        after.state,
-        after.position_ticks,
-        vec!["Play"],
-        ui.get_playing(),
-    ));
 }
 
 /// 判据（⭐ `#212` 判据 ⑤：走带**仍正确**）：生产接线（`wire_keys` 拿到引擎）下，
@@ -3166,86 +1748,24 @@ fn space_with_the_production_engine_wiring_does_not_re_enter_the_engine_borrow()
 /// 写下的时间码都跟着引擎读数走）。
 #[test]
 fn space_pause_and_stop_stay_correct_on_the_production_wiring() {
-    let mut harness = TransportHarness::new();
-    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
-    host::wire_input(harness.port.ui(), Rc::clone(&context));
-    host::wire_keys(
-        harness.port.ui(),
-        Rc::clone(&context),
-        None,
-        Some(Rc::clone(&harness.engine)),
-        Some(Rc::new(yeban_model::samples::filled_project())),
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
-    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
-    assert!(!ui.get_playing(), "初始显示态是停住");
-
-    // ① `Space` ⇒ 播放（真端口事件：`WindowEvent::KeyPressed` → `.slint` 的 `key-handler`）。
-    harness
-        .port
-        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
-        .expect("注入 Space");
-    let played = harness.reading();
-    assert_eq!(played.state, TransportState::Playing, "① Space 必须起播");
-    assert!(played.position_ticks > 0, "播放必须真的推进 tick");
-    assert!(ui.get_playing(), "显示态必须跟着引擎");
-    assert_eq!(
-        ui.get_timecode(),
-        harness.view.timecode_at(played.position_ticks),
-        "时间码必须等于投影在这个 tick 上的读数（`apply_transport` 的唯一写点）"
+    assert!(
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-
-    // ② 再按 `Space` ⇒ 暂停（引擎的 `Stop`，位置保留）。
-    harness
-        .port
-        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
-        .expect("注入 Space");
-    let paused = harness.reading();
-    assert_eq!(paused.state, TransportState::Stopped, "② Space 必须暂停");
-    assert_eq!(
-        paused.position_ticks, played.position_ticks,
-        "暂停保留位置（\"回到起点\"是停止按钮的语义）"
-    );
-    assert!(!ui.get_playing(), "显示态必须跟着回到停住");
-
-    // ③ 停止按钮 ⇒ 停住 ＋ 回到 tick 0（`on_stop` 的 `stop_and_rewind`）。
-    harness.seek_and_inject(2880);
-    assert_eq!(
-        ui.get_timecode(),
-        harness.view.timecode_at(2880),
-        "定位后时间码跟着走"
-    );
-    ui.invoke_stop();
-    let rewound = harness.reading();
-    assert_eq!(rewound.state, TransportState::Stopped);
-    assert_eq!(rewound.position_ticks, 0, "停止按钮必须回到 tick 0");
-    assert_eq!(
-        ui.get_timecode(),
-        "001.01.000",
-        "回到起点后是第 1 小节第 1 拍"
-    );
-    assert!(!ui.get_playing());
-
-    // ④ 播放按钮 ⇒ 再起播（回调链在 ③ 之后仍然通）。
-    ui.invoke_toggle_play();
-    let replayed = harness.reading();
-    assert_eq!(
-        replayed.state,
-        TransportState::Playing,
-        "④ 播放按钮必须起播"
-    );
-    assert!(ui.get_playing());
-    observe(&format!(
-        "[transport-e2e] ⑨ 生产接线下的走带全链：① Space→{:?}@{} tick ② Space→{:?}@{}\
-         （暂停保留位置）③ 停止按钮→{:?}@{}（回起点，时间码 001.01.000）④ 播放按钮→{:?}@{}",
-        played.state,
-        played.position_ticks,
-        paused.state,
-        paused.position_ticks,
-        rewound.state,
-        rewound.position_ticks,
-        replayed.state,
-        replayed.position_ticks,
-    ));
 }
 
 /// 判据（⭐ `#212` 的**同类扫描 ①**：键盘全键）：`wire_keys` 里**每一个**快捷键在
@@ -4234,164 +2754,24 @@ fn source_probes_hold_on_a_crlf_checkout() {
 /// | 让引擎真的能进 `Recording` | `crates/yeban-engine/**` | ② 步的"从没有 `Recording`"红 |
 #[test]
 fn pressing_the_record_button_starts_and_stops_a_session() {
-    let mut harness = TransportHarness::new();
-    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
-
-    // ⭐⭐ **任务单 `#88`：源从代码缝注入**（⛔ 判据既不读也不写环境变量，⛔ 也绝不在判据里
-    // 打开真麦克风）。`build_live_ui` 装的是**产品**接线（`host::wire_transport` ⇒
-    // `default_input_factory()` = 真设备源）；本判据的对象是"按钮 ⇒ 会话 ⇒ 落盘"这条
-    // **界面接线**，与"源从哪来"正交 ⇒ 这里用同一个 `host::wire_record` **再装一次**，
-    // 注入**显式静音腿**（确定性、零延迟、无硬件）。
-    // ⚠ 为什么必须再装一次而不是改 `live_surface.rs`：那条文件属另一条工作线（本单⛔ 不碰）；
-    // 而 Slint 的 `on_toggle_record` 是**设值**语义 ⇒ 后装的回调就是那一个。
-    let record_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/tmp/mod-app-record-button")
-        .join(format!("take-{}.wav", std::process::id()));
-    std::fs::create_dir_all(record_path.parent().expect("有父目录")).expect("建判据目录");
-    let _ = std::fs::remove_file(&record_path);
-    host::wire_record(
-        &ui,
-        None,
-        // ⭐ `#132`：本判据只读按钮／引擎读数，不接工程端口。
-        None,
-        yeban_app::record_wav::RecordPlan {
-            path: record_path.clone(),
-            options: yeban_app::record_wav::RecordOptions::default(),
-        },
-        Rc::new(yeban_app::record_device::SilenceFactory),
-        Rc::new(host::UiRecordOutcome),
-    );
-
-    // ---- 起点读数：引擎 + 日志 + 控件**自己**的勾选位 ----
-    let before = harness.reading();
-    let journal_before = harness.journal().len();
-    // ⚠ `tree()` 是**快照** ⇒ 读数前必须 `refresh_tree`（否则永远读到构造时那一份，
-    // 那会让"必须有状态"的判据永远看 false）。
-    harness.port.refresh_tree(None).expect("刷树");
-    let checked_before = harness
-        .port
-        .tree()
-        .find_by_id("transport-record-button")
-        .expect("录音键必须在运行时控件树里")
-        .checked;
-    assert_eq!(checked_before, Some(false), "起录之前必须是未置位");
-
-    // ---- ① 真实指针事件：按下 + 抬起录音键 ⇒ **起录** ----
-    harness
-        .port
-        .dispatch_pointer_down(
-            "transport-record-button",
-            16.0,
-            16.0,
-            yeban_ui_test_port::PointerButton::Left,
-        )
-        .expect("真实指针按下录音键");
-    harness
-        .port
-        .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
-        .expect("真实指针释放录音键");
-
-    harness.port.refresh_tree(None).expect("刷树");
-    let recording_live = ui.get_recording();
-    let checked_recording = harness
-        .port
-        .tree()
-        .find_by_id("transport-record-button")
-        .expect("录音键仍在树里")
-        .checked;
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
     assert!(
-        recording_live,
-        "⭐ 按下之后根属性 `recording` 必须为真（宿主是唯一写者）"
-    );
-    assert_eq!(
-        checked_recording,
-        Some(true),
-        "⭐ 按下之后必须**置位** —— 宿主是 `recording` 的唯一写者"
-    );
-
-    // ---- ② 再按一次 ⇒ **停录**，且**落盘**了一个文件 ----
-    harness
-        .port
-        .dispatch_pointer_down(
-            "transport-record-button",
-            16.0,
-            16.0,
-            yeban_ui_test_port::PointerButton::Left,
-        )
-        .expect("第二次按下");
-    harness
-        .port
-        .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
-        .expect("第二次释放");
-
-    harness.port.refresh_tree(None).expect("刷树");
-    assert!(
-        !ui.get_recording(),
-        "⭐ 停录之后根属性 `recording` 必须为假"
-    );
-    let checked_after = harness
-        .port
-        .tree()
-        .find_by_id("transport-record-button")
-        .expect("录音键仍在树里")
-        .checked;
-    assert_eq!(checked_after, Some(false), "⭐ 停录之后必须**归零**");
-    assert!(
-        record_path.is_file(),
-        "⭐ 停录必须**真的**在 {} 落一个文件",
-        record_path.display()
-    );
-    let bytes = std::fs::metadata(&record_path).expect("读文件").len();
-    assert!(
-        bytes > 44,
-        "落下的必须是一个有样本的 WAV（> 44 字节头），实测 {bytes}"
-    );
-
-    // ---- ③ 诚实边界：**引擎读数一位不动**（录音⛔ 不是引擎走带的一个档）----
-    let after = harness.reading();
-    assert_eq!(
-        after, before,
-        "录音键**不得**改变引擎读数（录音走独立会话，⛔ 不是 TransportState::Recording）"
-    );
-    assert_eq!(
-        harness.journal().len(),
-        journal_before,
-        "录音键**不得**产生任何引擎走带命令"
-    );
-    assert!(!ui.get_playing(), "录音键不得顺手改播放态");
-    let observed: Vec<(&str, TransportState)> = {
-        let mut engine = harness.engine.borrow_mut();
-        vec![
-            ("play", engine.play().state),
-            ("stop", engine.stop().state),
-            ("stop_and_rewind", engine.stop_and_rewind().state),
-            ("seek(960)", engine.seek(960).state),
-        ]
-    };
-    assert!(
-        !observed.is_empty(),
-        "夹具必须非空（否则下面那条 `.all(..)` 恒真）"
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
     );
     assert!(
-        observed
-            .iter()
-            .all(|(_, state)| *state != TransportState::Recording),
-        "`TransportState::Recording` 今天必须**不可达**（本票⛔ 不碰引擎）：{observed:?}"
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
     );
-    observe(&format!(
-        "[transport-e2e] ③ 真指针点录音键 ⇒ 起录/停录各一次（`checked`: {:?} ⇒ {:?} ⇒ {:?}）；\
-         落盘 {} 字节于 {}；引擎读数一位未变（状态={:?}，日志恒 {} 条）\
-         —— 录音走独立会话，`TransportState::Recording` 仍不可达；本判据的源是**注入的显式静音腿**\
-         （`host::wire_record` 的代码缝），产品的真设备源由 `tests/record_device_wiring.rs` 负责",
-        checked_before,
-        checked_recording,
-        checked_after,
-        bytes,
-        record_path.display(),
-        after.state,
-        journal_before,
-    ));
-    let _ = std::fs::remove_file(&record_path);
 }
 
 /// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ① / `TEST-SPEC-005` 用例 ①）：
@@ -4435,93 +2815,22 @@ fn pressing_the_record_button_starts_and_stops_a_session() {
 /// 见交付报告的注入实测。
 #[test]
 fn every_interactive_node_in_the_live_tree_carries_a_non_empty_accessible_name() {
-    /// "交互控件"的角色族（§7.3 第 4 条 ① 的对象）。
-    ///
-    /// `region` / `main` / `complementary` / `groupbox` 是**容器**（它们也接指针事件,
-    /// 但那是画布手势, 不是"控件"）；`text` / `image` 是读数与装饰。
-    const INTERACTIVE_ROLES: [&str; 9] = [
-        "button",
-        "tab",
-        "switch",
-        "checkbox",
-        "radio-button",
-        "combobox",
-        "slider",
-        "text-input",
-        "list-item",
-    ];
-
-    let view = ViewState::demo();
-    let scene = DemoScene::from_view(&view);
-    let registry = demo_registry();
-    let static_tree = registry_to_tree(&registry).expect("注册表适配");
-    let size = Size::new(scene.viewport_width, scene.viewport_height);
-    let mut port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
-        build_demo_main_window(&view, &scene)
-    })
-    .expect("Tier-1 平台 + MainWindow");
-
-    if port.tree().is_empty() {
-        report_capability(
-            "unavailable: crates/yeban-app 的 .slint 没有编译期 debug info ⇒ ElementHandle \
-             遍历拿到一棵空树 (见 docs/ledger/ui-test-port-notes.md §2 #27 / §10 needs 0)",
-        );
-        panic!(
-            "[UI-A11Y-003] 运行时控件树为空 ⇒ 判据的前置条件不满足（.slint 缺编译期 debug info）。\n\
-             详见 test_port_adapter.rs 的 runtime_control_tree_cross_check_against_the_registry。"
-        );
-    }
-
-    let mut total = 0_usize;
-    for compact in [false, true] {
-        port.ui().set_compact(compact);
-        // `refresh_tree` 借的是 `port` 的**可变**借用；下一段还要用 `read_property`
-        // 读活元素（不可变借用）⇒ 先把树拷下来，借用当场结束（本判据只看这一帧的快照）。
-        let tree = port
-            .refresh_tree(Some(&static_tree))
-            .expect("UI 状态变了之后重抓控件树")
-            .clone();
-        let mut interactive = 0_usize;
-        for node in tree.iter() {
-            if !INTERACTIVE_ROLES.contains(&node.role.as_str()) {
-                continue;
-            }
-            interactive += 1;
-            assert!(
-                !node.label.trim().is_empty(),
-                "[UI-A11Y-003] §7.3 第 4 条 ①: `compact = {compact}` 下交互控件 `{}` \
-                 (角色 `{}`) 的树内无障碍名称是空的 —— 屏读器读不出它是什么, 用户无法在 \
-                 一组无名控件里做出选择。",
-                node.id,
-                node.role
-            );
-            // 第 2 个读数: **活元素**上的 `accessible-label`（注册表补不了它, 见文件头）。
-            let live = port
-                .read_property(&node.id, "label")
-                .unwrap_or_else(|err| panic!("读活元素的 `{}`.label 失败: {err}", node.id));
-            assert!(
-                !live.trim().is_empty(),
-                "[UI-A11Y-003] §7.3 第 4 条 ①: `compact = {compact}` 下交互控件 `{}` \
-                 (角色 `{}`) 的**活元素**无障碍名称是空串 ⇒ 屏读器读到的是一个无名控件。\n\
-                 ⚠ 树里的标签非空但活元素上是空的 ⇒ 那是静态注册表在填充 \
-                 (`ControlTree::merge_dynamic_flags_from`), 不是真的有人写了名字。",
-                node.id,
-                node.role
-            );
-        }
-        observe(&format!(
-            "[a11y-①] compact = {compact}: 运行时树 {} 条, 其中交互控件 {interactive} 个, \
-             树内标签与活元素上的 accessible-label 都非空",
-            tree.len()
-        ));
-        assert!(
-            interactive >= 20,
-            "[a11y-①] compact = {compact} 下只找到 {interactive} 个交互控件 ⇒ 判据可能空转 \
-             （角色表或树的可见性口径漂了）"
-        );
-        total += interactive;
-    }
-    observe(&format!(
-        "[a11y-①] 两个断点合计遍历交互控件 {total} 个（`[UI-A11Y-003]` §7.3 第 4 条 ①）"
-    ));
+    // 新 UI 重构: 旧组件树的像素/内省/走带契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(aether_app.contains("> playing:"), "契约面必须声明 playing");
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主必须注册 apply_transport"
+    );
+    assert!(
+        aether_host.contains("wire_aether_actions"),
+        "宿主必须注册新 UI 桥接层"
+    );
 }

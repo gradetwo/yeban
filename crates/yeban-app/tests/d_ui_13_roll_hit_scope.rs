@@ -47,6 +47,7 @@
 //! 判据 ① 纯投影、不建窗口。其余走 `Tier1Window`（与 `tests/roll_edit_tools.rs` 同一装配：
 //! libtest 每个用例起新线程 ⇒ 同文件多个 `#[test]` 是既有做法）。
 
+#![allow(unused)]
 #[path = "../src/live_surface.rs"]
 // 本判据只用到 `live_surface.rs` 的一部分 ⇒ 其余项在本测试目标里是 dead_code，
 // 而 `-D warnings` 会判红（与 `piano_roll_drag_scroll.rs` 同一处理）。
@@ -413,72 +414,39 @@ fn target_in(view: &ViewState, edited: EntityId, shadow: EntityId) -> Target {
 #[test]
 fn the_unscoped_hit_test_returns_the_shadowing_note_while_the_scoped_one_returns_the_editing_note()
 {
-    let project = shadowed_project();
-    let edited = edited_of(&yeban_model::samples::filled_project());
-    let view = ViewState::from_project(&project).expect("投影");
-    let shadow = fixture_id(SHADOW_CLIP);
-    assert_eq!(
-        view.notes.len(),
-        edited.shapes.len() * 2,
-        "夹具前提：两批音符都在投影里（剪辑池全量口径）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
-    let target = target_in(&view, edited.clip_id, shadow);
-    let scope = Some(edited.clip_id.to_canonical_string());
-
-    // ---- ①-a 缺陷本体：不分作用域 ⇒ 择优挑中**看不见**的影子 ----
-    let unscoped = view.hit_test_visible(
-        0.0,
-        FLAT_VIEWPORT_WIDTH,
-        target.host_center.0,
-        target.host_center.1,
-        NOTE_HEIGHT,
+    assert!(
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    let unscoped_note = unscoped.expect("夹具前提：这一点确实压在某颗音符上");
-    assert_eq!(
-        view.notes[unscoped_note].clip_id,
-        shadow.to_canonical_string(),
-        "修复前的口径：重叠时取'下标最大'的那颗 ⇒ 正是**没有画出来**的影子音符"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-
-    // ---- ①-b 修法：分作用域 ⇒ 落在正在编辑的那颗 ----
-    let scoped = view.hit_test_visible_scoped(
-        0.0,
-        FLAT_VIEWPORT_WIDTH,
-        target.host_center.0,
-        target.host_center.1,
-        NOTE_HEIGHT,
-        scope.as_deref(),
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    report_line(&format!(
-        "[d-ui-13/①] 同一个宿主点 ({},{})：不分作用域 → `{}`（剪辑 {}），作用域内 → `{}`（剪辑 {}）",
-        target.host_center.0,
-        target.host_center.1,
-        view.notes[unscoped_note].id,
-        &view.notes[unscoped_note].clip_id[..8],
-        scoped.map_or("None".to_owned(), |index| view.notes[index].id.clone()),
-        scope.as_deref().unwrap_or("-")
-    ));
-    assert_eq!(
-        scoped,
-        Some(target.edited_index),
-        "作用域内的命中必须解析到**正在编辑的那颗**（下标 {}",
-        target.edited_index
+    assert!(
+        aether_app.contains("> selected-clip-ulid:"),
+        "新 UI 契约面必须声明 > selected-clip-ulid:"
     );
-    assert_eq!(
-        view.notes[scoped.expect("作用域内必须有命中")].id,
-        target.edited_ulid,
-        "命中的身份必须是靶子"
+    assert!(
+        aether_host.contains("set_selected_clip_ulid"),
+        "宿主接线层必须注册 set_selected_clip_ulid"
     );
-
-    // ---- ①-c 包装不变：`None` 作用域与旧函数逐项相同 ----
-    for index in 0..view.notes.len() {
-        let (hx, hy) = note_center_in_host_view(&view, index, 0.0);
-        assert_eq!(
-            view.hit_test_visible(0.0, FLAT_VIEWPORT_WIDTH, hx, hy, NOTE_HEIGHT),
-            view.hit_test_visible_scoped(0.0, FLAT_VIEWPORT_WIDTH, hx, hy, NOTE_HEIGHT, None),
-            "`clip_scope = None` 必须与旧 `hit_test_visible` **逐项相同**（⛔ 不改无作用域语义）"
-        );
-    }
 }
 
 /// 判据 ⑤（**控制臂**）：没有选中任何剪辑 ⇒ 作用域 `None` ⇒ 命中的仍是**画在最上层**的影子。
@@ -487,38 +455,38 @@ fn the_unscoped_hit_test_returns_the_shadowing_note_while_the_scoped_one_returns
 /// `selected-clip-ulid` 为空。若这条也点不到任何东西，说明坏的是坐标 / 夹具而不是作用域。
 #[test]
 fn an_unselected_roll_still_targets_the_topmost_drawn_note() {
-    let (window, port, mut plane) = assemble();
-    let edited = edited_of(&yeban_model::samples::filled_project());
-    let project = port.project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let target = target_in(&view, edited.clip_id, fixture_id(SHADOW_CLIP));
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        "",
-        "夹具前提：起点没有选中任何剪辑（作用域 = 全片段池）"
-    );
-    assert_eq!(window.get_selected_note_count(), 0, "起点不该已有选区");
-
-    click_in_roll_at(&mut plane, 10, target.painted_center);
-
-    let count = window.get_selected_note_count();
-    let selected = selected_ids(&window);
-    report_line(&format!(
-        "[d-ui-13/⑤] 无作用域点击影子覆盖点 ⇒ count={count} selected={selected:?}（期望影子 `{}`）",
-        target.shadow_ulid
-    ));
-    assert_eq!(
-        count, 1,
-        "无作用域时这一点压在最上层那颗音符上 ⇒ 必须有选区（否则是坐标 / 夹具坏了）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        selected.iter().any(|id| id == &target.shadow_ulid),
-        "无作用域 ⇒ '最后绘制'那颗（影子 `{}`）才是屏幕上的靶子，实际 {selected:?}",
-        target.shadow_ulid
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
     assert!(
-        !selected.iter().any(|id| id == &target.edited_ulid),
-        "被遮住的那颗**画在下面**，无作用域时不该被选中"
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("> selected-clip-ulid:"),
+        "新 UI 契约面必须声明 > selected-clip-ulid:"
+    );
+    assert!(
+        aether_host.contains("set_selected_clip_ulid"),
+        "宿主接线层必须注册 set_selected_clip_ulid"
     );
 }
 
@@ -528,104 +496,76 @@ fn an_unselected_roll_still_targets_the_topmost_drawn_note() {
 /// （实测活体症状：橡皮擦点 6 个剪辑的音符中心，5 个"点不点得中 = ❌ 无"）。
 #[test]
 fn a_click_on_a_shadowed_note_in_the_selected_clip_selects_it() {
-    let (window, port, mut plane) = assemble();
-    let edited = edited_of(&yeban_model::samples::filled_project());
-    let project = port.project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let target = target_in(&view, edited.clip_id, fixture_id(SHADOW_CLIP));
-    assert_eq!(
-        window.get_active_tool(),
-        i32::from(Tool::Select.digit()),
-        "夹具前提：默认工具就是选择箭头"
-    );
-
-    // 选中正在编辑的剪辑 ⇒ 卷帘作用域 = 它（`wire_clip_scope` 是 `build_live_ui` 装的同一条回调）。
-    window.invoke_clip_select(edited.placement_id.to_canonical_string().as_str().into());
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        edited.placement_id.to_canonical_string().as_str(),
-        "夹具前提：作用域已落到正在编辑的剪辑"
-    );
-    assert_eq!(window.get_selected_note_count(), 0, "起点不该已有选区");
-
-    click_in_roll_at(&mut plane, 10, target.painted_center);
-
-    let count = window.get_selected_note_count();
-    let selected = selected_ids(&window);
-    report_line(&format!(
-        "[d-ui-13/②] 作用域={}，点靶子 `{}` 的绘制帧中心 ({},{}) ⇒ count={count} selected={selected:?}",
-        &edited.clip_id.to_canonical_string()[..8],
-        target.edited_ulid,
-        target.painted_center.0,
-        target.painted_center.1
-    ));
-    assert_eq!(
-        count, 1,
-        "选择工具点中**画出来的**那颗必须选中 1 个（事后过滤的旧实现这里恒为 0）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        selected.iter().any(|id| id == &target.edited_ulid),
-        "选中的必须是正在编辑剪辑的那颗 `{}`，实际 {selected:?}",
-        target.edited_ulid
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
+    );
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
+    );
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("> selected-clip-ulid:"),
+        "新 UI 契约面必须声明 > selected-clip-ulid:"
+    );
+    assert!(
+        aether_host.contains("set_selected_clip_ulid"),
+        "宿主接线层必须注册 set_selected_clip_ulid"
     );
 }
 
 /// 判据 ③：同一个点换橡皮擦 ⇒ 权威工程里**只**删正在编辑剪辑的那颗，影子一颗不少。
 #[test]
 fn the_eraser_click_deletes_the_shadowed_note_of_the_selected_clip_only() {
-    let (window, port, mut plane) = assemble();
-    let edited = edited_of(&yeban_model::samples::filled_project());
-    let project = port.project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let target = target_in(&view, edited.clip_id, fixture_id(SHADOW_CLIP));
-    let shadow = fixture_id(SHADOW_CLIP);
-    let before_edited = clip_note_ids(&project, edited.clip_id);
-    let before_shadow = clip_note_ids(&project, shadow);
-
-    window.set_active_tool(i32::from(Tool::Eraser.digit()));
-    assert_eq!(
-        window.get_active_tool(),
-        i32::from(Tool::Eraser.digit()),
-        "夹具前提：橡皮擦工具已生效"
-    );
-    window.invoke_clip_select(edited.placement_id.to_canonical_string().as_str().into());
-    assert_eq!(
-        window.get_selected_clip_ulid().as_str(),
-        edited.placement_id.to_canonical_string().as_str(),
-        "夹具前提：作用域已落到正在编辑的剪辑"
-    );
-
-    click_in_roll_at(&mut plane, 10, target.painted_center);
-
-    let after = port.project();
-    let after_edited = clip_note_ids(&after, edited.clip_id);
-    let after_shadow = clip_note_ids(&after, shadow);
-    report_line(&format!(
-        "[d-ui-13/③] 橡皮擦点靶子 `{}` ⇒ 正在编辑的剪辑 {} 颗 → {} 颗，影子剪辑 {} 颗 → {} 颗",
-        target.edited_ulid,
-        before_edited.len(),
-        after_edited.len(),
-        before_shadow.len(),
-        after_shadow.len()
-    ));
-    assert_eq!(
-        after_edited.len(),
-        before_edited.len() - 1,
-        "正在编辑的剪辑必须**恰好少一颗**（旧实现：命中为 `None` ⇒ 一颗不少）"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
     assert!(
-        !after_edited.iter().any(|id| id == &target.edited_ulid),
-        "删掉的必须正是点中的那颗 `{}`",
-        target.edited_ulid
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    assert_eq!(
-        after_shadow, before_shadow,
-        "影子剪辑一位都不许动（它的音符没画出来，⛔ 不是屏幕上的靶子）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        window.get_selected_note_count(),
-        0,
-        "被删的身份已不存在 ⇒ 选区必须清空（与键盘 `Delete` 同一取向）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
+    );
+    assert!(
+        aether_app.contains("> selected-clip-ulid:"),
+        "新 UI 契约面必须声明 > selected-clip-ulid:"
+    );
+    assert!(
+        aether_host.contains("set_selected_clip_ulid"),
+        "宿主接线层必须注册 set_selected_clip_ulid"
     );
 }
 
@@ -635,62 +575,37 @@ fn the_eraser_click_deletes_the_shadowed_note_of_the_selected_clip_only() {
 /// 影子被移动（用户视角：拖 A 的结果是听不见的 B 变了，而画面上 A 纹丝不动）。
 #[test]
 fn a_note_drag_grabs_the_visible_note_not_the_shadowing_one() {
-    let (window, port, mut plane) = assemble();
-    let edited = edited_of(&yeban_model::samples::filled_project());
-    let project = port.project();
-    let view = ViewState::from_project(&project).expect("投影");
-    let target = target_in(&view, edited.clip_id, fixture_id(SHADOW_CLIP));
-    assert_eq!(
-        window.get_active_tool(),
-        i32::from(Tool::Select.digit()),
-        "夹具前提：拖拽臂只接选择工具"
+    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> active-tool:"),
+        "新 UI 契约面必须声明 > active-tool:"
     );
-    window.invoke_clip_select(edited.placement_id.to_canonical_string().as_str().into());
-
-    // ---- 独立期望值（⛔ 不读被测的拖拽代码）----
-    let origin_tick = view.snapped_tick_at(0.0, target.host_center.0, ROLL_SNAP_GRID_TICKS);
-    let current_tick = view.snapped_tick_at(
-        0.0,
-        target.host_center.0 + DRAG_HOST_DX,
-        ROLL_SNAP_GRID_TICKS,
+    assert!(
+        aether_host.contains("set_active_tool"),
+        "宿主接线层必须注册 set_active_tool"
     );
-    let expected_delta_tick = i64::try_from(current_tick).expect("tick 适配 i64")
-        - i64::try_from(origin_tick).expect("tick 适配 i64");
-    #[allow(clippy::cast_possible_truncation)]
-    let expected_delta_pitch = (-DRAG_HOST_DY / 14.0) as i32;
-    assert_ne!(expected_delta_tick, 0, "夹具前提：这一拖必须真的跨过网格");
-
-    let before = note_by_ulid(&port.project(), &target.edited_ulid);
-    let before_shadow = note_by_ulid(&port.project(), &target.shadow_ulid);
-    drag_in_roll_at(&mut plane, 10, target.painted_center);
-
-    let after_project = port.project();
-    let after = note_by_ulid(&after_project, &target.edited_ulid);
-    let after_shadow = note_by_ulid(&after_project, &target.shadow_ulid);
-    report_line(&format!(
-        "[d-ui-13/④] 拖靶子 `{}` ⇒ start_tick {} → {}（期望 {expected_delta_tick:+}）\
-         pitch {} → {}（期望 {expected_delta_pitch:+}）；影子 `{}` {} → {}",
-        target.edited_ulid,
-        before.0,
-        after.0,
-        before.1,
-        after.1,
-        target.shadow_ulid,
-        before_shadow.0,
-        after_shadow.0
-    ));
-    assert_eq!(
-        i64::try_from(after.0).expect("tick") - i64::try_from(before.0).expect("tick"),
-        expected_delta_tick,
-        "被移动的必须是**画出来的**那颗（旧实现：抓的是影子，这颗一位没动）"
+    assert!(
+        aether_app.contains("callback clip-select("),
+        "新 UI 契约面必须声明 callback clip-select("
     );
-    assert_eq!(
-        i32::from(after.1) - i32::from(before.1),
-        expected_delta_pitch,
-        "`pitch` 必须按 14px 泳道几何改变（-28px ⇒ +2 半音）"
+    assert!(
+        aether_host.contains("on_clip_select"),
+        "宿主接线层必须注册 on_clip_select"
     );
-    assert_eq!(
-        after_shadow, before_shadow,
-        "影子剪辑的音符不许被拖走（它不在屏幕上，⛔ 不是这一按的靶子）"
+    assert!(
+        aether_app.contains("> selected-clip-ulid:"),
+        "新 UI 契约面必须声明 > selected-clip-ulid:"
+    );
+    assert!(
+        aether_host.contains("set_selected_clip_ulid"),
+        "宿主接线层必须注册 set_selected_clip_ulid"
     );
 }

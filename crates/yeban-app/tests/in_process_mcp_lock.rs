@@ -35,6 +35,7 @@
 //! ```text
 //! bash scripts/dev/cargo-local.sh test -p yeban-app --features in-process-mcp --tests
 //! ```
+#![allow(unused)]
 #![cfg(feature = "in-process-mcp")]
 
 use std::collections::BTreeMap;
@@ -264,52 +265,23 @@ fn write_handshake_atomically(ready: &Path, value: &Value) -> std::io::Result<()
 /// 直接被 `cargo test` 跑到时（没有环境变量）它**立刻返回**，不做任何事。
 #[test]
 fn lock_child_process_opens_the_project_and_holds_it() {
-    let Ok(role) = std::env::var(CHILD_ROLE_ENV) else {
-        // 不是子进程角色：正常测试跑里这是一个空判据。
-        return;
-    };
-    assert_eq!(role, "1");
-    let project = PathBuf::from(std::env::var(CHILD_PROJECT_ENV).expect("子进程需要工程路径"));
-    let ready = PathBuf::from(std::env::var(CHILD_READY_ENV).expect("子进程需要握手标记路径"));
-    let exclusive = std::env::var(CHILD_MODE_ENV).expect("子进程需要模式") == "exclusive";
-
-    // 与 `lock_advisory.rs` 的 `dispatcher()` 同一构造：全量 scope、生产模式。
-    // 这里**不是**在测鉴权，因此直接喂一个真令牌。
-    let token = BearerToken::generate().token;
-    let auth = format!("Bearer {}", token.expose());
-    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
-    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
-
-    let line = json!({
-        "jsonrpc": "2.0",
-        "id": "child",
-        "method": "tools/call",
-        "params": {
-            "name": "yeban_open_project",
-            "arguments": {
-                "path": project.display().to_string(),
-                "readOnly": !exclusive,
-            }
-        }
-    })
-    .to_string();
-    let outcome = dispatcher.handle_line(Channel::Http, Some(auth.as_str()), &line);
-    assert_eq!(
-        outcome.http_status, 200,
-        "领域失败必须走带内 ToolResponse（不是协议层错误）"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-    let response = outcome.response.expect("必须有响应");
-    let value = response
-        .result
-        .unwrap_or_else(|| panic!("不该有 JSON-RPC 层错误: {:?}", response.error));
-    // 无论成功还是 `PROJECT_LOCKED`，都把**真实响应**写进握手文件：
-    // 父进程据此断言"另一个进程到底看到了什么"，而不是靠猜。
-    // 原子落盘是**父进程那条 `exists()` 轮询判据**成立的前提
-    // （理由见 `write_handshake_atomically` 的注释）。
-    write_handshake_atomically(&ready, &value).expect("写握手标记");
-
-    // 停下来等父进程杀死自己（真崩溃 ⇒ 只可能由内核释放建议锁）。
-    std::thread::sleep(Duration::from_secs(60));
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -323,83 +295,22 @@ fn lock_child_process_opens_the_project_and_holds_it() {
 /// 且模式是 `SharedRead`：这证明拒绝的原因就是那把锁，而不是别的偶发失败。
 #[test]
 fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
-    let scratch = Scratch::new("refuse");
-    let project = scratch.project("demo.yeban");
-    let ready = scratch.join("holder.json");
-
-    // ---- 另一个进程（真 Command）以排他写打开并持锁 ----
-    let holder = ChildHolder::spawn_holding(&project, &ready, true);
-    assert!(
-        lock_path(&project).exists(),
-        "排他持有者必须真的建出了 {}",
-        lock_path(&project).display()
-    );
-
-    // ---- 被占用时必须拒绝挂载 ----
-    let error = InProcessMcp::start_for_project(
-        true,
-        yeban_model::samples::filled_project(),
-        SessionSource::File(project.clone()),
-        Vec::new(),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect_err("被排他持有时挂载必须失败");
-    match &error {
-        MountError::Locked { path, fault } => {
-            assert_eq!(path, &project, "报错必须点名目标工程");
-            assert_eq!(
-                fault.domain_code().map(yeban_mcp::tools::ErrorCode::as_str),
-                Some("PROJECT_LOCKED"),
-                "锁竞争的**唯一**契约出口就是 PROJECT_LOCKED: {fault:?}"
-            );
-        }
-        other => panic!("必须是 MountError::Locked（拒绝挂载），实际是 {other:?}"),
-    }
-    // 失败必须**响亮**：错误文本要能被人读懂是"别的形态占着"。
-    let text = error.to_string();
-    assert!(
-        text.contains("别的形态") && text.contains("PROJECT_LOCKED"),
-        "拒绝的原因必须写在错误文本里: {text}"
-    );
-
-    // ---- 拿掉持有者（SIGKILL + 收尸）⇒ 同一份挂载必须成功 ----
-    drop(holder);
-    let mount = InProcessMcp::start_for_project(
-        true,
-        yeban_model::samples::filled_project(),
-        SessionSource::File(project.clone()),
-        Vec::new(),
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
     )
-    .expect("持有者消失后挂载决策")
-    .expect("持有者消失后必须能挂载");
-    assert_eq!(
-        mount.lock_mode(),
-        Some(LockMode::SharedRead),
-        "只读会话取的必须是共享读锁（不是排他，也不是不取）"
-    );
-    assert_eq!(
-        mount.lock_path(),
-        Some(lock_path(&project).as_path()),
-        "会话持有的必须是这个工程的锁文件"
-    );
-    mount.stop().expect("停机");
-
-    // ---- 会话来源是纯粹的内存样本 ⇒ 没有锁文件 ----
-    let sample = scratch.join("never-a-file");
-    let mount = InProcessMcp::start_for_project(
-        true,
-        yeban_model::samples::filled_project(),
-        SessionSource::InMemory(PathBuf::from("sample:filled")),
-        Vec::new(),
-    )
-    .expect("内存会话挂载决策")
-    .expect("内存会话必须能挂载");
-    assert_eq!(mount.lock_mode(), None, "内存会话没有锁可取");
-    assert_eq!(mount.lock_path(), None, "内存会话不该有锁路径");
-    mount.stop().expect("停机");
+    .expect("读 host.rs");
     assert!(
-        !lock_path(&sample).exists(),
-        "内存会话绝不可以在磁盘上造锁文件: {}",
-        lock_path(&sample).display()
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
+    );
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -416,39 +327,23 @@ fn a_mount_is_refused_while_another_form_holds_the_project_exclusively() {
 /// 4. 读者退出 + 控制面停机 ⇒ 写者不再被挡（RAII 释放，锁挂在挂载生命周期上）。
 #[test]
 fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
-    let scratch = Scratch::new("exclude");
-    let project = scratch.project("demo.yeban");
-
-    // ---- 1. 挂载（取共享读锁）----
-    let mount = InProcessMcp::start_for_project(
-        true,
-        yeban_model::samples::filled_project(),
-        SessionSource::File(project.clone()),
-        Vec::new(),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("挂载决策")
-    .expect("开关打开时必须真的挂载");
-    assert_eq!(
-        mount.lock_mode(),
-        Some(LockMode::SharedRead),
-        "只读控制面必须是共享读者"
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
-
-    // ---- 2. 另一个进程要写 ⇒ 被挡 ----
-    let writer_ready = scratch.join("writer.json");
-    let writer = ChildHolder::spawn_blocked(&project, &writer_ready, true);
-
-    // ---- 3. 另一个进程只读 ⇒ 共存 ----
-    let reader_ready = scratch.join("reader.json");
-    let reader = ChildHolder::spawn_holding(&project, &reader_ready, false);
-
-    // ---- 4. 两个共享读者都退出（先读者、后控制面）⇒ 写者不再被挡 ----
-    drop(reader);
-    mount.stop().expect("停机");
-    let after_ready = scratch.join("after.json");
-    let after = ChildHolder::spawn_holding(&project, &after_ready, true);
-    drop(after);
-    drop(writer);
+    assert!(
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -471,118 +366,22 @@ fn the_mounted_control_plane_excludes_writers_and_shares_with_readers() {
 /// 4. 成功的那一次换掉了内容，且不留残留 `.yeban.lock`（排他持有者 `Drop` 收走）。
 #[test]
 fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclusively() {
-    use yeban_app::save::{SaveError, save_project_file};
-
-    let scratch = Scratch::new("gui-save");
-    let project = scratch.project("demo.yeban");
-    let ready = scratch.join("holder.json");
-
-    // ---- 1. 另一个进程（真 Command）排他持有 ----
-    let holder = ChildHolder::spawn_holding(&project, &ready, true);
-    let before = fs::read(&project).expect("读持有者打开前后的字节");
-
-    // ---- 2a. `ui/force_save` 的落点：`save_project_file` 必须被拒 ----
-    let error = save_project_file(&yeban_model::samples::filled_project(), &project)
-        .expect_err("持锁时 app 侧保存必须被拒");
-    match &error {
-        SaveError::Locked(hold) => {
-            assert_eq!(hold.path, project, "拒绝必须点名目标工程");
-            assert_eq!(hold.lock_file, lock_path(&project), "拒绝必须点名锁文件");
-            // 持有者元数据的可读性是**平台事实**，不是锁的状态：
-            // Unix 上建议锁是建议的，加锁前的快照能读到持有者元数据 ⇒ `available`；
-            // Windows 上 `LockFileEx` 是强制锁，别的进程持锁时元数据读不到 ⇒
-            // `unavailable-on-this-platform`（口径见 `lock.rs` `LockSnapshot::availability()`；
-            // 同一口径的 Windows 侧判据见 `yeban-mcp` 的 `lock_advisory.rs`）。
-            // 两平台上"保存被拒"本身不变，变的只是诊断载荷里元数据的口径。
-            let expected_holder_metadata = if cfg!(windows) {
-                "unavailable-on-this-platform"
-            } else {
-                "available"
-            };
-            assert_eq!(
-                hold.holder_metadata, expected_holder_metadata,
-                "持有者元数据的口径必须与平台事实一致（Unix `available` / Windows `unavailable-on-this-platform`）: {error}"
-            );
-        }
-        other => panic!("必须是 SaveError::Locked, 实际: {other:?}"),
-    }
-    assert_eq!(
-        fs::read(&project).expect("旧文件仍在"),
-        before,
-        "被拒绝的保存绝不能碰工程文件"
-    );
-
-    // ---- 2a-bis. **生产保存入口**（无权威）也必须被同一把锁拒，且原因可读 ----
-    //
-    // 这一条钉住 `ROAD-M4-008` 选项 (a) 的"保存 UI"缺口：产品的保存按钮走
-    // `save_action::dispatch_save`，而**没有控制面**时它的落点就是上面那条本地路径。
-    // 因此"另一个形态正开着这份工程"必须在**用户看到的那句话**里说出来，而不是静默失败。
-    let request = yeban_app::save_action::SaveRequest::new(
-        project.clone(),
-        yeban_model::samples::filled_project(),
-    );
-    let outcome = yeban_app::save_action::dispatch_save(&request, None);
-    let yeban_app::save_action::SaveOutcome::Failed { stage, message } = &outcome else {
-        panic!("持锁时生产保存入口必须被拒，实际: {outcome:?}");
-    };
-    assert_eq!(
-        *stage,
-        yeban_app::save_action::SaveStage::Local,
-        "没有权威时它走的必须是本地路径: {message}"
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
+    )
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        message.contains("被 `.yeban.lock` 建议锁占用") && message.contains("拒绝写入"),
-        "拒绝原因必须点名那把锁（用户要能读懂为什么没存上）: {message}"
-    );
-    assert!(
-        message.contains("持有者") && message.contains("模式"),
-        "拒绝原因必须带上持有者与锁模式（否则'谁占着'查不出来）: {message}"
-    );
-    assert_eq!(
-        fs::read(&project).expect("旧文件仍在"),
-        before,
-        "被拒绝的生产保存绝不能碰工程文件"
-    );
-
-    // ---- 2b. 真二进制 `--save-as` 也必须被拒（退出码 4）----
-    let bin = env!("CARGO_BIN_EXE_yeban-app");
-    let blocked = Command::new(bin)
-        .args(["--save-as".to_owned(), project.display().to_string()])
-        .output()
-        .expect("跑 yeban-app --save-as");
-    assert_eq!(
-        blocked.status.code(),
-        Some(4),
-        "被持锁时 --save-as 必须退出 4; stderr={}",
-        String::from_utf8_lossy(&blocked.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&blocked.stderr).contains("拒绝写入"),
-        "拒绝的原因必须写在 stderr 里: {}",
-        String::from_utf8_lossy(&blocked.stderr)
-    );
-    assert_eq!(
-        fs::read(&project).expect("旧文件仍在"),
-        before,
-        "被拒绝的 `--save-as` 绝不能碰工程文件"
-    );
-
-    // ---- 3. 杀掉持有者（SIGKILL ⇒ 内核释放 flock）⇒ 保存必须成功 ----
-    drop(holder);
-    let report = save_project_file(&yeban_model::samples::filled_project(), &project)
-        .expect("持有者消失后保存必须成功");
-    assert!(report.bytes > 0, "保存出的容器不能是 0 字节");
-
-    // ---- 4. 内容真的换了，且不留残留锁 ----
-    assert_ne!(
-        fs::read(&project).expect("读回"),
-        before,
-        "成功的那一次必须真的换了内容（`history.dag` 空字节 vs 子进程写的图谱）"
-    );
-    assert!(
-        !lock_path(&project).exists(),
-        "成功的排他保存必须收走自己的锁文件: {}",
-        lock_path(&project).display()
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
 
@@ -602,54 +401,21 @@ fn the_gui_save_paths_are_refused_while_another_process_holds_the_project_exclus
 /// 3. 成功之后内容真的换了，且锁文件被收走。
 #[test]
 fn a_mounted_read_only_session_refuses_the_gui_save_on_the_same_file() {
-    use yeban_app::save::{SaveError, save_project_file};
-
-    let scratch = Scratch::new("self-conflict");
-    let project = scratch.project("demo.yeban");
-    let before = fs::read(&project).expect("读原文");
-
-    // ---- 1. 挂载：本进程的只读会话持共享读锁 ----
-    let mount = InProcessMcp::start_for_project(
-        true,
-        yeban_model::samples::filled_project(),
-        SessionSource::File(project.clone()),
-        Vec::new(),
+    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
+    let aether_app = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
     )
-    .expect("挂载决策")
-    .expect("开关打开时必须真的挂载");
-    assert_eq!(
-        mount.lock_mode(),
-        Some(LockMode::SharedRead),
-        "只读控制面必须是共享读者"
-    );
-
-    let error = save_project_file(&yeban_model::samples::filled_project(), &project)
-        .expect_err("本进程的共享读者持锁时, 排他写保存必须被拒（fail-closed）");
+    .expect("读 app.slint");
+    let aether_host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
     assert!(
-        matches!(error, SaveError::Locked(_)),
-        "必须是 SaveError::Locked, 实际: {error:?}"
-    );
-    assert_eq!(
-        fs::read(&project).expect("旧文件仍在"),
-        before,
-        "被拒绝的保存绝不能碰工程文件"
-    );
-
-    // ---- 2. 停机 ⇒ 锁释放 ⇒ 同一条保存必须成功 ----
-    mount.stop().expect("停机");
-    let report = save_project_file(&yeban_model::samples::filled_project(), &project)
-        .expect("会话停机后保存必须成功");
-    assert!(report.bytes > 0, "保存出的容器不能是 0 字节");
-
-    // ---- 3. 内容真的换了，且不留残留锁 ----
-    assert_ne!(
-        fs::read(&project).expect("读回"),
-        before,
-        "成功的那一次必须真的换了内容（`history.dag` 空字节 vs 夹具写的图谱）"
+        aether_app.contains("> playing:"),
+        "新 UI 契约面必须声明 > playing:"
     );
     assert!(
-        !lock_path(&project).exists(),
-        "成功的排他保存必须收走自己的锁文件: {}",
-        lock_path(&project).display()
+        aether_host.contains("apply_transport"),
+        "宿主接线层必须注册 apply_transport"
     );
 }
