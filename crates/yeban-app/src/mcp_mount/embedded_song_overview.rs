@@ -222,9 +222,20 @@ fn mounted_second_call_returns_the_same_json() {
     );
     let first_data = ok_data(&first);
     let second_data = ok_data(&second);
+    // 线 H cacheHit 口径：首次调用未命中（false）、第二次命中（true），故整包
+    // JSON 必然差这一键；缓存命中的证明是除该键外逐位相同＋标志翻转。
+    assert_eq!(first_data["cacheHit"], json!(false), "首次调用未命中");
+    assert_eq!(second_data["cacheHit"], json!(true), "第二次调用命中");
+    let mut first_rest = first_data.clone();
+    let mut second_rest = second_data.clone();
+    first_rest.as_object_mut().expect("对象").remove("cacheHit");
+    second_rest
+        .as_object_mut()
+        .expect("对象")
+        .remove("cacheHit");
     assert_eq!(
-        first_data, second_data,
-        "第二次同一调用必须与第一次逐位相同（整曲哈希缓存命中）"
+        first_rest, second_rest,
+        "第二次同一调用除 cacheHit 外必须与第一次逐位相同（整曲哈希缓存命中）"
     );
 }
 
