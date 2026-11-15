@@ -82,11 +82,11 @@ impl ClipperParams {
         };
         let oversample = if !self.oversample.is_finite() {
             Self::DEFAULT.oversample
-        } else if self.oversample < f32::consts::SQRT_2 {
+        } else if self.oversample < std::f32::consts::SQRT_2 {
             1.0
-        } else if self.oversample < 2.0 * f32::consts::SQRT_2 {
+        } else if self.oversample < 2.0 * std::f32::consts::SQRT_2 {
             2.0
-        } else if self.oversample < 4.0 * f32::consts::SQRT_2 {
+        } else if self.oversample < 4.0 * std::f32::consts::SQRT_2 {
             4.0
         } else {
             8.0
