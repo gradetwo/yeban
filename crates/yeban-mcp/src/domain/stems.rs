@@ -38,6 +38,16 @@
 //! （⚠ 漏掉它就是个坏文件，见 `crates/yeban-render/src/rf64.rs` 的容器规则）。
 //! 母带那条 24-bit + TPDF 的路径一位都不经过这里。
 //!
+//! ## 总线轨 stem（线 G ⑪ 治本）
+//!
+//! 总线/分组/Aux 轨的信号不在它自己的 clip/采样器里，而在**喂入边的求和**里。
+//! 旧实现有两道墙：选轨时的空判定只看自身 clip/采样器（不看入边）⇒ 总线轨被
+//! 判 `emptyTrack`；源节点集只取无入边节点 ⇒ 总线轨又被判 `notASourceNode`。
+//! 现行口径：有音频入边、能到达主总线、且祖先集带内容的总线轨是分轨的**一等
+//! 类别** —— 隔离渲染时只留喂入祖先的内容、只留流经本总线的边，取主总线输出，
+//! 得到它在混音里的实际贡献（判据见 `crates/yeban-mcp/tests/export_stems.rs`
+//! 的总线判据：总线 stem 与"只留喂入轨的混音"逐字节一致、且不含旁路轨）。
+//!
 //! ⚠ 32-bit Float 能容纳**超过 0 dBFS** 的样本而不削波 —— 这正是分轨的价值，
 //! 但也埋着一个下游陷阱：转 24-bit 整数时这些样本会被硬削平，而回执若只报
 //! `bitDepth: 32`，调用方无从知道哪条轨有这回事。因此逐轨回执在样本峰值
@@ -49,7 +59,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 
 use serde_json::{Map, Value, json};
-use yeban_model::{EntityId, YebanProjectV1};
+use yeban_model::{EntityId, RoutingKind, YebanProjectV1};
 
 use super::error::Fault;
 use super::{render, store};
@@ -176,7 +186,10 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<StemRequest, Fault> {
 pub enum SkipReason {
     /// 主总线不是"一条轨的素材"（它就是母带本身）。
     MasterBusTrack,
-    /// 该轨在路由图里不是任何源节点（总线 / 分组轨）⇒ 弹出来的不是"这条轨的内容"。
+    /// 该轨在路由图里既不是源节点、也不是有喂入的总线轨（不在图里 / 没有通往
+    /// 主总线的可用边 / 有入边但上游无内容）⇒ 没有可弹的信号。
+    /// ⭐ 有喂入且能到达主总线的总线/分组/Aux 轨**不在此列**：它们是总线 stem
+    /// 的一等类别（见 [`export_with_sink`] 的总线隔离渲染）。
     NotASourceNode,
     /// 该轨**没有 clip、也没有绑采样器** ⇒ 它确定输出静音，弹出来会是一个
     /// 时长与母带相同、样本全 0 的文件。
@@ -484,6 +497,125 @@ fn stems_basis_value(renders: usize, basis_frames: u64, sample_rate: u32) -> Val
     })
 }
 
+/// 一条分轨的隔离方式（渲染克隆上"只留谁可闻"的判据来源）。
+enum StemKind {
+    /// 源节点轨：静音其余源节点后取主总线输出（既有 D3 路径）。
+    Source,
+    /// 总线轨（线 G ⑪ 治本）：信号 = 喂入边的求和，本身没有可 solo 的源。
+    /// 隔离集是路由图的**祖先集**（能到达本总线的全部节点，含本总线自身）与
+    /// **后代集**（本总线能到达的全部节点，含主总线）：只留祖先的内容、
+    /// 只留流经本总线的边，再取主总线输出 —— 得到的正是这条总线在混音里
+    /// 的实际贡献（经它自身的插入链/推子/声相与下游通路），不是导出后补救。
+    Bus {
+        /// 能到达本总线的节点（含自身）：这些节点的内容属于本总线的信号。
+        ancestors: BTreeSet<EntityId>,
+        /// 本总线能到达的节点（含自身与主总线）：信号的下游通路。
+        descendants: BTreeSet<EntityId>,
+    },
+}
+
+/// 路由图里的**音频**边（源, 目的）：`Sidechain` 是键输入、不载音频求和，
+/// 与渲染层 `edge_ids()` 的口径一致（`#337`）。
+fn audio_edges(project: &YebanProjectV1) -> Vec<(EntityId, EntityId)> {
+    project
+        .routing_graph
+        .edges
+        .values()
+        .filter(|edge| edge.kind != RoutingKind::Sidechain)
+        .map(|edge| (edge.source_node, edge.destination_node))
+        .collect()
+}
+
+/// 沿音频边**反向**可达的节点集（含起点自身）。
+fn reachable_reverse(edges: &[(EntityId, EntityId)], start: EntityId) -> BTreeSet<EntityId> {
+    let mut seen = BTreeSet::from([start]);
+    let mut frontier = vec![start];
+    while let Some(node) = frontier.pop() {
+        for &(source, destination) in edges {
+            if destination == node && seen.insert(source) {
+                frontier.push(source);
+            }
+        }
+    }
+    seen
+}
+
+/// 沿音频边**正向**可达的节点集（含起点自身）。
+fn reachable_forward(edges: &[(EntityId, EntityId)], start: EntityId) -> BTreeSet<EntityId> {
+    let mut seen = BTreeSet::from([start]);
+    let mut frontier = vec![start];
+    while let Some(node) = frontier.pop() {
+        for &(source, destination) in edges {
+            if source == node && seen.insert(destination) {
+                frontier.push(destination);
+            }
+        }
+    }
+    seen
+}
+
+/// 判定一条轨是不是**可出 stem 的总线轨**，是则给出它的隔离集。
+///
+/// 条件（全部是图与内容的事实，⛔ 不看轨名/轨类型字符串）：在路由图里、
+/// 有音频入边、能沿音频边到达主总线、且祖先集（含自身）里至少一个节点
+/// 自带内容（片段或采样器）。上游全空的总线输出恒为静音 ⇒ 返回 `None`，
+/// 由调用方按空轨/非源节点点名。
+fn bus_stem_kind(project: &YebanProjectV1, track_id: EntityId) -> Option<StemKind> {
+    if !project.routing_graph.nodes.contains(&track_id) {
+        return None;
+    }
+    let edges = audio_edges(project);
+    if !edges
+        .iter()
+        .any(|&(_, destination)| destination == track_id)
+    {
+        return None;
+    }
+    let ancestors = reachable_reverse(&edges, track_id);
+    let descendants = reachable_forward(&edges, track_id);
+    if !descendants.contains(&project.master_bus_track_id) {
+        return None;
+    }
+    let has_content = ancestors.iter().any(|node| {
+        project
+            .tracks
+            .get(node)
+            .is_some_and(|track| !track.clips.is_empty() || track.sampler.is_some())
+    });
+    if !has_content {
+        return None;
+    }
+    Some(StemKind::Bus {
+        ancestors,
+        descendants,
+    })
+}
+
+/// **总线源节点**集：有音频入边、能到达主总线、且自带片段的节点
+/// （与渲染层探针 `bus_source_nodes` 同一条判据）。
+/// 这类节点的自有内容在总线 stem 隔离时不能只靠 `mute` 处理：`mute` 会把
+/// 它的输出级一并归零、连**路过**它的目标信号也消掉；正确做法是只摘掉
+/// 它自己的片段/采样器、保留总线通路（见渲染步）。
+fn bus_source_nodes(project: &YebanProjectV1) -> BTreeSet<EntityId> {
+    let edges = audio_edges(project);
+    let reach_master = reachable_reverse(&edges, project.master_bus_track_id);
+    project
+        .routing_graph
+        .nodes
+        .iter()
+        .copied()
+        .filter(|node| {
+            *node != project.master_bus_track_id
+                && reach_master.contains(node)
+                && edges.iter().any(|&(_, destination)| destination == *node)
+                && project
+                    .tracks
+                    .get(node)
+                    .is_some_and(|track| !track.clips.is_empty())
+        })
+        .collect()
+}
+
 /// 分轨字节的去向：`None` = 全留内存；`Some(f)` = 每渲完一条立刻 `f(path, bytes)`。
 type StemWriter<'a> = Option<&'a mut dyn FnMut(&Path, &[u8]) -> Result<(), Fault>>;
 
@@ -596,19 +728,24 @@ fn export_with_sink(
         .track_ids
         .as_ref()
         .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>());
-    let mut queue: Vec<(usize, EntityId, &str)> = Vec::with_capacity(project.tracks.len());
-    let mut skipped: Vec<SkippedTrack> = Vec::new();
+    // `skipped` 带工程内轨序，分类在基线渲染之后才完成，最后按轨序归位
+    // ⇒ `skippedTracks` 的顺序与从前（单遍遍历）逐字相同。
+    let mut queue: Vec<(usize, usize, EntityId, &str)> = Vec::with_capacity(project.tracks.len());
+    let mut skipped: Vec<(usize, SkippedTrack)> = Vec::new();
     let mut next_index = 1_usize;
-    for (&track_id, track) in &project.tracks {
+    for (order, (&track_id, track)) in project.tracks.iter().enumerate() {
         if track_id == project.master_bus_track_id {
             // 主总线不是"一条轨的素材"（它就是母带本身，`yeban_render_master` 那条工具）。
             // ⛔ 不静默消失：它在 `skippedTracks` 里点名（D4）。
-            skipped.push(SkippedTrack {
-                track_id,
-                name: track.name.clone(),
-                reason: SkipReason::MasterBusTrack,
-                hint: None,
-            });
+            skipped.push((
+                order,
+                SkippedTrack {
+                    track_id,
+                    name: track.name.clone(),
+                    reason: SkipReason::MasterBusTrack,
+                    hint: None,
+                },
+            ));
             continue;
         }
         let index = next_index;
@@ -619,19 +756,11 @@ fn export_with_sink(
         {
             continue;
         }
-        // ⭐ **空轨不出文件**（判据与 CLI 渲染核心同一条：没有 clip 也没有采样器
-        // ⇒ 引擎/SFZ/最小音源都只能输出 0）。⛔ 不静默丢：走 `skippedTracks` 点名。
+        // ⭐ 空轨/总线轨的分类**不在这里做**：一条没有 clip/采样器的轨可能
+        // 是总线轨（内容在喂入边上），必须等基线渲染给出源集、并结合路由图
+        // 才能判定（线 G ⑪ 的第一道墙正是这里旧版的"不看入边"空判定）。
         // 序号照样占位 ⇒ 文件名序号与工程里的轨序号一致，不因跳过而重排。
-        if track.clips.is_empty() && track.sampler.is_none() {
-            skipped.push(SkippedTrack {
-                track_id,
-                name: track.name.clone(),
-                reason: SkipReason::EmptyTrack,
-                hint: None,
-            });
-            continue;
-        }
-        queue.push((index, track_id, track.name.as_str()));
+        queue.push((order, index, track_id, track.name.as_str()));
     }
     // 2. 基线渲染：全工程可闻（试听状态已复位），帧数**由时间轴推导**。
     //    ⛔ 不自己算"工程有多长"：那条公式只有 `build` 一处实现（D3a）。
@@ -639,12 +768,43 @@ fn export_with_sink(
     let basis_request = stem_render_request(&basis_project, None, None);
     let basis = render::build(&basis_project, project_path, &basis_request, now_ms, assets)?;
     let source_nodes = basis.source_nodes.iter().copied().collect::<BTreeSet<_>>();
-    // 3. 剔除非源节点（总线/分组轨：它自己的信号来自子轨，逐轨弹出来的东西不是
-    //    "这条轨的内容"）。这一遍在**渲染之前**做完，`skippedTracks` 于是与
-    //    "哪些轨真的要渲"同源 —— `resumeFrom` 也就不必猜后续轨的身份。
-    let mut planned: Vec<(EntityId, String, String, PathBuf)> = Vec::with_capacity(queue.len());
-    for (index, track_id, name) in queue {
-        if !source_nodes.contains(&track_id) {
+    // 3. 分类（**渲染之前**做完，`skippedTracks` 于是与"哪些轨真的要渲"同源
+    //    —— `resumeFrom` 也就不必猜后续轨的身份）：
+    //    - 在基线源集里 ⇒ 源节点 stem；
+    //    - 是有喂入的总线轨（[`bus_stem_kind`]）⇒ 总线 stem（线 G ⑪ 治本：
+    //      总线信号是入边求和，旧版在这里被一律剔除、且更早被空判定拦下，
+    //      两道墙叠加 ⇒ 总线轨永远不出文件）；
+    //    - 自身无 clip/采样器、也不是有内容的总线 ⇒ 空轨点名；
+    //    - 其余 ⇒ 非源节点点名。
+    let content_bus_nodes = bus_source_nodes(project);
+    let mut planned: Vec<(EntityId, String, String, PathBuf, StemKind)> =
+        Vec::with_capacity(queue.len());
+    for (order, index, track_id, name) in queue {
+        let kind = if source_nodes.contains(&track_id) {
+            Some(StemKind::Source)
+        } else {
+            bus_stem_kind(project, track_id)
+        };
+        let Some(kind) = kind else {
+            let track = project
+                .tracks
+                .get(&track_id)
+                .expect("轨来自同一份 tracks 遍历");
+            if track.clips.is_empty() && track.sampler.is_none() {
+                // ⭐ **空轨不出文件**（判据与 CLI 渲染核心同一条：没有 clip 也没有
+                // 采样器、且没有带内容的喂入边 ⇒ 输出确定是 0）。⛔ 不静默丢：
+                // 走 `skippedTracks` 点名。
+                skipped.push((
+                    order,
+                    SkippedTrack {
+                        track_id,
+                        name: name.to_owned(),
+                        reason: SkipReason::EmptyTrack,
+                        hint: None,
+                    },
+                ));
+                continue;
+            }
             // ⭐ `notASourceNode` 的修法分两种情形，`hint` 必须区分（否则调用方
             //    分不清是缺节点还是缺边）：身份不在 `routing_graph.nodes` 里 ⇒
             //    先加节点再补边；在图里但不在基线源集里 ⇒ 只缺通往主总线的边。
@@ -660,21 +820,26 @@ fn export_with_sink(
                  经 addTrack 新建的轨已自动接线，本情形针对未入图的存量轨。"
                     .to_owned()
             };
-            skipped.push(SkippedTrack {
-                track_id,
-                name: name.to_owned(),
-                reason: SkipReason::NotASourceNode,
-                hint: Some(hint),
-            });
+            skipped.push((
+                order,
+                SkippedTrack {
+                    track_id,
+                    name: name.to_owned(),
+                    reason: SkipReason::NotASourceNode,
+                    hint: Some(hint),
+                },
+            ));
             continue;
-        }
+        };
         let file_name = stem_file_name(index, project.tracks.len(), name);
-        planned.push((track_id, name.to_owned(), file_name, PathBuf::new()));
+        planned.push((track_id, name.to_owned(), file_name, PathBuf::new(), kind));
     }
+    skipped.sort_by_key(|(order, _)| *order);
+    let skipped: Vec<SkippedTrack> = skipped.into_iter().map(|(_, row)| row).collect();
     // 4. 落点预检（**一次做完**，⛔ 不边渲边发现）：每个落点先过 `guard_output_path`
     //    （工程文件 / 锁文件），再加一条批内预检——目标已存在就整批拒绝
     //    （`write_project_atomic` 会覆盖它）。
-    for (_, _, file_name, path) in &mut planned {
+    for (_, _, file_name, path, _) in &mut planned {
         *path = request.out_dir.join(&file_name);
         render::guard_output_path(path, project_path)?;
         if path.exists() {
@@ -683,21 +848,71 @@ fn export_with_sink(
     }
     let planned_ids = planned
         .iter()
-        .map(|(track_id, _, _, _)| *track_id)
+        .map(|(track_id, _, _, _, _)| *track_id)
         .collect::<Vec<_>>();
     // 5. 逐轨渲染（`sink` 有值 ⇒ 渲完这条立刻写盘并释放字节）。
     let mut stems = Vec::with_capacity(planned.len());
     let mut renders = 1_usize;
-    for (position, (track_id, name, file_name, path)) in planned.into_iter().enumerate() {
+    for (position, (track_id, name, file_name, path, kind)) in planned.into_iter().enumerate() {
         let mut stem_project = project_without_audition(project);
-        // 只留这一条源节点可闻：其余源节点**在克隆上**静音（D3 的克隆-改-重渲染）。
-        // 总线与 master 不动 —— 它们是这一条信号的通路，静音它们会连目标一起消掉。
-        for &node in &source_nodes {
-            if node == track_id {
-                continue;
+        match &kind {
+            StemKind::Source => {
+                // 只留这一条源节点可闻：其余源节点**在克隆上**静音（D3 的克隆-改-重渲染）。
+                // 总线与 master 不动 —— 它们是这一条信号的通路，静音它们会连目标一起消掉。
+                for &node in &source_nodes {
+                    if node == track_id {
+                        continue;
+                    }
+                    if let Some(track) = stem_project.tracks.get_mut(&node) {
+                        track.mute = true;
+                    }
+                }
             }
-            if let Some(track) = stem_project.tracks.get_mut(&node) {
-                track.mute = true;
+            StemKind::Bus {
+                ancestors,
+                descendants,
+            } => {
+                // ⭐ 总线隔离（线 G ⑪）：只留**喂入祖先**的内容，其余一律摘除，
+                // 再取主总线输出 —— 主总线上剩下的就只有这条总线的贡献。
+                // - 祖先之外的源节点：静音（与源 stem 同一条手法）；
+                // - 祖先之外的总线源节点：只摘它自己的片段/采样器、**不**静音
+                //   —— 静音会把它的输出级归零，连路过它的目标信号一起消掉
+                //   （下游总线正是目标到主总线的通路）；
+                // - 音频边只留"祖先 ∪ 后代"内部且流经本总线的边：喂入源绕过
+                //   本总线直达下游/主总线的旁路边必须剪除，否则同一份信号会
+                //   绕开总线再混进来一份。侧链边不载音频，原样保留。
+                for &node in &source_nodes {
+                    if ancestors.contains(&node) {
+                        continue;
+                    }
+                    if let Some(track) = stem_project.tracks.get_mut(&node) {
+                        track.mute = true;
+                    }
+                }
+                for &node in &content_bus_nodes {
+                    if ancestors.contains(&node) {
+                        continue;
+                    }
+                    if let Some(track) = stem_project.tracks.get_mut(&node) {
+                        track.clips.clear();
+                        track.sampler = None;
+                    }
+                }
+                let flow: BTreeSet<EntityId> = ancestors.union(descendants).copied().collect();
+                stem_project.routing_graph.edges.retain(|_, edge| {
+                    if edge.kind == RoutingKind::Sidechain {
+                        return true;
+                    }
+                    let (source, destination) = (edge.source_node, edge.destination_node);
+                    if !flow.contains(&source) || !flow.contains(&destination) {
+                        return false;
+                    }
+                    // 旁路边：祖先 → 后代、两端都不是本总线 ⇒ 不流经本总线。
+                    !(ancestors.contains(&source)
+                        && descendants.contains(&destination)
+                        && source != track_id
+                        && destination != track_id)
+                });
             }
         }
         let stem_request = stem_render_request(&stem_project, Some(basis.frames), Some(path));

@@ -1053,3 +1053,303 @@ fn a_stem_above_full_scale_carries_a_peak_warning_and_quiet_stems_do_not() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 线 G ⑪（总线轨 stem 治本）：带总线路由的工程
+// ---------------------------------------------------------------------------
+
+/// 带总线路由的夹具：`Lead`/`Pad` → `RoomBus`（无 clip/采样器、推子 −6 dB）→ Master；
+/// `Bass` 直达 Master（不喂总线）。总线轨的信号只存在于喂入边的求和里。
+fn bus_project() -> YebanProjectV1 {
+    let master = id(1);
+    let bus = id(5);
+    let mut project = YebanProjectV1 {
+        id: id(998),
+        title: "bus stem fixture".to_owned(),
+        bpm: 120.0,
+        master_bus_track_id: master,
+        ..YebanProjectV1::default()
+    };
+    project.audio_config.sample_rate = SampleRate::Hz48000;
+    project.metadata.created_at_unix_ms = 1_700_000_000_000;
+    project.metadata.modified_at_unix_ms = 1_700_000_000_000;
+    project.tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    project.tracks.insert(
+        bus,
+        TrackV3 {
+            id: bus,
+            name: "RoomBus".to_owned(),
+            kind: TrackKind::Midi,
+            volume_db: -6.0,
+            ..TrackV3::default()
+        },
+    );
+    // (轨, 名, 音高, 目的节点, 边 kind, 边种子)
+    let routes = [
+        (2_u32, "Lead", 60_u8, bus, RoutingKind::TrackToBus, 50_u32),
+        (3, "Pad", 72, bus, RoutingKind::TrackToBus, 51),
+        (4, "Bass", 36, master, RoutingKind::TrackToBus, 52),
+    ];
+    for (seed, name, pitch, destination, kind, edge_seed) in routes {
+        let track = id(seed);
+        let clip = id(10 + seed);
+        let placement = id(20 + seed);
+        let note = id(30 + seed);
+        let mut params = TrackV3 {
+            id: track,
+            name: name.to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        };
+        params.clips.insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: clip,
+                start_tick: 0,
+                duration_ticks: 1_920,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        let mut notes = BTreeMap::new();
+        notes.insert(note, MidiNote::new(note, 0, pitch, 1_920));
+        project.clip_pool.insert(
+            clip,
+            ClipPoolEntry {
+                id: clip,
+                name: format!("{name}Clip"),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        project.tracks.insert(track, params);
+        project.routing_graph.edges.insert(
+            id(edge_seed),
+            RoutingEdge {
+                id: id(edge_seed),
+                source_node: track,
+                destination_node: destination,
+                kind,
+                gain_db: None,
+            },
+        );
+    }
+    project.routing_graph.edges.insert(
+        id(53),
+        RoutingEdge {
+            id: id(53),
+            source_node: bus,
+            destination_node: master,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        },
+    );
+    project.routing_graph.nodes = vec![id(2), id(3), id(4), bus, master];
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("总线夹具必须合法: {error}"));
+    project
+}
+
+/// 读回一个 32-bit Float WAV 的全部交错样本（从盘上字节解，不抄回执）。
+fn float_samples(path: &Path) -> Vec<f32> {
+    float_samples_of_bytes(&fs::read(path).expect("读分轨产物"))
+}
+
+/// 从容器字节解全部交错样本（`render::build` 只产字节不落盘，对照渲染走这条）。
+fn float_samples_of_bytes(bytes: &[u8]) -> Vec<f32> {
+    let parsed = parse_container(bytes).expect("容器可解析");
+    assert!(parsed.format.is_float, "容器必须是浮点");
+    bytes[parsed.data]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
+        .collect()
+}
+
+/// ⭐ 线 G ⑪ 判据 1：总线轨**出文件**（不再被空判定/非源节点两道墙拦下），
+/// 且只被主总线点名跳过；成本读数 = 4 条分轨 + 1 次基线。
+#[test]
+fn bus_track_gets_a_stem_and_only_the_master_is_skipped() {
+    let scratch = Scratch::new("bus-stem");
+    let out_dir = scratch.stems_dir();
+    let (mut dispatcher, auth) = dispatcher_with(&bus_project(), &scratch.project_path());
+
+    let data = export(&mut dispatcher, &auth, &out_dir, Value::Null);
+
+    assert_eq!(
+        entries(&out_dir),
+        vec![
+            "0001.Lead.wav",
+            "0002.Pad.wav",
+            "0003.Bass.wav",
+            "0004.RoomBus.wav"
+        ],
+        "总线轨必须与源轨一样出文件"
+    );
+    assert_eq!(data["stemCount"], json!(4));
+    assert_eq!(
+        data["stemsBasis"]["renders"],
+        json!(5),
+        "4 条分轨 + 1 次基线"
+    );
+    let skipped = data["skippedTracks"].as_array().expect("数组");
+    assert_eq!(skipped.len(), 1, "只有主总线不出文件: {skipped:?}");
+    assert_eq!(skipped[0]["reason"], json!("masterBusTrack"));
+    let bus_row = data["stems"]
+        .as_array()
+        .expect("数组")
+        .iter()
+        .find(|row| row["name"] == json!("RoomBus"))
+        .expect("RoomBus 必须在 stems 里")
+        .clone();
+    assert_eq!(bus_row["trackId"], json!(id(5).to_canonical_string()));
+    // 总线 stem 必须非静音（喂入求和是真信号，不是占位空文件）。
+    let samples = float_samples(&out_dir.join("0004.RoomBus.wav"));
+    assert!(!samples.is_empty(), "总线 stem 必须有样本");
+    let peak = samples.iter().fold(0.0_f32, |acc, s| acc.max(s.abs()));
+    assert!(peak > 0.05, "总线 stem 峰值必须显著非零, 实测 {peak}");
+}
+
+/// ⭐ 线 G ⑪ 判据 2：总线 stem 的内容 == 混音中该总线的实际信号。
+///
+/// 对照组不用分轨自身的任何代码：把同一工程里**不喂总线**的 `Bass` 在工程
+/// 数据里真静音，走 `render::build` 的母带路径（Float32 容器）渲染 —— 此刻
+/// 主总线输出恒等于 RoomBus 的贡献。逐样本比对（容差 1e-6：两条路径的求和
+/// 顺序差只许带来末位浮点差）。另加一条可加性核对：总线 stem ≈ Lead stem +
+/// Pad stem（两条喂入轨的分轨本身也经总线推子到达主总线）。
+#[test]
+fn bus_stem_matches_the_bus_signal_in_the_mix() {
+    use yeban_mcp::domain::render::{self, RenderRequest, SampleFormat, SampleLimits};
+
+    let scratch = Scratch::new("bus-mix");
+    let out_dir = scratch.stems_dir();
+    let project = bus_project();
+    let project_path = scratch.project_path();
+    let (mut dispatcher, auth) = dispatcher_with(&project, &project_path);
+    let data = export(&mut dispatcher, &auth, &out_dir, Value::Null);
+    let frames = data["stems"][0]["frames"].as_u64().expect("frames");
+
+    let bus_samples = float_samples(&out_dir.join("0004.RoomBus.wav"));
+    let lead_samples = float_samples(&out_dir.join("0001.Lead.wav"));
+    let pad_samples = float_samples(&out_dir.join("0002.Pad.wav"));
+    assert_eq!(bus_samples.len(), lead_samples.len());
+    assert_eq!(bus_samples.len(), pad_samples.len());
+
+    // 可加性：总线 stem = 两条喂入轨经总线后的贡献之和。
+    let mut max_add_diff = 0.0_f32;
+    for (index, ((bus, lead), pad)) in bus_samples
+        .iter()
+        .zip(lead_samples.iter())
+        .zip(pad_samples.iter())
+        .enumerate()
+    {
+        let _ = index;
+        max_add_diff = max_add_diff.max((bus - (lead + pad)).abs());
+    }
+    assert!(
+        max_add_diff <= 1e-5,
+        "总线 stem 必须等于喂入轨贡献之和, 最大逐样本差 {max_add_diff}"
+    );
+
+    // 与混音对照：Bass 真静音的工程走母带渲染路径，主总线输出 == 总线贡献。
+    let mut reference_project = bus_project();
+    reference_project
+        .tracks
+        .get_mut(&id(4))
+        .expect("Bass 在夹具里")
+        .mute = true;
+    let assets: BTreeMap<yeban_model::AssetHash, Vec<u8>> = BTreeMap::new();
+    let reference_path = scratch.dir.join("reference.wav");
+    let artifact = render::build(
+        &reference_project,
+        &project_path,
+        &RenderRequest {
+            format_index: 0,
+            sample_rate: reference_project.sample_rate(),
+            normalize: false,
+            frames: Some(frames),
+            duration_seconds_bits: None,
+            target_lufs_bits: None,
+            path: Some(reference_path.clone()),
+            contributions: false,
+            threads: None,
+            sample_format: SampleFormat::Float32,
+            sample_limits: SampleLimits::default(),
+            start_tick: None,
+            end_tick: None,
+        },
+        1_760_000_000_000,
+        &assets,
+    )
+    .expect("对照母带渲染必须成功");
+    assert_eq!(artifact.frames, frames, "对照渲染帧数与分轨钉死帧数一致");
+    let reference_samples = float_samples_of_bytes(&artifact.bytes);
+    assert_eq!(reference_samples.len(), bus_samples.len());
+    let mut max_mix_diff = 0.0_f32;
+    for (bus, reference) in bus_samples.iter().zip(reference_samples.iter()) {
+        max_mix_diff = max_mix_diff.max((bus - reference).abs());
+    }
+    assert!(
+        max_mix_diff <= 1e-6,
+        "总线 stem 必须与混音中该总线的实际信号逐样本一致, 最大差 {max_mix_diff}"
+    );
+}
+
+/// ⭐ 线 G ⑪ 判据 3：不喂总线的轨改了内容，总线 stem **逐字节不变**
+/// （旁路/直达信号不得漏进总线 stem）；该轨自己的 stem 必须随之改变
+/// （证明改动真的生效，不是两次导出都渲染了同一份东西）。
+#[test]
+fn bus_stem_is_unchanged_when_a_non_feeder_track_changes() {
+    let scratch = Scratch::new("bus-isolation");
+    let first_dir = scratch.dir.join("first");
+    let second_dir = scratch.dir.join("second");
+    fs::create_dir_all(&first_dir).expect("建第一目录");
+    fs::create_dir_all(&second_dir).expect("建第二目录");
+    let project_path = scratch.project_path();
+
+    let (mut dispatcher, auth) = dispatcher_with(&bus_project(), &project_path);
+    export(&mut dispatcher, &auth, &first_dir, Value::Null);
+
+    // Bass 的音高 36 → 40（只动不喂总线的那条轨的内容）。
+    let mut variant = bus_project();
+    let bass_clip = id(14);
+    if let ClipContent::Midi { notes } = &mut variant
+        .clip_pool
+        .get_mut(&bass_clip)
+        .expect("Bass 片段在夹具里")
+        .content
+    {
+        for note in notes.values_mut() {
+            note.pitch = 40;
+        }
+    }
+    let (mut dispatcher, auth) = dispatcher_with(&variant, &project_path);
+    export(&mut dispatcher, &auth, &second_dir, Value::Null);
+
+    assert_eq!(
+        file_sha256(&first_dir.join("0004.RoomBus.wav")),
+        file_sha256(&second_dir.join("0004.RoomBus.wav")),
+        "非喂入轨的内容变化不得进入总线 stem"
+    );
+    assert_eq!(
+        file_sha256(&first_dir.join("0001.Lead.wav")),
+        file_sha256(&second_dir.join("0001.Lead.wav")),
+        "喂入轨自身未变 ⇒ 其分轨也不变（对照）"
+    );
+    assert_ne!(
+        file_sha256(&first_dir.join("0003.Bass.wav")),
+        file_sha256(&second_dir.join("0003.Bass.wav")),
+        "Bass 自己的分轨必须随音高改变（改动生效的证据）"
+    );
+}
