@@ -1192,7 +1192,11 @@ fn bus_track_gets_a_stem_and_only_the_master_is_skipped() {
         "总线轨必须与源轨一样出文件"
     );
     assert_eq!(data["stemCount"], json!(4));
-    assert_eq!(data["stemsBasis"]["renders"], json!(5), "4 条分轨 + 1 次基线");
+    assert_eq!(
+        data["stemsBasis"]["renders"],
+        json!(5),
+        "4 条分轨 + 1 次基线"
+    );
     let skipped = data["skippedTracks"].as_array().expect("数组");
     assert_eq!(skipped.len(), 1, "只有主总线不出文件: {skipped:?}");
     assert_eq!(skipped[0]["reason"], json!("masterBusTrack"));
