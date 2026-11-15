@@ -5,7 +5,7 @@
   "description": "Standard JSON-RPC 2.0 interface and tool definitions for Yeban MCP. 根为 oneOf(ToolCall, ToolResponse, ReplayedToolResponse)：工具调用、工具响应与幂等重放信封的样本都必须通过根校验，否则本契约只是一堆没人引用的类型定义（ADR-0001 D25）。",
   "definitions": {
     "WarningCode": {
-      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` / `ignoredStripDevices` / `incompleteDrumNoteMap` / `unroutedTracks` = `domain/render.rs`，`sfzSamplesUnreadable` / `sfzCcGatedSilence` = `domain/sfz.rs`，`peakAboveFullScale` = `domain/stems.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
+      "description": "⭐ `data.warnings[]` 里 `code` 字段的**唯一权威名册**（机械对账见 `scripts/guards/check_warning_codes.py`：实现侧构造点与本 enum 必须**集合相等**）。警告一律**非阻断**：出现在响应里不代表操作失败。构造点：`unrecognisedEffectParam` / `deviceOnSilentTrack` = `domain/mod.rs`，`exportClipping` / `silentSources` / `ignoredStripDevices` / `incompleteDrumNoteMap` / `unroutedTracks` = `domain/render.rs`，`sfzSamplesUnreadable` / `sfzCcGatedSilence` / `sfzSampleBudgetTruncated` = `domain/sfz.rs`，`peakAboveFullScale` = `domain/stems.rs`。⚠ 错误路径的 `data.reason`（如 `unknownEffectParam`）**不属于**本名册。",
       "type": "string",
       "enum": [
         "deviceOnSilentTrack",
@@ -15,6 +15,7 @@
         "masterFaderAboveUnity",
         "peakAboveFullScale",
         "sfzCcGatedSilence",
+        "sfzSampleBudgetTruncated",
         "sfzSamplesUnreadable",
         "silentSources",
         "unrecognisedEffectParam",
@@ -1393,7 +1394,7 @@
             "maxSampleFiles": {
               "type": "integer",
               "minimum": 0,
-              "description": "本次装载最多读多少个**不同**样本文件（去重后）；缺省 512，`0` = 不限。真实大库的一件乐器就会有上百份不同样本（`GM-StylePerc` 184 份）—— 旧上界 128 会把大乐器的音区层/力度层**静默砍掉**，而采样器轨没有正弦回退 ⇒ 被砍的音区就是数字静音。截断仍是响亮报告的（`sampleReadsTruncated` ＋ 逐条 `sampleFailures`）。"
+              "description": "本次装载最多读多少个**不同**样本文件（去重后）；缺省 1024，`0` = 不限。真实大库的一件乐器就会有上百份不同样本（`GM-StylePerc` 184 份、`Salamander Grand` 641 份）—— 旧缺省 512 会把大乐器的音区层/力度层**砍掉**，而采样器轨没有正弦回退 ⇒ 被砍的音区就是数字静音。截断是响亮报告的（`sampleReadsTruncated` ＋ `sampleTruncation` 结构化记账 ＋ `sfzSampleBudgetTruncated` 警告 ＋ 逐条 `sampleFailures`）。"
             },
             "maxSampleFrames": {
               "type": "integer",

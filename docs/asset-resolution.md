@@ -81,11 +81,16 @@ app 侧同一语义在 `crates/yeban-app/src/sfz_load.rs::resolve_sample_path`�
     超限直接拒绝读取并把原因写进失败记账，⛔ **绝不截断**（截断会让听到的与
     文件里的不是同一段音频）。路径是目录、文件不存在同样是逐条失败，不是装载失败。
 15. **装载／渲染预算**（`SampleLimits`，逐轨记账、解码结果跨轨共享于
-    `SampleStore`）：不同样本文件数缺省上限 512（`MAX_SAMPLE_FILES_READ`）、
+    `SampleStore`）：不同样本文件数缺省上限 1024（`MAX_SAMPLE_FILES_READ`）、
     累计解码帧数缺省上限 64,000,000（`MAX_SAMPLE_FRAMES_TOTAL`）；运行期可用
     `yeban_load_sfz` / `yeban_render_master` 的 `maxSampleFiles` /
     `maxSampleFrames` 覆盖，`0` ＝ 不限。任一上限命中即**停止再读**，
     并把 `sampleReadsTruncated` 置 `true`——响亮报告，⛔ 不静默丢弃。
+    命中明细进 `sampleTruncation` 结构化记账（按上限分计被跳过文件数），
+    装载回执另发 `sfzSampleBudgetTruncated` 警告（命中上限名＋值、跳过
+    文件数、因此静音的区域数、改法）；单文件上限（第 14 条）的拒绝同样
+    计入该记账并置 `sampleReadsTruncated`，且不进 `sfzSamplesUnreadable`
+    的计数（那条只管文件缺失／读不出，改法不同）。
     预算只对本次渲染**会发声的已用子集**记账（按需装载 `DemandLoadFilter`）；
     已用子集自身超预算仍然响亮拒绝。
 16. **失败记账的形状**（装载与渲染回执同口径）：`sampleFailures` 是逐条字符串数组

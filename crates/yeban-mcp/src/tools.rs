@@ -1183,7 +1183,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "maxSampleFiles",
                 "integer",
                 false,
-                "⭐ 每条采样器轨最多读多少个**不同**样本文件（去重后）；缺省 512，`0` = 不限。与 `yeban_load_sfz.maxSampleFiles` **同一份**解析实现与同一套缺省值。逐轨记账（一次渲染内已解码 PCM 跨轨共享）。截断如实进 `data.sources[].sampler.sampleReadsTruncated` + `sampleFailures`，预算本身在 `data.request.sampleLimits` 与 `sampler.sampleLimits` 回显",
+                "⭐ 每条采样器轨最多读多少个**不同**样本文件（去重后）；缺省 1024，`0` = 不限。与 `yeban_load_sfz.maxSampleFiles` **同一份**解析实现与同一套缺省值。逐轨记账（一次渲染内已解码 PCM 跨轨共享）。截断如实进 `data.sources[].sampler.sampleReadsTruncated` + `sampleTruncation` + `sampleFailures`，预算本身在 `data.request.sampleLimits` 与 `sampler.sampleLimits` 回显",
             ),
             param(
                 "maxSampleFrames",
@@ -1550,7 +1550,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
         name: "yeban_load_sfz",
-        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出生效种子 (用户 initialCc 覆于文件 <control> 的 set_ccN 种子之上, 未声明者 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道, 泳道值覆于种子之上); ⭐ 可选 initialCc: 用户初始 CC 并入同一种子表播种 (覆盖文件 set_ccN), 普查改按生效种子算、响应回显 data.initialCc",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId; data.silentRegionCount 是引擎摊平口径的静音区域数 (缺样本 + 内建静音, 与 yeban_render_master 的 sampler.silentRegionCount 同义), builtinSilentRegionCount 是其中的 *silence 子集; ⭐ G4: 样本文件读不到时 status 仍是 success (文本确实解析了), 但 data.warnings[] 会点名 sfzSamplesUnreadable —— 采样器轨没有正弦回退, 绑轨即整轨静音, 采样须按 assets/samples/manifest.json 登记式外取; ⭐ CC 门控普查: data.ccGateCensus 给出生效种子 (用户 initialCc 覆于文件 <control> 的 set_ccN 种子之上, 未声明者 0) 下不可发声的区域分计 (byGate 门控 / byAmplitude 振幅 / ccNumbers 涉及 CC 号), 非 0 时 data.warnings[] 另点名非阻塞的 sfzCcGatedSilence (需要 CC 校准: 注入 MidiCc 泳道, 泳道值覆于种子之上); ⭐ 预算截断: 样本被文件数/帧数/单文件字节上限跳过时, data.sampleTruncation 给结构化记账 (按上限分计被跳过文件数), data.budgetSilentRegionCount 给因此静音的区域数, data.warnings[] 另点名非阻塞的 sfzSampleBudgetTruncated (命中上限名+值/跳过数/静音区域数/改法: maxSampleFiles/maxSampleFrames 提高或 0=不限, 单文件上限须切小或转码); ⭐ 可选 initialCc: 用户初始 CC 并入同一种子表播种 (覆盖文件 set_ccN), 普查改按生效种子算、响应回显 data.initialCc",
         scope: Scope::AppAdmin,
         // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
         // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。
@@ -1581,7 +1581,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "maxSampleFiles",
                 "integer",
                 false,
-                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 512, `0` = 不限。真实大库的一件乐器就会有上百份不同样本 (GM-StylePerc 184 份), 旧上界 128 会把大乐器的音区层/力度层**静默砍掉** —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断仍是响亮报告的 (`sampleReadsTruncated` + 逐条 `sampleFailures`), 响应里的 `sampleLimits` 回显本次用的预算",
+                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 1024, `0` = 不限。真实大库的一件乐器就会有上百份不同样本 (GM-StylePerc 184 份, Salamander Grand 641 份), 旧缺省 512 会把大乐器的音区层/力度层**砍掉** —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断是响亮报告的 (`sampleReadsTruncated` + `sampleTruncation` 结构化记账 + `sfzSampleBudgetTruncated` 警告 + 逐条 `sampleFailures`), 响应里的 `sampleLimits` 回显本次用的预算",
             ),
             param(
                 "maxSampleFrames",
