@@ -36,6 +36,30 @@ export component ArrangementViewport inherits Rectangle {
     callback arrangement-wheel(length, length, bool, bool);
     callback zoom-h-step(bool);
     callback zoom-v-step(bool);
+
+    function handle-arr-scroll(
+        delta-x: length,
+        delta-y: length,
+        shift: bool,
+        alt: bool,
+        allow-vertical: bool
+    ) -> EventResult {
+        if shift || alt {
+            root.arrangement-wheel(delta-x, delta-y, shift, alt);
+            return accept;
+        }
+        if delta-x != 0px {
+            root.arrangement-wheel(delta-x, delta-y, false, false);
+            if allow-vertical && delta-y != 0px {
+                arr_tracks_flickable.content-y = Math.max(
+                    Math.min(0px, arr_tracks_flickable.height - arr_tracks_flickable.content-height),
+                    Math.min(0px, arr_tracks_flickable.content-y + delta-y)
+                );
+            }
+            return accept;
+        }
+        return reject;
+    }
     /// 点击时间线块：只报**摆放身份**（`host::wire_clip_scope` 用它把卷帘作用域切到该片段）。
     in-out property <int> local-menu-track-id: 0;
     in-out property <string> active-local-menu: ""; // "", "tracks", "instrument"
@@ -285,12 +309,7 @@ export component ArrangementViewport inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.scrub-timeline(self.mouse-x + root.scroll-x); }
                                 scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
                                 }
                             }
 
@@ -660,12 +679,23 @@ export component ArrangementViewport inherits Rectangle {
             // 内容撑出工作区、把下方钢琴卷帘/混音台顶出窗口。这里改成纵向 Flickable：
             // 内容高 = 投影的 `sheet-height`，行 y / 行高 = 投影的 `track-ys` /
             // `track-heights` ⇒ 轨道再多也只在自己的窗口里滚动，⛔ 不挤占下坞。
-            Flickable {
+            arr_tracks_flickable := Flickable {
                 width: parent.width;
                 height: parent.height;
                 content-width: self.width;
-                content-height: max(self.height, root.sheet-height + 42px);
+                content-height: max(self.height, root.sheet-height + 42px + 46px);
                 interactive: true;
+
+                // 背景滚轮兜底（含顶部 42px 留白与末尾空白区），保证双指横向/纵向滑动在整块区域均响应
+                TouchArea {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: arr_tracks_flickable.content-height;
+                    scroll-event(event) => {
+                        root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                    }
+                }
 
                 for trk[idx] in root.tracks : Rectangle {
                     y: root.track-ys[idx];
@@ -696,12 +726,7 @@ export component ArrangementViewport inherits Rectangle {
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
                                 scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
                             }
 
@@ -751,6 +776,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 root.local-menu-track-id = trk.id;
                                                 root.active-local-menu = root.active-local-menu == "instrument" ? "" : "instrument";
                                             }
+                                            scroll-event(event) => {
+                                                root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                            }
                                         }
                                         TooltipBubble {
                                             text: "点击更换音色/效果 [当前: " + (trk.insert1 != "" ? trk.insert1 : trk.kind) + "]";
@@ -787,6 +815,9 @@ export component ArrangementViewport inherits Rectangle {
                                             m-btn-touch := TouchArea {
                                                 mouse-cursor: MouseCursor.pointer;
                                                 clicked => { root.toggle-mute(trk.id); }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: trk.muted ? "取消静音 [M]" : "静音轨道 [M]";
@@ -814,6 +845,9 @@ export component ArrangementViewport inherits Rectangle {
                                             s-btn-touch := TouchArea {
                                                 mouse-cursor: MouseCursor.pointer;
                                                 clicked => { root.toggle-solo(trk.id); }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: trk.soloed ? "取消独奏 [S]" : "独奏轨道 [S]";
@@ -841,6 +875,9 @@ export component ArrangementViewport inherits Rectangle {
                                             r-btn-touch := TouchArea {
                                                 mouse-cursor: MouseCursor.pointer;
                                                 clicked => { root.toggle-arm(trk.id); }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: trk.armed ? "取消录音准备 [R]" : "录音准备 (Arm) [R]";
@@ -897,6 +934,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 double-clicked => {
                                                     root.mixer-pan-reset(trk.id - 1);
                                                 }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "声像: " + trk.pan + " (左右拖拽调节，双击归中)";
@@ -937,6 +977,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                                 double-clicked => {
                                                     root.mixer-fader-reset(trk.id - 1);
+                                                }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                                 }
                                             }
                                             TooltipBubble {
@@ -1010,12 +1053,7 @@ export component ArrangementViewport inherits Rectangle {
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
                                 scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
                             }
 
@@ -1135,6 +1173,9 @@ export component ArrangementViewport inherits Rectangle {
                                         height: parent.height;
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.clip-select(blk.clip_ulid); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                        }
                                     }
                                 }
                             }
@@ -1179,12 +1220,7 @@ export component ArrangementViewport inherits Rectangle {
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
                                 scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
                             }
 
@@ -1234,6 +1270,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 root.local-menu-track-id = trk.id;
                                                 root.active-local-menu = root.active-local-menu == "instrument" ? "" : "instrument";
                                             }
+                                            scroll-event(event) => {
+                                                root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                            }
                                         }
                                         TooltipBubble {
                                             text: "点击更换音色/效果 [当前: " + (trk.insert1 != "" ? trk.insert1 : trk.kind) + "]";
@@ -1268,6 +1307,9 @@ export component ArrangementViewport inherits Rectangle {
                                             m-btn-r-touch := TouchArea {
                                                 mouse-cursor: MouseCursor.pointer;
                                                 clicked => { root.toggle-mute(trk.id); }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: trk.muted ? "取消静音 [M]" : "静音轨道 [M]";
@@ -1294,6 +1336,9 @@ export component ArrangementViewport inherits Rectangle {
                                             s-btn-r-touch := TouchArea {
                                                 mouse-cursor: MouseCursor.pointer;
                                                 clicked => { root.toggle-solo(trk.id); }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: trk.soloed ? "取消独奏 [S]" : "独奏轨道 [S]";
@@ -1320,6 +1365,9 @@ export component ArrangementViewport inherits Rectangle {
                                             r-btn-r-touch := TouchArea {
                                                 mouse-cursor: MouseCursor.pointer;
                                                 clicked => { root.toggle-arm(trk.id); }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: trk.armed ? "取消录音准备 [R]" : "录音准备 (Arm) [R]";
@@ -1374,6 +1422,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 double-clicked => {
                                                     root.mixer-pan-reset(trk.id - 1);
                                                 }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "声像: " + trk.pan + " (左右拖拽调节，双击归中)";
@@ -1414,6 +1465,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 double-clicked => {
                                                     root.mixer-fader-reset(trk.id - 1);
                                                 }
+                                                scroll-event(event) => {
+                                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "推子增益: " + (root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)) + " dB (上下拖拽调节，双击归 0dB)";
@@ -1447,9 +1501,9 @@ export component ArrangementViewport inherits Rectangle {
                     }
                 }
 
-                // Empty Track Lane Canvas / Add Track Drop Zone (Placed strictly below sheet-height inside Flickable)
+                // Empty Track Lane Canvas / Add Track Drop Zone (Placed strictly below sheet-height + top offset inside Flickable)
                 Rectangle {
-                    y: root.sheet-height;
+                    y: root.sheet-height + 42px;
                     vertical-stretch: 0;
                     height: 38px;
                     background: transparent;
@@ -1485,6 +1539,9 @@ export component ArrangementViewport inherits Rectangle {
                                     add-track-btm-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.add-track(); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "创建新音频或MIDI轨道 [Cmd+T]";
@@ -1544,6 +1601,9 @@ export component ArrangementViewport inherits Rectangle {
                             drop_zone_touch := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.add-track(); }
+                                scroll-event(event) => {
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                }
                             }
                             TooltipBubble {
                                 text: "双击或点击此区域添加新轨道 [Cmd+T]";
@@ -1602,6 +1662,9 @@ export component ArrangementViewport inherits Rectangle {
                                     add-track-btm-r-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.add-track(); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "创建新音频或MIDI轨道 [Cmd+T]";

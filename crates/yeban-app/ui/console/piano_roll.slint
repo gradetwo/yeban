@@ -46,6 +46,9 @@ export component PianoRoll inherits Rectangle {
     // `[ROAD-M3-002]` 滚动手势：本组件**只报告增量**, 偏移由宿主拥有并重新注入
     // （见账本第 199 轮：Flickable 会与宿主拥有的偏移双重计算, 故不用）。
     callback scroll-requested(length);
+    /// `[UI-NOTE-001 / UI-NOTE-002]` 双指触控板/鼠标滚轮二维滚动（`delta-x, delta-y, shift, alt`）：
+    /// 横向平移时间轴、纵向滑动音高视口（0..127 全音域）、`Alt/Option` 横向缩放。
+    callback roll-wheel(length, length, bool, bool);
     // `[UI-NOTE-003]` 左键单击：只**报告坐标**, 命中与选区由 Rust 侧决定（账本第 495/496 轮）。
     callback clicked(length, length);
     // `[UI-NOTE-003]` §3.3 工具矩阵 aux 列的**双击**入口（力度工具 = "双击恢复默认力度 100"）。
@@ -197,6 +200,10 @@ export component PianoRoll inherits Rectangle {
             clicked => {
                 root.tool-selected(tool_index + 1);
             }
+            scroll-event(event) => {
+                root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                accept
+            }
         }
     }
 
@@ -245,6 +252,10 @@ export component PianoRoll inherits Rectangle {
             oct-down-touch := TouchArea {
                 mouse-cursor: MouseCursor.pointer;
                 clicked => { root.pitch-range-shift(-12); }
+                scroll-event(event) => {
+                    root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                }
             }
         }
         Rectangle {
@@ -266,6 +277,10 @@ export component PianoRoll inherits Rectangle {
             oct-up-touch := TouchArea {
                 mouse-cursor: MouseCursor.pointer;
                 clicked => { root.pitch-range-shift(12); }
+                scroll-event(event) => {
+                    root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                }
             }
         }
         Rectangle {
@@ -286,6 +301,10 @@ export component PianoRoll inherits Rectangle {
             }
             quant-btn-touch := TouchArea {
                 clicked => { root.quantize-requested(); }
+                scroll-event(event) => {
+                    root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                }
             }
         }
         Rectangle {
@@ -306,6 +325,10 @@ export component PianoRoll inherits Rectangle {
             }
             hum-btn-touch := TouchArea {
                 clicked => { root.humanize-requested(); }
+                scroll-event(event) => {
+                    root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                    accept
+                }
             }
         }
     }
@@ -535,6 +558,10 @@ export component PianoRoll inherits Rectangle {
         accessible-role: region;
         accessible-id: "piano-roll-scroll-area";
         accessible-label: "卷帘拖动手势面";
+        scroll-event(event) => {
+            root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+            accept
+        }
         // 本版本 `PointerEvent` **没有** `delta-x`（编译期报 "Cannot access the field 'delta-x'"），
         // 本版本的 `PointerEvent` 也**没有** `position`，位置只能取 `TouchArea` 自己的 `mouse-x`。用 `last - now` 表示"向右拖 ⇒ 内容左移 ⇒ 偏移增加"。
         //

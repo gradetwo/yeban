@@ -103,6 +103,7 @@ export component UnifiedLowerDock inherits Rectangle {
     callback piano-key-pressed(int);
     callback piano-key-released(int);
     callback piano-roll-octave-shift(int);
+    callback piano-roll-wheel(length, length, bool, bool);
 
     // ⭐ 真实钢琴卷帘的数据面：全部由 host::apply_view 注入（同一份投影），
     // 界面⛔ 不再持有演示音符数组、⛔ 不再用 16×64 的假网格。
@@ -1923,6 +1924,7 @@ export component UnifiedLowerDock inherits Rectangle {
                 piano-key-pressed(lane) => { root.piano-key-pressed(lane); }
                 piano-key-released(lane) => { root.piano-key-released(lane); }
                 pitch-range-shift(delta) => { root.piano-roll-octave-shift(delta); }
+                roll-wheel(dx, dy, shift, alt) => { root.piano-roll-wheel(dx, dy, shift, alt); }
             }
         }
     }

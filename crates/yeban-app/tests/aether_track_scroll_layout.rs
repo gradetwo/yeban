@@ -10,15 +10,15 @@
 
 use std::rc::Rc;
 
-use slint::Model;
+use slint::{LogicalPosition, Model, platform::WindowEvent};
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::{EntityId, YebanProjectV1};
-use yeban_ui_test_port::Size;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
+use yeban_ui_test_port::{Size, UiTestPort};
 
 const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -136,5 +136,133 @@ fn many_tracks_scroll_inside_the_arrangement_and_keep_the_lower_dock_visible() {
     eprintln!(
         "[layout] console-tab-rail y={} height={} (window 900)",
         bounds.y, bounds.height
+    );
+}
+
+#[test]
+fn arrangement_supports_vertical_and_horizontal_trackpad_two_finger_scroll() {
+    let project = sixteen_track_project();
+    let view = ViewState::from_project(&project).expect("工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<aether-2d-scroll>", "yeban-app", project, NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    let mut live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("主窗口装配成功");
+    {
+        let ui = live.ui();
+        host::wire_arrangement_wheel(ui, &undo);
+        host::wire_track_select(ui, &undo);
+        host::apply_view(ui, &view, 1440.0, 0.0);
+    }
+
+    live.refresh_tree(None).expect("刷新控件树");
+    let arr_bounds = live
+        .tree()
+        .find_by_id("workspace-arrangement-canvas")
+        .expect("workspace-arrangement-canvas 必须在树里")
+        .bounds
+        .expect("arrangement 必须有几何");
+    let lane_pt = LogicalPosition::new(arr_bounds.x as f32 + 420.0, arr_bounds.y as f32 + 120.0);
+    let header_pt = LogicalPosition::new(arr_bounds.x as f32 + 96.0, arr_bounds.y as f32 + 120.0);
+
+    // 1. 无修饰 macOS 双指左右滑动（delta_x != 0, shift = false）在时间轴与轨道头区域均生效
+    assert_eq!(live.ui().get_roll_scroll_x(), 0.0);
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: lane_pt,
+        delta_x: -96.0,
+        delta_y: 0.0,
+    });
+    assert!(
+        (live.ui().get_roll_scroll_x() - 96.0).abs() < 0.5,
+        "无修饰双指右滑 delta_x=-96 应推进 roll_scroll_x 至 96，实际={}",
+        live.ui().get_roll_scroll_x()
+    );
+
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: header_pt,
+        delta_x: 48.0,
+        delta_y: 0.0,
+    });
+    assert!(
+        (live.ui().get_roll_scroll_x() - 48.0).abs() < 0.5,
+        "轨道头区域双指左滑 delta_x=+48 应回退 roll_scroll_x 至 48，实际={}",
+        live.ui().get_roll_scroll_x()
+    );
+
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: lane_pt,
+        delta_x: 200.0,
+        delta_y: 0.0,
+    });
+    assert_eq!(live.ui().get_roll_scroll_x(), 0.0, "向左滑动必须夹紧在 0");
+
+    // 2. 纯纵向滚轮 / 双指上下滑动使轨道行内容区域发生像素位移（上移显示下方轨道），而底坞不变
+    let rail_before = live
+        .tree()
+        .find_by_id("console-tab-rail")
+        .unwrap()
+        .bounds
+        .unwrap()
+        .y;
+    let frame_before = live.window().capture().expect("纵向滚动前抓帧");
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: header_pt,
+        delta_x: 0.0,
+        delta_y: -160.0,
+    });
+    let frame_after_v = live.window().capture().expect("纵向滚动后抓帧");
+    let mut vertical_diffs = 0_usize;
+    let scan_y0 = (arr_bounds.y + 72).max(0) as u32;
+    let scan_y1 = (arr_bounds.y + i32::try_from(arr_bounds.height).unwrap() - 12).max(0) as u32;
+    let scan_x0 = (arr_bounds.x + 8).max(0) as u32;
+    let scan_x1 = (arr_bounds.x + 200).max(0) as u32;
+    for py in scan_y0..scan_y1 {
+        for px in scan_x0..scan_x1 {
+            if frame_before.pixel(px, py) != frame_after_v.pixel(px, py) {
+                vertical_diffs += 1;
+            }
+        }
+    }
+    assert!(
+        vertical_diffs > 200,
+        "轨道头纵向双指滑动后内容像素必须发生实际位移，差异像素={vertical_diffs}"
+    );
+    live.refresh_tree(None).expect("刷新树");
+    let rail_after = live
+        .tree()
+        .find_by_id("console-tab-rail")
+        .unwrap()
+        .bounds
+        .unwrap()
+        .y;
+    assert_eq!(rail_before, rail_after, "轨道内部滚动不得挤动下坞位置");
+
+    // 3. 对角线双指手势（delta_x 与 delta_y 同非零）：同时推进横向与纵向
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: lane_pt,
+        delta_x: -60.0,
+        delta_y: -120.0,
+    });
+    let frame_after_diag = live.window().capture().expect("对角滑动后抓帧");
+    assert!(
+        (live.ui().get_roll_scroll_x() - 60.0).abs() < 0.5,
+        "对角双指滑动必须同步推进横向 roll_scroll_x，实际={}",
+        live.ui().get_roll_scroll_x()
+    );
+    let mut diag_header_diffs = 0_usize;
+    for py in scan_y0..scan_y1 {
+        for px in scan_x0..scan_x1 {
+            if frame_after_v.pixel(px, py) != frame_after_diag.pixel(px, py) {
+                diag_header_diffs += 1;
+            }
+        }
+    }
+    assert!(
+        diag_header_diffs > 200,
+        "对角双指滑动必须同时更新纵向 content-y，轨道头差异像素={diag_header_diffs}"
     );
 }

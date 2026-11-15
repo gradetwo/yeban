@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::Model;
+use slint::{LogicalPosition, Model, platform::WindowEvent};
 use yeban_app::bridge::{
     NOTE_INSET_X_PX, NOTE_INSET_Y_PX, PITCH_LANE_HEIGHT_PX, ROLL_HEADER_HEIGHT_PX,
     ROLL_KEY_COLUMN_WIDTH_PX, ViewState,
@@ -24,9 +24,9 @@ use yeban_app::scene::DemoScene;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::project::ClipContent;
 use yeban_model::{EntityId, YebanProjectV1};
-use yeban_ui_test_port::Size;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
+use yeban_ui_test_port::{Size, UiTestPort};
 
 const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -329,4 +329,161 @@ fn piano_roll_live_hold_release_octave_shift_and_audibility_warnings() {
     ui.invoke_piano_key_pressed(15);
     assert_eq!(ui.get_roll_edit_status().as_str(), "");
     ui.invoke_piano_key_released(15);
+}
+
+#[test]
+fn piano_roll_supports_2d_trackpad_vertical_pitch_and_horizontal_timeline_scroll() {
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<aether-roll-2d-scroll>", "yeban-app", project, NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    let mut live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("主窗口装配成功");
+    {
+        let ui = live.ui();
+        ui.set_show_lower_dock(true);
+        ui.invoke_apply_dock_tab("pianoroll".into());
+        host::wire_roll_edit(ui, &undo);
+        host::apply_view(ui, &view, 1440.0, 0.0);
+    }
+
+    live.refresh_tree(None).expect("刷新控件树");
+    let ui = live.ui();
+    let roll_bounds = live
+        .tree()
+        .find_by_id("piano-roll-scroll-area")
+        .expect("piano-roll-scroll-area 必须在树里")
+        .bounds
+        .expect("piano-roll-scroll-area 必须有几何");
+    let grid_pt = LogicalPosition::new(
+        roll_bounds.x as f32 + (roll_bounds.width as f32 * 0.5),
+        roll_bounds.y as f32 + (roll_bounds.height as f32 * 0.5),
+    );
+    let key_col_pt = LogicalPosition::new(
+        roll_bounds.x as f32 + 24.0,
+        roll_bounds.y as f32 + (roll_bounds.height as f32 * 0.5),
+    );
+
+    let target_note_idx = (0..ui.get_note_positions().row_count())
+        .find(|&idx| ui.get_note_positions().row_data(idx).unwrap_or(0.0) >= 96.0)
+        .expect("filled_project 至少应有一个 x>=96px 的音符");
+    let target_note_ulid = ui
+        .get_note_ulids()
+        .row_data(target_note_idx)
+        .expect("target_note_ulid");
+    let target_note_x_before = ui
+        .get_note_positions()
+        .row_data(target_note_idx)
+        .unwrap_or(0.0);
+    let ys_before: Vec<f32> = ui.get_note_ys().iter().collect();
+    assert_eq!(ui.get_roll_base_pitch(), 60);
+    assert_eq!(ui.get_roll_scroll_x(), 0.0);
+
+    // 1. 双指左右滑动（delta_x != 0，无修饰）平滑滚动时间轴
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: -84.0,
+        delta_y: 0.0,
+    });
+    assert!(
+        (ui.get_roll_scroll_x() - 84.0).abs() < 0.5,
+        "双指右滑 delta_x=-84 应滚动 roll_scroll_x 至 84，实际={}",
+        ui.get_roll_scroll_x()
+    );
+    let scrolled_idx = (0..ui.get_note_ulids().row_count())
+        .find(|&idx| ui.get_note_ulids().row_data(idx).as_ref() == Some(&target_note_ulid))
+        .expect("滚动后目标音符仍应在可见视口内");
+    let target_note_x_after = ui
+        .get_note_positions()
+        .row_data(scrolled_idx)
+        .unwrap_or(0.0);
+    assert!(
+        (target_note_x_after - (target_note_x_before - 84.0)).abs() < 1.0,
+        "滚动后目标音符绘制 x 必须左移 84px: before={target_note_x_before}, after={target_note_x_after}"
+    );
+
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: key_col_pt,
+        delta_x: 40.0,
+        delta_y: 0.0,
+    });
+    assert!(
+        (ui.get_roll_scroll_x() - 44.0).abs() < 0.5,
+        "琴键列区域向左滑动 delta_x=+40 应回退至 44，实际={}",
+        ui.get_roll_scroll_x()
+    );
+
+    // 2. 双指上下滑动（delta_y != 0，无修饰）纵向移动音高视口并同步重投影 note_ys
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: 0.0,
+        delta_y: -28.0,
+    });
+    assert_eq!(
+        ui.get_roll_base_pitch(),
+        58,
+        "向下滚动 28px (=2*14px) 必须使基音下降 2 半音 (60->58)"
+    );
+    let ys_after: Vec<f32> = ui.get_note_ys().iter().collect();
+    if !ys_before.is_empty() && !ys_after.is_empty() {
+        assert_ne!(
+            ys_before, ys_after,
+            "纵向滚动音高视野后可见音符的 Y 坐标必须同步重投影"
+        );
+    }
+
+    // 3. 精细触控板连续微小增量累积跨过 14px 时触发 1 半音步进
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: 0.0,
+        delta_y: -6.0,
+    });
+    assert_eq!(ui.get_roll_base_pitch(), 58);
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: 0.0,
+        delta_y: -10.0,
+    });
+    assert_eq!(ui.get_roll_base_pitch(), 57);
+
+    // 4. 对角线双指手势同时推进横向与纵向
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: -20.0,
+        delta_y: 28.0,
+    });
+    assert!((ui.get_roll_scroll_x() - 64.0).abs() < 0.5);
+    assert_eq!(ui.get_roll_base_pitch(), 59);
+
+    // 5. 覆盖全 MIDI 0..=127 音域（base_pitch 夹紧在 0..=112）
+    for _ in 0..10 {
+        live.window().dispatch(WindowEvent::PointerScrolled {
+            position: grid_pt,
+            delta_x: 0.0,
+            delta_y: -140.0,
+        });
+    }
+    assert_eq!(ui.get_roll_base_pitch(), 0);
+    assert_eq!(
+        ui.get_roll_lane_key_labels().row_data(15).as_deref(),
+        Some("C-1")
+    );
+
+    for _ in 0..20 {
+        live.window().dispatch(WindowEvent::PointerScrolled {
+            position: grid_pt,
+            delta_x: 0.0,
+            delta_y: 140.0,
+        });
+    }
+    assert_eq!(ui.get_roll_base_pitch(), 112);
+    assert_eq!(
+        ui.get_roll_lane_key_labels().row_data(0).as_deref(),
+        Some("G9")
+    );
 }

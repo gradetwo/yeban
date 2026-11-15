@@ -1430,18 +1430,28 @@ pub fn wire_arrangement_wheel(ui: &MainWindow, port: &Rc<UndoPort>) {
     ui.on_arrangement_wheel({
         let weak = weak.clone();
         let port = Rc::clone(port);
-        move |_delta_x, delta_y, shift, alt| {
+        move |delta_x, delta_y, shift, alt| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
             if shift && alt {
-                zoom_horizontal_step(&ui, Some(port.as_ref()), delta_y > 0.0);
+                let delta = if delta_y != 0.0 { delta_y } else { delta_x };
+                zoom_horizontal_step(&ui, Some(port.as_ref()), delta > 0.0);
             } else if alt {
-                zoom_vertical_step(&ui, Some(port.as_ref()), delta_y > 0.0);
-            } else if shift {
-                let next = advance_scroll(ui.get_roll_scroll_x(), -delta_y);
-                reproject_with_scroll(&ui, &port, next);
+                let delta = if delta_y != 0.0 { delta_y } else { delta_x };
+                zoom_vertical_step(&ui, Some(port.as_ref()), delta > 0.0);
+            } else {
+                // macOS 双指左右滑动发送 delta_x（无需 Shift）；外接鼠标 Shift+滚轮发送 delta_y
+                let horiz_delta = if shift && delta_y != 0.0 {
+                    delta_y
+                } else {
+                    delta_x
+                };
+                if horiz_delta != 0.0 {
+                    let next = advance_scroll(ui.get_roll_scroll_x(), -horiz_delta);
+                    reproject_with_scroll(&ui, &port, next);
+                }
             }
         }
     });
@@ -14945,22 +14955,101 @@ fn install_roll_scroll(
     // 内存镜像。存副本的话"重新接线"就要手工播种、别的写者改了偏移也会被镜像盖回去
     // （与 [`install_roll_click`] 从 `selected-ulids` 播种是同一件事，但这里连播种都不需要）。
     let weak = ui.as_weak();
-    ui.on_scroll_requested(move |delta| {
-        let Some(ui) = weak.upgrade() else {
-            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-            return;
-        };
-        // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
-        let next = advance_scroll(ui.get_roll_scroll_x(), delta);
-        let width = slint::ComponentHandle::window(&ui).size().width as f32;
-        match port
-            .as_ref()
-            .and_then(|port| port.try_project())
-            .and_then(|project| project_with_view_state(&project, &ui).ok())
-        {
-            // 端口在场 ⇒ 用**此刻**的工程投影（与 [`reproject_roll`] 同一条链）。
-            Some(refreshed) => apply_view(&ui, &refreshed, width, next),
-            None => apply_view(&ui, &fallback_view, width, next),
+    ui.on_scroll_requested({
+        let weak = weak.clone();
+        let port = port.clone();
+        let fallback_view = Rc::clone(&fallback_view);
+        move |delta| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 下限 0：不滚到时间轴之前；上限暂不设（内容长度由投影决定, 见账本第 199 轮）。
+            let next = advance_scroll(ui.get_roll_scroll_x(), delta);
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            match port
+                .as_ref()
+                .and_then(|port| port.try_project())
+                .and_then(|project| project_with_view_state(&project, &ui).ok())
+            {
+                // 端口在场 ⇒ 用**此刻**的工程投影（与 [`reproject_roll`] 同一条链）。
+                Some(refreshed) => apply_view(&ui, &refreshed, width, next),
+                None => apply_view(&ui, &fallback_view, width, next),
+            }
+        }
+    });
+
+    // `[UI-NOTE-001 / UI-NOTE-002]` 钢琴卷帘双指二维滚动（横向时间轴 + 纵向音高视野）与 Option/Alt 缩放。
+    let pitch_scroll_accum = Rc::new(std::cell::Cell::new(0.0_f32));
+    ui.on_piano_roll_wheel({
+        let weak = weak.clone();
+        let port = port.clone();
+        let fallback_view = Rc::clone(&fallback_view);
+        move |delta_x, delta_y, shift, alt| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if alt {
+                let delta = if delta_y != 0.0 { delta_y } else { delta_x };
+                zoom_horizontal_step(&ui, port.as_deref(), delta > 0.0);
+                return;
+            }
+            let horiz_delta = if shift && delta_y != 0.0 {
+                delta_y
+            } else {
+                delta_x
+            };
+            let current_scroll = ui.get_roll_scroll_x();
+            let next_scroll = if horiz_delta != 0.0 {
+                advance_scroll(current_scroll, -horiz_delta)
+            } else {
+                current_scroll
+            };
+            let scroll_changed = (next_scroll - current_scroll).abs() > f32::EPSILON;
+
+            let mut pitch_changed = false;
+            if !shift && delta_y != 0.0 {
+                let step_px = crate::bridge::PITCH_LANE_HEIGHT_PX.max(1.0);
+                let prev_accum = pitch_scroll_accum.get();
+                // 反向滚动时清零残留的反向小数像素，避免切方向的第一格需要多划一段抵消残差
+                let base_accum = if prev_accum != 0.0 && prev_accum.signum() != delta_y.signum() {
+                    0.0
+                } else {
+                    prev_accum
+                };
+                let mut accum = base_accum + delta_y;
+                #[allow(clippy::cast_possible_truncation)]
+                let steps = (accum / step_px).trunc() as i32;
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    accum -= (steps as f32) * step_px;
+                }
+                pitch_scroll_accum.set(accum);
+                if steps != 0 {
+                    let current_pitch = roll_base_pitch(&ui);
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let next_pitch = (i32::from(current_pitch) + steps).clamp(0, 112) as u8;
+                    if next_pitch != current_pitch {
+                        let range_label = apply_roll_pitch_range(&ui, next_pitch);
+                        ui.set_module_status(format!("钢琴卷帘音域: {range_label}").into());
+                        ui.set_module_status_succeeded(true);
+                        pitch_changed = true;
+                    }
+                }
+            }
+
+            if scroll_changed || pitch_changed {
+                let width = slint::ComponentHandle::window(&ui).size().width as f32;
+                match port
+                    .as_ref()
+                    .and_then(|port| port.try_project())
+                    .and_then(|project| project_with_view_state(&project, &ui).ok())
+                {
+                    Some(refreshed) => apply_view(&ui, &refreshed, width, next_scroll),
+                    None => apply_view(&ui, &fallback_view, width, next_scroll),
+                }
+            }
         }
     });
 }
@@ -17459,7 +17548,25 @@ fn select_aether_track_for_action(ui: &MainWindow, id: i32) {
 
 fn roll_base_pitch(ui: &MainWindow) -> u8 {
     let raw = ui.get_roll_base_pitch();
-    u8::try_from(raw.clamp(24, 96)).unwrap_or(crate::bridge::PITCH_LANE_BASE)
+    u8::try_from(raw.clamp(0, 112)).unwrap_or(crate::bridge::PITCH_LANE_BASE)
+}
+
+fn apply_roll_pitch_range(ui: &MainWindow, next: u8) -> String {
+    ui.set_roll_base_pitch(i32::from(next));
+    let top_pitch = next.saturating_add((crate::bridge::PITCH_LANE_COUNT - 1) as u8);
+    let range_label = format!("{} – {}", midi_pitch_name(next), midi_pitch_name(top_pitch));
+    ui.set_roll_pitch_range_label(range_label.clone().into());
+    let mut labels = Vec::with_capacity(crate::bridge::PITCH_LANE_COUNT as usize);
+    let mut whites = Vec::with_capacity(crate::bridge::PITCH_LANE_COUNT as usize);
+    for lane in 0..crate::bridge::PITCH_LANE_COUNT {
+        if let Some(p) = crate::bridge::pitch_for_lane_with_base(lane, next) {
+            labels.push(slint::SharedString::from(roll_key_sharp_label(p)));
+            whites.push(is_white_midi_key(p));
+        }
+    }
+    ui.set_roll_lane_key_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
+    ui.set_roll_lane_is_white(slint::ModelRc::new(slint::VecModel::from(whites)));
+    range_label
 }
 
 fn roll_key_sharp_label(pitch: u8) -> String {
@@ -18663,24 +18770,12 @@ pub fn wire_aether_actions(
                 return;
             };
             let current = i32::from(roll_base_pitch(&ui));
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let next = (current + delta).clamp(24, 96) as u8;
             if next == current as u8 {
                 return;
             }
-            ui.set_roll_base_pitch(i32::from(next));
-            let top_pitch = next.saturating_add((crate::bridge::PITCH_LANE_COUNT - 1) as u8);
-            let range_label = format!("{} – {}", midi_pitch_name(next), midi_pitch_name(top_pitch));
-            ui.set_roll_pitch_range_label(range_label.clone().into());
-            let mut labels = Vec::with_capacity(crate::bridge::PITCH_LANE_COUNT as usize);
-            let mut whites = Vec::with_capacity(crate::bridge::PITCH_LANE_COUNT as usize);
-            for lane in 0..crate::bridge::PITCH_LANE_COUNT {
-                if let Some(p) = crate::bridge::pitch_for_lane_with_base(lane, next) {
-                    labels.push(slint::SharedString::from(roll_key_sharp_label(p)));
-                    whites.push(is_white_midi_key(p));
-                }
-            }
-            ui.set_roll_lane_key_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
-            ui.set_roll_lane_is_white(slint::ModelRc::new(slint::VecModel::from(whites)));
+            let range_label = apply_roll_pitch_range(&ui, next);
             let width = slint::ComponentHandle::window(&ui).size().width as f32;
             let scroll = ui.get_roll_scroll_x();
             reproject_roll(&ui, &port, width, scroll);

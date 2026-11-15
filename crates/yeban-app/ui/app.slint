@@ -688,6 +688,7 @@ export component MainWindow inherits Window {
     callback piano-key-pressed(int);
     callback piano-key-released(int);
     callback piano-roll-octave-shift(int);
+    callback piano-roll-wheel(length, length, bool, bool);
     callback record-wav();
     callback redo-step();
     callback ruler-seek(length);
@@ -1250,6 +1251,7 @@ export component MainWindow inherits Window {
                 piano-key-pressed(lane) => { root.piano-key-pressed(lane); }
                 piano-key-released(lane) => { root.piano-key-released(lane); }
                 piano-roll-octave-shift(delta) => { root.piano-roll-octave-shift(delta); }
+                piano-roll-wheel(dx, dy, shift, alt) => { root.piano-roll-wheel(dx, dy, shift, alt); }
             }
 
             // 4. BOTTOM STATUS BAR (Real host-driven selection, save receipt, audio config)
