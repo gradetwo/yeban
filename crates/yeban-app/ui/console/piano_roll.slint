@@ -366,8 +366,8 @@ export component PianoRoll inherits Rectangle {
                 border-color: #2c3548;
             }
 
-            // C5 / C4 八度锚点标示点
-            if (key_index == 3 || key_index == 15) : Rectangle {
+            // C 音（八度锚点）标示点：随垂直滚动基音动态定位到每个 C 音行
+            if ((root.base-midi-pitch + 15 - key_index).mod(12) == 0) : Rectangle {
                 x: 3px;
                 y: 5px;
                 width: 4px;
@@ -411,7 +411,7 @@ export component PianoRoll inherits Rectangle {
             y: 14px * lane_index;
             width: parent.width;
             height: 14px;
-            background: (lane_index == 3 || lane_index == 15) ? #2c364b :
+            background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #2c364b :
                 (root.lane-is-white[lane_index] ? #242c3e : #161b26);
 
             Rectangle {
@@ -419,13 +419,13 @@ export component PianoRoll inherits Rectangle {
                 y: parent.height - 1px;
                 width: parent.width;
                 height: 1px;
-                background: (lane_index == 3 || lane_index == 15) ? #40516e : #2e374b;
+                background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #40516e : #2e374b;
             }
         }
 
-        // 纵向小节线 (960 PPQ 下的 1/16 网格等模型线落地)
+        // 纵向小节线 (960 PPQ 下的 1/16 网格等模型线落地，随 scroll-x 无缝横向平铺)
         for grid_index in 24 : Rectangle {
-            x: Tokens.space-5 + 48px * grid_index;
+            x: Tokens.space-5 + 48px * (grid_index + 24 * Math.max(0, Math.floor((root.scroll-x - 48 * grid_index + 1103) / 1152))) - root.scroll-x * 1px;
             y: 0;
             width: 1px;
             height: parent.height;

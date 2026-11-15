@@ -689,3 +689,114 @@ fn piano_roll_auditions_and_inserts_notes_in_empty_default_project() {
         "0 音轨工程新建音符后必须立即投影到卷帘"
     );
 }
+
+#[test]
+fn piano_roll_preserves_pitch_bounds_and_octave_direction_across_horizontal_scroll_and_edits() {
+    let project = yeban_model::samples::filled_project();
+    let view = ViewState::from_project(&project).expect("工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<aether-roll-pitch-bounds>", "yeban-app", project, NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    let mut live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("主窗口装配成功");
+    let prod = ProductionLoop::without_engine();
+    let engine = prod.engine_handle();
+    {
+        let ui = live.ui();
+        ui.set_show_lower_dock(true);
+        ui.invoke_apply_dock_tab("pianoroll".into());
+        host::wire_roll_edit(ui, &undo);
+        host::wire_aether_actions(
+            ui,
+            Rc::clone(&undo),
+            Rc::clone(&engine),
+            Rc::new(RefCell::new(view.clone())),
+        );
+        host::apply_view(ui, &view, 1440.0, 0.0);
+    }
+
+    live.refresh_tree(None).expect("刷新控件树");
+    let roll_bounds = live
+        .tree()
+        .find_by_id("piano-roll-scroll-area")
+        .expect("piano-roll-scroll-area 必须在树里")
+        .bounds
+        .expect("piano-roll-scroll-area 必须有几何");
+    let grid_bounds = live
+        .tree()
+        .find_by_id("piano-roll-grid")
+        .expect("piano-roll-grid 必须在树里")
+        .bounds
+        .expect("piano-roll-grid 必须有几何");
+    let grid_pt = LogicalPosition::new(
+        roll_bounds.x as f32 + (roll_bounds.width as f32 * 0.5),
+        roll_bounds.y as f32 + (roll_bounds.height as f32 * 0.5),
+    );
+
+    // 1. Scroll down 12 semitones to base_pitch = 48 (C3..D#4)
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: 0.0,
+        delta_y: -168.0,
+    });
+    assert_eq!(live.ui().get_roll_base_pitch(), 48);
+    assert_eq!(live.ui().get_roll_min_pitch(), 48);
+    assert_eq!(live.ui().get_roll_max_pitch(), 63);
+    let frame_before_hscroll = live.window().capture().expect("横向滚动前抓帧");
+
+    // 2. Subsequent horizontal wheel/trackpad scroll and note creation must keep roll_min_pitch / roll_max_pitch intact
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: -60.0,
+        delta_y: 0.0,
+    });
+    assert!((live.ui().get_roll_scroll_x() - 60.0).abs() < 0.5);
+    assert_eq!(live.ui().get_roll_min_pitch(), 48);
+    assert_eq!(live.ui().get_roll_max_pitch(), 63);
+
+    // Verify rendered grid lines and notes in piano-roll-grid actually shift horizontally
+    let frame_after_hscroll = live.window().capture().expect("卷帘横向滚动后抓帧");
+    let mut grid_diffs = 0usize;
+    let gx0 = (grid_bounds.x + 4).max(0) as u32;
+    let gx1 = (grid_bounds.x + i32::try_from(grid_bounds.width).unwrap() - 4).max(0) as u32;
+    let gy0 = (grid_bounds.y + 4).max(0) as u32;
+    let gy1 = (grid_bounds.y + i32::try_from(grid_bounds.height).unwrap() - 4).max(0) as u32;
+    for py in gy0..gy1 {
+        for px in gx0..gx1 {
+            if frame_before_hscroll.pixel(px, py) != frame_after_hscroll.pixel(px, py) {
+                grid_diffs += 1;
+            }
+        }
+    }
+    assert!(
+        grid_diffs > 100,
+        "卷帘横向滚动后网格线与音符绘制必须发生真实位移 (grid_diffs={grid_diffs})"
+    );
+
+    live.ui().invoke_piano_note_create(20, 4);
+    assert_eq!(live.ui().get_roll_base_pitch(), 48);
+    assert_eq!(live.ui().get_roll_min_pitch(), 48);
+    assert_eq!(live.ui().get_roll_max_pitch(), 63);
+
+    // 3. Scroll down below 24 (base_pitch = 10), then press 八- (must NOT jump up to 24) and 八+ (clean +12 -> 22)
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: grid_pt,
+        delta_x: 0.0,
+        delta_y: -(38.0 * 14.0),
+    });
+    assert_eq!(live.ui().get_roll_base_pitch(), 10);
+    live.ui().invoke_piano_roll_octave_shift(-12);
+    assert_eq!(
+        live.ui().get_roll_base_pitch(),
+        10,
+        "base_pitch < 24 时点 八- 不得反方向跳回 24"
+    );
+    live.ui().invoke_piano_roll_octave_shift(12);
+    assert_eq!(live.ui().get_roll_base_pitch(), 22);
+    assert_eq!(live.ui().get_roll_min_pitch(), 22);
+    assert_eq!(live.ui().get_roll_max_pitch(), 37);
+}

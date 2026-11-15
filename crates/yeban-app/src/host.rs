@@ -450,10 +450,20 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_roll_min_tick(tick_to_i32_saturating(min_tick));
     ui.set_roll_max_tick(tick_to_i32_saturating(max_tick));
     // 纵向：泳道数 16 与 `piano_roll.slint` 的 `for lane_index in 16` 一致（第 202 轮记录了它的来源问题）。
-    let (min_pitch, max_pitch) = view.visible_pitch_range(ROLL_LANE_COUNT);
+    // 先读当前卷帘音域基音：纵向滚轮/八度平移之后若只横向滚动或编辑音符，必须保留当前的 min/max 音高视野。
+    let roll_base = roll_base_pitch(ui);
+    let (min_pitch, max_pitch) = if roll_base == crate::bridge::PITCH_LANE_BASE {
+        view.visible_pitch_range(ROLL_LANE_COUNT)
+    } else {
+        (
+            roll_base,
+            roll_base
+                .saturating_add((ROLL_LANE_COUNT - 1) as u8)
+                .min(127),
+        )
+    };
     ui.set_roll_min_pitch(i32::from(min_pitch));
     ui.set_roll_max_pitch(i32::from(max_pitch));
-    let roll_base = roll_base_pitch(ui);
     if roll_base != crate::bridge::PITCH_LANE_BASE {
         view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, roll_base);
     }
@@ -19340,8 +19350,15 @@ pub fn wire_aether_actions(
                 return;
             };
             let current = i32::from(roll_base_pitch(&ui));
+            if (delta < 0 && current <= 24) || (delta > 0 && current >= 96) {
+                return;
+            }
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let next = (current + delta).clamp(24, 96) as u8;
+            let next = if delta < 0 {
+                (current + delta).max(24) as u8
+            } else {
+                (current + delta).min(96) as u8
+            };
             if next == current as u8 {
                 return;
             }
