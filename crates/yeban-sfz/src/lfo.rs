@@ -449,10 +449,10 @@ impl GenericLfo {
             return 0.0;
         }
         let cycles = freq * elapsed;
-        if let Some(count) = self.count {
-            if cycles >= count as f32 {
-                return 0.0;
-            }
+        if let Some(count) = self.count
+            && cycles >= count as f32
+        {
+            return 0.0;
         }
         let phase = phase + cycles;
         let wave = if self.steps.is_empty() {
@@ -501,7 +501,7 @@ mod tests {
         // t=1.25：相位 0.25 ⇒ sine=1；fade 因子 0.25。
         assert!((lfo.value_at(1.25, None) - 0.25).abs() < 1e-6);
         assert_eq!(lfo.effective_depth(None), 100.0);
-        assert!(lfo.is_transparent() == false);
+        assert!(!lfo.is_transparent());
         assert!(V1Lfo::EMPTY.is_transparent());
     }
 

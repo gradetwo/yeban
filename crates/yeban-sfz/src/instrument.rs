@@ -3681,20 +3681,21 @@ fn read_generic_lfos(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Generic
                 continue;
             }
             // ---- 阶梯电平 stepX ----
-            if let Some(digits) = rest.strip_prefix("step") {
-                if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-                    let step_index: u32 = digits.parse().map_err(|_| SfzError::InvalidInteger {
-                        line,
-                        opcode: name.to_string(),
-                        value: digits.to_string(),
-                    })?;
-                    let level = parse_lfo_float(raw, name, -100.0, 100.0, line)?;
-                    steps.entry(index).or_default().insert(step_index, level);
-                    table
-                        .entry(index)
-                        .or_insert_with(|| GenericLfo::empty(index));
-                    continue;
-                }
+            if let Some(digits) = rest.strip_prefix("step")
+                && !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+            {
+                let step_index: u32 = digits.parse().map_err(|_| SfzError::InvalidInteger {
+                    line,
+                    opcode: name.to_string(),
+                    value: digits.to_string(),
+                })?;
+                let level = parse_lfo_float(raw, name, -100.0, 100.0, line)?;
+                steps.entry(index).or_default().insert(step_index, level);
+                table
+                    .entry(index)
+                    .or_insert_with(|| GenericLfo::empty(index));
+                continue;
             }
             if !matches!(
                 rest,
