@@ -1054,7 +1054,10 @@ export component TransportHeaderBar inherits Rectangle {
             alignment: end;
 
             // Group F: Zero reload buffer switcher (High-contrast labels)
+            // 显式宽度：此前靠内容撑开、挂在 alignment:end 右岛里会被挤到只露出
+            // "BUFF"，1920 宽甚至整体不渲染（细节实测 §4.6 / 控件体检 §5）。
             Rectangle {
+                width: 128px;
                 background: #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
@@ -1238,16 +1241,16 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group I: Command palette button
             Rectangle {
-                width: 34px;
+                width: 52px;
                 height: 28px;
                 background: #10141d;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 Text {
-                    text: "⌘K";
+                    text: "Ctrl+K";
                     font-family: Tokens.font-mono;
-                    font-size: 10.5px;
+                    font-size: 9px;
                     font-weight: 400;
                     color: Theme.accent;
                     horizontal-alignment: center;
@@ -1257,7 +1260,7 @@ export component TransportHeaderBar inherits Rectangle {
                     mouse-cursor: MouseCursor.pointer;
                     clicked => { root.open-cmd-palette(); }
                 }
-                TooltipBubble { text: "快捷命令面板 [⌘K]"; is-visible: touch_cmd.has-hover; tip-offset-x: -30px; }
+                TooltipBubble { text: "快捷命令面板 [Ctrl+K]"; is-visible: touch_cmd.has-hover; tip-offset-x: -30px; }
             }
 
             // Group J: Architecture insights toggle

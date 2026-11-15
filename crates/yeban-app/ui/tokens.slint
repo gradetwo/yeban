@@ -1033,31 +1033,50 @@ export global Theme {
     out property <color> status-alert: #a44848; // 丹砂红 (静音/过载/录音触发)
 
     // 响应式专业录音室设计 Token (柔和低饱和专业工作站配色)
+    //
+    // ⭐ 主题链路（细节实测 §6）：这里原本只看 `persona`，与 `ThemeState.theme`
+    // 完全无关 —— 而 `--theme` 改的正是 `ThemeState.theme`，于是
+    // `--theme brand / inkmoor / plume` 三组对比 0 像素差异。修法：
+    //   * 默认 `yeban` 仍走**原 persona 表达式** ⇒ 默认外观一位未动（5 张 Linux
+    //     golden 基准不重录，见 main.rs 的 HD-56 说明）；
+    //   * 其余主题改读 `Tokens.*` 的同名角色令牌 —— 它们都是
+    //     `ThemeState.theme` 的多选一表达式 ⇒ 自绘调色板真正流到窗口绘制。
+    // ⛔ 不新增十六进制字面量：所有颜色仍以 `Tokens` 为唯一事实源。
     out property <color> bg-canvas:
-        persona == PersonaMode.AbletonLive ? #11141a :
-        persona == PersonaMode.LogicPro    ? #0e1117 :
-        persona == PersonaMode.CubasePro   ? #0b0d13 : #090b10;
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #11141a :
+            persona == PersonaMode.LogicPro    ? #0e1117 :
+            persona == PersonaMode.CubasePro   ? #0b0d13 : #090b10
+        ) : Tokens.bg-void;
 
     out property <color> bg-panel:
-        persona == PersonaMode.AbletonLive ? #161922 :
-        persona == PersonaMode.LogicPro    ? #131620 :
-        persona == PersonaMode.CubasePro   ? #10131a : #0e1118;
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #161922 :
+            persona == PersonaMode.LogicPro    ? #131620 :
+            persona == PersonaMode.CubasePro   ? #10131a : #0e1118
+        ) : Tokens.bg-shell;
 
     out property <color> bg-surface:
-        persona == PersonaMode.AbletonLive ? #1c212c :
-        persona == PersonaMode.LogicPro    ? #191e28 :
-        persona == PersonaMode.CubasePro   ? #151922 : #141822;
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #1c212c :
+            persona == PersonaMode.LogicPro    ? #191e28 :
+            persona == PersonaMode.CubasePro   ? #151922 : #141822
+        ) : Tokens.bg-panel;
 
     out property <color> border-subtle:
-        persona == PersonaMode.AbletonLive ? #202532 :
-        persona == PersonaMode.LogicPro    ? #1c212c :
-        persona == PersonaMode.CubasePro   ? #181d26 : #191f2c;
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #202532 :
+            persona == PersonaMode.LogicPro    ? #1c212c :
+            persona == PersonaMode.CubasePro   ? #181d26 : #191f2c
+        ) : Tokens.line;
 
     // 低饱和度护眼沉浸主色 (避免刺眼眩光，专业录音室级低反差)
     out property <color> accent:
-        persona == PersonaMode.AbletonLive ? #a66046 :
-        persona == PersonaMode.LogicPro    ? #436f9e :
-        persona == PersonaMode.CubasePro   ? #38889e : #387691;
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #a66046 :
+            persona == PersonaMode.LogicPro    ? #436f9e :
+            persona == PersonaMode.CubasePro   ? #38889e : #387691
+        ) : Tokens.accent;
 
     out property <color> accent-glow: accent.with-alpha(0.08);
 
@@ -1067,9 +1086,11 @@ export global Theme {
         persona == PersonaMode.CubasePro   ? 3px : 4px;
 
     out property <color> header-bg:
-        persona == PersonaMode.AbletonLive ? #10141d :
-        persona == PersonaMode.LogicPro    ? #11141c :
-        persona == PersonaMode.CubasePro   ? #0d1016 : #0c0f16;
+        ThemeState.theme == YebanTheme.yeban ? (
+            persona == PersonaMode.AbletonLive ? #10141d :
+            persona == PersonaMode.LogicPro    ? #11141c :
+            persona == PersonaMode.CubasePro   ? #0d1016 : #0c0f16
+        ) : Tokens.bg-head;
 
     // 演出激发模式下可将轨道头切换至右侧，默认布局保持在左侧黄金视线区
     in-out property <bool> track-headers-on-right:

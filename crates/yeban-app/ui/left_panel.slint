@@ -198,7 +198,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     padding-left: 6px;
                                     padding-right: 6px;
                                     Text {
-                                        text: "更换音色 ▾";
+                                        text: "更换音色 [v]";
                                         font-family: Tokens.font-ui;
                                         font-size: 9.5px;
                                         font-weight: 600;
@@ -496,16 +496,21 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             border-color: Theme.border-subtle;
                             clip: true;
 
-                            Path {
-                                commands: "M 0 28 Q 20 25, 35 12 T 70 18 T 100 24";
-                                stroke: root.selected-track-color;
-                                stroke-width: 1.8px;
+                            // 占位：真实 EQ 频响由 bridge::calculate_eq_curve_svg 算好、写在
+                            // MainWindow.eq-curve-svg，但本卡片尚未接那一路。⛔ 不画常量
+                            // 钟形曲线冒充频响；只画基准线并明确标「示意」。
+                            Rectangle {
+                                x: 5px;
+                                y: 19px;
+                                width: parent.width - 10px;
+                                height: 1px;
+                                background: root.selected-track-color.with-alpha(0.35);
                             }
                             HorizontalLayout {
                                 padding-left: 5px;
                                 padding-top: 3px;
                                 Text {
-                                    text: "EQ CURVE";
+                                    text: "EQ CURVE · 示意";
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
                                     letter-spacing: 0.4px;
@@ -817,16 +822,19 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             border-color: Theme.border-subtle;
                             clip: true;
 
-                            Path {
-                                commands: "M 0 20 Q 35 18, 55 12 T 100 16";
-                                stroke: Theme.track-bus;
-                                stroke-width: 1.8px;
+                            // 占位：总线压缩响应尚未接真实参数（⛔ 不画常量曲线冒充）。
+                            Rectangle {
+                                x: 5px;
+                                y: 19px;
+                                width: parent.width - 10px;
+                                height: 1px;
+                                background: Theme.track-bus.with-alpha(0.35);
                             }
                             HorizontalLayout {
                                 padding-left: 5px;
                                 padding-top: 3px;
                                 Text {
-                                    text: "BUS COMP";
+                                    text: "BUS COMP · 示意";
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
                                     letter-spacing: 0.4px;

@@ -283,7 +283,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 padding-left: 6px;
                                 padding-right: 6px;
                                 Text {
-                                    text: "音色 ▾";
+                                    text: "音色 [v]";
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -671,15 +671,16 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #ffffff0a;
                             }
 
-                            if idx == 0 : Path {
-                                commands: "M 0 36 Q 40 12, 80 34 T 160 18 T 240 32";
-                                stroke: root.device-bypassed[idx] ? #64748b : Theme.accent;
-                                stroke-width: 1.8px;
-                            }
-                            if idx > 0 : Path {
-                                commands: "M 0 48 Q 55 42, 110 20 T 220 34";
-                                stroke: root.device-bypassed[idx] ? #64748b : #347864;
-                                stroke-width: 1.8px;
+                            // 占位：卡片频响尚未接真实设备参数（⛔ 不画常量曲线冒充
+                            // EQ / 压缩响应）。上面的中心线就是唯一可见的基准，
+                            // 这里明确标「示意 · 未连接参数」。
+                            Text {
+                                x: 8px;
+                                y: 3px;
+                                text: "曲线示意 · 未连接参数";
+                                font-family: Tokens.font-mono;
+                                font-size: 8px;
+                                color: #64748b;
                             }
 
                             HorizontalLayout {
@@ -895,7 +896,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-left: 4px;
                                     padding-right: 4px;
                                     Text {
-                                        text: trk.insert1 != "" ? trk.insert1 : "1: 选音色 ▾";
+                                        text: trk.insert1 != "" ? trk.insert1 : "1: 选音色 [v]";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
                                         color: insert1_touch.has-hover ? #ffffff : #cbd5e1;
@@ -987,18 +988,19 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-color: #191f2c;
                                 clip: true;
 
-                                Path {
+                                // 占位：通道条 EQ 缩略未接真实频响；只画基准线 + 明确标注。
+                                Rectangle {
+                                    x: 0px;
+                                    y: parent.height / 2;
                                     width: parent.width;
-                                    height: parent.height;
-                                    stroke: trk.color;
-                                    stroke-width: 1.2px;
-                                    commands: "M 0 18 Q 20 8, 38 16 T 55 12 T 72 20";
+                                    height: 1px;
+                                    background: trk.color.with-alpha(0.35);
                                 }
 
                                 Text {
                                     x: 3px;
                                     y: 2px;
-                                    text: "EQ";
+                                    text: "EQ · 示意";
                                     font-family: Tokens.font-mono;
                                     font-size: 8px;
                                     font-weight: 400;
