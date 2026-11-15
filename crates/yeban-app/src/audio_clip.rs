@@ -1275,7 +1275,7 @@ mod tests {
             "片段区间渲染必须与全程切片逐样本相同"
         );
         assert!(
-            actual.iter().any(|sample| *sample == 0.5),
+            actual.contains(&0.5),
             "跨起点片段必须在区间内照常出声（牙齿：与音符冷启动的区别）"
         );
     }
