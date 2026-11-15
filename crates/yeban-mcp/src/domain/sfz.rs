@@ -205,8 +205,8 @@ pub const MAX_SAMPLE_FRAMES_TOTAL: u64 = 64_000_000;
 ///   `maxSampleFrames`）→ ② [`MAX_SAMPLE_FILES_READ`] / [`MAX_SAMPLE_FRAMES_TOTAL`]。
 ///
 /// ⚠ **`0` ＝ 不限**（两条都如此）—— 给"我知道这库有多大，别拦我"留一条正门；
-/// 截断仍然是响亮报告的（`sampleReadsTruncated` ＋ 逐条 `sampleFailures`），
-/// ⛔ 从来不会静默丢弃。
+/// 截断仍然是响亮报告的（`sampleReadsTruncated` ＋ [`SampleTruncation`]
+/// 结构化记账 ＋ 逐条 `sampleFailures`），⛔ 从来不会静默丢弃。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SampleLimits {
     /// 不同样本文件数上界（`0` ＝ 不限）。
@@ -261,6 +261,122 @@ impl SampleLimits {
             "maxSampleFiles": limit(self.max_files as u64),
             "maxSampleFrames": limit(self.max_frames),
             "unlimited": self.max_files == 0 && self.max_frames == 0,
+        })
+    }
+}
+
+/// 样本失败文案里**文件数上限命中**的识别标记（构造点在 [`cache_get`]）。
+///
+/// 三个标记是失败文案与 [`classify_sample_failure`] 之间的**唯一**契约：
+/// ⛔ 不许在别处另写一份近似措辞 —— 文案漂移会让分类静默失效（单测
+/// `the_truncation_classifier_reads_all_three_limit_reasons` 钉住三条真实
+/// 文案都含各自标记）。
+pub const FILE_LIMIT_REASON_MARK: &str = "达到本次调用的上限";
+
+/// 样本失败文案里**帧数上限命中**的识别标记（构造点在 [`cache_get`]）。
+pub const FRAME_LIMIT_REASON_MARK: &str = "会超过本次调用的上限";
+
+/// 样本失败文案里**单文件字节上限命中**的识别标记（构造点在
+/// [`read_sample_file`] 与 `decode_sample_bytes`）。
+pub const SIZE_LIMIT_REASON_MARK: &str = "超过单文件上限";
+
+/// 一条样本失败命中的是哪条上限（分类不出 ⇒ 不是上限问题，是文件本身读不到）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TruncationCause {
+    /// 不同文件数上限（[`SampleLimits::max_files`]，运行期 `maxSampleFiles`）。
+    FileCount,
+    /// 累计解码帧数上限（[`SampleLimits::max_frames`]，运行期 `maxSampleFrames`）。
+    FrameTotal,
+    /// 单文件字节上限（[`MAX_SAMPLE_FILE_BYTES`]，格式护栏，⛔ 不可经参数改）。
+    FileBytes,
+}
+
+/// 把一条样本失败原因分类：命中上限 ⇒ `Some(cause)`；其余（文件不存在 /
+/// 解码失败 / 是目录…）⇒ `None`。
+#[must_use]
+pub fn classify_sample_failure(reason: &str) -> Option<TruncationCause> {
+    if reason.contains(FILE_LIMIT_REASON_MARK) {
+        Some(TruncationCause::FileCount)
+    } else if reason.contains(FRAME_LIMIT_REASON_MARK) {
+        Some(TruncationCause::FrameTotal)
+    } else if reason.contains(SIZE_LIMIT_REASON_MARK) {
+        Some(TruncationCause::FileBytes)
+    } else {
+        None
+    }
+}
+
+/// 一次装载 / 渲染里**因上限被跳过**的结构化记账（按上限分计，⛔ 不是把
+/// `sampleFailures` 字符串再数一遍：文件数 / 帧数两条在 [`cache_get`] 的
+/// 命中点直接记账；单文件字节一条在同一命中点按 [`classify_sample_failure`]
+/// 分类 —— 三条缓存（[`SampleCache`] / [`TrackSampleCache`] /
+/// `EmbeddedSampleCache`）共用这一份口径）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SampleTruncation {
+    /// 因**文件数上限**没读的**不同**文件数。
+    pub files_at_file_limit: usize,
+    /// 因**帧数上限**被拒的**不同**文件数（文件已解码、但装不进预算）。
+    pub files_at_frame_limit: usize,
+    /// 因**单文件字节上限**被拒的**不同**文件数。
+    pub files_over_size_limit: usize,
+}
+
+impl SampleTruncation {
+    /// 是否命中过任何一条上限。
+    #[must_use]
+    pub const fn any(&self) -> bool {
+        self.files_at_file_limit > 0
+            || self.files_at_frame_limit > 0
+            || self.files_over_size_limit > 0
+    }
+
+    /// 因上限没读到的**不同**文件总数（三条之和）。
+    #[must_use]
+    pub const fn total_files(&self) -> usize {
+        self.files_at_file_limit + self.files_at_frame_limit + self.files_over_size_limit
+    }
+
+    /// 记一次命中（[`cache_get`] 专用）。
+    fn record(&mut self, cause: TruncationCause) {
+        match cause {
+            TruncationCause::FileCount => self.files_at_file_limit += 1,
+            TruncationCause::FrameTotal => self.files_at_frame_limit += 1,
+            TruncationCause::FileBytes => self.files_over_size_limit += 1,
+        }
+    }
+
+    /// 响应里的结构化形态：总跳过数 ＋ 逐条命中的上限（**名 ＋ 本次生效值
+    /// ＋ 跳过数 ＋ 改法**）；⛔ 只列真的命中的那几条（没命中的不假装）。
+    #[must_use]
+    pub fn to_value(&self, limits: SampleLimits) -> serde_json::Value {
+        let mut hits = Vec::new();
+        if self.files_at_file_limit > 0 {
+            hits.push(serde_json::json!({
+                "limit": "maxSampleFiles",
+                "limitValue": limits.max_files,
+                "filesSkipped": self.files_at_file_limit,
+                "remedy": "传 maxSampleFiles 提高 (0 = 不限)",
+            }));
+        }
+        if self.files_at_frame_limit > 0 {
+            hits.push(serde_json::json!({
+                "limit": "maxSampleFrames",
+                "limitValue": limits.max_frames,
+                "filesSkipped": self.files_at_frame_limit,
+                "remedy": "传 maxSampleFrames 提高 (0 = 不限)",
+            }));
+        }
+        if self.files_over_size_limit > 0 {
+            hits.push(serde_json::json!({
+                "limit": "maxSampleFileBytes",
+                "limitValue": MAX_SAMPLE_FILE_BYTES,
+                "filesSkipped": self.files_over_size_limit,
+                "remedy": "单文件上限是格式护栏, 不可经参数修改: 把超限文件切小或转码后再装载",
+            }));
+        }
+        serde_json::json!({
+            "filesSkipped": self.total_files(),
+            "hits": hits,
         })
     }
 }
@@ -416,6 +532,7 @@ pub struct SampleCache {
     entries: SampleEntries,
     frames_loaded: u64,
     truncated: bool,
+    truncation: SampleTruncation,
     limits: SampleLimits,
 }
 
@@ -445,6 +562,7 @@ impl SampleCache {
             entries,
             frames_loaded,
             truncated,
+            truncation,
             limits,
         } = self;
         cache_get(
@@ -452,6 +570,7 @@ impl SampleCache {
             entries,
             frames_loaded,
             truncated,
+            truncation,
             *limits,
             read_sample_file,
         )
@@ -473,6 +592,12 @@ impl SampleCache {
     #[must_use]
     pub const fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    /// 因上限被跳过的结构化记账（按上限分计）。
+    #[must_use]
+    pub const fn truncation(&self) -> SampleTruncation {
+        self.truncation
     }
 
     /// 已解码的总帧数。
@@ -504,12 +629,17 @@ impl SampleCache {
 /// 读一份样本时的**共同记账**（[`SampleCache`] 与 [`TrackSampleCache`] 共用同一份实现）。
 ///
 /// 记账口径逐条不变：命中 ⇒ 直接返回（**不**计帧、**不**计文件数）；上界命中 ⇒
-/// 记一条 `Err` 到本次调用的表里并置 `truncated`；读成功 ⇒ 累加帧数。
+/// 记一条 `Err` 到本次调用的表里并置 `truncated`，同时在 `truncation` 里按
+/// 上限分计一笔；读成功 ⇒ 累加帧数。读取本身报的失败里只有**单文件字节
+/// 上限**一条属于上限命中（按 [`classify_sample_failure`] 分类记账并同样置
+/// `truncated` —— 修前这条不置位，`sampleReadsTruncated` 对它恒 `false`）。
+#[allow(clippy::too_many_arguments)]
 fn cache_get(
     path: &Path,
     entries: &mut SampleEntries,
     frames_loaded: &mut u64,
     truncated: &mut bool,
+    truncation: &mut SampleTruncation,
     limits: SampleLimits,
     read: impl FnOnce(&Path) -> Result<SampleFileReading, String>,
 ) -> Result<SampleFileReading, String> {
@@ -518,6 +648,7 @@ fn cache_get(
     }
     if limits.files_exhausted(entries.len()) {
         *truncated = true;
+        truncation.record(TruncationCause::FileCount);
         let reason = format!(
             "已有 {} 个不同样本文件, 达到本次调用的上限 {} ⇒ 不再读盘 (⛔ 不静默截断; \
              可用实参 maxSampleFiles 提高, 0 = 不限)",
@@ -531,6 +662,7 @@ fn cache_get(
         Ok(reading) => {
             if limits.frames_exceeded(*frames_loaded, reading.frames) {
                 *truncated = true;
+                truncation.record(TruncationCause::FrameTotal);
                 Err(format!(
                     "累计样本帧数会超过本次调用的上限 {} 帧 (已读 {}, 本文件 {} 帧), 拒绝再读 {} \
                      (⛔ 不静默截断; 可用实参 maxSampleFrames 提高, 0 = 不限)",
@@ -544,7 +676,15 @@ fn cache_get(
                 Ok(reading)
             }
         }
-        Err(reason) => Err(reason),
+        Err(reason) => {
+            // 单文件字节上限的拒绝由读取腿自己报（文案含
+            // [`SIZE_LIMIT_REASON_MARK`]）⇒ 它同样是上限命中：记账 + 置截断位。
+            if let Some(cause) = classify_sample_failure(&reason) {
+                *truncated = true;
+                truncation.record(cause);
+            }
+            Err(reason)
+        }
     };
     entries.insert(path.to_path_buf(), outcome.clone());
     outcome
@@ -563,6 +703,8 @@ pub trait SampleReads {
     fn entries(&self) -> &SampleEntries;
     /// 是否命中过任何上界。
     fn truncated(&self) -> bool;
+    /// 因上限被跳过的结构化记账（按上限分计）。
+    fn truncation(&self) -> SampleTruncation;
     /// 本次调用累计解码帧数（上界③的记账值）。
     fn frames_loaded(&self) -> u64;
     /// 这次读取用的预算（回显用；⛔ 不从常量再读一遍 —— 那样会在"调用方覆盖过"时说错话）。
@@ -580,6 +722,10 @@ impl SampleReads for SampleCache {
 
     fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    fn truncation(&self) -> SampleTruncation {
+        self.truncation
     }
 
     fn frames_loaded(&self) -> u64 {
@@ -639,6 +785,7 @@ pub struct TrackSampleCache<'a> {
     entries: SampleEntries,
     frames_loaded: u64,
     truncated: bool,
+    truncation: SampleTruncation,
     limits: SampleLimits,
 }
 
@@ -657,6 +804,7 @@ impl<'a> TrackSampleCache<'a> {
             entries: SampleEntries::new(),
             frames_loaded: 0,
             truncated: false,
+            truncation: SampleTruncation::default(),
             limits,
         }
     }
@@ -669,6 +817,7 @@ impl SampleReads for TrackSampleCache<'_> {
             entries,
             frames_loaded,
             truncated,
+            truncation,
             limits,
         } = self;
         cache_get(
@@ -676,6 +825,7 @@ impl SampleReads for TrackSampleCache<'_> {
             entries,
             frames_loaded,
             truncated,
+            truncation,
             *limits,
             |resolved| store.read(resolved),
         )
@@ -687,6 +837,10 @@ impl SampleReads for TrackSampleCache<'_> {
 
     fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    fn truncation(&self) -> SampleTruncation {
+        self.truncation
     }
 
     fn frames_loaded(&self) -> u64 {
@@ -964,10 +1118,19 @@ pub struct SfzLoad {
     pub sample_sources: Vec<String>,
     /// 读失败的样本文件（`unreadable(...)` 摘要，升序）。
     pub sample_failures: Vec<String>,
-    /// 是否命中过读盘上界（文件数 / 累计帧数）。
+    /// 是否命中过读盘上界（文件数 / 累计帧数 / 单文件字节数）。
     pub sample_reads_truncated: bool,
     /// 累计解码帧数（所有读成功的文件之和）。
     pub sample_frames_loaded: u64,
+    /// ⭐ 因上限被跳过的**结构化**记账（按上限分计；全 0 ＝ 没命中过上限）。
+    ///
+    /// `sample_reads_truncated` 只说"截没截"，本字段说"被哪条上限、截了几个"，
+    /// 回执里与 [`Self::limits`] 一起读才是完整的四要素（名＋值＋计数＋改法，
+    /// 改法在 `sfzSampleBudgetTruncated` 警告与逐条 `sampleFailures` 里）。
+    pub sample_truncation: SampleTruncation,
+    /// ⭐ 因上限命中而静音的区域数（[`Self::silent_regions`] 中可归因于预算
+    /// 的那部分；区域回路按失败原因分类计，⛔ 不含真缺文件 / 解码失败的静音）。
+    pub budget_silent_regions: usize,
     /// ⭐ 本次装载**用的**预算（回显；`sampleReadsTruncated` 是不是"被这条预算"截的，
     /// 只有把它一起报出来才能判）。
     pub limits: SampleLimits,
@@ -1054,9 +1217,18 @@ impl SfzLoad {
     /// 因此口径与 `domain/render.rs` 的 `silent_sources_warning` 同型：
     /// 点名数量、给例子、说清后果（采样器轨**没有**正弦回退，见模块头第 1 条 ⚠）、
     /// ⛔ 不自动修、⛔ 不阻断。
+    ///
+    /// ⚠ **只数非预算失败**：因上限被跳过的文件不在这条里数 —— 它们在盘上、
+    /// 不是缺失，本条的 hint（照 manifest 外取）对它们是**误导**；那一类由
+    /// [`Self::budget_truncation_warning`] 单独点名（改法是抬预算，不是补文件）。
     #[must_use]
     pub fn samples_warning(&self) -> Option<serde_json::Value> {
-        if self.sample_failures.is_empty() {
+        let failures: Vec<&String> = self
+            .sample_failures
+            .iter()
+            .filter(|failure| classify_sample_failure(failure).is_none())
+            .collect();
+        if failures.is_empty() {
             return None;
         }
         let all_unreadable = self.sample_sources.is_empty();
@@ -1064,9 +1236,9 @@ impl SfzLoad {
             "code": "sfzSamplesUnreadable",
             "severity": "warning",
             "blocking": false,
-            "count": self.sample_failures.len(),
+            "count": failures.len(),
             "allSamplesUnreadable": all_unreadable,
-            "examples": self.sample_failures.iter().take(5).cloned().collect::<Vec<_>>(),
+            "examples": failures.iter().take(5).copied().cloned().collect::<Vec<_>>(),
             "hint": format!(
                 "SFZ 定义解析并注册成功（`loaded:true` 说的只是这件事），但 {} 个样本文件读不到{}\
                  。把这件乐器绑到采样器轨（`setTrackSampler`）后 `yeban_render_master` 会**整轨数字静音**\
@@ -1075,8 +1247,65 @@ impl SfzLoad {
                  `instruments[].repo` + `pin`（或 `archive.url`）自行拉取，并按每条 `sha256` 校验后\
                  放到 SFZ `sample=` 相对路径解析得到的位置。\
                  ⛔ 本工具不下载、不代生成采样，音频一个字节都没造。",
-                self.sample_failures.len(),
+                failures.len(),
                 if all_unreadable { "（全部 —— 绑轨渲染即绝对静音）" } else { "" },
+            ),
+        }))
+    }
+
+    /// ⭐ 样本被**预算上限**跳过时的**非阻塞警告**（与 [`Self::samples_warning`] 同型）。
+    ///
+    /// 与 `sfzSamplesUnreadable` 的分工：那条管"文件不在 / 读不出"，这条管
+    /// "文件在盘上、但本次预算装不下"。四要素必须齐：**命中哪个上限**
+    /// （逐条 `hits`：名 ＋ 本次生效值）、**被跳过的文件数**（按上限分计）、
+    /// **因此静音的区域数**（`silentRegions`）、**改法**（`maxSampleFiles` /
+    /// `maxSampleFrames` 提高或 0=不限；单文件上限是格式护栏，须切小/转码）。
+    /// ⛔ 不阻断、⛔ 不自动改预算。
+    #[must_use]
+    pub fn budget_truncation_warning(&self) -> Option<serde_json::Value> {
+        if !self.sample_truncation.any() {
+            return None;
+        }
+        let truncation = self.sample_truncation.to_value(self.limits);
+        let mut parts: Vec<String> = Vec::new();
+        if self.sample_truncation.files_at_file_limit > 0 {
+            parts.push(format!(
+                "文件数上限 maxSampleFiles={} 跳过 {} 个文件",
+                self.limits.max_files, self.sample_truncation.files_at_file_limit
+            ));
+        }
+        if self.sample_truncation.files_at_frame_limit > 0 {
+            parts.push(format!(
+                "帧数上限 maxSampleFrames={} 跳过 {} 个文件",
+                self.limits.max_frames, self.sample_truncation.files_at_frame_limit
+            ));
+        }
+        if self.sample_truncation.files_over_size_limit > 0 {
+            parts.push(format!(
+                "单文件上限 {} 字节拒绝 {} 个文件",
+                MAX_SAMPLE_FILE_BYTES, self.sample_truncation.files_over_size_limit
+            ));
+        }
+        Some(serde_json::json!({
+            "code": "sfzSampleBudgetTruncated",
+            "severity": "warning",
+            "blocking": false,
+            "filesSkipped": self.sample_truncation.total_files(),
+            "filesSkippedByFileLimit": self.sample_truncation.files_at_file_limit,
+            "filesSkippedByFrameLimit": self.sample_truncation.files_at_frame_limit,
+            "filesRejectedBySizeLimit": self.sample_truncation.files_over_size_limit,
+            "silentRegions": self.budget_silent_regions,
+            "sampleLimits": self.limits.to_value(),
+            "hits": truncation["hits"].clone(),
+            "hint": format!(
+                "本次装载有 {} 个样本文件被**预算上限**跳过（{}），{} 个区域因此静音\
+                 —— 采样器轨没有正弦回退，这些区域在母带里就是数字静音。\
+                 文件本身在盘上、不是缺失：传 `maxSampleFiles` / `maxSampleFrames` 提高上限\
+                 （`0` = 不限）即可全量装载；单文件上限是格式护栏、不可经参数修改，\
+                 超限文件须切小或转码后再装载。⛔ 本警告不阻断：解析与注册已成功。",
+                self.sample_truncation.total_files(),
+                parts.join("；"),
+                self.budget_silent_regions,
             ),
         }))
     }
@@ -1114,11 +1343,14 @@ impl SfzLoad {
         }))
     }
 
-    /// 本次装载的全部非阻塞警告（样本读不到 ＋ CC 门控普查，顺序固定）。
+    /// 本次装载的全部非阻塞警告（样本读不到 ＋ 预算截断 ＋ CC 门控普查，顺序固定）。
     #[must_use]
     pub fn all_warnings(&self) -> Vec<serde_json::Value> {
         let mut warnings: Vec<serde_json::Value> = Vec::new();
         if let Some(warning) = self.samples_warning() {
+            warnings.push(warning);
+        }
+        if let Some(warning) = self.budget_truncation_warning() {
             warnings.push(warning);
         }
         if let Some(warning) = self.cc_gate_warning() {
@@ -1151,6 +1383,8 @@ impl SfzLoad {
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleLimits": self.limits.to_value(),
+            "sampleTruncation": self.sample_truncation.to_value(self.limits),
+            "budgetSilentRegionCount": self.budget_silent_regions,
             "sampleHz": self.sample_hz,
             "ccGateCensus": self.cc_census.to_value(),
             "warnings": self.all_warnings(),
@@ -1188,6 +1422,8 @@ impl SfzLoad {
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleLimits": self.limits.to_value(),
+            "sampleTruncation": self.sample_truncation.to_value(self.limits),
+            "budgetSilentRegionCount": self.budget_silent_regions,
             "sampleHz": self.sample_hz,
             "ccGateCensus": self.cc_census.to_value(),
             "warnings": self.all_warnings(),
@@ -1916,6 +2152,8 @@ fn load_with_resolved(
         sample_failures,
         sample_reads_truncated,
         sample_frames_loaded,
+        sample_truncation,
+        budget_silent_regions,
         provider,
         cc_census,
         cc_seed_defaults,
@@ -1953,6 +2191,9 @@ fn load_with_resolved(
         let mut silent_regions = 0usize;
         let mut builtin_silent_regions = 0usize;
         let mut skipped_regions = 0usize;
+        // ⭐ 因上限命中而静音的区域数（失败原因按
+        // [`classify_sample_failure`] 分类；真缺文件不计）。
+        let mut budget_silent_regions = 0usize;
         for (index, region) in instrument.regions().iter().enumerate() {
             let mut summary = summarize(index, region);
             // ⭐ P1 按需装载：判定器说本区域在本次渲染里不会发声 ⇒ 跳过解码。
@@ -1994,6 +2235,9 @@ fn load_with_resolved(
                             false
                         }
                         Err(reason) => {
+                            if classify_sample_failure(&reason).is_some() {
+                                budget_silent_regions += 1;
+                            }
                             summary.sample_file_state =
                                 format!("unreadable({}): {reason}", resolved.display());
                             true
@@ -2032,6 +2276,8 @@ fn load_with_resolved(
             sample_failures,
             cache.truncated(),
             cache.frames_loaded(),
+            cache.truncation(),
+            budget_silent_regions,
             provider,
             cc_census,
             cc_seed_defaults,
@@ -2061,6 +2307,8 @@ fn load_with_resolved(
             sample_failures,
             sample_reads_truncated,
             sample_frames_loaded,
+            sample_truncation,
+            budget_silent_regions,
             // ⭐ 预算随装载一起登记：读数的"截没截"必须能对回是哪一条预算判的。
             limits: cache.limits(),
             cc_census,
@@ -2211,6 +2459,7 @@ pub(crate) struct EmbeddedSampleCache<'a> {
     entries: SampleEntries,
     frames_loaded: u64,
     truncated: bool,
+    truncation: SampleTruncation,
     limits: SampleLimits,
 }
 
@@ -2228,6 +2477,7 @@ impl<'a> EmbeddedSampleCache<'a> {
             entries: SampleEntries::new(),
             frames_loaded: 0,
             truncated: false,
+            truncation: SampleTruncation::default(),
             limits,
         }
     }
@@ -2248,6 +2498,7 @@ impl SampleReads for EmbeddedSampleCache<'_> {
             &mut self.entries,
             &mut self.frames_loaded,
             &mut self.truncated,
+            &mut self.truncation,
             self.limits,
             |resolved| read_embedded_sample(map, assets, &resolved.to_string_lossy()),
         )
@@ -2259,6 +2510,10 @@ impl SampleReads for EmbeddedSampleCache<'_> {
 
     fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    fn truncation(&self) -> SampleTruncation {
+        self.truncation
     }
 
     fn frames_loaded(&self) -> u64 {
@@ -2710,6 +2965,8 @@ pub struct SfzWavArtifact {
     pub sample_failures: Vec<String>,
     /// 是否命中过读盘上界。
     pub sample_reads_truncated: bool,
+    /// ⭐ 因上限被跳过的结构化记账（渲染恒用缺省预算 ⇒ 按缺省值回显上限）。
+    pub sample_truncation: SampleTruncation,
     /// 累计解码帧数。
     pub sample_frames_loaded: u64,
     // ⭐ `#223`：四类**已知但不生效**的区域参数。⚠ **只有本工具**
@@ -2803,6 +3060,7 @@ impl SfzWavArtifact {
             "sampleSources": self.sample_sources,
             "sampleFailures": self.sample_failures,
             "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleTruncation": self.sample_truncation.to_value(SampleLimits::default()),
             "sampleFramesLoaded": self.sample_frames_loaded,
             "notesUsingFileSample": self.notes_using_file_sample,
             "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
@@ -2855,6 +3113,7 @@ impl SfzWavArtifact {
             "sampleSources": self.sample_sources,
             "sampleFailures": self.sample_failures,
             "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleTruncation": self.sample_truncation.to_value(SampleLimits::default()),
             "sampleFramesLoaded": self.sample_frames_loaded,
             "notesUsingFileSample": self.notes_using_file_sample,
             "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
@@ -3050,6 +3309,8 @@ pub struct SfzRenderOutcome {
     pub sample_failures: Vec<String>,
     /// 是否命中过读盘上界。
     pub sample_reads_truncated: bool,
+    /// ⭐ 因上限被跳过的结构化记账（本渲染器恒用缺省预算，见 [`render`]）。
+    pub sample_truncation: SampleTruncation,
     /// 累计解码帧数。
     pub sample_frames_loaded: u64,
     /// ⭐ `#223`：命中区域声明了 `amplitude` 一族的音符数（本渲染器不应用）。
@@ -3228,6 +3489,7 @@ pub fn render(
             failures
         },
         sample_reads_truncated: cache.truncated(),
+        sample_truncation: cache.truncation(),
         sample_frames_loaded: cache.frames_loaded(),
         notes_with_amplitude,
         notes_with_tune_cc,
@@ -3665,6 +3927,175 @@ mod tests {
             MAX_SAMPLE_FILES_READ
         );
         assert!(cache.truncated(), "上限命中必须被记账");
+    }
+
+    /// ⭐ 截断分类器读**真实构造点**的文案（三条上限各一条）＋非上限失败不误判，
+    /// 且三条命中都在缓存的结构化记账里分计。
+    ///
+    /// 文案与标记的契约靠这条钉：任一侧漂移（改文案不改标记、或反之）即红。
+    #[test]
+    fn the_truncation_classifier_reads_all_three_limit_reasons() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        // 非上限失败（文件不存在）⇒ None，且不记账、不置截断位。
+        let mut cache = SampleCache::new();
+        let missing = cache
+            .get(Path::new("/nonexistent-dir-xyz/nope.wav"))
+            .expect_err("不存在的文件必须失败");
+        assert_eq!(classify_sample_failure(&missing), None, "{missing}");
+        assert!(!cache.truncated());
+        assert_eq!(cache.truncation(), SampleTruncation::default());
+
+        // 文件数上限：预算只许 1 个不同文件，第二个（同样不存在）被上限拦下。
+        let mut cache = SampleCache::with_limits(SampleLimits {
+            max_files: 1,
+            max_frames: 0,
+        });
+        let _ = cache.get(Path::new("/a.wav")).expect_err("不存在");
+        let reason = cache
+            .get(Path::new("/b.wav"))
+            .expect_err("第二个必须被文件数上限拒绝");
+        assert_eq!(
+            classify_sample_failure(&reason),
+            Some(TruncationCause::FileCount),
+            "{reason}"
+        );
+        assert_eq!(cache.truncation().files_at_file_limit, 1);
+        assert!(cache.truncated());
+
+        // 帧数上限：两份 480 帧真文件，预算 500 帧 ⇒ 第二份被拒。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-trunc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let w1 = dir.join("w1.wav");
+        let w2 = dir.join("w2.wav");
+        for path in [&w1, &w2] {
+            write_plain_wav(
+                path,
+                &PcmFormat::float(1, 48_000, 32),
+                &PcmBuffer::Float32(vec![0.25; 480]),
+            )
+            .expect("写夹具 WAV");
+        }
+        let mut cache = SampleCache::with_limits(SampleLimits {
+            max_files: 0,
+            max_frames: 500,
+        });
+        cache.get(&w1).expect("第一份装得下");
+        let reason = cache.get(&w2).expect_err("第二份必须被帧数上限拒绝");
+        assert_eq!(
+            classify_sample_failure(&reason),
+            Some(TruncationCause::FrameTotal),
+            "{reason}"
+        );
+        assert_eq!(cache.truncation().files_at_frame_limit, 1);
+        assert!(cache.truncated());
+
+        // 单文件字节上限：稀疏文件（只拉长度、不写内容）⇒ 元数据先行拒绝。
+        let big = dir.join("big.wav");
+        let file = std::fs::File::create(&big).expect("建稀疏文件");
+        file.set_len(MAX_SAMPLE_FILE_BYTES + 1).expect("拉长");
+        drop(file);
+        let mut cache = SampleCache::new();
+        let reason = cache.get(&big).expect_err("超限文件必须被拒绝");
+        assert_eq!(
+            classify_sample_failure(&reason),
+            Some(TruncationCause::FileBytes),
+            "{reason}"
+        );
+        assert_eq!(cache.truncation().files_over_size_limit, 1);
+        assert!(
+            cache.truncated(),
+            "单文件上限命中也必须置截断位（修前恒 false）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐ 装载级：预算截断的四要素在回执里齐全，且与「文件缺失」分开点名——
+    /// 文件都在盘上时 `sfzSamplesUnreadable` 不得出现（它的改法是外取，
+    /// 对预算截断是误导），改由 `sfzSampleBudgetTruncated` 点名。
+    #[test]
+    fn a_budget_truncated_load_reports_all_four_elements() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-budgetwarn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        for name in ["a.wav", "b.wav", "c.wav"] {
+            write_plain_wav(
+                &dir.join(name),
+                &PcmFormat::float(1, 48_000, 32),
+                &PcmBuffer::Float32(vec![0.25; 96]),
+            )
+            .expect("写夹具 WAV");
+        }
+        let path = dir.join("three.sfz");
+        std::fs::write(
+            &path,
+            "<region> sample=a.wav key=60\n<region> sample=b.wav key=61\n<region> sample=c.wav key=62\n",
+        )
+        .expect("写夹具 SFZ");
+        // 预算只许 2 个文件 ⇒ 第三个区域的样本被文件数上限跳过。
+        let limits = SampleLimits {
+            max_files: 2,
+            max_frames: 0,
+        };
+        let loaded = load(&path, 48_000.0, 7, false, limits, &BTreeMap::new()).expect("装载");
+        assert!(loaded.sample_reads_truncated);
+        assert_eq!(
+            loaded.sample_truncation.files_at_file_limit, 1,
+            "{:?}",
+            loaded.sample_truncation
+        );
+        assert_eq!(loaded.budget_silent_regions, 1);
+        assert_eq!(loaded.silent_regions, 1);
+        assert!(
+            loaded.samples_warning().is_none(),
+            "文件都在盘上 ⇒ 不得发外取提示: {:?}",
+            loaded.samples_warning()
+        );
+        let warning = loaded
+            .budget_truncation_warning()
+            .expect("必须有预算截断警告");
+        assert_eq!(warning["code"], "sfzSampleBudgetTruncated");
+        assert_eq!(warning["filesSkipped"], 1);
+        assert_eq!(warning["filesSkippedByFileLimit"], 1);
+        assert_eq!(warning["silentRegions"], 1);
+        assert_eq!(warning["hits"][0]["limit"], "maxSampleFiles");
+        assert_eq!(warning["hits"][0]["limitValue"], 2);
+        let hint = warning["hint"].as_str().expect("hint 是字符串");
+        assert!(hint.contains("maxSampleFiles"), "{hint}");
+        assert!(hint.contains("`0` = 不限"), "{hint}");
+        // 回执结构化字段与警告装配。
+        let data = loaded.response_data();
+        assert_eq!(data["sampleTruncation"]["filesSkipped"], 1);
+        assert_eq!(
+            data["sampleTruncation"]["hits"][0]["limit"],
+            "maxSampleFiles"
+        );
+        assert_eq!(data["budgetSilentRegionCount"], 1);
+        let codes: Vec<&str> = data["warnings"]
+            .as_array()
+            .expect("warnings 是数组")
+            .iter()
+            .map(|warning| warning["code"].as_str().expect("code 是字符串"))
+            .collect();
+        assert_eq!(codes, ["sfzSampleBudgetTruncated"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ⭐ `#276` 判据 6 的**解码次数那一半**：共享池让同一份样本只解码一次，

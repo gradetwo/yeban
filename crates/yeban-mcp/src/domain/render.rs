@@ -2038,6 +2038,12 @@ pub struct SamplerReport {
     pub sample_frames_loaded: u64,
     /// 本次装载是否命中样本读盘上界（MCP 侧的三条上限；⛔ 不是"静默截断"）。
     pub sample_reads_truncated: bool,
+    /// ⭐ 因上限被跳过的**结构化**记账（按上限分计；与装载回执的
+    /// `sampleTruncation` 同一份口径，来自同一份 `SfzLoad`）。
+    pub sample_truncation: sfz::SampleTruncation,
+    /// ⭐ 因上限命中而静音的区域数（装载口径；与引擎摊平口径的
+    /// `silent_regions` 并行登记，⛔ 不合并 —— 两者来源不同）。
+    pub budget_silent_regions: usize,
     /// 命中的区域里声明了 `ampeg_*` 的个数（⭐ `#274` 起引擎**应用**包络；这仍是读数，
     /// ⛔ 不再登记 `sfzRegionEnvelope`）。
     pub regions_with_envelope: u64,
@@ -2109,6 +2115,8 @@ impl SamplerReport {
             "sampleFailures": self.sample_failures,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleTruncation": self.sample_truncation.to_value(self.budget),
+            "budgetSilentRegionCount": self.budget_silent_regions,
             "sampleLimits": self.budget.to_value(),
             "regionsWithEnvelope": self.regions_with_envelope,
             "decodedSamples": self.decoded_samples,
@@ -5921,6 +5929,8 @@ fn build_source(
                 sample_failures: armed.load.sample_failures.clone(),
                 sample_frames_loaded: armed.load.sample_frames_loaded,
                 sample_reads_truncated: armed.load.sample_reads_truncated,
+                sample_truncation: armed.load.sample_truncation,
+                budget_silent_regions: armed.load.budget_silent_regions,
                 budget: armed.load.limits,
                 regions_with_envelope: survey.regions_with_envelope,
                 decoded_samples: summary.samples,
