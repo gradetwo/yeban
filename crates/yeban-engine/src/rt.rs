@@ -1935,8 +1935,12 @@ fn render_branch(
                     &mut share.track_scratch[..frames],
                 );
             }
+        } else if synth.has_active_live_voices(track) {
+            // 停住但存在实时试听音符（钢琴卷帘/键盘 `NoteOn`，`end_sample == u64::MAX`）：
+            // 仅渲染实时活跃声部，不触发时间轴调度音符、不推进游标，确保停止态试听真实发声。
+            synth.render_live_voices(track, &mut share.track_scratch[..frames]);
         } else {
-            // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
+            // 停住且无实时试听声部：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
             share.track_scratch[..frames].fill(0.0);
         }
         // --- 3a⁰) 参数目标表的**逐轨增益乘子**：逐样本 ---
@@ -7873,6 +7877,60 @@ mod tests {
             rig.runtime.stats().orphan_note_offs,
             0,
             "⭐ 这条 `NoteOff` 必须找到声部（⛔ 不是孤儿）"
+        );
+    }
+
+    #[test]
+    fn stopped_engine_plays_live_notes_and_returns_to_silence_after_note_off() {
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut rig = rig_with_snapshot(snapshot);
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::Transport {
+                command: crate::ring::TransportCommand::Stop,
+            }]),
+            1
+        );
+        let mut idle = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut idle, 2);
+        assert!(idle.iter().all(|v| *v == 0.0), "停止态无试听应精确全零");
+
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 60,
+                velocity: 112,
+            }]),
+            1
+        );
+        let mut sounding = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        let mut live_peak = 0.0f32;
+        for _ in 0..8 {
+            rig.runtime.process_quantum(&mut sounding, 2);
+            live_peak = live_peak.max(sounding.iter().fold(0.0f32, |a, v| a.max(v.abs())));
+        }
+        assert!(
+            live_peak > 0.01,
+            "停止态通过实时 NoteOn 试听琴键/音符必须发出可听电平（实测 live_peak={live_peak}）"
+        );
+
+        assert_eq!(
+            rig.sender
+                .publish(&[EngineEvent::NoteOff { track, pitch: 60 }]),
+            1
+        );
+        let mut tail = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..256 {
+            rig.runtime.process_quantum(&mut tail, 2);
+        }
+        let tail_rms = (tail
+            .iter()
+            .map(|v| f64::from(*v) * f64::from(*v))
+            .sum::<f64>()
+            / tail.len() as f64)
+            .sqrt();
+        assert!(
+            tail_rms < 1.0e-3,
+            "停止态试听松键后必须完整衰减至静音（RMS={tail_rms}）"
         );
     }
 

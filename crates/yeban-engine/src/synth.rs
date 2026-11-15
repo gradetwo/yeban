@@ -2057,6 +2057,29 @@ impl SynthEngine {
         }
     }
 
+    /// 仅判断某轨复音池内是否存在由实时 `EngineEvent::NoteOn` 触发的活跃试听声部
+    /// （`end_sample == u64::MAX`）。时间轴调度音符均带有限 `end_sample`，不受此方法影响。
+    /// 零分配、零锁、零 I/O。
+    #[must_use]
+    pub fn has_active_live_voices(&self, track: EntityId) -> bool {
+        let Some(index) = self.slot_index(track) else {
+            return false;
+        };
+        has_live_poly_voice(&self.slots[index].synth)
+    }
+
+    /// 走带停止状态下渲染某轨的实时 `EngineEvent::NoteOn` 试听声部：
+    /// 不推进时间轴游标、不触发调度音符 / SFZ 调度 / 鼓机调度，仅输出实时键盘或钢琴卷帘试听信号。
+    /// 零分配、零锁、零 I/O。
+    pub fn render_live_voices(&mut self, track: EntityId, out: &mut [f32]) {
+        out.fill(0.0);
+        let Some(index) = self.slot_index(track) else {
+            return;
+        };
+        let position = self.position;
+        self.slots[index].synth.render(&self.tables, position, out);
+    }
+
     /// 播放头前进 `frames` 帧（每个渲染量子调用一次）。
     pub fn advance(&mut self, frames: usize) {
         self.position = self.position.saturating_add(frames as u64);
@@ -2520,6 +2543,7 @@ impl SynthEngine {
                         break;
                     }
                 }
+                mix_live_poly_voices(&mut slot.synth, tables, position, out);
                 return;
             }
             while let Some(note) = notes.get(slot.cursor) {
@@ -2645,6 +2669,48 @@ impl SynthEngine {
                 }
             },
         }
+        if drum_map.is_some() || sfz.is_some() {
+            mix_live_poly_voices(&mut slot.synth, tables, position, out);
+        }
+    }
+}
+
+/// 检查某轨复音池内是否存在由实时 `EngineEvent::NoteOn` 触发的活跃试听声部（`end_sample == u64::MAX`）。
+#[inline]
+fn has_live_poly_voice(synth: &PolySynth) -> bool {
+    if synth.active_voices() == 0 {
+        return false;
+    }
+    (0..VOICES_PER_TRACK).any(|idx| matches!(synth.debug_voice(idx), Some((true, u64::MAX, _, _))))
+}
+
+/// 当轨道主音源为鼓机或 SFZ 时，若用户通过实时 `NoteOn` 触发了复音试听声部，
+/// 使用定长栈缓冲叠加渲染，避免主音源覆盖实时键盘试听声部，且保持零堆分配。
+fn mix_live_poly_voices(
+    synth: &mut PolySynth,
+    tables: &PolySynthTables,
+    position: u64,
+    out: &mut [f32],
+) {
+    if !has_live_poly_voice(synth) {
+        return;
+    }
+    let mut live_chunk = [0.0_f32; 256];
+    let mut offset = 0usize;
+    while offset < out.len() {
+        let take = (out.len() - offset).min(live_chunk.len());
+        synth.render(
+            tables,
+            position.saturating_add(offset as u64),
+            &mut live_chunk[..take],
+        );
+        for (dst, src) in out[offset..offset + take]
+            .iter_mut()
+            .zip(live_chunk[..take].iter())
+        {
+            *dst += *src;
+        }
+        offset += take;
     }
 }
 
