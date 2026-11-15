@@ -4213,7 +4213,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建临时目录");
         for name in ["a.wav", "b.wav", "c.wav"] {
             write_plain_wav(
-                &dir.join(name),
+                dir.join(name),
                 &PcmFormat::float(1, 48_000, 32),
                 &PcmBuffer::Float32(vec![0.25; 96]),
             )
