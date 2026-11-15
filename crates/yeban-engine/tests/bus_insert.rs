@@ -630,8 +630,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(
-        pool, 4_608,
-        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＋ 包络族片 eg_states 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）512 B ＋ filters 随 `VoiceFilter` 88 → 96 B 增 128 B ＝ 4608 B"
+        pool, 4_800,
+        "SfzVoicePool 必须是 1712 B ＋ round-robin 的 512 B ＋ `#341` held_notes `Option<u32>` 的 8 B ＋ portamento 池级四字段 8 B ＋ 弯音旁表四数组 320 B ＋ 滤波片 filters 数组（16 × `VoiceFilter` 88 B）1408 B ＋ 包络族片 eg_states 数组（16 槽 × 两只 16 B 的 `EgVoiceState`）512 B ＋ filters 随 `VoiceFilter` 88 → 96 B 增 128 B ＋ LFO 片 lfo_states 数组（16 槽 × 12 B 的 `LfoVoiceState`）192 B ＝ 4800 B"
     );
     assert_eq!(
         region, 6_248,

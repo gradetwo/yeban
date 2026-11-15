@@ -106,7 +106,8 @@ fn render_offline_cc(
 }
 
 /// ⭐ L1：generic 阶梯 LFO 恒定输出 1.0 × pitch 1200 音分 ⇒ 速率恰 ×2，
-/// 与静态 `tune=1200` 的裸 region 逐位相同（同一合成点、同一乘子公式）。
+/// 与「样本率 ×2 的裸 region」（速率同样恰 ×2）逐位相同
+/// （同一位置步进合成点 ⇒ 插值读数逐位一致）。
 #[test]
 fn l1_generic_step_pitch_is_a_constant_rate_multiplier() {
     let lfo = render_offline(
@@ -114,10 +115,9 @@ fn l1_generic_step_pitch_is_a_constant_rate_multiplier() {
          lfo01_steps=1 lfo01_step01=100 lfo01_freq=1 lfo01_pitch=1200",
         sine(440.0),
     );
-    let reference = render_offline(
-        "<region> sample=a.wav pitch_keytrack=0 tune=1200",
-        sine(440.0),
-    );
+    let mut double_rate = sine(440.0);
+    double_rate.sample_hz = HZ * 2.0;
+    let reference = render_offline("<region> sample=a.wav pitch_keytrack=0", double_rate);
     assert!(lfo.iter().any(|s| *s != 0.0), "夹具必须真的出声");
     assert_eq!(
         bits(&lfo),
@@ -306,14 +306,27 @@ fn l8_generic_step_resonance_lifts_the_cutoff_peak() {
     );
 }
 
+/// 指定频率的**长**正弦样本（0.2 s；输出只取前 0.1 s ⇒ 源不会被播完，
+/// 过零数反映真实速率而不是样本长度）。
+fn sine_long(freq: f32) -> InMemorySample {
+    let pcm: Vec<f32> = (0..PCM * 2)
+        .map(|i| 0.5 * (2.0 * std::f32::consts::PI * freq * i as f32 / HZ).sin())
+        .collect();
+    InMemorySample {
+        pcm: Arc::new(pcm),
+        sample_hz: HZ,
+        loop_points: None,
+    }
+}
+
 /// ⭐ L9：`pitchlfo_depth=1200`（±1 八度）颤音：音分域对称摆动经 exp2
 /// 后均值速率 > 1 ⇒ 0.1 s（恰 1 个 LFO 周期）内过零数高于裸 region。
 #[test]
 fn l9_pitchlfo_vibrato_raises_the_zero_crossing_rate() {
-    let plain = render_offline("<region> sample=a.wav pitch_keytrack=0", sine(440.0));
+    let plain = render_offline("<region> sample=a.wav pitch_keytrack=0", sine_long(440.0));
     let lfo = render_offline(
         "<region> sample=a.wav pitch_keytrack=0 pitchlfo_freq=10 pitchlfo_depth=1200",
-        sine(440.0),
+        sine_long(440.0),
     );
     assert!(
         crossings(&lfo) > crossings(&plain) + 3,

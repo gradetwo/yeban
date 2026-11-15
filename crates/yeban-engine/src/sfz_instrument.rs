@@ -3740,7 +3740,7 @@ impl LfoSpan<'_> {
 /// 顺序固定：v1 amp → v1 fil → v1 pitch → `lfoN` 按下标升序（解析层
 /// 已排序）；静态透明的不收。`V1Fil` 在区域无静态 `cutoff` 时不收 ——
 /// 与 `fileg` 的范围裁决同款（无基准可调 ⇒ 整体透明）。
-fn region_lfo_defs(region: &Region) -> Vec<LfoDef> {
+fn region_lfo_defs(region: &Region<'_>) -> Vec<LfoDef> {
     let mut defs = Vec::new();
     if !region.amplfo.is_transparent() {
         defs.push(LfoDef::V1Amp(region.amplfo.clone()));
@@ -4628,14 +4628,14 @@ impl PreparedRegion {
     /// 基准截止/谐振与 [`Self::voice_filter`] 的配置用**同一份**折算
     /// （[`Self::base_cutoff_hz`] ＋ [`Self::resonance`]，⛔ 不许第二份）。
     #[must_use]
-    pub fn lfo_span(
+    pub fn lfo_span<'p>(
         &self,
-        plan: &PreparedSfz,
+        plan: &'p PreparedSfz,
         note: u8,
         velocity: u8,
         cc: Option<&dyn Fn(u8) -> u8>,
         state: LfoVoiceState,
-    ) -> LfoSpan<'_> {
+    ) -> LfoSpan<'p> {
         lfo_span_from_defs(
             self.lfo_defs(plan),
             cc,
