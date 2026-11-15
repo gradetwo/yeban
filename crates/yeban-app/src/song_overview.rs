@@ -771,6 +771,24 @@ pub fn refresh_song_overview(
     };
     let mut failures: Vec<String> = Vec::new();
     let engine_hz = settings.sample_rate_hz as f32;
+    if project.tracks.len() > 8 || view.bar_positions.len() > 32 {
+        let score = score_input_from_project(&project);
+        let dsp = analyze_song_overview_with_options(&score, None, &options);
+        let mapped = if dsp.bar_series.is_empty() {
+            silent_overview(view)
+        } else {
+            overview_from_dsp(&dsp, view)
+        };
+        let bars = mapped.total_bars;
+        apply_song_overview(ui, &mapped);
+        state.borrow_mut().data = mapped;
+        return RefreshReport {
+            bars,
+            cache_hit: false,
+            score_only: true,
+            error: None,
+        };
+    }
     let result = {
         let mut live = state.borrow_mut();
         cached_overview(&mut live.cache, &project, &settings, &options, |_, raw| {
