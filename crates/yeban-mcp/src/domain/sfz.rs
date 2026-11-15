@@ -152,15 +152,19 @@ pub const MAX_SAMPLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// 一次装载 / 一次渲染的**缺省**文件数上界（去重后**不同**文件数）。
 ///
-/// ⚠ 512 而不是 32／128：真实大库的**一件**乐器就会有上百份不同样本 ——
+/// ⚠ 1024 而不是 32／128／512：真实大库的**一件**乐器就会有上百份不同样本 ——
 /// `GM-StylePerc`（220 区域 / 184 份 wav）、`freepats-spanish-classical-guitar`
-/// （48 区域在 32 时只读到 26）。截断是**响亮报告**的（`sampleReadsTruncated`），
-/// 但"读不全"会让大乐器的**力度层 / 音区层静默缺席** ⇒ 默认值必须容得下真实乐器。
+/// （48 区域在 32 时只读到 26）；而 `Salamander Grand` 一件就要 **641 份**样本文件，
+/// 旧缺省 512 下必然截断 ⇒ 一批音区**静默缺席**（外部实测，2026-11-15）。
+/// 截断是**响亮报告**的（`sampleReadsTruncated` ＋ `sampleTruncation` 结构化记账
+/// ＋ `sfzSampleBudgetTruncated` 警告），但"读不全"会让大乐器的**力度层 / 音区层
+/// 静默缺席** ⇒ 默认值必须容得下真实乐器。1024 按"已知最重真实乐器 641 份
+/// × 约 1.6 余量"取（Wang 2026-11-15 裁决：512 → 1024）。
 /// 这一条只放行**文件数**，内存的真实上界仍是 [`MAX_SAMPLE_FRAMES_TOTAL`]。
 ///
 /// ⭐ 运行期可用 `yeban_load_sfz.maxSampleFiles` / `yeban_render_master.maxSampleFiles`
 /// 覆盖（见 [`SampleLimits`]），⛔ 不必改常量重编。
-pub const MAX_SAMPLE_FILES_READ: usize = 512;
+pub const MAX_SAMPLE_FILES_READ: usize = 1024;
 
 /// 一次装载 / 一次渲染的**缺省**帧数上界（所有文件**合计**，按**解码后**的规模算）。
 ///
@@ -3636,13 +3640,14 @@ mod tests {
         }
     }
 
-    /// E4：文件数上限是 128，且第 129 个**响亮拒绝**而不是静默丢弃。
+    /// E4：文件数上限是 [`MAX_SAMPLE_FILES_READ`]，且再多一个**响亮拒绝**
+    /// 而不是静默丢弃。
     ///
     /// 用**不存在的路径**当探针：条目表按"不同路径"计数（失败也记一条，读成功的帧数
-    /// 另算），因此不必真的造 128 个 WAV 就能钉住上限。真实大库的动机见
+    /// 另算），因此不必真的造上千个 WAV 就能钉住上限。真实大库的动机见
     /// [`MAX_SAMPLE_FILES_READ`] 的文档。
     #[test]
-    fn the_sample_cache_accepts_128_distinct_files_and_refuses_the_129th() {
+    fn the_sample_cache_accepts_up_to_the_file_limit_and_refuses_the_next() {
         let base = std::env::temp_dir().join(format!("yeban-mcp-sfz-cap-{}", std::process::id()));
         let mut cache = SampleCache::new();
         for index in 0..MAX_SAMPLE_FILES_READ {
@@ -3650,13 +3655,14 @@ mod tests {
             assert!(cache.get(&path).is_err(), "不存在的文件必须如实报错");
         }
         assert_eq!(cache.files_failed(), MAX_SAMPLE_FILES_READ);
-        assert!(!cache.truncated(), "正好 128 个还没触发截断");
+        assert!(!cache.truncated(), "正好到上限还没触发截断");
 
         let overflow = base.join("missing-overflow.wav");
-        let reason = cache.get(&overflow).expect_err("第 129 个必须被拒绝");
+        let reason = cache.get(&overflow).expect_err("超过上限的一个必须被拒绝");
         assert!(
             reason.contains(&MAX_SAMPLE_FILES_READ.to_string()),
-            "拒绝文案必须点名上限 128: {reason}"
+            "拒绝文案必须点名上限 {}: {reason}",
+            MAX_SAMPLE_FILES_READ
         );
         assert!(cache.truncated(), "上限命中必须被记账");
     }

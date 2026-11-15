@@ -81,7 +81,7 @@ app 侧同一语义在 `crates/yeban-app/src/sfz_load.rs::resolve_sample_path`�
     超限直接拒绝读取并把原因写进失败记账，⛔ **绝不截断**（截断会让听到的与
     文件里的不是同一段音频）。路径是目录、文件不存在同样是逐条失败，不是装载失败。
 15. **装载／渲染预算**（`SampleLimits`，逐轨记账、解码结果跨轨共享于
-    `SampleStore`）：不同样本文件数缺省上限 512（`MAX_SAMPLE_FILES_READ`）、
+    `SampleStore`）：不同样本文件数缺省上限 1024（`MAX_SAMPLE_FILES_READ`）、
     累计解码帧数缺省上限 64,000,000（`MAX_SAMPLE_FRAMES_TOTAL`）；运行期可用
     `yeban_load_sfz` / `yeban_render_master` 的 `maxSampleFiles` /
     `maxSampleFrames` 覆盖，`0` ＝ 不限。任一上限命中即**停止再读**，

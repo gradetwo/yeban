@@ -1183,7 +1183,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "maxSampleFiles",
                 "integer",
                 false,
-                "⭐ 每条采样器轨最多读多少个**不同**样本文件（去重后）；缺省 512，`0` = 不限。与 `yeban_load_sfz.maxSampleFiles` **同一份**解析实现与同一套缺省值。逐轨记账（一次渲染内已解码 PCM 跨轨共享）。截断如实进 `data.sources[].sampler.sampleReadsTruncated` + `sampleFailures`，预算本身在 `data.request.sampleLimits` 与 `sampler.sampleLimits` 回显",
+                "⭐ 每条采样器轨最多读多少个**不同**样本文件（去重后）；缺省 1024，`0` = 不限。与 `yeban_load_sfz.maxSampleFiles` **同一份**解析实现与同一套缺省值。逐轨记账（一次渲染内已解码 PCM 跨轨共享）。截断如实进 `data.sources[].sampler.sampleReadsTruncated` + `sampleTruncation` + `sampleFailures`，预算本身在 `data.request.sampleLimits` 与 `sampler.sampleLimits` 回显",
             ),
             param(
                 "maxSampleFrames",
@@ -1581,7 +1581,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "maxSampleFiles",
                 "integer",
                 false,
-                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 512, `0` = 不限。真实大库的一件乐器就会有上百份不同样本 (GM-StylePerc 184 份), 旧上界 128 会把大乐器的音区层/力度层**静默砍掉** —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断仍是响亮报告的 (`sampleReadsTruncated` + 逐条 `sampleFailures`), 响应里的 `sampleLimits` 回显本次用的预算",
+                "本次装载最多读多少个**不同**样本文件 (去重后); 缺省 1024, `0` = 不限。真实大库的一件乐器就会有上百份不同样本 (GM-StylePerc 184 份, Salamander Grand 641 份), 旧缺省 512 会把大乐器的音区层/力度层**砍掉** —— 采样器轨没有正弦回退, 砍掉的音区就是数字静音。截断是响亮报告的 (`sampleReadsTruncated` + `sampleTruncation` 结构化记账 + `sfzSampleBudgetTruncated` 警告 + 逐条 `sampleFailures`), 响应里的 `sampleLimits` 回显本次用的预算",
             ),
             param(
                 "maxSampleFrames",
