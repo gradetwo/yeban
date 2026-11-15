@@ -191,47 +191,145 @@ fn transport_and_tool_mapping_do_not_double_toggle() {
     assert_eq!(ui.get_is_looping(), !loop_before);
 }
 
-/// 顶部下拉菜单高度按菜单项首选高度收缩，不再竖直拉满整窗，且 Esc 可关闭菜单。
+/// 主菜单使用窗口级 Slint 原生 `MenuBar`（macOS / Windows 等支持原生菜单栏的系统由宿主放入系统/窗口菜单栏，
+/// 无原生系统菜单栏时回退到窗口顶部 `MenuBarImpl`），不再放在 `TransportHeaderBar` 内；
+/// 各区域自带的局部菜单（编排头、控制台头、左侧检查器、卷帘右键）保留在各自区域，且菜单命令分发仍真改状态。
 #[test]
-fn top_menu_dropdown_fits_content_and_closes_on_escape() {
-    let port = build_rig(&ViewState::demo());
+fn native_menu_bar_replaces_transport_menu_strip_and_keeps_local_menus() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use slint::{LogicalPosition, platform::PointerEventButton};
+    use yeban_app::undo::{UndoPort, UndoSession};
+
+    let app_slint = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.slint"))
+        .expect("读取 ui/app.slint");
+    let transport_slint = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/ui/transport_bar.slint"
+    ))
+    .expect("读取 ui/transport_bar.slint");
+    let arrangement_slint =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/arrangement.slint"))
+            .expect("读取 ui/arrangement.slint");
+    let lower_dock_slint =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/lower_dock.slint"))
+            .expect("读取 ui/lower_dock.slint");
+    let left_panel_slint =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/left_panel.slint"))
+            .expect("读取 ui/left_panel.slint");
+    let piano_roll_slint = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/ui/console/piano_roll.slint"
+    ))
+    .expect("读取 ui/console/piano_roll.slint");
+
+    // 1. MainWindow declares native Window-level MenuBar with all 7 menus and no in-window top menu overlay.
+    assert!(
+        app_slint.contains("MenuBar {"),
+        "MainWindow 必须声明 Slint 原生 Window 级 MenuBar"
+    );
+    for title in [
+        "title: \"文件\";",
+        "title: \"编辑\";",
+        "title: \"轨道\";",
+        "title: \"走带\";",
+        "title: \"混音\";",
+        "title: \"视图\";",
+        "title: \"诊断\";",
+    ] {
+        assert!(
+            app_slint.contains(title),
+            "MainWindow MenuBar 必须包含主菜单: {title}"
+        );
+    }
+    assert!(
+        !app_slint.contains("active-top-menu"),
+        "app.slint 不应保留旧的窗口内自定义顶部菜单覆盖层"
+    );
+
+    // 2. TransportHeaderBar no longer houses the main application menu bar strip.
+    assert!(
+        !transport_slint.contains("toggle-top-menu")
+            && !transport_slint.contains("active-top-menu")
+            && !transport_slint.contains("execute-menu-command")
+            && !transport_slint.contains("id: \"file\""),
+        "TransportHeaderBar 内不应再绘制主菜单栏条目"
+    );
+
+    // 3. Local region menus remain in their respective region components.
+    assert!(arrangement_slint.contains("active-local-menu"));
+    assert!(lower_dock_slint.contains("dock-instrument-menu-open"));
+    assert!(left_panel_slint.contains("show-instrument-menu"));
+    assert!(piano_roll_slint.contains("context-menu-popup"));
+
+    // 4. Live window: Tier-1 renders cleanly with MenuBar and menu commands execute real state changes.
+    let project = yeban_model::samples::demo_project();
+    let view = ViewState::from_project(&project).expect("工程投影");
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<menu-bar-test>",
+            "yeban-app",
+            project.clone(),
+            1_700_000_000_000,
+        )
+        .expect("撤销会话"),
+    ));
+    let prod = host::ProductionLoop::without_engine();
+    let engine = prod.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+
+    let port = build_rig(&view);
     let ui = port.ui();
+    host::wire_track_strip(ui, &undo);
+    host::wire_aether_actions(ui, Rc::clone(&undo), engine, view_cell);
 
-    ui.set_active_top_menu("file".into());
-    let with_file = port.window().capture().expect("渲染打开文件菜单帧");
-    // 文件菜单 x=56..304 (10 项 ≈ 285px 高, 位于 y=52..337)。取右侧内边距 x=298 验证纯背景：
-    let top_box_px = with_file.pixel(298, 100).expect("顶部菜单区域像素");
+    let baseline = port.window().capture().expect("默认帧渲染");
+    // In Tier-1 (no native OS menu bar), clicking the fallback MenuBarItem ("文件" at top-left, 40px tall bar)
+    // opens a popup without filling y=650, and Escape closes it cleanly.
+    port.window().pointer_move(LogicalPosition::new(22.0, 20.0));
+    port.window()
+        .pointer_down(LogicalPosition::new(22.0, 20.0), PointerEventButton::Left);
+    port.window()
+        .pointer_up(LogicalPosition::new(22.0, 20.0), PointerEventButton::Left);
+    let with_menu_open = port.window().capture().expect("打开原生 MenuBar 下拉帧");
+    let mut upper_diff = 0usize;
+    for py in 45..260 {
+        for px in 10..240 {
+            if baseline.pixel(px, py) != with_menu_open.pixel(px, py) {
+                upper_diff += 1;
+            }
+        }
+    }
+    assert!(
+        upper_diff > 100,
+        "点击回退 MenuBar“文件”项必须在下拉区真实绘出菜单 (upper_diff={upper_diff})"
+    );
     assert_eq!(
-        top_box_px,
-        [13, 18, 29],
-        "菜单顶部区域 (298, 100) 应为菜单底色 #0d121d"
+        baseline.pixel(40, 650),
+        with_menu_open.pixel(40, 650),
+        "MenuBar 下拉菜单不得竖直拉满至 y=650"
     );
-
-    // 切换为较短的 edit 菜单 (6 项 ≈ 177px 高, 位于 y=52..229)，验证下方窗口区已脱出菜单框
-    ui.set_active_top_menu("edit".into());
-    let with_edit = port.window().capture().expect("渲染打开编辑菜单帧");
-    assert_ne!(
-        with_file.pixel(298, 280),
-        with_edit.pixel(298, 280),
-        "文件菜单(10项)在 y=280 仍在菜单框内，而更短的编辑菜单(6项)已结束"
-    );
-    assert_eq!(
-        with_file.pixel(298, 650),
-        with_edit.pixel(298, 650),
-        "y=650 下半窗区不应被菜单竖直拉满"
-    );
-    assert_ne!(
-        with_file.pixel(298, 650).unwrap(),
-        [13, 18, 29],
-        "文件菜单不得竖直延伸至窗口下部 y=650"
-    );
-
     port.window().key_press(slint::platform::Key::Escape);
+
+    let tracks_before = undo.try_project().unwrap().tracks.len();
+    ui.invoke_command_execute("track-add-midi".into());
     assert_eq!(
-        ui.get_active_top_menu().as_str(),
-        "",
-        "Esc 必须关闭顶部菜单"
+        undo.try_project().unwrap().tracks.len(),
+        tracks_before + 1,
+        "MenuBar 命令 track-add-midi 必须真实新增一条 MIDI 轨"
     );
+
+    let hotspots_before = ui.get_show_hotspots();
+    ui.invoke_command_execute("toggle-hotspots".into());
+    assert_ne!(
+        ui.get_show_hotspots(),
+        hotspots_before,
+        "MenuBar 命令 toggle-hotspots 必须切换状态"
+    );
+
+    ui.invoke_command_execute("tab-mixer".into());
+    assert_eq!(ui.get_console_tab(), 1, "tab-mixer 必须切到混音台");
 }
 
 #[test]
@@ -455,9 +553,11 @@ fn mixer_faders_and_pans_drag_smoothly_without_undo_spam() {
     let track0_db_before_ptr = undo.try_project().unwrap().tracks[&track0_id].volume_db;
     let track0_frac_start = ui.get_track_volume_fractions().row_data(0).unwrap();
 
-    // 第 0 轨通道条宽 82px，最大化下 88px 推子轨迹约在 x=32..60, y=295..385
+    // 第 0 轨通道条宽 82px；在 Tier-1 (顶部含 40px MenuBarImpl) 最大化下，88px 推子轨迹约在 x=32..60, y=346..434
     let start_x = 46.0_f32;
-    let start_y = 340.0_f32;
+    let start_y = 370.0_f32;
+    live.window()
+        .pointer_move(LogicalPosition::new(start_x, start_y));
     live.window().pointer_down(
         LogicalPosition::new(start_x, start_y),
         PointerEventButton::Left,

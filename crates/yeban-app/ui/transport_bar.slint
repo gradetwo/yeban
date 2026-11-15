@@ -581,7 +581,6 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
-    in-out property <string> active-top-menu: "";
 
     callback toggle-zone(string);
     callback select-tool(string);
@@ -597,8 +596,6 @@ export component TransportHeaderBar inherits Rectangle {
     callback open-cmd-palette();
     callback toggle-hotspots();
     callback revert-to-last-commit();
-    callback toggle-top-menu(string);
-    callback execute-menu-command(string);
 
     height: 48px;
     background: Theme.header-bg;
@@ -635,58 +632,6 @@ export component TransportHeaderBar inherits Rectangle {
                 brand_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
                 TooltipBubble { text: "夜半"; is-visible: brand_touch.has-hover; }
             }
-
-            // Group A2: Logic Pro 12 Grouped Top Menu Bar
-            Rectangle {
-                background: #0a0d14;
-                border-radius: Theme.radius;
-                border-width: 1px;
-                border-color: #ffffff14;
-                height: 28px;
-
-                HorizontalLayout {
-                    padding-left: 4px;
-                    padding-right: 4px;
-                    spacing: 2px;
-                    alignment: center;
-
-                    for menu in [
-                        { id: "file",      label: "文件", tip: "工程保存/打开、音频 WAV/分轨导出、MIDI/SFZ 导入与录音" },
-                        { id: "edit",      label: "编辑", tip: "撤销/重做、时光机 DAG、音符量化/人性化与 AI 提案" },
-                        { id: "track",     label: "轨道", tip: "新建 MIDI/音频/总线轨、切换音色、插入 EQ/混响" },
-                        { id: "transport", label: "走带", tip: "播放/停止、录音、节拍器、循环与归零" },
-                        { id: "mix",       label: "混音", tip: "混音台、设备链机架、总线控制与监听室" },
-                        { id: "view",      label: "视图", tip: "显隐/最大化各工作区、切换工作流预设" },
-                        { id: "diag",      label: "诊断", tip: "声学/AI 诊断分析、诊断包导出与提示开关" },
-                    ] : Rectangle {
-                        height: 22px;
-                        border-radius: 3px;
-                        background: root.active-top-menu == menu.id ? Theme.accent.with-alpha(0.28) : (m_touch.has-hover ? #182032 : transparent);
-                        border-width: root.active-top-menu == menu.id ? 1px : 0px;
-                        border-color: Theme.accent.with-alpha(0.65);
-
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            Text {
-                                text: menu.label;
-                                font-family: Tokens.font-ui;
-                                font-size: 10.5px;
-                                font-weight: root.active-top-menu == menu.id ? 700 : 600;
-                                color: root.active-top-menu == menu.id ? #f8fafc : #cbd5e1;
-                                vertical-alignment: center;
-                            }
-                        }
-                        m_touch := TouchArea {
-                            mouse-cursor: MouseCursor.pointer;
-                            clicked => { root.toggle-top-menu(menu.id); }
-                        }
-                        TooltipBubble { text: menu.tip; is-visible: m_touch.has-hover && root.active-top-menu == ""; }
-                    }
-                }
-            }
-
-            Rectangle { width: 1px; height: 18px; y: 5px; background: #ffffff18; }
 
             // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
             Rectangle {

@@ -215,7 +215,6 @@ export component MainWindow inherits Window {
     in-out property <string> toast-message: "";
     in-out property <bool> console-maximized: false;
     in-out property <bool> song-overview-fullscreen: false;
-    in-out property <string> active-top-menu: "";
     property <bool> dock-tab-sync-guard: false;
     in-out property <bool> control-room-dim: false;
     in-out property <bool> control-room-mono: false;
@@ -749,6 +748,85 @@ export component MainWindow inherits Window {
     callback zoom-v-slider(float);
     callback zoom-v-step(bool);
 
+    // Native OS MenuBar: macOS/Windows show it in the system/window native menu bar;
+    // platforms without a native menu bar automatically fall back to Slint's MenuBarImpl above window content.
+    MenuBar {
+        Menu {
+            title: "文件";
+            MenuItem { title: "新建空白工程"; activated => { root.command-execute("file-new"); } }
+            MenuItem { title: "打开 / 恢复工程..."; activated => { root.command-execute("file-open"); } }
+            MenuItem { title: "保存工程 (Cmd/Ctrl+S)"; activated => { root.command-execute("file-save"); } }
+            MenuSeparator {}
+            MenuItem { title: "导出音频 (WAV)..."; activated => { root.command-execute("open-export-wav"); } }
+            MenuItem { title: "导出分轨 (Stems)"; activated => { root.command-execute("export-stems"); } }
+            MenuItem { title: "导出 MIDI 文件..."; activated => { root.command-execute("export-midi"); } }
+            MenuSeparator {}
+            MenuItem { title: "导入 MIDI 文件..."; activated => { root.command-execute("import-midi"); } }
+            MenuItem { title: "导入音频文件..."; activated => { root.command-execute("import-audio"); } }
+            MenuItem { title: "装载 SFZ 音色库..."; activated => { root.command-execute("load-sfz"); } }
+            MenuSeparator {}
+            MenuItem { title: "实时录音至 WAV..."; activated => { root.command-execute("record-wav"); } }
+        }
+        Menu {
+            title: "编辑";
+            MenuItem { title: "撤销上一步 (Cmd/Ctrl+Z)"; activated => { root.command-execute("undo-step"); } }
+            MenuItem { title: "重做 (Cmd/Ctrl+Shift+Z)"; activated => { root.command-execute("redo-step"); } }
+            MenuItem { title: "编曲版本时光机 (Undo Tree)..."; activated => { root.command-execute("toggle-undo-tree"); } }
+            MenuSeparator {}
+            MenuItem { title: "音符量化 (Quantize 1/16)..."; activated => { root.command-execute("open-quantize"); } }
+            MenuItem { title: "音符人性化 (Humanize)..."; activated => { root.command-execute("open-humanize"); } }
+            MenuSeparator {}
+            MenuItem { title: "AI 编曲提案抽屉 (Musical PR)..."; activated => { root.command-execute("toggle-musical-pr"); } }
+        }
+        Menu {
+            title: "轨道";
+            MenuItem { title: "+ 新建 MIDI 合成器轨"; activated => { root.command-execute("track-add-midi"); } }
+            MenuItem { title: "+ 新建音频轨"; activated => { root.command-execute("track-add-audio"); } }
+            MenuItem { title: "+ 新建辅助总线轨"; activated => { root.command-execute("track-add-aux"); } }
+            MenuSeparator {}
+            MenuItem { title: "给当前轨插入 参量均衡 EQ"; activated => { root.command-execute("insert-eq"); } }
+            MenuItem { title: "给当前轨插入 空间混响 Reverb"; activated => { root.command-execute("insert-reverb"); } }
+            MenuSeparator {}
+            MenuItem { title: "均分所有轨道高度"; activated => { root.command-execute("normalize-heights"); } }
+        }
+        Menu {
+            title: "走带";
+            MenuItem { title: "播放 / 暂停 (Space)"; activated => { root.command-execute("transport-play"); } }
+            MenuItem { title: "停止播放"; activated => { root.command-execute("transport-stop"); } }
+            MenuItem { title: "归零至 001.01.000"; activated => { root.command-execute("transport-rewind"); } }
+            MenuSeparator {}
+            MenuItem { title: "循环播放开关 (C)"; activated => { root.command-execute("transport-loop"); } }
+            MenuItem { title: "节拍器开关"; activated => { root.command-execute("transport-metronome"); } }
+        }
+        Menu {
+            title: "混音";
+            MenuItem { title: "打开底部 混音台 (X)"; activated => { root.command-execute("tab-mixer"); } }
+            MenuItem { title: "打开底部 设备机架 (DSP)"; activated => { root.command-execute("tab-devices"); } }
+            MenuSeparator {}
+            MenuItem { title: "主控总线推子归 0dB"; activated => { root.command-execute("master-reset-fader"); } }
+            MenuItem { title: "显隐 监听控制室 (Control Room)"; activated => { root.command-execute("toggle-control-room"); } }
+        }
+        Menu {
+            title: "视图";
+            MenuItem { title: "钢琴卷帘编辑器 (P)"; activated => { root.command-execute("tab-pianoroll"); } }
+            MenuItem { title: "混音台面板 (X)"; activated => { root.command-execute("tab-mixer"); } }
+            MenuItem { title: "DSP 效果器机架"; activated => { root.command-execute("tab-devices"); } }
+            MenuItem { title: "混合平铺视图 (Stacked)"; activated => { root.command-execute("tab-stacked"); } }
+            MenuSeparator {}
+            MenuItem { title: "最大化/还原底部控制台"; activated => { root.command-execute("toggle-maximize-dock"); } }
+            MenuItem { title: "显隐左侧通道检查器 (I)"; activated => { root.command-execute("toggle-inspector"); } }
+            MenuItem { title: "显隐 Clip 激发矩阵 (Tab)"; activated => { root.command-execute("toggle-clip-matrix"); } }
+        }
+        Menu {
+            title: "诊断";
+            MenuItem { title: "执行 AI 声学检查与诊断"; activated => { root.command-execute("run-acoustic-diagnosis"); } }
+            MenuItem { title: "导出工程诊断报告包 (D56)"; activated => { root.command-execute("export-diagnostics"); } }
+            MenuSeparator {}
+            MenuItem { title: "开启/关闭 悬浮功能提示 (T)"; activated => { root.command-execute("toggle-tooltips"); } }
+            MenuItem { title: "显隐 架构热区透视 (H)"; activated => { root.command-execute("toggle-hotspots"); } }
+        }
+    }
+
     // Global Key Guard FocusScope
     key-handler := FocusScope {
         key-pressed(event) => {
@@ -823,7 +901,6 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
-                root.active-top-menu = "";
                 root.show-cmd-palette = false;
                 root.show-hotspots = false;
                 return accept;
@@ -850,15 +927,6 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
-                active-top-menu: root.active-top-menu;
-
-                toggle-top-menu(m) => {
-                    root.active-top-menu = (root.active-top-menu == m) ? "" : m;
-                }
-                execute-menu-command(id) => {
-                    root.active-top-menu = "";
-                    root.command-execute(id);
-                }
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
@@ -1302,201 +1370,6 @@ export component MainWindow inherits Window {
             show-toast: root.show-floating-toast || root.toast-message != "";
         }
 
-        // Logic Pro 12 Top Menu Dropdown Overlay
-        if root.active-top-menu != "" : Rectangle {
-            z: 9000;
-            x: 0px;
-            y: 48px;
-            width: root.width;
-            height: root.height - 48px;
-            background: #00000033;
-
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.active-top-menu = ""; }
-            }
-
-            Rectangle {
-                x: Math.min(parent.width - self.width - 8px,
-                   root.active-top-menu == "file" ? 56px :
-                   (root.active-top-menu == "edit" ? 96px :
-                   (root.active-top-menu == "track" ? 136px :
-                   (root.active-top-menu == "transport" ? 176px :
-                   (root.active-top-menu == "mix" ? 216px :
-                   (root.active-top-menu == "view" ? 256px : 296px))))));
-                y: 4px;
-                width: 248px;
-                height: Math.min(parent.height - 16px, top_menu_col.preferred-height);
-                clip: true;
-                background: #0d121d;
-                border-radius: 6px;
-                border-width: 1px;
-                border-color: Theme.accent.with-alpha(0.55);
-                drop-shadow-blur: 16px;
-                drop-shadow-color: #000000a0;
-
-                top_menu_col := VerticalLayout {
-                    padding: 6px;
-                    spacing: 3px;
-
-                    if root.active-top-menu == "file" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "file-new",         label: "新建空白工程" },
-                            { id: "file-open",        label: "打开 / 恢复工程..." },
-                            { id: "file-save",        label: "保存工程 (Cmd/Ctrl+S)" },
-                            { id: "open-export-wav",  label: "导出音频 (WAV)..." },
-                            { id: "export-stems",     label: "导出分轨 (Stems)" },
-                            { id: "export-midi",      label: "导出 MIDI 文件..." },
-                            { id: "import-midi",      label: "导入 MIDI 文件..." },
-                            { id: "import-audio",     label: "导入音频文件..." },
-                            { id: "load-sfz",         label: "装载 SFZ 音色库..." },
-                            { id: "record-wav",       label: "实时录音至 WAV..." },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: f_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            f_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-
-                    if root.active-top-menu == "edit" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "undo-step",        label: "撤销上一步 (Cmd/Ctrl+Z)" },
-                            { id: "redo-step",        label: "重做 (Cmd/Ctrl+Shift+Z)" },
-                            { id: "toggle-undo-tree", label: "编曲版本时光机 (Undo Tree)..." },
-                            { id: "open-quantize",    label: "音符量化 (Quantize 1/16)..." },
-                            { id: "open-humanize",    label: "音符人性化 (Humanize)..." },
-                            { id: "toggle-musical-pr",label: "AI 编曲提案抽屉 (Musical PR)..." },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: e_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            e_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-
-                    if root.active-top-menu == "track" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "track-add-midi",    label: "+ 新建 MIDI 合成器轨" },
-                            { id: "track-add-audio",   label: "+ 新建音频轨" },
-                            { id: "track-add-aux",     label: "+ 新建辅助总线轨" },
-                            { id: "insert-eq",         label: "给当前轨插入 参量均衡 EQ" },
-                            { id: "insert-reverb",     label: "给当前轨插入 空间混响 Reverb" },
-                            { id: "normalize-heights", label: "均分所有轨道高度" },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: t_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            t_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-
-                    if root.active-top-menu == "transport" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "transport-play",      label: "播放 / 暂停 (Space)" },
-                            { id: "transport-stop",      label: "停止播放" },
-                            { id: "transport-rewind",    label: "归零至 001.01.000" },
-                            { id: "transport-loop",      label: "循环播放开关 (C)" },
-                            { id: "transport-metronome", label: "节拍器开关" },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: tr_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            tr_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-
-                    if root.active-top-menu == "mix" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "tab-mixer",           label: "打开底部 混音台 (X)" },
-                            { id: "tab-devices",         label: "打开底部 设备机架 (DSP)" },
-                            { id: "master-reset-fader",  label: "主控总线推子归 0dB" },
-                            { id: "toggle-control-room", label: "显隐 监听控制室 (Control Room)" },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: mx_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            mx_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-
-                    if root.active-top-menu == "view" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "tab-pianoroll",        label: "钢琴卷帘编辑器 (P)" },
-                            { id: "tab-mixer",            label: "混音台面板 (X)" },
-                            { id: "tab-devices",          label: "DSP 效果器机架" },
-                            { id: "tab-stacked",          label: "混合平铺视图 (Stacked)" },
-                            { id: "toggle-maximize-dock", label: "最大化/还原底部控制台" },
-                            { id: "toggle-inspector",     label: "显隐左侧通道检查器 (I)" },
-                            { id: "toggle-clip-matrix",   label: "显隐 Clip 激发矩阵 (Tab)" },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: vw_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            vw_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-
-                    if root.active-top-menu == "diag" : VerticalLayout {
-                        spacing: 3px;
-                        for entry in [
-                            { id: "run-acoustic-diagnosis", label: "执行 AI 声学检查与诊断" },
-                            { id: "export-diagnostics",     label: "导出工程诊断报告包 (D56)" },
-                            { id: "toggle-tooltips",        label: "开启/关闭 悬浮功能提示 (T)" },
-                            { id: "toggle-hotspots",        label: "显隐 架构热区透视 (H)" },
-                        ] : Rectangle {
-                            height: 24px; border-radius: 3px;
-                            background: dg_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
-                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
-                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
-                            }
-                            dg_t := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // Visible Engine Error Banner
         if root.engine-error != "" : Rectangle {
             z: 9500;
@@ -1606,41 +1479,50 @@ export component MainWindow inherits Window {
             select-proposal(id) => { root.select-ai-proposal(id); }
         }
 
-        // Global Floating Tooltip Overlay (Near Hover Target, Clamped & Auto-flip)
-        if (Theme.show-tooltips && Theme.has-hover-tip && Theme.hover-tip != "") : Rectangle {
+        // Window-coordinate anchor for floating tooltip (offsets non-native MenuBar height when visible)
+        Rectangle {
+            x: 0px;
+            y: -key-handler.absolute-position.y;
+            width: root.width;
+            height: root.height;
             z: 10000;
-            width: tip-layout.min-width;
-            height: 22px;
-            x: Math.max(8px, Math.min(root.width - self.width - 8px, Theme.hover-tip-x - self.width / 2));
-            y: (Theme.hover-tip-y + Theme.hover-tip-target-h + 34px > root.height) ?
-                Math.max(6px, Theme.hover-tip-y - self.height - 6px) :
-                (Theme.hover-tip-y + Theme.hover-tip-target-h + 6px);
-            background: #090e1cf8;
-            border-radius: 4px;
-            border-width: 1px;
-            border-color: #38bdf888;
 
-            tip-layout := HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 6px;
-                alignment: center;
+            // Global Floating Tooltip Overlay (Near Hover Target, Clamped & Auto-flip)
+            if (Theme.show-tooltips && Theme.has-hover-tip && Theme.hover-tip != "") : Rectangle {
+                z: 10000;
+                width: tip-layout.min-width;
+                height: 22px;
+                x: Math.max(8px, Math.min(root.width - self.width - 8px, Theme.hover-tip-x - self.width / 2));
+                y: (Theme.hover-tip-y + Theme.hover-tip-target-h + 34px > root.height) ?
+                    Math.max(6px, Theme.hover-tip-y - self.height - 6px) :
+                    (Theme.hover-tip-y + Theme.hover-tip-target-h + 6px);
+                background: #090e1cf8;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: #38bdf888;
 
-                Rectangle {
-                    width: 4px;
-                    height: 4px;
-                    border-radius: 2px;
-                    background: Theme.accent;
-                    y: (parent.height - self.height) / 2;
-                }
+                tip-layout := HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    alignment: center;
 
-                Text {
-                    text: Theme.hover-tip;
-                    font-family: Tokens.font-ui;
-                    font-size: Tokens.font-size-xs;
-                    font-weight: 600;
-                    color: #f8fafc;
-                    vertical-alignment: center;
+                    Rectangle {
+                        width: 4px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Theme.accent;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: Theme.hover-tip;
+                        font-family: Tokens.font-ui;
+                        font-size: Tokens.font-size-xs;
+                        font-weight: 600;
+                        color: #f8fafc;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
