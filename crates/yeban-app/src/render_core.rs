@@ -2002,6 +2002,7 @@ mod tests {
     fn range_render_cross_start_note_alone_is_silent() {
         let (project, _) = range_project(&[(960, 1_920, 64)]);
         let ranged = render_range(&project, false, 48_000, 48_000);
+        assert_eq!(ranged.len(), 48_000 * 2, "区间输出长度 = 请求帧数 × 声道");
         assert!(
             ranged.iter().all(|sample| *sample == 0.0),
             "跨起点音符不得发声（含尾巴）"
@@ -2039,6 +2040,7 @@ mod tests {
         assert!(peak(&ranged) > 0.0, "区间内音符必须发声（牙齿）");
         let (cross_only, _) = range_project(&[(960, 1_920, 64)]);
         let silenced = render_range(&cross_only, true, 48_000, 48_000);
+        assert_eq!(silenced.len(), 48_000 * 2, "区间输出长度 = 请求帧数 × 声道");
         assert!(
             silenced.iter().all(|sample| *sample == 0.0),
             "引擎路径跨起点音符不得发声"

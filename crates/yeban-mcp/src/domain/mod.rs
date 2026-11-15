@@ -2119,13 +2119,11 @@ impl Plan {
                 );
                 preview.insert("opCount".to_owned(), Value::from(draft.ops.len()));
                 // ⭐ 第五份报告 A-3：预览与真正创建读**同一份**命中回显
-                // （非空才带，与 `apply_propose` 的 `resolvedParams` 同口径）。
-                if !param_echoes.is_empty() {
-                    preview.insert(
-                        "resolvedParams".to_owned(),
-                        Value::Array(param_echoes.clone()),
-                    );
-                }
+                // （恒带、空批为空数组，与 `apply_propose` 的 `resolvedParams` 同口径）。
+                preview.insert(
+                    "resolvedParams".to_owned(),
+                    Value::Array(param_echoes.clone()),
+                );
                 // 完整 op 载荷是**可选**的（`arguments.includeOps`，缺省 false）：
                 // `[BASELINE-006]` 要求 16 小节段落生成的往返 JSON ≤ 4 KB 且
                 // "结构化字段传输"，而逐条 op 载荷正是把这条判据顶破的那一块。
@@ -6528,8 +6526,10 @@ fn apply_close(
 /// `warnings` 是 `plan` 阶段算好的那一份（`#178`）：本函数**不**重算，因此 `dryRun`
 /// 预览与真正创建提案的 `warnings[]` 是同一批读数。
 ///
-/// `param_echoes` 是 A-3 的 `setParam` 命中回显：只在非空时以 `resolvedParams`
-/// 进 `data`（其余提案工具恒空 ⇒ 响应逐字节不变）。
+/// `param_echoes` 是 A-3 的 `setParam` 命中回显：**恒**以 `resolvedParams`
+/// 进 `data`（无设备参数写入时为空数组，与本响应里 `warnings` / `unwired`
+/// 等数组字段"恒发、可为空"的口径一致；广播 schema 已声明该字段，
+/// `props_176` 的 `validate_complete` 要求声明字段在真实响应里出现）。
 // 参数面与 [`Plan::Propose`] 的字段一一对应（草稿＋响应形状），不另打包结构体。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_propose(
@@ -6640,12 +6640,11 @@ pub(crate) fn apply_propose(
         "warnings": Value::Array(warnings.to_vec()),
         "proposal": wire_projection,
     });
-    // ⭐ 第五份报告 A-3：`setParam`（`DeviceParam`）的命中回显只在非空时带
-    // （其余提案工具恒空 ⇒ 响应逐字节不变）。键名 `resolvedParams`，元素内
+    // ⭐ 第五份报告 A-3：`setParam`（`DeviceParam`）的命中回显，**恒带**
+    // （无设备参数写入时为空数组 ⇒ 声明了该字段的广播 schema 与真实响应
+    // 逐键一致，见 `apply_propose` 的文档注）。键名 `resolvedParams`，元素内
     // `resolvedParamName` 与母带回执 `data.automation[]` 同名同义。
-    if !param_echoes.is_empty()
-        && let Some(object) = data.as_object_mut()
-    {
+    if let Some(object) = data.as_object_mut() {
         object.insert(
             "resolvedParams".to_owned(),
             Value::Array(param_echoes.to_vec()),

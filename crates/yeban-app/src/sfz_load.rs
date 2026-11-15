@@ -2350,6 +2350,7 @@ mod tests {
         let mut only_cross = SfzTrackSource::new(instrument.clone(), &[notes_all[1]], 48_000.0, 2);
         only_cross.seek_to(48_000).expect("定位必须成功");
         let silenced = render(&mut only_cross, 48_000, 48_000);
+        assert_eq!(silenced.len(), 48_000 * 2, "区间输出长度 = 请求帧数 × 声道");
         assert!(
             silenced.iter().all(|sample| *sample == 0.0),
             "跨起点音符定位后不得发声"

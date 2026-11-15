@@ -1839,7 +1839,10 @@ fn write_clipping_container_project(name: &str) -> PathBuf {
 ///
 /// 它挡的回归：预警被整条删掉 / stdio 装配丢了 `warnings` 字段 / 逐源峰值没接出去。
 /// 承重断言是**削波工程**上的三件事同时成立：
-/// `clippedSamples > 0`、`warnings.len() == 1`、`suggestedTrimDb < 0`。
+/// `clippedSamples > 0`、`exportClipping` 预警恰好一条、`suggestedTrimDb < 0`。
+/// 注：夹具把母带轨也推到 +24 dB ⇒ 同时触发 A-4 的 `masterFaderAboveUnity`
+/// 预警，属预期行为，本判据只数 `exportClipping`，不断言预警总数
+/// （与 `embedded_sampler` 的同名判据同口径，f1fa54590）。
 /// ⚠ "不削波时必须是空数组"由 `tests/render_master.rs` 的
 /// `a_normal_master_reports_an_empty_warnings_array` 钉住（那条在 dispatcher 层，快而准）。
 #[test]
@@ -1879,17 +1882,28 @@ fn the_stdio_binary_warns_when_the_export_clips() {
         "### stdio 腿削波读数（逐字）: clippedSamples={} truePeakDbfs={} suggestedTrimDb={} warnings={}",
         data["clippedSamples"],
         data["truePeakDbfs"],
-        warnings.first().map_or(serde_json::Value::Null, |warning| {
-            warning["suggestedTrimDb"].clone()
-        }),
+        warnings
+            .iter()
+            .find(|warning| warning["code"] == "exportClipping")
+            .map_or(serde_json::Value::Null, |warning| {
+                warning["suggestedTrimDb"].clone()
+            }),
         serde_json::to_string(warnings).expect("warnings")
     );
     assert!(
         data["clippedSamples"].as_u64().unwrap_or(0) > 0,
         "夹具必须真的削波（否则本条没有前提）: {data}"
     );
-    assert_eq!(warnings.len(), 1, "削波工程必须恰好一条预警: {data}");
-    let warning = &warnings[0];
+    let clipping: Vec<&serde_json::Value> = warnings
+        .iter()
+        .filter(|warning| warning["code"] == "exportClipping")
+        .collect();
+    assert_eq!(
+        clipping.len(),
+        1,
+        "削波工程必须恰好一条 exportClipping 预警: {data}"
+    );
+    let warning = clipping[0];
     assert_eq!(warning["code"], "exportClipping", "{warning}");
     assert_eq!(
         warning["suggestedTrimDbFormula"], "suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)",

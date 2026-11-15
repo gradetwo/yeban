@@ -2643,11 +2643,19 @@ fn names_outside_the_insert_chain_do_not_land_but_are_never_silent() {
             expect_chain_dsp,
             "{param_name}: deviceChainDsp 的登记口径（见本判据的表）: {data}"
         );
-        // 名单是**唯一来源**：100 个拼写（`tape_asym`、hpf/dyn-eq/width 与 `#344` mono-maker 之后，＋ nightfall deq_q/deq_ratio/ms_mid_gain_db/ms_mid_freq_hz 各一对规范名与别名），且这个 IR 形状名字不在里面。
+        // 名单是**唯一来源**：长度直接读名册常量（现 110 个拼写），且这个 IR 形状名字不在里面。
+        // ⛔ 不许在这里手抄数字：名册增减拼写时字面量必然过期 —— C-1 加 5 个
+        // clipper 拼写（105 → 110）后，旧字面量 105 只在真跑到本二进制的
+        // mac/win 腿上红，Linux workspace 腿因 fail-fast 停在更早的判据上、
+        // 本二进制根本没跑到，红长期无人看见。
         let listed = data["automation"]["appliedDeviceParamNames"]
             .as_array()
             .expect("appliedDeviceParamNames");
-        assert_eq!(listed.len(), 105, "{data}");
+        assert_eq!(
+            listed.len(),
+            yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES.len(),
+            "{data}"
+        );
         assert!(
             !listed.iter().any(|value| value == param_name),
             "{param_name} 不在落点名单里"
@@ -2726,7 +2734,11 @@ fn an_automated_reverb_wet_lane_really_lands_and_is_not_silent() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 105, "{data}");
+    assert_eq!(
+        listed.len(),
+        yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES.len(),
+        "{data}"
+    );
     assert!(
         listed.iter().any(|value| value == "reverb_wet"),
         "reverb_wet 必须在名单里: {data}"
@@ -2824,7 +2836,11 @@ fn an_automated_compressor_threshold_really_lands_and_flat_is_byte_identical() {
     let listed = data["automation"]["appliedDeviceParamNames"]
         .as_array()
         .expect("appliedDeviceParamNames");
-    assert_eq!(listed.len(), 105, "{data}");
+    assert_eq!(
+        listed.len(),
+        yeban_render::automation::APPLIED_DEVICE_PARAM_NAMES.len(),
+        "{data}"
+    );
     assert!(
         listed.iter().any(|value| value == "threshold_db"),
         "threshold_db 必须在名单里: {data}"

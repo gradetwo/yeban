@@ -1488,9 +1488,10 @@ fn edit_notes() -> Value {
              后者逐字列出引擎认的全部拼写，可当场改拼写重发）；`code:\"deviceOnSilentTrack\"` = 设备装到了\
              一条没有任何可发声内容的源轨上（主总线与有可发声上游的总线轨不报）（带 `trackId` / `track` / `placements` / `notes` 与逐字 `hint`）。\
              两者都可能为空数组。\
-             ⭐ 第五份报告 A-3：批里含 `setParam`（`DeviceParam` 泳道）时多出 \
-             `resolvedParams`（⛔ 不进 `required`：没有设备参数写入时不带该键）—— \
-             逐条回显编译期命中的 `trackId` / `slotIndex` / `paramIndex` / \
+             ⭐ 第五份报告 A-3：`resolvedParams` 逐条回显批里 `setParam`（`DeviceParam` 泳道）\
+             的命中（⛔ 不进 `required`，但**恒带**：没有设备参数写入时为空数组，\
+             与 `warnings` 等数组字段同口径）—— \
+             元素含编译期命中的 `trackId` / `slotIndex` / `paramIndex` / \
              `resolvedParamName`（与 `yeban_edit_automation` 回执同名同义，\
              按名写对与写错从此可辨）。",
         ),

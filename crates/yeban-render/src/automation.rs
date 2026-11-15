@@ -39,8 +39,8 @@
 //!
 //! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
 //!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**插入链能改的
-//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：105 个拼写 = 59 个字段，含别名；
-//!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5）；**卷积
+//!   标量字段**（[`APPLIED_DEVICE_PARAM_NAMES`]：110 个拼写 = 64 个字段，含别名；
+//!   通道条 28（14 增益/EQ/滤波 ＋ 8 压缩 ＋ 1 低切 ＋ 3 动态 EQ ＋ 1 宽度 ＋ 1 mono-maker）＋ 磁带饱和 5 ＋ Freeverb 4 ＋ 卷积标量 4 ＋ 延迟 9 ＋ 限制器 5 ＋ 软削波 5）；**卷积
 //!   IR 形状**（`conv_ir_decay*` / `conv_ir_seed` / `conv_ir_stereo`）如实登记（⛔ 不冒充已支持）；
 //!   ⭐ `#304` 起**压缩 8 字段**也在这张表里（`compressor_enabled` + 7 个标量），
 //!   静态投影与自动化因此读**同一张**名字表；
