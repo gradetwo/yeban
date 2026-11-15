@@ -448,3 +448,118 @@ fn simulated_human_ui_composition_mixing_and_wav_export_without_mcp() {
         "导出母带必须有明显音能且不削波: peak={peak}"
     );
 }
+
+#[test]
+fn simulated_ui_places_audio_clip_and_toggles_automation() {
+    use slint::Model;
+    use yeban_model::{EntityId, TrackKind};
+
+    let project = yeban_model::samples::default_project();
+    let view = yeban_app::bridge::ViewState::from_project(&project).expect("投影");
+    let scene = yeban_app::scene::DemoScene::from_view(&view);
+    let undo = std::rc::Rc::new(yeban_app::undo::UndoPort::new(
+        yeban_app::undo::UndoSession::open(
+            "<place-audio-sim>",
+            "yeban-app",
+            project.clone(),
+            1_700_000_000_000,
+        )
+        .expect("会话"),
+    ));
+    let view_cell = std::rc::Rc::new(std::cell::RefCell::new(view.clone()));
+    let engine = std::rc::Rc::new(std::cell::RefCell::new(
+        yeban_app::engine_host::EngineHost::new(),
+    ));
+
+    let live = yeban_ui_test_port::render::LivePort::new(
+        yeban_ui_test_port::Size::new(1440, 900),
+        yeban_ui_test_port::port::Permission::Interactive,
+        None,
+        || yeban_app::host::build_main_window(&view, &scene),
+    )
+    .expect("活窗口");
+    let ui = live.ui();
+    yeban_app::host::wire_track_strip(&ui, &undo);
+    yeban_app::host::wire_track_select(&ui, &undo);
+    yeban_app::host::wire_aether_actions(
+        &ui,
+        std::rc::Rc::clone(&undo),
+        std::rc::Rc::clone(&engine),
+        std::rc::Rc::clone(&view_cell),
+    );
+
+    // 1. 切换自动化泳道显示命令 (`toggle-automation`) 应真实切换 UI 状态。
+    let initial_auto = ui.get_automation_visible();
+    ui.invoke_command_execute("toggle-automation".into());
+    assert_eq!(ui.get_automation_visible(), !initial_auto);
+
+    // 2. 新建 Audio 轨并选中。
+    let tracks_before = undo.project().tracks.len();
+    ui.invoke_command_execute("track-add-audio".into());
+    assert_eq!(undo.project().tracks.len(), tracks_before + 1);
+    let audio_track_id = undo
+        .project()
+        .tracks
+        .values()
+        .find(|t| t.kind == TrackKind::Audio)
+        .expect("新建音频轨必须存在")
+        .id;
+    ui.set_selected_track_id(audio_track_id.to_canonical_string().into());
+
+    // 3. 用真实 WAV 文件经 `import_audio_file` + `insert_asset` 落入素材池与 CAS 资产库。
+    let dir = std::env::temp_dir().join(format!(
+        "yeban_place_audio_sim_{}_{}",
+        std::process::id(),
+        EntityId::new().to_canonical_string()
+    ));
+    std::fs::create_dir_all(&dir).expect("创建临时目录");
+    let wav_path = dir.join("shanghai_rain_cue.wav");
+    let sr = 48_000_u32;
+    let frames = sr * 2; // 2.0 秒 = 120 BPM 下 4 拍 = 3840 ticks
+    let samples: Vec<f32> = (0..frames)
+        .map(|i| 0.25 * (2.0 * std::f32::consts::PI * 220.0 * (i as f32) / (sr as f32)).sin())
+        .collect();
+    let fmt = yeban_render::rf64::PcmFormat {
+        channels: 1,
+        sample_rate: sr,
+        bits_per_sample: 16,
+        is_float: false,
+        channel_mask: None,
+    };
+    let pcm = yeban_render::dither::PcmBuffer::Int16(
+        samples.iter().map(|&x| (x * 32767.0) as i16).collect(),
+    );
+    yeban_render::wav::write_plain_wav(&wav_path, &fmt, &pcm).expect("写测试 WAV");
+    let current_proj = undo.project();
+    let report = yeban_app::import_audio::import_audio_file(
+        &undo,
+        &wav_path,
+        &current_proj,
+        &yeban_app::import_audio::AudioImportOptions::default(),
+        1_700_000_000_100,
+    )
+    .expect("导入音频进素材池");
+    assert!(report.created);
+    assert!(undo.insert_asset(report.asset.clone(), report.bytes.clone()));
+
+    // 4. 在 tick 960 处通过 UI 命令 `"place-audio-clip"` 摆放到当前 Audio 轨。
+    ui.set_playhead_ticks(960);
+    let blocks_before = ui.get_timeline_blocks().row_count();
+    ui.invoke_command_execute("place-audio-clip".into());
+
+    let proj_after = undo.project();
+    let audio_track = proj_after.tracks.get(&audio_track_id).unwrap();
+    assert_eq!(audio_track.clips.len(), 1, "Audio 轨应新增 1 条音频摆放");
+    let placement = audio_track.clips.values().next().unwrap();
+    assert_eq!(placement.start_tick, 960, "摆放起点应跟随播放头 tick");
+    assert!(
+        placement.duration_ticks >= 3840,
+        "音频摆放时值应按真实 WAV 帧数推算 (>= 3840 ticks), got {}",
+        placement.duration_ticks
+    );
+    assert!(
+        ui.get_timeline_blocks().row_count() > blocks_before,
+        "时间轴投影 timeline-blocks 应出现刚摆放的音频块"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

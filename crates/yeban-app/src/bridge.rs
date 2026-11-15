@@ -2611,6 +2611,77 @@ pub fn clip_create_ops_on(
     ])
 }
 
+/// 解析摆放音频片段的目标轨：显式选中了某轨时尊重用户选择（非 `Audio` 轨由上游拒绝，
+/// 不默默改投到其它轨）；未选中任何轨时优先寻找第一条 `Audio` 轨。
+#[must_use]
+pub fn target_audio_track<'a>(
+    project: &'a YebanProjectV1,
+    selected_track_id: Option<&str>,
+) -> Option<&'a TrackV3> {
+    if let Some(id_str) = selected_track_id.filter(|s| !s.is_empty())
+        && let Ok(id) = id_str.parse::<EntityId>()
+        && let Some(track) = project.tracks.get(&id)
+        && track.id != project.master_bus_track_id
+    {
+        return Some(track);
+    }
+    project
+        .tracks
+        .values()
+        .find(|t| t.kind == TrackKind::Audio)
+        .or_else(|| device_rack_track(project))
+}
+
+/// 把素材池里最近一条音频片段摆放到目标 `Audio` 轨（`place-audio-clip` 命令计划）。
+///
+/// # Errors
+///
+/// 目标轨不存在、不是 `TrackKind::Audio`、或素材池中尚无音频片段时返回人读原因。
+pub fn audio_clip_placement_ops_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+    start_tick: u64,
+    duration_ticks: Option<u64>,
+) -> Result<(Vec<Op>, String, String), &'static str> {
+    let Some(track) = track else {
+        return Err("没有可用的目标音轨");
+    };
+    if track.kind != TrackKind::Audio {
+        return Err("仅 Audio 轨可摆放音频片段，请先选中一条音频轨");
+    }
+    let Some((clip_id, clip_entry)) = project
+        .clip_pool
+        .iter()
+        .rev()
+        .find(|(_, entry)| matches!(entry.content, ClipContent::Audio { .. }))
+    else {
+        return Err("素材池中尚无音频片段，请先导入音频文件");
+    };
+    let duration_ticks = duration_ticks.filter(|&d| d > 0).unwrap_or_else(|| {
+        bar_length_ticks(project.time_signature)
+            .unwrap_or(yeban_model::ids::PPQ * 4)
+            .saturating_mul(CLIP_CREATE_BARS)
+            .max(1)
+    });
+    let placement = ClipPlacement {
+        id: EntityId::new(),
+        clip_id: *clip_id,
+        start_tick,
+        duration_ticks,
+        loop_config: LoopConfig::default(),
+        muted: false,
+        offset_samples: None,
+    };
+    Ok((
+        vec![Op::AddClipPlacement {
+            track_id: track.id,
+            placement,
+        }],
+        clip_entry.name.clone(),
+        track.name.clone(),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // ⭐ 任务单 `#164`：给展示轨**一键装乐器**（`TrackV3::sampler` ⇒ `Op::SetTrackSampler`）
 // ---------------------------------------------------------------------------
@@ -9422,5 +9493,78 @@ mod tests {
         assert_eq!(bus_view.bus_name, "Master");
         assert_eq!(lead_view.bus_name, "Strings Bus");
         assert_eq!(unrouted_view.bus_name, "Unrouted");
+    }
+
+    #[test]
+    fn audio_clip_placement_targets_audio_track_and_rejects_midi() {
+        let mut project = default_project();
+        let midi_track_id = EntityId::new();
+        project
+            .insert_track(TrackV3 {
+                id: midi_track_id,
+                name: "Erhu".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            })
+            .expect("insert midi track");
+        let audio_track_id = EntityId::new();
+        project
+            .insert_track(TrackV3 {
+                id: audio_track_id,
+                name: "SFX Bed".to_owned(),
+                kind: TrackKind::Audio,
+                ..TrackV3::default()
+            })
+            .expect("insert audio track");
+        let midi_str = midi_track_id.to_canonical_string();
+        let audio_str = audio_track_id.to_canonical_string();
+
+        // No audio clip in pool yet => crisp rejection.
+        let target = target_audio_track(&project, Some(&audio_str));
+        assert_eq!(
+            audio_clip_placement_ops_on(&project, target, 0, None).unwrap_err(),
+            "素材池中尚无音频片段，请先导入音频文件"
+        );
+
+        // Add audio clip to pool.
+        let clip_id = EntityId::new();
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::ClipPoolEntry {
+                id: clip_id,
+                name: "rain_bed.wav".to_owned(),
+                content: ClipContent::Audio {
+                    asset: yeban_model::AssetHash::of_bytes(b"rain"),
+                    gain_db: 0.0,
+                },
+            },
+        );
+
+        // Selecting a MIDI track rejects instead of silently dropping onto another track.
+        let wrong_target = target_audio_track(&project, Some(&midi_str));
+        assert_eq!(
+            audio_clip_placement_ops_on(&project, wrong_target, 960, Some(3840)).unwrap_err(),
+            "仅 Audio 轨可摆放音频片段，请先选中一条音频轨"
+        );
+
+        // No selection picks first Audio track; explicit Audio selection uses selected track.
+        let fallback_target = target_audio_track(&project, None);
+        let (ops, clip_name, track_name) =
+            audio_clip_placement_ops_on(&project, fallback_target, 1920, Some(7680)).unwrap();
+        assert_eq!(clip_name, "rain_bed.wav");
+        assert_eq!(track_name, "SFX Bed");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            Op::AddClipPlacement {
+                track_id,
+                placement,
+            } => {
+                assert_eq!(*track_id, audio_track_id);
+                assert_eq!(placement.clip_id, clip_id);
+                assert_eq!(placement.start_tick, 1920);
+                assert_eq!(placement.duration_ticks, 7680);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
     }
 }

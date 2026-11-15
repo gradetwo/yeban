@@ -783,6 +783,7 @@ export component MainWindow inherits Window {
             title: "轨道";
             MenuItem { title: "+ 新建 MIDI 合成器轨"; activated => { root.command-execute("track-add-midi"); } }
             MenuItem { title: "+ 新建音频轨"; activated => { root.command-execute("track-add-audio"); } }
+            MenuItem { title: "将最新导入音频摆放到当前音频轨"; activated => { root.command-execute("place-audio-clip"); } }
             MenuItem { title: "+ 新建辅助总线轨"; activated => { root.command-execute("track-add-aux"); } }
             MenuItem { title: "删除当前选中轨道"; activated => { root.command-execute("track-delete"); } }
             MenuSeparator {}
@@ -820,6 +821,7 @@ export component MainWindow inherits Window {
             MenuItem { title: "显隐左侧通道检查器 (I)"; activated => { root.command-execute("toggle-inspector"); } }
             MenuItem { title: "显隐 Clip 激发矩阵 (Tab)"; activated => { root.command-execute("toggle-clip-matrix"); } }
             MenuItem { title: "显示 / 隐藏和弦轨"; activated => { root.command-execute("toggle-chord-lane"); } }
+            MenuItem { title: "显示 / 隐藏自动化泳道 (A)"; activated => { root.command-execute("toggle-automation"); } }
         }
         Menu {
             title: "诊断";

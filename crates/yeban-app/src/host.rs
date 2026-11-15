@@ -16968,6 +16968,58 @@ fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     ui.set_toast_message(s);
 }
 
+fn place_latest_audio_clip(ui: &MainWindow, port: &UndoPort) {
+    let plan = {
+        let project = port.project();
+        let selected = selected_track_id(ui);
+        let target = crate::bridge::target_audio_track(&project, selected.as_deref());
+        let start_tick = playhead_tick(ui);
+        let latest_asset =
+            project
+                .clip_pool
+                .iter()
+                .rev()
+                .find_map(|(_, entry)| match &entry.content {
+                    yeban_model::ClipContent::Audio { asset, .. } => Some(asset.clone()),
+                    _ => None,
+                });
+        let duration_ticks = latest_asset
+            .and_then(|hash| port.asset_bytes(&hash))
+            .and_then(|bytes| {
+                yeban_render::wav::read_plain_wav_mono_f32_from_bytes(&bytes, "pool-audio").ok()
+            })
+            .and_then(|(samples, sample_rate, _)| {
+                yeban_model::time_math::frames_to_ticks_ceil(
+                    samples.len() as u64,
+                    yeban_model::ids::PPQ,
+                    project.bpm,
+                    sample_rate,
+                )
+            });
+        crate::bridge::audio_clip_placement_ops_on(&project, target, start_tick, duration_ticks)
+    };
+    match plan {
+        Ok((ops, clip_name, track_name)) => {
+            if let Err(err) = port.commit_ops(
+                now_ms(),
+                &format!("摆放音频片段「{clip_name}」到「{track_name}」"),
+                ops,
+            ) {
+                update_toast(ui, format!("[音频] 摆放失败: {err}"));
+                return;
+            }
+            refresh_undo_window(ui, port, true);
+            update_toast(
+                ui,
+                format!("[音频] 已将「{clip_name}」摆放到轨道「{track_name}」"),
+            );
+        }
+        Err(reason) => {
+            update_toast(ui, format!("[音频] 无法摆放: {reason}"));
+        }
+    }
+}
+
 /// 重构 UI 传统钢琴卷帘的 16 行音高名称(高音在上)。
 pub const PITCH_NAMES: [&str; 16] = [
     "C5", "B4", "Bb4", "A4", "Ab4", "G4", "F#4", "F4", "E4", "Eb4", "D4", "Db4", "C4", "B3", "Bb3",
@@ -18516,6 +18568,18 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
             ui.invoke_zone_toggle("clip-matrix".into());
         }
         "toggle-maximize-dock" => ui.invoke_console_maximize_toggle(),
+        "toggle-automation" => {
+            let next = !ui.get_automation_visible();
+            ui.set_automation_visible(next);
+            update_toast(
+                ui,
+                if next {
+                    "[视图] 已展开自动化泳道"
+                } else {
+                    "[视图] 已收起自动化泳道"
+                },
+            );
+        }
         "tab-pianoroll" => {
             ui.set_show_lower_dock(true);
             ui.invoke_apply_dock_tab("pianoroll".into());
@@ -19322,9 +19386,13 @@ pub fn wire_aether_actions(
     // ---- 命令面板 / 顶部菜单栏: 把命令 ID 分派到已接线的真实回调 ----
     ui.on_command_execute({
         let w = weak.clone();
+        let port = Rc::clone(&port);
         move |cmd| {
             if let Some(ui) = w.upgrade() {
-                dispatch_aether_command(&ui, cmd.as_str());
+                match cmd.as_str() {
+                    "place-audio-clip" => place_latest_audio_clip(&ui, &port),
+                    other => dispatch_aether_command(&ui, other),
+                }
             }
         }
     });
