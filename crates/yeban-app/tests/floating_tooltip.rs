@@ -25,13 +25,25 @@ fn build_rig() -> LivePort<yeban_app::ui::MainWindow> {
     .expect("LivePort 必须成功装配")
 }
 
+fn find_button_x(port: &mut LivePort<yeban_app::ui::MainWindow>, expected_tip: &str) -> f64 {
+    let mut x = 40.0_f64;
+    while x <= 600.0 {
+        port.dispatch_pointer_move(x, 18.0)
+            .expect("指针移动必须送达");
+        if port.ui().global::<Theme<'_>>().get_hover_tip().as_str() == expected_tip {
+            return x;
+        }
+        x += 8.0;
+    }
+    panic!("未在顶部栏找到目标提示按钮: {expected_tip}");
+}
+
 #[test]
 fn hover_shows_tooltip_with_exact_button_coordinates() {
     let mut port = build_rig();
 
-    // 移动指针至左侧检查器按钮 (x=70, y=18)
-    port.dispatch_pointer_move(70.0, 18.0)
-        .expect("指针移动必须送达");
+    // 移动指针至左侧检查器按钮
+    let insp_x = find_button_x(&mut port, "检查器与音色库 [I]");
 
     let theme = port.ui().global::<Theme<'_>>();
     assert_eq!(
@@ -44,7 +56,7 @@ fn hover_shows_tooltip_with_exact_button_coordinates() {
         "悬停时 has-hover-tip 必须为 true"
     );
     assert!(
-        theme.get_hover_tip_x() > 50.0 && theme.get_hover_tip_x() < 100.0,
+        (theme.get_hover_tip_x() - insp_x as f32).abs() <= 20.0,
         "提示横坐标必须位于目标按钮中央附近"
     );
     assert_eq!(
@@ -64,8 +76,7 @@ fn toggle_tooltips_while_hovering_is_reactive() {
     let mut port = build_rig();
 
     // 1. 悬停按钮
-    port.dispatch_pointer_move(70.0, 18.0)
-        .expect("指针移动必须送达");
+    let _insp_x = find_button_x(&mut port, "检查器与音色库 [I]");
     let theme = port.ui().global::<Theme<'_>>();
     assert_eq!(theme.get_hover_tip(), "检查器与音色库 [I]");
     assert!(theme.get_show_tooltips());
@@ -93,8 +104,7 @@ fn cursor_exit_clears_hover_state() {
     let mut port = build_rig();
 
     // 悬停
-    port.dispatch_pointer_move(70.0, 18.0)
-        .expect("指针移动必须送达");
+    let _insp_x = find_button_x(&mut port, "检查器与音色库 [I]");
     assert_eq!(
         port.ui().global::<Theme<'_>>().get_hover_tip(),
         "检查器与音色库 [I]"
@@ -115,15 +125,18 @@ fn cursor_exit_clears_hover_state() {
 fn direct_switch_between_buttons_updates_coordinates() {
     let mut port = build_rig();
 
-    // 悬停按钮 1
-    port.dispatch_pointer_move(70.0, 18.0)
+    let clip_x = find_button_x(&mut port, "Clip 激发矩阵 [Tab]");
+    port.dispatch_pointer_move(500.0, 200.0)
         .expect("指针移动必须送达");
+
+    // 悬停按钮 1
+    let _insp_x = find_button_x(&mut port, "检查器与音色库 [I]");
     let theme = port.ui().global::<Theme<'_>>();
     assert_eq!(theme.get_hover_tip(), "检查器与音色库 [I]");
     let tip1_x = theme.get_hover_tip_x();
 
     // 直接滑动至相邻按钮 2
-    port.dispatch_pointer_move(110.0, 18.0)
+    port.dispatch_pointer_move(clip_x, 18.0)
         .expect("指针移动必须送达");
     let theme = port.ui().global::<Theme<'_>>();
     assert_eq!(theme.get_hover_tip(), "Clip 激发矩阵 [Tab]");

@@ -10,6 +10,9 @@ import { UnifiedLowerDock } from "lower_dock.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { StatusBar } from "status_bar.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
+import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
+import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
+import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
 export component MainWindow inherits Window {
@@ -211,8 +214,39 @@ export component MainWindow inherits Window {
     in-out property <string> toast-message: "";
     in-out property <bool> console-maximized: false;
     in-out property <bool> song-overview-fullscreen: false;
+    in-out property <string> active-top-menu: "";
+    property <bool> dock-tab-sync-guard: false;
+    in-out property <bool> control-room-dim: false;
+    in-out property <bool> control-room-mono: false;
+    in-out property <bool> control-room-side: false;
+    in-out property <float> control-room-monitor: 0.78;
+
+    public function apply-dock-tab(t: string) {
+        Theme.active-dock-tab = t;
+        root.dock-tab-sync-guard = true;
+        root.dock-tab-selected(t);
+        if (t == "pianoroll") { root.console-tab = 0; }
+        else if (t == "mixer") { root.console-tab = 1; }
+        else if (t == "devices") { root.console-tab = 2; }
+        else if (t == "stacked") { root.console-tab = 3; }
+        root.dock-tab-sync-guard = false;
+    }
+
+    changed console-tab => {
+        if (!root.dock-tab-sync-guard) {
+            if (root.console-tab == 0) { Theme.active-dock-tab = "pianoroll"; }
+            else if (root.console-tab == 1) { Theme.active-dock-tab = "mixer"; }
+            else if (root.console-tab == 2) { Theme.active-dock-tab = "devices"; }
+            else if (root.console-tab == 3) { Theme.active-dock-tab = "stacked"; }
+        }
+    }
 
     // Callbacks to Rust Host
+    callback track-pan-changed(int, float);
+    callback track-instrument-change(int, string);
+    callback control-room-toggle-dim();
+    callback control-room-toggle-mono();
+    callback control-room-toggle-side();
     callback hot-swap-buffer-size(int);
     callback trigger-shortcut(string, KeyEvent);
     callback transport-toggle-play();
@@ -743,14 +777,12 @@ export component MainWindow inherits Window {
             }
             if (event.text == "x" || event.text == "X") {
                 root.show-lower-dock = true;
-                Theme.active-dock-tab = "mixer";
-                root.dock-tab-selected("mixer");
+                root.apply-dock-tab("mixer");
                 return accept;
             }
             if (event.text == "p" || event.text == "P") {
                 root.show-lower-dock = true;
-                Theme.active-dock-tab = "pianoroll";
-                root.dock-tab-selected("pianoroll");
+                root.apply-dock-tab("pianoroll");
                 return accept;
             }
             if (event.text == "i" || event.text == "I") {
@@ -779,8 +811,7 @@ export component MainWindow inherits Window {
                     root.console-maximize-toggle();
                 } else {
                     root.show-lower-dock = true;
-                    Theme.active-dock-tab = "mixer";
-                    root.dock-tab-selected("mixer");
+                    root.apply-dock-tab("mixer");
                     if (!root.console-maximized) {
                         root.console-maximize-toggle();
                     }
@@ -792,8 +823,7 @@ export component MainWindow inherits Window {
                     root.console-maximize-toggle();
                 } else {
                     root.show-lower-dock = true;
-                    Theme.active-dock-tab = "pianoroll";
-                    root.dock-tab-selected("pianoroll");
+                    root.apply-dock-tab("pianoroll");
                     if (!root.console-maximized) {
                         root.console-maximize-toggle();
                     }
@@ -827,6 +857,15 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
+                active-top-menu: root.active-top-menu;
+
+                toggle-top-menu(m) => {
+                    root.active-top-menu = (root.active-top-menu == m) ? "" : m;
+                }
+                execute-menu-command(id) => {
+                    root.active-top-menu = "";
+                    root.command-execute(id);
+                }
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
@@ -922,6 +961,11 @@ export component MainWindow inherits Window {
                     fader-changed(vol) => { root.track-volume-changed(root.selected-track-index, vol); }
                     bus-fader-changed(vol) => { root.track-volume-changed(0, vol); }
                     load-item(name) => { root.browser-item-load(name); }
+                    search-query <=> root.sidebar-search;
+                    search-changed(q) => { root.sidebar-search-changed(q); }
+                    track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
+                    track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
+                    execute-action(id) => { root.command-execute(id); }
                     focus-devices() => {
                         root.show-lower-dock = true;
                         Theme.active-dock-tab = "devices";
@@ -962,6 +1006,7 @@ export component MainWindow inherits Window {
                         root.selected-track-index = t-id;
                         root.track-selected(t-id);
                     }
+                    execute-action(id) => { root.command-execute(id); }
                 }
 
                 // Zone B-to-C Resizing Splitter Bar
@@ -1023,6 +1068,10 @@ export component MainWindow inherits Window {
                     zoom-h-step(zoom-in) => { root.zoom-h-step(zoom-in); }
                     zoom-v-step(zoom-in) => { root.zoom-v-step(zoom-in); }
                     clip-select(clip-ulid) => { root.clip-select(clip-ulid); }
+                    track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
+                    track-volume-change(t-id, v) => { root.track-volume-changed(t-id, v); }
+                    track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
+                    execute-action(id) => { root.command-execute(id); }
                 }
 
                 // Zone C-to-D Resizing Splitter Bar
@@ -1055,8 +1104,15 @@ export component MainWindow inherits Window {
                     lufs-peak: root.lufs-peak;
                     master-meter-l: root.master-meter-l;
                     master-meter-r: root.master-meter-r;
+                    is-dim <=> root.control-room-dim;
+                    is-mono <=> root.control-room-mono;
+                    is-side <=> root.control-room-side;
 
                     switch-monitor(name) => { root.monitor-switch(name); }
+                    toggle-dim() => { root.control-room-toggle-dim(); }
+                    toggle-mono() => { root.control-room-toggle-mono(); }
+                    toggle-side() => { root.control-room-toggle-side(); }
+                    execute-action(id) => { root.command-execute(id); }
                 }
             }
 
@@ -1117,10 +1173,16 @@ export component MainWindow inherits Window {
                 note-drag-preview-dx: root.note-drag-preview-dx;
                 note-drag-preview-dy: root.note-drag-preview-dy;
                 note-drag-preview-velocity: root.note-drag-preview-velocity;
+                device-names: root.device-names;
+                device-ids: root.device-ids;
+                device-bypassed: root.device-bypassed;
+                device-recognised: root.device-recognised;
+                device-track-label: root.device-track-label;
 
+                device-bypass-toggle(id) => { root.device-bypass-toggle(id); }
+                device-remove(id) => { root.device-remove(id); }
                 select-tab(t) => {
-                    Theme.active-dock-tab = t;
-                    root.dock-tab-selected(t);
+                    root.apply-dock-tab(t);
                 }
                 select-track(t-id) => {
                     root.selected-track-index = t-id;
@@ -1129,6 +1191,9 @@ export component MainWindow inherits Window {
                 toggle-track-mute(t-id) => { root.track-toggle-mute(t-id); }
                 toggle-track-solo(t-id) => { root.track-toggle-solo(t-id); }
                 track-volume-change(t-id, vol) => { root.track-volume-changed(t-id, vol); }
+                track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
+                track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
+                execute-action(id) => { root.command-execute(id); }
                 set-wt-pos(pos) => { root.device-param-changed("wavetable", "wt_pos", pos); }
                 set-wt-cutoff(cut) => { root.device-param-changed("wavetable", "cutoff", cut); }
                 toggle-piano-step(r, s) => { root.piano-step-toggle(r, s); }
@@ -1151,6 +1216,14 @@ export component MainWindow inherits Window {
                 humanize-requested => { root.open-humanize(); }
                 quantize-requested => { root.open-quantize(); }
             }
+
+            // 4. BOTTOM STATUS BAR (Real host-driven selection, save receipt, audio config)
+            StatusBar {
+                selection: root.status-selection;
+                device: root.status-device;
+                save-status: root.save-status;
+                save-succeeded: root.save-succeeded;
+            }
         }
 
         // Modals & Overlays
@@ -1172,12 +1245,13 @@ export component MainWindow inherits Window {
                 else if (id == "toggle-tooltips") {
                     Theme.show-tooltips = !Theme.show-tooltips;
                 }
-                else if (id == "tab-stacked") { root.show-lower-dock = true; Theme.active-dock-tab = "stacked"; }
-                else if (id == "tab-devices") { root.show-lower-dock = true; Theme.active-dock-tab = "devices"; }
-                else if (id == "tab-mixer") { root.show-lower-dock = true; Theme.active-dock-tab = "mixer"; }
-                else if (id == "tab-pianoroll") { root.show-lower-dock = true; Theme.active-dock-tab = "pianoroll"; }
+                else if (id == "tab-stacked") { root.show-lower-dock = true; root.apply-dock-tab("stacked"); }
+                else if (id == "tab-devices") { root.show-lower-dock = true; root.apply-dock-tab("devices"); }
+                else if (id == "tab-mixer") { root.show-lower-dock = true; root.apply-dock-tab("mixer"); }
+                else if (id == "tab-pianoroll") { root.show-lower-dock = true; root.apply-dock-tab("pianoroll"); }
+                else if (id == "toggle-undo-tree") { root.toggle-undo-tree(); }
                 else if (id == "action-add-track") { root.track-add-requested(); }
-                root.command-execute(id);
+                else { root.command-execute(id); }
             }
         }
 
@@ -1188,7 +1262,306 @@ export component MainWindow inherits Window {
 
         ToastBanner {
             toast-text: root.toast-message;
-            show-toast: root.show-floating-toast;
+            show-toast: root.show-floating-toast || root.toast-message != "";
+        }
+
+        // Logic Pro 12 Top Menu Dropdown Overlay
+        if root.active-top-menu != "" : Rectangle {
+            z: 9000;
+            x: 0px;
+            y: 48px;
+            width: root.width;
+            height: root.height - 48px;
+            background: #00000033;
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.active-top-menu = ""; }
+            }
+
+            Rectangle {
+                x: root.active-top-menu == "file" ? 56px :
+                   (root.active-top-menu == "edit" ? 96px :
+                   (root.active-top-menu == "track" ? 136px :
+                   (root.active-top-menu == "transport" ? 176px :
+                   (root.active-top-menu == "mix" ? 216px :
+                   (root.active-top-menu == "view" ? 256px : 296px)))));
+                y: 4px;
+                width: 248px;
+                background: #0d121d;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Theme.accent.with-alpha(0.55);
+
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 3px;
+
+                    if root.active-top-menu == "file" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "file-new",         label: "新建空白工程" },
+                            { id: "file-open",        label: "打开 / 恢复工程..." },
+                            { id: "file-save",        label: "保存工程 (Cmd/Ctrl+S)" },
+                            { id: "open-export-wav",  label: "导出音频 (WAV)..." },
+                            { id: "export-stems",     label: "导出分轨 (Stems)" },
+                            { id: "export-midi",      label: "导出 MIDI 文件..." },
+                            { id: "import-midi",      label: "导入 MIDI 文件..." },
+                            { id: "import-audio",     label: "导入音频文件..." },
+                            { id: "load-sfz",         label: "装载 SFZ 音色库..." },
+                            { id: "record-wav",       label: "实时录音至 WAV..." },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: f_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            f_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+
+                    if root.active-top-menu == "edit" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "undo-step",        label: "撤销上一步 (Cmd/Ctrl+Z)" },
+                            { id: "redo-step",        label: "重做 (Cmd/Ctrl+Shift+Z)" },
+                            { id: "toggle-undo-tree", label: "编曲版本时光机 (Undo Tree)..." },
+                            { id: "open-quantize",    label: "音符量化 (Quantize 1/16)..." },
+                            { id: "open-humanize",    label: "音符人性化 (Humanize)..." },
+                            { id: "toggle-musical-pr",label: "AI 编曲提案抽屉 (Musical PR)..." },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: e_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            e_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+
+                    if root.active-top-menu == "track" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "track-add-midi",    label: "+ 新建 MIDI 合成器轨" },
+                            { id: "track-add-audio",   label: "+ 新建音频轨" },
+                            { id: "track-add-aux",     label: "+ 新建辅助总线轨" },
+                            { id: "insert-eq",         label: "给当前轨插入 参量均衡 EQ" },
+                            { id: "insert-reverb",     label: "给当前轨插入 空间混响 Reverb" },
+                            { id: "normalize-heights", label: "均分所有轨道高度" },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: t_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            t_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+
+                    if root.active-top-menu == "transport" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "transport-play",      label: "播放 / 暂停 (Space)" },
+                            { id: "transport-stop",      label: "停止播放" },
+                            { id: "transport-rewind",    label: "归零至 001.01.000" },
+                            { id: "transport-loop",      label: "循环播放开关 (C)" },
+                            { id: "transport-metronome", label: "节拍器开关" },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: tr_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            tr_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+
+                    if root.active-top-menu == "mix" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "tab-mixer",           label: "打开底部 混音台 (X)" },
+                            { id: "tab-devices",         label: "打开底部 设备机架 (DSP)" },
+                            { id: "master-reset-fader",  label: "主控总线推子归 0dB" },
+                            { id: "toggle-control-room", label: "显隐 监听控制室 (Control Room)" },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: mx_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            mx_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+
+                    if root.active-top-menu == "view" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "tab-pianoroll",        label: "钢琴卷帘编辑器 (P)" },
+                            { id: "tab-mixer",            label: "混音台面板 (X)" },
+                            { id: "tab-devices",          label: "DSP 效果器机架" },
+                            { id: "tab-stacked",          label: "混合平铺视图 (Stacked)" },
+                            { id: "toggle-maximize-dock", label: "最大化/还原底部控制台" },
+                            { id: "toggle-inspector",     label: "显隐左侧通道检查器 (I)" },
+                            { id: "toggle-clip-matrix",   label: "显隐 Clip 激发矩阵 (Tab)" },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: vw_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            vw_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+
+                    if root.active-top-menu == "diag" : VerticalLayout {
+                        spacing: 3px;
+                        for entry in [
+                            { id: "run-acoustic-diagnosis", label: "执行 AI 声学检查与诊断" },
+                            { id: "export-diagnostics",     label: "导出工程诊断报告包 (D56)" },
+                            { id: "toggle-tooltips",        label: "开启/关闭 悬浮功能提示 (T)" },
+                            { id: "toggle-hotspots",        label: "显隐 架构热区透视 (H)" },
+                        ] : Rectangle {
+                            height: 24px; border-radius: 3px;
+                            background: dg_t.has-hover ? Theme.accent.with-alpha(0.24) : transparent;
+                            HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                Text { text: entry.label; font-family: Tokens.font-ui; font-size: 11px; color: #f1f5f9; vertical-alignment: center; }
+                            }
+                            dg_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.active-top-menu = ""; root.command-execute(entry.id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Visible Engine Error Banner
+        if root.engine-error != "" : Rectangle {
+            z: 9500;
+            x: 16px;
+            y: 52px;
+            width: root.width - 32px;
+            height: 36px;
+            background: #450a0af2;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #ef4444;
+            accessible-role: banner;
+            accessible-id: "engine-error-banner";
+            accessible-label: "引擎错误横幅";
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px; alignment: space-between;
+                Text {
+                    text: "音频引擎提示: " + root.engine-error;
+                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: #fecaca;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 20px; height: 20px; y: 8px; border-radius: 3px; background: #7f1d1d;
+                    Text { text: "×"; font-size: 12px; color: #fecaca; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.engine-error = ""; } }
+                }
+            }
+        }
+
+        // Visible Export WAV Modal Dialog
+        if root.export-wav-open : ExportWavDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            path <=> root.export-wav-path;
+            sample-rate <=> root.export-wav-sample-rate;
+            bit-depth <=> root.export-wav-bit-depth;
+            seconds <=> root.export-wav-seconds;
+            limiter <=> root.export-wav-limiter;
+            run => { root.export-wav(); }
+            close => { root.close-export-wav(); }
+            browse-path => { root.browse-export-wav-path(); }
+        }
+
+        // Visible Undo Tree Time-Machine Modal Dialog
+        if root.undo-tree-open : UndoTreeModal {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            node-count: root.undo-node-count;
+            node-labels: root.undo-node-labels;
+            node-hidden: root.undo-node-hidden;
+            can-undo: root.undo-can-undo;
+            can-redo: root.undo-can-redo;
+            undo-depth: root.undo-depth;
+            undone-depth: root.undo-undone;
+            commit-count: root.undo-commit-count;
+            branch-name: root.branch-name;
+            close => { root.close-undo-tree(); }
+            undo-step => { root.undo-step(); }
+            redo-step => { root.redo-step(); }
+            node-selected(i) => { root.undo-node-selected(i); }
+        }
+
+        // Visible Humanize / Quantize Modal Dialog
+        if root.humanize-open : HumanizeDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            time-jitter <=> root.humanize-time-jitter;
+            velocity-jitter <=> root.humanize-velocity-jitter;
+            seed <=> root.humanize-seed;
+            grid <=> root.humanize-grid;
+            strength <=> root.humanize-strength;
+            error <=> root.humanize-error;
+            focus-section: root.humanize-focus-section;
+            apply-humanize => { root.apply-humanize(); }
+            apply-quantize => { root.apply-quantize(); }
+            close => { root.close-humanize(); }
+        }
+
+        // Visible Musical PR Drawer
+        if root.musical-pr-open : musical_pr_drawer := MusicalPrDrawer {
+            z: 9550;
+            x: root.width - 384px;
+            y: 52px;
+            width: 372px;
+            height: Math.max(240px, root.height - 92px);
+            proposal-count: root.musical-pr-proposal-count;
+            proposal-ids: root.musical-pr-proposal-ids;
+            proposal-kinds: root.musical-pr-proposal-kinds;
+            proposal-titles: root.musical-pr-proposal-titles;
+            proposal-op-counts: root.musical-pr-proposal-op-counts;
+            selected-proposal-id: root.musical-pr-selected-id;
+            empty-reason: root.musical-pr-empty-reason;
+            resolve-available: root.musical-pr-resolve-available;
+            resolve-reason: root.musical-pr-resolve-reason;
+            accept => { root.accept-ai-proposal(); }
+            reject => { root.reject-ai-proposal(); }
+            close => { root.musical-pr-open = false; }
+            select-proposal(id) => { root.select-ai-proposal(id); }
         }
 
         // Global Floating Tooltip Overlay (Near Hover Target, Clamped & Auto-flip)
@@ -1266,8 +1639,6 @@ export component MainWindow inherits Window {
             tool-selected(tool) => { root.tool-selected(tool); }
 }
 
-        if false : StatusBar { }
-
         if false : Rectangle {
             accessible-role: region;
             accessible-id: "ai-rail";
@@ -1298,29 +1669,6 @@ export component MainWindow inherits Window {
                 accessible-action-default => { root.open-musical-pr(); }
                 TouchArea { clicked => { root.open-musical-pr(); } }
             }
-        }
-
-        if false : StatusBar { }
-
-        if false : Rectangle {
-            accessible-role: banner;
-            accessible-id: "engine-error-banner";
-            accessible-label: "引擎错误横幅";
-        }
-
-        if false : musical_pr_drawer := MusicalPrDrawer {
-            proposal-count: root.musical-pr-proposal-count;
-            proposal-ids: root.musical-pr-proposal-ids;
-            proposal-kinds: root.musical-pr-proposal-kinds;
-            proposal-titles: root.musical-pr-proposal-titles;
-            proposal-op-counts: root.musical-pr-proposal-op-counts;
-            selected-proposal-id: root.musical-pr-selected-id;
-            empty-reason: root.musical-pr-empty-reason;
-            resolve-available: root.musical-pr-resolve-available;
-            resolve-reason: root.musical-pr-resolve-reason;
-            accept => { root.accept-ai-proposal(); }
-            reject => { root.reject-ai-proposal(); }
-            select-proposal(id) => { root.select-ai-proposal(id); }
         }
     }
 }

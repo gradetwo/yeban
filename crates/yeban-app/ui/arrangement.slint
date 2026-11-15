@@ -36,6 +36,13 @@ export component ArrangementViewport inherits Rectangle {
     callback zoom-h-step(bool);
     callback zoom-v-step(bool);
     /// 点击时间线块：只报**摆放身份**（`host::wire_clip_scope` 用它把卷帘作用域切到该片段）。
+    in-out property <int> local-menu-track-id: 0;
+    in-out property <string> active-local-menu: ""; // "", "tracks", "instrument"
+
+    callback track-pan-change(int, float);
+    callback track-volume-change(int, float);
+    callback track-instrument-change(int, string);
+    callback execute-action(string);
     callback clip-select(string);
 
     background: Theme.bg-canvas;
@@ -136,6 +143,36 @@ export component ArrangementViewport inherits Rectangle {
                                     TooltipBubble {
                                         text: "添加新音轨 [Cmd+T]";
                                         is-visible: add-track-top-touch.has-hover;
+                                        tip-offset-y: 22px;
+                                    }
+                                }
+
+                                // 编曲区本地视图菜单开关
+                                Rectangle {
+                                    width: 44px;
+                                    height: 18px;
+                                    background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? #253045 : #161b28);
+                                    border-radius: 3px;
+                                    border-width: 1px;
+                                    border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
+                                    Text {
+                                        text: "轨道 ▾";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: root.active-local-menu == "tracks" ? #020617 : #e2e8f0;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    arr-menu-touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => {
+                                            root.active-local-menu = root.active-local-menu == "tracks" ? "" : "tracks";
+                                        }
+                                    }
+                                    TooltipBubble {
+                                        text: "编曲轨道与视图本地菜单";
+                                        is-visible: arr-menu-touch.has-hover;
                                         tip-offset-y: 22px;
                                     }
                                 }
@@ -619,7 +656,7 @@ export component ArrangementViewport inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 content-width: self.width;
-                content-height: max(self.height, root.sheet-height);
+                content-height: max(self.height, root.sheet-height + 42px);
                 interactive: true;
 
                 for trk[idx] in root.tracks : Rectangle {
@@ -648,6 +685,18 @@ export component ArrangementViewport inherits Rectangle {
                                 background: trk.color;
                             }
 
+                            TouchArea {
+                                clicked => { root.select-track(trk.id); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
+
                             VerticalLayout {
                                 padding-left: 12px;
                                 padding-right: 10px;
@@ -669,21 +718,36 @@ export component ArrangementViewport inherits Rectangle {
                                         horizontal-stretch: 1;
                                     }
                                     Rectangle {
-                                        background: #00000050;
+                                        background: badge-left-touch.has-hover ? #1e293b : #00000050;
                                         border-radius: 2px;
                                         border-width: 1px;
-                                        border-color: #ffffff14;
+                                        border-color: badge-left-touch.has-hover ? Theme.accent : #ffffff14;
+                                        max-width: 82px;
                                         HorizontalLayout {
-                                            padding-left: 3px;
-                                            padding-right: 3px;
+                                            padding-left: 4px;
+                                            padding-right: 4px;
                                             Text {
-                                                text: trk.kind;
+                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " ▾";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 7.5px;
-                                                color: #94a3b8;
+                                                color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
                                                 font-weight: 700;
+                                                overflow: elide;
                                                 vertical-alignment: center;
                                             }
+                                        }
+                                        badge-left-touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => {
+                                                root.select-track(trk.id);
+                                                root.local-menu-track-id = trk.id;
+                                                root.active-local-menu = root.active-local-menu == "instrument" ? "" : "instrument";
+                                            }
+                                        }
+                                        TooltipBubble {
+                                            text: "点击更换音色/效果 [当前: " + (trk.insert1 != "" ? trk.insert1 : trk.kind) + "]";
+                                            is-visible: badge-left-touch.has-hover;
+                                            tip-offset-y: 22px;
                                         }
                                     }
                                 }
@@ -812,7 +876,16 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             pan-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.pointer;
+                                                mouse-cursor: MouseCursor.col-resize;
+                                                pointer-event(event) => {
+                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                                                        let norm = Math.max(-1.0, Math.min(1.0, (self.mouse-x / max(1px, parent.width)) * 2.0 - 1.0));
+                                                        root.track-pan-change(trk.id, norm);
+                                                    }
+                                                }
+                                                double-clicked => {
+                                                    root.track-pan-change(trk.id, 0.0);
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "声像: " + trk.pan;
@@ -841,7 +914,21 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             vol-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.pointer;
+                                                mouse-cursor: MouseCursor.col-resize;
+                                                pointer-event(event) => {
+                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                                                        let delta_px = (self.mouse-x - self.pressed-x) / 1px;
+                                                        let next_db = Math.max(-60.0, Math.min(6.0, trk.volume_db + delta_px * 0.25));
+                                                        if delta_px > 2.0 || delta_px < -2.0 {
+                                                            root.track-volume-change(trk.id, next_db);
+                                                        } else {
+                                                            root.track-volume-change(trk.id, trk.volume_db < -3.0 ? 0.0 : -6.0);
+                                                        }
+                                                    }
+                                                }
+                                                double-clicked => {
+                                                    root.track-volume-change(trk.id, 0.0);
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "推子增益: " + trk.volume_db + " dB";
@@ -869,17 +956,6 @@ export component ArrangementViewport inherits Rectangle {
                                                 background: trk.meter_peak > 0.8 ? #ef4444 : (trk.meter_peak > 0.6 ? #f59e0b : #10b981);
                                             }
                                         }
-                                    }
-                                }
-                            }
-                            TouchArea {
-                                clicked => { root.select-track(trk.id); }
-                                scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
                                     }
                                 }
                             }
@@ -919,6 +995,19 @@ export component ArrangementViewport inherits Rectangle {
                                 width: 1px;
                                 height: parent.height;
                                 background: (root.bar-start-index + i).mod(4) == 0 ? #ffffff0d : #ffffff04;
+                            }
+
+                            // 背景选择与滚轮面必须先于片段块声明，避免遮挡 Clip 点击
+                            TouchArea {
+                                clicked => { root.select-track(trk.id); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
                             }
 
                             // Timeline Clips for this track
@@ -990,7 +1079,7 @@ export component ArrangementViewport inherits Rectangle {
                                             }
                                         }
 
-                                        // MIDI Polyphonic Score Display
+                                        // MIDI Polyphonic Score Display (driven strictly by real blk.note_count)
                                         if !blk.is_audio : Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
@@ -1004,77 +1093,27 @@ export component ArrangementViewport inherits Rectangle {
                                                 background: trk.color.with-alpha(0.15);
                                             }
 
-                                            // Track 1 (Lead Neuro Bass): 低频区厚重低音线条
-                                            if blk.track_id == 1 : HorizontalLayout {
-                                                x: 2px;
-                                                y: 13px;
-                                                spacing: 12px;
-                                                for w in [54px, 36px, 62px, 42px, 48px, 30px] : Rectangle {
-                                                    width: w;
-                                                    height: 6px;
-                                                    border-radius: 1.5px;
-                                                    background: trk.color;
-                                                }
+                                            if blk.note_count <= 0 && blk.width_px >= 90px : Text {
+                                                x: 8px;
+                                                y: (parent.height - self.height) / 2;
+                                                text: "空片段";
+                                                font-family: Tokens.font-ui;
+                                                font-size: 9px;
+                                                color: #8A95A580;
                                             }
 
-                                            // Track 3 (Atmos Granular Pad): 多声部密集粒子铺底垫音块
-                                            if blk.track_id == 3 : VerticalLayout {
-                                                padding-top: 3px;
-                                                spacing: 4px;
-                                                HorizontalLayout {
-                                                    spacing: 16px;
-                                                    for w in [70px, 85px, 60px, 90px] : Rectangle {
-                                                        width: w;
-                                                        height: 3.5px;
-                                                        border-radius: 1px;
-                                                        background: trk.color.with-alpha(0.85);
-                                                    }
-                                                }
-                                                HorizontalLayout {
-                                                    padding-left: 10px;
-                                                    spacing: 20px;
-                                                    for w in [55px, 95px, 75px, 80px] : Rectangle {
-                                                        width: w;
-                                                        height: 3.5px;
-                                                        border-radius: 1px;
-                                                        background: trk.color;
-                                                    }
-                                                }
-                                                HorizontalLayout {
-                                                    padding-left: 4px;
-                                                    spacing: 14px;
-                                                    for w in [80px, 65px, 90px, 70px] : Rectangle {
-                                                        width: w;
-                                                        height: 3.5px;
-                                                        border-radius: 1px;
-                                                        background: trk.color.with-alpha(0.70);
-                                                    }
-                                                }
-                                            }
-
-                                            // Default / Track 5 (Arp Pluck Sequencer): 16分音符快速跑动音符步进
-                                            if blk.track_id != 1 && blk.track_id != 3 : VerticalLayout {
-                                                padding-top: 2px;
+                                            if blk.note_count > 0 : HorizontalLayout {
+                                                x: 8px;
+                                                y: 6px;
+                                                width: Math.max(12px, parent.width - 16px);
+                                                height: Math.max(10px, parent.height - 10px);
                                                 spacing: 3px;
-                                                HorizontalLayout {
-                                                    x: 4px;
-                                                    spacing: 6px;
-                                                    for w in [16px, 12px, 20px, 14px, 18px, 12px, 24px, 16px] : Rectangle {
-                                                        width: w;
-                                                        height: 3.5px;
-                                                        border-radius: 1px;
-                                                        background: trk.color;
-                                                    }
-                                                }
-                                                HorizontalLayout {
-                                                    x: 12px;
-                                                    spacing: 8px;
-                                                    for w in [14px, 18px, 12px, 22px, 16px, 14px, 20px] : Rectangle {
-                                                        width: w;
-                                                        height: 3.5px;
-                                                        border-radius: 1px;
-                                                        background: trk.color.with-alpha(0.80);
-                                                    }
+                                                for n_idx in Math.min(16, blk.note_count) : Rectangle {
+                                                    horizontal-stretch: 1;
+                                                    height: 4px;
+                                                    border-radius: 1px;
+                                                    background: trk.color;
+                                                    y: Math.mod(n_idx * 5, 14) * 1px;
                                                 }
                                             }
                                         }
@@ -1087,18 +1126,6 @@ export component ArrangementViewport inherits Rectangle {
                                         height: parent.height;
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.clip-select(blk.clip_ulid); }
-                                    }
-                                }
-                            }
-
-                            TouchArea {
-                                clicked => { root.select-track(trk.id); }
-                                scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
                                     }
                                 }
                             }
@@ -1140,6 +1167,18 @@ export component ArrangementViewport inherits Rectangle {
                                 background: trk.color;
                             }
 
+                            TouchArea {
+                                clicked => { root.select-track(trk.id); }
+                                scroll-event(event) => {
+                                    if event.modifiers.shift || event.modifiers.alt {
+                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
+
                             VerticalLayout {
                                 padding-left: 10px;
                                 padding-right: 12px;
@@ -1161,21 +1200,36 @@ export component ArrangementViewport inherits Rectangle {
                                         horizontal-stretch: 1;
                                     }
                                     Rectangle {
-                                        background: #00000050;
+                                        background: badge-right-touch.has-hover ? #1e293b : #00000050;
                                         border-radius: 2px;
                                         border-width: 1px;
-                                        border-color: #ffffff14;
+                                        border-color: badge-right-touch.has-hover ? Theme.accent : #ffffff14;
+                                        max-width: 82px;
                                         HorizontalLayout {
-                                            padding-left: 3px;
-                                            padding-right: 3px;
+                                            padding-left: 4px;
+                                            padding-right: 4px;
                                             Text {
-                                                text: trk.kind;
+                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " ▾";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 7.5px;
-                                                color: #94a3b8;
+                                                color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
                                                 font-weight: 700;
+                                                overflow: elide;
                                                 vertical-alignment: center;
                                             }
+                                        }
+                                        badge-right-touch := TouchArea {
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => {
+                                                root.select-track(trk.id);
+                                                root.local-menu-track-id = trk.id;
+                                                root.active-local-menu = root.active-local-menu == "instrument" ? "" : "instrument";
+                                            }
+                                        }
+                                        TooltipBubble {
+                                            text: "点击更换音色/效果 [当前: " + (trk.insert1 != "" ? trk.insert1 : trk.kind) + "]";
+                                            is-visible: badge-right-touch.has-hover;
+                                            tip-offset-y: 22px;
                                         }
                                     }
                                 }
@@ -1298,7 +1352,16 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             pan-r-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.pointer;
+                                                mouse-cursor: MouseCursor.col-resize;
+                                                pointer-event(event) => {
+                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                                                        let norm = Math.max(-1.0, Math.min(1.0, (self.mouse-x / max(1px, parent.width)) * 2.0 - 1.0));
+                                                        root.track-pan-change(trk.id, norm);
+                                                    }
+                                                }
+                                                double-clicked => {
+                                                    root.track-pan-change(trk.id, 0.0);
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "声像: " + trk.pan;
@@ -1326,7 +1389,21 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             vol-r-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.pointer;
+                                                mouse-cursor: MouseCursor.col-resize;
+                                                pointer-event(event) => {
+                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                                                        let delta_px = (self.mouse-x - self.pressed-x) / 1px;
+                                                        let next_db = Math.max(-60.0, Math.min(6.0, trk.volume_db + delta_px * 0.25));
+                                                        if delta_px > 2.0 || delta_px < -2.0 {
+                                                            root.track-volume-change(trk.id, next_db);
+                                                        } else {
+                                                            root.track-volume-change(trk.id, trk.volume_db < -3.0 ? 0.0 : -6.0);
+                                                        }
+                                                    }
+                                                }
+                                                double-clicked => {
+                                                    root.track-volume-change(trk.id, 0.0);
+                                                }
                                             }
                                             TooltipBubble {
                                                 text: "推子增益: " + trk.volume_db + " dB";
@@ -1356,23 +1433,13 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                             }
-                            TouchArea {
-                                clicked => { root.select-track(trk.id); }
-                                scroll-event(event) => {
-                                    if event.modifiers.shift || event.modifiers.alt {
-                                        root.arrangement-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
-                                }
-                            }
                         }
                     }
                 }
 
-                // Empty Track Lane Canvas / Add Track Drop Zone (Reflows cleanly when dock is closed or tracks few)
+                // Empty Track Lane Canvas / Add Track Drop Zone (Placed strictly below sheet-height inside Flickable)
                 Rectangle {
+                    y: root.sheet-height;
                     vertical-stretch: 0;
                     height: 38px;
                     background: transparent;
@@ -1558,4 +1625,124 @@ export component ArrangementViewport inherits Rectangle {
             }
         }
     }
+
+    // ─── Arrangement Local Menus Backdrop & Popovers ───────────
+        if root.active-local-menu != "" : TouchArea {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.active-local-menu = ""; }
+        }
+
+        if root.active-local-menu == "tracks" : Rectangle {
+            x: Theme.track-headers-on-right ? parent.width - root.headers-width + 8px : 8px;
+            y: 50px;
+            width: 196px;
+            height: 222px;
+            background: #141923;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.accent;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #00000090;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 2px;
+                for opt in [
+                    { id: "track-add-midi", label: "+ 新建 MIDI 乐器轨" },
+                    { id: "track-add-audio", label: "+ 新建音频轨" },
+                    { id: "track-add-bus", label: "+ 新建辅助发送轨" },
+                    { id: "new-midi-clip", label: "+ 新建 4 小节 MIDI 片段" },
+                    { id: "track-equal-heights", label: "均分所有轨道高度" },
+                    { id: "toggle-chord-lane", label: "显示 / 隐藏和弦轨" },
+                    { id: "track-toggle-headers-side", label: "左 / 右侧切换轨道头" },
+                ] : Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: trk-m-touch.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: opt.label;
+                            font-family: Tokens.font-ui;
+                            font-size: 10.5px;
+                            color: trk-m-touch.has-hover ? #ffffff : #cbd5e1;
+                            vertical-alignment: center;
+                        }
+                    }
+                    trk-m-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.active-local-menu = "";
+                            root.execute-action(opt.id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.active-local-menu == "instrument" : Rectangle {
+            x: Theme.track-headers-on-right ? parent.width - root.headers-width - 10px : 10px;
+            y: 54px;
+            width: 228px;
+            height: 294px;
+            background: #141923;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.accent;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #000000a0;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 2px;
+                Text {
+                    text: "更换轨道 #\{root.local-menu-track-id} 音色 / 插入";
+                    font-family: Tokens.font-mono;
+                    font-size: 9px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                    height: 20px;
+                    vertical-alignment: center;
+                }
+                for preset in [
+                    { id: "synth:hollow", label: "合成器 • 柔和主音 (Hollow Lead)" },
+                    { id: "synth:organ", label: "合成器 • 风琴键音 (Warm Organ)" },
+                    { id: "synth:vocal", label: "合成器 • 人声铺底 (Choir Pad)" },
+                    { id: "synth:metallic", label: "合成器 • 金属 FM (FM Bell)" },
+                    { id: "synth:glass", label: "合成器 • 水晶拨弦 (Glass Pluck)" },
+                    { id: "synth:bass", label: "合成器 • 次低音 (Sub Bass)" },
+                    { id: "sfz:default", label: "采样库 • 加载 SFZ 音色..." },
+                    { id: "fx:eq", label: "效果槽 • 插入 参量均衡 EQ" },
+                    { id: "fx:reverb", label: "效果槽 • 插入 空间混响 Reverb" },
+                ] : Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: inst-m-touch.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: preset.label;
+                            font-family: Tokens.font-ui;
+                            font-size: 10px;
+                            color: inst-m-touch.has-hover ? #ffffff : #cbd5e1;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    inst-m-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.active-local-menu = "";
+                            root.track-instrument-change(
+                                root.local-menu-track-id > 0 ? root.local-menu-track-id : root.selected-track-id,
+                                preset.id
+                            );
+                        }
+                    }
+                }
+            }
+        }
 }

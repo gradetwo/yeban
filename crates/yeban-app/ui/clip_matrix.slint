@@ -8,6 +8,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
     callback trigger-scene(int);
     callback trigger-clip(int, int);
     callback select-track(int);
+    callback execute-action(string);
 
     width: root.panel-width;
     background: Theme.bg-panel;
@@ -40,15 +41,38 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         color: Theme.track-drum;
                         vertical-alignment: center;
                     }
-                    Text {
-                        text: "SCENE 1-4";
-                        font-family: Tokens.font-mono;
-                        font-size: 8px;
-                        letter-spacing: 0.8px;
-                        color: #64748b;
-                        font-weight: 700;
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Rectangle {
+                            height: 16px;
+                            border-radius: 3px;
+                            background: cm_add_t.has-hover ? Theme.accent.with-alpha(0.25) : #10141d;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 5px; padding-right: 5px;
+                                Text { text: "+ 轨道"; font-family: Tokens.font-ui; font-size: 8px; font-weight: 700; color: #e2e8f0; vertical-alignment: center; }
+                            }
+                            cm_add_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.execute-action("track-add-midi"); }
+                            }
+                        }
+                        Rectangle {
+                            height: 16px;
+                            border-radius: 3px;
+                            background: cm_stop_t.has-hover ? #ef444433 : #10141d;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 5px; padding-right: 5px;
+                                Text { text: "停止"; font-family: Tokens.font-ui; font-size: 8px; font-weight: 700; color: #fca5a5; vertical-alignment: center; }
+                            }
+                            cm_stop_t := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.execute-action("transport-stop"); }
+                            }
+                        }
                     }
                 }
 

@@ -958,6 +958,7 @@ export struct TimelineBlockData {
     is_audio: bool,
     gain_label: string,
     color: color,
+    note_count: int,
 }
 
 export struct BrowserItemData {
@@ -1075,7 +1076,7 @@ export global Theme {
         persona == PersonaMode.AbletonLive;
 
     in-out property <string> active-tool: "pointer"; // "pointer" | "range" | "split" | "draw"
-    in-out property <string> active-dock-tab: persona == PersonaMode.AbletonLive ? "devices" : (persona == PersonaMode.LogicPro || persona == PersonaMode.CubasePro ? "mixer" : "devices");
+    in-out property <string> active-dock-tab: "pianoroll";
 
     // 全局无遮挡提示系统与开关 (Floating Tooltips System & Toggle)
     in-out property <bool> show-tooltips: true;

@@ -16,6 +16,7 @@ export component ControlRoomMeters inherits Rectangle {
     callback toggle-dim();
     callback toggle-mono();
     callback toggle-side();
+    callback execute-action(string);
 
     width: root.panel-width;
     background: Theme.bg-panel;
@@ -40,21 +41,50 @@ export component ControlRoomMeters inherits Rectangle {
                     color: #f8fafc;
                     vertical-alignment: center;
                 }
-                Rectangle {
-                    background: Theme.status-ok.with-alpha(0.18);
-                    border-radius: 3px;
-                    border-width: 1px;
-                    border-color: Theme.status-ok.with-alpha(0.40);
-                    HorizontalLayout {
-                        padding-left: 5px;
-                        padding-right: 5px;
-                        Text {
-                            text: "EBU R128";
-                            font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            font-weight: 700;
-                            color: Theme.status-ok;
-                            vertical-alignment: center;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Rectangle {
+                        background: cr_reset_t.has-hover ? Theme.accent.with-alpha(0.25) : #10141d;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 5px; padding-right: 5px;
+                            Text {
+                                text: "归零";
+                                font-family: Tokens.font-ui;
+                                font-size: 8px;
+                                font-weight: 700;
+                                color: #e2e8f0;
+                                vertical-alignment: center;
+                            }
+                        }
+                        cr_reset_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.is-dim = false;
+                                root.is-mono = false;
+                                root.is-side = false;
+                                root.execute-action("master-reset-fader");
+                            }
+                        }
+                    }
+                    Rectangle {
+                        background: Theme.status-ok.with-alpha(0.18);
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: Theme.status-ok.with-alpha(0.40);
+                        HorizontalLayout {
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            Text {
+                                text: "EBU R128";
+                                font-family: Tokens.font-mono;
+                                font-size: 8px;
+                                font-weight: 700;
+                                color: Theme.status-ok;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }

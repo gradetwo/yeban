@@ -7,6 +7,14 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <string> focus-track-name: "01. Lead Neuro Bass";
     in-out property <[TrackData]> tracks;
     in-out property <int> selected-track-id: 1;
+    in-out property <[string]> device-names: [];
+    in-out property <[string]> device-ids: [];
+    in-out property <[bool]> device-bypassed: [];
+    in-out property <[string]> device-recognised: [];
+    in-out property <string> device-track-label: "";
+
+    callback device-bypass-toggle(string);
+    callback device-remove(string);
 
     // Wavetable device params
     in-out property <int> wt-pos-val: 64;
@@ -54,6 +62,9 @@ export component UnifiedLowerDock inherits Rectangle {
     callback toggle-track-mute(int);
     callback toggle-track-solo(int);
     callback track-volume-change(int, float);
+    callback track-pan-change(int, float);
+    callback track-instrument-change(int, string);
+    callback execute-action(string);
     callback set-wt-pos(int);
     callback set-wt-cutoff(int);
     callback toggle-piano-step(int, int);
@@ -99,6 +110,11 @@ export component UnifiedLowerDock inherits Rectangle {
 
     in-out property <bool> console-maximized: false;
     property <bool> is-maximized: root.console-maximized;
+    in-out property <bool> dock-instrument-menu-open: false;
+    in-out property <int> dock-instrument-target-id: -1;
+    in-out property <float> bus-volume-db: -1.0;
+    in-out property <float> master-volume-db: -0.3;
+    in-out property <bool> master-mono: false;
     in-out property <length> dock-height: 320px;
     min-height: root.console-maximized ? 0px : root.dock-height;
     max-height: root.console-maximized ? 100000px : root.dock-height;
@@ -219,10 +235,118 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
                 }
 
-                // Focus track badge & Maximize toggle
+                // Sub-module Local Actions + Focus track badge & Maximize toggle
                 HorizontalLayout {
                     alignment: end;
-                    spacing: 8px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        spacing: 3px;
+                        alignment: center;
+
+                        Rectangle {
+                            height: 22px;
+                            border-radius: 3px;
+                            background: root.dock-instrument-menu-open ? Theme.accent.with-alpha(0.22) : (dock-inst-btn.has-hover ? #1e293b : #10141f);
+                            border-width: 1px;
+                            border-color: root.dock-instrument-menu-open ? Theme.accent : #ffffff14;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "音色 ▾";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9px;
+                                    font-weight: 700;
+                                    color: root.dock-instrument-menu-open ? Theme.accent : #cbd5e1;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            dock-inst-btn := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => {
+                                    root.dock-instrument-target-id = root.selected-track-id;
+                                    root.dock-instrument-menu-open = !root.dock-instrument-menu-open;
+                                }
+                            }
+                            TooltipBubble { text: "为当前聚焦轨道切换内置/SFZ 音色"; is-visible: dock-inst-btn.has-hover; tip-offset-y: 26px; }
+                        }
+
+                        Rectangle {
+                            height: 22px;
+                            border-radius: 3px;
+                            background: dock-eq-btn.has-hover ? #1e293b : #10141f;
+                            border-width: 1px;
+                            border-color: #ffffff14;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "EQ";
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8.5px;
+                                    font-weight: 700;
+                                    color: #cbd5e1;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            dock-eq-btn := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.execute-action("insert-eq"); }
+                            }
+                            TooltipBubble { text: "为当前轨插入参量均衡器 EQ"; is-visible: dock-eq-btn.has-hover; tip-offset-y: 26px; }
+                        }
+
+                        Rectangle {
+                            height: 22px;
+                            border-radius: 3px;
+                            background: dock-rev-btn.has-hover ? #1e293b : #10141f;
+                            border-width: 1px;
+                            border-color: #ffffff14;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "混响";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 8.5px;
+                                    font-weight: 700;
+                                    color: #cbd5e1;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            dock-rev-btn := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.execute-action("insert-reverb"); }
+                            }
+                            TooltipBubble { text: "为当前轨插入空间混响 Reverb"; is-visible: dock-rev-btn.has-hover; tip-offset-y: 26px; }
+                        }
+
+                        Rectangle {
+                            height: 22px;
+                            border-radius: 3px;
+                            background: dock-quant-btn.has-hover ? #1e293b : #10141f;
+                            border-width: 1px;
+                            border-color: #ffffff14;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "量化";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 8.5px;
+                                    font-weight: 700;
+                                    color: #cbd5e1;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            dock-quant-btn := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.quantize-requested(); }
+                            }
+                            TooltipBubble { text: "量化当前轨 MIDI 音符至网格"; is-visible: dock-quant-btn.has-hover; tip-offset-y: 26px; }
+                        }
+                    }
 
                     Rectangle {
                         background: root.selected-track-color.with-alpha(0.15);
@@ -300,535 +424,334 @@ export component UnifiedLowerDock inherits Rectangle {
             spacing: 8px;
             vertical-stretch: 1;
 
-            // PANE: INLINE DSP DEVICES (Visible in stacked or devices mode)
+            // PANE: INLINE DSP DEVICES (Visible in stacked or devices mode - bound strictly to real track devices)
             if root.active-tab == "stacked" || root.active-tab == "devices" : HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
 
-                // Device 1: Wavetable MPE Synth (Fixed studio module width: 250px)
-                Rectangle {
-                    width: 250px;
+                if root.device-names.length == 0 : Rectangle {
+                    width: 340px;
                     background: Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
 
                     VerticalLayout {
-                        padding: 8px;
-                        spacing: 6px;
+                        padding: 12px;
+                        spacing: 8px;
                         alignment: space-between;
 
                         HorizontalLayout {
-                            spacing: 6px;
                             alignment: space-between;
-                            HorizontalLayout {
-                                spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent; }
-                                Text {
-                                    text: "Wavetable MPE";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: #f8fafc;
-                                    vertical-alignment: center;
-                                }
+                            Text {
+                                text: "当前轨道无挂载设备";
+                                font-family: Tokens.font-ui;
+                                font-size: 12px;
+                                font-weight: 700;
+                                color: #f8fafc;
                             }
                             Text {
-                                text: "OSC 1+2";
+                                text: root.device-track-label != "" ? root.device-track-label : root.focus-track-name;
                                 font-family: Tokens.font-mono;
-                                font-size: 8px;
-                                letter-spacing: 0.8px;
-                                color: Theme.accent;
-                                font-weight: 700;
-                                horizontal-alignment: right;
+                                font-size: 9px;
+                                color: #94a3b8;
                                 vertical-alignment: center;
                             }
                         }
 
-                        // 3D Morph Wave SVG (stretches to fill device width)
+                        Text {
+                            text: "该轨道设备链为空，可点击下方按钮快速挂载合成器、效果器或 SFZ 音色库。";
+                            font-family: Tokens.font-ui;
+                            font-size: 10px;
+                            color: #cbd5e1;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                height: 24px;
+                                horizontal-stretch: 1;
+                                border-radius: 3px;
+                                background: empty_add_synth.has-hover ? Theme.accent.with-alpha(0.25) : #10141f;
+                                border-width: 1px;
+                                border-color: Theme.accent.with-alpha(0.45);
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text { text: "+ 内置合成器"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #f8fafc; vertical-alignment: center; }
+                                }
+                                empty_add_synth := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.track-instrument-change(root.selected-track-id, "synth:hollow"); }
+                                }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                horizontal-stretch: 1;
+                                border-radius: 3px;
+                                background: empty_add_eq.has-hover ? #1e293b : #10141f;
+                                border-width: 1px;
+                                border-color: #ffffff18;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text { text: "+ 参量均衡 EQ"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
+                                }
+                                empty_add_eq := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.track-instrument-change(root.selected-track-id, "fx:eq"); }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                height: 24px;
+                                horizontal-stretch: 1;
+                                border-radius: 3px;
+                                background: empty_add_rev.has-hover ? #1e293b : #10141f;
+                                border-width: 1px;
+                                border-color: #ffffff18;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text { text: "+ 空间混响 Reverb"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
+                                }
+                                empty_add_rev := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.track-instrument-change(root.selected-track-id, "fx:reverb"); }
+                                }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                horizontal-stretch: 1;
+                                border-radius: 3px;
+                                background: empty_add_sfz.has-hover ? #1e293b : #10141f;
+                                border-width: 1px;
+                                border-color: #ffffff18;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text { text: "+ 加载 SFZ"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
+                                }
+                                empty_add_sfz := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.execute-action("load-sfz"); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for dev_name[idx] in root.device-names : Rectangle {
+                    width: 240px;
+                    background: Theme.bg-surface;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: root.device-bypassed[idx] ? Theme.border-subtle : Theme.accent.with-alpha(0.45);
+                    opacity: root.device-bypassed[idx] ? 0.65 : 1.0;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: space-between;
+
+                        // Header Row: Bypass indicator + Device Name + Recognised Badge + Remove
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 5px;
+                                horizontal-stretch: 1;
+                                Rectangle {
+                                    width: 14px;
+                                    height: 14px;
+                                    border-radius: 7px;
+                                    background: root.device-bypassed[idx] ? #1e293b : Theme.accent.with-alpha(0.25);
+                                    border-width: 1px;
+                                    border-color: root.device-bypassed[idx] ? #475569 : Theme.accent;
+                                    Rectangle {
+                                        x: 4px; y: 4px; width: 6px; height: 6px; border-radius: 3px;
+                                        background: root.device-bypassed[idx] ? #64748b : Theme.accent;
+                                    }
+                                    bypass_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.device-bypass-toggle(root.device-ids[idx]); }
+                                    }
+                                    TooltipBubble { text: root.device-bypassed[idx] ? "启用设备" : "旁通设备"; is-visible: bypass_touch.has-hover; tip-offset-y: 20px; }
+                                }
+                                Text {
+                                    text: dev_name;
+                                    font-family: Tokens.font-ui;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: root.device-bypassed[idx] ? #94a3b8 : #f8fafc;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                if idx < root.device-recognised.length && root.device-recognised[idx] != "" : Text {
+                                    text: root.device-recognised[idx];
+                                    font-family: Tokens.font-mono;
+                                    font-size: 8px;
+                                    color: #347864;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    width: 16px;
+                                    height: 16px;
+                                    border-radius: 3px;
+                                    background: dev_rm_touch.has-hover ? #ef444433 : #10141f;
+                                    border-width: 1px;
+                                    border-color: dev_rm_touch.has-hover ? #ef444488 : #ffffff14;
+                                    Text {
+                                        text: "×";
+                                        font-size: 10px;
+                                        color: dev_rm_touch.has-hover ? #fca5a5 : #94a3b8;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    dev_rm_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => { root.device-remove(root.device-ids[idx]); }
+                                    }
+                                    TooltipBubble { text: "从轨道设备链移除"; is-visible: dev_rm_touch.has-hover; tip-offset-y: 20px; }
+                                }
+                            }
+                        }
+
+                        // Real Device Visualizer / EQ Preview Box
                         Rectangle {
-                            height: 72px;
+                            height: 64px;
                             background: #06080d;
                             border-radius: 4px;
                             border-width: 1px;
                             border-color: #191f2c;
                             clip: true;
 
-                            Path {
-                                commands: "M 0 55 Q 40 20, 80 50 T 160 30 T 240 45 T 320 28 T 400 48 T 480 32 T 560 46 T 640 38";
-                                stroke: Theme.accent.with-alpha(0.35);
-                                stroke-width: 1.5px;
+                            Rectangle {
+                                x: 0;
+                                y: 32px;
+                                width: parent.width;
+                                height: 1px;
+                                background: #ffffff0a;
                             }
-                            Path {
-                                commands: "M 0 35 Q 40 8, 80 35 T 160 15 T 240 30 T 320 18 T 400 35 T 480 20 T 560 32 T 640 25";
-                                stroke: Theme.accent;
-                                stroke-width: 2.0px;
+
+                            if idx == 0 : Path {
+                                commands: "M 0 36 Q 40 12, 80 34 T 160 18 T 240 32";
+                                stroke: root.device-bypassed[idx] ? #64748b : Theme.accent;
+                                stroke-width: 1.8px;
                             }
-                            Path {
-                                commands: "M 0 60 Q 50 30, 100 55 T 200 38 T 300 52 T 400 36 T 500 50 T 600 42";
-                                stroke: #347864.with-alpha(0.35);
-                                stroke-width: 1.5px;
+                            if idx > 0 : Path {
+                                commands: "M 0 48 Q 55 42, 110 20 T 220 34";
+                                stroke: root.device-bypassed[idx] ? #64748b : #347864;
+                                stroke-width: 1.8px;
                             }
 
                             HorizontalLayout {
                                 x: 8px;
-                                y: 56px;
+                                y: 46px;
                                 width: parent.width - 16px;
                                 alignment: space-between;
                                 Text {
-                                    text: "POS: " + root.wt-pos-val + "%";
+                                    text: root.device-bypassed[idx] ? "BYPASSED" : "ACTIVE";
                                     font-family: Tokens.font-mono;
                                     font-size: 8px;
                                     font-weight: 700;
-                                    color: Theme.accent;
+                                    color: root.device-bypassed[idx] ? #f59e0b : #347864;
                                 }
                                 Text {
-                                    text: "UNISON: 4 Voices";
+                                    text: "ID: " + (idx < root.device-ids.length ? root.device-ids[idx] : "-");
                                     font-family: Tokens.font-mono;
                                     font-size: 8px;
                                     color: #64748b;
+                                    overflow: elide;
                                 }
                             }
                         }
 
-                        // Quick Knobs / Sliders
+                        // Parameter / Quick Action Controls
                         HorizontalLayout {
                             spacing: 4px;
-
                             Rectangle {
                                 background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                VerticalLayout {
-                                    padding: 4px;
-                                    spacing: 2px;
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
                                     Text {
-                                        text: "WT Pos";
+                                        text: idx == 0 ? ("POS: " + root.wt-pos-val + "%") : ("LOW: " + root.eq-low-db);
                                         font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #64748b;
+                                        font-size: 9px;
                                         font-weight: 700;
-                                        horizontal-alignment: center;
-                                    }
-                                    Text {
-                                        text: "" + root.wt-pos-val + "%";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 10px;
-                                        font-weight: 800;
                                         color: Theme.accent;
-                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
-                                TouchArea {
+                                dev_p1_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => {
                                         root.wt-pos-val = root.wt-pos-val == 64 ? 85 : 64;
                                         root.set-wt-pos(root.wt-pos-val);
                                     }
                                 }
                             }
-
                             Rectangle {
                                 background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: #ffffff0a;
                                 horizontal-stretch: 1;
-                                VerticalLayout {
-                                    padding: 4px;
-                                    spacing: 2px;
-                                    Text {
-                                        text: "Cutoff";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #64748b;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                    }
+                                height: 26px;
+                                HorizontalLayout {
+                                    alignment: center;
                                     Text {
                                         text: "" + root.wt-cutoff-hz + "Hz";
                                         font-family: Tokens.font-mono;
-                                        font-size: 10px;
-                                        font-weight: 800;
+                                        font-size: 9px;
+                                        font-weight: 700;
                                         color: #347864;
-                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
-                                TouchArea {
+                                dev_p2_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
                                     clicked => {
                                         root.wt-cutoff-hz = root.wt-cutoff-hz == 4800 ? 8200 : 4800;
                                         root.set-wt-cutoff(root.wt-cutoff-hz);
                                     }
                                 }
                             }
-
                             Rectangle {
-                                background: #080a10;
+                                background: dev_swap_touch.has-hover ? Theme.accent.with-alpha(0.22) : #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
-                                horizontal-stretch: 1;
-                                VerticalLayout {
-                                    padding: 4px;
-                                    spacing: 2px;
-                                    Text {
-                                        text: "Reso";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #64748b;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                    }
-                                    Text {
-                                        text: "" + root.wt-reso-val + "%";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 10px;
-                                        font-weight: 800;
-                                        color: #9a6a38;
-                                        horizontal-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Device 2: Pro-QLinear 8-band Dynamic EQ (Fixed studio module width: 280px)
-                Rectangle {
-                    width: 280px;
-                    background: Theme.bg-surface;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 6px;
-                        alignment: space-between;
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            alignment: space-between;
-                            HorizontalLayout {
-                                spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #347864; }
-                                Text {
-                                    text: "Pro-QLinear 8 (动态 EQ)";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: #f8fafc;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            Text {
-                                text: "" + root.wt-cutoff-hz + " Hz";
-                                font-family: Tokens.font-mono;
-                                font-size: 8px;
-                                color: #347864;
-                                font-weight: 700;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        // EQ Curve + Spectrum Display
-                        Rectangle {
-                            height: 72px;
-                            background: #06080d;
-                            border-radius: 4px;
-                            border-width: 1px;
-                            border-color: #191f2c;
-                            clip: true;
-
-                            // 0dB Center Axis & Frequency Reference Lines
-                            Rectangle {
-                                x: 0;
-                                y: 36px;
-                                width: parent.width;
-                                height: 1px;
-                                background: #ffffff0a;
-                            }
-
-                            // Spectrum Bars (Natural acoustic curve)
-                            HorizontalLayout {
-                                x: 4px;
-                                y: 12px;
-                                width: parent.width - 8px;
-                                height: 52px;
-                                spacing: 2px;
-                                alignment: center;
-
-                                for h in [14px, 20px, 32px, 44px, 38px, 46px, 34px, 28px, 36px, 42px, 30px, 24px, 18px, 26px, 20px, 14px, 16px, 22px, 34px, 42px, 35px, 26px, 18px, 12px] : Rectangle {
-                                    horizontal-stretch: 1;
-                                    min-width: 3px;
-                                    max-width: 8px;
-                                    height: h;
-                                    background: #34786422;
-                                    border-radius: 1px;
-                                }
-                            }
-
-                            // Dynamic Filter Curve Path (Smooth Bezier curve across spectrum)
-                            Path {
-                                commands: "M 0 52 Q 60 46, 120 22 T 240 32 T 360 20 T 480 38 T 600 52";
-                                stroke: #347864;
-                                stroke-width: 2.0px;
-                            }
-
-                            // 4 Parametric EQ Filter Nodes
-                            Rectangle {
-                                x: 60px;
-                                y: 44px;
-                                width: 6px;
-                                height: 6px;
-                                border-radius: 3px;
-                                background: #f8fafc;
-                                border-width: 1.5px;
-                                border-color: Theme.accent;
-                            }
-                            Rectangle {
-                                x: 120px;
-                                y: 20px;
-                                width: 6px;
-                                height: 6px;
-                                border-radius: 3px;
-                                background: #f8fafc;
-                                border-width: 1.5px;
-                                border-color: #347864;
-                            }
-                            Rectangle {
-                                x: 240px;
-                                y: 30px;
-                                width: 6px;
-                                height: 6px;
-                                border-radius: 3px;
-                                background: #f8fafc;
-                                border-width: 1.5px;
-                                border-color: #9a6a38;
-                            }
-                            Rectangle {
-                                x: 360px;
-                                y: 18px;
-                                width: 6px;
-                                height: 6px;
-                                border-radius: 3px;
-                                background: #f8fafc;
-                                border-width: 1.5px;
-                                border-color: #705e88;
-                            }
-                        }
-
-                        // Low / Mid / Air readouts
-                        HorizontalLayout {
-                            spacing: 4px;
-
-                            Rectangle {
-                                background: #080a10;
-                                border-radius: 3px;
-                                border-width: 1px;
-                                border-color: #ffffff0a;
-                                horizontal-stretch: 1;
+                                border-color: #ffffff14;
+                                width: 48px;
                                 height: 26px;
                                 HorizontalLayout {
                                     alignment: center;
                                     Text {
-                                        text: "LOW: " + root.eq-low-db;
-                                        font-family: Tokens.font-mono;
+                                        text: "切换";
+                                        font-family: Tokens.font-ui;
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: Theme.accent;
+                                        color: #e2e8f0;
                                         vertical-alignment: center;
                                     }
                                 }
-                            }
-                            Rectangle {
-                                background: #080a10;
-                                border-radius: 3px;
-                                border-width: 1px;
-                                border-color: #ffffff0a;
-                                horizontal-stretch: 1;
-                                height: 26px;
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: "MID: " + root.eq-mid-db;
-                                        font-family: Tokens.font-mono;
-                                        font-size: 9px;
-                                        font-weight: 700;
-                                        color: #347864;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                background: #080a10;
-                                border-radius: 3px;
-                                border-width: 1px;
-                                border-color: #ffffff0a;
-                                horizontal-stretch: 1;
-                                height: 26px;
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: "AIR: " + root.eq-air-db;
-                                        font-family: Tokens.font-mono;
-                                        font-size: 9px;
-                                        font-weight: 700;
-                                        color: #9a6a38;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Device 3: VCA Glue Compressor (Fixed studio module width: 240px)
-                Rectangle {
-                    width: 240px;
-                    background: Theme.bg-surface;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 6px;
-                        alignment: space-between;
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            alignment: space-between;
-                            HorizontalLayout {
-                                spacing: 5px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #9a6a38; }
-                                Text {
-                                    text: "VCA Glue Comp";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: #f8fafc;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            Text {
-                                text: "GR " + root.comp-gr-text;
-                                font-family: Tokens.font-mono;
-                                font-size: 8px;
-                                color: #9a6a38;
-                                font-weight: 700;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        // GR Meter Box
-                        Rectangle {
-                            height: 72px;
-                            background: #06080d;
-                            border-radius: 4px;
-                            border-width: 1px;
-                            border-color: #191f2c;
-
-                            VerticalLayout {
-                                padding: 6px;
-                                alignment: space-between;
-
-                                HorizontalLayout {
-                                    Text {
-                                        text: "GAIN REDUCTION";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        letter-spacing: 0.8px;
-                                        color: #64748b;
-                                        font-weight: 700;
-                                    }
-                                    Text {
-                                        text: root.comp-gr-text;
-                                        font-family: Tokens.font-mono;
-                                        font-size: 9px;
-                                        font-weight: 800;
-                                        color: #9a6a38;
-                                        horizontal-alignment: right;
-                                    }
-                                }
-
-                                Rectangle {
-                                    height: 8px;
-                                    background: #06080d;
-                                    border-radius: 4px;
-                                    Rectangle {
-                                        x: 0;
-                                        width: root.comp-gr-fraction * parent.width;
-                                        height: 8px;
-                                        border-radius: 4px;
-                                        background: #9a6a38;
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    alignment: space-between;
-                                    Text {
-                                        text: "Atk: 10ms";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #64748b;
-                                    }
-                                    Text {
-                                        text: "Rel: Auto";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #64748b;
-                                    }
-                                    Text {
-                                        text: "Ratio: 4:1";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #64748b;
-                                    }
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Rectangle {
-                                background: #080a10;
-                                border-radius: 3px;
-                                border-width: 1px;
-                                border-color: #ffffff0a;
-                                horizontal-stretch: 1;
-                                height: 26px;
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: "Thresh: -16dB";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #cbd5e1;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                background: #080a10;
-                                border-radius: 3px;
-                                border-width: 1px;
-                                border-color: #ffffff0a;
-                                horizontal-stretch: 1;
-                                height: 26px;
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: "Makeup: +4.5dB";
-                                        font-family: Tokens.font-mono;
-                                        font-size: 8px;
-                                        color: #cbd5e1;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
+                                dev_swap_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        root.dock-instrument-target-id = root.selected-track-id;
+                                        root.dock-instrument-menu-open = true;
                                     }
                                 }
                             }
@@ -860,6 +783,9 @@ export component UnifiedLowerDock inherits Rectangle {
                         border-width: 1px;
                         border-color: trk.id == root.selected-track-id ? Theme.accent : #191f2c;
                         clip: true;
+
+                        // Background selection TouchArea declared BEFORE foreground controls so M/S/Pan/Fader remain clickable
+                        TouchArea { clicked => { root.select-track(trk.id); } }
 
                         VerticalLayout {
                             padding: 5px;
@@ -928,26 +854,35 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
 
-                            // 3. Insert Slots
+                            // 3. Insert Slots (Clickable Instrument/Timbre Selector)
                             Rectangle {
                                 height: 15px;
-                                background: #10141d;
+                                background: insert1_touch.has-hover ? #1e293b : #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: insert1_touch.has-hover ? Theme.accent : #ffffff08;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
                                     Text {
-                                        text: trk.insert1 != "" ? trk.insert1 : "1: None";
+                                        text: trk.insert1 != "" ? trk.insert1 : "1: 选音色 ▾";
                                         font-family: Tokens.font-ui;
                                         font-size: 7px;
-                                        color: #cbd5e1;
+                                        color: insert1_touch.has-hover ? #ffffff : #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
                                     }
                                 }
+                                insert1_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        root.select-track(trk.id);
+                                        root.dock-instrument-target-id = trk.id;
+                                        root.dock-instrument-menu-open = !root.dock-instrument-menu-open;
+                                    }
+                                }
+                                TooltipBubble { text: "点击切换轨道 #\{trk.id} 音色/效果"; is-visible: insert1_touch.has-hover; tip-offset-y: -22px; }
                             }
 
                             if root.console-maximized : Rectangle {
@@ -1123,14 +1058,39 @@ export component UnifiedLowerDock inherits Rectangle {
                                         TooltipBubble { text: "独奏此音轨"; is-visible: s_touch.has-hover; tip-offset-y: -22px; }
                                     }
                                 }
-                                Text {
-                                    text: trk.pan;
-                                    font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    color: #64748b;
-                                    font-weight: 700;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    width: 36px;
+                                    height: 16px;
+                                    border-radius: 2px;
+                                    background: mix_pan_touch.has-hover ? #1e293b : #0c1018;
+                                    border-width: 1px;
+                                    border-color: mix_pan_touch.has-hover ? Theme.accent : #ffffff10;
+                                    Text {
+                                        text: trk.pan;
+                                        font-family: Tokens.font-mono;
+                                        font-size: 7.5px;
+                                        color: mix_pan_touch.has-hover ? #ffffff : #94a3b8;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    mix_pan_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.ew-resize;
+                                        pointer-event(event) => {
+                                            if (event.kind == PointerEventKind.up) {
+                                                root.select-track(trk.id);
+                                                root.track-pan-change(
+                                                    trk.id,
+                                                    Math.max(-1.0, Math.min(1.0, (self.mouse-x / (self.width > 1px ? self.width : 1px)) * 2.0 - 1.0))
+                                                );
+                                            }
+                                        }
+                                        double-clicked => {
+                                            root.select-track(trk.id);
+                                            root.track-pan-change(trk.id, 0.0);
+                                        }
+                                    }
+                                    TooltipBubble { text: "声像 Pan: " + trk.pan + " (左右拖拽/双击归中)"; is-visible: mix_pan_touch.has-hover; tip-offset-y: -22px; }
                                 }
                             }
 
@@ -1189,13 +1149,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                     }
 
                                     trk_fader_touch := TouchArea {
-                                        mouse-cursor: MouseCursor.pointer;
-                                        clicked => {
+                                        mouse-cursor: MouseCursor.ns-resize;
+                                        pointer-event(event) => {
+                                            if (event.kind == PointerEventKind.up) {
+                                                root.select-track(trk.id);
+                                                root.track-volume-change(
+                                                    trk.id,
+                                                    Math.round((Math.max(0.0, Math.min(1.0, 1.0 - (self.mouse-y / (self.height > 1px ? self.height : 1px)))) * 66.0 - 60.0) * 10.0) / 10.0
+                                                );
+                                            }
+                                        }
+                                        double-clicked => {
                                             root.select-track(trk.id);
-                                            root.track-volume-change(trk.id, trk.volume_db == -2.5 ? 0.0 : -2.5);
+                                            root.track-volume-change(trk.id, 0.0);
                                         }
                                     }
-                                    TooltipBubble { text: "推子: " + trk.volume_db + " dB (点击切换 0dB)"; is-visible: trk_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
+                                    TooltipBubble { text: "推子: " + trk.volume_db + " dB (上下拖拽/双击归 0dB)"; is-visible: trk_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
                                 }
 
                                 // Level Meter Bar
@@ -1265,7 +1234,6 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
                         }
-                        TouchArea { clicked => { root.select-track(trk.id); } }
                     }
 
                     // Optional Group Bus Strip in Mixer mode (Fixed width: 88px)
@@ -1453,7 +1421,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                     Rectangle {
                                         x: 1px;
-                                        y: 30px;
+                                        y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-volume-db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
                                         background: #94a3b8;
@@ -1469,6 +1437,17 @@ export component UnifiedLowerDock inherits Rectangle {
                                             background: Theme.track-bus;
                                         }
                                     }
+
+                                    bus_fader_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.ns-resize;
+                                        pointer-event(event) => {
+                                            if (event.kind == PointerEventKind.up) {
+                                                root.bus-volume-db = Math.round((Math.max(0.0, Math.min(1.0, 1.0 - (self.mouse-y / (self.height > 1px ? self.height : 1px)))) * 66.0 - 60.0) * 10.0) / 10.0;
+                                            }
+                                        }
+                                        double-clicked => { root.bus-volume-db = 0.0; }
+                                    }
+                                    TooltipBubble { text: "总线推子: " + root.bus-volume-db + " dB (上下拖拽/双击归 0dB)"; is-visible: bus_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
                                 }
 
                                 Rectangle {
@@ -1504,7 +1483,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     HorizontalLayout {
                                         alignment: center;
                                         Text {
-                                            text: "-1.0 dB";
+                                            text: "" + root.bus-volume-db + " dB";
                                             font-family: Tokens.font-mono;
                                             font-size: 8.5px;
                                             font-weight: 700;
@@ -1648,16 +1627,26 @@ export component UnifiedLowerDock inherits Rectangle {
                                     width: 32px;
                                     height: 16px;
                                     border-radius: 2px;
-                                    background: #10141d;
+                                    background: root.master-mono ? #f59e0b : (master_mono_touch.has-hover ? #1e293b : #10141d);
+                                    border-width: 1px;
+                                    border-color: root.master-mono ? #d97706 : #ffffff10;
                                     Text {
                                         text: "MONO";
                                         font-family: Tokens.font-mono;
                                         font-size: 7px;
                                         font-weight: 700;
-                                        color: #94a3b8;
+                                        color: root.master-mono ? #0f172a : #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
+                                    master_mono_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.pointer;
+                                        clicked => {
+                                            root.master-mono = !root.master-mono;
+                                            root.execute-action("master-toggle-mono");
+                                        }
+                                    }
+                                    TooltipBubble { text: "总输出单声道监听切换 [MONO]"; is-visible: master_mono_touch.has-hover; tip-offset-y: -22px; }
                                 }
                                 Text {
                                     text: "0 dBTP";
@@ -1702,7 +1691,7 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                     Rectangle {
                                         x: 1px;
-                                        y: 26px;
+                                        y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (root.master-volume-db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
                                         background: #cbd5e1;
@@ -1718,6 +1707,20 @@ export component UnifiedLowerDock inherits Rectangle {
                                             background: Theme.accent;
                                         }
                                     }
+
+                                    master_fader_touch := TouchArea {
+                                        mouse-cursor: MouseCursor.ns-resize;
+                                        pointer-event(event) => {
+                                            if (event.kind == PointerEventKind.up) {
+                                                root.master-volume-db = Math.round((Math.max(0.0, Math.min(1.0, 1.0 - (self.mouse-y / (self.height > 1px ? self.height : 1px)))) * 66.0 - 60.0) * 10.0) / 10.0;
+                                            }
+                                        }
+                                        double-clicked => {
+                                            root.master-volume-db = 0.0;
+                                            root.execute-action("master-reset-fader");
+                                        }
+                                    }
+                                    TooltipBubble { text: "总推子: " + root.master-volume-db + " dB (上下拖拽/双击归 0dB)"; is-visible: master_fader_touch.has-hover; tip-offset-x: -24px; tip-offset-y: -22px; }
                                 }
 
                                 // Stereo Master Meter Bar
@@ -1771,7 +1774,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     HorizontalLayout {
                                         alignment: center;
                                         Text {
-                                            text: "-0.3 dB";
+                                            text: "" + root.master-volume-db + " dB";
                                             font-family: Tokens.font-mono;
                                             font-size: 8.5px;
                                             font-weight: 800;
@@ -1808,10 +1811,10 @@ export component UnifiedLowerDock inherits Rectangle {
                     // Empty / Add Channel Strip Slot in Mixer mode (Fixed width: 72px)
                     if root.active-tab == "mixer" : Rectangle {
                         width: 72px;
-                        background: #06080d;
+                        background: add_mix_trk_touch.has-hover ? #101622 : #06080d;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: #ffffff08;
+                        border-color: add_mix_trk_touch.has-hover ? Theme.accent : #ffffff08;
 
                         VerticalLayout {
                             alignment: center;
@@ -1820,17 +1823,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: "+";
                                 font-family: Tokens.font-mono;
                                 font-size: 16px;
-                                color: #475569;
+                                color: add_mix_trk_touch.has-hover ? Theme.accent : #94a3b8;
                                 horizontal-alignment: center;
                             }
                             Text {
                                 text: "添加混音轨";
                                 font-family: Tokens.font-ui;
                                 font-size: 8px;
-                                color: #475569;
+                                color: add_mix_trk_touch.has-hover ? #f8fafc : #94a3b8;
                                 horizontal-alignment: center;
                             }
                         }
+                        add_mix_trk_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.execute-action("track-add-midi"); }
+                        }
+                        TooltipBubble { text: "新建 MIDI 混音音轨"; is-visible: add_mix_trk_touch.has-hover; tip-offset-y: -24px; }
                     }
                 }
             }
@@ -1867,6 +1875,78 @@ export component UnifiedLowerDock inherits Rectangle {
                 note-drag-cancel() => { root.note-drag-cancel(); }
                 humanize-requested => { root.humanize-requested(); }
                 quantize-requested => { root.quantize-requested(); }
+            }
+        }
+    }
+
+    // ─── Dock Sub-Module Local Instrument Picker Overlay ──────────
+    if root.dock-instrument-menu-open : TouchArea {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.dock-instrument-menu-open = false; }
+    }
+
+    if root.dock-instrument-menu-open : Rectangle {
+        x: Math.max(12px, parent.width - 420px);
+        y: 38px;
+        width: 232px;
+        height: 294px;
+        background: #141923;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Theme.accent;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #000000a0;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
+            Text {
+                text: "切换轨道 #\{root.dock-instrument-target-id > 0 ? root.dock-instrument-target-id : root.selected-track-id} 音色 / 插入";
+                font-family: Tokens.font-mono;
+                font-size: 9px;
+                font-weight: 700;
+                color: Theme.accent;
+                height: 20px;
+                vertical-alignment: center;
+            }
+            for preset in [
+                { id: "synth:hollow", label: "合成器 • 柔和主音 (Hollow Lead)" },
+                { id: "synth:organ", label: "合成器 • 风琴键音 (Warm Organ)" },
+                { id: "synth:vocal", label: "合成器 • 人声铺底 (Choir Pad)" },
+                { id: "synth:metallic", label: "合成器 • 金属 FM (FM Bell)" },
+                { id: "synth:glass", label: "合成器 • 水晶拨弦 (Glass Pluck)" },
+                { id: "synth:bass", label: "合成器 • 次低音 (Sub Bass)" },
+                { id: "sfz:default", label: "采样库 • 加载 SFZ 音色..." },
+                { id: "fx:eq", label: "效果槽 • 插入 参量均衡 EQ" },
+                { id: "fx:reverb", label: "效果槽 • 插入 空间混响 Reverb" },
+            ] : Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                background: dock-inst-opt.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    Text {
+                        text: preset.label;
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        color: dock-inst-opt.has-hover ? #ffffff : #cbd5e1;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                dock-inst-opt := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => {
+                        root.dock-instrument-menu-open = false;
+                        root.track-instrument-change(
+                            root.dock-instrument-target-id > 0 ? root.dock-instrument-target-id : root.selected-track-id,
+                            preset.id
+                        );
+                    }
+                }
             }
         }
     }

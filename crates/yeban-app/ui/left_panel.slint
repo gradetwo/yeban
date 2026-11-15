@@ -29,6 +29,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         { name: "Sub Bass 808 Glide Rack", desc: "带宏旋钮一键失真度映射", tag: "Synth", format: "Instrument Rack" }
     ];
 
+    in-out property <bool> show-instrument-menu: false;
+
     callback switch-tab(string);
     callback normalize-heights();
     callback fader-changed(float);
@@ -36,6 +38,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     callback select-tag(string);
     callback load-item(string);
     callback focus-devices();
+    callback track-pan-change(int, float);
+    callback track-instrument-change(int, string);
+    callback search-changed(string);
+    callback execute-action(string);
 
     in-out property <length> panel-width: 256px;
     width: root.panel-width;
@@ -153,29 +159,56 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             color: root.selected-track-color;
                             vertical-alignment: center;
                         }
-                        Rectangle {
-                            background: root.selected-track-color.with-alpha(0.18);
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: root.selected-track-color.with-alpha(0.40);
-                            height: 18px;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                Text {
-                                    text: "均分高度";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 9px;
-                                    font-weight: 700;
-                                    color: root.selected-track-color;
-                                    vertical-alignment: center;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Rectangle {
+                                background: inst_btn_touch.has-hover || root.show-instrument-menu ? Theme.accent.with-alpha(0.28) : Theme.accent.with-alpha(0.14);
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.accent.with-alpha(0.55);
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: "更换音色 ▾";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: #f8fafc;
+                                        vertical-alignment: center;
+                                    }
                                 }
+                                inst_btn_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.show-instrument-menu = !root.show-instrument-menu; }
+                                }
+                                TooltipBubble { text: "为当前轨道切换内置合成器音色或插入效果器"; is-visible: inst_btn_touch.has-hover; tip-offset-x: -40px; tip-offset-y: 22px; }
                             }
-                            touch_norm := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.normalize-heights(); }
+                            Rectangle {
+                                background: root.selected-track-color.with-alpha(0.18);
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: root.selected-track-color.with-alpha(0.40);
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: "均分高度";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: root.selected-track-color;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                touch_norm := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.normalize-heights(); }
+                                }
+                                TooltipBubble { text: "重置所有音轨高度为标准紧凑视图"; is-visible: touch_norm.has-hover; tip-offset-x: -30px; tip-offset-y: 22px; }
                             }
-                            TooltipBubble { text: "重置所有音轨高度为标准紧凑视图"; is-visible: touch_norm.has-hover; tip-offset-x: -30px; tip-offset-y: 22px; }
                         }
                     }
 
@@ -235,6 +268,52 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 clicked => { root.show-bus-strip = !root.show-bus-strip; }
                             }
                             TooltipBubble { text: "展开/折叠对应分组总线通道条"; is-visible: touch_bus_toggle.has-hover; tip-offset-x: -30px; tip-offset-y: 20px; }
+                        }
+                    }
+                }
+            }
+
+            // Inline Instrument / FX Quick Picker Menu
+            if root.show-instrument-menu : Rectangle {
+                background: #0d121c;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.accent.with-alpha(0.60);
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 3px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "音色与效果器预设"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: Theme.accent; vertical-alignment: center; }
+                        Rectangle {
+                            width: 16px; height: 16px; border-radius: 3px; background: #1e293b;
+                            Text { text: "×"; font-size: 10px; color: #f8fafc; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.show-instrument-menu = false; } }
+                        }
+                    }
+                    for opt in [
+                        { id: "synth:hollow",   label: "空灵合成 Pad (Hollow)" },
+                        { id: "synth:organ",    label: "温暖风琴 Organ" },
+                        { id: "synth:vocal",    label: "人声领唱 Vocal" },
+                        { id: "synth:metallic", label: "金属拨弦 Metallic Pluck" },
+                        { id: "synth:glass",    label: "玻璃钟琴 Glass Bell" },
+                        { id: "synth:bass",     label: "深沉贝斯 Neuro Bass" },
+                        { id: "fx:eq",          label: "+ 插入 参量均衡 EQ" },
+                        { id: "fx:reverb",      label: "+ 插入 空间混响 Reverb" },
+                    ] : Rectangle {
+                        height: 20px;
+                        border-radius: 3px;
+                        background: insp_opt_t.has-hover ? Theme.accent.with-alpha(0.22) : #141926;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            Text { text: opt.label; font-family: Tokens.font-ui; font-size: 9.5px; color: #f1f5f9; vertical-alignment: center; }
+                        }
+                        insp_opt_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.show-instrument-menu = false;
+                                root.track-instrument-change(root.selected-track-id, opt.id);
+                            }
                         }
                     }
                 }
@@ -310,10 +389,35 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                             }
 
+                            if root.selected-track-inserts.length == 0
+                                || (root.selected-track-inserts[0] == ""
+                                    && (root.selected-track-inserts.length < 2 || root.selected-track-inserts[1] == "")
+                                    && (root.selected-track-inserts.length < 3 || root.selected-track-inserts[2] == "")) : Rectangle {
+                                height: 24px;
+                                background: empty_ins_touch.has-hover ? Theme.accent.with-alpha(0.18) : #0b0e16;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: "点击 + 插入效果器或音色";
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9px;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                empty_ins_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.show-instrument-menu = true; }
+                                }
+                            }
+
                             for ins[idx] in root.selected-track-inserts : Rectangle {
                                 // [Q4] 空槽不画：投影只给**真实设备链**，没有设备就没有这一行。
                                 visible: ins != "";
-                                height: 22px;
+                                height: ins != "" ? 22px : 0px;
                                 background: #10141d;
                                 border-radius: 3px;
                                 border-width: 1px;
@@ -382,8 +486,11 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-weight: 700;
                                 }
                             }
-                            eq_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
-                            TooltipBubble { text: "多段参量均衡器曲线预览"; is-visible: eq_touch.has-hover; tip-offset-y: 40px; }
+                            eq_touch := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.track-instrument-change(root.selected-track-id, "fx:eq"); }
+                            }
+                            TooltipBubble { text: "点击为当前轨道追加/聚焦参量均衡 EQ"; is-visible: eq_touch.has-hover; tip-offset-y: 40px; }
                         }
 
                         // Section 4: Pan (声像) Balance Control (Compact Centered DAW Widget)
@@ -435,8 +542,19 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         }
                                     }
                                 }
-                                pan_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
-                                TooltipBubble { text: "声像平衡 (L/R Balance)"; is-visible: pan_touch.has-hover; tip-offset-y: 22px; }
+                                pan_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    moved => {
+                                        if self.pressed {
+                                            let pan_val = Math.max(-1.0, Math.min(1.0, (self.mouse-x - self.width / 2) / Math.max(1px, self.width / 2)));
+                                            root.track-pan-change(root.selected-track-id, pan_val);
+                                        }
+                                    }
+                                    double-clicked => {
+                                        root.track-pan-change(root.selected-track-id, 0.0);
+                                    }
+                                }
+                                TooltipBubble { text: "声像平衡 (左右拖拽调节，双击归中)"; is-visible: pan_touch.has-hover; tip-offset-y: 22px; }
                             }
                         }
 
@@ -709,8 +827,22 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                bus_pan_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
-                                TooltipBubble { text: "总线声像平衡 (L/R Balance)"; is-visible: bus_pan_touch.has-hover; tip-offset-y: 22px; }
+                                bus_pan_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    moved => {
+                                        if self.pressed {
+                                            let ratio = Math.max(0.0, Math.min(1.0, self.mouse-x / Math.max(1px, self.width)));
+                                            let db = -24.0 + ratio * 30.0;
+                                            root.bus-track-vol = db;
+                                            root.bus-fader-changed(db);
+                                        }
+                                    }
+                                    double-clicked => {
+                                        root.bus-track-vol = 0.0;
+                                        root.bus-fader-changed(0.0);
+                                    }
+                                }
+                                TooltipBubble { text: "总线控制 (拖拽调节总线电平，双击归 0dB)"; is-visible: bus_pan_touch.has-hover; tip-offset-y: 22px; }
                             }
                         }
 
@@ -834,17 +966,17 @@ export component ZoneBrowserAndInspector inherits Rectangle {
             padding: 8px;
             spacing: 8px;
 
-            // Search input field
+            // Search input field (Real TextInput)
             Rectangle {
                 height: 30px;
                 background: #06080d;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: Theme.border-subtle;
+                border-color: browser_search_input.has-focus ? Theme.accent : Theme.border-subtle;
 
                 HorizontalLayout {
                     padding-left: 10px;
-                    padding-right: 10px;
+                    padding-right: 8px;
                     spacing: 6px;
                     Text {
                         text: "检索";
@@ -854,12 +986,53 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         color: #64748b;
                         vertical-alignment: center;
                     }
-                    Text {
-                        text: "搜索音色、插件、采样包...";
-                        font-family: Tokens.font-ui;
-                        font-size: 10px;
-                        color: #64748b;
-                        vertical-alignment: center;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        if root.search-query == "" : Text {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            text: "搜索音色、插件、采样包...";
+                            font-family: Tokens.font-ui;
+                            font-size: 10px;
+                            color: #64748b;
+                            vertical-alignment: center;
+                        }
+                        browser_search_input := TextInput {
+                            width: parent.width;
+                            height: parent.height;
+                            text <=> root.search-query;
+                            font-family: Tokens.font-ui;
+                            font-size: 10px;
+                            color: #f8fafc;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => {
+                                root.search-changed(self.text);
+                            }
+                        }
+                    }
+                    if root.search-query != "" : Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        y: 6px;
+                        border-radius: 3px;
+                        background: clear_q_t.has-hover ? #1e293b : transparent;
+                        Text {
+                            text: "×";
+                            font-size: 11px;
+                            color: #94a3b8;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        clear_q_t := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.search-query = "";
+                                root.search-changed("");
+                            }
+                        }
                     }
                 }
             }

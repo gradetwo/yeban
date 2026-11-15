@@ -116,6 +116,14 @@ export component PianoRoll inherits Rectangle {
     in property <[bool]> white-key-pattern: [
         true, false, true, false, true, true, false, true, false, true, false, true
     ];
+    // 16 行音高映射 (row 0 = MIDI 75 Eb5 .. row 15 = MIDI 60 C4, 与 bridge::pitch_for_lane 同口径)
+    in property <[bool]> lane-is-white: [
+        false, true, false, true, true, false, true, false, true, false, true, true, false, true, false, true
+    ];
+    in property <[string]> lane-key-labels: [
+        "D#5", "D5", "C#5", "C5", "B4", "A#4", "A4", "G#4", "G4", "F#4", "F4", "E4", "D#4", "D4", "C#4", "C4"
+    ];
+    in-out property <int> audition-active-row: -1;
     // 力度是 0.0–1.0 的归一化值（= `MidiNote::velocity` ÷ 127，由投影层算好）；
     // 0–127 的量化与 960 PPQ 的对齐归模型层。
     in property <[float]> velocities: [];
@@ -191,30 +199,76 @@ export component PianoRoll inherits Rectangle {
         y: Tokens.space-2;
         // 运行期拒绝原因（`#166`）比静态读数长 ⇒ 这一行横向占满剩余宽度（左侧 x / 顶沿 y
         // 与高度一位未改，而**没有拒绝时**文字仍是同一串、左对齐 ⇒ 像素不变）。
-        width: parent.width - 272px - Tokens.space-4;
+        width: max(80px, parent.width - 272px - 170px);
         height: 20px;
-        text: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · 显示 C2 – C7";
+        text: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · C4 – Eb5";
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
+        overflow: elide;
         accessible-role: text;
         accessible-id: "piano-roll-status";
         accessible-label: "卷帘吸附与音域状态";
-        // ⭐ [PATCH UI-A11Y-006]（2026-11-09）：label 固定为**静态语义名**（与
-        // `elements.rs` 注册表、`pane_no_overlap.rs` 的判据逐字一致），当前读数走
-        // `value` 通道。修前 label 在回执态会变成拒绝原因（名字即内容），默认态又
-        // 只念静态名、拿不到吸附档位/音域；屏读器两种状态都缺稳定的「名称 + 值」。
-        // value 与上面 `text` **逐字同源**（同一个三元表达式），⛔ 不是第二份读数、
-        // ⛔ 不改可见像素、⛔ 不新增可寻址节点。
-        accessible-value: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · 显示 C2 – C7";
+        accessible-value: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · C4 – Eb5";
     }
 
-    // ---------------------------------------------------------------- 琴键列
+    // 右侧本地视图菜单（量化 / 人性化）
+    HorizontalLayout {
+        x: parent.width - 158px;
+        y: Tokens.space-2;
+        width: 150px;
+        height: 20px;
+        spacing: 4px;
+        z: 1;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 20px;
+            background: quant-btn-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "量化 Q";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            quant-btn-touch := TouchArea {
+                clicked => { root.quantize-requested(); }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 20px;
+            background: hum-btn-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "人性化 H";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            hum-btn-touch := TouchArea {
+                clicked => { root.humanize-requested(); }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 琴键列 (真实黑白键帽质感与音名)
     Rectangle {
         x: 0;
         y: 28px;
         width: 56px;
         height: parent.height - 28px;
-        background: Tokens.bg-panel;
+        background: #0d1018;
         accessible-role: list;
         accessible-id: "piano-roll-keys";
         accessible-label: "钢琴键列";
@@ -223,42 +277,88 @@ export component PianoRoll inherits Rectangle {
             x: 0;
             y: 14px * key_index;
             width: parent.width;
-            height: 13px;
-            background: root.white-key-pattern[key_index.mod(12)] ? Tokens.piano-key : Tokens.bg-void;
+            height: 14px;
+            background: root.audition-active-row == key_index ? #38bdf8 :
+                (root.lane-is-white[key_index] ? #e4e9f2 : #191e2b);
             border-width: 1px;
-            border-color: Tokens.line;
+            border-color: root.lane-is-white[key_index] ? #94a3b8 : #0b0d14;
+
+            // 黑键立体突起键帽（占左侧 34px）
+            if !root.lane-is-white[key_index] : Rectangle {
+                x: 0px;
+                y: 1px;
+                width: 34px;
+                height: 12px;
+                border-radius: 1.5px;
+                background: root.audition-active-row == key_index ? #0284c7 : #0b0e15;
+                border-width: 1px;
+                border-color: #2c3548;
+            }
+
+            // C5 / C4 八度锚点标示点
+            if (key_index == 3 || key_index == 15) : Rectangle {
+                x: 3px;
+                y: 5px;
+                width: 4px;
+                height: 4px;
+                border-radius: 2px;
+                background: #387691;
+            }
+
+            UiMonoText {
+                x: 35px;
+                y: 0px;
+                width: parent.width - 38px;
+                height: parent.height;
+                text: root.lane-key-labels[key_index];
+                color: root.audition-active-row == key_index ? #020617 :
+                    (root.lane-is-white[key_index] ? #1e293b : #94a3b8);
+                font-size: 8px;
+                font-weight: (key_index == 3 || key_index == 15) ? 800 : 600;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
         }
     }
 
-    // ---------------------------------------------------------------- 卷帘网格
+    // ---------------------------------------------------------------- 卷帘网格 (高对比黑白键背景 + 清晰格线)
     Rectangle {
         x: 56px;
         y: 28px;
         width: parent.width - 56px;
         height: parent.height - 28px;
-        background: Tokens.bg-shell;
+        background: #1a202e;
         clip: true;
 
         accessible-role: region;
         accessible-id: "piano-roll-grid";
         accessible-label: "音符网格画布";
 
-        // 横向音高车道
+        // 横向音高车道（保持 14px * lane_index 契约，增大黑白键明暗对比与 1px 底部分隔线）
         for lane_index in 16 : Rectangle {
             x: 0;
             y: 14px * lane_index;
             width: parent.width;
-            height: 13px;
-            background: root.white-key-pattern[lane_index.mod(12)] ? Tokens.bg-shell : Tokens.line;
+            height: 14px;
+            background: (lane_index == 3 || lane_index == 15) ? #2c364b :
+                (root.lane-is-white[lane_index] ? #242c3e : #161b26);
+
+            Rectangle {
+                x: 0;
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: (lane_index == 3 || lane_index == 15) ? #40516e : #2e374b;
+            }
         }
 
         // 纵向小节线 (960 PPQ 下的 1/16 网格等模型线落地)
-        for grid_index in 16 : Rectangle {
-            x: 60px * grid_index;
+        for grid_index in 24 : Rectangle {
+            x: Tokens.space-5 + 48px * grid_index;
             y: 0;
             width: 1px;
             height: parent.height;
-            background: grid_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
+            background: grid_index.mod(4) == 0 ? #404d66 : #293244;
         }
 
         // ------------------------------------------------------------ 音符图元
@@ -404,52 +504,76 @@ export component PianoRoll inherits Rectangle {
                     context-menu-popup.show();
                 }
             } else if event.kind == PointerEventKind.down {
-                root.drag-origin-x = self.mouse-x;
-                root.drag-origin-y = self.mouse-y;
-                root.drag-moved = false;
-                root.drag-last-x = self.mouse-x;
-                // 先问宿主"这一按是不是**移动音符**"（选择工具 + 命中音符）。
-                // 接管 ⇒ ⛔ 不滚动（两条手势通道互斥，⛔ 不双重处理）。
-                root.note-dragging = root.note-drag-grab(self.mouse-x, self.mouse-y);
-                root.dragging = !root.note-dragging;
-            } else if event.kind == PointerEventKind.up {
-                root.dragging = false;
-                if root.note-dragging {
+                if self.mouse-x < 56px && self.mouse-y >= 28px {
+                    root.audition-active-row = Math.min(15, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
+                    root.dragging = false;
                     root.note-dragging = false;
-                    if root.drag-moved {
-                        // 越了 4px ⇒ 这一抬是**拖拽**的收尾（提交恰好一个原子 Op）。
-                        root.note-drag-release(self.mouse-x, self.mouse-y);
-                    } else {
-                        // 没越阈值 ⇒ 这一抬是一次**单击**（选择工具点音符 = 选中它）。
+                    root.drag-moved = false;
+                    root.clicked(self.mouse-x, self.mouse-y);
+                } else {
+                    root.drag-origin-x = self.mouse-x;
+                    root.drag-origin-y = self.mouse-y;
+                    root.drag-moved = false;
+                    root.drag-last-x = self.mouse-x;
+                    // 先问宿主"这一按是不是**移动音符**"（选择工具 + 命中音符）。
+                    // 接管 ⇒ ⛔ 不滚动（两条手势通道互斥，⛔ 不双重处理）。
+                    root.note-dragging = root.note-drag-grab(self.mouse-x, self.mouse-y);
+                    root.dragging = !root.note-dragging;
+                }
+            } else if event.kind == PointerEventKind.up {
+                if root.audition-active-row >= 0 {
+                    root.audition-active-row = -1;
+                } else {
+                    root.dragging = false;
+                    if root.note-dragging {
+                        root.note-dragging = false;
+                        if root.drag-moved {
+                            // 越了 4px ⇒ 这一抬是**拖拽**的收尾（提交恰好一个原子 Op）。
+                            root.note-drag-release(self.mouse-x, self.mouse-y);
+                        } else {
+                            // 没越阈值 ⇒ 这一抬是一次**单击**（选择工具点音符 = 选中它）。
+                            root.clicked(self.mouse-x, self.mouse-y);
+                        }
+                    } else if !root.drag-moved {
+                        // 空白处：只有**没越阈值**的抬起才算一次单击（选中 / 清除选区）。
                         root.clicked(self.mouse-x, self.mouse-y);
                     }
-                } else if !root.drag-moved {
-                    // 空白处：只有**没越阈值**的抬起才算一次单击（选中 / 清除选区）。
-                    root.clicked(self.mouse-x, self.mouse-y);
+                    root.drag-moved = false;
                 }
-                root.drag-moved = false;
             } else if event.kind == PointerEventKind.move {
-                // 阈值判定用**两个方向各自比较**而不是 `abs(...)`：Slint 的 `length`
-                // 绝对值函数在这里没有必要，比较是纯量运算、无歧义。
-                if !root.drag-moved
-                    && ((self.mouse-x - root.drag-origin-x) > 4px
-                        || (root.drag-origin-x - self.mouse-x) > 4px
-                        || (self.mouse-y - root.drag-origin-y) > 4px
-                        || (root.drag-origin-y - self.mouse-y) > 4px) {
-                    root.drag-moved = true;
-                }
-                if root.note-dragging {
-                    // 拖拽臂：越阈值之后才更新草稿（小抖动不改草稿）。
-                    if root.drag-moved {
-                        root.note-drag-move(self.mouse-x, self.mouse-y);
+                if root.audition-active-row >= 0 {
+                    // 琴键列滑动滑奏（glissando）：越过新琴键行时即时试听
+                    if self.mouse-y >= 28px {
+                        let hovered = Math.min(15, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
+                        if hovered != root.audition-active-row {
+                            root.audition-active-row = hovered;
+                            root.clicked(self.mouse-x, self.mouse-y);
+                        }
                     }
-                } else if root.dragging {
-                    root.scroll-requested(root.drag-last-x - self.mouse-x);
-                    root.drag-last-x = self.mouse-x;
+                } else {
+                    // 阈值判定用**两个方向各自比较**而不是 `abs(...)`：Slint 的 `length`
+                    // 绝对值函数在这里没有必要，比较是纯量运算、无歧义。
+                    if !root.drag-moved
+                        && ((self.mouse-x - root.drag-origin-x) > 4px
+                            || (root.drag-origin-x - self.mouse-x) > 4px
+                            || (self.mouse-y - root.drag-origin-y) > 4px
+                            || (root.drag-origin-y - self.mouse-y) > 4px) {
+                        root.drag-moved = true;
+                    }
+                    if root.note-dragging {
+                        // 拖拽臂：越阈值之后才更新草稿（小抖动不改草稿）。
+                        if root.drag-moved {
+                            root.note-drag-move(self.mouse-x, self.mouse-y);
+                        }
+                    } else if root.dragging {
+                        root.scroll-requested(root.drag-last-x - self.mouse-x);
+                        root.drag-last-x = self.mouse-x;
+                    }
                 }
             } else {
                 // `cancel`（指针离开窗口 / 控件被禁用）：与 `up` 一样是收尾，
                 // 但这一拖**不算数** ⇒ 丢弃草稿、⛔ 不提交。
+                root.audition-active-row = -1;
                 root.dragging = false;
                 root.drag-moved = false;
                 if root.note-dragging {
