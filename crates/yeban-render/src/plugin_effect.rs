@@ -95,6 +95,16 @@ impl PluginEffectSource {
 }
 
 impl AudioSource for PluginEffectSource {
+    /// ⭐ 第五份报告 B-1：定位转发给内层源并对齐播放头。效果插件自身
+    /// 的内部状态（延迟线等）没有复位通路 ⇒ 区间起点按插件当前状态
+    /// 继续（这是本源的冷启动边界，如实登记：内层声部冷启动、效果
+    /// 状态不回滚）。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.inner.seek_to(frame)?;
+        self.position = frame;
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         if context.first_frame != self.position {
             return Err(RenderError::Source {

@@ -181,6 +181,22 @@ impl PluginTrackSource {
 }
 
 impl AudioSource for PluginTrackSource {
+    /// ⭐ 第五份报告 B-1：冷启动定位 —— 播放头跳到目标帧，调度游标
+    /// 跳过起点前的音符（不向插件发它们的开音），已激活表清空
+    /// （起点前开始的音符不追补，也不发无源的关音）。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.position = frame;
+        self.active.clear();
+        self.events.clear();
+        if let Some(schedule) = &self.schedule {
+            let notes = schedule.notes();
+            while self.cursor < notes.len() && notes[self.cursor].start_sample() < frame {
+                self.cursor += 1;
+            }
+        }
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         if context.first_frame != self.position {
             return Err(RenderError::Source {
