@@ -5538,6 +5538,20 @@ pub fn shortcut_rows() -> &'static [ShortcutRow] {
     &SHORTCUTS
 }
 
+/// 把规范写法里的 `Cmd/Ctrl+` 按**当前平台**折叠成单写（控件体检 §2.5 / §8 P1、
+/// 细节实测 §5.11：Windows 用户看到 `Cmd` 会先愣一下，两套修饰键写在一个字符串
+/// 里可读性也差）。数据表 [`SHORTCUTS`] 保留 `Cmd/Ctrl+` 的跨平台语义（判据与
+/// 文档逐字依赖它），只有 `--print-shortcuts` 面向人阅读的渲染这一层做平台化：
+/// macOS → `Cmd+`，其余平台 → `Ctrl+`。
+fn shortcut_label_for_platform(label: &str) -> String {
+    let single = if cfg!(target_os = "macos") {
+        "Cmd+"
+    } else {
+        "Ctrl+"
+    };
+    label.replace("Cmd/Ctrl+", single)
+}
+
 /// 打印 `[UI-A11Y-001]` / `[UI-A11Y-002]` 策略表在本版本下的判定结果。
 ///
 /// 同时给出**画布聚焦**与**IME 合成态**两列 —— 这两列必须不同, 而且差异必须是
@@ -5568,10 +5582,11 @@ pub fn shortcut_lines() -> Vec<String> {
     composing.begin_composition();
 
     for row in SHORTCUTS {
+        let rendered = shortcut_label_for_platform(row.label);
         let label = if row.implemented {
-            row.label.to_owned()
+            rendered
         } else {
-            format!("{} {}", row.label, UNIMPLEMENTED_MARKER)
+            format!("{} {}", rendered, UNIMPLEMENTED_MARKER)
         };
         lines.push(format!(
             "  {:<34} {:<28} {:<28}",
