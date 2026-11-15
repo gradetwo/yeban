@@ -23,7 +23,7 @@
 //! 2026-11-10 报告的一行为准（"onset 检测切到字 → tape（变速变调）/
 //! shift/stretch 三变形 → 4/10 ms 淡入淡出"）：
 //!
-//! 1. 读 WAV：与 `import_audio` 同一条 64 MiB 门（
+//! 1. 读 WAV：与 `import_audio` 同一条 256 MiB 门（
 //!    [`crate::import_audio::MAX_AUDIO_FILE_BYTES`]），超限拒绝不截断；
 //! 2. 切点：缺省按 onset 检测（[`yeban_dsp::slicer::detect_onsets`]），
 //!    第一个 onset 之前的音频丢弃（收据 `droppedLeadingFrames` 如实报）；
@@ -205,7 +205,7 @@ pub enum AudioSlicerError {
         /// 输入路径。
         path: PathBuf,
     },
-    /// 输入超过 64 MiB 门（与 `import_audio` 同门，拒绝不截断）。
+    /// 输入超过 256 MiB 门（与 `import_audio` 同门，拒绝不截断）。
     TooLarge {
         /// 输入路径。
         path: PathBuf,
@@ -271,7 +271,7 @@ impl std::fmt::Display for AudioSlicerError {
                 max_bytes,
             } => write!(
                 formatter,
-                "`{}` 是 {bytes} 字节，超过 64 MiB 门（{max_bytes} 字节），拒绝不截断",
+                "`{}` 是 {bytes} 字节，超过 256 MiB 门（{max_bytes} 字节），拒绝不截断",
                 path.display()
             ),
             Self::Read { path, reason } => {
@@ -351,7 +351,7 @@ impl SliceReport {
 ///
 /// # Errors
 ///
-/// 见 [`AudioSlicerError`]：输入不是文件／超 64 MiB 门／解码失败／0 帧／
+/// 见 [`AudioSlicerError`]：输入不是文件／超 256 MiB 门／解码失败／0 帧／
 /// 切点非法／根音溢出／变形失败／写盘失败。任何失败都不留部分产物
 /// （已写的切片 WAV 会被删掉，SFZ 不写）。
 pub fn slice_audio_file(

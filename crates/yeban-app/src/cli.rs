@@ -645,7 +645,7 @@ pub fn usage_text() -> String {
                            落在 `--slice-out` 指定的目录 (会创建, 含父目录);
                            采样器可直接加载; ⭐ 不开窗口、不建 MCP 会话、
                            不碰工程 ⇒ 没有显示器的机器上也能批量切; 输入
-                           超 64 MiB 门 (与 `--import-audio` 同门) ⇒ 拒绝不截断;
+                           超 256 MiB 门 (与 `--import-audio` 同门) ⇒ 拒绝不截断;
                            回执一行: `sliced-audio:` + 输入/输出目录/SFZ/片数/
                            变形/根音/丢弃首段帧数
   --slice-out <dir>         `--slice-audio` 的**输出目录** (必填); 单独给 = 用法错误
@@ -920,7 +920,7 @@ pub fn usage_text() -> String {
       {import_logic_switch} 在本次构建未编译 `{import_logic_feature}` /
       没配 --save-as / 与其它参数组合 (它是独立导入命令))
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
-  {open} --import-audio 失败 (读文件 / 超过 64 MiB 单文件上限 / 非 PCM-float WAV / 提交被拒)
+  {open} --import-audio 失败 (读文件 / 超过 256 MiB 单文件上限 / 非 PCM-float WAV / 提交被拒)
   {open} --import-logic 失败 (读 demo / ProjectData 记录流不合法 / 采样率不在规范枚举 /
      没有 karT 轨道 / 建出的工程未通过模型校验; 输入路径不存在是 skip, ⛔ 不算失败)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
