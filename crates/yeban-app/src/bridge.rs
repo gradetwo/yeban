@@ -210,28 +210,38 @@ pub fn host_to_painted(x: f32, y: f32) -> (f32, f32) {
 /// `pitch < PITCH_LANE_BASE` 落到最下面一条车道（索引 `PITCH_LANE_COUNT - 1`），
 /// `pitch >= PITCH_LANE_BASE + PITCH_LANE_COUNT` 落到最上面一条（索引 `0`）。
 /// 单调性：`pitch` 越大 ⇒ 车道索引越小（屏幕上越靠上），在窗口内**严格**递减。
+/// Map a MIDI pitch to a piano-roll lane index (`0..PITCH_LANE_COUNT`) using an explicit base pitch.
+#[must_use]
+pub fn pitch_lane_with_base(pitch: u8, base_pitch: u8) -> i32 {
+    let offset = i32::from(pitch.saturating_sub(base_pitch)).min(PITCH_LANE_COUNT - 1);
+    PITCH_LANE_COUNT - 1 - offset
+}
+
+/// `[UI-NOTE-002]` Map a MIDI pitch to the default C4 (`PITCH_LANE_BASE`) piano-roll lane index.
 #[must_use]
 pub fn pitch_lane(pitch: u8) -> i32 {
-    let offset = i32::from(pitch.saturating_sub(PITCH_LANE_BASE)).min(PITCH_LANE_COUNT - 1);
-    PITCH_LANE_COUNT - 1 - offset
+    pitch_lane_with_base(pitch, PITCH_LANE_BASE)
 }
 
 /// `[UI-NOTE-002/003]` **泳道 → 音高**（[`pitch_lane`] 的反向）。
 ///
 /// 铅笔要"在某个位置画出音符"就得先回答"这一行是哪个音高"。由 `pitch_lane` 的定义反推：
-/// `offset = PITCH_LANE_COUNT - 1 - lane`，`pitch = PITCH_LANE_BASE + offset`。
-/// 最下面一条泳道对应 `PITCH_LANE_BASE + 15`；比它更低的音高**画不出来**（车道只有 16 条）——
-/// 这不是缺陷而是当前截图的事实, 判据里以"往返"为准。
+/// `offset = PITCH_LANE_COUNT - 1 - lane`，`pitch = base_pitch + offset`。
+/// 最下面一条泳道对应 `base_pitch`；最上面一条泳道对应 `base_pitch + 15`。
 #[must_use]
-pub fn pitch_for_lane(lane: i32) -> Option<u8> {
-    // 用 `Range::contains` 而不是手写比较 —— clippy 的 `manual_range_contains` 正是这么要求的,
-    // 而我上一轮把门禁与提交串在一条命令里 ⇒ 它红着就推出去了（本会话第 172 轮记过这条规矩）。
+pub fn pitch_for_lane_with_base(lane: i32, base_pitch: u8) -> Option<u8> {
     if !(0..PITCH_LANE_COUNT).contains(&lane) {
         return None;
     }
     let offset = PITCH_LANE_COUNT - 1 - lane;
-    let base = i32::from(PITCH_LANE_BASE);
+    let base = i32::from(base_pitch);
     u8::try_from(base + offset).ok()
+}
+
+/// `[UI-NOTE-002/003]` Map a piano-roll lane index (`0..15`) to a MIDI pitch anchored at [`PITCH_LANE_BASE`].
+#[must_use]
+pub fn pitch_for_lane(lane: i32) -> Option<u8> {
+    pitch_for_lane_with_base(lane, PITCH_LANE_BASE)
 }
 
 /// `[UI-NOTE-002/003]` **y → 泳道**：`pitch_lane_y` 的反向, 供铅笔/力度工具把点击落到某一行。
@@ -252,10 +262,16 @@ pub fn lane_at_y(y: f32) -> Option<i32> {
 
 /// 音高 → 音符块顶边的相对 y（逻辑像素）。整数车道索引经**一次**乘法得到，不做累加。
 #[must_use]
-pub fn pitch_lane_y(pitch: u8) -> f32 {
+pub fn pitch_lane_y_with_base(pitch: u8, base_pitch: u8) -> f32 {
     #[allow(clippy::cast_precision_loss)]
-    let lane = pitch_lane(pitch) as f32;
+    let lane = pitch_lane_with_base(pitch, base_pitch) as f32;
     PITCH_LANE_HEIGHT_PX * lane + NOTE_INSET_Y_PX
+}
+
+/// `[UI-NOTE-002]` Map a MIDI pitch to its note top Y coordinate using [`PITCH_LANE_BASE`].
+#[must_use]
+pub fn pitch_lane_y(pitch: u8) -> f32 {
+    pitch_lane_y_with_base(pitch, PITCH_LANE_BASE)
 }
 
 // ---------------------------------------------------------------------------
@@ -526,9 +542,16 @@ impl ViewState {
     /// 只做**决策**（纯函数, 可判据）：真正的模型突变要经过撤销与 MCP, 属于下一层。
     /// `None` 表示"这里画不了"（y 落在 16 条泳道之外, 或 x 出界）。tick 已按 `grid_ticks` 吸附。
     #[must_use]
-    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<NotePlan> {
+    pub fn pencil_plan_with_base(
+        &self,
+        scroll_x: f32,
+        x: f32,
+        y: f32,
+        grid_ticks: u64,
+        base_pitch: u8,
+    ) -> Option<NotePlan> {
         let lane = lane_at_y(y)?;
-        let pitch = pitch_for_lane(lane)?;
+        let pitch = pitch_for_lane_with_base(lane, base_pitch)?;
         let start_tick = self.snapped_tick_at(scroll_x, x, grid_ticks);
         Some(NotePlan {
             start_tick,
@@ -536,6 +559,12 @@ impl ViewState {
             // 规范 `[UI-NOTE-003]`：双击创建"**默认 1 拍**"音符 ⇒ 时值 = 工程的 `ppq`（不是硬编码 960）。
             duration_ticks: self.ppq,
         })
+    }
+
+    /// `[UI-NOTE-003]` **铅笔的决策**（使用默认基准音高 [`PITCH_LANE_BASE`]）。
+    #[must_use]
+    pub fn pencil_plan(&self, scroll_x: f32, x: f32, y: f32, grid_ticks: u64) -> Option<NotePlan> {
+        self.pencil_plan_with_base(scroll_x, x, y, grid_ticks, PITCH_LANE_BASE)
     }
 
     /// `[UI-NOTE-003]` **力度柱命中**：车道内的点落在哪个音符的力度柱上。
@@ -4843,7 +4872,7 @@ impl ViewState {
     /// 事后过滤成 `None` → 选区为空 → 选择 / 橡皮擦 / 剪刀 / 箭头全部静默失效。
     /// 作用域为 `None` ⇒ 与 [`Self::hit_test_visible`] **逐项相同**。
     #[must_use]
-    pub fn hit_test_visible_scoped(
+    pub fn hit_test_visible_scoped_with_base(
         &self,
         scroll_x: f32,
         viewport_width: f32,
@@ -4851,6 +4880,7 @@ impl ViewState {
         y: f32,
         note_height: f32,
         clip_scope: Option<&str>,
+        base_pitch: u8,
     ) -> Option<usize> {
         let left_edge = scroll_x.max(0.0);
         let mut hit: Option<usize> = None;
@@ -4863,11 +4893,38 @@ impl ViewState {
             // 位置是**相对视口**的（与注入的数组同一口径, 见 `visible_notes`）。
             let left = note.x - left_edge;
             let right = left + note.width;
-            if x >= left && x <= right && y >= note.y && y <= note.y + note_height {
+            let note_y = if base_pitch == PITCH_LANE_BASE {
+                note.y
+            } else {
+                pitch_lane_y_with_base(note.pitch, base_pitch)
+            };
+            if x >= left && x <= right && y >= note_y && y <= note_y + note_height {
                 hit = Some(index);
             }
         }
         hit
+    }
+
+    /// Clip-scoped visible note hit test using [`PITCH_LANE_BASE`].
+    #[must_use]
+    pub fn hit_test_visible_scoped(
+        &self,
+        scroll_x: f32,
+        viewport_width: f32,
+        x: f32,
+        y: f32,
+        note_height: f32,
+        clip_scope: Option<&str>,
+    ) -> Option<usize> {
+        self.hit_test_visible_scoped_with_base(
+            scroll_x,
+            viewport_width,
+            x,
+            y,
+            note_height,
+            clip_scope,
+            PITCH_LANE_BASE,
+        )
     }
 
     /// `[UI-NOTE-001]` 步骤 ①：当前视口的 **tick 范围**（`[min_tick, max_tick]`）。
@@ -4944,6 +5001,21 @@ impl ViewState {
             out.velocities.push(note.velocity_normalized);
         }
         out
+    }
+
+    /// Re-project a list of already-filtered visible note Y coordinates using an arbitrary
+    /// piano-roll base MIDI pitch, preserving [`VisibleNotes`] layout invariants.
+    pub fn reproject_note_ys_with_base(&self, ulids: &[String], ys: &mut [f32], base_pitch: u8) {
+        let pitch_by_id: BTreeMap<&str, u8> = self
+            .notes
+            .iter()
+            .map(|note| (note.id.as_str(), note.pitch))
+            .collect();
+        for (id, y) in ulids.iter().zip(ys.iter_mut()) {
+            if let Some(&pitch) = pitch_by_id.get(id.as_str()) {
+                *y = pitch_lane_y_with_base(pitch, base_pitch);
+            }
+        }
     }
 
     /// 音符块宽（逻辑像素，下限 [`MIN_BLOCK_WIDTH_PX`]）。
@@ -9163,5 +9235,59 @@ mod tests {
         assert!(layout.set_percent(200));
         assert!(!layout.set_percent(200));
         assert!(!layout.is_default());
+    }
+
+    #[test]
+    fn piano_roll_with_base_roundtrips_and_reprojects() {
+        // Default base delegates cleanly.
+        for lane in 0..PITCH_LANE_COUNT {
+            let pitch = pitch_for_lane_with_base(lane, PITCH_LANE_BASE).expect("valid lane");
+            assert_eq!(pitch_for_lane(lane), Some(pitch));
+            assert_eq!(pitch_lane_with_base(pitch, PITCH_LANE_BASE), lane);
+            assert_eq!(pitch_lane(pitch), lane);
+            assert_eq!(
+                pitch_lane_y_with_base(pitch, PITCH_LANE_BASE),
+                pitch_lane_y(pitch)
+            );
+        }
+
+        // Low octave (C1 = 24) and high octave (C7 = 96 -> top lane = D#8 = 111).
+        assert_eq!(pitch_for_lane_with_base(15, 24), Some(24));
+        assert_eq!(pitch_for_lane_with_base(0, 24), Some(39));
+        assert_eq!(pitch_for_lane_with_base(15, 96), Some(96));
+        assert_eq!(pitch_for_lane_with_base(0, 96), Some(111));
+        assert_eq!(pitch_for_lane_with_base(-1, 60), None);
+        assert_eq!(pitch_for_lane_with_base(PITCH_LANE_COUNT, 60), None);
+
+        // `pencil_plan_with_base` and `hit_test_visible_scoped_with_base` agree on shifted octave.
+        let view = ViewState::from_project(&filled_project()).expect("view projection");
+        let plan = view
+            .pencil_plan_with_base(0.0, 20.0, pitch_lane_y_with_base(36, 36) + 2.0, 240, 36)
+            .expect("C2 plan at base 36");
+        assert_eq!(plan.pitch, 36);
+
+        if let Some(first_note) = view.notes.first() {
+            let shifted_base = 48;
+            let mut visible = view.visible_notes_scoped(0.0, 4000.0, None);
+            view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, shifted_base);
+            let idx = visible
+                .ulids
+                .iter()
+                .position(|id| id == &first_note.id)
+                .expect("first note visible");
+            let expected_y = pitch_lane_y_with_base(first_note.pitch, shifted_base);
+            assert!((visible.ys[idx] - expected_y).abs() < 0.01);
+
+            let hit = view.hit_test_visible_scoped_with_base(
+                0.0,
+                4000.0,
+                first_note.x + 1.0,
+                expected_y + 2.0,
+                16.0,
+                Some(first_note.clip_id.as_str()),
+                shifted_base,
+            );
+            assert!(hit.is_some(), "hit test must track reprojected Y");
+        }
     }
 }

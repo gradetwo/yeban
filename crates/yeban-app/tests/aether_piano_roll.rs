@@ -190,3 +190,143 @@ fn piano_roll_shows_the_selected_clip_and_edits_reach_the_project() {
     );
     eprintln!("[roll/zoom] tpp {tpp_before}->{tpp_after}, scroll {scroll_before}->{scroll_after}");
 }
+
+#[test]
+fn piano_roll_live_hold_release_octave_shift_and_audibility_warnings() {
+    let mut project = yeban_model::samples::filled_project();
+    // Ensure track 0 has no solo/mute blocking audition initially.
+    for track in project.tracks.values_mut() {
+        track.solo = false;
+        track.mute = false;
+        track.volume_db = 0.0;
+    }
+    let (clip_id, _) = first_midi_clip(&project);
+    let view = ViewState::from_project(&project).expect("工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<aether-roll-live>", "yeban-app", project.clone(), NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    let production = ProductionLoop::start(&project, 0).expect("启动实时引擎");
+    let engine = production.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+
+    let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    let ui = live.ui();
+    host::wire_roll_edit(ui, &undo);
+    host::wire_mixer_edit(ui, &undo);
+    host::wire_track_select(ui, &undo);
+    host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
+    host::wire_aether_actions(ui, Rc::clone(&undo), Rc::clone(&engine), view_cell);
+
+    let (placement_id, target_track_idx) = view
+        .clips
+        .iter()
+        .find(|clip| clip.clip_id == clip_id.to_canonical_string())
+        .map(|clip| (clip.placement_id.clone(), clip.track_index))
+        .expect("片段必须有摆放");
+    ui.set_selected_track_id(view.tracks[target_track_idx].id.clone().into());
+    ui.invoke_clip_select(placement_id.into());
+
+    // 1. Real hold-and-release piano key audition while transport is stopped.
+    ui.invoke_piano_key_pressed(15); // C4 (60)
+    assert!(ui.get_module_status_succeeded());
+    assert!(ui.get_module_status().as_str().contains("C4"));
+
+    let mut held_buf = vec![0.0_f32; 512 * 2];
+    engine.borrow_mut().render_into(&mut held_buf, 2, 4);
+    let held_peak = held_buf
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(
+        held_peak > 1e-4,
+        "按住琴键时必须持续出声，实际峰值={held_peak}"
+    );
+
+    // Sustained hold stays audible across additional blocks before release.
+    let mut sustain_buf = vec![0.0_f32; 512 * 2];
+    engine.borrow_mut().render_into(&mut sustain_buf, 2, 8);
+    let sustain_peak = sustain_buf
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(sustain_peak > 1e-4, "持续按住尚未松手时仍应有音频输出");
+
+    ui.invoke_piano_key_released(15);
+    let tail_quanta =
+        ((48_000 * 2) / yeban_app::engine_host::EngineHost::quantum_frames().max(1)) as u64;
+    engine.borrow_mut().pump(tail_quanta);
+    let mut tail_buf = vec![0.0_f32; 512 * 2];
+    engine.borrow_mut().render_into(&mut tail_buf, 2, 8);
+    let tail_end_peak = tail_buf
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(
+        tail_end_peak < 1e-4,
+        "松手释放 NoteOff 后音尾应衰减归零，实际={tail_end_peak}"
+    );
+
+    // 2. Octave shift changes pitch labels, range readout, note Y projections, and pencil pitch.
+    let ys_c4: Vec<f32> = ui.get_note_ys().iter().collect();
+    ui.invoke_piano_roll_octave_shift(-12);
+    assert_eq!(ui.get_roll_base_pitch(), 48);
+    assert_eq!(ui.get_roll_pitch_range_label().as_str(), "C3 – Eb4");
+    assert_eq!(
+        ui.get_roll_lane_key_labels().row_data(15).unwrap().as_str(),
+        "C3"
+    );
+    let ys_c3: Vec<f32> = ui.get_note_ys().iter().collect();
+    if !ys_c4.is_empty() && !ys_c3.is_empty() {
+        assert_ne!(ys_c4, ys_c3, "切换八度后可见音符的 Y 坐标必须同步重投影");
+    }
+
+    // Clamping down/up stays in 24..=96 (C1..C7).
+    for _ in 0..8 {
+        ui.invoke_piano_roll_octave_shift(-12);
+    }
+    assert_eq!(ui.get_roll_base_pitch(), 24);
+    for _ in 0..10 {
+        ui.invoke_piano_roll_octave_shift(12);
+    }
+    assert_eq!(ui.get_roll_base_pitch(), 96);
+    // Reset back to C3 (48) and pencil-draw on lane 15 -> must add pitch 48.
+    for _ in 0..4 {
+        ui.invoke_piano_roll_octave_shift(-12);
+    }
+    assert_eq!(ui.get_roll_base_pitch(), 48);
+    ui.set_active_tool(2);
+    let draw_x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 20.0;
+    let draw_y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 15.0 + 4.0;
+    ui.invoke_clicked(draw_x, draw_y);
+    let updated = undo.try_project().expect("工程");
+    let has_c3 = updated
+        .clip_pool
+        .get(&clip_id)
+        .and_then(|e| e.content.notes())
+        .is_some_and(|notes| notes.values().any(|n| n.pitch == 48));
+    assert!(
+        has_c3,
+        "切换到 C3 音域后用铅笔点最底行必须写入 MIDI 48 (C3)"
+    );
+
+    // 3. Muted track emits visible audibility warning on piano key press, then unmuting clears it.
+    ui.invoke_track_toggle_mute(target_track_idx as i32 + 1);
+    ui.invoke_piano_key_pressed(15);
+    assert!(ui.get_module_status_succeeded());
+    assert!(
+        ui.get_roll_edit_status().as_str().contains("静音"),
+        "静音轨道试听必须在状态提示用户，实际={}",
+        ui.get_roll_edit_status()
+    );
+    ui.invoke_piano_key_released(15);
+
+    ui.invoke_track_toggle_mute(target_track_idx as i32 + 1);
+    ui.invoke_piano_key_pressed(15);
+    assert_eq!(ui.get_roll_edit_status().as_str(), "");
+    ui.invoke_piano_key_released(15);
+}

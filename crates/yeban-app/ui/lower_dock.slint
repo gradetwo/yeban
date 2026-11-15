@@ -100,6 +100,9 @@ export component UnifiedLowerDock inherits Rectangle {
     callback note-drag-cancel();
     callback humanize-requested();
     callback quantize-requested();
+    callback piano-key-pressed(int);
+    callback piano-key-released(int);
+    callback piano-roll-octave-shift(int);
 
     // ⭐ 真实钢琴卷帘的数据面：全部由 host::apply_view 注入（同一份投影），
     // 界面⛔ 不再持有演示音符数组、⛔ 不再用 16×64 的假网格。
@@ -115,6 +118,14 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <string> playhead-timecode: "";
     in-out property <int> active-tool: 1;
     in-out property <string> roll-edit-status: "";
+    in-out property <int> roll-base-pitch: 60;
+    in-out property <string> roll-pitch-range-label: "C4 – Eb5";
+    in-out property <[string]> roll-lane-key-labels: [
+        "D#5", "D5", "C#5", "C5", "B4", "A#4", "A4", "G#4", "G4", "F#4", "F4", "E4", "D#4", "D4", "C#4", "C4"
+    ];
+    in-out property <[bool]> roll-lane-is-white: [
+        false, true, false, true, true, false, true, false, true, false, true, true, false, true, false, true
+    ];
     in-out property <string> note-drag-ulid: "";
     in-out property <float> note-drag-preview-dx: 0.0;
     in-out property <float> note-drag-preview-dy: 0.0;
@@ -1888,6 +1899,10 @@ export component UnifiedLowerDock inherits Rectangle {
                 playhead-timecode: root.playhead-timecode;
                 active-tool: root.active-tool;
                 edit-status: root.roll-edit-status;
+                base-midi-pitch: root.roll-base-pitch;
+                pitch-range-label: root.roll-pitch-range-label;
+                lane-key-labels: root.roll-lane-key-labels;
+                lane-is-white: root.roll-lane-is-white;
                 note-drag-ulid: root.note-drag-ulid;
                 note-drag-preview-dx: root.note-drag-preview-dx;
                 note-drag-preview-dy: root.note-drag-preview-dy;
@@ -1904,6 +1919,9 @@ export component UnifiedLowerDock inherits Rectangle {
                 note-drag-cancel() => { root.note-drag-cancel(); }
                 humanize-requested => { root.humanize-requested(); }
                 quantize-requested => { root.quantize-requested(); }
+                piano-key-pressed(lane) => { root.piano-key-pressed(lane); }
+                piano-key-released(lane) => { root.piano-key-released(lane); }
+                pitch-range-shift(delta) => { root.piano-roll-octave-shift(delta); }
             }
         }
     }

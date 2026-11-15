@@ -479,7 +479,15 @@ export component MainWindow inherits Window {
     in-out property <int> playhead-ticks: 0;
     in-out property <bool> playing: false;
     in-out property <bool> recording: false;
+    in-out property <int> roll-base-pitch: 60;
     in-out property <string> roll-edit-status: "";
+    in-out property <[bool]> roll-lane-is-white: [
+        false, true, false, true, true, false, true, false, true, false, true, true, false, true, false, true
+    ];
+    in-out property <[string]> roll-lane-key-labels: [
+        "D#5", "D5", "C#5", "C5", "B4", "A#4", "A4", "G#4", "G4", "F#4", "F4", "E4", "D#4", "D4", "C#4", "C4"
+    ];
+    in-out property <string> roll-pitch-range-label: "C4 – Eb5";
     in-out property <float> roll-scroll-x: 0.0;
     in-out property <int> roll-ticks-per-pixel: 30;
     in-out property <length> roll-velocity-lane-top: 0px;
@@ -677,6 +685,9 @@ export component MainWindow inherits Window {
     callback open-humanize();
     callback open-project();
     callback open-quantize();
+    callback piano-key-pressed(int);
+    callback piano-key-released(int);
+    callback piano-roll-octave-shift(int);
     callback record-wav();
     callback redo-step();
     callback ruler-seek(length);
@@ -1174,6 +1185,10 @@ export component MainWindow inherits Window {
                 playhead-timecode: root.timecode;
                 active-tool: root.active-tool;
                 roll-edit-status: root.roll-edit-status;
+                roll-base-pitch: root.roll-base-pitch;
+                roll-pitch-range-label: root.roll-pitch-range-label;
+                roll-lane-key-labels: root.roll-lane-key-labels;
+                roll-lane-is-white: root.roll-lane-is-white;
                 note-drag-ulid: root.note-drag-ulid;
                 note-drag-preview-dx: root.note-drag-preview-dx;
                 note-drag-preview-dy: root.note-drag-preview-dy;
@@ -1232,6 +1247,9 @@ export component MainWindow inherits Window {
                 note-drag-cancel() => { root.note-drag-cancel(); }
                 humanize-requested => { root.open-humanize(); }
                 quantize-requested => { root.open-quantize(); }
+                piano-key-pressed(lane) => { root.piano-key-pressed(lane); }
+                piano-key-released(lane) => { root.piano-key-released(lane); }
+                piano-roll-octave-shift(delta) => { root.piano-roll-octave-shift(delta); }
             }
 
             // 4. BOTTOM STATUS BAR (Real host-driven selection, save receipt, audio config)

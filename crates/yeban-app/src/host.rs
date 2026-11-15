@@ -403,7 +403,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 报告反馈③：旧口径在没有选中片段时显示**所有轨**的音符，和"当前轨道"对不上。
     // ⚠ 保留上面那一行**唯一**的 `visible_notes_scoped` 绑定（判据
     // `roll_injection_registration` 以它作注入窗口锚点）；选中轨的收窄在下面。
-    let visible = if roll_scope(ui, view).is_some() {
+    let mut visible = if roll_scope(ui, view).is_some() {
         visible
     } else if let Some(index) = view
         .selected_track
@@ -453,6 +453,10 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     let (min_pitch, max_pitch) = view.visible_pitch_range(ROLL_LANE_COUNT);
     ui.set_roll_min_pitch(i32::from(min_pitch));
     ui.set_roll_max_pitch(i32::from(max_pitch));
+    let roll_base = roll_base_pitch(ui);
+    if roll_base != crate::bridge::PITCH_LANE_BASE {
+        view.reproject_note_ys_with_base(&visible.ulids, &mut visible.ys, roll_base);
+    }
     ui.set_note_ulids(strings(&visible.ulids));
     ui.set_note_velocities(lengths(&visible.velocities));
     ui.set_note_positions(lengths(&visible.positions));
@@ -12284,19 +12288,41 @@ pub fn pencil_attempt_for_selected(
     grid_ticks: u64,
     active_tool: i32,
 ) -> Result<yeban_model::ops::Op, PencilRefusal> {
+    pencil_attempt_for_selected_with_base(
+        project,
+        selected,
+        scroll_x,
+        x,
+        y,
+        grid_ticks,
+        active_tool,
+        crate::bridge::PITCH_LANE_BASE,
+    )
+}
+
+/// Variant of [`pencil_attempt_for_selected`] using a caller-supplied piano-roll base MIDI pitch.
+///
+/// # Errors
+///
+/// See [`PencilRefusal`].
+#[allow(clippy::too_many_arguments)]
+pub fn pencil_attempt_for_selected_with_base(
+    project: &yeban_model::YebanProjectV1,
+    selected: Option<&str>,
+    scroll_x: f32,
+    x: f32,
+    y: f32,
+    grid_ticks: u64,
+    active_tool: i32,
+    base_pitch: u8,
+) -> Result<yeban_model::ops::Op, PencilRefusal> {
     if active_tool != i32::from(PENCIL_TOOL_DIGIT) {
         return Err(PencilRefusal::NotPencil);
     }
-    // 这里的命中测试**只**看卷帘的 14px 音高泳道（`lane_at_y`）与 tick 落在哪个片段，
-    // 与编排行高无关：行高变高/变矮**不**改这条路径的答案（因此 S1 不给它加布局参数
-    // —— 一个不影响结果的参数是假依赖）。
     let view = ViewState::from_project(project).map_err(|_| PencilRefusal::NoProjection)?;
     let plan = view
-        .pencil_plan(scroll_x, x, y, grid_ticks)
+        .pencil_plan_with_base(scroll_x, x, y, grid_ticks, base_pitch)
         .ok_or(PencilRefusal::NoPlan)?;
-    // ⭐ 任务单 `#166` 的**唯一**改动点：轨由展示轨决定（设备架 / 发送条 / 面板正在显示的
-    // 那一条），⛔ 不再遍历 `project.tracks` 找"第一条有片段覆盖"的轨。
-    // ⭐ 任务单 `#192`：展示轨 = **选中轨 or 兜底**（`display_track`，与投影同一份实现）。
     let track =
         crate::bridge::display_track(project, selected).ok_or(PencilRefusal::NoDisplayedTrack)?;
     let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
@@ -13067,7 +13093,9 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 let lane = ((painted.1 - crate::bridge::ROLL_HEADER_HEIGHT_PX)
                     / crate::bridge::PITCH_LANE_HEIGHT_PX)
                     .floor() as i32;
-                if let Some(pitch) = crate::bridge::pitch_for_lane(lane) {
+                if let Some(pitch) =
+                    crate::bridge::pitch_for_lane_with_base(lane, roll_base_pitch(&ui))
+                {
                     ui.invoke_piano_key_audition(
                         midi_pitch_name(pitch).into(),
                         84 - i32::from(pitch),
@@ -13092,7 +13120,15 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             // 挑最后绘制的那颗、再事后丢掉作用域外的" —— 那样别的轨在同一 x/y 上的音符会
             // 遮住正在编辑的这颗，返回 `None`，选区为空，于是选择 / 橡皮擦 / 剪刀 / 箭头
             // 全部静默失效（多轨工程里 6 个剪辑只有 1 个点得中）。
-            let mut hit = view.hit_test_visible_scoped(scroll, width, x, y, NOTE_HEIGHT_PX, scope);
+            let mut hit = view.hit_test_visible_scoped_with_base(
+                scroll,
+                width,
+                x,
+                y,
+                NOTE_HEIGHT_PX,
+                scope,
+                roll_base_pitch(&ui),
+            );
             // ⭐ 力度工具的**单击**（规范 §3.3 "选中对应音符的底部力度柱"）：力度柱画在
             // `roll-velocity-lane-top` 之下的车道里 ⇒ 那一带永远命中不到音符框。这里用与
             // 拖拽臂**同一个** [`velocity_bar_at`]（同一 x 口径 = 绘制帧、同一车道内 y 换算、
@@ -13176,7 +13212,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     // 覆盖该 tick 的片段 ⇒ **不写**（⛔ 不回退到别的轨）＋ 把逐字原因写进可见的
                     // `roll-edit-status`（⛔ 不静默丢弃）。⭐ `#192`：展示轨 = 选中轨 or 兜底。
                     let selected = selected_track_id(&ui);
-                    match pencil_attempt_for_selected(
+                    match pencil_attempt_for_selected_with_base(
                         project,
                         selected.as_deref(),
                         scroll,
@@ -13184,6 +13220,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                         y,
                         ROLL_SNAP_GRID_TICKS,
                         active_tool,
+                        roll_base_pitch(&ui),
                     ) {
                         Ok(op) => {
                             let drawn_pitch = match &op {
@@ -13555,8 +13592,15 @@ fn begin_note_drag(
     // `[D-UI-13]` 与 [`install_roll_click`] **同一个**作用域口径（择优之前过滤）：这一按要拖的
     // 必须是**屏幕上看得见、正在编辑的那个剪辑**里的音符，⛔ 不是"全工程最后绘制的那颗"。
     let scope = roll_scope(ui, view);
-    let Some(index) = view.hit_test_visible_scoped(scroll, width, x, y, NOTE_HEIGHT_PX, scope)
-    else {
+    let Some(index) = view.hit_test_visible_scoped_with_base(
+        scroll,
+        width,
+        x,
+        y,
+        NOTE_HEIGHT_PX,
+        scope,
+        roll_base_pitch(ui),
+    ) else {
         return false;
     };
     let note = &view.notes[index];
@@ -13577,7 +13621,13 @@ fn begin_note_drag(
 ///
 /// ⛔ 这里**不碰工程、不碰撤销栈** —— 这正是"拖动期不记录任何撤销记录"的落点。
 /// 没有进行中的手势时**什么都不做**：一个孤立的 `move` 改不动任何东西。
-fn preview_note_drag(ui: &MainWindow, fallback_view: &ViewState, x: f32, y: f32) {
+fn preview_note_drag(
+    ui: &MainWindow,
+    fallback_view: &ViewState,
+    port: Option<&Rc<UndoPort>>,
+    x: f32,
+    y: f32,
+) {
     if !ui.get_note_drag_active() {
         return;
     }
@@ -13605,8 +13655,26 @@ fn preview_note_drag(ui: &MainWindow, fallback_view: &ViewState, x: f32, y: f32)
     } else {
         -(delta_pitch as f32) * crate::bridge::PITCH_LANE_HEIGHT_PX
     };
+    let prev_dy = ui.get_note_drag_preview_dy();
+    #[allow(clippy::cast_possible_truncation)]
+    let prev_delta_pitch = (-prev_dy / crate::bridge::PITCH_LANE_HEIGHT_PX).round() as i32;
     ui.set_note_drag_preview_dx(dx);
     ui.set_note_drag_preview_dy(dy);
+    if !is_resize && i32::from(delta_pitch) != prev_delta_pitch {
+        let note_ulid = ui.get_note_drag_ulid().to_string();
+        let fresh = port
+            .and_then(|p| p.try_project())
+            .and_then(|p| ViewState::from_project(&p).ok());
+        let view = fresh.as_ref().unwrap_or(fallback_view);
+        if let Some(note) = view.notes.iter().find(|n| n.id == note_ulid) {
+            let preview_pitch =
+                (i32::from(note.pitch) + i32::from(delta_pitch)).clamp(0, 127) as u8;
+            ui.invoke_piano_key_audition(
+                midi_pitch_name(preview_pitch).into(),
+                84 - i32::from(preview_pitch),
+            );
+        }
+    }
 }
 
 /// 松手：**至多一次**原子提交（位移没跨过网格 ⇒ 一次都没有）。
@@ -13942,12 +14010,13 @@ fn install_roll_note_drag(
     ui.on_note_drag_move({
         let weak = weak.clone();
         let view = Rc::clone(&fallback_view);
+        let port = port.clone();
         move |x, y| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            preview_note_drag(&ui, &view, x, y);
+            preview_note_drag(&ui, &view, port.as_ref(), x, y);
             preview_velocity_drag(&ui, y);
         }
     });
@@ -17384,6 +17453,44 @@ fn select_aether_track_for_action(ui: &MainWindow, id: i32) {
     }
 }
 
+fn roll_base_pitch(ui: &MainWindow) -> u8 {
+    let raw = ui.get_roll_base_pitch();
+    u8::try_from(raw.clamp(24, 96)).unwrap_or(crate::bridge::PITCH_LANE_BASE)
+}
+
+fn roll_key_sharp_label(pitch: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = i32::from(pitch / 12) - 1;
+    format!("{}{}", NAMES[usize::from(pitch % 12)], octave)
+}
+
+fn is_white_midi_key(pitch: u8) -> bool {
+    matches!(pitch % 12, 0 | 2 | 4 | 5 | 7 | 9 | 11)
+}
+
+fn track_audibility_warning(
+    project: &yeban_model::YebanProjectV1,
+    track_id: yeban_model::EntityId,
+) -> Option<&'static str> {
+    let track = project.tracks.get(&track_id)?;
+    let any_solo = project
+        .tracks
+        .values()
+        .any(|t| t.id != project.master_bus_track_id && t.solo);
+    if any_solo && !track.solo {
+        return Some("其它轨道正在 Solo，当前轨已静音");
+    }
+    if track.mute {
+        return Some("当前轨道处于静音 (Mute)");
+    }
+    if track.volume_db <= -60.0 {
+        return Some("当前轨道推子已拉至最小 (-∞ dB)");
+    }
+    None
+}
+
 fn dispatch_aether_audition(
     ui: &MainWindow,
     engine: &Rc<RefCell<EngineHost>>,
@@ -17391,6 +17498,7 @@ fn dispatch_aether_audition(
     pitches: &[u8],
     velocity: u8,
     status_prefix: &str,
+    audibility_warning: Option<&'static str>,
 ) {
     if !engine.borrow().has_engine() {
         ui.set_module_status("试听: 引擎未接线（工程可继续编辑）".into());
@@ -17429,7 +17537,19 @@ fn dispatch_aether_audition(
             }
         });
     }
-    ui.set_module_status(format!("{status_prefix}: 引擎事件通道已调用, 写入 {count} 条").into());
+    let msg = match audibility_warning {
+        Some(warn) => {
+            ui.set_roll_edit_status(format!("试听提示: {warn}").into());
+            format!("{status_prefix}: 引擎事件通道已调用, 写入 {count} 条（提示: {warn}）")
+        }
+        None => {
+            if ui.get_roll_edit_status().as_str().starts_with("试听提示:") {
+                ui.set_roll_edit_status("".into());
+            }
+            format!("{status_prefix}: 引擎事件通道已调用, 写入 {count} 条")
+        }
+    };
+    ui.set_module_status(msg.into());
     ui.set_module_status_succeeded(true);
 }
 
@@ -18400,17 +18520,18 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            let Some(track) = port.try_project().and_then(|project| {
-                display_track(&ui, &project)
+            let Some((track, warning)) = port.try_project().and_then(|project| {
+                let track = display_track(&ui, &project)
                     .map(|t| t.id)
-                    .or_else(|| project.tracks.keys().next().copied())
+                    .or_else(|| project.tracks.keys().next().copied())?;
+                Some((track, track_audibility_warning(&project, track)))
             }) else {
                 ui.set_module_status("试听: 工程里没有音轨".into());
                 ui.set_module_status_succeeded(false);
                 return;
             };
             let pitches = parse_chord_pitches(chord.as_str());
-            dispatch_aether_audition(&ui, &engine, track, &pitches, 96, "试听和弦");
+            dispatch_aether_audition(&ui, &engine, track, &pitches, 96, "试听和弦", warning);
         }
     });
     ui.on_piano_key_audition({
@@ -18421,10 +18542,11 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            let Some(track) = port.try_project().and_then(|project| {
-                display_track(&ui, &project)
+            let Some((track, warning)) = port.try_project().and_then(|project| {
+                let track = display_track(&ui, &project)
                     .map(|t| t.id)
-                    .or_else(|| project.tracks.keys().next().copied())
+                    .or_else(|| project.tracks.keys().next().copied())?;
+                Some((track, track_audibility_warning(&project, track)))
             }) else {
                 ui.set_module_status("试听: 工程里没有音轨".into());
                 ui.set_module_status_succeeded(false);
@@ -18432,7 +18554,134 @@ pub fn wire_aether_actions(
             };
             let pitch =
                 parse_pitch_name(key.as_str()).unwrap_or_else(|| (84 - row).clamp(0, 127) as u8);
-            dispatch_aether_audition(&ui, &engine, track, &[pitch], 100, "试听琴键");
+            dispatch_aether_audition(&ui, &engine, track, &[pitch], 100, "试听琴键", warning);
+        }
+    });
+
+    let active_pressed_keys: Rc<
+        RefCell<std::collections::BTreeMap<i32, (yeban_model::EntityId, u8)>>,
+    > = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+    ui.on_piano_key_pressed({
+        let w = weak.clone();
+        let engine = Rc::clone(&engine);
+        let port = Rc::clone(&port);
+        let active_keys = Rc::clone(&active_pressed_keys);
+        move |lane| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let Some(pitch) = crate::bridge::pitch_for_lane_with_base(lane, roll_base_pitch(&ui))
+            else {
+                return;
+            };
+            let Some((track, warning)) = port.try_project().and_then(|project| {
+                let track = display_track(&ui, &project)
+                    .map(|t| t.id)
+                    .or_else(|| project.tracks.keys().next().copied())?;
+                Some((track, track_audibility_warning(&project, track)))
+            }) else {
+                ui.set_module_status("试听: 工程里没有音轨".into());
+                ui.set_module_status_succeeded(false);
+                return;
+            };
+            if !engine.borrow().has_engine() {
+                ui.set_module_status("试听: 引擎未接线（工程可继续编辑）".into());
+                ui.set_module_status_succeeded(false);
+                return;
+            }
+            let stale = active_keys.borrow_mut().remove(&lane);
+            let written = {
+                let mut host = engine.borrow_mut();
+                if let Some((old_track, old_pitch)) = stale {
+                    let _ = host.send_engine_events(&[yeban_engine::ring::EngineEvent::NoteOff {
+                        track: old_track,
+                        pitch: old_pitch,
+                    }]);
+                }
+                host.send_engine_events(&[yeban_engine::ring::EngineEvent::NoteOn {
+                    track,
+                    pitch,
+                    velocity: 100,
+                }])
+            };
+            active_keys.borrow_mut().insert(lane, (track, pitch));
+            let pitch_label = midi_pitch_name(pitch);
+            let msg = match warning {
+                Some(warn) => {
+                    ui.set_roll_edit_status(format!("试听提示: {warn}").into());
+                    format!("试听琴键({pitch_label}): 引擎事件通道已调用, 写入 {written} 条（提示: {warn}）")
+                }
+                None => {
+                    if ui.get_roll_edit_status().as_str().starts_with("试听提示:") {
+                        ui.set_roll_edit_status("".into());
+                    }
+                    format!("试听琴键({pitch_label}): 引擎事件通道已调用, 写入 {written} 条")
+                }
+            };
+            ui.set_module_status(msg.into());
+            ui.set_module_status_succeeded(true);
+        }
+    });
+    ui.on_piano_key_released({
+        let w = weak.clone();
+        let engine = Rc::clone(&engine);
+        let port = Rc::clone(&port);
+        let active_keys = Rc::clone(&active_pressed_keys);
+        move |lane| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let target = active_keys.borrow_mut().remove(&lane).or_else(|| {
+                let pitch = crate::bridge::pitch_for_lane_with_base(lane, roll_base_pitch(&ui))?;
+                let track = port.try_project().and_then(|project| {
+                    display_track(&ui, &project)
+                        .map(|t| t.id)
+                        .or_else(|| project.tracks.keys().next().copied())
+                })?;
+                Some((track, pitch))
+            });
+            if let Some((track, pitch)) = target {
+                let mut host = engine.borrow_mut();
+                if host.has_engine() {
+                    let _ = host.send_engine_events(&[yeban_engine::ring::EngineEvent::NoteOff {
+                        track,
+                        pitch,
+                    }]);
+                }
+            }
+        }
+    });
+    ui.on_piano_roll_octave_shift({
+        let w = weak.clone();
+        let port = Rc::clone(&port);
+        move |delta| {
+            let Some(ui) = w.upgrade() else {
+                return;
+            };
+            let current = i32::from(roll_base_pitch(&ui));
+            let next = (current + delta).clamp(24, 96) as u8;
+            if next == current as u8 {
+                return;
+            }
+            ui.set_roll_base_pitch(i32::from(next));
+            let top_pitch = next.saturating_add((crate::bridge::PITCH_LANE_COUNT - 1) as u8);
+            let range_label = format!("{} – {}", midi_pitch_name(next), midi_pitch_name(top_pitch));
+            ui.set_roll_pitch_range_label(range_label.clone().into());
+            let mut labels = Vec::with_capacity(crate::bridge::PITCH_LANE_COUNT as usize);
+            let mut whites = Vec::with_capacity(crate::bridge::PITCH_LANE_COUNT as usize);
+            for lane in 0..crate::bridge::PITCH_LANE_COUNT {
+                if let Some(p) = crate::bridge::pitch_for_lane_with_base(lane, next) {
+                    labels.push(slint::SharedString::from(roll_key_sharp_label(p)));
+                    whites.push(is_white_midi_key(p));
+                }
+            }
+            ui.set_roll_lane_key_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
+            ui.set_roll_lane_is_white(slint::ModelRc::new(slint::VecModel::from(whites)));
+            let width = slint::ComponentHandle::window(&ui).size().width as f32;
+            let scroll = ui.get_roll_scroll_x();
+            reproject_roll(&ui, &port, width, scroll);
+            ui.set_module_status(format!("钢琴卷帘音域已切换至 {range_label}").into());
+            ui.set_module_status_succeeded(true);
         }
     });
 

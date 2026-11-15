@@ -75,6 +75,12 @@ export component PianoRoll inherits Rectangle {
     // 与 `tests/golden/linux/` 的 5 张基准一位不变。
     callback humanize-requested();
     callback quantize-requested();
+    // Real piano-key hold/glissando/release audition + octave shift callbacks
+    callback piano-key-pressed(int);
+    callback piano-key-released(int);
+    callback pitch-range-shift(int);
+    in property <int> base-midi-pitch: 60;
+    in property <string> pitch-range-label: "C4 – Eb5";
     // 被拖音符的身份（空 = 没有手势）与拖动期的**草稿预览位移**（逻辑像素，由宿主算好注入）。
     // 只有身份相等的那个音符矩形跟着偏移 —— 界面不做位置算术（`[UI-NOTE-002]`）。
     in property <string> note-drag-ulid: "";
@@ -199,27 +205,69 @@ export component PianoRoll inherits Rectangle {
         y: Tokens.space-2;
         // 运行期拒绝原因（`#166`）比静态读数长 ⇒ 这一行横向占满剩余宽度（左侧 x / 顶沿 y
         // 与高度一位未改，而**没有拒绝时**文字仍是同一串、左对齐 ⇒ 像素不变）。
-        width: max(80px, parent.width - 272px - 170px);
+        width: max(0px, parent.width - 272px - 230px);
         height: 20px;
-        text: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · C4 – Eb5";
+        text: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · " + root.pitch-range-label;
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         overflow: elide;
         accessible-role: text;
         accessible-id: "piano-roll-status";
         accessible-label: "卷帘吸附与音域状态";
-        accessible-value: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · C4 – Eb5";
+        accessible-value: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · " + root.pitch-range-label;
     }
 
-    // 右侧本地视图菜单（量化 / 人性化）
+    // 右侧本地视图菜单（八度移位 / 量化 / 人性化）
     HorizontalLayout {
-        x: parent.width - 158px;
+        x: parent.width - 222px;
         y: Tokens.space-2;
-        width: 150px;
+        width: 214px;
         height: 20px;
         spacing: 4px;
         z: 1;
 
+        Rectangle {
+            width: 30px;
+            height: 20px;
+            background: oct-down-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "八-";
+                color: root.base-midi-pitch <= 24 ? Tokens.ink-2 : Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            oct-down-touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.pitch-range-shift(-12); }
+            }
+        }
+        Rectangle {
+            width: 30px;
+            height: 20px;
+            background: oct-up-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "八+";
+                color: root.base-midi-pitch >= 96 ? Tokens.ink-2 : Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            oct-up-touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.pitch-range-shift(12); }
+            }
+        }
         Rectangle {
             horizontal-stretch: 1;
             height: 20px;
@@ -509,7 +557,7 @@ export component PianoRoll inherits Rectangle {
                     root.dragging = false;
                     root.note-dragging = false;
                     root.drag-moved = false;
-                    root.clicked(self.mouse-x, self.mouse-y);
+                    root.piano-key-pressed(root.audition-active-row);
                 } else {
                     root.drag-origin-x = self.mouse-x;
                     root.drag-origin-y = self.mouse-y;
@@ -522,7 +570,9 @@ export component PianoRoll inherits Rectangle {
                 }
             } else if event.kind == PointerEventKind.up {
                 if root.audition-active-row >= 0 {
+                    let prev = root.audition-active-row;
                     root.audition-active-row = -1;
+                    root.piano-key-released(prev);
                 } else {
                     root.dragging = false;
                     if root.note-dragging {
@@ -542,12 +592,14 @@ export component PianoRoll inherits Rectangle {
                 }
             } else if event.kind == PointerEventKind.move {
                 if root.audition-active-row >= 0 {
-                    // 琴键列滑动滑奏（glissando）：越过新琴键行时即时试听
+                    // 琴键列滑动滑奏（glissando）：越过新琴键行时先释放前音再触发新音
                     if self.mouse-y >= 28px {
                         let hovered = Math.min(15, Math.max(0, Math.floor((self.mouse-y - 28px) / 14px)));
                         if hovered != root.audition-active-row {
+                            let prev = root.audition-active-row;
+                            root.piano-key-released(prev);
                             root.audition-active-row = hovered;
-                            root.clicked(self.mouse-x, self.mouse-y);
+                            root.piano-key-pressed(root.audition-active-row);
                         }
                     }
                 } else {
@@ -573,7 +625,11 @@ export component PianoRoll inherits Rectangle {
             } else {
                 // `cancel`（指针离开窗口 / 控件被禁用）：与 `up` 一样是收尾，
                 // 但这一拖**不算数** ⇒ 丢弃草稿、⛔ 不提交。
-                root.audition-active-row = -1;
+                if root.audition-active-row >= 0 {
+                    let prev = root.audition-active-row;
+                    root.audition-active-row = -1;
+                    root.piano-key-released(prev);
+                }
                 root.dragging = false;
                 root.drag-moved = false;
                 if root.note-dragging {
