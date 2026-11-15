@@ -265,4 +265,19 @@ fn arrangement_supports_vertical_and_horizontal_trackpad_two_finger_scroll() {
         diag_header_diffs > 200,
         "对角双指滑动必须同时更新纵向 content-y，轨道头差异像素={diag_header_diffs}"
     );
+
+    // 4. 展开和弦参考轨并滚动顶栏和弦块 / 轨道头控件区，也必须支持横向双指滑动
+    live.ui().set_show_chord_track(true);
+    live.refresh_tree(None).expect("展开和弦轨后刷新树");
+    let chord_pt = LogicalPosition::new(arr_bounds.x as f32 + 300.0, arr_bounds.y as f32 + 36.0);
+    let scroll_before_chord = live.ui().get_roll_scroll_x();
+    live.window().dispatch(WindowEvent::PointerScrolled {
+        position: chord_pt,
+        delta_x: -40.0,
+        delta_y: 0.0,
+    });
+    assert!(
+        (live.ui().get_roll_scroll_x() - (scroll_before_chord + 40.0)).abs() < 0.5,
+        "在和弦参考轨与顶栏控件上双指左右滑动必须推进 roll_scroll_x"
+    );
 }

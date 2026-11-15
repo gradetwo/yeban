@@ -12,9 +12,9 @@ use slint::Model;
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
-use yeban_ui_test_port::Size;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::LivePort;
+use yeban_ui_test_port::{Size, UiTestPort};
 
 fn build_rig(view: &ViewState) -> LivePort<yeban_app::ui::MainWindow> {
     let scene = DemoScene::from_view(view);
@@ -279,7 +279,7 @@ fn native_menu_bar_replaces_transport_menu_strip_and_keeps_local_menus() {
     let engine = prod.engine_handle();
     let view_cell = Rc::new(RefCell::new(view.clone()));
 
-    let port = build_rig(&view);
+    let mut port = build_rig(&view);
     let ui = port.ui();
     host::wire_track_strip(ui, &undo);
     host::wire_aether_actions(ui, Rc::clone(&undo), engine, view_cell);
@@ -330,6 +330,32 @@ fn native_menu_bar_replaces_transport_menu_strip_and_keeps_local_menus() {
 
     ui.invoke_command_execute("tab-mixer".into());
     assert_eq!(ui.get_console_tab(), 1, "tab-mixer 必须切到混音台");
+
+    // toggle-chord-lane from MenuBar/local menu genuinely toggles show_chord_track
+    assert!(!ui.get_show_chord_track());
+    ui.invoke_command_execute("toggle-chord-lane".into());
+    assert!(
+        ui.get_show_chord_track(),
+        "toggle-chord-lane 必须真实切换和弦轨显隐"
+    );
+    ui.invoke_command_execute("toggle-chord-lane".into());
+    assert!(!ui.get_show_chord_track());
+
+    // Modals inside key-handler must fit inside window bounds even with Tier-1 fallback 40px MenuBarImpl
+    ui.set_export_wav_open(true);
+    port.refresh_tree(None).expect("刷新导出弹窗控件树");
+    let export_bounds = port
+        .tree()
+        .find_by_id("export-wav-dialog")
+        .expect("export-wav-dialog 必须在树里")
+        .bounds
+        .expect("export-wav-dialog 必须有几何");
+    assert!(
+        export_bounds.y >= 0
+            && export_bounds.y + i32::try_from(export_bounds.height).unwrap() <= 800,
+        "回退 MenuBar 下导出模态底部不得越出窗口高度 800: {export_bounds:?}"
+    );
+    port.ui().set_export_wav_open(false);
 }
 
 #[test]

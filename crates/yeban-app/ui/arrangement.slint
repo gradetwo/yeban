@@ -143,6 +143,9 @@ export component ArrangementViewport inherits Rectangle {
                                     chord-toggle-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.show-chord-track = !root.show-chord-track; }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: root.show-chord-track ? "折叠和弦音轨" : "展开和弦音轨";
@@ -171,6 +174,9 @@ export component ArrangementViewport inherits Rectangle {
                                     add-track-top-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.add-track(); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "添加新音轨 [Cmd+T]";
@@ -200,6 +206,9 @@ export component ArrangementViewport inherits Rectangle {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => {
                                             root.active-local-menu = root.active-local-menu == "tracks" ? "" : "tracks";
+                                        }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
                                         }
                                     }
                                     TooltipBubble {
@@ -260,6 +269,9 @@ export component ArrangementViewport inherits Rectangle {
                         }
                         double-clicked => {
                             root.headers-width = 240px;
+                        }
+                        scroll-event(event) => {
+                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
                         }
                     }
                 }
@@ -407,6 +419,9 @@ export component ArrangementViewport inherits Rectangle {
                                     chord-1-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.audition-chord("Cm9"); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "试听 Cm9 (主和弦) 配置";
@@ -446,6 +461,9 @@ export component ArrangementViewport inherits Rectangle {
                                     chord-2-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.audition-chord("AbMaj7"); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "试听 AbMaj7 (下中音和弦) 配置";
@@ -485,6 +503,9 @@ export component ArrangementViewport inherits Rectangle {
                                     chord-3-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.audition-chord("Fm11"); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "试听 Fm11 (下属和弦) 配置";
@@ -524,6 +545,9 @@ export component ArrangementViewport inherits Rectangle {
                                     chord-4-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.audition-chord("G7#9"); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "试听 G7#9 (属和弦变化音) 配置";
@@ -563,6 +587,9 @@ export component ArrangementViewport inherits Rectangle {
                                     chord-5-touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.audition-chord("Cm11"); }
+                                        scroll-event(event) => {
+                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                        }
                                     }
                                     TooltipBubble {
                                         text: "试听 Cm11 (扩展主和弦) 配置";
@@ -593,6 +620,9 @@ export component ArrangementViewport inherits Rectangle {
                         }
                         double-clicked => {
                             root.headers-width = 240px;
+                        }
+                        scroll-event(event) => {
+                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
                         }
                     }
                 }
@@ -640,6 +670,9 @@ export component ArrangementViewport inherits Rectangle {
                                 add-track-right-touch := TouchArea {
                                     mouse-cursor: MouseCursor.pointer;
                                     clicked => { root.add-track(); }
+                                    scroll-event(event) => {
+                                        root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                    }
                                 }
                                 TooltipBubble {
                                     text: "添加新音轨 [Cmd+T]";
@@ -1032,6 +1065,9 @@ export component ArrangementViewport inherits Rectangle {
                                 double-clicked => {
                                     root.headers-width = 240px;
                                 }
+                                scroll-event(event) => {
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                }
                             }
                         }
 
@@ -1199,6 +1235,9 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                                 double-clicked => {
                                     root.headers-width = 240px;
+                                }
+                                scroll-event(event) => {
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
                             }
                         }
@@ -1571,6 +1610,9 @@ export component ArrangementViewport inherits Rectangle {
                                 double-clicked => {
                                     root.headers-width = 240px;
                                 }
+                                scroll-event(event) => {
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
+                                }
                             }
                         }
 
@@ -1630,6 +1672,9 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                                 double-clicked => {
                                     root.headers-width = 240px;
+                                }
+                                scroll-event(event) => {
+                                    root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
                             }
                         }

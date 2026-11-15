@@ -136,9 +136,19 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         }
 
         // TAB 1: DUAL INSPECTOR
-        if root.active-tab == "inspector" : VerticalLayout {
-            padding: 8px;
-            spacing: 8px;
+        if root.active-tab == "inspector" : insp_flick := Flickable {
+            vertical-stretch: 1;
+            min-height: 120px;
+            content-width: self.width;
+            content-height: Math.max(self.height, insp_body.preferred-height);
+
+            insp_body := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: insp_flick.width;
+                height: Math.max(insp_flick.height, self.preferred-height);
+                padding: 8px;
+                spacing: 8px;
 
             // Track Header Card
             Rectangle {
@@ -1009,11 +1019,22 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     }
                 }
             }
+            }
         }
 
         // TAB 2: SMART TAG BROWSER
-        if root.active-tab == "browser" : VerticalLayout {
-            padding: 8px;
+        if root.active-tab == "browser" : browser_flick := Flickable {
+            vertical-stretch: 1;
+            min-height: 120px;
+            content-width: self.width;
+            content-height: Math.max(self.height, browser_body.preferred-height);
+
+            browser_body := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: browser_flick.width;
+                height: Math.max(browser_flick.height, self.preferred-height);
+                padding: 8px;
             spacing: 8px;
 
             // Search input field (Real TextInput)
@@ -1257,6 +1278,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         TooltipBubble { text: "点击载入 " + item.name + " 至当前轨道"; is-visible: item_touch.has-hover; tip-offset-y: 52px; }
                     }
                 }
+            }
             }
         }
     }

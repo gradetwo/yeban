@@ -18281,7 +18281,16 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
             );
         }
         "toggle-chord-lane" => {
-            update_toast(ui, "[编曲] 请使用编曲区右上角“和弦轨”开关显示/隐藏和弦轨");
+            let next = !ui.get_show_chord_track();
+            ui.set_show_chord_track(next);
+            update_toast(
+                ui,
+                if next {
+                    "[编曲] 已显示和弦参考轨"
+                } else {
+                    "[编曲] 已隐藏和弦参考轨"
+                },
+            );
         }
         "transport-play" => ui.invoke_toggle_play(),
         "transport-stop" => ui.invoke_stop(),

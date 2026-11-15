@@ -210,6 +210,7 @@ export component MainWindow inherits Window {
     in-out property <float> master-meter-r: 0.64;
 
     // Overlays & Fullscreen State
+    in-out property <bool> show-chord-track: false;
     in-out property <bool> show-cmd-palette: false;
     in-out property <bool> show-hotspots: false;
     in-out property <string> toast-message: "";
@@ -816,6 +817,7 @@ export component MainWindow inherits Window {
             MenuItem { title: "最大化/还原底部控制台"; activated => { root.command-execute("toggle-maximize-dock"); } }
             MenuItem { title: "显隐左侧通道检查器 (I)"; activated => { root.command-execute("toggle-inspector"); } }
             MenuItem { title: "显隐 Clip 激发矩阵 (Tab)"; activated => { root.command-execute("toggle-clip-matrix"); } }
+            MenuItem { title: "显示 / 隐藏和弦轨"; activated => { root.command-execute("toggle-chord-lane"); } }
         }
         Menu {
             title: "诊断";
@@ -1107,6 +1109,7 @@ export component MainWindow inherits Window {
                 ArrangementViewport {
                     horizontal-stretch: 1;
                     headers-width: root.track-headers-width;
+                    show-chord-track <=> root.show-chord-track;
                     tracks: root.tracks;
                     track-volumes: root.track-volumes;
                     timeline-blocks: root.timeline-blocks;
@@ -1405,7 +1408,7 @@ export component MainWindow inherits Window {
             x: 0px;
             y: 0px;
             width: root.width;
-            height: root.height;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
             path <=> root.export-wav-path;
             sample-rate <=> root.export-wav-sample-rate;
             bit-depth <=> root.export-wav-bit-depth;
@@ -1422,7 +1425,7 @@ export component MainWindow inherits Window {
             x: 0px;
             y: 0px;
             width: root.width;
-            height: root.height;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
             node-count: root.undo-node-count;
             node-labels: root.undo-node-labels;
             node-hidden: root.undo-node-hidden;
@@ -1444,7 +1447,7 @@ export component MainWindow inherits Window {
             x: 0px;
             y: 0px;
             width: root.width;
-            height: root.height;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
             time-jitter <=> root.humanize-time-jitter;
             velocity-jitter <=> root.humanize-velocity-jitter;
             seed <=> root.humanize-seed;
@@ -1463,7 +1466,7 @@ export component MainWindow inherits Window {
             x: root.width - 384px;
             y: 52px;
             width: 372px;
-            height: Math.max(240px, root.height - 92px);
+            height: Math.max(240px, root.height - key-handler.absolute-position.y - 92px);
             proposal-count: root.musical-pr-proposal-count;
             proposal-ids: root.musical-pr-proposal-ids;
             proposal-kinds: root.musical-pr-proposal-kinds;
