@@ -7083,6 +7083,11 @@ pub(crate) fn mix_span_into<'a>(
         if let Some(c) = lfo_fil_cents {
             fil_cents = Some(fil_cents.unwrap_or(0.0) + c);
         }
+        // ⭐ 只有 resonance 目标在场（无 fil 偏移）时也要进调谐块：
+        // 截止偏移按 0 计、目标截止 ＝ 基准，靠 res 支触发 `retune`。
+        if fil_cents.is_none() && lfo_res_db.is_some() {
+            fil_cents = Some(0.0);
+        }
         if let Some(cents) = fil_cents {
             // 基准：fileg 在场用 `EgSpan` 的（与滤波器配置同一个），
             // 否则用 `LfoSpan` 的；两者同源（[`PreparedRegion::base_cutoff_hz`]）。
