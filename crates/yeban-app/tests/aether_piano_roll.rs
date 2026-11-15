@@ -487,3 +487,205 @@ fn piano_roll_supports_2d_trackpad_vertical_pitch_and_horizontal_timeline_scroll
         Some("G9")
     );
 }
+
+#[test]
+fn piano_roll_auditions_and_inserts_notes_when_track_has_no_midi_clip_no_synth_or_is_audio() {
+    // 1. Startup demo_project(): Track 0 ("鼓", Midi) has solo=true; Track 1 ("贝斯") is Audio with no synth;
+    //    Track 3 ("主音") is Midi with 0 clips and 0 devices.
+    let project = yeban_model::samples::demo_project();
+    let view = ViewState::from_project(&project).expect("demo_project 投影成功");
+    let scene = DemoScene::from_view(&view);
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<aether-roll-no-midi>",
+            "yeban-app",
+            project.clone(),
+            NOW_MS,
+        )
+        .expect("撤销会话必须能打开"),
+    ));
+    let production = ProductionLoop::start(&project, 0).expect("启动实时引擎");
+    let engine = production.engine_handle();
+    let view_cell = Rc::new(RefCell::new(view.clone()));
+
+    let live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    let ui = live.ui();
+    host::wire_roll_edit(ui, &undo);
+    host::wire_undo(ui, &undo);
+    host::wire_mixer_edit(ui, &undo);
+    host::wire_track_select(ui, &undo);
+    host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
+    host::wire_aether_actions(ui, Rc::clone(&undo), Rc::clone(&engine), view_cell);
+
+    let empty_midi_track_id = view
+        .tracks
+        .iter()
+        .find(|t| t.name == "主音")
+        .map(|t| t.id.clone())
+        .expect("demo_project 必须有 Track 3 主音");
+    let audio_track_id = view
+        .tracks
+        .iter()
+        .find(|t| t.name == "贝斯")
+        .map(|t| t.id.clone())
+        .expect("demo_project 必须有 Track 1 贝斯");
+
+    // 1a) Empty MIDI track (no clip, no synth device, blocked by Track 0 solo):
+    //     pressing key auto-installs instrument on Track 3 AND produces real audible output.
+    ui.set_selected_track_id(empty_midi_track_id.clone().into());
+    ui.invoke_piano_key_pressed(15);
+    assert!(ui.get_module_status_succeeded());
+    let mut empty_midi_buf = vec![0.0_f32; 512 * 2];
+    engine.borrow_mut().render_into(&mut empty_midi_buf, 2, 4);
+    let empty_midi_peak = empty_midi_buf
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(
+        empty_midi_peak > 1e-4,
+        "无片段/无合成器设备且存在其它轨 Solo 时，空 MIDI 轨琴键仍应发声，实际={empty_midi_peak}"
+    );
+    ui.invoke_piano_key_released(15);
+    let tail_quanta =
+        ((48_000 * 2) / yeban_app::engine_host::EngineHost::quantum_frames().max(1)) as u64;
+    engine.borrow_mut().pump(tail_quanta);
+
+    let after_key = undo.try_project().expect("工程存在");
+    let empty_midi_entity = empty_midi_track_id
+        .parse::<EntityId>()
+        .expect("合法 track id");
+    assert!(
+        !after_key.tracks[&empty_midi_entity].devices.is_empty(),
+        "空 MIDI 轨试听后应自动装载默认内置合成器"
+    );
+
+    // 1b) Drawing on the Piano Roll grid on empty MIDI track automatically creates MIDI clip + inserts note.
+    let notes_before = note_count(&after_key);
+    let commits_before = undo.display().commit_count;
+    ui.set_active_tool(2);
+    let draw_x = ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 24.0;
+    let draw_y = ROLL_HEADER_HEIGHT_PX + NOTE_INSET_Y_PX + PITCH_LANE_HEIGHT_PX * 10.0 + 4.0;
+    ui.invoke_clicked(draw_x, draw_y);
+    let after_draw = undo.try_project().expect("工程存在");
+    assert_eq!(note_count(&after_draw), notes_before + 1);
+    assert_eq!(
+        undo.display().commit_count,
+        commits_before + 1,
+        "画音符+建片段应是单步可撤销"
+    );
+    assert!(
+        !after_draw.tracks[&empty_midi_entity].clips.is_empty(),
+        "空 MIDI 轨点击网格后应自动创建 MIDI 片段摆放"
+    );
+    assert!(
+        ui.get_note_ulids().row_count() >= 1,
+        "自动创建的 MIDI 片段与音符必须立即投影到卷帘"
+    );
+
+    // 2) Audio track selected ("贝斯"):
+    //    pressing piano keys falls back to an audible synth and produces sound;
+    //    double-clicking / drawing inserts a new MIDI track + clip + note atomically (and undoes cleanly).
+    ui.set_selected_track_id(audio_track_id.into());
+    ui.set_selected_clip_ulid("".into());
+    ui.invoke_piano_key_pressed(10);
+    assert!(ui.get_module_status_succeeded());
+    let mut audio_sel_buf = vec![0.0_f32; 512 * 2];
+    engine.borrow_mut().render_into(&mut audio_sel_buf, 2, 4);
+    let audio_sel_peak = audio_sel_buf
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(
+        audio_sel_peak > 1e-4,
+        "选中音频轨时点击钢琴卷帘琴键必须回退到可听合成器发声，实际={audio_sel_peak}"
+    );
+    ui.invoke_piano_key_released(10);
+    engine.borrow_mut().pump(tail_quanta);
+
+    let tracks_before = undo.try_project().unwrap().tracks.len();
+    let notes_before_audio = note_count(&undo.try_project().unwrap());
+    let commits_before_audio = undo.display().commit_count;
+    ui.set_active_tool(1); // Pointer tool double-click inserts a default note too
+    ui.invoke_double_clicked(draw_x + 48.0, draw_y);
+    let after_audio_insert = undo.try_project().expect("工程存在");
+    assert_eq!(
+        after_audio_insert.tracks.len(),
+        tracks_before + 1,
+        "选中音频轨在卷帘写音符时必须自动创建新的 MIDI 轨"
+    );
+    assert_eq!(note_count(&after_audio_insert), notes_before_audio + 1);
+    assert_eq!(undo.display().commit_count, commits_before_audio + 1);
+
+    // Single undo rolls back the entire track + clip + note cleanly.
+    ui.invoke_undo_step();
+    let after_undo = undo.try_project().expect("工程存在");
+    assert_eq!(after_undo.tracks.len(), tracks_before);
+    assert_eq!(note_count(&after_undo), notes_before_audio);
+}
+
+#[test]
+fn piano_roll_auditions_and_inserts_notes_in_empty_default_project() {
+    // 3) Empty default_project() (only Master track, 0 non-master tracks):
+    //    key audition auto-creates a MIDI track + synth and renders audio;
+    //    piano-note-create inserts clip + note cleanly.
+    let empty_proj = yeban_model::samples::default_project();
+    let empty_view = ViewState::from_project(&empty_proj).expect("default_project 投影成功");
+    let empty_scene = DemoScene::from_view(&empty_view);
+    let empty_undo = Rc::new(UndoPort::new(
+        UndoSession::open(
+            "<aether-roll-default>",
+            "yeban-app",
+            empty_proj.clone(),
+            NOW_MS,
+        )
+        .expect("撤销会话必须能打开"),
+    ));
+    let empty_prod = ProductionLoop::start(&empty_proj, 0).expect("空工程引擎可启动");
+    let empty_engine = empty_prod.engine_handle();
+    let empty_view_cell = Rc::new(RefCell::new(empty_view.clone()));
+    let empty_live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&empty_view, &empty_scene)
+    })
+    .expect("Tier-1 活窗口");
+    let empty_ui = empty_live.ui();
+    host::wire_roll_edit(empty_ui, &empty_undo);
+    host::wire_track_select(empty_ui, &empty_undo);
+    host::wire_clip_scope(
+        empty_ui,
+        Rc::clone(&empty_view_cell),
+        Some(Rc::clone(&empty_undo)),
+    );
+    host::wire_aether_actions(
+        empty_ui,
+        Rc::clone(&empty_undo),
+        Rc::clone(&empty_engine),
+        empty_view_cell,
+    );
+
+    empty_ui.invoke_piano_key_pressed(15);
+    assert!(empty_ui.get_module_status_succeeded());
+    let mut default_buf = vec![0.0_f32; 512 * 2];
+    empty_engine
+        .borrow_mut()
+        .render_into(&mut default_buf, 2, 4);
+    let default_peak = default_buf
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| a.max(b.abs()));
+    assert!(
+        default_peak > 1e-4,
+        "0 音轨工程按钢琴卷帘琴键必须自动建 MIDI 轨并立即发布发声，实际={default_peak}"
+    );
+    empty_ui.invoke_piano_key_released(15);
+
+    empty_ui.invoke_piano_note_create(3, 4);
+    let default_after_note = empty_undo.try_project().expect("工程存在");
+    assert_eq!(note_count(&default_after_note), 1);
+    assert!(
+        empty_ui.get_note_ulids().row_count() >= 1,
+        "0 音轨工程新建音符后必须立即投影到卷帘"
+    );
+}

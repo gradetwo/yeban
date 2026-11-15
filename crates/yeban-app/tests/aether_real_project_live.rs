@@ -502,7 +502,8 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
         "track-instrument-change 必须更新内置合成器音色预设"
     );
 
-    // [N3] 新建一条无片段的 MIDI 轨并选中：写音符不得静默吞掉，必须置可见状态提示
+    // [N3] 新建一条无片段的 MIDI 轨并选中：在卷帘写入音符应自动为该轨新建 MIDI 片段、
+    // 写入音符并置可见状态提示（不得误写他轨，且单步可撤销）。
     let track0_midi_clip_id = undo.try_project().unwrap().tracks[&track0_id]
         .clips
         .values()
@@ -543,15 +544,40 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
     ui.set_roll_edit_status("".into());
     let count_before_n3 = midi_note_count(&undo.try_project().unwrap());
     ui.invoke_piano_note_create(2, 0);
+    let proj_after_n3 = undo.try_project().unwrap();
     assert_eq!(
-        midi_note_count(&undo.try_project().unwrap()),
-        count_before_n3,
-        "[N3] 空 MIDI 轨未建片段前不应凭空写入音符"
+        midi_note_count(&proj_after_n3),
+        count_before_n3 + 1,
+        "[N3] 空 MIDI 轨写音符应自动创建片段并写入 1 颗音符"
     );
+    assert_eq!(
+        proj_after_n3.tracks[&new_track_id].clips.len(),
+        1,
+        "[N3] 应在当前选中空 MIDI 轨自动建立 1 条 MIDI 片段"
+    );
+    if let Some(cid0) = track0_midi_clip_id {
+        assert_eq!(
+            proj_after_n3.clip_pool[&cid0]
+                .content
+                .notes()
+                .unwrap()
+                .len(),
+            track0_notes_before,
+            "[N3] 不得误写入已有 MIDI 轨片段"
+        );
+    }
     assert!(
         !ui.get_roll_edit_status().is_empty() && !ui.get_toast_message().is_empty(),
-        "[N3] 无片段写音符必须在 roll-edit-status 与 toast 明确反馈"
+        "[N3] 自动建片段写音符必须在 roll-edit-status 与 toast 明确反馈"
     );
+    ui.invoke_undo_step();
+    let proj_after_n3_undo = undo.try_project().unwrap();
+    assert_eq!(midi_note_count(&proj_after_n3_undo), count_before_n3);
+    assert!(
+        proj_after_n3_undo.tracks[&new_track_id].clips.is_empty(),
+        "[N3] 单步撤销应完整回滚自动新建的片段与音符"
+    );
+    ui.set_selected_clip_ulid("".into());
 
     // [N2 & N4] 在新选中轨建片段后写越界低音 row=48 (pitch=36) / step=80 (start_tick=19200)
     ui.invoke_clip_create();

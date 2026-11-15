@@ -12354,6 +12354,410 @@ pub fn pencil_attempt_for_selected_with_base(
     ))
 }
 
+/// 为指定 MIDI 轨道补充最小可发声链路：若既无非旁通内置乐器也无 SFZ 绑定，则插入一台内置
+/// `Yeban PolySynth` 并确保路由图存在到主总线的边。音频 / 辅助 / 主总线轨道不插入乐器。
+fn ensure_track_instrument_ops(
+    project: &yeban_model::YebanProjectV1,
+    track_id: yeban_model::EntityId,
+) -> Vec<yeban_model::ops::Op> {
+    let Some(track) = project.tracks.get(&track_id) else {
+        return Vec::new();
+    };
+    if track.kind != yeban_model::project::TrackKind::Midi {
+        return Vec::new();
+    }
+    let has_instrument = track.sampler.is_some()
+        || track.devices.iter().any(|device| {
+            !device.bypassed && device.kind == yeban_model::project::DeviceKind::InternalInstrument
+        });
+    let mut ops = Vec::new();
+    if !has_instrument {
+        ops.push(yeban_model::ops::Op::InsertDevice {
+            track_id,
+            slot_index: 0,
+            device: crate::bridge::builtin_instrument_device(),
+        });
+    }
+    if let Some(master) = project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .filter(|t| t.kind == yeban_model::project::TrackKind::Master)
+    {
+        let has_outgoing = project
+            .routing_graph
+            .edges
+            .values()
+            .any(|edge| edge.source_node == track_id);
+        if !has_outgoing {
+            if !project.routing_graph.nodes.contains(&track_id) {
+                ops.push(yeban_model::ops::Op::AddRoutingNode { node: track_id });
+            }
+            if !project.routing_graph.nodes.contains(&master.id) {
+                ops.push(yeban_model::ops::Op::AddRoutingNode { node: master.id });
+            }
+            ops.push(yeban_model::ops::Op::ConnectRouting {
+                edge: yeban_model::project::RoutingEdge {
+                    id: yeban_model::EntityId::new(),
+                    source_node: track_id,
+                    destination_node: master.id,
+                    kind: yeban_model::project::RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            });
+        }
+    }
+    ops
+}
+
+struct AutoRollNoteInsert {
+    ops: Vec<yeban_model::ops::Op>,
+    track_id: yeban_model::EntityId,
+    placement_id: yeban_model::EntityId,
+    track_created: bool,
+    clip_created: bool,
+}
+
+fn bar_aligned_clip_duration(end_tick: u64, bar_ticks: u64, min_duration: u64) -> u64 {
+    let bars = end_tick.max(1).div_ceil(bar_ticks.max(1)).max(1);
+    bars.saturating_mul(bar_ticks.max(1))
+        .max(min_duration)
+        .max(1)
+}
+
+fn track_midi_clip_placements<'a>(
+    project: &yeban_model::YebanProjectV1,
+    track: &'a yeban_model::project::TrackV3,
+) -> Vec<&'a yeban_model::project::ClipPlacement> {
+    track
+        .clips
+        .values()
+        .filter(|placement| {
+            matches!(
+                project
+                    .clip_pool
+                    .get(&placement.clip_id)
+                    .map(|entry| &entry.content),
+                Some(yeban_model::project::ClipContent::Midi { .. })
+            )
+        })
+        .collect()
+}
+
+/// 构造“保证可在当前工程写入音符”的原子 `Op` 批次：
+/// - 若当前展示轨是 MIDI 轨且已有覆盖 `note.start_tick` 的 MIDI 片段：直接复用（缺音源时补装内置合成器）；
+/// - 若当前展示轨是 MIDI 轨但没有覆盖该位置的 MIDI 片段：若存在 `start_tick == 0` 的前序 MIDI 片段则顺延长度，
+///   否则在 tick 0 新建 4 小节起步的 MIDI 片段与摆放（不跨过后续已有片段冲突），并缺音源时补装内置合成器；
+/// - 若工程尚无非主总线轨或当前展示轨不是 MIDI 轨（如 Audio / Aux / Master）：原子新建一条内置合成器
+///   MIDI 轨＋MIDI 片段＋摆放＋音符，全部在同一步可撤销批次中提交。
+fn build_roll_note_insert_ops(
+    project: &yeban_model::YebanProjectV1,
+    selected_track: Option<&str>,
+    selected_clip: Option<&str>,
+    note: yeban_model::MidiNote,
+) -> Result<AutoRollNoteInsert, &'static str> {
+    let start_tick = note.start_tick;
+    let end_tick = note.start_tick.saturating_add(note.duration_ticks.max(1));
+    let bar_ticks = crate::bridge::bar_length_ticks(project.time_signature)
+        .unwrap_or(3840)
+        .max(1);
+    let min_default_duration = bar_ticks.saturating_mul(crate::bridge::CLIP_CREATE_BARS);
+
+    let displayed = crate::bridge::display_track(project, selected_track);
+    if let Some(track) = displayed
+        && track.kind == yeban_model::project::TrackKind::Midi
+    {
+        let midi_placements = track_midi_clip_placements(project, track);
+        let preferred_covering = selected_clip
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .and_then(|id| clip_placement_for(project, id))
+            .filter(|(clip_track_id, _, placement)| {
+                *clip_track_id == track.id
+                    && matches!(
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .map(|entry| &entry.content),
+                        Some(yeban_model::project::ClipContent::Midi { .. })
+                    )
+            })
+            .map(|(_, _, placement)| placement);
+
+        if let Some(placement) = preferred_covering.filter(|placement| {
+            let p_end = placement
+                .start_tick
+                .saturating_add(placement.duration_ticks);
+            start_tick >= placement.start_tick && start_tick < p_end
+        }) {
+            let mut ops = ensure_track_instrument_ops(project, track.id);
+            ops.push(yeban_model::ops::Op::AddNote {
+                track_id: track.id,
+                clip_id: placement.clip_id,
+                note,
+            });
+            return Ok(AutoRollNoteInsert {
+                ops,
+                track_id: track.id,
+                placement_id: placement.id,
+                track_created: false,
+                clip_created: false,
+            });
+        }
+
+        if let Some(placement) = midi_placements.iter().copied().find(|placement| {
+            let p_end = placement
+                .start_tick
+                .saturating_add(placement.duration_ticks);
+            start_tick >= placement.start_tick && start_tick < p_end
+        }) {
+            let mut ops = ensure_track_instrument_ops(project, track.id);
+            ops.push(yeban_model::ops::Op::AddNote {
+                track_id: track.id,
+                clip_id: placement.clip_id,
+                note,
+            });
+            return Ok(AutoRollNoteInsert {
+                ops,
+                track_id: track.id,
+                placement_id: placement.id,
+                track_created: false,
+                clip_created: false,
+            });
+        }
+
+        if let Some(placement) = midi_placements
+            .iter()
+            .copied()
+            .find(|placement| placement.start_tick == 0)
+        {
+            let target_duration =
+                bar_aligned_clip_duration(end_tick, bar_ticks, placement.duration_ticks);
+            let mut ops = ensure_track_instrument_ops(project, track.id);
+            if target_duration > placement.duration_ticks {
+                ops.push(yeban_model::ops::Op::SetClipPlacementDuration {
+                    track_id: track.id,
+                    placement_id: placement.id,
+                    old_duration_ticks: placement.duration_ticks,
+                    new_duration_ticks: target_duration,
+                });
+            }
+            ops.push(yeban_model::ops::Op::AddNote {
+                track_id: track.id,
+                clip_id: placement.clip_id,
+                note,
+            });
+            return Ok(AutoRollNoteInsert {
+                ops,
+                track_id: track.id,
+                placement_id: placement.id,
+                track_created: false,
+                clip_created: false,
+            });
+        }
+
+        // 当前 MIDI 轨没有覆盖该位置的 MIDI 片段 ⇒ 原子新建一条从 tick 0 起步的 MIDI 片段并写音符。
+        let clip_id = yeban_model::EntityId::new();
+        let placement_id = yeban_model::EntityId::new();
+        let duration_ticks = bar_aligned_clip_duration(end_tick, bar_ticks, min_default_duration);
+        let clip = yeban_model::project::ClipPoolEntry {
+            id: clip_id,
+            name: crate::bridge::new_clip_name(project),
+            content: yeban_model::project::ClipContent::Midi {
+                notes: std::collections::BTreeMap::new(),
+            },
+        };
+        let placement = yeban_model::project::ClipPlacement {
+            id: placement_id,
+            clip_id,
+            start_tick: 0,
+            duration_ticks,
+            loop_config: yeban_model::project::LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        };
+        let mut ops = ensure_track_instrument_ops(project, track.id);
+        ops.push(yeban_model::ops::Op::AddClip { clip });
+        ops.push(yeban_model::ops::Op::AddClipPlacement {
+            track_id: track.id,
+            placement,
+        });
+        ops.push(yeban_model::ops::Op::AddNote {
+            track_id: track.id,
+            clip_id,
+            note,
+        });
+        return Ok(AutoRollNoteInsert {
+            ops,
+            track_id: track.id,
+            placement_id,
+            track_created: false,
+            clip_created: true,
+        });
+    }
+
+    // 无非主总线轨或当前展示轨是 Audio / Aux / Master ⇒ 原子新建一条内置合成器 MIDI 轨 ＋ 片段 ＋ 音符。
+    let mut ops = crate::bridge::track_create_ops(project, crate::bridge::NewTrackKind::Midi)?;
+    let new_track_id = ops
+        .iter()
+        .find_map(|op| match op {
+            yeban_model::ops::Op::AddTrack { track } => Some(track.id),
+            _ => None,
+        })
+        .ok_or("建轨结果缺少 AddTrack")?;
+    let clip_id = yeban_model::EntityId::new();
+    let placement_id = yeban_model::EntityId::new();
+    let duration_ticks = bar_aligned_clip_duration(end_tick, bar_ticks, min_default_duration);
+    ops.push(yeban_model::ops::Op::AddClip {
+        clip: yeban_model::project::ClipPoolEntry {
+            id: clip_id,
+            name: crate::bridge::new_clip_name(project),
+            content: yeban_model::project::ClipContent::Midi {
+                notes: std::collections::BTreeMap::new(),
+            },
+        },
+    });
+    ops.push(yeban_model::ops::Op::AddClipPlacement {
+        track_id: new_track_id,
+        placement: yeban_model::project::ClipPlacement {
+            id: placement_id,
+            clip_id,
+            start_tick: 0,
+            duration_ticks,
+            loop_config: yeban_model::project::LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        },
+    });
+    ops.push(yeban_model::ops::Op::AddNote {
+        track_id: new_track_id,
+        clip_id,
+        note,
+    });
+    Ok(AutoRollNoteInsert {
+        ops,
+        track_id: new_track_id,
+        placement_id,
+        track_created: true,
+        clip_created: true,
+    })
+}
+
+fn auto_pencil_ops_for_selected_with_base(
+    project: &yeban_model::YebanProjectV1,
+    selected_track: Option<&str>,
+    selected_clip: Option<&str>,
+    scroll_x: f32,
+    pos: (f32, f32),
+    grid_ticks: u64,
+    base_pitch: u8,
+) -> Result<(AutoRollNoteInsert, u8), PencilRefusal> {
+    let view = ViewState::from_project(project).map_err(|_| PencilRefusal::NoProjection)?;
+    let plan = view
+        .pencil_plan_with_base(scroll_x, pos.0, pos.1, grid_ticks, base_pitch)
+        .ok_or(PencilRefusal::NoPlan)?;
+    let pitch = plan.pitch;
+    let note = yeban_model::MidiNote::new(
+        yeban_model::EntityId::new(),
+        plan.start_tick,
+        plan.pitch,
+        plan.duration_ticks,
+    );
+    let inserted = build_roll_note_insert_ops(project, selected_track, selected_clip, note)
+        .map_err(|_| PencilRefusal::NoDisplayedTrack)?;
+    Ok((inserted, pitch))
+}
+
+fn auto_insert_status_message(inserted: &AutoRollNoteInsert) -> Option<&'static str> {
+    if inserted.track_created {
+        Some("已自动新建 MIDI 轨与片段并写入音符")
+    } else if inserted.clip_created {
+        Some("已自动新建 MIDI 片段并写入音符")
+    } else {
+        None
+    }
+}
+
+fn sync_roll_target_selection(
+    ui: &MainWindow,
+    project: &yeban_model::YebanProjectV1,
+    inserted: &AutoRollNoteInsert,
+) {
+    let track_id_str = inserted.track_id.to_canonical_string();
+    let placement_id_str = inserted.placement_id.to_canonical_string();
+    if inserted.track_created || selected_track_id(ui).as_deref() != Some(track_id_str.as_str()) {
+        ui.set_selected_track_id(track_id_str.into());
+    }
+    let current_clip = ui.get_selected_clip_ulid().to_string();
+    let current_clip_trimmed = current_clip.trim();
+    let current_clip_belongs_to_target = !current_clip_trimmed.is_empty()
+        && clip_placement_for(project, current_clip_trimmed).is_some_and(
+            |(clip_track_id, _, placement)| {
+                clip_track_id == inserted.track_id
+                    && matches!(
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .map(|entry| &entry.content),
+                        Some(yeban_model::project::ClipContent::Midi { .. })
+                    )
+            },
+        );
+    if inserted.track_created
+        || inserted.clip_created
+        || (!current_clip_trimmed.is_empty() && !current_clip_belongs_to_target)
+    {
+        ui.set_selected_clip_ulid(placement_id_str.into());
+    }
+}
+
+fn commit_roll_auto_draw(
+    ui: &MainWindow,
+    port: &UndoPort,
+    project: &yeban_model::YebanProjectV1,
+    x: f32,
+    y: f32,
+    width: f32,
+    scroll: f32,
+) {
+    let selected_track = selected_track_id(ui);
+    let selected_clip = ui.get_selected_clip_ulid().to_string();
+    match auto_pencil_ops_for_selected_with_base(
+        project,
+        selected_track.as_deref(),
+        Some(selected_clip.as_str()),
+        scroll,
+        (x, y),
+        ROLL_SNAP_GRID_TICKS,
+        roll_base_pitch(ui),
+    ) {
+        Ok((inserted, pitch)) => {
+            if port
+                .commit_ops(now_ms(), "pencil: add note", inserted.ops.clone())
+                .is_err()
+            {
+                return;
+            }
+            if let Some(updated_project) = port.try_project() {
+                sync_roll_target_selection(ui, &updated_project, &inserted);
+            }
+            apply_undo(ui, port);
+            reproject_roll(ui, port, width, scroll);
+            if let Some(notice) = auto_insert_status_message(&inserted) {
+                ui.set_roll_edit_status(notice.into());
+                update_toast(ui, notice);
+            } else {
+                ui.set_roll_edit_status("".into());
+            }
+            ui.invoke_piano_key_audition(midi_pitch_name(pitch).into(), 84 - i32::from(pitch));
+        }
+        Err(refusal) => {
+            if let Some(reason) = refusal.reason() {
+                ui.set_roll_edit_status(reason.into());
+            }
+        }
+    }
+}
+
 /// 铅笔工具的**数字键值**（与 `active-tool` 及 `Tool::from_digit` 同一口径）。
 pub const PENCIL_TOOL_DIGIT: u8 = 2;
 
@@ -13202,7 +13606,7 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                 return;
             };
             match tool.click() {
-                // 选择工具的全部语义就是上面那一段（命中 ⇒ 单选 / 空白 ⇒ 清除）；点中可见音符时同时试听音高。
+                // 选择工具：单击命中 ⇒ 单选并试听；空白处双击 ⇒ 自动保证 MIDI 轨/片段存在并插入默认 1 拍音符。
                 crate::input::ToolClick::SelectOrClear => {
                     if !double_click && let Some(index) = hit {
                         let pitch = view.notes[index].pitch;
@@ -13210,51 +13614,18 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                             midi_pitch_name(pitch).into(),
                             84 - i32::from(pitch),
                         );
+                    } else if double_click
+                        && hit.is_none()
+                        && let (Some(project), Some(port)) = (project.as_ref(), port.as_ref())
+                    {
+                        commit_roll_auto_draw(&ui, port, project, x, y, width, scroll);
                     }
                 }
                 crate::input::ToolClick::DrawNote => {
                     let (Some(project), Some(port)) = (project.as_ref(), port.as_ref()) else {
                         return;
                     };
-                    // ⭐ `#166`：寻址只认**展示轨**（`bridge::display_track`）。展示轨没有
-                    // 覆盖该 tick 的片段 ⇒ **不写**（⛔ 不回退到别的轨）＋ 把逐字原因写进可见的
-                    // `roll-edit-status`（⛔ 不静默丢弃）。⭐ `#192`：展示轨 = 选中轨 or 兜底。
-                    let selected = selected_track_id(&ui);
-                    match pencil_attempt_for_selected_with_base(
-                        project,
-                        selected.as_deref(),
-                        scroll,
-                        x,
-                        y,
-                        ROLL_SNAP_GRID_TICKS,
-                        active_tool,
-                        roll_base_pitch(&ui),
-                    ) {
-                        Ok(op) => {
-                            let drawn_pitch = match &op {
-                                yeban_model::ops::Op::AddNote { note, .. } => Some(note.pitch),
-                                _ => None,
-                            };
-                            if port
-                                .commit_ops(now_ms(), "pencil: add note", vec![op])
-                                .is_err()
-                            {
-                                return;
-                            }
-                            reproject_roll(&ui, port, width, scroll);
-                            if let Some(pitch) = drawn_pitch {
-                                ui.invoke_piano_key_audition(
-                                    midi_pitch_name(pitch).into(),
-                                    84 - i32::from(pitch),
-                                );
-                            }
-                        }
-                        Err(refusal) => {
-                            if let Some(reason) = refusal.reason() {
-                                ui.set_roll_edit_status(reason.into());
-                            }
-                        }
-                    }
+                    commit_roll_auto_draw(&ui, port, project, x, y, width, scroll);
                 }
                 crate::input::ToolClick::DeleteNote => {
                     let (Some(project), Some(port), Some(index)) =
@@ -17376,23 +17747,26 @@ fn resolve_roll_target(
     ui: &MainWindow,
     project: &yeban_model::YebanProjectV1,
 ) -> Result<(yeban_model::EntityId, yeban_model::EntityId), String> {
+    let displayed = display_track(ui, project);
     let selected_clip = ui.get_selected_clip_ulid();
     let selected_clip = selected_clip.as_str().trim();
-    if !selected_clip.is_empty() {
-        if let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip)
-            && matches!(
-                project
-                    .clip_pool
-                    .get(&placement.clip_id)
-                    .map(|entry| &entry.content),
-                Some(yeban_model::project::ClipContent::Midi { .. })
-            )
-        {
-            return Ok((track_id, placement.clip_id));
-        }
-        return Err("当前选中的片段不是可编辑的 MIDI 片段，请先选中或新建 MIDI 片段".to_owned());
+    if !selected_clip.is_empty()
+        && let Some((track_id, _, placement)) = clip_placement_for(project, selected_clip)
+        && displayed.is_none_or(|t| t.id == track_id)
+        && matches!(
+            project
+                .clip_pool
+                .get(&placement.clip_id)
+                .map(|entry| &entry.content),
+            Some(yeban_model::project::ClipContent::Midi { .. })
+        )
+    {
+        return Ok((track_id, placement.clip_id));
     }
-    if let Some(track) = display_track(ui, project) {
+    if let Some(track) = displayed {
+        if track.kind != yeban_model::project::TrackKind::Midi {
+            return Err(format!("当前轨道“{}”不是 MIDI 轨道", track.name));
+        }
         if let Some(clip_id) = track.clips.values().find_map(|placement| {
             matches!(
                 project
@@ -17405,26 +17779,10 @@ fn resolve_roll_target(
         }) {
             return Ok((track.id, clip_id));
         }
-        if track.kind == yeban_model::project::TrackKind::Midi {
-            return Err(format!(
-                "轨道“{}”尚无 MIDI 片段，请先点击“+ 片段”新建 MIDI 片段后再写音符",
-                track.name
-            ));
-        }
-    }
-    if let Some((track_id, clip_id)) = project.tracks.iter().find_map(|(tid, track)| {
-        track.clips.values().find_map(|placement| {
-            matches!(
-                project
-                    .clip_pool
-                    .get(&placement.clip_id)
-                    .map(|entry| &entry.content),
-                Some(yeban_model::project::ClipContent::Midi { .. })
-            )
-            .then_some((*tid, placement.clip_id))
-        })
-    }) {
-        return Ok((track_id, clip_id));
+        return Err(format!(
+            "轨道“{}”尚无 MIDI 片段，请先点击“+ 片段”新建 MIDI 片段后再写音符",
+            track.name
+        ));
     }
     Err("当前工程没有可编辑的 MIDI 片段，请先在 MIDI 轨新建片段".to_owned())
 }
@@ -17590,7 +17948,7 @@ fn track_audibility_warning(
         .tracks
         .values()
         .any(|t| t.id != project.master_bus_track_id && t.solo);
-    if any_solo && !track.solo {
+    if any_solo && !track.solo && !track.solo_safe {
         return Some("其它轨道正在 Solo，当前轨已静音");
     }
     if track.mute {
@@ -17600,6 +17958,210 @@ fn track_audibility_warning(
         return Some("当前轨道推子已拉至最小 (-∞ dB)");
     }
     None
+}
+
+fn track_audible_for_pitches(
+    project: &yeban_model::YebanProjectV1,
+    track: &yeban_model::project::TrackV3,
+    pitches: &[u8],
+    any_solo: bool,
+) -> bool {
+    if track.id == project.master_bus_track_id || track.mute || track.volume_db <= -60.0 {
+        return false;
+    }
+    if any_solo && !track.solo && !track.solo_safe {
+        return false;
+    }
+    if let Some(drums) = yeban_engine::drums::DrumsParams::from_devices(&track.devices) {
+        return !pitches.is_empty()
+            && pitches
+                .iter()
+                .any(|p| drums.notes().voice_for(*p).is_some());
+    }
+    true
+}
+
+fn publish_project_for_audition(port: &UndoPort, engine: &Rc<RefCell<EngineHost>>) {
+    let mark = crate::engine_host::EditMark::from_display(&port.display());
+    let should = {
+        let host = engine.borrow();
+        host.has_engine() && host.should_publish(mark)
+    };
+    if should && let Some(project) = port.try_project() {
+        let _ = engine.borrow_mut().publish_project(&project, mark);
+    }
+}
+
+/// 解析试听目标轨并补齐最小可发声链路：
+/// 1. 空工程（0 条非主总线轨）自动建一条内置合成器 MIDI 轨并选中；
+/// 2. 未静音 MIDI 轨缺少乐器/路由时自动安装 `Yeban PolySynth` 并立即发布给引擎；
+/// 3. 明确 `mute == true` 的轨道保留“静音”提示（供测试与用户感知）；
+/// 4. Audio / Aux / Master 轨或被他人 Solo / 鼓机未映射键位阻断时，优先回落到当前可听的 MIDI 合成器轨（无任何 MIDI 轨时自动建一条）。
+fn resolve_and_prepare_audition_target(
+    ui: &MainWindow,
+    port: &UndoPort,
+    engine: &Rc<RefCell<EngineHost>>,
+    pitches: &[u8],
+) -> Option<(yeban_model::EntityId, Option<&'static str>)> {
+    let mut project = port.try_project()?;
+    let selected = selected_track_id(ui);
+    if crate::bridge::display_track(&project, selected.as_deref()).is_none()
+        && let Ok(ops) =
+            crate::bridge::track_create_ops(&project, crate::bridge::NewTrackKind::Midi)
+    {
+        let created_id = ops.iter().find_map(|op| match op {
+            yeban_model::ops::Op::AddTrack { track } => Some(track.id),
+            _ => None,
+        });
+        if port
+            .commit_ops(now_ms(), "piano-roll: auto create midi track", ops)
+            .is_ok()
+        {
+            if let Some(tid) = created_id {
+                ui.set_selected_track_id(tid.to_canonical_string().into());
+            }
+            refresh_undo_window(ui, port, true);
+            project = port.try_project()?;
+        }
+    }
+
+    let displayed = crate::bridge::display_track(&project, selected_track_id(ui).as_deref());
+    if let Some(track) = displayed {
+        if track.kind == yeban_model::project::TrackKind::Midi {
+            if !track.mute {
+                let ops = ensure_track_instrument_ops(&project, track.id);
+                if !ops.is_empty()
+                    && port
+                        .commit_ops(now_ms(), "piano-roll: auto install instrument", ops)
+                        .is_ok()
+                {
+                    refresh_undo_window(ui, port, true);
+                    project = port.try_project()?;
+                }
+            }
+        } else {
+            let any_solo = project
+                .tracks
+                .values()
+                .any(|t| t.id != project.master_bus_track_id && t.solo);
+            let existing_midi = project
+                .tracks
+                .values()
+                .filter(|t| {
+                    t.id != project.master_bus_track_id
+                        && t.kind == yeban_model::project::TrackKind::Midi
+                })
+                .collect::<Vec<_>>();
+            if existing_midi.is_empty() {
+                if let Ok(ops) =
+                    crate::bridge::track_create_ops(&project, crate::bridge::NewTrackKind::Midi)
+                {
+                    let created_id = ops.iter().find_map(|op| match op {
+                        yeban_model::ops::Op::AddTrack { track } => Some(track.id),
+                        _ => None,
+                    });
+                    if port
+                        .commit_ops(now_ms(), "piano-roll: auto create midi track", ops)
+                        .is_ok()
+                    {
+                        if let Some(tid) = created_id {
+                            ui.set_selected_track_id(tid.to_canonical_string().into());
+                        }
+                        refresh_undo_window(ui, port, true);
+                        project = port.try_project()?;
+                    }
+                }
+            } else if let Some(candidate) = existing_midi
+                .iter()
+                .copied()
+                .find(|t| track_audible_for_pitches(&project, t, pitches, any_solo))
+                .or_else(|| {
+                    existing_midi
+                        .iter()
+                        .copied()
+                        .find(|t| !t.mute && t.volume_db > -60.0)
+                })
+            {
+                let ops = ensure_track_instrument_ops(&project, candidate.id);
+                if !ops.is_empty()
+                    && port
+                        .commit_ops(now_ms(), "piano-roll: auto install instrument", ops)
+                        .is_ok()
+                {
+                    refresh_undo_window(ui, port, true);
+                    project = port.try_project()?;
+                }
+            }
+        }
+    }
+
+    publish_project_for_audition(port, engine);
+
+    let any_solo = project
+        .tracks
+        .values()
+        .any(|t| t.id != project.master_bus_track_id && t.solo);
+    let track = crate::bridge::display_track(&project, selected_track_id(ui).as_deref())
+        .or_else(|| {
+            project
+                .tracks
+                .values()
+                .find(|t| t.id != project.master_bus_track_id)
+        })
+        .or_else(|| project.tracks.values().next())?;
+
+    if track.kind == yeban_model::project::TrackKind::Midi {
+        if track.mute {
+            return Some((track.id, Some("当前轨道处于静音 (Mute)")));
+        }
+        if track.volume_db <= -60.0 {
+            return Some((track.id, Some("当前轨道推子已拉至最小 (-∞ dB)")));
+        }
+        if track_audible_for_pitches(&project, track, pitches, any_solo) {
+            return Some((track.id, None));
+        }
+        if let Some(fallback) = project.tracks.values().find(|candidate| {
+            candidate.kind == yeban_model::project::TrackKind::Midi
+                && track_audible_for_pitches(&project, candidate, pitches, any_solo)
+                && yeban_engine::drums::DrumsParams::from_devices(&candidate.devices).is_none()
+        }) {
+            return Some((fallback.id, None));
+        }
+        if let Some(fallback) = project.tracks.values().find(|candidate| {
+            candidate.kind == yeban_model::project::TrackKind::Midi
+                && track_audible_for_pitches(&project, candidate, pitches, any_solo)
+        }) {
+            return Some((fallback.id, None));
+        }
+        return Some((track.id, track_audibility_warning(&project, track.id)));
+    }
+
+    if let Some(midi_track) = project
+        .tracks
+        .values()
+        .find(|candidate| {
+            candidate.kind == yeban_model::project::TrackKind::Midi
+                && track_audible_for_pitches(&project, candidate, pitches, any_solo)
+                && yeban_engine::drums::DrumsParams::from_devices(&candidate.devices).is_none()
+        })
+        .or_else(|| {
+            project.tracks.values().find(|candidate| {
+                candidate.kind == yeban_model::project::TrackKind::Midi
+                    && track_audible_for_pitches(&project, candidate, pitches, any_solo)
+            })
+        })
+    {
+        return Some((midi_track.id, None));
+    }
+
+    if let Some(any_midi) = project
+        .tracks
+        .values()
+        .find(|candidate| candidate.kind == yeban_model::project::TrackKind::Midi)
+    {
+        return Some((any_midi.id, track_audibility_warning(&project, any_midi.id)));
+    }
+    Some((track.id, track_audibility_warning(&project, track.id)))
 }
 
 fn dispatch_aether_audition(
@@ -18259,31 +18821,38 @@ pub fn wire_aether_actions(
             let Some(project) = port.try_project() else {
                 return;
             };
-            let (track_id, clip_id) = match resolve_roll_target(&ui, &project) {
-                Ok(target) => target,
-                Err(reason) => {
-                    ui.set_roll_edit_status(reason.clone().into());
-                    update_toast(&ui, reason);
-                    return;
-                }
-            };
             let pitch = (84 - row).clamp(0, 127) as u8;
             let start_tick = u64::try_from(step.max(0)).unwrap_or(0) * 240;
             let note =
                 yeban_model::MidiNote::new(yeban_model::EntityId::new(), start_tick, pitch, 240);
-            let op = yeban_model::Op::AddNote {
-                track_id,
-                clip_id,
+            let selected_track = selected_track_id(&ui);
+            let selected_clip = ui.get_selected_clip_ulid().to_string();
+            let inserted = match build_roll_note_insert_ops(
+                &project,
+                selected_track.as_deref(),
+                Some(selected_clip.as_str()),
                 note,
+            ) {
+                Ok(inserted) => inserted,
+                Err(reason) => {
+                    ui.set_roll_edit_status(reason.into());
+                    update_toast(&ui, reason);
+                    return;
+                }
             };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_millis() as u64);
-            if port.commit_ops(now, "aether: 新建音符", vec![op]).is_err() {
+            if !aether_commit(&ui, &port, inserted.ops.clone(), "aether: 新建音符") {
                 ui.set_roll_edit_status("新建音符被拒绝(工程未改)".into());
                 update_toast(&ui, "新建音符被拒绝(工程未改)");
             } else {
-                ui.set_roll_edit_status("".into());
+                if let Some(updated_project) = port.try_project() {
+                    sync_roll_target_selection(&ui, &updated_project, &inserted);
+                }
+                if let Some(notice) = auto_insert_status_message(&inserted) {
+                    ui.set_roll_edit_status(notice.into());
+                    update_toast(&ui, notice);
+                } else {
+                    ui.set_roll_edit_status("".into());
+                }
                 refresh_undo_window(&ui, &port, true);
                 ui.invoke_piano_key_audition(midi_pitch_name(pitch).into(), row);
             }
@@ -18535,7 +19104,7 @@ pub fn wire_aether_actions(
         }
     });
 
-    // ⑦ piano-step-toggle: step sequencer 格子 -> 有则删、无则建(真实 Op::AddNote/DeleteNote)。
+    // ⑦ piano-step-toggle: step sequencer 格子 -> 有则删、无则自动建轨/片段/乐器并插音符。
     ui.on_piano_step_toggle({
         let w = weak.clone();
         let port = Rc::clone(&port);
@@ -18546,51 +19115,61 @@ pub fn wire_aether_actions(
             let Some(project) = port.try_project() else {
                 return;
             };
-            let (track_id, clip_id) = match resolve_roll_target(&ui, &project) {
-                Ok(target) => target,
-                Err(reason) => {
-                    ui.set_roll_edit_status(reason.clone().into());
-                    update_toast(&ui, reason);
-                    return;
-                }
-            };
             let start_tick = u64::try_from(step.max(0)).unwrap_or(0) * 240;
             let pitch = (84 - row).clamp(0, 127) as u8;
-            let existing = match project.clip_pool.get(&clip_id) {
-                Some(yeban_model::project::ClipPoolEntry {
-                    content: yeban_model::project::ClipContent::Midi { notes },
-                    ..
-                }) => notes
-                    .values()
-                    .find(|n| n.start_tick == start_tick && n.pitch == pitch)
-                    .cloned(),
-                _ => None,
-            };
-            let adding = existing.is_none();
-            let op = if let Some(note) = existing {
-                yeban_model::Op::DeleteNote {
+            if let Ok((track_id, clip_id)) = resolve_roll_target(&ui, &project)
+                && let Some(note) =
+                    project
+                        .clip_pool
+                        .get(&clip_id)
+                        .and_then(|entry| match &entry.content {
+                            yeban_model::project::ClipContent::Midi { notes } => notes
+                                .values()
+                                .find(|n| n.start_tick == start_tick && n.pitch == pitch)
+                                .cloned(),
+                            _ => None,
+                        })
+            {
+                let op = yeban_model::Op::DeleteNote {
                     track_id,
                     clip_id,
                     note_id: note.id,
                     previous_note: note,
+                };
+                if aether_commit(&ui, &port, vec![op], "aether: 步进格") {
+                    ui.set_roll_edit_status("".into());
                 }
-            } else {
-                yeban_model::Op::AddNote {
-                    track_id,
-                    clip_id,
-                    note: yeban_model::MidiNote::new(
-                        yeban_model::EntityId::new(),
-                        start_tick,
-                        pitch,
-                        240,
-                    ),
+                return;
+            }
+            let note =
+                yeban_model::MidiNote::new(yeban_model::EntityId::new(), start_tick, pitch, 240);
+            let selected_track = selected_track_id(&ui);
+            let selected_clip = ui.get_selected_clip_ulid().to_string();
+            let inserted = match build_roll_note_insert_ops(
+                &project,
+                selected_track.as_deref(),
+                Some(selected_clip.as_str()),
+                note,
+            ) {
+                Ok(inserted) => inserted,
+                Err(reason) => {
+                    ui.set_roll_edit_status(reason.into());
+                    update_toast(&ui, reason);
+                    return;
                 }
             };
-            if aether_commit(&ui, &port, vec![op], "aether: 步进格") {
-                ui.set_roll_edit_status("".into());
-                if adding {
-                    ui.invoke_piano_key_audition(midi_pitch_name(pitch).into(), row);
+            if aether_commit(&ui, &port, inserted.ops.clone(), "aether: 步进格") {
+                if let Some(updated_project) = port.try_project() {
+                    sync_roll_target_selection(&ui, &updated_project, &inserted);
                 }
+                if let Some(notice) = auto_insert_status_message(&inserted) {
+                    ui.set_roll_edit_status(notice.into());
+                    update_toast(&ui, notice);
+                } else {
+                    ui.set_roll_edit_status("".into());
+                }
+                refresh_undo_window(&ui, &port, true);
+                ui.invoke_piano_key_audition(midi_pitch_name(pitch).into(), row);
             }
         }
     });
@@ -18631,17 +19210,14 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            let Some((track, warning)) = port.try_project().and_then(|project| {
-                let track = display_track(&ui, &project)
-                    .map(|t| t.id)
-                    .or_else(|| project.tracks.keys().next().copied())?;
-                Some((track, track_audibility_warning(&project, track)))
-            }) else {
+            let pitches = parse_chord_pitches(chord.as_str());
+            let Some((track, warning)) =
+                resolve_and_prepare_audition_target(&ui, &port, &engine, &pitches)
+            else {
                 ui.set_module_status("试听: 工程里没有音轨".into());
                 ui.set_module_status_succeeded(false);
                 return;
             };
-            let pitches = parse_chord_pitches(chord.as_str());
             dispatch_aether_audition(&ui, &engine, track, &pitches, 96, "试听和弦", warning);
         }
     });
@@ -18653,18 +19229,15 @@ pub fn wire_aether_actions(
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            let Some((track, warning)) = port.try_project().and_then(|project| {
-                let track = display_track(&ui, &project)
-                    .map(|t| t.id)
-                    .or_else(|| project.tracks.keys().next().copied())?;
-                Some((track, track_audibility_warning(&project, track)))
-            }) else {
+            let pitch =
+                parse_pitch_name(key.as_str()).unwrap_or_else(|| (84 - row).clamp(0, 127) as u8);
+            let Some((track, warning)) =
+                resolve_and_prepare_audition_target(&ui, &port, &engine, &[pitch])
+            else {
                 ui.set_module_status("试听: 工程里没有音轨".into());
                 ui.set_module_status_succeeded(false);
                 return;
             };
-            let pitch =
-                parse_pitch_name(key.as_str()).unwrap_or_else(|| (84 - row).clamp(0, 127) as u8);
             dispatch_aether_audition(&ui, &engine, track, &[pitch], 100, "试听琴键", warning);
         }
     });
@@ -18685,12 +19258,9 @@ pub fn wire_aether_actions(
             else {
                 return;
             };
-            let Some((track, warning)) = port.try_project().and_then(|project| {
-                let track = display_track(&ui, &project)
-                    .map(|t| t.id)
-                    .or_else(|| project.tracks.keys().next().copied())?;
-                Some((track, track_audibility_warning(&project, track)))
-            }) else {
+            let Some((track, warning)) =
+                resolve_and_prepare_audition_target(&ui, &port, &engine, &[pitch])
+            else {
                 ui.set_module_status("试听: 工程里没有音轨".into());
                 ui.set_module_status_succeeded(false);
                 return;
