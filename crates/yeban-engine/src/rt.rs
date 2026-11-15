@@ -7942,6 +7942,7 @@ mod tests {
         );
         let mut idle = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
         rig.runtime.process_quantum(&mut idle, 2);
+        assert_eq!(idle.len(), DEFAULT_BLOCK_FRAMES * 2);
         assert!(idle.iter().all(|v| *v == 0.0), "停止态无试听应精确全零");
 
         assert_eq!(
