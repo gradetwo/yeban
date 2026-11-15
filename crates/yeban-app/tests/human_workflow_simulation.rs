@@ -166,7 +166,24 @@ fn simulated_human_ui_composition_mixing_and_wav_export_without_mcp() {
     ui.invoke_transport_set_scale("C minor".into());
     let timed = undo.try_project().expect("速度/调号提交");
     assert!((timed.bpm - 78.0).abs() < 0.01, "BPM 必须同步更新为 78.0");
+    assert_eq!(
+        timed.key_signature,
+        Some(yeban_model::KeySignature {
+            sharps_flats: -3,
+            is_minor: true,
+        }),
+        "C minor 必须正确解析为 3 个降号的小调"
+    );
     assert_eq!(ui.get_scale_text().as_str(), "C minor");
+    let lead_track_row = ui
+        .get_tracks()
+        .row_data(ui_track_pos(ui, lead_id))
+        .expect("导唱轨 UI 行存在");
+    assert_eq!(
+        lead_track_row.bus.as_str(),
+        "Master",
+        "直连主总线的轨道在 UI 中必须真实投影为 Master，而非硬编码 Bus 1 (Sum)"
+    );
 
     // 3. 选中“导唱长笛”指派合成器，再插 EQ、Reverb 与 Compressor，检验多设备精确改参
     let lead_pos = ui_track_pos(ui, lead_id);

@@ -16155,6 +16155,45 @@ mod pencil_op_tests {
     }
 
     #[test]
+    fn parse_key_signature_text_handles_major_minor_and_chinese() {
+        assert_eq!(
+            parse_key_signature_text("C minor"),
+            yeban_model::KeySignature {
+                sharps_flats: -3,
+                is_minor: true
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("D Major"),
+            yeban_model::KeySignature {
+                sharps_flats: 2,
+                is_minor: false
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("A minor"),
+            yeban_model::KeySignature {
+                sharps_flats: 0,
+                is_minor: true
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("F#小调"),
+            yeban_model::KeySignature {
+                sharps_flats: 3,
+                is_minor: true
+            }
+        );
+        assert_eq!(
+            parse_key_signature_text("Eb 大调"),
+            yeban_model::KeySignature {
+                sharps_flats: -3,
+                is_minor: false
+            }
+        );
+    }
+
+    #[test]
     fn delete_ops_for_covers_every_selected_note_and_the_batch_reverses_whole() {
         // 判据：`delete_ops_for` 是"选区身份 → 待提交 op"的**唯一**解析点。
         // 空选区与垃圾身份 ⇒ **空批**（"什么都不做"是返回空, 不是 panic, 也不是删一个猜的对象）。
@@ -18414,6 +18453,7 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "track-add-midi" => ui.invoke_track_create_midi(),
         "track-add-audio" => ui.invoke_track_create_audio(),
         "track-add-aux" | "track-add-bus" => ui.invoke_track_create_aux(),
+        "track-delete" => ui.invoke_track_delete(),
         "new-midi-clip" => ui.invoke_clip_create(),
         "insert-eq" => ui.invoke_device_insert_eq(),
         "insert-reverb" => ui.invoke_device_insert_reverb(),
@@ -19267,24 +19307,11 @@ pub fn wire_aether_actions(
                 return;
             };
             ui.set_scale_text(text.clone());
-            let t = text.as_str();
-            let (sharps_flats, is_minor) = if t.contains("Minor") || t.contains("小调") {
-                (0, true)
-            } else if t.contains('D') || t.contains('d') {
-                (2, false)
-            } else if t.contains('G') || t.contains('g') {
-                (1, false)
-            } else {
-                (0, false)
-            };
+            let new_key_signature = Some(parse_key_signature_text(text.as_str()));
             let Some(project) = port.try_project() else {
                 return;
             };
             let old_key_signature = project.key_signature;
-            let new_key_signature = Some(yeban_model::KeySignature {
-                sharps_flats,
-                is_minor,
-            });
             if old_key_signature != new_key_signature {
                 aether_commit(
                     &ui,
@@ -19909,6 +19936,57 @@ pub fn wire_aether_actions(
     });
 }
 
+fn parse_key_signature_text(text: &str) -> yeban_model::KeySignature {
+    let normalized = text.trim().replace('♯', "#").replace('♭', "b");
+    let lower = normalized.to_ascii_lowercase();
+    let is_minor_word = lower.contains("minor")
+        || normalized.contains("小调")
+        || lower
+            .split_whitespace()
+            .any(|tok| tok == "m" || tok == "min");
+    let raw_token = normalized
+        .split(|c: char| c.is_whitespace() || c == '大' || c == '小' || c == '(')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let (tonic, suffix_minor) = if let Some(stem) = raw_token.strip_suffix("minor") {
+        (stem, true)
+    } else if let Some(stem) = raw_token.strip_suffix("major") {
+        (stem, false)
+    } else if let Some(stem) = raw_token.strip_suffix("min") {
+        (stem, true)
+    } else if let Some(stem) = raw_token.strip_suffix("maj") {
+        (stem, false)
+    } else if raw_token.len() >= 2 && raw_token.ends_with('m') {
+        (&raw_token[..raw_token.len() - 1], true)
+    } else {
+        (raw_token.as_str(), false)
+    };
+    let is_minor = is_minor_word || suffix_minor;
+    let sharps_flats: i8 = match (tonic, is_minor) {
+        ("c", false) | ("a", true) => 0,
+        ("g", false) | ("e", true) => 1,
+        ("d", false) | ("b", true) => 2,
+        ("a", false) | ("f#", true) | ("gb", true) => 3,
+        ("e", false) | ("c#", true) | ("db", true) => 4,
+        ("b", false) | ("g#", true) => 5,
+        ("f#", false) | ("d#", true) => 6,
+        ("c#", false) | ("a#", true) => 7,
+        ("f", false) | ("d", true) => -1,
+        ("bb", false) | ("g", true) => -2,
+        ("eb", false) | ("c", true) => -3,
+        ("ab", false) | ("f", true) => -4,
+        ("db", false) | ("bb", true) => -5,
+        ("gb", false) | ("eb", true) => -6,
+        ("cb", false) | ("ab", true) => -7,
+        _ => 0,
+    };
+    yeban_model::KeySignature {
+        sharps_flats,
+        is_minor,
+    }
+}
+
 fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
     view.tracks
         .iter()
@@ -19929,11 +20007,7 @@ fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
                 name: trk.name.clone().into(),
                 kind: trk.kind.to_uppercase().into(),
                 color: to_color(trk.color_rgb),
-                bus: if trk.is_master {
-                    "Master".into()
-                } else {
-                    "Bus 1 (Sum)".into()
-                },
+                bus: trk.bus_name.clone().into(),
                 volume_db: trk.volume_db,
                 pan: trk.pan_display.clone().into(),
                 muted: trk.mute,

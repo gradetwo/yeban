@@ -1225,6 +1225,8 @@ pub struct TrackView {
     /// 空链 ⇒ 空数组 ⇒ 界面显示空槽，⛔ 不再按轨道类型编造 "Wavetable MPE" /
     /// "Pro-QLinear 8" / "Glue Comp VCA" 这类工程里不存在的设备。
     pub devices: Vec<String>,
+    /// 该轨道在路由图中的主输出目标名（如 `"Master"` / `"Strings Bus"` / `"Unrouted"`）。
+    pub bus_name: String,
     /// 是否为 `master_bus_track_id` 指向的主总线。
     pub is_master: bool,
     /// 编排车道的**行顶沿 y**（逻辑像素）—— 由 [`track_rows`] 的前缀和给出。
@@ -3909,7 +3911,13 @@ impl ViewState {
 
         // 主总线单独挑出（不进 `tracks`，不占行）。
         if let Some(track) = project.tracks.get(&project.master_bus_track_id) {
-            master = Some(track_view(track, 0, true, None));
+            master = Some(track_view(
+                track,
+                0,
+                true,
+                None,
+                resolve_track_bus_name(project, track, true),
+            ));
         }
         // 轨道顺序 = **显示顺序**（`YebanProjectV1::display_track_ids`：显式 `Vec`，
         // 空表时回退到身份升序 ⇒ 未移动过的工程与改动前逐位相同）。`index` 与上面
@@ -3932,7 +3940,8 @@ impl ViewState {
                     row,
                 )?);
             }
-            tracks.push(track_view(track, index, false, row));
+            let bus_name = resolve_track_bus_name(project, track, false);
+            tracks.push(track_view(track, index, false, row, bus_name));
         }
         for (index, clip) in clips.iter_mut().enumerate() {
             clip.index = index;
@@ -5490,6 +5499,36 @@ fn kind_name(kind: TrackKind) -> &'static str {
     }
 }
 
+/// 解析轨道主输出目标在 UI 中显示的总线名。
+fn resolve_track_bus_name(project: &YebanProjectV1, track: &TrackV3, is_master: bool) -> String {
+    if is_master {
+        return "Master".to_owned();
+    }
+    let mut routes_to_master = false;
+    for edge in project.routing_graph.edges.values() {
+        if edge.source_node != track.id {
+            continue;
+        }
+        if !matches!(
+            edge.kind,
+            yeban_model::project::RoutingKind::TrackToBus
+                | yeban_model::project::RoutingKind::BusToMaster
+        ) {
+            continue;
+        }
+        if edge.destination_node == project.master_bus_track_id {
+            routes_to_master = true;
+        } else if let Some(dest) = project.tracks.get(&edge.destination_node) {
+            return dest.name.clone();
+        }
+    }
+    if routes_to_master {
+        "Master".to_owned()
+    } else {
+        "Unrouted".to_owned()
+    }
+}
+
 /// 投影一条轨道。
 ///
 /// `row` 是这条轨道在编排视图里的行几何（`None` = 主总线，它没有编排行）。
@@ -5498,6 +5537,7 @@ fn track_view(
     index: usize,
     is_master: bool,
     row: Option<RowGeometry>,
+    bus_name: String,
 ) -> TrackView {
     #[allow(clippy::cast_possible_truncation)]
     let pan_millis = (f64::from(track.pan) * 1000.0).round() as i32;
@@ -5532,6 +5572,7 @@ fn track_view(
             .iter()
             .map(|device| device.name.clone())
             .collect(),
+        bus_name,
         is_master,
         y,
         height,
@@ -9312,5 +9353,74 @@ mod tests {
             );
             assert!(hit.is_some(), "hit test must track reprojected Y");
         }
+    }
+
+    #[test]
+    fn track_view_bus_name_projects_routing_destination() {
+        use yeban_model::{RoutingEdge, RoutingKind, TrackKind, TrackV3};
+
+        let mut project = default_project();
+        let bus_id = EntityId::new();
+        let lead_id = EntityId::new();
+        let unrouted_id = EntityId::new();
+        project
+            .insert_track(TrackV3 {
+                id: bus_id,
+                name: "Strings Bus".to_owned(),
+                kind: TrackKind::AuxReturn,
+                ..TrackV3::default()
+            })
+            .expect("insert bus track");
+        project
+            .insert_track(TrackV3 {
+                id: lead_id,
+                name: "Erhu".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            })
+            .expect("insert lead track");
+        project
+            .insert_track(TrackV3 {
+                id: unrouted_id,
+                name: "Unrouted".to_owned(),
+                kind: TrackKind::Audio,
+                ..TrackV3::default()
+            })
+            .expect("insert unrouted track");
+        project.routing_graph.nodes.push(bus_id);
+        project.routing_graph.nodes.push(lead_id);
+        project.routing_graph.nodes.push(unrouted_id);
+        project.routing_graph.edges.insert(
+            EntityId::new(),
+            RoutingEdge {
+                id: EntityId::new(),
+                source_node: bus_id,
+                destination_node: project.master_bus_track_id,
+                kind: RoutingKind::BusToMaster,
+                gain_db: None,
+            },
+        );
+        project.routing_graph.edges.insert(
+            EntityId::new(),
+            RoutingEdge {
+                id: EntityId::new(),
+                source_node: lead_id,
+                destination_node: bus_id,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+
+        let view = ViewState::from_project(&project).expect("view projection");
+        let bus_view = view
+            .tracks
+            .iter()
+            .find(|t| t.name == "Strings Bus")
+            .unwrap();
+        let lead_view = view.tracks.iter().find(|t| t.name == "Erhu").unwrap();
+        let unrouted_view = view.tracks.iter().find(|t| t.name == "Unrouted").unwrap();
+        assert_eq!(bus_view.bus_name, "Master");
+        assert_eq!(lead_view.bus_name, "Strings Bus");
+        assert_eq!(unrouted_view.bus_name, "Unrouted");
     }
 }
