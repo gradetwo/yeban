@@ -1162,9 +1162,13 @@ fn bus_project() -> YebanProjectV1 {
 
 /// 读回一个 32-bit Float WAV 的全部交错样本（从盘上字节解，不抄回执）。
 fn float_samples(path: &Path) -> Vec<f32> {
-    let bytes = fs::read(path).expect("读分轨产物");
-    let parsed = parse_container(&bytes).expect("分轨容器可解析");
-    assert!(parsed.format.is_float, "分轨必须是浮点容器");
+    float_samples_of_bytes(&fs::read(path).expect("读分轨产物"))
+}
+
+/// 从容器字节解全部交错样本（`render::build` 只产字节不落盘，对照渲染走这条）。
+fn float_samples_of_bytes(bytes: &[u8]) -> Vec<f32> {
+    let parsed = parse_container(bytes).expect("容器可解析");
+    assert!(parsed.format.is_float, "容器必须是浮点");
     bytes[parsed.data]
         .as_chunks::<4>()
         .0
@@ -1290,7 +1294,7 @@ fn bus_stem_matches_the_bus_signal_in_the_mix() {
     )
     .expect("对照母带渲染必须成功");
     assert_eq!(artifact.frames, frames, "对照渲染帧数与分轨钉死帧数一致");
-    let reference_samples = float_samples(&reference_path);
+    let reference_samples = float_samples_of_bytes(&artifact.bytes);
     assert_eq!(reference_samples.len(), bus_samples.len());
     let mut max_mix_diff = 0.0_f32;
     for (bus, reference) in bus_samples.iter().zip(reference_samples.iter()) {
