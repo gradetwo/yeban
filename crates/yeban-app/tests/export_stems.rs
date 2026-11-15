@@ -339,9 +339,8 @@ fn empty_track_ids_list_is_a_usage_error() {
             value.to_owned(),
         ];
         let error = cli::parse(&argv).expect_err("空清单必须在解析期被拒绝");
-        assert_eq!(
+        assert!(
             error.to_string().contains("--stems-track-ids"),
-            true,
             "错误必须点名开关: {error}"
         );
         let _ = error;
