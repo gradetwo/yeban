@@ -437,7 +437,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             clicked => { root.console-maximize-toggle(); }
                         }
                         TooltipBubble {
-                            text: root.console-maximized ? "退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]" : "最大化全屏此视图 (卷帘/混音台) [Cmd/Ctrl+Alt+M / F3]";
+                            text: root.console-maximized ? "退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]" : "最大化全屏此视图 (钢琴卷帘/混音控制台) [Ctrl+Alt+M / F3]";
                             is-visible: max_btn_touch.has-hover;
                             tip-offset-x: -80px;
                             tip-offset-y: 26px;

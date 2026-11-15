@@ -25,6 +25,7 @@ const CONSOLE_TABS_SLINT: &str = include_str!("../ui/console/console_tabs.slint"
 const CLI: &str = include_str!("../src/cli.rs");
 const SCENE: &str = include_str!("../src/scene.rs");
 const ELEMENTS: &str = include_str!("../src/elements.rs");
+const TRANSPORT: &str = include_str!("../ui/transport_bar.slint");
 
 /// 滤掉整行注释后剩下的源码行（注释里解释"为什么统一"必然提到旧别名）。
 fn code_lines(source: &str) -> String {
@@ -57,6 +58,10 @@ const LEGACY_ALIASES: [&str; 12] = [
     "设备效果链",
     "打开底部 混音台",
     "(调音台/卷帘)",
+    "打开底部混音台",
+    "混音台最大化",
+    "卷帘/混音台",
+    "调音台流",
 ];
 
 /// **判据 ①**：底部页签的四个 `text:` 与 `select-tab(id)` 都用权威名。
@@ -122,6 +127,10 @@ fn shortcut_table_labels_match_the_dock_tabs() {
     assert!(c.contains("F8 → 控制台「混音控制台」"));
     assert!(c.contains("F9 → 控制台「设备机架」"));
     assert!(c.contains("控制台页签：钢琴卷帘 / 混音控制台 / 设备机架"));
+    assert!(c.contains("#   X               打开底部混音控制台"));
+    assert!(c.contains("#   F3              混音控制台最大化 / 还原"));
+    assert!(!c.contains("打开底部混音台"));
+    assert!(!c.contains("混音台最大化"));
 }
 
 /// **判据 ⑤**：规范页签表与元素注册表也用权威名（`--dump-elements` / 屏读器可见）。
@@ -145,6 +154,7 @@ fn no_legacy_panel_aliases_remain_in_user_facing_surfaces() {
         ("ui/modals.slint", MODALS),
         ("ui/console/console_tabs.slint", CONSOLE_TABS_SLINT),
         ("src/cli.rs", CLI),
+        ("ui/transport_bar.slint", TRANSPORT),
     ];
     for (label, src) in surfaces {
         let code = code_lines(src);
