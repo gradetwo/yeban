@@ -26,8 +26,12 @@
 //! ## 与 `MidiNote::syllable` 的关系
 //!
 //! `syllable` 是**音符级**的单个音节（SVS 对齐输入）；本时间轴是**行级**的整行词
-//! （LRC 的单位）。两者不互相推导：行边界（哪几个音节成一行）只存在于时间轴里，
-//! 音符的音节拼不出行 —— 因此时间轴必须**另存**，不能从音符派生。
+//! （LRC 的单位）。行边界（哪几个音节成一行）只存在于时间轴里 —— 因此时间轴必须
+//! **另存**，不从音符派生**存储**。
+//!
+//! 导出是另一件事：[`converged_lyric_lines`] 在**导出时**把已摆放音符的音节按
+//! `docs/ledger/lyrics-converge-notes.md` 的设计汇聚成行，与时间轴合并后导出。
+//! 汇聚不写回工程，时间轴仍是唯一落盘的歌词结构。
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -120,8 +124,137 @@ fn sanitize_lrc_text(text: &str) -> String {
 /// `total_seconds` 非有限或为负 ⇒ [`ModelError::NonFiniteValue`]；某行 tick
 /// 换算不出秒（病态 BPM —— 已校验的工程不会走到这里）⇒
 /// [`ModelError::LyricTimeConversionFailed`]。
+/// 分行间隔（tick）：同一摆放内，相邻音节出现的间隔不超过它时合成一行。
+///
+/// 一拍（[`PPQ`]）是本设计唯一的分行阈值，见
+/// `docs/ledger/lyrics-converge-notes.md` §2.3：本设计不发明小节或段落边界。
+pub const LYRIC_LINE_GAP_TICKS: u64 = PPQ;
+
+/// 导出用的汇聚歌词行：时间轴行 + 音符音节汇聚行（设计见
+/// `docs/ledger/lyrics-converge-notes.md`）。
+///
+/// * 时间轴行原样保留，优先级最高：汇聚行与任一时间轴行起始 tick 完全相同时
+///   被丢弃（§2.5 第 1 条）；其余汇聚行与时间轴行都保留，按起始 tick 升序合并，
+///   同 tick 时时间轴行在前；
+/// * 音节只经片段摆放收集：音轨按显示顺序、摆放按 `(start_tick, id)` 升序、
+///   静音摆放跳过、循环按 [`crate::project::ClipPlacement::note_copies`] 展开；
+/// * `None` / 空串 / 纯空白音节不产生出现、不产生空行、不参与分行间隔计算；
+/// * 同一摆放内按 `(绝对 tick, 音符 id)` 排序后分行：后一个出现的起点不晚于
+///   前一个出现的终点加 [`LYRIC_LINE_GAP_TICKS`] 时同行，音节以一个空格连接；
+///   不同摆放、不同音轨不合并。
+///
+/// 本函数只读工程，不写回任何字段。
+#[must_use]
+pub fn converged_lyric_lines(project: &YebanProjectV1) -> Vec<LyricLine> {
+    let mut derived: Vec<LyricLine> = Vec::new();
+    for track_id in project.display_track_ids() {
+        let Some(track) = project.tracks.get(&track_id) else {
+            continue;
+        };
+        let mut placements: Vec<&crate::project::ClipPlacement> = track.clips.values().collect();
+        placements.sort_by_key(|placement| (placement.start_tick, placement.id));
+        for placement in placements {
+            if placement.muted {
+                continue;
+            }
+            let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                continue;
+            };
+            let Some(notes) = entry.content.notes() else {
+                continue;
+            };
+            // 一次出现：(绝对 tick, 终点 tick, 音节文本, 音符 id)。
+            let mut occurrences: Vec<(u64, u64, String, crate::ids::EntityId)> = Vec::new();
+            for note in notes.values() {
+                let Some(raw) = &note.syllable else {
+                    continue;
+                };
+                let text = raw.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                for (copy_start, copy_duration) in
+                    placement.note_copies(note.start_tick, note.duration_ticks)
+                {
+                    let tick = placement.start_tick.saturating_add(copy_start);
+                    occurrences.push((
+                        tick,
+                        tick.saturating_add(copy_duration),
+                        text.to_owned(),
+                        note.id,
+                    ));
+                }
+            }
+            occurrences.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.3.cmp(&b.3)));
+            let mut current: Option<LyricLine> = None;
+            let mut previous_end: u64 = 0;
+            for (tick, end, text, _) in occurrences {
+                match &mut current {
+                    None => {
+                        current = Some(LyricLine {
+                            start_tick: tick,
+                            text,
+                        });
+                    }
+                    Some(line) if tick <= previous_end.saturating_add(LYRIC_LINE_GAP_TICKS) => {
+                        line.text.push(' ');
+                        line.text.push_str(&text);
+                    }
+                    Some(_) => {
+                        if let Some(finished) = current.take() {
+                            derived.push(finished);
+                        }
+                        current = Some(LyricLine {
+                            start_tick: tick,
+                            text,
+                        });
+                    }
+                }
+                previous_end = end;
+            }
+            if let Some(finished) = current.take() {
+                derived.push(finished);
+            }
+        }
+    }
+    let timeline_ticks: std::collections::BTreeSet<u64> =
+        project.lyrics.iter().map(|line| line.start_tick).collect();
+    derived.retain(|line| !timeline_ticks.contains(&line.start_tick));
+    // 合并：(起始 tick, 来源优先级) 升序的稳定排序；时间轴 = 0，汇聚 = 1。
+    let mut merged: Vec<(LyricLine, u8)> = project
+        .lyrics
+        .iter()
+        .cloned()
+        .map(|line| (line, 0))
+        .chain(derived.into_iter().map(|line| (line, 1)))
+        .collect();
+    merged.sort_by_key(|(line, priority)| (line.start_tick, *priority));
+    merged.into_iter().map(|(line, _)| line).collect()
+}
+
+/// 汇聚歌词行 ⇒ LRC 文本（[`lyrics_to_lrc`] 的汇聚版，格式口径逐字相同）。
+///
+/// # Errors
+///
+/// 同 [`lyrics_to_lrc`]。
+pub fn lyrics_to_lrc_converged(
+    project: &YebanProjectV1,
+    total_seconds: Option<f64>,
+) -> Result<String, ModelError> {
+    render_lrc(project, &converged_lyric_lines(project), total_seconds)
+}
+
 pub fn lyrics_to_lrc(
     project: &YebanProjectV1,
+    total_seconds: Option<f64>,
+) -> Result<String, ModelError> {
+    render_lrc(project, &project.lyrics, total_seconds)
+}
+
+/// 一组歌词行 ⇒ LRC 文本（[`lyrics_to_lrc`] 与 [`lyrics_to_lrc_converged`] 共用）。
+fn render_lrc(
+    project: &YebanProjectV1,
+    lines: &[LyricLine],
     total_seconds: Option<f64>,
 ) -> Result<String, ModelError> {
     if let Some(seconds) = total_seconds
@@ -147,7 +280,7 @@ pub fn lyrics_to_lrc(
     }
     out.push_str("[offset:0]\n");
     out.push('\n');
-    for line in &project.lyrics {
+    for line in lines {
         let frames = tempo
             .frames_at_tick(line.start_tick, PPQ, sample_rate)
             .ok_or(ModelError::LyricTimeConversionFailed {

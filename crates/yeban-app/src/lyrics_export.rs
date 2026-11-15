@@ -11,6 +11,11 @@
 //! 不碰 `~/.yeban` 的令牌。格式口径（`[ti/ar/by/length/offset]` 头 +
 //! `[mm:ss.cc]行`）由 [`yeban_model::lyrics::lyrics_to_lrc`] 钉住，本模块只负责落盘与回执。
 //!
+//! 导出内容是**汇聚**歌词：工程歌词时间轴 + 已摆放音符的 `syllable` 汇聚行
+//! （[`yeban_model::lyrics::converged_lyric_lines`]，设计见
+//! `docs/ledger/lyrics-converge-notes.md`）。只用音节写词的工程也能导完整歌词，
+//! 不再是 `lines=0`。
+//!
 //! ## 失败语义（与其它导出族同款）
 //!
 //! * 落盘失败 ⇒ 非零退出码，**不留半成品**（落盘走 [`crate::save::write_file_atomically`]：
@@ -96,12 +101,12 @@ pub fn export_lyrics(
     project: &YebanProjectV1,
     path: &Path,
 ) -> Result<LyricsExportReport, LyricsExportError> {
-    let lrc = yeban_model::lyrics::lyrics_to_lrc(project, None).map_err(|error| {
+    let lrc = yeban_model::lyrics::lyrics_to_lrc_converged(project, None).map_err(|error| {
         LyricsExportError::Convert {
             reason: error.to_string(),
         }
     })?;
-    let lines = project.lyrics.len();
+    let lines = yeban_model::lyrics::converged_lyric_lines(project).len();
     let report: SaveReport =
         write_file_atomically(lrc.as_bytes(), path).map_err(|source| LyricsExportError::Save {
             path: path.to_path_buf(),

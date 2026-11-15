@@ -257,3 +257,128 @@ fn help_lists_export_lyrics() {
         "用法必须写出 `--export-lyrics` 的参数形态"
     );
 }
+
+/// 带音节的内置夹具（`filled_project`：主轨片段有 do/re/mi/fa 四个音节，
+/// 时间轴为空）写成真容器。
+fn write_filled_container(
+    dir: &Path,
+    name: &str,
+    mutate: impl FnOnce(&mut yeban_model::YebanProjectV1),
+) -> PathBuf {
+    let mut project = yeban_model::samples::filled_project();
+    mutate(&mut project);
+    project.validate().expect("夹具合法");
+    let bytes = write_project_container(
+        &project,
+        b"lyrics-test-history",
+        &std::collections::BTreeMap::new(),
+    )
+    .expect("写出真容器");
+    let path = dir.join(name);
+    std::fs::write(&path, &bytes).expect("写容器");
+    path
+}
+
+#[test]
+fn export_lyrics_converges_syllable_only_project() {
+    let dir = scratch_dir("syllable-only");
+    let project = write_filled_container(&dir, "syllable.yeban", |_| {});
+    let out = dir.join("syllable.lrc");
+    let run = invoke(&[
+        "--open",
+        project.to_str().expect("路径"),
+        "--export-lyrics",
+        out.to_str().expect("路径"),
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "仅音节工程导出必须退出 0; stdout={}\nstderr={}",
+        run.stdout, run.stderr
+    );
+    let lrc = std::fs::read_to_string(&out).expect("LRC 必须落盘");
+    assert!(
+        lrc.contains("[00:00.00]do re mi fa"),
+        "音节必须汇聚成一行完整歌词: {lrc}"
+    );
+    let receipt = run
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("exported-lyrics:"))
+        .expect("必须有一行 `exported-lyrics:` 回执");
+    assert!(receipt.contains("lines=1"), "回执必须写 lines=1: {receipt}");
+}
+
+#[test]
+fn export_lyrics_with_timeline_and_syllables_prefers_timeline_at_same_tick() {
+    let dir = scratch_dir("both");
+    let project = write_filled_container(&dir, "both.yeban", |project| {
+        project.lyrics = vec![
+            LyricLine {
+                start_tick: 0,
+                text: "时间轴首行".to_owned(),
+            },
+            LyricLine {
+                start_tick: 15360,
+                text: "时间轴尾行".to_owned(),
+            },
+        ];
+    });
+    let out = dir.join("both.lrc");
+    let run = invoke(&[
+        "--open",
+        project.to_str().expect("路径"),
+        "--export-lyrics",
+        out.to_str().expect("路径"),
+    ]);
+    assert_eq!(run.code, 0, "stdout={}\nstderr={}", run.stdout, run.stderr);
+    let lrc = std::fs::read_to_string(&out).expect("LRC 必须落盘");
+    assert!(lrc.contains("时间轴首行"), "时间轴首行必须在: {lrc}");
+    assert!(lrc.contains("时间轴尾行"), "时间轴尾行必须在: {lrc}");
+    assert!(
+        !lrc.contains("do re mi fa"),
+        "tick 0 的汇聚行必须被时间轴行取代，不得重复: {lrc}"
+    );
+    let receipt = run
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("exported-lyrics:"))
+        .expect("必须有一行 `exported-lyrics:` 回执");
+    assert!(receipt.contains("lines=2"), "回执必须写 lines=2: {receipt}");
+}
+
+#[test]
+fn export_lyrics_with_only_empty_syllables_is_header_only() {
+    let dir = scratch_dir("empty-syllable");
+    let project = write_filled_container(&dir, "empty-syllable.yeban", |project| {
+        for entry in project.clip_pool.values_mut() {
+            if let Some(notes) = entry.content.notes_mut() {
+                for (index, note) in notes.values_mut().enumerate() {
+                    note.syllable = match index % 3 {
+                        0 => None,
+                        1 => Some(String::new()),
+                        _ => Some("  ".to_owned()),
+                    };
+                }
+            }
+        }
+    });
+    let out = dir.join("empty-syllable.lrc");
+    let run = invoke(&[
+        "--open",
+        project.to_str().expect("路径"),
+        "--export-lyrics",
+        out.to_str().expect("路径"),
+    ]);
+    assert_eq!(run.code, 0, "stdout={}\nstderr={}", run.stdout, run.stderr);
+    let lrc = std::fs::read_to_string(&out).expect("LRC 必须落盘");
+    assert!(
+        !lrc.contains("do") && !lrc.contains("[00:"),
+        "空音节不得产生任何歌词行: {lrc}"
+    );
+    let receipt = run
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("exported-lyrics:"))
+        .expect("必须有一行 `exported-lyrics:` 回执");
+    assert!(receipt.contains("lines=0"), "回执必须写 lines=0: {receipt}");
+}
