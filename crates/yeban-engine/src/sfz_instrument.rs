@@ -3901,6 +3901,13 @@ pub struct PreparedRegion {
     /// ⚠ **为什么它是"区域参数"、⛔ 不是"声部状态"**：CC 值**逐块**变（探针由调用方
     /// 沿 `with_cc` 那条链交下来），几何本身却是静态的 ⇒ 数组不进 [`SfzVoice`]，
     /// 声部尺寸 ⛔ 不变（判据 `S9` 钉住 40 B）。
+    ///
+    /// ⭐ **`on_loccN` / `on_hiccN` 触发门并入本表**（sfz-locc 线）：解析层把
+    /// 触发门单独放在 `Region::cc_triggers`，摊平期由 [`merged_cc_gate_slots`]
+    /// 与本表按 CC 号**求交合并** —— 两族在 note-on 触发期的判定形状逐字
+    /// 相同（探针值须落在闭区间内、未提供探针严格不成立），AND 语义下
+    /// 同号区间求交与两条分开判**逐值等价**；合并后条数仍 ≤ 128（ distinct
+    /// CC 号上界），⛔ 不新增定长数组、`PreparedRegion` 尺寸不变。
     cc_gates: [CcGate; CC_GATE_CAP],
     /// ⭐ 上面那张表里**有效**的条数（`0..=CC_GATE_CAP`）。
     ///
@@ -5863,8 +5870,9 @@ fn flatten_regions(
             //   探针都只能满足一部分区域（本单实测过：探针 `0` 满足不了 `locc1=64`）。
             // * 门控几何**原样**烘进 [`PreparedRegion::cc_gates`]（定长 `[CcGate; CC_GATE_CAP]`
             //   ＋ 条数）⇒ 触发／渲染那一刻才用 `cc_gates_ok(probe)` 判。
-            let gates = &region.cc_gates;
-            let (baked_cc_gates, baked_cc_gate_count) = cc_gate_slots(gates);
+            // ⭐ sfz-locc 线：`on_loccN`/`on_hiccN` 触发门与 `loccN`/`hiccN`
+            // 门控按 CC 号求交合并后一并烘入（见 [`merged_cc_gate_slots`]）。
+            let (baked_cc_gates, baked_cc_gate_count) = merged_cc_gate_slots(region);
             let probe = first_set_bit(&key_mask).zip(first_set_bit(&vel_mask));
             let gate_open =
                 probe.is_some_and(|(note, velocity)| non_cc_gates_open(region, note, velocity));
@@ -6161,6 +6169,35 @@ fn non_cc_gates_open(region: &Region<'_>, note: u8, velocity: u8) -> bool {
                 region.keyswitch_ok(None, |_| false)
             }
         }
+}
+
+/// ⭐ 把区域的 CC 门控（`loccN`/`hiccN`）与 CC 触发门
+/// （`on_loccN`/`on_hiccN`）**合并**后搬进摊平表槽位（sfz-locc 线）。
+///
+/// 合并规则：按 CC 号分组；同一 CC 上两族都有区间时取**交集**
+/// （`lo = max(lo)`, `hi = min(hi)`；交集为空时 `lo > hi`，区间判定
+/// 恒假，与两条分开判的 AND 结论逐值相同）；只有一族有的原样保留。
+/// 结果按 CC 号升序（与 `yeban-sfz` 的归约序一致）。
+///
+/// ⚠ 无触发门的区域（语料绝大多数）合并结果与 `region.cc_gates`
+/// **逐字相同** ⇒ 既有判据（烘入表与解析层逐字一致）不受影响。
+/// 条数上界仍是结构性的：distinct CC 号 ≤ 128 ⇒ 合并后 ≤
+/// [`CC_GATE_CAP`]，[`cc_gate_slots`] 的断言继续成立。
+fn merged_cc_gate_slots(region: &Region<'_>) -> ([CcGate; CC_GATE_CAP], u8) {
+    if region.cc_triggers.is_empty() {
+        return cc_gate_slots(&region.cc_gates);
+    }
+    let mut merged: Vec<CcGate> = region.cc_gates.clone();
+    for trigger in &region.cc_triggers {
+        if let Some(existing) = merged.iter_mut().find(|gate| gate.cc == trigger.cc) {
+            existing.lo = existing.lo.max(trigger.lo);
+            existing.hi = existing.hi.min(trigger.hi);
+        } else {
+            merged.push(*trigger);
+        }
+    }
+    merged.sort_by_key(|gate| gate.cc);
+    cc_gate_slots(&merged)
 }
 
 /// ⭐ 把区域归约好的 `loccN`/`hiccN` 门控搬进摊平表的**定长**槽位（任务单 `#109`）。
@@ -8938,6 +8975,52 @@ mod tests {
         assert_eq!(written_miss, 0, "不命中的音符不得写入帧");
         assert_eq!(energy_miss, 0.0, "不命中的音符必须是静音");
         assert!(energy > energy_miss, "⭐ 可区分：命中的能量必须大于不命中");
+    }
+
+    /// ⭐ 判据（sfz-locc 线）：`on_loccN`/`on_hiccN` 触发门烘入摊平表并在
+    /// 触发期按探针裁决；与 `loccN` 同 CC 时按交集合并。
+    #[test]
+    fn on_cc_triggers_are_baked_and_enforced_in_the_flattened_table() {
+        const SFZ: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                           locc1=10 hicc1=127 on_locc1=64 on_hicc1=100\n\
+                           <region> sample=b.wav key=62 pitch_keycenter=62 amp_veltrack=0 \
+                           on_locc64=127 on_hicc64=127\n";
+        let instrument =
+            SfzInstrument::load(SFZ.to_owned(), &ParseLimits::default()).expect("解析必须成功");
+        let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+        let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+        assert_eq!(prepared.region_count(), 2);
+        // ① 同 CC 两族求交：[10,127] ∩ [64,100] = [64,100]，一条槽位。
+        let first = &prepared.regions()[0];
+        assert_eq!(
+            first.cc_gates(),
+            &[CcGate {
+                cc: 1,
+                lo: 64,
+                hi: 100
+            }],
+            "locc 与 on_locc 同号须求交合并"
+        );
+        // ② 触发期判定：闭区间两端成立、区间外与无探针不成立。
+        let probe = |value: u8| move |_: u8| value;
+        assert!(first.cc_gates_ok(Some(&probe(64))));
+        assert!(first.cc_gates_ok(Some(&probe(100))));
+        assert!(!first.cc_gates_ok(Some(&probe(63))));
+        assert!(!first.cc_gates_ok(Some(&probe(101))));
+        assert!(!first.cc_gates_ok(None), "无探针严格不成立");
+        // ③ 只有触发门（不同 CC）的区域：原样烘入、掩码不被清零。
+        let second = &prepared.regions()[1];
+        assert_eq!(
+            second.cc_gates(),
+            &[CcGate {
+                cc: 64,
+                lo: 127,
+                hi: 127
+            }]
+        );
+        assert!(second.accepts(62, 100), "触发门不得在摊平期清掩码");
+        assert!(second.cc_gates_ok(Some(&probe(127))));
+        assert!(!second.cc_gates_ok(Some(&probe(126))));
     }
 
     /// ⭐ 新判据：**`trigger=release` 的区域不进 `note-on` 掩码**。
