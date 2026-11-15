@@ -16,15 +16,19 @@
 
 const CLI: &str = include_str!("../src/cli.rs");
 
-/// 取 `shortcut_lines` 函数体（到下一个 `///` 文档块之前）。
-fn shortcut_lines_body() -> &'static str {
-    let start = CLI
+/// 取 `shortcut_lines` 函数体。
+///
+/// ⚠ Windows 检出是 CRLF（`\r\n}\r\n`），直接用 `\n}\n` 找结尾会失败 ⇒ 判据
+/// 在 Windows 平台上假红（本机/Linux/macOS 是 LF 所以看不出来）。先按仓库既有
+/// 判据的做法用 `.lines().join("\n")` 把行尾 normalize 成 LF，再截取。
+fn shortcut_lines_body() -> String {
+    let normalized = CLI.lines().collect::<Vec<_>>().join("\n");
+    let start = normalized
         .find("pub fn shortcut_lines()")
         .expect("cli.rs 必须有 shortcut_lines");
-    let tail = &CLI[start..];
-    // 截到函数结束的 `\n}\n`
+    let tail = &normalized[start..];
     let end = tail.find("\n}\n").expect("shortcut_lines 必须有结尾");
-    &tail[..end]
+    tail[..end].to_owned()
 }
 
 /// **判据 ①**：存在按平台折叠的 helper，且两支分别给 Cmd+ / Ctrl+。
