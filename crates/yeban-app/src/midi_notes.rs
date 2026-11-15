@@ -1169,15 +1169,30 @@ mod tests {
         let runtime = include_str!("../../yeban-engine/src/rt.rs");
         let synth = include_str!("../../yeban-engine/src/synth.rs");
 
-        // (a) 出队闭包里**确有**音符分支。
-        let drain = runtime
-            .split("events.drain_with(")
-            .nth(1)
-            .and_then(|rest| rest.split("});").next())
-            .expect("必须能找到事件出队闭包");
+        // (a) 事件出队收集到 `scratch_events`，并在快照武装后（以及无快照兜底分支）
+        //     对 `&scratch_events[post_seek_start..drained]` 消费音符事件，走真实音源派发。
         assert!(
-            drain.contains("EngineEvent::NoteOn") && drain.contains("EngineEvent::NoteOff"),
-            "引擎的出队闭包必须消费音符事件（⛔ 否则环里的音符不会发声）"
+            runtime.contains("events.drain_with(scratch_events"),
+            "引擎实时线程必须通过 `events.drain_with(scratch_events, ...)` 出队环事件"
+        );
+        let note_dispatch_blocks: Vec<&str> = runtime
+            .split("&scratch_events[post_seek_start..drained]")
+            .skip(1)
+            .collect();
+        assert!(
+            note_dispatch_blocks.len() >= 2,
+            "引擎主分支与无快照兜底分支都必须消费 `&scratch_events[post_seek_start..drained]`，实际仅 {} 处",
+            note_dispatch_blocks.len()
+        );
+        assert!(
+            note_dispatch_blocks.iter().all(|block| {
+                let scope = &block[..block.len().min(1200)];
+                scope.contains("EngineEvent::NoteOn")
+                    && scope.contains("EngineEvent::NoteOff")
+                    && scope.contains("synth.note_on_with_sources")
+                    && scope.contains("synth.note_off_with_sources")
+            }),
+            "引擎的实时事件派发路径必须在两条分支均消费 NoteOn/NoteOff 并转发给 `note_on_with_sources`/`note_off_with_sources`（⛔ 否则环里的音符不会发声）"
         );
         // (b) 合成器确有音符触发入口。
         assert!(

@@ -433,11 +433,13 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
         blocks.iter().any(|b| !b.is_audio && b.note_count > 0),
         "[N8] MIDI 时间块必须带出真实音符数 note_count > 0"
     );
+    let audio_blocks: Vec<_> = blocks.iter().filter(|b| b.is_audio).collect();
     assert!(
-        blocks
-            .iter()
-            .filter(|b| b.is_audio)
-            .all(|b| b.note_count == 0),
+        !audio_blocks.is_empty(),
+        "[N8] 测试工程必须至少投影出 1 个音频时间块"
+    );
+    assert!(
+        audio_blocks.iter().all(|b| b.note_count == 0),
         "[N8] 音频时间块的 note_count 必须为 0"
     );
 
