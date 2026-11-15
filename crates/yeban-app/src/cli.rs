@@ -6387,6 +6387,17 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     // 它与 `--export-wav` / `--export-midi` 的**本质区别**：那两条的产物是"这首曲子的
     // 另一种格式"，本条的产物是**分析读数**（§8.2 的 JSON）—— 所以它要的是
     // `provider` ＋ 采样器武装，不是渲染器的输出格式参数。
+    // 线 H：JSON 与 HTML 两出口共用一份总览会话（同一工程只算一次；
+    // 先算的出口回执 `cacheHit=false`，后出的命中共享计算为 `true`）。
+    #[cfg(feature = "in-process-mcp")]
+    let mut overview_session = (options.export_song_overview.is_some()
+        || options.export_song_overview_html.is_some())
+    .then(|| {
+        crate::song_overview_export::OverviewSession::new(
+            loaded.project_dir().as_deref(),
+            &loaded.archive.assets,
+        )
+    });
     #[cfg(feature = "in-process-mcp")]
     if let Some(path) = options.export_song_overview.as_ref() {
         let mode = if options.overview_score_only {
@@ -6394,11 +6405,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         } else {
             crate::song_overview_export::RenderMode::Full
         };
-        let report = crate::song_overview_export::export_song_overview(
+        let report = crate::song_overview_export::export_song_overview_in(
+            overview_session
+                .as_mut()
+                .expect("给了总览出口开关就必有共享会话"),
             &loaded.archive.project,
             path,
-            loaded.project_dir().as_deref(),
-            &loaded.archive.assets,
             mode,
         )
         .map_err(|error| match error {
@@ -6444,11 +6456,12 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         } else {
             crate::song_overview_export::RenderMode::Full
         };
-        let report = crate::song_overview_export::export_song_overview_html(
+        let report = crate::song_overview_export::export_song_overview_html_in(
+            overview_session
+                .as_mut()
+                .expect("给了总览出口开关就必有共享会话"),
             &loaded.archive.project,
             path,
-            loaded.project_dir().as_deref(),
-            &loaded.archive.assets,
             mode,
         )
         .map_err(|error| match error {

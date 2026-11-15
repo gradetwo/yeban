@@ -42,6 +42,27 @@
 //! `Domain` ⇒ 调用时正持着分发器的锁，重入即死锁。当前方案三者都没有：
 //! 每一次调用都拿到调用那一刻的活跃工程。
 //!
+//! ## 共享计算与 `cacheHit`（线 H）
+//!
+//! 总览的各层（能量 / 频率 / 密度 / 张力 / 重复 / 打架）全部派生自 provider
+//! 的**一次**分析。此前同一会话里重复调用 `get_song_overview` 时，handler
+//! 每次都重新调 provider：stub 与宿主自备的 provider 没有缓存、每次重算；
+//! 真实 provider 虽有整曲哈希缓存，命中标志却在 handler 处被丢弃，响应里
+//! 没有任何字段能证明"这一次没有重算"。
+//!
+//! 线 H 在 handler 与 provider 之间加**一层共享缓存**（[`SharedOverviewCache`]，
+//! 住在 [`Domain`] 的会话运行态里，`MODEL-ISO-001` 第 2 层）：
+//!
+//! - 键 = 整曲指纹（`yeban-render` 的 `song_overview_hash`，构成见 [`overview_cache_key`]）+ 分辨率 + provider 名，与真实 provider 的渲染缓存同一把指纹；工程任一位变化 ⇒ 指纹变 ⇒ 未命中、重算（失效不需要显式清缓存），换 provider / 换分辨率同理。
+//! - 命中时 provider **一次都不调**：JSON 与 HTML 两种呈现共用同一份
+//!   已缓存总览（`format` 与 `include_png_path` 是呈现开关，不进键）。
+//! - JSON 响应带 `cacheHit`（camelCase，与既有 `provider` / `pngPath`
+//!   等 handler 追加字段同一风格）：命中共享缓存为 `true`，首次计算
+//!   为 `false`。HTML 响应的 `data` 是报告字符串本身、没有字段槽位，
+//!   只共享计算、不带该字段。
+//! - provider 失败 ⇒ 不计数、不留条目（与真实 provider 的缓存口径一致：
+//!   失败不毒化缓存，修好后同一会话必须能算）。
+//!
 //! ## `diagnostics` 的归属
 //!
 //! 异常检测逻辑（`low_mid_buildup`、`compression_squash` 等）由 dsp 线实现并由
@@ -82,14 +103,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_model::YebanProjectV1;
 use yeban_render::song_overview::{
-    Anomaly as DspAnomaly, AnomalyType as DspAnomalyType, BarOverlap as DspBarOverlap,
-    BarSeries as DspBarSeries, BestMatch as DspBestMatch, ClashSeverity as DspClashSeverity,
-    ClashTrackRef as DspClashTrackRef, DEFAULT_REPORT_TITLE,
+    AnalysisOptions as DspAnalysisOptions, Anomaly as DspAnomaly, AnomalyType as DspAnomalyType,
+    BarOverlap as DspBarOverlap, BarSeries as DspBarSeries, BestMatch as DspBestMatch,
+    ClashSeverity as DspClashSeverity, ClashTrackRef as DspClashTrackRef, DEFAULT_REPORT_TITLE,
     FrequencyClashEntry as DspFrequencyClashEntry,
-    FrequencyClashSummary as DspFrequencyClashSummary, NO_ENVELOPE,
+    FrequencyClashSummary as DspFrequencyClashSummary, NO_ENVELOPE, RenderSettings,
     RepeatedPassage as DspRepeatedPassage, RepetitionSummary as DspRepetitionSummary,
     SCHEMA_VERSION, SongMeta as DspSongMeta, SongOverview as DspSongOverview,
-    StructuralSummary as DspStructuralSummary, render_html_report_with_title,
+    StructuralSummary as DspStructuralSummary, TensionProfile as DspTensionProfile,
+    render_html_report_with_title, song_overview_hash,
 };
 
 use crate::output_schema::{
@@ -145,7 +167,8 @@ impl Profile {
 }
 
 /// 时间分辨率（设计稿 §8.2：`resolution` 参数，`bar` | `beat`，缺省 `bar`）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `Ord` 供 [`OverviewCacheKey`] 用（共享缓存键的一部分）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Resolution {
     /// 小节级（缺省）：`bar_series` 一小节一行。
     Bar,
@@ -212,6 +235,119 @@ pub trait SongOverviewProvider: std::fmt::Debug + Send + Sync {
         project: &YebanProjectV1,
         request: &SongOverviewRequest,
     ) -> Result<SongOverview, Fault>;
+}
+
+/// 共享总览缓存的键（线 H）：整曲指纹 + provider 名 + 分辨率。
+///
+/// 指纹与真实 provider 的渲染缓存同一把（`song_overview_hash`：工程确定性
+/// JSON + 采样率 + 种子 + 曲风档 + 期望等级表）⇒ "工程变了"在两层缓存里
+/// 是同一个判定，不会出现一层失效、另一层还端着旧结果的漂移。分辨率
+/// 单独进键：同一份 dsp 分析在小节级与拍级是两份不同的 §8.2 行集。
+/// provider 名进键：换一个 provider（stub ↔ real）不得命中前一个的结果。
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OverviewCacheKey {
+    /// 整曲指纹（SHA-256，`song_overview_hash`）。
+    digest: [u8; 32],
+    /// provider 自述名（[`SongOverviewProvider::name`]）。
+    provider: String,
+    /// 时间分辨率。
+    resolution: Resolution,
+}
+
+/// 由（工程，请求，provider 名）算共享缓存键。曲风档的映射与真实 provider
+/// `overview` 里的映射逐项同义（档名同名同义，见
+/// `song_overview_provider` 的 `AnalysisOptions` 构造）。
+fn overview_cache_key(
+    project: &YebanProjectV1,
+    request: &SongOverviewRequest,
+    provider_name: &str,
+) -> OverviewCacheKey {
+    let settings = RenderSettings::new(project.audio_config.sample_rate.hz(), 0);
+    let options = DspAnalysisOptions {
+        profile: match request.profile {
+            Profile::Default => DspTensionProfile::Default,
+            Profile::Orchestral => DspTensionProfile::Orchestral,
+            Profile::Electronic => DspTensionProfile::Electronic,
+        },
+        expected_levels: request.expected_levels.clone(),
+    };
+    OverviewCacheKey {
+        digest: song_overview_hash(project, &settings, &options),
+        provider: provider_name.to_owned(),
+        resolution: request.resolution,
+    }
+}
+
+/// 线 H 的**共享计算层**：`get_song_overview` 的会话级总览缓存。
+///
+/// 住在 [`Domain`] 的会话运行态里（`Mutex` 保护：`plan_song_overview`
+/// 只拿到 `&Domain`，与真实 provider 内部的 `Mutex` 缓存同一条先例）。
+/// 条目是 provider 的**未取整**总览：§8.2 取整仍由 handler 在每次响应前
+/// 用 [`rounded`] 做（命中与现算走同一条取整，逐位一致）。命中 / 未命中
+/// 计数是"重复调用不重算"的可测证据（经
+/// [`Domain::song_overview_cache_stats`](super::Domain::song_overview_cache_stats)
+/// 读回）。
+#[derive(Debug, Default)]
+pub struct SharedOverviewCache {
+    /// 键 → 未取整总览（`BTreeMap`：确定性迭代序，红线 4 的精神）。
+    entries: BTreeMap<OverviewCacheKey, SongOverview>,
+    /// 命中次数。
+    hits: u64,
+    /// 未命中次数（只计**成功**算出并存入的调用；失败不计数、不留条目）。
+    misses: u64,
+}
+
+impl SharedOverviewCache {
+    /// 空缓存。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 命中次数。
+    #[must_use]
+    pub const fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    /// 未命中次数。
+    #[must_use]
+    pub const fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// 缓存条目数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否空缓存。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 查缓存：命中返回克隆结果（`hit = true`，`compute` 一次都不调）；
+    /// 未命中跑 `compute`，成功后存入再返回（`hit = false`）。
+    ///
+    /// # Errors
+    ///
+    /// `compute` 失败时原样透出，且**不计数、不留条目**（失败不毒化缓存）。
+    fn get_or_compute(
+        &mut self,
+        key: &OverviewCacheKey,
+        compute: impl FnOnce() -> Result<SongOverview, Fault>,
+    ) -> Result<(SongOverview, bool), Fault> {
+        if let Some(cached) = self.entries.get(key) {
+            self.hits = self.hits.saturating_add(1);
+            return Ok((cached.clone(), true));
+        }
+        let overview = compute()?;
+        self.misses = self.misses.saturating_add(1);
+        self.entries.insert(key.clone(), overview.clone());
+        Ok((overview, false))
+    }
 }
 
 /// 保留 2 位小数（归一化指标，§8.2）。
@@ -602,11 +738,24 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
         profile,
         expected_levels,
     };
-    let overview = provider.overview(project, &request)?;
+    // 线 H 的共享计算层：同一 (工程指纹, provider, 分辨率) 的重复调用直接
+    // 命中 `Domain` 的共享缓存，provider 一次都不调（见模块头）。持锁期间
+    // 调 provider 是安全的：provider 的契约就是不回头读 `Domain`（见模块头
+    // "provider 怎么拿到工程"），不存在重入死锁。
+    let key = overview_cache_key(project, &request, provider.name());
+    let (overview, cache_hit) = {
+        let mut cache = domain
+            .song_overview_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.get_or_compute(&key, || provider.overview(project, &request))?
+    };
     let overview = rounded(overview);
     if format == OverviewFormat::Html {
         // HTML 形态：`data` 就是报告字符串本身（不是对象；`commitModel` 只注入对象，
-        // 见 `ToolResponse::with_commit_model` 的第二条口径）。
+        // 见 `ToolResponse::with_commit_model` 的第二条口径）。它与 JSON 共用上面
+        // 那一次共享计算（命中时同样不重算），但字符串没有字段槽位 ⇒ 不带
+        // `cacheHit`（线 H，见模块头）。
         // 标题取当前活跃工程的 `project.title`：`project` 是本函数开头
         // `require_active(domain)` 取到的那一份，即 `domain.active_project()`；
         // 没有活跃工程时上面那一步已 `NO_ACTIVE_PROJECT` 报错，不必另设回退。
@@ -624,6 +773,10 @@ pub fn plan_song_overview(domain: &Domain, call: &ToolCall) -> Result<super::Pla
     let object = data.as_object_mut().expect("SongOverview 序列化后是对象");
     object.insert("provider".to_owned(), Value::from(provider.name()));
     object.insert("resolution".to_owned(), Value::from(resolution.as_str()));
+    // 线 H：本次响应是否命中共享缓存（首次计算 `false`、重复调用 `true`；
+    // 工程 / 请求 / provider 任一变化后回到 `false`）。与 `provider` /
+    // `pngPath` 同款的 handler 追加字段，⛔ 不进 §8.2 的 struct 本体。
+    object.insert("cacheHit".to_owned(), Value::from(cache_hit));
     if include_png_path {
         // Phase 1 只接受参数、不产 PNG（设计稿 §8.1 的 PNG 是 Phase 2 的 Slint
         // 离屏渲染）：`pngPath: null` + 一句如实说明，⛔ 不编造路径。

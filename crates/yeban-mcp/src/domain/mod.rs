@@ -98,7 +98,7 @@ pub mod view;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 
@@ -262,6 +262,16 @@ pub struct Domain {
     /// [`Self::engine`] 的引擎读数镜像同一口径 —— 换一份工程不等于换一台
     /// 分析引擎）。`Arc` 共享：宿主与控制面会话可各持一份句柄。
     song_overview_provider: Option<Arc<dyn song_overview::SongOverviewProvider>>,
+    /// 线 H 的**共享总览缓存**（`get_song_overview` 的共享计算层，见
+    /// [`song_overview::SharedOverviewCache`]）：同一 (工程指纹, provider,
+    /// 分辨率) 的重复调用只算一次，响应以 `cacheHit` 如实标注。
+    ///
+    /// 它是**会话运行态**（`MODEL-ISO-001` 第 2 层）：不进 `project.json`、
+    /// 不进 `history.dag`。打开 / 关闭 / 替换工程**不**显式清它 —— 键里
+    /// 的工程指纹变了就自然未命中，旧条目只是再也命中不了（与真实
+    /// provider 的整曲哈希缓存同一条失效口径）。`Mutex` 是因为只读规划
+    /// 只拿到 `&Domain`（与 provider 内部缓存同一条先例）。
+    song_overview_cache: Mutex<song_overview::SharedOverviewCache>,
     /// 宿主注入的两轨相位测量 provider（`yeban_auto_align_tracks` 的唯一测量来源）。
     ///
     /// `None` = 宿主既没有注入、也没有调 [`Self::install_real_providers`]
@@ -338,6 +348,7 @@ impl Domain {
             pending_scene_launches: Vec::new(),
             scene_launches_applied: None,
             song_overview_provider: None,
+            song_overview_cache: Mutex::new(song_overview::SharedOverviewCache::new()),
             phase_align_auto_provider: None,
             provider_context: crate::song_overview_provider::ProviderContext::shared(
                 None,
@@ -569,6 +580,23 @@ impl Domain {
         provider: Arc<dyn song_overview::SongOverviewProvider>,
     ) {
         self.song_overview_provider = Some(provider);
+    }
+
+    /// 线 H 共享总览缓存的句柄（只供 `plan_song_overview` 在只读规划里用：
+    /// 规划只拿到 `&Domain`，缓存靠 `Mutex` 的内部可变性，见字段文档）。
+    pub(crate) fn song_overview_cache(&self) -> &Mutex<song_overview::SharedOverviewCache> {
+        &self.song_overview_cache
+    }
+
+    /// 共享总览缓存的（命中，未命中）计数（判据与诊断用：重复调用不重算
+    /// 的证据；失败的调用两边都不计，见 [`song_overview::SharedOverviewCache`]）。
+    #[must_use]
+    pub fn song_overview_cache_stats(&self) -> (u64, u64) {
+        let cache = self
+            .song_overview_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (cache.hits(), cache.misses())
     }
 
     /// 宿主注入的两轨相位测量 provider（`None` = 未注入）。

@@ -446,13 +446,32 @@ fn dry_run_does_not_change_state() {
     // dryRun 不返回同一信封：它返回预览信封（`data.preview.result` = 总览本体，
     // 另有 `stateUnchanged` / `wouldChangeState` / 前后摘要）。比较本体，不比较信封。
     let preview_result = &first["data"]["preview"]["result"];
+    // 线 H：`cacheHit` 是每次调用的实测状态、本就不可能恒等（dryRun 先算
+    // 为 false、正式调用随后命中共享缓存为 true）⇒ 本体比较把它摘掉，
+    // 两个值各自单独钉。共享缓存是会话运行态、不是工程状态：dryRun 把
+    // 算好的总览留给后续调用复用，不算"改状态"（下面的 apply_revision /
+    // 提交数断言才是状态口径）。
+    assert_eq!(preview_result["cacheHit"], false, "dryRun 是首次计算");
+    assert_eq!(
+        second["data"]["cacheHit"], true,
+        "正式调用命中 dryRun 的计算"
+    );
+    let mut preview_data = preview_result.clone();
+    preview_data
+        .as_object_mut()
+        .expect("预览本体是对象")
+        .remove("cacheHit");
     let mut normal_data = second["data"].clone();
     normal_data
         .as_object_mut()
         .expect("data 是对象")
         .remove("commitModel");
+    normal_data
+        .as_object_mut()
+        .expect("data 是对象")
+        .remove("cacheHit");
     assert_eq!(
-        preview_result, &normal_data,
+        preview_data, normal_data,
         "dryRun 预览的总览本体必须与正式调用逐位相同（只读工具无写副作用）"
     );
     assert_eq!(first["data"]["stateUnchanged"], true);
@@ -779,14 +798,27 @@ fn invalid_expected_levels_are_rejected() {
         assert_eq!(code, "INVALID_PARAMETER_RANGE");
         assert_eq!(data["reason"], "invalidExpectedLevels");
     }
-    // 空对象合法 = 无标注（与缺省调用逐位相同）。
+    // 空对象合法 = 无标注（与缺省调用逐位相同，只差线 H 的 `cacheHit`
+    // 实测状态：空对象那次是首次计算 false、缺省那次随后命中 true）。
     let empty = call_tool(
         &mut dispatcher,
         "get_song_overview",
         json!({"expected_levels": {}}),
     );
     let plain = call_tool(&mut dispatcher, "get_song_overview", json!({}));
-    assert_eq!(ok_data(&empty), ok_data(&plain));
+    assert_eq!(ok_data(&empty)["cacheHit"], false);
+    assert_eq!(ok_data(&plain)["cacheHit"], true);
+    let mut empty_data = ok_data(&empty).clone();
+    let mut plain_data = ok_data(&plain).clone();
+    empty_data
+        .as_object_mut()
+        .expect("data 是对象")
+        .remove("cacheHit");
+    plain_data
+        .as_object_mut()
+        .expect("data 是对象")
+        .remove("cacheHit");
+    assert_eq!(empty_data, plain_data, "空对象与缺省调用的本体逐位相同");
 }
 
 // ---------------------------------------------------------------------------
@@ -797,18 +829,35 @@ fn invalid_expected_levels_are_rejected() {
 /// 规范序 JSON（`serde_json::to_string` 的键序）逐字节钉死。
 /// 分轨频率打架线合入时同步更新：schema 1.1 → 1.2，`frequency_clash` 为空摘要
 /// （stub 不算打架；真实值见 `frequency_clash` 判据）。
-const GOLDEN_JSON: &str = r#"{"band_definitions_hz":[[20,90],[90,250],[250,500],[500,1000],[1000,2000],[2000,5000],[5000,10000],[10000,20000]],"bar_series":[{"bands_tilted_db":[-18.2,-14.5,-12.0,-11.4,-15.0,-19.2,-24.0,-31.5],"bar":1,"density_perc_onsets_per_beat":0.5,"density_pitched_duty":0.65,"density_pitched_onsets_per_beat":1.5,"lufs_momentary_max":-19.8,"lufs_short":-22.4,"score_dyn":0.28,"section":"Intro","target_deviation":0.0,"tension":0.42,"time_sec":0.0,"valence_hue":-0.62},{"bands_tilted_db":[-17.0,-13.8,-12.1,-11.0,-14.6,-18.8,-23.5,-31.0],"bar":2,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.68,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-17.5,"lufs_short":-20.1,"score_dyn":0.34,"section":"Intro","target_deviation":0.0,"tension":0.5,"time_sec":2.0,"valence_hue":-0.58},{"bands_tilted_db":[-16.2,-13.2,-11.9,-10.6,-14.0,-18.0,-22.8,-30.2],"bar":3,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.7,"density_pitched_onsets_per_beat":2.5,"lufs_momentary_max":-16.0,"lufs_short":-18.6,"score_dyn":0.42,"section":"Verse","target_deviation":0.0,"tension":0.54,"time_sec":4.0,"valence_hue":-0.55},{"bands_tilted_db":[-15.0,-12.4,-12.2,-10.2,-13.5,-17.4,-22.0,-29.5],"bar":4,"density_perc_onsets_per_beat":2.0,"density_pitched_duty":0.72,"density_pitched_onsets_per_beat":3.0,"lufs_momentary_max":-13.6,"lufs_short":-16.2,"score_dyn":0.48,"section":"Verse","target_deviation":0.0,"tension":0.62,"time_sec":6.0,"valence_hue":-0.5},{"bands_tilted_db":[-14.2,-11.8,-6.8,-10.0,-13.2,-17.0,-21.6,-29.0],"bar":5,"density_perc_onsets_per_beat":2.5,"density_pitched_duty":0.75,"density_pitched_onsets_per_beat":3.5,"lufs_momentary_max":-11.2,"lufs_short":-13.8,"score_dyn":0.52,"section":"Chorus","target_deviation":0.0,"tension":0.69,"time_sec":8.0,"valence_hue":-0.44},{"bands_tilted_db":[-14.6,-12.0,-6.8,-10.4,-13.6,-17.5,-22.2,-29.6],"bar":6,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.6,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-11.4,"lufs_short":-14.0,"score_dyn":0.4,"section":"Chorus","target_deviation":0.0,"tension":0.58,"time_sec":10.0,"valence_hue":-0.52},{"bands_tilted_db":[-13.8,-11.2,-12.0,-9.8,-13.0,-16.8,-21.2,-28.6],"bar":7,"density_perc_onsets_per_beat":3.0,"density_pitched_duty":0.78,"density_pitched_onsets_per_beat":4.0,"lufs_momentary_max":-11.0,"lufs_short":-13.6,"score_dyn":0.54,"section":"Chorus","target_deviation":0.0,"tension":0.73,"time_sec":12.0,"valence_hue":-0.4},{"bands_tilted_db":[-13.0,-10.6,-11.8,-9.4,-12.6,-16.2,-20.8,-28.0],"bar":8,"density_perc_onsets_per_beat":3.5,"density_pitched_duty":0.8,"density_pitched_onsets_per_beat":4.5,"lufs_momentary_max":-9.8,"lufs_short":-12.4,"score_dyn":0.58,"section":"Outro","target_deviation":0.0,"tension":0.79,"time_sec":14.0,"valence_hue":-0.35}],"commitModel":"none","frequency_clash":{"bar_overlaps":[],"entries":[],"overall_overlap":0.0,"total_groups":0},"provider":"stub","repetition":{"best_matches":[],"mechanical_index":0.0,"repeated_passages":[]},"resolution":"bar","schema_version":"1.2","song_meta":{"base_bpm":120.0,"duration_sec":16.0,"key_signature":"D minor","profile":"default","total_bars":8},"structural_summary":{"climax_bar":8,"climax_tension":0.79,"detected_anomalies":[{"bars":[5,6],"description":"Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB","type":"low_mid_buildup"},{"bars":[7,8],"description":"Score velocity rises +35% but rendered LUFS changes only +0.4 LU","type":"compression_squash"}],"dynamic_range_lu":10.0}}"#;
+/// 线 H 合入时同步更新：新增 handler 追加字段 `cacheHit`（首次计算恒
+/// `false`，本金标钉的就是首次计算那一份；命中那一份只差这一个字段，
+/// 见判据本体的第二段断言）。
+const GOLDEN_JSON: &str = r#"{"band_definitions_hz":[[20,90],[90,250],[250,500],[500,1000],[1000,2000],[2000,5000],[5000,10000],[10000,20000]],"bar_series":[{"bands_tilted_db":[-18.2,-14.5,-12.0,-11.4,-15.0,-19.2,-24.0,-31.5],"bar":1,"density_perc_onsets_per_beat":0.5,"density_pitched_duty":0.65,"density_pitched_onsets_per_beat":1.5,"lufs_momentary_max":-19.8,"lufs_short":-22.4,"score_dyn":0.28,"section":"Intro","target_deviation":0.0,"tension":0.42,"time_sec":0.0,"valence_hue":-0.62},{"bands_tilted_db":[-17.0,-13.8,-12.1,-11.0,-14.6,-18.8,-23.5,-31.0],"bar":2,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.68,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-17.5,"lufs_short":-20.1,"score_dyn":0.34,"section":"Intro","target_deviation":0.0,"tension":0.5,"time_sec":2.0,"valence_hue":-0.58},{"bands_tilted_db":[-16.2,-13.2,-11.9,-10.6,-14.0,-18.0,-22.8,-30.2],"bar":3,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.7,"density_pitched_onsets_per_beat":2.5,"lufs_momentary_max":-16.0,"lufs_short":-18.6,"score_dyn":0.42,"section":"Verse","target_deviation":0.0,"tension":0.54,"time_sec":4.0,"valence_hue":-0.55},{"bands_tilted_db":[-15.0,-12.4,-12.2,-10.2,-13.5,-17.4,-22.0,-29.5],"bar":4,"density_perc_onsets_per_beat":2.0,"density_pitched_duty":0.72,"density_pitched_onsets_per_beat":3.0,"lufs_momentary_max":-13.6,"lufs_short":-16.2,"score_dyn":0.48,"section":"Verse","target_deviation":0.0,"tension":0.62,"time_sec":6.0,"valence_hue":-0.5},{"bands_tilted_db":[-14.2,-11.8,-6.8,-10.0,-13.2,-17.0,-21.6,-29.0],"bar":5,"density_perc_onsets_per_beat":2.5,"density_pitched_duty":0.75,"density_pitched_onsets_per_beat":3.5,"lufs_momentary_max":-11.2,"lufs_short":-13.8,"score_dyn":0.52,"section":"Chorus","target_deviation":0.0,"tension":0.69,"time_sec":8.0,"valence_hue":-0.44},{"bands_tilted_db":[-14.6,-12.0,-6.8,-10.4,-13.6,-17.5,-22.2,-29.6],"bar":6,"density_perc_onsets_per_beat":1.0,"density_pitched_duty":0.6,"density_pitched_onsets_per_beat":2.0,"lufs_momentary_max":-11.4,"lufs_short":-14.0,"score_dyn":0.4,"section":"Chorus","target_deviation":0.0,"tension":0.58,"time_sec":10.0,"valence_hue":-0.52},{"bands_tilted_db":[-13.8,-11.2,-12.0,-9.8,-13.0,-16.8,-21.2,-28.6],"bar":7,"density_perc_onsets_per_beat":3.0,"density_pitched_duty":0.78,"density_pitched_onsets_per_beat":4.0,"lufs_momentary_max":-11.0,"lufs_short":-13.6,"score_dyn":0.54,"section":"Chorus","target_deviation":0.0,"tension":0.73,"time_sec":12.0,"valence_hue":-0.4},{"bands_tilted_db":[-13.0,-10.6,-11.8,-9.4,-12.6,-16.2,-20.8,-28.0],"bar":8,"density_perc_onsets_per_beat":3.5,"density_pitched_duty":0.8,"density_pitched_onsets_per_beat":4.5,"lufs_momentary_max":-9.8,"lufs_short":-12.4,"score_dyn":0.58,"section":"Outro","target_deviation":0.0,"tension":0.79,"time_sec":14.0,"valence_hue":-0.35}],"cacheHit":false,"commitModel":"none","frequency_clash":{"bar_overlaps":[],"entries":[],"overall_overlap":0.0,"total_groups":0},"provider":"stub","repetition":{"best_matches":[],"mechanical_index":0.0,"repeated_passages":[]},"resolution":"bar","schema_version":"1.2","song_meta":{"base_bpm":120.0,"duration_sec":16.0,"key_signature":"D minor","profile":"default","total_bars":8},"structural_summary":{"climax_bar":8,"climax_tension":0.79,"detected_anomalies":[{"bars":[5,6],"description":"Band 3 (250-500Hz) exceeds tilted balance by +5.2 dB","type":"low_mid_buildup"},{"bars":[7,8],"description":"Score velocity rises +35% but rendered LUFS changes only +0.4 LU","type":"compression_squash"}],"dynamic_range_lu":10.0}}"#;
 
 #[test]
 fn default_json_is_byte_identical_to_pre_change_golden() {
     let mut dispatcher = dispatcher_with_project(filled_project(), true);
-    for arguments in [json!({}), json!({"format": "json"})] {
-        let response = call_tool(&mut dispatcher, "get_song_overview", arguments);
-        let data = ok_data(&response);
-        let canonical = serde_json::to_string(data).expect("data 可序列化");
-        assert_eq!(canonical, GOLDEN_JSON, "缺省 json 与改前逐字节一致");
-        assert!(data.get("format").is_none(), "响应里不回显 format 参数");
-    }
+    // 首次计算（`{}`）：与金标逐字节一致（金标含线 H 的 `cacheHit:false`）。
+    let response = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    let data = ok_data(&response);
+    let canonical = serde_json::to_string(data).expect("data 可序列化");
+    assert_eq!(
+        canonical, GOLDEN_JSON,
+        "首次计算的缺省 json 与金标逐字节一致"
+    );
+    assert!(data.get("format").is_none(), "响应里不回显 format 参数");
+    // 第二次（显式 `format: "json"`，与首次同一组分析参数）：命中共享缓存
+    // ⇒ 除 `cacheHit` 变 `true` 外逐字节相同（线 H 的新契约，不是漂移）。
+    let response = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"format": "json"}),
+    );
+    let data = ok_data(&response);
+    let canonical = serde_json::to_string(data).expect("data 可序列化");
+    let expected_hit = GOLDEN_JSON.replace("\"cacheHit\":false", "\"cacheHit\":true");
+    assert_eq!(canonical, expected_hit, "命中响应只差 cacheHit 一个字段");
+    assert!(data.get("format").is_none(), "响应里不回显 format 参数");
 }
 
 #[test]
@@ -908,6 +957,160 @@ fn format_html_with_png_path_is_rejected() {
     let (code, data) = error_data(&response);
     assert_eq!(code, "INVALID_PARAMETER_RANGE");
     assert_eq!(data["reason"], "includePngPathRequiresJson");
+}
+
+// ---------------------------------------------------------------------------
+// 线 H：共享计算与 `cacheHit`（首次 false、二次 true、工程变更后失效）
+// ---------------------------------------------------------------------------
+
+/// 计数 provider：把调用交给 stub，同时数自己被调了几次 —— "重复调用
+/// 不重算"的直接证据（共享缓存命中时它一次都不该被调）。
+#[derive(Debug, Default)]
+struct CountingProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl SongOverviewProvider for CountingProvider {
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+
+    fn overview(
+        &self,
+        project: &YebanProjectV1,
+        request: &SongOverviewRequest,
+    ) -> Result<SongOverview, Fault> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        StubSongOverviewProvider.overview(project, request)
+    }
+}
+
+fn dispatcher_with_counting(project: YebanProjectV1) -> (Dispatcher, Arc<CountingProvider>) {
+    let counting = Arc::new(CountingProvider::default());
+    let token = BearerToken::generate().token;
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    dispatcher
+        .domain_mut()
+        .open_in_memory(unique_path("counting"), project, false)
+        .expect("注入规范工程");
+    let provider: Arc<dyn SongOverviewProvider> = Arc::<CountingProvider>::clone(&counting);
+    dispatcher.domain_mut().set_song_overview_provider(provider);
+    (dispatcher, counting)
+}
+
+fn counting_calls(provider: &CountingProvider) -> usize {
+    provider.calls.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn cache_hit_is_false_first_then_true_and_provider_runs_once() {
+    let (mut dispatcher, counting) = dispatcher_with_counting(filled_project());
+    // 首次计算：cacheHit false，provider 调一次，缓存计数 (命中 0, 未命中 1)。
+    let first = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    let first_data = ok_data(&first).clone();
+    assert_eq!(
+        first_data["cacheHit"], false,
+        "首次计算必须报 cacheHit:false"
+    );
+    assert_eq!(counting_calls(&counting), 1);
+    assert_eq!(dispatcher.domain().song_overview_cache_stats(), (0, 1));
+    // 第二次同一调用：cacheHit true，provider 一次都不再调，数据除
+    // cacheHit 外逐位相同。
+    let second = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    let second_data = ok_data(&second);
+    assert_eq!(
+        second_data["cacheHit"], true,
+        "重复调用必须报 cacheHit:true"
+    );
+    assert_eq!(counting_calls(&counting), 1, "命中时 provider 不得重算");
+    assert_eq!(dispatcher.domain().song_overview_cache_stats(), (1, 1));
+    assert_eq!(second_data["bar_series"], first_data["bar_series"]);
+    assert_eq!(
+        second_data["structural_summary"], first_data["structural_summary"],
+        "命中结果与现算结果必须逐位相同（只差 cacheHit 本身）"
+    );
+    // 换分辨率 = 另一组分析参数 ⇒ 未命中、重算；再换回来 ⇒ 命中旧条目。
+    let beat = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"resolution": "beat"}),
+    );
+    assert_eq!(ok_data(&beat)["cacheHit"], false, "换分辨率不得命中");
+    assert_eq!(counting_calls(&counting), 2);
+    let again = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&again)["cacheHit"], true);
+    assert_eq!(counting_calls(&counting), 2);
+    // 换曲风档同理（档进整曲指纹）。
+    let orchestral = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"profile": "orchestral"}),
+    );
+    assert_eq!(ok_data(&orchestral)["cacheHit"], false, "换曲风档不得命中");
+    assert_eq!(counting_calls(&counting), 3);
+}
+
+#[test]
+fn cache_hit_invalidates_when_the_project_changes() {
+    let (mut dispatcher, counting) = dispatcher_with_counting(filled_project());
+    let first = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&first)["cacheHit"], false);
+    let second = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&second)["cacheHit"], true);
+    assert_eq!(counting_calls(&counting), 1);
+    // 工程变更（第一条轨的音量推子动一位）：整曲指纹变 ⇒ 回到 false、
+    // 重算一次；其后再调又命中新条目。
+    let mut changed = filled_project();
+    let first_track = *changed.tracks.keys().next().expect("规范工程有轨");
+    changed
+        .tracks
+        .get_mut(&first_track)
+        .expect("轨在")
+        .volume_db += 1.0;
+    dispatcher
+        .domain_mut()
+        .open_in_memory(unique_path("changed"), changed, false)
+        .expect("换入变更后的工程");
+    let third = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(
+        ok_data(&third)["cacheHit"],
+        false,
+        "工程变更后必须失效、回到 cacheHit:false"
+    );
+    assert_eq!(counting_calls(&counting), 2, "变更后必须真重算一次");
+    let fourth = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&fourth)["cacheHit"], true);
+    assert_eq!(counting_calls(&counting), 2);
+}
+
+#[test]
+fn html_format_shares_the_same_computation() {
+    let (mut dispatcher, counting) = dispatcher_with_counting(filled_project());
+    // JSON 先算（false）；HTML 再调：共用同一份计算，provider 不重算，
+    // 且 HTML 的 data 是字符串、本就没有 cacheHit 字段槽位。
+    let json_first = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&json_first)["cacheHit"], false);
+    let html = call_tool(
+        &mut dispatcher,
+        "get_song_overview",
+        json!({"format": "html"}),
+    );
+    assert!(
+        ok_data(&html).as_str().is_some(),
+        "html 形态的 data 是报告字符串"
+    );
+    assert_eq!(
+        counting_calls(&counting),
+        1,
+        "HTML 必须复用 JSON 已算的那一份（共享计算）"
+    );
+    assert_eq!(dispatcher.domain().song_overview_cache_stats(), (1, 1));
+    // HTML 之后 JSON 再调仍命中同一条目。
+    let json_second = call_tool(&mut dispatcher, "get_song_overview", json!({}));
+    assert_eq!(ok_data(&json_second)["cacheHit"], true);
+    assert_eq!(counting_calls(&counting), 1);
+    assert_eq!(dispatcher.domain().song_overview_cache_stats(), (2, 1));
 }
 
 /// 手写 2 小节总览：拍行去重 + 无期望带哨兵。
