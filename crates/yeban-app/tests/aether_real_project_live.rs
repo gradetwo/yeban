@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use slint::Model;
+use slint::{ComponentHandle, Model};
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::host::ProductionLoop;
@@ -71,6 +71,66 @@ fn project_under_test() -> YebanProjectV1 {
 
 /// 生产装配的同一条路径：`build_main_window` + `src/main.rs` 的完整 `wire_*` 清单
 /// （走带 / 键位 / 卷帘 / 编排滚轮 / 移轨 / 设备架 / 侧栏 / 发送 / 宏 / 撤销）+
+fn wire_full_production_surface(
+    ui: &yeban_app::ui::MainWindow,
+    undo: &Rc<UndoPort>,
+    engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
+    project_rc: &Rc<YebanProjectV1>,
+    view_cell: &Rc<RefCell<ViewState>>,
+) {
+    let input = Rc::new(RefCell::new(yeban_app::input::InputContext::default()));
+    host::wire_input(ui, Rc::clone(&input));
+    host::wire_transport(
+        ui,
+        Rc::clone(engine),
+        Some(Rc::clone(project_rc)),
+        Some(Rc::clone(undo)),
+    );
+    host::wire_view_callbacks(ui);
+    host::wire_keys(
+        ui,
+        input,
+        Some(Rc::clone(undo)),
+        Some(Rc::clone(engine)),
+        Some(Rc::clone(project_rc)),
+    );
+    host::wire_bpm_commit(ui, undo);
+    host::wire_mixer_edit(ui, undo);
+    host::wire_track_arm(ui);
+    host::wire_track_select(ui, undo);
+    host::wire_tool_select(ui, Some(Rc::clone(undo)));
+    host::wire_track_strip(ui, undo);
+    host::wire_undo(ui, undo);
+    host::wire_track_reorder(ui, undo);
+    host::wire_track_height_drag(ui, undo);
+    host::wire_zoom_controls(ui, undo);
+    host::wire_arrangement_wheel(ui, undo);
+    host::wire_arrangement_hscroll(ui, undo);
+    host::wire_track_rename(ui, undo);
+    host::wire_automation_lane_click(ui, undo);
+    host::wire_clip_create(ui, undo);
+    host::wire_clip_drag(ui, undo);
+    host::wire_roll_edit(ui, undo);
+    host::wire_humanize_dialog(ui, Some(Rc::clone(undo)));
+    host::wire_send_strip(ui, undo);
+    host::wire_macro_panel(ui, undo);
+    let _ = host::wire_device_rack(ui, undo);
+    host::wire_scene_launch(ui, Rc::clone(engine), Rc::clone(view_cell));
+    host::wire_proposal_drawer(ui, yeban_app::proposals::ProposalSource::none());
+    host::wire_clip_scope(ui, Rc::clone(view_cell), Some(Rc::clone(undo)));
+    host::wire_ruler_seek(ui, Rc::clone(engine), Rc::clone(view_cell));
+    let _overview_state = yeban_app::song_overview::wire_song_overview(
+        ui,
+        Rc::clone(engine),
+        Rc::clone(view_cell),
+        Some(Rc::clone(undo)),
+    );
+    host::wire_section_seek(ui, Rc::clone(engine), Rc::clone(view_cell));
+    host::wire_sidebar_contents(ui, Rc::clone(view_cell));
+    host::wire_aether_actions(ui, Rc::clone(undo), Rc::clone(engine), Rc::clone(view_cell));
+}
+
+/// 真实 `.yeban`（或等价 `filled_project()`）在活窗口里走通全链（含 Q2 回归）与
 /// `wire_aether_actions`。报告 Q2 的教训：判据若只接一小撮接线，轨道重排与设备旁通
 /// 会在“缩减装配”下静默无效，全绿也证明不了产品接线没断。
 #[test]
@@ -93,52 +153,7 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
     let view_cell = Rc::new(RefCell::new(view.clone()));
     let project_rc = Rc::new(project.clone());
 
-    // ---- 生产同款接线（逐条对齐 `src/main.rs` 的 wire_* 清单）----
-    // 报告 Q2：本判据此前只接 `wire_mixer_edit` + `wire_aether_actions`，于是
-    // 轨道重排 / 设备旁通在缩减装配下静默无效 —— 判据全绿也不能证明生产接线没断。
-    // 这里把产品装配清单补齐，下面 ⑥/⑦ 直接断言这两条链路真的改工程。
-    host::wire_transport(
-        ui,
-        Rc::clone(&engine),
-        Some(Rc::clone(&project_rc)),
-        Some(Rc::clone(&undo)),
-    );
-    host::wire_view_callbacks(ui);
-    host::wire_keys(
-        ui,
-        Rc::new(RefCell::new(yeban_app::input::InputContext::default())),
-        Some(Rc::clone(&undo)),
-        Some(Rc::clone(&engine)),
-        Some(Rc::clone(&project_rc)),
-    );
-    host::wire_bpm_commit(ui, &undo);
-    host::wire_mixer_edit(ui, &undo);
-    host::wire_track_arm(ui);
-    host::wire_track_select(ui, &undo);
-    host::wire_tool_select(ui, Some(Rc::clone(&undo)));
-    host::wire_track_strip(ui, &undo);
-    host::wire_undo(ui, &undo);
-    host::wire_track_reorder(ui, &undo);
-    host::wire_track_height_drag(ui, &undo);
-    host::wire_zoom_controls(ui, &undo);
-    host::wire_arrangement_wheel(ui, &undo);
-    host::wire_arrangement_hscroll(ui, &undo);
-    host::wire_track_rename(ui, &undo);
-    host::wire_automation_lane_click(ui, &undo);
-    host::wire_clip_create(ui, &undo);
-    host::wire_clip_drag(ui, &undo);
-    host::wire_send_strip(ui, &undo);
-    host::wire_macro_panel(ui, &undo);
-    let _ = host::wire_device_rack(ui, &undo);
-    host::wire_scene_launch(ui, Rc::clone(&engine), Rc::clone(&view_cell));
-    host::wire_clip_scope(ui, Rc::clone(&view_cell), Some(Rc::clone(&undo)));
-    host::wire_sidebar_contents(ui, Rc::clone(&view_cell));
-    host::wire_aether_actions(
-        ui,
-        Rc::clone(&undo),
-        Rc::clone(&engine),
-        Rc::clone(&view_cell),
-    );
+    wire_full_production_surface(ui, &undo, &engine, &project_rc, &view_cell);
 
     // ① 导入：真工程投影必须注入新 UI 的结构数组（不是 .slint 里的硬编码演示轨道）。
     assert!(view.tracks.len() >= 2, "工程必须有多轨，否则判据是空绿");
@@ -409,4 +424,245 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
         "设备旁通必须改工程里的 bypassed 位"
     );
     eprintln!("[device] bypass {} -> {bypassed_after}", bypass_target.2);
+
+    // ⑧ [N1-N9 + Pan/Instrument 回归] 在同一个活窗口里逐项验证：
+    // [N8] TimelineBlockData.note_count 反映真实音符密度
+    let blocks = ui.get_timeline_blocks();
+    assert!(blocks.row_count() >= 2);
+    assert!(
+        blocks.iter().any(|b| !b.is_audio && b.note_count > 0),
+        "[N8] MIDI 时间块必须带出真实音符数 note_count > 0"
+    );
+    assert!(
+        blocks
+            .iter()
+            .filter(|b| b.is_audio)
+            .all(|b| b.note_count == 0),
+        "[N8] 音频时间块的 note_count 必须为 0"
+    );
+
+    // [N7] 双击片段与 apply-dock-tab 必须双向同步而不回弹
+    let first_clip_ulid = ui.get_clip_ulids().row_data(0).expect("至少一个片段");
+    ui.invoke_clip_double_click(first_clip_ulid);
+    assert!(ui.get_show_lower_dock(), "[N7] 双击片段必须展开底部面板");
+    assert_eq!(ui.get_console_tab(), 0, "[N7] 双击片段应切至钢琴卷帘 tab=0");
+    assert_eq!(
+        ui.global::<yeban_app::ui::Theme<'_>>()
+            .get_active_dock_tab()
+            .as_str(),
+        "pianoroll",
+        "[N7] Theme.active-dock-tab 必须保持为 pianoroll"
+    );
+    ui.invoke_apply_dock_tab("mixer".into());
+    assert_eq!(ui.get_console_tab(), 1);
+    assert_eq!(
+        ui.global::<yeban_app::ui::Theme<'_>>()
+            .get_active_dock_tab()
+            .as_str(),
+        "mixer"
+    );
+    ui.invoke_apply_dock_tab("pianoroll".into());
+
+    // [N6 + P1] 动态定位当前带设备的 MIDI 轨(第⑥步重排可能移动了它的下标)
+    let (midi_ui_idx, track0_id) = {
+        let proj = undo.try_project().unwrap();
+        let ids = ui.get_track_ids();
+        (0..ids.row_count())
+            .find_map(|idx| {
+                let s = ids.row_data(idx)?;
+                let tid = s.as_str().parse::<EntityId>().ok()?;
+                let track = proj.tracks.get(&tid)?;
+                (track.kind == yeban_model::project::TrackKind::Midi && !track.devices.is_empty())
+                    .then_some((i32::try_from(idx).unwrap(), tid))
+            })
+            .expect("工程至少一条带设备的 MIDI 轨")
+    };
+    ui.invoke_track_select(midi_ui_idx);
+    assert_eq!(
+        ui.get_selected_track_index(),
+        midi_ui_idx + 1,
+        "[N6] 选中 MIDI 轨同步"
+    );
+    ui.invoke_track_pan_changed(midi_ui_idx + 1, -0.5);
+    assert!(
+        (undo.try_project().unwrap().tracks[&track0_id].pan + 0.5).abs() < 1e-3,
+        "track-pan-changed 必须提交 Op::SetParam(TrackPan)"
+    );
+    assert_eq!(
+        ui.get_track_pans()
+            .row_data(usize::try_from(midi_ui_idx).unwrap())
+            .as_ref()
+            .map(slint::SharedString::as_str),
+        Some("L50")
+    );
+    ui.invoke_track_instrument_change(midi_ui_idx + 1, "synth:metallic".into());
+    assert_eq!(
+        undo.try_project().unwrap().tracks[&track0_id].devices[0].name,
+        "FM Bell",
+        "track-instrument-change 必须更新内置合成器音色预设"
+    );
+
+    // [N3] 新建一条无片段的 MIDI 轨并选中：写音符不得静默吞掉，必须置可见状态提示
+    let track0_midi_clip_id = undo.try_project().unwrap().tracks[&track0_id]
+        .clips
+        .values()
+        .find(|p| {
+            undo.try_project()
+                .unwrap()
+                .clip_pool
+                .get(&p.clip_id)
+                .is_some_and(|e| e.content.notes().is_some())
+        })
+        .map(|p| p.clip_id);
+    let track0_notes_before = track0_midi_clip_id
+        .map(|cid| {
+            undo.try_project().unwrap().clip_pool[&cid]
+                .content
+                .notes()
+                .unwrap()
+                .len()
+        })
+        .unwrap_or(0);
+
+    ui.invoke_track_create_midi();
+    let new_idx = i32::try_from(ui.get_track_ids().row_count() - 1).expect("新轨下标");
+    let new_track_id = ui
+        .get_track_ids()
+        .row_data(usize::try_from(new_idx).unwrap())
+        .unwrap()
+        .as_str()
+        .parse::<EntityId>()
+        .unwrap();
+    ui.invoke_track_select(new_idx);
+    assert_eq!(
+        ui.get_selected_track_index(),
+        new_idx + 1,
+        "[N6] 选中新轨同步"
+    );
+    ui.set_selected_clip_ulid("".into());
+    ui.set_roll_edit_status("".into());
+    let count_before_n3 = midi_note_count(&undo.try_project().unwrap());
+    ui.invoke_piano_note_create(2, 0);
+    assert_eq!(
+        midi_note_count(&undo.try_project().unwrap()),
+        count_before_n3,
+        "[N3] 空 MIDI 轨未建片段前不应凭空写入音符"
+    );
+    assert!(
+        !ui.get_roll_edit_status().is_empty() && !ui.get_toast_message().is_empty(),
+        "[N3] 无片段写音符必须在 roll-edit-status 与 toast 明确反馈"
+    );
+
+    // [N2 & N4] 在新选中轨建片段后写越界低音 row=48 (pitch=36) / step=80 (start_tick=19200)
+    ui.invoke_clip_create();
+    let new_clip_id = undo.try_project().unwrap().tracks[&new_track_id]
+        .clips
+        .values()
+        .next()
+        .expect("新建轨应刚创建片段")
+        .clip_id;
+    ui.invoke_piano_note_create(48, 80);
+    let proj_after_n2 = undo.try_project().unwrap();
+    if let Some(cid0) = track0_midi_clip_id {
+        assert_eq!(
+            proj_after_n2.clip_pool[&cid0]
+                .content
+                .notes()
+                .unwrap()
+                .len(),
+            track0_notes_before,
+            "[N2] 不得误写入已有 MIDI 轨片段"
+        );
+    }
+    let created_notes: Vec<_> = proj_after_n2.clip_pool[&new_clip_id]
+        .content
+        .notes()
+        .unwrap()
+        .values()
+        .collect();
+    assert_eq!(created_notes.len(), 1, "[N2] 必须写入当前选中轨新建片段");
+    let created_note_id = created_notes[0].id;
+    assert_eq!(
+        created_notes[0].pitch, 36,
+        "[N4] 应支持低于 69 的低音区 pitch=36"
+    );
+    assert_eq!(
+        created_notes[0].start_tick, 19200,
+        "[N4] 应支持超过 64 步的 step=80"
+    );
+
+    // [N1] 同会话内不重开直接改力度 / 删除刚刚新建的音符
+    let live_after_create = host::project_with_view_state(&proj_after_n2, ui).expect("重投影失败");
+    let created_note_str = created_note_id.to_string();
+    let created_ui_id = live_after_create
+        .notes
+        .iter()
+        .find(|n| n.id == created_note_str)
+        .map(|n| i32::try_from(n.index + 1).unwrap())
+        .expect("新建音符必须在实时投影中");
+    ui.invoke_piano_note_velocity(created_ui_id, 55);
+    assert_eq!(
+        undo.try_project().unwrap().clip_pool[&new_clip_id]
+            .content
+            .notes()
+            .unwrap()[&created_note_id]
+            .velocity,
+        55,
+        "[N1] 同会话内新建音符必须能被力度调整命中"
+    );
+    let count_before_del = midi_note_count(&undo.try_project().unwrap());
+    ui.invoke_piano_note_delete(created_ui_id);
+    assert_eq!(
+        midi_note_count(&undo.try_project().unwrap()),
+        count_before_del - 1,
+        "[N1] 同会话内新建音符必须能被删除"
+    );
+    assert!(
+        !undo.try_project().unwrap().clip_pool[&new_clip_id]
+            .content
+            .notes()
+            .unwrap()
+            .contains_key(&created_note_id),
+        "[N1] 删除命中的必须是刚才新建的那颗音符"
+    );
+
+    // [N9] 工具=铅笔(digit=2 -> ToolDrag::ResizeDuration) 拖拽改变音符时值
+    ui.invoke_track_select(midi_ui_idx);
+    ui.invoke_tool_selected(2);
+    let live_view = host::project_with_view_state(&undo.try_project().unwrap(), ui).expect("投影");
+    let scroll_x = ui.get_roll_scroll_x().max(0.0);
+    let target_note = live_view
+        .notes
+        .iter()
+        .find(|n| n.x >= scroll_x && n.x < scroll_x + 900.0)
+        .or_else(|| live_view.notes.first())
+        .expect("至少一个可见音符")
+        .clone();
+    let note_entity = target_note.id.parse::<EntityId>().unwrap();
+    let dur_before = target_note.duration_ticks;
+    let (px, py) =
+        yeban_app::bridge::host_to_painted((target_note.x - scroll_x) + 2.0, target_note.y + 4.0);
+    assert!(
+        ui.invoke_note_drag_grab(px, py),
+        "[N9] ToolDrag::ResizeDuration 必须能抓起音符"
+    );
+    ui.invoke_note_drag_move(px + 48.0, py);
+    ui.invoke_note_drag_release(px + 48.0, py);
+    let dur_after = undo
+        .try_project()
+        .unwrap()
+        .clip_pool
+        .values()
+        .find_map(|entry| {
+            entry
+                .content
+                .notes()?
+                .get(&note_entity)
+                .map(|n| n.duration_ticks)
+        })
+        .expect("音符必须在工程里");
+    assert!(
+        dur_after > dur_before,
+        "[N9] ToolDrag::ResizeDuration 松手必须增加 duration_ticks ({dur_before} -> {dur_after})"
+    );
 }
