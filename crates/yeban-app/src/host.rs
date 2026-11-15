@@ -10930,7 +10930,9 @@ fn apply_action(
             if let Some(port) = undo {
                 port.perform(UiAction::SelectTool(tool));
             }
-            ui.set_active_tool(i32::from(tool.digit()));
+            let digit = tool.digit();
+            ui.set_active_tool(i32::from(digit));
+            ui.set_active_tool_name(tool_name_for_digit(digit).into());
             true
         }
         // `B`：在箭头与铅笔之间快速切换（规范 §3.3 的"快速切换"，不是"选中铅笔"）。
@@ -10942,6 +10944,7 @@ fn apply_action(
                 pencil
             };
             ui.set_active_tool(next);
+            ui.set_active_tool_name(tool_name_for_digit(next as u8).into());
             true
         }
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
@@ -11631,6 +11634,7 @@ fn apply_action(
         Action::ToggleCycle => {
             let current = ui.get_cycle_enabled();
             ui.set_cycle_enabled(!current);
+            ui.set_is_looping(!current);
             true
         }
         // 时间轴水平缩放
@@ -16306,6 +16310,21 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     );
                 } else if text == "m" || text == "M" {
                     ui.invoke_console_maximize_toggle();
+                } else if text == "1" {
+                    ui.invoke_edit_tool_selected("pointer".into());
+                } else if text == "2" {
+                    ui.invoke_edit_tool_selected("draw".into());
+                } else if text == "3" {
+                    ui.invoke_edit_tool_selected("split".into());
+                } else if text == "4" {
+                    ui.invoke_edit_tool_selected("range".into());
+                } else if text == "b" || text == "B" {
+                    let next = if ui.get_active_tool_name().as_str() == "draw" {
+                        "pointer"
+                    } else {
+                        "draw"
+                    };
+                    ui.invoke_edit_tool_selected(next.into());
                 } else if text == "F3" || text == "F7" || text == "F8" {
                     ui.set_show_lower_dock(true);
                     ui.invoke_console_maximize_toggle();
@@ -17037,6 +17056,17 @@ pub fn sync_aether_display(ui: &MainWindow) {
         40.0
     };
     ui.set_playhead_px(px);
+}
+
+fn tool_name_for_digit(digit: u8) -> &'static str {
+    match digit {
+        1 => "pointer",
+        2 => "draw",
+        3 => "split",
+        4 => "range",
+        5 => "erase",
+        _ => "pointer",
+    }
 }
 
 fn midi_pitch_name(pitch: u8) -> String {
@@ -18005,9 +18035,10 @@ pub fn wire_aether_actions(
             if let Some(ui) = w.upgrade() {
                 let digit = match tool.as_str() {
                     "pointer" => 1,
-                    "range" => 2,
-                    "split" => 3,
-                    "draw" => 4,
+                    "draw" | "pencil" => 2,
+                    "split" | "knife" => 3,
+                    "range" | "velocity" => 4,
+                    "erase" | "eraser" => 5,
                     _ => 1,
                 };
                 ui.invoke_tool_selected(digit);

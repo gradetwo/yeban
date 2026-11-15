@@ -831,7 +831,7 @@ export component TransportHeaderBar inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tool("range"); }
                         }
-                        TooltipBubble { text: "时间范围选择工具 [2]"; is-visible: touch_rng.has-hover; }
+                        TooltipBubble { text: "力度 / 范围工具 [4]"; is-visible: touch_rng.has-hover; }
                     }
 
                     // 切分 [3]
@@ -853,7 +853,7 @@ export component TransportHeaderBar inherits Rectangle {
                         TooltipBubble { text: "剃刀切分工具 [3]"; is-visible: touch_splt.has-hover; }
                     }
 
-                    // 画笔 [4]
+                    // 画笔 [2 / B]
                     Rectangle {
                         width: 28px;
                         height: 24px;
@@ -869,7 +869,7 @@ export component TransportHeaderBar inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tool("draw"); }
                         }
-                        TooltipBubble { text: "画笔工具: 绘制音符与自动化 [4 / B]"; is-visible: touch_drw.has-hover; }
+                        TooltipBubble { text: "画笔工具: 绘制音符与自动化 [2 / B]"; is-visible: touch_drw.has-hover; }
                     }
                 }
             }
@@ -966,7 +966,6 @@ export component TransportHeaderBar inherits Rectangle {
                         btn_rec_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => {
-                                root.toggle-rec();
                                 root.toggle-record();
                             }
                         }

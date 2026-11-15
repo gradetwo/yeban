@@ -18,6 +18,7 @@ import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 export component MainWindow inherits Window {
     title: "夜半";
     background: Theme.bg-canvas;
+    forward-focus: key-handler;
     preferred-width: 1600px;
     preferred-height: 920px;
     min-width: 1200px;
@@ -355,7 +356,7 @@ export component MainWindow inherits Window {
     // main 版 public function: 新 UI 无对应旧控件, 保留 invoke_* 入口为空实现
     public function focus-sidebar-search() { }
     public function focus-undo-tree-trap() { }
-    public function focus-shortcut-layer() { }
+    public function focus-shortcut-layer() { key-handler.focus(); }
     public function focus-humanize-dialog() { }
     public function focus-export-wav-dialog() { }
 
@@ -735,39 +736,16 @@ export component MainWindow inherits Window {
     callback zoom-v-step(bool);
 
     // Global Key Guard FocusScope
-    FocusScope {
+    key-handler := FocusScope {
         key-pressed(event) => {
             root.trigger-shortcut(event.text, event);
-            if (event.text == " " || event.text == Key.Space) {
-                root.transport-toggle-play();
-                return accept;
-            }
-            if (event.text == "r" || event.text == "R") {
-                root.transport-toggle-rec();
-                return accept;
-            }
-            if (event.text == "c" || event.text == "C") {
-                root.transport-toggle-loop();
-                return accept;
-            }
-            if (event.text == "1") {
-                root.active-tool-name = "pointer";
-                root.edit-tool-selected("pointer");
-                return accept;
-            }
-            if (event.text == "2") {
-                root.active-tool-name = "range";
-                root.edit-tool-selected("range");
-                return accept;
-            }
-            if (event.text == "3") {
-                root.active-tool-name = "split";
-                root.edit-tool-selected("split");
-                return accept;
-            }
-            if (event.text == "4" || event.text == "b" || event.text == "B") {
-                root.active-tool-name = "draw";
-                root.edit-tool-selected("draw");
+            if (!event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt
+                && (event.text == " " || event.text == Key.Space
+                    || event.text == "r" || event.text == "R"
+                    || event.text == "c" || event.text == "C"
+                    || event.text == "1" || event.text == "2"
+                    || event.text == "3" || event.text == "4"
+                    || event.text == "5" || event.text == "b" || event.text == "B")) {
                 return accept;
             }
             if (event.text == Key.Tab) {
@@ -878,8 +856,8 @@ export component MainWindow inherits Window {
                     root.active-tool-name = t;
                     root.edit-tool-selected(t);
                 }
-                toggle-play() => { root.toggle-play(); root.transport-toggle-play(); }
-                toggle-rec() => { root.transport-toggle-rec(); }
+                toggle-play() => { root.toggle-play(); }
+                toggle-rec() => { root.toggle-record(); }
                 toggle-record => { root.toggle-record(); }
                 toggle-loop() => { root.transport-toggle-loop(); }
                 rewind() => { root.transport-rewind(); }
