@@ -1070,6 +1070,33 @@ pub struct Region<'a> {
     pub pitch_eg: Option<crate::pitch_eg::PitchEg>,
     /// MIDI CC 门控集合（按 CC 号升序，确定性）。
     pub cc_gates: Vec<CcGate>,
+    /// ⭐ **CC 触发门集合**（`on_loccN` / `on_hiccN`，别名 `start_loccN` /
+    /// `start_hiccN`；按 CC 号升序，确定性）。
+    ///
+    /// 规范逐字（<https://sfzformat.com/opcodes/on_loccN/>）：「If a MIDI
+    /// control message with a value between `on_loccN` and `on_hiccN` is
+    /// received, the region will play」＋「This does not involve playing
+    /// any MIDI notes」；表格行 Type = integer、Default = **-1**
+    /// （unassigned）、Range = 0 to 127。
+    ///
+    /// ⚠ **本片的范围裁决（与任务单口径一致，如实登记与规范的距离）**：
+    /// 规范的完整语义是 **CC 事件本身触发** region（典型形态
+    /// `key=-1` ＋ `on_locc64=127` 的踏板噪声），那需要触发事件面新增
+    /// CC 事件分发（引擎 `Trigger` 旁路 ＋ 实时事件 ＋ 离线 MidiCc
+    /// 泳道事件化，审计 C5 登记为 M 级深改）。本片只落**解析 ＋
+    /// note-on 触发判定**这一层：region 在 note-on 查询里除既有门控外
+    /// 还须满足本集合 —— 查询给出的 CC 探针值落在每条 `[lo, hi]`
+    /// 闭区间内才触发；未提供探针时按与 [`Region::cc_gates`] 相同的
+    /// **严格策略**不匹配。CC 事件直接触发（无音符发声）仍未接线，
+    /// ⛔ 不在本片声称已实现。
+    ///
+    /// 取值口径（与 `loccN` / `hiccN` 同族一致）：只给一端时另一端取
+    /// 缺省（下界 0 / 上界 127）；显式 `-1` 是规范的 unassigned 哨兵，
+    /// 该端点按未给出处理，两端都未给出（或都为 `-1`）时不产生门；
+    /// 其余越界值（`<-1` 或 `>127`）与非整数都是明确 `Err`（不钳位）。
+    /// CC 号 `N` 的域为 `0..=127`：畸形名与越界号按未知 opcode 忽略
+    /// （与 [`parse_cc_gate_name`] 同一条口径）。
+    pub cc_triggers: Vec<CcGate>,
     /// 交叉淡化集合（`xfin_*` / `xfout_*`，见 [`crate::crossfade`]）。
     ///
     /// 顺序**固定**，因此同一输入得到同一个 `Vec`（`Eq` 与判据都依赖它）：
@@ -1231,6 +1258,23 @@ impl<'a> Region<'a> {
         self.cc_gates
             .iter()
             .all(|gate| (gate.lo..=gate.hi).contains(&cc(gate.cc)))
+    }
+
+    /// ⭐ **CC 触发门**（`on_loccN` / `on_hiccN`）是否满足。`cc` 返回某个
+    /// CC 的当前值；判定形状与 [`Region::cc_gates_ok`] 逐字相同（每条
+    /// `[lo, hi]` 闭区间都须包含探针值），只是数据来自
+    /// [`Region::cc_triggers`]。空集合恒为 `true`。
+    #[must_use]
+    pub fn cc_triggers_ok(&self, cc: impl Fn(u8) -> u8) -> bool {
+        self.cc_triggers
+            .iter()
+            .all(|gate| (gate.lo..=gate.hi).contains(&cc(gate.cc)))
+    }
+
+    /// 该 region 是否声明了任何 `on_loccN` / `on_hiccN` 触发门。
+    #[must_use]
+    pub fn has_cc_trigger(&self) -> bool {
+        !self.cc_triggers.is_empty()
     }
 
     /// 该 region 是否声明了任何需要外部状态的 keyswitch 门控。
@@ -2074,6 +2118,18 @@ fn region_matches(region: &Region<'_>, query: &RegionQuery<'_>) -> bool {
         }
     }
 
+    // ⭐ CC 触发门（`on_loccN` / `on_hiccN`）：与 CC 门控同一条严格策略
+    // （未提供探针 ⇒ 不匹配），判定在本片口径下于 note-on 查询求值
+    // （范围裁决见 [`Region::cc_triggers`]）。
+    if !region.cc_triggers.is_empty() {
+        let Some(probe) = query.cc else {
+            return false;
+        };
+        if !region.cc_triggers_ok(probe) {
+            return false;
+        }
+    }
+
     true
 }
 
@@ -2457,43 +2513,21 @@ pub(crate) fn build_region<'a>(
     };
 
     // ---- CC 门控（global → master → group → region 覆盖） ----
-    let mut gates: BTreeMap<u8, (Option<u8>, Option<u8>)> = BTreeMap::new();
-    for map in [global_map, master_map, group_map, region_map] {
-        for (name, value) in map {
-            let Some((is_low, cc)) = parse_cc_gate_name(name.as_ref()) else {
-                continue;
-            };
-            let entry = gates.entry(cc).or_insert((None, None));
-            let parsed = parse_int(value.as_ref()).ok_or_else(|| SfzError::InvalidInteger {
-                line,
-                opcode: name.to_string(),
-                value: value.to_string(),
-            })?;
-            if !(0..=127).contains(&parsed) {
-                return Err(SfzError::IntegerOutOfRange {
-                    line,
-                    opcode: name.to_string(),
-                    value: parsed,
-                    min: 0,
-                    max: 127,
-                });
-            }
-            let parsed = parsed as u8;
-            if is_low {
-                entry.0 = Some(parsed);
-            } else {
-                entry.1 = Some(parsed);
-            }
-        }
-    }
-    let cc_gates = gates
-        .into_iter()
-        .map(|(cc, (lo, hi))| CcGate {
-            cc,
-            lo: lo.unwrap_or(0),
-            hi: hi.unwrap_or(127),
-        })
-        .collect();
+    let cc_gates = collect_cc_intervals(
+        [global_map, master_map, group_map, region_map],
+        line,
+        parse_cc_gate_name,
+        false,
+    )?;
+
+    // ---- ⭐ CC 触发门（`on_loccN` / `on_hiccN`，别名 `start_*`；
+    // global → master → group → region 覆盖，与 CC 门控同一条链） ----
+    let cc_triggers = collect_cc_intervals(
+        [global_map, master_map, group_map, region_map],
+        line,
+        parse_on_cc_trigger_name,
+        true,
+    )?;
 
     // ---- portamento 的 pitch 包络（egN_*，见 crate::pitch_eg） ----
     let pitch_eg = crate::pitch_eg::read_pitch_eg(&scopes)?;
@@ -2568,6 +2602,7 @@ pub(crate) fn build_region<'a>(
         sw_down,
         sw_up,
         cc_gates,
+        cc_triggers,
         crossfades,
         labels,
         source_line: line,
@@ -2586,6 +2621,91 @@ fn parse_cc_gate_name(name: &str) -> Option<(bool, u8)> {
     }
     let cc: u8 = digits.parse().ok()?;
     if cc > 127 { None } else { Some((is_low, cc)) }
+}
+
+/// ⭐ 识别 `on_loccN` / `on_hiccN`（别名 `start_loccN` / `start_hiccN`），
+/// 返回 `(是否下界, CC 号)`。
+///
+/// 只在 `locc` / `hicc` 之后是**全 ASCII 数字**且 CC 号 ≤ 127 时命中；
+/// 其它形态（`on_locc`、`on_loccfoo`、`on_locc128`）返回 `None`，按未知
+/// opcode 忽略 —— 与 [`parse_cc_gate_name`] 同一条口径。⚠ 前缀剥离
+/// 顺序：先剥 `on_` / `start_`，余下再走 `locc` / `hicc`，因此
+/// `on_locc1` ⛔ 不会被 [`parse_cc_gate_name`] 误认（它不以 `locc` 开头），
+/// `xfin_locc1` 也不会被本函数误认（它不以 `on_` / `start_` 开头）。
+fn parse_on_cc_trigger_name(name: &str) -> Option<(bool, u8)> {
+    let rest = name
+        .strip_prefix("on_")
+        .or_else(|| name.strip_prefix("start_"))?;
+    let (is_low, digits) = if let Some(rest) = rest.strip_prefix("locc") {
+        (true, rest)
+    } else {
+        (false, rest.strip_prefix("hicc")?)
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let cc: u8 = digits.parse().ok()?;
+    if cc > 127 { None } else { Some((is_low, cc)) }
+}
+
+/// 把四个作用域里的某一族 CC 区间 opcode（`loccN`/`hiccN` 或
+/// `on_loccN`/`on_hiccN`）归约成按 CC 号升序的 [`CcGate`] 列表。
+///
+/// 覆盖序 ＝ `global → master → group → region`（后写者胜，与 CC 门控
+/// 既有路径逐字相同）；只给一端时另一端取缺省（下界 0 / 上界 127）。
+///
+/// `allow_unassigned` 为真时（`on_*` 族），显式 `-1` 是规范的
+/// unassigned 哨兵：该端点按未给出处理，两端都未给出时该 CC 不产生
+/// 门。为假时（`loccN` 族）`-1` 与其它越界值一样是明确 `Err`。
+/// 非整数与越界都是明确 `Err`（⛔ 不静默钳位、不丢弃），与既有
+/// CC 门控路径同一条口径。
+fn collect_cc_intervals(
+    maps: [&OpcodeMap<'_>; 4],
+    line: usize,
+    parse_name: fn(&str) -> Option<(bool, u8)>,
+    allow_unassigned: bool,
+) -> Result<Vec<CcGate>, SfzError> {
+    let mut gates: BTreeMap<u8, (Option<u8>, Option<u8>)> = BTreeMap::new();
+    for map in maps {
+        for (name, value) in map {
+            let Some((is_low, cc)) = parse_name(name.as_ref()) else {
+                continue;
+            };
+            let parsed = parse_int(value.as_ref()).ok_or_else(|| SfzError::InvalidInteger {
+                line,
+                opcode: name.to_string(),
+                value: value.to_string(),
+            })?;
+            if allow_unassigned && parsed == -1 {
+                // unassigned 哨兵：端点按未给出处理（不建条目）。
+                continue;
+            }
+            if !(0..=127).contains(&parsed) {
+                return Err(SfzError::IntegerOutOfRange {
+                    line,
+                    opcode: name.to_string(),
+                    value: parsed,
+                    min: 0,
+                    max: 127,
+                });
+            }
+            let parsed = parsed as u8;
+            let entry = gates.entry(cc).or_insert((None, None));
+            if is_low {
+                entry.0 = Some(parsed);
+            } else {
+                entry.1 = Some(parsed);
+            }
+        }
+    }
+    Ok(gates
+        .into_iter()
+        .map(|(cc, (lo, hi))| CcGate {
+            cc,
+            lo: lo.unwrap_or(0),
+            hi: hi.unwrap_or(127),
+        })
+        .collect())
 }
 
 /// 识别 `amp_velcurve_N`，返回**下标文本** `N`。
@@ -3682,6 +3802,7 @@ mod tests {
             sw_down: None,
             sw_up: None,
             cc_gates: Vec::new(),
+            cc_triggers: Vec::new(),
             crossfades: Vec::new(),
             labels: Labels::default(),
             source_line: 1,
@@ -4024,6 +4145,186 @@ mod tests {
                 .region_for_with(RegionQuery::new(60, 100).with_cc(&low))
                 .is_none()
         );
+    }
+
+    // ------------------------------------------------------------------
+    // ⭐ CC 触发门（`on_loccN` / `on_hiccN`）：解析、值域、触发判定
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn on_cc_triggers_are_parsed_with_defaults_alias_and_scope_chain() {
+        let triggers_of = |text: &str| {
+            parse_text(text, &Default::default())
+                .expect("parses")
+                .regions()[0]
+                .cc_triggers
+                .clone()
+        };
+        // 双端齐全。
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_locc1=64 on_hicc1=100"),
+            vec![CcGate {
+                cc: 1,
+                lo: 64,
+                hi: 100
+            }]
+        );
+        // 只给一端：另一端取缺省（下界 0 / 上界 127），与 locc/hicc 同口径。
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_locc1=64"),
+            vec![CcGate {
+                cc: 1,
+                lo: 64,
+                hi: 127
+            }]
+        );
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_hicc1=63"),
+            vec![CcGate {
+                cc: 1,
+                lo: 0,
+                hi: 63
+            }]
+        );
+        // 别名 `start_loccN` / `start_hiccN`（审计 C5 登记的 v1/v2 别名形）。
+        assert_eq!(
+            triggers_of("<region>sample=a.wav start_locc64=127 start_hicc64=127"),
+            vec![CcGate {
+                cc: 64,
+                lo: 127,
+                hi: 127
+            }]
+        );
+        // 作用域链：group 覆 global、region 覆 group（逐端点独立覆盖）。
+        assert_eq!(
+            triggers_of(
+                "<global>on_locc1=0 on_hicc1=10\n<group>on_locc1=20\n<region>sample=a.wav on_hicc1=30"
+            ),
+            vec![CcGate {
+                cc: 1,
+                lo: 20,
+                hi: 30
+            }]
+        );
+        // 多个 CC 按号升序（确定性）。
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_locc7=1 on_locc1=2"),
+            vec![
+                CcGate {
+                    cc: 1,
+                    lo: 2,
+                    hi: 127
+                },
+                CcGate {
+                    cc: 7,
+                    lo: 1,
+                    hi: 127
+                },
+            ]
+        );
+        // 规范哨兵 -1 = unassigned：两端都 -1 ⇒ 不产生门；一端 -1 ⇒ 该端按未给出。
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_locc1=-1 on_hicc1=-1"),
+            Vec::<CcGate>::new()
+        );
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_locc1=-1 on_hicc1=63"),
+            vec![CcGate {
+                cc: 1,
+                lo: 0,
+                hi: 63
+            }]
+        );
+        // 畸形名 / 越界 CC 号按未知 opcode 忽略（与 loccN 同一条口径），不产生门也不报错。
+        assert_eq!(
+            triggers_of("<region>sample=a.wav on_locc128=10 on_locc=10 on_locc1x=10"),
+            Vec::<CcGate>::new()
+        );
+        // 无关族不误认：locc 仍只进 cc_gates，xfin_locc 仍只进 crossfades。
+        let region = first_region("<region>sample=a.wav locc1=64 xfin_locc1=0 xfin_hicc1=100");
+        assert!(region.cc_triggers.is_empty());
+        assert_eq!(region.cc_gates.len(), 1);
+    }
+
+    #[test]
+    fn on_cc_trigger_values_out_of_range_are_loud_errors() {
+        for text in [
+            "<region>sample=a.wav on_locc1=128",
+            "<region>sample=a.wav on_hicc1=-2",
+            "<region>sample=a.wav on_locc1=abc",
+        ] {
+            assert!(
+                parse_text(text, &Default::default()).is_err(),
+                "must be a loud Err: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_cc_triggers_gate_note_on_matching_at_closed_bounds() {
+        let instrument = parse_text(
+            "<region>sample=a.wav key=60 on_locc1=64 on_hicc1=100",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert!(region.has_cc_trigger());
+        assert!(region.cc_triggers_ok(|_| 64), "lo bound is inclusive");
+        assert!(region.cc_triggers_ok(|_| 100), "hi bound is inclusive");
+        assert!(!region.cc_triggers_ok(|_| 63), "below lo does not trigger");
+        assert!(!region.cc_triggers_ok(|_| 101), "above hi does not trigger");
+        // 未提供 CC 状态 → 严格策略下不匹配（与 cc_gates 同一条纪律）。
+        assert!(instrument.region_for(60, 100).is_none());
+        for (value, expected) in [(63u8, false), (64, true), (100, true), (101, false)] {
+            let cc = move |number: u8| if number == 1 { value } else { 0 };
+            assert_eq!(
+                instrument
+                    .region_for_with(RegionQuery::new(60, 100).with_cc(&cc))
+                    .is_some(),
+                expected,
+                "cc1={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_cc_triggers_stack_with_cc_gates_and_select_among_regions() {
+        // 多 region 叠加：同键两层由 on_cc 区间分工，探针落在哪段选哪层。
+        let instrument = parse_text(
+            "<region>sample=low.wav key=60 on_locc1=0 on_hicc1=63\n\
+             <region>sample=high.wav key=60 on_locc1=64 on_hicc1=127",
+            &Default::default(),
+        )
+        .expect("parses");
+        let pick = |value: u8| {
+            let cc = move |_: u8| value;
+            instrument
+                .region_for_with(RegionQuery::new(60, 100).with_cc(&cc))
+                .map(|region| region.sample.clone())
+        };
+        assert_eq!(pick(0).as_deref(), Some("low.wav"));
+        assert_eq!(pick(63).as_deref(), Some("low.wav"));
+        assert_eq!(pick(64).as_deref(), Some("high.wav"));
+        assert_eq!(pick(127).as_deref(), Some("high.wav"));
+
+        // 与 locc 门控叠加：两道门都须成立（AND），任一不成立即不触发。
+        let both = parse_text(
+            "<region>sample=a.wav key=60 locc1=10 hicc1=127 on_locc2=64 on_hicc2=100",
+            &Default::default(),
+        )
+        .expect("parses");
+        let matches = |cc1: u8, cc2: u8| {
+            let cc = move |number: u8| match number {
+                1 => cc1,
+                2 => cc2,
+                _ => 0,
+            };
+            both.region_for_with(RegionQuery::new(60, 100).with_cc(&cc))
+                .is_some()
+        };
+        assert!(matches(50, 64), "both gates open at bounds");
+        assert!(!matches(5, 64), "locc gate closed");
+        assert!(!matches(50, 101), "on_cc trigger closed");
     }
 
     #[test]

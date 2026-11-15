@@ -993,6 +993,10 @@ pub struct RegionSummary {
     /// 的原样抄录）。乐器初值状态（`set_ccN` 种子，未声明的 CC = 0）下初值落在
     /// 区间外的区域不会发声，见 [`CcGateCensus`]。
     pub cc_gates: Vec<CcGate>,
+    /// ⭐ CC 触发门（`on_loccN` / `on_hiccN` 归约后的闭区间，解析产物
+    /// [`Region::cc_triggers`] 的原样抄录；与 [`RegionSummary::cc_gates`]
+    /// 同形，判定口径见解析层字段文档）。
+    pub cc_triggers: Vec<CcGate>,
     /// ⭐ `amplitude` 基值（线性百分比，缺省 [`AMPLITUDE_DEFAULT_PERCENT`] = 100）。
     pub amplitude: f32,
     /// ⭐ `amplitude` 族的 CC 调制项（[`Region::cc_modulations`] 里
@@ -1013,6 +1017,11 @@ impl RegionSummary {
             "builtinSilence": self.builtin_silence,
             "sampleFileState": self.sample_file_state,
             "ccGates": self.cc_gates.iter().map(|gate| serde_json::json!({
+                "cc": gate.cc,
+                "lo": gate.lo,
+                "hi": gate.hi,
+            })).collect::<Vec<_>>(),
+            "ccTriggers": self.cc_triggers.iter().map(|gate| serde_json::json!({
                 "cc": gate.cc,
                 "lo": gate.lo,
                 "hi": gate.hi,
@@ -1137,11 +1146,12 @@ fn cc_gate_census_with_probe(
         let gate_hit = region
             .cc_gates
             .iter()
+            .chain(&region.cc_triggers)
             .any(|gate| !(gate.lo <= probe(gate.cc) && probe(gate.cc) <= gate.hi));
         let amplitude_hit = instrument.amplitude_value_with_cc(region, probe).0 == 0.0;
         if gate_hit {
             census.gate_silent_regions += 1;
-            for gate in &region.cc_gates {
+            for gate in region.cc_gates.iter().chain(&region.cc_triggers) {
                 if !(gate.lo <= probe(gate.cc) && probe(gate.cc) <= gate.hi) {
                     cc_numbers.insert(gate.cc);
                 }
@@ -2147,7 +2157,9 @@ impl DemandLoadFilter {
         // CC 门控。⚠ 无条目（无泳道、无种子）时**不是**"一律不发声"：MIDI CC 的缺省值是 0，
         // `locc/hicc` 的常见写法正是「0..63 一层、64..127 另一层」，缺省 0 落在第一层。
         // 修前这里 `if !probe_exists { return false }` 把整件库判死（见结构体文档）。
-        for gate in &region.cc_gates {
+        // ⭐ `on_loccN`/`on_hiccN` 触发门与 CC 门控同一条可达集判定：
+        // 可达区间与触发区间不交 ⇒ 该区域在本轨永不触发，不装其样本。
+        for gate in region.cc_gates.iter().chain(&region.cc_triggers) {
             let (lo, hi) = self.cc_reachable.get(&gate.cc).copied().unwrap_or((0, 0));
             if hi < gate.lo || lo > gate.hi {
                 return false;
@@ -2908,6 +2920,7 @@ fn summarize(index: usize, region: &Region<'_>) -> RegionSummary {
         // ⭐ CC 门控与 amplitude 族调制：解析产物的原样抄录（普查在
         // [`cc_gate_census`] 里按整件乐器算，本摘要只携带逐区域原料）。
         cc_gates: region.cc_gates.clone(),
+        cc_triggers: region.cc_triggers.clone(),
         amplitude: region.amplitude,
         amplitude_cc_mods: region
             .cc_modulations()
