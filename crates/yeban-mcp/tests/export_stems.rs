@@ -642,8 +642,13 @@ fn out_dir_missing_is_created_at_write_time_but_a_file_is_refused() {
     assert!(would_be.is_dir(), "真导出必须创建 outDir");
     assert_eq!(
         entries(&would_be),
-        vec!["0001.Lead.wav", "0002.Pad.wav", "0003.Bass.wav"],
-        "创建出的目录里必须恰好是三条分轨"
+        vec![
+            "0001.Lead.wav",
+            "0002.Pad.wav",
+            "0003.Bass.wav",
+            "stems-manifest.json"
+        ],
+        "创建出的目录里必须恰好是三条分轨加一份 manifest"
     );
 
     // 是文件而不是目录 ⇒ 仍然响亮拒绝（B6 只放行"不存在"这一种）。
