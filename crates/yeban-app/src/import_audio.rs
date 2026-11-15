@@ -68,10 +68,20 @@ use crate::undo::UndoPort;
 ///
 /// `read_plain_wav` 会把整份 PCM 读进内存 ⇒ 先看 `metadata.len()` 再决定读不读；
 /// **超过上限就拒绝**，⛔ 绝不静默截断（截断会让"工程里那份"与"文件里那份"不是同一段
-/// 音频，且没人知道）。取值与理由同 `crates/yeban-mcp/src/domain/sfz.rs` 的
-/// `MAX_SAMPLE_FILE_BYTES`（64 MiB）—— 那条是"`read_plain_wav` 之前先看文件长度"
-/// 的既有口径，本模块照同一条口径办（⛔ 不是新政策）。
-pub const MAX_AUDIO_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// 音频，且没人知道）。
+///
+/// ⭐ 第五份报告 B-2：上限从 64 MiB 抬到 **256 MiB**。选型理由：
+/// - 字节门是"解码前先看 `metadata`"的**内存守门**，不是格式限制 —— 它的职责
+///   是给"整份读进内存"设一个可预期的上界，⛔ 不承担"文件合不合法"的判定；
+/// - 64 MiB 只够约 6 分钟 48 kHz 立体声 float32（或 12 分钟 16 位），整首歌
+///   的伴奏/现场录音 WAV 常态超过它 ⇒ 正常素材被硬门挡在外面；
+/// - 256 MiB ≈ 24 分钟 48 kHz 立体声 float32（16 位约 48 分钟），覆盖整曲
+///   级素材；解码后内存与文件字节同量级（float32 交错缓冲 ≈ 文件大小），
+///   上界仍可预期。按帧数设限需要逐格式解析文件头才能知道帧数，守门点
+///   （`metadata` 预读）拿不到 ⇒ 不采用。
+/// - SFZ 样本的单文件门（`yeban-mcp` 的 `MAX_SAMPLE_FILE_BYTES`，64 MiB）
+///   是另一条口径（样本按需装载、有自己的帧数/文件数预算），⛔ 不随本条变。
+pub const MAX_AUDIO_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// 导入选项。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
