@@ -1442,8 +1442,70 @@ pub struct ParsedPitchBend {
     pub channel: u8,
     /// 这条事件在**文件里**的绝对 tick（⛔ 已换算到模型 960 PPQ 之前）。
     pub tick: u64,
-    /// 弯音深度（音分，±1200 截断）。
+    /// 弯音深度（音分；按事件当刻该通道的 RPN 0 弯音灵敏度换算，
+    /// 未设过 RPN 时缺省 ±2 半音 ⇒ ±200 音分内）。
     pub cents: i16,
+}
+
+/// 单个通道的 RPN 0（弯音灵敏度）状态机（⭐ 第五份报告 C-2 导入侧修复）。
+///
+/// `parse_smf` 按 (轨, 通道) 各持一份，轨首重置，缺省范围 ±2 半音
+/// （与旧口径逐位一致）。只认 RPN 0：CC 101/100 选 RPN、CC 99/98 选
+/// NRPN（数据录入 ⛔ 不作用于弯音范围）；CC 6（半音）/ CC 38（音分）
+/// 仅在选中 RPN (0, 0) 时更新范围；RPN Null (127, 127) 后数据录入
+/// 不再改范围。其它 RPN（如 1 号主音细调）的数据录入同样不碰范围。
+#[derive(Clone, Copy)]
+struct BendRangeState {
+    /// 当前由 CC 101/100 选中的 RPN 号（高字节, 低字节）；(127, 127) = Null。
+    rpn: (u8, u8),
+    /// 数据录入当前是否作用于 RPN（`false` = NRPN 或未选）。
+    rpn_selected: bool,
+    /// 弯音范围的半音部分（CC 6 写入）。
+    semitones: u8,
+    /// 弯音范围的音分部分（CC 38 写入，按原值取）。
+    cents_part: u8,
+}
+
+impl Default for BendRangeState {
+    fn default() -> Self {
+        Self {
+            rpn: (127, 127),
+            rpn_selected: false,
+            semitones: 2,
+            cents_part: 0,
+        }
+    }
+}
+
+impl BendRangeState {
+    /// 喂一条 CC；只有 RPN 0 的数据录入会改弯音范围。
+    fn on_controller(&mut self, controller: u8, value: u8) {
+        match controller {
+            101 => {
+                self.rpn.0 = value;
+                self.rpn_selected = true;
+            }
+            100 => {
+                self.rpn.1 = value;
+                self.rpn_selected = true;
+            }
+            99 | 98 => {
+                self.rpn_selected = false;
+            }
+            6 if self.rpn_selected && self.rpn == (0, 0) => {
+                self.semitones = value;
+            }
+            38 if self.rpn_selected && self.rpn == (0, 0) => {
+                self.cents_part = value;
+            }
+            _ => {}
+        }
+    }
+
+    /// 当前弯音范围（音分）= 半音 × 100 + 音分部分。
+    fn range_cents(&self) -> i32 {
+        i32::from(self.semitones) * 100 + i32::from(self.cents_part)
+    }
 }
 
 /// SMF 里的一个 chunk: fourcc 与它在文件里的负载范围。
@@ -1563,6 +1625,8 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
     let mut end_tick = 0u64;
     for (track_index, track) in smf.tracks.iter().enumerate() {
         let mut tick = 0u64;
+        // ⭐ C-2：本轨 16 通道各一份 RPN 弯音灵敏度状态（轨首重置、缺省 ±2）。
+        let mut bend_ranges = [BendRangeState::default(); 16];
         // (channel, key) -> (start_tick, velocity); 用 Vec 保序, 便于"后开先关"匹配。
         let mut open: Vec<(u8, u8, u64, u8)> = Vec::new();
         for event in track {
@@ -1608,6 +1672,11 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                                 controller: controller.as_int(),
                                 value: value.as_int(),
                             });
+                            // ⭐ C-2：同一条 CC 同步喂给本通道的 RPN 状态机
+                            //（只有 RPN 0 的数据录入会改弯音范围，见
+                            // [`BendRangeState`]）。
+                            bend_ranges[usize::from(channel)]
+                                .on_controller(controller.as_int(), value.as_int());
                         }
                         MidiMessage::ProgramChange { .. } => {
                             aux_events.record(MidiAuxEventKind::ProgramChange);
@@ -1618,13 +1687,14 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                         MidiMessage::PitchBend { bend } => {
                             aux_events.record(MidiAuxEventKind::PitchBend);
                             // `as_int()` 已是**居中**的 14-bit 值（-8192..=8191，0 = 中心）；
-                            // SMF 弯音默认范围 ±2 半音 ⇒ 换算成音分并截断到 ±1200。
-                            // ⚠ 第五份报告 C-2 登记的缺口：本读取点**不解析 RPN
-                            // 弯音灵敏度** —— 导出侧对超 ±2 半音的轨写了 RPN 并
-                            // 按新范围换算，这类文件回读时音分会被按 ±2 压回
-                            // （往返不对称，修复另行立项，⛔ 不在本条范围）。
-                            let cents =
-                                (i32::from(bend.as_int()) * 200 / 8192).clamp(-1200, 1200) as i16;
+                            // 换算按本通道**当刻**的 RPN 0 弯音灵敏度（缺省 ±2
+                            // 半音，与旧口径逐位一致）。⭐ 第五份报告 C-2 的往返
+                            // 不对称在此修复：导出侧对超 ±2 半音的轨写 RPN 并按
+                            // 新范围换算，回读按同一范围折回。
+                            let range_cents = bend_ranges[usize::from(channel)].range_cents();
+                            let cents = (i32::from(bend.as_int()) * range_cents / 8192)
+                                .clamp(-range_cents, range_cents)
+                                as i16;
                             pitch_bends.push(ParsedPitchBend {
                                 track: track_index,
                                 channel,
@@ -2470,6 +2540,127 @@ mod tests {
             "每条轨名恰计一次"
         );
         assert_eq!(parsed.aux_events.count(MidiAuxEventKind::TrackName), 2);
+    }
+
+    /// 造一条 format 0 单轨 SMF（480 PPQ），事件 = (delta, 原始字节)。
+    fn smf_single_track(events: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        fn vlq(mut value: u32) -> Vec<u8> {
+            let mut bytes = vec![(value & 0x7F) as u8];
+            value >>= 7;
+            while value > 0 {
+                bytes.push(((value & 0x7F) as u8) | 0x80);
+                value >>= 7;
+            }
+            bytes.reverse();
+            bytes
+        }
+        let mut body = Vec::new();
+        for (delta, event) in events {
+            body.extend(vlq(*delta));
+            body.extend_from_slice(event);
+        }
+        body.extend(vlq(0));
+        body.extend_from_slice(&[0xFF, 0x2F, 0x00]);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&480u16.to_be_bytes());
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&u32::try_from(body.len()).expect("短轨").to_be_bytes());
+        bytes.extend(body);
+        bytes
+    }
+
+    fn cc(channel: u8, controller: u8, value: u8) -> Vec<u8> {
+        vec![0xB0 | channel, controller, value]
+    }
+
+    /// 弯音事件字节：`raw` 是居中 14 位值（-8192..=8191）。
+    fn bend_ev(channel: u8, raw: i32) -> Vec<u8> {
+        let value = u16::try_from(raw + 8192).expect("弯音原值在 14 位内");
+        vec![0xE0 | channel, (value & 0x7F) as u8, (value >> 7) as u8]
+    }
+
+    fn bend_cents(parsed: &ParsedMidi) -> Vec<i16> {
+        parsed.pitch_bends.iter().map(|bend| bend.cents).collect()
+    }
+
+    /// 判据（⭐ C-2 导入侧）：RPN 只对**其后**的弯音生效；RPN Null 之后
+    /// 再发 CC 6 ⛔ 不改范围（范围保留 12 半音）。
+    #[test]
+    fn rpn_range_applies_to_later_bends_only_and_null_freezes_it() {
+        let bytes = smf_single_track(&[
+            (0, bend_ev(0, 4096)), // RPN 之前：缺省 ±2 ⇒ 100 音分
+            (0, cc(0, 101, 0)),
+            (0, cc(0, 100, 0)),
+            (0, cc(0, 6, 12)),
+            (0, cc(0, 38, 0)),
+            (480, bend_ev(0, 4096)), // 范围 12 ⇒ 600 音分
+            (0, cc(0, 101, 127)),    // RPN Null
+            (0, cc(0, 100, 127)),
+            (0, cc(0, 6, 2)),        // Null 后数据录入不生效
+            (480, bend_ev(0, 4096)), // 仍按 12 ⇒ 600 音分
+        ]);
+        let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
+        assert_eq!(bend_cents(&parsed), [100, 600, 600]);
+    }
+
+    /// 判据（⭐ C-2 导入侧）：NRPN 的数据录入与其它 RPN（如 1 号主音
+    /// 细调）的 CC 6 ⛔ 不碰弯音范围；之后选回 RPN 0 仍可正常设范围。
+    #[test]
+    fn nrpn_and_other_rpn_data_entry_do_not_touch_bend_range() {
+        let bytes = smf_single_track(&[
+            (0, cc(0, 99, 1)), // 选 NRPN
+            (0, cc(0, 98, 2)),
+            (0, cc(0, 6, 12)),
+            (0, bend_ev(0, 4096)), // 仍缺省 ±2 ⇒ 100
+            (0, cc(0, 101, 0)),    // 选 RPN 1（细调），不是 RPN 0
+            (0, cc(0, 100, 1)),
+            (0, cc(0, 6, 12)),
+            (480, bend_ev(0, 4096)), // 仍 100
+            (0, cc(0, 101, 0)),      // 选回 RPN 0
+            (0, cc(0, 100, 0)),
+            (0, cc(0, 6, 12)),
+            (480, bend_ev(0, 4096)), // 600
+        ]);
+        let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
+        assert_eq!(bend_cents(&parsed), [100, 100, 600]);
+    }
+
+    /// 判据（⭐ C-2 导入侧）：CC 38 的音分部分计入范围（2 半音 + 50 音分
+    /// = 250）；范围按通道隔离（通道 1 的设置不影响通道 0）。
+    /// 整数截断误差 ≤ 1 音分：8191 × 250 / 8192 = 249.97 ⇒ 249。
+    #[test]
+    fn rpn_range_includes_cc38_cents_and_is_per_channel() {
+        let bytes = smf_single_track(&[
+            (0, cc(1, 101, 0)),
+            (0, cc(1, 100, 0)),
+            (0, cc(1, 6, 2)),
+            (0, cc(1, 38, 50)),
+            (0, bend_ev(1, 8191)),  // 通道 1：249
+            (0, bend_ev(0, 4096)),  // 通道 0：缺省 ±2 ⇒ 100
+            (0, bend_ev(0, -8192)), // 通道 0：-200（缺省范围下限恰达）
+        ]);
+        let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
+        assert_eq!(bend_cents(&parsed), [249, 100, -200]);
+    }
+
+    /// 判据（⭐ C-2 导入侧）：范围边界 —— 12 半音时满幅负弯恰 −1200，
+    /// 满幅正弯因 14 位不对称（+8191）读 1199，与理想值差 1 音分（容差内）。
+    #[test]
+    fn rpn_range_boundary_values() {
+        let bytes = smf_single_track(&[
+            (0, cc(0, 101, 0)),
+            (0, cc(0, 100, 0)),
+            (0, cc(0, 6, 12)),
+            (0, cc(0, 38, 0)),
+            (0, bend_ev(0, -8192)),
+            (0, bend_ev(0, 8191)),
+        ]);
+        let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
+        assert_eq!(bend_cents(&parsed), [-1200, 1199]);
     }
 
     /// ⭐ `#312` 判据 2: `None` / `Some("")` 都**不写**歌词事件（空文本没有内容），
