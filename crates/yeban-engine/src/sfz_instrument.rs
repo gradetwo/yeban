@@ -1853,6 +1853,7 @@ use yeban_sfz::instrument::{
     CcGate, FilterType, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region,
     RegionQuery, Trigger,
 };
+use yeban_sfz::lfo::{GenericLfo, V1Lfo};
 // ⭐ 任务单 `#104`：CC 调制（`ccN` / `_ccN` / `_onccN` / `_curveccN`）；
 // ⭐ 任务单 `#115`：目标从五个 `ampeg_*` 推广成 [`ModTarget`]（首个增益族目标
 // `amplitude`）。摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
@@ -2598,6 +2599,18 @@ impl SfzInstrument {
                     }
                     None => VoiceFilter::BYPASSED,
                 };
+                // ⭐ LFO（SFZ LFO 片）：离线路由 [`region_lfo_defs`] 现场归约
+                // （与摊平路**同一份**），状态自 INERT 起算；基准与 `filter`
+                // 的配置用同一个 `base_hz` / `region.resonance`（⛔ 不许第二份）。
+                let lfo_defs = region_lfo_defs(region);
+                let mut lfos = lfo_span_from_defs(
+                    &lfo_defs,
+                    cc,
+                    engine_hz,
+                    base_hz,
+                    region.resonance,
+                    LfoVoiceState::INERT,
+                );
                 let region_written = mix_span_into(
                     &source.pcm,
                     &mut position,
@@ -2610,6 +2623,7 @@ impl SfzInstrument {
                     &mut env,
                     &mut filter,
                     &mut egs,
+                    &mut lfos,
                     out,
                 );
                 written = written.max(region_written);
@@ -3486,6 +3500,292 @@ impl EgSpan {
     };
 }
 
+/// ⭐ **每区域进引擎的 LFO 振荡器上界**（SFZ LFO 片；运行束的**定长**承载）。
+///
+/// v1 三族至多 3 台 ⇒ 前 5 个名额留给可分配 `lfoN_*`。超出的 `lfoN` 在
+/// 解析层照常可读、可经 [`GenericLfo::value_at`] 求值，但引擎不产出
+/// 运行束 —— 与 `pitch_eg` 下标越界「按无该族退休」同款裁决
+/// （⛔ 不 panic、⛔ 不改解析结果），如实登记在此。
+pub const LFO_OSC_CAP: usize = 8;
+
+/// ⭐ **一台 LFO 的引擎侧定义**（SFZ LFO 片）：摊平期由
+/// [`region_lfo_defs`] 从解析区域归约，进 [`PreparedSfz::lfo_defs`] 侧表，
+/// 区域用 `(lfo_first, lfo_count)` 指进来（与 [`EgDef`] 侧表同款）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum LfoDef {
+    /// `amplfo_*`（深度单位 dB，作用于样本增益）。
+    V1Amp(V1Lfo),
+    /// `fillfo_*`（深度单位音分偏移，作用于滤波截止）。
+    V1Fil(V1Lfo),
+    /// `pitchlfo_*`（深度单位音分，作用于位置步进）。
+    V1Pitch(V1Lfo),
+    /// `lfoN_*`（pitch/cutoff/resonance/volume 四目标）。
+    Generic(GenericLfo),
+}
+
+impl LfoDef {
+    /// 在给定 CC 探针下组装本台的逐块运行束（`hz` ＝ 引擎采样率；
+    /// CC 只在这一刻求值，逐样本不再读探针 —— 与 [`ModEgRun`] 同款）。
+    fn run(&self, cc: Option<&dyn Fn(u8) -> u8>, hz: f32) -> ModLfoRun<'_> {
+        let inv_hz = if hz > 0.0 { 1.0 / hz } else { 0.0 };
+        match self {
+            LfoDef::V1Amp(lfo) => ModLfoRun {
+                def: self,
+                inv_hz,
+                freq: lfo.effective_freq(cc),
+                delay: 0.0,
+                fade: 0.0,
+                phase: 0.0,
+                pitch: 0.0,
+                fil: 0.0,
+                amp: lfo.effective_depth(cc),
+                res: 0.0,
+            },
+            LfoDef::V1Fil(lfo) => ModLfoRun {
+                def: self,
+                inv_hz,
+                freq: lfo.effective_freq(cc),
+                delay: 0.0,
+                fade: 0.0,
+                phase: 0.0,
+                pitch: 0.0,
+                fil: lfo.effective_depth(cc),
+                amp: 0.0,
+                res: 0.0,
+            },
+            LfoDef::V1Pitch(lfo) => ModLfoRun {
+                def: self,
+                inv_hz,
+                freq: lfo.effective_freq(cc),
+                delay: 0.0,
+                fade: 0.0,
+                phase: 0.0,
+                pitch: lfo.effective_depth(cc),
+                fil: 0.0,
+                amp: 0.0,
+                res: 0.0,
+            },
+            LfoDef::Generic(lfo) => {
+                let (pitch, fil, res, vol) = lfo.effective_targets(cc);
+                ModLfoRun {
+                    def: self,
+                    inv_hz,
+                    freq: lfo.effective_freq(cc),
+                    delay: lfo.effective_delay(cc),
+                    fade: lfo.effective_fade(cc),
+                    phase: lfo.effective_phase(cc),
+                    pitch,
+                    fil,
+                    amp: vol,
+                    res,
+                }
+            }
+        }
+    }
+}
+
+/// ⭐ **一台 LFO 的逐块运行束**（SFZ LFO 片）：freq/delay/fade/phase 与
+/// 四个目标深度都在**块首**按 CC 探针求值冻结，逐样本只调
+/// [`V1Lfo::sample_at`] / [`GenericLfo::sample_at`]（求值本体在
+/// `yeban-sfz`，⛔ 引擎不写第二份波形/时序语义）。
+#[derive(Debug, Clone, Copy)]
+pub struct ModLfoRun<'a> {
+    /// 定义（波形/count/steps/delay/fade 的静态那一半在里面）。
+    def: &'a LfoDef,
+    /// `1 / hz`（块首换算，逐样本只乘不除）。
+    inv_hz: f32,
+    /// 已求值频率（Hz）。
+    freq: f32,
+    /// 已求值 delay（秒；只有 generic 用，v1 在定义里）。
+    delay: f32,
+    /// 已求值 fade（秒；只有 generic 用，v1 在定义里）。
+    fade: f32,
+    /// 已求值 phase（周期数；只有 generic 用）。
+    phase: f32,
+    /// 音高目标深度（音分）。
+    pitch: f32,
+    /// 滤波目标深度（音分偏移）。
+    fil: f32,
+    /// 幅度目标深度（dB；v1 amp 族与 generic volume）。
+    amp: f32,
+    /// 谐振目标深度（dB；只有 generic resonance）。
+    res: f32,
+}
+
+impl ModLfoRun<'_> {
+    /// 共享计数 `counter`（自触发起的帧数）那一帧的无量纲输出（-1..=1）。
+    fn wave_at(&self, counter: u32) -> f32 {
+        let t = counter as f32 * self.inv_hz;
+        match self.def {
+            LfoDef::V1Amp(lfo) | LfoDef::V1Fil(lfo) | LfoDef::V1Pitch(lfo) => {
+                lfo.sample_at(t, self.freq)
+            }
+            LfoDef::Generic(lfo) => lfo.sample_at(t, self.freq, self.delay, self.fade, self.phase),
+        }
+    }
+}
+
+/// ⭐ **逐声部的 LFO 推进状态**（SFZ LFO 片）：同一声部的全部振荡器都
+/// 自触发起算 ⇒ **共享一个帧计数**，每槽只存一份；另存 fil/res 上次
+/// 调谐到的目标（节流系数重算，与 [`ModEgRun::last_target`] 同款）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LfoVoiceState {
+    /// 自触发起的帧数（本声部全部振荡器共享）。
+    pub counter: u32,
+    /// fil 上次调谐到的目标截止 Hz（`-1.0` ＝ 未调过）。
+    pub last_target: f32,
+    /// res 上次调谐到的目标谐振 dB（`f32::MAX` ＝ 未调过）。
+    pub last_res_target: f32,
+}
+
+impl LfoVoiceState {
+    /// 静止态（新声部自此起算；池侧清零/退休都复位到它）。
+    pub const INERT: LfoVoiceState = LfoVoiceState {
+        counter: 0,
+        last_target: -1.0,
+        last_res_target: f32::MAX,
+    };
+}
+
+/// ⭐ 一段渲染里全部 LFO 的运行束（[`mix_span_into`] 的入参束；SFZ LFO 片）。
+///
+/// 全部缺席（[`Self::NONE`]）⇒ 逐样本路径**一项运算都不加**、输出逐位
+/// 不变。计数与调谐跟踪点跨块由池侧 [`LfoVoiceState`] 写回延续
+/// （离线/一次性路径恒自 [`LfoVoiceState::INERT`] 起算）。
+#[derive(Debug, Clone, Copy)]
+pub struct LfoSpan<'a> {
+    /// 本段的振荡器运行束（定长 [`LFO_OSC_CAP`]；`None` ＝ 空槽）。
+    pub runs: [Option<ModLfoRun<'a>>; LFO_OSC_CAP],
+    /// 共享帧计数（自触发起；逐样本 +1）。
+    pub counter: u32,
+    /// fil 上次调谐到的目标截止 Hz（fileg 在场时以 [`ModEgRun`] 的
+    /// 同名跟踪点为准，本格只在 fileg 缺席时承载，见 `mix_span_into`）。
+    pub last_target: f32,
+    /// res 上次调谐到的目标谐振 dB。
+    pub last_res_target: f32,
+    /// fil/res 的基准截止（Hz；`None` ＝ 无静态截止 ⇒ fil/res 整体透明，
+    /// 与 `fileg` 的范围裁决同款）。
+    pub base_cutoff_hz: Option<f32>,
+    /// res 的基准谐振（dB；目标 ＝ 基准 ＋ LFO 偏移）。
+    pub base_resonance_db: f32,
+}
+
+impl LfoSpan<'_> {
+    /// 全部缺席（无 LFO 的区域走这条 ⇒ 逐位不变）。
+    pub const NONE: LfoSpan<'static> = LfoSpan {
+        runs: [None; LFO_OSC_CAP],
+        counter: 0,
+        last_target: -1.0,
+        last_res_target: f32::MAX,
+        base_cutoff_hz: None,
+        base_resonance_db: 0.0,
+    };
+
+    /// 没有任何振荡器（⇒ `mix_span_into` 整段跳过 LFO 运算）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.runs.iter().all(Option::is_none)
+    }
+
+    /// 有音高目标在场（决定位置步进要不要乘 LFO 乘子）。
+    #[must_use]
+    pub fn has_pitch(&self) -> bool {
+        self.runs.iter().flatten().any(|run| run.pitch != 0.0)
+    }
+
+    /// 取回跨块延续的状态（池侧写回用）。
+    #[must_use]
+    pub fn state(&self) -> LfoVoiceState {
+        LfoVoiceState {
+            counter: self.counter,
+            last_target: self.last_target,
+            last_res_target: self.last_res_target,
+        }
+    }
+
+    /// ⭐ **推进一帧**：返回 `(音高乘子, 增益乘子, fil 音分偏移, res dB 偏移)`。
+    ///
+    /// 多台同目标**相加**（音分/dB 域相加 ＝ 线性域相乘，与多支 CC 调制
+    /// 相加的既有口径一致）。fil/res 的 `Option` 只看**深度是否在场**
+    /// （波形恰为 0 的帧也要把目标拉回基准，⛔ 不按波形值判在场）。
+    fn advance(&mut self) -> (f32, f32, Option<f32>, Option<f32>) {
+        let counter = self.counter;
+        self.counter = self.counter.saturating_add(1);
+        let mut pitch_cents = 0.0f32;
+        let mut amp_db = 0.0f32;
+        let mut fil_cents: Option<f32> = None;
+        let mut res_db: Option<f32> = None;
+        for run in self.runs.iter().flatten() {
+            let wave = run.wave_at(counter);
+            pitch_cents += wave * run.pitch;
+            amp_db += wave * run.amp;
+            if run.fil != 0.0 {
+                *fil_cents.get_or_insert(0.0) += wave * run.fil;
+            }
+            if run.res != 0.0 {
+                *res_db.get_or_insert(0.0) += wave * run.res;
+            }
+        }
+        (
+            (pitch_cents / 1200.0).exp2(),
+            10.0f32.powf(amp_db / 20.0),
+            fil_cents,
+            res_db,
+        )
+    }
+}
+
+/// ⭐ **一条解析区域的 LFO 定义归约**（离线/摊平两条路共用；SFZ LFO 片）。
+///
+/// 顺序固定：v1 amp → v1 fil → v1 pitch → `lfoN` 按下标升序（解析层
+/// 已排序）；静态透明的不收。`V1Fil` 在区域无静态 `cutoff` 时不收 ——
+/// 与 `fileg` 的范围裁决同款（无基准可调 ⇒ 整体透明）。
+fn region_lfo_defs(region: &Region<'_>) -> Vec<LfoDef> {
+    let mut defs = Vec::new();
+    if !region.amplfo.is_transparent() {
+        defs.push(LfoDef::V1Amp(region.amplfo.clone()));
+    }
+    if region.cutoff.is_some() && !region.fillfo.is_transparent() {
+        defs.push(LfoDef::V1Fil(region.fillfo.clone()));
+    }
+    if !region.pitchlfo.is_transparent() {
+        defs.push(LfoDef::V1Pitch(region.pitchlfo.clone()));
+    }
+    defs.extend(
+        region
+            .lfos
+            .iter()
+            .filter(|lfo| !lfo.is_transparent())
+            .cloned()
+            .map(LfoDef::Generic),
+    );
+    defs
+}
+
+/// ⭐ 由定义段组装一段渲染的 LFO 运行束（SFZ LFO 片）：超过
+/// [`LFO_OSC_CAP`] 的定义不产出运行束（见该常量的裁决登记）。
+fn lfo_span_from_defs<'a>(
+    defs: &'a [LfoDef],
+    cc: Option<&dyn Fn(u8) -> u8>,
+    hz: f32,
+    base_cutoff_hz: Option<f32>,
+    base_resonance_db: f32,
+    state: LfoVoiceState,
+) -> LfoSpan<'a> {
+    let mut span = LfoSpan {
+        runs: [None; LFO_OSC_CAP],
+        counter: state.counter,
+        last_target: state.last_target,
+        last_res_target: state.last_res_target,
+        base_cutoff_hz,
+        base_resonance_db,
+    };
+    for (slot, def) in span.runs.iter_mut().zip(defs.iter()) {
+        *slot = Some(def.run(cc, hz));
+    }
+    span
+}
+
 /// ⭐ **每区域的 CC 轴交叉淡化段数上界**（任务单 `#108`；摊平表的**定长**容器）。
 ///
 /// # 这个数从哪来（⛔ 不是拍的）
@@ -3852,6 +4152,14 @@ pub struct PreparedRegion {
     /// 与 [`Self::fileg_eg`] 共用同一张 [`PreparedSfz::eg_defs`] 侧表
     /// （两族形状同为 [`EgDef`]，⛔ 不开第二张表）。
     pitcheg_eg: u16,
+    /// ⭐ **LFO 定义段的起点**（[`PreparedSfz::lfo_defs`] 下标；SFZ LFO 片）。
+    ///
+    /// 与 [`Self::fileg_eg`] 同款侧表承载：[`LfoDef`] 含 `Vec` 不能内联。
+    /// ⚠ 它是**区域参数**、不是声部状态：逐声部状态在池侧 `lfo_states`
+    /// （见 [`LfoVoiceState`]）。
+    lfo_first: u16,
+    /// ⭐ **LFO 定义段的条数**（`0` ＝ 该区域没有 LFO；SFZ LFO 片）。
+    lfo_count: u16,
     /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` 一族；任务单 `#106`）。
     ///
     /// 下标 ＝ [`AmpegParam`] 的声明序；`None` ＝ 该参数的 `ampeg_vel2…` opcode
@@ -4312,6 +4620,37 @@ impl PreparedRegion {
     #[must_use]
     pub fn pitcheg_def(&self, plan: &PreparedSfz) -> Option<EgDef> {
         plan.eg_defs.get(usize::from(self.pitcheg_eg)).copied()
+    }
+
+    /// ⭐ 本区域的 **LFO 定义段**（v1 三族 ＋ `lfoN_*`；SFZ LFO 片）。
+    #[must_use]
+    pub fn lfo_defs<'p>(&self, plan: &'p PreparedSfz) -> &'p [LfoDef] {
+        let first = usize::from(self.lfo_first);
+        plan.lfo_defs
+            .get(first..first + usize::from(self.lfo_count))
+            .unwrap_or(&[])
+    }
+
+    /// ⭐ 本区域在给定音高/力度下的 **LFO 运行束**（SFZ LFO 片）：
+    /// 基准截止/谐振与 [`Self::voice_filter`] 的配置用**同一份**折算
+    /// （[`Self::base_cutoff_hz`] ＋ [`Self::resonance`]，⛔ 不许第二份）。
+    #[must_use]
+    pub fn lfo_span<'p>(
+        &self,
+        plan: &'p PreparedSfz,
+        note: u8,
+        velocity: u8,
+        cc: Option<&dyn Fn(u8) -> u8>,
+        state: LfoVoiceState,
+    ) -> LfoSpan<'p> {
+        lfo_span_from_defs(
+            self.lfo_defs(plan),
+            cc,
+            plan.engine_hz(),
+            self.base_cutoff_hz(note, velocity),
+            self.resonance,
+            state,
+        )
     }
 
     /// ⭐ 本区域在给定力度下的**滤波包络运行束**（[`eg_run_from`] 的唯一归约；
@@ -4969,6 +5308,11 @@ pub struct PreparedSfz {
     /// 同款**不进** `byte_usage` 的三项读数（区域表读数 ＝ `size_of × N`，
     /// 见 S25 的口径）。
     eg_defs: Vec<EgDef>,
+    /// ⭐ **LFO 定义表**（v1 三族 ＋ `lfoN_*`；SFZ LFO 片）。
+    ///
+    /// 摊平期按需 push（没有 LFO opcode 的语料 ⇒ 表为空），与 `eg_defs`
+    /// 同款**不进** `byte_usage` 的三项读数（区域表读数 ＝ `size_of × N`）。
+    lfo_defs: Vec<LfoDef>,
     /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
     broadcast: bool,
     /// ⭐ **不产生采样输出**的区域数（**计数**，⛔ 不静默）。
@@ -5313,7 +5657,7 @@ impl PreparedSfz {
         // 广播：只有**一份**样本（路径身份为空串），所有区域都指它。
         let samples = vec![PreparedSample::from_in_memory(String::new(), source)];
         let sample_hz = source.sample_hz;
-        let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs) =
+        let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs, lfo_defs) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
         let has_rand = regions.iter().any(|region| region.has_rand_gate());
@@ -5322,6 +5666,7 @@ impl PreparedSfz {
             samples,
             pitch_egs,
             eg_defs,
+            lfo_defs,
             broadcast: true,
             // ⭐ `#217`：广播重载也**不**把内建静音 region 指向 `samples[0]` ——
             // `flatten_regions` 已把它们标成 `NO_SAMPLE`，这里只把计数带出来。
@@ -5377,7 +5722,7 @@ impl PreparedSfz {
         // ⚠ 这里只数**缺样本**的区域；内建静音由 `flatten_regions` 另行计数
         // （两者在 `Self::silent_region_count` 里相加，`missing` 只收前者）。
         let mut missing_regions = 0usize;
-        let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs) =
+        let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs, lfo_defs) =
             flatten_regions(instrument, engine_hz, |region| {
                 let path = region.sample_path();
                 // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
@@ -5409,6 +5754,7 @@ impl PreparedSfz {
             samples,
             pitch_egs,
             eg_defs,
+            lfo_defs,
             broadcast: false,
             // ⭐ 两类静音分开数、报告里合并：`silent = 缺样本 + 内建静音`；
             // `missing_samples` **只**收缺样本的路径（`#217`：`*silence` 绝不在其中）。
@@ -5765,6 +6111,9 @@ impl PreparedSfz {
                     .map(|run| ModEgRun::new(run, u64::MAX, 0)),
                 base_cutoff_hz: region.base_cutoff_hz(note, velocity).unwrap_or(0.0),
             };
+            // ⭐ LFO（SFZ LFO 片）：与离线/实时两条路同一份组装
+            // （[`PreparedRegion::lfo_span`]）；一次性调用自 INERT 起算。
+            let mut lfos = region.lfo_span(self, note, velocity, cc, LfoVoiceState::INERT);
             let region_written = mix_span_into(
                 pcm,
                 &mut position,
@@ -5777,6 +6126,7 @@ impl PreparedSfz {
                 &mut env,
                 &mut filter,
                 &mut egs,
+                &mut lfos,
                 out,
             );
             written = written.max(region_written);
@@ -5806,6 +6156,7 @@ type FlattenedRegions = (
     usize,
     Vec<PitchEg>,
     Vec<EgDef>,
+    Vec<LfoDef>,
 );
 
 fn flatten_regions(
@@ -5826,6 +6177,9 @@ fn flatten_regions(
         // 下标指进来（见 `PreparedRegion::fileg_eg`）。没有这两族 opcode 的
         // 语料 ⇒ 表为空 ⇒ 一个字节都不占。
         let mut eg_defs: Vec<EgDef> = Vec::new();
+        // ⭐ LFO 定义表（SFZ LFO 片）：与 `eg_defs` 同款——只有静态不透明的
+        // 定义才 push，区域用 `(lfo_first, lfo_count)` 指进来。
+        let mut lfo_defs: Vec<LfoDef> = Vec::new();
         // ⭐ 任务单 `#217`：内建静音伪样本（`sample=*silence`）的区域数。
         // 它在**调用方的解析闭包之前**被截住 ⇒ 既⛔ 不会被当成文件路径去查提供表
         // （⇒ 不进 `missing`），也不受广播重载影响（⇒ 广播它也不会播 `samples[0]`）。
@@ -5967,6 +6321,18 @@ fn flatten_regions(
                 } else {
                     u16::MAX
                 };
+            // ⭐ LFO 定义段（SFZ LFO 片）：归约在 [`region_lfo_defs`]（离线
+            // 路共用同一份）；侧表下标越界（≥ 65535 条，语料里不存在）按
+            // 「无 LFO」退休，⛔ 不 panic（与 eg 侧表同款）。
+            let (lfo_first, lfo_count) = if lfo_defs.len() < usize::from(u16::MAX) {
+                let defs = region_lfo_defs(region);
+                let first = u16::try_from(lfo_defs.len()).unwrap_or(u16::MAX);
+                let count = u16::try_from(defs.len()).unwrap_or(u16::MAX);
+                lfo_defs.extend(defs);
+                (first, count)
+            } else {
+                (u16::MAX, 0)
+            };
             let mut velocity_gain = [0.0f32; 128];
             for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
                 *slot = region.velocity_gain(velocity as u8);
@@ -6035,6 +6401,9 @@ fn flatten_regions(
                 // ⭐ 调制包络定义下标（SFZ 包络族片）：表在 `PreparedSfz::eg_defs`。
                 fileg_eg: fileg_eg_index,
                 pitcheg_eg: pitcheg_eg_index,
+                // ⭐ LFO 定义段（SFZ LFO 片）：表在 `PreparedSfz::lfo_defs`。
+                lfo_first,
+                lfo_count,
                 // ⭐ 力度调制（任务单 `#106`）：五个**每参数**的力度调制量原样搬进
                 // 摊平表（`[Option<f32>; 5]`：`None` ＝ 该 opcode 没出现 ⇒ 求值期
                 // 一项算术都不做）。同样是**区域参数**、⛔ 不是声部状态
@@ -6109,6 +6478,7 @@ fn flatten_regions(
             builtin_silent_regions,
             pitch_egs,
             eg_defs,
+            lfo_defs,
         )
     })
 }
@@ -6586,7 +6956,7 @@ fn configured_voice_filter(
 // （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 与 `env` 是仅有的**静态**入参
 // （触发期/构造期/块首定好），⛔ 不在逐样本路径上构造。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn mix_span_into(
+pub(crate) fn mix_span_into<'a>(
     pcm: &[f32],
     position: &mut f32,
     rate: f32,
@@ -6606,6 +6976,9 @@ pub(crate) fn mix_span_into(
     // ⭐ 调制包络束（`fileg_*` / `pitcheg_*`；SFZ 包络族片）：两族都缺席
     // （[`EgSpan::NONE`]）⇒ 逐样本**一项运算都不加**、输出逐位不变。
     egs: &mut EgSpan,
+    // ⭐ LFO 束（v1 三族 ＋ `lfoN_*`；SFZ LFO 片）：全部缺席
+    // （[`LfoSpan::NONE`]）⇒ 逐样本**一项运算都不加**、输出逐位不变。
+    lfos: &mut LfoSpan<'a>,
     out: &mut [f32],
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
@@ -6639,6 +7012,9 @@ pub(crate) fn mix_span_into(
         (rate_end - rate) / out.len() as f32
     };
     let mut rate_now = rate;
+    // ⭐ LFO 在场判别在**循环外**算一次（逐样本只读布尔，⛔ 不逐样本扫表）。
+    let lfo_active = !lfos.is_empty();
+    let lfo_has_pitch = lfo_active && lfos.has_pitch();
     let mut written = 0usize;
     for slot in out.iter_mut() {
         // ⭐ 逐样本的引擎**绝对**帧（包络的释放进度 `k = abs − epoch` 靠它算；
@@ -6719,17 +7095,70 @@ pub(crate) fn mix_span_into(
         //   位置步进（与 `rate` 的 ramp 相乘，⛔ 不改 `rate_now` 本身 ——
         //   ramp 的步长是块级事实，包络是逐样本事实）。
         let mut pitch_mult = 1.0f32;
+        // ⭐ LFO（SFZ LFO 片）：推进一帧得四目标的合成量（音高/增益是
+        // 乘子，fil/res 是待与 fileg 相加的偏移）。全部缺席 ⇒ 本块
+        // 一项运算都不加（`lfo_gain` 恒 1.0、偏移恒 `None`）。
+        let mut lfo_gain = 1.0f32;
+        let mut lfo_fil_cents: Option<f32> = None;
+        let mut lfo_res_db: Option<f32> = None;
+        if lfo_active {
+            let (p, g, fil_c, res_db) = lfos.advance();
+            pitch_mult = p;
+            lfo_gain = g;
+            lfo_fil_cents = fil_c;
+            lfo_res_db = res_db;
+        }
+        // ⭐ fil 目标合成：fileg 与 LFO 的 fil 偏移**同基准、同单位（音分）
+        // 相加**后只调谐一次（两支各自调谐会互相覆盖，⛔ 不许）。
+        // fileg 单独在场时本段与接线前**逐字等价**（同一基准、同一公式、
+        // 同一跟踪点、同一 `retune_cutoff`）。
+        let mut fil_cents: Option<f32> = None;
         if let Some(fil) = egs.fil.as_mut() {
             let level = fil.advance(fil.abs_base() + written as u64);
-            let target = egs.base_cutoff_hz * (level * fil.depth() / 1200.0).exp2();
-            if target != fil.last_target() {
-                filter.retune_cutoff(target);
-                fil.set_last_target(target);
+            fil_cents = Some(level * fil.depth());
+        }
+        if let Some(c) = lfo_fil_cents {
+            fil_cents = Some(fil_cents.unwrap_or(0.0) + c);
+        }
+        // ⭐ 只有 resonance 目标在场（无 fil 偏移）时也要进调谐块：
+        // 截止偏移按 0 计、目标截止 ＝ 基准，靠 res 支触发 `retune`。
+        if fil_cents.is_none() && lfo_res_db.is_some() {
+            fil_cents = Some(0.0);
+        }
+        if let Some(cents) = fil_cents {
+            // 基准：fileg 在场用 `EgSpan` 的（与滤波器配置同一个），
+            // 否则用 `LfoSpan` 的；两者同源（[`PreparedRegion::base_cutoff_hz`]）。
+            let base = if egs.fil.is_some() {
+                egs.base_cutoff_hz
+            } else {
+                lfos.base_cutoff_hz.unwrap_or(0.0)
+            };
+            if base > 0.0 {
+                let target = base * (cents / 1200.0).exp2();
+                let last = if let Some(fil) = &egs.fil {
+                    fil.last_target()
+                } else {
+                    lfos.last_target
+                };
+                let res_target = lfo_res_db.map(|db| lfos.base_resonance_db + db);
+                if target != last || res_target.is_some_and(|r| r != lfos.last_res_target) {
+                    match res_target {
+                        Some(r) => {
+                            filter.retune(target, r);
+                            lfos.last_res_target = r;
+                        }
+                        None => filter.retune_cutoff(target),
+                    }
+                    if let Some(fil) = egs.fil.as_mut() {
+                        fil.set_last_target(target);
+                    }
+                    lfos.last_target = target;
+                }
             }
         }
         if let Some(pitch) = egs.pitch.as_mut() {
             let level = pitch.advance(pitch.abs_base() + written as u64);
-            pitch_mult = (level * pitch.depth() / 1200.0).exp2();
+            pitch_mult *= (level * pitch.depth() / 1200.0).exp2();
         }
         let frac = *position - index as f32;
         // ⚠ `next`（⭐ 钳位腿上是最后一格）⛔ 不是 `index + 1`：越界读一次都不允许。
@@ -6738,9 +7167,11 @@ pub(crate) fn mix_span_into(
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
         // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
         // 原样返回 `sample` ⇒ 整个表达式与接线前逐位相同。
-        *slot += filter.process(sample) * gain * fade.gain * env_gain;
-        // ⭐ 音高包络在场时步进乘包络乘子（缺席时走原表达式，逐位不变）。
-        if egs.pitch.is_some() {
+        // ⭐ LFO 增益同理：缺席时 `lfo_gain == 1.0` ⇒ 再乘一次逐位不变。
+        *slot += filter.process(sample) * gain * fade.gain * env_gain * lfo_gain;
+        // ⭐ 音高包络或音高 LFO 在场时步进乘合成乘子（都缺席时走原表达式，
+        // 逐位不变；`pitch_mult` 的合成见上面的推进段）。
+        if egs.pitch.is_some() || lfo_has_pitch {
             *position += rate_now * pitch_mult;
         } else {
             *position += rate_now;
@@ -7206,6 +7637,10 @@ pub struct SfzVoicePool {
     /// * **退休**（[`Self::silence_slot`]）：复位 [`EgVoiceState::INERT`]
     ///   （池的 `PartialEq` 是确定性判据的一部分，与 `filters` 同一条）。
     eg_states: [(EgVoiceState, EgVoiceState); SFZ_VOICES_PER_TRACK],
+    /// ⭐ **LFO 推进状态**（SFZ LFO 片）：与 `eg_states` 同款池侧持有、
+    /// 同款四处清零/退休点（触发/窃取/提升/退休）；逐声部的全部振荡器
+    /// 共享一份（见 [`LfoVoiceState`]）。
+    lfo_states: [LfoVoiceState; SFZ_VOICES_PER_TRACK],
 }
 
 /// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
@@ -7339,6 +7774,7 @@ impl SfzVoicePool {
             pending_note_start: [0; SFZ_VOICES_PER_TRACK],
             filters: [VoiceFilter::BYPASSED; SFZ_VOICES_PER_TRACK],
             eg_states: [(EgVoiceState::INERT, EgVoiceState::INERT); SFZ_VOICES_PER_TRACK],
+            lfo_states: [LfoVoiceState::INERT; SFZ_VOICES_PER_TRACK],
         }
     }
 
@@ -7657,6 +8093,8 @@ impl SfzVoicePool {
                     self.filters[index] = region.voice_filter(plan.engine_hz(), note, velocity);
                     // ⭐ 调制包络状态与声部**同刻**清零（新声部自 IDLE 起）。
                     self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
+                    // ⭐ LFO 状态同刻清零（新声部自触发起算）。
+                    self.lfo_states[index] = LfoVoiceState::INERT;
                     // ⭐ **portamento**（本单）：这条区域带 `egN_pitch_oncc140|141`
                     // ⇒ 记下"哪个槽在滑、从哪个音滑过来、滑了多久"。
                     // ⚠ 池级单槽语义（见 [`Self::porta_slot`] 的文档）。
@@ -7958,6 +8396,8 @@ impl SfzVoicePool {
                 });
             // ⭐ 调制包络状态随声部一起换（硬窃取：新声部自 IDLE 起）。
             self.eg_states[victim] = (EgVoiceState::INERT, EgVoiceState::INERT);
+            // ⭐ LFO 状态随声部一起换（同上）。
+            self.lfo_states[victim] = LfoVoiceState::INERT;
             return;
         }
         if self.pending_active[victim] {
@@ -8150,6 +8590,20 @@ impl SfzVoicePool {
                 }),
                 base_cutoff_hz: readings.base_cutoff_hz,
             };
+            // ⭐ victim 的 LFO：用它自己的池侧状态组装（推进但⛔ 不回写
+            // —— 与调制包络状态在淡出段不回写的既有纪律同一条）。
+            let mut lfos = plan.regions().get(usize::from(voice.region_index)).map_or(
+                LfoSpan::NONE,
+                |region| {
+                    region.lfo_span(
+                        plan,
+                        voice.note(),
+                        voice.velocity(),
+                        cc,
+                        self.lfo_states[index],
+                    )
+                },
+            );
             let written = mix_span_into(
                 sample.pcm(),
                 &mut local,
@@ -8162,6 +8616,7 @@ impl SfzVoicePool {
                 &mut env,
                 &mut filter,
                 &mut egs,
+                &mut lfos,
                 &mut out[..limit],
             );
             // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出/滤波照旧回写。
@@ -8195,6 +8650,8 @@ impl SfzVoicePool {
             // 那一帧起算（与 ampeg 在提升后以 IDLE/0 组装 `EnvRun` 同款；
             // victim 的残余状态随淡出段一起结束，⛔ 不继承）。
             self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
+            // ⭐ LFO 状态在提升这一刻清零（同上）。
+            self.lfo_states[index] = LfoVoiceState::INERT;
         }
         // --- 3) 正常段：本槽现在的声部写本块剩余帧 ---
         let voice = self.voices[index];
@@ -8239,6 +8696,20 @@ impl SfzVoicePool {
         // （`position + offset`）⇒ 三族包络逐帧对齐。
         let slot_states = self.eg_states[index];
         let abs_base = position + offset as u64;
+        // ⭐ 本槽声部的 LFO：池侧状态组装成本块运行束（写完回写，
+        // 与调制包络同一条纪律）。
+        let mut lfos =
+            plan.regions()
+                .get(usize::from(voice.region_index))
+                .map_or(LfoSpan::NONE, |region| {
+                    region.lfo_span(
+                        plan,
+                        voice.note(),
+                        voice.velocity(),
+                        cc,
+                        self.lfo_states[index],
+                    )
+                });
         let mut egs = EgSpan {
             fil: readings
                 .fil_run
@@ -8303,6 +8774,7 @@ impl SfzVoicePool {
             &mut env,
             &mut filter,
             &mut egs,
+            &mut lfos,
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;
@@ -8324,6 +8796,8 @@ impl SfzVoicePool {
         if let Some(pitch) = &egs.pitch {
             pitch.write_back(&mut self.eg_states[index].1);
         }
+        // ⭐ LFO 状态**跨块延续**（共享计数/调谐跟踪点回池侧）。
+        self.lfo_states[index] = lfos.state();
         // ⭐ 用样本自然结束：源位置走完 ⇒ 退休。⚠ 有循环窗口时这一条**不可达**
         // （回绕把位置压在窗口内）⇒ 循环声部只由 `end_sample`（无包络）
         // 或**包络的释放段走完**（有包络）终止。
@@ -8496,6 +8970,8 @@ impl SfzVoicePool {
         self.filters[index] = VoiceFilter::BYPASSED;
         // ⭐ 调制包络状态一并退休（理由同上）。
         self.eg_states[index] = (EgVoiceState::INERT, EgVoiceState::INERT);
+        // ⭐ LFO 状态一并退休（理由同上）。
+        self.lfo_states[index] = LfoVoiceState::INERT;
     }
 
     /// 释放**全部**声部（`seek` / 换音源 ⇒ ⛔ 不留上一件音源的尾巴）。

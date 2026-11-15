@@ -34,6 +34,7 @@ use crate::effect::{Effect, EffectBus};
 use crate::eg::{EgDef, EgParam, EgParams};
 use crate::error::SfzError;
 use crate::label::{Labels, cc_label_index};
+use crate::lfo::{GenericLfo, LfoCcMod, LfoWave, V1Lfo};
 use crate::midi::MidiSection;
 use crate::modulation::{
     AMPEG_MOD_CAP, AmpegParam, CcMod, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX, ModTarget,
@@ -874,6 +875,26 @@ pub struct Region<'a> {
     /// ⚠ 与 [`Region::pitch_eg`]（portamento 专用的 egN 子集）是**两套机制**，
     /// ⛔ 不共用形状。
     pub pitcheg: EgDef,
+    /// ⭐ **幅度 LFO**（`amplfo_*` 全族；SFZ LFO 片，审计 C21）。
+    ///
+    /// 形状与口径见 [`crate::lfo`]（[`V1Lfo`]）：delay/fade/freq/depth
+    /// ＋ depth/freq 的 cc 与 aft 伴随；depth 单位 dB。空定义
+    /// （[`V1Lfo::EMPTY`]）＝ 该族一个 opcode 都没出现 ⇒ 逐位不变。
+    pub amplfo: V1Lfo,
+    /// ⭐ **滤波 LFO**（`fillfo_*` 全族；SFZ LFO 片，审计 C21）。
+    ///
+    /// 与 [`Region::amplfo`] 同构；depth 单位音分。⚠ 生效前提同
+    /// [`Region::fileg`]：region 有 [`Region::cutoff`] 才有滤波可调。
+    pub fillfo: V1Lfo,
+    /// ⭐ **音高 LFO**（`pitchlfo_*` 全族；SFZ LFO 片，审计 C21）。
+    ///
+    /// 与 [`Region::amplfo`] 同构；depth 单位音分（颤音）。
+    pub pitchlfo: V1Lfo,
+    /// ⭐ **可分配 LFO 表**（`lfoN_*` 目标系；SFZ LFO 片，审计 C22）。
+    ///
+    /// 按 LFO 编号升序；空 ＝ 没有任何 `lfoN_*` opcode。目标只收
+    /// pitch/cutoff/resonance/volume 四个（裁决见 [`crate::lfo`]）。
+    pub lfos: Vec<GenericLfo>,
     /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
     pub offset: u32,
     /// 采样播放终点（`end`，规范默认 `unspecified`）。
@@ -2434,6 +2455,14 @@ pub(crate) fn build_region<'a>(
     // （[`read_eg_vel2`]）。`*_onccN` 一族⛔ 不在本片（见 [`crate::eg`] 的范围裁决）。
     let fileg = read_eg(&scopes, "fileg", line)?;
     let pitcheg = read_eg(&scopes, "pitcheg", line)?;
+    // ---- ⭐ LFO 三族 + 可分配 LFO（SFZ LFO 片，审计 C21/C22）----
+    // v1 三族同构（[`read_v1_lfo`] 一份实现）：静态四参走带域浮点读
+    // （缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err，⛔ 不钳位）；cc/aft 伴随单独
+    // 归约。depth 域随族：amplfo = dB ±10、fillfo/pitchlfo = 音分 ±1200。
+    let amplfo = read_v1_lfo(&scopes, "amplfo", -10.0, 10.0, line)?;
+    let fillfo = read_v1_lfo(&scopes, "fillfo", -1200.0, 1200.0, line)?;
+    let pitchlfo = read_v1_lfo(&scopes, "pitchlfo", -1200.0, 1200.0, line)?;
+    let lfos = read_generic_lfos(&scopes, line)?;
     // 弯音范围：两个端点各自独立，规范缺省 200 / -200，Range 都是 ±9600 音分
     // （<https://sfzformat.com/opcodes/bend_up/>、<https://sfzformat.com/opcodes/bend_down/>）。
     let bend_up = read_i32(
@@ -2570,6 +2599,10 @@ pub(crate) fn build_region<'a>(
         ampeg_vel2,
         fileg,
         pitcheg,
+        amplfo,
+        fillfo,
+        pitchlfo,
+        lfos,
         pitch_eg,
         offset,
         end,
@@ -3524,6 +3557,360 @@ fn read_eg_vel2_delta(raw: &str, name: &str, param: EgParam, line: usize) -> Res
     Ok(value)
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ LFO 三族 + 可分配 LFO（SFZ LFO 片，审计 C21/C22；形状见 crate::lfo）
+// ---------------------------------------------------------------------------
+
+/// v1 LFO 的全名（`&'static str`；与 [`eg_opcode_name`] 同款逐字列全）。
+fn v1_lfo_name(prefix: &str, suffix: &str) -> &'static str {
+    match (prefix, suffix) {
+        ("amplfo", "delay") => "amplfo_delay",
+        ("amplfo", "fade") => "amplfo_fade",
+        ("amplfo", "freq") => "amplfo_freq",
+        ("amplfo", "depth") => "amplfo_depth",
+        ("amplfo", "depthchanaft") => "amplfo_depthchanaft",
+        ("amplfo", "depthpolyaft") => "amplfo_depthpolyaft",
+        ("amplfo", "freqchanaft") => "amplfo_freqchanaft",
+        ("amplfo", "freqpolyaft") => "amplfo_freqpolyaft",
+        ("fillfo", "delay") => "fillfo_delay",
+        ("fillfo", "fade") => "fillfo_fade",
+        ("fillfo", "freq") => "fillfo_freq",
+        ("fillfo", "depth") => "fillfo_depth",
+        ("fillfo", "depthchanaft") => "fillfo_depthchanaft",
+        ("fillfo", "depthpolyaft") => "fillfo_depthpolyaft",
+        ("fillfo", "freqchanaft") => "fillfo_freqchanaft",
+        ("fillfo", "freqpolyaft") => "fillfo_freqpolyaft",
+        ("pitchlfo", "delay") => "pitchlfo_delay",
+        ("pitchlfo", "fade") => "pitchlfo_fade",
+        ("pitchlfo", "freq") => "pitchlfo_freq",
+        ("pitchlfo", "depth") => "pitchlfo_depth",
+        ("pitchlfo", "depthchanaft") => "pitchlfo_depthchanaft",
+        ("pitchlfo", "depthpolyaft") => "pitchlfo_depthpolyaft",
+        ("pitchlfo", "freqchanaft") => "pitchlfo_freqchanaft",
+        ("pitchlfo", "freqpolyaft") => "pitchlfo_freqpolyaft",
+        _ => "lfo",
+    }
+}
+
+/// 读一个带域的 LFO 浮点 opcode（缺失 ⇒ 缺省；认不出/非有限/越界 ⇒ 明确
+/// `Err`，⛔ 不钳位 —— 与 `amp_veltrack` 同一条口径）。
+fn read_lfo_float(
+    scopes: &Scopes<'_, '_>,
+    name: &'static str,
+    min: f32,
+    max: f32,
+    fallback: f32,
+) -> Result<f32, SfzError> {
+    match scopes.get(name) {
+        Some(value) => {
+            let parsed = value.as_f32()?;
+            if !(min..=max).contains(&parsed) {
+                return Err(SfzError::FloatOutOfRange {
+                    line: value.line,
+                    opcode: name.to_string(),
+                    value: parsed,
+                    min,
+                    max,
+                });
+            }
+            Ok(parsed)
+        }
+        None => Ok(fallback),
+    }
+}
+
+/// 读一个原始字符串形式的 LFO 浮点量（迭代 opcode 表时用；政策同
+/// [`read_lfo_float`]，`max = f32::MAX` 一档表示只验有限与下界）。
+fn parse_lfo_float(
+    raw: &str,
+    name: &str,
+    min: f32,
+    max: f32,
+    line: usize,
+) -> Result<f32, SfzError> {
+    let parsed = raw
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| SfzError::InvalidFloat {
+            line,
+            opcode: name.to_string(),
+            value: raw.to_string(),
+        })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line,
+            opcode: name.to_string(),
+            value: raw.to_string(),
+        });
+    }
+    if parsed < min || (max != f32::MAX && parsed > max) {
+        return Err(SfzError::FloatOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value: parsed,
+            min,
+            max,
+        });
+    }
+    Ok(parsed)
+}
+
+/// 归约一族 v1 LFO 的 `*_depthccN` / `*_freqccN`（含 `_onccN` 别名形）。
+///
+/// 作用域链 `global → master → group → region`，同一 cc 后者胜；
+/// 归约后按 cc 升序（确定性求和）。cc 号走既有调制口径
+/// [`parse_modulation_cc`]（0..=255 的写法域，存进 `u8` 时 >127 的
+/// 探针永远读不到 —— 与 `CcMod` 的既有处理一致）。
+fn read_v1_lfo_cc(
+    scopes: &Scopes<'_, '_>,
+    prefix: &str,
+    kind: &str,
+    min: f32,
+    max: f32,
+    line: usize,
+) -> Result<Vec<LfoCcMod>, SfzError> {
+    let plain = format!("{prefix}_{kind}cc");
+    let oncc = format!("{prefix}_{kind}_oncc");
+    let mut table: BTreeMap<u8, f32> = BTreeMap::new();
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let name = name.as_ref();
+            let Some(digits) = name
+                .strip_prefix(plain.as_str())
+                .or_else(|| name.strip_prefix(oncc.as_str()))
+            else {
+                continue;
+            };
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let cc = parse_modulation_cc(digits, name, line)?;
+            table.insert(cc, parse_lfo_float(value.as_ref(), name, min, max, line)?);
+        }
+    }
+    Ok(table
+        .into_iter()
+        .map(|(cc, delta)| LfoCcMod { cc, delta })
+        .collect())
+}
+
+/// ⭐ 归约一族 v1 LFO（`amplfo` / `fillfo` / `pitchlfo` 共用一份实现）。
+///
+/// `depth` 域随族传入（amp = ±10 dB、fil/pitch = ±1200 音分）；其余域
+/// 三族相同（delay/fade 0..100 秒、freq 0..20 Hz、freq 伴随 ±200 Hz、
+/// depth 伴随与 depth 同域），逐项出处见 [`crate::lfo`]。
+fn read_v1_lfo(
+    scopes: &Scopes<'_, '_>,
+    prefix: &'static str,
+    depth_min: f32,
+    depth_max: f32,
+    line: usize,
+) -> Result<V1Lfo, SfzError> {
+    let ranged = |suffix: &'static str, min: f32, max: f32| {
+        read_lfo_float(scopes, v1_lfo_name(prefix, suffix), min, max, 0.0)
+    };
+    Ok(V1Lfo {
+        delay: ranged("delay", 0.0, 100.0)?,
+        fade: ranged("fade", 0.0, 100.0)?,
+        freq: ranged("freq", 0.0, 20.0)?,
+        depth: ranged("depth", depth_min, depth_max)?,
+        depth_cc: read_v1_lfo_cc(scopes, prefix, "depth", depth_min, depth_max, line)?,
+        freq_cc: read_v1_lfo_cc(scopes, prefix, "freq", -200.0, 200.0, line)?,
+        depth_chanaft: ranged("depthchanaft", depth_min, depth_max)?,
+        depth_polyaft: ranged("depthpolyaft", depth_min, depth_max)?,
+        freq_chanaft: ranged("freqchanaft", -200.0, 200.0)?,
+        freq_polyaft: ranged("freqpolyaft", -200.0, 200.0)?,
+    })
+}
+
+/// 识别 `lfoN_<rest>` 名字：返回 `(N, rest)`；不是这个形状 ⇒ `None`。
+fn parse_generic_lfo_name(name: &str) -> Option<(u32, &str)> {
+    let after = name.strip_prefix("lfo")?;
+    let digit_len = after.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return None;
+    }
+    let (digits, rest) = after.split_at(digit_len);
+    let rest = rest.strip_prefix('_')?;
+    let index: u32 = digits.parse().ok()?;
+    Some((index, rest))
+}
+
+/// ⭐ 归约全部可分配 LFO（`lfoN_*`；SFZ LFO 片，审计 C22）。
+///
+/// * 作用域链 `global → master → group → region`，同一 `(N, 参数)` 后者胜；
+/// * 只收 [`crate::lfo`] 登记的形状：`wave/freq/delay/fade/phase/count/
+///   steps/stepX` 本体参 ＋ `pitch/cutoff/resonance/volume` 四目标及其
+///   `_onccX`，以及本体参的 `_onccX`；
+/// * `*_smoothccX` / `*_stepccX`、`freq_lfoX` 等 LFO 间调制、其余目标
+///   （pan/width/eq*/decim/bitred/amplitude…）**不收**（按未知忽略，
+///   裁决见 [`crate::lfo`]）；
+/// * 规格给了域的（`phase` 0..1、`stepX` ±100）越界响亮 `Err`；规格
+///   只写 N/A 的（freq/targets/oncc 量）只验有限，⛔ 不发明域。
+fn read_generic_lfos(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<GenericLfo>, SfzError> {
+    // 阶梯电平先按 (N, X) 收进侧表，最后按 X 升序拼成 Vec（见 GenericLfo::steps）。
+    let mut steps: BTreeMap<u32, BTreeMap<u32, f32>> = BTreeMap::new();
+    let mut table: BTreeMap<u32, GenericLfo> = BTreeMap::new();
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let name = name.as_ref();
+            let Some((index, rest)) = parse_generic_lfo_name(name) else {
+                continue;
+            };
+            if rest.contains("_smoothcc") || rest.contains("_stepcc") {
+                continue;
+            }
+            let raw = value.as_ref();
+            // ---- 本体参的 _onccX 与目标的 _onccX（先于本体参匹配）----
+            if let Some((base, digits)) = rest.split_once("_oncc") {
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    continue;
+                }
+                if !matches!(
+                    base,
+                    "pitch"
+                        | "cutoff"
+                        | "resonance"
+                        | "volume"
+                        | "freq"
+                        | "delay"
+                        | "fade"
+                        | "phase"
+                ) {
+                    continue;
+                }
+                let cc = parse_modulation_cc(digits, name, line)?;
+                let delta = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?;
+                let entry = table
+                    .entry(index)
+                    .or_insert_with(|| GenericLfo::empty(index));
+                let slot = match base {
+                    "pitch" => &mut entry.pitch_oncc,
+                    "cutoff" => &mut entry.cutoff_oncc,
+                    "resonance" => &mut entry.resonance_oncc,
+                    "volume" => &mut entry.volume_oncc,
+                    "freq" => &mut entry.freq_oncc,
+                    "delay" => &mut entry.delay_oncc,
+                    "fade" => &mut entry.fade_oncc,
+                    "phase" => &mut entry.phase_oncc,
+                    _ => continue,
+                };
+                slot.retain(|item| item.cc != cc);
+                slot.push(LfoCcMod { cc, delta });
+                slot.sort_by_key(|item| item.cc);
+                continue;
+            }
+            // ---- 阶梯电平 stepX ----
+            if let Some(digits) = rest.strip_prefix("step")
+                && !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+            {
+                let step_index: u32 = digits.parse().map_err(|_| SfzError::InvalidInteger {
+                    line,
+                    opcode: name.to_string(),
+                    value: digits.to_string(),
+                })?;
+                let level = parse_lfo_float(raw, name, -100.0, 100.0, line)?;
+                steps.entry(index).or_default().insert(step_index, level);
+                table
+                    .entry(index)
+                    .or_insert_with(|| GenericLfo::empty(index));
+                continue;
+            }
+            if !matches!(
+                rest,
+                "wave"
+                    | "freq"
+                    | "delay"
+                    | "fade"
+                    | "phase"
+                    | "pitch"
+                    | "cutoff"
+                    | "resonance"
+                    | "volume"
+                    | "count"
+                    | "steps"
+            ) {
+                continue;
+            }
+            let entry = table
+                .entry(index)
+                .or_insert_with(|| GenericLfo::empty(index));
+            match rest {
+                "wave" => {
+                    let parsed = parse_int(raw).ok_or_else(|| SfzError::InvalidInteger {
+                        line,
+                        opcode: name.to_string(),
+                        value: raw.to_string(),
+                    })?;
+                    entry.wave =
+                        LfoWave::from_index(parsed).ok_or_else(|| SfzError::InvalidOption {
+                            line,
+                            opcode: name.to_string(),
+                            value: raw.to_string(),
+                            allowed: "0, 1, 2, 3, 4, 5, 6, 7",
+                        })?;
+                }
+                "freq" => entry.freq = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?,
+                "delay" => entry.delay = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?,
+                "fade" => entry.fade = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?,
+                "phase" => entry.phase = parse_lfo_float(raw, name, 0.0, 1.0, line)?,
+                "pitch" => entry.pitch = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?,
+                "cutoff" => {
+                    entry.cutoff = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?;
+                }
+                "resonance" => {
+                    entry.resonance = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?;
+                }
+                "volume" => {
+                    entry.volume = parse_lfo_float(raw, name, f32::MIN, f32::MAX, line)?;
+                }
+                "count" => {
+                    let parsed = parse_int(raw).ok_or_else(|| SfzError::InvalidInteger {
+                        line,
+                        opcode: name.to_string(),
+                        value: raw.to_string(),
+                    })?;
+                    if parsed < 0 {
+                        return Err(SfzError::IntegerOutOfRange {
+                            line,
+                            opcode: name.to_string(),
+                            value: parsed,
+                            min: 0,
+                            max: i64::from(u32::MAX),
+                        });
+                    }
+                    entry.count = Some(parsed as u32);
+                }
+                "steps" => {
+                    // 只验形状（整数 ≥ 0）；实际电平以 stepX 为准（见 GenericLfo::steps）。
+                    let parsed = parse_int(raw).ok_or_else(|| SfzError::InvalidInteger {
+                        line,
+                        opcode: name.to_string(),
+                        value: raw.to_string(),
+                    })?;
+                    if parsed < 0 {
+                        return Err(SfzError::IntegerOutOfRange {
+                            line,
+                            opcode: name.to_string(),
+                            value: parsed,
+                            min: 0,
+                            max: i64::from(u32::MAX),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for (index, step_map) in steps {
+        if let Some(entry) = table.get_mut(&index) {
+            entry.steps = step_map.into_values().collect();
+        }
+    }
+    Ok(table.into_values().collect())
+}
+
 /// 解析 `ccN` / `_onccN` / `_curveccN` 里的 **CC 号**（`0..=255`，见
 /// [`crate::modulation`] 裁决 1）。
 ///
@@ -3772,6 +4159,10 @@ mod tests {
             ampeg_vel2: [None; AmpegParam::COUNT],
             fileg: EgDef::EMPTY,
             pitcheg: EgDef::EMPTY,
+            amplfo: V1Lfo::EMPTY.clone(),
+            fillfo: V1Lfo::EMPTY.clone(),
+            pitchlfo: V1Lfo::EMPTY.clone(),
+            lfos: Vec::new(),
             offset: 0,
             end: SampleEnd::Unspecified,
             direction: PlayDirection::Forward,
@@ -6794,6 +7185,109 @@ type=com.mda.Limiter
             .first()
             .cloned()
             .expect("one region")
+    }
+
+    #[test]
+    fn lfo_v1_families_parse_with_spec_defaults_and_ranges() {
+        let absent = first_region("<region>sample=a.wav");
+        assert!(absent.amplfo.is_empty());
+        assert!(absent.fillfo.is_empty());
+        assert!(absent.pitchlfo.is_empty());
+        assert!(absent.lfos.is_empty());
+        assert!(absent.amplfo.is_transparent());
+
+        let region = first_region(
+            "<global>pitchlfo_freq=5 pitchlfo_depth=50\n             <region>sample=a.wav amplfo_delay=0.4 amplfo_fade=1 amplfo_freq=2 amplfo_depth=3              amplfo_depthcc1=2 amplfo_depth_oncc2=1 amplfo_freqcc1=-10              amplfo_depthchanaft=4 fillfo_freq=3 fillfo_depth=-600              pitchlfo_depthcc7=25",
+        );
+        assert_eq!(region.amplfo.delay, 0.4);
+        assert_eq!(region.amplfo.fade, 1.0);
+        assert_eq!(region.amplfo.freq, 2.0);
+        assert_eq!(region.amplfo.depth, 3.0);
+        assert_eq!(region.amplfo.depth_chanaft, 4.0);
+        assert_eq!(
+            region.amplfo.depth_cc,
+            vec![
+                crate::lfo::LfoCcMod { cc: 1, delta: 2.0 },
+                crate::lfo::LfoCcMod { cc: 2, delta: 1.0 },
+            ],
+            "depthcc 与 depth_oncc 别名归到同一张表、按 cc 升序"
+        );
+        assert_eq!(
+            region.amplfo.freq_cc,
+            vec![crate::lfo::LfoCcMod {
+                cc: 1,
+                delta: -10.0
+            }]
+        );
+        assert_eq!(region.fillfo.freq, 3.0);
+        assert_eq!(region.fillfo.depth, -600.0);
+        // <global> 的 pitchlfo 被 region 继承；region 级 depthcc 追加。
+        assert_eq!(region.pitchlfo.freq, 5.0);
+        assert_eq!(region.pitchlfo.depth, 50.0);
+        assert_eq!(
+            region.pitchlfo.depth_cc,
+            vec![crate::lfo::LfoCcMod { cc: 7, delta: 25.0 }]
+        );
+        // CC 探针求值：depth = 3 + 2×1 + 1×0 = 5（cc1=127、cc2=0）。
+        let probe = |cc: u8| if cc == 1 { 127 } else { 0 };
+        assert_eq!(region.amplfo.effective_depth(Some(&probe)), 5.0);
+        assert_eq!(
+            region.amplfo.effective_freq(Some(&probe)),
+            0.0_f32.max(2.0 - 10.0)
+        );
+    }
+
+    #[test]
+    fn lfo_v1_out_of_range_is_a_loud_error() {
+        for text in [
+            "<region>sample=a.wav amplfo_depth=10.5",
+            "<region>sample=a.wav amplfo_depth=-11",
+            "<region>sample=a.wav pitchlfo_depth=1201",
+            "<region>sample=a.wav fillfo_depth=-1201",
+            "<region>sample=a.wav pitchlfo_freq=21",
+            "<region>sample=a.wav pitchlfo_delay=101",
+            "<region>sample=a.wav amplfo_freqcc1=201",
+            "<region>sample=a.wav amplfo_depthcc1=11",
+        ] {
+            assert!(
+                parse_text(text, &Default::default()).is_err(),
+                "越界必须响亮报错：{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn lfo_generic_families_parse_targets_wave_and_steps() {
+        let region = first_region(
+            "<region>sample=a.wav lfo01_wave=6 lfo01_freq=2 lfo01_pitch=100              lfo01_cutoff=-300 lfo01_volume=2 lfo01_pitch_oncc11=22              lfo02_freq=1 lfo02_phase=0.5 lfo02_count=3 lfo02_resonance=4              lfo03_steps=2 lfo03_step01=100 lfo03_step02=-100 lfo03_freq=1 lfo03_pitch=50              lfo01_pan=50 lfo01_freq_smoothcc9=10",
+        );
+        assert_eq!(region.lfos.len(), 3, "pan/smoothcc 不产生条目");
+        let (l1, l2, l3) = (&region.lfos[0], &region.lfos[1], &region.lfos[2]);
+        assert_eq!(l1.index, 1);
+        assert_eq!(l1.wave, crate::lfo::LfoWave::SawUp);
+        assert_eq!(l1.freq, 2.0);
+        assert_eq!(l1.pitch, 100.0);
+        assert_eq!(l1.cutoff, -300.0);
+        assert_eq!(l1.volume, 2.0);
+        assert_eq!(
+            l1.pitch_oncc,
+            vec![crate::lfo::LfoCcMod {
+                cc: 11,
+                delta: 22.0
+            }]
+        );
+        assert!(!l1.is_transparent());
+        assert_eq!(l2.phase, 0.5);
+        assert_eq!(l2.count, Some(3));
+        assert_eq!(l2.resonance, 4.0);
+        assert_eq!(l3.steps, vec![100.0, -100.0]);
+        assert_eq!(l3.value_at(0.25, None), 1.0);
+        // 未知目标不产生条目、坏 wave 响亮报错、phase 越界响亮报错。
+        let pan_only = first_region("<region>sample=a.wav lfo01_pan=50");
+        assert!(pan_only.lfos.is_empty());
+        assert!(parse_text("<region>sample=a.wav lfo01_wave=9", &Default::default()).is_err());
+        assert!(parse_text("<region>sample=a.wav lfo01_phase=2", &Default::default()).is_err());
+        assert!(parse_text("<region>sample=a.wav lfo01_step01=101", &Default::default()).is_err());
     }
 
     #[test]
