@@ -479,10 +479,10 @@ fn simulated_ui_places_audio_clip_and_toggles_automation() {
     )
     .expect("活窗口");
     let ui = live.ui();
-    yeban_app::host::wire_track_strip(&ui, &undo);
-    yeban_app::host::wire_track_select(&ui, &undo);
+    yeban_app::host::wire_track_strip(ui, &undo);
+    yeban_app::host::wire_track_select(ui, &undo);
     yeban_app::host::wire_aether_actions(
-        &ui,
+        ui,
         std::rc::Rc::clone(&undo),
         std::rc::Rc::clone(&engine),
         std::rc::Rc::clone(&view_cell),
