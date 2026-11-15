@@ -360,6 +360,7 @@ mod tests {
         let (mut l, mut r) = (vec![0.25f32; 64], vec![-0.25f32; 64]);
         // 断言判据的规模界：块定长 64（`.all(...)` 的根是 `l` / `r`）。
         assert_eq!(l.len(), 64);
+        assert_eq!(r.len(), 64);
         c.process(&mut l, &mut r);
         assert!(l.iter().all(|v| *v == 0.25));
         assert!(r.iter().all(|v| *v == -0.25));

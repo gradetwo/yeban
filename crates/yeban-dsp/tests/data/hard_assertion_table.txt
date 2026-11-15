@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 412 条：float_bits 90 ／ integer_count 322；其中 hard 74 ／ platform 13
+# 合计 417 条：float_bits 90 ／ integer_count 327；其中 hard 74 ／ platform 13
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -34,6 +34,11 @@ integer_count | no_callee | 0 | - | src/channel_strip.rs | the_filter_really_rem
 float_bits | platform | 23 | exp,log10 | src/channel_strip.rs | the_narrow_output_gain_entry_is_bit_identical_to_the_static_projection
 integer_count | no_callee | 0 | - | src/channel_strip.rs | the_same_input_twice_is_bit_identical
 float_bits | platform | 17 | exp,log10 | src/channel_strip.rs | the_two_channels_keep_their_own_input
+integer_count | no_callee | 0 | - | src/clipper.rs | below_the_knee_is_linear
+integer_count | no_callee | 0 | - | src/clipper.rs | oversampled_path_preserves_a_below_knee_tone
+integer_count | no_callee | 0 | - | src/clipper.rs | oversampling_reduces_aliasing_of_clipped_harmonics
+integer_count | no_callee | 0 | - | src/clipper.rs | params_are_clamped_to_their_domains
+integer_count | no_callee | 0 | - | src/clipper.rs | reset_reproduces_a_fresh_device_and_non_finite_input_is_safe
 integer_count | no_callee | 0 | - | src/comb.rs | a_fixed_length_matches_a_textbook_ring_buffer_bit_for_bit
 integer_count | no_callee | 0 | - | src/comb.rs | one_wavelength_per_delay_at_any_sample_rate
 integer_count | no_callee | 0 | - | src/comb.rs | retuning_never_replays_audio_from_outside_the_line
