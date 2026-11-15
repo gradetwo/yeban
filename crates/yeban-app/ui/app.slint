@@ -756,10 +756,11 @@ export component MainWindow inherits Window {
             title: "文件";
             MenuItem { title: "新建空白工程"; activated => { root.command-execute("file-new"); } }
             MenuItem { title: "打开 / 恢复工程..."; activated => { root.command-execute("file-open"); } }
-            MenuItem { title: "保存工程 (Cmd/Ctrl+S)"; activated => { root.command-execute("file-save"); } }
+            MenuItem { title: "保存工程 (Ctrl+S)"; activated => { root.command-execute("file-save"); } }
+            MenuItem { title: "另存为 (Ctrl+Shift+S)"; activated => { root.command-execute("file-save-as"); } }
             MenuSeparator {}
             MenuItem { title: "导出音频 (WAV)..."; activated => { root.command-execute("open-export-wav"); } }
-            MenuItem { title: "导出分轨 (Stems)"; activated => { root.command-execute("export-stems"); } }
+            MenuItem { title: "导出分轨 (Stems, 请用 CLI)"; activated => { root.command-execute("export-stems"); } }
             MenuItem { title: "导出 MIDI 文件..."; activated => { root.command-execute("export-midi"); } }
             MenuSeparator {}
             MenuItem { title: "导入 MIDI 文件..."; activated => { root.command-execute("import-midi"); } }
@@ -770,8 +771,8 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: "编辑";
-            MenuItem { title: "撤销上一步 (Cmd/Ctrl+Z)"; activated => { root.command-execute("undo-step"); } }
-            MenuItem { title: "重做 (Cmd/Ctrl+Shift+Z)"; activated => { root.command-execute("redo-step"); } }
+            MenuItem { title: "撤销上一步 (Ctrl+Z)"; activated => { root.command-execute("undo-step"); } }
+            MenuItem { title: "重做 (Ctrl+Shift+Z)"; activated => { root.command-execute("redo-step"); } }
             MenuItem { title: "编曲版本时光机 (Undo Tree)..."; activated => { root.command-execute("toggle-undo-tree"); } }
             MenuSeparator {}
             MenuItem { title: "音符量化 (Quantize 1/16)..."; activated => { root.command-execute("open-quantize"); } }
@@ -805,7 +806,7 @@ export component MainWindow inherits Window {
         Menu {
             title: "混音";
             MenuItem { title: "打开底部 混音台 (X)"; activated => { root.command-execute("tab-mixer"); } }
-            MenuItem { title: "打开底部 设备机架 (DSP)"; activated => { root.command-execute("tab-devices"); } }
+            MenuItem { title: "打开底部 设备机架"; activated => { root.command-execute("tab-devices"); } }
             MenuSeparator {}
             MenuItem { title: "主控总线推子归 0dB"; activated => { root.command-execute("master-reset-fader"); } }
             MenuItem { title: "显隐 监听控制室 (Control Room)"; activated => { root.command-execute("toggle-control-room"); } }
@@ -814,7 +815,7 @@ export component MainWindow inherits Window {
             title: "视图";
             MenuItem { title: "钢琴卷帘编辑器 (P)"; activated => { root.command-execute("tab-pianoroll"); } }
             MenuItem { title: "混音台面板 (X)"; activated => { root.command-execute("tab-mixer"); } }
-            MenuItem { title: "DSP 效果器机架"; activated => { root.command-execute("tab-devices"); } }
+            MenuItem { title: "设备机架"; activated => { root.command-execute("tab-devices"); } }
             MenuItem { title: "混合平铺视图 (Stacked)"; activated => { root.command-execute("tab-stacked"); } }
             MenuSeparator {}
             MenuItem { title: "最大化/还原底部控制台"; activated => { root.command-execute("toggle-maximize-dock"); } }
@@ -870,6 +871,9 @@ export component MainWindow inherits Window {
                 root.show-hotspots = !root.show-hotspots;
                 return accept;
             }
+            // Ctrl/Cmd+T 单一语义 = 新建轨道（细节实测 §5.10 / 控件体检 §2.1）。
+            // ⛔ 不同时切分：切分是破坏性操作，改由「轨道」菜单 / 工具栏切刀
+            // 显式触发；界面这一路是 Ctrl+T 的唯一入口。
             if ((event.modifiers.control || event.modifiers.meta) && (event.text == "t" || event.text == "T")) {
                 root.track-add-requested();
                 return accept;
@@ -894,16 +898,34 @@ export component MainWindow inherits Window {
                 }
                 return accept;
             }
-            if (event.text == Key.F7 || event.text == Key.F8) {
-                if (root.console-maximized && Theme.active-dock-tab == "pianoroll") {
-                    root.console-maximize-toggle();
-                } else {
-                    root.show-lower-dock = true;
-                    root.apply-dock-tab("pianoroll");
-                    if (!root.console-maximized) {
-                        root.console-maximize-toggle();
-                    }
-                }
+            // F7/F8/F9 = 控制台三个页签直达，与 input.rs 的
+            // SelectConsoleTab{0/1/2}（--print-shortcuts 官方口径）一致。
+            // ⛔ 不再一律打开「最大化后的钢琴卷帘」（控件体检 §2.2）。
+            if (event.text == Key.F7) {
+                root.show-lower-dock = true;
+                root.apply-dock-tab("pianoroll");
+                return accept;
+            }
+            if (event.text == Key.F8) {
+                root.show-lower-dock = true;
+                root.apply-dock-tab("mixer");
+                return accept;
+            }
+            if (event.text == Key.F9) {
+                root.show-lower-dock = true;
+                root.apply-dock-tab("devices");
+                return accept;
+            }
+            // [D] / [F4] 兑现页签 tooltip 承诺的绑定（控件体检 §2.3）：
+            // 此前裸 d 与 F4 全仓无绑定，提示「承诺了做不到，比不写更伤」。
+            if (!event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt
+                    && (event.text == "d" || event.text == "D")) {
+                root.show-lower-dock = true;
+                root.apply-dock-tab("devices");
+                return accept;
+            }
+            if (event.text == Key.F4) {
+                root.show-control-room = !root.show-control-room;
                 return accept;
             }
             if (event.text == Key.Escape) {

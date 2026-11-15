@@ -17123,10 +17123,10 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                         "draw"
                     };
                     ui.invoke_edit_tool_selected(next.into());
-                } else if text == "F3" || text == "F7" || text == "F8" {
-                    ui.set_show_lower_dock(true);
-                    ui.invoke_console_maximize_toggle();
                 }
+                // F3/F7/F8/F9 改由 app.slint 的 key-pressed 单一入口处理，
+                // ⛔ 不再在这里重复 console-maximize-toggle（否则与界面分支
+                //    双触发、两次取反相互抵消）。
             }
         }
     });
@@ -18498,6 +18498,7 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "file-new" => ui.invoke_new_project(),
         "file-open" => ui.invoke_open_project(),
         "file-save" => ui.invoke_save_project(),
+        "file-save-as" => ui.invoke_save_project_as(),
         "open-export-wav" => ui.invoke_open_export_wav(),
         "export-stems" => {
             ui.invoke_open_export_wav();

@@ -5580,6 +5580,28 @@ pub fn shortcut_lines() -> Vec<String> {
             format!("{:?}", composing.resolve(row.key, row.modifiers)),
         ));
     }
+
+    // 界面直达键（Slint FocusScope 的 key-pressed 分支）不经过上面的策略表，
+    // 但用户照样按得到。此前 --print-shortcuts 只打印策略表，X/P/I/H/T/C/F3、
+    // Ctrl+T、D、F4、F7/F8/F9 全都没列（控件体检 §2.4：用户照表学会漏一半）。
+    lines.push(String::new());
+    lines.push("# 界面直达键（Slint key-pressed，不经过上面的解析表，但同样可用）".to_owned());
+    for line in [
+        "#   Ctrl+T          新建轨道（切分请用「轨道」菜单 / 工具栏切刀）",
+        "#   X               打开底部混音台",
+        "#   P               打开底部钢琴卷帘",
+        "#   I               显隐左侧通道检查器",
+        "#   H               显隐架构热区透视",
+        "#   T               显隐悬浮功能提示",
+        "#   C               循环播放开关",
+        "#   D               打开底部设备机架（页签 tooltip [D]）",
+        "#   F3              混音台最大化 / 还原",
+        "#   F4              显隐监听控制室与响度计（tooltip [F4]）",
+        "#   F7 / F8 / F9    控制台页签：钢琴卷帘 / 调音台 / 设备机架",
+        "#   Escape          关闭命令面板 / 热区透视",
+    ] {
+        lines.push(line.to_owned());
+    }
     lines
 }
 
