@@ -472,6 +472,25 @@ fn json_and_html_switches_together_write_both_files() {
         "必须有 HTML 回执: {}",
         lines.join("\n")
     );
+    // 线 H：双出口共享一次计算 —— JSON 先算（cacheHit=false，文件里同值），
+    // HTML 后出、命中共享计算（cacheHit=true），不得各算一遍、不得再硬编码。
+    let json_receipt = lines
+        .iter()
+        .find(|line| line.starts_with("exported-song-overview:"))
+        .expect("JSON 回执在");
+    assert!(
+        json_receipt.contains("cacheHit=false"),
+        "先算的 JSON 出口回执必须是 cacheHit=false: {json_receipt}"
+    );
+    assert_eq!(data["cacheHit"], false, "JSON 文件里的 cacheHit 与回执同值");
+    let html_receipt = lines
+        .iter()
+        .find(|line| line.starts_with("exported-song-overview-html:"))
+        .expect("HTML 回执在");
+    assert!(
+        html_receipt.contains("cacheHit=true"),
+        "后出的 HTML 出口必须命中共享计算、回执 cacheHit=true: {html_receipt}"
+    );
 }
 
 /// **第八判据**：`--overview-score-only` 也修饰 HTML 出口（纯谱面的 HTML 报告）。
