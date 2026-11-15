@@ -4872,6 +4872,7 @@ impl ViewState {
     /// 事后过滤成 `None` → 选区为空 → 选择 / 橡皮擦 / 剪刀 / 箭头全部静默失效。
     /// 作用域为 `None` ⇒ 与 [`Self::hit_test_visible`] **逐项相同**。
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn hit_test_visible_scoped_with_base(
         &self,
         scroll_x: f32,

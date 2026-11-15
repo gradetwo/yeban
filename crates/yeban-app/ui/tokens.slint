@@ -253,7 +253,7 @@ export global Tokens {
     // 于是 `font-mono` / `font-serif` 现在是**打包进来的**族: 逐条登记 (来源 URL /
     // sha256 / 字节 / 许可 / 子集口径) 见 §5c 与 `assets/fonts/LICENSES.md`; `font-ui` 仍是
     // 系统族 `PingFang SC` —— 本次**不**打包 CJK 无衬线, 理由见 §5c。
-    out property <string> font-ui: "PingFang SC";
+    in-out property <string> font-ui: "PingFang SC";
     out property <string> font-mono: "JetBrains Mono";
     out property <string> font-serif: "Noto Serif SC";
 

@@ -9,7 +9,7 @@ import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
 component IconInspectorToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #64748b;
+    in property <color> inactive-color: #94a3b8;
 
     width: 14px;
     height: 12px;
@@ -67,7 +67,7 @@ component IconInspectorToggle inherits Rectangle {
 component IconClipMatrixToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #64748b;
+    in property <color> inactive-color: #94a3b8;
 
     width: 14px;
     height: 12px;
@@ -117,7 +117,7 @@ component IconClipMatrixToggle inherits Rectangle {
 component IconLowerDockToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #64748b;
+    in property <color> inactive-color: #94a3b8;
 
     width: 14px;
     height: 12px;
@@ -175,7 +175,7 @@ component IconLowerDockToggle inherits Rectangle {
 component IconControlRoomToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #64748b;
+    in property <color> inactive-color: #94a3b8;
 
     width: 14px;
     height: 12px;
@@ -1015,17 +1015,17 @@ export component TransportHeaderBar inherits Rectangle {
                             Text {
                                 text: "BAR / BEAT";
                                 font-family: Tokens.font-mono;
-                                font-size: 7.5px;
-                                letter-spacing: 0.6px;
+                                font-size: 8.5px;
+                                letter-spacing: 0.4px;
                                 color: #94a3b8;
-                                font-weight: 700;
+                                font-weight: 400;
                             }
                             Text {
                                 text: root.timecode-text;
                                 font-family: Tokens.font-mono;
                                 font-size: 12px;
                                 color: Theme.accent;
-                                font-weight: 800;
+                                font-weight: 400;
                             }
                         }
                         lcd_beat_touch := TouchArea { mouse-cursor: MouseCursor.pointer; }
@@ -1043,17 +1043,17 @@ export component TransportHeaderBar inherits Rectangle {
                             Text {
                                 text: "TEMPO";
                                 font-family: Tokens.font-mono;
-                                font-size: 7.5px;
-                                letter-spacing: 0.6px;
+                                font-size: 8.5px;
+                                letter-spacing: 0.4px;
                                 color: #94a3b8;
-                                font-weight: 700;
+                                font-weight: 400;
                             }
                             Text {
                                 text: "" + root.bpm-val + ".00";
                                 font-family: Tokens.font-mono;
                                 font-size: 12px;
                                 color: Theme.track-drum;
-                                font-weight: 800;
+                                font-weight: 400;
                             }
                         }
                         bpm_touch := TouchArea {
@@ -1077,17 +1077,17 @@ export component TransportHeaderBar inherits Rectangle {
                             Text {
                                 text: "KEY / SCALE";
                                 font-family: Tokens.font-mono;
-                                font-size: 7.5px;
-                                letter-spacing: 0.6px;
+                                font-size: 8.5px;
+                                letter-spacing: 0.4px;
                                 color: #94a3b8;
-                                font-weight: 700;
+                                font-weight: 400;
                             }
                             Text {
                                 text: root.scale-text;
                                 font-family: Tokens.font-ui;
-                                font-size: 10px;
+                                font-size: 10.5px;
                                 color: Theme.status-ok;
-                                font-weight: 700;
+                                font-weight: 600;
                             }
                         }
                         scale_touch := TouchArea {
@@ -1124,18 +1124,18 @@ export component TransportHeaderBar inherits Rectangle {
                     Text {
                         text: "BUFFER:";
                         font-family: Tokens.font-mono;
-                        font-size: 8px;
-                        letter-spacing: 0.5px;
+                        font-size: 9px;
+                        letter-spacing: 0.3px;
                         color: #94a3b8;
-                        font-weight: 700;
+                        font-weight: 400;
                         vertical-alignment: center;
                     }
                     Text {
                         text: "" + root.buffer-samples + " smp";
                         font-family: Tokens.font-mono;
-                        font-size: 10px;
+                        font-size: 10.5px;
                         color: Theme.accent;
-                        font-weight: 700;
+                        font-weight: 400;
                         vertical-alignment: center;
                     }
                 }
@@ -1169,17 +1169,17 @@ export component TransportHeaderBar inherits Rectangle {
                         Text {
                             text: "DSP";
                             font-family: Tokens.font-mono;
-                            font-size: 8px;
-                            letter-spacing: 0.5px;
+                            font-size: 9px;
+                            letter-spacing: 0.3px;
                             color: #94a3b8;
-                            font-weight: 700;
+                            font-weight: 400;
                         }
                         Text {
                             text: "" + root.dsp-cpu-percent + "%";
                             font-family: Tokens.font-mono;
-                            font-size: 9px;
+                            font-size: 10px;
                             color: Theme.status-ok;
-                            font-weight: 800;
+                            font-weight: 400;
                             horizontal-alignment: right;
                         }
                     }
@@ -1302,8 +1302,8 @@ export component TransportHeaderBar inherits Rectangle {
                 Text {
                     text: "⌘K";
                     font-family: Tokens.font-mono;
-                    font-size: 10px;
-                    font-weight: 800;
+                    font-size: 10.5px;
+                    font-weight: 400;
                     color: Theme.accent;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -1351,16 +1351,16 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 4px;
                         height: 4px;
                         border-radius: 2px;
-                        background: Theme.show-tooltips ? Theme.accent : #64748b;
+                        background: Theme.show-tooltips ? Theme.accent : #94a3b8;
                         y: (parent.height - self.height) / 2;
                     }
 
                     Text {
                         text: "T";
                         font-family: Tokens.font-mono;
-                        font-size: 10px;
-                        font-weight: 800;
-                        color: Theme.show-tooltips ? Theme.accent : #64748b;
+                        font-size: 10.5px;
+                        font-weight: 400;
+                        color: Theme.show-tooltips ? Theme.accent : #94a3b8;
                         vertical-alignment: center;
                     }
                 }

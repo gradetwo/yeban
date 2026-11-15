@@ -55,7 +55,7 @@ use crate::engine_host::{
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
-use crate::ui::{MainWindow, ThemeState, YebanTheme};
+use crate::ui::{MainWindow, ThemeState, Tokens, YebanTheme};
 use crate::undo::{UiAction, UndoPort};
 
 /// [`wire_save`] 的**装配输入**：保存到哪 + 拿不到活会话时用哪一份工程。
@@ -1932,11 +1932,10 @@ fn preview_track_volume(ui: &MainWindow, index: i32, volume_db: f32) {
     if let Some(vec_model) = tracks_model
         .as_any()
         .downcast_ref::<VecModel<crate::ui::TrackData>>()
+        && let Some(mut row) = vec_model.row_data(index)
     {
-        if let Some(mut row) = vec_model.row_data(index) {
-            row.volume_db = rounded_db;
-            vec_model.set_row_data(index, row);
-        }
+        row.volume_db = rounded_db;
+        vec_model.set_row_data(index, row);
     }
 }
 
@@ -1963,11 +1962,10 @@ fn preview_track_pan(ui: &MainWindow, index: i32, pan: f32) {
     if let Some(vec_model) = tracks_model
         .as_any()
         .downcast_ref::<VecModel<crate::ui::TrackData>>()
+        && let Some(mut row) = vec_model.row_data(index)
     {
-        if let Some(mut row) = vec_model.row_data(index) {
-            row.pan = pan_label.into();
-            vec_model.set_row_data(index, row);
-        }
+        row.pan = pan_label.into();
+        vec_model.set_row_data(index, row);
     }
 }
 
@@ -15190,6 +15188,12 @@ pub fn build_main_window_with_console_tab(
     console_tab: i32,
 ) -> Result<MainWindow, slint::PlatformError> {
     let ui = MainWindow::new()?;
+    #[cfg(target_os = "linux")]
+    ui.global::<Tokens<'_>>()
+        .set_font_ui("Noto Sans CJK SC".into());
+    #[cfg(target_os = "windows")]
+    ui.global::<Tokens<'_>>()
+        .set_font_ui("Microsoft YaHei UI".into());
     ui.set_timecode(scene.timecode.clone().into());
     ui.set_branch_name(scene.branch_name.clone().into());
     ui.set_arrangement_view(scene.arrangement_by_default);

@@ -44,14 +44,14 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                     HorizontalLayout {
                         spacing: 4px;
                         Rectangle {
-                            height: 16px;
+                            height: 18px;
                             border-radius: 3px;
                             background: cm_add_t.has-hover ? Theme.accent.with-alpha(0.25) : #10141d;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             HorizontalLayout {
-                                padding-left: 5px; padding-right: 5px;
-                                Text { text: "+ 轨道"; font-family: Tokens.font-ui; font-size: 8px; font-weight: 700; color: #e2e8f0; vertical-alignment: center; }
+                                padding-left: 6px; padding-right: 6px;
+                                Text { text: "+ 轨道"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #e2e8f0; vertical-alignment: center; }
                             }
                             cm_add_t := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -59,14 +59,14 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             }
                         }
                         Rectangle {
-                            height: 16px;
+                            height: 18px;
                             border-radius: 3px;
                             background: cm_stop_t.has-hover ? #ef444433 : #10141d;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             HorizontalLayout {
-                                padding-left: 5px; padding-right: 5px;
-                                Text { text: "停止"; font-family: Tokens.font-ui; font-size: 8px; font-weight: 700; color: #fca5a5; vertical-alignment: center; }
+                                padding-left: 6px; padding-right: 6px;
+                                Text { text: "停止"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #fca5a5; vertical-alignment: center; }
                             }
                             cm_stop_t := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -88,8 +88,8 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         Text {
                             text: "▶ S1";
                             font-family: Tokens.font-mono;
-                            font-size: 9px;
-                            font-weight: 700;
+                            font-size: 10px;
+                            font-weight: 400;
                             color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -114,8 +114,8 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         Text {
                             text: "▶ S2";
                             font-family: Tokens.font-mono;
-                            font-size: 9px;
-                            font-weight: 700;
+                            font-size: 10px;
+                            font-weight: 400;
                             color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -140,8 +140,8 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         Text {
                             text: "▶ S3";
                             font-family: Tokens.font-mono;
-                            font-size: 9px;
-                            font-weight: 700;
+                            font-size: 10px;
+                            font-weight: 400;
                             color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -166,8 +166,8 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         Text {
                             text: "▶ S4";
                             font-family: Tokens.font-mono;
-                            font-size: 9px;
-                            font-weight: 700;
+                            font-size: 10px;
+                            font-weight: 400;
                             color: Theme.accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -216,9 +216,9 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             Text {
                                 text: trk.clip1 != "" ? ("▶ " + trk.clip1) : "+";
                                 font-family: trk.clip1 != "" ? Tokens.font-ui : Tokens.font-mono;
-                                font-size: trk.clip1 != "" ? 9px : 10px;
-                                font-weight: 600;
-                                color: trk.clip1 != "" ? #f8fafc : #475569;
+                                font-size: trk.clip1 != "" ? 10px : 11px;
+                                font-weight: trk.clip1 != "" ? 600 : 400;
+                                color: trk.clip1 != "" ? #f8fafc : #94a3b8;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -252,9 +252,9 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             Text {
                                 text: trk.clip2 != "" ? ("▶ " + trk.clip2) : "+";
                                 font-family: trk.clip2 != "" ? Tokens.font-ui : Tokens.font-mono;
-                                font-size: trk.clip2 != "" ? 9px : 10px;
-                                font-weight: 600;
-                                color: trk.clip2 != "" ? #f8fafc : #475569;
+                                font-size: trk.clip2 != "" ? 10px : 11px;
+                                font-weight: trk.clip2 != "" ? 600 : 400;
+                                color: trk.clip2 != "" ? #f8fafc : #94a3b8;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -288,9 +288,9 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             Text {
                                 text: trk.clip3 != "" ? ("▶ " + trk.clip3) : "+";
                                 font-family: trk.clip3 != "" ? Tokens.font-ui : Tokens.font-mono;
-                                font-size: trk.clip3 != "" ? 9px : 10px;
-                                font-weight: 600;
-                                color: trk.clip3 != "" ? #f8fafc : #475569;
+                                font-size: trk.clip3 != "" ? 10px : 11px;
+                                font-weight: trk.clip3 != "" ? 600 : 400;
+                                color: trk.clip3 != "" ? #f8fafc : #94a3b8;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -324,9 +324,9 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             Text {
                                 text: trk.clip4 != "" ? ("▶ " + trk.clip4) : "+";
                                 font-family: trk.clip4 != "" ? Tokens.font-ui : Tokens.font-mono;
-                                font-size: trk.clip4 != "" ? 9px : 10px;
-                                font-weight: 600;
-                                color: trk.clip4 != "" ? #f8fafc : #475569;
+                                font-size: trk.clip4 != "" ? 10px : 11px;
+                                font-weight: trk.clip4 != "" ? 600 : 400;
+                                color: trk.clip4 != "" ? #f8fafc : #94a3b8;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;

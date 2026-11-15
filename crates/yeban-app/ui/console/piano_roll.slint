@@ -354,15 +354,15 @@ export component PianoRoll inherits Rectangle {
             }
 
             UiMonoText {
-                x: 35px;
+                x: 34px;
                 y: 0px;
-                width: parent.width - 38px;
+                width: parent.width - 36px;
                 height: parent.height;
                 text: root.lane-key-labels[key_index];
                 color: root.audition-active-row == key_index ? #020617 :
-                    (root.lane-is-white[key_index] ? #1e293b : #94a3b8);
-                font-size: 8px;
-                font-weight: (key_index == 3 || key_index == 15) ? 800 : 600;
+                    (root.lane-is-white[key_index] ? #0f172a : #cbd5e1);
+                font-size: 9px;
+                font-weight: 400;
                 horizontal-alignment: right;
                 vertical-alignment: center;
             }

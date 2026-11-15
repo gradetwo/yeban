@@ -89,10 +89,9 @@ export component ArrangementViewport inherits Rectangle {
                             alignment: space-between;
                             Text {
                                 text: "轨道控制头 (TRACKS)";
-                                font-family: Tokens.font-mono;
-                                font-size: 8px;
-                                font-weight: 700;
-                                letter-spacing: 0.8px;
+                                font-family: Tokens.font-ui;
+                                font-size: 9.5px;
+                                font-weight: 600;
                                 color: #94a3b8;
                                 vertical-alignment: center;
                             }
@@ -111,7 +110,7 @@ export component ArrangementViewport inherits Rectangle {
                                         Text {
                                             text: root.show-chord-track ? "和弦 ▾" : "和弦 ▸";
                                             font-family: Tokens.font-ui;
-                                            font-size: 8px;
+                                            font-size: 9.5px;
                                             font-weight: 600;
                                             color: root.show-chord-track ? Theme.accent : #cbd5e1;
                                             vertical-alignment: center;
@@ -139,8 +138,8 @@ export component ArrangementViewport inherits Rectangle {
                                         Text {
                                             text: "+ 轨道";
                                             font-family: Tokens.font-ui;
-                                            font-size: 9px;
-                                            font-weight: 800;
+                                            font-size: 9.5px;
+                                            font-weight: 700;
                                             color: Theme.accent;
                                             vertical-alignment: center;
                                         }
@@ -167,8 +166,8 @@ export component ArrangementViewport inherits Rectangle {
                                     Text {
                                         text: "轨道 ▾";
                                         font-family: Tokens.font-ui;
-                                        font-size: 9px;
-                                        font-weight: 700;
+                                        font-size: 9.5px;
+                                        font-weight: 600;
                                         color: root.active-local-menu == "tracks" ? #020617 : #e2e8f0;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -202,15 +201,15 @@ export component ArrangementViewport inherits Rectangle {
                                 Text {
                                     text: "全局和弦轨";
                                     font-family: Tokens.font-ui;
-                                    font-size: 9px;
-                                    font-weight: 700;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
                                     color: #cbd5e1;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: "智能和声声学";
                                     font-family: Tokens.font-ui;
-                                    font-size: 8px;
+                                    font-size: 9px;
                                     color: #94a3b8;
                                     vertical-alignment: center;
                                 }
@@ -318,7 +317,7 @@ export component ArrangementViewport inherits Rectangle {
                                         height: 16px;
                                         border-radius: 2px;
                                         background: hz-out-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "H−"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "H−"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                         hz-out-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(false); } }
                                     }
                                     Rectangle {
@@ -326,7 +325,7 @@ export component ArrangementViewport inherits Rectangle {
                                         height: 16px;
                                         border-radius: 2px;
                                         background: hz-in-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "H+"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "H+"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                         hz-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(true); } }
                                     }
                                     Rectangle {
@@ -334,7 +333,7 @@ export component ArrangementViewport inherits Rectangle {
                                         height: 16px;
                                         border-radius: 2px;
                                         background: vt-out-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "V−"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "V−"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                         vt-out-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-v-step(false); } }
                                     }
                                     Rectangle {
@@ -342,7 +341,7 @@ export component ArrangementViewport inherits Rectangle {
                                         height: 16px;
                                         border-radius: 2px;
                                         background: vt-in-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "V+"; font-size: 8px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { text: "V+"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
                                         vt-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-v-step(true); } }
                                     }
                                 }
@@ -373,16 +372,16 @@ export component ArrangementViewport inherits Rectangle {
                                         Text {
                                             text: "Cm9 (i9)";
                                             font-family: Tokens.font-mono;
-                                            font-size: 9px;
-                                            font-weight: 700;
+                                            font-size: 10px;
+                                            font-weight: 400;
                                             color: #8cb8cc;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
-                                            font-size: 8px;
-                                            color: #64748b;
+                                            font-size: 9px;
+                                            color: #94a3b8;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -412,16 +411,16 @@ export component ArrangementViewport inherits Rectangle {
                                         Text {
                                             text: "AbMaj7 (VI7)";
                                             font-family: Tokens.font-mono;
-                                            font-size: 9px;
-                                            font-weight: 700;
+                                            font-size: 10px;
+                                            font-weight: 400;
                                             color: #b39cc7;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
-                                            font-size: 8px;
-                                            color: #64748b;
+                                            font-size: 9px;
+                                            color: #94a3b8;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -451,16 +450,16 @@ export component ArrangementViewport inherits Rectangle {
                                         Text {
                                             text: "Fm11 (iv11)";
                                             font-family: Tokens.font-mono;
-                                            font-size: 9px;
-                                            font-weight: 700;
+                                            font-size: 10px;
+                                            font-weight: 400;
                                             color: #80bca8;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
-                                            font-size: 8px;
-                                            color: #64748b;
+                                            font-size: 9px;
+                                            color: #94a3b8;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -490,16 +489,16 @@ export component ArrangementViewport inherits Rectangle {
                                         Text {
                                             text: "G7#9 (V7#9)";
                                             font-family: Tokens.font-mono;
-                                            font-size: 9px;
-                                            font-weight: 700;
+                                            font-size: 10px;
+                                            font-weight: 400;
                                             color: #c7a46e;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
-                                            font-size: 8px;
-                                            color: #64748b;
+                                            font-size: 9px;
+                                            color: #94a3b8;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -738,9 +737,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " ▾";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 7.5px;
+                                                font-size: 9px;
                                                 color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
-                                                font-weight: 700;
+                                                font-weight: 400;
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
@@ -779,9 +778,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 9px;
-                                                font-weight: 800;
-                                                color: trk.muted ? #0f172a : (m-btn-touch.has-hover ? #f8fafc : #94a3b8);
+                                                font-size: 10px;
+                                                font-weight: 400;
+                                                color: trk.muted ? #0f172a : (m-btn-touch.has-hover ? #f8fafc : #cbd5e1);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -806,9 +805,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 9px;
-                                                font-weight: 800;
-                                                color: trk.soloed ? #0f172a : (s-btn-touch.has-hover ? #f8fafc : #94a3b8);
+                                                font-size: 10px;
+                                                font-weight: 400;
+                                                color: trk.soloed ? #0f172a : (s-btn-touch.has-hover ? #f8fafc : #cbd5e1);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -833,9 +832,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 9px;
-                                                font-weight: 800;
-                                                color: trk.armed ? #ffffff : (r-btn-touch.has-hover ? #f8fafc : #94a3b8);
+                                                font-size: 10px;
+                                                font-weight: 400;
+                                                color: trk.armed ? #ffffff : (r-btn-touch.has-hover ? #f8fafc : #cbd5e1);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -870,17 +869,17 @@ export component ArrangementViewport inherits Rectangle {
                                                 Text {
                                                     text: "P";
                                                     font-family: Tokens.font-mono;
-                                                    font-size: 7.5px;
-                                                    font-weight: 700;
+                                                    font-size: 8.5px;
+                                                    font-weight: 400;
                                                     color: #94a3b8;
                                                     vertical-alignment: center;
                                                 }
                                                 Text {
                                                     text: trk.pan;
                                                     font-family: Tokens.font-mono;
-                                                    font-size: 8px;
-                                                    font-weight: 700;
-                                                    color: #cbd5e1;
+                                                    font-size: 9px;
+                                                    font-weight: 400;
+                                                    color: #e2e8f0;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -919,9 +918,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 Text {
                                                     text: root.track-volumes.length > idx ? (root.track-volumes[idx] + "dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + "dB");
                                                     font-family: Tokens.font-mono;
-                                                    font-size: 8.5px;
-                                                    color: #cbd5e1;
-                                                    font-weight: 700;
+                                                    font-size: 9.5px;
+                                                    color: #e2e8f0;
+                                                    font-weight: 400;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -1043,8 +1042,8 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: blk.label;
                                                 font-family: Tokens.font-ui;
-                                                font-size: 9px;
-                                                font-weight: 700;
+                                                font-size: 10px;
+                                                font-weight: 600;
                                                 color: #f1f5f9;
                                                 overflow: elide;
                                                 vertical-alignment: center;
@@ -1053,8 +1052,8 @@ export component ArrangementViewport inherits Rectangle {
                                             if blk.width_px >= 110px : Text {
                                                 text: blk.gain_label;
                                                 font-family: Tokens.font-mono;
-                                                font-size: 8px;
-                                                color: #94a3b8;
+                                                font-size: 9px;
+                                                color: #cbd5e1;
                                                 horizontal-alignment: right;
                                                 vertical-alignment: center;
                                             }
@@ -1108,8 +1107,8 @@ export component ArrangementViewport inherits Rectangle {
                                                 y: (parent.height - self.height) / 2;
                                                 text: "空片段";
                                                 font-family: Tokens.font-ui;
-                                                font-size: 9px;
-                                                color: #8A95A580;
+                                                font-size: 9.5px;
+                                                color: #94a3b8;
                                             }
 
                                             if blk.note_count > 0 : HorizontalLayout {
@@ -1221,9 +1220,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " ▾";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 7.5px;
+                                                font-size: 9px;
                                                 color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
-                                                font-weight: 700;
+                                                font-weight: 400;
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
@@ -1260,9 +1259,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 9px;
-                                                font-weight: 800;
-                                                color: trk.muted ? #0f172a : (m-btn-r-touch.has-hover ? #f8fafc : #94a3b8);
+                                                font-size: 10px;
+                                                font-weight: 400;
+                                                color: trk.muted ? #0f172a : (m-btn-r-touch.has-hover ? #f8fafc : #cbd5e1);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1286,9 +1285,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 9px;
-                                                font-weight: 800;
-                                                color: trk.soloed ? #0f172a : (s-btn-r-touch.has-hover ? #f8fafc : #94a3b8);
+                                                font-size: 10px;
+                                                font-weight: 400;
+                                                color: trk.soloed ? #0f172a : (s-btn-r-touch.has-hover ? #f8fafc : #cbd5e1);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1312,9 +1311,9 @@ export component ArrangementViewport inherits Rectangle {
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
-                                                font-size: 9px;
-                                                font-weight: 800;
-                                                color: trk.armed ? #ffffff : (r-btn-r-touch.has-hover ? #f8fafc : #94a3b8);
+                                                font-size: 10px;
+                                                font-weight: 400;
+                                                color: trk.armed ? #ffffff : (r-btn-r-touch.has-hover ? #f8fafc : #cbd5e1);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1347,17 +1346,17 @@ export component ArrangementViewport inherits Rectangle {
                                                 Text {
                                                     text: "P";
                                                     font-family: Tokens.font-mono;
-                                                    font-size: 7.5px;
-                                                    font-weight: 700;
+                                                    font-size: 8.5px;
+                                                    font-weight: 400;
                                                     color: #94a3b8;
                                                     vertical-alignment: center;
                                                 }
                                                 Text {
                                                     text: trk.pan;
                                                     font-family: Tokens.font-mono;
-                                                    font-size: 8px;
-                                                    font-weight: 700;
-                                                    color: #cbd5e1;
+                                                    font-size: 9px;
+                                                    font-weight: 400;
+                                                    color: #e2e8f0;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -1395,9 +1394,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 Text {
                                                     text: root.track-volumes.length > idx ? (root.track-volumes[idx] + "dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + "dB");
                                                     font-family: Tokens.font-mono;
-                                                    font-size: 8.5px;
-                                                    color: #cbd5e1;
-                                                    font-weight: 700;
+                                                    font-size: 9.5px;
+                                                    color: #e2e8f0;
+                                                    font-weight: 400;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -1710,9 +1709,9 @@ export component ArrangementViewport inherits Rectangle {
                 spacing: 2px;
                 Text {
                     text: "更换轨道 #\{root.local-menu-track-id} 音色 / 插入";
-                    font-family: Tokens.font-mono;
-                    font-size: 9px;
-                    font-weight: 700;
+                    font-family: Tokens.font-ui;
+                    font-size: 10px;
+                    font-weight: 600;
                     color: Theme.accent;
                     height: 20px;
                     vertical-alignment: center;

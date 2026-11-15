@@ -284,8 +284,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "音色 ▾";
                                     font-family: Tokens.font-ui;
-                                    font-size: 9px;
-                                    font-weight: 700;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
                                     color: root.dock-instrument-menu-open ? Theme.accent : #cbd5e1;
                                     vertical-alignment: center;
                                 }
@@ -312,8 +312,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "EQ";
                                     font-family: Tokens.font-mono;
-                                    font-size: 8.5px;
-                                    font-weight: 700;
+                                    font-size: 9.5px;
+                                    font-weight: 400;
                                     color: #cbd5e1;
                                     vertical-alignment: center;
                                 }
@@ -337,8 +337,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "混响";
                                     font-family: Tokens.font-ui;
-                                    font-size: 8.5px;
-                                    font-weight: 700;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
                                     color: #cbd5e1;
                                     vertical-alignment: center;
                                 }
@@ -362,8 +362,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "量化";
                                     font-family: Tokens.font-ui;
-                                    font-size: 8.5px;
-                                    font-weight: 700;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
                                     color: #cbd5e1;
                                     vertical-alignment: center;
                                 }
@@ -390,8 +390,8 @@ export component UnifiedLowerDock inherits Rectangle {
                             Text {
                                 text: "聚焦: " + root.focus-track-name;
                                 font-family: Tokens.font-ui;
-                                font-size: 9px;
-                                font-weight: 700;
+                                font-size: 10px;
+                                font-weight: 600;
                                 color: root.selected-track-color;
                                 vertical-alignment: center;
                             }
@@ -624,9 +624,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                 if idx < root.device-recognised.length && root.device-recognised[idx] != "" : Text {
                                     text: root.device-recognised[idx];
                                     font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    color: #347864;
-                                    font-weight: 700;
+                                    font-size: 9px;
+                                    color: #4ade80;
+                                    font-weight: 400;
                                     vertical-alignment: center;
                                 }
                                 Rectangle {
@@ -638,8 +638,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                     border-color: dev_rm_touch.has-hover ? #ef444488 : #ffffff14;
                                     Text {
                                         text: "×";
-                                        font-size: 10px;
-                                        color: dev_rm_touch.has-hover ? #fca5a5 : #94a3b8;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 10.5px;
+                                        color: dev_rm_touch.has-hover ? #fca5a5 : #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -688,15 +689,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: root.device-bypassed[idx] ? "BYPASSED" : "ACTIVE";
                                     font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    font-weight: 700;
-                                    color: root.device-bypassed[idx] ? #f59e0b : #347864;
+                                    font-size: 9px;
+                                    font-weight: 400;
+                                    color: root.device-bypassed[idx] ? #f59e0b : #4ade80;
                                 }
                                 Text {
                                     text: "ID: " + (idx < root.device-ids.length ? root.device-ids[idx] : "-");
                                     font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    color: #64748b;
+                                    font-size: 9px;
+                                    color: #94a3b8;
                                     overflow: elide;
                                 }
                             }
@@ -717,8 +718,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: idx == 0 ? ("POS: " + root.wt-pos-val + "%") : ("LOW: " + root.eq-low-db);
                                         font-family: Tokens.font-mono;
-                                        font-size: 9px;
-                                        font-weight: 700;
+                                        font-size: 9.5px;
+                                        font-weight: 400;
                                         color: Theme.accent;
                                         vertical-alignment: center;
                                     }
@@ -743,9 +744,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "" + root.wt-cutoff-hz + "Hz";
                                         font-family: Tokens.font-mono;
-                                        font-size: 9px;
-                                        font-weight: 700;
-                                        color: #347864;
+                                        font-size: 9.5px;
+                                        font-weight: 400;
+                                        color: #4ade80;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -769,8 +770,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "切换";
                                         font-family: Tokens.font-ui;
-                                        font-size: 9px;
-                                        font-weight: 700;
+                                        font-size: 10px;
+                                        font-weight: 600;
                                         color: #e2e8f0;
                                         vertical-alignment: center;
                                     }
@@ -833,9 +834,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: trk.name;
                                         font-family: Tokens.font-ui;
-                                        font-size: 8px;
-                                        font-weight: 700;
-                                        color: #e2e8f0;
+                                        font-size: 9.5px;
+                                        font-weight: 600;
+                                        color: #f1f5f9;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -859,8 +860,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "IN: 0.0dB";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        color: #94a3b8;
+                                        font-size: 8px;
+                                        color: #cbd5e1;
                                         vertical-alignment: center;
                                     }
 
@@ -872,8 +873,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                         Text {
                                             text: "Ø";
                                             font-family: Tokens.font-mono;
-                                            font-size: 7.5px;
-                                            font-weight: 800;
+                                            font-size: 9px;
+                                            font-weight: 400;
                                             color: #cbd5e1;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
@@ -895,7 +896,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: trk.insert1 != "" ? trk.insert1 : "1: 选音色 ▾";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
+                                        font-size: 8.5px;
                                         color: insert1_touch.has-hover ? #ffffff : #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -925,7 +926,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: trk.insert2 != "" ? trk.insert2 : "2: —";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
+                                        font-size: 8.5px;
                                         color: #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -946,7 +947,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: trk.insert3 != "" ? trk.insert3 : "3: —";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
+                                        font-size: 8.5px;
                                         color: #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -967,8 +968,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "4: Dyn Comp";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
-                                        color: #64748b;
+                                        font-size: 8.5px;
+                                        color: #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -998,9 +999,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                     y: 2px;
                                     text: "EQ";
                                     font-family: Tokens.font-mono;
-                                    font-size: 6.5px;
-                                    font-weight: 700;
-                                    color: #475569;
+                                    font-size: 8px;
+                                    font-weight: 400;
+                                    color: #94a3b8;
                                 }
                             }
 
@@ -1020,16 +1021,16 @@ export component UnifiedLowerDock inherits Rectangle {
                                         padding-left: 2px;
                                         padding-right: 2px;
                                         alignment: space-between;
-                                        Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 6.5px; color: #64748b; }
-                                        Text { text: "-12.0dB"; font-family: Tokens.font-mono; font-size: 6.5px; color: Theme.accent; }
+                                        Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 8px; color: #94a3b8; }
+                                        Text { text: "-12.0dB"; font-family: Tokens.font-mono; font-size: 8px; color: Theme.accent; }
                                     }
 
                                     HorizontalLayout {
                                         padding-left: 2px;
                                         padding-right: 2px;
                                         alignment: space-between;
-                                        Text { text: "SND B"; font-family: Tokens.font-mono; font-size: 6.5px; color: #64748b; }
-                                        Text { text: "-8.5dB"; font-family: Tokens.font-mono; font-size: 6.5px; color: #a78bfa; }
+                                        Text { text: "SND B"; font-family: Tokens.font-mono; font-size: 8px; color: #94a3b8; }
+                                        Text { text: "-8.5dB"; font-family: Tokens.font-mono; font-size: 8px; color: #a78bfa; }
                                     }
                                 }
                             }
@@ -1051,9 +1052,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                         Text {
                                             text: "M";
                                             font-family: Tokens.font-mono;
-                                            font-size: 7px;
-                                            font-weight: 800;
-                                            color: trk.muted ? #020617 : #94a3b8;
+                                            font-size: 9px;
+                                            font-weight: 400;
+                                            color: trk.muted ? #020617 : #cbd5e1;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
@@ -1073,9 +1074,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                         Text {
                                             text: "S";
                                             font-family: Tokens.font-mono;
-                                            font-size: 7px;
-                                            font-weight: 800;
-                                            color: trk.soloed ? #020617 : #94a3b8;
+                                            font-size: 9px;
+                                            font-weight: 400;
+                                            color: trk.soloed ? #020617 : #cbd5e1;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
@@ -1096,9 +1097,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: trk.pan;
                                         font-family: Tokens.font-mono;
-                                        font-size: 7.5px;
-                                        color: mix_pan_touch.has-hover ? #ffffff : #94a3b8;
-                                        font-weight: 700;
+                                        font-size: 8.5px;
+                                        color: mix_pan_touch.has-hover ? #ffffff : #cbd5e1;
+                                        font-weight: 400;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -1229,8 +1230,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                         Text {
                                             text: root.track-volumes.length > tidx ? (root.track-volumes[tidx] + " dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + " dB");
                                             font-family: Tokens.font-mono;
-                                            font-size: 8.5px;
-                                            font-weight: 700;
+                                            font-size: 9px;
+                                            font-weight: 400;
                                             color: trk.color;
                                             vertical-alignment: center;
                                         }
@@ -1252,8 +1253,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: trk.bus != "" ? ("→ " + trk.bus) : "→ Master Bus";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        color: #64748b;
+                                        font-size: 8px;
+                                        color: #94a3b8;
                                         vertical-alignment: center;
                                         overflow: elide;
                                     }
@@ -1290,8 +1291,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "BUS SUM";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        font-weight: 800;
+                                        font-size: 8.5px;
+                                        font-weight: 400;
                                         color: Theme.track-bus;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -1313,8 +1314,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "TRIM: 0.0dB";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        color: #94a3b8;
+                                        font-size: 8px;
+                                        color: #cbd5e1;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1333,7 +1334,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "Tape Saturator";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
+                                        font-size: 8.5px;
                                         color: #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -1354,8 +1355,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "Bus Compressor";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
-                                        color: #94a3b8;
+                                        font-size: 8.5px;
+                                        color: #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1375,8 +1376,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "Linear Phase EQ";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
-                                        color: #64748b;
+                                        font-size: 8.5px;
+                                        color: #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1395,8 +1396,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-left: 3px;
                                     padding-right: 3px;
                                     alignment: space-between;
-                                    Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 6.5px; color: #64748b; }
-                                    Text { text: "-14.0dB"; font-family: Tokens.font-mono; font-size: 6.5px; color: Theme.track-bus; }
+                                    Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 8px; color: #94a3b8; }
+                                    Text { text: "-14.0dB"; font-family: Tokens.font-mono; font-size: 8px; color: Theme.track-bus; }
                                 }
                             }
 
@@ -1407,9 +1408,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "BUS 1+2";
                                     font-family: Tokens.font-mono;
-                                    font-size: 8px;
-                                    color: #64748b;
-                                    font-weight: 700;
+                                    font-size: 8.5px;
+                                    color: #94a3b8;
+                                    font-weight: 400;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1522,8 +1523,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                         Text {
                                             text: "" + (Math.round(root.bus-volume-db * 10.0) / 10.0) + " dB";
                                             font-family: Tokens.font-mono;
-                                            font-size: 8.5px;
-                                            font-weight: 700;
+                                            font-size: 9px;
+                                            font-weight: 400;
                                             color: Theme.track-bus;
                                             vertical-alignment: center;
                                         }
@@ -1545,8 +1546,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "→ Master Bus";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        color: #64748b;
+                                        font-size: 8px;
+                                        color: #94a3b8;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1582,8 +1583,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "MASTER 2-BUS";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        font-weight: 800;
+                                        font-size: 8.5px;
+                                        font-weight: 400;
                                         color: Theme.accent;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -1604,7 +1605,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "TruePeak Limit";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
+                                        font-size: 8.5px;
                                         color: #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -1625,8 +1626,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "Multiband Max";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
-                                        color: #94a3b8;
+                                        font-size: 8.5px;
+                                        color: #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1646,8 +1647,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "Analytic Scope";
                                         font-family: Tokens.font-ui;
-                                        font-size: 7px;
-                                        color: #64748b;
+                                        font-size: 8.5px;
+                                        color: #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1670,9 +1671,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Text {
                                         text: "MONO";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        font-weight: 700;
-                                        color: root.master-mono ? #0f172a : #94a3b8;
+                                        font-size: 8.5px;
+                                        font-weight: 400;
+                                        color: root.master-mono ? #0f172a : #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
@@ -1688,9 +1689,9 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     text: "0 dBTP";
                                     font-family: Tokens.font-mono;
-                                    font-size: 7px;
-                                    color: #347864;
-                                    font-weight: 700;
+                                    font-size: 8.5px;
+                                    color: #4ade80;
+                                    font-weight: 400;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1816,8 +1817,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                         Text {
                                             text: root.master-volume-display != "" ? (root.master-volume-display + " dB") : ("" + root.master-volume-db + " dB");
                                             font-family: Tokens.font-mono;
-                                            font-size: 8.5px;
-                                            font-weight: 800;
+                                            font-size: 9px;
+                                            font-weight: 400;
                                             color: Theme.accent;
                                             vertical-alignment: center;
                                         }
@@ -1837,10 +1838,10 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-right: 3px;
                                     alignment: center;
                                     Text {
-                                        text: "48k / 24-bit";
+                                        text: "48k / 32-bit";
                                         font-family: Tokens.font-mono;
-                                        font-size: 7px;
-                                        color: #64748b;
+                                        font-size: 8px;
+                                        color: #94a3b8;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1869,8 +1870,8 @@ export component UnifiedLowerDock inherits Rectangle {
                             Text {
                                 text: "添加混音轨";
                                 font-family: Tokens.font-ui;
-                                font-size: 8px;
-                                color: add_mix_trk_touch.has-hover ? #f8fafc : #94a3b8;
+                                font-size: 9.5px;
+                                color: add_mix_trk_touch.has-hover ? #f8fafc : #cbd5e1;
                                 horizontal-alignment: center;
                             }
                         }
@@ -1951,9 +1952,9 @@ export component UnifiedLowerDock inherits Rectangle {
             spacing: 2px;
             Text {
                 text: "切换轨道 #\{root.dock-instrument-target-id > 0 ? root.dock-instrument-target-id : root.selected-track-id} 音色 / 插入";
-                font-family: Tokens.font-mono;
-                font-size: 9px;
-                font-weight: 700;
+                font-family: Tokens.font-ui;
+                font-size: 10px;
+                font-weight: 600;
                 color: Theme.accent;
                 height: 20px;
                 vertical-alignment: center;
