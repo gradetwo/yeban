@@ -1634,9 +1634,8 @@ mod tests {
 
     /// 判据（⭐ 第五份报告 C-2）：`slide` 超过 ±2 半音（60 → 72 = +1200 音分）
     /// ⇒ 通道 tick 0 写 RPN 弯音灵敏度（101/100/6/38，范围 12 半音），且弯音
-    /// 按新范围换算 —— 用本仓**只认 ±2** 的回读器量：中点（240 tick、
-    /// 600 音分）应读出 600 × (2/12) = 100 音分（证明 14 位值是按 12 半音
-    /// 范围写的，不是按 ±2 写完被钳的 199）。
+    /// 按新范围换算。回读器已解析 RPN（C-2 导入侧修复）⇒ 中点（240 tick、
+    /// 600 音分）读回 **600**（往返对称；修复前只认 ±2 的回读器读出 100）。
     #[test]
     fn slide_beyond_two_semitones_writes_rpn_and_scales_bends() {
         let project = project_with_slide(60, 72, 480, 480, yeban_model::music::CurveType::Linear);
@@ -1662,8 +1661,8 @@ mod tests {
             .find(|bend| bend.tick == 240)
             .expect("中点弯音必须存在");
         assert_eq!(
-            midpoint.cents, 100,
-            "600 音分按 12 半音范围写出 ⇒ ±2 回读器读出 100（按 ±2 写只会钳出 199）"
+            midpoint.cents, 600,
+            "600 音分按 12 半音范围写出 ⇒ 回读器解析 RPN 后折回 600（往返对称）"
         );
     }
 
