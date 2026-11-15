@@ -9075,15 +9075,17 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     );
     assert_eq!(
         prepared_sfz,
-        88 + seed_table + 24 + 24,
+        88 + seed_table + 24 + 24 + 24,
         "⭐ `PreparedSfz` 的增量 ＝ `size_of::<CcSeedTable>()` ＋ pitch_egs 24 B（摊平表长大，⛔ 不进实时对象）；\
-         ⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 B（式子尾加一个 `+ 24`）**"
+         ⭐ **包络族片修订：`eg_defs: Vec<EgDef>` 再 ＋24 B（式子尾加一个 `+ 24`）**；\
+         ⭐ **LFO 片修订：`lfo_defs: Vec<LfoDef>` 再 ＋24 B（式子尾再加一个 `+ 24`）**"
     );
     assert_eq!(
         plan,
-        88 + seed_table + 24 + 24,
+        88 + seed_table + 24 + 24 + 24,
         "⭐ `SfzPlan` 的增量 ＝ 内层的增量（它按值内联 `PreparedSfz`）；\
-         ⭐ **包络族片修订同内层：`eg_defs` 再 ＋24 B**"
+         ⭐ **包络族片修订同内层：`eg_defs` 再 ＋24 B**；\
+         ⭐ **LFO 片修订同内层：`lfo_defs` 再 ＋24 B**"
     );
     assert_eq!(
         prepared_sfz, plan,
