@@ -68,6 +68,20 @@ pub const STEM_FILE_NAME_MAX_BYTES: usize = 255;
 /// `stemsBasis.basis` 的固定措辞（成本读数必须**自己说清**代价，`WALL ⑦` 的先例）。
 pub const STEMS_BASIS_TEXT: &str = "per-track re-render of the full project window (one project-wide basis render + one render per stem)";
 
+/// 落盘 manifest 的文件名（固定名，住在 `outDir` 里，与分轨同目录）。
+///
+/// manifest 是**机器可读的批次索引**：每条 stem 的 `trackId` / 轨名 / 文件名 /
+/// `sha256` / 字节数等回执字段落盘一份，进程退出后仍可据它判定哪些轨已导出、
+/// 文件是否仍与回执一致（续跑判定依据，报告 ⑩）。它不是音频产物：同目录再次
+/// 成功导出时由 [`write_manifest`] 原子覆盖更新，⛔ 不走分轨的「已存在即拒绝」。
+pub const STEMS_MANIFEST_FILE_NAME: &str = "stems-manifest.json";
+
+/// manifest 的格式标识（`format` 字段的固定值；消费方据它认文件）。
+pub const STEMS_MANIFEST_FORMAT: &str = "yeban-stems-manifest";
+
+/// manifest 的格式版本（整数；字段形状不兼容变更时抬它）。
+pub const STEMS_MANIFEST_VERSION: u64 = 1;
+
 /// 一次已校验的分轨导出请求（**还没有渲染**）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StemRequest {
@@ -136,6 +150,16 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<StemRequest, Fault> {
     }
     let track_ids = match arguments.get("trackIds") {
         None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.is_empty() => {
+            // 空数组 ⛔ 不是「全部轨」也不是「零条也算成功」：它只可能来自
+            // 调用方把筛选条件算空了。响亮拒绝，让它在渲染之前就暴露
+            // （缺省选全部的唯一拼法是**省略** `trackIds` 或给 `null`）。
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                "`trackIds` 不能为空数组: 省略它 (或给 null) 才是导出全部轨",
+                json!({ "field": "trackIds", "received": [] }),
+            ));
+        }
         Some(Value::Array(items)) => {
             let mut ids = Vec::with_capacity(items.len());
             for item in items {
@@ -401,6 +425,37 @@ impl StemBatch {
         stems_basis_value(self.renders, self.basis_frames, self.sample_rate)
     }
 
+    /// manifest 的落点（`outDir` + 固定文件名）。
+    #[must_use]
+    pub fn manifest_path(&self) -> PathBuf {
+        self.request.out_dir.join(STEMS_MANIFEST_FILE_NAME)
+    }
+
+    /// ⭐ 落盘 manifest 的**机器可读**内容（报告 ⑩）。
+    ///
+    /// 字段全部来自现有回执的同一批读数（逐轨走 [`StemRow::to_value`]、跳过轨走
+    /// [`SkippedTrack::to_value`]、成本走 [`Self::stems_basis`]）⛔ 不另算第二份：
+    /// 每条 stem 带 `trackId` / `name`（轨名）/ `fileName` / `path` / `sha256` /
+    /// `bytes` / `frames` / `bitDepth` / `channels` 等，消费方凭 `sha256` 与
+    /// `bytes` 即可在进程退出后核对盘上文件、判定续跑还缺哪些轨。
+    #[must_use]
+    pub fn manifest_value(&self, completed: &[StemRow]) -> Value {
+        json!({
+            "format": STEMS_MANIFEST_FORMAT,
+            "version": STEMS_MANIFEST_VERSION,
+            "outputDir": self.request.out_dir.display().to_string(),
+            "manifestFileName": STEMS_MANIFEST_FILE_NAME,
+            "request": self.request.to_value(),
+            "stemCount": completed.len(),
+            "bytesTotal": completed.iter().map(|row| row.bytes_len).sum::<usize>(),
+            "partial": false,
+            "auditionStateIgnored": true,
+            "stemsBasis": self.stems_basis(),
+            "stems": completed.iter().map(StemRow::to_value).collect::<Vec<_>>(),
+            "skippedTracks": self.skipped.iter().map(SkippedTrack::to_value).collect::<Vec<_>>(),
+        })
+    }
+
     /// `dryRun` 预览：全部实测数字，一个字节都不写盘。
     #[must_use]
     pub fn preview(&self) -> Value {
@@ -420,6 +475,10 @@ impl StemBatch {
             json!(self.request.out_dir.display().to_string()),
         );
         map.insert("request".to_owned(), self.request.to_value());
+        map.insert(
+            "manifestFileName".to_owned(),
+            json!(STEMS_MANIFEST_FILE_NAME),
+        );
         map.insert("willWrite".to_owned(), json!(true));
         map.insert("written".to_owned(), json!(false));
         Value::Object(map)
@@ -451,6 +510,14 @@ impl StemBatch {
             json!(self.request.out_dir.display().to_string()),
         );
         map.insert("request".to_owned(), self.request.to_value());
+        map.insert(
+            "manifestFileName".to_owned(),
+            json!(STEMS_MANIFEST_FILE_NAME),
+        );
+        map.insert(
+            "manifestPath".to_owned(),
+            json!(self.manifest_path().display().to_string()),
+        );
         Value::Object(map)
     }
 
@@ -756,12 +823,36 @@ fn export_with_sink(
 /// `data` 里给出 `completedStems` / `failedTrackId` / `failedReason` / `orphanedFiles` /
 /// `resumeFrom`。⛔ 不用 `"reason"` 这个键名 —— 它是故障词汇表冻结面的字面量，新增一处
 /// 就要重钉一次金标（见 `docs/DEVELOPMENT_LEDGER.md` 的 `fault_vocabulary` 条目）。
+/// ⭐ 把批次 manifest 原子写到 `outDir/stems-manifest.json`（报告 ⑩）。
+///
+/// 内容 = [`StemBatch::manifest_value`] 的 pretty JSON + 末尾换行。写失败
+/// ⇒ 原样回 [`Fault`]（`IO_ERROR`）：分轨已落盘但 manifest 没落盘时**不许**
+/// 假装整批完整成功，调用方据错误知道索引缺失、可重跑补齐。
+///
+/// # Errors
+///
+/// 序列化失败或原子写失败时返回 [`Fault`]。
+pub fn write_manifest(batch: &StemBatch) -> Result<PathBuf, Fault> {
+    let path = batch.manifest_path();
+    let mut text =
+        serde_json::to_string_pretty(&batch.manifest_value(&batch.stems)).map_err(|error| {
+            super::error::from_io(
+                "序列化分轨 manifest",
+                &std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+            )
+        })?;
+    text.push('\n');
+    store::write_project_atomic(&path, text.as_bytes())?;
+    Ok(path)
+}
+
 pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
     // ⭐ 已经在 [`export_streaming`] 里写穿的批次：⛔ 不重写。
     //    重写一次不会错（同一条 `write_project_atomic`、同样的字节），但它会白花
     //    一倍磁盘带宽，而且在"字节已释放"之后 `artifact.bytes` 是空数组 —— 那会写出
     //    一个 0 字节文件。这条短路是"同一批字节只写一次"的护栏。
     if batch.streamed {
+        write_manifest(batch)?;
         return Ok(batch.response_data(&batch.stems));
     }
     // B6（2026-11-14）：写盘口建目录（[`validate`] 只读不建；`dryRun` 不走到
@@ -786,6 +877,7 @@ pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
             ));
         }
     }
+    write_manifest(batch)?;
     Ok(batch.response_data(&batch.stems))
 }
 
@@ -1086,6 +1178,64 @@ mod tests {
                 "同级键集合必须和黄金表一致（字典序 = BTreeMap 承载）"
             );
         }
+    }
+
+    /// 空 `trackIds` 数组必须响亮拒绝（⛔ 不静默导出零条、也不当成全部）。
+    #[test]
+    fn empty_track_ids_array_is_rejected_loudly() {
+        let dir = std::env::temp_dir();
+        let mut arguments = Map::new();
+        arguments.insert("outDir".to_owned(), Value::from(dir.display().to_string()));
+        arguments.insert("trackIds".to_owned(), json!([]));
+        let fault = validate(&arguments).expect_err("空 trackIds 必须被拒绝");
+        match fault {
+            Fault::Domain { code, message, .. } => {
+                assert_eq!(code, ErrorCode::InvalidParameterRange);
+                assert!(message.contains("trackIds"), "文案必须点名: {message}");
+            }
+            other => panic!("必须是领域故障: {other:?}"),
+        }
+    }
+
+    /// manifest 形状：格式标识 + 每条 stem 的 trackId/轨名/文件名/sha256 都在。
+    #[test]
+    fn manifest_value_carries_format_and_per_stem_identity() {
+        use std::str::FromStr;
+        let track_id = EntityId::from_str("01J8ZR00000000000000000001").expect("合法 ULID");
+        let batch = StemBatch {
+            request: StemRequest {
+                out_dir: PathBuf::from("/tmp/stems-out"),
+                track_ids: Some(vec![track_id]),
+            },
+            stems: Vec::new(),
+            skipped: vec![SkippedTrack {
+                track_id,
+                name: "Master".to_owned(),
+                reason: SkipReason::MasterBusTrack,
+                hint: None,
+            }],
+            renders: 1,
+            basis_frames: 48_000,
+            sample_rate: 48_000,
+            streamed: false,
+        };
+        let value = batch.manifest_value(&batch.stems);
+        assert_eq!(value["format"], json!(STEMS_MANIFEST_FORMAT));
+        assert_eq!(value["version"], json!(STEMS_MANIFEST_VERSION));
+        assert_eq!(value["manifestFileName"], json!(STEMS_MANIFEST_FILE_NAME));
+        assert_eq!(value["stemCount"], json!(0));
+        assert_eq!(
+            batch.manifest_path(),
+            PathBuf::from("/tmp/stems-out").join(STEMS_MANIFEST_FILE_NAME)
+        );
+        assert_eq!(
+            value["skippedTracks"][0]["trackId"],
+            json!(track_id.to_canonical_string())
+        );
+        assert_eq!(
+            value["request"]["trackIds"][0],
+            json!(track_id.to_canonical_string())
+        );
     }
 
     /// `notASourceNode` 行带 `hint` 时，`hint` 作为第四个同级键出现，且两种
