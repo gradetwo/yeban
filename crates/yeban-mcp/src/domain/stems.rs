@@ -846,6 +846,11 @@ pub fn write_manifest(batch: &StemBatch) -> Result<PathBuf, Fault> {
     Ok(path)
 }
 
+/// ⭐ 逐条原子落盘（唯一的副作用点，D5）。
+///
+/// 第 k 条失败时：前 k−1 条**保留不删**，回一条 `IO_ERROR` + `errorKind:"stemWriteFailed"`，
+/// `data` 里给出 `completedStems` / `failedTrackId` / `failedReason` / `orphanedFiles` /
+/// `resumeFrom`。全部成功后另写 manifest（[`write_manifest`]）。
 pub fn write(batch: &StemBatch) -> Result<Value, Fault> {
     // ⭐ 已经在 [`export_streaming`] 里写穿的批次：⛔ 不重写。
     //    重写一次不会错（同一条 `write_project_atomic`、同样的字节），但它会白花
