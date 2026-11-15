@@ -104,11 +104,11 @@ pub const CONSOLE_TABS: [ConsoleTab; 3] = [
     },
     ConsoleTab {
         name: "mixer",
-        label: "调音台",
+        label: "混音控制台",
     },
     ConsoleTab {
         name: "devices",
-        label: "设备效果链",
+        label: "设备机架",
     },
 ];
 

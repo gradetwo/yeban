@@ -1150,7 +1150,7 @@ impl ElementRegistry {
             "mixer-console",
             ElementKind::Region,
             "console/mixer_console.slint",
-            "多轨调音台总控",
+            "混音控制台",
             false,
         );
         for (track_index, track) in view.tracks.iter().enumerate() {
@@ -1373,7 +1373,7 @@ impl ElementRegistry {
             "device-rack",
             ElementKind::Region,
             "console/device_rack.slint",
-            "设备效果链",
+            "设备机架",
             false,
         );
         registry.add(
