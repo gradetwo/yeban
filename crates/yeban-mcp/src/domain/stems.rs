@@ -1248,6 +1248,7 @@ fn stem_render_request(
         frames,
         duration_seconds_bits: None,
         target_lufs_bits: None,
+        mastering_clipper_bits: None,
         path,
         contributions: false,
         // ⭐ 审评 2026-10-31（P1-1）：分轨工具没有 threads 实参 ⇒ 基线走缺省多线程

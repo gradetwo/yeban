@@ -305,6 +305,14 @@
 //! 施加后复测），与 CLI 逐语义一致。本工具没有上限参数 ⇒ 上限恒用母带缺省值
 //! [`mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP`]（与两个内置预设同值），
 //! 在请求回显（`data.request.truePeakCeilingDbtp`）与响度块里如实报出。
+//!
+//! ⭐ **2026-11-15 追加（C-1 遗留，Wang 批准开入口）**：`masteringClipper` 实参
+//! 给施加级挂软削波段（`ExportPreset::with_clipper`，与母带链同一器件）：
+//! clipper 先降 crest，伺服再补剩余增益，真峰值上限仍兜底。单独给（无
+//! `targetLufs`）⇒ 拒绝（没有施加级可挂）；子字段缺省 = `ClipperParams::DEFAULT`，
+//! 越界／未知子键 ⇒ 拒绝并点名。回执在 `data.loudness.masteringClipper`（实际
+//! 参数）与 `data.loudness.crestReductionDb`（削掉的 crest）里如实报出，
+//! `data.request.masteringClipper` 同步回显请求值。
 //! 失败报文同步改为**可执行诊断**（清单 §五.3）：带 `reasonKind` 原因分类、
 //! 施加前实测、实际增益与绑定约束、复测值，上限绑定时再给建议 trim。
 //!
@@ -445,7 +453,7 @@
 //!
 //! | 状况 | 出口 |
 //! | :--- | :--- |
-//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / **`contributions` 非布尔** / **⭐ `startTick` / `endTick` 不是非负整数、或 `startTick >= endTick`、或与 `contributions` 同给** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
+//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **`masteringClipper` 非对象、含未知子键、子字段非数字或越界、或未与 `targetLufs` 同给** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / **`contributions` 非布尔** / **⭐ `startTick` / `endTick` 不是非负整数、或 `startTick >= endTick`、或与 `contributions` 同给** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
 //! | 0 帧、**显式帧数或工程末端推导**超出帧数上限、**⭐ 渲染区间换算到帧后为空或超出本次全程渲染帧数**、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID；超限带 `maxFrames`；区间越界带 tick 原值与换算帧数） |
 //! | **母带响度施加后仍未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带 `reasonKind` 原因分类/施加前实测/目标/已施加增益/绑定约束/复测值/差值/容差，上限绑定时带建议 trim） |
@@ -839,6 +847,13 @@ pub struct RenderRequest {
     /// 用「`f32` 的位型」参与 `Eq`（`#[derive(Eq)]` 对 `f32` 不成立），因此这里存
     /// 判定所需的**位型**，读出时用 [`target_lufs`](Self::target_lufs) 还原。
     pub target_lufs_bits: Option<u32>,
+    /// ⭐ C-1 遗留（2026-11-15，Wang 批准开入口）：`masteringClipper` 实参 —— 响度
+    /// 目标施加级里可选的软削波段（clipper 先降 crest，伺服再补剩余增益）。
+    ///
+    /// 存「五个 `f32` 的位型」（与 [`Self::target_lufs_bits`] 同一条 `Eq` 纪律：
+    /// `ClipperParams` 含 `f32`、只有 `PartialEq`），读出时用
+    /// [`Self::mastering_clipper`] 还原。`None` = 没给 ⇒ 施加级与今天逐位一致。
+    pub mastering_clipper_bits: Option<[u32; 5]>,
     /// 显式输出路径（`None` = 按缺省规则从工程路径派生）。
     pub path: Option<PathBuf>,
     /// ⭐ `ADR-0020`：是否额外报**逐轨贡献**（默认 `false`）。
@@ -897,6 +912,19 @@ impl RenderRequest {
         self.target_lufs_bits.map(f32::from_bits)
     }
 
+    /// `masteringClipper` 实参还原（位型 → 参数）；`None` = 没给（施加级不挂削波段）。
+    #[must_use]
+    pub fn mastering_clipper(&self) -> Option<mastering::ClipperParams> {
+        self.mastering_clipper_bits
+            .map(|bits| mastering::ClipperParams {
+                drive_db: f32::from_bits(bits[0]),
+                ceiling_db: f32::from_bits(bits[1]),
+                knee_db: f32::from_bits(bits[2]),
+                mix: f32::from_bits(bits[3]),
+                oversample: f32::from_bits(bits[4]),
+            })
+    }
+
     /// ⭐ `#252`：调用方给的显式时长（秒）；`None` = 没给 `durationSeconds`。
     ///
     /// 只用于回显。渲染用的帧数是 [`Self::frames`]（已在校验期换算好）。
@@ -943,6 +971,8 @@ impl RenderRequest {
             "startTick": self.start_tick,
             "endTick": self.end_tick,
             "targetLufs": self.target_lufs(),
+            // ⭐ C-1 遗留：`masteringClipper` 回显（`null` = 没给 ⇒ 施加级无削波段）。
+            "masteringClipper": self.mastering_clipper().map(mastering_clipper_value),
             "targetToleranceLu": if self.target_lufs_bits.is_some() {
                 Some(TARGET_TOLERANCE_LU)
             } else {
@@ -1015,6 +1045,43 @@ impl RenderRequest {
 /// **施加后复测**的读数下。已达标的目标 ⇒ 增益恒为 `0.0` ⇒ 产物仍与不给目标时
 /// **逐字节相同**（判据
 /// `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached`）。
+/// `masteringClipper` 的 JSON 形状（请求回显与响度块共用这一个拼装点；
+/// 名册在 `output_schema::mastering_clipper_roster`，逐键与这里对齐）。
+fn mastering_clipper_value(params: mastering::ClipperParams) -> Value {
+    serde_json::json!({
+        "driveDb": params.drive_db,
+        "ceilingDb": params.ceiling_db,
+        "kneeDb": params.knee_db,
+        "mix": params.mix,
+        "oversample": params.oversample,
+    })
+}
+
+/// 母带的**实测**响度 + 对目标的判定（进响应 `data.loudness`）。
+///
+/// ## 它为什么不是"第二份测量标准"
+///
+/// 读数**只**来自 `yeban-dsp::loudness` 的 [`GatedLoudness`]（ITU-R BS.1770-4 的
+/// K 加权 + `Γa = −70 LUFS` 绝对门限 + `Γr = −10 LU` 相对门限的**门限积分**），
+/// 也就是 `yeban_query_engine_state` 的 `integratedLufs` 字段背后**同一个**计量器。
+/// 本类型只加两件计量器没有的东西：**目标**与**比较**。
+///
+/// ## 它与渲染的关系（⭐ 2026-11-13 改：给了目标就**施加**）
+///
+/// 没给 `targetLufs` 时它仍然只读：不改一个样本、不参与容器编码，[`RenderArtifact::bytes`]
+/// 与 `sha256`／`masterDigest` 与本切片之前逐字节相同。
+///
+/// 给了 `targetLufs` 时它**就是**施加级的结果：增益在抖动/量化**之前的浮点母带**上
+/// 施加（与 CLI `--loudness-target` 同一实现，见 [`Self::from_apply`]），判定按
+/// **施加后复测**的读数下。已达标的目标 ⇒ 增益恒为 `0.0` ⇒ 产物仍与不给目标时
+/// **逐字节相同**（判据
+/// `the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attached`）。
+///
+/// ## 削波段（⭐ 2026-11-15：`masteringClipper` 入口）
+///
+/// 给了 `targetLufs` 时可同给削波段参数：clipper 先降 crest 再由伺服补剩余增益，
+/// 同一条复测闭环。`mastering_clipper` 回显实际参数，`crest_reduction_db` 报削掉
+/// 的 crest（dB）；没给目标时没有施加级，两键恒 `None`。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoudnessTarget {
     /// 调用方给的目标（LUFS）；`None` = 默认路径（只报读数）。
@@ -1048,6 +1115,14 @@ pub struct LoudnessTarget {
     /// 施加时的真峰值上限（dBTP）；仅给了目标时有值（本工具没有上限参数，
     /// 恒为 `mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP`，回显让口径可见）。
     pub true_peak_ceiling_dbtp: Option<f32>,
+    /// ⭐ C-1 遗留：本次施加级挂的软削波段（回显**请求**的已校验参数，与
+    /// `ExportPreset::with_clipper` 收到的是同一份）；`None` = 没给
+    /// `masteringClipper`（或没给目标 ⇒ 没有施加级）。
+    pub mastering_clipper: Option<mastering::ClipperParams>,
+    /// ⭐ clipper 削掉的 crest（dB；口径 = 真峰值 − 积分响度，施加前 − clipper 后，
+    /// 取自 [`mastering::NormalizeOutcome::crest_reduction_db`]）；仅给了目标且
+    /// `apply` 给出结果时有值；没挂 clipper 时恒 `0.0`。
+    pub crest_reduction_db: Option<f32>,
 }
 
 impl LoudnessTarget {
@@ -1105,6 +1180,8 @@ impl LoudnessTarget {
             gain_bound: None,
             before_gain_lufs: None,
             true_peak_ceiling_dbtp: None,
+            mastering_clipper: None,
+            crest_reduction_db: None,
         }
     }
 
@@ -1133,6 +1210,8 @@ impl LoudnessTarget {
                 gain_bound: Some(BOUND_NOTHING_TO_DO),
                 before_gain_lufs: None,
                 true_peak_ceiling_dbtp: Some(ceiling),
+                mastering_clipper: None,
+                crest_reduction_db: None,
             };
         };
         let before = outcome
@@ -1154,6 +1233,8 @@ impl LoudnessTarget {
             gain_bound: Some(gain_bound_name(outcome.bound)),
             before_gain_lufs: before,
             true_peak_ceiling_dbtp: Some(ceiling),
+            mastering_clipper: None,
+            crest_reduction_db: Some(outcome.crest_reduction_db),
         };
         if before.is_none() {
             // 静音：`apply` 不动样本（增益 0），测不出 ⇒ 无法判定（与只测时代同一出口）。
@@ -1212,6 +1293,9 @@ impl LoudnessTarget {
             "gainBound": self.gain_bound,
             "beforeGainLufs": json_f32(self.before_gain_lufs),
             "truePeakCeilingDbtp": json_f32(self.true_peak_ceiling_dbtp),
+            // ⭐ C-1 遗留：削波段回显与 crest 削减量（没给目标时恒 `null` —— 没有施加级）。
+            "masteringClipper": self.mastering_clipper.map(mastering_clipper_value),
+            "crestReductionDb": json_f32(self.crest_reduction_db),
             "algorithm": "ITU-R BS.1770-4 (K-weighted, gated integrated: Γa = −70 LUFS, Γr = −10 LU)",
             "implementation": "yeban-dsp::loudness::GatedLoudness (与 yeban_query_engine_state 的 integratedLufs 同一计量器)",
             "specId": "ARCH-UI-002",
@@ -1817,6 +1901,90 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    // ⭐ C-1 遗留（2026-11-15，Wang 批准开入口）：`masteringClipper` —— 响度目标
+    // 施加级的可选软削波段。只与 `targetLufs` 同给才有意义（施加级只在给了目标
+    // 时存在）⇒ 单独给直接拒，⛔ 不静默忽略。子字段全可选（缺省 =
+    // `ClipperParams::DEFAULT`）；未知子键 / 非数字 / 越界一律带内拒绝并点名，
+    // 与 `targetLufs` 同一条响亮纪律（`ClipperParams::sanitised()` 只作兜底，
+    // 不当校验用）。
+    let mastering_clipper_bits = match arguments.get("masteringClipper") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(fields)) => {
+            if target_lufs_bits.is_none() {
+                return Err(Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    "`masteringClipper` 是响度目标施加级的削波段, 必须与 `targetLufs` 同给 (没给目标时没有施加级)",
+                ));
+            }
+            let mut params = mastering::ClipperParams::DEFAULT;
+            for (key, value) in fields {
+                let number = match value {
+                    Value::Number(raw) => raw.as_f64().map_or(f32::NAN, |v| v as f32),
+                    _ => f32::NAN,
+                };
+                let slot = match key.as_str() {
+                    "driveDb" => &mut params.drive_db,
+                    "ceilingDb" => &mut params.ceiling_db,
+                    "kneeDb" => &mut params.knee_db,
+                    "mix" => &mut params.mix,
+                    "oversample" => &mut params.oversample,
+                    other => {
+                        return Err(Fault::domain(
+                            ErrorCode::InvalidParameterRange,
+                            format!(
+                                "`masteringClipper` 含未知子键 `{other}` (合法子键: driveDb / ceilingDb / kneeDb / mix / oversample)"
+                            ),
+                        ));
+                    }
+                };
+                if !number.is_finite() {
+                    return Err(Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`masteringClipper.{key}` 必须是有限数字, 实际收到 {value}"),
+                    ));
+                }
+                *slot = number;
+            }
+            // 范围与 `ClipperParams` 的合法域逐条对齐。
+            for (key, value, low, high) in [
+                ("driveDb", params.drive_db, 0.0, 24.0),
+                ("ceilingDb", params.ceiling_db, -6.0, 0.0),
+                ("kneeDb", params.knee_db, 0.0, 6.0),
+                ("mix", params.mix, 0.0, 1.0),
+            ] {
+                if !(low..=high).contains(&value) {
+                    return Err(Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "`masteringClipper.{key}` 必须在 {low}..={high} 之间, 实际收到 {value}"
+                        ),
+                    ));
+                }
+            }
+            if ![1.0, 2.0, 4.0, 8.0].contains(&params.oversample) {
+                return Err(Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`masteringClipper.oversample` 必须是 1 / 2 / 4 / 8 之一, 实际收到 {}",
+                        params.oversample
+                    ),
+                ));
+            }
+            Some([
+                params.drive_db.to_bits(),
+                params.ceiling_db.to_bits(),
+                params.knee_db.to_bits(),
+                params.mix.to_bits(),
+                params.oversample.to_bits(),
+            ])
+        }
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`masteringClipper` 必须是对象, 实际收到 {other}"),
+            ));
+        }
+    };
     let path = match arguments.get("path") {
         None => None,
         Some(Value::String(text)) if !text.trim().is_empty() => Some(PathBuf::from(text)),
@@ -1997,6 +2165,7 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
         frames,
         duration_seconds_bits,
         target_lufs_bits,
+        mastering_clipper_bits,
         path,
         contributions,
         threads,
@@ -3936,6 +4105,8 @@ pub fn build(
     // 本工具没有上限参数 ⇒ 上限恒用母带缺省值
     // [`mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP`]（与两个内置预设同值），
     // 并在请求回显与响度块里如实报出。
+    // ⭐ C-1 遗留：给了 `masteringClipper` 时同一 preset 再挂软削波段（先降 crest、
+    // 伺服补剩余增益），回执在响度块回显参数与 `crestReductionDb`。
     // 位置在峰值归一化**之后**、削波/真峰值读数（10a）**之前** ⇒ 10a 起的全部
     // 读数描述的都是**最终**样本。增益真的改了样本时，按第 9 步同一纪律重算摘要；
     // 增益为 0（已达标 / 静音 / 测不出）时一个样本都不碰。
@@ -3951,9 +4122,13 @@ pub fn build(
         let preset = mastering::ExportPreset::new(
             Some(target),
             Some(mastering::DEFAULT_TRUE_PEAK_CEILING_DBTP),
-        );
+        )
+        .with_clipper(request.mastering_clipper());
         if let Some(outcome) = preset.apply(sample_rate, &mut left, &mut right) {
-            if outcome.gain_db != 0.0 {
+            // ⭐ 挂了 clipper 时增益为 0 也要写回：削波段在伺服之前已经改过样本
+            // （降 crest），只看 `gain_db` 会把削波后的样本丢掉、产物留下未削波的
+            // 原样，而回执却报了 crest 削减量 ⇒ 读数与产物对不上。
+            if outcome.gain_db != 0.0 || request.mastering_clipper().is_some() {
                 for index in 0..frames {
                     output.samples[index * MASTER_CHANNELS] = left[index];
                     output.samples[index * MASTER_CHANNELS + 1] = right[index];
@@ -4022,7 +4197,13 @@ pub fn build(
     //      没给目标 ⇒ 只测（默认路径, 逐字节不变）; 给了目标 ⇒ 用 10-pre 的
     //      施加结果（**复测**值）判定, `measuredIntegratedLufs` 报交付物的读数。
     let loudness = match request.target_lufs() {
-        Some(target) => LoudnessTarget::from_apply(target, loudness_outcome),
+        Some(target) => {
+            // ⭐ C-1 遗留：回执补上削波段回显（来源是请求；crest 削减量已由
+            // `from_apply` 从 `NormalizeOutcome` 带入）。
+            let mut receipt = LoudnessTarget::from_apply(target, loudness_outcome);
+            receipt.mastering_clipper = request.mastering_clipper();
+            receipt
+        }
         None => LoudnessTarget::measure(sample_rate, MASTER_CHANNELS, &output.samples, None),
     };
     // 判定的两个否定出口都**不落盘**：`fail`（不达标）与 `unmeasurable`（测不出 ⇒
@@ -4153,6 +4334,7 @@ pub fn track_contributions(
         frames: Some(master.frames),
         duration_seconds_bits: None,
         target_lufs_bits: None,
+        mastering_clipper_bits: None,
         path: None,
         contributions: false,
         // ⭐ 审评 2026-10-31（P1-1）：逐轨贡献的 1+N 次渲染继承调用方的线程选择。
@@ -7513,7 +7695,7 @@ mod tests {
     }
 
     #[test]
-    fn the_applied_loudness_block_has_the_fifteen_roster_keys() {
+    fn the_applied_loudness_block_has_the_seventeen_roster_keys() {
         // 与 `output_schema::loudness_roster` 逐键同集（广播侧另有判据核对）。
         let value = LoudnessTarget::from_apply(
             -10.0,
@@ -7534,9 +7716,11 @@ mod tests {
                 "algorithm",
                 "appliedGainDb",
                 "beforeGainLufs",
+                "crestReductionDb",
                 "deltaLu",
                 "gainBound",
                 "implementation",
+                "masteringClipper",
                 "measured",
                 "measuredIntegratedLufs",
                 "measurementNote",
@@ -7554,5 +7738,12 @@ mod tests {
         assert_eq!(plain["gainBound"], Value::Null);
         assert_eq!(plain["beforeGainLufs"], Value::Null);
         assert_eq!(plain["truePeakCeilingDbtp"], Value::Null);
+        // 没给目标 ⇒ 没有施加级 ⇒ 削波段回显与 crest 削减量同样恒 `null`。
+        assert_eq!(plain["masteringClipper"], Value::Null);
+        assert_eq!(plain["crestReductionDb"], Value::Null);
+        // 给了目标但没挂 clipper：crest 削减量是实测的 `0.0`（不是 `null`），
+        // 削波段回显仍是 `null`（回执侧由调用点补请求值，本构造点恒 `None`）。
+        assert_eq!(value["crestReductionDb"], 0.0);
+        assert_eq!(value["masteringClipper"], Value::Null);
     }
 }
