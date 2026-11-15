@@ -27,6 +27,7 @@
 //! 实时块边界落点）都在 `yeban-render` 与 `yeban-engine`，它们⛔ 不得再造第二张表。
 
 use crate::channel_strip::ChannelStripParams;
+use crate::clipper::ClipperParams;
 use crate::convolution_reverb::{
     ConvolutionReverbParams, MAX_IR_GAIN_DB, MAX_PRE_DELAY_SECONDS, MIN_IR_GAIN_DB,
 };
@@ -1168,6 +1169,102 @@ impl LimiterField {
     }
 }
 
+/// 软削波器上**可被 `DeviceParam` 自动化落点**的字段（第五份报告 C-1）。
+///
+/// 与 `clipper_of` 的静态投影**同一张拼写表**（[`Self::SPELLINGS`]），
+/// 全部带 `clipper_` 前缀（⛔ 不提供裸 `drive` / `mix`：会撞通道条与磁带）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ClipperField {
+    /// 输入驱动（dB，0..24）。`clipper_drive_db`。
+    DriveDb,
+    /// 削波渐近线（dBFS，−6..0）。`clipper_ceiling_db`。
+    CeilingDb,
+    /// 软膝宽度（dB，0..6）。`clipper_knee_db`。
+    KneeDb,
+    /// 干湿比（0..1）。`clipper_mix`。
+    Mix,
+    /// 过采样倍数（1/2/4/8）。`clipper_oversample`。
+    Oversample,
+}
+
+impl ClipperField {
+    /// 全部字段。
+    pub const ALL: &'static [Self] = &[
+        Self::DriveDb,
+        Self::CeilingDb,
+        Self::KneeDb,
+        Self::Mix,
+        Self::Oversample,
+    ];
+
+    /// **全部拼写** → 字段（`5` 条 = `5` 个字段）。
+    pub const SPELLINGS: &'static [(&'static str, Self)] = &[
+        ("clipper_drive_db", Self::DriveDb),
+        ("clipper_ceiling_db", Self::CeilingDb),
+        ("clipper_knee_db", Self::KneeDb),
+        ("clipper_mix", Self::Mix),
+        ("clipper_oversample", Self::Oversample),
+    ];
+
+    /// 名字 → 字段（大小写不敏感）。
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| name.eq_ignore_ascii_case(spelling))
+            .map(|(_, field)| *field)
+    }
+
+    /// 规范名。
+    #[must_use]
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::DriveDb => "clipper_drive_db",
+            Self::CeilingDb => "clipper_ceiling_db",
+            Self::KneeDb => "clipper_knee_db",
+            Self::Mix => "clipper_mix",
+            Self::Oversample => "clipper_oversample",
+        }
+    }
+
+    /// 本字段是否是**开关**（削波器没有开关字段）。
+    #[must_use]
+    pub const fn is_flag(self) -> bool {
+        false
+    }
+
+    /// 从参数结构里读这个字段。
+    #[must_use]
+    pub fn read(self, params: &ClipperParams) -> f32 {
+        match self {
+            Self::DriveDb => params.drive_db,
+            Self::CeilingDb => params.ceiling_db,
+            Self::KneeDb => params.knee_db,
+            Self::Mix => params.mix,
+            Self::Oversample => params.oversample,
+        }
+    }
+
+    /// 把**原生绝对值**写进参数结构（⛔ 不在这里钳制：钳制在 `sanitised()`）。
+    pub fn store(self, params: &mut ClipperParams, value: f32) {
+        match self {
+            Self::DriveDb => params.drive_db = value,
+            Self::CeilingDb => params.ceiling_db = value,
+            Self::KneeDb => params.knee_db = value,
+            Self::Mix => params.mix = value,
+            Self::Oversample => params.oversample = value,
+        }
+    }
+
+    /// 与器件**同一次**钳制：把值写进一份 `DEFAULT`、`sanitised()`、再读回来。
+    #[must_use]
+    pub fn sanitise(self, value: f32) -> f32 {
+        let mut params = ClipperParams::DEFAULT;
+        self.store(&mut params, value);
+        self.read(&params.sanitised())
+    }
+}
+
 /// 一条 `DeviceParam` 泳道在离线插入链上的**落点**：器件族 ＋ 字段。
 ///
 /// [`Self::from_name`] 是“哪个名字有落点”的**唯一**判定处：静态投影
@@ -1186,6 +1283,8 @@ pub enum DeviceParamField {
     Delay(DelayField),
     /// 插入式限制器字段。
     Limiter(LimiterField),
+    /// 软削波器字段。
+    Clipper(ClipperField),
 }
 
 /// 强制实例化按**器件族**分开。
@@ -1203,6 +1302,8 @@ pub enum DeviceParamFamily {
     Delay,
     /// 限制器。
     Limiter,
+    /// 软削波器。
+    Clipper,
 }
 
 impl DeviceParamField {
@@ -1216,6 +1317,7 @@ impl DeviceParamField {
             .or_else(|| ConvolutionField::from_name(name).map(Self::Convolution))
             .or_else(|| DelayField::from_name(name).map(Self::Delay))
             .or_else(|| LimiterField::from_name(name).map(Self::Limiter))
+            .or_else(|| ClipperField::from_name(name).map(Self::Clipper))
     }
 
     /// 规范名。
@@ -1228,6 +1330,7 @@ impl DeviceParamField {
             Self::Convolution(field) => field.canonical_name(),
             Self::Delay(field) => field.canonical_name(),
             Self::Limiter(field) => field.canonical_name(),
+            Self::Clipper(field) => field.canonical_name(),
         }
     }
 
@@ -1241,6 +1344,7 @@ impl DeviceParamField {
             Self::Convolution(_) => DeviceParamFamily::Convolution,
             Self::Delay(_) => DeviceParamFamily::Delay,
             Self::Limiter(_) => DeviceParamFamily::Limiter,
+            Self::Clipper(_) => DeviceParamFamily::Clipper,
         }
     }
 
@@ -1254,6 +1358,7 @@ impl DeviceParamField {
             Self::Convolution(field) => field.sanitise(value),
             Self::Delay(field) => field.sanitise(value),
             Self::Limiter(field) => field.sanitise(value),
+            Self::Clipper(field) => field.sanitise(value),
         }
     }
 }

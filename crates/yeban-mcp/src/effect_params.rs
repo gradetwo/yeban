@@ -758,6 +758,61 @@ const LIMITER: EffectGroup = EffectGroup {
     ],
 };
 
+/// 软削波器：母带软削波（C-1；普通插入器件，母带链首个使用点）。
+const CLIPPER: EffectGroup = EffectGroup {
+    id: "clipper",
+    title: "软削波器",
+    summary: "软膝削波：膝以下线性、膝以上渐近 ceiling（永不越界），带过采样抗混叠。\
+              母带链位置在磁带饱和之后、限制器之前：先削 crest 降峰均比，限制器只兜底真峰值。",
+    params: &[
+        EffectParam {
+            name: "clipper_drive_db",
+            aliases: &[],
+            unit: "dB",
+            min: 0.0,
+            max: 24.0,
+            default: 6.0,
+            doc: "输入驱动：把瞬态推过膝点的量，决定削多少 crest。默认 6 dB",
+        },
+        EffectParam {
+            name: "clipper_ceiling_db",
+            aliases: &[],
+            unit: "dB",
+            min: -6.0,
+            max: 0.0,
+            default: -1.0,
+            doc: "削波渐近线：输出（全湿时）渐近到它、严格不超过它。默认 −1 dB 与 limiter 天花板对齐",
+        },
+        EffectParam {
+            name: "clipper_knee_db",
+            aliases: &[],
+            unit: "dB",
+            min: 0.0,
+            max: 6.0,
+            default: 3.0,
+            doc: "软膝宽度：0 近硬削（谐波多），6 膝起点在 ceiling 之下 6 dB（谐波少）",
+        },
+        EffectParam {
+            name: "clipper_mix",
+            aliases: &[],
+            unit: "",
+            min: 0.0,
+            max: 1.0,
+            default: 1.0,
+            doc: "干湿并行比：1 = 全湿；调低保留瞬态质感（并行压缩式）",
+        },
+        EffectParam {
+            name: "clipper_oversample",
+            aliases: &[],
+            unit: "x",
+            min: 1.0,
+            max: 8.0,
+            default: 4.0,
+            doc: "过采样倍数（只认 1/2/4/8，器件吸附到最近档）：削波谐波在过采样域产生、抽取前滤除，不折回可听带",
+        },
+    ],
+};
+
 /// 采样延迟：手动相位对齐第一层（纯延迟、无反馈、100% 湿）。
 const SAMPLE_DELAY: EffectGroup = EffectGroup {
     id: "sampleDelay",
@@ -786,7 +841,7 @@ const SAMPLE_DELAY: EffectGroup = EffectGroup {
 };
 
 /// 全部**引擎真正认**的效果器参数，按器件分组（顺序稳定，schema 与读回共用）。
-pub const EFFECT_GROUPS: [EffectGroup; 11] = [
+pub const EFFECT_GROUPS: [EffectGroup; 12] = [
     CHANNEL_STRIP,
     EQ,
     FILTER,
@@ -798,6 +853,7 @@ pub const EFFECT_GROUPS: [EffectGroup; 11] = [
     DELAY,
     LIMITER,
     SAMPLE_DELAY,
+    CLIPPER,
 ];
 
 /// 按名字（大小写不敏感）查一个参数的归属。

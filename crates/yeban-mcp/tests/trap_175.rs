@@ -335,20 +335,21 @@ fn a_deliberately_unrecognised_name_is_accepted_but_warned() {
 /// 动态 EQ `deq_*`，各 1 别名）⇒ **＋10 规范、＋10 别名 = 109**（62 + 47）。
 /// ⭐ **手动相位对齐第一层**：新增 `sampleDelay` 组，2 条规范拼写
 /// （`sample_delay_samples` / `sample_delay_invert`，各 1 别名）⇒ **＋2 规范、＋2 别名 = 113**（64 + 49）。
+/// ⭐ **C-1**：新增 `clipper` 组，5 条规范拼写、0 别名 ⇒ **118**（69 + 49）。
 #[test]
 fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
     let names = effect_params::recognised_names();
     assert_eq!(
         names.len(),
-        113,
-        "拼写总数必须是 64 规范 + 49 别名 = 113，实测 {names:?}"
+        118,
+        "拼写总数必须是 69 规范 + 49 别名 = 118，实测 {names:?}"
     );
     assert_eq!(
         effect_params::EFFECT_GROUPS
             .iter()
             .map(|group| group.params.len())
             .sum::<usize>(),
-        64,
+        69,
         "规范名个数（`#156` 的 45 ＋ `tape_asym` ＋ `conv_ir_stereo` ＋ `P6` 的 5 条 `limiter_*` ＋ 预制线的 10 条 ＋ 相位对齐线的 2 条）"
     );
 
@@ -363,7 +364,7 @@ fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
     let branches = insert["properties"]["device"]["properties"]["params"]["items"]["oneOf"]
         .as_array()
         .expect("device.params.items.oneOf");
-    assert_eq!(branches.len(), 64, "每个引擎参数一个分支");
+    assert_eq!(branches.len(), 69, "每个引擎参数一个分支");
     let published: Vec<String> = branches
         .iter()
         .flat_map(|branch| {
@@ -375,7 +376,7 @@ fn the_eight_fifty_eight_published_spellings_are_still_all_there() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert_eq!(published.len(), 113, "公告的拼写总数");
+    assert_eq!(published.len(), 118, "公告的拼写总数");
     for name in &names {
         assert!(
             published.iter().any(|item| item == name),
@@ -485,8 +486,8 @@ fn the_warning_hands_back_the_exact_accepted_spellings() {
     let table = effect_params::recognised_names();
     assert_eq!(
         table.len(),
-        113,
-        "本判据的前提是词表有 113 个拼写（判据 ④ 也钉这个数）"
+        118,
+        "本判据的前提是词表有 118 个拼写（判据 ④ 也钉这个数）"
     );
 
     for warning in warnings {

@@ -1173,6 +1173,12 @@ pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &[
     "limiter_release_ms",
     "limiter_lookahead",
     "limiter_true_peak",
+    // 软削波器（5 = 5 个字段；C-1，⛔ 无别名：裸 `drive` / `mix` 会撞通道条与磁带）。
+    "clipper_drive_db",
+    "clipper_ceiling_db",
+    "clipper_knee_db",
+    "clipper_mix",
+    "clipper_oversample",
 ];
 
 /// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与静态投影的同一口径）。
@@ -1223,6 +1229,10 @@ fn static_insert_field_value(track: &TrackV3, field: DeviceParamField) -> Option
         }
         DeviceParamField::Limiter(field) => {
             let params = crate::inserts::limiter_source_params(track)?;
+            Some(field.sanitise(field.read(&params)))
+        }
+        DeviceParamField::Clipper(field) => {
+            let params = crate::inserts::clipper_source_params(track)?;
             Some(field.sanitise(field.read(&params)))
         }
     }
@@ -1280,6 +1290,9 @@ fn applicable_device_param(
         DeviceParamFamily::Delay => delay_source_slot(track) == Some(slot_index),
         DeviceParamFamily::Limiter => {
             crate::inserts::limiter_source_slot(track) == Some(slot_index)
+        }
+        DeviceParamFamily::Clipper => {
+            crate::inserts::clipper_source_slot(track) == Some(slot_index)
         }
     };
     if !slot_is_source {
@@ -1864,6 +1877,9 @@ pub fn forced_insert_instances(
                 }
                 DeviceParamFamily::Limiter => {
                     forced.limiter.insert(*track_id);
+                }
+                DeviceParamFamily::Clipper => {
+                    forced.clipper.insert(*track_id);
                 }
             }
         }
@@ -3257,6 +3273,37 @@ mod tests {
             0.0,
             1.0,
         ),
+        // 软削波器 5 字段（C-1）：两端落在器件合法域内、差值足够大。
+        (
+            DeviceParamField::Clipper(yeban_dsp::device_param::ClipperField::DriveDb),
+            "clipper_drive_db",
+            6.0,
+            12.0,
+        ),
+        (
+            DeviceParamField::Clipper(yeban_dsp::device_param::ClipperField::CeilingDb),
+            "clipper_ceiling_db",
+            -1.0,
+            -2.0,
+        ),
+        (
+            DeviceParamField::Clipper(yeban_dsp::device_param::ClipperField::KneeDb),
+            "clipper_knee_db",
+            3.0,
+            5.0,
+        ),
+        (
+            DeviceParamField::Clipper(yeban_dsp::device_param::ClipperField::Mix),
+            "clipper_mix",
+            1.0,
+            0.5,
+        ),
+        (
+            DeviceParamField::Clipper(yeban_dsp::device_param::ClipperField::Oversample),
+            "clipper_oversample",
+            2.0,
+            8.0,
+        ),
     ];
 
     /// 一个**名单拼写**的用例：落点、规范名、静态值、终点值。
@@ -3387,8 +3434,12 @@ mod tests {
             + ConvolutionField::SPELLINGS.len()
             + DelayField::SPELLINGS.len()
             + TapeField::SPELLINGS.len()
-            + yeban_dsp::device_param::LimiterField::SPELLINGS.len();
-        assert_eq!(expected_len, 105, "61 + 6 + 8 + 15 + 10 + 5 = 105 个拼写");
+            + yeban_dsp::device_param::LimiterField::SPELLINGS.len()
+            + yeban_dsp::device_param::ClipperField::SPELLINGS.len();
+        assert_eq!(
+            expected_len, 110,
+            "61 + 6 + 8 + 15 + 10 + 5 + 5 = 110 个拼写"
+        );
         assert_eq!(
             APPLIED_DEVICE_PARAM_NAMES.len(),
             expected_len,
@@ -3405,6 +3456,11 @@ mod tests {
             .chain(TapeField::SPELLINGS.iter().map(|(name, _)| *name))
             .chain(
                 yeban_dsp::device_param::LimiterField::SPELLINGS
+                    .iter()
+                    .map(|(name, _)| *name),
+            )
+            .chain(
+                yeban_dsp::device_param::ClipperField::SPELLINGS
                     .iter()
                     .map(|(name, _)| *name),
             )

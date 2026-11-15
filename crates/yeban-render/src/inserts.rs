@@ -151,9 +151,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams, MONO_BELOW_BYPASS_HZ};
+use yeban_dsp::clipper::{Clipper, ClipperParams};
 use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::delay::{Delay, DelayParams};
-use yeban_dsp::device_param::{LimiterField, delay_params_from_stage};
+use yeban_dsp::device_param::{ClipperField, LimiterField, delay_params_from_stage};
 use yeban_dsp::limiter::{InsertLimiter, LimiterParams};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::oversample::OS_TAPS;
@@ -281,6 +282,11 @@ pub struct InsertChain {
     /// 因此渲染计划必须把那几帧加进本节点的 `latency`（见 [`crate::render::track_latencies`]），
     /// 否则多轨合流时这一轨整体前移一个前瞻长度。
     limiter: Option<LimiterParams>,
+    /// 软削波器参数；`None` = 本轨没有削波器（C-1）。
+    ///
+    /// 链上位置在磁带饱和**之后**、限制器**之前**（母带链 Strip → Tape →
+    /// Clipper → Limiter 的同一顺序）：削波降 crest，限制器只兜底真峰值。
+    clipper: Option<ClipperParams>,
     /// **编译期强制实例化通道条**（任务单 `#266`）。
     ///
     /// `true` = 本轨有**非恒等**的 `DeviceParam` 泳道 ⇒ 即使投影结果是"全恒等"
@@ -306,6 +312,9 @@ pub struct InsertChain {
     /// **编译期强制实例化限制器**（与 `#293` 同理）：一条非恒等的限制器泳道
     /// 在块边界改参数时，器件必须已经存在。
     force_limiter: bool,
+    /// **编译期强制实例化削波器**（与 `#293` 同理）：静态 `clipper_mix: 0`
+    /// 时运行态不建器件，但一条非恒等削波泳道会在块边界把它拉起来。
+    force_clipper: bool,
 }
 
 impl InsertChain {
@@ -320,12 +329,14 @@ impl InsertChain {
             delay: None,
             sample_delay: None,
             limiter: None,
+            clipper: None,
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
             force_convolution: false,
             force_delay: false,
             force_limiter: false,
+            force_clipper: false,
         }
     }
 
@@ -349,6 +360,7 @@ impl InsertChain {
         let mut delay: Option<DelayParams> = None;
         let mut sample_delay: Option<SampleDelayParams> = None;
         let mut limiter: Option<LimiterParams> = None;
+        let mut clipper: Option<ClipperParams> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
@@ -374,6 +386,9 @@ impl InsertChain {
             if limiter.is_none() {
                 limiter = limiter_of(device);
             }
+            if clipper.is_none() {
+                clipper = clipper_of(device);
+            }
             if strip.is_some()
                 && saturation.is_some()
                 && reverb.is_some()
@@ -381,6 +396,7 @@ impl InsertChain {
                 && delay.is_some()
                 && sample_delay.is_some()
                 && limiter.is_some()
+                && clipper.is_some()
             {
                 break;
             }
@@ -393,12 +409,14 @@ impl InsertChain {
             delay,
             sample_delay,
             limiter: limiter.map(LimiterParams::sanitised),
+            clipper: clipper.map(ClipperParams::sanitised),
             force_strip: false,
             force_saturation: false,
             force_reverb: false,
             force_convolution: false,
             force_delay: false,
             force_limiter: false,
+            force_clipper: false,
         }
     }
 
@@ -489,6 +507,25 @@ impl InsertChain {
         self.limiter
     }
 
+    /// 置"强制实例化削波器"位（与 `#293` 同理）。见 [`Self::force_clipper`]。
+    #[must_use]
+    pub const fn with_forced_clipper(mut self, force: bool) -> Self {
+        self.force_clipper = force;
+        self
+    }
+
+    /// 本链是否被编译期强制实例化了削波器（读数用）。
+    #[must_use]
+    pub const fn is_forced_clipper(&self) -> bool {
+        self.force_clipper
+    }
+
+    /// 本链的软削波器参数（读数用）。
+    #[must_use]
+    pub const fn clipper(&self) -> Option<ClipperParams> {
+        self.clipper
+    }
+
     /// 本链是否为空（没有任何**离线会执行**的器件）。
     ///
     /// ⭐ `#303`：**只有压缩参数的通道条算非空** —— 压缩级现在真的执行（§1.1）。
@@ -502,6 +539,7 @@ impl InsertChain {
             && self.delay.is_none()
             && self.sample_delay.is_none()
             && self.limiter.is_none()
+            && self.clipper.is_none()
     }
 
     /// 本链的**静态投影**是否会执行**压缩级**（读数用；⛔ 不是生产判据）。
@@ -663,6 +701,8 @@ pub struct ForcedInsertInstances {
     pub delay: BTreeSet<EntityId>,
     /// 需要强制实例化限制器的轨。
     pub limiter: BTreeSet<EntityId>,
+    /// 需要强制实例化削波器的轨。
+    pub clipper: BTreeSet<EntityId>,
 }
 
 impl ForcedInsertInstances {
@@ -675,6 +715,7 @@ impl ForcedInsertInstances {
             && self.convolution.is_empty()
             && self.delay.is_empty()
             && self.limiter.is_empty()
+            && self.clipper.is_empty()
     }
 }
 
@@ -698,7 +739,8 @@ pub fn project_inserts_with_forced_instances(
                 .with_forced_reverb(forced.reverb.contains(&id))
                 .with_forced_convolution(forced.convolution.contains(&id))
                 .with_forced_delay(forced.delay.contains(&id))
-                .with_forced_limiter(forced.limiter.contains(&id));
+                .with_forced_limiter(forced.limiter.contains(&id))
+                .with_forced_clipper(forced.clipper.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -1018,6 +1060,40 @@ pub fn limiter_source_params(track: &TrackV3) -> Option<LimiterParams> {
 #[must_use]
 pub fn limiter_latency_frames(track: &TrackV3) -> u32 {
     limiter_source_params(track).map_or(0, LimiterParams::latency_frames)
+}
+
+/// 单台设备 → 削波器参数（`None` = 一个已识别的削波器名字都没有）。
+///
+/// 与 [`limiter_of`] 同式：只认 [`ClipperField::SPELLINGS`]（`clipper_` 前缀），
+/// 未写字段保持 [`ClipperParams::DEFAULT`]。
+fn clipper_of(device: &DeviceDefinition) -> Option<ClipperParams> {
+    let mut params = ClipperParams::DEFAULT;
+    let mut seen = false;
+    for param in &device.params {
+        if let Some(field) = ClipperField::from_name(&param.name) {
+            field.store(&mut params, param.value);
+            seen = true;
+        }
+    }
+    if seen { Some(params) } else { None }
+}
+
+/// 本轨 **削波器来源设备**的下标（`from_devices` 的"首个含已识别削波器名字的设备"）。
+#[must_use]
+pub fn clipper_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed
+            && device.kind == DeviceKind::InternalEffect
+            && clipper_of(device).is_some()
+    })
+}
+
+/// 本轨削波器**来源设备**的投影参数（已 sanitised 口径由 `from_devices` 统一处理；
+/// 本入口返回投影原值，器件 `set_params` 再净化一次）。
+#[must_use]
+pub fn clipper_source_params(track: &TrackV3) -> Option<ClipperParams> {
+    let slot = clipper_source_slot(track)?;
+    clipper_of(&track.devices[slot])
 }
 /// 本轨乒乓延迟**来源设备**的投影期参数（未换算；音符同步换算在 `delay_of` 里做，
 /// 与 `from_devices` 交给器件的同一份换算前输入）。
@@ -1581,6 +1657,10 @@ pub(crate) struct InsertRuntime {
     limiter: Option<InsertLimiter>,
     /// 限制器当前参数（块边界自动化改这一份，再 `configure` 成器件配置）。
     limiter_params: LimiterParams,
+    /// 软削波器状态；`None` = 不动（`clipper_mix` 钳制后为 0 且未强制）。
+    clipper: Option<Clipper>,
+    /// 削波器当前参数（块边界自动化改这一份，再 `set_params`）。
+    clipper_params: ClipperParams,
     /// 采样率：只为把限制器的 dB/ms 参数换算成器件域（构造期一次，之后复用）。
     sample_rate: f32,
     /// 左声道去交错缓冲。
@@ -1703,6 +1783,17 @@ impl InsertRuntime {
         // 第一层没有泳道自动化 ⇒ 没有强制位；恒等链丢掉器件不会让任何泳道无落点。
         // 容量 = 满上限（离线侧不省缓冲：块与块之间没有武装期重建，`configure`
         // 一次建满 `MAX + 1` 帧；`process` 按参数钳制到 `容量 − 1`）。
+        let clipper_params = chain.clipper.unwrap_or_default();
+        let clipper = chain.clipper.and_then(|params| {
+            let mut state = Clipper::new();
+            state.configure(sample_rate_f32);
+            state.set_params(params);
+            if state.is_active() || chain.is_forced_clipper() {
+                Some(state)
+            } else {
+                None
+            }
+        });
         let sample_delay_params = chain.sample_delay.unwrap_or_default();
         let sample_delay = chain.sample_delay.and_then(|_| {
             if sample_delay_params.is_identity() {
@@ -1724,6 +1815,8 @@ impl InsertRuntime {
             sample_delay_params,
             limiter,
             limiter_params,
+            clipper,
+            clipper_params,
             sample_rate: sample_rate_f32,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
@@ -1756,6 +1849,9 @@ impl InsertRuntime {
         }
         if let Some(limiter) = &mut self.limiter {
             limiter.reset();
+        }
+        if let Some(clipper) = &mut self.clipper {
+            clipper.reset();
         }
     }
 
@@ -1815,6 +1911,13 @@ impl InsertRuntime {
                     }
                 }
             }
+            // 削波器：五字段落进参数结构，再 `set_params`（不清状态）。
+            DeviceParamField::Clipper(field) => {
+                if let Some(clipper) = &mut self.clipper {
+                    field.store(&mut self.clipper_params, value);
+                    clipper.set_params(self.clipper_params);
+                }
+            }
             // 延迟的 5 个器件字段直接写进运行参数（`Delay::process` 每块读它）；
             // 同步四字段是**投影期输入**，块边界没有 `bpm` 可重算 ⇒ 这里不改
             // `time_s`（同步泳道仍报 applied、仍强制建器件，见 ADR-0061）。
@@ -1858,6 +1961,7 @@ impl InsertRuntime {
             sample_delay,
             sample_delay_params,
             limiter,
+            clipper,
             left,
             right,
             tape_upsampled,
@@ -1887,6 +1991,10 @@ impl InsertRuntime {
                 &mut tape_upsampled[..2 * frames],
                 &mut tape_scratch[..OS_TAPS - 1 + 2 * frames],
             );
+        }
+        // 削波器在磁带之后、限制器之前（C-1 母带链序）：先削 crest，限制器兜底。
+        if let Some(clipper) = clipper {
+            clipper.process(&mut left[..frames], &mut right[..frames]);
         }
         if let Some(reverb) = reverb {
             reverb.process(&mut left[..frames], &mut right[..frames]);
@@ -1945,6 +2053,7 @@ impl InsertRuntime {
             left,
             right,
             limiter,
+            clipper,
             key_left,
             key_right,
             tape_upsampled,
@@ -1980,6 +2089,10 @@ impl InsertRuntime {
                 &mut tape_upsampled[..2 * frames],
                 &mut tape_scratch[..OS_TAPS - 1 + 2 * frames],
             );
+        }
+        // 削波器在磁带之后、限制器之前（C-1 母带链序，与 `process` 同一位）。
+        if let Some(clipper) = clipper {
+            clipper.process(&mut left[..frames], &mut right[..frames]);
         }
         if let Some(reverb) = reverb {
             reverb.process(&mut left[..frames], &mut right[..frames]);
@@ -2105,6 +2218,11 @@ mod tests {
             DeviceParamField::Limiter(LimiterField::ReleaseMs) => 250.0,
             DeviceParamField::Limiter(LimiterField::Lookahead) => 96.0,
             DeviceParamField::Limiter(LimiterField::TruePeak) => 0.0,
+            DeviceParamField::Clipper(ClipperField::DriveDb) => 12.0,
+            DeviceParamField::Clipper(ClipperField::CeilingDb) => -2.0,
+            DeviceParamField::Clipper(ClipperField::KneeDb) => 4.0,
+            DeviceParamField::Clipper(ClipperField::Mix) => 0.8,
+            DeviceParamField::Clipper(ClipperField::Oversample) => 8.0,
         }
     }
 
@@ -2191,6 +2309,18 @@ mod tests {
                         delay_field.read(&projected).to_bits(),
                         delay_field.sanitise(value).to_bits(),
                         "{name} 的投影值与恒等判定值必须同一个"
+                    );
+                }
+                DeviceParamField::Clipper(clipper_field) => {
+                    let projected = clipper_of(&device(&[(name, value)]))
+                        .unwrap_or_else(|| panic!("{name}={value} 必须被 clipper_of 认出来"));
+                    let mut device = Clipper::new();
+                    device.configure(48_000.0);
+                    device.set_params(projected);
+                    assert_eq!(
+                        clipper_field.read(&device.params()).to_bits(),
+                        clipper_field.sanitise(value).to_bits(),
+                        "{name} 的器件读数与恒等判定值必须同一个"
                     );
                 }
             }
@@ -3047,5 +3177,58 @@ mod tests {
             assert_eq!(passthrough[2 * frame].to_bits(), 0.9f32.to_bits());
             assert_eq!(passthrough[2 * frame + 1].to_bits(), (-0.4f32).to_bits());
         }
+    }
+
+    /// C-1：削波器投影 + 运行态处理（1× 路径）：强驱动常量块被渐近压到
+    /// ceiling 之下；`clipper_mix = 0` 时整级丢掉 ⇒ 直通。
+    /// 母带链序由 `process` 的调用顺序保证（Tape → Clipper → Limiter），
+    /// 本判据同时断言三级投影齐备（strip/tape/clipper/limiter 可同链共存）。
+    #[test]
+    fn clipper_runtime_clips_and_drops_an_inactive_stage() {
+        let chain = InsertChain::from_devices(
+            &[device(&[
+                ("tape_drive", 0.5),
+                ("tape_mix", 1.0),
+                ("clipper_drive_db", 12.0),
+                ("clipper_ceiling_db", -1.0),
+                ("clipper_knee_db", 3.0),
+                ("clipper_mix", 1.0),
+                ("clipper_oversample", 1.0),
+                ("limiter_threshold_db", -1.0),
+            ])],
+            48_000,
+            120.0,
+        );
+        assert!(chain.saturation().is_some(), "tape 级投影必须在");
+        assert!(chain.clipper().is_some(), "clipper 级投影必须在");
+        assert!(chain.limiter().is_some(), "limiter 级投影必须在");
+        let mut runtime = InsertRuntime::new(&chain, 48_000, 512);
+        assert!(runtime.clipper.is_some());
+        assert!(runtime.limiter.is_some());
+        let mut buffer = vec![0.0; 2 * 512];
+        for frame in 0..512 {
+            buffer[2 * frame] = 0.9;
+            buffer[2 * frame + 1] = 0.9;
+        }
+        runtime.process(&mut buffer);
+        let ceiling = 10.0f32.powf(-1.0 / 20.0);
+        // 前段含 limiter 前瞻延迟（48 帧环形缓冲初值为 0）与 tape 过采样瞬态，
+        // 只断言稳态段（128 帧起）。
+        for frame in 128..512 {
+            let sample = buffer[2 * frame];
+            assert!(
+                sample <= ceiling + 1e-6,
+                "第 {frame} 帧 {sample} 越过 clipper/limiter 天花板 {ceiling}"
+            );
+            assert!(sample > 0.5, "常量块应被驱动后贴近天花板，实读 {sample}");
+        }
+
+        let quiet_chain = InsertChain::from_devices(
+            &[device(&[("clipper_drive_db", 12.0), ("clipper_mix", 0.0)])],
+            48_000,
+            120.0,
+        );
+        let quiet = InsertRuntime::new(&quiet_chain, 48_000, 512);
+        assert!(quiet.clipper.is_none(), "mix = 0 ⇒ 不建器件");
     }
 }

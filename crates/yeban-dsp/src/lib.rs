@@ -51,6 +51,7 @@
 //! | [`convolution_reverb`] | 卷积混响**外壳**：四通路核 ＋ 湿路预延迟（≤100 ms）＋ 独立湿/干电平 ＋ IR 增益（dB），**零延迟**、逐样本零分配 | 装配 [ARCH-RT-001, ARCH-PDC-001] |
 //! | [`shaping`] | bitcrusher / shaping EQ / transient shaper | `fx_shaping.rs` |
 //! | [`compressor`] | 前馈式压缩器：软膝静态曲线 + RMS 检波 + 线性域增益弹道（**零延迟**） | 新写 [ARCH-RT-001]；本机无移植源，见该模块 §8 |
+//! | [`clipper`] | 母带软削波器：软膝渐近 ceiling + Oversampler2x 级联过采样（1/2/4/8×） | 新写 [第五份报告 C-1] |
 //! | [`tape`] | 磁带饱和：链级饱和器（`pade_tanh`＋2x 过采样＋湿路低通），覆盖采样器轨 | 新写 [ADR-0062] |
 //! | [`channel_strip`] | 通道条：输入增益 → EQ → 滤波 → 动态（压缩） → 输出增益（**组合**既有器件，零延迟） | 组合 [ARCH-DSP-001]，见该模块 §2 |
 //! | [`gate`] | 噪声门 / 扩展器 / 闪避器：侧链键滤波 + 峰值/RMS 检波 + 迟滞与保持 + 线性域弹道（**零延迟**） | 新写 [ARCH-RT-001, ARCH-DSP-001] |
@@ -80,6 +81,7 @@
 pub mod band_solo;
 pub mod block;
 pub mod channel_strip;
+pub mod clipper;
 pub mod comb;
 pub mod compressor;
 pub mod convolution;
