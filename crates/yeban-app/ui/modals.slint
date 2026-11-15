@@ -14,7 +14,7 @@ export component CommandPaletteModal inherits Rectangle {
         { id: "tab-devices",     title: "切换底栏：内联 DSP 设备机架 (Inline Devices)", category: "View", shortcut: "Shift+Tab" },
         { id: "tab-mixer",       title: "切换底栏：MixConsole 混音控制台 (Mixer)", category: "View", shortcut: "X" },
         { id: "tab-pianoroll",   title: "切换底栏：MPE 钢琴卷帘编辑器 (Piano Roll)", category: "View", shortcut: "P" },
-        { id: "action-add-track",title: "新增轨道 (Add Audio/MIDI Track)", category: "Track", shortcut: "Cmd+T" }
+        { id: "action-add-track",title: "新增轨道 (Add Audio/MIDI Track)", category: "Track", shortcut: "Ctrl+T" }
     ];
 
     callback execute-command(string);
@@ -57,7 +57,7 @@ export component CommandPaletteModal inherits Rectangle {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text {
-                                        text: "⌘K";
+                                        text: "Ctrl+K";
                                         font-family: Tokens.font-mono;
                                         font-size: 13px;
                                         font-weight: 800;

@@ -140,7 +140,7 @@ export component ArrangementViewport inherits Rectangle {
                                         padding-left: 5px;
                                         padding-right: 5px;
                                         Text {
-                                            text: root.show-chord-track ? "和弦 ▾" : "和弦 ▸";
+                                            text: root.show-chord-track ? "和弦·收起" : "和弦·展开";
                                             font-family: Tokens.font-ui;
                                             font-size: 9.5px;
                                             font-weight: 600;
@@ -187,22 +187,23 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "添加新音轨 [Cmd+T]";
+                                        text: "添加新音轨 [Ctrl+T]";
                                         is-visible: add-track-top-touch.has-hover;
                                         tip-offset-y: 22px;
                                     }
                                 }
 
-                                // 编曲区本地视图菜单开关
+                                // 编曲区本地视图菜单开关（用可渲染的中文标签，⛔ 不再依赖
+                                // 不渲染的下拉箭头字形；详见细节实测 §5.9）
                                 Rectangle {
-                                    width: 44px;
+                                    width: 60px;
                                     height: 18px;
                                     background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? #253045 : #161b28);
                                     border-radius: 3px;
                                     border-width: 1px;
                                     border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
                                     Text {
-                                        text: "轨道 ▾";
+                                        text: "轨道·菜单";
                                         font-family: Tokens.font-ui;
                                         font-size: 9.5px;
                                         font-weight: 600;
@@ -693,7 +694,7 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                                 TooltipBubble {
-                                    text: "添加新音轨 [Cmd+T]";
+                                    text: "添加新音轨 [Ctrl+T]";
                                     is-visible: add-track-right-touch.has-hover;
                                     tip-offset-y: 22px;
                                 }
@@ -811,7 +812,7 @@ export component ArrangementViewport inherits Rectangle {
                                             padding-left: 4px;
                                             padding-right: 4px;
                                             Text {
-                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " ▾";
+                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " [v]";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
@@ -1152,12 +1153,16 @@ export component ArrangementViewport inherits Rectangle {
                                             }
                                         }
 
-                                        // Audio Waveform: Dynamic Transient Contours + 0dB Centerline
+                                        // 波形占位：真实峰值（按 block 的离线分析缓存）尚未接入
+                                        // timeline-blocks 投影。在此之前 ⛔ 不画常量折线冒充音频
+                                        // 包络（细节实测 §3.1：任何素材、任何长度都长一样的假波，
+                                        // 比空白更误导创作判断）。只保留真实的 0dB 基准线，
+                                        // 并明确标「示意 / 待分析」。
                                         if blk.is_audio : Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // 0dB Centerline
+                                            // 0dB Centerline（基准线，不是编造的包络）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
@@ -1166,18 +1171,16 @@ export component ArrangementViewport inherits Rectangle {
                                                 background: trk.color.with-alpha(0.20);
                                             }
 
-                                            // Upper Waveform Contour
-                                            Path {
-                                                commands: "M 0 12 L 6 4 L 12 14 L 18 3 L 26 15 L 34 2 L 42 16 L 50 5 L 58 13 L 66 1 L 74 15 L 82 6 L 90 12 L 98 3 L 106 14 L 114 2 L 122 15 L 130 5 L 138 13 L 148 3 L 158 15 L 168 6 L 178 12 L 188 4 L 198 15 L 208 5 L 218 14 L 228 3 L 238 15 L 248 5 L 258 13 L 268 3 L 278 15 L 288 6 L 298 11 L 310 4 L 322 14 L 334 5 L 346 13 L 358 3 L 370 15 L 382 6 L 394 12 L 406 4 L 418 14 L 430 5 L 442 13 L 454 4 L 466 15 L 478 6";
-                                                stroke: trk.color;
-                                                stroke-width: 1.3px;
-                                            }
-
-                                            // Mirrored Lower Waveform Contour
-                                            Path {
-                                                commands: "M 0 12 L 6 18 L 12 13 L 18 20 L 26 13 L 34 21 L 42 13 L 50 19 L 58 14 L 66 22 L 74 13 L 82 18 L 90 14 L 98 21 L 106 13 L 114 22 L 122 13 L 130 19 L 138 14 L 148 21 L 158 13 L 168 18 L 178 14 L 188 20 L 198 13 L 208 19 L 218 14 L 228 21 L 238 13 L 248 19 L 258 14 L 268 21 L 278 13 L 288 18 L 298 14 L 310 20 L 322 13 L 334 19 L 346 14 L 358 21 L 370 13 L 382 18 L 394 14 L 406 20 L 418 13 L 430 19 L 442 14 L 454 20 L 466 13 L 478 18";
-                                                stroke: trk.color.with-alpha(0.45);
-                                                stroke-width: 1.1px;
+                                            Text {
+                                                x: 4px;
+                                                y: 2px;
+                                                width: parent.width - 8px;
+                                                text: "波形待分析 · 示意";
+                                                font-family: Tokens.font-mono;
+                                                font-size: 8.5px;
+                                                color: #94a3b8;
+                                                horizontal-alignment: left;
+                                                vertical-alignment: top;
                                             }
                                         }
 
@@ -1312,7 +1315,7 @@ export component ArrangementViewport inherits Rectangle {
                                             padding-left: 4px;
                                             padding-right: 4px;
                                             Text {
-                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " ▾";
+                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " [v]";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
@@ -1602,7 +1605,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "创建新音频或MIDI轨道 [Cmd+T]";
+                                        text: "创建新音频或MIDI轨道 [Ctrl+T]";
                                         is-visible: add-track-btm-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -1649,16 +1652,23 @@ export component ArrangementViewport inherits Rectangle {
                                 background: #ffffff04;
                             }
 
-                            HorizontalLayout {
-                                alignment: center;
-                                Text {
-                                    text: "在此区域拖拽音频、MIDI 文件或双击以新增轨道";
-                                    font-family: Tokens.font-ui;
-                                    font-size: 10px;
-                                    font-weight: 500;
-                                    color: #94a3b8;
-                                    vertical-alignment: center;
-                                }
+                            // 空态提示按**视口**居中：此前放在内容网格的同级
+                            // HorizontalLayout 里，按 bar-count × bar-width 的内容宽度
+                            // 居中，整句被推到右缘只剩半句（细节实测 §4.8）。
+                            // 显式 width = parent.width（视口）+ word-wrap ⇒ 不再被裁断。
+                            Text {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: parent.height;
+                                text: "在此区域拖拽音频、MIDI 文件或双击以新增轨道";
+                                font-family: Tokens.font-ui;
+                                font-size: 10px;
+                                font-weight: 500;
+                                color: #94a3b8;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
                             }
                             drop_zone_touch := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -1668,7 +1678,7 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
                             TooltipBubble {
-                                text: "双击或点击此区域添加新轨道 [Cmd+T]";
+                                text: "双击或点击此区域添加新轨道 [Ctrl+T]";
                                 is-visible: drop_zone_touch.has-hover;
                                 tip-offset-y: 20px;
                             }
@@ -1732,7 +1742,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "创建新音频或MIDI轨道 [Cmd+T]";
+                                        text: "创建新音频或MIDI轨道 [Ctrl+T]";
                                         is-visible: add-track-btm-r-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
