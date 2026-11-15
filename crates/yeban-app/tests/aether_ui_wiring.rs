@@ -970,4 +970,151 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         pr_playhead_zoom.x, note1_zoom.x,
         "缩放后卷帘播放头与 Bar 2 音符左沿必须保持逐像素重合"
     );
+
+    // 7. 恢复缩放 tpp=30 并在 scroll_x=128px 时点击标尺 x=128px: 应加回滚动偏移定位到 Bar 3 (tick 7680)
+    {
+        let ui = live.ui();
+        assert!(host::set_roll_ticks_per_pixel(ui, 30));
+        let fresh = host::project_with_view_state(&project, ui).expect("恢复缩放投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 128.0);
+        ui.invoke_ruler_seek(128.0);
+        assert_eq!(
+            ui.get_playhead_ticks(),
+            7680,
+            "横向滚动 128px 后点击标尺局部 x=128px 必须定位到 Bar 3 (tick 7680)"
+        );
+        assert_eq!(ui.get_timecode_text().as_str(), "003.01.000");
+    }
+    let img_scrolled_seek = live.window().capture().expect("滚动后定位帧");
+    assert!(
+        is_close_rgb(
+            img_scrolled_seek
+                .pixel((timeline_origin_x + 128) as u32, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "scroll_x=128 定位到 Bar 3 后播放头必须回到屏幕列 x={}",
+        timeline_origin_x + 128
+    );
+
+    // 8. 切换轨道控制头到右侧 (AbletonLive 镜像布局): tick 0 播放头必须精确对齐 canvas.x，
+    //    且左侧滚动越界/右侧控制头绝不出现播放头伪影
+    {
+        let ui = live.ui();
+        ui.invoke_command_execute("track-toggle-headers-side".into());
+        ui.invoke_transport_rewind();
+        let fresh = host::project_with_view_state(&project, ui).expect("右置控制头投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 0.0);
+        assert_eq!(ui.get_playhead_ticks(), 0);
+    }
+    let img_right = live.window().capture().expect("右置控制头 tick 0 帧");
+    let right_origin_x = canvas.x;
+    assert!(
+        is_close_rgb(
+            img_right
+                .pixel(right_origin_x as u32, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "右置轨道头模式下 tick 0 播放头必须对齐时间轴最左沿 x={right_origin_x}"
+    );
+    assert!(
+        is_close_rgb(
+            img_right
+                .pixel(right_origin_x as u32, (canvas.y + 62) as u32)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "右置轨道头模式下 tick 0 播放头必须贯穿到轨道泳道起点 x={right_origin_x}"
+    );
+    let headers_w = live.ui().get_track_headers_width().round() as i32;
+    let canvas_right = canvas.x + i32::try_from(canvas.width).unwrap();
+    let right_timeline_end = canvas_right - headers_w - 5;
+    for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
+        for x in right_timeline_end..(right_timeline_end + 5) {
+            let px = img_right.pixel(x as u32, y).unwrap();
+            assert!(
+                !is_close_rgb(px, ACCENT_RGB),
+                "右置轨道头模式下 tick 0 播放头不得泄漏到右侧分隔线 (x={x}, y={y}, rgb={px:?})"
+            );
+        }
+    }
+    for x in right_timeline_end..canvas_right {
+        let px = img_right.pixel(x as u32, (canvas.y + 2) as u32).unwrap();
+        assert!(
+            !is_close_rgb(px, ACCENT_RGB),
+            "右置轨道头模式下播放头菱形顶盖不得泄漏进右置控制头顶区 (x={x}, rgb={px:?})"
+        );
+    }
+    // 将播放头定位到超出右置时间轴右沿的位置 (45000 ticks / tpp=30 => 1500px > timeline_width)，
+    // 验证右侧 5px 分隔线与右置控制头顶区完全裁剪、绝不溢出
+    {
+        let ui = live.ui();
+        ui.invoke_ruler_seek(1500.0);
+        let fresh = host::project_with_view_state(&project, ui).expect("右越界裁剪投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 0.0);
+    }
+    let img_right_clipped = live.window().capture().expect("右置越界裁剪帧");
+    for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
+        for x in right_timeline_end..(right_timeline_end + 5) {
+            let px = img_right_clipped.pixel(x as u32, y).unwrap();
+            assert!(
+                !is_close_rgb(px, ACCENT_RGB),
+                "播放头越过右置时间轴右沿后不得泄漏到右侧分隔线 (x={x}, y={y}, rgb={px:?})"
+            );
+        }
+    }
+    for x in right_timeline_end..canvas_right {
+        let px = img_right_clipped
+            .pixel(x as u32, (canvas.y + 2) as u32)
+            .unwrap();
+        assert!(
+            !is_close_rgb(px, ACCENT_RGB),
+            "播放头越过右置时间轴右沿后不得泄漏进右置控制头顶区 (x={x}, rgb={px:?})"
+        );
+    }
+    live.ui()
+        .invoke_command_execute("track-toggle-headers-side".into());
+    live.ui().invoke_transport_rewind();
+
+    // 9. 最大化底部停靠栏 (Lower Dock Maximized): 卷帘播放头仍与网格起点 / tick 0 音符左沿对齐
+    {
+        let ui = live.ui();
+        let fresh = host::project_with_view_state(&project, ui).expect("最大化下坞前投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 0.0);
+        ui.set_console_maximized(true);
+        ui.invoke_transport_rewind();
+    }
+    let (grid_max, pr_max, note0_max) = {
+        let tree_max = live.refresh_tree(None).expect("最大化后控件树");
+        (
+            tree_max
+                .find_by_id("piano-roll-grid")
+                .and_then(|n| n.bounds)
+                .expect("最大化卷帘网格"),
+            tree_max
+                .find_by_id("piano-roll-playhead")
+                .and_then(|n| n.bounds)
+                .expect("最大化卷帘播放头"),
+            tree_max
+                .find_by_id(&note0_id)
+                .and_then(|n| n.bounds)
+                .expect("最大化 tick 0 音符"),
+        )
+    };
+    assert_eq!(pr_max.x, grid_max.x + 12);
+    assert_eq!(
+        pr_max.x, note0_max.x,
+        "下坞最大化态下卷帘播放头与 tick 0 音符左沿必须保持逐像素对齐"
+    );
+    // 冷启动建窗兜底: 即便首帧未拿到窗口尺寸，tick > 0 的可见音符也不应被错误裁剪为空
+    let cold_ui = host::build_main_window(&view, &scene).expect("冷启动构造 MainWindow");
+    assert!(
+        cold_ui.get_note_ulids().row_count() >= 2,
+        "冷启动默认投影必须保留 Bar 1/Bar 2 可见音符而非被 0 视口宽裁掉"
+    );
 }
