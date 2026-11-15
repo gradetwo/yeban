@@ -210,6 +210,12 @@ pub const APPLY_OPS_SWITCH: &str = "--apply-ops";
 /// [`crate::export_stems`] 里。值是输出目录（不存在时写盘时创建）。
 pub const EXPORT_STEMS_SWITCH: &str = "--export-stems";
 
+/// `--stems-track-ids` 的字面值（`--export-stems` 的**修饰**开关：按 `trackIds` 选轨）。
+///
+/// 与 `--slice-cuts` / `--sample-edit-layers` 同款：取值是逗号分隔清单，一次给完。
+/// 它本身不选路径 ⇒ 不进 `ACTION_SWITCHES`；单独给（没有 `--export-stems`）⇒ 用法错误。
+pub const STEMS_TRACK_IDS_SWITCH: &str = "--stems-track-ids";
+
 /// `--dry-run` 的字面值（只修饰 [`APPLY_OPS_SWITCH`] 的布尔开关：模拟，不写盘）。
 ///
 /// 与 `--overview-score-only` 同一个定位：修饰器，不是动作；它本身不在
@@ -607,9 +613,19 @@ pub fn usage_text() -> String {
                            但在回执里各有一行 `stem-skipped:` (⛔ 不静默丢轨); 目录不存在时
                            写盘时创建, 目标文件已存在时整批拒绝 (⛔ 不覆盖); 落盘逐条原子,
                            第 k 条失败时前 k−1 条保留、回执带续跑起点 (D5 部分成功是一等状态);
-                           回执: `exported-stems:` 汇总 + 每条 `stem:`; **默认构建里
+                           回执: `exported-stems:` 汇总 + 每条 `stem:`; 成功时同时在
+                           目录里落一份机器可读 manifest (`stems-manifest.json`:
+                           每条 stem 的 trackId/轨名/文件名/sha256/字节数等, 供
+                           进程退出后核对与续跑判定); **默认构建里
                            存在** (`{export_stems_feature}` 自 2026-11-12 起为默认
                            feature); `--no-default-features` 构建给这个开关 =
+                           用法错误 (退出码 {usage})
+  --stems-track-ids <list> `--export-stems` 的**选轨修饰**: 逗号分隔的 ULID 清单
+                           (如 `01J...,01J...`), 只导这些轨 (与 MCP `trackIds`
+                           同义, 顺序无关); 缺省 = 全部非 master 源节点轨;
+                           空清单/空条目 = 用法错误 (退出码 {usage}); 非法 ULID
+                           与工程中不存在的身份由后端响亮拒绝 (退出码 {export},
+                           ⛔ 不静默忽略); 单独给 (没有 `--export-stems`) =
                            用法错误 (退出码 {usage})
   --edit-samples <input>   采样库编辑的**批处理**出口 (缺口报告 C-1): 输入是采样目录
                            (递归取 .wav / .wave / .flac / .ogg) 或 .sfz 文件
@@ -1576,6 +1592,14 @@ pub struct Options {
     ///
     /// 只在 `in-process-mcp` 构建里可执行（渲染与落盘住在 `yeban-mcp`）。
     pub export_stems: Option<PathBuf>,
+    /// `--stems-track-ids <ULID,ULID,...>`：`--export-stems` 的**修饰** —— 只导这些轨。
+    ///
+    /// 取值是逗号分隔的 26 字符 ULID 清单（与 MCP `yeban_export_stems` 的
+    /// `trackIds` 同义，顺序无关、重复由后端去重）。缺省（不给）= 全部非 master
+    /// 源节点轨。空清单 / 空条目 ⇒ 解析期用法错误；非法 ULID 与工程中不存在的
+    /// 身份由后端 `stems::validate` / `export` 响亮拒绝（`INVALID_PARAMETER_RANGE` /
+    /// `TRACK_NOT_FOUND`，⛔ 不静默忽略）。单独给 ⇒ 用法错误。
+    pub export_stems_track_ids: Option<Vec<String>>,
     /// `--dry-run`：`--apply-ops` 的**修饰** —— 模拟，不写盘。
     ///
     /// 解析与编译照旧跑，提交改成在克隆上模拟施加 + 校验；前置不满足时模拟照样
@@ -2299,6 +2323,18 @@ pub enum ParseError {
     /// （`stems::export` / `stems::write`）全住在 `yeban-mcp`，默认构建里那条依赖边
     /// **不在** ⇒ 不可能产出"与工具同一份"的分轨。点名 feature（退出码 [`EXIT_USAGE`]）。
     ExportStemsNotCompiled,
+    /// `--stems-track-ids` 的取值非法（空清单或含空条目）。
+    ///
+    /// payload 是原始取值。非法 ULID 与不存在的身份不在解析期判 —— 那是后端
+    /// `stems::validate` / `export` 的响亮拒绝（`INVALID_PARAMETER_RANGE` /
+    /// `TRACK_NOT_FOUND`），解析期只判「清单形状」这一层。
+    StemsTrackIdsInvalid(String),
+    /// 给了 `--stems-track-ids`，但没给 `--export-stems`。
+    ///
+    /// 它只是分轨导出的**选轨修饰**，单独给没有任何东西可修饰 —— 与
+    /// [`Self::OverviewScoreOnlyWithoutExport`] 同一条纪律：静默忽略 = 用户
+    /// 以为「只导了那几条」而其实什么都没导。
+    StemsTrackIdsWithoutExport,
     /// 给了 `--dry-run`，但没给 `--apply-ops`。
     ///
     /// 它只是那一次编辑的**口径修饰**（模拟、不写盘），单独给没有任何东西可修饰 ——
@@ -2560,6 +2596,14 @@ impl fmt::Display for ParseError {
                 "{EXPORT_STEMS_SWITCH} 需要本次构建带 `--features {EXPORT_STEMS_FEATURE}` \
                  (渲染与落盘 `stems::export` / `stems::write` 都住在 yeban-mcp, \
                  默认构建里那条依赖边不在 ⇒ 产不出与 `yeban_export_stems` 同一份的分轨)"
+            ),
+            Self::StemsTrackIdsInvalid(value) => write!(
+                formatter,
+                "`{STEMS_TRACK_IDS_SWITCH}` 的取值 `{value}` 非法 (需要逗号分隔的非空 ULID 清单; 空清单/空条目不接受, 导出全部轨请省略它)"
+            ),
+            Self::StemsTrackIdsWithoutExport => write!(
+                formatter,
+                "`{STEMS_TRACK_IDS_SWITCH}` 只修饰 `{EXPORT_STEMS_SWITCH}` —— 它只改那一次分轨导出的选轨, 单独给 = 没有任何东西可修饰"
             ),
             Self::DryRunWithoutApplyOps => write!(
                 formatter,
@@ -2931,6 +2975,27 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     "--export-stems",
                     PathBuf::from(value),
                 )?;
+            }
+            // `--stems-track-ids`：**修饰**开关（只改 `--export-stems` 的选轨，
+            // ⛔ 自己不选路径 ⇒ 与 `--slice-cuts` 同档，不进 `ACTION_SWITCHES`）。
+            // 清单形状在解析期判：空清单 / 空条目（`,,`、首尾逗号）⇒ 用法错误。
+            "--stems-track-ids" => {
+                let value = take_value(STEMS_TRACK_IDS_SWITCH, inline, args, &mut cursor)?;
+                if options.export_stems_track_ids.is_some() {
+                    return Err(ParseError::DuplicateOption(STEMS_TRACK_IDS_SWITCH));
+                }
+                let mut ids = Vec::new();
+                for part in value.split(',') {
+                    let id = part.trim();
+                    if id.is_empty() {
+                        return Err(ParseError::StemsTrackIdsInvalid(value.clone()));
+                    }
+                    ids.push(id.to_owned());
+                }
+                if ids.is_empty() {
+                    return Err(ParseError::StemsTrackIdsInvalid(value));
+                }
+                options.export_stems_track_ids = Some(ids);
             }
             // `--dry-run`：**修饰**开关（只改 `--apply-ops` 的口径：模拟、不写盘，
             // ⛔ 自己不选路径 ⇒ 与 `--overview-score-only` 同档，不进 `ACTION_SWITCHES`）。
@@ -3452,6 +3517,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     }
     if options.export_stems.is_some() && !cfg!(feature = "in-process-mcp") {
         return Err(ParseError::ExportStemsNotCompiled);
+    }
+    // `--stems-track-ids` 只修饰 `--export-stems`（与 `--overview-score-only`
+    // 只修饰总览导出同一条纪律）：单独给 = 用法错误，⛔ 不静默忽略。
+    if options.export_stems_track_ids.is_some() && options.export_stems.is_none() {
+        return Err(ParseError::StemsTrackIdsWithoutExport);
     }
     // `--dry-run` 只修饰 `--apply-ops`（与 `--overview-score-only` 只修饰
     // `--export-song-overview` 同一条纪律）：单独给 = 用法错误，⛔ 不静默忽略。
@@ -5938,6 +6008,13 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     // 直接构造的 [`Options`] —— 字段是公开的，判据可以绕过解析器）。
     // ⭐ 任务单 `#331`：判据改走**唯一配对实现**（`#287` 的"单独给"原文案逐字不变）。
     let sampler_installs = options.sampler_installs().map_err(CliError::Usage)?;
+    // `--stems-track-ids` 的第二道守卫（同 `#287` 理由：直接构造的 [`Options`]
+    // 绕过 `parse()` 时，单独给选轨修饰不得被静默忽略）。
+    if options.export_stems_track_ids.is_some() && options.export_stems.is_none() {
+        return Err(CliError::Usage(
+            ParseError::StemsTrackIdsWithoutExport.to_string(),
+        ));
+    }
     if options.headless_idle {
         // 防假绿守卫，**不是**形式主义：本函数的模块文档第一句就是"零 Slint 依赖"，
         // 而 `--headless-idle` 的全部价值在于"真的建了控件树"。放它过去 ⇒
@@ -6660,6 +6737,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             &loaded.archive.project,
             &project_path,
             dir,
+            options.export_stems_track_ids.as_deref(),
             &loaded.archive.assets,
         )
         .map_err(|error| CliError::ExportStems {

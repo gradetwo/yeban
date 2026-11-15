@@ -285,12 +285,50 @@ fn one_call_writes_every_track_as_a_32_bit_float_stem() {
 
     let data = export(&mut dispatcher, &auth, &out_dir, Value::Null);
 
-    // 一次调用 ⇒ 目录里恰好 3 个 wav（母带都不写）。
+    // 一次调用 ⇒ 目录里恰好 3 个 wav + 1 份 manifest（母带都不写）。
     let names = entries(&out_dir);
     assert_eq!(
         names,
-        vec!["0001.Lead.wav", "0002.Pad.wav", "0003.Bass.wav"],
-        "一次调用必须出全部三条分轨"
+        vec![
+            "0001.Lead.wav",
+            "0002.Pad.wav",
+            "0003.Bass.wav",
+            "stems-manifest.json"
+        ],
+        "一次调用必须出全部三条分轨与一份 manifest"
+    );
+    // manifest 内容：机器可读 JSON，每条 stem 的 trackId/轨名/文件名/sha256
+    // 必须与响应逐项一致，且 sha256 必须对得上盘上 WAV 字节。
+    assert_eq!(data["manifestFileName"], json!("stems-manifest.json"));
+    let manifest_text =
+        fs::read_to_string(out_dir.join("stems-manifest.json")).expect("读 manifest");
+    let manifest: Value = serde_json::from_str(&manifest_text).expect("manifest 必须是 JSON");
+    assert_eq!(manifest["format"], json!("yeban-stems-manifest"));
+    assert_eq!(manifest["version"], json!(1));
+    assert_eq!(manifest["stemCount"], json!(3));
+    let manifest_stems = manifest["stems"].as_array().expect("manifest stems 是数组");
+    assert_eq!(manifest_stems.len(), 3);
+    for (manifest_row, response_row) in manifest_stems
+        .iter()
+        .zip(data["stems"].as_array().expect("stems 是数组"))
+    {
+        for key in ["trackId", "name", "fileName", "sha256", "bytes", "frames"] {
+            assert_eq!(
+                manifest_row[key], response_row[key],
+                "manifest 的 {key} 必须与响应一致"
+            );
+        }
+        let wav_path = out_dir.join(manifest_row["fileName"].as_str().expect("fileName"));
+        assert_eq!(
+            file_sha256(&wav_path),
+            manifest_row["sha256"].as_str().expect("sha256"),
+            "manifest 的 sha256 必须等于盘上 WAV 字节"
+        );
+    }
+    assert_eq!(
+        manifest["skippedTracks"][0]["reason"],
+        json!("masterBusTrack"),
+        "manifest 必须带跳过轨点名"
     );
     let stems = data["stems"].as_array().expect("stems 是数组");
     assert_eq!(stems.len(), 3);
@@ -604,8 +642,13 @@ fn out_dir_missing_is_created_at_write_time_but_a_file_is_refused() {
     assert!(would_be.is_dir(), "真导出必须创建 outDir");
     assert_eq!(
         entries(&would_be),
-        vec!["0001.Lead.wav", "0002.Pad.wav", "0003.Bass.wav"],
-        "创建出的目录里必须恰好是三条分轨"
+        vec![
+            "0001.Lead.wav",
+            "0002.Pad.wav",
+            "0003.Bass.wav",
+            "stems-manifest.json"
+        ],
+        "创建出的目录里必须恰好是三条分轨加一份 manifest"
     );
 
     // 是文件而不是目录 ⇒ 仍然响亮拒绝（B6 只放行"不存在"这一种）。
@@ -638,12 +681,27 @@ fn track_ids_filters_the_batch_and_unknown_ids_fail_loudly() {
     );
     assert_eq!(
         entries(&out_dir),
-        vec!["0003.Bass.wav"],
+        vec!["0003.Bass.wav", "stems-manifest.json"],
         "筛选只改**导出哪些**, 不改序号与命名（与全量导出同名才可互认）"
     );
     assert_eq!(array_len(&data, "stems"), 1);
     // 1 条分轨 + 1 次基线 = 2 次渲染。
     assert_eq!(data["stemsBasis"]["renders"], json!(2));
+    // 选轨导出的 manifest 只含选中轨，且 request 如实回显筛选条件。
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(out_dir.join("stems-manifest.json")).expect("读 manifest"),
+    )
+    .expect("manifest 必须是 JSON");
+    assert_eq!(manifest["stemCount"], json!(1));
+    assert_eq!(
+        manifest["stems"][0]["trackId"],
+        json!(id(4).to_canonical_string())
+    );
+    assert_eq!(manifest["stems"][0]["fileName"], json!("0003.Bass.wav"));
+    assert_eq!(
+        manifest["request"]["trackIds"][0],
+        json!(id(4).to_canonical_string())
+    );
 
     let response = call(
         &mut dispatcher,
@@ -660,8 +718,28 @@ fn track_ids_filters_the_batch_and_unknown_ids_fail_loudly() {
     );
     assert_eq!(
         entries(&out_dir),
-        vec!["0003.Bass.wav"],
+        vec!["0003.Bass.wav", "stems-manifest.json"],
         "被拒绝的调用不得改变已有产物"
+    );
+}
+
+/// 空 `trackIds` 数组 ⇒ `INVALID_PARAMETER_RANGE` 响亮拒绝（⛔不当全部、⛔不当零条成功）。
+#[test]
+fn empty_track_ids_array_fails_loudly_and_writes_nothing() {
+    let scratch = Scratch::new("empty-filter");
+    let out_dir = scratch.stems_dir();
+    let (mut dispatcher, auth) = dispatcher_with(&three_track_project(), &scratch.project_path());
+    let response = call(
+        &mut dispatcher,
+        &auth,
+        json!({"outDir": out_dir.display().to_string(), "trackIds": []}),
+    );
+    assert_eq!(response["status"], "error", "{response}");
+    assert_eq!(response["error"]["code"], json!("INVALID_PARAMETER_RANGE"));
+    assert_eq!(
+        entries(&out_dir),
+        Vec::<String>::new(),
+        "被拒绝的调用不得写任何文件（含 manifest）"
     );
 }
 
@@ -678,7 +756,15 @@ fn file_names_are_deterministic_and_carry_no_path_from_the_track_name() {
     let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.project_path());
     let data = export(&mut dispatcher, &auth, &out_dir, Value::Null);
     let names = entries(&out_dir);
-    assert_eq!(names.len(), 3, "三条都要出文件: {names:?}");
+    assert_eq!(
+        names.iter().filter(|name| name.ends_with(".wav")).count(),
+        3,
+        "三条都要出 WAV 文件: {names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name == "stems-manifest.json"),
+        "目录里必须有 manifest: {names:?}"
+    );
     // `/` 全被换成 `_` ⇒ 名字里不存在任何目录分隔；首尾的点号/下划线被剥掉。
     assert_eq!(
         data["stems"][0]["fileName"],
@@ -702,8 +788,14 @@ fn file_names_are_deterministic_and_carry_no_path_from_the_track_name() {
     let reported = usize::try_from(data["maxFileNameBytes"].as_u64().expect("maxFileNameBytes"))
         .expect("usize");
     assert!(
-        reported >= names.iter().map(|name| name.len()).max().expect("有名字"),
-        "maxFileNameBytes 必须覆盖最长的文件名"
+        reported
+            >= names
+                .iter()
+                .filter(|name| name.ends_with(".wav"))
+                .map(|name| name.len())
+                .max()
+                .expect("有 WAV 名字"),
+        "maxFileNameBytes 必须覆盖最长的分轨文件名（manifest 不计入分轨文件名口径）"
     );
 
     // 同一工程再导一次（换一个目录）⇒ 逐字节同名同哈希。
@@ -1187,13 +1279,16 @@ fn bus_track_gets_a_stem_and_only_the_master_is_skipped() {
 
     let data = export(&mut dispatcher, &auth, &out_dir, Value::Null);
 
+    // 合入调解（线 G＋线 F）：F 的 manifest（stems-manifest.json）与分轨同落 outDir，
+    // 故期望清单含 manifest；与 F 本线判据（track_ids 等）同口径。
     assert_eq!(
         entries(&out_dir),
         vec![
             "0001.Lead.wav",
             "0002.Pad.wav",
             "0003.Bass.wav",
-            "0004.RoomBus.wav"
+            "0004.RoomBus.wav",
+            "stems-manifest.json"
         ],
         "总线轨必须与源轨一样出文件"
     );

@@ -29,7 +29,13 @@
 //!   `errorKind:"stemWriteFailed"`，`data` 里给 `completedStems` /
 //!   `failedTrackId` / `orphanedFiles` / `resumeFrom`（D5 的部分成功是一等状态）。
 //! * 渲染失败 ⇒ `RENDER_FAILED`；`trackIds` 点名不存在的轨 ⇒ `TRACK_NOT_FOUND`。
-//!   本开关不设 `trackIds` 实参：导出的恒是**全部**非 master 源节点轨。
+//! * 选轨：`--stems-track-ids <ULID,ULID,...>`（`cli::Options::export_stems_track_ids`）
+//!   透传成后端的 `trackIds` 实参，只导点名的轨；不给 = 全部非 master 源节点轨。
+//!   空清单在 CLI 解析期就被拒绝，非法/未知身份由后端响亮拒绝。
+//! * manifest：成功时同时把机器可读的批次索引落到 `<dir>/stems-manifest.json`
+//!   （`stems::write_manifest`，与 MCP 腿同一份）：每条 stem 的 `trackId` / 轨名 /
+//!   文件名 / `sha256` / 字节数等都在里面，进程退出后可据它核对与续跑判定。
+//!   回执汇总行以 `manifest=` 报它的落点。
 //!
 //! ## 工程路径
 //!
@@ -56,6 +62,8 @@ pub const SKIPPED_LINE_PREFIX: &str = "stem-skipped:";
 /// 一条已写分轨的实测读数（回执行的数据来源：`StemRow::to_value` 的同一批字段）。
 #[derive(Debug)]
 pub struct StemLine {
+    /// 轨身份（ULID 文本，与 manifest 的 `trackId` 同值）。
+    pub track_id: String,
     /// 轨名（原样回显）。
     pub track: String,
     /// 落点文件名（`{序号}.{清洗后的轨名}.wav`）。
@@ -73,6 +81,8 @@ pub struct StemLine {
 /// 一条跳过轨的实测读数（`SkippedTrack::to_value` 的同一批字段）。
 #[derive(Debug)]
 pub struct SkippedLine {
+    /// 轨身份（ULID 文本，与 manifest 的 `trackId` 同值）。
+    pub track_id: String,
     /// 轨名（原样回显）。
     pub track: String,
     /// 跳过原因（`masterBusTrack` / `notASourceNode`）。
@@ -96,6 +106,8 @@ pub struct ExportStemsReport {
     pub basis_frames: u64,
     /// 采样率（Hz，工程采样率）。
     pub sample_rate: u32,
+    /// manifest 的落点（`<dir>/stems-manifest.json`，已落盘）。
+    pub manifest_path: PathBuf,
 }
 
 impl ExportStemsReport {
@@ -103,19 +115,22 @@ impl ExportStemsReport {
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
-            "{RECEIPT_PREFIX} dir={} stems={} skipped={} bytes={} renders={} sampleRate={} bitDepth=32",
+            "{RECEIPT_PREFIX} dir={} stems={} skipped={} bytes={} renders={} sampleRate={} bitDepth=32 manifest={}",
             self.dir.display(),
             self.stems.len(),
             self.skipped.len(),
             self.bytes_total,
             self.renders,
             self.sample_rate,
+            self.manifest_path.display(),
         )];
         for stem in &self.stems {
             lines.push(format!(
-                "{STEM_LINE_PREFIX} path={} track={} bytes={} bitDepth={} channels={}",
+                "{STEM_LINE_PREFIX} path={} track={} trackId={} fileName={} bytes={} bitDepth={} channels={}",
                 stem.path.display(),
                 stem.track,
+                stem.track_id,
+                stem.file_name,
                 stem.bytes,
                 stem.bit_depth,
                 stem.channels,
@@ -123,8 +138,8 @@ impl ExportStemsReport {
         }
         for skipped in &self.skipped {
             lines.push(format!(
-                "{SKIPPED_LINE_PREFIX} track={} reason={}",
-                skipped.track, skipped.reason,
+                "{SKIPPED_LINE_PREFIX} track={} trackId={} reason={}",
+                skipped.track, skipped.track_id, skipped.reason,
             ));
         }
         lines
@@ -198,6 +213,7 @@ pub fn export_stems(
     project: &YebanProjectV1,
     project_path: &Path,
     out_dir: &Path,
+    track_ids: Option<&[String]>,
     assets: &[(AssetHash, Vec<u8>)],
 ) -> Result<ExportStemsReport, ExportStemsError> {
     let mut arguments = Map::new();
@@ -205,6 +221,12 @@ pub fn export_stems(
         "outDir".to_owned(),
         Value::from(out_dir.display().to_string()),
     );
+    if let Some(ids) = track_ids {
+        arguments.insert(
+            "trackIds".to_owned(),
+            Value::Array(ids.iter().map(|id| Value::from(id.clone())).collect()),
+        );
+    }
     let request = stems::validate(&arguments)?;
     let pool: BTreeMap<AssetHash, Vec<u8>> = assets.iter().cloned().collect();
     // ⭐ **流式**（渲一条、写一条、释放一条）而不是 `export` + `write`：
@@ -218,9 +240,13 @@ pub fn export_stems(
         crate::host::now_ms(),
         &pool,
     )?;
+    // manifest 在分轨全部落盘后写（失败 ⇒ 整批以 `Fault` 响亮失败，⛔ 不假装
+    // 索引已落盘）；内容与 MCP 腿的 `stems::write` 写的那份同一实现。
+    let manifest_path = stems::write_manifest(&batch)?;
     let mut stems_out = Vec::with_capacity(batch.stems.len());
     for row in &batch.stems {
         stems_out.push(StemLine {
+            track_id: row.track_id.to_canonical_string(),
             track: row.name.clone(),
             file_name: row.file_name.clone(),
             path: row.path.clone(),
@@ -239,6 +265,7 @@ pub fn export_stems(
             stems::SkipReason::EmptyTrack => "emptyTrack",
         };
         skipped_out.push(SkippedLine {
+            track_id: skipped.track_id.to_canonical_string(),
             track: skipped.name.clone(),
             reason,
         });
@@ -251,5 +278,6 @@ pub fn export_stems(
         renders: batch.renders,
         basis_frames: batch.basis_frames,
         sample_rate: batch.sample_rate,
+        manifest_path,
     })
 }

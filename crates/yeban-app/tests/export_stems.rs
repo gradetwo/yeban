@@ -176,6 +176,175 @@ fn each_track_gets_one_valid_float_wav() {
         .filter(|line| line.starts_with("stem:"))
         .collect();
     assert_eq!(stem_lines.len(), stems, "stem: 行数必须等于 stems={stems}");
+    // manifest：汇总行报落点，文件是机器可读 JSON，逐条 stem 带 trackId/轨名/
+    // 文件名/sha256，且与目录里的 WAV 一一对应。
+    let manifest_path = out.join("stems-manifest.json");
+    assert!(
+        summary.contains(&format!("manifest={}", manifest_path.display())),
+        "汇总行必须报 manifest 落点，汇总行: {summary}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("读 manifest"))
+            .expect("manifest 必须是 JSON");
+    assert_eq!(
+        manifest["format"],
+        serde_json::json!("yeban-stems-manifest")
+    );
+    assert_eq!(
+        manifest["stemCount"].as_u64(),
+        Some(stems as u64),
+        "manifest 的 stemCount 必须等于汇总行 stems"
+    );
+    let manifest_stems = manifest["stems"].as_array().expect("manifest stems 是数组");
+    assert_eq!(manifest_stems.len(), stems);
+    assert!(!manifest_stems.is_empty(), "manifest 至少一条 stem 才有牙");
+    for row in manifest_stems {
+        assert!(
+            row["trackId"].as_str().is_some_and(|id| id.len() == 26),
+            "每条 stem 必须带 26 字符 trackId: {row}"
+        );
+        assert!(row["name"].is_string(), "每条 stem 必须带轨名: {row}");
+        let file_name = row["fileName"].as_str().expect("fileName 是字符串");
+        assert!(
+            out.join(file_name).is_file(),
+            "manifest 的 fileName 必须对应盘上 WAV: {file_name}"
+        );
+        assert!(
+            row["sha256"].as_str().is_some_and(|hash| hash.len() == 64),
+            "每条 stem 必须带 sha256: {row}"
+        );
+    }
+}
+
+/// **选轨判据**：`--stems-track-ids` 只出选中轨；未知 id 响亮失败；空清单与
+/// 单独给修饰开关都是用法错误。
+#[test]
+fn track_ids_selects_only_the_named_track() {
+    // 先全量导出，从 manifest 取第一条 stem 的 trackId（不硬编码夹具身份）。
+    let dir = scratch("select");
+    let full = dir.join("full");
+    std::fs::create_dir(&full).expect("建全量目录");
+    run_batch(&[
+        "--project-sample",
+        "default",
+        "--export-stems",
+        &full.display().to_string(),
+    ])
+    .expect("全量导出必须成功");
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(full.join("stems-manifest.json")).expect("读 manifest"),
+    )
+    .expect("manifest 必须是 JSON");
+    let first = &manifest["stems"][0];
+    let track_id = first["trackId"]
+        .as_str()
+        .expect("trackId 是字符串")
+        .to_owned();
+    let file_name = first["fileName"]
+        .as_str()
+        .expect("fileName 是字符串")
+        .to_owned();
+
+    let out = dir.join("selected");
+    std::fs::create_dir(&out).expect("建选轨目录");
+    let lines = run_batch(&[
+        "--project-sample",
+        "default",
+        "--export-stems",
+        &out.display().to_string(),
+        "--stems-track-ids",
+        &track_id,
+    ])
+    .expect("选轨导出必须成功");
+    let summary = lines
+        .iter()
+        .find(|line| line.starts_with("exported-stems:"))
+        .expect("回执里必须有 exported-stems: 一行");
+    assert_eq!(
+        summary_field(summary, "stems"),
+        "1",
+        "选一条就只能出一条: {summary}"
+    );
+    let wavs: Vec<PathBuf> = std::fs::read_dir(&out)
+        .expect("读选轨目录")
+        .map(|entry| entry.expect("目录项").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "wav"))
+        .collect();
+    assert_eq!(wavs.len(), 1, "选轨目录里只能有一个 WAV: {wavs:?}");
+    assert_eq!(
+        wavs[0].file_name().expect("有文件名").to_string_lossy(),
+        file_name,
+        "选中轨的文件名必须与全量导出同名"
+    );
+    let selected_manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.join("stems-manifest.json")).expect("读 manifest"),
+    )
+    .expect("manifest 必须是 JSON");
+    assert_eq!(selected_manifest["stemCount"], serde_json::json!(1));
+    assert_eq!(
+        selected_manifest["stems"][0]["trackId"],
+        serde_json::json!(track_id)
+    );
+    assert_eq!(
+        selected_manifest["request"]["trackIds"][0],
+        serde_json::json!(track_id),
+        "manifest 必须如实记录选轨条件"
+    );
+
+    // 未知 id（合法 ULID、工程里没有）⇒ 导出失败（退出码 5），不写 WAV。
+    let unknown_out = dir.join("unknown");
+    std::fs::create_dir(&unknown_out).expect("建未知目录");
+    let unknown = "01J8ZR00000000000000000077";
+    assert_eq!(unknown.len(), 26);
+    let error = run_batch(&[
+        "--project-sample",
+        "default",
+        "--export-stems",
+        &unknown_out.display().to_string(),
+        "--stems-track-ids",
+        unknown,
+    ])
+    .expect_err("未知 trackId 必须响亮失败");
+    assert_eq!(
+        error.exit_code(),
+        5,
+        "未知 id 是导出失败（退出码 5）: {error}"
+    );
+    assert!(
+        error.to_string().contains("TRACK_NOT_FOUND"),
+        "错误必须带 TRACK_NOT_FOUND: {error}"
+    );
+
+    // 单独给修饰开关 ⇒ 用法错误（退出码 2）。
+    let error = run_batch(&["--stems-track-ids", &track_id]).expect_err("单独给必须失败");
+    assert_eq!(
+        error.exit_code(),
+        2,
+        "单独给是用法错误（退出码 2）: {error}"
+    );
+}
+
+/// **空清单判据**：`--stems-track-ids ""` / 含空条目 ⇒ 解析期用法错误（退出码 2）。
+#[test]
+fn empty_track_ids_list_is_a_usage_error() {
+    let dir = scratch("empty-ids");
+    let out = dir.join("stems");
+    for value in ["", ",", "01J8ZR00000000000000000077,"] {
+        let argv: Vec<String> = vec![
+            "--project-sample".to_owned(),
+            "default".to_owned(),
+            "--export-stems".to_owned(),
+            out.display().to_string(),
+            "--stems-track-ids".to_owned(),
+            value.to_owned(),
+        ];
+        let error = cli::parse(&argv).expect_err("空清单必须在解析期被拒绝");
+        assert!(
+            error.to_string().contains("--stems-track-ids"),
+            "错误必须点名开关: {error}"
+        );
+        let _ = error;
+    }
 }
 
 /// **B6 判据（2026-11-14）**：输出目录不存在 ⇒ 写盘时创建、导出成功。
