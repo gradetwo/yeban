@@ -195,12 +195,12 @@ export component MainWindow inherits Window {
     in-out property <bool> is-playing: false;
     in-out property <bool> is-recording: false;
     in-out property <bool> is-looping: false;
-    in-out property <string> timecode-text: "003.02.01";
+    in-out property <string> timecode-text: "001.01.000";
     in-out property <int> bpm-val: 124;
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
-    in-out property <length> playhead-px: 360px;
+    in-out property <length> playhead-px: (root.playhead-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
 
     // Telemetry Meters
     in-out property <string> lufs-integrated: "-9.4 LUFS";
@@ -1108,19 +1108,21 @@ export component MainWindow inherits Window {
                 // Zone C: Center Linear Arrangement & Track Headers
                 ArrangementViewport {
                     horizontal-stretch: 1;
-                    headers-width: root.track-headers-width;
+                    headers-width <=> root.track-headers-width;
                     show-chord-track <=> root.show-chord-track;
                     tracks: root.tracks;
                     track-volumes: root.track-volumes;
                     timeline-blocks: root.timeline-blocks;
                     selected-track-id: root.selected-track-index;
+                    playhead-ticks: root.playhead-ticks;
+                    ticks-per-pixel: root.roll-ticks-per-pixel;
                     playhead-px: root.playhead-px;
                     is-looping: root.is-looping;
                     bar-start-index: root.bar-start-index;
                     bar-count: root.bar-count;
                     bar-width-px: root.bar-width-px;
-                    cycle-start-px: (root.cycle-start-ticks / root.roll-ticks-per-pixel) * 1px;
-                    cycle-end-px: (root.cycle-end-ticks / root.roll-ticks-per-pixel) * 1px;
+                    cycle-start-px: (root.cycle-start-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
+                    cycle-end-px: (root.cycle-end-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
                     // 轨道行几何 / 内容高 / 横向滚动：全部来自投影（同一份事实源）。
                     track-ys: root.track-ys;
                     track-heights: root.track-heights;
@@ -1137,7 +1139,8 @@ export component MainWindow inherits Window {
                     toggle-arm(t-id) => { root.track-toggle-arm(t-id); }
                     add-track() => { root.track-add-requested(); }
                     audition-chord(name) => { root.chord-audition(name); }
-                    scrub-timeline(pos) => { root.playhead-px = pos; }
+                    ruler-seek(pos) => { root.ruler-seek(pos); }
+                    scrub-timeline(pos) => { root.ruler-seek(pos - root.roll-scroll-x * 1px); }
                     arrangement-wheel(dx, dy, shift, alt) => {
                         root.arrangement-wheel(dx, dy, shift, alt);
                     }

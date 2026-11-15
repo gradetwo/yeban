@@ -6051,9 +6051,13 @@ pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState)
 ///   界面上的数字跟着引擎的 `position_ticks` 走；停住时同样写，显示与引擎一致。
 ///   ⛔ 心跳里不调它就是本单的缺陷形态："按了播放、数字不动"。
 pub fn apply_transport(ui: &MainWindow, reading: TransportReading) {
-    ui.set_playing(reading.state.is_running());
+    let running = reading.state.is_running();
+    ui.set_playing(running);
+    ui.set_is_playing(running);
     let grid = timecode_grid_of(ui);
-    ui.set_timecode(crate::bridge::timecode_for_ticks(grid, reading.position_ticks).into());
+    let tc = crate::bridge::timecode_for_ticks(grid, reading.position_ticks);
+    ui.set_timecode(tc.clone().into());
+    ui.set_timecode_text(tc.into());
     // 走带光标（编曲 / 卷帘两条）的唯一写点：位置 = 引擎读数，x 由 `.slint` 用
     // 投影同口径的 `tick ÷ ticks_per_pixel` 派生。超 i32 的 tick（≈ 10 小时以上）钳到
     // `i32::MAX` —— 界面的 x 会在视口外被裁剪，但绝不回绕到左边。
@@ -17144,9 +17148,9 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         let weak = weak.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
-                ui.set_playhead_px(40.0);
-                ui.set_timecode_text("001.01.01".into());
-                update_toast(&ui, "[走带] 播放头已归零至 001.01.01");
+                apply_transport(&ui, yeban_engine::transport::TransportReading::cold());
+                ui.set_timecode_text("001.01.000".into());
+                update_toast(&ui, "[走带] 播放头已归零至 001.01.000");
             }
         }
     });
@@ -17738,13 +17742,6 @@ pub fn sync_aether_display(ui: &MainWindow) {
     ui.set_master_meter_l(level);
     ui.set_master_meter_r((level * 0.95).min(1.0));
     ui.set_lufs_short(ui.get_master_meter_lufs());
-    let tpp = ui.get_roll_ticks_per_pixel() as f32;
-    let px = if tpp > 0.0 {
-        40.0 + (ui.get_playhead_ticks() as f32) / tpp
-    } else {
-        40.0
-    };
-    ui.set_playhead_px(px);
 }
 
 fn tool_name_for_digit(digit: u8) -> &'static str {

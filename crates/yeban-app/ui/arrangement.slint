@@ -5,8 +5,14 @@ export component ArrangementViewport inherits Rectangle {
     in property <[string]> track-volumes: [];
     in-out property <[TimelineBlockData]> timeline-blocks;
     in-out property <int> selected-track-id: 1;
-    in-out property <length> playhead-px: 360px;
+    in property <int> playhead-ticks: 0;
+    in property <int> ticks-per-pixel: 30;
+    in-out property <length> playhead-px: (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px;
     in-out property <bool> is-looping: false;
+    property <length> timeline-origin-x: Theme.track-headers-on-right ? 0px : (root.headers-width + 5px);
+    property <length> timeline-width: max(0px, root.width - root.headers-width - 5px);
+    out property <length> playhead-origin-x: root.timeline-origin-x;
+    out property <length> playhead-screen-x: root.timeline-origin-x + root.playhead-px - root.scroll-x;
     // [Q6] 标尺读数：可见小节数 / 小节宽 / 循环区间（全部由宿主从投影写入）。
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
@@ -30,6 +36,7 @@ export component ArrangementViewport inherits Rectangle {
     callback toggle-arm(int);
     callback add-track();
     callback audition-chord(string);
+    callback ruler-seek(length);
     callback scrub-timeline(length);
     /// 滚轮分流：`shift` = 横向滚动、`alt` = 纵向缩放、`shift+alt` = 横向缩放。
     /// 无修饰由界面 `reject` ⇒ 冒泡给 `Flickable` 做纵向滚动。
@@ -288,6 +295,7 @@ export component ArrangementViewport inherits Rectangle {
                             height: 24px;
                             background: #06080d;
                             border-color: #ffffff0a;
+                            clip: true;
 
                             // [Q6] 标尺格数与间距来自投影（`host::apply_view` 的
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个
@@ -319,7 +327,16 @@ export component ArrangementViewport inherits Rectangle {
 
                             TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.scrub-timeline(self.mouse-x + root.scroll-x); }
+                                pointer-event(event) => {
+                                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                        root.ruler-seek(self.mouse-x);
+                                    }
+                                }
+                                moved => {
+                                    if self.pressed {
+                                        root.ruler-seek(self.mouse-x);
+                                    }
+                                }
                                 scroll-event(event) => {
                                     root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
                                 }
@@ -1074,6 +1091,7 @@ export component ArrangementViewport inherits Rectangle {
                         // Center Timeline Lane
                         Rectangle {
                             horizontal-stretch: 1;
+                            clip: true;
 
                             // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
                             // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
@@ -1622,6 +1640,7 @@ export component ArrangementViewport inherits Rectangle {
 
                             // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
                             for _i in root.bar-count : Rectangle {
+                                visible: (root.bar-start-index + _i) * root.bar-width-px - root.scroll-x >= 0px;
                                 x: (root.bar-start-index + _i) * root.bar-width-px - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
@@ -1722,24 +1741,32 @@ export component ArrangementViewport inherits Rectangle {
                     }
                 }
             }
+        }
+    }
 
-            // Animated Playhead Line (adaptive offset relative to left/right headers)
+    // Animated Playhead Overlay (clipped strictly to Center Timeline region, spanning Ruler down through Track Lanes)
+    Rectangle {
+        x: root.timeline-origin-x;
+        y: 0px;
+        width: root.timeline-width;
+        height: parent.height;
+        clip: true;
+
+        Rectangle {
+            x: root.playhead-px - root.scroll-x;
+            y: 0px;
+            width: 2px;
+            height: parent.height;
+            background: Theme.accent;
+
+            // Diamond head at ruler top
             Rectangle {
-                x: (Theme.track-headers-on-right ? 0px : root.headers-width) + root.playhead-px - root.scroll-x;
+                x: -4px;
                 y: 0px;
-                width: 2px;
-                height: parent.height;
+                width: 10px;
+                height: 10px;
                 background: Theme.accent;
-
-                // Diamond head
-                Rectangle {
-                    x: -4px;
-                    y: 0px;
-                    width: 10px;
-                    height: 10px;
-                    background: Theme.accent;
-                    border-radius: 2px;
-                }
+                border-radius: 2px;
             }
         }
     }

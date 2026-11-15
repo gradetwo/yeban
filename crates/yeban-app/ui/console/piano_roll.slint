@@ -520,21 +520,29 @@ export component PianoRoll inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 走带光标 [UI-MCP-002]
-    // x = 56px（卷帘时间轴左沿）+ tick ÷ ticks_per_pixel − 滚动偏移：
-    // `note-positions` 是投影**已减去 scroll_x** 的视口相对像素，所以走带光标用
-    // 同一个滚动读数；`playhead-ticks` 的唯一写者 = `host::apply_transport`。
-    // `max(1, …)` 只是除零护栏（宿主写入的缩放恒在 1..=960）。
+    // x = 56px（卷帘时间轴左沿）+ Tokens.space-5（音符 / 网格同款 12px 起点内缩）
+    // + tick ÷ ticks_per_pixel − 滚动偏移：保证 tick 0 与第 1 小节线、start_tick=0 音符
+    // 左沿逐像素对齐；同时外层按 [56px, parent.width) `clip: true` 裁剪，横向滚动时绝不向左
+    // 越界盖住琴键列。`playhead-ticks` 唯一写者 = `host::apply_transport`。
     Rectangle {
-        x: 56px + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px
-            - (root.scroll-x * 1px);
+        x: 56px;
         y: 28px;
-        width: 1px;
+        width: parent.width - 56px;
         height: parent.height - 28px;
-        background: Tokens.gold-bright;
-        accessible-role: slider;
-        accessible-id: "piano-roll-playhead";
-        accessible-label: "卷帘走带光标";
-        accessible-value: root.playhead-timecode;
+        clip: true;
+
+        Rectangle {
+            x: Tokens.space-5 + (root.playhead-ticks / max(1, root.ticks-per-pixel)) * 1px
+                - (root.scroll-x * 1px);
+            y: 0px;
+            width: 1px;
+            height: parent.height;
+            background: Tokens.gold-bright;
+            accessible-role: slider;
+            accessible-id: "piano-roll-playhead";
+            accessible-label: "卷帘走带光标";
+            accessible-value: root.playhead-timecode;
+        }
     }
 
     // 覆盖泳道的输入面：按住并水平拖动 ⇒ 报告水平增量（向右拖 ⇒ 内容左移 ⇒ 偏移增加）。

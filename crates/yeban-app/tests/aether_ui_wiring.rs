@@ -632,3 +632,342 @@ fn mixer_faders_and_pans_drag_smoothly_without_undo_spam() {
         "真实指针拖动必须只占 1 步撤销记录"
     );
 }
+
+fn is_close_rgb(actual: [u8; 3], expected: [u8; 3]) -> bool {
+    actual[0].abs_diff(expected[0]) <= 3
+        && actual[1].abs_diff(expected[1]) <= 3
+        && actual[2].abs_diff(expected[2]) <= 3
+}
+
+/// 回归判据: 编曲视口与钢琴卷帘播放头在 tick 0 (启动 / 归零)、标尺定位、横向滚动及缩放下
+/// 必须与轨道/小节/片段起点逐像素对齐，且向左侧滚动越界时被严格裁剪不侵入控制头/琴键区。
+#[test]
+fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+    use yeban_app::bridge::{NewTrackKind, track_create_ops};
+    use yeban_app::undo::{UndoPort, UndoSession};
+    use yeban_model::EntityId;
+    use yeban_model::music::MidiNote;
+    use yeban_model::ops::Op;
+    use yeban_model::project::{ClipContent, ClipPlacement, ClipPoolEntry, LoopConfig};
+
+    let base = yeban_model::samples::default_project();
+    let seed_ops = track_create_ops(&base, NewTrackKind::Midi).expect("创建 MIDI 轨");
+    let track_id = seed_ops
+        .iter()
+        .find_map(|op| match op {
+            Op::AddTrack { track } => Some(track.id),
+            _ => None,
+        })
+        .expect("必须返回新建轨道 ID");
+
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<playhead-align>", "yeban-app", base, 1_700_000_000_000)
+            .expect("撤销会话"),
+    ));
+    undo.commit_ops(1_700_000_000_001, "test: add track", seed_ops)
+        .expect("提交新建轨道");
+
+    let clip_id = EntityId::new();
+    let placement_id = EntityId::new();
+    let n0_id = EntityId::new();
+    let n1_id = EntityId::new();
+    let mut notes = BTreeMap::new();
+    notes.insert(n0_id, MidiNote::new(n0_id, 0, 60, 960));
+    notes.insert(n1_id, MidiNote::new(n1_id, 3840, 64, 960));
+
+    let clip = ClipPoolEntry {
+        id: clip_id,
+        name: "Lead".into(),
+        content: ClipContent::Midi { notes },
+    };
+    let placement = ClipPlacement {
+        id: placement_id,
+        clip_id,
+        start_tick: 0,
+        duration_ticks: 3840 * 4,
+        loop_config: LoopConfig::default(),
+        muted: false,
+        offset_samples: None,
+    };
+    undo.commit_ops(
+        1_700_000_000_002,
+        "test: add lead clip",
+        vec![
+            Op::AddClip { clip },
+            Op::AddClipPlacement {
+                track_id,
+                placement,
+            },
+        ],
+    )
+    .expect("提交测试片段");
+
+    let project = undo.try_project().expect("权威工程");
+    let production =
+        host::ProductionLoop::start_with_audio_source(&project, 0, None).expect("引擎装配");
+    let engine = production.engine_handle();
+    engine.borrow_mut().stop();
+
+    let view = ViewState::from_project(&project).expect("工程投影");
+    let scene = DemoScene::from_view(&view);
+    let live_view = Rc::new(RefCell::new(view.clone()));
+
+    let mut live = LivePort::new(Size::new(1440, 900), Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 活窗口");
+    {
+        let ui = live.ui();
+        host::wire_transport(ui, Rc::clone(&engine), None, None);
+        host::wire_ruler_seek(ui, Rc::clone(&engine), Rc::clone(&live_view));
+        host::wire_zoom_controls(ui, &undo);
+        host::wire_roll_edit(ui, &undo);
+        host::wire_track_select(ui, &undo);
+        host::wire_clip_scope(ui, Rc::clone(&live_view), Some(Rc::clone(&undo)));
+        host::wire_aether_actions(
+            ui,
+            Rc::clone(&undo),
+            Rc::clone(&engine),
+            Rc::clone(&live_view),
+        );
+
+        ui.set_show_left_inspector(false);
+        ui.set_show_clip_matrix(false);
+        ui.set_show_control_room(false);
+        ui.set_ai_drawer_open(false);
+        ui.set_show_lower_dock(true);
+        ui.invoke_apply_dock_tab("pianoroll".into());
+        ui.invoke_clip_select(placement_id.to_canonical_string().into());
+        host::apply_view(ui, &view, 1440.0, 0.0);
+        host::apply_transport(ui, engine.borrow().transport());
+        host::sync_aether_display(ui);
+    }
+
+    // YebanDefault accent (#387691)
+    const ACCENT_RGB: [u8; 3] = [0x38, 0x76, 0x91];
+
+    // 1. 初始冷启动 tick 0: 播放头与 Bar 1 / 轨道内容起点逐像素对齐，时间码 = 001.01.000
+    assert_eq!(live.ui().get_playhead_ticks(), 0);
+    assert_eq!(live.ui().get_playhead_px(), 0.0);
+    assert_eq!(live.ui().get_timecode().as_str(), "001.01.000");
+    assert_eq!(live.ui().get_timecode_text().as_str(), "001.01.000");
+
+    let note0_id = format!("note-{}-rect", n0_id.to_canonical_string());
+    let note1_id = format!("note-{}-rect", n1_id.to_canonical_string());
+    let (canvas, grid0, pr_playhead0, note0_bounds) = {
+        let tree = live.refresh_tree(None).expect("控件树");
+        (
+            tree.find_by_id("workspace-arrangement-canvas")
+                .and_then(|n| n.bounds)
+                .expect("编曲画布包围盒"),
+            tree.find_by_id("piano-roll-grid")
+                .and_then(|n| n.bounds)
+                .expect("卷帘网格"),
+            tree.find_by_id("piano-roll-playhead")
+                .and_then(|n| n.bounds)
+                .expect("卷帘播放头"),
+            tree.find_by_id(&note0_id)
+                .and_then(|n| n.bounds)
+                .expect("tick 0 音符包围盒"),
+        )
+    };
+    let timeline_origin_x = canvas.x + live.ui().get_track_headers_width().round() as i32 + 5;
+    let ruler_probe_y = (canvas.y + 15) as u32;
+
+    let img0 = live.window().capture().expect("帧 0");
+    for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
+        for x in (timeline_origin_x - 5)..timeline_origin_x {
+            let px = img0.pixel(x as u32, y).unwrap();
+            assert!(
+                !is_close_rgb(px, ACCENT_RGB),
+                "tick 0 播放头与菱形头不得向左侵入分隔线/轨道控制头 (x={x}, y={y}, rgb={px:?})"
+            );
+        }
+    }
+    assert!(
+        is_close_rgb(
+            img0.pixel(timeline_origin_x as u32, ruler_probe_y).unwrap(),
+            ACCENT_RGB
+        ),
+        "tick 0 编曲播放头左侧必须正好落在时间轴起点 x={timeline_origin_x}"
+    );
+    assert!(
+        is_close_rgb(
+            img0.pixel(timeline_origin_x as u32 + 1, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "tick 0 编曲播放头 2px 线宽必须落在 [{timeline_origin_x}, {})",
+        timeline_origin_x + 2
+    );
+    assert!(
+        is_close_rgb(
+            img0.pixel(timeline_origin_x as u32, (canvas.y + 62) as u32)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "tick 0 编曲播放头必须贯穿到轨道泳道起点 x={timeline_origin_x}"
+    );
+
+    assert_eq!(
+        pr_playhead0.x,
+        grid0.x + 12,
+        "tick 0 卷帘播放头必须对齐 12px 起点内缩"
+    );
+    assert_eq!(
+        pr_playhead0.x, note0_bounds.x,
+        "tick 0 卷帘播放头必须与 start_tick=0 音符左沿完全对齐"
+    );
+
+    // 2. 点击标尺定位到 Bar 3 (tick 7680 => tpp 30 下 x = 256px)
+    live.ui().invoke_ruler_seek(256.0);
+    assert_eq!(live.ui().get_playhead_ticks(), 7680);
+    assert_eq!(live.ui().get_playhead_px(), 256.0);
+    assert_eq!(live.ui().get_timecode_text().as_str(), "003.01.000");
+
+    let pr_playhead_seek = {
+        let tree_seek = live.refresh_tree(None).expect("seek 后控件树");
+        tree_seek
+            .find_by_id("piano-roll-playhead")
+            .and_then(|n| n.bounds)
+            .expect("seek 后卷帘播放头")
+    };
+    let img_seek = live.window().capture().expect("seek 帧");
+    assert!(
+        is_close_rgb(
+            img_seek
+                .pixel((timeline_origin_x + 256) as u32, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "seek 到第 3 小节后编曲播放头必须移至 x={}",
+        timeline_origin_x + 256
+    );
+    assert_eq!(
+        pr_playhead_seek.x,
+        grid0.x + 12 + 256,
+        "seek 后卷帘播放头必须同步移动 +256px"
+    );
+
+    // 3. 点击归零 (Rewind): 播放头与时间码必须回到原点
+    live.ui().invoke_transport_rewind();
+    assert_eq!(live.ui().get_playhead_ticks(), 0);
+    assert_eq!(live.ui().get_playhead_px(), 0.0);
+    assert_eq!(live.ui().get_timecode_text().as_str(), "001.01.000");
+
+    let pr_playhead_rew = {
+        let tree_rew = live.refresh_tree(None).expect("归零后控件树");
+        tree_rew
+            .find_by_id("piano-roll-playhead")
+            .and_then(|n| n.bounds)
+            .expect("归零后卷帘播放头")
+    };
+    let img_rew = live.window().capture().expect("归零帧");
+    assert!(
+        is_close_rgb(
+            img_rew
+                .pixel(timeline_origin_x as u32, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "归零后编曲播放头必须精准回到时间轴起点 x={timeline_origin_x}"
+    );
+    assert_eq!(pr_playhead_rew.x, grid0.x + 12);
+
+    // 4. 定位到 Bar 2 (tick 3840 => 128px) 并横向滚动 scroll_x=128px (应正好对齐时间轴左沿)
+    live.ui().invoke_ruler_seek(128.0);
+    assert_eq!(live.ui().get_playhead_ticks(), 3840);
+    {
+        let ui = live.ui();
+        let fresh = host::project_with_view_state(&project, ui).expect("投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 128.0);
+    }
+    let (pr_playhead_scroll, note1_scroll) = {
+        let tree_scroll = live.refresh_tree(None).expect("滚动后控件树");
+        (
+            tree_scroll
+                .find_by_id("piano-roll-playhead")
+                .and_then(|n| n.bounds)
+                .expect("滚动后卷帘播放头"),
+            tree_scroll
+                .find_by_id(&note1_id)
+                .and_then(|n| n.bounds)
+                .expect("Bar 2 音符"),
+        )
+    };
+    let img_scroll = live.window().capture().expect("滚动帧");
+    assert!(
+        is_close_rgb(
+            img_scroll
+                .pixel(timeline_origin_x as u32, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "Bar 2 播放头在 scroll_x=128px 时必须落在时间轴左沿 x={timeline_origin_x}"
+    );
+    assert_eq!(
+        pr_playhead_scroll.x, note1_scroll.x,
+        "横向滚动后卷帘播放头与 Bar 2 音符左沿必须逐像素重合"
+    );
+
+    // 5. 继续向右滚动越过播放头 (scroll_x=256px, 播放头在 128px): 必须被裁剪，不得泄漏进控制头
+    {
+        let ui = live.ui();
+        let fresh = host::project_with_view_state(&project, ui).expect("投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 256.0);
+    }
+    let img_clipped = live.window().capture().expect("裁剪帧");
+    for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
+        for x in (timeline_origin_x - 5)..(timeline_origin_x + 4) {
+            let px = img_clipped.pixel(x as u32, y).unwrap();
+            assert!(
+                !is_close_rgb(px, ACCENT_RGB),
+                "播放头滚出左视口后不得泄漏进控制头/分隔线或时间轴左沿 (x={x}, y={y}, rgb={px:?})"
+            );
+        }
+    }
+
+    // 6. 缩放至 tpp=60 (tick 3840 => 64px) 且 scroll_x=0: 编曲与卷帘播放头同时精确落在 +64px
+    {
+        let ui = live.ui();
+        assert!(host::set_roll_ticks_per_pixel(ui, 60));
+        let fresh = host::project_with_view_state(&project, ui).expect("缩放后投影");
+        *live_view.borrow_mut() = fresh.clone();
+        host::apply_view(ui, &fresh, 1440.0, 0.0);
+    }
+    assert_eq!(live.ui().get_playhead_px(), 64.0);
+    let (pr_playhead_zoom, note1_zoom) = {
+        let tree_zoom = live.refresh_tree(None).expect("缩放后控件树");
+        (
+            tree_zoom
+                .find_by_id("piano-roll-playhead")
+                .and_then(|n| n.bounds)
+                .expect("缩放后卷帘播放头"),
+            tree_zoom
+                .find_by_id(&note1_id)
+                .and_then(|n| n.bounds)
+                .expect("缩放后 Bar 2 音符"),
+        )
+    };
+    let img_zoom = live.window().capture().expect("缩放帧");
+    assert!(
+        is_close_rgb(
+            img_zoom
+                .pixel((timeline_origin_x + 64) as u32, ruler_probe_y)
+                .unwrap(),
+            ACCENT_RGB
+        ),
+        "缩放至 tpp=60 后编曲播放头必须落在 x={}",
+        timeline_origin_x + 64
+    );
+    assert_eq!(pr_playhead_zoom.x, grid0.x + 12 + 64);
+    assert_eq!(
+        pr_playhead_zoom.x, note1_zoom.x,
+        "缩放后卷帘播放头与 Bar 2 音符左沿必须保持逐像素重合"
+    );
+}
