@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 411 条：float_bits 90 ／ integer_count 321；其中 hard 74 ／ platform 13
+# 合计 412 条：float_bits 90 ／ integer_count 322；其中 hard 74 ／ platform 13
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/band_solo.rs | centers_and_q_are_geometric_means
 integer_count | no_callee | 0 | - | src/band_solo.rs | illegal_sample_rate_falls_back_to_48k
@@ -153,6 +153,7 @@ float_bits | hard | 9 | - | src/limiter.rs | a_loud_right_channel_drives_the_sha
 integer_count | no_callee | 0 | - | src/limiter.rs | a_peak_exactly_at_the_threshold_is_not_a_reduction
 float_bits | hard | 7 | - | src/limiter.rs | a_silent_channel_stays_bit_silent
 float_bits | hard | 8 | - | src/limiter.rs | a_single_spike_is_exactly_limited_and_the_tail_is_bit_silent
+integer_count | no_callee | 0 | - | src/limiter.rs | a_threshold_below_the_ceiling_no_longer_pins_the_output_to_the_threshold
 float_bits | hard | 10 | - | src/limiter.rs | an_empty_block_never_moves_an_already_advanced_instance
 float_bits | hard | 12 | - | src/limiter.rs | default_config_is_the_bus_limiter
 integer_count | no_callee | 0 | - | src/limiter.rs | gain_release_is_bounded_per_sample
