@@ -2,6 +2,7 @@ import { Theme, TrackData, TimelineBlockData, Tokens, TooltipBubble } from "toke
 
 export component ArrangementViewport inherits Rectangle {
     in-out property <[TrackData]> tracks;
+    in property <[string]> track-volumes: [];
     in-out property <[TimelineBlockData]> timeline-blocks;
     in-out property <int> selected-track-id: 1;
     in-out property <length> playhead-px: 360px;
@@ -42,6 +43,14 @@ export component ArrangementViewport inherits Rectangle {
     callback track-pan-change(int, float);
     callback track-volume-change(int, float);
     callback track-instrument-change(int, string);
+    callback mixer-fader-grab(int, length);
+    callback mixer-fader-drag(int, length);
+    callback mixer-fader-release(int);
+    callback mixer-fader-reset(int);
+    callback mixer-pan-grab(int, length);
+    callback mixer-pan-drag(int, length);
+    callback mixer-pan-release(int);
+    callback mixer-pan-reset(int);
     callback execute-action(string);
     callback clip-select(string);
 
@@ -876,19 +885,22 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             pan-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.col-resize;
+                                                mouse-cursor: MouseCursor.ew-resize;
                                                 pointer-event(event) => {
-                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
-                                                        let norm = Math.max(-1.0, Math.min(1.0, (self.mouse-x / max(1px, parent.width)) * 2.0 - 1.0));
-                                                        root.track-pan-change(trk.id, norm);
+                                                    if event.kind == PointerEventKind.down {
+                                                        root.mixer-pan-grab(trk.id - 1, self.mouse-x);
+                                                    } else if event.kind == PointerEventKind.move {
+                                                        root.mixer-pan-drag(trk.id - 1, self.mouse-x);
+                                                    } else {
+                                                        root.mixer-pan-release(trk.id - 1);
                                                     }
                                                 }
                                                 double-clicked => {
-                                                    root.track-pan-change(trk.id, 0.0);
+                                                    root.mixer-pan-reset(trk.id - 1);
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "声像: " + trk.pan;
+                                                text: "声像: " + trk.pan + " (左右拖拽调节，双击归中)";
                                                 is-visible: pan-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -905,7 +917,7 @@ export component ArrangementViewport inherits Rectangle {
                                             HorizontalLayout {
                                                 alignment: center;
                                                 Text {
-                                                    text: "" + trk.volume_db + "dB";
+                                                    text: root.track-volumes.length > idx ? (root.track-volumes[idx] + "dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + "dB");
                                                     font-family: Tokens.font-mono;
                                                     font-size: 8.5px;
                                                     color: #cbd5e1;
@@ -914,24 +926,22 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             vol-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.col-resize;
+                                                mouse-cursor: MouseCursor.ns-resize;
                                                 pointer-event(event) => {
-                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
-                                                        let delta_px = (self.mouse-x - self.pressed-x) / 1px;
-                                                        let next_db = Math.max(-60.0, Math.min(6.0, trk.volume_db + delta_px * 0.25));
-                                                        if delta_px > 2.0 || delta_px < -2.0 {
-                                                            root.track-volume-change(trk.id, next_db);
-                                                        } else {
-                                                            root.track-volume-change(trk.id, trk.volume_db < -3.0 ? 0.0 : -6.0);
-                                                        }
+                                                    if event.kind == PointerEventKind.down {
+                                                        root.mixer-fader-grab(trk.id - 1, self.mouse-y);
+                                                    } else if event.kind == PointerEventKind.move {
+                                                        root.mixer-fader-drag(trk.id - 1, self.mouse-y);
+                                                    } else {
+                                                        root.mixer-fader-release(trk.id - 1);
                                                     }
                                                 }
                                                 double-clicked => {
-                                                    root.track-volume-change(trk.id, 0.0);
+                                                    root.mixer-fader-reset(trk.id - 1);
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "推子增益: " + trk.volume_db + " dB";
+                                                text: "推子增益: " + (root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)) + " dB (上下拖拽调节，双击归 0dB)";
                                                 is-visible: vol-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1352,19 +1362,22 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             pan-r-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.col-resize;
+                                                mouse-cursor: MouseCursor.ew-resize;
                                                 pointer-event(event) => {
-                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
-                                                        let norm = Math.max(-1.0, Math.min(1.0, (self.mouse-x / max(1px, parent.width)) * 2.0 - 1.0));
-                                                        root.track-pan-change(trk.id, norm);
+                                                    if event.kind == PointerEventKind.down {
+                                                        root.mixer-pan-grab(trk.id - 1, self.mouse-x);
+                                                    } else if event.kind == PointerEventKind.move {
+                                                        root.mixer-pan-drag(trk.id - 1, self.mouse-x);
+                                                    } else {
+                                                        root.mixer-pan-release(trk.id - 1);
                                                     }
                                                 }
                                                 double-clicked => {
-                                                    root.track-pan-change(trk.id, 0.0);
+                                                    root.mixer-pan-reset(trk.id - 1);
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "声像: " + trk.pan;
+                                                text: "声像: " + trk.pan + " (左右拖拽调节，双击归中)";
                                                 is-visible: pan-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1380,7 +1393,7 @@ export component ArrangementViewport inherits Rectangle {
                                             HorizontalLayout {
                                                 alignment: center;
                                                 Text {
-                                                    text: "" + trk.volume_db + "dB";
+                                                    text: root.track-volumes.length > idx ? (root.track-volumes[idx] + "dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + "dB");
                                                     font-family: Tokens.font-mono;
                                                     font-size: 8.5px;
                                                     color: #cbd5e1;
@@ -1389,24 +1402,22 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             vol-r-touch := TouchArea {
-                                                mouse-cursor: MouseCursor.col-resize;
+                                                mouse-cursor: MouseCursor.ns-resize;
                                                 pointer-event(event) => {
-                                                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
-                                                        let delta_px = (self.mouse-x - self.pressed-x) / 1px;
-                                                        let next_db = Math.max(-60.0, Math.min(6.0, trk.volume_db + delta_px * 0.25));
-                                                        if delta_px > 2.0 || delta_px < -2.0 {
-                                                            root.track-volume-change(trk.id, next_db);
-                                                        } else {
-                                                            root.track-volume-change(trk.id, trk.volume_db < -3.0 ? 0.0 : -6.0);
-                                                        }
+                                                    if event.kind == PointerEventKind.down {
+                                                        root.mixer-fader-grab(trk.id - 1, self.mouse-y);
+                                                    } else if event.kind == PointerEventKind.move {
+                                                        root.mixer-fader-drag(trk.id - 1, self.mouse-y);
+                                                    } else {
+                                                        root.mixer-fader-release(trk.id - 1);
                                                     }
                                                 }
                                                 double-clicked => {
-                                                    root.track-volume-change(trk.id, 0.0);
+                                                    root.mixer-fader-reset(trk.id - 1);
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "推子增益: " + trk.volume_db + " dB";
+                                                text: "推子增益: " + (root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)) + " dB (上下拖拽调节，双击归 0dB)";
                                                 is-visible: vol-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }

@@ -312,6 +312,8 @@ export component MainWindow inherits Window {
     in-out property <[string]> track-volumes: [];
     in-out property <[float]> track-volume-fractions: [];
     in-out property <[string]> track-pans: [];
+    in-out property <[float]> track-pan-values: [];
+    in-out property <float> bus-volume-db: -1.0;
     in-out property <[bool]> track-mutes: [];
     in-out property <[bool]> track-solos: [];
     in-out property <[string]> track-meter-peaks: [];
@@ -928,13 +930,16 @@ export component MainWindow inherits Window {
                     selected-track-badge: root.tracks.length > 0 ? ("TRK 0" + root.selected-track-index + " · " + root.tracks[root.safe-selected-idx].kind) : "";
                     selected-track-bus: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].bus : "";
                     selected-track-pan: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].pan : "C";
+                    selected-track-pan-value: root.track-pan-values.length > root.safe-selected-idx ? root.track-pan-values[root.safe-selected-idx] : 0.0;
                     selected-track-vol: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].volume_db : 0.0;
+                    selected-track-vol-display: root.track-volumes.length > root.safe-selected-idx ? root.track-volumes[root.safe-selected-idx] : "";
                     selected-track-peak: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].meter_peak : 0.0;
                     selected-track-inserts: root.tracks.length > 0 ? [
                         root.tracks[root.safe-selected-idx].insert1,
                         root.tracks[root.safe-selected-idx].insert2,
                         root.tracks[root.safe-selected-idx].insert3
                     ] : [];
+                    bus-track-vol <=> root.bus-volume-db;
 
                     normalize-heights() => { root.normalize-track-heights(); }
                     fader-changed(vol) => { root.track-volume-changed(root.selected-track-index, vol); }
@@ -944,6 +949,14 @@ export component MainWindow inherits Window {
                     search-changed(q) => { root.sidebar-search-changed(q); }
                     track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                     track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
+                    mixer-fader-grab(idx, y) => { root.mixer-fader-grab(idx, y); }
+                    mixer-fader-drag(idx, y) => { root.mixer-fader-drag(idx, y); }
+                    mixer-fader-release(idx) => { root.mixer-fader-release(idx); }
+                    mixer-fader-reset(idx) => { root.mixer-fader-reset(idx); }
+                    mixer-pan-grab(idx, x) => { root.mixer-pan-grab(idx, x); }
+                    mixer-pan-drag(idx, x) => { root.mixer-pan-drag(idx, x); }
+                    mixer-pan-release(idx) => { root.mixer-pan-release(idx); }
+                    mixer-pan-reset(idx) => { root.mixer-pan-reset(idx); }
                     execute-action(id) => { root.command-execute(id); }
                     focus-devices() => {
                         root.show-lower-dock = true;
@@ -1015,6 +1028,7 @@ export component MainWindow inherits Window {
                     horizontal-stretch: 1;
                     headers-width: root.track-headers-width;
                     tracks: root.tracks;
+                    track-volumes: root.track-volumes;
                     timeline-blocks: root.timeline-blocks;
                     selected-track-id: root.selected-track-index;
                     playhead-px: root.playhead-px;
@@ -1050,6 +1064,14 @@ export component MainWindow inherits Window {
                     track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                     track-volume-change(t-id, v) => { root.track-volume-changed(t-id, v); }
                     track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
+                    mixer-fader-grab(idx, y) => { root.mixer-fader-grab(idx, y); }
+                    mixer-fader-drag(idx, y) => { root.mixer-fader-drag(idx, y); }
+                    mixer-fader-release(idx) => { root.mixer-fader-release(idx); }
+                    mixer-fader-reset(idx) => { root.mixer-fader-reset(idx); }
+                    mixer-pan-grab(idx, x) => { root.mixer-pan-grab(idx, x); }
+                    mixer-pan-drag(idx, x) => { root.mixer-pan-drag(idx, x); }
+                    mixer-pan-release(idx) => { root.mixer-pan-release(idx); }
+                    mixer-pan-reset(idx) => { root.mixer-pan-reset(idx); }
                     execute-action(id) => { root.command-execute(id); }
                 }
 
@@ -1132,6 +1154,10 @@ export component MainWindow inherits Window {
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
                 focus-track-name: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].name : "";
                 tracks: root.tracks;
+                track-volumes: root.track-volumes;
+                master-volume-db: Math.round((-60.0 + root.master-volume-fraction * 66.0) * 10.0) / 10.0;
+                master-volume-display: root.master-volume-display;
+                bus-volume-db <=> root.bus-volume-db;
                 selected-track-id: root.selected-track-index;
                 notes: root.notes;
                 playhead-px: root.playhead-px;
@@ -1172,6 +1198,18 @@ export component MainWindow inherits Window {
                 track-volume-change(t-id, vol) => { root.track-volume-changed(t-id, vol); }
                 track-pan-change(t-id, p) => { root.track-pan-changed(t-id, p); }
                 track-instrument-change(t-id, inst) => { root.track-instrument-change(t-id, inst); }
+                mixer-fader-grab(idx, y) => { root.mixer-fader-grab(idx, y); }
+                mixer-fader-drag(idx, y) => { root.mixer-fader-drag(idx, y); }
+                mixer-fader-release(idx) => { root.mixer-fader-release(idx); }
+                mixer-fader-reset(idx) => { root.mixer-fader-reset(idx); }
+                mixer-pan-grab(idx, x) => { root.mixer-pan-grab(idx, x); }
+                mixer-pan-drag(idx, x) => { root.mixer-pan-drag(idx, x); }
+                mixer-pan-release(idx) => { root.mixer-pan-release(idx); }
+                mixer-pan-reset(idx) => { root.mixer-pan-reset(idx); }
+                mixer-master-fader-grab(y) => { root.mixer-master-fader-grab(y); }
+                mixer-master-fader-drag(y) => { root.mixer-master-fader-drag(y); }
+                mixer-master-fader-release() => { root.mixer-master-fader-release(); }
+                mixer-master-fader-reset() => { root.mixer-master-fader-reset(); }
                 execute-action(id) => { root.command-execute(id); }
                 set-wt-pos(pos) => { root.device-param-changed("wavetable", "wt_pos", pos); }
                 set-wt-cutoff(cut) => { root.device-param-changed("wavetable", "cutoff", cut); }

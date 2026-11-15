@@ -5031,6 +5031,15 @@ impl ViewState {
             .collect()
     }
 
+    /// 非主总线轨道的归一化声相数值（`-1.0..=1.0`，由 `TrackView::pan_millis` 派生）。
+    #[must_use]
+    pub fn track_pan_values(&self) -> Vec<f32> {
+        self.tracks
+            .iter()
+            .map(|track| (track.pan_millis as f32 / 1000.0).clamp(-1.0, 1.0))
+            .collect()
+    }
+
     /// 非主总线轨道的推子位置（0.0–1.0，由 `TrackV3::volume_db` 派生）。
     #[must_use]
     pub fn track_volume_fractions(&self) -> Vec<f32> {

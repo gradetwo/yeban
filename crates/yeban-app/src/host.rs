@@ -225,6 +225,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_track_volumes(strings(&view.track_volumes()));
     ui.set_track_volume_fractions(lengths(&view.track_volume_fractions()));
     ui.set_track_pans(strings(&view.track_pans()));
+    ui.set_track_pan_values(lengths(&view.track_pan_values()));
     ui.set_track_mutes(booleans(&view.track_mutes()));
     ui.set_track_solos(booleans(&view.track_solos()));
     // ⭐ `#82`：SFZ 采样器绑定的**只读**注入面（`TrackV3::sampler` 的路径原文，
@@ -1921,6 +1922,18 @@ fn preview_track_volume(ui: &MainWindow, index: i32, volume_db: f32) {
     fractions[index] = crate::bridge::volume_fraction(volume_db);
     ui.set_track_volumes(strings(&volumes));
     ui.set_track_volume_fractions(lengths(&fractions));
+    // 就地更新 VecModel 单行，避免 ui.set_tracks(..) 重建 Repeater 并丢失指针抓取。
+    let rounded_db = (volume_db * 10.0).round() / 10.0;
+    let tracks_model = ui.get_tracks();
+    if let Some(vec_model) = tracks_model
+        .as_any()
+        .downcast_ref::<VecModel<crate::ui::TrackData>>()
+    {
+        if let Some(mut row) = vec_model.row_data(index) {
+            row.volume_db = rounded_db;
+            vec_model.set_row_data(index, row);
+        }
+    }
 }
 
 /// 同 [`preview_track_volume`]，写声相数组（文本与千分位整数同源）。
@@ -1932,8 +1945,26 @@ fn preview_track_pan(ui: &MainWindow, index: i32, pan: f32) {
     if index >= pans.len() {
         return;
     }
-    pans[index] = crate::bridge::pan_display(pan_millis_of(pan));
+    let clamped = pan.clamp(-1.0, 1.0);
+    let pan_label = crate::bridge::pan_display(pan_millis_of(clamped));
+    pans[index] = pan_label.clone();
     ui.set_track_pans(strings(&pans));
+    let mut pan_values = read_lengths(&ui.get_track_pan_values());
+    if index < pan_values.len() {
+        pan_values[index] = clamped;
+        ui.set_track_pan_values(lengths(&pan_values));
+    }
+    // 就地更新 VecModel 单行，同步检查器/编排轨/调音台全部视图且保持拖动抓取。
+    let tracks_model = ui.get_tracks();
+    if let Some(vec_model) = tracks_model
+        .as_any()
+        .downcast_ref::<VecModel<crate::ui::TrackData>>()
+    {
+        if let Some(mut row) = vec_model.row_data(index) {
+            row.pan = pan_label.into();
+            vec_model.set_row_data(index, row);
+        }
+    }
 }
 
 /// **主控通道条**的视图态预览（音量）：只写那两个**标量**属性。
