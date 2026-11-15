@@ -124,6 +124,19 @@ struct TrackSource {
 }
 
 impl AudioSource for TrackSource {
+    /// ⭐ 第五份报告 B-1（app 侧补齐）：定位转发给基座与每个片段源。
+    ///
+    /// 基座（引擎／SFZ／最小音源）各自做冷启动定位；片段源按绝对帧寻址
+    /// 恒成功。任一子源拒绝 ⇒ 整体拒绝（`execute` 包成点名失败），
+    /// ⛔ 不许只定位一半还继续渲。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.base.seek_to(frame)?;
+        for clip in &mut self.clips {
+            clip.seek_to(frame)?;
+        }
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 基座会清零（三个既有源都 `out.fill(0.0)`）；音频片段只**累加**。
         self.base.render_block(context, out)?;
@@ -147,6 +160,15 @@ struct AutomationGain {
 }
 
 impl AudioSource for AutomationGain {
+    /// ⭐ 第五份报告 B-1（app 侧补齐）：定位转发给内层源。
+    ///
+    /// 自动化本身按 `context.first_frame` **绝对帧**读曲线；平滑器的
+    /// 状态在 `execute` 的调用点仍是构造初态（定位发生在任何一块
+    /// 之前）⇒ 冷启动语义与 MCP 的 `TrackSource` 同一条口径。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.inner.seek_to(frame)
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         self.inner.render_block(context, out)?;
         self.automation.apply_ratio_block(
@@ -179,6 +201,12 @@ struct AutomationPan {
 }
 
 impl AudioSource for AutomationPan {
+    /// ⭐ 第五份报告 B-1（app 侧补齐）：定位转发给内层源（与
+    /// [`AutomationGain`] 同一条口径：曲线按绝对帧读，平滑器冷启动）。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.inner.seek_to(frame)
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         self.inner.render_block(context, out)?;
         let law = self.law;
@@ -215,6 +243,13 @@ struct PeakTap {
 }
 
 impl AudioSource for PeakTap {
+    /// ⭐ 第五份报告 B-1（app 侧补齐）：定位转发给内层源（探针本身
+    /// 无位置状态；与 MCP 的 `PeakTap::seek_to` 同形）。峰值读数不因
+    /// 定位清零 —— 定位发生在任何一块渲染之前，读数本就还是 0。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        self.inner.seek_to(frame)
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         self.inner.render_block(context, out)?;
         let mut peak = 0.0_f32;
@@ -410,7 +445,15 @@ pub fn render_project_f32_with_assets_under(
     assets: &[(AssetHash, Vec<u8>)],
     project_dir: Option<&Path>,
 ) -> Result<RenderProjectOutput, WavExportError> {
-    render_project_f32_with_plans_under(project, options, sfz, assets, BTreeMap::new(), project_dir)
+    render_project_f32_with_plans_under(
+        project,
+        options,
+        sfz,
+        assets,
+        BTreeMap::new(),
+        project_dir,
+        0,
+    )
 }
 
 /// 与 [`render_project_f32_with_assets`] 相同，但可**额外注入已摊平的 SFZ 表**（任务单 `#79`）。
@@ -441,7 +484,7 @@ pub fn render_project_f32_with_plans(
     assets: &[(AssetHash, Vec<u8>)],
     plans: BTreeMap<EntityId, yeban_engine::sfz_instrument::SfzPlan>,
 ) -> Result<RenderProjectOutput, WavExportError> {
-    render_project_f32_with_plans_under(project, options, sfz, assets, plans, None)
+    render_project_f32_with_plans_under(project, options, sfz, assets, plans, None, 0)
 }
 
 /// 路由图里**有音频入边**的非主轨节点（总线推子的落点集合）。
@@ -465,6 +508,14 @@ fn audio_bus_nodes(project: &YebanProjectV1) -> BTreeSet<EntityId> {
 ///
 /// `project_dir = None` ⇒ 与 [`render_project_f32_with_plans`] **逐位相同**。
 ///
+/// ⭐ 第五份报告 B-1（app 侧补齐）：末参 `start_frame` 是**区间渲染起点**
+/// （绝对帧）。`0`（全部既有公开入口都传 0）⇒ 从头渲染，行为逐位不变。
+/// 大于 0 时透传给 [`RenderOptions::start_frame`]：`execute` 先把每个
+/// app 侧音源 `seek_to` 到该帧再出块，`options.frames` 是**从该帧起**的
+/// 输出帧数。跨起点的音符不追补发声、效果与平滑器冷启动（语义与 render
+/// 侧 `coldStart` 回显同一条）；音频片段按绝对帧寻址，出它在区间内的
+/// 部分。本参数只供内部与判据使用，⛔ 没有 CLI／UI 入口。
+///
 /// # Errors
 ///
 /// 与 [`render_project_f32_with_plans`] 相同，外加"相对路径在全部候选根下都找不到"时的
@@ -479,6 +530,8 @@ pub fn render_project_f32_with_plans_under(
     assets: &[(AssetHash, Vec<u8>)],
     plans: BTreeMap<EntityId, yeban_engine::sfz_instrument::SfzPlan>,
     project_dir: Option<&Path>,
+    // ⭐ B-1（app 侧补齐）：区间渲染起点（绝对帧）；语义见函数文档。
+    start_frame: u64,
 ) -> Result<RenderProjectOutput, WavExportError> {
     // ⭐ `#168`：唯一的解析上下文（工程目录 ⇒ 仓库根 ⇒ cwd）。
     let sfz_roots = match project_dir {
@@ -567,6 +620,8 @@ pub fn render_project_f32_with_plans_under(
     };
     let options_render = RenderOptions {
         frames: render_frames,
+        // ⭐ B-1（app 侧补齐）：区间起点透传（0 ⇒ 旧行为逐位不变）。
+        start_frame,
         sample_rate: options.sample_rate,
         channels: options.channels,
         seed: options.seed,
@@ -1163,7 +1218,9 @@ pub fn render_project_f32_with_plans_under(
             let frames = output.samples.len() / options.channels.max(1);
             automation.apply_gain_block(
                 &mut output.samples,
-                0,
+                // ⭐ B-1（app 侧补齐）：曲线按**绝对帧**读 ⇒ 区间渲染时
+                // 必须从 `start_frame` 起算（写 0 会静默读错一段曲线）。
+                start_frame,
                 frames,
                 options.channels,
                 master_gain,
@@ -1174,7 +1231,8 @@ pub fn render_project_f32_with_plans_under(
         if let Some(automation) = master_pan_automation.as_mut() {
             let channels = options.channels.max(1);
             let frames = output.samples.len() / channels;
-            automation.apply_pan_block(&mut output.samples, 0, frames, channels, |pan| {
+            // ⭐ B-1（app 侧补齐）：同上，绝对帧起点（见音量自动化处）。
+            automation.apply_pan_block(&mut output.samples, start_frame, frames, channels, |pan| {
                 pan_gains(pan, pan_law)
             });
         }
@@ -1797,5 +1855,289 @@ mod tests {
             audio_bus_nodes(&project).contains(&bus),
             "普通音频边必须让目的节点成为总线（负对照）"
         );
+    }
+
+    /// ⭐ B-1 探针夹具：bpm 120、48 kHz ⇒ 1 tick = 25 帧。一条 MIDI 轨
+    /// ＋主总线，音符由调用方按 tick 给（`(起始 tick, 时值 tick, 音高)`）。
+    fn range_project(notes: &[(u64, u64, u8)]) -> (YebanProjectV1, EntityId) {
+        use std::str::FromStr as _;
+
+        use yeban_model::{
+            ClipContent, ClipPlacement, ClipPoolEntry, LoopConfig, MidiNote, RoutingEdge,
+            RoutingKind, TrackKind,
+        };
+
+        fn ulid(tail: &str) -> EntityId {
+            EntityId::from_str(&format!("01J8Z5Q0R7K3M9X2V4B6N8P0{tail}"))
+                .expect("夹具 ULID 必须合法")
+        }
+        let master = ulid("M0");
+        let track_id = ulid("T0");
+        let clip_id = ulid("C0");
+        let placement_id = ulid("P0");
+        let mut project = YebanProjectV1 {
+            id: ulid("Z0"),
+            bpm: 120.0,
+            master_bus_track_id: master,
+            ..YebanProjectV1::default()
+        };
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                name: "Master".to_owned(),
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.nodes.push(master);
+        let mut track = TrackV3 {
+            id: track_id,
+            name: "Range".to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 2_880,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        project.tracks.insert(track_id, track);
+        project.routing_graph.nodes.push(track_id);
+        let mut map = BTreeMap::new();
+        for (index, (start, duration, pitch)) in notes.iter().enumerate() {
+            let note_id = ulid(&format!("N{index}"));
+            map.insert(
+                note_id,
+                MidiNote {
+                    velocity: 100,
+                    ..MidiNote::new(note_id, *start, *pitch, *duration)
+                },
+            );
+        }
+        project.clip_pool.insert(
+            clip_id,
+            ClipPoolEntry {
+                id: clip_id,
+                name: "range-clip".to_owned(),
+                content: ClipContent::Midi { notes: map },
+            },
+        );
+        let edge_id = ulid("E0");
+        project.routing_graph.edges.insert(
+            edge_id,
+            RoutingEdge {
+                id: edge_id,
+                source_node: track_id,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        (project, track_id)
+    }
+
+    /// 走**生产装配**渲染（直调内层核心 ⇒ 可给区间起点；公开入口传 0）。
+    fn render_range(
+        project: &YebanProjectV1,
+        use_engine: bool,
+        start: u64,
+        frames: u64,
+    ) -> Vec<f32> {
+        let options = WavExportOptions {
+            frames,
+            use_engine_source: use_engine,
+            ..Default::default()
+        };
+        render_project_f32_with_plans_under(
+            project,
+            options,
+            None,
+            &[],
+            BTreeMap::new(),
+            None,
+            start,
+        )
+        .expect("渲染必须成功")
+        .samples
+    }
+
+    /// ⭐ 判据（第五份报告 B-1，app 侧补齐）：**最小音源**的区间等价。
+    ///
+    /// 音符（帧口径）：A `[0, 12_000)`、B `[24_000, 72_000)`（跨起点
+    /// 48_000）、C `[60_000, 72_000)`。区间渲染 `[48_000, 96_000)` 必须
+    /// 与"没有 B 的工程全程渲染"的同段切片**逐样本相同**（线性幅度）。
+    #[test]
+    fn range_render_minimal_source_matches_full_slice_bitwise() {
+        let (with_cross, _) = range_project(&[(0, 480, 60), (960, 1_920, 64), (2_400, 480, 67)]);
+        let (no_cross, _) = range_project(&[(0, 480, 60), (2_400, 480, 67)]);
+        let full = render_range(&no_cross, false, 0, 96_000);
+        let ranged = render_range(&with_cross, false, 48_000, 48_000);
+        assert_eq!(ranged.len(), 48_000 * 2, "区间输出长度 = 请求帧数 × 声道");
+        assert_eq!(
+            ranged,
+            full[48_000 * 2..],
+            "最小音源区间渲染必须与全程切片逐样本相同"
+        );
+        assert!(peak(&ranged) > 0.0, "区间内音符必须发声（牙齿）");
+        let cross_full = render_range(&with_cross, false, 0, 96_000);
+        assert!(
+            cross_full[48_000 * 2..]
+                .iter()
+                .zip(ranged.iter())
+                .any(|(a, b)| a != b),
+            "跨起点音符的尾巴必须在全程里存在（牙齿）"
+        );
+    }
+
+    /// ⭐ 判据（B-1，app 侧补齐）：跨起点音符独占时区间渲染全零。
+    #[test]
+    fn range_render_cross_start_note_alone_is_silent() {
+        let (project, _) = range_project(&[(960, 1_920, 64)]);
+        let ranged = render_range(&project, false, 48_000, 48_000);
+        assert!(
+            ranged.iter().all(|sample| *sample == 0.0),
+            "跨起点音符不得发声（含尾巴）"
+        );
+        let full = render_range(&project, false, 0, 96_000);
+        assert!(
+            peak(&full[48_000 * 2..]) > 0.0,
+            "不定位时同一区间必须有尾巴（牙齿）"
+        );
+    }
+
+    /// ⭐ 判据（B-1，app 侧补齐）：**引擎音源**的区间等价（经 app 的
+    /// 复合源与探针包装走生产装配）。
+    ///
+    /// 容差：引擎声部槽的分配顺序在冷启动下可不同 ⇒ 求和顺序可不同，
+    /// 只允许浮点结合律量级的差（最大绝对差 ≤ 1e-5，线性幅度），
+    /// ⛔ 不是音质容差。跨起点独占仍要求逐样本全零。
+    #[test]
+    fn range_render_engine_source_matches_full_slice_within_tolerance() {
+        let (with_cross, _) = range_project(&[(0, 480, 60), (960, 1_920, 64), (2_400, 480, 67)]);
+        let (no_cross, _) = range_project(&[(0, 480, 60), (2_400, 480, 67)]);
+        let full = render_range(&no_cross, true, 0, 96_000);
+        let ranged = render_range(&with_cross, true, 48_000, 48_000);
+        let expected = &full[48_000 * 2..];
+        assert_eq!(ranged.len(), expected.len());
+        let max_diff = ranged
+            .iter()
+            .zip(expected.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff <= 1e-5,
+            "引擎区间渲染与全程切片的最大差 {max_diff} 超过容差 1e-5"
+        );
+        assert!(peak(&ranged) > 0.0, "区间内音符必须发声（牙齿）");
+        let (cross_only, _) = range_project(&[(960, 1_920, 64)]);
+        let silenced = render_range(&cross_only, true, 48_000, 48_000);
+        assert!(
+            silenced.iter().all(|sample| *sample == 0.0),
+            "引擎路径跨起点音符不得发声"
+        );
+    }
+
+    /// 探针桩源：记录 `seek_to` 调用，可设定拒绝。
+    struct SeekStub {
+        /// 最后一次定位的帧。
+        seen: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        /// 定位调用次数。
+        calls: std::sync::Arc<AtomicU32>,
+        /// 是否拒绝定位。
+        fail: bool,
+    }
+
+    impl AudioSource for SeekStub {
+        fn render_block(
+            &mut self,
+            _context: BlockContext,
+            _out: &mut [f32],
+        ) -> Result<(), RenderError> {
+            Ok(())
+        }
+
+        fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.seen.store(frame, Ordering::Relaxed);
+            if self.fail {
+                Err("桩源拒绝定位".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// ⭐ 判据（B-1，app 侧补齐）：四个包装层的定位都**转发**给内层源，
+    /// 且子源拒绝时整体拒绝（错误原文透传）。
+    #[test]
+    fn app_wrappers_forward_seek_to_the_inner_source() {
+        use std::sync::atomic::AtomicU64;
+
+        let (project, track_id) = range_project(&[(0, 480, 60)]);
+        let make = |fail: bool| {
+            let seen = std::sync::Arc::new(AtomicU64::new(0));
+            let calls = std::sync::Arc::new(AtomicU32::new(0));
+            let stub = SeekStub {
+                seen: std::sync::Arc::clone(&seen),
+                calls: std::sync::Arc::clone(&calls),
+                fail,
+            };
+            (stub, seen, calls)
+        };
+        let check = |seen: &std::sync::Arc<AtomicU64>, calls: &std::sync::Arc<AtomicU32>| {
+            assert_eq!(calls.load(Ordering::Relaxed), 1, "内层必须恰好被定位一次");
+            assert_eq!(seen.load(Ordering::Relaxed), 48_000, "帧必须原样转发");
+        };
+        // 复合源（基座转发；片段表为空）。
+        let (stub, seen, calls) = make(false);
+        let mut source = TrackSource {
+            base: Box::new(stub),
+            clips: Vec::new(),
+        };
+        source.seek_to(48_000).expect("复合源定位必须成功");
+        check(&seen, &calls);
+        // 音量自动化门。
+        let (stub, seen, calls) = make(false);
+        let mut source = AutomationGain {
+            inner: Box::new(stub),
+            automation: TrackGainAutomation::new(&project, track_id, 48_000),
+        };
+        source.seek_to(48_000).expect("音量门定位必须成功");
+        check(&seen, &calls);
+        // 声相自动化门。
+        let (stub, seen, calls) = make(false);
+        let mut source = AutomationPan {
+            inner: Box::new(stub),
+            automation: TrackPanAutomation::new(&project, track_id, 48_000),
+            law: PanLaw::from_model(project.audio_config.pan_law),
+        };
+        source.seek_to(48_000).expect("声相门定位必须成功");
+        check(&seen, &calls);
+        // 峰值探针。
+        let (stub, seen, calls) = make(false);
+        let mut source = PeakTap {
+            inner: Box::new(stub),
+            peak_bits: std::sync::Arc::new(AtomicU32::new(0)),
+        };
+        source.seek_to(48_000).expect("探针定位必须成功");
+        check(&seen, &calls);
+        // 子源拒绝 ⇒ 整体拒绝，错误原文透传。
+        let (stub, _, _) = make(true);
+        let mut source = TrackSource {
+            base: Box::new(stub),
+            clips: Vec::new(),
+        };
+        let error = source
+            .seek_to(48_000)
+            .expect_err("子源拒绝时复合源必须拒绝");
+        assert!(error.contains("桩源拒绝定位"), "错误必须原文透传: {error}");
     }
 }

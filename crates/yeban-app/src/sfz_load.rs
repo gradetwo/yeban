@@ -1933,6 +1933,35 @@ impl SfzTrackSource {
 }
 
 impl yeban_render::render::AudioSource for SfzTrackSource {
+    /// ⭐ 第五份报告 B-1（app 侧补齐）：冷启动定位 —— 起点在 `frame`
+    /// 之前的音符**整体丢弃**（尾巴也不进区间，与引擎侧调度表过滤
+    /// 同一条口径）。三张平行表（`notes` / `per_note` / `occurrences`）
+    /// 按同一谓词同步删：保留音符的轮替序号仍是它在**全程**里的第
+    /// 几次触发 ⇒ round-robin 选样与全程渲染的切片一致。保留音符的
+    /// 预渲染缓存一并清掉（冷启动：状态复位）。
+    ///
+    /// ⚠ 插件／采样器内部状态（混响尾等）无复位通路是既知冷启动
+    /// 边界，不在本函数范围：本源的状态只有逐音符 scratch，清掉
+    /// 即复位，不存在静默带入的尾音。
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        for index in (0..self.notes.len()).rev() {
+            if self.notes[index].start_frame < frame {
+                self.notes.remove(index);
+                if index < self.per_note.len() {
+                    self.per_note.remove(index);
+                }
+                if index < self.occurrences.len() {
+                    self.occurrences.remove(index);
+                }
+            }
+        }
+        for note in &mut self.notes {
+            note.scratch = Vec::new();
+            note.rendered = 0;
+        }
+        Ok(())
+    }
+
     fn render_block(
         &mut self,
         context: yeban_render::render::BlockContext,
@@ -2243,5 +2272,93 @@ mod tests {
             "相对形式必须解析回同一文件（按路径比较）"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ 判据（第五份报告 B-1，app 侧补齐）：SFZ 源的冷启动定位。
+    ///
+    /// 量什么：四个音符 A(帧 0)、B(帧 24_000、跨过 48_000)、C(帧
+    /// 60_000)、D(帧 84_000，与 A 同音高 ⇒ 全程里是第 2 次触发)。
+    /// `seek_to(48_000)` 后的区间渲染与"没有 B 的全程渲染"的切片
+    /// **逐样本相同**（单位：线性幅度）；只剩 B 时区间渲染全零。
+    #[test]
+    fn seek_to_drops_cross_start_notes_and_matches_the_full_slice() {
+        use yeban_render::render::AudioSource as _;
+
+        let text = "<region> sample=a.wav key=60\n\
+                    <region> sample=a.wav key=64\n\
+                    <region> sample=a.wav key=67\n";
+        let instrument = std::sync::Arc::new(
+            SfzInstrument::load(text.to_owned(), &ParseLimits::default())
+                .expect("夹具 SFZ 必须能装载"),
+        );
+        let notes_all: [(u64, u64, u8, u8); 4] = [
+            (0, 12_000, 60, 100),
+            (24_000, 48_000, 64, 100),
+            (60_000, 12_000, 67, 100),
+            (84_000, 6_000, 60, 90),
+        ];
+        let notes_no_cross: [(u64, u64, u8, u8); 3] = [notes_all[0], notes_all[2], notes_all[3]];
+        fn render(source: &mut SfzTrackSource, start: u64, frames: u64) -> Vec<f32> {
+            let mut out = vec![0.0_f32; frames as usize * 2];
+            let mut done = 0u64;
+            let mut index = 0u64;
+            while done < frames {
+                let n = 8192u64.min(frames - done);
+                let context = yeban_render::render::BlockContext {
+                    block_index: index,
+                    first_frame: start + done,
+                    frames: n as usize,
+                    channels: 2,
+                    sample_rate: 48_000,
+                    seed: 0,
+                };
+                let from = done as usize * 2;
+                let to = (done + n) as usize * 2;
+                source
+                    .render_block(context, &mut out[from..to])
+                    .expect("SFZ 渲染必须成功");
+                done += n;
+                index += 1;
+            }
+            out
+        }
+        let mut full = SfzTrackSource::new(instrument.clone(), &notes_no_cross, 48_000.0, 2);
+        let expected_full = render(&mut full, 0, 96_000);
+        let expected = &expected_full[48_000 * 2..];
+        let mut ranged = SfzTrackSource::new(instrument.clone(), &notes_all, 48_000.0, 2);
+        ranged.seek_to(48_000).expect("SFZ 源定位必须成功");
+        let actual = render(&mut ranged, 48_000, 48_000);
+        assert_eq!(
+            actual, expected,
+            "区间渲染必须与无跨起点音符的全程切片逐样本相同"
+        );
+        assert!(
+            actual.iter().any(|sample| sample.abs() > 0.01),
+            "区间内音符必须真发声（牙齿）"
+        );
+        // 牙齿 2：带 B 的全程切片与区间渲染必须不同（B 的尾巴在全程里）。
+        let mut full_cross = SfzTrackSource::new(instrument.clone(), &notes_all, 48_000.0, 2);
+        let cross_full = render(&mut full_cross, 0, 96_000);
+        assert!(
+            cross_full[48_000 * 2..]
+                .iter()
+                .zip(actual.iter())
+                .any(|(a, b)| a != b),
+            "跨起点音符的尾巴必须在全程切片里存在（否则判据无牙）"
+        );
+        // 跨起点音符独占时：定位后全零；不定位时同一区间非零。
+        let mut only_cross = SfzTrackSource::new(instrument.clone(), &[notes_all[1]], 48_000.0, 2);
+        only_cross.seek_to(48_000).expect("定位必须成功");
+        let silenced = render(&mut only_cross, 48_000, 48_000);
+        assert!(
+            silenced.iter().all(|sample| *sample == 0.0),
+            "跨起点音符定位后不得发声"
+        );
+        let mut unseeked = SfzTrackSource::new(instrument, &[notes_all[1]], 48_000.0, 2);
+        let tail = render(&mut unseeked, 48_000, 48_000);
+        assert!(
+            tail.iter().any(|sample| sample.abs() > 0.01),
+            "不定位时跨起点音符的尾巴必须可闻（牙齿）"
+        );
     }
 }
