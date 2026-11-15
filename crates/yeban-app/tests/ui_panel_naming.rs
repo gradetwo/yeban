@@ -45,7 +45,7 @@ const CANONICAL: [(&str, &str); 4] = [
 ];
 
 /// 曾经出现过的别名；任一用户可见面再出现即说明命名又分叉了。
-const LEGACY_ALIASES: [&str; 12] = [
+const LEGACY_ALIASES: [&str; 16] = [
     "混合平铺视图",
     "混音台面板",
     "钢琴卷帘编辑器",
@@ -148,7 +148,7 @@ fn canonical_names_reach_the_spec_table_and_element_registry() {
 /// **判据 ⑥**：用户可见面的代码行里不再出现任何旧别名。
 #[test]
 fn no_legacy_panel_aliases_remain_in_user_facing_surfaces() {
-    let surfaces: [(&str, &str); 5] = [
+    let surfaces: [(&str, &str); 6] = [
         ("ui/lower_dock.slint", DOCK),
         ("ui/app.slint", APP),
         ("ui/modals.slint", MODALS),
