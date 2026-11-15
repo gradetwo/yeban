@@ -1116,9 +1116,8 @@ pub fn delay_source_params(track: &TrackV3) -> Option<DelayStageParams> {
 /// `yeban-app/tests/{compressor_export,device_param_automation_export}.rs`、
 /// `yeban-mcp/src/domain/notes.rs`、`yeban-mcp/tests/{render_audio_clips,fault_vocabulary}.rs`）。
 pub use yeban_dsp::device_param::{
-    ClipperField, ConvolutionField, DelayField, DelayStageParams, DeviceParamFamily,
-    DeviceParamField, ReverbField, SampleDelayField, StripField, TapeField,
-    sanitised_output_gain_db,
+    ConvolutionField, DelayField, DelayStageParams, DeviceParamFamily, DeviceParamField,
+    ReverbField, SampleDelayField, StripField, TapeField, sanitised_output_gain_db,
 };
 
 /// 通道条被**强制实例化**、但本轨没有投影来源时的参数（任务单 `#266` 的缝）。
@@ -3213,7 +3212,9 @@ mod tests {
         }
         runtime.process(&mut buffer);
         let ceiling = 10.0f32.powf(-1.0 / 20.0);
-        for frame in 0..512 {
+        // 前段含 limiter 前瞻延迟（48 帧环形缓冲初值为 0）与 tape 过采样瞬态，
+        // 只断言稳态段（128 帧起）。
+        for frame in 128..512 {
             let sample = buffer[2 * frame];
             assert!(
                 sample <= ceiling + 1e-6,
@@ -3227,7 +3228,7 @@ mod tests {
             48_000,
             120.0,
         );
-        let mut quiet = InsertRuntime::new(&quiet_chain, 48_000, 512);
+        let quiet = InsertRuntime::new(&quiet_chain, 48_000, 512);
         assert!(quiet.clipper.is_none(), "mix = 0 ⇒ 不建器件");
     }
 }
