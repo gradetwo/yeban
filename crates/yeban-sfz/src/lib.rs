@@ -353,6 +353,7 @@ pub mod eg;
 pub mod error;
 pub mod instrument;
 pub mod label;
+pub mod lfo;
 pub mod midi;
 pub mod modulation;
 pub mod parser;
@@ -377,6 +378,7 @@ pub use instrument::{
     trigger_rand,
 };
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
+pub use lfo::{GenericLfo, LfoCcMod, LfoWave, V1Lfo};
 pub use midi::{MidiOpcode, MidiSection};
 pub use parser::{
     Header, IncludeIssue, IncludeIssueKind, IncludeResolution, IncludeResolver, OpcodeValue,
