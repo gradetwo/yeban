@@ -206,6 +206,8 @@ fn reexport(parsed: &ParsedMidi, format: MidiFormat) -> MidiExport {
                 channel,
                 notes,
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             })
             .collect(),
         key_signature: parsed
@@ -698,6 +700,8 @@ fn tempo_map_round_trips_faithfully() {
             channel: 0,
             notes: vec![MidiNote::new(EntityId::new(), 0, 60, 120)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,

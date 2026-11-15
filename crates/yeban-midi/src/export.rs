@@ -35,7 +35,8 @@
 //! | `syllable`（非空） | ⭐ `#312`：`FF 05` 歌词元事件，在音符**生效起点**、`NoteOn` **之前**，UTF-8 原样（见 `midi.rs` 的 `lyric_text`） |
 //! | `phonemes` | ⭐ **不导出**：SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ `yeban_export_midi` 的 `unsupported`（`phonemes`）如实登记 |
 //! | `pitch_bend_curve`（非空） | ⭐ ADR-0014 D3：逐点 `E0` 弯音，绝对 tick = 生效起点 + 音符局部 tick，±2 半音换算（1 音分 = 8192/200）；末点非 0 时在音符结束处补一条居中复位 |
-//! | `probability` / `ratchet` / `slide` | **不导出**（`midi.rs` 已登记的边界；导出写"作者写下的音符"，不做触发/连击判定） |
+//! | `slide` | ⭐ 第五份报告 C-2：**导出** —— 按引擎求值口径（`target_cents = (target_pitch − pitch) × 100`、曲线 `ease`、与弯音曲线相加 D9）在滑音段上取 8 段采样点，折进 `pitch_bend_curve` 一起写成 `E0`；采样窗截到音符时值。轨内最大弯音超过 ±2 半音时，编码器在该通道 tick 0 写 RPN 弯音灵敏度（CC 101/100/6/38）并按新范围换算全部弯音（见 `midi.rs` 的 `BendRange`） |
+//! | `probability` / `ratchet` | **不导出**（`midi.rs` 已登记的边界；导出写"作者写下的音符"，不做触发/连击判定） |
 //!
 //! ### tick → tick（**没有**任何节拍换算）
 //!
@@ -290,6 +291,86 @@ fn track_notes(
     Ok(notes)
 }
 
+/// ⭐ 第五份报告 C-2：把一条音符的 `slide` 折进它的弯音曲线。
+///
+/// ## 求值口径（与引擎 `PitchShape::cents_at` 逐条同一）
+///
+/// - 滑音：`target_cents = (target_pitch − pitch) × 100`；
+///   `local < duration` 时 `target_cents × curve.ease(local / duration)`，
+///   之后保持 `target_cents`（`yeban-engine` 的 `SlideShape::cents_at`）。
+/// - 弯音：首点之前取 0（D4）、相邻点线性插值（D5）、末点之后保持末值。
+/// - 两者**相加**（D9），与引擎的发声口径一致 ⇒ 导出的弯音就是引擎里
+///   听到的音高轨迹的采样。
+///
+/// ## 采样
+///
+/// 滑音段等分 **8** 段取 9 个采样点（tick = `duration × i / 8`），再并上
+/// 原弯音曲线的全部点位，逐点求总音分、四舍五入到整数音分。
+/// 采样窗截到**音符时值**：音符结束之后的弯音没有载体（声部已停），
+/// 且会泄漏到同通道的下一颗音符 ⇒ 超出部分不采样；末点非 0 时编码器
+/// 照既有约定在音符结束处补居中复位。
+fn slide_merged_bend_curve(note: &MidiNote) -> Vec<(u64, i16)> {
+    const SLIDE_SEGMENTS: u64 = 8;
+    let Some(slide) = note.slide else {
+        return note.pitch_bend_curve.clone();
+    };
+    let window = slide.duration_ticks.min(note.duration_ticks);
+    let mut ticks: Vec<u64> = note
+        .pitch_bend_curve
+        .iter()
+        .map(|&(tick, _)| tick)
+        .collect();
+    for i in 0..=SLIDE_SEGMENTS {
+        ticks.push(window * i / SLIDE_SEGMENTS);
+    }
+    ticks.sort_unstable();
+    ticks.dedup();
+    ticks
+        .into_iter()
+        .map(|tick| {
+            let total =
+                bend_cents_at(&note.pitch_bend_curve, tick) + slide_cents_at(note, slide, tick);
+            let cents = libm::roundf(total).clamp(f32::from(i16::MIN), f32::from(i16::MAX));
+            (tick, cents as i16)
+        })
+        .collect()
+}
+
+/// 弯音曲线在 `local` 处的音分（引擎 D4/D5 口径：首点前 0、点间线性、
+/// 末点后保持）。
+fn bend_cents_at(curve: &[(u64, i16)], local: u64) -> f32 {
+    let Some(first) = curve.first() else {
+        return 0.0;
+    };
+    if local < first.0 {
+        return 0.0;
+    }
+    let mut previous = first;
+    for point in curve {
+        if local < point.0 {
+            let span = point.0 - previous.0;
+            let t = if span == 0 {
+                0.0
+            } else {
+                (local - previous.0) as f32 / span as f32
+            };
+            return f32::from(previous.1) + (f32::from(point.1) - f32::from(previous.1)) * t;
+        }
+        previous = point;
+    }
+    f32::from(previous.1)
+}
+
+/// 滑音在 `local` 处的音分（引擎 `SlideShape::cents_at` 口径）。
+fn slide_cents_at(note: &MidiNote, slide: yeban_model::music::SlideConfig, local: u64) -> f32 {
+    let target_cents = (f32::from(slide.target_pitch) - f32::from(note.pitch)) * 100.0;
+    if local >= slide.duration_ticks {
+        return target_cents;
+    }
+    let t = local as f32 / slide.duration_ticks as f32;
+    target_cents * slide.curve.ease(t)
+}
+
 /// ⭐ ADR-0015 D3：音量泳道的分贝 ⇒ CC 7（0..=127）。
 ///
 /// 导入侧换算（`import::cc7_to_decibels`，`dB = 40·log10(v/127)`）的**逆**：
@@ -391,9 +472,29 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
         if track.id == project.master_bus_track_id {
             continue;
         }
-        let notes = track_notes(project, track.id, &track.clips)?;
+        let mut notes = track_notes(project, track.id, &track.clips)?;
         if notes.is_empty() {
             continue;
+        }
+        // ⭐ 第五份报告 C-2：`slide` 折进弯音曲线（标准 `E0` 载体，见
+        // [`slide_merged_bend_curve`]）—— SMF 没有滑音字段，弯音是唯一
+        // 标准载体；折完之后编码器与普通弯音曲线走同一条路。
+        // 本轨弯音范围只由**折入曲线**的最大 |音分| 抬高（纯弯音曲线
+        // 保持 ±2 的 D3 口径，⛔ 不因同轨有 slide 而改变量化）。
+        let mut bend_range_semitones: u8 = 2;
+        for note in &mut notes {
+            if note.slide.is_some() {
+                note.pitch_bend_curve = slide_merged_bend_curve(note);
+                let max_cents = note
+                    .pitch_bend_curve
+                    .iter()
+                    .map(|&(_, cents)| i32::from(cents).abs())
+                    .max()
+                    .unwrap_or(0);
+                let needed = u8::try_from(((max_cents + 99) / 100).clamp(2, 24))
+                    .expect("钳过的范围在 u8 内");
+                bend_range_semitones = bend_range_semitones.max(needed);
+            }
         }
         let lane = tracks.len() % usize::from(MIDI_CHANNEL_COUNT);
         let channel = u8::try_from(lane).expect("lane < MIDI_CHANNEL_COUNT <= u8::MAX");
@@ -402,6 +503,7 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
             channel,
             notes,
             control_changes: track_control_changes(track),
+            bend_range_semitones,
         });
     }
 
@@ -1433,6 +1535,163 @@ mod tests {
         );
     }
 
+    /// ⭐ 第五份报告 C-2 夹具：一颗带 `slide` 的音符的单轨工程。
+    fn project_with_slide(
+        pitch: u8,
+        target_pitch: u8,
+        slide_ticks: u64,
+        note_ticks: u64,
+        curve: yeban_model::music::CurveType,
+    ) -> YebanProjectV1 {
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let note_id = EntityId::new();
+        let mut note = MidiNote::new(note_id, 0, pitch, note_ticks);
+        note.slide = Some(yeban_model::music::SlideConfig {
+            duration_ticks: slide_ticks,
+            target_pitch,
+            curve,
+        });
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(note_id, note);
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "Slide".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let track_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "SlideTrack".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: note_ticks,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+        project
+    }
+
+    /// 判据（⭐ 第五份报告 C-2）：`slide`（60 → 62，线性，480 tick）导出成
+    /// 标准弯音采样点：8 段采样、每 60 tick 一点、音分 0,25,…,200 线性爬升；
+    /// 范围在 ±2 半音内 ⇒ ⛔ 不写 RPN、换算与旧口径逐位相同。
+    ///
+    /// 注入（实测红）：映射层不折 slide ⇒ 文件里一条弯音都没有、判据红；
+    /// 采样点数或求值口径（ease/相加）漂移 ⇒ 点位或音分对不上、判据红。
+    #[test]
+    fn slide_exports_as_pitch_bend_sample_points() {
+        let project = project_with_slide(60, 62, 480, 480, yeban_model::music::CurveType::Linear);
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        let bends: Vec<(u64, i16)> = parsed
+            .pitch_bends
+            .iter()
+            .map(|bend| (bend.tick, bend.cents))
+            .collect();
+        assert_eq!(
+            bends[..8],
+            [
+                (0, 0),
+                (60, 25),
+                (120, 50),
+                (180, 75),
+                (240, 100),
+                (300, 125),
+                (360, 150),
+                (420, 175)
+            ],
+            "滑音必须按 8 段采样折成弯音点: {bends:?}"
+        );
+        assert!(
+            bends.contains(&(480, 0)),
+            "末点非 0 ⇒ 音符结束处必须有居中复位: {bends:?}"
+        );
+        assert_eq!(
+            parsed
+                .control_changes
+                .iter()
+                .filter(|cc| cc.controller == 101)
+                .count(),
+            0,
+            "±2 半音内不得写 RPN 弯音灵敏度: {:?}",
+            parsed.control_changes
+        );
+    }
+
+    /// 判据（⭐ 第五份报告 C-2）：`slide` 超过 ±2 半音（60 → 72 = +1200 音分）
+    /// ⇒ 通道 tick 0 写 RPN 弯音灵敏度（101/100/6/38，范围 12 半音），且弯音
+    /// 按新范围换算 —— 用本仓**只认 ±2** 的回读器量：中点（240 tick、
+    /// 600 音分）应读出 600 × (2/12) = 100 音分（证明 14 位值是按 12 半音
+    /// 范围写的，不是按 ±2 写完被钳的 199）。
+    #[test]
+    fn slide_beyond_two_semitones_writes_rpn_and_scales_bends() {
+        let project = project_with_slide(60, 72, 480, 480, yeban_model::music::CurveType::Linear);
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        let rpn: Vec<(u8, u8)> = parsed
+            .control_changes
+            .iter()
+            .filter(|cc| cc.tick == 0 && cc.channel == 0)
+            .map(|cc| (cc.controller, cc.value))
+            .collect();
+        assert_eq!(
+            rpn,
+            [(101, 0), (100, 0), (6, 12), (38, 0)],
+            "tick 0 必须有 RPN 弯音灵敏度四条（范围 12 半音）: {rpn:?}"
+        );
+        let midpoint = parsed
+            .pitch_bends
+            .iter()
+            .find(|bend| bend.tick == 240)
+            .expect("中点弯音必须存在");
+        assert_eq!(
+            midpoint.cents, 100,
+            "600 音分按 12 半音范围写出 ⇒ ±2 回读器读出 100（按 ±2 写只会钳出 199）"
+        );
+    }
+
+    /// 判据（⭐ 第五份报告 C-2，D9 相加）：已有弯音曲线与 slide 在采样点上
+    /// **相加** —— 弯音恒 +100 音分、slide 线性 0 → +200 ⇒ 合并曲线
+    /// tick 0 = 100、tick 480 = 300。
+    #[test]
+    fn slide_merges_with_the_existing_bend_curve_by_addition() {
+        let mut note = MidiNote::new(EntityId::new(), 0, 60, 480);
+        note.pitch_bend_curve = vec![(0, 100)];
+        note.slide = Some(yeban_model::music::SlideConfig {
+            duration_ticks: 480,
+            target_pitch: 62,
+            curve: yeban_model::music::CurveType::Linear,
+        });
+        let merged = slide_merged_bend_curve(&note);
+        assert_eq!(
+            merged.first(),
+            Some(&(0, 100)),
+            "tick 0 = 弯音 100 + 滑音 0"
+        );
+        assert_eq!(
+            merged.last(),
+            Some(&(480, 300)),
+            "tick 480 = 弯音保持 100 + 滑音 200"
+        );
+    }
+
     /// 判据 (ADR-0014 D2+D3 闭环): 带弯音曲线的单音音符导出 ⇒ 回读 ⇒ 导入，
     /// 曲线按**音符局部 tick** 回到 `AddNote` 的 `pitch_bend_curve`。
     #[test]
@@ -2079,6 +2338,8 @@ mod tests {
                         value: 100,
                     },
                 ],
+
+                bend_range_semitones: 2,
             }],
             key_signature: None,
             title: None,
@@ -2133,6 +2394,8 @@ mod tests {
                     controller: 128,
                     value: 200,
                 }],
+
+                bend_range_semitones: 2,
             }],
             key_signature: None,
             title: None,

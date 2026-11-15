@@ -290,12 +290,16 @@ fn create_multitrack_smf_file() -> PathBuf {
                 channel: 0,
                 notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             },
             MidiExportTrack {
                 name: "Track Two".to_string(),
                 channel: 1,
                 notes: vec![yeban_model::MidiNote::new(EntityId::new(), 480, 48, 480)],
                 control_changes: Vec::new(),
+
+                bend_range_semitones: 2,
             },
         ],
         key_signature: None,
@@ -424,6 +428,8 @@ fn create_key_signature_smf_file() -> PathBuf {
             channel: 0,
             notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: Some(yeban_model::project::KeySignature {
             sharps_flats: 2,
@@ -550,6 +556,8 @@ fn create_metadata_smf_file() -> PathBuf {
             channel: 0,
             notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: Some(META_TITLE.to_string()),
@@ -655,6 +663,8 @@ fn create_single_track_named_smf() -> PathBuf {
             channel: 0,
             notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: Some(META_TITLE.to_string()),
@@ -731,6 +741,8 @@ fn create_tempo_meter_map_smf_file() -> PathBuf {
             channel: 0,
             notes: vec![yeban_model::MidiNote::new(EntityId::new(), 0, 60, 480)],
             control_changes: Vec::new(),
+
+            bend_range_semitones: 2,
         }],
         key_signature: None,
         title: None,

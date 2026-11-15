@@ -40,9 +40,11 @@
 //!   SVS 对齐数据伪装成歌词）⇒ 它们进 `data.unsupported` / `data.unsupportedCounts`
 //!   的 `phonemes`（**只在**工程真的带 phonemes 时出现；计数 = 带 phonemes 的音符数，
 //!   同样读 `MidiExport::notes_with_phonemes`，⛔ 不在本层重数）。
-//!   ⚠ 这不是"SMF 导出损失表"：`probability` / `ratchet` / `slide` / `pitch_bend_curve`
+//!   ⚠ 这不是"SMF 导出损失表"：`probability` / `ratchet` / `pitch_bend_curve`
 //!   是**演奏**语义（导出写"作者写下的音符"，不做触发/连击判定），不是载体装不下的
 //!   音符**数据**；把它们塞进 `unsupported` 会让这张表的含义漂移（另一票再议）。
+//!   ⭐ 第五份报告 C-2 起 `slide` 不在此列：它由 `yeban-midi` 的映射层按
+//!   引擎求值口径折成标准 pitch bend 写出（见该 crate 的映射表）。
 
 use serde_json::{Value, json};
 
