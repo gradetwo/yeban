@@ -1571,6 +1571,7 @@ mod tests {
                             sw_down: None,
                             sw_up: None,
                             cc_gates: Vec::new(),
+                            cc_triggers: Vec::new(),
                             crossfades: Vec::new(),
                             labels: crate::label::Labels::default(),
                             source_line: 1,
