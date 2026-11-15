@@ -200,6 +200,16 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 }
 
 impl AudioSource for AudioClipSource {
+    /// ⭐ 第五份报告 B-1（app 侧补齐）：本源按 `context.first_frame`
+    /// **绝对寻址**（片段区间与素材偏移都是绝对帧算术），没有顺序
+    /// 播放头 ⇒ 定位恒成功；跨过区间起点已开始的片段照常出它在区间
+    /// 内的部分（与引擎音符的冷启动不同 —— 片段是录音材料，起点是
+    /// 切口不是触发点）。与 MCP 的 `AudioClipSource::seek_to` 同一条
+    /// 口径。
+    fn seek_to(&mut self, _frame: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 调用方（`TrackSource` 的 MIDI 基座）已经写过/清过 `out`；这里只**累加**。
         let channels = context.channels;
@@ -1200,6 +1210,73 @@ mod tests {
             out,
             vec![0.9, 0.8, 0.7, 0.6],
             "有覆盖时必须逐位渲染 warped PCM，而不是原素材"
+        );
+    }
+
+    /// ⭐ 判据（第五份报告 B-1，app 侧补齐）：片段源的定位。
+    ///
+    /// 量什么：常量 `0.5` 的双声道素材、一个 `[24_000, 72_000)` 的摆放。
+    /// `seek_to(48_000)` 必须成功，且其后的区间渲染与全程渲染的切片
+    /// **逐样本相同**（单位：线性幅度）—— 含跨起点片段在区间内的那
+    /// 一部分（片段是录音材料：起点是切口、不是触发点，与音符的冷
+    /// 启动丢弃**相反**，这条判据同时钉住这个区别）。
+    #[test]
+    fn seek_to_is_ok_and_a_cross_start_clip_matches_the_full_slice() {
+        fn source() -> AudioClipSource {
+            AudioClipSource {
+                asset: Arc::new(DecodedAsset {
+                    samples: vec![0.5; 96_000 * 2],
+                    source_channels: 2,
+                    sample_rate: 48_000,
+                    frames: 96_000,
+                }),
+                warped: None,
+                layout: ChannelLayout::Identity,
+                spans: vec![ClipSpan {
+                    start: 24_000,
+                    end: 72_000,
+                    source_offset: 0,
+                    gain_l: 1.0,
+                    gain_r: 1.0,
+                }],
+            }
+        }
+        fn render(source: &mut AudioClipSource, start: u64, frames: u64) -> Vec<f32> {
+            let mut out = vec![0.0_f32; frames as usize * 2];
+            let mut done = 0u64;
+            let mut index = 0u64;
+            while done < frames {
+                let n = 8192u64.min(frames - done);
+                let context = BlockContext {
+                    block_index: index,
+                    first_frame: start + done,
+                    frames: n as usize,
+                    channels: 2,
+                    sample_rate: 48_000,
+                    seed: 0,
+                };
+                let from = done as usize * 2;
+                let to = (done + n) as usize * 2;
+                source
+                    .render_block(context, &mut out[from..to])
+                    .expect("片段渲染必须成功");
+                done += n;
+                index += 1;
+            }
+            out
+        }
+        let full = render(&mut source(), 0, 96_000);
+        let mut ranged = source();
+        ranged.seek_to(48_000).expect("片段源定位必须恒成功");
+        let actual = render(&mut ranged, 48_000, 48_000);
+        assert_eq!(
+            actual,
+            full[48_000 * 2..],
+            "片段区间渲染必须与全程切片逐样本相同"
+        );
+        assert!(
+            actual.iter().any(|sample| *sample == 0.5),
+            "跨起点片段必须在区间内照常出声（牙齿：与音符冷启动的区别）"
         );
     }
 }
