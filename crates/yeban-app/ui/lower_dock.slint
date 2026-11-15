@@ -194,7 +194,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("stacked"); }
                         }
-                        TooltipBubble { text: "效果器与调音台双层堆叠视图 [Alt+S]"; is-visible: tab_stk_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: "设备堆叠：效果器与混音控制台双层视图 [Alt+S]"; is-visible: tab_stk_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -216,7 +216,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("devices"); }
                         }
-                        TooltipBubble { text: "效果器与虚拟乐器机架 [D]"; is-visible: tab_dev_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: "设备机架：效果器与虚拟乐器 [D]"; is-visible: tab_dev_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -238,7 +238,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("mixer"); }
                         }
-                        TooltipBubble { text: "多轨混音控制台 [X]"; is-visible: tab_mix_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: "混音控制台 [X]"; is-visible: tab_mix_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -260,7 +260,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("pianoroll"); }
                         }
-                        TooltipBubble { text: "MPE 钢琴卷帘编辑器 [P]"; is-visible: tab_pr_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: "钢琴卷帘 [P]"; is-visible: tab_pr_touch.has-hover; tip-offset-y: 28px; }
                     }
                 }
 

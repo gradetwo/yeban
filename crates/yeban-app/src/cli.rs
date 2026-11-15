@@ -5013,14 +5013,14 @@ const SHORTCUTS: [ShortcutRow; 54] = [
         implemented: true,
     },
     ShortcutRow {
-        label: "F8 → 控制台「调音台」",
+        label: "F8 → 控制台「混音控制台」",
         action: Action::SelectConsoleTab { index: 1 },
         key: PhysicalKey::F8,
         modifiers: Modifiers::none(),
         implemented: true,
     },
     ShortcutRow {
-        label: "F9 → 控制台「设备效果链」",
+        label: "F9 → 控制台「设备机架」",
         action: Action::SelectConsoleTab { index: 2 },
         key: PhysicalKey::F9,
         modifiers: Modifiers::none(),
@@ -5597,7 +5597,7 @@ pub fn shortcut_lines() -> Vec<String> {
         "#   D               打开底部设备机架（页签 tooltip [D]）",
         "#   F3              混音台最大化 / 还原",
         "#   F4              显隐监听控制室与响度计（tooltip [F4]）",
-        "#   F7 / F8 / F9    控制台页签：钢琴卷帘 / 调音台 / 设备机架",
+        "#   F7 / F8 / F9    控制台页签：钢琴卷帘 / 混音控制台 / 设备机架",
         "#   Escape          关闭命令面板 / 热区透视",
     ] {
         lines.push(line.to_owned());

@@ -805,7 +805,7 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: "混音";
-            MenuItem { title: "打开底部 混音台 (X)"; activated => { root.command-execute("tab-mixer"); } }
+            MenuItem { title: "打开底部 混音控制台 (X)"; activated => { root.command-execute("tab-mixer"); } }
             MenuItem { title: "打开底部 设备机架"; activated => { root.command-execute("tab-devices"); } }
             MenuSeparator {}
             MenuItem { title: "主控总线推子归 0dB"; activated => { root.command-execute("master-reset-fader"); } }
@@ -813,10 +813,10 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: "视图";
-            MenuItem { title: "钢琴卷帘编辑器 (P)"; activated => { root.command-execute("tab-pianoroll"); } }
-            MenuItem { title: "混音台面板 (X)"; activated => { root.command-execute("tab-mixer"); } }
+            MenuItem { title: "钢琴卷帘 (P)"; activated => { root.command-execute("tab-pianoroll"); } }
+            MenuItem { title: "混音控制台 (X)"; activated => { root.command-execute("tab-mixer"); } }
             MenuItem { title: "设备机架"; activated => { root.command-execute("tab-devices"); } }
-            MenuItem { title: "混合平铺视图 (Stacked)"; activated => { root.command-execute("tab-stacked"); } }
+            MenuItem { title: "设备堆叠 (Stacked)"; activated => { root.command-execute("tab-stacked"); } }
             MenuSeparator {}
             MenuItem { title: "最大化/还原底部控制台"; activated => { root.command-execute("toggle-maximize-dock"); } }
             MenuItem { title: "显隐左侧通道检查器 (I)"; activated => { root.command-execute("toggle-inspector"); } }

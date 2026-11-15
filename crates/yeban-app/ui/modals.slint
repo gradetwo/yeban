@@ -10,10 +10,10 @@ export component CommandPaletteModal inherits Rectangle {
         { id: "persona-cubase",  title: "切换至：混音控制台工作区 (母带监听 Mix & Master)", category: "Layout", shortcut: "4" },
         { id: "toggle-hotspots", title: "打开/关闭 创新工作流与架构透视 (Insights)", category: "Help", shortcut: "H" },
         { id: "toggle-tooltips", title: "切换悬浮提示开关 (Toggle Hover Tooltips)", category: "View", shortcut: "T" },
-        { id: "tab-stacked",     title: "切换底栏：设备与混音堆叠 (Stacked Devices+Mixer)", category: "View", shortcut: "F3" },
-        { id: "tab-devices",     title: "切换底栏：内联 DSP 设备机架 (Inline Devices)", category: "View", shortcut: "Shift+Tab" },
-        { id: "tab-mixer",       title: "切换底栏：MixConsole 混音控制台 (Mixer)", category: "View", shortcut: "X" },
-        { id: "tab-pianoroll",   title: "切换底栏：MPE 钢琴卷帘编辑器 (Piano Roll)", category: "View", shortcut: "P" },
+        { id: "tab-stacked",     title: "切换底栏：设备堆叠 (Stacked)", category: "View", shortcut: "F3" },
+        { id: "tab-devices",     title: "切换底栏：设备机架 (Devices)", category: "View", shortcut: "Shift+Tab" },
+        { id: "tab-mixer",       title: "切换底栏：混音控制台 (Mixer)", category: "View", shortcut: "X" },
+        { id: "tab-pianoroll",   title: "切换底栏：钢琴卷帘 (Piano Roll)", category: "View", shortcut: "P" },
         { id: "action-add-track",title: "新增轨道 (Add Audio/MIDI Track)", category: "Track", shortcut: "Ctrl+T" }
     ];
 
@@ -65,7 +65,7 @@ export component CommandPaletteModal inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: "输入命令、切换工作区或定位模块 (如: 混音台, 卷帘, 切分)...";
+                                        text: "输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)...";
                                         font-family: Tokens.font-ui;
                                         font-size: 12px;
                                         color: #94a3b8;
