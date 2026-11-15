@@ -8,6 +8,9 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> selected-track-badge: "TRK 01 · SYNTH";
     in-out property <string> selected-track-bus: "Bus 1 (Synth Grp)";
     in-out property <string> selected-track-pan: "C";
+    // 真实 EQ 频响：MainWindow.eq-curve-svg 由 bridge::calculate_eq_curve_svg
+    // 按当前轨道参量均衡参数算好并注入（与 device_rack 卡片同一路）。
+    in property <string> eq-curve-svg: "M 0 50 L 420 50";
     in property <float> selected-track-pan-value: 0.0;
     in-out property <float> selected-track-vol: -2.5;
     in property <string> selected-track-vol-display: "";
@@ -496,9 +499,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             border-color: Theme.border-subtle;
                             clip: true;
 
-                            // 占位：真实 EQ 频响由 bridge::calculate_eq_curve_svg 算好、写在
-                            // MainWindow.eq-curve-svg，但本卡片尚未接那一路。⛔ 不画常量
-                            // 钟形曲线冒充频响；只画基准线并明确标「示意」。
+                            // 0dB 基准线（缺省帧唯一可见的绘制，保护 5 张 Linux golden）。
                             Rectangle {
                                 x: 5px;
                                 y: 19px;
@@ -506,11 +507,32 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 height: 1px;
                                 background: root.selected-track-color.with-alpha(0.35);
                             }
+                            // 真实 EQ 频响：commands 走 root.eq-curve-svg（由
+                            // bridge::calculate_eq_curve_svg 按当前轨参量均衡算好）。
+                            // ⛔ 缺省 "M 0 50 L 420 50" 就是基准线本身 ⇒ 此时 Path 隐藏，
+                            // 缺省帧与旧渲染逐像素一致；改 EQ 参数后曲线才显形并随参数变化。
+                            // ⛔ 不画常量钟形曲线冒充频响。
+                            Path {
+                                visible: root.eq-curve-svg != "M 0 50 L 420 50";
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                viewbox-x: 0;
+                                viewbox-y: 0;
+                                viewbox-width: 420;
+                                viewbox-height: 100;
+                                fit: ImageFit.fill;
+                                commands: root.eq-curve-svg;
+                                stroke: root.selected-track-color;
+                                stroke-width: 1.8px;
+                                fill: transparent;
+                            }
                             HorizontalLayout {
                                 padding-left: 5px;
                                 padding-top: 3px;
                                 Text {
-                                    text: "EQ CURVE · 示意";
+                                    text: "EQ CURVE";
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
                                     letter-spacing: 0.4px;

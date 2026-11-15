@@ -5602,6 +5602,7 @@ pub fn shortcut_lines() -> Vec<String> {
     lines.push(String::new());
     lines.push("# 界面直达键（Slint key-pressed，不经过上面的解析表，但同样可用）".to_owned());
     for line in [
+        "#   ⚠ 双层键路：Tab / Ctrl+T / Ctrl+Alt+M 在解析表与 Slint 界面各绑一次，按一次会触发两个动作",
         "#   Ctrl+T          新建轨道（切分请用「轨道」菜单 / 工具栏切刀）",
         "#   X               打开底部混音控制台",
         "#   P               打开底部钢琴卷帘",

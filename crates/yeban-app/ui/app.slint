@@ -1031,6 +1031,7 @@ export component MainWindow inherits Window {
                 if root.show-left-inspector : ZoneBrowserAndInspector {
                     panel-width: root.left-panel-width;
                     active-tab: root.left-panel-tab;
+                    eq-curve-svg: root.eq-curve-svg;
                     switch-tab(t) => { root.left-panel-tab = t; }
                     selected-track-id: root.selected-track-index;
                     selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
