@@ -18091,7 +18091,12 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   在 `rust (workspace 全量)` 04:06:09Z、`macos` 04:26:22Z、`windows` 04:27:20Z 各一次；
   `Running tests/corpus_random_families.rs` 在 workspace 04:15:54Z、macos 04:16:25Z 各一次；
   全日志 `test result: FAILED` 计数 **0**、`test result:` 行 **1 611**。
-  ⚠ 合流 `2fc07078` 的 main 全量判决**本条写完时仍未读** ⇒ 那一条记 `pending`（见下一条）。
+  ⭐ **main 全量判决（读回）**：tip `696e4802` 的 run **`43808764225`** = `completed / **success**`
+  （`plan` / `checks` / `deny` / `lockfile` / `e2e` / `rust (workspace 全量)` / `macos` / `windows`
+  全 `success`，矩阵腿 `skipped`）。日志现读：`test result:` **1 627** 行、`test result: FAILED`
+  **0**；本片判据 `sfz_random_start` 与 `corpus_random_families` 各 **3** 次（workspace / macos /
+  windows）、`r7_offset_random…` **3** 次。⚠ 更早的 `391a2748` 那次 main run 被后续推送**取消**
+  （§6.3：`cancelled` ⛔ 不是判决），本行只引用**跑完的**这一次。
 
 ### 24.1 ⭐ 预听（`yeban_render_sfz_wav`）区域选择的**事件门控**缺失（2026-11-16）
 
@@ -18111,4 +18116,7 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **本地读数（⚠ 只有 CI 算数）**：`cargo test -p yeban-mcp --lib` = **727 passed / 0 failed**；
   `--test sfz_decoded_formats` **5**、`--test sfz_tools` **5**、`--test sfz_includes` **13** 全 ok；
   `clippy -p yeban-mcp --all-targets -- -D warnings` 零告警；`cargo fmt --check` 通过。
-- **判决**：尚未推送 ⇒ **CI `pending`**。
+- **判决（读回）**：线 tip `722b0e15` 的 run **`43809944271`** = `completed / **success**`
+  （`rust (yeban-mcp)` / `rust (yeban-ui-mcp)` / `checks` / `deny` / `lockfile` / `e2e` /
+  `macos` / `windows` 全 `success`）。日志现读：`test result:` **1 080** 行、`FAILED` **0**；
+  本片两条判据各 **4** 次在场。
