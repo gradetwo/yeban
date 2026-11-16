@@ -770,6 +770,10 @@ export component MainWindow inherits Window {
             MenuItem { title: "装载 SFZ 音色库..."; activated => { root.command-execute("load-sfz"); } }
             MenuSeparator {}
             MenuItem { title: "实时录音至 WAV..."; activated => { root.command-execute("record-wav"); } }
+            MenuSeparator {}
+            // ⭐ 退出（此前「文件」菜单没有退出项，关窗口是唯一出路）。
+            // Windows 上 Alt+F4 仍在；这条给的是**菜单里能看见**的出口。
+            MenuItem { title: "退出 Yeban"; activated => { root.command-execute("app-quit"); } }
         }
         Menu {
             title: "编辑";
