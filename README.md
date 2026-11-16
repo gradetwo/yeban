@@ -56,10 +56,6 @@ The current interface, running a 10-track pop project (lead vocal, harmonies, pi
 
 ![Arrangement view (zoomed): verse into chorus with clear density contrast, the piano roll showing the piano track arpeggios](assets/screenshots/ui-full-song.png)
 
-![Arrangement view: the chorus section, with the piano roll and the channel inspector showing a real EQ curve](assets/screenshots/ui-arrangement-chorus.png)
-
-![Mixer console: per-track channel strips with the bus and master sections](assets/screenshots/ui-mixer-console.png)
-
 ## Made with Yeban
 
 **[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)** — a trilogy created with Yeban. Three chapters — I. 雨声太吵 (The Rain Is Too Loud), II. 失语呢喃, III. 潮·失 — in one immersive visual experience: click the topology nodes to jump between emotional phases.

@@ -66,10 +66,6 @@
 
 ![全曲编曲总览：完整 12 小节段落结构，底部钢琴卷帘显示钢琴轨的分解和弦](assets/screenshots/ui-full-song.png)
 
-![编曲主视图：副歌段，底部钢琴卷帘，左通道检查器显示真实 EQ 曲线](assets/screenshots/ui-arrangement-chorus.png)
-
-![混音控制台：每轨通道条与总线、主输出区](assets/screenshots/ui-mixer-console.png)
-
 ## 用夜半创作的作品
 
 **[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)**——用夜半创作的三部曲作品。三章——I. 雨声太吵、II. 失语呢喃、III. 潮·失——组成一个沉浸式视觉体验，点击拓扑节点跃迁情绪相位。
