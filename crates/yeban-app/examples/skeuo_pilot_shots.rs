@@ -40,11 +40,9 @@ slint::slint! {
         height: 380px;
         background: Tokens.bg-void;
 
-        // 质感开关: Rust 侧经 `Tokens.texture` 全局写 (与应用侧
-        // `host::apply_texture` 同路); 全局属性不能在组件内绑定
-        // (`Tokens.texture: ...` 是 Slint 解析错误 —— 盒上 clippy 实证),
-        // 只能由 Rust 写。
-        in-out property <bool> physical: false;
+        // 质感开关由 Rust 侧经 `Tokens.texture` 全局写 (与应用侧
+        // `host::apply_texture` 同路)。注意: 全局属性不能在组件内绑定
+        // (`Tokens.texture: ...` 是 Slint 解析错误 —— 盒上 clippy 实证)。
 
         Rectangle {
             x: 16px;
