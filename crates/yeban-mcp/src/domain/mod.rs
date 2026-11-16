@@ -2846,14 +2846,17 @@ fn require_envelope_clip(
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`clipId` 是必需的: 这次调用含 {kinds} —— 该形态读顶层 `clipId` (目标片段)。\
+                "`clipId` 是必需的: 这次调用含 {kinds} —— 这些形态/条目**没有自带** \
+                 `clipId`, 读顶层 `clipId` (目标片段)。\
+                 ⭐ `delete` 可在条目里自带 `clipId` 避开本要求（第五份报告 B-4：顶层或条目自带二选一）; \
+                 `placement` / `create:true` 仍只读顶层。\
                  不读它的形态 (`addTrack` / 设备 / 路由 / 段落 / 场景 / 资产 / 音轨属性 / 文档级) \
                  可以省略它 (省略 = 占位身份, 给了也接受但忽略)。"
             ),
             serde_json::json!({
                 "reason": "clipIdRequired",
                 "requiredByKinds": required_by,
-                "hint": "给 `clipId` (26 字符 ULID), 或改用不读它的形态 (例如 `addTrack`)",
+                "hint": "给顶层 `clipId` (26 字符 ULID), 或给 `delete` 条目自带 `clipId`, 或改用不读它的形态 (例如 `addTrack`)",
             }),
         ));
     }

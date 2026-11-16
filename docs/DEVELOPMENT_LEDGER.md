@@ -18189,3 +18189,27 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `p1_with_the_pedal` / `p2_on_pedal` / `p4_the_synth` 均在日志里。
   ⚠ 更早的 `5ae83fd0` / `4aae7a84` 两次支线 run 随 rebase 作废（`--force-with-lease`），
   本行只引用 rebase 后的这一次。
+
+### 24.4 ⭐ `db8873f` 反馈复测包的收尾项（B-4 文案 / A-4 按设计）
+
+- **输入**：`~/yeban_issues_db8873f.zip`（内含 `yeban_issues_5bc0126/` 全量报告与探针）。
+  `reports/06_check_db8873f.md` 的逐条结论是**10 条里 9 条已修**；末节"仍然存在的两件事"：
+  A-4（母带推子在限幅器后，只预警）与 B-4（拒绝文案过期）。
+- **B-4（已修）**：`crates/yeban-mcp/src/domain/mod.rs::require_envelope_clip` 的缺参报文
+  原文说"该形态读顶层 `clipId`"，没说 `delete` 条目可**自带** `clipId`（第五份报告已把
+  规则改成二选一）⇒ 按过期提示写代码的人会误把 `clipId` 提到顶层。现报文明说
+  "这些形态/条目**没有自带** `clipId`…`delete` 可在条目里自带 `clipId` 避开本要求"，
+  `hint` 同步给出三条路（顶层 / `delete` 自带 / 换成不读它的形态）。
+- **判据**：`crates/yeban-mcp/tests/trap_177.rs` 新增
+  `a_missing_clip_id_message_names_the_delete_own_clip_id_escape_hatch` —— 负面腿读
+  `error.message` / `data.hint` 必须同时含 `delete` 与"自带"、`requiredByKinds == ["delete"]`；
+  正面腿 `delete` 自带 `clipId` + 顶层不给 ⇒ `status == success`。本文件 **11/11**（新增 1 条）。
+- **A-4（不改代码，按设计保留）**：`master_fader_warning` 已在 `render.rs` 实现完整预警
+  （`masterFaderAboveUnity`，带推子位置/值与修法提示，推子 ≤ 0 dB ⇒ 不报）；代码注释逐字
+  "⛔ 只生成 JSON：不改拓扑、不移动推子、不改一个样本"。**移动母带推子到限幅器之前会改变
+  所有非单位推子工程的成品字节**（`render_master` 既有判据钉住当前拓扑），属于产品级裁决 ⇒
+  按 `AGENTS.md` §5.7 不私自改：保留预警，等人类批准再动拓扑。
+- **其余 9 条抽查**（当前 main，非只信报告）：`MAX_AUDIO_FILE_BYTES = 256 MiB`、
+  `not_loaded_sample_paths` 与 `unreadable.notFound` 分字段、`resolvedParamName` 两路都有、
+  `masteringClipper` 入口与区间渲染 `method` 均在。
+- **判决**：尚未推送 ⇒ **CI `pending`**。
