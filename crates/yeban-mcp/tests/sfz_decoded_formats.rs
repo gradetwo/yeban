@@ -345,15 +345,26 @@ fn the_sfz_wav_tool_reports_the_four_known_gaps() {
         .iter()
         .map(|key| key.as_str().expect("字符串键"))
         .collect();
-    for key in [
+    // ⭐ 当前词表（现读 `SfzWavArtifact::unsupported_keys`）：三条**恒在**的基线键。
+    // 原先的 `sfzTuneCcModulation` / `sfzVolumeCcModulation` / `sfzSampleSpan` 已随
+    // 「CC 调制真的乘进增益/音高」「offset/end 真的切片」退役（见 domain/sfz.rs 的
+    // 撤项注释）；`sfzAmplitude` 只在**静态/CC 曲线解不出**时登记，本夹具的
+    // `amplitude=50` 真的生效 ⇒ 不该出现。旧判据仍按四键断言 ⇒ 全量红。
+    for key in ["sfzLoopExpansion", "deviceChainDsp", "automationLanes"] {
+        assert!(
+            unsupported.contains(&key),
+            "`{key}` 必须出现在 yeban_render_sfz_wav 的 unsupported 里: {unsupported:?}"
+        );
+    }
+    for retired in [
         "sfzAmplitude",
         "sfzTuneCcModulation",
         "sfzVolumeCcModulation",
         "sfzSampleSpan",
     ] {
         assert!(
-            unsupported.contains(&key),
-            "`{key}` 必须出现在 yeban_render_sfz_wav 的 unsupported 里: {unsupported:?}"
+            !unsupported.contains(&retired),
+            "本夹具里 `{retired}` 已不生效/已真正实现，⛔ 不得登记成 gap: {unsupported:?}"
         );
     }
 
