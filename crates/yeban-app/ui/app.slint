@@ -215,6 +215,10 @@ export component MainWindow inherits Window {
     in-out property <bool> show-hotspots: false;
     in-out property <string> toast-message: "";
     in-out property <bool> console-maximized: false;
+    // 界面语言当前态（双语 i18n）：true = 英文。宿主持有的状态
+    // （host::apply_language 唯一写入口），此处只是给走带栏 Group L
+    // 开关读的镜像，.slint 侧不自己翻它。
+    in-out property <bool> language-en: false;
     in-out property <bool> song-overview-fullscreen: false;
     property <bool> dock-tab-sync-guard: false;
     in-out property <bool> control-room-dim: false;
@@ -284,6 +288,9 @@ export component MainWindow inherits Window {
     callback console-maximize-toggle();
     callback toggle-play();
     callback toggle-record();
+    // 界面语言切换（双语 i18n）：由走带栏 Group L 开关触发，宿主接管
+    // （host::apply_language 是唯一写入口，.slint 侧不自己改语言状态）。
+    callback toggle-language();
     callback revert-to-last-commit();
     callback open-cmd-palette();
     callback open-musical-pr();
@@ -943,6 +950,7 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
+                language-en: root.language-en;
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
@@ -956,6 +964,7 @@ export component MainWindow inherits Window {
                     root.edit-tool-selected(t);
                 }
                 toggle-play() => { root.toggle-play(); }
+                toggle-language() => { root.toggle-language(); }
                 toggle-rec() => { root.toggle-record(); }
                 toggle-record => { root.toggle-record(); }
                 toggle-loop() => { root.transport-toggle-loop(); }

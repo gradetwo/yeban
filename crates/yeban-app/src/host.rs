@@ -16101,6 +16101,25 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
     });
 }
 
+/// 界面语言（`--lang` / 走带栏 Group L 开关）的**唯一**写入口，与 [`apply_theme`] 同款
+/// 单向注入（双语 i18n，设计见 `docs/app-i18n-notes.md`）。
+///
+/// 做两件事，缺一不可：
+/// 1. `slint::select_bundled_translation` 真正切换 bundled 词表 —— `@tr` 绑定随
+///    `translations_dirty` 索引属性即时重求值，已渲染界面不重启全量生效
+///    （同版本探针实测：属性回读 zh→en、像素差、往返逐像素一致，见 notes §2）；
+/// 2. 回写 `MainWindow.language-en` 属性 —— 走带栏 Group L 开关的当前态显示读它；
+///    属性只在切换**真的成功**时才置位，词表缺失时开关停在中文态，不假装已切换。
+///
+/// 为什么建窗后必须显式调用一次：`set_bundled_languages` 在首个组件创建时按
+/// **系统 locale** 自动选语言；负责人定案默认 zh-CN，启动路径必须用
+/// `options.lang`（默认 [`crate::cli::Language::ZhCn`]）覆盖自动选择，
+/// 否则英文系统上首帧会是英文。
+pub fn apply_language(ui: &MainWindow, lang: crate::cli::Language) {
+    let selected = slint::select_bundled_translation(lang.bundled_selector());
+    ui.set_language_en(selected.is_ok() && matches!(lang, crate::cli::Language::EnUs));
+}
+
 /// 同 [`build_main_window`]，但显式指定底部控制台的初始 Tab。
 ///
 /// 存在的理由：混音台通道条（Tab 1）只在被选中时**进入运行时控件树**（`visible` 为假的分支
@@ -16124,6 +16143,21 @@ pub fn build_main_window_with_console_tab(
     #[cfg(target_os = "windows")]
     ui.global::<Tokens<'_>>()
         .set_font_ui("Microsoft YaHei UI".into());
+    // 语言开关（走带栏 Group L）：语言状态归宿主持有，回调只做
+    // 「读当前态 → 取反 → 经唯一写入口 apply_language 应用」。挂在这一处
+    // （两个 build_main_window* 的共同构造点），测试与生产路径同得。
+    ui.on_toggle_language({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let next = if ui.get_language_en() {
+                crate::cli::Language::ZhCn
+            } else {
+                crate::cli::Language::EnUs
+            };
+            apply_language(&ui, next);
+        }
+    });
     ui.set_timecode(scene.timecode.clone().into());
     ui.set_branch_name(scene.branch_name.clone().into());
     ui.set_arrangement_view(scene.arrangement_by_default);

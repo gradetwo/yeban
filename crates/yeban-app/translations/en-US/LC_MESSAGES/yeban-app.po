@@ -1,0 +1,106 @@
+# Yeban desktop UI — English (en-US) bundled translation.
+# Source language is zh-CN: msgid = the Chinese source string used in @tr("...")
+# in crates/yeban-app/ui/**/*.slint (single key table, no msgctxt — the build
+# disables Slint's default translation context, see build.rs).
+# Coverage is enforced by crates/yeban-app/tests/i18n_coverage.rs:
+# the msgid set here must exactly equal the @tr msgid set in the sources.
+msgid ""
+msgstr ""
+"Project-Id-Version: yeban-app\n"
+"Language: en-US\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+# --- transport_bar.slint ---
+msgid "检查器与音色库 [I]"
+msgstr "Inspector & Sound Library [I]"
+
+msgid "Clip 激发矩阵 [Tab]"
+msgstr "Clip Launch Matrix [Tab]"
+
+msgid "统一底栏 (混音控制台/钢琴卷帘) [P / X]"
+msgstr "Unified Lower Dock (Mixer / Piano Roll) [P / X]"
+
+msgid "监听控制室与响度计 [F4]"
+msgstr "Control Room & Loudness Meters [F4]"
+
+msgid "指针选区工具: 选择与移动 [1]"
+msgstr "Pointer Tool: Select & Move [1]"
+
+msgid "力度 / 范围工具 [4]"
+msgstr "Velocity / Range Tool [4]"
+
+msgid "剃刀切分工具 [3]"
+msgstr "Razor Split Tool [3]"
+
+msgid "画笔工具: 绘制音符与自动化 [2 / B]"
+msgstr "Draw Tool: Draw Notes & Automation [2 / B]"
+
+msgid "返回工程起点 / 归零 [Return]"
+msgstr "Return to Project Start [Return]"
+
+msgid "停止播放并复位 [Space]"
+msgstr "Stop & Reset Playhead [Space]"
+
+msgid "播放 / 暂停走带 [Space]"
+msgstr "Play / Pause [Space]"
+
+msgid "录音准备 / 穿插录音 [R]"
+msgstr "Record Arm / Punch-In [R]"
+
+msgid "选区循环播放开关 [C]"
+msgstr "Toggle Loop Playback [C]"
+
+msgid "当前时间码: 小节.拍.分拍"
+msgstr "Current Timecode: Bar.Beat.Tick"
+
+msgid "工程主速度: 点击循环切换 (124/128/140 BPM)"
+msgstr "Project Tempo: Click to Cycle (124/128/140 BPM)"
+
+msgid "C Minor (自然小调)"
+msgstr "C Minor (Natural Minor)"
+
+msgid "D Dorian (多利亚)"
+msgstr "D Dorian (Dorian)"
+
+msgid "F Major (大调)"
+msgstr "F Major (Major)"
+
+msgid "全局工程调式: 点击循环切换"
+msgstr "Project Key / Scale: Click to Cycle"
+
+msgid "音频缓冲区延迟: 点击热切换 (64/128/512/2048 smp)"
+msgstr "Audio Buffer: Click to Hot-Swap (64/128/512/2048 smp)"
+
+msgid "实时音频 DSP CPU 负荷率"
+msgstr "Real-Time Audio DSP CPU Load"
+
+msgid "默认工作区"
+msgstr "Default Workspace"
+
+msgid "现场演出模式 (Clip 流)"
+msgstr "Live Performance Mode (Clip Flow)"
+
+msgid "线性编曲模式 (时间轴流)"
+msgstr "Linear Arrangement Mode (Timeline Flow)"
+
+msgid "混音母带模式 (混音控制台流)"
+msgstr "Mix & Master Mode (Console Flow)"
+
+msgid "快捷命令面板 [Ctrl+K]"
+msgstr "Command Palette [Ctrl+K]"
+
+msgid "架构透视与热区诊断 [H]"
+msgstr "Architecture Insights & Hotspot Diagnostics [H]"
+
+msgid "悬浮提示: 已开启 (点击关闭) [T]"
+msgstr "Hover Tips: On (Click to Turn Off) [T]"
+
+msgid "悬浮提示: 已关闭 (点击开启) [T]"
+msgstr "Hover Tips: Off (Click to Turn On) [T]"
+
+msgid "界面语言: 英文 (点击切回中文)"
+msgstr "UI Language: English (Click for Chinese)"
+
+msgid "界面语言: 中文 (点击切换英文)"
+msgstr "UI Language: Chinese (Click for English)"

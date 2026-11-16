@@ -324,6 +324,13 @@ pub const PROBE_INSTRUMENTS_SWITCH: &str = "--probe-instruments";
 /// `--theme` 的字面值（运行期调色板切换的**唯一**用户出口）。
 pub const THEME_SWITCH: &str = "--theme";
 
+/// `--lang` 的字面值（界面语言的**启动选择**；运行期切换在走带栏 Group L 开关）。
+///
+/// 双语 i18n（line/ui-i18n，设计见 `docs/app-i18n-notes.md`）：语言对 zh-CN（默认、
+/// 也是词表源语言）＋ en-US（bundled translation）。与 `--theme` 同款：未知取值
+/// 报 [`ParseError::UnknownLanguage`]，**绝不静默回退**。
+pub const LANG_SWITCH: &str = "--lang";
+
 /// `--print-theme` 的字面值（把"请求的主题 / 本二进制实际编译进来的风格"如实打出来）。
 ///
 /// 与 `--print-shortcuts` 同族：一条**只读**的自述命令，让人与 CI 能核对
@@ -733,6 +740,9 @@ pub fn usage_text() -> String {
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
   --theme <{themes}>
                            选择界面主题; 重复给以最后一个为准 (默认 default = yeban 调色板)
+  --lang <{langs}>
+                           选择界面语言; 重复给以最后一个为准 (默认 zh-CN = 简体中文);
+                             运行期可在走带栏 Group L 语言开关切换, 不必重启
                              default    水墨 + 颜料 (**2026-10-07 起是默认主题**): 背景/面板/线
                                         几乎零饱和, 颜色只留在内容上, 唯一强调色 (`accent`)
                                         整份界面只出现一次。取值**由负责人下发的具名调色板指定**
@@ -1034,6 +1044,8 @@ pub fn usage_text() -> String {
         // 合法取值集合**机械地**来自 `Theme::ALL`（唯一事实源，别名也在同一份推导里）：
         // 用法文本与 `ParseError::UnknownTheme` 的可用列表因此不可能各说各话。
         themes = Theme::accepted_names().join("|"),
+        // 语言的合法取值集合同样机械地来自 `Language::ALL`（唯一事实源）。
+        langs = Language::accepted_names().join("|"),
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -1180,6 +1192,79 @@ impl Sample {
 /// 编译进来的那一个。于是 `--theme material` 与 `--theme fluent` 在不重新编译时共享同一套
 /// `Palette` 值 —— 这不是缺陷而是本版本的上限；[`theme_lines`] / [`PRINT_THEME_SWITCH`]
 /// 把这件事**如实**打给用户，而不是假装四个主题各不相同。
+/// 界面语言（双语 i18n，line/ui-i18n；设计见 `docs/app-i18n-notes.md`）。
+///
+/// 与 [`Theme`] 同款的「CLI 取值 ↔ 枚举」结构：规范名 + 别名 + `accepted_names`
+/// 唯一推导，用法文本与 [`ParseError::UnknownLanguage`] 共用一份，绝不漂移。
+///
+/// 语言对只有两支：`ZhCn` 是**源语言**（.slint 里的 `@tr("中文")` 原文即界面文案，
+/// bundled 词表索引 0），`EnUs` 是唯一的 bundled translation
+/// （`crates/yeban-app/translations/en-US/LC_MESSAGES/yeban-app.po`）。
+/// 生效入口是 [`crate::host::apply_language`]（唯一写入口，与 `apply_theme` 同款）：
+/// 它调 `slint::select_bundled_translation` 并回写 `MainWindow.language-en` 属性
+/// （走带栏 Group L 开关的当前态显示读它）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Language {
+    /// 简体中文（默认；词表源语言，`select_bundled_translation("")` 回到这一支）。
+    #[default]
+    ZhCn,
+    /// 英文（en-US bundled translation）。
+    EnUs,
+}
+
+impl Language {
+    /// 全部语言（默认在前）。
+    pub const ALL: [Self; 2] = [Self::ZhCn, Self::EnUs];
+
+    /// 命令行**规范名**（`--lang <name>`），同时也是 bundled 词表的目录名
+    /// （`ZhCn` 例外：它是源语言，没有词表目录，规范名只用于 CLI 对称）。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ZhCn => "zh-CN",
+            Self::EnUs => "en-US",
+        }
+    }
+
+    /// 别名（解析到同一支语言）：`zh` / `en` 是 locale 的语言段简写，
+    /// 用户在命令行里最容易顺手打错的就是漏掉地区段，故收。
+    #[must_use]
+    pub const fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::ZhCn => &["zh"],
+            Self::EnUs => &["en"],
+        }
+    }
+
+    /// **全部可接受的命令行取值**（规范名 + 别名）。用法文本、错误信息与判据共用。
+    #[must_use]
+    pub fn accepted_names() -> Vec<&'static str> {
+        Self::ALL
+            .into_iter()
+            .flat_map(|lang| std::iter::once(lang.name()).chain(lang.aliases().iter().copied()))
+            .collect()
+    }
+
+    /// 从命令行字面值解析（规范名或别名；未知取值返回 `None`）。
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|lang| lang.name() == value || lang.aliases().contains(&value))
+    }
+
+    /// 传给 `slint::select_bundled_translation` 的参数：英文是词表目录名，
+    /// 中文是空串（Slint 约定：空串 = 源语言/默认语言，见 i-slint-core 的
+    /// `select_bundled_translation` 文档）。
+    #[must_use]
+    pub const fn bundled_selector(self) -> &'static str {
+        match self {
+            Self::ZhCn => "",
+            Self::EnUs => "en-US",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     /// 本仓品牌深色（`assets/brand/`，从母版 SVG 提取）—— **2026-10-07 之前的默认外观**。
@@ -1824,6 +1909,13 @@ pub struct Options {
     /// `--headless` 是"一个 Slint 对象都不构造"的路径（见 `main.rs` 的模块文档），
     /// 那里**没有**可写的 `ThemeState`，所以它接受这个开关但不生效。
     pub theme: Theme,
+    /// 界面语言（`--lang <zh-CN|en-US>`，别名 `zh` / `en`）。
+    ///
+    /// 默认 [`Language::ZhCn`]（负责人定案：zh-CN 默认，英文显式切换）。
+    /// 生效范围与 `theme` 同款：只有真的构造窗口的路径才调用
+    /// [`crate::host::apply_language`]（GUI 与 `--headless-idle` 两档）；
+    /// 运行期切换走走带栏 Group L 开关，**不**回写这个字段（它只是启动选择）。
+    pub lang: Language,
     /// `--print-theme`：把请求的主题与"本二进制实际编译进来的 Slint 风格"打到 stdout。
     ///
     /// 为什么它必须存在（而不是只写在我的报告里）：`--theme material` 在一个用
@@ -2238,6 +2330,11 @@ pub enum ParseError {
     /// "我选了 material"与"其实渲染的是 `default`(yeban 调色板)"长得一模一样，而本仓库最忌讳
     /// 的就是这一类"以为生效了"的假绿。
     UnknownTheme(String),
+    /// `--lang` 的取值不在允许集合里。
+    ///
+    /// 与 [`Self::UnknownTheme`] 同款：**绝不静默回退到默认语言** —— 那会让
+    /// "我选了英文"与"其实显示中文"长得一模一样。
+    UnknownLanguage(String),
     /// `--midi-in-seconds` 的取值不是十进制数。
     MidiInSecondsInvalid(String),
     /// `--headless-idle` 没配 `--idle-seconds`。
@@ -2505,6 +2602,13 @@ impl fmt::Display for ParseError {
             Self::UnknownSample(sample) => write!(
                 formatter,
                 "未知的工程样本 `{sample}` (可用: default|demo|filled|empty)"
+            ),
+            Self::UnknownLanguage(lang) => write!(
+                formatter,
+                "未知的界面语言 `{lang}` (可用: {}; 默认 `zh-CN` = 简体中文, \
+                 也是词表源语言; `en-US` = 英文 bundled 词表; 运行期切换在走带栏 \
+                 Group L 语言开关, 不必重启)",
+                Language::accepted_names().join("|")
             ),
             Self::UnknownTheme(theme) => write!(
                 formatter,
@@ -3347,6 +3451,11 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 let value = take_value(THEME_SWITCH, inline, args, &mut cursor)?;
                 options.theme = Theme::from_name(&value)
                     .ok_or_else(|| ParseError::UnknownTheme(value.clone()))?;
+            }
+            LANG_SWITCH => {
+                let value = take_value(LANG_SWITCH, inline, args, &mut cursor)?;
+                options.lang = Language::from_name(&value)
+                    .ok_or_else(|| ParseError::UnknownLanguage(value.clone()))?;
             }
             other => return Err(ParseError::UnknownArgument(other.to_owned())),
         }

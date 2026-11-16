@@ -208,6 +208,8 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
     // 本档真的构造控件树并光栅化一帧，因此这里的主题是**可被像素见证的**：
     // 换主题 ⇒ `distinct-colors` / `non-black-pixels` 会不一样。
     host::apply_theme(&ui, options.theme);
+    // 语言（`--lang`）：与 GUI 路径同一个写入口、同一个时机（理由见 main.rs）。
+    host::apply_language(&ui, options.lang);
     ui.show().map_err(|error| CliError::Ui {
         detail: format!("主窗口 show 失败: {error}"),
     })?;
