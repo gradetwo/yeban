@@ -181,13 +181,13 @@ fn parse_po(po: &str) -> (BTreeSet<String>, Vec<String>) {
     let mut current_str: Option<String> = None;
     let mut mode: Option<&str> = None;
     let mut flush = |id: &mut Option<String>, s: &mut Option<String>| {
-        if let (Some(id), Some(s)) = (id.take(), s.take()) {
-            if !id.is_empty() {
-                if s.is_empty() {
-                    empty.push(id.clone());
-                }
-                ids.insert(id);
+        if let (Some(id), Some(s)) = (id.take(), s.take())
+            && !id.is_empty()
+        {
+            if s.is_empty() {
+                empty.push(id.clone());
             }
+            ids.insert(id);
         }
     };
     for raw_line in po.lines() {
