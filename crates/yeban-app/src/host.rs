@@ -11406,7 +11406,9 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
-            clipboard_copy_selected(ui, &project)
+            let ok = clipboard_copy_selected(ui, &project);
+            report_clipboard(ui, ClipboardVerb::Copy, ok);
+            ok
         }
         Action::PasteClipboard => {
             let Some(port) = undo else {
@@ -11415,7 +11417,9 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
-            clipboard_paste(ui, port, &project)
+            let ok = clipboard_paste(ui, port, &project);
+            report_clipboard(ui, ClipboardVerb::Paste, ok);
+            ok
         }
         Action::CutClipboard => {
             let Some(port) = undo else {
@@ -11424,7 +11428,9 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
-            clipboard_cut(ui, port, &project)
+            let ok = clipboard_cut(ui, port, &project);
+            report_clipboard(ui, ClipboardVerb::Cut, ok);
+            ok
         }
         // `Cmd/Ctrl+S`：保存**当前**工程（键位选择的三条事实见 [`Action::SaveProject`]）。
         //
@@ -11747,15 +11753,20 @@ fn apply_action(
             };
             split_selected_clip_at_playhead(ui, port, &project)
         }
-        // Logic Pro 工作流：X 混音台、E/P 卷帘与编辑器
+        // Logic Pro 工作流：X 混音台、P 钢琴卷帘、F9 设备机架。
+        //
+        // ⭐ 修前这两条都是**同一个** `console_tab` 0↔1 互换：
+        //   - 菜单写「钢琴卷帘 (P)」，但在卷帘页（tab 0）按 P 会跳去混音台（tab 1）；
+        //   - 菜单写「混音台 (X)」，在混音台页按 X 会跳去钢琴卷帘。
+        // 现在各自**幂等地落到自己的页**（`console-tab`：0=钢琴卷帘 / 1=混音台 /
+        // 2=设备机架 / 3=设备堆叠，见 `app.slint` 的 `changed console-tab`）。
+        // 重复按同一键不再"跳走"，符合 Logic / Live 的习惯。
         Action::ToggleMixer => {
-            let current = ui.get_console_tab();
-            ui.set_console_tab(if current == 1 { 0 } else { 1 });
+            ui.set_console_tab(1);
             true
         }
         Action::ToggleEditor => {
-            let current = ui.get_console_tab();
-            ui.set_console_tab(if current == 0 { 1 } else { 0 });
+            ui.set_console_tab(0);
             true
         }
         // Logic Pro 工作流：A 自动化泳道显示
@@ -14977,6 +14988,56 @@ thread_local! {
     > = const { std::cell::RefCell::new(None) };
 }
 
+/// 分轨导出目录：**用户可预期、且不会被系统清理**的固定位置。
+///
+/// 修前是 `std::env::temp_dir().join("yeban-stems")` —— 用户得从 toast 抄绝对路径去翻，
+/// 而 Windows 磁盘清理 / `TEMP` 回收会把整份分轨删掉。现在：
+/// - Windows：`%USERPROFILE%\Documents\Yeban\stems`
+/// - 其它平台 / 读不到 `USERPROFILE`：退回 `TEMP/yeban-stems`
+///
+/// ⚠ `wire_aether_actions` 没有 `ModulePaths` 捕获 ⇒ 拿不到"工程文件同级"，
+/// 真正的目录选择器属 ADR-0076 B5 的后续切片。
+fn stems_output_dir() -> std::path::PathBuf {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        if !profile.trim().is_empty() {
+            return std::path::Path::new(&profile)
+                .join("Documents")
+                .join("Yeban")
+                .join("stems");
+        }
+    }
+    std::env::temp_dir().join("yeban-stems")
+}
+
+/// 剪贴板三键的**用户可见回执**（键盘与菜单共用一条，⛔ 不再静默）。
+///
+/// 修前：`clipboard_copy_selected` 返回 `bool`，四个调用点全部丢弃 ⇒ 复制成功没有
+/// 「已复制」、失败没有「先选中一个片段」，用户分不清"没选中"和"功能坏了"。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardVerb {
+    /// `Ctrl+C` / 菜单「复制片段」。
+    Copy,
+    /// `Ctrl+V` / 菜单「粘贴片段」。
+    Paste,
+    /// `Ctrl+X` / 菜单「剪切片段」。
+    Cut,
+}
+
+/// 写一条剪贴板回执。`ok == false` 时给出**可执行**的下一步，而不是只说失败。
+pub fn report_clipboard(ui: &MainWindow, verb: ClipboardVerb, ok: bool) {
+    let (verb_word, hint) = match verb {
+        ClipboardVerb::Copy => ("复制", "先选中一个片段再按 Ctrl+C"),
+        ClipboardVerb::Paste => ("粘贴", "先在编曲区选中目标轨、把播放头挪到落点"),
+        ClipboardVerb::Cut => ("剪切", "先选中一个片段再按 Ctrl+X"),
+    };
+    let text = if ok {
+        format!("[剪贴板] 已{verb_word}片段")
+    } else {
+        format!("[剪贴板] {verb_word}未生效：{hint}")
+    };
+    ui.set_toast_message(text.into());
+}
+
 /// 把选中片段复制到进程内剪贴板。返回 `false` = 没选中 / 读不到（不写入）。
 pub fn clipboard_copy_selected(ui: &MainWindow, project: &yeban_model::YebanProjectV1) -> bool {
     let selected = ui.get_selected_clip_ulid();
@@ -17690,14 +17751,11 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
     });
 
     // 11. 命令面板
-    ui.on_command_execute({
-        let weak = weak.clone();
-        move |cmd| {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(format!("[命令] 已执行命令: {}", cmd).into());
-            }
-        }
-    });
+    //
+    // ⛔ 这里**不再注册** `on_command_execute`：真分派在文件后段（`wire_aether_actions`
+    // 的「命令面板 / 顶部菜单栏」段）。Slint 重复注册时后注册覆盖前者，旧的那条
+    // 只写一句「[命令] 已执行命令: X」的 toast，属于**被覆盖的死代码**；留着会让人
+    // 以为菜单命令只弹 toast、不干真事。
 
     // 12. 设备参数变更
     ui.on_device_param_changed({
@@ -18744,13 +18802,9 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "file-save" => ui.invoke_save_project(),
         "file-save-as" => ui.invoke_save_project_as(),
         "open-export-wav" => ui.invoke_open_export_wav(),
-        "export-stems" => {
-            ui.invoke_open_export_wav();
-            update_toast(
-                ui,
-                "[导出] 已打开 WAV 导出面板（分轨导出 CLI 可用 `--export-stems`）",
-            );
-        }
+        // ⛔ 这里**不再有** `export-stems` 臂：真实入口在 `on_command_execute` 里先命中
+        // （见 `stems_output_dir` 与 `crate::export_stems::export_stems`）。旧的
+        // 「打开 WAV 面板 + 提示请用 CLI」分支已删除——留着会让下一个人误判成"还没修"。
         "export-midi" => ui.invoke_export_midi(),
         "import-midi" => ui.invoke_import_midi(),
         "import-audio" => ui.invoke_import_audio(),
@@ -19659,27 +19713,31 @@ pub fn wire_aether_actions(
                     // 剪贴板三键的**菜单入口**（与键盘同一组函数，ADR-0076 B3）。
                     "edit-copy" => {
                         if let Some(project) = port.try_project() {
-                            clipboard_copy_selected(&ui, &project);
+                            let ok = clipboard_copy_selected(&ui, &project);
+                            report_clipboard(&ui, ClipboardVerb::Copy, ok);
                         }
                     }
                     "edit-paste" => {
                         if let Some(project) = port.try_project() {
-                            clipboard_paste(&ui, &port, &project);
+                            let ok = clipboard_paste(&ui, &port, &project);
+                            report_clipboard(&ui, ClipboardVerb::Paste, ok);
                         }
                     }
                     "edit-cut" => {
                         if let Some(project) = port.try_project() {
-                            clipboard_cut(&ui, &port, &project);
+                            let ok = clipboard_cut(&ui, &port, &project);
+                            report_clipboard(&ui, ClipboardVerb::Cut, ok);
                         }
                     }
                     "place-audio-clip" => place_latest_audio_clip(&ui, &port),
                     // ⭐ 分轨导出 GUI 入口（ADR-0076 B5）：后端与 CLI / MCP **同一份**
                     // （`crate::export_stems::export_stems`）；这里只补「定输出目录 + 线程 + 回执」。
-                    // ⚠ 本回调（`wire_aether_actions`）没有 `ModulePaths` 捕获 ⇒ 用跨平台
-                    // 临时目录下的固定子目录；回执给**绝对路径**让用户找得到。
+                    // ⚠ 本回调（`wire_aether_actions`）没有 `ModulePaths` 捕获 ⇒ 目录按
+                    // 「用户可预期且不会被系统清理」的固定位置推导（`stems_output_dir`），
+                    // 不再落在 `%TEMP%`（Windows 磁盘清理会连整份分轨一起删掉）。
                     // （GUI 目录选择器属后续切片，见 ADR-0076 B5。）
                     "export-stems" => {
-                        let out_dir = std::env::temp_dir().join("yeban-stems");
+                        let out_dir = stems_output_dir();
                         if let Err(err) = std::fs::create_dir_all(&out_dir) {
                             ui.set_toast_message(
                                 format!("[导出] 无法创建分轨目录 {}：{err}", out_dir.display())
@@ -19719,6 +19777,20 @@ pub fn wire_aether_actions(
                                 }
                             });
                         });
+                    }
+                    // ⭐ 菜单「退出 Yeban」：先藏窗口再退事件循环。
+                    // `main.rs` 走 `slint::ComponentHandle::run(&ui)` ⇒ `quit_event_loop()`
+                    // 是唯一正确的出口；`hide()` 先做是为了把"点菜单到进程结束"之间
+                    // 的空窗时间压到最短（视觉上不会留一个白框）。
+                    "app-quit" => {
+                        // `hide()` 返回 `Result`：退出路径上藏不住窗口不算致命，
+                        // 但也不能 `.unwrap()`（窗口已被系统收走时会 panic）。
+                        let _ = ui.window().hide();
+                        if let Err(err) = slint::quit_event_loop() {
+                            ui.set_toast_message(
+                                format!("[退出] 事件循环未退出：{err}").into(),
+                            );
+                        }
                     }
                     other => dispatch_aether_command(&ui, other),
                 }
