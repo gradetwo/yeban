@@ -1302,7 +1302,8 @@ pub struct ClipView {
     pub clip_name: String,
     /// 片段内容类型：`midi` / `audio`。
     pub content: &'static str,
-    /// 界面标签：`"{track_name} · {clip_name}"`（`.slint` 直接画它）。
+    /// 界面标签：**片段名**（空名时 `"未命名片段"`）。轨道名由轨道头单独显示，
+    /// ⛔ 不在此重复（用户 2026-11-16 反馈：每片段再拼轨道名纯属重复）。
     pub label: String,
     /// 起始 tick（`ClipPlacement::start_tick`）。
     pub start_tick: u64,
@@ -5810,10 +5811,13 @@ fn clip_view(
         ClipContent::Midi { .. } => "midi",
         ClipContent::Audio { .. } => "audio",
     });
+    // ⭐ 片段标签**只放片段名**：轨道名已由左侧轨道头单独显示，
+    // 每个片段再拼一次「轨道名 · 片段名」是纯重复（用户 2026-11-16 反馈）。
+    // 空片段名时用「未命名片段」兜底（⛔ 不回退成轨道名，那又会重复）。
     let label = if clip_name.is_empty() {
-        track_name.to_owned()
+        "未命名片段".to_owned()
     } else {
-        format!("{track_name} · {clip_name}")
+        clip_name.clone()
     };
     #[allow(clippy::cast_possible_truncation)]
     let lane = track_index as i32;
@@ -7460,7 +7464,7 @@ mod tests {
         assert_eq!(clip.track_name, "Lead");
         assert_eq!(clip.content, "midi");
         assert_eq!(clip.clip_name, "Clip");
-        assert_eq!(clip.label, "Lead · Clip");
+        assert_eq!(clip.label, "Clip", "片段标签只放片段名（不重复轨道名）");
         assert_eq!(clip.lane, i32::try_from(lead.index).unwrap());
 
         // 段落 / 场景 / 音符身份逐条来自模型。
