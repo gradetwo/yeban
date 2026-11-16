@@ -14998,13 +14998,15 @@ thread_local! {
 /// ⚠ `wire_aether_actions` 没有 `ModulePaths` 捕获 ⇒ 拿不到"工程文件同级"，
 /// 真正的目录选择器属 ADR-0076 B5 的后续切片。
 fn stems_output_dir() -> std::path::PathBuf {
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        if !profile.trim().is_empty() {
-            return std::path::Path::new(&profile)
-                .join("Documents")
-                .join("Yeban")
-                .join("stems");
-        }
+    // ⭐ `clippy::collapsible_if`（全量 clippy `-D warnings` 判据）：两层同一条件合并成
+    // `let chains`，语义逐字不变（空/读不到仍退回 TEMP）。
+    if let Ok(profile) = std::env::var("USERPROFILE")
+        && !profile.trim().is_empty()
+    {
+        return std::path::Path::new(&profile)
+            .join("Documents")
+            .join("Yeban")
+            .join("stems");
     }
     std::env::temp_dir().join("yeban-stems")
 }
