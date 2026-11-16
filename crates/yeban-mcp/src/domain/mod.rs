@@ -5783,6 +5783,7 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             request.frames,
             request.sample_rate,
             Some(sfz_path.as_path()),
+            &instrument.initial_cc,
         )
     })??;
     // 编码**复用**与 `yeban_render_master` 同一份实现（`write_master_container`）：

@@ -3602,6 +3602,7 @@ pub fn render(
     frames: u64,
     sample_rate: u32,
     sfz_path: Option<&Path>,
+    initial_cc: &BTreeMap<u8, u8>,
 ) -> Result<SfzRenderOutcome, Fault> {
     if sample_rate == 0 {
         return Err(Fault::domain(CODE_RENDER, "输出采样率不得为 0"));
@@ -3639,7 +3640,15 @@ pub fn render(
         // ⚠ 走这条路**发声**的只有 `yeban_render_sfz_wav`；`yeban_render_master` 自
         // `#274` 起不经这里发声（它只调 [`survey_sampler`] 取读数，音频由引擎的
         // SFZ 支路渲染，钉住这条的判据是 `tests/sampler_source_single_path.rs`）。
-        let Some(wave) = note_wave(instrument, note, tone_hz, engine_hz, sfz_path, &mut cache)
+        let Some(wave) = note_wave(
+            instrument,
+            note,
+            tone_hz,
+            engine_hz,
+            sfz_path,
+            &mut cache,
+            initial_cc,
+        )
         else {
             notes_unmatched = notes_unmatched.saturating_add(1);
             continue;
@@ -3652,7 +3661,10 @@ pub fn render(
         }
         // ⭐ `#223`：四类已知但不生效的区域参数，逐音符数出来（键进 `unsupported`）。
         if let Some(region) = instrument.regions().get(wave.region_index) {
-            if region_declares_amplitude(region) {
+            // ⭐ 静态 `amplitude` 与 `amplitude_onccN` **现在都真的应用了**
+            // （见 [`note_wave`] 的最外层乘子）⇒ 只有"曲线解不出"（`unresolved > 0`）
+            // 才登记 `sfzAmplitude`，否则这个键就是假话。
+            if wave.amplitude_unresolved > 0 {
                 notes_with_amplitude = notes_with_amplitude.saturating_add(1);
             }
             if region_declares_cc_target(region, ModTarget::Tune) {
@@ -3782,6 +3794,11 @@ pub(super) struct NoteWave {
     pub layered: bool,
     /// 样本来源裁决。
     pub kind: NoteSampleKind,
+    /// ⭐ `amplitude` 族里**曲线解不出**的调制项个数（0 = 已完整应用）。
+    ///
+    /// 只有 `> 0` 时 `sfzAmplitude` 才进 `unsupported`：静态值与能解出曲线的 CC
+    /// 调制项现在都真的乘进了增益（见 [`note_wave`] 的 `amplitude_value_with_cc`）。
+    pub amplitude_unresolved: usize,
 }
 
 /// **唯一的**"一个音符怎么响"实现：区域选择 → 播放速率 → 总增益 → 样本来源。
@@ -3800,6 +3817,7 @@ pub(super) fn note_wave(
     engine_hz: f32,
     sfz_path: Option<&Path>,
     cache: &mut SampleCache,
+    initial_cc: &BTreeMap<u8, u8>,
 ) -> Option<NoteWave> {
     let rates = RenderRates::new(engine_hz, engine_hz);
     // ⭐ `#273`：`find` 仍然只取**第一条**（区域选择逐位不变），但顺手数一下还有没有
@@ -3807,6 +3825,16 @@ pub(super) fn note_wave(
     // 叠加 ⇒ 层叠本身是一项**已知分叉**，必须能报出来。
     //
     // 用同一个 `filter` 谓词选出迭代器 ⇒ "选中的区域"与"层叠的判定"不可能漂移。
+    // ⭐ CC 门的**求值探针**：本次装载的 `initialCc` 优先，其次文件 `cc_defaults()`，
+    // 都没有 ⇒ SFZ 规范缺省 0。渲染与普查（`cc_gate_census_with_probe`）用**同一口径**，
+    // 否则"普查说这一片被门挡着"与"导出照样发声"会同时成立 —— 那就是静默的错误音频。
+    let cc_probe = |cc: u8| {
+        initial_cc
+            .get(&cc)
+            .copied()
+            .or_else(|| instrument.cc_default(u16::from(cc)))
+            .unwrap_or(0)
+    };
     let mut matching = instrument
         .regions()
         .iter()
@@ -3814,6 +3842,10 @@ pub(super) fn note_wave(
         .filter(|(_, region)| {
             region.matches_key(note.pitch)
                 && region.matches_velocity(note.velocity)
+                // ⭐ CC 门 / CC 触发门：门外 ⇒ 这个区域对**本音符**不成立。
+                // 以前只做键/力度/事件族三判，门的语义在离线导出里被整段忽略。
+                && region.cc_gates_ok(&cc_probe)
+                && region.cc_triggers_ok(&cc_probe)
                 // ⭐ **事件门控**（本片）：本工具只渲染 **note-on** 事件 ⇒ `trigger=release` /
                 // `release_key` 的区域⛔ 不能在"按下"时被预听选中（那会把松键噪声当成音头
                 // 发出来，且用户无法从 `unsupported` 看出哪里不对）。
@@ -3827,7 +3859,15 @@ pub(super) fn note_wave(
     let layered = matching.next().is_some();
     let rate = region.playback_rate(note.pitch, rates);
     let spec = region.playback_spec(note.pitch, note.velocity, rates);
-    let gain = spec.total_gain();
+    // ⭐ `#115` 的离线侧：`amplitude`（线性百分比，缺省 100）与其 `amplitude_onccN`
+    // 调制项**一起**进最外层乘子（`yeban-sfz` 的 `modulation.rs` 第 195 行给的
+    // `final_gain = total_gain × amplitude_gain`）。CC 探针取**本次装载的
+    // `initialCc` 种子**，缺省 CC = 0（SFZ 规范缺省，与 `cc_defaults()` 同口径）。
+    // ⚠ `amplitude` 缺省 100 ⇒ `amplitude_gain == 1.0` ⇒ 没有 `amplitude` 的文件
+    // **逐位不变**（IEEE：有限值 × 1.0 恒等）。
+    let (amplitude_value, amplitude_unresolved) =
+        instrument.amplitude_value_with_cc(region, &cc_probe);
+    let gain = spec.total_gain() * (amplitude_value / AMPLITUDE_DEFAULT_PERCENT);
     let looping = spec.loops();
     if !(rate.is_finite() && rate > 0.0) || gain == 0.0 {
         return None;
@@ -3891,6 +3931,7 @@ pub(super) fn note_wave(
         looping,
         layered,
         kind,
+        amplitude_unresolved,
     })
 }
 
@@ -4967,7 +5008,9 @@ mod tests {
                     <region> sample=att.wav key=60\n";
         let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
         let mut cache = SampleCache::new();
-        let wave = note_wave(&instrument, &note, 440.0, 48_000.0, None, &mut cache)
+        let wave = note_wave(
+            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+        )
             .expect("起音区域必须被选中");
         assert_eq!(
             wave.region_index, 1,
@@ -4980,7 +5023,10 @@ mod tests {
         )
         .expect("解析");
         assert!(
-            note_wave(&only_release, &note, 440.0, 48_000.0, None, &mut cache).is_none(),
+            note_wave(
+            &only_release, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+        )
+        .is_none(),
             "只有 trigger=release 区域时，note-on 预听必须静音"
         );
         // 起音族不受影响（`trigger=attack` / 缺省同一支）。
@@ -4990,11 +5036,76 @@ mod tests {
         )
         .expect("解析");
         assert_eq!(
-            note_wave(&attack, &note, 440.0, 48_000.0, None, &mut cache)
+            note_wave(
+            &attack, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+        )
                 .expect("起音区域必须发声")
                 .region_index,
             0
         );
+    }
+
+    /// ⭐ 本轮补口：`amplitude`（线性百分比）与 `amplitude_onccN` **真的乘进增益**，
+    /// 且 `locc100` 这类 **CC 门**在离线导出里**真的被判定**。
+    ///
+    /// 修前两条都缺：`gain` 只取 `playback_spec().total_gain()`（volume/velocity/键位/
+    /// 交叉淡化四段），`amplitude` 与 CC 门被整段忽略 ⇒ 导出会比引擎**更响**
+    /// （门关着的区域照样发声），而 `unsupported` 里却写着 `sfzAmplitude` —— 一句话两头都不诚实。
+    #[test]
+    fn amplitude_scales_offline_gain_and_cc_gates_are_enforced() {
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 512,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let text = "<region> sample=a.wav key=60 amplitude=100\n\
+                    <region> sample=b.wav key=61 amplitude=50\n\
+                    <region> sample=c.wav key=62 locc100=64\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let mut cache = SampleCache::new();
+
+        // 腿 1：amplitude=100（缺省）⇒ 乘子 1.0，峰值即正弦样本本身。
+        let wave = note_wave(
+            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+        )
+        .expect("amplitude=100 必须发声");
+        let full = math::peak_of(&wave.mono);
+
+        // 腿 2：amplitude=50 ⇒ 峰值恰为一半（−6.02 dB）。
+        let note50 = SfzNote { pitch: 61, ..note };
+        let half = note_wave(
+            &instrument, &note50, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+        )
+        .expect("amplitude=50 必须发声")
+        .mono;
+        let half_peak = math::peak_of(&half);
+        assert!(
+            (half_peak / full - 0.5).abs() < 1e-3,
+            "amplitude=50 的峰值必须恰是 amplitude=100 的一半，实得 ratio = {}",
+            half_peak / full
+        );
+
+        // 腿 3：`locc100=64` 而 CC100 未播种（缺省 0）⇒ 门外 ⇒ 该音符不发声。
+        let note62 = SfzNote { pitch: 62, ..note };
+        assert!(
+            note_wave(
+                &instrument, &note62, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+            )
+            .is_none(),
+            "CC100=0 时 `locc100=64` 的区域必须不命中（与引擎的门控同结论）"
+        );
+
+        // 腿 4：播下 CC100=64 ⇒ 门打开 ⇒ 同一区域发声。
+        let mut seeded: BTreeMap<u8, u8> = BTreeMap::new();
+        seeded.insert(100, 64);
+        let opened = note_wave(
+            &instrument, &note62, 440.0, 48_000.0, None, &mut cache, &seeded,
+        )
+        .expect("CC100=64 时门必须打开");
+        assert_eq!(opened.region_index, 2);
     }
 
     /// P1：与引擎自身判定的一致性（无 CC 门控的 Attack 区域：`wants` ⟺ 存在音符使
