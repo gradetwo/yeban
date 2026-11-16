@@ -11397,6 +11397,35 @@ fn apply_action(
             // 音符选区为空时，尝试复制编曲视图选中的剪辑 (Logic Pro Cmd+D 对齐)
             duplicate_selected_clip_placement(ui, port, &project)
         }
+        // ⭐ 剪贴板三键（ADR-0076 B3）：复制 / 粘贴 / 剪切选中片段。
+        // 与菜单命令 `edit-copy/paste/cut` 同一组函数 ⇒ 键盘与菜单不可能分叉。
+        Action::CopyClipboard => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            clipboard_copy_selected(ui, &project)
+        }
+        Action::PasteClipboard => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            clipboard_paste(ui, port, &project)
+        }
+        Action::CutClipboard => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            clipboard_cut(ui, port, &project)
+        }
         // `Cmd/Ctrl+S`：保存**当前**工程（键位选择的三条事实见 [`Action::SaveProject`]）。
         //
         // 三条口径（都与既有保存入口逐字一致，⛔ 不另写一条保存路径）：
@@ -14927,6 +14956,127 @@ fn duplicate_selected_clip_placement(
         return false;
     }
     ui.set_selected_clip_ulid(new_id.into());
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+// ===========================================================================
+// 片段剪贴板（ADR-0076 B3：复制 / 粘贴 / 剪切）
+// ===========================================================================
+
+thread_local! {
+    /// 进程内片段剪贴板：一份 `ClipPoolEntry`（含音符）＋ 来源摆放
+    /// （继承 duration / loop / offset 语义）。
+    ///
+    /// ⚠ 只活在 UI 线程、只活本次运行（剪贴板语义），⛔ 不进 `.yeban`、⛔ 不进撤销栈。
+    static CLIP_CLIPBOARD: std::cell::RefCell<
+        Option<(
+            yeban_model::project::ClipPoolEntry,
+            yeban_model::project::ClipPlacement,
+        )>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// 把选中片段复制到进程内剪贴板。返回 `false` = 没选中 / 读不到（不写入）。
+pub fn clipboard_copy_selected(ui: &MainWindow, project: &yeban_model::YebanProjectV1) -> bool {
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let Some((_, _, placement)) = clip_placement_for(project, selected.as_str()) else {
+        return false;
+    };
+    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+        return false;
+    };
+    CLIP_CLIPBOARD.with(|cell| *cell.borrow_mut() = Some((entry.clone(), *placement)));
+    true
+}
+
+/// 粘贴到**当前选中轨**的播放头位置（**一步**撤销）。返回 `false` = 无剪贴板/无目标轨。
+pub fn clipboard_paste(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    let Some((entry, base)) = CLIP_CLIPBOARD.with(|cell| cell.borrow().clone()) else {
+        return false;
+    };
+    let Some(track_id) =
+        selected_track_id(ui).and_then(|s| s.parse::<yeban_model::EntityId>().ok())
+    else {
+        return false;
+    };
+    // ⛔ 主总线不接收粘贴（与建轨 / 删轨同一取向）。
+    if track_id == project.master_bus_track_id || !project.tracks.contains_key(&track_id) {
+        return false;
+    }
+    // 副本：新片段身份 ＋ 每个音符新身份（复用身份会撞 MODEL-AST 唯一性）。
+    let new_clip_id = yeban_model::EntityId::new();
+    let content = match &entry.content {
+        yeban_model::project::ClipContent::Midi { notes } => {
+            let mut fresh = std::collections::BTreeMap::new();
+            for note in notes.values() {
+                let mut copy = note.clone();
+                copy.id = yeban_model::EntityId::new();
+                fresh.insert(copy.id, copy);
+            }
+            yeban_model::project::ClipContent::Midi { notes: fresh }
+        }
+        yeban_model::project::ClipContent::Audio { asset, gain_db } => {
+            yeban_model::project::ClipContent::Audio {
+                asset: asset.clone(),
+                gain_db: *gain_db,
+            }
+        }
+    };
+    let new_entry = yeban_model::project::ClipPoolEntry {
+        id: new_clip_id,
+        name: entry.name.clone(),
+        content,
+    };
+    let placement = yeban_model::project::ClipPlacement {
+        id: yeban_model::EntityId::new(),
+        clip_id: new_clip_id,
+        start_tick: playhead_tick(ui),
+        duration_ticks: base.duration_ticks,
+        loop_config: base.loop_config,
+        muted: false,
+        offset_samples: base.offset_samples,
+    };
+    let new_id = placement.id.to_string();
+    let ops = vec![
+        yeban_model::ops::Op::AddClip { clip: new_entry },
+        yeban_model::ops::Op::AddClipPlacement {
+            track_id,
+            placement,
+        },
+    ];
+    if port.commit_ops(now_ms(), "paste clip", ops).is_err() {
+        return false;
+    }
+    ui.set_selected_clip_ulid(new_id.into());
+    refresh_undo_window(ui, port, true);
+    true
+}
+
+/// 剪切 = 复制 + 删除（**一次**撤销同时回滚两者）。
+pub fn clipboard_cut(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    if !clipboard_copy_selected(ui, project) {
+        return false;
+    }
+    let ops = clip_delete_ops_for(project, ui.get_selected_clip_ulid().as_str());
+    if ops.is_empty() {
+        return false;
+    }
+    if port.commit_ops(now_ms(), "cut clip", ops).is_err() {
+        return false;
+    }
+    ui.set_selected_clip_ulid("".into());
     refresh_undo_window(ui, port, true);
     true
 }
@@ -19504,8 +19654,72 @@ pub fn wire_aether_actions(
         let port = Rc::clone(&port);
         move |cmd| {
             if let Some(ui) = w.upgrade() {
+                let w = w.clone();
                 match cmd.as_str() {
+                    // 剪贴板三键的**菜单入口**（与键盘同一组函数，ADR-0076 B3）。
+                    "edit-copy" => {
+                        if let Some(project) = port.try_project() {
+                            clipboard_copy_selected(&ui, &project);
+                        }
+                    }
+                    "edit-paste" => {
+                        if let Some(project) = port.try_project() {
+                            clipboard_paste(&ui, &port, &project);
+                        }
+                    }
+                    "edit-cut" => {
+                        if let Some(project) = port.try_project() {
+                            clipboard_cut(&ui, &port, &project);
+                        }
+                    }
                     "place-audio-clip" => place_latest_audio_clip(&ui, &port),
+                    // ⭐ 分轨导出 GUI 入口（ADR-0076 B5）：后端与 CLI / MCP **同一份**
+                    // （`crate::export_stems::export_stems`）；这里只补「定输出目录 + 线程 + 回执」。
+                    // ⚠ 本回调（`wire_aether_actions`）没有 `ModulePaths` 捕获 ⇒ 用跨平台
+                    // 临时目录下的固定子目录；回执给**绝对路径**让用户找得到。
+                    // （GUI 目录选择器属后续切片，见 ADR-0076 B5。）
+                    "export-stems" => {
+                        let out_dir = std::env::temp_dir().join("yeban-stems");
+                        if let Err(err) = std::fs::create_dir_all(&out_dir) {
+                            ui.set_toast_message(
+                                format!("[导出] 无法创建分轨目录 {}：{err}", out_dir.display())
+                                    .into(),
+                            );
+                            return;
+                        }
+                        let Some(project) = port.try_project() else {
+                            ui.set_toast_message("[导出] 没有活跃工程，无法导出分轨".into());
+                            return;
+                        };
+                        // `project_path` 只用于解析 SFZ 相对路径（与 CLI 同口径）；
+                        // 本入口没有工程落盘路径 ⇒ 用输出目录下的占位（绝对 SFZ 不受影响）。
+                        let project_path = out_dir.join("project.yeban");
+                        let worker = w.clone();
+                        let out_for_msg = out_dir.clone();
+                        let _ = std::thread::spawn(move || {
+                            let result = crate::export_stems::export_stems(
+                                &project,
+                                &project_path,
+                                &out_dir,
+                                None,
+                                &[],
+                            );
+                            let _ = worker.upgrade_in_event_loop(move |ui| match result {
+                                Ok(report) => ui.set_toast_message(
+                                    format!(
+                                        "[导出] 分轨完成：{} 条（跳过 {}）→ {}",
+                                        report.stems.len(),
+                                        report.skipped.len(),
+                                        out_for_msg.display()
+                                    )
+                                    .into(),
+                                ),
+                                Err(err) => {
+                                    ui.set_toast_message(format!("[导出] 分轨失败：{err}").into())
+                                }
+                            });
+                        });
+                    }
                     other => dispatch_aether_command(&ui, other),
                 }
             }
