@@ -1155,11 +1155,10 @@ export component ArrangementViewport inherits Rectangle {
                                             }
                                         }
 
-                                        // 波形占位：真实峰值（按 block 的离线分析缓存）尚未接入
-                                        // timeline-blocks 投影。在此之前 ⛔ 不画常量折线冒充音频
-                                        // 包络（细节实测 §3.1：任何素材、任何长度都长一样的假波，
-                                        // 比空白更误导创作判断）。只保留真实的 0dB 基准线，
-                                        // 并明确标「示意 / 待分析」。
+                                        // ⭐ 真实波形（ADR-0076 B1）：`blk.waveform-peaks` 非空时按柱画
+                                        // （每柱取该段 |sample| 最大值，由 bridge::compute_waveform_peaks 算）；
+                                        // 空 = 尚未分析 ⇒ 只留 0dB 基准线并标「示意」，
+                                        // ⛔ 绝不画常量折线冒充包络（细节实测 §3.1）。
                                         if blk.is_audio : Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
@@ -1173,6 +1172,15 @@ export component ArrangementViewport inherits Rectangle {
                                                 background: trk.color.with-alpha(0.20);
                                             }
 
+                                            // 真实峰值柱：peaks 为空时 0 个（不画）。
+                                            for peak_index in blk.waveform-peaks.length : Rectangle {
+                                                x: 4px + peak_index * ((parent.width - 8px) / blk.waveform-peaks.length);
+                                                width: Math.max(1px, (parent.width - 8px) / blk.waveform-peaks.length - 1px);
+                                                height: Math.max(1px, blk.waveform-peaks[peak_index] * (parent.height - 8px));
+                                                y: (parent.height - height) / 2;
+                                                background: trk.color.with-alpha(0.85);
+                                            }
+
                                             Text {
                                                 x: 4px;
                                                 y: 2px;
@@ -1180,7 +1188,8 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: "波形待分析 · 示意";
                                                 // 窄片段放不下整句 ⇒ 不显示被裁成「波形」的半截误导文案；
                                                 // 完整语义仍保留在代码与 accessible-label 里。
-                                                visible: parent.width >= 88px;
+                                                // 有真实峰值时不再显示该标注。
+                                                visible: parent.width >= 88px && blk.waveform-peaks.length == 0;
                                                 accessible-role: text;
                                                 accessible-label: "波形待分析 · 示意（峰值分析尚未接入，当前为 0dB 基准线占位）";
                                                 font-family: Tokens.font-mono;

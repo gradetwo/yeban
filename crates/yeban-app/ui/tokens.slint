@@ -959,6 +959,9 @@ export struct TimelineBlockData {
     gain_label: string,
     color: color,
     note_count: int,
+    /// 真实波形峰值（每柱 0..1；空 = 尚未分析 ⇒ 界面不画，保持「示意」标注）。
+    /// 由 `bridge::compute_waveform_peaks` 从解码 PCM 算出（ADR-0076 B1）。
+    waveform_peaks: [float],
 }
 
 export struct BrowserItemData {
