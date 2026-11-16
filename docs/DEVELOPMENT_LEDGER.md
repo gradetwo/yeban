@@ -18054,3 +18054,32 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   两点 `origin/main..HEAD` = **24** = 23 枚补丁 + 1 张合并票。⚠ 这是 §23.4-2"引用会漂"的第二次实测，这次漂的是**我自己的数** ⇒ 按新事实登记，不粉饰。
 - ⛔ 本线仍**未合流 main**：等的还是 §23.3 那两条导出腿的人类裁决；tip 现在是绿的、主干是它的祖先，但**没有人类授权不动 main**。
 
+
+---
+
+## §24 SFZ 触发期随机族（2026-11-16）：`offset_random` / `amp_random` 落地 ＋ 缺口审计表（CI 判决 pending）
+
+- **票面**：用户目标「检查 SFZ 引擎功能缺口和 bug，修复完善」。本轮先做**可复算的缺口普查**，再挑
+  语料面最大的一条**完全未实现**的族落地。
+- **普查（单位：文件数 / 次数；分母 1 399 份 `git ls-files` 的 `.sfz`，剥 `//` · `/* */` 注释后按
+  `(?:^|[\\s])([A-Za-z_][A-Za-z_0-9]*)\\s*=` 取 opcode 名，一次性 `python3 -B` 探针）**：
+  `offset_random` **79 / 4 901**、`amp_random` **2 / 19**（两族此前**解析层与播放层都不认**）；
+  仍未实现的族：`rt_decay` 5、`eq1_*` 33、`fil2_*` 24、`eg06_*` 23、`var01_*` 6、`width` 11、
+  `set_hdcc*` 10、`off_shape` 8、`bend_smooth` 2（逐条与理由见 `docs/ledger/sfz-random-start-notes.md` §6）。
+- **落地**：`Region` 两个字段 ＋ 两个纯函数（`offset_random_shift` / `amp_random_gain`，唯一算术）＋
+  `Region::playback_span_with_rand`；引擎 `PreparedRegion` 两个读数 ＋ `span_bounds_with_rand` /
+  `amp_random_gain`；实时路径把随机音量**折进** `SfzVoice::track_gain`（⛔ 不新增逐声部字段）。
+  `has_rand` 的语义由「有随机门」扩为「本次触发需要一个随机数」（三族共用 `trigger_rand`）。
+- **口径**（规范逐字与裁决 D1–D6 见台账 §2／§3）：`offset_random` 单极 `floor(rand × N) ∈ [0, N)`、
+  `amp_random` 单极衰减 `10 ^ (−(rand × dB) / 20)`；两族与 `lorand`/`hirand` 同一个随机数；
+  一次性回调口（无 occurrence）按 `rand = 0` 渲染 —— 与 `seq_*` 在该路的**既有边界**一致。
+- **本地读数（⚠ 只有 CI 算数）**：`yeban-sfz` 433 单元 ＋ 48 ＋ 32 ＋ 11 doctest 全 ok；
+  `yeban-engine`（`--no-default-features`）**327 ＋ 16 ＋ 4 ＋ 9 ＋ 6 ＋ 6** 全 ok（含 `bus_insert` b5／
+  `bus_routing` r6 两条尺寸钉）；新判据 `sfz_random_start` **6/6**；`clippy -D warnings`（两 crate、
+  `--all-targets`）零告警；`cargo fmt --check` 通过。⚠ 本机 `yeban-engine` 需
+  `BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/gcc/aarch64-linux-gnu/15/include`（`signalsmith-stretch` 的
+  bindgen 找不到 gcc 的 `stddef.h`），该变量只是**本机头文件路径**、⛔ 不是代码问题。
+- **尺寸**：`PreparedRegion` `6248 → 6256`（＋8）；`SfzVoice` 40 / `SfzVoicePool` 4800 /
+  `EngineRuntime` 45888 三条 **＋0**。四条绝对值判据（`sfz_instrument` × 7 处、`bus_routing::r6`、
+  `bus_insert::b5`）已按新基线更新，原文保留并追加修订段。
+- **判决**：本条目写完时尚未推送 ⇒ **CI `pending`**，⛔ 不写成"通过"。

@@ -356,6 +356,26 @@ pub const AMPEG_RELEASE_DEFAULT_SECONDS: f32 = 0.0;
 /// （规范自己记了 "some players … do not clamp"）。
 pub const AMPLITUDE_DEFAULT_PERCENT: f32 = 100.0;
 
+/// `amp_random` 的取值下界（dB）。
+///
+/// ⚠ **规范表格写的是 `0 to 24`**；本仓把下界放宽到 **−24** 的唯一理由是**登记语料里真的**
+/// 有人写了负值：`assets/samples/freepats-button-accordion-hn/PRESET Button Accordion HN
+/// tuned.sfz:51` 的 `<group>` 段有 `amp_random=-6`（2026-11-16 实测，1 处 / 1 个文件）。
+/// 严格按规范拒收会让那份乐器**整份不可加载**（连它上方 47 行正常的 attack 区域一起）；
+/// 本仓对"语料里真实存在、旧行为能加载"的写法取**保可加载**（与 `#206` 容忍
+/// `-1.6.` 同一条纪律），并把读数交给**同一条公式**：
+/// `10 ^ (−(rand × amp_random) / 20)` 在负值时给出 `[0, +|amp_random|] dB` 的**提升**
+/// —— ⛔ 不新造第二套语义、⛔ 不静默当 0。
+///
+/// 越界（`< −24` 或 `> 24`）仍是明确 [`SfzError::FloatOutOfRange`]，⛔ 不钳位。
+pub const AMP_RANDOM_MIN_DB: f32 = -24.0;
+
+/// `amp_random` 的规范取值上界（dB；格式页 Range `0 to 24`）。
+///
+/// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位（与 `amp_veltrack` 同口径）。
+/// 缺省 `0` ⇒ 随机音量乘子恰 `1.0` ⇒ 没有该 opcode 的文件**逐位不变**。
+pub const AMP_RANDOM_MAX_DB: f32 = 24.0;
+
 /// ⭐ **`lorand` 的规范缺省**：**0**。
 ///
 /// 出处逐字 <https://sfzformat.com/opcodes/lorand> 的表行
@@ -897,6 +917,29 @@ pub struct Region<'a> {
     pub lfos: Vec<GenericLfo>,
     /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
     pub offset: u32,
+    /// ⭐ **随机起始偏移**（`offset_random`，单位采样点，缺省 0）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/offset_random/> 的表格行：
+    /// Type = integer、**Default = 0**、Range = `0 to 4294967296`、Unit = **sample units**；
+    /// 正文逐字 "Random offset added to the region offset." 与
+    /// "**Computed when the note is triggered.**"、以及
+    /// "**Unipolar in ARIA, Cakewalk and rcg sfz.**"。
+    ///
+    /// 求值见 [`Region::playback_span_with_rand`]；位移算术的唯一实现是
+    /// [`offset_random_shift`]。**工程裁决**（三条）登记在
+    /// `docs/ledger/sfz-random-start-notes.md`：
+    ///
+    /// 1. **单极** `[0, offset_random)`（ARIA / Cakewalk / rgc 三家的口径）：规范页把
+    ///    双极只归给 rgc 之外的对照描述，本仓取**只加不减**的那一支；
+    /// 2. **向下取整**（`floor(rand × N)`，`f64` 乘后截断）⇒ 位移恒落在 `[0, N)`；
+    ///    `N = 0` ⇒ 位移恰 `0`（⇒ 与接线前**逐位相同**）；
+    /// 3. 位移**加在** `offset` 上、区间终点 `end` **不动** ⇒ 位移把起点推过终点时
+    ///    该 region **不发声**（沿用 `end <= offset` 那条既有归约，⛔ 不夹回起点）。
+    ///
+    /// 取值域：表格写的上界 `4294967296` 比 `u32::MAX` 大 1、装不进 `u32`
+    /// ⇒ 本仓按 **`u32` 全域**读取（`0 ..= 4294967295`），越界是明确
+    /// `SfzError::IntegerOutOfRange`（⛔ 不静默钳位）。
+    pub offset_random: u32,
     /// 采样播放终点（`end`，规范默认 `unspecified`）。
     pub end: SampleEnd,
     /// 播放方向（`direction`，SFZ v2，规范默认 `forward`）。
@@ -994,6 +1037,26 @@ pub struct Region<'a> {
     pub bend_down: i32,
     /// 音量（dB，规范范围 -144..=6；本实现只要求有限）。
     pub volume: f32,
+    /// ⭐ **随机音量**（`amp_random`，dB，缺省 0）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/amp_random/> 的表格行：Type = float、
+    /// **Default = 0**、Range = `0 to 24`、Unit = **dB**；正文逐字
+    /// "Random volume for the region, in decibels." 与
+    /// "Computed when the note is triggered, remains the same for that region for as long
+    /// as the region plays."，Practical considerations 逐字
+    /// "In ARIA and Cakewalk, `amp_random` is **unipolar**."。
+    ///
+    /// **工程裁决**：取 ARIA / Cakewalk 的**单极衰减**读法 —— 增益乘子为
+    /// `10 ^ (−(rand × amp_random) / 20)`，即实际音量落在 `[−amp_random, 0]` dB；
+    /// 求值见 [`Region::amp_random_gain`]（唯一实现 [`amp_random_gain`]）。
+    /// ⚠ **下界放宽到 −24**（表格是 `0 to 24`）：登记语料里有 `amp_random=-6` 的真实文件，
+    /// 负值按**同一条公式**读作提升（理由与文件见 [`AMP_RANDOM_MIN_DB`]）。
+    /// `amp_random = 0` ⇒ 乘子恰 `1.0`（⇒ 与接线前**逐位相同**）。
+    ///
+    /// 与 [`Region::lorand`] / [`Region::hirand`] 共用**同一个**每次触发的随机数
+    /// （[`trigger_rand`]）—— 同次触发全部 region 一个值，规范对这三者都要求
+    /// "computed when the note is triggered"。
+    pub amp_random: f32,
     /// ⭐ **振幅（`amplitude`，线性百分比；任务单 `#115`）**。
     ///
     /// 规范出处 <https://sfzformat.com/opcodes/amplitude/> 的表行：Type = float、
@@ -2098,6 +2161,69 @@ pub fn trigger_rand(occurrence: u64, note: u8, channel: u8) -> f32 {
     ((z >> 40) as f32) * (1.0 / 16_777_216.0)
 }
 
+/// ⭐ **`offset_random` 的位移算术**（唯一实现；本片）。
+///
+/// 输入：`offset_random`（采样点，`u32`）与本次触发的随机数 `rand`（`[0, 1)`，
+/// 由 [`trigger_rand`] 派生）。输出：加在 `offset` 上的**非负**位移（采样点）。
+///
+/// # 口径（三条，均为 README 级裁决，登记在
+/// `docs/ledger/sfz-random-start-notes.md`）
+///
+/// 1. **单极**：位移 ∈ `[0, offset_random)`。格式页逐字 "**Unipolar in ARIA,
+///    Cakewalk and rcg sfz.**" ⇒ 本仓取只加不减的那一支（⛔ 不造 ±N 双极）。
+/// 2. **向下取整**：`floor(rand × N)`。用 `f64` 做乘再截断 —— `N` 可以到
+///    `u32::MAX`，`f32` 的 24 位尾数在 `N > 2^24` 时会丢低位 ⇒ 用 `f64`（53 位）
+///    才能让"随机源本身的精度"而不是算术成为唯一舍入来源。
+/// 3. **退化**：`N = 0` ⇒ 恰 `0`；`rand` 非有限或越界 ⇒ 按 `0` 处理（`NaN`
+///    不能污染偏移量）。`as u64` 在 Rust 里是**饱和**转换，但上面的钳位已让
+///    输入落在 `[0, N]` ⇒ 不会触到饱和分支。
+///
+/// 零分配、无状态 ⇒ 可在实时路径调用。
+#[must_use]
+pub fn offset_random_shift(offset_random: u32, rand: f32) -> u64 {
+    if offset_random == 0 {
+        return 0;
+    }
+    let rand = if rand.is_finite() {
+        rand.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    // `rand < 1` ⇒ 乘积 < N ⇒ 结果恒在 `[0, N)`；`as u64` 是截断（＝ floor）。
+    (f64::from(rand) * f64::from(offset_random)) as u64
+}
+
+/// ⭐ **`amp_random` 的增益乘子**（唯一实现；本片）。
+///
+/// 输入：`amp_random`（dB，`0..=24`）与本次触发的随机数 `rand`（`[0, 1)`）。
+/// 输出：线性增益乘子 `10 ^ (−(rand × amp_random) / 20)`。
+///
+/// # 口径
+///
+/// * **单极衰减**：格式页逐字 "In ARIA and Cakewalk, `amp_random` is **unipolar**."
+///   ⇒ 实际音量落在 `[−amp_random, 0]` dB（⛔ 不是 ±）。
+/// * **与 `volume` 分开**：`amp_random` 是**触发期**的独立乘子，⛔ 不改写
+///   `Region::volume` 的读数；两者在增益链上相乘。
+/// * **退化**：`amp_random = 0` ⇒ 恰 `1.0`（`powf` 的 `2^0` 之外再走一次短路，
+///   让"没有该 opcode"的文件在增益链上**逐位不变**）；非有限 `rand` ⇒ 取 `0`
+///   （⇒ 乘子 `1.0`）。
+///
+/// 零分配、无状态 ⇒ 可在实时路径调用。
+#[must_use]
+pub fn amp_random_gain(amp_random: f32, rand: f32) -> f32 {
+    if !amp_random.is_finite() || amp_random == 0.0 {
+        return 1.0;
+    }
+    let rand = if rand.is_finite() {
+        rand.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    // 与 `volume` 同一条 dB → 线性换算（`10 ^ (dB / 20)`），只是 dB 取负、
+    // 由 `rand` 在 `[0, amp_random]` 内缩放。`f32` 与既有增益链同精度。
+    10.0f32.powf(-(rand * amp_random) / 20.0)
+}
+
 /// 单个 region 是否满足查询（严格门控策略见 [`RegionQuery`]）。
 fn region_matches(region: &Region<'_>, query: &RegionQuery<'_>) -> bool {
     if !region.matches_key(query.note)
@@ -2356,6 +2482,9 @@ pub(crate) fn build_region<'a>(
     // ---- 播放区间 / 方向（显式区间与方向，见 <https://sfzformat.com/opcodes/offset/>、
     //      <https://sfzformat.com/opcodes/end/>、<https://sfzformat.com/opcodes/direction/>） ----
     let offset = read_u32(&scopes, "offset", None, 0)?;
+    // ⭐ 随机起始偏移（`offset_random`，采样点；本片）：与 `offset` 同层读取，
+    // 位移在**触发期**由 `offset_random_shift` 求值（⛔ 不在解析期抽随机数）。
+    let offset_random = read_u32(&scopes, "offset_random", None, 0)?;
     let end = match scopes.get("end") {
         // 规范取值域是 `0 to 4294967296` 再加上文档化的 `-1`（不发声）哨兵。
         Some(value) => match value.as_int(-1, i64::from(u32::MAX))? {
@@ -2483,6 +2612,26 @@ pub(crate) fn build_region<'a>(
         Some(value) => value.as_f32()?,
         None => 0.0,
     };
+    // ⭐ 随机音量（`amp_random`，dB；本片）：表格行 Default = 0、Range = `0 to 24`；
+    // 越界是明确 `FloatOutOfRange`（⛔ 不静默钳位）。求值见 `Region::amp_random_gain`。
+    let amp_random = match scopes.get("amp_random") {
+        Some(value) => {
+            let db = value.as_f32()?;
+            // ⚠ 下界是 **−24**（不是表格的 0）：语料里有 `amp_random=-6` 的真实文件，
+            // 拒收会让整份乐器不可加载；负值走**同一条公式**（见 `AMP_RANDOM_MIN_DB`）。
+            if !(AMP_RANDOM_MIN_DB..=AMP_RANDOM_MAX_DB).contains(&db) {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "amp_random".to_string(),
+                    value: db,
+                    min: AMP_RANDOM_MIN_DB,
+                    max: AMP_RANDOM_MAX_DB,
+                });
+            }
+            db
+        }
+        None => 0.0,
+    };
     // ⭐ 振幅（`amplitude`，线性 %；任务单 `#115`）—— 与 `volume`（dB）**分开**读。
     // 缺省 ＝ 规范表行的 `100`（⛔ 不钳位：规范自己记了有些播放器不夹）。
     let amplitude = match scopes.get("amplitude") {
@@ -2588,6 +2737,7 @@ pub(crate) fn build_region<'a>(
         loop_start,
         loop_end,
         loop_mode,
+        offset_random,
         ampeg_attack,
         ampeg_hold,
         ampeg_decay,
@@ -2619,6 +2769,7 @@ pub(crate) fn build_region<'a>(
         bend_up,
         bend_down,
         volume,
+        amp_random,
         amplitude,
         pan,
         seq_position,
@@ -4164,6 +4315,7 @@ mod tests {
             pitchlfo: V1Lfo::EMPTY.clone(),
             lfos: Vec::new(),
             offset: 0,
+            offset_random: 0,
             end: SampleEnd::Unspecified,
             direction: PlayDirection::Forward,
             tune: 0,
@@ -4178,6 +4330,7 @@ mod tests {
             bend_up: BEND_UP_DEFAULT_CENTS,
             bend_down: BEND_DOWN_DEFAULT_CENTS,
             volume: 0.0,
+            amp_random: 0.0,
             pan: 0.0,
             seq_position,
             seq_length,

@@ -682,7 +682,7 @@ impl<'a> Region<'a> {
         }
     }
 
-    /// 该 region 实际读取的源采样区间；`None` 表示不产生采样输出。
+    /// 该 region 实际读取的源采样区间（**确定性口径**：随机位移取 `0`）。
     ///
     /// 规则全部来自 `offset` / `end` 的规范语义
     /// （<https://sfzformat.com/opcodes/offset/>、<https://sfzformat.com/opcodes/end/>）：
@@ -697,10 +697,31 @@ impl<'a> Region<'a> {
     /// —— 没有任何采样点可读。这与 [`Region::loop_window`] 拒绝零长度窗口是同一条口径：
     /// 不返回反向区间，也不发明「反向自动交换两端」的语义。
     ///
+    /// ⭐ 本方法是 [`Region::playback_span_with_rand`] 在 `rand = 0` 时的**同一条**实现
+    /// （`offset_random` 的位移恰 `0`）⇒ 没有该 opcode 的文件**逐位不变**。
+    ///
     /// 零分配，可在实时路径调用。
     #[must_use]
     pub fn playback_span(&self) -> Option<SampleSpan> {
-        let start = u64::from(self.offset);
+        self.playback_span_with_rand(0.0)
+    }
+
+    /// ⭐ **带上本次触发随机数的源采样区间**（`offset_random`；本片）。
+    ///
+    /// 与 [`Region::playback_span`] **逐条同规则**，只多一步：起点先加上
+    /// [`crate::instrument::offset_random_shift`]（唯一算术实现）再走同一套 `end` 归约。
+    /// `offset_random = 0`（缺省）⇒ 位移恰 `0` ⇒ 与 [`Region::playback_span`] 逐位相同。
+    ///
+    /// **位移后的空区间**（起点被推过终点）⇒ `None`（⛔ 不夹回起点）：
+    /// 这是与「显式 `end` 落在 `offset` 之前」**同一条**既有裁决。
+    ///
+    /// 零分配，可在实时路径调用。
+    #[must_use]
+    pub fn playback_span_with_rand(&self, rand: f32) -> Option<SampleSpan> {
+        let start = u64::from(self.offset).saturating_add(crate::instrument::offset_random_shift(
+            self.offset_random,
+            rand,
+        ));
         match self.end {
             SampleEnd::Silent => None,
             SampleEnd::Unspecified => Some(SampleSpan { start, end: None }),
@@ -717,6 +738,16 @@ impl<'a> Region<'a> {
                 }
             }
         }
+    }
+
+    /// ⭐ **`amp_random` 的增益乘子**（本片）：[`crate::instrument::amp_random_gain`] 的
+    /// 方法形（**同一份**实现，⛔ 没有第二套公式）。
+    ///
+    /// `amp_random = 0`（缺省）⇒ 恰 `1.0` ⇒ 增益链**逐位不变**。
+    /// 零分配、纯算术，可在实时路径调用。
+    #[must_use]
+    pub fn amp_random_gain(&self, rand: f32) -> f32 {
+        crate::instrument::amp_random_gain(self.amp_random, rand)
     }
 
     /// 生成该 region 的可渲染采样描述。零分配，可在实时路径调用。
@@ -808,6 +839,7 @@ impl<'a> Instrument<'a> {
 mod tests {
     use super::*;
     use crate::PITCH_BEND_CENTER;
+    use crate::SfzError;
     use crate::parser::parse_text;
 
     const RATES_EQUAL: RenderRates = RenderRates {
@@ -1545,6 +1577,7 @@ mod tests {
                             pitchlfo: crate::lfo::V1Lfo::EMPTY.clone(),
                             lfos: Vec::new(),
                             offset: 0,
+                            offset_random: 0,
                             end: SampleEnd::Unspecified,
                             direction: PlayDirection::Forward,
                             tune,
@@ -1559,6 +1592,7 @@ mod tests {
                             bend_up: crate::BEND_UP_DEFAULT_CENTS,
                             bend_down: crate::BEND_DOWN_DEFAULT_CENTS,
                             volume: 0.0,
+                            amp_random: 0.0,
                             amplitude: crate::instrument::AMPLITUDE_DEFAULT_PERCENT,
                             pan: 0.0,
                             seq_position: 1,
@@ -1657,6 +1691,159 @@ mod tests {
         );
     }
 
+    #[test]
+    fn offset_random_shifts_the_start_unipolarly_and_degenerates_to_zero() {
+        let text = "<region>sample=a.wav offset=100 offset_random=1000 end=5000";
+        let instrument = parse_text(text, &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        // `rand = 0` ⇒ 位移恰 0（与 `playback_span` 逐位相同）。
+        assert_eq!(
+            region.playback_span_with_rand(0.0),
+            Some(SampleSpan {
+                start: 100,
+                end: Some(5001)
+            })
+        );
+        assert_eq!(region.playback_span_with_rand(0.0), region.playback_span());
+        // 单极：`floor(rand × N)`，恒落在 `[0, N)`。
+        assert_eq!(
+            region.playback_span_with_rand(0.5).expect("span").start,
+            600
+        );
+        assert_eq!(
+            region
+                .playback_span_with_rand(0.999_999)
+                .expect("span")
+                .start,
+            1099,
+            "rand < 1 ⇒ 位移 < N（⛔ 不再是 1100）"
+        );
+        // 非有限随机数按 0 处理（⛔ 不让 NaN 污染偏移量）。
+        assert_eq!(
+            region
+                .playback_span_with_rand(f32::NAN)
+                .expect("span")
+                .start,
+            100
+        );
+        // `offset_random = 0` ⇒ 与确定性口径**逐位相同**（任意 rand）。
+        let plain = parse_text(
+            "<region>sample=a.wav offset=100 end=5000",
+            &Default::default(),
+        )
+        .expect("parses");
+        let plain = &plain.regions()[0];
+        assert_eq!(plain.playback_span_with_rand(0.73), plain.playback_span());
+        // 位移把起点推过终点 ⇒ 不发声（沿用 `end <= offset` 的既有归约）。
+        let pushed = parse_text(
+            "<region>sample=a.wav offset=0 offset_random=100 end=49",
+            &Default::default(),
+        )
+        .expect("parses");
+        let pushed = &pushed.regions()[0];
+        assert_eq!(
+            pushed
+                .playback_span_with_rand(0.0)
+                .and_then(SampleSpan::len),
+            Some(50)
+        );
+        assert_eq!(
+            pushed.playback_span_with_rand(0.5),
+            None,
+            "start 50 == end 50"
+        );
+        // `end=-1` 仍然优先（随机位移⛔ 不会把静音区变成发声）。
+        let silent = parse_text(
+            "<region>sample=a.wav offset_random=100 end=-1",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(silent.regions()[0].playback_span_with_rand(0.5), None);
+    }
+
+    #[test]
+    fn offset_random_is_u32_bounded_and_defaults_to_zero() {
+        let instrument = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(instrument.regions()[0].offset_random, 0);
+        let top = parse_text(
+            "<region>sample=a.wav offset_random=4294967295",
+            &Default::default(),
+        )
+        .expect("u32 全域可读");
+        assert_eq!(top.regions()[0].offset_random, u32::MAX);
+        // 规范表格的上界比 `u32::MAX` 大 1 ⇒ 装不下，响亮报错（⛔ 不钳位）。
+        let err = parse_text(
+            "<region>sample=a.wav offset_random=4294967296",
+            &Default::default(),
+        )
+        .expect_err("超出 u32 必须报错");
+        assert!(
+            matches!(err, SfzError::IntegerOutOfRange { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn amp_random_is_unipolar_attenuation_with_a_bit_exact_default() {
+        let text = "<region>sample=a.wav amp_random=24";
+        let instrument = parse_text(text, &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.amp_random, 24.0);
+        // `rand = 0` ⇒ 恰 1.0（任何有限值 × 1.0 恒等）。
+        assert_eq!(region.amp_random_gain(0.0), 1.0);
+        // `rand = 0.5`、24 dB ⇒ −12 dB。
+        let half = region.amp_random_gain(0.5);
+        assert!(
+            close(half, 10.0f32.powf(-12.0 / 20.0), 1.0e-6),
+            "got {half}"
+        );
+        // 全量随机 ⇒ −24 dB。
+        let full = region.amp_random_gain(1.0);
+        assert!(
+            close(full, 10.0f32.powf(-24.0 / 20.0), 1.0e-6),
+            "got {full}"
+        );
+        // 非有限随机数 ⇒ 0 ⇒ 不衰减。
+        assert_eq!(region.amp_random_gain(f32::INFINITY), 1.0);
+        // 缺省 `amp_random = 0` ⇒ 任意 rand 都恰 1.0。
+        let plain = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        for rand in [0.0f32, 0.25, 0.5, 0.99, 1.0] {
+            assert_eq!(plain.regions()[0].amp_random_gain(rand), 1.0, "rand {rand}");
+        }
+    }
+
+    #[test]
+    fn amp_random_accepts_the_corpus_negative_and_rejects_beyond_the_widened_domain() {
+        // ⭐ 语料真的写了负值：freepats-button-accordion-hn 的 `<group>` 段有
+        // `amp_random=-6`（1 处 / 1 个文件）⇒ 拒收会让那份乐器整份不可加载。
+        // 负值走**同一条公式**：`10 ^ (−(rand × −6) / 20)` ⇒ [0, +6] dB 的提升。
+        let negative = parse_text("<region>sample=a.wav amp_random=-6", &Default::default())
+            .expect("语料里的负值必须可加载");
+        assert_eq!(negative.regions()[0].amp_random, -6.0);
+        let boost = negative.regions()[0].amp_random_gain(1.0);
+        assert!(
+            close(boost, 10.0f32.powf(6.0 / 20.0), 1.0e-6),
+            "got {boost}"
+        );
+        assert!(boost > 1.0, "负值 ⇒ 提升（⛔ 不是衰减）");
+        // 域外仍然响亮报错（−24 / 24 是闭区间端点）。
+        let err = parse_text("<region>sample=a.wav amp_random=24.5", &Default::default())
+            .expect_err("上界是 24");
+        assert!(
+            matches!(err, SfzError::FloatOutOfRange { .. }),
+            "got {err:?}"
+        );
+        let low = parse_text("<region>sample=a.wav amp_random=-24.5", &Default::default())
+            .expect_err("下界是 −24");
+        assert!(
+            matches!(low, SfzError::FloatOutOfRange { .. }),
+            "got {low:?}"
+        );
+        for edge in ["-24", "24"] {
+            let text = format!("<region>sample=a.wav amp_random={edge}");
+            parse_text(&text, &Default::default()).expect("闭区间端点必须可加载");
+        }
+    }
     #[test]
     fn playback_spec_carries_offset_end_direction_and_silence() {
         let instrument = parse_text(
