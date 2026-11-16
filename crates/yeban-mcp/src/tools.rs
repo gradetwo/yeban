@@ -1660,7 +1660,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "note",
                 "integer",
                 false,
-                "只渲染这一个 MIDI 音高 (0..=127); 不给 = 渲染活跃工程 MIDI 片段里的全部音符",
+                "只在**活跃工程已排程的 MIDI 音符**里筛出这一个音高 (0..=127); 不给 = 不过滤。⛔ 它不是单音试听器: 工程里没有该音高的音符 ⇒ 仍写出合法 WAV 但全部为零帧, 回执会带 `notesEmpty.reason`",
             ),
         ],
         errors: &[
