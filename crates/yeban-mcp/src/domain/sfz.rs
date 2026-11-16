@@ -3842,8 +3842,9 @@ pub(super) fn note_wave(
 /// （既有判据逐条读它们），而且"这条轨命中了什么"与"引擎会怎么响"是**同一份**
 /// 已解析区域表上的两个投影 —— 读数从区域表来，⛔ 不是第二份音源。
 ///
-/// ⚠ 与引擎口径的**差别如实登记**：区域选择这里仍用 `matches_key && matches_velocity`
-/// （与 `#221` 的 `note_wave` 同一条），**不含**通道 / `trigger` / keyswitch / CC 门控
+/// ⚠ 与引擎口径的**差别如实登记**：区域选择用 `matches_key && matches_velocity`
+/// ＋ **事件门控** `Trigger::responds_to(NoteOn)`（与 `#221` 的 `note_wave` 和引擎摊平门控
+/// 同一条），仍**不含**通道 / keyswitch / CC 门控
 /// —— 那些由引擎在摊平期烧进掩码。因此"读数说命中、引擎不出声"的情形只可能出现在
 /// 那些门控上；本层的三个 `unsupported` 键（`sfzAmplitude` / `sfzTuneCcModulation` /
 /// `sfzVolumeCcModulation`）只报**CC 调制**，静态参数已由引擎应用。
@@ -3894,10 +3895,14 @@ pub(super) fn survey_sampler(
         ..SamplerSurvey::default()
     };
     for &(_start, _frames, pitch, velocity) in notes {
-        let mut matching = instrument
-            .regions()
-            .iter()
-            .filter(|region| region.matches_key(pitch) && region.matches_velocity(velocity));
+        // ⭐ 事件门控与 `note_wave` **同一条**（本片）：读数是"引擎会怎么响"的投影，
+        // 而引擎的摊平门控按 note-on 事件清零 release 族的键掩码 ⇒ 这里⛔ 不能把
+        // `trigger=release` 区域算成"这个 note-on 命中"。
+        let mut matching = instrument.regions().iter().filter(|region| {
+            region.matches_key(pitch)
+                && region.matches_velocity(velocity)
+                && region.trigger.responds_to(TriggerEvent::NoteOn)
+        });
         let Some(first) = matching.next() else {
             survey.notes_unmatched = survey.notes_unmatched.saturating_add(1);
             continue;
@@ -4858,6 +4863,31 @@ mod tests {
         assert!(!filter.wants(&regions[3]), "key=-1 永不命中");
     }
 
+    /// ⭐ **读数侧的事件门控**（本片）：`survey_sampler` 是"引擎会怎么响"的投影 ⇒
+    /// `trigger=release` 区域⛔ 不能被算成 note-on 命中（否则报告说"用了样本"，
+    /// 引擎却不发声）。判定量：`notes_unmatched` / `notes_with_multiple_regions`。
+    #[test]
+    fn survey_does_not_count_a_release_region_as_a_note_on_hit() {
+        let notes = [(0u64, 64u64, 60u8, 100u8)];
+        let decoded = std::collections::BTreeSet::new();
+        let text = "<region> sample=rel.wav key=60 trigger=release\n\
+                    <region> sample=att.wav key=60\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let survey = survey_sampler(&instrument, &notes, &decoded);
+        assert_eq!(survey.notes_total, 1);
+        assert_eq!(survey.notes_unmatched, 0, "起音区域仍然命中");
+        assert_eq!(
+            survey.notes_with_multiple_regions, 0,
+            "释放区域被事件门控排除 ⇒ 只剩一条 ⇒ ⛔ 不算层叠"
+        );
+        let only_release = parse_text(
+            "<region> sample=rel.wav key=60 trigger=release",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let survey = survey_sampler(&only_release, &notes, &decoded);
+        assert_eq!(survey.notes_unmatched, 1, "只有 release ⇒ note-on 不命中");
+    }
     /// ⭐ **预听的区域选择必须做事件门控**（本片）：`yeban_render_sfz_wav` 只渲染
     /// note-on 事件，而 `note_wave` 此前只按键/力度取**第一条**匹配 ⇒ 一条写在前面
     /// 的 `trigger=release` 区域会被"按下"预听选中，把松键噪声当音头发出来。
