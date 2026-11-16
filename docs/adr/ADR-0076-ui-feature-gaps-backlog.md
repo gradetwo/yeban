@@ -64,6 +64,20 @@ artifact `golden-linux`）：
   ⇒ B1 要给 GUI 打开路径补一条「读 assets」的入口（或直接复用 container 读法）。
 - 建议：导入/落盘时算 peaks 并落进会话 CAS 附加元数据（避免每次投影解码）。
 - 验收：判据断言「音频片段有非空 peaks 数组且长度与片段宽度对应」+ 视觉回归。
+- **落地（2026-11-16，两步）**：
+  1. **链路**：`bridge::compute_waveform_peaks(pcm, bins)`（纯函数，每 bin 取 `|sample|` 最大值）
+     ＋ `TimelineBlockData.waveform_peaks: [float]` ＋ `arrangement.slint` 按峰值画柱；
+     空数组仍画「波形待分析 · 示意」（⛔ 不假装有波形）。
+  2. **数据**：`ClipView.asset_hash` 把 `ClipContent::Audio.asset` 带出投影（投影层不解码、不读盘）
+     ⇒ `waveform_cache`（后台线程、一批一线程、1024 bin 包络、按哈希缓存、失败记账不重试）
+     ⇒ `host::pump_waveform_analysis` 挂在 16 ms 心跳上（打开工程**不是**唯一入口：
+     录音落点 / 导入音频也会在运行期往 CAS 池加字节）。
+     **资产字节来源 = 会话 CAS 池**（`UndoPort::replace_assets` / `insert_asset`，即
+     `open_project_document_file` 的 `archive.assets`）—— 上面「依赖」一节担心的缺口由
+     `#132` 的池装配补上，⛔ 不再需要另开「读 assets」的入口。
+- **仍缺（如实登记）**：① 视觉回归**没有**覆盖到它（golden 比对仍禁用，见 D2），
+  所以「画得对不对」只有源码判据 + 行为判据（`waveform_cache` 的单元测试）；
+  ② 字节不在会话 CAS 池里的外部引用（只存在于控制面的资产）⇒ 停在「示意」。
 
 ### B2 BUS COMP 真实曲线（中）
 - 需：压缩器参数（threshold/ratio/attack/release/makeup）投影到 left_panel，按传递函数
@@ -101,5 +115,6 @@ artifact `golden-linux`）：
 
 - 正向：6 项从"散落在报告/口述"变成**有证据、有实现要点、有验收口径**的立项清单；
   P2-1 死代码本次已清。
-- 负向 / 限制：B1/B2/B3/B5/B6 **本轮未实现**（各自是独立能力切片）；B6 还卡在产品
-  裁决；B5 卡在发行特性。⛔ 不把"仍是示意/请用 CLI"当作已修。
+- 负向 / 限制：B6 **仍未实现**（卡在产品裁决：空白拖拽 = 滚动 还是 框选）；B1/B2/B3/B5 已落地
+  （B1 见上「落地（2026-11-16，两步）」）。⛔ 不把"仍是示意/请用 CLI"当作已修 ——
+  本轮之后这三句都已从代码里消失（B2 画真曲线、B5 真导出、B1 有真峰值）。

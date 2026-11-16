@@ -1302,6 +1302,11 @@ pub struct ClipView {
     pub clip_name: String,
     /// 片段内容类型：`midi` / `audio`。
     pub content: &'static str,
+    /// 音频片段的资产哈希（CAS 键，`ClipContent::Audio::asset`）。
+    ///
+    /// ⭐ ADR-0076 B1：波形峰值缓存（[`crate::waveform_cache`]）按这个键查表。
+    /// MIDI 片段 / 片段池里查不到 ⇒ `None`（⛔ 不编一个哈希出来）。
+    pub asset_hash: Option<String>,
     /// 界面标签：**片段名**（空名时 `"未命名片段"`）。轨道名由轨道头单独显示，
     /// ⛔ 不在此重复（用户 2026-11-16 反馈：每片段再拼轨道名纯属重复）。
     pub label: String,
@@ -5807,10 +5812,13 @@ fn clip_view(
     let x_end = x_end + dx;
     let entry = project.clip_pool.get(&placement.clip_id);
     let clip_name = entry.map_or_else(String::new, |entry| entry.name.clone());
-    let content = entry.map_or("unknown", |entry| match entry.content {
-        ClipContent::Midi { .. } => "midi",
-        ClipContent::Audio { .. } => "audio",
-    });
+    // ⭐ ADR-0076 B1：音频片段的资产哈希随投影带出去 —— 波形峰值缓存按它查表
+    // （[`crate::waveform_cache::peaks`]）。⛔ 投影层自己不解码、不读盘。
+    let (content, asset_hash) = match entry.map(|entry| &entry.content) {
+        Some(ClipContent::Midi { .. }) => ("midi", None),
+        Some(ClipContent::Audio { asset, .. }) => ("audio", Some(asset.to_string())),
+        None => ("unknown", None),
+    };
     // ⭐ 片段标签**只放片段名**：轨道名已由左侧轨道头单独显示，
     // 每个片段再拼一次「轨道名 · 片段名」是纯重复（用户 2026-11-16 反馈）。
     // 空片段名时用「未命名片段」兜底（⛔ 不回退成轨道名，那又会重复）。
@@ -5830,6 +5838,7 @@ fn clip_view(
         track_name: track_name.to_owned(),
         clip_name,
         content,
+        asset_hash,
         label,
         start_tick,
         end_tick,
