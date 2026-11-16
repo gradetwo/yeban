@@ -44,11 +44,21 @@
 
 ---
 
-## 用夜半创作的作品
+## 下载
 
-**[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)**——用夜半创作的三部曲作品。三章——I. 雨声太吵、II. 失语呢喃、III. 潮·失——组成一个沉浸式视觉体验，点击拓扑节点跃迁情绪相位。
+**夜半是用 Rust 编写的开源 DAW，带有完整的 MCP 工具面——AI agent 可以通过它作曲、编曲和混音，与人一起在桌面 GUI 前并肩创作。**
 
-▶ 试听《雨声太吵》（4 分 24 秒，[直接播放](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)）——完整体验在[三部曲站](https://trilogy.wangda.today)，视觉配合音乐。
+以下安装包来自持续滚动的 **nightly** 构建（跟踪 `main` 分支；未签名）：
+
+| 平台 | 安装包 |
+| :--- | :--- |
+| Windows (x86_64) | [MSI 安装包](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-pc-windows-msvc.msi) |
+| macOS (Apple Silicon) | [DMG 镜像](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-aarch64-apple-darwin.dmg) |
+| macOS (Intel) | [DMG 镜像](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-apple-darwin.dmg) |
+| Linux (x86_64) | [DEB 安装包](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-unknown-linux-gnu.deb) |
+| Linux (arm64) | [DEB 安装包](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-aarch64-unknown-linux-gnu.deb) |
+
+便携版 `.tar.gz` 压缩包与 `SHA256SUMS` 见 [nightly 发布页](https://github.com/gradetwo/yeban/releases/tag/nightly)；全部版本见 [Releases](https://github.com/gradetwo/yeban/releases)。如需从源码构建，见[快速开始](#-快速开始)。
 
 ## 界面截图
 
@@ -59,6 +69,12 @@
 ![编曲主视图：副歌段，底部钢琴卷帘，左通道检查器显示真实 EQ 曲线](assets/screenshots/ui-arrangement-chorus.png)
 
 ![混音控制台：每轨通道条与总线、主输出区](assets/screenshots/ui-mixer-console.png)
+
+## 用夜半创作的作品
+
+**[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)**——用夜半创作的三部曲作品。三章——I. 雨声太吵、II. 失语呢喃、III. 潮·失——组成一个沉浸式视觉体验，点击拓扑节点跃迁情绪相位。
+
+▶ 试听《雨声太吵》（4 分 24 秒，[直接播放](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)）——完整体验在[三部曲站](https://trilogy.wangda.today)，视觉配合音乐。
 
 ## 强大功能
 
