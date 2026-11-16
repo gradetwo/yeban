@@ -805,6 +805,12 @@ pub enum Action {
     OpenTimeMachine,
     /// `Cmd/Ctrl+D`: 原位智能复制。
     Duplicate,
+    /// `Cmd/Ctrl+C`: 复制选中片段到进程内剪贴板（ADR-0076 B3）。
+    CopyClipboard,
+    /// `Cmd/Ctrl+V`: 把剪贴板片段粘贴到当前选中轨的播放头位置（一步撤销）。
+    PasteClipboard,
+    /// `Cmd/Ctrl+X`: 复制 + 删除选中片段（一步撤销同时回滚两者）。
+    CutClipboard,
     /// `Cmd/Ctrl+S`: 保存当前工程（标准 DAW 习惯键，**界面决定**，⛔ 不是规范点名）。
     ///
     /// 落点是 `host::apply_action` 的同一个臂 ⇒ `ui.invoke_save_project()` ⇒
@@ -1291,6 +1297,11 @@ impl InputContext {
                 (Key::Character('z'), true, false) => Resolution::Action(Action::Redo),
                 (Key::Character('h'), true, false) => Resolution::Action(Action::OpenTimeMachine),
                 (Key::Character('d'), false, false) => Resolution::Action(Action::Duplicate),
+                // 标准剪贴板三键（ADR-0076 B3）：文本焦点下由第 2 步整体放行 ⇒
+                // 文本框里的 Cmd/Ctrl+C/V/X 仍是系统文本剪贴板，不劫持。
+                (Key::Character('c'), false, false) => Resolution::Action(Action::CopyClipboard),
+                (Key::Character('v'), false, false) => Resolution::Action(Action::PasteClipboard),
+                (Key::Character('x'), false, false) => Resolution::Action(Action::CutClipboard),
                 // **界面决定**（⛔ 不是规范点名）：标准 DAW 的保存键与另存为键。
                 // 这两条格此前是空的（`s` 在 `command()` 分支里一条都没有），
                 // 而裸 `s` 已于 2026-10-31 归 [`Action::ToggleTrackSolo`] ⇒ 互不冲突；
