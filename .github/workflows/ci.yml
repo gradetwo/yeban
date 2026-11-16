@@ -887,15 +887,24 @@ jobs:
   windows:
     name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
     needs: plan
+    # ⭐ 平台腿只在 **main 推送 / PR / 手动 dispatch / 宽改动** 时跑；
+    #   `line/**` 分支只跑 Linux 的受影响 crate（用户 2026-11-16 裁决：
+    #   「分支上跑修改相关的，合入 main 后再跑全量」）。
+    #   原因：本腿 steps 硬编码跑全部 8 个 crate（非 plan 的受影响集合），
+    #   单次 40–50 分钟，是 CI 慢的主因；Linux `rust (matrix crate)` 已按集合跑。
     if: |
-      contains(needs.plan.outputs.crates, 'yeban-mcp') ||
-      contains(needs.plan.outputs.crates, 'yeban-model') ||
-      contains(needs.plan.outputs.crates, 'yeban-dsp') ||
-      contains(needs.plan.outputs.crates, 'yeban-render') ||
-      contains(needs.plan.outputs.crates, 'yeban-decode') ||
-      contains(needs.plan.outputs.crates, 'yeban-app') ||
-      contains(needs.plan.outputs.crates, 'yeban-sfz') ||
-      contains(needs.plan.outputs.crates, 'yeban-engine')
+      (github.ref == 'refs/heads/main' ||
+       github.event_name == 'pull_request' ||
+       github.event_name == 'workflow_dispatch' ||
+       needs.plan.outputs.workspace_wide == 'true') &&
+      (contains(needs.plan.outputs.crates, 'yeban-mcp') ||
+       contains(needs.plan.outputs.crates, 'yeban-model') ||
+       contains(needs.plan.outputs.crates, 'yeban-dsp') ||
+       contains(needs.plan.outputs.crates, 'yeban-render') ||
+       contains(needs.plan.outputs.crates, 'yeban-decode') ||
+       contains(needs.plan.outputs.crates, 'yeban-app') ||
+       contains(needs.plan.outputs.crates, 'yeban-sfz') ||
+       contains(needs.plan.outputs.crates, 'yeban-engine'))
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -1065,15 +1074,24 @@ jobs:
   macos:
     name: macos (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
     needs: plan
+    # ⭐ 平台腿只在 **main 推送 / PR / 手动 dispatch / 宽改动** 时跑；
+    #   `line/**` 分支只跑 Linux 的受影响 crate（用户 2026-11-16 裁决：
+    #   「分支上跑修改相关的，合入 main 后再跑全量」）。
+    #   原因：本腿 steps 硬编码跑全部 8 个 crate（非 plan 的受影响集合），
+    #   单次 40–50 分钟，是 CI 慢的主因；Linux `rust (matrix crate)` 已按集合跑。
     if: |
-      contains(needs.plan.outputs.crates, 'yeban-mcp') ||
-      contains(needs.plan.outputs.crates, 'yeban-model') ||
-      contains(needs.plan.outputs.crates, 'yeban-dsp') ||
-      contains(needs.plan.outputs.crates, 'yeban-render') ||
-      contains(needs.plan.outputs.crates, 'yeban-decode') ||
-      contains(needs.plan.outputs.crates, 'yeban-app') ||
-      contains(needs.plan.outputs.crates, 'yeban-sfz') ||
-      contains(needs.plan.outputs.crates, 'yeban-engine')
+      (github.ref == 'refs/heads/main' ||
+       github.event_name == 'pull_request' ||
+       github.event_name == 'workflow_dispatch' ||
+       needs.plan.outputs.workspace_wide == 'true') &&
+      (contains(needs.plan.outputs.crates, 'yeban-mcp') ||
+       contains(needs.plan.outputs.crates, 'yeban-model') ||
+       contains(needs.plan.outputs.crates, 'yeban-dsp') ||
+       contains(needs.plan.outputs.crates, 'yeban-render') ||
+       contains(needs.plan.outputs.crates, 'yeban-decode') ||
+       contains(needs.plan.outputs.crates, 'yeban-app') ||
+       contains(needs.plan.outputs.crates, 'yeban-sfz') ||
+       contains(needs.plan.outputs.crates, 'yeban-engine'))
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
