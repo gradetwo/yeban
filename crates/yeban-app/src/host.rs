@@ -547,6 +547,9 @@ pub fn apply_dynamics_and_sidechain(ui: &MainWindow, view: &ViewState) {
     ui.set_sidechain_key_label(view.sidechain_key_label().into());
     ui.set_sidechain_available(view.sidechain_available());
     ui.set_compressor_info(view.compressor_info().into());
+    // ⭐ BUS COMP 真实传递曲线（ADR-0076 B2）：按该轨压缩器的 threshold_db/ratio
+    // 由 bridge::project_compressor_curve 算好注入；无压缩器时为空串（界面保持「示意」）。
+    ui.set_comp_curve_svg(view.compressor_curve_svg().into());
     ui.set_compressor_available(view.compressor_available());
     ui.set_limiter_info(view.limiter_info().into());
     ui.set_limiter_available(view.limiter_available());
