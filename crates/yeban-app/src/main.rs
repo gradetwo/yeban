@@ -289,6 +289,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 因此不给 `--theme` 时这一步是幂等的。**默认外观因此与 2026-10-07 之前不同**：
     // 5 张 Linux 基准要按手动档 `gates-manual.yml gate=goldens` 重录 + 人工复核（`HD-56`）。
     host::apply_theme(&ui, options.theme);
+    // 质感（`--texture`）：与主题同一个写入口纪律（`host::apply_texture`），
+    // 同样在 `run()` 之前。默认 `flat` 与 Slint 初值相同 ⇒ 不给开关时幂等。
+    host::apply_texture(&ui, options.texture);
 
     // 语言（`--lang`）：**唯一**的写入口是 `host::apply_language`，紧跟主题之后、
     // 同样在 `run()` 之前。它必须显式调用一次：bundled 词表在首个组件创建时按

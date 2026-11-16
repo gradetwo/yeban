@@ -98,6 +98,8 @@
 // ⛔ 本文件没有新增可见控件、文案或样式：默认帧（`selected-track-id = ""`）逐像素不变。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
+import { HFader } from "../controls/fader.slint";
+import { ToggleSwitch } from "../controls/toggle_switch.slint";
 
 export component DeviceRack inherits Rectangle {
     // ---------------------------------------------------------------- 只读投影
@@ -499,19 +501,41 @@ export component DeviceRack inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 频响曲线区 (G-E1 & G-E2)
+    // (一期起 physical 走「玻璃屏」处理: `glass-brush` 深底 + 曲线辉光底层 +
+    // 一道斜向反光 + 斜面边; flat 时 `glass-brush` 恒等于 `bg-shell`, 其余
+    //  physical 件的 alpha 恒 0 ⇒ 逐像素不变。见 tokens.slint §10。)
     Rectangle {
         x: Tokens.space-4;
         y: 28px;
         width: 420px;
         height: 100px;
-        background: Tokens.bg-shell;
+        background: Tokens.glass-brush;
         border-radius: Tokens.radius-md;
-        border-width: 1px;
+        border-width: Tokens.texture-physical ? 0px : 1px;
         border-color: Tokens.line-strong;
         clip: true;
         accessible-role: image;
         accessible-id: "device-rack-eq-curve";
         accessible-label: @tr("4 段 EQ 频响曲线");
+
+        // physical: 斜面亮边 (上) —— 玻璃的上沿受光。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.bevel-light;
+        }
+
+        // physical: 一道斜向反光 (全屏只许这一道; alpha 3.5%, 靠 clip 裁边)。
+        Rectangle {
+            x: -30px;
+            y: -14px;
+            width: 190px;
+            height: 30px;
+            background: Tokens.glass-reflection;
+            rotation-angle: -18;
+        }
 
         // 频响网格
         for eq_grid_index in 8 : Rectangle {
@@ -552,6 +576,24 @@ export component DeviceRack inherits Rectangle {
             commands: root.eq-curve-fill-svg;
             fill: #d4a01720;
             stroke-width: 0px;
+        }
+
+        // physical: 曲线辉光底层 (同色 18% alpha、宽笔垫底 —— 曲线是**信息**,
+        // 它的发光在许可内; flat 时 alpha 恒 0 ⇒ 不画任何像素)。
+        Path {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 420;
+            viewbox-height: 100;
+            fit: ImageFit.fill;
+            commands: root.eq-curve-svg;
+            stroke: Tokens.gold.with-alpha(Tokens.glass-glow-alpha);
+            stroke-width: 5px;
+            fill: transparent;
         }
 
         // 真实频响曲线 Path (G-E1)
@@ -607,9 +649,9 @@ export component DeviceRack inherits Rectangle {
         visible: root.first-side-visible;
         y: 28px;
         height: 100px;
-        background: Tokens.bg-panel;
+        background: Tokens.panel-brush;
         border-radius: Tokens.radius-md;
-        border-width: 1px;
+        border-width: Tokens.texture-physical ? 0px : 1px;
         border-color: Tokens.line;
         clip: true;
         accessible-role: groupbox;
@@ -640,72 +682,42 @@ export component DeviceRack inherits Rectangle {
             accessible-label: root.eq-available ? root.eq-gain-db + " dB" : @tr("本轨没有可编辑的 eq_low_gain");
         }
 
-        // 滑块语义节点：读屏器读得到值域与当前值（值域是**注入**的，⛔ 不是字面量）。
-        Rectangle {
+        // 滑块 (语义节点 + 导轨 + 0 dB 刻度 + 滑块头 + 手势面):
+        // 一期起收进共享控件 `HFader` —— 五件的相对几何与算式逐位保留:
+        // 节点宽 `min(300, 面板宽 − space-6)` (`#184`)、手势面恒 300×24、
+        // 刻度条件 = 值域跨 0、头落色不可用时 = `line`。
+        // ⭐ 任务单 `#182`：按下携带**设备身份**（`eq-device-id`），⛔ 不是行下标。
+        HFader {
             x: Tokens.space-4;
             y: 40px;
-            // ⭐ `#184`：380 宽面板上仍是 300（`#181` 的原值）；窄面板收到 `面板宽 − 16`。
             width: min(300px, parent.width - Tokens.space-6);
             height: 24px;
-            background: transparent;
-            accessible-role: slider;
-            accessible-id: "device-eq-low-gain-slider";
-            accessible-label: @tr("EQ 低架增益");
-            accessible-orientation: horizontal;
-            accessible-value-minimum: root.eq-min-db;
-            accessible-value-maximum: root.eq-max-db;
-            accessible-value-step: 0.1;
-            accessible-value: root.eq-gain-db + " dB";
-
-            // 导轨
-            Rectangle {
-                x: 0;
-                y: 10px;
-                width: parent.width;
-                height: 4px;
-                background: Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
+            fraction: root.eq-fraction-clamped;
+            rail-y: 10px;
+            thumb-y: 4px;
+            thumb-travel-inset: 12px;
+            node-height: 24px;
+            show-zero-tick: root.eq-min-db <= 0.0 && root.eq-max-db >= 0.0;
+            zero-tick-inset: 0px;
+            thumb-color: root.eq-available ? Tokens.gold-deep : Tokens.line;
+            thumb-visible: root.eq-available;
+            hit-width: 300px;
+            hit-height: 24px;
+            touch-visible: root.eq-available;
+            a11y-id: "device-eq-low-gain-slider";
+            a11y-label: @tr("EQ 低架增益");
+            a11y-min: root.eq-min-db;
+            a11y-max: root.eq-max-db;
+            a11y-step: 0.1;
+            a11y-value: root.eq-gain-db + " dB";
+            grabbed(f) => {
+                root.device-eq-grab(root.eq-device-id, f);
             }
-            // 0 dB 刻度（值域对称时才画；`0` 是注入端点算出来的位置，不是常量表）
-            Rectangle {
-                x: parent.width / 2;
-                y: 6px;
-                width: 1px;
-                height: 12px;
-                background: Tokens.line-strong;
-                visible: root.eq-min-db <= 0.0 && root.eq-max-db >= 0.0;
+            dragged(f) => {
+                root.device-eq-drag(f);
             }
-            // 旋钮
-            Rectangle {
-                // 300 宽时 `(300 − 12) × f = 288f` —— 与 `#181` 的原式**逐位相同**。
-                x: (parent.width - 12px) * root.eq-fraction-clamped;
-                y: 4px;
-                width: 12px;
-                height: 16px;
-                background: root.eq-available ? Tokens.gold-deep : Tokens.line;
-                border-radius: Tokens.radius-sm;
-                visible: root.eq-available;
-            }
-        }
-
-        // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
-        // ⭐ 任务单 `#182`：按下携带**设备身份**（`eq-device-id`），⛔ 不是行下标。
-        TouchArea {
-            mouse-cursor: MouseCursor.grab;
-            x: Tokens.space-4;
-            y: 40px;
-            width: 300px;
-            height: 24px;
-            visible: root.eq-available;
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down) {
-                    root.device-eq-grab(root.eq-device-id, self.mouse-x / self.width);
-                } else if (event.kind == PointerEventKind.move) {
-                    root.device-eq-drag(self.mouse-x / self.width);
-                } else {
-                    // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
-                    root.device-eq-release();
-                }
+            released => {
+                root.device-eq-release();
             }
         }
 
@@ -739,9 +751,9 @@ export component DeviceRack inherits Rectangle {
         // 有发送时逐位等于 `#159` 的 `126px + 40px × n`（⛔ 一格不动）。
         height: 126px + 40px * root.send-destination-names.length
             + (root.send-destination-names.length == 0 ? 22px : 0px);
-        background: Tokens.bg-panel;
+        background: Tokens.panel-brush;
         border-radius: Tokens.radius-md;
-        border-width: 1px;
+        border-width: Tokens.texture-physical ? 0px : 1px;
         border-color: Tokens.line;
         clip: true;
         accessible-role: region;
@@ -1070,60 +1082,37 @@ export component DeviceRack inherits Rectangle {
                 accessible-label: root.send-gain-labels[send_index];
             }
 
-            // 滑块语义节点：读屏器读得到值域与当前值（值域是**注入**的，⛔ 不是字面量）。
-            Rectangle {
+            // 滑块 (语义节点 + 导轨 + 滑块头 + 手势面): 一期起收进共享控件
+            // `HFader` —— 相对几何逐位保留 (节点 16 高、手势面 20 高、
+            // 头 12×12、行程扣减 12)。三条回调都在此包一层**路由边身份**
+            // (`send-edge-ids[send_index]`, ⛔ 不是行下标)。
+            HFader {
                 x: 0;
                 y: 20px;
                 width: parent.slider-width;
                 height: 16px;
-                background: transparent;
-                accessible-role: slider;
-                accessible-id: "send-" + send_index + "-gain-slider";
-                accessible-label: @tr("发送 {} 增益", send_destination);
-                accessible-orientation: horizontal;
-                accessible-value-minimum: root.send-gain-min-db;
-                accessible-value-maximum: root.send-gain-max-db;
-                accessible-value-step: 0.1;
-                accessible-value: root.send-gain-labels[send_index];
-            }
-
-            // 导轨
-            Rectangle {
-                x: 0;
-                y: 26px;
-                width: parent.slider-width;
-                height: 4px;
-                background: Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-            }
-
-            // 旋钮（位置只读注入的 dB 与注入的值域）
-            Rectangle {
-                // 300 宽时 `(300 − 12) × f = 288f` —— 与 `#159` 的原式**逐位相同**。
-                x: (parent.slider-width - 12px) * parent.gain-fraction-clamped;
-                y: 22px;
-                width: 12px;
-                height: 12px;
-                background: Tokens.gold-deep;
-                border-radius: Tokens.radius-sm;
-            }
-
-            // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
-            TouchArea {
-                mouse-cursor: MouseCursor.grab;
-                x: 0;
-                y: 20px;
-                width: parent.slider-width;
-                height: 20px;
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down) {
-                        root.send-gain-grab(root.send-edge-ids[send_index], self.mouse-x / self.width);
-                    } else if (event.kind == PointerEventKind.move) {
-                        root.send-gain-drag(root.send-edge-ids[send_index], self.mouse-x / self.width);
-                    } else {
-                        // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
-                        root.send-gain-release(root.send-edge-ids[send_index]);
-                    }
+                fraction: parent.gain-fraction-clamped;
+                rail-y: 6px;
+                thumb-y: 2px;
+                thumb-width: 12px;
+                thumb-height: 12px;
+                thumb-travel-inset: 12px;
+                node-height: 16px;
+                hit-height: 20px;
+                a11y-id: "send-" + send_index + "-gain-slider";
+                a11y-label: @tr("发送 {} 增益", send_destination);
+                a11y-min: root.send-gain-min-db;
+                a11y-max: root.send-gain-max-db;
+                a11y-step: 0.1;
+                a11y-value: root.send-gain-labels[send_index];
+                grabbed(f) => {
+                    root.send-gain-grab(root.send-edge-ids[send_index], f);
+                }
+                dragged(f) => {
+                    root.send-gain-drag(root.send-edge-ids[send_index], f);
+                }
+                released => {
+                    root.send-gain-release(root.send-edge-ids[send_index]);
                 }
             }
 
@@ -1777,9 +1766,9 @@ export component DeviceRack inherits Rectangle {
         y: 216px + 46px * device_index;
         width: 420px;
         height: 44px;
-        background: root.device-bypassed[device_index] ? Tokens.bg-void : Tokens.bg-panel;
+        background: root.device-bypassed[device_index] ? Tokens.void-brush : Tokens.panel-brush;
         border-radius: Tokens.radius-md;
-        border-width: 1px;
+        border-width: Tokens.texture-physical ? 0px : 1px;
         border-color: root.device-bypassed[device_index] ? Tokens.line : Tokens.line-strong;
         clip: true;
         accessible-role: list-item;
@@ -1832,44 +1821,19 @@ export component DeviceRack inherits Rectangle {
 
         // 旁通开关：`accessible-checked` 现在**有真实状态**（`TrackV3::devices[i].bypassed`），
         // 点击 = 一次 `commit_ops`（`host::wire_device_rack`）。
-        Rectangle {
+        // (一期起走共享控件 `ToggleSwitch`: 几何 / 语义 / 落点逐位相同,
+        // flat 外观不变; physical 走软触 pill。)
+        // ⭐ 任务单 `#182`：落点报**设备身份**（`device-ids[device_index]`，⛔ 不是下标）。
+        ToggleSwitch {
             x: parent.width - 116px;
             y: 4px;
             width: 72px;
             height: 20px;
-            background: root.device-bypassed[device_index] ? Tokens.gold-deep : Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            border-width: 1px;
-            border-color: root.device-bypassed[device_index] ? Tokens.gold : Tokens.line-strong;
-            accessible-role: switch;
-            accessible-id: "device-" + device_index + "-bypass-switch";
-            accessible-label: @tr("旁通 {}", device_name);
-            accessible-checkable: true;
-            accessible-checked: root.device-bypassed[device_index];
-            // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
-            // ⭐ 任务单 `#182`：落点报**设备身份**（`device-ids[device_index]`，⛔ 不是下标）。
-            accessible-action-default => {
+            checked: root.device-bypassed[device_index];
+            a11y-id: "device-" + device_index + "-bypass-switch";
+            a11y-label: @tr("旁通 {}", device_name);
+            toggled => {
                 root.device-bypass-toggle(root.device-ids[device_index]);
-            }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: root.device-bypassed[device_index] ? "BYPASSED" : "ACTIVE";
-                color: root.device-bypassed[device_index] ? Tokens.bg-void : Tokens.ink-2;
-                font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
-            }
-
-            TouchArea {
-                mouse-cursor: MouseCursor.pointer;
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.device-bypass-toggle(root.device-ids[device_index]);
-                }
             }
         }
 
@@ -2201,9 +2165,9 @@ export component DeviceRack inherits Rectangle {
             y: 22px;
             width: root.master-eq-panel-width;
             height: 48px;
-            background: Tokens.bg-shell;
+            background: Tokens.shell-brush;
             border-radius: Tokens.radius-md;
-            border-width: 1px;
+            border-width: Tokens.texture-physical ? 0px : 1px;
             border-color: Tokens.line;
             clip: true;
             accessible-role: groupbox;
@@ -2253,74 +2217,42 @@ export component DeviceRack inherits Rectangle {
                 accessible-label: root.master-device-eq-reason;
             }
 
-            // 滑块语义节点：读屏器读得到值域与当前值（两个端点都是注入值）。
-            Rectangle {
-                x: 8px;
-                y: 28px;
-                // 滑轨宽 = 本格宽 − 28（328 宽时仍是 300，`#181` 的原值）。
-                width: parent.width - 28px;
-                height: 18px;
-                background: transparent;
-                visible: root.master-device-eq-available;
-                accessible-role: slider;
-                accessible-id: "master-device-eq-slider";
-                accessible-label: @tr("主总线 EQ 低架增益");
-                accessible-orientation: horizontal;
-                accessible-value-minimum: root.master-device-eq-min-db;
-                accessible-value-maximum: root.master-device-eq-max-db;
-                accessible-value-step: 0.1;
-                accessible-value: root.master-device-eq-gain-db + " dB";
-
-                // 导轨
-                Rectangle {
-                    x: 0;
-                    y: 7px;
-                    width: parent.width;
-                    height: 4px;
-                    background: Tokens.bg-void;
-                    border-radius: Tokens.radius-sm;
-                }
-                // 0 dB 刻度（值域跨过 0 时才画；位置由注入端点算出）
-                Rectangle {
-                    x: (parent.width - 28px) / 2;
-                    y: 3px;
-                    width: 1px;
-                    height: 12px;
-                    background: Tokens.line-strong;
-                    visible: root.master-device-eq-min-db <= 0.0
-                        && root.master-device-eq-max-db >= 0.0;
-                }
-                // 旋钮
-                Rectangle {
-                    x: (parent.width - 40px) * root.master-eq-fraction-clamped;
-                    y: 1px;
-                    width: 12px;
-                    height: 16px;
-                    background: Tokens.gold-deep;
-                    border-radius: Tokens.radius-sm;
-                }
-            }
-
-            // 手势面：位置**不随数值动**（读 `self.mouse-x`，否则自己喂自己）。
+            // 滑块 (语义节点 + 导轨 + 0 dB 刻度 + 滑块头 + 手势面):
+            // 一期起收进共享控件 `HFader` —— 与展示轨那一格同一副滑块,
+            // 相对几何逐位保留 (轨宽 = 本格宽 − 28、刻度扣减 28、行程扣减 40);
+            // 不可用时整副隐藏 (`parts-visible` / `node-visible` / `touch-visible`
+            // 同落 `master-device-eq-available`, 与旧内联「子件随节点同隐」一致)。
             // ⭐ 任务单 `#182`：按下携带**设备身份**（`master-device-eq-device-id`）。
-            TouchArea {
+            HFader {
                 x: 8px;
                 y: 28px;
                 width: parent.width - 28px;
                 height: 18px;
-                visible: root.master-device-eq-available;
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down) {
-                        root.master-device-eq-grab(
-                            root.master-device-eq-device-id,
-                            self.mouse-x / self.width,
-                        );
-                    } else if (event.kind == PointerEventKind.move) {
-                        root.master-device-eq-drag(self.mouse-x / self.width);
-                    } else {
-                        // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
-                        root.master-device-eq-release();
-                    }
+                fraction: root.master-eq-fraction-clamped;
+                rail-y: 7px;
+                thumb-y: 1px;
+                thumb-travel-inset: 40px;
+                node-height: 18px;
+                show-zero-tick: root.master-device-eq-min-db <= 0.0
+                    && root.master-device-eq-max-db >= 0.0;
+                zero-tick-inset: 28px;
+                node-visible: root.master-device-eq-available;
+                parts-visible: root.master-device-eq-available;
+                touch-visible: root.master-device-eq-available;
+                a11y-id: "master-device-eq-slider";
+                a11y-label: @tr("主总线 EQ 低架增益");
+                a11y-min: root.master-device-eq-min-db;
+                a11y-max: root.master-device-eq-max-db;
+                a11y-step: 0.1;
+                a11y-value: root.master-device-eq-gain-db + " dB";
+                grabbed(f) => {
+                    root.master-device-eq-grab(root.master-device-eq-device-id, f);
+                }
+                dragged(f) => {
+                    root.master-device-eq-drag(f);
+                }
+                released => {
+                    root.master-device-eq-release();
                 }
             }
         }
@@ -2335,10 +2267,10 @@ export component DeviceRack inherits Rectangle {
             height: 44px;
             visible: master_device_index < root.master-visible-card-count;
             background: root.master-device-bypassed[master_device_index]
-                ? Tokens.bg-void
-                : Tokens.bg-shell;
+                ? Tokens.void-brush
+                : Tokens.shell-brush;
             border-radius: Tokens.radius-md;
-            border-width: 1px;
+            border-width: Tokens.texture-physical ? 0px : 1px;
             border-color: root.master-device-bypassed[master_device_index]
                 ? Tokens.line
                 : Tokens.line-strong;
@@ -2397,54 +2329,20 @@ export component DeviceRack inherits Rectangle {
             // 有真实状态，点击 = 一次 `commit_ops`），只是目标轨是主总线 —— 宿主用
             // `DeviceTarget::Master` **显式**寻址。⛔ 不在这里判断"有没有主总线"：
             // 卡片本身只按主总线的设备数生成 ⇒ 0 台时这个开关**不出现**。
-            Rectangle {
+            // (一期起走共享控件 `ToggleSwitch`, 与展示轨那一段同一副。)
+            // ⭐ 任务单 `#182`：落点报**设备身份**（⛔ 不是下标）。
+            ToggleSwitch {
                 x: parent.width - 116px;
                 y: 4px;
                 width: 72px;
                 height: 20px;
-                background: root.master-device-bypassed[master_device_index]
-                    ? Tokens.gold-deep
-                    : Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-                border-width: 1px;
-                border-color: root.master-device-bypassed[master_device_index]
-                    ? Tokens.gold
-                    : Tokens.line-strong;
-                accessible-role: switch;
-                accessible-id: "master-device-" + master_device_index + "-bypass-switch";
-                accessible-label: @tr("旁通主总线设备 {}", master_device_name);
-                accessible-checkable: true;
-                accessible-checked: root.master-device-bypassed[master_device_index];
-                // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
-                // ⭐ 任务单 `#182`：落点报**设备身份**（⛔ 不是下标）。
-                accessible-action-default => {
+                checked: root.master-device-bypassed[master_device_index];
+                a11y-id: "master-device-" + master_device_index + "-bypass-switch";
+                a11y-label: @tr("旁通主总线设备 {}", master_device_name);
+                toggled => {
                     root.master-device-bypass-toggle(
                         root.master-device-ids[master_device_index],
                     );
-                }
-
-                UiText {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    text: root.master-device-bypassed[master_device_index] ? "BYPASSED" : "ACTIVE";
-                    color: root.master-device-bypassed[master_device_index]
-                        ? Tokens.bg-void
-                        : Tokens.ink-2;
-                    font-size: Tokens.font-size-xs;
-                    horizontal-alignment: center;
-                }
-
-                TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    width: parent.width;
-                    height: parent.height;
-                    clicked => {
-                        root.master-device-bypass-toggle(
-                            root.master-device-ids[master_device_index],
-                        );
-                    }
                 }
             }
 

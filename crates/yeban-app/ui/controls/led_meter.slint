@@ -1,0 +1,112 @@
+// 夜半 (Yeban) — 共享控件 · LED 电平表 (`line/ui-skeuo-theme` 一期, 2026-11-16)
+//
+// 根 = 旧内联里「槽 + 填充」两件套的外包围盒, 根自身承载无障碍语义节点
+// (旧内联把 `progress-indicator` 挂在槽上, 本控件逐位保留)。
+//
+// flat: 与旧内联**逐位相同**的单条填充 (底对齐, 高 = 100px × level,
+// 填充色由 `flat-color` 注入: 通道条 `ok-green` / 主控条 `warn-amber`)。
+//
+// physical: 18 段分段 LED。分段与峰值保持是真设备电平表的读法:
+//   - 段色按电平区固定 (低段 `ok-green` / 中段 `warn-amber` / 高段
+//     `record-red`) —— 颜色承载**区位信息**, 不是装饰;
+//   - 亮段带一层同色软晕 (alpha 0.20) —— LED 的发光是**信号本身**,
+//     属「发光只承载信息」的许可范围;
+//   - 未亮段留同色 13% alpha 的暗段 (真 LED 的熄灭残影);
+//   - 峰值保持: 组件内 `Timer` 以 100ms 步进让峰值标记缓慢回落
+//     (每步 −0.01), 峰值线画在峰值段的上沿。峰值只由真实 `level`
+//     驱动, ⛔ 不喂假数据。
+//
+// 绘制层序参考真机 LED 表与 JUCE 式电平表的「槽 → 段 → 峰值标记」关系;
+// 段数 / 区界 / 回落速率是本控件自己的标定 (见下方常量注释)。
+
+import { Tokens } from "../tokens.slint";
+
+export component LedMeter inherits Rectangle {
+    /// 当前电平 (0.0–1.0, 由投影注入的视觉量; 本控件不做 dB 换算)。
+    in property <float> level: 0.0;
+    /// flat 模式的填充色 (旧内联原值由调用方注入)。
+    in property <color> flat-color: Tokens.ok-green;
+    // 无障碍转发 (根即语义节点, 与旧内联同形状)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    in property <string> a11y-value: "";
+    in property <float> a11y-min: -120.0;
+    in property <float> a11y-max: 0.0;
+
+    /// 峰值保持量 (仅 physical 使用; flat 下不渲染, 状态仍随 level 更新
+    /// 以便模式切换时不跳变)。
+    property <float> peak: 0.0;
+
+    // flat 时必须是 `bg-void` (不是 `glass-brush` 的 flat 落点 `bg-shell`),
+    // 故 flat 分支写同色双停渐变, 与旧内联逐像素相同。
+    background: Tokens.texture-physical
+        ? Tokens.glass-brush
+        : @linear-gradient(180deg, Tokens.bg-void, Tokens.bg-void);
+    border-radius: Tokens.radius-sm;
+    accessible-role: progress-indicator;
+    accessible-id: root.a11y-id;
+    accessible-label: root.a11y-label;
+    accessible-value-minimum: root.a11y-min;
+    accessible-value-maximum: root.a11y-max;
+    accessible-value-step: 0.1;
+    accessible-value: root.a11y-value;
+
+    changed level => {
+        if (root.level > root.peak) {
+            root.peak = root.level;
+        }
+    }
+
+    // 峰值回落: 100ms 一步, 每步 −0.01 (约 1 秒回落满量程的 10%)。
+    Timer {
+        interval: 100ms;
+        running: Tokens.texture-physical;
+        triggered => {
+            root.peak = max(root.level, root.peak - 0.01);
+        }
+    }
+
+    // flat 填充: 旧算式逐位 (x=1, 宽=根宽−2, y=根高−2−100×level, 高=100×level)。
+    Rectangle {
+        visible: !Tokens.texture-physical;
+        x: 1px;
+        y: parent.height - 2px - 100px * root.level;
+        width: parent.width - 2px;
+        height: 100px * root.level;
+        background: root.flat-color;
+        border-radius: Tokens.radius-sm;
+    }
+
+    // physical 分段: 18 段, 段高 4px, 段距 = (根高 − 2) / 18。
+    for seg[idx] in 18: Rectangle {
+        visible: Tokens.texture-physical;
+        // 段的区位色: 段中心归一化位置 < 0.65 绿 / < 0.85 琥珀 / 以上红。
+        property <color> zone: (idx + 0.5) / 18 < 0.65 ? Tokens.ok-green
+            : ((idx + 0.5) / 18 < 0.85 ? Tokens.warn-amber : Tokens.record-red);
+        // 亮段判据: 段中心被 level 覆盖。
+        property <bool> lit: root.level * 18 >= idx + 0.5;
+        // 峰值段判据: 峰值落在段内。
+        property <bool> is-peak: root.peak > 0.0 && root.peak * 18 >= idx && root.peak * 18 < idx + 1;
+
+        x: 1px;
+        y: parent.height - 1px - (idx + 1) * ((parent.height - 2px) / 18) + (((parent.height - 2px) / 18) - 4px) / 2;
+        width: parent.width - 2px;
+        height: 4px;
+        background: zone.with-alpha(lit ? 1.0 : 0.13);
+        border-radius: 1px;
+        drop-shadow-color: zone.with-alpha(lit ? 0.20 : 0.0);
+        drop-shadow-offset-x: 0px;
+        drop-shadow-offset-y: 0px;
+        drop-shadow-blur: lit ? 3px : 0px;
+
+        // 峰值保持线: 画在峰值段的上沿 (白色 55%, 1px)。
+        Rectangle {
+            visible: parent.is-peak;
+            x: 0;
+            y: -1px;
+            width: parent.width;
+            height: 1px;
+            background: #ffffff.with-alpha(0.55);
+        }
+    }
+}

@@ -125,6 +125,34 @@ export global ThemeState {
     in-out property <YebanTheme> theme: YebanTheme.yeban;
 }
 
+// ---------------------------------------------------------------------------
+// 质感模式 (2026-11-16, `line/ui-skeuo-theme` 一期; 负责人裁决: 实体化做成
+// 与配色**正交**的第二维, ⛔ 不合入 main 的默认外观)
+// ---------------------------------------------------------------------------
+//
+// 与 `ThemeState` 同款纪律: 唯一的写者是 Rust 侧的 `host::apply_texture`
+// (单向注入); 初值必须是**默认质感** `flat` —— 不调 `apply_texture` 的路径
+// (Tier-1 无头渲染 / golden 截图) 看到的就是它, 因此默认外观一位不动。
+// 判据 `tests/texture_selection.rs` 把「CLI 默认 = flat / Slint 初值 = flat /
+// 生效判定只对深色自绘配色 (brand / yeban) 打开」三条耦合钉住。
+//
+// ⚠ 生效范围: `physical` 只在 `brand` / `yeban` 两支**深色自绘配色**下生效
+// (见 `Tokens.texture-physical`); 其余配色 (inkmoor / plume / 设计系统四支)
+// 下控件自动回落 flat 渲染 —— 材质参数只为深色金属体系标定过, 不向未标定的
+// 配色外推。
+export enum TextureMode {
+    // 扁平: 现行观感。全部质感令牌在此模式下**恒等于**对应的扁平值
+    // (brush = 同色双停渐变, 阴影 alpha = 0, 斜面 alpha = 0) ⇒ 像素一位不动。
+    flat,
+    // 实体: 精密仪器质感 (单一左上光源; 面板磨砂金属 / 旋钮阳极氧化铝 /
+    // 屏面玻璃 / 按键软触; 发光只承载信息)。参数表见 `Tokens` 的 §10。
+    physical
+}
+
+export global TextureState {
+    in-out property <TextureMode> texture: TextureMode.flat;
+}
+
 export global Tokens {
     // =====================================================================
     // 1. 网格几何 [UI-GRID-001] —— 规范正文的像素值, 一个都不许改
@@ -700,6 +728,136 @@ export global Tokens {
     out property <color> record-red: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? #ac6e60 : (ThemeState.theme == YebanTheme.inkmoor ? #b4715f : (ThemeState.theme == YebanTheme.plume ? #b25c43 : #d94a4a)));
     out property <color> ok-green: #3fa96a;
     out property <color> warn-amber: #d9a441;
+
+    // =====================================================================
+    // 10. 质感 (实体化) —— `line/ui-skeuo-theme` 一期 (2026-11-16)
+    // =====================================================================
+    // 与配色正交的第二维: 配色决定**色相**, 质感决定**光与材质**。本节全部
+    // 令牌都是 `texture-physical` 的函数; flat 时每个 brush 恒等于它对应的
+    // 扁平纯色 (同色双停渐变), 每条阴影 / 斜面的 alpha 恒为 0 ⇒ **默认外观
+    // (flat) 逐像素不变**, 这是本节存在的硬约束, 判据见
+    // `tests/texture_selection.rs`。
+    //
+    // 设计纪律 (负责人裁决, 逐条落在本节与 `ui/controls/`):
+    //   ① **单一光源**: 全界面只许一个光源方向 = **左上**。高光恒在左上,
+    //      斜面亮边恒在上 / 左, 暗边恒在下 / 右, 投影恒落向右下
+    //      (offset-x ≥ 0, offset-y ≥ 0)。任何控件违反即不合格。
+    //   ② **材质分工固定**: 面板 = 细磨砂深色金属 (垂直微渐变);
+    //      旋钮 = 阳极氧化铝 (径向渐变 + 细刻度环 + 哑光高光弧, ⛔ 无镜面高光);
+    //      显示屏 = 玻璃 (深色底 + 内发光内容 + 一道极淡斜向反光);
+    //      按键 / 开关 = 软触 (低反光、大圆角、按下位移 1px 且阴影收缩)。
+    //   ③ **发光只承载信息**: LED / 屏面曲线 / 激活态可以发光; ⛔ 无装饰辉光。
+    //   ④ **层级靠高度与明暗**: 描边只留斜面的一亮一暗两条线, ⛔ 不叠第三层。
+    //   ⑤ **克制优先**: 每种材质只做对的那几层, 不堆层。
+    //
+    // 绘制配方的**层序**参考了三家公开实现的层与参数关系 (只学配方, ⛔ 不抄
+    // 代码 / 数值 / 资产; 最终参数全部按下表自洽标定):
+    //   - Calf 家 Cairo 程序化旋钮的分层顺序 (底圈 → 外环 → 内圆径向渐变
+    //     (高光中心向光源偏移) → 值弧 → 指针);
+    //   - g200kg/webaudio-controls (Apache-2.0) 的三色角色分工
+    //     (indicator / body / highlight) 与「径向渐变 + 模糊柔化做深度」;
+    //   - JUCE LookAndFeel `drawRotarySlider` 的轨道弧 / 值弧 / 指针线层序
+    //     与「弧半径 = 半径 − 线宽/2、线宽随半径缩放」的参数关系。
+    //
+    // ⚠ 本节的颜色字面量只许出现在 brand / yeban 两支 (physical 只对这两支
+    // 生效); 其余分支一律回落到既有角色令牌 (那些值在 physical 下永不渲染,
+    // 但类型必须成立)。alpha 出现在令牌里是**有意的例外**: 本文件头部的
+    // 「alpha 留在使用点」纪律针对的是 8 位十六进制的字面量歧义; 这里的
+    // alpha 本身就是令牌的取值 (随质感开关 0 / 标定值), 用 `.with-alpha()`
+    // 表达, 无歧义。
+
+    /// 质感**生效**判定 (唯一事实源): 开关 = physical **且**配色是深色自绘
+    /// 两支之一。其余组合一律 flat —— 控件只读这一格, ⛔ 不自己拼条件。
+    out property <bool> texture-physical: TextureState.texture == TextureMode.physical
+        && (ThemeState.theme == YebanTheme.brand || ThemeState.theme == YebanTheme.yeban);
+
+    // ---- 面板 · 细磨砂深色金属 -------------------------------------------
+    // 垂直线性渐变: 顶亮 / 中本色 / 底暗 (光源在上 ⇒ 上沿受光)。
+    // 幅度克制: 亮端与暗端距本色各约一步墨阶 (这是"磨砂"不是"拉丝金属")。
+    out property <brush> panel-brush: !texture-physical ? @linear-gradient(180deg, bg-panel, bg-panel)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @linear-gradient(180deg, #1a2342, #151d38 45%, #121a30)
+            : @linear-gradient(180deg, #171f2a, #131a22 45%, #0f151d));
+    out property <brush> panel-alt-brush: !texture-physical ? @linear-gradient(180deg, bg-panel-alt, bg-panel-alt)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @linear-gradient(180deg, #202a52, #1b2447 45%, #161e3a)
+            : @linear-gradient(180deg, #1a232f, #161e28 45%, #121922));
+    out property <brush> shell-brush: !texture-physical ? @linear-gradient(180deg, bg-shell, bg-shell)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @linear-gradient(180deg, #111a33, #0d1326 45%, #0a0f1f)
+            : @linear-gradient(180deg, #151b23, #11161c 45%, #0d1218));
+    out property <brush> raised-brush: !texture-physical ? @linear-gradient(180deg, bg-raised, bg-raised)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @linear-gradient(180deg, #2a3868, #232f5c 50%, #1c2749)
+            : @linear-gradient(180deg, #242f3e, #1e2733 50%, #171f2a));
+    /// 凹陷 / 熄灭面 (旁通卡片、表槽、推子轨槽的底)。
+    out property <brush> void-brush: !texture-physical ? @linear-gradient(180deg, bg-void, bg-void)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @linear-gradient(180deg, #04060c, #060a14 55%, #0a1020)
+            : @linear-gradient(180deg, #0a0e12, #0e1216 55%, #131920));
+
+    // ---- 阴影 (投影恒落向右下 = 光源左上的唯一解) -------------------------
+    out property <color> shadow-color: #000000;
+    /// 面板级: 浮起面板的落影。
+    out property <float> shadow-panel-alpha: texture-physical ? 0.38 : 0.0;
+    out property <length> shadow-panel-offset-x: texture-physical ? 1px : 0px;
+    out property <length> shadow-panel-offset-y: texture-physical ? 2px : 0px;
+    out property <length> shadow-panel-blur: texture-physical ? 6px : 0px;
+    /// 控件级: 旋钮 / 推子帽 / 按键的落影 (比面板小一档)。
+    out property <float> shadow-ctl-alpha: texture-physical ? 0.45 : 0.0;
+    out property <length> shadow-ctl-offset-x: texture-physical ? 1px : 0px;
+    out property <length> shadow-ctl-offset-y: texture-physical ? 2px : 0px;
+    out property <length> shadow-ctl-blur: texture-physical ? 4px : 0px;
+    /// 按下态: 阴影收缩 (软触纪律: 位移 1px + 本档)。
+    out property <float> shadow-pressed-alpha: texture-physical ? 0.25 : 0.0;
+    out property <length> shadow-pressed-offset-y: texture-physical ? 0px : 0px;
+    out property <length> shadow-pressed-blur: texture-physical ? 1px : 0px;
+
+    // ---- 斜面 (一亮一暗, ⛔ 没有第三条边) ----------------------------------
+    /// 亮边: 画在上沿与左沿 (受光面)。白色 8% —— 哑光, 不是镜面。
+    out property <color> bevel-light: #ffffff.with-alpha(texture-physical ? 0.08 : 0.0);
+    /// 暗边: 画在下沿与右沿 (背光面)。
+    out property <color> bevel-dark: #000000.with-alpha(texture-physical ? 0.45 : 0.0);
+    /// 凹陷内影的近似 (Slint 无内阴影原语): 凹槽上沿一条深线 (槽内背光)
+    /// + 下沿一条极淡亮线 (槽底反射)。两条都只在 physical 下有 alpha。
+    out property <color> recess-dark: #000000.with-alpha(texture-physical ? 0.55 : 0.0);
+    out property <color> recess-light: #ffffff.with-alpha(texture-physical ? 0.05 : 0.0);
+
+    // ---- 旋钮 · 阳极氧化铝 --------------------------------------------------
+    /// 旋帽径向渐变: 中心偏亮 (受光) → 边缘沉降。停点 0 / 55% / 100%。
+    out property <brush> knob-brush: !texture-physical ? @linear-gradient(180deg, bg-control, bg-control)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @radial-gradient(circle, #2e3c66, #1d2745 55%, #111830)
+            : @radial-gradient(circle, #333f4e, #212b37 55%, #151c24));
+    /// 旋钮底座环 (刻度环的座): 比面板深一档的环色。
+    out property <color> knob-ring: texture-physical
+        ? (ThemeState.theme == YebanTheme.brand ? #0b1122 : #0d1218)
+        : line;
+    /// 哑光高光弧: 白色 10%, 只出现在旋帽的**左上**象限 (光源方向)。
+    out property <color> knob-highlight: #ffffff.with-alpha(texture-physical ? 0.10 : 0.0);
+
+    // ---- 显示屏 · 玻璃 ------------------------------------------------------
+    /// 屏面底: 比面板更深、带极轻的自上而下沉降 (玻璃的厚度感)。
+    out property <brush> glass-brush: !texture-physical ? @linear-gradient(180deg, bg-shell, bg-shell)
+        : @linear-gradient(165deg, #0b1017, #05070b 62%);
+    /// 斜向反光: 一道极淡的白 (3.5%), 全屏只许这一道, ⛔ 不做第二道。
+    out property <color> glass-reflection: #ffffff.with-alpha(texture-physical ? 0.035 : 0.0);
+    /// 屏内信息发光的底层宽笔 (曲线本体的辉光是**信息**的一部分):
+    /// 同色 18% alpha、线宽约 2.5 倍 —— 只在 physical 下叠在曲线本体之下。
+    out property <float> glass-glow-alpha: texture-physical ? 0.18 : 0.0;
+
+    /// 强调色实心件的渐变版 (滑块头 / 开关选中底): 与 `gold-deep` 同色相,
+    /// 只是按光源方向压出上亮下暗。flat 时恒等于 `gold-deep` 纯色。
+    out property <brush> accent-brush: !texture-physical ? @linear-gradient(180deg, gold-deep, gold-deep)
+        : (ThemeState.theme == YebanTheme.brand
+            ? @linear-gradient(180deg, #cfa855, #b8933e 50%, #96762f)
+            : @linear-gradient(180deg, #84a2bb, #6d88a1 50%, #587189));
+
+    // ---- 按键 / 开关 · 软触 ---------------------------------------------------
+    /// 软触圆角增量: physical 下按键圆角从 radius-sm (2px) 放到 5px。
+    out property <length> radius-soft: texture-physical ? 5px : radius-sm;
+    /// 软触顶光: 按键上半的一层极淡顶光 (白色 5%), 与斜面亮边同源同向。
+    out property <color> soft-sheen: #ffffff.with-alpha(texture-physical ? 0.05 : 0.0);
 }
 
 // 全部文本图元的统一起点: 一处固定字体族 / 字重与默认墨色, 免得 81 个 Text 各写一遍。

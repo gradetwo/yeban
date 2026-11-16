@@ -1,0 +1,184 @@
+// 夜半 (Yeban) — 共享控件 · 旋钮 (`line/ui-skeuo-theme` 一期, 2026-11-16)
+//
+// ⚠ 一期状态: 试点两面板 (设备架 / 混音台) 里**没有**可迁的旋转控件
+// (混音台声相是文本拖动面, 设备架的静态 EQ 旋钮已在 #157 删除),
+// 本控件一期只进库 + 由 `examples/skeuo_pilot_shots.rs` 的陈列场景做
+// 渲染验证; 二期等真实旋转参数 (滤波器截止 / 共振类) 出现时再落点。
+//
+// 接口: `value` / `minimum` / `maximum` + `changed(float)`; 垂直拖动
+// 改值 (120px 行程 = 满量程), 双击回中点 —— 与音频旋钮的通用手势一致。
+// 扫程 270° (−135°..+135°), 与三家参考配方 (JUCE / webaudio-controls /
+// Calf 家) 的共识一致。
+//
+// 分层 (外 → 内, 层序学 JUCE `drawRotarySlider` 的「轨 → 体 → 指针」与
+// Calf 家 Cairo 旋钮的「底圈 → 外环 → 内圆径向渐变 → 指针」, 参数自定):
+//   1. 底座环 (刻度环的座, 深色环 + 控件级落影);
+//   2. 刻度环: 11 段细刻度, 已扫过的段用 `indicator-color` 点亮
+//      (刻度是**值的一部分**, 属信息发光许可内; 未扫过段为暗灰);
+//   3. 旋帽: 阳极氧化铝 —— 径向渐变 (中心受光 → 边缘沉降);
+//   4. 哑光高光弧: 只在旋帽**左上**象限的一道弧 (白色 10%,
+//      ⛔ 不是镜面塑料高光 —— 没有锐利白点、没有全圆描边光);
+//   5. 指示线: 从中心指向当前值的短粗线, 随值旋转。
+// 光源恒左上: 高光弧在左上、落影落右下, 与全界面一致。
+//
+// flat: 纯色帽面 (`bg-control` + 1px `line-strong` 边) + 同一刻度环与
+// 指示线 —— 扁平模式下它就是一个干净的扁平旋钮, 无渐变无阴影。
+
+import { Tokens } from "../tokens.slint";
+
+export component Knob inherits Rectangle {
+    in-out property <float> value: 0.0;
+    in property <float> minimum: 0.0;
+    in property <float> maximum: 1.0;
+    /// 指示色 (已扫过刻度 + 指示线): 调用方按参数语义注入 (轨道色只许
+    /// 出现在内容与**对应控件的指示点**上 —— 本色就是那个指示点)。
+    in property <color> indicator-color: Tokens.accent;
+    // 无障碍转发 (根即语义节点)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    in property <string> a11y-value: "";
+    callback changed(float);
+
+    /// 值钳制 (显示与手势共用一处)。
+    function clamped(v: float) -> float {
+        return v < root.minimum ? root.minimum : (v > root.maximum ? root.maximum : v);
+    }
+
+    /// 归一化位置。
+    property <float> fraction: root.maximum > root.minimum
+        ? (root.clamped(root.value) - root.minimum) / (root.maximum - root.minimum)
+        : 0.5;
+    /// 指示角: −135° (最小) .. +135° (最大)。
+    property <float> angle: -135 + 270 * root.fraction;
+    /// 拖动起点快照 (手势内私有)。
+    property <bool> dragging: false;
+    property <length> drag-start-y: 0px;
+    property <float> drag-start-value: 0.0;
+
+    background: transparent;
+    accessible-role: slider;
+    accessible-id: root.a11y-id;
+    accessible-label: root.a11y-label;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: (root.maximum - root.minimum) / 100.0;
+    accessible-value: root.a11y-value;
+
+    // 1. 底座环。
+    Rectangle {
+        x: (parent.width - parent.height) / 2;
+        y: 0;
+        width: parent.height;
+        height: parent.height;
+        background: Tokens.texture-physical ? Tokens.knob-ring : transparent;
+        border-radius: self.width / 2;
+        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+        drop-shadow-blur: Tokens.shadow-ctl-blur;
+    }
+
+    // 2. 刻度环: 11 段, 每段一个旋转 wrapper (刻度本体在 wrapper 顶部)。
+    for tick[idx] in 11: Rectangle {
+        x: (parent.width - parent.height) / 2;
+        y: 0;
+        width: parent.height;
+        height: parent.height;
+        background: transparent;
+        rotation-angle: -135 + idx * 27;
+        Rectangle {
+            x: (parent.width - 2px) / 2;
+            y: 1px;
+            width: 2px;
+            height: idx.mod(5) == 0 ? 7px : 4px;
+            background: idx * 0.1 <= root.fraction
+                ? root.indicator-color
+                : Tokens.ink-2.with-alpha(0.45);
+            border-radius: 1px;
+        }
+    }
+
+    // 3. 旋帽 (内缩 9px 给刻度环让位)。
+    Rectangle {
+        x: (parent.width - (parent.height - 18px)) / 2;
+        y: 9px;
+        width: parent.height - 18px;
+        height: parent.height - 18px;
+        background: Tokens.knob-brush;
+        border-radius: self.width / 2;
+        border-width: Tokens.texture-physical ? 0px : 1px;
+        border-color: Tokens.line-strong;
+
+        // 4. 哑光高光弧 (仅 physical; 左上象限, 弧线 195°→255° 方向的
+        //    一段 —— 以 100×100 viewbox 表达: 圆心 (50,50) 半径 38,
+        //    起点 (13.3, 40.2) 终点 (40.2, 13.3), 顺时针短弧)。
+        Path {
+            visible: Tokens.texture-physical;
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            stroke: Tokens.knob-highlight;
+            stroke-width: 5px;
+            fill: transparent;
+            MoveTo {
+                x: 13.3;
+                y: 40.2;
+            }
+
+            ArcTo {
+                radius-x: 38;
+                radius-y: 38;
+                x: 40.2;
+                y: 13.3;
+                sweep: true;
+            }
+        }
+
+        // 5. 指示线 (旋转 wrapper 与刻度环同法)。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+            rotation-angle: root.angle;
+            Rectangle {
+                x: (parent.width - 3px) / 2;
+                y: 3px;
+                width: 3px;
+                height: parent.height * 0.30;
+                background: root.indicator-color;
+                border-radius: 1.5px;
+            }
+        }
+    }
+
+    // 手势面: 垂直拖动 (120px = 满量程), 双击回中点。
+    TouchArea {
+        mouse-cursor: MouseCursor.grab;
+        width: parent.width;
+        height: parent.height;
+        double-clicked => {
+            root.value = (root.minimum + root.maximum) / 2;
+            root.changed(root.value);
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.dragging = true;
+                root.drag-start-y = self.mouse-y;
+                root.drag-start-value = root.value;
+            } else if (event.kind == PointerEventKind.move && root.dragging) {
+                root.value = root.clamped(root.drag-start-value
+                    + (root.drag-start-y - self.mouse-y) / 120px * (root.maximum - root.minimum));
+                root.changed(root.value);
+            } else {
+                root.dragging = false;
+            }
+        }
+    }
+}

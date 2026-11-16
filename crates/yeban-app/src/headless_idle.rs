@@ -216,6 +216,9 @@ pub fn run(options: &Options) -> Result<Vec<String>, CliError> {
         crate::settings::detect_system_language(),
     );
     host::apply_language(&ui, startup_lang);
+    // 质感（`--texture`）：与 GUI 路径同一个写入口；本档会光栅化一帧，
+    // 因此这里的质感同样可被像素见证。
+    host::apply_texture(&ui, options.texture);
     ui.show().map_err(|error| CliError::Ui {
         detail: format!("主窗口 show 失败: {error}"),
     })?;

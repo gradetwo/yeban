@@ -332,6 +332,12 @@ pub const THEME_SWITCH: &str = "--theme";
 /// 与 `--theme` 同款：未知取值报 [`ParseError::UnknownLanguage`]，
 /// **绝不静默回退**。
 pub const LANG_SWITCH: &str = "--lang";
+/// `--texture` 的字面值（运行期**质感**切换的唯一用户出口；`line/ui-skeuo-theme` 一期）。
+///
+/// 与 `--theme` 正交：`--theme` 选**配色**（色相从哪来），`--texture` 选**质感**
+/// （`flat` 扁平 / `physical` 实体）。默认值必须是 `flat` —— 默认外观一位不动，
+/// 耦合由 `tests/texture_selection.rs` 钉住。
+pub const TEXTURE_SWITCH: &str = "--texture";
 
 /// `--print-theme` 的字面值（把"请求的主题 / 本二进制实际编译进来的风格"如实打出来）。
 ///
@@ -777,6 +783,14 @@ pub fn usage_text() -> String {
                            风格; `{print_theme}` 会把这件事如实打出来。
                            生效范围: 只有真的构造窗口的路径 (GUI / --headless-idle);
                            `--headless` 一个 Slint 对象都不构造, 因此接受本开关但不生效
+  --texture <{textures}>
+                           选择界面质感 (与 --theme 正交); 重复给以最后一个为准
+                             flat       扁平 (**默认**): 现行观感, 一位不动
+                             physical   实体: 精密仪器质感 (单一左上光源; 面板磨砂金属 /
+                                        旋钮阳极氧化铝 / 屏面玻璃 / 按键软触), 参数表见
+                                        ui/tokens.slint §10。**只对深色配色** (brand /
+                                        default) 生效, 其余配色自动回落 flat
+                           生效范围与 --theme 相同 (GUI / --headless-idle)
   {print_theme}          打印主题报告: 请求的主题 / 生效的调色板来源 / 本二进制实际
                            编译进来的 Slint 风格 (由 build.rs 注入, 不是从命令行推出来的)
   --project-sample <default|filled|empty>
@@ -1048,6 +1062,7 @@ pub fn usage_text() -> String {
         themes = Theme::accepted_names().join("|"),
         // 语言的合法取值集合同样机械地来自 `Language::ALL`（唯一事实源）。
         langs = Language::accepted_names().join("|"),
+        textures = Texture::accepted_names().join("|"),
         ok = EXIT_OK,
         ui = EXIT_UI,
         usage = EXIT_USAGE,
@@ -1541,6 +1556,57 @@ impl Theme {
     }
 }
 
+/// 界面**质感**（`line/ui-skeuo-theme` 一期，2026-11-16）：与 [`Theme`]（配色）
+/// **正交**的第二维 —— 配色决定色相，质感决定光与材质。
+///
+/// 在 `.slint` 侧它对应 `ui/tokens.slint` 的 `TextureMode` + `TextureState`
+/// 全局；唯一的写者是 [`crate::host::apply_texture`]（与 `apply_theme` 同款
+/// 单向注入）。
+///
+/// ⚠ 生效范围如实登记：`physical` 只在深色自绘配色（[`Theme::Brand`] /
+/// [`Theme::Yeban`]）下生效，其余配色下控件自动回落 `flat` 渲染 —— 材质
+/// 参数只为深色金属体系标定过（判据见 `Tokens.texture-physical` 与
+/// `tests/texture_selection.rs`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Texture {
+    /// 扁平：现行观感。**默认**（`#[default]`）—— 不给 `--texture` 时
+    /// 界面与本线之前逐像素相同。
+    #[default]
+    Flat,
+    /// 实体：精密仪器质感（单一左上光源；面板磨砂金属 / 旋钮阳极氧化铝 /
+    /// 屏面玻璃 / 按键软触；参数表在 `ui/tokens.slint` §10）。
+    Physical,
+}
+
+impl Texture {
+    /// 全部质感（每支一个；顺序 = 默认在前）。
+    pub const ALL: [Self; 2] = [Self::Flat, Self::Physical];
+
+    /// 命令行**规范名**（`--texture <name>`；每支恰好一个，无别名）。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Flat => "flat",
+            Self::Physical => "physical",
+        }
+    }
+
+    /// **全部可接受的命令行取值**（顺序 = [`Self::ALL`]）。与 [`Theme::accepted_names`]
+    /// 同款纪律：用法文本、错误信息与判据共用这一份推导，⛔ 别在别处手写第二份。
+    #[must_use]
+    pub fn accepted_names() -> Vec<&'static str> {
+        Self::ALL.into_iter().map(Self::name).collect()
+    }
+
+    /// 从命令行字面值解析（未知取值返回 `None`，由调用方转成用法错误）。
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|texture| texture.name() == value)
+    }
+}
+
 /// 解析后的命令行选项。
 ///
 /// 字段全公开是为了让判据能直接构造组合（例如只给 `save_as` 而不给 `open`），
@@ -1988,6 +2054,12 @@ pub struct Options {
     /// `--lang` 是否在命令行里显式给过（与 `lang` 配对；解析时由
     /// `--lang` 分支置位，默认 `false`）。
     pub lang_given: bool,
+    /// `--texture <flat|physical>`：界面质感（与 [`Options::theme`] 正交，见 [`Texture`]）。
+    ///
+    /// 默认 [`Texture::Flat`] = 现行观感 —— 默认外观一位不动是本字段的硬约束。
+    /// 生效范围与 [`Options::theme`] 相同：只有真的构造窗口的路径（GUI 与
+    /// `--headless-idle`）才调用 [`crate::host::apply_texture`]。
+    pub texture: Texture,
     /// `--print-theme`：把请求的主题与"本二进制实际编译进来的 Slint 风格"打到 stdout。
     ///
     /// 为什么它必须存在（而不是只写在我的报告里）：`--theme material` 在一个用
@@ -2407,6 +2479,10 @@ pub enum ParseError {
     /// 与 [`Self::UnknownTheme`] 同款：**绝不静默回退到默认语言** —— 那会让
     /// "我选了英文"与"其实显示中文"长得一模一样。
     UnknownLanguage(String),
+    /// `--texture` 的取值不在允许集合里。与 [`Self::UnknownTheme`] 同款：
+    /// **绝不静默回退** —— 静默回退会让"我选了 physical"与"其实是 flat"
+    /// 长得一模一样。
+    UnknownTexture(String),
     /// `--midi-in-seconds` 的取值不是十进制数。
     MidiInSecondsInvalid(String),
     /// `--headless-idle` 没配 `--idle-seconds`。
@@ -2691,6 +2767,13 @@ impl fmt::Display for ParseError {
                  设计系统的 Palette 角色, 而 Slint 1.18.1 的风格只能**编译期**选 —— \
                  见 `{PRINT_THEME_SWITCH}` 与 `{SLINT_STYLE_ENV}`)",
                 Theme::accepted_names().join("|")
+            ),
+            Self::UnknownTexture(texture) => write!(
+                formatter,
+                "未知的质感 `{texture}` (可用: {}; 默认 `flat` = 现行扁平观感; \
+                 `physical` = 实体质感, 只对深色配色 `brand` / `default`(yeban) 生效, \
+                 其余配色自动回落 `flat`)",
+                Texture::accepted_names().join("|")
             ),
             Self::IdleSecondsMissing => write!(
                 formatter,
@@ -3529,6 +3612,13 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 options.lang = Language::from_name(&value)
                     .ok_or_else(|| ParseError::UnknownLanguage(value.clone()))?;
                 options.lang_given = true;
+            }
+            // `--texture`: 与 `--theme` 同款（重复给以最后一个为准; 未知取值
+            // ⇒ 点名用法错误, ⛔ 不静默回退到 flat)。
+            TEXTURE_SWITCH => {
+                let value = take_value(TEXTURE_SWITCH, inline, args, &mut cursor)?;
+                options.texture = Texture::from_name(&value)
+                    .ok_or_else(|| ParseError::UnknownTexture(value.clone()))?;
             }
             other => return Err(ParseError::UnknownArgument(other.to_owned())),
         }
