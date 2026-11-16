@@ -26,7 +26,11 @@
 #   ⚠ 应用侧目前**没有**显式设置 winit/Slint 的 application_id (代码里只有
 #   bundle id 与数据目录在用 dev.yeban.app) —— 显式设置是应用侧待办, 不在本脚本范围。
 #   Depends 的依据: README 的 Linux 构建依赖表 (dev 包 → 对应运行时包) +
-#   libxkbcommon-x11-0 (真桌面首启 panic 修复时确认的运行时件, 见 ci.yml apt 清单)。
+#   libxkbcommon-x11-0 (真桌面首启 panic 修复时确认的运行时件, 见 ci.yml apt 清单) +
+#   CI 实测 ldd (run 43820577463 Linux 腿日志): DT_NEEDED 直链只有 fontconfig/
+#   freetype/asound/libstdc++/libc/libm —— xkbcommon/wayland/X11/GL 是 winit 在
+#   运行时 dlopen 的, 不出现在 ldd 里但必须声明 (libstdc++6 即据此补入;
+#   expat/z/bz2/png/brotli 是 fontconfig/freetype 的传递依赖, 不重复声明)。
 #   音频依赖按实际核实: 引擎是 cpal + ALSA (根 Cargo.toml 的 cpal 无 jack
 #   feature; midir 的 jack 按 ADR-0006 D6 全仓禁用; 无 pipewire 链接) ⇒
 #   硬依赖只有 libasound; PipeWire 桌面上的 ALSA 路由件 (pipewire-alsa +
@@ -139,7 +143,7 @@ Architecture: $deb_arch
 Maintainer: Yeban Contributors <yeban@wangda.today>
 Section: sound
 Priority: optional
-Depends: libc6, libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libgl1, libasound2t64 | libasound2
+Depends: libc6, libstdc++6, libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libgl1, libasound2t64 | libasound2
 Recommends: pipewire-alsa, wireplumber, fonts-noto-cjk
 Installed-Size: $installed_size
 Homepage: https://yeban.wangda.today
