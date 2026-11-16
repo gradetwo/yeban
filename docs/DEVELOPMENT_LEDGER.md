@@ -18082,4 +18082,13 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **尺寸**：`PreparedRegion` `6248 → 6256`（＋8）；`SfzVoice` 40 / `SfzVoicePool` 4800 /
   `EngineRuntime` 45888 三条 **＋0**。四条绝对值判据（`sfz_instrument` × 7 处、`bus_routing::r6`、
   `bus_insert::b5`）已按新基线更新，原文保留并追加修订段。
-- **判决**：本条目写完时尚未推送 ⇒ **CI `pending`**，⛔ 不写成"通过"。
+- **判决（读回，不是推测）**：线 tip `dfcf9c65` 的**全量** run `43799948324`（`workflow_dispatch` +
+  `force_full=true`；⚠ 两次推送触发的窄 run `43798558215` / `43798973198` 均被并发组 `cancelled`
+  ⇒ 按 §6.3 它们**不是判决**）＝ `completed / **success**`：`checks` / `deny` / `lockfile` / `e2e` /
+  `rust (workspace 全量)` / `macos` / `windows` 全 `success`，`rust (matrix)` `skipped`（宽运行的设计）。
+  ⭐ 目标判据**在三平台逐字在场且 ok**（日志现读）：`Running tests/sfz_random_start.rs` 与
+  `test r7_offset_random_inside_a_loop_window_wraps_instead_of_reading_past_the_end ... ok`
+  在 `rust (workspace 全量)` 04:06:09Z、`macos` 04:26:22Z、`windows` 04:27:20Z 各一次；
+  `Running tests/corpus_random_families.rs` 在 workspace 04:15:54Z、macos 04:16:25Z 各一次；
+  全日志 `test result: FAILED` 计数 **0**、`test result:` 行 **1 611**。
+  ⚠ 合流 `2fc07078` 的 main 全量判决**本条写完时仍未读** ⇒ 那一条记 `pending`（见下一条）。
