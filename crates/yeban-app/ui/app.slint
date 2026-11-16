@@ -426,6 +426,8 @@ export component MainWindow inherits Window {
     in-out property <string> eq-curve-fill-svg: "";
     in-out property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
     in-out property <string> eq-curve-svg: "M 0 50 L 420 50";
+    // BUS COMP 真实压缩传递曲线（空串 = 无压缩器 ⇒ 卡片保持「示意」）。
+    in-out property <string> comp-curve-svg: "";
     in-out property <string> export-wav-bit-depth: "24";
     in-out property <int> export-wav-focused-control: 0;
     in-out property <int> export-wav-focused-field: 0;
@@ -1009,6 +1011,7 @@ export component MainWindow inherits Window {
                     panel-width: root.left-panel-width;
                     active-tab: root.left-panel-tab;
                     eq-curve-svg: root.eq-curve-svg;
+                    comp-curve-svg: root.comp-curve-svg;
                     switch-tab(t) => { root.left-panel-tab = t; }
                     selected-track-id: root.selected-track-index;
                     selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;

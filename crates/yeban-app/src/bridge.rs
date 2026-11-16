@@ -3656,6 +3656,8 @@ pub struct ViewState {
     pub sidechain_available: bool,
     /// ⭐ G-D6：压缩器参数与衰减读数（如 `"压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB"`）。
     pub compressor_info: String,
+    /// 总线压缩器**传递曲线**（`calculate_comp_curve_svg` 的产物；无压缩器时为空串）。
+    pub compressor_curve_svg: String,
     /// ⭐ G-D6：压缩器是否可用。
     pub compressor_available: bool,
     /// ⭐ G-D5：限制器门限与 True-Peak 状态（如 `"限制器: 阈值 -0.1 dBTP · 状态 正常"`）。
@@ -4039,6 +4041,7 @@ impl ViewState {
         let (eq_curve_svg, eq_curve_fill_svg, eq_curve_info) = eq_curve_projection(display);
         let (sidechain_key_label, sidechain_available) = project_sidechain_info(project, display);
         let (compressor_info, compressor_available) = project_compressor_info(project, display);
+        let compressor_curve_svg = project_compressor_curve(project, display);
         let (limiter_info, limiter_available) = project_limiter_info(project, display);
         let (shaper_info, shaper_available) = project_shaper_info(project, display);
         // ⭐ 任务单 `#173`：主总线的设备链 —— 第二段。`#181` 起这一段也**可编辑**
@@ -4204,6 +4207,7 @@ impl ViewState {
             sidechain_key_label,
             sidechain_available,
             compressor_info,
+            compressor_curve_svg,
             compressor_available,
             limiter_info,
             limiter_available,
@@ -4680,6 +4684,12 @@ impl ViewState {
     #[must_use]
     pub fn compressor_available(&self) -> bool {
         self.compressor_available
+    }
+
+    /// 总线压缩器传递曲线（无压缩器时为空串）。
+    #[must_use]
+    pub fn compressor_curve_svg(&self) -> &str {
+        &self.compressor_curve_svg
     }
 
     /// 限制器门限与 True-Peak 状态。
@@ -6294,6 +6304,36 @@ pub fn calculate_eq_curve_svg(
     svg
 }
 
+/// **总线压缩器传递曲线**（性能无关，纯几何）：输入电平 → 输出电平。
+///
+/// x 轴 = 输入 -60..0 dBFS（0..420），y 轴 = 输出 -60..0 dBFS（100..0）。
+/// 每点按硬拐点压缩公式：`out = in <= threshold ? in : threshold + (in - threshold) / ratio`。
+/// 参数来自 `track.devices` 的 `threshold_db`/`ratio`（见 [
+/// `project_compressor_info`]）；⛔ 不画常量钟形曲线冒充响应。
+#[must_use]
+pub fn calculate_comp_curve_svg(threshold_db: f32, ratio: f32) -> String {
+    use std::fmt::Write as _;
+    let threshold = threshold_db.clamp(-60.0, 0.0);
+    let ratio = ratio.max(1.0);
+    let mut svg = String::with_capacity(43 * 10);
+    for step in 0..=42 {
+        let x = step as f32 * 10.0;
+        let input_db = -60.0 + (x / 420.0) * 60.0;
+        let output_db = if input_db <= threshold {
+            input_db
+        } else {
+            threshold + (input_db - threshold) / ratio
+        };
+        let y = (100.0 - ((output_db + 60.0) / 60.0) * 100.0).clamp(0.0, 100.0);
+        let cmd = if step == 0 { 'M' } else { 'L' };
+        let _ = write!(svg, "{cmd} {x:.1} {y:.1} ");
+    }
+    while svg.ends_with(' ') {
+        svg.pop();
+    }
+    svg
+}
+
 /// 封闭频响曲线至基准线（y=50.0），用于透明面积填充。
 #[must_use]
 pub fn calculate_eq_curve_fill_svg(curve_svg: &str) -> String {
@@ -6464,6 +6504,36 @@ pub fn sidechain_cycle_ops(project: &YebanProjectV1, track_id: EntityId) -> Vec<
     }
 
     ops
+}
+
+/// 总线压缩器**传递曲线**（供 left_panel 的 BUS COMP 卡片画真实响应）。
+///
+/// 读与 [`project_compressor_info`] **同一份**设备参数（`ratio` / `threshold_db`），
+/// 无压缩器设备 ⇒ 空串（界面保持「示意」标注，⛔ 不画常量曲线冒充）。
+#[must_use]
+pub fn project_compressor_curve(project: &YebanProjectV1, track: Option<&TrackV3>) -> String {
+    let _ = project;
+    let Some(track) = track else {
+        return String::new();
+    };
+    let Some(comp_device) = track
+        .devices
+        .iter()
+        .find(|d| d.params.iter().any(|p| p.name == "ratio") || d.name.contains("压缩"))
+    else {
+        return String::new();
+    };
+    let ratio = comp_device
+        .params
+        .iter()
+        .find(|p| p.name == "ratio")
+        .map_or(4.0, |p| p.value);
+    let threshold = comp_device
+        .params
+        .iter()
+        .find(|p| p.name == "threshold_db" || p.name == "threshold")
+        .map_or(-18.0, |p| p.value);
+    calculate_comp_curve_svg(threshold, ratio)
 }
 
 /// 计算展示轨的压缩器参数与衰减读数 (G-D6)。
