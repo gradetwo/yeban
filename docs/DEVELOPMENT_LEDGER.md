@@ -18263,3 +18263,19 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   的 `collapsible_if`（合并 let-chains），`fault_vocabulary` 新增
   `domain/sfz.rs::notesEmpty.reason` 动态站点登记（键站点 345 → 346、总出现 349 → 350、
   运行时站点 6 → 7，⛔ 不放宽扫描器）。
+
+### 24.7 ⭐ 合流整树全量判决（2026-11-16，A/B/C/D + set_hdcc + db8873f 全部在内）
+
+- tip `c6729977` 在同树 tag `verify-c6729977` 上以
+  `workflow_dispatch(force_full=true)` 起 run **`43901015038`** =
+  `completed / **success**`（`checks` / `deny` / `lockfile` / `plan` / `e2e` /
+  `rust (workspace 全量)` / `macos` / `windows` 全绿，矩阵腿 `skipped`）。
+- `rust (workspace 全量)` 作业日志现读：`test result:` **761** 行、`FAILED` **0**；
+  `set_hdcc_defaults` / `h1_set_hdcc` / `set_hdcc_float_default` /
+  `sfz_release_trigger` / `sfz_sustain_pedal` / `the_sfz_wav_tool_reports`
+  各 **1** 次在场。
+- ⚠ 到达这一绿之前，整树连续红在**其它线在途**的 UI 波形接线
+  （`TimelineBlockData::waveform_peaks` 两处漏改、`pump_waveform_analysis` 缺失）与
+  `sfz_decoded_formats` 的过期 unsupported 判据（三条基线键 ＋ 已退役四键）——
+  均已就地补上（`98fd43f1` / `acd55642` / `c6729977`），未放宽任何判据。
+- 本行是"未读判决 = pending"纪律下，**所有已合流工作**的整树全量绿读数。
