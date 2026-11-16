@@ -25,6 +25,28 @@
 处理器被 `wire_aether_actions` 的后写覆盖，从未执行 ⇒ 删除。⛔ 行为零变更。
 判据 `tests/dead_code_removed.rs` 钉住「全仓只赋值一次」。
 
+## D2 — 顺带发现：golden 重录机制当前**不生效**（2026-11-16 实测）
+
+`gates-manual.yml` 的 `goldens` 档跑 `YEBAN_WRITE_GOLDEN=1 cargo test --test real_ui_tier1`
+并上传 `crates/yeban-app/tests/golden/linux/`。实测 run `43829721705`（success，
+artifact `golden-linux`）：
+
+- artifact 的 5 张 PNG 与仓库**哈希完全相同**（`SAME` ×5）；
+- artifact 的 `MANIFEST.txt` 仍记录 **2026-10-07** 的旧 run `37695374534`；
+⇒ **上传的是仓库 checkout 里的旧图**，测试没有写出新图。
+
+根因：
+1. `regenerate_golden_if_asked` 只在 `src/test_port_adapter.rs:159`（截图路径）被调用，
+   而 `real_ui_tier1.rs` **没有任何截图调用** ⇒ 该测试不产生图；
+2. `assert_matches_golden` 里 `GOLDEN_COMPARE_ENABLED = false`（2026-11-12 Wang 定、
+   UI 重构期禁用）⇒ 即使图变了也不比对。
+
+影响：本轮视觉改动（选中高亮 / 片段标签 / 对比度）**只有源码层判据**看守，
+⛔ 不能声称"golden 已验证"。
+
+建议：让 `real_ui_tier1` 真正调用截图 API（或改用带截图的入口）→ 复核 5 张基准 →
+恢复 `GOLDEN_COMPARE_ENABLED = true`。在此之前，任何"golden 重录"都是空操作。
+
 ## 实现要点与依赖（按可交付性排序）
 
 ### B1 波形真实峰值（中-大，2026-11-16 细化依赖）
