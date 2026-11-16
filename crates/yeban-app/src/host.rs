@@ -18163,7 +18163,8 @@ fn roll_base_for_pitch_range(lo: u8, hi: u8) -> u8 {
     } else {
         lo.saturating_add(span / 2).saturating_sub(lane_count / 2)
     };
-    base.min(127 - (lane_count - 1)).max(0)
+    // u8 天然 >= 0；只需钳上界（base+15 不得超过 127）。
+    base.min(127 - (lane_count - 1))
 }
 
 /// 由片段起始 tick 算卷帘横向 scroll（片段起点留 16px 边距）。
