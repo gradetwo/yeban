@@ -148,6 +148,10 @@ else
     || die "candle/light 失败 (原因见上面输出)"
 fi
 [[ -f "$out_abs/$name.msi" ]] || die "build 退出 0 但 MSI 不在: $out_abs/$name.msi"
+# WiX (v3 light / v4 build 都会) 在 MSI 旁边留一个 $name.wixpdb 调试符号文件;
+# 它不是发布物, 不删会被 workflow 的 dist/* 一并上传到 Release 里
+# (2026-11-16 run 43823130284 的 Windows artifact 实证混入)。
+rm -f "$out_abs/$name.wixpdb"
 ( cd "$out_abs" && python3 -c "import hashlib; print(hashlib.sha256(open('$name.msi','rb').read()).hexdigest() + '  $name.msi')" > "$name.msi.sha256" )
 
 # --- 3. 自验: msiexec /a 管理安装 + --version 对账 ---------------------------
