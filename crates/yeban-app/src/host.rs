@@ -19502,10 +19502,60 @@ pub fn wire_aether_actions(
     ui.on_command_execute({
         let w = weak.clone();
         let port = Rc::clone(&port);
+        let paths_for_cmd = paths.clone();
         move |cmd| {
             if let Some(ui) = w.upgrade() {
+                let w = w.clone();
                 match cmd.as_str() {
                     "place-audio-clip" => place_latest_audio_clip(&ui, &port),
+                    // ⭐ 分轨导出 GUI 入口（ADR-0076 B5）：后端与 CLI / MCP **同一份**
+                    // （`crate::export_stems::export_stems`）；这里只补「定输出目录 + 线程 + 回执」。
+                    // 输出目录 = WAV 导出路径的同级 `stems/`（GUI 暂无目录选择器，见 ADR-0076 B5）。
+                    "export-stems" => {
+                        let parent = paths_for_cmd.export_wav.parent().map_or_else(
+                            || std::path::PathBuf::from("."),
+                            std::path::Path::to_path_buf,
+                        );
+                        let out_dir = parent.join("stems");
+                        if let Err(err) = std::fs::create_dir_all(&out_dir) {
+                            ui.set_toast_message(
+                                format!("[导出] 无法创建分轨目录 {}：{err}", out_dir.display())
+                                    .into(),
+                            );
+                            return;
+                        }
+                        let Some(project) = port.try_project() else {
+                            ui.set_toast_message("[导出] 没有活跃工程，无法导出分轨".into());
+                            return;
+                        };
+                        // `project_path` 只用于解析 SFZ 相对路径（与 CLI 同口径）。
+                        let project_path = paths_for_cmd.export_wav.clone();
+                        let worker = w.clone();
+                        let out_for_msg = out_dir.clone();
+                        let _ = std::thread::spawn(move || {
+                            let result = crate::export_stems::export_stems(
+                                &project,
+                                &project_path,
+                                &out_dir,
+                                None,
+                                &[],
+                            );
+                            let _ = worker.upgrade_in_event_loop(move |ui| match result {
+                                Ok(report) => ui.set_toast_message(
+                                    format!(
+                                        "[导出] 分轨完成：{} 条（跳过 {}）→ {}",
+                                        report.stems.len(),
+                                        report.skipped.len(),
+                                        out_for_msg.display()
+                                    )
+                                    .into(),
+                                ),
+                                Err(err) => {
+                                    ui.set_toast_message(format!("[导出] 分轨失败：{err}").into())
+                                }
+                            });
+                        });
+                    }
                     other => dispatch_aether_command(&ui, other),
                 }
             }
