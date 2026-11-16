@@ -805,6 +805,34 @@
 //!
 //! [`Instrument::region_for_with`]: yeban_sfz::instrument::Instrument::region_for_with
 //!
+//! # ⭐ 触发期随机族（`offset_random` / `amp_random`）
+//!
+//! 与随机轮替**共用**同一个 `trigger_rand` 读数（规范对三族都写
+//! "Computed when the note is triggered"）：`offset_random` 位移采样起点、
+//! `amp_random` 给一个单极衰减的增益乘子。
+//!
+//! * **规范逐字**：<https://sfzformat.com/opcodes/offset_random/> 的
+//!   "Random offset added to the region offset." 与 "**Unipolar in ARIA, Cakewalk
+//!   and rcg sfz.**"；<https://sfzformat.com/opcodes/amp_random/> 的
+//!   "Random volume for the region, in decibels." 与 "In ARIA and Cakewalk,
+//!   `amp_random` is **unipolar**."。
+//! * **唯一算术**在 `yeban-sfz`（[`yeban_sfz::instrument::offset_random_shift`] /
+//!   [`yeban_sfz::instrument::amp_random_gain`]）；本模块只搬运两个读数
+//!   （[`PreparedRegion::offset_random`] / [`PreparedRegion::amp_random_db`]）并在
+//!   触发期求值（[`PreparedRegion::span_bounds_with_rand`] /
+//!   [`PreparedRegion::amp_random_gain`]）。
+//! * **哪些路应用**：有触发身份的两条（实时声部触发、离线 `occurrence` 入口）；
+//!   一次性回调口 [`PreparedSfz::render_block_into_with_cc`] 没有 occurrence 概念
+//!   ⇒ 与 `seq_*` / `lorand` 在**同一条**路上的既有边界一致，按 `rand = 0` 渲染。
+//! * **`has_rand` 语义扩写**：从「有随机门」扩到「**本次触发需要一个随机数**」
+//!   （三族任一在场）⇒ 每键触发计数照旧推进；三族全不在 ⇒ `false`（逐位不变）。
+//! * **尺寸**：`PreparedRegion` 6248 → **6256 B**（＋8 ＝ `offset_random: u32` ＋
+//!   `amp_random: f32`，摊平期）；`SfzVoice` 40 / `SfzVoicePool` 4800 /
+//!   `EngineRuntime` 45888 三条**全部 ＋0**（随机音量折进既有的
+//!   `SfzVoice::track_gain` 标量，⛔ 不新增逐声部字段）。
+//! * 判据：`tests/sfz_random_start.rs` 的 R1～R6；口径与语料普查在
+//!   `docs/ledger/sfz-random-start-notes.md`。
+//!
 //! # ⭐ 键盘跟踪（`pitch_keytrack` / `amp_keytrack` / `amp_keycenter`）
 //!
 //! ## 规范逐字（2026-11-14 现读）
@@ -2461,15 +2489,22 @@ impl SfzInstrument {
                 // [`volume_ratio_with_baked`]）⇒ 三条路逐位一致（判据 `S114`）。
                 // 缺省（无 `volume_*ccN`）⇒ 乘子恰 `1.0` ⇒ 乘它**逐位不变**。
                 let volume_ratio = volume_ratio_with_baked(baked.as_deref().unwrap_or(&[]), cc);
+                // ⭐ 本片：随机音量（`amp_random`）是**最外层**乘子；缺省 `0 dB` ⇒ 乘子
+                // 恰 `1.0` ⇒ 既有读数逐位不变（IEEE：`x * 1.0 == x`）。
                 let gain = region.playback_spec_with(&query, rates).total_gain()
                     * amplitude_gain
-                    * volume_ratio;
+                    * volume_ratio
+                    * region.amp_random_gain(rand.unwrap_or(0.0));
                 // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
                 if !rate_is_usable(rate) || pcm_len == 0 {
                     continue;
                 }
                 // ⭐ `offset`/`end`：与摊平表、实时声部**同一份**归约（`None` ⇒ 不产生输出）。
-                let Some((start, source_end)) = reduce_span(region.playback_span(), pcm_len) else {
+                // ⭐ 本片：起点带**本次触发的随机位移**（`offset_random`）；`rand == None`
+                // （旧入口 / 无触发身份）⇒ 位移恰 `0` ⇒ 与接线前逐位相同。
+                let Some((start, source_end)) =
+                    reduce_span(region.playback_span_with_rand(rand.unwrap_or(0.0)), pcm_len)
+                else {
                     continue;
                 };
                 // ⭐ 循环：与摊平表、实时声部**同一份**归约（`None` ⇒ 按不循环渲染）。
@@ -4334,6 +4369,24 @@ pub struct PreparedRegion {
     lorand: f32,
     /// ⭐ **随机轮替上界**（`hirand`，缺省 1）。口径同 [`Self::lorand`]。
     hirand: f32,
+    /// ⭐ **随机起始偏移**（`offset_random`，采样点，缺省 0；本片）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里落地（[`Region::offset_random`]：`u32` 全域、
+    /// 越界是响亮 `IntegerOutOfRange`）⇒ 本字段只把那份 `u32` 搬进摊平表。
+    ///
+    /// **触发期**由 [`Self::span_bounds_with_rand`] 加在起点上；位移算术的唯一实现
+    /// 是 [`yeban_sfz::instrument::offset_random_shift`]（⛔ 本模块没有第二套）。
+    /// ⚠ 它**不**改 [`Self::span`]（摊平期只存确定性起点）⇒ 声部仍只带既有
+    /// `source_start` 字段（`SfzVoice` 仍 40 B）。
+    offset_random: u32,
+    /// ⭐ **随机音量**（`amp_random`，dB，缺省 0；本片）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里落地（[`Region::amp_random`]：`0 ..= 24`、
+    /// 越界是响亮 `FloatOutOfRange`）。触发期乘子由 [`Self::amp_random_gain`]
+    /// 给出（唯一实现 [`yeban_sfz::instrument::amp_random_gain`]）。
+    /// ⚠ 实时路径把它**折进** `SfzVoice::track_gain`（该字段本就是标量乘子）
+    /// ⇒ ⛔ 不新增逐声部字段。
+    amp_random_db: f32,
     /// ⭐ **振幅键位跟踪量**（`amp_keytrack`，**dB/键**，缺省 0）。
     ///
     /// 解析与取值域在 `yeban-sfz` 里**已落地**（[`Region::amp_keytrack`]，
@@ -4522,6 +4575,18 @@ impl PreparedRegion {
         self.amp_keytrack
     }
 
+    /// ⭐ **随机起始偏移**（`offset_random`，采样点，缺省 0；原样）。
+    #[must_use]
+    pub const fn offset_random(&self) -> u32 {
+        self.offset_random
+    }
+
+    /// ⭐ **随机音量**（`amp_random`，dB，缺省 0；原样）。
+    #[must_use]
+    pub const fn amp_random_db(&self) -> f32 {
+        self.amp_random_db
+    }
+
     /// ⭐ **振幅键位跟踪中心键**（`amp_keycenter`，缺省 60；原样）。
     #[must_use]
     pub const fn amp_keycenter(&self) -> i32 {
@@ -4704,9 +4769,49 @@ impl PreparedRegion {
     /// ⭐ **`span` 的归约结果**：`(源起点, 源终点)`（半开）；`None` ＝ 不产生采样输出。
     ///
     /// 直接转交 [`reduce_span`]（⭐ **唯一**归约）⇒ 离线/摊平/实时三条路不可能分叉。
+    /// ⭐ 本方法是 [`Self::span_bounds_with_rand`] 在 `rand = 0` 时的同一条实现
+    /// （`offset_random` 的位移恰 `0`）⇒ 没有该 opcode 的区域**逐位不变**。
     #[must_use]
     pub fn span_bounds(&self, pcm_len: usize) -> Option<(f32, u64)> {
         reduce_span(self.span, pcm_len)
+    }
+
+    /// ⭐ **带上本次触发随机数的 `span` 归约**（`offset_random`；本片）。
+    ///
+    /// 与 [`Self::span_bounds`] **同一条** [`reduce_span`]，只把起点先加上
+    /// [`yeban_sfz::instrument::offset_random_shift`]（唯一算术实现）：
+    ///
+    /// ```text
+    /// start' = span.start + floor(rand × offset_random)
+    /// end    = min(span.end, pcm_len)          // 与 rand 无关
+    /// end <= start'  ⇒  None                   // 位移把起点推过终点 ⇒ 不发声
+    /// ```
+    ///
+    /// ⚠ **为什么在这里、⛔ 不在摊平期**：规范逐字 "Computed when the note is
+    /// triggered." ⇒ 同一条区域每次触发可以取到不同起点；摊平表只存确定性
+    /// `span`（`rand = 0` 的读数）。
+    ///
+    /// ⚠ **哪些路会用它**：有触发身份的两条（实时声部触发、离线 `occurrence`
+    /// 入口）；一次性回调口 [`PreparedSfz::render_block_into_with_cc`] **没有**
+    /// occurrence 概念 ⇒ 按 `rand = 0` 渲染 —— 与 `seq_*` / `lorand` 在同一条
+    /// 路上的既有口径一致（那条路也不做轮替/随机门选择）。
+    #[must_use]
+    pub fn span_bounds_with_rand(&self, pcm_len: usize, rand: f32) -> Option<(f32, u64)> {
+        let shift = yeban_sfz::instrument::offset_random_shift(self.offset_random, rand);
+        let span = self.span.map(|span| SampleSpan {
+            start: span.start.saturating_add(shift),
+            end: span.end,
+        });
+        reduce_span(span, pcm_len)
+    }
+
+    /// ⭐ **随机音量乘子**（`amp_random`；本片）：唯一实现
+    /// [`yeban_sfz::instrument::amp_random_gain`]。
+    ///
+    /// `amp_random = 0` ⇒ 恰 `1.0` ⇒ 增益链**逐位不变**。
+    #[must_use]
+    pub fn amp_random_gain(&self, rand: f32) -> f32 {
+        yeban_sfz::instrument::amp_random_gain(self.amp_random_db, rand)
     }
 
     /// ⭐ **源采样起点**（`offset`，已归约）；`None` ＝ 不产生采样输出。
@@ -5660,7 +5765,14 @@ impl PreparedSfz {
         let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs, lfo_defs) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
-        let has_rand = regions.iter().any(|region| region.has_rand_gate());
+        // ⭐ 本片：`has_rand` 的语义从「有随机门」扩到「**本次触发需要一个随机数**」
+        // —— `offset_random` / `amp_random` 与 `lorand`/`hirand` 共用 `trigger_rand`
+        // 的同一个读数（规范对三者都写 "Computed when the note is triggered"）。
+        // ⚠ 它只控制「要不要推进每键触发计数并派生 `rand`」⇒ 没有这三族 opcode 的库
+        // 仍为 `false`（分支整段跳过，逐位不变）。
+        let has_rand = regions.iter().any(|region| {
+            region.has_rand_gate() || region.offset_random() > 0 || region.amp_random_db() > 0.0
+        });
         Ok(Self {
             regions,
             samples,
@@ -5748,7 +5860,14 @@ impl PreparedSfz {
         missing.sort();
         missing.dedup();
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
-        let has_rand = regions.iter().any(|region| region.has_rand_gate());
+        // ⭐ 本片：`has_rand` 的语义从「有随机门」扩到「**本次触发需要一个随机数**」
+        // —— `offset_random` / `amp_random` 与 `lorand`/`hirand` 共用 `trigger_rand`
+        // 的同一个读数（规范对三者都写 "Computed when the note is triggered"）。
+        // ⚠ 它只控制「要不要推进每键触发计数并派生 `rand`」⇒ 没有这三族 opcode 的库
+        // 仍为 `false`（分支整段跳过，逐位不变）。
+        let has_rand = regions.iter().any(|region| {
+            region.has_rand_gate() || region.offset_random() > 0 || region.amp_random_db() > 0.0
+        });
         Ok(Self {
             regions,
             samples,
@@ -5904,7 +6023,13 @@ impl PreparedSfz {
         self.has_round_robin
     }
 
-    /// ⭐ 这条乐器是否**有**随机轮替区域（实时路径读的就是这一位）。
+    /// ⭐ 这条乐器**本次触发要不要一个随机数**（实时路径读的就是这一位）。
+    ///
+    /// ⚠ **本片把语义从「有随机门」扩到「有任何触发期随机」**：`lorand`/`hirand`
+    /// （随机轮替）、`offset_random`（随机起点）、`amp_random`（随机音量）三族共用
+    /// [`yeban_sfz::instrument::trigger_rand`] 的**同一个**读数（规范对三者都写
+    /// "Computed when the note is triggered"）⇒ 任一族在场就推进每键触发计数并派生
+    /// `rand`。三族**全都不在**的语料 ⇒ `false`（分支整段跳过，逐位不变）。
     #[must_use]
     pub const fn has_rand(&self) -> bool {
         self.has_rand
@@ -6457,6 +6582,9 @@ fn flatten_regions(
                 // 与「没写」在谓词层分叉。
                 lorand: region.lorand,
                 hirand: region.hirand,
+                // ⭐ 随机起始偏移 / 随机音量（本片）：同样只**搬运**已裁定的读数。
+                offset_random: region.offset_random,
+                amp_random_db: region.amp_random,
                 amp_keytrack: region.amp_keytrack,
                 amp_keycenter: region.amp_keycenter,
                 // ⭐ 滤波静态族（`fil_type` / `cutoff` / `resonance` /
@@ -8038,7 +8166,11 @@ impl SfzVoicePool {
                 continue;
             }
             // ⭐ 起点/终点口径：同一份归约（`span() == None` / 空区间 ⇒ 不建声部）。
-            let Some((source_start, source_end)) = region.span_bounds(pcm_len) else {
+            // ⭐ 本片：起点带**本次触发的随机位移**（`offset_random`）。
+            // `rand == None`（`has_rand == false` 的库）⇒ 位移恰 `0` ⇒ 逐位不变。
+            let Some((source_start, source_end)) =
+                region.span_bounds_with_rand(pcm_len, rand.unwrap_or(0.0))
+            else {
                 continue;
             };
             // ⭐ **播放方向**（任务单 `#113`）：与离线/摊平两条路**同一份**归约
@@ -8050,11 +8182,15 @@ impl SfzVoicePool {
             // ⭐ 引擎层的轨增益门**乘在乐器层增益之外**（两个归属各一份 ⇒ ⛔ 不重复）。
             // ⚠ 任务单 `#108`：这里**只**存引擎层那一份（`track_gain`）—— 乐器层
             // （含 CC 轴交叉淡化）由逐块路径现算（CC 逐块可变，触发期烘死不成立）。
+            // ⭐ 本片：随机音量（`amp_random`）**折进**声部的轨增益标量（该字段本就是
+            // 乘子；⛔ 不新增逐声部字段 ⇒ `SfzVoice` 仍 40 B）。缺省 `0 dB` ⇒ 乘子恰
+            // `1.0` ⇒ `track_gain` 逐位不变。
+            let voice_gain = track_gain * region.amp_random_gain(rand.unwrap_or(0.0));
             let voice = SfzVoice::new(
                 note,
                 velocity,
                 rate,
-                track_gain,
+                voice_gain,
                 region.sample_index,
                 region_index,
                 source_start,
