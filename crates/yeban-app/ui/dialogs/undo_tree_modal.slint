@@ -89,7 +89,7 @@ export component UndoTreeModal inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "undo-tree-modal";
-    accessible-label: "编曲版本时光机图谱";
+    accessible-label: @tr("编曲版本时光机图谱");
 
     // ⭐ `D-UI-21`：遮罩**真的**吞掉鼠标 —— 与 `dialogs/export_wav_dialog.slint` 同一条修复。
     // 组件根本身是 `Rectangle`，而 `Rectangle` 对鼠标事件返回 `EventIgnored`：Slint 里只有
@@ -118,14 +118,14 @@ export component UndoTreeModal inherits Rectangle {
 
         accessible-role: region;
         accessible-id: "undo-tree-panel";
-        accessible-label: "版本图谱面板";
+        accessible-label: @tr("版本图谱面板");
 
         UiTitleText {
             x: Tokens.space-6;
             y: Tokens.space-4;
             width: parent.width - 96px;
             height: 24px;
-            text: "编曲时光机 · 版本 DAG";
+            text: @tr("编曲时光机 · 版本 DAG");
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-xl;
         }
@@ -136,8 +136,7 @@ export component UndoTreeModal inherits Rectangle {
             y: 34px;
             width: parent.width - 96px;
             height: 16px;
-            text: "分支 " + root.branch-name + " · 可撤销 " + root.undo-depth + " 步 · 已撤销 "
-                + root.undone-depth + " 步 · 提交 " + root.commit-count + " 条";
+            text: @tr("分支 {} · 可撤销 {} 步 · 已撤销 {} 步 · 提交 {} 条", root.branch-name, root.undo-depth, root.undone-depth, root.commit-count);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }
@@ -152,7 +151,7 @@ export component UndoTreeModal inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "undo-tree-close-button";
-            accessible-label: "关闭时光机";
+            accessible-label: @tr("关闭时光机");
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
             accessible-action-default => { root.close(); }
 
@@ -254,14 +253,14 @@ export component UndoTreeModal inherits Rectangle {
 
             accessible-role: text;
             accessible-id: "undo-tree-empty-state";
-            accessible-label: "还没有任何版本提交。撤销历史为空。";
+            accessible-label: @tr("还没有任何版本提交。撤销历史为空。");
 
             UiText {
                 x: Tokens.space-4;
                 y: 0;
                 width: parent.width - 8px;
                 height: parent.height;
-                text: "还没有任何版本提交。撤销历史为空。";
+                text: @tr("还没有任何版本提交。撤销历史为空。");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-sm;
                 overflow: elide;
@@ -280,15 +279,14 @@ export component UndoTreeModal inherits Rectangle {
 
             accessible-role: text;
             accessible-id: "undo-tree-truncation-note";
-            accessible-label: "更早的 " + root.node-hidden + " 个版本未画出";
+            accessible-label: @tr("更早的 {} 个版本未画出", root.node-hidden);
 
             UiMonoText {
                 x: 0;
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "更早的 " + root.node-hidden + " 个版本未画出（画布只画得下最近 "
-                    + root.node-count + " 个）";
+                text: @tr("更早的 {} 个版本未画出（画布只画得下最近 {} 个）", root.node-hidden, root.node-count);
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;
@@ -310,7 +308,7 @@ export component UndoTreeModal inherits Rectangle {
             border-color: root.can-undo ? Tokens.gold : Tokens.line-strong;
             accessible-role: button;
             accessible-id: "undo-tree-undo-button";
-            accessible-label: "撤销一步 (Cmd+Z)";
+            accessible-label: @tr("撤销一步 (Cmd+Z)");
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同
             // （同一格 `UndoPort::perform`，与 `Cmd+Z` 同源）。
             accessible-action-default => { root.undo-step(); }
@@ -320,7 +318,7 @@ export component UndoTreeModal inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: root.can-undo ? "撤销一步 (" + root.undo-depth + " 步可撤)" : "无历史可撤";
+                text: root.can-undo ? @tr("撤销一步 ({} 步可撤)", root.undo-depth) : @tr("无历史可撤");
                 color: root.can-undo ? Tokens.gold-bright : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -351,7 +349,7 @@ export component UndoTreeModal inherits Rectangle {
             border-color: root.can-redo ? Tokens.gold : Tokens.line-strong;
             accessible-role: button;
             accessible-id: "undo-tree-redo-button";
-            accessible-label: "重做一步";
+            accessible-label: @tr("重做一步");
             accessible-action-default => { root.redo-step(); }
 
             UiText {
@@ -359,7 +357,7 @@ export component UndoTreeModal inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: root.can-redo ? "重做一步 (" + root.undone-depth + " 步可重做)" : "无历史可重做";
+                text: root.can-redo ? @tr("重做一步 ({} 步可重做)", root.undone-depth) : @tr("无历史可重做");
                 color: root.can-redo ? Tokens.gold-bright : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -378,7 +376,7 @@ export component UndoTreeModal inherits Rectangle {
             y: parent.height - 32px;
             width: parent.width - 32px;
             height: 20px;
-            text: "撤销一步与 Cmd+Z 同源 · 点击版本节点回到该版本 · Esc 关闭";
+            text: @tr("撤销一步与 Cmd+Z 同源 · 点击版本节点回到该版本 · Esc 关闭");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }

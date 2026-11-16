@@ -92,13 +92,13 @@ export component ModuleActions inherits Rectangle {
         y: 212px;
         width: parent.width - 8px;
         height: 16px;
-        text: "模块入口";
+        text: @tr("模块入口");
         color: Tokens.gold;
         font-size: Tokens.font-size-sm;
         // [PATCH UI-A11Y-007]：可寻址节点必须显式声明 role（注册表 = ElementKind::Text）。
         accessible-role: text;
         accessible-id: "module-actions-title";
-        accessible-label: "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入";
+        accessible-label: @tr("模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入");
     }
 
     // ------------------------------------------------------------- 导出 WAV
@@ -114,7 +114,7 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-export-wav-button";
-        accessible-label: "导出 WAV（打开采样率 / 位深 / 时长选项）";
+        accessible-label: @tr("导出 WAV（打开采样率 / 位深 / 时长选项）");
         accessible-action-default => { root.open-export-wav(); }
 
         UiText {
@@ -122,7 +122,7 @@ export component ModuleActions inherits Rectangle {
             y: 0;
             width: parent.width - 12px;
             height: parent.height;
-            text: "导出 WAV";
+            text: @tr("导出 WAV");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
         }
@@ -146,7 +146,7 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-import-midi-button";
-        accessible-label: "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）";
+        accessible-label: @tr("导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）");
         accessible-action-default => { root.import-midi(); }
 
         UiText {
@@ -154,7 +154,7 @@ export component ModuleActions inherits Rectangle {
             y: 0;
             width: parent.width - 12px;
             height: parent.height;
-            text: "导入 MIDI";
+            text: @tr("导入 MIDI");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
         }
@@ -178,7 +178,7 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-load-sfz-button";
-        accessible-label: "装载 SFZ 乐器（报告区域数并探测一个音符）";
+        accessible-label: @tr("装载 SFZ 乐器（报告区域数并探测一个音符）");
         accessible-action-default => { root.load-sfz(); }
 
         UiText {
@@ -186,7 +186,7 @@ export component ModuleActions inherits Rectangle {
             y: 0;
             width: parent.width - 12px;
             height: parent.height;
-            text: "装载 SFZ";
+            text: @tr("装载 SFZ");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
         }
@@ -211,7 +211,7 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-record-wav-button";
-        accessible-label: "录音（把控制侧测试音录成 24-bit WAV）";
+        accessible-label: @tr("录音（把控制侧测试音录成 24-bit WAV）");
         accessible-action-default => { root.record-wav(); }
 
         UiText {
@@ -219,7 +219,7 @@ export component ModuleActions inherits Rectangle {
             y: 0;
             width: parent.width - 12px;
             height: parent.height;
-            text: "录音（测试音）";
+            text: @tr("录音（测试音）");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
         }
@@ -251,7 +251,7 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-midi-in-button";
-        accessible-label: "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）";
+        accessible-label: @tr("硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）");
         accessible-action-default => { root.midi-in(); }
 
         UiText {
@@ -259,7 +259,7 @@ export component ModuleActions inherits Rectangle {
             y: 0;
             width: parent.width - 12px;
             height: parent.height;
-            text: "MIDI 输入（硬件）";
+            text: @tr("MIDI 输入（硬件）");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
         }
@@ -287,7 +287,7 @@ export component ModuleActions inherits Rectangle {
         accessible-id: "module-midi-in-status";
         // ⚠ 标签**静态**（与 `module-last-status` 同款理由：`[TEST-SPEC-005]` 要求
         // 可见且可寻址的节点必须有非空无障碍名，而默认是空串）。
-        accessible-label: "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）";
+        accessible-label: @tr("最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）");
         // ⭐ 任务单 `#236`：可见文本 = `accessible-value` ⇒ 屏幕阅读器读到的是这一串
         // 回执原文（与下面的通用回执行、`module-clipping-warning` 同款绑定）。
         accessible-value: root.midi-in-status;
@@ -314,7 +314,7 @@ export component ModuleActions inherits Rectangle {
         // 而回执在没人按之前是空串 ⇒ 绑上去会让这个节点**无名字**。
         // 动态内容仍然可读：判据读 `MainWindow.module-status`，屏幕阅读器读下面的
         // `accessible-value`（与可见 `text` 绑同一个属性）。
-        accessible-label: "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）";
+        accessible-label: @tr("最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）");
         // ⭐ 任务单 `#236`：可见文本 = `accessible-value`（读屏与判据读同一串字节，
         // ⛔ 不是第二份）。默认空串 ⇒ 值是 `""` 而不是"没有值"。
         accessible-value: root.status;
@@ -340,7 +340,7 @@ export component ModuleActions inherits Rectangle {
         accessible-id: "module-clipping-warning";
         // 静态标签：`[TEST-SPEC-005]` 要求可见且可寻址的节点必须有非空无障碍名，
         // 而默认是空串 ⇒ ⛔ 不把 label 绑到动态文本上。
-        accessible-label: "母带削波警示（削波样本数 / 建议减多少 dB）";
+        accessible-label: @tr("母带削波警示（削波样本数 / 建议减多少 dB）");
         // 可见文本 = `accessible-value`（读屏与判据读同一串字节，⛔ 不是第二份）。
         accessible-value: root.clipping-warning;
     }
@@ -377,7 +377,7 @@ export component ModuleActions inherits Rectangle {
         accessible-role: text;
         accessible-id: "module-import-losses";
         // 静态标签（与 `elements.rs` 的注册表标签逐字相同）；⛔ 不绑动态文本。
-        accessible-label: "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）";
+        accessible-label: @tr("最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）");
         // 可见文本 = `accessible-value`（读屏与判据读同一串字节，⛔ 不是第二份）。
         accessible-value: root.import-losses;
     }

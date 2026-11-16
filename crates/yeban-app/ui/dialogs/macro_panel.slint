@@ -42,7 +42,7 @@ export component MacroPanel inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "macro-panel";
-    accessible-label: "宏面板";
+    accessible-label: @tr("宏面板");
     // 宏条数进 `accessible-value`，与标题里的 "(N)" 同一份读数。
     accessible-value: "" + root.macro-names.length;
 
@@ -59,13 +59,13 @@ export component MacroPanel inherits Rectangle {
             y: 0;
             width: parent.width - 64px;
             height: parent.height;
-            text: "宏 (" + root.macro-names.length + ") · " + root.track-label;
+            text: @tr("宏 ({}) · {}", root.macro-names.length, root.track-label);
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-lg;
             overflow: elide;
             accessible-role: text;
             accessible-id: "macro-panel-title";
-            accessible-label: "宏面板，" + root.track-label;
+            accessible-label: @tr("宏面板，{}", root.track-label);
         }
 
         Rectangle {
@@ -79,7 +79,7 @@ export component MacroPanel inherits Rectangle {
             border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "macro-panel-close-button";
-            accessible-label: "关闭宏面板";
+            accessible-label: @tr("关闭宏面板");
             accessible-action-default => {
                 root.close();
             }
@@ -114,13 +114,13 @@ export component MacroPanel inherits Rectangle {
         y: 52px;
         width: parent.width - 32px;
         height: 16px;
-        text: "这条轨没有宏";
+        text: @tr("这条轨没有宏");
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         visible: root.macro-names.length == 0;
         accessible-role: text;
         accessible-id: "macro-empty-state";
-        accessible-label: "这条轨没有宏";
+        accessible-label: @tr("这条轨没有宏");
     }
 
     // ---------------------------------------------------------------- 宏行
@@ -179,7 +179,7 @@ export component MacroPanel inherits Rectangle {
             background: transparent;
             accessible-role: slider;
             accessible-id: "macro-" + macro_index + "-slider";
-            accessible-label: macro_name + " 位置";
+            accessible-label: @tr("{} 位置", macro_name);
             accessible-orientation: horizontal;
             accessible-value-minimum: 0.0;
             accessible-value-maximum: 1.0;

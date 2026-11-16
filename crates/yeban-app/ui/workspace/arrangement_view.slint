@@ -158,7 +158,7 @@ export component ArrangementView inherits Rectangle {
 
     accessible-role: main;
     accessible-id: "workspace-arrangement-canvas";
-    accessible-label: "Arrangement 线性编曲时间轴";
+    accessible-label: @tr("Arrangement 线性编曲时间轴");
 
     // ---------------------------------------------------------------- 轨道高度拖拽手势
     //
@@ -320,7 +320,7 @@ export component ArrangementView inherits Rectangle {
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-h-out-button";
-        accessible-label: "横向缩小";
+        accessible-label: @tr("横向缩小");
         accessible-action-default => { root.zoom-h-step(false); }
         UiText {
             x: 0;
@@ -361,7 +361,7 @@ export component ArrangementView inherits Rectangle {
         height: 20px;
         accessible-role: slider;
         accessible-id: "arrangement-zoom-h-slider";
-        accessible-label: "横向缩放";
+        accessible-label: @tr("横向缩放");
         accessible-value: "" + Math.round(root.zoom-h-fraction * 100) + "%";
         accessible-action-increment => { root.zoom-h-step(true); }
         accessible-action-decrement => { root.zoom-h-step(false); }
@@ -389,7 +389,7 @@ export component ArrangementView inherits Rectangle {
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-h-in-button";
-        accessible-label: "横向放大";
+        accessible-label: @tr("横向放大");
         accessible-action-default => { root.zoom-h-step(true); }
         UiText {
             x: 0;
@@ -418,7 +418,7 @@ export component ArrangementView inherits Rectangle {
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-v-out-button";
-        accessible-label: "纵向缩小";
+        accessible-label: @tr("纵向缩小");
         accessible-action-default => { root.zoom-v-step(false); }
         UiText {
             x: 0;
@@ -459,7 +459,7 @@ export component ArrangementView inherits Rectangle {
         height: 20px;
         accessible-role: slider;
         accessible-id: "arrangement-zoom-v-slider";
-        accessible-label: "纵向缩放";
+        accessible-label: @tr("纵向缩放");
         accessible-value: "" + Math.round(root.zoom-v-fraction * 100) + "%";
         accessible-action-increment => { root.zoom-v-step(true); }
         accessible-action-decrement => { root.zoom-v-step(false); }
@@ -482,7 +482,7 @@ export component ArrangementView inherits Rectangle {
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "arrangement-zoom-v-in-button";
-        accessible-label: "纵向放大";
+        accessible-label: @tr("纵向放大");
         accessible-action-default => { root.zoom-v-step(true); }
         UiText {
             x: 0;
@@ -512,7 +512,7 @@ export component ArrangementView inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "section-" + section_index + "-card";
-        accessible-label: "章节 " + section_name;
+        accessible-label: @tr("章节 {}", section_name);
         accessible-item-index: section_index;
         accessible-item-count: root.sections.length;
         // ⭐ `U-05`：章节卡片此前**只显示、不可点**。默认动作 = 走带定位到该段起点
@@ -543,7 +543,7 @@ export component ArrangementView inherits Rectangle {
             background: root.section-colors[section_index];
             accessible-role: image;
             accessible-id: "section-" + section_index + "-color-swatch";
-            accessible-label: "段落色标 " + root.section-color-labels[section_index];
+            accessible-label: @tr("段落色标 {}", root.section-color-labels[section_index]);
         }
 
         UiSerifText {
@@ -571,7 +571,7 @@ export component ArrangementView inherits Rectangle {
         // `accessible-value` 报的是**当前走带位置**（与时间码同一个引擎读数）。
         accessible-role: slider;
         accessible-id: "arrangement-ruler";
-        accessible-label: "小节与拍标尺";
+        accessible-label: @tr("小节与拍标尺");
         accessible-value: root.playhead-timecode;
         accessible-action-increment => { root.ruler-step(1); }
         accessible-action-decrement => { root.ruler-step(-1); }
@@ -682,7 +682,7 @@ export component ArrangementView inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "track-" + track_index + "-header";
-        accessible-label: "轨道 " + track_name;
+        accessible-label: @tr("轨道 {}", track_name);
         accessible-item-index: track_index;
         accessible-item-count: root.tracks.length;
         accessible-item-selectable: true;
@@ -790,7 +790,7 @@ export component ArrangementView inherits Rectangle {
         //    控件树（pane_no_overlap / elements 注册表一位不动）；无 `TouchArea` /
         //    `clicked` / `callback` ⇒ 不改命中测试、不改活文档计数。它们排在包头拖拽
         //    `TouchArea` **之后**声明，因此"拖拽面是第一个子元素"的既有假设一位不动。
-        // ② 不改包头 `accessible-label: "轨道 " + track_name`（live_ui_mcp 逐字断言），
+        // ② 不改包头 `accessible-label: @tr("轨道 {}", track_name)`（live_ui_mcp 逐字断言），
         //    不把 `selected-track-id` 引入可见样式（track_selection 棘轮）。
         // ③ `visible` 用「下标 + 非空」双守卫：`track-kinds` 未注入或与 `tracks` 不等长
         //    时整组不画 ⇒ 不伪造"这条轨道是什么类型"的读数（与注入族同款诚实口径）。
@@ -881,7 +881,7 @@ export component ArrangementView inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: image;
             accessible-id: "track-" + track_index + "-color-swatch";
-            accessible-label: "轨道色标 " + root.track-color-labels[track_index];
+            accessible-label: @tr("轨道色标 {}", root.track-color-labels[track_index]);
         }
 
         // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
@@ -894,7 +894,7 @@ export component ArrangementView inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "track-" + track_index + "-mute-button";
-            accessible-label: "轨道 " + track_name + " 静音";
+            accessible-label: @tr("轨道 {} 静音", track_name);
             accessible-checkable: true;
             accessible-checked: root.track-mutes[track_index];
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -934,7 +934,7 @@ export component ArrangementView inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "track-" + track_index + "-solo-button";
-            accessible-label: "轨道 " + track_name + " 独奏";
+            accessible-label: @tr("轨道 {} 独奏", track_name);
             accessible-checkable: true;
             accessible-checked: root.track-solos[track_index];
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -972,7 +972,7 @@ export component ArrangementView inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "track-" + track_index + "-arm-button";
-            accessible-label: "轨道 " + track_name + " 录音准备";
+            accessible-label: @tr("轨道 {} 录音准备", track_name);
             accessible-checkable: true;
             accessible-checked: track_index < root.track-arms.length && root.track-arms[track_index];
             accessible-action-default => { root.track-arm-toggle(track_index); }
@@ -1040,7 +1040,7 @@ export component ArrangementView inherits Rectangle {
         height: root.sheet-height * 1px;
         accessible-role: region;
         accessible-id: "arrangement-lane-scroll-area";
-        accessible-label: "编曲空车道拖动滚动面";
+        accessible-label: @tr("编曲空车道拖动滚动面");
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
                 root.lane-drag-origin-x = self.mouse-x;
@@ -1115,8 +1115,8 @@ export component ArrangementView inherits Rectangle {
             border-color: root.selected-clip-ulid == clip_ulid ? Tokens.selection : transparent;
             accessible-role: list-item;
             accessible-id: "clip-" + clip_ulid + "-header";
-            accessible-label: "剪辑 " + root.clip-labels[clip_index]
-                + (root.clip-mutes[clip_index] ? "（静音）" : "");
+            accessible-label: @tr("剪辑 {}", root.clip-labels[clip_index])
+                + (root.clip-mutes[clip_index] ? @tr("（静音）") : "");
             accessible-item-index: clip_index;
             accessible-item-count: root.clip-ulids.length;
             accessible-item-selectable: true;
@@ -1174,7 +1174,7 @@ export component ArrangementView inherits Rectangle {
         height: root.clip-heights[clip_index] - 18px;
         accessible-role: region;
         accessible-id: "clip-" + clip_ulid + "-body";
-        accessible-label: "剪辑拖动面 " + root.clip-labels[clip_index];
+        accessible-label: @tr("剪辑拖动面 {}", root.clip-labels[clip_index]);
 
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
@@ -1312,7 +1312,7 @@ export component ArrangementView inherits Rectangle {
         background: Tokens.gold;
         accessible-role: image;
         accessible-id: "track-reorder-insertion-line";
-        accessible-label: "轨道插入位置";
+        accessible-label: @tr("轨道插入位置");
     }
 
     }  // ← 行区滚动容器到此结束
@@ -1330,7 +1330,7 @@ export component ArrangementView inherits Rectangle {
         background: Tokens.gold-bright;
         accessible-role: slider;
         accessible-id: "arrangement-playhead";
-        accessible-label: "走带光标";
+        accessible-label: @tr("走带光标");
         accessible-value: root.playhead-timecode;
     }
 
@@ -1360,7 +1360,7 @@ export component ArrangementView inherits Rectangle {
         property <length> thumb-width: min(parent.width, max(20px, parent.width * self.viewport-px / max(1.0, root.content-px)));
         accessible-role: slider;
         accessible-id: "arrangement-hscroll";
-        accessible-label: "编曲横向滚动条";
+        accessible-label: @tr("编曲横向滚动条");
         accessible-value: "" + Math.round(100 * self.scroll-fraction) + "%";
         accessible-action-increment => {
             root.arrangement-scroll-to((root.scroll-x + self.viewport-px) * 1px);

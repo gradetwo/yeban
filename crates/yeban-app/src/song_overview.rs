@@ -192,7 +192,7 @@ pub struct SongOverview {
     /// 该小节实际张力是否超出期望带 0.15 以上（Phase 2 告警，面板画琥珀高亮）。
     pub envelope_alert: Vec<bool>,
     /// 曲风档名（Phase 2，设计稿 §3.6：`"default"` / `"orchestral"` / `"electronic"`；
-    /// 面板预设按钮显示它的中文名，见 [`profile_display_name`]）。
+    /// 面板预设按钮显示它的显示名（按当前界面语言），见 [`profile_display_name_for`]）。
     pub profile: String,
 }
 
@@ -204,6 +204,46 @@ pub fn profile_display_name(profile: &str) -> &'static str {
         "electronic" => "电子",
         _ => "均衡",
     }
+}
+
+/// 曲风档名 → 面板预设按钮的英文名（双语 i18n，line/ui-i18n）。
+#[must_use]
+pub fn profile_display_name_en(profile: &str) -> &'static str {
+    match profile {
+        "orchestral" => "Orchestral",
+        "electronic" => "Electronic",
+        _ => "Balanced",
+    }
+}
+
+/// 曲风档名 → 当前界面语言下的显示名。
+///
+/// 这是宿主写入 .slint 属性的**唯一**一处闭集显示标签（其余界面文案全走
+/// .slint 侧 `@tr`）：写点 [`apply_song_overview`] 按
+/// [`crate::host::current_language`] 取名字，语言切换时
+/// [`crate::host::apply_language`] 再用 [`relabel_profile_display`] 重标
+/// 已显示的那一个。
+#[must_use]
+pub fn profile_display_name_for(profile: &str, lang: crate::cli::Language) -> &'static str {
+    match lang {
+        crate::cli::Language::ZhCn => profile_display_name(profile),
+        crate::cli::Language::EnUs => profile_display_name_en(profile),
+    }
+}
+
+/// 已显示的曲风档名 → 目标语言下的显示名（语言切换时重标用）。
+///
+/// 入参是任一语言下的现行显示名（或档位键名）；不认识的值返回 `None`
+/// （调用方保持原值不动，不猜）。
+#[must_use]
+pub fn relabel_profile_display(current: &str, lang: crate::cli::Language) -> Option<&'static str> {
+    let key = match current {
+        "管弦" | "Orchestral" | "orchestral" => "orchestral",
+        "电子" | "Electronic" | "electronic" => "electronic",
+        "均衡" | "Balanced" | "default" => "default",
+        _ => return None,
+    };
+    Some(profile_display_name_for(key, lang))
 }
 
 /// 下一个曲风档（Phase 2：Default → Orchestral → Electronic → Default 循环）。
@@ -623,7 +663,9 @@ pub fn apply_song_overview(ui: &MainWindow, overview: &SongOverview) {
     ui.set_song_overview_envelope_lo(floats(&overview.envelope_lo));
     ui.set_song_overview_envelope_hi(floats(&overview.envelope_hi));
     ui.set_song_overview_envelope_alert(bools(&overview.envelope_alert));
-    ui.set_song_overview_profile(profile_display_name(&overview.profile).into());
+    ui.set_song_overview_profile(
+        profile_display_name_for(&overview.profile, crate::host::current_language()).into(),
+    );
     let section_names: Vec<String> = overview
         .sections
         .iter()
@@ -1119,7 +1161,7 @@ pub fn wire_song_overview(
 
     // Phase 2 曲风预设（设计稿 §3.6）：界面只报“按了预设键”，档位循环与重算
     // 的唯一写者是这里。Default → Orchestral → Electronic → Default；
-    // 刷新后预设按钮的中文名由 `apply_song_overview` 从新数据的档名写回。
+    // 刷新后预设按钮的显示名由 `apply_song_overview` 从新数据的档名写回。
     let weak = ui.as_weak();
     ui.on_song_overview_profile_cycle({
         let weak = weak.clone();
@@ -1506,6 +1548,31 @@ mod tests {
         assert_eq!(profile_display_name("orchestral"), "管弦");
         assert_eq!(profile_display_name("electronic"), "电子");
         assert_eq!(profile_display_name("unknown"), "均衡");
+    }
+
+    /// 双语 i18n：英文档名与按语言取名的分发（line/ui-i18n）。
+    #[test]
+    fn profile_display_names_follow_language() {
+        use crate::cli::Language::{EnUs, ZhCn};
+        assert_eq!(profile_display_name_for("default", ZhCn), "均衡");
+        assert_eq!(profile_display_name_for("orchestral", ZhCn), "管弦");
+        assert_eq!(profile_display_name_for("default", EnUs), "Balanced");
+        assert_eq!(profile_display_name_for("orchestral", EnUs), "Orchestral");
+        assert_eq!(profile_display_name_for("electronic", EnUs), "Electronic");
+        assert_eq!(profile_display_name_for("unknown", EnUs), "Balanced");
+    }
+
+    /// 双语 i18n：语言切换时已显示档名的重标（任一语言的现行名都认，
+    /// 不认识的值不猜、返回 None）。
+    #[test]
+    fn relabel_profile_display_switches_closed_set() {
+        use crate::cli::Language::{EnUs, ZhCn};
+        assert_eq!(relabel_profile_display("均衡", EnUs), Some("Balanced"));
+        assert_eq!(relabel_profile_display("管弦", EnUs), Some("Orchestral"));
+        assert_eq!(relabel_profile_display("Balanced", ZhCn), Some("均衡"));
+        assert_eq!(relabel_profile_display("Electronic", ZhCn), Some("电子"));
+        assert_eq!(relabel_profile_display("管弦", ZhCn), Some("管弦"));
+        assert_eq!(relabel_profile_display("未知档名", EnUs), None);
     }
 
     /// 期望等级循环：None → 1 → 2 → 3 → 4 → 5 → None（六态闭环）。

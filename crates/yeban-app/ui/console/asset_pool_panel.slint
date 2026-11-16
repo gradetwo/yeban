@@ -42,7 +42,7 @@ export component AssetPoolPanel inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "asset-pool-panel";
-    accessible-label: "素材池";
+    accessible-label: @tr("素材池");
 
     // ---------------------------------------------------------------- 标题
     // Wang 2026-11-16：删只说明面板名的可见标题「素材池」（面板的 accessible-label
@@ -57,14 +57,14 @@ export component AssetPoolPanel inherits Rectangle {
         height: 16px;
         accessible-role: text;
         accessible-id: "asset-pool-count";
-        accessible-label: "素材 " + root.asset-pool-names.length + " 条";
+        accessible-label: @tr("素材 {} 条", root.asset-pool-names.length);
 
         UiText {
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "素材 " + root.asset-pool-names.length + " 条";
+            text: @tr("素材 {} 条", root.asset-pool-names.length);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }
@@ -82,7 +82,7 @@ export component AssetPoolPanel inherits Rectangle {
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "asset-pool-import-button";
-        accessible-label: "导入音频（用文件对话框挑一个 WAV 并作为片段导入）";
+        accessible-label: @tr("导入音频（用文件对话框挑一个 WAV 并作为片段导入）");
         accessible-action-default => { root.import-audio(); }
 
         UiText {
@@ -90,7 +90,7 @@ export component AssetPoolPanel inherits Rectangle {
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: "导入音频";
+            text: @tr("导入音频");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -115,14 +115,14 @@ export component AssetPoolPanel inherits Rectangle {
         visible: root.asset-pool-names.length == 0;
         accessible-role: text;
         accessible-id: "asset-pool-empty";
-        accessible-label: "尚无素材";
+        accessible-label: @tr("尚无素材");
 
         UiText {
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "尚无素材";
+            text: @tr("尚无素材");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }

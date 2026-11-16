@@ -138,9 +138,9 @@ import { Tokens, UiText, UiMonoText } from "tokens.slint";
 export component StatusBar inherits Rectangle {
     // 下面三条是**"还没有读数"的形态**，不是任何具体读数 —— 有读数的形态由宿主写者
     // 注入（`selection` / `device`），`chord` 则永远停在无读数形态（能力不存在）。
-    in property <string> selection: "选区 无";
+    in property <string> selection: @tr("选区 无");
     in property <string> chord: "(none)";
-    in property <string> tip: "空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听";
+    in property <string> tip: @tr("空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听");
     in property <string> device: "—";
     // `ROAD-M4-008` 选项 (a)：最近一次**保存**的结果原话（宿主唯一写者）。
     // 它取代"快捷键提示"这一格（提示仍然在 `accessible-label` 里）；
@@ -170,7 +170,7 @@ export component StatusBar inherits Rectangle {
 
     accessible-role: content-info;
     accessible-id: "status-bar";
-    accessible-label: "状态栏";
+    accessible-label: @tr("状态栏");
 
     UiMonoText {
         x: Tokens.space-4;
@@ -182,7 +182,7 @@ export component StatusBar inherits Rectangle {
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "status-bar-selection";
-        accessible-label: "选区信息";
+        accessible-label: @tr("选区信息");
         // ⭐ [PATCH UI-A11Y-003]：可见文本 = `accessible-value` ⇒ 屏读器与 `ui/tree`
         // 的 `value` 读到的是**同一串字节**（与 `module-last-status` 同款纪律）。
         // 只加无障碍属性 ⇒ ⛔ 不改可见像素 ⇒ 5 张金帧一位不动。
@@ -194,7 +194,7 @@ export component StatusBar inherits Rectangle {
         y: 0;
         width: 96px;
         height: parent.height;
-        text: "和弦 " + root.chord;
+        text: @tr("和弦 {}", root.chord);
         color: Tokens.gold;
         font-size: Tokens.font-size-xs;
         accessible-role: text;
@@ -202,8 +202,8 @@ export component StatusBar inherits Rectangle {
         // ⭐ [PATCH UI-A11Y-003]：原名"实时和弦识别"是**假的承诺** —— app 侧没有
         // `yeban-theory` 依赖边、这一格没有宿主写者、永远显示 `(none)`（R9 登记）。
         // 改成如实描述，⛔ 不改可见文本（`(none)` 是 D24 字体 tofu 判据的对照样本）。
-        accessible-label: "和弦识别（当前版本无读数）";
-        accessible-value: "和弦 " + root.chord;
+        accessible-label: @tr("和弦识别（当前版本无读数）");
+        accessible-value: @tr("和弦 {}", root.chord);
     }
 
     // 快捷键提示（原来的那一格，仍在注册表里：`status-bar-shortcut-tip`）。
@@ -222,7 +222,7 @@ export component StatusBar inherits Rectangle {
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "status-bar-shortcut-tip";
-        accessible-label: "快捷键提示";
+        accessible-label: @tr("快捷键提示");
         // ⭐ [PATCH UI-A11Y-003]：提示的**内容**此前只能靠像素读；现在 `ui/tree` 的
         // `value` 与屏读器能现读到同一句（`d_ui_27` 判据钉的那一串承诺）。
         accessible-value: root.tip;
@@ -242,7 +242,7 @@ export component StatusBar inherits Rectangle {
         // 这是一个**独立**的语义节点（不是把提示节点改个名）：判据按 `[UI-TEST-001]` 的
         // 语义 ID 寻址它，屏读器按它念出最近一次保存的结果。
         accessible-id: "status-bar-save-status";
-        accessible-label: "最近一次保存工程的结果";
+        accessible-label: @tr("最近一次保存工程的结果");
         // ⭐ 缺陷 **D-UI-9**：`accessible-label` 是**静态**说明句，真正的回执在 `text` 里，
         // 而控制面的属性清单（`yeban-ui-test-port::inspect::property_of`）没有"读 text 内容"
         // 这一格 —— 上游 `ElementHandle` 也**没有** `accessible_name()`（1.18.1 只有
@@ -268,7 +268,7 @@ export component StatusBar inherits Rectangle {
         // 标签说"音频配置"而不是"硬件声卡"：这两格读数是**工程音频配置**
         // （`project.audio_config`，引擎据此向声卡协商），不是声卡协商回来的结果。
         // 注册表标签必须逐字相同（`crates/yeban-app/src/elements.rs`）。
-        accessible-label: "音频配置与性能目标";
+        accessible-label: @tr("音频配置与性能目标");
         // ⭐ [PATCH UI-A11Y-003]：真实工程音频配置（`audio_config_display`）也能被读屏读到。
         accessible-value: root.device;
     }

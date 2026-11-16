@@ -16117,7 +16117,41 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
 /// 否则英文系统上首帧会是英文。
 pub fn apply_language(ui: &MainWindow, lang: crate::cli::Language) {
     let selected = slint::select_bundled_translation(lang.bundled_selector());
-    ui.set_language_en(selected.is_ok() && matches!(lang, crate::cli::Language::EnUs));
+    if selected.is_ok() {
+        CURRENT_LANGUAGE.store(
+            match lang {
+                crate::cli::Language::ZhCn => 0,
+                crate::cli::Language::EnUs => 1,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        ui.set_language_en(matches!(lang, crate::cli::Language::EnUs));
+        // 宿主写入的闭集显示标签里只有总览面板的曲风档名一处（写点在
+        // song_overview::apply_song_overview，它按 current_language() 取名字）；
+        // 切换时已显示的那一个不会自己重写，在这里按闭集重标一次。
+        if let Some(name) = crate::song_overview::relabel_profile_display(
+            ui.get_song_overview_profile().as_str(),
+            lang,
+        ) {
+            ui.set_song_overview_profile(name.into());
+        }
+    }
+}
+
+/// 当前界面语言的进程内记录（[`apply_language`] 是唯一写者，默认 zh-CN）。
+///
+/// 存在的理由：宿主侧有极少数闭集显示标签由 Rust 写入 .slint 属性
+/// （当前只有总览面板的曲风档名），写点需要知道当前语言才能写对名字；
+/// 其余界面文案全部走 .slint 侧 `@tr`，不读这个记录。
+static CURRENT_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// 当前界面语言（从未调用过 [`apply_language`] 时为默认 zh-CN）。
+#[must_use]
+pub fn current_language() -> crate::cli::Language {
+    match CURRENT_LANGUAGE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => crate::cli::Language::EnUs,
+        _ => crate::cli::Language::ZhCn,
+    }
 }
 
 /// 同 [`build_main_window`]，但显式指定底部控制台的初始 Tab。

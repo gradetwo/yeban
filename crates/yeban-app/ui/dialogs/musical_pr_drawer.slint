@@ -75,7 +75,7 @@ export component MusicalPrDrawer inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "musical-pr-drawer";
-    accessible-label: "AI 编曲提案审核抽屉";
+    accessible-label: @tr("AI 编曲提案审核抽屉");
     // 提案条数进 `accessible-value` ⇒ 它是**机器可读**的读数（`ui/tree` / `ui/node` 的
     // `value` 字段, `crates/yeban-ui-test-port/src/inspect.rs:186`）。
     // 零提案时它是 `"0"`。判据 `the_musical_pr_drawer_shows_an_honest_empty_state`
@@ -95,7 +95,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 0;
             width: parent.width - 76px;
             height: parent.height;
-            text: "AI 编曲提案 (" + root.proposal-count + ")";
+            text: @tr("AI 编曲提案 ({})", root.proposal-count);
             color: Tokens.selection;
             font-size: Tokens.font-size-lg;
         }
@@ -109,7 +109,7 @@ export component MusicalPrDrawer inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "musical-pr-close-button";
-            accessible-label: "关闭提案抽屉";
+            accessible-label: @tr("关闭提案抽屉");
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
             accessible-action-default => { root.close(); }
 
@@ -145,7 +145,7 @@ export component MusicalPrDrawer inherits Rectangle {
 
         accessible-role: text;
         accessible-id: "musical-pr-diff-legend";
-        accessible-label: "视觉差异图例: 新增 / 删除 / 微调";
+        accessible-label: @tr("视觉差异图例: 新增 / 删除 / 微调");
 
         // 新增: 实心亮绿 + 右上角 `+`
         Rectangle {
@@ -161,7 +161,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: Tokens.space-4;
             width: 80px;
             height: 16px;
-            text: "+ 新增";
+            text: @tr("+ 新增");
             color: Tokens.diff-added;
             font-size: Tokens.font-size-xs;
         }
@@ -194,7 +194,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 28px;
             width: 80px;
             height: 16px;
-            text: "删除";
+            text: @tr("删除");
             color: Tokens.diff-removed;
             font-size: Tokens.font-size-xs;
         }
@@ -222,7 +222,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: Tokens.space-4;
             width: 96px;
             height: 16px;
-            text: "↑ 微调";
+            text: @tr("↑ 微调");
             color: Tokens.diff-tweaked;
             font-size: Tokens.font-size-xs;
         }
@@ -236,7 +236,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 40px;
             width: parent.width - 160px;
             height: 16px;
-            text: "遮罩 #000000 (无头截图动态区域)";
+            text: @tr("遮罩 #000000 (无头截图动态区域)");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }
@@ -322,7 +322,7 @@ export component MusicalPrDrawer inherits Rectangle {
 
             accessible-role: text;
             accessible-id: "musical-pr-proposal-" + proposal_index + "-ops";
-            accessible-label: "本提案携带 " + root.proposal_op_counts[proposal_index] + " 条 op";
+            accessible-label: @tr("本提案携带 {} 条 op", root.proposal_op_counts[proposal_index]);
 
             UiMonoText {
                 x: 0;
@@ -379,7 +379,7 @@ export component MusicalPrDrawer inherits Rectangle {
         border-color: Tokens.diff-added;
         accessible-role: button;
         accessible-id: "musical-pr-accept-button";
-        accessible-label: "采纳提案 (Shift+Enter)";
+        accessible-label: @tr("采纳提案 (Shift+Enter)");
         // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
         accessible-action-default => { root.accept(); }
 
@@ -388,7 +388,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "采纳 (Shift+Enter)";
+            text: @tr("采纳 (Shift+Enter)");
             color: Tokens.diff-added;
             font-size: Tokens.font-size-sm;
             horizontal-alignment: center;
@@ -413,7 +413,7 @@ export component MusicalPrDrawer inherits Rectangle {
         border-color: Tokens.diff-removed;
         accessible-role: button;
         accessible-id: "musical-pr-reject-button";
-        accessible-label: "放弃提案";
+        accessible-label: @tr("放弃提案");
         // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
         accessible-action-default => { root.reject(); }
 
@@ -422,7 +422,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "放弃";
+            text: @tr("放弃");
             color: Tokens.diff-removed;
             font-size: Tokens.font-size-sm;
             horizontal-alignment: center;

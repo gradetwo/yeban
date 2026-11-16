@@ -104,3 +104,1671 @@ msgstr "UI Language: English (Click for Chinese)"
 
 msgid "界面语言: 中文 (点击切换英文)"
 msgstr "UI Language: Chinese (Click for English)"
+
+# --- app.slint ---
+
+msgid "夜半"
+msgstr "Yeban"
+
+msgid "靛青"
+msgstr "Indigo"
+
+msgid "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB"
+msgstr "Compressor: Threshold -18.0 dB · Ratio 4:1 · GR 0.0 dB"
+
+msgid "平坦响应 (0 dB · 20 Hz – 20 kHz)"
+msgstr "Flat Response (0 dB · 20 Hz – 20 kHz)"
+
+msgid "未装乐器"
+msgstr "No Instrument Loaded"
+
+msgid "限制器: 阈值 -0.1 dBTP · 状态 正常"
+msgstr "Limiter: Threshold -0.1 dBTP · State OK"
+
+msgid "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)"
+msgstr "Transient Shaper: Attack +0.0 · Sustain +0.0 (Inactive)"
+
+msgid "侧链键源: 无 (点击切换)"
+msgstr "Sidechain Key: None (Click to Switch)"
+
+msgid "均衡"
+msgstr "Balanced"
+
+msgid "选区 无"
+msgstr "Selection: None"
+
+msgid "夜半 Yeban"
+msgstr "Yeban"
+
+msgid "文件"
+msgstr "File"
+
+msgid "新建空白工程"
+msgstr "New Empty Project"
+
+msgid "打开 / 恢复工程..."
+msgstr "Open / Restore Project..."
+
+msgid "保存工程 (Ctrl+S)"
+msgstr "Save Project (Ctrl+S)"
+
+msgid "另存为 (Ctrl+Shift+S)"
+msgstr "Save As (Ctrl+Shift+S)"
+
+msgid "导出音频 (WAV)..."
+msgstr "Export Audio (WAV)..."
+
+msgid "导出分轨 (Stems)..."
+msgstr "Export Stems..."
+
+msgid "导出 MIDI 文件..."
+msgstr "Export MIDI File..."
+
+msgid "导入 MIDI 文件..."
+msgstr "Import MIDI File..."
+
+msgid "导入音频文件..."
+msgstr "Import Audio File..."
+
+msgid "装载 SFZ 音色库..."
+msgstr "Load SFZ Library..."
+
+msgid "实时录音至 WAV..."
+msgstr "Record to WAV in Real Time..."
+
+msgid "退出 Yeban"
+msgstr "Quit Yeban"
+
+msgid "编辑"
+msgstr "Edit"
+
+msgid "撤销上一步 (Ctrl+Z)"
+msgstr "Undo (Ctrl+Z)"
+
+msgid "重做 (Ctrl+Shift+Z)"
+msgstr "Redo (Ctrl+Shift+Z)"
+
+msgid "编曲版本时光机 (Undo Tree)..."
+msgstr "Arrangement Time Machine (Undo Tree)..."
+
+msgid "复制片段 (Ctrl+C)"
+msgstr "Copy Clip (Ctrl+C)"
+
+msgid "粘贴片段 (Ctrl+V)"
+msgstr "Paste Clip (Ctrl+V)"
+
+msgid "剪切片段 (Ctrl+X)"
+msgstr "Cut Clip (Ctrl+X)"
+
+msgid "音符量化 (Quantize 1/16)..."
+msgstr "Quantize Notes (1/16)..."
+
+msgid "音符人性化 (Humanize)..."
+msgstr "Humanize Notes..."
+
+msgid "AI 编曲提案抽屉 (Musical PR)..."
+msgstr "AI Arrangement Proposals (Musical PR)..."
+
+msgid "轨道"
+msgstr "Track"
+
+msgid "+ 新建 MIDI 合成器轨 (Ctrl+N)"
+msgstr "+ New MIDI Synth Track (Ctrl+N)"
+
+msgid "+ 新建音频轨"
+msgstr "+ New Audio Track"
+
+msgid "将最新导入音频摆放到当前音频轨"
+msgstr "Place Latest Imported Audio on Current Audio Track"
+
+msgid "+ 新建辅助总线轨"
+msgstr "+ New Aux Bus Track"
+
+msgid "删除当前选中轨道"
+msgstr "Delete Selected Track"
+
+msgid "给当前轨插入 参量均衡 EQ"
+msgstr "Insert Parametric EQ on Current Track"
+
+msgid "给当前轨插入 空间混响 Reverb"
+msgstr "Insert Reverb on Current Track"
+
+msgid "给当前轨插入 动态压缩 Compressor"
+msgstr "Insert Compressor on Current Track"
+
+msgid "均分所有轨道高度"
+msgstr "Even Out All Track Heights"
+
+msgid "走带"
+msgstr "Transport"
+
+msgid "播放 / 暂停 (Space)"
+msgstr "Play / Pause (Space)"
+
+msgid "停止播放"
+msgstr "Stop"
+
+msgid "归零至 001.01.000"
+msgstr "Return to 001.01.000"
+
+msgid "循环播放开关 (C)"
+msgstr "Toggle Loop (C)"
+
+msgid "节拍器开关"
+msgstr "Toggle Metronome"
+
+msgid "预备拍开关 (Ctrl+Alt+D)"
+msgstr "Toggle Count-In (Ctrl+Alt+D)"
+
+msgid "混音"
+msgstr "Mix"
+
+msgid "打开底部 混音控制台 (X)"
+msgstr "Open Lower Mixer Console (X)"
+
+msgid "打开底部 设备机架"
+msgstr "Open Lower Device Rack"
+
+msgid "主控总线推子归 0dB"
+msgstr "Reset Master Fader to 0 dB"
+
+msgid "显隐 监听控制室 (Control Room)"
+msgstr "Toggle Control Room"
+
+msgid "视图"
+msgstr "View"
+
+msgid "钢琴卷帘 (P)"
+msgstr "Piano Roll (P)"
+
+msgid "混音控制台 (X)"
+msgstr "Mixer Console (X)"
+
+msgid "设备机架"
+msgstr "Device Rack"
+
+msgid "设备堆叠 (Stacked)"
+msgstr "Device Stack (Stacked)"
+
+msgid "最大化/还原底部控制台"
+msgstr "Maximize / Restore Lower Console"
+
+msgid "显隐左侧通道检查器 (I)"
+msgstr "Toggle Left Channel Inspector (I)"
+
+msgid "显隐 Clip 激发矩阵 (Tab)"
+msgstr "Toggle Clip Launch Matrix (Tab)"
+
+msgid "显示 / 隐藏和弦轨"
+msgstr "Show / Hide Chord Track"
+
+msgid "显示 / 隐藏自动化泳道 (A)"
+msgstr "Show / Hide Automation Lanes (A)"
+
+msgid "诊断"
+msgstr "Diagnostics"
+
+msgid "执行 AI 声学检查与诊断"
+msgstr "Run AI Acoustic Check & Diagnostics"
+
+msgid "导出工程诊断报告包 (D56)"
+msgstr "Export Project Diagnostics Bundle (D56)"
+
+msgid "开启/关闭 悬浮功能提示 (T)"
+msgstr "Toggle Hover Tips (T)"
+
+msgid "显隐 架构热区透视 (H)"
+msgstr "Toggle Architecture Hotspot Overlay (H)"
+
+msgid "主工作区与底部控制台的分割线 (220–600px)"
+msgstr "Divider Between Main Workspace and Lower Console (220–600 px)"
+
+msgid "引擎错误横幅"
+msgstr "Engine Error Banner"
+
+msgid "音频引擎提示: {}"
+msgstr "Audio Engine Notice: {}"
+
+msgid "AI 协作栏: 意图生成与声学诊断"
+msgstr "AI Collaboration Bar: Intent Generation & Acoustic Diagnostics"
+
+msgid "用自然语言描述编曲意图"
+msgstr "Describe your arrangement intent in natural language"
+
+msgid "声学诊断"
+msgstr "Acoustic Diagnostics"
+
+msgid "导出诊断包 (D56)"
+msgstr "Export Diagnostics Bundle (D56)"
+
+msgid "音乐提案抽屉 (Musical PR Drawer)"
+msgstr "Musical Proposal Drawer (Musical PR)"
+
+# --- console/device_rack.slint ---
+
+msgid "{} 台设备"
+msgstr "{} Devices"
+
+msgid "打开宏面板（{} 个宏）"
+msgstr "Open Macro Panel ({} Macros)"
+
+msgid "宏 ({})"
+msgstr "Macros ({})"
+
+msgid "4 段 EQ 频响曲线"
+msgstr "4-Band EQ Response Curve"
+
+msgid "EQ 低架增益 (eq_low_gain)"
+msgstr "EQ Low Shelf Gain (eq_low_gain)"
+
+msgid "EQ 低架增益 · eq_low_gain"
+msgstr "EQ Low Shelf Gain · eq_low_gain"
+
+msgid "— 本轨没有 eq_low_gain"
+msgstr "— This Track Has No eq_low_gain"
+
+msgid "本轨没有可编辑的 eq_low_gain"
+msgstr "This Track Has No Editable eq_low_gain"
+
+msgid "EQ 低架增益"
+msgstr "EQ Low Shelf Gain"
+
+msgid "{} … {} dB（引擎钳制域）"
+msgstr "{} … {} dB (Engine Clamp Range)"
+
+msgid "发送与轨路由"
+msgstr "Sends & Track Routing"
+
+msgid "轨与路由"
+msgstr "Tracks & Routing"
+
+msgid "轨 / 路由"
+msgstr "Tracks / Routing"
+
+msgid "新建 MIDI 轨"
+msgstr "New MIDI Track"
+
+msgid "新建音频轨"
+msgstr "New Audio Track"
+
+msgid "+ 音频"
+msgstr "+ Audio"
+
+msgid "新建辅助返回轨"
+msgstr "New Aux Return Track"
+
+msgid "+ 辅助返回"
+msgstr "+ Aux Return"
+
+msgid "删除展示轨"
+msgstr "Delete Display Track"
+
+msgid "发送"
+msgstr "Sends"
+
+msgid "{} 条发送"
+msgstr "{} Sends"
+
+msgid "无发送"
+msgstr "No Sends"
+
+msgid "发送 → {} · {}"
+msgstr "Send → {} · {}"
+
+msgid "发送 {} 增益"
+msgstr "Send {} Gain"
+
+msgid "删除发送 → {}"
+msgstr "Delete Send → {}"
+
+msgid "新建发送"
+msgstr "New Send"
+
+msgid "动态、侧链与瞬态控制"
+msgstr "Dynamics, Sidechain & Transient Control"
+
+msgid "装乐器 {}"
+msgstr "Load Instrument {}"
+
+msgid "装 {}"
+msgstr "Load {}"
+
+msgid "上一页乐器"
+msgstr "Previous Page of Instruments"
+
+msgid "下一页乐器"
+msgstr "Next Page of Instruments"
+
+msgid "校验采样库"
+msgstr "Verify Sample Library"
+
+msgid "下载采样库"
+msgstr "Download Sample Library"
+
+msgid "设备与片段操作"
+msgstr "Device & Clip Actions"
+
+msgid "装 EQ"
+msgstr "Load EQ"
+
+msgid "装混响"
+msgstr "Load Reverb"
+
+msgid "新建空的 MIDI 片段"
+msgstr "New Empty MIDI Clip"
+
+msgid "设备 {}"
+msgstr "Device {}"
+
+msgid "（已旁通）"
+msgstr "(Bypassed)"
+
+msgid "（生效）"
+msgstr "(Active)"
+
+msgid "旁通 {}"
+msgstr "Bypass {}"
+
+msgid "移除设备 {}"
+msgstr "Remove Device {}"
+
+msgid "无设备（点上方「装 EQ」或「装混响」）"
+msgstr "No Devices (Click “Load EQ” or “Load Reverb” Above)"
+
+msgid "商业插件宿主卡片 (v2.0.0, 未实现)"
+msgstr "Commercial Plug-In Host Card (v2.0.0, Not Implemented)"
+
+msgid "商业插件宿主 [v2.0.0 · 未实现]"
+msgstr "Commercial Plug-In Host [v2.0.0 · Not Implemented]"
+
+msgid "主总线设备链"
+msgstr "Master Bus Device Chain"
+
+msgid "还有 {} 台设备未显示"
+msgstr "{} More Devices Not Shown"
+
+msgid "给主总线装 EQ"
+msgstr "Load EQ on Master Bus"
+
+msgid "给主总线装混响"
+msgstr "Load Reverb on Master Bus"
+
+msgid "主总线 EQ 低架增益 (eq_low_gain)"
+msgstr "Master Bus EQ Low Shelf Gain (eq_low_gain)"
+
+msgid "主总线 EQ 低架增益 · eq_low_gain"
+msgstr "Master Bus EQ Low Shelf Gain · eq_low_gain"
+
+msgid "主总线 EQ 低架增益"
+msgstr "Master Bus EQ Low Shelf Gain"
+
+msgid "主总线设备 {}"
+msgstr "Master Bus Device {}"
+
+msgid "旁通主总线设备 {}"
+msgstr "Bypass Master Bus Device {}"
+
+msgid "移除主总线设备 {}"
+msgstr "Remove Master Bus Device {}"
+
+# --- arrangement.slint ---
+
+msgid "工作区编曲画布"
+msgstr "Arrangement Canvas"
+
+msgid "轨道控制头 (TRACKS)"
+msgstr "Track Headers (TRACKS)"
+
+msgid "和弦收起"
+msgstr "Collapse Chords"
+
+msgid "和弦展开"
+msgstr "Expand Chords"
+
+msgid "折叠和弦音轨"
+msgstr "Fold Chord Track"
+
+msgid "展开和弦音轨"
+msgstr "Unfold Chord Track"
+
+msgid "+ 轨道"
+msgstr "+ Track"
+
+msgid "添加新音轨 [Ctrl+T]"
+msgstr "Add New Track [Ctrl+T]"
+
+msgid "轨道菜单"
+msgstr "Track Menu"
+
+msgid "编曲轨道与视图本地菜单"
+msgstr "Arrangement Track & View Context Menu"
+
+msgid "全局和弦轨"
+msgstr "Global Chord Track"
+
+msgid "智能和声声学"
+msgstr "Smart Harmony Acoustics"
+
+msgid "▶ 试听"
+msgstr "▶ Preview"
+
+msgid "试听 Cm9 (主和弦) 配置"
+msgstr "Preview Cm9 (Tonic) Voicing"
+
+msgid "试听 AbMaj7 (下中音和弦) 配置"
+msgstr "Preview AbMaj7 (Submediant) Voicing"
+
+msgid "试听 Fm11 (下属和弦) 配置"
+msgstr "Preview Fm11 (Subdominant) Voicing"
+
+msgid "试听 G7#9 (属和弦变化音) 配置"
+msgstr "Preview G7#9 (Altered Dominant) Voicing"
+
+msgid "试听 Cm11 (扩展主和弦) 配置"
+msgstr "Preview Cm11 (Extended Tonic) Voicing"
+
+msgid "轨道控制头 (右置)"
+msgstr "Track Headers (Right)"
+
+msgid "右置轨道头模式 (镜像工作区)"
+msgstr "Right-Side Track Headers (Mirrored Workspace)"
+
+msgid "点击更换音色/效果 [当前: {}]"
+msgstr "Click to Change Instrument / Effect [Current: {}]"
+
+msgid "取消静音 [M]"
+msgstr "Unmute [M]"
+
+msgid "静音轨道 [M]"
+msgstr "Mute Track [M]"
+
+msgid "取消独奏 [S]"
+msgstr "Unsolo [S]"
+
+msgid "独奏轨道 [S]"
+msgstr "Solo Track [S]"
+
+msgid "取消录音准备 [R]"
+msgstr "Disarm [R]"
+
+msgid "录音准备 (Arm) [R]"
+msgstr "Arm for Recording [R]"
+
+msgid "声像: {} (左右拖拽调节，双击归中)"
+msgstr "Pan: {} (Drag Left/Right, Double-Click to Center)"
+
+msgid "推子增益: {} dB (上下拖拽调节，双击归 0dB)"
+msgstr "Fader Gain: {} dB (Drag Up/Down, Double-Click for 0 dB)"
+
+msgid "波形待分析 · 示意"
+msgstr "Waveform Pending Analysis · Placeholder"
+
+msgid "波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）"
+msgstr "Waveform Pending Analysis · Placeholder (Asset Not in the Session Pool or Decode Failed; Showing a 0 dB Reference Line)"
+
+msgid "空片段"
+msgstr "Empty Clip"
+
+msgid "+ 点击添加新轨道"
+msgstr "+ Click to Add a Track"
+
+msgid "创建新音频或MIDI轨道 [Ctrl+T]"
+msgstr "Create a New Audio or MIDI Track [Ctrl+T]"
+
+msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
+msgstr "Drag Audio or MIDI Files Here, or Double-Click to Add a Track"
+
+msgid "双击或点击此区域添加新轨道 [Ctrl+T]"
+msgstr "Double-Click or Click Here to Add a Track [Ctrl+T]"
+
+msgid "+ 新建 MIDI 乐器轨"
+msgstr "+ New MIDI Instrument Track"
+
+msgid "+ 新建辅助发送轨"
+msgstr "+ New Aux Send Track"
+
+msgid "+ 新建 4 小节 MIDI 片段"
+msgstr "+ New 4-Bar MIDI Clip"
+
+msgid "将最新导入音频摆放到音频轨"
+msgstr "Place Latest Imported Audio on an Audio Track"
+
+msgid "左 / 右侧切换轨道头"
+msgstr "Switch Track Headers Left / Right"
+
+msgid "更换轨道 #{} 音色 / 插入"
+msgstr "Change Track #{} Instrument / Insert"
+
+msgid "合成器 • 柔和主音 (Hollow Lead)"
+msgstr "Synth • Hollow Lead"
+
+msgid "合成器 • 风琴键音 (Warm Organ)"
+msgstr "Synth • Warm Organ"
+
+msgid "合成器 • 人声铺底 (Choir Pad)"
+msgstr "Synth • Choir Pad"
+
+msgid "合成器 • 金属 FM (FM Bell)"
+msgstr "Synth • FM Bell"
+
+msgid "合成器 • 水晶拨弦 (Glass Pluck)"
+msgstr "Synth • Glass Pluck"
+
+msgid "合成器 • 次低音 (Sub Bass)"
+msgstr "Synth • Sub Bass"
+
+msgid "采样库 • 加载 SFZ 音色..."
+msgstr "Sample Library • Load SFZ Instrument..."
+
+msgid "效果槽 • 插入 参量均衡 EQ"
+msgstr "Effect Slot • Insert Parametric EQ"
+
+msgid "效果槽 • 插入 空间混响 Reverb"
+msgstr "Effect Slot • Insert Reverb"
+
+msgid "效果槽 • 插入 动态压缩 Compressor"
+msgstr "Effect Slot • Insert Compressor"
+
+# --- lower_dock.slint ---
+
+msgid "底部控制台"
+msgstr "Lower Console"
+
+msgid "设备堆叠"
+msgstr "Device Stack"
+
+msgid "设备堆叠：效果器与混音控制台双层视图 [Alt+S]"
+msgstr "Device Stack: Dual-Layer Effects & Mixer View [Alt+S]"
+
+msgid "设备机架：效果器与虚拟乐器 [D]"
+msgstr "Device Rack: Effects & Virtual Instruments [D]"
+
+msgid "混音控制台"
+msgstr "Mixer Console"
+
+msgid "混音控制台 [X]"
+msgstr "Mixer Console [X]"
+
+msgid "钢琴卷帘"
+msgstr "Piano Roll"
+
+msgid "钢琴卷帘 [P]"
+msgstr "Piano Roll [P]"
+
+msgid "音色 [v]"
+msgstr "Instrument [V]"
+
+msgid "为当前聚焦轨道切换内置/SFZ 音色"
+msgstr "Switch Built-In / SFZ Instrument for the Focused Track"
+
+msgid "为当前轨插入参量均衡器 EQ"
+msgstr "Insert Parametric EQ on the Current Track"
+
+msgid "混响"
+msgstr "Reverb"
+
+msgid "为当前轨插入空间混响 Reverb"
+msgstr "Insert Reverb on the Current Track"
+
+msgid "量化"
+msgstr "Quantize"
+
+msgid "量化当前轨 MIDI 音符至网格"
+msgstr "Quantize the Current Track's MIDI Notes to the Grid"
+
+msgid "聚焦: {}"
+msgstr "Focused: {}"
+
+msgid "最大化 / 还原底部控制台"
+msgstr "Maximize / Restore the Lower Console"
+
+msgid "退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]"
+msgstr "Exit Maximize / Restore [Cmd/Ctrl+Alt+M / F3]"
+
+msgid "最大化全屏此视图 (钢琴卷帘/混音控制台) [Ctrl+Alt+M / F3]"
+msgstr "Maximize This View Full-Screen (Piano Roll / Mixer) [Ctrl+Alt+M / F3]"
+
+msgid "当前轨道无挂载设备"
+msgstr "No Devices on the Current Track"
+
+msgid "该轨道设备链为空，可点击下方按钮快速挂载合成器、效果器或 SFZ 音色库。"
+msgstr "This track's device chain is empty. Use the buttons below to quickly add a synth, an effect, or an SFZ library."
+
+msgid "+ 内置合成器"
+msgstr "+ Built-In Synth"
+
+msgid "+ 参量均衡 EQ"
+msgstr "+ Parametric EQ"
+
+msgid "+ 空间混响 Reverb"
+msgstr "+ Reverb"
+
+msgid "+ 加载 SFZ"
+msgstr "+ Load SFZ"
+
+msgid "启用设备"
+msgstr "Enable Device"
+
+msgid "旁通设备"
+msgstr "Bypass Device"
+
+msgid "从轨道设备链移除"
+msgstr "Remove from the Track's Device Chain"
+
+msgid "曲线示意 · 未连接参数"
+msgstr "Curve Preview · Parameter Not Connected"
+
+msgid "切换"
+msgstr "Switch"
+
+msgid "1: 选音色 [v]"
+msgstr "1: Choose Instrument [V]"
+
+msgid "点击切换轨道 #{} 音色/效果"
+msgstr "Click to Switch Track #{} Instrument / Effect"
+
+msgid "EQ · 示意"
+msgstr "EQ · Preview"
+
+msgid "静音此音轨"
+msgstr "Mute This Track"
+
+msgid "独奏此音轨"
+msgstr "Solo This Track"
+
+msgid "声像 Pan: {} (左右拖拽/双击归中)"
+msgstr "Pan: {} (Drag Left/Right, Double-Click to Center)"
+
+msgid "推子: {} dB (上下拖拽/双击归 0dB)"
+msgstr "Fader: {} dB (Drag Up/Down, Double-Click for 0 dB)"
+
+msgid "总线推子: {} dB (上下拖拽/双击归 0dB)"
+msgstr "Bus Fader: {} dB (Drag Up/Down, Double-Click for 0 dB)"
+
+msgid "总输出单声道监听切换 [MONO]"
+msgstr "Toggle Mono Monitoring on the Master Output [MONO]"
+
+msgid "总推子: {} dB (上下拖拽/双击归 0dB)"
+msgstr "Master Fader: {} dB (Drag Up/Down, Double-Click for 0 dB)"
+
+msgid "添加混音轨"
+msgstr "Add Mixer Track"
+
+msgid "新建 MIDI 混音音轨"
+msgstr "New MIDI Mixer Track"
+
+msgid "切换轨道 #{} 音色 / 插入"
+msgstr "Switch Track #{} Instrument / Insert"
+
+# --- left_panel.slint ---
+
+msgid "+ 添加总线效果"
+msgstr "+ Add Bus Effect"
+
+msgid "双振荡器 3D 波表合成器"
+msgstr "Dual-Oscillator 3D Wavetable Synth"
+
+msgid "内联实时频谱零延迟动态 EQ"
+msgstr "Inline Real-Time Spectrum, Zero-Latency Dynamic EQ"
+
+msgid "支持 MPE 弯音的粒子采样器"
+msgstr "Granular Sampler with MPE Pitch Bend"
+
+msgid "含 64 个多麦克风分层鼓组"
+msgstr "Layered Drum Kit with 64 Multi-Mic Samples"
+
+msgid "模拟 SSL 4000G 总线粘合压缩"
+msgstr "SSL 4000G-Style Bus Glue Compressor"
+
+msgid "带宏旋钮一键失真度映射"
+msgstr "One-Knob Macro Distortion Mapping"
+
+msgid "通道检查器"
+msgstr "Channel Inspector"
+
+msgid "当前音轨与总线信号链检查器"
+msgstr "Signal-Chain Inspector for the Current Track & Buses"
+
+msgid "智能音色库"
+msgstr "Smart Sound Library"
+
+msgid "工程资产、音频切片与采样音色库"
+msgstr "Project Assets, Audio Slices & Sample Library"
+
+msgid "更换音色 [v]"
+msgstr "Change Instrument [V]"
+
+msgid "为当前轨道切换内置合成器音色或插入效果器"
+msgstr "Switch the Built-In Synth or Insert an Effect on the Current Track"
+
+msgid "均分高度"
+msgstr "Even Heights"
+
+msgid "重置所有音轨高度为标准紧凑视图"
+msgstr "Reset All Track Heights to the Compact View"
+
+msgid "折叠总线"
+msgstr "Fold Bus"
+
+msgid "展开总线"
+msgstr "Unfold Bus"
+
+msgid "展开/折叠对应分组总线通道条"
+msgstr "Expand / Fold the Group Bus Channel Strip"
+
+msgid "音色与效果器预设"
+msgstr "Instrument & Effect Presets"
+
+msgid "空灵合成 Pad (Hollow)"
+msgstr "Hollow Synth Pad"
+
+msgid "温暖风琴 Organ"
+msgstr "Warm Organ"
+
+msgid "人声领唱 Vocal"
+msgstr "Lead Vocal"
+
+msgid "金属拨弦 Metallic Pluck"
+msgstr "Metallic Pluck"
+
+msgid "玻璃钟琴 Glass Bell"
+msgstr "Glass Bell"
+
+msgid "深沉贝斯 Neuro Bass"
+msgstr "Neuro Bass"
+
+msgid "+ 插入 参量均衡 EQ"
+msgstr "+ Insert Parametric EQ"
+
+msgid "+ 插入 空间混响 Reverb"
+msgstr "+ Insert Reverb"
+
+msgid "+ 插入 动态压缩 Compressor"
+msgstr "+ Insert Compressor"
+
+msgid "当前通道"
+msgstr "Current Channel"
+
+msgid "效果器插槽 (INSERTS)"
+msgstr "Effect Slots (INSERTS)"
+
+msgid "点击 + 插入效果器或音色"
+msgstr "Click + to Insert an Effect or Instrument"
+
+msgid "效果器插槽: 点击聚焦底栏设备机架"
+msgstr "Effect Slots: Click to Focus the Lower Device Rack"
+
+msgid "点击为当前轨道追加/聚焦参量均衡 EQ"
+msgstr "Click to Add / Focus Parametric EQ on the Current Track"
+
+msgid "声像平衡: {} (左右拖拽调节，双击归中)"
+msgstr "Pan: {} (Drag Left/Right, Double-Click to Center)"
+
+msgid "音量推子: {} dB (上下拖拽调节，双击归 0dB)"
+msgstr "Volume Fader: {} dB (Drag Up/Down, Double-Click for 0 dB)"
+
+msgid "总线效果器 (BUS INSERTS)"
+msgstr "Bus Effects (BUS INSERTS)"
+
+msgid "BUS COMP · 示意"
+msgstr "BUS COMP · Preview"
+
+msgid "总线声像 (左右拖拽调节，双击归中)"
+msgstr "Bus Pan (Drag Left/Right, Double-Click to Center)"
+
+msgid "总线推子: {} dB (上下拖拽调节，双击归 0dB)"
+msgstr "Bus Fader: {} dB (Drag Up/Down, Double-Click for 0 dB)"
+
+msgid "检索"
+msgstr "Search"
+
+msgid "搜索音色、插件、采样包..."
+msgstr "Search instruments, plug-ins, sample packs..."
+
+msgid "全部"
+msgstr "All"
+
+msgid "点击载入 {} 至当前轨道"
+msgstr "Click to Load {} onto the Current Track"
+
+# --- workspace/song_overview_panel.slint ---
+
+msgid "整曲多层总览图"
+msgstr "Whole-Song Multi-Layer Overview"
+
+msgid "整曲总览图：频率热力图、能量面积与情绪曲线"
+msgstr "Whole-Song Overview: Frequency Heatmap, Energy Area & Emotion Curve"
+
+msgid "总览图走带光标"
+msgstr "Overview Playhead Cursor"
+
+msgid "独奏频段行"
+msgstr "Solo Band Row"
+
+msgid "当前编排视口"
+msgstr "Current Arrangement Viewport"
+
+msgid "第 {}–{} 小节"
+msgstr "Bars {}–{}"
+
+msgid "无数据"
+msgstr "No Data"
+
+msgid "拖动缩放编排视口"
+msgstr "Drag to Zoom the Arrangement Viewport"
+
+msgid "悬停小节读数"
+msgstr "Hovered Bar Readout"
+
+msgid "疏密条码与小节标尺"
+msgstr "Density Barcode & Bar Ruler"
+
+msgid "情绪层开关"
+msgstr "Toggle Emotion Layer"
+
+msgid "能量层开关"
+msgstr "Toggle Energy Layer"
+
+msgid "频段层开关"
+msgstr "Toggle Band Layer"
+
+msgid "疏密层开关"
+msgstr "Toggle Density Layer"
+
+msgid "情绪"
+msgstr "Emotion"
+
+msgid "能量"
+msgstr "Energy"
+
+msgid "频段"
+msgstr "Bands"
+
+msgid "疏密"
+msgstr "Density"
+
+msgid "折叠 / 展开总览面板"
+msgstr "Fold / Unfold the Overview Panel"
+
+msgid "总览 ▸"
+msgstr "Overview ▸"
+
+msgid "总览 ▾"
+msgstr "Overview ▾"
+
+msgid "全屏 / 退出全屏总览面板"
+msgstr "Full-Screen / Exit Full-Screen Overview Panel"
+
+msgid "退出全屏"
+msgstr "Exit Full Screen"
+
+msgid "全屏"
+msgstr "Full Screen"
+
+msgid "曲风预设"
+msgstr "Style Preset"
+
+msgid "预设：{}"
+msgstr "Preset: {}"
+
+# --- console/mixer_console.slint ---
+
+msgid "工程导出"
+msgstr "Project Export"
+
+msgid "导出 MIDI（把当前工程写成 SMF 1 文件）"
+msgstr "Export MIDI (Write the Current Project as an SMF 1 File)"
+
+msgid "导出 MIDI"
+msgstr "Export MIDI"
+
+msgid "工程"
+msgstr "Project"
+
+msgid "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）"
+msgstr "Open Project (Pick a .yeban Container in the File Dialog and Replace the Current Project in Place)"
+
+msgid "打开工程"
+msgstr "Open Project"
+
+msgid "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）"
+msgstr "New Project (Choose a Location in the File Dialog; Writes an Empty Container with 0 Tracks + 1 Master Bus and Switches to It)"
+
+msgid "新建工程"
+msgstr "New Project"
+
+msgid "通道条 {}"
+msgstr "Channel Strip {}"
+
+msgid "轨道 {} 声相"
+msgstr "Track {} Pan"
+
+msgid "轨道色标 {}"
+msgstr "Track Color Tag {}"
+
+msgid "轨道 {} 静音"
+msgstr "Track {} Mute"
+
+msgid "轨道 {} 独奏"
+msgstr "Track {} Solo"
+
+msgid "轨道 {} 电平表 峰值 {} RMS {} dBFS"
+msgstr "Track {} Meter — Peak {} RMS {} dBFS"
+
+msgid "轨道 {} 推子"
+msgstr "Track {} Fader"
+
+msgid "轨道 {} SFZ 采样器路径"
+msgstr "Track {} SFZ Sampler Path"
+
+msgid "轨道 {} 浏览 SFZ 文件"
+msgstr "Track {} Browse SFZ File"
+
+msgid "轨道 {} 提交 SFZ 路径"
+msgstr "Track {} Commit SFZ Path"
+
+msgid "轨道 {} 解绑 SFZ 采样器"
+msgstr "Track {} Unbind SFZ Sampler"
+
+msgid "主控通道条"
+msgstr "Master Channel Strip"
+
+msgid "主控声相"
+msgstr "Master Pan"
+
+msgid "主控色标 {}"
+msgstr "Master Color Tag {}"
+
+msgid "主控静音"
+msgstr "Master Mute"
+
+msgid "主控独奏"
+msgstr "Master Solo"
+
+msgid "主控电平表 峰值 {} RMS {} dBFS"
+msgstr "Master Meter — Peak {} RMS {} dBFS"
+
+msgid "主控推子"
+msgstr "Master Fader"
+
+# --- workspace/arrangement_view.slint ---
+
+msgid "Arrangement 线性编曲时间轴"
+msgstr "Arrangement — Linear Timeline"
+
+msgid "横向缩小"
+msgstr "Zoom Out Horizontally"
+
+msgid "横向缩放"
+msgstr "Horizontal Zoom"
+
+msgid "横向放大"
+msgstr "Zoom In Horizontally"
+
+msgid "纵向缩小"
+msgstr "Zoom Out Vertically"
+
+msgid "纵向缩放"
+msgstr "Vertical Zoom"
+
+msgid "纵向放大"
+msgstr "Zoom In Vertically"
+
+msgid "章节 {}"
+msgstr "Section {}"
+
+msgid "段落色标 {}"
+msgstr "Section Color Tag {}"
+
+msgid "小节与拍标尺"
+msgstr "Bar & Beat Ruler"
+
+msgid "轨道 {}"
+msgstr "Track {}"
+
+msgid "轨道 {} 录音准备"
+msgstr "Track {} Arm"
+
+msgid "编曲空车道拖动滚动面"
+msgstr "Arrangement Empty-Lane Drag Scroll Surface"
+
+msgid "剪辑 {}"
+msgstr "Clip {}"
+
+msgid "（静音）"
+msgstr "(Muted)"
+
+msgid "剪辑拖动面 {}"
+msgstr "Clip Drag Surface {}"
+
+msgid "轨道插入位置"
+msgstr "Track Insert Position"
+
+msgid "走带光标"
+msgstr "Playhead Cursor"
+
+msgid "编曲横向滚动条"
+msgstr "Arrangement Horizontal Scrollbar"
+
+# --- console/piano_roll.slint ---
+
+msgid "选择"
+msgstr "Select"
+
+msgid "铅笔"
+msgstr "Pencil"
+
+msgid "剪刀"
+msgstr "Scissors"
+
+msgid "力度"
+msgstr "Velocity"
+
+msgid "橡皮"
+msgstr "Eraser"
+
+msgid "虚拟化钢琴卷帘"
+msgstr "Virtualized Piano Roll"
+
+msgid "{}工具"
+msgstr "{} Tool"
+
+msgid "吸附 1/16 · PPQ 960 · {}"
+msgstr "Snap 1/16 · PPQ 960 · {}"
+
+msgid "卷帘吸附与音域状态"
+msgstr "Piano Roll Snap & Range Status"
+
+msgid "八-"
+msgstr "Oct-"
+
+msgid "八+"
+msgstr "Oct+"
+
+msgid "量化 Q"
+msgstr "Quantize Q"
+
+msgid "人性化 H"
+msgstr "Humanize H"
+
+msgid "钢琴键列"
+msgstr "Piano Key Column"
+
+msgid "音符网格画布"
+msgstr "Note Grid Canvas"
+
+msgid "音符 {}"
+msgstr "Note {}"
+
+msgid "力度泳道"
+msgstr "Velocity Lane"
+
+msgid "力度条 {}"
+msgstr "Velocity Bar {}"
+
+msgid "卷帘走带光标"
+msgstr "Piano Roll Playhead Cursor"
+
+msgid "卷帘拖动手势面"
+msgstr "Piano Roll Drag Gesture Surface"
+
+msgid "人性化…"
+msgstr "Humanize…"
+
+msgid "量化…"
+msgstr "Quantize…"
+
+# --- modals.slint ---
+
+msgid "切换至：夜半全景工作区 (默认 Production)"
+msgstr "Switch to: Yeban Panorama Workspace (Default Production)"
+
+msgid "切换至：现场激发工作区 (Clip 矩阵 Performance)"
+msgstr "Switch to: Live Launch Workspace (Clip Matrix Performance)"
+
+msgid "切换至：线性编曲工作区 (时间轴编曲 Arrange)"
+msgstr "Switch to: Linear Arrangement Workspace (Timeline Arrange)"
+
+msgid "切换至：混音控制台工作区 (母带监听 Mix & Master)"
+msgstr "Switch to: Mixer Workspace (Mastering Monitoring, Mix & Master)"
+
+msgid "打开/关闭 创新工作流与架构透视 (Insights)"
+msgstr "Toggle Innovation Workflow & Architecture Insights"
+
+msgid "切换悬浮提示开关 (Toggle Hover Tooltips)"
+msgstr "Toggle Hover Tooltips"
+
+msgid "切换底栏：设备堆叠 (Stacked)"
+msgstr "Switch Lower Dock: Device Stack (Stacked)"
+
+msgid "切换底栏：设备机架 (Devices)"
+msgstr "Switch Lower Dock: Device Rack (Devices)"
+
+msgid "切换底栏：混音控制台 (Mixer)"
+msgstr "Switch Lower Dock: Mixer Console (Mixer)"
+
+msgid "切换底栏：钢琴卷帘 (Piano Roll)"
+msgstr "Switch Lower Dock: Piano Roll"
+
+msgid "新增轨道 (Add Audio/MIDI Track)"
+msgstr "Add Track (Audio / MIDI)"
+
+msgid "输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)..."
+msgstr "Type a command, switch workspace, or jump to a module (e.g. Mixer, Piano Roll, Split)..."
+
+msgid "夜半 专业工作流与现代声学架构"
+msgstr "Yeban — Professional Workflow & Modern Acoustic Architecture"
+
+msgid "基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区"
+msgstr "A modern native responsive desktop workspace on a Rust real-time audio engine and Slint"
+
+msgid "关闭透视"
+msgstr "Close Insights"
+
+msgid "① 黄金视线轨道头与全景排布"
+msgstr "① Golden-Sightline Track Headers & Panoramic Layout"
+
+msgid "轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。"
+msgstr "Track names, part colors, and core M/S/R monitoring sit in the golden sightline at the left of the timeline, so eyes and mouse never jump across the screen.\nThe performance matrix and linear tracks also mirror-switch in one click, serving both studio production and stage improvisation."
+
+msgid "② 内联全功能 DSP 设备机架 (Zero Popups)"
+msgstr "② Inline Full-Feature DSP Device Rack (Zero Popups)"
+
+msgid "原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。"
+msgstr "A native wavetable synth, an 8-band dynamic EQ, and a bus glue compressor live inline in the lower rack — every parameter one screen away, with millisecond real-time spectra.\nNo more overlapping popups hiding the timeline as in traditional workstations; double-click to pop a device out into its own window when needed."
+
+msgid "③ 即时混合工作流与无感缓冲热切"
+msgstr "③ Instant Hybrid Workflow & Seamless Buffer Hot-Swap"
+
+msgid "现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。"
+msgstr "The live Clip launch drawer links seamlessly with the central linear timeline — improvise with clips and drag them smoothly onto tracks.\nAudio buffer sizes hot-swap in real time with no project reload, giving mastering and creation professional-grade low latency and strong determinism."
+
+msgid "提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。"
+msgstr "Tip: Click Default / Live / Arrange / Mix in the top bar at any time to switch between the four professional workflows instantly."
+
+# --- transport.slint ---
+
+msgid "停止 (回到起始点)"
+msgstr "Stop (Return to Start)"
+
+msgid "录音"
+msgstr "Record"
+
+msgid "速度 BPM"
+msgstr "Tempo BPM"
+
+msgid "主时间码"
+msgstr "Main Timecode"
+
+msgid "当前分支"
+msgstr "Current Branch"
+
+msgid "分支: {}"
+msgstr "Branch: {}"
+
+msgid "提交当前编辑为一个 Commit"
+msgstr "Commit the Current Edits"
+
+msgid "回滚到上一个 Commit"
+msgstr "Roll Back to the Previous Commit"
+
+msgid "保存工程"
+msgstr "Save Project"
+
+msgid "保存"
+msgstr "Save"
+
+msgid "打开 AI 编曲提案审核抽屉"
+msgstr "Open the AI Proposal Review Drawer"
+
+msgid "AI提案"
+msgstr "AI Proposals"
+
+msgid "节拍器 (Cmd/Ctrl + Alt + N)"
+msgstr "Metronome (Cmd/Ctrl + Alt + N)"
+
+msgid "Session 触发矩阵 (F5)"
+msgstr "Session Launch Matrix (F5)"
+
+msgid "Arrangement 时间轴 (F6)"
+msgstr "Arrangement Timeline (F6)"
+
+msgid "切换 Session / Arrangement (Tab, 仅画布聚焦时)"
+msgstr "Switch Session / Arrangement (Tab, Canvas Focused Only)"
+
+msgid "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)"
+msgstr "AI Collaboration Drawer (Cmd/Ctrl + Alt + A)"
+
+# --- dialogs/humanize_dialog.slint ---
+
+msgid "人性化与量化"
+msgstr "Humanize & Quantize"
+
+msgid "人性化与量化面板"
+msgstr "Humanize & Quantize Panel"
+
+msgid "人性化 · 量化"
+msgstr "Humanize · Quantize"
+
+msgid "关闭人性化与量化"
+msgstr "Close Humanize & Quantize"
+
+msgid "人性化（整片段）"
+msgstr "Humanize (Whole Clip)"
+
+msgid "时值抖动量（tick）"
+msgstr "Timing Jitter (Ticks)"
+
+msgid "力度抖动量（±n）"
+msgstr "Velocity Jitter (±n)"
+
+msgid "基础种子（缺省工程种子）"
+msgstr "Base Seed (Default: Project Seed)"
+
+msgid "基础种子说明"
+msgstr "Base Seed Note"
+
+msgid "同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎 v2 接上。"
+msgstr "The same base seed produces the same jitter sequence on different clips; per-track derivation is wired up by engine v2."
+
+msgid "对选中剪辑应用人性化"
+msgstr "Apply Humanize to the Selected Clip"
+
+msgid "应用人性化"
+msgstr "Apply Humanize"
+
+msgid "量化（整片段）"
+msgstr "Quantize (Whole Clip)"
+
+msgid "网格（tick）"
+msgstr "Grid (Ticks)"
+
+msgid "强度（0–100%）"
+msgstr "Strength (0–100%)"
+
+msgid "对选中剪辑应用量化"
+msgstr "Apply Quantize to the Selected Clip"
+
+msgid "应用量化"
+msgstr "Apply Quantize"
+
+msgid "人性化或量化失败的原因"
+msgstr "Why Humanize or Quantize Failed"
+
+# --- dialogs/export_wav_dialog.slint ---
+
+msgid "WAV 导出设置"
+msgstr "WAV Export Settings"
+
+msgid "WAV 导出设置面板"
+msgstr "WAV Export Settings Panel"
+
+msgid "导出 WAV · 选项"
+msgstr "Export WAV · Options"
+
+msgid "关闭导出设置"
+msgstr "Close Export Settings"
+
+msgid "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）"
+msgstr "Output Path (Ctrl/Cmd+O to Browse…; Empty = Host Default)"
+
+msgid "WAV 输出路径"
+msgstr "WAV Output Path"
+
+msgid "采样率 Hz（auto = 跟随工程）"
+msgstr "Sample Rate in Hz (auto = Follow Project)"
+
+msgid "采样率（auto 或 Hz）"
+msgstr "Sample Rate (auto or Hz)"
+
+msgid "位深（16 / 24 / 32f）"
+msgstr "Bit Depth (16 / 24 / 32f)"
+
+msgid "时长 秒（缺省 = 全曲末端）"
+msgstr "Duration in Seconds (Default = End of Song)"
+
+msgid "导出时长（秒）"
+msgstr "Export Duration (Seconds)"
+
+msgid "母线限制器（仅本次导出）"
+msgstr "Master Limiter (This Export Only)"
+
+msgid "限制器：开"
+msgstr "Limiter: On"
+
+msgid "限制器：关"
+msgstr "Limiter: Off"
+
+msgid "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。"
+msgstr "An invalid sample rate, bit depth, or duration fails the export honestly — no partial file is written."
+
+msgid "按这些选项导出 WAV"
+msgstr "Export WAV with These Options"
+
+msgid "导出"
+msgstr "Export"
+
+# --- module_actions.slint ---
+
+msgid "模块入口"
+msgstr "Module Entries"
+
+msgid "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入"
+msgstr "Module Entries: Export WAV / Import MIDI / Load SFZ / Record / Hardware MIDI Input"
+
+msgid "导出 WAV（打开采样率 / 位深 / 时长选项）"
+msgstr "Export WAV (Opens Sample Rate / Bit Depth / Duration Options)"
+
+msgid "导出 WAV"
+msgstr "Export WAV"
+
+msgid "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）"
+msgstr "Import MIDI (Imports SMF Notes onto the First Non-Master Track)"
+
+msgid "导入 MIDI"
+msgstr "Import MIDI"
+
+msgid "装载 SFZ 乐器（报告区域数并探测一个音符）"
+msgstr "Load SFZ Instrument (Reports the Region Count and Probes One Note)"
+
+msgid "装载 SFZ"
+msgstr "Load SFZ"
+
+msgid "录音（把控制侧测试音录成 24-bit WAV）"
+msgstr "Record (Records the Control-Side Test Tone as 24-bit WAV)"
+
+msgid "录音（测试音）"
+msgstr "Record (Test Tone)"
+
+msgid "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）"
+msgstr "Hardware MIDI Input (Captures Physical Port Events and Writes the Paired Notes onto the First Non-Master Track)"
+
+msgid "MIDI 输入（硬件）"
+msgstr "MIDI Input (Hardware)"
+
+msgid "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）"
+msgstr "Latest Hardware MIDI Capture Result (Port / Events / Unsupported / Dropped / Jitter / Error Code)"
+
+msgid "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）"
+msgstr "Latest Module Action Receipt (Path / Frames / Source / Error Code)"
+
+msgid "母带削波警示（削波样本数 / 建议减多少 dB）"
+msgstr "Master Clipping Warning (Clipped Samples / Suggested dB Reduction)"
+
+msgid "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）"
+msgstr "Latest MIDI Import Loss Summary (Classes / Events / Lost Lyrics / Note Channels / Release Velocities)"
+
+# --- dialogs/undo_tree_modal.slint ---
+
+msgid "编曲版本时光机图谱"
+msgstr "Arrangement Version Time-Machine Graph"
+
+msgid "版本图谱面板"
+msgstr "Version Graph Panel"
+
+msgid "编曲时光机 · 版本 DAG"
+msgstr "Arrangement Time Machine · Version DAG"
+
+msgid "分支 {} · 可撤销 {} 步 · 已撤销 {} 步 · 提交 {} 条"
+msgstr "Branch {} · {} Steps Undoable · {} Steps Undone · {} Commits"
+
+msgid "关闭时光机"
+msgstr "Close Time Machine"
+
+msgid "还没有任何版本提交。撤销历史为空。"
+msgstr "No version commits yet. The undo history is empty."
+
+msgid "更早的 {} 个版本未画出"
+msgstr "{} Earlier Versions Not Drawn"
+
+msgid "更早的 {} 个版本未画出（画布只画得下最近 {} 个）"
+msgstr "{} Earlier Versions Not Drawn (the Canvas Only Fits the Latest {})"
+
+msgid "撤销一步 (Cmd+Z)"
+msgstr "Undo One Step (Cmd+Z)"
+
+msgid "撤销一步 ({} 步可撤)"
+msgstr "Undo One Step ({} Undoable)"
+
+msgid "无历史可撤"
+msgstr "Nothing to Undo"
+
+msgid "重做一步"
+msgstr "Redo One Step"
+
+msgid "重做一步 ({} 步可重做)"
+msgstr "Redo One Step ({} Redoable)"
+
+msgid "无历史可重做"
+msgstr "Nothing to Redo"
+
+msgid "撤销一步与 Cmd+Z 同源 · 点击版本节点回到该版本 · Esc 关闭"
+msgstr "Undo shares its source with Cmd+Z · Click a version node to jump to it · Esc closes"
+
+# --- dialogs/musical_pr_drawer.slint ---
+
+msgid "AI 编曲提案审核抽屉"
+msgstr "AI Arrangement Proposal Review Drawer"
+
+msgid "AI 编曲提案 ({})"
+msgstr "AI Arrangement Proposals ({})"
+
+msgid "关闭提案抽屉"
+msgstr "Close the Proposal Drawer"
+
+msgid "视觉差异图例: 新增 / 删除 / 微调"
+msgstr "Visual Diff Legend: Added / Removed / Tweaked"
+
+msgid "+ 新增"
+msgstr "+ Added"
+
+msgid "删除"
+msgstr "Removed"
+
+msgid "↑ 微调"
+msgstr "↑ Tweaked"
+
+msgid "遮罩 #000000 (无头截图动态区域)"
+msgstr "Mask #000000 (Dynamic Region in Headless Screenshots)"
+
+msgid "本提案携带 {} 条 op"
+msgstr "This Proposal Carries {} Ops"
+
+msgid "采纳提案 (Shift+Enter)"
+msgstr "Accept Proposal (Shift+Enter)"
+
+msgid "采纳 (Shift+Enter)"
+msgstr "Accept (Shift+Enter)"
+
+msgid "放弃提案"
+msgstr "Discard Proposal"
+
+msgid "放弃"
+msgstr "Discard"
+
+# --- sidebar.slint ---
+
+msgid "搜索乐器 / 采样 / 预置"
+msgstr "Search Instruments / Samples / Presets"
+
+msgid "左侧资源浏览器与资产库"
+msgstr "Left Resource Browser & Asset Library"
+
+msgid "资源库"
+msgstr "Resource Library"
+
+msgid "展开左侧资源栏"
+msgstr "Expand the Left Resource Bar"
+
+msgid "收起左侧资源栏"
+msgstr "Collapse the Left Resource Bar"
+
+msgid "搜索资源"
+msgstr "Search Resources"
+
+msgid "资源分类 {}"
+msgstr "Resource Category {}"
+
+msgid "乐器"
+msgstr "Instruments"
+
+msgid "采样"
+msgstr "Samples"
+
+msgid "预置"
+msgstr "Presets"
+
+# --- workspace/session_view.slint ---
+
+msgid "Session 触发矩阵"
+msgstr "Session Launch Matrix"
+
+msgid "场景一键激发列"
+msgstr "One-Click Scene Launch Column"
+
+msgid "场景"
+msgstr "Scene"
+
+msgid "场景 · {}"
+msgstr "Scene · {}"
+
+msgid "激发场景 {}"
+msgstr "Launch Scene {}"
+
+msgid "场景色标 {}"
+msgstr "Scene Color Tag {}"
+
+msgid "返回编曲 (Back to Arrangement)"
+msgstr "Back to Arrangement"
+
+msgid "→ 编曲"
+msgstr "→ Arrangement"
+
+msgid "场景启动状态"
+msgstr "Scene Launch State"
+
+msgid "还有 {} 轨未显示"
+msgstr "{} More Tracks Not Shown"
+
+# --- status_bar.slint ---
+
+msgid "空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听"
+msgstr "Space Play/Pause · Tab Switches View (Canvas Focused) · 1–5 Tools · [ ] A/B Blind Test"
+
+msgid "状态栏"
+msgstr "Status Bar"
+
+msgid "选区信息"
+msgstr "Selection Info"
+
+msgid "和弦 {}"
+msgstr "Chord {}"
+
+msgid "和弦识别（当前版本无读数）"
+msgstr "Chord Recognition (No Reading in This Version)"
+
+msgid "快捷键提示"
+msgstr "Shortcut Tips"
+
+msgid "最近一次保存工程的结果"
+msgstr "Result of the Latest Project Save"
+
+msgid "音频配置与性能目标"
+msgstr "Audio Configuration & Performance Targets"
+
+# --- clip_matrix.slint ---
+
+msgid "Clip 激发矩阵"
+msgstr "Clip Launch Matrix"
+
+msgid "停止"
+msgstr "Stop"
+
+msgid "激发场景 1 (Scene 1) 切片组合"
+msgstr "Launch Scene 1 Clip Combination"
+
+msgid "激发场景 2 (Scene 2) 切片组合"
+msgstr "Launch Scene 2 Clip Combination"
+
+msgid "激发场景 3 (Scene 3) 切片组合"
+msgstr "Launch Scene 3 Clip Combination"
+
+msgid "激发场景 4 (Scene 4) 切片组合"
+msgstr "Launch Scene 4 Clip Combination"
+
+msgid "激发片段: {}"
+msgstr "Launch Clip: {}"
+
+msgid "创建空白片段"
+msgstr "Create Empty Clip"
+
+# --- control_room.slint ---
+
+msgid "监听控制室"
+msgstr "Control Room"
+
+msgid "归零"
+msgstr "Reset to Zero"
+
+msgid "A: 近场主箱"
+msgstr "A: Main Nearfields"
+
+msgid "切换至 A 组全频近场立体声监听音箱"
+msgstr "Switch to the A Set: Full-Range Nearfield Stereo Monitors"
+
+msgid "B: 单声道参考"
+msgstr "B: Mono Reference"
+
+msgid "切换至 B 组小振膜单声道参考音箱"
+msgstr "Switch to the B Set: Small-Diaphragm Mono Reference Speaker"
+
+msgid "DIM 衰减监听电平 (-20 dB)"
+msgstr "DIM: Attenuate Monitor Level (-20 dB)"
+
+msgid "MONO 单声道求和检验相位互消"
+msgstr "MONO: Sum to Mono to Check Phase Cancellation"
+
+msgid "SIDE 仅监听立体声差信号 (S=L-R)"
+msgstr "SIDE: Monitor the Stereo Difference Signal Only (S = L-R)"
+
+# --- console/console_tabs.slint ---
+
+msgid "底部控制台标签导轨"
+msgstr "Lower Console Tab Rail"
+
+# --- dialogs/macro_panel.slint ---
+
+msgid "宏面板"
+msgstr "Macro Panel"
+
+msgid "宏 ({}) · {}"
+msgstr "Macros ({}) · {}"
+
+msgid "宏面板，{}"
+msgstr "Macro Panel, {}"
+
+msgid "关闭宏面板"
+msgstr "Close the Macro Panel"
+
+msgid "这条轨没有宏"
+msgstr "This Track Has No Macros"
+
+msgid "{} 位置"
+msgstr "{} Position"
+
+# --- console/asset_pool_panel.slint ---
+
+msgid "素材池"
+msgstr "Asset Pool"
+
+msgid "素材 {} 条"
+msgstr "{} Assets"
+
+msgid "导入音频（用文件对话框挑一个 WAV 并作为片段导入）"
+msgstr "Import Audio (Pick a WAV in the File Dialog and Import It as a Clip)"
+
+msgid "导入音频"
+msgstr "Import Audio"
+
+msgid "尚无素材"
+msgstr "No Assets Yet"

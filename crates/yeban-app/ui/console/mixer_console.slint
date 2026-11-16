@@ -264,7 +264,7 @@ export component MixerConsole inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "mixer-console";
-    accessible-label: "混音控制台";
+    accessible-label: @tr("混音控制台");
 
     // ---------------------------------------------------------------- 横向滚动容器
     //
@@ -331,7 +331,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-md;
                 accessible-role: button;
                 accessible-id: "module-export-midi-button";
-                accessible-label: "导出 MIDI（把当前工程写成 SMF 1 文件）";
+                accessible-label: @tr("导出 MIDI（把当前工程写成 SMF 1 文件）");
                 accessible-action-default => { root.export-midi(); }
 
                 UiText {
@@ -339,7 +339,7 @@ export component MixerConsole inherits Rectangle {
                     y: 0;
                     width: parent.width - 12px;
                     height: parent.height;
-                    text: "导出 MIDI";
+                    text: @tr("导出 MIDI");
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
                 }
@@ -397,7 +397,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-md;
                 accessible-role: button;
                 accessible-id: "module-open-project-button";
-                accessible-label: "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）";
+                accessible-label: @tr("打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）");
                 accessible-action-default => { root.open-project(); }
 
                 UiText {
@@ -405,7 +405,7 @@ export component MixerConsole inherits Rectangle {
                     y: 0;
                     width: parent.width - 12px;
                     height: parent.height;
-                    text: "打开工程";
+                    text: @tr("打开工程");
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
                 }
@@ -430,7 +430,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-md;
                 accessible-role: button;
                 accessible-id: "module-new-project-button";
-                accessible-label: "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）";
+                accessible-label: @tr("新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）");
                 accessible-action-default => { root.new-project(); }
 
                 UiText {
@@ -438,7 +438,7 @@ export component MixerConsole inherits Rectangle {
                     y: 0;
                     width: parent.width - 12px;
                     height: parent.height;
-                    text: "新建工程";
+                    text: @tr("新建工程");
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
                 }
@@ -504,7 +504,7 @@ export component MixerConsole inherits Rectangle {
             clip: true;
             accessible-role: groupbox;
             accessible-id: "track-" + track_index + "-channel-strip";
-            accessible-label: "通道条 " + track_name;
+            accessible-label: @tr("通道条 {}", track_name);
             accessible-item-selected: root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index];
             accessible-action-default => { root.track-select(track_index); }
 
@@ -542,7 +542,7 @@ export component MixerConsole inherits Rectangle {
                 overflow: elide;
                 accessible-role: slider;
                 accessible-id: "track-" + track_index + "-pan";
-                accessible-label: "轨道 " + track_name + " 声相";
+                accessible-label: @tr("轨道 {} 声相", track_name);
                 accessible-orientation: horizontal;
                 accessible-value-minimum: -100;
                 accessible-value-maximum: 100;
@@ -561,7 +561,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: image;
                 accessible-id: "track-" + track_index + "-mixer-color-swatch";
-                accessible-label: "轨道色标 " + root.track-color-labels[track_index];
+                accessible-label: @tr("轨道色标 {}", root.track-color-labels[track_index]);
             }
 
             // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
@@ -574,7 +574,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: button;
                 accessible-id: "track-" + track_index + "-mixer-mute-button";
-                accessible-label: "轨道 " + track_name + " 静音";
+                accessible-label: @tr("轨道 {} 静音", track_name);
                 accessible-checkable: true;
                 accessible-checked: root.track-mutes[track_index];
                 // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -612,7 +612,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: button;
                 accessible-id: "track-" + track_index + "-mixer-solo-button";
-                accessible-label: "轨道 " + track_name + " 独奏";
+                accessible-label: @tr("轨道 {} 独奏", track_name);
                 accessible-checkable: true;
                 accessible-checked: root.track-solos[track_index];
                 // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -651,7 +651,7 @@ export component MixerConsole inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: progress-indicator;
                 accessible-id: "track-" + track_index + "-meter";
-                accessible-label: "轨道 " + track_name + " 电平表 峰值 " + root.track-meter-peaks[track_index] + " RMS " + root.track-meter-rmss[track_index] + " dBFS";
+                accessible-label: @tr("轨道 {} 电平表 峰值 {} RMS {} dBFS", track_name, root.track-meter-peaks[track_index], root.track-meter-rmss[track_index]);
                 accessible-value-minimum: -120;
                 accessible-value-maximum: 0;
                 accessible-value-step: 0.1;
@@ -690,7 +690,7 @@ export component MixerConsole inherits Rectangle {
                 border-color: Tokens.gold-deep;
                 accessible-role: slider;
                 accessible-id: "track-" + track_index + "-fader";
-                accessible-label: "轨道 " + track_name + " 推子";
+                accessible-label: @tr("轨道 {} 推子", track_name);
                 accessible-orientation: vertical;
                 accessible-value-minimum: -60;
                 accessible-value-maximum: 6;
@@ -755,7 +755,7 @@ export component MixerConsole inherits Rectangle {
                 // [PATCH UI-A11Y-007]：可寻址节点必须显式声明 role（注册表 = ElementKind::TextInput）。
                 accessible-role: text-input;
                 accessible-id: "track-" + track_index + "-sampler-path";
-                accessible-label: "轨道 " + track_name + " SFZ 采样器路径";
+                accessible-label: @tr("轨道 {} SFZ 采样器路径", track_name);
                 // 回车 = SET。⛔ 不是第二份提交实现：与 SET 按钮发**同一条**回调。
                 accepted => {
                     root.mixer-sampler-set(track_index, self.text);
@@ -780,7 +780,7 @@ export component MixerConsole inherits Rectangle {
                 border-color: Tokens.line-strong;
                 accessible-role: button;
                 accessible-id: "track-" + track_index + "-sampler-browse";
-                accessible-label: "轨道 " + track_name + " 浏览 SFZ 文件";
+                accessible-label: @tr("轨道 {} 浏览 SFZ 文件", track_name);
                 // `[UI-A11Y-003]` §7.3：落点与下面的 `TouchArea.clicked` **逐字相同**。
                 accessible-action-default => {
                     root.mixer-sampler-browse(track_index);
@@ -818,7 +818,7 @@ export component MixerConsole inherits Rectangle {
                 border-color: Tokens.line-strong;
                 accessible-role: button;
                 accessible-id: "track-" + track_index + "-sampler-set";
-                accessible-label: "轨道 " + track_name + " 提交 SFZ 路径";
+                accessible-label: @tr("轨道 {} 提交 SFZ 路径", track_name);
                 accessible-action-default => {
                     root.mixer-sampler-set(track_index, sampler-path-field.text);
                 }
@@ -855,7 +855,7 @@ export component MixerConsole inherits Rectangle {
                 border-color: Tokens.line-strong;
                 accessible-role: button;
                 accessible-id: "track-" + track_index + "-sampler-clear";
-                accessible-label: "轨道 " + track_name + " 解绑 SFZ 采样器";
+                accessible-label: @tr("轨道 {} 解绑 SFZ 采样器", track_name);
                 accessible-action-default => {
                     root.mixer-sampler-clear(track_index);
                 }
@@ -962,7 +962,7 @@ export component MixerConsole inherits Rectangle {
         clip: true;
         accessible-role: groupbox;
         accessible-id: "mixer-master-strip";
-        accessible-label: "主控通道条";
+        accessible-label: @tr("主控通道条");
 
         UiMediumText {
             x: Tokens.space-3;
@@ -989,7 +989,7 @@ export component MixerConsole inherits Rectangle {
             // `value`），否则"主控声相拖得动但读不回"只能靠窗口属性证明。
             accessible-role: slider;
             accessible-id: "mixer-master-pan";
-            accessible-label: "主控声相";
+            accessible-label: @tr("主控声相");
             accessible-orientation: horizontal;
             accessible-value-minimum: -100;
             accessible-value-maximum: 100;
@@ -1006,7 +1006,7 @@ export component MixerConsole inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: image;
             accessible-id: "mixer-master-color-swatch";
-            accessible-label: "主控色标 " + root.master-color-label;
+            accessible-label: @tr("主控色标 {}", root.master-color-label);
         }
 
         Rectangle {
@@ -1018,7 +1018,7 @@ export component MixerConsole inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "mixer-master-mute-button";
-            accessible-label: "主控静音";
+            accessible-label: @tr("主控静音");
             accessible-checkable: true;
             accessible-checked: root.master-mute;
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -1055,7 +1055,7 @@ export component MixerConsole inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "mixer-master-solo-button";
-            accessible-label: "主控独奏";
+            accessible-label: @tr("主控独奏");
             accessible-checkable: true;
             accessible-checked: root.master-solo;
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -1092,7 +1092,7 @@ export component MixerConsole inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: progress-indicator;
             accessible-id: "mixer-master-meter";
-            accessible-label: "主控电平表 峰值 " + root.master-meter-peak + " RMS " + root.master-meter-rms + " dBFS";
+            accessible-label: @tr("主控电平表 峰值 {} RMS {} dBFS", root.master-meter-peak, root.master-meter-rms);
             accessible-value-minimum: -120;
             accessible-value-maximum: 0;
             accessible-value-step: 0.1;
@@ -1139,7 +1139,7 @@ export component MixerConsole inherits Rectangle {
             border-color: Tokens.gold;
             accessible-role: slider;
             accessible-id: "mixer-master-fader";
-            accessible-label: "主控推子";
+            accessible-label: @tr("主控推子");
             accessible-orientation: vertical;
             accessible-value-minimum: -60;
             accessible-value-maximum: 6;
