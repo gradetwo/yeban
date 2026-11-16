@@ -599,7 +599,9 @@ export component ArrangementViewport inherits Rectangle {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            color: #64748b;
+                                            // ⭐ WCAG AA：8px 小字也须 ≥3:1（实测 #64748b 在 #161b28 上仅 3.61:1）。
+                                            // 改用「次要文字下限」#7c8aa0（最亮底 #161b28 上 4.91:1）。
+                                            color: #7c8aa0;
                                             vertical-alignment: center;
                                         }
                                     }
