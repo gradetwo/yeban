@@ -69,8 +69,10 @@ const LEGACY_ALIASES: [&str; 16] = [
 fn dock_tabs_use_the_canonical_names() {
     let d = code_lines(DOCK);
     for (id, name) in CANONICAL {
+        // 双语 i18n（line/ui-i18n）后页签文案在源码里写作 `text: @tr("…")`：
+        // 针随表示形式更新，判据意图（页签必须用权威名）不变。
         assert!(
-            d.contains(&format!("text: \"{name}\"")),
+            d.contains(&format!("text: @tr(\"{name}\")")),
             "底部页签缺权威名「{name}」"
         );
         assert!(
