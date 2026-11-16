@@ -1158,40 +1158,6 @@ impl Sample {
     }
 }
 
-/// `--theme` 可选的主题（运行期调色板选择）。
-///
-/// ## 它到底能改什么（实测，不是期望）
-///
-/// 本仓的界面 **100% 自绘**：13 个 `.slint` 里 `Rectangle` 出现 74 次，而 Slint 内建控件
-/// （`StandardButton` / `LineEdit` / `ScrollView` / `ListView` / `ComboBox` / `Slider` /
-/// `TabWidget` …）出现 **0 次**。所以"换一个 Slint 内建风格"本身**改不动我们的像素** ——
-/// 它只改 Slint 自己的控件与 `Palette` 全局。
-///
-/// 能让我们的像素跟着走的，是 [`crate::host::apply_theme`] 把
-/// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Yeban` 走**负责人下发的
-/// yeban 字面量**（2026-10-07 起是**默认主题**，CLI 字面值 `default`，`yeban` 是它的
-/// 别名），`Brand` 走**本仓品牌深色的那一串十六进制字面量**（CLI 字面值 `brand`；
-/// 2026-10-07 之前它是默认主题、CLI 名字叫 `default`），`InkMoor` / `Plume` 各走
-/// **负责人下发的另一串十六进制字面量**（`.slint` 侧写作 `brand` / `yeban` / `inkmoor` /
-/// `plume`；Slint 的 Rust 生成器只把每段首字母大写，所以 `inkmoor` **生成出来**是
-/// `YebanTheme::Inkmoor`，与本枚举的 **CLI 变体名** `Theme::InkMoor` 差一个大写 ——
-/// 两个名字各属于一层，别混用），剩下四个走 Slint 设计系统的 `Palette.*` 角色。
-///
-/// 于是八支主题分成两族：**四支自绘**（`Brand` / `Yeban` / `InkMoor` / `Plume` —— 都是
-/// 本枚举的变体名；它们在 `YebanTheme` 里对应 `Brand` / `Yeban` / `Inkmoor` / `Plume`，
-/// [`Self::uses_design_system`] 为假、[`Self::requested_slint_style`] 为 `None`）与
-/// **四个设计系统名字**（`Material` / `Fluent` / `Cupertino` / `Native`）。
-/// **命令行取值比主题多一个**：`yeban` 是 `Yeban` 的别名（见 [`Self::aliases`]），
-/// 因此 `--theme` 的可接受集合 = [`Self::accepted_names`] 的 9 个名字 / 8 支调色板。
-///
-/// ## 为什么四个内建名字在**同一个二进制**里长得一样
-///
-/// Slint 1.18.1 **没有运行时选风格的 API**（`slint::select_built_in_style` 在该版本的
-/// slint / i-slint-core / i-slint-backend-selector / i-slint-compiler 全文检索里不存在），
-/// 风格是**编译期**定死的（`build.rs` 的 `SLINT_STYLE` → `with_style`）。`Palette` 也只有
-/// 编译进来的那一个。于是 `--theme material` 与 `--theme fluent` 在不重新编译时共享同一套
-/// `Palette` 值 —— 这不是缺陷而是本版本的上限；[`theme_lines`] / [`PRINT_THEME_SWITCH`]
-/// 把这件事**如实**打给用户，而不是假装四个主题各不相同。
 /// 界面语言（双语 i18n，line/ui-i18n；设计见 `docs/app-i18n-notes.md`）。
 ///
 /// 与 [`Theme`] 同款的「CLI 取值 ↔ 枚举」结构：规范名 + 别名 + `accepted_names`
@@ -1265,6 +1231,40 @@ impl Language {
     }
 }
 
+/// `--theme` 可选的主题（运行期调色板选择）。
+///
+/// ## 它到底能改什么（实测，不是期望）
+///
+/// 本仓的界面 **100% 自绘**：13 个 `.slint` 里 `Rectangle` 出现 74 次，而 Slint 内建控件
+/// （`StandardButton` / `LineEdit` / `ScrollView` / `ListView` / `ComboBox` / `Slider` /
+/// `TabWidget` …）出现 **0 次**。所以"换一个 Slint 内建风格"本身**改不动我们的像素** ——
+/// 它只改 Slint 自己的控件与 `Palette` 全局。
+///
+/// 能让我们的像素跟着走的，是 [`crate::host::apply_theme`] 把
+/// `ui/tokens.slint` 的 `ThemeState.theme` 写成下面的值：`Yeban` 走**负责人下发的
+/// yeban 字面量**（2026-10-07 起是**默认主题**，CLI 字面值 `default`，`yeban` 是它的
+/// 别名），`Brand` 走**本仓品牌深色的那一串十六进制字面量**（CLI 字面值 `brand`；
+/// 2026-10-07 之前它是默认主题、CLI 名字叫 `default`），`InkMoor` / `Plume` 各走
+/// **负责人下发的另一串十六进制字面量**（`.slint` 侧写作 `brand` / `yeban` / `inkmoor` /
+/// `plume`；Slint 的 Rust 生成器只把每段首字母大写，所以 `inkmoor` **生成出来**是
+/// `YebanTheme::Inkmoor`，与本枚举的 **CLI 变体名** `Theme::InkMoor` 差一个大写 ——
+/// 两个名字各属于一层，别混用），剩下四个走 Slint 设计系统的 `Palette.*` 角色。
+///
+/// 于是八支主题分成两族：**四支自绘**（`Brand` / `Yeban` / `InkMoor` / `Plume` —— 都是
+/// 本枚举的变体名；它们在 `YebanTheme` 里对应 `Brand` / `Yeban` / `Inkmoor` / `Plume`，
+/// [`Self::uses_design_system`] 为假、[`Self::requested_slint_style`] 为 `None`）与
+/// **四个设计系统名字**（`Material` / `Fluent` / `Cupertino` / `Native`）。
+/// **命令行取值比主题多一个**：`yeban` 是 `Yeban` 的别名（见 [`Self::aliases`]），
+/// 因此 `--theme` 的可接受集合 = [`Self::accepted_names`] 的 9 个名字 / 8 支调色板。
+///
+/// ## 为什么四个内建名字在**同一个二进制**里长得一样
+///
+/// Slint 1.18.1 **没有运行时选风格的 API**（`slint::select_built_in_style` 在该版本的
+/// slint / i-slint-core / i-slint-backend-selector / i-slint-compiler 全文检索里不存在），
+/// 风格是**编译期**定死的（`build.rs` 的 `SLINT_STYLE` → `with_style`）。`Palette` 也只有
+/// 编译进来的那一个。于是 `--theme material` 与 `--theme fluent` 在不重新编译时共享同一套
+/// `Palette` 值 —— 这不是缺陷而是本版本的上限；[`theme_lines`] / [`PRINT_THEME_SWITCH`]
+/// 把这件事**如实**打给用户，而不是假装四个主题各不相同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     /// 本仓品牌深色（`assets/brand/`，从母版 SVG 提取）—— **2026-10-07 之前的默认外观**。
