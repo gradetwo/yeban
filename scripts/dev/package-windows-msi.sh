@@ -14,10 +14,13 @@
 #   MajorUpgrade 就地升级。perMachine, 需要管理员权限安装 —— 桌面 DAW 的常态。
 #
 # 工具来源 (仓库纪律: 只用发行版工具, 不下随机二进制):
-#   PATH 里有 wix 就用; 没有就 `choco install wixtoolset -y` (Chocolatey 是
-#   runner 自带的包管理器), 装完在 PATH 与 Program Files 的 WiX Toolset v*/bin
-#   下再找; 仍找不到 ⇒ 响亮失败, 不静默换别的打包路。
-#   WiX v5+ 首次 build 会要求接受 OSMF EULA: 第一次 build 若失败, 带
+#   PATH 里有现成的就用; 没有就 `choco install wixtoolset -y` (Chocolatey 是
+#   runner 自带的包管理器), 装完再找一遍; 仍找不到 ⇒ 响亮失败, 不静默换别的打包路。
+#   ⚠ 实测 (2026-11-16 nightly 分支 run 43820577463 Windows 腿日志): choco 的
+#   wixtoolset 是 **3.14.1** (candle/light, 没有 v4 的 wix CLI)。故两条路都支持:
+#   有 v4+ 的 `wix` 就编 yeban.wxs (v4 语法); 只有 v3 就 candle+light 编
+#   yeban-v3.wxs (同一产品身份的 v3 方言)。用哪条路由日志如实打印。
+#   WiX v5+ 首次 build 会要求接受 OSMF EULA: v4 路第一次 build 若失败, 带
 #   `-acceptEula wix0001` 重试一次 (重试的输出原样留在日志里, 不吞)。
 #
 # 版本: 根 Cargo.toml 的 [workspace.package] version; MSI 的 ProductVersion
@@ -77,8 +80,8 @@ stage_abs="$(cd "$stage_dir" && pwd)"
 mkdir -p "$out_dir"
 out_abs="$(cd "$out_dir" && pwd)"
 
-# --- 1. 找到 WiX -------------------------------------------------------------
-find_wix() {
+# --- 1. 找到 WiX (v4 的 wix CLI 或 v3 的 candle, 见头部实测注) ----------------
+find_wix4() {
   if command -v wix >/dev/null 2>&1; then command -v wix; return 0; fi
   local d
   for d in "/c/Program Files (x86)"/WiX\ Toolset\ v*/bin "/c/Program Files"/WiX\ Toolset\ v*/bin; do
@@ -86,36 +89,65 @@ find_wix() {
   done
   return 1
 }
+find_candle() {
+  if command -v candle.exe >/dev/null 2>&1; then command -v candle.exe; return 0; fi
+  local d
+  # WiX v3 安装器会设 WIX 环境变量指向安装根。
+  if [[ -n "${WIX:-}" ]]; then
+    d="$(cygpath -u "$WIX" 2>/dev/null || true)"
+    [[ -n "$d" && -x "$d/bin/candle.exe" ]] && { printf '%s' "$d/bin/candle.exe"; return 0; }
+  fi
+  for d in "/c/Program Files (x86)"/WiX\ Toolset\ v3*/bin "/c/Program Files"/WiX\ Toolset\ v3*/bin; do
+    [[ -x "$d/candle.exe" ]] && { printf '%s' "$d/candle.exe"; return 0; }
+  done
+  return 1
+}
 
-WIX="$(find_wix || true)"
-if [[ -z "$WIX" ]]; then
-  step "PATH 里没有 wix ⇒ choco install wixtoolset"
-  command -v choco >/dev/null 2>&1 || die "没有 wix 也没有 choco, 无法按既定路安装 WiX"
+WIX4="$(find_wix4 || true)"
+CANDLE="$(find_candle || true)"
+if [[ -z "$WIX4" && -z "$CANDLE" ]]; then
+  step "没有现成的 WiX ⇒ choco install wixtoolset"
+  command -v choco >/dev/null 2>&1 || die "没有 WiX 也没有 choco, 无法按既定路安装 WiX"
   choco install wixtoolset -y --no-progress
-  WIX="$(find_wix || true)"
+  WIX4="$(find_wix4 || true)"
+  CANDLE="$(find_candle || true)"
 fi
-[[ -n "$WIX" ]] || die "choco install wixtoolset 后仍找不到 wix.exe"
-echo "[pkg-msi] wix: $WIX"
-"$WIX" --version || true
+[[ -n "$WIX4" || -n "$CANDLE" ]] \
+  || die "choco install wixtoolset 后仍找不到 wix.exe (v4) 或 candle.exe (v3)"
 
 # --- 2. 生成 .wxs 并 build ---------------------------------------------------
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-sed "s/__YEBAN_VERSION__/$msi_version/g" \
-  "$repo_root/resources/windows/yeban.wxs" > "$work/yeban.wxs"
-grep -q -- "$msi_version" "$work/yeban.wxs" || die ".wxs 版本占位符替换失败"
 
 src_win="$(cygpath -w "$stage_abs")"
 out_win="$(cygpath -w "$out_abs/$name.msi")"
-wxs_win="$(cygpath -w "$work/yeban.wxs")"
 
-step "wix build → $out_dir/$name.msi"
-if ! "$WIX" build -arch x64 -d "SourceDir=$src_win" -o "$out_win" "$wxs_win"; then
-  echo "[pkg-msi] 首次 build 失败, 带 -acceptEula wix0001 重试一次 (WiX v5+ 的 EULA 门)"
-  "$WIX" build -acceptEula wix0001 -arch x64 -d "SourceDir=$src_win" -o "$out_win" "$wxs_win" \
-    || die "wix build 两次都失败 (原因见上面输出)"
+if [[ -n "$WIX4" ]]; then
+  echo "[pkg-msi] 工具链: WiX v4+ CLI: $WIX4"
+  "$WIX4" --version || true
+  sed "s/__YEBAN_VERSION__/$msi_version/g" \
+    "$repo_root/resources/windows/yeban.wxs" > "$work/yeban.wxs"
+  grep -q -- "$msi_version" "$work/yeban.wxs" || die ".wxs 版本占位符替换失败"
+  step "wix build → $out_dir/$name.msi"
+  if ! "$WIX4" build -arch x64 -d "SourceDir=$src_win" -o "$out_win" "$(cygpath -w "$work/yeban.wxs")"; then
+    echo "[pkg-msi] 首次 build 失败, 带 -acceptEula wix0001 重试一次 (WiX v5+ 的 EULA 门)"
+    "$WIX4" build -acceptEula wix0001 -arch x64 -d "SourceDir=$src_win" -o "$out_win" "$(cygpath -w "$work/yeban.wxs")" \
+      || die "wix build 两次都失败 (原因见上面输出)"
+  fi
+else
+  LIGHT="$(dirname "$CANDLE")/light.exe"
+  [[ -x "$LIGHT" ]] || die "有 candle.exe 但同目录没有 light.exe: $CANDLE"
+  echo "[pkg-msi] 工具链: WiX v3: $CANDLE + $LIGHT"
+  "$CANDLE" -help >/dev/null 2>&1 || true
+  sed "s/__YEBAN_VERSION__/$msi_version/g" \
+    "$repo_root/resources/windows/yeban-v3.wxs" > "$work/yeban.wxs"
+  grep -q -- "$msi_version" "$work/yeban.wxs" || die ".wxs 版本占位符替换失败"
+  step "candle + light → $out_dir/$name.msi"
+  ( cd "$work" && "$CANDLE" -arch x64 -d"SourceDir=$src_win" yeban.wxs \
+      && "$LIGHT" -o "$out_win" yeban.wixobj ) \
+    || die "candle/light 失败 (原因见上面输出)"
 fi
-[[ -f "$out_abs/$name.msi" ]] || die "wix build 退出 0 但 MSI 不在: $out_abs/$name.msi"
+[[ -f "$out_abs/$name.msi" ]] || die "build 退出 0 但 MSI 不在: $out_abs/$name.msi"
 ( cd "$out_abs" && python3 -c "import hashlib; print(hashlib.sha256(open('$name.msi','rb').read()).hexdigest() + '  $name.msi')" > "$name.msi.sha256" )
 
 # --- 3. 自验: msiexec /a 管理安装 + --version 对账 ---------------------------

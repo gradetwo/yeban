@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   夜半 (Yeban) Windows MSI 的 WiX v4 源文件 —— 由 scripts/dev/package-windows-msi.sh 消费。
+  ⚠ 还有一份 v3 方言的孪生文件 yeban-v3.wxs (choco 的 wixtoolset 是 3.14.1,
+  runner 上实际走 v3 的 candle/light —— 见打包脚本头部的实测注)。两份的
+  UpgradeCode 与组件 GUID 必须逐字一致, 改一处改两处。
 
   约定 (改这里之前先读打包脚本的头部):
   - 版本不写死: `__YEBAN_VERSION__` 占位符由打包脚本替换成根 Cargo.toml 的
