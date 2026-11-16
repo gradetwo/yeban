@@ -18254,4 +18254,12 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **本地读数（⚠ 只有 CI 算数）**：`yeban-sfz` 全套（438 单元 ＋ 新 5 ＋ 其余集成）与
   `yeban-engine --no-default-features` 全套**全绿**；clippy `-D warnings`（两 crate，
   `--all-targets`）零告警；`cargo fmt --check` 与 `run-gates.sh light` 通过。
-- **判决**：尚未推送 ⇒ **CI `pending`**。
+- **判决（读回）**：tip `559f0d46` 的**全量** run **`43873482822`**（`workflow_dispatch`
+  + `force_full=true`；同支窄 run `43865066500` 因继承 main tip 的两处全量红失败、已修）=
+  `completed / **success**`（`rust (workspace 全量)` / `macos` / `windows` 全绿）。
+  workspace 作业日志现读：`test result:` **758** 行、`FAILED` **0**，`set_hdcc_defaults` /
+  `h1_set_hdcc` / `set_hdcc_float_default` / `a_missing_clip_id_message` 各 **1** 次在场。
+- ⚠ 顺带修掉两处**继承 main tip**、与 set_hdcc 语义无关的全量红：`yeban-app::stems_output_dir`
+  的 `collapsible_if`（合并 let-chains），`fault_vocabulary` 新增
+  `domain/sfz.rs::notesEmpty.reason` 动态站点登记（键站点 345 → 346、总出现 349 → 350、
+  运行时站点 6 → 7，⛔ 不放宽扫描器）。
