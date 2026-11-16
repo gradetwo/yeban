@@ -40,6 +40,16 @@
 
 ▶ Listen to 《雨声太吵》 (4:24, [direct audio](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)) — the full experience, visuals synced to the music, is on [the trilogy site](https://trilogy.wangda.today).
 
+## Screenshots
+
+The current interface, running a 10-track pop project (lead vocal, harmonies, piano, guitars, bass, drums, strings, synth pad):
+
+![Full-song arrangement view: the complete 12-bar structure, with the piano roll showing the piano track's arpeggios](assets/screenshots/ui-full-song.png)
+
+![Arrangement view: the chorus section, with the piano roll and the channel inspector showing a real EQ curve](assets/screenshots/ui-arrangement-chorus.png)
+
+![Mixer console: per-track channel strips with the bus and master sections](assets/screenshots/ui-mixer-console.png)
+
 ## What Yeban can do
 
 - **Songmap — whole-song overview** (`get_song_overview` MCP tool, or `--export-song-overview` on the CLI): one bar-level diagnostic in four layers — energy, frequency, density and emotion — with an automatic anomaly summary. Phase 2 adds expected-level envelope bands, three genre presets (`default` / `orchestral` / `electronic`) and a score-dynamics ghost line and an A/B snapshot diff (`compare_song_snapshots` MCP tool). A within-song self-similarity check has shipped (similarity ≥ 0.95 over ≥ 4 bars, best 5 matches).
