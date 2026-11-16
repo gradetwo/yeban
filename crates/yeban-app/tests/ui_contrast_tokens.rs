@@ -116,4 +116,3 @@ fn muted_text_meets_wcag_aa_on_every_panel_background() {
         "#64748b 在 #161b28 上本就超过 4.5:1，本判据的前提失效，需重新评估"
     );
 }
-
