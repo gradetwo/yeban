@@ -43,7 +43,7 @@
   "lang.en": "EN",
   "lang.zh": "中文",
   "meta.title": "夜半 Yeban — 纯血 Rust 原生专业 DAW",
-  "meta.description": "夜半 (Yeban) 是一台从零设计的原生桌面数字音频工作站：Slint 声明式矢量界面 + 纯 Rust 低时延实时音频引擎，960 PPQ 整数时钟，GPLv3 开源。",
+  "meta.description": "夜半 (Yeban) 是一台从零设计的开源 DAW（数字音频工作站）：纯 Rust 低时延实时音频引擎 + Slint 原生界面，带完整 MCP 工具面，AI agent 可作曲、编曲与混音。GPLv3 开源，提供 Windows / macOS / Linux 安装包。",
   "nav.contact": "联系",
   "nav.features": "特性",
   "nav.opensource": "开源",

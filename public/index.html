@@ -12,7 +12,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="meta.title">夜半 Yeban — 纯血 Rust 原生专业 DAW</title>
-<meta name="description" data-i18n-attr="content:meta.description" content="夜半 (Yeban) 是一台从零设计的原生桌面数字音频工作站：Slint 声明式矢量界面 + 纯 Rust 低时延实时音频引擎，960 PPQ 整数时钟，GPLv3 开源。">
+<meta name="description" data-i18n-attr="content:meta.description" content="夜半 (Yeban) 是一台从零设计的开源 DAW（数字音频工作站）：纯 Rust 低时延实时音频引擎 + Slint 原生界面，带完整 MCP 工具面，AI agent 可作曲、编曲与混音。GPLv3 开源，提供 Windows / macOS / Linux 安装包。">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#060A14" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#FDFCFA" media="(prefers-color-scheme: light)">
@@ -25,6 +25,17 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/png/yeban-dark-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/apple-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="夜半 Yeban">
+<meta property="og:title" content="夜半 Yeban — 纯血 Rust 原生专业 DAW">
+<meta property="og:description" content="夜半 (Yeban) 是一台从零设计的开源 DAW（数字音频工作站）：纯 Rust 低时延实时音频引擎 + Slint 原生界面，带完整 MCP 工具面，AI agent 可作曲、编曲与混音。GPLv3 开源，提供 Windows / macOS / Linux 安装包。">
+<meta property="og:url" content="https://yeban.wangda.today/">
+<meta property="og:image" content="https://yeban.wangda.today/assets/shots/ui-full-song.png">
+<meta property="og:image:alt" content="夜半 Yeban 界面截图：编曲视图（全曲）">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="夜半 Yeban — 纯血 Rust 原生专业 DAW">
+<meta name="twitter:description" content="夜半 (Yeban) 是一台从零设计的开源 DAW（数字音频工作站）：纯 Rust 低时延实时音频引擎 + Slint 原生界面，带完整 MCP 工具面，AI agent 可作曲、编曲与混音。GPLv3 开源，提供 Windows / macOS / Linux 安装包。">
+<meta name="twitter:image" content="https://yeban.wangda.today/assets/shots/ui-full-song.png">
 <link rel="stylesheet" href="/assets/css/site.css">
 <!--
   主题必须在样式表生效前决定, 否则会闪一下浅色 (FOUC)。
@@ -41,6 +52,21 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
   root.setAttribute("data-theme-pref", pref);
   root.setAttribute("data-theme", dark ? "dark" : "light");
 })();
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "夜半 Yeban",
+  "alternateName": "Yeban DAW",
+  "url": "https://yeban.wangda.today/",
+  "applicationCategory": "MultimediaApplication",
+  "operatingSystem": "Windows, macOS, Linux",
+  "description": "夜半 (Yeban) 是一台从零设计的开源 DAW（数字音频工作站）：纯 Rust 低时延实时音频引擎 + Slint 原生界面，带完整 MCP 工具面，AI agent 可作曲、编曲与混音。GPLv3 开源。",
+  "license": "https://github.com/gradetwo/yeban/blob/main/LICENSE",
+  "downloadUrl": "https://github.com/gradetwo/yeban/releases",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
 </script>
 </head>
 <body>

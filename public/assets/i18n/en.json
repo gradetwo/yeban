@@ -43,7 +43,7 @@
   "lang.en": "EN",
   "lang.zh": "中文",
   "meta.title": "Yeban — Pure-Rust Native Professional DAW",
-  "meta.description": "Yeban is a native desktop digital audio workstation designed from scratch: a Slint declarative vector UI plus a pure-Rust low-latency real-time audio engine, a 960 PPQ integer clock, open source under GPLv3.",
+  "meta.description": "Yeban is an open-source DAW designed from scratch in Rust: a native desktop digital audio workstation with a pure-Rust low-latency real-time audio engine and a full MCP tool surface — AI agents can compose, arrange and mix. GPLv3, with installers for Windows, macOS and Linux.",
   "nav.contact": "Contact",
   "nav.features": "Features",
   "nav.opensource": "Open source",
