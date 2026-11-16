@@ -4556,6 +4556,9 @@ impl EngineRuntime {
         // 三类"没有生效"的裁决各自计数 ⇒ "事件到了但什么都没发生"永远可见
         // [ARCH-DSP-001, MUST-GATE-001]。
         let mut applied = 0usize;
+        // ⭐ **CC64 的踏板跃变**（本片）：出队点只写 CC 表（拿不到摊平表）⇒ 这里只记
+        // `Option<bool>`，等快照借出后按轨应用 [`SynthEngine::set_sustain_pedal`]。
+        let mut pedal_transition: Option<bool> = None;
         // ⭐ 任务单 `#231`：本量子有没有**定位**（`SeekTicks`）。定位只搬了播放头，
         // 音频侧的音符游标还得在快照借出来之后**逐轨搬回**（见下面的
         // [`SynthEngine::realign_cursors`]）—— ⛔ 不在这里重建游标：游标表的
@@ -4704,7 +4707,20 @@ impl EngineRuntime {
             // ——"无事可报"与"没有这条路径"在读数上必须可区分，`events_applied` 就是那条
             // 区分的见证（判据：`tests/sfz_instrument.rs` 的 S63）。
             if let EngineEvent::ControlChange { controller, value } = event {
+                // ⭐ 先取"踏板跃变"（本片）：`value(64)` 的**旧值**必须在 `apply` 之前读。
+                // 只认 CC64 的 down↔up 跃变；同档重复消息不触发任何动作。
+                let pedal_before = if controller & 0x7F == 64 {
+                    control_change.is_received(64) && control_change.value(64) >= 64
+                } else {
+                    false
+                };
                 let _ = control_change.apply(controller, value);
+                if controller & 0x7F == 64 {
+                    let pedal_after = (value & 0x7F) >= 64;
+                    if pedal_before != pedal_after {
+                        pedal_transition = Some(pedal_after);
+                    }
+                }
             }
             // ⭐ 任务单 `#283`：**设备腿的场景启动**。设备腿把 `EngineRuntime` 按值移进
             // cpal 回调（[`crate::device::open_output`]）⇒ 控制线程没有 `&mut self`
@@ -4747,6 +4763,16 @@ impl EngineRuntime {
             // stereo-linked 的母线电平，绝不按"轨道"重复计量；它也不参与声部合成
             // （母线是汇流点，没有自己的声源）。
             let master = current.master();
+
+            // ⭐ **应用本量子的 CC64 跃变**（本片）：快照已借出 ⇒ 每条有摊平表的轨都能
+            // 拿到 `prepared()`，`set_sustain_pedal` 在**松开**时会逐个 `release_note` ＋
+            // `trigger_pedal_up`（与 `note_off_with_sources` 同一套语义）。
+            // ⚠ 只处理"有 SFZ 表"的轨：没有采样器音源的轨本来就没有释放族。
+            if let Some(down) = pedal_transition {
+                for (track, plan) in current.sfz() {
+                    synth.set_sustain_pedal(*track, down, Some(plan.prepared()));
+                }
+            }
 
             // ⭐ ⭐ 任务单 `#231`：**定位之后把音频侧的音符游标搬回新位置**。
             //

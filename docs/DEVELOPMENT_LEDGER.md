@@ -18169,9 +18169,11 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   对齐）；`PreparedRegion` 6296 / `SfzVoice` 40 / `EngineRuntime` 45888 不变。
 - **判据**：`tests/sfz_sustain_pedal.rs` P1（踩下只响 release_key）、P2（松开只响 release）、
   P3（重触发清挂起位），本地 3/3。
-- ⚠ **仍未接（本片是半片，如实记）**：`EngineEvent::ControlChange` 的出队点（`rt.rs`
-  的 `render_block` 1) 段）只把 CC 写进 `ControlChangeState`，**没有**调用
-  `SynthEngine::set_sustain_pedal` —— 该处拿不到"当前快照的摊平表"（快照守卫在那一步
-  之后才借出）⇒ 需要一次"CC64 跃变 → 逐轨 plan"的接线裁决（在快照借出后重放跃变，或
-  把踏板跃变存进定长队列）。⇒ **产品路径的实时踏板今天还不起作用**；API 与语义已就绪。
+- ⭐ **运行时接线（同片补齐）**：`rt.rs` 的 CC 出队臂在 `apply` **之前**读 CC64 旧值、
+  `apply` 之后判 down↔up 跃变，只记 `Option<bool>`（拿不到摊平表）；主快照块
+  （`begin_block()` 返回 `held` 的**每量子**路径）里按 `current.sfz()` 逐轨调
+  `synth.set_sustain_pedal(track, down, Some(plan.prepared()))` ⇒ ⛔ 不再需要第二套
+  跃变队列（`begin_block` 末尾无条件返回 `held`，见 `snapshot.rs:2425`）。
+- **判据补充**：P4 用真 `SynthEngine`（`arm_from_snapshot` + 一条轨）钉住"踏板踩下时
+  起音声部继续响、松开才建 release 声部并放掉起音"——`out[0]` 依次 0.5 → 0.5 → 0.25。
 - **判决**：尚未推送 ⇒ **CI `pending`**。

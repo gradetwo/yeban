@@ -845,9 +845,10 @@
 //! * `SynthEngine::note_off_with_sources`：踩下时不停声部、只响 `release_key` 并标记挂起；
 //!   `SynthEngine::set_sustain_pedal` 在松开时逐个 `release_note` ＋ `trigger_pedal_up`。
 //! * **尺寸**：池 6464 → **6600 B**（＋136）；其余三条不变。
-//! * ⚠ **设备/事件面未接**：`EngineEvent::ControlChange` 的出队点（`rt.rs`）拿不到摊平表，
-//!   本片**没有**在那里调 `set_sustain_pedal` ⇒ 产品路径的实时踏板今天还不起作用；
-//!   两种落法与验收见 `docs/ledger/sfz-sustain-pedal-project.md` §7。
+//! * **设备/事件面**：`rt.rs` 的 CC 出队臂只记 CC64 的 down↔up 跃变（`Option<bool>`），
+//!   主快照块按 `current.sfz()` 逐轨调 `set_sustain_pedal`（`begin_block()` 每量子返回
+//!   `held`）⇒ 在线 MIDI 的 CC64 经既有 `midi_live → EngineEvent::ControlChange` 到达；
+//!   ⚠ 通道→轨路由仍是既有的全局口径（CC 不携带 track）。
 //! * 判据：`tests/sfz_sustain_pedal.rs` 的 P1～P3。
 //!
 //! # ⭐ 释放采样（`trigger=release` / `release_key`）与 `rt_decay`

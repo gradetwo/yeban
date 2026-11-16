@@ -88,3 +88,92 @@ fn p3_retriggering_the_key_clears_the_sustained_flag() {
     let _ = pool.trigger_note(&plan, NOTE, 100, u64::MAX, 1.0, None);
     assert!(!pool.sustained(NOTE), "重触发必须清掉挂起位");
 }
+
+#[test]
+fn p4_the_synth_defers_both_the_release_voice_and_the_note_stop_until_pedal_up() {
+    use std::collections::BTreeMap;
+
+    use yeban_engine::graph::LatencyTable;
+    use yeban_engine::snapshot::{EngineSnapshot, TrackParams};
+    use yeban_engine::synth::SynthEngine;
+    use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
+
+    // 只有 attack（0.5）与 release（0.25）：release_key 由 P1 单独钉。
+    let plan = {
+        let instrument = SfzInstrument::load(
+            "<region> sample=x.wav key=60\n<region> sample=y.wav key=60 trigger=release".to_owned(),
+            &Default::default(),
+        )
+        .expect("解析");
+        PreparedSfz::prepare_with_samples(
+            &instrument,
+            &[
+                ("x.wav".to_owned(), flat(0.5)),
+                ("y.wav".to_owned(), flat(0.25)),
+            ],
+            HZ,
+        )
+        .expect("摊平")
+    };
+    // 最小工程：一条轨 → master（与 `sfz_arm_perf` 的夹具同形；`volume_db = 0` ⇒ 轨增益 1.0）。
+    let master = EntityId::new();
+    let track = EntityId::new();
+    let mut routing = RoutingGraph {
+        nodes: vec![track, master],
+        ..RoutingGraph::default()
+    };
+    let edge = EntityId::new();
+    routing.edges.insert(
+        edge,
+        RoutingEdge {
+            id: edge,
+            source_node: track,
+            destination_node: master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    let mut tracks = BTreeMap::new();
+    let track_v3 = TrackV3 {
+        id: track,
+        volume_db: 0.0,
+        ..TrackV3::default()
+    };
+    tracks.insert(track, TrackParams::from_track(&track_v3, 0));
+    let snapshot = EngineSnapshot::from_parts(
+        1,
+        48_000,
+        512,
+        2,
+        master,
+        tracks,
+        &routing,
+        &LatencyTable::new(),
+    )
+    .expect("图合法");
+    let mut engine = SynthEngine::new(48_000);
+    engine.arm_from_snapshot(&snapshot).expect("武装");
+    let _ = engine.note_on_with_sources(track, NOTE, 127, Some(&plan), None, true);
+    let mut out = vec![0.0f32; 64];
+    engine.render_track(track, None, Some(&plan), &mut out);
+    assert!((out[0] - 0.5).abs() <= 1.0e-7, "起音首帧 {}", out[0]);
+    // 踏板踩下 + 键松开：不停声部、也不建 release 声部。
+    assert_eq!(engine.set_sustain_pedal(track, true, Some(&plan)), 0);
+    assert!(engine.note_off_with_sources(track, NOTE, Some(&plan), true));
+    let mut out = vec![0.0f32; 64];
+    engine.render_track(track, None, Some(&plan), &mut out);
+    assert!(
+        (out[0] - 0.5).abs() <= 1.0e-7,
+        "踏板踩下时起音声部必须继续响（实得 {}）",
+        out[0]
+    );
+    // 踏板松开：release 声部建立，且起音声部在这里才被放掉。
+    assert_eq!(engine.set_sustain_pedal(track, false, Some(&plan)), 1);
+    let mut out = vec![0.0f32; 64];
+    engine.render_track(track, None, Some(&plan), &mut out);
+    assert!(
+        (out[0] - 0.25).abs() <= 1.0e-7,
+        "踏板松开后只剩 release 声部（实得 {}）",
+        out[0]
+    );
+}

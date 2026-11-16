@@ -1,6 +1,8 @@
 # 立项：延音踏板（CC64）驱动 `trigger=release` 的时机（Proposed 设计稿）
 
-> 状态：**引擎面已落地（2026-11-16），设备/事件面未接**。上一片
+> 状态：**已落地（2026-11-16）** —— 引擎面、池、合成器与 `EngineEvent::ControlChange`
+> 的 CC64 跃变接线全部就绪；判据 P1～P4。在线 MIDI 的 CC64 经既有 `midi_live` →
+> `EngineEvent::ControlChange` 通路到达引擎（通道→轨路由仍是既有的全局口径）。上一片
 > （`docs/ledger/sfz-release-samples-notes.md`）把释放族接进了三条路，但**引擎没有踏板状态**
 > ⇒ `trigger=release` 在踏板踩下时也会跟着键松开发声；规范要求等踏板松开。
 > 本文件是范围、落点与判据；§4 已实现并判据化（`sfz_sustain_pedal.rs` P1～P3），
@@ -66,8 +68,8 @@
 | `trigger_release` 按踏板选事件 / `trigger_pedal_up` | ✅ 同一条 `trigger_event` 实现 |
 | `SynthEngine::note_off_with_sources` | ✅ 踩下时不停声部、只响 `release_key`、标记挂起 |
 | `SynthEngine::set_sustain_pedal` | ✅ 松开时逐个 `release_note` ＋ `trigger_pedal_up` |
-| `EngineEvent::ControlChange` → `set_sustain_pedal` | ⛔ **未接** —— 出队点在快照守卫借出**之前**，拿不到摊平表（见 §7） |
-| 判据 | ✅ `tests/sfz_sustain_pedal.rs` P1～P3（本地 3/3） |
+| `EngineEvent::ControlChange` → `set_sustain_pedal` | ✅ **已接**：出队臂只记 `Option<bool>` 跃变，主快照块（`begin_block` 每量子返回 `held`）按 `current.sfz()` 逐轨应用 |
+| 判据 | ✅ `tests/sfz_sustain_pedal.rs` P1～P4（本地 4/4；P4 用真 `SynthEngine`） |
 
 ## §6 不在本片范围
 
@@ -77,7 +79,7 @@
 - **半踏板（CC64 0..127 连续值）**：规范只定义"踩下/松开"两态；连续值属于 ARIA 扩展，
   未证语义不补齐。
 
-## §7 最后一步：CC64 跃变 → 逐轨 plan（未做）
+## §7 CC64 跃变 → 逐轨 plan（已落地，保留为设计记录）
 
 `EngineRuntime::render_block` 的 1) 段（`rt.rs` 的 `if let EngineEvent::ControlChange`）
 只把值写进 `ControlChangeState`。要驱动 `SynthEngine::set_sustain_pedal(track, down, plan)`
