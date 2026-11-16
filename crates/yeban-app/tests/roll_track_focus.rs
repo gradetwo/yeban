@@ -41,11 +41,11 @@ fn track_select_calls_roll_focus() {
 fn roll_focus_sets_scroll_and_pitch_window() {
     let h = code_lines(HOST);
     assert!(
-        h.contains("set_roll_scroll_x(scroll)"),
-        "必须横向滚到该轨片段起点"
+        h.contains("set_roll_scroll_x(roll_scroll_for_tick(ui, start_tick))"),
+        "必须横向滚到该轨首个片段起点（复用 roll_scroll_for_tick）"
     );
     assert!(
-        h.contains("apply_roll_pitch_range(ui, base)"),
+        h.contains("apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi))"),
         "必须把 roll_base_pitch 对齐到该轨音区（否则低音轨音符仍在窗外）"
     );
     // 纵向两档：窗口内全可见 / 超窗居中
@@ -74,5 +74,27 @@ fn same_track_reclick_still_focuses() {
     assert!(
         code_lines(HOST).contains("let same_track ="),
         "同轨判断必须改成「仍联动、只是不重复写身份」"
+    );
+}
+
+/// ④ 选片段也精准联动到**该片段**（不是整轨的第一个），并复用同一套计算。
+#[test]
+fn clip_select_focuses_the_roll_to_that_clip() {
+    let h = code_lines(HOST);
+    assert!(
+        h.contains("roll_focus_on_clip(&ui, &project, clip_ulid.as_str())"),
+        "on_clip_select 必须调 roll_focus_on_clip（点片段也要联动）"
+    );
+    assert!(
+        h.contains("fn roll_focus_on_clip("),
+        "必须存在 roll_focus_on_clip 实现"
+    );
+    assert!(
+        h.contains("roll_scroll_for_tick(ui, placement.start_tick)"),
+        "片段联动必须横向滚到**该片段**的 start_tick（不是整轨首个片段）"
+    );
+    assert!(
+        h.contains("roll_base_for_pitch_range(lo, hi)"),
+        "选轨与选片段必须复用同一套音域计算（不出现第二份口径）"
     );
 }
