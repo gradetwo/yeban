@@ -2484,8 +2484,7 @@ mod tests {
         )
         .expect("写夹具");
         let text = std::fs::read_to_string(&seeded).expect("读夹具");
-        let instrument =
-            SfzInstrument::load(text, &Default::default()).expect("夹具必须解析成功");
+        let instrument = SfzInstrument::load(text, &Default::default()).expect("夹具必须解析成功");
         let table = cc_seeds_of(&instrument).expect("有 `set_ccN` ⇒ 必须给出表");
         assert_eq!(table[1], 100, "⭐ `set_cc1=100` ⇒ 表[1]");
         assert_eq!(

@@ -2396,7 +2396,14 @@ impl SfzInstrument {
     ) -> Result<usize, SfzError> {
         // ⭐ 转调带探针的那一份（`cc = None` ⇒ 逐位等于接线前的实现）。
         self.render_note_into_from_samples_with_cc(
-            samples, note, velocity, held_frames, occurrence, out, engine_hz, None,
+            samples,
+            note,
+            velocity,
+            held_frames,
+            occurrence,
+            out,
+            engine_hz,
+            None,
         )
     }
 
@@ -2475,7 +2482,14 @@ impl SfzInstrument {
     ) -> Result<usize, SfzError> {
         // ⭐ 转调带探针的那一份（`cc = None` ⇒ 逐位等于接线前的实现）。
         self.render_release_into_from_samples_with_cc(
-            samples, note, velocity, held_frames, occurrence, out, engine_hz, None,
+            samples,
+            note,
+            velocity,
+            held_frames,
+            occurrence,
+            out,
+            engine_hz,
+            None,
         )
     }
 

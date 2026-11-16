@@ -16705,7 +16705,14 @@ fn s119_the_bypass_entry_takes_a_cc_probe() {
                 let cc_arg: &dyn Fn(u8) -> u8 = &probe;
                 instrument
                     .render_note_into_from_samples_with_cc(
-                        &table, 60, VELOCITY, None, None, &mut out, HZ, Some(cc_arg),
+                        &table,
+                        60,
+                        VELOCITY,
+                        None,
+                        None,
+                        &mut out,
+                        HZ,
+                        Some(cc_arg),
                     )
                     .expect("渲染不得报错")
             }
@@ -16772,7 +16779,10 @@ fn s119_the_bypass_entry_takes_a_cc_probe() {
     let written_legacy = instrument
         .render_note_into_from_samples(&table, 60, VELOCITY, None, None, &mut legacy, HZ)
         .expect("旧入口不得报错");
-    assert_eq!(written_legacy, written_none, "⭐ 旧入口与「新入口传 None」写入帧数相同");
+    assert_eq!(
+        written_legacy, written_none,
+        "⭐ 旧入口与「新入口传 None」写入帧数相同"
+    );
     assert_eq!(
         fnv1a_64(&legacy),
         fnv1a_64(&out_none),
