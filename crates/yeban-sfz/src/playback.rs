@@ -1813,19 +1813,36 @@ mod tests {
     }
 
     #[test]
-    fn amp_random_rejects_values_above_twenty_four_db() {
+    fn amp_random_accepts_the_corpus_negative_and_rejects_beyond_the_widened_domain() {
+        // ⭐ 语料真的写了负值：freepats-button-accordion-hn 的 `<group>` 段有
+        // `amp_random=-6`（1 处 / 1 个文件）⇒ 拒收会让那份乐器整份不可加载。
+        // 负值走**同一条公式**：`10 ^ (−(rand × −6) / 20)` ⇒ [0, +6] dB 的提升。
+        let negative = parse_text("<region>sample=a.wav amp_random=-6", &Default::default())
+            .expect("语料里的负值必须可加载");
+        assert_eq!(negative.regions()[0].amp_random, -6.0);
+        let boost = negative.regions()[0].amp_random_gain(1.0);
+        assert!(
+            close(boost, 10.0f32.powf(6.0 / 20.0), 1.0e-6),
+            "got {boost}"
+        );
+        assert!(boost > 1.0, "负值 ⇒ 提升（⛔ 不是衰减）");
+        // 域外仍然响亮报错（−24 / 24 是闭区间端点）。
         let err = parse_text("<region>sample=a.wav amp_random=24.5", &Default::default())
-            .expect_err("规定 Range 是 0 to 24");
+            .expect_err("上界是 24");
         assert!(
             matches!(err, SfzError::FloatOutOfRange { .. }),
             "got {err:?}"
         );
-        let negative = parse_text("<region>sample=a.wav amp_random=-1", &Default::default())
-            .expect_err("负值不在 0 to 24 内");
+        let low = parse_text("<region>sample=a.wav amp_random=-24.5", &Default::default())
+            .expect_err("下界是 −24");
         assert!(
-            matches!(negative, SfzError::FloatOutOfRange { .. }),
-            "got {negative:?}"
+            matches!(low, SfzError::FloatOutOfRange { .. }),
+            "got {low:?}"
         );
+        for edge in ["-24", "24"] {
+            let text = format!("<region>sample=a.wav amp_random={edge}");
+            parse_text(&text, &Default::default()).expect("闭区间端点必须可加载");
+        }
     }
     #[test]
     fn playback_spec_carries_offset_end_direction_and_silence() {

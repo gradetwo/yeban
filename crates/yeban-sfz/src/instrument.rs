@@ -356,6 +356,20 @@ pub const AMPEG_RELEASE_DEFAULT_SECONDS: f32 = 0.0;
 /// （规范自己记了 "some players … do not clamp"）。
 pub const AMPLITUDE_DEFAULT_PERCENT: f32 = 100.0;
 
+/// `amp_random` 的取值下界（dB）。
+///
+/// ⚠ **规范表格写的是 `0 to 24`**；本仓把下界放宽到 **−24** 的唯一理由是**登记语料里真的**
+/// 有人写了负值：`assets/samples/freepats-button-accordion-hn/PRESET Button Accordion HN
+/// tuned.sfz:51` 的 `<group>` 段有 `amp_random=-6`（2026-11-16 实测，1 处 / 1 个文件）。
+/// 严格按规范拒收会让那份乐器**整份不可加载**（连它上方 47 行正常的 attack 区域一起）；
+/// 本仓对"语料里真实存在、旧行为能加载"的写法取**保可加载**（与 `#206` 容忍
+/// `-1.6.` 同一条纪律），并把读数交给**同一条公式**：
+/// `10 ^ (−(rand × amp_random) / 20)` 在负值时给出 `[0, +|amp_random|] dB` 的**提升**
+/// —— ⛔ 不新造第二套语义、⛔ 不静默当 0。
+///
+/// 越界（`< −24` 或 `> 24`）仍是明确 [`SfzError::FloatOutOfRange`]，⛔ 不钳位。
+pub const AMP_RANDOM_MIN_DB: f32 = -24.0;
+
 /// `amp_random` 的规范取值上界（dB；格式页 Range `0 to 24`）。
 ///
 /// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位（与 `amp_veltrack` 同口径）。
@@ -1035,6 +1049,8 @@ pub struct Region<'a> {
     /// **工程裁决**：取 ARIA / Cakewalk 的**单极衰减**读法 —— 增益乘子为
     /// `10 ^ (−(rand × amp_random) / 20)`，即实际音量落在 `[−amp_random, 0]` dB；
     /// 求值见 [`Region::amp_random_gain`]（唯一实现 [`amp_random_gain`]）。
+    /// ⚠ **下界放宽到 −24**（表格是 `0 to 24`）：登记语料里有 `amp_random=-6` 的真实文件，
+    /// 负值按**同一条公式**读作提升（理由与文件见 [`AMP_RANDOM_MIN_DB`]）。
     /// `amp_random = 0` ⇒ 乘子恰 `1.0`（⇒ 与接线前**逐位相同**）。
     ///
     /// 与 [`Region::lorand`] / [`Region::hirand`] 共用**同一个**每次触发的随机数
@@ -2195,7 +2211,7 @@ pub fn offset_random_shift(offset_random: u32, rand: f32) -> u64 {
 /// 零分配、无状态 ⇒ 可在实时路径调用。
 #[must_use]
 pub fn amp_random_gain(amp_random: f32, rand: f32) -> f32 {
-    if !amp_random.is_finite() || amp_random <= 0.0 {
+    if !amp_random.is_finite() || amp_random == 0.0 {
         return 1.0;
     }
     let rand = if rand.is_finite() {
@@ -2601,12 +2617,14 @@ pub(crate) fn build_region<'a>(
     let amp_random = match scopes.get("amp_random") {
         Some(value) => {
             let db = value.as_f32()?;
-            if !(0.0..=AMP_RANDOM_MAX_DB).contains(&db) {
+            // ⚠ 下界是 **−24**（不是表格的 0）：语料里有 `amp_random=-6` 的真实文件，
+            // 拒收会让整份乐器不可加载；负值走**同一条公式**（见 `AMP_RANDOM_MIN_DB`）。
+            if !(AMP_RANDOM_MIN_DB..=AMP_RANDOM_MAX_DB).contains(&db) {
                 return Err(SfzError::FloatOutOfRange {
                     line,
                     opcode: "amp_random".to_string(),
                     value: db,
-                    min: 0.0,
+                    min: AMP_RANDOM_MIN_DB,
                     max: AMP_RANDOM_MAX_DB,
                 });
             }

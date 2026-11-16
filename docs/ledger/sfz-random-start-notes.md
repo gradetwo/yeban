@@ -9,8 +9,10 @@
 
 ## §1 语料普查（2026-11-16 实测）
 
-**指标**：`git ls-files -z` 里 `.sfz` 结尾的文件（分母 **1 399**，比旧台账的 1 398
-多 1 —— 本仓后来新增了一份夹具），逐文件剥 `//` 行注释与 `/* */` 块后，用
+**指标**：`git ls-files -z` 里 `.sfz` 结尾的文件。⚠ 分母有两档：**1 399** 是仓库内
+全部追踪的 `.sfz`，其中 **1 398** 份在 `assets/samples/**`（`find` 读数），另 **1** 份是
+测试夹具 `crates/yeban-app/tests/fixtures/sampler_c1.sfz`（本文件的下表都用 1 398 的语料面
+口径，夹具不含本表任何 opcode）。逐文件剥 `//` 行注释与 `/* */` 块后，用
 `(?:^|[\s])([A-Za-z_][A-Za-z_0-9]*)\s*=` 取 opcode 名；命令是**一次性探针**
 （`python3 -B`，未入库）。单位：**文件数**（至少出现一次）与**出现次数**。
 
@@ -57,6 +59,9 @@
 
 表行：Type = float、**Default = 0**、Range = `0 to 24`、Unit = **dB**。
 
+⚠ **语料反例（实测）**：`assets/samples/freepats-button-accordion-hn/PRESET Button
+Accordion HN tuned.sfz:51` 的 `<group>` 段写 `amp_random=-6`（1 处 / 1 文件）。
+
 ---
 
 ## §3 工程裁决（⛔ 规范没说死的地方）
@@ -65,6 +70,7 @@
 | :--- | :--- | :--- |
 | D1 | 位移取 **`floor(rand × N)` ∈ `[0, N)`** | 页面的 "Unipolar" 只给方向；闭开区间让 `N = 0` 与"不写"**逐位等价**。算术用 `f64`（`N` 可到 `u32::MAX`，`f32` 24 位尾数会丢低位）。 |
 | D2 | `amp_random` 取 **单极衰减**：`10 ^ (−(rand × dB) / 20)` | 页面明写 ARIA / Cakewalk 单极；双极是 rgc 的口径，本仓不取。 |
+| D2b | `amp_random` 的取值域放宽为 **−24 ..= 24**（表格是 `0 to 24`） | 语料里真有 `amp_random=-6`；拒收会让整份 34 区域乐器不可加载（与 `#206` 容忍 `-1.6.` 同一条"保可加载"纪律）。负值走**同一条公式** ⇒ 提升 `[0, +|v|]` dB，⛔ 不新造语义、⛔ 不当 0。 |
 | D3 | 两族与 `lorand` / `hirand` **共用同一个** `trigger_rand(occurrence, note, 1)` | 规范对三者都写 "Computed when the note is triggered"；同次触发一个值让"同一次触发的多个 region"仍然相关（与随机轮替的分段区间语义同源）。 |
 | D4 | `offset_random` 只动**起点**，`end` 不动；位移把起点推过终点 ⇒ 该 region **不发声** | 与 `end <= offset` 那条既有归约**同一条**（⛔ 不夹回起点、⛔ 不发明反向区间）。 |
 | D5 | 取值域按 **`u32` 全域**（`0 ..= 4294967295`），越界响亮 `IntegerOutOfRange` | 表行上界 `4294967296` 比 `u32::MAX` 大 1，装不进 `u32`；⛔ 不静默钳位。 |
@@ -105,7 +111,9 @@
 | R5 | 两族都不写 ⇒ 逐位不变 | 首帧 == `pcm[0]`；实时 == 离线；显式写 0 也逐位相同 |
 | R6 | `has_rand` 三族各自为真、都没有为假 | `has_rand()` |
 
-`yeban-sfz` 侧另有四条单元判据（`playback.rs`）：单极区间与 `rand < 1` 的边界
+`yeban-sfz` 侧另有**常驻语料判据** `tests/corpus_random_families.rs`（C1：1 398 份语料里
+**没有任何**文件因为这两个 opcode 解析失败；C2：accordion 文件的组级 `amp_random=-6`
+与 `offset_random=10` 真的继承到末区域），以及四条单元判据（`playback.rs`）：单极区间与 `rand < 1` 的边界
 （`0.999999 × 1000 ⇒ 999`）、`NaN` 退化为 0、位移越界 ⇒ `None`、`amp_random` 的
 `0 dB ⇒ 恰 1.0` 与越界响亮报错。
 

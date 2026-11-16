@@ -4381,8 +4381,9 @@ pub struct PreparedRegion {
     offset_random: u32,
     /// ⭐ **随机音量**（`amp_random`，dB，缺省 0；本片）。
     ///
-    /// 解析与取值域在 `yeban-sfz` 里落地（[`Region::amp_random`]：`0 ..= 24`、
-    /// 越界是响亮 `FloatOutOfRange`）。触发期乘子由 [`Self::amp_random_gain`]
+    /// 解析与取值域在 `yeban-sfz` 里落地（[`Region::amp_random`]：`−24 ..= 24` ——
+    /// 下界按语料放宽，`freepats-button-accordion-hn` 写着 `amp_random=-6`；越界是
+    /// 响亮 `FloatOutOfRange`）。触发期乘子由 [`Self::amp_random_gain`]
     /// 给出（唯一实现 [`yeban_sfz::instrument::amp_random_gain`]）。
     /// ⚠ 实时路径把它**折进** `SfzVoice::track_gain`（该字段本就是标量乘子）
     /// ⇒ ⛔ 不新增逐声部字段。
