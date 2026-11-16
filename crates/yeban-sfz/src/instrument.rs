@@ -376,6 +376,12 @@ pub const AMP_RANDOM_MIN_DB: f32 = -24.0;
 /// 缺省 `0` ⇒ 随机音量乘子恰 `1.0` ⇒ 没有该 opcode 的文件**逐位不变**。
 pub const AMP_RANDOM_MAX_DB: f32 = 24.0;
 
+/// `rt_decay` 的规范取值上界（dB/秒；格式页 Range `0 to 200`）。
+///
+/// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位。缺省 `0` ⇒ 乘子恰 `1.0`
+/// ⇒ 没有该 opcode 的文件**逐位不变**。
+pub const RT_DECAY_MAX_DB: f32 = 200.0;
+
 /// ⭐ **`lorand` 的规范缺省**：**0**。
 ///
 /// 出处逐字 <https://sfzformat.com/opcodes/lorand> 的表行
@@ -731,6 +737,20 @@ pub struct Region<'a> {
     /// 取值域：规范表格的 Range 为空 ⇒ 只要求**有限**且**非负**
     /// （负时长的取反是明确 `Err`，不静默钳位）。
     pub off_time: Option<f32>,
+    /// ⭐ **释放采样随按住时长衰减**（`rt_decay`，dB/秒；缺省 0）。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/rt_decay/>：
+    /// "Applies only to regions that triggered through `trigger=release`. The volume
+    /// decrease (in decibels) **per seconds** after the corresponding attack region was
+    /// triggered."；表行 Type = float、**Default = 0**、Range = `0 to 200`、Unit = **dB**。
+    /// 页面算例逐字："The sample `keyup_noise.wav` will play 3db quieter for every second
+    /// the key has been on."
+    ///
+    /// 求值见 [`Region::rt_decay_gain`]：`10 ^ (−(rt_decay × 按住秒数) / 20)`。
+    /// ⚠ **只对 release 家族生效**（`trigger=release` / `release_key`）；写在 attack 区域上
+    /// 是格式页明确说"applies only to"之外的写法 ⇒ 本 crate **照读不误**、引擎在
+    /// **触发期**只对 release 声部应用它（⛔ 不静默丢弃、⛔ 不改写 attack 的增益）。
+    pub rt_decay: f32,
     /// 力度下界（含）。
     pub lovel: u8,
     /// 力度上界（含）。
@@ -2193,6 +2213,26 @@ pub fn offset_random_shift(offset_random: u32, rand: f32) -> u64 {
     (f64::from(rand) * f64::from(offset_random)) as u64
 }
 
+/// ⭐ **`rt_decay` 的按住时长衰减乘子**（唯一实现；本片）。
+///
+/// 输入：`rt_decay`（dB/秒，`0..=200`）与按住秒数。输出：`10 ^ (−(rt_decay × 秒数) / 20)`。
+/// `rt_decay = 0`（缺省）⇒ 恰 `1.0`；非有限 / 负秒数 ⇒ 按 `0` 处理。
+#[must_use]
+pub fn rt_decay_gain(rt_decay: f32, held_seconds: f32) -> f32 {
+    if !rt_decay.is_finite() || rt_decay <= 0.0 {
+        return 1.0;
+    }
+    let held = if held_seconds.is_finite() {
+        held_seconds.max(0.0)
+    } else {
+        0.0
+    };
+    if held == 0.0 {
+        return 1.0;
+    }
+    10.0f32.powf(-(rt_decay * held) / 20.0)
+}
+
 /// ⭐ **`amp_random` 的增益乘子**（唯一实现；本片）。
 ///
 /// 输入：`amp_random`（dB，`0..=24`）与本次触发的随机数 `rand`（`[0, 1)`）。
@@ -2369,6 +2409,24 @@ pub(crate) fn build_region<'a>(
             Some(seconds)
         }
         None => None,
+    };
+    // ⭐ 释放采样随按住时长衰减（`rt_decay`）：表格 Range 0 to 200、缺省 0；
+    // 越界是明确 `FloatOutOfRange`（⛔ 不静默钳位）。只对 release 家族生效。
+    let rt_decay = match scopes.get("rt_decay") {
+        Some(value) => {
+            let db = value.as_f32()?;
+            if !(0.0..=RT_DECAY_MAX_DB).contains(&db) {
+                return Err(SfzError::FloatOutOfRange {
+                    line,
+                    opcode: "rt_decay".to_string(),
+                    value: db,
+                    min: 0.0,
+                    max: RT_DECAY_MAX_DB,
+                });
+            }
+            db
+        }
+        None => 0.0,
     };
 
     // ---- 力度 → 振幅（`amp_veltrack` / `amp_velcurve_N`，见 crate::velocity） ----
@@ -2726,6 +2784,7 @@ pub(crate) fn build_region<'a>(
         trigger,
         off_mode,
         off_time,
+        rt_decay,
         lovel,
         hivel,
         lochan,
@@ -4287,6 +4346,7 @@ mod tests {
             trigger: Trigger::Attack,
             off_mode: OffMode::Fast,
             off_time: None,
+            rt_decay: 0.0,
             lovel: 0,
             hivel: 127,
             lochan: 1,

@@ -1913,6 +1913,40 @@ impl SfzTrackSource {
             }
             break (buf, got);
         };
+        // ⭐⭐ **释放族**（`trigger=release` / `release_key`；本片）：note-on 那一段写完之后，
+        // 从 **松键那一帧**（`held`）起再叠一段释放采样。引擎侧 `note_off_with_sources`
+        // 做的是**同一件事**（`release_note` ＋ `trigger_release`）⇒ 导出与试听同口径。
+        //    ⚠ 缓冲按需扩容时**重渲染**释放段（与上面同一条"重渲染不拼接"纪律：释放段的
+        //    帧偏移是相对 `held` 的常量 ⇒ 重渲染逐位相同）。
+        let mut written = written;
+        if let Some(table) = self.samples.as_deref() {
+            loop {
+                let got = self
+                    .instrument
+                    .render_release_into_from_samples(
+                        table,
+                        pitch,
+                        velocity,
+                        held,
+                        Some(occurrence),
+                        &mut scratch,
+                        self.engine_hz,
+                    )
+                    .unwrap_or(0);
+                let end = usize::try_from(held)
+                    .unwrap_or(usize::MAX)
+                    .saturating_add(got);
+                // 写满了 ⇒ 释放尾巴还没完 ⇒ 翻倍再试（上限同 `MAX_TAIL_SECONDS`）。
+                if end >= scratch.len() && (scratch.len() as u64) < ceiling {
+                    let next = (scratch.len().saturating_mul(2))
+                        .min(usize::try_from(ceiling).unwrap_or(usize::MAX));
+                    scratch.resize(next.max(scratch.len() + 1), 0.0);
+                    continue;
+                }
+                written = written.max(end.min(scratch.len()));
+                break;
+            }
+        }
         // ⭐ **引擎层的轨增益门**乘在**乐器层输出之外**（归属裁决 `R711`：两者相乘、
         //    ⛔ 不重复）。乐器层（`render_note_into`）已经含它自己的 `volume_gain` /
         //    `velocity_gain` / 交叉淡化等 —— 这里**只**乘轨增益这一半。

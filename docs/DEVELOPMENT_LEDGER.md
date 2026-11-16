@@ -18120,3 +18120,34 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   （`rust (yeban-mcp)` / `rust (yeban-ui-mcp)` / `checks` / `deny` / `lockfile` / `e2e` /
   `macos` / `windows` 全 `success`）。日志现读：`test result:` **1 080** 行、`FAILED` **0**；
   本片两条判据各 **4** 次在场。
+
+### 24.2 ⭐ 释放采样（`trigger=release` / `release_key`）与 `rt_decay` 接线（2026-11-16）
+
+- **缺口（语料 29 / 117 ＋ 10 / 20 个文件／处）**：`#94` 为防"按下时把 release 采样打出来"
+  把释放族的键掩码清零，但引擎**没有** note-off 触发路径 ⇒ 整族永不发声；`rt_decay`
+  解析层也不认（5 / 22）。用户听到：钢琴 key-up、吉他松弦、手风琴松键机械声全部消失。
+- **落地**：`Region::rt_decay`（0..=200，越界响亮）＋ 唯一算术 `rt_decay_gain`；
+  `PreparedRegion` 两张释放掩码 ＋ `rt_decay`；池把 `trigger_note_with_pitch` 的函数体
+  提成 `trigger_event`（note-on / note-off **同一条实现**）＋ `trigger_release`、
+  `key_on_frame` / `key_velocity` / `release_occurrence` / `sample_rate`；合成器
+  `note_off_with_sources` 同帧调 `release_note` ＋ `trigger_release`；离线
+  `render_release_into_from_samples` 从松键帧起写；导出 `SfzTrackSource::ensure_rendered`
+  在 note-on 段后叠释放段（按需扩容、重渲染不拼接）。
+- **裁决 D1–D6**（力度来源＝按下力度、两张掩码、独立轮替计数、踏板不建模、one_shot 播到尾、
+  两条路各自的按住时长来源）见 `docs/ledger/sfz-release-samples-notes.md`。
+- **尺寸**：`PreparedRegion` 6256 → **6296**（＋40）、`SfzVoicePool` 4800 → **6464**
+  （＋1664）；`SfzVoice` 40 / `EngineRuntime` 45888 ＋0。四条绝对基线判据（`sfz_instrument`
+  × 15 处、`bus_insert::b5`、`bus_routing::r6`）已按新值更新，原文保留并追加修订段。
+- **本地读数（⚠ 只有 CI 算数）**：`yeban-sfz` 435 单元 ＋ 语料 2 ＋ 48 ＋ 32 ＋ 11 doctest 全 ok；
+  `yeban-engine`（`--no-default-features`）**327 ＋ 16 ＋ 4 ＋ 9 ＋ 6 ＋ 6 ＋ 112 ＋ 5**；
+  新判据 `sfz_release_trigger` **5/5**；`yeban-app` `cargo check --no-default-features` 通过；
+  `clippy -D warnings`（`yeban-sfz` ＋ `yeban-engine`、`--all-targets`）零告警，`cargo fmt --check` 通过。
+- **仍未做**：延音踏板状态（`TriggerEvent::NoteOff{pedal_down}` 谓词已就绪、引擎无来源）、
+  `rt_decayN`（语料 0）、"对应 attack region" 判定（规范自陈跨播放器不一致）——
+  逐条登记在 notes §6。
+- **判决（读回）**：线 tip `f8d70570` 的 run **`43813752935`** = `completed / **success**`
+  （`plan` / `checks` / `deny` / `lockfile` / `e2e` / `rust (yeban-sfz)` / `rust (yeban-engine)` /
+  `rust (yeban-app)` / `rust (yeban-render)` / `rust (yeban-mcp)` / `rust (yeban-ui-mcp)` /
+  `macos` / `windows` 全 `success`；`rust (workspace 全量)` `skipped` —— 分支走**受影响集合**）。
+  日志现读：`test result:` **1 623** 行、`FAILED` **0**；`t1_the_two_masks…` /
+  `rt_decay_scales…` / `offline_writes_the_release…` 各 **3** 次（Linux / macOS / Windows）。

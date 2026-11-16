@@ -374,8 +374,9 @@ pub use instrument::{
     FIL_KEYTRACK_MIN, FIL_TYPE_DEFAULT, FIL_VELTRACK_DEFAULT, FIL_VELTRACK_MAX, FIL_VELTRACK_MIN,
     FilterType, HIRAND_DEFAULT, Instrument, LORAND_DEFAULT, LoopMode, NotePolyphony,
     OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PITCH_KEYTRACK_DEFAULT, PlayDirection,
-    RESONANCE_DEFAULT_DB, RESONANCE_MAX_DB, RESONANCE_MIN_DB, Region, RegionQuery, SampleEnd,
-    Trigger, TriggerEvent, amp_random_gain, offset_random_shift, trigger_rand,
+    RESONANCE_DEFAULT_DB, RESONANCE_MAX_DB, RESONANCE_MIN_DB, RT_DECAY_MAX_DB, Region, RegionQuery,
+    SampleEnd, Trigger, TriggerEvent, amp_random_gain, offset_random_shift, rt_decay_gain,
+    trigger_rand,
 };
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use lfo::{GenericLfo, LfoCcMod, LfoWave, V1Lfo};
