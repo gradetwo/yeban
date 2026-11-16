@@ -33,7 +33,9 @@
 //!   活跃工程的 MIDI 片段 ⇒ 每个音符 (start_frame, frames, pitch, velocity)
 //!                        [与 render.rs 的连击/微时值格点**同一份**公式]
 //!                        力度可被 `velocity` 实参整段覆盖（不给 ⇒ 逐音符用自己的）
-//!          ⇒ 逐音符: 区域选择 Region::matches_key/matches_velocity
+//!          ⇒ 逐音符: 区域选择 Region::matches_key/matches_velocity ＋ 事件门控
+//!                    (Trigger::responds_to(NoteOn)：本工具只渲染 note-on ⇒
+//!                     `trigger=release` / `release_key` 的区域⛔ 不被选中)
 //!                    播放速率 Region::playback_rate
 //!                    总增益   Region::playback_spec(..).total_gain()
 //!          ⇒ 交织成立体声（音轨音量 × 等功率声相）
@@ -69,8 +71,10 @@
 //!    **显式**导出路径上取代 MIDI 合成源。
 //! 3. **没有循环**：SFZ 的 `loop_mode` / `loop_start` / `loop_end` 没有被求值
 //!    （`PlaybackSpec::loops()` 为真时**登记**，⛔ 不静默当一个长音）。
-//! 4. **只走 `yeban-sfz` 的公开口径**：区域选择用 `matches_key` / `matches_velocity`，
-//!    速率用 `playback_rate`，增益用 `playback_spec(..).total_gain()` —— 本层
+//! 4. **只走 `yeban-sfz` 的公开口径**：区域选择用 `matches_key` / `matches_velocity`
+//!    ＋ 事件门控 `Trigger::responds_to(TriggerEvent::NoteOn)`（与引擎摊平门控
+//!    `non_cc_gates_open` **同一条谓词**；本工具只渲染 note-on，`trigger=release` /
+//!    `release_key` 的区域⛔ 不能在"按下"时被选中），速率用 `playback_rate`，增益用 `playback_spec(..).total_gain()` —— 本层
 //!    ⛔ 不重写这些规则（也没有把 `yeban-engine` 拖进 MCP：见
 //!    `crates/yeban-mcp/Cargo.toml` 的"轻量 crate"注释）。
 //! 5. ⭐ **`#include` 在装载期展开**（任务单 `#208`）：走 `yeban-sfz` 的
@@ -99,7 +103,9 @@ use std::sync::Arc;
 use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
 use yeban_render::wav::{read_plain_wav_mono_f32, read_plain_wav_mono_f32_from_bytes};
 use yeban_sfz::SampleEnd;
-use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, CcGate, Instrument, Region, Trigger};
+use yeban_sfz::instrument::{
+    AMPLITUDE_DEFAULT_PERCENT, CcGate, Instrument, Region, Trigger, TriggerEvent,
+};
 use yeban_sfz::modulation::{CcMod, ModTarget};
 use yeban_sfz::parser::{
     IncludeIssue, IncludeIssueKind, IncludeResolver, ParseLimits, SfzSource, parse_sources,
@@ -3747,7 +3753,16 @@ pub(super) fn note_wave(
         .iter()
         .enumerate()
         .filter(|(_, region)| {
-            region.matches_key(note.pitch) && region.matches_velocity(note.velocity)
+            region.matches_key(note.pitch)
+                && region.matches_velocity(note.velocity)
+                // ⭐ **事件门控**（本片）：本工具只渲染 **note-on** 事件 ⇒ `trigger=release` /
+                // `release_key` 的区域⛔ 不能在"按下"时被预听选中（那会把松键噪声当成音头
+                // 发出来，且用户无法从 `unsupported` 看出哪里不对）。
+                // 判据与引擎的摊平门控 `non_cc_gates_open` **同一条谓词**（同一份
+                // `Trigger::responds_to`）⇒ 两侧不可能选出不同的事件族。
+                // ⚠ **被**排除的只有事件族，键/力度/keyswitch/CC 的既有边界**逐字未动**
+                // （后者仍登记在 `unsupported` 的键里，⛔ 不在本片扩大范围）。
+                && region.trigger.responds_to(TriggerEvent::NoteOn)
         });
     let (region_index, region) = matching.next()?;
     let layered = matching.next().is_some();
@@ -4841,6 +4856,56 @@ mod tests {
         assert!(!filter.wants(&regions[1]), "不匹配音符的 release 不计入");
         assert!(filter.wants(&regions[2]), "匹配音符的 release_key 计入");
         assert!(!filter.wants(&regions[3]), "key=-1 永不命中");
+    }
+
+    /// ⭐ **预听的区域选择必须做事件门控**（本片）：`yeban_render_sfz_wav` 只渲染
+    /// note-on 事件，而 `note_wave` 此前只按键/力度取**第一条**匹配 ⇒ 一条写在前面
+    /// 的 `trigger=release` 区域会被"按下"预听选中，把松键噪声当音头发出来。
+    ///
+    /// 判定量：选中的 `region_index`（区域下标）与"只有释放区域时"的 `None`。
+    #[test]
+    fn preview_note_on_never_selects_a_release_region() {
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 64,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        // 释放区域在前、起音区域在后：按"键/力度第一条"会选错。
+        let text = "<region> sample=rel.wav key=60 trigger=release\n\
+                    <region> sample=att.wav key=60\n";
+        let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
+        let mut cache = SampleCache::new();
+        let wave = note_wave(&instrument, &note, 440.0, 48_000.0, None, &mut cache)
+            .expect("起音区域必须被选中");
+        assert_eq!(
+            wave.region_index, 1,
+            "必须选起音区域（下标 1），⛔ 不是释放区域（下标 0）"
+        );
+        // 反面腿：只有释放区域 ⇒ 按下时该音符**不发声**（与引擎的 note-on 门控同结论）。
+        let only_release = parse_text(
+            "<region> sample=rel.wav key=60 trigger=release",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        assert!(
+            note_wave(&only_release, &note, 440.0, 48_000.0, None, &mut cache).is_none(),
+            "只有 trigger=release 区域时，note-on 预听必须静音"
+        );
+        // 起音族不受影响（`trigger=attack` / 缺省同一支）。
+        let attack = parse_text(
+            "<region> sample=att.wav key=60 trigger=attack",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        assert_eq!(
+            note_wave(&attack, &note, 440.0, 48_000.0, None, &mut cache)
+                .expect("起音区域必须发声")
+                .region_index,
+            0
+        );
     }
 
     /// P1：与引擎自身判定的一致性（无 CC 门控的 Attack 区域：`wants` ⟺ 存在音符使
