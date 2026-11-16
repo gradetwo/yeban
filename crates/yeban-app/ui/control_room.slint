@@ -160,17 +160,10 @@ export component ControlRoomMeters inherits Rectangle {
             }
 
             // Speaker Matrix Switcher
+            // 旧小节名「MONITOR MATRIX」只说明区域名 (无信息/无操作),
+            // 负责人 2026-11-16 四条之 1 已删; 下方 A/B 按钮自带组名与说明。
             VerticalLayout {
                 spacing: 5px;
-
-                Text {
-                    text: "MONITOR MATRIX";
-                    font-family: Tokens.font-mono;
-                    font-size: 9px;
-                    letter-spacing: 0.6px;
-                    font-weight: 400;
-                    color: #b6c2d2;
-                }
 
                 HorizontalLayout {
                     spacing: 4px;

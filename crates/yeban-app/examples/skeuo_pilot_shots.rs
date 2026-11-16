@@ -1,7 +1,7 @@
 //! 实体化试点对比图（`line/ui-skeuo-theme` 一期证据工具，**不是**产品路径）。
 //!
 //! 用法：
-//! `cargo run -p yeban-app --example skeuo_pilot_shots -- <mixer|devices|showcase> [输出目录]`
+//! `cargo run -p yeban-app --example skeuo_pilot_shots -- <mixer|devices|tracks|showcase> [输出目录]`
 //!
 //! 每个场景产出两张 PNG（`flat` / `physical`），同一份**真实工程**
 //! （`yeban_model::samples::filled_project()`：3 轨 + 主总线，带设备 / 音量 /
@@ -301,11 +301,42 @@ fn main() {
 
     match scene_name.as_str() {
         "mixer" | "devices" => shoot_console(&scene_name, &out_dir),
+        "tracks" => shoot_tracks(&out_dir),
         "showcase" => shoot_showcase(&out_dir),
         other => {
-            eprintln!("未知场景 `{other}` (可用: mixer | devices | showcase)");
+            eprintln!("未知场景 `{other}` (可用: mixer | devices | tracks | showcase)");
             std::process::exit(2);
         }
+    }
+}
+
+/// 轨道区场景（负责人 2026-11-16 四条 UI 要求的证据图）：主窗口默认视图
+/// （编曲区在中央、控制台不最大化），真实工程 + 真投影。产出整帧两张
+/// （flat / physical）；工具行 / 分界线 / 标尺的 1:1 与 3x 裁图由整帧裁出，
+/// 裁图坐标在回执里注明（裁图不是二次渲染，像素与整帧逐位一致）。
+fn shoot_tracks(out_dir: &str) {
+    let (width, height) = (1600u32, 900u32);
+    let window = install_platform(width, height);
+
+    let project = yeban_model::samples::filled_project();
+    let view = cli::project_view(&project).expect("投影 filled 工程");
+    let scene = DemoScene::from_view(&view);
+    let ui = host::build_main_window(&view, &scene).expect("构造主窗口");
+    host::apply_theme(&ui, Theme::Yeban);
+    ui.show().expect("show 主窗口");
+
+    let _ = render_frame(&window, width, height);
+    for (texture, label) in [(Texture::Physical, "physical"), (Texture::Flat, "flat")] {
+        host::apply_texture(&ui, texture);
+        let (frame, elapsed) =
+            render_frame(&window, width, height).expect("切换质感后必须重绘一帧");
+        let path = format!("{out_dir}/tracks-{label}.png");
+        write_png(&path, &frame, width, height);
+        println!(
+            "skeuo-shot scene=tracks texture={label} render_ms={:.2} non_black={} path={path}",
+            elapsed.as_secs_f64() * 1000.0,
+            non_black_pixels(&frame),
+        );
     }
 }
 

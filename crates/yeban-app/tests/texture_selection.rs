@@ -149,6 +149,138 @@ fn the_live_dock_panels_bind_texture_tokens_with_flat_fallback() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据（源码钉）: 负责人 2026-11-16 四条 UI 要求（并入拟物线一期）
+//
+// 1. 删冗余说明文字: 只说明区域名、不承载信息、不参与操作的可见标签
+//    一律删（钉住实际删除的原文不再以 `text:` 出现; 注释里提及旧文案
+//    不算 —— 钉的是 `text: "…"` 的赋值形）。
+// 2. 轨道菜单前置: `arrangement.slint` 里「轨道菜单」的首个 `text:` 必须
+//    在「+ 轨道」的首个 `text:` 之前（左置工具行是文件里先出现的那行）。
+// 3. 分界线走令牌: 行底线 / 顶行横线 / 分隔条 / 网格竖线一律
+//    `Tokens.divider-*`, 旧行框口径（未选中行 #ffffff0a 全框）不得回归。
+// 4. 标尺走令牌: 标尺底 `Tokens.ruler-brush`、小节号 `Tokens.ruler-ink`,
+//    标尺刻度与网格同用 `divider-grid-strong`。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_track_area_follows_the_four_ui_rulings() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let read = |rel: &str| {
+        std::fs::read_to_string(ui_dir.join(rel)).unwrap_or_else(|_| panic!("读 {rel}"))
+    };
+    let tokens = read("tokens.slint");
+    // §11 同键双套值（负责人定案：扁平/实体并存可切换）：扁平分支必须是
+    // 现行值（line / line-strong / bg-shell 纯色），拟物分支才许换质感值。
+    for (needle, what) in [
+        (
+            "out property <color> divider-row: texture-physical ? #43536a : line-strong;",
+            "行间分界令牌（扁平套 = line-strong）",
+        ),
+        (
+            "out property <color> divider-row-highlight: #ffffff.with-alpha(texture-physical ? 0.05 : 0.0);",
+            "分界刻蚀高光令牌（扁平套 alpha = 0）",
+        ),
+        (
+            "out property <color> divider-grid: texture-physical ? line.with-alpha(0.55) : line;",
+            "网格弱档令牌（扁平套 = line）",
+        ),
+        (
+            "out property <color> divider-grid-strong: texture-physical ? line-strong.with-alpha(0.8) : line-strong;",
+            "网格强档令牌（扁平套 = line-strong）",
+        ),
+        (
+            "? @linear-gradient(180deg, bg-panel, bg-shell)",
+            "标尺带底拟物套渐变",
+        ),
+        (
+            ": @linear-gradient(180deg, bg-shell, bg-shell);",
+            "标尺带底扁平套纯色（现行 bg-shell）",
+        ),
+        ("out property <color> ruler-ink: ink-0;", "小节号墨色令牌"),
+    ] {
+        assert!(
+            tokens.contains(needle),
+            "tokens.slint 必须含 {what}: {needle}"
+        );
+    }
+
+    // 用户切换入口（走带栏 Group L）：翻的是同一个 `Tokens.texture`。
+    let transport_bar = read("transport_bar.slint");
+    assert!(
+        transport_bar.contains(
+            "Tokens.texture = Tokens.texture == TextureMode.physical ? TextureMode.flat : TextureMode.physical;"
+        ),
+        "走带栏必须有质感切换钮（翻 Tokens.texture 本身）"
+    );
+    assert!(
+        transport_bar.contains("质感主题: 实体 (点击切回扁平)"),
+        "质感切换钮必须有状态 tooltip"
+    );
+
+    let arrangement = read("arrangement.slint");
+    for gone in [
+        "text: \"轨道控制头 (TRACKS)\"",
+        "text: \"轨道控制头 (右置)\"",
+        "text: \"右置轨道头模式 (镜像工作区)\"",
+        "text: \"智能和声声学\"",
+    ] {
+        assert!(
+            !arrangement.contains(gone),
+            "冗余说明文字不得回归 arrangement.slint: {gone}"
+        );
+    }
+    let menu_at = arrangement
+        .find("text: \"轨道菜单\"")
+        .expect("轨道菜单必须在");
+    let add_at = arrangement.find("text: \"+ 轨道\"").expect("+ 轨道必须在");
+    assert!(
+        menu_at < add_at,
+        "轨道菜单必须排在 + 轨道之前（工具行最前）: menu@{menu_at} add@{add_at}"
+    );
+    for (needle, what) in [
+        ("background: Tokens.divider-row;", "分界线走 divider-row"),
+        (
+            "background: Tokens.divider-row-highlight;",
+            "分界刻蚀高光走 divider-row-highlight",
+        ),
+        ("background: Tokens.ruler-brush;", "标尺底走 ruler-brush"),
+        ("color: Tokens.ruler-ink;", "小节号走 ruler-ink"),
+        (
+            "Tokens.divider-grid-strong : Tokens.divider-grid",
+            "网格强弱两档走令牌",
+        ),
+    ] {
+        assert!(
+            arrangement.contains(needle),
+            "arrangement.slint 必须含 {what}: {needle}"
+        );
+    }
+    assert!(
+        !arrangement.contains("with-alpha(0.70) : #ffffff0a"),
+        "未选中行不得回归 #ffffff0a 全框描边（分界只由行底单线承担）"
+    );
+
+    // 全 UI 同类排查的删除钉（各文件实际删掉的区域名/描述标签）。
+    for (rel, gone) in [
+        ("clip_matrix.slint", "text: \"Clip 激发矩阵\""),
+        ("control_room.slint", "text: \"监听控制室\""),
+        ("control_room.slint", "text: \"MONITOR MATRIX\""),
+        ("sidebar.slint", "text: \"资源库\""),
+        ("console/asset_pool_panel.slint", "text: \"素材池\""),
+        (
+            "console/device_rack.slint",
+            "text: \"动态、侧链与瞬态控制\"",
+        ),
+        ("left_panel.slint", "text: \"总线效果器 (BUS INSERTS)\""),
+    ] {
+        assert!(
+            !read(rel).contains(gone),
+            "冗余说明文字不得回归 {rel}: {gone}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ②③④: 活窗口回读（本文件唯一碰 Slint 的测试）
 // ---------------------------------------------------------------------------
 

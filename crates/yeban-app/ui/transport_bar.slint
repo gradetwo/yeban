@@ -1,4 +1,4 @@
-import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
+import { Theme, PersonaMode, TextureMode, Tokens, TooltipBubble } from "tokens.slint";
 
 // =========================================================================
 // UNIFIED VECTOR ICONS (1.2px - 1.5px Stroke, Geometric, Professional DAW Style)
@@ -1427,6 +1427,41 @@ export component TransportHeaderBar inherits Rectangle {
                     clicked => { lang-menu-popup.show(); }
                 }
                 TooltipBubble { text: @tr("界面语言 (点击选择语言)"); is-visible: touch_lang.has-hover; tip-offset-x: -40px; }
+            }
+
+            // Group L: Texture theme switch (扁平 / 实体) —— 负责人
+            // 2026-11-16 架构定案的用户切换入口: 两主题并存, 运行时切换
+            // `Tokens.texture` 即整套令牌换值 (§10 材质 + §11 结构线),
+            // 全界面绑定同源 ⇒ 即时、全量生效, 不重启不重编译。与 Group K
+            // 同款: Slint 内直接翻全局属性; 初始值仍由 host::apply_texture
+            // (CLI --texture) 注入。克制口径: 只一个小开关, 文字即当前态。
+            // 注: 本文件全部控件均无 accessible-id (文件惯例), 本钮从之,
+            // 身份由可见文字 + tooltip 承担。
+            Rectangle {
+                width: 40px;
+                height: 28px;
+                background: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.18) : #10141d;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.5) : Theme.border-subtle;
+
+                Text {
+                    text: Tokens.texture == TextureMode.physical ? "实体" : "扁平";
+                    font-family: Tokens.font-ui;
+                    font-size: 9.5px;
+                    font-weight: 600;
+                    color: Tokens.texture == TextureMode.physical ? Theme.accent : #b6c2d2;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                touch_texture := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => {
+                        Tokens.texture = Tokens.texture == TextureMode.physical ? TextureMode.flat : TextureMode.physical;
+                    }
+                }
+                TooltipBubble { text: Tokens.texture == TextureMode.physical ? "质感主题: 实体 (点击切回扁平)" : "质感主题: 扁平 (点击切换实体)"; is-visible: touch_texture.has-hover; tip-offset-x: -40px; }
             }
         }
     }
