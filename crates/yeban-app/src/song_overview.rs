@@ -218,8 +218,8 @@ pub fn profile_display_name_en(profile: &str) -> &'static str {
 
 /// 曲风档名 → 当前界面语言下的显示名。
 ///
-/// 这是宿主写入 .slint 属性的**唯一**一处闭集显示标签（其余界面文案全走
-/// .slint 侧 `@tr`）：写点 [`apply_song_overview`] 按
+/// 这是宿主写入 .slint 属性的闭集显示标签之一（另两处是状态栏的选区与
+/// 音频配置两格，见 `host::publish_status_bar`）：写点 [`apply_song_overview`] 按
 /// [`crate::host::current_language`] 取名字，语言切换时
 /// [`crate::host::apply_language`] 再用 [`relabel_profile_display`] 重标
 /// 已显示的那一个。
