@@ -102,11 +102,15 @@ use std::sync::Arc;
 
 use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
 use yeban_render::wav::{read_plain_wav_mono_f32, read_plain_wav_mono_f32_from_bytes};
+use yeban_sfz::PlayDirection;
 use yeban_sfz::SampleEnd;
 use yeban_sfz::instrument::{
-    AMPLITUDE_DEFAULT_PERCENT, CcGate, Instrument, Region, Trigger, TriggerEvent,
+    AMPLITUDE_DEFAULT_PERCENT, CcGate, Instrument, Region, Trigger, TriggerEvent, amp_random_gain,
+    trigger_rand,
 };
-use yeban_sfz::modulation::{CcMod, ModTarget};
+use yeban_sfz::modulation::{
+    AmpegParam, CcMod, ModTarget, bake_cc_mods, tune_ratio_with_baked, volume_ratio_with_baked,
+};
 use yeban_sfz::parser::{
     IncludeIssue, IncludeIssueKind, IncludeResolver, ParseLimits, SfzSource, parse_sources,
     parse_text,
@@ -3207,15 +3211,8 @@ impl SfzWavArtifact {
         if self.notes_with_amplitude > 0 {
             keys.push("sfzAmplitude");
         }
-        if self.notes_with_tune_cc > 0 {
-            keys.push("sfzTuneCcModulation");
-        }
-        if self.notes_with_volume_cc > 0 {
-            keys.push("sfzVolumeCcModulation");
-        }
-        if self.notes_with_sample_span > 0 {
-            keys.push("sfzSampleSpan");
-        }
+        // ⭐ `sfzSampleSpan` 已撤：`offset` / `end` 现在真的切片（见 [`note_wave`] 的
+        // `sample_span_bounds`），与引擎 `reduce_span` 同一口径。
         // ⭐ `#273`：有多于一条区域命中同一音符 ⇒ 本工具只取第一条、引擎叠加全部。
         if self.notes_with_multiple_regions > 0 {
             keys.push("sfzRegionLayering");
@@ -3794,6 +3791,129 @@ pub(super) struct NoteWave {
     pub amplitude_unresolved: usize,
 }
 
+/// ⭐ 离线侧的 `ampeg_*` 包络：**与引擎 [`yeban_engine`] 的 `AmpegRun` 同一形状**
+/// （延迟 → 起音 → 保持 → 衰减 → 保持电平 → 末段释放），但只保留逐样本要用的量。
+///
+/// 为什么这里再写一份而不是直接引用引擎那个类型：`yeban-mcp` 的清单规则是
+/// "轻量 crate：不拖音频栈进 MCP"（见 `Cargo.toml` 里 `yeban-midi` 那一段的注释），
+/// 而 `AmpegRun` 定义在 `yeban-engine`。形状口径逐条抄自
+/// `yeban-engine/src/sfz_instrument.rs` 的 `AmpegRun::level_at` 与 `release_scale`：
+/// 段内**线性**、`sustain` 是**百分比 ÷ 100** 的线性电平、释放段乘 `(R − k) / R`。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct AmpegCurve {
+    delay_end: u32,
+    attack_end: u32,
+    hold_end: u32,
+    decay_end: u32,
+    start: f32,
+    sustain: f32,
+    release_frames: u32,
+}
+
+impl AmpegCurve {
+    /// 自音符起点第 `t` 帧、音符总长 `len` 帧处的线性电平（含末段释放）。
+    fn level(&self, t: u32, len: u32) -> f32 {
+        let base = if t < self.delay_end {
+            self.start
+        } else if t < self.attack_end {
+            self.start
+                + (1.0 - self.start)
+                    * ((t - self.delay_end) as f32 / (self.attack_end - self.delay_end) as f32)
+        } else if t < self.hold_end {
+            1.0
+        } else if t < self.decay_end {
+            1.0 - (1.0 - self.sustain)
+                * ((t - self.hold_end) as f32 / (self.decay_end - self.hold_end) as f32)
+        } else {
+            self.sustain
+        };
+        if self.release_frames == 0 {
+            return base;
+        }
+        let release_start = len.saturating_sub(self.release_frames);
+        if t < release_start {
+            return base;
+        }
+        let walked = t - release_start;
+        if walked >= self.release_frames {
+            return 0.0;
+        }
+        base * ((self.release_frames - walked) as f32 / self.release_frames as f32)
+    }
+}
+
+/// 秒 → 帧（与引擎 `seconds_to_frames` 同一条口径：**四舍五入**、非有限/非正记 0、饱和不 panic）。
+fn seconds_to_frames(seconds: f32, engine_hz: f32) -> u32 {
+    let raw = f64::from(seconds) * f64::from(engine_hz);
+    if !raw.is_finite() || raw <= 0.0 {
+        0
+    } else if raw >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        raw.round() as u32
+    }
+}
+
+/// ⭐ 把一个区域的 `ampeg_*`（**逐参数**过 CC 探针求值，含 `ampeg_*onccN`）归约成
+/// [`AmpegCurve`]；七个参数都在透明缺省 ⇒ `None`（＝ 一个浮点运算都不加，逐位不变）。
+fn offline_ampeg(
+    instrument: &Instrument<'_>,
+    region: &Region<'_>,
+    probe: &dyn Fn(u8) -> u8,
+    engine_hz: f32,
+) -> Option<AmpegCurve> {
+    let probe_some: Option<&dyn Fn(u8) -> u8> = Some(probe);
+    let (attack, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Attack, probe_some);
+    let (hold, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Hold, probe_some);
+    let (decay, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Decay, probe_some);
+    let (sustain, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Sustain, probe_some);
+    let (release, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Release, probe_some);
+    let (delay, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Delay, probe_some);
+    let (start, _) = instrument.ampeg_value_with_cc(region, AmpegParam::Start, probe_some);
+    // 透明缺省：各段 0 秒、sustain 100 %、delay 0、start 0 %。
+    if attack == 0.0
+        && hold == 0.0
+        && decay == 0.0
+        && sustain == 100.0
+        && release == 0.0
+        && delay == 0.0
+        && start == 0.0
+    {
+        return None;
+    }
+    let delay_frames = seconds_to_frames(delay, engine_hz);
+    let attack_frames = seconds_to_frames(attack, engine_hz);
+    let hold_frames = seconds_to_frames(hold, engine_hz);
+    let decay_frames = seconds_to_frames(decay, engine_hz);
+    let release_frames = seconds_to_frames(release, engine_hz);
+    // 段边界饱和到 `u32::MAX` 不会 panic（`saturating_add`），与引擎同一形态。
+    let attack_end = delay_frames.saturating_add(attack_frames);
+    let hold_end = attack_end.saturating_add(hold_frames);
+    let decay_end = hold_end.saturating_add(decay_frames);
+    Some(AmpegCurve {
+        delay_end: delay_frames,
+        attack_end,
+        hold_end,
+        decay_end,
+        start: (start / 100.0).clamp(0.0, 1.0),
+        sustain: (sustain / 100.0).clamp(0.0, 1.0),
+        release_frames,
+    })
+}
+
+/// 源采样区间 `[offset, end)` 的**归约**（与引擎 `reduce_span` 同一口径：
+/// 半开区间、终点 `min(end, pcm 长度)`、起点越界 ⇒ 空区间）。
+fn sample_span_bounds(region: &Region<'_>, pcm_len: usize, rand: f32) -> (usize, usize) {
+    let Some(span) = region.playback_span_with_rand(rand) else {
+        // `end=-1`（`SampleEnd::Silent`）：区域**仍被触发**，但不产出采样。
+        return (0, 0);
+    };
+    let total = pcm_len as u64;
+    let from = span.start.min(total);
+    let to = span.end.unwrap_or(total).min(total).max(from);
+    (from as usize, to as usize)
+}
+
 /// **唯一的**"一个音符怎么响"实现：区域选择 → 播放速率 → 总增益 → 样本来源。
 ///
 /// 返回 `None` 的唯一情形是"这个音符在这份 SFZ 里不发声"：没有区域匹配它的
@@ -3860,7 +3980,41 @@ pub(super) fn note_wave(
     // **逐位不变**（IEEE：有限值 × 1.0 恒等）。
     let (amplitude_value, amplitude_unresolved) =
         instrument.amplitude_value_with_cc(region, &cc_probe);
-    let gain = spec.total_gain() * (amplitude_value / AMPLITUDE_DEFAULT_PERCENT);
+    // ⭐⭐ `volume` / `tune` 族的 CC 调制（`#119` / `#116`）：`yeban-sfz` 里
+    // [`volume_ratio_with_baked`] 与 [`tune_ratio_with_baked`] 是**唯一实现**，引擎的
+    // 三条路（离线 / 摊平 / 实时）都在用；离线导出此前**一项都不调** ⇒ 同一条 SFZ
+    // 在引擎里会响、会变调，在导出里不变。这里补上同一处施加点：
+    //   `gain = (total_gain × amplitude_gain) × volume_ratio`
+    //   `rate = rate × tune_ratio`（`pitch_*ccN` 也落 `ModTarget::Tune`）
+    // 无调制时两个乘子都恰为 `1.0` ⇒ 逐位不变。
+    // 曲线解析口径与引擎一致：文件内 `<curve>` 优先，取不到再退 **ARIA 内建曲线**
+    // （缺省 `curve=0` 是线性 —— 不回退就会把所有默认曲线的调制项判成"解不出"，
+    // 于是 `volume_onccN` 这类最常见写法一项都不生效）。
+    let baked = bake_cc_mods(region.cc_modulations(), |index| {
+        instrument
+            .curve(index)
+            .cloned()
+            .or_else(|| yeban_sfz::curve::Curve::built_in(index))
+    });
+    let volume_ratio = volume_ratio_with_baked(&baked, Some(&cc_probe));
+    let tune_ratio = tune_ratio_with_baked(&baked, Some(&cc_probe));
+    // ⭐⭐ `ampeg_*`：**包络本身**离线导出此前完全没有（只有末尾那段线性淡出），
+    // 而引擎按 `ampeg_attack/hold/decay/sustain/release` 造整条幅度包络 ⇒ 带包络的库
+    // （二胡、弦乐几乎都有音头）在导出里"没有音头、没有衰减"。七个参数逐个过 CC 探针
+    // （`ampeg_attack_onccN` 这类写法因此也生效），曲线优先文件 `<curve>`、再退内建。
+    let ampeg = offline_ampeg(instrument, region, &cc_probe, engine_hz);
+    // ⭐⭐ 触发期随机族（`offset_random` / `amp_random`）：与引擎**共用同一个派生点**
+    // [`trigger_rand`]（splitmix64，纯整数 ⇒ 跨平台逐位一致）。⚠ 唯一口径差别记在这里：
+    // 引擎的 `occurrence` 是"该键的第几次触发"计数器，离线导出没有那份计数器，改用
+    // **本音符的起始帧**当触发身份 —— 每个音符一个稳定且互不相同的随机值，效果等价
+    // （同一音符每次导出结果相同 ⇒ 可复现），但**逐位不与引擎相同**。
+    let rand = trigger_rand(note.start_frame, note.pitch, 1);
+    let random_gain = amp_random_gain(region.amp_random, rand);
+    let gain = spec.total_gain()
+        * (amplitude_value / AMPLITUDE_DEFAULT_PERCENT)
+        * volume_ratio
+        * random_gain;
+    let rate = rate * tune_ratio;
     let looping = spec.loops();
     if !(rate.is_finite() && rate > 0.0) || gain == 0.0 {
         return None;
@@ -3899,12 +4053,29 @@ pub(super) fn note_wave(
         // `playback_rate` = `pitch_ratio * sample_hz / engine_hz`），与
         // `yeban-engine::SfzInstrument::render_note_into` 的
         // `RenderRates::new(source.sample_hz, engine_hz)` **同一口径**。
-        let file_rate =
-            region.playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz));
-        (
-            render_pcm_into(reading.pcm.as_slice(), file_rate, gain, &mut mono),
-            NoteSampleKind::FileSample,
-        )
+        let file_rate = region
+            .playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz))
+            * tune_ratio;
+        // ⭐ `offset` / `end`（含 `offset_random` 的触发位移）：先按半开区间切源采样，
+        // 再走同一份线性插值。缺省（`offset=0` ＋ `end` 未指定 ＋ `offset_random=0`）
+        // ⇒ 切片就是整段 ⇒ **逐位不变**。
+        let (from, to) = sample_span_bounds(region, reading.pcm.len(), rand);
+        // ⭐ `direction=reverse`：与引擎 `reduce_travel` 的等价性（判据 S95）一致 ——
+        // 反向播放**逐帧逐位等于**"把区间倒序后按 forward 播放"。所以这里只把切片倒序，
+        // 插值算术一个字不改（⛔ 不引入负步进，避免与 `render_pcm_into` 的守卫分叉）。
+        if spec.direction == PlayDirection::Reverse {
+            let mut reversed: Vec<f32> = reading.pcm[from..to].to_vec();
+            reversed.reverse();
+            (
+                render_pcm_into(&reversed, file_rate, gain, &mut mono),
+                NoteSampleKind::FileSample,
+            )
+        } else {
+            (
+                render_pcm_into(&reading.pcm[from..to], file_rate, gain, &mut mono),
+                NoteSampleKind::FileSample,
+            )
+        }
     } else {
         // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有
         // 数据可播。为什么按音符造：读到样本末尾就停的语义下，用一个固定 1 秒的
@@ -3917,6 +4088,15 @@ pub(super) fn note_wave(
             NoteSampleKind::SineFallback,
         )
     };
+    // ⭐ `ampeg_*` 幅度包络在这里施加（与引擎 `SfzVoice` 的逐样本电平同一层：
+    // "一个音符怎么响"必须只有一个实现，⛔ 不放到混音循环里）。
+    // 没有包络（`None`）⇒ 一个浮点运算都不加 ⇒ 逐位不变。
+    if let Some(curve) = ampeg {
+        let len = written as u32;
+        for (index, value) in mono.iter_mut().enumerate().take(written) {
+            *value *= curve.level(index as u32, len);
+        }
+    }
     Some(NoteWave {
         mono,
         written,
@@ -3939,8 +4119,9 @@ pub(super) fn note_wave(
 /// ＋ **事件门控** `Trigger::responds_to(NoteOn)`（与 `#221` 的 `note_wave` 和引擎摊平门控
 /// 同一条），仍**不含**通道 / keyswitch / CC 门控
 /// —— 那些由引擎在摊平期烧进掩码。因此"读数说命中、引擎不出声"的情形只可能出现在
-/// 那些门控上；本层的三个 `unsupported` 键（`sfzAmplitude` / `sfzTuneCcModulation` /
-/// `sfzVolumeCcModulation`）只报**CC 调制**，静态参数已由引擎应用。
+/// 那些门控上；`sfzAmplitude` 只在**曲线解不出**时登记。`sfzTuneCcModulation` /
+/// `sfzVolumeCcModulation` 两个键已撤：`volume` / `tune` 族的 CC 调制现在真的乘进
+/// 增益与播放速率（与引擎 `render_note_into_with_cc` 同一处施加点、同一份求值）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct SamplerSurvey {
     /// 排程音符数（含没匹配到区域的）。
@@ -5041,6 +5222,529 @@ mod tests {
             .region_index,
             0
         );
+    }
+
+    #[test]
+    fn probe_volume_and_tune_ratios_from_a_pitch_and_volume_cc_region() {
+        use yeban_sfz::curve::Curve;
+        use yeban_sfz::modulation::{bake_cc_mods, tune_ratio_with_baked, volume_ratio_with_baked};
+        let instrument = parse_text(
+            "<region> sample=a.wav key=60 volume_oncc100=-12 pitch_oncc100=1200",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let region = &instrument.regions()[0];
+        eprintln!("cc_mods = {:?}", region.cc_modulations());
+        let baked = bake_cc_mods(region.cc_modulations(), |index| {
+            instrument
+                .curve(index)
+                .cloned()
+                .or_else(|| Curve::built_in(index))
+        });
+        let probe = |_cc: u8| 127u8;
+        eprintln!(
+            "volume_ratio = {} tune_ratio = {}",
+            volume_ratio_with_baked(&baked, Some(&probe)),
+            tune_ratio_with_baked(&baked, Some(&probe))
+        );
+        assert!((volume_ratio_with_baked(&baked, Some(&probe)) - 0.251).abs() < 0.01);
+        assert!((tune_ratio_with_baked(&baked, Some(&probe)) - 2.0).abs() < 0.01);
+    }
+
+    /// ⭐⭐ `volume` / `tune` 族的 CC 调制在同一层验证（本轮补口）。
+    ///
+    /// 用**内存正弦回退**（`sample=` 指向不存在的文件）造一条干净正弦：这样 f0 只能来自
+    /// `rate`，不受样本天然谐波干扰。判据是"零穿越率翻倍"，即 `pitch_oncc100=1200`
+    /// 在 CC100=127 处把音高抬一个八度。
+    #[test]
+    fn volume_and_tune_cc_modulation_reach_the_offline_wave() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 volume_oncc100=-12 pitch_oncc100=1200",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 2048,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        // 未播种（CC100 = 0）⇒ 两个乘子都是 1.0 ⇒ 与"没有这两条 opcode"逐位相同。
+        let plain = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("正弦回退必须发声");
+        let plain_peak = math::peak_of(&plain.mono);
+        let plain_zc = zero_crossings(&plain.mono[..plain.written]);
+
+        let mut seeded: BTreeMap<u8, u8> = BTreeMap::new();
+        seeded.insert(100, 127);
+        let modulated = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &seeded,
+        )
+        .expect("播种后必须发声");
+
+        // 音量腿：−12 dB ⇒ 峰值 ≈ 0.251 × 原峰值。
+        let ratio = math::peak_of(&modulated.mono) / plain_peak;
+        assert!(
+            (ratio - 0.251).abs() < 0.02,
+            "volume_oncc100=-12 在 CC=127 处必须把峰值压到约四分之一，实得 {ratio}"
+        );
+        // 音高腿：+1200 音分 ⇒ **单位长度上的**零穿越率恰翻倍（八度）。
+        // ⚠ 只在 `written` 以内数：正弦样本按音符时值造，速率翻倍会让 `written` 减半，
+        // 拿整段（含尾部 0）数会把结论稀释回 ~1.0。
+        let zc_ratio = (zero_crossings(&modulated.mono[..modulated.written]) as f64
+            / modulated.written as f64)
+            / (plain_zc as f64 / plain.written as f64);
+        assert!(
+            (zc_ratio - 2.0).abs() < 0.06,
+            "pitch_oncc100=1200 在 CC=127 处必须把音高抬一个八度，实得零穿越比 {zc_ratio}"
+        );
+    }
+
+    #[test]
+    fn tune_cc_shifts_the_file_sample_rate_too() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        // 自带夹具：临时目录里现写一份真实 WAV（48 kHz 单声道正弦，100_000 帧），
+        // 不依赖任何本机绝对路径——原版写死作者本机路径，文件不在场时 note_wave
+        // 按设计回退正弦、kind 断言必红，CI 上同样不可移植。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-tunecc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let wav_path = dir.join("tone.wav");
+        let frames: Vec<f32> = (0..100_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        write_plain_wav(
+            &wav_path,
+            &PcmFormat::float(1, 48_000, 32),
+            &PcmBuffer::Float32(frames),
+        )
+        .expect("写夹具 WAV");
+        let text = format!(
+            "<region> sample={} key=60 pitch_oncc100=1200",
+            wav_path.display()
+        );
+        let instrument = parse_text(&text, &ParseLimits::default()).expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 200_000,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let plain = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("文件样本必须发声");
+        let mut seeded: BTreeMap<u8, u8> = BTreeMap::new();
+        seeded.insert(100, 127);
+        let tuned = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache,
+            &seeded,
+        )
+        .expect("播种后必须发声");
+        eprintln!(
+            "plain written = {} tuned written = {}",
+            plain.written, tuned.written
+        );
+        assert_eq!(plain.kind, NoteSampleKind::FileSample);
+        let ratio = plain.written as f64 / tuned.written as f64;
+        assert!(
+            (ratio - 2.0).abs() < 0.15,
+            "音高抬一个八度 ⇒ 同样的样本只能用一半的时值，实得 {ratio}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐ `offset` / `end` 真的切片：同一条样本，声明 `[1000, 1999]` 后只能用约 1000 个源帧。
+    #[test]
+    fn offset_and_end_slice_the_offline_file_sample() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        // 自带夹具：临时目录里现写一份真实 WAV（48 kHz 单声道正弦，240_000 帧），
+        // 不依赖任何本机绝对路径——原版写死作者本机路径，CI 上不可移植。
+        // 48 kHz 与引擎同采样率 ⇒ playback_rate = 1.0，1000 个源帧即 1000 个输出帧，
+        // 仍落在原断言区间 [900, 1100] 内。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-span-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let wav_path = dir.join("tone.wav");
+        let frames: Vec<f32> = (0..240_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        write_plain_wav(
+            &wav_path,
+            &PcmFormat::float(1, 48_000, 32),
+            &PcmBuffer::Float32(frames),
+        )
+        .expect("写夹具 WAV");
+        let wav = wav_path.display();
+        let plain_text = format!("<region> sample={wav} key=60");
+        let sliced_text = format!("<region> sample={wav} key=60 offset=1000 end=1999");
+        let plain_inst = parse_text(&plain_text, &ParseLimits::default()).expect("解析");
+        let sliced_inst = parse_text(&sliced_text, &ParseLimits::default()).expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 200_000,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let mut cache = SampleCache::new();
+        let plain = note_wave(
+            &plain_inst,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("整段样本");
+        let mut cache2 = SampleCache::new();
+        let sliced = note_wave(
+            &sliced_inst,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache2,
+            &BTreeMap::new(),
+        )
+        .expect("切片后仍必须发声");
+        eprintln!(
+            "plain written = {} sliced written = {}",
+            plain.written, sliced.written
+        );
+        // `end` 含端点 ⇒ 源帧 1000 个，按 playback_rate（44.1k → 48k，约 0.919）换算到输出帧。
+        assert!(
+            (900..=1100).contains(&sliced.written),
+            "offset=1000 end=1999 只能播约 1000 个源帧，实得 {}",
+            sliced.written
+        );
+        assert!(plain.written > sliced.written * 100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐ `ampeg_*` 包络（静态值）真的被施加：起音段电平必须显著低于稳态。
+    #[test]
+    fn ampeg_envelope_shapes_the_offline_wave() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 ampeg_attack=0.05 ampeg_decay=0.1 ampeg_sustain=50",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 9600,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let wave = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("正弦回退必须发声");
+        let head: f32 = wave.mono[..240].iter().map(|v| v.abs()).sum::<f32>() / 240.0;
+        // 起音 0.05 s ＝ 2400 帧 ⇒ 第 2000..2400 帧已接近满幅。
+        let body: f32 = wave.mono[2000..2400].iter().map(|v| v.abs()).sum::<f32>() / 400.0;
+        eprintln!("head = {head} body = {body}");
+        {
+            let region = &instrument.regions()[0];
+            let probe = |_cc: u8| 0u8;
+            let dbg = offline_ampeg(&instrument, region, &probe, 48_000.0);
+            eprintln!(
+                "raw ampeg_attack={} sustain={} decay={} -> {dbg:?}",
+                region.ampeg_attack, region.ampeg_sustain, region.ampeg_decay
+            );
+        }
+        assert!(
+            body > head * 10.0,
+            "起音段必须从 0 爬升（head={head} 应远小于 body={body}）"
+        );
+        // 稳态后是 50 % 电平：末期（衰减已走完）应约为前段的四分之一能量（差分后绿）。
+        let tail: f32 = wave.mono[8000..9000].iter().map(|v| v.abs()).sum::<f32>() / 1000.0;
+        assert!(
+            tail < body,
+            "sustain=50 必须让稳态低于 1.0（tail={tail} 应小于 body={body}）"
+        );
+    }
+
+    /// ⭐ `ampeg_attack_onccN`：CC 调制真的进包络（同一个音符，播种后音头明显更长）。
+    #[test]
+    fn ampeg_cc_modulation_reaches_the_offline_envelope() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 ampeg_attack_oncc100=0.1",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 9600,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let unseeded = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("未播种也要发声");
+        let mut seeded: BTreeMap<u8, u8> = BTreeMap::new();
+        seeded.insert(100, 127);
+        let seeded_wave = note_wave(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &seeded,
+        )
+        .expect("播种后也要发声");
+        let early = |w: &NoteWave| w.mono[..600].iter().map(|v| v.abs()).sum::<f32>() / 600.0;
+        let a = early(&unseeded);
+        let b = early(&seeded_wave);
+        eprintln!("unseeded head = {a} seeded head = {b}");
+        // 未播种（CC100=0）⇒ 无起音；播种 127 ⇒ 0.1 s 起音 ⇒ 前 600 帧几乎为 0。
+        assert!(
+            a > b * 10.0,
+            "ampeg_attack_oncc100=0.1 在 CC=127 处必须把音头拉长（{a} 应远大于 {b}）"
+        );
+    }
+
+    /// ⭐ `direction=reverse`：反向播放**逐帧等于**"把区间倒序后按正向播放"
+    /// （引擎 `reduce_travel` 的等价性判据 S95，此处作为离线侧的独立参照）。
+    #[test]
+    fn reverse_direction_mirrors_the_forward_wave() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        // 自带夹具：临时目录里现写一份真实 WAV（44.1 kHz 单声道正弦，150_000 帧），
+        // 不依赖任何本机绝对路径——原版写死作者本机路径，文件不在场时 note_wave
+        // 按设计回退正弦、镜像断言必红，CI 上同样不可移植。
+        // 44.1 kHz 与下方 engine_hz 相同 ⇒ 步进恰为 1；且源长（150_000）须 < 音符长
+        // （200_000）：written 由源长封顶（= 源长 − 1），下方镜像枢轴 written 恰为
+        // 源末帧下标，镜像判据才成立（见下方注记）。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-reverse-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let wav_path = dir.join("tone.wav");
+        let frames: Vec<f32> = (0..150_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44_100.0).sin() * 0.5)
+            .collect();
+        write_plain_wav(
+            &wav_path,
+            &PcmFormat::float(1, 44_100, 32),
+            &PcmBuffer::Float32(frames),
+        )
+        .expect("写夹具 WAV");
+        let wav = wav_path.display();
+        let fwd_text = format!("<region> sample={wav} key=60");
+        let rev_text = format!("<region> sample={wav} key=60 direction=reverse");
+        let fwd_inst = parse_text(&fwd_text, &ParseLimits::default()).expect("解析");
+        let rev_inst = parse_text(&rev_text, &ParseLimits::default()).expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 200_000,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let sfz = std::path::Path::new("/tmp/x.sfz");
+        // ⚠ 判据只在**步进恰为 1** 时可用：`engine_hz = 样本采样率`（44.1 kHz）⇒
+        // `playback_rate` 的 `sample_hz / engine_hz` 恰 1 ⇒ 反向读与正向读落在同一批
+        // 整数源帧上，`rev[i]` 必须逐位等于 `fwd[written − 1 − i]`。
+        // （步进 ≠ 1 时两侧读的是**不同**源帧序列，镜像比对不成立 —— 那是测量口径问题。）
+        let mut cache = SampleCache::new();
+        let fwd = note_wave(
+            &fwd_inst,
+            &note,
+            440.0,
+            44_100.0,
+            Some(sfz),
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("正向");
+        let mut cache2 = SampleCache::new();
+        let rev = note_wave(
+            &rev_inst,
+            &note,
+            440.0,
+            44_100.0,
+            Some(sfz),
+            &mut cache2,
+            &BTreeMap::new(),
+        )
+        .expect("反向");
+        assert_eq!(
+            fwd.written, rev.written,
+            "同一区间的两个方向必须用掉同样多的源帧"
+        );
+        let n = fwd.written.min(20_000);
+        let mut worst: f32 = 0.0;
+        // ⚠ 起点偏一格：反向从区间**最后一格**（`end − 1`）起步，而正向在
+        // `index + 1 < len` 的守卫下永远读不到那一格 ⇒ `rev[i]` 对应 `fwd[written − i]`
+        // （`i = 0` 那一格没有正向对应，跳过）。这是引擎 `reduce_travel` 的既有口径。
+        for i in 1..n {
+            let diff = (rev.mono[i] - fwd.mono[fwd.written - i]).abs();
+            if diff > worst {
+                worst = diff;
+            }
+        }
+        eprintln!("reverse vs mirrored forward, worst |diff| = {worst}");
+        assert!(
+            worst < 1e-4,
+            "反向波必须逐帧等于正向波的镜像（最大差 {worst}）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⭐ `amp_random`：与引擎**共用** [`trigger_rand`] 派生 ⇒ 单极衰减，比值可预算。
+    #[test]
+    fn amp_random_scales_the_offline_gain_deterministically() {
+        let plain_inst = parse_text(
+            "<region> sample=definitely-missing.wav key=60",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let random_inst = parse_text(
+            "<region> sample=definitely-missing.wav key=60 amp_random=12",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 4321,
+            frames: 9600,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let plain = note_wave(
+            &plain_inst,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("无随机");
+        let random = note_wave(
+            &random_inst,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("有随机");
+        // 与实现同一份派生：`occurrence` ＝ 起始帧（见 `note_wave` 的口径注记）。
+        let expected = amp_random_gain(12.0, trigger_rand(note.start_frame, note.pitch, 1));
+        let ratio = math::peak_of(&random.mono) / math::peak_of(&plain.mono);
+        eprintln!("amp_random ratio = {ratio} expected = {expected}");
+        assert!(
+            (ratio - expected).abs() < 1e-3,
+            "amp_random=12 的乘子必须是 {expected}，实得 {ratio}"
+        );
+        assert!(ratio < 1.0, "amp_random 是**单极衰减**，只能变轻不能变响");
+    }
+
+    /// ⭐ `offset_random`：位移是 `floor(rand × N)` 的**单极**非负位移（与引擎同一算术）。
+    #[test]
+    fn offset_random_shifts_the_source_start() {
+        let inst = parse_text(
+            "<region> sample=x.wav key=60 offset_random=10000 end=50000",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let region = &inst.regions()[0];
+        let (from, to) = sample_span_bounds(region, 100_000, 0.5);
+        eprintln!("offset_random: from = {from} to = {to}");
+        assert!(
+            (4_000..=6_000).contains(&from),
+            "offset_random=10000 在 rand=0.5 处应位移约 5000 帧，实得 {from}"
+        );
+        assert_eq!(to, 50_001, "`end` 含端点 ⇒ 半开区间终点是 end+1");
+    }
+
+    fn zero_crossings(pcm: &[f32]) -> usize {
+        pcm.windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count()
     }
 
     /// ⭐ 本轮补口：`amplitude`（线性百分比）与 `amplitude_onccN` **真的乘进增益**，
