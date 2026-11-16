@@ -1198,6 +1198,74 @@ fn reproject_with_scroll(ui: &MainWindow, port: &UndoPort, next: f32) {
     apply_view(ui, &view, width, next.max(0.0));
 }
 
+/// 「现在重投影一次」的唯一入口（波形峰值缓存就绪后由心跳调用）。
+///
+/// 与 [`reproject_with_scroll`] 的差别：滚动量取**窗口当前值** ——
+/// `roll-scroll-x` 是编曲视图与卷帘共用的那一个属性，本函数⛔ 不主动改它。
+pub fn reproject_now(ui: &MainWindow, port: &Rc<UndoPort>) {
+    reproject_with_scroll(ui, port, ui.get_roll_scroll_x());
+}
+
+/// 波形峰值缓存的**驱动泵**（ADR-0076 B1 第二步）。
+///
+/// 每一跳（`src/main.rs` 的 16 ms 定时器）调一次，做三件**都很便宜**的事：
+///
+/// 1. 上一批分析结束了 ⇒ 重投影一次（峰值从缓存来，不重投影画面不会变）；
+/// 2. 有批次在飞 ⇒ 本跳什么都不做（⛔ 不并发解两批，磁盘与 CPU 都不划算）；
+/// 3. 空闲 ⇒ 找出「音频片段引用 + 资产池里有字节 + 还没分析」的哈希，起一批。
+///
+/// ## 为什么泵在**心跳**，而不是「打开工程那一下」
+///
+/// 音频字节也能在运行期进来（录音落地 [`crate::record_landing`] / 导入音频都走
+/// [`UndoPort::insert_asset`]），那时没有「打开」事件可挂。泵 + 内容寻址缓存
+/// 让两条来源共用一条路径：同哈希必同字节，分析过的就不会再解一次。
+///
+/// ## 拿不到字节时如实停住
+///
+/// 资产池里没有这条哈希的字节（外部引用 / 只在控制面）⇒ 跳过，
+/// 界面停在「波形待分析 · 示意」的基准线。⛔ 不去磁盘上按路径猜（那是另一份事实源）。
+pub fn pump_waveform_analysis(ui: &MainWindow, port: &Rc<UndoPort>) {
+    if crate::waveform_cache::take_finished() {
+        reproject_now(ui, port);
+    }
+    if !crate::waveform_cache::is_idle() {
+        return;
+    }
+    let Some(needed) = port.with_project(audio_asset_hashes) else {
+        return;
+    };
+    let mut jobs = Vec::new();
+    for hash in needed {
+        if crate::waveform_cache::is_cached(&hash) || crate::waveform_cache::is_failed(&hash) {
+            continue;
+        }
+        let Ok(parsed) = yeban_model::AssetHash::parse(hash.clone()) else {
+            continue;
+        };
+        if let Some(bytes) = port.asset_bytes(&parsed) {
+            jobs.push((hash, bytes));
+        }
+    }
+    if !jobs.is_empty() {
+        crate::waveform_cache::spawn_batch(jobs);
+    }
+}
+
+/// 工程里被**音频片段**引用的资产哈希（去重、升序）。
+fn audio_asset_hashes(project: &yeban_model::YebanProjectV1) -> Vec<String> {
+    let mut hashes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for track in project.tracks.values() {
+        for placement in track.clips.values() {
+            if let Some(entry) = project.clip_pool.get(&placement.clip_id)
+                && let yeban_model::ClipContent::Audio { asset, .. } = &entry.content
+            {
+                hashes.insert(asset.to_string());
+            }
+        }
+    }
+    hashes.into_iter().collect()
+}
+
 /// 把编曲视图的缩放控件接到宿主（2026-11-07 ①：可见控件路）。
 ///
 /// 回调（`app.slint` 的 `MainWindow`，与 `.slint` 里的控件一一对应）：
@@ -14998,8 +15066,8 @@ thread_local! {
 /// ⚠ `wire_aether_actions` 没有 `ModulePaths` 捕获 ⇒ 拿不到"工程文件同级"，
 /// 真正的目录选择器属 ADR-0076 B5 的后续切片。
 fn stems_output_dir() -> std::path::PathBuf {
-    // ⭐ `clippy::collapsible_if`（全量 clippy `-D warnings` 判据）：两层同一条件合并成
-    // `let chains`，语义逐字不变（空/读不到仍退回 TEMP）。
+    // let-chain（Rust 2024）：层叠两个 if 会被 clippy::collapsible_if 拦下
+    // （本仓库 -D warnings ⇒ 硬错误），语义完全相同。
     if let Ok(profile) = std::env::var("USERPROFILE")
         && !profile.trim().is_empty()
     {
@@ -17670,8 +17738,7 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     gain_label: "0dB".into(),
                     color: col,
                     note_count: if is_aud { 0 } else { 4 },
-                    // ⭐ 新块没有波形 ⇒ 空模型（ADR-0076 B1 的 `waveform_peaks` 字段；
-                    // 另一条线加了 Slint 字段但漏改这两个初始化点，全量 clippy 编译红）。
+                    // 新建片段没有音频样本 ⇒ 空 peaks（界面不画波形，⛔ 不假装有）。
                     waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
                 });
                 ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
@@ -20554,6 +20621,27 @@ fn view_to_tracks(view: &ViewState) -> Vec<TrackData> {
         .collect()
 }
 
+/// 音频片段的波形峰值柱数：按**像素宽度**取，约每 3 px 一根，夹在 8..=200。
+///
+/// 为什么按宽度而不是按拍：绘制层一根柱子占 1 px 以上才画得开；固定 512 根
+/// 在窄片段上会挤成一块实心色块（用户 2026-11-16 的「信息过载」反馈同一条取向）。
+fn waveform_bins_for_width(width_px: f32) -> usize {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bins = (width_px / 3.0).round() as usize;
+    bins.clamp(8, 200)
+}
+
+/// 一个片段的峰值数组（非音频 / 无哈希 / 未分析 ⇒ 空）。
+fn waveform_peaks_for(clip: &crate::bridge::ClipView) -> Vec<f32> {
+    if clip.content != "audio" {
+        return Vec::new();
+    }
+    let Some(hash) = clip.asset_hash.as_deref() else {
+        return Vec::new();
+    };
+    crate::waveform_cache::peaks(hash, waveform_bins_for_width(clip.width))
+}
+
 fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
     let mut note_counts: std::collections::BTreeMap<&str, i32> = std::collections::BTreeMap::new();
     for note in &view.notes {
@@ -20588,8 +20676,10 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                 },
                 color: col,
                 note_count,
-                // ⭐ 同上：该映射没有解码 PCM ⇒ 空波形模型（避免 missing field）。
-                waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
+                // ⭐ ADR-0076 B1 第二步：按资产哈希查**会话峰值缓存**（`crate::waveform_cache`）。
+                // 缓存未就绪 / 字节不在资产池 / 解码失败 ⇒ 空数组 ⇒ 界面画回
+                // 「波形待分析 · 示意」的基准线（诚实降级，⛔ 不编形状）。
+                waveform_peaks: ModelRc::new(VecModel::from(waveform_peaks_for(clip))),
             }
         })
         .collect()
