@@ -18212,4 +18212,14 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **其余 9 条抽查**（当前 main，非只信报告）：`MAX_AUDIO_FILE_BYTES = 256 MiB`、
   `not_loaded_sample_paths` 与 `unreadable.notFound` 分字段、`resolvedParamName` 两路都有、
   `masteringClipper` 入口与区间渲染 `method` 均在。
-- **判决**：尚未推送 ⇒ **CI `pending`**。
+- **判决（读回）**：线 tip `0895b2ce` 的窄 run **`43849536021`** = `completed / **success**`
+  （`rust (yeban-mcp)` 真跑、`rust (workspace 全量)` / `macos` / `windows` `skipped` —— 分支只改
+  mcp，按受影响集合裁剪）。`rust (yeban-mcp)` 作业日志现读：`test result:` **181** 行、
+  `FAILED` **0**；`a_missing_clip_id_message_names_the_delete_own_clip_id_escape_hatch`
+  **2** 次在场。
+- ⭐ **合流后整树全量判决（读回）**：tip `56c5e622`（含 A/B/C/D 四条 SFZ 线）在 main 上的
+  连续几次 run 均被他人推送 `cancelled` ⇒ 改在**同树 tag** `verify-56c5e622` 上以
+  `workflow_dispatch(force_full=true)` 起 run **`43844270237`** = `completed / **success**`
+  （`rust (workspace 全量)` / `macos` / `windows` 全绿）。workspace 作业日志现读：
+  `test result:` **751** 行、`FAILED` **0**，`sfz_random_start` / `sfz_release_trigger` /
+  `sfz_sustain_pedal` 各 **1** 次。tag 与 main tip 指向**同一棵树**，因此这是合流树的全量判决。
