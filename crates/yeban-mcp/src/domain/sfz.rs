@@ -3837,8 +3837,8 @@ pub(super) fn note_wave(
                 && region.matches_velocity(note.velocity)
                 // ⭐ CC 门 / CC 触发门：门外 ⇒ 这个区域对**本音符**不成立。
                 // 以前只做键/力度/事件族三判，门的语义在离线导出里被整段忽略。
-                && region.cc_gates_ok(&cc_probe)
-                && region.cc_triggers_ok(&cc_probe)
+                && region.cc_gates_ok(cc_probe)
+                && region.cc_triggers_ok(cc_probe)
                 // ⭐ **事件门控**（本片）：本工具只渲染 **note-on** 事件 ⇒ `trigger=release` /
                 // `release_key` 的区域⛔ 不能在"按下"时被预听选中（那会把松键噪声当成音头
                 // 发出来，且用户无法从 `unsupported` 看出哪里不对）。
@@ -4068,19 +4068,6 @@ fn region_declares_envelope(region: &Region<'_>) -> bool {
         || region.ampeg_decay > 0.0
         || region.ampeg_release > 0.0
         || region.ampeg_sustain < 100.0
-}
-
-/// 该区域是否声明了 **`amplitude` 一族**（静态值非缺省，或有 `amplitude*ccN` 调制项）。
-///
-/// 判据的两半各有出处：
-/// - 静态：`yeban-sfz` 的 [`AMPLITUDE_DEFAULT_PERCENT`]（规范缺省 100 ⇒ 乘子恰 1.0，
-///   即"没声明"）；
-/// - CC：`Region::cc_mods` 里 `target == ModTarget::Amplitude`。**不**按 `delta == 0`
-///   过滤：本渲染器**没有任何 CC 状态**，任何一条声明都无法求值。
-#[must_use]
-fn region_declares_amplitude(region: &Region<'_>) -> bool {
-    region.amplitude != AMPLITUDE_DEFAULT_PERCENT
-        || region_declares_cc_target(region, ModTarget::Amplitude)
 }
 
 /// 该区域是否声明了**某个目标**的 CC 调制项（`ccN` / `_ccN` / `_onccN` / `_curveccN`）。
