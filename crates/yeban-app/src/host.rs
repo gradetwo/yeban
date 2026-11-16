@@ -19502,7 +19502,6 @@ pub fn wire_aether_actions(
     ui.on_command_execute({
         let w = weak.clone();
         let port = Rc::clone(&port);
-        let paths_for_cmd = paths.clone();
         move |cmd| {
             if let Some(ui) = w.upgrade() {
                 let w = w.clone();
@@ -19510,13 +19509,11 @@ pub fn wire_aether_actions(
                     "place-audio-clip" => place_latest_audio_clip(&ui, &port),
                     // ⭐ 分轨导出 GUI 入口（ADR-0076 B5）：后端与 CLI / MCP **同一份**
                     // （`crate::export_stems::export_stems`）；这里只补「定输出目录 + 线程 + 回执」。
-                    // 输出目录 = WAV 导出路径的同级 `stems/`（GUI 暂无目录选择器，见 ADR-0076 B5）。
+                    // ⚠ 本回调（`wire_aether_actions`）没有 `ModulePaths` 捕获 ⇒ 用跨平台
+                    // 临时目录下的固定子目录；回执给**绝对路径**让用户找得到。
+                    // （GUI 目录选择器属后续切片，见 ADR-0076 B5。）
                     "export-stems" => {
-                        let parent = paths_for_cmd.export_wav.parent().map_or_else(
-                            || std::path::PathBuf::from("."),
-                            std::path::Path::to_path_buf,
-                        );
-                        let out_dir = parent.join("stems");
+                        let out_dir = std::env::temp_dir().join("yeban-stems");
                         if let Err(err) = std::fs::create_dir_all(&out_dir) {
                             ui.set_toast_message(
                                 format!("[导出] 无法创建分轨目录 {}：{err}", out_dir.display())
@@ -19528,8 +19525,9 @@ pub fn wire_aether_actions(
                             ui.set_toast_message("[导出] 没有活跃工程，无法导出分轨".into());
                             return;
                         };
-                        // `project_path` 只用于解析 SFZ 相对路径（与 CLI 同口径）。
-                        let project_path = paths_for_cmd.export_wav.clone();
+                        // `project_path` 只用于解析 SFZ 相对路径（与 CLI 同口径）；
+                        // 本入口没有工程落盘路径 ⇒ 用输出目录下的占位（绝对 SFZ 不受影响）。
+                        let project_path = out_dir.join("project.yeban");
                         let worker = w.clone();
                         let out_for_msg = out_dir.clone();
                         let _ = std::thread::spawn(move || {
