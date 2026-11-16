@@ -229,14 +229,16 @@ fn native_menu_bar_replaces_transport_menu_strip_and_keeps_local_menus() {
         app_slint.contains("MenuBar {"),
         "MainWindow 必须声明 Slint 原生 Window 级 MenuBar"
     );
+    // 双语 i18n（line/ui-i18n）后菜单标题在源码里写作 `title: @tr("…");`
+    // —— 针随表示形式更新，判据意图（七个主菜单必须在）不变。
     for title in [
-        "title: \"文件\";",
-        "title: \"编辑\";",
-        "title: \"轨道\";",
-        "title: \"走带\";",
-        "title: \"混音\";",
-        "title: \"视图\";",
-        "title: \"诊断\";",
+        "title: @tr(\"文件\");",
+        "title: @tr(\"编辑\");",
+        "title: @tr(\"轨道\");",
+        "title: @tr(\"走带\");",
+        "title: @tr(\"混音\");",
+        "title: @tr(\"视图\");",
+        "title: @tr(\"诊断\");",
     ] {
         assert!(
             app_slint.contains(title),
