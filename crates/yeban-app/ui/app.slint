@@ -762,7 +762,7 @@ export component MainWindow inherits Window {
             MenuItem { title: "另存为 (Ctrl+Shift+S)"; activated => { root.command-execute("file-save-as"); } }
             MenuSeparator {}
             MenuItem { title: "导出音频 (WAV)..."; activated => { root.command-execute("open-export-wav"); } }
-            MenuItem { title: "导出分轨 (Stems, 请用 CLI)"; activated => { root.command-execute("export-stems"); } }
+            MenuItem { title: "导出分轨 (Stems)..."; activated => { root.command-execute("export-stems"); } }
             MenuItem { title: "导出 MIDI 文件..."; activated => { root.command-execute("export-midi"); } }
             MenuSeparator {}
             MenuItem { title: "导入 MIDI 文件..."; activated => { root.command-execute("import-midi"); } }
