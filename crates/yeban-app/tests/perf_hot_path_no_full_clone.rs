@@ -15,11 +15,17 @@ const HOST: &str = include_str!("../src/host.rs");
 const UNDO: &str = include_str!("../src/undo.rs");
 
 /// 取某个顶层 `fn` 的函数体（到行首无缩进的 `}` 为止）。
-fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
-    let start = src.find(sig).unwrap_or_else(|| panic!("必须存在 {sig}"));
-    let tail = &src[start..];
+///
+/// ⚠ 先把 CRLF 归一到 LF：Windows 检出是 `\r\n}` ⇒ 直接 `find("\n}\n")`
+/// 找不到（实测 CI windows 腿因此 panic）。
+fn fn_body(src: &str, sig: &str) -> String {
+    let normalized = src.lines().collect::<Vec<_>>().join("\n");
+    let start = normalized
+        .find(sig)
+        .unwrap_or_else(|| panic!("必须存在 {sig}"));
+    let tail = &normalized[start..];
     let end = tail.find("\n}\n").expect("函数必须有顶层结尾");
-    &tail[..end]
+    tail[..end].to_string()
 }
 
 /// ① 拖动预览走借用式读，不再 clone 整份工程。
