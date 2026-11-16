@@ -1176,8 +1176,11 @@ export component ArrangementViewport inherits Rectangle {
                                             for peak_index in blk.waveform-peaks.length : Rectangle {
                                                 x: 4px + peak_index * ((parent.width - 8px) / blk.waveform-peaks.length);
                                                 width: Math.max(1px, (parent.width - 8px) / blk.waveform-peaks.length - 1px);
-                                                height: Math.max(1px, blk.waveform-peaks[peak_index] * (parent.height - 8px));
-                                                y: (parent.height - height) / 2;
+                                                // ⚠ Slint 里 length × float 必须显式换算：先除 1px 变成数，
+                                                // 乘完再乘 1px 变回 length（否则编译期报
+                                                // 「Cannot convert float to length」）。
+                                                height: Math.max(1px, ((parent.height - 8px) / 1px) * blk.waveform-peaks[peak_index] * 1px);
+                                                y: (parent.height - self.height) / 2;
                                                 background: trk.color.with-alpha(0.85);
                                             }
 
@@ -1191,7 +1194,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 // 有真实峰值时不再显示该标注。
                                                 visible: parent.width >= 88px && blk.waveform-peaks.length == 0;
                                                 accessible-role: text;
-                                                accessible-label: "波形待分析 · 示意（峰值分析尚未接入，当前为 0dB 基准线占位）";
+                                                accessible-label: "波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8.5px;
                                                 color: #b6c2d2;

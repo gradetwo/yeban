@@ -544,6 +544,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 } else {
                     last_heavy_at.set(std::time::Instant::now());
                 }
+                // ⭐ ADR-0076 B1 第二步：波形峰值缓存的泵。空闲时这一步是两次
+                // 哈希查表 + 一次借用读（微秒级）；刚解完一批时它会重投影一次。
+                host::pump_waveform_analysis(&ui_tick, &port);
                 let mark = EditMark::from_display(&port.display());
                 let mut production = production_tick.borrow_mut();
                 // "没改就不克隆工程"是这一跳的成本契约 ⇒ 先问标记，再决定要不要 `try_project`。

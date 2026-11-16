@@ -177,6 +177,8 @@ pub mod scene;
 // 数据是按设计稿 §8.2 列式形状造的固定假数据；dsp 分析线落地后换真实映射。
 pub mod song_overview;
 pub mod undo;
+// ⭐ ADR-0076 B1：音频片段波形峰值的会话缓存（后台解码 + 固定分辨率信封）。
+pub mod waveform_cache;
 
 // ---------------------------------------------------------------------------
 // 形态 A 的运行态挂载 (默认 feature `in-process-mcp`, 2026-11-12 裁决起) [ROAD-M4-001, MUST-GATE-009]

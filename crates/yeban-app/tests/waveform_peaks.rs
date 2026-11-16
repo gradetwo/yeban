@@ -1,19 +1,28 @@
-//! **音频片段按真实峰值画波形**（ADR-0076 B1，第一步：链路就绪）。
+//! **音频片段按真实峰值画波形**（ADR-0076 B1）。
 //!
 //! 修前：`arrangement.slint` 只有 0dB 基准线 + 「波形待分析 · 示意」，
 //! 注释自证「真实峰值（按 block 的离线分析缓存）尚未接入」—— 任何素材都长一样。
 //!
-//! 本步交付：
+//! 第一步（链路）：
 //! 1. `bridge::compute_waveform_peaks(pcm, bins)` 纯函数（每 bin 取 |sample| 最大值）；
 //! 2. `TimelineBlockData.waveform_peaks: [float]` 字段；
 //! 3. 音频片段按 peaks 画柱；**peaks 为空时仍标「示意」**（⛔ 不假装有波形）。
 //!
-//! ⚠ 峰值**数据填充**（从 `.yeban` 容器 `archive.assets` 解码 → 缓存）是第二步，
-//! 见 ADR-0076 B1；本判据只钉「链路 + 诚实降级」。
+//! 第二步（数据）：
+//! 4. `ClipView.asset_hash` 把 `ClipContent::Audio.asset` 带出投影（投影层不解码、不读盘）；
+//! 5. `waveform_cache` 在后台线程上把字节解成 1024 bin 包络并按哈希缓存，
+//!    `host::pump_waveform_analysis` 在心跳里驱动（⛔ 不阻塞 UI 线程）；
+//! 6. `host::waveform_peaks_for` 按「未分析 ⇒ 空」的诚实口径取柱数。
+//!
+//! 本判据钉**源码契约**（`yeban-app` 依赖 Slint/cpal，属 `AGENTS.md` `5 的重依赖，
+//! 本地不编译；行为判据在 `src/waveform_cache.rs` 的单元测试里，由 CI 跑）。
 
 const BRIDGE: &str = include_str!("../src/bridge.rs");
 const TOKENS: &str = include_str!("../ui/tokens.slint");
 const ARR: &str = include_str!("../ui/arrangement.slint");
+const CACHE: &str = include_str!("../src/waveform_cache.rs");
+const HOST: &str = include_str!("../src/host.rs");
+const MAIN: &str = include_str!("../src/main.rs");
 
 #[test]
 fn waveform_peak_function_is_per_bin_max_abs() {
@@ -40,5 +49,67 @@ fn audio_clip_renders_real_peaks_when_present() {
     assert!(
         ARR.contains("blk.waveform-peaks.length == 0"),
         "peaks 为空时必须仍标「示意」（诚实降级）"
+    );
+}
+
+#[test]
+fn projection_carries_the_audio_asset_hash() {
+    assert!(
+        BRIDGE.contains("pub asset_hash: Option<String>"),
+        "ClipView 必须把音频片段的资产哈希带出投影（峰值缓存的键）"
+    );
+    assert!(
+        BRIDGE.contains(
+            "Some(ClipContent::Audio { asset, .. }) => (\"audio\", Some(asset.to_string()))"
+        ),
+        "asset_hash 必须来自 ClipContent::Audio.asset，⛔ 不编一个哈希"
+    );
+}
+
+#[test]
+fn cache_decodes_off_the_ui_thread_and_reports_completion() {
+    assert!(
+        CACHE.contains("std::thread::Builder::new()"),
+        "解码必须在后台线程（⛔ 不阻塞 UI 线程）"
+    );
+    assert!(
+        CACHE.contains("pub fn spawn_batch(jobs: Vec<(String, Vec<u8>)>)"),
+        "泵要能成批递「哈希 + 字节」"
+    );
+    assert!(
+        CACHE.contains("pub fn take_finished() -> bool"),
+        "批次结束要能被泵消费（否则画面永不变）"
+    );
+    assert!(
+        CACHE.contains("store().failed.insert(asset)"),
+        "解不出来的资产必须记账（⛔ 不每帧重试）"
+    );
+}
+
+#[test]
+fn pump_runs_on_the_heartbeat_not_on_open() {
+    assert!(
+        HOST.contains("pub fn pump_waveform_analysis(ui: &MainWindow, port: &Rc<UndoPort>)"),
+        "泵必须由心跳驱动（录音 / 导入也会在运行期加字节）"
+    );
+    assert!(
+        MAIN.contains("host::pump_waveform_analysis(&ui_tick, &port);"),
+        "心跳里必须真的调了泵（⛔ 只定义不调用）"
+    );
+    assert!(
+        HOST.contains("crate::waveform_cache::peaks(hash, waveform_bins_for_width(clip.width))"),
+        "时间轴块必须按资产哈希 + 像素宽度取峰值"
+    );
+}
+
+#[test]
+fn unavailable_peaks_degrade_to_empty_not_to_a_fake_shape() {
+    assert!(
+        HOST.contains("// 缓存未就绪 / 字节不在资产池 / 解码失败 ⇒ 空数组 ⇒ 界面画回"),
+        "取不到峰值时必须如实退回「示意」口径"
+    );
+    assert!(
+        CACHE.contains("None => Vec::new(),"),
+        "缓存未命中必须给空数组（⛔ 不编一个形状）"
     );
 }

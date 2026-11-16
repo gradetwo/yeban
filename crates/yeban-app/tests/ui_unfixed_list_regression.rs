@@ -90,13 +90,20 @@ fn chip_labels_avoid_the_truncation_prone_middle_dot() {
 #[test]
 fn waveform_placeholder_label_is_width_gated() {
     let arr = code_lines(ARRANGEMENT);
+    // ADR-0076 B1 第二步后：占位标注还多一个前提 —— **没有真实峰值**。
+    // 有峰值时这句不该出现（否则一句真话变成一句假话）。
     assert!(
-        arr.contains("visible: parent.width >= 88px;"),
+        arr.contains("visible: parent.width >= 88px && blk.waveform-peaks.length == 0;"),
         "窄片段必须隐藏整句，⛔ 不显示被裁成「波形」的半截误导文案（清单 P1-4）"
     );
     assert!(
-        arr.contains("峰值分析尚未接入") && arr.contains("accessible-label:"),
+        arr.contains("资产不在会话池或解码失败") && arr.contains("accessible-label:"),
         "隐藏后完整语义必须保留在 accessible-label（读屏器可读）"
+    );
+    // 第二步之后「峰值分析尚未接入」不再成立 ⇒ ⛔ 不许留着这句话。
+    assert!(
+        !arr.contains("峰值分析尚未接入"),
+        "峰值已接入，占位文案不许再自证「尚未接入」（那是假话）"
     );
     // 文案本身仍在（ui_display_honesty 判据 ② 仍绿）
     assert!(arr.contains("波形待分析 · 示意"));
