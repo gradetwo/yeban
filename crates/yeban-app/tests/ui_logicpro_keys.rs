@@ -56,10 +56,6 @@ fn cmd_n_is_wired_to_new_track_end_to_end() {
         CLI.contains("Cmd/Ctrl+N → 新建 MIDI 合成器轨"),
         "SHORTCUTS 主表必须登记 Cmd/Ctrl+N（--print-shortcuts 的官方口径）"
     );
-    assert!(
-        CLI.contains("const SHORTCUTS: [ShortcutRow; 59]"),
-        "SHORTCUTS 数组长度必须随新增 5 行（解析表收敛键）同步为 59"
-    );
 }
 
 /// ③ 界面层不再重复执行解析表已处理的 5 个键（双层键路已收敛）。
@@ -126,4 +122,31 @@ fn ui_only_keys_are_preserved() {
     ] {
         assert!(a.contains(needle), "纯界面键分支被误删：{needle}");
     }
+}
+
+/// ⑦ `SHORTCUTS` 声明长度必须与实际 `ShortcutRow` 行数一致。
+///
+/// ⚠ 本机编不了 `yeban-app`（Slint 重依赖 ⇒ AGENTS §5 禁本机全量构建），
+/// 所以数组长度写错时**本机 `cargo check` 发现不了**，只有 CI 的
+/// `error[E0308]: mismatched types` 才暴露（实测：声明 59 / 实际 60）。
+/// 这条纯文本对账把该错误提前到 `rustc --test` 可捕获。
+#[test]
+fn shortcut_table_declared_len_matches_actual_row_count() {
+    let declared: usize = CLI
+        .split("const SHORTCUTS: [ShortcutRow; ")
+        .nth(1)
+        .expect("必须能切出 SHORTCUTS 声明")
+        .split(']')
+        .next()
+        .expect("声明必须有 ]")
+        .trim()
+        .parse()
+        .expect("声明长度必须是整数");
+    // 4 空格缩进的 ShortcutRow 开括号只出现在数组里（pub struct ShortcutRow
+    // 定义没有那层缩进）⇒ 直接计数即数组行数。
+    let actual = CLI.matches("\n    ShortcutRow {").count();
+    assert_eq!(
+        declared, actual,
+        "SHORTCUTS 声明 [ShortcutRow; {declared}] 与实际 {actual} 行不符 ——          本机编不了 Slint 时这会被 CI 的 E0308 才抓到"
+    );
 }
