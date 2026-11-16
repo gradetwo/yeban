@@ -3641,15 +3641,8 @@ pub fn render(
         // `#274` 起不经这里发声（它只调 [`survey_sampler`] 取读数，音频由引擎的
         // SFZ 支路渲染，钉住这条的判据是 `tests/sampler_source_single_path.rs`）。
         let Some(wave) = note_wave(
-            instrument,
-            note,
-            tone_hz,
-            engine_hz,
-            sfz_path,
-            &mut cache,
-            initial_cc,
-        )
-        else {
+            instrument, note, tone_hz, engine_hz, sfz_path, &mut cache, initial_cc,
+        ) else {
             notes_unmatched = notes_unmatched.saturating_add(1);
             continue;
         };
@@ -5009,9 +5002,15 @@ mod tests {
         let instrument = parse_text(text, &ParseLimits::default()).expect("解析");
         let mut cache = SampleCache::new();
         let wave = note_wave(
-            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
         )
-            .expect("起音区域必须被选中");
+        .expect("起音区域必须被选中");
         assert_eq!(
             wave.region_index, 1,
             "必须选起音区域（下标 1），⛔ 不是释放区域（下标 0）"
@@ -5024,9 +5023,15 @@ mod tests {
         .expect("解析");
         assert!(
             note_wave(
-            &only_release, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
-        )
-        .is_none(),
+                &only_release,
+                &note,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new(),
+            )
+            .is_none(),
             "只有 trigger=release 区域时，note-on 预听必须静音"
         );
         // 起音族不受影响（`trigger=attack` / 缺省同一支）。
@@ -5037,10 +5042,16 @@ mod tests {
         .expect("解析");
         assert_eq!(
             note_wave(
-            &attack, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
-        )
-                .expect("起音区域必须发声")
-                .region_index,
+                &attack,
+                &note,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new(),
+            )
+            .expect("起音区域必须发声")
+            .region_index,
             0
         );
     }
@@ -5069,7 +5080,13 @@ mod tests {
 
         // 腿 1：amplitude=100（缺省）⇒ 乘子 1.0，峰值即正弦样本本身。
         let wave = note_wave(
-            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
         )
         .expect("amplitude=100 必须发声");
         let full = math::peak_of(&wave.mono);
@@ -5077,7 +5094,13 @@ mod tests {
         // 腿 2：amplitude=50 ⇒ 峰值恰为一半（−6.02 dB）。
         let note50 = SfzNote { pitch: 61, ..note };
         let half = note_wave(
-            &instrument, &note50, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+            &instrument,
+            &note50,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
         )
         .expect("amplitude=50 必须发声")
         .mono;
@@ -5092,7 +5115,13 @@ mod tests {
         let note62 = SfzNote { pitch: 62, ..note };
         assert!(
             note_wave(
-                &instrument, &note62, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(),
+                &instrument,
+                &note62,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new(),
             )
             .is_none(),
             "CC100=0 时 `locc100=64` 的区域必须不命中（与引擎的门控同结论）"
@@ -5102,7 +5131,13 @@ mod tests {
         let mut seeded: BTreeMap<u8, u8> = BTreeMap::new();
         seeded.insert(100, 64);
         let opened = note_wave(
-            &instrument, &note62, 440.0, 48_000.0, None, &mut cache, &seeded,
+            &instrument,
+            &note62,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &seeded,
         )
         .expect("CC100=64 时门必须打开");
         assert_eq!(opened.region_index, 2);
