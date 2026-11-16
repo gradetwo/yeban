@@ -57,11 +57,16 @@ fn no_fabricated_waveform_or_eq_curves_are_drawn() {
     }
 }
 
-/// **判据 ②**：替代方案必须是**明确标注的占位**，而不是又一条假曲线。
+/// **判据 ②**：**未接真实数据**的替代方案必须是**明确标注的占位**，而不是又一条假曲线。
+/// `EQ CURVE` 卡片已接 `bridge::calculate_eq_curve_svg` 的真实曲线（0dB 缺省仍是
+/// 基准线）⇒ 它不再属于占位，改由 `ui_unfixed_list_regression.rs` 钉住实数据链路；
+/// 其余四处（波形 / BUS COMP / 机架卡片 / 通道条 EQ）仍未接，继续要求「示意」标注。
 #[test]
 fn placeholders_are_explicitly_labelled_as_schematic() {
     assert!(code_lines(ARRANGEMENT).contains("波形待分析 · 示意"));
-    assert!(code_lines(LEFT_PANEL).contains("EQ CURVE · 示意"));
+    // EQ CURVE 已接真实 eq-curve-svg（bridge::calculate_eq_curve_svg），不再是示意占位。
+    assert!(code_lines(LEFT_PANEL).contains("commands: root.eq-curve-svg"));
+    assert!(!code_lines(LEFT_PANEL).contains("EQ CURVE · 示意"));
     assert!(code_lines(LEFT_PANEL).contains("BUS COMP · 示意"));
     assert!(code_lines(LOWER_DOCK).contains("曲线示意 · 未连接参数"));
     assert!(code_lines(LOWER_DOCK).contains("EQ · 示意"));
@@ -105,9 +110,10 @@ fn chips_use_renderable_labels_instead_of_missing_arrow_glyphs() {
     let src = code_lines(ARRANGEMENT);
     assert!(!src.contains("▾"), "不渲染的 ▾ 不应再出现在代码行");
     assert!(!src.contains("▸"), "不渲染的 ▸ 不应再出现在代码行");
-    assert!(src.contains("和弦·收起"));
-    assert!(src.contains("和弦·展开"));
-    assert!(src.contains("轨道·菜单"));
+    assert!(src.contains("和弦收起"));
+    assert!(src.contains("和弦展开"));
+    assert!(src.contains("轨道菜单"));
+    assert!(!src.contains("·收起") && !src.contains("·展开") && !src.contains("·菜单"));
 }
 
 /// **判据 ⑥**：空编排区提示按视口居中且可换行（细节实测 §4.8）。
