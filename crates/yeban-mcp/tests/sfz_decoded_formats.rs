@@ -350,7 +350,9 @@ fn the_sfz_wav_tool_reports_the_four_known_gaps() {
     // 「CC 调制真的乘进增益/音高」「offset/end 真的切片」退役（见 domain/sfz.rs 的
     // 撤项注释）；`sfzAmplitude` 只在**静态/CC 曲线解不出**时登记，本夹具的
     // `amplitude=50` 真的生效 ⇒ 不该出现。旧判据仍按四键断言 ⇒ 全量红。
-    for key in ["sfzLoopExpansion", "deviceChainDsp", "automationLanes"] {
+    // ⭐ `0006`：`sfzLoopExpansion` / `sfzRegionLayering` 也已退役（循环真的展开、
+    // 区域真的叠加）⇒ 恒在的基线键只剩两条。
+    for key in ["deviceChainDsp", "automationLanes"] {
         assert!(
             unsupported.contains(&key),
             "`{key}` 必须出现在 yeban_render_sfz_wav 的 unsupported 里: {unsupported:?}"
@@ -361,6 +363,8 @@ fn the_sfz_wav_tool_reports_the_four_known_gaps() {
         "sfzTuneCcModulation",
         "sfzVolumeCcModulation",
         "sfzSampleSpan",
+        "sfzLoopExpansion",
+        "sfzRegionLayering",
     ] {
         assert!(
             !unsupported.contains(&retired),
