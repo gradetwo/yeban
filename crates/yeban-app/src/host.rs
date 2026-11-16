@@ -18576,6 +18576,12 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
             ui.invoke_key_action("c".into(), false, false, false, false);
         }
         "transport-metronome" => ui.invoke_toggle_metronome(),
+        // 预备拍开关（清单 P1-8）：走与 Ctrl+Alt+D 完全相同的链
+        // （解析表 -> apply_action），不另写一份 toggle 逻辑
+        // （Action::ToggleCountIn 的唯一落点在 apply_action）。
+        "transport-count-in" => {
+            let _ = ui.invoke_key_action("d".into(), false, true, true, false);
+        }
         "master-reset-fader" => ui.invoke_mixer_master_fader_reset(),
         "master-toggle-mono" => {
             ui.set_control_room_mono(!ui.get_control_room_mono());
