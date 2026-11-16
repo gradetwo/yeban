@@ -57,6 +57,11 @@ artifact `golden-linux`）：
   `路径→hash`；资产字节只在 `yeban-mcp::domain::Domain::asset(&hash)`（控制面）
   或 `.yeban` 容器的 `assets/<hash>`。⇒ B1 必须先有一条**容器/控制面资产读取路径**
   （或导入时把 peaks 写进 `AssetMetadata`），否则投影层拿不到样本。
+- **具体 API（2026-11-16 核验）**：`yeban_app::open::open_project_file` 只返回
+  `YebanProjectV1`（**丢弃 assets**）；要拿资产字节需走
+  `yeban_model::container::read_project_container(path)` 的 `archive.assets`
+  （`Vec<(AssetHash, Vec<u8>)>` / `BTreeMap`），或控制面 `Domain::asset(&hash)`。
+  ⇒ B1 要给 GUI 打开路径补一条「读 assets」的入口（或直接复用 container 读法）。
 - 建议：导入/落盘时算 peaks 并落进会话 CAS 附加元数据（避免每次投影解码）。
 - 验收：判据断言「音频片段有非空 peaks 数组且长度与片段宽度对应」+ 视觉回归。
 
