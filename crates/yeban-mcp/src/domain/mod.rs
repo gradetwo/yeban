@@ -5746,6 +5746,32 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
     render::guard_output_path(&request.path, project_path)?;
     let (notes, notes_silenced) =
         sfz::collect_notes(project, request.sample_rate, request.note, request.velocity);
+    // ⭐ 空排程诊断：`note` 是**过滤器**（在工程已排程的音符里筛音高），不是单音试听。
+    // 一个音符都没收上来时，输出是合法的全静音 WAV —— 以前调用方只能看到
+    // `peak: 0.0` + `notesScheduled: 0`，分不清"工程里没有 MIDI"和"音高不在这份库里"。
+    let notes_in_project = sfz::count_project_midi_notes(project);
+    let notes_in_window = notes
+        .iter()
+        .filter(|note| note.start_frame < request.frames)
+        .count() as u64;
+    let empty_schedule_reason = if notes.is_empty() {
+        Some(if notes_in_project == 0 {
+            "projectHasNoMidiNotes"
+        } else if notes_silenced > 0 {
+            "allNotesSilencedByProbability"
+        } else if request.note.is_some() {
+            "pitchNotPresentInProject"
+        } else {
+            "noSchedulableNotes"
+        })
+    } else if notes_in_window == 0 {
+        // ⭐ `peak: 0.0` 的第二种真实成因：音符都排在输出窗口之后
+        // （工程第一句在 32 s，而 `frames` 只给了 2 s）。以前它与"目标音高不存在"
+        // 在回执里长得一模一样。
+        Some("allScheduledNotesOutsideWindow")
+    } else {
+        None
+    };
     // ⚠ `sample=` 的路径语义：相对路径按 SFZ 惯例**相对 SFZ 文件所在目录**解析
     // （`resolve_sample_path`），因此这里把装载时的路径带下去。
     let sfz_path = instrument.path.clone();
@@ -5802,6 +5828,10 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             notes_with_sample_span: outcome.notes_with_sample_span,
             // ⭐ `#273`：多于一条区域命中同一音符（本工具只取第一条）。
             notes_with_multiple_regions: outcome.notes_with_multiple_regions,
+            // ⭐ 空排程诊断（只在 `notesScheduled == 0` 时进回执的 `notesEmpty`）。
+            notes_in_project,
+            notes_in_window,
+            empty_schedule_reason,
         }),
     })
 }

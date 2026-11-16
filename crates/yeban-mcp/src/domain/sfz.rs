@@ -3179,6 +3179,18 @@ pub struct SfzWavArtifact {
     pub notes_with_sample_span: u64,
     /// ⭐ `#273`：**多于一条区域命中**同一音符的音符数（本工具只取第一条，引擎叠加全部）。
     pub notes_with_multiple_regions: u64,
+    /// ⭐ 活跃工程 MIDI 片段里的**原始音符数**（⛔ 未过 `note` 音高过滤、未过概率门）。
+    ///
+    /// 只在 [`Self::notes_scheduled`] 为 0 时才有诊断价值：它区分"工程里根本没有 MIDI"
+    /// 与"有 MIDI 但没有这个音高"（见 [`Self::empty_schedule_reason`]）。
+    pub notes_in_project: u64,
+    /// ⭐ 排程里**真的落在输出窗口内**（`start_frame < frames`）的音符数。
+    ///
+    /// 窗口外音符不发声：`notesScheduled` 很大而 `peak` 恰为 0.0 的唯一常见原因就是
+    /// 全部音符都从窗口之后开始（例如工程第一句在 32 s，而 `frames` 只给了 2 s）。
+    pub notes_in_window: u64,
+    /// ⭐ 输出窗口内**一个发声音符都没有**时的结构化原因（`None` = 窗口内有音符）。
+    pub empty_schedule_reason: Option<&'static str>,
 }
 
 impl SfzWavArtifact {
@@ -3283,7 +3295,7 @@ impl SfzWavArtifact {
     /// 真调用响应的 `data`。
     #[must_use]
     pub fn response_data(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut data = serde_json::json!({
             "rendered": true,
             "renderer": "yeban-render",
             "request": self.request.to_value(),
@@ -3321,7 +3333,35 @@ impl SfzWavArtifact {
             // ⚠ `samplerFileDecode` **只在真的没有音符用上文件样本时**才登记 ——
             // 报一个已经做到的键就是假话（与 `render.rs` 撤掉 `noteProbability` 同一条纪律）。
             "unsupported": self.unsupported_keys(),
-        })
+        });
+        // ⭐ 一个音符都没排程 ⇒ 输出必然是合法的全静音 WAV。以前 `peak: 0.0` +
+        // `notesScheduled: 0` 看不出"为什么"（工程里没 MIDI？音高不在这份库里？
+        // 概率门全关？），调用方只能去猜。这里只在**真的空排程**时登记，
+        // 有音符的正常路径一个键都不加（逐字节与加这个补丁之前相同）。
+        if self.notes_in_window == 0 {
+            let reason = self.empty_schedule_reason.unwrap_or("noNotesInWindow");
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert(
+                    "notesEmpty".to_string(),
+                    serde_json::json!({
+                        "reason": reason,
+                        "notesInProject": self.notes_in_project,
+                        "notesScheduled": self.notes_scheduled,
+                        "notesInWindow": self.notes_in_window,
+                        "frames": self.frames,
+                        "noteFilter": self.request.note,
+                        "silencedByProbability": self.notes_silenced,
+                        "hint": concat!(
+                            "本工具导出的是**活跃工程里已排程的 MIDI 音符**；`note` 是音高过滤器，不是单音试听器。",
+                            "工程里没有 MIDI、没有该音高的音符、或音符都排在输出窗口之后时，",
+                            "输出仍是合法 WAV，但全部为零帧（peak 0.0）。",
+                            "要试听单音，请先在工程里建一条带这个音高音符的 MIDI 轨；要听整曲片段，请把 `frames` 给到覆盖首句。",
+                        ),
+                    }),
+                );
+            }
+        }
+        data
     }
 }
 
@@ -3340,6 +3380,25 @@ pub struct SfzNote {
     pub gain_l: f32,
     /// 右声道增益。
     pub gain_r: f32,
+}
+
+/// ⭐ 活跃工程 MIDI 片段里的**原始音符数**（⛔ 不过 `note` 音高过滤、⛔ 不掷概率门）。
+///
+/// 只用于诊断口径：`yeban_render_sfz_wav` 的 `note` 是**过滤器**而非单音试听器，
+/// 工程里没有 MIDI（或没有该音高）时输出必然是全静音，扣在 `notesEmpty` 里说清原因。
+#[must_use]
+pub fn count_project_midi_notes(project: &YebanProjectV1) -> u64 {
+    let mut total = 0u64;
+    for track in project.tracks.values() {
+        for placement in track.clips.values() {
+            if let Some(clip) = project.clip_pool.get(&placement.clip_id)
+                && let ClipContent::Midi { notes } = &clip.content
+            {
+                total = total.saturating_add(notes.len() as u64);
+            }
+        }
+    }
+    total
 }
 
 /// 从活跃工程收集 MIDI 音符（**与 `render_master` 同一份格点公式**）。

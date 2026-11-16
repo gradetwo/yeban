@@ -34,11 +34,21 @@
 
 ---
 
-## Made with Yeban
+## Download
 
-**[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)** — a trilogy created with Yeban. Three chapters — I. 雨声太吵 (The Rain Is Too Loud), II. 失语呢喃, III. 潮·失 — in one immersive visual experience: click the topology nodes to jump between emotional phases.
+**Yeban is an open-source DAW written in Rust, with a complete MCP tool surface — AI agents can compose, arrange and mix through it, side by side with the human at the desktop GUI.**
 
-▶ Listen to 《雨声太吵》 (4:24, [direct audio](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)) — the full experience, visuals synced to the music, is on [the trilogy site](https://trilogy.wangda.today).
+Installers from the rolling **nightly** build (tracks the `main` branch; unsigned):
+
+| Platform | Installer |
+| :--- | :--- |
+| Windows (x86_64) | [MSI installer](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-pc-windows-msvc.msi) |
+| macOS (Apple Silicon) | [DMG image](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-aarch64-apple-darwin.dmg) |
+| macOS (Intel) | [DMG image](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-apple-darwin.dmg) |
+| Linux (x86_64) | [DEB package](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-unknown-linux-gnu.deb) |
+| Linux (arm64) | [DEB package](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-aarch64-unknown-linux-gnu.deb) |
+
+Portable `.tar.gz` archives and `SHA256SUMS` are on the [nightly release page](https://github.com/gradetwo/yeban/releases/tag/nightly); all releases are listed under [Releases](https://github.com/gradetwo/yeban/releases). To build from source instead, see [Quick start](#quick-start).
 
 ## Screenshots
 
@@ -49,6 +59,12 @@ The current interface, running a 10-track pop project (lead vocal, harmonies, pi
 ![Arrangement view: the chorus section, with the piano roll and the channel inspector showing a real EQ curve](assets/screenshots/ui-arrangement-chorus.png)
 
 ![Mixer console: per-track channel strips with the bus and master sections](assets/screenshots/ui-mixer-console.png)
+
+## Made with Yeban
+
+**[《慢性崩溃环 THE CHRONIC MOBIUS》](https://trilogy.wangda.today)** — a trilogy created with Yeban. Three chapters — I. 雨声太吵 (The Rain Is Too Loud), II. 失语呢喃, III. 潮·失 — in one immersive visual experience: click the topology nodes to jump between emotional phases.
+
+▶ Listen to 《雨声太吵》 (4:24, [direct audio](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)) — the full experience, visuals synced to the music, is on [the trilogy site](https://trilogy.wangda.today).
 
 ## What Yeban can do
 

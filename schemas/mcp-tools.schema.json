@@ -1461,7 +1461,7 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 127,
-              "description": "只渲染这一个 MIDI 音高（0..=127）；不给则渲染活跃工程 MIDI 片段里的全部音符。"
+              "description": "只在**活跃工程已排程的 MIDI 音符**里筛出这一个音高（0..=127）；不给则不过滤。⛔ 它不是单音试听器：工程里没有该音高的音符时仍写出合法 WAV 但全部为零帧，回执带 `notesEmpty.reason`。"
             },
             "dryRun": {
               "type": "boolean",
