@@ -18176,4 +18176,10 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   跃变队列（`begin_block` 末尾无条件返回 `held`，见 `snapshot.rs:2425`）。
 - **判据补充**：P4 用真 `SynthEngine`（`arm_from_snapshot` + 一条轨）钉住"踏板踩下时
   起音声部继续响、松开才建 release 声部并放掉起音"——`out[0]` 依次 0.5 → 0.5 → 0.25。
-- **判决**：尚未推送 ⇒ **CI `pending`**。
+- **判决（读回）**：rebase 到 `02438282` 后的 tip `dba4ab7a` 的 run **`43829579802`**
+  = `completed / **success**`（`plan` / `checks` / `deny` / `lockfile` / `e2e` /
+  `rust (workspace 全量)` / `macos` / `windows` 全 `success`）。`rust (workspace 全量)`
+  作业日志现读：`test result:` **745** 行、`FAILED` **0**，`sfz_sustain_pedal` 与
+  `p1_with_the_pedal` / `p2_on_pedal` / `p4_the_synth` 均在日志里。
+  ⚠ 更早的 `5ae83fd0` / `4aae7a84` 两次支线 run 随 rebase 作废（`--force-with-lease`），
+  本行只引用 rebase 后的这一次。
