@@ -263,12 +263,18 @@ fn install_platform(width: u32, height: u32) -> Rc<MinimalSoftwareWindow> {
 }
 
 /// 光栅化一帧并计时。返回 `None` = 窗口未要求重绘（帧与上一帧逐像素相同）。
+///
+/// ⚠ 必须先显式 `request_redraw`（仓内既定写法，见 `headless_idle.rs:220-223`）：
+/// `draw_if_needed` 只在「需要重绘」时才调回调；只改全局质感属性时，主窗口
+/// 的损伤标记不一定送达窗口适配器 —— 不先请求就会拿到「没有渲染」，切换后
+/// 的帧直接 `None`（mixer / devices 两场景实证；陈列窗因树简单偶然能画）。
 fn render_frame(
     window: &MinimalSoftwareWindow,
     width: u32,
     height: u32,
 ) -> Option<(Vec<Rgb8Pixel>, Duration)> {
     let mut buffer = vec![Rgb8Pixel::new(0, 0, 0); (width * height) as usize];
+    window.request_redraw();
     let start = Instant::now();
     let drawn = window.draw_if_needed(|renderer| {
         renderer.render(&mut buffer, width as usize);
