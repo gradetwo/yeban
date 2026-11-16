@@ -30,7 +30,7 @@ slint::slint! {
     // 注意: `export { X } from "f"` 只做再导出、不建立本地绑定, 块内写
     // `Tokens.xxx` 会报 Cannot access id —— 须先 `import` 再 `export { X };`。
     import { Tokens, TextureMode, UiText } from "../ui/tokens.slint";
-    export { Tokens, TextureMode };
+    export { Tokens, TextureMode }
     import { Knob } from "../ui/controls/knob.slint";
     import { Fader, HFader } from "../ui/controls/fader.slint";
     import { LedMeter } from "../ui/controls/led_meter.slint";
