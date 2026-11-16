@@ -528,13 +528,43 @@ export component DeviceRack inherits Rectangle {
         }
 
         // physical: 一道斜向反光 (全屏只许这一道; alpha 3.5%, 靠 clip 裁边)。
-        Rectangle {
-            x: -30px;
-            y: -14px;
-            width: 190px;
-            height: 30px;
-            background: Tokens.glass-reflection;
-            rotation-angle: -18;
+        // 斜带用 Path 多边形画 (Slint 1.18.1 的 Rectangle 没有旋转属性):
+        // 带身自上沿向左下斜出 —— 与左上光源同向。
+        Path {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 420;
+            viewbox-height: 100;
+            fill: Tokens.glass-reflection;
+            stroke-width: 0px;
+            MoveTo {
+                x: 18;
+                y: 0;
+            }
+
+            LineTo {
+                x: 150;
+                y: 0;
+            }
+
+            LineTo {
+                x: 96;
+                y: 100;
+            }
+
+            LineTo {
+                x: -36;
+                y: 100;
+            }
+
+            LineTo {
+                x: 18;
+                y: 0;
+            }
         }
 
         // 频响网格

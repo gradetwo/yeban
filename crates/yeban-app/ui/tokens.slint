@@ -140,6 +140,11 @@ export global ThemeState {
 // (见 `Tokens.texture-physical`); 其余配色 (inkmoor / plume / 设计系统四支)
 // 下控件自动回落 flat 渲染 —— 材质参数只为深色金属体系标定过, 不向未标定的
 // 配色外推。
+//
+// ⚠ 存放位置 (实测): 开关属性放在 `Tokens` 全局里 (见该全局的首行), **不**
+// 另立 `TextureState` 全局 —— Slint 1.18.1 的代码生成不会为只被另一个全局
+// 引用的全局生成 Rust 结构体 (盒上实测: 独立的 `TextureState` 在生成文件里
+// 零出现, 而 `ThemeState` / `Tokens` 都在), `host::apply_texture` 无从写它。
 export enum TextureMode {
     // 扁平: 现行观感。全部质感令牌在此模式下**恒等于**对应的扁平值
     // (brush = 同色双停渐变, 阴影 alpha = 0, 斜面 alpha = 0) ⇒ 像素一位不动。
@@ -149,11 +154,11 @@ export enum TextureMode {
     physical
 }
 
-export global TextureState {
-    in-out property <TextureMode> texture: TextureMode.flat;
-}
-
 export global Tokens {
+    // 质感开关 (见文件上方 `TextureMode` 的说明; 唯一的写者是
+    // `host::apply_texture`)。初值 `flat` = 默认外观一位不动。
+    in-out property <TextureMode> texture: TextureMode.flat;
+
     // =====================================================================
     // 1. 网格几何 [UI-GRID-001] —— 规范正文的像素值, 一个都不许改
     // =====================================================================
@@ -768,7 +773,7 @@ export global Tokens {
 
     /// 质感**生效**判定 (唯一事实源): 开关 = physical **且**配色是深色自绘
     /// 两支之一。其余组合一律 flat —— 控件只读这一格, ⛔ 不自己拼条件。
-    out property <bool> texture-physical: TextureState.texture == TextureMode.physical
+    out property <bool> texture-physical: texture == TextureMode.physical
         && (ThemeState.theme == YebanTheme.brand || ThemeState.theme == YebanTheme.yeban);
 
     // ---- 面板 · 细磨砂深色金属 -------------------------------------------

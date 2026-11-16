@@ -5,7 +5,7 @@
 //! | # | 判据 | 观测面 |
 //! | :-- | :--- | :--- |
 //! | ① | CLI 默认 = `flat`；`flat` / `physical` 被接受；未知取值被**点名拒绝**（`UnknownTexture`），⛔ 不静默回退 | `cli::parse` 的返回值 |
-//! | ② | **初值耦合**：不调 `apply_texture` 时，活窗口的 `TextureState.texture` 初值 == `TextureMode::Flat` == `cli::Texture::default()`（截图 / golden 路径不调 apply，看到的就是初值 —— 默认外观一位不动靠这一条） | 真 `MainWindow` 的全局回读 + `tokens.slint` 源码钉 |
+//! | ② | **初值耦合**：不调 `apply_texture` 时，活窗口的 `Tokens.texture` 初值 == `TextureMode::Flat` == `cli::Texture::default()`（截图 / golden 路径不调 apply，看到的就是初值 —— 默认外观一位不动靠这一条） | 真 `MainWindow` 的全局回读 + `tokens.slint` 源码钉 |
 //! | ③ | **生效判定**：`physical` + 深色自绘配色（`yeban` / `brand`）⇒ `Tokens.texture-physical == true`；`physical` + 其余配色 ⇒ `false`；`flat` 恒 `false` | 真 `MainWindow` 的 token 回读 |
 //! | ④ | **flat 不变式**：flat 时每个面板 brush 的渐变停点色 == 它对应的扁平纯色（brush 令牌「同色双停」的机械形态） | 真 `MainWindow` 的 brush 回读 |
 //!
@@ -15,7 +15,7 @@
 use yeban_app::cli::{self, ParseError, Texture, Theme};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
-use yeban_app::ui::{TextureMode, TextureState, Tokens};
+use yeban_app::ui::{TextureMode, Tokens};
 
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(ToString::to_string).collect()
@@ -77,7 +77,7 @@ fn the_slint_initial_texture_is_flat_in_the_source() {
     .expect("读 tokens.slint");
     assert!(
         tokens.contains("in-out property <TextureMode> texture: TextureMode.flat;"),
-        "TextureState 的 Slint 初值必须是 flat（截图路径不调 apply_texture）"
+        "Tokens.texture 的 Slint 初值必须是 flat（截图路径不调 apply_texture）"
     );
     assert!(
         tokens.contains("texture-physical"),
@@ -118,9 +118,9 @@ fn the_effective_texture_follows_the_selection() {
 
     // ② 初值耦合: 还没调任何 apply —— 回读到的必须是 flat / 未生效。
     assert_eq!(
-        ui.global::<TextureState<'_>>().get_texture(),
+        ui.global::<Tokens<'_>>().get_texture(),
         TextureMode::Flat,
-        "TextureState 初值必须是 flat"
+        "Tokens.texture 初值必须是 flat"
     );
     assert!(
         !ui.global::<Tokens<'_>>().get_texture_physical(),

@@ -55,7 +55,7 @@ use crate::engine_host::{
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
-use crate::ui::{MainWindow, TextureMode, TextureState, ThemeState, YebanTheme};
+use crate::ui::{MainWindow, TextureMode, ThemeState, YebanTheme};
 // `Tokens` 只在 linux / windows 的字体注入分支里用（见
 // build_main_window_with_console_tab）；macOS 下没有使用点，无条件 import 会被
 // clippy `-D warnings` 判成 unused-imports。
@@ -16319,7 +16319,9 @@ pub fn current_language() -> crate::cli::Language {
 }
 
 /// 把 CLI 的质感选择写进界面（`line/ui-skeuo-theme` 一期）：[`apply_theme`] 的
-/// **同款单向注入**，写的是 `ui/tokens.slint` 的 `TextureState` 全局。
+/// **同款单向注入**，写的是 `ui/tokens.slint` 的 `Tokens.texture` 属性
+/// （开关不另立全局的理由写在 `TextureMode` 的文档里：代码生成不为只被
+/// 另一个全局引用的全局生成 Rust 结构体）。
 ///
 /// 与主题的差别只有一处：**生效判定不在这里**。`physical` 是否真的改变像素，
 /// 由 `Tokens.texture-physical` 按「开关 = physical 且配色 ∈ {brand, yeban}」
@@ -16327,11 +16329,11 @@ pub fn current_language() -> crate::cli::Language {
 /// 「请求了什么」与「生效了什么」在两个地方各说各话；判据
 /// `tests/texture_selection.rs` 分开钉这两件事）。
 ///
-/// 默认值 `Texture::default()` = `Flat` 与 `TextureState.texture` 的 Slint
-/// 初值 `TextureMode.flat` 是**同一个**，因此不给 `--texture` 时这一步幂等，
+/// 默认值 `Texture::default()` = `Flat` 与 `Tokens.texture` 的 Slint 初值
+/// `TextureMode.flat` 是**同一个**，因此不给 `--texture` 时这一步幂等，
 /// 默认外观一位不动。
 pub fn apply_texture(ui: &MainWindow, texture: crate::cli::Texture) {
-    ui.global::<TextureState<'_>>().set_texture(match texture {
+    ui.global::<Tokens<'_>>().set_texture(match texture {
         crate::cli::Texture::Flat => TextureMode::Flat,
         crate::cli::Texture::Physical => TextureMode::Physical,
     });

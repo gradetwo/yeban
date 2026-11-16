@@ -78,32 +78,41 @@ export component Knob inherits Rectangle {
         drop-shadow-blur: Tokens.shadow-ctl-blur;
     }
 
-    // 2. 刻度环: 11 段, 每段一个旋转 wrapper (刻度本体在 wrapper 顶部)。
-    for tick[idx] in 11: Rectangle {
+    // 2. 刻度环: 11 段径向细刻度。Slint 1.18.1 的 Rectangle 没有旋转
+    // 属性 ⇒ 每段是一条以三角函数定位的 Path 线段 (圆心 (50,50),
+    // 外半径 47.5, 主刻度内半径 43.5 / 次刻度 45 —— 与旋帽半径 42 留 1.5 间隙)。
+    for tick[idx] in 11: Path {
         x: (parent.width - parent.height) / 2;
         y: 0;
         width: parent.height;
         height: parent.height;
-        background: transparent;
-        rotation-angle: -135 + idx * 27;
-        Rectangle {
-            x: (parent.width - 2px) / 2;
-            y: 1px;
-            width: 2px;
-            height: idx.mod(5) == 0 ? 7px : 4px;
-            background: idx * 0.1 <= root.fraction
-                ? root.indicator-color
-                : Tokens.ink-2.with-alpha(0.45);
-            border-radius: 1px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: idx * 0.1 <= root.fraction
+            ? root.indicator-color
+            : Tokens.ink-2.with-alpha(0.45);
+        stroke-width: 2px;
+        fill: transparent;
+        MoveTo {
+            x: 50 + (idx.mod(5) == 0 ? 43.5 : 45) * sin((-135 + idx * 27) * 1deg);
+            y: 50 - (idx.mod(5) == 0 ? 43.5 : 45) * cos((-135 + idx * 27) * 1deg);
+        }
+
+        LineTo {
+            x: 50 + 47.5 * sin((-135 + idx * 27) * 1deg);
+            y: 50 - 47.5 * cos((-135 + idx * 27) * 1deg);
         }
     }
 
-    // 3. 旋帽 (内缩 9px 给刻度环让位)。
+    // 3. 旋帽 (直径 = 根高 × 0.84, 给刻度环让位; 比例式内缩使上面的
+    // viewbox 半径在任何尺寸下都成立)。
     Rectangle {
-        x: (parent.width - (parent.height - 18px)) / 2;
-        y: 9px;
-        width: parent.height - 18px;
-        height: parent.height - 18px;
+        x: (parent.width - parent.height) / 2 + parent.height * 0.08;
+        y: parent.height * 0.08;
+        width: parent.height * 0.84;
+        height: parent.height * 0.84;
         background: Tokens.knob-brush;
         border-radius: self.width / 2;
         border-width: Tokens.texture-physical ? 0px : 1px;
@@ -139,21 +148,28 @@ export component Knob inherits Rectangle {
             }
         }
 
-        // 5. 指示线 (旋转 wrapper 与刻度环同法)。
-        Rectangle {
+        // 5. 指示线 (与刻度环同法: 三角函数定位的 Path 线段,
+        // 自半径 12 向外到 37 —— 不顶到帽沿, 留出哑光高光弧的位置)。
+        Path {
             x: 0;
             y: 0;
             width: parent.width;
             height: parent.height;
-            background: transparent;
-            rotation-angle: root.angle;
-            Rectangle {
-                x: (parent.width - 3px) / 2;
-                y: 3px;
-                width: 3px;
-                height: parent.height * 0.30;
-                background: root.indicator-color;
-                border-radius: 1.5px;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            stroke: root.indicator-color;
+            stroke-width: 5px;
+            fill: transparent;
+            MoveTo {
+                x: 50 + 12 * sin(root.angle * 1deg);
+                y: 50 - 12 * cos(root.angle * 1deg);
+            }
+
+            LineTo {
+                x: 50 + 37 * sin(root.angle * 1deg);
+                y: 50 - 37 * cos(root.angle * 1deg);
             }
         }
     }

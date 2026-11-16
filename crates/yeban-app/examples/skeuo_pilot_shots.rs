@@ -177,13 +177,41 @@ slint::slint! {
                 border-radius: Tokens.radius-md;
                 clip: true;
 
-                Rectangle {
-                    x: -30px;
-                    y: -14px;
-                    width: 190px;
-                    height: 30px;
-                    background: Tokens.glass-reflection;
-                    rotation-angle: -18;
+                Path {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: 300;
+                    viewbox-height: 100;
+                    fill: Tokens.glass-reflection;
+                    stroke-width: 0px;
+                    MoveTo {
+                        x: 14;
+                        y: 0;
+                    }
+
+                    LineTo {
+                        x: 108;
+                        y: 0;
+                    }
+
+                    LineTo {
+                        x: 70;
+                        y: 100;
+                    }
+
+                    LineTo {
+                        x: -24;
+                        y: 100;
+                    }
+
+                    LineTo {
+                        x: 14;
+                        y: 0;
+                    }
                 }
 
                 UiText {
@@ -308,7 +336,7 @@ fn shoot_showcase(out_dir: &str) {
         (TextureMode::Physical, "physical"),
         (TextureMode::Flat, "flat"),
     ] {
-        ui.global::<TextureState<'_>>().set_texture(mode);
+        ui.global::<Tokens<'_>>().set_texture(mode);
         let (frame, elapsed) =
             render_frame(&window, width, height).expect("切换质感后必须重绘一帧");
         let path = format!("{out_dir}/showcase-{label}.png");

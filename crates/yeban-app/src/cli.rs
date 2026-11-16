@@ -1559,9 +1559,9 @@ impl Theme {
 /// 界面**质感**（`line/ui-skeuo-theme` 一期，2026-11-16）：与 [`Theme`]（配色）
 /// **正交**的第二维 —— 配色决定色相，质感决定光与材质。
 ///
-/// 在 `.slint` 侧它对应 `ui/tokens.slint` 的 `TextureMode` + `TextureState`
-/// 全局；唯一的写者是 [`crate::host::apply_texture`]（与 `apply_theme` 同款
-/// 单向注入）。
+/// 在 `.slint` 侧它对应 `ui/tokens.slint` 的 `TextureMode` 枚举与
+/// `Tokens.texture` 开关属性；唯一的写者是 [`crate::host::apply_texture`]
+/// （与 `apply_theme` 同款单向注入）。
 ///
 /// ⚠ 生效范围如实登记：`physical` 只在深色自绘配色（[`Theme::Brand`] /
 /// [`Theme::Yeban`]）下生效，其余配色下控件自动回落 `flat` 渲染 —— 材质
