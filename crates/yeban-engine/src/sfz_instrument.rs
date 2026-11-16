@@ -833,6 +833,30 @@
 //! * 判据：`tests/sfz_random_start.rs` 的 R1～R6；口径与语料普查在
 //!   `docs/ledger/sfz-random-start-notes.md`。
 //!
+//! # ⭐ 释放采样（`trigger=release` / `release_key`）与 `rt_decay`
+//!
+//! 修前：`#94` 把释放族的键掩码清零（防"按下时把 release 采样打出来"）之后，引擎
+//! **没有**任何 note-off 触发路径 ⇒ 松键噪声/key-up 采样**永不发声**（语料 29 个文件
+//! `trigger=release`、10 个 `release_key`）。
+//!
+//! * **两张掩码**：`PreparedRegion::key_mask`（note-on）与 `release_key_mask`（释放族）
+//!   分开；释放掩码用**同一套**键/力度范围与通道/keyswitch 门控，只把事件换成
+//!   `Trigger::responds_to(NoteOff { pedal_down: false })`。
+//! * **一条触发实现**：`SfzVoicePool::trigger_event` 是 note-on / note-off 的共同函数体；
+//!   `trigger_note` 与 `trigger_release` 只选事件。轮替计数**分两格**
+//!   （`seq_occurrence` / `release_occurrence`）。
+//! * **力度来源**：该键最近一次 note-on 的力度（工程裁决；note-off 力度在多数 DAW 里是 0）。
+//! * **`rt_decay`**：`10 ^ (−(dB × 按住秒数) / 20)`；实时用 `off_frame − key_on_frame`，
+//!   离线用调用方给的 `held_frames`。
+//! * **离线**：`SfzInstrument::render_release_into_from_samples` 从 `out[held_frames]` 起写；
+//!   导出侧 `yeban-app::sfz_load::SfzTrackSource` 在 note-on 段之后叠这一段。
+//! * **尺寸**：`PreparedRegion` 6256 → **6296**（＋40）；`SfzVoicePool` 4800 → **6464**
+//!   （＋1664）；`SfzVoice` 40 / `EngineRuntime` 45888 **＋0**。
+//! * **仍未做**：延音踏板状态（`TriggerEvent` 的 `pedal_down` 已就绪、引擎无来源）、
+//!   `rt_decayN`、"对应 attack region" 判定 —— 逐条登记在
+//!   `docs/ledger/sfz-release-samples-notes.md` §6。
+//! * 判据：`tests/sfz_release_trigger.rs` 的 T1～T5。
+//!
 //! # ⭐ 键盘跟踪（`pitch_keytrack` / `amp_keytrack` / `amp_keycenter`）
 //!
 //! ## 规范逐字（2026-11-14 现读）
@@ -2200,6 +2224,14 @@ struct NoteInputs<'a> {
     occurrence: Option<u32>,
     /// 轨级调律偏移（音分；B8）。`0.0` ⇒ 乘子恰 `1.0` ⇒ 速率逐位不变。
     tune_cents: f32,
+    /// ⭐ **事件族**（本片）：`NoteOn`（缺省所有旧入口）/ `NoteOff { pedal_down: false }`。
+    /// 区域选择走 `Region::matches_query` 的同一条谓词（`with_event`）。
+    event: yeban_sfz::instrument::TriggerEvent,
+    /// ⭐ **本次写入在 `out` 里的起点帧**（本片；释放采样从 note-off 帧起）。
+    /// 旧入口恒 `0` ⇒ 逐位不变。
+    frame_offset: u64,
+    /// ⭐ **`rt_decay` 的按住帧数**（本片）：只对 note-off 有意义；`None` ⇒ 0 秒。
+    rt_decay_held_frames: Option<u64>,
 }
 
 impl SfzInstrument {
@@ -2292,6 +2324,9 @@ impl SfzInstrument {
                 held_frames: None,
                 occurrence: None,
                 tune_cents,
+                event: yeban_sfz::instrument::TriggerEvent::NoteOn,
+                frame_offset: 0,
+                rt_decay_held_frames: None,
             },
             out,
             engine_hz,
@@ -2352,6 +2387,9 @@ impl SfzInstrument {
                 occurrence,
                 // ⚠ 本入口没有轨上下文（裸乐器试听）⇒ 调律偏移恒 0（逐位不变）。
                 tune_cents: 0.0,
+                event: yeban_sfz::instrument::TriggerEvent::NoteOn,
+                frame_offset: 0,
+                rt_decay_held_frames: None,
             },
             out,
             engine_hz,
@@ -2359,6 +2397,44 @@ impl SfzInstrument {
     }
 
     /// 三条离线入口的**唯一实现**（⛔ 不许第二份：本仓"同一口径只有一个实现"的纪律）。
+    /// ⭐ **离线渲染一只释放声部**（`trigger=release` / `release_key`；本片）。
+    ///
+    /// 与 [`Self::render_note_into_from_samples`] **同一条实现**（[`Self::render_note_with`]），
+    /// 只把事件换成 [`yeban_sfz::instrument::TriggerEvent::NoteOff`] 并把写入起点挪到
+    /// `held_frames`（＝松键那一帧，缓冲里该音符已渲染的时值长度）。
+    ///
+    /// * `held_frames` 同时是 `rt_decay` 的**按住时长**（帧）；
+    /// * 返回"释放段写入了多少帧"（从 `out[held_frames]` 起算，⛔ 不含前面的时值段）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_release_into_from_samples(
+        &self,
+        samples: &BTreeMap<String, InMemorySample>,
+        note: u8,
+        velocity: u8,
+        held_frames: u64,
+        occurrence: Option<u32>,
+        out: &mut [f32],
+        engine_hz: f32,
+    ) -> Result<usize, SfzError> {
+        self.render_note_with(
+            NoteInputs {
+                source: None,
+                samples: Some(samples),
+                note,
+                velocity,
+                cc: None,
+                // 释放声部没有"后续 note-off"（规范：按 `one_shot` 处理）⇒ `None`。
+                held_frames: None,
+                occurrence,
+                tune_cents: 0.0,
+                event: yeban_sfz::instrument::TriggerEvent::NoteOff { pedal_down: false },
+                frame_offset: held_frames,
+                rt_decay_held_frames: Some(held_frames),
+            },
+            out,
+            engine_hz,
+        )
+    }
     fn render_note_with(
         &self,
         inp: NoteInputs<'_>,
@@ -2374,8 +2450,18 @@ impl SfzInstrument {
             held_frames,
             occurrence,
             tune_cents,
+            event,
+            frame_offset,
+            rt_decay_held_frames,
         } = inp;
-        let query = RegionQuery::new(note, velocity);
+        // ⭐ **写入窗口**（本片）：释放采样从 note-off 帧起 ⇒ 从 `frame_offset` 开始写；
+        // 旧入口恒 0 ⇒ 与接线前**逐位相同**。
+        let offset = usize::try_from(frame_offset).unwrap_or(usize::MAX);
+        if offset >= out.len() {
+            return Ok(0);
+        }
+        let out = &mut out[offset..];
+        let query = RegionQuery::new(note, velocity).with_event(event);
         // ⭐ 探针同时注入**既有**的 CC 门控（`loccN`/`hiccN`）；`None` ⇒ 严格策略不变。
         let query = match cc {
             Some(probe) => query.with_cc(probe),
@@ -2491,10 +2577,19 @@ impl SfzInstrument {
                 let volume_ratio = volume_ratio_with_baked(baked.as_deref().unwrap_or(&[]), cc);
                 // ⭐ 本片：随机音量（`amp_random`）是**最外层**乘子；缺省 `0 dB` ⇒ 乘子
                 // 恰 `1.0` ⇒ 既有读数逐位不变（IEEE：`x * 1.0 == x`）。
+                // ⭐ 释放族再乘 `rt_decay`（按住时长 = `rt_decay_held_frames` / 引擎采样率）；
+                // 非 note-off 事件恒 `1.0` ⇒ 既有读数逐位不变。
+                let rt_decay = match event {
+                    yeban_sfz::instrument::TriggerEvent::NoteOff { .. } => rt_decay_held_frames
+                        .map(|held| region.rt_decay_gain(held as f32 / engine_hz.max(1.0)))
+                        .unwrap_or(1.0),
+                    yeban_sfz::instrument::TriggerEvent::NoteOn => 1.0,
+                };
                 let gain = region.playback_spec_with(&query, rates).total_gain()
                     * amplitude_gain
                     * volume_ratio
-                    * region.amp_random_gain(rand.unwrap_or(0.0));
+                    * region.amp_random_gain(rand.unwrap_or(0.0))
+                    * rt_decay;
                 // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
                 if !rate_is_usable(rate) || pcm_len == 0 {
                     continue;
@@ -2604,7 +2699,9 @@ impl SfzInstrument {
                         ENV_STAGE_IDLE,
                         0,
                         held.unwrap_or(u64::MAX),
-                        0,
+                        // ⭐ 引擎绝对帧的基准（本片）：释放采样从 `frame_offset` 起 ⇒
+                        // 包络的释放进度必须以它为 0 点（旧入口 0 ⇒ 逐位不变）。
+                        frame_offset,
                         loop_during_release,
                     )
                 });
@@ -4063,6 +4160,24 @@ pub struct PreparedRegion {
     key_mask: [u64; 2],
     /// 力度掩码：第 `v` 位为 1 表示该区域接受 `velocity == v`（门控不过时全 0）。
     vel_mask: [u64; 2],
+    /// ⭐ **释放族的键掩码**（`trigger=release` / `release_key`；本片）。
+    ///
+    /// 与 [`Self::key_mask`] **同一套键范围与静态门控**，只有事件那一位不同
+    /// （`Trigger::responds_to(NoteOff { pedal_down: false })`）⇒ note-on 触发**永不**
+    /// 读它，note-off 触发**只**读它。两张表分开是规矩的机械后果：一条区域在两侧
+    /// 的"可播范围"本来就不同，共用一格必然有一侧错。
+    ///
+    /// ⚠ 无释放区域的语料 ⇒ 两格全 0 ⇒ [`SfzVoicePool::trigger_release`] 的快路径
+    /// 一次都不进循环（逐位不变）。
+    release_key_mask: [u64; 2],
+    /// ⭐ **释放族的力度掩码**（口径同 [`Self::release_key_mask`]）。
+    release_vel_mask: [u64; 2],
+    /// ⭐ **释放采样随按住时长衰减**（`rt_decay`，dB/秒；本片）。
+    ///
+    /// 解析与取值域在 `yeban-sfz`（`0 ..= 200`、越界响亮 `FloatOutOfRange`）。
+    /// 只在**释放声部**的触发期乘 `yeban_sfz::instrument::rt_decay_gain`（⛔ 不改
+    /// note-on 声部的增益）。
+    rt_decay: f32,
     /// ⭐ `#341`：`trigger` opcode 的取值。
     ///
     /// `first` / `legato` 的"其它音符按住数"是**会话运行态**，⛔ 不能烘进掩码
@@ -4448,6 +4563,37 @@ impl PreparedRegion {
         let v = velocity as usize;
         self.key_mask[n / 64] & (1u64 << (n % 64)) != 0
             && self.vel_mask[v / 64] & (1u64 << (v % 64)) != 0
+    }
+
+    /// ⭐ **释放族**是否接受 `(note, velocity)`（本片；纯位测试）。
+    ///
+    /// 只读 [`Self::release_key_mask`] / [`Self::release_vel_mask`] —— 与 [`Self::accepts`]
+    /// **同一形态**，⛔ 不共用一格（一张区域的事件族是静态事实，两张表各读各的）。
+    #[must_use]
+    pub fn release_accepts(&self, note: u8, velocity: u8) -> bool {
+        let n = note as usize;
+        let v = velocity as usize;
+        self.release_key_mask[n / 64] & (1u64 << (n % 64)) != 0
+            && self.release_vel_mask[v / 64] & (1u64 << (v % 64)) != 0
+    }
+
+    /// ⭐ 本区域是否为释放族（`trigger=release` / `release_key`）。
+    #[must_use]
+    pub fn is_release_family(&self) -> bool {
+        self.trigger.is_release_family()
+    }
+
+    /// ⭐ **`rt_decay` 的衰减乘子**（本片）：唯一实现
+    /// [`yeban_sfz::instrument::rt_decay_gain`]。
+    #[must_use]
+    pub fn rt_decay_gain(&self, held_seconds: f32) -> f32 {
+        yeban_sfz::instrument::rt_decay_gain(self.rt_decay, held_seconds)
+    }
+
+    /// ⭐ 释放族键掩码的**只读副本**（判据用）。
+    #[must_use]
+    pub fn release_key_mask(&self) -> [u64; 2] {
+        self.release_key_mask
     }
 
     /// ⭐ **CC 区域门控**（`loccN`/`hiccN`，任务单 `#109`）是否成立。
@@ -5467,6 +5613,11 @@ pub struct PreparedSfz {
     /// 没有随机门的语料在触发路径上**一个新分支都不走**。同样是 `bool`
     /// 而不是计数（理由同上）。
     has_rand: bool,
+    /// ⭐ **本条乐器有没有释放族区域**（`trigger=release` / `release_key`；本片）。
+    ///
+    /// 与 [`Self::has_rand`] 同形：`trigger_release` 拿它当"要不要进循环"的开关 ⇒
+    /// 没有释放区域的语料在 note-off 路径上一次都不进区域循环。
+    has_release: bool,
 }
 
 /// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
@@ -5766,6 +5917,9 @@ impl PreparedSfz {
         let (regions, cc_seeds, builtin_silent_regions, pitch_egs, eg_defs, lfo_defs) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
+        let has_release = regions
+            .iter()
+            .any(|region| region.is_release_family() && region.release_key_mask() != [0u64; 2]);
         // ⭐ 本片：`has_rand` 的语义从「有随机门」扩到「**本次触发需要一个随机数**」
         // —— `offset_random` / `amp_random` 与 `lorand`/`hirand` 共用 `trigger_rand`
         // 的同一个读数（规范对三者都写 "Computed when the note is triggered"）。
@@ -5789,6 +5943,7 @@ impl PreparedSfz {
             cc_seeds,
             has_round_robin,
             has_rand,
+            has_release,
         })
     }
 
@@ -5861,6 +6016,9 @@ impl PreparedSfz {
         missing.sort();
         missing.dedup();
         let has_round_robin = regions.iter().any(|region| region.seq_length > 1);
+        let has_release = regions
+            .iter()
+            .any(|region| region.is_release_family() && region.release_key_mask() != [0u64; 2]);
         // ⭐ 本片：`has_rand` 的语义从「有随机门」扩到「**本次触发需要一个随机数**」
         // —— `offset_random` / `amp_random` 与 `lorand`/`hirand` 共用 `trigger_rand`
         // 的同一个读数（规范对三者都写 "Computed when the note is triggered"）。
@@ -5884,6 +6042,7 @@ impl PreparedSfz {
             cc_seeds,
             has_round_robin,
             has_rand,
+            has_release,
         })
     }
 
@@ -6034,6 +6193,12 @@ impl PreparedSfz {
     #[must_use]
     pub const fn has_rand(&self) -> bool {
         self.has_rand
+    }
+
+    /// ⭐ **本条乐器有没有释放族区域**（本片；`trigger_release` 的快路径开关）。
+    #[must_use]
+    pub const fn has_release_regions(&self) -> bool {
+        self.has_release
     }
 
     /// ⭐ 摊平后的**样本表**（去重后；**只读借用**：实时侧⛔ 不 clone）。
@@ -6354,12 +6519,37 @@ fn flatten_regions(
             // 门控按 CC 号求交合并后一并烘入（见 [`merged_cc_gate_slots`]）。
             let (baked_cc_gates, baked_cc_gate_count) = merged_cc_gate_slots(region);
             let probe = first_set_bit(&key_mask).zip(first_set_bit(&vel_mask));
-            let gate_open =
-                probe.is_some_and(|(note, velocity)| non_cc_gates_open(region, note, velocity));
-            if !gate_open {
+            let note_on_gate_open = probe.is_some_and(|(note, velocity)| {
+                non_cc_gates_open(
+                    region,
+                    note,
+                    velocity,
+                    yeban_sfz::instrument::TriggerEvent::NoteOn,
+                )
+            });
+            // ⭐ **释放族掩码**（本片）：同一套键/力度范围 ＋ 通道/keyswitch 门控，
+            // 只把事件那一位换成 `is_release_family()`。⛔ 不与 note-on 掩码共用一格：
+            // 一次触发只按**事件**选其中一张（`trigger_release` 走释放表，其余走 note-on 表）。
+            let release_gate_open = probe.is_some_and(|(note, velocity)| {
+                non_cc_gates_open(
+                    region,
+                    note,
+                    velocity,
+                    yeban_sfz::instrument::TriggerEvent::NoteOff { pedal_down: false },
+                )
+            });
+            // ⚠ **在清零之前**留一份原始范围：note-on 清零是"事件不匹配"，⛔ 不能连带
+            // 把同一区域的释放掩码也清掉（那正是本片要修的那条）。
+            let (raw_key_mask, raw_vel_mask) = (key_mask, vel_mask);
+            if !note_on_gate_open {
                 key_mask = [0u64; 2];
                 vel_mask = [0u64; 2];
             }
+            let (release_key_mask, release_vel_mask) = if release_gate_open {
+                (raw_key_mask, raw_vel_mask)
+            } else {
+                ([0u64; 2], [0u64; 2])
+            };
 
             // ⭐ 增益：`total_gain() = (volume × 力度) × 交叉淡化`，而交叉淡化是一条
             // 从左到右的乘法链：键轴段（in/out）→ 力度轴段（in/out）→ CC 段（**跳过**，
@@ -6485,6 +6675,9 @@ fn flatten_regions(
 
             regions.push(PreparedRegion {
                 key_mask,
+                release_key_mask,
+                release_vel_mask,
+                rt_decay: region.rt_decay,
                 vel_mask,
                 trigger: region.trigger,
                 rate_per_note,
@@ -6639,13 +6832,19 @@ fn flatten_regions(
 /// ⚠ 它**只**用于构造期的掩码（摊平期一次）；"这条区域此刻该不该响"的**运行时**判据
 /// 是 [`PreparedRegion::cc_gates_ok`]，⛔ 不是本函数。
 #[inline]
-fn non_cc_gates_open(region: &Region<'_>, note: u8, velocity: u8) -> bool {
+fn non_cc_gates_open(
+    region: &Region<'_>,
+    note: u8,
+    velocity: u8,
+    event: yeban_sfz::instrument::TriggerEvent,
+) -> bool {
     region.matches_key(note)
         && region.matches_velocity(velocity)
         && region.matches_channel(1)
-        && region
-            .trigger
-            .responds_to(yeban_sfz::instrument::TriggerEvent::NoteOn)
+        // ⭐ 本片把事件**参数化**：note-on 掩码传 `NoteOn`、释放掩码传
+        // `NoteOff { pedal_down: false }`（`release` 与 `release_key` 都过；
+        // 踏板语义见 `TriggerEvent` 文档）。⛔ 不是第二套门控，只是同一个谓词的另一个事件。
+        && region.trigger.responds_to(event)
         // ⭐ `#341`：`trigger=first` / `legato` 的"按住数"是**运行态**，摊平期
         // 无法判定 ⇒ 这里**不再**按 `held_notes_ok(None)` 清零掩码（那会让这两族
         // 区域**永久静默且不报错**）。改由触发期的 `held_notes_ok(self.held_notes)` 裁决。
@@ -7669,6 +7868,28 @@ pub struct SfzVoicePool {
     /// 状态开始"必然从序列第一个变体起，⛔ 不会因为上一次播放留下计数而在
     /// 重渲染时换掉变体（[ARCH-DET-001] 要求同一输入逐位同输出）。
     seq_occurrence: [u32; 128],
+    /// ⭐ **释放族的每音高触发计数**（本片；与 [`Self::seq_occurrence`] **分开**）。
+    ///
+    /// 同一条区域表上可以同时有 note-on 组与释放组各自的 `seq_position`；共用一格会让
+    /// 两族的"第 n 次"互相推进（按下两次才轮到释放变体 1）⇒ 各记各的。代价 **512 B / 池**。
+    /// 归零时机同 [`Self::seq_occurrence`]（[`Self::silence`]）。
+    release_occurrence: [u32; 128],
+    /// ⭐ **每个键最近一次 note-on 的绝对帧**（本片；`rt_decay` 的按住时长起点）。
+    ///
+    /// 只由 note-on 触发写（[`Self::trigger_event`]），note-off 只读。代价 **1024 B / 池**。
+    /// 缺省 0 ⇒ `off_frame.saturating_sub(0)` 仍然有限（⛔ 不会下溢）。
+    key_on_frame: [u64; 128],
+    /// ⭐ **每个键最近一次 note-on 的力度**（本片；释放声部的力度来源）。
+    ///
+    /// 规范对 `trigger=release` 的力度来源没有规定；MIDI note-off 的力度在多数 DAW 里
+    /// 是 0（用它会让释放采样全静音）⇒ 本仓取**按下的力度**（工程裁决，登记在
+    /// `docs/ledger/sfz-release-samples-notes.md`）。代价 **128 B / 池**。
+    key_velocity: [u8; 128],
+    /// ⭐ **池的采样率**（本片；`rt_decay` 的帧 → 秒）。
+    ///
+    /// [`Self::set_sample_rate`] 同步更新（与窃取淡出帧数同一处）；**只**用于触发期的
+    /// 一次除法，⛔ 不进逐样本路径。
+    sample_rate: f32,
     /// ⭐ `#341`：**触发那一刻**"其它音符的按住数"（`trigger=first` / `legato` 用）。
     ///
     /// `None` ＝ 调用方未提供该状态 ⇒ 严格策略下这两族区域**不匹配**
@@ -7892,6 +8113,10 @@ impl SfzVoicePool {
             dropped: 0,
             stolen: 0,
             seq_occurrence: [0; 128],
+            release_occurrence: [0; 128],
+            key_on_frame: [0; 128],
+            key_velocity: [0; 128],
+            sample_rate,
             held_notes: None,
             last_key: None,
             porta_slot: u8::MAX,
@@ -7924,6 +8149,8 @@ impl SfzVoicePool {
     /// （换采样率必须由控制侧**重新摊平**）。本函数只重算窃取淡出。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.steal_fade_frames = steal_fade_frames_for(sample_rate);
+        // ⭐ 本片：`rt_decay` 的帧 → 秒换算必须用**当前**采样率（与窃取淡出同一条边界）。
+        self.sample_rate = sample_rate;
     }
 
     /// 覆盖窃取淡出帧数（**判据/注入用**；`0` ＝ 硬窃取）。
@@ -8045,15 +8272,97 @@ impl SfzVoicePool {
         pitch_shape: u16,
         tune_cents: f32,
     ) -> usize {
+        self.trigger_event(
+            plan,
+            note,
+            velocity,
+            start_sample,
+            end_sample,
+            track_gain,
+            cc,
+            pitch_shape,
+            tune_cents,
+            yeban_sfz::instrument::TriggerEvent::NoteOn,
+        )
+    }
+
+    /// ⭐ **note-off 触发释放族**（`trigger=release` / `release_key`；本片）。
+    ///
+    /// 与 [`Self::trigger_note`] **同一条实现**（[`Self::trigger_event`]），只把事件换成
+    /// [`yeban_sfz::instrument::TriggerEvent::NoteOff`]。`off_frame` 既是"现在"（释放声部
+    /// 的起点）也是 `rt_decay` 的**按住时长**终点（起点由本池在 note-on 触发时记下的
+    /// [`Self::key_on_frame`] 给出）。
+    ///
+    /// * 力度取该键**最近一次 note-on 的力度**（MIDI note-off 的力度在多数 DAW 里是 0；
+    ///   规范对 `trigger=release` 的力度来源**没有**规定 —— 工程裁决，理由见
+    ///   `docs/ledger/sfz-release-samples-notes.md`）；
+    /// * 释放声部按规范"**as if `loop_mode` was `one_shot`**"（[`Region::effective_loop_mode`]）
+    ///   ⇒ 本池用 `end_sample = u64::MAX` 建声部：没有后续 note-off 会停它，它播到样本尾。
+    ///
+    /// 返回新建／接管／窃取的声部数（与 [`Self::trigger_note`] 同义）。
+    pub fn trigger_release(
+        &mut self,
+        plan: &PreparedSfz,
+        note: u8,
+        off_frame: u64,
+        track_gain: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> usize {
+        // ⭐ 没有释放区域的语料（绝大多数）⇒ 这里一次都不进循环（零成本快路径）。
+        if !plan.has_release_regions() {
+            return 0;
+        }
+        let velocity = self.key_velocity[note as usize];
+        self.trigger_event(
+            plan,
+            note,
+            velocity,
+            off_frame,
+            u64::MAX,
+            track_gain,
+            cc,
+            NO_PITCH_SHAPE,
+            0.0,
+            yeban_sfz::instrument::TriggerEvent::NoteOff { pedal_down: false },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn trigger_event(
+        &mut self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        start_sample: u64,
+        end_sample: u64,
+        track_gain: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+        pitch_shape: u16,
+        tune_cents: f32,
+        event: yeban_sfz::instrument::TriggerEvent,
+    ) -> usize {
         let n = note as usize;
+        // ⭐ 事件族（本片）：一次调用只服务**一个**事件 ⇒ 下面所有"选区域 / 计轮替 /
+        // 记按住起点"的分支都由它唯一决定（⛔ 不再有第二条触发实现）。
+        let is_note_on = event == yeban_sfz::instrument::TriggerEvent::NoteOn;
         // ⭐ **portamento 的 key delta**（CC140 的引擎侧来源）：当前音 − 上一个触发音。
         // 首个音没有"上一个" ⇒ `0`（⇒ 包络乘子恒 `1.0`，首音不滑）。
         // ⚠ 位置在**任何** `continue` 之前：delta 是"这次触发"的事实，与哪条区域命中无关。
-        let key_delta = match self.last_key {
-            Some(previous) => i32::from(note) - i32::from(previous),
-            None => 0,
+        // ⭐ note-off **不推进** `last_key`、也不改 key delta（滑音是按下时的事实）。
+        let key_delta = if is_note_on {
+            match self.last_key {
+                Some(previous) => i32::from(note) - i32::from(previous),
+                None => 0,
+            }
+        } else {
+            0
         };
-        self.last_key = Some(note);
+        if is_note_on {
+            self.last_key = Some(note);
+            // ⭐ **按住起点与力度**（`rt_decay` / 释放声部的力度来源）：只由 note-on 写。
+            self.key_on_frame[n] = start_sample;
+            self.key_velocity[n] = velocity;
+        }
         let mut created = 0usize;
         // ⭐ **触发前的在场快照**（任务单 `#94` 裁决 5：**触发者不自掐**）：只有本次调用
         // **之前**就 active 的槽位才是 `off_by` 的候选 victim ⇒ 无论本次新建的声部属于
@@ -8087,9 +8396,15 @@ impl SfzVoicePool {
         // 留缝 ＝ 规范明示的静音，见 [`PreparedRegion::selects_rand`]）。
         // 两样都没有的库：计数不推进、随机数不派生、循环里一个新分支都不走。
         let (occurrence, rr_fallback) = if plan.has_round_robin() || plan.has_rand() {
-            let occurrence = self.next_occurrence(note);
+            // ⭐ 两张计数表分开：note-on 的 `seq_*` 序列与释放族的序列互不推进
+            // （同一条区域表上两族可以各有自己的 `seq_position` 组）。
+            let occurrence = if is_note_on {
+                self.next_occurrence(note)
+            } else {
+                self.next_release_occurrence(note)
+            };
             let fallback = if plan.has_round_robin() {
-                self.round_robin_fallback(plan, note, velocity, occurrence, cc)
+                self.round_robin_fallback(plan, note, velocity, occurrence, cc, event)
             } else {
                 None
             };
@@ -8109,7 +8424,14 @@ impl SfzVoicePool {
             None
         };
         for (region_index, region) in plan.regions().iter().enumerate() {
-            if !region.accepts(note, velocity) {
+            // ⭐ 事件族决定读**哪一张**掩码（note-on / 释放）；再叠一次 `responds_to`
+            // 是为了让"踏板语义"这一层留在**触发期**（掩码只编码事件族，不编码踏板）。
+            let accepted = if is_note_on {
+                region.accepts(note, velocity)
+            } else {
+                region.release_accepts(note, velocity)
+            };
+            if !accepted || !region.trigger.responds_to(event) {
                 continue;
             }
             // ⭐ 轮替筛选：`seq_length <= 1` ⇒ 恒通过（不参与轮替的区域照旧叠加）。
@@ -8186,7 +8508,18 @@ impl SfzVoicePool {
             // ⭐ 本片：随机音量（`amp_random`）**折进**声部的轨增益标量（该字段本就是
             // 乘子；⛔ 不新增逐声部字段 ⇒ `SfzVoice` 仍 40 B）。缺省 `0 dB` ⇒ 乘子恰
             // `1.0` ⇒ `track_gain` 逐位不变。
-            let voice_gain = track_gain * region.amp_random_gain(rand.unwrap_or(0.0));
+            // ⭐ 释放族再乘 `rt_decay`（格式页逐字 "Applies only to regions that triggered
+            // through `trigger=release`"）：「按住时长」= 本帧 − 该键最近一次 note-on 的帧。
+            // `is_note_on == false` 时 `start_sample` 就是 note-off 帧。
+            let held_seconds = if is_note_on {
+                0.0
+            } else {
+                let held_frames = start_sample.saturating_sub(self.key_on_frame[n]);
+                held_frames as f32 / self.sample_rate.max(1.0)
+            };
+            let voice_gain = track_gain
+                * region.amp_random_gain(rand.unwrap_or(0.0))
+                * region.rt_decay_gain(held_seconds);
             let voice = SfzVoice::new(
                 note,
                 velocity,
@@ -9125,6 +9458,9 @@ impl SfzVoicePool {
             self.silence_slot(index);
         }
         self.seq_occurrence = [0; 128];
+        self.release_occurrence = [0; 128];
+        self.key_on_frame = [0; 128];
+        self.key_velocity = [0; 128];
     }
 
     /// ⭐ 某音高的**下一个**轮替序号（0-based；读后**自增**）。
@@ -9137,6 +9473,15 @@ impl SfzVoicePool {
     /// * 只到 `u32::MAX` 回绕，⛔ 不读写时钟。
     fn next_occurrence(&mut self, note: u8) -> u32 {
         let slot = &mut self.seq_occurrence[note as usize];
+        let occurrence = *slot;
+        *slot = occurrence.wrapping_add(1);
+        occurrence
+    }
+
+    /// ⭐ 某音高的**下一个释放族轮替序号**（本片；与 [`Self::next_occurrence`] 同一形态、
+    /// **另一张表**）。语义逐条同 [`Self::next_occurrence`]，只是推进量属于 note-off 事件。
+    fn next_release_occurrence(&mut self, note: u8) -> u32 {
+        let slot = &mut self.release_occurrence[note as usize];
         let occurrence = *slot;
         *slot = occurrence.wrapping_add(1);
         occurrence
@@ -9171,13 +9516,17 @@ impl SfzVoicePool {
         velocity: u8,
         occurrence: u32,
         cc: Option<&dyn Fn(u8) -> u8>,
+        event: yeban_sfz::instrument::TriggerEvent,
     ) -> Option<u16> {
         let mut first: Option<u16> = None;
         for (index, region) in plan.regions().iter().enumerate() {
-            if region.seq_length() <= 1
-                || !region.accepts(note, velocity)
-                || !region.cc_gates_ok(cc)
-            {
+            // ⭐ 兜底与主循环**同一张**事件掩码（本片）：note-off 只在释放族里兜底。
+            let accepted = if event == yeban_sfz::instrument::TriggerEvent::NoteOn {
+                region.accepts(note, velocity)
+            } else {
+                region.release_accepts(note, velocity)
+            };
+            if region.seq_length() <= 1 || !accepted || !region.cc_gates_ok(cc) {
                 continue;
             }
             // 有人被选中 ⇒ 不需要兜底（`None` 与"下标 0"必须分得开）。
@@ -9502,26 +9851,54 @@ mod tests {
                     "纯 sw_up 在 keyswitch_ok 侧必须判过"
                 );
                 assert!(
-                    non_cc_gates_open(&regions[0], 60, 100),
+                    non_cc_gates_open(
+                        &regions[0],
+                        60,
+                        100,
+                        yeban_sfz::instrument::TriggerEvent::NoteOn
+                    ),
                     "纯 sw_up 在摊平侧必须判过（修前恒假）"
                 );
                 // 其余形态：两侧逐条同判。
                 for (index, region) in regions.iter().enumerate() {
                     assert_eq!(
-                        non_cc_gates_open(region, 60, 100),
+                        non_cc_gates_open(
+                            region,
+                            60,
+                            100,
+                            yeban_sfz::instrument::TriggerEvent::NoteOn
+                        ),
                         region.keyswitch_ok(None, |_| false),
                         "区域 {index}（sample={}）两侧必须同判",
                         region.sample.as_ref()
                     );
                 }
                 // 对照钉：sw_down 与无缺省的 sw_last 两侧都判不过。
-                assert!(!non_cc_gates_open(&regions[1], 60, 100), "sw_down 判不过");
                 assert!(
-                    !non_cc_gates_open(&regions[2], 60, 100),
+                    !non_cc_gates_open(
+                        &regions[1],
+                        60,
+                        100,
+                        yeban_sfz::instrument::TriggerEvent::NoteOn
+                    ),
+                    "sw_down 判不过"
+                );
+                assert!(
+                    !non_cc_gates_open(
+                        &regions[2],
+                        60,
+                        100,
+                        yeban_sfz::instrument::TriggerEvent::NoteOn
+                    ),
                     "sw_last 无 sw_default 判不过"
                 );
                 assert!(
-                    non_cc_gates_open(&regions[3], 60, 100),
+                    non_cc_gates_open(
+                        &regions[3],
+                        60,
+                        100,
+                        yeban_sfz::instrument::TriggerEvent::NoteOn
+                    ),
                     "sw_last == sw_default 判过"
                 );
             })

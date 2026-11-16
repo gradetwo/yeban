@@ -750,6 +750,23 @@ impl<'a> Region<'a> {
         crate::instrument::amp_random_gain(self.amp_random, rand)
     }
 
+    /// ⭐ **释放采样的按住时长衰减**（`rt_decay`，dB/秒；本片）。
+    ///
+    /// 规则来自 <https://sfzformat.com/opcodes/rt_decay/>："The volume decrease (in
+    /// decibels) **per seconds** after the corresponding attack region was triggered"
+    /// ⇒ 乘子 `10 ^ (−(rt_decay × 按住秒数) / 20)`。
+    ///
+    /// * `rt_decay = 0`（缺省）⇒ 恰 `1.0`（⛔ 不因"有该字段"改动任何既有读数）；
+    /// * 非有限 / 负的按住时长 ⇒ 按 `0` 处理（`NaN` 不能污染增益）。
+    ///
+    /// ⚠ **调用方负责只在 release 家族上应用**：格式页逐字 "Applies only to regions that
+    /// triggered through `trigger=release`" ⇒ 本方法**不**看 `self.trigger`（它是纯算术，
+    /// 便于三条路共用）；引擎在**触发期**按 `trigger.is_release_family()` 决定是否乘它。
+    #[must_use]
+    pub fn rt_decay_gain(&self, held_seconds: f32) -> f32 {
+        crate::instrument::rt_decay_gain(self.rt_decay, held_seconds)
+    }
+
     /// 生成该 region 的可渲染采样描述。零分配，可在实时路径调用。
     ///
     /// 这条重载只吃 `note` / `velocity` 两个标量，因此
@@ -1549,6 +1566,7 @@ mod tests {
                             trigger: Trigger::Attack,
                             off_mode: OffMode::Fast,
                             off_time: None,
+                            rt_decay: 0.0,
                             lovel: 0,
                             hivel: 127,
                             lochan: 1,
@@ -1841,6 +1859,51 @@ mod tests {
         );
         for edge in ["-24", "24"] {
             let text = format!("<region>sample=a.wav amp_random={edge}");
+            parse_text(&text, &Default::default()).expect("闭区间端点必须可加载");
+        }
+    }
+
+    #[test]
+    fn rt_decay_is_a_per_second_attenuation_with_a_bit_exact_default() {
+        let text = "<region>sample=a.wav trigger=release rt_decay=6";
+        let instrument = parse_text(text, &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.rt_decay, 6.0);
+        // 0 秒 ⇒ 恰 1.0。
+        assert_eq!(region.rt_decay_gain(0.0), 1.0);
+        // 1 秒、6 dB/秒 ⇒ −6 dB。
+        let one = region.rt_decay_gain(1.0);
+        assert!(close(one, 10.0f32.powf(-6.0 / 20.0), 1.0e-6), "got {one}");
+        // 2 秒 ⇒ −12 dB（线性于秒数，不是平方）。
+        let two = region.rt_decay_gain(2.0);
+        assert!(close(two, 10.0f32.powf(-12.0 / 20.0), 1.0e-6), "got {two}");
+        // 非有限 / 负的按住时长 ⇒ 按 0 处理（乘子 1.0）。
+        assert_eq!(region.rt_decay_gain(f32::NAN), 1.0);
+        assert_eq!(region.rt_decay_gain(-3.0), 1.0);
+        // 缺省 `rt_decay = 0` ⇒ 任意按住时长都恰 1.0。
+        let plain = parse_text("<region>sample=a.wav trigger=release", &Default::default())
+            .expect("parses");
+        for held in [0.0f32, 0.25, 1.0, 10.0] {
+            assert_eq!(plain.regions()[0].rt_decay_gain(held), 1.0, "held {held}");
+        }
+    }
+
+    #[test]
+    fn rt_decay_rejects_values_outside_zero_to_two_hundred() {
+        let high = parse_text("<region>sample=a.wav rt_decay=200.5", &Default::default())
+            .expect_err("上界是 200");
+        assert!(
+            matches!(high, SfzError::FloatOutOfRange { .. }),
+            "got {high:?}"
+        );
+        let negative = parse_text("<region>sample=a.wav rt_decay=-1", &Default::default())
+            .expect_err("下界是 0");
+        assert!(
+            matches!(negative, SfzError::FloatOutOfRange { .. }),
+            "got {negative:?}"
+        );
+        for edge in ["0", "200"] {
+            let text = format!("<region>sample=a.wav rt_decay={edge}");
             parse_text(&text, &Default::default()).expect("闭区间端点必须可加载");
         }
     }

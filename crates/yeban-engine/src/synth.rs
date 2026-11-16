@@ -1818,6 +1818,23 @@ impl SynthEngine {
             if self.slots[index].sfz.release_note(plan, pitch, off_clock) {
                 released = true;
             }
+            // ⭐ **释放族真的发声**（本片）：note-off 不只缩短已有声部，还按
+            // `trigger=release` / `release_key` 建**新**声部（`TriggerEvent::NoteOff`）。
+            // ⚠ 与上面那句**同一帧**：缩短与新建都用 `off_clock` ⇒ 释放采样从松键那一帧起。
+            let created = self.slots[index].sfz.trigger_release(
+                plan,
+                pitch,
+                off_clock,
+                self.slots[index].gain_scale,
+                None,
+            );
+            if created > 0 {
+                released = true;
+                self.slots[index].live_sfz = true;
+                self.notes_triggered = self
+                    .notes_triggered
+                    .saturating_add(u64::try_from(created).unwrap_or(u64::MAX));
+            }
         }
         released
     }
