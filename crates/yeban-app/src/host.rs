@@ -11711,6 +11711,12 @@ fn apply_action(
             ui.set_is_looping(!current);
             true
         }
+        // Cmd/Ctrl+N：新建 MIDI 合成器轨（界面决定；与菜单 `track-add-midi` 走
+        // 同一个界面回调 `invoke_track_create_midi` ⇒ 同一条 Op 链，⛔ 不另造一条）。
+        Action::NewTrack => {
+            ui.invoke_track_create_midi();
+            true
+        }
         // 时间轴水平缩放
         Action::ZoomIn => zoom_horizontal_step(ui, undo.map(|u| u.as_ref()), true),
         Action::ZoomOut => zoom_horizontal_step(ui, undo.map(|u| u.as_ref()), false),

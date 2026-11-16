@@ -4962,7 +4962,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 54] = [
+const SHORTCUTS: [ShortcutRow; 59] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -4981,6 +4981,44 @@ const SHORTCUTS: [ShortcutRow; 54] = [
         label: "Tab → 视图切换 (仅画布聚焦)",
         action: Action::ToggleView,
         key: PhysicalKey::Tab,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // ⭐ ADR-0074 R1：这 5 个键自 R1 起由解析表**唯一执行**（界面层不再重复），
+    // 此前只靠 --print-shortcuts 的「界面直达键」段列出、主表缺行 ⇒ 收敛后补进
+    // 主表，用户照表能看到（标签与底部页签权威名一致）。
+    ShortcutRow {
+        label: "Cmd/Ctrl+T → 在播放头处切分选中的剪辑",
+        action: Action::SplitAtPlayhead,
+        key: PhysicalKey::KeyT,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "X → 打开底部混音控制台",
+        action: Action::ToggleMixer,
+        key: PhysicalKey::KeyX,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "E → 编辑器视图切换",
+        action: Action::ToggleEditor,
+        key: PhysicalKey::KeyE,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "P → 打开底部钢琴卷帘",
+        action: Action::ToggleEditor,
+        key: PhysicalKey::KeyP,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "C → 循环播放开关",
+        action: Action::ToggleCycle,
+        key: PhysicalKey::KeyC,
         modifiers: Modifiers::none(),
         implemented: true,
     },
@@ -5113,6 +5151,13 @@ const SHORTCUTS: [ShortcutRow; 54] = [
     // 端口不在场的那一刻不消费（`live_surface` 的无会话装配正是这一形，判据 ⑨ 钉着）。
     // （修前 `N` 那一支要的是"引擎上下文"，而那份工程是装配期冻结的 ⇒ 拨一次开关会把
     // 播放侧退回旧文档；见 `docs/ledger/app-zimmer-ui-notes.md` §50。）
+    ShortcutRow {
+        label: "Cmd/Ctrl+N → 新建 MIDI 合成器轨",
+        action: Action::NewTrack,
+        key: PhysicalKey::KeyN,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
     ShortcutRow {
         label: "Cmd/Ctrl+Alt+N → 节拍器开关",
         action: Action::ToggleMetronome,
@@ -5596,20 +5641,15 @@ pub fn shortcut_lines() -> Vec<String> {
         ));
     }
 
-    // 界面直达键（Slint FocusScope 的 key-pressed 分支）不经过上面的策略表，
-    // 但用户照样按得到。此前 --print-shortcuts 只打印策略表，X/P/I/H/T/C/F3、
-    // Ctrl+T、D、F4、F7/F8/F9 全都没列（控件体检 §2.4：用户照表学会漏一半）。
+    // 界面直达键（Slint FocusScope 的 key-pressed 分支）不经过上面的策略表。
+    // ⭐ X / E / P / C / Tab / Ctrl+T / Ctrl+Alt+M 自 ADR-0074 R1 起由上方解析表
+    // **唯一执行**（界面层不再重复）⇒ 不再单列；此处只剩解析表里没有的界面键。
     lines.push(String::new());
     lines.push("# 界面直达键（Slint key-pressed，不经过上面的解析表，但同样可用）".to_owned());
     for line in [
-        "#   ⚠ 双层键路：Tab / Ctrl+T / Ctrl+Alt+M 在解析表与 Slint 界面各绑一次，按一次会触发两个动作",
-        "#   Ctrl+T          新建轨道（切分请用「轨道」菜单 / 工具栏切刀）",
-        "#   X               打开底部混音控制台",
-        "#   P               打开底部钢琴卷帘",
         "#   I               显隐左侧通道检查器",
         "#   H               显隐架构热区透视",
         "#   T               显隐悬浮功能提示",
-        "#   C               循环播放开关",
         "#   D               打开底部设备机架（页签 tooltip [D]）",
         "#   F3              混音控制台最大化 / 还原",
         "#   F4              显隐监听控制室与响度计（tooltip [F4]）",
