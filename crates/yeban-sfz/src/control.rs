@@ -113,6 +113,20 @@
 //! （⛔ 原文一字未删）：`#206` 让 `#include` 支持 **`.txt`** 目标与**行内**写法后重测，
 //! include 解析失败 ＝ **97**（−10 条此前被扩展名挡住的 `.txt`）。同一探针的
 //! `parse_ok` / `parse_err` 仍是 `#205` 的读数（⛔ 未在 `#206` 重测，⛔ 不冒充新读数）。
+//!
+//! ## ⭐ ARIA 的 `set_hdccN`（第五份报告 §6，本片）
+//!
+//! 规范逐字（<https://sfzformat.com/opcodes/set_hdccN/>）：
+//!
+//! > Like `set_ccN` but with floating point MIDI CCs. Sets a default initial value for
+//! > MIDI CC number N using a floating point value, when the instrument is initially loaded.
+//! > `set_realccN` is a deprecated alias for `set_hdccN`.
+//!
+//! 语料 10 处（`salamander-grand` 1 处 `set_hdcc10=0.5`；`ixox-flute` 9 处含宏形态）。
+//! 本仓的 CC 域是 7 位 `u8` ⇒ **取值** `0.0..=1.0` 在解析期按 `round(v × 127)` 换算
+//! （0.5 → 64）；**下标**域照抄 `set_ccN`（`u16`，不把 Range 错读成下标上界）。
+//! 与 `set_ccN` 同时声明同一 CC 时 **`set_ccN` 赢**（精确整数 > 扩展换算值，
+//! 与书写顺序无关）—— 在 [`crate::parser`] 的 `finish()` 里用 `entry().or_insert()` 合并。
 
 use crate::error::SfzError;
 
@@ -222,6 +236,73 @@ pub(crate) fn set_cc_declaration(
         cc,
         initial: parsed as u8,
     })
+}
+
+/// `set_hdccN`（ARIA 浮点 CC 初值）的名字解析：`set_hdccN` 本体与已废弃别名
+/// `set_realccN`（规范页逐字 "set_realccN is a deprecated alias for set_hdccN"）。
+///
+/// 下标域与 `set_ccN` 完全相同（[`parse_set_cc_name`] / [`MAX_CC_DEFAULT_INDEX`]）：
+/// 规范表把 `N` 写在名字里、Range 只约束**取值**（0..=1），语料里又有 `set_hdcc400`
+/// 一类的 ARIA 扩展 CC —— ⛔ 不把 Range 错读成下标上界。
+#[must_use]
+pub fn parse_set_hdcc_name(name: &str) -> Option<&str> {
+    let digits = name
+        .strip_prefix("set_hdcc")
+        .or_else(|| name.strip_prefix("set_realcc"))?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(digits)
+}
+
+/// 一个 `<control>` opcode 解析成 `set_hdccN` 声明的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SetHdccOutcome {
+    /// 名字不是 `set_hdccN` / `set_realccN`。
+    NotThisOpcode,
+    /// 命中：CC `cc` 的初值是 `initial`（已按 `round(v × 127)` 换算到 7 位域）。
+    Value { cc: u16, initial: u8 },
+    /// 取值不是 `0..=1` 的浮点数（含非有限值）⇒ 丢弃该条声明 + 告警，不中断解析
+    /// （与 `set_ccN` 的 `UnrepresentableValue` 同款口径：规范 Range 外的值不猜）。
+    UnrepresentableValue,
+}
+
+/// 把一个 `<control>` opcode 解析成 `set_hdccN` / `set_realccN` 声明。
+///
+/// * **下标**越界（> [`MAX_CC_DEFAULT_INDEX`]）⇒ 明确 `IntegerOutOfRange`（与 `set_ccN` 同款）；
+/// * **取值**不是 `0.0..=1.0` 的有限浮点 ⇒ [`SetHdccOutcome::UnrepresentableValue`]（丢弃 + 告警）；
+/// * 命中 ⇒ `round(v × 127)`（0.5 → 64，1 → 127，0 → 0）。
+///
+/// ⚠ 与 `set_ccN` 的优先级在 [`crate::parser`] 的 `finish()` 合并：`set_ccN`
+/// 是 SFZ v2 的精确整数声明，**赢**过 ARIA 扩展的浮点换算值。
+pub(crate) fn set_hdcc_declaration(
+    name: &str,
+    value: &str,
+    line: usize,
+) -> Result<SetHdccOutcome, SfzError> {
+    let Some(digits) = parse_set_hdcc_name(name) else {
+        return Ok(SetHdccOutcome::NotThisOpcode);
+    };
+    let cc = match digits.parse::<u16>() {
+        Ok(cc) => cc,
+        Err(_) => {
+            return Err(SfzError::IntegerOutOfRange {
+                line,
+                opcode: name.to_string(),
+                value: digits.parse::<i64>().unwrap_or(i64::MAX),
+                min: 0,
+                max: i64::from(MAX_CC_DEFAULT_INDEX),
+            });
+        }
+    };
+    let parsed = value.trim().parse::<f32>().ok();
+    let Some(v) = parsed.filter(|v| v.is_finite() && (0.0..=1.0).contains(v)) else {
+        return Ok(SetHdccOutcome::UnrepresentableValue);
+    };
+    // 0.0..=1.0 的有限值 ×127 再 round 必落 0..=127 ⇒ `as u8` 不截断。
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let initial = (v * f32::from(MAX_CC_DEFAULT_VALUE)).round() as u8;
+    Ok(SetHdccOutcome::Value { cc, initial })
 }
 
 #[cfg(test)]
@@ -392,6 +473,65 @@ mod tests {
         assert_eq!(
             set_cc_declaration("set_cc0", "2", 2).expect("ok"),
             SetCcOutcome::Value { cc: 0, initial: 2 }
+        );
+    }
+
+    #[test]
+    fn set_hdcc_names_cover_the_aria_spelling_and_its_deprecated_alias() {
+        for name in ["set_hdcc10", "set_realcc10", "set_hdcc0", "set_hdcc65535"] {
+            assert!(parse_set_hdcc_name(name).is_some(), "{name}");
+        }
+        for bad in [
+            "set_hdcc",
+            "set_hdccX",
+            "set_hdcc7x",
+            "SET_HDCC7",
+            "set_cc7",
+        ] {
+            assert_eq!(parse_set_hdcc_name(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn set_hdcc_values_are_rounded_from_zero_to_one_to_seven_bits() {
+        for (text, initial) in [
+            ("0", 0u8),
+            ("0.5", 64),
+            ("1", 127),
+            ("0.08", 10),
+            ("0.1", 13),
+            (" +0.5 ", 64),
+        ] {
+            assert_eq!(
+                set_hdcc_declaration("set_hdcc10", text, 1).expect("ok"),
+                SetHdccOutcome::Value { cc: 10, initial },
+                "set_hdcc10={text}"
+            );
+            assert_eq!(
+                set_hdcc_declaration("set_realcc10", text, 1).expect("alias"),
+                SetHdccOutcome::Value { cc: 10, initial },
+                "set_realcc10={text}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_hdcc_rejects_out_of_range_values_and_index_overflow() {
+        for bad in ["-0.1", "1.001", "2", "NaN", "inf", "abc"] {
+            assert_eq!(
+                set_hdcc_declaration("set_hdcc10", bad, 7).expect("no error"),
+                SetHdccOutcome::UnrepresentableValue,
+                "value {bad}"
+            );
+        }
+        let error = set_hdcc_declaration("set_hdcc65536", "0.5", 9).expect_err("index");
+        assert!(
+            matches!(error, SfzError::IntegerOutOfRange { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            set_hdcc_declaration("set_cc7", "0.5", 1).expect("not hdcc"),
+            SetHdccOutcome::NotThisOpcode
         );
     }
 }
