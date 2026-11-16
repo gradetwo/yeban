@@ -67,7 +67,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
     in-out property <length> panel-width: 256px;
     width: root.panel-width;
-    background: Theme.bg-panel;
+    background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-panel;
     border-color: Theme.border-subtle;
 
     VerticalLayout {
@@ -77,7 +77,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         // Subtab switcher
         Rectangle {
             height: 34px;
-            background: #080a10;
+            background: Tokens.texture-physical ? Tokens.shell-brush : #080a10;
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
@@ -157,7 +157,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
             // Track Header Card
             Rectangle {
-                background: Theme.bg-surface;
+                // 二期质感: 卡面走 §10 面板刷 + 面板落影 (flat = Theme.bg-surface, 落影 alpha 为 0)。
+                background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface;
+                drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                drop-shadow-blur: Tokens.shadow-panel-blur;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
@@ -307,7 +312,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
             // Inline Instrument / FX Quick Picker Menu
             if root.show-instrument-menu : Rectangle {
-                background: #0d121c;
+                // 二期质感: 菜单面走 §10 面板刷 + 面板落影 (flat = 现行字面 #0d121c, 落影 alpha 为 0)。
+                background: Tokens.texture-physical ? Tokens.panel-brush : #0d121c;
+                drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                drop-shadow-blur: Tokens.shadow-panel-blur;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.accent.with-alpha(0.60);
@@ -336,7 +346,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     ] : Rectangle {
                         height: 20px;
                         border-radius: 3px;
-                        background: insp_opt_t.has-hover ? Theme.accent.with-alpha(0.22) : #141926;
+                        background: insp_opt_t.has-hover ? Theme.accent.with-alpha(0.22) : (Tokens.texture-physical ? Tokens.raised-brush : #141926);
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px;
                             Text { text: opt.label; font-family: Tokens.font-ui; font-size: 9.5px; color: #f1f5f9; vertical-alignment: center; }
@@ -359,7 +369,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                 // Strip 1: Selected Track Strip (Professional Signal Flow: Inserts -> EQ -> Pan -> Fader/Meter)
                 Rectangle {
-                    background: Theme.bg-surface;
+                    // 二期质感: 卡面走 §10 面板刷 + 面板落影 (flat = Theme.bg-surface, 落影 alpha 为 0)。
+                    background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface;
+                    drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                    drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                    drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                    drop-shadow-blur: Tokens.shadow-panel-blur;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
@@ -426,7 +441,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     && (root.selected-track-inserts.length < 2 || root.selected-track-inserts[1] == "")
                                     && (root.selected-track-inserts.length < 3 || root.selected-track-inserts[2] == "")) : Rectangle {
                                 height: 24px;
-                                background: empty_ins_touch.has-hover ? Theme.accent.with-alpha(0.18) : #0b0e16;
+                                background: empty_ins_touch.has-hover ? Theme.accent.with-alpha(0.18) : (Tokens.texture-physical ? Tokens.void-brush : #0b0e16);
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -450,7 +465,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 // [Q4] 空槽不画：投影只给**真实设备链**，没有设备就没有这一行。
                                 visible: ins != "";
                                 height: ins != "" ? 22px : 0px;
-                                background: #10141d;
+                                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -495,11 +510,27 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // Section 3: EQ Curve Thumbnail Preview
                         Rectangle {
                             height: 38px;
-                            background: #06080d;
+                            // 二期质感: EQ 屏走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #06080d, 反光 alpha 为 0)。
+                            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
                             border-radius: 3px;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             clip: true;
+
+                            Path {
+                                width: parent.width;
+                                height: parent.height;
+                                viewbox-x: 0;
+                                viewbox-y: 0;
+                                viewbox-width: 120;
+                                viewbox-height: 38;
+                                fill: Tokens.glass-reflection;
+                                stroke-width: 0px;
+                                MoveTo { x: 14; y: 0; }
+                                LineTo { x: 44; y: 0; }
+                                LineTo { x: 30; y: 38; }
+                                LineTo { x: 0; y: 38; }
+                            }
 
                             // 0dB 基准线（缺省帧唯一可见的绘制，保护 5 张 Linux golden）。
                             Rectangle {
@@ -555,7 +586,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 96px;
                                 height: 20px;
-                                background: #0a0d14;
+                                background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -639,7 +670,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 24px;
                                 height: 104px;
-                                background: #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -669,7 +700,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.selected-track-vol + 60.0) / 66.0)));
                                     width: 22px;
                                     height: 15px;
-                                    background: #94a3b8;
+                                    background: Tokens.texture-physical ? Tokens.raised-brush : #94a3b8;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #cbd5e1;
@@ -704,7 +735,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 8px;
                                 height: 104px;
-                                background: #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -727,7 +758,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 58px;
                                 height: 18px;
-                                background: #080c14;
+                                background: Tokens.texture-physical ? Tokens.glass-brush : #080c14;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -749,7 +780,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                 // Strip 2: Target Group Bus Strip (Collapsible)
                 if root.show-bus-strip : Rectangle {
-                    background: Theme.bg-surface;
+                    // 二期质感: 卡面走 §10 面板刷 + 面板落影 (flat = Theme.bg-surface, 落影 alpha 为 0)。
+                    background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface;
+                    drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                    drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                    drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                    drop-shadow-blur: Tokens.shadow-panel-blur;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
@@ -811,7 +847,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                             for ins[idx] in root.bus-inserts : Rectangle {
                                 height: 22px;
-                                background: #10141d;
+                                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -844,11 +880,27 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // Section 3: Bus Comp Preview
                         Rectangle {
                             height: 38px;
-                            background: #06080d;
+                            // 二期质感: 压缩屏走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #06080d, 反光 alpha 为 0)。
+                            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
                             border-radius: 3px;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             clip: true;
+
+                            Path {
+                                width: parent.width;
+                                height: parent.height;
+                                viewbox-x: 0;
+                                viewbox-y: 0;
+                                viewbox-width: 120;
+                                viewbox-height: 38;
+                                fill: Tokens.glass-reflection;
+                                stroke-width: 0px;
+                                MoveTo { x: 14; y: 0; }
+                                LineTo { x: 44; y: 0; }
+                                LineTo { x: 30; y: 38; }
+                                LineTo { x: 0; y: 38; }
+                            }
 
                             // 0dB 基准线（无压缩器时唯一可见的绘制）。
                             Rectangle {
@@ -898,7 +950,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 96px;
                                 height: 20px;
-                                background: #0a0d14;
+                                background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -967,7 +1019,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 24px;
                                 height: 104px;
-                                background: #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -994,7 +1046,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-track-vol + 60.0) / 66.0)));
                                     width: 22px;
                                     height: 15px;
-                                    background: #94a3b8;
+                                    background: Tokens.texture-physical ? Tokens.raised-brush : #94a3b8;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #cbd5e1;
@@ -1033,7 +1085,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 8px;
                                 height: 104px;
-                                background: #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1056,7 +1108,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 58px;
                                 height: 18px;
-                                background: #080c14;
+                                background: Tokens.texture-physical ? Tokens.glass-brush : #080c14;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1097,7 +1149,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
             // Search input field (Real TextInput)
             Rectangle {
                 height: 30px;
-                background: #06080d;
+                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: browser_search_input.has-focus ? Theme.accent : Theme.border-subtle;
@@ -1172,7 +1224,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 height: 22px;
 
                 Rectangle {
-                    background: root.active-tag == "all" ? Theme.accent : #10141d;
+                    background: root.active-tag == "all" ? Theme.accent : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "all" ? Theme.accent : Theme.border-subtle;
@@ -1197,7 +1249,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Synth" ? Theme.track-synth : #10141d;
+                    background: root.active-tag == "Synth" ? Theme.track-synth : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "Synth" ? Theme.track-synth : Theme.border-subtle;
@@ -1222,7 +1274,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "DSP" ? Theme.status-ok : #10141d;
+                    background: root.active-tag == "DSP" ? Theme.status-ok : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "DSP" ? Theme.status-ok : Theme.border-subtle;
@@ -1247,7 +1299,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Drums" ? Theme.track-drum : #10141d;
+                    background: root.active-tag == "Drums" ? Theme.track-drum : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "Drums" ? Theme.track-drum : Theme.border-subtle;
@@ -1280,7 +1332,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 for item in root.browser-items : Rectangle {
                     if root.active-tag == "all" || item.tag == root.active-tag : Rectangle {
                         height: 50px;
-                        background: Theme.bg-surface;
+                        // 二期质感: 条目卡走 §10 面板刷 + 面板落影 (flat = Theme.bg-surface, 落影 alpha 为 0)。
+                        background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface;
+                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                        drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                        drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                        drop-shadow-blur: Tokens.shadow-panel-blur;
                         border-radius: Theme.radius;
                         border-width: 1px;
                         border-color: Theme.border-subtle;

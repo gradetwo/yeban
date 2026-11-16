@@ -149,6 +149,238 @@ fn the_live_dock_panels_bind_texture_tokens_with_flat_fallback() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据（源码钉）: 二期五面（2026-11-17）
+//
+// ① dock 钢琴卷帘页、② 左栏检查器 + 智能音色库、③ 走带栏本体、
+// ④ 编曲区轨道头/片段、⑤ 状态栏。口径同一期：使用点三元的假分支必须是
+// 现行字面值/现行角色色（flat 逐像素不变靠三元假分支或令牌 flat 分支）；
+// §12 专用材质（轨道头/片段/卷帘键面与车道）的 flat 分支必须是使用点
+// 现行字面值的同色双停渐变。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let read = |rel: &str| {
+        std::fs::read_to_string(ui_dir.join(rel)).unwrap_or_else(|_| panic!("读 {rel}"))
+    };
+    let tokens = read("tokens.slint");
+    // §12 专用材质令牌: flat 分支 = 现行字面值同色双停。
+    for (needle, what) in [
+        (
+            "out property <brush> track-head-brush: texture-physical",
+            "轨道头刷令牌（§12）",
+        ),
+        (
+            ": @linear-gradient(180deg, #0b0e16, #0b0e16);",
+            "轨道头刷 flat 分支 = 现行字面 #0b0e16",
+        ),
+        (
+            "out property <color> clip-sheen: #ffffff.with-alpha(texture-physical ? 0.07 : 0.0);",
+            "片段顶光令牌（flat alpha = 0）",
+        ),
+        (
+            "out property <color> clip-shade: #000000.with-alpha(texture-physical ? 0.35 : 0.0);",
+            "片段底影令牌（flat alpha = 0）",
+        ),
+        (
+            ": @linear-gradient(180deg, #e4e9f2, #e4e9f2);",
+            "卷帘白键刷 flat 分支 = 现行字面 #e4e9f2",
+        ),
+        (
+            ": @linear-gradient(180deg, #191e2b, #191e2b);",
+            "卷帘黑键行刷 flat 分支 = 现行字面 #191e2b",
+        ),
+        (
+            ": @linear-gradient(180deg, #0b0e15, #0b0e15);",
+            "卷帘黑键帽刷 flat 分支 = 现行字面 #0b0e15",
+        ),
+        (
+            ": @linear-gradient(180deg, #242c3e, #242c3e);",
+            "卷帘白键车道刷 flat 分支 = 现行字面 #242c3e",
+        ),
+        (
+            ": @linear-gradient(180deg, #161b26, #161b26);",
+            "卷帘黑键车道刷 flat 分支 = 现行字面 #161b26",
+        ),
+        (
+            ": @linear-gradient(180deg, #2c364b, #2c364b);",
+            "卷帘根音车道刷 flat 分支 = 现行字面 #2c364b",
+        ),
+        (
+            ": @linear-gradient(180deg, #1a202e, #1a202e);",
+            "卷帘网格刷 flat 分支 = 现行字面 #1a202e",
+        ),
+    ] {
+        assert!(
+            tokens.contains(needle),
+            "tokens.slint 必须含 {what}: {needle}"
+        );
+    }
+
+    // ① 钢琴卷帘页。使用点一律三元: flat 走字面色支 (渐变刷作
+    // background 时软件渲染器的圆角 AA 与纯色填充不一致, 盒上实证)。
+    let roll = read("console/piano_roll.slint");
+    for (needle, what) in [
+        (
+            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void",
+            "卷帘根底走 void-brush (flat 色值支)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.shell-brush : #0d1018",
+            "键列容器 (shell-brush, flat #0d1018)",
+        ),
+        ("Tokens.roll-key-white-brush", "白键面走 §12 键刷"),
+        ("Tokens.roll-key-black-brush", "黑键行走 §12 键刷"),
+        ("Tokens.roll-key-cap-brush", "黑键帽走 §12 键刷"),
+        ("Tokens.roll-lane-white-brush", "白键车道走 §12 车道刷"),
+        ("Tokens.roll-lane-black-brush", "黑键车道走 §12 车道刷"),
+        ("Tokens.roll-lane-root-brush", "根音车道走 §12 车道刷"),
+        (
+            "Tokens.texture-physical ? Tokens.roll-grid-brush : #1a202e",
+            "网格底走 §12 网格刷 (flat 字面支)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel",
+            "力度泳道/右键菜单走 panel-brush (flat 色值支)",
+        ),
+    ] {
+        assert!(
+            roll.contains(needle),
+            "piano_roll.slint 必须含 {what}: {needle}"
+        );
+    }
+    for gone in [
+        "background: Tokens.roll-grid-brush;",
+        "background: Tokens.void-brush;",
+    ] {
+        assert!(
+            !roll.contains(gone),
+            "渐变刷不得直作 background (flat 圆角 AA 纪律): {gone}"
+        );
+    }
+
+    // ② 左栏检查器 + 智能音色库。
+    let left = read("left_panel.slint");
+    for (needle, what) in [
+        (
+            "Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-panel",
+            "左栏根底 (panel-brush, flat Theme.bg-panel)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.shell-brush : #080a10",
+            "子页签栏 (shell-brush, flat #080a10)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface",
+            "轨道头卡/通道条/总线条/音色条目卡 (panel-brush, flat Theme.bg-surface)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.glass-brush : #06080d",
+            "EQ 屏/总线压缩屏 (glass-brush, flat #06080d)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.void-brush : #06080d",
+            "推子导轨/表井/搜索框 (void-brush, flat #06080d)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.raised-brush : #94a3b8",
+            "推子帽 (raised-brush, flat #94a3b8)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.glass-brush : #080c14",
+            "dB 读数牌 (glass-brush, flat #080c14)",
+        ),
+    ] {
+        assert!(
+            left.contains(needle),
+            "left_panel.slint 必须含 {what}: {needle}"
+        );
+    }
+    assert!(
+        left.contains("Tokens.glass-reflection"),
+        "左栏两块屏必须有玻璃斜向反光"
+    );
+    assert!(
+        !left.contains("background: #06080d;") && !left.contains("background: Theme.bg-surface;"),
+        "左栏屏/井/卡的字面背景不得回归（必须走质感三元）"
+    );
+
+    // ③ 走带栏本体（Group L 质感切换钮的渲染与行为不在本轮范围, 钉住未动）。
+    let transport = read("transport_bar.slint");
+    for (needle, what) in [
+        (
+            "Tokens.texture-physical ? Tokens.panel-brush : Theme.header-bg",
+            "走带栏体 (panel-brush, flat Theme.header-bg)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.shell-brush : #0a0d14",
+            "走带组板 (shell-brush, flat #0a0d14)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.shell-brush : #090c12",
+            "走带簇底板 (shell-brush, flat #090c12)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.glass-brush : #05070a",
+            "LCD 框 (glass-brush, flat #05070a)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.raised-brush : #10141d",
+            "命令钮 (raised-brush, flat #10141d)",
+        ),
+        (
+            "background: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.18) : #10141d;",
+            "Group L 质感切换钮渲染未动",
+        ),
+    ] {
+        assert!(
+            transport.contains(needle),
+            "transport_bar.slint 必须含 {what}: {needle}"
+        );
+    }
+    assert!(
+        transport.contains("Tokens.glass-reflection"),
+        "走带 LCD 必须有玻璃斜向反光"
+    );
+
+    // ④ 编曲区轨道头/片段。
+    let arrangement = read("arrangement.slint");
+    for (needle, what) in [
+        (
+            ": (Tokens.texture-physical ? Tokens.track-head-brush : #0b0e16);",
+            "轨道头未选中支走 §12 轨道头刷 (flat 字面支)",
+        ),
+        ("background: Tokens.clip-sheen;", "片段顶光走 §12 令牌"),
+        ("background: Tokens.clip-shade;", "片段底影走 §12 令牌"),
+        (
+            "Tokens.texture-physical ? Tokens.void-brush : #06080d",
+            "轨道头表井 (void-brush, flat #06080d)",
+        ),
+    ] {
+        assert!(
+            arrangement.contains(needle),
+            "arrangement.slint 必须含 {what}: {needle}"
+        );
+    }
+    assert!(
+        !arrangement.contains("with-alpha(0.10) : #0b0e16;"),
+        "轨道头二期前的直写平色形不得回归 (必须走 §12 三元)"
+    );
+
+    // ⑤ 状态栏。
+    let status = read("status_bar.slint");
+    assert!(
+        status.contains("Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel"),
+        "status_bar.slint 状态栏底必须走 panel-brush 三元 (flat 色值支)"
+    );
+    assert!(
+        !status.contains("background: Tokens.bg-panel;"),
+        "status_bar.slint 不得回归 bg-panel 平色"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据（源码钉）: 负责人 2026-11-16 四条 UI 要求（并入拟物线一期）
 //
 // 1. 删冗余说明文字: 只说明区域名、不承载信息、不参与操作的可见标签

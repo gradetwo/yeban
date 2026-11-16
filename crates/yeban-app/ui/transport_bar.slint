@@ -603,7 +603,8 @@ export component TransportHeaderBar inherits Rectangle {
     callback revert-to-last-commit();
 
     height: 48px;
-    background: Theme.header-bg;
+    // 二期质感: 栏体走 §10 面板刷 (flat = Theme.header-bg 本身)。
+    background: Tokens.texture-physical ? Tokens.panel-brush : Theme.header-bg;
     border-color: Theme.border-subtle;
 
     HorizontalLayout {
@@ -620,7 +621,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group A: Brand Mark (Official Studio Logo Mark)
             Rectangle {
-                background: #10131a;
+                // 二期质感: 品牌块走 §10 外壳刷 (flat = 现行字面 #10131a)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #10131a;
                 border-radius: 4px;
                 border-width: 1px;
                 border-color: #ffffff25;
@@ -640,7 +642,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: #ffffff14;
@@ -735,7 +738,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group C: Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: #ffffff14;
@@ -833,7 +837,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group D: Cohesive Logic 12 Transport Control Cluster (Unified height, styling, vector iconography, and balanced visual weight)
             Rectangle {
-                background: #090c12;
+                // 二期质感: 走带簇底板走 §10 外壳刷 (flat = 现行字面 #090c12); 簇内按钮状态色不动。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #090c12;
                 border-radius: 5px;
                 border-width: 1px;
                 border-color: #1c2333;
@@ -945,10 +950,28 @@ export component TransportHeaderBar inherits Rectangle {
             // Group E: Digital Precision LCD HUD Display Bezel (High-contrast WCAG AA)
             Rectangle {
                 height: 28px;
-                background: #05070a;
+                // 二期质感: LCD 框走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #05070a, 反光 alpha 为 0)。
+                background: Tokens.texture-physical ? Tokens.glass-brush : #05070a;
                 border-radius: 5px;
                 border-width: 1px;
                 border-color: #1a202c;
+
+                // 反光带刻意内收: 本框原无 clip (框内 TooltipBubble 须溢出
+                // 显示), 不为反光加 clip; 带脚避开 5px 圆角区即可。
+                Path {
+                    width: parent.width;
+                    height: parent.height;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: 200;
+                    viewbox-height: 28;
+                    fill: Tokens.glass-reflection;
+                    stroke-width: 0px;
+                    MoveTo { x: 36; y: 0; }
+                    LineTo { x: 116; y: 0; }
+                    LineTo { x: 88; y: 28; }
+                    LineTo { x: 8; y: 28; }
+                }
 
                 HorizontalLayout {
                     padding-left: 10px;
@@ -1066,7 +1089,8 @@ export component TransportHeaderBar inherits Rectangle {
             // "BUFF"，1920 宽甚至整体不渲染（细节实测 §4.6 / 控件体检 §5）。
             Rectangle {
                 width: 128px;
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: #ffffff14;
@@ -1109,7 +1133,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group G: DSP CPU Gauge (High-contrast)
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: #ffffff14;
@@ -1158,7 +1183,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group H: Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: #ffffff14;
@@ -1251,7 +1277,8 @@ export component TransportHeaderBar inherits Rectangle {
             Rectangle {
                 width: 52px;
                 height: 28px;
-                background: #10141d;
+                // 二期质感: 命令钮走 §10 凸起刷 (flat = 现行字面 #10141d)。
+                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;

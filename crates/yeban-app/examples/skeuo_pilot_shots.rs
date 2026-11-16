@@ -1,7 +1,11 @@
 //! 实体化试点对比图（`line/ui-skeuo-theme` 一期证据工具，**不是**产品路径）。
 //!
 //! 用法：
-//! `cargo run -p yeban-app --example skeuo_pilot_shots -- <mixer|devices|tracks|showcase> [输出目录]`
+//! `cargo run -p yeban-app --example skeuo_pilot_shots -- <mixer|devices|pianoroll|tracks|browser|showcase> [输出目录]`
+//!
+//! 二期（2026-11-17）加 `pianoroll`（dock 钢琴卷帘页）与 `browser`
+//! （左栏智能音色库页；走带栏本体 / 左栏检查器 / 编曲区轨道头与片段 /
+//! 状态栏的证据由 `tracks` 整帧裁出）。
 //!
 //! 每个场景产出两张 PNG（`flat` / `physical`），同一份**真实工程**
 //! （`yeban_model::samples::filled_project()`：3 轨 + 主总线，带设备 / 音量 /
@@ -300,11 +304,14 @@ fn main() {
     std::fs::create_dir_all(&out_dir).expect("创建输出目录");
 
     match scene_name.as_str() {
-        "mixer" | "devices" => shoot_console(&scene_name, &out_dir),
+        "mixer" | "devices" | "pianoroll" => shoot_console(&scene_name, &out_dir),
         "tracks" => shoot_tracks(&out_dir),
+        "browser" => shoot_browser(&out_dir),
         "showcase" => shoot_showcase(&out_dir),
         other => {
-            eprintln!("未知场景 `{other}` (可用: mixer | devices | tracks | showcase)");
+            eprintln!(
+                "未知场景 `{other}` (可用: mixer | devices | pianoroll | tracks | browser | showcase)"
+            );
             std::process::exit(2);
         }
     }
@@ -348,7 +355,12 @@ fn shoot_console(scene_name: &str, out_dir: &str) {
     let project = yeban_model::samples::filled_project();
     let view = cli::project_view(&project).expect("投影 filled 工程");
     let scene = DemoScene::from_view(&view);
-    let console_tab = if scene_name == "mixer" { 1 } else { 2 };
+    // console-tab 口径 (app.slint): 0 = pianoroll, 1 = mixer, 2 = devices。
+    let console_tab = match scene_name {
+        "pianoroll" => 0,
+        "mixer" => 1,
+        _ => 2,
+    };
     let ui =
         host::build_main_window_with_console_tab(&view, &scene, console_tab).expect("构造主窗口");
     host::apply_theme(&ui, Theme::Yeban);
@@ -365,6 +377,36 @@ fn shoot_console(scene_name: &str, out_dir: &str) {
         write_png(&path, &frame, width, height);
         println!(
             "skeuo-shot scene={scene_name} texture={label} render_ms={:.2} non_black={} path={path}",
+            elapsed.as_secs_f64() * 1000.0,
+            non_black_pixels(&frame),
+        );
+    }
+}
+
+/// 左栏智能音色库场景（二期证据图）：主窗口默认视图 + 左栏切到
+/// `browser` 页（搜索框 / 标签丸 / 条目卡都是真实投影数据）。整帧两张
+/// （flat / physical）；左栏裁图由整帧裁出。
+fn shoot_browser(out_dir: &str) {
+    let (width, height) = (1600u32, 900u32);
+    let window = install_platform(width, height);
+
+    let project = yeban_model::samples::filled_project();
+    let view = cli::project_view(&project).expect("投影 filled 工程");
+    let scene = DemoScene::from_view(&view);
+    let ui = host::build_main_window(&view, &scene).expect("构造主窗口");
+    host::apply_theme(&ui, Theme::Yeban);
+    ui.set_left_panel_tab("browser".into());
+    ui.show().expect("show 主窗口");
+
+    let _ = render_frame(&window, width, height);
+    for (texture, label) in [(Texture::Physical, "physical"), (Texture::Flat, "flat")] {
+        host::apply_texture(&ui, texture);
+        let (frame, elapsed) =
+            render_frame(&window, width, height).expect("切换质感后必须重绘一帧");
+        let path = format!("{out_dir}/browser-{label}.png");
+        write_png(&path, &frame, width, height);
+        println!(
+            "skeuo-shot scene=browser texture={label} render_ms={:.2} non_black={} path={path}",
             elapsed.as_secs_f64() * 1000.0,
             non_black_pixels(&frame),
         );

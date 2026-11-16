@@ -916,6 +916,56 @@ export global Tokens {
     /// 小节号墨色: 标尺带上必须清晰 —— 取最亮的正文墨 `ink-0`。
     /// 两套同值 (数字的可读性不分主题)。
     out property <color> ruler-ink: ink-0;
+
+// =====================================================================
+// 12. 二期材质面 (2026-11-17): 编曲区轨道头/片段 + 钢琴卷帘键面/车道
+// =====================================================================
+// §10 是**通用**材质 (面板/旋钮/屏/按键); 本节是两个**专用**面的材质。
+// 它们的 flat 分支不是 §6 的角色色, 而是使用点**现行手写字面值**本身
+// (轨道头 #0b0e16、卷帘车道三色、键面两色 —— 这些值不随配色主题走,
+// 是编曲区/卷帘的既有平色), 因此双套值只能写在本节: flat = 字面值
+// 同色双停渐变 (逐位等于现行渲染), physical = 绕同一基色标定的微
+// 渐变。physical 只在 brand/yeban 生效 (同 §10: `texture-physical`
+// 已含品牌门)。
+// ⚠ 使用点一律写三元 (flat 走字面色支, 不直接把刷作 background):
+// 软件渲染器对渐变刷的圆角 AA 与纯色填充不一致 (盒上实证: 直用刷
+// 时 flat 帧与基线差 144 px, 全在圆角/边缘; 改三元后归零)。本节的
+// flat 分支因此只作取值文档, 实际 flat 像素由使用点的字面色支保证。
+//
+// 编曲区轨道头 (未选中行): flat = 现行字面 #0b0e16; physical = 磨砂
+// 金属微渐变 (顶受光 / 底沉降, 与 panel-brush 同族)。
+out property <brush> track-head-brush: texture-physical
+    ? @linear-gradient(180deg, #121828, #0b0e16 45%, #070a10)
+    : @linear-gradient(180deg, #0b0e16, #0b0e16);
+// 片段顶光/底影 (只 physical): 与 §10 bevel 同源同向 (光源左上);
+// flat alpha = 0 ⇒ 不画像素。片段本体是数据色 (轨道色 + alpha, 是
+// 信息编码), 只在其上下沿各叠 1px, 不动本体。
+out property <color> clip-sheen: #ffffff.with-alpha(texture-physical ? 0.07 : 0.0);
+out property <color> clip-shade: #000000.with-alpha(texture-physical ? 0.35 : 0.0);
+// 钢琴卷帘键列: 白键帽 (键面本身) / 黑键行底 / 黑键突起帽。
+out property <brush> roll-key-white-brush: texture-physical
+    ? @linear-gradient(180deg, #f2f5fa, #e4e9f2 55%, #ccd5e4)
+    : @linear-gradient(180deg, #e4e9f2, #e4e9f2);
+out property <brush> roll-key-black-brush: texture-physical
+    ? @linear-gradient(180deg, #202634, #191e2b 55%, #12151f)
+    : @linear-gradient(180deg, #191e2b, #191e2b);
+out property <brush> roll-key-cap-brush: texture-physical
+    ? @linear-gradient(180deg, #141926, #0b0e15 60%, #05070c)
+    : @linear-gradient(180deg, #0b0e15, #0b0e15);
+// 钢琴卷帘车道 (音符泳道行底): 白键行 / 黑键行 / 根音 (C) 行, 以及
+// 车道之下的网格底。
+out property <brush> roll-lane-white-brush: texture-physical
+    ? @linear-gradient(180deg, #28324a, #242c3e 55%, #1d2434)
+    : @linear-gradient(180deg, #242c3e, #242c3e);
+out property <brush> roll-lane-black-brush: texture-physical
+    ? @linear-gradient(180deg, #1a2130, #161b26 55%, #10141d)
+    : @linear-gradient(180deg, #161b26, #161b26);
+out property <brush> roll-lane-root-brush: texture-physical
+    ? @linear-gradient(180deg, #323f59, #2c364b 55%, #232c40)
+    : @linear-gradient(180deg, #2c364b, #2c364b);
+out property <brush> roll-grid-brush: texture-physical
+    ? @linear-gradient(180deg, #1e2534, #1a202e 55%, #151a26)
+    : @linear-gradient(180deg, #1a202e, #1a202e);
 }
 
 // 全部文本图元的统一起点: 一处固定字体族 / 字重与默认墨色, 免得 81 个 Text 各写一遍。
