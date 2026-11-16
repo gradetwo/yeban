@@ -181,6 +181,11 @@
 //! `renderFailed` 2 处、`cause` / `reason` 2 键，本 crate 生产面新词）
 //! ⇒ reason 数 279 → 280、规范行数 1180 → 1183（1 reason 行 ＋ 2 键行）；
 //! `reason` 键站点 322 → 325；新摘要照抄判据自己的报出值（见本表）。
+//!
+//! ⭐ 本支（set_hdcc）继承 main tip 的 `notesEmpty.reason` 新站点
+//! （`domain/sfz.rs` 的结构体字段 ⇒ 运行时盲区）⇒ 显式登记第 6 条豁免：
+//! 键站点 345 → **346**、总出现 349 → **350**、运行时站点 6 → **7**。
+//! ⛔ 不放宽扫描器、⛔ 不把新站点悄悄塞进"可分类"。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -1572,7 +1577,7 @@ struct DynamicReasonSite {
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 5] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 6] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1620,6 +1625,19 @@ const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 5] = [
         occurrences: 2,
         forwards: "`io_fault` 的 `match`（TimedOut ⇒ `serviceTimeout` / ConnectionRefused|NotFound ⇒ \\\n                   `serviceUnreachable` / 其余 ⇒ `serviceIoError`；其中 `serviceUnreachable` 已有字面量站点）\\\n                   与 `param_fault` 的 `reason` 入参（47 个调用点送进来的字面量校验词，40 个不同值）\\\n                   ⇒ 扫描器看不见运行时的值：`match` 不在可解析 `let` 形状内（只认单个字面量与 \\\n                   `if/else`），`reason` 又不是 `param_fault` 的最后一个入参（末参是 `message`），调用点传播不适用。",
         retires_when: "`io_fault` 改成字面量 `if/else` 链或闭合枚举，且 `param_fault` 的 `reason` 改成最后一个入参\\\n                       并登记调用点传播时退役（届时两处都成为可分类站点，本登记项必须删掉）。",
+    },
+    // ⭐ `notesEmpty` 的可选原因（继承 main tip 的新站点；与 set_hdcc 语义无关，
+    // 但它让全量判据红，故在本支显式登记 ⛔ 不放宽扫描器）：
+    DynamicReasonSite {
+        file: "domain/sfz.rs",
+        expr: "reason",
+        occurrences: 1,
+        forwards: "`render_sfz_wav` 的 `notesEmpty.reason` 来自 `self.empty_schedule_reason`\
+                   （`Option<&'static str>` 字段，由装载/排程路径在运行时写入）再 \
+                   `unwrap_or(\"noNotesInWindow\")`；扫描器只认单个字面量 / 可解析 `let` / \
+                   `if` 链，看不见结构体字段。",
+        retires_when: "把 `empty_schedule_reason` 改成闭合枚举（每个值一个 `as_str()` 常量）\
+                       且扫描器能解析该字段的赋值时退役；在此之前它没有可冻结的词表。",
     },
 ];
 
@@ -1769,15 +1787,15 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 4] = [
 // `listDirectoryNotFound` 各 1 处、`listDirectoryReadFailed` 2 处）⇒ 出现
 // 344 → 349、键站点 340 → 345、字面站点 329 → 334（恒等式仍闭合：
 // 345 = 字面 334 ＋ 可解析 `let` 2 ＋ 运行时 6 ＋ 传播 3；349 = 345 ＋ 参数名 4）。
-const REASON_OCCURRENCES_TOTAL: usize = 349;
+const REASON_OCCURRENCES_TOTAL: usize = 350;
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 345;
+const REASON_KEY_SITES_TOTAL: usize = 346;
 const REASON_LITERAL_SITES_TOTAL: usize = 334;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 6;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 7;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 4;
 
