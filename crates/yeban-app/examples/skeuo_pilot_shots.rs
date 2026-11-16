@@ -36,6 +36,13 @@ slint::slint! {
         height: 380px;
         background: Tokens.bg-void;
 
+        // 质感开关: 用组件内 bool 驱动全局开关 (不在 Rust 侧碰 `Tokens` /
+        // `TextureMode` —— `slint!` 宏的内联文件里, 从别的 .slint 文件
+        // import 的全局/枚举不属于该文件的公开 API, Rust 侧引用会报
+        // E0425 / deprecated type alias; 判据与应用侧仍走 `host::apply_texture`)。
+        in-out property <bool> physical: false;
+        Tokens.texture: root.physical ? TextureMode.physical : TextureMode.flat;
+
         Rectangle {
             x: 16px;
             y: 16px;
@@ -332,11 +339,8 @@ fn shoot_showcase(out_dir: &str) {
     let ui = SkeuoShowcase::new().expect("构造陈列场景");
     ui.show().expect("show 陈列场景");
     let _ = render_frame(&window, width, height);
-    for (mode, label) in [
-        (TextureMode::Physical, "physical"),
-        (TextureMode::Flat, "flat"),
-    ] {
-        ui.global::<Tokens<'_>>().set_texture(mode);
+    for (physical, label) in [(true, "physical"), (false, "flat")] {
+        ui.set_physical(physical);
         let (frame, elapsed) =
             render_frame(&window, width, height).expect("切换质感后必须重绘一帧");
         let path = format!("{out_dir}/showcase-{label}.png");
