@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Yeban
+Name[zh_CN]=夜半
+GenericName=Digital Audio Workstation
+GenericName[zh_CN]=数字音频工作站
+Comment=AI-native digital audio workstation
+Comment[zh_CN]=AI 原生数字音频工作站
+Exec=yeban
+Icon=yeban
+Terminal=false
+Categories=AudioVideo;Audio;Midi;Sequencer;
+Keywords=music;daw;midi;audio;recording;

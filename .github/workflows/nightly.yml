@@ -14,6 +14,11 @@
 #      五个平台的包都是**未签名**的 nightly（仓库无 codesign 凭据）：nightly 不是
 #      正式 release，用户须手动放行；要签名分发等 release.yml 的各平台路打通后再说。
 #      加目标时同步改下面的 matrix、artifact 名与发布校验里的归档数断言。
+#      每腿另出一个**安装包**（Windows MSI / macOS DMG / Linux DEB，与 tar.gz 用
+#      同一份 stage 字节，打包+自验住在 scripts/dev/package-*.sh，release.yml 的
+#      Linux 腿共用同一个 DEB 脚本）：DMG 里的 .app 是 ad-hoc 签名（无 Developer
+#      ID、未公证），MSI/DEB 无签名 ⇒ 与归档同口径，用户手动放行。发布校验里
+#      安装包单独计数（5 个），与归档数断言并列，少一个都不许发。
 #   ② 不重跑 release.yml 的重门禁（guards / deny / clippy --workspace / test --workspace）。
 #      那些判据在 main 每次 push 时已经由 ci.yml 跑过；nightly 只做"把 main 的树用默认
 #      feature 真编译一次、打成可核对的包"。夜半 nightly ≠ 夜半 release：release 的
@@ -45,7 +50,9 @@
 #   LICENSE、BUILD-INFO.txt）。改动打包路时两边要同步改，并说明理由。
 # **归档名稳定 ⇒ 无需清理旧包**：偃师版要删旧归档，是因为它的归档名里带 commit 短哈希；
 #   夜半归档名是 yeban-<工作区版本>-<目标>.tar.gz（版本在两次发版之间不变），
-#   新 Release 里只有本次 5 个归档＋SHA256SUMS ⇒ Release 里永远只有最新一套包。
+#   新 Release 里只有本次 5 个归档＋5 个安装包（yeban-<版本>-<目标>.msi/.dmg/.deb，
+#   同样是"版本号＋固定模板"，无 commit 哈希无日期 —— 下一期 Homebrew cask / AUR
+#   yeban-bin / APT 仓库靠这个模板拼下载 URL）＋SHA256SUMS ⇒ Release 里永远只有最新一套包。
 # **冒烟**：解包后跑包里的 yeban-app --version，与工作区清单版本逐字比对
 #  （release.yml 的版本对账同款判据；yeban-mcp 没有 --version 开关，不拿它冒烟，
 #   只验它在包里存在且可执行）。
@@ -336,7 +343,64 @@ jobs:
             || { echo "::error::包内二进制的自报版本 '$BIN_LINE' 与清单版本 'yeban-app $VERSION' 不一致 ⇒ 拒绝发布"; exit 1; }
           echo "✓ 冒烟通过：包能解、yeban-app --version 与清单版本一致 ✓"
 
-      - name: 上传归档（artifact；发布是 publish job 的事）
+      - name: 安装包（DEB / DMG / MSI；与 release.yml 共用 scripts/dev/package-* 脚本）
+        shell: bash
+        env:
+          # 同冒烟步：Windows 腿的 Python stdout 缺省 cp1252，脚本里有中文打印。
+          PYTHONUTF8: '1'
+        run: |
+          set -euo pipefail
+          # 安装包与 tar.gz 用同一份 stage/ 字节（打包步刚生成、冒烟步刚验过）。
+          # 打包与自验都住在脚本里（两边 workflow 共用同一份，不各写一份漂移）：
+          #   DEB：dpkg-deb 结构断言 + 实装（dpkg -i → --version 对账 → 卸载）；
+          #   DMG：hdiutil verify + 挂载断言 + codesign --verify（原生腿另跑 --version；
+          #        x86_64 交叉腿在 arm64 runner 上只验结构与签名，YEBAN_PKG_SKIP_RUN=1）；
+          #   MSI：msiexec /a 管理安装解包断言 + --version 对账。
+          # 任一脚本红 ⇒ 本腿红 ⇒ publish 不跑（needs: build），不发半套。
+          VERSION="$(python3 - <<'PY'
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              import sys
+              print("::error::无法从根 Cargo.toml 读版本（需要 python3 >= 3.11 的 tomllib）", file=sys.stderr)
+              raise SystemExit(3)
+          import pathlib
+          print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"])
+          PY
+          )"
+          NAME="yeban-${VERSION}-${{ matrix.target }}"
+          case "${{ matrix.target }}" in
+            *-unknown-linux-gnu)
+              YEBAN_PKG_INSTALL_TEST=1 bash scripts/dev/package-linux-deb.sh "stage/$NAME" "${{ matrix.target }}" dist
+              ;;
+            aarch64-apple-darwin)
+              bash scripts/dev/package-macos-dmg.sh "stage/$NAME" "${{ matrix.target }}" dist
+              ;;
+            x86_64-apple-darwin)
+              YEBAN_PKG_SKIP_RUN=1 bash scripts/dev/package-macos-dmg.sh "stage/$NAME" "${{ matrix.target }}" dist
+              ;;
+            *-pc-windows-msvc)
+              bash scripts/dev/package-windows-msi.sh "stage/$NAME" "${{ matrix.target }}" dist
+              ;;
+            *)
+              echo "::error::目标 ${{ matrix.target }} 没有安装包脚本映射 ⇒ 先给它写 package-* 脚本再加腿"
+              exit 1
+              ;;
+          esac
+          ls -l dist
+          {
+            echo "### nightly 安装包"
+            echo ""
+            echo '| 文件 | 字节 (wc -c) | sha256 |'
+            echo '| :--- | ---: | :--- |'
+            for f in dist/*.deb dist/*.dmg dist/*.msi; do
+              [ -e "$f" ] || continue
+              printf '| `%s` | %s | `%s` |\n' "$(basename "$f")" "$(wc -c < "$f" | tr -d ' ')" "$(cut -d' ' -f1 < "$f.sha256")"
+            done
+          } 2>&1 | tee /tmp/nightly-installer.txt
+          cat /tmp/nightly-installer.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传归档与安装包（artifact；发布是 publish job 的事）
         uses: actions/upload-artifact@v4
         with:
           name: yeban-nightly-${{ matrix.target }}
@@ -376,9 +440,16 @@ jobs:
           echo "归档数 $n_archives"
           # v1 五个平台：归档数不是 5 就是构建腿或取回腿漂移了 ⇒ 不许发布。
           [ "$n_archives" -eq 5 ] || { echo "✗ 归档数 $n_archives ≠ 5 ⇒ 不许发布（加平台时同步改这里的断言）" >&2; exit 1; }
+          find artifacts \( -name '*.msi' -o -name '*.dmg' -o -name '*.deb' \) | sort | tee /tmp/nightly-installers.txt
+          n_installers=$(wc -l < /tmp/nightly-installers.txt | tr -d ' ')
+          echo "安装包数 $n_installers"
+          # 每腿一个安装包（MSI 1 + DMG 2 + DEB 2 = 5）：不是 5 就是某腿没产出 ⇒ 不许发布。
+          [ "$n_installers" -eq 5 ] || { echo "✗ 安装包数 $n_installers ≠ 5 ⇒ 不许发布" >&2; exit 1; }
+          # SHA256SUMS 汇合全部 .sha256 侧车：归档 5 条 + 安装包 5 条 = 10 条。
           find artifacts -name '*.sha256' -exec cat {} \; > SHA256SUMS
           cat SHA256SUMS
           # 自校验：每个归档都在自己的 artifact 目录里凭随包 .sha256 验一遍（证明传输没坏）。
+          # 同目录里的安装包 .sha256 也在这一步一起被验（./*.sha256 不区分种类）。
           # ⛔ 不再与 build job 的 outputs 逐字比对：矩阵腿的 outputs 不能以 needs.build.outputs
           # 单值寻址；监管链是 .sha256 文件由同一 build 腿生成、随同一 artifact 取回。
           for f in $(cat /tmp/nightly-archives.txt); do
@@ -386,7 +457,8 @@ jobs:
           done
           NOTES="Rolling nightly build from main.
           Commit: ${GITHUB_SHA}
-          Built at (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          Built at (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Installers: Windows .msi, macOS .dmg, Linux .deb are included. All packages are unsigned (the macOS app is ad-hoc signed, not notarized), so your OS will ask you to allow them manually."
           # 删后重建（见文件头“删后重建”）：edit 不动 published_at，故先删再建；
           # create 会把 tag 建在本次 SHA，不再需要 tag PATCH。
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -396,5 +468,8 @@ jobs:
           for f in $(find artifacts -name '*.tar.gz' | sort); do
             gh release upload nightly "$f" --repo "$GITHUB_REPOSITORY"
           done
+          for f in $(cat /tmp/nightly-installers.txt); do
+            gh release upload nightly "$f" --repo "$GITHUB_REPOSITORY"
+          done
           gh release upload nightly SHA256SUMS --repo "$GITHUB_REPOSITORY"
-          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档）=="
+          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档 + $n_installers 个安装包）=="

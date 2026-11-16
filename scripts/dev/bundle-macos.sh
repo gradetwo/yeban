@@ -10,6 +10,16 @@
 # 用法:
 #   bash scripts/dev/bundle-macos.sh
 #
+# 环境变量覆盖 (发布打包线用; 三个都不给时行为与原来逐字相同):
+#   YEBAN_BUNDLE_BINARY    用这个现成的 yeban-app 二进制装配, 跳过脚本自带的
+#                          cargo build (nightly/release 已先编好默认档产物,
+#                          再编一次既慢又可能编出不同字节)。
+#   YEBAN_BUNDLE_OUT       bundle 输出路径 (缺省 $repo/target/Yeban.app)。
+#   YEBAN_BUNDLE_SKIP_SMOKE=1
+#                          跳过第 7 步的包内二进制冒烟 (交叉腿: 在 arm64 runner
+#                          上装配 x86_64 bundle 时, 包内二进制不保证能本地执行;
+#                          签名与结构仍由打包脚本 package-macos-dmg.sh 验)。
+#
 # ⭐ 已由人类实测确认 (2026-10-17, 台账 R840):
 #   在真实桌面 `open target/Yeban.app` + 按录音 ⇒ **系统真的弹了权限框**, 授权后录音可用。
 #   ⇒ `NSMicrophoneUsageDescription` 这一条**已验**, 不再是"plist 里写了但没试过"。
@@ -40,9 +50,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 app_name="Yeban"
 executable_name="yeban"
-bundle="$repo_root/target/$app_name.app"
+bundle="${YEBAN_BUNDLE_OUT:-$repo_root/target/$app_name.app}"
 template="$repo_root/resources/macos/Info.plist"
-built_binary="$repo_root/target/release/yeban-app"
+built_binary="${YEBAN_BUNDLE_BINARY:-$repo_root/target/release/yeban-app}"
 version_placeholder="__YEBAN_VERSION__"
 
 step() { printf '\n[bundle] %s\n' "$*"; }
@@ -79,9 +89,14 @@ printf '[bundle] plutil -lint 模板: %s\n' "$template_lint"
 
 # --- 3. 构建 ---------------------------------------------------------------
 # `--locked`: 本单不允许改 Cargo.lock (sha256 前后必须一致); 锁一旦过期就应大声失败。
-step "cargo build --release -p yeban-app --locked"
-cargo build --release -p yeban-app --locked --manifest-path "$repo_root/Cargo.toml"
-[[ -x "$built_binary" ]] || die "构建结束但找不到可执行文件: $built_binary"
+if [[ -n "${YEBAN_BUNDLE_BINARY:-}" ]]; then
+  step "使用现成二进制 (YEBAN_BUNDLE_BINARY): $built_binary —— 跳过 cargo build"
+  [[ -x "$built_binary" ]] || die "YEBAN_BUNDLE_BINARY 指向的文件不存在或不可执行: $built_binary"
+else
+  step "cargo build --release -p yeban-app --locked"
+  cargo build --release -p yeban-app --locked --manifest-path "$repo_root/Cargo.toml"
+  [[ -x "$built_binary" ]] || die "构建结束但找不到可执行文件: $built_binary"
+fi
 
 # --- 4. 装配 ---------------------------------------------------------------
 # 先整体删掉旧 bundle: 可重复执行的前提是"上一次的残留不参与这一次"。
@@ -130,13 +145,20 @@ fi
 
 # --- 7. 冒烟: bundle 内的二进制真的能跑 ------------------------------------
 # `--version` 是 CLI 的短路命令 (src/cli.rs), 不初始化 Slint/音频 ⇒ 不会弹窗。
-step "smoke: $bundle/Contents/MacOS/$executable_name --version"
-version_output="$("$bundle/Contents/MacOS/$executable_name" --version)"
+if [[ "${YEBAN_BUNDLE_SKIP_SMOKE:-}" == "1" ]]; then
+  step "smoke: 已跳过 (YEBAN_BUNDLE_SKIP_SMOKE=1, 交叉腿不本地执行包内二进制)"
+  version_output="(smoke skipped)"
+else
+  step "smoke: $bundle/Contents/MacOS/$executable_name --version"
+  version_output="$("$bundle/Contents/MacOS/$executable_name" --version)"
+fi
 printf '[bundle] %s\n' "$version_output"
-case "$version_output" in
-  *"$version"*) ;;
-  *) die "版本行不含 $version: $version_output" ;;
-esac
+if [[ "${YEBAN_BUNDLE_SKIP_SMOKE:-}" != "1" ]]; then
+  case "$version_output" in
+    *"$version"*) ;;
+    *) die "版本行不含 $version: $version_output" ;;
+  esac
+fi
 
 # --- 8. 报告 ---------------------------------------------------------------
 step "产物"
