@@ -802,6 +802,7 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "循环播放开关 (C)"; activated => { root.command-execute("transport-loop"); } }
             MenuItem { title: "节拍器开关"; activated => { root.command-execute("transport-metronome"); } }
+            MenuItem { title: "预备拍开关 (Ctrl+Alt+D)"; activated => { root.command-execute("transport-count-in"); } }
         }
         Menu {
             title: "混音";

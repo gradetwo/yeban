@@ -4962,7 +4962,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 60] = [
+const SHORTCUTS: [ShortcutRow; 66] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -5020,6 +5020,49 @@ const SHORTCUTS: [ShortcutRow; 60] = [
         action: Action::ToggleCycle,
         key: PhysicalKey::KeyC,
         modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    // 补全：这些解析表能触发但主表此前缺行（用户照 --print-shortcuts 学不全）。
+    ShortcutRow {
+        label: "Enter → 回到起点",
+        action: Action::GoToBeginning,
+        key: PhysicalKey::Enter,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Shift+A → 自动化泳道显示",
+        action: Action::ToggleAutomation,
+        key: PhysicalKey::KeyA,
+        modifiers: Modifiers::ctrl_shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+↑ → 音轨垂直缩小",
+        action: Action::VerticalZoomOut,
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+↓ → 音轨垂直放大",
+        action: Action::VerticalZoomIn,
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+= → 时间轴水平放大",
+        action: Action::ZoomIn,
+        key: PhysicalKey::Equal,
+        modifiers: Modifiers::meta(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+- → 时间轴水平缩小",
+        action: Action::ZoomOut,
+        key: PhysicalKey::Minus,
+        modifiers: Modifiers::meta(),
         implemented: true,
     },
     ShortcutRow {

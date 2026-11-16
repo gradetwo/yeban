@@ -1548,15 +1548,16 @@ pub fn wire_track_select(ui: &MainWindow, port: &Rc<UndoPort>) {
             let Some(track_id) = track_id_at(&ui, index) else {
                 return;
             };
-            // 同一条轨再点一次 = 一位不动（⛔ 不白重投影一帧）。
-            if selected_track_id(&ui).as_deref() == Some(track_id.as_str()) {
-                if ui.get_selected_track_index() != index + 1 {
-                    ui.set_selected_track_index(index + 1);
-                }
-                return;
+            // 同一条轨再点一次：身份不变，但**仍要联动**（用户点轨道 = 想看到该轨
+            // 音区；见下方 roll_focus_on_track）。⛔ 早前的「同轨直接 return 不重投影」
+            // 会把精准联动一并吞掉（`on_track_selected` 先设 index 再 invoke 本回调）。
+            let same_track = selected_track_id(&ui).as_deref() == Some(track_id.as_str());
+            if !same_track {
+                ui.set_selected_track_id(track_id.clone().into());
             }
-            ui.set_selected_track_id(track_id.into());
-            ui.set_selected_track_index(index + 1);
+            if ui.get_selected_track_index() != index + 1 {
+                ui.set_selected_track_index(index + 1);
+            }
             // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
             // 那时**出声不画**：选中态已经记在窗口上，下一次投影会带上它。
             let Some(project) = port.try_project() else {
@@ -1565,10 +1566,13 @@ pub fn wire_track_select(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             match project_with_view_state(&project, &ui) {
                 Ok(view) => {
-                    // 与撤销刷新同款：复用当前横向偏移，选轨⛔ 不把卷帘滚回起点。
-                    let scroll_x = ui.get_roll_scroll_x();
                     let width =
                         viewport_width_or_fallback(&ui, crate::scene::DEMO_VIEWPORT_WIDTH as f32);
+                    // ⭐ 精准联动（用户需求）：选轨后把卷帘滚到该轨首个 MIDI 片段、
+                    // 并把音域对齐到该轨音符范围 —— 低音轨自动显示低音区，
+                    // ⛔ 不再复用上一轨的偏移/音域（那会让音符停在窗外、看不见）。
+                    let _ = roll_focus_on_track(&ui, &project, track_id.as_str());
+                    let scroll_x = ui.get_roll_scroll_x();
                     apply_view(&ui, &view, width, scroll_x);
                 }
                 Err(error) => {
@@ -7229,6 +7233,12 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         }
         if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
             return;
+        }
+        // ⭐ 精准联动：横向滚到该片段起点、音域对齐该片段音符（比整轨更准）。
+        // 放在 set_selected_clip_ulid **之前**（clip_ulid 之后会被 move），
+        // 且此时的 base/scroll 会被下面的 apply_view 采用。
+        if let Some(project) = undo_for_select.as_ref().and_then(|port| port.try_project()) {
+            let _ = roll_focus_on_clip(&ui, &project, clip_ulid.as_str());
         }
         ui.set_selected_clip_ulid(clip_ulid);
         // 作用域重注入：只读的重投影，不 `commit_ops`。
@@ -18143,6 +18153,109 @@ fn select_aether_track_for_action(ui: &MainWindow, id: i32) {
     }
 }
 
+/// 由 pitch 范围算 16 行窗口的 `roll_base_pitch`：
+/// 跨度 < 16 半音 ⇒ 全部可见（上下留白 ≤2 行）；≥ 16 ⇒ 居中（两端各露一半）。
+fn roll_base_for_pitch_range(lo: u8, hi: u8) -> u8 {
+    let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;
+    let span = hi.saturating_sub(lo);
+    let base = if span < lane_count {
+        lo.saturating_sub((lane_count - 1 - span).min(2))
+    } else {
+        lo.saturating_add(span / 2).saturating_sub(lane_count / 2)
+    };
+    // u8 天然 >= 0；只需钳上界（base+15 不得超过 127）。
+    base.min(127 - (lane_count - 1))
+}
+
+/// 由片段起始 tick 算卷帘横向 scroll（片段起点留 16px 边距）。
+fn roll_scroll_for_tick(ui: &MainWindow, start_tick: u64) -> f32 {
+    let tpp = roll_ticks_per_pixel(ui).max(1);
+    let px = crate::bridge::tick_to_px(start_tick, tpp)
+        .map(|v| v as f32)
+        .unwrap_or(0.0);
+    (px - 16.0).max(0.0)
+}
+
+/// 选轨时的**卷帘精准联动**：把卷帘横向滚到该轨首个 MIDI 片段，纵向把
+/// `roll_base_pitch` 对齐到该轨音符范围（`roll-min-pitch` 由随后的
+/// `apply_view` 按 base 推出）。
+///
+/// - 跨度 < 16 半音 ⇒ 全部音符落在 16 行窗口内（上下各留 ≤2 行 padding）。
+/// - 跨度 ≥ 16 ⇒ 居中（最低/最高各露一半），并如实提示可纵向滚动。
+/// - 音频轨 / 空轨（无 MIDI 音符）⇒ 一位不动。
+///
+/// 返回 `true` = 横向滚动被改过（调用方应重读 `roll_scroll_x` 再 `apply_view`）。
+fn roll_focus_on_track(
+    ui: &MainWindow,
+    project: &yeban_model::YebanProjectV1,
+    track_id: &str,
+) -> bool {
+    let Ok(tid) = track_id.parse::<yeban_model::EntityId>() else {
+        return false;
+    };
+    let Some(track) = project.tracks.get(&tid) else {
+        return false;
+    };
+    let mut first_start: Option<u64> = None;
+    let mut lo: Option<u8> = None;
+    let mut hi: Option<u8> = None;
+    for placement in track.clips.values() {
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            continue;
+        };
+        let yeban_model::project::ClipContent::Midi { notes } = &entry.content else {
+            continue;
+        };
+        if notes.is_empty() {
+            continue;
+        }
+        first_start =
+            Some(first_start.map_or(placement.start_tick, |s| s.min(placement.start_tick)));
+        for note in notes.values() {
+            lo = Some(lo.map_or(note.pitch, |x| x.min(note.pitch)));
+            hi = Some(hi.map_or(note.pitch, |x| x.max(note.pitch)));
+        }
+    }
+    let (Some(start_tick), Some(lo), Some(hi)) = (first_start, lo, hi) else {
+        return false;
+    };
+    let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;
+    let span = hi.saturating_sub(lo);
+    apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi));
+    if span >= lane_count {
+        ui.set_module_status(
+            format!(
+                "卷帘已对准该轨音区（{lo}–{hi}，跨 {span} 半音，超出 16 行窗口，可纵向滚动查看）"
+            )
+            .into(),
+        );
+        ui.set_module_status_succeeded(true);
+    }
+    ui.set_roll_scroll_x(roll_scroll_for_tick(ui, start_tick));
+    true
+}
+
+/// 选片段时的**横向精准联动**：滚到该片段起点。
+///
+/// 音域由 `on_clip_select` 里的 `invoke_track_select`（按轨）负责 ——
+/// 这里**只做横向**，⛔ 不重复改 base：两点原因
+/// 1. 与按轨口径只留一份（避免"点片段音域更窄"这类第二真相源）；
+/// 2. 改 base 会破坏依赖"默认 base=60"的既有卷帘判据
+///    （实测：`aether_piano_roll` 的 lane15=C4 断言因此红）。
+///
+/// 返回 `true` = 横向滚动被改过。
+fn roll_focus_on_clip(
+    ui: &MainWindow,
+    project: &yeban_model::YebanProjectV1,
+    clip_ulid: &str,
+) -> bool {
+    let Some((_, _, placement)) = clip_placement_for(project, clip_ulid) else {
+        return false;
+    };
+    ui.set_roll_scroll_x(roll_scroll_for_tick(ui, placement.start_tick));
+    true
+}
+
 fn roll_base_pitch(ui: &MainWindow) -> u8 {
     let raw = ui.get_roll_base_pitch();
     u8::try_from(raw.clamp(0, 112)).unwrap_or(crate::bridge::PITCH_LANE_BASE)
@@ -18576,6 +18689,12 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
             ui.invoke_key_action("c".into(), false, false, false, false);
         }
         "transport-metronome" => ui.invoke_toggle_metronome(),
+        // 预备拍开关（清单 P1-8）：走与 Ctrl+Alt+D 完全相同的链
+        // （解析表 -> apply_action），不另写一份 toggle 逻辑
+        // （Action::ToggleCountIn 的唯一落点在 apply_action）。
+        "transport-count-in" => {
+            let _ = ui.invoke_key_action("d".into(), false, true, true, false);
+        }
         "master-reset-fader" => ui.invoke_mixer_master_fader_reset(),
         "master-toggle-mono" => {
             ui.set_control_room_mono(!ui.get_control_room_mono());
