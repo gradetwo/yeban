@@ -18235,9 +18235,15 @@ fn roll_focus_on_track(
     true
 }
 
-/// 选片段时的**精准联动**：横向滚到该片段起点，音域对齐**该片段**音符
-/// （比整轨更窄更准；`on_clip_select` 已先 `invoke_track_select` 按轨对齐，
-/// 这里用片段范围覆盖它）。
+/// 选片段时的**横向精准联动**：滚到该片段起点。
+///
+/// 音域由 `on_clip_select` 里的 `invoke_track_select`（按轨）负责 ——
+/// 这里**只做横向**，⛔ 不重复改 base：两点原因
+/// 1. 与按轨口径只留一份（避免"点片段音域更窄"这类第二真相源）；
+/// 2. 改 base 会破坏依赖"默认 base=60"的既有卷帘判据
+///    （实测：`aether_piano_roll` 的 lane15=C4 断言因此红）。
+///
+/// 返回 `true` = 横向滚动被改过。
 fn roll_focus_on_clip(
     ui: &MainWindow,
     project: &yeban_model::YebanProjectV1,
@@ -18246,25 +18252,6 @@ fn roll_focus_on_clip(
     let Some((_, _, placement)) = clip_placement_for(project, clip_ulid) else {
         return false;
     };
-    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
-        return false;
-    };
-    let yeban_model::project::ClipContent::Midi { notes } = &entry.content else {
-        return false;
-    };
-    if notes.is_empty() {
-        return false;
-    }
-    let mut lo: Option<u8> = None;
-    let mut hi: Option<u8> = None;
-    for note in notes.values() {
-        lo = Some(lo.map_or(note.pitch, |x| x.min(note.pitch)));
-        hi = Some(hi.map_or(note.pitch, |x| x.max(note.pitch)));
-    }
-    let (Some(lo), Some(hi)) = (lo, hi) else {
-        return false;
-    };
-    apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi));
     ui.set_roll_scroll_x(roll_scroll_for_tick(ui, placement.start_tick));
     true
 }

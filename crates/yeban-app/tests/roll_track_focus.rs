@@ -77,13 +77,13 @@ fn same_track_reclick_still_focuses() {
     );
 }
 
-/// ④ 选片段也精准联动到**该片段**（不是整轨的第一个），并复用同一套计算。
+/// ④ 选片段联动只做**横向**（精确到该片段），音域只按轨改一份（不出现第二真相源）。
 #[test]
-fn clip_select_focuses_the_roll_to_that_clip() {
+fn clip_select_focuses_roll_horizontally_without_touching_pitch() {
     let h = code_lines(HOST);
     assert!(
         h.contains("roll_focus_on_clip(&ui, &project, clip_ulid.as_str())"),
-        "on_clip_select 必须调 roll_focus_on_clip（点片段也要联动）"
+        "on_clip_select 必须调 roll_focus_on_clip（点片段也要横向联动）"
     );
     assert!(
         h.contains("fn roll_focus_on_clip("),
@@ -93,8 +93,12 @@ fn clip_select_focuses_the_roll_to_that_clip() {
         h.contains("roll_scroll_for_tick(ui, placement.start_tick)"),
         "片段联动必须横向滚到**该片段**的 start_tick（不是整轨首个片段）"
     );
-    assert!(
-        h.contains("roll_base_for_pitch_range(lo, hi)"),
-        "选轨与选片段必须复用同一套音域计算（不出现第二份口径）"
+    // 音域只由 roll_focus_on_track 改一份；clip 再改会与按轨口径冲突，
+    // 并破坏依赖默认 base=60 的既有卷帘判据（实测 aether_piano_roll lane15=C4 曾红）。
+    assert_eq!(
+        h.matches("apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi))")
+            .count(),
+        1,
+        "apply_roll_pitch_range 只能出现在 roll_focus_on_track 一处（音域单一真相源）"
     );
 }
