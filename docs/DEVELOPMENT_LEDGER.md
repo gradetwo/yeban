@@ -18223,3 +18223,13 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   （`rust (workspace 全量)` / `macos` / `windows` 全绿）。workspace 作业日志现读：
   `test result:` **751** 行、`FAILED` **0**，`sfz_random_start` / `sfz_release_trigger` /
   `sfz_sustain_pedal` 各 **1** 次。tag 与 main tip 指向**同一棵树**，因此这是合流树的全量判决。
+
+### 24.5 ⭐ `db8873f` 收尾合流的整树全量判决（2026-11-16）
+
+- tip `621a8d3a`（B-4 文案修复已合入，整棵含 A/B/C/D 四条 SFZ 线）在同树 tag
+  `verify-621a8d3a` 上 `workflow_dispatch(force_full=true)` 的 run **`43854498077`** =
+  `completed / **success**`（`rust (workspace 全量)` / `macos` / `windows` 全绿）。
+- `rust (workspace 全量)` 作业日志现读：`test result:` **755** 行、`FAILED` **0**；
+  `a_missing_clip_id_message_names_the_delete_own_clip_id_escape_hatch` **1** 次在场。
+- 至此 `db8873f` 复测包的两件遗留：**B-4 已修且判决读回**；**A-4 按设计保留预警**
+  （改拓扑属产品级裁决，等人类批准，见 §24.4）。10 条里 9 条报告判已修、1 条明示设计如此。
