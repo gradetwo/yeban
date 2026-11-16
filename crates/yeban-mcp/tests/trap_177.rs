@@ -207,6 +207,70 @@ fn kinds_that_read_the_envelope_clip_report_a_loud_missing_error() {
     }
 }
 
+/// 判据 ② 的补充（第五份报告 B-4）：拒绝文案必须点名 **`delete` 可自带 `clipId`**，
+/// ⛔ 不能再说"该形态读顶层"——那会误导调用方把 `clipId` 提到顶层。
+#[test]
+fn a_missing_clip_id_message_names_the_delete_own_clip_id_escape_hatch() {
+    let (mut dispatcher, auth, project) = dispatcher();
+    let (track_id, clip_id) = track_and_clip(&project);
+    // 真音符身份：正面腿要真的删到一条存在的音符（不是只过解析层）。
+    let note_id = project
+        .clip_pool
+        .get(&clip_id)
+        .and_then(|entry| entry.content.notes())
+        .and_then(|notes| notes.keys().next())
+        .expect("样本片段必须含至少一条音符")
+        .to_canonical_string();
+
+    // 负面腿：`delete` 没自带、顶层也没给 ⇒ 拒绝，且文案说出两条路。
+    let missing = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id.to_canonical_string(),
+            "ops": [{"kind": "delete", "noteId": note_id.clone()}],
+        }),
+    );
+    assert_eq!(missing["status"], "error", "{missing}");
+    assert_eq!(
+        missing["error"]["data"]["reason"], "clipIdRequired",
+        "{missing}"
+    );
+    assert_eq!(
+        missing["error"]["data"]["requiredByKinds"],
+        json!(["delete"]),
+        "{missing}"
+    );
+    let message = missing["error"]["message"]
+        .as_str()
+        .expect("拒绝必须有 message");
+    assert!(
+        message.contains("delete") && message.contains("自带"),
+        "文案必须点名 `delete` 可自带 `clipId`: {message}"
+    );
+    let hint = missing["error"]["data"]["hint"]
+        .as_str()
+        .expect("data.hint 必须存在");
+    assert!(
+        hint.contains("delete") && hint.contains("自带"),
+        "hint 必须点名 `delete` 自带 `clipId`: {hint}"
+    );
+
+    // 正面腿：`delete` 条目自带 `clipId`、顶层**不给** ⇒ 通过（报告 §四 B-4）。
+    let owned = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_id.to_canonical_string(),
+            "ops": [{"kind": "delete", "noteId": note_id,
+                     "clipId": clip_id.to_canonical_string()}],
+        }),
+    );
+    assert_eq!(owned["status"], "success", "{owned}");
+}
+
 /// 判据 ② 的反面：**不需要 `clipId` 的 kind 给了就接受但忽略** —— 连非法 ULID 都不解析。
 #[test]
 fn a_clip_id_is_ignored_by_kinds_that_do_not_read_it() {
