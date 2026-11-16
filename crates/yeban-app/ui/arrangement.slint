@@ -99,7 +99,11 @@ export component ArrangementViewport inherits Rectangle {
         // TOP HEADER ROW: Track header top box + Ruler + Chord Progression Track (Collapsible)
         Rectangle {
             height: root.show-chord-track ? 54px : 26px;
-            background: #080a10;
+            // 顶部带底色（Wang 2026-11-16：学 Logic，标尺带比轨道背景浅一档）：
+            // 取令牌阶梯里紧邻车道背景 Theme.bg-canvas 的上一档 Theme.bg-panel；
+            // 底边显式 1px 分隔线，理顺工具行/标尺与轨道区之间的横线。
+            background: Theme.bg-panel;
+            border-width: 1px;
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
@@ -119,13 +123,38 @@ export component ArrangementViewport inherits Rectangle {
 
                         HorizontalLayout {
                             alignment: space-between;
-                            Text {
-                                text: "轨道控制头 (TRACKS)";
-                                font-family: Tokens.font-ui;
-                                font-size: 9.5px;
-                                font-weight: 600;
-                                color: #b6c2d2;
-                                vertical-alignment: center;
+                            // 编曲区本地视图菜单开关（Wang 2026-11-16 令：置于轨道头工具行最前）。
+                            // 用可渲染的中文标签，⛔ 不再依赖不渲染的下拉箭头字形；详见细节实测 §5.9。
+                            Rectangle {
+                                width: 60px;
+                                height: 18px;
+                                background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? #253045 : #161b28);
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
+                                Text {
+                                    text: "轨道菜单";
+                                    font-family: Tokens.font-ui;
+                                    font-size: 9.5px;
+                                    font-weight: 600;
+                                    color: root.active-local-menu == "tracks" ? #020617 : #e2e8f0;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                arr-menu-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        root.active-local-menu = root.active-local-menu == "tracks" ? "" : "tracks";
+                                    }
+                                    scroll-event(event) => {
+                                        root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
+                                    }
+                                }
+                                TooltipBubble {
+                                    text: "编曲轨道与视图本地菜单";
+                                    is-visible: arr-menu-touch.has-hover;
+                                    tip-offset-y: 22px;
+                                }
                             }
                             HorizontalLayout {
                                 spacing: 4px;
@@ -193,39 +222,6 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
 
-                                // 编曲区本地视图菜单开关（用可渲染的中文标签，⛔ 不再依赖
-                                // 不渲染的下拉箭头字形；详见细节实测 §5.9）
-                                Rectangle {
-                                    width: 60px;
-                                    height: 18px;
-                                    background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? #253045 : #161b28);
-                                    border-radius: 3px;
-                                    border-width: 1px;
-                                    border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
-                                    Text {
-                                        text: "轨道菜单";
-                                        font-family: Tokens.font-ui;
-                                        font-size: 9.5px;
-                                        font-weight: 600;
-                                        color: root.active-local-menu == "tracks" ? #020617 : #e2e8f0;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                    arr-menu-touch := TouchArea {
-                                        mouse-cursor: MouseCursor.pointer;
-                                        clicked => {
-                                            root.active-local-menu = root.active-local-menu == "tracks" ? "" : "tracks";
-                                        }
-                                        scroll-event(event) => {
-                                            root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, false)
-                                        }
-                                    }
-                                    TooltipBubble {
-                                        text: "编曲轨道与视图本地菜单";
-                                        is-visible: arr-menu-touch.has-hover;
-                                        tip-offset-y: 22px;
-                                    }
-                                }
                             }
                         }
 
@@ -295,7 +291,7 @@ export component ArrangementViewport inherits Rectangle {
                         // Ruler (24px) - Spans across 24 bars (High contrast WCAG AA labels)
                         Rectangle {
                             height: 24px;
-                            background: #06080d;
+                            background: Theme.bg-panel;
                             border-color: #ffffff0a;
                             clip: true;
 
@@ -661,15 +657,7 @@ export component ArrangementViewport inherits Rectangle {
                         alignment: space-between;
 
                         HorizontalLayout {
-                            alignment: space-between;
-                            Text {
-                                text: "轨道控制头 (右置)";
-                                font-family: Tokens.font-mono;
-                                font-size: 8px;
-                                font-weight: 700;
-                                color: Theme.accent;
-                                vertical-alignment: center;
-                            }
+                            alignment: end;
                             Rectangle {
                                 background: add-track-right-touch.has-hover ? Theme.accent.with-alpha(0.35) : Theme.accent.with-alpha(0.18);
                                 border-radius: 3px;
@@ -757,7 +745,7 @@ export component ArrangementViewport inherits Rectangle {
                     width: parent.width;
                     background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent;
                     border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a;
-                    border-width: trk.id == root.selected-track-id ? 1.5px : 1px;
+                    border-width: trk.id == root.selected-track-id ? 1.5px : 0px;
 
                     HorizontalLayout {
                         spacing: 0px;
@@ -1578,6 +1566,17 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
                         }
+                    }
+                    // 行底分界线（Wang 2026-11-16：学 Logic 的行间低对比细线）：整行一根
+                    // ⇒ 轨道头列与车道侧同一 y 位对齐；色用既有分隔令牌 Theme.border-subtle。
+                    // 选中行已有 accent 边框，不再叠加本线。
+                    Rectangle {
+                        x: 0px;
+                        y: parent.height - 1px;
+                        width: parent.width;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                        visible: trk.id != root.selected-track-id;
                     }
                 }
 
