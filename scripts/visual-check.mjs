@@ -18,7 +18,7 @@
  *   A6 移动端 390px 宽无横向溢出 (scrollWidth <= innerWidth + 1)
  *   A7 关键区块锚点 (#features/#stack/#roadmap/#opensource/#contact) 都在
  *   A8 404 页面可访问且语义正确
- *   A9 fr/ja/ru 渲染与词典逐字一致 (<html lang>/h1/title/meta/下拉值); fr/ru 全页无中文残留
+ *   A9 fr/ja/ru 渲染与词典逐字一致 (<html lang>/h1/title/meta/分享 meta/下拉值); fr/ru 全页无中文残留
  *  A10 语言检测与持久化: 无存储按浏览器语言检测; 下拉选后保持; 清存储后回到检测
  * 截图 (artifact):
  *   desktop-dark-zh / desktop-light-en / mobile-dark-zh / notfound-dark-zh
@@ -208,6 +208,16 @@ async function main() {
       if (title !== dict["meta.title"]) fail("A9", `${lang} <title> 与词典不一致: ${title}`);
       const desc = await page.getAttribute('meta[name="description"]', "content");
       if (desc !== dict["meta.description"]) fail("A9", `${lang} meta description 与词典不一致`);
+      const ogTitle = await page.getAttribute('meta[property="og:title"]', "content");
+      if (ogTitle !== dict["meta.title"]) fail("A9", `${lang} og:title 与词典不一致: ${ogTitle}`);
+      const ogDesc = await page.getAttribute('meta[property="og:description"]', "content");
+      if (ogDesc !== dict["meta.description"]) fail("A9", `${lang} og:description 与词典不一致`);
+      const twTitle = await page.getAttribute('meta[name="twitter:title"]', "content");
+      if (twTitle !== dict["meta.title"]) fail("A9", `${lang} twitter:title 与词典不一致: ${twTitle}`);
+      const twDesc = await page.getAttribute('meta[name="twitter:description"]', "content");
+      if (twDesc !== dict["meta.description"]) fail("A9", `${lang} twitter:description 与词典不一致`);
+      const ogAlt = await page.getAttribute('meta[property="og:image:alt"]', "content");
+      if (ogAlt !== dict["meta.og_image_alt"]) fail("A9", `${lang} og:image:alt 与词典不一致: ${ogAlt}`);
       const feat = await page.$eval('[data-i18n="features.title"]', (n) => n.textContent.trim());
       if (feat !== dict["features.title"]) fail("A9", `${lang} features.title 与词典不一致: ${feat}`);
       const sel = await page.$eval("[data-lang-select]", (n) => n.value);
