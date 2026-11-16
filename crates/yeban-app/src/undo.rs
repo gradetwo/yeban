@@ -535,6 +535,24 @@ impl UndoPort {
         }
     }
 
+    /// **借用式读**：`Local` 后端下直接借用工程（⛔ 不 clone），供高频只读路径
+    /// （如拖动预览每帧只取一条 placement 的 `start_tick`）使用。
+    ///
+    /// 返回 `None` = 权威会话此刻没有活跃工程（与 [`Self::try_project`] 同口径）。
+    /// `Authority` 后端只能给一份快照（控制面 API）⇒ 那时仍 clone 一次 ——
+    /// 那是控制面路径，不是 UI 高频路径。
+    ///
+    /// ⚠ 闭包在 `RefCell::borrow()` 期间执行：**⛔ 不得**在闭包里再借本端口
+    /// （会 panic），也 ⛔ 不要调可能重入本端口的 UI 回调；只做纯读/纯算，
+    /// 结果拿出去之后再写 UI。
+    pub fn with_project<R>(&self, f: impl FnOnce(&YebanProjectV1) -> R) -> Option<R> {
+        match &*self.session.borrow() {
+            UndoBackend::Local(session) => Some(f(session.project())),
+            #[cfg(feature = "in-process-mcp")]
+            UndoBackend::Authority(authority) => authority.project().map(|p| f(&p)),
+        }
+    }
+
     /// 权威工程的一份拷贝（界面重投影用）。
     ///
     /// # Panics

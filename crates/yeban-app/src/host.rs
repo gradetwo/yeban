@@ -15324,15 +15324,20 @@ fn preview_clip_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, clip_ulid: &s
     let Some(port) = port else {
         return;
     };
-    let Some(project) = port.try_project() else {
+    // ⭐ 借用式读（⛔ 不 clone 整份工程）：pointer-move 60–120 次/秒，这里只需要
+    // 那一条 placement 的 start_tick。工程做大后，这次深拷贝正是「越拖越卡」的来源
+    // （性能实测 P2-A / 报告 §4 第 3 件）。
+    let Some(found) = port.with_project(|project| {
+        clip_placement_for(project, clip_ulid).map(|(_, _, placement)| placement.start_tick)
+    }) else {
+        // 无工程（权威会话被关）⇒ 与原 try_project 失败同口径：直接返回、不动草稿。
         return;
     };
-    let Some((_, _, placement)) = clip_placement_for(&project, clip_ulid) else {
+    let Some(start_tick) = found else {
         // 拖到一半工程里没有这条摆放了（外部编辑）⇒ 草稿归零，画面回到投影位置。
         ui.set_clip_drag_preview_dx(0.0);
         return;
     };
-    let start_tick = placement.start_tick;
     let ticks_per_pixel = roll_ticks_per_pixel(ui);
     let target =
         clip_drag_target_tick(start_tick, x - ui.get_clip_drag_origin_x(), ticks_per_pixel);
