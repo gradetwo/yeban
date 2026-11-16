@@ -124,7 +124,7 @@ export component ArrangementViewport inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
-                                color: #94a3b8;
+                                color: #b6c2d2;
                                 vertical-alignment: center;
                             }
                             HorizontalLayout {
@@ -252,7 +252,7 @@ export component ArrangementViewport inherits Rectangle {
                                     text: "智能和声声学";
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
-                                    color: #94a3b8;
+                                    color: #b6c2d2;
                                     vertical-alignment: center;
                                 }
                             }
@@ -431,7 +431,7 @@ export component ArrangementViewport inherits Rectangle {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #94a3b8;
+                                            color: #b6c2d2;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -473,7 +473,7 @@ export component ArrangementViewport inherits Rectangle {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #94a3b8;
+                                            color: #b6c2d2;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -515,7 +515,7 @@ export component ArrangementViewport inherits Rectangle {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #94a3b8;
+                                            color: #b6c2d2;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -557,7 +557,7 @@ export component ArrangementViewport inherits Rectangle {
                                             text: "▶ 试听";
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #94a3b8;
+                                            color: #b6c2d2;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -753,8 +753,8 @@ export component ArrangementViewport inherits Rectangle {
                     y: root.track-ys[idx];
                     height: root.track-heights[idx];
                     width: parent.width;
-                    background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.14) : transparent;
-                    border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : #ffffff0a;
+                    background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent;
+                    border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a;
                     border-width: trk.id == root.selected-track-id ? 1.5px : 1px;
 
                     HorizontalLayout {
@@ -763,8 +763,8 @@ export component ArrangementViewport inherits Rectangle {
                         // Left Track Header (if not headers on right)
                         if !Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
-                            background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.20) : #0b0e16;
-                            border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : Theme.border-subtle;
+                            background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : #0b0e16;
+                            border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle;
 
                             // Left color strip (illuminated on focus)
                             Rectangle {
@@ -960,7 +960,7 @@ export component ArrangementViewport inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 8.5px;
                                                     font-weight: 400;
-                                                    color: #94a3b8;
+                                                    color: #b6c2d2;
                                                     vertical-alignment: center;
                                                 }
                                                 Text {
@@ -1183,7 +1183,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 accessible-label: "波形待分析 · 示意（峰值分析尚未接入，当前为 0dB 基准线占位）";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8.5px;
-                                                color: #94a3b8;
+                                                color: #b6c2d2;
                                                 horizontal-alignment: left;
                                                 vertical-alignment: top;
                                             }
@@ -1209,7 +1209,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: "空片段";
                                                 font-family: Tokens.font-ui;
                                                 font-size: 9.5px;
-                                                color: #94a3b8;
+                                                color: #b6c2d2;
                                             }
 
                                             if blk.note_count > 0 : HorizontalLayout {
@@ -1272,8 +1272,8 @@ export component ArrangementViewport inherits Rectangle {
                         // Right Track Header (if right mode)
                         if Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
-                            background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.20) : #0b0e16;
-                            border-color: trk.id == root.selected-track-id ? trk.color.with-alpha(0.85) : Theme.border-subtle;
+                            background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : #0b0e16;
+                            border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle;
 
                             Rectangle {
                                 x: parent.width - 4px;
@@ -1462,7 +1462,7 @@ export component ArrangementViewport inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 8.5px;
                                                     font-weight: 400;
-                                                    color: #94a3b8;
+                                                    color: #b6c2d2;
                                                     vertical-alignment: center;
                                                 }
                                                 Text {
@@ -1670,7 +1670,7 @@ export component ArrangementViewport inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 500;
-                                color: #94a3b8;
+                                color: #b6c2d2;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 wrap: word-wrap;

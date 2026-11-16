@@ -186,7 +186,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
-                                color: root.active-tab == "stacked" ? #020617 : #94a3b8;
+                                color: root.active-tab == "stacked" ? #020617 : #b6c2d2;
                                 vertical-alignment: center;
                             }
                         }
@@ -208,7 +208,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
-                                color: root.active-tab == "devices" ? #020617 : #94a3b8;
+                                color: root.active-tab == "devices" ? #020617 : #b6c2d2;
                                 vertical-alignment: center;
                             }
                         }
@@ -230,7 +230,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
-                                color: root.active-tab == "mixer" ? #020617 : #94a3b8;
+                                color: root.active-tab == "mixer" ? #020617 : #b6c2d2;
                                 vertical-alignment: center;
                             }
                         }
@@ -252,7 +252,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
-                                color: root.active-tab == "pianoroll" ? #020617 : #94a3b8;
+                                color: root.active-tab == "pianoroll" ? #020617 : #b6c2d2;
                                 vertical-alignment: center;
                             }
                         }
@@ -483,7 +483,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: root.device-track-label != "" ? root.device-track-label : root.focus-track-name;
                                 font-family: Tokens.font-mono;
                                 font-size: 9px;
-                                color: #94a3b8;
+                                color: #b6c2d2;
                                 vertical-alignment: center;
                             }
                         }
@@ -613,7 +613,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 11px;
                                     font-weight: 700;
-                                    color: root.device-bypassed[idx] ? #94a3b8 : #f8fafc;
+                                    color: root.device-bypassed[idx] ? #b6c2d2 : #f8fafc;
                                     overflow: elide;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
@@ -699,7 +699,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     text: "ID: " + (idx < root.device-ids.length ? root.device-ids[idx] : "-");
                                     font-family: Tokens.font-mono;
                                     font-size: 9px;
-                                    color: #94a3b8;
+                                    color: #b6c2d2;
                                     overflow: elide;
                                 }
                             }
@@ -929,7 +929,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: trk.insert2 != "" ? trk.insert2 : "2: —";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -950,7 +950,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: trk.insert3 != "" ? trk.insert3 : "3: —";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -971,7 +971,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: "4: Dyn Comp";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1004,7 +1004,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     font-family: Tokens.font-mono;
                                     font-size: 8px;
                                     font-weight: 400;
-                                    color: #94a3b8;
+                                    color: #b6c2d2;
                                 }
                             }
 
@@ -1024,7 +1024,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         padding-left: 2px;
                                         padding-right: 2px;
                                         alignment: space-between;
-                                        Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 8px; color: #94a3b8; }
+                                        Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 8px; color: #b6c2d2; }
                                         Text { text: "-12.0dB"; font-family: Tokens.font-mono; font-size: 8px; color: Theme.accent; }
                                     }
 
@@ -1032,7 +1032,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         padding-left: 2px;
                                         padding-right: 2px;
                                         alignment: space-between;
-                                        Text { text: "SND B"; font-family: Tokens.font-mono; font-size: 8px; color: #94a3b8; }
+                                        Text { text: "SND B"; font-family: Tokens.font-mono; font-size: 8px; color: #b6c2d2; }
                                         Text { text: "-8.5dB"; font-family: Tokens.font-mono; font-size: 8px; color: #a78bfa; }
                                     }
                                 }
@@ -1257,7 +1257,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: trk.bus != "" ? ("→ " + trk.bus) : "→ Master Bus";
                                         font-family: Tokens.font-mono;
                                         font-size: 8px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         vertical-alignment: center;
                                         overflow: elide;
                                     }
@@ -1380,7 +1380,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: "Linear Phase EQ";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1399,7 +1399,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-left: 3px;
                                     padding-right: 3px;
                                     alignment: space-between;
-                                    Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 8px; color: #94a3b8; }
+                                    Text { text: "SND A"; font-family: Tokens.font-mono; font-size: 8px; color: #b6c2d2; }
                                     Text { text: "-14.0dB"; font-family: Tokens.font-mono; font-size: 8px; color: Theme.track-bus; }
                                 }
                             }
@@ -1412,7 +1412,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     text: "BUS 1+2";
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
-                                    color: #94a3b8;
+                                    color: #b6c2d2;
                                     font-weight: 400;
                                     vertical-alignment: center;
                                 }
@@ -1550,7 +1550,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: "→ Master Bus";
                                         font-family: Tokens.font-mono;
                                         font-size: 8px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1651,7 +1651,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: "Analytic Scope";
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -1844,7 +1844,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         text: "48k / 32-bit";
                                         font-family: Tokens.font-mono;
                                         font-size: 8px;
-                                        color: #94a3b8;
+                                        color: #b6c2d2;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1867,7 +1867,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 text: "+";
                                 font-family: Tokens.font-mono;
                                 font-size: 16px;
-                                color: add_mix_trk_touch.has-hover ? Theme.accent : #94a3b8;
+                                color: add_mix_trk_touch.has-hover ? Theme.accent : #b6c2d2;
                                 horizontal-alignment: center;
                             }
                             Text {

@@ -9,7 +9,7 @@ import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
 component IconInspectorToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #94a3b8;
+    in property <color> inactive-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -67,7 +67,7 @@ component IconInspectorToggle inherits Rectangle {
 component IconClipMatrixToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #94a3b8;
+    in property <color> inactive-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -117,7 +117,7 @@ component IconClipMatrixToggle inherits Rectangle {
 component IconLowerDockToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #94a3b8;
+    in property <color> inactive-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -175,7 +175,7 @@ component IconLowerDockToggle inherits Rectangle {
 component IconControlRoomToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #94a3b8;
+    in property <color> inactive-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -234,7 +234,7 @@ component IconControlRoomToggle inherits Rectangle {
 
 component IconToolPointer inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -251,7 +251,7 @@ component IconToolPointer inherits Rectangle {
 
 component IconToolRange inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -321,7 +321,7 @@ component IconToolRange inherits Rectangle {
 
 component IconToolSplit inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -339,7 +339,7 @@ component IconToolSplit inherits Rectangle {
 
 component IconToolDraw inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -360,7 +360,7 @@ component IconToolDraw inherits Rectangle {
 
 component IconPersonaDefault inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -396,7 +396,7 @@ component IconPersonaDefault inherits Rectangle {
 
 component IconPersonaPerformance inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -412,7 +412,7 @@ component IconPersonaPerformance inherits Rectangle {
 
 component IconPersonaArranger inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -440,7 +440,7 @@ component IconPersonaArranger inherits Rectangle {
 
 component IconPersonaMixer inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
 
     width: 14px;
     height: 12px;
@@ -552,7 +552,7 @@ component IconTransportRecord inherits Rectangle {
 }
 
 component IconTransportLoop inherits Rectangle {
-    in property <color> icon-color: #94a3b8;
+    in property <color> icon-color: #b6c2d2;
     width: 12px;
     height: 10px;
 
@@ -657,7 +657,7 @@ export component TransportHeaderBar inherits Rectangle {
                         IconInspectorToggle {
                             active: root.show-browser;
                             active-color: Theme.accent;
-                            inactive-color: #94a3b8;
+                            inactive-color: #b6c2d2;
                         }
                         touch_insp := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -677,7 +677,7 @@ export component TransportHeaderBar inherits Rectangle {
                         IconClipMatrixToggle {
                             active: root.show-clipmatrix;
                             active-color: Theme.accent;
-                            inactive-color: #94a3b8;
+                            inactive-color: #b6c2d2;
                         }
                         touch_clip := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -697,7 +697,7 @@ export component TransportHeaderBar inherits Rectangle {
                         IconLowerDockToggle {
                             active: root.show-lower-dock;
                             active-color: Theme.accent;
-                            inactive-color: #94a3b8;
+                            inactive-color: #b6c2d2;
                         }
                         touch_dock := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -717,7 +717,7 @@ export component TransportHeaderBar inherits Rectangle {
                         IconControlRoomToggle {
                             active: root.show-control-room;
                             active-color: Theme.accent;
-                            inactive-color: #94a3b8;
+                            inactive-color: #b6c2d2;
                         }
                         touch_room := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -751,7 +751,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolPointer {
                             selected: root.active-tool == "pointer";
-                            icon-color: root.active-tool == "pointer" ? Theme.accent : #94a3b8;
+                            icon-color: root.active-tool == "pointer" ? Theme.accent : #b6c2d2;
                         }
                         touch_ptr := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -770,7 +770,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolRange {
                             selected: root.active-tool == "range";
-                            icon-color: root.active-tool == "range" ? Theme.accent : #94a3b8;
+                            icon-color: root.active-tool == "range" ? Theme.accent : #b6c2d2;
                         }
                         touch_rng := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -789,7 +789,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolSplit {
                             selected: root.active-tool == "split";
-                            icon-color: root.active-tool == "split" ? Theme.accent : #94a3b8;
+                            icon-color: root.active-tool == "split" ? Theme.accent : #b6c2d2;
                         }
                         touch_splt := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -808,7 +808,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolDraw {
                             selected: root.active-tool == "draw";
-                            icon-color: root.active-tool == "draw" ? Theme.accent : #94a3b8;
+                            icon-color: root.active-tool == "draw" ? Theme.accent : #b6c2d2;
                         }
                         touch_drw := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -866,7 +866,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-width: (!root.is-playing && !root.is-recording) ? 1px : (btn_stop_touch.has-hover ? 1px : 0);
                         border-color: (!root.is-playing && !root.is-recording) ? #2e3d55 : #253347;
                         IconTransportStop {
-                            icon-color: (!root.is-playing && !root.is-recording) ? #f8fafc : (btn_stop_touch.has-hover ? #cbd5e1 : #94a3b8);
+                            icon-color: (!root.is-playing && !root.is-recording) ? #f8fafc : (btn_stop_touch.has-hover ? #cbd5e1 : #b6c2d2);
                         }
                         btn_stop_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -926,7 +926,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-width: root.is-looping ? 1px : (btn_loop_touch.has-hover ? 1px : 0);
                         border-color: root.is-looping ? Theme.accent.with-alpha(0.70) : #334155;
                         IconTransportLoop {
-                            icon-color: root.is-looping ? Theme.accent : (btn_loop_touch.has-hover ? #cbd5e1 : #94a3b8);
+                            icon-color: root.is-looping ? Theme.accent : (btn_loop_touch.has-hover ? #cbd5e1 : #b6c2d2);
                         }
                         btn_loop_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -962,7 +962,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8.5px;
                                 letter-spacing: 0.4px;
-                                color: #94a3b8;
+                                color: #b6c2d2;
                                 font-weight: 400;
                             }
                             Text {
@@ -990,7 +990,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8.5px;
                                 letter-spacing: 0.4px;
-                                color: #94a3b8;
+                                color: #b6c2d2;
                                 font-weight: 400;
                             }
                             Text {
@@ -1024,7 +1024,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8.5px;
                                 letter-spacing: 0.4px;
-                                color: #94a3b8;
+                                color: #b6c2d2;
                                 font-weight: 400;
                             }
                             Text {
@@ -1074,7 +1074,7 @@ export component TransportHeaderBar inherits Rectangle {
                         font-family: Tokens.font-mono;
                         font-size: 9px;
                         letter-spacing: 0.3px;
-                        color: #94a3b8;
+                        color: #b6c2d2;
                         font-weight: 400;
                         vertical-alignment: center;
                     }
@@ -1119,7 +1119,7 @@ export component TransportHeaderBar inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             letter-spacing: 0.3px;
-                            color: #94a3b8;
+                            color: #b6c2d2;
                             font-weight: 400;
                         }
                         Text {
@@ -1171,7 +1171,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.accent.with-alpha(0.6);
                         IconPersonaDefault {
                             selected: Theme.persona == PersonaMode.YebanDefault;
-                            icon-color: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : #b6c2d2;
                         }
                         touch_p_def := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1190,7 +1190,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.track-drum.with-alpha(0.6);
                         IconPersonaPerformance {
                             selected: Theme.persona == PersonaMode.AbletonLive;
-                            icon-color: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : #b6c2d2;
                         }
                         touch_p_live := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1209,7 +1209,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.accent.with-alpha(0.6);
                         IconPersonaArranger {
                             selected: Theme.persona == PersonaMode.LogicPro;
-                            icon-color: Theme.persona == PersonaMode.LogicPro ? Theme.accent : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.LogicPro ? Theme.accent : #b6c2d2;
                         }
                         touch_p_log := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1228,7 +1228,7 @@ export component TransportHeaderBar inherits Rectangle {
                         border-color: Theme.track-vocal.with-alpha(0.6);
                         IconPersonaMixer {
                             selected: Theme.persona == PersonaMode.CubasePro;
-                            icon-color: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : #94a3b8;
+                            icon-color: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : #b6c2d2;
                         }
                         touch_p_cu := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1308,7 +1308,7 @@ export component TransportHeaderBar inherits Rectangle {
                         font-family: Tokens.font-mono;
                         font-size: 10.5px;
                         font-weight: 400;
-                        color: Theme.show-tooltips ? Theme.accent : #94a3b8;
+                        color: Theme.show-tooltips ? Theme.accent : #b6c2d2;
                         vertical-alignment: center;
                     }
                 }
