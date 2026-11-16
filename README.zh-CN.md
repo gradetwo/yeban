@@ -50,6 +50,16 @@
 
 ▶ 试听《雨声太吵》（4 分 24 秒，[直接播放](https://trilogy.wangda.today/assets/05-yushengtaichao.mp3)）——完整体验在[三部曲站](https://trilogy.wangda.today)，视觉配合音乐。
 
+## 界面截图
+
+当前界面，打开一个 10 轨流行歌工程（主唱、和声、钢琴、吉他、贝斯、鼓组、弦乐、合成铺底）：
+
+![全曲编曲总览：完整 12 小节段落结构，底部钢琴卷帘显示钢琴轨的分解和弦](assets/screenshots/ui-full-song.png)
+
+![编曲主视图：副歌段，底部钢琴卷帘，左通道检查器显示真实 EQ 曲线](assets/screenshots/ui-arrangement-chorus.png)
+
+![混音控制台：每轨通道条与总线、主输出区](assets/screenshots/ui-mixer-console.png)
+
 ## 强大功能
 
 - **Songmap 整曲总览图**（`get_song_overview` MCP 工具，或 CLI `--export-song-overview`）：一幅小节级四层诊断图——能量、频率、疏密、情绪——附自动异常诊断。Phase 2 加段落期望张力等级包络带、3 档流派预设（`default` / `orchestral` / `electronic`）与谱面力度虚线与 A/B 快照对比（`compare_song_snapshots` MCP 工具）。段内自相似度检查已合入（相似度 ≥ 0.95、≥ 4 小节，取最优 5 个匹配）。
