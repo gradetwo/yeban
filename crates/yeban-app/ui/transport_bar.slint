@@ -1356,7 +1356,7 @@ export component TransportHeaderBar inherits Rectangle {
                     mouse-cursor: MouseCursor.pointer;
                     clicked => { root.toggle-language(); }
                 }
-                TooltipBubble { text: root.language-en ? @tr("界面语言: 英文 (点击切回中文)") : @tr("界面语言: 中文 (点击切换英文)"); is-visible: touch_lang.has-hover; tip-offset-x: -40px; }
+                TooltipBubble { text: @tr("界面语言 (点击选择语言)"); is-visible: touch_lang.has-hover; tip-offset-x: -40px; }
             }
         }
     }

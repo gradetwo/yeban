@@ -99,11 +99,8 @@ msgstr "Hover Tips: On (Click to Turn Off) [T]"
 msgid "悬浮提示: 已关闭 (点击开启) [T]"
 msgstr "Hover Tips: Off (Click to Turn On) [T]"
 
-msgid "界面语言: 英文 (点击切回中文)"
-msgstr "UI Language: English (Click for Chinese)"
-
-msgid "界面语言: 中文 (点击切换英文)"
-msgstr "UI Language: Chinese (Click for English)"
+msgid "界面语言 (点击选择语言)"
+msgstr "Interface Language (Click to Choose Language)"
 
 # --- app.slint ---
 
