@@ -151,3 +151,27 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
 - 其余 .slint 文件：skeuo 改材质令牌引用、本线改文案字面量，多数可自动合并，
   同一行同时被改的点（既有材质又有文案的 Text）会零星冲突；
 - `crates/yeban-app/translations/` 与 `tests/i18n_coverage.rs` 为本线独有，无冲突。
+
+## 9. 完工状态（2026-11-17，实施后补记）
+
+- 路由结果：624 处 `@tr` 调用点、571 条唯一 msgid；`en-US.po` 的 msgid
+  集合与源码精确相等且无空译（判据 ② 机械保证）。
+- 普查修正一处：钢琴卷帘的工具名（选择/铅笔/剪刀/力度/橡皮）是
+  piano_roll.slint 内的 .slint 侧模型默认值，已随机械包裹覆盖；
+  `"{}工具"` 的参数在英文态下读到的就是译后的工具名。
+- Rust 侧唯一闭集显示标签已覆盖：总览面板曲风档名
+  （`song_overview::profile_display_name_for` 按 `host::current_language()`
+  取名；`host::apply_language` 记录当前语言并在切换时用
+  `relabel_profile_display` 重标已显示的那一个）。其余 Rust 侧文案仍按
+  §4 排除（状态/诊断类），`.slint` 侧只译其框架词（如
+  `@tr("音频引擎提示: {}", root.engine-error)`，参数原文不译）。
+- 覆盖判据落地为 `crates/yeban-app/tests/i18n_coverage.rs`（三层：未路由
+  硬编码红 / 词表集合精确相等且无空译 / 合成变异自检）。外部变异实测：
+  往 status_bar.slint 加一条假硬编码中文 ⇒ 判据红并点名
+  `ui/status_bar.slint:278`；删一条 .po 词条 ⇒ 判据红并点名缺条；两者
+  恢复后全绿。
+- 与 line/ui-skeuo-theme 的预期 rebase 冲突面：transport_bar.slint 右侧
+  开关岛（拟物线在同区加质感开关，本线加 Group L 语言开关，同区两开关
+  需人工排序）、app.slint 的 MainWindow 属性/回调区（两线各加属性与回调，
+  文本相邻）、host.rs 的 apply_* 与回调接线区（两线各加接线）。其余文件
+  两线基本不相交；translations/ 与 tests/i18n_coverage.rs 为本线独有。
