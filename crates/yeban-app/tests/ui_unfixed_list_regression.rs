@@ -102,14 +102,23 @@ fn waveform_placeholder_label_is_width_gated() {
     assert!(arr.contains("波形待分析 · 示意"));
 }
 
-/// ④ 键位表明确警示「双层都绑」的三条键（P2-2）。
+/// ④ ADR-0074 R1 收敛后：解析表键不再出现在「界面直达键」段（改由主表覆盖）。
 #[test]
-fn shortcut_table_warns_about_dual_bound_keys() {
+fn shortcut_table_no_longer_lists_parsed_keys_as_ui_direct() {
     let cli = code_lines(CLI);
-    assert!(
-        cli.contains("双层键路") && cli.contains("Tab / Ctrl+T / Ctrl+Alt+M"),
-        "--print-shortcuts 必须点名三条双层绑定键，否则用户要按下去才知道（清单 P2-2）"
-    );
+    for gone in [
+        "#   Ctrl+T",
+        "#   X               打开底部混音控制台",
+        "#   P               打开底部钢琴卷帘",
+        "#   C               循环播放开关",
+    ] {
+        assert!(
+            !cli.contains(gone),
+            "R1 后 {gone:?} 由解析表唯一执行，不应再在「界面直达键」段单列"
+        );
+    }
+    // 纯界面键仍在
+    assert!(cli.contains("#   F7 / F8 / F9"));
 }
 
 /// ⑤ 修复不得把此前清掉的七处假几何画回来。

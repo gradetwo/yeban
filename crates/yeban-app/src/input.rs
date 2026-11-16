@@ -1155,6 +1155,13 @@ pub enum Action {
     /// 判据 B11b 的 `rows.len()`（⛔ 不复述数字），因此 `--print-shortcuts` 不打印它，但
     /// `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
+    /// `Cmd/Ctrl+N`: 新建 MIDI 合成器轨（**界面决定**）。
+    ///
+    /// ⚠ Logic Pro 的 New Track 是 `Option+Cmd+N`，但本仓该格已是
+    /// [`Self::ToggleMetronome`]（节拍器，10+ 文件/2 个专测依赖）⇒ 暂用
+    /// `Cmd/Ctrl+N`（"新建"的通用直觉，该格此前空闲）。严格对齐 Logic 需把
+    /// 节拍器改 `K`（另立一票）。
+    NewTrack,
     /// `Cmd/Ctrl+T`: 在播放头位置切分当前选中的剪辑 (Logic Pro `Cmd+T` 对齐)。
     SplitAtPlayhead,
     /// `X`: 展开/收起/切换底部混音台 (Logic Pro `X` 对齐)。
@@ -1340,6 +1347,9 @@ impl InputContext {
                     param: MixerParam::Pan,
                     direction: -1,
                 }),
+                // 新建 MIDI 轨（界面决定）：`n` 在 Cmd/Ctrl 组此前只有 `+Alt`（节拍器）
+                // 一条 ⇒ `Cmd/Ctrl+N` 这格空闲。Logic 的 Option+Cmd+N 在本仓被节拍器占用。
+                (Key::Character('n'), false, false) => Resolution::Action(Action::NewTrack),
                 // Logic Pro 工作流：Cmd+T 剪辑切分
                 (Key::Character('t'), false, false) => Resolution::Action(Action::SplitAtPlayhead),
                 // 横向缩放：Cmd+= / Cmd++ / Cmd+-（`=`/`-` 备用，见第 6 步）

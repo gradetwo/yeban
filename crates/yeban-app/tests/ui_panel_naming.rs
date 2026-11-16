@@ -127,7 +127,8 @@ fn shortcut_table_labels_match_the_dock_tabs() {
     assert!(c.contains("F8 → 控制台「混音控制台」"));
     assert!(c.contains("F9 → 控制台「设备机架」"));
     assert!(c.contains("控制台页签：钢琴卷帘 / 混音控制台 / 设备机架"));
-    assert!(c.contains("#   X               打开底部混音控制台"));
+    // ADR-0074 R1：X 不再在「界面直达键」段，改由 SHORTCUTS 主表列出。
+    assert!(c.contains("X → 打开底部混音控制台"));
     assert!(c.contains("#   F3              混音控制台最大化 / 还原"));
     assert!(!c.contains("打开底部混音台"));
     assert!(!c.contains("混音台最大化"));

@@ -782,7 +782,7 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: "轨道";
-            MenuItem { title: "+ 新建 MIDI 合成器轨"; activated => { root.command-execute("track-add-midi"); } }
+            MenuItem { title: "+ 新建 MIDI 合成器轨 (Ctrl+N)"; activated => { root.command-execute("track-add-midi"); } }
             MenuItem { title: "+ 新建音频轨"; activated => { root.command-execute("track-add-audio"); } }
             MenuItem { title: "将最新导入音频摆放到当前音频轨"; activated => { root.command-execute("place-audio-clip"); } }
             MenuItem { title: "+ 新建辅助总线轨"; activated => { root.command-execute("track-add-aux"); } }
@@ -847,21 +847,8 @@ export component MainWindow inherits Window {
                     || event.text == "5" || event.text == "b" || event.text == "B")) {
                 return accept;
             }
-            if (event.text == Key.Tab) {
-                root.show-clip-matrix = !root.show-clip-matrix;
-                root.zone-toggle("clipmatrix");
-                return accept;
-            }
-            if (event.text == "x" || event.text == "X") {
-                root.show-lower-dock = true;
-                root.apply-dock-tab("mixer");
-                return accept;
-            }
-            if (event.text == "p" || event.text == "P") {
-                root.show-lower-dock = true;
-                root.apply-dock-tab("pianoroll");
-                return accept;
-            }
+            // [ADR-0074 R1] X / P 由 input.rs 解析表（ToggleMixer/ToggleEditor）唯一执行；
+            // Tab / Ctrl+T / Ctrl+Alt+M 同理 —— ⛔ 界面层不再重复执行同一键（双层键路已收敛）。
             if (event.text == "i" || event.text == "I") {
                 root.show-left-inspector = !root.show-left-inspector;
                 root.zone-toggle("browser");
@@ -871,19 +858,8 @@ export component MainWindow inherits Window {
                 root.show-hotspots = !root.show-hotspots;
                 return accept;
             }
-            // Ctrl/Cmd+T 单一语义 = 新建轨道（细节实测 §5.10 / 控件体检 §2.1）。
-            // ⛔ 不同时切分：切分是破坏性操作，改由「轨道」菜单 / 工具栏切刀
-            // 显式触发；界面这一路是 Ctrl+T 的唯一入口。
-            if ((event.modifiers.control || event.modifiers.meta) && (event.text == "t" || event.text == "T")) {
-                root.track-add-requested();
-                return accept;
-            }
             if (!event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt && (event.text == "t" || event.text == "T")) {
                 Theme.show-tooltips = !Theme.show-tooltips;
-                return accept;
-            }
-            if (event.modifiers.alt && (event.modifiers.control || event.modifiers.meta) && (event.text == "m" || event.text == "M")) {
-                root.console-maximize-toggle();
                 return accept;
             }
             if (event.text == Key.F3) {

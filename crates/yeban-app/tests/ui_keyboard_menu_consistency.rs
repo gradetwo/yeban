@@ -85,18 +85,9 @@ fn menu_labels_use_platform_neutral_ctrl_prefix() {
 fn printed_shortcuts_list_the_ui_direct_keys() {
     let c = code_lines(CLI);
     assert!(c.contains("界面直达键"));
-    for key in [
-        "Ctrl+T",
-        "X",
-        "P",
-        "I",
-        "H",
-        "T",
-        "C",
-        "F3",
-        "F4",
-        "F7 / F8 / F9",
-    ] {
+    // ⭐ ADR-0074 R1 之后，X/E/P/C/Tab/Ctrl+T/Ctrl+Alt+M 由解析表唯一执行，
+    // 不再出现在本段（改由 SHORTCUTS 主表覆盖）；此处只剩纯界面键。
+    for key in ["I", "H", "T", "D", "F3", "F4", "F7 / F8 / F9", "Escape"] {
         assert!(
             c.contains(&format!("#   {key}")),
             "--print-shortcuts 的界面直达键段漏了 {key}"
