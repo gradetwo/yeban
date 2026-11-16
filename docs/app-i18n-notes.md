@@ -1,8 +1,10 @@
-# 夜半桌面 UI 双语 i18n 设计与实施记录（line/ui-i18n）
+# 夜半桌面 UI 九语 i18n 设计与实施记录（line/ui-i18n）
 
-负责人定案（Wang 2026-11-17）：夜半开分支完成双语 i18n。语言对 = zh-CN（默认）＋ en-US；
-运行时可切换、不重启生效。产品口径对齐偃师 web 端 i18n：单一词表按中文原文精确匹配、
-默认中文、英文显式切换、开关在顶栏、日志与诊断不翻译、覆盖判据守漏词条。
+负责人定案（Wang 2026-11-17）：夜半开分支完成九语 i18n。语言 = zh-CN（默认）
+＋ en-US、fr-FR、es-ES、pt-BR、ja-JP、ko-KR、ru-RU、de-DE；运行时可切换、
+不重启生效；选择持久化、启动按优先级自动选语言。产品口径对齐偃师 web 端
+i18n：单一词表按中文原文精确匹配、默认中文、其余八语显式切换、开关在顶栏、
+日志与诊断不翻译、覆盖判据守漏词条。
 
 ## 1. 普查（基线 c6729977d，词法级提取，已剔注释）
 
@@ -53,8 +55,9 @@
 - build.rs：`CompilerConfiguration::with_bundled_translations("translations")`
   ＋ `with_default_translation_context(DefaultTranslationContext::None)`（关掉默认的
   组件名上下文 ⇒ 词表按中文原文单一键，与偃师口径一致）；
-- 词表文件：`crates/yeban-app/translations/en-US/LC_MESSAGES/yeban-app.po`
-  （域名 = CARGO_PKG_NAME = `yeban-app`，编译期由 rspolib 解析、逐串编进二进制）；
+- 词表文件：`crates/yeban-app/translations/<locale>/LC_MESSAGES/yeban-app.po`
+  （域名 = CARGO_PKG_NAME = `yeban-app`，编译期由 rspolib 解析、逐串编进二进制），
+  九语共八份目标词表（zh-CN 是源语言，无词表目录）；
 - 运行时：`slint::select_bundled_translation("en-US")` 切英文，
   `select_bundled_translation("")` 回源语言（中文）；缺词条时自动回退原文，不会显示空白。
 
@@ -89,6 +92,7 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
 
 新增 `translations/<lang>/LC_MESSAGES/yeban-app.po` 一份文件＋切换入口加一个取值，
 零代码结构改动。词条以中文原文为键，天然与偃师词表口径互通。
+2026-11-17 已按此成本一次扩七语（见 §10），无结构改动。
 
 ### 与 UiText/Tokens 体系的冲突面
 
@@ -99,18 +103,45 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
 
 ## 3. 切换入口与持久化
 
-- 入口：走带栏右岛、Group K（TIPS 开关）之后新增 **Group L：语言开关**，
-  照 Group K 的小开关形态（文字即当前态：中文态显示「中文」，英文态显示「EN」）。
-  选走带栏的理由：与质感开关（拟物线在同一位置的先例）同为全局显示偏好，
-  顶栏右岛已有成例（主题/质感/提示开关同区），用户找语言开关的心智位置一致；
-  设置区在本应用里不存在成形的面板，不为一个开关新开面板。
-- 接线：`TransportHeaderBar.language-en` 属性＋`toggle-language` 回调 →
-  `MainWindow.language-en` 属性＋`toggle-language` 回调 → host.rs 处理器调用
-  `select_bundled_translation` 并回写属性。另加 CLI `--lang <zh-CN|en-US>`
-  （照 `--theme` 的解析与拒绝形态），启动时在建窗后显式应用一次。
-- 持久化：**本仓没有用户设置持久化路径**（全仓无设置文件/配置目录读写，
-  主题与质感同样是 CLI＋会话内开关）。本期只做会话内切换＋`--lang` 启动选择，
-  在此明写；持久化待仓内有统一设置存储后一并接入，不在本期自造一份。
+- 入口有两处，同调一个 `MainWindow.select-language(string)` 回调（入参为
+  语言规范名，宿主接管：`host::apply_language_and_save` 应用＋写回设置）：
+  ① 走带栏右岛 Group L：按钮显示当前语言**自称名**
+  （`MainWindow.language-name`，宿主持有），点击弹出九语菜单
+  （`PopupWindow`，9 项 × 32px，当前项名前打勾；先例见
+  `ui/console/piano_roll.slint` 的右键菜单）；② 主菜单新增「设置」菜单，
+  内列九语自称名（当前项标题前缀 `✓`；不用 `MenuItem.checked`——它在
+  激活时自翻，与 `language-code` 绑定冲突，故拼标题前缀）。
+  选走带栏＋主菜单双入口的理由：走带栏是找语言开关的心智位置（与质感
+  开关同区），主菜单是 Wang 05:57 令明确要求的"菜单里能改"；两处都只
+  发同一个回调，不各立接线。
+- 宿主侧语言状态：`MainWindow.language-code`（规范名）与 `language-name`
+  （自称名）两个属性，`host::apply_language` 是唯一写入口；闭集显示标签
+  （总览曲风档名、状态栏选区/音频配置两格）按 `host::current_language()`
+  取词，切换时重标（见 §9）。
+- CLI `--lang <语言>`（照 `--theme` 的解析与拒绝形态）：九语规范名与
+  语言段简写（`fr`/`es`/`pt`/`ja`/`ko`/`ru`/`de`/`en`/`zh`）都接受；
+  未知取值报 `UnknownLanguage`，绝不静默回退。
+- 持久化（2026-11-17 05:57 Wang 令新增；此前"仓内无设置持久化路径"，
+  本线新建）：设置文件 `yeban/settings.json`，放平台配置目录
+  （Linux `$XDG_CONFIG_HOME/yeban/`，未设则 `$HOME/.config/yeban/`；
+  macOS `$HOME/Library/Application Support/yeban/`；
+  Windows `%APPDATA%/yeban/`；仓内此前无设置路径先例，全仓 grep
+  `config_dir` / `settings.json` 零命中，故新建；目录名全平台统一小写
+  `yeban`）。格式 `{"version": 1, "language": "fr-FR"}`，`version` 是给
+  后续线的演进位；读不到 / 读坏 / 取值不在九语里 ⇒ 当作没有已存选择，
+  不报错。实现见 `crates/yeban-app/src/settings.rs`（`serde_json::Value`
+  手工读写，不引新依赖；写临时文件再 rename；`YEBAN_SETTINGS_PATH`
+  环境变量可覆盖路径，仅供单测与取证工具隔离用，生产不设）。
+- 启动优先级（定案，纯函数 `settings::resolve_startup_language`，单测钉死）：
+  `--lang` 参数（显式给过才算，`Options.lang_given` 标记；临时覆盖、**不写回**）
+  ＞ 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN。系统检测读进程环境
+  `LC_ALL` ＞ `LC_MESSAGES` ＞ `LANG`（POSIX 优先级），映射到九语
+  （`pt-PT` 落到 pt-BR——本线只有巴西葡语一支；`zh-TW` 落到 zh-CN——
+  只有简体中文一支；认不出 / `C` / 空 ⇒ zh-CN）。检测复述 Slint 首帧
+  自动选择（`set_bundled_languages` 按系统 locale 选词表），不是第二套
+  检测。已知缺口：Windows 上 `LANG` 类变量通常未设，检测落回 zh-CN
+  （Slint 自身在 Windows 上能读到系统语言，但 Rust 侧读不到；Windows
+  用户首次启动为 zh-CN，菜单里选一次后即持久化）。缺口在此登记，不静默。
 
 ## 4. 范围与排除项
 
@@ -133,9 +164,15 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
 
 1. 扫 `ui/**/*.slint`（词法级，剔注释）：任何含中文的字符串字面量若不是 `@tr(...)`
    的直接实参（或在白名单内），判红并列出文件:行与原文；
-2. 词表完整性：源码中 `@tr` 的全部 msgid 集合必须与 en-US.po 的 msgid 集合**相等**
-   （漏译、孤儿词条都红）；
+2. 词表完整性：源码中 `@tr` 的全部 msgid 集合必须与**八个目标语言**词表的
+   msgid 集合逐一**相等**（漏译、孤儿词条、空译都红）；另逐语做删词条变异：
+   每语删 `选区 无` 一条，判据必须当场点名该条（变异可抽样，全量对账在判据本体）；
 3. 变异验证：随手加一条假硬编码中文串 ⇒ ① 红；删掉 ⇒ 绿（实施时实测并记回执）。
+
+宿主闭集显示标签（三处：总览曲风档名、状态栏选区/音频配置两格）不在本判据
+的 .slint 观测面内，各自由九语单测看守（`src/song_overview.rs` /
+`src/host.rs` 内：九语档名表、空选区常量与各语 `.po` 的 `选区 无` msgstr
+逐字符对账、设备格后缀九语重标拿全部采样率 × 位深组合验）。
 
 ## 6. 实施批次
 
@@ -156,12 +193,13 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
 
 ## 9. 完工状态（2026-11-17，实施后补记）
 
-- 路由结果：624 处 `@tr` 调用点、565 条唯一 msgid；`en-US.po` 的 msgid
-  集合与源码精确相等且无空译（判据 ② 机械保证）。（原 571 条；2026-11-17
-  rebase 到 main c58c70369 时，ui-header-cleanup 删除的六条冗余标题
-  ——轨道控制头 (TRACKS)、轨道控制头 (右置)、Clip 激发矩阵、监听控制室、
-  工程导出、工程——随删除成为孤儿词条，已从 .po 移除；素材池因
-  accessible-label 仍在而保留。）
+- 路由结果：666 处 `@tr` 调用点（去注释后计数）、565 条唯一 msgid；八份目标词表的 msgid
+  集合与源码精确相等且无空译（判据 ② 机械保证）。计数沿革：原 571 条；
+  2026-11-17 rebase 到 main c58c70369 时，ui-header-cleanup 删除的六条
+  冗余标题随删除成为孤儿词条，已从 .po 移除（→565）；九语扩展时 Group L
+  两态提示合并为一条菜单提示（删 2 增 1，→564）；主菜单「设置」新增
+  `设置` 一条 msgid（→565）。「素材池」因 accessible-label
+  仍在而保留。
 - 普查修正一处：钢琴卷帘的工具名（选择/铅笔/剪刀/力度/橡皮）是
   piano_roll.slint 内的 .slint 侧模型默认值，已随机械包裹覆盖；
   `"{}工具"` 的参数在英文态下读到的就是译后的工具名。
@@ -191,3 +229,36 @@ tooltip 串同步变英文；像素差 zh→en = 2764 px；切回 `""` 后属性
   需人工排序）、app.slint 的 MainWindow 属性/回调区（两线各加属性与回调，
   文本相邻）、host.rs 的 apply_* 与回调接线区（两线各加接线）。其余文件
   两线基本不相交；translations/ 与 tests/i18n_coverage.rs 为本线独有。
+
+## 10. 九语扩展与持久化补记（2026-11-17，Wang 05:31 / 05:57 两令）
+
+- 语言：zh-CN（源）＋ en-US、fr-FR、es-ES、pt-BR（巴西变体）、ja-JP、
+  ko-KR、ru-RU、de-DE，共九语八份目标词表，各 565 条、零空译（判据 ②
+  八语对账＋逐语删 `选区 无` 变异点名）。
+- 词表翻译：七份新词表各由一轮翻译写成（msgid 集与 en-US 逐条对齐、
+  占位符 `{}`/`%s` 两侧一致；与英文相同者逐语 17–21 条，逐条核查均
+  为行业借词或同形词，如 Piano Roll / Reverb / Preset / Clip /
+  Transport，无懒复制）。
+- 宿主闭集九语化：`Language` 九变体（规范名、别名、自称名、bundled
+  selector）；状态栏选区格（空选区九串、前缀九串、重标九语互认）与
+  音频配置格（后缀九串，含日语 `目標` 与中文 `目标` 简繁同义不同形）；
+  总览曲风档名九语表与重标。九语单测看守（host.rs 三条、
+  song_overview.rs 两条）。
+- 切换入口：Group L 两态开关改为九语弹出菜单（按钮显示自称名，菜单
+  9 项 × 32px，当前项打勾）；主菜单新增「设置」菜单列九语（当前项标
+  题前缀 `✓`）；两处同调 `select-language(string)`，宿主
+  `apply_language_and_save` 应用＋写回。
+- 持久化与启动：新建 `src/settings.rs`，设置文件 `yeban/settings.json`
+  （平台配置目录，见 §3；格式 `{"version": 1, "language": "fr-FR"}`）。
+  启动优先级 `--lang` ＞ 已存选择 ＞ 系统检测 ＞ zh-CN（纯函数
+  `resolve_startup_language` 单测钉死；检测读 `LC_ALL` /
+  `LC_MESSAGES` / `LANG`，见 §3 缺口登记：Windows 检测落回 zh-CN）。
+- 证据帧：`examples/i18n_shots.rs` 出六帧（zh / en / fr / ja / ru /
+  zh-back，1600×900），fr/ja/ru 三帧须全对应语言无中文残留（含状态
+  栏两格），往返切回 zh 逐像素无损；取证运行的设置写回指到输出目录
+  临时文件。
+- 后续线：窗口布局持久化**不在本线**。合入后父 agent 另开
+  line/ui-window-state，用同一设置存储做窗口几何＋面板布局持久化、
+  主菜单「设置」加「恢复默认布局」。
+- 已登记未修：① 「均分高度」按钮英文只显 'Even'（布局裁切，译文完整）；
+  ② Windows 首次启动语言检测落回 zh-CN（见 §3）。

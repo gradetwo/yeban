@@ -1,20 +1,26 @@
-//! 双语 i18n 证据图（`line/ui-i18n` 的取证工具，**不是**产品路径）。
+//! 九语 i18n 证据图（`line/ui-i18n` 的取证工具，**不是**产品路径）。
 //!
 //! 用法：
 //! `cargo run -p yeban-app --example i18n_shots -- [输出目录]`
 //! （缺省输出到 `~/workspace/i18n-shots`）。
 //!
 //! 同一份**真实工程**（`yeban_model::samples::filled_project()`）+ 真投影，
-//! 在同一活窗口上依次产出三帧：
+//! 在同一活窗口上依次产出六帧：
 //! 1. `main-zh.png` —— 启动语言 zh-CN（经 `host::apply_language`，与
 //!    `main.rs` 的 `--lang` 写入口同路）；
-//! 2. `main-en.png` —— 经**真实开关路径**切英文：调用主窗口的
-//!    `toggle-language` 回调（走带栏 Group L 开关在 .slint 侧转发的就是它，
-//!    宿主接管后走 `apply_language`），不重启、不重建窗口；
-//! 3. `main-zh-back.png` —— 再调一次回调切回中文；与第 1 帧逐像素比对，
+//! 2. `main-en.png` —— 经**真实选择路径**切英文：调用主窗口的
+//!    `select-language` 回调（走带栏 Group L 语言菜单与主菜单
+//!    「设置 → 语言」在 .slint 侧转发的就是它，宿主接管后走
+//!    `apply_language_and_save`），不重启、不重建窗口；
+//! 3. `main-fr.png` —— 同路切法语；
+//! 4. `main-ja.png` —— 同路切日语；
+//! 5. `main-ru.png` —— 同路切俄语；
+//! 6. `main-zh-back.png` —— 再调一次回调切回中文；与第 1 帧逐像素比对，
 //!    不一致即非零退出（往返无损的机械见证）。
 //!
-//! stdout 打印每帧的非黑像素数与 `language-en` 属性读数作见证。
+//! stdout 打印每帧的非黑像素数与 `language-code` / `language-name`
+//! 属性读数作见证。取证运行的语言选择写回（`apply_language_and_save`）
+//! 指到输出目录下的临时设置文件，不碰真用户配置。
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -79,6 +85,15 @@ fn main() {
         format!("{home}/workspace/i18n-shots")
     });
     std::fs::create_dir_all(&out_dir).expect("创建输出目录");
+    // 取证运行不碰真用户设置：语言选择写回指到输出目录下的临时文件。
+    // SAFETY: `set_var` 在 Rust 2024 下是 `unsafe`（多线程下改环境变量不安全）；
+    // 这里是进程启动后主线程的第一件事，窗口与工作线程尚未创建，无并发读写。
+    unsafe {
+        std::env::set_var(
+            yeban_app::settings::SETTINGS_PATH_ENV,
+            format!("{out_dir}/.settings-test.json"),
+        );
+    }
 
     let (width, height) = (1600u32, 900u32);
     let window = install_platform(width, height);
@@ -95,36 +110,51 @@ fn main() {
     // 热身帧（布局与首帧构建不计入语言切换的见证）。
     let _ = render_frame(&window, width, height);
 
-    let (zh_frame, zh_elapsed) = render_frame(&window, width, height).expect("中文帧必须重绘");
-    write_png(&format!("{out_dir}/main-zh.png"), &zh_frame, width, height);
-    println!(
-        "i18n-shot frame=zh language_en={} render_ms={:.2} non_black={} path={out_dir}/main-zh.png",
-        ui.get_language_en(),
-        zh_elapsed.as_secs_f64() * 1000.0,
-        non_black_pixels(&zh_frame),
-    );
+    // 出一帧：渲染 + 写盘 + 打印见证行，返回像素（供往返比对）。
+    let shot = |name: &str| -> Vec<Rgb8Pixel> {
+        let (frame, elapsed) =
+            render_frame(&window, width, height).unwrap_or_else(|| panic!("{name} 帧必须重绘"));
+        write_png(&format!("{out_dir}/main-{name}.png"), &frame, width, height);
+        println!(
+            "i18n-shot frame={name} language_code={} language_name={} render_ms={:.2} non_black={} path={out_dir}/main-{name}.png",
+            ui.get_language_code(),
+            ui.get_language_name(),
+            elapsed.as_secs_f64() * 1000.0,
+            non_black_pixels(&frame),
+        );
+        frame
+    };
 
-    // 真实开关路径：Group L 开关 → MainWindow.toggle-language 回调 → 宿主接管。
-    ui.invoke_toggle_language();
-    let (en_frame, en_elapsed) = render_frame(&window, width, height).expect("英文帧必须重绘");
-    write_png(&format!("{out_dir}/main-en.png"), &en_frame, width, height);
-    println!(
-        "i18n-shot frame=en language_en={} render_ms={:.2} non_black={} path={out_dir}/main-en.png",
-        ui.get_language_en(),
-        en_elapsed.as_secs_f64() * 1000.0,
-        non_black_pixels(&en_frame),
-    );
-    assert!(ui.get_language_en(), "切换后 language-en 必须为 true");
+    let zh_frame = shot("zh");
+    assert_eq!(ui.get_language_code().as_str(), "zh-CN");
+    assert_eq!(ui.get_language_name().as_str(), "中文");
 
-    ui.invoke_toggle_language();
-    let (back_frame, _) = render_frame(&window, width, height).expect("回切中文帧必须重绘");
-    write_png(
-        &format!("{out_dir}/main-zh-back.png"),
-        &back_frame,
-        width,
-        height,
-    );
-    assert!(!ui.get_language_en(), "回切后 language-en 必须为 false");
+    // 真实选择路径：主菜单 / Group L 菜单 → MainWindow.select-language
+    // 回调 → 宿主接管（应用＋写回临时设置文件）。
+    for (code, name, frame_name) in [
+        ("en-US", "English", "en"),
+        ("fr-FR", "Français", "fr"),
+        ("ja-JP", "日本語", "ja"),
+        ("ru-RU", "Русский", "ru"),
+    ] {
+        ui.invoke_select_language(code.into());
+        let _frame = shot(frame_name);
+        assert_eq!(
+            ui.get_language_code().as_str(),
+            code,
+            "切到 {code} 后 language-code 必须为 {code}"
+        );
+        assert_eq!(
+            ui.get_language_name().as_str(),
+            name,
+            "切到 {code} 后 language-name 必须为 {name}"
+        );
+    }
+
+    ui.invoke_select_language("zh-CN".into());
+    let back_frame = shot("zh-back");
+    assert_eq!(ui.get_language_code().as_str(), "zh-CN");
+    assert_eq!(ui.get_language_name().as_str(), "中文");
     let roundtrip_diff = zh_frame
         .iter()
         .zip(back_frame.iter())

@@ -15922,50 +15922,73 @@ pub const STATUS_SELECTION_EMPTY: &str = "选区 无";
 /// 由本文件单测 `status_bar_i18n_empty_selection_matches_po_msgstr` 机械对账。
 pub const STATUS_SELECTION_EMPTY_EN: &str = "Selection: None";
 
-/// 「选区信息」格的前缀（中文 / 英文）：有选区时整串是 `{前缀} {起点} – {终点}`，
-/// 时间码本身与语言无关（`timecode_for_ticks` 的产物只有数字与标点）。
-const STATUS_SELECTION_PREFIX_ZH: &str = "选区";
-/// 同上，英文前缀（与 [`STATUS_SELECTION_EMPTY_EN`] 同源：`Selection`）。
-const STATUS_SELECTION_PREFIX_EN: &str = "Selection";
-
-/// 空选区时「选区信息」格在 `lang` 下的文本（闭集：两个字面量，见上两条常量）。
+/// 空选区时「选区信息」格在 `lang` 下的文本（闭集：九个字面量）。
+///
+/// 英文那条见 [`STATUS_SELECTION_EMPTY_EN`] 的逐字符约束；其余七语同理，
+/// 各自的 `.po` 里 `选区 无` 的 msgstr 必须与这里的字面量逐字符相同，
+/// 由本文件单测 `status_bar_i18n_empty_selection_matches_po_msgstr` 逐语对账。
+/// （法语冒号前空格是法语排版惯例，不是笔误。）
 fn status_selection_empty_for(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
     match lang {
-        crate::cli::Language::ZhCn => STATUS_SELECTION_EMPTY,
-        crate::cli::Language::EnUs => STATUS_SELECTION_EMPTY_EN,
+        ZhCn => STATUS_SELECTION_EMPTY,
+        EnUs => STATUS_SELECTION_EMPTY_EN,
+        FrFr => "Sélection : aucune",
+        EsEs => "Selección: ninguna",
+        PtBr => "Seleção: nenhuma",
+        JaJp => "選択なし",
+        KoKr => "선택 없음",
+        RuRu => "Выделение: нет",
+        DeDe => "Auswahl: keine",
+    }
+}
+
+/// 「选区信息」格的前缀（九语）：有选区时整串是 `{前缀} {起点} – {终点}`，
+/// 时间码本身与语言无关（`timecode_for_ticks` 的产物只有数字与标点）。
+/// 各语前缀与上表空选区文本同源（空选区 = 前缀 + 本语"无"词）。
+fn status_selection_prefix_for(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => "选区",
+        EnUs => "Selection",
+        FrFr => "Sélection",
+        EsEs => "Selección",
+        PtBr => "Seleção",
+        JaJp => "選択",
+        KoKr => "선택",
+        RuRu => "Выделение",
+        DeDe => "Auswahl",
     }
 }
 
 /// 有选区时「选区信息」格在 `lang` 下的整串：`{前缀} {起点时间码} – {终点时间码}`。
 fn status_selection_range(start: &str, end: &str, lang: crate::cli::Language) -> String {
-    let prefix = match lang {
-        crate::cli::Language::ZhCn => STATUS_SELECTION_PREFIX_ZH,
-        crate::cli::Language::EnUs => STATUS_SELECTION_PREFIX_EN,
-    };
+    let prefix = status_selection_prefix_for(lang);
     format!("{prefix} {start} – {end}")
 }
 
 /// 已显示的「选区信息」格文本 → `lang` 下的文本（语言切换时重标用，
 /// 与 [`crate::song_overview::relabel_profile_display`] 同款）。
 ///
-/// 只认得闭集的两种形态：空选区字面量（中 / 英任一）与 `{前缀} {起点} – {终点}`
+/// 只认得闭集的两种形态：空选区字面量（九语任一）与 `{前缀} {起点} – {终点}`
 /// 区间形态（时间码段原样保留）。其余文本（别的写者留下的瞬时状态消息等）
 /// 不认识 ⇒ 返回 `None`，调用方保持原值不动，不猜。
 fn relabel_status_selection(current: &str, lang: crate::cli::Language) -> Option<String> {
-    if current == STATUS_SELECTION_EMPTY || current == STATUS_SELECTION_EMPTY_EN {
-        return Some(status_selection_empty_for(lang).to_owned());
+    use crate::cli::Language;
+    for source in Language::ALL {
+        if current == status_selection_empty_for(source) {
+            return Some(status_selection_empty_for(lang).to_owned());
+        }
     }
-    for prefix in [STATUS_SELECTION_PREFIX_ZH, STATUS_SELECTION_PREFIX_EN] {
+    for source in Language::ALL {
+        let prefix = status_selection_prefix_for(source);
         if let Some(rest) = current
             .strip_prefix(prefix)
             .and_then(|tail| tail.strip_prefix(' '))
         {
             // 区间形态还必须含时间码分隔符，避免把别的前缀同名文本误判成选区读数。
             if rest.contains(" – ") {
-                let target = match lang {
-                    crate::cli::Language::ZhCn => STATUS_SELECTION_PREFIX_ZH,
-                    crate::cli::Language::EnUs => STATUS_SELECTION_PREFIX_EN,
-                };
+                let target = status_selection_prefix_for(lang);
                 return Some(format!("{target} {rest}"));
             }
         }
@@ -15974,16 +15997,28 @@ fn relabel_status_selection(current: &str, lang: crate::cli::Language) -> Option
 }
 
 /// 「音频配置」格整串里**唯一**随语言变的段：`[UI-GRID-004]` 目标标签的后缀
-/// （中文 ` · 目标 120 FPS` / 英文 ` · Target 120 FPS`）。
+/// （九语各一串，见 [`status_device_target_suffix_for`]；日语与中文同形
+/// ` · 目標 120 FPS`，重标时按后缀表逐语匹配，往返恒等）。
 ///
 /// 整串的其余部分（采样率 / 位深）由 `crate::bridge::audio_config_display`
 /// 在投影期拼一次且与语言无关；宿主**不重拼第二份**（R9 口径），只在写点换
 /// 这一段闭集后缀。后缀与 bridge 的格式串若漂移 ⇒ 本文件单测
 /// `status_bar_i18n_device_relabel_covers_every_audio_config` 拿全部
 /// 采样率 × 位深组合的真实投影串验，漂移即红。
-const STATUS_DEVICE_TARGET_SUFFIX_ZH: &str = " · 目标 120 FPS";
-/// 同上，英文后缀。
-const STATUS_DEVICE_TARGET_SUFFIX_EN: &str = " · Target 120 FPS";
+fn status_device_target_suffix_for(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => " · 目标 120 FPS",
+        EnUs => " · Target 120 FPS",
+        FrFr => " · Cible 120 FPS",
+        EsEs => " · Objetivo 120 FPS",
+        PtBr => " · Alvo 120 FPS",
+        JaJp => " · 目標 120 FPS",
+        KoKr => " · 목표 120 FPS",
+        RuRu => " · Цель 120 FPS",
+        DeDe => " · Ziel 120 FPS",
+    }
+}
 
 /// 已显示（或待写）的「音频配置」格整串 → `lang` 下的整串（语言切换时重标用，
 /// 写点 [`publish_status_bar`] 也走它把投影的中文规范形换成当前语言）。
@@ -15991,21 +16026,13 @@ const STATUS_DEVICE_TARGET_SUFFIX_EN: &str = " · Target 120 FPS";
 /// 认不出后缀（还没读数时的 `—`、或格式被改动）⇒ 返回 `None`，调用方保持
 /// 原值不动，不猜。
 fn relabel_status_device(current: &str, lang: crate::cli::Language) -> Option<String> {
-    let (from, to) = match lang {
-        crate::cli::Language::ZhCn => (
-            STATUS_DEVICE_TARGET_SUFFIX_EN,
-            STATUS_DEVICE_TARGET_SUFFIX_ZH,
-        ),
-        crate::cli::Language::EnUs => (
-            STATUS_DEVICE_TARGET_SUFFIX_ZH,
-            STATUS_DEVICE_TARGET_SUFFIX_EN,
-        ),
-    };
-    if let Some(head) = current.strip_suffix(from) {
-        return Some(format!("{head}{to}"));
-    }
-    if current.ends_with(to) {
-        return Some(current.to_owned());
+    use crate::cli::Language;
+    let to = status_device_target_suffix_for(lang);
+    for source in Language::ALL {
+        let from = status_device_target_suffix_for(source);
+        if let Some(head) = current.strip_suffix(from) {
+            return Some(format!("{head}{to}"));
+        }
     }
     None
 }
@@ -16213,31 +16240,38 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
     });
 }
 
-/// 界面语言（`--lang` / 走带栏 Group L 开关）的**唯一**写入口，与 [`apply_theme`] 同款
-/// 单向注入（双语 i18n，设计见 `docs/app-i18n-notes.md`）。
+/// 界面语言（`--lang` / 走带栏 Group L 菜单 / 主菜单「设置 → 语言」）的
+/// **唯一**写入口，与 [`apply_theme`] 同款单向注入（设计见
+/// `docs/app-i18n-notes.md`）。
 ///
 /// 做两件事，缺一不可：
 /// 1. `slint::select_bundled_translation` 真正切换 bundled 词表 —— `@tr` 绑定随
 ///    `translations_dirty` 索引属性即时重求值，已渲染界面不重启全量生效
 ///    （同版本探针实测：属性回读 zh→en、像素差、往返逐像素一致，见 notes §2）；
-/// 2. 回写 `MainWindow.language-en` 属性 —— 走带栏 Group L 开关的当前态显示读它；
-///    属性只在切换**真的成功**时才置位，词表缺失时开关停在中文态，不假装已切换。
+/// 2. 回写 `MainWindow.language-code` / `language-name` 属性 —— 走带栏 Group L
+///    开关与主菜单的当前态显示读它；属性只在切换**真的成功**时才置位，
+///    词表缺失时开关停在中文态，不假装已切换。
+///
+/// 本函数**不**写设置文件：启动路径（`main.rs` / `headless_idle.rs`）先用
+/// [`crate::settings::resolve_startup_language`] 算出优先级
+/// （`--lang` ＞ 已存选择 ＞ 系统检测 ＞ zh-CN）再调这里；
+/// 用户在菜单里显式选语言走 [`apply_language_and_save`]（应用＋写回）。
 ///
 /// 为什么建窗后必须显式调用一次：`set_bundled_languages` 在首个组件创建时按
-/// **系统 locale** 自动选语言；负责人定案默认 zh-CN，启动路径必须用
-/// `options.lang`（默认 [`crate::cli::Language::ZhCn`]）覆盖自动选择，
-/// 否则英文系统上首帧会是英文。
+/// **系统 locale** 自动选语言；负责人定案默认 zh-CN，启动路径必须用算出的
+/// 语言覆盖自动选择，否则英文系统上首帧会是英文。
 pub fn apply_language(ui: &MainWindow, lang: crate::cli::Language) {
     let selected = slint::select_bundled_translation(lang.bundled_selector());
     if selected.is_ok() {
         CURRENT_LANGUAGE.store(
-            match lang {
-                crate::cli::Language::ZhCn => 0,
-                crate::cli::Language::EnUs => 1,
-            },
+            crate::cli::Language::ALL
+                .iter()
+                .position(|candidate| *candidate == lang)
+                .unwrap_or(0) as u8,
             std::sync::atomic::Ordering::Relaxed,
         );
-        ui.set_language_en(matches!(lang, crate::cli::Language::EnUs));
+        ui.set_language_code(lang.name().into());
+        ui.set_language_name(lang.self_name().into());
         // 宿主写入的闭集显示标签有三处：总览面板的曲风档名（写点在
         // song_overview::apply_song_overview，它按 current_language() 取名字）
         // 与状态栏的选区 / 音频配置两格（写点在 publish_status_bar，同样按
@@ -16258,6 +16292,15 @@ pub fn apply_language(ui: &MainWindow, lang: crate::cli::Language) {
     }
 }
 
+/// 用户在菜单里显式选语言的入口：先 [`apply_language`]，再把选择写回
+/// 设置文件（见 [`crate::settings::save_language`]）。写回失败不影响
+/// 本次切换（设置模块只打印一行 stderr）；启动路径不走这里
+/// （`--lang` 临时覆盖与自动检测都不写回，见 `apply_language` 的文档）。
+pub fn apply_language_and_save(ui: &MainWindow, lang: crate::cli::Language) {
+    apply_language(ui, lang);
+    crate::settings::save_language(lang);
+}
+
 /// 当前界面语言的进程内记录（[`apply_language`] 是唯一写者，默认 zh-CN）。
 ///
 /// 存在的理由：宿主侧有极少数闭集显示标签由 Rust 写入 .slint 属性
@@ -16268,10 +16311,11 @@ static CURRENT_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::Atomic
 /// 当前界面语言（从未调用过 [`apply_language`] 时为默认 zh-CN）。
 #[must_use]
 pub fn current_language() -> crate::cli::Language {
-    match CURRENT_LANGUAGE.load(std::sync::atomic::Ordering::Relaxed) {
-        1 => crate::cli::Language::EnUs,
-        _ => crate::cli::Language::ZhCn,
-    }
+    let index = CURRENT_LANGUAGE.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    crate::cli::Language::ALL
+        .get(index)
+        .copied()
+        .unwrap_or(crate::cli::Language::ZhCn)
 }
 
 /// 同 [`build_main_window`]，但显式指定底部控制台的初始 Tab。
@@ -16297,19 +16341,18 @@ pub fn build_main_window_with_console_tab(
     #[cfg(target_os = "windows")]
     ui.global::<Tokens<'_>>()
         .set_font_ui("Microsoft YaHei UI".into());
-    // 语言开关（走带栏 Group L）：语言状态归宿主持有，回调只做
-    // 「读当前态 → 取反 → 经唯一写入口 apply_language 应用」。挂在这一处
-    // （两个 build_main_window* 的共同构造点），测试与生产路径同得。
-    ui.on_toggle_language({
+    // 语言选择（走带栏 Group L 菜单 + 主菜单「设置 → 语言」）：宿主收到语言
+    // 代码 → 经唯一写入口应用并持久化本次显式选择（启动时的 --lang 覆盖
+    // 与自动检测不走这里、不写回）。挂在这一处（两个 build_main_window* 的
+    // 共同构造点），测试与生产路径同得。
+    ui.on_select_language({
         let weak = ui.as_weak();
-        move || {
+        move |code| {
             let Some(ui) = weak.upgrade() else { return };
-            let next = if ui.get_language_en() {
-                crate::cli::Language::ZhCn
-            } else {
-                crate::cli::Language::EnUs
+            let Some(lang) = crate::cli::Language::from_name(code.as_str()) else {
+                return;
             };
-            apply_language(&ui, next);
+            apply_language_and_save(&ui, lang);
         }
     });
     ui.set_timecode(scene.timecode.clone().into());
@@ -16350,37 +16393,81 @@ pub fn build_main_window_with_console_tab(
 mod tests {
     use super::advance_scroll;
 
-    /// 双语 i18n 收尾（2026-11-17）：英文空选区常量必须与 .po 里 `选区 无` 的
-    /// msgstr **逐字符相同**——`.slint` 默认值 `@tr("选区 无")` 在英文态渲染
-    /// 出的就是那条 msgstr，宿主写出的英文若不同 ⇒ 同一格两个英文口径。
+    /// 九语 i18n 收尾（2026-11-17）：八个目标语言的空选区常量必须与各自
+    /// `.po` 里 `选区 无` 的 msgstr **逐字符相同**——`.slint` 默认值
+    /// `@tr("选区 无")` 在某语言态渲染出的就是那条 msgstr，宿主写出的若不同
+    /// ⇒ 同一格两个口径。缺一语即红（词表缺文件时 `include_str!` 编译期即报错）。
     #[test]
     fn status_bar_i18n_empty_selection_matches_po_msgstr() {
-        use super::STATUS_SELECTION_EMPTY_EN;
-        let po = include_str!("../translations/en-US/LC_MESSAGES/yeban-app.po");
-        let mut lines = po.lines();
-        let msgstr = loop {
-            let line = lines
-                .next()
-                .expect("en-US.po 里必须有 `选区 无` 条目")
-                .trim();
-            if line == "msgid \"选区 无\"" {
-                let next = lines.next().expect("msgid 后必须跟 msgstr 行").trim();
-                break next
-                    .strip_prefix("msgstr \"")
-                    .and_then(|rest| rest.strip_suffix('"'))
-                    .expect("msgstr 必须是单行字符串字面量")
-                    .to_owned();
+        use super::status_selection_empty_for;
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu};
+        fn po_msgstr(po: &str, msgid: &str) -> String {
+            let mut lines = po.lines();
+            loop {
+                let line = lines
+                    .next()
+                    .unwrap_or_else(|| panic!(".po 里必须有 `{msgid}` 条目"))
+                    .trim();
+                if line == format!("msgid \"{msgid}\"") {
+                    let next = lines.next().expect("msgid 后必须跟 msgstr 行").trim();
+                    break next
+                        .strip_prefix("msgstr \"")
+                        .and_then(|rest| rest.strip_suffix('"'))
+                        .expect("msgstr 必须是单行字符串字面量")
+                        .to_owned();
+                }
             }
-        };
-        assert_eq!(msgstr, STATUS_SELECTION_EMPTY_EN);
+        }
+        let cases = [
+            (
+                EnUs,
+                include_str!("../translations/en-US/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                FrFr,
+                include_str!("../translations/fr-FR/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                EsEs,
+                include_str!("../translations/es-ES/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                PtBr,
+                include_str!("../translations/pt-BR/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                JaJp,
+                include_str!("../translations/ja-JP/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                KoKr,
+                include_str!("../translations/ko-KR/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                RuRu,
+                include_str!("../translations/ru-RU/LC_MESSAGES/yeban-app.po"),
+            ),
+            (
+                DeDe,
+                include_str!("../translations/de-DE/LC_MESSAGES/yeban-app.po"),
+            ),
+        ];
+        for (lang, po) in cases {
+            assert_eq!(
+                po_msgstr(po, "选区 无"),
+                status_selection_empty_for(lang),
+                "语言 {} 的 `选区 无` msgstr 必须等于宿主常量",
+                lang.name()
+            );
+        }
     }
 
-    /// 双语 i18n 收尾：选区格的按语言拼串与切换重标（空选区 + 区间双向，
+    /// 九语 i18n 收尾：选区格的按语言拼串与切换重标（空选区 + 区间双向，
     /// 认不出的形态不猜）。
     #[test]
     fn status_bar_i18n_selection_range_and_relabel() {
         use super::{relabel_status_selection, status_selection_range};
-        use crate::cli::Language::{EnUs, ZhCn};
+        use crate::cli::Language::{DeDe, EnUs, FrFr, JaJp, RuRu, ZhCn};
         assert_eq!(
             status_selection_range("1.1.000", "5.4.480", ZhCn),
             "选区 1.1.000 – 5.4.480"
@@ -16388,6 +16475,23 @@ mod tests {
         assert_eq!(
             status_selection_range("1.1.000", "5.4.480", EnUs),
             "Selection 1.1.000 – 5.4.480"
+        );
+        // 七语新区间的拼串（前缀 + 时间码段）。
+        assert_eq!(
+            status_selection_range("1.1.000", "5.4.480", FrFr),
+            "Sélection 1.1.000 – 5.4.480"
+        );
+        assert_eq!(
+            status_selection_range("1.1.000", "5.4.480", JaJp),
+            "選択 1.1.000 – 5.4.480"
+        );
+        assert_eq!(
+            status_selection_range("1.1.000", "5.4.480", RuRu),
+            "Выделение 1.1.000 – 5.4.480"
+        );
+        assert_eq!(
+            status_selection_range("1.1.000", "5.4.480", DeDe),
+            "Auswahl 1.1.000 – 5.4.480"
         );
         // 空选区：双向重标 + 同语言幂等。
         assert_eq!(
@@ -16402,6 +16506,19 @@ mod tests {
             relabel_status_selection("选区 无", ZhCn).as_deref(),
             Some("选区 无")
         );
+        // 跨七语重标（源语言与目标语言都不限于中英）。
+        assert_eq!(
+            relabel_status_selection("Sélection : aucune", EnUs).as_deref(),
+            Some("Selection: None")
+        );
+        assert_eq!(
+            relabel_status_selection("選択なし", ZhCn).as_deref(),
+            Some("选区 无")
+        );
+        assert_eq!(
+            relabel_status_selection("Auswahl: keine", FrFr).as_deref(),
+            Some("Sélection : aucune")
+        );
         // 区间：双向重标，时间码段原样保留。
         assert_eq!(
             relabel_status_selection("选区 1.1.000 – 5.4.480", EnUs).as_deref(),
@@ -16411,28 +16528,52 @@ mod tests {
             relabel_status_selection("Selection 1.1.000 – 5.4.480", ZhCn).as_deref(),
             Some("选区 1.1.000 – 5.4.480")
         );
+        assert_eq!(
+            relabel_status_selection("Sélection 1.1.000 – 5.4.480", JaJp).as_deref(),
+            Some("選択 1.1.000 – 5.4.480")
+        );
         // 认不出的形态（别的写者的瞬时状态消息 / 无读数占位）⇒ None，不猜。
         assert_eq!(relabel_status_selection("轨道 #3 声像: 左", EnUs), None);
         assert_eq!(relabel_status_selection("—", EnUs), None);
     }
 
-    /// 双语 i18n 收尾：设备格后缀重标拿**全部**采样率 × 位深组合的真实投影串
+    /// 九语 i18n 收尾：设备格后缀重标拿**全部**采样率 × 位深组合的真实投影串
     /// 验——`bridge::audio_config_display` 的格式串与宿主后缀常量漂移即红；
-    /// 英文态不得残留中文，往返必须逐字符还原。
+    /// 目标语言态不得残留中文（`目标` 简体字形只在中文后缀里出现，日语
+    /// 后缀是繁体 `目標`，故断言对八语同样成立），往返必须逐字符还原。
     #[test]
     fn status_bar_i18n_device_relabel_covers_every_audio_config() {
-        use super::relabel_status_device;
-        use crate::cli::Language::{EnUs, ZhCn};
+        use super::{relabel_status_device, status_device_target_suffix_for};
+        use crate::cli::Language::{self, ZhCn};
         use yeban_model::project::{BitDepth, SampleRate};
         for rate in SampleRate::ALL {
             for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
                 let canonical = crate::bridge::audio_config_display(rate, depth);
-                let en =
-                    relabel_status_device(&canonical, EnUs).expect("投影串必须认得出目标标签后缀");
-                assert!(en.ends_with(" · Target 120 FPS"), "英文整串: {en}");
-                assert!(!en.contains("目标"), "英文态不得残留中文: {en}");
-                let back = relabel_status_device(&en, ZhCn).expect("英文串必须认得出");
-                assert_eq!(back, canonical, "往返必须逐字符还原");
+                for target in Language::ALL {
+                    if target == ZhCn {
+                        continue;
+                    }
+                    let relabeled = relabel_status_device(&canonical, target)
+                        .expect("投影串必须认得出目标标签后缀");
+                    assert!(
+                        relabeled.ends_with(status_device_target_suffix_for(target)),
+                        "{} 态整串: {relabeled}",
+                        target.name()
+                    );
+                    assert!(
+                        !relabeled.contains("目标"),
+                        "{} 态不得残留中文: {relabeled}",
+                        target.name()
+                    );
+                    assert!(
+                        !relabeled.contains("选区"),
+                        "{} 态不得残留中文: {relabeled}",
+                        target.name()
+                    );
+                    let back =
+                        relabel_status_device(&relabeled, ZhCn).expect("目标语言串必须认得出");
+                    assert_eq!(back, canonical, "往返必须逐字符还原");
+                }
                 assert_eq!(
                     relabel_status_device(&canonical, ZhCn).as_deref(),
                     Some(canonical.as_str()),
@@ -16441,7 +16582,7 @@ mod tests {
             }
         }
         // 还没读数时的占位不猜。
-        assert_eq!(relabel_status_device("—", EnUs), None);
+        assert_eq!(relabel_status_device("—", Language::EnUs), None);
     }
 
     /// 判据（混音台的**纯算术**那一半）：推子位移 → 位置 / dB 的映射、夹紧与退化输入。

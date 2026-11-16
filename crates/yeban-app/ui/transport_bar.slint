@@ -581,9 +581,10 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
-    // 界面语言当前态（双语 i18n）：true = 英文。宿主持有的状态在 MainWindow
-    // 侧，这里只读它显示 Group L 开关的当前态。
-    in-out property <bool> language-en: false;
+    // 界面语言当前态（九语 i18n）：语言代码与自称名。宿主持有的状态在 MainWindow
+    // 侧，这里只读它显示 Group L 菜单按钮的当前语言。
+    in-out property <string> language-code: "zh-CN";
+    in-out property <string> language-name: "中文";
 
     callback toggle-zone(string);
     callback select-tool(string);
@@ -598,7 +599,7 @@ export component TransportHeaderBar inherits Rectangle {
     callback select-persona(PersonaMode);
     callback open-cmd-palette();
     callback toggle-hotspots();
-    callback toggle-language();
+    callback select-language(string);
     callback revert-to-last-commit();
 
     height: 48px;
@@ -1329,32 +1330,101 @@ export component TransportHeaderBar inherits Rectangle {
                 TooltipBubble { text: Theme.show-tooltips ? @tr("悬浮提示: 已开启 (点击关闭) [T]") : @tr("悬浮提示: 已关闭 (点击开启) [T]"); is-visible: touch_tips.has-hover; tip-offset-x: -40px; }
             }
 
-            // Group L: Language switch （中文 / EN）—— 双语 i18n（line/ui-i18n）
-            // 语言状态归宿主持有（host::apply_language 是唯一写入口），本开关只发
-            // toggle-language 回调、并读 language-en 显示当前态（文字即当前态，
-            // 与 Group K 同款）。开关自身的「中文」是语言自称名，不走 @tr
-            // （判据白名单，见 tests/i18n_coverage.rs）。
+            // Group L: Language menu （九语 i18n）—— 按钮显示当前语言自称名
+            // （root.language-name，宿主持有），点击弹出九语菜单（PopupWindow，
+            // 先例见 ui/console/piano_roll.slint 的 context-menu-popup：
+            // 菜单项在弹出层内调外层回调后关弹窗是允许方向；九项用 for 循环，
+            // 先例见 arrangement.slint 的 arr_tracks_menu_col）。自称名按定义
+            // 不走 @tr（判据白名单，见 tests/i18n_coverage.rs）。
             Rectangle {
-                width: 40px;
+                width: 64px;
                 height: 28px;
-                background: root.language-en ? Theme.accent.with-alpha(0.18) : #10141d;
+                background: #10141d;
                 border-radius: Theme.radius;
                 border-width: 1px;
-                border-color: root.language-en ? Theme.accent.with-alpha(0.5) : Theme.border-subtle;
+                border-color: Theme.border-subtle;
+
+                lang-menu-popup := PopupWindow {
+                    // 菜单宽 150px，右缘与按钮右缘对齐（按钮宽 64px ⇒ 左移 86px），
+                    // 落在按钮下方 4px 处。
+                    x: -86px;
+                    y: 32px;
+                    width: 150px;
+                    height: 296px;
+                    close-policy: close-on-click-outside;
+
+                    Rectangle {
+                        background: #10141d;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        border-radius: Theme.radius;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 0px;
+                            for lang in [
+                                { code: "zh-CN", name: "中文" },
+                                { code: "en-US", name: "English" },
+                                { code: "fr-FR", name: "Français" },
+                                { code: "es-ES", name: "Español" },
+                                { code: "pt-BR", name: "Português" },
+                                { code: "ja-JP", name: "日本語" },
+                                { code: "ko-KR", name: "한국어" },
+                                { code: "ru-RU", name: "Русский" },
+                                { code: "de-DE", name: "Deutsch" },
+                            ] : Rectangle {
+                                height: 32px;
+                                border-radius: 4px;
+                                background: lang-touch.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 4px;
+                                    Text {
+                                        // 当前项打勾：opacity 占位（不用 visible，
+                                        // 否则未勾选项的名字会左移一格）。
+                                        text: "✓";
+                                        opacity: root.language-code == lang.code ? 1 : 0;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 9.5px;
+                                        font-weight: 600;
+                                        color: Theme.accent;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: lang.name;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 10.5px;
+                                        color: #cbd5e1;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                lang-touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        root.select-language(lang.code);
+                                        lang-menu-popup.close();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Text {
-                    text: root.language-en ? "EN" : "中文";
+                    text: root.language-name;
                     font-family: Tokens.font-ui;
                     font-size: 9.5px;
                     font-weight: 600;
-                    color: root.language-en ? Theme.accent : #b6c2d2;
+                    color: #b6c2d2;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
 
                 touch_lang := TouchArea {
                     mouse-cursor: MouseCursor.pointer;
-                    clicked => { root.toggle-language(); }
+                    clicked => { lang-menu-popup.show(); }
                 }
                 TooltipBubble { text: @tr("界面语言 (点击选择语言)"); is-visible: touch_lang.has-hover; tip-offset-x: -40px; }
             }

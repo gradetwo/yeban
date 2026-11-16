@@ -317,6 +317,9 @@ msgstr "Toggle Hover Tips (T)"
 msgid "显隐 架构热区透视 (H)"
 msgstr "Toggle Architecture Hotspot Overlay (H)"
 
+msgid "设置"
+msgstr "Settings"
+
 msgid "主工作区与底部控制台的分割线 (220–600px)"
 msgstr "Divider Between Main Workspace and Lower Console (220–600 px)"
 

@@ -216,7 +216,7 @@ pub fn profile_display_name_en(profile: &str) -> &'static str {
     }
 }
 
-/// 曲风档名 → 当前界面语言下的显示名。
+/// 曲风档名 → 当前界面语言下的显示名（九语闭集）。
 ///
 /// 这是宿主写入 .slint 属性的闭集显示标签之一（另两处是状态栏的选区与
 /// 音频配置两格，见 `host::publish_status_bar`）：写点 [`apply_song_overview`] 按
@@ -225,9 +225,31 @@ pub fn profile_display_name_en(profile: &str) -> &'static str {
 /// 已显示的那一个。
 #[must_use]
 pub fn profile_display_name_for(profile: &str, lang: crate::cli::Language) -> &'static str {
-    match lang {
-        crate::cli::Language::ZhCn => profile_display_name(profile),
-        crate::cli::Language::EnUs => profile_display_name_en(profile),
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match (profile, lang) {
+        (_, ZhCn) => profile_display_name(profile),
+        (_, EnUs) => profile_display_name_en(profile),
+        ("orchestral", FrFr) => "Orchestral",
+        ("electronic", FrFr) => "Électronique",
+        (_, FrFr) => "Équilibré",
+        ("orchestral", EsEs) => "Orquestal",
+        ("electronic", EsEs) => "Electrónica",
+        (_, EsEs) => "Equilibrado",
+        ("orchestral", PtBr) => "Orquestral",
+        ("electronic", PtBr) => "Eletrônica",
+        (_, PtBr) => "Equilibrado",
+        ("orchestral", JaJp) => "オーケストラ",
+        ("electronic", JaJp) => "エレクトロニック",
+        (_, JaJp) => "バランス",
+        ("orchestral", KoKr) => "오케스트라",
+        ("electronic", KoKr) => "일렉트로닉",
+        (_, KoKr) => "밸런스",
+        ("orchestral", RuRu) => "Оркестровая",
+        ("electronic", RuRu) => "Электронная",
+        (_, RuRu) => "Сбалансированная",
+        ("orchestral", DeDe) => "Orchester",
+        ("electronic", DeDe) => "Elektronisch",
+        (_, DeDe) => "Ausgewogen",
     }
 }
 
@@ -238,9 +260,34 @@ pub fn profile_display_name_for(profile: &str, lang: crate::cli::Language) -> &'
 #[must_use]
 pub fn relabel_profile_display(current: &str, lang: crate::cli::Language) -> Option<&'static str> {
     let key = match current {
-        "管弦" | "Orchestral" | "orchestral" => "orchestral",
-        "电子" | "Electronic" | "electronic" => "electronic",
-        "均衡" | "Balanced" | "default" => "default",
+        "管弦"
+        | "Orchestral"
+        | "Orquestal"
+        | "Orquestral"
+        | "オーケストラ"
+        | "오케스트라"
+        | "Оркестровая"
+        | "Orchester"
+        | "orchestral" => "orchestral",
+        "电子"
+        | "Electronic"
+        | "Électronique"
+        | "Electrónica"
+        | "Eletrônica"
+        | "エレクトロニック"
+        | "일렉트로닉"
+        | "Электронная"
+        | "Elektronisch"
+        | "electronic" => "electronic",
+        "均衡"
+        | "Balanced"
+        | "Équilibré"
+        | "Equilibrado"
+        | "バランス"
+        | "밸런스"
+        | "Сбалансированная"
+        | "Ausgewogen"
+        | "default" => "default",
         _ => return None,
     };
     Some(profile_display_name_for(key, lang))
@@ -1550,28 +1597,66 @@ mod tests {
         assert_eq!(profile_display_name("unknown"), "均衡");
     }
 
-    /// 双语 i18n：英文档名与按语言取名的分发（line/ui-i18n）。
+    /// 九语 i18n：英文档名与按语言取名的分发（line/ui-i18n，2026-11-17 扩九语）。
     #[test]
     fn profile_display_names_follow_language() {
-        use crate::cli::Language::{EnUs, ZhCn};
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
         assert_eq!(profile_display_name_for("default", ZhCn), "均衡");
         assert_eq!(profile_display_name_for("orchestral", ZhCn), "管弦");
         assert_eq!(profile_display_name_for("default", EnUs), "Balanced");
         assert_eq!(profile_display_name_for("orchestral", EnUs), "Orchestral");
         assert_eq!(profile_display_name_for("electronic", EnUs), "Electronic");
         assert_eq!(profile_display_name_for("unknown", EnUs), "Balanced");
+        // 七语新档名（九语闭集，缺一即红）。
+        assert_eq!(profile_display_name_for("orchestral", FrFr), "Orchestral");
+        assert_eq!(profile_display_name_for("electronic", FrFr), "Électronique");
+        assert_eq!(profile_display_name_for("default", FrFr), "Équilibré");
+        assert_eq!(profile_display_name_for("orchestral", EsEs), "Orquestal");
+        assert_eq!(profile_display_name_for("electronic", EsEs), "Electrónica");
+        assert_eq!(profile_display_name_for("orchestral", PtBr), "Orquestral");
+        assert_eq!(profile_display_name_for("electronic", PtBr), "Eletrônica");
+        assert_eq!(profile_display_name_for("orchestral", JaJp), "オーケストラ");
+        assert_eq!(
+            profile_display_name_for("electronic", JaJp),
+            "エレクトロニック"
+        );
+        assert_eq!(profile_display_name_for("default", JaJp), "バランス");
+        assert_eq!(profile_display_name_for("orchestral", KoKr), "오케스트라");
+        assert_eq!(profile_display_name_for("electronic", KoKr), "일렉트로닉");
+        assert_eq!(profile_display_name_for("orchestral", RuRu), "Оркестровая");
+        assert_eq!(profile_display_name_for("electronic", RuRu), "Электронная");
+        assert_eq!(
+            profile_display_name_for("default", RuRu),
+            "Сбалансированная"
+        );
+        assert_eq!(profile_display_name_for("orchestral", DeDe), "Orchester");
+        assert_eq!(profile_display_name_for("electronic", DeDe), "Elektronisch");
+        assert_eq!(profile_display_name_for("default", DeDe), "Ausgewogen");
     }
 
-    /// 双语 i18n：语言切换时已显示档名的重标（任一语言的现行名都认，
+    /// 九语 i18n：语言切换时已显示档名的重标（任一语言的现行名都认，
     /// 不认识的值不猜、返回 None）。
     #[test]
     fn relabel_profile_display_switches_closed_set() {
-        use crate::cli::Language::{EnUs, ZhCn};
+        use crate::cli::Language::{DeDe, EnUs, FrFr, JaJp, ZhCn};
         assert_eq!(relabel_profile_display("均衡", EnUs), Some("Balanced"));
         assert_eq!(relabel_profile_display("管弦", EnUs), Some("Orchestral"));
         assert_eq!(relabel_profile_display("Balanced", ZhCn), Some("均衡"));
         assert_eq!(relabel_profile_display("Electronic", ZhCn), Some("电子"));
         assert_eq!(relabel_profile_display("管弦", ZhCn), Some("管弦"));
+        // 跨七语重标（源语言与目标语言都不限于中英）。
+        assert_eq!(
+            relabel_profile_display("Électronique", JaJp),
+            Some("エレクトロニック")
+        );
+        assert_eq!(
+            relabel_profile_display("オーケストラ", DeDe),
+            Some("Orchester")
+        );
+        assert_eq!(
+            relabel_profile_display("Сбалансированная", FrFr),
+            Some("Équilibré")
+        );
         assert_eq!(relabel_profile_display("未知档名", EnUs), None);
     }
 

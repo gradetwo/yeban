@@ -292,9 +292,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
 
     // 语言（`--lang`）：**唯一**的写入口是 `host::apply_language`，紧跟主题之后、
     // 同样在 `run()` 之前。它必须显式调用一次：bundled 词表在首个组件创建时按
-    // 系统 locale 自动选语言，而定案默认是 zh-CN —— 不覆盖就会在英文系统上
-    // 首帧英文。运行期切换走走带栏 Group L 开关（host 里接的回调）。
-    host::apply_language(&ui, options.lang);
+    // 系统 locale 自动选语言，而启动语言按优先级定案
+    // `--lang`（显式给过才算）＞ 已存选择 ＞ 系统检测 ＞ zh-CN
+    // （`settings::resolve_startup_language`，单测钉死）—— 不覆盖就会在
+    // 英文系统上首帧英文。运行期切换走走带栏 Group L 语言菜单与主菜单
+    // 「设置 → 语言」（host 里接的回调）；`--lang` 只是临时覆盖，不写回。
+    let startup_lang = yeban_app::settings::resolve_startup_language(
+        options.lang_given.then_some(options.lang),
+        yeban_app::settings::load().language,
+        yeban_app::settings::detect_system_language(),
+    );
+    host::apply_language(&ui, startup_lang);
 
     // 走带与电平都要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁事件通道 +
     // 电平 SPSC + 量子驱动）。`ProductionLoop::start` 做两件事，第二件是本票修的缺口：
