@@ -18092,3 +18092,23 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `Running tests/corpus_random_families.rs` 在 workspace 04:15:54Z、macos 04:16:25Z 各一次；
   全日志 `test result: FAILED` 计数 **0**、`test result:` 行 **1 611**。
   ⚠ 合流 `2fc07078` 的 main 全量判决**本条写完时仍未读** ⇒ 那一条记 `pending`（见下一条）。
+
+### 24.1 ⭐ 预听（`yeban_render_sfz_wav`）区域选择的**事件门控**缺失（2026-11-16）
+
+- **缺陷**：`domain/sfz.rs::note_wave` 是全仓唯一的"一个音符怎么响"实现（`#221`），它按
+  `matches_key && matches_velocity` 取**第一条**匹配区域 —— **没有**事件门控。而
+  `yeban_render_sfz_wav` 只渲染 note-on 事件 ⇒ 一条写在前面、覆盖同键的
+  `trigger=release` / `release_key` 区域会在"按下"预听时被选中，把**松键噪声当音头**
+  发出来。引擎侧早有同一条门控（摊平期 `non_cc_gates_open` 用
+  `Trigger::responds_to(NoteEvent::NoteOn)` 清零键掩码），装载侧的 `DemandLoadFilter`
+  也把 release 族单独算 —— 只有**真正发声**的这条预听路漏了 ⇒ 三处口径不一致。
+- **修法**：在 `note_wave` 的**唯一**选择谓词上加 `region.trigger.responds_to(NoteOn)`
+  （与引擎**同一份**谓词，⛔ 不另写规则）；键/力度/keyswitch/CC 的既有边界**逐字未动**。
+  模块头两处"区域选择用 `matches_key` / `matches_velocity`"已同步改写真身。
+- **判据**：`domain::sfz::tests::preview_note_on_never_selects_a_release_region` ——
+  ① 释放区域在前、起音区域在后 ⇒ 选中的 `region_index == 1`（修前是 0）；
+  ② 只有 `trigger=release` ⇒ 该音符**不发声**（`None`）；③ `trigger=attack` 不受影响（`0`）。
+- **本地读数（⚠ 只有 CI 算数）**：`cargo test -p yeban-mcp --lib` = **727 passed / 0 failed**；
+  `--test sfz_decoded_formats` **5**、`--test sfz_tools` **5**、`--test sfz_includes` **13** 全 ok；
+  `clippy -p yeban-mcp --all-targets -- -D warnings` 零告警；`cargo fmt --check` 通过。
+- **判决**：尚未推送 ⇒ **CI `pending`**。
