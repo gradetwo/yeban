@@ -19787,9 +19787,7 @@ pub fn wire_aether_actions(
                         // 但也不能 `.unwrap()`（窗口已被系统收走时会 panic）。
                         let _ = ui.window().hide();
                         if let Err(err) = slint::quit_event_loop() {
-                            ui.set_toast_message(
-                                format!("[退出] 事件循环未退出：{err}").into(),
-                            );
+                            ui.set_toast_message(format!("[退出] 事件循环未退出：{err}").into());
                         }
                     }
                     other => dispatch_aether_command(&ui, other),

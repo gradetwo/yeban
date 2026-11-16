@@ -46,10 +46,7 @@ fn file_menu_has_a_quit_item_that_really_quits() {
         APP.contains(r#"root.command-execute("app-quit")"#),
         "「文件」菜单没有退出项"
     );
-    assert!(
-        HOST.contains(r#""app-quit" =>"#),
-        "`app-quit` 没有分派臂"
-    );
+    assert!(HOST.contains(r#""app-quit" =>"#), "`app-quit` 没有分派臂");
     assert!(
         HOST.contains("slint::quit_event_loop()"),
         "退出必须走 `slint::quit_event_loop()`（`main.rs` 用的是 `ComponentHandle::run`）"
@@ -64,7 +61,8 @@ fn stems_output_dir_is_not_volatile_temp() {
         "缺 `stems_output_dir`：输出目录必须有一个可读的推导点"
     );
     assert!(
-        !HOST.contains(r#"std::env::temp_dir().join("yeban-stems")"#) || HOST.contains("stems_output_dir()"),
+        !HOST.contains(r#"std::env::temp_dir().join("yeban-stems")"#)
+            || HOST.contains("stems_output_dir()"),
         "分轨目录仍直接写死 temp_dir"
     );
     assert!(
