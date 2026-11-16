@@ -44,7 +44,7 @@
 
 The current interface, running a 10-track pop project (lead vocal, harmonies, piano, guitars, bass, drums, strings, synth pad):
 
-![Full-song arrangement view: the complete 12-bar structure, with the piano roll showing the piano track's arpeggios](assets/screenshots/ui-full-song.png)
+![Arrangement view (zoomed): verse into chorus with clear density contrast, the piano roll showing the piano track arpeggios](assets/screenshots/ui-full-song.png)
 
 ![Arrangement view: the chorus section, with the piano roll and the channel inspector showing a real EQ curve](assets/screenshots/ui-arrangement-chorus.png)
 

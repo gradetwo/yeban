@@ -5,16 +5,16 @@
   "items": [
     {
       "id": "screenshot-ui-full-song",
-      "name": "全曲编曲总览与钢琴卷帘",
+      "name": "编曲放大视图与钢琴卷帘",
       "relative_path": "assets/screenshots/ui-full-song.png",
-      "sha256": "50be85dfb6905396b541c0ea75b098c52f242580675fd8e0b1ffb8818ca86bbe",
-      "size_bytes": 149215,
+      "sha256": "ba3ae501e1297c676c569e17f2fce0d45c83f0f699cc4c7f01a630fa1dfbd219",
+      "size_bytes": 127631,
       "license": "GPL-3.0-only",
       "author": "The Yeban Authors",
       "commercial_usable": true,
       "attribution_required": false,
       "bundled": true,
-      "note": "1920×1080。同一工程的全曲视图：12 小节完整段落结构（前奏／主歌／副歌／尾奏），底部钢琴卷帘显示钢琴轨 120 个音符的分解和弦型与力度车道，左通道检查器为钢琴轨 EQ。"
+      "note": "1920×1080。同一工程的放大编曲视图（约 6 小节、6 条轨入框）：主歌后段至副歌，段落疏密对比可见，底部钢琴卷帘显示钢琴轨的分解和弦与力度车道，左通道检查器为钢琴轨 EQ。轨道与片段名为英文；固定界面文字仍为中文（产品暂无界面语言切换）。"
     },
     {
       "attribution_required": false,
@@ -24,10 +24,10 @@
       "id": "screenshot-ui-arrangement-chorus",
       "license": "GPL-3.0-only",
       "name": "编曲主视图（副歌段）",
-      "note": "1920×1080。主干 6da815fac 的 aether UI：10 条多色轨道、底部钢琴卷帘（主唱旋律）、左通道检查器（EQ＋压缩器，EQ 曲线为真实参数投影）。",
+      "note": "1920×1080。主干 6da815fac 的 aether UI：副歌段放大特写（6 条轨入框）、底部钢琴卷帘（主唱长音旋律）、左通道检查器（EQ＋Compressor，EQ 曲线为真实参数投影）。轨道与片段名为英文；固定界面文字仍为中文。",
       "relative_path": "assets/screenshots/ui-arrangement-chorus.png",
-      "sha256": "4397b3fba983abb636a8be9020c240ee40cdbed022388ff8c46d35370d0f1c87",
-      "size_bytes": 145564
+      "sha256": "0a9ec3b1b9814b3454d8e29e89037ea67de0265d7f7379a804ade73215492d62",
+      "size_bytes": 125791
     },
     {
       "attribution_required": false,
@@ -37,12 +37,12 @@
       "id": "screenshot-ui-mixer-console",
       "license": "GPL-3.0-only",
       "name": "混音控制台",
-      "note": "1920×1080。同一工程的混音控制台页：10 轨＋BUS SUM＋MASTER 2-BUS 通道条。",
+      "note": "1920×1080。同一工程的混音控制台页：10 轨＋BUS SUM＋MASTER 2-BUS 通道条，轨道名为英文。",
       "relative_path": "assets/screenshots/ui-mixer-console.png",
-      "sha256": "b506f1cd49685f871b545735578070e710f309e26bc94647b8473be1939fd5ea",
-      "size_bytes": 158421
+      "sha256": "2980585ab00b381e1468d15a5c6dbfdf99c8b123aad761240ec3b57e7a259b11",
+      "size_bytes": 140285
     }
   ],
-  "note": "README 与官网用的界面截图：由本仓库的 yeban-app 在无头测试口（yeban-ui-test-port）上装配真实工程渲染、截图后无损重压缩（像素逐位一致）。工程为截图专用构造的 12 小节流行歌工程（10 轨、58 片段、约 640 个 MIDI 音符），非用户真实工程文件。截图随项目以 GPL-3.0-only 发布。",
+  "note": "README 与官网用的界面截图：由本仓库的 yeban-app 在无头测试口（yeban-ui-test-port）上装配真实工程渲染、截图后无损重压缩（像素逐位一致）。工程为截图专用构造的 12 小节流行歌工程（10 轨，五段落疏密拉开，297 个 MIDI 音符），非用户真实工程文件。截图随项目以 GPL-3.0-only 发布。",
   "version": "1.0.0"
 }
