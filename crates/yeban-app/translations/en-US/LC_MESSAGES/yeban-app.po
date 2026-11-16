@@ -516,9 +516,6 @@ msgstr "Remove Master Bus Device {}"
 msgid "工作区编曲画布"
 msgstr "Arrangement Canvas"
 
-msgid "轨道控制头 (TRACKS)"
-msgstr "Track Headers (TRACKS)"
-
 msgid "和弦收起"
 msgstr "Collapse Chords"
 
@@ -566,9 +563,6 @@ msgstr "Preview G7#9 (Altered Dominant) Voicing"
 
 msgid "试听 Cm11 (扩展主和弦) 配置"
 msgstr "Preview Cm11 (Extended Tonic) Voicing"
-
-msgid "轨道控制头 (右置)"
-msgstr "Track Headers (Right)"
 
 msgid "右置轨道头模式 (镜像工作区)"
 msgstr "Right-Side Track Headers (Mirrored Workspace)"
@@ -1013,17 +1007,11 @@ msgstr "Preset: {}"
 
 # --- console/mixer_console.slint ---
 
-msgid "工程导出"
-msgstr "Project Export"
-
 msgid "导出 MIDI（把当前工程写成 SMF 1 文件）"
 msgstr "Export MIDI (Write the Current Project as an SMF 1 File)"
 
 msgid "导出 MIDI"
 msgstr "Export MIDI"
-
-msgid "工程"
-msgstr "Project"
 
 msgid "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）"
 msgstr "Open Project (Pick a .yeban Container in the File Dialog and Replace the Current Project in Place)"
@@ -1678,9 +1666,6 @@ msgstr "Audio Configuration & Performance Targets"
 
 # --- clip_matrix.slint ---
 
-msgid "Clip 激发矩阵"
-msgstr "Clip Launch Matrix"
-
 msgid "停止"
 msgstr "Stop"
 
@@ -1703,9 +1688,6 @@ msgid "创建空白片段"
 msgstr "Create Empty Clip"
 
 # --- control_room.slint ---
-
-msgid "监听控制室"
-msgstr "Control Room"
 
 msgid "归零"
 msgstr "Reset to Zero"
