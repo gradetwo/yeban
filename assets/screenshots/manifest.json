@@ -7,8 +7,8 @@
       "id": "screenshot-ui-full-song",
       "name": "全曲编曲总览与钢琴卷帘",
       "relative_path": "assets/screenshots/ui-full-song.png",
-      "sha256": "a3fa8eca81283b5d5a2825c1521721b896649c0cbbbdcc54aa2c9939ca654d53",
-      "size_bytes": 153800,
+      "sha256": "50be85dfb6905396b541c0ea75b098c52f242580675fd8e0b1ffb8818ca86bbe",
+      "size_bytes": 149215,
       "license": "GPL-3.0-only",
       "author": "The Yeban Authors",
       "commercial_usable": true,
@@ -24,10 +24,10 @@
       "id": "screenshot-ui-arrangement-chorus",
       "license": "GPL-3.0-only",
       "name": "编曲主视图（副歌段）",
-      "note": "1920×1080。主干 239e86dc3 的 aether UI：10 条多色轨道、底部钢琴卷帘（主唱旋律）、左通道检查器（EQ＋压缩器，EQ 曲线为真实参数投影）。",
+      "note": "1920×1080。主干 6da815fac 的 aether UI：10 条多色轨道、底部钢琴卷帘（主唱旋律）、左通道检查器（EQ＋压缩器，EQ 曲线为真实参数投影）。",
       "relative_path": "assets/screenshots/ui-arrangement-chorus.png",
-      "sha256": "1a8cf87d11256e9941fcb29b09b1b36559200e35781678e75dba7094f0961f81",
-      "size_bytes": 152607
+      "sha256": "4397b3fba983abb636a8be9020c240ee40cdbed022388ff8c46d35370d0f1c87",
+      "size_bytes": 145564
     },
     {
       "attribution_required": false,
@@ -39,8 +39,8 @@
       "name": "混音控制台",
       "note": "1920×1080。同一工程的混音控制台页：10 轨＋BUS SUM＋MASTER 2-BUS 通道条。",
       "relative_path": "assets/screenshots/ui-mixer-console.png",
-      "sha256": "cc248b621664d65b6454dc0f819ea60820df2f051453aaeb1f95c04358364a3a",
-      "size_bytes": 165576
+      "sha256": "b506f1cd49685f871b545735578070e710f309e26bc94647b8473be1939fd5ea",
+      "size_bytes": 158421
     }
   ],
   "note": "README 与官网用的界面截图：由本仓库的 yeban-app 在无头测试口（yeban-ui-test-port）上装配真实工程渲染、截图后无损重压缩（像素逐位一致）。工程为截图专用构造的 12 小节流行歌工程（10 轨、58 片段、约 640 个 MIDI 音符），非用户真实工程文件。截图随项目以 GPL-3.0-only 发布。",
