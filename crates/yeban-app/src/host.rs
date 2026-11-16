@@ -17094,68 +17094,12 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         }
     });
 
-    // 2. 键盘快捷键分发
-    ui.on_trigger_shortcut({
-        let weak = weak.clone();
-        move |text, _event| {
-            if let Some(ui) = weak.upgrade() {
-                if text == " " {
-                    let playing = !ui.get_is_playing();
-                    ui.set_is_playing(playing);
-                    update_toast(
-                        &ui,
-                        if playing {
-                            "[走带] 播放走带已启动"
-                        } else {
-                            "[走带] 走带已停止"
-                        },
-                    );
-                } else if text == "r" || text == "R" {
-                    let rec = !ui.get_is_recording();
-                    ui.set_is_recording(rec);
-                    update_toast(
-                        &ui,
-                        if rec {
-                            "[录音] 录音与回溯捕获已开启"
-                        } else {
-                            "[录音] 录音已停止"
-                        },
-                    );
-                } else if text == "c" || text == "C" {
-                    let loop_on = !ui.get_is_looping();
-                    ui.set_is_looping(loop_on);
-                    update_toast(
-                        &ui,
-                        if loop_on {
-                            "[循环] 循环已开启"
-                        } else {
-                            "[循环] 循环已关闭"
-                        },
-                    );
-                } else if text == "m" || text == "M" {
-                    ui.invoke_console_maximize_toggle();
-                } else if text == "1" {
-                    ui.invoke_edit_tool_selected("pointer".into());
-                } else if text == "2" {
-                    ui.invoke_edit_tool_selected("draw".into());
-                } else if text == "3" {
-                    ui.invoke_edit_tool_selected("split".into());
-                } else if text == "4" {
-                    ui.invoke_edit_tool_selected("range".into());
-                } else if text == "b" || text == "B" {
-                    let next = if ui.get_active_tool_name().as_str() == "draw" {
-                        "pointer"
-                    } else {
-                        "draw"
-                    };
-                    ui.invoke_edit_tool_selected(next.into());
-                }
-                // F3/F7/F8/F9 改由 app.slint 的 key-pressed 单一入口处理，
-                // ⛔ 不再在这里重复 console-maximize-toggle（否则与界面分支
-                //    双触发、两次取反相互抵消）。
-            }
-        }
-    });
+    // 2. 键盘快捷键分发（**已迁移，⛔ 不要在这里再加**）
+    //
+    // 这里曾给 ui.on_trigger_shortcut 赋一个「空格/r/c/m/1-4/b 白名单」处理器；
+    // 但 wire_aether_actions（main.rs 装配期后调用）会再赋值一次 —— Slint 后写覆盖
+    // 前写 ⇒ 白名单从未执行（死代码）。键盘统一由 wire_aether_actions →
+    // invoke_key_action → input.rs 解析表处理（ADR-0074）。删除死代码，不改行为。
 
     ui.on_toggle_play({
         let weak = weak.clone();
