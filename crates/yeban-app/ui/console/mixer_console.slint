@@ -319,16 +319,7 @@ export component MixerConsole inherits Rectangle {
             border-color: Tokens.line;
             clip: true;
 
-            UiMediumText {
-                x: Tokens.space-3;
-                y: 0;
-                width: parent.width - 8px;
-                height: 18px;
-                text: "工程导出";
-                color: Tokens.ink-0;
-                font-size: Tokens.font-size-sm;
-                overflow: elide;
-            }
+            // Wang 2026-11-16：删只说明分节名的冗余标题「工程导出」；面板几何与按钮 y 不动。
 
             // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
             Rectangle {
@@ -394,16 +385,7 @@ export component MixerConsole inherits Rectangle {
             border-color: Tokens.line;
             clip: true;
 
-            UiMediumText {
-                x: Tokens.space-3;
-                y: 0;
-                width: parent.width - 8px;
-                height: 18px;
-                text: "工程";
-                color: Tokens.ink-0;
-                font-size: Tokens.font-size-sm;
-                overflow: elide;
-            }
+            // Wang 2026-11-16：删只说明分节名的冗余标题「工程」；面板几何与按钮 y 不动。
 
             // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
             Rectangle {
