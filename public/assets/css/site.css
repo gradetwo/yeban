@@ -441,3 +441,22 @@ code {
   .site-header, .controls, .cta-row, .hero-art { display: none; }
   body { background: #fff; color: #000; }
 }
+
+/* 界面截图区 */
+.shot {
+  margin: 28px 0;
+}
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.shot figcaption {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: center;
+}
