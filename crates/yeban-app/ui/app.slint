@@ -777,6 +777,11 @@ export component MainWindow inherits Window {
             MenuItem { title: "重做 (Ctrl+Shift+Z)"; activated => { root.command-execute("redo-step"); } }
             MenuItem { title: "编曲版本时光机 (Undo Tree)..."; activated => { root.command-execute("toggle-undo-tree"); } }
             MenuSeparator {}
+            // 片段剪贴板（ADR-0076 B3）：与 Cmd/Ctrl+C/V/X 走同一组函数。
+            MenuItem { title: "复制片段 (Ctrl+C)"; activated => { root.command-execute("edit-copy"); } }
+            MenuItem { title: "粘贴片段 (Ctrl+V)"; activated => { root.command-execute("edit-paste"); } }
+            MenuItem { title: "剪切片段 (Ctrl+X)"; activated => { root.command-execute("edit-cut"); } }
+            MenuSeparator {}
             MenuItem { title: "音符量化 (Quantize 1/16)..."; activated => { root.command-execute("open-quantize"); } }
             MenuItem { title: "音符人性化 (Humanize)..."; activated => { root.command-execute("open-humanize"); } }
             MenuSeparator {}
