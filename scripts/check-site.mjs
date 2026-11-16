@@ -16,6 +16,7 @@
  *   C8 <html lang>、hreflang alternates、canonical 存在
  *   C9 品牌图标文件存在且非空 (favicon / apple-touch-icon / 两种主题的 64 与 512)
  *  C10 页面不含 0.0.0.0, 不含内联第三方域名 (除 github.com / wangda.today 白名单)
+ *  C11 分享 meta (og:/twitter:) 必须挂 i18n 键            -> 摘掉挂钩退回写死中文就红
  *
  * 用法: node scripts/check-site.mjs
  * 退出码: 0 全过, 1 有失败项。
@@ -240,6 +241,30 @@ for (const rel of ["public/assets/css/site.css", "public/assets/js/site.js", "pu
     if (!allowedHosts.some((h) => host === h || host.endsWith("." + h))) {
       fail("C10", `${rel} 引用了外部主机: ${host}`);
     }
+  }
+}
+
+// -------------------------------------------------------------------- C11
+
+// 分享 meta 挂钩: og:title/twitter:title 共用 meta.title,
+// og:description/twitter:description 共用 meta.description,
+// og:image:alt 用 meta.og_image_alt。C1-C3 只对账"键存在且被使用",
+// 摘掉某个 meta 的挂钩时键在别处仍被使用、查不出来, 页面会静默退回
+// 写死中文 —— 所以把五个分享 meta 的挂钩逐个钉死。
+const shareMetaHooks = [
+  ['property="og:title"', "content:meta.title"],
+  ['property="og:description"', "content:meta.description"],
+  ['property="og:image:alt"', "content:meta.og_image_alt"],
+  ['name="twitter:title"', "content:meta.title"],
+  ['name="twitter:description"', "content:meta.description"],
+];
+for (const [selector, hook] of shareMetaHooks) {
+  const at = html.indexOf(selector);
+  const start = at < 0 ? -1 : html.lastIndexOf("<meta", at);
+  const end = at < 0 ? -1 : html.indexOf(">", at);
+  if (start < 0 || end < 0) fail("C11", `缺少分享 meta: ${selector}`);
+  else if (!html.slice(start, end).includes(`data-i18n-attr="${hook}"`)) {
+    fail("C11", `分享 meta ${selector} 未挂 i18n, 应为 data-i18n-attr="${hook}"`);
   }
 }
 
