@@ -18,8 +18,11 @@
  *   A6 移动端 390px 宽无横向溢出 (scrollWidth <= innerWidth + 1)
  *   A7 关键区块锚点 (#features/#stack/#roadmap/#opensource/#contact) 都在
  *   A8 404 页面可访问且语义正确
+ *   A9 fr/ja/ru 渲染与词典逐字一致 (<html lang>/h1/title/meta/下拉值); fr/ru 全页无中文残留
+ *  A10 语言检测与持久化: 无存储按浏览器语言检测; 下拉选后保持; 清存储后回到检测
  * 截图 (artifact):
  *   desktop-dark-zh / desktop-light-en / mobile-dark-zh / notfound-dark-zh
+ *   desktop-dark-fr / desktop-dark-ja / desktop-dark-ru
  *
  * 用法: BASE_URL=http://127.0.0.1:8099 node scripts/visual-check.mjs
  *       (未设 BASE_URL 时脚本自己起一个静态服务器)
@@ -106,7 +109,10 @@ async function main() {
       reducedMotion: "reduce",
       // 显式钉死 locale: CI 的 navigator.language 是 en-US, 若不钉死,
       // 名为 *-zh 的截图实际拍的是英文 (第一版就踩了这个坑)
-      locale: lang === "en" ? "en-US" : "zh-CN",
+      locale: {
+        en: "en-US", fr: "fr-FR", es: "es-ES", pt: "pt-BR",
+        ja: "ja-JP", ko: "ko-KR", ru: "ru-RU", de: "de-DE",
+      }[lang] || "zh-CN",
     });
     const page = await context.newPage();
     const consoleErrors = [];
@@ -183,6 +189,79 @@ async function main() {
     await context.close();
   }
 
+  // --- A9: fr / ja / ru 与词典逐字一致 ------------------------------------
+  {
+    const htmlLangOf = { fr: "fr", ja: "ja", ru: "ru" };
+    // 下拉里的语言自称名与作品章名是专名, 在任何语言下都保留原文, 不算残留
+    const properNouns = ["中文", "English", "Français", "Español", "Português", "日本語", "한국어", "Русский", "Deutsch", "雨声太吵", "失语呢喃", "潮·失"];
+    for (const lang of ["fr", "ja", "ru"]) {
+      const dict = JSON.parse(readFileSync(join(PUBLIC, "assets", "i18n", `${lang}.json`), "utf8"));
+      const { context, page, consoleErrors, failedRequests } = await newPage({ dark: true, lang });
+      if (consoleErrors.length) fail("A9", `${lang} 控制台错误: ${consoleErrors.join(" | ")}`);
+      if (failedRequests.length) fail("A9", `${lang} 请求失败: ${failedRequests.join(" | ")}`);
+
+      const htmlLang = await page.getAttribute("html", "lang");
+      if (htmlLang !== htmlLangOf[lang]) fail("A9", `?lang=${lang} 时 <html lang>=${htmlLang}, 期望 ${htmlLangOf[lang]}`);
+      const h1 = (await page.textContent("h1")).trim();
+      if (h1 !== dict["hero.title"]) fail("A9", `${lang} h1 与词典不一致: ${h1}`);
+      const title = await page.title();
+      if (title !== dict["meta.title"]) fail("A9", `${lang} <title> 与词典不一致: ${title}`);
+      const desc = await page.getAttribute('meta[name="description"]', "content");
+      if (desc !== dict["meta.description"]) fail("A9", `${lang} meta description 与词典不一致`);
+      const feat = await page.$eval('[data-i18n="features.title"]', (n) => n.textContent.trim());
+      if (feat !== dict["features.title"]) fail("A9", `${lang} features.title 与词典不一致: ${feat}`);
+      const sel = await page.$eval("[data-lang-select]", (n) => n.value);
+      if (sel !== lang) fail("A9", `${lang} 时语言下拉值=${sel}, 期望 ${lang}`);
+
+      // ja 与中文共享汉字, 逐字比对已覆盖; fr/ru 另做全页残留扫描
+      if (lang !== "ja") {
+        const residue = await page.evaluate((names) => {
+          let text = document.body.innerText;
+          for (const s of names) text = text.split(s).join("");
+          const m = text.match(/[一-鿿぀-ヿ가-힯]/g);
+          return m ? m.slice(0, 20).join("") : "";
+        }, properNouns);
+        if (residue) fail("A9", `${lang} 页面仍有中日韩文字残留: ${residue}`);
+      }
+
+      await page.screenshot({ path: join(OUT, `desktop-dark-${lang}.png`), fullPage: true });
+      await context.close();
+    }
+  }
+
+  // --- A10: 浏览器语言检测 + localStorage 持久化 ---------------------------
+  {
+    const frDict = JSON.parse(readFileSync(join(PUBLIC, "assets", "i18n", "fr.json"), "utf8"));
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      colorScheme: "dark",
+      deviceScaleFactor: 1,
+      reducedMotion: "reduce",
+      locale: "fr-FR",
+    });
+    const page = await context.newPage();
+    // 1) 无 URL 参数、无存储: 必须按浏览器语言 (fr-FR) 检测出法语
+    await page.goto(`${base}/`, { waitUntil: "networkidle" });
+    let htmlLang = await page.getAttribute("html", "lang");
+    if (htmlLang !== "fr") fail("A10", `浏览器 fr-FR 且无存储时 <html lang>=${htmlLang}, 期望 fr (自动检测)`);
+    const h1 = (await page.textContent("h1")).trim();
+    if (h1 !== frDict["hero.title"]) fail("A10", `自动检测后 h1 不是法语: ${h1}`);
+    // 2) 下拉改成德语: 立即生效, 且去掉 URL 参数后靠 localStorage 保持
+    await page.selectOption("[data-lang-select]", "de");
+    await page.waitForFunction(() => document.documentElement.lang === "de");
+    await page.goto(`${base}/`, { waitUntil: "networkidle" });
+    htmlLang = await page.getAttribute("html", "lang");
+    if (htmlLang !== "de") fail("A10", `选德语后无参数重开 <html lang>=${htmlLang}, 期望 de (localStorage 持久化)`);
+    const sel = await page.$eval("[data-lang-select]", (n) => n.value);
+    if (sel !== "de") fail("A10", `持久化后语言下拉值=${sel}, 期望 de`);
+    // 3) 清掉存储再无参数打开: 回到浏览器语言检测 (法语)
+    await page.evaluate(() => localStorage.removeItem("yeban-lang"));
+    await page.goto(`${base}/`, { waitUntil: "networkidle" });
+    htmlLang = await page.getAttribute("html", "lang");
+    if (htmlLang !== "fr") fail("A10", `清存储后 <html lang>=${htmlLang}, 期望回到检测结果 fr`);
+    await context.close();
+  }
+
   // --- A6: 移动端无横向溢出 ------------------------------------------------
   {
     const { context, page } = await newPage({ dark: true, lang: "zh", viewport: { width: 390, height: 844 } });
@@ -194,6 +273,20 @@ async function main() {
       fail("A6", `390px 宽横向溢出: scrollWidth=${overflow.scrollWidth} > innerWidth=${overflow.innerWidth}`);
     }
     await page.screenshot({ path: join(OUT, "mobile-dark-zh.png"), fullPage: true });
+    await context.close();
+  }
+
+  // --- A6b: 德语长复合词在移动端同样不溢出 ----------------------------------
+  {
+    const { context, page } = await newPage({ dark: true, lang: "de", viewport: { width: 390, height: 844 } });
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    }));
+    if (overflow.scrollWidth > overflow.innerWidth + 1) {
+      fail("A6", `德语 390px 宽横向溢出: scrollWidth=${overflow.scrollWidth} > innerWidth=${overflow.innerWidth}`);
+    }
+    await page.screenshot({ path: join(OUT, "mobile-dark-de.png"), fullPage: true });
     await context.close();
   }
 

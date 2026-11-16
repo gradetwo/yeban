@@ -2,7 +2,7 @@
   "name": "yeban-website",
   "version": "0.0.1",
   "private": true,
-  "description": "夜半 (Yeban) 官网 yeban.wangda.today —— 纯静态双语站点，部署到 Cloudflare Workers",
+  "description": "夜半 (Yeban) 官网 yeban.wangda.today —— 纯静态九种语言站点，部署到 Cloudflare Workers",
   "type": "module",
   "scripts": {
     "check": "node scripts/check-site.mjs",

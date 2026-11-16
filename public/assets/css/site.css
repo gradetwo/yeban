@@ -218,6 +218,20 @@ code {
   font-weight: 600;
 }
 
+/* 语言下拉: 与 .segmented 同一套视觉语言 (描边胶囊), 保留原生箭头保证可发现性 */
+.lang-select {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 6px 11px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.lang-select:hover { color: var(--text); border-color: var(--border-strong); }
+
 /* ------------------------------------------------------------------ hero */
 
 .hero {

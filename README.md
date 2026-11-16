@@ -8,15 +8,15 @@
 ```text
 .
 ├── public/                     # ← 部署根目录（wrangler [assets] directory 指向这里）
-│   ├── index.html              # 单页站点：双语 + 深浅色自适应
+│   ├── index.html              # 单页站点：九种语言 + 深浅色自适应
 │   ├── 404.html                # 自定义 404（not_found_handling = "404-page"）
 │   ├── robots.txt / sitemap.xml / site.webmanifest
 │   └── assets/
 │       ├── css/site.css        # 全部样式（无框架、无外部字体）
 │       ├── js/theme.js         # 自动/浅色/深色，跟随系统实时切换
-│       ├── js/i18n.js          # 中英切换（?lang=zh|en + localStorage）
+│       ├── js/i18n.js          # 九种语言下拉切换（?lang= + localStorage + 浏览器语言检测）
 │       ├── js/site.js          # 控件装配
-│       ├── i18n/{zh,en}.json   # 两份词典，键集必须完全相同（门禁 C1 强制）
+│       ├── i18n/{zh,en,fr,es,pt,ja,ko,ru,de}.json   # 九份词典，键集必须完全相同（门禁 C1 强制）
 │       └── brand/              # 来自 main 的 assets/brand，另含 favicon/OG 图
 ├── scripts/check-site.mjs      # 站点静态契约检查（10 组判据，本机可跑）
 ├── wrangler.toml               # Cloudflare Workers 配置
@@ -27,7 +27,7 @@
 
 | 需求 | 实现 |
 | :--- | :--- |
-| 中英双语可切换 | `data-i18n` 标注 + 两份 JSON 词典；`?lang=en` 可直接分享；切换后同步 `<html lang>` 供读屏软件使用 |
+| 九种语言可切换 | `data-i18n` 标注 + 九份 JSON 词典；下拉切换，`?lang=fr` 可直接分享；首次按浏览器语言自动检测、选择存 localStorage；切换后同步 `<html lang>` 供读屏软件使用 |
 | 深浅色可切换，默认自动 | `<html data-theme-pref>`（用户选择）+ `<html data-theme>`（解析结果）；"自动"跟随 `prefers-color-scheme` 并**实时**响应系统切换；首屏内联脚本消除闪白 |
 | 无第三方依赖 | 无框架、无外部字体、无分析脚本、无 Cookie（门禁 C10 会拦下白名单外的外部主机） |
 | 渐进增强 | HTML 内已写中文原文；即使词典请求失败或 JS 被禁用，页面依然完整可读 |
