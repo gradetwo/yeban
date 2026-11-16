@@ -17670,6 +17670,9 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     gain_label: "0dB".into(),
                     color: col,
                     note_count: if is_aud { 0 } else { 4 },
+                    // ⭐ 新块没有波形 ⇒ 空模型（ADR-0076 B1 的 `waveform_peaks` 字段；
+                    // 另一条线加了 Slint 字段但漏改这两个初始化点，全量 clippy 编译红）。
+                    waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
                 });
                 ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
 
@@ -20585,6 +20588,8 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                 },
                 color: col,
                 note_count,
+                // ⭐ 同上：该映射没有解码 PCM ⇒ 空波形模型（避免 missing field）。
+                waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
             }
         })
         .collect()
