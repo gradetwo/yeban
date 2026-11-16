@@ -16665,3 +16665,139 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert!(runtime < 200 * 1024, "⛔ `EngineRuntime` 必须 < 200 KiB");
 }
+
+// --------------------------------------------------------------------------- #
+// ⭐ S119（旁路 CC 播种）：`--sfz` 覆盖路径的离线入口也必须能读 CC 探针
+// --------------------------------------------------------------------------- #
+//
+// **修的是什么**：`--sfz` 覆盖路径（`SfzTrackSource` → `render_note_into_from_samples`）
+// 的 `cc` 曾**硬编码 `None`**，而 `cc_gates_ok(None)` 走**严格策略**（有 `loccN`/`hiccN`
+// 门的区域一律不过）⇒ 靠 CC 门选区域的库在 `--sfz` 下**整份静音**，而同一份文件走
+// 工程内 sampler（`Source::with_cc` 把 `PreparedSfz::cc_seeds()` 注入探针）**完全正常**。
+//
+// 实测来源：`karoryfer.big-rusty-drums` 原厂 `Programs/01-full.sfz`（每段 `<master>`
+// 挂 `locc70=1`，初值由 `<control> set_cc70=100` 给出）
+//   * `--sfz 01-full.sfz --export-wav` ⇒ `peak 0.0000 / rms -147.5 dB`（全静音）
+//   * `--track-sampler 01-full.sfz --export-wav` ⇒ `peak 1.0000 / rms -26.7 dB`（正常）
+//
+// **本判据锁的是什么**：新入口 `render_note_into_from_samples_with_cc` 传探针时
+// 门控真的活（`cc = 100` ⇒ 512 帧发声、`cc = 0` ⇒ 静音、`None` ⇒ 严格策略静音），
+// 且旧入口与"新入口传 `None`"**逐位相同**（保命不变量：没播种的库一个字节都不动）。
+
+#[test]
+fn s119_the_bypass_entry_takes_a_cc_probe() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+
+    let instrument = SfzInstrument::load(CC_GATE_FIXTURE.to_owned(), &Default::default())
+        .expect("夹具必须解析成功");
+    let mut table: std::collections::BTreeMap<String, InMemorySample> =
+        std::collections::BTreeMap::new();
+    table.insert("a.wav".to_owned(), constant_sample(4_096));
+
+    // `None` ⇒ 不传探针（严格策略）；`Some(v)` ⇒ 传一个 CC1 = v 的探针。
+    let render = |value: Option<u8>| -> (usize, Vec<f32>) {
+        let mut out = vec![0.0f32; FRAMES];
+        let written = match value {
+            Some(v) => {
+                let probe = cc1_probe(v);
+                let cc_arg: &dyn Fn(u8) -> u8 = &probe;
+                instrument
+                    .render_note_into_from_samples_with_cc(
+                        &table, 60, VELOCITY, None, None, &mut out, HZ, Some(cc_arg),
+                    )
+                    .expect("渲染不得报错")
+            }
+            None => instrument
+                .render_note_into_from_samples_with_cc(
+                    &table, 60, VELOCITY, None, None, &mut out, HZ, None,
+                )
+                .expect("渲染不得报错"),
+        };
+        (written, out)
+    };
+
+    let (written_none, out_none) = render(None);
+    let (written_closed, out_closed) = render(Some(0));
+    let (written_open, out_open) = render(Some(100));
+
+    println!(
+        "[engine-sfz/S119] 无探针：写入 {written_none} 帧、非零 {} 帧、指纹 0x{:016x}",
+        nonzero_frames(&out_none),
+        fnv1a_64(&out_none)
+    );
+    println!(
+        "[engine-sfz/S119] cc = 0：写入 {written_closed} 帧、非零 {} 帧、指纹 0x{:016x}",
+        nonzero_frames(&out_closed),
+        fnv1a_64(&out_closed)
+    );
+    println!(
+        "[engine-sfz/S119] cc = 100：写入 {written_open} 帧、非零 {} 帧、指纹 0x{:016x}",
+        nonzero_frames(&out_open),
+        fnv1a_64(&out_open)
+    );
+
+    assert_eq!(
+        nonzero_frames(&out_none),
+        0,
+        "⭐ 无探针 ⇒ `locc1=64` 门走严格策略 ⇒ 全静音（这正是 `--sfz` 旁路修前的行为）"
+    );
+    assert_eq!(
+        nonzero_frames(&out_closed),
+        0,
+        "⭐ cc = 0 < locc1 = 64 ⇒ 门不成立 ⇒ 全静音"
+    );
+    assert_eq!(
+        nonzero_frames(&out_open),
+        FRAMES,
+        "⭐ cc = 100 ∈ [64, 127] ⇒ 512 帧全非零（门真的活了）"
+    );
+    assert_eq!(written_open, FRAMES, "⭐ 写入帧数与输出长度一致");
+    for (index, sample) in out_open.iter().enumerate() {
+        assert_eq!(
+            sample.to_bits(),
+            1.0f32.to_bits(),
+            "⭐ 恒 1.0 样本 ＋ amp_veltrack=0 ⇒ 第 {index} 帧必须逐位等于 1.0"
+        );
+    }
+    assert_ne!(
+        fnv1a_64(&out_none),
+        fnv1a_64(&out_open),
+        "⭐ 有牙：无探针与播种后的输出必须**逐位不同**"
+    );
+
+    // ---- 保命不变量：旧入口 ≡ 新入口传 None（没播种的库一个字节都不动）----
+    let mut legacy = vec![0.0f32; FRAMES];
+    let written_legacy = instrument
+        .render_note_into_from_samples(&table, 60, VELOCITY, None, None, &mut legacy, HZ)
+        .expect("旧入口不得报错");
+    assert_eq!(written_legacy, written_none, "⭐ 旧入口与「新入口传 None」写入帧数相同");
+    assert_eq!(
+        fnv1a_64(&legacy),
+        fnv1a_64(&out_none),
+        "⛔ 保命不变量：旧入口必须与「新入口传 None」**逐位相同**"
+    );
+
+    // ---- 释放族同一条口径（`trigger=release` 的区域也可能挂 `loccN` 门）----
+    let mut release_open = vec![0.0f32; FRAMES];
+    let probe = cc1_probe(100);
+    let cc_arg: &dyn Fn(u8) -> u8 = &probe;
+    let release_written = instrument
+        .render_release_into_from_samples_with_cc(
+            &table,
+            60,
+            VELOCITY,
+            0,
+            None,
+            &mut release_open,
+            HZ,
+            Some(cc_arg),
+        )
+        .expect("释放族不得报错");
+    println!("[engine-sfz/S119] 释放族 cc = 100：写入 {release_written} 帧");
+    assert_eq!(
+        release_written, 0,
+        "⭐ 该夹具没有 `trigger=release` 区域 ⇒ 释放族写入 0 帧（只验不 panic、口径不串）"
+    );
+}

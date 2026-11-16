@@ -1601,6 +1601,30 @@ pub fn arm_pending_sfz(
     Ok((snapshot, reports))
 }
 
+/// 取 SFZ 的 `set_ccN` 初值表（`<control>` 段，128 项定长）。
+///
+/// 返回 `None` ⇒ 该 SFZ 没有声明任何 `set_ccN`（语料绝大多数）⇒ 渲染走**旧入口**、
+/// 与接线前逐位相同。返回 `Some` ⇒ 渲染期喂给带探针的那一份入口。
+///
+/// ⚠ 键是 `u16`（`set_hdccN` 之类可能 >127）⇒ 超出表的键**不抄**（本引擎的 CC 域
+/// 是 `u8`；抄不进去的键本来也不参与 `loccN`/`hiccN` 判定）。
+fn cc_seeds_of(instrument: &SfzInstrument) -> Option<Box<[u8; 128]>> {
+    let (table, any) = instrument
+        .with_instrument(|inst| {
+            let mut table = Box::new([0_u8; 128]);
+            let mut any = false;
+            for (cc, value) in inst.cc_defaults() {
+                if let Some(slot) = table.get_mut(usize::from(*cc)) {
+                    *slot = *value;
+                    any = true;
+                }
+            }
+            (table, any)
+        })
+        .ok()?;
+    any.then_some(table)
+}
+
 /// **SFZ 音源**：让 `--export-wav` 用 SFZ 的区域/样本发声（**离线**路径）。
 ///
 /// ## 怎么发声（复用既有设施，⛔ 无旁路）
@@ -1655,6 +1679,13 @@ pub struct SfzTrackSource {
     /// ⚠ 只有在 SFZ 里出现 `seq_length > 1` 时才改变输出；其余音色拿到它也一字不变
     /// （判据 `region.seq_length > 1` 才参与互斥）。
     occurrences: Vec<u32>,
+    /// ⭐ **CC 初值表**（`<control>` 段的 `set_ccN`，128 项定长，缺省 `None`）。
+    ///
+    /// `Some` ⇒ 渲染期用它构造探针，喂给
+    /// [`SfzInstrument::render_note_into_from_samples_with_cc`] 与释放族的那一份
+    /// ⇒ `loccN`/`hiccN` 门才可能通过。`None`（语料绝大多数）⇒ 走旧入口、
+    /// 与接线前**逐位相同**。
+    cc_seeds: Option<Box<[u8; 128]>>,
     /// 引擎采样率。
     engine_hz: f32,
     /// 声道数。
@@ -1720,6 +1751,12 @@ impl SfzTrackSource {
             .unwrap_or(48_000)
             .max(1);
         Self {
+            // ⭐ `set_ccN` 初值（`<control>` 段）：`--sfz` 旁路**没有 MIDI CC 流**，
+            // 这些初值是这条路上唯一的 CC 来源。⛔ 不在这里播种 ⇒ 靠 `loccN`/`hiccN`
+            // 选区域的库（Karoryfer Big Rusty Drums 原厂 SFZ）整份静音，
+            // 而同一份文件走工程内 sampler 路径却正常 —— 同一个库换装法就哑了。
+            // 解析一次、抄进 128 字节的定长表（渲染期零分配）。
+            cc_seeds: cc_seeds_of(&instrument),
             instrument,
             sample: InMemorySample::sine(440.0, engine_hz, sample_frames),
             engine_hz,
@@ -1880,8 +1917,26 @@ impl SfzTrackSource {
             let mut buf = vec![0.0_f32; size];
             // ⭐ 有共享表 ⇒ region 级 ＋ note-off ＋ 轮替；无表 ⇒ 旧入口（判据对照腿，
             //    逐位等于接线前：内存正弦、无 note-off、无轮替）。
-            let got = match self.samples.as_deref() {
-                Some(table) => self.instrument.render_note_into_from_samples(
+            // ⭐ CC 探针（`set_ccN` 初值）：先拷到栈上 128 B —— 探针闭包要借用它，
+            //    而 `self` 在下面那行同时被不可变借用（`self.instrument` / `self.samples`）。
+            //    拷贝成局部量把两者解耦，且仍零分配（定长数组）。
+            let seeds = self.cc_seeds.as_deref().copied();
+            let got = match (self.samples.as_deref(), seeds.as_ref()) {
+                // ⭐ 有 `set_ccN` ⇒ 带探针（`loccN`/`hiccN` 门才可能通过）。
+                (Some(table), Some(seeds)) => {
+                    let probe = |cc: u8| seeds.get(usize::from(cc)).copied().unwrap_or(0);
+                    self.instrument.render_note_into_from_samples_with_cc(
+                        table,
+                        pitch,
+                        velocity,
+                        Some(held),
+                        Some(occurrence),
+                        &mut buf,
+                        self.engine_hz,
+                        Some(&probe),
+                    )
+                }
+                (Some(table), None) => self.instrument.render_note_into_from_samples(
                     table,
                     pitch,
                     velocity,
@@ -1890,7 +1945,7 @@ impl SfzTrackSource {
                     &mut buf,
                     self.engine_hz,
                 ),
-                None => {
+                (None, _) => {
                     let sample = self
                         .per_note
                         .get(index)
@@ -1920,10 +1975,25 @@ impl SfzTrackSource {
         //    帧偏移是相对 `held` 的常量 ⇒ 重渲染逐位相同）。
         let mut written = written;
         if let Some(table) = self.samples.as_deref() {
+            // ⭐ 释放族同样要探针：`trigger=release` 的区域也可能挂 `loccN`/`hiccN` 门
+            //    （没有探针时整族被严格策略挡掉，用户只听到「松键后没尾音」）。
+            let seeds = self.cc_seeds.as_deref().copied();
             loop {
-                let got = self
-                    .instrument
-                    .render_release_into_from_samples(
+                let got = match seeds.as_ref() {
+                    Some(seeds) => {
+                        let probe = |cc: u8| seeds.get(usize::from(cc)).copied().unwrap_or(0);
+                        self.instrument.render_release_into_from_samples_with_cc(
+                            table,
+                            pitch,
+                            velocity,
+                            held,
+                            Some(occurrence),
+                            &mut scratch,
+                            self.engine_hz,
+                            Some(&probe),
+                        )
+                    }
+                    None => self.instrument.render_release_into_from_samples(
                         table,
                         pitch,
                         velocity,
@@ -1931,8 +2001,9 @@ impl SfzTrackSource {
                         Some(occurrence),
                         &mut scratch,
                         self.engine_hz,
-                    )
-                    .unwrap_or(0);
+                    ),
+                }
+                .unwrap_or(0);
                 let end = usize::try_from(held)
                     .unwrap_or(usize::MAX)
                     .saturating_add(got);
@@ -2395,5 +2466,51 @@ mod tests {
             tail.iter().any(|sample| sample.abs() > 0.01),
             "不定位时跨起点音符的尾巴必须可闻（牙齿）"
         );
+    }
+
+    /// ⭐ **旁路 CC 播种：`<control> set_ccN` 的初值必须被抄进定长表**。
+    ///
+    /// 这条锁的是 `--sfz` 覆盖路径的上游一半：抄不到表 ⇒ 渲染期没有探针 ⇒
+    /// 带 `loccN` 门的库整份静音（实测 `karoryfer.big-rusty-drums` 原厂
+    /// `Programs/01-full.sfz`：`--sfz` 下 `peak 0.0000`，`--track-sampler` 下
+    /// `peak 1.0000` —— 同一个库换装法就哑了）。
+    #[test]
+    fn the_control_section_seeds_are_read_for_the_bypass_source() {
+        let dir = temp_dir("cc-seeds");
+        let seeded = dir.join("seeded.sfz");
+        std::fs::write(
+            &seeded,
+            "<control> set_cc1=100 set_cc70=100\n<region> sample=a.wav key=60\n",
+        )
+        .expect("写夹具");
+        let text = std::fs::read_to_string(&seeded).expect("读夹具");
+        let instrument =
+            SfzInstrument::load(text, &Default::default()).expect("夹具必须解析成功");
+        let table = cc_seeds_of(&instrument).expect("有 `set_ccN` ⇒ 必须给出表");
+        assert_eq!(table[1], 100, "⭐ `set_cc1=100` ⇒ 表[1]");
+        assert_eq!(
+            table[70], 100,
+            "⭐ `set_cc70=100` ⇒ 表[70]（鼓库每段 `<master>` 挂的 `locc70=1` 就靠它）"
+        );
+        assert_eq!(table[2], 0, "⭐ 没声明的控制器 ⇒ 0");
+
+        // 反向腿：没有 `<control>` ⇒ `None`（渲染走旧入口、逐位不变）。
+        let plain = dir.join("plain.sfz");
+        std::fs::write(&plain, "<region> sample=a.wav key=60\n").expect("写夹具");
+        let plain_text = std::fs::read_to_string(&plain).expect("读夹具");
+        let plain_instrument =
+            SfzInstrument::load(plain_text, &Default::default()).expect("夹具必须解析成功");
+        assert!(
+            cc_seeds_of(&plain_instrument).is_none(),
+            "⛔ 没有 `set_ccN` ⇒ `None`（走旧入口、与接线前逐位相同）"
+        );
+
+        // ⭐ 端到端：`SfzTrackSource` 构造期就把表抄好（渲染期零解析）。
+        let source = SfzTrackSource::new(std::sync::Arc::new(instrument), &[], 48_000.0, 2);
+        assert!(
+            source.cc_seeds.is_some(),
+            "⭐ 带 `set_ccN` 的音源必须在构造期拿到种子表"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

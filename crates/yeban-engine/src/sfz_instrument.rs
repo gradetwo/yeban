@@ -2394,13 +2394,52 @@ impl SfzInstrument {
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
+        // ⭐ 转调带探针的那一份（`cc = None` ⇒ 逐位等于接线前的实现）。
+        self.render_note_into_from_samples_with_cc(
+            samples, note, velocity, held_frames, occurrence, out, engine_hz, None,
+        )
+    }
+
+    /// [`Self::render_note_into_from_samples`] ＋ **CC 探针**（`set_ccN` 初值）。
+    ///
+    /// # 为什么需要这一份
+    ///
+    /// `--sfz` 覆盖路径**没有 MIDI CC 流**：`<control>` 段 `set_ccN` 声明的初值是这条
+    /// 路上**唯一**的 CC 来源。修前这里恒传 `cc = None`，而 `cc_gates_ok(None)` 走
+    /// **严格策略**（有 `loccN`/`hiccN` 门的区域一律不过）⇒ 凡是靠 CC 门选区域的库
+    /// （实测 `karoryfer.big-rusty-drums` 原厂 SFZ，每段 `<master>` 都挂 `locc70=1`）
+    /// **整份静音**，而同一份文件走工程内 sampler（`render_core` 的 `Source::with_cc`
+    /// 会把 `PreparedSfz::cc_seeds()` 注入探针）**完全正常**。
+    ///
+    /// 「同一个库换个装法就哑了」是最难查的一类：用户看到的不是报错，是一段静音。
+    ///
+    /// # 参数
+    ///
+    /// * `cc` —— CC 探针，`Fn(cc) -> value`。调用方把 [`yeban_sfz::Instrument::cc_defaults`]
+    ///   播进自己的表再传进来（本 crate ⛔ 不替调用方持有会话状态）。
+    ///   `None` ⇒ 与 [`Self::render_note_into_from_samples`] **逐位相同**。
+    ///
+    /// # Errors
+    /// 同 [`Self::render_note_into`]。没有匹配区域 ⇒ `Ok(0)`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_note_into_from_samples_with_cc(
+        &self,
+        samples: &BTreeMap<String, InMemorySample>,
+        note: u8,
+        velocity: u8,
+        held_frames: Option<u64>,
+        occurrence: Option<u32>,
+        out: &mut [f32],
+        engine_hz: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> Result<usize, SfzError> {
         self.render_note_with(
             NoteInputs {
                 source: None,
                 samples: Some(samples),
                 note,
                 velocity,
-                cc: None,
+                cc,
                 held_frames,
                 occurrence,
                 // ⚠ 本入口没有轨上下文（裸乐器试听）⇒ 调律偏移恒 0（逐位不变）。
@@ -2434,13 +2473,42 @@ impl SfzInstrument {
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
+        // ⭐ 转调带探针的那一份（`cc = None` ⇒ 逐位等于接线前的实现）。
+        self.render_release_into_from_samples_with_cc(
+            samples, note, velocity, held_frames, occurrence, out, engine_hz, None,
+        )
+    }
+
+    /// [`Self::render_release_into_from_samples`] ＋ **CC 探针**（`set_ccN` 初值）。
+    ///
+    /// 与 note-on 那一份**同一条理由**（见
+    /// [`Self::render_note_into_from_samples_with_cc`]）：释放族（`trigger=release` /
+    /// `release_key`）的区域同样可能挂 `loccN`/`hiccN` 门 ⇒ 没有探针时整族被严格策略挡掉，
+    /// 而用户听到的只是「松键后没有尾音」，比整段静音更难定位。
+    ///
+    /// `cc = None` ⇒ 与 [`Self::render_release_into_from_samples`] **逐位相同**。
+    ///
+    /// # Errors
+    /// 同 [`Self::render_note_into`]。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_release_into_from_samples_with_cc(
+        &self,
+        samples: &BTreeMap<String, InMemorySample>,
+        note: u8,
+        velocity: u8,
+        held_frames: u64,
+        occurrence: Option<u32>,
+        out: &mut [f32],
+        engine_hz: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> Result<usize, SfzError> {
         self.render_note_with(
             NoteInputs {
                 source: None,
                 samples: Some(samples),
                 note,
                 velocity,
-                cc: None,
+                cc,
                 // 释放声部没有"后续 note-off"（规范：按 `one_shot` 处理）⇒ `None`。
                 held_frames: None,
                 occurrence,
