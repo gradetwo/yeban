@@ -2813,7 +2813,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 26] = [
+    const SLINT_MANIFEST: [&str; 31] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2842,6 +2842,13 @@ mod tests {
         "dialogs/macro_panel.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
+        // 共享控件库（`line/ui-skeuo-theme` 一期）：Knob / Fader / LedMeter /
+        // PushButton / ToggleSwitch —— 试点迁移的定义真移到了这里，清单同步登记。
+        "controls/fader.slint",
+        "controls/knob.slint",
+        "controls/led_meter.slint",
+        "controls/push_button.slint",
+        "controls/toggle_switch.slint",
         // 桌面 UI 重构组件清单
         "arrangement.slint",
         "clip_matrix.slint",
@@ -2897,13 +2904,28 @@ mod tests {
     /// `"track-" + i + "-fader"` 这样的模板。模板无法在文本层展开成具体 ID, 但它的
     /// **字面段序列**是确定的 —— 契约判据就建立在字面段上。
     fn id_pattern(line: &str) -> Option<(Vec<String>, bool)> {
-        let rhs = line.split_once("accessible-id:")?.1;
+        // `a11y-id:` 是共享控件（`ui/controls/*.slint`）的转发入参：调用点写
+        // `a11y-id: "device-" + i + "-bypass-switch"`，控件内再落到节点的
+        // `accessible-id: root.a11y-id;`。扫描器必须认这两种拼法，否则
+        // 「注册表 → .slint」方向会误报已转发的 ID 不存在（`line/ui-skeuo-theme`
+        // 一期实证：`device-0-bypass-switch`）。
+        //
+        // 顺序不能反：控件内的转发句本身也含 `a11y-id`（`accessible-id:
+        // root.a11y-id;`），先试 `accessible-id:` 才能让它按「无字面段」
+        // 返回 None 而不是误读成模板。
+        let rhs = line
+            .split_once("accessible-id:")
+            .or_else(|| line.split_once("a11y-id:"))
+            .map(|(_, rhs)| rhs)?;
         let rhs = rhs.split(';').next().unwrap_or(rhs);
         let segments: Vec<String> = rhs
             .split('"')
             .skip(1)
             .step_by(2)
             .map(str::to_owned)
+            // 控件入参的默认值 `a11y-id: "";` 只有一个空字面量 —— 它不是模板，
+            // 是「调用方没给 ID」的占位；空段不过滤会在方向 2 里误报。
+            .filter(|segment| !segment.is_empty())
             .collect();
         if segments.is_empty() {
             return None;
@@ -3451,8 +3473,11 @@ mod tests {
             "root.track-pans[track_index]",
             "root.track-volumes[track_index]",
             "root.track-volume-fractions[track_index]",
-            // 电平：柱高 + dBFS 文本（两条独立的机械证据）
-            "100px * root.track-meter-levels[track_index]",
+            // 电平：柱高 + dBFS 文本（两条独立的机械证据）。柱高算式一期起
+            // 收进共享控件 `LedMeter`（`height: 100 * level`，100px 常量
+            // 不变）；mixer 只绑 `level`，这里钉的就是这条绑定 —— 投影
+            // → 表的驱动链不断。
+            "level: root.track-meter-levels[track_index]",
             "root.track-meter-peaks[track_index]",
             "root.track-meter-rmss[track_index]",
             // 主控同源
@@ -3528,11 +3553,11 @@ mod tests {
              主控：推子 / 声相），实测 {}",
             source.matches("TouchArea").count()
         );
+        // 推子四条一期起走两跳：手势面在共享控件 `Fader` 里（`grabbed /
+        // dragged` 的参数就是手势面内的 `mouse-y`，见下面 ①c），mixer 只
+        // 接回调并把参数原样传给宿主 —— 锚点改钉回调体里的参数名 `y`。
         for (what, marker) in [
-            (
-                "推子竖直拖",
-                "root.mixer-fader-grab(track_index, self.mouse-y)",
-            ),
+            ("推子竖直拖", "root.mixer-fader-grab(track_index, y)"),
             ("推子收尾", "root.mixer-fader-release(track_index)"),
             (
                 "声相水平拖",
@@ -3542,8 +3567,8 @@ mod tests {
             ("静音点击", "root.mixer-mute-toggle(track_index)"),
             ("独奏点击", "root.mixer-solo-toggle(track_index)"),
             // 主控：**不带下标**的六个成员（本切片补的那一格）。
-            ("主控推子按下", "root.mixer-master-fader-grab(self.mouse-y)"),
-            ("主控推子拖动", "root.mixer-master-fader-drag(self.mouse-y)"),
+            ("主控推子按下", "root.mixer-master-fader-grab(y)"),
+            ("主控推子拖动", "root.mixer-master-fader-drag(y)"),
             ("主控推子收尾", "root.mixer-master-fader-release()"),
             ("主控声相按下", "root.mixer-master-pan-grab(self.mouse-x)"),
             ("主控声相拖动", "root.mixer-master-pan-drag(self.mouse-x)"),
@@ -3552,6 +3577,19 @@ mod tests {
             assert!(
                 source.contains(marker),
                 "混音台缺少「{what}」的输入面：源码里找不到 `{marker}`"
+            );
+        }
+
+        // ①c 推子两跳的另一半：共享控件 `Fader` 必须把手势面内的绝对
+        // `mouse-y` 原样报给 `grabbed` / `dragged` —— 上面 ① 钉的 `y`
+        // 只有在这里接上 `self.mouse-y`，宿主拿到的才是按下 / 拖动位置，
+        // 不是控件内部算出来的相对量。
+        let fader = std::fs::read_to_string(ui_dir().join("controls/fader.slint"))
+            .expect("读 controls/fader.slint");
+        for forwarding in ["root.grabbed(self.mouse-y)", "root.dragged(self.mouse-y)"] {
+            assert!(
+                fader.contains(forwarding),
+                "共享控件 Fader 必须把手势面 mouse-y 原样报给回调：源码里找不到 `{forwarding}`"
             );
         }
 
@@ -3578,11 +3616,18 @@ mod tests {
             );
         }
 
-        // ② 推子行程：`.slint` 的位置表达式里的像素系数就是行程。
-        let fader_geometry = "60px + 88px * (1.0 - root.track-volume-fractions[track_index])";
+        // ② 推子行程：`.slint` 的位置表达式里的像素系数就是行程。一期起
+        // 位置算式收进共享控件 `Fader`（`6px + 88px * (1.0 - root.fraction)`），
+        // mixer 只绑 `fraction` —— 两边各钉一半，行程同源不断。
+        let fader = std::fs::read_to_string(ui_dir().join("controls/fader.slint"))
+            .expect("读 controls/fader.slint");
         assert!(
-            source.contains(fader_geometry),
-            "推子帽的位置表达式是像素行程的唯一来源"
+            fader.contains("6px + 88px * (1.0 - root.fraction)"),
+            "推子帽的位置表达式是像素行程的唯一来源（现居 controls/fader.slint）"
+        );
+        assert!(
+            source.contains("fraction: root.track-volume-fractions[track_index]"),
+            "通道条必须把投影的音量归一值绑给 Fader.fraction"
         );
         assert_eq!(
             crate::host::MIXER_FADER_TRAVEL_PX,
@@ -3599,8 +3644,10 @@ mod tests {
         assert_eq!(crate::host::MIXER_PAN_TRAVEL_PX, 36.0);
 
         // ④ 主控推子帽的位置表达式与通道条**同一个像素系数**（88px ⇒ 共用一个行程常量）。
+        // 位置算式与通道条共用 `Fader` 里的同一行（上面 ② 已钉）；这里只钉
+        // 主控把自己的归一值绑给同一个 `fraction`。
         assert!(
-            source.contains("60px + 88px * (1.0 - root.master-volume-fraction)"),
+            source.contains("fraction: root.master-volume-fraction"),
             "主控推子帽的位置表达式必须与 `MIXER_FADER_TRAVEL_PX`（88px）同源"
         );
     }
