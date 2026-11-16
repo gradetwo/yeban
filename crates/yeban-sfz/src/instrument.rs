@@ -193,6 +193,16 @@ pub enum TriggerEvent {
         /// 延音踏板此刻是否踩下。
         pedal_down: bool,
     },
+    /// ⭐ **延音踏板松开**（CC64 从 >= 64 落到 < 64；本片）。
+    ///
+    /// 与 `NoteOff { pedal_down: false }` 的**唯一**差别：它不是「某个键松开」，而是
+    /// 「踏板松开、把踏板期间挂住的键真正放掉」。
+    ///
+    /// 规范逐字（<https://sfzformat.com/opcodes/trigger/>）：`release` 在
+    /// "note-off **or** sustain pedal off" 时发声；`release_key` 是 "same as release,
+    /// but is not affected by sustain pedal" ⇒ 踏板松开时**只**有 `release` 响，
+    /// ⛔ 不能重复播 `release_key` 的采样（那是另一个事件的音量）。
+    PedalUp,
 }
 
 /// `trigger` opcode：region 由哪一类 MIDI 事件触发。
@@ -250,9 +260,12 @@ impl Trigger {
     pub fn responds_to(self, event: TriggerEvent) -> bool {
         match self {
             Trigger::Attack | Trigger::First | Trigger::Legato => event == TriggerEvent::NoteOn,
-            // 踏板踩下时 `release` 不发声，等踏板松开。
-            Trigger::Release => event == TriggerEvent::NoteOff { pedal_down: false },
-            // `release_key` 忽略踏板：踏板踩不踩都发声。
+            // 踏板踩下时 `release` 不发声，等踏板松开 —— **键松开**或**踏板松开**都算。
+            Trigger::Release => matches!(
+                event,
+                TriggerEvent::NoteOff { pedal_down: false } | TriggerEvent::PedalUp
+            ),
+            // `release_key` 忽略踏板：只认**键**松开（`NoteOff`），⛔ 不认 `PedalUp`。
             Trigger::ReleaseKey => matches!(event, TriggerEvent::NoteOff { .. }),
         }
     }
@@ -6680,6 +6693,10 @@ mod tests {
                 TriggerEvent::NoteOff { pedal_down: true },
                 false,
             ),
+            // ⭐ `PedalUp`（本片）：只有 `release` 认它；`release_key` 与 note-on 家族都不认。
+            (Trigger::Release, TriggerEvent::PedalUp, true),
+            (Trigger::ReleaseKey, TriggerEvent::PedalUp, false),
+            (Trigger::Attack, TriggerEvent::PedalUp, false),
         ];
         for (trigger, event, expected) in cases {
             assert_eq!(

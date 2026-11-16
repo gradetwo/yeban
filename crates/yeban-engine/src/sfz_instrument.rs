@@ -833,6 +833,24 @@
 //! * 判据：`tests/sfz_random_start.rs` 的 R1～R6；口径与语料普查在
 //!   `docs/ledger/sfz-random-start-notes.md`。
 //!
+//! # ⭐ 延音踏板（CC64）与释放族时机
+//!
+//! 规范（<https://sfzformat.com/opcodes/trigger/>）：`release` 在「键松开**或**踏板松开」
+//! 时响；`release_key` 只认键松开（"is not affected by sustain pedal"）⇒ 踏板松开时
+//! ⛔ 不能重复播 `release_key`。
+//!
+//! * `yeban-sfz`：`TriggerEvent::PedalUp`（`release` 认、`release_key` 不认）。
+//! * `SfzVoicePool`：`pedal_down` ＋ `sustained[128]`；`trigger_release` 按踏板选
+//!   `NoteOff{pedal_down}`，`trigger_pedal_up` 走 `PedalUp`；note-on 重触发清挂起位。
+//! * `SynthEngine::note_off_with_sources`：踩下时不停声部、只响 `release_key` 并标记挂起；
+//!   `SynthEngine::set_sustain_pedal` 在松开时逐个 `release_note` ＋ `trigger_pedal_up`。
+//! * **尺寸**：池 6464 → **6600 B**（＋136）；其余三条不变。
+//! * **设备/事件面**：`rt.rs` 的 CC 出队臂只记 CC64 的 down↔up 跃变（`Option<bool>`），
+//!   主快照块按 `current.sfz()` 逐轨调 `set_sustain_pedal`（`begin_block()` 每量子返回
+//!   `held`）⇒ 在线 MIDI 的 CC64 经既有 `midi_live → EngineEvent::ControlChange` 到达；
+//!   ⚠ 通道→轨路由仍是既有的全局口径（CC 不携带 track）。
+//! * 判据：`tests/sfz_sustain_pedal.rs` 的 P1～P3。
+//!
 //! # ⭐ 释放采样（`trigger=release` / `release_key`）与 `rt_decay`
 //!
 //! 修前：`#94` 把释放族的键掩码清零（防"按下时把 release 采样打出来"）之后，引擎
@@ -2580,7 +2598,8 @@ impl SfzInstrument {
                 // ⭐ 释放族再乘 `rt_decay`（按住时长 = `rt_decay_held_frames` / 引擎采样率）；
                 // 非 note-off 事件恒 `1.0` ⇒ 既有读数逐位不变。
                 let rt_decay = match event {
-                    yeban_sfz::instrument::TriggerEvent::NoteOff { .. } => rt_decay_held_frames
+                    yeban_sfz::instrument::TriggerEvent::NoteOff { .. }
+                    | yeban_sfz::instrument::TriggerEvent::PedalUp => rt_decay_held_frames
                         .map(|held| region.rt_decay_gain(held as f32 / engine_hz.max(1.0)))
                         .unwrap_or(1.0),
                     yeban_sfz::instrument::TriggerEvent::NoteOn => 1.0,
@@ -7890,6 +7909,17 @@ pub struct SfzVoicePool {
     /// [`Self::set_sample_rate`] 同步更新（与窃取淡出帧数同一处）；**只**用于触发期的
     /// 一次除法，⛔ 不进逐样本路径。
     sample_rate: f32,
+    /// ⭐ **延音踏板是否踩下**（CC64 ≥ 64；本片）。
+    ///
+    /// 键松开时：踩下 ⇒ `release_key` 立刻响、`release` 等踏板；松开 ⇒ 两者都按
+    /// `NoteOff { pedal_down: false }` 处理。语义的谓词在 `yeban-sfz` 的
+    /// `Trigger::responds_to`，本字段只提供"踏板此刻是不是踩着"。
+    pedal_down: bool,
+    /// ⭐ **被踏板挂住的键**（键已松开、等踏板松开；本片）。
+    ///
+    /// 由 `note_off` 在踏板踩下时置位，note-on 重触发 / 踏板松开时清零。
+    /// 代价 **128 B / 池**。
+    sustained: [bool; 128],
     /// ⭐ `#341`：**触发那一刻**"其它音符的按住数"（`trigger=first` / `legato` 用）。
     ///
     /// `None` ＝ 调用方未提供该状态 ⇒ 严格策略下这两族区域**不匹配**
@@ -8099,6 +8129,39 @@ impl SfzVoicePool {
         self.held_notes = held;
     }
 
+    /// ⭐ **设延音踏板状态**（CC64 ≥ 64；本片）。返回是否发生 **down → up** 的跃变。
+    ///
+    /// ⚠ 本方法**只**记状态，不释放任何声部：踏板松开的"真正放掉"由调用方（合成器）
+    /// 用 [`Self::sustained`] 扫一遍、逐个 `release_note` ＋ [`Self::trigger_pedal_up`]
+    /// —— 因为停止声部需要 `PreparedSfz`，而池的踏板状态本身不需要它。
+    pub fn set_pedal(&mut self, down: bool) -> bool {
+        let released = self.pedal_down && !down;
+        self.pedal_down = down;
+        released
+    }
+
+    /// ⭐ 踏板此刻是否踩下（本片）。
+    #[must_use]
+    pub const fn pedal_down(&self) -> bool {
+        self.pedal_down
+    }
+
+    /// ⭐ 标记"该键已松开、等踏板"（本片）。
+    pub fn mark_sustained(&mut self, note: u8) {
+        self.sustained[note as usize] = true;
+    }
+
+    /// ⭐ 该键是否被踏板挂住（本片）。
+    #[must_use]
+    pub fn sustained(&self, note: u8) -> bool {
+        self.sustained[note as usize]
+    }
+
+    /// ⭐ 清掉某键的挂起位（note-on 重触发 / 踏板松开之后；本片）。
+    pub fn clear_sustained(&mut self, note: u8) {
+        self.sustained[note as usize] = false;
+    }
+
     /// 空池（⛔ 无分配：整个池是栈上/结构体内的定长数组）；淡出帧数按 `sample_rate` 定。
     #[must_use]
     pub fn new(sample_rate: f32) -> Self {
@@ -8117,6 +8180,8 @@ impl SfzVoicePool {
             key_on_frame: [0; 128],
             key_velocity: [0; 128],
             sample_rate,
+            pedal_down: false,
+            sustained: [false; 128],
             held_notes: None,
             last_key: None,
             porta_slot: u8::MAX,
@@ -8323,7 +8388,39 @@ impl SfzVoicePool {
             cc,
             NO_PITCH_SHAPE,
             0.0,
-            yeban_sfz::instrument::TriggerEvent::NoteOff { pedal_down: false },
+            // ⭐ 踏板踩下时只让 `release_key` 响（`release` 等踏板松开）——谓词在
+            // `Trigger::responds_to`，本处只把"此刻踩没踩"如实报进去。
+            yeban_sfz::instrument::TriggerEvent::NoteOff {
+                pedal_down: self.pedal_down,
+            },
+        )
+    }
+
+    /// ⭐ **踏板松开触发**（`PedalUp`；本片）：只让 `trigger=release` 的区域响，
+    /// ⛔ 不重复播 `release_key`（规范逐字 "is not affected by sustain pedal"）。
+    pub fn trigger_pedal_up(
+        &mut self,
+        plan: &PreparedSfz,
+        note: u8,
+        off_frame: u64,
+        track_gain: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> usize {
+        if !plan.has_release_regions() {
+            return 0;
+        }
+        let velocity = self.key_velocity[note as usize];
+        self.trigger_event(
+            plan,
+            note,
+            velocity,
+            off_frame,
+            u64::MAX,
+            track_gain,
+            cc,
+            NO_PITCH_SHAPE,
+            0.0,
+            yeban_sfz::instrument::TriggerEvent::PedalUp,
         )
     }
 
@@ -8362,6 +8459,8 @@ impl SfzVoicePool {
             // ⭐ **按住起点与力度**（`rt_decay` / 释放声部的力度来源）：只由 note-on 写。
             self.key_on_frame[n] = start_sample;
             self.key_velocity[n] = velocity;
+            // ⭐ 重触发清掉踏板挂起位（本片）：这个键又被按下了，旧挂起作废。
+            self.sustained[n] = false;
         }
         let mut created = 0usize;
         // ⭐ **触发前的在场快照**（任务单 `#94` 裁决 5：**触发者不自掐**）：只有本次调用
@@ -9461,6 +9560,9 @@ impl SfzVoicePool {
         self.release_occurrence = [0; 128];
         self.key_on_frame = [0; 128];
         self.key_velocity = [0; 128];
+        // ⚠ 踏板**状态**也复位（`silence` = seek/快照重建 ⇒ 从停止状态开始）；
+        //   但 `pedal_down` 保留：它是**设备/控制面**的状态，⛔ 不该被一次 seek 改写。
+        self.sustained = [false; 128];
     }
 
     /// ⭐ 某音高的**下一个**轮替序号（0-based；读后**自增**）。

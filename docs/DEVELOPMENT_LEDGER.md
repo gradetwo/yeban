@@ -18157,3 +18157,35 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `test result:` **744** 行、`FAILED` **0**，`sfz_random_start` / `corpus_random_families` /
   `sfz_release_trigger` 各 **1** 次。⚠ 更早的 `2453fdfb`／`df1d33ab` 两次 main run 均被
   后续推送**取消**（§6.3：`cancelled` ⛔ 不是判决），本行只引用跑完的这一次。
+
+### 24.3 ⭐ 延音踏板（CC64）与释放族时机（2026-11-16；引擎面 + CC64 事件接线均已落地）
+
+- **语义**（规范逐字见 `TriggerEvent` / `Trigger::responds_to`）：`release` 在「键松开**或**
+  踏板松开」时响；`release_key` 只认键松开（"is not affected by sustain pedal"）。
+- **落地（本片）**：
+  * `yeban-sfz`：新增 `TriggerEvent::PedalUp`（`release` 认它、`release_key` 与 note-on
+    家族都不认）＋ 三条 responds_to 判例；
+  * `SfzVoicePool`：`pedal_down` ＋ `sustained[128]`，`set_pedal`（返回 down→up 跃变）、
+    `mark_sustained` / `sustained` / `clear_sustained`；`trigger_release` 按踏板状态选
+    `NoteOff{pedal_down}`、新增 `trigger_pedal_up`（`PedalUp`）；note-on 重触发清挂起位；
+  * `SynthEngine`：`note_off_with_sources` 在踏板踩下时**不**停声部、只触发 release_key
+    并标记挂起；`set_sustain_pedal(track, down, plan)` 在松开时逐个 `release_note` ＋
+    `trigger_pedal_up`。
+- **尺寸**：`SfzVoicePool` 6464 → **6600**（＋136 ＝ `sustained[128]` ＋ `pedal_down` 与
+  对齐）；`PreparedRegion` 6296 / `SfzVoice` 40 / `EngineRuntime` 45888 不变。
+- **判据**：`tests/sfz_sustain_pedal.rs` P1（踩下只响 release_key）、P2（松开只响 release）、
+  P3（重触发清挂起位），本地 3/3。
+- ⭐ **运行时接线（同片补齐）**：`rt.rs` 的 CC 出队臂在 `apply` **之前**读 CC64 旧值、
+  `apply` 之后判 down↔up 跃变，只记 `Option<bool>`（拿不到摊平表）；主快照块
+  （`begin_block()` 返回 `held` 的**每量子**路径）里按 `current.sfz()` 逐轨调
+  `synth.set_sustain_pedal(track, down, Some(plan.prepared()))` ⇒ ⛔ 不再需要第二套
+  跃变队列（`begin_block` 末尾无条件返回 `held`，见 `snapshot.rs:2425`）。
+- **判据补充**：P4 用真 `SynthEngine`（`arm_from_snapshot` + 一条轨）钉住"踏板踩下时
+  起音声部继续响、松开才建 release 声部并放掉起音"——`out[0]` 依次 0.5 → 0.5 → 0.25。
+- **判决（读回）**：rebase 到 `02438282` 后的 tip `dba4ab7a` 的 run **`43829579802`**
+  = `completed / **success**`（`plan` / `checks` / `deny` / `lockfile` / `e2e` /
+  `rust (workspace 全量)` / `macos` / `windows` 全 `success`）。`rust (workspace 全量)`
+  作业日志现读：`test result:` **745** 行、`FAILED` **0**，`sfz_sustain_pedal` 与
+  `p1_with_the_pedal` / `p2_on_pedal` / `p4_the_synth` 均在日志里。
+  ⚠ 更早的 `5ae83fd0` / `4aae7a84` 两次支线 run 随 rebase 作废（`--force-with-lease`），
+  本行只引用 rebase 后的这一次。
