@@ -487,9 +487,18 @@ jobs:
             out="$(timeout 30 "$app" "$@" 2>&1 </dev/null)"; rc=$?
             set -e
             echo "--- $label: rc=$rc"
-            printf '%s\n' "$out" | head -2
+            # ⚠ 这里**不能**用 `printf … | head` / `printf … | grep -q`: 本步开了
+            # pipefail, 下游 (head / grep -q) 命中后先退出会让 printf 吃 SIGPIPE
+            # (写错误), 管道状态变成 141 ⇒ 明明点名了 feature 也会误报失败。
+            # 2026-11-16 dry_run run 43823184691 实证 (拒绝信息里有 ui-mcp-http,
+            # 判据却报未点名)。展示用 `|| true` 兜底, 断言改走无管道的 case 匹配;
+            # 断言本身 (退出码 2 + 输出含 feature 名) 一字未变。
+            printf '%s\n' "$out" | head -2 || true
             [ "$rc" -eq 2 ] || { echo "::error::$label 期望退出码 2 (未编译该 feature 的用法错误), 实得 $rc"; return 1; }
-            printf '%s' "$out" | grep -q -- "$feature" || { echo "::error::$label 的拒绝未能点名 feature '$feature' ⇒ 无法证明拒绝是因为它没编进来"; return 1; }
+            case "$out" in
+              *"$feature"*) ;;
+              *) echo "::error::$label 的拒绝未能点名 feature '$feature' ⇒ 无法证明拒绝是因为它没编进来"; return 1 ;;
+            esac
           }
           check_refusal "--enable-ui-mcp-http"    "ui-mcp-http"                   --enable-ui-mcp-http
           check_refusal "--export-als"            "experimental-als-export"       --export-als /tmp/yeban-must-not-exist.als
