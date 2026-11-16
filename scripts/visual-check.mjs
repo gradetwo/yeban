@@ -114,7 +114,15 @@ async function main() {
     page.on("console", (m) => {
       if (m.type() === "error") consoleErrors.push(m.text());
     });
-    page.on("requestfailed", (r) => failedRequests.push(`${r.url()} ${r.failure()?.errorText}`));
+    // 统计主机豁免：GTM/GA 是 Wang 决定引入的第三方统计（容器 GTM-5WC4DS5B），
+    // 其 beacon 在无外网的 CI 沙箱里必然失败，不计入 A1；本站自身资源失败仍判红。
+    const analyticsHosts = ["www.googletagmanager.com", "www.google-analytics.com", "analytics.google.com"];
+    page.on("requestfailed", (r) => {
+      let host = "";
+      try { host = new URL(r.url()).hostname; } catch { /* 保持空串 */ }
+      if (analyticsHosts.includes(host)) return;
+      failedRequests.push(`${r.url()} ${r.failure()?.errorText}`);
+    });
     const url = lang ? `${base}/?lang=${lang}` : `${base}/`;
     await page.goto(url, { waitUntil: "networkidle" });
     return { context, page, consoleErrors, failedRequests };
