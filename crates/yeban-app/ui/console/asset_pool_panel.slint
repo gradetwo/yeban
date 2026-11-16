@@ -14,7 +14,7 @@
 // 为什么是三个平行数组而不是一个富对象数组: 与本仓既有投影面（`track-*` / `clip-*` /
 //   `note-*`）同形 —— 每个显示字段一个数组，**同一索引集**，`.slint` 只按下标取。
 
-import { Tokens, UiMediumText, UiText } from "../tokens.slint";
+import { Tokens, UiText } from "../tokens.slint";
 
 export component AssetPoolPanel inherits Rectangle {
     // 每一行的显示名 / 类型 / 可用字段（投影给出，同索引集）。
@@ -45,16 +45,8 @@ export component AssetPoolPanel inherits Rectangle {
     accessible-label: "素材池";
 
     // ---------------------------------------------------------------- 标题
-    UiMediumText {
-        x: Tokens.space-3;
-        y: Tokens.space-2;
-        width: parent.width - 12px;
-        height: 18px;
-        text: "素材池";
-        color: Tokens.ink-0;
-        font-size: Tokens.font-size-sm;
-        overflow: elide;
-    }
+    // Wang 2026-11-16：删只说明面板名的可见标题「素材池」（面板的 accessible-label
+    // 保留，无障碍名不变）；其余几何一位不动，条目数/导入/行起点保持原 y。
 
     // ---------------------------------------------------------------- 条目数
     // 读数是**投影的行数**（`asset-pool-names.length`），不是界面自己数的。
