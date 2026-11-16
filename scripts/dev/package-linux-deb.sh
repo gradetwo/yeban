@@ -14,12 +14,24 @@
 # 包布局 (按进 APT 仓库的标准写, reprepro/aptly 扫包时不该被拒):
 #   /usr/lib/yeban/yeban-app, yeban-mcp, LICENSE   ← 本体 (0755 / 0755 / 0644)
 #   /usr/bin/yeban, /usr/bin/yeban-mcp             ← 指向 ../lib/yeban/* 的软链
-#   /usr/share/applications/yeban.desktop          ← resources/linux/yeban.desktop
-#   /usr/share/icons/hicolor/512x512/apps/yeban.png ← assets/brand/png/yeban-dark-512.png
+#   /usr/share/applications/dev.yeban.app.desktop  ← resources/linux/dev.yeban.app.desktop
+#   /usr/share/icons/hicolor/scalable/apps/yeban.svg + {64,128,256,512}x*/apps/yeban.png
+#                                                  ← assets/brand 的深色变体 (SVG/同尺寸 PNG)
+#   /usr/share/mime/packages/yeban.xml             ← .yeban 工程文件的 MIME 注册
 #   DEBIAN/control: Package/Version/Architecture/Maintainer/Section/Priority/
 #                   Depends/Recommends/Installed-Size/Homepage/Description 写全。
+#   .desktop 身份三一致 (Omarchy/Hyprland 的窗口↔启动器匹配靠它): 文件名
+#   dev.yeban.app.desktop、StartupWMClass=dev.yeban.app、应用的 Wayland app_id
+#   目标值 dev.yeban.app (与 macOS bundle id 同一个身份); Icon=yeban 用裸名。
+#   ⚠ 应用侧目前**没有**显式设置 winit/Slint 的 application_id (代码里只有
+#   bundle id 与数据目录在用 dev.yeban.app) —— 显式设置是应用侧待办, 不在本脚本范围。
 #   Depends 的依据: README 的 Linux 构建依赖表 (dev 包 → 对应运行时包) +
 #   libxkbcommon-x11-0 (真桌面首启 panic 修复时确认的运行时件, 见 ci.yml apt 清单)。
+#   音频依赖按实际核实: 引擎是 cpal + ALSA (根 Cargo.toml 的 cpal 无 jack
+#   feature; midir 的 jack 按 ADR-0006 D6 全仓禁用; 无 pipewire 链接) ⇒
+#   硬依赖只有 libasound; PipeWire 桌面上的 ALSA 路由件 (pipewire-alsa +
+#   wireplumber) 放 Recommends (apt 默认会装), 不把 pipewire-jack/pipewire-pulse
+#   写成依赖 —— 应用没有 JACK/Pulse 代码路径, 写了就是假依赖。
 #   本脚本会顺带打印 stage 里 yeban-app 的 ldd (有 ldd 时), 让 CI 日志留一份
 #   真实链接证据, 供日后收紧 Depends 时对账 —— 打印只是证据, 不作判据。
 #
@@ -90,18 +102,30 @@ trap 'rm -rf "$work"' EXIT
 root="$work/root"
 mkdir -p "$root/usr/lib/yeban" "$root/usr/bin" \
          "$root/usr/share/applications" \
-         "$root/usr/share/icons/hicolor/512x512/apps" \
+         "$root/usr/share/icons/hicolor/scalable/apps" \
+         "$root/usr/share/mime/packages" \
          "$root/DEBIAN"
+for size in 64 128 256 512; do
+  mkdir -p "$root/usr/share/icons/hicolor/${size}x${size}/apps"
+done
 
 install -m 0755 "$stage_dir/yeban-app" "$root/usr/lib/yeban/yeban-app"
 install -m 0755 "$stage_dir/yeban-mcp" "$root/usr/lib/yeban/yeban-mcp"
 install -m 0644 "$stage_dir/LICENSE"   "$root/usr/lib/yeban/LICENSE"
 ln -s ../lib/yeban/yeban-app "$root/usr/bin/yeban"
 ln -s ../lib/yeban/yeban-mcp "$root/usr/bin/yeban-mcp"
-install -m 0644 "$repo_root/resources/linux/yeban.desktop" \
-  "$root/usr/share/applications/yeban.desktop"
-install -m 0644 "$repo_root/assets/brand/png/yeban-dark-512.png" \
-  "$root/usr/share/icons/hicolor/512x512/apps/yeban.png"
+install -m 0644 "$repo_root/resources/linux/dev.yeban.app.desktop" \
+  "$root/usr/share/applications/dev.yeban.app.desktop"
+install -m 0644 "$repo_root/resources/linux/yeban-mime.xml" \
+  "$root/usr/share/mime/packages/yeban.xml"
+# 图标: 裸名 yeban; SVG 进 scalable, PNG 按品牌资产现有尺寸进各档
+# (品牌集只有 32/64/128/256/512 的 PNG, 没有 48 —— scalable SVG 覆盖该档)。
+install -m 0644 "$repo_root/assets/brand/yeban-dark-512.svg" \
+  "$root/usr/share/icons/hicolor/scalable/apps/yeban.svg"
+for size in 64 128 256 512; do
+  install -m 0644 "$repo_root/assets/brand/png/yeban-dark-$size.png" \
+    "$root/usr/share/icons/hicolor/${size}x${size}/apps/yeban.png"
+done
 
 # mktemp -d 是 0700, dpkg-deb 要求 control 目录权限在 0755..0775 之间 ⇒ 全树目录归一。
 find "$root" -type d -exec chmod 0755 {} +
@@ -116,7 +140,7 @@ Maintainer: Yeban Contributors <yeban@wangda.today>
 Section: sound
 Priority: optional
 Depends: libc6, libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libgl1, libasound2t64 | libasound2
-Recommends: fonts-noto-cjk
+Recommends: pipewire-alsa, wireplumber, fonts-noto-cjk
 Installed-Size: $installed_size
 Homepage: https://yeban.wangda.today
 Description: Yeban (夜半) - AI-native digital audio workstation
@@ -146,7 +170,12 @@ contents="$(dpkg-deb --contents "$out_dir/$name.deb")"
 printf '%s\n' "$contents"
 for want in "./usr/lib/yeban/yeban-app" "./usr/lib/yeban/yeban-mcp" \
             "./usr/lib/yeban/LICENSE" "./usr/bin/yeban" "./usr/bin/yeban-mcp" \
-            "./usr/share/applications/yeban.desktop" \
+            "./usr/share/applications/dev.yeban.app.desktop" \
+            "./usr/share/mime/packages/yeban.xml" \
+            "./usr/share/icons/hicolor/scalable/apps/yeban.svg" \
+            "./usr/share/icons/hicolor/64x64/apps/yeban.png" \
+            "./usr/share/icons/hicolor/128x128/apps/yeban.png" \
+            "./usr/share/icons/hicolor/256x256/apps/yeban.png" \
             "./usr/share/icons/hicolor/512x512/apps/yeban.png"; do
   printf '%s\n' "$contents" | grep -q -- "$want" \
     || die "--contents 缺预期路径: $want"
