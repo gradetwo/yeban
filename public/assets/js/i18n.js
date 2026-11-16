@@ -1,11 +1,11 @@
-/* 双语切换 (中文 / English)
+/* 九种语言切换 (中文 / English / Français / Español / Português / 日本語 / 한국어 / Русский / Deutsch)
  *
  * 设计要点:
  *   1. **渐进增强**: HTML 里已经写好了中文原文。即使 JSON 取不到、JS 被禁用,
  *      页面依然完整可读 —— 只是不切换语言。这是刻意的, 因为静态站点的第一要求是"能看"。
  *   2. **单一契约**: 所有可翻译文本用 data-i18n / data-i18n-attr 标注;
- *      `scripts/check-site.mjs` 会断言两份词典键集完全相同、且 HTML 用到的键都存在。
- *   3. **语言持久化**: localStorage + URL 查询参数 (?lang=en)。URL 优先,
+ *      `scripts/check-site.mjs` 会断言九份词典键集完全相同、且 HTML 用到的键都存在。
+ *   3. **语言持久化**: localStorage + URL 查询参数 (?lang=fr)。URL 优先,
  *      这样别人分享的链接会打开对应语言 (并且与 <link rel="alternate" hreflang> 一致)。
  *   4. **无障碍**: 切换后同步 <html lang>, 让读屏软件换用正确的语音。
  */
@@ -13,8 +13,11 @@
   "use strict";
 
   var STORAGE_KEY = "yeban-lang";
-  var SUPPORTED = ["zh", "en"];
-  var HTML_LANG = { zh: "zh-Hans", en: "en" };
+  var SUPPORTED = ["zh", "en", "fr", "es", "pt", "ja", "ko", "ru", "de"];
+  var HTML_LANG = {
+    zh: "zh-Hans", en: "en", fr: "fr", es: "es", pt: "pt-BR",
+    ja: "ja", ko: "ko", ru: "ru", de: "de"
+  };
   var dict = null;
   var current = "zh";
 
@@ -39,9 +42,8 @@
   function fromBrowser() {
     var langs = navigator.languages || [navigator.language || "zh"];
     for (var i = 0; i < langs.length; i++) {
-      var tag = String(langs[i]).toLowerCase();
-      if (tag.indexOf("zh") === 0) return "zh";
-      if (tag.indexOf("en") === 0) return "en";
+      var prefix = String(langs[i]).toLowerCase().split("-")[0];
+      if (SUPPORTED.indexOf(prefix) >= 0) return prefix;
     }
     return "zh";
   }
@@ -80,10 +82,10 @@
     }
   }
 
-  function syncButtons() {
-    var buttons = document.querySelectorAll("[data-lang-set]");
-    for (var i = 0; i < buttons.length; i++) {
-      buttons[i].setAttribute("aria-pressed", String(buttons[i].getAttribute("data-lang-set") === current));
+  function syncControls() {
+    var selects = document.querySelectorAll("[data-lang-select]");
+    for (var i = 0; i < selects.length; i++) {
+      selects[i].value = current;
     }
   }
 
@@ -95,8 +97,8 @@
     }
     if (dict) {
       applyToDom();
-      syncButtons();
     }
+    syncControls();
   }
 
   function fetchDict(lang) {
@@ -112,7 +114,7 @@
     var initial = fromUrl() || fromStore() || fromBrowser();
     current = initial;
 
-    // 先取当前语言; 另一份词典在首次切换时再取 (省一次请求)
+    // 先取当前语言; 其余语言随后预取, 使切换无感
     fetchDict(initial)
       .then(function (json) {
         dict = json;
@@ -149,7 +151,7 @@
         if (target !== current) return;
         dict = json;
         applyToDom();
-        syncButtons();
+        syncControls();
       }).catch(function () { /* 保持原文 */ });
       return need;
     },

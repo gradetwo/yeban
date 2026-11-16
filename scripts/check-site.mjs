@@ -6,12 +6,12 @@
  * 它的存在理由与 SKILL 规则 2 一致: 判据必须能失败。每一条检查都在下面注明"怎么才会红"。
  *
  * 检查项:
- *   C1 两份词典 JSON 可解析, 且**键集完全相同**        -> 单边删/加一个键就红
- *   C2 HTML 里每个 data-i18n / data-i18n-attr 的键都在两份词典里存在 -> 打错键名就红
+ *   C1 九份词典 JSON 可解析, 且**键集完全相同**、无空译文 -> 单边删/加一个键就红
+ *   C2 HTML 里每个 data-i18n / data-i18n-attr 的键都在九份词典里存在 -> 打错键名就红
  *   C3 词典里没有未被使用的键 (死键)                    -> 删掉 HTML 用法留下词典条目就红
  *   C4 所有站内 href/src 指向的文件真实存在于 public/    -> 引用了不存在的图片/CSS 就红
  *   C5 站内链接不含 http:// 明文                        -> 写 http:// 就红
- *   C6 主题与语言控件、跳过链接、语义锚点齐全 (DOM 契约) -> 删掉一个切换按钮就红
+ *   C6 主题控件与语言下拉、跳过链接、语义锚点齐全 (DOM 契约) -> 删掉一个切换控件就红
  *   C7 必备文件存在且格式合法: 404.html / robots.txt / sitemap.xml / site.webmanifest / wrangler.toml
  *   C8 <html lang>、hreflang alternates、canonical 存在
  *   C9 品牌图标文件存在且非空 (favicon / apple-touch-icon / 两种主题的 64 与 512)
@@ -50,8 +50,10 @@ function readJson(rel) {
 
 // ---------------------------------------------------------------- C1/C2/C3
 
-const zh = readJson("public/assets/i18n/zh.json");
-const en = readJson("public/assets/i18n/en.json");
+const LANGS = ["zh", "en", "fr", "es", "pt", "ja", "ko", "ru", "de"];
+const dicts = {};
+for (const l of LANGS) dicts[l] = readJson(`public/assets/i18n/${l}.json`);
+const zh = dicts.zh;
 const htmlFiles = ["index.html", "404.html"];
 const htmlByFile = {};
 for (const f of htmlFiles) {
@@ -67,17 +69,23 @@ const html = htmlByFile["index.html"];
 // i18n 键的使用是**跨页面**的: 404.html 用 notfound.*, 首页用其余键。
 const allHtml = htmlFiles.map((f) => htmlByFile[f]).join("\n");
 
-if (zh && en) {
-  const zhKeys = new Set(Object.keys(zh));
-  const enKeys = new Set(Object.keys(en));
-  for (const k of zhKeys) if (!enKeys.has(k)) fail("C1", `en.json 缺少键: ${k}`);
-  for (const k of enKeys) if (!zhKeys.has(k)) fail("C1", `zh.json 缺少键: ${k}`);
+if (LANGS.every((l) => dicts[l])) {
+  const keySets = {};
+  for (const l of LANGS) keySets[l] = new Set(Object.keys(dicts[l]));
+  const zhKeys = keySets.zh;
   if (zhKeys.size === 0) fail("C1", "zh.json 是空的");
 
+  // 九份词典键集必须与中文 (源语言) 完全一致
+  for (const l of LANGS) {
+    if (l === "zh") continue;
+    for (const k of zhKeys) if (!keySets[l].has(k)) fail("C1", `${l}.json 缺少键: ${k}`);
+    for (const k of keySets[l]) if (!zhKeys.has(k)) fail("C1", `${l}.json 多出键: ${k}`);
+  }
+
   // 空译文也算缺陷: 切换语言后会出现空白
-  for (const [name, dict] of [["zh", zh], ["en", en]]) {
-    for (const [k, v] of Object.entries(dict)) {
-      if (typeof v !== "string" || v.trim() === "") fail("C1", `${name}.json 的 \`${k}\` 是空字符串`);
+  for (const l of LANGS) {
+    for (const [k, v] of Object.entries(dicts[l])) {
+      if (typeof v !== "string" || v.trim() === "") fail("C1", `${l}.json 的 \`${k}\` 是空字符串`);
     }
   }
 
@@ -93,13 +101,14 @@ if (zh && en) {
   for (const m of allHtml.matchAll(/data-i18n-lang="([^"]+)"/g)) used.add(m[1]);
 
   for (const k of used) {
-    if (!zhKeys.has(k)) fail("C2", `HTML 用到 \`${k}\`, 但 zh.json 里没有`);
-    if (!enKeys.has(k)) fail("C2", `HTML 用到 \`${k}\`, 但 en.json 里没有`);
+    for (const l of LANGS) {
+      if (!keySets[l].has(k)) fail("C2", `HTML 用到 \`${k}\`, 但 ${l}.json 里没有`);
+    }
   }
   for (const k of zhKeys) {
     if (!used.has(k)) fail("C3", `词典里的 \`${k}\` 在 HTML 里从未被使用 (死键)`);
   }
-  notes.push(`i18n: 词典各 ${zhKeys.size} 键, ${htmlFiles.join("+")} 共用到 ${used.size} 键`);
+  notes.push(`i18n: ${LANGS.length} 份词典各 ${zhKeys.size} 键, ${htmlFiles.join("+")} 共用到 ${used.size} 键`);
 }
 
 // ------------------------------------------------------------------- C4/C5
@@ -128,8 +137,7 @@ const domContract = [
   ["data-theme-set=\"auto\"", "缺少主题-自动按钮"],
   ["data-theme-set=\"light\"", "缺少主题-浅色按钮"],
   ["data-theme-set=\"dark\"", "缺少主题-深色按钮"],
-  ['data-lang-set="zh"', "缺少语言-中文按钮"],
-  ['data-lang-set="en"', "缺少语言-英文按钮"],
+  ['data-lang-select', "缺少语言下拉 (select)"],
   ['data-i18n="brand.name"', "缺少品牌名 (i18n 契约锚点)"],
   ['id="features"', "缺少 #features 区块"],
   ['id="stack"', "缺少 #stack 区块"],
@@ -139,6 +147,9 @@ const domContract = [
   ['href="mailto:yeban@wangda.today"', "缺少联系邮箱链接"],
   ['href="https://github.com/gradetwo/yeban"', "缺少仓库链接"],
 ];
+for (const l of LANGS) {
+  domContract.push([`<option value="${l}"`, `缺少语言选项 ${l}`]);
+}
 for (const [needle, message] of domContract) {
   if (!html.includes(needle)) fail("C6", message);
 }
@@ -181,7 +192,9 @@ if (existsSync(join(ROOT, "wrangler.toml"))) {
 // --------------------------------------------------------------------- C8
 
 if (!/<html[^>]+lang="/.test(html)) fail("C8", "<html> 缺少 lang 属性");
-if (!/hreflang="en"/.test(html)) fail("C8", "缺少 hreflang=en 的 alternate 链接");
+for (const hl of ["zh-Hans", "en", "fr", "es", "pt-BR", "ja", "ko", "ru", "de"]) {
+  if (!new RegExp(`hreflang="${hl}"`).test(html)) fail("C8", `缺少 hreflang=${hl} 的 alternate 链接`);
+}
 if (!/hreflang="x-default"/.test(html)) fail("C8", "缺少 hreflang=x-default");
 if (!/rel="canonical"/.test(html)) fail("C8", "缺少 canonical");
 if (!/name="viewport"/.test(html)) fail("C8", "缺少 viewport (移动端会缩放错乱)");

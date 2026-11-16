@@ -23,11 +23,11 @@
       });
     }
 
-    // 2. 语言切换 (zh / en)
-    var langButtons = document.querySelectorAll("[data-lang-set]");
-    for (var j = 0; j < langButtons.length; j++) {
-      langButtons[j].addEventListener("click", function (event) {
-        var lang = event.currentTarget.getAttribute("data-lang-set");
+    // 2. 语言切换 (下拉选择 9 种语言)
+    var langSelects = document.querySelectorAll("[data-lang-select]");
+    for (var j = 0; j < langSelects.length; j++) {
+      langSelects[j].addEventListener("change", function (event) {
+        var lang = event.currentTarget.value;
         if (!window.YebanI18n) return;
         window.YebanI18n.set(lang);
         window.YebanI18n.syncUrl(lang);
@@ -38,7 +38,7 @@
     var year = document.getElementById("year");
     if (year) year.textContent = String(new Date().getFullYear());
 
-    // 4. 若 URL 带了 ?lang=en, 语言按钮的状态要与之一致 (i18n.js 会设, 这里只兜底)
+    // 4. 若 URL 带了 ?lang=fr, 语言下拉的状态要与之一致 (i18n.js 会设, 这里只兜底)
     try {
       var urlLang = new URLSearchParams(window.location.search).get("lang");
       if (urlLang && window.YebanI18n) window.YebanI18n.set(urlLang);
