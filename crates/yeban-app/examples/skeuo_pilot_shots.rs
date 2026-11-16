@@ -27,8 +27,10 @@ slint::slint! {
     // ⚠ `Tokens` / `TextureMode` 必须从这个内联文件**再导出**才属于它的公开
     // API、Rust 侧才有对应类型 (只 `import` 会在 Rust 侧报 E0425 /
     // deprecated type alias —— CI run 43864308074 rust 腿实证)。
-    export { Tokens, TextureMode } from "../ui/tokens.slint";
-    import { UiText } from "../ui/tokens.slint";
+    // 注意: `export { X } from "f"` 只做再导出、不建立本地绑定, 块内写
+    // `Tokens.xxx` 会报 Cannot access id —— 须先 `import` 再 `export { X };`。
+    import { Tokens, TextureMode, UiText } from "../ui/tokens.slint";
+    export { Tokens, TextureMode };
     import { Knob } from "../ui/controls/knob.slint";
     import { Fader, HFader } from "../ui/controls/fader.slint";
     import { LedMeter } from "../ui/controls/led_meter.slint";
