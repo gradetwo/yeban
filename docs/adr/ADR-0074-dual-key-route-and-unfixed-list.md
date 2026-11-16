@@ -1,6 +1,6 @@
 # ADR-0074 — `未修复问题清单-0f181bd.md` 复核裁决：双层键路与待实现项（Proposed）
 
-- **状态**: **Proposed（待人类批准）** — 依 `AGENTS.md §5.7`，本 ADR 登记
+- **状态**: **D2 Accepted（人类 2026-11-16 确认「参考 Logic Pro」采纳 R1，见下方裁决回执）；D3 仍待立项** — 依 `AGENTS.md §5.7`，本 ADR 登记
   「规范缺口 / 两套事实源冲突」的复核证据与建议裁决，**不擅自选定语义、
   不私自发明答案**。
 - **决定者**: 待人类责任人裁定
@@ -65,7 +65,7 @@ tree 与 `0f181bd` 一致），故清单的代码事实对当前 tip 成立。�
 ⛔ BUS COMP / 机架卡片 / 通道条 EQ 三处**仍未接**真实参数（无对应投影属性），
 继续保持「示意」标注，不臆造曲线。
 
-### D2 — 双层键路冲突：登记三条候选路线，不代选
+### D2 — 双层键路冲突：**已采纳 R1（人类 2026-11-16 确认「参考 Logic Pro」）**
 
 | 路线 | 做法 | 代价 / 风险 |
 |---|---|---|
@@ -83,6 +83,41 @@ Ctrl+T / Tab / Ctrl+Alt+M 这类双层缺陷**无法被当前判据测到**。�
 加 `KeyChordModifiers` 或让 `dispatch_key_press` 收修饰位）是独立能力切片，
 不在本轮。
 
+### D2 裁决回执（2026-11-16，人类确认「参考 Logic Pro」）
+
+采纳 **R1 方向**。⚠ 实现方式比 R1 原文**更小**：不改 `trigger-shortcut -> bool`
+（那要动 callback 签名 + 所有调用点），而是直接**删除 `app.slint` key-handler 里
+与解析表重复的 5 个执行分支**（Tab / x / p / Ctrl+T / Ctrl+Alt+M），只留注释；
+末尾 `accept` 仍消费按键，执行完全交给解析表。效果等价、改动面最小。
+
+按 Logic Pro 的最终键位（`input.rs` 本就对齐 Logic，本轮把界面层的反 Logic 覆盖清掉）：
+
+| 键 | 语义 | 落点 |
+|---|---|---|
+| `Cmd/Ctrl+T` | 在播放头处切分选中剪辑（Logic `⌘T`） | `SplitAtPlayhead`（原「加轨」删除） |
+| `Cmd/Ctrl+N` | 新建 MIDI 合成器轨 | 新增 `Action::NewTrack` → `invoke_track_create_midi` |
+| `X` | 混音台切换（Logic `X`） | `ToggleMixer`（原界面 `apply-dock-tab` 删除） |
+| `E` / `P` | 编辑器 / 钢琴卷帘（Logic `E`/`P`） | `ToggleEditor`（原界面分支删除） |
+| `C` | 循环（Logic `C`） | `ToggleCycle` |
+| `Tab` | 视图切换（Session↔Arrangement，**非** Logic 的 Tracks↔Editor） | `ToggleView`（原界面 Clip 矩阵分支删除） |
+| `Cmd/Ctrl+Alt+M` | 控制台最大化（Logic 无此键，自造） | `ToggleConsoleMaximize`（原界面双 toggle 删除，净零修正为单次） |
+
+⚠ **如实登记的偏离**：Logic 的 New Track 是 `Option+Cmd+N`，但本仓该格已被
+`Action::ToggleMetronome`（节拍器）占用，且节拍器引用横跨 10+ 文件 + 2 个专测 +
+`d_ui_26` 棘轮表 ⇒ 本轮 **NewTrack 用空闲的 `Cmd/Ctrl+N`**，节拍器保持
+`Cmd/Ctrl+Alt+N` 不动。要严格对齐 Logic（节拍器改 `K`、NewTrack 回 `Option+Cmd+N`）
+需另立一票并同步那 10+ 文件，本轮不做。
+
+⚠ `Tab` 也只做了「去重复」：解析表把它绑到 `ToggleView`（Session↔Arrangement，
+Ableton 概念），**不是** Logic 的 Tracks↔Editor。语义对齐另立票。
+
+⚠ 测试端口 P2-3 未动：`dispatch_key_chord` 只跑解析表、`dispatch_key_press` 的
+Slint `KeyPressed` 无修饰位 ⇒ 双层缺陷**结构上仍测不到**；本轮防回归靠
+`tests/ui_logicpro_keys.rs` 的源码层判据（6 条）。
+
+实现落点：`line/logicpro-keys`；判据 `ui_logicpro_keys` / `ui_keyboard_menu_consistency`
+/ `ui_panel_naming` / `ui_unfixed_list_regression` 已同步。
+
 ### D3 — 其余项：登记，不臆造
 
 | 清单项 | 判定 | 建议裁决 / 后续 |
@@ -99,9 +134,7 @@ Ctrl+T / Tab / Ctrl+Alt+M 这类双层缺陷**无法被当前判据测到**。�
 
 ## 建议的人类裁决点
 
-1. **D2 选 R1 / R2 / R3**：核心是「Ctrl+T 到底是加轨还是切分」「Tab 是换视图
-   还是开 Clip 矩阵」。选定后由实现票统一 `input.rs` / `app.slint` / 菜单文案 /
-   `--print-shortcuts` / 判据，并评估 golden 重录。
+1. ~~**D2 选 R1 / R2 / R3**~~ → **已裁决：采纳 R1（2026-11-16），见上方裁决回执**。
 2. **P0-1 波形峰值**是否立项（涉及离线分析 + 投影 + 视觉回归）。
 3. **P1-5/6/7/8** 各自是否立项，以及剪贴板语义、退出确认策略。
 4. **P2-3 测试端口修饰位**是否立项（决定双层键缺陷以后能否被自动测到）。
@@ -111,6 +144,6 @@ Ctrl+T / Tab / Ctrl+Alt+M 这类双层缺陷**无法被当前判据测到**。�
 - 正向：清单里 4 项确定性缺陷已修且有回归判据；双层键路的**冲突本身**被
   显式登记，避免后续 Agent 按任一单方面注释"修一半"造成新的不一致；
   `--print-shortcuts` 不再隐瞒三条双绑键。
-- 负向 / 限制：P0-3 / P1-1 / P1-2 / P2-1 **本轮未改行为**（那是语义裁决）；
-  P0-1 / P1-5/6/7/8 / P3 未实现。它们需要人类裁决、独立能力切片或真机验证，
-  不能靠本机源码扫描臆造。
+- 负向 / 限制：D2 已按 Logic Pro 落地（R1），但 NewTrack 用 `Cmd/Ctrl+N` 而非
+  Logic 的 `Option+Cmd+N`（节拍器占位，另立票），Tab 仍非 Logic 的 Tracks↔Editor；
+  P0-1 / P1-5/6/7/8 / P3 未实现，需立项/真机/裁决。
