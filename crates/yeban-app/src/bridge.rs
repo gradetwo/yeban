@@ -6338,6 +6338,32 @@ pub fn calculate_comp_curve_svg(threshold_db: f32, ratio: f32) -> String {
     svg
 }
 
+/// 从解码后的 PCM 算 `bins` 个 **波形峰值**（每 bin 取 |sample| 最大值，夹到 1.0）。
+///
+/// 纯函数（⛔ 不解码、不读盘）：解码与缓存由调用方负责（见 ADR-0076 B1）。
+/// 多声道交错 PCM 直接喂进来也成立（取绝对值的最大值）。
+#[must_use]
+pub fn compute_waveform_peaks(pcm: &[f32], bins: usize) -> Vec<f32> {
+    if bins == 0 || pcm.is_empty() {
+        return Vec::new();
+    }
+    let per = pcm.len().div_ceil(bins).max(1);
+    let mut out = Vec::with_capacity(bins);
+    for bin in 0..bins {
+        let start = bin * per;
+        if start >= pcm.len() {
+            out.push(0.0);
+            continue;
+        }
+        let end = (start + per).min(pcm.len());
+        let peak = pcm[start..end]
+            .iter()
+            .fold(0.0_f32, |acc, s| acc.max(s.abs()));
+        out.push(peak.clamp(0.0, 1.0));
+    }
+    out
+}
+
 /// 封闭频响曲线至基准线（y=50.0），用于透明面积填充。
 #[must_use]
 pub fn calculate_eq_curve_fill_svg(curve_svg: &str) -> String {

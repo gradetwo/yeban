@@ -17668,6 +17668,8 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     gain_label: "0dB".into(),
                     color: col,
                     note_count: if is_aud { 0 } else { 4 },
+                    // 新建片段没有音频样本 ⇒ 空 peaks（界面不画波形，⛔ 不假装有）。
+                    waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
                 });
                 ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
 
@@ -20583,6 +20585,8 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                 },
                 color: col,
                 note_count,
+                // 波形峰值由后续切片从解码 PCM 填充（ADR-0076 B1）；空 ⇒ 界面保持「示意」。
+                waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
             }
         })
         .collect()
