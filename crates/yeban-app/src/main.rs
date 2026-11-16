@@ -520,6 +520,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         let view_tick = Rc::clone(&view_cell);
         let warned = Rc::clone(&meter_mismatch_warned);
         let midi_live = Rc::clone(&midi_live_state);
+        // ⭐ 停播降频（性能实测 P2-B）：16 ms 心跳在**不播放**时降到 ~20 Hz，
+        // 播放时保持 60 Hz（走带/电平要跟手）。空闲 CPU / 风扇的主要来源就是这条
+        // 常驻 60 Hz；工程越大（轨数越多）降频收益越大。
+        let last_heavy_at = Rc::new(std::cell::Cell::new(std::time::Instant::now()));
         #[cfg(feature = "in-process-mcp")]
         let scene_launch_tick = scene_launch_handle.clone();
         #[cfg(feature = "in-process-mcp")]
@@ -528,6 +532,18 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             slint::TimerMode::Repeated,
             std::time::Duration::from_millis(HEARTBEAT_PERIOD_MS),
             move || {
+                // 停播时每 40 ms 才做一次重活（≈20 Hz）；播放时每跳都做（60 Hz）。
+                if !ui_tick.get_playing() {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_heavy_at.get())
+                        < std::time::Duration::from_millis(40)
+                    {
+                        return;
+                    }
+                    last_heavy_at.set(now);
+                } else {
+                    last_heavy_at.set(std::time::Instant::now());
+                }
                 let mark = EditMark::from_display(&port.display());
                 let mut production = production_tick.borrow_mut();
                 // "没改就不克隆工程"是这一跳的成本契约 ⇒ 先问标记，再决定要不要 `try_project`。

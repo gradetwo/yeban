@@ -547,6 +547,9 @@ pub fn apply_dynamics_and_sidechain(ui: &MainWindow, view: &ViewState) {
     ui.set_sidechain_key_label(view.sidechain_key_label().into());
     ui.set_sidechain_available(view.sidechain_available());
     ui.set_compressor_info(view.compressor_info().into());
+    // ⭐ BUS COMP 真实传递曲线（ADR-0076 B2）：按该轨压缩器的 threshold_db/ratio
+    // 由 bridge::project_compressor_curve 算好注入；无压缩器时为空串（界面保持「示意」）。
+    ui.set_comp_curve_svg(view.compressor_curve_svg().into());
     ui.set_compressor_available(view.compressor_available());
     ui.set_limiter_info(view.limiter_info().into());
     ui.set_limiter_available(view.limiter_available());
@@ -9591,84 +9594,102 @@ pub fn wire_module_actions_with_capture(
                 None::<u64>,
             );
             wav_options.limiter = limiter_requested;
-            let (receipt, ok, clipping_warning) = match crate::export_wav::export_wav_with_sfz_file(
-                &project,
-                &target,
-                wav_options,
-                sfz,
-            ) {
-                Ok(report) => {
-                    let mut fields = vec![
-                        "outcome=ok".to_owned(),
-                        format!("path={}", report.path.display()),
-                        format!("frames={}", report.frames),
-                        format!("sample_rate={}", report.sample_rate),
-                        format!("channels={}", report.channels),
-                        format!("bits={}", report.bits),
-                        format!("bytes={}", report.bytes),
-                        format!("source={}", report.source),
-                        format!("digest={}", report.digest),
-                        // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
-                        // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
-                        // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**
-                        // （`render_core` 的限制器压样本计数 ＋ 量化前浮点母带上的真峰值），
-                        // 这里只是把它们发出去，⛔ 不新增任何测量、⛔ 不改一个样本。
-                        //
-                        // ⚠ 发在 `clipping_note` **之前**：`#229` 记下过长文案落在**最后一个
-                        // 字段**时会被 264px 的 `module-status` 行 `elide`（`#230` 因此另开了一行）
-                        // —— 保持 `clipping_note` 在最后，那条已知行为一位不改。
-                        format!("limiter={}", if limiter_requested { "on" } else { "off" }),
-                        format!("limiter_reductions={}", report.limiter_reductions),
-                        format!(
-                            "true_peak_dbfs={}",
-                            report
-                                .true_peak_dbfs
-                                .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+            // ⭐ 导出搬到工作线程（性能实测 P1-A）：离线渲染 60s≈9.7s、3 分钟曲
+            // ~25–30s，同步跑会把 Slint 事件循环冻住（窗口不重绘、点不动、连取消都按不了，
+            // 用户会以为程序崩了）。UI 线程只做最后的回执写入。
+            // 跨线程安全：YebanProjectV1 是纯数据（无 Rc/RefCell）、sfz 是 Arc<SfzInstrument>。
+            let weak2 = weak.clone();
+            let _ = std::thread::spawn(move || {
+                let result = crate::export_wav::export_wav_with_sfz_file(
+                    &project,
+                    &target,
+                    wav_options,
+                    sfz,
+                );
+                let _ = weak2.upgrade_in_event_loop(move |ui| {
+                    let (receipt, ok, clipping_warning) = match result {
+                        Ok(report) => {
+                            let mut fields = vec![
+                                "outcome=ok".to_owned(),
+                                format!("path={}", report.path.display()),
+                                format!("frames={}", report.frames),
+                                format!("sample_rate={}", report.sample_rate),
+                                format!("channels={}", report.channels),
+                                format!("bits={}", report.bits),
+                                format!("bytes={}", report.bytes),
+                                format!("source={}", report.source),
+                                format!("digest={}", report.digest),
+                                // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
+                                // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
+                                // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**
+                                // （`render_core` 的限制器压样本计数 ＋ 量化前浮点母带上的真峰值），
+                                // 这里只是把它们发出去，⛔ 不新增任何测量、⛔ 不改一个样本。
+                                //
+                                // ⚠ 发在 `clipping_note` **之前**：`#229` 记下过长文案落在**最后一个
+                                // 字段**时会被 264px 的 `module-status` 行 `elide`（`#230` 因此另开了一行）
+                                // —— 保持 `clipping_note` 在最后，那条已知行为一位不改。
+                                format!("limiter={}", if limiter_requested { "on" } else { "off" }),
+                                format!("limiter_reductions={}", report.limiter_reductions),
+                                format!(
+                                    "true_peak_dbfs={}",
+                                    report
+                                        .true_peak_dbfs
+                                        .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+                                ),
+                                format!(
+                                    "headroom_db={}",
+                                    report
+                                        .headroom_db
+                                        .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
+                                ),
+                            ];
+                            // ⭐ 任务单 `#229`：**削波时再多一条字段**，内容是 CLI 的同一条
+                            // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
+                            // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**这条不加**
+                            // —— 长文案不进干净回执（判据 `tests/gui_export_clipping.rs` 的干净臂）。
+                            //
+                            // ⚠ 它原来写的"不削波时一个字段都不加 ⇒ 整条回执逐字不变"从 `D-EX-1`
+                            // 起**不再成立**：峰值读数改成恒发（见上面那段）。改的是"发不发"，
+                            // ⛔ 不是"量不量"，也⛔ 不是那条长文案的门。
+                            //
+                            // 为什么放在**末尾**而不是把字段拆开：① 与 CLI `--export-wav` 的
+                            // "多一行"同一个口径（`#226`），区别只是这一行的行首有字段名；
+                            // ② `module-status` 是**一行**文本，再拆成几个字段只会让这一行更长、
+                            // 可见部分更少；③ 长文案里的 `:` / `=` 不参与回执语法 —— 它整体被
+                            // 双引号包住（与 `module_error_fields` 的 `message="…"` 同款）。
+                            if let Some(note) = report.clipping_note() {
+                                fields.push(format!("clipping_note=\"{note}\""));
+                            }
+                            // ⭐ 任务单 `#230`：窗口里**看得见**的那一行（与上面那条回执字段
+                            // 是同一份报告的两个显示位，⛔ 不是第二份读数）。
+                            let warning = if report.clipped_samples == 0 {
+                                String::new()
+                            } else {
+                                clipping_warning_line(
+                                    report.clipped_samples,
+                                    report.suggested_trim_db,
+                                )
+                            };
+                            (module_receipt("export-wav", &fields), true, warning)
+                        }
+                        Err(error) => (
+                            module_receipt(
+                                "export-wav",
+                                &module_error_fields("export-wav", &error.to_string()),
+                            ),
+                            false,
+                            String::new(),
                         ),
-                        format!(
-                            "headroom_db={}",
-                            report
-                                .headroom_db
-                                .map_or_else(|| "null".to_owned(), |v| format!("{v:.6}"))
-                        ),
-                    ];
-                    // ⭐ 任务单 `#229`：**削波时再多一条字段**，内容是 CLI 的同一条
-                    // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
-                    // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**这条不加**
-                    // —— 长文案不进干净回执（判据 `tests/gui_export_clipping.rs` 的干净臂）。
-                    //
-                    // ⚠ 它原来写的"不削波时一个字段都不加 ⇒ 整条回执逐字不变"从 `D-EX-1`
-                    // 起**不再成立**：峰值读数改成恒发（见上面那段）。改的是"发不发"，
-                    // ⛔ 不是"量不量"，也⛔ 不是那条长文案的门。
-                    //
-                    // 为什么放在**末尾**而不是把字段拆开：① 与 CLI `--export-wav` 的
-                    // "多一行"同一个口径（`#226`），区别只是这一行的行首有字段名；
-                    // ② `module-status` 是**一行**文本，再拆成几个字段只会让这一行更长、
-                    // 可见部分更少；③ 长文案里的 `:` / `=` 不参与回执语法 —— 它整体被
-                    // 双引号包住（与 `module_error_fields` 的 `message="…"` 同款）。
-                    if let Some(note) = report.clipping_note() {
-                        fields.push(format!("clipping_note=\"{note}\""));
-                    }
-                    // ⭐ 任务单 `#230`：窗口里**看得见**的那一行（与上面那条回执字段
-                    // 是同一份报告的两个显示位，⛔ 不是第二份读数）。
-                    let warning = if report.clipped_samples == 0 {
-                        String::new()
-                    } else {
-                        clipping_warning_line(report.clipped_samples, report.suggested_trim_db)
                     };
-                    (module_receipt("export-wav", &fields), true, warning)
-                }
-                Err(error) => (
-                    module_receipt(
-                        "export-wav",
-                        &module_error_fields("export-wav", &error.to_string()),
-                    ),
-                    false,
-                    String::new(),
-                ),
-            };
-            apply_module_receipt_with_clipping_warning(&ui, &receipt, ok, &clipping_warning);
-            module_trace("export-wav", started, &receipt);
+                    apply_module_receipt_with_clipping_warning(
+                        &ui,
+                        &receipt,
+                        ok,
+                        &clipping_warning,
+                    );
+                    module_trace("export-wav", started, &receipt);
+                });
+            });
         });
     }
 
