@@ -362,7 +362,9 @@ pub mod playback;
 pub mod velocity;
 pub mod voice_pool;
 
-pub use control::{MAX_CC_DEFAULT_INDEX, MAX_CC_DEFAULT_VALUE, parse_set_cc_name};
+pub use control::{
+    MAX_CC_DEFAULT_INDEX, MAX_CC_DEFAULT_VALUE, parse_set_cc_name, parse_set_hdcc_name,
+};
 pub use crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange, fade_in, fade_out};
 pub use curve::{Curve, CurvePoint, MAX_BUILT_IN_CURVE_INDEX, MAX_CURVE_INDEX};
 pub use effect::{Effect, EffectBus, MAX_AUX_BUS, MAX_DSP_ORDER, MAX_FX_BUS, SEND_COUNT};

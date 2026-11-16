@@ -18233,3 +18233,25 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `a_missing_clip_id_message_names_the_delete_own_clip_id_escape_hatch` **1** 次在场。
 - 至此 `db8873f` 复测包的两件遗留：**B-4 已修且判决读回**；**A-4 按设计保留预警**
   （改拓扑属产品级裁决，等人类批准，见 §24.4）。10 条里 9 条报告判已修、1 条明示设计如此。
+
+### 24.6 ⭐ `set_hdccN` / `set_realccN`（ARIA 浮点 CC 初值）落地（2026-11-16）
+
+- **缺口**：第五份报告 §6 列的 10 处 `set_hdcc*`（`salamander-grand` 1 处
+  `set_hdcc10=0.5`；`ixox-flute` 9 处含宏形态）此前不识别（未知 opcode 静默忽略）。
+  规范逐字（<https://sfzformat.com/opcodes/set_hdccN/>）："Like `set_ccN` but with
+  floating point MIDI CCs"，`set_realccN` 是废弃别名。
+- **落地**：`control.rs` 新增 `parse_set_hdcc_name`（本体＋别名）、`set_hdcc_declaration`
+  （取值 `0.0..=1.0` 有限浮点 ⇒ `round(v × 127)`；越界取值丢弃＋`MalformedSetCc` 告警，
+  ⛔ 不中断整份乐器；下标越界明确 `IntegerOutOfRange`）＋ 3 条单元判据；`parser.rs`
+  单独收 `control_cc_hd_defaults`，`finish()` 用 `entry().or_insert()` 合并 ⇒ **`set_ccN`
+  （SFZ v2 精确整数）无条件赢**，与书写顺序无关；引擎播种表 `CcSeedTable` 既有通路
+  ⛔ 一字未改。
+- **判据**：`tests/set_hdcc_defaults.rs` H1（0.5→64，端点 0/1）、H3（别名等价）、
+  H4（整数赢、不同 CC 并存）、H2（越界取值告警丢弃、下标越界 Err）、H6（两份语料
+  真文件加载且 `cc_defaults()[10] == 64`），**5/5**；`yeban-engine/tests/sfz_instrument.rs`
+  H5（`PreparedSfz::cc_seeds().value(10) == Some(64)`，整数赢）**1/1**；
+  `control.rs` 单元 3/3。
+- **本地读数（⚠ 只有 CI 算数）**：`yeban-sfz` 全套（438 单元 ＋ 新 5 ＋ 其余集成）与
+  `yeban-engine --no-default-features` 全套**全绿**；clippy `-D warnings`（两 crate，
+  `--all-targets`）零告警；`cargo fmt --check` 与 `run-gates.sh light` 通过。
+- **判决**：尚未推送 ⇒ **CI `pending`**。

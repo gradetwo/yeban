@@ -1,7 +1,11 @@
 # 立项：`set_hdccN`（ARIA 浮点 CC 初值）
 
-> 状态：**立项 / 待实现**。语料 10 处（`ixox-flute` 9 处宏形态 ＋ `salamander-grand` 1 处 `set_hdcc10=0.5`），
-> 规范页可用（<https://sfzformat.com/opcodes/set_hdccN/>），语义清晰：`<control>` 段的**浮点** CC 初值。
+> 状态：**已实现（2026-11-16）**。语料 10 处（`ixox-flute` 9 处宏形态 ＋
+> `salamander-grand` 1 处 `set_hdcc10=0.5`），规范页可用
+> （<https://sfzformat.com/opcodes/set_hdccN/>）：`<control>` 段的**浮点** CC 初值。
+> 落地：`control.rs` 解析（含废弃别名 `set_realccN`）→ `parser.rs` 单独收表、
+> `finish()` 用 `entry().or_insert()` 合并（`set_ccN` 赢）→ 引擎 `CcSeedTable` 既有通路。
+> 判据 H1～H6 全绿（`yeban-sfz` 5 条 + `control.rs` 3 条单元 + `yeban-engine` 1 条）。
 
 ## §1 规范逐字（2026-11-16 现读）
 

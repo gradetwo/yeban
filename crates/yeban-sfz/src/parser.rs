@@ -1019,6 +1019,11 @@ struct Parser<'a> {
     /// 与 `control` 表的区别同 `control_cc_labels`：不被新 `<control>` 段重置
     /// （口径与理由见 [`crate::control`]）。
     control_cc_defaults: BTreeMap<u16, u8>,
+    /// ⭐ `<control>` 段声明的 `set_hdccN` / `set_realccN` 初值（ARIA 浮点 0..=1，
+    /// 已在解析期 `round(v × 127)` 换算到 7 位域）。**单独收**是为了让 `set_ccN`
+    /// 在 `finish()` 里无条件赢（SFZ v2 精确整数声明 > ARIA 扩展换算值），
+    /// ⛔ 不靠"文件里谁写在后面"决定优先级。
+    control_cc_hd_defaults: BTreeMap<u16, u8>,
     warnings: Vec<Warning>,
     warnings_truncated: bool,
 }
@@ -1069,6 +1074,7 @@ impl<'a> Parser<'a> {
             region_line: 1,
             control_cc_labels: BTreeMap::new(),
             control_cc_defaults: BTreeMap::new(),
+            control_cc_hd_defaults: BTreeMap::new(),
             warnings: Vec::new(),
             warnings_truncated: false,
         }
@@ -1144,6 +1150,22 @@ impl<'a> Parser<'a> {
                     });
                 }
                 crate::control::SetCcOutcome::NotThisOpcode => {}
+            }
+            // ⭐ `set_hdccN` / `set_realccN`（ARIA 浮点初值，本片）：与 `set_ccN` 分开收，
+            // 在 `finish()` 合并时让精确整数声明赢。取值越界 ⇒ 丢弃 + 告警（同 `set_ccN`
+            // 的 `UnrepresentableValue` 口径，⛔ 不中断整份乐器解析）。
+            match crate::control::set_hdcc_declaration(name.as_ref(), value.as_ref(), line)? {
+                crate::control::SetHdccOutcome::Value { cc, initial } => {
+                    self.control_cc_hd_defaults.insert(cc, initial);
+                }
+                crate::control::SetHdccOutcome::UnrepresentableValue => {
+                    self.warn(Warning::MalformedSetCc {
+                        line,
+                        opcode: name.to_string(),
+                        value: truncate_for_error(value.as_ref()),
+                    });
+                }
+                crate::control::SetHdccOutcome::NotThisOpcode => {}
             }
         }
         let Some((map, scope_name)) = self.map_for(scope) else {
@@ -1658,13 +1680,19 @@ impl<'a> Parser<'a> {
     }
 
     fn finish(self) -> Instrument<'a> {
+        // ⭐ `set_ccN`（SFZ v2 精确整数）赢过 `set_hdccN` / `set_realccN`（ARIA 换算值）：
+        // `or_insert` 只填整数表没声明过的 CC —— 优先级与文件里的书写顺序**无关**。
+        let mut cc_defaults = self.control_cc_defaults;
+        for (cc, initial) in self.control_cc_hd_defaults {
+            cc_defaults.entry(cc).or_insert(initial);
+        }
         Instrument::new(
             self.regions,
             self.curves,
             self.effects,
             self.midi_sections,
             self.control_cc_labels,
-            self.control_cc_defaults,
+            cc_defaults,
             self.warnings,
         )
     }

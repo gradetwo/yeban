@@ -16811,3 +16811,30 @@ fn s119_the_bypass_entry_takes_a_cc_probe() {
         "⭐ 该夹具没有 `trigger=release` 区域 ⇒ 释放族写入 0 帧（只验不 panic、口径不串）"
     );
 }
+
+/// ⭐ **`set_hdccN` 的浮点初值真的到达引擎播种表**（第五份报告 §6 H5）。
+///
+/// 判定量：`PreparedSfz::cc_seeds().value(10)`（7 位 CC 值，单位 0..=127）。
+/// 0.5 ⇒ `round(0.5 × 127)` = 64；同 CC 的 `set_cc10=100`（SFZ v2 精确整数）赢。
+#[test]
+fn set_hdcc_float_default_reaches_the_engine_seed_table() {
+    let sample = constant_sample(256);
+    let float = prepare_with(
+        "<control>set_hdcc10=0.5\n<region>sample=a.wav key=60",
+        &sample,
+    );
+    assert_eq!(
+        float.cc_seeds().value(10),
+        Some(64),
+        "set_hdcc10=0.5 必须进 CcSeedTable"
+    );
+    let integer_wins = prepare_with(
+        "<control>set_cc10=100\nset_hdcc10=0.5\n<region>sample=a.wav key=60",
+        &sample,
+    );
+    assert_eq!(
+        integer_wins.cc_seeds().value(10),
+        Some(100),
+        "set_ccN 必须赢过 set_hdccN"
+    );
+}
