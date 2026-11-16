@@ -110,6 +110,7 @@ Accordion HN tuned.sfz:51` 的 `<group>` 段写 `amp_random=-6`（1 处 / 1 文�
 | R4 | `amp_random` 单极衰减、两条路同一乘子 | 比值 == `10 ^ (−(rand × 24) / 20)` 且 ∈ (0, 1] |
 | R5 | 两族都不写 ⇒ 逐位不变 | 首帧 == `pcm[0]`；实时 == 离线；显式写 0 也逐位相同 |
 | R6 | `has_rand` 三族各自为真、都没有为假 | `has_rand()` |
+| R7 | 位移进循环窗口后**回绕**（规范页把"loop 样本从随机起点起播"列为用途） | 首帧 == 回绕点的采样值，离线同身份逐位相同 |
 
 `yeban-sfz` 侧另有**常驻语料判据** `tests/corpus_random_families.rs`（C1：1 398 份语料里
 **没有任何**文件因为这两个 opcode 解析失败；C2：accordion 文件的组级 `amp_random=-6`

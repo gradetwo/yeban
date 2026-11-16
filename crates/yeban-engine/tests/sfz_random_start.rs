@@ -26,6 +26,7 @@
 //! | R4 | `amp_random` 是单极衰减、两条路同一乘子 | 与 `amp_random=0` 的比值逐位 == `10 ^ (−(rand × 24) / 20)` |
 //! | R5 | 两族都不写 ⇒ 逐位不变 | 首帧 == `pcm[0]`，且实时 == 离线 |
 //! | R6 | `has_rand` 的语义扩到"需要随机数" | 三族各自 `true`、都没有 `false` |
+//! | R7 | 位移进循环窗口之后**回绕**而不是越界/静音 | 首帧 == `pcm[200 + (起点 − 200) % 200] × 增益链`，且离线同身份逐位相同 |
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -202,4 +203,38 @@ fn r6_has_rand_means_this_trigger_needs_a_random_number() {
     assert!(prepare("<region>sample=a.wav key=60 amp_random=1").has_rand());
     // 随机门仍在（语义被**扩**，⛔ 不是被替换）。
     assert!(prepare("<region>sample=a.wav key=60 lorand=0.5").has_rand());
+}
+
+#[test]
+fn r7_offset_random_inside_a_loop_window_wraps_instead_of_reading_past_the_end() {
+    // 规范页把"loop 样本从随机起点起播"列为 `offset_random` 的用途之一 ⇒ 起点被
+    // 推进到 `loop_end` 之后时必须**回绕**，⛔ 不能越界读、⛔ 不能静音。
+    let text = "<region>sample=a.wav key=60 offset=100 offset_random=1000 \
+                loop_mode=loop_continuous loop_start=200 loop_end=400";
+    let plan = prepare(text);
+    let mut pool = SfzVoicePool::new(HZ);
+    assert_eq!(pool.trigger_note(&plan, NOTE, 100, u64::MAX, 1.0, None), 1);
+    let mut out = vec![0.0f32; 64];
+    pool.render_into(&plan, 0, &mut out);
+    assert!(out.iter().all(|sample| sample.is_finite()), "全是有限值");
+    // `rand = trigger_rand(0) = 0.5592167` ⇒ 位移 559 ⇒ 起点 659，越过 `loop_end=400`
+    // ⇒ 首帧按 `[200, 400)` 的窗口回绕到 `200 + (659 - 200) % 200 = 259`。
+    let rand = trigger_rand(0, NOTE, 1);
+    let shift = (f64::from(rand) * 1_000.0) as usize;
+    let start = 100 + shift;
+    let wrapped = 200 + (start - 200) % 200;
+    let plain = realtime_first_frame("<region>sample=a.wav key=60 offset=100");
+    let scale = plain / pcm_at(100);
+    let expected = pcm_at(wrapped) * scale;
+    assert!(
+        (out[0] - expected).abs() <= 1.0e-7,
+        "首帧 {} != pcm[{wrapped}] × {scale} = {expected}（起点 {start} 回绕）",
+        out[0]
+    );
+    // 离线同身份 ⇒ 同一首帧。
+    assert_eq!(
+        out[0].to_bits(),
+        offline_first_frame(text, Some(0)).to_bits(),
+        "回绕腿也必须三条路同口径"
+    );
 }
