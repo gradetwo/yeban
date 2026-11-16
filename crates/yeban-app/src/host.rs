@@ -7234,6 +7234,12 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
             return;
         }
+        // ⭐ 精准联动：横向滚到该片段起点、音域对齐该片段音符（比整轨更准）。
+        // 放在 set_selected_clip_ulid **之前**（clip_ulid 之后会被 move），
+        // 且此时的 base/scroll 会被下面的 apply_view 采用。
+        if let Some(project) = undo_for_select.as_ref().and_then(|port| port.try_project()) {
+            let _ = roll_focus_on_clip(&ui, &project, clip_ulid.as_str());
+        }
         ui.set_selected_clip_ulid(clip_ulid);
         // 作用域重注入：只读的重投影，不 `commit_ops`。
         let scroll = ui.get_roll_scroll_x();
@@ -18147,6 +18153,28 @@ fn select_aether_track_for_action(ui: &MainWindow, id: i32) {
     }
 }
 
+/// 由 pitch 范围算 16 行窗口的 `roll_base_pitch`：
+/// 跨度 < 16 半音 ⇒ 全部可见（上下留白 ≤2 行）；≥ 16 ⇒ 居中（两端各露一半）。
+fn roll_base_for_pitch_range(lo: u8, hi: u8) -> u8 {
+    let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;
+    let span = hi.saturating_sub(lo);
+    let base = if span < lane_count {
+        lo.saturating_sub((lane_count - 1 - span).min(2))
+    } else {
+        lo.saturating_add(span / 2).saturating_sub(lane_count / 2)
+    };
+    base.min(127 - (lane_count - 1)).max(0)
+}
+
+/// 由片段起始 tick 算卷帘横向 scroll（片段起点留 16px 边距）。
+fn roll_scroll_for_tick(ui: &MainWindow, start_tick: u64) -> f32 {
+    let tpp = roll_ticks_per_pixel(ui).max(1);
+    let px = crate::bridge::tick_to_px(start_tick, tpp)
+        .map(|v| v as f32)
+        .unwrap_or(0.0);
+    (px - 16.0).max(0.0)
+}
+
 /// 选轨时的**卷帘精准联动**：把卷帘横向滚到该轨首个 MIDI 片段，纵向把
 /// `roll_base_pitch` 对齐到该轨音符范围（`roll-min-pitch` 由随后的
 /// `apply_view` 按 base 推出）。
@@ -18192,15 +18220,7 @@ fn roll_focus_on_track(
     };
     let lane_count = crate::bridge::PITCH_LANE_COUNT as u8;
     let span = hi.saturating_sub(lo);
-    let base = if span < lane_count {
-        // 全部可见：留白取 min(2, 剩余行数)。
-        lo.saturating_sub((lane_count - 1 - span).min(2))
-    } else {
-        // 超出窗口：居中（最低/最高各露一半）。
-        lo.saturating_add(span / 2).saturating_sub(lane_count / 2)
-    };
-    let base = base.min(127 - (lane_count - 1)).max(0);
-    apply_roll_pitch_range(ui, base);
+    apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi));
     if span >= lane_count {
         ui.set_module_status(
             format!(
@@ -18210,12 +18230,41 @@ fn roll_focus_on_track(
         );
         ui.set_module_status_succeeded(true);
     }
-    let tpp = roll_ticks_per_pixel(ui).max(1);
-    let px = crate::bridge::tick_to_px(start_tick, tpp)
-        .map(|v| v as f32)
-        .unwrap_or(0.0);
-    let scroll = (px - 16.0).max(0.0);
-    ui.set_roll_scroll_x(scroll);
+    ui.set_roll_scroll_x(roll_scroll_for_tick(ui, start_tick));
+    true
+}
+
+/// 选片段时的**精准联动**：横向滚到该片段起点，音域对齐**该片段**音符
+/// （比整轨更窄更准；`on_clip_select` 已先 `invoke_track_select` 按轨对齐，
+/// 这里用片段范围覆盖它）。
+fn roll_focus_on_clip(
+    ui: &MainWindow,
+    project: &yeban_model::YebanProjectV1,
+    clip_ulid: &str,
+) -> bool {
+    let Some((_, _, placement)) = clip_placement_for(project, clip_ulid) else {
+        return false;
+    };
+    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+        return false;
+    };
+    let yeban_model::project::ClipContent::Midi { notes } = &entry.content else {
+        return false;
+    };
+    if notes.is_empty() {
+        return false;
+    }
+    let mut lo: Option<u8> = None;
+    let mut hi: Option<u8> = None;
+    for note in notes.values() {
+        lo = Some(lo.map_or(note.pitch, |x| x.min(note.pitch)));
+        hi = Some(hi.map_or(note.pitch, |x| x.max(note.pitch)));
+    }
+    let (Some(lo), Some(hi)) = (lo, hi) else {
+        return false;
+    };
+    apply_roll_pitch_range(ui, roll_base_for_pitch_range(lo, hi));
+    ui.set_roll_scroll_x(roll_scroll_for_tick(ui, placement.start_tick));
     true
 }
 
