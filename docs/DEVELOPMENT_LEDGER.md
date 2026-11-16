@@ -18151,3 +18151,9 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `macos` / `windows` 全 `success`；`rust (workspace 全量)` `skipped` —— 分支走**受影响集合**）。
   日志现读：`test result:` **1 623** 行、`FAILED` **0**；`t1_the_two_masks…` /
   `rt_decay_scales…` / `offline_writes_the_release…` 各 **3** 次（Linux / macOS / Windows）。
+- ⭐ **合流后的 main 全量判决（读回）**：tip `02438282` 的 run **`43825166189`** = `completed /
+  **success**`（`plan` / `checks` / `deny` / `lockfile` / `e2e` / `rust (workspace 全量)` /
+  `macos` / `windows` 全 `success`，矩阵腿 `skipped`）。`rust (workspace 全量)` 作业日志现读：
+  `test result:` **744** 行、`FAILED` **0**，`sfz_random_start` / `corpus_random_families` /
+  `sfz_release_trigger` 各 **1** 次。⚠ 更早的 `2453fdfb`／`df1d33ab` 两次 main run 均被
+  后续推送**取消**（§6.3：`cancelled` ⛔ 不是判决），本行只引用跑完的这一次。
