@@ -357,6 +357,8 @@ jobs:
       #   (或者让 release job 自己从 dist/ 里发现归档), 否则两个腿的产物会互相覆盖。
       archive: ${{ steps.pack.outputs.archive }}
       sha256: ${{ steps.pack.outputs.sha256 }}
+      installer: ${{ steps.installer.outputs.installer }}
+      installer_sha256: ${{ steps.installer.outputs.installer_sha256 }}
     strategy:
       fail-fast: false
       # 目标矩阵**只在**受支持清单里取值; 清单由 job `plan` 唯一给出, 下面的断言会拦住漂移。
@@ -485,9 +487,18 @@ jobs:
             out="$(timeout 30 "$app" "$@" 2>&1 </dev/null)"; rc=$?
             set -e
             echo "--- $label: rc=$rc"
-            printf '%s\n' "$out" | head -2
+            # ⚠ 这里**不能**用 `printf … | head` / `printf … | grep -q`: 本步开了
+            # pipefail, 下游 (head / grep -q) 命中后先退出会让 printf 吃 SIGPIPE
+            # (写错误), 管道状态变成 141 ⇒ 明明点名了 feature 也会误报失败。
+            # 2026-11-16 dry_run run 43823184691 实证 (拒绝信息里有 ui-mcp-http,
+            # 判据却报未点名)。展示用 `|| true` 兜底, 断言改走无管道的 case 匹配;
+            # 断言本身 (退出码 2 + 输出含 feature 名) 一字未变。
+            printf '%s\n' "$out" | head -2 || true
             [ "$rc" -eq 2 ] || { echo "::error::$label 期望退出码 2 (未编译该 feature 的用法错误), 实得 $rc"; return 1; }
-            printf '%s' "$out" | grep -q -- "$feature" || { echo "::error::$label 的拒绝未能点名 feature '$feature' ⇒ 无法证明拒绝是因为它没编进来"; return 1; }
+            case "$out" in
+              *"$feature"*) ;;
+              *) echo "::error::$label 的拒绝未能点名 feature '$feature' ⇒ 无法证明拒绝是因为它没编进来"; return 1 ;;
+            esac
           }
           check_refusal "--enable-ui-mcp-http"    "ui-mcp-http"                   --enable-ui-mcp-http
           check_refusal "--export-als"            "experimental-als-export"       --export-als /tmp/yeban-must-not-exist.als
@@ -605,11 +616,41 @@ jobs:
           } 2>&1 | tee /tmp/release-pack.txt
           cat /tmp/release-pack.txt >> "$GITHUB_STEP_SUMMARY"
 
+      - name: "安装包 (DEB; 与 nightly 共用 scripts/dev/package-linux-deb.sh)"
+        id: installer
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.plan.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          NAME="yeban-${VERSION}-${TARGET}"
+          # 与 nightly 的 Linux 腿同一个脚本、同一份 stage/ 字节 (pack 步刚生成)。
+          # 脚本内自验: dpkg-deb --info/--contents/-x 结构断言 + INSTALL_TEST 实装
+          # (dpkg -i → /usr/lib/yeban/yeban-app --version 对账 → 卸载)。
+          # 本步特意排在隐私门**之前**: .deb 进 dist/ 后会被隐私门当散放文件扫
+          # (见下一步注释), 不是先斩后奏。
+          YEBAN_PKG_INSTALL_TEST=1 bash scripts/dev/package-linux-deb.sh "stage/$NAME" "$TARGET" dist
+          DEB="$NAME.deb"
+          test -f "dist/$DEB" || { echo "::error::DEB 没产出: dist/$DEB"; exit 1; }
+          DEB_SHA="$(cut -d' ' -f1 < "dist/$DEB.sha256")"
+          printf 'installer=%s\ninstaller_sha256=%s\n' "$DEB" "$DEB_SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 发行安装包"
+            echo ""
+            echo '| 文件 | 字节 (wc -c) | sha256 |'
+            echo '| :--- | ---: | :--- |'
+            printf '| `%s` | %s | `%s` |\n' "$DEB" "$(wc -c < "dist/$DEB" | tr -d ' ')" "$DEB_SHA"
+          } 2>&1 | tee /tmp/release-installer.txt
+          cat /tmp/release-installer.txt >> "$GITHUB_STEP_SUMMARY"
+
       - name: "隐私门 check_release_privacy.py (扫发布产物: 绝对路径/家目录/私钥/key/token)"
         run: |
           set -euo pipefail
           # 位置纪律: 打包之后、上传 artifact 之前 ⇒ 命中即红, 什么都不发
           # (与 MUST-GATE-009 同一条纪律: 退出码 2 = 无法判定, 也按红处理)。
+          # 安装包 (.deb) 已在上一步生成、同在 dist/ 里: 本门把非 .gz 散放文件一律
+          # 按二进制可打印字符串扫同一套五类规则 ⇒ DEB 是被**同门扫过**, 不是绕过;
+          # 且 DEB 里的二进制与 tar.gz 成员是同一份 stage 字节, 扫描结论等价。
+          # (本机实证: 含 .deb 的 dist 跑本门 = 1 归档 + 3 散放文件, 0 命中。)
           set +e
           python3 scripts/gates/check_release_privacy.py dist 2>&1 | tee /tmp/release-privacy.txt
           rc=${PIPESTATUS[0]}
@@ -671,6 +712,16 @@ jobs:
           echo "expected=$expected"
           echo "actual  =$actual"
           [ "$expected" = "$actual" ] || { echo "::error::release job 拿到的手册摘要与 build job 的不一致"; exit 1; }
+          # ③ 安装包 (.deb) 同样对账: 必须在, 且摘要与 build job 输出逐字一致
+          # (① 的 sha256sum -c 已连它的 .sha256 侧车一起验过传输完整性)。
+          installer="${{ needs.build.outputs.installer }}"
+          test -n "$installer" || { echo "::error::build job 没输出 installer ⇒ 安装包步没跑"; exit 1; }
+          test -f "dist/$installer" || { echo "::error::release job 没拿到安装包 dist/$installer"; exit 1; }
+          exp_i="${{ needs.build.outputs.installer_sha256 }}"
+          act_i="$(cut -d' ' -f1 < "dist/$installer.sha256")"
+          echo "installer expected=$exp_i"
+          echo "installer actual  =$act_i"
+          [ "$exp_i" = "$act_i" ] || { echo "::error::release job 拿到的安装包摘要与 build job 的不一致"; exit 1; }
           {
             echo "### 待发布资产"
             echo ""

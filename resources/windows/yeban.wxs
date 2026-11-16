@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  夜半 (Yeban) Windows MSI 的 WiX v4 源文件 —— 由 scripts/dev/package-windows-msi.sh 消费。
+  ⚠ 还有一份 v3 方言的孪生文件 yeban-v3.wxs (choco 的 wixtoolset 是 3.14.1,
+  runner 上实际走 v3 的 candle/light —— 见打包脚本头部的实测注)。两份的
+  UpgradeCode 与组件 GUID 必须逐字一致, 改一处改两处。
+
+  约定 (改这里之前先读打包脚本的头部):
+  - 版本不写死: `__YEBAN_VERSION__` 占位符由打包脚本替换成根 Cargo.toml 的
+    [workspace.package] version (MSI 的 ProductVersion 不能带预发布后缀,
+    脚本会先剥掉 `-suffix` 再替换)。
+  - UpgradeCode 与两个组件 GUID 是**产品身份**, 一旦发布不许再改:
+    改 UpgradeCode = 系统把新版当成另一个产品, 升级变并存安装。
+  - 源文件目录不写死: `$(var.SourceDir)` 由打包脚本用 `-d SourceDir=<stage 目录>`
+    传入 (stage 目录与 tar.gz 用的是同一份: yeban-app.exe / yeban-mcp.exe / LICENSE)。
+  - 元数据 (Name / Manufacturer) 刻意只用 ASCII: MSI 的 codepage 处理对 CJK
+    名字没有仓库内实证, 不拿发布物冒险; 中文名留给快捷方式之外的展示面。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Yeban" Manufacturer="Yeban Contributors" Version="__YEBAN_VERSION__"
+           UpgradeCode="{71181B90-2B67-4E6F-A03F-4D5F037B912B}"
+           Scope="perMachine" Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Yeban is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Yeban">
+        <Component Id="cmp.MainExecutables" Guid="{B041BD78-45FD-40BE-82C2-09D5BDB6E784}">
+          <File Id="fil.YebanApp" Source="$(var.SourceDir)\yeban-app.exe" KeyPath="yes" />
+          <File Id="fil.YebanMcp" Source="$(var.SourceDir)\yeban-mcp.exe" />
+          <File Id="fil.License" Source="$(var.SourceDir)\LICENSE" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="dir.ProgramsYeban" Name="Yeban">
+        <Component Id="cmp.StartMenuShortcut" Guid="{42FA4724-7992-4ED4-B14A-244220AE7C3B}">
+          <Shortcut Id="sct.Yeban" Name="Yeban" Description="Yeban - AI-native DAW"
+                    Target="[INSTALLFOLDER]yeban-app.exe" WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="rmf.ProgramsYeban" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\Yeban" Name="installed"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="fea.Main" Title="Yeban" Level="1">
+      <ComponentRef Id="cmp.MainExecutables" />
+      <ComponentRef Id="cmp.StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

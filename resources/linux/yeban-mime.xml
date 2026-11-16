@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  夜半工程文件 (.yeban) 的 shared-mime-info 注册 —— 由 DEB 装到
+  /usr/share/mime/packages/yeban.xml, 与 dev.yeban.app.desktop 的
+  MimeType=application/x-yeban 对应 (双击 .yeban 文件用夜半打开)。
+  MIME 数据库由 dpkg 的 shared-mime-info trigger 自动重建, 包里不跑任何脚本。
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-yeban">
+    <comment>Yeban project</comment>
+    <comment xml:lang="zh_CN">夜半工程</comment>
+    <glob pattern="*.yeban"/>
+    <icon name="yeban"/>
+  </mime-type>
+</mime-info>
