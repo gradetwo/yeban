@@ -24,7 +24,11 @@ use yeban_app::scene::DemoScene;
 // 陈列场景（旋钮 / 按键 / 开关的 physical 渲染验证; 试点两面板里没有旋钮，
 // 见 controls/knob.slint 的文件头）。路径相对本文件（examples/ 的上一级）。
 slint::slint! {
-    import { Tokens, UiText } from "../ui/tokens.slint";
+    // ⚠ `Tokens` / `TextureMode` 必须从这个内联文件**再导出**才属于它的公开
+    // API、Rust 侧才有对应类型 (只 `import` 会在 Rust 侧报 E0425 /
+    // deprecated type alias —— CI run 43864308074 rust 腿实证)。
+    export { Tokens, TextureMode } from "../ui/tokens.slint";
+    import { UiText } from "../ui/tokens.slint";
     import { Knob } from "../ui/controls/knob.slint";
     import { Fader, HFader } from "../ui/controls/fader.slint";
     import { LedMeter } from "../ui/controls/led_meter.slint";
@@ -36,12 +40,11 @@ slint::slint! {
         height: 380px;
         background: Tokens.bg-void;
 
-        // 质感开关: 用组件内 bool 驱动全局开关 (不在 Rust 侧碰 `Tokens` /
-        // `TextureMode` —— `slint!` 宏的内联文件里, 从别的 .slint 文件
-        // import 的全局/枚举不属于该文件的公开 API, Rust 侧引用会报
-        // E0425 / deprecated type alias; 判据与应用侧仍走 `host::apply_texture`)。
+        // 质感开关: Rust 侧经 `Tokens.texture` 全局写 (与应用侧
+        // `host::apply_texture` 同路); 全局属性不能在组件内绑定
+        // (`Tokens.texture: ...` 是 Slint 解析错误 —— 盒上 clippy 实证),
+        // 只能由 Rust 写。
         in-out property <bool> physical: false;
-        Tokens.texture: root.physical ? TextureMode.physical : TextureMode.flat;
 
         Rectangle {
             x: 16px;
@@ -339,8 +342,11 @@ fn shoot_showcase(out_dir: &str) {
     let ui = SkeuoShowcase::new().expect("构造陈列场景");
     ui.show().expect("show 陈列场景");
     let _ = render_frame(&window, width, height);
-    for (physical, label) in [(true, "physical"), (false, "flat")] {
-        ui.set_physical(physical);
+    for (mode, label) in [
+        (TextureMode::Physical, "physical"),
+        (TextureMode::Flat, "flat"),
+    ] {
+        ui.global::<Tokens<'_>>().set_texture(mode);
         let (frame, elapsed) =
             render_frame(&window, width, height).expect("切换质感后必须重绘一帧");
         let path = format!("{out_dir}/showcase-{label}.png");
