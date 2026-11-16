@@ -18117,4 +18117,9 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
 - **仍未做**：延音踏板状态（`TriggerEvent::NoteOff{pedal_down}` 谓词已就绪、引擎无来源）、
   `rt_decayN`（语料 0）、"对应 attack region" 判定（规范自陈跨播放器不一致）——
   逐条登记在 notes §6。
-- **判决**：尚未推送 ⇒ **CI `pending`**。
+- **判决（读回）**：线 tip `f8d70570` 的 run **`43813752935`** = `completed / **success**`
+  （`plan` / `checks` / `deny` / `lockfile` / `e2e` / `rust (yeban-sfz)` / `rust (yeban-engine)` /
+  `rust (yeban-app)` / `rust (yeban-render)` / `rust (yeban-mcp)` / `rust (yeban-ui-mcp)` /
+  `macos` / `windows` 全 `success`；`rust (workspace 全量)` `skipped` —— 分支走**受影响集合**）。
+  日志现读：`test result:` **1 623** 行、`FAILED` **0**；`t1_the_two_masks…` /
+  `rt_decay_scales…` / `offline_writes_the_release…` 各 **3** 次（Linux / macOS / Windows）。

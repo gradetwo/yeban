@@ -105,3 +105,9 @@
    note-off"的裁决（⛔ 本片不发明）。
 5. **轨增益/随机/rt_decay 的乘法次序**：`voice_gain = track × amp_random × rt_decay`，
    乐器层（`gain_at`）在逐块路径现算 —— 与 note-on 路径**同一处**，⛔ 不重复。
+6. **离线释放段的轮替序号**：`render_release_into_from_samples` 收的 `occurrence` 与
+   note-on 段**同一个**（导出侧按"该音高第几次按下"给）；引擎实时侧有独立的
+   `release_occurrence` 计数。⇒ 带 `seq_*` 的释放区域在两条路上的变体序列**可能不同**；
+   语料普查：**5** 个文件同时出现 `trigger=release|release_key` 与 `seq_*` 的 token
+   （`karoryfer-black-and-blue-basses` 4 份 ＋ `vcsl` 口琴 1 份），⚠ **未逐区域核**它们是否
+   同区；本片不为此引入第二条离线计数（代价如实登记在此）。
