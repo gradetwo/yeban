@@ -86,6 +86,69 @@ fn the_slint_initial_texture_is_flat_in_the_source() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据（源码钉）: 活面板的质感落点 —— 下层 dock，而非 console/*
+//
+// 背景：最大化窗口只渲染 `UnifiedLowerDock`；`console/mixer_console.slint`
+// 与 `console/device_rack.slint` 只挂在 `app.slint` 里被 `if false` 禁用
+// 的 `ConsoleTabs` 上，真实界面根本不走它们。只迁移 console/*，主窗口
+// 的 flat/physical 渲染逐像素相同（实测 0 差异像素）。一期试点因此必须
+// 同时覆盖 dock 的混音条带与设备卡片；本钉锁住这些落点与 flat 分支的
+// 旧字面值（flat 逐像素不变是靠三元的假分支，不是靠令牌的 flat 落点 ——
+// dock 的旧色与令牌角色色并不相等，见各断言里的字面值）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_live_dock_panels_bind_texture_tokens_with_flat_fallback() {
+    let dock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/lower_dock.slint"),
+    )
+    .expect("读 lower_dock.slint");
+    for (needle, what) in [
+        (
+            "Tokens.texture-physical ? Tokens.panel-brush : #080a10",
+            "通道条/总线条背景 (panel-brush, flat #080a10)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.shell-brush : Theme.bg-surface",
+            "混音区外容器背景 (shell-brush, flat Theme.bg-surface)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.void-brush : #06080d",
+            "推子导轨背景 (void-brush, flat #06080d)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.raised-brush : #94a3b8",
+            "推子帽背景 (raised-brush, flat #94a3b8)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.glass-brush : #06080d",
+            "电平槽/设备屏背景 (glass-brush, flat #06080d)",
+        ),
+        (
+            "Tokens.texture-physical ? (root.device-bypassed[idx] ? Tokens.void-brush : Tokens.panel-brush) : Theme.bg-surface",
+            "设备卡片背景 (旁通 void-brush, 常态 panel-brush)",
+        ),
+        (
+            "Tokens.texture-physical ? Tokens.raised-brush : #cbd5e1",
+            "主推子帽背景 (raised-brush, flat #cbd5e1)",
+        ),
+    ] {
+        assert!(
+            dock.contains(needle),
+            "lower_dock.slint 必须含 {what}: {needle}"
+        );
+    }
+    assert!(
+        dock.contains("Tokens.glass-reflection"),
+        "设备屏与通道条 EQ 预览屏必须有玻璃斜向反光"
+    );
+    assert!(
+        dock.contains("Tokens.bevel-light") && dock.contains("Tokens.bevel-dark"),
+        "推子帽/M/S/声像必须有斜面亮/暗边"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ②③④: 活窗口回读（本文件唯一碰 Slint 的测试）
 // ---------------------------------------------------------------------------
 
