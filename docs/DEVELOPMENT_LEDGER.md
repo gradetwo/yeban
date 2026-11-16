@@ -18151,3 +18151,27 @@ helper 里 ⇒ 必须不认（防假绿）。两条臂在旧实现上都会失�
   `macos` / `windows` 全 `success`；`rust (workspace 全量)` `skipped` —— 分支走**受影响集合**）。
   日志现读：`test result:` **1 623** 行、`FAILED` **0**；`t1_the_two_masks…` /
   `rt_decay_scales…` / `offline_writes_the_release…` 各 **3** 次（Linux / macOS / Windows）。
+
+### 24.3 ⭐ 延音踏板（CC64）与释放族时机——**引擎面**落地（2026-11-16，设备/事件面未接）
+
+- **语义**（规范逐字见 `TriggerEvent` / `Trigger::responds_to`）：`release` 在「键松开**或**
+  踏板松开」时响；`release_key` 只认键松开（"is not affected by sustain pedal"）。
+- **落地（本片）**：
+  * `yeban-sfz`：新增 `TriggerEvent::PedalUp`（`release` 认它、`release_key` 与 note-on
+    家族都不认）＋ 三条 responds_to 判例；
+  * `SfzVoicePool`：`pedal_down` ＋ `sustained[128]`，`set_pedal`（返回 down→up 跃变）、
+    `mark_sustained` / `sustained` / `clear_sustained`；`trigger_release` 按踏板状态选
+    `NoteOff{pedal_down}`、新增 `trigger_pedal_up`（`PedalUp`）；note-on 重触发清挂起位；
+  * `SynthEngine`：`note_off_with_sources` 在踏板踩下时**不**停声部、只触发 release_key
+    并标记挂起；`set_sustain_pedal(track, down, plan)` 在松开时逐个 `release_note` ＋
+    `trigger_pedal_up`。
+- **尺寸**：`SfzVoicePool` 6464 → **6600**（＋136 ＝ `sustained[128]` ＋ `pedal_down` 与
+  对齐）；`PreparedRegion` 6296 / `SfzVoice` 40 / `EngineRuntime` 45888 不变。
+- **判据**：`tests/sfz_sustain_pedal.rs` P1（踩下只响 release_key）、P2（松开只响 release）、
+  P3（重触发清挂起位），本地 3/3。
+- ⚠ **仍未接（本片是半片，如实记）**：`EngineEvent::ControlChange` 的出队点（`rt.rs`
+  的 `render_block` 1) 段）只把 CC 写进 `ControlChangeState`，**没有**调用
+  `SynthEngine::set_sustain_pedal` —— 该处拿不到"当前快照的摊平表"（快照守卫在那一步
+  之后才借出）⇒ 需要一次"CC64 跃变 → 逐轨 plan"的接线裁决（在快照借出后重放跃变，或
+  把踏板跃变存进定长队列）。⇒ **产品路径的实时踏板今天还不起作用**；API 与语义已就绪。
+- **判决**：尚未推送 ⇒ **CI `pending`**。

@@ -1815,12 +1815,28 @@ impl SynthEngine {
             } else {
                 self.slots[index].live_position
             };
-            if self.slots[index].sfz.release_note(plan, pitch, off_clock) {
+            let pedal_down = self.slots[index].sfz.pedal_down();
+            if pedal_down {
+                // ⭐ **踏板踩下**（本片）：键松开**不**停止声部（等踏板松开），也**不**
+                // 触发 `trigger=release` 的区域（只在 `PedalUp` 时响）；`release_key`
+                // 照规范立刻响。挂起位在这里置上，好让踏板松开时知道要放掉谁。
+                if self.slots[index]
+                    .sfz
+                    .voices()
+                    .iter()
+                    .any(|voice| voice.is_active() && voice.note() == pitch)
+                {
+                    released = true;
+                }
+                self.slots[index].sfz.mark_sustained(pitch);
+            } else if self.slots[index].sfz.release_note(plan, pitch, off_clock) {
                 released = true;
             }
             // ⭐ **释放族真的发声**（本片）：note-off 不只缩短已有声部，还按
             // `trigger=release` / `release_key` 建**新**声部（`TriggerEvent::NoteOff`）。
             // ⚠ 与上面那句**同一帧**：缩短与新建都用 `off_clock` ⇒ 释放采样从松键那一帧起。
+            // ⚠ 踏板踩下时事件带 `pedal_down: true` ⇒ 只有 `release_key` 会响（谓词在
+            // `yeban-sfz` 的 `Trigger::responds_to`）。
             let created = self.slots[index].sfz.trigger_release(
                 plan,
                 pitch,
@@ -1839,6 +1855,56 @@ impl SynthEngine {
         released
     }
 
+    /// ⭐ **延音踏板（CC64）**（本片）：设状态，并在 **down → up** 时放掉被踏板挂住的键。
+    ///
+    /// 语义（规范逐字见 `yeban-sfz` 的 `TriggerEvent`）：
+    /// * 踩下时键松开 ⇒ `release_key` 立刻响、`release` 等踏板；attack 声部**不**停；
+    /// * 踏板松开 ⇒ 每个被挂住的键：`release_note`（真正停声部）＋ `PedalUp`
+    ///   （只让 `release` 区响，⛔ 不重复播 `release_key`）。
+    ///
+    /// `sfz` 是**该轨当前**的摊平表（踏板松开那一刻建释放声部要用它）；`None` ⇒
+    /// 只能清挂起位（没有区域表就建不出声部，⛔ 不猜）。
+    ///
+    /// 返回踏板松开时新建的释放声部数。零分配、零锁、零 I/O ⇒ 可在实时路径调用。
+    pub fn set_sustain_pedal(
+        &mut self,
+        track: EntityId,
+        down: bool,
+        sfz: Option<&PreparedSfz>,
+    ) -> usize {
+        let Some(index) = self.slot_index(track) else {
+            return 0;
+        };
+        if !self.slots[index].sfz.set_pedal(down) {
+            return 0;
+        }
+        // 踏板松开：逐个放掉挂起的键。
+        let now = self.position;
+        let mut created = 0usize;
+        for pitch in 0..128u8 {
+            if !self.slots[index].sfz.sustained(pitch) {
+                continue;
+            }
+            if let Some(plan) = sfz {
+                let _ = self.slots[index].sfz.release_note(plan, pitch, now);
+                created += self.slots[index].sfz.trigger_pedal_up(
+                    plan,
+                    pitch,
+                    now,
+                    self.slots[index].gain_scale,
+                    None,
+                );
+            }
+            self.slots[index].sfz.clear_sustained(pitch);
+        }
+        if created > 0 {
+            self.slots[index].live_sfz = true;
+            self.notes_triggered = self
+                .notes_triggered
+                .saturating_add(u64::try_from(created).unwrap_or(u64::MAX));
+        }
+        created
+    }
     /// ⭐ **是否已经有轨道占过槽位**（⭐ 即"⭐ 本运行时至少武装过一次快照"）。
     ///
     /// ⚠ 用途：⭐ 首块的环音符事件在**快照武装之前**出队 ⇒ ⭐ 槽位还没影 ⇒
