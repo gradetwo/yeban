@@ -748,8 +748,12 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         host::sync_aether_display(ui);
     }
 
-    // YebanDefault accent (#387691)
-    const ACCENT_RGB: [u8; 3] = [0x38, 0x76, 0x91];
+    // 编曲播放头颜色（六版，Wang 2026-11-17 15:09 亲定）：竖线与菱形头
+    // 由 Theme.accent (#387691) 改纯白 #ffffff；本测试的播放头像素探针
+    // 跟随播放头颜色，只钉位置——x=245、2px 线宽、12px 内缩等几何值
+    // 一律不动（六版只改了颜色，未动时间轴起点与播放头左缘几何；
+    // 旧 accent 探针在六版头 CI run 44039699951 唯一一败即源于此）。
+    const PLAYHEAD_RGB: [u8; 3] = [0xff, 0xff, 0xff];
 
     // 1. 初始冷启动 tick 0: 播放头与 Bar 1 / 轨道内容起点逐像素对齐，时间码 = 001.01.000
     assert_eq!(live.ui().get_playhead_ticks(), 0);
@@ -784,7 +788,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         for x in (timeline_origin_x - 5)..timeline_origin_x {
             let px = img0.pixel(x as u32, y).unwrap();
             assert!(
-                !is_close_rgb(px, ACCENT_RGB),
+                !is_close_rgb(px, PLAYHEAD_RGB),
                 "tick 0 播放头与菱形头不得向左侵入分隔线/轨道控制头 (x={x}, y={y}, rgb={px:?})"
             );
         }
@@ -792,7 +796,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
     assert!(
         is_close_rgb(
             img0.pixel(timeline_origin_x as u32, ruler_probe_y).unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "tick 0 编曲播放头左侧必须正好落在时间轴起点 x={timeline_origin_x}"
     );
@@ -800,7 +804,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         is_close_rgb(
             img0.pixel(timeline_origin_x as u32 + 1, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "tick 0 编曲播放头 2px 线宽必须落在 [{timeline_origin_x}, {})",
         timeline_origin_x + 2
@@ -809,7 +813,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         is_close_rgb(
             img0.pixel(timeline_origin_x as u32, (canvas.y + 62) as u32)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "tick 0 编曲播放头必须贯穿到轨道泳道起点 x={timeline_origin_x}"
     );
@@ -843,7 +847,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_seek
                 .pixel((timeline_origin_x + 256) as u32, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "seek 到第 3 小节后编曲播放头必须移至 x={}",
         timeline_origin_x + 256
@@ -873,7 +877,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_rew
                 .pixel(timeline_origin_x as u32, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "归零后编曲播放头必须精准回到时间轴起点 x={timeline_origin_x}"
     );
@@ -907,7 +911,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_scroll
                 .pixel(timeline_origin_x as u32, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "Bar 2 播放头在 scroll_x=128px 时必须落在时间轴左沿 x={timeline_origin_x}"
     );
@@ -928,7 +932,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         for x in (timeline_origin_x - 5)..(timeline_origin_x + 4) {
             let px = img_clipped.pixel(x as u32, y).unwrap();
             assert!(
-                !is_close_rgb(px, ACCENT_RGB),
+                !is_close_rgb(px, PLAYHEAD_RGB),
                 "播放头滚出左视口后不得泄漏进控制头/分隔线或时间轴左沿 (x={x}, y={y}, rgb={px:?})"
             );
         }
@@ -962,7 +966,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_zoom
                 .pixel((timeline_origin_x + 64) as u32, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "缩放至 tpp=60 后编曲播放头必须落在 x={}",
         timeline_origin_x + 64
@@ -994,7 +998,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_scrolled_seek
                 .pixel((timeline_origin_x + 128) as u32, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "scroll_x=128 定位到 Bar 3 后播放头必须回到屏幕列 x={}",
         timeline_origin_x + 128
@@ -1018,7 +1022,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_right
                 .pixel(right_origin_x as u32, ruler_probe_y)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "右置轨道头模式下 tick 0 播放头必须对齐时间轴最左沿 x={right_origin_x}"
     );
@@ -1027,7 +1031,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             img_right
                 .pixel(right_origin_x as u32, (canvas.y + 62) as u32)
                 .unwrap(),
-            ACCENT_RGB
+            PLAYHEAD_RGB
         ),
         "右置轨道头模式下 tick 0 播放头必须贯穿到轨道泳道起点 x={right_origin_x}"
     );
@@ -1038,7 +1042,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         for x in right_timeline_end..(right_timeline_end + 5) {
             let px = img_right.pixel(x as u32, y).unwrap();
             assert!(
-                !is_close_rgb(px, ACCENT_RGB),
+                !is_close_rgb(px, PLAYHEAD_RGB),
                 "右置轨道头模式下 tick 0 播放头不得泄漏到右侧分隔线 (x={x}, y={y}, rgb={px:?})"
             );
         }
@@ -1046,7 +1050,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
     for x in right_timeline_end..canvas_right {
         let px = img_right.pixel(x as u32, (canvas.y + 2) as u32).unwrap();
         assert!(
-            !is_close_rgb(px, ACCENT_RGB),
+            !is_close_rgb(px, PLAYHEAD_RGB),
             "右置轨道头模式下播放头菱形顶盖不得泄漏进右置控制头顶区 (x={x}, rgb={px:?})"
         );
     }
@@ -1064,7 +1068,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         for x in right_timeline_end..(right_timeline_end + 5) {
             let px = img_right_clipped.pixel(x as u32, y).unwrap();
             assert!(
-                !is_close_rgb(px, ACCENT_RGB),
+                !is_close_rgb(px, PLAYHEAD_RGB),
                 "播放头越过右置时间轴右沿后不得泄漏到右侧分隔线 (x={x}, y={y}, rgb={px:?})"
             );
         }
@@ -1074,7 +1078,7 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
             .pixel(x as u32, (canvas.y + 2) as u32)
             .unwrap();
         assert!(
-            !is_close_rgb(px, ACCENT_RGB),
+            !is_close_rgb(px, PLAYHEAD_RGB),
             "播放头越过右置时间轴右沿后不得泄漏进右置控制头顶区 (x={x}, rgb={px:?})"
         );
     }

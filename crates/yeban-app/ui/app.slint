@@ -157,30 +157,30 @@ export component MainWindow inherits Window {
     ];
 
     in-out property <[TimelineBlockData]> timeline-blocks: [
-        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #387691 },
-        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #387691 },
-        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: #387691 },
-        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: #387691 },
-        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #387691 },
-        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #387691 },
-        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #9a6a38 },
-        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38 },
-        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #9a6a38 },
-        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38 },
-        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #9a6a38 },
-        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #705e88 },
-        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: false, gain_label: "0dB", color: #705e88 },
-        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #705e88 },
-        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: false, gain_label: "0dB", color: #705e88 },
-        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
-        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
-        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #347864 },
-        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: #347864 },
-        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: #347864 },
-        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #8a4f6d },
-        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: #8a4f6d },
-        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #8a4f6d },
-        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #8a4f6d }
+        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
+        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
+        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
+        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
+        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
+        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
+        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
+        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
+        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
+        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
+        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
+        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
+        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
+        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
+        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
+        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
+        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
+        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
+        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
+        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
+        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb },
+        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb },
+        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb },
+        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb }
     ];
 
     in-out property <int> selected-track-index: 3;
@@ -419,6 +419,15 @@ export component MainWindow inherits Window {
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 0px;
+    // 拍刻度 / 拍线的拍位来源：投影的拍号分子（与小节读数同批写入）。
+    in-out property <int> beats-per-bar: 4;
+    // 网格密度读数（五版自适应）：编号步长 / 线条单位 / 拍刻度与车道拍线
+    // 可见性 / 每拍细分份数，由 host::grid_density 按小节宽算出、同批写入。
+    in-out property <int> grid-label-stride: 1;
+    in-out property <int> grid-line-unit: 1;
+    in-out property <bool> grid-show-beat-ticks: false;
+    in-out property <bool> grid-show-lane-beats: false;
+    in-out property <int> grid-subdiv-per-beat: 0;
     in-out property <string> bpm-display: "120.00";
     in-out property <bool> bpm-field-editing: false;
     in-out property <string> branch-name: "main";
@@ -1337,6 +1346,12 @@ export component MainWindow inherits Window {
                     bar-start-index: root.bar-start-index;
                     bar-count: root.bar-count;
                     bar-width-px: root.bar-width-px;
+                    beats-per-bar: root.beats-per-bar;
+                    grid-label-stride: root.grid-label-stride;
+                    grid-line-unit: root.grid-line-unit;
+                    grid-show-beat-ticks: root.grid-show-beat-ticks;
+                    grid-show-lane-beats: root.grid-show-lane-beats;
+                    grid-subdiv-per-beat: root.grid-subdiv-per-beat;
                     cycle-start-px: (root.cycle-start-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
                     cycle-end-px: (root.cycle-end-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
                     // 轨道行几何 / 内容高 / 横向滚动：全部来自投影（同一份事实源）。

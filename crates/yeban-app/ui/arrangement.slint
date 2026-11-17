@@ -32,6 +32,20 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 128px;
+    // 拍位来源：投影的拍号分子（`bridge::ViewState::time_signature_numerator`），
+    // 宿主在 `apply_view` 与小节读数同批写入。标尺拍刻度与车道拍线共用这一份
+    // 读数（Wang 2026-11-17：网格以拍为常显基本单位，每拍一刻度 / 一线）。
+    in-out property <int> beats-per-bar: 4;
+    // 网格密度读数（五版自适应，Wang 2026-11-17 14:37 按 Logic Pro 实测
+    // 规格）：宿主 `grid_density` 按当前小节宽与拍号分子算出、与小节读数
+    // 同批写入。编号步长／线条单位为 2 的幂（小节）；细分份数 0／2／4。
+    // 默认值 = 本组件默认小节宽 128px、4 拍时的 `grid_density` 读数
+    // （宿主在真实装配里必然覆盖，默认值只供独立渲染时自洽）。
+    in-out property <int> grid-label-stride: 1;
+    in-out property <int> grid-line-unit: 1;
+    in-out property <bool> grid-show-beat-ticks: true;
+    in-out property <bool> grid-show-lane-beats: true;
+    in-out property <int> grid-subdiv-per-beat: 4;
     in-out property <length> cycle-start-px: 0px;
     in-out property <length> cycle-end-px: 0px;
     in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
@@ -312,23 +326,46 @@ export component ArrangementViewport inherits Rectangle {
                         spacing: 0px;
 
                         // Ruler (24px) - Spans across 24 bars (High contrast WCAG AA labels)
-                        // 标尺带 (负责人 2026-11-16 四条之 4): 底比编曲区浅一档,
-                        // 走令牌 `Tokens.ruler-brush` (bg-shell), ⛔ 不写死;
+                        // 标尺带 (负责人 2026-11-16 四条之 4): 底比编曲区浅一档;
                         // 小节号走 `Tokens.ruler-ink`; 底部刻度与下方网格竖线
                         // 同 x 同源 (bar-positions / bar-width-px / scroll-x)。
+                        // 标尺带底自 2026-11-17 合入起走质感三元 (Wang 裁决
+                        // 甲, 19:58): 拟物支走令牌 `Tokens.ruler-brush`,
+                        // 扁平支用十一版定值 (见下方 background 行注释)。
                         Rectangle {
                             height: 24px;
-                            background: Tokens.ruler-brush;
+                            // 标尺带底 (裁决甲): 拟物支 = main 令牌形态
+                            // `Tokens.ruler-brush`; 扁平支 = 十一版定值
+                            // #1d2733 (Wang 2026-11-17 三版口径: 与车道底
+                            // 的相对亮度比 1.30:1, 旧 `Theme.bg-panel`
+                            // #0e1118 只有 1.04:1, 带与车道几乎同色;
+                            // 轨道头底色同值, 整条头部带同面)。边框色
+                            // 同理: main 形态无边框色 (透明), 扁平支
+                            // 保留十一版 #ffffff0a。
+                            background: Tokens.texture-physical ? Tokens.ruler-brush : #1d2733;
+                            border-color: Tokens.texture-physical ? transparent : #ffffff0a;
                             clip: true;
 
                             // [Q6] 标尺格数与间距来自投影（`host::apply_view` 的
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个
                             // 水平刻度（`blk.start_px = tick / ticks_per_pixel`）。
                             for i in root.bar-count : Text {
+                                // 编号步长（五版自适应）：只在步长整数倍的
+                                // 小节上标号（步长由宿主按小节宽算，间距
+                                // >= 96px；Logic 图二极端缩小时每 16 小节
+                                // 一个编号）。
+                                // 净空区（六版，Wang 15:06 终判「刻度上
+                                // 数字有点遮盖」）：编号只占标尺带上部
+                                // 9px 净空区（字形在区内垂直居中），下方
+                                // 刻度行仍是带下半 12px，编号区底与刻度
+                                // 行顶之间留 3px（24 = 9 + 3 + 12），
+                                // 任何刻度不得进入编号区。几何常量由
+                                // arrangement_grid_density 判据 ⑥ 钉住。
+                                visible: (root.bar-start-index + i).mod(max(1, root.grid-label-stride)) == 0;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: root.bar-width-px;
-                                height: parent.height;
+                                height: 9px;
                                 horizontal-alignment: left;
                                 text: "" + (root.bar-start-index + i + 1);
                                 font-family: Tokens.font-mono;
@@ -340,9 +377,9 @@ export component ArrangementViewport inherits Rectangle {
 
                             // 小节刻度线: 标尺底部 5px, 与编曲区网格竖线同 x ——
                             // 眼睛从小节号垂直落下即对上网格 (四条之 4 的对齐要求)。
-                            // 2026-11-17 rebase 裁定: main 标尺带无此元素, 扁平套
-                            // 须与 main 逐像素一致 ⇒ 刻度只在拟物套出现 (刻蚀感
-                            // 的一部分), 扁平套不画。
+                            // 拟物支形态 (main, 逐形照旧): 刻度只在拟物套出现
+                            // (刻蚀感的一部分)。扁平支走下方三档字面刻度块
+                            // (裁决甲, Wang 2026-11-17 19:58: 整块二选一)。
                             for i in root.bar-count : Rectangle {
                                 visible: Tokens.texture-physical;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
@@ -350,6 +387,68 @@ export component ArrangementViewport inherits Rectangle {
                                 width: 1px;
                                 height: 5px;
                                 background: Tokens.divider-grid-strong;
+                            }
+
+                            // 扁平支刻度块 (裁决甲): 本块每个 visible 均加
+                            // `!Tokens.texture-physical` 门控, 与上方拟物支
+                            // 令牌刻度整块二选一, 色值/几何逐值照旧。
+                            // 小节刻度 + 拍刻度 + 细分刻度（五版，Wang
+                            // 2026-11-17 14:37 按 Logic Pro 实测规格定）：
+                            // Logic 图一实测——刻度全 1px 宽，长度分级：
+                            // 小节刻度满刻度行高、拍刻度约半行（下对齐）。
+                            // 本带高 24px，刻度行取带下半 12px：小节 12px、
+                            // 拍 6px、细分 3px（1 : 1/2 : 1/4，下对齐）。
+                            // 颜色沿用四版同色相处理（灰蓝 211°，只差亮度），
+                            // 对标尺带底 #1d2733（相对亮度 0.0195）实算：
+                            // 小节刻度 #83909e（0.2724）比 4.64:1（≥4.5）；
+                            // 拍刻度 #6e7f8f（0.2048）比 3.67:1（≥3）；
+                            // 细分刻度 #66788a（0.1809）比 3.32:1（≥3 硬
+                            // 下限）。小节编号 #cbd5e1 对标尺带 10.17:1。
+                            // 可见性走宿主密度读数（`grid_density`）：小节
+                            // 刻度只在线条单位整数倍的小节上画；拍刻度须
+                            // 每拍 >= 8px；细分份数（每拍 4/2/0）由宿主
+                            // 按细分距 >= 8px 逐档退。
+                            for i in root.bar-count : Rectangle {
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                background: transparent;
+
+                                Rectangle {
+                                    visible: !Tokens.texture-physical && (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
+                                    x: 0px;
+                                    y: parent.height - 12px;
+                                    width: 1px;
+                                    height: 12px;
+                                    background: #83909e;
+                                }
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    visible: beat > 0 && root.grid-show-beat-ticks && !Tokens.texture-physical;
+                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                                    y: parent.height - 6px;
+                                    width: 1px;
+                                    height: 6px;
+                                    background: #6e7f8f;
+                                }
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: root.bar-width-px;
+                                    height: parent.height;
+                                    background: transparent;
+
+                                    for sub in root.grid-subdiv-per-beat : Rectangle {
+                                        visible: sub > 0 && !Tokens.texture-physical;
+                                        x: beat * (root.bar-width-px / max(1, root.beats-per-bar)) + sub * (root.bar-width-px / max(1, root.beats-per-bar) / max(1, root.grid-subdiv-per-beat));
+                                        y: parent.height - 3px;
+                                        width: 1px;
+                                        height: 3px;
+                                        background: #66788a;
+                                    }
+                                }
                             }
 
                             // 循环指示带：区间来自视图态（`cycle-start/end-ticks`），
@@ -446,10 +545,17 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-1-touch.has-hover ? #1b283835 : #1b283818;
+                                    // 九版（Wang 16:43）：和弦块底改和弦色纯色本体
+                                    // #387691（八版合成等效实色 = 和弦色混黑，废）。
+                                    // hover 按同色明度微调（±0.04，方向取文字仍
+                                    // >= 4.5 的一侧，本块为 -0.04）；边框为同色更深
+                                    // 一档实色（明度 -0.10 / hover -0.05），不用
+                                    // alpha。文字按底色选近白/纯白/纯黑（>= 4.5）。
+                                    // 五块同规则，数值各自按其和弦色算。
+                                    background: chord-1-touch.has-hover ? #326a82 : #387691;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-1-touch.has-hover ? #38769170 : #38769135;
+                                    border-color: chord-1-touch.has-hover ? #31677f : #2a586c;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -460,14 +566,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #8cb8cc;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -488,10 +594,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-2-touch.has-hover ? #2d203835 : #2d203818;
+                                    background: chord-2-touch.has-hover ? #7a6694 : #705e88;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-2-touch.has-hover ? #705e8870 : #705e8835;
+                                    border-color: chord-2-touch.has-hover ? #645479 : #57496a;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -502,14 +608,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #b39cc7;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -530,10 +636,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-3-touch.has-hover ? #182c2635 : #182c2618;
+                                    background: chord-3-touch.has-hover ? #2e6a58 : #347864;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-3-touch.has-hover ? #34786470 : #34786435;
+                                    border-color: chord-3-touch.has-hover ? #2c6655 : #255446;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -544,14 +650,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #80bca8;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -572,10 +678,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-4-touch.has-hover ? #34261635 : #34261618;
+                                    background: chord-4-touch.has-hover ? #8b6033 : #9a6a38;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-4-touch.has-hover ? #9a6a3870 : #9a6a3835;
+                                    border-color: chord-4-touch.has-hover ? #875d31 : #75502a;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -586,14 +692,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #c7a46e;
+                                            color: #ffffff;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #ffffff;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -614,10 +720,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-5-touch.has-hover ? #1b283835 : #1b283818;
+                                    background: chord-5-touch.has-hover ? #326a82 : #387691;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-5-touch.has-hover ? #38769170 : #38769135;
+                                    border-color: chord-5-touch.has-hover ? #31677f : #2a586c;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -628,16 +734,16 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #8cb8cc;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            // ⭐ WCAG AA：8px 小字也须 ≥3:1（实测 #64748b 在 #161b28 上仅 3.61:1）。
-                                            // 改用「次要文字下限」#7c8aa0（最亮底 #161b28 上 4.91:1）。
-                                            color: #7c8aa0;
+                                            // 九版：底改和弦色纯色 #387691，文字随块统一
+                                            // 用 #f1f5f9（对纯色底实算 4.60:1，>= 4.5）。
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -778,6 +884,19 @@ export component ArrangementViewport inherits Rectangle {
         Rectangle {
             vertical-stretch: 1;
             clip: true;
+            // 车道底（十一版，Wang 2026-11-17 18:51 + 18:53 亲定）：
+            // 十版把车道底抬到中性灰（相对亮度 0.0273），与全应用的
+            // 深蓝色系（轨道头 #1d2733、标尺带）差异太大 ⇒ 改回九版
+            // #090b10 的色相/饱和（HSV 222.9° / 0.4375）只抬明度：
+            // 定值 #1d2333，相对亮度实算 0.0170（目标带 0.014–0.020，
+            // 仍低于十版中性灰）。只落本容器（行与行下空置区同底），
+            // ⛔ 不动 Theme.bg-canvas 本体（窗口底与其它面共用）、
+            // 不动标尺带 Theme.bg-panel。
+            // 合入裁决甲 (Wang 2026-11-17 19:58) 补: 本容器在 main
+            // 侧原本无底色 (透出 root 的 Theme.bg-canvas), 十一版
+            // 字面底只许落扁平支 ⇒ 写成质感三元, 拟物支 transparent
+            // 逐像素复现 main 形态。
+            background: Tokens.texture-physical ? transparent : #1d2333;
 
             // ⭐ 轨道一多（16 轨 × 56px = 896px）时，固定高度的 VerticalLayout 会把
             // 内容撑出工作区、把下方钢琴卷帘/混音台顶出窗口。这里改成纵向 Flickable：
@@ -805,9 +924,17 @@ export component ArrangementViewport inherits Rectangle {
                     y: root.track-ys[idx];
                     height: root.track-heights[idx];
                     width: parent.width;
-                    background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent;
-                    border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a;
-                    border-width: trk.id == root.selected-track-id ? 1.5px : 0px;
+                    // 选中呈现（裁决甲，Wang 2026-11-17 19:58）：质感三元。
+                    // 扁平支 = 十一版形态（八版 Logic 式：七版纯白边框
+                    // 作废，选中只由提亮承载——车道底改回蓝调 #1d2333
+                    // 后选中行底按相对亮度比 1.80 重算为 #273146，相对
+                    // 亮度 0.0307；行边框 #ffffff0a 0px 与未选中行同款；
+                    // 轨道色与 accent 双脱钩，色条仍保留轨道色）。
+                    // 拟物支 = main 形态（选中行 accent α0.08 底 +
+                    // α0.70 边 1.5px，未选中 #ffffff0a 淡框）。
+                    background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent) : (trk.id == root.selected-track-id ? #273146 : transparent);
+                    border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a) : #ffffff0a;
+                    border-width: Tokens.texture-physical ? (trk.id == root.selected-track-id ? 1.5px : 0px) : 0px;
 
                     HorizontalLayout {
                         spacing: 0px;
@@ -815,8 +942,15 @@ export component ArrangementViewport inherits Rectangle {
                         // Left Track Header (if not headers on right)
                         if !Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
-                            background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : (Tokens.texture-physical ? Tokens.track-head-brush : #0b0e16);
-                            border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle;
+                            // 轨道头选中呈现 (裁决甲, Wang 2026-11-17 19:58):
+                            // 质感三元。拟物支 = main 形态 (选中 accent
+                            // α0.10 底 + α0.80 边, 未选中 track-head-brush);
+                            // 扁平支 = 十一版定值 (选中头底 #293645——八版
+                            // Logic 式: 未选中头底 #1d2733 按亮度比 1.80
+                            // 线性提亮; 边框恒 Theme.border-subtle 与未选中
+                            // 行同款, 七版 #16232b 与纯白边框同废)。
+                            background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);
+                            border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle) : Theme.border-subtle;
 
                             // Left color strip (illuminated on focus)
                             Rectangle {
@@ -1159,16 +1293,74 @@ export component ArrangementViewport inherits Rectangle {
                             horizontal-stretch: 1;
                             clip: true;
 
-                            // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
-                            // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
-                            // 线色走令牌 (四条之 3 / 4): 强档 = divider-grid-strong,
-                            // 弱档 = divider-grid; 与标尺底部刻度同 x 对齐。
+                            // [Q6] 小节网格：位置 / 间距与标尺、片段块同源。
+                            // 裁决甲 (Wang 2026-11-17 19:58): 整块二选一——
+                            // 拟物支 = main 形态 (每 4 小节一条强调线, 索引
+                            // 0 起 ⇒ `i.mod(4) == 0`; 线色走令牌 (四条之
+                            // 3 / 4): 强档 = divider-grid-strong, 弱档 =
+                            // divider-grid; 与标尺底部刻度同 x 对齐; 无
+                            // 拍线元素); 扁平支 = 十一版形态 (下方第二块:
+                            // #979fa8 均匀线 + 拍线 #74808b)。
                             for i in root.bar-count : Rectangle {
+                                visible: Tokens.texture-physical && (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
                                 background: (root.bar-start-index + i).mod(4) == 0 ? Tokens.divider-grid-strong : Tokens.divider-grid;
+                            }
+
+                            // 扁平支车道网格 (十一版, 逐值照旧; visible 加
+                            // `!Tokens.texture-physical` 门控, 与上方拟物支
+                            // 整块二选一)。五版（Wang 2026-11-17 14:37 按
+                            // Logic Pro 实测规格）：线宽全 1px（Logic 图一
+                            // 车道小节线实测 1px、值约 74 / 背景约 52）；
+                            // 取消每 4 小节加重线——Logic 车道与标尺内小节
+                            // 线全均匀。只在线条单位整数倍的小节上画
+                            // （宿主密度读数；极端缩小时单位粗化为每
+                            // 2/4/… 小节一条）。十一版（2026-11-17
+                            // 18:51）：车道底改回蓝调 #1d2333 后线色按新
+                            // 底重算——小节线 #979fa8（相对亮度 0.3420）：
+                            // 对选中行底 #273146 实算 4.86:1（>= 4.5
+                            // 下限）、对未选中行底 #1d2333 5.85:1。
+                            for i in root.bar-count : Rectangle {
+                                visible: !Tokens.texture-physical && (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: 1px;
+                                height: parent.height;
+                                background: #979fa8;
+                            }
+
+                            // 拍线（Wang 2026-11-17：以拍为单位；五版按
+                            // Logic 实测规格改 1px 并加缩放门槛）：节内每拍
+                            // 一根纵线，全部实色、无透明度合成。六版按
+                            // Wang 15:06 终判再淡一档（目标约 3.2:1、硬下限
+                            // ≥3、目标窗 3.15–3.30，比率目标历版不变）。
+                            // 十一版（2026-11-17 18:51）：车道底改回蓝调
+                            // #1d2333 后按新底重算——拍线 #74808b（相对
+                            // 亮度 0.2102）：对最不利底（选中行 #273146）
+                            // 实算 3.22:1（窗内）、对未选中行底 #1d2333
+                            // 3.88:1；小节线 #979fa8（0.3420）对两底
+                            // 4.86／5.85:1。
+                            // 读数：每拍 >= 24px 才画车道拍线（Logic
+                            // 图一每拍 12px 时车道无拍线、只有小节线；
+                            // 24px 为推定阈值，来源见 host::grid_density）。
+                            for i in root.bar-count : Rectangle {
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                background: transparent;
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    visible: beat > 0 && root.grid-show-lane-beats && !Tokens.texture-physical;
+                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                                    y: 0px;
+                                    width: 1px;
+                                    height: parent.height;
+                                    background: #74808b;
+                                }
                             }
 
                             // 背景选择与滚轮面必须先于片段块声明，避免遮挡 Clip 点击
@@ -1187,9 +1379,21 @@ export component ArrangementViewport inherits Rectangle {
                                     width: blk.width_px;
                                     height: Math.max(52px, parent.height - 8px);
                                     border-radius: 4px;
-                                    background: trk.color.with-alpha(0.12);
-                                    border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 1px;
-                                    border-color: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? #ffffff : trk.color.with-alpha(0.55);
+                                    // 片段底（九版，Wang 2026-11-17 16:43 亲定，照 Logic Pro
+                                    // 区域）：轨道色纯色本体 blk.base-color（投影层
+                                    // bridge::clip_base_color 算：纯色不混黑；太浅的色按
+                                    // 统一规则只降 HSL 明度，使白色对比 >= 3.05:1——
+                                    // 十版标记虽改同色相派生浅色，其明度同量级，
+                                    // 本规则原样兜底）。
+                                    // 八版「不透明近黑底 + 轨道色 0.12 叠层 = 合成等效
+                                    // 实色」废——那是轨道色混黑，暗且脏。轨道标识色
+                                    // trk.color 本身不动，轨道头色条仍是原色。
+                                    background: blk.base-color;
+                                    // 同色边框去除（九版，Wang 16:43）：未选中片段原有
+                                    // trk.color α0.55 同色边框整圈去掉（宽 0，无边框）；
+                                    // 选中片段的 2px 纯白边框保留（选中指示，非同色边框）。
+                                    border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 0px;
+                                    border-color: #ffffff;
                                     clip: true;
 
                                     VerticalLayout {
@@ -1204,7 +1408,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-ui;
                                                 font-size: 10px;
                                                 font-weight: 600;
-                                                color: #f1f5f9;
+                                                // 九版：文字色按底色选（blk.text-color，
+                                                // 投影层保证对纯色底 >= 4.5:1）。
+                                                color: blk.text-color;
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
@@ -1213,7 +1419,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: blk.gain_label;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
-                                                color: #cbd5e1;
+                                                color: blk.text-color;
                                                 horizontal-alignment: right;
                                                 vertical-alignment: center;
                                             }
@@ -1227,13 +1433,15 @@ export component ArrangementViewport inherits Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // 0dB Centerline（基准线，不是编造的包络）
+                                            // 0dB Centerline（基准线，不是编造的包络；十版：
+                                            // 色由 blk.guide-color 给——与峰值柱同出投影层
+                                            // 派生（轨道色同色相浅色版，bridge::clip_marker_color）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
                                                 width: parent.width;
                                                 height: 1px;
-                                                background: trk.color.with-alpha(0.20);
+                                                background: blk.guide-color;
                                             }
 
                                             // 真实峰值柱：peaks 为空时 0 个（不画）。
@@ -1245,7 +1453,14 @@ export component ArrangementViewport inherits Rectangle {
                                                 // 「Cannot convert float to length」）。
                                                 height: Math.max(1px, ((parent.height - 8px) / 1px) * blk.waveform-peaks[peak_index] * 1px);
                                                 y: (parent.height - self.height) / 2;
-                                                background: trk.color.with-alpha(0.85);
+                                                // 峰值柱十版改同色相派生色 blk.marker-color
+                                                // （Wang 2026-11-17 18:28，照 Logic 波形色）：
+                                                // 轨道色 HSV 派生（H 不变、V = 0.99、
+                                                // S × 1/3），是底色的浅色版而非纯白——
+                                                // 纯白在彩色底上引入外来色且对比过冲，
+                                                // 故刺眼（八版/九版纯白废）。逐色落码值
+                                                // 由判据 ⑧ 普查钉死。
+                                                background: blk.marker-color;
                                             }
 
                                             Text {
@@ -1261,7 +1476,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 accessible-label: @tr("波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）");
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8.5px;
-                                                color: #b6c2d2;
+                                                color: blk.text-color;
                                                 horizontal-alignment: left;
                                                 vertical-alignment: top;
                                             }
@@ -1272,13 +1487,15 @@ export component ArrangementViewport inherits Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // Pitch division guideline
+                                            // Pitch division guideline（十版：色由
+                                            // blk.guide-color 给，口径同波形基准线——
+                                            // 同出投影层同色相派生）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
                                                 width: parent.width;
                                                 height: 1px;
-                                                background: trk.color.with-alpha(0.15);
+                                                background: blk.guide-color;
                                             }
 
                                             if blk.note_count <= 0 && blk.width_px >= 90px : Text {
@@ -1287,7 +1504,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: @tr("空片段");
                                                 font-family: Tokens.font-ui;
                                                 font-size: 9.5px;
-                                                color: #b6c2d2;
+                                                color: blk.text-color;
                                             }
 
                                             if blk.note_count > 0 : HorizontalLayout {
@@ -1300,7 +1517,10 @@ export component ArrangementViewport inherits Rectangle {
                                                     horizontal-stretch: 1;
                                                     height: 4px;
                                                     border-radius: 1px;
-                                                    background: trk.color;
+                                                    // 音符条十版改同色相派生色
+                                                    // blk.marker-color（口径同峰值柱）：
+                                                    // 轨道色浅色版，⛔ 不再用纯白。
+                                                    background: blk.marker-color;
                                                     y: Math.mod(n_idx * 5, 14) * 1px;
                                                 }
                                             }
@@ -1355,8 +1575,12 @@ export component ArrangementViewport inherits Rectangle {
                         // Right Track Header (if right mode)
                         if Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
-                            background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : (Tokens.texture-physical ? Tokens.track-head-brush : #0b0e16);
-                            border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle;
+                            // 选中头底与边框同左头 (裁决甲质感三元: 拟物支
+                            // main 形态, 扁平支十一版定值 #293645 / 边框
+                            // Theme.border-subtle, 七版 #16232b 与纯白边框
+                            // 同废; 解法与左头逐字一致)。
+                            background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);
+                            border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle) : Theme.border-subtle;
 
                             Rectangle {
                                 x: parent.width - 4px;
@@ -1659,15 +1883,28 @@ export component ArrangementViewport inherits Rectangle {
                         }
                     }
                     // 行底分界线（Wang 2026-11-16：学 Logic 的行间低对比细线）：整行一根
-                    // ⇒ 轨道头列与车道侧同一 y 位对齐；色用既有分隔令牌 Theme.border-subtle。
-                    // 选中行已有 accent 边框，不再叠加本线。
+                    // ⇒ 轨道头列与车道侧同一 y 位对齐。八版起选中行亦画本线
+                    // （七版纯白边框已废，选中行不再靠边框分界）。
+                    // 十一版改暗线（Wang 2026-11-17 18:52 亲定，推翻
+                    // 八版以来的亮线方向）：分界线改为比车道底更深的
+                    // 同色系深色——定值 #040508（相对亮度 0.0015，低于
+                    // 未选中行底 #1d2333 与选中行底 #273146）：暗线对
+                    // 两底实算 1.30:1 / 1.57:1。⚠ 暗线对比有物理上限：
+                    // 车道底相对亮度仅 0.0170，纯黑对未选中底也只有
+                    // 1.34:1，旧亮线的 2.3–2.7 窗在暗方向不可达；本值
+                    // 取同色系近黑（距纯黑上限约 0.04）。层级按绝对
+                    // 对比仍为 分界线 < 拍线 < 小节线。只改本落点，
+                    // ⛔ 不动 Theme.border-subtle 本体（其它分隔仍用它）。
                     Rectangle {
                         x: 0px;
                         y: parent.height - 1px;
                         width: parent.width;
                         height: 1px;
-                        background: Tokens.divider-row;
-                        visible: trk.id != root.selected-track-id;
+                        // 裁决甲 (Wang 2026-11-17 19:58): 质感三元——拟物
+                        // 支 = main 形态 (divider-row + 选中行门控), 扁平
+                        // 支 = 十一版暗线 #040508 恒画 (上方长注释)。
+                        background: Tokens.texture-physical ? Tokens.divider-row : #040508;
+                        visible: Tokens.texture-physical ? trk.id != root.selected-track-id : true;
                     }
 
                     // 刻蚀高光 (只拟物套): 主线下方 1px (下一行顶沿)。
@@ -1761,13 +1998,53 @@ export component ArrangementViewport inherits Rectangle {
                             horizontal-stretch: 1;
 
                             // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
+                            // 五版同车道：小节线 1px、只在线条单位整数倍
+                            // 的小节上画（原有 x >= 0 的裁剪条件保留）。
+                            // 十一版线色同车道重算值（小节线 #979fa8）。
+                            // 裁决甲：与车道同解整块二选一（拟物支令牌
+                            // divider-grid、扁平支十一版字面色 + 拍线），
+                            // 两区同解不断档。
                             for _i in root.bar-count : Rectangle {
-                                visible: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px;
+                                visible: Tokens.texture-physical && ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px && (root.bar-start-index + _i).mod(max(1, root.grid-line-unit)) == 0;
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
                                 background: Tokens.divider-grid;
+                            }
+
+                            // 扁平支空置区网格 (十一版, 与车道同款同解):
+                            // 小节线 #979fa8 + 拍线 #74808b, visible 加
+                            // `!Tokens.texture-physical` 门控。
+                            for _i in root.bar-count : Rectangle {
+                                visible: !Tokens.texture-physical && ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px && (root.bar-start-index + _i).mod(max(1, root.grid-line-unit)) == 0;
+                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: 1px;
+                                height: parent.height;
+                                background: #979fa8;
+                            }
+
+                            // 拍线与车道同款（以拍为单位，WCAG 实算同车道，
+                            // 五版同色同宽同门槛，六版同再淡一档）：拍线
+                            // #74808b（1px，十一版按新底重算），小节线
+                            // #979fa8（1px）；空置行与轨道行同源同强度，
+                            // 整幅网格不断档。
+                            for _i in root.bar-count : Rectangle {
+                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                background: transparent;
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    visible: beat > 0 && root.grid-show-lane-beats && !Tokens.texture-physical;
+                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                                    y: 0px;
+                                    width: 1px;
+                                    height: parent.height;
+                                    background: #74808b;
+                                }
                             }
 
                             // 空态提示按**视口**居中：此前放在内容网格的同级
@@ -1881,12 +2158,17 @@ export component ArrangementViewport inherits Rectangle {
         height: parent.height;
         clip: true;
 
+        // 播放头颜色（六版，Wang 2026-11-17 15:09）：竖线与头部改
+        // 纯白 #ffffff——播放头是视觉中心，对最深车道行底 #181719
+        // 实算 17.87:1，醒目度最高。只改编曲区这一处落点，⛔ 不动
+        // Theme.accent 本体（全局唯一强调色，录音键 ● 与循环带等
+        // 仍用它）；钢琴卷帘播放头不在本笔范围。
         Rectangle {
             x: root.playhead-px - root.scroll-x;
             y: 0px;
             width: 2px;
             height: parent.height;
-            background: Theme.accent;
+            background: #ffffff;
 
             // Diamond head at ruler top
             Rectangle {
@@ -1894,7 +2176,7 @@ export component ArrangementViewport inherits Rectangle {
                 y: 0px;
                 width: 10px;
                 height: 10px;
-                background: Theme.accent;
+                background: #ffffff;
                 border-radius: 2px;
             }
         }

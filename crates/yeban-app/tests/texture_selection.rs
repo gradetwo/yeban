@@ -350,8 +350,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
     let arrangement = read("arrangement.slint");
     for (needle, what) in [
         (
-            ": (Tokens.texture-physical ? Tokens.track-head-brush : #0b0e16);",
-            "轨道头未选中支走 §12 轨道头刷 (flat 字面支)",
+            "background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);",
+            "轨道头底走裁决甲三元 (拟物 §12 头刷/accent 选中, 扁平十一版定值)",
         ),
         (
             "Tokens.texture-physical ? Tokens.void-brush : #06080d",
@@ -395,8 +395,13 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
 // 3. 分界线走令牌: 行底线 / 顶行横线 / 分隔条 / 网格竖线一律
 //    `Tokens.divider-*`; 行框按 2026-11-17 rebase 裁定保留 main 形态
 //    （未选中行 #ffffff0a 淡框 + 行底单线对选中行门控）。
+//    ——合入裁决甲 (Wang 2026-11-17 19:58) 后: 编曲区的行底分界线、
+//    行框、网格竖线改为质感三元, main 形态只活在拟物支, 扁平支用
+//    网格十一版字面定值; 本节相应钉改钉三元全串 (见下方断言)。
 // 4. 标尺走令牌: 标尺底 `Tokens.ruler-brush`、小节号 `Tokens.ruler-ink`,
 //    标尺刻度（仅拟物套可见，rebase 裁定）与网格同用 `divider-grid-strong`。
+//    ——裁决甲后: 标尺底改质感三元 (拟物 ruler-brush / 扁平十一版
+//    定值 #1d2733), 扁平支另有三档字面刻度块 (网格十一版)。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -507,16 +512,22 @@ fn the_track_area_follows_the_four_ui_rulings() {
         "轨道菜单必须排在 + 轨道之前（工具行最前）: menu@{menu_at} add@{add_at}"
     );
     for (needle, what) in [
-        ("background: Tokens.divider-row;", "分界线走 divider-row"),
+        (
+            "background: Tokens.texture-physical ? Tokens.divider-row : #040508;",
+            "行底分界线走裁决甲三元 (拟物 divider-row, 扁平十一版暗线 #040508)",
+        ),
         (
             "background: Tokens.divider-row-highlight;",
             "分界刻蚀高光走 divider-row-highlight",
         ),
-        ("background: Tokens.ruler-brush;", "标尺底走 ruler-brush"),
+        (
+            "background: Tokens.texture-physical ? Tokens.ruler-brush : #1d2733;",
+            "标尺底走裁决甲三元 (拟物 ruler-brush, 扁平十一版定值 #1d2733)",
+        ),
         ("color: Tokens.ruler-ink;", "小节号走 ruler-ink"),
         (
             "Tokens.divider-grid-strong : Tokens.divider-grid",
-            "网格强弱两档走令牌",
+            "网格强弱两档走令牌 (裁决甲拟物支)",
         ),
     ] {
         assert!(
@@ -527,13 +538,18 @@ fn the_track_area_follows_the_four_ui_rulings() {
     // 2026-11-17 rebase 裁定（以 main 为底）：main 的 ui-header-cleanup
     // 保留未选中行 #ffffff0a 淡框 + 行底单线（选中行门控不叠线），本支
     // 初版「删全框、只留行底线」的半条让位；钉住 main 形态与门控在。
+    // ——合入裁决甲 (Wang 2026-11-17 19:58) 改钉: 上述 main 形态只许
+    // 活在质感三元的拟物支, 两串改钉三元全串 (扁平支分别为恒
+    // #ffffff0a 行框与十一版暗线恒画)。
     assert!(
-        arrangement.contains("with-alpha(0.70) : #ffffff0a"),
-        "rebase 裁定: 未选中行保留 main 的 #ffffff0a 淡框（以 main 为底）"
+        arrangement.contains("border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a) : #ffffff0a;"),
+        "裁决甲: 行边框必须走三元 (拟物支保留 main 的 accent 边 + #ffffff0a 淡框, 扁平支恒 #ffffff0a)"
     );
     assert!(
-        arrangement.contains("visible: trk.id != root.selected-track-id;"),
-        "行底分界线必须保留 main 的选中行门控"
+        arrangement.contains(
+            "visible: Tokens.texture-physical ? trk.id != root.selected-track-id : true;"
+        ),
+        "裁决甲: 行底分界线的 main 选中行门控只许在拟物支 (扁平支暗线恒画)"
     );
 
     // 全 UI 同类排查的删除钉（各文件实际删掉的区域名/描述标签）。

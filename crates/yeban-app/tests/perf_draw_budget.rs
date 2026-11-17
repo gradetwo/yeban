@@ -493,7 +493,22 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 58;
 /// 类型色带与控制区的类型徽标（默认帧新增**纯视觉**节点 ⇒ 基准须重录，见
 /// `tests/golden/linux/MANIFEST.txt` 末尾的待重录声明）；该数组同时计入 ③b 的
 /// `array_instance_addrs` 清单。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 103;
+/// ⭐ 2026-11-17（`line/arrangement-grid`）：多**一行** `ui.set_beats_per_bar`
+/// （拍号分子**标量**，投影 `time_signature_numerator` 的读数）⇒ **103 → 104**。
+/// 消费者是编曲标尺的拍刻度与车道／空置行的拍线（Wang 2026-11-17：网格以拍为
+/// 常显基本单位，强度次于小节线）；标量不换模型实例 ⇒ ③b 的数组清单不动。
+/// 默认帧新增纯视觉节点（拍刻度 / 拍线）⇒ Linux 基准帧像素随之变化，UI golden
+/// 比对现为禁用态（Wang 2026-11-12 令），基准重录随 UI 重构收尾统一做。
+/// ⭐ 2026-11-17（`line/arrangement-grid` 五版）：多**五行**网格密度标量
+/// `ui.set_grid_label_stride` / `set_grid_line_unit` / `set_grid_show_beat_ticks` /
+/// `set_grid_show_lane_beats` / `set_grid_subdiv_per_beat`（宿主 `grid_density`
+/// 按小节宽与拍号分子算出的读数）⇒ **104 → 109**。消费者是编曲标尺与车道／
+/// 空置行的缩放自适应（编号步长、线条单位、刻度可见性与细分份数；Wang
+/// 2026-11-17 14:37 按 Logic Pro 实测规格定）；五个都是**标量** ⇒ ③b 的数组
+/// 清单不动。绘制量侧：单位 >= 2 时小节线／刻度按单位跳画、拍线与细分只在
+/// 宽度达标时出现 ⇒ 自适应只减不增每帧绘制量。默认帧（bar 128px）新增细分
+/// 刻度节点 ⇒ 像素随之变化，UI golden 比对现为禁用态（同上）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 109;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {

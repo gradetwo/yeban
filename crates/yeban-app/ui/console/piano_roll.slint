@@ -550,7 +550,12 @@ export component PianoRoll inherits Rectangle {
             y: 0px;
             width: 1px;
             height: parent.height;
-            background: Tokens.gold-bright;
+            // 播放头颜色（七版，Wang 2026-11-17 15:49）：与编曲区播放头
+            // 统一改纯白 #ffffff——播放头是视觉中心，对卷帘最深行底
+            // #161b26（黑键行）实算 17.23:1（编曲区同量级 17.87:1）。
+            // 只改本落点，⛔ 不动 Tokens.gold-bright 本体（时间码/读数
+            // 仍用它）。本线无标尺带内段与顶部标记，只有这一根竖线。
+            background: #ffffff;
             accessible-role: slider;
             accessible-id: "piano-roll-playhead";
             accessible-label: @tr("卷帘走带光标");

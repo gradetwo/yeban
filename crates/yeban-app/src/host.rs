@@ -179,6 +179,86 @@ fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32, scroll_x: f32) 
     )
 }
 
+/// 编曲网格的**密度读数**（五版自适应，Wang 2026-11-17 14:37 按 Logic Pro
+/// 实测规格定）：给定一小节的像素宽与每小节拍数，算出编号步长、线条单位、
+/// 拍刻度／车道拍线可见性与每拍细分刻度数。纯函数，判据
+/// `tests/arrangement_grid_density.rs` 逐档钉住。
+///
+/// 规则（阈值来源逐条注明）：
+/// * 编号步长：2 的幂（小节），取使编号间距 `>= 96px` 的最小步长
+///   （Logic 图一 bar 48px 时编号每 2 小节、图二 bar 约 7.5px 时每 16 小节，
+///   两点都落在「间距 >= 96px 的最小 2 的幂」上）。
+/// * 线条单位：2 的幂（小节），取使线距 `>= 15px` 的最小单位（Logic 图二
+///   极端缩小时线条单位粗化为每 2 小节一条、线距 15px）；单位 >= 2 时
+///   车道与标尺只画单位线，无拍／细分刻度。
+/// * 单位 = 1 时：标尺拍刻度在每拍像素宽 `>= 8px` 时绘制；细分刻度先取
+///   每拍 4 份（16 分音），细分距 `>= 8px` 才画，不够宽退每拍 2 份，
+///   再不够不画（细分距阈值与拍刻度同为 8px）。
+/// * 车道拍线：仅当每拍像素宽 `>= 24px` 时绘制（推定值：Logic 图一每拍
+///   12px 时车道无拍线、只有小节线；标尺拍刻度则在）。
+/// * 拍数取拍号分子（`beats_per_bar`），⛔ 不写死 4。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridDensity {
+    /// 小节编号步长（小节数，2 的幂）：绝对小节索引 `% label_stride_bars == 0`
+    /// 的小节才显示编号。
+    pub label_stride_bars: i32,
+    /// 线条单位（小节数，2 的幂）：绝对小节索引 `% line_unit_bars == 0`
+    /// 的小节才画小节线／小节刻度。
+    pub line_unit_bars: i32,
+    /// 标尺拍刻度可见（单位 = 1 且每拍 >= 8px）。
+    pub show_beat_ticks: bool,
+    /// 车道／空置行拍线可见（单位 = 1 且每拍 >= 24px）。
+    pub show_lane_beats: bool,
+    /// 每拍细分刻度份数：0（不画）／2／4。
+    pub subdiv_per_beat: i32,
+}
+
+/// 见 [`GridDensity`] 的规则说明。`bar_width_px <= 0` 或非有限（投影尚无
+/// 小节宽读数）时退回最保守读数：步长／单位都为 1、无拍刻度、无细分。
+pub fn grid_density(bar_width_px: f32, beats_per_bar: i32) -> GridDensity {
+    if !bar_width_px.is_finite() || bar_width_px <= 0.0 {
+        return GridDensity {
+            label_stride_bars: 1,
+            line_unit_bars: 1,
+            show_beat_ticks: false,
+            show_lane_beats: false,
+            subdiv_per_beat: 0,
+        };
+    }
+    let beats = f32::from(i16::try_from(beats_per_bar.clamp(1, 32)).unwrap_or(4));
+    let px_per_beat = bar_width_px / beats;
+    // 2 的幂逐档放大，上限 2^20 小节（约等于不设上限，只防死循环）。
+    let mut label_stride_bars: i32 = 1;
+    while label_stride_bars < (1 << 20)
+        && f64::from(label_stride_bars) * f64::from(bar_width_px) < 96.0
+    {
+        label_stride_bars *= 2;
+    }
+    let mut line_unit_bars: i32 = 1;
+    while line_unit_bars < (1 << 20) && f64::from(line_unit_bars) * f64::from(bar_width_px) < 15.0 {
+        line_unit_bars *= 2;
+    }
+    let unit_is_single = line_unit_bars == 1;
+    let show_beat_ticks = unit_is_single && px_per_beat >= 8.0;
+    let show_lane_beats = unit_is_single && px_per_beat >= 24.0;
+    let subdiv_per_beat = if !show_beat_ticks {
+        0
+    } else if px_per_beat / 4.0 >= 8.0 {
+        4
+    } else if px_per_beat / 2.0 >= 8.0 {
+        2
+    } else {
+        0
+    };
+    GridDensity {
+        label_stride_bars,
+        line_unit_bars,
+        show_beat_ticks,
+        show_lane_beats,
+        subdiv_per_beat,
+    }
+}
+
 /// 获取窗口当前逻辑宽；若窗口尚未布局（宽度 <= 0，如冷启动首帧），退回传入兜底宽度。
 fn viewport_width_or_fallback(ui: &MainWindow, fallback: f32) -> f32 {
     let w = ui.window().size().width as f32;
@@ -403,6 +483,19 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_bar_start_index(bar_start);
     ui.set_bar_count(bar_count);
     ui.set_bar_width_px(bar_width_px);
+    // 拍刻度 / 拍线的拍位来源：投影的拍号分子（标量，与小节读数同批写入；
+    // Wang 2026-11-17：编曲网格以拍为常显基本单位）。
+    ui.set_beats_per_bar(i32::from(view.time_signature_numerator));
+    // 网格密度读数（五版自适应，Wang 2026-11-17 14:37 按 Logic 实测规格）：
+    // 编号步长 / 线条单位 / 拍刻度与车道拍线可见性 / 每拍细分份数，全部由
+    // `grid_density` 按当前小节宽与拍号分子一次算出（五个标量，与小节读数
+    // 同批写入；规则与阈值来源见 `grid_density` 的文档）。
+    let density = grid_density(bar_width_px, i32::from(view.time_signature_numerator));
+    ui.set_grid_label_stride(density.label_stride_bars);
+    ui.set_grid_line_unit(density.line_unit_bars);
+    ui.set_grid_show_beat_ticks(density.show_beat_ticks);
+    ui.set_grid_show_lane_beats(density.show_lane_beats);
+    ui.set_grid_subdiv_per_beat(density.subdiv_per_beat);
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
     // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
@@ -19568,6 +19661,10 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     .filter_map(|i| blocks.row_data(i))
                     .collect();
                 let is_aud = ((next_id - 1) % 7) == 1 || ((next_id - 1) % 7) == 3;
+                // 十版片段四色与投影路径同规则（bridge::clip_*_color）。
+                let demo_rgb = crate::bridge::RgbColor::new(col.red(), col.green(), col.blue());
+                let demo_base = crate::bridge::clip_base_color(demo_rgb);
+                let demo_marker = crate::bridge::clip_marker_color(demo_rgb);
                 block_vec.push(TimelineBlockData {
                     track_id: next_id,
                     clip_ulid: "".into(),
@@ -19577,6 +19674,10 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     is_audio: is_aud,
                     gain_label: "0dB".into(),
                     color: col,
+                    base_color: to_color(demo_base),
+                    text_color: to_color(crate::bridge::clip_text_color(demo_base)),
+                    guide_color: to_color(demo_marker),
+                    marker_color: to_color(demo_marker),
                     note_count: if is_aud { 0 } else { 4 },
                     // 新建片段没有音频样本 ⇒ 空 peaks（界面不画波形，⛔ 不假装有）。
                     waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
@@ -22602,11 +22703,17 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
         .iter()
         .map(|clip| {
             let track_id = (clip.track_index + 1) as i32;
-            let col = view
+            let track_rgb = view
                 .tracks
                 .get(clip.track_index)
-                .map(|t| to_color(t.color_rgb))
-                .unwrap_or_else(|| to_color(crate::bridge::DEFAULT_TRACK_COLOR));
+                .map(|t| t.color_rgb)
+                .unwrap_or(crate::bridge::DEFAULT_TRACK_COLOR);
+            let col = to_color(track_rgb);
+            // 十版片段四色：底 = 轨道色纯色（太浅时统一压暗）、文字
+            // 按底色推导、标记/导线 = 轨道色同色相派生，全部在投影层
+            // 算（bridge::clip_*_color 唯一实现）。
+            let base_rgb = crate::bridge::clip_base_color(track_rgb);
+            let marker_rgb = crate::bridge::clip_marker_color(track_rgb);
             let is_audio = clip.content == "audio";
             let note_count = if is_audio {
                 0
@@ -22626,6 +22733,10 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                     "0dB".into()
                 },
                 color: col,
+                base_color: to_color(base_rgb),
+                text_color: to_color(crate::bridge::clip_text_color(base_rgb)),
+                guide_color: to_color(marker_rgb),
+                marker_color: to_color(marker_rgb),
                 note_count,
                 // ⭐ ADR-0076 B1 第二步：按资产哈希查**会话峰值缓存**（`crate::waveform_cache`）。
                 // 缓存未就绪 / 字节不在资产池 / 解码失败 ⇒ 空数组 ⇒ 界面画回
