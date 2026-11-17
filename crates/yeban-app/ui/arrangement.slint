@@ -1929,12 +1929,17 @@ export component ArrangementViewport inherits Rectangle {
         height: parent.height;
         clip: true;
 
+        // 播放头颜色（六版，Wang 2026-11-17 15:09）：竖线与头部改
+        // 纯白 #ffffff——播放头是视觉中心，对最深车道行底 #181719
+        // 实算 17.87:1，醒目度最高。只改编曲区这一处落点，⛔ 不动
+        // Theme.accent 本体（全局唯一强调色，录音键 ● 与循环带等
+        // 仍用它）；钢琴卷帘播放头不在本笔范围。
         Rectangle {
             x: root.playhead-px - root.scroll-x;
             y: 0px;
             width: 2px;
             height: parent.height;
-            background: Theme.accent;
+            background: #ffffff;
 
             // Diamond head at ruler top
             Rectangle {
@@ -1942,7 +1947,7 @@ export component ArrangementViewport inherits Rectangle {
                 y: 0px;
                 width: 10px;
                 height: 10px;
-                background: Theme.accent;
+                background: #ffffff;
                 border-radius: 2px;
             }
         }
