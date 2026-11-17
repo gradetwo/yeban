@@ -495,14 +495,17 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    // 八版实色化（Wang 16:23）：和弦块底与边框原为和弦色
-                                    // α≈0.09/0.21 叠在和弦轨带底 #0d1017 上，现全换合成
-                                    // 等效实色（呈现色不变、整块不透明）；hover 同法。
-                                    // 五块同法，数值各自按其和弦色合成。
-                                    background: chord-1-touch.has-hover ? #10151e : #0e121a;
+                                    // 九版（Wang 16:43）：和弦块底改和弦色纯色本体
+                                    // #387691（八版合成等效实色 = 和弦色混黑，废）。
+                                    // hover 按同色明度微调（±0.04，方向取文字仍
+                                    // >= 4.5 的一侧，本块为 -0.04）；边框为同色更深
+                                    // 一档实色（明度 -0.10 / hover -0.05），不用
+                                    // alpha。文字按底色选近白/纯白/纯黑（>= 4.5）。
+                                    // 五块同规则，数值各自按其和弦色算。
+                                    background: chord-1-touch.has-hover ? #326a82 : #387691;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-1-touch.has-hover ? #203d4d : #162530;
+                                    border-color: chord-1-touch.has-hover ? #31677f : #2a586c;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -513,14 +516,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #8cb8cc;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -541,10 +544,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-2-touch.has-hover ? #14131e : #10121a;
+                                    background: chord-2-touch.has-hover ? #7a6694 : #705e88;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-2-touch.has-hover ? #383249 : #22202e;
+                                    border-color: chord-2-touch.has-hover ? #645479 : #57496a;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -555,14 +558,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #b39cc7;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -583,10 +586,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-3-touch.has-hover ? #0f161a : #0e1318;
+                                    background: chord-3-touch.has-hover ? #2e6a58 : #347864;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-3-touch.has-hover ? #1e3e39 : #152627;
+                                    border-color: chord-3-touch.has-hover ? #2c6655 : #255446;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -597,14 +600,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #80bca8;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -625,10 +628,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-4-touch.has-hover ? #151517 : #111217;
+                                    background: chord-4-touch.has-hover ? #8b6033 : #9a6a38;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-4-touch.has-hover ? #4b3825 : #2a231e;
+                                    border-color: chord-4-touch.has-hover ? #875d31 : #75502a;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -639,14 +642,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #c7a46e;
+                                            color: #ffffff;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #b6c2d2;
+                                            color: #ffffff;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -667,10 +670,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-5-touch.has-hover ? #10151e : #0e121a;
+                                    background: chord-5-touch.has-hover ? #326a82 : #387691;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-5-touch.has-hover ? #203d4d : #162530;
+                                    border-color: chord-5-touch.has-hover ? #31677f : #2a586c;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -681,16 +684,16 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #8cb8cc;
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            // ⭐ WCAG AA：8px 小字也须 ≥3:1（实测 #64748b 在 #161b28 上仅 3.61:1）。
-                                            // 改用「次要文字下限」#7c8aa0（最亮底 #161b28 上 4.91:1）。
-                                            color: #7c8aa0;
+                                            // 九版：底改和弦色纯色 #387691，文字随块统一
+                                            // 用 #f1f5f9（对纯色底实算 4.60:1，>= 4.5）。
+                                            color: #f1f5f9;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -1254,27 +1257,20 @@ export component ArrangementViewport inherits Rectangle {
                                     width: blk.width_px;
                                     height: Math.max(52px, parent.height - 8px);
                                     border-radius: 4px;
-                                    // 片段底（八版，Wang 2026-11-17 16:09 + 16:10 特写确认）：
-                                    // Logic 式实心纯色底。外层底改为不透明车道底 #090b10
-                                    // （盖住底下的网格线，片段块整体不再透底）；内层仍以
-                                    // 轨道色 0.12 叠在实色底上，渲染结果恰为现行呈现色
-                                    // （0.12×轨道色 + 0.88×#090b10 的合成色），现取为
-                                    // 实色——不用片段色本体，因音符条本身就是轨道色实色，
-                                    // 全色底会吞掉音符条。波形/音符/文字照常画在实色底上，
-                                    // 标记色一律不动；选中片段靠 2px 纯白边框区分（下行）。
-                                    // 范围外同型只列清单不动：Clip 矩阵槽底 α0.18/0.32、
-                                    // 下坞轨道徽章底 α0.18、总览/Session/卷帘无透底。
-                                    background: #090b10;
-                                    border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 1px;
-                                    border-color: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? #ffffff : trk.color.with-alpha(0.55);
+                                    // 片段底（九版，Wang 2026-11-17 16:43 亲定，照 Logic Pro
+                                    // 区域）：轨道色纯色本体 blk.base-color（投影层
+                                    // bridge::clip_base_color 算：纯色不混黑；太浅的色按
+                                    // 统一规则只降 HSL 明度，使白色标记 >= 3.05:1）。
+                                    // 八版「不透明近黑底 + 轨道色 0.12 叠层 = 合成等效
+                                    // 实色」废——那是轨道色混黑，暗且脏。轨道标识色
+                                    // trk.color 本身不动，轨道头色条仍是原色。
+                                    background: blk.base-color;
+                                    // 同色边框去除（九版，Wang 16:43）：未选中片段原有
+                                    // trk.color α0.55 同色边框整圈去掉（宽 0，无边框）；
+                                    // 选中片段的 2px 纯白边框保留（选中指示，非同色边框）。
+                                    border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 0px;
+                                    border-color: #ffffff;
                                     clip: true;
-
-                                    // 实色填充层：轨道色 0.12 叠在不透明底上，整块不透明。
-                                    Rectangle {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        background: trk.color.with-alpha(0.12);
-                                    }
 
                                     VerticalLayout {
                                         padding: 4px;
@@ -1288,7 +1284,9 @@ export component ArrangementViewport inherits Rectangle {
                                                 font-family: Tokens.font-ui;
                                                 font-size: 10px;
                                                 font-weight: 600;
-                                                color: #f1f5f9;
+                                                // 九版：文字色按底色选（blk.text-color，
+                                                // 投影层保证对纯色底 >= 4.5:1）。
+                                                color: blk.text-color;
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
@@ -1297,7 +1295,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: blk.gain_label;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
-                                                color: #cbd5e1;
+                                                color: blk.text-color;
                                                 horizontal-alignment: right;
                                                 vertical-alignment: center;
                                             }
@@ -1311,14 +1309,15 @@ export component ArrangementViewport inherits Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // 0dB Centerline（基准线，不是编造的包络；八版实色化：
-                                            // 原轨道色 α0.20 改灰实色 #748392，与峰值柱纯白分主次）
+                                            // 0dB Centerline（基准线，不是编造的包络；九版：
+                                            // 色由 blk.guide-color 给——灰 #748392 对纯色底
+                                            // 达标则灰、不达标改黑/白，投影层保证 >= 3:1）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
                                                 width: parent.width;
                                                 height: 1px;
-                                                background: #748392;
+                                                background: blk.guide-color;
                                             }
 
                                             // 真实峰值柱：peaks 为空时 0 个（不画）。
@@ -1330,10 +1329,10 @@ export component ArrangementViewport inherits Rectangle {
                                                 // 「Cannot convert float to length」）。
                                                 height: Math.max(1px, ((parent.height - 8px) / 1px) * blk.waveform-peaks[peak_index] * 1px);
                                                 y: (parent.height - self.height) / 2;
-                                                // 八版（Wang 16:23）：峰值柱改纯白实色 #ffffff
-                                                // （Logic 式白波形画在实色区域底上；原轨道色
-                                                // α0.85 透画废）。对最不利片段实色底（白轨
-                                                // 合成底 #27282d）实算 14.71:1，远超 ≥3 下限。
+                                                // 峰值柱纯白实色 #ffffff（八版定，九版沿用）：
+                                                // Logic 式白波形画在纯色区域底上。九版底为
+                                                // 轨道色纯色，投影层规则保证白对任一底色
+                                                // >= 3.05:1（调色板普查见判据 ⑧）。
                                                 background: #ffffff;
                                             }
 
@@ -1350,7 +1349,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 accessible-label: @tr("波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）");
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8.5px;
-                                                color: #b6c2d2;
+                                                color: blk.text-color;
                                                 horizontal-alignment: left;
                                                 vertical-alignment: top;
                                             }
@@ -1361,14 +1360,14 @@ export component ArrangementViewport inherits Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // Pitch division guideline（八版实色化：原轨道色
-                                            // α0.15 改灰实色 #748392，与音符条纯白分主次）
+                                            // Pitch division guideline（九版：色由
+                                            // blk.guide-color 给，口径同波形基准线）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
                                                 width: parent.width;
                                                 height: 1px;
-                                                background: #748392;
+                                                background: blk.guide-color;
                                             }
 
                                             if blk.note_count <= 0 && blk.width_px >= 90px : Text {
@@ -1377,7 +1376,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: @tr("空片段");
                                                 font-family: Tokens.font-ui;
                                                 font-size: 9.5px;
-                                                color: #b6c2d2;
+                                                color: blk.text-color;
                                             }
 
                                             if blk.note_count > 0 : HorizontalLayout {
@@ -1390,9 +1389,9 @@ export component ArrangementViewport inherits Rectangle {
                                                     horizontal-stretch: 1;
                                                     height: 4px;
                                                     border-radius: 1px;
-                                                    // 八版（Wang 16:23）：音符条改纯白实色
-                                                    // #ffffff（Logic 式；原轨道色实色废）。
-                                                    // 对最不利片段实色底实算 14.71:1（≥3）。
+                                                    // 音符条纯白实色 #ffffff（八版定，九版
+                                                    // 沿用）：画在轨道色纯色底上，投影层
+                                                    // 规则保证 >= 3.05:1（判据 ⑧ 普查）。
                                                     background: #ffffff;
                                                     y: Math.mod(n_idx * 5, 14) * 1px;
                                                 }

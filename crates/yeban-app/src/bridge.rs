@@ -375,6 +375,161 @@ pub fn track_color_or_default(raw: Option<&str>) -> RgbColor {
     raw.and_then(parse_hex_color).unwrap_or(DEFAULT_TRACK_COLOR)
 }
 
+/// sRGB 通道线性化（WCAG 2.1 相对亮度的通道式）。
+fn srgb_channel_linear(value: u8) -> f32 {
+    let v = f32::from(value) / 255.0;
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// 相对亮度（WCAG 2.1 定义，与 `tests/arrangement_grid_density.rs` 同式）。
+#[must_use]
+pub fn relative_luminance(color: RgbColor) -> f32 {
+    0.2126 * srgb_channel_linear(color.red)
+        + 0.7152 * srgb_channel_linear(color.green)
+        + 0.0722 * srgb_channel_linear(color.blue)
+}
+
+/// 两色对比度（WCAG：`(L1+0.05)/(L2+0.05)`，亮者作分子）。
+#[must_use]
+pub fn contrast_ratio(a: RgbColor, b: RgbColor) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// RGB → HSL（`h`/`s`/`l` 均在 `0..=1`，`h` 为色相圈比例）。
+fn rgb_to_hsl(color: RgbColor) -> (f32, f32, f32) {
+    let r = f32::from(color.red) / 255.0;
+    let g = f32::from(color.green) / 255.0;
+    let b = f32::from(color.blue) / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - r).abs() < f32::EPSILON {
+        let mut h = (g - b) / d;
+        if g < b {
+            h += 6.0;
+        }
+        h / 6.0
+    } else if (max - g).abs() < f32::EPSILON {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    (h, s, l)
+}
+
+/// HSL → RGB（[`rgb_to_hsl`] 的逆；通道四舍五入到 `u8`）。
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> RgbColor {
+    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    if s == 0.0 {
+        let v = channel(l);
+        return RgbColor::new(v, v, v);
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let hue_to_rgb = |mut t: f32| {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 1.0 / 2.0 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    RgbColor::new(
+        channel(hue_to_rgb(h + 1.0 / 3.0)),
+        channel(hue_to_rgb(h)),
+        channel(hue_to_rgb(h - 1.0 / 3.0)),
+    )
+}
+
+/// 纯白（片段内标记与文字候选）。
+pub const CLIP_WHITE: RgbColor = RgbColor::new(0xff, 0xff, 0xff);
+/// 纯黑（片段内文字/导线候选）。
+pub const CLIP_BLACK: RgbColor = RgbColor::new(0x00, 0x00, 0x00);
+/// 片段名近白文字（现行 `#f1f5f9`，达标时优先保留）。
+pub const CLIP_TEXT_NEAR_WHITE: RgbColor = RgbColor::new(0xf1, 0xf5, 0xf9);
+/// 片段内导线灰（八版定值 `#748392`，达标时优先保留）。
+pub const CLIP_GUIDE_GREY: RgbColor = RgbColor::new(0x74, 0x83, 0x92);
+
+/// ⭐ 片段底色（九版，Wang 2026-11-17 16:43 亲定，照 Logic Pro 区域）：
+///
+/// 底 = 轨道色**纯色本体**，⛔ 不再混黑（八版「合成等效实色」=
+/// 0.12×轨道色 + 0.88×近黑，呈现暗且脏，废）。唯一例外是统一压暗
+/// 规则：白色音符条/峰值柱对底的对比度（图形下限 3:1，`[UI-A11Y-003]`
+/// 第 3 条）不足 3.05 时，只降 HSL **明度**（每步 0.02，色相与饱和
+/// 不动）到达标为止——逐色同规则，⛔ 不逐色随意调。轨道标识色本身
+/// （轨道头色条/色标）不受影响，仍是原色。
+#[must_use]
+pub fn clip_base_color(track: RgbColor) -> RgbColor {
+    if contrast_ratio(CLIP_WHITE, track) >= 3.05 {
+        return track;
+    }
+    let (h, s, mut l) = rgb_to_hsl(track);
+    loop {
+        l = (l - 0.02).max(0.0);
+        let candidate = hsl_to_rgb(h, s, l);
+        if contrast_ratio(CLIP_WHITE, candidate) >= 3.05 || l <= 0.0 {
+            return candidate;
+        }
+    }
+}
+
+/// ⭐ 片段内文字色（九版）：按底色明暗选（照 Logic 按区域色选黑/白
+/// 文字）——候选顺序 `#f1f5f9`（现行近白）→ 纯白 → 纯黑，取第一个
+/// 对底色对比度 >= 4.5（正常文本下限）的。三者必有一达标：纯白与
+/// 纯黑的达标区间在相对亮度 0.175–0.183 处交叠，无空档。
+#[must_use]
+pub fn clip_text_color(base: RgbColor) -> RgbColor {
+    for candidate in [CLIP_TEXT_NEAR_WHITE, CLIP_WHITE, CLIP_BLACK] {
+        if contrast_ratio(candidate, base) >= 4.5 {
+            return candidate;
+        }
+    }
+    CLIP_BLACK
+}
+
+/// ⭐ 片段内导线色（九版）：波形 0dB 基准线与 MIDI 分界线。灰
+/// `#748392` 对底色对比度 >= 3.0（图形下限）时保留灰；不达标改用
+/// 黑/白中对比度更高者（纯色底上灰多半不达标，属预期）。
+#[must_use]
+pub fn clip_guide_color(base: RgbColor) -> RgbColor {
+    if contrast_ratio(CLIP_GUIDE_GREY, base) >= 3.0 {
+        return CLIP_GUIDE_GREY;
+    }
+    if contrast_ratio(CLIP_WHITE, base) >= contrast_ratio(CLIP_BLACK, base) {
+        CLIP_WHITE
+    } else {
+        CLIP_BLACK
+    }
+}
+
 /// 投影过程中可恢复的输入问题。
 ///
 /// 刻意**不**用 `panic!`：工程文档来自磁盘 / 归档，属不可信输入
@@ -8638,6 +8793,38 @@ mod tests {
         assert_eq!(demo.tracks[0].color_hex, "#F7E6B0");
         assert_eq!(demo.tracks[1].color_hex, DEFAULT_TRACK_COLOR_HEX);
         assert_eq!(demo.tracks[2].color_hex, "#22AA88");
+    }
+
+    /// 九版片段三色（Wang 2026-11-17 16:43）：底 = 轨道色纯色，
+    /// 太浅时只降明度；文字/导线按底色达标规则选。逐色细表在
+    /// `tests/arrangement_grid_density.rs` 判据 ⑧ 普查，这里只钉
+    /// 规则的三条骨架（不压暗、压暗达标、黑白无空档）。
+    #[test]
+    fn clip_colors_follow_the_rev9_rules() {
+        // 深色底不压暗、文字近白、导线纯白（灰不达标）。
+        let dark = RgbColor::new(0x2c, 0x3a, 0x63);
+        assert_eq!(clip_base_color(dark), dark);
+        assert_eq!(clip_text_color(dark), CLIP_TEXT_NEAR_WHITE);
+        assert_eq!(clip_guide_color(dark), CLIP_WHITE);
+        // 白色轨道压暗后白标记达标，且结果为中性灰（色相/饱和为零）。
+        let white_base = clip_base_color(CLIP_WHITE);
+        assert!(contrast_ratio(CLIP_WHITE, white_base) >= 3.05);
+        assert_eq!(white_base.red, white_base.green);
+        assert_eq!(white_base.green, white_base.blue);
+        assert_eq!(clip_text_color(white_base), CLIP_BLACK);
+        assert_eq!(clip_guide_color(white_base), CLIP_BLACK);
+        // 任意底色下文字必达 4.5（近白/纯白/纯黑三候选无空档）：
+        // 扫一遍粗网格色立方验证规则本身。
+        for r in (0..=255).step_by(51) {
+            for g in (0..=255).step_by(51) {
+                for b in (0..=255).step_by(51) {
+                    let base = clip_base_color(RgbColor::new(r, g, b));
+                    assert!(contrast_ratio(CLIP_WHITE, base) >= 3.0);
+                    assert!(contrast_ratio(clip_text_color(base), base) >= 4.5);
+                    assert!(contrast_ratio(clip_guide_color(base), base) >= 3.0);
+                }
+            }
+        }
     }
 
     /// 场景色标与轨道色标**同一套**解析 / 回退：合法色保留并规范化，

@@ -958,6 +958,15 @@ export struct TimelineBlockData {
     is_audio: bool,
     gain_label: string,
     color: color,
+    /// 九版片段底色：轨道色纯色（太浅时由投影层按统一规则只降明度），
+    /// 由 `bridge::clip_base_color` 算，⛔ .slint 不得再自行混黑/叠 alpha。
+    base_color: color,
+    /// 九版片段内文字色：按底色选近白/纯白/纯黑（>= 4.5:1），
+    /// 由 `bridge::clip_text_color` 算。
+    text_color: color,
+    /// 九版片段内导线色（基准线/分界线）：灰达标则灰、否则黑/白，
+    /// 由 `bridge::clip_guide_color` 算。
+    guide_color: color,
     note_count: int,
     /// 真实波形峰值（每柱 0..1；空 = 尚未分析 ⇒ 界面不画，保持「示意」标注）。
     /// 由 `bridge::compute_waveform_peaks` 从解码 PCM 算出（ADR-0076 B1）。

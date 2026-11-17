@@ -64,6 +64,13 @@
 //! * 和弦块底实色化（16:23 追加）：五块和弦底（原 α≈0.09）与边框
 //!   （原 α≈0.21）全换合成等效实色（叠和弦轨带底 `#0d1017` 的呈现
 //!   色），hover 同法；和弦名文字对新实底实算 7.56–8.79:1。
+//!
+//! ## 九版增补（Wang 2026-11-17 16:43 亲定，照 Logic Pro 区域）
+//!
+//! * 片段底改轨道色纯色本体：八版「合成等效实色」= 0.12×轨道色 + 0.88×近黑，呈现为轨道色混黑、暗且脏，废。底由投影层 `bridge::clip_base_color` 算（`blk.base-color`）：纯色不混黑；仅当白色标记对纯色底不足 3.05 时按统一规则只降 HSL 明度（每步 0.02，色相/饱和不动）到达标。判据 ⑧ 换钉落点 + 全调色板普查（产品自带/自分派轨道色 + 默认色 + 白，逐色钉落码值并实算三项下限）。
+//! * 同色边框去除：未选中片段 `trk.color` α0.55 边框整圈去掉（宽 0）；选中片段 2px 纯白边框保留（判据 ⑧）。
+//! * 片段内文字/导线改投影推导：文字 `blk.text-color`（近白→纯白→纯黑，第一达 4.5 者）、导线 `blk.guide-color`（灰 `#748392` 达 3.0 则灰，否则黑/白取高者）；纯白标记沿用八版（判据 ⑨）。
+//! * 和弦块同口径改纯色：五块底 = 和弦色本体，hover = 同色明度 ±0.04（方向取文字仍 >= 4.5 的一侧），边框 = 同色更深一档实色（-0.10 / hover -0.05）；文字按底色选近白/纯白（判据 ⑨）。
 
 use yeban_app::host::{GridDensity, grid_density};
 
@@ -436,14 +443,50 @@ fn rev8_divider_and_selected_row() {
     assert!(contrast_ratio("#ffffff", "#161b26") >= 17.0);
 }
 
-/// ⑧ 八版片段底纯色（Wang 2026-11-17 16:09 + 16:10 特写确认）：
-/// 编曲区车道内片段块（MIDI 与音频同一块）的外层底必须是不透明
-/// 纯色 `#090b10`，不得再是 `trk.color.with-alpha(...)` 透底。
-/// 内层轨道色 0.12 叠在实色底上、渲染结果为实色合成色，不在本
-/// 判据的否定范围——断言只钉外层底本身（`timeline-blocks`
-/// 循环之后第一个 background）。
+/// RGB → HSL（与 `bridge::clip_base_color` 的压暗规则对账用：
+/// 压暗只许降明度，色相/饱和须守恒）。
+fn rgb_to_hsl(hex: &str) -> (f32, f32, f32) {
+    let h = hex.trim_start_matches('#');
+    let chan =
+        |i: usize| u8::from_str_radix(&h[i..i + 2], 16).expect("合法十六进制") as f32 / 255.0;
+    let (r, g, b) = (chan(0), chan(2), chan(4));
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let hue = if (max - r).abs() < f32::EPSILON {
+        let mut x = (g - b) / d;
+        if g < b {
+            x += 6.0;
+        }
+        x / 6.0
+    } else if (max - g).abs() < f32::EPSILON {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    (hue, s, l)
+}
+
+/// ⑧ 九版片段底纯色 + 去同色边框（Wang 2026-11-17 16:43 亲定）：
+/// 片段块底必须是投影层算好的轨道色纯色 `blk.base-color`（八版
+/// 「近黑底 + 0.12 叠层」混黑做法清零）；未选中片段的同色边框
+/// （`trk.color` α0.55）去掉（宽 0），选中片段 2px 纯白边框保留；
+/// 文字/导线走投影字段。调色板普查逐色钉落码值并实算三项下限。
 #[test]
-fn rev8_clip_background_is_opaque_solid() {
+fn rev9_clip_background_is_pure_track_color() {
+    use yeban_app::bridge::{
+        RgbColor, clip_base_color, clip_guide_color, clip_text_color, track_color_or_default,
+    };
+
     let arrangement = include_str!("../ui/arrangement.slint");
     let clips_at = arrangement
         .find("for blk in root.timeline-blocks")
@@ -456,20 +499,99 @@ fn rev8_clip_background_is_opaque_solid() {
         .collect();
     assert_eq!(
         bg_val.trim(),
-        "#090b10",
-        "片段块外层底必须是不透明纯色 #090b10（八版），不得透底"
+        "blk.base-color",
+        "片段块底必须是轨道色纯色 blk.base-color（九版），不得混黑/透底"
     );
+    // 八版混黑两件套清零：0.12 叠层与 α0.55 同色边框。
+    for old in ["trk.color.with-alpha(0.12)", "trk.color.with-alpha(0.55)"] {
+        assert!(!arrangement.contains(old), "八版片段做法 {old} 仍在");
+    }
+    // 边框：未选中宽 0（无边框）、选中 2px；边框色只剩纯白（选中指示）。
     assert!(
-        !bg_val.contains("with-alpha"),
-        "片段块外层底不得带 with-alpha（否则网格线仍会透过片段底）"
+        arrangement.contains("? 2px : 0px"),
+        "未选中片段边框宽必须为 0（同色边框已去除）"
+    );
+    // 文字与导线走投影字段（名字/增益/标注/空片段 4 处文字、2 处导线）。
+    assert_eq!(
+        arrangement.matches("color: blk.text-color;").count(),
+        4,
+        "片段内文字应为 4 处走 blk.text-color"
+    );
+    assert_eq!(
+        arrangement.matches("background: blk.guide-color;").count(),
+        2,
+        "片段内导线应为 2 处走 blk.guide-color"
+    );
+
+    // 调色板普查：产品自带/自分派的全部轨道色（自动分派 6 色、夹具
+    // 3 色）、默认色与白色（最不利），逐色按 bridge 规则钉落码值，
+    // 并实算下限（白标记 >= 3.0 图形、文字 >= 4.5 文本、导线 >= 3.0）。
+    // （原色、落码底、文字、导线）——数值由规则离线算出后钉死，
+    // bridge 规则若漂移此处即红。
+    let census: [(&str, &str, &str, &str); 11] = [
+        ("#2C3A63", "#2C3A63", "#F1F5F9", "#FFFFFF"),
+        ("#FF8800", "#E07800", "#000000", "#000000"),
+        ("#33AAFF", "#0095FF", "#000000", "#000000"),
+        ("#66DD88", "#24A449", "#000000", "#000000"),
+        ("#DD66CC", "#DD66CC", "#000000", "#000000"),
+        ("#FFD166", "#C28800", "#000000", "#000000"),
+        ("#8C8CFF", "#8282FF", "#000000", "#000000"),
+        ("#3366FF", "#3366FF", "#FFFFFF", "#FFFFFF"),
+        ("#22AA88", "#20A281", "#000000", "#000000"),
+        ("#F7E6B0", "#B48E12", "#000000", "#000000"),
+        ("#FFFFFF", "#8F8F8F", "#000000", "#000000"),
+    ];
+    for (orig, want_base, want_text, want_guide) in census {
+        let track = track_color_or_default(Some(orig));
+        let base = clip_base_color(track);
+        assert_eq!(base.to_hex(), want_base, "{orig} 的落码底色不符");
+        assert_eq!(
+            clip_text_color(base).to_hex(),
+            want_text,
+            "{orig} 的文字色不符"
+        );
+        assert_eq!(
+            clip_guide_color(base).to_hex(),
+            want_guide,
+            "{orig} 的导线色不符"
+        );
+        // 三项下限用本文件的 WCAG 式实算（不靠 bridge 自证）。
+        let base_hex = base.to_hex();
+        assert!(
+            contrast_ratio("#ffffff", &base_hex) >= 3.0,
+            "{orig} 底 {base_hex} 上白色标记对比不足 3.0"
+        );
+        assert!(
+            contrast_ratio(want_text, &base_hex) >= 4.5,
+            "{orig} 底 {base_hex} 上文字对比不足 4.5"
+        );
+        assert!(
+            contrast_ratio(want_guide, &base_hex) >= 3.0,
+            "{orig} 底 {base_hex} 上导线对比不足 3.0"
+        );
+        // 压暗守恒：落码与原色同色相、同饱和（只降明度）；未压暗者
+        // 落码 == 原色。
+        let (h0, s0, l0) = rgb_to_hsl(orig);
+        let (h1, s1, l1) = rgb_to_hsl(&base_hex);
+        assert!(
+            (h0 - h1).abs() < 0.01 && (s0 - s1).abs() < 0.02 && l1 <= l0 + 0.004,
+            "{orig} → {base_hex} 不是只降明度（色相 {h0:.3}→{h1:.3}、饱和 {s0:.3}→{s1:.3}）"
+        );
+    }
+    // 默认色走同一入口（缺失/非法回退色也是调色板成员）。
+    assert_eq!(
+        clip_base_color(RgbColor::new(0x2c, 0x3a, 0x63)).to_hex(),
+        "#2C3A63"
     );
 }
 
-/// ⑨ 八版片段内标记与和弦块实色（Wang 2026-11-17 16:23 追加）：
-/// 波形峰值柱/MIDI 音符条纯白实色、片段内基准/分界线灰实色；
-/// 五块和弦底与边框为合成等效实色，旧 alpha 字面量清零。
+/// ⑨ 九版片段内标记与和弦块纯色（Wang 2026-11-17 16:23 八版 +
+/// 16:43 九版）：波形峰值柱/MIDI 音符条纯白实色沿用；片段内导线
+/// 改走 `blk.guide-color`（文件内 `#748392` 只剩车道小节线 2 处）；
+/// 五块和弦底改和弦色纯色本体、hover/边框为同色明度档实色，
+/// 八版合成等效实色与更早的 alpha 字面量全清零。
 #[test]
-fn rev8_clip_markers_and_chord_blocks_are_solid() {
+fn rev9_clip_markers_and_chord_blocks_are_pure() {
     let arrangement = include_str!("../ui/arrangement.slint");
 
     // 片段内旧透画标记清零（本文件内三处原为轨道色 α0.85/0.20/0.15）。
@@ -480,9 +602,9 @@ fn rev8_clip_markers_and_chord_blocks_are_solid() {
     ] {
         assert!(!arrangement.contains(old), "片段内透画标记 {old} 仍在");
     }
-    // 峰值柱与音符条纯白、基准/分界线灰实色：按全文件落点计数钉住
-    // （纯白 4 处 = 峰值柱/音符条/播放头线/菱形头；#748392 4 处 =
-    // 车道小节线/空置行小节线/波形基准线/MIDI 分界线）。
+    // 峰值柱与音符条纯白：按全文件落点计数钉住（纯白 4 处 = 峰值柱/
+    // 音符条/播放头线/菱形头，九版不变）；#748392 只剩车道小节线
+    // 2 处（片段内 2 处导线已改走 blk.guide-color，判据 ⑧ 钉计数）。
     assert_eq!(
         arrangement.matches("background: #ffffff;").count(),
         4,
@@ -490,17 +612,12 @@ fn rev8_clip_markers_and_chord_blocks_are_solid() {
     );
     assert_eq!(
         arrangement.matches("background: #748392;").count(),
-        4,
-        "#748392 落点应为 4 处（小节线两处 + 片段内基准/分界线两处）"
+        2,
+        "#748392 落点应为 2 处（车道小节线两处；片段内导线走投影字段）"
     );
-    // 纯白对最不利片段实色底（白轨合成底 #27282d）>= 3（实算 14.71）。
-    assert!(contrast_ratio("#ffffff", "#27282d") >= 3.0);
-    // 灰线亮度弱于纯白（分主次），且对最不利实色底 >= 3（实算 3.79）。
-    assert!(
-        relative_luminance("#748392") < relative_luminance("#ffffff"),
-        "片段内灰线必须弱于纯白标记"
-    );
-    assert!(contrast_ratio("#748392", "#27282d") >= 3.0);
+    // 纯白对最不利落码底（白色轨道压暗底 #8f8f8f）>= 3（实算 3.23）；
+    // 其余调色板底由判据 ⑧ 的普查逐色看守。
+    assert!(contrast_ratio("#ffffff", "#8f8f8f") >= 3.0);
 
     // 和弦块：旧 alpha 字面量（底 α0x18/0x35、边框 α0x35/0x70）清零。
     for old in [
@@ -523,11 +640,34 @@ fn rev8_clip_markers_and_chord_blocks_are_solid() {
     ] {
         assert!(!arrangement.contains(old), "和弦块 alpha 字面量 {old} 仍在");
     }
-    // 合成等效实色齐备（五块底 normal/hover + 边框 normal/hover）。
-    for solid in [
+    // 八版合成等效实色（混黑）清零。
+    for old in [
         "#0e121a", "#10151e", "#162530", "#203d4d", "#10121a", "#14131e", "#22202e", "#383249",
         "#0e1318", "#0f161a", "#152627", "#1e3e39", "#111217", "#151517", "#2a231e", "#4b3825",
     ] {
-        assert!(arrangement.contains(solid), "和弦块实色 {solid} 缺失");
+        assert!(!arrangement.contains(old), "八版和弦块混黑实色 {old} 仍在");
+    }
+    // 九版纯色齐备：四色底（Cm 两块同色）+ hover 明度档 + 边框深档。
+    for pure in [
+        "#387691", "#326a82", "#2a586c", "#31677f", "#705e88", "#7a6694", "#57496a", "#645479",
+        "#347864", "#2e6a58", "#255446", "#2c6655", "#9a6a38", "#8b6033", "#75502a", "#875d31",
+    ] {
+        assert!(arrangement.contains(pure), "和弦块纯色 {pure} 缺失");
+    }
+    // 和弦名文字对纯色底（含 hover 底）>= 4.5（本文件 WCAG 式实算）。
+    for (text, base) in [
+        ("#f1f5f9", "#387691"),
+        ("#f1f5f9", "#326a82"),
+        ("#f1f5f9", "#705e88"),
+        ("#f1f5f9", "#7a6694"),
+        ("#f1f5f9", "#347864"),
+        ("#f1f5f9", "#2e6a58"),
+        ("#ffffff", "#9a6a38"),
+        ("#ffffff", "#8b6033"),
+    ] {
+        assert!(
+            contrast_ratio(text, base) >= 4.5,
+            "和弦文字 {text} 对底 {base} 对比不足 4.5"
+        );
     }
 }
