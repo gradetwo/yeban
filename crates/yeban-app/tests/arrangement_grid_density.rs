@@ -58,6 +58,12 @@
 //! * 片段底改纯色：编曲区片段块外层底改为不透明 `#090b10`（判据 ⑦
 //!   后新立判据钉住）；Clip 矩阵槽底、下坞轨道徽章底范围外，只列
 //!   清单不动。
+//! * 片段内标记改白色系实色（16:23 追加）：波形峰值柱与 MIDI 音符条
+//!   改纯白 `#ffffff`（对最不利片段实色底实算 14.71:1），波形基准线
+//!   与 MIDI 分界线改灰实色 `#748392`（弱于纯白、分主次）。
+//! * 和弦块底实色化（16:23 追加）：五块和弦底（原 α≈0.09）与边框
+//!   （原 α≈0.21）全换合成等效实色（叠和弦轨带底 `#0d1017` 的呈现
+//!   色），hover 同法；和弦名文字对新实底实算 7.56–8.79:1。
 
 use yeban_app::host::{GridDensity, grid_density};
 
@@ -457,4 +463,71 @@ fn rev8_clip_background_is_opaque_solid() {
         !bg_val.contains("with-alpha"),
         "片段块外层底不得带 with-alpha（否则网格线仍会透过片段底）"
     );
+}
+
+/// ⑨ 八版片段内标记与和弦块实色（Wang 2026-11-17 16:23 追加）：
+/// 波形峰值柱/MIDI 音符条纯白实色、片段内基准/分界线灰实色；
+/// 五块和弦底与边框为合成等效实色，旧 alpha 字面量清零。
+#[test]
+fn rev8_clip_markers_and_chord_blocks_are_solid() {
+    let arrangement = include_str!("../ui/arrangement.slint");
+
+    // 片段内旧透画标记清零（本文件内三处原为轨道色 α0.85/0.20/0.15）。
+    for old in [
+        "trk.color.with-alpha(0.85)",
+        "trk.color.with-alpha(0.20)",
+        "trk.color.with-alpha(0.15)",
+    ] {
+        assert!(!arrangement.contains(old), "片段内透画标记 {old} 仍在");
+    }
+    // 峰值柱与音符条纯白、基准/分界线灰实色：按全文件落点计数钉住
+    // （纯白 4 处 = 峰值柱/音符条/播放头线/菱形头；#748392 4 处 =
+    // 车道小节线/空置行小节线/波形基准线/MIDI 分界线）。
+    assert_eq!(
+        arrangement.matches("background: #ffffff;").count(),
+        4,
+        "纯白实色落点应为 4 处（峰值柱/音符条/播放头线/菱形头）"
+    );
+    assert_eq!(
+        arrangement.matches("background: #748392;").count(),
+        4,
+        "#748392 落点应为 4 处（小节线两处 + 片段内基准/分界线两处）"
+    );
+    // 纯白对最不利片段实色底（白轨合成底 #27282d）>= 3（实算 14.71）。
+    assert!(contrast_ratio("#ffffff", "#27282d") >= 3.0);
+    // 灰线亮度弱于纯白（分主次），且对最不利实色底 >= 3（实算 3.79）。
+    assert!(
+        relative_luminance("#748392") < relative_luminance("#ffffff"),
+        "片段内灰线必须弱于纯白标记"
+    );
+    assert!(contrast_ratio("#748392", "#27282d") >= 3.0);
+
+    // 和弦块：旧 alpha 字面量（底 α0x18/0x35、边框 α0x35/0x70）清零。
+    for old in [
+        "#1b283818",
+        "#1b283835",
+        "#2d203818",
+        "#2d203835",
+        "#182c2618",
+        "#182c2635",
+        "#34261618",
+        "#34261635",
+        "#38769135",
+        "#38769170",
+        "#705e8835",
+        "#705e8870",
+        "#34786435",
+        "#34786470",
+        "#9a6a3835",
+        "#9a6a3870",
+    ] {
+        assert!(!arrangement.contains(old), "和弦块 alpha 字面量 {old} 仍在");
+    }
+    // 合成等效实色齐备（五块底 normal/hover + 边框 normal/hover）。
+    for solid in [
+        "#0e121a", "#10151e", "#162530", "#203d4d", "#10121a", "#14131e", "#22202e", "#383249",
+        "#0e1318", "#0f161a", "#152627", "#1e3e39", "#111217", "#151517", "#2a231e", "#4b3825",
+    ] {
+        assert!(arrangement.contains(solid), "和弦块实色 {solid} 缺失");
+    }
 }

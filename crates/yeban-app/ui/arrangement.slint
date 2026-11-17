@@ -495,10 +495,14 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-1-touch.has-hover ? #1b283835 : #1b283818;
+                                    // 八版实色化（Wang 16:23）：和弦块底与边框原为和弦色
+                                    // α≈0.09/0.21 叠在和弦轨带底 #0d1017 上，现全换合成
+                                    // 等效实色（呈现色不变、整块不透明）；hover 同法。
+                                    // 五块同法，数值各自按其和弦色合成。
+                                    background: chord-1-touch.has-hover ? #10151e : #0e121a;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-1-touch.has-hover ? #38769170 : #38769135;
+                                    border-color: chord-1-touch.has-hover ? #203d4d : #162530;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -537,10 +541,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-2-touch.has-hover ? #2d203835 : #2d203818;
+                                    background: chord-2-touch.has-hover ? #14131e : #10121a;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-2-touch.has-hover ? #705e8870 : #705e8835;
+                                    border-color: chord-2-touch.has-hover ? #383249 : #22202e;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -579,10 +583,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-3-touch.has-hover ? #182c2635 : #182c2618;
+                                    background: chord-3-touch.has-hover ? #0f161a : #0e1318;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-3-touch.has-hover ? #34786470 : #34786435;
+                                    border-color: chord-3-touch.has-hover ? #1e3e39 : #152627;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -621,10 +625,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-4-touch.has-hover ? #34261635 : #34261618;
+                                    background: chord-4-touch.has-hover ? #151517 : #111217;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-4-touch.has-hover ? #9a6a3870 : #9a6a3835;
+                                    border-color: chord-4-touch.has-hover ? #4b3825 : #2a231e;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -663,10 +667,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-5-touch.has-hover ? #1b283835 : #1b283818;
+                                    background: chord-5-touch.has-hover ? #10151e : #0e121a;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-5-touch.has-hover ? #38769170 : #38769135;
+                                    border-color: chord-5-touch.has-hover ? #203d4d : #162530;
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -1307,13 +1311,14 @@ export component ArrangementViewport inherits Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // 0dB Centerline（基准线，不是编造的包络）
+                                            // 0dB Centerline（基准线，不是编造的包络；八版实色化：
+                                            // 原轨道色 α0.20 改灰实色 #748392，与峰值柱纯白分主次）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
                                                 width: parent.width;
                                                 height: 1px;
-                                                background: trk.color.with-alpha(0.20);
+                                                background: #748392;
                                             }
 
                                             // 真实峰值柱：peaks 为空时 0 个（不画）。
@@ -1325,7 +1330,11 @@ export component ArrangementViewport inherits Rectangle {
                                                 // 「Cannot convert float to length」）。
                                                 height: Math.max(1px, ((parent.height - 8px) / 1px) * blk.waveform-peaks[peak_index] * 1px);
                                                 y: (parent.height - self.height) / 2;
-                                                background: trk.color.with-alpha(0.85);
+                                                // 八版（Wang 16:23）：峰值柱改纯白实色 #ffffff
+                                                // （Logic 式白波形画在实色区域底上；原轨道色
+                                                // α0.85 透画废）。对最不利片段实色底（白轨
+                                                // 合成底 #27282d）实算 14.71:1，远超 ≥3 下限。
+                                                background: #ffffff;
                                             }
 
                                             Text {
@@ -1352,13 +1361,14 @@ export component ArrangementViewport inherits Rectangle {
                                             height: Math.max(22px, parent.height - 26px);
                                             clip: true;
 
-                                            // Pitch division guideline
+                                            // Pitch division guideline（八版实色化：原轨道色
+                                            // α0.15 改灰实色 #748392，与音符条纯白分主次）
                                             Rectangle {
                                                 x: 0px;
                                                 y: parent.height / 2;
                                                 width: parent.width;
                                                 height: 1px;
-                                                background: trk.color.with-alpha(0.15);
+                                                background: #748392;
                                             }
 
                                             if blk.note_count <= 0 && blk.width_px >= 90px : Text {
@@ -1380,7 +1390,10 @@ export component ArrangementViewport inherits Rectangle {
                                                     horizontal-stretch: 1;
                                                     height: 4px;
                                                     border-radius: 1px;
-                                                    background: trk.color;
+                                                    // 八版（Wang 16:23）：音符条改纯白实色
+                                                    // #ffffff（Logic 式；原轨道色实色废）。
+                                                    // 对最不利片段实色底实算 14.71:1（≥3）。
+                                                    background: #ffffff;
                                                     y: Math.mod(n_idx * 5, 14) * 1px;
                                                 }
                                             }
