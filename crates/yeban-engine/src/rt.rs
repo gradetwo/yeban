@@ -1915,8 +1915,10 @@ fn render_branch(
         //   是**同一条标量曲线**，左右可以共用（`ParamTable::apply_pair` 一次
         //   `process()` 写到两条缓冲，⛔ 不让平滑器推进两次）⇒ 带 `SetParam` 自动化的轨
         //   现在也走分声道。
-        // * PDC 与手动相位对齐在本轨是**零延迟**（`DelayLine::delay() == 0`／未武装）：
-        //   两条延迟线要两份内存，本片不做；
+        // * ~~PDC 与手动相位对齐在本轨是**零延迟**~~：⭐ **stage 8 解除 PDC 那条** ——
+        //   延迟线现在有**右声道环**（`DelayLine::process_pair_in_place`），左右共用
+        //   同一个游标 ⇒ 补偿延迟对两声道同值、状态只推进一次。手动相位对齐
+        //   （`phase_bank.effective_delay`）仍要求未武装。
         // * 只有一条"直连 master、单位增益"的出边且没有发送自动化；
         // * 没有声相自动化（那条平滑路径只服务单声道）。
         //
@@ -1930,7 +1932,6 @@ fn render_branch(
             && !has_armed_insert_devices(share, &track)
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
-            && share.pdc.line(&track).is_none_or(|line| line.delay() == 0)
             && share.phase_bank.effective_delay(&track).is_none()
             && routes_of_track.len() == 1
             && routes_of_track[0].destination() == master
@@ -2106,7 +2107,16 @@ fn render_branch(
         //
         // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
         // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
-        share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        if stereo_track {
+            // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
+            share.pdc.apply_pair(
+                &track,
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+        } else {
+            share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        }
         // --- 手动相位对齐第一层：PDC 之后、声相/母线求和之前 ---
         //
         // 与 PDC 同一条位置规则（"进入总线求和节点前"）：先把插件延迟补齐，
