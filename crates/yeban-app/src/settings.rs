@@ -1,7 +1,9 @@
 //! 最小设置存储（2026-11-17，i18n 语言持久化，Wang 05:57 令；
-//! 同日 line/ui-window-state 扩入窗口布局，仍是同一个文件、同一个模块）。
+//! 同日 line/ui-window-state 扩入窗口布局，仍是同一个文件、同一个模块；
+//! 同日 line/startup-chooser 再扩入最近打开工程清单，仍是同一份文件）。
 //!
-//! 存两样用户偏好：界面语言（显式选过才存）与窗口布局（退出时快照）。
+//! 存三样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）与
+//! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）。
 //! 语言的启动优先级（定案）是 `--lang` 参数（临时覆盖、不写回）＞
 //! 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN，决策函数见
 //! [`resolve_startup_language`]，单测钉死。布局的恢复/写回/重置语义在
@@ -44,7 +46,8 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 /// 测试隔离环境变量（见模块文档）。
 pub const SETTINGS_PATH_ENV: &str = "YEBAN_SETTINGS_PATH";
 
-/// 设置内容：`language`（i18n 线）＋ `layout`（窗口布局线），同一份文件。
+/// 设置内容：`language`（i18n 线）＋ `layout`（窗口布局线）＋
+/// `recent_projects`（启动选择器线），同一份文件。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
     /// 用户显式选过的语言；`None` = 从未存过（首次启动走自动检测）。
@@ -52,6 +55,45 @@ pub struct Settings {
     /// 已存的窗口布局；`None` = 从未存过（启动时不恢复，界面保持
     /// .slint 初值 —— 含 persona 派生的面板显隐初值，不被强行覆盖）。
     pub layout: Option<WindowLayout>,
+    /// 最近打开过的工程（最近的在最前，上限
+    /// [`RECENT_PROJECTS_MAX`]）；空 = 从未记录过。本机配置
+    /// （MODEL-ISO-001 第三层），不进工程文件。
+    pub recent_projects: Vec<RecentProject>,
+}
+
+/// 一条「最近打开工程」记录：路径 + 最近一次打开时刻。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentProject {
+    /// 工程文件的路径（打开时用户给的那条，原样保存；显示名由
+    /// 消费方从路径派生，⛔ 不在这里另存一份会漂移的名字）。
+    pub path: std::path::PathBuf,
+    /// 最近一次打开的时刻（Unix 毫秒）。
+    pub opened_at_unix_ms: u64,
+}
+
+/// 最近清单的上限：超出时从尾部（最旧）丢弃。
+pub const RECENT_PROJECTS_MAX: usize = 10;
+
+/// 把一次打开记进最近清单（纯函数）：同路径旧记录先摘掉，新记录插到
+/// 最前，超出上限从尾部丢弃。顺序即显示顺序（最近在前）。
+#[must_use]
+pub fn touch_recent_project(
+    list: &[RecentProject],
+    path: &std::path::Path,
+    opened_at_unix_ms: u64,
+) -> Vec<RecentProject> {
+    let mut out: Vec<RecentProject> = Vec::with_capacity(list.len() + 1);
+    out.push(RecentProject {
+        path: path.to_path_buf(),
+        opened_at_unix_ms,
+    });
+    for entry in list {
+        if entry.path != path {
+            out.push(entry.clone());
+        }
+    }
+    out.truncate(RECENT_PROJECTS_MAX);
+    out
 }
 
 /// 窗口几何（**物理像素**，与 `slint::Window::size` / `position` 的口径
@@ -202,7 +244,42 @@ pub fn load_from(path: &std::path::Path) -> Settings {
             .and_then(|name| name.as_str())
             .and_then(Language::from_name),
         layout: parse_layout(&value),
+        recent_projects: parse_recent_projects(&value),
     }
+}
+
+/// 解析 `recent_projects` 键：键缺失 / 不是数组 ⇒ 空清单；逐条容错
+/// （单条形状坏只丢那一条，不连坐整份清单）；重复路径只留第一条
+/// （清单语义上最近在前，第一条就是最近的那次）；超出上限截断。
+fn parse_recent_projects(root: &serde_json::Value) -> Vec<RecentProject> {
+    let Some(items) = root.get("recent_projects").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<RecentProject> = Vec::new();
+    for item in items {
+        let Some(path) = item.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if path.is_empty()
+            || out
+                .iter()
+                .any(|entry: &RecentProject| entry.path.as_os_str() == path)
+        {
+            continue;
+        }
+        let opened_at_unix_ms = item
+            .get("opened_at_unix_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        out.push(RecentProject {
+            path: std::path::PathBuf::from(path),
+            opened_at_unix_ms,
+        });
+        if out.len() >= RECENT_PROJECTS_MAX {
+            break;
+        }
+    }
+    out
 }
 
 /// 取一个有限 f32 字段（JSON 数字）；缺失 / 类型错 / 非有限 ⇒ `None`。
@@ -419,6 +496,22 @@ fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result<()> {
     if let Some(layout) = &settings.layout {
         object.insert("layout".to_owned(), layout_to_json(layout));
     }
+    if !settings.recent_projects.is_empty() {
+        let items: Vec<serde_json::Value> = settings
+            .recent_projects
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "path": entry.path.to_string_lossy(),
+                    "opened_at_unix_ms": entry.opened_at_unix_ms,
+                })
+            })
+            .collect();
+        object.insert(
+            "recent_projects".to_owned(),
+            serde_json::Value::Array(items),
+        );
+    }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(object))
         .expect("内存里的设置对象一定能序列化成 JSON");
     let tmp = path.with_extension("json.tmp");
@@ -439,6 +532,19 @@ pub fn save_language(lang: Language) {
     settings.language = Some(lang);
     if let Err(error) = save(&settings) {
         eprintln!("[yeban-app] 语言选择写回设置失败（下次启动仍走旧选择）: {error}");
+    }
+}
+
+/// 把一次「打开了这个工程文件」记进最近清单：先读出现有设置
+/// （保住 `language` / `layout`），再 [`touch_recent_project`] 写回。
+/// 与 [`save_language`] 同款契约：写失败只打印，不让调用方把一次
+/// 打开变失败（工程已经打开，最近清单下次再记）。
+pub fn record_recent_project(path: &std::path::Path, opened_at_unix_ms: u64) {
+    let mut settings = load();
+    settings.recent_projects =
+        touch_recent_project(&settings.recent_projects, path, opened_at_unix_ms);
+    if let Err(error) = save(&settings) {
+        eprintln!("[yeban-app] 最近工程清单写回设置失败（下次启动的「最近」会少这一条）: {error}");
     }
 }
 
@@ -626,6 +732,7 @@ mod tests {
         let settings = Settings {
             language: Some(Language::FrFr),
             layout: None,
+            recent_projects: Vec::new(),
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -690,6 +797,7 @@ mod tests {
         let settings = Settings {
             language: Some(Language::JaJp),
             layout: Some(distinctive_layout()),
+            recent_projects: Vec::new(),
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -796,6 +904,7 @@ mod tests {
         let initial = Settings {
             language: Some(Language::FrFr),
             layout: Some(distinctive_layout()),
+            recent_projects: Vec::new(),
         };
         save_to(&path, &initial).expect("写初始设置");
         // 改语言（save_language 的读-改-写形态）。
@@ -816,6 +925,79 @@ mod tests {
             "改布局不丢语言"
         );
         assert_eq!(after_layout.layout, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn touch_recent_project_dedupes_front_inserts_and_caps() {
+        let a = std::path::Path::new("/music/a.yeban");
+        let b = std::path::Path::new("/music/b.yeban");
+        let list = touch_recent_project(&[], a, 100);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].path, a);
+        let list = touch_recent_project(&list, b, 200);
+        assert_eq!(list[0].path, b, "最新打开的在最前");
+        // 再开 a：a 回到最前且不重复，时刻更新。
+        let list = touch_recent_project(&list, a, 300);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].path, a);
+        assert_eq!(list[0].opened_at_unix_ms, 300);
+        // 灌满后继续加：长度封顶、最旧的被丢掉。
+        let mut list = list;
+        for i in 0..20 {
+            list = touch_recent_project(
+                &list,
+                &std::path::PathBuf::from(format!("/music/p{i}.yeban")),
+                400 + i,
+            );
+        }
+        assert_eq!(list.len(), RECENT_PROJECTS_MAX);
+        assert_eq!(list[0].opened_at_unix_ms, 419);
+        assert!(
+            list.iter().all(|entry| entry.path != b),
+            "最旧的条目应被上限丢弃"
+        );
+    }
+
+    #[test]
+    fn recent_projects_round_trip_and_tolerant_parse() {
+        let dir =
+            std::env::temp_dir().join(format!("yeban-settings-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("settings.json");
+        let settings = Settings {
+            recent_projects: vec![
+                RecentProject {
+                    path: std::path::PathBuf::from("/music/a.yeban"),
+                    opened_at_unix_ms: 111,
+                },
+                RecentProject {
+                    path: std::path::PathBuf::from("/music/b.yeban"),
+                    opened_at_unix_ms: 99,
+                },
+            ],
+            ..Default::default()
+        };
+        save_to(&path, &settings).expect("写设置");
+        let back = load_from(&path);
+        assert_eq!(back.recent_projects, settings.recent_projects);
+        // 坏条目只丢自己：形状坏的、空路径的、重复的都不连坐其余条目。
+        std::fs::write(
+            &path,
+            r#"{"version":1,"recent_projects":[
+                {"path":"/music/a.yeban","opened_at_unix_ms":5},
+                {"nope":true},
+                {"path":"","opened_at_unix_ms":6},
+                {"path":"/music/a.yeban","opened_at_unix_ms":7},
+                {"path":"/music/c.yeban"}
+            ]}"#,
+        )
+        .expect("写坏设置");
+        let parsed = load_from(&path);
+        assert_eq!(parsed.recent_projects.len(), 2);
+        assert_eq!(parsed.recent_projects[0].opened_at_unix_ms, 5);
+        assert_eq!(parsed.recent_projects[1].opened_at_unix_ms, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

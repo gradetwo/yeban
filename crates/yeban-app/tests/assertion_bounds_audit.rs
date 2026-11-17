@@ -48,6 +48,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/midi_notes.rs", include_str!("../src/midi_notes.rs")),
     ("src/render_core.rs", include_str!("../src/render_core.rs")),
     ("src/scene.rs", include_str!("../src/scene.rs")),
+    ("src/settings.rs", include_str!("../src/settings.rs")),
     ("src/sfz_load.rs", include_str!("../src/sfz_load.rs")),
     (
         "src/sound_library.rs",

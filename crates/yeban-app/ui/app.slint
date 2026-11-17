@@ -1,5 +1,5 @@
-import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
-export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
+import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
+export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -14,6 +14,7 @@ import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
+import { StartupChooserDialog } from "dialogs/startup_chooser.slint";
 import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
 import { SoundLibraryDialog } from "dialogs/sound_library_dialog.slint";
 import { CommandPaletteModal, HotspotOverlay } from "modals.slint";
@@ -606,6 +607,18 @@ export component MainWindow inherits Window {
     in-out property <int> song-overview-total-bars: 0;
     in-out property <bool> splitter-dragging: false;
     in-out property <length> splitter-press-y: 0px;
+    in-out property <int> startup-category: 0;
+    in-out property <bool> startup-chooser-open: false;
+    in-out property <bool> startup-details-open: false;
+    in-out property <int> startup-hidden-rows: 0;
+    in-out property <int> startup-key-index: 0;
+    in-out property <string> startup-key-label: "—";
+    in-out property <int> startup-rate-index: 1;
+    in-out property <[StartupChooserRow]> startup-rows: [];
+    in-out property <int> startup-selected-entry: -1;
+    in-out property <string> startup-tempo-text: "120";
+    in-out property <int> startup-time-den-index: 2;
+    in-out property <int> startup-time-num: 4;
     in-out property <string> status-device: "—";
     in-out property <string> status-selection: @tr("选区 无");
     in-out property <int> template-chooser-hidden-rows: 0;
@@ -785,6 +798,13 @@ export component MainWindow inherits Window {
     callback song-overview-toggle-fullscreen();
     callback song-overview-viewport-scroll(float);
     callback song-overview-viewport-zoom(int);
+    callback startup-cancel();
+    callback startup-category-selected(int);
+    callback startup-cycle-key(int);
+    callback startup-entry-activated(int);
+    callback startup-new-project();
+    callback startup-open-existing();
+    callback startup-tap-tempo();
     callback stop();
     callback template-selected(int);
     callback toggle-ai-drawer();
@@ -1005,6 +1025,12 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
+                // 启动选择器开着时 `Esc` = 取消启动（宿主关弹窗并退
+                // 出事件循环），先于下面的一切关闭动作。
+                if (root.startup-chooser-open) {
+                    root.startup-cancel();
+                    return accept;
+                }
                 // 模板选择器没有自己的焦点陷阱 ⇒ 它的 `Esc` 在这里关
                 // （另存为模板对话框有自己的陷阱，先于本层处理 `Esc`；
                 // 这里对它只作兜底）。
@@ -1671,6 +1697,33 @@ export component MainWindow inherits Window {
             hidden-rows: root.template-chooser-hidden-rows;
             template-selected(i) => { root.template-selected(i); }
             close => { root.template-chooser-open = false; }
+        }
+
+        // Visible Startup Chooser Modal Dialog（启动工程选择器，
+        // line/startup-chooser；仅无 `--open` 启动时由装配点打开）
+        if root.startup-chooser-open : StartupChooserDialog {
+            z: 9700;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            category: root.startup-category;
+            details-open <=> root.startup-details-open;
+            rows: root.startup-rows;
+            hidden-rows: root.startup-hidden-rows;
+            key-label: root.startup-key-label;
+            selected-entry <=> root.startup-selected-entry;
+            tempo-text <=> root.startup-tempo-text;
+            time-num <=> root.startup-time-num;
+            time-den-index <=> root.startup-time-den-index;
+            rate-index <=> root.startup-rate-index;
+            category-selected(c) => { root.startup-category-selected(c); }
+            entry-activated(i) => { root.startup-entry-activated(i); }
+            new-project => { root.startup-new-project(); }
+            open-existing => { root.startup-open-existing(); }
+            cancel => { root.startup-cancel(); }
+            tap-tempo => { root.startup-tap-tempo(); }
+            cycle-key(d) => { root.startup-cycle-key(d); }
         }
 
         // Visible Save-As-Template Modal Dialog（另存为模板）

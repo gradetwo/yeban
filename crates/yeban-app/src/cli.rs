@@ -2298,6 +2298,25 @@ impl Options {
         !self.batch()
     }
 
+    /// 启动路由（line/startup-chooser）：开窗口且**没有**给
+    /// `--open` ⇒ 先出启动工程选择器（学 Logic「Choose a
+    /// Project」：不是直接打开工程时先让用户选）；给了
+    /// `--open <path>` ⇒ 直进那个工程，⛔ 不出选择器。
+    ///
+    /// 判定只看 `open` 与路径形态：批处理 / 无头路径在
+    /// `main.rs` 里先于 GUI 分流，永远到不了选择器；本函数对
+    /// 它们一律回 [`StartupRoute::Direct`]（防御性口径，判据
+    /// 钉死）。选择器的后续装配（占位工程、选定后换入）住在
+    /// `main.rs` 的 `run_gui` 与 `host::wire_startup_chooser`。
+    #[must_use]
+    pub fn startup_route(&self) -> StartupRoute {
+        if self.wants_gui() && self.open.is_none() {
+            StartupRoute::Chooser
+        } else {
+            StartupRoute::Direct
+        }
+    }
+
     /// 是否需要把工程**投影成界面状态**。
     ///
     /// `--save-as` **不**需要投影：保存只依赖 `YebanProjectV1`。
@@ -4187,6 +4206,15 @@ fn set_once(
 // ---------------------------------------------------------------------------
 // 当前工程
 // ---------------------------------------------------------------------------
+
+/// 启动路由（line/startup-chooser，见 [`Options::startup_route`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupRoute {
+    /// 先出启动工程选择器（无 `--open` 的窗口启动）。
+    Chooser,
+    /// 直进工程（给了 `--open`，或根本不开窗口）。
+    Direct,
+}
 
 /// 当前工程**从哪里来**（报告里必须能说清，见模块文档）。
 #[derive(Debug, Clone, PartialEq, Eq)]

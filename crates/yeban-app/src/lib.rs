@@ -168,6 +168,7 @@ pub mod save;
 /// i18n 的 `language` 与窗口布局的 `layout`（line/ui-window-state 在
 /// version 1 内加键扩展，同一文件、同一模块，不另起设置文件）。
 pub mod settings;
+pub mod startup_chooser;
 // **用户在界面上按的"保存工程"**（`ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口）。
 // 产品路径上的普通模块：它只拿 `save::save_project_file` 与（有 feature 时）
 // `ProjectAuthorityHandle::save_to`，因此**不**把 dev-dependency 的测试装配拉进发行图。

@@ -109,6 +109,7 @@ fn reset_restores_defaults_clears_stored_layout_and_keeps_language() {
     settings::save(&Settings {
         language: Some(Language::FrFr),
         layout: Some(distinctive_layout()),
+        recent_projects: Vec::new(),
     })
     .expect("预置设置文件必须写成功");
 

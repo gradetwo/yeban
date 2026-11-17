@@ -1870,6 +1870,22 @@ msgstr "サウンドライブラリを削除"
 
 msgid "确认删除"
 msgstr "削除を確認"
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "プロジェクトを選択"
+
+msgid "选择工程面板"
+msgstr "プロジェクト選択パネル"
+
+msgid "取消启动"
+msgstr "起動をキャンセル"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "開くプロジェクトを選ぶか、新規作成してください。デモとテンプレートは無題のコピーとして開き、元のファイルには書き戻しません。"
+
+msgid "创建新工程"
+msgstr "新規プロジェクトを作成"
 
 msgid "取消"
 msgstr "キャンセル"
@@ -1897,3 +1913,56 @@ msgstr "ダウンロード中"
 
 msgid "音源管理状态"
 msgstr "サウンドライブラリ管理の状態"
+msgid "启动选择器条目列表"
+msgstr "起動セレクターの項目リスト"
+
+msgid "工程模板"
+msgstr "プロジェクトテンプレート"
+
+msgid "我的模板"
+msgstr "マイテンプレート"
+
+msgid "打开"
+msgstr "開く"
+
+msgid "打开已有工程…"
+msgstr "既存のプロジェクトを開く…"
+
+msgid "拍号"
+msgstr "拍子"
+
+msgid "最近打开"
+msgstr "最近開いた項目"
+
+msgid "此目录中还没有模板。"
+msgstr "このフォルダにはまだテンプレートがありません。"
+
+msgid "演示工程"
+msgstr "デモプロジェクト"
+
+msgid "点按测速"
+msgstr "タップテンポ"
+
+msgid "空工程"
+msgstr "空のプロジェクト"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "空白のプロジェクトから始める（無題、保存時に場所を選択）"
+
+msgid "详情"
+msgstr "詳細"
+
+msgid "调号"
+msgstr "調号"
+
+msgid "还有更多行未画出"
+msgstr "表示されていない行がさらにあります"
+
+msgid "还没有最近打开的工程。"
+msgstr "最近開いたプロジェクトはまだありません。"
+
+msgid "速度"
+msgstr "テンポ"
+
+msgid "采样率"
+msgstr "サンプルレート"

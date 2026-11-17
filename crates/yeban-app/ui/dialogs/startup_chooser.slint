@@ -1,0 +1,1100 @@
+// 夜半 (Yeban) — 启动工程选择器
+//
+// 内容与思想学 Logic Pro「Choose a Project」（Wang 2026-11-17 令）：
+// 不是直接打开工程时，先让用户选这次要开哪个。布局按夜半自己的
+// 设计语言走现有令牌与对话框组件（与模板选择器同款的遮罩 + 面板 +
+// 分组列表），⛔ 不照搬 Logic 外观。Logic 侧栏的 Live Loops 一类
+// 夜半没有对应机制，按定案不设；其余五类全有：
+//
+//   0 新建工程（空工程 + Details）   1 最近   2 演示工程
+//   3 工程模板（工厂目录）           4 我的模板（用户目录）
+//
+// ## 显示态全部来自宿主（界面不自己算）
+//
+// 行模型、Details 初值、调号名都由宿主（`host::wire_startup_chooser`）
+// 从 `crate::startup_chooser` 的纯逻辑写入；本文件只做呈现与上抛：
+// 分类切换、条目选中 / 双击打开、Details 步进、点按测速。打开语义
+// （未命名副本 / 记最近 / 失败不关弹窗）全在宿主，本文件 ⛔ 不碰磁盘。
+//
+// 默认关着（`MainWindow.startup-chooser-open = false`）⇒ 默认帧与
+// 金帧基准一位不变。
+
+import { Tokens, UiText, UiTitleText, StartupChooserRow } from "../tokens.slint";
+
+export component StartupChooserDialog inherits Rectangle {
+    // ---- 宿主写入的显示态 ------------------------------------------------
+    in property <int> category: 0;
+    in property <[StartupChooserRow]> rows: [];
+    // 被行数上限截断、没有画出来的行数（宿主读数，0 = 全画出来了）。
+    in property <int> hidden-rows: 0;
+    in property <string> key-label: "—";
+
+    // ---- 双向状态（界面与宿主共享） --------------------------------------
+    in-out property <int> selected-entry: -1;
+    in-out property <string> tempo-text: "120";
+    in-out property <int> time-num: 4;
+    in-out property <int> time-den-index: 2;
+    in-out property <int> rate-index: 1;
+
+    // ---- 纯界面状态（宿主可预置，如取证帧要展开 Details） ------------------
+    in-out property <bool> details-open: false;
+
+    callback category-selected(int);
+    callback entry-activated(int);
+    callback new-project();
+    callback open-existing();
+    callback cancel();
+    callback tap-tempo();
+    callback cycle-key(int);
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "startup-chooser-dialog";
+    accessible-label: @tr("选择工程");
+
+    // 遮罩吞掉鼠标（与模板选择器同款）：点遮罩不关面板，关面板只有
+    // 「取消」/ ✕ / `Esc`（取消 = 退出启动，语义在宿主）。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    // ---------------------------------------------------------------- 弹窗面板
+    Rectangle {
+        x: (root.width - 880px) / 2;
+        y: (root.height - 600px) / 2;
+        width: 880px;
+        height: 600px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "startup-chooser-panel";
+        accessible-label: @tr("选择工程面板");
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: @tr("选择工程");
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        UiText {
+            x: Tokens.space-6;
+            y: 34px;
+            width: parent.width - 96px;
+            height: 16px;
+            text: @tr("选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。");
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 关闭 = 取消启动（退出），与页脚「取消」同一跳。
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "startup-chooser-close-button";
+            accessible-label: @tr("取消启动");
+            accessible-action-default => { root.cancel(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xl;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.cancel(); }
+            }
+        }
+
+        // ------------------------------------------------------------ 左侧分类导航
+        // 五个分类按钮纵排；选中态 = 抬起面 + 金边（与全应用选中口径一致）。
+        // 逐个显式写：`accessible-id` 必须是字面量（注册表双向覆盖判据
+        // 只认字面量模板），⛔ 不用数据驱动循环生成。
+        Rectangle {
+            x: Tokens.space-6;
+            y: 68px;
+            width: 168px;
+            height: 40px;
+            background: root.category == 0 ? Tokens.bg-raised : transparent;
+            border-radius: Tokens.radius-md;
+            border-width: root.category == 0 ? 1px : 0px;
+            border-color: Tokens.gold-deep;
+            accessible-role: button;
+            accessible-id: "startup-nav-new";
+            accessible-label: @tr("新建工程");
+            accessible-action-default => { root.category-selected(0); }
+
+            UiText {
+                x: Tokens.space-5;
+                y: 0;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: @tr("新建工程");
+                color: root.category == 0 ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.category-selected(0); }
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-6;
+            y: 68px + 44px;
+            width: 168px;
+            height: 40px;
+            background: root.category == 1 ? Tokens.bg-raised : transparent;
+            border-radius: Tokens.radius-md;
+            border-width: root.category == 1 ? 1px : 0px;
+            border-color: Tokens.gold-deep;
+            accessible-role: button;
+            accessible-id: "startup-nav-recent";
+            accessible-label: @tr("最近打开");
+            accessible-action-default => { root.category-selected(1); }
+
+            UiText {
+                x: Tokens.space-5;
+                y: 0;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: @tr("最近打开");
+                color: root.category == 1 ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.category-selected(1); }
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-6;
+            y: 68px + 88px;
+            width: 168px;
+            height: 40px;
+            background: root.category == 2 ? Tokens.bg-raised : transparent;
+            border-radius: Tokens.radius-md;
+            border-width: root.category == 2 ? 1px : 0px;
+            border-color: Tokens.gold-deep;
+            accessible-role: button;
+            accessible-id: "startup-nav-demos";
+            accessible-label: @tr("演示工程");
+            accessible-action-default => { root.category-selected(2); }
+
+            UiText {
+                x: Tokens.space-5;
+                y: 0;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: @tr("演示工程");
+                color: root.category == 2 ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.category-selected(2); }
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-6;
+            y: 68px + 132px;
+            width: 168px;
+            height: 40px;
+            background: root.category == 3 ? Tokens.bg-raised : transparent;
+            border-radius: Tokens.radius-md;
+            border-width: root.category == 3 ? 1px : 0px;
+            border-color: Tokens.gold-deep;
+            accessible-role: button;
+            accessible-id: "startup-nav-factory";
+            accessible-label: @tr("工程模板");
+            accessible-action-default => { root.category-selected(3); }
+
+            UiText {
+                x: Tokens.space-5;
+                y: 0;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: @tr("工程模板");
+                color: root.category == 3 ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.category-selected(3); }
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-6;
+            y: 68px + 176px;
+            width: 168px;
+            height: 40px;
+            background: root.category == 4 ? Tokens.bg-raised : transparent;
+            border-radius: Tokens.radius-md;
+            border-width: root.category == 4 ? 1px : 0px;
+            border-color: Tokens.gold-deep;
+            accessible-role: button;
+            accessible-id: "startup-nav-user";
+            accessible-label: @tr("我的模板");
+            accessible-action-default => { root.category-selected(4); }
+
+            UiText {
+                x: Tokens.space-5;
+                y: 0;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: @tr("我的模板");
+                color: root.category == 4 ? Tokens.gold-bright : Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.category-selected(4); }
+            }
+        }
+
+        // ------------------------------------------------------------ 右侧内容区
+        // ---- 新建工程：空工程入口 + Details ----
+        if root.category == 0 : Rectangle {
+            x: 200px;
+            y: 68px;
+            width: parent.width - 200px - 24px;
+            height: parent.height - 68px - 64px;
+            clip: true;
+
+            // 空工程入口卡（双击 = 直接创建；单击只是视觉选中，本分类
+            // 只有这一个入口，创建走页脚主按钮 / 双击 / 回车语义）。
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: 64px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold-deep;
+                accessible-role: list-item;
+                accessible-id: "startup-empty-project";
+                accessible-label: @tr("空工程");
+                accessible-action-default => { root.new-project(); }
+
+                UiText {
+                    x: Tokens.space-6;
+                    y: 10px;
+                    width: parent.width - 32px;
+                    height: 22px;
+                    text: @tr("空工程");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-lg;
+                }
+
+                UiText {
+                    x: Tokens.space-6;
+                    y: 36px;
+                    width: parent.width - 32px;
+                    height: 16px;
+                    text: @tr("从空白工程开始（未命名，保存时再选落点）");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    double-clicked => { root.new-project(); }
+                }
+            }
+
+            // Details 展开开关
+            Rectangle {
+                x: 0;
+                y: 76px;
+                width: parent.width;
+                height: 28px;
+                accessible-role: button;
+                accessible-id: "startup-details-toggle";
+                accessible-label: @tr("详情");
+                accessible-action-default => { root.details-open = !root.details-open; }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: 60px;
+                    height: parent.height;
+                    text: @tr("详情");
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-md;
+                    vertical-alignment: center;
+                }
+
+                UiText {
+                    x: 44px;
+                    y: 0;
+                    width: 16px;
+                    height: parent.height;
+                    text: root.details-open ? "▾" : "▸";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-md;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.details-open = !root.details-open; }
+                }
+            }
+
+            // Details 本体：四个真实字段（速度 / 调号 / 拍号 / 采样率）。
+            // 字段集来自工程模型普查 —— 输入/输出设备不在工程模型里，
+            // ⛔ 不在这里摆假字段。
+            if root.details-open : Rectangle {
+                x: 0;
+                y: 108px;
+                width: parent.width;
+                height: 4 * 40px;
+                clip: true;
+
+                // —— 速度：文本输入 + 单位 + 点按测速 ——
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: 64px;
+                    height: 32px;
+                    text: @tr("速度");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-sm;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 64px;
+                    y: 2px;
+                    width: 76px;
+                    height: 28px;
+                    background: Tokens.bg-void;
+                    border-radius: Tokens.radius-sm;
+                    border-width: 1px;
+                    border-color: Tokens.line;
+
+                    TextInput {
+                        x: Tokens.space-3;
+                        y: 0;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        text <=> root.tempo-text;
+                        single-line: true;
+                        font-family: Tokens.font-ui;
+                        color: Tokens.gold;
+                        font-size: Tokens.font-size-md;
+                        vertical-alignment: center;
+                        accessible-role: text-input;
+                        accessible-id: "startup-tempo-input";
+                        accessible-label: @tr("速度");
+                    }
+                }
+
+                UiText {
+                    x: 146px;
+                    y: 0;
+                    width: 36px;
+                    height: 32px;
+                    text: "BPM";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-sm;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 190px;
+                    y: 2px;
+                    width: 96px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-tap-tempo-button";
+                    accessible-label: @tr("点按测速");
+                    accessible-action-default => { root.tap-tempo(); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: @tr("点按测速");
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.tap-tempo(); }
+                    }
+                }
+
+                // —— 调号：步进（31 档闭集，标签由宿主按语言写） ——
+                UiText {
+                    x: 0;
+                    y: 40px;
+                    width: 64px;
+                    height: 32px;
+                    text: @tr("调号");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-sm;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 64px;
+                    y: 42px;
+                    width: 28px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-key-prev-button";
+                    accessible-label: @tr("调号");
+                    accessible-action-default => { root.cycle-key(-1); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: "‹";
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-lg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.cycle-key(-1); }
+                    }
+                }
+
+                UiText {
+                    x: 98px;
+                    y: 40px;
+                    width: 110px;
+                    height: 32px;
+                    text: root.key-label;
+                    color: Tokens.gold;
+                    font-size: Tokens.font-size-md;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    x: 214px;
+                    y: 42px;
+                    width: 28px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-key-next-button";
+                    accessible-label: @tr("调号");
+                    accessible-action-default => { root.cycle-key(1); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: "›";
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-lg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.cycle-key(1); }
+                    }
+                }
+
+                // —— 拍号：分子步进（1..32）/ 分母步进（{1,2,4,8,16,32}） ——
+                UiText {
+                    x: 0;
+                    y: 80px;
+                    width: 64px;
+                    height: 32px;
+                    text: @tr("拍号");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-sm;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 64px;
+                    y: 82px;
+                    width: 28px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-time-num-prev-button";
+                    accessible-label: @tr("拍号");
+                    accessible-action-default => { root.time-num = max(1, root.time-num - 1); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: "‹";
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-lg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.time-num = max(1, root.time-num - 1); }
+                    }
+                }
+
+                UiText {
+                    x: 98px;
+                    y: 80px;
+                    width: 28px;
+                    height: 32px;
+                    text: root.time-num;
+                    color: Tokens.gold;
+                    font-size: Tokens.font-size-md;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 132px;
+                    y: 82px;
+                    width: 28px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-time-num-next-button";
+                    accessible-label: @tr("拍号");
+                    accessible-action-default => { root.time-num = min(32, root.time-num + 1); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: "›";
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-lg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.time-num = min(32, root.time-num + 1); }
+                    }
+                }
+
+                UiText {
+                    x: 164px;
+                    y: 80px;
+                    width: 12px;
+                    height: 32px;
+                    text: "/";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-md;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 182px;
+                    y: 82px;
+                    width: 28px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-time-den-prev-button";
+                    accessible-label: @tr("拍号");
+                    accessible-action-default => { root.time-den-index = max(0, root.time-den-index - 1); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: "‹";
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-lg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.time-den-index = max(0, root.time-den-index - 1); }
+                    }
+                }
+
+                UiText {
+                    x: 216px;
+                    y: 80px;
+                    width: 28px;
+                    height: 32px;
+                    text: ["1", "2", "4", "8", "16", "32"][root.time-den-index];
+                    color: Tokens.gold;
+                    font-size: Tokens.font-size-md;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    x: 250px;
+                    y: 82px;
+                    width: 28px;
+                    height: 28px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "startup-time-den-next-button";
+                    accessible-label: @tr("拍号");
+                    accessible-action-default => { root.time-den-index = min(5, root.time-den-index + 1); }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: "›";
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-lg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.time-den-index = min(5, root.time-den-index + 1); }
+                    }
+                }
+
+                // —— 采样率：五档芯片（模型枚举五档，标签是数值不翻译） ——
+                UiText {
+                    x: 0;
+                    y: 120px;
+                    width: 64px;
+                    height: 32px;
+                    text: @tr("采样率");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-sm;
+                    vertical-alignment: center;
+                }
+
+                for rate-label[rate-idx] in ["44.1 kHz", "48 kHz", "88.2 kHz", "96 kHz", "192 kHz"] : Rectangle {
+                    x: 64px + rate-idx * 92px;
+                    y: 122px;
+                    width: 84px;
+                    height: 28px;
+                    background: root.rate-index == rate-idx ? Tokens.bg-raised : Tokens.bg-void;
+                    border-radius: Tokens.radius-sm;
+                    border-width: root.rate-index == rate-idx ? 1px : 0px;
+                    border-color: Tokens.gold-deep;
+                    accessible-role: button;
+                    accessible-id: "startup-rate-chip-" + rate-idx;
+                    accessible-label: @tr("采样率");
+                    accessible-action-default => { root.rate-index = rate-idx; }
+
+                    UiText {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        text: rate-label;
+                        color: root.rate-index == rate-idx ? Tokens.gold-bright : Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => { root.rate-index = rate-idx; }
+                    }
+                }
+            }
+        }
+
+        // ---- 列表分类：最近 / 演示 / 工程模板 / 我的模板 ----
+        if root.category != 0 : Rectangle {
+            x: 200px;
+            y: 68px;
+            width: parent.width - 200px - 24px;
+            height: parent.height - 68px - 64px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+
+            accessible-role: list;
+            accessible-id: "startup-chooser-list";
+            accessible-label: @tr("启动选择器条目列表");
+
+            Flickable {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: max(self.height, root.rows.length * 36px);
+                interactive: true;
+
+                for row[row-index] in root.rows : Rectangle {
+                    x: 0;
+                    y: row-index * 36px;
+                    width: parent.width;
+                    height: 36px;
+                    clip: true;
+
+                    // 条目行（kind == 2）：可点；单击选中、双击打开。
+                    // 无障碍默认动作与单击同一落点（选中）——打开走双击
+                    // 或页脚「打开」主按钮（选中后可用），三条路不分叉。
+                    if row.kind == 2 && row.enabled : Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: root.selected-entry == row.entry-index ? Tokens.bg-raised
+                            : row-touch.has-hover ? Tokens.bg-panel-alt : transparent;
+                        accessible-role: list-item;
+                        accessible-id: "startup-row-" + row-index;
+                        accessible-label: row.label;
+                        accessible-action-default => {
+                            root.selected-entry = row.entry-index;
+                        }
+
+                        UiText {
+                            x: Tokens.space-6;
+                            y: 1px;
+                            width: parent.width - 32px;
+                            height: 19px;
+                            text: row.label;
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-sm;
+                            overflow: elide;
+                        }
+
+                        UiText {
+                            x: Tokens.space-6;
+                            y: 20px;
+                            width: parent.width - 32px;
+                            height: 14px;
+                            text: row.detail;
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-xs;
+                            overflow: elide;
+                        }
+
+                        row-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.selected-entry = row.entry-index; }
+                            double-clicked => { root.entry-activated(row.entry-index); }
+                        }
+                    }
+
+                    // 失效条目（kind == 2 && !enabled）：置灰、不可点
+                    //（最近清单里文件已不存在的工程；副文字已由宿主
+                    // 写明「文件已不存在」）。
+                    if row.kind == 2 && !row.enabled : Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        accessible-role: list-item;
+                        accessible-id: "startup-row-" + row-index;
+                        accessible-label: row.label;
+
+                        UiText {
+                            x: Tokens.space-6;
+                            y: 1px;
+                            width: parent.width - 32px;
+                            height: 19px;
+                            text: row.label;
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-sm;
+                            overflow: elide;
+                        }
+
+                        UiText {
+                            x: Tokens.space-6;
+                            y: 20px;
+                            width: parent.width - 32px;
+                            height: 14px;
+                            text: row.detail;
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-xs;
+                            overflow: elide;
+                        }
+                    }
+
+                    // 分组标题行（kind 0 = 曲风、1 = 子曲风）：只读。
+                    if row.kind != 2 : Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        accessible-role: text;
+                        accessible-id: "startup-row-" + row-index;
+                        accessible-label: row.label;
+
+                        UiText {
+                            x: row.kind == 0 ? Tokens.space-4 : Tokens.space-6 + 24px;
+                            y: 0;
+                            width: parent.width - 72px;
+                            height: parent.height;
+                            text: row.label;
+                            color: row.kind == 0 ? Tokens.gold-bright : Tokens.ink-1;
+                            font-size: row.kind == 0 ? Tokens.font-size-sm : Tokens.font-size-xs;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // 空态（分类专属文案；演示分类恒有两条、不会落到这里）
+            if root.rows.length == 0 : Rectangle {
+                x: Tokens.space-6;
+                y: 120px;
+                width: parent.width - 48px;
+                height: 40px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "startup-chooser-empty-state";
+                accessible-label: root.category == 1 ? @tr("还没有最近打开的工程。") : @tr("此目录中还没有模板。");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.category == 1 ? @tr("还没有最近打开的工程。") : @tr("此目录中还没有模板。");
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-sm;
+                    overflow: elide;
+                }
+            }
+
+            // 截断的如实报数
+            if root.hidden-rows > 0 : Rectangle {
+                x: Tokens.space-6;
+                y: parent.height - 24px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "startup-chooser-truncation-note";
+                accessible-label: @tr("还有更多行未画出");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("还有 {} 行未画出（列表一次最多画 64 行）", root.hidden-rows);
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ 页脚
+        Rectangle {
+            x: Tokens.space-6;
+            y: parent.height - 52px;
+            width: 168px;
+            height: 36px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-md;
+            accessible-role: button;
+            accessible-id: "startup-open-existing-button";
+            accessible-label: @tr("打开已有工程…");
+            accessible-action-default => { root.open-existing(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: @tr("打开已有工程…");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.open-existing(); }
+            }
+        }
+
+        Rectangle {
+            x: parent.width - 24px - 96px - 12px - 132px;
+            y: parent.height - 52px;
+            width: 96px;
+            height: 36px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-md;
+            accessible-role: button;
+            accessible-id: "startup-cancel-button";
+            accessible-label: @tr("取消");
+            accessible-action-default => { root.cancel(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: @tr("取消");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.cancel(); }
+            }
+        }
+
+        // 主操作：新建分类 = 创建新工程；列表分类 = 打开选中条目
+        //（未选中时置灰不可点）。
+        Rectangle {
+            x: parent.width - 24px - 132px;
+            y: parent.height - 52px;
+            width: 132px;
+            height: 36px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            opacity: root.category == 0 || root.selected-entry >= 0 ? 1.0 : 0.45;
+            accessible-role: button;
+            accessible-id: "startup-confirm-button";
+            accessible-label: root.category == 0 ? @tr("创建新工程") : @tr("打开");
+            accessible-action-default => {
+                if (root.category == 0) { root.new-project(); }
+                else if (root.selected-entry >= 0) { root.entry-activated(root.selected-entry); }
+            }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.category == 0 ? @tr("创建新工程") : @tr("打开");
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-md;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    if (root.category == 0) { root.new-project(); }
+                    else if (root.selected-entry >= 0) { root.entry-activated(root.selected-entry); }
+                }
+            }
+        }
+    }
+}
