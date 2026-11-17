@@ -78,14 +78,18 @@ fn assert_tier(
 }
 
 #[test]
-fn windows_born_at_1920_and_1445_start_in_their_own_tier() {
+fn window_born_at_1920_starts_in_the_wide_tier() {
+    // Tier-1 平台每线程只能装一次 ⇒ 一档一个测试函数（与 compact 判据同款）。
     let wide = build(Size::new(1920, 1080));
     assert_tier(
         "出生 1920",
         observe(&wide, "出生 1920"),
         (false, false, false, false, false),
     );
+}
 
+#[test]
+fn window_born_at_1445_starts_in_the_narrow_tier() {
     let narrow = build(Size::new(1445, 700));
     assert_tier(
         "出生 1445",
@@ -103,21 +107,27 @@ fn tiers_follow_real_resizes_in_both_directions() {
         (false, false, false, false, false),
     );
 
-    port.window().resize(Size::new(1600, 900)).expect("resize 到 1600");
+    port.window()
+        .resize(Size::new(1600, 900))
+        .expect("resize 到 1600");
     assert_tier(
         "扫档 1600",
         observe(&port, "扫档 1600"),
         (true, false, false, false, true),
     );
 
-    port.window().resize(Size::new(1445, 700)).expect("resize 到 1445");
+    port.window()
+        .resize(Size::new(1445, 700))
+        .expect("resize 到 1445");
     assert_tier(
         "扫档 1445",
         observe(&port, "扫档 1445"),
         (true, true, true, true, true),
     );
 
-    port.window().resize(Size::new(1920, 1080)).expect("resize 回 1920");
+    port.window()
+        .resize(Size::new(1920, 1080))
+        .expect("resize 回 1920");
     assert_tier(
         "扫档回 1920",
         observe(&port, "扫档回 1920"),
