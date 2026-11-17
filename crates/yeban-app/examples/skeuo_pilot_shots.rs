@@ -76,6 +76,9 @@ slint::slint! {
                 indicator-color: Tokens.accent;
             }
 
+            // 第三例 = 禁用态陈列 (2026-11-17 三期裁定): 产品 UI 尚无
+            // 真实旋转参数落点, 无参数可绑的 Knob 必须呈置灰禁用态,
+            // 不做假活钮; 本例钉住该形态的渲染。
             Knob {
                 x: 264px;
                 y: 24px;
@@ -83,6 +86,7 @@ slint::slint! {
                 height: 96px;
                 value: 0.9;
                 indicator-color: Tokens.ok-green;
+                enabled: false;
             }
 
             UiText {

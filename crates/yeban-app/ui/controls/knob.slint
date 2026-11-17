@@ -37,6 +37,11 @@ export component Knob inherits Rectangle {
     in property <string> a11y-id: "";
     in property <string> a11y-label: "";
     in property <string> a11y-value: "";
+    /// 可用性 (2026-11-17 三期裁定, 学 Logic: 旋钮全部绑真实参数, 不可
+    /// 用的呈置灰禁用态): false 时整钮去色压暗、刻度不点亮、指针转灰、
+    /// 手势面关闭 —— ⛔ 不做「看起来能用」的假静态。尚无真实旋转参数
+    /// 落点时, 落点侧必须显式给 false (缺口登记见拟物线回执)。
+    in property <bool> enabled: true;
     callback changed(float);
 
     /// 值钳制 (显示与手势共用一处)。
@@ -90,9 +95,12 @@ export component Knob inherits Rectangle {
         viewbox-y: 0;
         viewbox-width: 100;
         viewbox-height: 100;
-        stroke: idx * 0.1 <= root.fraction
+        // 未扫过段: 扁平套保持 0.45; 拟物套提亮一档 (0.62) —— 值弧线在
+        // 质感帽面旁必须可辨 (2026-11-17 加码, Logic 旋钮「值可辨」口径)。
+        // 禁用态: 刻度永不点亮且再压暗一档 (0.25)。
+        stroke: root.enabled && idx * 0.1 <= root.fraction
             ? root.indicator-color
-            : Tokens.ink-2.with-alpha(0.45);
+            : Tokens.ink-2.with-alpha(!root.enabled ? 0.25 : (Tokens.texture-physical ? 0.62 : 0.45));
         stroke-width: 2px;
         fill: transparent;
         MoveTo {
@@ -122,7 +130,7 @@ export component Knob inherits Rectangle {
         //    一段 —— 以 100×100 viewbox 表达: 圆心 (50,50) 半径 38,
         //    起点 (13.3, 40.2) 终点 (40.2, 13.3), 顺时针短弧)。
         Path {
-            visible: Tokens.texture-physical;
+            visible: Tokens.texture-physical && root.enabled;
             x: 0;
             y: 0;
             width: parent.width;
@@ -159,7 +167,7 @@ export component Knob inherits Rectangle {
             viewbox-y: 0;
             viewbox-width: 100;
             viewbox-height: 100;
-            stroke: root.indicator-color;
+            stroke: root.enabled ? root.indicator-color : Tokens.ink-2.with-alpha(0.5);
             stroke-width: 5px;
             fill: transparent;
             MoveTo {
@@ -172,10 +180,23 @@ export component Knob inherits Rectangle {
                 y: 50 - 37 * cos(root.angle * 1deg);
             }
         }
+
+        // 6. 禁用罩 (仅 !enabled): 以面板色半透压住帽面与指针, 整钮
+        // 去色压暗 —— 与刻度压暗、高光弧隐藏同向, 一眼是「不可用」。
+        Rectangle {
+            visible: !root.enabled;
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Tokens.bg-panel.with-alpha(0.55);
+            border-radius: self.width / 2;
+        }
     }
 
-    // 手势面: 垂直拖动 (120px = 满量程), 双击回中点。
+    // 手势面: 垂直拖动 (120px = 满量程), 双击回中点。禁用态关闭。
     TouchArea {
+        enabled: root.enabled;
         mouse-cursor: MouseCursor.grab;
         width: parent.width;
         height: parent.height;
