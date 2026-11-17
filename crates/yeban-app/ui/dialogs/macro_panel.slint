@@ -35,7 +35,7 @@ export component MacroPanel inherits Rectangle {
     callback macro-release(int);
     callback close();
 
-    background: Tokens.bg-panel;
+    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line-strong;
     clip: true;
@@ -52,7 +52,7 @@ export component MacroPanel inherits Rectangle {
         y: 0;
         width: parent.width;
         height: 36px;
-        background: Tokens.bg-panel-alt;
+        background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
 
         UiTitleText {
             x: Tokens.space-6;
@@ -73,7 +73,7 @@ export component MacroPanel inherits Rectangle {
             y: 8px;
             width: 20px;
             height: 20px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
@@ -193,7 +193,7 @@ export component MacroPanel inherits Rectangle {
             y: 26px;
             width: parent.width;
             height: 4px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
         }
 

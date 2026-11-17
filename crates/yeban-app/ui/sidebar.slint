@@ -113,7 +113,7 @@ export component Sidebar inherits Rectangle {
     /// 于是这一枚读数的含义恰好等于"用户看得见的那个框正持有键盘"。
     out property <bool> search-has-focus: !root.compact && sidebar-search-input.has-focus;
 
-    background: Tokens.bg-panel;
+    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line;
     clip: true;
@@ -128,7 +128,7 @@ export component Sidebar inherits Rectangle {
         y: 0;
         width: parent.width;
         height: 32px;
-        background: Tokens.bg-panel-alt;
+        background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
 
         UiTitleText {
             x: Tokens.space-4;
@@ -147,7 +147,7 @@ export component Sidebar inherits Rectangle {
             y: 5px;
             width: 22px;
             height: 22px;
-            background: collapse_area.pressed ? Tokens.bg-raised : Tokens.bg-panel;
+            background: Tokens.texture-physical ? (collapse_area.pressed ? Tokens.raised-brush : Tokens.panel-brush) : (collapse_area.pressed ? Tokens.bg-raised : Tokens.bg-panel);
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "sidebar-collapse-button";
@@ -193,11 +193,14 @@ export component Sidebar inherits Rectangle {
         y: 40px;
         width: parent.width - 8px;
         height: 24px;
-        background: Tokens.bg-void;
+        background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         border-radius: Tokens.radius-sm;
         border-width: 1px;
         border-color: Tokens.line-strong;
         visible: !root.compact;
+
+        // 输入井凹陷线 (只拟物套有 alpha)。
+        Rectangle { x: 0; y: 0; width: parent.width; height: 1px; background: Tokens.recess-dark; }
 
         UiText {
             x: Tokens.space-3;
@@ -252,7 +255,7 @@ export component Sidebar inherits Rectangle {
         y: 72px;
         width: 60px;
         height: 20px;
-        background: category_index == root.active-category ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: Tokens.texture-physical ? (category_index == root.active-category ? Tokens.raised-brush : Tokens.panel-alt-brush) : (category_index == root.active-category ? Tokens.bg-raised : Tokens.bg-panel-alt);
         border-radius: Tokens.radius-sm;
         visible: !root.compact;
         accessible-role: tab;
@@ -321,7 +324,7 @@ export component Sidebar inherits Rectangle {
         y: 100px + 28px * item_index;
         width: parent.width - 8px;
         height: 24px;
-        background: item_index == root.active-item ? Tokens.bg-panel-alt : Tokens.bg-panel;
+        background: Tokens.texture-physical ? (item_index == root.active-item ? Tokens.panel-alt-brush : Tokens.panel-brush) : (item_index == root.active-item ? Tokens.bg-panel-alt : Tokens.bg-panel);
         border-radius: Tokens.radius-sm;
         clip: true;
         accessible-role: list-item;

@@ -100,7 +100,7 @@ export component HumanizeDialog inherits Rectangle {
             y: (root.height - 360px) / 2;
             width: 560px;
             height: 360px;
-            background: Tokens.bg-panel;
+            background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
             border-radius: Tokens.radius-lg;
             border-width: 1px;
             border-color: Tokens.gold-deep;
@@ -126,7 +126,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: Tokens.space-4;
                 width: 24px;
                 height: 24px;
-                background: Tokens.bg-void;
+                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
                 border-radius: Tokens.radius-sm;
                 accessible-role: button;
                 accessible-id: "humanize-close-button";
@@ -285,7 +285,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 148px;
                 width: 160px;
                 height: 32px;
-                background: Tokens.bg-raised;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
                 border-radius: Tokens.radius-md;
                 border-width: 1px;
                 border-color: Tokens.gold;
@@ -403,7 +403,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 280px;
                 width: 160px;
                 height: 32px;
-                background: Tokens.bg-raised;
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
                 border-radius: Tokens.radius-md;
                 border-width: 1px;
                 border-color: Tokens.gold;

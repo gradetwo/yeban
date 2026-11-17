@@ -34,7 +34,7 @@ export component AssetPoolPanel inherits Rectangle {
     // 因此空池/行循环的既有几何一位不动。面板住在控制台 Tab 1 ⇒ 默认帧不画它。
     callback import-audio();
 
-    background: Tokens.bg-panel;
+    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
     border-radius: Tokens.radius-md;
     border-width: 1px;
     border-color: Tokens.line;
@@ -78,7 +78,7 @@ export component AssetPoolPanel inherits Rectangle {
         y: 20px;
         width: 56px;
         height: 20px;
-        background: Tokens.bg-panel-alt;
+        background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "asset-pool-import-button";

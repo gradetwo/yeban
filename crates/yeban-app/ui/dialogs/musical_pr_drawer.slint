@@ -68,7 +68,7 @@ export component MusicalPrDrawer inherits Rectangle {
     /// 指向另一条提案, 那等于把用户的决定施加到没被点的那条上）。
     callback select-proposal(string);
 
-    background: Tokens.bg-panel;
+    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.ai-suggestion;
     clip: true;
@@ -88,7 +88,7 @@ export component MusicalPrDrawer inherits Rectangle {
         y: 0;
         width: parent.width;
         height: 36px;
-        background: Tokens.bg-panel-alt;
+        background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
 
         UiTitleText {
             x: Tokens.space-4;
@@ -105,7 +105,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 8px;
             width: 20px;
             height: 20px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "musical-pr-close-button";
@@ -140,7 +140,7 @@ export component MusicalPrDrawer inherits Rectangle {
         y: 44px;
         width: parent.width - 8px;
         height: 68px;
-        background: Tokens.bg-void;
+        background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         border-radius: Tokens.radius-md;
 
         accessible-role: text;
@@ -180,14 +180,14 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 28px;
             width: 1px;
             height: 16px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         }
         Rectangle {
             x: Tokens.space-4;
             y: 35px;
             width: 56px;
             height: 1px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         }
         UiText {
             x: 64px;
@@ -205,7 +205,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: Tokens.space-4;
             width: 56px;
             height: 16px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-width: 1px;
             border-color: Tokens.diff-tweaked;
             border-radius: Tokens.radius-sm;
@@ -256,7 +256,7 @@ export component MusicalPrDrawer inherits Rectangle {
         y: 124px;
         width: parent.width - 8px;
         height: 48px;
-        background: Tokens.bg-void;
+        background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.line;
@@ -291,7 +291,7 @@ export component MusicalPrDrawer inherits Rectangle {
         property <bool> is-selected: !root.selected-proposal-id.is-empty
             && root.proposal-ids[proposal_index] == root.selected-proposal-id;
 
-        background: is-selected ? Tokens.bg-raised : (proposal_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel);
+        background: Tokens.texture-physical ? (is-selected ? Tokens.raised-brush : (proposal_index.mod(2) == 0 ? Tokens.panel-alt-brush : Tokens.panel-brush)) : (is-selected ? Tokens.bg-raised : (proposal_index.mod(2) == 0 ? Tokens.bg-panel-alt : Tokens.bg-panel));
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: is-selected ? Tokens.selection : Tokens.line;
@@ -315,7 +315,7 @@ export component MusicalPrDrawer inherits Rectangle {
             y: 6px;
             width: 36px;
             height: 16px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.ai-suggestion;
@@ -373,7 +373,7 @@ export component MusicalPrDrawer inherits Rectangle {
         y: parent.height - 40px;
         width: (parent.width - 16px) / 2;
         height: 28px;
-        background: Tokens.bg-raised;
+        background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.diff-added;
@@ -407,7 +407,7 @@ export component MusicalPrDrawer inherits Rectangle {
         y: parent.height - 40px;
         width: (parent.width - 16px) / 2;
         height: 28px;
-        background: Tokens.bg-void;
+        background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.diff-removed;
@@ -448,7 +448,7 @@ export component MusicalPrDrawer inherits Rectangle {
         y: parent.height - 76px;
         width: parent.width - 8px;
         height: 64px;
-        background: Tokens.bg-void;
+        background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.line;

@@ -527,6 +527,147 @@ fn the_track_area_follows_the_four_ui_rulings() {
 }
 
 // ---------------------------------------------------------------------------
+// 判据（源码钉）: 三期六面（2026-11-17）+ ConsoleTabs 普查 + Knob 禁用态
+//
+// 六面: ① 控制室、② Clip 矩阵抽屉、③ Session 视图、④ 全曲总览、
+// ⑤ 对话框/模态（modals + dialogs 五件）、⑥ sidebar 本体；连带
+// console/asset_pool_panel（ConsoleTabs 判据面的第三块面板，见下）。
+// 口径同一/二期: 铬面底色一律质感三元（flat 分支 = 原表达式逐字），
+// 内容色（轨道色 / 频带色 / 电平色 / diff 色 / 状态色 / 遮罩）不动；
+// 六面文件里不得再有裸 `background: Tokens.bg-* / Theme.bg-*;`。
+//
+// ConsoleTabs 普查结论（2026-11-17）: 组件在 app.slint 里挂在
+// `if false` 转发块下（原注「Compatibility Forwarding Block for
+// Automated Criteria Tests」），真实窗口不可达；但它不是可删死 UI ——
+// 其三页（卷帘 / 混音 / 设备）的功能在 UnifiedLowerDock 以同一
+// `console-tab` 状态存活（F7/F8/F9、屏读器动作、dock 页签同源），且
+// 约五十份判据经它转发对账混音/设备接线（删它等于删活功能的验证
+// 面）。处置 = 按「在用（判据面）」保留并与其他面一样拟物化（混音台 /
+// 设备架一期已迁共享控件，素材池本期补迁）。本钉锁住该处置的形态：
+// 转发块在、素材池走令牌。若日后要真删，须连判据面迁移一并立项。
+//
+// Knob 裁定（2026-11-17，学 Logic 无装饰旋钮）: 产品 UI 现无任何
+// Knob 落点（声相是文本拖动面、静态 EQ 旋钮已于 #157 删除），唯一
+// 使用方是陈列 example；组件已备 `enabled` 置灰禁用态，无真实参数
+// 可绑的落点必须显式给 false。本钉锁住禁用态的源码形态。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let read = |rel: &str| {
+        std::fs::read_to_string(ui_dir.join(rel)).unwrap_or_else(|_| panic!("读 {rel}"))
+    };
+    let phase3_files = [
+        "control_room.slint",
+        "clip_matrix.slint",
+        "sidebar.slint",
+        "workspace/session_view.slint",
+        "workspace/song_overview_panel.slint",
+        "modals.slint",
+        "dialogs/export_wav_dialog.slint",
+        "dialogs/humanize_dialog.slint",
+        "dialogs/macro_panel.slint",
+        "dialogs/musical_pr_drawer.slint",
+        "dialogs/undo_tree_modal.slint",
+        "console/asset_pool_panel.slint",
+    ];
+    for rel in phase3_files {
+        let src = read(rel);
+        assert!(
+            src.contains("Tokens.texture-physical ? Tokens."),
+            "{rel} 必须有质感三元落点（三期拟物化）"
+        );
+        for bare in [
+            "background: Tokens.bg-panel;",
+            "background: Tokens.bg-panel-alt;",
+            "background: Tokens.bg-void;",
+            "background: Tokens.bg-raised;",
+            "background: Tokens.bg-shell;",
+            "background: Theme.bg-panel;",
+            "background: Theme.bg-surface;",
+        ] {
+            assert!(
+                !src.contains(bare),
+                "{rel} 不得有裸底色（必须走质感三元）: {bare}"
+            );
+        }
+    }
+    // 逐面代表钉。
+    for (rel, needle, what) in [
+        (
+            "control_room.slint",
+            "Tokens.texture-physical ? Tokens.glass-brush : #06080d",
+            "控制室主表井走 glass-brush",
+        ),
+        (
+            "control_room.slint",
+            "background: Tokens.recess-dark;",
+            "控制室表井必须有凹陷深线",
+        ),
+        (
+            "clip_matrix.slint",
+            "background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-panel;",
+            "Clip 矩阵根底走 panel-brush",
+        ),
+        (
+            "clip_matrix.slint",
+            "Tokens.clip-sheen",
+            "Clip 矩阵填充格必须有质感顶光",
+        ),
+        (
+            "sidebar.slint",
+            "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;",
+            "sidebar 根底走 panel-brush",
+        ),
+        (
+            "workspace/session_view.slint",
+            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;",
+            "Session 插槽列走 shell-brush",
+        ),
+        (
+            "workspace/song_overview_panel.slint",
+            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;",
+            "全曲总览画布井走 void-brush",
+        ),
+        (
+            "modals.slint",
+            "Tokens.texture-physical ? Tokens.panel-brush : #11141d;",
+            "命令面板体走 panel-brush",
+        ),
+        (
+            "console/asset_pool_panel.slint",
+            "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;",
+            "素材池根底走 panel-brush（ConsoleTabs 判据面同迁）",
+        ),
+    ] {
+        assert!(read(rel).contains(needle), "{rel} 必须含 {what}: {needle}");
+    }
+
+    // ConsoleTabs 普查处置钉: 转发块保留（判据面在用，见本节头注）。
+    let app = read("app.slint");
+    assert!(
+        app.contains("if false : console_tabs := ConsoleTabs {"),
+        "ConsoleTabs 判据转发块必须保留（2026-11-17 普查裁定: 在用）"
+    );
+
+    // Knob 禁用态钉。
+    let knob = read("controls/knob.slint");
+    assert!(
+        knob.contains("in property <bool> enabled: true;"),
+        "Knob 必须有 enabled 属性（无参数可绑时置灰禁用）"
+    );
+    assert!(
+        knob.contains("visible: !root.enabled;"),
+        "Knob 禁用态必须有去色罩"
+    );
+    assert!(
+        knob.contains("enabled: root.enabled;"),
+        "Knob 禁用态必须关闭手势面"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 ②③④: 活窗口回读（本文件唯一碰 Slint 的测试）
 // ---------------------------------------------------------------------------
 

@@ -19,7 +19,7 @@ export component ControlRoomMeters inherits Rectangle {
     callback execute-action(string);
 
     width: root.panel-width;
-    background: Theme.bg-panel;
+    background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-panel;
     border-color: Theme.border-subtle;
 
     VerticalLayout {
@@ -37,7 +37,7 @@ export component ControlRoomMeters inherits Rectangle {
                 HorizontalLayout {
                     spacing: 4px;
                     Rectangle {
-                        background: cr_reset_t.has-hover ? Theme.accent.with-alpha(0.25) : #10141d;
+                        background: cr_reset_t.has-hover ? Theme.accent.with-alpha(0.25) : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -85,7 +85,7 @@ export component ControlRoomMeters inherits Rectangle {
 
             // Loudness Telemetry Card
             Rectangle {
-                background: Theme.bg-surface;
+                background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
@@ -170,7 +170,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : (mon_a_touch.has-hover ? #182030 : #10141d);
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : (mon_a_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "main" ? 1px : 0;
                         border-color: Theme.accent;
@@ -204,7 +204,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : (mon_b_touch.has-hover ? #182030 : #10141d);
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : (mon_b_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "alt" ? 1px : 0;
                         border-color: Theme.accent;
@@ -242,7 +242,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : (dim_touch.has-hover ? #182030 : #10141d);
+                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : (dim_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-dim ? Theme.status-warn : Theme.border-subtle;
@@ -271,7 +271,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : (mono_touch.has-hover ? #182030 : #10141d);
+                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : (mono_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-mono ? Theme.accent : Theme.border-subtle;
@@ -300,7 +300,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : (side_touch.has-hover ? #182030 : #10141d);
+                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : (side_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-side ? Theme.status-alert : Theme.border-subtle;
@@ -332,11 +332,15 @@ export component ControlRoomMeters inherits Rectangle {
 
         // Stereo Master Twin Bar Meters (Precision vertical LED bars)
         Rectangle {
-            background: #06080d;
+            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
             border-radius: Theme.radius;
             border-width: 1px;
             border-color: Theme.border-subtle;
             vertical-stretch: 1;
+
+            // 凹陷内影 (只拟物套有 alpha): 上沿深线 + 下沿反射线。
+            Rectangle { x: 0; y: 0; width: parent.width; height: 1px; background: Tokens.recess-dark; }
+            Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Tokens.recess-light; }
 
             HorizontalLayout {
                 padding: 8px;
@@ -358,7 +362,7 @@ export component ControlRoomMeters inherits Rectangle {
                 // Left Meter Bar
                 Rectangle {
                     width: 14px;
-                    background: #0a0d14;
+                    background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
                     border-radius: 2px;
                     border-width: 1px;
                     border-color: #ffffff0a;
@@ -377,7 +381,7 @@ export component ControlRoomMeters inherits Rectangle {
                 // Right Meter Bar
                 Rectangle {
                     width: 14px;
-                    background: #0a0d14;
+                    background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
                     border-radius: 2px;
                     border-width: 1px;
                     border-color: #ffffff0a;
@@ -398,7 +402,7 @@ export component ControlRoomMeters inherits Rectangle {
         // Master Output Footer
         Rectangle {
             height: 24px;
-            background: #080a10;
+            background: Tokens.texture-physical ? Tokens.shell-brush : #080a10;
             border-radius: 3px;
             border-width: 1px;
             border-color: Theme.border-subtle;
