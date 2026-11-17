@@ -4004,7 +4004,12 @@ pub(super) fn note_wave_at(
     let candidates: Vec<(usize, &Region<'_>)> =
         select_regions(instrument, note, initial_cc, occurrence, held_notes)
             .into_iter()
-            .filter_map(|index| instrument.regions().get(index).map(|region| (index, region)))
+            .filter_map(|index| {
+                instrument
+                    .regions()
+                    .get(index)
+                    .map(|region| (index, region))
+            })
             .collect();
 
     for (index, region) in candidates {
@@ -6319,7 +6324,10 @@ mod tests {
         ];
         let context = note_trigger_context(&notes);
         let ends = voice_end_frames(&instrument, &notes, &context, &BTreeMap::new());
-        assert_eq!(ends[0], 24_000, "`group=1` 的新区域 ⇒ 关掉声明的 `off_by=1` 声部");
+        assert_eq!(
+            ends[0], 24_000,
+            "`group=1` 的新区域 ⇒ 关掉声明的 `off_by=1` 声部"
+        );
         assert_eq!(ends[1], 72_000, "关断方自己的音尾不许被改");
     }
 
