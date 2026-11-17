@@ -156,6 +156,21 @@ yeban-diagnostics = { path = "../yeban-diagnostics" }
 serde_json = { workspace = true }
 
 # ---------------------------------------------------------------------------
+# 音源管理（line/sound-library-manager）：目录拉取 / 包下载 / 校验 / 解包
+# ---------------------------------------------------------------------------
+# `src/sound_library.rs` 的四条边：
+# - `ureq`：仓内**唯一**的 HTTP 客户端（新包，裁决与许可面见根 Cargo.toml 的
+#   登记注释）；只做 https GET（目录 JSON 与包归档），⛔ 不监听、不上传。
+# - `sha2` / `zip`：**早已在** workspace 依赖图里（`yeban-diagnostics` /
+#   `yeban-model` 在用），本条只是给 app 加直接边，包集合只多 ureq 一族。
+# - `zip` 的 `deflate` feature：根登记是 `default-features = false`（写入侧
+#   只用 stored），读包必须能解 deflate 条目 ⇒ 在成员这一层显式补上。
+# 依赖图变了 ⇒ 按纪律重生成 `docs/ledger/dependency-licenses.md` 并一起提交。
+ureq = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true, features = ["deflate"] }
+
+# ---------------------------------------------------------------------------
 # ui-test-port: 无头 UI 自动化测试端口 (默认**关闭**)
 # ---------------------------------------------------------------------------
 # 依赖方向 (架构规范 §8 的 crate 清单): yeban-app --(feature)--> yeban-ui-test-port。

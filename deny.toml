@@ -52,6 +52,11 @@ allow = [
     # 不像多数 crate 那样带 MIT/Apache 兜底分支, 所以必须显式列出(否则被逐条拒绝)。
     # 同样是 Proposed 状态, 见 docs/adr/ADR-0001 D20。
     "Unlicense",
+    # CDLA-Permissive-2.0 (Community Data License Agreement Permissive 2.0): Linux
+    # Foundation 的宽松**数据**许可, 无 copyleft / 非商业 / 不可再分发限制。它由
+    # webpki-roots 引入 (Mozilla CA 根证书**数据**的编译产物), 来源链路是
+    # ureq (rustls) <- yeban-app 的音源目录拉取。不属于 AGENTS.md §2 红线 2 的任何一类。
+    "CDLA-Permissive-2.0",
 ]
 # 注意: CC-BY-NC-* / CC-Sampling-Plus / 任何"非商业"或"不可再分发"许可**永远不进白名单**
 # [AGENTS.md §2 红线 2]。历史项目 groove 的采样清单曾主动接受 CC-BY-NC —— 绝不移植
