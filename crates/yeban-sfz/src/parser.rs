@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBuilder};
 use crate::error::SfzError;
-use crate::instrument::{Instrument, Region, build_region};
+use crate::instrument::{Instrument, Region, RegionShift, build_region};
 use crate::midi::{MidiOpcode, MidiSection};
 
 // ---------------------------------------------------------------------------
@@ -1035,6 +1035,12 @@ struct Parser<'a> {
     control_note_offset: i32,
     /// `<control>` 段声明的 `octave_offset`（八度，SFZ v2）。口径同 `control_note_offset`。
     control_octave_offset: i32,
+    /// ⭐ **外部移位**（半音）：解析**入参**（见
+    /// [`parse_text_with_external_shift`]），⛔ 不是文件内容 —— 它是装载侧
+    /// 记法适配（自动检测 (b) / 手动覆盖 (c)）的施加通道，在归约侧与文件
+    /// 自带 (a) 相加（合成公式见 `docs/ledger/sfz-core-notes.md` §14.4）。
+    /// 缺省 0 ⇒ 解析结果与未实现本入参之前逐位相同。
+    external_shift: i32,
     warnings: Vec<Warning>,
     warnings_truncated: bool,
 }
@@ -1088,6 +1094,7 @@ impl<'a> Parser<'a> {
             control_cc_hd_defaults: BTreeMap::new(),
             control_note_offset: 0,
             control_octave_offset: 0,
+            external_shift: 0,
             warnings: Vec::new(),
             warnings_truncated: false,
         }
@@ -1423,14 +1430,19 @@ impl<'a> Parser<'a> {
         let default_path = self.control.get("default_path").cloned();
         // `<control>` 的移位声明（插入期已校验）：合成半音移位，随 `default_path`
         // 同一条位置语义通道传给归约 —— 在本 region 归约时有效的那一份。
-        let note_shift = self.control_note_offset + self.control_octave_offset * 12;
+        // ⭐ 文件自带 (a) 与解析入参的外部移位在此相加成施加用的总移位；
+        // (a) 单独一份传给归约，逐 region 记进 `Region::declared_note_shift`。
+        let declared_shift = self.control_note_offset + self.control_octave_offset * 12;
         let built = build_region(
             &self.region,
             &self.group,
             &self.master,
             &self.global,
             default_path,
-            note_shift,
+            RegionShift {
+                applied: declared_shift + self.external_shift,
+                declared: declared_shift,
+            },
             line,
         )?;
         match built {
@@ -1768,8 +1780,30 @@ fn truncate_for_error(text: &str) -> String {
 /// [`Warning::IncludeIgnored`]）。
 ///
 /// 纯函数：无 I/O、无全局状态、可重入，也是 fuzz 目标的主入口。
+/// 等价于 [`parse_text_with_external_shift`] 传外部移位 0。
 pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<'a>, SfzError> {
+    parse_text_with_external_shift(text, limits, 0)
+}
+
+/// 与 [`parse_text`] 相同，但带一个**外部移位**（半音）入参。
+///
+/// ## 口径（`docs/ledger/sfz-core-notes.md` §14.4）
+///
+/// * 外部移位是**装载侧适配**的施加通道（自动检测 (b) / 手动覆盖 (c) 的结论），
+///   ⛔ 不是文件内容、⛔ 不改写任何源文本；
+/// * 它在归约侧与文件自带 (a)（`<control>` 的 `note_offset` / `octave_offset`）
+///   **相加**成总移位，再经阶段 1 的同一组 `shifted_*` 助手施加 ⇒ 「只移写出的
+///   值、缺省不移、哨兵不移」的口径对外部移位一字不变；
+/// * `external_shift == 0` 时结果与 [`parse_text`] 逐位相同；
+/// * 每条 region 的 [`Region::declared_note_shift`](crate::instrument::Region::declared_note_shift)
+///   只记 (a)，⛔ 不含本入参 —— 「文件说了什么」与「装载侧加了什么」分得开。
+pub fn parse_text_with_external_shift<'a>(
+    text: &'a str,
+    limits: &ParseLimits,
+    external_shift: i32,
+) -> Result<Instrument<'a>, SfzError> {
     let mut parser = Parser::new(*limits);
+    parser.external_shift = external_shift;
     parser.run(text, 1, true)?;
     parser.finalize_region()?;
     parser.finalize_curve()?;
@@ -1781,11 +1815,23 @@ pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<
 /// 把 [`IncludeResolver`] 展开好的片段序列解析成 [`Instrument`]。
 ///
 /// 片段按粘贴顺序遍历，解析状态跨片段延续，因此 `<region>` 可以跨 `#include` 边界。
+/// 等价于 [`parse_sources_with_external_shift`] 传外部移位 0。
 pub fn parse_sources<'a>(
     sources: &'a [SfzSource],
     limits: &ParseLimits,
 ) -> Result<Instrument<'a>, SfzError> {
+    parse_sources_with_external_shift(sources, limits, 0)
+}
+
+/// 与 [`parse_sources`] 相同，但带一个**外部移位**（半音）入参
+/// （口径同 [`parse_text_with_external_shift`]）。
+pub fn parse_sources_with_external_shift<'a>(
+    sources: &'a [SfzSource],
+    limits: &ParseLimits,
+    external_shift: i32,
+) -> Result<Instrument<'a>, SfzError> {
     let mut parser = Parser::new(*limits);
+    parser.external_shift = external_shift;
     for source in sources {
         parser.run(&source.text, source.first_line, false)?;
     }
