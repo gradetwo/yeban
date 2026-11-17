@@ -1754,3 +1754,7 @@ msgstr "オーディオを読み込み"
 
 msgid "尚无素材"
 msgstr "アセットはまだありません"
+
+# --- app.slint (line/ui-window-state) ---
+msgid "恢复默认布局"
+msgstr "デフォルトレイアウトに戻す"

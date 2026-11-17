@@ -1754,3 +1754,7 @@ msgstr "Importer de l'audio"
 
 msgid "尚无素材"
 msgstr "Aucune ressource pour l'instant"
+
+# --- app.slint (line/ui-window-state) ---
+msgid "恢复默认布局"
+msgstr "Restaurer la disposition par défaut"
