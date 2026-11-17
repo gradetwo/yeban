@@ -1068,8 +1068,8 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        36,
-        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics` ＋ 手动相位对齐线的 `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` 3 条（逐项对应见常量上的表）"
+        37,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler` ＋ `#348` 的 `channel` ＋ 任务单 `#350` 的 `key_signature` ＋ 采样内嵌线的 `embedded_samples` ＋ UI 轨道交互线的 `track_order` ＋ 夜半原生预制线的 `tracks[*].preset` 一组 9 条 ＋ 歌词轨线的 `lyrics` ＋ 手动相位对齐线的 `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` 3 条 ＋ 音名八度统一线的 `tracks[*].sampler.note_octave_override`（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,
