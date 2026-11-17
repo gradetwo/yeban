@@ -3677,7 +3677,7 @@ pub fn render(
         // ⚠ 走这条路**发声**的只有 `yeban_render_sfz_wav`；`yeban_render_master` 自
         // `#274` 起不经这里发声（它只调 [`survey_sampler`] 取读数，音频由引擎的
         // SFZ 支路渲染，钉住这条的判据是 `tests/sampler_source_single_path.rs`）。
-        let Some(wave) = note_wave_at(
+        let Some(wave) = note_wave_at_with_cuts(
             instrument,
             &note,
             tone_hz,
@@ -3689,6 +3689,7 @@ pub fn render(
             Some(held),
             TriggerEvent::NoteOn,
             0.0,
+            &cuts[index].layers,
         ) else {
             notes_unmatched = notes_unmatched.saturating_add(1);
             continue;
@@ -4105,6 +4106,40 @@ pub(super) fn note_wave_at(
     event: TriggerEvent,
     held_seconds: f32,
 ) -> Option<NoteWave> {
+    note_wave_at_with_cuts(
+        instrument,
+        note,
+        tone_hz,
+        engine_hz,
+        sfz_path,
+        cache,
+        initial_cc,
+        occurrence,
+        held_notes,
+        event,
+        held_seconds,
+        &[],
+    )
+}
+
+/// [`note_wave_at`] ＋**逐层关断表**（`(区域下标, 结束帧, 淡出帧数)`）：
+/// 被 `off_by` / `note_polyphony` 掐掉的**那一层**在这里被截断并淡出，
+/// 同一个音符的其它层不受影响（＝引擎逐声部退休）。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn note_wave_at_with_cuts(
+    instrument: &Instrument<'_>,
+    note: &SfzNote,
+    tone_hz: f32,
+    engine_hz: f32,
+    sfz_path: Option<&Path>,
+    cache: &mut SampleCache,
+    initial_cc: &BTreeMap<u8, u8>,
+    occurrence: u64,
+    held_notes: Option<u32>,
+    event: TriggerEvent,
+    held_seconds: f32,
+    layer_cuts: &[(usize, u64, u64)],
+) -> Option<NoteWave> {
     let rates = RenderRates::new(engine_hz, engine_hz);
     let cc_probe = |cc: u8| -> u8 { initial_cc.get(&cc).copied().unwrap_or(0) };
     // 同一次触发的**一个**随机数：`lorand` / `hirand` / `amp_random` / `offset_random`
@@ -4184,7 +4219,7 @@ pub(super) fn note_wave_at(
             })
         };
         let mut layer = vec![0.0_f32; span];
-        let (layer_written, _layer_kind) = if builtin_silence {
+        let (mut layer_written, _layer_kind) = if builtin_silence {
             saw_silence = true;
             (span, NoteSampleKind::BuiltinSilence)
         } else if let Some(reading) = &file_sample {
@@ -4232,6 +4267,23 @@ pub(super) fn note_wave_at(
             let len = layer_written as u32;
             for (sample_index, value) in layer.iter_mut().enumerate().take(layer_written) {
                 *value *= curve.level(sample_index as u32, len);
+            }
+        }
+        // ⭐ **逐层关断**：这一层被 `off_by` / `note_polyphony` 掐掉 ⇒ 只截这一层并淡出，
+        // 同音符的其它层继续响（引擎关的是声部，⛔ 不是整个音符）。
+        if let Some(&(_, end, fade)) = layer_cuts.iter().find(|(region, _, _)| *region == index) {
+            let relative =
+                usize::try_from(end.saturating_sub(note.start_frame)).unwrap_or(usize::MAX);
+            let limit = layer_written.min(relative);
+            if limit < layer_written {
+                let fade_frames = fade.max(NOTE_FADE_FRAMES).max(1) as usize;
+                for (sample_index, value) in layer.iter_mut().enumerate().take(limit) {
+                    let remaining = limit - sample_index;
+                    if remaining < fade_frames {
+                        *value *= remaining as f32 / fade_frames as f32;
+                    }
+                }
+                layer_written = limit;
             }
         }
         let (pan_l, pan_r) = region_pan_gains(spec.pan);
@@ -4591,18 +4643,26 @@ pub(super) fn note_trigger_context(notes: &[SfzNote]) -> Vec<(u64, u32)> {
         .collect()
 }
 
-/// 一个音符的**关断裁决**：真实结束帧 ＋ 关断淡出的帧数。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 一个音符的**关断裁决**：真实结束帧 ＋ 关断淡出的帧数 ＋ 逐层关断表。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct VoiceCut {
     /// 实际结束帧（含）。
     pub end: u64,
     /// 末尾淡出帧数（`off_mode=time` ⇒ `off_time` 秒 × 采样率；其余沿用 64 帧去咔哒）。
     pub fade: u64,
+    /// ⭐ **逐声部**的关断：`(区域下标, 结束帧, 淡出帧数)`。
+    ///
+    /// 引擎关断的是**声部**（一条区域在一次触发里的一份发声），⛔ 不是整个音符：
+    /// 同一个音符的多层里被掐掉一层，其余层照样响。这里如实记下每一层的死期，
+    /// 由渲染端按层截断（`end` 只在**所有层**都被掐掉时才提前）。
+    pub layers: Vec<(usize, u64, u64)>,
 }
 
 #[derive(Clone, Copy)]
 struct ActiveVoice {
     note: usize,
+    /// 这条声部对应的区域下标（＝一层）。
+    region: usize,
     group: u32,
     /// 这个声部被关断时的淡出帧数（`off_mode=time` ⇒ `off_time`，否则 0）。
     off_fade: u64,
@@ -4627,6 +4687,7 @@ pub(super) fn voice_end_frames(
         .map(|note| VoiceCut {
             end: note.start_frame.saturating_add(note.frames.max(1)),
             fade: 0,
+            layers: Vec::new(),
         })
         .collect();
     let selected: Vec<Vec<usize>> = notes
@@ -4664,10 +4725,13 @@ pub(super) fn voice_end_frames(
                 for voice in active.iter_mut().take(existing) {
                     if voice.off_by == group {
                         voice.end = start;
-                        if start < cuts[voice.note].end {
-                            cuts[voice.note].end = start;
-                            cuts[voice.note].fade = voice.off_fade;
-                        }
+                        // ⭐ 掐的是**这一层**，不是整个音符。
+                        record_layer_cut(
+                            &mut cuts[voice.note],
+                            voice.region,
+                            start,
+                            voice.off_fade,
+                        );
                     }
                 }
             }
@@ -4694,10 +4758,12 @@ pub(super) fn voice_end_frames(
                         break;
                     };
                     let victim_note = active[victim].note;
-                    if start < cuts[victim_note].end {
-                        cuts[victim_note].end = start;
-                        cuts[victim_note].fade = active[victim].off_fade;
-                    }
+                    record_layer_cut(
+                        &mut cuts[victim_note],
+                        active[victim].region,
+                        start,
+                        active[victim].off_fade,
+                    );
                     active[victim].end = start;
                     active.retain(|voice| voice.end > start);
                 }
@@ -4715,6 +4781,7 @@ pub(super) fn voice_end_frames(
             };
             active.push(ActiveVoice {
                 note: index,
+                region: region_index,
                 off_fade,
                 group: region.group,
                 off_by: region.off_by,
@@ -4726,7 +4793,30 @@ pub(super) fn voice_end_frames(
             order = order.saturating_add(1);
         }
     }
+    // 只有**这个音符的所有层**都被掐掉，音符本身才提前收尾；否则存活层会自然响到底。
+    for (index, cut) in cuts.iter_mut().enumerate() {
+        if cut.layers.is_empty() || cut.layers.len() < selected[index].len() {
+            continue;
+        }
+        let latest = cut.layers.iter().max_by_key(|(_, end, _)| *end);
+        if let Some(&(_, end, fade)) = latest {
+            cut.end = cut.end.min(end);
+            cut.fade = fade;
+        }
+    }
     cuts
+}
+
+/// 记一条逐层关断（同一层被重复掐 ⇒ 取更早/更短的那次，⛔ 不重复登记）。
+fn record_layer_cut(cut: &mut VoiceCut, region: usize, end: u64, fade: u64) {
+    if let Some(existing) = cut.layers.iter_mut().find(|(r, _, _)| *r == region) {
+        if end < existing.1 {
+            existing.1 = end;
+            existing.2 = fade;
+        }
+        return;
+    }
+    cut.layers.push((region, end, fade));
 }
 
 #[cfg(test)]
@@ -6732,20 +6822,22 @@ mod tests {
     /// ⭐ `off_mode=time` ＋ `off_time`：关断的淡出长度按秒数折算，⛔ 不是固定 64 帧。
     #[test]
     fn off_time_controls_the_choke_fade_length() {
-        let note = |start: u64| SfzNote {
+        let note = |start: u64, pitch: u8| SfzNote {
             start_frame: start,
             frames: 48_000,
-            pitch: 60,
+            pitch,
             velocity: 100,
             gain_l: 1.0,
             gain_r: 1.0,
         };
-        let notes = [note(0), note(24_000)];
+        // 掐人的那条必须用**另一个键**，否则同一个音符会把两条区域都触发 ⇒ 只有一层被掐，
+        // 音符靠另一层还能响（这正是逐层关断的语义，见下一条判据）。
+        let notes = [note(0, 60), note(24_000, 62)];
         let context = note_trigger_context(&notes);
         // 缺省（`off_mode=fast`）⇒ 淡出 0（沿用 64 帧去咔哒）。
         let fast = parse_text(
             "<region> sample=definitely-missing.wav key=60 off_by=1\n\
-             <region> sample=definitely-missing.wav key=60 group=1",
+             <region> sample=definitely-missing.wav key=62 group=1",
             &ParseLimits::default(),
         )
         .expect("解析");
@@ -6755,13 +6847,78 @@ mod tests {
         // `off_mode=time off_time=0.05` ⇒ 0.05 s × 48 kHz = 2400 帧。
         let timed = parse_text(
             "<region> sample=definitely-missing.wav key=60 off_by=1 off_mode=time off_time=0.05\n\
-             <region> sample=definitely-missing.wav key=60 group=1",
+             <region> sample=definitely-missing.wav key=62 group=1",
             &ParseLimits::default(),
         )
         .expect("解析");
         let cuts = voice_end_frames(&timed, &notes, &context, &BTreeMap::new(), 48_000.0);
         assert_eq!(cuts[0].end, 24_000);
         assert_eq!(cuts[0].fade, 2_400, "`off_time=0.05` @ 48 kHz ⇒ 2400 帧");
+    }
+
+    /// ⭐ **逐层关断**：同一个音符命中两条区域，其中一层被 `off_by` 掐掉时，
+    /// ⛔ 不许连坐整个音符 —— 另一层要照常响到底（引擎关的是声部，不是音符）。
+    #[test]
+    fn choke_cuts_only_the_victim_layer() {
+        let note = |start: u64, pitch: u8| SfzNote {
+            start_frame: start,
+            frames: 48_000,
+            pitch,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let notes = [note(0, 60), note(24_000, 62)];
+        let context = note_trigger_context(&notes);
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 off_by=1 tune=0\n\
+             <region> sample=definitely-missing.wav key=60 tune=100\n\
+             <region> sample=definitely-missing.wav key=62 group=1",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let cuts = voice_end_frames(&instrument, &notes, &context, &BTreeMap::new(), 48_000.0);
+        assert_eq!(cuts[0].layers.len(), 1, "只有 `off_by=1` 那一层该被掐掉");
+        let (region, end, _fade) = cuts[0].layers[0];
+        assert_eq!(region, 0, "被掐的是第 0 条区域");
+        assert_eq!(end, 24_000, "死期＝掐人者的触发帧");
+        assert_eq!(
+            cuts[0].end, 48_000,
+            "另一层还活着 ⇒ 音符本身**不许**提前收尾"
+        );
+
+        // 渲染端：被掐的那一层在 24000 帧后消失，另一层（`tune=100`）继续。
+        let mut cache = SampleCache::new();
+        let wave = note_wave_at_with_cuts(
+            &instrument,
+            &notes[0],
+            220.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(0),
+            TriggerEvent::NoteOn,
+            0.0,
+            &cuts[0].layers,
+        )
+        .expect("两层都该发声");
+        let energy = |from: usize, to: usize| -> f32 {
+            wave.mono[from..to].iter().map(|v| v * v).sum::<f32>() / (to - from) as f32
+        };
+        let before = energy(4_000, 12_000);
+        let after = energy(30_000, 38_000);
+        assert!(
+            after < before * 0.75,
+            "被掐掉一层后能量该明显下降：before={before} after={after}"
+        );
+        // ⚠ 正弦回退的源长按 `tune` 升高后提前耗尽（≈45389），只要"接近整音符"即可。
+        assert!(
+            wave.written > 45_000,
+            "存活层仍要几乎写满整个音符：written={}",
+            wave.written
+        );
     }
 
     fn zero_crossings(pcm: &[f32]) -> usize {
