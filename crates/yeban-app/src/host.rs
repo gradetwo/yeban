@@ -1226,6 +1226,10 @@ pub fn reproject_now(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// 界面停在「波形待分析 · 示意」的基准线。⛔ 不去磁盘上按路径猜（那是另一份事实源）。
 pub fn pump_waveform_analysis(ui: &MainWindow, port: &Rc<UndoPort>) {
     if crate::waveform_cache::take_finished() {
+        // 可观测性（本轮实测教训：整条波形链**一条日志都没有**，界面上看不出包络时
+        // 无法区分"没分析 / 分析完没画 / 画了被盖住"）。只在**一批真的结束**时打一行，
+        // 稳态（空闲）零输出。
+        eprintln!("[yeban-app] 波形分析：一批结束 ⇒ 重投影一次");
         reproject_now(ui, port);
     }
     if !crate::waveform_cache::is_idle() {
@@ -1247,6 +1251,10 @@ pub fn pump_waveform_analysis(ui: &MainWindow, port: &Rc<UndoPort>) {
         }
     }
     if !jobs.is_empty() {
+        eprintln!(
+            "[yeban-app] 波形分析：起一批 {} 条（资产字节来自会话池）",
+            jobs.len()
+        );
         crate::waveform_cache::spawn_batch(jobs);
     }
 }
@@ -5481,20 +5489,46 @@ pub fn wire_track_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
 fn create_track(ui: &MainWindow, port: &UndoPort, kind: crate::bridge::NewTrackKind) {
     let Some(project) = port.try_project() else {
         eprintln!("[yeban-app] 新建轨：权威会话此刻没有活跃工程");
+        toast_track(ui, "新建轨道被拒绝：会话里没有活跃工程");
         return;
     };
+    // 提交**之前**记下轨道身份集合：提交后按差集取出"刚建的那一条"，
+    // 好让回执说出**名字**（而不是只报一句"成功"）。成本是提交时的一次集合拷贝
+    // （轨道数 × 26 字符实体 ID，与一次编辑同量级）。
+    let before: Vec<yeban_model::EntityId> = project.tracks.keys().cloned().collect();
     let ops = match crate::bridge::track_create_ops(&project, kind) {
         Ok(ops) => ops,
         Err(reason) => {
             eprintln!("[yeban-app] 新建轨被拒绝：{reason}");
+            toast_track(ui, &format!("新建轨道被拒绝：{reason}"));
             refresh_undo_window(ui, port, true);
             return;
         }
     };
     if port.commit_ops(now_ms(), "create track", ops).is_err() {
         eprintln!("[yeban-app] 新建轨被拒绝（工程未改）");
+        toast_track(ui, "新建轨道被拒绝（工程未改）");
+    } else {
+        // 回执：用户刚点的那一下必须**看得见结果**。名字从提交后的工程读（差集取新增），
+        // 读不到就退回不带名字的文案 —— ⛔ 不编一个假名字。
+        let name = port.try_project().and_then(|after| {
+            after
+                .tracks
+                .iter()
+                .find(|(id, _)| !before.contains(id))
+                .map(|(_, track)| track.name.clone())
+        });
+        match name {
+            Some(name) => toast_track(ui, &format!("已新建轨道：{name}")),
+            None => toast_track(ui, "已新建轨道"),
+        }
     }
     refresh_undo_window(ui, port, true);
+}
+
+/// 建轨的**回执**（唯一文案出口：成功与拒绝都经由这里，⛔ 不各写一份前缀）。
+fn toast_track(ui: &MainWindow, text: &str) {
+    ui.set_toast_message(format!("[轨道] {text}").into());
 }
 
 /// 发送增益手势的中间态（**会话运行态**，不进 `.yeban`）。
@@ -5606,6 +5640,25 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
     ui.set_track_meter_peaks(strings(&snapshot.peak_labels()));
     ui.set_track_meter_rmss(strings(&snapshot.rms_labels()));
     ui.set_track_meter_levels(lengths(&snapshot.levels()));
+    // 可观测性（本轮实测教训）：电平"到底有没有读数"必须能在 stderr 读到，否则界面上一根
+    // 不动时分不清两件完全不同的事——"引擎给的就是静音" 与 "值到了但没画出来"。
+    // 只在**首次**出现非零读数时打一行（稳态零噪声，一次排查够用）。
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SEEN_NONZERO: AtomicBool = AtomicBool::new(false);
+        if !SEEN_NONZERO.load(Ordering::Relaxed) {
+            let levels = snapshot.levels();
+            let non_zero = levels.iter().filter(|v| **v > 0.001).count();
+            if non_zero > 0 {
+                let peak = levels.iter().copied().fold(0.0_f32, f32::max);
+                SEEN_NONZERO.store(true, Ordering::Relaxed);
+                eprintln!(
+                    "[yeban-app] 电平：首次非零读数 {non_zero}/{} 条，最大 {peak:.3}",
+                    levels.len()
+                );
+            }
+        }
+    }
     ui.set_master_meter_peak(snapshot.master_peak_label().into());
     ui.set_master_meter_rms(snapshot.master_rms_label().into());
     ui.set_master_meter_lufs(snapshot.master_lufs_label().into());
@@ -15417,7 +15470,20 @@ pub fn report_clipboard(ui: &MainWindow, verb: ClipboardVerb, ok: bool) {
     } else {
         format!("[剪贴板] {verb_word}未生效：{hint}")
     };
-    ui.set_toast_message(text.into());
+    // 可观测性（本轮实测教训）：toast 是**唯一**的剪贴板回执，而它一旦没上屏，
+    // 现场就分不清"没路由到"与"路由到了没画出来"。这一行把判断从两端拉成一条直线：
+    // stderr 有这行 ⇒ 键位到了、文案写进去了（剩下的只是渲染问题）；
+    // stderr 没有 ⇒ 根本没走到这里（回去查按键路由）。
+    eprintln!("[yeban-app] toast: {text}");
+    ui.set_toast_message(text.clone().into());
+    // 第二道读数：写进去之后**当场读回来**。stderr 里这行与界面像素对不上的话，
+    // 责任链就只剩"渲染层"这一段，不用再怀疑按键路由/属性没绑上。
+    let applied = ui.get_toast_message();
+    if applied.as_str() == text {
+        eprintln!("[yeban-app] toast 现值 = {applied}（写入生效）");
+    } else {
+        eprintln!("[yeban-app] toast 现值 = {applied}（⚠ 与期望 {text:?} 不一致）");
+    }
 }
 
 /// 把选中片段复制到进程内剪贴板。返回 `false` = 没选中 / 读不到（不写入）。

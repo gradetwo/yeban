@@ -15,7 +15,7 @@ import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
 import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
-import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
+import { CommandPaletteModal, HotspotOverlay } from "modals.slint";
 
 export component MainWindow inherits Window {
     title: @tr("夜半");
@@ -1316,6 +1316,11 @@ export component MainWindow inherits Window {
             // 3. BOTTOM UNIFIED MULTI-MODAL DOCK (Resizable Height & Fullscreen Maximize)
             if (root.show-lower-dock || root.console-maximized) : UnifiedLowerDock {
                 console-maximized: root.console-maximized;
+                // ⚠ 本轮试过把这里改成"按 root.height 封顶"或"工作区先让位"两种写法：
+                //   · 用 `root.height` 计算 ⇒ Slint 报 9 条 binding loop（高度互喂）；
+                //   · 给工作区行加 `min-height: 0px` ⇒ dock 被推到窗口底部，反而只剩标签行。
+                // 都不如原样。A1（纵向布局溢出）留给下一轮：需要一条**单向**的窗口高度信号
+                // （Rust 侧窗口 resize 事件写进属性），而不是在 .slint 里回读自己。
                 dock-height: root.lower-dock-height;
                 active-tab: Theme.active-dock-tab;
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
@@ -1452,9 +1457,88 @@ export component MainWindow inherits Window {
             close-overlay() => { root.show-hotspots = false; }
         }
 
-        ToastBanner {
-            toast-text: root.toast-message;
-            show-toast: root.show-floating-toast || root.toast-message != "";
+        // 浮层顺序：toast 必须在**所有**工作区内容之上。
+        //
+        // ⭐ 2026-11-16 实测修正：原来这里实例化 `ToastBanner`，宿主已经把文案写进了
+        // `toast-message`（stderr 有 `[yeban-app] toast: [剪贴板] 复制未生效…`），
+        // 但整帧差异恒为 **0 像素** ⇒ 组件那一层（`in-out` 双向属性 + 内部 `root` 重定向）
+        // 没有把文案画出来。这里改成**直接画在窗口上**的内联覆盖层：只有一条绑定
+        // （`text: root.toast-message`）与一个显隐条件，没有第二层属性转发，
+        // 因此"宿主写了文案"与"屏幕上有字"之间不再有可失效的环节。
+        // 9400 低于模态层（9500+）⇒ 弹窗开着时 toast 不会压到模态上。
+        // ⚠ **本轮实测结论（决定性）**：根级"绝对定位覆盖层"在这里**不是覆盖层**。
+        // 因为 root 的第一个子元素是 `VerticalLayout`，Slint 会把 root 的其余子元素也当作
+        // 该布局的行来排 —— 于是 `x:/y:` 被忽略、元素被压成布局行。用一个无条件显示的
+        // 260×40 品红探针实测：它没有落在 (20,200)，而是被拉成约 390×60 落在 (41,375)。
+        // 结论：当布局总高 > 窗口高时，任何**后声明**的行（toast/引擎错误条/模态）都被排到
+        // 窗口外 ⇒ 屏幕上 0 像素。这是"布局溢出"问题，不是绑定问题（属性读回确有文案）。
+        // 因此：toast 这条修复只有在「布局能塞进窗口」之后才看得见（见本轮报告的 A1 项）。
+        // 这里保留内联覆盖层写法（比原来的 ToastBanner 少一层 in-out 转发），⛔ 不再叠第三层。
+        if root.show-floating-toast || root.toast-message != "" : Rectangle {
+            z: 9400;
+            x: root.width - 324px;
+            y: 54px;
+            width: 310px;
+            height: 34px;
+            background: #0e1422f6;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.accent.with-alpha(0.6);
+            accessible-role: banner;
+            accessible-id: "toast-banner";
+            accessible-label: @tr("提示：{}", root.toast-message);
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 10px;
+                spacing: 8px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        y: 14px;
+                        border-radius: 3px;
+                        background: Theme.accent;
+                    }
+                    Text {
+                        text: root.toast-message;
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: #f8fafc;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+                }
+
+                // 手动收起：清文案与常显位（⛔ 不另设"已关闭"布尔 —— 两个状态会互相打脸）。
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: 8px;
+                    border-radius: 9px;
+                    background: #ffffff14;
+                    Text {
+                        text: "✕";
+                        font-family: Tokens.font-ui;
+                        font-size: 10.5px;
+                        color: #cbd5e1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.toast-message = "";
+                            root.show-floating-toast = false;
+                        }
+                    }
+                }
+            }
         }
 
         // Visible Engine Error Banner
