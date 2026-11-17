@@ -124,6 +124,7 @@ fn project_with_notes_and_sampler(notes: &[(u8, u8)], binding: &str) -> YebanPro
         }
     }
     project.tracks.get_mut(&lead).expect("Lead").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: binding.to_owned(),
     });
     project.validate().expect("夹具工程必须合法");

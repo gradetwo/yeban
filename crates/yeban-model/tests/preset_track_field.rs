@@ -120,6 +120,7 @@ fn set_track_preset_writes_exactly_one_field_and_is_reversible() {
         track_id,
         old_sampler: None,
         new_sampler: Some(SamplerBinding {
+            note_octave_override: None,
             path: "assets/samples/ixox-flute/Ixox Flute.sfz".to_owned(),
         }),
     };

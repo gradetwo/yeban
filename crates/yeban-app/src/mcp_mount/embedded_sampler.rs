@@ -180,6 +180,7 @@ fn bound_project_of(
         .expect("样本工程必须有一条带音符的 MIDI 轨")
         .id;
     project.tracks.get_mut(&track_id).expect("轨").sampler = Some(yeban_model::SamplerBinding {
+        note_octave_override: None,
         path: sampler.to_owned(),
     });
     project.validate().expect("夹具工程必须合法");
@@ -554,6 +555,7 @@ fn single_track_sampler_project(pan: f32, sampler: &str) -> yeban_model::YebanPr
         kind: TrackKind::Midi,
         pan,
         sampler: Some(SamplerBinding {
+            note_octave_override: None,
             path: sampler.to_owned(),
         }),
         ..TrackV3::default()

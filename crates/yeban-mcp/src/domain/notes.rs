@@ -5544,6 +5544,7 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                     }
                     Some(Value::Null) => None,
                     Some(value) => Some(SamplerBinding {
+                        note_octave_override: None,
                         path: read_non_empty_string(
                             SET_TRACK_SAMPLER_KIND,
                             value,
@@ -10624,6 +10625,7 @@ fn compile_inner(
                 let new_sampler = new_sampler
                     .as_ref()
                     .map(|binding| yeban_model::SamplerBinding {
+                        note_octave_override: None,
                         path: yeban_model::sampler_path::normalize_sampler_path_for_storage(
                             &super::sample_roots::library_root(),
                             &binding.path,

@@ -1290,6 +1290,7 @@ fn sampler_project(notes: &[(u64, u8)], sampler: Option<&Path>) -> YebanProjectV
     let mut project = empty_project();
     let track = add_track(&mut project, 2, TrackKind::Midi, "Sampler");
     project.tracks.get_mut(&track).expect("夹具轨").sampler = sampler.map(|path| SamplerBinding {
+        note_octave_override: None,
         path: path.display().to_string(),
     });
     let mut map = BTreeMap::new();

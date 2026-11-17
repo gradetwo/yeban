@@ -1767,17 +1767,18 @@ pub fn arm_pending_sfz(
         snapshot = snapshot.with_sfz(track, plan);
     }
     // 先收集（键升序）再逐条解码：`with_sfz` 需要 `&mut self`，⛔ 不能边借边改。
-    let pending: Vec<(EntityId, String)> = snapshot
+    // ⭐ 阶段 2：八度覆盖随待摊平项一并收集（(c) 优先于 (b)，在解码装载期生效）。
+    let pending: Vec<(EntityId, String, Option<i32>)> = snapshot
         .sfz_pending()
         .iter()
-        .map(|(track, entry)| (*track, entry.path().to_owned()))
+        .map(|(track, entry)| (*track, entry.path().to_owned(), entry.octave_override()))
         .collect();
     let mut reports = Vec::with_capacity(pending.len());
-    for (track, path) in pending {
+    for (track, path, octave_override) in pending {
         // ⭐ `#168`：唯一解析（绝对原样 ⇒ 工程目录 ⇒ 仓库根 ⇒ cwd）；找不到 ⇒ 响亮。
         let resolved = resolve_sampler_path(&path, roots)
             .map_err(|error| SfzLoadError::Read(error.to_string()))?;
-        let (plan, report) = decode_sfz_plan(&resolved, engine_hz)?;
+        let (plan, report) = decode_sfz_plan_with_override(&resolved, engine_hz, octave_override)?;
         snapshot = snapshot.with_sfz(track, plan);
         reports.push((track, report));
     }

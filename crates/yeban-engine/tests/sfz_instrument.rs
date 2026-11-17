@@ -2502,6 +2502,7 @@ fn project_with_sampler(fixture: &support::Fixture, sampler: Option<&str>) -> Ye
         .get_mut(&fixture.track)
         .expect("夹具里必须有那条 MIDI 轨")
         .sampler = sampler.map(|path| SamplerBinding {
+        note_octave_override: None,
         path: path.to_owned(),
     });
     project

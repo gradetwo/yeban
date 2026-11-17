@@ -863,8 +863,15 @@ impl EngineSnapshot {
                 drums.insert(*id, params);
             }
             // ⭐ 接线：有采样器绑定 ⇒ 记一条**待摊平**（路径原样；⛔ 不读盘、⛔ 不解析）。
+            //    阶段 2：八度覆盖一并投影（`effective_octave_override` 已过滤非法值）。
             if let Some(binding) = &track.sampler {
-                sfz_pending.insert(*id, PendingSfz::new(binding.path.clone()));
+                sfz_pending.insert(
+                    *id,
+                    PendingSfz::with_octave_override(
+                        binding.path.clone(),
+                        binding.effective_octave_override(),
+                    ),
+                );
             }
         }
         let block = project.audio_config.block_size.frames() as usize;

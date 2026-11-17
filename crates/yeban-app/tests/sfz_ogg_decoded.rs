@@ -528,6 +528,7 @@ fn render_bound(dir: &Path, sfz_name: &str, sample: &str) -> RenderProjectOutput
     let pitches = pitches_of(&project, lead);
     let sfz = write_sfz(dir, sfz_name, &pitches, sample);
     project.tracks.get_mut(&lead).expect("轨必须在").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: sfz.to_string_lossy().into_owned(),
     });
     render_project_f32_with_assets(&project, float_options(), None, &[])

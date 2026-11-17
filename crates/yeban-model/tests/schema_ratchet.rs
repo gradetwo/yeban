@@ -97,6 +97,7 @@ use yeban_model::samples::filled_project;
 /// | 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | `None` ⇒ 不落盘（任务单 `#76` 新增） |
 /// | 20–28 | `#.tracks.*.preset` 及其 8 个子路径（`preset_id` / `bypassed` / `auto_load` / `previous` / `previous.strip` / `previous.effects` / `previous.sends` / `previous.macros`） | `tracks[*].preset` 一组 | `None` / 缺省值 / 空集 ⇒ 不落盘（夜半原生预制线新增） |
 /// | 34–36 | `#.tracks.*.delay_samples` / `#.tracks.*.invert_polarity` / `#.tracks.*.clips.*.offset_samples` | `tracks[*].delay_samples` / `tracks[*].invert_polarity` / `tracks[*].clips[*].offset_samples` | `None` ⇒ 不落盘（手动相位对齐线新增） |
+/// | 37 | `#.tracks.*.sampler.note_octave_override` | `tracks[*].sampler.note_octave_override` | `None` ⇒ 不落盘（音名八度统一线阶段 2 新增） |
 ///
 /// **注意反例**：`clip_pool[*].content.Audio.gain_db` **不在**本表里 —— 那里 `gain_db`
 /// 是裸 `f32`，所以它**是**必需的（§5.4 原文明确点名了这个对比）。
@@ -150,6 +151,14 @@ use yeban_model::samples::filled_project;
 /// 为可选属性。既有夹具一处都不落盘它们（\"默认不改变既有工程\"），填进夹具会改掉冻结
 /// sha256 ⇒ 唯一正确的出路同样是登记。账本 `model-no-compat-notes.md` §5.4 与
 /// `schema-ratchet-notes.md` §3 已同步补行。
+///
+/// ⚠ **第 37 项的来历**（音名八度统一线阶段 2，2026-11-17）：`SamplerBinding::
+/// note_octave_override` 是 `Option<i32>`（八度档 −24/−12/0/+12/+24）＋
+/// `#[serde(default)]` + `skip_serializing_if`，与第 19 项**同形**（它就长在
+/// 第 19 项的对象里）⇒ 契约里只能声明为可选属性。`None` 与 `Some(0)` 语义
+/// 不同（未设 ⇒ 装载跑自动检测；设了 ⇒ 检测停跑）是本字段必须用 `Option`
+/// 承载的原因。既有夹具一处都不落盘它（"默认不改变既有工程"），填进夹具
+/// 会改掉冻结 sha256 ⇒ 唯一正确的出路同样是登记。账本两处已同步补行。
 const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.author",
     "#.metadata.description",
@@ -159,6 +168,7 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.tracks.*.folder_id",
     "#.tracks.*.color",
     "#.tracks.*.sampler",
+    "#.tracks.*.sampler.note_octave_override",
     "#.tracks.*.preset",
     "#.tracks.*.preset.preset_id",
     "#.tracks.*.preset.bypassed",

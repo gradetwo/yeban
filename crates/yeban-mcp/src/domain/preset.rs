@@ -561,6 +561,7 @@ pub fn build_apply_ops(
     // ⑥ 乐器绑定（instrument 类）：只在绑定变化时写。
     if categories.contains(&"instrument") {
         let new_sampler = Some(yeban_model::SamplerBinding {
+            note_octave_override: None,
             path: preset.instrument_sfz.clone(),
         });
         if track.sampler != new_sampler {

@@ -3110,7 +3110,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///
 /// ## 空文本为什么是"**不提交**"，而不是"解绑"
 ///
-/// `""` 不是 `None`：`SamplerBinding { path: "" }` 会让发布点把"读不到的文件"如实报错
+/// `""` 不是 `None`：`SamplerBinding { note_octave_override: None, path: "" }` 会让发布点把"读不到的文件"如实报错
 /// （`EngineHostError::Sfz`）。而用户清空输入框**往往只是想重打一遍** ⇒ 这里什么都不做
 /// 并出声。解绑只有一个入口：`Clear`（它写的就是 `None`）。
 ///
@@ -3306,6 +3306,7 @@ fn commit_sampler_binding(
         return;
     };
     let new_sampler = new_path.map(|path| yeban_model::SamplerBinding {
+        note_octave_override: None,
         path: crate::samples::normalize_sampler_path_for_storage(path),
     });
     // 值没变 ⇒ 不制造"什么也没改"的一步撤销历史（见本函数调用者的文档）。
@@ -21776,7 +21777,7 @@ pub fn wire_aether_actions(
                         let op = yeban_model::Op::SetTrackSampler {
                             track_id: tid,
                             old_sampler: track.sampler.clone(),
-                            new_sampler: Some(yeban_model::SamplerBinding { path: stored }),
+                            new_sampler: Some(yeban_model::SamplerBinding { note_octave_override: None, path: stored }),
                         };
                         if aether_commit(&ui, &port, vec![op], "aether: 更换 SFZ 音色") {
                             let msg = format!(

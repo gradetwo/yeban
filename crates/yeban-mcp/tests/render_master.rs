@@ -5657,6 +5657,7 @@ fn project_with_sampler(sampler: Option<&str>) -> YebanProjectV1 {
         .get_mut(&lead)
         .expect("夹具必须有 Lead 轨")
         .sampler = sampler.map(|path| yeban_model::SamplerBinding {
+        note_octave_override: None,
         path: path.to_owned(),
     });
     project.validate().expect("夹具工程必须合法");
@@ -6778,8 +6779,10 @@ fn a_sampler_track_over_sixteen_voices_reports_its_steals() {
         );
     }
     project.clip_pool.get_mut(&clip).expect("夹具片段").content = ClipContent::Midi { notes };
-    project.tracks.get_mut(&lead).expect("Lead 轨").sampler =
-        Some(yeban_model::SamplerBinding { path: path.clone() });
+    project.tracks.get_mut(&lead).expect("Lead 轨").sampler = Some(yeban_model::SamplerBinding {
+        note_octave_override: None,
+        path: path.clone(),
+    });
     project.validate().expect("20 声部夹具必须合法");
 
     let (_sha, _peak, response) = render_once(&scratch, "steals", &project);

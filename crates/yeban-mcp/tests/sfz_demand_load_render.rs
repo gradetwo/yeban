@@ -120,6 +120,7 @@ fn project_with_notes_and_sampler(notes: &[(u8, u8)], sfz_path: &Path) -> YebanP
         }
     }
     project.tracks.get_mut(&lead).expect("Lead").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: sfz_path.display().to_string(),
     });
     project.validate().expect("夹具工程必须合法");

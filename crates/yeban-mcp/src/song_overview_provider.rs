@@ -1134,6 +1134,7 @@ mod tests {
         let mut project = demo_project();
         let first_track = *project.tracks.keys().next().expect("演示工程有轨");
         project.tracks.get_mut(&first_track).expect("轨在").sampler = Some(SamplerBinding {
+            note_octave_override: None,
             path: "assets/samples/does-not-exist/missing.sfz".to_owned(),
         });
         let real = provider();

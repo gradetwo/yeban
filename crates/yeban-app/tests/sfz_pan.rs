@@ -125,6 +125,7 @@ fn project(pan: f32, sampler: Option<&Path>) -> YebanProjectV1 {
         kind: TrackKind::Midi,
         pan,
         sampler: sampler.map(|path| SamplerBinding {
+            note_octave_override: None,
             path: path.display().to_string(),
         }),
         ..TrackV3::default()

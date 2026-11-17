@@ -196,6 +196,8 @@ fn schema_sampler_branch_shape_matches_the_model_type() {
     let spec = sampler_spec(&schema);
     let binding = SamplerBinding {
         path: "instruments/piano.sfz".to_owned(),
+        // ⭐ 阶段 2：带上可选字段的**全形**实例（② 的键集对账要的是写入器能写出的全集）。
+        note_octave_override: Some(12),
     };
     let binding_json = serde_json::to_value(&binding).expect("SamplerBinding 必须可序列化");
 
@@ -225,19 +227,35 @@ fn schema_sampler_branch_shape_matches_the_model_type() {
         );
     }
 
-    // ④ 必需性：`SamplerBinding` 的字段是裸 `String`（无 `Option`、无 `skip_serializing_if`）
-    //    ⇒ 写入器**总是**写出它们 ⇒ 契约必须把它们全部 `required`。
-    //    ⚠ 若将来给本类型加了 `Option` 字段，本判据会红 —— 那是**提醒**作者去同步
-    //    ADR-0001 D43 的裁决（`tests/schema_ratchet.rs` 的豁免集与 notes §5.4），
-    //    ⛔ 不是放宽本判据换绿。
+    // ④ 必需性：`path` 是裸 `String` ⇒ 写入器**总是**写出 ⇒ 必须 `required`；
+    //    `note_octave_override`（阶段 2 加入）是 `Option` + `skip_serializing_if`
+    //    ⇒ 未设时**不落盘** ⇒ ⛔ 不得 `required`（ADR-0001 D43 豁免，已登记
+    //    `#.tracks.*.sampler.note_octave_override`，见 `tests/schema_ratchet.rs`
+    //    与 notes §5.4）。基线 = **未设覆盖**的绑定真实写出的键集。
     let required: BTreeSet<&str> = spec["required"]
         .as_array()
         .expect("sampler 分支必须有 `required`")
         .iter()
         .map(|name| name.as_str().expect("`required` 元素必须是字符串"))
         .collect();
+    let unset_json = serde_json::to_value(SamplerBinding {
+        note_octave_override: None,
+        path: "instruments/piano.sfz".to_owned(),
+    })
+    .expect("SamplerBinding 必须可序列化");
+    let always_written: BTreeSet<&str> = unset_json
+        .as_object()
+        .expect("SamplerBinding 序列化为对象")
+        .keys()
+        .map(String::as_str)
+        .collect();
     assert_eq!(
-        required, written,
+        always_written,
+        BTreeSet::from(["path"]),
+        "未设覆盖的绑定必须只写出 `path`（旧工程字节不变）"
+    );
+    assert_eq!(
+        required, always_written,
         "契约 `sampler.required` 必须恰好是写入器总是写出的那些键"
     );
 
@@ -252,6 +270,21 @@ fn schema_sampler_branch_shape_matches_the_model_type() {
     );
     assert!(!accepts(spec, &json!({})), "`{{}}`（缺 `path`）必须被拒");
     assert!(!accepts(spec, &json!("x")), "`\"x\"`（类型错）必须被拒");
+    // 阶段 2：带覆盖的全形必须被接受、覆盖类型错必须被拒。
+    assert!(
+        accepts(
+            spec,
+            &json!({ "path": "instruments/piano.sfz", "note_octave_override": 12 })
+        ),
+        "带 `note_octave_override` 的绑定必须被 sampler 分支接受"
+    );
+    assert!(
+        !accepts(
+            spec,
+            &json!({ "path": "instruments/piano.sfz", "note_octave_override": "x" })
+        ),
+        "`note_octave_override` 类型错（字符串）必须被拒"
+    );
     // 反空洞：若 `accepts` 恒真，上面两条负向会静默通过 ⇒ 用**必然错**的字段类型证明它有牙。
     assert!(
         !accepts(spec, &json!({ "path": 1 })),
@@ -281,6 +314,28 @@ fn schema_sampler_branch_shape_matches_the_model_type() {
     assert_eq!(
         bindings[0].path, "instruments/piano.sfz",
         "路径必须逐字保留"
+    );
+    assert_eq!(
+        bindings[0].note_octave_override, None,
+        "没写覆盖的旧文档读回必须是未设（None）"
+    );
+
+    // ⑦′ 阶段 2：带覆盖的文档读回 `Some(12)`，且往返写出仍带该键。
+    let parsed: YebanProjectV1 = serde_json::from_value(document_with_sampler(json!({
+        "path": "instruments/piano.sfz",
+        "note_octave_override": 12
+    })))
+    .expect("带八度覆盖的文档必须可读回");
+    let bindings: Vec<&SamplerBinding> = parsed
+        .tracks
+        .values()
+        .filter_map(|track| track.sampler.as_ref())
+        .collect();
+    assert_eq!(bindings.len(), 1, "恰好一条轨带 sampler");
+    assert_eq!(
+        bindings[0].note_octave_override,
+        Some(12),
+        "八度覆盖必须逐字读回（Some(0) 与未设的区分靠它）"
     );
 }
 

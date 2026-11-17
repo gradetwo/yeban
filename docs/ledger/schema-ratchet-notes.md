@@ -196,6 +196,7 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 | 29 | `#.tracks.*.preset.previous.sends` | `TrackPresetSnapshot::sends` | 已声明、非 required；夹具里不落盘 |
 | 30 | `#.tracks.*.preset.previous.macros` | `TrackPresetSnapshot::macros` | 已声明、非 required；夹具里不落盘 |
 | 31 | `#.lyrics` | 根 `lyrics` | 已声明、非 required；**夹具里不落盘**（歌词轨线新增，见下） |
+| 32 | `#.tracks.*.sampler.note_octave_override` | `SamplerBinding::note_octave_override` | 已声明、非 required；**夹具里不落盘**（音名八度统一线阶段 2 新增，见下） |
 
 ⚠ **第 19 项（任务单 `#76`，2026-10-16 追加）**：`TrackV3::sampler`
 （`Option<SamplerBinding>`，"这条轨用哪份 SFZ"）与第 6/7 项**同形**
@@ -220,6 +221,15 @@ sha256 改变 ⇒ 唯一出路是登记。本次与该行同时更新了 `model-
 ⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"；唯一出路是登记。本次与该行同时更新了
 `model-no-compat-notes.md` §5.4。它同样受 ④/⑤ 双向反证：删键必须读成功、
 且不得进任何 `required`。
+
+⚠ **第 32 项（音名八度统一线阶段 2，2026-11-17 追加）**：`SamplerBinding::note_octave_override`
+（`Option<i32>` + `#[serde(default)]` + `skip_serializing_if`，未设不落盘）
+与第 19 项**同形**（就长在第 19 项的对象里）⇒ 契约里只能声明为可选属性，
+而既有夹具**刻意不落盘**它（那正是"默认不改变既有工程"的判据）。
+`None` 与 `Some(0)` 语义不同（未设 ⇒ 装载跑记法自动检测；设了 ⇒ 检测停跑）
+是它必须用 `Option` 承载的原因。⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"；唯一出路是登记。
+本次与该行同时更新了 `model-no-compat-notes.md` §5.4。它同样受 ④/⑤ 双向反证：
+删键必须读成功、且不得进任何 `required`。
 
 **反例（§5.4 原文点名）**：`clip_pool[*].content.Audio.gain_db` **不在**豁免表里 ——
 那里是裸 `f32`，所以它**是**必需的。判据 ③ 删它，实测报

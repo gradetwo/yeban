@@ -1020,14 +1020,15 @@ impl EngineHost {
             None => crate::sfz_load::SfzRoots::none(),
         };
         // ① 待摊平项（`BTreeMap` ⇒ 键升序；`Vec` 收集是因为 `with_sfz` 需要 `&mut self`）。
-        let pending: Vec<(EntityId, String)> = snapshot
+        //    阶段 2：八度覆盖随项收集（摊平必须按覆盖适配，见 `sfz_load` 阶段 2）。
+        let pending: Vec<(EntityId, String, Option<i32>)> = snapshot
             .sfz_pending()
             .iter()
-            .map(|(track, entry)| (*track, entry.path().to_owned()))
+            .map(|(track, entry)| (*track, entry.path().to_owned(), entry.octave_override()))
             .collect();
         // ⭐ 缓存只保留"此刻还有 SFZ 绑定的轨"：sampler 被清回 `None` 的轨在这里回收条目
         //    （失效条件 ③；⛔ 不回收的话旧摊平表会只涨不落）。即使 `pending` 为空也要做。
-        let live: BTreeSet<EntityId> = pending.iter().map(|(track, _)| *track).collect();
+        let live: BTreeSet<EntityId> = pending.iter().map(|(track, _, _)| *track).collect();
         self.sfz_cache.retain_tracks(&live);
         if pending.is_empty() {
             return Ok(snapshot);
@@ -1037,14 +1038,25 @@ impl EngineHost {
         // ⚠ 缓存键用**解析后**的路径：同一条模型路径在不同 cwd/工程目录下可能指向不同文件，
         //    键必须是"真的读了哪一份"，否则失效条件 ① 会被一个稳定但错误的字符串骗过。
         let mut prebuilt: BTreeMap<EntityId, SfzPlan> = BTreeMap::new();
-        for (track, path) in pending {
+        for (track, path, octave_override) in pending {
             let resolved = crate::sfz_load::resolve_sampler_path(&path, roots)
                 .map_err(|error| SfzLoadError::Read(error.to_string()))?;
-            let key = resolved.to_string_lossy().into_owned();
+            // ⭐ 阶段 2：缓存键必须含八度覆盖 —— 同一路径改了覆盖是**另一份摊平表**，
+            //    只按路径命中会把旧移位的表喂给新绑定（分隔符用 \u{1f}，路径里不会出现）。
+            let key = match octave_override {
+                Some(shift) => {
+                    format!(
+                        "{}\u{1f}octave-override={shift}",
+                        resolved.to_string_lossy()
+                    )
+                }
+                None => resolved.to_string_lossy().into_owned(),
+            };
             let plan = self
                 .sfz_cache
                 .get_or_prepare(track, &key, engine_hz, |_key, hz| {
-                    crate::sfz_load::decode_sfz_plan(&resolved, hz).map(|(plan, _report)| plan)
+                    crate::sfz_load::decode_sfz_plan_with_override(&resolved, hz, octave_override)
+                        .map(|(plan, _report)| plan)
                 })?;
             // ⭐ `#279`：`PreparedSample.pcm` 已是 `Arc<Vec<f32>>` ⇒ 注入的 `SfzPlan::clone`
             //    只复制**区域表/路径**（控制侧的小对象），PCM 用 `Arc::clone` 共享 —— 缓存与

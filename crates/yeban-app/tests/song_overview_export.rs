@@ -254,6 +254,7 @@ fn a_missing_sampler_fails_loudly_and_writes_nothing() {
         .find(|id| **id != project.master_bus_track_id)
         .expect("演示工程有非 master 音轨");
     project.tracks.get_mut(&track).expect("刚找到的轨").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: "这份定义不存在.sfz".to_owned(),
     });
 
@@ -326,6 +327,7 @@ fn a_silent_full_render_says_so_without_failing() {
         .find(|id| **id != project.master_bus_track_id)
         .expect("演示工程有非 master 音轨");
     project.tracks.get_mut(&track).expect("刚找到的轨").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: sfz.display().to_string(),
     });
 

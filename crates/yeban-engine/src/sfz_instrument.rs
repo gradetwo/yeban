@@ -10275,19 +10275,40 @@ impl SfzVoicePool {
 pub struct PendingSfz {
     /// 采样器定义文件路径（逐字留痕；见本类型的模块级说明）。
     path: String,
+    /// ⭐ 阶段 2：手动八度覆盖（半音；`SamplerBinding::effective_octave_override`
+    /// 的投影 —— 已过滤非法值，`None` ＝ 未设、装载跑自动检测）。
+    octave_override: Option<i32>,
 }
 
 impl PendingSfz {
     /// 从一个路径建（控制侧投影用：把 `TrackV3.sampler.path` 原样搬过来）。
     #[must_use]
     pub fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            octave_override: None,
+        }
+    }
+
+    /// ⭐ 从路径 + 八度覆盖建（快照投影用，见 `EngineSnapshot::from_project`）。
+    #[must_use]
+    pub fn with_octave_override(path: impl Into<String>, octave_override: Option<i32>) -> Self {
+        Self {
+            path: path.into(),
+            octave_override,
+        }
     }
 
     /// 路径（**逐字**，⛔ 未被规范化）。
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// 手动八度覆盖（半音；`None` ＝ 未设）。
+    #[must_use]
+    pub fn octave_override(&self) -> Option<i32> {
+        self.octave_override
     }
 }
 

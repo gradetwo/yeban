@@ -318,7 +318,10 @@ fn the_old_path_only_form_still_targets_the_first_non_master_track() {
     let saved = reopen(&out);
     assert_eq!(
         sampler_of(&saved, fixture.midi),
-        Some(SamplerBinding { path: sfz }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: sfz
+        }),
         "落盘的绑定必须在 B0 上"
     );
     assert_eq!(
@@ -364,7 +367,10 @@ fn naming_the_aux_identity_installs_the_sampler_on_the_aux() {
     let saved = reopen(&out);
     assert_eq!(
         sampler_of(&saved, fixture.aux),
-        Some(SamplerBinding { path: sfz }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: sfz
+        }),
         "落盘的绑定必须在 aux（Z0）上"
     );
     assert_eq!(

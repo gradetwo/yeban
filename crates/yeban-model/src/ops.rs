@@ -4728,6 +4728,7 @@ mod tests {
                 track_id: f.lead,
                 old_sampler: None,
                 new_sampler: Some(SamplerBinding {
+                    note_octave_override: None,
                     path: "instruments/lead.sfz".to_owned(),
                 }),
             },
@@ -5003,6 +5004,7 @@ mod tests {
         let f = fixture();
         let mut doc = fixture_document();
         let binding = SamplerBinding {
+            note_octave_override: None,
             path: "instruments/lead.sfz".to_owned(),
         };
         let before = doc.track(&f.lead).expect("lead 轨在夹具里").clone();

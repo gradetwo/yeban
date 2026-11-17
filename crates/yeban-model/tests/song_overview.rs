@@ -119,6 +119,7 @@ fn fixture_project() -> YebanProjectV1 {
 
     let mut drum_track = track(drums, "轻鼓");
     drum_track.sampler = Some(yeban_model::SamplerBinding {
+        note_octave_override: None,
         path: "assets/samples/discord-gm-sitar/Discord GM/Drums/001-Standard Kit.sfz".to_owned(),
     });
     drum_track.clips.insert(

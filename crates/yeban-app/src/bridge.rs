@@ -3733,6 +3733,7 @@ pub fn instrument_install_ops_on_probed(
     // 与 UI 提交同一条规则）；其余原样。比较仍对**存入值**做：文档里旧的绝对
     // 形式与归一化后的新值不等 ⇒ 仍提交一次（这次提交就是形式收敛本身）。
     let new_sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: crate::samples::normalize_sampler_path_for_storage(path),
     });
     if track.sampler == new_sampler {

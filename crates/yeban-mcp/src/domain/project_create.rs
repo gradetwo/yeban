@@ -459,6 +459,7 @@ pub fn build_with_clock(
             track_id: first,
             old_sampler: None,
             new_sampler: Some(yeban_model::SamplerBinding {
+                note_octave_override: None,
                 path: yeban_model::sampler_path::normalize_sampler_path_for_storage(
                     &super::sample_roots::library_root(),
                     sampler,
