@@ -3646,10 +3646,7 @@ pub fn render(
                 .filter(|(other, candidate)| {
                     *other != index
                         && candidate.start_frame < note.start_frame
-                        && candidate
-                            .start_frame
-                            .saturating_add(candidate.frames)
-                            > note.start_frame
+                        && candidate.start_frame.saturating_add(candidate.frames) > note.start_frame
                 })
                 .count(),
         )
@@ -4213,7 +4210,6 @@ fn loop_expanded_pcm(
     }
     out
 }
-
 
 /// 一条采样器轨的**只读读数**（⭐ `#274`：发声改由引擎的 SFZ 支路负责，
 /// 本层**不再**逐音符烘 PCM ⇒ `prepare_sampler`／`PreparedSampler` 已退休）。
@@ -5870,14 +5866,36 @@ mod tests {
             gain_r: 1.0,
         };
         let mut cache = SampleCache::new();
-        let single = note_wave(&one, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new())
-            .expect("单层");
+        let single = note_wave(
+            &one,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("单层");
         let mut cache2 = SampleCache::new();
-        let doubled = note_wave(&two, &note, 440.0, 48_000.0, None, &mut cache2, &BTreeMap::new())
-            .expect("双层");
+        let doubled = note_wave(
+            &two,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache2,
+            &BTreeMap::new(),
+        )
+        .expect("双层");
         let ratio = math::peak_of(&doubled.mono) / math::peak_of(&single.mono);
-        eprintln!("single.layered={} doubled.layered={} ratio={ratio}", single.layered, doubled.layered);
-        assert!(!single.layered && doubled.layered, "`layered` 必须如实反映层数");
+        eprintln!(
+            "single.layered={} doubled.layered={} ratio={ratio}",
+            single.layered, doubled.layered
+        );
+        assert!(
+            !single.layered && doubled.layered,
+            "`layered` 必须如实反映层数"
+        );
         assert!(
             (ratio - 2.0).abs() < 0.05,
             "两条相同区域叠加必须约为单层的两倍，实得 {ratio}"
@@ -5903,11 +5921,27 @@ mod tests {
         };
         let mut cache = SampleCache::new();
         let first = note_wave_at(
-            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(), 0, Some(0),
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(0),
         )
         .expect("第 1 次触发");
         let second = note_wave_at(
-            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(), 1, Some(0),
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            1,
+            Some(0),
         )
         .expect("第 2 次触发");
         eprintln!(
@@ -5946,15 +5980,39 @@ mod tests {
             gain_r: 1.0,
         };
         let mut cache = SampleCache::new();
-        let open_wave = note_wave(&open, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new())
-            .expect("缺省门恒开");
+        let open_wave = note_wave(
+            &open,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("缺省门恒开");
         assert!(
-            note_wave(&all_closed, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new())
-                .is_none(),
+            note_wave(
+                &all_closed,
+                &note,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new()
+            )
+            .is_none(),
             "`lorand=1` 的区域必须一条都不发声"
         );
-        let mixed_wave = note_wave(&mixed, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new())
-            .expect("还有一条门是开的 ⇒ 音符必须照常发声");
+        let mixed_wave = note_wave(
+            &mixed,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("还有一条门是开的 ⇒ 音符必须照常发声");
         let ratio = math::peak_of(&mixed_wave.mono) / math::peak_of(&open_wave.mono);
         eprintln!("mixed ratio = {ratio}");
         assert!(
@@ -5984,12 +6042,24 @@ mod tests {
         let sfz = std::path::Path::new("/tmp/x.sfz");
         let mut cache = SampleCache::new();
         let plain = note_wave(
-            &plain_inst, &note, 440.0, 48_000.0, Some(sfz), &mut cache, &BTreeMap::new(),
+            &plain_inst,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache,
+            &BTreeMap::new(),
         )
         .expect("不循环");
         let mut cache2 = SampleCache::new();
         let looped = note_wave(
-            &loop_inst, &note, 440.0, 48_000.0, Some(sfz), &mut cache2, &BTreeMap::new(),
+            &loop_inst,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache2,
+            &BTreeMap::new(),
         )
         .expect("循环");
         eprintln!(
@@ -6029,13 +6099,29 @@ mod tests {
         };
         let mut cache = SampleCache::new();
         let first = note_wave_at(
-            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(), 0, Some(0),
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(0),
         )
         .expect("没有别的音按着 ⇒ `first` 发声");
         assert_eq!(first.region_index, 0, "`held=0` 只许选 `trigger=first`");
         assert!(!first.layered, "两类 trigger ⛔ 不许同时响");
         let legato = note_wave_at(
-            &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(), 0, Some(1),
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(1),
         )
         .expect("有别的音按着 ⇒ `legato` 发声");
         assert_eq!(legato.region_index, 1, "`held=1` 只许选 `trigger=legato`");
@@ -6043,7 +6129,15 @@ mod tests {
         // `None`（调用方给不出上下文）⇒ 两族都不许偷偷发声。
         assert!(
             note_wave_at(
-                &instrument, &note, 440.0, 48_000.0, None, &mut cache, &BTreeMap::new(), 0, None
+                &instrument,
+                &note,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new(),
+                0,
+                None
             )
             .is_none(),
             "给不出按住数时，`first` / `legato` 必须不发声"
