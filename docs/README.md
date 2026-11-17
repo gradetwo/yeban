@@ -30,6 +30,7 @@
 | [../skills/song-arrangement/SKILL.md](./skills/song-arrangement/SKILL.md) | 编曲方法论：先定角色、再定音区、最后写音符；改风格走参考学习法，写完用数据验收 |
 | [../skills/instrumentation-craft/SKILL.md](./skills/instrumentation-craft/SKILL.md) | 配器与音源选型方法论：选库先审计、SFZ 入库先清洗、接引擎先小样验证 |
 | [../skills/mix-mastering/SKILL.md](./skills/mix-mastering/SKILL.md) | 混音与母带方法论：增益结构、EQ 让位、效果器用法，导出后量化验收与故障排查 |
+| [../skills/sound-design/SKILL.md](./skills/sound-design/SKILL.md) | 声音设计与音色塑造方法论：漂移与拍频、自发重复、参数耦合、分层解剖、可复现随机、空间与宽度、噪声用法，听感验收 |
 
 ## 4. 判例与账本 —— 规范有缺口或冲突时我们怎么裁的
 

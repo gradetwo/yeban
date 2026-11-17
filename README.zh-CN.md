@@ -290,7 +290,7 @@ yeban/
 │   ├── adr/                        # 规范冲突与缺口的裁决留痕
 │   ├── ledger/                     # 历史代码复用审计等账本附件
 │   ├── DEVELOPMENT_LEDGER.md       # 测量账本 + pending 清单
-│   └── skills/                     # yeban-dev-workflow、song-arrangement、instrumentation-craft、mix-mastering
+│   └── skills/                     # yeban-dev-workflow、song-arrangement、instrumentation-craft、mix-mastering、sound-design
 ├── spikes/                         # Phase 0 九大 Spike，各自独立成 crate（可并行）
 │   └── spike-01-cpal-latency … spike-09-snapshot-exchange
 ├── .github/workflows/              # ci.yml(自动) / gates-manual.yml(手动) / site-deploy.yml
