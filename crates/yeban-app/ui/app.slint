@@ -295,6 +295,11 @@ export component MainWindow inherits Window {
     // （host::apply_language 是唯一写入口，.slint 侧不自己改语言状态；
     // 显式选择同时写回设置文件，见 host::apply_language_and_save）。
     callback select-language(string);
+    // 恢复默认布局（line/ui-window-state）：由主菜单「设置 → 恢复默认
+    // 布局」触发，宿主接管（host::reset_window_layout 是唯一落点：应用
+    // .slint 初值并清掉已存布局；.slint 侧不自己改布局状态，与
+    // select-language 同款）。
+    callback reset-window-layout();
     callback revert-to-last-commit();
     callback open-cmd-palette();
     callback open-musical-pr();
@@ -860,7 +865,9 @@ export component MainWindow inherits Window {
         // checked 属性会在激活时自翻，与 language-code 绑定冲突，故不用它，
         // 改拼标题前缀；标题用表达式拼接，免得 "✓ 中文" 整串落进覆盖判据
         // 的硬编码 CJK 白名单）。自称名按定义不走 @tr。
-        // 后续线 line/ui-window-state 在此菜单加「恢复默认布局」。
+        // 「恢复默认布局」由 line/ui-window-state 加在本菜单末尾（语言项
+        // 之后）：走独立回调 reset-window-layout，宿主应用默认值并清掉
+        // 已存布局，语言选择不受影响。
         Menu {
             title: @tr("设置");
             MenuItem { title: (root.language-code == "zh-CN" ? "✓ " : "") + "中文"; activated => { root.select-language("zh-CN"); } }
@@ -872,6 +879,7 @@ export component MainWindow inherits Window {
             MenuItem { title: (root.language-code == "ko-KR" ? "✓ " : "") + "한국어"; activated => { root.select-language("ko-KR"); } }
             MenuItem { title: (root.language-code == "ru-RU" ? "✓ " : "") + "Русский"; activated => { root.select-language("ru-RU"); } }
             MenuItem { title: (root.language-code == "de-DE" ? "✓ " : "") + "Deutsch"; activated => { root.select-language("de-DE"); } }
+            MenuItem { title: @tr("恢复默认布局"); activated => { root.reset-window-layout(); } }
         }
     }
 

@@ -164,8 +164,9 @@ pub mod project_lock;
 // 没有 feature 门：默认构建里它读不到来源, 于是恒给"没有来源"那句**真话**（见模块文档）。
 pub mod proposals;
 pub mod save;
-/// 最小设置存储（i18n 语言持久化）：平台配置目录下 `yeban/settings.json`，
-/// 本线只存 `language` 一项，结构预留窗口布局等后续字段。
+/// 最小设置存储：平台配置目录下 `yeban/settings.json`。存两项 ——
+/// i18n 的 `language` 与窗口布局的 `layout`（line/ui-window-state 在
+/// version 1 内加键扩展，同一文件、同一模块，不另起设置文件）。
 pub mod settings;
 // **用户在界面上按的"保存工程"**（`ROAD-M4-008` 选项 (a) 剩下的"保存 UI"缺口）。
 // 产品路径上的普通模块：它只拿 `save::save_project_file` 与（有 feature 时）

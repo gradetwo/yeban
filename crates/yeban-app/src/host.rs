@@ -16301,6 +16301,91 @@ pub fn apply_language_and_save(ui: &MainWindow, lang: crate::cli::Language) {
     crate::settings::save_language(lang);
 }
 
+/// 窗口布局（line/ui-window-state）的**唯一**写入口，与 [`apply_language`]
+/// 同款单向注入：把一份已存布局写进 `MainWindow` 属性与窗口几何。
+///
+/// 时机：`main.rs` 在 `apply_language` 之后、事件循环之前调用一次
+///（没有已存布局时不调用，界面保持 .slint 初值）。几何用物理像素
+///（[`crate::settings::WindowGeometry`] 的口径）：先尺寸与位置、最后
+/// 最大化 —— 最大化时前两者是还原几何，顺序反了会被窗口管理器吃掉。
+/// `console_tab` 经属性写入，.slint 侧的 `changed console-tab` 会把
+/// `Theme.active-dock-tab` 同步过去，不需要在这里再写一份。
+pub fn apply_window_layout(ui: &MainWindow, layout: &crate::settings::WindowLayout) {
+    ui.set_left_panel_width(layout.left_panel_width);
+    ui.set_clip_matrix_width(layout.clip_matrix_width);
+    ui.set_control_room_width(layout.control_room_width);
+    ui.set_lower_dock_height(layout.lower_dock_height);
+    ui.set_track_headers_width(layout.track_headers_width);
+    ui.set_show_left_inspector(layout.show_left_inspector);
+    ui.set_show_clip_matrix(layout.show_clip_matrix);
+    ui.set_show_lower_dock(layout.show_lower_dock);
+    ui.set_show_control_room(layout.show_control_room);
+    ui.set_left_panel_tab(layout.left_panel_tab.as_str().into());
+    ui.set_console_tab(layout.console_tab);
+    ui.set_console_maximized(layout.console_maximized);
+    ui.set_sidebar_collapsed(layout.sidebar_collapsed);
+    if let Some(window) = layout.window {
+        let handle = ui.window();
+        handle.set_size(slint::PhysicalSize::new(window.width, window.height));
+        handle.set_position(slint::PhysicalPosition::new(window.x, window.y));
+        handle.set_maximized(window.maximized);
+    }
+}
+
+/// 读回当前窗口布局（[`apply_window_layout`] 的逆操作）：面板属性逐个
+/// 读回，窗口几何取 `slint::Window` 的物理像素原值。最大化时
+/// size 是最大化后的尺寸（Slint 不暴露还原几何），此时以
+/// `maximized` 标记为准 —— 见 [`crate::settings::WindowGeometry`]。
+#[must_use]
+pub fn snapshot_window_layout(ui: &MainWindow) -> crate::settings::WindowLayout {
+    let handle = ui.window();
+    let size = handle.size();
+    let position = handle.position();
+    crate::settings::WindowLayout {
+        window: Some(crate::settings::WindowGeometry {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+            maximized: handle.is_maximized(),
+        }),
+        left_panel_width: ui.get_left_panel_width(),
+        clip_matrix_width: ui.get_clip_matrix_width(),
+        control_room_width: ui.get_control_room_width(),
+        lower_dock_height: ui.get_lower_dock_height(),
+        track_headers_width: ui.get_track_headers_width(),
+        show_left_inspector: ui.get_show_left_inspector(),
+        show_clip_matrix: ui.get_show_clip_matrix(),
+        show_lower_dock: ui.get_show_lower_dock(),
+        show_control_room: ui.get_show_control_room(),
+        left_panel_tab: ui.get_left_panel_tab().as_str().to_owned(),
+        console_tab: ui.get_console_tab(),
+        console_maximized: ui.get_console_maximized(),
+        sidebar_collapsed: ui.get_sidebar_collapsed(),
+    }
+}
+
+/// 退出时写回布局：`main.rs` 在事件循环返回后调用（此刻窗口已隐藏，
+/// 但尺寸/位置/属性仍可读）。快照经 [`crate::settings::store_layout`]
+/// 落盘，语言字段由设置的读-改-写保住。崩溃退出不经这里 ⇒ 下次启动
+/// 仍用上上次的布局（偏好数据，口径与语言一致）。
+pub fn save_window_layout(ui: &MainWindow) {
+    crate::settings::store_layout(Some(snapshot_window_layout(ui)));
+}
+
+/// 「设置 → 恢复默认布局」的落点（菜单回调 `reset-window-layout` 的
+/// 唯一处理器）：面板回到 .slint 初值（[`crate::settings::WindowLayout`]
+/// 的 `Default`），窗口取消最大化并回到 preferred 尺寸（1600×920，
+/// 位置没有默认值的概念 ⇒ 不动），同时把已存布局清掉 —— 之后即使
+/// 崩溃退出，下次启动也没有旧布局可恢复。语言选择不经此路，不受影响。
+pub fn reset_window_layout(ui: &MainWindow) {
+    apply_window_layout(ui, &crate::settings::WindowLayout::default());
+    let handle = ui.window();
+    handle.set_maximized(false);
+    handle.set_size(slint::LogicalSize::new(1600.0, 920.0));
+    crate::settings::store_layout(None);
+}
+
 /// 当前界面语言的进程内记录（[`apply_language`] 是唯一写者，默认 zh-CN）。
 ///
 /// 存在的理由：宿主侧有极少数闭集显示标签由 Rust 写入 .slint 属性
@@ -16353,6 +16438,15 @@ pub fn build_main_window_with_console_tab(
                 return;
             };
             apply_language_and_save(&ui, lang);
+        }
+    });
+    // 恢复默认布局（主菜单「设置 → 恢复默认布局」）：与语言选择同处一挂，
+    // 宿主经唯一落点应用默认值并清已存布局（见 reset_window_layout）。
+    ui.on_reset_window_layout({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            reset_window_layout(&ui);
         }
     });
     ui.set_timecode(scene.timecode.clone().into());

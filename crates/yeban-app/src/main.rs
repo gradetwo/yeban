@@ -304,6 +304,16 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     );
     host::apply_language(&ui, startup_lang);
 
+    // 窗口布局（line/ui-window-state）：紧跟语言之后、同样在 `run()` 之前，
+    // 把上次退出时存下的布局写回（`host::apply_window_layout` 是唯一写
+    // 入口，与同一设置文件的 `layout` 键）。没有已存布局时什么都不做 ——
+    // 界面保持 .slint 初值（含 persona 派生的面板显隐初值），不强行覆盖。
+    // 写回在事件循环结束时（见本函数末尾）；`--headless-idle` 路径不经
+    // 这里 —— 它按场景视口定尺寸做见证测量，恢复真实布局会污染读数。
+    if let Some(layout) = yeban_app::settings::load().layout {
+        host::apply_window_layout(&ui, &layout);
+    }
+
     // 走带与电平都要有东西可驱动 ⇒ GUI 路径真的建一代引擎（快照 + 无锁事件通道 +
     // 电平 SPSC + 量子驱动）。`ProductionLoop::start` 做两件事，第二件是本票修的缺口：
     //
@@ -1003,7 +1013,13 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 恰好把它带进作用域时会变成 unused import, 直接撞上 `-D warnings`。
     // UFCS 两种情况下都成立, 且不需要任何 import。
     match slint::ComponentHandle::run(&ui) {
-        Ok(()) => Ok(Vec::new()),
+        Ok(()) => {
+            // 布局写回（line/ui-window-state）：事件循环正常结束 = 关窗 /
+            // 退出，此刻窗口虽已隐藏，尺寸、位置与面板属性仍可读，快照
+            // 存回设置（语言字段由设置的读-改-写保住）。异常退出不写回。
+            host::save_window_layout(&ui);
+            Ok(Vec::new())
+        }
         Err(error) => Err(cli::CliError::Ui {
             detail: format!("事件循环异常退出: {error}"),
         }),
