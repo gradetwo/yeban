@@ -472,6 +472,12 @@ impl PdcPlan {
 #[derive(Clone, Debug)]
 pub struct DelayLine {
     buffer: Vec<f32>,
+    /// ⭐ stage 8：**右声道环**（与 `buffer` 同容量、同游标）。
+    ///
+    /// 单声道通路只碰 `buffer`；分声道通路（[`Self::process_pair_in_place`]）
+    /// 一次推进**一个**游标、同时读写两条环 ⇒ 两个声道拿到**同一份延迟相位**，
+    /// 且线上状态只前进一次（⛔ 不是"跑两遍单声道线"）。
+    buffer_r: Vec<f32>,
     write: usize,
     delay: usize,
 }
@@ -486,6 +492,7 @@ impl DelayLine {
         let capacity = max_delay_samples.saturating_add(1).max(1);
         Self {
             buffer: vec![0.0; capacity],
+            buffer_r: vec![0.0; capacity],
             write: 0,
             delay: 0,
         }
@@ -522,6 +529,7 @@ impl DelayLine {
     /// **配置变更**时调用，绝不进逐样本路径。
     pub fn reset(&mut self) {
         self.buffer.fill(0.0);
+        self.buffer_r.fill(0.0);
         self.write = 0;
     }
 
@@ -596,6 +604,53 @@ impl DelayLine {
             let delayed = self.buffer[read];
             self.buffer[write] = *inp;
             *out = delayed;
+            write += 1;
+            if write == capacity {
+                write = 0;
+            }
+            read += 1;
+            if read == capacity {
+                read = 0;
+            }
+        }
+        self.write = write;
+    }
+    /// ⭐ stage 8：**一对声道共用一个游标**的就地处理（分声道通路专用）。
+    ///
+    /// 语义与 [`Self::process_in_place`] **逐声道等价**：左用 `buffer`、右用 `buffer_r`，
+    /// 延迟量、预热静音、块边界连续性全部相同；区别只有一个 —— **游标只推进一次**。
+    /// 「对两条缓冲各跑一次单声道」会把写头推进两次，右声道的相位就会与左错开
+    /// 一整个块长 ⇒ 分声道通路必须走这里。
+    ///
+    /// ⚠ `delay == 0` 时输出仍**逐位等于输入**，但两条环照样写入（环的不变量同上）。
+    pub fn process_pair_in_place(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let frames = left.len().min(right.len());
+        if frames == 0 {
+            return;
+        }
+        let capacity = self.buffer.len();
+        let mut write = self.write;
+        let delay = self.delay;
+        if delay == 0 {
+            for index in 0..frames {
+                self.buffer[write] = left[index];
+                self.buffer_r[write] = right[index];
+                write += 1;
+                if write == capacity {
+                    write = 0;
+                }
+            }
+            self.write = write;
+            return;
+        }
+        let mut read = (write + capacity - delay) % capacity;
+        for index in 0..frames {
+            let delayed_left = self.buffer[read];
+            let delayed_right = self.buffer_r[read];
+            self.buffer[write] = left[index];
+            self.buffer_r[write] = right[index];
+            left[index] = delayed_left;
+            right[index] = delayed_right;
             write += 1;
             if write == capacity {
                 write = 0;
@@ -820,6 +875,25 @@ impl CompensationBank {
         }
     }
 
+    /// ⭐ stage 8：**一对声道的 PDC 延迟**（分声道通路专用）。
+    ///
+    /// 语义与 [`Self::apply`] 相同（未武装 ⇒ `false`、计数口径相同），区别只在
+    /// 它把左右两条缓冲交给**同一条延迟线的一个游标**（[`DelayLine::process_pair_in_place`]）
+    /// ⇒ 补偿延迟对两个声道**同值**，且线上状态只推进一次。
+    pub fn apply_pair(&mut self, node: &EntityId, left: &mut [f32], right: &mut [f32]) -> bool {
+        match self.entries[..self.armed].binary_search_by(|(candidate, _)| candidate.cmp(node)) {
+            Ok(index) => {
+                let line = &mut self.entries[index].1;
+                self.processed_blocks = self
+                    .processed_blocks
+                    .wrapping_add(u64::from(line.delay() != 0));
+                line.process_pair_in_place(left, right);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// 只读访问某个节点的延迟线（未武装的槽位不可达）。
     #[must_use]
     pub fn line(&self, node: &EntityId) -> Option<&DelayLine> {
@@ -1004,6 +1078,31 @@ impl PhaseBank {
         }
     }
 
+    /// ⭐ stage 9：**一对声道的手动相位对齐**（分声道通路专用）。
+    ///
+    /// 与 [`Self::apply`] 同一口径（未武装 ⇒ `false`；`processed_blocks` 只按
+    /// "延时非零或反转"计数），区别只在：左右两条缓冲交给**同一个延迟线游标**
+    /// （[`DelayLine::process_pair_in_place`]）⇒ 对齐延时对两声道同值、极性同时反转、
+    /// 线上状态只推进一次。
+    pub fn apply_pair(&mut self, node: &EntityId, left: &mut [f32], right: &mut [f32]) -> bool {
+        match self.entries[..self.armed].binary_search_by(|(candidate, _)| candidate.cmp(node)) {
+            Ok(index) => {
+                let line = &mut self.entries[index].1;
+                let active = line.delay() != 0 || self.invert[index];
+                self.processed_blocks = self.processed_blocks.wrapping_add(u64::from(active));
+                line.process_pair_in_place(left, right);
+                if self.invert[index] {
+                    for (sample_l, sample_r) in left.iter_mut().zip(right.iter_mut()) {
+                        *sample_l = -*sample_l;
+                        *sample_r = -*sample_r;
+                    }
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// 只读访问某个节点的有效延时（采样；未武装的节点不可达）。
     #[must_use]
     pub fn effective_delay(&self, node: &EntityId) -> Option<usize> {
@@ -1034,6 +1133,62 @@ impl PhaseBank {
 
 #[cfg(test)]
 mod tests {
+    /// ⭐ **stage 9 判据**：相位对齐的成对通路 —— 左右读数与"两条同参数的
+    /// 单声道 `apply`"**逐位相同**（＝ 对齐延时同值、极性同时反转、游标只推进一次）。
+    #[test]
+    fn the_phase_pair_path_matches_two_mono_lines() {
+        let node = EntityId::new();
+        let phases = [(node, 3, true)];
+        let mut pair = PhaseBank::preallocated(2, 8);
+        let mut mono_left = PhaseBank::preallocated(2, 8);
+        let mut mono_right = PhaseBank::preallocated(2, 8);
+        for bank in [&mut pair, &mut mono_left, &mut mono_right] {
+            bank.rearm(&phases);
+        }
+        let mut left: Vec<f32> = (0..16).map(|index| index as f32 + 1.0).collect();
+        let mut right: Vec<f32> = (0..16).map(|index| -(index as f32) - 2.0).collect();
+        let mut reference_left = left.clone();
+        let mut reference_right = right.clone();
+        assert!(pair.apply_pair(&node, &mut left, &mut right));
+        assert!(mono_left.apply(&node, &mut reference_left));
+        assert!(mono_right.apply(&node, &mut reference_right));
+        assert_eq!(left, reference_left, "左声道必须与同参数单声道线逐位相同");
+        assert_eq!(right, reference_right, "右声道必须与同参数单声道线逐位相同");
+        // 反转真的生效：第一块输出里必有一个样本不再是"正斜坡"的正值。
+        assert!(
+            left.iter().any(|sample| *sample < 0.0),
+            "极性反转必须作用到左声道"
+        );
+    }
+
+    /// ⭐ **stage 8 判据**：PDC 的成对通路必须"**一个游标服务两条环**" ——
+    /// 左右读数与'各跑一条同延迟单声道线'**逐位相同**（＝ 相位同值、状态只推进一次）。
+    #[test]
+    fn the_pdc_pair_path_keeps_one_shared_cursor() {
+        let mut pair = DelayLine::new(8);
+        pair.set_delay(3);
+        let mut left_mono = DelayLine::new(8);
+        left_mono.set_delay(3);
+        let mut right_mono = DelayLine::new(8);
+        right_mono.set_delay(3);
+        let mut left: Vec<f32> = (0..16).map(|index| index as f32 + 1.0).collect();
+        let mut right: Vec<f32> = (0..16).map(|index| -(index as f32) - 2.0).collect();
+        let mut mono_left = left.clone();
+        let mut mono_right = right.clone();
+        for _ in 0..2 {
+            pair.process_pair_in_place(&mut left, &mut right);
+            left_mono.process_in_place(&mut mono_left);
+            right_mono.process_in_place(&mut mono_right);
+            assert_eq!(left, mono_left, "左声道必须与单声道同延迟线逐位相同");
+            assert_eq!(right, mono_right, "右声道必须与单声道同延迟线逐位相同");
+        }
+        // 反向腿：第二块真的有变化（证明游标确实在推进，而不是输出被冻住）。
+        assert!(
+            left.iter().any(|sample| *sample != 0.0),
+            "延迟线预热完成后必须有非零样本"
+        );
+    }
+
     use super::*;
 
     // R215③ 便宜臂：本文件 `.insert(`（单值存储）与 `.entry(..).or_default().push(..)`（累积）

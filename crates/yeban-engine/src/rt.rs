@@ -1422,6 +1422,31 @@ fn master_last(
 ///
 /// 只扫 `armed_*_slots` 截出的**定长前缀**（默认工程全是空切片）⇒ 零分配、零锁、
 /// 零 I/O [MUST-GATE-001]。
+/// ⭐ **stage 11／12**：本节点武装的插入器件是否**全部**有立体声入口
+/// （通道条 `process_stereo`、混响 `process(left, right)`）；采样延迟与卷积仍是
+/// 单声道器件 ⇒ 只要它们任一级武装，本轨就必须留在单声道。
+///
+/// 分声道通路现在能吃通道条（`ChannelStrip::process_stereo` 是真立体声实现），
+/// 但另外三级仍是单声道器件（各自的延迟线与弹道只有一份状态）⇒ 只要它们中
+/// 任何一级对本节点武装，本轨就必须留在单声道。
+fn only_stereo_inserts(share: &BranchShare<'_>, node: &EntityId) -> bool {
+    let strip_armed = share.armed_strips[..*share.armed_insert_slots]
+        .iter()
+        .any(|(id, strip)| id == node && strip.is_some());
+    let reverb_armed = share.armed_reverbs[..*share.armed_reverb_slots]
+        .iter()
+        .any(|(id, _)| id == node);
+    if !(strip_armed || reverb_armed) {
+        return false;
+    }
+    !share.armed_sample_delays[..*share.armed_sample_delay_slots]
+        .iter()
+        .any(|(id, armed)| *armed && id == node)
+        && !share.armed_convs[..*share.armed_conv_slots]
+            .iter()
+            .any(|(id, armed)| *armed && id == node)
+}
+
 fn has_armed_insert_devices(share: &BranchShare<'_>, node: &EntityId) -> bool {
     share.armed_strips[..*share.armed_insert_slots]
         .iter()
@@ -1575,6 +1600,8 @@ fn process_insert_chain(
     // 键源在抽头池里的槽位（`RoutingPlan::key_route` 的读数）；`None` = 本节点
     // 没有已求值的键路由 ⇒ 走节目检波。
     key_slot: Option<usize>,
+    // ⭐ stage 11：本轨是否走分声道（真 ⇒ 通道条用 `process_stereo`，两条缓冲一起过）。
+    stereo: bool,
 ) -> bool {
     let frames = frames.min(DEFAULT_BLOCK_FRAMES);
     let mut seen = false;
@@ -1620,7 +1647,15 @@ fn process_insert_chain(
         let key = key_slot
             .filter(|&slot| share.key_tap_filled[slot])
             .map(|slot| &share.key_taps[slot][..frames]);
-        if let Some(key) = key {
+        if stereo {
+            // ⭐ stage 11：通道条的真立体声入口 —— EQ/低切/动态各级都按"左/右
+            // 各自一份状态、一次推进"处理（`only_strip_armed` 已保证另外三级未武装）。
+            let (left, right) = (
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+            strip.process_stereo(left, right);
+        } else if let Some(key) = key {
             strip.process_mono_with_key(&mut share.track_scratch[..frames], key);
         } else {
             strip.process_mono(&mut share.track_scratch[..frames]);
@@ -1658,6 +1693,8 @@ fn process_insert_chain(
     // `(out_l + out_r) · 0.5`。那是恒等式而不是近似（`crate::insert` 模块文档
     // §8.3 给了代数证明）：湿路径的输入与"单声道输入"同解，宽度项在中值里恰好抵消。
     //
+    // ⭐ **stage 12**：分声道轨走混响自己的 `process(left, right)`（左右各一份
+    // 状态、一次推进）⇒ 混响不再把本轨拽回单声道。
     // **默认口径**：本轨没有混响（`armed_reverbs` 里查不到武装项）⇒ 整段跳过；
     // `Reverb::is_active()`（`mix ≤ 1e-4`）为假时同样跳过 ⇒ 这两种情形下器件的状态
     // **不推进**（与器件自己的早返回守卫同口径）。
@@ -1666,7 +1703,15 @@ fn process_insert_chain(
         .position(|(id, armed)| *armed && id == &track)
     {
         let reverb = &mut share.reverb_pool[index];
-        if reverb.is_active() {
+        if reverb.is_active() && stereo {
+            // ⭐ stage 12：混响的立体声入口 —— 左右各走自己的信号，⛔ 不再"复制成双声道再下混"。
+            let (left, right) = (
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+            reverb.process(left, right);
+            *share.insert_reverb_frames = share.insert_reverb_frames.wrapping_add(frames as u64);
+        } else if reverb.is_active() {
             share.reverb_scratch[0][..frames].copy_from_slice(&share.track_scratch[..frames]);
             share.reverb_scratch[1][..frames].copy_from_slice(&share.track_scratch[..frames]);
             let (left, right) = share.reverb_scratch.split_at_mut(1);
@@ -1911,11 +1956,19 @@ fn render_branch(
         //   单声道处理器，对两条缓冲各跑一次会让状态**推进两次**（声音会错），
         //   复制状态也做不到 ⇒ 有插入的轨保持单声道（**已知偏差**，登记在案）；
         // * 没有侧链键抽头：抽头只复制单声道，右声道会静默丢掉；
-        // * 参数表对本轨**恒等**（`ParamTable::is_identity`）：平滑器同样有状态；
-        // * PDC 与手动相位对齐在本轨是**零延迟**（`DelayLine::delay() == 0`／未武装）：
-        //   两条延迟线要两份内存，本片不做；
+        // * ~~参数表对本轨**恒等**~~：⭐ **stage 7 解除** —— 轨参数（音量/平移的增益塔）
+        //   是**同一条标量曲线**，左右可以共用（`ParamTable::apply_pair` 一次
+        //   `process()` 写到两条缓冲，⛔ 不让平滑器推进两次）⇒ 带 `SetParam` 自动化的轨
+        //   现在也走分声道。
+        // * ~~PDC 与手动相位对齐在本轨是**零延迟**~~：⭐ **stage 8 解除 PDC 那条** ——
+        //   延迟线现在有**右声道环**（`DelayLine::process_pair_in_place`），左右共用
+        //   同一个游标 ⇒ 补偿延迟对两声道同值、状态只推进一次。
+        // * ~~手动相位对齐要求未武装~~：⭐ **stage 9 解除** —— `PhaseBank::apply_pair`
+        //   把两声道交给**同一个游标**（对齐延时同值、极性同时反转）。
         // * 只有一条"直连 master、单位增益"的出边且没有发送自动化；
-        // * 没有声相自动化（那条平滑路径只服务单声道）。
+        // * ~~没有声相自动化~~：⭐ **stage 10 解除** —— `sum_pair_into_bus_smoothed`
+        //   把两个声相平滑器**每帧各推进一次**，分别乘到源侧已分好的左右缓冲上
+        //   （⛔ 不是"跑两遍单声道求和"：那会多推一次状态、并丢掉区域声相）。
         //
         // ⚠ 这些条件都是**读**（零分配、零锁）⇒ 判不成立时不花任何额外代价。
         let prepared_sfz = current.sfz_plan(&track).map(|plan| plan.prepared());
@@ -1924,20 +1977,14 @@ fn render_branch(
             && prepared_sfz
                 .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
             && current.audio_clip_schedule(&track).is_none()
-            && !has_armed_insert_devices(share, &track)
+            && (!has_armed_insert_devices(share, &track) || only_stereo_inserts(share, &track))
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
-            && share.params.is_identity(track)
-            && share.pdc.line(&track).is_none_or(|line| line.delay() == 0)
-            && share.phase_bank.effective_delay(&track).is_none()
             && routes_of_track.len() == 1
             && routes_of_track[0].destination() == master
             && routes_of_track[0].gain() == 1.0
-            && !(process_sends && send_armed(share, &routes_of_track[0]))
-            && share.pan_gains[..*share.armed_pan_slots]
-                .iter()
-                .position(|(id, _, _)| *id == track)
-                .is_none_or(|index| !share.armed_pan_armed[index]);
+            && !(process_sends && send_armed(share, &routes_of_track[0]));
+
         if running && stereo_track {
             // 分声道：左 → `track_scratch`、右 → `track_scratch_r`（区域 `pan` 在源侧施加）。
             let (left, right) = (
@@ -2015,9 +2062,18 @@ fn render_branch(
         //
         // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
         // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
-        share
-            .params
-            .apply(track, &mut share.track_scratch[..frames]);
+        if stereo_track {
+            // ⭐ stage 7：一对声道共用同一条增益曲线（平滑器只推进一次）。
+            share.params.apply_pair(
+                track,
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+        } else {
+            share
+                .params
+                .apply(track, &mut share.track_scratch[..frames]);
+        }
         // --- 3a'~3a'''') 插入链：通道条 → 混响 → 卷积混响，**逐样本** ---
         // [crate::insert]。位置：**轨道自己的渲染与参数乘子之后、逐轨电平与 PDC 之前**
         // ⇒ 普通轨的电平读数与汇入母线的信号都是"插入之后"的结果。
@@ -2038,6 +2094,7 @@ fn render_branch(
                 &mut insert_current_db,
                 &mut insert_detector_db,
                 routing.key_route(&track),
+                stereo_track,
             )
         {
             insert_current_seen = true;
@@ -2095,15 +2152,33 @@ fn render_branch(
         //
         // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
         // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
-        share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        if stereo_track {
+            // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
+            share.pdc.apply_pair(
+                &track,
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+        } else {
+            share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        }
         // --- 手动相位对齐第一层：PDC 之后、声相/母线求和之前 ---
         //
         // 与 PDC 同一条位置规则（"进入总线求和节点前"）：先把插件延迟补齐，
         // 用户延时再按对齐后的信号施加。无武装的轨返回 `false`、样本一位不动
         // ⇒ 没有相位设置的工程逐位不变。走带停住时**也**调（喂静音，推进线）。
-        let _ = share
-            .phase_bank
-            .apply(&track, &mut share.track_scratch[..frames]);
+        if stereo_track {
+            // ⭐ stage 9：同一个延迟线游标、同一份对齐延时与极性。
+            let _ = share.phase_bank.apply_pair(
+                &track,
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+        } else {
+            let _ = share
+                .phase_bank
+                .apply(&track, &mut share.track_scratch[..frames]);
+        }
         // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
         // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
         // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
@@ -2234,13 +2309,26 @@ fn render_branch(
             });
             if single_unit_to_master {
                 if stereo_track {
-                    sum_pair_into_bus(
-                        out,
-                        &share.track_scratch[..frames],
-                        &share.track_scratch_r[..frames],
-                        gain_l,
-                        gain_r,
-                    );
+                    if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
+                        // ⭐ stage 10：声相自动化 ＋ 分声道 ⇒ 逐帧平滑的成对求和。
+                        sum_pair_into_bus_smoothed(
+                            out,
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                            &mut share.armed_pan_l[index],
+                            &mut share.armed_pan_r[index],
+                        );
+                        *share.pan_automation_frames =
+                            share.pan_automation_frames.wrapping_add(frames as u64);
+                    } else {
+                        sum_pair_into_bus(
+                            out,
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                            gain_l,
+                            gain_r,
+                        );
+                    }
                 } else {
                     sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
                 }
@@ -2313,6 +2401,7 @@ fn render_branch(
                     &mut insert_current_db,
                     &mut insert_detector_db,
                     routing.key_route(node),
+                    false, // 处理型总线：单声道（v1 口径未变）
                 ) {
                     insert_current_seen = true;
                 }
@@ -2438,6 +2527,7 @@ fn render_branch(
             &mut insert_current_db,
             &mut insert_detector_db,
             routing.key_route(&master),
+            false, // 主总线：单声道（v1 口径未变）
         ) {
             insert_current_seen = true;
         }
@@ -5821,6 +5911,28 @@ fn sum_pair_into_bus(
     {
         *l += *source_l * gain_l;
         *r += *source_r * gain_r;
+    }
+}
+
+/// ⭐ **stage 10**：把"源侧已分好左右"的一对缓冲按**逐帧平滑的轨声相增益**
+/// 汇入母线（声相自动化专用）。
+///
+/// 与 [`sum_pair_into_bus`] 的唯一区别是增益不再是常量：两个平滑器**每帧各推进一次**，
+/// 分别乘到左/右缓冲上。⛔ 不能改写成"对两条缓冲各跑一次单声道求和" —— 那会让
+/// 平滑器状态推进两次、且丢掉源侧的区域声相。
+fn sum_pair_into_bus_smoothed(
+    block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    left: &[f32],
+    right: &[f32],
+    gain_l: &mut ParamSmoother,
+    gain_r: &mut ParamSmoother,
+) {
+    let (out_l, out_r) = block.stereo_mut();
+    for (((l, r), source_l), source_r) in
+        out_l.iter_mut().zip(out_r.iter_mut()).zip(left).zip(right)
+    {
+        *l += *source_l * gain_l.process();
+        *r += *source_r * gain_r.process();
     }
 }
 
@@ -9970,5 +10082,49 @@ mod tests {
         let (left, right) = other.stereo_mut();
         assert_eq!(left[0], left_source[0] * 0.5, "对调后左声道读数必须变");
         assert_eq!(right[0], right_source[0] * 0.25, "对调后右声道读数必须变");
+    }
+
+    /// ⭐ **stage 10 判据**：声相自动化的成对求和 —— 每一帧只推进**一次**平滑器，
+    /// 且左/右各自乘自己的增益；读数逐位等于"按同一序列手工乘加"的期望值。
+    #[test]
+    fn the_smoothed_pair_sum_advances_each_gain_once_per_frame() {
+        const N: usize = 32;
+        let mut block = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        let left: Vec<f32> = (0..N).map(|index| index as f32 + 1.0).collect();
+        let right: Vec<f32> = (0..N).map(|index| -(index as f32) - 2.0).collect();
+        let mut gain_l =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        let mut gain_r =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        gain_l.set_target(0.25);
+        gain_r.set_target(0.75);
+        let mut reference_l =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        let mut reference_r =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        reference_l.set_target(0.25);
+        reference_r.set_target(0.75);
+        sum_pair_into_bus_smoothed(&mut block, &left, &right, &mut gain_l, &mut gain_r);
+        let (out_l, out_r) = block.stereo_mut();
+        for index in 0..N {
+            assert_eq!(
+                out_l[index],
+                left[index] * reference_l.process(),
+                "左声道必须是 源左 × 第 {index} 帧增益"
+            );
+            assert_eq!(
+                out_r[index],
+                right[index] * reference_r.process(),
+                "右声道必须是 源右 × 第 {index} 帧增益"
+            );
+        }
+        // 反向腿：第二块沿用同一对平滑器 ⇒ 读数必须继续变化（状态没有停住）。
+        let mut second = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        sum_pair_into_bus_smoothed(&mut second, &left, &right, &mut gain_l, &mut gain_r);
+        let (second_l, _) = second.stereo_mut();
+        assert_ne!(
+            second_l[0], out_l[0],
+            "第二块的第一帧必须与第一块不同（平滑器在继续收敛）"
+        );
     }
 }

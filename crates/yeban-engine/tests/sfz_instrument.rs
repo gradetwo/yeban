@@ -17101,6 +17101,34 @@ fn s120_cutoff_oncc_modulates_the_lowpass_per_block() {
         closed > 0.0,
         "反向腿：`cc=127` 不是静音（滤波仍有泄漏，⛔ 不能靠「整段没出声」过关）"
     );
+    // ⭐ stage 6：**离线一次性入口**（`render_note_into_with_cc`）也必须吃到同一条调制
+    // （stage 5 曾把它登记为已知偏差，本轮闭合）—— 与实时腿同一个夹具、同一个阈值。
+    {
+        let instrument = SfzInstrument::load(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+             cutoff=800 cutoff_oncc1=-700\n"
+                .to_owned(),
+            &Default::default(),
+        )
+        .expect("离线夹具必须解析成功");
+        let offline_at = |value: u8| -> f32 {
+            let probe = move |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+            let mut out = vec![0.0f32; FRAMES];
+            instrument
+                .render_note_into_with_cc(&sample, 60, 127, Some(&probe), 0.0, &mut out, HZ)
+                .expect("离线渲染必须成功");
+            out[200..].iter().map(|sample| sample.abs()).sum()
+        };
+        let offline_open = offline_at(0);
+        let offline_closed = offline_at(127);
+        println!(
+            "[engine-sfz/S120] 离线一次性入口：cc=0 ⇒ {offline_open};cc=127 ⇒ {offline_closed}"
+        );
+        assert!(
+            offline_closed < offline_open * 0.5,
+            "离线一次性入口也必须施加 `cutoff_oncc1`：cc=0 ⇒ {offline_open};cc=127 ⇒ {offline_closed}"
+        );
+    }
     assert!(
         closed < open * 0.5,
         "`cutoff_oncc1=-700` 必须真的把截止从 800 Hz 压到 100 Hz         （200 Hz 正弦应被明显衰减）：cc=0 ⇒ {open};cc=127 ⇒ {closed}"
