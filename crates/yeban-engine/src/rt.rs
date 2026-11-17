@@ -1422,6 +1422,29 @@ fn master_last(
 ///
 /// 只扫 `armed_*_slots` 截出的**定长前缀**（默认工程全是空切片）⇒ 零分配、零锁、
 /// 零 I/O [MUST-GATE-001]。
+/// ⭐ **stage 11**：本节点是否"**只**武装了通道条"（采样延迟／混响／卷积都没武装）。
+///
+/// 分声道通路现在能吃通道条（`ChannelStrip::process_stereo` 是真立体声实现），
+/// 但另外三级仍是单声道器件（各自的延迟线与弹道只有一份状态）⇒ 只要它们中
+/// 任何一级对本节点武装，本轨就必须留在单声道。
+fn only_strip_armed(share: &BranchShare<'_>, node: &EntityId) -> bool {
+    let strip_armed = share.armed_strips[..*share.armed_insert_slots]
+        .iter()
+        .any(|(id, strip)| id == node && strip.is_some());
+    if !strip_armed {
+        return false;
+    }
+    !share.armed_reverbs[..*share.armed_reverb_slots]
+        .iter()
+        .any(|(id, _)| id == node)
+        && !share.armed_sample_delays[..*share.armed_sample_delay_slots]
+            .iter()
+            .any(|(id, armed)| *armed && id == node)
+        && !share.armed_convs[..*share.armed_conv_slots]
+            .iter()
+            .any(|(id, armed)| *armed && id == node)
+}
+
 fn has_armed_insert_devices(share: &BranchShare<'_>, node: &EntityId) -> bool {
     share.armed_strips[..*share.armed_insert_slots]
         .iter()
@@ -1575,6 +1598,8 @@ fn process_insert_chain(
     // 键源在抽头池里的槽位（`RoutingPlan::key_route` 的读数）；`None` = 本节点
     // 没有已求值的键路由 ⇒ 走节目检波。
     key_slot: Option<usize>,
+    // ⭐ stage 11：本轨是否走分声道（真 ⇒ 通道条用 `process_stereo`，两条缓冲一起过）。
+    stereo: bool,
 ) -> bool {
     let frames = frames.min(DEFAULT_BLOCK_FRAMES);
     let mut seen = false;
@@ -1620,7 +1645,15 @@ fn process_insert_chain(
         let key = key_slot
             .filter(|&slot| share.key_tap_filled[slot])
             .map(|slot| &share.key_taps[slot][..frames]);
-        if let Some(key) = key {
+        if stereo {
+            // ⭐ stage 11：通道条的真立体声入口 —— EQ/低切/动态各级都按"左/右
+            // 各自一份状态、一次推进"处理（`only_strip_armed` 已保证另外三级未武装）。
+            let (left, right) = (
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+            strip.process_stereo(left, right);
+        } else if let Some(key) = key {
             strip.process_mono_with_key(&mut share.track_scratch[..frames], key);
         } else {
             strip.process_mono(&mut share.track_scratch[..frames]);
@@ -1932,7 +1965,7 @@ fn render_branch(
             && prepared_sfz
                 .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
             && current.audio_clip_schedule(&track).is_none()
-            && !has_armed_insert_devices(share, &track)
+            && (!has_armed_insert_devices(share, &track) || only_strip_armed(share, &track))
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
             && routes_of_track.len() == 1
@@ -2049,6 +2082,7 @@ fn render_branch(
                 &mut insert_current_db,
                 &mut insert_detector_db,
                 routing.key_route(&track),
+                stereo_track,
             )
         {
             insert_current_seen = true;
@@ -2355,6 +2389,7 @@ fn render_branch(
                     &mut insert_current_db,
                     &mut insert_detector_db,
                     routing.key_route(node),
+                    false, // 处理型总线：单声道（v1 口径未变）
                 ) {
                     insert_current_seen = true;
                 }
@@ -2480,6 +2515,7 @@ fn render_branch(
             &mut insert_current_db,
             &mut insert_detector_db,
             routing.key_route(&master),
+            false, // 主总线：单声道（v1 口径未变）
         ) {
             insert_current_seen = true;
         }
