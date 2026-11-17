@@ -225,12 +225,17 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "右键菜单走 panel-brush (flat 色值支)",
         ),
         // 编辑面回平目标值（2026-11-17 拟物重点口径）: 根底/网格/车道/
-        // 力度泳道两套主题同为平色。
+        // 力度泳道 flat 同为平色; 网格底与车道三档的 physical 支于
+        // 2026-11-17 按 Bitwig 采样提亮 (Wang 定拟物版卷帘背景太深),
+        // flat 支仍为回平字面值。
         ("background: Tokens.bg-void;", "卷帘根底回平 (bg-void 平色)"),
-        ("background: #1a202e;", "网格底回平 (#1a202e 平色)"),
         (
-            "background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #2c364b :",
-            "车道回平 (字面三档平色)",
+            "background: Tokens.texture-physical ? #20272e : #1a202e;",
+            "网格底 (flat 回平 #1a202e; physical Bitwig 采样 #20272e)",
+        ),
+        (
+            "background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? #323d4b : #2c364b) :",
+            "车道三档 (flat 字面平色; physical 随底上移)",
         ),
         (
             "background: Tokens.bg-panel;",
@@ -416,12 +421,12 @@ fn the_track_area_follows_the_four_ui_rulings() {
             "分界刻蚀高光令牌（扁平套 alpha = 0）",
         ),
         (
-            "out property <color> divider-grid: texture-physical ? line.with-alpha(0.55) : #ffffff04;",
-            "网格弱档令牌（扁平套 = main 现行 #ffffff04）",
+            "out property <color> divider-grid: texture-physical ? #7a8694 : #ffffff04;",
+            "网格弱档令牌（扁平套 = main 现行 #ffffff04；拟物套 2026-11-17 车道底提亮后改实色 #7a8694，对新底 ≥3:1）",
         ),
         (
-            "out property <color> divider-grid-strong: texture-physical ? line-strong.with-alpha(0.8) : #ffffff0d;",
-            "网格强档令牌（扁平套 = main 现行 #ffffff0d）",
+            "out property <color> divider-grid-strong: texture-physical ? #9ba5b0 : #ffffff0d;",
+            "网格强档令牌（扁平套 = main 现行 #ffffff0d；拟物套 2026-11-17 改实色 #9ba5b0，对新底 ≥4.5:1）",
         ),
         (
             "? @linear-gradient(180deg, bg-panel, bg-shell)",
