@@ -1693,14 +1693,19 @@ export component ArrangementViewport inherits Rectangle {
                         }
                     }
                     // 行底分界线（Wang 2026-11-16：学 Logic 的行间低对比细线）：整行一根
-                    // ⇒ 轨道头列与车道侧同一 y 位对齐；色用既有分隔令牌 Theme.border-subtle。
-                    // 选中行已有 accent 边框，不再叠加本线。
+                    // ⇒ 轨道头列与车道侧同一 y 位对齐。选中行已有白色边框，不再叠加本线。
+                    // 七版提亮定值（Wang 2026-11-17 15:49）：原用 Theme.border-subtle，
+                    // 帧上实测 #191f2c，对最不利行底 #181719 仅 1.08:1，几乎不可见；
+                    // 改定值 #5a6672（相对亮度 0.1289）：对 #181719 实算 3.04:1
+                    // （目标窗 3.0–3.1）、对车道底 #090b10 为 3.35:1，且暗于车道
+                    // 拍线 #5d6a76（同底 3.22:1）。只改本落点，⛔ 不动
+                    // Theme.border-subtle 本体（其它分隔仍用它）。
                     Rectangle {
                         x: 0px;
                         y: parent.height - 1px;
                         width: parent.width;
                         height: 1px;
-                        background: Theme.border-subtle;
+                        background: #5a6672;
                         visible: trk.id != root.selected-track-id;
                     }
                 }
