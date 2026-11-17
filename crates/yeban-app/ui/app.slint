@@ -1486,7 +1486,7 @@ export component MainWindow inherits Window {
             border-color: Theme.accent.with-alpha(0.6);
             accessible-role: banner;
             accessible-id: "toast-banner";
-            accessible-label: "提示：" + root.toast-message;
+            accessible-label: @tr("提示：{}", root.toast-message);
 
             HorizontalLayout {
                 padding-left: 12px;

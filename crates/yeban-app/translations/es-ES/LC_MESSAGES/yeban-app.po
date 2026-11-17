@@ -1841,3 +1841,7 @@ msgstr "Aún no hay plantillas. Guarda primero el proyecto actual como plantilla
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "Aún no hay plantillas. Guarda primero el proyecto actual como plantilla."
+
+# --- app.slint (ui-patch-v3) ---
+msgid "提示：{}"
+msgstr "Aviso: {}"

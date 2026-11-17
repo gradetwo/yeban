@@ -1841,3 +1841,7 @@ msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comm
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comme modèle."
+
+# --- app.slint (ui-patch-v3) ---
+msgid "提示：{}"
+msgstr "Avis : {}"
