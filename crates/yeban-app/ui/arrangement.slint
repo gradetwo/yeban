@@ -324,12 +324,15 @@ export component ArrangementViewport inherits Rectangle {
                             // 对比度口径 2026-11-17 13:01 三版定：按设计文档
                             // §7.3 [UI-A11Y-003] 第 3 条 WCAG 2.1 AA 实算——
                             // 拍级 ≥3:1、小节级 ≥4.5:1，对各自实际背景合成后
-                            // 颜色按相对亮度公式算）。标尺带底 #1d2733
-                            // （相对亮度 0.0195）：小节刻度 `Tokens.gold`
-                            // #c6a47c（0.4001）高 9px、宽 2px，比 6.48:1；
-                            // 拍刻度 #6e7f8f（0.2051）高 5px、宽 1px，
-                            // 比 3.67:1。色相暖金 vs 冷灰蓝、粗细 2 对 1，
-                            // 层级分明。小节编号 #cbd5e1 对标尺带 10.17:1。
+                            // 颜色按相对亮度公式算）。四版（Wang 2026-11-17
+                            // 14:17／14:19 亲定）：小节刻度去掉金色，与拍刻度
+                            // 同为灰蓝色相（211°），只亮一档、宽一倍；线宽
+                            // 全体 ×2 试看，刻度高度不变。标尺带底 #1d2733
+                            // （相对亮度 0.0195）：小节刻度 #83909e（0.2724）
+                            // 高 9px、宽 4px，比 4.64:1；拍刻度 #6e7f8f
+                            // （0.2048）高 5px、宽 2px，比 3.67:1。层级靠
+                            // 亮度与线宽区分。小节编号 #cbd5e1 对标尺带
+                            // 10.17:1。
                             // 无更细的常显刻度：工程没有 division／吸附细分
                             // 设置，默认态只有拍刻度（细分线不新造设置项）。
                             for i in root.bar-count : Rectangle {
@@ -342,16 +345,16 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     x: 0px;
                                     y: parent.height - 9px;
-                                    width: 2px;
+                                    width: 4px;
                                     height: 9px;
-                                    background: Tokens.gold;
+                                    background: #83909e;
                                 }
 
                                 for beat in root.beats-per-bar : Rectangle {
                                     visible: beat > 0;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                     y: parent.height - 5px;
-                                    width: 1px;
+                                    width: 2px;
                                     height: 5px;
                                     background: #6e7f8f;
                                 }
@@ -1135,23 +1138,24 @@ export component ArrangementViewport inherits Rectangle {
                             for i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
-                                width: 2px;
+                                width: 4px;
                                 height: parent.height;
-                                background: (root.bar-start-index + i).mod(4) == 0 ? Tokens.gold : #a3804f;
+                                background: (root.bar-start-index + i).mod(4) == 0 ? #83909e : #748392;
                             }
 
                             // 拍线（Wang 2026-11-17：以拍为单位；对比度口径
                             // 2026-11-17 13:01 三版定，WCAG 2.1 AA 实算）：
                             // 节内每拍一根纵线，全部实色、无透明度合成。
-                            // 车道底 #090b10（相对亮度 0.0034）：拍线 #687685
-                            // （0.1759，宽 1px）比 4.24:1（≥3）；小节线宽 2px，
-                            // 常规 #a3804f（0.2379）比 5.40:1（≥4.5），每 4 小
-                            // 节 `Tokens.gold` #c6a47c（0.4001）比 8.44:1。
+                            // 四版（Wang 2026-11-17 14:17／14:19 亲定）：小节
+                            // 线去掉金色，与拍线同为灰蓝色相（211°），只提高
+                            // 亮度；线宽全体 ×2 试看（拍 2px、小节 4px）。
+                            // 车道底 #090b10（相对亮度 0.0033）：拍线 #687685
+                            // （0.1759，宽 2px）比 4.24:1（≥3）；小节线宽
+                            // 4px，常规 #748392（0.2202）比 5.07:1（≥4.5），
+                            // 每 4 小节 #83909e（0.2724）比 6.04:1。
                             // 对更亮的车道变体（着色车道 (12,19,25)、选中行
                             // (24,23,25)）实算仍达标：拍线 4.02／3.84:1、
-                            // 小节线 5.13／4.90:1。二版的透明度定值（拍线
-                            // `#ffffff04` 1.03:1、小节线 gold 0.08 1.10:1）
-                            // 被 Wang 判对比度不够，故本版改实色硬定值。
+                            // 小节线 4.81／4.60:1、每 4 小节线 5.74／5.49:1。
                             // 无更细的常显网格：工程没有 division／吸附细分
                             // 设置，默认态只有拍线。
                             for i in root.bar-count : Rectangle {
@@ -1165,7 +1169,7 @@ export component ArrangementViewport inherits Rectangle {
                                     visible: beat > 0;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                     y: 0px;
-                                    width: 1px;
+                                    width: 2px;
                                     height: parent.height;
                                     background: #687685;
                                 }
@@ -1741,14 +1745,15 @@ export component ArrangementViewport inherits Rectangle {
                                 visible: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px;
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
-                                width: 2px;
+                                width: 4px;
                                 height: parent.height;
-                                background: #a3804f;
+                                background: #748392;
                             }
 
-                            // 拍线与车道同款（以拍为单位，WCAG 实算同车道）：
-                            // 拍线 #687685（1px），小节线 #a3804f（2px）；
-                            // 空置行与轨道行同源同强度，整幅网格不断档。
+                            // 拍线与车道同款（以拍为单位，WCAG 实算同车道，
+                            // 四版同色同宽）：拍线 #687685（2px），小节线
+                            // #748392（4px）；空置行与轨道行同源同强度，
+                            // 整幅网格不断档。
                             for _i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
@@ -1760,7 +1765,7 @@ export component ArrangementViewport inherits Rectangle {
                                     visible: beat > 0;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                     y: 0px;
-                                    width: 1px;
+                                    width: 2px;
                                     height: parent.height;
                                     background: #687685;
                                 }
