@@ -16,7 +16,7 @@ use std::str::FromStr as _;
 
 use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
-use yeban_mcp::security::{BearerToken, ScopeSet, RunMode, Channel};
+use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::samples::filled_project;
 use yeban_model::{ClipContent, EntityId, YebanProjectV1};
 
@@ -241,10 +241,11 @@ fn existing_track_with_instrument_keeps_kit() {
     assert_eq!(lead.devices.len(), 1);
     assert_eq!(lead.devices[0].name, "Yeban PolySynth");
     assert!(lead.sampler.is_none());
-    assert!(lead
-        .clips
-        .values()
-        .any(|p| project.clip_pool.contains_key(&p.clip_id)));
+    assert!(
+        lead.clips
+            .values()
+            .any(|p| project.clip_pool.contains_key(&p.clip_id))
+    );
 }
 
 #[test]

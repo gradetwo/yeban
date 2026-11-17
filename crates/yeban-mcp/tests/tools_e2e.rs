@@ -1641,6 +1641,12 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
                 },
             }),
         ),
+        // 鼓机生成：风格 `trap` 缺省建新鼓轨 + `autoMerge` 一次落 main ⇒
+        // 带内 `success`；正向通路的证据在 `tests/drum_generate_tool.rs`。
+        (
+            "yeban_generate_drum_pattern",
+            json!({ "style": "trap", "autoMerge": true }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

@@ -4181,9 +4181,8 @@ fn plan_move_track(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// 内容逐字节一致（判据在 tests 里以两份新工程对账）。
 fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
-    let style = arg_str(call, "style").ok_or_else(|| {
-        Fault::domain(ErrorCode::InvalidParameterRange, "`style` 是必填参数")
-    })?;
+    let style = arg_str(call, "style")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "`style` 是必填参数"))?;
     let preset = yeban_theory::factory_drum_style(style)
         .map_err(|error| {
             Fault::domain(
@@ -4214,20 +4213,28 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
     let intensity = knob("intensity", 80)?;
     let seed = arg_u64(call, "seed")?.unwrap_or(0);
     let bars_raw = arg_u64(call, "bars")?.unwrap_or(4);
-    let bars = u32::try_from(bars_raw).ok().filter(|b| (1..=16).contains(b)).ok_or_else(|| {
-        Fault::domain(
-            ErrorCode::InvalidParameterRange,
-            format!("`bars` 必须是 1..=16 的整数, 实际收到 {bars_raw}"),
-        )
-    })?;
-    let swing = match arg_u64(call, "swingPermille")? {
-        None => None,
-        Some(raw) => Some(u16::try_from(raw).ok().filter(|v| (500..=1000).contains(v)).ok_or_else(|| {
+    let bars = u32::try_from(bars_raw)
+        .ok()
+        .filter(|b| (1..=16).contains(b))
+        .ok_or_else(|| {
             Fault::domain(
                 ErrorCode::InvalidParameterRange,
-                format!("`swingPermille` 必须是 500..=1000 的整数, 实际收到 {raw}"),
+                format!("`bars` 必须是 1..=16 的整数, 实际收到 {bars_raw}"),
             )
-        })?),
+        })?;
+    let swing = match arg_u64(call, "swingPermille")? {
+        None => None,
+        Some(raw) => Some(
+            u16::try_from(raw)
+                .ok()
+                .filter(|v| (500..=1000).contains(v))
+                .ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`swingPermille` 必须是 500..=1000 的整数, 实际收到 {raw}"),
+                    )
+                })?,
+        ),
     };
     let fill = arg_bool(call, "fill", true);
     let start_tick = arg_u64(call, "startTick")?.unwrap_or(0);
