@@ -145,11 +145,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yeban_decode::{DecodeError, DecodeOptions, decode_path};
-use yeban_engine::sfz_instrument::{InMemorySample, SampleLoop, SfzInstrument, SfzPlan};
+use yeban_engine::sfz_instrument::{
+    InMemorySample, NotationShiftSource, SampleLoop, SfzInstrument, SfzPlan,
+};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_render::wav::WavError;
 use yeban_sfz::instrument::is_builtin_silence_sample;
+use yeban_sfz::notation::NotationDetection;
 use yeban_sfz::parser::{IncludeIssue, ParseLimits};
 
 /// ⭐ **控制侧读盘计数器**（任务单 `#80` 的缓存判据的**可观测量**）。
@@ -315,6 +318,21 @@ pub struct SfzLoadReport {
     /// 空 ⇒ 全部 include 都读到了。每条都带**行号 + 请求路径 + 原因**；装载本身
     /// **不会**因为一条缺失就失败（其余 include 与 inline `<region>` 照常）。
     pub include_issues: Vec<IncludeIssue>,
+    /// ⭐ 阶段 2：(b) 记法检测的**结构化报告**（命中/未命中原因 + 证据计数）。
+    ///
+    /// `None` 只出现在 (c) 手动覆盖在场时（检测**停跑**，⛔ 不是"没结论"）。
+    /// 未命中时本字段照样有值 —— "没移位"必须带原因，⛔ 不许静默。
+    pub notation: Option<NotationDetection>,
+    /// ⭐ 阶段 2：实际施加的**外部移位**（半音；文件自带 (a) 之外的那份）。
+    pub notation_shift: i32,
+    /// ⭐ 阶段 2：外部移位的来源（自动检测／手动覆盖／无）。
+    pub notation_source: NotationShiftSource,
+    /// ⭐ 阶段 2：文件自带移位 (a) 的**逐 region 归属**（`(region 下标, 半音)`，
+    /// 只含非零；空 ⇒ 文件没声明 (a)，或声明被后续 `<control>` 归零）。
+    pub declared_shifts: Vec<(usize, i32)>,
+    /// ⭐ 阶段 2：**移位后**实际覆盖键位范围（`min(lokey) ..= max(hikey)`，
+    /// 只数 note 触发 region）；无 note 触发 region ⇒ `None`。
+    pub key_range: Option<(i32, i32)>,
 }
 
 impl SfzLoadReport {
@@ -337,6 +355,66 @@ impl SfzLoadReport {
             self.sample_source,
             if self.wired_to_export { "yes" } else { "no" },
         )
+    }
+
+    /// ⭐ 阶段 2：记法适配的**响亮报告行**（⛔ 绝不静默移位是硬口径）。
+    ///
+    /// 只在有事可报时产行：文件自带 (a) 生效、(b) 命中、(c) 覆盖生效、
+    /// (b) 未命中但**疑似**（带手动出路）。普通对齐乐器（未命中、无疑似、
+    /// 无 (a)）⇒ 空 —— 它们的完整结论在 [`Self::notation`] 结构里，不刷屏。
+    #[must_use]
+    pub fn notation_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.declared_shifts.is_empty() {
+            let mut values: Vec<i32> = self
+                .declared_shifts
+                .iter()
+                .map(|&(_, shift)| shift)
+                .collect();
+            values.sort_unstable();
+            values.dedup();
+            let rendered: Vec<String> = values.iter().map(|value| format!("{value:+}")).collect();
+            lines.push(format!(
+                "记法适配：文件自带移位（note_offset/octave_offset）在 {} 个 region 生效：{} 半音",
+                self.declared_shifts.len(),
+                rendered.join("/")
+            ));
+        }
+        match self.notation_source {
+            NotationShiftSource::AutoDetected => {
+                if let Some(detection) = &self.notation {
+                    lines.push(format!(
+                        "记法适配：检测到八度记法冲突，已整体移位 {:+} 半音；证据 {}/{} 个音名 region 的嵌入根音一致（带采样 region 共 {} 个）",
+                        self.notation_shift,
+                        detection.matching_count(),
+                        detection.evidence_count,
+                        detection.sampled_region_count,
+                    ));
+                }
+            }
+            NotationShiftSource::ManualOverride => {
+                if self.notation_shift != 0 {
+                    lines.push(format!(
+                        "记法适配：按工程手动八度覆盖移位 {:+} 半音（手动覆盖优先，自动检测未运行）",
+                        self.notation_shift,
+                    ));
+                }
+            }
+            NotationShiftSource::None => {
+                if let Some(detection) = &self.notation
+                    && let Some(suspected) = detection.suspected_shift
+                {
+                    let reason = detection
+                        .miss_reason
+                        .map_or("证据不足", |reason| reason.describe());
+                    lines.push(format!(
+                        "记法适配：疑似八度记法偏移 {:+} 半音，证据不足未自动移位（{reason}）；可在乐器面板手动设八度覆盖",
+                        suspected,
+                    ));
+                }
+            }
+        }
+        lines
     }
 }
 
@@ -368,6 +446,25 @@ pub fn load_sfz_with_instrument(
     probe_note: Option<u8>,
     engine_hz: f32,
 ) -> Result<(SfzLoadReport, SfzInstrument), SfzLoadError> {
+    load_sfz_adapted(path, probe_note, engine_hz, None)
+}
+
+/// ⭐ 阶段 2：与 [`load_sfz_with_instrument`] 相同，但调用方给出 (c) **手动
+/// 八度覆盖**（半音，来自工程乐器绑定）：有值 ⇒ (b) 自动检测**停跑**、
+/// 外部移位直接取覆盖值；`None` ⇒ 跑 (b)，命中才施加。
+///
+/// 适配在装载期只跑一次，结论（结构化报告 + 响亮行）进 [`SfzLoadReport`]；
+/// 探测在适配**之后**做 ⇒ 探测读数就是用户将听到的键位。
+///
+/// # Errors
+///
+/// 与 [`load_sfz_with_instrument`] 相同。
+pub fn load_sfz_adapted(
+    path: &Path,
+    probe_note: Option<u8>,
+    engine_hz: f32,
+    override_shift: Option<i32>,
+) -> Result<(SfzLoadReport, SfzInstrument), SfzLoadError> {
     // ⭐ 读盘计数器（任务单 `#80`）：只在这里自增 —— 本函数是 SFZ 文本**唯一**的读入口。
     read_probe::note_sfz_text_read();
     let text = std::fs::read_to_string(path)
@@ -381,13 +478,39 @@ pub fn load_sfz_with_instrument(
         _ => Path::new("."),
     };
     let entry = path.file_name().and_then(|name| name.to_str());
-    let instrument = match entry {
+    let mut instrument = match entry {
         Some(entry) if !entry.is_empty() => {
             SfzInstrument::load_with_includes(text, base_dir, entry, &limits)
         }
         _ => SfzInstrument::load(text, &limits),
     }
     .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
+    // ⭐ 阶段 2 记法适配（§14.4）：证据锚点 = WAV `smpl` 嵌入根音（按解析后
+    //    路径缓存，每个文件只扫一遍）；非 WAV 样本没有这个锚点 ⇒ 不进证据集。
+    let root_cache = std::cell::RefCell::new(BTreeMap::<PathBuf, Option<i32>>::new());
+    let adaptation = instrument
+        .adapt_notation(
+            &|sample_path| {
+                let resolved = resolve_sample_path(path, Path::new(sample_path));
+                if !is_wav_suffix(&resolved) {
+                    return None;
+                }
+                root_cache
+                    .borrow_mut()
+                    .entry(resolved.clone())
+                    .or_insert_with(|| read_wav_smpl_unity_note(&resolved))
+                    .as_ref()
+                    .copied()
+            },
+            override_shift,
+        )
+        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
+    let declared_shifts: Vec<(usize, i32)> = instrument
+        .with_instrument(|parsed| parsed.declared_note_shifts().collect())
+        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
+    let key_range = instrument
+        .key_range()
+        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
     let probe = probe_note
         .map(|note| probe_note_energy(&instrument, note, engine_hz))
         .transpose()?;
@@ -401,6 +524,11 @@ pub fn load_sfz_with_instrument(
             // 默认 `false`（本次装载没有请求导出/录音）；调用方（CLI）在真的要用它导出/录音时改写为 `true`。
             wired_to_export: false,
             include_issues: instrument.include_issues().to_vec(),
+            notation: adaptation.detection,
+            notation_shift: adaptation.applied_shift,
+            notation_source: adaptation.source,
+            declared_shifts,
+            key_range,
         },
         instrument,
     ))
@@ -524,6 +652,14 @@ fn is_wav_suffix(path: &Path) -> bool {
 /// 这与"解码失败"不同（那个有 `unreadable_samples` 报告行）—— `smpl` 只是**可选的
 /// 元数据**，它的缺失不改变"这个样本能不能播"。
 fn read_wav_smpl_loop(path: &Path) -> Option<SampleLoop> {
+    parse_wav_smpl_loop(&scan_wav_smpl_payload(path)?)
+}
+
+/// ⭐ **流式扫 chunk 取 `smpl` 块 payload**（loop 点与嵌入根音共用这一遍扫描）。
+///
+/// 口径与 [`read_wav_smpl_loop`] 的文档一致：只认 `RIFF`、遇到 `data` seek 跳过、
+/// payload 至多读 1 KiB、任何一步失败 ⇒ `None`（⛔ 不 panic）。
+fn scan_wav_smpl_payload(path: &Path) -> Option<Vec<u8>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
     let mut riff = [0u8; 12];
@@ -545,7 +681,7 @@ fn read_wav_smpl_loop(path: &Path) -> Option<SampleLoop> {
             let take = usize::try_from(size.min(1024)).ok()?;
             let mut payload = vec![0u8; take];
             file.read_exact(&mut payload).ok()?;
-            return parse_wav_smpl_loop(&payload);
+            return Some(payload);
         }
         // RIFF 的 chunk 一律**偶数字节对齐**（奇数长度后有一个 padding 字节）。
         let skip = size + (size & 1);
@@ -554,6 +690,27 @@ fn read_wav_smpl_loop(path: &Path) -> Option<SampleLoop> {
             return None;
         }
     }
+}
+
+/// ⭐ **读 WAV 的 `smpl` 块里的嵌入根音**（阶段 2 记法检测 (b) 的锚点证据）。
+///
+/// `dwMIDIUnityNote`（payload 偏移 12）是采样**文件自己**声明的原始音高（MIDI 号，
+/// 与任何记法无关 —— 正因为它不依赖记法，才配当锚点，见设计 §14.4）。
+/// 读不到（非 WAV、无 `smpl`、字段越界 > 127）⇒ `None`（该 region 不进证据集）。
+/// ⚠ 字段未写时写入器常留 0 —— 0 是合法 MIDI 号、按**可读**处理（它会成为
+/// 「与写出值对不上」的证据，正是鼓组类样本被正确判不命中的来源，⛔ 不特判）。
+fn read_wav_smpl_unity_note(path: &Path) -> Option<i32> {
+    parse_wav_smpl_unity_note(&scan_wav_smpl_payload(path)?)
+}
+
+/// `smpl` 块 payload → 嵌入根音（布局见 [`parse_wav_smpl_loop`] 的表：偏移 12）。
+fn parse_wav_smpl_unity_note(payload: &[u8]) -> Option<i32> {
+    if payload.len() < 16 {
+        return None;
+    }
+    let value = u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]);
+    let note = i32::try_from(value).ok()?;
+    (0..=127).contains(&note).then_some(note)
 }
 
 /// `smpl` 块 payload → [`SampleLoop`]（半开区间；见 [`read_wav_smpl_loop`] 的口径）。
@@ -1180,6 +1337,14 @@ pub struct SfzDecodeReport {
     pub unreadable_sample_reasons: Vec<UnreadableSample>,
     /// 摊平表占用的字节数（[`SfzPlan::memory_bytes`]）。
     pub plan_bytes: usize,
+    /// ⭐ 阶段 2：(b) 记法检测的结构化报告（透传装载报告；(c) 在场时为 `None`）。
+    pub notation: Option<NotationDetection>,
+    /// ⭐ 阶段 2：摊平所依据的**外部移位**（半音；0 ⇒ 摊平表与未适配时逐位同）。
+    pub notation_shift: i32,
+    /// ⭐ 阶段 2：外部移位的来源（自动检测／手动覆盖／无）。
+    pub notation_source: NotationShiftSource,
+    /// ⭐ 阶段 2：移位后实际覆盖键位范围（透传装载报告）。
+    pub key_range: Option<(i32, i32)>,
 }
 
 impl SfzDecodeReport {
@@ -1475,8 +1640,22 @@ pub fn decode_sfz_plan(
     sfz_path: &Path,
     engine_hz: f32,
 ) -> Result<(SfzPlan, SfzDecodeReport), SfzLoadError> {
+    decode_sfz_plan_with_override(sfz_path, engine_hz, None)
+}
+
+/// ⭐ 阶段 2：与 [`decode_sfz_plan`] 相同，但带 (c) **手动八度覆盖**
+/// （半音；来自工程乐器绑定 —— 渲染/导出路径据此让 (c) 优先于 (b)）。
+///
+/// # Errors
+///
+/// 与 [`decode_sfz_plan`] 相同。
+pub fn decode_sfz_plan_with_override(
+    sfz_path: &Path,
+    engine_hz: f32,
+    override_shift: Option<i32>,
+) -> Result<(SfzPlan, SfzDecodeReport), SfzLoadError> {
     // ① ＋ ②：读盘与解析走 `--sfz` 装载的**同一个**函数（⛔ 不复制读文件/解析那两行）。
-    let (load, instrument) = load_sfz_with_instrument(sfz_path, None, engine_hz)?;
+    let (load, instrument) = load_sfz_adapted(sfz_path, None, engine_hz, override_shift)?;
     // ③：引擎给的路径全集（排序 ＋ 去重 ⇒ 确定性顺序）。
     let referenced = instrument
         .referenced_sample_paths()
@@ -1549,6 +1728,10 @@ pub fn decode_sfz_plan(
         unreadable_samples,
         unreadable_sample_reasons,
         plan_bytes: plan.memory_bytes(),
+        notation: load.notation.clone(),
+        notation_shift: load.notation_shift,
+        notation_source: load.notation_source,
+        key_range: load.key_range,
     };
     Ok((plan, report))
 }

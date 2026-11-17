@@ -356,6 +356,7 @@ pub mod label;
 pub mod lfo;
 pub mod midi;
 pub mod modulation;
+pub mod notation;
 pub mod parser;
 pub mod pitch_eg;
 pub mod playback;
@@ -383,6 +384,9 @@ pub use instrument::{
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use lfo::{GenericLfo, LfoCcMod, LfoWave, V1Lfo};
 pub use midi::{MidiOpcode, MidiSection};
+pub use notation::{
+    NotationDetection, NotationEvidence, NotationMissReason, detect_notation_shift,
+};
 pub use parser::{
     Header, IncludeIssue, IncludeIssueKind, IncludeResolution, IncludeResolver, OpcodeValue,
     ParseLimits, SfzSource, Warning, parse_f32, parse_int, parse_note, parse_sources,
