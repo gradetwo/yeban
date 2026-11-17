@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，96 行）
+# 三方对齐矩阵（系统 / UI / MCP，97 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -30,13 +30,13 @@
 - 判定顺序：`计划` 或三侧全空 ⇒ **仅计划**；`系统=无` 且任一侧暴露 ⇒ **UI 或 MCP 独有**；
   `系统有` 且两侧都暴露 ⇒ **三方齐全**；只有 UI 暴露 ⇒ **系统+UI**；只有 MCP 暴露 ⇒ **系统+MCP**；否则 ⇒ **仅系统**。
 
-- 三方齐全：34 行
+- 三方齐全：35 行
 - 系统+UI（MCP 无）：6 行
 - 系统+MCP（UI 无）：34 行
 - 仅系统：12 行
 - 仅计划（系统也未实现）：6 行
 - UI 或 MCP 独有（系统没有）：4 行
-- **合计：96 行**
+- **合计：97 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -102,6 +102,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | 参数自动化平滑（`ARCH-DSP-001`，τ≈5ms 一阶低通 + 吸附） | 部分｜原语已实现 `crates/yeban-dsp/src/smoothing.rs`（`ParamSmoother`）；音频路径**无消费者**（`grep -rn "ParamSmoother" crates/*/src` 除该文件外命中 0）；`docs/ledger/phase-status.md` §4 `ROAD-M2-006` 引 `D44①`"参数平滑仍未实现"；自动化**录制**（`OpOrigin::AutomationRecord` 在 `crates/yeban-model/src/ops.rs:48`）无写入路径 | 无｜无平滑时间常数相关控件（自动化泳道的写模式角标只显示模式） | 无｜十个工具都没有自动化面；`yeban_set_macro`（`trackId`/`macroIndex`/`value`）只写目标值，不暴露平滑参数 | 原因：设备链参数求值接口未落地（`docs/ledger/mcp-render-notes.md` needs-3）；计划：engine 线出参数求值 / 自动化曲线求值接口；状态：PENDING ⚠ **2026-10-22 就地更正（读数）**：`grep -rn "ParamSmoother" crates/*/src` 实测 **74** 命中（不是 0），文件外 1 处为 `crates/yeban-dsp/src/compressor.rs:612` 的文档引用。**结论与读数分开**：结论「音频路径无消费者」**仍成立**（那处是注释、不是调用）；而「除该文件外命中 0」为假。 |
 | `yeban_edit_automation` | 已实现｜`crates/yeban-model` 的 `automation_value_at`（**唯一求值入口**）+ `Op::SetAutomationPoint` / `Op::SetAutomationLane` | 有｜`crates/yeban-app/src/automation.rs`（泳道 → 折线投影，含细采样） | 有｜`crates/yeban-mcp/src/domain/automation.rs`（读写同一条泳道；写走 `Op`，可逆） | 原因：AI 侧此前只能看见自动化而不能读写，泳道求值只有界面在用；计划：由 `ADR-0001 D46` 裁决的工具集扩张落地；注：求值必须走 `automation_value_at`（禁第二份求值，判据有牙）；状态：三方齐全 |
+| `yeban_generate_drum_pattern`（鼓机生成：风格预置 + 三旋钮 → MIDI 片段） | 已实现｜`crates/yeban-theory/src/drum_gen.rs`（`generate_drum_pattern`，种子绑定、同种子同参数逐字节可复现）+ 出厂 10 风格预置（`crates/yeban-theory/src/drum_preset.rs`）；落轨配方 `crates/yeban-app/src/bridge.rs` 的 `drum_gen_ops`（与 MCP 侧同一 theory 生成层；目标轨无音源时按风格族装默认鼓组） | 有｜「编辑」菜单「鼓机生成 (Drums)...」→ `ui/dialogs/drum_gen_dialog.slint`（`drum-gen-*` 元素族）+ 宿主接线 `crates/yeban-app/src/host.rs` 的 `wire_drum_gen_dialog` | 有｜`yeban_generate_drum_pattern`（`style` / `trackId` / `complexity` / `intensity` / `swingPermille` / `seed` / `bars` / `fill` / `startTick`；`crates/yeban-mcp/src/domain/mod.rs` 的 `plan_generate_drum_pattern`，提案路径） | 原因：—；计划：—；状态：三方齐全 |
 | `yeban_query_engine_state` | 已实现｜`SessionRuntimeState`（`MODEL-ISO-001` 第 2 层）+ `project.audio_config.sample_rate` + `TrackV3::devices`；缓冲帧数住在 `yeban-engine` | 有｜`crates/yeban-app/src/engine_host.rs`（走带 / seek / play）+ `meters.rs` | 有｜`crates/yeban-mcp/src/domain/engine_state.rs`（只读；缓冲走宿主注入的镜像） | 原因：引擎运行态此前只在界面/宿主进程内可读，AI 侧看不见；计划：D46 落地；注：形态 B（stdio 二进制）没有引擎进程 ⇒ `bufferFrames` 只能为 null（已如实写在契约与台账）；状态：三方齐全 |
 | `yeban_import_audio` | 已实现｜`yeban-decode`（解码 + `PcmBudget`）+ `Op::AddClip`（登记进 `clip_pool`）+ `Op::AddClipPlacement`（`crates/yeban-model/src/ops.rs:198`；`trackId` 一给就与 `AddClip` 包成**一条** `Op::Batch` 在同一次提交里施加） | 无｜`crates/yeban-app/src` 里没有音频导入路径（`decode_path` 与 `yeban_decode` 在 app 侧均零命中；`bridge.rs` 的音频片段是夹具假哈希） | 有｜`crates/yeban-mcp/src/domain/import_audio.rs`（走既有 CAS 池 + `Op`）。实参 = `name`（必填）/ `assetHash`·`path`（恰好给一个）/ `gainDb` / `clipId`，加 **5 个可选实参**：`trackId` / `startTick` / `durationTicks` / `placementId` / `muted`（`crates/yeban-mcp/src/tools.rs:935-964`；⚠ 2026-10-09 就地更正：旧记 `:767-817`，行号已漂移 ⇒ 这 5 个可选实参**现位于第 935-964 行**）。**给了 `trackId` ⇒ 用 `Op::AddClipPlacement` 摆放片段**（`startTick` 缺省 `0`；`durationTicks` 缺省由素材全长换算 `ceil(frames * PPQ * bpm / (sampleRate * 60))`，是硬切剪辑边界）；**不给 `trackId` ⇒ 逐字节等于旧行为**（只登记片段；此时再给其余四个摆放实参一律 `INVALID_PARAMETER_RANGE` + `data.reason = "placementWithoutTrack"`，`crates/yeban-mcp/src/domain/import_audio.rs:572`） | 原因：UI 侧从来没有导入音频文件的入口，`yeban-decode` 此前只被 MCP 的渲染片段路径消费；**`needs-3` 保持 OPEN**：工程 `assets` 索引没有 `Op`（模型 `Op` 全集无资产变体），因此本工具只写 `clip_pool` 条目、不写索引；**索引是许可留痕（`MUST-GATE-014`），不是渲染的字节来源 —— 渲染读会话 CAS 池**（唯一读法 = `crates/yeban-mcp/src/domain/mod.rs:2794` 的 `impl render::AssetStore for Domain`；容器把池里每条写成 `assets/{sha256}`），这条缺口由 `crates/yeban-mcp/tests/render_audio_clips.rs` 从两个方向钉住（索引仍为空 + 字节仍出自池）；计划：UI 接一条导入动作（同一个 `Op::AddClip` + 同一份 CAS 池）；状态：待接线 |
 | `yeban_export_diagnostics`（诊断包导出，**D56**） | 已实现｜`crates/yeban-diagnostics/src/lib.rs`（采集器：env/git/状态/配置 + zip + 逐项 sha256 + 脱敏；本行原写 `crates/yeban-engine/src/diagnostics.rs`，该路径**不存在** —— 采集器已在 `e78b8f4` 移入这个轻量 crate）与 `crates/yeban-mcp/src/domain/diagnostics.rs`（领域接线） | 有｜`app.slint` 的 `diagnostics-export-action` → `host.rs` 的 `on_export_diagnostics` → `UiAction::ExportDiagnostics` | 有｜`yeban_export_diagnostics`（可选 `outDir`；缺省写**系统临时目录** `std::env::temp_dir()`，本行原写"当前目录"已过期；`projectIncluded` **恒 `false`** —— `engine-state.json` 只是既有 `engine_state::snapshot` 投影，不含工程文档） | 原因：—；计划：—；状态：三方齐全 |

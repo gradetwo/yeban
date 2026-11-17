@@ -3434,7 +3434,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 39] = [
+    const SLINT_MANIFEST: [&str; 40] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3467,6 +3467,8 @@ mod tests {
         "dialogs/humanize_dialog.slint",
         // 音源管理对话框（`line/sound-library-manager`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/sound_library_dialog.slint",
+        // 鼓机生成对话框（`line/drum-machine-p1`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/drum_gen_dialog.slint",
         // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
         "dialogs/macro_panel.slint",
         // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
@@ -3800,7 +3802,36 @@ mod tests {
             "标签必须来自工程: {}",
             lead.label
         );
+        // ⭐ 鼓机对话框的静态条目逐条豁免（⛔ 不是静默放行）：`鼓` 是演示
+        // 夹具轨道 0 的名字，同时是产品自身词汇的语素（鼓机 / 鼓型 /
+        // 鼓轨）—— 鼓机生成对话框的这些标签是**静态 UI 文案**（对话框族
+        // 在 [`ElementRegistry::from_view`] 的文档里已登记为「不由工程
+        // 驱动」），不携带任何工程数据，与演示轨道名只是字面撞车。
+        // 豁免的成立条件由下面的相等断言钉住：被豁免条目在演示与 filled
+        // 两份注册表里的标签必须**逐字相同**（工程无关的机械证据）；
+        // 任何一条变成工程派生，相等断言先红、豁免即失效。
+        const DEMO_NAME_STATIC_EXEMPTIONS: &[&str] = &[
+            "drum-gen-dialog",
+            "drum-gen-panel",
+            "drum-gen-close-button",
+            "drum-gen-target-line",
+            "drum-gen-apply-button",
+            "drum-gen-error-line",
+        ];
         for meta in filled.iter() {
+            if DEMO_NAME_STATIC_EXEMPTIONS.contains(&meta.id.as_str())
+                || meta.id.starts_with("drum-gen-style-")
+            {
+                let demo_meta = demo
+                    .get(&meta.id)
+                    .expect("豁免条目在演示注册表里也必须存在");
+                assert_eq!(
+                    demo_meta.label, meta.label,
+                    "豁免条目 `{}` 的标签必须在演示与 filled 注册表里逐字相同（静态文案的证据）",
+                    meta.id
+                );
+                continue;
+            }
             assert!(
                 !meta.label.contains("鼓"),
                 "`{}` 的标签里出现了演示夹具的轨道名 `鼓`: {}",
