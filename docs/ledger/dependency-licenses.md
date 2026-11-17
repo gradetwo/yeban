@@ -3,8 +3,8 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `a9fe5fb37742b634`
-- 外部依赖包数: **654**（不含 29 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `b9b5381bbd4ede0d`
+- 外部依赖包数: **657**（不含 29 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
@@ -12,8 +12,8 @@
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
 | `MIT OR Apache-2.0` | 304 |
-| `MIT` | 131 |
-| `Apache-2.0 OR MIT` | 53 |
+| `MIT` | 132 |
+| `Apache-2.0 OR MIT` | 54 |
 | `Unicode-3.0` | 27 |
 | `Apache-2.0` | 19 |
 | `Zlib OR Apache-2.0 OR MIT` | 16 |
@@ -44,6 +44,7 @@
 | `BSD-2-Clause` | 1 |
 | `BSD-2-Clause OR MIT OR Apache-2.0` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
+| `CC0-1.0 OR MIT-0 OR Apache-2.0` | 1 |
 | `CDLA-Permissive-2.0` | 1 |
 | `MIT / Apache-2.0` | 1 |
 | `Unlicense` | 1 |
@@ -139,6 +140,7 @@
 | `const-field-offset` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `const-field-offset-macro` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `const-oid` | `0.10.2` | `Apache-2.0 OR MIT` | 传递 | — |
+| `constant_time_eq` | `0.6.1` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | 传递 | — |
 | `convert_case` | `0.10.0` | `MIT` | 传递 | — |
 | `core-foundation` | `0.9.4` | `MIT OR Apache-2.0` | 传递 | — |
 | `core-foundation-sys` | `0.8.7` | `MIT OR Apache-2.0` | 传递 | — |
@@ -346,6 +348,7 @@
 | `ndk-context` | `0.1.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `ndk-sys` | `0.6.0+11769913` | `MIT OR Apache-2.0` | 传递 | — |
 | `nix` | `0.31.3` | `MIT` | 传递 | — |
+| `nix` | `0.32.0` | `MIT` | 传递 | — |
 | `nom` | `7.1.3` | `MIT` | 传递 | — |
 | `nom` | `8.0.0` | `MIT` | 传递 | — |
 | `num-complex` | `0.4.6` | `MIT OR Apache-2.0` | 传递 | — |
@@ -563,7 +566,7 @@
 | `tree_magic_mini` | `3.2.2` | `MIT` | 传递 | — |
 | `ttf-parser` | `0.25.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `typed-index-collections` | `3.5.0` | `MIT OR Apache-2.0` | 传递 | — |
-| `typed-path` | `0.12.3` | `MIT OR Apache-2.0` | 传递 | — |
+| `typed-path` | `0.13.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `typenum` | `1.20.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `udev` | `0.9.3` | `MIT` | 传递 | — |
 | `uds_windows` | `1.2.1` | `MIT` | 传递 | — |
@@ -697,10 +700,11 @@
 | `zerofrom` | `0.1.8` | `Unicode-3.0` | 传递 | — |
 | `zerofrom-derive` | `0.1.8` | `Unicode-3.0` | 传递 | — |
 | `zeroize` | `1.9.1` | `Apache-2.0 OR MIT` | 传递 | — |
+| `zeroize_derive` | `1.5.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `zerotrie` | `0.2.5` | `Unicode-3.0` | 传递 | — |
 | `zerovec` | `0.11.8` | `Unicode-3.0` | 传递 | — |
 | `zerovec-derive` | `0.11.6` | `Unicode-3.0` | 传递 | — |
-| `zip` | `9.0.3` | `MIT` | 直接 | `yeban-app`, `yeban-diagnostics` |
+| `zip` | `9.6.1` | `MIT` | 直接 | `yeban-app`, `yeban-diagnostics` |
 | `zlib-rs` | `0.6.8` | `Zlib` | 传递 | — |
 | `zmij` | `1.0.23` | `MIT` | 传递 | — |
 | `zopfli` | `0.8.4` | `Apache-2.0` | 传递 | — |
