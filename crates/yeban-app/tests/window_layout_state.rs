@@ -106,10 +106,12 @@ fn reset_restores_defaults_clears_stored_layout_and_keeps_language() {
         std::env::set_var(settings::SETTINGS_PATH_ENV, &path);
     }
     // 预置：语言 fr-FR ＋ 一份已存布局（模拟上次退出留下的文件）。
+    // （help 字段：Settings 加字段后的机械补位，默认状态。）
     settings::save(&Settings {
         language: Some(Language::FrFr),
         layout: Some(distinctive_layout()),
         recent_projects: Vec::new(),
+        help: yeban_app::help_state::HelpState::default(),
     })
     .expect("预置设置文件必须写成功");
 

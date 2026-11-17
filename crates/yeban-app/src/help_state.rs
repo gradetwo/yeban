@@ -1,36 +1,46 @@
-//! 帮助系统状态存储：新手引导的「不再显示 / 已完成」与教学课程的完成进度。
+//! 帮助系统状态：新手引导的「不再显示 / 已完成」与教学课程的完成进度。
 //!
-//! # 选型（line/onboarding-help 普查结论）
+//! # 存储（line/fix-onboarding-settings 起并入 settings）
 //!
-//! `main` 上的 yeban-app 没有用户级设置存储（无 config 目录、无首启概念）。
-//! 仓内唯一的同类先例是模型层 `yeban_model::local_config::LocalMachineConfig`
-//! （`~/.yeban/config.json`）：它的字段集由规范钉死为本机绑定
-//! （声卡 / 外部编辑器 / 密钥引用），引导与课程状态不在其中 ⇒ ⛔ 不往里塞。
-//! 本模块在**同一目录** `~/.yeban/` 下另立 `onboarding.json`，并逐字沿用
-//! 那份先例的落盘纪律：
+//! 帮助状态**不再**另立文件：它以 `help` 键存在 settings 文件
+//! （`yeban/settings.json`，见 [`crate::settings`]）里，与语言、窗口布局、
+//! 最近工程共用一份设置存储。`load` / `save` / `load_from` / `save_to`
+//! 的 API 不变，但语义改为读-改-写 settings 文件 —— 每次写回都先读出
+//! 现有设置（保住语言 / 布局 / 最近工程），再改 `help` 字段。
 //!
-//! * 目录权限 0700、文件权限 0600（Unix），不依赖 umask；
-//! * 写入序：建目录 → 以 0600 打开 → `write_all` → `sync_all` → 权限复核；
-//! * 序列化：`deny_unknown_fields` + 字段全带默认值（旧文件缺字段不判死），
-//!   映射用 `BTreeMap` 保证字节确定性；
-//! * 家目录解析：`HOME` → `USERPROFILE`，解析不到即报错，⛔ 不回退临时目录。
+//! 落盘纪律改随 settings：写临时文件再 rename，不留半截文件
+//! （旧独立文件的 0700/0600 权限纪律随之退役，settings 文件不设
+//! 特殊权限 —— 与语言、布局同一待遇）。
 //!
-//! 测试隔离：环境变量 `YEBAN_ONBOARDING_FILE` 给出完整路径时优先用它
-//! （判据用临时文件验往返，不碰真实家目录）。
+//! # 旧文件折入
+//!
+//! 旧独立文件 `~/.yeban/onboarding.json`（`state_path` 定位）在首次读取
+//! 时折入：settings 里已有非默认帮助状态时以 settings 为准；settings
+//! 还是默认时采用旧文件状态，并立即把折入结果写回 settings，此后以
+//! settings 为准（折入规则见 [`fold_legacy_state`]）。旧文件本身不删
+//! （不做破坏性操作），只作一次性迁移源。用户真实状态不会因折入丢失：
+//! 折入只发生在 settings 尚无状态时，且折入后立即落盘。
+//!
+//! # 测试隔离
+//!
+//! `YEBAN_SETTINGS_PATH`（settings 的路径覆盖）优先于默认设置路径；
+//! `YEBAN_ONBOARDING_FILE` 只用来定位**旧文件**（折入测试用），
+//! 不再是帮助状态的主存储路径。判据同时设这两个变量指到临时文件，
+//! 绝不碰真实配置目录与家目录。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// 状态文件格式版本。本线写 `1`；读到更高版本按未知处理（回默认，不覆盖）。
+/// 状态格式版本。本线写 `1`；读到更高版本按未知处理（回默认，不覆盖）。
 pub const HELP_STATE_VERSION: u32 = 1;
 
-/// 状态目录名（与 `local_config` / MCP 令牌目录同为 `~/.yeban`）。
+/// 旧状态目录名（与 `local_config` / MCP 令牌目录同为 `~/.yeban`）。
 pub const HELP_STATE_DIR_NAME: &str = ".yeban";
 
-/// 状态文件名。
+/// 旧状态文件名。
 pub const HELP_STATE_FILE_NAME: &str = "onboarding.json";
 
-/// 测试隔离用的路径覆盖环境变量。
+/// 旧文件路径覆盖环境变量（仅折入测试用，见模块文档）。
 pub const HELP_STATE_PATH_ENV: &str = "YEBAN_ONBOARDING_FILE";
 
 /// 一节课的持久化进度。
@@ -107,7 +117,7 @@ impl HelpState {
     }
 }
 
-/// 状态存储的错误面。读不到 / 解析失败**不**是错误（见 [`load_from`] 的回退
+/// 状态存储的错误面。读不到 / 解析失败**不**是错误（见 [`load`] 的回退
 /// 语义）；只有落盘失败与家目录不可知才报错，且调用方一律降级为
 /// 「本次会话不持久化」，⛔ 不许因此挡住应用启动。
 #[derive(Debug)]
@@ -132,7 +142,8 @@ impl std::fmt::Display for HelpStateError {
 
 impl std::error::Error for HelpStateError {}
 
-/// 解析状态文件路径：环境变量覆盖优先，其次 `~/.yeban/onboarding.json`。
+/// 旧独立状态文件路径：环境变量覆盖优先，其次 `~/.yeban/onboarding.json`。
+/// 只在折入时用（见模块文档），不是帮助状态的主存储路径。
 ///
 /// # Errors
 /// 家目录不可知时返回 [`HelpStateError::HomeUnknown`]。
@@ -153,10 +164,10 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 从指定路径读状态。文件不存在 / 内容损坏 / 版本更高 ⇒ 回默认状态
-/// （首次启动与文件损坏在用户眼里没有区别：都该看到引导）。
+/// 从旧独立文件读状态（折入专用）：文件不存在 / 内容损坏 / 版本更高 ⇒
+/// 回默认状态（旧文件损坏时就当它从没写过状态，不因此挡住折入）。
 #[must_use]
-pub fn load_from(path: &std::path::Path) -> HelpState {
+fn load_legacy_file(path: &std::path::Path) -> HelpState {
     let Ok(text) = std::fs::read_to_string(path) else {
         return HelpState::default();
     };
@@ -166,59 +177,109 @@ pub fn load_from(path: &std::path::Path) -> HelpState {
     }
 }
 
-/// 读当前生效路径的状态（路径不可知 ⇒ 默认状态）。
+/// 旧文件状态的折入口径（纯函数）：settings 里已有非默认状态时以
+/// settings 为准；settings 还是默认时采用旧文件状态。
+#[must_use]
+pub fn fold_legacy_state(current: &HelpState, legacy: &HelpState) -> HelpState {
+    if *current != HelpState::default() {
+        current.clone()
+    } else {
+        legacy.clone()
+    }
+}
+
+/// 从 settings 文件读帮助状态。文件不存在 / 解析失败 ⇒ 默认状态
+/// （首次启动与文件损坏在用户眼里没有区别：都该看到引导）。
+#[must_use]
+pub fn load_from(path: &std::path::Path) -> HelpState {
+    crate::settings::load_from(path).help
+}
+
+/// 读当前生效的帮助状态：settings 文件的 `help` 键为准；settings 里还
+/// 没有状态时，把旧独立文件的状态折入并写回 settings（见模块文档），
+/// 此后以 settings 为准。
 #[must_use]
 pub fn load() -> HelpState {
-    match state_path() {
-        Ok(path) => load_from(&path),
-        Err(_) => HelpState::default(),
+    let settings = crate::settings::load();
+    if settings.help != HelpState::default() {
+        return settings.help;
     }
+    let Ok(legacy_path) = state_path() else {
+        return settings.help;
+    };
+    let folded = fold_legacy_state(&settings.help, &load_legacy_file(&legacy_path));
+    if folded != settings.help {
+        let mut merged = settings;
+        merged.help = folded.clone();
+        // 折入落盘失败不挡读取：本次先按折入结果走，下次启动再试。
+        let _ = crate::settings::save(&merged);
+    }
+    folded
 }
 
-/// 把状态写到指定路径（落盘纪律见模块头）。
+/// 把帮助状态写到 settings 文件（读-改-写：先读出现有设置，保住语言 /
+/// 布局 / 最近工程，再改 `help` 写回；落盘纪律见 [`crate::settings`]）。
 ///
 /// # Errors
-/// 目录创建 / 写入 / 同步失败时返回 [`HelpStateError::Io`]。
+/// 读-改-写中的 IO 失败时返回 [`HelpStateError::Io`]。
 pub fn save_to(path: &std::path::Path, state: &HelpState) -> Result<(), HelpStateError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(HelpStateError::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    let mut text = serde_json::to_string_pretty(state).map_err(HelpStateError::Serialize)?;
-    text.push('\n');
-    write_private_file(path, text.as_bytes())
+    let mut settings = crate::settings::load_from(path);
+    settings.help = state.clone();
+    crate::settings::save_to(path, &settings).map_err(HelpStateError::Io)
 }
 
-fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), HelpStateError> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(HelpStateError::Io)?;
-    file.write_all(bytes).map_err(HelpStateError::Io)?;
-    file.sync_all().map_err(HelpStateError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(HelpStateError::Io)?;
-    }
-    Ok(())
-}
-
-/// 写当前生效路径的状态。
+/// 写当前生效的 settings 文件里的帮助状态（读-改-写，见 [`save_to`]）。
 ///
 /// # Errors
-/// 路径不可知或落盘失败时返回 [`HelpStateError`]。
+/// 落盘失败时返回 [`HelpStateError::Io`]。
 pub fn save(state: &HelpState) -> Result<(), HelpStateError> {
-    let path = state_path()?;
-    save_to(&path, state)
+    let mut settings = crate::settings::load();
+    settings.help = state.clone();
+    crate::settings::save(&settings).map_err(HelpStateError::Io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 折入纯函数：settings 已有状态 ⇒ 以 settings 为准，旧文件状态丢弃；
+    /// settings 还是默认 ⇒ 采用旧文件状态；两边都默认 ⇒ 仍是默认。
+    #[test]
+    fn fold_legacy_state_prefers_settings_then_legacy() {
+        let default = HelpState::default();
+        let dismissed = HelpState {
+            onboarding_dismissed: true,
+            ..HelpState::default()
+        };
+        let finished = HelpState {
+            onboarding_finished: true,
+            ..HelpState::default()
+        };
+
+        assert_eq!(fold_legacy_state(&dismissed, &finished), dismissed);
+        assert_eq!(fold_legacy_state(&default, &finished), finished);
+        assert_eq!(fold_legacy_state(&default, &default), default);
+    }
+
+    /// 旧文件解析回退：不存在 / 损坏 / 未来版本 ⇒ 默认。
+    #[test]
+    fn legacy_file_falls_back_to_default_when_unreadable() {
+        let dir =
+            std::env::temp_dir().join(format!("yeban-help-legacy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let missing = dir.join("missing.json");
+        assert_eq!(load_legacy_file(&missing), HelpState::default());
+        let corrupt = dir.join("corrupt.json");
+        std::fs::write(&corrupt, "{not json").expect("写坏文件");
+        assert_eq!(load_legacy_file(&corrupt), HelpState::default());
+        let future = dir.join("future.json");
+        std::fs::write(&future, "{\"version\": 99}").expect("写未来版本");
+        assert_eq!(load_legacy_file(&future), HelpState::default());
+        let good = dir.join("good.json");
+        std::fs::write(&good, "{\"version\": 1, \"onboarding_dismissed\": true}")
+            .expect("写旧格式");
+        assert!(load_legacy_file(&good).onboarding_dismissed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

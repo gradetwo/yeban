@@ -1,9 +1,13 @@
 //! 最小设置存储（2026-11-17，i18n 语言持久化，Wang 05:57 令；
 //! 同日 line/ui-window-state 扩入窗口布局，仍是同一个文件、同一个模块；
-//! 同日 line/startup-chooser 再扩入最近打开工程清单，仍是同一份文件）。
+//! 同日 line/startup-chooser 再扩入最近打开工程清单，仍是同一份文件；
+//! 同日 line/fix-onboarding-settings 再扩入帮助系统状态 —— 新手引导线
+//! 原先另立的 `~/.yeban/onboarding.json` 就此并入，全应用只此一份
+//! 设置存储，旧文件的折入见 `help_state` 模块）。
 //!
-//! 存三样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）与
-//! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）。
+//! 存四样用户偏好：界面语言（显式选过才存）、窗口布局（退出时快照）、
+//! 最近打开工程（打开时记录，启动选择器的「最近」分类读它）与帮助系统
+//! 状态（新手引导的「不再显示 / 已完成」与教学课程进度）。
 //! 语言的启动优先级（定案）是 `--lang` 参数（临时覆盖、不写回）＞
 //! 已存选择 ＞ 系统 locale 自动检测 ＞ zh-CN，决策函数见
 //! [`resolve_startup_language`]，单测钉死。布局的恢复/写回/重置语义在
@@ -21,8 +25,10 @@
 //! `version` 仍为 1 —— 演进口径是**在 version 1 下加可选键**：读端只取
 //! 自己认识的键，未知键忽略。于是旧构建（只认 `language`）读新文件时
 //! 布局键被忽略、语言选择不丢；新构建读旧文件时 `layout` 缺失 ⇒ 没有
-//! 已存布局。读不到 / 读坏 ⇒ 当作"什么都没存过"，不报错、不崩溃
-//!（设置文件是偏好，不是工程数据）。
+//! 已存布局。`help` 键同理（见 [`parse_help_state`] 的逐字段容错，
+//! 只有它自带的 `version` 高于本构建所识时整份回默认 —— 那是旧独立
+//! 文件留下的语义）。读不到 / 读坏 ⇒ 当作"什么都没存过"，不报错、
+//! 不崩溃（设置文件是偏好，不是工程数据）。
 //!
 //! 布局（[`WindowLayout`]）逐字段容错：单字段类型错 / 越界只让该字段
 //! 落回默认值（尺寸按 .slint 拖拽同界钳位、标签页只认闭集），不连坐
@@ -37,6 +43,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::cli::Language;
+use crate::help_state::HelpState;
 
 /// 设置文件在配置目录下的相对路径（目录名 + 文件名）。
 pub const SETTINGS_DIR_NAME: &str = "yeban";
@@ -47,7 +54,8 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const SETTINGS_PATH_ENV: &str = "YEBAN_SETTINGS_PATH";
 
 /// 设置内容：`language`（i18n 线）＋ `layout`（窗口布局线）＋
-/// `recent_projects`（启动选择器线），同一份文件。
+/// `recent_projects`（启动选择器线）＋ `help`（新手引导线，存储并入），
+/// 同一份文件。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
     /// 用户显式选过的语言；`None` = 从未存过（首次启动走自动检测）。
@@ -59,6 +67,9 @@ pub struct Settings {
     /// [`RECENT_PROJECTS_MAX`]）；空 = 从未记录过。本机配置
     /// （MODEL-ISO-001 第三层），不进工程文件。
     pub recent_projects: Vec<RecentProject>,
+    /// 帮助系统状态（新手引导与课程进度，类型与语义见
+    /// [`HelpState`]）；`HelpState::default()` = 从未存过。
+    pub help: HelpState,
 }
 
 /// 一条「最近打开工程」记录：路径 + 最近一次打开时刻。
@@ -245,6 +256,7 @@ pub fn load_from(path: &std::path::Path) -> Settings {
             .and_then(Language::from_name),
         layout: parse_layout(&value),
         recent_projects: parse_recent_projects(&value),
+        help: parse_help_state(&value),
     }
 }
 
@@ -280,6 +292,76 @@ fn parse_recent_projects(root: &serde_json::Value) -> Vec<RecentProject> {
         }
     }
     out
+}
+
+/// 解析 `help` 键：键缺失 / 不是对象 ⇒ 默认状态（从未存过）；
+/// `version` 高于本构建所识 ⇒ 整份回默认（与旧独立文件的语义一致：
+/// 新版写的状态不许被旧构建误读成半份）；其余逐字段容错 —— 坏字段
+/// 落回默认、坏课程条目只丢自己，不连坐整份状态与其它键。
+fn parse_help_state(root: &serde_json::Value) -> HelpState {
+    let Some(object) = root.get("help").and_then(|v| v.as_object()) else {
+        return HelpState::default();
+    };
+    if let Some(version) = object.get("version").and_then(serde_json::Value::as_u64)
+        && version > u64::from(crate::help_state::HELP_STATE_VERSION)
+    {
+        return HelpState::default();
+    }
+    let mut state = HelpState::default();
+    state.onboarding_dismissed =
+        json_bool(object, "onboarding_dismissed").unwrap_or(state.onboarding_dismissed);
+    state.onboarding_finished =
+        json_bool(object, "onboarding_finished").unwrap_or(state.onboarding_finished);
+    if let Some(lessons) = object.get("lessons").and_then(|v| v.as_object()) {
+        for (id, entry) in lessons {
+            let Some(entry) = entry.as_object() else {
+                continue;
+            };
+            state.lessons.insert(
+                id.clone(),
+                crate::help_state::LessonProgress {
+                    steps_done: entry
+                        .get("steps_done")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .unwrap_or(0),
+                    finished: json_bool(entry, "finished").unwrap_or(false),
+                },
+            );
+        }
+    }
+    state.active_lesson = object.get("active_lesson").and_then(parse_active_lesson);
+    state
+}
+
+/// 解析 `help.active_lesson`：`lesson_id` 缺失 / 为空 ⇒ `None`
+/// （没有它整条进行中课程无从谈起）；其余字段缺失落回默认。
+fn parse_active_lesson(value: &serde_json::Value) -> Option<crate::help_state::ActiveLesson> {
+    let object = value.as_object()?;
+    let lesson_id = object.get("lesson_id").and_then(|v| v.as_str())?;
+    if lesson_id.is_empty() {
+        return None;
+    }
+    let baseline_track_ids = object
+        .get("baseline_track_ids")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let current_step = object
+        .get("current_step")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0);
+    Some(crate::help_state::ActiveLesson {
+        lesson_id: lesson_id.to_owned(),
+        baseline_track_ids,
+        current_step,
+    })
 }
 
 /// 取一个有限 f32 字段（JSON 数字）；缺失 / 类型错 / 非有限 ⇒ `None`。
@@ -474,6 +556,47 @@ fn layout_to_json(layout: &WindowLayout) -> serde_json::Value {
     serde_json::Value::Object(object)
 }
 
+/// 把帮助状态序列化成 JSON 值（字段名与 [`parse_help_state`] 的读法
+/// 一一对应；`lessons` 沿 `BTreeMap` 迭代序输出，字节确定性与旧独立
+/// 文件一致）。
+fn help_to_json(state: &HelpState) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    object.insert("version".to_owned(), serde_json::json!(state.version));
+    object.insert(
+        "onboarding_dismissed".to_owned(),
+        serde_json::json!(state.onboarding_dismissed),
+    );
+    object.insert(
+        "onboarding_finished".to_owned(),
+        serde_json::json!(state.onboarding_finished),
+    );
+    let lessons: serde_json::Map<String, serde_json::Value> = state
+        .lessons
+        .iter()
+        .map(|(id, progress)| {
+            (
+                id.clone(),
+                serde_json::json!({
+                    "steps_done": progress.steps_done,
+                    "finished": progress.finished,
+                }),
+            )
+        })
+        .collect();
+    object.insert("lessons".to_owned(), serde_json::Value::Object(lessons));
+    if let Some(active) = &state.active_lesson {
+        object.insert(
+            "active_lesson".to_owned(),
+            serde_json::json!({
+                "lesson_id": active.lesson_id,
+                "baseline_track_ids": active.baseline_track_ids,
+                "current_step": active.current_step,
+            }),
+        );
+    }
+    serde_json::Value::Object(object)
+}
+
 /// 从默认路径读设置（见 [`load_from`] 的容错口径）。
 #[must_use]
 pub fn load() -> Settings {
@@ -481,7 +604,8 @@ pub fn load() -> Settings {
 }
 
 /// 把设置写到 `path`（先建父目录，写临时文件再 rename，不留半截文件）。
-fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result<()> {
+/// `pub(crate)`：`help_state` 按显式路径做读-改-写时复用同一份写盘纪律。
+pub(crate) fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -511,6 +635,9 @@ fn save_to(path: &std::path::Path, settings: &Settings) -> io::Result<()> {
             "recent_projects".to_owned(),
             serde_json::Value::Array(items),
         );
+    }
+    if settings.help != HelpState::default() {
+        object.insert("help".to_owned(), help_to_json(&settings.help));
     }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(object))
         .expect("内存里的设置对象一定能序列化成 JSON");
@@ -733,6 +860,7 @@ mod tests {
             language: Some(Language::FrFr),
             layout: None,
             recent_projects: Vec::new(),
+            help: HelpState::default(),
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -798,6 +926,7 @@ mod tests {
             language: Some(Language::JaJp),
             layout: Some(distinctive_layout()),
             recent_projects: Vec::new(),
+            help: HelpState::default(),
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -894,8 +1023,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 一份各字段都离开默认值的帮助状态（往返与互不连坐才验得住）。
+    fn distinctive_help() -> HelpState {
+        let mut help = HelpState {
+            onboarding_dismissed: true,
+            onboarding_finished: true,
+            ..HelpState::default()
+        };
+        help.lessons.insert(
+            "first-melody".to_owned(),
+            crate::help_state::LessonProgress {
+                steps_done: 3,
+                finished: true,
+            },
+        );
+        help.active_lesson = Some(crate::help_state::ActiveLesson {
+            lesson_id: "first-drum-track".to_owned(),
+            baseline_track_ids: vec!["track-a".to_owned(), "track-b".to_owned()],
+            current_step: 1,
+        });
+        help
+    }
+
+    /// 帮助状态存取往返：与语言同存一份文件，读回逐字段相等；
+    /// 默认状态不写出 `help` 键（旧文件不因读改写而膨胀）。
+    #[test]
+    fn help_state_roundtrip_through_a_temp_file() {
+        let dir = test_dir("help-roundtrip");
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = Settings {
+            language: Some(Language::FrFr),
+            help: distinctive_help(),
+            ..Settings::default()
+        };
+        save_to(&path, &settings).expect("临时目录写设置必须成功");
+        let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
+        assert!(text.contains("\"help\""), "文件须带 help: {text}");
+        assert!(
+            text.contains("\"first-melody\""),
+            "文件须存课程进度: {text}"
+        );
+        assert_eq!(load_from(&path), settings);
+        // 默认帮助状态 ⇒ 不写 help 键，读回仍是默认。
+        let plain = Settings {
+            language: Some(Language::FrFr),
+            ..Settings::default()
+        };
+        save_to(&path, &plain).expect("写默认帮助状态");
+        let text = std::fs::read_to_string(&path).expect("读回文件");
+        assert!(!text.contains("\"help\""), "默认状态不许写 help 键: {text}");
+        assert_eq!(load_from(&path).help, HelpState::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 格式兼容：没有 `help` 键的旧文件 ⇒ 帮助状态为默认，其余键照读；
+    /// `help` 不是对象 ⇒ 同样当作从未存过。
+    #[test]
+    fn old_file_without_help_key_reads_default_help() {
+        let dir = test_dir("old-file-help");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let old = dir.join("old.json");
+        std::fs::write(&old, "{\"version\": 1, \"language\": \"fr-FR\"}").expect("写旧文件");
+        let loaded = load_from(&old);
+        assert_eq!(loaded.language, Some(Language::FrFr));
+        assert_eq!(loaded.help, HelpState::default());
+        let junk = dir.join("junk.json");
+        std::fs::write(&junk, "{\"version\": 1, \"help\": \"not-an-object\"}").expect("写坏 help");
+        assert_eq!(load_from(&junk).help, HelpState::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 帮助状态逐字段降级：未来版本整份回默认；坏课程条目只丢自己；
+    /// `active_lesson` 缺 id 整条丢弃，都不连坐合法字段与语言。
+    #[test]
+    fn help_state_fields_degrade_individually() {
+        let dir = test_dir("help-degrade");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let future = dir.join("future.json");
+        std::fs::write(
+            &future,
+            "{\"help\": {\"version\": 99, \"onboarding_dismissed\": true}}",
+        )
+        .expect("写未来版本");
+        assert_eq!(
+            load_from(&future).help,
+            HelpState::default(),
+            "未来版本整份回默认"
+        );
+        let path = dir.join("degraded.json");
+        std::fs::write(
+            &path,
+            "{\
+                \"version\": 1,\
+                \"language\": \"de-DE\",\
+                \"help\": {\
+                    \"version\": 1,\
+                    \"onboarding_dismissed\": true,\
+                    \"onboarding_finished\": \"yes\",\
+                    \"lessons\": {\
+                        \"first-melody\": {\"steps_done\": 2, \"finished\": true},\
+                        \"broken\": \"not-an-object\",\
+                        \"half\": {\"steps_done\": \"three\"}\
+                    },\
+                    \"active_lesson\": {\"current_step\": 2}\
+                }\
+            }",
+        )
+        .expect("写降级样本");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.language, Some(Language::DeDe), "语言不连坐");
+        let help = loaded.help;
+        assert!(help.onboarding_dismissed, "合法字段照常生效");
+        assert!(!help.onboarding_finished, "类型错落回默认 false");
+        assert_eq!(help.lessons.len(), 2, "坏条目只丢自己");
+        assert_eq!(
+            help.lessons["first-melody"],
+            crate::help_state::LessonProgress {
+                steps_done: 2,
+                finished: true,
+            }
+        );
+        assert_eq!(
+            help.lessons["half"],
+            crate::help_state::LessonProgress::default(),
+            "字段类型错落回默认，不连坐整条"
+        );
+        assert_eq!(help.active_lesson, None, "缺 lesson_id 整条丢弃");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 读-改-写互不连坐（`save_language` / `store_layout` 的机制本体）：
-    /// 改语言保住布局，改布局保住语言。
+    /// 改语言保住布局与帮助状态，改布局保住语言与帮助状态。
     #[test]
     fn rewriting_one_field_preserves_the_other() {
         let dir = test_dir("preserve");
@@ -905,6 +1166,7 @@ mod tests {
             language: Some(Language::FrFr),
             layout: Some(distinctive_layout()),
             recent_projects: Vec::new(),
+            help: distinctive_help(),
         };
         save_to(&path, &initial).expect("写初始设置");
         // 改语言（save_language 的读-改-写形态）。
@@ -914,6 +1176,7 @@ mod tests {
         let after_language = load_from(&path);
         assert_eq!(after_language.language, Some(Language::KoKr));
         assert_eq!(after_language.layout, initial.layout, "改语言不丢布局");
+        assert_eq!(after_language.help, initial.help, "改语言不丢帮助状态");
         // 改布局（store_layout 的读-改-写形态，含清掉布局）。
         let mut by_layout = load_from(&path);
         by_layout.layout = None;
@@ -925,6 +1188,7 @@ mod tests {
             "改布局不丢语言"
         );
         assert_eq!(after_layout.layout, None);
+        assert_eq!(after_layout.help, initial.help, "改布局不丢帮助状态");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
