@@ -2669,6 +2669,54 @@ impl SynthEngine {
         out: &mut [f32],
         cc: Option<&dyn Fn(u8) -> u8>,
     ) {
+        self.render_track_inner(track, schedule, sfz, out, None, cc);
+    }
+
+    /// ⭐ **分声道渲染（区域 `pan` 的落点）**：左/右两条总线各写一遍。
+    ///
+    /// * SFZ 支路 ⇒ [`crate::sfz_instrument::SfzVoicePool::render_into_stereo_with_probes`]
+    ///   （声相在**源侧**按区域施加，与 Logic 的 sampler 同口径）；
+    /// * 鼓机 / 复音支路⛔ 没有源侧声相 ⇒ 先写左声道，再整体复制给右
+    ///   （与单声道路径**逐位相同**的"两声道同值"）。
+    ///
+    /// ⚠ 与 [`Self::render_track_with_cc`] 的差别**仅**是"多写一条右声道"：
+    /// 触发、音源、增益、块切分**逐字同一份**实现（同一个内层函数）。
+    pub fn render_track_stereo(
+        &mut self,
+        track: EntityId,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
+        self.render_track_stereo_with_cc(track, schedule, sfz, left, right, None);
+    }
+
+    /// [`Self::render_track_stereo`] ＋ CC 探针（语义同 [`Self::render_track_with_cc`]）。
+    pub fn render_track_stereo_with_cc(
+        &mut self,
+        track: EntityId,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        left: &mut [f32],
+        right: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
+        right.fill(0.0);
+        self.render_track_inner(track, schedule, sfz, left, Some(right), cc);
+    }
+
+    /// 单声道/分声道**共用的唯一一份**轨渲染体（`out_r == None` ⇒ 逐位同旧）。
+    #[allow(clippy::too_many_arguments)]
+    fn render_track_inner(
+        &mut self,
+        track: EntityId,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        out: &mut [f32],
+        mut out_r: Option<&mut [f32]>,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
         out.fill(0.0);
         let Some(index) = self
             .slots
@@ -2790,13 +2838,23 @@ impl SynthEngine {
                         if length == 0 {
                             break;
                         }
-                        slot.sfz.render_into_with_probes(
-                            plan,
-                            cursor_frame,
-                            &mut out[offset..offset + length],
-                            cc,
-                            pitch_probe,
-                        );
+                        match out_r.as_mut() {
+                            Some(right) => slot.sfz.render_into_stereo_with_probes(
+                                plan,
+                                cursor_frame,
+                                &mut out[offset..offset + length],
+                                &mut right[offset..offset + length],
+                                cc,
+                                pitch_probe,
+                            ),
+                            None => slot.sfz.render_into_with_probes(
+                                plan,
+                                cursor_frame,
+                                &mut out[offset..offset + length],
+                                cc,
+                                pitch_probe,
+                            ),
+                        }
                         offset += length;
                         cursor_frame = boundary;
                     }
@@ -2943,6 +3001,11 @@ impl SynthEngine {
         }
         if drums[index].active_slots() == 0 {
             slot.live_drum = false;
+        }
+        // ⭐ 鼓机 / 复音的兜底支路没有源侧声相 ⇒ 它们只写了左声道，
+        // 这里把左声道整份复制给右（"两声道同值"）；SFZ 分段路已在写的时候就分好了。
+        if let Some(right) = out_r {
+            right.copy_from_slice(out);
         }
     }
 }

@@ -5829,6 +5829,7 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             notes_with_sample_span: outcome.notes_with_sample_span,
             // ⭐ `#273`：多于一条区域命中同一音符（本工具只取第一条）。
             notes_with_multiple_regions: outcome.notes_with_multiple_regions,
+            notes_with_pan: outcome.notes_with_pan,
             // ⭐ 空排程诊断（只在 `notesScheduled == 0` 时进回执的 `notesEmpty`）。
             notes_in_project,
             notes_in_window,

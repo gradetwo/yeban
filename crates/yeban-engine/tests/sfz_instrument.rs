@@ -375,6 +375,51 @@ fn bits(samples: &[f32]) -> Vec<u32> {
 /// ⚠ 这条 ==0 的**强度**在于接线（触发哪些区域／速率／增益／终点），⛔ 不在于"两段
 /// 逐样本循环"：那一段是**同一个函数**（`sfz_instrument::mix_span_into`），
 /// 因为本仓的机械纪律是"全仓不许两份实现"（两份在 binary32 下无法维持逐位相同）。
+/// ⭐ **区域 `pan` 在源侧生效**：分声道通路里 `pan=100` ⇒ 左声道 ≈ 0、右声道出声；
+/// `pan` 缺省（0）⇒ 两条声道**逐位相同**（与单声道通路同值）。
+#[test]
+fn stereo_path_applies_region_pan_at_the_source() {
+    let track = EntityId::new();
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+
+    // ① `pan=100`（全右）
+    let right_panned = prepare("<region> sample=a.wav key=60 pitch_keycenter=60 pan=100\n");
+    assert_eq!(right_panned.region_pan(0), 100.0, "摊平表必须带上 `pan`");
+    let mut engine = engine_with_track(track);
+    let mut left = vec![0.0f32; BLOCK];
+    let mut right = vec![0.0f32; BLOCK];
+    engine.render_track_stereo(
+        track,
+        Some(&schedule),
+        Some(&right_panned),
+        &mut left,
+        &mut right,
+    );
+    let peak = |pcm: &[f32]| pcm.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+    assert!(peak(&right) > 0.01, "右声道必须出声：peak={}", peak(&right));
+    assert!(
+        peak(&left) < peak(&right) * 1e-3,
+        "`pan=100` ⇒ 左声道该几乎为 0：left={} right={}",
+        peak(&left),
+        peak(&right)
+    );
+
+    // ② 缺省（中性）⇒ 两声道逐位相同
+    let centered = prepare("<region> sample=a.wav key=60 pitch_keycenter=60\n");
+    let mut engine = engine_with_track(track);
+    let mut left = vec![0.0f32; BLOCK];
+    let mut right = vec![0.0f32; BLOCK];
+    engine.render_track_stereo(
+        track,
+        Some(&schedule),
+        Some(&centered),
+        &mut left,
+        &mut right,
+    );
+    assert_eq!(bits(&left), bits(&right), "中性区域 ⇒ 两声道必须逐位相同");
+}
+
 #[test]
 fn s1_engine_voices_match_the_flattened_table_sample_by_sample() {
     let prepared = prepare(TWO_MATCH_ONE_MISS);
@@ -16175,11 +16220,16 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 0,
             needle: "`direction` / `pan` **仍未做**，拆到⑩",
-            verdict: "仍成立（`pan` 在引擎侧未被应用）",
-            basis: "`pan` 在 `yeban-sfz` 里**被解析并携带**（`instrument.rs` 的 `scopes.get(\"pan\")`、\
-                    `Region::pan`、`PlaybackSpec::pan`），但**没有任何消费者**把它施加到输出上 —— \
-                    剥注释后引擎代码里**没有** `pan` 这个标识符 ⇒ 「引擎侧仍未做」成立",
-            check: SweepCheck::NotInCode(0, &["pan"]),
+            verdict: "⭐ **已落地（stage 1）**：分声道通路上区域声相已在**源侧**施加",
+            basis: "⭐ **区域 pan 片（stage 1）修订段**：`PreparedRegion` 携带 `pan`（百分比，\
+                    [`crates::sfz_instrument::PreparedSfz::region_pan`]），\
+                    `SfzVoicePool::render_into_stereo_with_probes` 逐声部按\
+                    `centered_pan_gains(pan / 100, ConstantPowerMinus3dB)` 分左右写入，\
+                    `SynthEngine::render_track_stereo(_with_cc)` 是它的引擎级入口。\
+                    ⚠ **仍成立的部分**：单声道路径（`render_track` / `render_track_with_cc`）对 `pan`\
+                    仍是**不施加**（逐位同接线前），混音器的逐轨声相也仍走既有那条\
+                    「先单声道、混总线时再补 pan」 ⇒ 母带/实时要吃到源侧声相，还差混音器接线（stage 2）",
+            check: SweepCheck::InCode(0, "pan"),
         },
         SweepRow {
             file: 0,
