@@ -126,14 +126,19 @@ export component ArrangementViewport inherits Rectangle {
                             // 编曲区本地视图菜单开关（Wang 2026-11-16 令：置于轨道头工具行最前）。
                             // 用可渲染的中文标签，⛔ 不再依赖不渲染的下拉箭头字形；详见细节实测 §5.9。
                             Rectangle {
-                                width: 60px;
+                                // i18n 合入后（d10ab38）：文案走 @tr，长度随语种变化（9 语词表）。
+                                // 因此宽度改为「随 preferred-width 自适应，下限 72px / 上限 96px」，
+                                // 超长语种由 elide 兜底，避免把同行右侧的"和弦展开/＋轨道"挤出去。
+                                width: Math.min(96px, Math.max(72px, menu-label.preferred-width + 10px));
                                 height: 18px;
                                 background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? #253045 : #161b28);
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
-                                Text {
+                                menu-label := Text {
                                     text: @tr("轨道菜单");
+                                    width: Math.min(menu-label.preferred-width, parent.width - 6px);
+                                    overflow: elide;
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -797,17 +802,29 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         border-width: 1px;
                                         border-color: badge-left-touch.has-hover ? Theme.accent : #ffffff14;
-                                        max-width: 82px;
+                                        max-width: 108px;
                                         HorizontalLayout {
                                             padding-left: 4px;
                                             padding-right: 4px;
+                                            // 「Yeban PolySynth [v]」在 9px 等宽下约 100px，旧的 82px 上限把
+                                            // 尾巴 `[v]` 一起省成「Yeban PolySy…」，看不见"可换音色"的入口。
+                                            // 拆成两段：名字用 elide 自适应，`[v]` 单独且永远完整。
                                             Text {
-                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " [v]";
+                                                text: trk.insert1 != "" ? trk.insert1 : trk.kind;
+                                                horizontal-stretch: 1;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
                                                 font-weight: 400;
                                                 overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: " [v]";
+                                                font-family: Tokens.font-mono;
+                                                font-size: 9px;
+                                                color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
+                                                font-weight: 400;
                                                 vertical-alignment: center;
                                             }
                                         }
@@ -1317,17 +1334,27 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         border-width: 1px;
                                         border-color: badge-right-touch.has-hover ? Theme.accent : #ffffff14;
-                                        max-width: 82px;
+                                        max-width: 108px;
                                         HorizontalLayout {
                                             padding-left: 4px;
                                             padding-right: 4px;
+                                            // 同左侧轨道头：名字 elide、`[v]` 尾巴恒定可见。
                                             Text {
-                                                text: (trk.insert1 != "" ? trk.insert1 : trk.kind) + " [v]";
+                                                text: trk.insert1 != "" ? trk.insert1 : trk.kind;
+                                                horizontal-stretch: 1;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
                                                 color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
                                                 font-weight: 400;
                                                 overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: " [v]";
+                                                font-family: Tokens.font-mono;
+                                                font-size: 9px;
+                                                color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
+                                                font-weight: 400;
                                                 vertical-alignment: center;
                                             }
                                         }

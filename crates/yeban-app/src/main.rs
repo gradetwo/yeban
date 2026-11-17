@@ -579,7 +579,37 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 } else {
                     None
                 };
-                let tick = production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
+                let mut tick =
+                    production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
+                // ⭐ **心跳投影自愈**（本轮实测的根因）：`view-tick` 是装配期/上次打开工程时的
+                // 那份投影副本，而"新建轨道""控制面改轨道集合"这类编辑只会经
+                // `apply_view` 重画界面、**不会**回写本循环手里那份副本（B1 波形与电平腿都读它）。
+                // 后果：新增一条轨之后 `pump_meters` 的长度契约永远不成立 ⇒ 混音台电平表
+                // **永久**停在静音值（现场实例：Lead/Bass/Aux + 新建的 MIDI 2 共 4 行，
+                // 而心跳那份投影仍是 3 条）。
+                //
+                // 处置：只在**第一次**发现不等长时用权威工程重建一次投影（每"轨数变化"一次
+                // 代价，稳态零成本），重建后立刻补跑一跳让电平当帧恢复。重建后仍不等长
+                // ⇒ 照旧如实出声（下面的 `LengthMismatch` 日志），⛔ 不静默。
+                if let host::MeterPump::LengthMismatch { .. } = &tick.meters {
+                    // 缩放取**当前**那份副本的读数（窗口里的刻度没变过 ⇒ 重建不能顺带改缩放，
+                    // 否则自动化泳道/波形柱数会跟着跳）。
+                    let zoom = view_tick.borrow().ticks_per_pixel;
+                    if let Some(fresh) = port
+                        .with_project(|project| {
+                            ViewState::from_project_with_zoom(project, zoom).ok()
+                        })
+                        .flatten()
+                    {
+                        *view_tick.borrow_mut() = fresh;
+                        tick = production.tick(
+                            &ui_tick,
+                            &view_tick.borrow(),
+                            mark,
+                            project.as_ref(),
+                        );
+                    }
+                }
                 // 新 UI 的显示态(is-playing / timecode / 电平 / 播放头)与
                 // 契约面(旧接线写入)对齐; 数据数组同名, apply_view 已直接驱动组件树。
                 host::sync_aether_display(&ui_tick);
