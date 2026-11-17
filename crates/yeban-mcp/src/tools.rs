@@ -116,8 +116,8 @@ pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 /// 调用方的记忆里搬进生产代码）。
 pub const COMMIT_MODEL_KEY: &str = "commitModel";
 
-/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条 + 快照对比 1 条 + 自动相位对齐 1 条）。
-pub const TOOL_COUNT: usize = 44;
+/// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展 + 插件扫描／装载 2 条 + ARA 3 条 + 伶人 SVS 2 条 + 原生预制 4 条 + 整曲总览 1 条 + OTCP 音高校正 3 条 + 移轨 1 条 + 快照对比 1 条 + 自动相位对齐 1 条 + 鼓机生成 1 条）。
+pub const TOOL_COUNT: usize = 45;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
@@ -144,7 +144,10 @@ pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 /// + **快照对比 1 条**（设计稿 §8.3，Phase 2：`compare_song_snapshots`，两版快照的 A/B Diff）。
 /// + **自动相位对齐 1 条**（手动层第二层：`yeban_auto_align_tracks`，互相关测两轨延时
 ///   + 经提案路径写延时/极性补偿；测量住在 `yeban-dsp`，宿主注入 provider）。
-pub const EXTENSION_TOOL_COUNT: usize = 34;
+/// + **鼓机生成 1 条**（鼓机一期：`yeban_generate_drum_pattern`，风格预置 + 三旋钮
+///   + 种子经 `yeban-theory` 生成鼓型，落成目标轨上的 MIDI 片段；轨无音源时
+///     按风格族装默认鼓组——原声 SFZ / 电子合成）。
+pub const EXTENSION_TOOL_COUNT: usize = 35;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -192,6 +195,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_move_track",
     "compare_song_snapshots",
     "yeban_auto_align_tracks",
+    "yeban_generate_drum_pattern",
 ];
 
 /// 规范 ID 前缀。
@@ -2567,9 +2571,101 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::RenderFailed,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-DRUM-GENERATE",
+        name: "yeban_generate_drum_pattern",
+        summary: "鼓机一期：按风格预置生成鼓型并落成目标轨上的 MIDI 片段（提案路径，`autoMerge` 可一次调用落 main）。风格 = 出厂 10 预置（trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock，数据改编自 groove 仓 MIT pattern 并经调优）；三旋钮 complexity（密度/鬼音）/ intensity（力度）/ swingPermille（摇摆，缺省取风格定值）+ seed（同种子同参数逐字节可复现）。`trackId` 缺省 ⇒ 新建鼓轨；目标轨尚无音源时按风格族装默认鼓组（原声族 = Virtuosity Drums SFZ 采样、电子族 = 合成鼓机 808 系），已有音源则沿用。ratchet/hat roll 在音符事件层展开，无新片段类型；生成片段可在编曲区与钢琴卷帘继续编辑。风格不存在 ⇒ STYLE_NOT_FOUND（回执带 availableStyles）。",
+        scope: Scope::AppAdmin,
+        // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
+        side_effect: SideEffect::ProjectState,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_generate_drum_pattern` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            param(
+                "style",
+                "string",
+                true,
+                "风格预置 id（出厂 10 个：trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock）；不存在 ⇒ STYLE_NOT_FOUND",
+            ),
+            param(
+                "trackId",
+                "string",
+                false,
+                "目标音轨 EntityId（26 字符 ULID）；缺省 = 新建一条鼓轨（含到主总线的路由）；音轨不存在 ⇒ TRACK_NOT_FOUND",
+            ),
+            param(
+                "complexity",
+                "integer",
+                false,
+                "复杂度 0..=100（缺省 50）：<34 只出核心层、34..=66 加标准层、>=67 全层 + 军鼓鬼音（种子驱动）；越界 ⇒ INVALID_PARAMETER_RANGE",
+            ),
+            param(
+                "intensity",
+                "integer",
+                false,
+                "强度 0..=100（缺省 80）：力度缩放（100 = 预置原力度，0 = 压到 55%）；越界 ⇒ INVALID_PARAMETER_RANGE",
+            ),
+            param(
+                "swingPermille",
+                "integer",
+                false,
+                "摇摆千分比 500..=1000（500 = 平直）；缺省 = 风格预置定值；越界 ⇒ INVALID_PARAMETER_RANGE",
+            ),
+            param(
+                "seed",
+                "integer",
+                false,
+                "生成种子（缺省 0）：同种子 + 同参数 ⇒ 片段逐字节一致；驱动鬼音层",
+            ),
+            param(
+                "bars",
+                "integer",
+                false,
+                "生成小节数 1..=16（缺省 4；预置 pattern 循环取用）；越界 ⇒ INVALID_PARAMETER_RANGE",
+            ),
+            param(
+                "fill",
+                "boolean",
+                false,
+                "缺省 true = 最后一小节落 fill（风格带 fill 时）；false = 全程主 pattern",
+            ),
+            param(
+                "startTick",
+                "integer",
+                false,
+                "摆放起始 tick（缺省 0）",
+            ),
+            param(
+                INCLUDE_OPS_PARAM,
+                "boolean",
+                false,
+                "是否回传完整 op 载荷: 缺省 false = 只回结构化字段 (willCreate + opCount/opKinds), true = 额外回传逐条 ops (审查用途) [BASELINE-006]",
+            ),
+            param(
+                "autoMerge",
+                "boolean",
+                false,
+                "[ADR-0029]: 缺省 false = 逐字节不变 (只建提案, `pendingMerge:true`)。true = 同一次调用内背靠背执行既有的 `yeban_merge_proposal` 合并实现, 响应 = 提案回执 ⊕ 合并回执",
+            ),
+            param(
+                "mergeCommitMessage",
+                "string",
+                false,
+                "[ADR-0029]: `autoMerge` 合并提交的信息, 只随 `autoMerge:true` 生效; 缺省同手动合并的既有缺省 `\\\"merge proposal {id}\\\"`",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::StyleNotFound,
+            ErrorCode::TrackNotFound,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::Conflict,
+        ],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；44 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；45 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)

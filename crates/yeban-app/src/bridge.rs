@@ -2818,6 +2818,165 @@ pub fn clip_create_ops_on(
     ])
 }
 
+/// 鼓机生成（`line/drum-machine-p1`）的目标轨解析：展示轨是 MIDI 轨时用它，
+/// 否则（音频 / 辅助 / 主总线 / 无轨）返回 `None` ⇒ [`drum_gen_ops`] 新建鼓轨。
+#[must_use]
+pub fn drum_gen_target<'a>(
+    project: &YebanProjectV1,
+    display: Option<&'a TrackV3>,
+) -> Option<&'a TrackV3> {
+    display.filter(|track| track.kind == TrackKind::Midi && track.id != project.master_bus_track_id)
+}
+
+/// 鼓机生成的 `Op` 批次构造（与 MCP 工具 `yeban_generate_drum_pattern` 同一
+/// 配方、同一 theory 生成层；身份走工程既有分配器 [`EntityId::new`]，不要求
+/// 跨进程确定 —— 确定性契约由 theory 生成层对**音符内容**保证）。
+///
+/// 形状（顺序承重）：
+/// 1. `target = None` 时先 `AddTrack`（名 `<预置名> Drums`、-6 dB）+
+///    `AddRoutingNode` + `ConnectRouting` 到主总线（主总线节点缺失时补一格，
+///    与 [`track_create_ops`] 同款守卫）；
+/// 2. 目标轨尚无音源（`sampler` 为空且 `devices` 为空）时按
+///    [`yeban_theory::kit_setup`] 装默认鼓组：原声族 `SetTrackSampler` 绑
+///    Virtuosity 基础组、电子族 `InsertDevice` 合成鼓机；已有音源 ⇒ 不动
+///    （用户鼓组优先，与 MCP 同口径）；
+/// 3. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
+///    （tick 0 起、时长 = 小节数 × [`yeban_theory::TICKS_PER_BAR`]）。
+///
+/// # Errors
+///
+/// - 没有主总线（新建轨路径）⇒ 与 [`track_create_ops`] 同一条原因；
+/// - 目标是主总线或非 MIDI 轨 ⇒ 拒绝（调用方应先经 [`drum_gen_target`]）；
+/// - theory 生成失败或生成为空 ⇒ 透传原因，不产出半成品批次。
+pub fn drum_gen_ops(
+    project: &YebanProjectV1,
+    preset: &yeban_theory::DrumStylePreset,
+    params: &yeban_theory::DrumGenParams,
+    target: Option<&TrackV3>,
+) -> Result<Vec<Op>, String> {
+    let mut ops: Vec<Op> = Vec::new();
+    let (track_id, has_instrument) = match target {
+        Some(track) => {
+            if track.id == project.master_bus_track_id {
+                return Err("不能往主总线轨上生成鼓型片段".to_owned());
+            }
+            if track.kind != TrackKind::Midi {
+                return Err("目标轨不是 MIDI 轨，不能放鼓型片段".to_owned());
+            }
+            (
+                track.id,
+                track.sampler.is_some() || !track.devices.is_empty(),
+            )
+        }
+        None => {
+            let master = project
+                .tracks
+                .get(&project.master_bus_track_id)
+                .filter(|track| track.kind == TrackKind::Master)
+                .ok_or_else(|| TRACK_CREATE_NO_MASTER_REASON.to_owned())?;
+            let track_id = EntityId::new();
+            ops.push(Op::AddTrack {
+                track: TrackV3 {
+                    id: track_id,
+                    name: format!("{} Drums", preset.name),
+                    kind: TrackKind::Midi,
+                    volume_db: -6.0,
+                    ..TrackV3::default()
+                },
+            });
+            ops.push(Op::AddRoutingNode { node: track_id });
+            if !project.routing_graph.nodes.contains(&master.id) {
+                ops.push(Op::AddRoutingNode { node: master.id });
+            }
+            ops.push(Op::ConnectRouting {
+                edge: RoutingEdge {
+                    id: EntityId::new(),
+                    source_node: track_id,
+                    destination_node: master.id,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            });
+            (track_id, false)
+        }
+    };
+
+    if !has_instrument {
+        match yeban_theory::kit_setup(preset) {
+            yeban_theory::DrumKitSetup::AcousticSfz { sfz_path } => {
+                ops.push(Op::SetTrackSampler {
+                    track_id,
+                    old_sampler: None,
+                    new_sampler: Some(SamplerBinding {
+                        path: sfz_path.to_owned(),
+                    }),
+                });
+            }
+            yeban_theory::DrumKitSetup::SynthDevice {
+                device_name,
+                params: device_params,
+            } => {
+                ops.push(Op::InsertDevice {
+                    track_id,
+                    slot_index: 0,
+                    device: DeviceDefinition {
+                        id: EntityId::new(),
+                        name: device_name.to_owned(),
+                        kind: DeviceKind::InternalInstrument,
+                        bypassed: false,
+                        params: device_params
+                            .iter()
+                            .map(|(name, value)| ParameterValue {
+                                name: name.clone(),
+                                value: *value,
+                                unit: None,
+                            })
+                            .collect(),
+                        latency_samples: 0,
+                        plugin: None,
+                    },
+                });
+            }
+        }
+    }
+
+    let generated = yeban_theory::generate_drum_pattern(preset, params)
+        .map_err(|error| format!("鼓型生成失败: {error}"))?;
+    if generated.is_empty() {
+        return Err(format!("风格 `{}` 在当前参数下生成不出任何鼓点", preset.id));
+    }
+    let mut notes = BTreeMap::new();
+    for note in &generated {
+        let id = EntityId::new();
+        let midi = MidiNote {
+            velocity: note.velocity,
+            ..MidiNote::new(id, note.tick, note.gm_key, note.duration_ticks)
+        };
+        notes.insert(id, midi);
+    }
+    let clip_id = EntityId::new();
+    ops.push(Op::AddClip {
+        clip: ClipPoolEntry {
+            id: clip_id,
+            name: format!("{} Drums", preset.name),
+            content: ClipContent::Midi { notes },
+        },
+    });
+    ops.push(Op::AddClipPlacement {
+        track_id,
+        placement: ClipPlacement {
+            id: EntityId::new(),
+            clip_id,
+            start_tick: 0,
+            duration_ticks: u64::from(params.bars) * yeban_theory::TICKS_PER_BAR,
+            loop_config: LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        },
+    });
+    Ok(ops)
+}
+
 /// 解析摆放音频片段的目标轨：显式选中了某轨时尊重用户选择（非 `Audio` 轨由上游拒绝，
 /// 不默默改投到其它轨）；未选中任何轨时优先寻找第一条 `Audio` 轨。
 #[must_use]
@@ -9929,5 +10088,150 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
+    }
+
+    // ------------------------------------------------ 鼓机生成（drum-machine-p1）
+
+    fn drum_params() -> yeban_theory::DrumGenParams {
+        yeban_theory::DrumGenParams {
+            complexity: 50,
+            intensity: 80,
+            swing_permille: Some(515),
+            seed: 42,
+            bars: 4,
+            fill: true,
+        }
+    }
+
+    #[test]
+    fn drum_gen_ops_new_track_electronic_installs_synth_kit() {
+        let project = filled_project();
+        let preset = yeban_theory::factory_drum_style("trap")
+            .unwrap()
+            .expect("trap 预置必须存在");
+        let params = drum_params();
+        let ops = drum_gen_ops(&project, &preset, &params, None).expect("新建鼓轨批次");
+        assert_eq!(ops.len(), 6, "建轨 3 + 装鼓组 1 + 片段 2: {ops:?}");
+        match &ops[0] {
+            Op::AddTrack { track } => {
+                assert_eq!(track.name, "Trap Drums");
+                assert_eq!(track.kind, TrackKind::Midi);
+                assert_eq!(track.volume_db, -6.0);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(matches!(ops[1], Op::AddRoutingNode { .. }));
+        match &ops[2] {
+            Op::ConnectRouting { edge } => {
+                assert_eq!(edge.destination_node, project.master_bus_track_id);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        match &ops[3] {
+            Op::InsertDevice { device, .. } => {
+                assert_eq!(device.kind, DeviceKind::InternalInstrument);
+                assert!(device.params.iter().any(|p| p.name == "kick_note"));
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        // 片段音符与 theory 生成逐项一致（tick / 音高 / 力度 / 时值）。
+        let expected = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();
+        match &ops[4] {
+            Op::AddClip { clip } => match &clip.content {
+                ClipContent::Midi { notes } => {
+                    assert_eq!(notes.len(), expected.len());
+                    let mut got: Vec<(u64, u8, u8, u64)> = notes
+                        .values()
+                        .map(|n| (n.start_tick, n.pitch, n.velocity, n.duration_ticks))
+                        .collect();
+                    let mut want: Vec<(u64, u8, u8, u64)> = expected
+                        .iter()
+                        .map(|n| (n.tick, n.gm_key, n.velocity, n.duration_ticks))
+                        .collect();
+                    got.sort_unstable();
+                    want.sort_unstable();
+                    assert_eq!(got, want);
+                }
+                other => panic!("unexpected clip content: {other:?}"),
+            },
+            other => panic!("unexpected op: {other:?}"),
+        }
+        match &ops[5] {
+            Op::AddClipPlacement { placement, .. } => {
+                assert_eq!(placement.start_tick, 0);
+                assert_eq!(placement.duration_ticks, 4 * yeban_theory::TICKS_PER_BAR);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drum_gen_ops_new_track_acoustic_binds_sfz_kit() {
+        let project = filled_project();
+        let preset = yeban_theory::factory_drum_style("rock")
+            .unwrap()
+            .expect("rock 预置必须存在");
+        let ops = drum_gen_ops(&project, &preset, &drum_params(), None).expect("新建鼓轨批次");
+        match &ops[3] {
+            Op::SetTrackSampler { new_sampler, .. } => {
+                assert_eq!(
+                    new_sampler.as_ref().map(|s| s.path.as_str()),
+                    Some(yeban_theory::ACOUSTIC_KIT_SFZ_PATH)
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drum_gen_ops_existing_equipped_track_keeps_its_kit() {
+        let mut project = filled_project();
+        let track_id = EntityId::new();
+        let equipped = TrackV3 {
+            id: track_id,
+            name: "我的鼓轨".to_owned(),
+            kind: TrackKind::Midi,
+            devices: vec![DeviceDefinition {
+                id: EntityId::new(),
+                name: "已有乐器".to_owned(),
+                kind: DeviceKind::InternalInstrument,
+                bypassed: false,
+                params: Vec::new(),
+                latency_samples: 0,
+                plugin: None,
+            }],
+            ..TrackV3::default()
+        };
+        project.tracks.insert(track_id, equipped);
+        let target = project.tracks.get(&track_id).unwrap();
+        let preset = yeban_theory::factory_drum_style("trap")
+            .unwrap()
+            .expect("trap 预置必须存在");
+        let ops =
+            drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
+        assert_eq!(ops.len(), 2, "只应有片段两笔: {ops:?}");
+        assert!(matches!(ops[0], Op::AddClip { .. }));
+        match &ops[1] {
+            Op::AddClipPlacement {
+                track_id: placed_on,
+                ..
+            } => assert_eq!(*placed_on, track_id),
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drum_gen_ops_rejects_master_target() {
+        let project = filled_project();
+        let master = project
+            .tracks
+            .get(&project.master_bus_track_id)
+            .unwrap()
+            .clone();
+        let preset = yeban_theory::factory_drum_style("trap")
+            .unwrap()
+            .expect("trap 预置必须存在");
+        let error = drum_gen_ops(&project, &preset, &drum_params(), Some(&master)).unwrap_err();
+        assert!(error.contains("主总线"), "错误应指明主总线: {error}");
     }
 }

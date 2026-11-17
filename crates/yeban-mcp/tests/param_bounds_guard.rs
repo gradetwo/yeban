@@ -86,8 +86,8 @@ enum BoundStatus {
     Unbounded(&'static str),
 }
 
-/// 51 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 51] = [
+/// 52 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 52] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -105,6 +105,9 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 51] = [
     ("lane", BoundStatus::WordList),
     // #176：`yeban_list_proposals` 的类别过滤 —— 取值是固定词表（section / notes / macro）。
     ("kind", BoundStatus::WordList),
+    // 鼓机一期：`yeban_generate_drum_pattern` 的风格 id —— 取值是出厂预置
+    // 固定词表（`yeban_theory::factory_drum_style_ids`），查不到即 STYLE_NOT_FOUND。
+    ("style", BoundStatus::WordList),
     ("format", BoundStatus::WordList),
     (
         "timeSignature",

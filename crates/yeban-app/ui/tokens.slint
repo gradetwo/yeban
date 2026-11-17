@@ -1318,6 +1318,16 @@ export struct LessonRow {
     status: string,
 }
 
+// 鼓机生成对话框的一行风格（`yeban-theory` 出厂预置的界面投影，宿主
+// `host::wire_drum_gen_dialog` 从 `factory_drum_styles()` 写入）。
+// `label` = 预置中文名（已含英文后缀，如 `陷阱 Trap`）；
+// `detail` = BPM 与鼓组族的宿主拼串。
+export struct DrumStyleRow {
+    style-index: int,
+    label: string,
+    detail: string,
+}
+
 export struct PianoStepRow {
     pitch_name: string,
     is_root: bool,

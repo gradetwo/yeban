@@ -19,6 +19,9 @@ path = "src/main.rs"
 
 [dependencies]
 yeban-midi = { path = "../yeban-midi" }
+# 鼓机生成（line/drum-machine-p1）：出厂风格预置 + 确定性生成与 MCP 工具同源。
+# 依赖方向: yeban-app -> yeban-theory（theory 只依赖 thiserror + libm，无 GUI）。
+yeban-theory = { workspace = true }
 # 版本唯一事实源仍是根 Cargo.toml 的 [workspace.dependencies] (ADR-0001 D5) —— 本文件不写版本号。
 # 根里 slint 被钉成 `default-features = false`, 因此**必要 feature 必须在成员这一层显式列出**。
 # 核验来源 (2026-10-05, docs.rs):

@@ -1,0 +1,585 @@
+// 夜半 (Yeban) — 鼓机生成对话框（line/drum-machine-p1 一期）
+//
+// 规范来源 (Normative):
+//   - 「编辑」菜单「鼓机生成 (Drums)...」的选项面。与人性化对话框
+//     （`dialogs/humanize_dialog.slint`）同一结构：弹窗默认**关着**
+//     （`MainWindow.drum-gen-open = false`），打开后是整帧遮罩。
+//   - 生成纯计算住在 `yeban-theory::drum_gen`（唯一实现，MCP 工具
+//     `yeban_generate_drum_pattern` 同源）；本文件**不解析**任何数值：
+//     五个输入框的文本原样交给宿主（`host::wire_drum_gen_dialog`），由它按
+//     theory 的同一口径校验（复杂度 / 强度 0..=100、摇摆 500..=700‰、
+//     种子 u64、小节数 1..=16）；解析失败时宿主把原因写进 `error`，
+//     **弹窗不关**、不提交半成品。
+//   - 风格行由宿主从 `yeban_theory::factory_drum_styles()` 投影写入
+//     `rows`；选中风格时宿主把该风格的 swing 定值播种进摇摆框。
+//   - 目标轨在 `target-label` 里明示：展示轨为 MIDI 轨时落该轨，
+//     否则新建鼓轨；既有轨已有采样器 / 设备时不动其鼓组（用户鼓组优先）。
+//
+// ## 键盘
+//
+// 与音源管理对话框同一机制：`drum-gen-trap` 是八格（五框 + 填充开关 +
+// 生成钮 + ✕）的祖先 `FocusScope`；`Tab` / `Shift+Tab` 八格闭环轮转；
+// `Esc` 调 `close`；`↑` / `↓` 在陷阱内切换风格选择（风格行本身可点、
+// 可经无障碍动作触发，不进 Tab 环）。
+
+import { Tokens, UiText, UiTitleText, DrumStyleRow } from "../tokens.slint";
+
+export component DrumGenDialog inherits Rectangle {
+    // ---- 宿主写的风格行（出厂预置投影；顺序 = 预置登记顺序）--------------
+    in property <[DrumStyleRow]> rows: [];
+    // ---- 当前选中风格下标（唯一写者 = 宿主播种 + style-picked 回调）------
+    in-out property <int> style-index: 0;
+    // ---- 五格可编辑文本（唯一写者 = 宿主打开时播种；此后用户输入）--------
+    in-out property <string> complexity: "";
+    in-out property <string> intensity: "";
+    in-out property <string> swing: "";
+    in-out property <string> seed: "";
+    in-out property <string> bars: "";
+    // ---- 末小节填充开关（宿主播种 true）----------------------------------
+    in-out property <bool> fill: true;
+    // ---- 宿主写的目标轨说明行 --------------------------------------------
+    in property <string> target-label: "";
+    // ---- 宿主写的失败行（空串 = 无失败；失败时弹窗不关）------------------
+    in-out property <string> error: "";
+
+    callback style-picked(int);
+    callback apply();
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "drum-gen-dialog";
+    accessible-label: @tr("鼓机生成");
+
+    // 遮罩吞掉鼠标（与人性化对话框同款）：点遮罩不关面板。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    // ------------------------------------------------- 键盘：焦点陷阱
+    drum-gen-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else if (event.text == Key.UpArrow) {
+                root.style-picked(max(0, root.style-index - 1));
+                accept
+            } else if (event.text == Key.DownArrow) {
+                root.style-picked(min(root.rows.length - 1, root.style-index + 1));
+                accept
+            } else {
+                reject
+            }
+        }
+
+        Rectangle {
+            x: (root.width - 680px) / 2;
+            y: (root.height - 520px) / 2;
+            width: 680px;
+            height: 520px;
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            clip: true;
+
+            accessible-role: region;
+            accessible-id: "drum-gen-panel";
+            accessible-label: @tr("鼓机生成面板");
+
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: @tr("鼓机生成");
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            // 关闭
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "drum-gen-close-button";
+                accessible-label: @tr("关闭鼓机生成");
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                drum-gen-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 风格列
+            UiText {
+                x: Tokens.space-6;
+                y: 48px;
+                width: 240px;
+                height: 16px;
+                text: @tr("风格（选一）");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            for row in root.rows : Rectangle {
+                x: Tokens.space-6;
+                y: 72px + row.style-index * 40px;
+                width: 240px;
+                height: 36px;
+                background: row.style-index == root.style-index ? Tokens.bg-raised : Tokens.bg-void;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: row.style-index == root.style-index ? Tokens.gold : Tokens.gold-deep;
+                accessible-role: button;
+                accessible-id: "drum-gen-style-" + row.style-index;
+                accessible-label: row.label;
+                accessible-action-default => { root.style-picked(row.style-index); }
+
+                UiText {
+                    x: Tokens.space-3;
+                    y: 2px;
+                    width: parent.width - 24px;
+                    height: 16px;
+                    text: row.label;
+                    color: row.style-index == root.style-index ? Tokens.gold-bright : Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+
+                UiText {
+                    x: Tokens.space-3;
+                    y: 18px;
+                    width: parent.width - 24px;
+                    height: 14px;
+                    text: row.detail;
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.style-picked(row.style-index); }
+                }
+            }
+
+            // ------------------------------------------------------------ 参数列
+            UiText {
+                x: 300px;
+                y: 48px;
+                width: 160px;
+                height: 16px;
+                text: @tr("复杂度（0–100）");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            drum-gen-complexity-input := TextInput {
+                x: 300px;
+                y: 68px;
+                width: 160px;
+                height: 24px;
+                text <=> root.complexity;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "drum-gen-complexity-input";
+                accessible-label: @tr("复杂度（0–100）");
+                accessible-value: root.complexity;
+                accessible-read-only: false;
+                accepted => { root.apply(); }
+            }
+
+            UiText {
+                x: 476px;
+                y: 48px;
+                width: 160px;
+                height: 16px;
+                text: @tr("强度（0–100）");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            drum-gen-intensity-input := TextInput {
+                x: 476px;
+                y: 68px;
+                width: 160px;
+                height: 24px;
+                text <=> root.intensity;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "drum-gen-intensity-input";
+                accessible-label: @tr("强度（0–100）");
+                accessible-value: root.intensity;
+                accessible-read-only: false;
+                accepted => { root.apply(); }
+            }
+
+            UiText {
+                x: 300px;
+                y: 108px;
+                width: 160px;
+                height: 16px;
+                text: @tr("摇摆（‰，500–700）");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            drum-gen-swing-input := TextInput {
+                x: 300px;
+                y: 128px;
+                width: 160px;
+                height: 24px;
+                text <=> root.swing;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "drum-gen-swing-input";
+                accessible-label: @tr("摇摆（‰，500–700）");
+                accessible-value: root.swing;
+                accessible-read-only: false;
+                accepted => { root.apply(); }
+            }
+
+            UiText {
+                x: 476px;
+                y: 108px;
+                width: 160px;
+                height: 16px;
+                text: @tr("小节数（1–16）");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            drum-gen-bars-input := TextInput {
+                x: 476px;
+                y: 128px;
+                width: 160px;
+                height: 24px;
+                text <=> root.bars;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "drum-gen-bars-input";
+                accessible-label: @tr("小节数（1–16）");
+                accessible-value: root.bars;
+                accessible-read-only: false;
+                accepted => { root.apply(); }
+            }
+
+            UiText {
+                x: 300px;
+                y: 168px;
+                width: 336px;
+                height: 16px;
+                text: @tr("基础种子（缺省工程种子）");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            drum-gen-seed-input := TextInput {
+                x: 300px;
+                y: 188px;
+                width: 336px;
+                height: 24px;
+                text <=> root.seed;
+                single-line: true;
+                font-family: Tokens.font-mono;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "drum-gen-seed-input";
+                accessible-label: @tr("基础种子（缺省工程种子）");
+                accessible-value: root.seed;
+                accessible-read-only: false;
+                accepted => { root.apply(); }
+            }
+
+            UiText {
+                x: 300px;
+                y: 224px;
+                width: 336px;
+                height: 16px;
+                accessible-role: text;
+                accessible-id: "drum-gen-note-line";
+                accessible-label: @tr("同种子同参数逐字节可复现说明");
+                text: @tr("同一种子与参数两次生成，片段逐字节一致。");
+                color: Tokens.warn-amber;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+
+            // 末小节填充开关
+            Rectangle {
+                x: 300px;
+                y: 252px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "drum-gen-fill-toggle";
+                accessible-label: @tr("末小节填充开关");
+                accessible-action-default => { root.fill = !root.fill; }
+
+                drum-gen-fill-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.fill = !root.fill;
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.fill ? @tr("末小节填充：开") : @tr("末小节填充：关");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.fill = !root.fill; }
+                }
+            }
+
+            // 目标轨说明
+            UiText {
+                x: 300px;
+                y: 300px;
+                width: 336px;
+                height: 16px;
+                accessible-role: text;
+                accessible-id: "drum-gen-target-line";
+                accessible-label: @tr("生成目标轨道");
+                text: root.target-label;
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+
+            // 生成钮
+            Rectangle {
+                x: 300px;
+                y: 332px;
+                width: 160px;
+                height: 32px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "drum-gen-apply-button";
+                accessible-label: @tr("生成鼓型片段");
+                accessible-action-default => { root.apply(); }
+
+                drum-gen-apply-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.apply();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("生成");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.apply(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 失败行
+            Rectangle {
+                x: Tokens.space-6;
+                y: 484px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "drum-gen-error-line";
+                accessible-label: @tr("鼓机生成失败的原因");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.error;
+                    color: Tokens.record-red;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // ---- 焦点读数 -----------------------------------------------------------
+    /// 八格轮转全集：`0` 复杂度 / `1` 强度 / `2` 摇摆 / `3` 小节数 /
+    /// `4` 基础种子 / `5` 填充开关 / `6` 生成 / `7` ✕ 关闭 / `-1` 不在模态内。
+    out property <int> focused-control:
+        drum-gen-complexity-input.has-focus ? 0
+        : drum-gen-intensity-input.has-focus ? 1
+        : drum-gen-swing-input.has-focus ? 2
+        : drum-gen-bars-input.has-focus ? 3
+        : drum-gen-seed-input.has-focus ? 4
+        : drum-gen-fill-focus.has-focus ? 5
+        : drum-gen-apply-focus.has-focus ? 6
+        : drum-gen-close-focus.has-focus ? 7
+        : -1;
+
+    /// 打开时由宿主调用：焦点进复杂度首格。
+    public function focus-first-field() {
+        drum-gen-complexity-input.focus();
+    }
+
+    /// 八格的唯一一张「序号 → 控件」表。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            drum-gen-complexity-input.focus();
+        } else if (index == 1) {
+            drum-gen-intensity-input.focus();
+        } else if (index == 2) {
+            drum-gen-swing-input.focus();
+        } else if (index == 3) {
+            drum-gen-bars-input.focus();
+        } else if (index == 4) {
+            drum-gen-seed-input.focus();
+        } else if (index == 5) {
+            drum-gen-fill-focus.focus();
+        } else if (index == 6) {
+            drum-gen-apply-focus.focus();
+        } else if (index == 7) {
+            drum-gen-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：八格闭环；`-1` ⇒ 落回首格。
+    public function focus-next-control() {
+        if (root.focused-control >= 0 && root.focused-control < 7) {
+            root.focus-control(root.focused-control + 1);
+        } else if (root.focused-control == 7) {
+            root.focus-control(0);
+        } else {
+            root.focus-first-field();
+        }
+    }
+
+    /// `Shift+Tab`：反向；首格再退 ⇒ 末格（`-1` 同样退到末格）。
+    public function focus-previous-control() {
+        if (root.focused-control > 0) {
+            root.focus-control(root.focused-control - 1);
+        } else {
+            root.focus-control(7);
+        }
+    }
+}

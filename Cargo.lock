@@ -6819,6 +6819,7 @@ dependencies = [
  "yeban-model",
  "yeban-render",
  "yeban-sfz",
+ "yeban-theory",
  "yeban-ui-mcp",
  "yeban-ui-test-port",
  "zip",

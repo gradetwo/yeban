@@ -380,8 +380,9 @@ impl ElementRegistry {
             ElementKind::Text,
             "status_bar.slint",
             // ⭐ [PATCH UI-A11Y-003]：与 `ui/status_bar.slint` 的 `accessible-label`
-            // **逐字相同**。原名"实时和弦识别"是假承诺：app 侧没有 `yeban-theory`
-            // 边、这一格没有宿主写者、永远停在 `(none)`（R9 登记）。改成如实描述。
+            // **逐字相同**。原名"实时和弦识别"是假承诺：这一格没有宿主写者、永远停在
+            // `(none)`（R9 登记；`yeban-theory` 边自鼓机线起存在，但只供鼓机生成，
+            // 不接和弦识别）。改成如实描述。
             "和弦识别（当前版本无读数）",
             true,
         );
@@ -2490,6 +2491,115 @@ impl ElementRegistry {
             "基础种子说明：同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎接上",
             false,
         );
+        // 鼓机生成对话框（line/drum-machine-p1）：默认关闭（`drum-gen-open=false`），
+        // 因此不进运行时控件树、不改任何金帧。打开后宿主把「编辑」菜单的
+        // 「鼓机生成 (Drums)...」接到这里，提交走 `MainWindow.apply-drum-gen`
+        // → `host::wire_drum_gen_dialog` → `bridge::drum_gen_ops`。五格文本
+        // **不在 UI 侧解析**：解析只发生在宿主，非法值写进 `drum-gen-error`
+        // 且不提交半成品。
+        registry.add(
+            "drum-gen-dialog",
+            ElementKind::Region,
+            "dialogs/drum_gen_dialog.slint",
+            "鼓机生成对话框",
+            false,
+        );
+        registry.add(
+            "drum-gen-panel",
+            ElementKind::Region,
+            "dialogs/drum_gen_dialog.slint",
+            "鼓机生成面板",
+            false,
+        );
+        registry.add(
+            "drum-gen-close-button",
+            ElementKind::Button,
+            "dialogs/drum_gen_dialog.slint",
+            "关闭鼓机生成对话框",
+            false,
+        );
+        // 风格行族是**有界**的：行数 = 出厂预置数（宿主从
+        // `yeban_theory::factory_drum_styles()` 投影，一行不多），注册范围
+        // 与数据上限同源（与 `template-row-*` 同一条纪律）。
+        for style_index in 0..yeban_theory::factory_drum_style_ids().len() {
+            registry.add(
+                &format!("drum-gen-style-{style_index}"),
+                ElementKind::Button,
+                "dialogs/drum_gen_dialog.slint",
+                &format!("鼓机风格第 {style_index} 行（出厂预置顺序）"),
+                false,
+            );
+        }
+        registry.add(
+            "drum-gen-complexity-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "复杂度（0..=100，决定音符密度与鬼音）",
+            false,
+        );
+        registry.add(
+            "drum-gen-intensity-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "强度（0..=100，决定力度层级）",
+            false,
+        );
+        registry.add(
+            "drum-gen-swing-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "摇摆（千分比 500..=700，选风格时播种为该风格定值）",
+            false,
+        );
+        registry.add(
+            "drum-gen-bars-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "小节数（1..=16）",
+            false,
+        );
+        registry.add(
+            "drum-gen-seed-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "基础种子（缺省工程种子；同种子同参数逐字节可复现）",
+            false,
+        );
+        registry.add(
+            "drum-gen-note-line",
+            ElementKind::Text,
+            "dialogs/drum_gen_dialog.slint",
+            "可复现说明：同一种子与参数两次生成，片段逐字节一致",
+            false,
+        );
+        registry.add(
+            "drum-gen-fill-toggle",
+            ElementKind::Button,
+            "dialogs/drum_gen_dialog.slint",
+            "末小节填充开关（开 = 最后一小节换风格填充型）",
+            false,
+        );
+        registry.add(
+            "drum-gen-target-line",
+            ElementKind::Text,
+            "dialogs/drum_gen_dialog.slint",
+            "生成目标轨道（当前 MIDI 轨或新建鼓轨，宿主写明）",
+            false,
+        );
+        registry.add(
+            "drum-gen-apply-button",
+            ElementKind::Button,
+            "dialogs/drum_gen_dialog.slint",
+            "生成鼓型片段",
+            false,
+        );
+        registry.add(
+            "drum-gen-error-line",
+            ElementKind::Text,
+            "dialogs/drum_gen_dialog.slint",
+            "鼓机生成失败原因（空 = 无失败）",
+            false,
+        );
         // 工程模板选择器（从模板新建）：默认关闭（`template-chooser-open=false`），
         // 因此不进运行时控件树、不改任何金帧。行模型由宿主从
         // `templates::build_chooser_rows` 写入（分组标题 + 条目同列），界面不自己分组。
@@ -3325,7 +3435,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 39] = [
+    const SLINT_MANIFEST: [&str; 40] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3358,6 +3468,8 @@ mod tests {
         "dialogs/humanize_dialog.slint",
         // 音源管理对话框（`line/sound-library-manager`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/sound_library_dialog.slint",
+        // 鼓机生成对话框（`line/drum-machine-p1`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/drum_gen_dialog.slint",
         // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
         "dialogs/macro_panel.slint",
         // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
@@ -3691,7 +3803,36 @@ mod tests {
             "标签必须来自工程: {}",
             lead.label
         );
+        // ⭐ 鼓机对话框的静态条目逐条豁免（⛔ 不是静默放行）：`鼓` 是演示
+        // 夹具轨道 0 的名字，同时是产品自身词汇的语素（鼓机 / 鼓型 /
+        // 鼓轨）—— 鼓机生成对话框的这些标签是**静态 UI 文案**（对话框族
+        // 在 [`ElementRegistry::from_view`] 的文档里已登记为「不由工程
+        // 驱动」），不携带任何工程数据，与演示轨道名只是字面撞车。
+        // 豁免的成立条件由下面的相等断言钉住：被豁免条目在演示与 filled
+        // 两份注册表里的标签必须**逐字相同**（工程无关的机械证据）；
+        // 任何一条变成工程派生，相等断言先红、豁免即失效。
+        const DEMO_NAME_STATIC_EXEMPTIONS: &[&str] = &[
+            "drum-gen-dialog",
+            "drum-gen-panel",
+            "drum-gen-close-button",
+            "drum-gen-target-line",
+            "drum-gen-apply-button",
+            "drum-gen-error-line",
+        ];
         for meta in filled.iter() {
+            if DEMO_NAME_STATIC_EXEMPTIONS.contains(&meta.id.as_str())
+                || meta.id.starts_with("drum-gen-style-")
+            {
+                let demo_meta = demo
+                    .get(&meta.id)
+                    .expect("豁免条目在演示注册表里也必须存在");
+                assert_eq!(
+                    demo_meta.label, meta.label,
+                    "豁免条目 `{}` 的标签必须在演示与 filled 注册表里逐字相同（静态文案的证据）",
+                    meta.id
+                );
+                continue;
+            }
             assert!(
                 !meta.label.contains("鼓"),
                 "`{}` 的标签里出现了演示夹具的轨道名 `鼓`: {}",

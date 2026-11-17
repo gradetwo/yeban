@@ -2056,3 +2056,57 @@ msgstr "Próxima etapa"
 
 msgid "开始使用"
 msgstr "Começar"
+
+msgid "鼓机生成"
+msgstr "Caixa de ritmos"
+
+msgid "鼓机生成面板"
+msgstr "Painel da caixa de ritmos"
+
+msgid "关闭鼓机生成"
+msgstr "Fechar caixa de ritmos"
+
+msgid "风格（选一）"
+msgstr "Estilo (escolha um)"
+
+msgid "复杂度（0–100）"
+msgstr "Complexidade (0–100)"
+
+msgid "强度（0–100）"
+msgstr "Intensidade (0–100)"
+
+msgid "摇摆（‰，500–700）"
+msgstr "Swing (‰, 500–700)"
+
+msgid "小节数（1–16）"
+msgstr "Compassos (1–16)"
+
+msgid "同种子同参数逐字节可复现说明"
+msgstr "Nota: mesma semente e parâmetros reproduzem byte a byte"
+
+msgid "同一种子与参数两次生成，片段逐字节一致。"
+msgstr "A mesma semente e os mesmos parâmetros geram um clipe idêntico byte a byte."
+
+msgid "末小节填充开关"
+msgstr "Alternar preenchimento do último compasso"
+
+msgid "末小节填充：开"
+msgstr "Preenchimento do último compasso: Ligado"
+
+msgid "末小节填充：关"
+msgstr "Preenchimento do último compasso: Desligado"
+
+msgid "生成目标轨道"
+msgstr "Faixa de destino da geração"
+
+msgid "生成鼓型片段"
+msgstr "Gerar clipe de padrão de bateria"
+
+msgid "生成"
+msgstr "Gerar"
+
+msgid "鼓机生成失败的原因"
+msgstr "Motivo da falha na geração de bateria"
+
+msgid "鼓机生成 (Drums)..."
+msgstr "Caixa de ritmos (Drums)..."

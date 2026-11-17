@@ -2056,3 +2056,57 @@ msgstr "Nächster Schritt"
 
 msgid "开始使用"
 msgstr "Loslegen"
+
+msgid "鼓机生成"
+msgstr "Drum Machine"
+
+msgid "鼓机生成面板"
+msgstr "Drum-Machine-Bedienfeld"
+
+msgid "关闭鼓机生成"
+msgstr "Drum Machine schließen"
+
+msgid "风格（选一）"
+msgstr "Stil (einen wählen)"
+
+msgid "复杂度（0–100）"
+msgstr "Komplexität (0–100)"
+
+msgid "强度（0–100）"
+msgstr "Intensität (0–100)"
+
+msgid "摇摆（‰，500–700）"
+msgstr "Swing (‰, 500–700)"
+
+msgid "小节数（1–16）"
+msgstr "Takte (1–16)"
+
+msgid "同种子同参数逐字节可复现说明"
+msgstr "Hinweis: gleicher Seed und gleiche Parameter reproduzieren bytegenau"
+
+msgid "同一种子与参数两次生成，片段逐字节一致。"
+msgstr "Gleicher Seed und gleiche Parameter erzeugen einen byteidentischen Clip."
+
+msgid "末小节填充开关"
+msgstr "Fill im letzten Takt umschalten"
+
+msgid "末小节填充：开"
+msgstr "Fill im letzten Takt: An"
+
+msgid "末小节填充：关"
+msgstr "Fill im letzten Takt: Aus"
+
+msgid "生成目标轨道"
+msgstr "Zielspur der Erzeugung"
+
+msgid "生成鼓型片段"
+msgstr "Drum-Pattern-Clip erzeugen"
+
+msgid "生成"
+msgstr "Erzeugen"
+
+msgid "鼓机生成失败的原因"
+msgstr "Grund für das Scheitern der Drum-Erzeugung"
+
+msgid "鼓机生成 (Drums)..."
+msgstr "Drum Machine (Drums)..."

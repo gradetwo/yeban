@@ -1041,6 +1041,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
     // 同一条接线（无头装配在 `live_surface.rs` 的同一处调它）。
     host::wire_humanize_dialog(&ui, Some(Rc::clone(&undo_port)));
+    // ⭐ 鼓机生成对话框（line/drum-machine-p1）：「编辑 → 鼓机生成 (Drums)...」。
+    host::wire_drum_gen_dialog(&ui, Some(Rc::clone(&undo_port)));
     // ⭐ 音源管理对话框（line/sound-library-manager）：主菜单「设置 →
     // 音源管理...」的接线（打开才拉目录，⛔ 启动不联网）。
     host::wire_sound_library_dialog(&ui);
