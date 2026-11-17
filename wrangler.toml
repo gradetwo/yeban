@@ -11,11 +11,11 @@
 # 站点是**纯静态**的：没有 Worker 脚本、没有构建步骤。
 # Cloudflare 直接把这个 assets 目录作为 Worker 的静态资源发布。
 
-name = "yeban-wangda-today"
+name = "yeban"
 compatibility_date = "2026-10-05"
 
 # 发布到 <name>.<subdomain>.workers.dev（自定义域未配置时的兜底入口）
-workers_dev = true
+workers_dev = false 
 
 [assets]
 directory = "./public"
