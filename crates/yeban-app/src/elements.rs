@@ -1282,6 +1282,23 @@ impl ElementRegistry {
                 &format!("轨道 {} 浏览 SFZ 文件", track.name),
                 false,
             );
+            // ⭐ 阶段 2：八度覆盖步进的两个按钮（六档循环：自动/−2/−1/0/+1/+2）。
+            // 与 SET/CLR 同款独立节点：控制面要能分开触发减小/增大，
+            // 当前档位由通道条上的值文本与工程字段读回（⛔ 不在这两个节点上压状态）。
+            registry.add(
+                &format!("track-{track_index}-sampler-octave-down"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 八度覆盖减小", track.name),
+                false,
+            );
+            registry.add(
+                &format!("track-{track_index}-sampler-octave-up"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 八度覆盖增大", track.name),
+                false,
+            );
         }
         registry.add(
             "mixer-master-strip",

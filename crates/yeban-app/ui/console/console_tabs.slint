@@ -76,6 +76,12 @@ export component ConsoleTabs inherits Rectangle {
     // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
     // 与上面两格同一条透传纪律：本组件不解释它。
     in property <[string]> track-sampler-paths: [];
+    // ⭐ 阶段 2：八度覆盖与装载显示读数 —— 同一条透传纪律，本组件不解释。
+    in property <[bool]> track-sampler-octave-auto: [];
+    in property <[int]> track-sampler-octave-values: [];
+    in property <[string]> track-sampler-key-ranges: [];
+    in property <[int]> track-sampler-shift-kinds: [];
+    in property <[string]> track-sampler-shift-amounts: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
     in property <[string]> track-ids: [];
@@ -220,6 +226,8 @@ export component ConsoleTabs inherits Rectangle {
     // 与上面八个同款 —— 本组件只上抛，不解释、不改任何值，也没有第二份提交实现。
     callback mixer-sampler-set(int, string);
     callback mixer-sampler-clear(int);
+    // ⭐ 阶段 2：八度覆盖步进 —— 同样只上抛。
+    callback mixer-sampler-octave-step(int, int);
     // ⭐ **③ 浏览…**（任务单 `#86` 乙）：与上面两条**不同** —— 它⛔ 不提交工程内容，
     // 只请求宿主"问一次原生对话框、把选中的路径填进输入框"。同样只上抛。
     callback mixer-sampler-browse(int);
@@ -470,6 +478,11 @@ export component ConsoleTabs inherits Rectangle {
         track-mutes: root.track-mutes;
         track-solos: root.track-solos;
         track-sampler-paths: root.track-sampler-paths;
+        track-sampler-octave-auto: root.track-sampler-octave-auto;
+        track-sampler-octave-values: root.track-sampler-octave-values;
+        track-sampler-key-ranges: root.track-sampler-key-ranges;
+        track-sampler-shift-kinds: root.track-sampler-shift-kinds;
+        track-sampler-shift-amounts: root.track-sampler-shift-amounts;
         track-colors: root.track-colors;
         track-color-labels: root.track-color-labels;
         track-ids: root.track-ids;
@@ -543,6 +556,9 @@ export component ConsoleTabs inherits Rectangle {
         }
         mixer-sampler-clear(index) => {
             root.mixer-sampler-clear(index);
+        }
+        mixer-sampler-octave-step(index, delta) => {
+            root.mixer-sampler-octave-step(index, delta);
         }
         // ⭐ **③ 浏览…**（任务单 `#86` 乙）：同样只上抛（宿主 `host::wire_mixer_sampler_browse`
         // 是唯一落点）—— ⛔ 它不提交任何工程内容，只填输入框。

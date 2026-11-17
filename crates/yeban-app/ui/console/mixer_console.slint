@@ -50,6 +50,13 @@ export component MixerConsole inherits Rectangle {
     // 这是"用户怎么设它"那一环的**只读注入面**；写方向是下面两条 `mixer-sampler-*` 回调
     // （落到 `Op::SetTrackSampler`，与 `mixer-mute-toggle` 同一条提交路径）。
     in property <[string]> track-sampler-paths: [];
+    // ⭐ 阶段 2：八度覆盖步进读数（自动位 + 半音值）与装载后显示读数
+    // （键位范围文本 + 移位徽标种类/量）—— 与路径同一条只读注入纪律。
+    in property <[bool]> track-sampler-octave-auto: [];
+    in property <[int]> track-sampler-octave-values: [];
+    in property <[string]> track-sampler-key-ranges: [];
+    in property <[int]> track-sampler-shift-kinds: [];
+    in property <[string]> track-sampler-shift-amounts: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
     // ⭐ 轨道身份数组与当前选中轨身份（与编曲视图同款，按身份键控）
@@ -127,6 +134,10 @@ export component MixerConsole inherits Rectangle {
     // 全在宿主（`host::wire_mixer_sampler`）—— 与静音 / 独奏逐条同形。
     callback mixer-sampler-set(int, string);
     callback mixer-sampler-clear(int);
+    // ⭐ 阶段 2：八度覆盖步进 `(下标, 方向 ±1)` —— 在 自动/−2/−1/0/+1/+2 间循环；
+    // `.slint` 只报下标与方向，档位推进与 `Op` 提交全在宿主
+    // （`host::wire_mixer_sampler` 的 `next_octave_override`）。
+    callback mixer-sampler-octave-step(int, int);
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框那一条入口**（任务单 `#86` 乙）。
     //
     // 它与上面两条**不是**同一种动作：SET / CLR 提交**工程内容**（走 `Op::SetTrackSampler`
@@ -825,6 +836,118 @@ export component MixerConsole inherits Rectangle {
                         root.mixer-sampler-clear(track_index);
                     }
                 }
+            }
+
+            // ------------------------------------------------ 八度覆盖（阶段 2）
+            //
+            // 步进在六档间循环：自动（未设 ⇒ 装载跑 (b) 检测）→ −2 → −1 → 0 → +1 → +2。
+            // `.slint` 只报下标与方向；档位推进、`(c) 优先` 与 `Op` 提交全在宿主。
+            // 下面的信息行是**装载后**读数：移位后实际覆盖键位范围 ＋ 有移位时的
+            // 徽标（来源与总量由投影给，界面只选文案，⛔ 不重判移位）。
+            UiMonoText {
+                x: Tokens.space-3;
+                y: 248px;
+                width: parent.width - 8px;
+                height: 12px;
+                text: @tr("八度覆盖");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            Rectangle {
+                x: Tokens.space-3;
+                y: 262px;
+                width: 18px;
+                height: 16px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-sampler-octave-down";
+                accessible-label: @tr("轨道 {} 八度覆盖减小", track_name);
+                accessible-action-default => {
+                    root.mixer-sampler-octave-step(track_index, -1);
+                }
+
+                UiMonoText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "-";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-sampler-octave-step(track_index, -1);
+                    }
+                }
+            }
+
+            UiMonoText {
+                x: 24px;
+                y: 262px;
+                width: 46px;
+                height: 16px;
+                text: root.track-sampler-octave-auto[track_index] ? @tr("自动") : (root.track-sampler-octave-values[track_index] > 0 ? "+" + root.track-sampler-octave-values[track_index] / 12 : "" + root.track-sampler-octave-values[track_index] / 12);
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            Rectangle {
+                x: 72px;
+                y: 262px;
+                width: 18px;
+                height: 16px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line-strong;
+                accessible-role: button;
+                accessible-id: "track-" + track_index + "-sampler-octave-up";
+                accessible-label: @tr("轨道 {} 八度覆盖增大", track_name);
+                accessible-action-default => {
+                    root.mixer-sampler-octave-step(track_index, 1);
+                }
+
+                UiMonoText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "+";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.mixer-sampler-octave-step(track_index, 1);
+                    }
+                }
+            }
+
+            UiMonoText {
+                x: Tokens.space-3;
+                y: 282px;
+                width: parent.width - 8px;
+                height: 12px;
+                text: root.track-sampler-shift-kinds[track_index] == 0 ? (root.track-sampler-key-ranges[track_index] == "" ? "" : @tr("键位 {}", root.track-sampler-key-ranges[track_index])) : (root.track-sampler-key-ranges[track_index] == "" ? (root.track-sampler-shift-kinds[track_index] == 1 ? @tr("已移位 {}（自动检测）", root.track-sampler-shift-amounts[track_index]) : (root.track-sampler-shift-kinds[track_index] == 2 ? @tr("已移位 {}（手动覆盖）", root.track-sampler-shift-amounts[track_index]) : @tr("已移位 {}（文件声明）", root.track-sampler-shift-amounts[track_index]))) : @tr("键位 {}", root.track-sampler-key-ranges[track_index]) + " · " + (root.track-sampler-shift-kinds[track_index] == 1 ? @tr("已移位 {}（自动检测）", root.track-sampler-shift-amounts[track_index]) : (root.track-sampler-shift-kinds[track_index] == 2 ? @tr("已移位 {}（手动覆盖）", root.track-sampler-shift-amounts[track_index]) : @tr("已移位 {}（文件声明）", root.track-sampler-shift-amounts[track_index]))));
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
             }
 
             // ---------------------------------------------------------------- 输入面

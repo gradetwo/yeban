@@ -2110,3 +2110,27 @@ msgstr "Motivo por el que falló la generación de batería"
 
 msgid "鼓机生成 (Drums)..."
 msgstr "Caja de ritmos (Drums)..."
+
+msgid "八度覆盖"
+msgstr "Ajuste de octava"
+
+msgid "轨道 {} 八度覆盖减小"
+msgstr "Pista {} reducir ajuste de octava"
+
+msgid "轨道 {} 八度覆盖增大"
+msgstr "Pista {} aumentar ajuste de octava"
+
+msgid "自动"
+msgstr "Auto"
+
+msgid "键位 {}"
+msgstr "Teclas {}"
+
+msgid "已移位 {}（自动检测）"
+msgstr "Desplazado {} (detectado automáticamente)"
+
+msgid "已移位 {}（手动覆盖）"
+msgstr "Desplazado {} (ajuste manual)"
+
+msgid "已移位 {}（文件声明）"
+msgstr "Desplazado {} (declarado en el archivo)"

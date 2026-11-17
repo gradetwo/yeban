@@ -2110,3 +2110,27 @@ msgstr "Raison de l'échec de la génération de batterie"
 
 msgid "鼓机生成 (Drums)..."
 msgstr "Boîte à rythmes (Drums)..."
+
+msgid "八度覆盖"
+msgstr "Correctif d'octave"
+
+msgid "轨道 {} 八度覆盖减小"
+msgstr "Piste {} diminuer le correctif d'octave"
+
+msgid "轨道 {} 八度覆盖增大"
+msgstr "Piste {} augmenter le correctif d'octave"
+
+msgid "自动"
+msgstr "Auto"
+
+msgid "键位 {}"
+msgstr "Touches {}"
+
+msgid "已移位 {}（自动检测）"
+msgstr "Décalé {} (détection automatique)"
+
+msgid "已移位 {}（手动覆盖）"
+msgstr "Décalé {} (correctif manuel)"
+
+msgid "已移位 {}（文件声明）"
+msgstr "Décalé {} (déclaré dans le fichier)"

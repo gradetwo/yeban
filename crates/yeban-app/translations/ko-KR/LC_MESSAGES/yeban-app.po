@@ -2110,3 +2110,27 @@ msgstr "드럼 생성이 실패한 이유"
 
 msgid "鼓机生成 (Drums)..."
 msgstr "드럼 머신 생성 (Drums)..."
+
+msgid "八度覆盖"
+msgstr "옥타브 오버라이드"
+
+msgid "轨道 {} 八度覆盖减小"
+msgstr "트랙 {} 옥타브 오버라이드 내리기"
+
+msgid "轨道 {} 八度覆盖增大"
+msgstr "트랙 {} 옥타브 오버라이드 올리기"
+
+msgid "自动"
+msgstr "자동"
+
+msgid "键位 {}"
+msgstr "키 {}"
+
+msgid "已移位 {}（自动检测）"
+msgstr "{} 이동됨 (자동 감지)"
+
+msgid "已移位 {}（手动覆盖）"
+msgstr "{} 이동됨 (수동 재정의)"
+
+msgid "已移位 {}（文件声明）"
+msgstr "{} 이동됨 (파일 선언)"
