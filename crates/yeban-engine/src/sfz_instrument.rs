@@ -2854,6 +2854,21 @@ impl SfzInstrument {
                 // fileg 的在场前提是 region 有静态有效截止（`base_hz`）——
                 // 与下面 `filter` 的配置用**同一个**读数（⛔ 不许第二份折算）。
                 let base_hz = region.filter_cutoff(note, velocity);
+                // ⭐ stage 6：离线一次性入口也吃 `cutoff_onccN` —— 这一条原来是
+                // stage 5 的**已知偏差**（"只走摊平路径"），现在闭合。
+                // ⚠ 本入口本来就**解析 ＋ 分配**（`bake_cc_mods` 在这里合法，
+                // ⛔ 不在音频回调里）⇒ 与摊平路共用 `cutoff_hz_with_baked` 这一份求值。
+                let cutoff_delta_hz = match (base_hz, cc) {
+                    (Some(base), Some(probe)) => {
+                        // 复用本函数前面已经烘好的那份表（⛔ 不第二次烘焙、⛔ 不第二次解曲线）
+                        yeban_sfz::modulation::cutoff_hz_with_baked(
+                            base,
+                            baked.as_deref().unwrap_or(&[]),
+                            Some(probe),
+                        ) - base
+                    }
+                    _ => 0.0,
+                };
                 let eg_frame = held.unwrap_or(u64::MAX);
                 let mut egs = EgSpan {
                     fil: base_hz.and_then(|_| {
@@ -2895,11 +2910,10 @@ impl SfzInstrument {
                     &mut filter,
                     &mut egs,
                     &mut lfos,
-                    // ⚠ 本入口是"单个 region 的一次性离线渲染"，**不承载**逐块调制
-                    // （`cutoff_onccN` 只走摊平路径，登记为本片已知偏差）；
-                    // 因此这里如实给 0 偏移 —— 与接线前逐位相同。
+                    // ⭐ stage 6：静态基准 ＋ `cutoff_onccN` 的增量（`cc == None` ⇒ 0.0
+                    // ⇒ `+ 0.0` 逐位不变）。
                     base_hz.unwrap_or(0.0),
-                    0.0,
+                    cutoff_delta_hz,
                     out,
                 );
                 written = written.max(region_written);
