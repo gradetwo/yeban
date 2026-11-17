@@ -1422,24 +1422,26 @@ fn master_last(
 ///
 /// 只扫 `armed_*_slots` 截出的**定长前缀**（默认工程全是空切片）⇒ 零分配、零锁、
 /// 零 I/O [MUST-GATE-001]。
-/// ⭐ **stage 11**：本节点是否"**只**武装了通道条"（采样延迟／混响／卷积都没武装）。
+/// ⭐ **stage 11／12**：本节点武装的插入器件是否**全部**有立体声入口
+/// （通道条 `process_stereo`、混响 `process(left, right)`）；采样延迟与卷积仍是
+/// 单声道器件 ⇒ 只要它们任一级武装，本轨就必须留在单声道。
 ///
 /// 分声道通路现在能吃通道条（`ChannelStrip::process_stereo` 是真立体声实现），
 /// 但另外三级仍是单声道器件（各自的延迟线与弹道只有一份状态）⇒ 只要它们中
 /// 任何一级对本节点武装，本轨就必须留在单声道。
-fn only_strip_armed(share: &BranchShare<'_>, node: &EntityId) -> bool {
+fn only_stereo_inserts(share: &BranchShare<'_>, node: &EntityId) -> bool {
     let strip_armed = share.armed_strips[..*share.armed_insert_slots]
         .iter()
         .any(|(id, strip)| id == node && strip.is_some());
-    if !strip_armed {
+    let reverb_armed = share.armed_reverbs[..*share.armed_reverb_slots]
+        .iter()
+        .any(|(id, _)| id == node);
+    if !(strip_armed || reverb_armed) {
         return false;
     }
-    !share.armed_reverbs[..*share.armed_reverb_slots]
+    !share.armed_sample_delays[..*share.armed_sample_delay_slots]
         .iter()
-        .any(|(id, _)| id == node)
-        && !share.armed_sample_delays[..*share.armed_sample_delay_slots]
-            .iter()
-            .any(|(id, armed)| *armed && id == node)
+        .any(|(id, armed)| *armed && id == node)
         && !share.armed_convs[..*share.armed_conv_slots]
             .iter()
             .any(|(id, armed)| *armed && id == node)
@@ -1691,6 +1693,8 @@ fn process_insert_chain(
     // `(out_l + out_r) · 0.5`。那是恒等式而不是近似（`crate::insert` 模块文档
     // §8.3 给了代数证明）：湿路径的输入与"单声道输入"同解，宽度项在中值里恰好抵消。
     //
+    // ⭐ **stage 12**：分声道轨走混响自己的 `process(left, right)`（左右各一份
+    // 状态、一次推进）⇒ 混响不再把本轨拽回单声道。
     // **默认口径**：本轨没有混响（`armed_reverbs` 里查不到武装项）⇒ 整段跳过；
     // `Reverb::is_active()`（`mix ≤ 1e-4`）为假时同样跳过 ⇒ 这两种情形下器件的状态
     // **不推进**（与器件自己的早返回守卫同口径）。
@@ -1699,7 +1703,15 @@ fn process_insert_chain(
         .position(|(id, armed)| *armed && id == &track)
     {
         let reverb = &mut share.reverb_pool[index];
-        if reverb.is_active() {
+        if reverb.is_active() && stereo {
+            // ⭐ stage 12：混响的立体声入口 —— 左右各走自己的信号，⛔ 不再"复制成双声道再下混"。
+            let (left, right) = (
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+            reverb.process(left, right);
+            *share.insert_reverb_frames = share.insert_reverb_frames.wrapping_add(frames as u64);
+        } else if reverb.is_active() {
             share.reverb_scratch[0][..frames].copy_from_slice(&share.track_scratch[..frames]);
             share.reverb_scratch[1][..frames].copy_from_slice(&share.track_scratch[..frames]);
             let (left, right) = share.reverb_scratch.split_at_mut(1);
@@ -1965,7 +1977,7 @@ fn render_branch(
             && prepared_sfz
                 .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
             && current.audio_clip_schedule(&track).is_none()
-            && (!has_armed_insert_devices(share, &track) || only_strip_armed(share, &track))
+            && (!has_armed_insert_devices(share, &track) || only_stereo_inserts(share, &track))
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
             && routes_of_track.len() == 1
