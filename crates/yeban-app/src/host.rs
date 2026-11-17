@@ -403,6 +403,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_bar_start_index(bar_start);
     ui.set_bar_count(bar_count);
     ui.set_bar_width_px(bar_width_px);
+    // 拍刻度 / 拍线的拍位来源：投影的拍号分子（标量，与小节读数同批写入；
+    // Wang 2026-11-17：编曲网格以拍为常显基本单位）。
+    ui.set_beats_per_bar(i32::from(view.time_signature_numerator));
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
     // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。

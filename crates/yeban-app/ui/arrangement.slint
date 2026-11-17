@@ -18,6 +18,10 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 128px;
+    // 拍位来源：投影的拍号分子（`bridge::ViewState::time_signature_numerator`），
+    // 宿主在 `apply_view` 与小节读数同批写入。标尺拍刻度与车道拍线共用这一份
+    // 读数（Wang 2026-11-17：网格以拍为常显基本单位，每拍一刻度 / 一线）。
+    in-out property <int> beats-per-bar: 4;
     in-out property <length> cycle-start-px: 0px;
     in-out property <length> cycle-end-px: 0px;
     in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
@@ -310,6 +314,37 @@ export component ArrangementViewport inherits Rectangle {
                                 font-weight: 600;
                                 color: #cbd5e1;
                                 vertical-alignment: center;
+                            }
+
+                            // 小节刻度 + 拍刻度（Wang 2026-11-17：以拍为单位）。
+                            // 小节刻度立在每个小节起点：高 9px、发丝线令牌全强度，
+                            // 与小节编号同位；拍刻度只标节内拍位（每拍一根）：
+                            // 高 5px、同一令牌半透明 ⇒ 短于、弱于小节刻度与编号。
+                            // 无更细的常显刻度：工程没有 division／吸附细分设置，
+                            // 默认态只有拍刻度（细分线不新造设置项）。
+                            for i in root.bar-count : Rectangle {
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                background: transparent;
+
+                                Rectangle {
+                                    x: 0px;
+                                    y: parent.height - 9px;
+                                    width: 1px;
+                                    height: 9px;
+                                    background: Tokens.line;
+                                }
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    visible: beat > 0;
+                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                                    y: parent.height - 5px;
+                                    width: 1px;
+                                    height: 5px;
+                                    background: Tokens.line.with-alpha(0.45);
+                                }
                             }
 
                             // 循环指示带：区间来自视图态（`cycle-start/end-ticks`），
@@ -1095,6 +1130,31 @@ export component ArrangementViewport inherits Rectangle {
                                 background: (root.bar-start-index + i).mod(4) == 0 ? #ffffff0d : #ffffff04;
                             }
 
+                            // 拍线（Wang 2026-11-17：以拍为单位）：节内每拍一根纵线，
+                            // 只作定位参考。色取发丝线令牌 `Tokens.line` 的低透明度
+                            // （0.06）：改前帧实测车道底色 (9,11,16)、小节线 +3／通道
+                            // （每 4 小节 +12／通道）；0.05 档实测拍线只有 (0,+1,+1)、
+                            // 近乎不可见，0.06 档约 +1.7／通道 ⇒ 约为小节线半幅，
+                            // 强度明确次于小节线，小节线本身不动。无更细的
+                            // 常显网格：工程没有 division／吸附细分设置，默认态
+                            // 只有拍线。
+                            for i in root.bar-count : Rectangle {
+                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                background: transparent;
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    visible: beat > 0;
+                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                                    y: 0px;
+                                    width: 1px;
+                                    height: parent.height;
+                                    background: Tokens.line.with-alpha(0.06);
+                                }
+                            }
+
                             // 背景选择与滚轮面必须先于片段块声明，避免遮挡 Clip 点击
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
@@ -1668,6 +1728,25 @@ export component ArrangementViewport inherits Rectangle {
                                 width: 1px;
                                 height: parent.height;
                                 background: #ffffff04;
+                            }
+
+                            // 拍线与车道同款（以拍为单位、强度次于小节线）：
+                            // 空置行与轨道行同源同强度，整幅网格不断档。
+                            for _i in root.bar-count : Rectangle {
+                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
+                                y: 0px;
+                                width: root.bar-width-px;
+                                height: parent.height;
+                                background: transparent;
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    visible: beat > 0;
+                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                                    y: 0px;
+                                    width: 1px;
+                                    height: parent.height;
+                                    background: Tokens.line.with-alpha(0.06);
+                                }
                             }
 
                             // 空态提示按**视口**居中：此前放在内容网格的同级

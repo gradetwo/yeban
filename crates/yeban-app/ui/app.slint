@@ -400,6 +400,8 @@ export component MainWindow inherits Window {
     in-out property <int> bar-start-index: 0;
     in-out property <int> bar-count: 0;
     in-out property <length> bar-width-px: 0px;
+    // 拍刻度 / 拍线的拍位来源：投影的拍号分子（与小节读数同批写入）。
+    in-out property <int> beats-per-bar: 4;
     in-out property <string> bpm-display: "120.00";
     in-out property <bool> bpm-field-editing: false;
     in-out property <string> branch-name: "main";
@@ -1178,6 +1180,7 @@ export component MainWindow inherits Window {
                     bar-start-index: root.bar-start-index;
                     bar-count: root.bar-count;
                     bar-width-px: root.bar-width-px;
+                    beats-per-bar: root.beats-per-bar;
                     cycle-start-px: (root.cycle-start-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
                     cycle-end-px: (root.cycle-end-ticks / max(1, root.roll-ticks-per-pixel)) * 1px;
                     // 轨道行几何 / 内容高 / 横向滚动：全部来自投影（同一份事实源）。
