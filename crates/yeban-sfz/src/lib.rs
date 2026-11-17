@@ -356,6 +356,7 @@ pub mod label;
 pub mod lfo;
 pub mod midi;
 pub mod modulation;
+pub mod notation;
 pub mod parser;
 pub mod pitch_eg;
 pub mod playback;
@@ -374,18 +375,22 @@ pub use instrument::{
     AMP_RANDOM_MAX_DB, AMP_RANDOM_MIN_DB, BEND_DOWN_DEFAULT_CENTS, BEND_RANGE_MAX_CENTS,
     BEND_UP_DEFAULT_CENTS, CcGate, FIL_KEYCENTER_DEFAULT, FIL_KEYTRACK_DEFAULT, FIL_KEYTRACK_MAX,
     FIL_KEYTRACK_MIN, FIL_TYPE_DEFAULT, FIL_VELTRACK_DEFAULT, FIL_VELTRACK_MAX, FIL_VELTRACK_MIN,
-    FilterType, HIRAND_DEFAULT, Instrument, LORAND_DEFAULT, LoopMode, NotePolyphony,
-    OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PITCH_KEYTRACK_DEFAULT, PlayDirection,
-    RESONANCE_DEFAULT_DB, RESONANCE_MAX_DB, RESONANCE_MIN_DB, RT_DECAY_MAX_DB, Region, RegionQuery,
-    SampleEnd, Trigger, TriggerEvent, amp_random_gain, offset_random_shift, rt_decay_gain,
-    trigger_rand,
+    FilterType, HIRAND_DEFAULT, Instrument, KeycenterSpelling, LORAND_DEFAULT, LoopMode,
+    NotePolyphony, OFF_TIME_DEFAULT_SECONDS, OffMode, PITCH_BEND_CENTER, PITCH_KEYTRACK_DEFAULT,
+    PlayDirection, RESONANCE_DEFAULT_DB, RESONANCE_MAX_DB, RESONANCE_MIN_DB, RT_DECAY_MAX_DB,
+    Region, RegionQuery, SampleEnd, Trigger, TriggerEvent, amp_random_gain, offset_random_shift,
+    rt_decay_gain, trigger_rand,
 };
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use lfo::{GenericLfo, LfoCcMod, LfoWave, V1Lfo};
 pub use midi::{MidiOpcode, MidiSection};
+pub use notation::{
+    NotationDetection, NotationEvidence, NotationMissReason, detect_notation_shift,
+};
 pub use parser::{
     Header, IncludeIssue, IncludeIssueKind, IncludeResolution, IncludeResolver, OpcodeValue,
-    ParseLimits, SfzSource, Warning, parse_f32, parse_int, parse_note, parse_sources, parse_text,
+    ParseLimits, SfzSource, Warning, parse_f32, parse_int, parse_note, parse_sources,
+    parse_sources_with_external_shift, parse_text, parse_text_with_external_shift,
 };
 pub use pitch_eg::{PitchEg, PitchEgSource};
 pub use playback::{

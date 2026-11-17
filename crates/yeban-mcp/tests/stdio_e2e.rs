@@ -1672,6 +1672,7 @@ fn write_sampler_container_project(name: &str) -> PathBuf {
         .expect("样本工程必须有一条带音符的 MIDI 轨")
         .id;
     project.tracks.get_mut(&track_id).expect("轨").sampler = Some(yeban_model::SamplerBinding {
+        note_octave_override: None,
         path: dir.join("tone.sfz").display().to_string(),
     });
     project.validate().expect("夹具工程必须合法");

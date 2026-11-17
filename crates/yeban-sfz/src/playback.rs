@@ -1562,6 +1562,8 @@ mod tests {
                             lokey: 0,
                             hikey: 127,
                             pitch_keycenter,
+                            pitch_keycenter_spelling: crate::instrument::KeycenterSpelling::Numeric,
+                            declared_note_shift: 0,
                             trigger_by_note: true,
                             trigger: Trigger::Attack,
                             off_mode: OffMode::Fast,

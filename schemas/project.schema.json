@@ -362,6 +362,13 @@
             "properties": {
               "path": {
                 "type": "string"
+              },
+              "note_octave_override": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Optional manual octave override in semitones (one of -24, -12, 0, 12, 24). Absent means unset: the loader runs automatic notation detection. Present (including 0) means the user decided and detection is skipped. Semantically optional per ADR-0001 D43, so it is never required and the writer omits it when unset."
               }
             }
           },

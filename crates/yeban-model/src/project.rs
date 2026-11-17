@@ -1269,6 +1269,35 @@ impl ClipPlacement {
 pub struct SamplerBinding {
     /// 采样器定义文件路径（原样留痕，⛔ 模型不解析、不规范化、不查存在性）。
     pub path: String,
+    /// ⭐ **手动八度覆盖**（阶段 2 (c)，半音；设计 `docs/ledger/sfz-core-notes.md` §14.4）。
+    ///
+    /// 只许八度档：`−24 / −12 / 0 / +12 / +24`（见 [`Self::is_valid_octave_override`]）。
+    /// ⚠ **`None` 与 `Some(0)` 语义不同**（这是本字段存在的理由）：`None` ＝ 未设
+    /// ⇒ 装载时跑 (b) 自动检测；`Some(_)` ＝ 用户已裁决 ⇒ (b) **停跑**，外部移位
+    /// 直接取该值（`Some(0)` ＝ 明确不移位）。因此本字段必须能区分两者 ⇒
+    /// `Option` + `#[serde(default)]` + `None` 不落盘（D43 豁免形状，旧工程
+    /// 字节不变；已登记 `#.tracks.*.sampler.note_octave_override`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_octave_override: Option<i32>,
+}
+
+impl SamplerBinding {
+    /// 合法的八度覆盖档（半音）：覆盖是**八度**概念，非八度值无意义。
+    pub const OCTAVE_OVERRIDE_STEPS: [i32; 5] = [-24, -12, 0, 12, 24];
+
+    /// 一个值是不是合法的八度覆盖档（写入侧校验与应用侧防御共用）。
+    #[must_use]
+    pub fn is_valid_octave_override(value: i32) -> bool {
+        Self::OCTAVE_OVERRIDE_STEPS.contains(&value)
+    }
+
+    /// 应用侧读法：已设且合法 ⇒ `Some(档)`；未设、或存了非法值（手改工程文件
+    /// 等）⇒ `None`（退回自动检测，⛔ 不把非法值施加到乐器上）。
+    #[must_use]
+    pub fn effective_octave_override(&self) -> Option<i32> {
+        self.note_octave_override
+            .filter(|value| Self::is_valid_octave_override(*value))
+    }
 }
 
 /// 音轨 [MODEL-AST-002]。
@@ -6458,6 +6487,7 @@ mod tests {
         for path in ["instruments/lead.sfz", "", r"C:\sfz\a b.sfz", "  spaced  "] {
             let mut project = filled_project();
             project.track_mut(&lead).expect("lead 在").sampler = Some(SamplerBinding {
+                note_octave_override: None,
                 path: path.to_owned(),
             });
             assert_eq!(
@@ -6477,6 +6507,7 @@ mod tests {
             assert_eq!(
                 back.track(&lead).expect("lead 在").sampler,
                 Some(SamplerBinding {
+                    note_octave_override: None,
                     path: path.to_owned()
                 }),
                 "路径必须**原样**保留（⛔ 不规范化、⛔ 不解析）"
@@ -6486,6 +6517,7 @@ mod tests {
         // ---- ④ 落盘形态：`"sampler":{"path":"…"}`（对象、值只是字符串）----
         let mut project = filled_project();
         project.track_mut(&lead).expect("lead 在").sampler = Some(SamplerBinding {
+            note_octave_override: None,
             path: "instruments/lead.sfz".to_owned(),
         });
         let json = serde_json::to_string(&project).expect("序列化");

@@ -203,6 +203,7 @@ fn project_with_sampler(path: &str) -> (YebanProjectV1, EntityId) {
     let mut project = filled_project();
     let track = non_master_track(&project);
     project.tracks.get_mut(&track).expect("轨必须在").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: path.to_owned(),
     });
     (project, track)

@@ -343,6 +343,11 @@ export component MainWindow inherits Window {
     in-out property <[string]> track-kinds: [];
     in-out property <[string]> track-ids: [];
     in-out property <[string]> track-sampler-paths: [];
+    in-out property <[bool]> track-sampler-octave-auto: [];
+    in-out property <[int]> track-sampler-octave-values: [];
+    in-out property <[string]> track-sampler-key-ranges: [];
+    in-out property <[int]> track-sampler-shift-kinds: [];
+    in-out property <[string]> track-sampler-shift-amounts: [];
     in-out property <[color]> track-colors: [];
     in-out property <[string]> track-color-labels: [];
     in-out property <[string]> track-volumes: [];
@@ -816,6 +821,7 @@ export component MainWindow inherits Window {
     callback mixer-pan-reset(int);
     callback mixer-sampler-browse(int);
     callback mixer-sampler-clear(int);
+    callback mixer-sampler-octave-step(int, int);
     callback mixer-sampler-set(int, string);
     callback mixer-solo-toggle(int);
     callback new-from-template();
@@ -2062,6 +2068,11 @@ export component MainWindow inherits Window {
             track-mutes: root.track-mutes;
             track-solos: root.track-solos;
             track-sampler-paths: root.track-sampler-paths;
+            track-sampler-octave-auto: root.track-sampler-octave-auto;
+            track-sampler-octave-values: root.track-sampler-octave-values;
+            track-sampler-key-ranges: root.track-sampler-key-ranges;
+            track-sampler-shift-kinds: root.track-sampler-shift-kinds;
+            track-sampler-shift-amounts: root.track-sampler-shift-amounts;
             track-colors: root.track-colors;
             track-color-labels: root.track-color-labels;
             track-ids: root.track-ids;

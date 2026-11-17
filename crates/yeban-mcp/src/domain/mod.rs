@@ -4296,6 +4296,9 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                     old_sampler: None,
                     new_sampler: Some(yeban_model::SamplerBinding {
                         path: sfz_path.to_owned(),
+                        // 鼓机默认鼓组不设手动八度覆盖（None ⇒ 装载跑记法自动检测；
+                        // 该构造点来自鼓机合入，本线 S3 加字段时它尚不在树上）。
+                        note_octave_override: None,
                     }),
                 });
                 kit_note = "装默认鼓组：Virtuosity Drums 基础组（SFZ 采样）";

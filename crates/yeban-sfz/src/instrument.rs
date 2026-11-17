@@ -704,6 +704,37 @@ pub struct CcGate {
     pub hi: u8,
 }
 
+/// 有效 `pitch_keycenter` 在源文件里的**拼写出处**（阶段 2 装载侧记法检测的证据
+/// 资格，设计见 `docs/ledger/sfz-core-notes.md` §14.4）。
+///
+/// 只有 [`Self::NoteName`] 的 region 才有资格当检测证据：数字写法的作者说的就是
+/// 数字，不存在记法可猜；音名拼写的作者心里有一套记法（IPN 或 Yamaha），
+/// 正是待判对象。出处按「显式 `pitch_keycenter` 优先、否则 `key` 推导、两者
+/// 都没写 ⇒ [`Self::Default`]」取，与 `pitch_keycenter` 本身的取值优先级同源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeycenterSpelling {
+    /// 写成了音名（`c3` / `C#4` / `eb2` …，经 `parse_note` 的音名路径读出）。
+    NoteName,
+    /// 写成了 MIDI 号数字（`48` …，经 `parse_note` 的数字路径读出）。
+    Numeric,
+    /// `pitch_keycenter` 与 `key` 都没写，根音是实现缺省（60）。
+    Default,
+}
+
+impl KeycenterSpelling {
+    /// 由一个**已通过 `as_note` 读取**的原始值判拼写。
+    ///
+    /// 分派与 [`crate::parser::parse_note`] 逐字同界：数字路径的首字符只可能是
+    /// 数字或 `+` / `-`，音名路径的首字符必然是 ASCII 字母（`A`–`G`，含升降号
+    /// 拼写的首字母）⇒ 看首字符即可，不重跑一遍解析。
+    fn of(value: &OpcodeValue<'_>) -> Self {
+        match value.as_str().trim_start().chars().next() {
+            Some(c) if c.is_ascii_alphabetic() => Self::NoteName,
+            _ => Self::Numeric,
+        }
+    }
+}
+
 /// 一个可播放的 `<region>`。
 ///
 /// 字符串字段用 [`Cow`]：无 `$VAR` 宏替换时是 `Borrowed`（零拷贝借用源缓冲），
@@ -723,6 +754,17 @@ pub struct Region<'a> {
     pub hikey: i32,
     /// 根音（`pitch_keycenter`，默认 60 = C4）。
     pub pitch_keycenter: i32,
+    /// 有效根音的拼写出处（见 [`KeycenterSpelling`]）：归约时与
+    /// [`Self::pitch_keycenter`] 同源记下，⛔ 不是事后从数字反推（数字反推不出写法）。
+    pub pitch_keycenter_spelling: KeycenterSpelling,
+    /// 本 region 归约时点实际生效的**文件自带移位** (a)（半音，
+    /// ＝当时有效 `<control>` 段的 `note_offset + octave_offset × 12`）。
+    ///
+    /// ⛔ 不含**外部移位**（解析入参，见
+    /// [`crate::parser::parse_text_with_external_shift`]）：本字段回答的是
+    /// 「文件自己声明了什么」，供装载回执报告 (a) 层（§14.4）。位置语义下
+    /// 不同 region 可以吃到不同的 (a) ⇒ 逐 region 记，不压成乐器级单值。
+    pub declared_note_shift: i32,
     /// `false` 表示 `key=-1`：该 region 不由音符触发（例如纯 CC 触发）。
     pub trigger_by_note: bool,
     /// `trigger`：该 region 由哪一类 MIDI 事件触发（缺省 [`Trigger::Attack`]）。
@@ -1794,6 +1836,21 @@ impl<'a> Instrument<'a> {
         &self.regions
     }
 
+    /// 文件自带移位 (a) 的**逐 region 归属**：产出 `(region 下标, 移位半音)`，
+    /// 只含 (a) 非零的 region（文件顺序，确定性）。
+    ///
+    /// 口径（`docs/ledger/sfz-core-notes.md` §14.4 的 (a) 层报告）：位置语义下
+    /// 不同 `<control>` 段可以给不同 region 不同的 (a) ⇒ ⛔ 不压成乐器级单值；
+    /// 装载回执据此报告「哪些 region 吃到了文件自带移位、吃了多少」。
+    /// 空迭代 ⇒ 文件没有对任何 region 声明移位。
+    pub fn declared_note_shifts(&self) -> impl Iterator<Item = (usize, i32)> + '_ {
+        self.regions
+            .iter()
+            .enumerate()
+            .filter(|(_, region)| region.declared_note_shift != 0)
+            .map(|(index, region)| (index, region.declared_note_shift))
+    }
+
     /// 全部 `<curve>`（保持文件出现顺序，确定性；`curve_index` 不保证升序）。
     #[must_use]
     pub fn curves(&self) -> &[Curve] {
@@ -2358,6 +2415,37 @@ impl<'a> Scopes<'_, 'a> {
     }
 }
 
+/// 把 `<control>` 的移位（`note_offset` + `octave_offset` × 12，单位半音）加到一个
+/// **写在文件里**的键值（`key` / `lokey` / `hikey`）。
+///
+/// 负值是「无键」哨兵（`key=-1` / `lokey=-1`，见任务单 `#206`），不是音高，
+/// ⛔ 不参与移位。其余值不钳位：移出 0..=127 的键区间对任何输入音符都永不匹配，
+/// 这正是「整份乐器被声明移出键盘」的语义。
+fn shifted_key_value(value: i32, shift: i32) -> i32 {
+    if value < 0 {
+        value
+    } else {
+        value.saturating_add(shift)
+    }
+}
+
+/// 把移位加到一个**写在文件里**的音高中心（`pitch_keycenter` / `fil_keycenter`）。
+///
+/// 与 [`shifted_key_value`] 的区别：音高中心没有哨兵语义，负值也是音高，一并移位；
+/// 同样不钳位（中心只参与音高比算术）。
+fn shifted_pitch_center(value: i32, shift: i32) -> i32 {
+    value.saturating_add(shift)
+}
+
+/// 把移位加到一个**写在文件里**的 keyswitch 键（`u8` 家族）。
+///
+/// 钳到 0..=255：大于 127 的结果对 0..=127 的输入音符永不相等、永不落入区间，
+/// 与 i32 版「不钳位 ⇒ 不可达」的语义一致；负方向钳到 0 是 `u8` 的表示下限
+/// （把 keyswitch 声明移位 −247 半音这类极端输入没有更精确的表达）。
+fn shifted_keyswitch(value: u8, shift: i32) -> u8 {
+    (i32::from(value) + shift).clamp(0, 255) as u8
+}
+
 /// 把四个作用域归约成一个可播放的 [`Region`]。
 ///
 /// 返回 `Ok(None)` 表示该 `<region>` 没有 `sample`（例如纯 keyswitch 映射）：
@@ -2368,14 +2456,42 @@ impl<'a> Scopes<'_, 'a> {
 /// 作用域优先级是 `region → group → master → global`
 /// （`<master>` 是 ARIA 在 `group` 与 `global` 之间加的一层，见
 /// <https://sfzformat.com/headers/>）。
+///
+/// **`shift.applied`**：总移位（半音）＝ `<control>` 的 `note_offset` /
+/// `octave_offset` 合成的文件自带移位 (a)（由解析器在归约时点按当时的
+/// `<control>` 段求值，口径见 `parser.rs`）＋ 解析入参的外部移位（§14.4）。
+/// 规范依据：两页都把移位定为作用于整份文件的音高坐标
+/// （<https://sfzformat.com/opcodes/note_offset/>、
+/// <https://sfzformat.com/opcodes/octave_offset/> —— 后者的例子
+/// `octave_offset=-1` 让写出的 `C4` 落在 MIDI 48 而不是 60，即定义侧移位）。
+/// 本实现据此把移位加在**归约侧**：文件里实际写出的每个音高值（音名与数字一视同仁
+/// —— 同一个音高在文件里混写 `key=48` 与 `key=c3` 时移位后必须仍相等）统一加移位，
+/// 内部关系（键区间与 `pitch_keycenter` 的相对距离）逐位不变，效果与「移位输入音符」
+/// 在匹配与音高比上等价。**未写出的缺省值不移位**（缺省 `pitch_keycenter=60`、
+/// `sw_lokey=0`、`sw_hikey=127` 是本实现的缺省、不是文件的声明）；
+/// `shift.applied == 0` 时全部字段与未实现这两个 opcode 之前逐位相同。
+///
+/// 归约一条 region 时的移位双元（半音，§14.4 的合成公式）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RegionShift {
+    /// **施加**用的总移位 ＝ 文件自带 (a) ＋ 外部移位（解析入参）。
+    pub applied: i32,
+    /// 总移位里**文件自带** (a) 的那一份：只为逐 region 记进
+    /// [`Region::declared_note_shift`] 供装载回执报告 (a) 层，
+    /// ⛔ 不参与任何施加计算。
+    pub declared: i32,
+}
+
 pub(crate) fn build_region<'a>(
     region_map: &OpcodeMap<'a>,
     group_map: &OpcodeMap<'a>,
     master_map: &OpcodeMap<'a>,
     global_map: &OpcodeMap<'a>,
     default_path: Option<Cow<'a, str>>,
+    shift: RegionShift,
     line: usize,
 ) -> Result<Option<Region<'a>>, SfzError> {
+    let note_shift = shift.applied;
     let scopes = Scopes {
         region: region_map,
         group: group_map,
@@ -2489,28 +2605,44 @@ pub(crate) fn build_region<'a>(
     let amp_keycenter = read_i32(&scopes, "amp_keycenter", 0, 127, AMP_KEYCENTER_DEFAULT)?;
 
     // ---- 键映射 ----
-    let key = match scopes.get("key") {
+    // `<control>` 移位（`note_shift`）在此一并生效：`lokey`/`hikey`/`pitch_keycenter`
+    // 的推导值继承移位后的 `key`；各自显式写出的值各自移位（哨兵 `-1` 不移，
+    // 见 [`shifted_key_value`]）。缺省的 0 / 127 / 60 不移位。
+    // ⚠ `trigger_by_note` 必须按**移位前**的原值判：真实音高移位后可以恰好落在
+    // -1（例如 `key=0` + `note_offset=-1`），那不是哨兵，是「移出键盘下限」。
+    let key_value = scopes.get("key");
+    let key = match &key_value {
         Some(value) => Some(value.as_note(-1, 127)?),
         None => None,
     };
     let trigger_by_note = key != Some(-1);
-    let derived = key.filter(|value| *value >= 0);
+    let derived = key
+        .filter(|value| *value >= 0)
+        .map(|value| shifted_key_value(value, note_shift));
     // ⭐ 任务单 `#206`：`lokey` / `hikey` 与 `key` 一样接受 **`-1`**（"无键"哨兵：
     // `salamander-grand` 的 `Data/pedal.txt` 用 `lokey=-1 hikey=-1` 声明只在 CC
     // 事件上发声的踏板噪声 region）。`Region::lokey/hikey` 是 i32，`matches_key`
     // 拿 0..=127 的音符比较 ⇒ `-1..=-1` 永远不匹配，行为与 `key=-1` 一致。
     // 同时接受音名（与 `key` 同一条 `as_note` 路径）。
     let lokey = match scopes.get("lokey") {
-        Some(value) => value.as_note(-1, 127)?,
+        Some(value) => shifted_key_value(value.as_note(-1, 127)?, note_shift),
         None => derived.unwrap_or(0),
     };
     let hikey = match scopes.get("hikey") {
-        Some(value) => value.as_note(-1, 127)?,
+        Some(value) => shifted_key_value(value.as_note(-1, 127)?, note_shift),
         None => derived.unwrap_or(127),
     };
-    let pitch_keycenter = match scopes.get("pitch_keycenter") {
-        Some(value) => value.as_note(-127, 127)?,
+    let keycenter_value = scopes.get("pitch_keycenter");
+    let pitch_keycenter = match &keycenter_value {
+        Some(value) => shifted_pitch_center(value.as_note(-127, 127)?, note_shift),
         None => derived.unwrap_or(60),
+    };
+    // 拼写出处与取值**同源**：显式 `pitch_keycenter` 的写法优先，否则 `key` 的
+    // 写法，两者都没写 ⇒ 缺省（§14.4 的证据资格只认这个出处，⛔ 不从数字反推）。
+    let pitch_keycenter_spelling = match (&keycenter_value, &key_value) {
+        (Some(value), _) => KeycenterSpelling::of(value),
+        (None, Some(value)) => KeycenterSpelling::of(value),
+        (None, None) => KeycenterSpelling::Default,
     };
 
     // ---- 力度 / 通道 ----
@@ -2638,7 +2770,7 @@ pub(crate) fn build_region<'a>(
         FIL_KEYTRACK_DEFAULT,
     )?;
     let fil_keycenter = match scopes.get("fil_keycenter") {
-        Some(value) => value.as_note(0, 127)?,
+        Some(value) => shifted_pitch_center(value.as_note(0, 127)?, note_shift),
         None => FIL_KEYCENTER_DEFAULT,
     };
     let fil_veltrack = read_i32(
@@ -2729,15 +2861,17 @@ pub(crate) fn build_region<'a>(
     let note_polyphony = read_note_polyphony(&scopes)?;
 
     // ---- keyswitch ----
+    // 写出的 keyswitch 键与键映射同样吃 `<control>` 移位（见 [`shifted_keyswitch`]）；
+    // 缺省的 `sw_lokey=0` / `sw_hikey=127` 不移位（同 `build_region` 的缺省口径）。
     let sw_last = match scopes.get("sw_last") {
-        Some(value) => Some(value.as_note(0, 127)? as u8),
+        Some(value) => Some(shifted_keyswitch(value.as_note(0, 127)? as u8, note_shift)),
         None => None,
     };
     // `sw_default`：`sw_last` 的开机缺省值。取值域 0 to 127（出处
     // <https://sfzformat.com/opcodes/sw_default/> 的表格行），与 `sw_last` 同一条
     // `as_note` 路径 —— 因此音名（登记语料里的 `sw_default=$NATURAL` → `C0`）也被接受。
     let sw_default = match scopes.get("sw_default") {
-        Some(value) => Some(value.as_note(0, 127)? as u8),
+        Some(value) => Some(shifted_keyswitch(value.as_note(0, 127)? as u8, note_shift)),
         None => None,
     };
     // ⭐ 任务单 `#206`：keyswitch 音域的**两个端点**与 `sw_last` / `sw_default` 同族，
@@ -2745,19 +2879,19 @@ pub(crate) fn build_region<'a>(
     // 该文件此前因为 include 被忽略而从未走到这里）。走同一条 `as_note` 路径：
     // 整数与音名都接受，越界仍是 `IntegerOutOfRange`（⛔ 不钳位）。
     let sw_lokey = match scopes.get("sw_lokey") {
-        Some(value) => value.as_note(0, 127)? as u8,
+        Some(value) => shifted_keyswitch(value.as_note(0, 127)? as u8, note_shift),
         None => 0,
     };
     let sw_hikey = match scopes.get("sw_hikey") {
-        Some(value) => value.as_note(0, 127)? as u8,
+        Some(value) => shifted_keyswitch(value.as_note(0, 127)? as u8, note_shift),
         None => 127,
     };
     let sw_down = match scopes.get("sw_down") {
-        Some(value) => Some(value.as_note(0, 127)? as u8),
+        Some(value) => Some(shifted_keyswitch(value.as_note(0, 127)? as u8, note_shift)),
         None => None,
     };
     let sw_up = match scopes.get("sw_up") {
-        Some(value) => Some(value.as_note(0, 127)? as u8),
+        Some(value) => Some(shifted_keyswitch(value.as_note(0, 127)? as u8, note_shift)),
         None => None,
     };
 
@@ -2793,6 +2927,8 @@ pub(crate) fn build_region<'a>(
         lokey,
         hikey,
         pitch_keycenter,
+        pitch_keycenter_spelling,
+        declared_note_shift: shift.declared,
         trigger_by_note,
         trigger,
         off_mode,
@@ -4328,7 +4464,9 @@ mod tests {
     use super::*;
     use crate::curve::CurvePoint;
     use crate::midi::MidiOpcode;
-    use crate::parser::{Header, ParseLimits, SfzSource, parse_sources, parse_text};
+    use crate::parser::{
+        Header, ParseLimits, SfzSource, parse_sources, parse_text, parse_text_with_external_shift,
+    };
 
     /// ⭐ `merged_cc_defaults`：用户值覆盖文件值、新增键并入、空用户表逐项
     /// 不变（种子合并的唯一实现，两处入口共用）。
@@ -4358,6 +4496,8 @@ mod tests {
             lokey: i32::from(note),
             hikey: i32::from(note),
             pitch_keycenter: i32::from(note),
+            pitch_keycenter_spelling: KeycenterSpelling::Numeric,
+            declared_note_shift: 0,
             trigger_by_note: true,
             trigger: Trigger::Attack,
             off_mode: OffMode::Fast,
@@ -5085,6 +5225,317 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(literal.regions()[0].sw_default, Some(12));
+    }
+
+    #[test]
+    fn octave_offset_shifts_a_written_note_name_key() {
+        // 任务单口径（Wang 2026-11-17 裁决的阶段 1）：`octave_offset=1` 时
+        // `key=c3`（IPN 解析为 48）归约后落在 60。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>key=c3 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.lokey, 60);
+        assert_eq!(region.hikey, 60);
+        assert_eq!(region.pitch_keycenter, 60);
+        assert!(instrument.region_for(60, 100).is_some());
+        assert!(instrument.region_for(48, 100).is_none());
+    }
+
+    #[test]
+    fn octave_offset_shifts_numeric_keys_too() {
+        // 规范结论：移位作用于整份文件的音高坐标，数字与音名一视同仁 ——
+        // 同一音高在文件里混写 `key=48` 与 `key=c3`，移位后必须仍相等。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>key=48 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].lokey, 60);
+        assert_eq!(instrument.regions()[0].pitch_keycenter, 60);
+    }
+
+    #[test]
+    fn note_offset_shifts_by_semitones_and_combines_with_octave_offset() {
+        let by_semitones = parse_text(
+            "<control>note_offset=-3\n\
+             <region>key=c4 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(by_semitones.regions()[0].lokey, 57);
+        assert_eq!(by_semitones.regions()[0].pitch_keycenter, 57);
+
+        let combined = parse_text(
+            "<control>note_offset=2 octave_offset=1\n\
+             <region>key=48 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(combined.regions()[0].lokey, 62);
+    }
+
+    #[test]
+    fn without_offsets_note_names_parse_exactly_as_before() {
+        // 缺省 0 ⇒ 逐位不变：没有 `<control>` 移位声明时 `key=c3` 仍落在 48。
+        let instrument =
+            parse_text("<region>key=c3 sample=a.wav", &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.lokey, 48);
+        assert_eq!(region.hikey, 48);
+        assert_eq!(region.pitch_keycenter, 48);
+        assert!(instrument.region_for(48, 100).is_some());
+        assert!(instrument.region_for(60, 100).is_none());
+    }
+
+    #[test]
+    fn an_explicit_pitch_keycenter_still_wins_under_an_offset() {
+        // 优先级不变：显式 `pitch_keycenter` 胜过 `key` 推导；两者各自移位。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>key=c3 pitch_keycenter=c4 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.lokey, 60);
+        assert_eq!(region.hikey, 60);
+        assert_eq!(region.pitch_keycenter, 72);
+    }
+
+    #[test]
+    fn defaults_are_not_shifted_only_written_values_are() {
+        // 只写键区间、不写 `key`/`pitch_keycenter`：区间移位，缺省中心 60 不移位。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>lokey=c3 hikey=c4 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.lokey, 60);
+        assert_eq!(region.hikey, 72);
+        assert_eq!(region.pitch_keycenter, 60);
+    }
+
+    #[test]
+    fn offsets_shift_keyswitch_keys_and_the_filter_keycenter() {
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>sw_last=c0 sw_lokey=c0 sw_hikey=c1 fil_keycenter=e3 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.sw_last, Some(24));
+        assert_eq!(region.sw_lokey, 24);
+        assert_eq!(region.sw_hikey, 36);
+        assert_eq!(region.fil_keycenter, 64);
+    }
+
+    #[test]
+    fn the_minus_one_sentinel_is_not_shifted() {
+        // `key=-1` / `lokey=-1` 是「无键」哨兵，不是音高：移位不得把它变成真实键。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>key=-1 sample=a.wav\n\
+             <region>lokey=-1 hikey=-1 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert!(!instrument.regions()[0].trigger_by_note);
+        assert_eq!(instrument.regions()[1].lokey, -1);
+        assert_eq!(instrument.regions()[1].hikey, -1);
+    }
+
+    #[test]
+    fn a_later_control_header_resets_the_offsets() {
+        // 位置语义（与 `default_path` 同口径）：新的 `<control>` 段重置移位，
+        // 只作用于其后归约的 region。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>key=c3 sample=a.wav\n\
+             <control>\n\
+             <region>key=c3 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].lokey, 60);
+        assert_eq!(instrument.regions()[1].lokey, 48);
+    }
+
+    #[test]
+    fn offset_values_may_come_from_a_define() {
+        // 取值先过宏展开、再做类型化校验：`#define` 可以给这两个 opcode 供值。
+        let instrument = parse_text(
+            "#define $OCT 1\n\
+             <control>octave_offset=$OCT\n\
+             <region>key=c3 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].lokey, 60);
+    }
+
+    #[test]
+    fn out_of_range_or_non_integer_offsets_are_loud_errors() {
+        let too_far = parse_text(
+            "<control>note_offset=128\n<region>key=c3 sample=a.wav",
+            &Default::default(),
+        );
+        assert!(
+            matches!(too_far, Err(SfzError::IntegerOutOfRange { .. })),
+            "got {too_far:?}"
+        );
+        let too_many_octaves = parse_text(
+            "<control>octave_offset=11\n<region>key=c3 sample=a.wav",
+            &Default::default(),
+        );
+        assert!(
+            matches!(too_many_octaves, Err(SfzError::IntegerOutOfRange { .. })),
+            "got {too_many_octaves:?}"
+        );
+        let not_a_number = parse_text(
+            "<control>note_offset=abc\n<region>key=c3 sample=a.wav",
+            &Default::default(),
+        );
+        assert!(
+            matches!(not_a_number, Err(SfzError::InvalidInteger { .. })),
+            "got {not_a_number:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ⭐ 阶段 2 的三个小口子（§14.4.4 的 S1）：外部移位入参 / 拼写出处 /
+    // (a) 生效值访问器。
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn external_shift_adds_to_the_file_declared_shift() {
+        // 合成公式（§14.4 总形状）：总移位 = (a) + 外部移位。
+        // `key=c3` = 48，(a) = octave_offset 1 ⇒ +12，外部 +12 ⇒ 落在 72；
+        // `declared_note_shift` 只记 (a) 那一份（12），⛔ 不含外部移位。
+        let instrument = parse_text_with_external_shift(
+            "<control>octave_offset=1\n\
+             <region>key=c3 sample=a.wav",
+            &Default::default(),
+            12,
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.lokey, 72);
+        assert_eq!(region.hikey, 72);
+        assert_eq!(region.pitch_keycenter, 72);
+        assert_eq!(region.declared_note_shift, 12);
+    }
+
+    #[test]
+    fn external_shift_alone_shifts_written_values_but_not_defaults() {
+        // 外部移位走阶段 1 的同一组助手 ⇒ 同一条口径：只移写出的值，
+        // 缺省 `pitch_keycenter=60` 不移；文件没声明 (a) ⇒ 逐 region 记 0。
+        let instrument = parse_text_with_external_shift(
+            "<region>key=c3 sample=a.wav\n\
+             <region>lokey=c3 hikey=c4 sample=b.wav",
+            &Default::default(),
+            -12,
+        )
+        .expect("parses");
+        assert_eq!(instrument.regions()[0].lokey, 36);
+        assert_eq!(instrument.regions()[0].pitch_keycenter, 36);
+        assert_eq!(instrument.regions()[0].declared_note_shift, 0);
+        assert_eq!(instrument.regions()[1].lokey, 36);
+        assert_eq!(instrument.regions()[1].hikey, 48);
+        assert_eq!(instrument.regions()[1].pitch_keycenter, 60);
+        assert_eq!(instrument.regions()[1].declared_note_shift, 0);
+    }
+
+    #[test]
+    fn external_shift_zero_is_bit_identical_to_plain_parse() {
+        // 入参缺省 0 的保命不变量：与 `parse_text` 逐位相同（含新字段）。
+        let text = "<control>note_offset=2\n\
+                    <region>key=c3 pitch_keycenter=e3 sample=a.wav\n\
+                    <region>key=48 sample=b.wav";
+        let plain = parse_text(text, &Default::default()).expect("parses");
+        let shifted = parse_text_with_external_shift(text, &Default::default(), 0).expect("parses");
+        assert_eq!(plain.regions(), shifted.regions());
+    }
+
+    #[test]
+    fn keycenter_spelling_follows_the_winning_value() {
+        // 出处与取值同源：显式 `pitch_keycenter` 优先，否则 `key`，都没写 ⇒ 缺省。
+        let from_key_name =
+            parse_text("<region>key=c3 sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(
+            from_key_name.regions()[0].pitch_keycenter_spelling,
+            KeycenterSpelling::NoteName
+        );
+        let from_key_number =
+            parse_text("<region>key=48 sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(
+            from_key_number.regions()[0].pitch_keycenter_spelling,
+            KeycenterSpelling::Numeric
+        );
+        // 显式中心是数字、`key` 是音名 ⇒ 出处取显式中心（数字）。
+        let explicit_number_wins = parse_text(
+            "<region>key=c3 pitch_keycenter=64 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            explicit_number_wins.regions()[0].pitch_keycenter_spelling,
+            KeycenterSpelling::Numeric
+        );
+        // 显式中心是音名、`key` 是数字 ⇒ 出处取显式中心（音名）。
+        let explicit_name_wins = parse_text(
+            "<region>key=48 pitch_keycenter=e3 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            explicit_name_wins.regions()[0].pitch_keycenter_spelling,
+            KeycenterSpelling::NoteName
+        );
+        // 继承链上的写法同样算数（group 级音名 `key`）。
+        let from_group =
+            parse_text("<group>key=g2\n<region>sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(
+            from_group.regions()[0].pitch_keycenter_spelling,
+            KeycenterSpelling::NoteName
+        );
+        // 只写键区间、不写 `key`/中心 ⇒ 缺省。
+        let defaulted = parse_text(
+            "<region>lokey=40 hikey=50 sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_eq!(
+            defaulted.regions()[0].pitch_keycenter_spelling,
+            KeycenterSpelling::Default
+        );
+        assert_eq!(defaulted.regions()[0].pitch_keycenter, 60);
+    }
+
+    #[test]
+    fn declared_note_shifts_reports_per_region_attribution() {
+        // 位置语义：第一段 `<control>` 的 (a) 只归属其后的 region；新段重置后
+        // 第二条 region 的 (a) = 0 ⇒ 访问器只产出第一条。
+        let instrument = parse_text(
+            "<control>octave_offset=1\n\
+             <region>key=c3 sample=a.wav\n\
+             <control>\n\
+             <region>key=c3 sample=b.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let declared: Vec<(usize, i32)> = instrument.declared_note_shifts().collect();
+        assert_eq!(declared, vec![(0, 12)]);
+        // 没有任何声明时访问器为空（回执据此不写 (a) 报告行）。
+        let plain = parse_text("<region>key=c3 sample=a.wav", &Default::default()).expect("parses");
+        assert_eq!(plain.declared_note_shifts().count(), 0);
     }
 
     #[test]

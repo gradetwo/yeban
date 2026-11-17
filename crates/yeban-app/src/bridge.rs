@@ -1405,6 +1405,9 @@ pub struct TrackView {
     /// （路径是留痕字符串，不是"已装载的乐器"）。"这份 SFZ 读不到"是**发布点**的事
     /// （[`crate::engine_host::EngineHost::publish_project`] 明确失败，⛔ 不静默回退）。
     pub sampler_path: Option<String>,
+    /// ⭐ 阶段 2：采样器绑定的**手动八度覆盖**（`SamplerBinding::effective_octave_override`
+    /// 的投影：已过滤非法值；`None` ＝ 未设 ⇒ 装载跑自动检测，含显式 0 的区分）。
+    pub sampler_octave_override: Option<i32>,
     /// 音量 (dB)，原样保留模型值。
     pub volume_db: f32,
     /// 音量的显示文本（`{:.1}` dB）。
@@ -2909,6 +2912,9 @@ pub fn drum_gen_ops(
                     old_sampler: None,
                     new_sampler: Some(SamplerBinding {
                         path: sfz_path.to_owned(),
+                        // 鼓机默认鼓组不设手动八度覆盖（None ⇒ 装载跑记法自动检测；
+                        // 该构造点来自鼓机合入，本线 S3 加字段时它尚不在树上）。
+                        note_octave_override: None,
                     }),
                 });
             }
@@ -3263,6 +3269,93 @@ pub enum InstrumentSampleProbe {
     },
     /// SFZ 文本本身读不到 / 路径解析不到 / 文本非法。
     UnreadableSfz,
+}
+
+/// ⭐ 阶段 2：一条轨的采样器**显示读数**（键位范围 + 移位徽标）。
+#[derive(Clone, Default)]
+struct SamplerDisplay {
+    /// 移位后实际覆盖键位范围（`"C2–C6"`）；读不到 ⇒ 空串。
+    key_range_text: String,
+    /// 徽标种类：0 无 / 1 自动检测 / 2 手动覆盖 / 3 文件声明。
+    shift_kind: i32,
+    /// 总移位量文本（`"+12"` ＝ (a) 首值 ＋ 外部移位）；无徽标 ⇒ 空串。
+    shift_amount: String,
+}
+
+/// ⭐ 阶段 2：取一条轨的显示读数（进程缓存，键 ＝ `(路径原文, 覆盖)`）。
+///
+/// 数据来自**装载侧适配**（[`crate::sfz_load::load_sfz_adapted`]：只读 SFZ 文本
+/// 与采样头，⛔ 不解码 PCM）⇒ 首次遇到某个绑定时有一次小 I/O，之后命中缓存。
+/// ⚠ **装载失败不缓存**（文件修好后下一次投影就能读到），且失败时读数为空 ——
+/// "读不到"由发布/渲染路径响亮报错，本显示面⛔ 不伪造徽标。
+fn sampler_display(track: &TrackView) -> SamplerDisplay {
+    let Some(path) = &track.sampler_path else {
+        return SamplerDisplay::default();
+    };
+    static CACHE: std::sync::Mutex<BTreeMap<(String, Option<i32>), SamplerDisplay>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let key = (path.clone(), track.sampler_octave_override);
+    if let Ok(cache) = CACHE.lock()
+        && let Some(display) = cache.get(&key)
+    {
+        return display.clone();
+    }
+    let Ok(resolved) =
+        crate::sfz_load::resolve_sampler_path(path, crate::sfz_load::SfzRoots::none())
+    else {
+        return SamplerDisplay::default();
+    };
+    let Ok((report, _instrument)) = crate::sfz_load::load_sfz_adapted(
+        &resolved,
+        None,
+        INSTRUMENT_PROBE_ENGINE_HZ,
+        track.sampler_octave_override,
+    ) else {
+        return SamplerDisplay::default();
+    };
+    let declared_first = report
+        .declared_shifts
+        .first()
+        .map_or(0, |&(_, shift)| shift);
+    let total_shift = report.notation_shift + declared_first;
+    let shift_kind = if report.notation_source
+        == yeban_engine::sfz_instrument::NotationShiftSource::AutoDetected
+    {
+        1
+    } else if report.notation_source
+        == yeban_engine::sfz_instrument::NotationShiftSource::ManualOverride
+        && report.notation_shift != 0
+    {
+        2
+    } else if !report.declared_shifts.is_empty() {
+        3
+    } else {
+        0
+    };
+    let display = SamplerDisplay {
+        key_range_text: report.key_range.map_or_else(String::new, |(low, high)| {
+            format!("{}–{}", ipn_note_name(low), ipn_note_name(high))
+        }),
+        shift_kind,
+        shift_amount: if shift_kind == 0 {
+            String::new()
+        } else {
+            format!("{total_shift:+}")
+        },
+    };
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.insert(key, display.clone());
+    }
+    display
+}
+
+/// IPN 音名（C4 = 60；移位后的范围可越出 0..=127 ⇒ 用欧几里得除法兜底）。
+fn ipn_note_name(note: i32) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let class = usize::try_from(note.rem_euclid(12)).unwrap_or(0);
+    format!("{}{}", NAMES[class], note.div_euclid(12) - 1)
 }
 
 /// ⭐ 任务单 `#211`：**唯一**的字节级探测实现 —— [`sfz_samples_present`] 与后台线程、
@@ -3733,6 +3826,7 @@ pub fn instrument_install_ops_on_probed(
     // 与 UI 提交同一条规则）；其余原样。比较仍对**存入值**做：文档里旧的绝对
     // 形式与归一化后的新值不等 ⇒ 仍提交一次（这次提交就是形式收敛本身）。
     let new_sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: crate::samples::normalize_sampler_path_for_storage(path),
     });
     if track.sampler == new_sampler {
@@ -4754,6 +4848,55 @@ impl ViewState {
         self.tracks
             .iter()
             .map(|track| track.sampler_path.clone().unwrap_or_default())
+            .collect()
+    }
+
+    /// ⭐ 阶段 2：每条轨的八度覆盖是不是**自动**（未设 ⇒ 装载跑 (b) 检测）。
+    #[must_use]
+    pub fn track_sampler_octave_auto(&self) -> Vec<bool> {
+        self.tracks
+            .iter()
+            .map(|track| track.sampler_octave_override.is_none())
+            .collect()
+    }
+
+    /// ⭐ 阶段 2：每条轨八度覆盖的**半音值**（未设 ⇒ 0，与
+    /// [`Self::track_sampler_octave_auto`] 配对读；界面不许自己猜未设/0 的区别）。
+    #[must_use]
+    pub fn track_sampler_octave_values(&self) -> Vec<i32> {
+        self.tracks
+            .iter()
+            .map(|track| track.sampler_octave_override.unwrap_or(0))
+            .collect()
+    }
+
+    /// ⭐ 阶段 2：每条轨采样器**移位后实际覆盖键位范围**文本（`"C2–C6"` 形态，
+    /// IPN 音名）；无绑定 / 装载读不到 ⇒ `""`（数据源见 `sampler_display`）。
+    #[must_use]
+    pub fn track_sampler_key_ranges(&self) -> Vec<String> {
+        self.tracks
+            .iter()
+            .map(|track| sampler_display(track).key_range_text)
+            .collect()
+    }
+
+    /// ⭐ 阶段 2：每条轨的**移位徽标种类**：0 无徽标 / 1 自动检测 / 2 手动覆盖 /
+    /// 3 文件声明（界面按它选 @tr 文案，⛔ 不在界面里重判移位来源）。
+    #[must_use]
+    pub fn track_sampler_shift_kinds(&self) -> Vec<i32> {
+        self.tracks
+            .iter()
+            .map(|track| sampler_display(track).shift_kind)
+            .collect()
+    }
+
+    /// ⭐ 阶段 2：徽标上的**总移位量**文本（`"+12"` 形态 ＝ (a) ＋ 外部移位；
+    /// 无徽标 ⇒ `""`）。
+    #[must_use]
+    pub fn track_sampler_shift_amounts(&self) -> Vec<String> {
+        self.tracks
+            .iter()
+            .map(|track| sampler_display(track).shift_amount)
             .collect()
     }
 
@@ -6008,6 +6151,10 @@ fn track_view(
         solo: track.solo,
         solo_safe: track.solo_safe,
         sampler_path: track.sampler.as_ref().map(|binding| binding.path.clone()),
+        sampler_octave_override: track
+            .sampler
+            .as_ref()
+            .and_then(|binding| binding.effective_octave_override()),
         volume_db: track.volume_db,
         volume_display: format!("{:.1}", track.volume_db),
         volume_fraction: volume_fraction(track.volume_db),

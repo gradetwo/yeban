@@ -855,6 +855,7 @@ mod tests {
             .expect("演示工程必须有 MIDI 轨")
             .id;
         project.tracks.get_mut(&track).expect("轨").sampler = Some(yeban_model::SamplerBinding {
+            note_octave_override: None,
             path: sfz_path.display().to_string(),
         });
         project.validate().expect("武装夹具必须合法");
@@ -926,6 +927,7 @@ mod tests {
             let track = ids[0];
             project.tracks.get_mut(&track).expect("轨").sampler =
                 Some(yeban_model::SamplerBinding {
+                    note_octave_override: None,
                     path: sfz_path.display().to_string(),
                 });
             if lane_zero {

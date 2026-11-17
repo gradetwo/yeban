@@ -162,6 +162,7 @@ fn fixture_project(fixture: &Fixture, with_source: bool, with_send: bool) -> Yeb
     let (mut aux_track, aux_clip, aux_note) = midi_track(aux, "Aux Return", 60, 40);
     aux_track.kind = TrackKind::AuxReturn;
     aux_track.sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: fixture.sfz.to_string_lossy().into_owned(),
     });
     project.clip_pool.insert(

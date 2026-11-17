@@ -261,6 +261,7 @@ fn mounted_missing_sfz_is_a_loud_render_failure() {
     let mut project = demo_project();
     let first_track = *project.tracks.keys().next().expect("演示工程有轨");
     project.tracks.get_mut(&first_track).expect("轨在").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: "assets/samples/does-not-exist/missing.sfz".to_owned(),
     });
     let response = mounted_overview(&project, json!({}));

@@ -852,3 +852,239 @@ test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engi
 `group`/`off_by`／新依赖／推远端。
 ⚠ 边界：`yeban-dsp`／`yeban-sfz`／`yeban-model`／`yeban-app`／`schemas`／`scripts` **一个字未动**
 ⇒ 只跑 engine 四门（＋仓级 `light`）。
+
+## 14. 音名八度统一与音源适配（2026-11-17，Wang 裁决；工作线 `line/sfz-note-octave-unify`）
+
+### 14.0 裁决（关闭第 6 节待裁决第 1 项）
+
+**触发事实**：SSO 音源按 Yamaha 惯例把中央 C 写成 `key=c3`（意指 MIDI 60），本仓解析器按
+IPN 读成 48 ⇒ 写在 60/61/62 的鼓音符一个都触发不了（静默无声，Wang 把音符改到 48/49/50 后
+立刻出声，实证是记法冲突、不是 `one_shot` 等参数问题）。
+
+**裁决口径**（Wang 2026-11-17）：
+
+1. 夜半内部只用一套音名标准：**IPN（`C4 = 60`）为唯一规范标准**；与 agent 及真人交互的
+   表面（钢琴卷帘标注、MCP 工具与文档、导出）全部统一到同一标准。
+2. **不改默认解析、不改 Yamaha**：解析器现状（`parse_note` 按 sfzformat `key` 页
+   `c5 ≡ 72` 取 IPN）即规范标准，保持不动。
+3. 外部音源自带其它记法（Yamaha `C3 = 60` 等）时，由**夜半在装载侧适配**，
+   用户侧不得出现八度记法冲突。
+
+⇒ 第 6 节第 1 项「是否需要兼容模式开关，或是否只认 MIDI 号」**已裁决关闭**：
+答案是「两者皆不」——不设全局记法开关、不拒认音名，改走装载侧适配（本节 14.4 的设计）。
+第 5 节第 12 条「不提供 Yamaha 兼容开关」的表述与本裁决一致，继续成立；
+第 5 节第 10 条的 `note_offset`/`octave_offset` 缺口由本线阶段 1 补上（见 14.2）。
+
+### 14.1 阶段 0：音名表面审计（只读普查，2026-11-17，基线 `ee69364e2`）
+
+指标：全仓一切**产生或消费带八度的音名**的代码/文档表面，逐面读其换算式定标准。
+「只用数字」＝该表面根本不出现音名，无八度面；「音级名」＝只有音级拼写、不带八度，
+结构上不可能产生八度冲突。
+
+| # | 表面 | 位置 | 现行标准 | 证据（换算式/读法） |
+| :-- | :--- | :--- | :--- | :--- |
+| A1 | SFZ 音名解析本体 | `yeban-sfz/src/parser.rs` `parse_note` | **IPN** | `(octave + 1) * 12 + semitone`；`C4=60`、`c5=72`、`c-1=0`；省略八度按 4；升降号 `#`/`s`/`b`/`f`；纯数字（含 `-1` 哨兵）直通 |
+| A2 | SFZ 类型化读取入口 | `parser.rs` `OpcodeValue::as_note` | **IPN**（经 A1） | 全仓 `as_note` 调用点只有归约一处来源；`error.rs` 的 `InvalidNote` 文档亦注明 IPN |
+| A3 | SFZ 词法断点判定 | `parser.rs` `is_complete_scalar` | **IPN**（经 A1） | 只借 A1 判「前缀是否完整音名」以决定一行多 opcode 的切分点，不独立取值 |
+| A4 | SFZ 消费 opcode（11 个） | `yeban-sfz/src/instrument.rs` `build_region` | **IPN**（经 A2） | `key`/`lokey`/`hikey`/`pitch_keycenter`/`fil_keycenter`/`sw_last`/`sw_default`/`sw_lokey`/`sw_hikey`/`sw_down`/`sw_up` 全部走 `as_note`；其余键值类 opcode（`amp_keycenter` 等）只读整数 |
+| B1 | theory 音高本体 | `yeban-theory/src/pitch.rs` `Pitch` | **IPN**（科学音高记号） | `octave() = midi / 12 - 1`（钉死全域判据）；常量族 `Pitch::C4 = 60` |
+| B2 | theory 拼写音名 | `pitch.rs` `SpelledPitch` | **IPN** | `midi = (octave + 1) * 12 + pitch_class`；`parse` 收 `C4`/`C#4`/`Db4`/`Cb-1`。⚠ 目前**无仓外消费者**（grep 仅 theory 内部与测试） |
+| B3 | theory 和弦音名 | `chord.rs` `Chord::note_names` | 音级名（无八度） | 返回 `NoteName` 拼写（按调性选升/降），不带八度 |
+| C1 | 卷帘键位标签 | `yeban-app/src/host.rs` `roll_key_sharp_label` | **IPN** | 全升号拼写；`octave = pitch / 12 - 1`（60 → `C4`）；经 `roll_lane_key_labels` 进 Slint |
+| C2 | 音高名显示（试听/范围） | `host.rs` `midi_pitch_name` | **IPN** | 混合拼写（`Eb`/`Ab`/`Bb` + 升号）；同一八度公式；用于钢琴键试听标注与卷帘范围标签 |
+| C3 | 音高名文本输入 | `host.rs` `parse_pitch_name` | **IPN** | C2 的逆运算：`(octave + 1) * 12 + base + accidental`；调用点在键位行 → 音高解析 |
+| C4 | 和弦文本输入 | `host.rs` `parse_chord_pitches` | **IPN** | 根音 `(octave + 1) * 12 + …`，缺省八度 4 |
+| D1 | MCP 音符入参 | `yeban-mcp/src/domain/notes.rs` `parse_note`（JSON 对象版，与 A1 同名不同物） | 只用数字 | `pitch` 走 `read_range(0..=127)`，**不接受音名字符串** ⇒ MCP 写音符无八度面 |
+| D2 | MCP 工具文档/注释中的音名 | `domain/project_create.rs`（种子音符注释）、`domain/section_build.rs`（音域注释） | **IPN** | 注释写 `C4 D4 E4 G4`、`C2–C4`，与其数值（60/62/64/67 等）按 IPN 对齐 |
+| D3 | MCP 和弦/段落构建 | `domain/section_build.rs` 音级名表 | 音级名（无八度） | 根音表含 `DB`/`EB`/`GB`/`AB`/`BB` 大写降号拼写，只到音级 |
+| D4 | MCP 鼓键位诊断 | `domain/mod.rs` `incomplete_drum_note_names`、`domain/render.rs` | 只用数字 | 此处 `note_names` 指设备参数名（`kick_note` 等，见 F1），非音高名 |
+| E1 | SMF（MIDI 文件）读写 | `yeban-midi` | 只用数字 | 音高恒为 MIDI 号，无音名文本 |
+| E2 | MusicXML 导入/导出 | `yeban-midi/src/musicxml.rs` | **IPN** | `midi = (octave + 1) * 12 + step + alter`，文档注明 `C4 = 60`；MusicXML 规范本身即科学记法，与内部同口径 |
+| F1 | 鼓机键位映射 | `yeban-engine/src/drums.rs` `DrumNoteMap` / `DRUM_NOTE_NAMES` | 只用数字 | `DRUM_NOTE_NAMES` 是设备**参数名**（`kick_note`/`snare_note`/…），键位值是 MIDI 号 |
+| F2 | 鼓机预置/生成与对话框 | `yeban-theory` 鼓型生成、`yeban-mcp` 鼓工具、app 鼓对话框 | 只用数字 | 以鼓件名（kick/snare/hat…）＋数字键位表达，无八度音名；SFZ 鼓库（virtuosity-drums 等）走 A 面 |
+| G1 | 全曲总览/调性检测显示 | `yeban-dsp/src/song_overview.rs`、`vocal_key_detect.rs` | 音级名（无八度） | 12 音级名表只作色度/调性轴标，不带八度 |
+| H1 | 模型与工程文件 | `yeban-model` `MidiNote` | 只用数字 | `pitch: u8`；持久化不存音名 |
+| I1 | 随仓文档 | `docs/**`（除本 ledger） | — | grep `IPN`/`Yamaha`/`C3 = 60` 零命中；记法口径只登记在本 ledger §2/§5/§6 与本节 |
+
+**审计结论**：全仓带八度的音名表面（A/B/C/D2/E2）**无一例外是 IPN**，与裁决的
+「内部唯一标准」现状一致——本线不需要改任何既有表面的标准，要补的只有两件：
+SFZ 规范自带的移位 opcode（14.3）与装载侧对外部记法的适配（14.4 设计）。
+真正的冲突面只有一个：**外部 SFZ 文件的音名写法**（A1 的输入侧），因为文件作者
+可能按 Yamaha 写。数字写法的文件与本仓永不冲突（数字无记法）。
+
+### 14.2 阶段 0 附查：装载路径与采样嵌入根音现状
+
+阶段 2 的自动检测要靠「记法无关的音高锚点」，本节先查清今天有什么：
+
+| 项 | 现状 | 证据 |
+| :--- | :--- | :--- |
+| 装载路径 | 两条：① app `yeban-app/src/sfz_load.rs`（`load_sfz_with_instrument` + `build_region_samples`，导出/试听，自行解码采样）；② engine `yeban-engine/src/sfz_instrument.rs`（`PreparedSfz` 摊平，采样由调用方以 `InMemorySample` 提供）。两条都只消费 `yeban-sfz` 的解析结果（纯数字 `Region`）⇒ **解析层移位对两条同时生效**，适配不必两处做 | — |
+| WAV `smpl` 块 | **只读 loop**：`sfz_load.rs` 的 `read_wav_smpl_loop`/`parse_wav_smpl_loop` 自行扫 chunk，只取 `dwNumSampleLoops`（偏移 28）与第一条 loop 的 `dwStart`/`dwEnd`（44/48）；engine 侧只收换算后的 `SampleLoop` | `sfz_load.rs` 布局表（偏移 0–56）未列根音字段 |
+| 嵌入根音（`dwMIDIUnityNote`，`smpl` 头偏移 12，MIDI 号） | **无人读取**。该字段是采样录制音高的数字声明、与记法无关，是天然的交叉核对锚点；读取它只需扩现有扫描器（同一 chunk、同一次读盘） | grep `unity`/`root_note` 全仓零命中（除本节） |
+| 其它格式的根音元数据（FLAC/OGG/MP3） | 不读：`yeban-decode`（symphonia）只产 PCM 与 `AssetMetadata`（哈希/许可/索引），无根音字段 | `yeban-decode/src/asset.rs` |
+| 文件名音高标记（如 `Kick_C3.wav`） | **无任何代码从采样文件名推断音高**；`file_name` 只用于显示与目录列举 | grep `file_name` 于 `sfz_load.rs`/`sfz_instrument.rs` |
+| SFZ 侧可核对量 | 每 region 的 `pitch_keycenter`（归约后数字）＋其 `sample=` 路径 ⇒ 与该采样嵌入根音逐条对账的数据在解析结果里齐备，只差把根音读出来 | `instrument.rs` `Region::pitch_keycenter` |
+
+⇒ 检测设计（14.4）的证据链定为：**嵌入根音为主锚**（WAV `smpl` 偏移 12），
+文件名标记为**次级线索**（需新建解析规则，可靠性低一档），两者都缺失时不自动移位、
+只剩手动覆盖一层。
+
+### 14.3 阶段 1：`note_offset` / `octave_offset` 实现（范围只限 `yeban-sfz`）
+
+**规范依据**（落码前查页，2026-11-17）：
+
+| opcode | sfzformat 页口径 | 类型/缺省/范围 |
+| :--- | :--- | :--- |
+| `note_offset` | 「offset all incoming MIDI notes by the specified number of semitones」，`<control>` 下，SFZ v2 | integer / 0 / −127..127，单位半音 |
+| `octave_offset` | 「offset all incoming MIDI data by the specified octave」，例子：`octave_offset=-1` 让写出的 `C4` 落在 MIDI 48 而不是 60（IPN → MMA 的换算），`<control>` 下，SFZ v2 | integer / 0 / −10..10，单位八度 |
+
+**工程裁决**（规范没写到这么细，本实现定如下，判据钉住）：
+
+1. **归约侧施加，不在查询侧**：sfzformat 的例子是定义侧读法（写出的 `C4` 落在 48）。
+   本实现在 `build_region` 归约时把合成移位 `note_offset + octave_offset × 12`
+   加到写出的音高值上。整份乐器的内部关系（键区间与 `pitch_keycenter` 的相对距离）
+   逐位不变 ⇒ 与「查询侧移位输入音符」在匹配与音高比上等价，且离线/实时两条装载
+   路径（14.2）自动同口径，因为它们只消费归约后的 `Region`。
+2. **音名与数字一视同仁**：同一个音高在文件里混写 `key=48` 与 `key=c3` 时，
+   移位后必须仍相等（判据 `octave_offset_shifts_numeric_keys_too`）。
+3. **只移写出的值**：缺省值（未写的 `pitch_keycenter=60`、`sw_lokey=0`、
+   `sw_hikey=127`）是本实现的缺省、不是文件的声明，⛔ 不移位
+   （判据 `defaults_are_not_shifted_only_written_values_are`）。
+4. **哨兵不移**：`key=-1` / `lokey=-1` / `hikey=-1`（「无键」，任务单 `#206`）
+   不是音高；`trigger_by_note` 按移位**前**的原值判（真实音高移位后恰好落在 −1
+   是「移出键盘下限」，不是哨兵）。
+5. **位置语义，与 `default_path` 同口径**：移位在 region 归约时点按当时有效的
+   `<control>` 段求值；新的 `<control>` 段把两个值一并重置为 0
+   （判据 `a_later_control_header_resets_the_offsets`）。
+6. **插入期校验、响亮报错**：两个值在 `insert_opcode` 里经 `OpcodeValue::as_int`
+   按规范范围校验，带 opcode 自己的行号；非法/越界是明确 `Err`
+   （`InvalidInteger` / `IntegerOutOfRange`）。与 `set_ccN` 的「丢弃 + 告警」不同：
+   移位错了整份乐器错位，静默丢弃等于无声错位。无 region 的文件不触发校验
+   （没有可归约的对象），如实登记为已知边角。
+7. **与 `#define` 的先后**：取值先过宏展开、再做类型化校验 ⇒ `#define` 可供值
+   （判据 `offset_values_may_come_from_a_define`）；移位只作用于 region 音高字段，
+   ⛔ 不回头改写宏定义本身。
+8. **钳位口径**：i32 字段（`key`/`lokey`/`hikey`/`pitch_keycenter`/`fil_keycenter`）
+   不钳位（移出 0..=127 自然永不匹配/只影响音高比算术）；`u8` keyswitch 家族
+   （`sw_last`/`sw_default`/`sw_lokey`/`sw_hikey`/`sw_down`/`sw_up`）钳到 0..=255，
+   保住「>127 即不可达」的语义。
+9. **作用字段全集（11 个）**：`key`、`lokey`、`hikey`、`pitch_keycenter`、
+   `fil_keycenter`、`sw_last`、`sw_default`、`sw_lokey`、`sw_hikey`、`sw_down`、
+   `sw_up` —— 即 `build_region` 里全部经 `as_note` 读取的字段。
+   `sw_note_offset` 本阶段不做（仍挂第 5 节第 10 条）。
+
+**验证读数**（本机 VM 单路 `CARGO_BUILD_JOBS=1`，2026-11-17）：
+
+| 项 | 读数 |
+| :--- | :--- |
+| `cargo test -p yeban-sfz` | lib **449** + 集成/文档 **99**（1+2+48+32+5+11）＝ **548 全绿、0 失败** |
+| 新增判据 | **11 条**（音名移位/数字移位/半音与合成/缺省逐位不变/显式中心优先/缺省不移/keyswitch+滤波中心移位/哨兵不移/段重置/宏供值/响亮报错） |
+| 注入验证 | 把 `finalize_region` 的合成移位改成恒 0 ⇒ 偏移族判据变红（实测 5 条 FAILED 起）；还原后全绿 |
+| `cargo clippy -p yeban-sfz --all-targets`（`RUSTFLAGS="-D warnings"`） | 退出 0 |
+| `cargo fmt -p yeban-sfz -- --check` | 通过 |
+| 缺省逐位不变 | 无移位声明时 `key=c3` 仍归约到 48（判据 `without_offsets_note_names_parse_exactly_as_before`），且全量 548 条无一翻转 |
+
+**本阶段边界**：只动 `yeban-sfz`（`parser.rs` + `instrument.rs`）；engine/app 未动。
+`Instrument` 暂未暴露「文件声明了什么移位」的只读访问器 —— 装载回执若要报告
+文件自带移位（14.4 的 (a) 层报告），需要在阶段 2 实现时一并补（小口子，已登记）。
+
+### 14.4 阶段 2 设计：装载侧记法适配（只设计，不落码；待父 agent 审过再开工）
+
+#### 总形状
+
+三层按「文件自己说了 > 机器能证明 > 人手动定」的顺序叠加，**共用一条施加通道**：
+归约侧移位（14.3 的 `build_region` `note_shift`)。总移位合成公式：
+
+```
+总移位 = 文件自带声明 (a)  +  外部移位 (b 或 c，二选一)
+外部移位 = 手动覆盖 (c) 已设置时取 (c)；否则自动检测 (b) 命中时取 (b)；否则 0
+```
+
+- (a) 永远生效（那是文件自身的语义，14.3 已实现）。
+- (c) 一旦由用户设置，(b) 对该乐器**停跑**（人已经说了，不许机器再猜）。
+- 外部移位以「解析入参」形式进 `yeban-sfz`（见 14.4.4 的小口子），与 (a) 在归约侧
+  相加 —— ⛔ 不在解析后改 `Region`（`Region` 是不可变产物）、⛔ 不改写用户的
+  `.sfz` 文件、⛔ 不动默认解析（无任何移位时逐位不变，14.3 已钉死）。
+- 适配只发生在**控制侧装载期**（app `sfz_load` 装载路径与 engine 摊平的调用方）；
+  实时路径只消费摊平表，永不检测。
+- 确定性：检测是（SFZ 字节 + 采样头）的纯函数，同输入同结论（`ARCH-DET-001`)；
+  无随机、无网络、无墙钟。
+
+#### (a) 文件自带声明（已生效，只差报告）
+
+文件写了 `note_offset`/`octave_offset` 时，14.3 已让移位自然生效。本层剩一件：
+**装载回执要报告它** —— 回执行写明文件名与声明值（如「文件自带 octave_offset=1」），
+让「为什么这台乐器整体高了一个八度」在装载时就可见，而不是试听时才发现。
+依赖 14.3 登记的小口子：`Instrument` 暴露归约时实际生效的 (a) 值
+（位置语义下多段 `<control>` 可不同 —— 报告口径取「有任一 region 吃到非零 (a)」
+并逐 region 归属，访问器形状在实现切片里定）。
+
+#### (b) 约定自动检测
+
+**证据**（每条 region 一份，三个量）：
+
+| 量 | 来源 | 说明 |
+| :--- | :--- | :--- |
+| `keycenter_written` | 归约后的有效 `pitch_keycenter`（显式 `pitch_keycenter` 优先，否则 `key` 推导） | 被核对的一侧 |
+| `spelling` | 解析期出处：该值在文件里是**音名拼写**还是数字 | ⛔ 归约后现状不保留，需 14.4.4 的小口子。**只有音名拼写的 region 才有资格当证据**：数字写法的作者说的是数字，不存在记法可猜；音名拼写的作者心里有一套记法，正是待判对象 |
+| `root` | 采样文件的**嵌入根音**（WAV `smpl` 头偏移 12 的 `dwMIDIUnityNote`，MIDI 号） | 记法无关的锚：录制/编辑工具写下的数字。次级证据：文件名里的**数字**音高标记（如 `_060`)。⚠ 文件名里的**音名**标记（如 `_C3`）与 SFZ 音名同出一位作者之手、同记法，**不构成独立证据**，只作一致性参考、不计入判定 |
+
+**判定规则**（可判，证据不足即不移位）：记 `delta_i = root_i − keycenter_written_i`，
+只统计音名拼写且锚可读的 region（证据集 E）：
+
+1. `|E| ≥ 5`，且 E 占「带采样 region 总数」的比例 `≥ 60%`；
+2. 候选移位只认 `S = +12` 或 `S = −12`（八度级差才是记法冲突的形状；
+   `±24` 与非八度差不自动处理 —— 那是移调或映射选择，不是记法）；
+3. `#{i ∈ E : delta_i = S} ≥ 90% × |E|`，且 `#{i ∈ E : delta_i = −S} = 0`；
+4. 三条全满足才命中 S；任一不满足 ⇒ **不移位**，走 (c) 的提示路径。
+
+**命中后的报告（绝不静默移位）**：装载回执（app `sfz_load` 的既有报告通道，
+与 `unreadable_samples` 同列）加一行，UI 乐器头加徽标，文案口径如：
+「检测到 Yamaha 记法（key=c3 意指 60）：已整体移位 +12；证据 23/25 个 region 的
+嵌入根音一致」。报告必须带证据计数 —— 没有计数的移位不许发生。
+未命中但证据呈「多数同一非零 delta、未达门槛」时，回执给**提示行**
+（「疑似记法偏移 +12，证据不足未自动移位，可在乐器面板手动设八度覆盖」），
+同样不静默。
+
+**误判风险与回滚**：
+
+| 风险 | 形状 | 防线 |
+| :--- | :--- | :--- |
+| 鼓类 one-shot 库 | 鼓采样没有真实音高，编辑器常把 unity note 写成缺省值（如全 60）或触发键本身 | delta 散列 ⇒ 规则 3 的一致性门槛挡下；SSO 鼓组正是此形 —— 若其嵌入根音散列，(b) 不命中、由 (c) 兜底，**这是预期行为不是缺陷** |
+| 故意偏心映射 | 采样录制音高与 `pitch_keycenter` 本就不同（拉伸映射、特效音色） | 同上：delta 不统一 ⇒ 不命中；统一偏心（全库同差 ±12）与记法冲突在证据上不可分 —— 靠报告可见 + (c) 一键回滚消解 |
+| 混合记法文件 | 同一文件里两套记法拼接（合并库） | delta 双峰 ⇒ 规则 3 不命中；(c) 是整乐器粒度，救不了单文件双记法 —— 如实登记为本设计**不覆盖**的形状 |
+| 相关证据灌水 | 多麦克风/多奏法把同一采样复制成几十个 region | 证据不独立但同向，不产生假方向；门槛按 region 计数即可，不按采样去重（如实现时发现灌水样本，再加按采样路径去重的修订） |
+| unity note = 0 的缺省污染 | 个别采样根音字段未写（0) | 其 delta 必然异形，计入分母压低一致性 ⇒ 偏向不命中（安全方向） |
+
+**回滚**：检测结论只存在于装载期，不落用户文件、不落工程（除非用户随后设了 (c))。
+关掉自动检测（全局设置）或给该乐器设 (c) = 0，即可逐位回到未移位的解析结果；
+回执行保留「曾移位 +12（自动检测）」的记录供审计。
+
+#### (c) 每音源手动八度覆盖（兜底）
+
+- 取值：`−24 / −12 / 0 / +12 / +24`（只认八度步进：本层处理的是记法冲突；
+  半音级移动是移调功能的地盘，不混进来）。
+- 存储：**存工程、作用于乐器实例** —— 挂在轨的采样器绑定上
+  （现状 `TrackV3.sampler: Option<SamplerBinding { path }>`，见第 13 节
+  sfz-needs-5）。设计上给绑定加一个八度覆盖字段（缺省 0 = 未设置，与「设为 0」
+  在行为上等价、在 (b) 停跑语义上不同 —— 故存储须区分「未设置」与「0」，
+  用 `Option` 或哨兵）。⚠ 这是**模型面变更**，须另行切片并过 schema/迁移口径，
+  本设计不落码、不预设字段名。
+- 施加：装载时读绑定 → 外部移位 = 覆盖值 × 12，与 (a) 相加（合成公式见总形状）。
+- UI 两件：① 乐器面板的八度覆盖控件（`−2..+2` 八度档 + 「自动」档 = 未设置）；
+  ② **装载后显示实际覆盖键位范围**（全部 region 移位后的 `min(lokey)..max(hikey)`)，
+  让任何残余错位在界面上可见（例：范围显示 48–50 而用户写的是 60–62，一眼可见）。
+  范围显示不依赖检测成败，(a)/(b)/(c) 任一层生效都同样显示**移位后**的真实范围。
+
+#### 14.4.4 实现切分建议（后续切片，本阶段不动手）
+
+| 切片 | 范围 | 内容 |
+| :--- | :--- | :--- |
+| S1 | `yeban-sfz` | ① 解析入参增可选外部移位（缺省 0，与 (a) 在归约侧相加，复用 14.3 的三个 `shifted_*` 助手）；② `Region` 记 `pitch_keycenter` 的拼写出处（音名/数字/缺省，1 个小枚举）；③ `Instrument` 暴露 (a) 的实际生效值供回执 |
+| S2 | `yeban-app`（`sfz_load`) | 扩 `read_wav_smpl_loop` 的同一次扫读带出 `dwMIDIUnityNote`（偏移 12）；装载编排：算证据 → 按规则判定 → 带外部移位重解析（或首解析即传入，两段式在切片里定）；回执行与范围读数 |
+| S3 | `yeban-engine` 调用方 | 摊平路径接同一装载编排（与 S2 共用判定函数，⛔ 不许两份实现） |
+| S4 | 模型 + UI | 绑定覆盖字段（另行裁决 schema 形状）+ 面板控件 + 覆盖范围显示 + (b) 的全局开关 |
+| 判据要点 | — | 检测规则五条边界各一条（恰达门槛/差一条/对向 delta 出现/证据占比不足/数字拼写不计证据）；命中必有报告行；关检测后逐位回到未移位结果；(c) 设置后 (b) 停跑 |
+
+**本设计不做**：不改用户 `.sfz` 文件；不改默认解析；不做 `sw_note_offset`；
+不做非八度的自动移位；不处理单文件双记法。

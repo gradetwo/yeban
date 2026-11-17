@@ -249,7 +249,16 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// 住在 `apply_view` 的每帧路径上 ⇒ **57 → 58**（多这一个数组，判据清单逐字多一项）。
 /// 它不改默认帧：演示 / 夹具工程里每条摆放默认 `muted = false` ⇒ 底色逐像素不变 ⇒
 /// ⛔ 无需重录基准。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 58;
+/// ## 58 → 63 的追加（音名八度统一线阶段 2，2026-11-17）
+///
+/// 那五格是采样器八度覆盖与装载显示读数的平行数组：`track-sampler-octave-auto` /
+/// `track-sampler-octave-values`（步进当前档）＋ `track-sampler-key-ranges` /
+/// `track-sampler-shift-kinds` / `track-sampler-shift-amounts`（装载后键位范围与
+/// 移位徽标）。与 `track-sampler-paths` 同索引集、同一次注入 ⇒ **58 → 63**，
+/// `APPLY_VIEW_WRITE_SITE_BUDGET` 同步 +5。消费者只在调音台通道条（Tab 1，
+/// 默认帧 Tab 0 不实例化）⇒ 默认帧一位不变；取数侧走 `bridge::sampler_display`
+/// 的进程缓存（键 = 路径＋覆盖），⛔ 不在每帧读盘。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 63;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -508,7 +517,15 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 58;
 /// 清单不动。绘制量侧：单位 >= 2 时小节线／刻度按单位跳画、拍线与细分只在
 /// 宽度达标时出现 ⇒ 自适应只减不增每帧绘制量。默认帧（bar 128px）新增细分
 /// 刻度节点 ⇒ 像素随之变化，UI golden 比对现为禁用态（同上）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 109;
+/// ⭐ 2026-11-17（音名八度统一线阶段 2）：多**五行** `ui.set_track_sampler_octave_auto`
+/// / `set_track_sampler_octave_values` / `set_track_sampler_key_ranges` /
+/// `set_track_sampler_shift_kinds` / `set_track_sampler_shift_amounts`
+/// （与 `track-sampler-paths` 同索引集）⇒ **103 → 108**。消费者只在调音台
+/// 通道条（Tab 1）⇒ 默认帧一位不变、⛔ 基准无需重录；五格同时计入 ③b 清单。
+/// ⭐ 2026-11-17（并集：`line/arrangement-grid` ＋ 音名八度统一线阶段 2）：
+/// 两路同基 103、写点互不重叠 ⇒ **109 + 5 = 114**（网格的 1 + 5 与八度的 5
+/// 全是新增写点；③b 清单只含八度的五格，网格六点皆为标量）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 114;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -542,6 +559,19 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     // ⭐ 任务单 `#82`：SFZ 采样器路径也在 `apply_view` 的每帧路径上（⛔ 不是手势路径）
     // ⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"这类回归会漏数。
     push!("track-sampler-paths", get_track_sampler_paths);
+    // ⭐ 阶段 2：八度覆盖与装载显示读数的五个平行数组也在 `apply_view` 的每帧
+    // 路径上 ⇒ 必须计入这份清单（同 `track-sampler-paths` 的纪律）。
+    push!("track-sampler-octave-auto", get_track_sampler_octave_auto);
+    push!(
+        "track-sampler-octave-values",
+        get_track_sampler_octave_values
+    );
+    push!("track-sampler-key-ranges", get_track_sampler_key_ranges);
+    push!("track-sampler-shift-kinds", get_track_sampler_shift_kinds);
+    push!(
+        "track-sampler-shift-amounts",
+        get_track_sampler_shift_amounts
+    );
     push!("scene-names", get_scene_names);
     push!("section-names", get_section_names);
     push!("section-positions", get_section_positions);

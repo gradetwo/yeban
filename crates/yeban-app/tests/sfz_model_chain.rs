@@ -172,6 +172,7 @@ fn pitches_of(project: &YebanProjectV1, track_id: EntityId) -> Vec<u8> {
 /// 给那条 MIDI 轨写一个 `sampler = Some(路径)`。
 fn bind_sampler(project: &mut YebanProjectV1, track_id: EntityId, path: &Path) {
     project.tracks.get_mut(&track_id).expect("轨必须在").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: path.to_string_lossy().into_owned(),
     });
 }

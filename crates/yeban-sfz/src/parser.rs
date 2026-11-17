@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 use crate::curve::{Curve, CurvePoint};
 use crate::effect::{Effect, EffectBuilder};
 use crate::error::SfzError;
-use crate::instrument::{Instrument, Region, build_region};
+use crate::instrument::{Instrument, Region, RegionShift, build_region};
 use crate::midi::{MidiOpcode, MidiSection};
 
 // ---------------------------------------------------------------------------
@@ -233,7 +233,8 @@ impl ParseLimits {
 /// 而不是静默当作 region 处理。见 <https://sfzformat.com/headers/>。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Header {
-    /// `<control>`（SFZ v2）：文件级设置，本实现只取 `default_path`。
+    /// `<control>`（SFZ v2）：文件级设置，本实现取 `default_path`、`set_ccN` 家族、
+    /// `label_ccN` 与 `note_offset` / `octave_offset`。
     Control,
     /// `<global>`（SFZ v2）：对所有 region 生效。
     Global,
@@ -642,8 +643,10 @@ pub fn parse_f32(raw: &str) -> Option<f32> {
 /// （IPN / 科学音高记法，中央 C 为 C4）。大小写不敏感；升号接受 `#` / `s`，
 /// 降号接受 `b` / `f`；省略八度时按八度 4 处理。
 ///
-/// 注意：AKAI / 部分老音色库使用 `C3 = 60`（Yamaha 记法），本实现**不**采用；
-/// 该歧义记录在 `docs/ledger/sfz-core-notes.md` 的「需要人类裁决」一节。
+/// 注意：AKAI / 部分老音色库使用 `C3 = 60`（Yamaha 记法），本实现**不**采用。
+/// 该歧义已于 2026-11-17 裁决关闭（`docs/ledger/sfz-core-notes.md` 第 14 节）：
+/// 内部唯一标准仍是 IPN，**不**改本函数的默认解析；文件可用 `<control>` 的
+/// `note_offset` / `octave_offset` 自我声明移位，外部记法的装载侧适配另行处理。
 #[must_use]
 pub fn parse_note(raw: &str) -> Option<i32> {
     let text = raw.trim();
@@ -1024,6 +1027,20 @@ struct Parser<'a> {
     /// 在 `finish()` 里无条件赢（SFZ v2 精确整数声明 > ARIA 扩展换算值），
     /// ⛔ 不靠"文件里谁写在后面"决定优先级。
     control_cc_hd_defaults: BTreeMap<u16, u8>,
+    /// `<control>` 段声明的 `note_offset`（半音，SFZ v2）。
+    ///
+    /// 与 `control_cc_defaults` 的区别：它与 `default_path` 同为**当前段的位置语义**
+    /// —— 新的 `<control>` 段在 `switch_scope` 里连同 `control` 表一并重置为 0，
+    /// 只作用于其后归约的 region。插入期已用 `as_int` 校验（非法/越界是明确 `Err`）。
+    control_note_offset: i32,
+    /// `<control>` 段声明的 `octave_offset`（八度，SFZ v2）。口径同 `control_note_offset`。
+    control_octave_offset: i32,
+    /// ⭐ **外部移位**（半音）：解析**入参**（见
+    /// [`parse_text_with_external_shift`]），⛔ 不是文件内容 —— 它是装载侧
+    /// 记法适配（自动检测 (b) / 手动覆盖 (c)）的施加通道，在归约侧与文件
+    /// 自带 (a) 相加（合成公式见 `docs/ledger/sfz-core-notes.md` §14.4）。
+    /// 缺省 0 ⇒ 解析结果与未实现本入参之前逐位相同。
+    external_shift: i32,
     warnings: Vec<Warning>,
     warnings_truncated: bool,
 }
@@ -1075,6 +1092,9 @@ impl<'a> Parser<'a> {
             control_cc_labels: BTreeMap::new(),
             control_cc_defaults: BTreeMap::new(),
             control_cc_hd_defaults: BTreeMap::new(),
+            control_note_offset: 0,
+            control_octave_offset: 0,
+            external_shift: 0,
             warnings: Vec::new(),
             warnings_truncated: false,
         }
@@ -1166,6 +1186,25 @@ impl<'a> Parser<'a> {
                     });
                 }
                 crate::control::SetHdccOutcome::NotThisOpcode => {}
+            }
+            // `note_offset` / `octave_offset`（SFZ v2，<control> 的文件级移位声明）：
+            // 插入期校验并存进解析器字段，归约时合成半音移位传给 `build_region`。
+            // 与 `set_ccN` 不同，这里非法/越界是明确 `Err` 而不是丢弃 + 告警：
+            // 移位是整份乐器的音高坐标，静默丢弃会让全部 region 错位一个八度
+            // 却不留任何痕迹（与本 crate 类型化读取的响亮口径一致）。
+            // 取值在到达这里之前已过宏展开（`#define` 可用于这两个 opcode 的值），
+            // 而移位本身只作用于 region 的音高字段，⛔ 不回头改写宏定义。
+            match name.as_ref() {
+                "note_offset" => {
+                    self.control_note_offset = OpcodeValue::new("note_offset", value.clone(), line)
+                        .as_int(-127, 127)? as i32;
+                }
+                "octave_offset" => {
+                    self.control_octave_offset =
+                        OpcodeValue::new("octave_offset", value.clone(), line).as_int(-10, 10)?
+                            as i32;
+                }
+                _ => {}
             }
         }
         let Some((map, scope_name)) = self.map_for(scope) else {
@@ -1389,12 +1428,21 @@ impl<'a> Parser<'a> {
         }
         let line = self.region_line;
         let default_path = self.control.get("default_path").cloned();
+        // `<control>` 的移位声明（插入期已校验）：合成半音移位，随 `default_path`
+        // 同一条位置语义通道传给归约 —— 在本 region 归约时有效的那一份。
+        // ⭐ 文件自带 (a) 与解析入参的外部移位在此相加成施加用的总移位；
+        // (a) 单独一份传给归约，逐 region 记进 `Region::declared_note_shift`。
+        let declared_shift = self.control_note_offset + self.control_octave_offset * 12;
         let built = build_region(
             &self.region,
             &self.group,
             &self.master,
             &self.global,
             default_path,
+            RegionShift {
+                applied: declared_shift + self.external_shift,
+                declared: declared_shift,
+            },
             line,
         )?;
         match built {
@@ -1613,6 +1661,10 @@ impl<'a> Parser<'a> {
             Some(Header::Control) => {
                 // ARIA 语义：新的 `<control>` 会重置 `default_path`。
                 self.control.clear();
+                // `note_offset` / `octave_offset` 与 `default_path` 同为当前段的
+                // 位置语义（只作用于其后归约的 region），随段头一并重置。
+                self.control_note_offset = 0;
+                self.control_octave_offset = 0;
                 self.scope = Scope::Control;
             }
             Some(Header::Global) => {
@@ -1728,8 +1780,30 @@ fn truncate_for_error(text: &str) -> String {
 /// [`Warning::IncludeIgnored`]）。
 ///
 /// 纯函数：无 I/O、无全局状态、可重入，也是 fuzz 目标的主入口。
+/// 等价于 [`parse_text_with_external_shift`] 传外部移位 0。
 pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<'a>, SfzError> {
+    parse_text_with_external_shift(text, limits, 0)
+}
+
+/// 与 [`parse_text`] 相同，但带一个**外部移位**（半音）入参。
+///
+/// ## 口径（`docs/ledger/sfz-core-notes.md` §14.4）
+///
+/// * 外部移位是**装载侧适配**的施加通道（自动检测 (b) / 手动覆盖 (c) 的结论），
+///   ⛔ 不是文件内容、⛔ 不改写任何源文本；
+/// * 它在归约侧与文件自带 (a)（`<control>` 的 `note_offset` / `octave_offset`）
+///   **相加**成总移位，再经阶段 1 的同一组 `shifted_*` 助手施加 ⇒ 「只移写出的
+///   值、缺省不移、哨兵不移」的口径对外部移位一字不变；
+/// * `external_shift == 0` 时结果与 [`parse_text`] 逐位相同；
+/// * 每条 region 的 [`Region::declared_note_shift`](crate::instrument::Region::declared_note_shift)
+///   只记 (a)，⛔ 不含本入参 —— 「文件说了什么」与「装载侧加了什么」分得开。
+pub fn parse_text_with_external_shift<'a>(
+    text: &'a str,
+    limits: &ParseLimits,
+    external_shift: i32,
+) -> Result<Instrument<'a>, SfzError> {
     let mut parser = Parser::new(*limits);
+    parser.external_shift = external_shift;
     parser.run(text, 1, true)?;
     parser.finalize_region()?;
     parser.finalize_curve()?;
@@ -1741,11 +1815,23 @@ pub fn parse_text<'a>(text: &'a str, limits: &ParseLimits) -> Result<Instrument<
 /// 把 [`IncludeResolver`] 展开好的片段序列解析成 [`Instrument`]。
 ///
 /// 片段按粘贴顺序遍历，解析状态跨片段延续，因此 `<region>` 可以跨 `#include` 边界。
+/// 等价于 [`parse_sources_with_external_shift`] 传外部移位 0。
 pub fn parse_sources<'a>(
     sources: &'a [SfzSource],
     limits: &ParseLimits,
 ) -> Result<Instrument<'a>, SfzError> {
+    parse_sources_with_external_shift(sources, limits, 0)
+}
+
+/// 与 [`parse_sources`] 相同，但带一个**外部移位**（半音）入参
+/// （口径同 [`parse_text_with_external_shift`]）。
+pub fn parse_sources_with_external_shift<'a>(
+    sources: &'a [SfzSource],
+    limits: &ParseLimits,
+    external_shift: i32,
+) -> Result<Instrument<'a>, SfzError> {
     let mut parser = Parser::new(*limits);
+    parser.external_shift = external_shift;
     for source in sources {
         parser.run(&source.text, source.first_line, false)?;
     }

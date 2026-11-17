@@ -188,6 +188,7 @@ fn project_with_sampler(raw: &str) -> YebanProjectV1 {
         .map(|(id, _)| *id)
         .expect("filled_project 必须有 Lead 轨");
     project.tracks.get_mut(&lead).expect("Lead").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: raw.to_owned(),
     });
     project.validate().expect("夹具工程必须合法");
@@ -534,6 +535,7 @@ fn two_tracks_sharing_one_sample_file_both_sound() {
         .map(|(id, _)| *id)
         .expect("filled_project 必须有 Lead 轨");
     single.tracks.get_mut(&lead).expect("Lead").sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: sfz.display().to_string(),
     });
     single.validate().expect("单轨夹具必须合法");

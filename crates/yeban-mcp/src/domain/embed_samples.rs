@@ -320,6 +320,7 @@ mod tests {
             ..TrackV3::default()
         };
         track.sampler = Some(yeban_model::SamplerBinding {
+            note_octave_override: None,
             path: binding.to_owned(),
         });
         let placement_id = uid(9200);

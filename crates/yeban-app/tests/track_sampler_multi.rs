@@ -373,17 +373,26 @@ fn two_installs_land_on_two_tracks_in_one_commit() {
     let saved = reopen(&out);
     assert_eq!(
         sampler_of(&saved, fixture.midi),
-        Some(SamplerBinding { path: a.clone() }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: a.clone()
+        }),
         "midi 轨上必须是第一份"
     );
     assert_eq!(
         sampler_of(&saved, fixture.aux),
-        Some(SamplerBinding { path: b.clone() }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: b.clone()
+        }),
         "aux 轨上必须是第二份"
     );
     assert_ne!(
         sampler_of(&saved, fixture.master),
-        Some(SamplerBinding { path: a }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: a
+        }),
         "⛔ 主总线上不许有绑定"
     );
     let _ = fixture.master;
@@ -422,12 +431,18 @@ fn pairing_follows_command_line_order_not_sorting() {
     let saved = reopen(&out);
     assert_eq!(
         sampler_of(&saved, fixture.aux),
-        Some(SamplerBinding { path: a.clone() }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: a.clone()
+        }),
         "第一个 `--track-sampler`（zz_first.sfz）配第一个 `--sampler-track`（aux）"
     );
     assert_eq!(
         sampler_of(&saved, fixture.midi),
-        Some(SamplerBinding { path: b.clone() }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: b.clone()
+        }),
         "第二个 `--track-sampler`（aa_second.sfz）配第二个 `--sampler-track`（midi）"
     );
 }
@@ -560,7 +575,10 @@ fn a_single_install_still_emits_exactly_one_line() {
     );
     assert_eq!(
         sampler_of(&reopen(&out), fixture.aux),
-        Some(SamplerBinding { path: a }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: a
+        }),
         "单份落盘仍只在目标是的那条轨上"
     );
     assert_eq!(

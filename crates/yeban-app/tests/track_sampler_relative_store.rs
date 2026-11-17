@@ -276,6 +276,7 @@ fn cli_installs_an_under_library_root_absolute_path_as_the_relative_form() {
     assert_eq!(
         sampler_of(&saved, fixture.midi),
         Some(SamplerBinding {
+            note_octave_override: None,
             path: "assets/samples/vsco2ce/Harp_slim.sfz".to_owned()
         }),
         "库根下绝对路径必须落盘成相对形式"
@@ -307,7 +308,10 @@ fn cli_installs_an_outside_library_root_absolute_path_verbatim() {
     let saved = reopen(&out);
     assert_eq!(
         sampler_of(&saved, fixture.midi),
-        Some(SamplerBinding { path: sfz }),
+        Some(SamplerBinding {
+            note_octave_override: None,
+            path: sfz
+        }),
         "库根外的绝对路径必须落盘原样"
     );
 }

@@ -698,6 +698,7 @@ fn the_sampler_installed_on_the_aux_return_is_heard_in_the_export() {
         .get_mut(&aux)
         .expect("夹具必须有 aux")
         .sampler = Some(SamplerBinding {
+        note_octave_override: None,
         path: sfz.to_str().expect("UTF-8").to_owned(),
     });
     let options = WavExportOptions {

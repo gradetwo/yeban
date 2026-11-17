@@ -326,6 +326,14 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // ⭐ `#82`：SFZ 采样器绑定的**只读**注入面（`TrackV3::sampler` 的路径原文，
     // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
     ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
+    // ⭐ 阶段 2：八度覆盖步进的读数（自动位 + 半音值）与装载后显示读数
+    // （键位范围 + 移位徽标种类/量）。写方向是 `mixer-sampler-octave-step` 回调。
+    // 五个数组与五处写入点分别计入两项帧预算（见 `tests/perf_draw_budget.rs`）。
+    ui.set_track_sampler_octave_auto(booleans(&view.track_sampler_octave_auto()));
+    ui.set_track_sampler_octave_values(integers(&view.track_sampler_octave_values()));
+    ui.set_track_sampler_key_ranges(strings(&view.track_sampler_key_ranges()));
+    ui.set_track_sampler_shift_kinds(integers(&view.track_sampler_shift_kinds()));
+    ui.set_track_sampler_shift_amounts(strings(&view.track_sampler_shift_amounts()));
     ui.set_scene_names(strings(&view.scene_names()));
     // 场景色标：解析 / 回退在投影层（`bridge::track_color_or_default` 唯一实现），
     // 这里只转成 Slint 的 `Color` 并把规范化文本一起下发（标签源）。
@@ -3110,7 +3118,7 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///
 /// ## 空文本为什么是"**不提交**"，而不是"解绑"
 ///
-/// `""` 不是 `None`：`SamplerBinding { path: "" }` 会让发布点把"读不到的文件"如实报错
+/// `""` 不是 `None`：`SamplerBinding { note_octave_override: None, path: "" }` 会让发布点把"读不到的文件"如实报错
 /// （`EngineHostError::Sfz`）。而用户清空输入框**往往只是想重打一遍** ⇒ 这里什么都不做
 /// 并出声。解绑只有一个入口：`Clear`（它写的就是 `None`）。
 ///
@@ -3157,6 +3165,18 @@ fn wire_mixer_sampler(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             };
             commit_sampler_binding(&ui, &port, index, None, "clear track sampler");
+        }
+    });
+    // ⭐ 阶段 2：八度覆盖步进（与 SET/CLR 同一条提交路径：`Op::SetTrackSampler`）。
+    ui.on_mixer_sampler_octave_step({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index, delta| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            commit_sampler_octave(&ui, &port, index, delta);
         }
     });
 }
@@ -3305,8 +3325,19 @@ fn commit_sampler_binding(
     let Some(old_sampler) = authoritative_sampler(port, &track_id) else {
         return;
     };
-    let new_sampler = new_path.map(|path| yeban_model::SamplerBinding {
-        path: crate::samples::normalize_sampler_path_for_storage(path),
+    let new_sampler = new_path.map(|path| {
+        let normalized = crate::samples::normalize_sampler_path_for_storage(path);
+        // ⭐ 阶段 2：路径**没变**（只是重按了一次 SET）⇒ 八度覆盖保留；
+        //    换了乐器 ⇒ 覆盖是给旧乐器设的，**清回未设**（⛔ 不把 A 乐器的
+        //    八度裁决套到 B 乐器上）。
+        let note_octave_override = match &old_sampler {
+            Some(old) if old.path == normalized => old.note_octave_override,
+            _ => None,
+        };
+        yeban_model::SamplerBinding {
+            note_octave_override,
+            path: normalized,
+        }
     });
     // 值没变 ⇒ 不制造"什么也没改"的一步撤销历史（见本函数调用者的文档）。
     // 比较的是归一化后的新值与文档原值：文档里旧的绝对形式 ⇒ 仍提交一次
@@ -3324,6 +3355,82 @@ fn commit_sampler_binding(
         return;
     }
     refresh_undo_window(ui, port, true);
+}
+
+/// ⭐ 阶段 2：八度覆盖的**六档循环**（步进一格）：自动 → −2 → −1 → 0 → +1 → +2
+/// → 自动。`delta` 只取符号（界面报 ±1）。存量非法值（手改工程等）按「自动」起步。
+#[must_use]
+pub fn next_octave_override(current: Option<i32>, delta: i32) -> Option<i32> {
+    const STEPS: [Option<i32>; 6] = [None, Some(-24), Some(-12), Some(0), Some(12), Some(24)];
+    let index = STEPS.iter().position(|step| *step == current).unwrap_or(0);
+    let next = (i32::try_from(index).unwrap_or(0) + delta.signum()).rem_euclid(6);
+    STEPS[usize::try_from(next).unwrap_or(0)]
+}
+
+/// ⭐ 阶段 2：八度覆盖步进的提交（路径**逐字保留**，只改覆盖一格）。
+///
+/// 无绑定（`sampler == None`）⇒ **不提交**：给不存在的乐器设八度没有意义，
+/// ⛔ 不顺手造一条绑定。值没变（理论上不会发生，六档互异）⇒ 同样不提交。
+fn commit_sampler_octave(ui: &MainWindow, port: &UndoPort, index: i32, delta: i32) {
+    let Some(track_id) = track_id_at(ui, index) else {
+        return;
+    };
+    let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+        return;
+    };
+    // 双层 `Option`：问不出来（无活跃工程）与无绑定（`Some(None)`）都 ⇒ 不提交。
+    let Some(Some(old_binding)) = authoritative_sampler(port, &track_id) else {
+        return;
+    };
+    let next = next_octave_override(old_binding.note_octave_override, delta);
+    if next == old_binding.note_octave_override {
+        return;
+    }
+    let new_sampler = Some(yeban_model::SamplerBinding {
+        note_octave_override: next,
+        path: old_binding.path.clone(),
+    });
+    let op = yeban_model::Op::SetTrackSampler {
+        track_id: id,
+        old_sampler: Some(old_binding),
+        new_sampler,
+    };
+    if port
+        .commit_ops(now_ms(), "set track sampler octave override", vec![op])
+        .is_err()
+    {
+        eprintln!("[yeban-app] SFZ 八度覆盖提交被拒绝（工程未改）");
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
+#[cfg(test)]
+mod octave_override_tests {
+    use super::next_octave_override;
+
+    #[test]
+    fn steps_forward_through_all_six_positions_and_wraps() {
+        assert_eq!(next_octave_override(None, 1), Some(-24));
+        assert_eq!(next_octave_override(Some(-24), 1), Some(-12));
+        assert_eq!(next_octave_override(Some(-12), 1), Some(0));
+        assert_eq!(next_octave_override(Some(0), 1), Some(12));
+        assert_eq!(next_octave_override(Some(12), 1), Some(24));
+        assert_eq!(next_octave_override(Some(24), 1), None);
+    }
+
+    #[test]
+    fn steps_backward_and_wraps_to_the_top() {
+        assert_eq!(next_octave_override(None, -1), Some(24));
+        assert_eq!(next_octave_override(Some(24), -1), Some(12));
+        assert_eq!(next_octave_override(Some(-24), -1), None);
+    }
+
+    #[test]
+    fn invalid_stored_value_restarts_from_auto() {
+        assert_eq!(next_octave_override(Some(7), 1), Some(-24));
+        assert_eq!(next_octave_override(Some(7), -1), Some(24));
+    }
 }
 
 /// 权威工程里某轨的 `TrackV3::sampler` **原值**。
@@ -21776,7 +21883,7 @@ pub fn wire_aether_actions(
                         let op = yeban_model::Op::SetTrackSampler {
                             track_id: tid,
                             old_sampler: track.sampler.clone(),
-                            new_sampler: Some(yeban_model::SamplerBinding { path: stored }),
+                            new_sampler: Some(yeban_model::SamplerBinding { note_octave_override: None, path: stored }),
                         };
                         if aether_commit(&ui, &port, vec![op], "aether: 更换 SFZ 音色") {
                             let msg = format!(

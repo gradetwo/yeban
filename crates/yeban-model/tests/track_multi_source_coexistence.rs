@@ -164,6 +164,7 @@ fn model_allows_a_track_to_hold_both_a_sampler_and_a_drum_shaped_instrument() {
     let device_id = id(3);
     let device = multi_source_device(device_id);
     let binding = SamplerBinding {
+        note_octave_override: None,
         path: "instruments/kit.sfz".to_owned(),
     };
 

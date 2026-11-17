@@ -1959,7 +1959,7 @@ use yeban_sfz::eg::{EgDef, EgParam};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
     CcGate, FilterType, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region,
-    RegionQuery, Trigger,
+    RegionQuery, Trigger, is_builtin_silence_sample,
 };
 use yeban_sfz::lfo::{GenericLfo, V1Lfo};
 // ⭐ 任务单 `#104`：CC 调制（`ccN` / `_ccN` / `_onccN` / `_curveccN`）；
@@ -1979,7 +1979,11 @@ use yeban_sfz::modulation::{
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 // ⭐ portamento（本单）：`egN_pitch_oncc140|141` 的最小子集。求值本体在 `yeban-sfz`
 // ⇒ 解析、离线、摊平、实时四条路读的是**同一份** `level_at` / `cents_at`。
-use yeban_sfz::parser::{IncludeIssue, ParseLimits, SfzSource, parse_sources, parse_text};
+use yeban_sfz::notation::{NotationDetection, NotationEvidence, detect_notation_shift};
+use yeban_sfz::parser::{
+    IncludeIssue, ParseLimits, SfzSource, parse_sources, parse_sources_with_external_shift,
+    parse_text, parse_text_with_external_shift,
+};
 use yeban_sfz::pitch_eg::{PitchEg, PitchEgSource};
 use yeban_sfz::playback::{LoopWindow, RenderRates, SampleSpan};
 // ⭐ 衰减底（−60 dBFS）取自 `yeban-sfz` 的 [`StealFade`](yeban_sfz::voice_pool::StealFade)：
@@ -2019,6 +2023,39 @@ pub struct SfzInstrument {
     include_issues: Vec<IncludeIssue>,
     /// 构造期解析得到的**区域数**（元数据，供控制侧快速查询）。
     region_count: usize,
+    /// ⭐ **外部移位**（半音；阶段 2 记法适配的施加值，缺省 0）。
+    ///
+    /// 与文件自带 (a) 的分工：(a) 在解析归约时按 `<control>` 位置生效（`yeban-sfz`
+    /// 内部），本字段是**整份乐器一律**的外加移位，经 `parse_*_with_external_shift`
+    /// 入参进入同一次归约（总移位 ＝ (a) ＋ 本字段，见
+    /// `docs/ledger/sfz-core-notes.md` §14.4）。由 [`Self::adapt_notation`] 按
+    /// (b)/(c) 结论落值，也可由 [`Self::set_external_shift`] 直接设。
+    external_shift: i32,
+    /// ⭐ 最近一次 (b) 记法检测的结构化报告（`None` ＝ 未跑过检测，
+    /// 或最近一次适配被 (c) 手动覆盖短路 —— (c) 在场时 (b) **停跑**）。
+    notation_detection: Option<NotationDetection>,
+}
+
+/// ⭐ 一次记法适配的**施加来源**（阶段 2；徽标与回执据此区分三种移位）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotationShiftSource {
+    /// 没有外部移位生效（(b) 未命中且无 (c) 覆盖）。
+    None,
+    /// (b) 自动检测命中并施加。
+    AutoDetected,
+    /// (c) 工程手动覆盖（优先于 (b)：在场即停跑检测，含显式 0）。
+    ManualOverride,
+}
+
+/// ⭐ [`SfzInstrument::adapt_notation`] 的结论（装载回执原样携带）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotationAdaptation {
+    /// 实际施加的**外部**移位（半音；不含文件自带 (a)）。
+    pub applied_shift: i32,
+    /// 施加来源（见 [`NotationShiftSource`]）。
+    pub source: NotationShiftSource,
+    /// (b) 的结构化检测报告；被 (c) 短路时为 `None`（检测没有跑）。
+    pub detection: Option<NotationDetection>,
 }
 
 impl SfzInstrument {
@@ -2038,6 +2075,8 @@ impl SfzInstrument {
             sources: None,
             include_issues: Vec::new(),
             region_count,
+            external_shift: 0,
+            notation_detection: None,
         })
     }
 
@@ -2080,6 +2119,8 @@ impl SfzInstrument {
             sources: Some(Arc::from(resolution.sources)),
             include_issues: resolution.issues,
             region_count,
+            external_shift: 0,
+            notation_detection: None,
         })
     }
 
@@ -2115,10 +2156,122 @@ impl SfzInstrument {
         // ⭐ `#206`：include 展开过的乐器按**同一份片段序列**重放（⛔ 不是拿根文本
         //    再 `parse_text` —— 那会把 include 悄悄丢掉）。
         let instrument = match self.sources.as_deref() {
-            Some(sources) => parse_sources(sources, &limits)?,
-            None => parse_text(&self.text, &limits)?,
+            Some(sources) => {
+                parse_sources_with_external_shift(sources, &limits, self.external_shift)?
+            }
+            None => parse_text_with_external_shift(&self.text, &limits, self.external_shift)?,
         };
         Ok(f(&instrument))
+    }
+
+    /// 当前**外部移位**（半音；文件自带 (a) 之外的那份，见 [`Self::external_shift`] 字段）。
+    #[must_use]
+    pub fn external_shift(&self) -> i32 {
+        self.external_shift
+    }
+
+    /// 最近一次 (b) 记法检测的结构化报告（`None` ＝ 未跑过，或被 (c) 短路）。
+    #[must_use]
+    pub fn notation_detection(&self) -> Option<&NotationDetection> {
+        self.notation_detection.as_ref()
+    }
+
+    /// 直接设置外部移位（半音）。不清检测报告（报告描述的是**检测**，
+    /// 施加值以 [`Self::external_shift`] 为准）。
+    pub fn set_external_shift(&mut self, shift: i32) {
+        self.external_shift = shift;
+    }
+
+    /// ⭐ **装载侧记法适配**（阶段 2，设计 §14.4）：在控制侧装载期跑一次。
+    ///
+    /// * `override_shift`（(c) 手动覆盖）有值 ⇒ **停跑 (b)**，外部移位直接取它
+    ///   （含显式 0：设了覆盖就是用户的裁决，⛔ 不许检测再插一脚）；
+    /// * 无覆盖 ⇒ 用 `root_of` 逐 region 取采样嵌入根音（参数是 region 的
+    ///   `sample_path()`；读不到 ⇒ `None`），在**未加外部移位**的解析上组装
+    ///   证据，交 `yeban_sfz::detect_notation_shift` 判定，命中才施加。
+    ///
+    /// 结论同时存进本乐器（[`Self::notation_detection`]），并以
+    /// [`NotationAdaptation`] 返回供装载回执携带。⛔ 绝不静默：未命中也带
+    /// 原因与证据计数回来。
+    ///
+    /// # Errors
+    /// 适配期的重解析失败（正常路径不会发生）⇒ [`SfzError`]，且外部移位
+    /// 恢复到调用前的值（⛔ 不留半施加状态）。
+    pub fn adapt_notation(
+        &mut self,
+        root_of: &dyn Fn(&str) -> Option<i32>,
+        override_shift: Option<i32>,
+    ) -> Result<NotationAdaptation, SfzError> {
+        if let Some(shift) = override_shift {
+            self.external_shift = shift;
+            self.notation_detection = None;
+            return Ok(NotationAdaptation {
+                applied_shift: shift,
+                source: NotationShiftSource::ManualOverride,
+                detection: None,
+            });
+        }
+        // (b)：证据必须取自未加外部移位的解析（已施加的移位会把 delta 抹平）。
+        let saved_shift = self.external_shift;
+        self.external_shift = 0;
+        let evidence = self.with_instrument(|instrument| {
+            instrument
+                .regions()
+                .iter()
+                .map(|region| {
+                    let raw_path = region.sample_path();
+                    let root = if is_builtin_silence_sample(&raw_path) {
+                        None
+                    } else {
+                        root_of(&raw_path)
+                    };
+                    NotationEvidence::from_region(region, root)
+                })
+                .collect::<Vec<_>>()
+        });
+        let evidence = match evidence {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                self.external_shift = saved_shift;
+                return Err(error);
+            }
+        };
+        let detection = detect_notation_shift(&evidence);
+        let applied_shift = detection.applied_shift.unwrap_or(0);
+        self.external_shift = applied_shift;
+        let source = if detection.is_hit() {
+            NotationShiftSource::AutoDetected
+        } else {
+            NotationShiftSource::None
+        };
+        self.notation_detection = Some(detection.clone());
+        Ok(NotationAdaptation {
+            applied_shift,
+            source,
+            detection: Some(detection),
+        })
+    }
+
+    /// ⭐ **移位后实际覆盖键位范围**（阶段 2 切片 S4 的显示数据源）：
+    /// 全部 note 触发 region 的 `min(lokey) ..= max(hikey)`（**已含** (a) 与
+    /// 外部移位 —— 就是用户按下去会响的范围）；无 note 触发 region ⇒ `None`。
+    ///
+    /// # Errors
+    /// 同 [`Self::with_instrument`]。
+    pub fn key_range(&self) -> Result<Option<(i32, i32)>, SfzError> {
+        self.with_instrument(|instrument| {
+            let mut range: Option<(i32, i32)> = None;
+            for region in instrument.regions() {
+                if !region.trigger_by_note {
+                    continue;
+                }
+                range = Some(match range {
+                    None => (region.lokey, region.hikey),
+                    Some((low, high)) => (low.min(region.lokey), high.max(region.hikey)),
+                });
+            }
+            range
+        })
     }
 
     /// 在给定 `note`/`velocity` 下**选中**的区域（控制侧的查询口径）。
@@ -10136,19 +10289,40 @@ impl SfzVoicePool {
 pub struct PendingSfz {
     /// 采样器定义文件路径（逐字留痕；见本类型的模块级说明）。
     path: String,
+    /// ⭐ 阶段 2：手动八度覆盖（半音；`SamplerBinding::effective_octave_override`
+    /// 的投影 —— 已过滤非法值，`None` ＝ 未设、装载跑自动检测）。
+    octave_override: Option<i32>,
 }
 
 impl PendingSfz {
     /// 从一个路径建（控制侧投影用：把 `TrackV3.sampler.path` 原样搬过来）。
     #[must_use]
     pub fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            octave_override: None,
+        }
+    }
+
+    /// ⭐ 从路径 + 八度覆盖建（快照投影用，见 `EngineSnapshot::from_project`）。
+    #[must_use]
+    pub fn with_octave_override(path: impl Into<String>, octave_override: Option<i32>) -> Self {
+        Self {
+            path: path.into(),
+            octave_override,
+        }
     }
 
     /// 路径（**逐字**，⛔ 未被规范化）。
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// 手动八度覆盖（半音；`None` ＝ 未设）。
+    #[must_use]
+    pub fn octave_override(&self) -> Option<i32> {
+        self.octave_override
     }
 }
 
