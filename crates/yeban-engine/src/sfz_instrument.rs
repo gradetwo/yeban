@@ -963,6 +963,44 @@
 //! * **不在本线**：`fil2_*` 第二滤波器、`fil_random`、`fil_gain`、
 //!   `fil_mode`、EQ 族 —— 审计报告 §8 子集外，不扩围。
 //!
+//! # ⭐ 区域声相（`pan`，stage 1：分声道通路）
+//!
+//! ⚠ **本节的立场**：`pan` 在 `yeban-sfz` 里早已被解析（`Region::pan`，百分比 −100..=100），
+//! 引擎侧一直到本节之前**没有任何消费者**（模块头第 ⑩ 行的"`pan` 仍未做"就是这个意思，
+//! 原文保留）。
+//!
+//! ⭐ ⭐ **追加修订段（区域 pan 片 · stage 1）—— 被修订的是"引擎侧没有消费者"这一句**：
+//! 现在有**两条**通路，区别只在"要不要分左右"：
+//!
+//! | 通路 | 入口 | `pan` |
+//! | :--- | :--- | :--- |
+//! | 单声道（实时/旧导出） | [`SfzVoicePool::render_into_with_probes`] / [`crate::synth::SynthEngine::render_track`] | ⛔ **不施加**（与接线前逐位相同） |
+//! | 分声道（stage 1 新入口） | [`SfzVoicePool::render_into_stereo_with_probes`] / [`crate::synth::SynthEngine::render_track_stereo`] | ✅ 在**源侧**施加 |
+//!
+//! 为什么必须两条并存：引擎的轨渲染一直是**单声道**（`out` 的长度就是帧数），轨声相在
+//! 混入总线时才由 `mixer::centered_pan_gains` 施加；而区域 `pan` 的语义是"**这一层**先分左右、
+//! 再连同其它层一起进总线"（Logic 的 sampler 就是这个口径：样本源侧 pan ＋ 全程立体声图）。
+//! 把单声道路径整个改成双声道会波及 `render_track` 系列的 45 个调用点，所以本片**先**把
+//! "源侧能分声道"这条腿接出来（阶段 1），混音器接线留 stage 2。
+//!
+//! ## 口径细节
+//!
+//! * 声相定律**复用**母线那一条（[`crate::mixer::centered_pan_gains`]，
+//!   [`crate::mixer::PanLaw::ConstantPowerMinus3dB`]）：`pan == 0` 时恒等 `(1, 1)`
+//!   ⇒ 中性区域在两条通路上**逐位相同**；
+//! * `pan` 是**百分比**（规范同 `Region::pan`），换算时除以 `100`；非有限值由
+//!   `centered_pan_gains` 自己退回恒等（⛔ 不另立夹取）；
+//! * 逐槽渲染用**栈上定长分块**（[`STEREO_CHUNK_FRAMES`]）：池结构体**一个字节都不加**
+//!   （体积普查钉死的 `SfzVoicePool` 大小不受影响），⛔ RT 路径里不分配；
+//! * 声部的 `pan` 取它**自己来源区域**（`SfzVoice::region_index` ⇒
+//!   [`PreparedSfz::region_pan`]）⇒ 同一音符的多层可以各自不同相（这正是区域级 `pan` 的意义）；
+//! * ⚠ **已知未接线**：① 混音器/母带仍按"单声道轨 ＋ 总线补 pan"走（stage 2）；
+//!   ② 同一轨同时武装 SFZ 与复音试听声部时，试听声部只写左声道（`render_track_stereo`
+//!   的 SFZ 早退分支）；③ `pan_onccN` 的**逐块**调制未做（stage 3）。
+//!
+//! 判据：`tests/sfz_instrument.rs` 的 `stereo_path_applies_region_pan_at_the_source`
+//! （`pan=100` ⇒ 左声道 peak < 右声道 1e-3；中性 ⇒ 两声道逐位相同）。
+
 //! # ⭐ 播放方向（`direction`，任务单 `#113`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是三处"`direction` 仍未做"的登记**：
@@ -4273,6 +4311,12 @@ pub struct PreparedRegion {
     release_key_mask: [u64; 2],
     /// ⭐ **释放族的力度掩码**（口径同 [`Self::release_key_mask`]）。
     release_vel_mask: [u64; 2],
+    /// ⭐ **区域声相**（`pan`，百分比 -100..=100；0 ＝ 中性）。
+    ///
+    /// 只有**分声道渲染**才有效（[`SfzVoicePool::render_into_stereo_with_probes`]）；
+    /// 单声道路径（[`SfzVoicePool::render_into_with_probes`]）⛔ 不施加声相，
+    /// 与接线前**逐位相同**。换算用 [`crate::mixer::centered_pan_gains`]（与母线同一份定律）。
+    pan: f32,
     /// ⭐ **释放采样随按住时长衰减**（`rt_decay`，dB/秒；本片）。
     ///
     /// 解析与取值域在 `yeban-sfz`（`0 ..= 200`、越界响亮 `FloatOutOfRange`）。
@@ -6260,6 +6304,12 @@ impl PreparedSfz {
         self.regions.len()
     }
 
+    /// 区域声相（百分比；`0` ＝ 中性）。单声道通路不施加，分声道通路按它分左右。
+    #[must_use]
+    pub fn region_pan(&self, index: usize) -> f32 {
+        self.regions.get(index).map_or(0.0, |region| region.pan)
+    }
+
     /// 摊平后的区域表（**只读**；判据与控制侧读数用）。
     #[must_use]
     pub fn regions(&self) -> &[PreparedRegion] {
@@ -6778,6 +6828,7 @@ fn flatten_regions(
                 key_mask,
                 release_key_mask,
                 release_vel_mask,
+                pan: region.pan,
                 rt_decay: region.rt_decay,
                 vel_mask,
                 trigger: region.trigger,
@@ -8199,6 +8250,12 @@ fn bend_ratio(cents: f32) -> f32 {
     }
 }
 
+/// 分声道渲染的**栈上分块长**（一个槽每趟渲染 ≤ 这么多帧，再按声相加进左右总线）。
+///
+/// ⚠ 池结构体**一个字节都不加**（体积普查钉死的池大小不受影响）：暂存是函数内的
+/// 定长栈数组，逐块循环，⛔ 不在 RT 路径里分配。
+pub const STEREO_CHUNK_FRAMES: usize = 128;
+
 impl SfzVoicePool {
     /// ⭐ `#341`：设定**本次触发**的"其它音符按住数"。
     ///
@@ -9162,6 +9219,58 @@ impl SfzVoicePool {
     ) {
         for index in 0..SFZ_VOICES_PER_TRACK {
             self.render_slot(index, plan, position, out, cc, pitch);
+        }
+    }
+
+    /// ⭐ **分声道渲染**（区域 `pan` 的落点）。
+    ///
+    /// 语义与 [`Self::render_into_with_probes`] **逐个声部相同**，只多**一条**右声道
+    /// 总线：每个槽先渲染进暂存，再按该声部**来源区域**的 `pan`
+    /// （[`PreparedSfz::region_pan`]，百分比）用 [`crate::mixer::centered_pan_gains`]
+    /// 换算成 `(gain_l, gain_r)` 分别加进左右两端 —— 这就是"声相在**源侧**施加"，
+    /// 与 Logic 的 sampler 同一条口径（⛔ 不是先混总线再补 pan）。
+    ///
+    /// * 中性区域（`pan == 0` ／ 0 帧的非法值）⇒ 增益恰 `(1, 1)`，与单声道**逐位相同**；
+    /// * 块长 > [`STEREO_SCRATCH_FRAMES`] ⇒ **退回单声道**并把左声道复制给右，
+    ///   计入 [`Self::stereo_fallbacks`]（⛔ 不静默、⛔ 不在 RT 里重新分配）；
+    /// * 逐槽多一次内存往返（4096 帧上限内），⛔ 不改 `mix_span_into` 的逐样本实现
+    ///   —— 全仓仍然只有一份逐样本循环。
+    pub fn render_into_stereo_with_probes(
+        &mut self,
+        plan: &PreparedSfz,
+        position: u64,
+        left: &mut [f32],
+        right: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+        pitch: Option<&dyn Fn(u16, u64) -> f32>,
+    ) {
+        let frames = left.len().min(right.len());
+        left[..frames].fill(0.0);
+        right[..frames].fill(0.0);
+        for index in 0..SFZ_VOICES_PER_TRACK {
+            let pan = plan.region_pan(usize::from(self.voices[index].region_index));
+            let (gain_l, gain_r) = crate::mixer::centered_pan_gains(
+                pan / 100.0,
+                crate::mixer::PanLaw::ConstantPowerMinus3dB,
+            );
+            let mut offset = 0usize;
+            while offset < frames {
+                let len = (frames - offset).min(STEREO_CHUNK_FRAMES);
+                let mut chunk = [0.0f32; STEREO_CHUNK_FRAMES];
+                self.render_slot(
+                    index,
+                    plan,
+                    position.saturating_add(offset as u64),
+                    &mut chunk[..len],
+                    cc,
+                    pitch,
+                );
+                for (slot, value) in chunk[..len].iter().enumerate() {
+                    left[offset + slot] += value * gain_l;
+                    right[offset + slot] += value * gain_r;
+                }
+                offset += len;
+            }
         }
     }
 
