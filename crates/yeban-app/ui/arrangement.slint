@@ -321,11 +321,18 @@ export component ArrangementViewport inherits Rectangle {
                                 // 小节上标号（步长由宿主按小节宽算，间距
                                 // >= 96px；Logic 图二极端缩小时每 16 小节
                                 // 一个编号）。
+                                // 净空区（六版，Wang 15:06 终判「刻度上
+                                // 数字有点遮盖」）：编号只占标尺带上部
+                                // 9px 净空区（字形在区内垂直居中），下方
+                                // 刻度行仍是带下半 12px，编号区底与刻度
+                                // 行顶之间留 3px（24 = 9 + 3 + 12），
+                                // 任何刻度不得进入编号区。几何常量由
+                                // arrangement_grid_density 判据 ⑥ 钉住。
                                 visible: (root.bar-start-index + i).mod(max(1, root.grid-label-stride)) == 0;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: root.bar-width-px;
-                                height: parent.height;
+                                height: 9px;
                                 horizontal-alignment: left;
                                 text: "" + (root.bar-start-index + i + 1);
                                 font-family: Tokens.font-mono;

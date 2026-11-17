@@ -267,3 +267,78 @@ fn density_wiring_and_colors_are_in_place() {
         "车道拍线比值 {lane_beat:.3} 不在六版目标窗 3.15–3.30"
     );
 }
+
+/// 从 `src[..end]` 里最后一个 `{marker}` 之后读出 px 数值（`.slint`
+/// 几何常量提取，无正则，手写扫描）。
+fn last_px_before(src: &str, end: usize, marker: &str) -> f32 {
+    let head = &src[..end];
+    let idx = head.rfind(marker).expect("标记必须存在");
+    let rest = &head[idx + marker.len()..];
+    let num: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    num.parse().expect("标记之后必须是数值")
+}
+
+/// 从 `src[from..]` 里第一个 `{marker}` 之后读出 px 数值。
+fn first_px_after(src: &str, from: usize, marker: &str) -> f32 {
+    let rest = &src[from..];
+    let idx = rest.find(marker).expect("标记必须存在");
+    let tail = &rest[idx + marker.len()..];
+    let num: String = tail
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    num.parse().expect("标记之后必须是数值")
+}
+
+/// ⑥ 编号净空（六版，Wang 15:06 终判）：编号区与刻度行分区，编号区底
+/// 与每档刻度顶之间 >= 2px 净空；三档刻度分级比例（满行 : 1/2 : 1/4）
+/// 不变。钉的是 `arrangement.slint` 里的几何常量本身，⛔ 不靠目视。
+#[test]
+fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
+    let arrangement = include_str!("../ui/arrangement.slint");
+
+    // 标尺带高：`// Ruler (24px)` 注释之后第一个 height。
+    let ruler_at = arrangement.find("// Ruler (24px)").expect("标尺注释在");
+    let band = first_px_after(arrangement, ruler_at, "height: ");
+
+    // 编号区高：编号 Text 的 text 行之前最近的 height。
+    let text_at = arrangement
+        .find("text: \"\" + (root.bar-start-index + i + 1);")
+        .expect("编号 Text 在");
+    let number_zone = last_px_before(arrangement, text_at, "height: ");
+
+    // 三档刻度：各自 background 行之前最近的 height（刻度高）与
+    // `parent.height - Npx`（刻度底距带底的距离，即刻度行上沿位置）。
+    let tick = |color: &str| {
+        let at = arrangement
+            .find(&format!("background: {color};"))
+            .unwrap_or_else(|| panic!("刻度色 {color} 在"));
+        (
+            last_px_before(arrangement, at, "height: "),
+            last_px_before(arrangement, at, "parent.height - "),
+        )
+    };
+    let (bar_h, bar_from_bottom) = tick("#83909e");
+    let (beat_h, beat_from_bottom) = tick("#6e7f8f");
+    let (sub_h, sub_from_bottom) = tick("#66788a");
+
+    // 分级比例不变：小节满刻度行、拍 1/2、细分 1/4。
+    assert_eq!(beat_h * 2.0, bar_h, "拍刻度须为小节刻度高的一半");
+    assert_eq!(sub_h * 4.0, bar_h, "细分刻度须为小节刻度高的四分之一");
+
+    // 净空不变量：每档刻度顶（自带顶起算）与编号区底之间 >= 2px。
+    for (name, from_bottom) in [
+        ("小节", bar_from_bottom),
+        ("拍", beat_from_bottom),
+        ("细分", sub_from_bottom),
+    ] {
+        let tick_top = band - from_bottom;
+        assert!(
+            tick_top - number_zone >= 2.0,
+            "{name}刻度顶 {tick_top} 与编号区底 {number_zone} 之间净空不足 2px"
+        );
+    }
+}
