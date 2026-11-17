@@ -788,30 +788,26 @@ export global Tokens {
     // ---- 面板 · 细磨砂深色金属 -------------------------------------------
     // 垂直线性渐变: 顶亮 / 中本色 / 底暗 (光源在上 ⇒ 上沿受光)。
     // 幅度克制: 亮端与暗端距本色各约一步墨阶 (这是"磨砂"不是"拉丝金属")。
+    //
+    // 2026-11-17 对色 (负责人定: 拟物版的控件颜色与背景色改用 Bitwig
+    // 截图色板): 本节与 §12 的 physical 停点统一换 Bitwig 深蓝灰家族
+    // (采样与逐令牌对照表见 docs/skeuo-bitwig-palette-20261117.md)。
+    // physical 是一套独立色板 ⇒ brand / yeban 两支的 physical 停点
+    // 收敛为同一组值, 不再按配色主题分叉; flat 分支一位不动。
     out property <brush> panel-brush: !texture-physical ? @linear-gradient(180deg, bg-panel, bg-panel)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @linear-gradient(180deg, #1a2342, #151d38 45%, #121a30)
-            : @linear-gradient(180deg, #171f2a, #131a22 45%, #0f151d));
+        : @linear-gradient(180deg, #262f37, #1b2329 45%, #141a1f);
     out property <brush> panel-alt-brush: !texture-physical ? @linear-gradient(180deg, bg-panel-alt, bg-panel-alt)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @linear-gradient(180deg, #202a52, #1b2447 45%, #161e3a)
-            : @linear-gradient(180deg, #1a232f, #161e28 45%, #121922));
+        : @linear-gradient(180deg, #2e3740, #232b33 45%, #1b2329);
     out property <brush> shell-brush: !texture-physical ? @linear-gradient(180deg, bg-shell, bg-shell)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @linear-gradient(180deg, #111a33, #0d1326 45%, #0a0f1f)
-            : @linear-gradient(180deg, #151b23, #11161c 45%, #0d1218));
+        : @linear-gradient(180deg, #20282f, #171f26 45%, #11161c);
     // 2026-11-17 加码一档 (二期复盘「差别不大」+ Logic 口径: 加码只进
     // 交互控件 —— 本刷是推子帽/按键/开关头的帽面刷, 属交互件): 亮端与
     // 暗端各再拉开一步, 中停点基本不动, 帽面受光/背光一眼可分。
     out property <brush> raised-brush: !texture-physical ? @linear-gradient(180deg, bg-raised, bg-raised)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @linear-gradient(180deg, #35477c, #283763 50%, #1a2547)
-            : @linear-gradient(180deg, #2e3c4e, #222d3b 50%, #141b24));
+        : @linear-gradient(180deg, #3e4a54, #2e3a41 50%, #232b31);
     /// 凹陷 / 熄灭面 (旁通卡片、表槽、推子轨槽的底)。
     out property <brush> void-brush: !texture-physical ? @linear-gradient(180deg, bg-void, bg-void)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @linear-gradient(180deg, #04060c, #060a14 55%, #0a1020)
-            : @linear-gradient(180deg, #0a0e12, #0e1216 55%, #131920));
+        : @linear-gradient(180deg, #0a0e12, #0e1318 55%, #131a20);
 
     // ---- 阴影 (投影恒落向右下 = 光源左上的唯一解) -------------------------
     out property <color> shadow-color: #000000;
@@ -849,14 +845,10 @@ export global Tokens {
     // 2026-11-17 加码: 中心再亮一步、帽沿再沉一步 (Logic 旋钮口径:
     // 明确阴影 + 高光 + 值弧线, 帽面体积感须一眼成立)。
     out property <brush> knob-brush: !texture-physical ? @linear-gradient(180deg, bg-control, bg-control)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @radial-gradient(circle, #3c4f7d, #222f52 55%, #0e1526)
-            : @radial-gradient(circle, #414f61, #25303d 55%, #11171e));
+        : @radial-gradient(circle, #3a454f, #252e36 55%, #12181e);
     /// 旋钮底座环 (刻度环的座): 比面板深一档的环色 (加码后更深一格,
     /// 衬出刻度环与旋帽)。
-    out property <color> knob-ring: texture-physical
-        ? (ThemeState.theme == YebanTheme.brand ? #070c16 : #090e13)
-        : line;
+    out property <color> knob-ring: texture-physical ? #0a0e12 : line;
     /// 哑光高光弧: 白色 16% (2026-11-17 加码, 原 10%), 只出现在旋帽的
     /// **左上**象限 (光源方向)。
     out property <color> knob-highlight: #ffffff.with-alpha(texture-physical ? 0.16 : 0.0);
@@ -864,7 +856,7 @@ export global Tokens {
     // ---- 显示屏 · 玻璃 ------------------------------------------------------
     /// 屏面底: 比面板更深、带极轻的自上而下沉降 (玻璃的厚度感)。
     out property <brush> glass-brush: !texture-physical ? @linear-gradient(180deg, bg-shell, bg-shell)
-        : @linear-gradient(165deg, #0b1017, #05070b 62%);
+        : @linear-gradient(165deg, #14201d, #090f12 62%);
     /// 斜向反光: 一道极淡的白 (3.5%), 全屏只许这一道, ⛔ 不做第二道。
     out property <color> glass-reflection: #ffffff.with-alpha(texture-physical ? 0.035 : 0.0);
     /// 屏内信息发光的底层宽笔 (曲线本体的辉光是**信息**的一部分):
@@ -874,10 +866,11 @@ export global Tokens {
     /// 强调色实心件的渐变版 (滑块头 / 开关选中底): 与 `gold-deep` 同色相,
     /// 只是按光源方向压出上亮下暗。flat 时恒等于 `gold-deep` 纯色。
     // 2026-11-17 加码: 亮端再亮一步、暗端再沉一步 (开关选中态须跳得出)。
+    // 2026-11-17 对色: physical 停点换 Bitwig 青绿 accent 家族
+    // (#67b8a5 / #30b8a0 系), 不再随配色主题取 gold-deep 色相;
+    // flat 分支仍恒等于 gold-deep 纯色 (扁平一位不动)。
     out property <brush> accent-brush: !texture-physical ? @linear-gradient(180deg, gold-deep, gold-deep)
-        : (ThemeState.theme == YebanTheme.brand
-            ? @linear-gradient(180deg, #dcbc66, #bd9c44 50%, #8a6c2a)
-            : @linear-gradient(180deg, #97b4cc, #7290ab 50%, #4f6c88));
+        : @linear-gradient(180deg, #74bfa9, #3fa38b 50%, #276b5a);
 
     // ---- 按键 / 开关 · 软触 ---------------------------------------------------
     /// 软触圆角增量: physical 下按键圆角从 radius-sm (2px) 放到 5px。
@@ -913,8 +906,10 @@ export global Tokens {
     /// 工具行 / 标尺与轨道区之间的横线 + 轨道头列与编曲区之间的竖线。
     /// 全 UI 的轨道区结构线只许用这一支, 保证两侧对齐、同色。
     /// 扁平套 = main 现行 `Theme.border-subtle`; 拟物套 = 提亮一档的
-    /// 机加工边色。
-    out property <color> divider-row: texture-physical ? #43536a : Theme.border-subtle;
+    /// 机加工边色。2026-11-17 对色: 拟物值换 Bitwig 描边家族 —— 采样
+    /// 原值 #404b51 对新面板底只有 1.78:1, 低于旧拟物值的可读性
+    /// (2.03:1), 按 §7.3 口径同色相只提明度到 #47535c (2.13:1)。
+    out property <color> divider-row: texture-physical ? #47535c : Theme.border-subtle;
     /// 分界线的刻蚀高光 (只拟物套): 主线下方 1px 的极淡亮线, 与 §10
     /// 凹陷的 recess-light 同源同向 (光源左上 ⇒ 槽底下沿反光)。
     /// 扁平套 alpha = 0 ⇒ 扁平态只有一条平面细线, 像素一位不多。
@@ -959,17 +954,19 @@ export global Tokens {
 // 编曲区轨道头 (未选中行): flat = 现行字面 #0b0e16; physical = 磨砂
 // 金属微渐变 (顶受光 / 底沉降, 与 panel-brush 同族)。
 out property <brush> track-head-brush: texture-physical
-    ? @linear-gradient(180deg, #121828, #0b0e16 45%, #070a10)
+    ? @linear-gradient(180deg, #232c34, #1b2329 45%, #141a1f)
     : @linear-gradient(180deg, #0b0e16, #0b0e16);
 // 钢琴卷帘键列: 白键帽 (键面本身) / 黑键行底 / 黑键突起帽。
+// 2026-11-17 对色: 三刷 physical 停点换 Bitwig 键面家族 (白键浅
+// 蓝灰 / 黑键深蓝灰), flat 分支一位不动。
 out property <brush> roll-key-white-brush: texture-physical
-    ? @linear-gradient(180deg, #f2f5fa, #e4e9f2 55%, #ccd5e4)
+    ? @linear-gradient(180deg, #d2d7db, #b7bdc2 55%, #989fa5)
     : @linear-gradient(180deg, #e4e9f2, #e4e9f2);
 out property <brush> roll-key-black-brush: texture-physical
-    ? @linear-gradient(180deg, #202634, #191e2b 55%, #12151f)
+    ? @linear-gradient(180deg, #242d33, #1b2329 55%, #131a1f)
     : @linear-gradient(180deg, #191e2b, #191e2b);
 out property <brush> roll-key-cap-brush: texture-physical
-    ? @linear-gradient(180deg, #141926, #0b0e15 60%, #05070c)
+    ? @linear-gradient(180deg, #1a2229, #11171d 60%, #0a0f14)
     : @linear-gradient(180deg, #0b0e15, #0b0e15);
 }
 

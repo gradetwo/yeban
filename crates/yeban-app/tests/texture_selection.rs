@@ -408,8 +408,8 @@ fn the_track_area_follows_the_four_ui_rulings() {
     // Theme.bg-panel / #cbd5e1）；本支初版的 line 家族扁平值已被取代。
     for (needle, what) in [
         (
-            "out property <color> divider-row: texture-physical ? #43536a : Theme.border-subtle;",
-            "行间分界令牌（扁平套 = main 现行 Theme.border-subtle）",
+            "out property <color> divider-row: texture-physical ? #47535c : Theme.border-subtle;",
+            "行间分界令牌（扁平套 = main 现行 Theme.border-subtle；拟物套 2026-11-17 换 Bitwig 描边家族 #47535c）",
         ),
         (
             "out property <color> divider-row-highlight: #ffffff.with-alpha(texture-physical ? 0.05 : 0.0);",
