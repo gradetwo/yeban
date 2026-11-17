@@ -115,7 +115,7 @@ use yeban_sfz::parser::{
     IncludeIssue, IncludeIssueKind, IncludeResolver, ParseLimits, SfzSource, parse_sources,
     parse_text,
 };
-use yeban_sfz::playback::RenderRates;
+use yeban_sfz::playback::{LoopWindow, RenderRates};
 
 use super::error::Fault;
 use super::render;
@@ -3201,7 +3201,10 @@ impl SfzWavArtifact {
     /// 本次渲染**明确没做**的键（⛔ 不报已经做到的键）。
     #[must_use]
     pub fn unsupported_keys(&self) -> Vec<&'static str> {
-        let mut keys = vec!["sfzLoopExpansion", "deviceChainDsp", "automationLanes"];
+        // ⭐ `0006` 起 `sfzLoopExpansion` / `sfzRegionLayering` 都撤出：循环窗口真的展开
+        // （`loop_expanded_pcm`）、每条命中区域都真的叠加（[`note_wave_at`] 遍历全部候选）。
+        // 剩下两条是**真正的**缺口：设备链 DSP 与自动化车道不由 SFZ 渲染承担。
+        let mut keys = vec!["deviceChainDsp", "automationLanes"];
         // 只有**一个音符都没用上**文件样本时，才登记"样本文件解码没做"。
         if self.notes_using_file_sample == 0 {
             keys.insert(0, "samplerFileDecode");
@@ -3214,9 +3217,8 @@ impl SfzWavArtifact {
         // ⭐ `sfzSampleSpan` 已撤：`offset` / `end` 现在真的切片（见 [`note_wave`] 的
         // `sample_span_bounds`），与引擎 `reduce_span` 同一口径。
         // ⭐ `#273`：有多于一条区域命中同一音符 ⇒ 本工具只取第一条、引擎叠加全部。
-        if self.notes_with_multiple_regions > 0 {
-            keys.push("sfzRegionLayering");
-        }
+        // ⭐ `0006`：多条区域现在**真的叠加** ⇒ 不再登记 gap；`notes_with_multiple_regions`
+        // 仍是读数（"这个音符有几层"），不是缺口。
         keys
     }
 
@@ -3632,13 +3634,43 @@ pub fn render(
     // ⭐ `#273`：多于一条区域命中同一音符的音符数（区域选择仍是"第一条"）。
     let mut notes_with_multiple_regions = 0u64;
     let mut cache = SampleCache::new();
-    for note in notes {
+    // ⭐ `seq_*` 轮替的触发计数：与引擎 `seq_occurrence[note]` 同一条语义（每个音高各自从 0 起）。
+    let mut occurrences: BTreeMap<u8, u64> = BTreeMap::new();
+    for (index, note) in notes.iter().enumerate() {
+        // ⭐ `trigger=first` / `legato` 需要"这个音符按下时，**其它**音符还按着几个"：
+        // 用同一份排程算（区间相交 = 按住）。这是离线导出唯一能给出该上下文的来源。
+        let held = u32::try_from(
+            notes
+                .iter()
+                .enumerate()
+                .filter(|(other, candidate)| {
+                    *other != index
+                        && candidate.start_frame < note.start_frame
+                        && candidate.start_frame.saturating_add(candidate.frames) > note.start_frame
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        let occurrence = {
+            let slot = occurrences.entry(note.pitch).or_insert(0);
+            let current = *slot;
+            *slot = slot.saturating_add(1);
+            current
+        };
         // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**（[`note_wave`]）。
         // ⚠ 走这条路**发声**的只有 `yeban_render_sfz_wav`；`yeban_render_master` 自
         // `#274` 起不经这里发声（它只调 [`survey_sampler`] 取读数，音频由引擎的
         // SFZ 支路渲染，钉住这条的判据是 `tests/sampler_source_single_path.rs`）。
-        let Some(wave) = note_wave(
-            instrument, note, tone_hz, engine_hz, sfz_path, &mut cache, initial_cc,
+        let Some(wave) = note_wave_at(
+            instrument,
+            note,
+            tone_hz,
+            engine_hz,
+            sfz_path,
+            &mut cache,
+            initial_cc,
+            occurrence,
+            Some(held),
         ) else {
             notes_unmatched = notes_unmatched.saturating_add(1);
             continue;
@@ -3923,6 +3955,12 @@ fn sample_span_bounds(region: &Region<'_>, pcm_len: usize, rand: f32) -> (usize,
 /// `TrackV3.sampler`，而它必须与 `yeban_render_sfz_wav` 用的是**同一条**音源路径。
 /// 如果各自写一遍区域选择，两条路会在"哪个样本、多快、多响"上漂移 —— 那正是
 /// "监听/导出的不是同一个作品"那一族缺陷。
+/// ⭐ **本轮（0006）**：这个函数不再"只取第一条命中区域"——
+/// 遍历**全部**命中区域，逐条渲染后叠加（＝引擎 `render_note_into` 的多声部），
+/// 逐条过 `lorand` / `hirand` 随机门与 `seq_*` 轮替，逐条按自己的 `loop_start/loop_end`
+/// **展开循环**。任一条不发声（随机门关、轮替没选中、速率不可用、增益 0）只跳过它自己，
+/// ⛔ 不连坐整个音符。`occurrence` 缺省取 `0`（＝第一条轮替变体）。
+#[cfg(test)]
 pub(super) fn note_wave(
     instrument: &Instrument<'_>,
     note: &SfzNote,
@@ -3932,180 +3970,245 @@ pub(super) fn note_wave(
     cache: &mut SampleCache,
     initial_cc: &BTreeMap<u8, u8>,
 ) -> Option<NoteWave> {
+    note_wave_at(
+        instrument,
+        note,
+        tone_hz,
+        engine_hz,
+        sfz_path,
+        cache,
+        initial_cc,
+        0,
+        Some(0),
+    )
+}
+
+/// [`note_wave`] 的**带触发序号**版本：`occurrence` 是该音高的第几次 note-on（从 0 起），
+/// 与引擎 `seq_occurrence[note]` 同一条语义，用来选 `seq_*` 轮替变体。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn note_wave_at(
+    instrument: &Instrument<'_>,
+    note: &SfzNote,
+    tone_hz: f32,
+    engine_hz: f32,
+    sfz_path: Option<&Path>,
+    cache: &mut SampleCache,
+    initial_cc: &BTreeMap<u8, u8>,
+    occurrence: u64,
+    held_notes: Option<u32>,
+) -> Option<NoteWave> {
     let rates = RenderRates::new(engine_hz, engine_hz);
-    // ⭐ `#273`：`find` 仍然只取**第一条**（区域选择逐位不变），但顺手数一下还有没有
-    // 第二条命中 —— 引擎（`sfz_instrument.rs` 的 `render_note_into`）遍历全部命中并
-    // 叠加 ⇒ 层叠本身是一项**已知分叉**，必须能报出来。
-    //
-    // 用同一个 `filter` 谓词选出迭代器 ⇒ "选中的区域"与"层叠的判定"不可能漂移。
-    // ⭐ CC 门的**求值探针**：本次装载的 `initialCc` 优先，其次文件 `cc_defaults()`，
-    // 都没有 ⇒ SFZ 规范缺省 0。渲染与普查（`cc_gate_census_with_probe`）用**同一口径**，
-    // 否则"普查说这一片被门挡着"与"导出照样发声"会同时成立 —— 那就是静默的错误音频。
-    let cc_probe = |cc: u8| {
-        initial_cc
-            .get(&cc)
-            .copied()
-            .or_else(|| instrument.cc_default(u16::from(cc)))
-            .unwrap_or(0)
+    let cc_probe = |cc: u8| -> u8 { initial_cc.get(&cc).copied().unwrap_or(0) };
+    // 同一次触发的**一个**随机数：`lorand` / `hirand` / `amp_random` / `offset_random`
+    // 共用它（规范对四族都写 "computed when the note is triggered"）。
+    let rand = trigger_rand(note.start_frame, note.pitch, 1);
+    let span = usize::try_from(note.frames.max(1)).unwrap_or(0);
+    let mut mono = vec![0.0_f32; span];
+    let mut written = 0usize;
+    let mut region_index = 0usize;
+    let mut regions_hit = 0usize;
+    let mut looping = false;
+    let mut amplitude_unresolved = 0usize;
+    let mut saw_file_sample = false;
+    let mut saw_sine_fallback = false;
+    let mut saw_silence = false;
+
+    // 基础命中（键/力度/随机门/CC 门/事件族）—— 与引擎摊平门控同一份谓词。
+    let base_match = |region: &Region<'_>| {
+        // ⭐ `trigger=first` / `legato` 的"其它按住的音符数"门控：调用方必须给出
+        // （`None` ⇒ 这两族**不发声**，与 `yeban-sfz` 的严格策略一致）。
+        region.trigger.held_notes_ok(held_notes)
+            // ⭐ 通道门：引擎触发路径的通道恒为 1（与 `RegionQuery::new` 的缺省一致），
+            // 离线导出同样按通道 1 选区域 —— 否则 `lochan=2` 这类"左右声部分库"
+            // 的区域会被一起叠进来（立体声分轨库常见的 +6 dB 假响）。
+            && region.matches_channel(1)
+            && region.matches_key(note.pitch)
+            && region.matches_velocity(note.velocity)
+            && region.accepts_rand(rand)
+            && region.cc_gates_ok(cc_probe)
+            && region.cc_triggers_ok(cc_probe)
+            && region.trigger.responds_to(TriggerEvent::NoteOn)
     };
-    let mut matching = instrument
+    // ⭐ `seq_*` 轮替（引擎 `PreparedRegion::selects_occurrence` 同一条规则）：
+    // `seq_length <= 1` ⇒ 恒发声（不参与轮替，照旧叠加）；
+    // `seq_length > 1` ⇒ 只发 `seq_position == occurrence % seq_length + 1` 那一条。
+    // ⛔ 不取"第一个匹配区域的 seq_length"当组长：逐区域用它自己的值取模。
+    let seq_selects = |region: &Region<'_>| {
+        let length = u64::from(region.seq_length);
+        length <= 1 || u64::from(region.seq_position) == occurrence % length + 1
+    };
+    let mut candidates: Vec<(usize, &Region<'_>)> = instrument
         .regions()
         .iter()
         .enumerate()
-        .filter(|(_, region)| {
-            region.matches_key(note.pitch)
-                && region.matches_velocity(note.velocity)
-                // ⭐ CC 门 / CC 触发门：门外 ⇒ 这个区域对**本音符**不成立。
-                // 以前只做键/力度/事件族三判，门的语义在离线导出里被整段忽略。
-                && region.cc_gates_ok(cc_probe)
-                && region.cc_triggers_ok(cc_probe)
-                // ⭐ **事件门控**（本片）：本工具只渲染 **note-on** 事件 ⇒ `trigger=release` /
-                // `release_key` 的区域⛔ 不能在"按下"时被预听选中（那会把松键噪声当成音头
-                // 发出来，且用户无法从 `unsupported` 看出哪里不对）。
-                // 判据与引擎的摊平门控 `non_cc_gates_open` **同一条谓词**（同一份
-                // `Trigger::responds_to`）⇒ 两侧不可能选出不同的事件族。
-                // ⚠ **被**排除的只有事件族，键/力度/keyswitch/CC 的既有边界**逐字未动**
-                // （后者仍登记在 `unsupported` 的键里，⛔ 不在本片扩大范围）。
-                && region.trigger.responds_to(TriggerEvent::NoteOn)
-        });
-    let (region_index, region) = matching.next()?;
-    let layered = matching.next().is_some();
-    let rate = region.playback_rate(note.pitch, rates);
-    let spec = region.playback_spec(note.pitch, note.velocity, rates);
-    // ⭐ `#115` 的离线侧：`amplitude`（线性百分比，缺省 100）与其 `amplitude_onccN`
-    // 调制项**一起**进最外层乘子（`yeban-sfz` 的 `modulation.rs` 第 195 行给的
-    // `final_gain = total_gain × amplitude_gain`）。CC 探针取**本次装载的
-    // `initialCc` 种子**，缺省 CC = 0（SFZ 规范缺省，与 `cc_defaults()` 同口径）。
-    // ⚠ `amplitude` 缺省 100 ⇒ `amplitude_gain == 1.0` ⇒ 没有 `amplitude` 的文件
-    // **逐位不变**（IEEE：有限值 × 1.0 恒等）。
-    let (amplitude_value, amplitude_unresolved) =
-        instrument.amplitude_value_with_cc(region, &cc_probe);
-    // ⭐⭐ `volume` / `tune` 族的 CC 调制（`#119` / `#116`）：`yeban-sfz` 里
-    // [`volume_ratio_with_baked`] 与 [`tune_ratio_with_baked`] 是**唯一实现**，引擎的
-    // 三条路（离线 / 摊平 / 实时）都在用；离线导出此前**一项都不调** ⇒ 同一条 SFZ
-    // 在引擎里会响、会变调，在导出里不变。这里补上同一处施加点：
-    //   `gain = (total_gain × amplitude_gain) × volume_ratio`
-    //   `rate = rate × tune_ratio`（`pitch_*ccN` 也落 `ModTarget::Tune`）
-    // 无调制时两个乘子都恰为 `1.0` ⇒ 逐位不变。
-    // 曲线解析口径与引擎一致：文件内 `<curve>` 优先，取不到再退 **ARIA 内建曲线**
-    // （缺省 `curve=0` 是线性 —— 不回退就会把所有默认曲线的调制项判成"解不出"，
-    // 于是 `volume_onccN` 这类最常见写法一项都不生效）。
-    let baked = bake_cc_mods(region.cc_modulations(), |index| {
-        instrument
-            .curve(index)
-            .cloned()
-            .or_else(|| yeban_sfz::curve::Curve::built_in(index))
-    });
-    let volume_ratio = volume_ratio_with_baked(&baked, Some(&cc_probe));
-    let tune_ratio = tune_ratio_with_baked(&baked, Some(&cc_probe));
-    // ⭐⭐ `ampeg_*`：**包络本身**离线导出此前完全没有（只有末尾那段线性淡出），
-    // 而引擎按 `ampeg_attack/hold/decay/sustain/release` 造整条幅度包络 ⇒ 带包络的库
-    // （二胡、弦乐几乎都有音头）在导出里"没有音头、没有衰减"。七个参数逐个过 CC 探针
-    // （`ampeg_attack_onccN` 这类写法因此也生效），曲线优先文件 `<curve>`、再退内建。
-    let ampeg = offline_ampeg(instrument, region, &cc_probe, engine_hz);
-    // ⭐⭐ 触发期随机族（`offset_random` / `amp_random`）：与引擎**共用同一个派生点**
-    // [`trigger_rand`]（splitmix64，纯整数 ⇒ 跨平台逐位一致）。⚠ 唯一口径差别记在这里：
-    // 引擎的 `occurrence` 是"该键的第几次触发"计数器，离线导出没有那份计数器，改用
-    // **本音符的起始帧**当触发身份 —— 每个音符一个稳定且互不相同的随机值，效果等价
-    // （同一音符每次导出结果相同 ⇒ 可复现），但**逐位不与引擎相同**。
-    let rand = trigger_rand(note.start_frame, note.pitch, 1);
-    let random_gain = amp_random_gain(region.amp_random, rand);
-    let gain = spec.total_gain()
-        * (amplitude_value / AMPLITUDE_DEFAULT_PERCENT)
-        * volume_ratio
-        * random_gain;
-    let rate = rate * tune_ratio;
-    let looping = spec.loops();
-    if !(rate.is_finite() && rate > 0.0) || gain == 0.0 {
-        return None;
+        .filter(|(_, region)| base_match(region) && seq_selects(region))
+        .collect();
+    // 兜底：`seq_position` 不保证覆盖 `1..=seq_length`，一个都没选中时退回**第一条**
+    // 基础命中的区域（与引擎 `round_robin_fallback` 同一条裁决）。
+    if candidates.is_empty()
+        && let Some((index, region)) = instrument
+            .regions()
+            .iter()
+            .enumerate()
+            .find(|(_, region)| base_match(region))
+    {
+        candidates.push((index, region));
     }
-    // ---- 样本来源：**能读文件就用文件**，否则回退内存正弦（如实记账）----
-    //
-    // ⚠ 区域选择 / 播放速率 / 总增益**一位不改**：它们仍全部来自 `yeban-sfz`
-    // 的公开读数（上面三行）。这里换的**只有样本数据**。
-    //
-    // ⭐ `#218`：`sample=*silence` 是**内建静音**（⛔ 不是文件）——
-    // 判定用 `yeban-sfz` 的 `Region::is_builtin_silence()`（判 `sample=` 原值），
-    // 在**任何读盘之前**截住 ⇒ ⛔ 不进 `sample_failures`、⛔ 不回退内存正弦；
-    // 下面写零帧（该音符照常排程、照常计入 `regionsUsed`）。
-    let builtin_silence = region.is_builtin_silence();
-    let file_sample = if builtin_silence {
-        None
-    } else {
-        sfz_path.and_then(|sfz| {
-            let raw = region.sample_path();
-            if raw.trim().is_empty() {
-                return None;
-            }
-            let resolved = resolve_sample_path(sfz, &raw);
-            // 读不到 ⇒ `None` ⇒ 回退内存正弦（原因已进 cache，渲染完由
-            // `sample_failures` 如实报出）。
-            cache.get(&resolved).ok()
-        })
-    };
-    let span = usize::try_from(note.frames.max(1)).unwrap_or(0);
-    let mut mono = vec![0.0_f32; span];
-    let (written, kind) = if builtin_silence {
-        // `mono` 全是 0.0；写 `span` 帧等价于"这个音符真的响，但样本值为 0"。
-        (span, NoteSampleKind::BuiltinSilence)
-    } else if let Some(reading) = &file_sample {
-        // ⭐ 文件样本的步进比按**它自己的**采样率换算（`yeban-sfz` 的
-        // `playback_rate` = `pitch_ratio * sample_hz / engine_hz`），与
-        // `yeban-engine::SfzInstrument::render_note_into` 的
-        // `RenderRates::new(source.sample_hz, engine_hz)` **同一口径**。
-        let file_rate = region
-            .playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz))
-            * tune_ratio;
-        // ⭐ `offset` / `end`（含 `offset_random` 的触发位移）：先按半开区间切源采样，
-        // 再走同一份线性插值。缺省（`offset=0` ＋ `end` 未指定 ＋ `offset_random=0`）
-        // ⇒ 切片就是整段 ⇒ **逐位不变**。
-        let (from, to) = sample_span_bounds(region, reading.pcm.len(), rand);
-        // ⭐ `direction=reverse`：与引擎 `reduce_travel` 的等价性（判据 S95）一致 ——
-        // 反向播放**逐帧逐位等于**"把区间倒序后按 forward 播放"。所以这里只把切片倒序，
-        // 插值算术一个字不改（⛔ 不引入负步进，避免与 `render_pcm_into` 的守卫分叉）。
-        if spec.direction == PlayDirection::Reverse {
-            let mut reversed: Vec<f32> = reading.pcm[from..to].to_vec();
-            reversed.reverse();
+
+    for (index, region) in candidates {
+        if regions_hit == 0 {
+            region_index = index;
+        }
+        regions_hit += 1;
+        let spec = region.playback_spec(note.pitch, note.velocity, rates);
+        let (amplitude_value, unresolved) = instrument.amplitude_value_with_cc(region, &cc_probe);
+        amplitude_unresolved += unresolved;
+        let baked = bake_cc_mods(region.cc_modulations(), |curve_index| {
+            instrument
+                .curve(curve_index)
+                .cloned()
+                .or_else(|| yeban_sfz::curve::Curve::built_in(curve_index))
+        });
+        let volume_ratio = volume_ratio_with_baked(&baked, Some(&cc_probe));
+        let tune_ratio = tune_ratio_with_baked(&baked, Some(&cc_probe));
+        let ampeg = offline_ampeg(instrument, region, &cc_probe, engine_hz);
+        let random_gain = amp_random_gain(region.amp_random, rand);
+        let gain = spec.total_gain()
+            * (amplitude_value / AMPLITUDE_DEFAULT_PERCENT)
+            * volume_ratio
+            * random_gain;
+        let rate = region.playback_rate(note.pitch, rates) * tune_ratio;
+        // 单条区域不可用（速率/增益）⇒ 只跳过它自己（引擎也是逐声部退休）。
+        if !(rate.is_finite() && rate > 0.0) || gain == 0.0 {
+            continue;
+        }
+        looping |= spec.loops();
+        let builtin_silence = region.is_builtin_silence();
+        let file_sample = if builtin_silence {
+            None
+        } else {
+            sfz_path.and_then(|sfz| {
+                let raw = region.sample_path();
+                if raw.trim().is_empty() {
+                    return None;
+                }
+                let resolved = resolve_sample_path(sfz, &raw);
+                cache.get(&resolved).ok()
+            })
+        };
+        let mut layer = vec![0.0_f32; span];
+        let (layer_written, _layer_kind) = if builtin_silence {
+            saw_silence = true;
+            (span, NoteSampleKind::BuiltinSilence)
+        } else if let Some(reading) = &file_sample {
+            saw_file_sample = true;
+            let file_rate = region
+                .playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz))
+                * tune_ratio;
+            let (from, to) = sample_span_bounds(region, reading.pcm.len(), rand);
+            // ⭐ 循环展开：引擎把 `loop_mode` 区域按 `[loop_start, loop_end)` 反复读到
+            // 音符结束；离线此前只响一遍 ⇒ 长音在第一个循环长度处就断。
+            let source: Vec<f32> = if spec.loops() {
+                loop_expanded_pcm(
+                    &reading.pcm[from..to],
+                    spec.loop_window,
+                    from as u64,
+                    span,
+                    file_rate,
+                )
+            } else {
+                reading.pcm[from..to].to_vec()
+            };
+            let pcm = if spec.direction == PlayDirection::Reverse {
+                let mut reversed = source;
+                reversed.reverse();
+                reversed
+            } else {
+                source
+            };
             (
-                render_pcm_into(&reversed, file_rate, gain, &mut mono),
+                render_pcm_into(&pcm, file_rate, gain, &mut layer),
                 NoteSampleKind::FileSample,
             )
         } else {
+            saw_sine_fallback = true;
+            let want = note.frames.saturating_add(NOTE_FADE_FRAMES).max(1);
+            let sample_frames = usize::try_from(want.min(8_000_000)).unwrap_or(0).max(2);
+            let sample = InMemorySfzSample::sine(tone_hz, engine_hz, sample_frames);
             (
-                render_pcm_into(&reading.pcm[from..to], file_rate, gain, &mut mono),
-                NoteSampleKind::FileSample,
+                render_pcm_into(&sample.pcm, rate, gain, &mut layer),
+                NoteSampleKind::SineFallback,
             )
+        };
+        // ⭐ 包络**逐层**施加（叠加之后再乘会张冠李戴）。
+        if let Some(curve) = ampeg {
+            let len = layer_written as u32;
+            for (sample_index, value) in layer.iter_mut().enumerate().take(layer_written) {
+                *value *= curve.level(sample_index as u32, len);
+            }
         }
-    } else {
-        // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有
-        // 数据可播。为什么按音符造：读到样本末尾就停的语义下，用一个固定 1 秒的
-        // 样本会让长音符在第 1 秒之后静音（那是**静默的错误音频**）。
-        let want = note.frames.saturating_add(NOTE_FADE_FRAMES).max(1);
-        let sample_frames = usize::try_from(want.min(8_000_000)).unwrap_or(0).max(2);
-        let sample = InMemorySfzSample::sine(tone_hz, engine_hz, sample_frames);
-        (
-            render_pcm_into(&sample.pcm, rate, gain, &mut mono),
-            NoteSampleKind::SineFallback,
-        )
-    };
-    // ⭐ `ampeg_*` 幅度包络在这里施加（与引擎 `SfzVoice` 的逐样本电平同一层：
-    // "一个音符怎么响"必须只有一个实现，⛔ 不放到混音循环里）。
-    // 没有包络（`None`）⇒ 一个浮点运算都不加 ⇒ 逐位不变。
-    if let Some(curve) = ampeg {
-        let len = written as u32;
-        for (index, value) in mono.iter_mut().enumerate().take(written) {
-            *value *= curve.level(index as u32, len);
+        for (sample_index, value) in layer.iter().enumerate().take(layer_written) {
+            mono[sample_index] += value;
         }
+        written = written.max(layer_written);
     }
+    if regions_hit == 0 {
+        return None;
+    }
+    let kind = if saw_file_sample {
+        NoteSampleKind::FileSample
+    } else if saw_sine_fallback {
+        NoteSampleKind::SineFallback
+    } else {
+        debug_assert!(saw_silence);
+        NoteSampleKind::BuiltinSilence
+    };
     Some(NoteWave {
         mono,
         written,
         region_index,
         looping,
-        layered,
+        layered: regions_hit > 1,
         kind,
         amplitude_unresolved,
     })
+}
+
+/// ⭐ **循环窗口展开**：把 `[loop_start, loop_end)` 反复接到音头之后，够这个音符用完。
+///
+/// * `slice` 是**已按 `offset` / `end` 裁过**的源采样；`from` 是那段的起点（源采样点），
+///   用来把窗口的绝对坐标换算成切片内坐标。
+/// * `need` 由 `span × rate`（这个音符在**源帧**上要用到的长度）推出，多留 2 帧给线性插值的右邻。
+/// * 窗口解不出（越界 / 空 / 单帧）⇒ **原样返回切片**（＝ 不展开，与引擎"窗口无效 ⇒
+///   不循环"同一条），⛔ 不造死循环。
+/// * 长度上限 `8_000_000` 源帧（与正弦回退的上限同一口径）⇒ 病态窗口不会吃爆内存。
+#[must_use]
+fn loop_expanded_pcm(
+    slice: &[f32],
+    window: Option<LoopWindow>,
+    from: u64,
+    span: usize,
+    rate: f32,
+) -> Vec<f32> {
+    let Some(window) = window else {
+        return slice.to_vec();
+    };
+    let loop_start = usize::try_from(u64::from(window.start).saturating_sub(from)).unwrap_or(0);
+    let loop_end = usize::try_from(u64::from(window.end).saturating_sub(from)).unwrap_or(0);
+    let body_start = loop_start.min(slice.len());
+    let body_end = loop_end.min(slice.len());
+    if body_end <= body_start + 1 {
+        return slice.to_vec();
+    }
+    let wanted = (span as f32 * rate.max(0.0)).ceil() as usize + 2;
+    let need = wanted.min(8_000_000).max(body_end);
+    let mut out = Vec::with_capacity(need);
+    out.extend_from_slice(&slice[..body_start]);
+    let body = &slice[body_start..body_end];
+    while out.len() < need {
+        out.extend_from_slice(body);
+    }
+    out
 }
 
 /// 一条采样器轨的**只读读数**（⭐ `#274`：发声改由引擎的 SFZ 支路负责，
@@ -5739,6 +5842,331 @@ mod tests {
             "offset_random=10000 在 rand=0.5 处应位移约 5000 帧，实得 {from}"
         );
         assert_eq!(to, 50_001, "`end` 含端点 ⇒ 半开区间终点是 end+1");
+    }
+
+    /// ⭐ 多条区域命中 ⇒ **逐条渲染后叠加**（引擎把每条命中区域都建成声部）。
+    #[test]
+    fn every_matching_region_layers_into_the_offline_note() {
+        let one = parse_text(
+            "<region> sample=definitely-missing.wav key=60",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let two = parse_text(
+            "<region> sample=definitely-missing.wav key=60\n<region> sample=definitely-missing.wav key=60",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 4800,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let single = note_wave(
+            &one,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("单层");
+        let mut cache2 = SampleCache::new();
+        let doubled = note_wave(
+            &two,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache2,
+            &BTreeMap::new(),
+        )
+        .expect("双层");
+        let ratio = math::peak_of(&doubled.mono) / math::peak_of(&single.mono);
+        eprintln!(
+            "single.layered={} doubled.layered={} ratio={ratio}",
+            single.layered, doubled.layered
+        );
+        assert!(
+            !single.layered && doubled.layered,
+            "`layered` 必须如实反映层数"
+        );
+        assert!(
+            (ratio - 2.0).abs() < 0.05,
+            "两条相同区域叠加必须约为单层的两倍，实得 {ratio}"
+        );
+    }
+
+    /// ⭐ `seq_*` 轮替：`seq_length=2` 的两条变体**轮流**发声（⛔ 不是一起叠）。
+    #[test]
+    fn seq_round_robin_selects_one_variant_per_trigger() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 seq_length=2 seq_position=1\n\
+             <region> sample=definitely-missing.wav key=60 seq_length=2 seq_position=2",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 4800,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let first = note_wave_at(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(0),
+        )
+        .expect("第 1 次触发");
+        let second = note_wave_at(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            1,
+            Some(0),
+        )
+        .expect("第 2 次触发");
+        eprintln!(
+            "occurrence 0 -> region {} ; occurrence 1 -> region {}",
+            first.region_index, second.region_index
+        );
+        assert_eq!(first.region_index, 0, "第 1 次触发应选 seq_position=1");
+        assert_eq!(second.region_index, 1, "第 2 次触发应选 seq_position=2");
+        assert!(!first.layered && !second.layered, "轮替变体之间不许叠加");
+    }
+
+    /// ⭐ 随机门 `lorand` / `hirand`：同一音符的一条区域被门掉时**只跳过它自己**。
+    #[test]
+    fn random_gates_skip_only_the_gated_region() {
+        let open = parse_text(
+            "<region> sample=definitely-missing.wav key=60",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let all_closed = parse_text(
+            "<region> sample=definitely-missing.wav key=60 lorand=1",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let mixed = parse_text(
+            "<region> sample=definitely-missing.wav key=60 lorand=1\n<region> sample=definitely-missing.wav key=60",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 4800,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let open_wave = note_wave(
+            &open,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("缺省门恒开");
+        assert!(
+            note_wave(
+                &all_closed,
+                &note,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new()
+            )
+            .is_none(),
+            "`lorand=1` 的区域必须一条都不发声"
+        );
+        let mixed_wave = note_wave(
+            &mixed,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("还有一条门是开的 ⇒ 音符必须照常发声");
+        let ratio = math::peak_of(&mixed_wave.mono) / math::peak_of(&open_wave.mono);
+        eprintln!("mixed ratio = {ratio}");
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "被门掉的那条不许连坐：峰值必须等于单层，实得 {ratio}"
+        );
+    }
+
+    /// ⭐ 循环展开：`loop_start/loop_end` 区域必须填满整个音符，而不是响一遍就断。
+    #[test]
+    fn loop_window_is_expanded_to_the_note_length() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        // 自带夹具：临时目录里现写一份真实 WAV（48 kHz 单声道正弦，100_000 帧），
+        // 不依赖任何本机绝对路径——原版写死作者本机路径，文件不在场时 note_wave
+        // 按设计回退正弦、written 断言必红，CI 上同样不可移植。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-loop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let wav_path = dir.join("tone.wav");
+        let frames: Vec<f32> = (0..100_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        write_plain_wav(
+            &wav_path,
+            &PcmFormat::float(1, 48_000, 32),
+            &PcmBuffer::Float32(frames),
+        )
+        .expect("写夹具 WAV");
+        let wav = wav_path.display().to_string();
+        let plain_text = format!("<region> sample={wav} key=60");
+        let loop_text = format!(
+            "<region> sample={wav} key=60 loop_start=10000 loop_end=20000 loop_mode=loop_continuous"
+        );
+        let plain_inst = parse_text(&plain_text, &ParseLimits::default()).expect("解析");
+        let loop_inst = parse_text(&loop_text, &ParseLimits::default()).expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 200_000,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let sfz = std::path::Path::new("/tmp/x.sfz");
+        let mut cache = SampleCache::new();
+        let plain = note_wave(
+            &plain_inst,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache,
+            &BTreeMap::new(),
+        )
+        .expect("不循环");
+        let mut cache2 = SampleCache::new();
+        let looped = note_wave(
+            &loop_inst,
+            &note,
+            440.0,
+            48_000.0,
+            Some(sfz),
+            &mut cache2,
+            &BTreeMap::new(),
+        )
+        .expect("循环");
+        eprintln!(
+            "plain written = {} looped written = {} (span = 200000)",
+            plain.written, looped.written
+        );
+        assert!(!plain.looping && looped.looping, "`looping` 必须如实");
+        assert!(
+            plain.written < 190_000,
+            "不循环时必须停在样本末尾，实得 {}",
+            plain.written
+        );
+        assert_eq!(looped.written, 200_000, "展开循环必须填满整个音符");
+        let tail: f32 = looped.mono[198_000..199_500]
+            .iter()
+            .map(|value| value.abs())
+            .sum();
+        assert!(tail > 0.0, "展开后音符尾部必须仍有信号（不许提前静音）");
+    }
+
+    /// ⭐ `trigger=first` / `legato`：按"其它按住的音符数"互斥（⛔ 两类一起叠）。
+    #[test]
+    fn first_and_legato_triggers_are_mutually_exclusive() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 trigger=first\n\
+             <region> sample=definitely-missing.wav key=60 trigger=legato",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = SfzNote {
+            start_frame: 0,
+            frames: 4800,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let mut cache = SampleCache::new();
+        let first = note_wave_at(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(0),
+        )
+        .expect("没有别的音按着 ⇒ `first` 发声");
+        assert_eq!(first.region_index, 0, "`held=0` 只许选 `trigger=first`");
+        assert!(!first.layered, "两类 trigger ⛔ 不许同时响");
+        let legato = note_wave_at(
+            &instrument,
+            &note,
+            440.0,
+            48_000.0,
+            None,
+            &mut cache,
+            &BTreeMap::new(),
+            0,
+            Some(1),
+        )
+        .expect("有别的音按着 ⇒ `legato` 发声");
+        assert_eq!(legato.region_index, 1, "`held=1` 只许选 `trigger=legato`");
+        assert!(!legato.layered);
+        // `None`（调用方给不出上下文）⇒ 两族都不许偷偷发声。
+        assert!(
+            note_wave_at(
+                &instrument,
+                &note,
+                440.0,
+                48_000.0,
+                None,
+                &mut cache,
+                &BTreeMap::new(),
+                0,
+                None
+            )
+            .is_none(),
+            "给不出按住数时，`first` / `legato` 必须不发声"
+        );
     }
 
     fn zero_crossings(pcm: &[f32]) -> usize {
