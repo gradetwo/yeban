@@ -1,0 +1,272 @@
+// 夜半 (Yeban) — 从模板新建 · 模板选择器
+//
+// 机制来源：Logic Pro 的模板选择器 —— 模板目录下的子文件夹在选择器里
+// 显示为分组集合。夜半的模板按「曲风 / 子曲风 / 模板名」三级落盘
+// （Wang 2026-11-17 定案），本选择器照此以**分组列表**呈现：
+// 来源（工厂模板 / 我的模板）→ 曲风 → 子曲风 三层标题行 + 模板条目行，
+// 同列纵排，靠缩进与配色分级（仓内没有树控件先例，`Flickable` 纵向滚动
+// 是编曲区轨道列与混音台的既有做法）。
+//
+// ## 显示态全部来自宿主的行模型（界面不自己算）
+//
+// `rows` 由宿主（`host::wire_project_templates`）从
+// `templates::build_chooser_rows` 的输出写入：标题行与条目行的顺序、分组、
+// 条目下标都在 Rust 侧算好（纯函数，有判据）。界面只做三件事：按 `kind`
+// 选缩进与配色、把条目行的点击上抛为 `template-selected(entry-index)`、
+// 在超出画布时如实报数（`hidden-rows`，宿主按
+// `templates::TEMPLATE_CHOOSER_MAX_ROWS` 截断并计数，⛔ 不静默丢行）。
+//
+// 选中之后发生什么（打开未命名副本、绝不回写模板）全在宿主，本文件
+// ⛔ 不碰磁盘、⛔ 不知道模板文件在哪。
+//
+// 默认关着（`MainWindow.template-chooser-open = false`）⇒ 默认帧与
+// `tests/golden/linux/` 的 5 张基准一位不变。
+
+import { Tokens, UiText, UiTitleText, TemplateChooserRow } from "../tokens.slint";
+
+export component TemplateChooserDialog inherits Rectangle {
+    // ---- 行模型（唯一写者 = 宿主；默认空 ⇒ 空态）----------------------------
+    in property <[TemplateChooserRow]> rows: [];
+    // 被行数上限截断、**没有画出来**的行数（宿主读数，0 = 全画出来了）。
+    in property <int> hidden-rows: 0;
+
+    callback template-selected(int);
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "template-chooser-dialog";
+    accessible-label: "从模板新建";
+
+    // `D-UI-21`：遮罩**真的**吞掉鼠标（与导出对话框 / 时光机同款）。刻意
+    // ⛔ 没有任何回调：点遮罩不关面板（关面板只有 ✕ 与 `Esc`），唯一职责
+    // 是吃掉这一击。声明在面板之前 ⇒ 面板内控件仍在最上层。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    // ---------------------------------------------------------------- 弹窗面板
+    Rectangle {
+        x: (root.width - 640px) / 2;
+        y: (root.height - 520px) / 2;
+        width: 640px;
+        height: 520px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "template-chooser-panel";
+        accessible-label: "模板列表面板";
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: "从模板新建";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        UiText {
+            x: Tokens.space-6;
+            y: 34px;
+            width: parent.width - 96px;
+            height: 16px;
+            text: "按曲风 / 子曲风 / 模板名三级组织；选中后以未命名副本打开，编辑不回写模板。";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 关闭（`Esc` 由宿主窗口的全局按键层关本弹窗，与命令面板同一落点）
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "template-chooser-close-button";
+            accessible-label: "关闭模板选择器";
+            accessible-action-default => { root.close(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "×";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xl;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.close(); }
+            }
+        }
+
+        // ------------------------------------------------------------ 分组列表
+        // 统一行高 28px（标题行与条目行同高，靠缩进 / 配色分级）⇒ 行 y 是
+        // 下标的线性函数，`Flickable` 的内容高 = 行数 × 28px（编曲区
+        // Flickable 同款：内容高由数据算，视口只裁剪）。
+        Rectangle {
+            x: Tokens.space-6;
+            y: 60px;
+            width: parent.width - 48px;
+            height: parent.height - 60px - 40px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+
+            accessible-role: list;
+            accessible-id: "template-chooser-list";
+            accessible-label: "模板分组列表";
+
+            Flickable {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: max(self.height, root.rows.length * 28px);
+                interactive: true;
+
+                for row[row-index] in root.rows : Rectangle {
+                    x: 0;
+                    y: row-index * 28px;
+                    width: parent.width;
+                    height: 28px;
+                    clip: true;
+
+                    // 条目行（kind == 3）：可点。`accessible-role` 必须是常量
+                    // 表达式 ⇒ 条目行与标题行分两个条件分支写（⛔ 不能三元）。
+                    if row.kind == 3 : Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: row-touch.has-hover ? Tokens.bg-raised : transparent;
+                        accessible-role: list-item;
+                        accessible-id: "template-row-" + row-index;
+                        accessible-label: row.label;
+                        accessible-action-default => {
+                            root.template-selected(row.entry-index);
+                        }
+
+                        UiText {
+                            x: Tokens.space-6 + 48px;
+                            y: 0;
+                            width: parent.width - 72px;
+                            height: parent.height;
+                            text: row.label;
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-xs;
+                            overflow: elide;
+                        }
+
+                        row-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => {
+                                root.template-selected(row.entry-index);
+                            }
+                        }
+                    }
+
+                    // 标题行（kind 0/1/2 = 来源 / 曲风 / 子曲风）：只读文本，
+                    // 靠缩进与配色分级，不可点。
+                    if row.kind != 3 : Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        accessible-role: text;
+                        accessible-id: "template-row-" + row-index;
+                        accessible-label: row.label;
+
+                        UiText {
+                            x: row.kind == 0 ? Tokens.space-3
+                                : row.kind == 1 ? Tokens.space-6
+                                : Tokens.space-6 + 24px;
+                            y: 0;
+                            width: parent.width - 72px;
+                            height: parent.height;
+                            text: row.label;
+                            color: row.kind == 0 ? Tokens.gold-bright
+                                : row.kind == 1 ? Tokens.ink-1
+                                : Tokens.ink-2;
+                            font-size: row.kind == 0 ? Tokens.font-size-sm : Tokens.font-size-xs;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ 空态
+        // 两个根目录里一个模板都没有 ⇒ 说真话，并告诉用户第一个模板从哪来。
+        if root.rows.length == 0 : Rectangle {
+            x: Tokens.space-6;
+            y: 200px;
+            width: parent.width - 48px;
+            height: 40px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+
+            accessible-role: text;
+            accessible-id: "template-chooser-empty-state";
+            accessible-label: "还没有任何模板。先用另存为模板把当前工程存为模板。";
+
+            UiText {
+                x: Tokens.space-4;
+                y: 0;
+                width: parent.width - 8px;
+                height: parent.height;
+                text: "还没有任何模板。先用「文件 → 另存为模板…」把当前工程存为模板。";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-sm;
+                overflow: elide;
+            }
+        }
+
+        // ------------------------------------------------------ 截断的如实报数
+        if root.hidden-rows > 0 : Rectangle {
+            x: Tokens.space-6;
+            y: parent.height - 32px;
+            width: parent.width - 48px;
+            height: 16px;
+            clip: true;
+
+            accessible-role: text;
+            accessible-id: "template-chooser-truncation-note";
+            accessible-label: "还有更多模板行未画出";
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "还有 " + root.hidden-rows + " 行未画出（列表一次最多画 64 行）";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+        }
+    }
+}

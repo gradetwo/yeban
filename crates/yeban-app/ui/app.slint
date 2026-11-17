@@ -1,5 +1,5 @@
-import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote } from "tokens.slint";
-export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote } from "tokens.slint";
+import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
+export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -13,6 +13,8 @@ import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
+import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
+import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
 export component MainWindow inherits Window {
@@ -585,6 +587,16 @@ export component MainWindow inherits Window {
     in-out property <length> splitter-press-y: 0px;
     in-out property <string> status-device: "—";
     in-out property <string> status-selection: @tr("选区 无");
+    in-out property <int> template-chooser-hidden-rows: 0;
+    in-out property <bool> template-chooser-open: false;
+    in-out property <[TemplateChooserRow]> template-chooser-rows: [];
+    in-out property <string> template-save-error: "";
+    in-out property <bool> template-save-exists: false;
+    in-out property <string> template-save-hint: "";
+    in-out property <string> template-save-name: "";
+    in-out property <bool> template-save-open: false;
+    in-out property <string> template-save-style: "";
+    in-out property <string> template-save-substyle: "";
     in-out property <string> timecode: "001.01.000";
     in-out property <int> timecode-ticks-bar: 0;
     in-out property <int> timecode-ticks-beat: 0;
@@ -638,6 +650,8 @@ export component MainWindow inherits Window {
     callback compressor-cycle-ratio();
     callback console-height-requested(int);
     callback console-height-reset();
+    callback confirm-save-as-template();
+    callback confirm-template-overwrite();
     callback device-bypass-toggle(string);
     callback device-eq-drag(float);
     callback device-eq-grab(string, float);
@@ -694,6 +708,7 @@ export component MainWindow inherits Window {
     callback mixer-sampler-clear(int);
     callback mixer-sampler-set(int, string);
     callback mixer-solo-toggle(int);
+    callback new-from-template();
     callback new-project();
     callback note-drag-cancel();
     callback note-drag-grab(length, length) -> bool;
@@ -714,6 +729,7 @@ export component MainWindow inherits Window {
     callback ruler-step(int);
     callback sample-library-download();
     callback sample-library-download-drain-requested();
+    callback save-as-template();
     callback save-project();
     callback save-project-as();
     callback scene-launch(int);
@@ -740,6 +756,7 @@ export component MainWindow inherits Window {
     callback song-overview-viewport-scroll(float);
     callback song-overview-viewport-zoom(int);
     callback stop();
+    callback template-selected(int);
     callback toggle-ai-drawer();
     callback toggle-metronome();
     callback toggle-sidebar();
@@ -773,9 +790,11 @@ export component MainWindow inherits Window {
         Menu {
             title: @tr("文件");
             MenuItem { title: @tr("新建空白工程"); activated => { root.command-execute("file-new"); } }
+            MenuItem { title: @tr("从模板新建..."); activated => { root.command-execute("file-new-from-template"); } }
             MenuItem { title: @tr("打开 / 恢复工程..."); activated => { root.command-execute("file-open"); } }
             MenuItem { title: @tr("保存工程 (Ctrl+S)"); activated => { root.command-execute("file-save"); } }
             MenuItem { title: @tr("另存为 (Ctrl+Shift+S)"); activated => { root.command-execute("file-save-as"); } }
+            MenuItem { title: @tr("另存为模板..."); activated => { root.command-execute("file-save-as-template"); } }
             MenuSeparator {}
             MenuItem { title: @tr("导出音频 (WAV)..."); activated => { root.command-execute("open-export-wav"); } }
             MenuItem { title: @tr("导出分轨 (Stems)..."); activated => { root.command-execute("export-stems"); } }
@@ -954,6 +973,11 @@ export component MainWindow inherits Window {
                 return accept;
             }
             if (event.text == Key.Escape) {
+                // 模板选择器没有自己的焦点陷阱 ⇒ 它的 `Esc` 在这里关
+                // （另存为模板对话框有自己的陷阱，先于本层处理 `Esc`；
+                // 这里对它只作兜底）。
+                root.template-chooser-open = false;
+                root.template-save-open = false;
                 root.show-cmd-palette = false;
                 root.show-hotspots = false;
                 return accept;
@@ -1518,6 +1542,37 @@ export component MainWindow inherits Window {
             apply-humanize => { root.apply-humanize(); }
             apply-quantize => { root.apply-quantize(); }
             close => { root.close-humanize(); }
+        }
+
+        // Visible Template Chooser Modal Dialog（从模板新建）
+        if root.template-chooser-open : TemplateChooserDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            rows: root.template-chooser-rows;
+            hidden-rows: root.template-chooser-hidden-rows;
+            template-selected(i) => { root.template-selected(i); }
+            close => { root.template-chooser-open = false; }
+        }
+
+        // Visible Save-As-Template Modal Dialog（另存为模板）
+        if root.template-save-open : SaveAsTemplateDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            style <=> root.template-save-style;
+            substyle <=> root.template-save-substyle;
+            name <=> root.template-save-name;
+            hint: root.template-save-hint;
+            error <=> root.template-save-error;
+            exists <=> root.template-save-exists;
+            confirm => { root.confirm-save-as-template(); }
+            overwrite => { root.confirm-template-overwrite(); }
+            close => { root.template-save-open = false; }
         }
 
         // Visible Musical PR Drawer

@@ -409,6 +409,24 @@ pub fn user_preset_library_dir() -> PathBuf {
         .join("Patches")
 }
 
+/// 用户工程模板库默认位置：与 [`user_preset_library_dir`] **同源**（同一个
+/// `~/Music/Audio Music Apps/` 父目录），抄 Logic 的
+/// `~/Music/Audio Music Apps/Project Templates/`（Logic 把用户模板放在
+/// `Audio Music Apps` 下与 `Patches` 并列的 `Project Templates` 文件夹）。
+///
+/// 模板不是新格式：存进这个目录的 `.yeban` 工程文件就是模板；目录内部按
+/// 「曲风 / 子曲风 / 模板名」三级组织（Wang 2026-11-17 定案）。目录的创建与
+/// 扫描住在 `yeban-app::templates`，本函数只给**位置**（与预制库同一条口径：
+/// 只读 `HOME`，不猜第二条回退路径）。
+#[must_use]
+pub fn user_template_library_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home)
+        .join("Music")
+        .join("Audio Music Apps")
+        .join("Project Templates")
+}
+
 /// 用户预制标识 `user:<ulid>` → 工程包内嵌条目名 `presets/user/<ulid>.json`。
 #[must_use]
 pub fn embedded_entry_name(preset_id: &str) -> Option<String> {

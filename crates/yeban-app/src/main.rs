@@ -765,69 +765,84 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         // ② 重接三处**静态快照**（保存落点 / 走带 / 按键）—— 它们都是装配期的 `clone`，
         //    不重接就会拿着旧工程；保存那一处尤其危险：新工程会被写进**旧**工程的文件；
         // ③ 引擎的"已应用标记"跟上新会话（与装配点那一句同款，免得下一跳白发布一遍）。
-        let view_after = Rc::clone(&view_cell);
         let production_after = Rc::clone(&production);
-        let engine_after = Rc::clone(&engine_handle);
-        let port_after = Rc::clone(&undo_port);
-        let input_after = Rc::clone(&input);
-        #[cfg(feature = "in-process-mcp")]
-        let authority_after = in_process_mcp
-            .as_ref()
-            .map(yeban_app::mcp_mount::InProcessMcp::project_authority);
-        let save_picker_after: Rc<dyn yeban_app::file_picker::FilePicker> =
-            Rc::new(yeban_app::file_picker::NativeFilePicker);
-        // ⭐ 抽屉的来源**不用换**：它拿的是权威的句柄，而换工程不换权威（`Domain` 还是
-        // 那一个 `Domain`）。这里只是把同一份读数的第二份克隆交给新那代回调。
-        let proposal_source_after = proposal_source.clone();
-        let after = Rc::new(
-            move |ui: &yeban_app::ui::MainWindow,
-                  project: &yeban_model::YebanProjectV1,
-                  path: &str,
-                  view: &yeban_app::bridge::ViewState|
-                  -> Result<(), String> {
-                // ① 心跳对齐基准。
-                *view_after.borrow_mut() = view.clone();
-                // ② 保存落点**跟着新工程走**（`--open` 那个文件 → 这次打开的那个文件）。
-                //    ⭐ `#170`：这一跳与「打开」同源 —— 保存成功时 `project_dir` 也跟着
-                //    落点走（`engine_after` 就是走带 / 按键那一代的同一个宿主）。
-                host::wire_save_with_engine(
-                    ui,
-                    host::SaveStatus {
-                        target: Some(std::path::PathBuf::from(path)),
-                        project: project.clone(),
-                    },
-                    Some(Rc::clone(&port_after)),
-                    Rc::clone(&save_picker_after),
-                    #[cfg(feature = "in-process-mcp")]
-                    authority_after.clone(),
-                    #[cfg(not(feature = "in-process-mcp"))]
-                    None,
-                    Some(Rc::clone(&engine_after)),
-                );
-                // ③ 走带 / 按键那两处静态快照（`on_*` setter 覆盖旧闭包）。
-                wire_callbacks(
-                    ui,
-                    &engine_after,
-                    Some(Rc::new(project.clone())),
-                    Some(Rc::clone(&port_after)),
-                    // ⭐ `#283`：`view_after` 就是上面刚换过的那份投影（同一个 `Rc`）。
-                    Rc::clone(&view_after),
-                    proposal_source_after.clone(),
-                );
-                host::wire_keys(
-                    ui,
-                    Rc::clone(&input_after),
-                    Some(Rc::clone(&port_after)),
-                    Some(Rc::clone(&engine_after)),
-                    Some(Rc::new(project.clone())),
-                );
-                // ④ 已应用标记（与装配点 `engine_handle().mark_applied(..)` 同款）。
-                engine_after
-                    .borrow_mut()
-                    .mark_applied(EditMark::from_display(&port_after.display()));
-                Ok(())
-            },
-        );
+        // ⭐ 闭包体收成一个**工厂**（2026-11-17，工程模板线）：普通「打开」与
+        //    「从模板新建」共用同一份 `after`，唯一差别是 ② 的保存落点 ——
+        //    普通打开跟着新文件走（`Some(path)`）；模板副本必须**未命名**
+        //    （`untitled = true` ⇒ 落点 `None`，首存走「保存工程」的问路径
+        //    流程，**永不**回写模板文件 —— 照 Logic 的副本语义）。其余动作
+        //    （① 心跳基准、③ 快照、④ 已应用标记）逐字相同，⛔ 不复制第二份。
+        let make_after = |untitled: bool| -> host::OpenProjectAfter {
+            let view_after = Rc::clone(&view_cell);
+            let engine_after = Rc::clone(&engine_handle);
+            let port_after = Rc::clone(&undo_port);
+            let input_after = Rc::clone(&input);
+            #[cfg(feature = "in-process-mcp")]
+            let authority_after = in_process_mcp
+                .as_ref()
+                .map(yeban_app::mcp_mount::InProcessMcp::project_authority);
+            let save_picker_after: Rc<dyn yeban_app::file_picker::FilePicker> =
+                Rc::new(yeban_app::file_picker::NativeFilePicker);
+            // ⭐ 抽屉的来源**不用换**：它拿的是权威的句柄，而换工程不换权威（`Domain` 还是
+            // 那一个 `Domain`）。这里只是把同一份读数的第二份克隆交给新那代回调。
+            let proposal_source_after = proposal_source.clone();
+            Rc::new(
+                move |ui: &yeban_app::ui::MainWindow,
+                      project: &yeban_model::YebanProjectV1,
+                      path: &str,
+                      view: &yeban_app::bridge::ViewState|
+                      -> Result<(), String> {
+                    // ① 心跳对齐基准。
+                    *view_after.borrow_mut() = view.clone();
+                    // ② 保存落点**跟着新工程走**（`--open` 那个文件 → 这次打开的那个文件）；
+                    //    模板副本（`untitled`）例外：落点为空 ⇒ 它是未命名新工程，
+                    //    首存走问路径流程，模板文件永不被写。
+                    //    ⭐ `#170`：这一跳与「打开」同源 —— 保存成功时 `project_dir` 也跟着
+                    //    落点走（`engine_after` 就是走带 / 按键那一代的同一个宿主）。
+                    host::wire_save_with_engine(
+                        ui,
+                        host::SaveStatus {
+                            target: if untitled {
+                                None
+                            } else {
+                                Some(std::path::PathBuf::from(path))
+                            },
+                            project: project.clone(),
+                        },
+                        Some(Rc::clone(&port_after)),
+                        Rc::clone(&save_picker_after),
+                        #[cfg(feature = "in-process-mcp")]
+                        authority_after.clone(),
+                        #[cfg(not(feature = "in-process-mcp"))]
+                        None,
+                        Some(Rc::clone(&engine_after)),
+                    );
+                    // ③ 走带 / 按键那两处静态快照（`on_*` setter 覆盖旧闭包）。
+                    wire_callbacks(
+                        ui,
+                        &engine_after,
+                        Some(Rc::new(project.clone())),
+                        Some(Rc::clone(&port_after)),
+                        // ⭐ `#283`：`view_after` 就是上面刚换过的那份投影（同一个 `Rc`）。
+                        Rc::clone(&view_after),
+                        proposal_source_after.clone(),
+                    );
+                    host::wire_keys(
+                        ui,
+                        Rc::clone(&input_after),
+                        Some(Rc::clone(&port_after)),
+                        Some(Rc::clone(&engine_after)),
+                        Some(Rc::new(project.clone())),
+                    );
+                    // ④ 已应用标记（与装配点 `engine_handle().mark_applied(..)` 同款）。
+                    engine_after
+                        .borrow_mut()
+                        .mark_applied(EditMark::from_display(&port_after.display()));
+                    Ok(())
+                },
+            )
+        };
+        let after = make_after(false);
         // ⭐ 换工程的**唯一装配**（任务单 `#93`）——「打开」与「新建」共用这**一个**
         // `Rc<dyn OpenProjectRuntime>`（新建 = 写一个空容器 + 走同一段换工程路径）。
         let open_runtime: Rc<dyn host::OpenProjectRuntime> = Rc::new(host::PortOpenProject {
@@ -862,6 +877,27 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             &ui,
             Rc::new(yeban_app::file_picker::NativeFilePicker),
             open_runtime,
+        );
+        // ⭐ **工程模板的两个入口**（2026-11-17，照 Logic 的模板机制）：
+        //    文件菜单「从模板新建…」/「另存为模板…」⇒
+        //    `host::wire_project_templates`。换工程仍走 `open_runtime` 那一段
+        //    固定动作，但装的是**未命名**变体（`make_after(true)`）：模板副本
+        //    的保存落点为空 ⇒ 编辑后首存走问路径流程，模板文件一字节不动。
+        //    相对路径样本在副本未保存前仍按模板所在目录解析（`open_runtime`
+        //    第 ⑤ 步的 `set_project_dir(模板父目录)`，与 Logic 把模板资源
+        //    放在模板旁边同义）；首次保存后落点与工程目录一起跟着新文件走。
+        let open_runtime_untitled: Rc<dyn host::OpenProjectRuntime> =
+            Rc::new(host::PortOpenProject {
+                port: Rc::clone(&undo_port),
+                production: Some(Rc::clone(&production_after)),
+                quanta: 0,
+                after: make_after(true),
+            });
+        host::wire_project_templates(
+            &ui,
+            Some(Rc::clone(&undo_port)),
+            open_runtime_untitled,
+            yeban_app::templates::TemplateRoots::production(),
         );
     }
     // ⭐ **运行期「导入音频」的可见入口**（控制台 Tab 1 的素材池面板）：问一次对话框 ⇒
