@@ -2954,6 +2954,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_correct_pitch_job" => otcp::plan_correct_pitch_job(domain, call),
         "yeban_correct_pitch_notes" => otcp::plan_correct_pitch_notes(domain, call),
         "yeban_move_track" => plan_move_track(domain, call),
+        "yeban_generate_drum_pattern" => plan_generate_drum_pattern(domain, call),
         "compare_song_snapshots" => compare_snapshots::plan_compare_song_snapshots(call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
@@ -4156,6 +4157,235 @@ fn plan_move_track(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("移轨：音轨 {track_id} 从位置 {old_index} → {new_index}"),
         format!("move_track {track_id} {old_index}->{new_index}"),
         vec![op],
+        call,
+    )
+}
+
+/// `yeban_generate_drum_pattern`（鼓机一期；提案路径，`autoMerge` 可一次调用落 main）。
+///
+/// 风格预置（`yeban_theory::factory_drum_style`，出厂 10 风格）+ 三旋钮
+/// （`complexity` / `intensity` / `swingPermille`）+ `seed` 经
+/// `yeban_theory::generate_drum_pattern` 生成音符列，落成目标轨上的一个
+/// MIDI 片段（`Op::AddClip` + `Op::AddClipPlacement`，片段可在编曲区与
+/// 钢琴卷帘继续编辑）。`trackId` 缺省 ⇒ 新建鼓轨（`Op::AddTrack` +
+/// 路由到主总线，口径与 `project_create` 的种子轨一致）。
+///
+/// 默认鼓组（轨上尚无音源时才装；已有采样器或设备 ⇒ 用户鼓组优先，
+/// 只落片段）：原声族 `Op::SetTrackSampler` 绑 Virtuosity Drums 基础组
+/// （SFZ，GM 映射）；电子族 `Op::InsertDevice` 一台内置合成鼓机
+/// （五键 GM 映射 + 按风格的 808 系音色定值，见 `yeban_theory::kit_setup`）。
+///
+/// 身份纪律：轨/片段/摆放/音符 id 全部由 `(目标, 风格, 种子, 三旋钮,
+/// 小节数, fill, 起始 tick)` 确定性派生 ⇒ 同参数重复调用命中同一身份
+/// （与段落构建的确定性 id 同一条纪律）；同种子同参数两次生成的片段
+/// 内容逐字节一致（判据在 tests 里以两份新工程对账）。
+fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let style = arg_str(call, "style").ok_or_else(|| {
+        Fault::domain(ErrorCode::InvalidParameterRange, "`style` 是必填参数")
+    })?;
+    let preset = yeban_theory::factory_drum_style(style)
+        .map_err(|error| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("风格预置 `{style}` 解析失败: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::StyleNotFound,
+                format!("没有名为 `{style}` 的鼓机风格预置"),
+                serde_json::json!({
+                    "style": style,
+                    "availableStyles": yeban_theory::factory_drum_style_ids(),
+                }),
+            )
+        })?;
+    let knob = |name: &str, default: u64| -> Result<u8, Fault> {
+        let raw = arg_u64(call, name)?.unwrap_or(default);
+        u8::try_from(raw).ok().filter(|v| *v <= 100).ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`{name}` 必须是 0..=100 的整数, 实际收到 {raw}"),
+            )
+        })
+    };
+    let complexity = knob("complexity", 50)?;
+    let intensity = knob("intensity", 80)?;
+    let seed = arg_u64(call, "seed")?.unwrap_or(0);
+    let bars_raw = arg_u64(call, "bars")?.unwrap_or(4);
+    let bars = u32::try_from(bars_raw).ok().filter(|b| (1..=16).contains(b)).ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`bars` 必须是 1..=16 的整数, 实际收到 {bars_raw}"),
+        )
+    })?;
+    let swing = match arg_u64(call, "swingPermille")? {
+        None => None,
+        Some(raw) => Some(u16::try_from(raw).ok().filter(|v| (500..=1000).contains(v)).ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`swingPermille` 必须是 500..=1000 的整数, 实际收到 {raw}"),
+            )
+        })?),
+    };
+    let fill = arg_bool(call, "fill", true);
+    let start_tick = arg_u64(call, "startTick")?.unwrap_or(0);
+    let swing_resolved = swing.unwrap_or(preset.swing_permille);
+
+    // 目标轨：给 `trackId` 用既有轨；缺省新建鼓轨。
+    let requested_track = if call.arguments.get("trackId").is_some() {
+        Some(arg_id(call, "trackId")?)
+    } else {
+        None
+    };
+    let label = format!(
+        "{}:{style}:{seed}:{complexity}:{intensity}:{swing_resolved}:{bars}:{fill}:{start_tick}",
+        requested_track.map_or_else(|| "new".to_owned(), |id| id.to_canonical_string()),
+    );
+    let mut ops: Vec<Op> = Vec::new();
+    let (track_id, existing_track) = match requested_track {
+        Some(id) => {
+            let track = project
+                .track(&id)
+                .map_err(|error| error::from_model("音轨查找", &error))?;
+            (id, Some(track.clone()))
+        }
+        None => {
+            let id = ids::deterministic_id(&format!("drum-gen:track:{label}"));
+            ops.push(Op::AddTrack {
+                track: TrackV3 {
+                    id,
+                    name: format!("{} Drums", preset.name),
+                    kind: yeban_model::TrackKind::Midi,
+                    volume_db: -6.0,
+                    ..TrackV3::default()
+                },
+            });
+            ops.push(Op::AddRoutingNode { node: id });
+            ops.push(Op::ConnectRouting {
+                edge: yeban_model::RoutingEdge {
+                    id: ids::deterministic_id(&format!("drum-gen:edge:{label}")),
+                    source_node: id,
+                    destination_node: project.master_bus_track_id,
+                    kind: yeban_model::RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            });
+            (id, None)
+        }
+    };
+
+    // 默认鼓组：轨上尚无音源时才装。
+    let has_instrument = existing_track
+        .as_ref()
+        .is_some_and(|track| track.sampler.is_some() || !track.devices.is_empty());
+    let mut kit_note = "轨上已有音源，沿用现有鼓组";
+    if !has_instrument {
+        match yeban_theory::kit_setup(&preset) {
+            yeban_theory::DrumKitSetup::AcousticSfz { sfz_path } => {
+                ops.push(Op::SetTrackSampler {
+                    track_id,
+                    old_sampler: None,
+                    new_sampler: Some(yeban_model::SamplerBinding {
+                        path: sfz_path.to_owned(),
+                    }),
+                });
+                kit_note = "装默认鼓组：Virtuosity Drums 基础组（SFZ 采样）";
+            }
+            yeban_theory::DrumKitSetup::SynthDevice {
+                device_name,
+                params,
+            } => {
+                ops.push(Op::InsertDevice {
+                    track_id,
+                    slot_index: 0,
+                    device: DeviceDefinition {
+                        id: ids::deterministic_id(&format!("drum-gen:device:{label}")),
+                        name: device_name.to_owned(),
+                        kind: DeviceKind::InternalInstrument,
+                        bypassed: false,
+                        params: params
+                            .iter()
+                            .map(|(name, value)| yeban_model::ParameterValue {
+                                name: name.clone(),
+                                value: *value,
+                                unit: None,
+                            })
+                            .collect(),
+                        latency_samples: 0,
+                        plugin: None,
+                    },
+                });
+                kit_note = "装默认鼓组：合成鼓机（808 系电子件）";
+            }
+        }
+    }
+
+    // 生成音符列 ⇒ MIDI 片段 + 摆放。
+    let generated = yeban_theory::generate_drum_pattern(
+        &preset,
+        &yeban_theory::DrumGenParams {
+            complexity,
+            intensity,
+            swing_permille: swing,
+            seed,
+            bars,
+            fill,
+        },
+    )
+    .map_err(|error| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("鼓型生成失败: {error}"),
+        )
+    })?;
+    if generated.is_empty() {
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("风格 `{style}` 在当前参数下生成不出任何鼓点"),
+        ));
+    }
+    let mut notes = std::collections::BTreeMap::new();
+    for (index, note) in generated.iter().enumerate() {
+        let id = ids::deterministic_id(&format!("drum-gen:note:{label}:{index}"));
+        let midi = yeban_model::MidiNote {
+            velocity: note.velocity,
+            ..yeban_model::MidiNote::new(id, note.tick, note.gm_key, note.duration_ticks)
+        };
+        notes.insert(id, midi);
+    }
+    let clip_id = ids::deterministic_id(&format!("drum-gen:clip:{label}"));
+    ops.push(Op::AddClip {
+        clip: yeban_model::ClipPoolEntry {
+            id: clip_id,
+            name: format!("{} Drums", preset.name),
+            content: ClipContent::Midi { notes },
+        },
+    });
+    ops.push(Op::AddClipPlacement {
+        track_id,
+        placement: yeban_model::ClipPlacement {
+            id: ids::deterministic_id(&format!("drum-gen:placement:{label}")),
+            clip_id,
+            start_tick,
+            duration_ticks: u64::from(bars) * yeban_theory::TICKS_PER_BAR,
+            loop_config: yeban_model::LoopConfig::default(),
+            muted: false,
+            offset_samples: None,
+        },
+    });
+
+    propose_draft(
+        domain,
+        project,
+        "generate_drum_pattern",
+        format!("生成鼓型：{} → 音轨 {track_id}", preset.name),
+        format!(
+            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}",
+            generated.len(),
+        ),
+        ops,
         call,
     )
 }
@@ -8426,6 +8656,12 @@ mod tests {
                     "trackId": track.to_canonical_string(),
                     "newIndex": move_track_new_index,
                 }),
+            ),
+            // 鼓机生成：风格合法 ⇒ 规划成功（新建鼓轨 + 电子默认鼓组 + 片段；
+            // 正向通路的片段内容与逐字节复现由 `tests/drum_generate_tool.rs` 钉）。
+            (
+                "yeban_generate_drum_pattern",
+                serde_json::json!({ "style": "trap" }),
             ),
             // Songmap A/B 快照对比：两份合法快照 ⇒ 规划成功（Diff 在 plan 里组装；
             // 不要求活跃工程 —— 这里有工程也一样走通，正向通路的逐位算术在

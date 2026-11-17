@@ -75,7 +75,8 @@
             "yeban_correct_pitch_notes",
             "yeban_move_track",
             "compare_song_snapshots",
-            "yeban_auto_align_tracks"
+            "yeban_auto_align_tracks",
+            "yeban_generate_drum_pattern"
           ]
         },
         "arguments": {
@@ -737,6 +738,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_auto_align_tracks"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_generate_drum_pattern"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_generate_drum_pattern"
               }
             }
           }
@@ -2319,6 +2339,72 @@
           "required": [
             "referenceTrackId",
             "targetTrackId"
+          ]
+        },
+        "yeban_generate_drum_pattern": {
+          "title": "yeban_generate_drum_pattern",
+          "type": "object",
+          "description": "鼓机一期：按风格预置生成鼓型并落成目标轨上的 MIDI 片段（提案路径，autoMerge 可一次调用落 main）。风格 = 出厂 10 预置（trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock）；三旋钮 complexity/intensity/swingPermille + seed（同种子同参数逐字节可复现）。trackId 缺省 ⇒ 新建鼓轨；目标轨尚无音源时按风格族装默认鼓组（原声 SFZ / 电子合成），已有音源则沿用。风格不存在 ⇒ STYLE_NOT_FOUND。",
+          "properties": {
+            "style": {
+              "type": "string",
+              "description": "风格预置 id（出厂 10 个：trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock）；不存在 ⇒ STYLE_NOT_FOUND"
+            },
+            "trackId": {
+              "type": "string",
+              "description": "目标音轨 EntityId（26 字符 ULID）；缺省 = 新建一条鼓轨；音轨不存在 ⇒ TRACK_NOT_FOUND"
+            },
+            "complexity": {
+              "type": "integer",
+              "description": "复杂度 0..=100（缺省 50）：<34 只出核心层、34..=66 加标准层、>=67 全层 + 军鼓鬼音（种子驱动）"
+            },
+            "intensity": {
+              "type": "integer",
+              "description": "强度 0..=100（缺省 80）：力度缩放（100 = 预置原力度，0 = 压到 55%）"
+            },
+            "swingPermille": {
+              "type": "integer",
+              "description": "摇摆千分比 500..=1000（500 = 平直）；缺省 = 风格预置定值"
+            },
+            "seed": {
+              "type": "integer",
+              "description": "生成种子（缺省 0）：同种子 + 同参数 ⇒ 片段逐字节一致"
+            },
+            "bars": {
+              "type": "integer",
+              "description": "生成小节数 1..=16（缺省 4）"
+            },
+            "fill": {
+              "type": "boolean",
+              "description": "缺省 true = 最后一小节落 fill（风格带 fill 时）"
+            },
+            "startTick": {
+              "type": "integer",
+              "description": "摆放起始 tick（缺省 0）"
+            },
+            "includeOps": {
+              "type": "boolean",
+              "description": "是否回传完整 op 载荷: 缺省 false = 只回结构化字段, true = 额外回传逐条 ops (审查用途) [BASELINE-006]"
+            },
+            "autoMerge": {
+              "type": "boolean",
+              "description": "[ADR-0029]: 缺省 false = 只建提案 (pendingMerge:true)。true = 同一次调用内背靠背执行既有的 yeban_merge_proposal 合并实现, 响应 = 提案回执 ⊕ 合并回执"
+            },
+            "mergeCommitMessage": {
+              "type": "string",
+              "description": "[ADR-0029]: autoMerge 合并提交的信息, 只随 autoMerge:true 生效"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "style"
           ]
         }
       }
