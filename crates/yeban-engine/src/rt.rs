@@ -1911,7 +1911,10 @@ fn render_branch(
         //   单声道处理器，对两条缓冲各跑一次会让状态**推进两次**（声音会错），
         //   复制状态也做不到 ⇒ 有插入的轨保持单声道（**已知偏差**，登记在案）；
         // * 没有侧链键抽头：抽头只复制单声道，右声道会静默丢掉；
-        // * 参数表对本轨**恒等**（`ParamTable::is_identity`）：平滑器同样有状态；
+        // * ~~参数表对本轨**恒等**~~：⭐ **stage 7 解除** —— 轨参数（音量/平移的增益塔）
+        //   是**同一条标量曲线**，左右可以共用（`ParamTable::apply_pair` 一次
+        //   `process()` 写到两条缓冲，⛔ 不让平滑器推进两次）⇒ 带 `SetParam` 自动化的轨
+        //   现在也走分声道。
         // * PDC 与手动相位对齐在本轨是**零延迟**（`DelayLine::delay() == 0`／未武装）：
         //   两条延迟线要两份内存，本片不做；
         // * 只有一条"直连 master、单位增益"的出边且没有发送自动化；
@@ -1927,7 +1930,6 @@ fn render_branch(
             && !has_armed_insert_devices(share, &track)
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
-            && share.params.is_identity(track)
             && share.pdc.line(&track).is_none_or(|line| line.delay() == 0)
             && share.phase_bank.effective_delay(&track).is_none()
             && routes_of_track.len() == 1
@@ -2015,9 +2017,18 @@ fn render_branch(
         //
         // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
         // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
-        share
-            .params
-            .apply(track, &mut share.track_scratch[..frames]);
+        if stereo_track {
+            // ⭐ stage 7：一对声道共用同一条增益曲线（平滑器只推进一次）。
+            share.params.apply_pair(
+                track,
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+        } else {
+            share
+                .params
+                .apply(track, &mut share.track_scratch[..frames]);
+        }
         // --- 3a'~3a'''') 插入链：通道条 → 混响 → 卷积混响，**逐样本** ---
         // [crate::insert]。位置：**轨道自己的渲染与参数乘子之后、逐轨电平与 PDC 之前**
         // ⇒ 普通轨的电平读数与汇入母线的信号都是"插入之后"的结果。

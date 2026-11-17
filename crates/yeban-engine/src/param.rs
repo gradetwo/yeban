@@ -453,6 +453,32 @@ impl ParamTable {
         }
     }
 
+    /// ⭐ stage 7：**一对声道共用同一条增益曲线**（⛔ 不让平滑器推进两次）。
+    ///
+    /// 逐轨的分声道通路（`render_branch` 的 `stereo_track`）要把同一份轨增益乘到
+    /// 左右两条缓冲上；两次 `apply` 会把 `ParamSmoother` 的状态**推进两次**（声音会错）
+    /// ⇒ 本方法是那个场景的唯一入口：**一次 `process()`，两个声道同值**。
+    ///
+    /// 与 [`Self::apply`] 的关系：槽位查找、恒等快路径、计数器口径都相同；
+    /// 返回值是**被乘过的帧数**（取两条缓冲的较短者）。
+    pub fn apply_pair(&mut self, entity: EntityId, left: &mut [f32], right: &mut [f32]) -> u64 {
+        let Some(index) = self.index_of(entity) else {
+            return 0;
+        };
+        let gain = &mut self.gains[index];
+        if gain.is_settled() && gain.value() == 1.0 {
+            return 0;
+        }
+        let frames = left.len().min(right.len());
+        for (l, r) in left[..frames].iter_mut().zip(right[..frames].iter_mut()) {
+            let value = gain.process();
+            *l *= value;
+            *r *= value;
+        }
+        self.gain_frames = self.gain_frames.wrapping_add(frames as u64);
+        frames as u64
+    }
+
     /// 逐样本：把本实体的增益乘子乘进 `out`，返回**被乘过的帧数**。
     ///
     /// 没有槽位、或槽位已吸附到 `1.0` ⇒ 一个样本都不碰（返回 `0`），
@@ -604,6 +630,44 @@ impl core::fmt::Debug for ParamTable {
 
 #[cfg(test)]
 mod tests {
+    /// ⭐ **stage 7 判据**：`apply_pair` 必须"一条增益曲线喂两个声道" ——
+    /// 左右逐帧**完全同值**，且与"单声道 `apply` 跑同一段"的读数**逐位相同**
+    /// （＝ 平滑器只推进一次；若实现成两次 `apply`，右声道会落后一帧）。
+    #[test]
+    fn the_pair_path_shares_one_gain_curve() {
+        let entity = EntityId::new();
+        let master = EntityId::new();
+        let mut table = ParamTable::new(48_000.0);
+        let mut mono = ParamTable::new(48_000.0);
+        let address = ParamAddress::new(entity, TRACK_GAIN_SLOT);
+        for table in [&mut table, &mut mono] {
+            assert!(matches!(
+                table.accept(address, 0.25, master),
+                ParamOutcome::Accepted
+            ));
+        }
+        let mut left = [1.0f32; 64];
+        let mut right = [1.0f32; 64];
+        let mut reference = [1.0f32; 64];
+        assert_eq!(table.apply_pair(entity, &mut left, &mut right), 64);
+        assert_eq!(mono.apply(entity, &mut reference), 64);
+        for index in 0..64 {
+            assert_eq!(left[index], right[index], "两个声道必须同值（{index}）");
+            assert_eq!(
+                left[index], reference[index],
+                "与单声道 `apply` 的读数必须逐位相同（平滑器只推进一次）（{index}）"
+            );
+        }
+        // 反向腿：把右声道换成一个**新的** `apply_pair` 调用（状态已前进）
+        // ⇒ 读数必须真的变化（证明上面那条相等不是"函数没干活"）。
+        let mut left_again = [1.0f32; 64];
+        let mut right_again = [1.0f32; 64];
+        let frames = table.apply_pair(entity, &mut left_again, &mut right_again);
+        assert!(frames > 0, "第二段仍有平滑在走");
+        assert_ne!(left_again[0], left[0], "状态已前进 ⇒ 第二段读数必须变");
+        assert_eq!(left_again[0], right_again[0], "第二段两声道仍必须同值");
+    }
+
     use super::*;
 
     const SR: f32 = 48_000.0;
