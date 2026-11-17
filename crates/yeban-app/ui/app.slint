@@ -660,6 +660,22 @@ export component MainWindow inherits Window {
     in-out property <float> track-reorder-preview-y: 0.0;
     in-out property <float> track-reorder-start-y: 0.0;
     in-out property <string> track-reorder-track: "";
+    // 顶栏窄窗分档（Wang 2026-11-17 裁决 F1/F2；落法由父 agent 参考 Logic Pro
+    // 控制栏定案：位置与速度恒显、次要读数进溢出区、再窄收辅助入口）。
+    // 与 `compact` 同款：绑 **Window 自身宽度**（平台给定、不经布局回授 ⇒ 无
+    // `layoutinfo-h` 绑定环；`compact_follows_window_width` 已证此形态随真 resize
+    // 翻档）。⛔ 不要改回 Rust 心跳注入：上一轮 `window-w` 单向注入实测没有到达
+    // 走带栏、紧凑分支全灭（见下方 TransportHeaderBar 实例化处旧注）。本轮只在
+    // 窗口根上算布尔、经属性传进走带栏，栏内元素只读布尔决定在场性。
+    //   - `transport-overflow`（F2）：宽 < 1880 时 KEY/SCALE、DSP、BUFFER 离场，
+    //     收进右岛 ⋯ 溢出弹出层；BAR/BEAT 与 TEMPO 常显。
+    //   - F1 辅助入口按**优先级**逐档收起（阈值依次降低，先列的先消失）：
+    //     品牌标（< 1540）→ TIPS（< 1500）→ 命令面板入口（< 1460）。
+    //     走带控制与 LCD 要项不在收起之列；被收的入口其快捷键/菜单路径照旧可用。
+    in-out property <bool> transport-hide-brand: self.width < 1540px;
+    in-out property <bool> transport-hide-cmd: self.width < 1460px;
+    in-out property <bool> transport-hide-tips: self.width < 1500px;
+    in-out property <bool> transport-overflow: self.width < 1880px;
     in-out property <bool> undo-can-redo: false;
     in-out property <bool> undo-can-undo: false;
     in-out property <int> undo-commit-count: 0;
@@ -1131,11 +1147,17 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
-                // ⛔ 这里本轮试过接 `compact: root.window-w < 1600px`（Rust 心跳单向注入窗口宽），
-                // 实测**判据没生效**：1460×700 窗口下 client 实测 1445×642，KEY/SCALE 依旧渲染、
-                // 右岛依旧被裁 ⇒ 注入的宽度没有到达 `TransportHeaderBar`，改过的紧凑分支全是死路，
-                // 已整体回退（源码见 git 历史 95e1c16）。窗口自身宽度做判据会触发 `layoutinfo-h`
-                // 绑定环。⇒ 右岛收窄改走「溢出菜单」并在 Slint 侧重新验证之前，先不要再动 `compact`。
+                overflow: root.transport-overflow;
+                hide-brand: root.transport-hide-brand;
+                hide-tips: root.transport-hide-tips;
+                hide-cmd: root.transport-hide-cmd;
+                // 窄窗分档（F1/F2）：判据是上方 `transport-*` 四个布尔 —— 绑 Window
+                // 自身宽度（与 `compact` 同款形态），在这里只把布尔传进走带栏。
+                // ⛔ 历史教训（源码见 git 历史 95e1c16）：上一轮接的是 Rust 心跳单向
+                // 注入的 `window-w`，实测注入没有到达本组件、紧凑分支全是死路；而把
+                // 窗口宽度在**布局内**当判据会触发 `layoutinfo-h` 绑定环。两条死路
+                // 都不要再走：宽度只许在 Window 根上读（`self.width` 绑定），栏内
+                // 一律只读传进来的布尔。
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }

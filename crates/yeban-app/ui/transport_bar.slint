@@ -582,6 +582,18 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
 
+    // 窄窗分档（Wang 2026-11-17 裁决 F1/F2）：由 MainWindow 按窗口宽算好后传入
+    // （app.slint 的 `transport-*`，绑 Window 自身宽度）。栏内只读这四个布尔
+    // 决定在场性，⛔ 不在本组件里读任何宽度（布局内读宽会成 `layoutinfo-h` 环）。
+    //   - `overflow`（F2）：KEY/SCALE、DSP、BUFFER 离场收进 ⋯ 弹出层；
+    //     BAR/BEAT 与 TEMPO 常显（借鉴 Logic Pro 控制栏的溢出收纳）。
+    //   - F1 收起优先级：`hide-brand`（品牌标）→ `hide-tips`（TIPS）→
+    //     `hide-cmd`（命令面板入口），阈值依次降低、先列的先消失。
+    in property <bool> overflow: false;
+    in property <bool> hide-brand: false;
+    in property <bool> hide-tips: false;
+    in property <bool> hide-cmd: false;
+
     callback toggle-zone(string);
     callback select-tool(string);
     callback toggle-play();
@@ -616,6 +628,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group A: Brand Mark (Official Studio Logo Mark)
             Rectangle {
+                // F1 第一优先收起：窄档离场（品牌名本体在主菜单/启动器仍在）。
+                visible: !root.hide-brand;
                 // 二期质感: 品牌块走 §10 外壳刷 (flat = 现行字面 #10131a)。
                 background: Tokens.texture-physical ? Tokens.shell-brush : #10131a;
                 border-radius: 4px;
@@ -1041,10 +1055,13 @@ export component TransportHeaderBar inherits Rectangle {
                         TooltipBubble { text: @tr("工程主速度: 点击循环切换 (124/128/140 BPM)"); is-visible: bpm_touch.has-hover; }
                     }
 
-                    Rectangle { width: 1px; height: 16px; background: Tokens.line; }
+                    // F2：分隔线随 KEY/SCALE 一起离场（读数在 ⋯ 弹出层里）。
+                    Rectangle { visible: !root.overflow; width: 1px; height: 16px; background: Tokens.line; }
 
                     // Global Scale Key
                     Rectangle {
+                        // F2：溢出档离场，读数与循环切换动作收进 ⋯ 弹出层（见右岛 Group F0）。
+                        visible: !root.overflow;
                         height: 24px;
                         VerticalLayout {
                             alignment: center;
@@ -1086,10 +1103,223 @@ export component TransportHeaderBar inherits Rectangle {
             spacing: 8px;
             alignment: end;
 
+            // Group F0: ⋯ 溢出按钮（F2，Wang 2026-11-17 裁决；借鉴 Logic Pro
+            // 控制栏：位置与速度恒显、次要读数收进可弹出的溢出区）。只在
+            // `overflow` 档在场；点开弹出层读全 KEY/SCALE、BUFFER、DSP 三项
+            // 完整读数 —— 层内三行与栏内原格**同源同落点**（同一批 root 属性、
+            // 同一组回调），点行照旧循环切换并关层。无新文案：钮面是符号 `⋯`，
+            // 层内标签复用栏内既有字面（"KEY / SCALE" / "BUFFER:" / "DSP" 与
+            // 三条既有 @tr 说明），不新增任何词条。
+            Rectangle {
+                visible: root.overflow;
+                width: 30px;
+                height: 28px;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Tokens.line;
+                accessible-role: button;
+                accessible-id: "transport-overflow-button";
+                accessible-label: "⋯";
+                // `[UI-A11Y-003]` §7.3：落点与 `touch_overflow` 的 `clicked` 逐字相同。
+                accessible-action-default => { overflow-popup.show(); }
+
+                Text {
+                    text: "⋯";
+                    font-family: Tokens.font-mono;
+                    font-size: 13px;
+                    color: Theme.accent;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                touch_overflow := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { overflow-popup.show(); }
+                }
+
+                // 弹出层（`PopupWindow`，与卷帘右键菜单同款）：默认不显示、
+                // 不占命中、不进默认帧；点层外任意处自动关。x 右对齐钮右沿，
+                // y 落在栏下 6px。层内行高 34px × 3 + 上下垫 8px = 118px。
+                overflow-popup := PopupWindow {
+                    x: parent.width - self.width;
+                    y: parent.height + 6px;
+                    width: 232px;
+                    height: 118px;
+                    close-policy: close-on-click-outside;
+
+                    Rectangle {
+                        background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+                        border-width: 1px;
+                        border-color: Tokens.line-strong;
+                        border-radius: Tokens.radius-sm;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 0px;
+
+                            // KEY / SCALE 行（点行 = 与 LCD 原格同一循环切换）。
+                            Rectangle {
+                                height: 34px;
+                                accessible-role: button;
+                                accessible-id: "transport-overflow-scale-row";
+                                accessible-label: @tr("全局工程调式: 点击循环切换");
+                                accessible-action-default => {
+                                    let next-scale = root.scale-text == "C Minor (自然小调)" ? "D Dorian (多利亚)" : (root.scale-text == "D Dorian (多利亚)" ? "F Major (大调)" : "C Minor (自然小调)");
+                                    root.change-scale(next-scale);
+                                    overflow-popup.close();
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Text {
+                                        text: "KEY / SCALE";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 8.5px;
+                                        letter-spacing: 0.4px;
+                                        color: #b6c2d2;
+                                        font-weight: 400;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        // 与 LCD 原格逐字同一显示映射（规范值只在显示点映射翻译）。
+                                        text: root.scale-text == "C Minor (自然小调)" ? @tr("C Minor (自然小调)") : root.scale-text == "D Dorian (多利亚)" ? @tr("D Dorian (多利亚)") : root.scale-text == "F Major (大调)" ? @tr("F Major (大调)") : root.scale-text;
+                                        font-family: Tokens.font-ui;
+                                        font-size: 10.5px;
+                                        color: Theme.status-ok;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                scale_row_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        let next-scale = root.scale-text == "C Minor (自然小调)" ? "D Dorian (多利亚)" : (root.scale-text == "D Dorian (多利亚)" ? "F Major (大调)" : "C Minor (自然小调)");
+                                        root.change-scale(next-scale);
+                                        overflow-popup.close();
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Tokens.line; }
+
+                            // BUFFER 行（点行 = 与原格同一热切换循环）。
+                            Rectangle {
+                                height: 34px;
+                                accessible-role: button;
+                                accessible-id: "transport-overflow-buffer-row";
+                                accessible-label: @tr("音频缓冲区延迟: 点击热切换 (64/128/512/2048 smp)");
+                                accessible-action-default => {
+                                    if (root.buffer-samples == 64) { root.hot-swap-buffer(128); }
+                                    else if (root.buffer-samples == 128) { root.hot-swap-buffer(512); }
+                                    else if (root.buffer-samples == 512) { root.hot-swap-buffer(2048); }
+                                    else { root.hot-swap-buffer(64); }
+                                    overflow-popup.close();
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Text {
+                                        text: "BUFFER:";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        letter-spacing: 0.3px;
+                                        color: #b6c2d2;
+                                        font-weight: 400;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "" + root.buffer-samples + " smp";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10.5px;
+                                        color: Theme.accent;
+                                        font-weight: 400;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                buffer_row_touch := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => {
+                                        if (root.buffer-samples == 64) { root.hot-swap-buffer(128); }
+                                        else if (root.buffer-samples == 128) { root.hot-swap-buffer(512); }
+                                        else if (root.buffer-samples == 512) { root.hot-swap-buffer(2048); }
+                                        else { root.hot-swap-buffer(64); }
+                                        overflow-popup.close();
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Tokens.line; }
+
+                            // DSP 行（纯读数，与原格同口径：无点击动作）。
+                            Rectangle {
+                                height: 34px;
+                                accessible-role: text;
+                                accessible-id: "transport-overflow-dsp-row";
+                                accessible-label: @tr("实时音频 DSP CPU 负荷率");
+                                accessible-value: "" + root.dsp-cpu-percent + "%";
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Text {
+                                        text: "DSP";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 9px;
+                                        letter-spacing: 0.3px;
+                                        color: #b6c2d2;
+                                        font-weight: 400;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "" + root.dsp-cpu-percent + "%";
+                                        font-family: Tokens.font-mono;
+                                        font-size: 10px;
+                                        color: Theme.status-ok;
+                                        font-weight: 400;
+                                        vertical-alignment: center;
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 62px;
+                                            height: 3px;
+                                            border-radius: 1.5px;
+                                            background: #080a10;
+                                            Rectangle {
+                                                x: 0;
+                                                width: (root.dsp-cpu-percent * 62px) / 100;
+                                                height: 3px;
+                                                border-radius: 1.5px;
+                                                background: Theme.status-ok;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Group F: Zero reload buffer switcher (High-contrast labels)
             // 显式宽度：此前靠内容撑开、挂在 alignment:end 右岛里会被挤到只露出
             // "BUFF"，1920 宽甚至整体不渲染（细节实测 §4.6 / 控件体检 §5）。
             Rectangle {
+                // F2：溢出档离场，读数与热切换动作收进 ⋯ 弹出层（见 Group F0）。
+                visible: !root.overflow;
                 width: 128px;
                 // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
                 background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
@@ -1135,6 +1365,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group G: DSP CPU Gauge (High-contrast)
             Rectangle {
+                // F2：溢出档离场，读数收进 ⋯ 弹出层（见 Group F0）。
+                visible: !root.overflow;
                 // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
                 background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
@@ -1277,6 +1509,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group I: Command palette button
             Rectangle {
+                // F1 第三优先收起：窄档离场（Ctrl+K 键路照旧可用）。
+                visible: !root.hide-cmd;
                 width: 52px;
                 height: 28px;
                 // 二期质感: 命令钮走 §10 凸起刷 (flat = 现行字面 #10141d)。
@@ -1321,6 +1555,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group K: Hover tooltips toggle switch (TIPS [T])
             Rectangle {
+                // F1 第二优先收起：窄档离场（[T] 键路照旧可用）。
+                visible: !root.hide-tips;
                 width: 30px;
                 height: 28px;
                 background: Theme.show-tooltips ? Theme.accent.with-alpha(0.18) : #10141d;
