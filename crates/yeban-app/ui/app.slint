@@ -1,5 +1,5 @@
-import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
-export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
+import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
+export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -221,8 +221,8 @@ export component MainWindow inherits Window {
     in-out property <bool> console-maximized: false;
     // 界面语言当前态（九语 i18n）：语言代码（"zh-CN" 等九语规范名）与
     // 自称名（"中文" / "English" / ...）。宿主持有的状态
-    // （host::apply_language 唯一写入口），此处只是给走带栏 Group L
-    // 菜单与主菜单读的镜像，.slint 侧不自己翻它。
+    // （host::apply_language 唯一写入口），此处只是给主菜单
+    // 「设置 → 语言」的当前态勾选读的镜像，.slint 侧不自己翻它。
     in-out property <string> language-code: "zh-CN";
     in-out property <string> language-name: "中文";
     in-out property <bool> song-overview-fullscreen: false;
@@ -294,16 +294,24 @@ export component MainWindow inherits Window {
     callback console-maximize-toggle();
     callback toggle-play();
     callback toggle-record();
-    // 界面语言选择（九语 i18n）：由走带栏 Group L 语言菜单与主菜单
-    // 「设置 → 语言」触发，入参为语言规范名（"fr-FR" 等），宿主接管
-    // （host::apply_language 是唯一写入口，.slint 侧不自己改语言状态；
-    // 显式选择同时写回设置文件，见 host::apply_language_and_save）。
+    // 界面语言选择（九语 i18n）：由主菜单「设置 → 语言」触发，入参为
+    // 语言规范名（"fr-FR" 等），宿主接管（host::apply_language 是唯一
+    // 写入口，.slint 侧不自己改语言状态；显式选择同时写回设置文件，
+    // 见 host::apply_language_and_save）。走带栏语言 chip 已按负责人
+    // 2026-11-17 口径撤销，菜单是唯一运行期入口。
     callback select-language(string);
     // 恢复默认布局（line/ui-window-state）：由主菜单「设置 → 恢复默认
     // 布局」触发，宿主接管（host::reset_window_layout 是唯一落点：应用
     // .slint 初值并清掉已存布局；.slint 侧不自己改布局状态，与
     // select-language 同款）。
     callback reset-window-layout();
+    // 界面质感选择（扁平 / 实体）：由主菜单「设置 → 质感」触发，入参为
+    // 质感规范名（"flat" / "physical"），宿主接管（host::apply_texture
+    // 是 Tokens.texture 的唯一写入口，与 CLI --texture 同一写点）。
+    // 与语言不同：质感不写设置文件——现行口径就是会话内切换，初始值
+    // 由启动路径按 --texture 注入（负责人 2026-11-17 口径：切换入口
+    // 统一进主菜单，走带栏质感开关已撤销）。
+    callback select-texture(string);
     callback revert-to-last-commit();
     callback open-cmd-palette();
     callback open-musical-pr();
@@ -929,25 +937,38 @@ export component MainWindow inherits Window {
             MenuItem { title: @tr("开启/关闭 悬浮功能提示 (T)"); activated => { root.command-execute("toggle-tooltips"); } }
             MenuItem { title: @tr("显隐 架构热区透视 (H)"); activated => { root.command-execute("toggle-hotspots"); } }
         }
-        // 设置（九语 i18n）：语言选择的主菜单入口，与走带栏 Group L 语言菜单
-        // 同调一个 select-language 回调。当前语言的项名前缀 "✓"（MenuItem 的
-        // checked 属性会在激活时自翻，与 language-code 绑定冲突，故不用它，
-        // 改拼标题前缀；标题用表达式拼接，免得 "✓ 中文" 整串落进覆盖判据
-        // 的硬编码 CJK 白名单）。自称名按定义不走 @tr。
-        // 「恢复默认布局」由 line/ui-window-state 加在本菜单末尾（语言项
-        // 之后）：走独立回调 reset-window-layout，宿主应用默认值并清掉
-        // 已存布局，语言选择不受影响。
+        // 设置（负责人 2026-11-17 口径：语言与质感两个切换入口统一进
+        // 系统主菜单，不要走带栏按钮/chip）：「语言」子菜单九语，调
+        // select-language（宿主应用并写回设置文件）；「质感」子菜单
+        // 扁平/实体两项，调 select-texture（宿主经 apply_texture 写
+        // Tokens.texture，会话内生效、不写设置文件）。当前态的项名前缀
+        // "✓"（MenuItem 的 checked 属性会在激活时自翻，与状态绑定冲突，
+        // 故不用它，改拼标题前缀；标题用表达式拼接，免得 "✓ 中文" 整串
+        // 落进覆盖判据的硬编码 CJK 白名单）。语言自称名按定义不走 @tr；
+        // 子菜单标题与质感两项走 @tr。
+        // 「恢复默认布局」（line/ui-window-state）与「音源管理...」
+        // （line/sound-library-manager）同在本菜单末尾：前者走独立回调
+        // reset-window-layout，宿主应用默认值并清掉已存布局，语言
+        // 选择不受影响。
         Menu {
             title: @tr("设置");
-            MenuItem { title: (root.language-code == "zh-CN" ? "✓ " : "") + "中文"; activated => { root.select-language("zh-CN"); } }
-            MenuItem { title: (root.language-code == "en-US" ? "✓ " : "") + "English"; activated => { root.select-language("en-US"); } }
-            MenuItem { title: (root.language-code == "fr-FR" ? "✓ " : "") + "Français"; activated => { root.select-language("fr-FR"); } }
-            MenuItem { title: (root.language-code == "es-ES" ? "✓ " : "") + "Español"; activated => { root.select-language("es-ES"); } }
-            MenuItem { title: (root.language-code == "pt-BR" ? "✓ " : "") + "Português"; activated => { root.select-language("pt-BR"); } }
-            MenuItem { title: (root.language-code == "ja-JP" ? "✓ " : "") + "日本語"; activated => { root.select-language("ja-JP"); } }
-            MenuItem { title: (root.language-code == "ko-KR" ? "✓ " : "") + "한국어"; activated => { root.select-language("ko-KR"); } }
-            MenuItem { title: (root.language-code == "ru-RU" ? "✓ " : "") + "Русский"; activated => { root.select-language("ru-RU"); } }
-            MenuItem { title: (root.language-code == "de-DE" ? "✓ " : "") + "Deutsch"; activated => { root.select-language("de-DE"); } }
+            Menu {
+                title: @tr("语言");
+                MenuItem { title: (root.language-code == "zh-CN" ? "✓ " : "") + "中文"; activated => { root.select-language("zh-CN"); } }
+                MenuItem { title: (root.language-code == "en-US" ? "✓ " : "") + "English"; activated => { root.select-language("en-US"); } }
+                MenuItem { title: (root.language-code == "fr-FR" ? "✓ " : "") + "Français"; activated => { root.select-language("fr-FR"); } }
+                MenuItem { title: (root.language-code == "es-ES" ? "✓ " : "") + "Español"; activated => { root.select-language("es-ES"); } }
+                MenuItem { title: (root.language-code == "pt-BR" ? "✓ " : "") + "Português"; activated => { root.select-language("pt-BR"); } }
+                MenuItem { title: (root.language-code == "ja-JP" ? "✓ " : "") + "日本語"; activated => { root.select-language("ja-JP"); } }
+                MenuItem { title: (root.language-code == "ko-KR" ? "✓ " : "") + "한국어"; activated => { root.select-language("ko-KR"); } }
+                MenuItem { title: (root.language-code == "ru-RU" ? "✓ " : "") + "Русский"; activated => { root.select-language("ru-RU"); } }
+                MenuItem { title: (root.language-code == "de-DE" ? "✓ " : "") + "Deutsch"; activated => { root.select-language("de-DE"); } }
+            }
+            Menu {
+                title: @tr("质感");
+                MenuItem { title: (Tokens.texture == TextureMode.flat ? "✓ " : "") + @tr("扁平"); activated => { root.select-texture("flat"); } }
+                MenuItem { title: (Tokens.texture == TextureMode.physical ? "✓ " : "") + @tr("实体"); activated => { root.select-texture("physical"); } }
+            }
             MenuItem { title: @tr("恢复默认布局"); activated => { root.reset-window-layout(); } }
             MenuSeparator {}
             MenuItem { title: @tr("音源管理..."); activated => { root.command-execute("open-sound-library"); } }
@@ -1062,8 +1083,6 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
-                language-code: root.language-code;
-                language-name: root.language-name;
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
@@ -1077,7 +1096,6 @@ export component MainWindow inherits Window {
                     root.edit-tool-selected(t);
                 }
                 toggle-play() => { root.toggle-play(); }
-                select-language(code) => { root.select-language(code); }
                 toggle-rec() => { root.toggle-record(); }
                 toggle-record => { root.toggle-record(); }
                 toggle-loop() => { root.transport-toggle-loop(); }

@@ -1,0 +1,99 @@
+// 夜半 (Yeban) — 共享控件 · 按键 (`line/ui-skeuo-theme` 一期, 2026-11-16)
+//
+// 根承载无障碍语义 (`button` + `checkable`, 与旧内联的节点形状一致),
+// 视觉层是根的子矩形 —— 按下位移只动视觉层, ⛔ 不动语义节点的几何。
+//
+// flat: 与旧内联逐像素相同 (未选 `bg-void` / 已选 `checked-bg`,
+// 圆角 `radius-sm`, 无描边, 文案 `ink-2`)。
+//
+// physical: 软触材质 —— 圆角放大到 `radius-soft` (5px), 未选态走凹陷面
+// 渐变, 已选态在语义色上叠一层极淡顶光; 按下时视觉层下移 1px 且落影
+// 收缩到按下档 (`shadow-pressed-*`)。光源恒左上 (顶光在上、投影右下)。
+
+import { Tokens, UiText } from "../tokens.slint";
+
+export component PushButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> checked: false;
+    /// 已选态底色 (语义色由调用方注入: 静音 `record-red` / 独奏 `gold-deep`)。
+    in property <color> checked-bg: Tokens.record-red;
+    /// 文案色 (已选 / 未选同为 `ink-2` 是混音台 M/S 的旧观感, 逐位保留;
+    /// 需要区分的调用方自行注入)。
+    in property <color> fg: Tokens.ink-2;
+    /// 文案字号 (混音台 M/S 注入 `font-size-xs`, 与旧内联逐位相同)。
+    in property <length> font-size: Tokens.font-size-sm;
+    // 无障碍转发 (根即语义节点)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    callback clicked();
+
+    accessible-role: button;
+    accessible-id: root.a11y-id;
+    accessible-label: root.a11y-label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    // 视觉层 (按下位移的作用对象)。
+    Rectangle {
+        y: touch.pressed && Tokens.texture-physical ? 1px : 0px;
+        width: parent.width;
+        height: parent.height;
+        // 已选态在两模式下都是语义纯色 (physical 的软触感来自顶光 + 斜面
+        // + 阴影, 不改状态色); 未选态走 `void-brush` (flat 时 = `bg-void`)。
+        background: root.checked
+            ? @linear-gradient(180deg, root.checked-bg, root.checked-bg)
+            : Tokens.void-brush;
+        border-radius: Tokens.texture-physical ? Tokens.radius-soft : Tokens.radius-sm;
+        drop-shadow-color: Tokens.shadow-color.with-alpha(
+            touch.pressed && Tokens.texture-physical ? Tokens.shadow-pressed-alpha : Tokens.shadow-ctl-alpha);
+        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+        drop-shadow-offset-y: touch.pressed && Tokens.texture-physical ? Tokens.shadow-pressed-offset-y : Tokens.shadow-ctl-offset-y;
+        drop-shadow-blur: touch.pressed && Tokens.texture-physical ? Tokens.shadow-pressed-blur : Tokens.shadow-ctl-blur;
+
+        // physical: 上沿受光线 (斜面亮边; 已选态同样保留 —— 软触的顶光
+        // 不随状态色变向)。
+        Rectangle {
+            x: 1px;
+            y: 0;
+            width: parent.width - 2px;
+            height: 1px;
+            background: Tokens.bevel-light;
+        }
+
+        // physical: 顶光 (软触低反光: 上半区一层 5% 白, 圆角随父)。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height / 2;
+            background: Tokens.soft-sheen;
+            border-top-left-radius: Tokens.texture-physical ? Tokens.radius-soft : Tokens.radius-sm;
+            border-top-right-radius: Tokens.texture-physical ? Tokens.radius-soft : Tokens.radius-sm;
+        }
+
+        // 文案只做水平居中, ⛔ 不加垂直居中 —— 旧内联 M/S 的文本是顶对齐
+        // 落在 16px 高的盒子里, flat 逐像素保留以那一份为准。
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.text;
+            font-size: root.font-size;
+            color: root.fg;
+            horizontal-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.clicked();
+        }
+    }
+}

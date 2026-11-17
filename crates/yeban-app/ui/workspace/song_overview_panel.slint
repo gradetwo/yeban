@@ -158,6 +158,8 @@ export component SongOverviewPanel inherits Rectangle {
     // 到不了的值）；非全屏时仍是 104 / 22 写死值。
     min-height: root.fullscreen ? 0px : (root.collapsed ? 22px : 104px);
     max-height: root.fullscreen ? 100000px : (root.collapsed ? 22px : 104px);
+    // 编辑面回平 (负责人 2026-11-17 拟物重点口径): 总览面板本体/画布/
+    // 底部疏密条两套主题同为平色, 质感只留给层开关胶囊与折叠键。
     background: Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line;
@@ -597,8 +599,11 @@ export component SongOverviewPanel inherits Rectangle {
         // ⭐ [PATCH UI-FEEDBACK-01]：胶囊此前只有「选中态」会变色，鼠标悬浮 / 按下
         // 一位不动 —— 用户不确定自己有没有指到。金边 = 悬浮，按下时板提亮。默认帧
         // （未悬浮、未按下）逐字回落到原来的状态三元 / `line` ⇒ 选中态与 golden 零像素位移。
-        background: pill_touch.pressed ? Tokens.bg-raised
-            : ((pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.gold : Tokens.bg-panel);
+        background: Tokens.texture-physical
+            ? (pill_touch.pressed ? Tokens.raised-brush
+                : ((pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.gold : Tokens.panel-brush))
+            : (pill_touch.pressed ? Tokens.bg-raised
+                : ((pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.gold : Tokens.bg-panel));
         border-radius: 8px;
         border-width: 1px;
         border-color: pill_touch.has-hover ? Tokens.gold : Tokens.line;
@@ -639,7 +644,7 @@ export component SongOverviewPanel inherits Rectangle {
         height: 16px;
         // ⭐ [PATCH UI-FEEDBACK-01]：折叠键此前点下去一位不动。金边 = 悬浮，按下提亮；
         // 默认帧逐字回落到原来的 `bg-panel` / `line` ⇒ golden 零像素位移。
-        background: collapse_touch.pressed ? Tokens.bg-raised : Tokens.bg-panel;
+        background: Tokens.texture-physical ? (collapse_touch.pressed ? Tokens.raised-brush : Tokens.panel-brush) : (collapse_touch.pressed ? Tokens.bg-raised : Tokens.bg-panel);
         border-radius: 8px;
         border-width: 1px;
         border-color: collapse_touch.has-hover ? Tokens.gold : Tokens.line;

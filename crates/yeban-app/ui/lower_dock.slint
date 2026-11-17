@@ -461,7 +461,8 @@ export component UnifiedLowerDock inherits Rectangle {
 
                 if root.device-names.length == 0 : Rectangle {
                     width: 340px;
-                    background: Theme.bg-surface;
+                    // 一期质感: flat 分支保留旧值; physical 走 §10 壳面刷。
+                    background: Tokens.texture-physical ? Tokens.shell-brush : Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
@@ -573,11 +574,16 @@ export component UnifiedLowerDock inherits Rectangle {
 
                 for dev_name[idx] in root.device-names : Rectangle {
                     width: 240px;
-                    background: Theme.bg-surface;
+                    // 一期质感: flat 分支保留旧值; physical 走面板刷 (旁通卡片走凹面刷)。
+                    background: Tokens.texture-physical ? (root.device-bypassed[idx] ? Tokens.void-brush : Tokens.panel-brush) : Theme.bg-surface;
                     border-radius: Theme.radius;
                     border-width: 1px;
                     border-color: root.device-bypassed[idx] ? Theme.border-subtle : Theme.accent.with-alpha(0.45);
                     opacity: root.device-bypassed[idx] ? 0.65 : 1.0;
+                    drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                    drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                    drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                    drop-shadow-blur: Tokens.shadow-panel-blur;
 
                     VerticalLayout {
                         padding: 8px;
@@ -658,7 +664,8 @@ export component UnifiedLowerDock inherits Rectangle {
                         // Real Device Visualizer / EQ Preview Box
                         Rectangle {
                             height: 64px;
-                            background: #06080d;
+                            // 一期质感: flat 分支保留旧值; physical 走 §10 玻璃刷。
+                            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
                             border-radius: 4px;
                             border-width: 1px;
                             border-color: #191f2c;
@@ -670,6 +677,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                 width: parent.width;
                                 height: 1px;
                                 background: Tokens.line;
+                            }
+
+                            // 一期质感: 玻璃斜向反光 (flat 下 alpha 为 0, 不画像素)。
+                            Path {
+                                width: parent.width;
+                                height: parent.height;
+                                viewbox-x: 0;
+                                viewbox-y: 0;
+                                viewbox-width: 224;
+                                viewbox-height: 64;
+                                fill: Tokens.glass-reflection;
+                                stroke-width: 0px;
+                                MoveTo { x: 10; y: 0; }
+                                LineTo { x: 80; y: 0; }
+                                LineTo { x: 51; y: 64; }
+                                LineTo { x: -19; y: 64; }
                             }
 
                             // 占位：卡片频响尚未接真实设备参数（⛔ 不画常量曲线冒充
@@ -711,7 +734,8 @@ export component UnifiedLowerDock inherits Rectangle {
                         HorizontalLayout {
                             spacing: 4px;
                             Rectangle {
-                                background: #080a10;
+                                // 一期质感: flat 分支保留旧值; physical 走凸面刷。
+                                background: Tokens.texture-physical ? Tokens.raised-brush : #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Tokens.line;
@@ -737,7 +761,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                background: #080a10;
+                                // 一期质感: flat 分支保留旧值; physical 走凸面刷。
+                                background: Tokens.texture-physical ? Tokens.raised-brush : #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Tokens.line;
@@ -763,7 +788,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                background: dev_swap_touch.has-hover ? Theme.accent.with-alpha(0.22) : #080a10;
+                                // 一期质感: flat 分支保留悬停/常态原值; physical 走强调刷 (悬停) / 凸面刷 (常态)。
+                                background: Tokens.texture-physical ? (dev_swap_touch.has-hover ? Tokens.accent-brush : Tokens.raised-brush) : (dev_swap_touch.has-hover ? Theme.accent.with-alpha(0.22) : #080a10);
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Tokens.line;
@@ -797,7 +823,8 @@ export component UnifiedLowerDock inherits Rectangle {
             if root.active-tab == "stacked" || root.active-tab == "mixer" : Rectangle {
                 horizontal-stretch: root.active-tab == "stacked" ? 2 : 1;
                 min-width: root.active-tab == "stacked" ? 400px : 560px;
-                background: Theme.bg-surface;
+                // 一期质感: flat 分支保留旧值 (逐像素不变); physical 走 §10 壳面刷。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Theme.bg-surface;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
@@ -811,11 +838,17 @@ export component UnifiedLowerDock inherits Rectangle {
                     for trk[tidx] in root.tracks : Rectangle {
                         width: 82px;
                         vertical-stretch: 1;
-                        // 选中不靠色边框：底色提亮一档承载（#080a10 向白混合 3% ⇒ #0f1117，相对亮度约 1.7 倍，与编曲选中提亮同量级）。
-                        background: trk.id == root.selected-track-id ? #0f1117 : #080a10;
+                        // 一期质感: physical 走 §10 面板刷 + 面板级落影; flat 分支保留旧值，
+                        // 且选中不靠色边框：底色提亮一档承载（#080a10 向白混合 3% ⇒ #0f1117，
+                        // 相对亮度约 1.7 倍，与编曲选中提亮同量级）。
+                        background: Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? #0f1117 : #080a10);
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: #191f2c;
+                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                        drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                        drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                        drop-shadow-blur: Tokens.shadow-panel-blur;
                         clip: true;
 
                         // Background selection TouchArea declared BEFORE foreground controls so M/S/Pan/Fader remain clickable
@@ -985,7 +1018,8 @@ export component UnifiedLowerDock inherits Rectangle {
                             // 4. EQ Curve Preview (Revealed when maximized)
                             if root.console-maximized : Rectangle {
                                 height: 30px;
-                                background: #07090e;
+                                // 一期质感: flat 分支保留旧值; physical 走 §10 玻璃刷。
+                                background: Tokens.texture-physical ? Tokens.glass-brush : #07090e;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: #191f2c;
@@ -998,6 +1032,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                     width: parent.width;
                                     height: 1px;
                                     background: trk.color.with-alpha(0.35);
+                                }
+
+                                // 一期质感: 玻璃斜向反光 (flat 下 alpha 为 0, 不画像素)。
+                                Path {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    viewbox-x: 0;
+                                    viewbox-y: 0;
+                                    viewbox-width: 72;
+                                    viewbox-height: 30;
+                                    fill: Tokens.glass-reflection;
+                                    stroke-width: 0px;
+                                    MoveTo { x: 10; y: 0; }
+                                    LineTo { x: 32; y: 0; }
+                                    LineTo { x: 24; y: 30; }
+                                    LineTo { x: 2; y: 30; }
                                 }
 
                                 Text {
@@ -1051,10 +1101,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Rectangle {
                                         width: 16px;
                                         height: 16px;
-                                        border-radius: 2px;
+                                        // 一期质感: 软触圆角 (flat 下 = 2px 原值); 斜面亮/暗边与落影在 flat 下 alpha 为 0。
+                                        border-radius: Tokens.radius-soft;
                                         background: trk.muted ? #9a6a38 : #12151e;
                                         border-width: 1px;
                                         border-color: trk.muted ? #825828 : Tokens.line;
+                                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                        drop-shadow-blur: Tokens.shadow-ctl-blur;
                                         Text {
                                             text: "M";
                                             font-family: Tokens.font-mono;
@@ -1063,6 +1118,20 @@ export component UnifiedLowerDock inherits Rectangle {
                                             color: trk.muted ? #020617 : #cbd5e1;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: 0;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-light;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: parent.height - 1px;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-dark;
                                         }
                                         m_touch := TouchArea {
                                             mouse-cursor: MouseCursor.pointer;
@@ -1073,10 +1142,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                     Rectangle {
                                         width: 16px;
                                         height: 16px;
-                                        border-radius: 2px;
+                                        // 一期质感: 软触圆角 (flat 下 = 2px 原值); 斜面亮/暗边与落影在 flat 下 alpha 为 0。
+                                        border-radius: Tokens.radius-soft;
                                         background: trk.soloed ? Theme.accent : #12151e;
                                         border-width: 1px;
                                         border-color: trk.soloed ? Theme.accent : Tokens.line;
+                                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                        drop-shadow-blur: Tokens.shadow-ctl-blur;
                                         Text {
                                             text: "S";
                                             font-family: Tokens.font-mono;
@@ -1085,6 +1159,20 @@ export component UnifiedLowerDock inherits Rectangle {
                                             color: trk.soloed ? #020617 : #cbd5e1;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: 0;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-light;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: parent.height - 1px;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-dark;
                                         }
                                         s_touch := TouchArea {
                                             mouse-cursor: MouseCursor.pointer;
@@ -1096,10 +1184,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 36px;
                                     height: 16px;
-                                    border-radius: 2px;
-                                    background: mix_pan_touch.has-hover ? #1e293b : #0c1018;
+                                    // 一期质感: flat 分支保留悬停/常态原值; physical 走凸面刷 (悬停更亮一档)。
+                                    border-radius: Tokens.radius-soft;
+                                    background: Tokens.texture-physical ? (mix_pan_touch.has-hover ? Tokens.raised-brush : Tokens.panel-brush) : (mix_pan_touch.has-hover ? #1e293b : #0c1018);
                                     border-width: 1px;
                                     border-color: mix_pan_touch.has-hover ? Theme.accent : Tokens.line;
+                                    drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                    drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                    drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                    drop-shadow-blur: Tokens.shadow-ctl-blur;
                                     Text {
                                         text: trk.pan;
                                         font-family: Tokens.font-mono;
@@ -1108,6 +1201,20 @@ export component UnifiedLowerDock inherits Rectangle {
                                         font-weight: 400;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        x: 1px;
+                                        y: 0;
+                                        width: parent.width - 2px;
+                                        height: 1px;
+                                        background: Tokens.bevel-light;
+                                    }
+                                    Rectangle {
+                                        x: 1px;
+                                        y: parent.height - 1px;
+                                        width: parent.width - 2px;
+                                        height: 1px;
+                                        background: Tokens.bevel-dark;
                                     }
                                     mix_pan_touch := TouchArea {
                                         mouse-cursor: MouseCursor.ew-resize;
@@ -1138,7 +1245,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 24px;
                                     height: 88px;
-                                    background: #06080d;
+                                    // 一期质感: flat 分支保留旧值; physical 走凹面刷 + 凹槽内影线。
+                                    background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1151,6 +1259,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                         height: parent.height - 8px;
                                         background: #000000;
                                         border-radius: 1px;
+                                    }
+
+                                    // 一期质感: 凹槽内影 (flat 下 alpha 为 0)。
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Tokens.recess-dark;
+                                    }
+                                    Rectangle {
+                                        x: 0;
+                                        y: parent.height - 1px;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Tokens.recess-light;
                                     }
 
                                     // dB scale ticks on sides
@@ -1168,10 +1292,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (trk.volume_db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
-                                        background: #94a3b8;
+                                        // 一期质感: flat 分支保留旧值与 1px 强调边; physical 走凸面刷 + 斜面 + 控件级落影。
+                                        background: Tokens.texture-physical ? Tokens.raised-brush : #94a3b8;
                                         border-radius: 2px;
-                                        border-width: 1px;
+                                        border-width: Tokens.texture-physical ? 0px : 1px;
                                         border-color: #cbd5e1;
+                                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                        drop-shadow-blur: Tokens.shadow-ctl-blur;
 
                                         Rectangle {
                                             x: 0;
@@ -1179,6 +1308,21 @@ export component UnifiedLowerDock inherits Rectangle {
                                             width: parent.width;
                                             height: 2px;
                                             background: trk.color;
+                                        }
+
+                                        Rectangle {
+                                            x: 1px;
+                                            y: 0;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-light;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: parent.height - 1px;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-dark;
                                         }
                                     }
 
@@ -1204,7 +1348,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 6px;
                                     height: 88px;
-                                    background: #06080d;
+                                    // 一期质感: flat 分支保留旧值; physical 走玻璃刷。
+                                    background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
                                     border-radius: 1px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1217,6 +1362,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                         height: trk.meter_peak * parent.height;
                                         background: trk.meter_peak > 0.8 ? Theme.status-warn : Theme.status-ok;
                                         border-radius: 1px;
+                                        // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
+                                        drop-shadow-color: (trk.meter_peak > 0.8 ? Theme.status-warn : Theme.status-ok).with-alpha(Tokens.glass-glow-alpha);
+                                        drop-shadow-offset-x: 0px;
+                                        drop-shadow-offset-y: 0px;
+                                        drop-shadow-blur: 3px;
                                     }
                                 }
                             }
@@ -1227,7 +1377,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 50px;
                                     height: 17px;
-                                    background: #080c14;
+                                    // 一期质感: flat 分支保留旧值; physical 走壳面刷。
+                                    background: Tokens.texture-physical ? Tokens.shell-brush : #080c14;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1273,8 +1424,13 @@ export component UnifiedLowerDock inherits Rectangle {
                     if root.active-tab == "mixer" : Rectangle {
                         width: 88px;
                         vertical-stretch: 1;
-                        background: #080a10;
+                        // 一期质感: flat 分支保留旧值; physical 走 §10 面板刷 + 面板级落影。
+                        background: Tokens.texture-physical ? Tokens.panel-brush : #080a10;
                         border-radius: 4px;
+                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                        drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                        drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                        drop-shadow-blur: Tokens.shadow-panel-blur;
                         border-width: 1px;
                         border-color: Theme.track-bus.mix(Theme.bg-surface, 0.40);
                         clip: true;
@@ -1430,7 +1586,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 24px;
                                     height: 88px;
-                                    background: #06080d;
+                                    // 一期质感: flat 分支保留旧值; physical 走凹面刷 + 凹槽内影线。
+                                    background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1442,6 +1599,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                         height: parent.height - 8px;
                                         background: #000000;
                                         border-radius: 1px;
+                                    }
+
+                                    // 一期质感: 凹槽内影 (flat 下 alpha 为 0)。
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Tokens.recess-dark;
+                                    }
+                                    Rectangle {
+                                        x: 0;
+                                        y: parent.height - 1px;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Tokens.recess-light;
                                     }
 
                                     for tick_y in [14px, 28px, 42px, 56px, 70px] : Rectangle {
@@ -1457,10 +1630,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-volume-db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
-                                        background: #94a3b8;
+                                        // 一期质感: flat 分支保留旧值与 1px 强调边; physical 走凸面刷 + 斜面 + 控件级落影。
+                                        background: Tokens.texture-physical ? Tokens.raised-brush : #94a3b8;
                                         border-radius: 2px;
-                                        border-width: 1px;
+                                        border-width: Tokens.texture-physical ? 0px : 1px;
                                         border-color: #cbd5e1;
+                                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                        drop-shadow-blur: Tokens.shadow-ctl-blur;
 
                                         Rectangle {
                                             x: 0;
@@ -1468,6 +1646,21 @@ export component UnifiedLowerDock inherits Rectangle {
                                             width: parent.width;
                                             height: 2px;
                                             background: Theme.track-bus;
+                                        }
+
+                                        Rectangle {
+                                            x: 1px;
+                                            y: 0;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-light;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: parent.height - 1px;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-dark;
                                         }
                                     }
 
@@ -1497,7 +1690,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 6px;
                                     height: 88px;
-                                    background: #06080d;
+                                    // 一期质感: flat 分支保留旧值; physical 走玻璃刷。
+                                    background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
                                     border-radius: 1px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1510,6 +1704,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                         height: 48px;
                                         background: Theme.status-ok;
                                         border-radius: 1px;
+                                        // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
+                                        drop-shadow-color: Theme.status-ok.with-alpha(Tokens.glass-glow-alpha);
+                                        drop-shadow-offset-x: 0px;
+                                        drop-shadow-offset-y: 0px;
+                                        drop-shadow-blur: 3px;
                                     }
                                 }
                             }
@@ -1520,7 +1719,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 50px;
                                     height: 17px;
-                                    background: #080c14;
+                                    // 一期质感: flat 分支保留旧值; physical 走壳面刷。
+                                    background: Tokens.texture-physical ? Tokens.shell-brush : #080c14;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1565,10 +1765,15 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         width: 92px;
                         vertical-stretch: 1;
-                        background: #05070c;
+                        // 一期质感: flat 分支保留旧值; physical 走 §10 壳面刷 + 面板级落影。
+                        background: Tokens.texture-physical ? Tokens.shell-brush : #05070c;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: Theme.accent.with-alpha(0.35);
+                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
+                        drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
+                        drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
+                        drop-shadow-blur: Tokens.shadow-panel-blur;
                         clip: true;
 
                         VerticalLayout {
@@ -1670,10 +1875,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 32px;
                                     height: 16px;
-                                    border-radius: 2px;
+                                    // 一期质感: 软触圆角 (flat 下 = 2px 原值); 斜面亮/暗边与落影在 flat 下 alpha 为 0。
+                                    border-radius: Tokens.radius-soft;
                                     background: root.master-mono ? #f59e0b : (master_mono_touch.has-hover ? #1e293b : #10141d);
                                     border-width: 1px;
                                     border-color: root.master-mono ? #d97706 : Tokens.line;
+                                    drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                    drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                    drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                    drop-shadow-blur: Tokens.shadow-ctl-blur;
                                     Text {
                                         text: "MONO";
                                         font-family: Tokens.font-mono;
@@ -1682,6 +1892,20 @@ export component UnifiedLowerDock inherits Rectangle {
                                         color: root.master-mono ? #0f172a : #cbd5e1;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        x: 1px;
+                                        y: 0;
+                                        width: parent.width - 2px;
+                                        height: 1px;
+                                        background: Tokens.bevel-light;
+                                    }
+                                    Rectangle {
+                                        x: 1px;
+                                        y: parent.height - 1px;
+                                        width: parent.width - 2px;
+                                        height: 1px;
+                                        background: Tokens.bevel-dark;
                                     }
                                     master_mono_touch := TouchArea {
                                         mouse-cursor: MouseCursor.pointer;
@@ -1711,7 +1935,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 24px;
                                     height: 88px;
-                                    background: #040509;
+                                    // 一期质感: flat 分支保留旧值; physical 走凹面刷 + 凹槽内影线。
+                                    background: Tokens.texture-physical ? Tokens.void-brush : #040509;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1723,6 +1948,22 @@ export component UnifiedLowerDock inherits Rectangle {
                                         height: parent.height - 8px;
                                         background: #000000;
                                         border-radius: 1px;
+                                    }
+
+                                    // 一期质感: 凹槽内影 (flat 下 alpha 为 0)。
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Tokens.recess-dark;
+                                    }
+                                    Rectangle {
+                                        x: 0;
+                                        y: parent.height - 1px;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Tokens.recess-light;
                                     }
 
                                     for tick_y in [14px, 28px, 42px, 56px, 70px] : Rectangle {
@@ -1738,10 +1979,15 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (root.master-volume-db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
-                                        background: #cbd5e1;
+                                        // 一期质感: flat 分支保留旧值与 1px 强调边; physical 走凸面刷 + 斜面 + 控件级落影。
+                                        background: Tokens.texture-physical ? Tokens.raised-brush : #cbd5e1;
                                         border-radius: 2px;
-                                        border-width: 1px;
+                                        border-width: Tokens.texture-physical ? 0px : 1px;
                                         border-color: #ffffff;
+                                        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+                                        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+                                        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+                                        drop-shadow-blur: Tokens.shadow-ctl-blur;
 
                                         Rectangle {
                                             x: 0;
@@ -1749,6 +1995,21 @@ export component UnifiedLowerDock inherits Rectangle {
                                             width: parent.width;
                                             height: 2px;
                                             background: Theme.accent;
+                                        }
+
+                                        Rectangle {
+                                            x: 1px;
+                                            y: 0;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-light;
+                                        }
+                                        Rectangle {
+                                            x: 1px;
+                                            y: parent.height - 1px;
+                                            width: parent.width - 2px;
+                                            height: 1px;
+                                            background: Tokens.bevel-dark;
                                         }
                                     }
 
@@ -1774,7 +2035,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 10px;
                                     height: 88px;
-                                    background: #040509;
+                                    // 一期质感: flat 分支保留旧值; physical 走玻璃刷。
+                                    background: Tokens.texture-physical ? Tokens.glass-brush : #040509;
                                     border-radius: 1px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1791,6 +2053,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 width: 4px;
                                                 height: 56px;
                                                 background: Theme.status-ok;
+                                                // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
+                                                drop-shadow-color: Theme.status-ok.with-alpha(Tokens.glass-glow-alpha);
+                                                drop-shadow-offset-x: 0px;
+                                                drop-shadow-offset-y: 0px;
+                                                drop-shadow-blur: 3px;
                                             }
                                         }
                                         Rectangle {
@@ -1802,6 +2069,11 @@ export component UnifiedLowerDock inherits Rectangle {
                                                 width: 4px;
                                                 height: 52px;
                                                 background: Theme.status-ok;
+                                                // 一期质感: 电平发光 (信息发光; flat 下 alpha 为 0)。
+                                                drop-shadow-color: Theme.status-ok.with-alpha(Tokens.glass-glow-alpha);
+                                                drop-shadow-offset-x: 0px;
+                                                drop-shadow-offset-y: 0px;
+                                                drop-shadow-blur: 3px;
                                             }
                                         }
                                     }
@@ -1814,7 +2086,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 50px;
                                     height: 17px;
-                                    background: #080c14;
+                                    // 一期质感: flat 分支保留旧值; physical 走壳面刷。
+                                    background: Tokens.texture-physical ? Tokens.shell-brush : #080c14;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: #191f2c;
@@ -1858,7 +2131,8 @@ export component UnifiedLowerDock inherits Rectangle {
                     // Empty / Add Channel Strip Slot in Mixer mode (Fixed width: 72px)
                     if root.active-tab == "mixer" : Rectangle {
                         width: 72px;
-                        background: add_mix_trk_touch.has-hover ? #101622 : #06080d;
+                        // 一期质感: flat 分支保留悬停/常态原值; physical 走凹面刷 (悬停面板刷)。
+                        background: Tokens.texture-physical ? (add_mix_trk_touch.has-hover ? Tokens.panel-brush : Tokens.void-brush) : (add_mix_trk_touch.has-hover ? #101622 : #06080d);
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: add_mix_trk_touch.has-hover ? Theme.accent : Tokens.line;

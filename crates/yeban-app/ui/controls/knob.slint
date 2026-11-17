@@ -1,0 +1,221 @@
+// 夜半 (Yeban) — 共享控件 · 旋钮 (`line/ui-skeuo-theme` 一期, 2026-11-16)
+//
+// ⚠ 一期状态: 试点两面板 (设备架 / 混音台) 里**没有**可迁的旋转控件
+// (混音台声相是文本拖动面, 设备架的静态 EQ 旋钮已在 #157 删除),
+// 本控件一期只进库 + 由 `examples/skeuo_pilot_shots.rs` 的陈列场景做
+// 渲染验证; 二期等真实旋转参数 (滤波器截止 / 共振类) 出现时再落点。
+//
+// 接口: `value` / `minimum` / `maximum` + `changed(float)`; 垂直拖动
+// 改值 (120px 行程 = 满量程), 双击回中点 —— 与音频旋钮的通用手势一致。
+// 扫程 270° (−135°..+135°), 与三家参考配方 (JUCE / webaudio-controls /
+// Calf 家) 的共识一致。
+//
+// 分层 (外 → 内, 层序学 JUCE `drawRotarySlider` 的「轨 → 体 → 指针」与
+// Calf 家 Cairo 旋钮的「底圈 → 外环 → 内圆径向渐变 → 指针」, 参数自定):
+//   1. 底座环 (刻度环的座, 深色环 + 控件级落影);
+//   2. 刻度环: 11 段细刻度, 已扫过的段用 `indicator-color` 点亮
+//      (刻度是**值的一部分**, 属信息发光许可内; 未扫过段为暗灰);
+//   3. 旋帽: 阳极氧化铝 —— 径向渐变 (中心受光 → 边缘沉降);
+//   4. 哑光高光弧: 只在旋帽**左上**象限的一道弧 (白色 10%,
+//      ⛔ 不是镜面塑料高光 —— 没有锐利白点、没有全圆描边光);
+//   5. 指示线: 从中心指向当前值的短粗线, 随值旋转。
+// 光源恒左上: 高光弧在左上、落影落右下, 与全界面一致。
+//
+// flat: 纯色帽面 (`bg-control` + 1px `line-strong` 边) + 同一刻度环与
+// 指示线 —— 扁平模式下它就是一个干净的扁平旋钮, 无渐变无阴影。
+
+import { Tokens } from "../tokens.slint";
+
+export component Knob inherits Rectangle {
+    in-out property <float> value: 0.0;
+    in property <float> minimum: 0.0;
+    in property <float> maximum: 1.0;
+    /// 指示色 (已扫过刻度 + 指示线): 调用方按参数语义注入 (轨道色只许
+    /// 出现在内容与**对应控件的指示点**上 —— 本色就是那个指示点)。
+    in property <color> indicator-color: Tokens.accent;
+    // 无障碍转发 (根即语义节点)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    in property <string> a11y-value: "";
+    /// 可用性 (2026-11-17 三期裁定, 学 Logic: 旋钮全部绑真实参数, 不可
+    /// 用的呈置灰禁用态): false 时整钮去色压暗、刻度不点亮、指针转灰、
+    /// 手势面关闭 —— ⛔ 不做「看起来能用」的假静态。尚无真实旋转参数
+    /// 落点时, 落点侧必须显式给 false (缺口登记见拟物线回执)。
+    in property <bool> enabled: true;
+    callback changed(float);
+
+    /// 值钳制 (显示与手势共用一处)。
+    function clamped(v: float) -> float {
+        return v < root.minimum ? root.minimum : (v > root.maximum ? root.maximum : v);
+    }
+
+    /// 归一化位置。
+    property <float> fraction: root.maximum > root.minimum
+        ? (root.clamped(root.value) - root.minimum) / (root.maximum - root.minimum)
+        : 0.5;
+    /// 指示角: −135° (最小) .. +135° (最大)。
+    property <float> angle: -135 + 270 * root.fraction;
+    /// 拖动起点快照 (手势内私有)。
+    property <bool> dragging: false;
+    property <length> drag-start-y: 0px;
+    property <float> drag-start-value: 0.0;
+
+    background: transparent;
+    accessible-role: slider;
+    accessible-id: root.a11y-id;
+    accessible-label: root.a11y-label;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: (root.maximum - root.minimum) / 100.0;
+    accessible-value: root.a11y-value;
+
+    // 1. 底座环。
+    Rectangle {
+        x: (parent.width - parent.height) / 2;
+        y: 0;
+        width: parent.height;
+        height: parent.height;
+        background: Tokens.texture-physical ? Tokens.knob-ring : transparent;
+        border-radius: self.width / 2;
+        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+        drop-shadow-blur: Tokens.shadow-ctl-blur;
+    }
+
+    // 2. 刻度环: 11 段径向细刻度。Slint 1.18.1 的 Rectangle 没有旋转
+    // 属性 ⇒ 每段是一条以三角函数定位的 Path 线段 (圆心 (50,50),
+    // 外半径 47.5, 主刻度内半径 43.5 / 次刻度 45 —— 与旋帽半径 42 留 1.5 间隙)。
+    for tick[idx] in 11: Path {
+        x: (parent.width - parent.height) / 2;
+        y: 0;
+        width: parent.height;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        // 未扫过段: 扁平套保持 0.45; 拟物套提亮一档 (0.62) —— 值弧线在
+        // 质感帽面旁必须可辨 (2026-11-17 加码, Logic 旋钮「值可辨」口径)。
+        // 禁用态: 刻度永不点亮且再压暗一档 (0.25)。
+        stroke: root.enabled && idx * 0.1 <= root.fraction
+            ? root.indicator-color
+            : Tokens.ink-2.with-alpha(!root.enabled ? 0.25 : (Tokens.texture-physical ? 0.62 : 0.45));
+        stroke-width: 2px;
+        fill: transparent;
+        MoveTo {
+            x: 50 + (idx.mod(5) == 0 ? 43.5 : 45) * sin((-135 + idx * 27) * 1deg);
+            y: 50 - (idx.mod(5) == 0 ? 43.5 : 45) * cos((-135 + idx * 27) * 1deg);
+        }
+
+        LineTo {
+            x: 50 + 47.5 * sin((-135 + idx * 27) * 1deg);
+            y: 50 - 47.5 * cos((-135 + idx * 27) * 1deg);
+        }
+    }
+
+    // 3. 旋帽 (直径 = 根高 × 0.84, 给刻度环让位; 比例式内缩使上面的
+    // viewbox 半径在任何尺寸下都成立)。
+    Rectangle {
+        x: (parent.width - parent.height) / 2 + parent.height * 0.08;
+        y: parent.height * 0.08;
+        width: parent.height * 0.84;
+        height: parent.height * 0.84;
+        background: Tokens.knob-brush;
+        border-radius: self.width / 2;
+        border-width: Tokens.texture-physical ? 0px : 1px;
+        border-color: Tokens.line-strong;
+
+        // 4. 哑光高光弧 (仅 physical; 左上象限, 弧线 195°→255° 方向的
+        //    一段 —— 以 100×100 viewbox 表达: 圆心 (50,50) 半径 38,
+        //    起点 (13.3, 40.2) 终点 (40.2, 13.3), 顺时针短弧)。
+        Path {
+            visible: Tokens.texture-physical && root.enabled;
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            stroke: Tokens.knob-highlight;
+            stroke-width: 5px;
+            fill: transparent;
+            MoveTo {
+                x: 13.3;
+                y: 40.2;
+            }
+
+            ArcTo {
+                radius-x: 38;
+                radius-y: 38;
+                x: 40.2;
+                y: 13.3;
+                sweep: true;
+            }
+        }
+
+        // 5. 指示线 (与刻度环同法: 三角函数定位的 Path 线段,
+        // 自半径 12 向外到 37 —— 不顶到帽沿, 留出哑光高光弧的位置)。
+        Path {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            stroke: root.enabled ? root.indicator-color : Tokens.ink-2.with-alpha(0.5);
+            stroke-width: 5px;
+            fill: transparent;
+            MoveTo {
+                x: 50 + 12 * sin(root.angle * 1deg);
+                y: 50 - 12 * cos(root.angle * 1deg);
+            }
+
+            LineTo {
+                x: 50 + 37 * sin(root.angle * 1deg);
+                y: 50 - 37 * cos(root.angle * 1deg);
+            }
+        }
+
+        // 6. 禁用罩 (仅 !enabled): 以面板色半透压住帽面与指针, 整钮
+        // 去色压暗 —— 与刻度压暗、高光弧隐藏同向, 一眼是「不可用」。
+        Rectangle {
+            visible: !root.enabled;
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Tokens.bg-panel.with-alpha(0.55);
+            border-radius: self.width / 2;
+        }
+    }
+
+    // 手势面: 垂直拖动 (120px = 满量程), 双击回中点。禁用态关闭。
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.grab;
+        width: parent.width;
+        height: parent.height;
+        double-clicked => {
+            root.value = (root.minimum + root.maximum) / 2;
+            root.changed(root.value);
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.dragging = true;
+                root.drag-start-y = self.mouse-y;
+                root.drag-start-value = root.value;
+            } else if (event.kind == PointerEventKind.move && root.dragging) {
+                root.value = root.clamped(root.drag-start-value
+                    + (root.drag-start-y - self.mouse-y) / 120px * (root.maximum - root.minimum));
+                root.changed(root.value);
+            } else {
+                root.dragging = false;
+            }
+        }
+    }
+}

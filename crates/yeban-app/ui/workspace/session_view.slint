@@ -50,6 +50,9 @@ export component SessionView inherits Rectangle {
     // 启动请求的**如实**回执（没有引擎 / 事件环满时非空）；默认空串 = 不占视觉空间。
     in property <string> scene-launch-status: "";
 
+    // 编辑面回平 (负责人 2026-11-17 拟物重点口径): Session 矩阵本体
+    // (根底/包头/插槽列/插槽格/激发列头) 两套主题同为平色, 质感只留
+    // 给场景激发行与返回钮等按钮面 (下方 raised-brush 三元)。
     background: Tokens.bg-void;
     clip: true;
 
@@ -177,7 +180,7 @@ export component SessionView inherits Rectangle {
         height: 64px;
         // ⭐ `#283`：**当前场景**高亮（读宿主的 `current-scene-index`；默认 `-1`
         // ⇒ 基准帧与接线前逐像素相同）。
-        background: (scene_touch.pressed || scene_touch.has-hover || root.current-scene-index == scene_index) ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: Tokens.texture-physical ? ((scene_touch.pressed || scene_touch.has-hover || root.current-scene-index == scene_index) ? Tokens.raised-brush : Tokens.panel-alt-brush) : ((scene_touch.pressed || scene_touch.has-hover || root.current-scene-index == scene_index) ? Tokens.bg-raised : Tokens.bg-panel-alt);
         border-radius: Tokens.radius-md;
         border-width: root.current-scene-index == scene_index ? 2px : 1px;
         border-color: root.current-scene-index == scene_index ? Tokens.gold-bright : Tokens.gold-deep;
@@ -232,7 +235,7 @@ export component SessionView inherits Rectangle {
         y: 32px + 68px * root.scenes.length + 8px;
         width: 104px;
         height: 28px;
-        background: (back_area.pressed || back_area.has-hover) ? Tokens.bg-raised : Tokens.bg-void;
+        background: Tokens.texture-physical ? ((back_area.pressed || back_area.has-hover) ? Tokens.raised-brush : Tokens.void-brush) : ((back_area.pressed || back_area.has-hover) ? Tokens.bg-raised : Tokens.bg-void);
         border-radius: Tokens.radius-sm;
         border-width: 1px;
         border-color: Tokens.record-red;

@@ -55,12 +55,12 @@ use crate::engine_host::{
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
-use crate::ui::{MainWindow, ThemeState, YebanTheme};
-// `Tokens` 只在 linux / windows 的字体注入分支里用（见
-// build_main_window_with_console_tab）；macOS 下没有使用点，无条件 import 会被
-// clippy `-D warnings` 判成 unused-imports。
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use crate::ui::Tokens;
+use crate::ui::{MainWindow, TextureMode, ThemeState, Tokens, YebanTheme};
+// `Tokens` 原本只在 linux / windows 的字体注入分支里用（见
+// build_main_window_with_console_tab），故旧版 import 带 cfg 门；拟物线
+// 的 `apply_texture`（全平台无条件写 `Tokens.texture`）落地后 macOS 也有
+// 使用点，cfg 门会让 macOS 腿 E0425（分支 CI run 43993814646 实证），
+// 改为无条件导入。
 use crate::undo::{UiAction, UndoPort};
 
 /// [`wire_save`] 的**装配输入**：保存到哪 + 拿不到活会话时用哪一份工程。
@@ -17520,7 +17520,7 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
     });
 }
 
-/// 界面语言（`--lang` / 走带栏 Group L 菜单 / 主菜单「设置 → 语言」）的
+/// 界面语言（`--lang` / 主菜单「设置 → 语言」）的
 /// **唯一**写入口，与 [`apply_theme`] 同款单向注入（设计见
 /// `docs/app-i18n-notes.md`）。
 ///
@@ -17528,9 +17528,9 @@ pub fn apply_theme(ui: &MainWindow, theme: crate::cli::Theme) {
 /// 1. `slint::select_bundled_translation` 真正切换 bundled 词表 —— `@tr` 绑定随
 ///    `translations_dirty` 索引属性即时重求值，已渲染界面不重启全量生效
 ///    （同版本探针实测：属性回读 zh→en、像素差、往返逐像素一致，见 notes §2）；
-/// 2. 回写 `MainWindow.language-code` / `language-name` 属性 —— 走带栏 Group L
-///    开关与主菜单的当前态显示读它；属性只在切换**真的成功**时才置位，
-///    词表缺失时开关停在中文态，不假装已切换。
+/// 2. 回写 `MainWindow.language-code` / `language-name` 属性 —— 主菜单
+///    「设置 → 语言」的当前态勾选读它；属性只在切换**真的成功**时才置位，
+///    词表缺失时勾选停在中文态，不假装已切换。
 ///
 /// 本函数**不**写设置文件：启动路径（`main.rs` / `headless_idle.rs`）先用
 /// [`crate::settings::resolve_startup_language`] 算出优先级
@@ -17683,6 +17683,35 @@ pub fn current_language() -> crate::cli::Language {
         .unwrap_or(crate::cli::Language::ZhCn)
 }
 
+/// 把 CLI 的质感选择写进界面（`line/ui-skeuo-theme` 一期）：[`apply_theme`] 的
+/// **同款单向注入**，写的是 `ui/tokens.slint` 的 `Tokens.texture` 属性
+/// （开关不另立全局的理由写在 `TextureMode` 的文档里：代码生成不为只被
+/// 另一个全局引用的全局生成 Rust 结构体）。
+///
+/// 本函数是这个属性的**唯一**写者：启动路径按 `--texture` 注入初始值，
+/// 运行时的用户切换走主菜单「设置 → 质感」（`MainWindow.select-texture`
+/// 回调，挂点见 [`build_main_window_with_console_tab`]）也经这里 ——
+/// 负责人 2026-11-17 口径：切换入口统一进系统主菜单，走带栏质感开关
+/// 已撤销，.slint 侧不再直接写这个属性。扁平/实体是并存可切换的主题
+/// （负责人 2026-11-16 定案），切换即整套令牌换值；属性是唯一事实源，
+/// 不存在第二份状态。
+///
+/// 与主题的差别只有一处：**生效判定不在这里**。`physical` 是否真的改变像素，
+/// 由 `Tokens.texture-physical` 按「开关 = physical 且配色 ∈ {brand, yeban}」
+/// 统一判定 —— 本函数只如实转发用户的选择，⛔ 不在这里拼配色条件（那会让
+/// 「请求了什么」与「生效了什么」在两个地方各说各话；判据
+/// `tests/texture_selection.rs` 分开钉这两件事）。
+///
+/// 默认值 `Texture::default()` = `Flat` 与 `Tokens.texture` 的 Slint 初值
+/// `TextureMode.flat` 是**同一个**，因此不给 `--texture` 时这一步幂等，
+/// 默认外观一位不动。
+pub fn apply_texture(ui: &MainWindow, texture: crate::cli::Texture) {
+    ui.global::<Tokens<'_>>().set_texture(match texture {
+        crate::cli::Texture::Flat => TextureMode::Flat,
+        crate::cli::Texture::Physical => TextureMode::Physical,
+    });
+}
+
 /// 同 [`build_main_window`]，但显式指定底部控制台的初始 Tab。
 ///
 /// 存在的理由：混音台通道条（Tab 1）只在被选中时**进入运行时控件树**（`visible` 为假的分支
@@ -17706,7 +17735,7 @@ pub fn build_main_window_with_console_tab(
     #[cfg(target_os = "windows")]
     ui.global::<Tokens<'_>>()
         .set_font_ui("Microsoft YaHei UI".into());
-    // 语言选择（走带栏 Group L 菜单 + 主菜单「设置 → 语言」）：宿主收到语言
+    // 语言选择（主菜单「设置 → 语言」）：宿主收到语言
     // 代码 → 经唯一写入口应用并持久化本次显式选择（启动时的 --lang 覆盖
     // 与自动检测不走这里、不写回）。挂在这一处（两个 build_main_window* 的
     // 共同构造点），测试与生产路径同得。
@@ -17727,6 +17756,20 @@ pub fn build_main_window_with_console_tab(
         move || {
             let Some(ui) = weak.upgrade() else { return };
             reset_window_layout(&ui);
+        }
+    });
+    // 质感选择（主菜单「设置 → 质感」）：宿主收到质感规范名 → 经唯一
+    // 写入口 apply_texture 应用。会话内生效、不写设置文件（质感的现行
+    // 口径即会话切换；启动初始值由 --texture 在启动路径注入）。与语言
+    // 选择同挂这一处。
+    ui.on_select_texture({
+        let weak = ui.as_weak();
+        move |code| {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(texture) = crate::cli::Texture::from_name(code.as_str()) else {
+                return;
+            };
+            apply_texture(&ui, texture);
         }
     });
     ui.set_timecode(scene.timecode.clone().into());

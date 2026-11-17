@@ -110,7 +110,7 @@ export component UndoTreeModal inherits Rectangle {
         y: (root.height - 360px) / 2;
         width: 720px;
         height: 360px;
-        background: Tokens.bg-panel;
+        background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
         border-radius: Tokens.radius-lg;
         border-width: 1px;
         border-color: Tokens.gold-deep;
@@ -147,7 +147,7 @@ export component UndoTreeModal inherits Rectangle {
             y: Tokens.space-4;
             width: 24px;
             height: 24px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "undo-tree-close-button";
@@ -188,7 +188,7 @@ export component UndoTreeModal inherits Rectangle {
             y: 100px + 44px * node_index.mod(2);
             width: 100px;
             height: 40px;
-            background: node_index == root.undone-depth ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            background: Tokens.texture-physical ? (node_index == root.undone-depth ? Tokens.raised-brush : Tokens.panel-alt-brush) : (node_index == root.undone-depth ? Tokens.bg-raised : Tokens.bg-panel-alt);
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: node_index == root.undone-depth ? Tokens.gold : Tokens.line-strong;
@@ -245,7 +245,7 @@ export component UndoTreeModal inherits Rectangle {
             y: 100px;
             width: parent.width - 48px;
             height: 40px;
-            background: Tokens.bg-void;
+            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: Tokens.line;
@@ -302,7 +302,7 @@ export component UndoTreeModal inherits Rectangle {
             y: parent.height - 76px;
             width: 180px;
             height: 32px;
-            background: root.can-undo ? Tokens.bg-raised : Tokens.bg-void;
+            background: Tokens.texture-physical ? (root.can-undo ? Tokens.raised-brush : Tokens.void-brush) : (root.can-undo ? Tokens.bg-raised : Tokens.bg-void);
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: root.can-undo ? Tokens.gold : Tokens.line-strong;
@@ -343,7 +343,7 @@ export component UndoTreeModal inherits Rectangle {
             y: parent.height - 76px;
             width: 180px;
             height: 32px;
-            background: root.can-redo ? Tokens.bg-raised : Tokens.bg-void;
+            background: Tokens.texture-physical ? (root.can-redo ? Tokens.raised-brush : Tokens.void-brush) : (root.can-redo ? Tokens.bg-raised : Tokens.bg-void);
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: root.can-redo ? Tokens.gold : Tokens.line-strong;

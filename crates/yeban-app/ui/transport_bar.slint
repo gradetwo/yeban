@@ -581,10 +581,6 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
-    // 界面语言当前态（九语 i18n）：语言代码与自称名。宿主持有的状态在 MainWindow
-    // 侧，这里只读它显示 Group L 菜单按钮的当前语言。
-    in-out property <string> language-code: "zh-CN";
-    in-out property <string> language-name: "中文";
 
     callback toggle-zone(string);
     callback select-tool(string);
@@ -599,11 +595,11 @@ export component TransportHeaderBar inherits Rectangle {
     callback select-persona(PersonaMode);
     callback open-cmd-palette();
     callback toggle-hotspots();
-    callback select-language(string);
     callback revert-to-last-commit();
 
     height: 48px;
-    background: Theme.header-bg;
+    // 二期质感: 栏体走 §10 面板刷 (flat = Theme.header-bg 本身)。
+    background: Tokens.texture-physical ? Tokens.panel-brush : Theme.header-bg;
     border-color: Theme.border-subtle;
 
     HorizontalLayout {
@@ -620,7 +616,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group A: Brand Mark (Official Studio Logo Mark)
             Rectangle {
-                background: #10131a;
+                // 二期质感: 品牌块走 §10 外壳刷 (flat = 现行字面 #10131a)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #10131a;
                 border-radius: 4px;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -640,7 +637,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -735,7 +733,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group C: Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -833,7 +832,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group D: Cohesive Logic 12 Transport Control Cluster (Unified height, styling, vector iconography, and balanced visual weight)
             Rectangle {
-                background: #090c12;
+                // 二期质感: 走带簇底板走 §10 外壳刷 (flat = 现行字面 #090c12); 簇内按钮状态色不动。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #090c12;
                 border-radius: 5px;
                 border-width: 1px;
                 border-color: #1c2333;
@@ -945,10 +945,28 @@ export component TransportHeaderBar inherits Rectangle {
             // Group E: Digital Precision LCD HUD Display Bezel (High-contrast WCAG AA)
             Rectangle {
                 height: 28px;
-                background: #05070a;
+                // 二期质感: LCD 框走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #05070a, 反光 alpha 为 0)。
+                background: Tokens.texture-physical ? Tokens.glass-brush : #05070a;
                 border-radius: 5px;
                 border-width: 1px;
                 border-color: #1a202c;
+
+                // 反光带刻意内收: 本框原无 clip (框内 TooltipBubble 须溢出
+                // 显示), 不为反光加 clip; 带脚避开 5px 圆角区即可。
+                Path {
+                    width: parent.width;
+                    height: parent.height;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: 200;
+                    viewbox-height: 28;
+                    fill: Tokens.glass-reflection;
+                    stroke-width: 0px;
+                    MoveTo { x: 36; y: 0; }
+                    LineTo { x: 116; y: 0; }
+                    LineTo { x: 88; y: 28; }
+                    LineTo { x: 8; y: 28; }
+                }
 
                 HorizontalLayout {
                     padding-left: 10px;
@@ -1073,7 +1091,8 @@ export component TransportHeaderBar inherits Rectangle {
             // "BUFF"，1920 宽甚至整体不渲染（细节实测 §4.6 / 控件体检 §5）。
             Rectangle {
                 width: 128px;
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -1116,7 +1135,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group G: DSP CPU Gauge (High-contrast)
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -1165,7 +1185,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group H: Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
             Rectangle {
-                background: #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -1258,7 +1279,8 @@ export component TransportHeaderBar inherits Rectangle {
             Rectangle {
                 width: 52px;
                 height: 28px;
-                background: #10141d;
+                // 二期质感: 命令钮走 §10 凸起刷 (flat = 现行字面 #10141d)。
+                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
@@ -1337,104 +1359,11 @@ export component TransportHeaderBar inherits Rectangle {
                 TooltipBubble { text: Theme.show-tooltips ? @tr("悬浮提示: 已开启 (点击关闭) [T]") : @tr("悬浮提示: 已关闭 (点击开启) [T]"); is-visible: touch_tips.has-hover; tip-offset-x: -40px; }
             }
 
-            // Group L: Language menu （九语 i18n）—— 按钮显示当前语言自称名
-            // （root.language-name，宿主持有），点击弹出九语菜单（PopupWindow，
-            // 先例见 ui/console/piano_roll.slint 的 context-menu-popup：
-            // 菜单项在弹出层内调外层回调后关弹窗是允许方向；九项用 for 循环，
-            // 先例见 arrangement.slint 的 arr_tracks_menu_col）。自称名按定义
-            // 不走 @tr（判据白名单，见 tests/i18n_coverage.rs）。
-            Rectangle {
-                width: 64px;
-                height: 28px;
-                background: #10141d;
-                border-radius: Theme.radius;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-
-                lang-menu-popup := PopupWindow {
-                    // 菜单宽 150px，右缘与按钮右缘对齐（按钮宽 64px ⇒ 左移 86px），
-                    // 落在按钮下方 4px 处。
-                    x: -86px;
-                    y: 32px;
-                    width: 150px;
-                    height: 296px;
-                    close-policy: close-on-click-outside;
-
-                    Rectangle {
-                        background: #10141d;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        border-radius: Theme.radius;
-                        clip: true;
-
-                        VerticalLayout {
-                            padding: 4px;
-                            spacing: 0px;
-                            for lang in [
-                                { code: "zh-CN", name: "中文" },
-                                { code: "en-US", name: "English" },
-                                { code: "fr-FR", name: "Français" },
-                                { code: "es-ES", name: "Español" },
-                                { code: "pt-BR", name: "Português" },
-                                { code: "ja-JP", name: "日本語" },
-                                { code: "ko-KR", name: "한국어" },
-                                { code: "ru-RU", name: "Русский" },
-                                { code: "de-DE", name: "Deutsch" },
-                            ] : Rectangle {
-                                height: 32px;
-                                border-radius: 4px;
-                                background: lang-touch.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    spacing: 4px;
-                                    Text {
-                                        // 当前项打勾：opacity 占位（不用 visible，
-                                        // 否则未勾选项的名字会左移一格）。
-                                        text: "✓";
-                                        opacity: root.language-code == lang.code ? 1 : 0;
-                                        font-family: Tokens.font-ui;
-                                        font-size: 9.5px;
-                                        font-weight: 600;
-                                        color: Theme.accent;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: lang.name;
-                                        font-family: Tokens.font-ui;
-                                        font-size: 10.5px;
-                                        color: #cbd5e1;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                lang-touch := TouchArea {
-                                    mouse-cursor: MouseCursor.pointer;
-                                    clicked => {
-                                        root.select-language(lang.code);
-                                        lang-menu-popup.close();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Text {
-                    text: root.language-name;
-                    font-family: Tokens.font-ui;
-                    font-size: 9.5px;
-                    font-weight: 600;
-                    color: #b6c2d2;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                touch_lang := TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    clicked => { lang-menu-popup.show(); }
-                }
-                TooltipBubble { text: @tr("界面语言 (点击选择语言)"); is-visible: touch_lang.has-hover; tip-offset-x: -40px; }
-            }
+            // Group L 已撤（负责人 2026-11-17 口径）：语言与质感两个切换
+            // 入口统一进系统主菜单「设置」（语言 → MainWindow.select-language,
+            // 质感 → MainWindow.select-texture，宿主接管），走带栏不再放
+            // 切换钮/chip。原 Group L 语言菜单与质感开关两块 Rectangle
+            // 就此删除，栏内其余元素回到无钮排布。
         }
     }
 }

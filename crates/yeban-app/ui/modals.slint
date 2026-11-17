@@ -32,7 +32,7 @@ export component CommandPaletteModal inherits Rectangle {
                 Rectangle {
                     width: 560px;
                     height: 400px;
-                    background: #11141d;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : #11141d;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: #262e3d;
@@ -45,7 +45,7 @@ export component CommandPaletteModal inherits Rectangle {
                         // Header with input
                         Rectangle {
                             height: 48px;
-                            background: #151a24;
+                            background: Tokens.texture-physical ? Tokens.panel-alt-brush : #151a24;
                             border-color: Tokens.line;
 
                             HorizontalLayout {
@@ -74,7 +74,7 @@ export component CommandPaletteModal inherits Rectangle {
                                 }
 
                                 Rectangle {
-                                    background: esc_touch.has-hover ? #28324a : #1e2536;
+                                    background: esc_touch.has-hover ? #28324a : (Tokens.texture-physical ? Tokens.raised-brush : #1e2536);
                                     border-radius: 4px;
                                     height: 24px;
                                     border-width: 1px;
@@ -107,7 +107,7 @@ export component CommandPaletteModal inherits Rectangle {
 
                             for cmd in root.commands : Rectangle {
                                 height: 32px;
-                                background: cmd_touch.has-hover ? #1f2738 : #161b26;
+                                background: cmd_touch.has-hover ? #1f2738 : (Tokens.texture-physical ? Tokens.panel-brush : #161b26);
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: cmd_touch.has-hover ? Theme.accent : Tokens.line;
@@ -264,7 +264,7 @@ export component HotspotOverlay inherits Rectangle {
                 Rectangle {
                     width: 350px;
                     height: 190px;
-                    background: #0e1320;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.accent;
@@ -294,7 +294,7 @@ export component HotspotOverlay inherits Rectangle {
                 Rectangle {
                     width: 350px;
                     height: 190px;
-                    background: #0e1320;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.status-ok;
@@ -324,7 +324,7 @@ export component HotspotOverlay inherits Rectangle {
                 Rectangle {
                     width: 350px;
                     height: 190px;
-                    background: #0e1320;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : #0e1320;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.track-drum;
@@ -377,7 +377,7 @@ export component ToastBanner inherits Rectangle {
         y: 54px; // 移至右上角顶部栏下方，避免覆盖低轨道主工作区
         width: 310px;
         height: 34px;
-        background: #0e1422f6;
+        background: Tokens.texture-physical ? Tokens.panel-brush : #0e1422f6;
         border-radius: 6px;
         border-width: 1px;
         border-color: Theme.accent.with-alpha(0.6);

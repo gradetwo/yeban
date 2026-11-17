@@ -137,6 +137,9 @@ export component PianoRoll inherits Rectangle {
     // 0–127 的量化与 960 PPQ 的对齐归模型层。
     in property <[float]> velocities: [];
 
+    // 编辑面回平 (负责人 2026-11-17 拟物重点口径): 卷帘根底/网格/车道/
+    // 力度泳道两套主题同为平色 (二期加的 §10/§12 刷已撤), 质感只留给
+    // 工具按钮、键盘本体与右键菜单 (下方三元)。
     background: Tokens.bg-void;
     clip: true;
 
@@ -162,7 +165,8 @@ export component PianoRoll inherits Rectangle {
         y: Tokens.space-2;
         width: 48px;
         height: 20px;
-        background: root.active-tool-index == tool_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        // 二期质感: 工具钮走 §10 凸起/面板刷 (flat 走色值支, 同根底注)。
+        background: root.active-tool-index == tool_index ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
         border-radius: Tokens.radius-sm;
         // 最前: 本组件末尾那条覆盖全高的滚动手势 `TouchArea` 也是 `root` 的兄弟,
         // 且声明在更后面。这条 `z` 让工具行**确定**先被本节点接住
@@ -236,7 +240,7 @@ export component PianoRoll inherits Rectangle {
         Rectangle {
             width: 30px;
             height: 20px;
-            background: oct-down-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            background: oct-down-touch.has-hover ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
@@ -261,7 +265,7 @@ export component PianoRoll inherits Rectangle {
         Rectangle {
             width: 30px;
             height: 20px;
-            background: oct-up-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            background: oct-up-touch.has-hover ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
@@ -286,7 +290,7 @@ export component PianoRoll inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
             height: 20px;
-            background: quant-btn-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            background: quant-btn-touch.has-hover ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
@@ -310,7 +314,7 @@ export component PianoRoll inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
             height: 20px;
-            background: hum-btn-touch.has-hover ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            background: hum-btn-touch.has-hover ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
             border-radius: Tokens.radius-sm;
             border-width: 1px;
             border-color: Tokens.line;
@@ -339,7 +343,8 @@ export component PianoRoll inherits Rectangle {
         y: 28px;
         width: 56px;
         height: parent.height - 28px;
-        background: #0d1018;
+        // 二期质感: 键列容器走 §10 外壳刷 (flat = 现行字面 #0d1018)。
+        background: Tokens.texture-physical ? Tokens.shell-brush : #0d1018;
         accessible-role: list;
         accessible-id: "piano-roll-keys";
         accessible-label: @tr("钢琴键列");
@@ -349,8 +354,9 @@ export component PianoRoll inherits Rectangle {
             y: 14px * key_index;
             width: parent.width;
             height: 14px;
+            // 二期质感: 键面走 §12 键刷 (flat 走字面色支, 同根底注); 试听高亮是状态色, 不动。
             background: root.audition-active-row == key_index ? #38bdf8 :
-                (root.lane-is-white[key_index] ? #e4e9f2 : #191e2b);
+                (Tokens.texture-physical ? (root.lane-is-white[key_index] ? Tokens.roll-key-white-brush : Tokens.roll-key-black-brush) : (root.lane-is-white[key_index] ? #e4e9f2 : #191e2b));
             border-width: 1px;
             border-color: root.lane-is-white[key_index] ? #b6c2d2 : #0b0d14;
 
@@ -361,7 +367,7 @@ export component PianoRoll inherits Rectangle {
                 width: 34px;
                 height: 12px;
                 border-radius: 1.5px;
-                background: root.audition-active-row == key_index ? #0284c7 : #0b0e15;
+                background: root.audition-active-row == key_index ? #0284c7 : (Tokens.texture-physical ? Tokens.roll-key-cap-brush : #0b0e15);
                 border-width: 1px;
                 border-color: #2c3548;
             }
@@ -398,6 +404,7 @@ export component PianoRoll inherits Rectangle {
         y: 28px;
         width: parent.width - 56px;
         height: parent.height - 28px;
+        // 网格底回平 (2026-11-17 口径): 两套主题同为 #1a202e 平色。
         background: #1a202e;
         clip: true;
 
@@ -411,6 +418,8 @@ export component PianoRoll inherits Rectangle {
             y: 14px * lane_index;
             width: parent.width;
             height: 14px;
+            // 车道回平 (2026-11-17 口径): 两套主题同为字面平色三档
+            // (根音行 / 白键行 / 黑键行)。
             background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #2c364b :
                 (root.lane-is-white[lane_index] ? #242c3e : #161b26);
 
@@ -483,6 +492,7 @@ export component PianoRoll inherits Rectangle {
         y: parent.height - 44px;
         width: parent.width;
         height: 44px;
+        // 力度泳道回平 (2026-11-17 口径): 两套主题同为 bg-panel 平色。
         background: Tokens.bg-panel;
         visible: root.show-velocity-lane;
         accessible-role: region;
@@ -697,7 +707,8 @@ export component PianoRoll inherits Rectangle {
         close-policy: close-on-click-outside;
 
         Rectangle {
-            background: Tokens.bg-panel;
+            // 二期质感: 右键菜单走 §10 面板刷 (flat 走色值支, 同根底注)。
+            background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
             border-width: 1px;
             border-color: Tokens.gold-deep;
             border-radius: Tokens.radius-sm;

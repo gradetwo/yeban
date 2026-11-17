@@ -164,7 +164,9 @@ export component StatusBar inherits Rectangle {
 
     min-height: Tokens.status-bar-height;
     max-height: Tokens.status-bar-height;
-    background: Tokens.bg-panel;
+    // 二期质感: 状态栏底走 §10 面板刷 (flat 走色值支: 渐变刷的边缘 AA
+    // 与纯色填充不一致, 一期三元口径)。
+    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line;
 

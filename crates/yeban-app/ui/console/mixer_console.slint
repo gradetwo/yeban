@@ -34,6 +34,9 @@
 
 import { Tokens, UiText, UiMonoText, UiMediumText } from "../tokens.slint";
 import { AssetPoolPanel } from "asset_pool_panel.slint";
+import { Fader } from "../controls/fader.slint";
+import { LedMeter } from "../controls/led_meter.slint";
+import { PushButton } from "../controls/push_button.slint";
 
 export component MixerConsole inherits Rectangle {
     // ---- 由 src/host.rs 注入的**投影**数据 (默认空 = 没有内联演示数据) ----
@@ -497,9 +500,11 @@ export component MixerConsole inherits Rectangle {
             y: Tokens.space-4;
             width: 96px;
             height: parent.height - 16px;
-            background: track_index.mod(2) == 0 ? Tokens.bg-panel : Tokens.bg-shell;
+            // brush 令牌在 flat 时恒等于对应的扁平纯色 (panel = bg-panel /
+            // shell = bg-shell), 故无条件绑 brush, 不写模式三元。
+            background: track_index.mod(2) == 0 ? Tokens.panel-brush : Tokens.shell-brush;
             border-radius: Tokens.radius-md;
-            border-width: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? 2px : 1px;
+            border-width: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? 2px : (Tokens.texture-physical ? 0px : 1px);
             border-color: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? Tokens.gold : Tokens.line;
             clip: true;
             accessible-role: groupbox;
@@ -515,6 +520,26 @@ export component MixerConsole inherits Rectangle {
                 clicked => {
                     root.track-select(track_index);
                 }
+            }
+
+            // physical: 斜面亮边 (上) / 暗边 (下) —— 未选中时取代 1px 中性描边;
+            // 选中金边是身份标记, 两模式都保留 (此时斜面线让位)。
+            Rectangle {
+                visible: Tokens.texture-physical && !(root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]);
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: 1px;
+                background: Tokens.bevel-light;
+            }
+
+            Rectangle {
+                visible: Tokens.texture-physical && !(root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]);
+                x: 0;
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Tokens.bevel-dark;
             }
 
             UiMediumText {
@@ -565,138 +590,59 @@ export component MixerConsole inherits Rectangle {
             }
 
             // 静音 —— `accessible-checked` 来自工程的 `TrackV3::mute`
-            Rectangle {
+            // (`line/ui-skeuo-theme` 一期起走共享控件 `PushButton`: 几何 / 语义 /
+            // 回调落点与旧内联逐位相同, flat 外观不变; physical 走软触材质。)
+            PushButton {
                 x: Tokens.space-3;
                 y: 38px;
                 width: 20px;
                 height: 16px;
-                background: root.track-mutes[track_index] ? Tokens.record-red : Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-                accessible-role: button;
-                accessible-id: "track-" + track_index + "-mixer-mute-button";
-                accessible-label: @tr("轨道 {} 静音", track_name);
-                accessible-checkable: true;
-                accessible-checked: root.track-mutes[track_index];
-                // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-                accessible-action-default => { root.mixer-mute-toggle(track_index); }
-
-                UiText {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    text: "M";
-                    color: Tokens.ink-2;
-                    font-size: Tokens.font-size-xs;
-                    horizontal-alignment: center;
-                }
-
-                // 点击 ⇒ `Op::SetTrackMute`（一次点击 = 一次可撤销的编辑）。
-                TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    width: parent.width;
-                    height: parent.height;
-                    clicked => {
-                        root.mixer-mute-toggle(track_index);
-                    }
+                text: "M";
+                font-size: Tokens.font-size-xs;
+                checked: root.track-mutes[track_index];
+                checked-bg: Tokens.record-red;
+                a11y-id: "track-" + track_index + "-mixer-mute-button";
+                a11y-label: @tr("轨道 {} 静音", track_name);
+                clicked => {
+                    root.mixer-mute-toggle(track_index);
                 }
             }
 
             // 独奏 —— `accessible-checked` 来自工程的 `TrackV3::solo`
-            Rectangle {
+            PushButton {
                 x: 30px;
                 y: 38px;
                 width: 20px;
                 height: 16px;
-                background: root.track-solos[track_index] ? Tokens.gold-deep : Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-                accessible-role: button;
-                accessible-id: "track-" + track_index + "-mixer-solo-button";
-                accessible-label: @tr("轨道 {} 独奏", track_name);
-                accessible-checkable: true;
-                accessible-checked: root.track-solos[track_index];
-                // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-                accessible-action-default => { root.mixer-solo-toggle(track_index); }
-
-                UiText {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: parent.height;
-                    text: "S";
-                    color: Tokens.ink-2;
-                    font-size: Tokens.font-size-xs;
-                    horizontal-alignment: center;
-                }
-
-                // 点击 ⇒ `Op::SetTrackSolo`。与静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
-                TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    width: parent.width;
-                    height: parent.height;
-                    clicked => {
-                        root.mixer-solo-toggle(track_index);
-                    }
+                text: "S";
+                font-size: Tokens.font-size-xs;
+                checked: root.track-solos[track_index];
+                checked-bg: Tokens.gold-deep;
+                a11y-id: "track-" + track_index + "-mixer-solo-button";
+                a11y-label: @tr("轨道 {} 独奏", track_name);
+                clicked => {
+                    root.mixer-solo-toggle(track_index);
                 }
             }
 
             // VU 电平表 (高频刷新 → 遮罩) [UI-MCP-002] [ARCH-UI-002]
             // 柱高来自引擎发布的电平（`track-meter-levels`），文本来自同一帧的 dBFS。
-            Rectangle {
+            // (一期起走共享控件 `LedMeter`: flat = 旧单条填充逐位相同;
+            // physical = 18 段 LED + 峰值保持, 见 controls/led_meter.slint。)
+            LedMeter {
                 x: Tokens.space-3;
                 y: 60px;
                 width: 12px;
                 height: 104px;
-                background: Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-                accessible-role: progress-indicator;
-                accessible-id: "track-" + track_index + "-meter";
-                accessible-label: @tr("轨道 {} 电平表 峰值 {} RMS {} dBFS", track_name, root.track-meter-peaks[track_index], root.track-meter-rmss[track_index]);
-                accessible-value-minimum: -120;
-                accessible-value-maximum: 0;
-                accessible-value-step: 0.1;
-                accessible-value: root.track-meter-peaks[track_index] + " dBFS";
-
-                Rectangle {
-                    x: 1px;
-                    y: parent.height - 2px - 100px * root.track-meter-levels[track_index];
-                    width: parent.width - 2px;
-                    height: 100px * root.track-meter-levels[track_index];
-                    background: Tokens.ok-green;
-                    border-radius: Tokens.radius-sm;
-                }
+                level: root.track-meter-levels[track_index];
+                flat-color: Tokens.ok-green;
+                a11y-id: "track-" + track_index + "-meter";
+                a11y-label: @tr("轨道 {} 电平表 峰值 {} RMS {} dBFS", track_name, root.track-meter-peaks[track_index], root.track-meter-rmss[track_index]);
+                a11y-value: root.track-meter-peaks[track_index] + " dBFS";
             }
 
-            // 推子导轨
-            Rectangle {
-                x: 38px;
-                y: 60px;
-                width: 6px;
-                height: 104px;
-                background: Tokens.bg-void;
-                border-radius: Tokens.radius-sm;
-            }
-
-            // 推子帽 —— [UI-TEST-001] `track-{track_index}-fader`
-            // 位置来自工程的 `volume_db`（`track-volume-fractions`），**不是**电平。
-            Rectangle {
-                x: 30px;
-                y: 60px + 88px * (1.0 - root.track-volume-fractions[track_index]);
-                width: 22px;
-                height: 16px;
-                background: Tokens.bg-raised;
-                border-radius: Tokens.radius-sm;
-                border-width: 1px;
-                border-color: Tokens.gold-deep;
-                accessible-role: slider;
-                accessible-id: "track-" + track_index + "-fader";
-                accessible-label: @tr("轨道 {} 推子", track_name);
-                accessible-orientation: vertical;
-                accessible-value-minimum: -60;
-                accessible-value-maximum: 6;
-                accessible-value-step: 0.1;
-                accessible-value: root.track-volumes[track_index] + " dB";
-            }
+            // 推子 (导轨 + 推子帽) 已随手势面一起收进下面的 `Fader` 控件
+            // (声明位置 = 旧手势面的位置; 导轨 / 帽的相对几何在控件内)。
 
             UiMonoText {
                 x: Tokens.space-3;
@@ -893,34 +839,39 @@ export component MixerConsole inherits Rectangle {
             // 范围：推子面 x 22–70 / y 54–170 盖住导轨（x 38–44）与推子帽（x 30–52，
             // y ∈ [60, 164]）；声相面 x 4–40 / y 18–36 盖住 `PAN …` 文本（x 4–32）。
             // 两者都**不**碰静音 / 独奏（y 38–54）、电平表（x 4–16）与别的通道条。
-            TouchArea {
-                mouse-cursor: MouseCursor.grab;
+            // 推子手势面 + 导轨 + 推子帽 (一期起收进共享控件 `Fader`):
+            // 控件根 = 本手势面的旧几何 (22, 54, 48×116), 内部手势面与旧
+            // `TouchArea` 逐位同形 —— 同样**不设** `pressed` 守卫:
+            // ⭐ [PATCH UI-DRAG-01] 的实证 (重建后 move 落到新实例) 在控件
+            // 形态下依然成立, 因为控件对手势不持状态, 守卫仍只在宿主
+            // (`mixer-drag-active`) 一处。
+            Fader {
                 x: 22px;
                 y: 54px;
                 width: 48px;
                 height: 116px;
+                fraction: root.track-volume-fractions[track_index];
+                cap-accent: Tokens.gold-deep;
+                a11y-id: "track-" + track_index + "-fader";
+                a11y-label: @tr("轨道 {} 推子", track_name);
+                a11y-min: -60;
+                a11y-max: 6;
+                a11y-step: 0.1;
+                a11y-value: root.track-volumes[track_index] + " dB";
+                grabbed(y) => {
+                    root.track-select(track_index);
+                    root.mixer-fader-grab(track_index, y);
+                }
+                dragged(y) => {
+                    root.mixer-fader-drag(track_index, y);
+                }
+                released => {
+                    root.mixer-fader-release(track_index);
+                }
                 // 双击 ⇒ 这一轨推子回 unity（`0 dB`）。
-                double-clicked => {
+                reset-requested => {
                     root.track-select(track_index);
                     root.mixer-fader-reset(track_index);
-                }
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.down {
-                        root.track-select(track_index);
-                        root.mixer-fader-grab(track_index, self.mouse-y);
-                    } else if event.kind == PointerEventKind.move {
-                        // ⭐ [PATCH UI-DRAG-01] 复核（2026-11-08）：这里**不能**加
-                        // `self.pressed` 守卫。通道条在 `for track-names` repeater 内，
-                        // `down` 先调 `track-select` ⇒ 宿主 `apply_view` 重建模型 ⇒
-                        // `move` 落到新建的 TouchArea，`self.pressed == false`，合法拖拽
-                        // 会被整条吞掉（`live_ui_mcp` 推子拖动判据实证）。悬浮的孤立 move
-                        // 由宿主 `mixer-drag-active` 守卫拦住，界面无需第二份状态。
-                        root.mixer-fader-drag(track_index, self.mouse-y);
-                    } else {
-                        // `up` 与 `cancel` 都是收尾：指针拖到窗口外松手也走这条
-                        // （与 `track-height-release` 同款）。
-                        root.mixer-fader-release(track_index);
-                    }
                 }
             }
 
@@ -955,7 +906,7 @@ export component MixerConsole inherits Rectangle {
         y: Tokens.space-4;
         width: 104px;
         height: parent.height - 16px;
-        background: Tokens.bg-panel-alt;
+        background: Tokens.panel-alt-brush;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.gold-deep;
@@ -1009,103 +960,50 @@ export component MixerConsole inherits Rectangle {
             accessible-label: @tr("主控色标 {}", root.master-color-label);
         }
 
-        Rectangle {
+        // 主控静音 / 独奏 (一期起走共享控件 `PushButton`, 与通道条同款)。
+        PushButton {
             x: Tokens.space-3;
             y: 38px;
             width: 20px;
             height: 16px;
-            background: root.master-mute ? Tokens.record-red : Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: button;
-            accessible-id: "mixer-master-mute-button";
-            accessible-label: @tr("主控静音");
-            accessible-checkable: true;
-            accessible-checked: root.master-mute;
-            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-            accessible-action-default => { root.mixer-master-mute-toggle(); }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "M";
-                color: Tokens.ink-2;
-                font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
-            }
-
-            // 点击 ⇒ `Op::SetTrackMute`（目标 = 主总线那条轨；一次点击 = 一次可撤销的编辑）。
-            TouchArea {
-                mouse-cursor: MouseCursor.pointer;
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-master-mute-toggle();
-                }
+            text: "M";
+            font-size: Tokens.font-size-xs;
+            checked: root.master-mute;
+            checked-bg: Tokens.record-red;
+            a11y-id: "mixer-master-mute-button";
+            a11y-label: @tr("主控静音");
+            clicked => {
+                root.mixer-master-mute-toggle();
             }
         }
 
-        Rectangle {
+        PushButton {
             x: 30px;
             y: 38px;
             width: 20px;
             height: 16px;
-            background: root.master-solo ? Tokens.gold-deep : Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: button;
-            accessible-id: "mixer-master-solo-button";
-            accessible-label: @tr("主控独奏");
-            accessible-checkable: true;
-            accessible-checked: root.master-solo;
-            // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
-            accessible-action-default => { root.mixer-master-solo-toggle(); }
-
-            UiText {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                text: "S";
-                color: Tokens.ink-2;
-                font-size: Tokens.font-size-xs;
-                horizontal-alignment: center;
-            }
-
-            // 点击 ⇒ `Op::SetTrackSolo`。与主控静音按钮**成对相邻**（静音 x=4、独奏 x=30）。
-            TouchArea {
-                mouse-cursor: MouseCursor.pointer;
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.mixer-master-solo-toggle();
-                }
+            text: "S";
+            font-size: Tokens.font-size-xs;
+            checked: root.master-solo;
+            checked-bg: Tokens.gold-deep;
+            a11y-id: "mixer-master-solo-button";
+            a11y-label: @tr("主控独奏");
+            clicked => {
+                root.mixer-master-solo-toggle();
             }
         }
 
-        Rectangle {
+        // 主控电平表 (一期起走共享控件 `LedMeter`; flat 填充色 = warn-amber)。
+        LedMeter {
             x: Tokens.space-3;
             y: 60px;
             width: 14px;
             height: 104px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-            accessible-role: progress-indicator;
-            accessible-id: "mixer-master-meter";
-            accessible-label: @tr("主控电平表 峰值 {} RMS {} dBFS", root.master-meter-peak, root.master-meter-rms);
-            accessible-value-minimum: -120;
-            accessible-value-maximum: 0;
-            accessible-value-step: 0.1;
-            accessible-value: root.master-meter-peak + " dBFS";
-
-            Rectangle {
-                x: 1px;
-                y: parent.height - 2px - 100px * root.master-meter-level;
-                width: parent.width - 2px;
-                height: 100px * root.master-meter-level;
-                background: Tokens.warn-amber;
-                border-radius: Tokens.radius-sm;
-            }
+            level: root.master-meter-level;
+            flat-color: Tokens.warn-amber;
+            a11y-id: "mixer-master-meter";
+            a11y-label: @tr("主控电平表 峰值 {} RMS {} dBFS", root.master-meter-peak, root.master-meter-rms);
+            a11y-value: root.master-meter-peak + " dBFS";
         }
 
         UiMonoText {
@@ -1119,33 +1017,8 @@ export component MixerConsole inherits Rectangle {
             overflow: elide;
         }
 
-        Rectangle {
-            x: 40px;
-            y: 60px;
-            width: 6px;
-            height: 104px;
-            background: Tokens.bg-void;
-            border-radius: Tokens.radius-sm;
-        }
-
-        Rectangle {
-            x: 32px;
-            y: 60px + 88px * (1.0 - root.master-volume-fraction);
-            width: 22px;
-            height: 16px;
-            background: Tokens.bg-raised;
-            border-radius: Tokens.radius-sm;
-            border-width: 1px;
-            border-color: Tokens.gold;
-            accessible-role: slider;
-            accessible-id: "mixer-master-fader";
-            accessible-label: @tr("主控推子");
-            accessible-orientation: vertical;
-            accessible-value-minimum: -60;
-            accessible-value-maximum: 6;
-            accessible-value-step: 0.1;
-            accessible-value: root.master-volume-display + " dB";
-        }
+        // 主控推子 (导轨 + 推子帽) 已随手势面一起收进下面的 `Fader` 控件
+        // (帽描边色 = `gold`, 由 `cap-accent` 注入)。
 
         UiMonoText {
             x: Tokens.space-3;
@@ -1168,25 +1041,33 @@ export component MixerConsole inherits Rectangle {
         // 范围：推子面 x 24–72 / y 54–170 盖住导轨（x 40–46）与推子帽（x 32–54，
         // y ∈ [60, 164]）；声相面 x 4–40 / y 18–36 盖住 `PAN …` 文本（x 4–34）。
         // 两者都**不**碰静音 / 独奏（y 38–54）、电平表（x 4–18）与色标（x 48–58）。
-        TouchArea {
-            mouse-cursor: MouseCursor.grab;
+        // 主控推子手势面 + 导轨 + 推子帽 (一期起收进共享控件 `Fader`;
+        // 控件根 = 本手势面的旧几何 (24, 54, 48×116), 与通道条同款无守卫转发)。
+        Fader {
             x: 24px;
             y: 54px;
             width: 48px;
             height: 116px;
-            // 双击 ⇒ 主控推子回 unity（`0 dB`）。
-            double-clicked => {
-                root.mixer-master-fader-reset();
+            fraction: root.master-volume-fraction;
+            cap-accent: Tokens.gold;
+            a11y-id: "mixer-master-fader";
+            a11y-label: @tr("主控推子");
+            a11y-min: -60;
+            a11y-max: 6;
+            a11y-step: 0.1;
+            a11y-value: root.master-volume-display + " dB";
+            grabbed(y) => {
+                root.mixer-master-fader-grab(y);
             }
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.down {
-                    root.mixer-master-fader-grab(self.mouse-y);
-                } else if event.kind == PointerEventKind.move {
-                    root.mixer-master-fader-drag(self.mouse-y);
-                } else {
-                    // `up` 与 `cancel` 都是收尾（与通道条同款）。
-                    root.mixer-master-fader-release();
-                }
+            dragged(y) => {
+                root.mixer-master-fader-drag(y);
+            }
+            released => {
+                root.mixer-master-fader-release();
+            }
+            // 双击 ⇒ 主控推子回 unity（`0 dB`）。
+            reset-requested => {
+                root.mixer-master-fader-reset();
             }
         }
 

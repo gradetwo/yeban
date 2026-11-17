@@ -1,0 +1,82 @@
+// 夜半 (Yeban) — 共享控件 · 开关 (`line/ui-skeuo-theme` 一期, 2026-11-16)
+//
+// 设备旁通开关的共享形: 根承载无障碍语义 (`switch` + `checkable`,
+// 与旧内联的节点形状一致), 文案随状态切换 (`ACTIVE` / `BYPASSED`)。
+// 回调只报「被拨动」, 新状态由宿主投影回写 `checked` —— 与旧内联
+// 「点击 → 宿主改旁通投影 → 界面重绘」的单向流逐字对齐。
+//
+// flat: 与旧内联逐像素相同 (已选 `gold-deep` 底 + 同色 1px 边 /
+// 未选 `bg-void` 底 + `line-strong` 边, 圆角 `radius-sm`)。
+//
+// physical: 软触 pill —— 圆角 = 高/2, 已选底走 `accent-brush` 渐变,
+// 未选走凹陷面渐变, 描边让位给斜面亮/暗线 + 控件级落影。光源恒左上。
+
+import { Tokens, UiText } from "../tokens.slint";
+
+export component ToggleSwitch inherits Rectangle {
+    /// 开关状态 (投影注入; 本控件不自持状态)。
+    in property <bool> checked: false;
+    in property <string> on-text: "BYPASSED";
+    in property <string> off-text: "ACTIVE";
+    // 无障碍转发 (根即语义节点)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    callback toggled();
+
+    // `accent-brush` / `void-brush` 在 flat 时分别恒等于 `gold-deep` / `bg-void`。
+    background: root.checked ? Tokens.accent-brush : Tokens.void-brush;
+    border-radius: Tokens.texture-physical ? self.height / 2 : Tokens.radius-sm;
+    border-width: Tokens.texture-physical ? 0px : 1px;
+    border-color: root.checked ? Tokens.gold : Tokens.line-strong;
+    drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+    drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+    drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+    drop-shadow-blur: Tokens.shadow-ctl-blur;
+    accessible-role: switch;
+    accessible-id: root.a11y-id;
+    accessible-label: root.a11y-label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.toggled();
+    }
+
+    // physical: 上沿受光线 (斜面亮边)。
+    Rectangle {
+        x: 2px;
+        y: 0;
+        width: parent.width - 4px;
+        height: 1px;
+        background: Tokens.bevel-light;
+    }
+
+    // physical: 下沿背光线 (斜面暗边)。
+    Rectangle {
+        x: 2px;
+        y: parent.height - 1px;
+        width: parent.width - 4px;
+        height: 1px;
+        background: Tokens.bevel-dark;
+    }
+
+    // 文案只做水平居中 (旧内联无垂直居中, flat 逐像素以旧为准)。
+    UiText {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text: root.checked ? root.on-text : root.off-text;
+        font-size: Tokens.font-size-xs;
+        color: root.checked ? Tokens.bg-void : Tokens.ink-2;
+        horizontal-alignment: center;
+    }
+
+    TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.toggled();
+        }
+    }
+}

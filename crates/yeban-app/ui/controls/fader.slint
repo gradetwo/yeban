@@ -1,0 +1,287 @@
+// 夜半 (Yeban) — 共享控件 · 推子 (`line/ui-skeuo-theme` 一期, 2026-11-16)
+//
+// 两个变体:
+//   - `Fader`  垂直推子 (混音台通道条 / 主控条)。根 = **手势面几何**
+//     (调用方给的 x/y/width/height 与旧内联 `TouchArea` 逐位相同), 内部
+//     导轨 / 推子帽的相对坐标由 `rail-x` / `cap-x` 注入 (通道条与主控条
+//     两组旧值不同, ⛔ 不在本文件里擅自统一)。
+//   - `HFader` 水平滑块 (设备架 EQ 增益 / 发送增益)。根 = 旧内联里
+//     「语义节点 + 导轨 + 滑块头 + 手势面」四件套的外包围盒; 四者的相对
+//     几何全部以入参注入, 三处旧调用点 (展示轨 EQ / 主总线 EQ / 发送)
+//     的算式逐位保留 (见各入参注释)。
+//
+// 交互契约与旧内联**逐字对齐**: 回调只报手势原始量 (垂直 = 手势面内的
+// `mouse-y` 长度; 水平 = 归一化 `mouse-x / width`), 值域换算仍在宿主,
+// ⛔ 本文件不做任何值域算术 (除 `fraction` 的显示位置)。
+//
+// 质感: flat 时全部绘制与旧内联逐像素相同 (导轨 `bg-void` / 推子帽
+// `bg-raised` + 1px 强调边 / 滑块头 `gold-deep`); physical 时走
+// `Tokens` §10 的材质令牌 (凹槽内影、帽体渐变 + 落影 + 中央指示线)。
+// 光源恒左上 (投影右下、高光在上), 见 tokens.slint §10 的纪律。
+
+import { Tokens } from "../tokens.slint";
+
+export component Fader inherits Rectangle {
+    /// 推子帽位置的唯一来源 (0.0–1.0, 投影注入; 本控件不钳制 —— 旧内联
+    /// 也不钳制, 位置算式与旧式逐位相同)。
+    in property <float> fraction: 0.0;
+    /// 导轨左沿 (相对手势面): 通道条与主控条同为 16px (旧内联原值:
+    /// 两处导轨绝对 x 分别为 38 / 40, 手势面 x 分别为 22 / 24)。
+    in property <length> rail-x: 16px;
+    /// 推子帽左沿 (相对手势面): 两处同为 8px (帽绝对 x 分别为 30 / 32)。
+    in property <length> cap-x: 8px;
+    /// 推子帽描边色 (flat): 通道条 `gold-deep` / 主控条 `gold` (旧内联原值)。
+    in property <color> cap-accent: Tokens.gold-deep;
+    // 无障碍转发: 语义节点 = 推子帽 (与旧内联的节点形状一致)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    in property <string> a11y-value: "";
+    in property <float> a11y-min: 0.0;
+    in property <float> a11y-max: 0.0;
+    in property <float> a11y-step: 0.1;
+    /// 按下 (参数 = 手势面内 `mouse-y`, 与旧回调逐字相同)。
+    callback grabbed(length);
+    /// 拖动 (同上)。
+    callback dragged(length);
+    /// 收尾 (`up` 与 `cancel` 都走这里, 与旧内联同款)。
+    callback released();
+    /// 双击 (旧内联 = 回 unity / 回中央, 落点由调用方接)。
+    callback reset-requested();
+
+    background: transparent;
+
+    // 导轨: 旧几何 6×104 @ (rail-x, 6)。
+    Rectangle {
+        x: root.rail-x;
+        y: 6px;
+        width: 6px;
+        height: 104px;
+        // `void-brush` 在 flat 时恒等于 `bg-void` 纯色 (令牌层的不变式),
+        // 因此这里无条件绑 brush, 不写模式三元。
+        background: Tokens.void-brush;
+        border-radius: Tokens.radius-sm;
+
+        // physical: 凹槽内影近似 (上沿深线 = 槽内背光, 下沿淡线 = 槽底反光)。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.recess-dark;
+        }
+
+        Rectangle {
+            x: 0;
+            y: parent.height - 1px;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.recess-light;
+        }
+    }
+
+    // 推子帽: 旧几何 22×16, y = 6 + 88 × (1 − fraction) (行程 88px)。
+    Rectangle {
+        x: root.cap-x;
+        y: 6px + 88px * (1.0 - root.fraction);
+        width: 22px;
+        height: 16px;
+        background: Tokens.raised-brush;
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.texture-physical ? 0px : 1px;
+        border-color: root.cap-accent;
+        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+        drop-shadow-blur: Tokens.shadow-ctl-blur;
+        accessible-role: slider;
+        accessible-id: root.a11y-id;
+        accessible-label: root.a11y-label;
+        accessible-orientation: vertical;
+        accessible-value-minimum: root.a11y-min;
+        accessible-value-maximum: root.a11y-max;
+        accessible-value-step: root.a11y-step;
+        accessible-value: root.a11y-value;
+
+        // physical: 上沿受光线 (斜面亮边)。
+        Rectangle {
+            x: 1px;
+            y: 0;
+            width: parent.width - 2px;
+            height: 1px;
+            background: Tokens.bevel-light;
+        }
+
+        // physical: 中央指示线 —— 它是**读数对齐线** (信息), 不是装饰。
+        Rectangle {
+            x: 2px;
+            y: parent.height / 2;
+            width: parent.width - 4px;
+            height: 1px;
+            background: #ffffff.with-alpha(Tokens.texture-physical ? 0.28 : 0.0);
+        }
+
+        // physical: 下沿背光线 (斜面暗边)。
+        Rectangle {
+            x: 1px;
+            y: parent.height - 1px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: Tokens.bevel-dark;
+        }
+    }
+
+    // 手势面: 覆盖整个根 (与旧内联的手势面逐位相同: 静态、不随数值动)。
+    TouchArea {
+        mouse-cursor: MouseCursor.grab;
+        width: parent.width;
+        height: parent.height;
+        double-clicked => {
+            root.reset-requested();
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.grabbed(self.mouse-y);
+            } else if (event.kind == PointerEventKind.move) {
+                root.dragged(self.mouse-y);
+            } else {
+                root.released();
+            }
+        }
+    }
+}
+
+export component HFader inherits Rectangle {
+    /// 滑块头位置 (0.0–1.0; 调用方注入已钳制的归一化位置, 与旧内联的
+    /// `*-fraction-clamped` 逐位相同 —— 钳制仍在调用方, ⛔ 本文件不重复)。
+    in property <float> fraction: 0.0;
+    /// 导轨上沿 (相对根): 展示轨 EQ 10px / 主总线 EQ 7px / 发送 6px。
+    in property <length> rail-y: 10px;
+    /// 滑块头上沿 (相对根): 4px / 1px / 2px (同上顺序)。
+    in property <length> thumb-y: 4px;
+    /// 滑块头尺寸: EQ 两处 12×16 / 发送 12×12。
+    in property <length> thumb-width: 12px;
+    in property <length> thumb-height: 16px;
+    /// 滑块头位置算式的行程扣减: `(根宽 − 本值) × fraction`。
+    /// EQ 两处与发送都是 12 (头宽); 主总线 EQ 是 40 (旧式原值, 逐位保留)。
+    in property <length> thumb-travel-inset: 12px;
+    /// 语义节点高度: 展示轨 EQ 24px / 主总线 EQ 18px / 发送 16px。
+    in property <length> node-height: 24px;
+    /// 0 dB 刻度 (值域跨 0 时由调用方打开; 位置算式见 `zero-tick-inset`)。
+    in property <bool> show-zero-tick: false;
+    /// 刻度左沿 = `(根宽 − 本值) / 2`: 展示轨 EQ 0 / 主总线 EQ 28px (旧式原值)。
+    in property <length> zero-tick-inset: 0px;
+    /// 滑块头在不可用时的落色 (flat): 展示轨 EQ 不可用 = `line`, 其余恒 `gold-deep`。
+    in property <color> thumb-color: Tokens.gold-deep;
+    in property <bool> thumb-visible: true;
+    in property <bool> node-visible: true;
+    in property <bool> touch-visible: true;
+    /// 绘制件 (导轨 / 刻度 / 滑块头) 的总可见性: 主总线 EQ 在不可用时
+    /// 连导轨一起隐藏 (旧内联里它们是语义节点的子件, 随节点同隐);
+    /// 展示轨 EQ 与发送恒 true (导轨在不可用时仍画)。
+    in property <bool> parts-visible: true;
+    /// 手势面尺寸: 0 = 取根尺寸 (默认); 展示轨 EQ 传固定 300×24 (旧内联
+    /// 原值: 即使语义节点在窄面板下收窄, 手势面仍是 300 —— 逐位保留)。
+    in property <length> hit-width: 0px;
+    in property <length> hit-height: 0px;
+    // 无障碍转发: 语义节点是根内部的一块透明矩形 (旧内联同形状)。
+    in property <string> a11y-id: "";
+    in property <string> a11y-label: "";
+    in property <string> a11y-value: "";
+    in property <float> a11y-min: 0.0;
+    in property <float> a11y-max: 0.0;
+    in property <float> a11y-step: 0.1;
+    /// 按下 (参数 = 手势面内的归一化位置, 与旧回调逐字相同)。
+    callback grabbed(float);
+    /// 拖动 (同上)。
+    callback dragged(float);
+    /// 收尾 (同上)。
+    callback released();
+
+    background: transparent;
+
+    // 语义节点 (透明; 只承载无障碍语义, 不画像素 —— 旧内联同款)。
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: root.node-height;
+        background: transparent;
+        visible: root.node-visible;
+        accessible-role: slider;
+        accessible-id: root.a11y-id;
+        accessible-label: root.a11y-label;
+        accessible-orientation: horizontal;
+        accessible-value-minimum: root.a11y-min;
+        accessible-value-maximum: root.a11y-max;
+        accessible-value-step: root.a11y-step;
+        accessible-value: root.a11y-value;
+    }
+
+    // 导轨: 高 4px, 满宽 (旧内联原值)。
+    Rectangle {
+        x: 0;
+        y: root.rail-y;
+        width: parent.width;
+        height: 4px;
+        background: Tokens.void-brush;
+        border-radius: Tokens.radius-sm;
+        visible: root.parts-visible;
+    }
+
+    // 0 dB 刻度: 1×12 (旧内联原值; 上沿 = 导轨上沿 − 4)。
+    Rectangle {
+        x: (parent.width - root.zero-tick-inset) / 2;
+        y: root.rail-y - 4px;
+        width: 1px;
+        height: 12px;
+        background: Tokens.line-strong;
+        visible: root.parts-visible && root.show-zero-tick;
+    }
+
+    // 滑块头。
+    Rectangle {
+        x: (parent.width - root.thumb-travel-inset) * root.fraction;
+        y: root.thumb-y;
+        width: root.thumb-width;
+        height: root.thumb-height;
+        // flat 时 `accent-brush` 恒等于 `gold-deep` —— 但不可用态的落色
+        // (`thumb-color` = `line`) 不是它, 故 flat 分支走同色双停渐变。
+        background: Tokens.texture-physical
+            ? Tokens.accent-brush
+            : @linear-gradient(180deg, root.thumb-color, root.thumb-color);
+        border-radius: Tokens.radius-sm;
+        visible: root.parts-visible && root.thumb-visible;
+        drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-ctl-alpha);
+        drop-shadow-offset-x: Tokens.shadow-ctl-offset-x;
+        drop-shadow-offset-y: Tokens.shadow-ctl-offset-y;
+        drop-shadow-blur: Tokens.shadow-ctl-blur;
+
+        // physical: 头体上沿受光线。
+        Rectangle {
+            x: 1px;
+            y: 0;
+            width: parent.width - 2px;
+            height: 1px;
+            background: Tokens.bevel-light;
+        }
+    }
+
+    // 手势面: 静态 (不随数值动), 读归一化位置 —— 与旧内联逐字相同。
+    TouchArea {
+        mouse-cursor: MouseCursor.grab;
+        x: 0;
+        y: 0;
+        width: root.hit-width > 0px ? root.hit-width : parent.width;
+        height: root.hit-height > 0px ? root.hit-height : parent.height;
+        visible: root.touch-visible;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.grabbed(self.mouse-x / self.width);
+            } else if (event.kind == PointerEventKind.move) {
+                root.dragged(self.mouse-x / self.width);
+            } else {
+                root.released();
+            }
+        }
+    }
+}
