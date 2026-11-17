@@ -1185,16 +1185,17 @@ export component ArrangementViewport inherits Rectangle {
 
                             // 拍线（Wang 2026-11-17：以拍为单位；五版按
                             // Logic 实测规格改 1px 并加缩放门槛）：节内每拍
-                            // 一根纵线，全部实色、无透明度合成。颜色沿用
-                            // 四版：车道底 #090b10（相对亮度 0.0033）上
-                            // 拍线 #687685（0.1759）比 4.24:1（≥3），小节线
-                            // #748392（0.2202）比 5.07:1（≥4.5）；对更亮的
-                            // 车道变体（着色车道 (12,19,25)、选中行
-                            // (24,23,25)）实算仍达标：拍线 4.02／3.84:1、
-                            // 小节线 4.81／4.60:1。可见性走宿主密度读数：
-                            // 每拍 >= 24px 才画车道拍线（Logic 图一每拍
-                            // 12px 时车道无拍线、只有小节线；24px 为推定
-                            // 阈值，来源见 host::grid_density）。
+                            // 一根纵线，全部实色、无透明度合成。六版按
+                            // Wang 15:06 终判再淡一档：拍线 #5d6a76
+                            // （相对亮度 0.1394），对车道底 #090b10
+                            // （0.0033）比 3.55:1、对着色车道 (12,19,25)
+                            // 比 3.37:1、对最亮的选中行 (24,23,25) 比
+                            // 3.22:1（六版目标窗 3.15–3.30，硬下限 ≥3）；
+                            // 小节线 #748392（0.2202）不动，比 5.07／
+                            // 4.81／4.60:1（≥4.5）。可见性走宿主密度
+                            // 读数：每拍 >= 24px 才画车道拍线（Logic
+                            // 图一每拍 12px 时车道无拍线、只有小节线；
+                            // 24px 为推定阈值，来源见 host::grid_density）。
                             for i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
@@ -1208,7 +1209,7 @@ export component ArrangementViewport inherits Rectangle {
                                     y: 0px;
                                     width: 1px;
                                     height: parent.height;
-                                    background: #687685;
+                                    background: #5d6a76;
                                 }
                             }
 
@@ -1790,9 +1791,9 @@ export component ArrangementViewport inherits Rectangle {
                             }
 
                             // 拍线与车道同款（以拍为单位，WCAG 实算同车道，
-                            // 五版同色同宽同门槛）：拍线 #687685（1px），
-                            // 小节线 #748392（1px）；空置行与轨道行同源
-                            // 同强度，整幅网格不断档。
+                            // 五版同色同宽同门槛，六版同再淡一档）：拍线
+                            // #5d6a76（1px），小节线 #748392（1px）；
+                            // 空置行与轨道行同源同强度，整幅网格不断档。
                             for _i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
@@ -1806,7 +1807,7 @@ export component ArrangementViewport inherits Rectangle {
                                     y: 0px;
                                     width: 1px;
                                     height: parent.height;
-                                    background: #687685;
+                                    background: #5d6a76;
                                 }
                             }
 
