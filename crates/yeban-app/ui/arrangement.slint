@@ -993,7 +993,10 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         border-width: 1px;
                                         border-color: badge-left-touch.has-hover ? Theme.accent : #ffffff14;
-                                        max-width: 108px;
+                                        // 108px 在 1460 宽窗口下仍然差几个像素：`Yeban PolySynth [v]`
+                                        // 实测被省成「Yeban PolySyn…」，名字尾巴和 `[v]` 换音色入口都读不清。
+                                        // 抬到 140px，长音色名能整段显示（轨道名是 stretch + elide，不会溢出）。
+                                        max-width: 140px;
                                         HorizontalLayout {
                                             padding-left: 4px;
                                             padding-right: 4px;
@@ -1622,7 +1625,7 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         border-width: 1px;
                                         border-color: badge-right-touch.has-hover ? Theme.accent : #ffffff14;
-                                        max-width: 108px;
+                                        max-width: 140px;
                                         HorizontalLayout {
                                             padding-left: 4px;
                                             padding-right: 4px;
