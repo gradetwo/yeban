@@ -2895,6 +2895,11 @@ impl SfzInstrument {
                     &mut filter,
                     &mut egs,
                     &mut lfos,
+                    // ⚠ 本入口是"单个 region 的一次性离线渲染"，**不承载**逐块调制
+                    // （`cutoff_onccN` 只走摊平路径，登记为本片已知偏差）；
+                    // 因此这里如实给 0 偏移 —— 与接线前逐位相同。
+                    base_hz.unwrap_or(0.0),
+                    0.0,
                     out,
                 );
                 written = written.max(region_written);
@@ -4964,6 +4969,27 @@ impl PreparedRegion {
         )
     }
 
+    /// ⭐⭐ **`cutoff` 调制的逐块增量**（本片 stage 5）：`Σ delta × curve(cc)`，单位 Hz。
+    ///
+    /// * `cc == None` ⇒ **恰 `0.0`**（⇒ 消费方的 `+ 0.0` 在 binary32 下逐位不变，
+    ///   与接线前**逐位相同**）；
+    /// * 没有静态 `cutoff`（[`Self::base_cutoff_hz`] 为 `None` ⇒ 滤波禁用）⇒ **也返回
+    ///   `0.0`**：⛔ 不让一条调制凭空造出滤波器（统一登记为已知偏差，见本模块文档）；
+    /// * 求值本体是 `yeban-sfz` 的 [`yeban_sfz::modulation::cutoff_hz_with_baked`]
+    ///   （离线／摊平／实时**同一份**，⛔ 没有第二套求和）；
+    /// * 下界已在那个函数里钳到 `0`；上界（`SampleRate/2`）由 `yeban-dsp` 的系数钳制接住。
+    #[must_use]
+    pub fn cutoff_cc_delta_hz(&self, note: u8, velocity: u8, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        let Some(base) = self.base_cutoff_hz(note, velocity) else {
+            return 0.0;
+        };
+        let probe = match cc {
+            Some(probe) => probe,
+            None => return 0.0,
+        };
+        yeban_sfz::modulation::cutoff_hz_with_baked(base, self.cc_modulations(), Some(probe)) - base
+    }
+
     /// ⭐ 本区域的**滤波包络**定义（`fileg_*`；SFZ 包络族片）。
     ///
     /// 指向 [`PreparedSfz::eg_defs`]（与 [`Self::pitch_eg`] 同款侧表：
@@ -6352,6 +6378,31 @@ impl PreparedSfz {
             .count()
     }
 
+    /// ⭐⭐ **`cutoff` 调制的逐块增量**（stage 5）：按区域下标取
+    /// [`PreparedRegion::cutoff_cc_delta_hz`]。越界 ⇒ `0.0`（本块不调谐）。
+    #[must_use]
+    pub fn region_cutoff_cc_delta_hz(
+        &self,
+        index: usize,
+        note: u8,
+        velocity: u8,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> f32 {
+        self.regions()
+            .get(index)
+            .map_or(0.0, |region| region.cutoff_cc_delta_hz(note, velocity, cc))
+    }
+
+    /// ⭐⭐ **静态有效截止**（stage 5）：按区域下标取
+    /// [`PreparedRegion::base_cutoff_hz`]；无滤波 ⇒ `0.0`。
+    #[must_use]
+    pub fn region_base_cutoff_hz(&self, index: usize, note: u8, velocity: u8) -> f32 {
+        self.regions()
+            .get(index)
+            .and_then(|region| region.base_cutoff_hz(note, velocity))
+            .unwrap_or(0.0)
+    }
+
     /// ⭐ **本块有效的区域声相**（stage 3）：静态 `pan` ＋ `pan_onccN` 的逐块调制，
     /// 钳 `±100` 百分比。`cc == None` ⇒ 与 [`Self::region_pan`] 逐位相同。
     #[must_use]
@@ -6607,6 +6658,8 @@ impl PreparedSfz {
             // ⭐ LFO（SFZ LFO 片）：与离线/实时两条路同一份组装
             // （[`PreparedRegion::lfo_span`]）；一次性调用自 INERT 起算。
             let mut lfos = region.lfo_span(self, note, velocity, cc, LfoVoiceState::INERT);
+            // ⭐ stage 5：先取静态基准（`&mut egs` 借出之后就读不到了）。
+            let filter_base_hz = egs.base_cutoff_hz;
             let region_written = mix_span_into(
                 pcm,
                 &mut position,
@@ -6620,6 +6673,8 @@ impl PreparedSfz {
                 &mut filter,
                 &mut egs,
                 &mut lfos,
+                filter_base_hz,
+                region.cutoff_cc_delta_hz(note, velocity, cc),
                 out,
             );
             written = written.max(region_written);
@@ -7510,6 +7565,11 @@ pub(crate) fn mix_span_into<'a>(
     // ⭐ LFO 束（v1 三族 ＋ `lfoN_*`；SFZ LFO 片）：全部缺席
     // （[`LfoSpan::NONE`]）⇒ 逐样本**一项运算都不加**、输出逐位不变。
     lfos: &mut LfoSpan<'a>,
+    // ⭐ stage 5：`cutoff_onccN` 的两项输入（**块级常量**，逐样本路径只做一次加法）。
+    // `filter_base_hz` ＝ 本声部的静态有效截止（`0.0` ⇒ 无滤波 ⇒ 整段不加）；
+    // `cutoff_delta_hz` ＝ `Σ delta × curve(cc)`（`0.0` ⇒ 与接线前**逐位相同**）。
+    filter_base_hz: f32,
+    cutoff_delta_hz: f32,
     out: &mut [f32],
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
@@ -7656,16 +7716,35 @@ pub(crate) fn mix_span_into<'a>(
         if fil_cents.is_none() && lfo_res_db.is_some() {
             fil_cents = Some(0.0);
         }
+        // ⭐ stage 5：`cutoff_onccN` 在场时**本块也要进调谐块** ——
+        // 它是一条与 fileg／LFO 平行的偏移（同基准、同单位语义：都作用在
+        // 同一个有效截止上），因此借用同一个"0 音分"入口，偏移在下面按 Hz 加。
+        if fil_cents.is_none() && cutoff_delta_hz != 0.0 && filter_base_hz > 0.0 {
+            fil_cents = Some(0.0);
+        }
         if let Some(cents) = fil_cents {
             // 基准：fileg 在场用 `EgSpan` 的（与滤波器配置同一个），
             // 否则用 `LfoSpan` 的；两者同源（[`PreparedRegion::base_cutoff_hz`]）。
-            let base = if egs.fil.is_some() {
+            // ⭐ stage 5：两束都不在（`base == 0`）时退到调用方给的 `filter_base_hz`
+            // （同一个读数，⛔ 不是第二份折算）。
+            let internal = if egs.fil.is_some() {
                 egs.base_cutoff_hz
             } else {
                 lfos.base_cutoff_hz.unwrap_or(0.0)
             };
+            let base = if internal > 0.0 {
+                internal
+            } else {
+                filter_base_hz
+            };
             if base > 0.0 {
-                let target = base * (cents / 1200.0).exp2();
+                let mut target = base * (cents / 1200.0).exp2();
+                // ⭐ `cutoff_delta_hz == 0.0` ⇒ `+ 0.0` 在 binary32 下**逐位不变**
+                // ⇒ 无 `cutoff_onccN` 的工程与接线前逐位相同。
+                target += cutoff_delta_hz;
+                if target < 0.0 {
+                    target = 0.0;
+                }
                 let last = if let Some(fil) = &egs.fil {
                     fil.last_target()
                 } else {
@@ -9429,6 +9508,17 @@ impl SfzVoicePool {
                 &mut filter,
                 &mut egs,
                 &mut lfos,
+                plan.region_base_cutoff_hz(
+                    usize::from(voice.region_index),
+                    voice.note(),
+                    voice.velocity(),
+                ),
+                plan.region_cutoff_cc_delta_hz(
+                    usize::from(voice.region_index),
+                    voice.note(),
+                    voice.velocity(),
+                    cc,
+                ),
                 &mut out[..limit],
             );
             // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出/滤波照旧回写。
@@ -9587,6 +9677,17 @@ impl SfzVoicePool {
             &mut filter,
             &mut egs,
             &mut lfos,
+            plan.region_base_cutoff_hz(
+                usize::from(voice.region_index),
+                voice.note(),
+                voice.velocity(),
+            ),
+            plan.region_cutoff_cc_delta_hz(
+                usize::from(voice.region_index),
+                voice.note(),
+                voice.velocity(),
+                cc,
+            ),
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;

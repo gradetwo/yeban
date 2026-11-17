@@ -820,6 +820,10 @@ pub enum ModUnit {
     /// 理由与代价）。⚠ 它对 [`ModTarget::is_time`] 返回 `false` ⇒ `#104` 的
     /// `is_time()` 契约对**七个既有目标**逐字不变。
     Decibels,
+    /// ⭐⭐ **赫兹**（`cutoff`；本片）——**第五个**单位类别，与 `Cents`／`Decibels`
+    /// 同款：⛔ **不认任何后缀**（规范里 `cutoff_onccN=-400` 只写纯数字，
+    /// ⛔ 没有 `-400Hz` 写法）。`#117`～`#124` 的四支**逐字未动**。
+    Hertz,
 }
 
 impl ModUnit {
@@ -836,6 +840,8 @@ impl ModUnit {
             // ⭐⭐ `#119`：`dB` 一族与 `cents` 同款 —— ⛔ 一个后缀都不认
             // （规范里没有 `volume_oncc1=6dB` 这种写法）。
             Self::Decibels => &[""],
+            // 本片：`cutoff` 的 `Hz` 与上面两支同款 —— ⛔ 一个后缀都不认。
+            Self::Hertz => &[""],
         }
     }
 }
@@ -936,6 +942,18 @@ pub enum ModTarget {
     /// `pan_onccN` ／ `pan_curveccN`）；域 `-100..=100`（`pan` 页 Modulation 表 Range）。
     /// 与 [`Self::Volume`] 一样**加在末尾** ⇒ 既有十个目标的下标一个都没动。
     Pan,
+    /// ⭐⭐ `cutoff`（**赫兹**；本片：调制族第五个被推广目标、第五个单位类别 `Hertz`）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ Hz**（⛔ 不是基准 `cutoff`）：
+    /// 基准 `cutoff`（连同 `fil_keytrack`／`fil_veltrack`）早就折成
+    /// [`crate::playback::filter_cutoff_hz`] 的有效截止，本目标只贡献**逐块可变**的
+    /// 增量（见 [`cutoff_hz_with_baked`]），两者的**和的物理含义是同一个截止频率**。
+    ///
+    /// ⚠ 只由 `cutoff<suffix>` 四族到达（`cutoffccN` / `cutoff_ccN` /
+    /// `cutoff_onccN` / `cutoff_curveccN`）；裸 `cutoff=` 是**静态基准**，⛔ 不是本族
+    /// （由 [`crate::instrument`] 单独读）。`cutoff_smoothccN`／`cutoff_stepccN`
+    /// 落不进四后缀 ⇒ 按未知 opcode 忽略（与本模块其余四族同口径）。
+    Cutoff,
 }
 
 impl ModTarget {
@@ -951,10 +969,10 @@ impl ModTarget {
     /// ⭐ **被修订的只是条目数**：五个既有 ampeg 目标的下标（0..=4）逐位不变；
     /// `Amplitude`／`Tune`／`Volume` 的下标由 [`AmpegParam::COUNT`] 派生（7／8／9），
     /// 相对序不变 ⇒ 每个目标**自身**的求和序（同目标内按 CC 升序）逐位不变。
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 12;
 
-    /// 全部十一个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 11] = [
+    /// 全部十二个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 12] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
@@ -970,6 +988,8 @@ impl ModTarget {
         Self::Volume,
         // ⭐⭐ 本片新增（stage 3）：`pan` 同样**加在末尾** ⇒ 既有十个下标一个都不动。
         Self::Pan,
+        // ⭐⭐ 本片新增（stage 5）：`cutoff` 同样**加在末尾** ⇒ 既有十一个下标一个都不动。
+        Self::Cutoff,
     ];
 
     /// 在 [`Self::ALL`] 里的下标（`0..=9`）；**这个序就是求和序**。
@@ -981,6 +1001,7 @@ impl ModTarget {
             Self::Tune => AmpegParam::COUNT + 1,
             Self::Volume => AmpegParam::COUNT + 2,
             Self::Pan => AmpegParam::COUNT + 3,
+            Self::Cutoff => AmpegParam::COUNT + 4,
         }
     }
 
@@ -999,6 +1020,7 @@ impl ModTarget {
             Self::Tune => "tune",
             Self::Volume => "volume",
             Self::Pan => "pan",
+            Self::Cutoff => "cutoff",
         }
     }
 
@@ -1007,7 +1029,7 @@ impl ModTarget {
     pub const fn ampeg(self) -> Option<AmpegParam> {
         match self {
             Self::Ampeg(param) => Some(param),
-            Self::Amplitude | Self::Tune | Self::Volume | Self::Pan => None,
+            Self::Amplitude | Self::Tune | Self::Volume | Self::Pan | Self::Cutoff => None,
         }
     }
 
@@ -1041,6 +1063,8 @@ impl ModTarget {
             Self::Volume => ModUnit::Decibels,
             // 本片：`pan` 页 Modulation 表 Unit ＝ %（与 `amplitude` 同一类别，⛔ 不新开）。
             Self::Pan => ModUnit::Percent,
+            // 本片：`cutoff` 页 Modulation 表 Unit ＝ Hz。
+            Self::Cutoff => ModUnit::Hertz,
         }
     }
 
@@ -1076,6 +1100,7 @@ impl ModTarget {
             ModUnit::Cents => "cents",
             // ⭐⭐ `#119`：`volume` 页表行 Unit 列的字面就是 `dB`。
             ModUnit::Decibels => "dB",
+            ModUnit::Hertz => "Hz",
         }
     }
 
@@ -1115,6 +1140,9 @@ impl ModTarget {
             Self::Volume => (MIN_VOLUME_MODULATION_DELTA, MAX_VOLUME_MODULATION_DELTA),
             // `pan` 页 Modulation 表 Range ＝ `-100 to 100`（与 `amplitude` 的旧域同数）。
             Self::Pan => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            // 本片：`cutoff` 页 Range ＝ `0 to SampleRate/2`，delta 因而取 ±24000 Hz
+            // （44.1 kHz 族的半个采样率；更高采样率由 dsp 侧的系数钳制接住）。
+            Self::Cutoff => (MIN_CUTOFF_MODULATION_DELTA, MAX_CUTOFF_MODULATION_DELTA),
         }
     }
 }
@@ -1130,6 +1158,16 @@ pub const MIN_MODULATION_DELTA: f32 = -100.0;
 
 /// `delta` 的上界（同上）。
 pub const MAX_MODULATION_DELTA: f32 = 100.0;
+
+/// ⭐⭐ `cutoff_*ccN` 的 `delta` 下界／上界（本片）：**±24000 Hz**。
+///
+/// 依据：`cutoff` 页 Modulation 表 Range ＝ `0 to SampleRate/2`；delta 是**加性 Hz 偏移**
+/// ⇒ 正负两端都要能覆盖整个定义域。⛔ 不是"发明一个域"：它就是把那一行按 48 kHz 族的
+/// 半采样率写下来的结果，更高采样率由 `yeban-dsp` 的系数钳制接住。
+pub const MIN_CUTOFF_MODULATION_DELTA: f32 = -24000.0;
+
+/// `cutoff_*ccN` 的 `delta` 上界（见 [`MIN_CUTOFF_MODULATION_DELTA`]）。
+pub const MAX_CUTOFF_MODULATION_DELTA: f32 = 24000.0;
 
 /// ⭐⭐ `amplitude_*ccN` 的 `delta` 下界（任务单 `#206`）：**负无穷**（只受
 /// finite 检查约束）。
@@ -1272,6 +1310,33 @@ pub fn pan_value_with_baked(
 /// 折成音高比：`2 ^ (((note − pitch_keycenter + transpose) × 100 + tune) / 1200)`。
 /// 本常量是那**同一个数**的 `f32` 形态（`tune` 的调制量在 `f32` 上求和 ⇒ 换算走 `f32`）。
 pub const TUNE_CENTS_PER_OCTAVE: f32 = 1200.0;
+
+/// ⭐⭐ **`cutoff` 调制的唯一求值**（本片 stage 5）：基准截止 ＋ `Σ delta × curve(cc)`。
+///
+/// ```text
+/// cutoff_hz = base_hz + Σ_{cc} delta × curve(probe(cc))     // 单位：Hz
+/// ```
+///
+/// * `probe == None` ⇒ **一项 CC 都不读**、原样返回 `base_hz`
+///   （⇒ 滤波配置与接线前**逐位相同**，无 CC 的工程一分钱都不多花）；
+/// * 求值本体是 [`cc_value_with_baked`]（与其余四目标**同一份**求和，⛔ 没有第二套）；
+/// * **下界钳到 `0`**：规范定义域是 `0 to SampleRate/2`，负截止在物理上不存在
+///   （上界不在这里钳 —— 采样率只有消费方知道，由 `yeban-dsp` 的系数钳制接住）；
+/// * 曲线不可烘焙的项**不贡献**（⛔ 不当成曲线 0），与 [`cc_value_with_baked`] 同口径。
+///
+/// 实时安全：纯算术 ＋ 定长切片，无分配、无锁、无 I/O ⇒ 可逐块调用。
+#[must_use]
+pub fn cutoff_hz_with_baked(
+    base_hz: f32,
+    mods: &[BakedCcMod],
+    probe: Option<&dyn Fn(u8) -> u8>,
+) -> f32 {
+    let Some(probe) = probe else {
+        return base_hz;
+    };
+    let (hz, _unresolved) = cc_value_with_baked(base_hz, ModTarget::Cutoff, mods, probe);
+    hz.max(0.0)
+}
 
 /// ⭐⭐ `tune` 调制的**唯一换算**（任务单 `#116`）：音分增量 → 音高比乘子。
 ///
@@ -1472,6 +1537,25 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
             return None;
         }
         return Some((ModTarget::Pan, form, digits));
+    }
+    // ⭐⭐ `cutoff` 族（本片 stage 5）：与 `pan`／`amplitude` **同款**的四后缀识别
+    // （⛔ 不另开一套）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、`_oncc` 在 `cc` 之前。
+    // ⚠ 裸 `cutoff=`（**静态基准**）被 `strip_prefix("cc")?` 挡掉 ⇒ 不是本族目标；
+    // `cutoff_smoothccN`／`cutoff_stepccN` 落不进四后缀 ⇒ 按未知 opcode 忽略。
+    if let Some(tail) = name.strip_prefix("cutoff") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Cutoff, form, digits));
     }
     if let Some(tail) = name.strip_prefix("amplitude") {
         let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
@@ -2153,14 +2237,18 @@ mod tests {
         // ⇒ 上面那条 `ALL[5] == Amplitude` 逐位不变。
         // ⛔ **原句（历史，⛔ 不再作为断言）**：
         // `assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);`
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Tune);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 4], ModTarget::Tune);
         // ⭐ 本片（stage 3）：`Pan` 加在 `Volume` **之后** ⇒ "末尾"移到 `Pan`，
         // `Volume` 退到 `COUNT − 2`；既有十个目标的下标**一个都没动**。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Volume);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Pan);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Volume);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Pan);
+        // ⭐ 本片（stage 5）：`Cutoff` 加在 `Pan` **之后** ⇒ "末尾"移到 `Cutoff`；
+        // 既有十一个目标的下标**一个都没动**。
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Cutoff);
         assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
         assert_eq!(ModTarget::Volume.index(), AmpegParam::COUNT + 2);
         assert_eq!(ModTarget::Pan.index(), AmpegParam::COUNT + 3);
+        assert_eq!(ModTarget::Cutoff.index(), AmpegParam::COUNT + 4);
         assert_eq!(ModTarget::Tune.name(), "tune");
         assert_eq!(ModTarget::Tune.ampeg(), None);
         assert!(!ModTarget::Tune.is_time(), "`tune_onccN` 的单位是音分");
