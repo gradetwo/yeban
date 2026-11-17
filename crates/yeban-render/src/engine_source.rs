@@ -709,7 +709,11 @@ impl AudioSource for EngineTrackSource {
         // ⭐ **stage 2**：这张摊平表里有**非中性**区域 `pan` ⇒ 走分声道通路
         //    （`render_track_stereo`），源侧声相按区域施加；否则走原来的单声道通路
         //    （`pan` 全 0 的语料 ⇒ 与接线前逐位相同）。
-        let source_panned = channels == 2 && sfz.is_some_and(|plan| plan.regions_with_pan() > 0);
+        // ⚠ stage 3 起还要看**逐块可变**的声相：静态 `pan=0` ＋ `pan_onccN` 的库，
+        //   只有在分声道通路上才听得见调制（同样条数为 0 时不切，逐位不变）。
+        let source_panned = channels == 2
+            && sfz
+                .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0);
         if source_panned {
             // 栈上定长分块：⛔ 不在渲染中分配（与 `SfzVoicePool` 的分声道入口同一条纪律）。
             const CHUNK: usize = 128;

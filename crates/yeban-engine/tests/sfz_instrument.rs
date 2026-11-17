@@ -420,6 +420,58 @@ fn stereo_path_applies_region_pan_at_the_source() {
     assert_eq!(bits(&left), bits(&right), "中性区域 ⇒ 两声道必须逐位相同");
 }
 
+/// ⭐ **stage 3 判据**：`pan_onccN` 逐块生效（同一份摊平表、两条不同的 CC 读数）。
+///
+/// 与上面那条的区别只有一处：**静态 `pan` 是 0**，位移全部来自 CC 调制
+/// ⇒ 这条判据红的唯一原因就是调制没接线。
+#[test]
+fn pan_oncc_modulates_the_region_pan_per_block() {
+    let track = EntityId::new();
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let plan = prepare(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 pan_oncc1=100
+",
+    );
+    assert_eq!(plan.regions_with_pan(), 0, "静态 `pan` 走缺省 ⇒ 0");
+    assert_eq!(
+        plan.regions_with_cc_pan(),
+        1,
+        "摊平表必须留下 `pan_onccN` 这一项"
+    );
+
+    let peak = |pcm: &[f32]| pcm.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+    let mut readings = Vec::new();
+    for (label, cc_value) in [("cc=0", 0u8), ("cc=127", 127u8)] {
+        let probe = move |controller: u8| if controller == 1 { cc_value } else { 0 };
+        let mut engine = engine_with_track(track);
+        let mut left = vec![0.0f32; BLOCK];
+        let mut right = vec![0.0f32; BLOCK];
+        engine.render_track_stereo_with_cc(
+            track,
+            Some(&schedule),
+            Some(&plan),
+            &mut left,
+            &mut right,
+            Some(&probe),
+        );
+        readings.push((label, peak(&left), peak(&right)));
+    }
+    println!("[stage3] {:?}", readings);
+    let (_, left0, right0) = readings[0];
+    let (_, left127, right127) = readings[1];
+    assert!(left0 > 0.01, "cc=0 ⇒ 中性，左声道必须出声：{left0}");
+    assert_eq!(
+        left0.to_bits(),
+        right0.to_bits(),
+        "cc=0 ⇒ 调制量为 0 ⇒ 两声道必须逐位相同"
+    );
+    assert!(
+        left127 < right127 * 1e-3,
+        "cc=127 ⇒ `pan_oncc1=100` 把声相推到全右：left={left127} right={right127}"
+    );
+}
+
 #[test]
 fn s1_engine_voices_match_the_flattened_table_sample_by_sample() {
     let prepared = prepare(TWO_MATCH_ONE_MISS);
@@ -13316,8 +13368,9 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
     assert_eq!(
         ModTarget::COUNT,
-        10,
-        "⭐ `#119` 加上 `Volume` ⇒ 目标数是 8；⭐ **包络族片修订：`AmpegParam` 尾加 \
+        11,
+        "⭐ 本片（stage 3）加上 `Pan` ⇒ 目标数 10 → **11**（既有十个下标一个都没动）；\
+         历史：⭐ `#119` 加上 `Volume` ⇒ 目标数是 8；⭐ **包络族片修订：`AmpegParam` 尾加 \
          `Delay`／`Start` ⇒ 目标数 10（`Volume` 仍在末尾；`#104`～`#118` 七个目标的**相对序未动**、\
          绝对下标随 `AmpegParam::COUNT` 派生）**"
     );
@@ -13928,8 +13981,8 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         // ⛔ 这里把**今天的行为**钉住（⛔ 不是"哪天变成识别到了但静默丢弃"）。
         "cutoff_oncc1",
         "cutoff_cc1",
-        "pan_oncc1",
-        "pan_cc1",
+        // ⭐ 本片（stage 3）：`pan_oncc1` / `pan_cc1` **从本反向腿表移出** —— 它们现在
+        // 是识别的（`ModTarget::Pan`），改由下面的**正例**逐字钉住。
         "pitch_smoothcc1",
         "pitch_stepcc1",
         "tune_smoothcc1",
@@ -13945,6 +13998,35 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
             "[engine-sfz/S114] ⑧ `{name}=10` 单独出现 ⇒ 调制项数 = {count}（＝未知 opcode 忽略）"
         );
         assert_eq!(count, 0, "⭐ `{name}` ⛔ 不进调制表（本单不做、登记在案）");
+    }
+    // ⭐ 本片（stage 3）的**正例**：`pan_onccN` 一家必须**真的进调制表**（目标 ＝ `Pan`、
+    // 单位 ＝ `%`），而且无 CC 时**不改任何读数**（静态 `pan` 原样）。
+    let pan_row = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 pan_oncc1=10\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("`pan_oncc1=10` 必须在 `-100..=100` 域内 ⇒ 解析成功");
+    {
+        let readings: Vec<(ModTarget, u8, f32)> = pan_row
+            .with_instrument(|parsed| {
+                parsed.regions()[0]
+                    .cc_modulations()
+                    .iter()
+                    .map(|item| (item.target, item.cc, item.delta))
+                    .collect()
+            })
+            .expect("重解析");
+        println!("[engine-sfz/S114] ⑧ `pan_oncc1=10` ⇒ {readings:?}");
+        assert_eq!(readings.len(), 1, "`pan_oncc1=10` 必须真的进调制表");
+        assert_eq!(readings[0].0, ModTarget::Pan, "目标必须是新增的 `Pan`");
+        assert_eq!(readings[0].1, 1, "CC 号必须是 1");
+        assert_eq!(readings[0].2, 10.0, "delta 必须逐字读成 10 %");
+        assert_eq!(ModTarget::Pan.unit(), "%", "`pan` 的单位是百分比");
+        assert_eq!(
+            ModTarget::Pan.delta_range(),
+            (-100.0, 100.0),
+            "`pan_onccN` 表的 Range 列是 `-100 to 100`"
+        );
     }
     // ⭐⭐ `#124` 的**正例**（第 278 条：上面那张表里 `"gain_cc1"` 那一支被修订后落到这里）：
     // `gain_ccN` —— 规范 Modulation 表里**逐字的 delta 行名** —— 必须**真的被识别**。
@@ -15996,8 +16078,8 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     // ---- ⑦ 尺寸（`size_of` 现读，⛔ 不手抄）：四个全 ＋0 ----
     assert_eq!(
         ModTarget::COUNT,
-        10,
-        "⛔ `#124` ⛔ 不加目标（`gain_ccN` 落**既有**的 `Volume`）；\
+        11,
+        "⛔ `#124` ⛔ 不加目标（本片 stage 3 加的是 `Pan`：10 → 11）（`gain_ccN` 落**既有**的 `Volume`）；\
          ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**"
     );
     assert_eq!(ModTarget::ALL[9], ModTarget::Volume);
@@ -16247,10 +16329,12 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 0,
             needle: "`pan_oncc*` ／ `cutoff_oncc*` 那两项整条有效**（仍未做，另开单）",
-            verdict: "仍成立（两支都落不进识别层）",
-            basis: "`parse_modulation_name` 今天对这两支都返回 `None` —— ⛔ 不新开目标、\
-                    ⛔ 不新开单位（同族的落地形状在 `#104`～`#124` 已立，缺的只是「谁来做」）",
-            check: SweepCheck::NotRecognized(&["pan_oncc1", "cutoff_oncc1"]),
+            verdict: "⭐ **已落地一半**：`pan_oncc*` 现在**被识别**（`ModTarget::Pan`，\
+                     stage 3）；`cutoff_oncc*` **仍未做**（下一支仍成立）",
+            basis: "`parse_modulation_name` 对 `pan_oncc1` 返回 `Some((Pan, Delta, \"1\"))`、\
+                    对 `cutoff_oncc1` 仍返回 `None` —— ⛔ 不新开单位（`pan` 用既有 `Percent`）；\
+                    ⛔ 原文一字未删（登记改由本行的 basis 承担）",
+            check: SweepCheck::Recognized(&["pan_oncc1", "pan_cc1", "pan_curvecc1"]),
         },
         SweepRow {
             file: 0,

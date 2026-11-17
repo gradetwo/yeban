@@ -1972,8 +1972,8 @@ use yeban_sfz::lfo::{GenericLfo, V1Lfo};
 // [`volume_ratio_with_baked`]（同样是 `yeban-sfz` 的**同一份**实现）。
 use yeban_sfz::modulation::{
     AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
-    cc_value_with_baked_and_vel2, tune_ratio_from_cents, tune_ratio_with_baked,
-    volume_ratio_with_baked,
+    cc_value_with_baked_and_vel2, pan_value_with_baked, tune_ratio_from_cents,
+    tune_ratio_with_baked, volume_ratio_with_baked,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
@@ -5493,6 +5493,24 @@ impl PreparedRegion {
         tune_ratio_with_baked(self.cc_modulations(), cc)
     }
 
+    /// ⭐⭐ **`pan` 调制的有效声相**（本片 stage 3）：`base ＋ Σ delta × curve(cc)`，钳 `±100`。
+    ///
+    /// * `cc == None` ⇒ 一项 CC 都不读 ⇒ **原样返回静态 `pan`**（⇒ 分声道通路在无探针
+    ///   入口上与 stage 1 的读数**逐位相同**）；
+    /// * 求值本体是 `yeban-sfz` 的 [`pan_value_with_baked`]（离线／摊平／实时**同一份**）。
+    #[must_use]
+    pub fn pan_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        pan_value_with_baked(self.pan, self.cc_modulations(), cc)
+    }
+
+    /// 本区域是否带**逐块可变**的 `pan`（`pan_onccN` 一族烘焙后仍在表里）。
+    #[must_use]
+    pub fn has_pan_modulation(&self) -> bool {
+        self.cc_modulations()
+            .iter()
+            .any(|item| item.target == ModTarget::Pan)
+    }
+
     /// ⭐⭐ **`volume` 调制的线性增益乘子**（任务单 `#119`）：
     /// `2 ^ (Σ delta × curve(cc) × log2(10) / 20)`（＝ `10 ^ (dB / 20)`）。
     ///
@@ -6304,7 +6322,7 @@ impl PreparedSfz {
         self.regions.len()
     }
 
-    /// ⭐ 声明了**非中性**区域 `pan` 的区域条数（`0` ⇒ 整张表都不需要分声道）。
+    /// 声明了**非中性**区域 `pan` 的区域条数（`0` ⇒ 整张表都不需要分声道）。
     ///
     /// 消费方据此选通路：`0` ⇒ 走单声道（逐位同接线前）；`> 0` ⇒ 走分声道
     /// （[`crate::synth::SynthEngine::render_track_stereo`]），源侧声相才有效。
@@ -6320,6 +6338,27 @@ impl PreparedSfz {
     #[must_use]
     pub fn region_pan(&self, index: usize) -> f32 {
         self.regions.get(index).map_or(0.0, |region| region.pan)
+    }
+
+    /// 表里带 `pan_onccN` 的区域条数（`0` ⇒ 静态 `pan` 就是全部真相）。
+    ///
+    /// ⚠ 消费方选通路时必须与 [`Self::regions_with_pan`] **一起判**：
+    /// 静态 `pan=0` 但带 `pan_onccN` 的库，只有在分声道通路上才听得见调制。
+    #[must_use]
+    pub fn regions_with_cc_pan(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.has_pan_modulation())
+            .count()
+    }
+
+    /// ⭐ **本块有效的区域声相**（stage 3）：静态 `pan` ＋ `pan_onccN` 的逐块调制，
+    /// 钳 `±100` 百分比。`cc == None` ⇒ 与 [`Self::region_pan`] 逐位相同。
+    #[must_use]
+    pub fn region_pan_with_cc(&self, index: usize, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        self.regions
+            .get(index)
+            .map_or(0.0, |region| region.pan_with_cc(cc))
     }
 
     /// 摊平后的区域表（**只读**；判据与控制侧读数用）。
@@ -9260,7 +9299,8 @@ impl SfzVoicePool {
         left[..frames].fill(0.0);
         right[..frames].fill(0.0);
         for index in 0..SFZ_VOICES_PER_TRACK {
-            let pan = plan.region_pan(usize::from(self.voices[index].region_index));
+            // ⭐ stage 3：`pan_onccN` 逐块生效（`cc == None` ⇒ 与 stage 1 逐位相同）。
+            let pan = plan.region_pan_with_cc(usize::from(self.voices[index].region_index), cc);
             let (gain_l, gain_r) = crate::mixer::centered_pan_gains(
                 pan / 100.0,
                 crate::mixer::PanLaw::ConstantPowerMinus3dB,

@@ -926,6 +926,16 @@ pub enum ModTarget {
     /// `gain_oncc1`／`gain_curvecc1` 两格**逐字仍钉在"未知 opcode 忽略"**；
     /// 裁定、代价与 8 档语料口径见 §8.6）。
     Volume,
+    /// ⭐⭐ `pan`（**百分比**；本片的第四个被推广目标，与 `Amplitude` 同单位类别）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ %**（⛔ 不是基准 `pan`）：
+    /// 基准 `pan` 早就是 [`crate::Region::pan`]（摊平表的 `PreparedRegion::pan`），
+    /// 本目标只贡献**逐块可变**的增量（见 [`pan_value_with_baked`]）。
+    ///
+    /// ⚠ 本变体**只由 `pan<suffix>` 四族**到达（`panccN` / `pan_ccN` ／
+    /// `pan_onccN` ／ `pan_curveccN`）；域 `-100..=100`（`pan` 页 Modulation 表 Range）。
+    /// 与 [`Self::Volume`] 一样**加在末尾** ⇒ 既有十个目标的下标一个都没动。
+    Pan,
 }
 
 impl ModTarget {
@@ -941,10 +951,10 @@ impl ModTarget {
     /// ⭐ **被修订的只是条目数**：五个既有 ampeg 目标的下标（0..=4）逐位不变；
     /// `Amplitude`／`Tune`／`Volume` 的下标由 [`AmpegParam::COUNT`] 派生（7／8／9），
     /// 相对序不变 ⇒ 每个目标**自身**的求和序（同目标内按 CC 升序）逐位不变。
-    pub const COUNT: usize = 10;
+    pub const COUNT: usize = 11;
 
-    /// 全部十个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 10] = [
+    /// 全部十一个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 11] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
@@ -958,6 +968,8 @@ impl ModTarget {
         Self::Tune,
         // ⭐⭐ `#119` 的**新增目标**（⛔ 加在末尾 ⇒ 既有七个下标一个都不动）。
         Self::Volume,
+        // ⭐⭐ 本片新增（stage 3）：`pan` 同样**加在末尾** ⇒ 既有十个下标一个都不动。
+        Self::Pan,
     ];
 
     /// 在 [`Self::ALL`] 里的下标（`0..=9`）；**这个序就是求和序**。
@@ -968,6 +980,7 @@ impl ModTarget {
             Self::Amplitude => AmpegParam::COUNT,
             Self::Tune => AmpegParam::COUNT + 1,
             Self::Volume => AmpegParam::COUNT + 2,
+            Self::Pan => AmpegParam::COUNT + 3,
         }
     }
 
@@ -985,6 +998,7 @@ impl ModTarget {
             Self::Amplitude => "amplitude",
             Self::Tune => "tune",
             Self::Volume => "volume",
+            Self::Pan => "pan",
         }
     }
 
@@ -993,7 +1007,7 @@ impl ModTarget {
     pub const fn ampeg(self) -> Option<AmpegParam> {
         match self {
             Self::Ampeg(param) => Some(param),
-            Self::Amplitude | Self::Tune | Self::Volume => None,
+            Self::Amplitude | Self::Tune | Self::Volume | Self::Pan => None,
         }
     }
 
@@ -1025,6 +1039,8 @@ impl ModTarget {
             // ⭐⭐ `#119`：**第四个**单位类别（`volume` 的表行 Unit ＝ dB）。
             // ⚠ `#117` 的三支**逐字未动**（见本模块 §8.2）。
             Self::Volume => ModUnit::Decibels,
+            // 本片：`pan` 页 Modulation 表 Unit ＝ %（与 `amplitude` 同一类别，⛔ 不新开）。
+            Self::Pan => ModUnit::Percent,
         }
     }
 
@@ -1097,6 +1113,8 @@ impl ModTarget {
             ),
             Self::Tune => (MIN_TUNE_MODULATION_DELTA, MAX_TUNE_MODULATION_DELTA),
             Self::Volume => (MIN_VOLUME_MODULATION_DELTA, MAX_VOLUME_MODULATION_DELTA),
+            // `pan` 页 Modulation 表 Range ＝ `-100 to 100`（与 `amplitude` 的旧域同数）。
+            Self::Pan => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
         }
     }
 }
@@ -1218,6 +1236,31 @@ pub fn volume_ratio_with_baked(mods: &[BakedCcMod], probe: Option<&dyn Fn(u8) ->
     };
     let (decibels, _unresolved) = cc_value_with_baked(0.0, ModTarget::Volume, mods, probe);
     (decibels * std::f32::consts::LOG2_10 / 20.0).exp2()
+}
+
+/// ⭐⭐ `pan` 调制的**唯一求值**（本片 stage 3）：百分比基准 ＋ CC 增量，**钳到 `-100..=100`**。
+///
+/// ```text
+/// pan = clamp(base + Σ delta × curve(cc), -100, 100)      // 百分比
+/// ```
+///
+/// * `probe == None` ⇒ 一项 CC 都不读 ⇒ **原样返回 `base`**（⛔ 不做钳位之外的算术）
+///   ⇒ 摊平表里没有 `pan_onccN` 或走无探针入口时，与接线前**逐位相同**；
+/// * 钳位是**语义**的一部分（不是防御）：`pan` 的消费方
+///   [`crate::ModTarget::delta_range`] 只管 `delta` 的域，基准 ＋ 增量越界时才钳
+///   （SFZ 的 `pan` 定义域就是 `-100..=100`；越界值在播放器里等价于端点）；
+/// * 求值本体是 [`cc_value_with_baked`]（与其它目标**同一份**，⛔ 没有第二套求和）。
+#[must_use]
+pub fn pan_value_with_baked(
+    base: f32,
+    mods: &[BakedCcMod],
+    probe: Option<&dyn Fn(u8) -> u8>,
+) -> f32 {
+    let Some(probe) = probe else {
+        return base;
+    };
+    let (pan, _unresolved) = cc_value_with_baked(base, ModTarget::Pan, mods, probe);
+    pan.clamp(MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
 }
 
 /// ⭐⭐ 一个八度的音分数（**音分 → 音高比** 换算的唯一分母；任务单 `#116`）。
@@ -1411,6 +1454,25 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
     // ⭐ 增益族（任务单 `#115`）：`amplitude` ＋ 四种后缀之一。
     // ⚠ 检查顺序：`_curvecc` 必须在 `_cc` **之前**（否则 `…_curvecc4` 会被剥成
     // `urvecc4` ⇒ 非数字 ⇒ 静默漏掉）；`_oncc` 也必须在 `cc` 之前。
+    // ⭐⭐ `pan` 族（本片 stage 3）：与 `amplitude` **同款**的四后缀识别（⛔ 不另开一套）。
+    // ⚠ 裸 `pan=`（**静态基准**）在这里被 `strip_prefix("cc")?` 挡掉 ⇒ 它不是本族目标。
+    // ⚠ `pan_onccN` 是规范表里**唯一**带 `%` 的声相调制行；`pan_smoothccN`／`pan_stepccN`
+    // 落不进四后缀 ⇒ 按未知 opcode 忽略（与 `volume` 族同口径）。
+    if let Some(tail) = name.strip_prefix("pan") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Pan, form, digits));
+    }
     if let Some(tail) = name.strip_prefix("amplitude") {
         let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
             (ModulationForm::Curve, digits)
@@ -2091,10 +2153,14 @@ mod tests {
         // ⇒ 上面那条 `ALL[5] == Amplitude` 逐位不变。
         // ⛔ **原句（历史，⛔ 不再作为断言）**：
         // `assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);`
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Tune);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Volume);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Tune);
+        // ⭐ 本片（stage 3）：`Pan` 加在 `Volume` **之后** ⇒ "末尾"移到 `Pan`，
+        // `Volume` 退到 `COUNT − 2`；既有十个目标的下标**一个都没动**。
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Volume);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Pan);
         assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
         assert_eq!(ModTarget::Volume.index(), AmpegParam::COUNT + 2);
+        assert_eq!(ModTarget::Pan.index(), AmpegParam::COUNT + 3);
         assert_eq!(ModTarget::Tune.name(), "tune");
         assert_eq!(ModTarget::Tune.ampeg(), None);
         assert!(!ModTarget::Tune.is_time(), "`tune_onccN` 的单位是音分");
