@@ -525,7 +525,11 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 63;
 /// ⭐ 2026-11-17（并集：`line/arrangement-grid` ＋ 音名八度统一线阶段 2）：
 /// 两路同基 103、写点互不重叠 ⇒ **109 + 5 = 114**（网格的 1 + 5 与八度的 5
 /// 全是新增写点；③b 清单只含八度的五格，网格六点皆为标量）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 114;
+/// ⭐ 2026-11-18（台账订正：`line/sfz-note-octave-unify` 合入 main 91ce3c7a5 后）：
+/// 114 失真——并集算法取了旧基数 103（103＋网格 6＋八度 5），未计主干在鼓机
+/// 合入后已带进的增量；按本文件 `write_sites` 口径实测合入树 `apply_view`
+/// 的 `ui.set_` 写点为 **122** ⇒ **114 → 122**。该常量无活测试断言，纯台账。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 122;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
