@@ -278,7 +278,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             border-radius: 3px;
                             background: root.dock-instrument-menu-open ? Theme.accent.with-alpha(0.22) : (dock-inst-btn.has-hover ? #1e293b : #10141f);
                             border-width: 1px;
-                            border-color: root.dock-instrument-menu-open ? Theme.accent : #ffffff14;
+                            border-color: root.dock-instrument-menu-open ? Theme.accent : Tokens.line;
                             HorizontalLayout {
                                 padding-left: 6px;
                                 padding-right: 6px;
@@ -306,7 +306,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             border-radius: 3px;
                             background: dock-eq-btn.has-hover ? #1e293b : #10141f;
                             border-width: 1px;
-                            border-color: #ffffff14;
+                            border-color: Tokens.line;
                             HorizontalLayout {
                                 padding-left: 6px;
                                 padding-right: 6px;
@@ -331,7 +331,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             border-radius: 3px;
                             background: dock-rev-btn.has-hover ? #1e293b : #10141f;
                             border-width: 1px;
-                            border-color: #ffffff14;
+                            border-color: Tokens.line;
                             HorizontalLayout {
                                 padding-left: 6px;
                                 padding-right: 6px;
@@ -356,7 +356,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             border-radius: 3px;
                             background: dock-quant-btn.has-hover ? #1e293b : #10141f;
                             border-width: 1px;
-                            border-color: #ffffff14;
+                            border-color: Tokens.line;
                             HorizontalLayout {
                                 padding-left: 6px;
                                 padding-right: 6px;
@@ -378,10 +378,11 @@ export component UnifiedLowerDock inherits Rectangle {
                     }
 
                     Rectangle {
-                        background: root.selected-track-color.with-alpha(0.15);
+                        // 徽章底/边：轨道色在所依底色上的等效合成实色（mix），不再透叠（本文件徽章同此）。
+                        background: root.selected-track-color.mix(Theme.bg-panel, 0.15);
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: root.selected-track-color.with-alpha(0.40);
+                        border-color: root.selected-track-color.mix(Theme.bg-panel, 0.40);
                         height: 24px;
                         HorizontalLayout {
                             padding-left: 8px;
@@ -411,7 +412,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         background: max_btn_touch.has-hover ? #22293a : (root.console-maximized ? Theme.accent.with-alpha(0.25) : #121622);
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: root.console-maximized ? Theme.accent : #ffffff18;
+                        border-color: root.console-maximized ? Theme.accent : Tokens.line-strong;
 
                         if !root.console-maximized : Path {
                             width: 12px;
@@ -520,7 +521,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-radius: 3px;
                                 background: empty_add_eq.has-hover ? #1e293b : #10141f;
                                 border-width: 1px;
-                                border-color: #ffffff18;
+                                border-color: Tokens.line-strong;
                                 HorizontalLayout {
                                     alignment: center;
                                     Text { text: @tr("+ 参量均衡 EQ"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
@@ -540,7 +541,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-radius: 3px;
                                 background: empty_add_rev.has-hover ? #1e293b : #10141f;
                                 border-width: 1px;
-                                border-color: #ffffff18;
+                                border-color: Tokens.line-strong;
                                 HorizontalLayout {
                                     alignment: center;
                                     Text { text: @tr("+ 空间混响 Reverb"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
@@ -556,7 +557,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-radius: 3px;
                                 background: empty_add_sfz.has-hover ? #1e293b : #10141f;
                                 border-width: 1px;
-                                border-color: #ffffff18;
+                                border-color: Tokens.line-strong;
                                 HorizontalLayout {
                                     alignment: center;
                                     Text { text: @tr("+ 加载 SFZ"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
@@ -636,7 +637,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     border-radius: 3px;
                                     background: dev_rm_touch.has-hover ? #ef444433 : #10141f;
                                     border-width: 1px;
-                                    border-color: dev_rm_touch.has-hover ? #ef444488 : #ffffff14;
+                                    border-color: dev_rm_touch.has-hover ? #ef444488 : Tokens.line;
                                     Text {
                                         text: "×";
                                         font-family: Tokens.font-ui;
@@ -668,7 +669,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 y: 32px;
                                 width: parent.width;
                                 height: 1px;
-                                background: #ffffff0a;
+                                background: Tokens.line;
                             }
 
                             // 占位：卡片频响尚未接真实设备参数（⛔ 不画常量曲线冒充
@@ -713,7 +714,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 horizontal-stretch: 1;
                                 height: 26px;
                                 HorizontalLayout {
@@ -739,7 +740,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 horizontal-stretch: 1;
                                 height: 26px;
                                 HorizontalLayout {
@@ -765,7 +766,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: dev_swap_touch.has-hover ? Theme.accent.with-alpha(0.22) : #080a10;
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #ffffff14;
+                                border-color: Tokens.line;
                                 width: 48px;
                                 height: 26px;
                                 HorizontalLayout {
@@ -810,10 +811,11 @@ export component UnifiedLowerDock inherits Rectangle {
                     for trk[tidx] in root.tracks : Rectangle {
                         width: 82px;
                         vertical-stretch: 1;
-                        background: #080a10;
+                        // 选中不靠色边框：底色提亮一档承载（#080a10 向白混合 3% ⇒ #0f1117，相对亮度约 1.7 倍，与编曲选中提亮同量级）。
+                        background: trk.id == root.selected-track-id ? #0f1117 : #080a10;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: trk.id == root.selected-track-id ? Theme.accent : #191f2c;
+                        border-color: #191f2c;
                         clip: true;
 
                         // Background selection TouchArea declared BEFORE foreground controls so M/S/Pan/Fader remain clickable
@@ -827,10 +829,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // 1. Color / Name Badge
                             Rectangle {
                                 height: 18px;
-                                background: trk.color.with-alpha(0.18);
+                                background: trk.color.mix(#080a10, 0.18);
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: trk.color.with-alpha(0.60);
+                                border-color: trk.color.mix(#080a10, 0.60);
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -853,7 +855,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 3px;
                                     padding-right: 3px;
@@ -892,7 +894,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: insert1_touch.has-hover ? #1e293b : #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: insert1_touch.has-hover ? Theme.accent : #ffffff08;
+                                border-color: insert1_touch.has-hover ? Theme.accent : Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -922,7 +924,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -943,7 +945,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -964,7 +966,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1015,7 +1017,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
 
                                 VerticalLayout {
                                     padding: 2px;
@@ -1052,7 +1054,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         border-radius: 2px;
                                         background: trk.muted ? #9a6a38 : #12151e;
                                         border-width: 1px;
-                                        border-color: trk.muted ? #825828 : #ffffff10;
+                                        border-color: trk.muted ? #825828 : Tokens.line;
                                         Text {
                                             text: "M";
                                             font-family: Tokens.font-mono;
@@ -1074,7 +1076,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         border-radius: 2px;
                                         background: trk.soloed ? Theme.accent : #12151e;
                                         border-width: 1px;
-                                        border-color: trk.soloed ? Theme.accent : #ffffff10;
+                                        border-color: trk.soloed ? Theme.accent : Tokens.line;
                                         Text {
                                             text: "S";
                                             font-family: Tokens.font-mono;
@@ -1097,7 +1099,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     border-radius: 2px;
                                     background: mix_pan_touch.has-hover ? #1e293b : #0c1018;
                                     border-width: 1px;
-                                    border-color: mix_pan_touch.has-hover ? Theme.accent : #ffffff10;
+                                    border-color: mix_pan_touch.has-hover ? Theme.accent : Tokens.line;
                                     Text {
                                         text: trk.pan;
                                         font-family: Tokens.font-mono;
@@ -1157,7 +1159,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: tick_y;
                                         width: 18px;
                                         height: 1px;
-                                        background: #ffffff10;
+                                        background: Tokens.line;
                                     }
 
                                     // Tactile fader cap
@@ -1249,7 +1251,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 3px;
                                     padding-right: 3px;
@@ -1274,7 +1276,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         background: #080a10;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: Theme.track-bus.with-alpha(0.40);
+                        border-color: Theme.track-bus.mix(Theme.bg-surface, 0.40);
                         clip: true;
 
                         VerticalLayout {
@@ -1285,10 +1287,10 @@ export component UnifiedLowerDock inherits Rectangle {
                             // Header
                             Rectangle {
                                 height: 18px;
-                                background: Theme.track-bus.with-alpha(0.20);
+                                background: Theme.track-bus.mix(#080a10, 0.20);
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: Theme.track-bus.with-alpha(0.60);
+                                border-color: Theme.track-bus.mix(#080a10, 0.60);
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1310,7 +1312,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1331,7 +1333,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1352,7 +1354,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1373,7 +1375,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1395,7 +1397,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 3px;
                                     padding-right: 3px;
@@ -1447,7 +1449,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: tick_y;
                                         width: 18px;
                                         height: 1px;
-                                        background: #ffffff10;
+                                        background: Tokens.line;
                                     }
 
                                     Rectangle {
@@ -1542,7 +1544,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 3px;
                                     padding-right: 3px;
@@ -1602,7 +1604,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1623,7 +1625,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1644,7 +1646,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #10141d;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff08;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-right: 4px;
@@ -1671,7 +1673,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     border-radius: 2px;
                                     background: root.master-mono ? #f59e0b : (master_mono_touch.has-hover ? #1e293b : #10141d);
                                     border-width: 1px;
-                                    border-color: root.master-mono ? #d97706 : #ffffff10;
+                                    border-color: root.master-mono ? #d97706 : Tokens.line;
                                     Text {
                                         text: "MONO";
                                         font-family: Tokens.font-mono;
@@ -1728,7 +1730,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         y: tick_y;
                                         width: 18px;
                                         height: 1px;
-                                        background: #ffffff10;
+                                        background: Tokens.line;
                                     }
 
                                     Rectangle {
@@ -1836,7 +1838,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 background: #0c0f17;
                                 border-radius: 2px;
                                 border-width: 1px;
-                                border-color: #ffffff0a;
+                                border-color: Tokens.line;
                                 HorizontalLayout {
                                     padding-left: 3px;
                                     padding-right: 3px;
@@ -1859,7 +1861,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         background: add_mix_trk_touch.has-hover ? #101622 : #06080d;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: add_mix_trk_touch.has-hover ? Theme.accent : #ffffff08;
+                        border-color: add_mix_trk_touch.has-hover ? Theme.accent : Tokens.line;
 
                         VerticalLayout {
                             alignment: center;

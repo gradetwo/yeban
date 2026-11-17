@@ -46,7 +46,7 @@ export component CommandPaletteModal inherits Rectangle {
                         Rectangle {
                             height: 48px;
                             background: #151a24;
-                            border-color: #ffffff14;
+                            border-color: Tokens.line;
 
                             HorizontalLayout {
                                 padding-left: 14px;
@@ -78,7 +78,7 @@ export component CommandPaletteModal inherits Rectangle {
                                     border-radius: 4px;
                                     height: 24px;
                                     border-width: 1px;
-                                    border-color: #ffffff10;
+                                    border-color: Tokens.line;
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -110,7 +110,7 @@ export component CommandPaletteModal inherits Rectangle {
                                 background: cmd_touch.has-hover ? #1f2738 : #161b26;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: cmd_touch.has-hover ? Theme.accent : #ffffff0a;
+                                border-color: cmd_touch.has-hover ? Theme.accent : Tokens.line;
 
                                 HorizontalLayout {
                                     padding-left: 12px;
@@ -129,10 +129,10 @@ export component CommandPaletteModal inherits Rectangle {
                                         spacing: 6px;
                                         alignment: end;
                                         Rectangle {
-                                            background: #00000030;
+                                            background: #12161f;
                                             border-radius: 3px;
                                             border-width: 1px;
-                                            border-color: #ffffff0a;
+                                            border-color: Tokens.line;
                                             height: 18px;
                                             HorizontalLayout {
                                                 padding-left: 6px;
@@ -418,7 +418,7 @@ export component ToastBanner inherits Rectangle {
                 height: 18px;
                 y: 8px;
                 border-radius: 9px;
-                background: #ffffff14;
+                background: Tokens.line;
                 Text {
                     text: "✕";
                     font-family: Tokens.font-ui;
