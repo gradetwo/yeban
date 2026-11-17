@@ -27,6 +27,9 @@
 | [asset-resolution.md](./asset-resolution.md) | SFZ 采样资源解析规则：`sample=` 相对路径与 `default_path`、`#include` 沙箱、解码与失败记账、渲染时容器池优先于磁盘的候选顺序（逐条带代码出处） |
 | [tool-availability.md](./tool-availability.md) | MCP 工具可用性：形态 A／B 的差异、`yeban-app` 的 feature 门控表、两个依赖宿主 provider 的工具与 `providerUnavailable` 契约、CLI 导出开关与 MCP 工具的对应表 |
 | [../skills/yeban-dev-workflow/SKILL.md](./skills/yeban-dev-workflow/SKILL.md) | 十条用血换来的规则（测量优先、判据必须先能变红、绝不管道化门禁……） |
+| [../skills/song-arrangement/SKILL.md](./skills/song-arrangement/SKILL.md) | 编曲方法论：先定角色、再定音区、最后写音符；改风格走参考学习法，写完用数据验收 |
+| [../skills/instrumentation-craft/SKILL.md](./skills/instrumentation-craft/SKILL.md) | 配器与音源选型方法论：选库先审计、SFZ 入库先清洗、接引擎先小样验证 |
+| [../skills/mix-mastering/SKILL.md](./skills/mix-mastering/SKILL.md) | 混音与母带方法论：增益结构、EQ 让位、效果器用法，导出后量化验收与故障排查 |
 
 ## 4. 判例与账本 —— 规范有缺口或冲突时我们怎么裁的
 
