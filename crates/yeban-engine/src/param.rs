@@ -433,6 +433,26 @@ impl ParamTable {
         ParamOutcome::Accepted
     }
 
+    /// 本实体当前是不是**恒等**（没有槽位，或增益已吸附在 `1.0`）。
+    ///
+    /// 只读、零成本（一次查找 ＋ 两个字段比较）。实时侧用它决定"这条轨能不能走
+    /// 分声道通路"：`apply` 在恒等时本来就不碰任何样本，但它的**平滑器状态**会在
+    /// 调用时推进 —— 分声道通路要对左右两条缓冲各跑一次，⛔ 不能让状态推进两次，
+    /// 所以必须先问这一句。
+    ///
+    /// ⚠ 它**不**替代 `apply` 的返回值语义：`apply` 返回"碰了几帧"，这里返回
+    /// "现在还恒不恒等"（一次判定，⛔ 不推进任何状态）。
+    #[must_use]
+    pub fn is_identity(&self, entity: EntityId) -> bool {
+        match self.index_of(entity) {
+            Some(index) => {
+                let gain = &self.gains[index];
+                gain.is_settled() && gain.value() == 1.0
+            }
+            None => true,
+        }
+    }
+
     /// 逐样本：把本实体的增益乘子乘进 `out`，返回**被乘过的帧数**。
     ///
     /// 没有槽位、或槽位已吸附到 `1.0` ⇒ 一个样本都不碰（返回 `0`），

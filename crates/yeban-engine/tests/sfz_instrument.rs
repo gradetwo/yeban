@@ -272,7 +272,10 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// `InsertLimiter` 里，运行时不背）。
 /// ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。
 /// ⭐ **频段独奏片（Songmap follow-ons (a)）＋48 B ⇒ 45 888 B**：新增 band_solo: BandSoloFilter（Biquad 36 B ＋ sample_rate 4 B ＋ Option<usize> 16 B ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B；余量 204800 − 45888 = 158912 B）。
-const ENGINE_RUNTIME_BYTES: usize = 45_888;
+/// ⭐ **pan stage 4 片 ＋512 B ⇒ 46 400 B**：`EngineRuntime` 新增 `track_scratch_r`
+/// （`[f32; DEFAULT_BLOCK_FRAMES]` ＝ 128 × 4 B ＝ 512 B），实时侧"源侧已分声道"的
+/// 轨用它装右声道；其余轨这条路一次都不碰。余量 204800 − 46400 = 158400 B。
+const ENGINE_RUNTIME_BYTES: usize = 46_400;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
@@ -418,6 +421,58 @@ fn stereo_path_applies_region_pan_at_the_source() {
         &mut right,
     );
     assert_eq!(bits(&left), bits(&right), "中性区域 ⇒ 两声道必须逐位相同");
+}
+
+/// ⭐ **stage 3 判据**：`pan_onccN` 逐块生效（同一份摊平表、两条不同的 CC 读数）。
+///
+/// 与上面那条的区别只有一处：**静态 `pan` 是 0**，位移全部来自 CC 调制
+/// ⇒ 这条判据红的唯一原因就是调制没接线。
+#[test]
+fn pan_oncc_modulates_the_region_pan_per_block() {
+    let track = EntityId::new();
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let plan = prepare(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 pan_oncc1=100
+",
+    );
+    assert_eq!(plan.regions_with_pan(), 0, "静态 `pan` 走缺省 ⇒ 0");
+    assert_eq!(
+        plan.regions_with_cc_pan(),
+        1,
+        "摊平表必须留下 `pan_onccN` 这一项"
+    );
+
+    let peak = |pcm: &[f32]| pcm.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+    let mut readings = Vec::new();
+    for (label, cc_value) in [("cc=0", 0u8), ("cc=127", 127u8)] {
+        let probe = move |controller: u8| if controller == 1 { cc_value } else { 0 };
+        let mut engine = engine_with_track(track);
+        let mut left = vec![0.0f32; BLOCK];
+        let mut right = vec![0.0f32; BLOCK];
+        engine.render_track_stereo_with_cc(
+            track,
+            Some(&schedule),
+            Some(&plan),
+            &mut left,
+            &mut right,
+            Some(&probe),
+        );
+        readings.push((label, peak(&left), peak(&right)));
+    }
+    println!("[stage3] {:?}", readings);
+    let (_, left0, right0) = readings[0];
+    let (_, left127, right127) = readings[1];
+    assert!(left0 > 0.01, "cc=0 ⇒ 中性，左声道必须出声：{left0}");
+    assert_eq!(
+        left0.to_bits(),
+        right0.to_bits(),
+        "cc=0 ⇒ 调制量为 0 ⇒ 两声道必须逐位相同"
+    );
+    assert!(
+        left127 < right127 * 1e-3,
+        "cc=127 ⇒ `pan_oncc1=100` 把声相推到全右：left={left127} right={right127}"
+    );
 }
 
 #[test]
@@ -11378,13 +11433,15 @@ fn s110_the_reverse_leg_the_three_fingerprints_and_the_existing_families() {
 /// 点名被修订的支）：`#119` 在**末尾**追加第 4 行 `Decibels` —— 它是 `#119` 新开的
 /// **第四个**单位类别（`volume` 页表行 Unit ＝ `dB`，裁定见
 /// `yeban-sfz/src/modulation.rs` §8.2），后缀接受集与 `Cents` 同款（⛔ 一个都不认）。
-const EXPECTED_SUFFIXES: [(ModUnit, &[&str]); 4] = [
+const EXPECTED_SUFFIXES: [(ModUnit, &[&str]); 5] = [
     (ModUnit::Seconds, &["", "s", "ms"]),
     (ModUnit::Percent, &["", "%"]),
     // ⭐⭐ `#117`：音分**没有任何**后缀写法（规范里 `cents` 一族只写纯数字）。
     (ModUnit::Cents, &[""]),
     // ⭐⭐ `#119` 的**新增行**（⛔ 加在末尾 ⇒ `#117` 的三行顺序不动）。
     (ModUnit::Decibels, &[""]),
+    // ⭐ 本片 stage 5：`Hz` 与上两支同款（⛔ 加在末尾 ⇒ 既有四行顺序不动）。
+    (ModUnit::Hertz, &[""]),
 ];
 
 /// ⭐ `#117` 单位矩阵的**行**：opcode 名 ＋ 它必须归属的目标 ＋ 期望的单位类别。
@@ -11469,6 +11526,8 @@ const UNIT_MATRIX_SUFFIXES: [&str; 4] = ["", "s", "ms", "%"];
 const fn unit_matrix_cell_value(unit: ModUnit) -> f32 {
     match unit {
         ModUnit::Decibels => 48.0,
+        // 本片 stage 5：`cutoff` 的 delta 域是 ±24000 Hz ⇒ `50` 仍在域内。
+        ModUnit::Hertz => 50.0,
         ModUnit::Seconds | ModUnit::Percent | ModUnit::Cents => 50.0,
     }
 }
@@ -11681,6 +11740,8 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
                 // 本臂是编译器强制补的（`match` 必须穷尽）⇒ 它的返回值与
                 // `ModTarget::unit()` 的 `dB` 臂逐字相同。
                 ModUnit::Decibels => "dB",
+                // 本片 stage 5：编译器强制补的穷尽臂（与 `ModTarget::unit()` 的 `Hz` 逐字相同）。
+                ModUnit::Hertz => "Hz",
             },
             "⭐ `{name}`：`unit()` 必须仍返回规范表行 Unit 列的字面"
         );
@@ -13316,8 +13377,10 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
     assert_eq!(
         ModTarget::COUNT,
-        10,
-        "⭐ `#119` 加上 `Volume` ⇒ 目标数是 8；⭐ **包络族片修订：`AmpegParam` 尾加 \
+        12,
+        "⭐ 本片（stage 5）加上 `Cutoff` ⇒ 目标数 11 → **12**（既有十一个下标一个都没动）；\
+         历史：⭐ 本片（stage 3）加上 `Pan` ⇒ 目标数 10 → **11**（既有十个下标一个都没动）；\
+         历史：⭐ `#119` 加上 `Volume` ⇒ 目标数是 8；⭐ **包络族片修订：`AmpegParam` 尾加 \
          `Delay`／`Start` ⇒ 目标数 10（`Volume` 仍在末尾；`#104`～`#118` 七个目标的**相对序未动**、\
          绝对下标随 `AmpegParam::COUNT` 派生）**"
     );
@@ -13926,10 +13989,8 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         // ⭐⭐ 任务单 `#119`（判据 §4.8）：**不属本单**、也**不被本单的改动影响**的邻居
         // —— 它们与 `volume` 前缀**不相交** ⇒ 今天的"未知 opcode 忽略"行为**一字未变**。
         // ⛔ 这里把**今天的行为**钉住（⛔ 不是"哪天变成识别到了但静默丢弃"）。
-        "cutoff_oncc1",
-        "cutoff_cc1",
-        "pan_oncc1",
-        "pan_cc1",
+        // ⭐ 本片（stage 3）：`pan_oncc1` / `pan_cc1` **从本反向腿表移出** —— 它们现在
+        // 是识别的（`ModTarget::Pan`），改由下面的**正例**逐字钉住。
         "pitch_smoothcc1",
         "pitch_stepcc1",
         "tune_smoothcc1",
@@ -13946,6 +14007,76 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         );
         assert_eq!(count, 0, "⭐ `{name}` ⛔ 不进调制表（本单不做、登记在案）");
     }
+    // ⭐ 本片（stage 3）的**正例**：`pan_onccN` 一家必须**真的进调制表**（目标 ＝ `Pan`、
+    // 单位 ＝ `%`），而且无 CC 时**不改任何读数**（静态 `pan` 原样）。
+    let pan_row = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 pan_oncc1=10\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("`pan_oncc1=10` 必须在 `-100..=100` 域内 ⇒ 解析成功");
+    {
+        let readings: Vec<(ModTarget, u8, f32)> = pan_row
+            .with_instrument(|parsed| {
+                parsed.regions()[0]
+                    .cc_modulations()
+                    .iter()
+                    .map(|item| (item.target, item.cc, item.delta))
+                    .collect()
+            })
+            .expect("重解析");
+        println!("[engine-sfz/S114] ⑧ `pan_oncc1=10` ⇒ {readings:?}");
+        assert_eq!(readings.len(), 1, "`pan_oncc1=10` 必须真的进调制表");
+        assert_eq!(readings[0].0, ModTarget::Pan, "目标必须是新增的 `Pan`");
+        assert_eq!(readings[0].1, 1, "CC 号必须是 1");
+        assert_eq!(readings[0].2, 10.0, "delta 必须逐字读成 10 %");
+        assert_eq!(ModTarget::Pan.unit(), "%", "`pan` 的单位是百分比");
+        assert_eq!(
+            ModTarget::Pan.delta_range(),
+            (-100.0, 100.0),
+            "`pan_onccN` 表的 Range 列是 `-100 to 100`"
+        );
+    }
+    // ⭐ 本片（stage 5）的**正例**：`cutoff_onccN` 必须**真的进调制表**（目标 ＝ `Cutoff`、
+    // 单位 ＝ `Hz`、域 `±24000`），且 `cutoff_curveccN` 的曲线下标同样被认（只有曲线 ⇒ 不产生项）。
+    let cutoff_row = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 cutoff=1000 cutoff_oncc1=-400\n"
+            .to_owned(),
+        &Default::default(),
+    )
+    .expect("`cutoff_oncc1=-400` 必须在 `-24000..=24000` 域内 ⇒ 解析成功");
+    {
+        let readings: Vec<(ModTarget, u8, f32)> = cutoff_row
+            .with_instrument(|parsed| {
+                parsed.regions()[0]
+                    .cc_modulations()
+                    .iter()
+                    .map(|item| (item.target, item.cc, item.delta))
+                    .collect()
+            })
+            .expect("重解析");
+        println!("[engine-sfz/S114] ⑧ `cutoff_oncc1=-400` ⇒ {readings:?}");
+        assert_eq!(readings, vec![(ModTarget::Cutoff, 1, -400.0)]);
+        assert_eq!(ModTarget::Cutoff.unit(), "Hz", "`cutoff` 的单位是赫兹");
+        assert_eq!(
+            ModTarget::Cutoff.delta_range(),
+            (-24000.0, 24000.0),
+            "`cutoff` 的定义域是 `0 to SampleRate/2` ⇒ delta 取 ±24000 Hz"
+        );
+    }
+    let cutoff_curve = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 cutoff=1000 cutoff_curvecc1=9\n"
+            .to_owned(),
+        &Default::default(),
+    )
+    .expect("`cutoff_curvecc1=9` 是合法曲线下标 ⇒ 解析成功");
+    assert_eq!(
+        cutoff_curve
+            .with_instrument(|parsed| parsed.regions()[0].cc_modulations().len())
+            .expect("重解析"),
+        0,
+        "⭐ 只有曲线、没有 delta 的 `cutoff_curveccN` ⛔ 不产生调制项（与其余四族同口径）"
+    );
+
     // ⭐⭐ `#124` 的**正例**（第 278 条：上面那张表里 `"gain_cc1"` 那一支被修订后落到这里）：
     // `gain_ccN` —— 规范 Modulation 表里**逐字的 delta 行名** —— 必须**真的被识别**。
     let gain_row = SfzInstrument::load(
@@ -15996,8 +16127,8 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     // ---- ⑦ 尺寸（`size_of` 现读，⛔ 不手抄）：四个全 ＋0 ----
     assert_eq!(
         ModTarget::COUNT,
-        10,
-        "⛔ `#124` ⛔ 不加目标（`gain_ccN` 落**既有**的 `Volume`）；\
+        12,
+        "⛔ `#124` ⛔ 不加目标（本片 stage 5 加的是 `Cutoff`：11 → 12；stage 3 加的是 `Pan`：10 → 11）（`gain_ccN` 落**既有**的 `Volume`）；\
          ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**"
     );
     assert_eq!(ModTarget::ALL[9], ModTarget::Volume);
@@ -16247,10 +16378,12 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
         SweepRow {
             file: 0,
             needle: "`pan_oncc*` ／ `cutoff_oncc*` 那两项整条有效**（仍未做，另开单）",
-            verdict: "仍成立（两支都落不进识别层）",
-            basis: "`parse_modulation_name` 今天对这两支都返回 `None` —— ⛔ 不新开目标、\
-                    ⛔ 不新开单位（同族的落地形状在 `#104`～`#124` 已立，缺的只是「谁来做」）",
-            check: SweepCheck::NotRecognized(&["pan_oncc1", "cutoff_oncc1"]),
+            verdict: "⭐ **已落地一半**：`pan_oncc*` 现在**被识别**（`ModTarget::Pan`，\
+                     stage 3）；`cutoff_oncc*` **仍未做**（下一支仍成立）",
+            basis: "`parse_modulation_name` 对 `pan_oncc1` 返回 `Some((Pan, Delta, \"1\"))`、\
+                    对 `cutoff_oncc1` 仍返回 `None` —— ⛔ 不新开单位（`pan` 用既有 `Percent`）；\
+                    ⛔ 原文一字未删（登记改由本行的 basis 承担）",
+            check: SweepCheck::Recognized(&["pan_oncc1", "pan_cc1", "pan_curvecc1"]),
         },
         SweepRow {
             file: 0,
@@ -16886,5 +17019,90 @@ fn set_hdcc_float_default_reaches_the_engine_seed_table() {
         integer_wins.cc_seeds().value(10),
         Some(100),
         "set_ccN 必须赢过 set_hdccN"
+    );
+}
+
+/// ⭐ **S120（stage 5）**：`cutoff_onccN` 必须**真的改变截止频率**（不只是"被解析"）。
+///
+/// 对象 ＝ 同一份夹具（`cutoff=2000` ＋ `cutoff_oncc1=-1900`）经实时声部池渲染 512 帧；
+/// 样本 ＝ **Nyquist 交替序列**（`+1/−1`，频谱能量全在半采样率）⇒ 截止越低，输出越小。
+/// 判据 ＝ `cc=127`（截止 100 Hz）的绝对能量必须**远小于** `cc=0`（截止 2000 Hz），
+/// 且**不是静音**（反向腿：证明差异来自滤波而不是"整段没出声"）。
+#[test]
+fn s120_cutoff_oncc_modulates_the_lowpass_per_block() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 512;
+    let sample = InMemorySample {
+        pcm: Arc::new(
+            (0..4_096)
+                .map(|index| {
+                    let phase = 2.0 * std::f32::consts::PI * 200.0 * index as f32 / HZ;
+                    phase.sin()
+                })
+                .collect(),
+        ),
+        sample_hz: HZ,
+        loop_points: None,
+    };
+    let plan = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+         cutoff=800 cutoff_oncc1=-700\n",
+        &sample,
+    );
+    assert_eq!(
+        plan.regions()[0].cc_modulations().len(),
+        1,
+        "摊平表必须真的承载那一条 `cutoff` 调制项"
+    );
+    let region = &plan.regions()[0];
+    assert_eq!(
+        region.cutoff_cc_delta_hz(60, 127, Some(&|_controller: u8| 0)),
+        0.0,
+        "`cc=0` ⇒ 增量恰 0（曲线 0 ⇒ `−1900 × 0`）"
+    );
+    assert_eq!(
+        region.cutoff_cc_delta_hz(60, 127, Some(&|_controller: u8| 127)),
+        -700.0,
+        "`cc=127` ⇒ 增量逐字是 −700 Hz"
+    );
+    // 基线对照：`cutoff=2000` 固定、**不给探针** ⇒ 这条腿必须出声（否则本夹具本身坏了）。
+    {
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None), 1);
+        let mut out = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut out, None);
+        println!(
+            "[engine-sfz/S120] 无探针：后段 Σ|x|={};out[200..206]={:?}",
+            out[200..].iter().map(|s| s.abs()).sum::<f32>(),
+            &out[200..206]
+        );
+    }
+    let render_at = |value: u8| -> f32 {
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(
+            pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None),
+            1,
+            "单区域夹具 ⇒ 恰好建 1 个声部"
+        );
+        let probe = move |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+        let mut out = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut out, Some(&probe));
+        // ⚠ 量**后段**（前 ~100 帧是声部起音的建立段，两臂都被同一段包络压低）
+        out[200..].iter().map(|sample| sample.abs()).sum()
+    };
+    let open = render_at(0);
+    let closed = render_at(127);
+    println!("[engine-sfz/S120] cc=0 ⇒ Σ|x|={open};cc=127 ⇒ Σ|x|={closed}");
+    assert!(
+        open > 0.0,
+        "反向腿：`cc=0` 必须有真实输出（否则本判据无意义）"
+    );
+    assert!(
+        closed > 0.0,
+        "反向腿：`cc=127` 不是静音（滤波仍有泄漏，⛔ 不能靠「整段没出声」过关）"
+    );
+    assert!(
+        closed < open * 0.5,
+        "`cutoff_oncc1=-700` 必须真的把截止从 800 Hz 压到 100 Hz         （200 Hz 正弦应被明显衰减）：cc=0 ⇒ {open};cc=127 ⇒ {closed}"
     );
 }

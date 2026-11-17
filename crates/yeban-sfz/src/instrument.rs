@@ -4250,6 +4250,9 @@ fn read_modulation_delta(
         // `InvalidFloat`（⛔ 不静默当成 6 dB；理由与表行见
         // [`crate::modulation`] §8.1／§8.2）。
         ModUnit::Decibels => (raw, 1.0_f32),
+        // ⭐⭐ 本片 stage 5：`cutoff` 的 Hz 与上两支同款 —— ⛔ 不剥任何后缀
+        // （规范里没有 `cutoff_oncc1=-400Hz` 这种写法）。
+        ModUnit::Hertz => (raw, 1.0_f32),
     };
     let parsed = parse_modulation_float(number).ok_or_else(|| SfzError::InvalidFloat {
         line,

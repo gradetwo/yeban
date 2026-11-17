@@ -339,3 +339,57 @@ fn a_centered_sampler_keeps_the_pre_wiring_bytes() {
         render_project_f32_with_assets(&project, options(), None, &[]).expect("同工程第二次渲染");
     assert_eq!(out.digest, again.digest, "同一工程连渲两次摘要必须相同");
 }
+
+/// ⭐ **stage 2 判据**：区域 `pan` 在**源侧**生效（与轨声相是两回事）。
+///
+/// 工程轨 `pan = 0`（中性）⇒ 左右增益恒 `(1,1)`，所以这里量到的左右分离**只可能**
+/// 来自区域级 `pan`：`pan=100` 的采样器轨必须"右声道出声、左声道几乎为 0"；
+/// 同一份 SFZ 去掉 `pan` ⇒ 两声道**逐位相同**（中性语料不许被新通路扰动）。
+#[test]
+fn a_region_pan_is_applied_at_the_source() {
+    let fixture = Fixture::new("region-pan");
+    let panned = fixture.dir.join("panned.sfz");
+    std::fs::write(
+        &panned,
+        "<region> sample=const.wav lokey=0 hikey=127 pitch_keycenter=60 pan=100\n",
+    )
+    .expect("写带区域 pan 的夹具");
+    let centered = fixture.dir.join("centered.sfz");
+    std::fs::write(
+        &centered,
+        "<region> sample=const.wav lokey=0 hikey=127 pitch_keycenter=60\n",
+    )
+    .expect("写中性夹具");
+
+    let panned_out =
+        render_project_f32_with_assets(&project(0.0, Some(&panned)), options(), None, &[])
+            .expect("带区域 pan 的工程必须能渲染");
+    let (left, right) = peaks(&panned_out.samples);
+    println!("[stage2] pan=100 区域：L={left:.9} R={right:.9}");
+    assert!(right > 0.01, "右声道必须出声：R={right}");
+    assert!(
+        left < right * 1.0e-3,
+        "`pan=100` ⇒ 左声道几乎为 0：L={left} R={right}"
+    );
+
+    let centered_out =
+        render_project_f32_with_assets(&project(0.0, Some(&centered)), options(), None, &[])
+            .expect("中性工程必须能渲染");
+    let mut frames_equal = true;
+    for frame in centered_out.samples.as_chunks::<2>().0 {
+        if frame[0].to_bits() != frame[1].to_bits() {
+            frames_equal = false;
+            break;
+        }
+    }
+    assert!(
+        frames_equal,
+        "中性区域 ⇒ 两声道必须逐位相同（新通路不许扰动中性语料）"
+    );
+    let (center_left, center_right) = peaks(&centered_out.samples);
+    println!("[stage2] 中性区域：L={center_left:.9} R={center_right:.9}");
+    assert!(
+        center_left > 0.01 && center_right > 0.01,
+        "中性区域两声道都必须出声：L={center_left} R={center_right}"
+    );
+}

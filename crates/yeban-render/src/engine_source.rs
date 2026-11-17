@@ -706,24 +706,72 @@ impl AudioSource for EngineTrackSource {
             .cc
             .as_mut()
             .and_then(|cc| cc.table_at(context.first_frame));
-        match cc_table {
-            Some(table) => {
-                let probe =
-                    |controller: u8| table.get(usize::from(controller)).copied().unwrap_or(0);
-                self.engine.render_track_with_cc(
+        // ⭐ **stage 2**：这张摊平表里有**非中性**区域 `pan` ⇒ 走分声道通路
+        //    （`render_track_stereo`），源侧声相按区域施加；否则走原来的单声道通路
+        //    （`pan` 全 0 的语料 ⇒ 与接线前逐位相同）。
+        // ⚠ stage 3 起还要看**逐块可变**的声相：静态 `pan=0` ＋ `pan_onccN` 的库，
+        //   只有在分声道通路上才听得见调制（同样条数为 0 时不切，逐位不变）。
+        let source_panned = channels == 2
+            && sfz
+                .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0);
+        if source_panned {
+            // 栈上定长分块：⛔ 不在渲染中分配（与 `SfzVoicePool` 的分声道入口同一条纪律）。
+            const CHUNK: usize = 128;
+            let mut done = 0usize;
+            while done < frames {
+                let count = (frames - done).min(CHUNK);
+                let mut left = [0.0f32; CHUNK];
+                let mut right = [0.0f32; CHUNK];
+                match cc_table {
+                    Some(table) => {
+                        let probe = |controller: u8| {
+                            table.get(usize::from(controller)).copied().unwrap_or(0)
+                        };
+                        self.engine.render_track_stereo_with_cc(
+                            self.track,
+                            self.schedule.as_ref(),
+                            sfz,
+                            &mut left[..count],
+                            &mut right[..count],
+                            Some(&probe),
+                        );
+                    }
+                    None => self.engine.render_track_stereo(
+                        self.track,
+                        self.schedule.as_ref(),
+                        sfz,
+                        &mut left[..count],
+                        &mut right[..count],
+                    ),
+                }
+                let (gain_l, gain_r) = self.pan;
+                for index in 0..count {
+                    let base = (done + index) * channels;
+                    out[base] = left[index] * gain_l;
+                    out[base + 1] = right[index] * gain_r;
+                }
+                done += count;
+            }
+        } else {
+            match cc_table {
+                Some(table) => {
+                    let probe =
+                        |controller: u8| table.get(usize::from(controller)).copied().unwrap_or(0);
+                    self.engine.render_track_with_cc(
+                        self.track,
+                        self.schedule.as_ref(),
+                        sfz,
+                        &mut self.mono[..frames],
+                        Some(&probe),
+                    );
+                }
+                None => self.engine.render_track(
                     self.track,
                     self.schedule.as_ref(),
                     sfz,
                     &mut self.mono[..frames],
-                    Some(&probe),
-                );
+                ),
             }
-            None => self.engine.render_track(
-                self.track,
-                self.schedule.as_ref(),
-                sfz,
-                &mut self.mono[..frames],
-            ),
         }
         // ⭐ `#209`：**必须**推进播放头，否则每个块都从位置 0 渲染
         //    ⇒ 只有 tick 0 的音符会被触发一次并一直拖长，其余音符永不发声
@@ -737,21 +785,23 @@ impl AudioSource for EngineTrackSource {
         //    ⚠ 只写一个 relaxed 原子（⛔ 不改音频、⛔ 不分配）；调用方在渲染之后读。
         self.steals
             .store(self.engine.sfz_voice_steals(), Ordering::Relaxed);
-        out.fill(0.0);
-        let (gain_l, gain_r) = self.pan;
-        for index in 0..frames {
-            let value = self.mono[index];
-            let base = index * channels;
-            if gain_l == 1.0 && gain_r == 1.0 {
-                // ⭐ 居中（绝大多数工程）：原来的"单声道铺到所有声道"，逐位不变。
-                for channel in 0..channels {
-                    out[base + channel] = value;
-                }
-            } else {
-                // ⭐ `#251`：等功率声相。第 0 声道左、第 1 声道右，其余保持 0。
-                out[base] = value * gain_l;
-                if channels > 1 {
-                    out[base + 1] = value * gain_r;
+        if !source_panned {
+            out.fill(0.0);
+            let (gain_l, gain_r) = self.pan;
+            for index in 0..frames {
+                let value = self.mono[index];
+                let base = index * channels;
+                if gain_l == 1.0 && gain_r == 1.0 {
+                    // ⭐ 居中（绝大多数工程）：原来的"单声道铺到所有声道"，逐位不变。
+                    for channel in 0..channels {
+                        out[base + channel] = value;
+                    }
+                } else {
+                    // ⭐ `#251`：等功率声相。第 0 声道左、第 1 声道右，其余保持 0。
+                    out[base] = value * gain_l;
+                    if channels > 1 {
+                        out[base + 1] = value * gain_r;
+                    }
                 }
             }
         }
