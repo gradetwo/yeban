@@ -377,6 +377,14 @@ fn theory_edge_is_drum_only_and_chord_still_has_no_recognition() {
         "let p = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();\n\
          let s = yeban_theory::factory_drum_styles();",
     );
+    // 对照夹具前提（R115）：合成纯鼓片段恰含 2 处 theory 引用 —— 空集时 `.all`
+    // 恒真，须先把 `symbols` 的长度钉死，下面的 `.all` 断言才不是真空通过。
+    assert_eq!(
+        symbols.len(),
+        2,
+        "对照夹具前提：纯鼓片段的 theory 引用必须恰为 2 处（`generate_drum_pattern`／`factory_drum_styles`），当前 {} 处。",
+        symbols.len()
+    );
     assert!(
         unaccounted.is_empty(),
         "对照失败：纯鼓片段不应有未入账行：{unaccounted:?}"
