@@ -1078,6 +1078,31 @@ impl PhaseBank {
         }
     }
 
+    /// ⭐ stage 9：**一对声道的手动相位对齐**（分声道通路专用）。
+    ///
+    /// 与 [`Self::apply`] 同一口径（未武装 ⇒ `false`；`processed_blocks` 只按
+    /// "延时非零或反转"计数），区别只在：左右两条缓冲交给**同一个延迟线游标**
+    /// （[`DelayLine::process_pair_in_place`]）⇒ 对齐延时对两声道同值、极性同时反转、
+    /// 线上状态只推进一次。
+    pub fn apply_pair(&mut self, node: &EntityId, left: &mut [f32], right: &mut [f32]) -> bool {
+        match self.entries[..self.armed].binary_search_by(|(candidate, _)| candidate.cmp(node)) {
+            Ok(index) => {
+                let line = &mut self.entries[index].1;
+                let active = line.delay() != 0 || self.invert[index];
+                self.processed_blocks = self.processed_blocks.wrapping_add(u64::from(active));
+                line.process_pair_in_place(left, right);
+                if self.invert[index] {
+                    for (sample_l, sample_r) in left.iter_mut().zip(right.iter_mut()) {
+                        *sample_l = -*sample_l;
+                        *sample_r = -*sample_r;
+                    }
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// 只读访问某个节点的有效延时（采样；未武装的节点不可达）。
     #[must_use]
     pub fn effective_delay(&self, node: &EntityId) -> Option<usize> {
@@ -1108,6 +1133,34 @@ impl PhaseBank {
 
 #[cfg(test)]
 mod tests {
+    /// ⭐ **stage 9 判据**：相位对齐的成对通路 —— 左右读数与"两条同参数的
+    /// 单声道 `apply`"**逐位相同**（＝ 对齐延时同值、极性同时反转、游标只推进一次）。
+    #[test]
+    fn the_phase_pair_path_matches_two_mono_lines() {
+        let node = EntityId::new();
+        let phases = [(node, 3, true)];
+        let mut pair = PhaseBank::preallocated(2, 8);
+        let mut mono_left = PhaseBank::preallocated(2, 8);
+        let mut mono_right = PhaseBank::preallocated(2, 8);
+        for bank in [&mut pair, &mut mono_left, &mut mono_right] {
+            bank.rearm(&phases);
+        }
+        let mut left: Vec<f32> = (0..16).map(|index| index as f32 + 1.0).collect();
+        let mut right: Vec<f32> = (0..16).map(|index| -(index as f32) - 2.0).collect();
+        let mut reference_left = left.clone();
+        let mut reference_right = right.clone();
+        assert!(pair.apply_pair(&node, &mut left, &mut right));
+        assert!(mono_left.apply(&node, &mut reference_left));
+        assert!(mono_right.apply(&node, &mut reference_right));
+        assert_eq!(left, reference_left, "左声道必须与同参数单声道线逐位相同");
+        assert_eq!(right, reference_right, "右声道必须与同参数单声道线逐位相同");
+        // 反转真的生效：第一块输出里必有一个样本不再是"正斜坡"的正值。
+        assert!(
+            left.iter().any(|sample| *sample < 0.0),
+            "极性反转必须作用到左声道"
+        );
+    }
+
     /// ⭐ **stage 8 判据**：PDC 的成对通路必须"**一个游标服务两条环**" ——
     /// 左右读数与'各跑一条同延迟单声道线'**逐位相同**（＝ 相位同值、状态只推进一次）。
     #[test]

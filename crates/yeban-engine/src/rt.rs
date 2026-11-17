@@ -1917,8 +1917,9 @@ fn render_branch(
         //   现在也走分声道。
         // * ~~PDC 与手动相位对齐在本轨是**零延迟**~~：⭐ **stage 8 解除 PDC 那条** ——
         //   延迟线现在有**右声道环**（`DelayLine::process_pair_in_place`），左右共用
-        //   同一个游标 ⇒ 补偿延迟对两声道同值、状态只推进一次。手动相位对齐
-        //   （`phase_bank.effective_delay`）仍要求未武装。
+        //   同一个游标 ⇒ 补偿延迟对两声道同值、状态只推进一次。
+        // * ~~手动相位对齐要求未武装~~：⭐ **stage 9 解除** —— `PhaseBank::apply_pair`
+        //   把两声道交给**同一个游标**（对齐延时同值、极性同时反转）。
         // * 只有一条"直连 master、单位增益"的出边且没有发送自动化；
         // * 没有声相自动化（那条平滑路径只服务单声道）。
         //
@@ -1932,7 +1933,6 @@ fn render_branch(
             && !has_armed_insert_devices(share, &track)
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
-            && share.phase_bank.effective_delay(&track).is_none()
             && routes_of_track.len() == 1
             && routes_of_track[0].destination() == master
             && routes_of_track[0].gain() == 1.0
@@ -2122,9 +2122,18 @@ fn render_branch(
         // 与 PDC 同一条位置规则（"进入总线求和节点前"）：先把插件延迟补齐，
         // 用户延时再按对齐后的信号施加。无武装的轨返回 `false`、样本一位不动
         // ⇒ 没有相位设置的工程逐位不变。走带停住时**也**调（喂静音，推进线）。
-        let _ = share
-            .phase_bank
-            .apply(&track, &mut share.track_scratch[..frames]);
+        if stereo_track {
+            // ⭐ stage 9：同一个延迟线游标、同一份对齐延时与极性。
+            let _ = share.phase_bank.apply_pair(
+                &track,
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+        } else {
+            let _ = share
+                .phase_bank
+                .apply(&track, &mut share.track_scratch[..frames]);
+        }
         // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
         // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
         // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
