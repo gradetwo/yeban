@@ -25,7 +25,10 @@ import { CommandPaletteModal, HotspotOverlay } from "modals.slint";
 
 export component MainWindow inherits Window {
     title: @tr("夜半");
-    background: Theme.bg-canvas;
+    // 窗口底: flat 走现行 Theme.bg-canvas 一位不动; physical 换
+    // Bitwig 色板窗口底 #141a1f (2026-11-17 拟物对色, 见
+    // docs/skeuo-bitwig-palette-20261117.md)。
+    background: Tokens.texture-physical ? #141a1f : Theme.bg-canvas;
     forward-focus: key-handler;
     preferred-width: 1600px;
     preferred-height: 920px;

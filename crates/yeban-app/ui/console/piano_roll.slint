@@ -404,8 +404,10 @@ export component PianoRoll inherits Rectangle {
         y: 28px;
         width: parent.width - 56px;
         height: parent.height - 28px;
-        // 网格底回平 (2026-11-17 口径): 两套主题同为 #1a202e 平色。
-        background: #1a202e;
+        // 网格底 (2026-11-17 口径): flat 回平 #1a202e 平色;
+        // physical 按 Bitwig 截图采样提亮到 #20272e (Wang 定:
+        // 拟物版卷帘背景太深), 下方车道三档与分隔线同幅上移。
+        background: Tokens.texture-physical ? #20272e : #1a202e;
         clip: true;
 
         accessible-role: region;
@@ -418,17 +420,18 @@ export component PianoRoll inherits Rectangle {
             y: 14px * lane_index;
             width: parent.width;
             height: 14px;
-            // 车道回平 (2026-11-17 口径): 两套主题同为字面平色三档
-            // (根音行 / 白键行 / 黑键行)。
-            background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #2c364b :
-                (root.lane-is-white[lane_index] ? #242c3e : #161b26);
+            // 车道三档 (根音行 / 白键行 / 黑键行): flat 字面平色
+            // (2026-11-17 回平口径); physical 随网格底同幅上移
+            // (+6/+7/+0), 三档间距与对底关系不变。
+            background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? #323d4b : #2c364b) :
+                (root.lane-is-white[lane_index] ? (Tokens.texture-physical ? #2a333e : #242c3e) : (Tokens.texture-physical ? #1c2226 : #161b26));
 
             Rectangle {
                 x: 0;
                 y: parent.height - 1px;
                 width: parent.width;
                 height: 1px;
-                background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #40516e : #2e374b;
+                background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? #46586e : #40516e) : (Tokens.texture-physical ? #343e4b : #2e374b);
             }
         }
 

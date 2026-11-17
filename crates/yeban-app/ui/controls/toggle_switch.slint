@@ -24,7 +24,11 @@ export component ToggleSwitch inherits Rectangle {
     callback toggled();
 
     // `accent-brush` / `void-brush` 在 flat 时分别恒等于 `gold-deep` / `bg-void`。
-    background: root.checked ? Tokens.accent-brush : Tokens.void-brush;
+    // physical 的 pill 填充同 Knob 帽面口径 (2026-11-17): 渐变填充
+    // 不按 border-radius 裁剪 (角部像素实测为渐变色而非面板色) ⇒
+    // 根 background 在 physical 置透明, 填充改走下方横带三层纯色
+    // 分层; flat 保持根 background 原路逐像素不变。
+    background: Tokens.texture-physical ? transparent : (root.checked ? Tokens.accent-brush : Tokens.void-brush);
     border-radius: Tokens.texture-physical ? self.height / 2 : Tokens.radius-sm;
     border-width: Tokens.texture-physical ? 0px : 1px;
     border-color: root.checked ? Tokens.gold : Tokens.line-strong;
@@ -39,6 +43,71 @@ export component ToggleSwitch inherits Rectangle {
     accessible-checked: root.checked;
     accessible-action-default => {
         root.toggled();
+    }
+
+    // physical 填充面: 横带三层纯色分层 (见根 background 注)。
+    // 每层 = 直剪带 (clip 只按包围盒裁, 可用) 内放一只整高纯色
+    // pill (纯色填充按 border-radius 正确成半圆端), 只露出本带
+    // 的一段 ⇒ 三层叠出的轮廓是精确 pill, 色带边界精确在
+    // H/2 与 3H/4。每带色 = 对应刷垂直斜坡在该带中心 t 处的
+    // 采样 (t = .25 / .625 / .875)。
+    if Tokens.texture-physical: Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        background: transparent;
+
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height / 2;
+            clip: true;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: root.height;
+                border-radius: self.height / 2;
+                background: root.checked ? #5ab19a : #0c1015;
+            }
+        }
+
+        Rectangle {
+            x: 0;
+            y: parent.height / 2;
+            width: parent.width;
+            height: parent.height / 4;
+            clip: true;
+
+            Rectangle {
+                x: 0;
+                y: -root.height / 2;
+                width: parent.width;
+                height: root.height;
+                border-radius: self.height / 2;
+                background: root.checked ? #39957f : #0f1419;
+            }
+        }
+
+        Rectangle {
+            x: 0;
+            y: parent.height * 3 / 4;
+            width: parent.width;
+            height: parent.height / 4;
+            clip: true;
+
+            Rectangle {
+                x: 0;
+                y: -root.height * 3 / 4;
+                width: parent.width;
+                height: root.height;
+                border-radius: self.height / 2;
+                background: root.checked ? #2d7966 : #12181e;
+            }
+        }
     }
 
     // physical: 上沿受光线 (斜面亮边)。
