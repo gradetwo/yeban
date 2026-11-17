@@ -31,6 +31,8 @@ use std::path::PathBuf;
 const SOURCES: &[(&str, &str)] = &[
     ("src/chord.rs", include_str!("../src/chord.rs")),
     ("src/drum.rs", include_str!("../src/drum.rs")),
+    ("src/drum_gen.rs", include_str!("../src/drum_gen.rs")),
+    ("src/drum_preset.rs", include_str!("../src/drum_preset.rs")),
     ("src/error.rs", include_str!("../src/error.rs")),
     ("src/genre.rs", include_str!("../src/genre.rs")),
     ("src/lib.rs", include_str!("../src/lib.rs")),
@@ -57,7 +59,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 16;
+const MIN_SOURCES: usize = 18;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;
@@ -845,7 +847,7 @@ fn every_file_that_contains_all_is_registered() {
             }
         }
     }
-    // 规模地板（R199 的口径：这是**覆盖面**读数，不是主守卫）：本 crate 现有 14 src + 4 tests（=SOURCES 16）。
+    // 规模地板（R199 的口径：这是**覆盖面**读数，不是主守卫）：本 crate 现有 14 src + 4 tests（=SOURCES 18）。
     assert!(
         scanned >= 16,
         "被扫的 `.rs` 文件数 {scanned} 必须 ≥ 16（目录读不到会先 panic ⇒ 不会静默真空）"

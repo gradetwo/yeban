@@ -332,6 +332,8 @@ mod tests {
             },
         )
         .expect("gen");
+        // R115：`.all(` 在空集上恒真 ⇒ 先钉住 `notes` 非空，否则该性质断言什么都没测。
+        assert!(!notes.is_empty(), "trap preset must emit at least one note");
         assert!(notes.iter().all(|n| n.tick % STEP_TICKS == 0));
     }
 
