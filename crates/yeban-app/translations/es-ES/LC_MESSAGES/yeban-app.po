@@ -1754,3 +1754,15 @@ msgstr "Importar audio"
 
 msgid "尚无素材"
 msgstr "Aún no hay assets"
+
+msgid "实体"
+msgstr "Físico"
+
+msgid "扁平"
+msgstr "Plano"
+
+msgid "质感主题: 实体 (点击切回扁平)"
+msgstr "Tema de textura: Físico (clic para volver a Plano)"
+
+msgid "质感主题: 扁平 (点击切换实体)"
+msgstr "Tema de textura: Plano (clic para cambiar a Físico)"

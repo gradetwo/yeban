@@ -1473,7 +1473,7 @@ export component TransportHeaderBar inherits Rectangle {
                 border-color: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.5) : Theme.border-subtle;
 
                 Text {
-                    text: Tokens.texture == TextureMode.physical ? "实体" : "扁平";
+                    text: Tokens.texture == TextureMode.physical ? @tr("实体") : @tr("扁平");
                     font-family: Tokens.font-ui;
                     font-size: 9.5px;
                     font-weight: 600;
@@ -1488,7 +1488,7 @@ export component TransportHeaderBar inherits Rectangle {
                         Tokens.texture = Tokens.texture == TextureMode.physical ? TextureMode.flat : TextureMode.physical;
                     }
                 }
-                TooltipBubble { text: Tokens.texture == TextureMode.physical ? "质感主题: 实体 (点击切回扁平)" : "质感主题: 扁平 (点击切换实体)"; is-visible: touch_texture.has-hover; tip-offset-x: -40px; }
+                TooltipBubble { text: Tokens.texture == TextureMode.physical ? @tr("质感主题: 实体 (点击切回扁平)") : @tr("质感主题: 扁平 (点击切换实体)"); is-visible: touch_texture.has-hover; tip-offset-x: -40px; }
             }
         }
     }

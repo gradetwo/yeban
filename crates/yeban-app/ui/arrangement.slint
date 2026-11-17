@@ -321,7 +321,11 @@ export component ArrangementViewport inherits Rectangle {
 
                             // 小节刻度线: 标尺底部 5px, 与编曲区网格竖线同 x ——
                             // 眼睛从小节号垂直落下即对上网格 (四条之 4 的对齐要求)。
+                            // 2026-11-17 rebase 裁定: main 标尺带无此元素, 扁平套
+                            // 须与 main 逐像素一致 ⇒ 刻度只在拟物套出现 (刻蚀感
+                            // 的一部分), 扁平套不画。
                             for i in root.bar-count : Rectangle {
+                                visible: Tokens.texture-physical;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: parent.height - 5px;
                                 width: 1px;

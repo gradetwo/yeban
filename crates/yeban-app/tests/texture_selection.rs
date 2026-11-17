@@ -386,12 +386,13 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
 // 1. 删冗余说明文字: 只说明区域名、不承载信息、不参与操作的可见标签
 //    一律删（钉住实际删除的原文不再以 `text:` 出现; 注释里提及旧文案
 //    不算 —— 钉的是 `text: "…"` 的赋值形）。
-// 2. 轨道菜单前置: `arrangement.slint` 里「轨道菜单」的首个 `text:` 必须
-//    在「+ 轨道」的首个 `text:` 之前（左置工具行是文件里先出现的那行）。
+// 2. 轨道菜单前置: `arrangement.slint` 里「轨道菜单」的首个 `@tr` 必须
+//    在「+ 轨道」的首个 `@tr` 之前（左置工具行是文件里先出现的那行）。
 // 3. 分界线走令牌: 行底线 / 顶行横线 / 分隔条 / 网格竖线一律
-//    `Tokens.divider-*`, 旧行框口径（未选中行 #ffffff0a 全框）不得回归。
+//    `Tokens.divider-*`; 行框按 2026-11-17 rebase 裁定保留 main 形态
+//    （未选中行 #ffffff0a 淡框 + 行底单线对选中行门控）。
 // 4. 标尺走令牌: 标尺底 `Tokens.ruler-brush`、小节号 `Tokens.ruler-ink`,
-//    标尺刻度与网格同用 `divider-grid-strong`。
+//    标尺刻度（仅拟物套可见，rebase 裁定）与网格同用 `divider-grid-strong`。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -402,33 +403,39 @@ fn the_track_area_follows_the_four_ui_rulings() {
     };
     let tokens = read("tokens.slint");
     // §11 同键双套值（负责人定案：扁平/实体并存可切换）：扁平分支必须是
-    // 现行值（line / line-strong / bg-shell 纯色），拟物分支才许换质感值。
+    // main 现行值，拟物分支才许换质感值。2026-11-17 rebase 到 4af1fe2c1
+    // 按「以 main 为底、flat 逐像素零差」把扁平分支逐支重钉回 main 的
+    // ui-header-cleanup 同题实现（border-subtle / #ffffff04 / #ffffff0d /
+    // Theme.bg-panel / #cbd5e1）；本支初版的 line 家族扁平值已被取代。
     for (needle, what) in [
         (
-            "out property <color> divider-row: texture-physical ? #43536a : line-strong;",
-            "行间分界令牌（扁平套 = line-strong）",
+            "out property <color> divider-row: texture-physical ? #43536a : Theme.border-subtle;",
+            "行间分界令牌（扁平套 = main 现行 Theme.border-subtle）",
         ),
         (
             "out property <color> divider-row-highlight: #ffffff.with-alpha(texture-physical ? 0.05 : 0.0);",
             "分界刻蚀高光令牌（扁平套 alpha = 0）",
         ),
         (
-            "out property <color> divider-grid: texture-physical ? line.with-alpha(0.55) : line;",
-            "网格弱档令牌（扁平套 = line）",
+            "out property <color> divider-grid: texture-physical ? line.with-alpha(0.55) : #ffffff04;",
+            "网格弱档令牌（扁平套 = main 现行 #ffffff04）",
         ),
         (
-            "out property <color> divider-grid-strong: texture-physical ? line-strong.with-alpha(0.8) : line-strong;",
-            "网格强档令牌（扁平套 = line-strong）",
+            "out property <color> divider-grid-strong: texture-physical ? line-strong.with-alpha(0.8) : #ffffff0d;",
+            "网格强档令牌（扁平套 = main 现行 #ffffff0d）",
         ),
         (
             "? @linear-gradient(180deg, bg-panel, bg-shell)",
             "标尺带底拟物套渐变",
         ),
         (
-            ": @linear-gradient(180deg, bg-shell, bg-shell);",
-            "标尺带底扁平套纯色（现行 bg-shell）",
+            ": @linear-gradient(180deg, Theme.bg-panel, Theme.bg-panel);",
+            "标尺带底扁平套纯色（main 现行 Theme.bg-panel）",
         ),
-        ("out property <color> ruler-ink: ink-0;", "小节号墨色令牌"),
+        (
+            "out property <color> ruler-ink: texture-physical ? ink-0 : #cbd5e1;",
+            "小节号墨色令牌（扁平套 = main 现行 #cbd5e1）",
+        ),
     ] {
         assert!(
             tokens.contains(needle),
@@ -462,9 +469,9 @@ fn the_track_area_follows_the_four_ui_rulings() {
         );
     }
     let menu_at = arrangement
-        .find("text: \"轨道菜单\"")
+        .find("@tr(\"轨道菜单\")")
         .expect("轨道菜单必须在");
-    let add_at = arrangement.find("text: \"+ 轨道\"").expect("+ 轨道必须在");
+    let add_at = arrangement.find("@tr(\"+ 轨道\")").expect("+ 轨道必须在");
     assert!(
         menu_at < add_at,
         "轨道菜单必须排在 + 轨道之前（工具行最前）: menu@{menu_at} add@{add_at}"
@@ -487,9 +494,16 @@ fn the_track_area_follows_the_four_ui_rulings() {
             "arrangement.slint 必须含 {what}: {needle}"
         );
     }
+    // 2026-11-17 rebase 裁定（以 main 为底）：main 的 ui-header-cleanup
+    // 保留未选中行 #ffffff0a 淡框 + 行底单线（选中行门控不叠线），本支
+    // 初版「删全框、只留行底线」的半条让位；钉住 main 形态与门控在。
     assert!(
-        !arrangement.contains("with-alpha(0.70) : #ffffff0a"),
-        "未选中行不得回归 #ffffff0a 全框描边（分界只由行底单线承担）"
+        arrangement.contains("with-alpha(0.70) : #ffffff0a"),
+        "rebase 裁定: 未选中行保留 main 的 #ffffff0a 淡框（以 main 为底）"
+    );
+    assert!(
+        arrangement.contains("visible: trk.id != root.selected-track-id;"),
+        "行底分界线必须保留 main 的选中行门控"
     );
 
     // 全 UI 同类排查的删除钉（各文件实际删掉的区域名/描述标签）。

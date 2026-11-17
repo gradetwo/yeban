@@ -886,36 +886,42 @@ export global Tokens {
     // Theme.border-subtle 三套口径并存, 行框四边描边与相邻行叠成双线)。
     // 自本节起统一走令牌, ⛔ 使用点不再写十六进制。
     //
-    // 强度口径 (对 Logic Pro 的低对比细线): 扁平套线色取既有 `line`
-    // 家族 —— `line-strong` 在 yeban 支是 #2c3948, 压在编曲区底
-    // #090b10 与轨道头底 #0b0e16 上都是低对比, 但 1:1 下一眼可分行
-    // (旧 #ffffff0a ≈ 4% 白, 压在近黑底上几乎不可见, 这是本节要修的)。
+    // 强度口径 (对 Logic Pro 的低对比细线): 拟物套提亮一档作机加工边。
+    //
+    // **2026-11-17 rebase 裁定 (以 main 为底)**: 本节初版曾把扁平套线色
+    // 改取 `line` 家族 (强于 main 现行值), 与 main 的 ui-header-cleanup
+    // 同题实现 (分界/网格/标尺全走 `Theme.border-subtle` 与 #ffffff04 /
+    // #ffffff0d / #cbd5e1) 在扁平态下不一致。rebase 到 4af1fe2c1 时按
+    // 「flat 与 main 逐像素零差」口径把扁平套逐支重钉回 main 现行值
+    // (见各支注释); 拟物套值不动。日后要再提扁平线强, 须先改 main。
 
     /// 轨道行间横线 (行底单线, 跨轨道头列与编曲区同色同高) +
     /// 工具行 / 标尺与轨道区之间的横线 + 轨道头列与编曲区之间的竖线。
     /// 全 UI 的轨道区结构线只许用这一支, 保证两侧对齐、同色。
-    /// 扁平套 = `line-strong` 平面细线; 拟物套 = 提亮一档的机加工边色。
-    out property <color> divider-row: texture-physical ? #43536a : line-strong;
+    /// 扁平套 = main 现行 `Theme.border-subtle`; 拟物套 = 提亮一档的
+    /// 机加工边色。
+    out property <color> divider-row: texture-physical ? #43536a : Theme.border-subtle;
     /// 分界线的刻蚀高光 (只拟物套): 主线下方 1px 的极淡亮线, 与 §10
     /// 凹陷的 recess-light 同源同向 (光源左上 ⇒ 槽底下沿反光)。
     /// 扁平套 alpha = 0 ⇒ 扁平态只有一条平面细线, 像素一位不多。
     out property <color> divider-row-highlight: #ffffff.with-alpha(texture-physical ? 0.05 : 0.0);
     /// 小节网格竖线 (弱档): 编曲区内每小节一条, 与标尺刻度同源同 x。
-    /// 拟物套略收 alpha (面板已有渐变结构, 网格退后一档)。
-    out property <color> divider-grid: texture-physical ? line.with-alpha(0.55) : line;
+    /// 拟物套略收 alpha (面板已有渐变结构, 网格退后一档);
+    /// 扁平套 = main 现行 #ffffff04 (2026-11-17 rebase 重钉)。
+    out property <color> divider-grid: texture-physical ? line.with-alpha(0.55) : #ffffff04;
     /// 小节网格竖线 (强档): 每 4 小节一条 + 标尺底部刻度线。
-    out property <color> divider-grid-strong: texture-physical ? line-strong.with-alpha(0.8) : line-strong;
-    /// 标尺带底: 比轨道 / 编曲区背景**浅一档**。编曲区底走
-    /// `Theme.bg-canvas` (yeban 默认 #090b10, 其余配色 = `bg-void`),
-    /// 标尺取梯子上一档 `bg-shell` (yeban #11161c / brand #0d1326)。
-    /// 浅多少由这一支决定, ⛔ 使用点不写死色值。扁平套 = 纯色;
-    /// 拟物套 = 自 `bg-panel` 向 `bg-shell` 的微渐变 (带面受光)。
+    /// 扁平套 = main 现行 #ffffff0d (2026-11-17 rebase 重钉)。
+    out property <color> divider-grid-strong: texture-physical ? line-strong.with-alpha(0.8) : #ffffff0d;
+    /// 标尺带底: 比轨道 / 编曲区背景**浅一档**。浅多少由这一支决定,
+    /// ⛔ 使用点不写死色值。扁平套 = main 现行 `Theme.bg-panel` 纯色
+    /// (2026-11-17 rebase 重钉); 拟物套 = 自 `bg-panel` 向 `bg-shell`
+    /// 的微渐变 (带面受光)。
     out property <brush> ruler-brush: texture-physical
         ? @linear-gradient(180deg, bg-panel, bg-shell)
-        : @linear-gradient(180deg, bg-shell, bg-shell);
-    /// 小节号墨色: 标尺带上必须清晰 —— 取最亮的正文墨 `ink-0`。
-    /// 两套同值 (数字的可读性不分主题)。
-    out property <color> ruler-ink: ink-0;
+        : @linear-gradient(180deg, Theme.bg-panel, Theme.bg-panel);
+    /// 小节号墨色: 标尺带上必须清晰。拟物套取最亮的正文墨 `ink-0`;
+    /// 扁平套 = main 现行 #cbd5e1 (2026-11-17 rebase 重钉)。
+    out property <color> ruler-ink: texture-physical ? ink-0 : #cbd5e1;
 
 // =====================================================================
 // 12. 二期材质面 (2026-11-17): 编曲区轨道头/片段 + 钢琴卷帘键面/车道

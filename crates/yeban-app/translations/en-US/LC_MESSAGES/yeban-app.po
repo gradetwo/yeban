@@ -1754,3 +1754,15 @@ msgstr "Import Audio"
 
 msgid "尚无素材"
 msgstr "No Assets Yet"
+
+msgid "实体"
+msgstr "Physical"
+
+msgid "扁平"
+msgstr "Flat"
+
+msgid "质感主题: 实体 (点击切回扁平)"
+msgstr "Texture theme: Physical (click to switch back to Flat)"
+
+msgid "质感主题: 扁平 (点击切换实体)"
+msgstr "Texture theme: Flat (click to switch to Physical)"

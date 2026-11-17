@@ -1754,3 +1754,15 @@ msgstr "Importer de l'audio"
 
 msgid "尚无素材"
 msgstr "Aucune ressource pour l'instant"
+
+msgid "实体"
+msgstr "Physique"
+
+msgid "扁平"
+msgstr "Plat"
+
+msgid "质感主题: 实体 (点击切回扁平)"
+msgstr "Thème de texture : Physique (cliquer pour revenir à Plat)"
+
+msgid "质感主题: 扁平 (点击切换实体)"
+msgstr "Thème de texture : Plat (cliquer pour passer à Physique)"
