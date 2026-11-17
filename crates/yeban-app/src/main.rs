@@ -261,6 +261,12 @@ fn main() -> ExitCode {
 /// 返回值恒为 `Ok(vec![])`：报告已经由 [`cli::emit`] 打过了，`cli::finish` 不该再打第二遍。
 fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     let loaded = cli::load_project(options)?;
+    // ⭐ line/startup-chooser：带 `--open` 启动 = 一次「打开」⇒ 记进
+    //    最近清单（启动选择器的「最近」分类读的就是它）。样本形态没有
+    //    磁盘路径，不记。写失败只在设置模块里响亮报，⛔ 不挡启动。
+    if let Some(path) = &options.open {
+        yeban_app::settings::record_recent_project(path, yeban_model::project::now_unix_ms());
+    }
     let view = cli::project_view(&loaded.archive.project)?;
     let scene = DemoScene::from_view(&view);
 
@@ -876,7 +882,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         host::wire_new_project(
             &ui,
             Rc::new(yeban_app::file_picker::NativeFilePicker),
-            open_runtime,
+            // 克隆而非移动：同一个 `open_runtime` 还要喂给下面的启动
+            // 选择器（line/startup-chooser 的 titled 腿）。
+            Rc::clone(&open_runtime),
         );
         // ⭐ **工程模板的两个入口**（2026-11-17，照 Logic 的模板机制）：
         //    文件菜单「从模板新建…」/「另存为模板…」⇒
@@ -886,19 +894,38 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         //    相对路径样本在副本未保存前仍按模板所在目录解析（`open_runtime`
         //    第 ⑤ 步的 `set_project_dir(模板父目录)`，与 Logic 把模板资源
         //    放在模板旁边同义）；首次保存后落点与工程目录一起跟着新文件走。
-        let open_runtime_untitled: Rc<dyn host::OpenProjectRuntime> =
-            Rc::new(host::PortOpenProject {
-                port: Rc::clone(&undo_port),
-                production: Some(Rc::clone(&production_after)),
-                quanta: 0,
-                after: make_after(true),
-            });
+        let untitled_port: Rc<host::PortOpenProject> = Rc::new(host::PortOpenProject {
+            port: Rc::clone(&undo_port),
+            production: Some(Rc::clone(&production_after)),
+            quanta: 0,
+            after: make_after(true),
+        });
+        let open_runtime_untitled: Rc<dyn host::OpenProjectRuntime> = untitled_port.clone();
         host::wire_project_templates(
             &ui,
             Some(Rc::clone(&undo_port)),
             open_runtime_untitled,
             yeban_app::templates::TemplateRoots::production(),
         );
+        // ⭐ **启动工程选择器**（line/startup-chooser，学 Logic
+        //    「Choose a Project」的内容与思想）：无 `--open` 启动 ⇒
+        //    先出选择器，占位工程（默认样本）只作装配底座，用户选定
+        //    后经上面同一批换工程实现换入，⛔ 不新造第二条打开路径。
+        //    带 `--open` ⇒ 路由为 Direct，这里整段跳过、直进工程。
+        //    Details 初值取自占位工程（= 规范空工程的出厂字段）。
+        if options.startup_route() == cli::StartupRoute::Chooser {
+            host::wire_startup_chooser(
+                &ui,
+                Rc::new(yeban_app::file_picker::NativeFilePicker),
+                Rc::clone(&open_runtime),
+                Rc::clone(&untitled_port),
+                yeban_app::templates::TemplateRoots::production(),
+                yeban_app::startup_chooser::NewProjectDetails::from_project(
+                    &loaded.archive.project,
+                ),
+            );
+            ui.set_startup_chooser_open(true);
+        }
     }
     // ⭐ **运行期「导入音频」的可见入口**（控制台 Tab 1 的素材池面板）：问一次对话框 ⇒
     // `crate::import_audio::import_audio_file`（经同一个 `UndoPort`，来源 `OpOrigin::Import`

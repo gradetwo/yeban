@@ -8247,18 +8247,53 @@ impl OpenProjectRuntime for PortOpenProject {
         // 会静默消失（保存写的是端口里那一池，而那一池从没被新归档填过）。
         let document = crate::open::open_project_document_file(path, &Default::default())
             .map_err(|error| format!("打开 `{path}` 失败（当前工程一位没动）: {error}"))?;
-        let project = document.archive.project.clone();
+        // ② 起的固定动作与「从归档打开」共用同一段（见下面那个方法）。
+        self.open_archive_runtime(
+            ui,
+            path,
+            &document.archive,
+            std::path::Path::new(path).parent(),
+        )
+    }
+}
+
+impl PortOpenProject {
+    /// ⭐ **「打开一份已经在手里的归档」**（line/startup-chooser 补的
+    /// 第二条腿）：与 [`OpenProjectRuntime::open_runtime`] 的 ②–⑥
+    /// **同一段**固定动作（投影 → 换会话 → 注入 → 换代 → `after`），
+    /// 差别只有来源：那条从磁盘路径读归档，这条由调用方直接给出
+    /// 归档 —— 启动选择器的演示工程（内置样本）与新建工程
+    /// （Details 构造）没有磁盘文件可读，只能走这条。
+    ///
+    /// `label` 是这份归档在回执 / 会话来源里的名字（文件打开时
+    /// 就是路径本身，于是那条路的报文逐字不变）；`project_dir`
+    /// 是相对 SFZ 路径的解析根（文件 = 文件父目录；样本 / 新建
+    /// = `None` ⇒ 从仓库根解析，与 `cli::Loaded::project_dir`
+    /// 的样本口径一致）。
+    ///
+    /// # Errors
+    ///
+    /// 给用户看的完整原因（**非空**）：投影失败 / 换会话被拒 /
+    /// `after` 失败 / 引擎换代失败（界面已换时如实说明）。
+    pub fn open_archive_runtime(
+        &self,
+        ui: &MainWindow,
+        label: &str,
+        archive: &yeban_model::container::ProjectArchive,
+        project_dir: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        let project = archive.project.clone();
         // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
         //    用的是与 ③ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
         let view = project_with_view_state(&project, ui)
-            .map_err(|error| format!("`{path}` 投影失败（当前工程一位没动）: {error}"))?;
+            .map_err(|error| format!("`{label}` 投影失败（当前工程一位没动）: {error}"))?;
         // ③ 换会话（「打开一个工程 = **新会话**」的唯一实现）。
         //    权威后端在场 / 根提交被模型拒绝 ⇒ 到这里就返回：界面与引擎都还没碰。
         //    ⭐ 资产池跟着新归档走（替换，⛔ 不合并 —— 见 [`UndoPort::replace_assets`]）。
         self.port.open_project_session(
-            format!("open {path}"),
+            format!("open {label}"),
             project.clone(),
-            document.archive.assets,
+            archive.assets.clone(),
             now_ms(),
         )?;
         // ④ 注入界面（唯一注入点）—— 视图态从**当前窗口**读回（行高 / 缩放不因换工程清零）。
@@ -8289,11 +8324,9 @@ impl OpenProjectRuntime for PortOpenProject {
             // ⭐ 任务单 `#168`：相对 SFZ 路径从**新工程文件所在目录**开始解析。
             //    必须在 `reload` **之前**写下（那一跳就要摊平第一份快照）；0 轨分支会把
             //    宿主整体换成 `EngineHost::new()`，那里没有可解析的 SFZ，不重写也无害。
-            engine.borrow_mut().set_project_dir(
-                std::path::Path::new(path)
-                    .parent()
-                    .map(std::path::Path::to_path_buf),
-            );
+            engine
+                .borrow_mut()
+                .set_project_dir(project_dir.map(std::path::Path::to_path_buf));
             // ⚠ **先读成一个布尔**（⛔ 不写 `if engine.borrow().has_engine() { … }`）：那样写会让
             // 那个 `Ref` **活着穿过整个 `if` 体**，于是体内任何 `engine.borrow_mut()` 都会
             // `RefCell already borrowed` —— `tests/open_project_ui.rs` 的正向腿第一版实测抓到的
@@ -8345,11 +8378,11 @@ impl OpenProjectRuntime for PortOpenProject {
             }
         }
         // ⑥ 装配方自己的那一跳（心跳对齐基准 / 保存落点 / 静态快照）。
-        (self.after)(ui, &project, path, &view)?;
+        (self.after)(ui, &project, label, &view)?;
         if let Some(error) = reload_error {
             // 界面已经换了新工程 ⇒ 这一句**如实**说明"播放侧还是上一版"（不静默）。
             return Err(format!(
-                "界面已换成 `{path}`，但引擎换代失败（播放侧仍是上一版）: {error}"
+                "界面已换成 `{label}`，但引擎换代失败（播放侧仍是上一版）: {error}"
             ));
         }
         Ok(())
@@ -8408,19 +8441,28 @@ pub fn wire_open_project(
         }
         // ③ 打开（唯一实现在 runtime 里）。
         let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
-            Ok(()) => (
-                module_receipt(
-                    "open-project",
-                    &[
-                        "outcome=ok".to_owned(),
-                        format!("path={path}"),
-                        // **回读**（不是回显入参）：界面此刻的轨道行数。
-                        format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
-                        format!("savedFirst={save_first}"),
-                    ],
-                ),
-                true,
-            ),
+            Ok(()) => {
+                // 打开成功 ⇒ 记进「最近打开」（line/startup-chooser 的
+                // 第三键）：启动选择器的「最近」分类读的就是这份清单。
+                // 失败只在设置模块里响亮 eprintln，⛔ 不把打开改判失败。
+                crate::settings::record_recent_project(
+                    std::path::Path::new(&path),
+                    yeban_model::project::now_unix_ms(),
+                );
+                (
+                    module_receipt(
+                        "open-project",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!("path={path}"),
+                            // **回读**（不是回显入参）：界面此刻的轨道行数。
+                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                            format!("savedFirst={save_first}"),
+                        ],
+                    ),
+                    true,
+                )
+            }
             Err(message) => (
                 module_receipt(
                     "open-project",
@@ -8607,19 +8649,26 @@ pub fn wire_new_project(
         };
         // ⭐ ④ 换成新工程 = **打开**刚写出的那个文件（`#93` 的同一段换工程代码）。
         let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
-            Ok(()) => (
-                module_receipt(
-                    "new-project",
-                    &[
-                        "outcome=ok".to_owned(),
-                        format!("path={path}"),
-                        format!("bytes={bytes}"),
-                        // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
-                        format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
-                    ],
-                ),
-                true,
-            ),
+            Ok(()) => {
+                // 新建并打开成功 ⇒ 同样记进「最近打开」（它就是一次打开）。
+                crate::settings::record_recent_project(
+                    std::path::Path::new(&path),
+                    yeban_model::project::now_unix_ms(),
+                );
+                (
+                    module_receipt(
+                        "new-project",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!("path={path}"),
+                            format!("bytes={bytes}"),
+                            // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
+                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                        ],
+                    ),
+                    true,
+                )
+            }
             Err(message) => (
                 module_receipt(
                     "new-project",
@@ -8850,6 +8899,453 @@ pub fn wire_project_templates(
                 &last_overwrite,
                 true,
             );
+        });
+    }
+}
+
+/// 启动选择器的分类编码（与 `ui/dialogs/startup_chooser.slint`
+/// 左侧导航的顺序逐一对应；.slint 侧只传这个整数）。
+const STARTUP_CATEGORY_NEW: i32 = 0;
+/// 「最近」分类编码。
+const STARTUP_CATEGORY_RECENT: i32 = 1;
+/// 「演示工程」分类编码。
+const STARTUP_CATEGORY_DEMOS: i32 = 2;
+/// 「工程模板」（工厂目录）分类编码。
+const STARTUP_CATEGORY_FACTORY: i32 = 3;
+/// 「我的模板」（用户目录）分类编码。
+const STARTUP_CATEGORY_USER: i32 = 4;
+
+/// 拍号分母的步进表（模型合法集 {1,2,4,8,16,32}，界面按下标步进）。
+const STARTUP_TIME_DENOMINATORS: [u8; 6] = [1, 2, 4, 8, 16, 32];
+
+/// 把某个分类的行模型写进窗口（行构造的纯逻辑在
+/// [`crate::startup_chooser`]，这里只做编码与灌模型）。切换分类
+/// 同时把选中项清掉（旧分类的下标对新分类没有意义）。
+fn apply_startup_category(
+    ui: &MainWindow,
+    data: &crate::startup_chooser::ChooserData,
+    category: i32,
+) {
+    let lang = current_language();
+    let rows = match category {
+        STARTUP_CATEGORY_RECENT => crate::startup_chooser::recent_rows(
+            &data.recent,
+            lang,
+            yeban_model::project::now_unix_ms(),
+        ),
+        STARTUP_CATEGORY_DEMOS => crate::startup_chooser::demo_rows(&data.demos, lang),
+        STARTUP_CATEGORY_FACTORY => crate::startup_chooser::template_rows(
+            &data.templates,
+            crate::templates::TemplateSource::Factory,
+        ),
+        STARTUP_CATEGORY_USER => crate::startup_chooser::template_rows(
+            &data.templates,
+            crate::templates::TemplateSource::User,
+        ),
+        _ => Vec::new(),
+    };
+    let hidden = rows
+        .len()
+        .saturating_sub(crate::startup_chooser::CHOOSER_MAX_ROWS);
+    let model: Vec<crate::ui::StartupChooserRow> = rows
+        .iter()
+        .take(crate::startup_chooser::CHOOSER_MAX_ROWS)
+        .map(|row| crate::ui::StartupChooserRow {
+            kind: row.kind.code(),
+            label: row.label.clone().into(),
+            detail: row.detail.clone().into(),
+            entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
+            enabled: row.enabled,
+        })
+        .collect();
+    ui.set_startup_rows(ModelRc::new(VecModel::from(model)));
+    ui.set_startup_hidden_rows(hidden as i32);
+    ui.set_startup_category(category);
+    ui.set_startup_selected_entry(-1);
+}
+
+/// 速度文本的规范写法（整数不带小数尾巴，其余一位小数）。
+fn format_startup_bpm(bpm: f64) -> String {
+    if bpm.fract().abs() < f64::EPSILON {
+        format!("{bpm:.0}")
+    } else {
+        format!("{bpm:.1}")
+    }
+}
+
+/// ⭐ **运行期「启动工程选择器」的唯一接线**（line/startup-chooser）：
+/// `.slint` 的 `startup-*` 回调 ⇒ [`crate::startup_chooser`] 的纯
+/// 逻辑 ⇒ **既有**的换工程实现（文件走
+/// [`OpenProjectRuntime::open_runtime`]、归档走
+/// [`PortOpenProject::open_archive_runtime`]）⇒ **既有**的
+/// `module-status` 回执通道。⛔ 不新造换工程路径、不新造回执通道。
+///
+/// ## 装配口径
+///
+/// - 数据在接线时汇集**一次**（[`crate::startup_chooser::gather`]：
+///   最近清单 + 演示样本 + 两根模板扫描）；分类切换只读这一份，
+///   ⛔ 不重扫（与模板选择器「两跳之间清单只存一份」同一条纪律）。
+/// - 本函数只**播种**界面状态（Details 初值取自占位工程、分类
+///   停在「新建工程」），⛔ 不自己打开选择器：`startup-chooser-open`
+///   由装配点（`main.rs` 的 `run_gui` 按
+///   [`crate::cli::Options::startup_route`] 判定后）置真。
+/// - 打开成功 ⇒ 关选择器 + 写成功回执；失败 ⇒ 回执报错且选择器
+///   **不关**（用户可以换一条再试，当前工程一位没动）。
+/// - 「取消」⇒ 关选择器 + 隐藏窗口 + 退出事件循环（进程正常
+///   退出）：占位工程从未落盘、从未示人，⛔ 不留半开状态。
+/// - 模板与演示一律未命名副本（`untitled` 那台运行时的 `after`
+///   保证保存落点为空）；模板打开**不**记最近清单（模板路径不是
+///   工程落点，日后从「最近」点开会把模板当工程重开）。
+pub fn wire_startup_chooser(
+    ui: &MainWindow,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+    titled: Rc<dyn OpenProjectRuntime>,
+    untitled: Rc<PortOpenProject>,
+    roots: crate::templates::TemplateRoots,
+    initial_details: crate::startup_chooser::NewProjectDetails,
+) {
+    let data: Rc<RefCell<crate::startup_chooser::ChooserData>> = Rc::new(RefCell::new(
+        crate::startup_chooser::gather(&crate::settings::load(), &roots),
+    ));
+    let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+
+    // ---- 播种：Details 初值 + 停在「新建工程」分类 -------------------
+    ui.set_startup_tempo_text(format_startup_bpm(initial_details.bpm).into());
+    ui.set_startup_key_index(crate::startup_chooser::key_choice_index(
+        initial_details.key_signature,
+    ));
+    ui.set_startup_key_label(
+        crate::startup_chooser::key_signature_label(
+            initial_details.key_signature,
+            current_language(),
+        )
+        .into(),
+    );
+    ui.set_startup_time_num(initial_details.time_signature.numerator as i32);
+    ui.set_startup_time_den_index(
+        STARTUP_TIME_DENOMINATORS
+            .iter()
+            .position(|den| *den == initial_details.time_signature.denominator)
+            .unwrap_or(2) as i32,
+    );
+    ui.set_startup_rate_index(
+        yeban_model::project::SampleRate::ALL
+            .iter()
+            .position(|rate| *rate == initial_details.sample_rate)
+            .unwrap_or(1) as i32,
+    );
+    apply_startup_category(ui, &data.borrow(), STARTUP_CATEGORY_NEW);
+
+    // ---- 分类切换 -----------------------------------------------------
+    {
+        let weak = ui.as_weak();
+        let data_nav = Rc::clone(&data);
+        ui.on_startup_category_selected(move |category| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            apply_startup_category(&ui, &data_nav.borrow(), category);
+        });
+    }
+
+    // ---- 条目打开（双击 / 「打开」按钮共用这一跳） --------------------
+    {
+        let weak = ui.as_weak();
+        let data_open = Rc::clone(&data);
+        ui.on_startup_entry_activated(move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let category = ui.get_startup_category();
+            let fail = |ui: &MainWindow, code: &str, message: &str| {
+                let receipt =
+                    module_receipt("startup-chooser", &module_error_fields(code, message));
+                apply_module_receipt(ui, &receipt, false);
+                module_trace("startup-chooser", started, &receipt);
+            };
+            let done = |ui: &MainWindow, via: &str, detail: String| {
+                ui.set_startup_chooser_open(false);
+                let receipt = module_receipt(
+                    "startup-chooser",
+                    &[
+                        "outcome=ok".to_owned(),
+                        format!("via={via}"),
+                        detail,
+                        format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                    ],
+                );
+                apply_module_receipt(ui, &receipt, true);
+                module_trace("startup-chooser", started, &receipt);
+            };
+            let idx = usize::try_from(index).unwrap_or(usize::MAX);
+            match category {
+                STARTUP_CATEGORY_RECENT => {
+                    let entry = data_open.borrow().recent.get(idx).cloned();
+                    let Some(entry) = entry else {
+                        fail(
+                            &ui,
+                            "recent-index",
+                            &format!("最近清单里没有下标 {index}（当前工程一位没动）"),
+                        );
+                        return;
+                    };
+                    if !entry.exists {
+                        fail(
+                            &ui,
+                            "recent-missing",
+                            &format!(
+                                "`{}` 已不存在，不能打开（当前工程一位没动）",
+                                entry.path.display()
+                            ),
+                        );
+                        return;
+                    }
+                    let path = entry.path.to_string_lossy().into_owned();
+                    match titled.open_runtime(&ui, &path) {
+                        Ok(()) => {
+                            crate::settings::record_recent_project(
+                                std::path::Path::new(&path),
+                                yeban_model::project::now_unix_ms(),
+                            );
+                            done(&ui, "recent", format!("path={path}"));
+                        }
+                        Err(message) => fail(&ui, "open-recent", &message),
+                    }
+                }
+                STARTUP_CATEGORY_DEMOS => {
+                    let demo = data_open.borrow().demos.get(idx).cloned();
+                    let Some(demo) = demo else {
+                        fail(
+                            &ui,
+                            "demo-index",
+                            &format!("演示清单里没有下标 {index}（当前工程一位没动）"),
+                        );
+                        return;
+                    };
+                    let sample = demo.sample;
+                    let mut project = sample.project();
+                    project.record_creation_time(yeban_model::project::now_unix_ms());
+                    let archive = yeban_model::container::ProjectArchive {
+                        project,
+                        history_dag: Vec::new(),
+                        assets: sample.assets(),
+                        embedded_presets: Vec::new(),
+                    };
+                    let label = match sample {
+                        crate::cli::Sample::Default => "sample:default",
+                        crate::cli::Sample::Filled => "sample:filled",
+                        crate::cli::Sample::Empty => "sample:empty",
+                    };
+                    match untitled.open_archive_runtime(&ui, label, &archive, None) {
+                        Ok(()) => done(&ui, "demo", format!("source={label}")),
+                        Err(message) => fail(&ui, "open-demo", &message),
+                    }
+                }
+                STARTUP_CATEGORY_FACTORY | STARTUP_CATEGORY_USER => {
+                    let entry = data_open.borrow().templates.get(idx).cloned();
+                    let Some(entry) = entry else {
+                        fail(
+                            &ui,
+                            "template-index",
+                            &format!("模板清单里没有下标 {index}（当前工程一位没动）"),
+                        );
+                        return;
+                    };
+                    let path = entry.path.to_string_lossy().into_owned();
+                    match untitled.open_runtime(&ui, &path) {
+                        Ok(()) => done(&ui, "template", format!("path={path}")),
+                        Err(message) => fail(&ui, "open-template", &message),
+                    }
+                }
+                _ => {
+                    fail(
+                        &ui,
+                        "category",
+                        "当前分类没有可打开的条目（新建工程走「创建新工程」）",
+                    );
+                }
+            }
+        });
+    }
+
+    // ---- 新建工程（Empty + Details） ----------------------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_startup_new_project(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let tempo_text = ui.get_startup_tempo_text();
+            let Ok(bpm) = tempo_text.trim().parse::<f64>() else {
+                let receipt = module_receipt(
+                    "startup-chooser",
+                    &module_error_fields(
+                        "tempo",
+                        &format!(
+                            "速度「{tempo_text}」不是数字，新工程没有创建（当前工程一位没动）"
+                        ),
+                    ),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("startup-chooser", started, &receipt);
+                return;
+            };
+            let den_index = usize::try_from(ui.get_startup_time_den_index()).unwrap_or(2);
+            let rate_index = usize::try_from(ui.get_startup_rate_index()).unwrap_or(1);
+            let details = crate::startup_chooser::NewProjectDetails {
+                bpm,
+                key_signature: crate::startup_chooser::key_choice(ui.get_startup_key_index()),
+                time_signature: yeban_model::project::TimeSignature {
+                    numerator: ui.get_startup_time_num().clamp(1, 32) as u8,
+                    denominator: STARTUP_TIME_DENOMINATORS
+                        .get(den_index)
+                        .copied()
+                        .unwrap_or(4),
+                },
+                sample_rate: yeban_model::project::SampleRate::ALL
+                    .get(rate_index)
+                    .copied()
+                    .unwrap_or(yeban_model::project::SampleRate::Hz48000),
+            };
+            let project = details.build_project(yeban_model::project::now_unix_ms());
+            let archive = yeban_model::container::ProjectArchive {
+                project,
+                history_dag: Vec::new(),
+                assets: Vec::new(),
+                embedded_presets: Vec::new(),
+            };
+            match untitled.open_archive_runtime(&ui, "new-project", &archive, None) {
+                Ok(()) => {
+                    ui.set_startup_chooser_open(false);
+                    let receipt = module_receipt(
+                        "startup-chooser",
+                        &[
+                            "outcome=ok".to_owned(),
+                            "via=new".to_owned(),
+                            format!("bpm={}", details.sanitized().bpm),
+                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                        ],
+                    );
+                    apply_module_receipt(&ui, &receipt, true);
+                    module_trace("startup-chooser", started, &receipt);
+                }
+                Err(message) => {
+                    let receipt = module_receipt(
+                        "startup-chooser",
+                        &module_error_fields("open-new", &message),
+                    );
+                    apply_module_receipt(&ui, &receipt, false);
+                    module_trace("startup-chooser", started, &receipt);
+                }
+            }
+        });
+    }
+
+    // ---- 打开已有工程…（文件选择器） ----------------------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_startup_open_existing(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let picked = picker.choose_open(
+                &crate::file_picker::PickerRequest::open("打开工程").with_extensions(["yeban"]),
+            );
+            let Some(path) = picked else {
+                // 取消：留在选择器里，什么都不做（与 wire_open_project 同口径）。
+                return;
+            };
+            let path = path.to_string_lossy().into_owned();
+            match titled.open_runtime(&ui, &path) {
+                Ok(()) => {
+                    crate::settings::record_recent_project(
+                        std::path::Path::new(&path),
+                        yeban_model::project::now_unix_ms(),
+                    );
+                    ui.set_startup_chooser_open(false);
+                    let receipt = module_receipt(
+                        "startup-chooser",
+                        &[
+                            "outcome=ok".to_owned(),
+                            "via=file".to_owned(),
+                            format!("path={path}"),
+                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                        ],
+                    );
+                    apply_module_receipt(&ui, &receipt, true);
+                    module_trace("startup-chooser", started, &receipt);
+                }
+                Err(message) => {
+                    let receipt = module_receipt(
+                        "startup-chooser",
+                        &module_error_fields("open-file", &message),
+                    );
+                    apply_module_receipt(&ui, &receipt, false);
+                    module_trace("startup-chooser", started, &receipt);
+                }
+            }
+        });
+    }
+
+    // ---- Tap Tempo ------------------------------------------------------
+    {
+        let weak = ui.as_weak();
+        let taps_tap = Rc::clone(&taps);
+        ui.on_startup_tap_tempo(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            taps_tap
+                .borrow_mut()
+                .push(yeban_model::project::now_unix_ms());
+            if let Some(bpm) = crate::startup_chooser::tap_tempo_bpm(&taps_tap.borrow()) {
+                ui.set_startup_tempo_text(format_startup_bpm(bpm).into());
+            }
+        });
+    }
+
+    // ---- 调号步进（标签是九语闭集，只能由宿主写） ----------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_startup_cycle_key(move |delta| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let next = (ui.get_startup_key_index() + delta)
+                .rem_euclid(crate::startup_chooser::KEY_CHOICE_COUNT);
+            ui.set_startup_key_index(next);
+            ui.set_startup_key_label(
+                crate::startup_chooser::key_signature_label(
+                    crate::startup_chooser::key_choice(next),
+                    current_language(),
+                )
+                .into(),
+            );
+        });
+    }
+
+    // ---- 取消：关选择器 + 退进程 ----------------------------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_startup_cancel(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            ui.set_startup_chooser_open(false);
+            slint::ComponentHandle::hide(&ui);
+            if let Err(error) = slint::quit_event_loop() {
+                eprintln!("startup-chooser: 退出事件循环失败: {error}");
+            }
         });
     }
 }
