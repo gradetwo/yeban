@@ -155,6 +155,8 @@
 
 pub mod chord;
 pub mod drum;
+pub mod drum_gen;
+pub mod drum_preset;
 pub mod error;
 pub mod genre;
 pub mod melody;
@@ -170,6 +172,15 @@ pub use drum::{
     Backbeat, DRUM_VOICE_COUNT, DrumHit, DrumPattern, DrumStyle, DrumVoice, default_backbeat,
     drum_pattern, is_meter_group_start, styled_drum_pattern, swung_drum_pattern,
     swung_styled_drum_pattern,
+};
+pub use drum_gen::{
+    DrumGenError, DrumGenParams, GeneratedDrumNote, KNOB_MAX, STEP_TICKS, TICKS_PER_BAR,
+    generate_drum_pattern,
+};
+pub use drum_preset::{
+    ACOUSTIC_KIT_SFZ_PATH, DRUM_STYLE_FORMAT, DRUM_STYLE_FORMAT_VERSION, DrumKitSetup,
+    DrumLanePreset, DrumPresetError, DrumStep, DrumStylePreset, KitFamily, MAX_RATCHET,
+    STEPS_PER_BAR, factory_drum_style, factory_drum_style_ids, factory_drum_styles, kit_setup,
 };
 pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};
