@@ -3634,36 +3634,24 @@ pub fn render(
     // ⭐ `#273`：多于一条区域命中同一音符的音符数（区域选择仍是"第一条"）。
     let mut notes_with_multiple_regions = 0u64;
     let mut cache = SampleCache::new();
-    // ⭐ `seq_*` 轮替的触发计数：与引擎 `seq_occurrence[note]` 同一条语义（每个音高各自从 0 起）。
-    let mut occurrences: BTreeMap<u8, u64> = BTreeMap::new();
+    // ⭐ 触发上下文与独占组/复音限制的结束帧都先在排程上算定：关断会改写**更早**
+    // 音符的音尾，必须发生在任何样本被写进输出之前。
+    let context = note_trigger_context(notes);
+    let ends = voice_end_frames(instrument, notes, &context, initial_cc);
     for (index, note) in notes.iter().enumerate() {
-        // ⭐ `trigger=first` / `legato` 需要"这个音符按下时，**其它**音符还按着几个"：
-        // 用同一份排程算（区间相交 = 按住）。这是离线导出唯一能给出该上下文的来源。
-        let held = u32::try_from(
-            notes
-                .iter()
-                .enumerate()
-                .filter(|(other, candidate)| {
-                    *other != index
-                        && candidate.start_frame < note.start_frame
-                        && candidate.start_frame.saturating_add(candidate.frames) > note.start_frame
-                })
-                .count(),
-        )
-        .unwrap_or(u32::MAX);
-        let occurrence = {
-            let slot = occurrences.entry(note.pitch).or_insert(0);
-            let current = *slot;
-            *slot = slot.saturating_add(1);
-            current
-        };
+        let (occurrence, held) = context[index];
+        let mut note = *note;
+        note.frames = note
+            .frames
+            .min(ends[index].saturating_sub(note.start_frame))
+            .max(1);
         // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**（[`note_wave`]）。
         // ⚠ 走这条路**发声**的只有 `yeban_render_sfz_wav`；`yeban_render_master` 自
         // `#274` 起不经这里发声（它只调 [`survey_sampler`] 取读数，音频由引擎的
         // SFZ 支路渲染，钉住这条的判据是 `tests/sampler_source_single_path.rs`）。
         let Some(wave) = note_wave_at(
             instrument,
-            note,
+            &note,
             tone_hz,
             engine_hz,
             sfz_path,
@@ -4013,47 +4001,11 @@ pub(super) fn note_wave_at(
     let mut saw_sine_fallback = false;
     let mut saw_silence = false;
 
-    // 基础命中（键/力度/随机门/CC 门/事件族）—— 与引擎摊平门控同一份谓词。
-    let base_match = |region: &Region<'_>| {
-        // ⭐ `trigger=first` / `legato` 的"其它按住的音符数"门控：调用方必须给出
-        // （`None` ⇒ 这两族**不发声**，与 `yeban-sfz` 的严格策略一致）。
-        region.trigger.held_notes_ok(held_notes)
-            // ⭐ 通道门：引擎触发路径的通道恒为 1（与 `RegionQuery::new` 的缺省一致），
-            // 离线导出同样按通道 1 选区域 —— 否则 `lochan=2` 这类"左右声部分库"
-            // 的区域会被一起叠进来（立体声分轨库常见的 +6 dB 假响）。
-            && region.matches_channel(1)
-            && region.matches_key(note.pitch)
-            && region.matches_velocity(note.velocity)
-            && region.accepts_rand(rand)
-            && region.cc_gates_ok(cc_probe)
-            && region.cc_triggers_ok(cc_probe)
-            && region.trigger.responds_to(TriggerEvent::NoteOn)
-    };
-    // ⭐ `seq_*` 轮替（引擎 `PreparedRegion::selects_occurrence` 同一条规则）：
-    // `seq_length <= 1` ⇒ 恒发声（不参与轮替，照旧叠加）；
-    // `seq_length > 1` ⇒ 只发 `seq_position == occurrence % seq_length + 1` 那一条。
-    // ⛔ 不取"第一个匹配区域的 seq_length"当组长：逐区域用它自己的值取模。
-    let seq_selects = |region: &Region<'_>| {
-        let length = u64::from(region.seq_length);
-        length <= 1 || u64::from(region.seq_position) == occurrence % length + 1
-    };
-    let mut candidates: Vec<(usize, &Region<'_>)> = instrument
-        .regions()
-        .iter()
-        .enumerate()
-        .filter(|(_, region)| base_match(region) && seq_selects(region))
-        .collect();
-    // 兜底：`seq_position` 不保证覆盖 `1..=seq_length`，一个都没选中时退回**第一条**
-    // 基础命中的区域（与引擎 `round_robin_fallback` 同一条裁决）。
-    if candidates.is_empty()
-        && let Some((index, region)) = instrument
-            .regions()
-            .iter()
-            .enumerate()
-            .find(|(_, region)| base_match(region))
-    {
-        candidates.push((index, region));
-    }
+    let candidates: Vec<(usize, &Region<'_>)> =
+        select_regions(instrument, note, initial_cc, occurrence, held_notes)
+            .into_iter()
+            .filter_map(|index| instrument.regions().get(index).map(|region| (index, region)))
+            .collect();
 
     for (index, region) in candidates {
         if regions_hit == 0 {
@@ -4408,6 +4360,174 @@ fn db_to_linear(db: f32) -> f32 {
         return 0.0;
     }
     libm::powf(10.0, db / 20.0)
+}
+
+/// 一条音符在本次触发下**真正命中**的区域下标（含 `seq_*` 兜底）。
+///
+/// 与 [`note_wave_at`] 用**同一份**谓词：叠加/轮替/门控与独占组/复音限制必须看到
+/// 同一组候选区域，否则两条结论会互相打架。
+pub(super) fn select_regions(
+    instrument: &Instrument<'_>,
+    note: &SfzNote,
+    initial_cc: &BTreeMap<u8, u8>,
+    occurrence: u64,
+    held_notes: Option<u32>,
+) -> Vec<usize> {
+    let cc_probe = |cc: u8| -> u8 { initial_cc.get(&cc).copied().unwrap_or(0) };
+    let rand = trigger_rand(note.start_frame, note.pitch, 1);
+    let matches = |region: &Region<'_>| {
+        region.trigger.held_notes_ok(held_notes)
+            && region.matches_channel(1)
+            && region.matches_key(note.pitch)
+            && region.matches_velocity(note.velocity)
+            && region.accepts_rand(rand)
+            && region.cc_gates_ok(&cc_probe)
+            && region.cc_triggers_ok(&cc_probe)
+            && region.trigger.responds_to(TriggerEvent::NoteOn)
+    };
+    let seq_selects = |region: &Region<'_>| {
+        let length = u64::from(region.seq_length);
+        length <= 1 || u64::from(region.seq_position) == occurrence % length + 1
+    };
+    let mut indices: Vec<usize> = instrument
+        .regions()
+        .iter()
+        .enumerate()
+        .filter(|(_, region)| matches(region) && seq_selects(region))
+        .map(|(index, _)| index)
+        .collect();
+    if indices.is_empty() {
+        if let Some((index, _)) = instrument
+            .regions()
+            .iter()
+            .enumerate()
+            .find(|(_, region)| matches(region))
+        {
+            indices.push(index);
+        }
+    }
+    indices
+}
+
+/// 每个音符的触发上下文：`(occurrence, held_notes)`。
+pub(super) fn note_trigger_context(notes: &[SfzNote]) -> Vec<(u64, u32)> {
+    let mut counters: BTreeMap<u8, u64> = BTreeMap::new();
+    notes
+        .iter()
+        .enumerate()
+        .map(|(index, note)| {
+            let slot = counters.entry(note.pitch).or_insert(0);
+            let occurrence = *slot;
+            *slot = slot.saturating_add(1);
+            let held = u32::try_from(
+                notes
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, candidate)| {
+                        *other != index
+                            && candidate.start_frame < note.start_frame
+                            && candidate.start_frame.saturating_add(candidate.frames)
+                                > note.start_frame
+                    })
+                    .count(),
+            )
+            .unwrap_or(u32::MAX);
+            (occurrence, held)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct ActiveVoice {
+    note: usize,
+    group: u32,
+    off_by: u32,
+    key: u8,
+    velocity: u8,
+    end: u64,
+    order: u64,
+}
+
+/// 独占组（`group` / `off_by`）与同键复音限制（`note_polyphony` / `note_selfmask`）
+/// 的离线排程：返回每个音符的**实际结束帧**（被关掉的音符提前收尾）。
+pub(super) fn voice_end_frames(
+    instrument: &Instrument<'_>,
+    notes: &[SfzNote],
+    context: &[(u64, u32)],
+    initial_cc: &BTreeMap<u8, u8>,
+) -> Vec<u64> {
+    let mut ends: Vec<u64> = notes
+        .iter()
+        .map(|note| note.start_frame.saturating_add(note.frames.max(1)))
+        .collect();
+    let selected: Vec<Vec<usize>> = notes
+        .iter()
+        .zip(context)
+        .map(|(note, &(occurrence, held))| {
+            select_regions(instrument, note, initial_cc, occurrence, Some(held))
+        })
+        .collect();
+    let mut order = 0u64;
+    let mut active: Vec<ActiveVoice> = Vec::new();
+    let mut indices: Vec<usize> = (0..notes.len()).collect();
+    indices.sort_by_key(|&index| (notes[index].start_frame, index));
+    for index in indices {
+        let note = &notes[index];
+        let start = note.start_frame;
+        active.retain(|voice| voice.end > start);
+        for &region_index in &selected[index] {
+            let Some(region) = instrument.regions().get(region_index) else {
+                continue;
+            };
+            if region.group != 0 {
+                let group = region.group;
+                for voice in active.iter_mut() {
+                    if voice.off_by == group {
+                        voice.end = start;
+                        ends[voice.note] = ends[voice.note].min(start);
+                    }
+                }
+            }
+            let policy = region.note_polyphony;
+            if !policy.is_unlimited() {
+                let polyphony_group = region.group;
+                loop {
+                    let mut candidates: Vec<usize> = active
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, voice)| {
+                            voice.key == note.pitch
+                                && voice.group == polyphony_group
+                                && (!policy.self_mask || voice.velocity <= note.velocity)
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    if candidates.len() < policy.limit as usize {
+                        break;
+                    }
+                    candidates.sort_by_key(|&voice| (active[voice].order, active[voice].note));
+                    let Some(&victim) = candidates.first() else {
+                        break;
+                    };
+                    let victim_note = active[victim].note;
+                    ends[victim_note] = ends[victim_note].min(start);
+                    active[victim].end = start;
+                    active.retain(|voice| voice.end > start);
+                }
+            }
+            active.push(ActiveVoice {
+                note: index,
+                group: region.group,
+                off_by: region.off_by,
+                key: note.pitch,
+                velocity: note.velocity,
+                end: ends[index],
+                order,
+            });
+            order = order.saturating_add(1);
+        }
+    }
+    ends
 }
 
 #[cfg(test)]
@@ -6167,6 +6287,91 @@ mod tests {
             .is_none(),
             "给不出按住数时，`first` / `legato` 必须不发声"
         );
+    }
+
+    /// ⭐ `group` / `off_by`：新区域触发时把"同组"的在场声部关掉（鼓机 choking 那一条）。
+    #[test]
+    fn off_by_chokes_the_earlier_note_at_the_trigger() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 off_by=1\n\
+             <region> sample=definitely-missing.wav key=62 group=1\n\
+             <region> sample=definitely-missing.wav key=62",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let notes = [
+            SfzNote {
+                start_frame: 0,
+                frames: 48_000,
+                pitch: 60,
+                velocity: 100,
+                gain_l: 1.0,
+                gain_r: 1.0,
+            },
+            SfzNote {
+                start_frame: 24_000,
+                frames: 48_000,
+                pitch: 62,
+                velocity: 100,
+                gain_l: 1.0,
+                gain_r: 1.0,
+            },
+        ];
+        let context = note_trigger_context(&notes);
+        let ends = voice_end_frames(&instrument, &notes, &context, &BTreeMap::new());
+        assert_eq!(ends[0], 24_000, "`group=1` 的新区域 ⇒ 关掉声明的 `off_by=1` 声部");
+        assert_eq!(ends[1], 72_000, "关断方自己的音尾不许被改");
+    }
+
+    /// ⭐ `note_polyphony`：同键同时发声上限，超限时结束**最早**的那一条。
+    #[test]
+    fn note_polyphony_keeps_only_the_latest_voice_per_key() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 note_polyphony=1",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let notes = [0u64, 24_000, 48_000].map(|start| SfzNote {
+            start_frame: start,
+            frames: 48_000,
+            pitch: 60,
+            velocity: 100,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        });
+        let context = note_trigger_context(&notes);
+        let ends = voice_end_frames(&instrument, &notes, &context, &BTreeMap::new());
+        assert_eq!(ends[0], 24_000, "第一条被第二条顶掉");
+        assert_eq!(ends[1], 48_000, "第二条被第三条顶掉");
+        assert_eq!(ends[2], 96_000, "最后一条唱完自己的时值");
+    }
+
+    /// ⭐ `note_selfmask=on`（缺省）：只许"力度更低"的在场声部被结束 ⇒ 轻声不许切掉大声。
+    #[test]
+    fn note_selfmask_never_lets_a_quieter_note_cut_a_louder_one() {
+        let instrument = parse_text(
+            "<region> sample=definitely-missing.wav key=60 note_polyphony=1 note_selfmask=on",
+            &ParseLimits::default(),
+        )
+        .expect("解析");
+        let note = |start: u64, velocity: u8| SfzNote {
+            start_frame: start,
+            frames: 48_000,
+            pitch: 60,
+            velocity,
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        // 先大后小：100 不许被 60 结束（`self_mask` 只放任"力度不高于新声部"的被结束）。
+        let quiet_after_loud = [note(0, 100), note(24_000, 60)];
+        let context = note_trigger_context(&quiet_after_loud);
+        let ends = voice_end_frames(&instrument, &quiet_after_loud, &context, &BTreeMap::new());
+        assert_eq!(ends[0], 48_000, "轻声不许切掉大声");
+        // 反方向：60 被 100 结束 ⇒ 上限真的生效。
+        let loud_after_quiet = [note(0, 60), note(24_000, 100)];
+        let context = note_trigger_context(&loud_after_quiet);
+        let ends = voice_end_frames(&instrument, &loud_after_quiet, &context, &BTreeMap::new());
+        assert_eq!(ends[0], 24_000, "大声可以结束轻声");
     }
 
     fn zero_crossings(pcm: &[f32]) -> usize {
