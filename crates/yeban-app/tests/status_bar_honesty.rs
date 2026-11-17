@@ -8,7 +8,7 @@
 //! | 属性 | 改前（假） | 改后 | 宿主写者 |
 //! | :--- | :--- | :--- | :--- |
 //! | `selection` | `选区 1.1.000 – 5.4.480` | `选区 无` | `host::publish_status_bar` ← `ViewState::selection_tick_span` |
-//! | `chord` | `Cmaj7` | `(none)` | **没有**（能力不存在：`yeban-theory` 不在依赖图上） |
+//! | `chord` | `Cmaj7` | `(none)` | **没有**（和弦识别未接线：`yeban-theory` 边自鼓机线起存在，但只供鼓机生成——判据 ④） |
 //! | `device` | `48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS` | `—` | `host::publish_status_bar` ← `ViewState::audio_config_display` |
 //!
 //! ⇒ 上一版判据 ①（默认值 == 旧字面量）与判据 ③（断言**没有**写者）在新状态下**必然为假**。
@@ -18,9 +18,19 @@
 //! - 判据 ① 钉住三条默认值是**"还没有读数"的形态**，不是任何一个具体读数；
 //! - 判据 ② 钉住登记还在，且点名两条真实数据源与 `chord` 的能力缺口；
 //! - 判据 ③ 钉住**写者真的存在、且只有一个**（`src/host.rs`），`chord` 仍然**没有**写者；
-//! - 判据 ④ 钉住 `chord` 的能力缺口没被"顺手加依赖"绕过（`yeban-theory` 边仍不存在）；
+//! - 判据 ④ 钉住 `yeban-theory` 边**只供鼓机生成**（`chord` 识别仍未接线；旧代理"边不存在"已随鼓机线失效，见判据 ④ 的改写注记）；
 //! - 判据 ⑤ 钉住"没选区时显示什么"只有**一个**口径（`.slint` 默认值 == `host.rs` 常量）；
 //! - 判据 ⑥ 钉住删掉 `DSP …%` 那一格的**理由**仍然成立（app 里没有任何负载读数）。
+//!
+//! ## 本文件在 2026-11-17 再改判据 ④（`line/drum-machine-p1` 第三轮修复）
+//!
+//! 鼓机线给 `yeban-app` 加了 `yeban-theory` 依赖边（`bridge::drum_gen_ops` 生成鼓型、
+//! `host::wire_drum_gen_dialog` 投影风格、`elements` 注册风格行），旧判据 ④ 的代理命题
+//! 「边不存在 ⇒ 能力不存在」随之失效，分支 CI 单败本判据。边是真实需要的（删边等于把鼓机
+//! 生成搬出 app 或走 MCP 环回，与台账第 105 行「同一 theory 生成层」的设计冲突），故修法
+//! 不是撤边，而是把判据改写成**真不变量**：边存在，但 `yeban_theory::` 引用全在鼓机白名单内
+//! （11 个符号，实测 23 处 / 3 文件），且 `chord` 仍无写者（判据 ③）、仍显示 `(none)`
+//! （判据 ①）。新判据自带 R56 合成正负对照。可见文本一位未动 ⇒ 无基准重录。
 //!
 //! ⚠ 本文件**不**证明界面是诚实的。它证明"登记、写者、数据源名与无读数形态"这四件事
 //! 没有被静默改掉。像素那一半由 `src/test_port_adapter.rs` 的 `[UI-MCP-003]` 逐字节比对守。
@@ -115,7 +125,7 @@ fn status_bar_defaults_are_no_reading_forms_not_fabricated_values() {
 ///   - `publish_status_bar`：唯一的宿主写者（判据 ③ 查它真的存在）；
 ///   - `selection_tick_span` / `audio_config_display` / `timecode_for_ticks`：
 ///     两条数据源的**名字**，登记必须点得出来；
-///   - `yeban-theory`：`chord` 的能力缺口（判据 ④ 查这条边真的不存在）。
+///   - `yeban-theory`：`chord` 的能力缺口（判据 ④ 查这条边只供鼓机生成）。
 ///
 /// ⚠ 这条**不**证明界面诚实；它证明"这笔债/这份出处还记在账上，没被顺手删掉"。
 #[test]
@@ -216,28 +226,198 @@ fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
     );
 }
 
-/// **判据 ④**：登记里那句"`chord` 的能力不存在（`yeban-theory` 不在 `yeban-app` 的依赖图上）"
-/// 必须仍然成立。
+/// 鼓机符号白名单：`yeban-app` 调 `yeban-theory` 只许这 11 个符号。
 ///
-/// 观测面 = 本 crate 清单里有没有一条**以 `yeban-theory` 开头的依赖键**。先剔掉 `#` 注释行：
-/// 本仓清单里大段注释会点名别的 crate，把注释也当成依赖会把判据自己变成假红源。
+/// 实测（2026-11-17，`crates/yeban-app/src` 去 `//` 注释后）：23 处引用、3 个文件
+/// （`bridge.rs` / `host.rs` / `elements.rs`），符号恰为这 11 个。
+/// `factory_drum_style` 与 `factory_drum_styles` 是两个不同符号，须各列一条。
+const DRUM_THEORY_SYMBOLS: [&str; 11] = [
+    "ACOUSTIC_KIT_SFZ_PATH",
+    "DrumGenParams",
+    "DrumKitSetup",
+    "DrumStylePreset",
+    "KitFamily",
+    "TICKS_PER_BAR",
+    "factory_drum_style",
+    "factory_drum_style_ids",
+    "factory_drum_styles",
+    "generate_drum_pattern",
+    "kit_setup",
+];
+
+/// 扫一段源码，返回（`yeban_theory::` 符号表，未入账的行）。
+///
+/// 未入账 = 含 `yeban_theory` 却提不出符号的行（`use yeban_theory::{…}` 大括号导入、
+/// 裸 `use yeban_theory;` 之类）—— 白名单扫不到的形态必须先红，而不是静默漏过。
+/// 逐行先过 `code_only`：注释里的引用不算（登记与留痕本身就会写这些名字）。
+fn theory_references_in_code(code: &str) -> (Vec<String>, Vec<String>) {
+    let mut symbols = Vec::new();
+    let mut unaccounted = Vec::new();
+    for line in code.lines() {
+        let line = code_only(line);
+        if !line.contains("yeban_theory") {
+            continue;
+        }
+        let mut rest = line;
+        let mut found_any = false;
+        while let Some(idx) = rest.find("yeban_theory::") {
+            found_any = true;
+            let after = &rest[idx + "yeban_theory::".len()..];
+            let symbol: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if symbol.is_empty() {
+                unaccounted.push(line.trim().to_owned());
+                break;
+            }
+            symbols.push(symbol);
+            rest = after;
+        }
+        if !found_any {
+            unaccounted.push(line.trim().to_owned());
+        }
+    }
+    (symbols, unaccounted)
+}
+
+/// **判据 ④**：`yeban-theory` 边**只供鼓机生成**，`chord` 识别仍未接线。
+///
+/// 2026-11-17 改写（`line/drum-machine-p1` 第三轮修复）：旧代理「边不存在 ⇒ 能力不存在」
+/// 已失效 —— 鼓机线真实调这条边。真不变量是：`crates/yeban-app/src` 里每一条
+/// `yeban_theory::` 引用都落在鼓机白名单内；`chord` 仍无写者（判据 ③ 另行钉
+/// `set_chord` 不出现）、仍显示 `(none)`（判据 ①）。`theory` 里确实有和弦能力
+/// （`chord.rs` / `Chord` / `genre` 与 `progression` 的 `chords`），所以白名单
+/// 必须能抓住"用 theory 做和弦" —— 见下面的 R56 对照。
+///
+/// 四条断言：
+///   1. 清单里有 `yeban-theory` 边（鼓机线需要它；撤边会先断鼓机编译，本条直接钉前提）；
+///   2. 全部 `yeban_theory::` 符号都在白名单内；
+///   3. 没有白名单扫不到的形态（大括号导入、裸 `use`）；
+///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 23 处 / 3 文件 /
+///      11 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
+///
+/// 另附 R56 合成对照（与真扫描同一段代码）：纯鼓片段 ⇒ 干净；含 `Chord` /
+/// `detect_chord` 的片段 ⇒ 点名报出；大括号导入 / 裸 `use` ⇒ 报"未入账"；
+/// 注释里的引用 ⇒ 不报。
 #[test]
-fn chord_capability_gap_is_still_missing_no_yeban_theory_edge() {
+fn theory_edge_is_drum_only_and_chord_still_has_no_recognition() {
+    // (1) 边必须存在：鼓机线需要它。
     let edge = APP_MANIFEST
         .lines()
         .map(str::trim)
         .find(|line| !line.starts_with('#') && line.starts_with("yeban-theory"));
-    if let Some(edge) = edge {
-        panic!(
-            "登记写着 `chord` 的能力不存在（`yeban-theory` 不在 `yeban-app` 的依赖图上），但 \
-             `crates/yeban-app/Cargo.toml` 里出现了依赖边 `{edge}`。\n\
-             本票的红线是**不为 `chord` 加依赖边**。若确实要接上和弦识别：先把登记重写成\
-             「能力已接线」，并在同一个提交里处理基准 —— 这一格 `status-bar-chord` 同时是\
-             ADR-0001 D24 的**对照样本**（`src/test_port_adapter.rs` 的 D24 墨迹判据），\
-             改这一格要先确认新文本仍含 ASCII 墨迹。\n\
-             出处：`docs/ledger/integration-rulings-notes.md` 的 R9 行。"
-        );
+    assert!(
+        edge.is_some(),
+        "`crates/yeban-app/Cargo.toml` 里必须有 `yeban-theory` 依赖边 —— 鼓机线\
+         （`bridge::drum_gen_ops` / 对话框 / 风格注册）真实调它。若有人撤边，鼓机编译\
+         先断；本条直接钉住这个前提。"
+    );
+
+    // (2)(3) 真扫描：全部符号入白名单，无未入账形态。
+    let files = app_source_files();
+    assert!(
+        files.len() >= 20,
+        "扫描域非真空：`crates/yeban-app/src` 下 `.rs` 文件数必须 ≥ 20（实测 {}）。\
+         文件数塌了 ⇒ 判据在扫一个空目录。",
+        files.len()
+    );
+    let mut total_uses = 0;
+    let mut distinct: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut files_with_uses = 0;
+    let mut violations: Vec<String> = Vec::new();
+    for (path, text) in &files {
+        let (symbols, unaccounted) = theory_references_in_code(text);
+        if !symbols.is_empty() {
+            files_with_uses += 1;
+        }
+        for symbol in &symbols {
+            total_uses += 1;
+            distinct.insert(symbol.clone());
+            if !DRUM_THEORY_SYMBOLS.contains(&symbol.as_str()) {
+                violations.push(format!(
+                    "{}: `yeban_theory::{symbol}` 不在鼓机白名单内 —— theory 边只供鼓机生成，\
+                     和弦识别仍未接线（R9 登记）",
+                    path.display()
+                ));
+            }
+        }
+        for line in &unaccounted {
+            violations.push(format!(
+                "{}: 白名单扫不到的 theory 引用（大括号导入 / 裸 `use` 之类）：{line}",
+                path.display()
+            ));
+        }
     }
+    assert!(
+        violations.is_empty(),
+        "theory 边被挪作他用（{} 处）：\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+
+    // (4) 非真空下界（实测 23 处 / 3 文件 / 11 符号）。
+    assert!(
+        total_uses >= 10,
+        "引用数非真空：`yeban_theory::` 引用必须 ≥ 10 处（实测 23 处），当前 {total_uses} 处。\
+         引用塌了 ⇒ 要么鼓机接线被删了，要么扫描本身坏了。"
+    );
+    assert!(
+        files_with_uses >= 2,
+        "引用分布非真空：含 theory 引用的文件必须 ≥ 2 个（实测 3 个），当前 {files_with_uses} 个。"
+    );
+    assert!(
+        distinct.len() >= 5,
+        "符号面非真空：不同 theory 符号必须 ≥ 5 个（实测 11 个），当前 {} 个。",
+        distinct.len()
+    );
+
+    // R56 合成对照：同一段判定代码跑四份合成片段。
+    let (symbols, unaccounted) = theory_references_in_code(
+        "let p = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();\n\
+         let s = yeban_theory::factory_drum_styles();",
+    );
+    assert!(
+        unaccounted.is_empty(),
+        "对照失败：纯鼓片段不应有未入账行：{unaccounted:?}"
+    );
+    assert!(
+        symbols
+            .iter()
+            .all(|s| DRUM_THEORY_SYMBOLS.contains(&s.as_str())),
+        "对照失败：纯鼓片段的符号必须全在白名单内：{symbols:?}"
+    );
+    let (symbols, _) =
+        theory_references_in_code("let c = yeban_theory::Chord::from_notes(&notes);");
+    assert_eq!(
+        symbols,
+        vec!["Chord".to_string()],
+        "对照失败：和弦片段必须被点名报出符号 `Chord`"
+    );
+    assert!(
+        !DRUM_THEORY_SYMBOLS.contains(&"Chord"),
+        "对照失败：白名单里不许有 `Chord` —— 否则判据抓不住\"用 theory 做和弦\""
+    );
+    let (_, unaccounted) = theory_references_in_code("use yeban_theory::{Chord, DrumGenParams};");
+    assert_eq!(
+        unaccounted.len(),
+        1,
+        "对照失败：大括号导入必须报 1 行未入账（白名单扫不到的形态不能静默漏过）"
+    );
+    let (_, unaccounted) = theory_references_in_code("use yeban_theory;");
+    assert_eq!(
+        unaccounted.len(),
+        1,
+        "对照失败：裸 `use yeban_theory;` 必须报 1 行未入账"
+    );
+    let (symbols, unaccounted) = theory_references_in_code(
+        "// 登记：yeban_theory::Chord 是和弦能力（只写在注释里）\n\
+         let p = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();",
+    );
+    assert!(
+        unaccounted.is_empty() && symbols == vec!["generate_drum_pattern".to_string()],
+        "对照失败：注释里的引用不算，只认代码里的 1 处鼓引用：{symbols:?} / {unaccounted:?}"
+    );
 }
 
 /// **判据 ⑤**：空选区的文本只有**一个**口径。

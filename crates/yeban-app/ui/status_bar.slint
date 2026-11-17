@@ -38,6 +38,10 @@
 //      `src/test_port_adapter.rs` 的 `[D24]`「字体非 tofu」对照样本仍然有牙**：
 //      该判据是 `cjk_ink > reference_ink` 且对照就是这一格；对照若是纯汉字，
 //      在没有 CJK 字体的 runner 上两侧一起塌到 0，判据会**变成永远绿**。
+//   ⚠ 就地加注（2026-11-17，`line/drum-machine-p1` 第三轮修复）：上面「`crates/yeban-app/Cargo.toml`
+//      里没有 `yeban-theory` 依赖键」一句已过期 —— 鼓机线自 2026-11-17 起真实调这条边，但**只供
+//      鼓机生成**（`bridge::drum_gen_ops` / 对话框 / 风格注册），不接和弦识别。`chord` 仍无写者、
+//      仍显示 `(none)`，能力缺口未变；守卫见 `tests/status_bar_honesty.rs` 判据 ④（已改写为白名单口径）。
 //   ③ `device`: `"48 kHz / 24-bit · DSP 3.2% · 目标 120 FPS"`
 //      ⇒ `"48 kHz / 32-bit float · 目标 120 FPS"`。
 //      写者 = `host::apply_view` → `host::publish_status_bar`。
@@ -131,7 +135,7 @@
 //
 // 这份登记与"三条默认值 = 基准里那三格"的绑定，现在由 `tests/status_bar_honesty.rs` 的
 // **六条**判据看守（无读数形态 / 登记点名数据源 / 写者唯一且 `chord` 无写者 /
-// `yeban-theory` 边仍不存在 / 空选区文本只有一个口径 / 负载读数仍为 0）。
+// `yeban-theory` 边只供鼓机生成 / 空选区文本只有一个口径 / 负载读数仍为 0）。
 
 import { Tokens, UiText, UiMonoText } from "tokens.slint";
 

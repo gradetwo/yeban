@@ -380,8 +380,9 @@ impl ElementRegistry {
             ElementKind::Text,
             "status_bar.slint",
             // ⭐ [PATCH UI-A11Y-003]：与 `ui/status_bar.slint` 的 `accessible-label`
-            // **逐字相同**。原名"实时和弦识别"是假承诺：app 侧没有 `yeban-theory`
-            // 边、这一格没有宿主写者、永远停在 `(none)`（R9 登记）。改成如实描述。
+            // **逐字相同**。原名"实时和弦识别"是假承诺：这一格没有宿主写者、永远停在
+            // `(none)`（R9 登记；`yeban-theory` 边自鼓机线起存在，但只供鼓机生成，
+            // 不接和弦识别）。改成如实描述。
             "和弦识别（当前版本无读数）",
             true,
         );
