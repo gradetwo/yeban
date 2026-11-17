@@ -1841,3 +1841,77 @@ msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comm
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comme modèle."
+
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "Choisir un projet"
+
+msgid "选择工程面板"
+msgstr "Panneau de choix de projet"
+
+msgid "取消启动"
+msgstr "Annuler le démarrage"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "Choisissez un projet à ouvrir ou créez-en un nouveau. Les démos et les modèles s'ouvrent comme copies sans titre et ne réécrivent jamais le fichier d'origine."
+
+msgid "创建新工程"
+msgstr "Créer le nouveau projet"
+
+msgid "取消"
+msgstr "Annuler"
+
+msgid "启动选择器条目列表"
+msgstr "Liste des entrées du sélecteur de démarrage"
+
+msgid "工程模板"
+msgstr "Modèles de projet"
+
+msgid "我的模板"
+msgstr "Mes modèles"
+
+msgid "打开"
+msgstr "Ouvrir"
+
+msgid "打开已有工程…"
+msgstr "Ouvrir un projet existant…"
+
+msgid "拍号"
+msgstr "Chiffrage de mesure"
+
+msgid "最近打开"
+msgstr "Récents"
+
+msgid "此目录中还没有模板。"
+msgstr "Il n'y a encore aucun modèle dans ce dossier."
+
+msgid "演示工程"
+msgstr "Projets de démonstration"
+
+msgid "点按测速"
+msgstr "Tap Tempo"
+
+msgid "空工程"
+msgstr "Projet vide"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "Partir d'un projet vierge (sans titre ; l'emplacement se choisit à l'enregistrement)"
+
+msgid "详情"
+msgstr "Détails"
+
+msgid "调号"
+msgstr "Armure"
+
+msgid "还有更多行未画出"
+msgstr "D'autres lignes ne sont pas affichées"
+
+msgid "还没有最近打开的工程。"
+msgstr "Aucun projet ouvert récemment pour le moment."
+
+msgid "速度"
+msgstr "Tempo"
+
+msgid "采样率"
+msgstr "Fréquence d'échantillonnage"

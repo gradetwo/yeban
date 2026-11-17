@@ -995,6 +995,20 @@ export struct TemplateChooserRow {
     entry-index: int,
 }
 
+// 启动工程选择器的一行（`crate::startup_chooser::ChooserRow` 的界面投影）。
+// `kind` 的整数编码与 `startup_chooser::ChooserRowKind::code()` 同值：
+// 0 = 曲风标题、1 = 子曲风标题、2 = 条目。`entry-index` 只在 kind == 2
+// 时有效，指向该分类数据表的下标（模板分类是全量模板清单下标）；
+// 标题行恒为 -1。`enabled = false` 的条目置灰不可点（最近清单里文件
+// 已不存在的工程）。`detail` 是副文字（路径 + 相对时间 / 轨道数）。
+export struct StartupChooserRow {
+    kind: int,
+    label: string,
+    detail: string,
+    entry-index: int,
+    enabled: bool,
+}
+
 export struct PianoStepRow {
     pitch_name: string,
     is_root: bool,

@@ -1841,3 +1841,77 @@ msgstr "Es sind noch keine Vorlagen vorhanden. Speichern Sie zuerst das aktuelle
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "Es sind noch keine Vorlagen vorhanden. Speichern Sie zuerst das aktuelle Projekt als Vorlage."
+
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "Projekt auswählen"
+
+msgid "选择工程面板"
+msgstr "Bereich Projektauswahl"
+
+msgid "取消启动"
+msgstr "Start abbrechen"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "Wählen Sie ein Projekt zum Öffnen oder erstellen Sie ein neues. Demos und Vorlagen öffnen als unbenannte Kopien und überschreiben die Originaldatei nie."
+
+msgid "创建新工程"
+msgstr "Neues Projekt erstellen"
+
+msgid "取消"
+msgstr "Abbrechen"
+
+msgid "启动选择器条目列表"
+msgstr "Eintragsliste der Startauswahl"
+
+msgid "工程模板"
+msgstr "Projektvorlagen"
+
+msgid "我的模板"
+msgstr "Meine Vorlagen"
+
+msgid "打开"
+msgstr "Öffnen"
+
+msgid "打开已有工程…"
+msgstr "Vorhandenes Projekt öffnen…"
+
+msgid "拍号"
+msgstr "Taktart"
+
+msgid "最近打开"
+msgstr "Zuletzt geöffnet"
+
+msgid "此目录中还没有模板。"
+msgstr "In diesem Ordner gibt es noch keine Vorlagen."
+
+msgid "演示工程"
+msgstr "Demo-Projekte"
+
+msgid "点按测速"
+msgstr "Tap Tempo"
+
+msgid "空工程"
+msgstr "Leeres Projekt"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "Mit einem leeren Projekt beginnen (unbenannt; Speicherort wird beim Sichern gewählt)"
+
+msgid "详情"
+msgstr "Details"
+
+msgid "调号"
+msgstr "Tonartvorzeichen"
+
+msgid "还有更多行未画出"
+msgstr "Weitere Zeilen nicht dargestellt"
+
+msgid "还没有最近打开的工程。"
+msgstr "Noch keine zuletzt geöffneten Projekte."
+
+msgid "速度"
+msgstr "Tempo"
+
+msgid "采样率"
+msgstr "Abtastrate"

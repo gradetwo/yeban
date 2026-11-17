@@ -1841,3 +1841,77 @@ msgstr "아직 템플릿이 없습니다. 먼저 '파일 → 템플릿으로 저
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "아직 템플릿이 없습니다. 먼저 현재 프로젝트를 템플릿으로 저장하세요."
+
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "프로젝트 선택"
+
+msgid "选择工程面板"
+msgstr "프로젝트 선택 패널"
+
+msgid "取消启动"
+msgstr "시작 취소"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "열 프로젝트를 선택하거나 새로 만드세요. 데모와 템플릿은 제목 없는 복사본으로 열리며 원본 파일을 덮어쓰지 않습니다."
+
+msgid "创建新工程"
+msgstr "새 프로젝트 만들기"
+
+msgid "取消"
+msgstr "취소"
+
+msgid "启动选择器条目列表"
+msgstr "시작 선택기 항목 목록"
+
+msgid "工程模板"
+msgstr "프로젝트 템플릿"
+
+msgid "我的模板"
+msgstr "내 템플릿"
+
+msgid "打开"
+msgstr "열기"
+
+msgid "打开已有工程…"
+msgstr "기존 프로젝트 열기…"
+
+msgid "拍号"
+msgstr "박자"
+
+msgid "最近打开"
+msgstr "최근 항목"
+
+msgid "此目录中还没有模板。"
+msgstr "이 폴더에는 아직 템플릿이 없습니다."
+
+msgid "演示工程"
+msgstr "데모 프로젝트"
+
+msgid "点按测速"
+msgstr "탭 템포"
+
+msgid "空工程"
+msgstr "빈 프로젝트"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "빈 프로젝트로 시작 (제목 없음, 저장할 때 위치 선택)"
+
+msgid "详情"
+msgstr "세부 정보"
+
+msgid "调号"
+msgstr "조표"
+
+msgid "还有更多行未画出"
+msgstr "표시되지 않은 행이 더 있습니다"
+
+msgid "还没有最近打开的工程。"
+msgstr "최근에 연 프로젝트가 아직 없습니다."
+
+msgid "速度"
+msgstr "템포"
+
+msgid "采样率"
+msgstr "샘플 레이트"

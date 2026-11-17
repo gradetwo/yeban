@@ -1841,3 +1841,77 @@ msgstr "Aún no hay plantillas. Guarda primero el proyecto actual como plantilla
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "Aún no hay plantillas. Guarda primero el proyecto actual como plantilla."
+
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "Elegir un proyecto"
+
+msgid "选择工程面板"
+msgstr "Panel de selección de proyecto"
+
+msgid "取消启动"
+msgstr "Cancelar el inicio"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "Elige un proyecto para abrir o crea uno nuevo. Las demos y las plantillas se abren como copias sin título y nunca sobrescriben el archivo original."
+
+msgid "创建新工程"
+msgstr "Crear proyecto nuevo"
+
+msgid "取消"
+msgstr "Cancelar"
+
+msgid "启动选择器条目列表"
+msgstr "Lista de entradas del selector de inicio"
+
+msgid "工程模板"
+msgstr "Plantillas de proyecto"
+
+msgid "我的模板"
+msgstr "Mis plantillas"
+
+msgid "打开"
+msgstr "Abrir"
+
+msgid "打开已有工程…"
+msgstr "Abrir proyecto existente…"
+
+msgid "拍号"
+msgstr "Compás"
+
+msgid "最近打开"
+msgstr "Recientes"
+
+msgid "此目录中还没有模板。"
+msgstr "Aún no hay plantillas en esta carpeta."
+
+msgid "演示工程"
+msgstr "Proyectos de demostración"
+
+msgid "点按测速"
+msgstr "Tap Tempo"
+
+msgid "空工程"
+msgstr "Proyecto vacío"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "Empezar con un proyecto en blanco (sin título; la ubicación se elige al guardar)"
+
+msgid "详情"
+msgstr "Detalles"
+
+msgid "调号"
+msgstr "Armadura"
+
+msgid "还有更多行未画出"
+msgstr "Hay más filas sin mostrar"
+
+msgid "还没有最近打开的工程。"
+msgstr "Aún no hay proyectos abiertos recientemente."
+
+msgid "速度"
+msgstr "Tempo"
+
+msgid "采样率"
+msgstr "Frecuencia de muestreo"

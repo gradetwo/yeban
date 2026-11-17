@@ -1841,3 +1841,77 @@ msgstr "Ainda não há modelos. Salve primeiro o projeto atual como modelo em \"
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "Ainda não há modelos. Salve primeiro o projeto atual como modelo."
+
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "Escolher um projeto"
+
+msgid "选择工程面板"
+msgstr "Painel de escolha de projeto"
+
+msgid "取消启动"
+msgstr "Cancelar a abertura"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "Escolha um projeto para abrir ou crie um novo. Demos e modelos abrem como cópias sem título e nunca regravam o arquivo original."
+
+msgid "创建新工程"
+msgstr "Criar novo projeto"
+
+msgid "取消"
+msgstr "Cancelar"
+
+msgid "启动选择器条目列表"
+msgstr "Lista de itens do seletor de abertura"
+
+msgid "工程模板"
+msgstr "Modelos de projeto"
+
+msgid "我的模板"
+msgstr "Meus modelos"
+
+msgid "打开"
+msgstr "Abrir"
+
+msgid "打开已有工程…"
+msgstr "Abrir projeto existente…"
+
+msgid "拍号"
+msgstr "Fórmula de compasso"
+
+msgid "最近打开"
+msgstr "Recentes"
+
+msgid "此目录中还没有模板。"
+msgstr "Ainda não há modelos nesta pasta."
+
+msgid "演示工程"
+msgstr "Projetos de demonstração"
+
+msgid "点按测速"
+msgstr "Tap Tempo"
+
+msgid "空工程"
+msgstr "Projeto vazio"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "Começar com um projeto em branco (sem título; o local é escolhido ao salvar)"
+
+msgid "详情"
+msgstr "Detalhes"
+
+msgid "调号"
+msgstr "Armadura de clave"
+
+msgid "还有更多行未画出"
+msgstr "Mais linhas não exibidas"
+
+msgid "还没有最近打开的工程。"
+msgstr "Ainda não há projetos abertos recentemente."
+
+msgid "速度"
+msgstr "Andamento"
+
+msgid "采样率"
+msgstr "Taxa de amostragem"

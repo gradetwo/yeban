@@ -1841,3 +1841,77 @@ msgstr "There are no templates yet. First save the current project as a template
 
 msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
 msgstr "There are no templates yet. Save the current project as a template first."
+
+# --- dialogs/startup_chooser.slint ---
+
+msgid "选择工程"
+msgstr "Choose a Project"
+
+msgid "选择工程面板"
+msgstr "Project chooser panel"
+
+msgid "取消启动"
+msgstr "Cancel startup"
+
+msgid "选择要打开的工程，或新建一个。演示与模板以未命名副本打开，不回写原文件。"
+msgstr "Choose a project to open, or create a new one. Demos and templates open as untitled copies and never overwrite the original file."
+
+msgid "创建新工程"
+msgstr "Create New Project"
+
+msgid "取消"
+msgstr "Cancel"
+
+msgid "启动选择器条目列表"
+msgstr "Startup chooser entry list"
+
+msgid "工程模板"
+msgstr "Project Templates"
+
+msgid "我的模板"
+msgstr "My Templates"
+
+msgid "打开"
+msgstr "Open"
+
+msgid "打开已有工程…"
+msgstr "Open Existing Project…"
+
+msgid "拍号"
+msgstr "Time Signature"
+
+msgid "最近打开"
+msgstr "Recent"
+
+msgid "此目录中还没有模板。"
+msgstr "There are no templates in this folder yet."
+
+msgid "演示工程"
+msgstr "Demo Projects"
+
+msgid "点按测速"
+msgstr "Tap Tempo"
+
+msgid "空工程"
+msgstr "Empty Project"
+
+msgid "从空白工程开始（未命名，保存时再选落点）"
+msgstr "Start from a blank project (untitled; choose where to save later)"
+
+msgid "详情"
+msgstr "Details"
+
+msgid "调号"
+msgstr "Key Signature"
+
+msgid "还有更多行未画出"
+msgstr "More rows not shown"
+
+msgid "还没有最近打开的工程。"
+msgstr "No recently opened projects yet."
+
+msgid "速度"
+msgstr "Tempo"
+
+msgid "采样率"
+msgstr "Sample Rate"

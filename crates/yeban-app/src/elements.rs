@@ -2379,6 +2379,151 @@ impl ElementRegistry {
             "未画出的模板行数（如实报数）",
             false,
         );
+        // 启动工程选择器（line/startup-chooser）：默认关闭
+        // （`startup-chooser-open=false`，仅无 `--open` 的窗口启动由
+        // 装配点打开），因此不进运行时控件树、不改任何金帧。行模型与
+        // Details 初值由宿主从 `crate::startup_chooser` 写入。
+        registry.add(
+            "startup-chooser-dialog",
+            ElementKind::Region,
+            "dialogs/startup_chooser.slint",
+            "启动工程选择器",
+            false,
+        );
+        registry.add(
+            "startup-chooser-panel",
+            ElementKind::Region,
+            "dialogs/startup_chooser.slint",
+            "启动选择器面板",
+            false,
+        );
+        registry.add(
+            "startup-chooser-close-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "取消启动（退出）",
+            false,
+        );
+        for (nav_id, nav_desc) in [
+            ("startup-nav-new", "分类：新建工程"),
+            ("startup-nav-recent", "分类：最近"),
+            ("startup-nav-demos", "分类：演示工程"),
+            ("startup-nav-factory", "分类：工程模板"),
+            ("startup-nav-user", "分类：我的模板"),
+        ] {
+            registry.add(
+                nav_id,
+                ElementKind::Button,
+                "dialogs/startup_chooser.slint",
+                nav_desc,
+                false,
+            );
+        }
+        registry.add(
+            "startup-chooser-list",
+            ElementKind::List,
+            "dialogs/startup_chooser.slint",
+            "启动选择器条目列表（最近 / 演示 / 模板分组）",
+            false,
+        );
+        // 行族有界：一次最多画 `CHOOSER_MAX_ROWS` 行（与模板行同纪律）。
+        for row_index in 0..crate::startup_chooser::CHOOSER_MAX_ROWS {
+            registry.add(
+                &format!("startup-row-{row_index}"),
+                ElementKind::ListItem,
+                "dialogs/startup_chooser.slint",
+                &format!("启动选择器第 {row_index} 行"),
+                false,
+            );
+        }
+        registry.add(
+            "startup-chooser-empty-state",
+            ElementKind::Text,
+            "dialogs/startup_chooser.slint",
+            "当前分类为空（空态说明）",
+            false,
+        );
+        registry.add(
+            "startup-chooser-truncation-note",
+            ElementKind::Text,
+            "dialogs/startup_chooser.slint",
+            "未画出的选择器行数（如实报数）",
+            false,
+        );
+        registry.add(
+            "startup-empty-project",
+            ElementKind::ListItem,
+            "dialogs/startup_chooser.slint",
+            "空工程入口（新建工程分类）",
+            false,
+        );
+        registry.add(
+            "startup-details-toggle",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "展开 / 收起新建工程详情",
+            false,
+        );
+        registry.add(
+            "startup-tempo-input",
+            ElementKind::TextInput,
+            "dialogs/startup_chooser.slint",
+            "新工程速度（BPM）输入",
+            false,
+        );
+        registry.add(
+            "startup-tap-tempo-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "点按测速（Tap Tempo）",
+            false,
+        );
+        for step_id in [
+            "startup-key-prev-button",
+            "startup-key-next-button",
+            "startup-time-num-prev-button",
+            "startup-time-num-next-button",
+            "startup-time-den-prev-button",
+            "startup-time-den-next-button",
+        ] {
+            registry.add(
+                step_id,
+                ElementKind::Button,
+                "dialogs/startup_chooser.slint",
+                "新建工程详情步进按钮",
+                false,
+            );
+        }
+        for rate_index in 0..5 {
+            registry.add(
+                &format!("startup-rate-chip-{rate_index}"),
+                ElementKind::Button,
+                "dialogs/startup_chooser.slint",
+                &format!("新工程采样率档位 {rate_index}"),
+                false,
+            );
+        }
+        registry.add(
+            "startup-open-existing-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "打开已有工程…（文件选择器）",
+            false,
+        );
+        registry.add(
+            "startup-cancel-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "取消启动（退出）",
+            false,
+        );
+        registry.add(
+            "startup-confirm-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "确认打开 / 创建（主操作）",
+            false,
+        );
         // 另存为模板对话框：默认关闭（`template-save-open=false`），不进默认帧。
         // 三格文本（曲风 / 子曲风 / 模板名）不在 UI 侧校验：校验、落盘、同名
         // 覆盖确认全在宿主（`host::wire_project_templates`）与 `crate::templates`。
@@ -2943,7 +3088,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 28] = [
+    const SLINT_MANIFEST: [&str; 29] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2973,6 +3118,8 @@ mod tests {
         // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/save_as_template.slint",
         "dialogs/template_chooser.slint",
+        // 启动工程选择器（`line/startup-chooser`）：全窗模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/startup_chooser.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
         // 桌面 UI 重构组件清单
