@@ -34,7 +34,7 @@ export component OnboardingOverlay inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "onboarding-overlay";
-    accessible-label: "新手引导";
+    accessible-label: @tr("新手引导");
 
     TouchArea {
         x: 0;
@@ -56,14 +56,14 @@ export component OnboardingOverlay inherits Rectangle {
 
         accessible-role: region;
         accessible-id: "onboarding-card";
-        accessible-label: "新手引导卡片";
+        accessible-label: @tr("新手引导卡片");
 
         UiText {
             x: Tokens.space-6;
             y: Tokens.space-4;
             width: parent.width - 32px;
             height: 18px;
-            text: "新手引导 · 第 " + (root.step-index + 1) + " / " + root.step-count + " 步";
+            text: @tr("新手引导 · 第 {} / {} 步", root.step-index + 1, root.step-count);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
         }
@@ -100,13 +100,13 @@ export component OnboardingOverlay inherits Rectangle {
             visible: root.step-index > 0;
             accessible-role: button;
             accessible-id: "onboarding-back-button";
-            accessible-label: "上一步";
+            accessible-label: @tr("上一步");
             accessible-action-default => { root.back(); }
 
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "上一步";
+                text: @tr("上一步");
                 horizontal-alignment: center;
                 font-size: Tokens.font-size-md;
             }
@@ -125,13 +125,13 @@ export component OnboardingOverlay inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "onboarding-skip-button";
-            accessible-label: "跳过导览";
+            accessible-label: @tr("跳过导览");
             accessible-action-default => { root.skip(); }
 
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "跳过导览";
+                text: @tr("跳过导览");
                 horizontal-alignment: center;
                 font-size: Tokens.font-size-md;
             }
@@ -150,13 +150,13 @@ export component OnboardingOverlay inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "onboarding-dismiss-button";
-            accessible-label: "不再显示新手引导";
+            accessible-label: @tr("不再显示新手引导");
             accessible-action-default => { root.dismiss-forever(); }
 
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "不再显示";
+                text: @tr("不再显示");
                 horizontal-alignment: center;
                 font-size: Tokens.font-size-md;
             }
@@ -175,13 +175,13 @@ export component OnboardingOverlay inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "onboarding-next-button";
-            accessible-label: root.step-index + 1 >= root.step-count ? "完成新手引导" : "下一步";
+            accessible-label: root.step-index + 1 >= root.step-count ? @tr("完成新手引导") : @tr("下一步");
             accessible-action-default => { root.next(); }
 
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: root.step-index + 1 >= root.step-count ? "开始使用" : "下一步";
+                text: root.step-index + 1 >= root.step-count ? @tr("开始使用") : @tr("下一步");
                 horizontal-alignment: center;
                 font-size: Tokens.font-size-md;
             }

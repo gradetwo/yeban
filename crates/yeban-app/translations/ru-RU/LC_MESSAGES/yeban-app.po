@@ -1974,3 +1974,85 @@ msgstr "Язык"
 
 msgid "质感"
 msgstr "Фактура"
+
+# --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
+msgid "帮助"
+msgstr "Справка"
+
+msgid "用户手册"
+msgstr "Руководство пользователя"
+
+msgid "快捷键速查"
+msgstr "Горячие клавиши"
+
+msgid "新手引导"
+msgstr "Обучающий тур"
+
+msgid "教学课程"
+msgstr "Уроки"
+
+msgid "用户手册面板"
+msgstr "Панель руководства пользователя"
+
+msgid "关闭用户手册"
+msgstr "Закрыть руководство пользователя"
+
+msgid "手册章节：{}"
+msgstr "Глава руководства: {}"
+
+msgid "快捷键速查面板"
+msgstr "Панель горячих клавиш"
+
+msgid "关闭快捷键速查"
+msgstr "Закрыть горячие клавиши"
+
+msgid "关闭教学课程"
+msgstr "Закрыть уроки"
+
+msgid "课程：{}（{}）"
+msgstr "Урок: {} ({})"
+
+msgid "第 {} / {} 步"
+msgstr "Шаг {} из {}"
+
+msgid "实测进度：{}"
+msgstr "Фактический прогресс: {}"
+
+msgid "完成本步并检查"
+msgstr "Завершить этот шаг и проверить"
+
+msgid "完成本步（检查）"
+msgstr "Завершить этот шаг (проверить)"
+
+msgid "返回课程列表"
+msgstr "Назад к списку уроков"
+
+msgid "返回课程列表（进度已保存）"
+msgstr "Назад к списку уроков (прогресс сохранён)"
+
+msgid "新手引导卡片"
+msgstr "Карточка обучающего тура"
+
+msgid "新手引导 · 第 {} / {} 步"
+msgstr "Обучающий тур · Шаг {} из {}"
+
+msgid "上一步"
+msgstr "Предыдущий шаг"
+
+msgid "跳过导览"
+msgstr "Пропустить тур"
+
+msgid "不再显示新手引导"
+msgstr "Больше не показывать обучающий тур"
+
+msgid "不再显示"
+msgstr "Больше не показывать"
+
+msgid "完成新手引导"
+msgstr "Завершить обучающий тур"
+
+msgid "下一步"
+msgstr "Следующий шаг"
+
+msgid "开始使用"
+msgstr "Начать работу"

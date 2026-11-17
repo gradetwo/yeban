@@ -1974,3 +1974,85 @@ msgstr "Language"
 
 msgid "质感"
 msgstr "Texture"
+
+# --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
+msgid "帮助"
+msgstr "Help"
+
+msgid "用户手册"
+msgstr "User Manual"
+
+msgid "快捷键速查"
+msgstr "Keyboard Shortcuts"
+
+msgid "新手引导"
+msgstr "Guided Tour"
+
+msgid "教学课程"
+msgstr "Lessons"
+
+msgid "用户手册面板"
+msgstr "User Manual Panel"
+
+msgid "关闭用户手册"
+msgstr "Close User Manual"
+
+msgid "手册章节：{}"
+msgstr "Manual Chapter: {}"
+
+msgid "快捷键速查面板"
+msgstr "Keyboard Shortcuts Panel"
+
+msgid "关闭快捷键速查"
+msgstr "Close Keyboard Shortcuts"
+
+msgid "关闭教学课程"
+msgstr "Close Lessons"
+
+msgid "课程：{}（{}）"
+msgstr "Lesson: {} ({})"
+
+msgid "第 {} / {} 步"
+msgstr "Step {} of {}"
+
+msgid "实测进度：{}"
+msgstr "Measured Progress: {}"
+
+msgid "完成本步并检查"
+msgstr "Complete This Step and Check"
+
+msgid "完成本步（检查）"
+msgstr "Complete This Step (Check)"
+
+msgid "返回课程列表"
+msgstr "Back to Lesson List"
+
+msgid "返回课程列表（进度已保存）"
+msgstr "Back to Lesson List (Progress Saved)"
+
+msgid "新手引导卡片"
+msgstr "Guided Tour Card"
+
+msgid "新手引导 · 第 {} / {} 步"
+msgstr "Guided Tour · Step {} of {}"
+
+msgid "上一步"
+msgstr "Previous Step"
+
+msgid "跳过导览"
+msgstr "Skip Tour"
+
+msgid "不再显示新手引导"
+msgstr "Never Show the Guided Tour Again"
+
+msgid "不再显示"
+msgstr "Don't Show Again"
+
+msgid "完成新手引导"
+msgstr "Finish the Guided Tour"
+
+msgid "下一步"
+msgstr "Next Step"
+
+msgid "开始使用"
+msgstr "Get Started"

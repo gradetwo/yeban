@@ -24,7 +24,7 @@ export component ManualDialog inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "help-manual-dialog";
-    accessible-label: "用户手册";
+    accessible-label: @tr("用户手册");
 
     // D-UI-21：遮罩吞掉鼠标（点遮罩不关，关只走 ✕ 与宿主回调）。
     TouchArea {
@@ -47,14 +47,14 @@ export component ManualDialog inherits Rectangle {
 
         accessible-role: region;
         accessible-id: "help-manual-panel";
-        accessible-label: "用户手册面板";
+        accessible-label: @tr("用户手册面板");
 
         UiTitleText {
             x: Tokens.space-6;
             y: Tokens.space-4;
             width: parent.width - 96px;
             height: 24px;
-            text: "用户手册";
+            text: @tr("用户手册");
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-xl;
         }
@@ -68,7 +68,7 @@ export component ManualDialog inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "help-manual-close-button";
-            accessible-label: "关闭用户手册";
+            accessible-label: @tr("关闭用户手册");
             accessible-action-default => { root.close(); }
 
             UiText {
@@ -106,7 +106,7 @@ export component ManualDialog inherits Rectangle {
                     border-radius: Tokens.radius-sm;
                     accessible-role: button;
                     accessible-id: "help-manual-chapter-" + i;
-                    accessible-label: "手册章节：" + title;
+                    accessible-label: @tr("手册章节：{}", title);
                     accessible-action-default => { root.select-chapter(i); }
 
                     UiText {

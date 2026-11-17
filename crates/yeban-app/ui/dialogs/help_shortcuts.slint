@@ -19,7 +19,7 @@ export component ShortcutsDialog inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "help-shortcuts-dialog";
-    accessible-label: "快捷键速查";
+    accessible-label: @tr("快捷键速查");
 
     TouchArea {
         x: 0;
@@ -41,14 +41,14 @@ export component ShortcutsDialog inherits Rectangle {
 
         accessible-role: region;
         accessible-id: "help-shortcuts-panel";
-        accessible-label: "快捷键速查面板";
+        accessible-label: @tr("快捷键速查面板");
 
         UiTitleText {
             x: Tokens.space-6;
             y: Tokens.space-4;
             width: parent.width - 96px;
             height: 24px;
-            text: "快捷键速查";
+            text: @tr("快捷键速查");
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-xl;
         }
@@ -62,7 +62,7 @@ export component ShortcutsDialog inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "help-shortcuts-close-button";
-            accessible-label: "关闭快捷键速查";
+            accessible-label: @tr("关闭快捷键速查");
             accessible-action-default => { root.close(); }
 
             UiText {

@@ -1015,11 +1015,11 @@ export component MainWindow inherits Window {
             MenuItem { title: @tr("音源管理..."); activated => { root.command-execute("open-sound-library"); } }
         }
         Menu {
-            title: "帮助";
-            MenuItem { title: "用户手册"; activated => { root.command-execute("help-manual"); } }
-            MenuItem { title: "快捷键速查"; activated => { root.command-execute("help-shortcuts"); } }
-            MenuItem { title: "新手引导"; activated => { root.command-execute("help-onboarding"); } }
-            MenuItem { title: "教学课程"; activated => { root.command-execute("help-lessons"); } }
+            title: @tr("帮助");
+            MenuItem { title: @tr("用户手册"); activated => { root.command-execute("help-manual"); } }
+            MenuItem { title: @tr("快捷键速查"); activated => { root.command-execute("help-shortcuts"); } }
+            MenuItem { title: @tr("新手引导"); activated => { root.command-execute("help-onboarding"); } }
+            MenuItem { title: @tr("教学课程"); activated => { root.command-execute("help-lessons"); } }
         }
     }
 
