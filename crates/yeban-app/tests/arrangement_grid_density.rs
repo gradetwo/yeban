@@ -96,6 +96,29 @@
 //!   0.0492 = 1.80 × 0.0273）；选中头底 `#293645` 不动（头底基色
 //!   `#1d2733` 未变）。九版起充当保守最亮参考底的 `#181719` 退役
 //!   ——新底组（选中行）本身即最不利底。
+//!
+//! ## 十一版增补（Wang 2026-11-17 18:51 + 18:52 + 18:53 亲定）
+//!
+//! * 车道底回蓝调抬亮：十版中性灰 `#2e2e2e` 与全应用深蓝色系
+//!   （轨道头 `#1d2733`、标尺带）差异太大 ⇒ 改回九版 `#090b10`
+//!   的色相/饱和（HSV 222.9° / 0.4375）只抬明度：定值 `#1d2333`
+//!   （相对亮度 0.0170，目标带 0.014–0.020，仍低于十版 0.0273）。
+//!   落点仍只落车道容器，`Theme.bg-canvas` 本体与标尺带不动。
+//! * 选中行底维持相对提亮比 1.80 按新基底重算：`#273146`
+//!   （相对亮度 0.0307 = 1.80 × 0.0170）；选中头底 `#293645`
+//!   不动。线色按新底重算、比率目标不变：拍线 `#74808b`（对最
+//!   不利底 = 选中行 3.22，窗 3.15–3.30；对未选中行 3.88）、
+//!   小节线 `#979fa8`（4.86 / 5.85，下限 4.5）。
+//! * 分界线改暗线（18:52，推翻八版以来亮线方向）：取比车道底
+//!   更暗的同色系深色 `#040508`（相对亮度 0.0015 < 两底），暗线
+//!   对两底实算 1.30（未选中）/ 1.57（选中）。⚠ Wang 原目标窗
+//!   2.3–2.7 在暗方向物理不可达：WCAG 对比含 +0.05 眩光项，
+//!   车道底亮度 0.0170 时纯黑线对未选中底上限仅 1.34:1；判据按
+//!   实算紧窗换钉（1.28–1.32 / 1.54–1.59）并断言方向（分界线
+//!   相对亮度低于两底）。层级按绝对对比仍 分界线 < 拍线 < 小节线。
+//! * 十版派生标记（`bridge::clip_marker_color`）原样保留，判据
+//!   ⑧ 不动；片段名文字规则、播放头纯白、选中片段 2px 纯白边
+//!   均不动。
 
 use yeban_app::host::{GridDensity, grid_density};
 
@@ -306,17 +329,20 @@ fn density_wiring_and_colors_are_in_place() {
         );
     }
     // 网格五色齐备；四版以前的金色（#a3804f / #c6a47c）清零；
-    // 十版起旧车道线色（#748392 / #5d6a76）清零（已按新底重算）。
-    for color in ["#83909e", "#6e7f8f", "#66788a", "#a7b0ba", "#828f9c"] {
+    // 十版起旧车道线色（#748392 / #5d6a76）清零（已按新底重算）；
+    // 十一版起十版底与线色全组清零（底回蓝调重算）。
+    for color in ["#83909e", "#6e7f8f", "#66788a", "#979fa8", "#74808b"] {
         assert!(arrangement.contains(color), "网格色 {color} 缺失");
     }
     for gold in ["#a3804f", "#c6a47c"] {
         assert!(!arrangement.contains(gold), "金色 {gold} 仍在网格里");
     }
-    for retired in ["#748392", "#5d6a76"] {
+    for retired in [
+        "#748392", "#5d6a76", "#2e2e2e", "#383f4c", "#a7b0ba", "#828f9c", "#6d7d8c",
+    ] {
         assert!(
             !arrangement.contains(retired),
-            "旧车道线色 {retired} 仍在（十版已按新底重算）"
+            "旧底/旧线色 {retired} 仍在（十一版已按新底重算）"
         );
     }
 
@@ -326,16 +352,16 @@ fn density_wiring_and_colors_are_in_place() {
     assert!(contrast_ratio("#83909e", "#1d2733") >= 4.5);
     assert!(contrast_ratio("#6e7f8f", "#1d2733") >= 3.0);
     assert!(contrast_ratio("#66788a", "#1d2733") >= 3.0);
-    // 车道两色（十版按新底重算）：最不利底 = 选中行底 #383f4c
-    // （新底组里最亮）；未选中行底 #2e2e2e 次之。
-    assert!(contrast_ratio("#a7b0ba", "#383f4c") >= 4.5);
-    assert!(contrast_ratio("#828f9c", "#383f4c") >= 3.0);
-    assert!(contrast_ratio("#a7b0ba", "#2e2e2e") >= 4.5);
-    assert!(contrast_ratio("#828f9c", "#2e2e2e") >= 3.0);
+    // 车道两色（十一版按新底重算）：最不利底 = 选中行底 #273146
+    // （新底组里最亮）；未选中行底 #1d2333 次之。
+    assert!(contrast_ratio("#979fa8", "#273146") >= 4.5);
+    assert!(contrast_ratio("#74808b", "#273146") >= 3.0);
+    assert!(contrast_ratio("#979fa8", "#1d2333") >= 4.5);
+    assert!(contrast_ratio("#74808b", "#1d2333") >= 3.0);
     // 拍线目标窗（六版定，比率目标不变）：对最不利底的比值须落在
     // 3.15–3.30——下限仍是上面的 >= 3.0（不放宽），窗断言额外钉住
     // 「淡」的幅度，防止日后悄悄调回更亮。
-    let lane_beat = contrast_ratio("#828f9c", "#383f4c");
+    let lane_beat = contrast_ratio("#74808b", "#273146");
     assert!(
         (3.15..=3.30).contains(&lane_beat),
         "车道拍线比值 {lane_beat:.3} 不在目标窗 3.15–3.30"
@@ -417,20 +443,27 @@ fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
     }
 }
 
-/// ⑦ 十版（Wang 2026-11-17 18:28）：车道底抬到 `#2e2e2e`、选中行底
-/// 按 1.80 提亮比重算、线色按新底重算后比值不破下限；卷帘播放头
-/// 改白断言保留（七版）。
+/// ⑦ 十一版（Wang 2026-11-17 18:51 + 18:52 + 18:53）：车道底改回
+/// 蓝调 `#1d2333`（相对亮度带 0.014–0.020）、选中行底按 1.80 提亮比
+/// 重算、分界线改暗线（相对亮度低于两底）、线色按新底重算后比值
+/// 不破下限；卷帘播放头改白断言保留（七版）。
 #[test]
-fn rev10_divider_and_selected_row() {
+fn rev11_divider_and_selected_row() {
     let arrangement = include_str!("../ui/arrangement.slint");
 
-    // 车道底落点：车道容器必须是十版定值 #2e2e2e（Logic 实测同值）。
+    // 车道底落点：车道容器必须是十一版定值 #1d2333，且其实算相对
+    // 亮度落入 Wang 18:53 亲定的目标带 0.014–0.020。
     assert!(
-        arrangement.contains("background: #2e2e2e;"),
-        "车道容器底必须用十版定值 #2e2e2e"
+        arrangement.contains("background: #1d2333;"),
+        "车道容器底必须用十一版定值 #1d2333"
     );
-    // 选中行底：相对亮度比维持八版 1.80（对未选中行底 #2e2e2e 实算）。
-    let lift = relative_luminance("#383f4c") / relative_luminance("#2e2e2e");
+    let base_lum = relative_luminance("#1d2333");
+    assert!(
+        (0.014..=0.020).contains(&base_lum),
+        "车道底相对亮度 {base_lum:.4} 不在目标带 0.014–0.020"
+    );
+    // 选中行底：相对亮度比维持八版 1.80（对未选中行底 #1d2333 实算）。
+    let lift = relative_luminance("#273146") / base_lum;
     assert!(
         (1.79..=1.81).contains(&lift),
         "选中行提亮比 {lift:.3} 不在 1.80 ± 0.01"
@@ -444,40 +477,57 @@ fn rev10_divider_and_selected_row() {
         .chars()
         .take_while(|c| *c != ';')
         .collect();
-    assert_eq!(bg_val.trim(), "#6d7d8c", "分界线必须用十版定值 #6d7d8c");
-
-    // 分界线比值：对最不利行底（选中行 #383f4c）落在目标窗 2.3–2.7
-    // （目标 2.50，比率目标不变），且相对亮度低于车道拍线 #828f9c
-    // （比拍线暗），对未选中行底实算 3.21（窗 3.15–3.30 钉住）。
-    let divider = contrast_ratio("#6d7d8c", "#383f4c");
-    assert!(
-        (2.3..=2.7).contains(&divider),
-        "分界线比值 {divider:.3} 不在目标窗 2.3–2.7"
-    );
-    assert!(
-        relative_luminance("#6d7d8c") < relative_luminance("#828f9c"),
-        "分界线必须暗于车道拍线 #828f9c"
-    );
-    let divider_lane = contrast_ratio("#6d7d8c", "#2e2e2e");
-    assert!(
-        (3.15..=3.30).contains(&divider_lane),
-        "分界线对未选中行底比值 {divider_lane:.3} 不在实算窗 3.15–3.30"
+    assert_eq!(
+        bg_val.trim(),
+        "#040508",
+        "分界线必须用十一版暗线定值 #040508"
     );
 
-    // 选中行底 #383f4c 下，小节线/拍线对它的实算比值不破既有下限
+    // 分界线方向（十一版改暗线，Wang 18:52）：相对亮度必须低于
+    // 未选中行底与选中行底（暗于背景），且低于车道拍线。
+    let divider_lum = relative_luminance("#040508");
+    assert!(
+        divider_lum < base_lum && divider_lum < relative_luminance("#273146"),
+        "分界线 #040508 必须暗于两行底（暗线方向）"
+    );
+    assert!(
+        divider_lum < relative_luminance("#74808b"),
+        "分界线必须暗于车道拍线 #74808b"
+    );
+    // 分界线比值（暗线对亮底方向）：对未选中行底实算 1.30（窗
+    // 1.28–1.32）、对选中行底实算 1.57（窗 1.54–1.59）。⚠ Wang 原
+    // 目标窗 2.3–2.7 在暗方向物理不可达（纯黑对未选中底上限
+    // 1.34:1），此处按实算紧窗钉住。
+    let divider_lane = contrast_ratio("#040508", "#1d2333");
+    assert!(
+        (1.28..=1.32).contains(&divider_lane),
+        "分界线对未选中行底比值 {divider_lane:.3} 不在实算窗 1.28–1.32"
+    );
+    let divider_sel = contrast_ratio("#040508", "#273146");
+    assert!(
+        (1.54..=1.59).contains(&divider_sel),
+        "分界线对选中行底比值 {divider_sel:.3} 不在实算窗 1.54–1.59"
+    );
+
+    // 选中行底 #273146 下，小节线/拍线对它的实算比值不破既有下限
     // （4.5 / 3.0，与判据 ⑤ 同口径），并钉住实算值本身（小节线
-    // 4.82、拍线 3.21，窗内浮动只容舍入）。
-    assert!(contrast_ratio("#a7b0ba", "#383f4c") >= 4.5);
-    assert!(contrast_ratio("#828f9c", "#383f4c") >= 3.0);
-    let bar_sel = contrast_ratio("#a7b0ba", "#383f4c");
+    // 4.86、拍线 3.22，窗内浮动只容舍入）。
+    assert!(contrast_ratio("#979fa8", "#273146") >= 4.5);
+    assert!(contrast_ratio("#74808b", "#273146") >= 3.0);
+    let bar_sel = contrast_ratio("#979fa8", "#273146");
     assert!(
-        (4.80..=4.86).contains(&bar_sel),
-        "小节线对选中行底比值 {bar_sel:.3} 不在实算窗 4.80–4.86"
+        (4.83..=4.89).contains(&bar_sel),
+        "小节线对选中行底比值 {bar_sel:.3} 不在实算窗 4.83–4.89"
     );
-    let beat_sel = contrast_ratio("#828f9c", "#383f4c");
+    let beat_sel = contrast_ratio("#74808b", "#273146");
     assert!(
         (3.15..=3.30).contains(&beat_sel),
         "拍线对选中行底比值 {beat_sel:.3} 不在实算窗 3.15–3.30"
+    );
+    // 层级（对选中行底的绝对对比）：分界线 < 拍线 < 小节线。
+    assert!(
+        divider_sel < beat_sel && beat_sel < bar_sel,
+        "层级须 分界线 < 拍线 < 小节线（实算 {divider_sel:.3} / {beat_sel:.3} / {bar_sel:.3}）"
     );
 
     // 卷帘播放头：`piano-roll-playhead` 元素向上的最近一处 background
@@ -647,16 +697,16 @@ fn rev10_clip_background_is_pure_track_color() {
     );
 }
 
-/// ⑨ 十版片段内标记与和弦块纯色（和弦为九版 Wang 2026-11-17
-/// 16:43，标记为十版 18:28）：波形峰值柱/MIDI 音符条改走投影
-/// 派生色 `blk.marker-color`、片段内导线走 `blk.guide-color`
-/// （同出派生函数）；纯白只剩播放头线/菱形头 2 处（Wang 亲定
-/// 播放头纯白不动）；车道小节线改十版重算值 `#a7b0ba` 2 处、
-/// 旧值 `#748392` 清零；五块和弦底为和弦色纯色本体、hover/边框
-/// 为同色明度档实色，八版合成等效实色与更早的 alpha 字面量
-/// 全清零（沿九版）。
+/// ⑨ 片段内标记与和弦块纯色（和弦为九版 Wang 2026-11-17 16:43，
+/// 标记为十版 18:28，十一版仅换车道小节线重算值）：波形峰值柱/
+/// MIDI 音符条改走投影派生色 `blk.marker-color`、片段内导线走
+/// `blk.guide-color`（同出派生函数）；纯白只剩播放头线/菱形头
+/// 2 处（Wang 亲定播放头纯白不动）；车道小节线改十一版重算值
+/// `#979fa8` 2 处、旧值 `#a7b0ba` 与 `#748392` 清零；五块和弦底
+/// 为和弦色纯色本体、hover/边框为同色明度档实色，八版合成等效
+/// 实色与更早的 alpha 字面量全清零（沿九版）。
 #[test]
-fn rev10_clip_markers_and_chord_blocks_are_pure() {
+fn rev11_clip_markers_and_chord_blocks_are_pure() {
     let arrangement = include_str!("../ui/arrangement.slint");
 
     // 片段内旧透画标记清零（本文件内三处原为轨道色 α0.85/0.20/0.15）。
@@ -675,13 +725,13 @@ fn rev10_clip_markers_and_chord_blocks_are_pure() {
         "纯白实色落点应为 2 处（播放头线/菱形头；片段标记已改派生色）"
     );
     assert_eq!(
-        arrangement.matches("background: #a7b0ba;").count(),
+        arrangement.matches("background: #979fa8;").count(),
         2,
-        "#a7b0ba 落点应为 2 处（车道小节线两处）"
+        "#979fa8 落点应为 2 处（车道小节线两处）"
     );
     assert!(
-        !arrangement.contains("#748392"),
-        "旧小节线色 #748392 应清零（十版已按新底重算为 #a7b0ba）"
+        !arrangement.contains("#748392") && !arrangement.contains("#a7b0ba"),
+        "旧小节线色 #748392 / #a7b0ba 应清零（十一版已按新底重算为 #979fa8）"
     );
     // 派生标记对最不利落码底（白色轨道：派生 #fcfcfc 对压暗底
     // #8f8f8f）实算 3.15 >= 3.0；其余调色板底由判据 ⑧ 的普查

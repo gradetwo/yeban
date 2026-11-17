@@ -812,13 +812,15 @@ export component ArrangementViewport inherits Rectangle {
         Rectangle {
             vertical-stretch: 1;
             clip: true;
-            // 车道底（十版，Wang 2026-11-17 18:28 亲定，照 Logic Pro）：
-            // 未选中车道底由近黑 #090b10（相对亮度 0.0033，实为
-            // Theme.bg-canvas 透行显出）抬到 #2e2e2e（相对亮度
-            // 0.0273，Logic 编曲区底逐像素实测同值）。只落本容器
-            // （行与行下空置区同底），⛔ 不动 Theme.bg-canvas 本体
-            // （窗口底与其它面共用）、不动标尺带 Theme.bg-panel。
-            background: #2e2e2e;
+            // 车道底（十一版，Wang 2026-11-17 18:51 + 18:53 亲定）：
+            // 十版把车道底抬到中性灰（相对亮度 0.0273），与全应用的
+            // 深蓝色系（轨道头 #1d2733、标尺带）差异太大 ⇒ 改回九版
+            // #090b10 的色相/饱和（HSV 222.9° / 0.4375）只抬明度：
+            // 定值 #1d2333，相对亮度实算 0.0170（目标带 0.014–0.020，
+            // 仍低于十版中性灰）。只落本容器（行与行下空置区同底），
+            // ⛔ 不动 Theme.bg-canvas 本体（窗口底与其它面共用）、
+            // 不动标尺带 Theme.bg-panel。
+            background: #1d2333;
 
             // ⭐ 轨道一多（16 轨 × 56px = 896px）时，固定高度的 VerticalLayout 会把
             // 内容撑出工作区、把下方钢琴卷帘/混音台顶出窗口。这里改成纵向 Flickable：
@@ -849,13 +851,14 @@ export component ArrangementViewport inherits Rectangle {
                     // 选中呈现（八版，Wang 2026-11-17 16:08 亲定，Logic 式）：
                     // 七版纯白边框作废——选中行不再有任何边框信号，三处边框
                     // 回归未选中行同款（行边框 #ffffff0a 0px、头边框
-                    // Theme.border-subtle）；选中只由提亮承载。十版
-                    // （2026-11-17 18:28）车道底抬到 #2e2e2e 后，选中行底
-                    // 按同一相对亮度比 1.80 重算为 #383f4c（相对亮度
-                    // 0.0492，对未选中行对比度仅 1.05:1，仍是深色行）；
-                    // 头底 #293645 不动（头底基色 #1d2733 未变，提亮法
-                    // 同八版）。轨道色与 accent 双脱钩，色条仍保留轨道色。
-                    background: trk.id == root.selected-track-id ? #383f4c : transparent;
+                    // Theme.border-subtle）；选中只由提亮承载。十一版
+                    // （2026-11-17 18:51）车道底改回蓝调 #1d2333 后，
+                    // 选中行底按同一相对亮度比 1.80 重算为 #273146
+                    // （相对亮度 0.0307，对未选中行对比度 1.20:1，
+                    // 仍是深色行）；头底 #293645 不动（头底基色
+                    // #1d2733 未变，提亮法同八版）。轨道色与 accent
+                    // 双脱钩，色条仍保留轨道色。
+                    background: trk.id == root.selected-track-id ? #273146 : transparent;
                     border-color: #ffffff0a;
                     border-width: 0px;
 
@@ -1208,17 +1211,18 @@ export component ArrangementViewport inherits Rectangle {
                             // 线——Logic 车道与标尺内小节线全均匀。只在
                             // 线条单位整数倍的小节上画（宿主密度读数；
                             // 极端缩小时单位粗化为每 2/4/… 小节一条）。
-                            // 十版（2026-11-17 18:28）：车道底抬到 #2e2e2e
-                            // 后线色按新底重算——小节线 #a7b0ba（相对亮度
-                            // 0.4281）：对选中行底 #383f4c 实算 4.82:1
-                            // （>= 4.5 下限）、对未选中行底 #2e2e2e 6.18:1。
+                            // 十一版（2026-11-17 18:51）：车道底改回蓝调
+                            // #1d2333 后线色按新底重算——小节线 #979fa8
+                            // （相对亮度 0.3420）：对选中行底 #273146 实算
+                            // 4.86:1（>= 4.5 下限）、对未选中行底 #1d2333
+                            // 5.85:1。
                             for i in root.bar-count : Rectangle {
                                 visible: (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
-                                background: #a7b0ba;
+                                background: #979fa8;
                             }
 
                             // 拍线（Wang 2026-11-17：以拍为单位；五版按
@@ -1226,11 +1230,12 @@ export component ArrangementViewport inherits Rectangle {
                             // 一根纵线，全部实色、无透明度合成。六版按
                             // Wang 15:06 终判再淡一档（目标约 3.2:1、硬下限
                             // ≥3、目标窗 3.15–3.30，比率目标历版不变）。
-                            // 十版（2026-11-17 18:28）：车道底抬到 #2e2e2e
-                            // 后按新底重算——拍线 #828f9c（相对亮度
-                            // 0.2679）：对最不利底（选中行 #383f4c）实算
-                            // 3.21:1（窗内）、对未选中行底 #2e2e2e 4.11:1；
-                            // 小节线 #a7b0ba（0.4281）对两底 4.82／6.18:1。
+                            // 十一版（2026-11-17 18:51）：车道底改回蓝调
+                            // #1d2333 后按新底重算——拍线 #74808b（相对
+                            // 亮度 0.2102）：对最不利底（选中行 #273146）
+                            // 实算 3.22:1（窗内）、对未选中行底 #1d2333
+                            // 3.88:1；小节线 #979fa8（0.3420）对两底
+                            // 4.86／5.85:1。
                             // 读数：每拍 >= 24px 才画车道拍线（Logic
                             // 图一每拍 12px 时车道无拍线、只有小节线；
                             // 24px 为推定阈值，来源见 host::grid_density）。
@@ -1247,7 +1252,7 @@ export component ArrangementViewport inherits Rectangle {
                                     y: 0px;
                                     width: 1px;
                                     height: parent.height;
-                                    background: #828f9c;
+                                    background: #74808b;
                                 }
                             }
 
@@ -1756,20 +1761,22 @@ export component ArrangementViewport inherits Rectangle {
                     // 行底分界线（Wang 2026-11-16：学 Logic 的行间低对比细线）：整行一根
                     // ⇒ 轨道头列与车道侧同一 y 位对齐。八版起选中行亦画本线
                     // （七版纯白边框已废，选中行不再靠边框分界）。
-                    // 八版再深一档（Wang 2026-11-17 16:08）：目标 2.50:1
-                    // （目标窗 2.3–2.7），且须暗于车道拍线。十版
-                    // （2026-11-17 18:28）：车道底抬到 #2e2e2e 后按新底
-                    // 重算——定值 #6d7d8c（相对亮度 0.1981）：对最不利
-                    // 行底（选中行 #383f4c）实算 2.50:1（窗内）、对未选中
-                    // 行底 #2e2e2e 为 3.21:1，且暗于车道拍线 #828f9c
-                    // （相对亮度 0.2679）。只改本落点，⛔ 不动
-                    // Theme.border-subtle 本体（其它分隔仍用它）。
+                    // 十一版改暗线（Wang 2026-11-17 18:52 亲定，推翻
+                    // 八版以来的亮线方向）：分界线改为比车道底更深的
+                    // 同色系深色——定值 #040508（相对亮度 0.0015，低于
+                    // 未选中行底 #1d2333 与选中行底 #273146）：暗线对
+                    // 两底实算 1.30:1 / 1.57:1。⚠ 暗线对比有物理上限：
+                    // 车道底相对亮度仅 0.0170，纯黑对未选中底也只有
+                    // 1.34:1，旧亮线的 2.3–2.7 窗在暗方向不可达；本值
+                    // 取同色系近黑（距纯黑上限约 0.04）。层级按绝对
+                    // 对比仍为 分界线 < 拍线 < 小节线。只改本落点，
+                    // ⛔ 不动 Theme.border-subtle 本体（其它分隔仍用它）。
                     Rectangle {
                         x: 0px;
                         y: parent.height - 1px;
                         width: parent.width;
                         height: 1px;
-                        background: #6d7d8c;
+                        background: #040508;
                     }
                 }
 
@@ -1856,20 +1863,20 @@ export component ArrangementViewport inherits Rectangle {
                             // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
                             // 五版同车道：小节线 1px、只在线条单位整数倍
                             // 的小节上画（原有 x >= 0 的裁剪条件保留）。
-                            // 十版线色同车道重算值（小节线 #a7b0ba）。
+                            // 十一版线色同车道重算值（小节线 #979fa8）。
                             for _i in root.bar-count : Rectangle {
                                 visible: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px && (root.bar-start-index + _i).mod(max(1, root.grid-line-unit)) == 0;
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
-                                background: #a7b0ba;
+                                background: #979fa8;
                             }
 
                             // 拍线与车道同款（以拍为单位，WCAG 实算同车道，
                             // 五版同色同宽同门槛，六版同再淡一档）：拍线
-                            // #828f9c（1px，十版按新底重算），小节线
-                            // #a7b0ba（1px）；空置行与轨道行同源同强度，
+                            // #74808b（1px，十一版按新底重算），小节线
+                            // #979fa8（1px）；空置行与轨道行同源同强度，
                             // 整幅网格不断档。
                             for _i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
@@ -1884,7 +1891,7 @@ export component ArrangementViewport inherits Rectangle {
                                     y: 0px;
                                     width: 1px;
                                     height: parent.height;
-                                    background: #828f9c;
+                                    background: #74808b;
                                 }
                             }
 
