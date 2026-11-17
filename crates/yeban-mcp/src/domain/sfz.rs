@@ -3985,6 +3985,7 @@ pub(super) fn note_wave(
 
 /// [`note_wave`] 的**带触发序号**版本：`occurrence` 是该音高的第几次 note-on（从 0 起），
 /// 与引擎 `seq_occurrence[note]` 同一条语义，用来选 `seq_*` 轮替变体。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn note_wave_at(
     instrument: &Instrument<'_>,
     note: &SfzNote,
@@ -4024,8 +4025,8 @@ pub(super) fn note_wave_at(
             && region.matches_key(note.pitch)
             && region.matches_velocity(note.velocity)
             && region.accepts_rand(rand)
-            && region.cc_gates_ok(&cc_probe)
-            && region.cc_triggers_ok(&cc_probe)
+            && region.cc_gates_ok(cc_probe)
+            && region.cc_triggers_ok(cc_probe)
             && region.trigger.responds_to(TriggerEvent::NoteOn)
     };
     // ⭐ `seq_*` 轮替（引擎 `PreparedRegion::selects_occurrence` 同一条规则）：
@@ -4044,15 +4045,14 @@ pub(super) fn note_wave_at(
         .collect();
     // 兜底：`seq_position` 不保证覆盖 `1..=seq_length`，一个都没选中时退回**第一条**
     // 基础命中的区域（与引擎 `round_robin_fallback` 同一条裁决）。
-    if candidates.is_empty() {
-        if let Some((index, region)) = instrument
+    if candidates.is_empty()
+        && let Some((index, region)) = instrument
             .regions()
             .iter()
             .enumerate()
             .find(|(_, region)| base_match(region))
-        {
-            candidates.push((index, region));
-        }
+    {
+        candidates.push((index, region));
     }
 
     for (index, region) in candidates {
