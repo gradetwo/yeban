@@ -180,6 +180,9 @@ pub mod scene;
 // 4 项核心交互的接线（点击跳转 / 视口联动框 / 图层胶囊 / 悬停读数）。
 // 数据是按设计稿 §8.2 列式形状造的固定假数据；dsp 分析线落地后换真实映射。
 pub mod song_overview;
+// 工程模板机制（照 Logic：模板 = 存进模板目录的工程文件；三级分类
+// 曲风 / 子曲风 / 模板名；纯函数层，界面接线在 `host::wire_project_templates`）。
+pub mod templates;
 pub mod undo;
 // ⭐ ADR-0076 B1：音频片段波形峰值的会话缓存（后台解码 + 固定分辨率信封）。
 pub mod waveform_cache;

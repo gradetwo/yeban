@@ -8636,6 +8636,318 @@ pub fn wire_new_project(
     });
 }
 
+/// ⭐ **工程模板的运行期接线**（照 Logic Pro 的模板机制，Wang 2026-11-17 定案）：
+/// 文件菜单「从模板新建…」/「另存为模板…」的唯一落点。纯逻辑（目录、扫描、
+/// 分组、校验、落盘）在 [`crate::templates`]，本函数只做界面接线。
+///
+/// ## 它不新造任何东西（逐条点名复用了什么）
+///
+/// | 这一步 | 复用的既有实现 | ⛔ 没有新造 |
+/// | :--- | :--- | :--- |
+/// | 打开模板副本 | [`OpenProjectRuntime::open_runtime`]（`#93` 的**同一段**换工程代码） | 第二条换工程实现 |
+/// | 副本的「未命名」语义 | 装配方注入的 `runtime` 自带一份 `after`：它把保存落点接成 `None`（见 `main.rs` 的 `after_untitled`）⇒ 首存走「保存工程」的问路径流程，**永不**写回模板文件 | 在模板文件上原地保存 |
+/// | 存为模板的归档组装 | 与 [`wire_save`] **同一读法**：`UndoPort` 一次读出工程 + 图谱 + 资产池 | 第二份序列化 |
+/// | 落盘 | [`crate::templates::save_template_archive`] ⇒ [`crate::save::save_archive_file`]（唯一归档写入口） | 第二份容器写入 |
+/// | 回执 | [`apply_module_receipt`] ⇒ **既有**的 `module-status` 通道 | 第二条投影通道 |
+/// | 对话框 | `.slint` 的两个模态（`TemplateChooserDialog` / `SaveAsTemplateDialog`），默认关着 ⇒ 默认帧不变 | 新的启动流程 |
+///
+/// ## 两条语义（承重）
+///
+/// * **从模板新建不先保存当前工程**：与 [`wire_new_project`] 同一条取舍
+///   （新建语义；`save_first` 会让样本会话先弹保存框并因无目标被拒）。
+///   如实登记代价：当前工程未保存的改动会被模板副本替换。
+/// * **同名覆盖要两次确认**：普通「另存为」的覆盖确认在原生对话框里发生；
+///   模板落点由三段名字合成、没有文件对话框 ⇒ 第一次确认撞到已存在时
+///   **不写盘**，只把 `template-save-exists` 置真留在对话框里，用户再点
+///   「覆盖已有模板」才走 `overwrite` 那一路（见
+///   [`crate::templates::SaveTemplateError::Exists`]）。
+pub fn wire_project_templates(
+    ui: &MainWindow,
+    live_port: Option<Rc<UndoPort>>,
+    runtime: Rc<dyn OpenProjectRuntime>,
+    roots: crate::templates::TemplateRoots,
+) {
+    // 选择器选中时要查的那一份清单（「打开选择器」那一跳写入，「选中」那一跳
+    // 按下标读 —— 两跳之间清单只存这一份，⛔ 不在选中时重新扫盘：扫盘结果
+    // 若在两跳之间变了，下标就会指错模板）。
+    let entries: Rc<RefCell<Vec<crate::templates::TemplateEntry>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    // 上次用过的分类（曲风 / 子曲风）：下次打开「另存为模板」时预填
+    // （模板名不预填 —— 每个模板都要有自己的名字）。会话内状态，不落盘。
+    let last_category: Rc<RefCell<(String, String)>> =
+        Rc::new(RefCell::new((String::new(), String::new())));
+
+    // ---- 从模板新建：扫描两个根 ⇒ 分组行模型 ⇒ 打开选择器 ----------------
+    {
+        let weak = ui.as_weak();
+        let entries_open = Rc::clone(&entries);
+        let roots_open = roots.clone();
+        ui.on_new_from_template(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let listing = crate::templates::list_templates(&roots_open);
+            let rows = crate::templates::build_chooser_rows(&listing, current_language());
+            let hidden = rows
+                .len()
+                .saturating_sub(crate::templates::TEMPLATE_CHOOSER_MAX_ROWS);
+            let model: Vec<crate::ui::TemplateChooserRow> = rows
+                .iter()
+                .take(crate::templates::TEMPLATE_CHOOSER_MAX_ROWS)
+                .map(|row| crate::ui::TemplateChooserRow {
+                    kind: row.kind.code(),
+                    label: row.label.clone().into(),
+                    entry_index: row.entry_index.map(|index| index as i32).unwrap_or(-1),
+                })
+                .collect();
+            *entries_open.borrow_mut() = listing;
+            ui.set_template_chooser_rows(ModelRc::new(VecModel::from(model)));
+            ui.set_template_chooser_hidden_rows(hidden as i32);
+            ui.set_template_chooser_open(true);
+        });
+    }
+
+    // ---- 选中模板：以未命名副本打开（换工程走 `open_runtime` 同一段） ----
+    {
+        let weak = ui.as_weak();
+        let entries_pick = Rc::clone(&entries);
+        ui.on_template_selected(move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let entry = entries_pick
+                .borrow()
+                .get(usize::try_from(index).unwrap_or(usize::MAX))
+                .cloned();
+            let Some(entry) = entry else {
+                let receipt = module_receipt(
+                    "new-from-template",
+                    &module_error_fields(
+                        "template-index",
+                        &format!(
+                            "选择器给的下标 {index} 在当前模板清单里不存在\
+                             （当前工程一位没动）"
+                        ),
+                    ),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("new-from-template", started, &receipt);
+                return;
+            };
+            ui.set_template_chooser_open(false);
+            let path = entry.path.to_string_lossy().into_owned();
+            let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
+                Ok(()) => (
+                    module_receipt(
+                        "new-from-template",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!(
+                                "source={}",
+                                match entry.source {
+                                    crate::templates::TemplateSource::Factory => "factory",
+                                    crate::templates::TemplateSource::User => "user",
+                                }
+                            ),
+                            format!("style={}", entry.style),
+                            format!("substyle={}", entry.substyle),
+                            format!("name={}", entry.name),
+                            format!("path={path}"),
+                            // **回读**（不是回显入参）：界面此刻的轨道行数。
+                            format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(message) => (
+                    module_receipt(
+                        "new-from-template",
+                        &module_error_fields("open-template", &message),
+                    ),
+                    false,
+                ),
+            };
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("new-from-template", started, &receipt);
+        });
+    }
+
+    // ---- 另存为模板：建用户根 ⇒ 播种对话框 ⇒ 打开 ------------------------
+    {
+        let weak = ui.as_weak();
+        let roots_save = roots.clone();
+        let last_open = Rc::clone(&last_category);
+        ui.on_save_as_template(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            if let Err(message) = crate::templates::ensure_user_template_root(&roots_save.user) {
+                let receipt = module_receipt(
+                    "save-as-template",
+                    &module_error_fields("template-dir", &message),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("save-as-template", started, &receipt);
+                return;
+            }
+            let listing = crate::templates::list_templates(&roots_save);
+            let pairs = crate::templates::user_category_hint(&listing);
+            let hint = if pairs.is_empty() {
+                "已有分类：无（填入的名字将新建分类）".to_owned()
+            } else {
+                format!("已有分类：{}", pairs.join("、"))
+            };
+            let (style, substyle) = last_open.borrow().clone();
+            ui.set_template_save_hint(hint.into());
+            ui.set_template_save_style(style.into());
+            ui.set_template_save_substyle(substyle.into());
+            ui.set_template_save_name(String::new().into());
+            ui.set_template_save_error(String::new().into());
+            ui.set_template_save_exists(false);
+            ui.set_template_save_open(true);
+        });
+    }
+
+    // ---- 确认（不覆盖）与覆盖确认：同一段提交逻辑，`overwrite` 一位之差 --
+    {
+        let weak = ui.as_weak();
+        let port_confirm = live_port.clone();
+        let roots_confirm = roots.clone();
+        let last_confirm = Rc::clone(&last_category);
+        ui.on_confirm_save_as_template(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            save_template_from_dialog(
+                &ui,
+                &port_confirm,
+                &roots_confirm.user,
+                &last_confirm,
+                false,
+            );
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let port_overwrite = live_port;
+        let roots_overwrite = roots;
+        let last_overwrite = last_category;
+        ui.on_confirm_template_overwrite(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            save_template_from_dialog(
+                &ui,
+                &port_overwrite,
+                &roots_overwrite.user,
+                &last_overwrite,
+                true,
+            );
+        });
+    }
+}
+
+/// 「另存为模板」的提交段：读对话框三格 ⇒ 校验 ⇒ 组装活会话归档 ⇒ 落盘。
+///
+/// 失败分三路，处置各不同（⛔ 不混成一句）：
+///
+/// | 失败 | 处置 |
+/// | :--- | :--- |
+/// | 字段校验不过 | 原因写进对话框的 `template-save-error`，弹窗不关、不写盘 |
+/// | 同名已存在（仅 `overwrite = false` 时） | **不写盘**：`template-save-exists` 置真，弹窗不关，等用户点「覆盖已有模板」 |
+/// | 没有活会话 / 落盘失败 | 原因写进 `template-save-error`，弹窗不关 |
+///
+/// 成功 ⇒ 关弹窗 + 既有 `module-status` 回执（`save-as-template`）。
+fn save_template_from_dialog(
+    ui: &MainWindow,
+    live_port: &Option<Rc<UndoPort>>,
+    user_root: &std::path::Path,
+    last_category: &RefCell<(String, String)>,
+    overwrite: bool,
+) {
+    let started = std::time::Instant::now();
+    let style =
+        match crate::templates::validate_template_segment("曲风", &ui.get_template_save_style()) {
+            Ok(style) => style,
+            Err(message) => {
+                ui.set_template_save_error(message.into());
+                return;
+            }
+        };
+    let substyle = match crate::templates::validate_template_segment(
+        "子曲风",
+        &ui.get_template_save_substyle(),
+    ) {
+        Ok(substyle) => substyle,
+        Err(message) => {
+            ui.set_template_save_error(message.into());
+            return;
+        }
+    };
+    let name = match crate::templates::validate_template_name(&ui.get_template_save_name()) {
+        Ok(name) => name,
+        Err(message) => {
+            ui.set_template_save_error(message.into());
+            return;
+        }
+    };
+    // 保存的是**此刻**的活会话（与 [`wire_save`] 同一读法：工程 + 图谱 +
+    // 资产池一次从同一个端口读出，⛔ 不分几次读）。
+    let live = live_port.as_ref().and_then(|port| {
+        port.try_project()
+            .map(|project| (project, port.graph(), port.assets()))
+    });
+    let Some((project, graph, assets)) = live else {
+        ui.set_template_save_error("没有活会话可存为模板（本装配没有注入工程端口）".into());
+        return;
+    };
+    let archive = yeban_model::container::ProjectArchive {
+        project,
+        history_dag: yeban_model::commit::encode_history_dag(&graph),
+        assets,
+        embedded_presets: Vec::new(),
+    };
+    match crate::templates::save_template_archive(
+        user_root, &style, &substyle, &name, &archive, overwrite,
+    ) {
+        Ok((path, bytes)) => {
+            *last_category.borrow_mut() = (style.clone(), substyle.clone());
+            ui.set_template_save_exists(false);
+            ui.set_template_save_error(String::new().into());
+            ui.set_template_save_open(false);
+            let receipt = module_receipt(
+                "save-as-template",
+                &[
+                    "outcome=ok".to_owned(),
+                    format!("style={style}"),
+                    format!("substyle={substyle}"),
+                    format!("name={name}"),
+                    format!("path={}", path.display()),
+                    format!("bytes={bytes}"),
+                    format!("overwrite={overwrite}"),
+                ],
+            );
+            apply_module_receipt(ui, &receipt, true);
+            module_trace("save-as-template", started, &receipt);
+        }
+        Err(crate::templates::SaveTemplateError::Exists(_)) => {
+            // 对话框不关、不写回执：`exists` 就是给用户的确认问句
+            // （按钮变「覆盖已有模板」，再点一次走 overwrite 那一路）。
+            ui.set_template_save_exists(true);
+        }
+        Err(error) => {
+            ui.set_template_save_error(error.to_string().into());
+        }
+    }
+}
+
 /// ⭐ **运行期「导入音频」的唯一接线**：`.slint` 的 `import-audio` 回调（素材池面板
 /// `asset-pool-import-button`）⇒ 文件对话框 ⇒ [`crate::import_audio::import_audio_file`]
 /// ⇒ 资产字节登记进**会话池** ⇒ 重投影 ⇒ **既有**的 `module-status` 回执通道。
@@ -19387,9 +19699,11 @@ fn dispatch_aether_audition(
 fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
     match cmd {
         "file-new" => ui.invoke_new_project(),
+        "file-new-from-template" => ui.invoke_new_from_template(),
         "file-open" => ui.invoke_open_project(),
         "file-save" => ui.invoke_save_project(),
         "file-save-as" => ui.invoke_save_project_as(),
+        "file-save-as-template" => ui.invoke_save_as_template(),
         "open-export-wav" => ui.invoke_open_export_wav(),
         // ⛔ 这里**不再有** `export-stems` 臂：真实入口在 `on_command_execute` 里先命中
         // （见 `stems_output_dir` 与 `crate::export_stems::export_stems`）。旧的

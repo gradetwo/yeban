@@ -1758,3 +1758,86 @@ msgstr "Aún no hay assets"
 # --- app.slint (line/ui-window-state) ---
 msgid "恢复默认布局"
 msgstr "Restaurar el diseño predeterminado"
+
+# --- app.slint + dialogs (line/project-templates) ---
+
+msgid "从模板新建"
+msgstr "Nuevo desde plantilla"
+
+msgid "从模板新建..."
+msgstr "Nuevo desde plantilla..."
+
+msgid "关闭另存为模板"
+msgstr "Cerrar Guardar como plantilla"
+
+msgid "关闭模板选择器"
+msgstr "Cerrar el selector de plantillas"
+
+msgid "另存为模板"
+msgstr "Guardar como plantilla"
+
+msgid "另存为模板..."
+msgstr "Guardar como plantilla..."
+
+msgid "另存为模板失败的原因"
+msgstr "Motivo por el que no se pudo guardar la plantilla"
+
+msgid "另存为模板面板"
+msgstr "Panel Guardar como plantilla"
+
+msgid "同名模板已存在"
+msgstr "Ya existe una plantilla con este nombre"
+
+msgid "填已有分类名 = 存进已有分类 · 填新名 = 新建分类 · Esc 关闭"
+msgstr "Nombre de categoría existente = guardar en ella · Nombre nuevo = crear categoría · Esc para cerrar"
+
+msgid "子曲风"
+msgstr "Subestilo"
+
+msgid "子曲风（二级分类）"
+msgstr "Subestilo (categoría de segundo nivel)"
+
+msgid "存为模板"
+msgstr "Guardar como plantilla"
+
+msgid "存进我的模板目录；存的是当前工程原样（不剥离片段内容）。"
+msgstr "Se guarda en tu carpeta de plantillas; el proyecto actual se almacena tal cual (no se elimina el contenido de los clips)."
+
+msgid "已有模板分类"
+msgstr "Categorías de plantillas existentes"
+
+msgid "按曲风 / 子曲风 / 模板名三级组织；选中后以未命名副本打开，编辑不回写模板。"
+msgstr "Organizadas en tres niveles: estilo / subestilo / nombre de plantilla; la plantilla seleccionada se abre como una copia sin título y las ediciones nunca se guardan en la plantilla."
+
+msgid "曲风"
+msgstr "Estilo"
+
+msgid "曲风（一级分类）"
+msgstr "Estilo (categoría de primer nivel)"
+
+msgid "模板分组列表"
+msgstr "Lista de plantillas agrupadas"
+
+msgid "模板列表面板"
+msgstr "Panel de la lista de plantillas"
+
+msgid "模板名"
+msgstr "Nombre de la plantilla"
+
+msgid "覆盖已有模板"
+msgstr "Sobrescribir plantilla existente"
+
+msgid "该分类下已有同名模板。再点一次「覆盖已有模板」才会替换它。"
+msgstr "Esta categoría ya tiene una plantilla con este nombre. Haz clic otra vez en «Sobrescribir plantilla existente» para reemplazarla."
+
+msgid "还有 {} 行未画出（列表一次最多画 64 行）"
+msgstr "{} filas más no se muestran (la lista dibuja un máximo de 64 filas a la vez)"
+
+msgid "还有更多模板行未画出"
+msgstr "Hay más filas de plantillas que no se muestran"
+
+msgid "还没有任何模板。先用「文件 → 另存为模板…」把当前工程存为模板。"
+msgstr "Aún no hay plantillas. Guarda primero el proyecto actual como plantilla desde «Archivo → Guardar como plantilla…»."
+
+msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
+msgstr "Aún no hay plantillas. Guarda primero el proyecto actual como plantilla."

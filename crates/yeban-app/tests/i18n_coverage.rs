@@ -30,8 +30,11 @@
 //!   显示标签**：总览面板曲风档名（由 `song_overview::profile_display_name_for`
 //!   按语言取名）与状态栏选区 / 音频配置两格（`host::publish_status_bar`
 //!   按语言取词、`host::apply_language` 切换时重标）——状态栏是常驻 UI
-//!   显示、不是日志，2026-11-17 收尾裁定须译。三处都不在本判据的 .slint
-//!   观测面内，各自由九语单测看守（`src/song_overview.rs` / `src/host.rs` 内）。
+//!   显示、不是日志，2026-11-17 收尾裁定须译。第四处是模板选择器的来源
+//!   分组标题（`templates::TemplateSource::group_label_for`，行模型打开
+//!   选择器时按当前语言构建）。四处都不在本判据的 .slint 观测面内，各自
+//!   由九语单测看守（`src/song_overview.rs` / `src/host.rs` /
+//!   `src/templates.rs` 内）。
 //! - 用户内容（轨道名、片段名、工程数据）：不是源码字面量，本判据天然
 //!   碰不到，也不许碰。
 

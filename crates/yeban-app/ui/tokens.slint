@@ -984,6 +984,17 @@ export struct CommandPaletteItem {
     shortcut: string,
 }
 
+// 工程模板选择器的一行（`crate::templates::ChooserRow` 的界面投影）。
+// `kind` 的整数编码与 `templates::ChooserRowKind::code()` 同值：
+// 0 = 来源分组（工厂模板 / 我的模板）、1 = 曲风、2 = 子曲风、3 = 模板条目。
+// `entry-index` 只在 kind == 3 时有效，指向宿主持有的模板清单下标；
+// 标题行恒为 -1（不可点）。
+export struct TemplateChooserRow {
+    kind: int,
+    label: string,
+    entry-index: int,
+}
+
 export struct PianoStepRow {
     pitch_name: string,
     is_root: bool,

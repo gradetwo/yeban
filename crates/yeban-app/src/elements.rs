@@ -2322,6 +2322,136 @@ impl ElementRegistry {
             "基础种子说明：同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎接上",
             false,
         );
+        // 工程模板选择器（从模板新建）：默认关闭（`template-chooser-open=false`），
+        // 因此不进运行时控件树、不改任何金帧。行模型由宿主从
+        // `templates::build_chooser_rows` 写入（分组标题 + 条目同列），界面不自己分组。
+        registry.add(
+            "template-chooser-dialog",
+            ElementKind::Region,
+            "dialogs/template_chooser.slint",
+            "从模板新建选择器",
+            false,
+        );
+        registry.add(
+            "template-chooser-panel",
+            ElementKind::Region,
+            "dialogs/template_chooser.slint",
+            "模板列表面板",
+            false,
+        );
+        registry.add(
+            "template-chooser-close-button",
+            ElementKind::Button,
+            "dialogs/template_chooser.slint",
+            "关闭模板选择器",
+            false,
+        );
+        registry.add(
+            "template-chooser-list",
+            ElementKind::List,
+            "dialogs/template_chooser.slint",
+            "模板分组列表（工厂 / 我的 → 曲风 → 子曲风 → 模板名）",
+            false,
+        );
+        // 行族是**有界**的：选择器一次最多画 `TEMPLATE_CHOOSER_MAX_ROWS` 行
+        // （宿主截断并如实报数），运行时不可能出现第 65 个 `template-row-*`
+        // ⇒ 注册范围与画布上限同源（与 `undo-tree-node-{0..6}` 同一条纪律）。
+        for row_index in 0..crate::templates::TEMPLATE_CHOOSER_MAX_ROWS {
+            registry.add(
+                &format!("template-row-{row_index}"),
+                ElementKind::ListItem,
+                "dialogs/template_chooser.slint",
+                &format!("模板选择器第 {row_index} 行"),
+                false,
+            );
+        }
+        registry.add(
+            "template-chooser-empty-state",
+            ElementKind::Text,
+            "dialogs/template_chooser.slint",
+            "还没有任何模板（空态说明）",
+            false,
+        );
+        registry.add(
+            "template-chooser-truncation-note",
+            ElementKind::Text,
+            "dialogs/template_chooser.slint",
+            "未画出的模板行数（如实报数）",
+            false,
+        );
+        // 另存为模板对话框：默认关闭（`template-save-open=false`），不进默认帧。
+        // 三格文本（曲风 / 子曲风 / 模板名）不在 UI 侧校验：校验、落盘、同名
+        // 覆盖确认全在宿主（`host::wire_project_templates`）与 `crate::templates`。
+        registry.add(
+            "save-as-template-dialog",
+            ElementKind::Region,
+            "dialogs/save_as_template.slint",
+            "另存为模板对话框",
+            false,
+        );
+        registry.add(
+            "save-as-template-panel",
+            ElementKind::Region,
+            "dialogs/save_as_template.slint",
+            "另存为模板面板",
+            false,
+        );
+        registry.add(
+            "save-as-template-close-button",
+            ElementKind::Button,
+            "dialogs/save_as_template.slint",
+            "关闭另存为模板",
+            false,
+        );
+        registry.add(
+            "template-style-input",
+            ElementKind::TextInput,
+            "dialogs/save_as_template.slint",
+            "曲风（一级分类，可填新名新建分类）",
+            false,
+        );
+        registry.add(
+            "template-substyle-input",
+            ElementKind::TextInput,
+            "dialogs/save_as_template.slint",
+            "子曲风（二级分类，可填新名新建分类）",
+            false,
+        );
+        registry.add(
+            "template-name-input",
+            ElementKind::TextInput,
+            "dialogs/save_as_template.slint",
+            "模板名",
+            false,
+        );
+        registry.add(
+            "template-save-hint-line",
+            ElementKind::Text,
+            "dialogs/save_as_template.slint",
+            "已有模板分类提示",
+            false,
+        );
+        registry.add(
+            "template-save-exists-note",
+            ElementKind::Text,
+            "dialogs/save_as_template.slint",
+            "同名模板已存在提示（再点一次才覆盖）",
+            false,
+        );
+        registry.add(
+            "template-save-error-line",
+            ElementKind::Text,
+            "dialogs/save_as_template.slint",
+            "另存为模板失败原因（空 = 无失败）",
+            false,
+        );
+        registry.add(
+            "template-save-button",
+            ElementKind::Button,
+            "dialogs/save_as_template.slint",
+            "存为模板（同名时变覆盖确认）",
+            false,
+        );
         // 卷帘右键上下文菜单的两项：默认不显示（菜单只在右键按下那一刻弹出），
         // 因此不进运行时控件树、不改任何金帧。点击后只上抛 `humanize-requested` /
         // `quantize-requested`，播种与提交全在宿主。
@@ -2813,7 +2943,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 26] = [
+    const SLINT_MANIFEST: [&str; 28] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2840,6 +2970,9 @@ mod tests {
         "dialogs/humanize_dialog.slint",
         // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
         "dialogs/macro_panel.slint",
+        // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/save_as_template.slint",
+        "dialogs/template_chooser.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
         "module_actions.slint",
         // 桌面 UI 重构组件清单

@@ -1,0 +1,474 @@
+// 夜半 (Yeban) — 另存为模板对话框
+//
+// 机制来源：Logic Pro 的「Save As Template」—— 把当前工程存进用户模板
+// 文件夹，它就是模板。夜半的分类是三级（Wang 2026-11-17 定案）：
+// **曲风 / 子曲风 / 模板名**，本对话框就是收集这三段名字的表单：
+// 三格都是自由文本 —— 填已有的分类名就是存进已有分类，填新的就是
+// 新建分类（落盘时目录自动创建，⛔ 没有单独的「新建分类」动作）。
+//
+// ## 同名处理（仓内先例的合成）
+//
+// 普通「另存为」的同名覆盖由原生保存对话框在选路径时确认；模板的落点
+// 不是用户在文件对话框里挑的，而是由三段名字在本对话框里合成 ⇒ 覆盖
+// 确认只能在本对话框内完成：宿主第一次确认时发现三级路径已有文件 ⇒
+// **不写盘**，把 `exists` 置真、对话框不关，按钮变「覆盖已有模板」，
+// 用户再点一次才真的覆盖（落点在宿主 `host::wire_project_templates`）。
+// 用户改动任一格文本 ⇒ `exists` 立即作废（那已经是另一个三级路径）。
+//
+// ## 本文件不判断任何事
+//
+// 三格文本原样交给宿主：校验（空 / 路径分隔符 / 点段）、组装归档、落盘、
+// 回执全在宿主与 `crate::templates`。校验失败时宿主把原因写进 `error`，
+// **弹窗不关**、不写半成品（与人性化对话框同一口径）。
+//
+// ## 键盘（D-UI-19：模态对话框内焦点闭环）
+//
+// 与人性化对话框同一机制：`save-template-trap` 是五格（三框 + 保存钮 +
+// ✕）的祖先 `FocusScope`；`Tab` / `Shift+Tab` 五格闭环；`Return` 落在
+// 文本框内 ⇒ 该框 `accepted` 走与保存钮同一条提交；`Esc` 调 `close`。
+//
+// 默认关着（`MainWindow.template-save-open = false`）⇒ 默认帧与 5 张
+// Linux 基准一位不变。
+
+import { Tokens, UiText, UiMonoText, UiTitleText } from "../tokens.slint";
+
+export component SaveAsTemplateDialog inherits Rectangle {
+    // ---- 三格可编辑文本（打开时由宿主播种：名字清空，分类预填上次用过的）--
+    in-out property <string> style: "";
+    in-out property <string> substyle: "";
+    in-out property <string> name: "";
+    // ---- 宿主写的分类提示行（已有的「曲风 / 子曲风」组合；空 = 还没有）----
+    in property <string> hint: "";
+    // ---- 宿主写的失败行（空串 = 无失败；失败时弹窗不关）------------------
+    in-out property <string> error: "";
+    // ---- 三级路径上已有同名模板（宿主在确认被拒时置真；改任一格即作废）--
+    in-out property <bool> exists: false;
+
+    callback confirm();
+    callback overwrite();
+    callback close();
+
+    /// 保存钮与三格 `accepted` 的**同一个**提交落点：已存在 ⇒ 覆盖确认，
+    /// 否则 ⇒ 首次确认。
+    public function submit() {
+        if (root.exists) {
+            root.overwrite();
+        } else {
+            root.confirm();
+        }
+    }
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "save-as-template-dialog";
+    accessible-label: @tr("另存为模板");
+
+    // `D-UI-21`：遮罩**真的**吞掉鼠标（与人性化对话框同款）。刻意 ⛔ 没有
+    // 任何回调：点遮罩不关面板（关面板只有 ✕ 与 `Esc`）。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    // ------------------------------------------------- 键盘（D-UI-19）：焦点陷阱
+    save-template-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{9}" || event.text == "\u{19}") {
+                if (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                    reject
+                } else if (event.text == "\u{19}" || event.modifiers.shift) {
+                    root.focus-previous-control();
+                    accept
+                } else {
+                    root.focus-next-control();
+                    accept
+                }
+            } else if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        Rectangle {
+            x: (root.width - 560px) / 2;
+            y: (root.height - 400px) / 2;
+            width: 560px;
+            height: 400px;
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            clip: true;
+
+            accessible-role: region;
+            accessible-id: "save-as-template-panel";
+            accessible-label: @tr("另存为模板面板");
+
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: @tr("另存为模板");
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            UiText {
+                x: Tokens.space-6;
+                y: 34px;
+                width: parent.width - 96px;
+                height: 16px;
+                text: @tr("存进我的模板目录；存的是当前工程原样（不剥离片段内容）。");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+
+            // 关闭
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "save-as-template-close-button";
+                accessible-label: @tr("关闭另存为模板");
+                accessible-action-default => { root.close(); }
+
+                save-template-close-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.close();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // ------------------------------------------------------------ 曲风
+            UiText {
+                x: Tokens.space-6;
+                y: 60px;
+                width: 160px;
+                height: 16px;
+                text: @tr("曲风（一级分类）");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            template-style-input := TextInput {
+                x: Tokens.space-6;
+                y: 80px;
+                width: parent.width - 48px;
+                height: 24px;
+                text <=> root.style;
+                single-line: true;
+                font-family: Tokens.font-ui;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-sm;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "template-style-input";
+                accessible-label: @tr("曲风");
+                accessible-value: root.style;
+                accessible-read-only: false;
+                edited => {
+                    root.exists = false;
+                    root.error = "";
+                }
+                accepted => { root.submit(); }
+            }
+
+            // ------------------------------------------------------------ 子曲风
+            UiText {
+                x: Tokens.space-6;
+                y: 116px;
+                width: 160px;
+                height: 16px;
+                text: @tr("子曲风（二级分类）");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            template-substyle-input := TextInput {
+                x: Tokens.space-6;
+                y: 136px;
+                width: parent.width - 48px;
+                height: 24px;
+                text <=> root.substyle;
+                single-line: true;
+                font-family: Tokens.font-ui;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-sm;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "template-substyle-input";
+                accessible-label: @tr("子曲风");
+                accessible-value: root.substyle;
+                accessible-read-only: false;
+                edited => {
+                    root.exists = false;
+                    root.error = "";
+                }
+                accepted => { root.submit(); }
+            }
+
+            // ------------------------------------------------------------ 模板名
+            UiText {
+                x: Tokens.space-6;
+                y: 172px;
+                width: 160px;
+                height: 16px;
+                text: @tr("模板名");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+
+            template-name-input := TextInput {
+                x: Tokens.space-6;
+                y: 192px;
+                width: parent.width - 48px;
+                height: 24px;
+                text <=> root.name;
+                single-line: true;
+                font-family: Tokens.font-ui;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-sm;
+                vertical-alignment: center;
+                accessible-role: text-input;
+                accessible-id: "template-name-input";
+                accessible-label: @tr("模板名");
+                accessible-value: root.name;
+                accessible-read-only: false;
+                edited => {
+                    root.exists = false;
+                    root.error = "";
+                }
+                accepted => { root.submit(); }
+            }
+
+            // ------------------------------------------------------------ 分类提示
+            Rectangle {
+                x: Tokens.space-6;
+                y: 228px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "template-save-hint-line";
+                accessible-label: @tr("已有模板分类");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.hint;
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+
+            // ------------------------------------------------------------ 同名提示
+            Rectangle {
+                x: Tokens.space-6;
+                y: 252px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "template-save-exists-note";
+                accessible-label: @tr("同名模板已存在");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.exists ? @tr("该分类下已有同名模板。再点一次「覆盖已有模板」才会替换它。") : "";
+                    color: Tokens.warn-amber;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+
+            // ------------------------------------------------------------ 失败行
+            Rectangle {
+                x: Tokens.space-6;
+                y: 276px;
+                width: parent.width - 48px;
+                height: 16px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "template-save-error-line";
+                accessible-label: @tr("另存为模板失败的原因");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.error;
+                    color: Tokens.record-red;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+
+            // ------------------------------------------------------------ 保存钮
+            Rectangle {
+                x: Tokens.space-6;
+                y: parent.height - 76px;
+                width: 180px;
+                height: 32px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "template-save-button";
+                accessible-label: @tr("存为模板");
+                accessible-action-default => { root.submit(); }
+
+                template-save-focus := FocusScope {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (event.text == Key.Return || event.text == Key.Space) {
+                            root.submit();
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.exists ? @tr("覆盖已有模板") : @tr("存为模板");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.submit(); }
+                }
+            }
+
+            UiMonoText {
+                x: Tokens.space-6;
+                y: parent.height - 32px;
+                width: parent.width - 32px;
+                height: 20px;
+                text: @tr("填已有分类名 = 存进已有分类 · 填新名 = 新建分类 · Esc 关闭");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+            }
+        }
+    }
+
+    // ---- 焦点读数（D-UI-19 / D-UI-20）---------------------------------------
+    /// 五格里哪一格正持有键盘：`0` 曲风 / `1` 子曲风 / `2` 模板名 /
+    /// `3` 保存钮 / `4` ✕ 关闭 / `-1` 不在模态内。
+    out property <int> focused-control:
+        template-style-input.has-focus ? 0
+        : template-substyle-input.has-focus ? 1
+        : template-name-input.has-focus ? 2
+        : template-save-focus.has-focus ? 3
+        : save-template-close-focus.has-focus ? 4
+        : -1;
+
+    /// 打开时由宿主调用：焦点落曲风格。
+    public function focus-first-field() {
+        template-style-input.focus();
+    }
+
+    /// 五格的**唯一**一张「序号 → 控件」表。
+    public function focus-control(index: int) {
+        if (index == 0) {
+            template-style-input.focus();
+        } else if (index == 1) {
+            template-substyle-input.focus();
+        } else if (index == 2) {
+            template-name-input.focus();
+        } else if (index == 3) {
+            template-save-focus.focus();
+        } else if (index == 4) {
+            save-template-close-focus.focus();
+        }
+    }
+
+    /// `Tab`：曲风 → 子曲风 → 模板名 → 保存钮 → ✕ → 回第一格。
+    public function focus-next-control() {
+        if (root.focused-control >= 0 && root.focused-control < 4) {
+            root.focus-control(root.focused-control + 1);
+        } else if (root.focused-control == 4) {
+            root.focus-control(0);
+        } else {
+            root.focus-first-field();
+        }
+    }
+
+    /// `Shift+Tab`：反向；第一格再退 ⇒ 末格（`-1` 同样退到末格）。
+    public function focus-previous-control() {
+        if (root.focused-control > 0) {
+            root.focus-control(root.focused-control - 1);
+        } else {
+            root.focus-control(4);
+        }
+    }
+}

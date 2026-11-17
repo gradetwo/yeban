@@ -1758,3 +1758,86 @@ msgstr "Noch keine Assets"
 # --- app.slint (line/ui-window-state) ---
 msgid "恢复默认布局"
 msgstr "Standardlayout wiederherstellen"
+
+# --- app.slint + dialogs (line/project-templates) ---
+
+msgid "从模板新建"
+msgstr "Neu aus Vorlage"
+
+msgid "从模板新建..."
+msgstr "Neu aus Vorlage..."
+
+msgid "关闭另存为模板"
+msgstr "„Als Vorlage speichern“ schließen"
+
+msgid "关闭模板选择器"
+msgstr "Vorlagenauswahl schließen"
+
+msgid "另存为模板"
+msgstr "Als Vorlage speichern"
+
+msgid "另存为模板..."
+msgstr "Als Vorlage speichern..."
+
+msgid "另存为模板失败的原因"
+msgstr "Grund, warum die Vorlage nicht gespeichert werden konnte"
+
+msgid "另存为模板面板"
+msgstr "Bereich „Als Vorlage speichern“"
+
+msgid "同名模板已存在"
+msgstr "Eine Vorlage mit diesem Namen ist bereits vorhanden"
+
+msgid "填已有分类名 = 存进已有分类 · 填新名 = 新建分类 · Esc 关闭"
+msgstr "Vorhandener Kategoriename = darin speichern · Neuer Name = Kategorie erstellen · Esc schließt"
+
+msgid "子曲风"
+msgstr "Unterstil"
+
+msgid "子曲风（二级分类）"
+msgstr "Unterstil (Kategorie der zweiten Ebene)"
+
+msgid "存为模板"
+msgstr "Als Vorlage speichern"
+
+msgid "存进我的模板目录；存的是当前工程原样（不剥离片段内容）。"
+msgstr "Wird in Ihrem Vorlagenordner gespeichert; das aktuelle Projekt wird unverändert abgelegt (Clip-Inhalte werden nicht entfernt)."
+
+msgid "已有模板分类"
+msgstr "Vorhandene Vorlagenkategorien"
+
+msgid "按曲风 / 子曲风 / 模板名三级组织；选中后以未命名副本打开，编辑不回写模板。"
+msgstr "In drei Ebenen organisiert: Stil / Unterstil / Vorlagenname; die ausgewählte Vorlage wird als unbenannte Kopie geöffnet, und Bearbeitungen werden nie in die Vorlage zurückgeschrieben."
+
+msgid "曲风"
+msgstr "Stil"
+
+msgid "曲风（一级分类）"
+msgstr "Stil (Kategorie der ersten Ebene)"
+
+msgid "模板分组列表"
+msgstr "Gruppierte Vorlagenliste"
+
+msgid "模板列表面板"
+msgstr "Bereich mit der Vorlagenliste"
+
+msgid "模板名"
+msgstr "Vorlagenname"
+
+msgid "覆盖已有模板"
+msgstr "Vorhandene Vorlage überschreiben"
+
+msgid "该分类下已有同名模板。再点一次「覆盖已有模板」才会替换它。"
+msgstr "In dieser Kategorie ist bereits eine Vorlage mit diesem Namen vorhanden. Klicken Sie erneut auf „Vorhandene Vorlage überschreiben“, um sie zu ersetzen."
+
+msgid "还有 {} 行未画出（列表一次最多画 64 行）"
+msgstr "Weitere {} Zeilen werden nicht angezeigt (die Liste zeichnet höchstens 64 Zeilen auf einmal)"
+
+msgid "还有更多模板行未画出"
+msgstr "Weitere Vorlagenzeilen werden nicht angezeigt"
+
+msgid "还没有任何模板。先用「文件 → 另存为模板…」把当前工程存为模板。"
+msgstr "Es sind noch keine Vorlagen vorhanden. Speichern Sie zuerst das aktuelle Projekt über „Datei → Als Vorlage speichern…“ als Vorlage."
+
+msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
+msgstr "Es sind noch keine Vorlagen vorhanden. Speichern Sie zuerst das aktuelle Projekt als Vorlage."
