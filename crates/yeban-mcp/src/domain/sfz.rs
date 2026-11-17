@@ -6024,7 +6024,32 @@ mod tests {
     /// ⭐ 循环展开：`loop_start/loop_end` 区域必须填满整个音符，而不是响一遍就断。
     #[test]
     fn loop_window_is_expanded_to_the_note_length() {
-        let wav = "/home/user/Doubao/chats/38453429416166402/yeban/assets/resolved/aliexpress-erhu/Samples/st/erhu_a5_st_rr1.wav";
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        // 自带夹具：临时目录里现写一份真实 WAV（48 kHz 单声道正弦，100_000 帧），
+        // 不依赖任何本机绝对路径——原版写死作者本机路径，文件不在场时 note_wave
+        // 按设计回退正弦、written 断言必红，CI 上同样不可移植。
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-loop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let wav_path = dir.join("tone.wav");
+        let frames: Vec<f32> = (0..100_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        write_plain_wav(
+            &wav_path,
+            &PcmFormat::float(1, 48_000, 32),
+            &PcmBuffer::Float32(frames),
+        )
+        .expect("写夹具 WAV");
+        let wav = wav_path.display().to_string();
         let plain_text = format!("<region> sample={wav} key=60");
         let loop_text = format!(
             "<region> sample={wav} key=60 loop_start=10000 loop_end=20000 loop_mode=loop_continuous"
