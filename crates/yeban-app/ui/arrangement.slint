@@ -832,8 +832,14 @@ export component ArrangementViewport inherits Rectangle {
                     y: root.track-ys[idx];
                     height: root.track-heights[idx];
                     width: parent.width;
-                    background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent;
-                    border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a;
+                    // 选中呈现（七版，Wang 2026-11-17 15:51）：边框统一纯白
+                    // #ffffff、底色改定值，与轨道色和 accent 双脱钩（2026-11-16
+                    // 「不得用 trk.color」的口径再进一步）。行底定值 #131a20 =
+                    // 现行 accent 8% 合成帧上实测 #0c1319 向白混合 3%（相对
+                    // 亮度 0.0062 → 0.0098，仍是深色行；拍线/小节线对它实算
+                    // 3.17 / 4.52，不破既有下限）。
+                    background: trk.id == root.selected-track-id ? #131a20 : transparent;
+                    border-color: trk.id == root.selected-track-id ? #ffffff : #ffffff0a;
                     border-width: trk.id == root.selected-track-id ? 1.5px : 0px;
 
                     HorizontalLayout {
@@ -842,8 +848,11 @@ export component ArrangementViewport inherits Rectangle {
                         // Left Track Header (if not headers on right)
                         if !Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
-                            background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : #1d2733;
-                            border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle;
+                            // 选中头底定值 #16232b = 现行 accent 10% 合成帧上实测
+                            // #0f1c24 向白混合 3%（七版，与行底同幅度）；选中头
+                            // 边框同行边框统一纯白 #ffffff。
+                            background: trk.id == root.selected-track-id ? #16232b : #1d2733;
+                            border-color: trk.id == root.selected-track-id ? #ffffff : Theme.border-subtle;
 
                             // Left color strip (illuminated on focus)
                             Rectangle {
@@ -1399,8 +1408,9 @@ export component ArrangementViewport inherits Rectangle {
                         // Right Track Header (if right mode)
                         if Theme.track-headers-on-right : Rectangle {
                             width: root.headers-width;
-                            background: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : #1d2733;
-                            border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle;
+                            // 选中头底与边框同左头（七版定值 #16232b / 纯白）。
+                            background: trk.id == root.selected-track-id ? #16232b : #1d2733;
+                            border-color: trk.id == root.selected-track-id ? #ffffff : Theme.border-subtle;
 
                             Rectangle {
                                 x: parent.width - 4px;

@@ -33,6 +33,17 @@
 //!   分级 12/6/3 不动）。
 //! * 播放头竖线改纯白 `#ffffff`（落点在 `arrangement.slint` 播放头
 //!   覆盖层，不在本文件覆盖面）。
+//!
+//! ## 七版增补（Wang 2026-11-17 15:49 + 15:51 亲定）
+//!
+//! * 钢琴卷帘播放头同步改纯白 `#ffffff`（判据 ⑦ 钉 `piano_roll.slint`
+//!   落点与对最深行底 `#161b26` 的比值）。
+//! * 编曲区行底分界线提亮定值 `#5a6672`：对最不利行底 `#181719`
+//!   实算 3.04:1，钉在目标窗 3.0–3.1 内，且相对亮度须低于拍线
+//!   `#5d6a76`（判据 ⑦）。
+//! * 轨道选中边框统一纯白、选中底改定值（行底 `#131a20`／头底
+//!   `#16232b`，判据在 `selection_highlight_uses_accent.rs` 换钉）；
+//!   本文件判据 ⑦ 另钉小节线/拍线对新选中行底的比值不破既有下限。
 
 use yeban_app::host::{GridDensity, grid_density};
 
@@ -341,4 +352,54 @@ fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
             "{name}刻度顶 {tick_top} 与编号区底 {number_zone} 之间净空不足 2px"
         );
     }
+}
+
+/// ⑦ 七版（Wang 2026-11-17 15:49 + 15:51）：行底分界线提亮定值、卷帘
+/// 播放头改白、选中行底换定值后网格线比值不破下限。
+#[test]
+fn rev7_divider_roll_playhead_and_selected_row() {
+    let arrangement = include_str!("../ui/arrangement.slint");
+
+    // 分界线落点：「行底分界线」注释之后第一个 background 必须是定值。
+    let divider_at = arrangement.find("行底分界线").expect("分界线注释在");
+    let rest = &arrangement[divider_at..];
+    let bg_idx = rest.find("background: ").expect("分界线 background 在");
+    let bg_val: String = rest[bg_idx + "background: ".len()..]
+        .chars()
+        .take_while(|c| *c != ';')
+        .collect();
+    assert_eq!(bg_val.trim(), "#5a6672", "分界线必须用七版定值 #5a6672");
+
+    // 分界线比值：对最不利行底 #181719 落在目标窗 3.0–3.1（提亮），
+    // 且相对亮度低于车道拍线 #5d6a76（比拍线暗），对车道底 >= 3.0。
+    let divider = contrast_ratio("#5a6672", "#181719");
+    assert!(
+        (3.0..=3.1).contains(&divider),
+        "分界线比值 {divider:.3} 不在七版目标窗 3.0–3.1"
+    );
+    assert!(
+        relative_luminance("#5a6672") < relative_luminance("#5d6a76"),
+        "分界线必须暗于车道拍线 #5d6a76"
+    );
+    assert!(contrast_ratio("#5a6672", "#090b10") >= 3.0);
+
+    // 选中行底换定值 #131a20 后，小节线/拍线对它的实算比值不破既有
+    // 下限（4.5 / 3.0，与判据 ⑤ 同口径，只是背景换成真实选中行底）。
+    assert!(contrast_ratio("#748392", "#131a20") >= 4.5);
+    assert!(contrast_ratio("#5d6a76", "#131a20") >= 3.0);
+
+    // 卷帘播放头：`piano-roll-playhead` 元素向上的最近一处 background
+    // 必须是纯白；白色对卷帘最深行底 #161b26（黑键行）>= 17。
+    let piano_roll = include_str!("../ui/console/piano_roll.slint");
+    let ph_at = piano_roll
+        .find("accessible-id: \"piano-roll-playhead\"")
+        .expect("卷帘播放头在");
+    let head = &piano_roll[..ph_at];
+    let bg_rel = head.rfind("background: ").expect("播放头 background 在");
+    let ph_val: String = head[bg_rel + "background: ".len()..]
+        .chars()
+        .take_while(|c| *c != ';')
+        .collect();
+    assert_eq!(ph_val.trim(), "#ffffff", "卷帘播放头必须纯白 #ffffff");
+    assert!(contrast_ratio("#ffffff", "#161b26") >= 17.0);
 }
