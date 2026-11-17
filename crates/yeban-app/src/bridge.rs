@@ -475,17 +475,59 @@ pub const CLIP_WHITE: RgbColor = RgbColor::new(0xff, 0xff, 0xff);
 pub const CLIP_BLACK: RgbColor = RgbColor::new(0x00, 0x00, 0x00);
 /// 片段名近白文字（现行 `#f1f5f9`，达标时优先保留）。
 pub const CLIP_TEXT_NEAR_WHITE: RgbColor = RgbColor::new(0xf1, 0xf5, 0xf9);
-/// 片段内导线灰（八版定值 `#748392`，达标时优先保留）。
-pub const CLIP_GUIDE_GREY: RgbColor = RgbColor::new(0x74, 0x83, 0x92);
+/// RGB → HSV（`h` 在 0..360 度，`s`/`v` 在 `0..=1`）。
+fn rgb_to_hsv(color: RgbColor) -> (f32, f32, f32) {
+    let r = f32::from(color.red) / 255.0;
+    let g = f32::from(color.green) / 255.0;
+    let b = f32::from(color.blue) / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d.abs() < f32::EPSILON {
+        0.0
+    } else if (max - r).abs() < f32::EPSILON {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if (max - g).abs() < f32::EPSILON {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max };
+    (h, s, max)
+}
+
+/// HSV → RGB（[`rgb_to_hsv`] 的逆；通道四舍五入到 `u8`）。
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> RgbColor {
+    let channel = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    RgbColor::new(channel(r + m), channel(g + m), channel(b + m))
+}
 
 /// ⭐ 片段底色（九版，Wang 2026-11-17 16:43 亲定，照 Logic Pro 区域）：
 ///
 /// 底 = 轨道色**纯色本体**，⛔ 不再混黑（八版「合成等效实色」=
 /// 0.12×轨道色 + 0.88×近黑，呈现暗且脏，废）。唯一例外是统一压暗
-/// 规则：白色音符条/峰值柱对底的对比度（图形下限 3:1，`[UI-A11Y-003]`
-/// 第 3 条）不足 3.05 时，只降 HSL **明度**（每步 0.02，色相与饱和
-/// 不动）到达标为止——逐色同规则，⛔ 不逐色随意调。轨道标识色本身
-/// （轨道头色条/色标）不受影响，仍是原色。
+/// 规则：白色对底的对比度（图形下限 3:1，`[UI-A11Y-003]` 第 3 条）
+/// 不足 3.05 时，只降 HSL **明度**（每步 0.02，色相与饱和不动）到
+/// 达标为止——逐色同规则，⛔ 不逐色随意调。十版标记色虽改同色相
+/// 派生（[`clip_marker_color`]，V = 0.99 的浅色版），其明度与白色
+/// 同量级，本压暗规则原样保留，继续为浅色标记兜底。轨道标识色
+/// 本身（轨道头色条/色标）不受影响，仍是原色。
 #[must_use]
 pub fn clip_base_color(track: RgbColor) -> RgbColor {
     if contrast_ratio(CLIP_WHITE, track) >= 3.05 {
@@ -515,19 +557,23 @@ pub fn clip_text_color(base: RgbColor) -> RgbColor {
     CLIP_BLACK
 }
 
-/// ⭐ 片段内导线色（九版）：波形 0dB 基准线与 MIDI 分界线。灰
-/// `#748392` 对底色对比度 >= 3.0（图形下限）时保留灰；不达标改用
-/// 黑/白中对比度更高者（纯色底上灰多半不达标，属预期）。
+/// ⭐ 片段内标记色（十版，Wang 2026-11-17 18:28 亲定，照 Logic Pro
+/// 波形色）：波形峰值柱、MIDI 音符条、波形 0dB 基准线与 MIDI 分界线
+/// 同用此色（投影字段 `marker_color` 与 `guide_color` 同出此函数）。
+///
+/// Logic 实测规律（父 agent 对 Wang 所发截图逐像素采集）：波形色
+/// 不是纯白、也不是固定色——与区域底色**同色相**（偏差 ≤3°），
+/// HSV 明度 V 拉到 0.98–0.99，饱和度降到原色约 1/3，呈现为底色
+/// 的浅色版（实测对：蓝 `#4A80CE`→`#C6DEFC`、紫 `#6F3CCC`→
+/// `#D7C4FB`、品红 `#9724C2`→`#E6B3FB`），对底对比度 2.9–5.2:1；
+/// 纯白在同底上 4.0–6.8:1 且引入外来色，故刺眼——八版/九版的
+/// 纯白标记与黑/白导线废。派生自轨道色纯色本体（[`clip_base_color`]
+/// 的来源色），逐色同式：H 不变、V = 0.99、S = 原 S × 1/3，
+/// ⛔ 不逐色随意调。
 #[must_use]
-pub fn clip_guide_color(base: RgbColor) -> RgbColor {
-    if contrast_ratio(CLIP_GUIDE_GREY, base) >= 3.0 {
-        return CLIP_GUIDE_GREY;
-    }
-    if contrast_ratio(CLIP_WHITE, base) >= contrast_ratio(CLIP_BLACK, base) {
-        CLIP_WHITE
-    } else {
-        CLIP_BLACK
-    }
+pub fn clip_marker_color(track: RgbColor) -> RgbColor {
+    let (h, s, _v) = rgb_to_hsv(track);
+    hsv_to_rgb(h, s / 3.0, 0.99)
 }
 
 /// 投影过程中可恢复的输入问题。
@@ -8795,33 +8841,54 @@ mod tests {
         assert_eq!(demo.tracks[2].color_hex, "#22AA88");
     }
 
-    /// 九版片段三色（Wang 2026-11-17 16:43）：底 = 轨道色纯色，
-    /// 太浅时只降明度；文字/导线按底色达标规则选。逐色细表在
+    /// 十版片段四色（九版底/文字规则沿用，标记改同色相派生，
+    /// Wang 2026-11-17 18:28）：底 = 轨道色纯色，太浅时只降明度；
+    /// 文字按底色达标规则选；标记 = 轨道色 HSV 派生（H 不变、
+    /// V = 0.99、S × 1/3）。逐色细表在
     /// `tests/arrangement_grid_density.rs` 判据 ⑧ 普查，这里只钉
-    /// 规则的三条骨架（不压暗、压暗达标、黑白无空档）。
+    /// 规则骨架（不压暗、压暗达标、黑白无空档、派生式守恒）。
     #[test]
-    fn clip_colors_follow_the_rev9_rules() {
-        // 深色底不压暗、文字近白、导线纯白（灰不达标）。
+    fn clip_colors_follow_the_rev10_rules() {
+        // 深色底不压暗、文字近白、标记为同色相浅色版（离线算出钉死）。
         let dark = RgbColor::new(0x2c, 0x3a, 0x63);
         assert_eq!(clip_base_color(dark), dark);
         assert_eq!(clip_text_color(dark), CLIP_TEXT_NEAR_WHITE);
-        assert_eq!(clip_guide_color(dark), CLIP_WHITE);
-        // 白色轨道压暗后白标记达标，且结果为中性灰（色相/饱和为零）。
+        assert_eq!(clip_marker_color(dark), RgbColor::new(0xce, 0xda, 0xfc));
+        // 白色轨道压暗后白对比达标，且结果为中性灰（色相/饱和为零）；
+        // 其标记派生自白色本体 ⇒ 近白中性色。
         let white_base = clip_base_color(CLIP_WHITE);
         assert!(contrast_ratio(CLIP_WHITE, white_base) >= 3.05);
         assert_eq!(white_base.red, white_base.green);
         assert_eq!(white_base.green, white_base.blue);
         assert_eq!(clip_text_color(white_base), CLIP_BLACK);
-        assert_eq!(clip_guide_color(white_base), CLIP_BLACK);
-        // 任意底色下文字必达 4.5（近白/纯白/纯黑三候选无空档）：
-        // 扫一遍粗网格色立方验证规则本身。
+        assert_eq!(
+            clip_marker_color(CLIP_WHITE),
+            RgbColor::new(0xfc, 0xfc, 0xfc)
+        );
+        // 任意底色下文字必达 4.5（近白/纯白/纯黑三候选无空档）；
+        // 标记派生守恒：扫一遍粗网格色立方，派生色的 H 与原色一致
+        // （S >= 0.2 时，容差为 u8 舍入实测上界 0.91° 的两倍）、
+        // S 为原 S 的 1/3（容差 0.01）、V 为 0.99（容差 0.005）。
         for r in (0..=255).step_by(51) {
             for g in (0..=255).step_by(51) {
                 for b in (0..=255).step_by(51) {
-                    let base = clip_base_color(RgbColor::new(r, g, b));
+                    let track = RgbColor::new(r, g, b);
+                    let base = clip_base_color(track);
                     assert!(contrast_ratio(CLIP_WHITE, base) >= 3.0);
                     assert!(contrast_ratio(clip_text_color(base), base) >= 4.5);
-                    assert!(contrast_ratio(clip_guide_color(base), base) >= 3.0);
+                    let (h0, s0, _v0) = rgb_to_hsv(track);
+                    let (h1, s1, v1) = rgb_to_hsv(clip_marker_color(track));
+                    assert!((v1 - 0.99).abs() < 0.005, "派生 V {v1} 偏离 0.99");
+                    assert!(
+                        (s1 - s0 / 3.0).abs() < 0.01,
+                        "派生 S {s1} 偏离原 S/3 {}",
+                        s0 / 3.0
+                    );
+                    if s0 >= 0.2 {
+                        let dh = (h1 - h0).abs();
+                        let dh = dh.min(360.0 - dh);
+                        assert!(dh < 2.0, "派生色相偏离 {dh} 度");
+                    }
                 }
             }
         }

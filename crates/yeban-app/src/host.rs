@@ -18338,9 +18338,10 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     .filter_map(|i| blocks.row_data(i))
                     .collect();
                 let is_aud = ((next_id - 1) % 7) == 1 || ((next_id - 1) % 7) == 3;
-                // 九版片段三色与投影路径同规则（bridge::clip_*_color）。
+                // 十版片段四色与投影路径同规则（bridge::clip_*_color）。
                 let demo_rgb = crate::bridge::RgbColor::new(col.red(), col.green(), col.blue());
                 let demo_base = crate::bridge::clip_base_color(demo_rgb);
+                let demo_marker = crate::bridge::clip_marker_color(demo_rgb);
                 block_vec.push(TimelineBlockData {
                     track_id: next_id,
                     clip_ulid: "".into(),
@@ -18352,7 +18353,8 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
                     color: col,
                     base_color: to_color(demo_base),
                     text_color: to_color(crate::bridge::clip_text_color(demo_base)),
-                    guide_color: to_color(crate::bridge::clip_guide_color(demo_base)),
+                    guide_color: to_color(demo_marker),
+                    marker_color: to_color(demo_marker),
                     note_count: if is_aud { 0 } else { 4 },
                     // 新建片段没有音频样本 ⇒ 空 peaks（界面不画波形，⛔ 不假装有）。
                     waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
@@ -21273,9 +21275,11 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                 .map(|t| t.color_rgb)
                 .unwrap_or(crate::bridge::DEFAULT_TRACK_COLOR);
             let col = to_color(track_rgb);
-            // 九版片段三色：底 = 轨道色纯色（太浅时统一压暗）、文字/导线
-            // 按底色推导，全部在投影层算（bridge::clip_*_color 唯一实现）。
+            // 十版片段四色：底 = 轨道色纯色（太浅时统一压暗）、文字
+            // 按底色推导、标记/导线 = 轨道色同色相派生，全部在投影层
+            // 算（bridge::clip_*_color 唯一实现）。
             let base_rgb = crate::bridge::clip_base_color(track_rgb);
+            let marker_rgb = crate::bridge::clip_marker_color(track_rgb);
             let is_audio = clip.content == "audio";
             let note_count = if is_audio {
                 0
@@ -21297,7 +21301,8 @@ fn view_to_timeline_blocks(view: &ViewState) -> Vec<TimelineBlockData> {
                 color: col,
                 base_color: to_color(base_rgb),
                 text_color: to_color(crate::bridge::clip_text_color(base_rgb)),
-                guide_color: to_color(crate::bridge::clip_guide_color(base_rgb)),
+                guide_color: to_color(marker_rgb),
+                marker_color: to_color(marker_rgb),
                 note_count,
                 // ⭐ ADR-0076 B1 第二步：按资产哈希查**会话峰值缓存**（`crate::waveform_cache`）。
                 // 缓存未就绪 / 字节不在资产池 / 解码失败 ⇒ 空数组 ⇒ 界面画回

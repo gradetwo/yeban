@@ -964,9 +964,13 @@ export struct TimelineBlockData {
     /// 九版片段内文字色：按底色选近白/纯白/纯黑（>= 4.5:1），
     /// 由 `bridge::clip_text_color` 算。
     text_color: color,
-    /// 九版片段内导线色（基准线/分界线）：灰达标则灰、否则黑/白，
-    /// 由 `bridge::clip_guide_color` 算。
+    /// 十版片段内导线色（基准线/分界线）：与标记同出
+    /// `bridge::clip_marker_color`（轨道色同色相派生浅色）。
     guide_color: color,
+    /// 十版片段内标记色（波形峰值柱/MIDI 音符条）：轨道色 HSV
+    /// 派生（H 不变、V = 0.99、S × 1/3），照 Logic 波形色，
+    /// 由 `bridge::clip_marker_color` 算，⛔ 不再用纯白。
+    marker_color: color,
     note_count: int,
     /// 真实波形峰值（每柱 0..1；空 = 尚未分析 ⇒ 界面不画，保持「示意」标注）。
     /// 由 `bridge::compute_waveform_peaks` 从解码 PCM 算出（ADR-0076 B1）。

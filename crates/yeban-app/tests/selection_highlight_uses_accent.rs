@@ -20,6 +20,11 @@
 //! Logic 自身车道对比度亦仅 1.11:1）。「不得用 trk.color」与「色条
 //! 保留轨道色」两条三代原样保留（不放宽）。
 //!
+//! 第四代（十版，Wang 2026-11-17 18:28）：车道底抬到 `#2e2e2e`
+//! （Logic 编曲区底实测同值）后，选中行底按同一相对亮度比 1.80
+//! 重算为 `#383f4c`；头底基色 `#1d2733` 未变，选中头底 `#293645`
+//! 与提亮法原样保留。
+//!
 //! ⚠ 纯 `include_str!` 判据；像素级效果由对照帧看守（八版 compare8-*），
 //! 本改动会触发 golden 基准重录（`gates-manual` 的 `goldens` 档）。
 
@@ -40,8 +45,8 @@ fn selected_track_highlight_uses_brightening_not_white_border() {
         "选中边框不得为 #ffffff（八版口径：纯白选中边框作废，回归未选中行同款；轨道名选中变白是原有文字行为，不在本条范围）"
     );
     assert!(
-        ARR.contains("selected-track-id ? #0f1218"),
-        "选中行底必须用八版定值 #0f1218"
+        ARR.contains("selected-track-id ? #383f4c"),
+        "选中行底必须用十版定值 #383f4c（八版 1.80 提亮比按新车道底重算）"
     );
     assert!(
         ARR.contains("selected-track-id ? #293645"),
