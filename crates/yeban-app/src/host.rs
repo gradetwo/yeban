@@ -55,12 +55,12 @@ use crate::engine_host::{
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
-use crate::ui::{MainWindow, TextureMode, ThemeState, YebanTheme};
-// `Tokens` 只在 linux / windows 的字体注入分支里用（见
-// build_main_window_with_console_tab）；macOS 下没有使用点，无条件 import 会被
-// clippy `-D warnings` 判成 unused-imports。
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use crate::ui::Tokens;
+use crate::ui::{MainWindow, TextureMode, ThemeState, Tokens, YebanTheme};
+// `Tokens` 原本只在 linux / windows 的字体注入分支里用（见
+// build_main_window_with_console_tab），故旧版 import 带 cfg 门；拟物线
+// 的 `apply_texture`（全平台无条件写 `Tokens.texture`）落地后 macOS 也有
+// 使用点，cfg 门会让 macOS 腿 E0425（分支 CI run 43993814646 实证），
+// 改为无条件导入。
 use crate::undo::{UiAction, UndoPort};
 
 /// [`wire_save`] 的**装配输入**：保存到哪 + 拿不到活会话时用哪一份工程。
