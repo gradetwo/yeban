@@ -871,7 +871,7 @@ IPN 读成 48 ⇒ 写在 60/61/62 的鼓音符一个都触发不了（静默无�
    用户侧不得出现八度记法冲突。
 
 ⇒ 第 6 节第 1 项「是否需要兼容模式开关，或是否只认 MIDI 号」**已裁决关闭**：
-答案是「两者皆不」——不设全局记法开关、不拒认音名，改走装载侧适配（本节 14.3 的设计）。
+答案是「两者皆不」——不设全局记法开关、不拒认音名，改走装载侧适配（本节 14.4 的设计）。
 第 5 节第 12 条「不提供 Yamaha 兼容开关」的表述与本裁决一致，继续成立；
 第 5 节第 10 条的 `note_offset`/`octave_offset` 缺口由本线阶段 1 补上（见 14.2）。
 
@@ -908,7 +908,7 @@ IPN 读成 48 ⇒ 写在 60/61/62 的鼓音符一个都触发不了（静默无�
 
 **审计结论**：全仓带八度的音名表面（A/B/C/D2/E2）**无一例外是 IPN**，与裁决的
 「内部唯一标准」现状一致——本线不需要改任何既有表面的标准，要补的只有两件：
-SFZ 规范自带的移位 opcode（14.2）与装载侧对外部记法的适配（14.3 设计）。
+SFZ 规范自带的移位 opcode（14.3）与装载侧对外部记法的适配（14.4 设计）。
 真正的冲突面只有一个：**外部 SFZ 文件的音名写法**（A1 的输入侧），因为文件作者
 可能按 Yamaha 写。数字写法的文件与本仓永不冲突（数字无记法）。
 
@@ -925,6 +925,65 @@ SFZ 规范自带的移位 opcode（14.2）与装载侧对外部记法的适配�
 | 文件名音高标记（如 `Kick_C3.wav`） | **无任何代码从采样文件名推断音高**；`file_name` 只用于显示与目录列举 | grep `file_name` 于 `sfz_load.rs`/`sfz_instrument.rs` |
 | SFZ 侧可核对量 | 每 region 的 `pitch_keycenter`（归约后数字）＋其 `sample=` 路径 ⇒ 与该采样嵌入根音逐条对账的数据在解析结果里齐备，只差把根音读出来 | `instrument.rs` `Region::pitch_keycenter` |
 
-⇒ 检测设计（14.3）的证据链定为：**嵌入根音为主锚**（WAV `smpl` 偏移 12），
+⇒ 检测设计（14.4）的证据链定为：**嵌入根音为主锚**（WAV `smpl` 偏移 12），
 文件名标记为**次级线索**（需新建解析规则，可靠性低一档），两者都缺失时不自动移位、
 只剩手动覆盖一层。
+
+### 14.3 阶段 1：`note_offset` / `octave_offset` 实现（范围只限 `yeban-sfz`）
+
+**规范依据**（落码前查页，2026-11-17）：
+
+| opcode | sfzformat 页口径 | 类型/缺省/范围 |
+| :--- | :--- | :--- |
+| `note_offset` | 「offset all incoming MIDI notes by the specified number of semitones」，`<control>` 下，SFZ v2 | integer / 0 / −127..127，单位半音 |
+| `octave_offset` | 「offset all incoming MIDI data by the specified octave」，例子：`octave_offset=-1` 让写出的 `C4` 落在 MIDI 48 而不是 60（IPN → MMA 的换算），`<control>` 下，SFZ v2 | integer / 0 / −10..10，单位八度 |
+
+**工程裁决**（规范没写到这么细，本实现定如下，判据钉住）：
+
+1. **归约侧施加，不在查询侧**：sfzformat 的例子是定义侧读法（写出的 `C4` 落在 48）。
+   本实现在 `build_region` 归约时把合成移位 `note_offset + octave_offset × 12`
+   加到写出的音高值上。整份乐器的内部关系（键区间与 `pitch_keycenter` 的相对距离）
+   逐位不变 ⇒ 与「查询侧移位输入音符」在匹配与音高比上等价，且离线/实时两条装载
+   路径（14.2）自动同口径，因为它们只消费归约后的 `Region`。
+2. **音名与数字一视同仁**：同一个音高在文件里混写 `key=48` 与 `key=c3` 时，
+   移位后必须仍相等（判据 `octave_offset_shifts_numeric_keys_too`）。
+3. **只移写出的值**：缺省值（未写的 `pitch_keycenter=60`、`sw_lokey=0`、
+   `sw_hikey=127`）是本实现的缺省、不是文件的声明，⛔ 不移位
+   （判据 `defaults_are_not_shifted_only_written_values_are`）。
+4. **哨兵不移**：`key=-1` / `lokey=-1` / `hikey=-1`（「无键」，任务单 `#206`）
+   不是音高；`trigger_by_note` 按移位**前**的原值判（真实音高移位后恰好落在 −1
+   是「移出键盘下限」，不是哨兵）。
+5. **位置语义，与 `default_path` 同口径**：移位在 region 归约时点按当时有效的
+   `<control>` 段求值；新的 `<control>` 段把两个值一并重置为 0
+   （判据 `a_later_control_header_resets_the_offsets`）。
+6. **插入期校验、响亮报错**：两个值在 `insert_opcode` 里经 `OpcodeValue::as_int`
+   按规范范围校验，带 opcode 自己的行号；非法/越界是明确 `Err`
+   （`InvalidInteger` / `IntegerOutOfRange`）。与 `set_ccN` 的「丢弃 + 告警」不同：
+   移位错了整份乐器错位，静默丢弃等于无声错位。无 region 的文件不触发校验
+   （没有可归约的对象），如实登记为已知边角。
+7. **与 `#define` 的先后**：取值先过宏展开、再做类型化校验 ⇒ `#define` 可供值
+   （判据 `offset_values_may_come_from_a_define`）；移位只作用于 region 音高字段，
+   ⛔ 不回头改写宏定义本身。
+8. **钳位口径**：i32 字段（`key`/`lokey`/`hikey`/`pitch_keycenter`/`fil_keycenter`）
+   不钳位（移出 0..=127 自然永不匹配/只影响音高比算术）；`u8` keyswitch 家族
+   （`sw_last`/`sw_default`/`sw_lokey`/`sw_hikey`/`sw_down`/`sw_up`）钳到 0..=255，
+   保住「>127 即不可达」的语义。
+9. **作用字段全集（11 个）**：`key`、`lokey`、`hikey`、`pitch_keycenter`、
+   `fil_keycenter`、`sw_last`、`sw_default`、`sw_lokey`、`sw_hikey`、`sw_down`、
+   `sw_up` —— 即 `build_region` 里全部经 `as_note` 读取的字段。
+   `sw_note_offset` 本阶段不做（仍挂第 5 节第 10 条）。
+
+**验证读数**（本机 VM 单路 `CARGO_BUILD_JOBS=1`，2026-11-17）：
+
+| 项 | 读数 |
+| :--- | :--- |
+| `cargo test -p yeban-sfz` | lib **449** + 集成/文档 **99**（1+2+48+32+5+11）＝ **548 全绿、0 失败** |
+| 新增判据 | **11 条**（音名移位/数字移位/半音与合成/缺省逐位不变/显式中心优先/缺省不移/keyswitch+滤波中心移位/哨兵不移/段重置/宏供值/响亮报错） |
+| 注入验证 | 把 `finalize_region` 的合成移位改成恒 0 ⇒ 偏移族判据变红（实测 5 条 FAILED 起）；还原后全绿 |
+| `cargo clippy -p yeban-sfz --all-targets`（`RUSTFLAGS="-D warnings"`） | 退出 0 |
+| `cargo fmt -p yeban-sfz -- --check` | 通过 |
+| 缺省逐位不变 | 无移位声明时 `key=c3` 仍归约到 48（判据 `without_offsets_note_names_parse_exactly_as_before`），且全量 548 条无一翻转 |
+
+**本阶段边界**：只动 `yeban-sfz`（`parser.rs` + `instrument.rs`）；engine/app 未动。
+`Instrument` 暂未暴露「文件声明了什么移位」的只读访问器 —— 装载回执若要报告
+文件自带移位（14.4 的 (a) 层报告），需要在阶段 2 实现时一并补（小口子，已登记）。
