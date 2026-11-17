@@ -1921,7 +1921,9 @@ fn render_branch(
         // * ~~手动相位对齐要求未武装~~：⭐ **stage 9 解除** —— `PhaseBank::apply_pair`
         //   把两声道交给**同一个游标**（对齐延时同值、极性同时反转）。
         // * 只有一条"直连 master、单位增益"的出边且没有发送自动化；
-        // * 没有声相自动化（那条平滑路径只服务单声道）。
+        // * ~~没有声相自动化~~：⭐ **stage 10 解除** —— `sum_pair_into_bus_smoothed`
+        //   把两个声相平滑器**每帧各推进一次**，分别乘到源侧已分好的左右缓冲上
+        //   （⛔ 不是"跑两遍单声道求和"：那会多推一次状态、并丢掉区域声相）。
         //
         // ⚠ 这些条件都是**读**（零分配、零锁）⇒ 判不成立时不花任何额外代价。
         let prepared_sfz = current.sfz_plan(&track).map(|plan| plan.prepared());
@@ -1936,11 +1938,8 @@ fn render_branch(
             && routes_of_track.len() == 1
             && routes_of_track[0].destination() == master
             && routes_of_track[0].gain() == 1.0
-            && !(process_sends && send_armed(share, &routes_of_track[0]))
-            && share.pan_gains[..*share.armed_pan_slots]
-                .iter()
-                .position(|(id, _, _)| *id == track)
-                .is_none_or(|index| !share.armed_pan_armed[index]);
+            && !(process_sends && send_armed(share, &routes_of_track[0]));
+
         if running && stereo_track {
             // 分声道：左 → `track_scratch`、右 → `track_scratch_r`（区域 `pan` 在源侧施加）。
             let (left, right) = (
@@ -2264,13 +2263,26 @@ fn render_branch(
             });
             if single_unit_to_master {
                 if stereo_track {
-                    sum_pair_into_bus(
-                        out,
-                        &share.track_scratch[..frames],
-                        &share.track_scratch_r[..frames],
-                        gain_l,
-                        gain_r,
-                    );
+                    if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
+                        // ⭐ stage 10：声相自动化 ＋ 分声道 ⇒ 逐帧平滑的成对求和。
+                        sum_pair_into_bus_smoothed(
+                            out,
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                            &mut share.armed_pan_l[index],
+                            &mut share.armed_pan_r[index],
+                        );
+                        *share.pan_automation_frames =
+                            share.pan_automation_frames.wrapping_add(frames as u64);
+                    } else {
+                        sum_pair_into_bus(
+                            out,
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                            gain_l,
+                            gain_r,
+                        );
+                    }
                 } else {
                     sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
                 }
@@ -5851,6 +5863,28 @@ fn sum_pair_into_bus(
     {
         *l += *source_l * gain_l;
         *r += *source_r * gain_r;
+    }
+}
+
+/// ⭐ **stage 10**：把"源侧已分好左右"的一对缓冲按**逐帧平滑的轨声相增益**
+/// 汇入母线（声相自动化专用）。
+///
+/// 与 [`sum_pair_into_bus`] 的唯一区别是增益不再是常量：两个平滑器**每帧各推进一次**，
+/// 分别乘到左/右缓冲上。⛔ 不能改写成"对两条缓冲各跑一次单声道求和" —— 那会让
+/// 平滑器状态推进两次、且丢掉源侧的区域声相。
+fn sum_pair_into_bus_smoothed(
+    block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    left: &[f32],
+    right: &[f32],
+    gain_l: &mut ParamSmoother,
+    gain_r: &mut ParamSmoother,
+) {
+    let (out_l, out_r) = block.stereo_mut();
+    for (((l, r), source_l), source_r) in
+        out_l.iter_mut().zip(out_r.iter_mut()).zip(left).zip(right)
+    {
+        *l += *source_l * gain_l.process();
+        *r += *source_r * gain_r.process();
     }
 }
 
@@ -10000,5 +10034,49 @@ mod tests {
         let (left, right) = other.stereo_mut();
         assert_eq!(left[0], left_source[0] * 0.5, "对调后左声道读数必须变");
         assert_eq!(right[0], right_source[0] * 0.25, "对调后右声道读数必须变");
+    }
+
+    /// ⭐ **stage 10 判据**：声相自动化的成对求和 —— 每一帧只推进**一次**平滑器，
+    /// 且左/右各自乘自己的增益；读数逐位等于"按同一序列手工乘加"的期望值。
+    #[test]
+    fn the_smoothed_pair_sum_advances_each_gain_once_per_frame() {
+        const N: usize = 32;
+        let mut block = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        let left: Vec<f32> = (0..N).map(|index| index as f32 + 1.0).collect();
+        let right: Vec<f32> = (0..N).map(|index| -(index as f32) - 2.0).collect();
+        let mut gain_l =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        let mut gain_r =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        gain_l.set_target(0.25);
+        gain_r.set_target(0.75);
+        let mut reference_l =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        let mut reference_r =
+            ParamSmoother::new(48_000.0, yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S);
+        reference_l.set_target(0.25);
+        reference_r.set_target(0.75);
+        sum_pair_into_bus_smoothed(&mut block, &left, &right, &mut gain_l, &mut gain_r);
+        let (out_l, out_r) = block.stereo_mut();
+        for index in 0..N {
+            assert_eq!(
+                out_l[index],
+                left[index] * reference_l.process(),
+                "左声道必须是 源左 × 第 {index} 帧增益"
+            );
+            assert_eq!(
+                out_r[index],
+                right[index] * reference_r.process(),
+                "右声道必须是 源右 × 第 {index} 帧增益"
+            );
+        }
+        // 反向腿：第二块沿用同一对平滑器 ⇒ 读数必须继续变化（状态没有停住）。
+        let mut second = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        sum_pair_into_bus_smoothed(&mut second, &left, &right, &mut gain_l, &mut gain_r);
+        let (second_l, _) = second.stereo_mut();
+        assert_ne!(
+            second_l[0], out_l[0],
+            "第二块的第一帧必须与第一块不同（平滑器在继续收敛）"
+        );
     }
 }
