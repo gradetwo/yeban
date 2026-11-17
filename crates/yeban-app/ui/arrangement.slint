@@ -1276,27 +1276,10 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
 
-                                    // 二期质感: 片段顶光/底影 (只 physical; flat 下 alpha
-                                    // 为 0, 不画像素)。本体是数据色 (轨道色 + alpha, 信息
-                                    // 编码), 只在其上下沿各叠 1px, 不动本体。
-                                    // ⚠ 两条线必须内缩一个边框宽: 本片段 `clip: true` 把
-                                    // 子元素裁到边框内侧, 贴边 (y=0 / height-1) 的 1px 线
-                                    // 会被整条裁掉 (盒上实证: α 拉到 0.5 仍零像素; 内缩
-                                    // 后正常出图)。边框宽与本块 border-width 同表达式。
-                                    Rectangle {
-                                        x: 0;
-                                        y: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 1px;
-                                        width: parent.width;
-                                        height: 1px;
-                                        background: Tokens.clip-sheen;
-                                    }
-                                    Rectangle {
-                                        x: 0;
-                                        y: parent.height - (blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 3px : 2px);
-                                        width: parent.width;
-                                        height: 1px;
-                                        background: Tokens.clip-shade;
-                                    }
+                                    // 片段面无质感叠层: 负责人 2026-11-17 拟物重点
+                                    // 口径 —— 编辑区域 (画布与片段) 保持平坦, 二期
+                                    // 加的片段顶光/底影已撤销, 片段本体就是数据色
+                                    // (轨道色 + alpha, 信息编码), 两套主题同形。
 
                                     // ⭐ 点击片段 = 选中该**摆放**：卷帘作用域随 `clip-select` 切到它
                                     // （⛔ 不再"所有轨道的全部音符混在一起"）。

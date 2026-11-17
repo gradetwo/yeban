@@ -9,9 +9,9 @@
 //! 1. `main-zh.png` —— 启动语言 zh-CN（经 `host::apply_language`，与
 //!    `main.rs` 的 `--lang` 写入口同路）；
 //! 2. `main-en.png` —— 经**真实选择路径**切英文：调用主窗口的
-//!    `select-language` 回调（走带栏 Group L 语言菜单与主菜单
-//!    「设置 → 语言」在 .slint 侧转发的就是它，宿主接管后走
-//!    `apply_language_and_save`），不重启、不重建窗口；
+//!    `select-language` 回调（主菜单「设置 → 语言」在 .slint 侧调的
+//!    就是它，宿主接管后走 `apply_language_and_save`），不重启、
+//!    不重建窗口；
 //! 3. `main-fr.png` —— 同路切法语；
 //! 4. `main-ja.png` —— 同路切日语；
 //! 5. `main-ru.png` —— 同路切俄语；
@@ -129,7 +129,7 @@ fn main() {
     assert_eq!(ui.get_language_code().as_str(), "zh-CN");
     assert_eq!(ui.get_language_name().as_str(), "中文");
 
-    // 真实选择路径：主菜单 / Group L 菜单 → MainWindow.select-language
+    // 真实选择路径：主菜单「设置 → 语言」→ MainWindow.select-language
     // 回调 → 宿主接管（应用＋写回临时设置文件）。
     for (code, name, frame_name) in [
         ("en-US", "English", "en"),

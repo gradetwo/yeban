@@ -1,4 +1,4 @@
-import { Theme, PersonaMode, TextureMode, Tokens, TooltipBubble } from "tokens.slint";
+import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
 
 // =========================================================================
 // UNIFIED VECTOR ICONS (1.2px - 1.5px Stroke, Geometric, Professional DAW Style)
@@ -581,10 +581,6 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <string> scale-text: "C Minor (自然小调)";
     in-out property <int> buffer-samples: 128;
     in-out property <int> dsp-cpu-percent: 14;
-    // 界面语言当前态（九语 i18n）：语言代码与自称名。宿主持有的状态在 MainWindow
-    // 侧，这里只读它显示 Group L 菜单按钮的当前语言。
-    in-out property <string> language-code: "zh-CN";
-    in-out property <string> language-name: "中文";
 
     callback toggle-zone(string);
     callback select-tool(string);
@@ -599,7 +595,6 @@ export component TransportHeaderBar inherits Rectangle {
     callback select-persona(PersonaMode);
     callback open-cmd-palette();
     callback toggle-hotspots();
-    callback select-language(string);
     callback revert-to-last-commit();
 
     height: 48px;
@@ -1357,139 +1352,11 @@ export component TransportHeaderBar inherits Rectangle {
                 TooltipBubble { text: Theme.show-tooltips ? @tr("悬浮提示: 已开启 (点击关闭) [T]") : @tr("悬浮提示: 已关闭 (点击开启) [T]"); is-visible: touch_tips.has-hover; tip-offset-x: -40px; }
             }
 
-            // Group L: Language menu （九语 i18n）—— 按钮显示当前语言自称名
-            // （root.language-name，宿主持有），点击弹出九语菜单（PopupWindow，
-            // 先例见 ui/console/piano_roll.slint 的 context-menu-popup：
-            // 菜单项在弹出层内调外层回调后关弹窗是允许方向；九项用 for 循环，
-            // 先例见 arrangement.slint 的 arr_tracks_menu_col）。自称名按定义
-            // 不走 @tr（判据白名单，见 tests/i18n_coverage.rs）。
-            Rectangle {
-                width: 64px;
-                height: 28px;
-                background: #10141d;
-                border-radius: Theme.radius;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-
-                lang-menu-popup := PopupWindow {
-                    // 菜单宽 150px，右缘与按钮右缘对齐（按钮宽 64px ⇒ 左移 86px），
-                    // 落在按钮下方 4px 处。
-                    x: -86px;
-                    y: 32px;
-                    width: 150px;
-                    height: 296px;
-                    close-policy: close-on-click-outside;
-
-                    Rectangle {
-                        background: #10141d;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        border-radius: Theme.radius;
-                        clip: true;
-
-                        VerticalLayout {
-                            padding: 4px;
-                            spacing: 0px;
-                            for lang in [
-                                { code: "zh-CN", name: "中文" },
-                                { code: "en-US", name: "English" },
-                                { code: "fr-FR", name: "Français" },
-                                { code: "es-ES", name: "Español" },
-                                { code: "pt-BR", name: "Português" },
-                                { code: "ja-JP", name: "日本語" },
-                                { code: "ko-KR", name: "한국어" },
-                                { code: "ru-RU", name: "Русский" },
-                                { code: "de-DE", name: "Deutsch" },
-                            ] : Rectangle {
-                                height: 32px;
-                                border-radius: 4px;
-                                background: lang-touch.has-hover ? Theme.accent.with-alpha(0.22) : transparent;
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    spacing: 4px;
-                                    Text {
-                                        // 当前项打勾：opacity 占位（不用 visible，
-                                        // 否则未勾选项的名字会左移一格）。
-                                        text: "✓";
-                                        opacity: root.language-code == lang.code ? 1 : 0;
-                                        font-family: Tokens.font-ui;
-                                        font-size: 9.5px;
-                                        font-weight: 600;
-                                        color: Theme.accent;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: lang.name;
-                                        font-family: Tokens.font-ui;
-                                        font-size: 10.5px;
-                                        color: #cbd5e1;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                lang-touch := TouchArea {
-                                    mouse-cursor: MouseCursor.pointer;
-                                    clicked => {
-                                        root.select-language(lang.code);
-                                        lang-menu-popup.close();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Text {
-                    text: root.language-name;
-                    font-family: Tokens.font-ui;
-                    font-size: 9.5px;
-                    font-weight: 600;
-                    color: #b6c2d2;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                touch_lang := TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    clicked => { lang-menu-popup.show(); }
-                }
-                TooltipBubble { text: @tr("界面语言 (点击选择语言)"); is-visible: touch_lang.has-hover; tip-offset-x: -40px; }
-            }
-
-            // Group L: Texture theme switch (扁平 / 实体) —— 负责人
-            // 2026-11-16 架构定案的用户切换入口: 两主题并存, 运行时切换
-            // `Tokens.texture` 即整套令牌换值 (§10 材质 + §11 结构线),
-            // 全界面绑定同源 ⇒ 即时、全量生效, 不重启不重编译。与 Group K
-            // 同款: Slint 内直接翻全局属性; 初始值仍由 host::apply_texture
-            // (CLI --texture) 注入。克制口径: 只一个小开关, 文字即当前态。
-            // 注: 本文件全部控件均无 accessible-id (文件惯例), 本钮从之,
-            // 身份由可见文字 + tooltip 承担。
-            Rectangle {
-                width: 40px;
-                height: 28px;
-                background: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.18) : #10141d;
-                border-radius: Theme.radius;
-                border-width: 1px;
-                border-color: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.5) : Theme.border-subtle;
-
-                Text {
-                    text: Tokens.texture == TextureMode.physical ? @tr("实体") : @tr("扁平");
-                    font-family: Tokens.font-ui;
-                    font-size: 9.5px;
-                    font-weight: 600;
-                    color: Tokens.texture == TextureMode.physical ? Theme.accent : #b6c2d2;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                touch_texture := TouchArea {
-                    mouse-cursor: MouseCursor.pointer;
-                    clicked => {
-                        Tokens.texture = Tokens.texture == TextureMode.physical ? TextureMode.flat : TextureMode.physical;
-                    }
-                }
-                TooltipBubble { text: Tokens.texture == TextureMode.physical ? @tr("质感主题: 实体 (点击切回扁平)") : @tr("质感主题: 扁平 (点击切换实体)"); is-visible: touch_texture.has-hover; tip-offset-x: -40px; }
-            }
+            // Group L 已撤（负责人 2026-11-17 口径）：语言与质感两个切换
+            // 入口统一进系统主菜单「设置」（语言 → MainWindow.select-language,
+            // 质感 → MainWindow.select-texture，宿主接管），走带栏不再放
+            // 切换钮/chip。原 Group L 语言菜单与质感开关两块 Rectangle
+            // 就此删除，栏内其余元素回到无钮排布。
         }
     }
 }

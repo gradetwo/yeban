@@ -99,9 +99,6 @@ msgstr "Consejos flotantes: activados (clic para desactivar) [T]"
 msgid "悬浮提示: 已关闭 (点击开启) [T]"
 msgstr "Consejos flotantes: desactivados (clic para activar) [T]"
 
-msgid "界面语言 (点击选择语言)"
-msgstr "Idioma de la interfaz (clic para elegir idioma)"
-
 # --- app.slint ---
 
 msgid "夜半"
@@ -1761,8 +1758,8 @@ msgstr "Físico"
 msgid "扁平"
 msgstr "Plano"
 
-msgid "质感主题: 实体 (点击切回扁平)"
-msgstr "Tema de textura: Físico (clic para volver a Plano)"
+msgid "语言"
+msgstr "Idioma"
 
-msgid "质感主题: 扁平 (点击切换实体)"
-msgstr "Tema de textura: Plano (clic para cambiar a Físico)"
+msgid "质感"
+msgstr "Textura"

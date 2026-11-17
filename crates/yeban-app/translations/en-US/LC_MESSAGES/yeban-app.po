@@ -99,9 +99,6 @@ msgstr "Hover Tips: On (Click to Turn Off) [T]"
 msgid "悬浮提示: 已关闭 (点击开启) [T]"
 msgstr "Hover Tips: Off (Click to Turn On) [T]"
 
-msgid "界面语言 (点击选择语言)"
-msgstr "Interface Language (Click to Choose Language)"
-
 # --- app.slint ---
 
 msgid "夜半"
@@ -1761,8 +1758,8 @@ msgstr "Physical"
 msgid "扁平"
 msgstr "Flat"
 
-msgid "质感主题: 实体 (点击切回扁平)"
-msgstr "Texture theme: Physical (click to switch back to Flat)"
+msgid "语言"
+msgstr "Language"
 
-msgid "质感主题: 扁平 (点击切换实体)"
-msgstr "Texture theme: Flat (click to switch to Physical)"
+msgid "质感"
+msgstr "Texture"

@@ -99,9 +99,6 @@ msgstr "Hover-Tipps: Ein (Klicken zum Ausschalten) [T]"
 msgid "悬浮提示: 已关闭 (点击开启) [T]"
 msgstr "Hover-Tipps: Aus (Klicken zum Einschalten) [T]"
 
-msgid "界面语言 (点击选择语言)"
-msgstr "Sprache der Oberfläche (Klicken zur Sprachauswahl)"
-
 # --- app.slint ---
 
 msgid "夜半"
@@ -1761,8 +1758,8 @@ msgstr "Physisch"
 msgid "扁平"
 msgstr "Flach"
 
-msgid "质感主题: 实体 (点击切回扁平)"
-msgstr "Texturthema: Physisch (klicken, um zu Flach zurückzuwechseln)"
+msgid "语言"
+msgstr "Sprache"
 
-msgid "质感主题: 扁平 (点击切换实体)"
-msgstr "Texturthema: Flach (klicken, um zu Physisch zu wechseln)"
+msgid "质感"
+msgstr "Textur"

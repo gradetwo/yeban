@@ -158,7 +158,9 @@ export component SongOverviewPanel inherits Rectangle {
     // 到不了的值）；非全屏时仍是 104 / 22 写死值。
     min-height: root.fullscreen ? 0px : (root.collapsed ? 22px : 104px);
     max-height: root.fullscreen ? 100000px : (root.collapsed ? 22px : 104px);
-    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+    // 编辑面回平 (负责人 2026-11-17 拟物重点口径): 总览面板本体/画布/
+    // 底部疏密条两套主题同为平色, 质感只留给层开关胶囊与折叠键。
+    background: Tokens.bg-panel;
     border-width: 1px;
     border-color: Tokens.line;
     clip: true;
@@ -215,7 +217,7 @@ export component SongOverviewPanel inherits Rectangle {
         width: root.canvas-width;
         height: root.fullscreen ? parent.height - 22px : 82px;
         visible: !root.collapsed;
-        background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
+        background: Tokens.bg-void;
         clip: true;
 
         accessible-role: image;
@@ -508,7 +510,7 @@ export component SongOverviewPanel inherits Rectangle {
         y: root.collapsed ? 0px : (root.fullscreen ? parent.height - 22px : 82px);
         width: root.canvas-width;
         height: 22px;
-        background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+        background: Tokens.bg-panel;
         clip: true;
 
         accessible-role: image;

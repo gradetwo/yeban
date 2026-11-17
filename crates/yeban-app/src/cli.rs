@@ -324,8 +324,8 @@ pub const PROBE_INSTRUMENTS_SWITCH: &str = "--probe-instruments";
 /// `--theme` 的字面值（运行期调色板切换的**唯一**用户出口）。
 pub const THEME_SWITCH: &str = "--theme";
 
-/// `--lang` 的字面值（界面语言的**启动选择**；运行期切换在走带栏 Group L
-/// 语言菜单与主菜单「设置 → 语言」）。
+/// `--lang` 的字面值（界面语言的**启动选择**；运行期切换在主菜单
+/// 「设置 → 语言」）。
 ///
 /// 九语 i18n（line/ui-i18n，设计见 `docs/app-i18n-notes.md`）：语言对
 /// zh-CN（默认、也是词表源语言）＋ en-US 等八个 bundled translation。
@@ -750,7 +750,7 @@ pub fn usage_text() -> String {
                            选择界面主题; 重复给以最后一个为准 (默认 default = yeban 调色板)
   --lang <{langs}>
                            选择界面语言; 重复给以最后一个为准 (默认 zh-CN = 简体中文);
-                             运行期可在走带栏 Group L 语言开关切换, 不必重启
+                             运行期可在主菜单「设置 → 语言」切换, 不必重启
                              default    水墨 + 颜料 (**2026-10-07 起是默认主题**): 背景/面板/线
                                         几乎零饱和, 颜色只留在内容上, 唯一强调色 (`accent`)
                                         整份界面只出现一次。取值**由负责人下发的具名调色板指定**
@@ -1185,7 +1185,7 @@ impl Sample {
 /// （`crates/yeban-app/translations/en-US/LC_MESSAGES/yeban-app.po`）。
 /// 生效入口是 [`crate::host::apply_language`]（唯一写入口，与 `apply_theme` 同款）：
 /// 它调 `slint::select_bundled_translation` 并回写 `MainWindow.language-code` /
-/// `language-name` 属性（走带栏 Group L 开关的当前态显示读它）。
+/// `language-name` 属性（主菜单「设置 → 语言」的当前态勾选读它）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Language {
     /// 简体中文（默认；词表源语言，`select_bundled_translation("")` 回到这一支）。
@@ -2044,7 +2044,7 @@ pub struct Options {
     ///
     /// 默认 [`Language::ZhCn`]。生效范围与 `theme` 同款：只有真的构造窗口
     /// 的路径才调用 [`crate::host::apply_language`]（GUI 与 `--headless-idle`
-    /// 两档）；运行期切换走走带栏 Group L 菜单与主菜单「设置 → 语言」，
+    /// 两档）；运行期切换走主菜单「设置 → 语言」，
     /// **不**回写这个字段（它只是启动选择）。
     ///
     /// 启动优先级（2026-11-17 定案，见 [`crate::settings`])：`--lang` 显式
@@ -2754,8 +2754,8 @@ impl fmt::Display for ParseError {
             Self::UnknownLanguage(lang) => write!(
                 formatter,
                 "未知的界面语言 `{lang}` (可用: {}; 默认 `zh-CN` = 简体中文, \
-                 也是词表源语言; `en-US` = 英文 bundled 词表; 运行期切换在走带栏 \
-                 Group L 语言开关, 不必重启)",
+                 也是词表源语言; `en-US` = 英文 bundled 词表; 运行期切换在主菜单 \
+                 「设置 → 语言」, 不必重启)",
                 Language::accepted_names().join("|")
             ),
             Self::UnknownTheme(theme) => write!(

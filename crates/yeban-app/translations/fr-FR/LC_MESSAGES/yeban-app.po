@@ -99,9 +99,6 @@ msgstr "Info-bulles : activées (cliquer pour désactiver) [T]"
 msgid "悬浮提示: 已关闭 (点击开启) [T]"
 msgstr "Info-bulles : désactivées (cliquer pour activer) [T]"
 
-msgid "界面语言 (点击选择语言)"
-msgstr "Langue de l'interface (cliquer pour choisir)"
-
 # --- app.slint ---
 
 msgid "夜半"
@@ -1761,8 +1758,8 @@ msgstr "Physique"
 msgid "扁平"
 msgstr "Plat"
 
-msgid "质感主题: 实体 (点击切回扁平)"
-msgstr "Thème de texture : Physique (cliquer pour revenir à Plat)"
+msgid "语言"
+msgstr "Langue"
 
-msgid "质感主题: 扁平 (点击切换实体)"
-msgstr "Thème de texture : Plat (cliquer pour passer à Physique)"
+msgid "质感"
+msgstr "Texture"

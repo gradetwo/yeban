@@ -135,10 +135,11 @@ export global ThemeState {
 // 值, 运行时切换即整套换值, 不重启、不重编译; 现行扁平的全部取值
 // 收在 flat 套里, 施工中不得丢失或漂移 (flat 套的恒等式见 §10 文件头)。
 //
-// 写者纪律: 初值由 Rust 侧的 `host::apply_texture` 单向注入 (CLI
-// `--texture`); 用户侧的切换入口是走带栏的质感开关
-// (`transport_bar.slint` Group L, 与 TIPS 开关同款: Slint 内直接翻
-// 本属性)。两处写的都是这**同一个属性**, 它是唯一事实源。
+// 写者纪律: `host::apply_texture` 是唯一写者 —— 启动时按 CLI
+// `--texture` 注入初值, 用户侧的运行期切换走系统主菜单
+// 「设置 → 质感」(`MainWindow.select-texture` 回调, 同样经
+// `apply_texture`)。负责人 2026-11-17 口径: 切换入口统一进主菜单,
+// 走带栏质感开关已撤销, .slint 侧不再直接写本属性。它是唯一事实源。
 // 初值必须是**默认质感** `flat` —— 不调 `apply_texture` 的路径
 // (Tier-1 无头渲染 / golden 截图) 看到的就是它, 因此默认外观一位不动。
 // 判据 `tests/texture_selection.rs` 把「CLI 默认 = flat / Slint 初值 = flat /
@@ -163,8 +164,8 @@ export enum TextureMode {
 }
 
 export global Tokens {
-    // 质感开关 (见文件上方 `TextureMode` 的说明; 写者 = `host::apply_texture`
-    // 的初始注入 + 走带栏质感开关的用户切换)。初值 `flat` = 默认外观一位不动。
+    // 质感开关 (见文件上方 `TextureMode` 的说明; 写者 = `host::apply_texture`,
+    // 初始注入与主菜单「设置 → 质感」的用户切换都经它)。初值 `flat` = 默认外观一位不动。
     in-out property <TextureMode> texture: TextureMode.flat;
 
     // =====================================================================
@@ -937,11 +938,15 @@ export global Tokens {
     out property <color> ruler-ink: texture-physical ? ink-0 : #cbd5e1;
 
 // =====================================================================
-// 12. 二期材质面 (2026-11-17): 编曲区轨道头/片段 + 钢琴卷帘键面/车道
+// 12. 二期材质面 (2026-11-17): 编曲区轨道头 + 钢琴卷帘键面
 // =====================================================================
+// 负责人 2026-11-17 拟物重点口径: 质感只在控件与硬件面, 编辑区域
+// (编曲区画布与片段、卷帘音符区、总览/Session/Clip 矩阵) 保持平坦
+// —— 本节原有的片段顶光/底影与卷帘车道/网格刷已按此撤销, 使用点
+// 回到平色; 本节只剩轨道头与键面两个硬件面材质。
 // §10 是**通用**材质 (面板/旋钮/屏/按键); 本节是两个**专用**面的材质。
 // 它们的 flat 分支不是 §6 的角色色, 而是使用点**现行手写字面值**本身
-// (轨道头 #0b0e16、卷帘车道三色、键面两色 —— 这些值不随配色主题走,
+// (轨道头 #0b0e16、键面两色 —— 这些值不随配色主题走,
 // 是编曲区/卷帘的既有平色), 因此双套值只能写在本节: flat = 字面值
 // 同色双停渐变 (逐位等于现行渲染), physical = 绕同一基色标定的微
 // 渐变。physical 只在 brand/yeban 生效 (同 §10: `texture-physical`
@@ -956,11 +961,6 @@ export global Tokens {
 out property <brush> track-head-brush: texture-physical
     ? @linear-gradient(180deg, #121828, #0b0e16 45%, #070a10)
     : @linear-gradient(180deg, #0b0e16, #0b0e16);
-// 片段顶光/底影 (只 physical): 与 §10 bevel 同源同向 (光源左上);
-// flat alpha = 0 ⇒ 不画像素。片段本体是数据色 (轨道色 + alpha, 是
-// 信息编码), 只在其上下沿各叠 1px, 不动本体。
-out property <color> clip-sheen: #ffffff.with-alpha(texture-physical ? 0.07 : 0.0);
-out property <color> clip-shade: #000000.with-alpha(texture-physical ? 0.35 : 0.0);
 // 钢琴卷帘键列: 白键帽 (键面本身) / 黑键行底 / 黑键突起帽。
 out property <brush> roll-key-white-brush: texture-physical
     ? @linear-gradient(180deg, #f2f5fa, #e4e9f2 55%, #ccd5e4)
@@ -971,20 +971,6 @@ out property <brush> roll-key-black-brush: texture-physical
 out property <brush> roll-key-cap-brush: texture-physical
     ? @linear-gradient(180deg, #141926, #0b0e15 60%, #05070c)
     : @linear-gradient(180deg, #0b0e15, #0b0e15);
-// 钢琴卷帘车道 (音符泳道行底): 白键行 / 黑键行 / 根音 (C) 行, 以及
-// 车道之下的网格底。
-out property <brush> roll-lane-white-brush: texture-physical
-    ? @linear-gradient(180deg, #28324a, #242c3e 55%, #1d2434)
-    : @linear-gradient(180deg, #242c3e, #242c3e);
-out property <brush> roll-lane-black-brush: texture-physical
-    ? @linear-gradient(180deg, #1a2130, #161b26 55%, #10141d)
-    : @linear-gradient(180deg, #161b26, #161b26);
-out property <brush> roll-lane-root-brush: texture-physical
-    ? @linear-gradient(180deg, #323f59, #2c364b 55%, #232c40)
-    : @linear-gradient(180deg, #2c364b, #2c364b);
-out property <brush> roll-grid-brush: texture-physical
-    ? @linear-gradient(180deg, #1e2534, #1a202e 55%, #151a26)
-    : @linear-gradient(180deg, #1a202e, #1a202e);
 }
 
 // 全部文本图元的统一起点: 一处固定字体族 / 字重与默认墨色, 免得 81 个 Text 各写一遍。

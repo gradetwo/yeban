@@ -176,14 +176,6 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "轨道头刷 flat 分支 = 现行字面 #0b0e16",
         ),
         (
-            "out property <color> clip-sheen: #ffffff.with-alpha(texture-physical ? 0.07 : 0.0);",
-            "片段顶光令牌（flat alpha = 0）",
-        ),
-        (
-            "out property <color> clip-shade: #000000.with-alpha(texture-physical ? 0.35 : 0.0);",
-            "片段底影令牌（flat alpha = 0）",
-        ),
-        (
             ": @linear-gradient(180deg, #e4e9f2, #e4e9f2);",
             "卷帘白键刷 flat 分支 = 现行字面 #e4e9f2",
         ),
@@ -195,26 +187,25 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             ": @linear-gradient(180deg, #0b0e15, #0b0e15);",
             "卷帘黑键帽刷 flat 分支 = 现行字面 #0b0e15",
         ),
-        (
-            ": @linear-gradient(180deg, #242c3e, #242c3e);",
-            "卷帘白键车道刷 flat 分支 = 现行字面 #242c3e",
-        ),
-        (
-            ": @linear-gradient(180deg, #161b26, #161b26);",
-            "卷帘黑键车道刷 flat 分支 = 现行字面 #161b26",
-        ),
-        (
-            ": @linear-gradient(180deg, #2c364b, #2c364b);",
-            "卷帘根音车道刷 flat 分支 = 现行字面 #2c364b",
-        ),
-        (
-            ": @linear-gradient(180deg, #1a202e, #1a202e);",
-            "卷帘网格刷 flat 分支 = 现行字面 #1a202e",
-        ),
     ] {
         assert!(
             tokens.contains(needle),
             "tokens.slint 必须含 {what}: {needle}"
+        );
+    }
+    // 编辑面材质令牌已撤销（2026-11-17 拟物重点口径：编辑面回平）:
+    // 片段顶光/底影、卷帘车道/网格刷不得回归。
+    for gone in [
+        "clip-sheen",
+        "clip-shade",
+        "roll-lane-white-brush",
+        "roll-lane-black-brush",
+        "roll-lane-root-brush",
+        "roll-grid-brush",
+    ] {
+        assert!(
+            !tokens.contains(gone),
+            "编辑面材质令牌不得回归 tokens.slint: {gone}"
         );
     }
 
@@ -223,26 +214,27 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
     let roll = read("console/piano_roll.slint");
     for (needle, what) in [
         (
-            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void",
-            "卷帘根底走 void-brush (flat 色值支)",
-        ),
-        (
             "Tokens.texture-physical ? Tokens.shell-brush : #0d1018",
             "键列容器 (shell-brush, flat #0d1018)",
         ),
         ("Tokens.roll-key-white-brush", "白键面走 §12 键刷"),
         ("Tokens.roll-key-black-brush", "黑键行走 §12 键刷"),
         ("Tokens.roll-key-cap-brush", "黑键帽走 §12 键刷"),
-        ("Tokens.roll-lane-white-brush", "白键车道走 §12 车道刷"),
-        ("Tokens.roll-lane-black-brush", "黑键车道走 §12 车道刷"),
-        ("Tokens.roll-lane-root-brush", "根音车道走 §12 车道刷"),
-        (
-            "Tokens.texture-physical ? Tokens.roll-grid-brush : #1a202e",
-            "网格底走 §12 网格刷 (flat 字面支)",
-        ),
         (
             "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel",
-            "力度泳道/右键菜单走 panel-brush (flat 色值支)",
+            "右键菜单走 panel-brush (flat 色值支)",
+        ),
+        // 编辑面回平目标值（2026-11-17 拟物重点口径）: 根底/网格/车道/
+        // 力度泳道两套主题同为平色。
+        ("background: Tokens.bg-void;", "卷帘根底回平 (bg-void 平色)"),
+        ("background: #1a202e;", "网格底回平 (#1a202e 平色)"),
+        (
+            "background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? #2c364b :",
+            "车道回平 (字面三档平色)",
+        ),
+        (
+            "background: Tokens.bg-panel;",
+            "力度泳道回平 (bg-panel 平色)",
         ),
     ] {
         assert!(
@@ -258,6 +250,13 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             !roll.contains(gone),
             "渐变刷不得直作 background (flat 圆角 AA 纪律): {gone}"
         );
+    }
+    for gone in [
+        "Tokens.roll-lane",
+        "Tokens.roll-grid-brush",
+        "Tokens.void-brush",
+    ] {
+        assert!(!roll.contains(gone), "卷帘编辑面质感刷不得回归: {gone}");
     }
 
     // ② 左栏检查器 + 智能音色库。
@@ -306,7 +305,9 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
         "左栏屏/井/卡的字面背景不得回归（必须走质感三元）"
     );
 
-    // ③ 走带栏本体（Group L 质感切换钮的渲染与行为不在本轮范围, 钉住未动）。
+    // ③ 走带栏本体（质感切换钮已按负责人 2026-11-17 口径撤出走带栏、
+    // 迁主菜单「设置 → 质感」, 入口钉在本文件 the_track_area 一节; 这里
+    // 只钉栏体渲染）。
     let transport = read("transport_bar.slint");
     for (needle, what) in [
         (
@@ -329,10 +330,6 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "Tokens.texture-physical ? Tokens.raised-brush : #10141d",
             "命令钮 (raised-brush, flat #10141d)",
         ),
-        (
-            "background: Tokens.texture == TextureMode.physical ? Theme.accent.with-alpha(0.18) : #10141d;",
-            "Group L 质感切换钮渲染未动",
-        ),
     ] {
         assert!(
             transport.contains(needle),
@@ -351,8 +348,6 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             ": (Tokens.texture-physical ? Tokens.track-head-brush : #0b0e16);",
             "轨道头未选中支走 §12 轨道头刷 (flat 字面支)",
         ),
-        ("background: Tokens.clip-sheen;", "片段顶光走 §12 令牌"),
-        ("background: Tokens.clip-shade;", "片段底影走 §12 令牌"),
         (
             "Tokens.texture-physical ? Tokens.void-brush : #06080d",
             "轨道头表井 (void-brush, flat #06080d)",
@@ -366,6 +361,10 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
     assert!(
         !arrangement.contains("with-alpha(0.10) : #0b0e16;"),
         "轨道头二期前的直写平色形不得回归 (必须走 §12 三元)"
+    );
+    assert!(
+        !arrangement.contains("Tokens.clip-sheen") && !arrangement.contains("Tokens.clip-shade"),
+        "片段顶光/底影不得回归（编辑面回平，2026-11-17 口径）"
     );
 
     // ⑤ 状态栏。
@@ -443,17 +442,43 @@ fn the_track_area_follows_the_four_ui_rulings() {
         );
     }
 
-    // 用户切换入口（走带栏 Group L）：翻的是同一个 `Tokens.texture`。
-    let transport_bar = read("transport_bar.slint");
+    // 用户切换入口（负责人 2026-11-17 口径：语言与质感两个切换入口
+    // 统一进系统主菜单，不要走带栏按钮/chip）：主菜单「设置 → 质感」
+    // 两项调 select-texture，宿主经唯一写入口 apply_texture 写同一个
+    // `Tokens.texture`；走带栏两钮（质感开关 + 语言 chip）已撤，不得回归。
+    let app = read("app.slint");
     assert!(
-        transport_bar.contains(
-            "Tokens.texture = Tokens.texture == TextureMode.physical ? TextureMode.flat : TextureMode.physical;"
-        ),
-        "走带栏必须有质感切换钮（翻 Tokens.texture 本身）"
+        app.contains("root.select-texture(\"flat\")"),
+        "主菜单「设置 → 质感」必须有扁平项（调 select-texture）"
     );
     assert!(
-        transport_bar.contains("质感主题: 实体 (点击切回扁平)"),
-        "质感切换钮必须有状态 tooltip"
+        app.contains("root.select-texture(\"physical\")"),
+        "主菜单「设置 → 质感」必须有实体项（调 select-texture）"
+    );
+    let host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        host.contains("ui.on_select_texture("),
+        "宿主必须接 select-texture 回调（菜单项的宿主落点）"
+    );
+    assert!(
+        host.contains("apply_texture(&ui, texture)"),
+        "select-texture 必须经唯一写入口 apply_texture 应用"
+    );
+    let transport_bar = read("transport_bar.slint");
+    assert!(
+        !transport_bar.contains("touch_texture"),
+        "走带栏质感切换钮不得回归（入口已迁主菜单）"
+    );
+    assert!(
+        !transport_bar.contains("Tokens.texture = Tokens"),
+        "走带栏不得再直接写 Tokens.texture（写者收敛为 host::apply_texture）"
+    );
+    assert!(
+        !transport_bar.contains("lang-menu-popup"),
+        "走带栏语言 chip 不得回归（入口已迁主菜单）"
     );
 
     let arrangement = read("arrangement.slint");
@@ -536,6 +561,11 @@ fn the_track_area_follows_the_four_ui_rulings() {
 // 内容色（轨道色 / 频带色 / 电平色 / diff 色 / 状态色 / 遮罩）不动；
 // 六面文件里不得再有裸 `background: Tokens.bg-* / Theme.bg-*;`。
 //
+// 2026-11-17 晚口径修订（负责人拟物重点口径）: ②③④ 是编辑面，本体
+// 回平 —— 矩阵/总览的根底、画布、插槽、列头回到裸平色（本节后段逐面
+// 改钉回平目标值 + 负向钉），质感只留给它们内部的按钮（三元保留）；
+// ①⑤⑥ 与素材池维持全质感口径不变。
+//
 // ConsoleTabs 普查结论（2026-11-17）: 组件在 app.slint 里挂在
 // `if false` 转发块下（原注「Compatibility Forwarding Block for
 // Automated Criteria Tests」），真实窗口不可达；但它不是可删死 UI ——
@@ -558,12 +588,11 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
     let read = |rel: &str| {
         std::fs::read_to_string(ui_dir.join(rel)).unwrap_or_else(|_| panic!("读 {rel}"))
     };
+    // 全质感面（编辑面②③④已按 2026-11-17 晚口径移出，见节头注与
+    // 本节后段的回平专钉）。
     let phase3_files = [
         "control_room.slint",
-        "clip_matrix.slint",
         "sidebar.slint",
-        "workspace/session_view.slint",
-        "workspace/song_overview_panel.slint",
         "modals.slint",
         "dialogs/export_wav_dialog.slint",
         "dialogs/humanize_dialog.slint",
@@ -606,29 +635,9 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
             "控制室表井必须有凹陷深线",
         ),
         (
-            "clip_matrix.slint",
-            "background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-panel;",
-            "Clip 矩阵根底走 panel-brush",
-        ),
-        (
-            "clip_matrix.slint",
-            "Tokens.clip-sheen",
-            "Clip 矩阵填充格必须有质感顶光",
-        ),
-        (
             "sidebar.slint",
             "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;",
             "sidebar 根底走 panel-brush",
-        ),
-        (
-            "workspace/session_view.slint",
-            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;",
-            "Session 插槽列走 shell-brush",
-        ),
-        (
-            "workspace/song_overview_panel.slint",
-            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;",
-            "全曲总览画布井走 void-brush",
         ),
         (
             "modals.slint",
@@ -643,6 +652,57 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
     ] {
         assert!(read(rel).contains(needle), "{rel} 必须含 {what}: {needle}");
     }
+
+    // 编辑面回平专钉（2026-11-17 晚口径）: ②③④ 本体必须是裸平色
+    // （回平目标值逐字钉），内部按钮保留质感三元，片段/格面顶光底影
+    // 令牌不得回归。
+    let clip_matrix = read("clip_matrix.slint");
+    assert!(
+        clip_matrix.contains("background: Theme.bg-panel;"),
+        "Clip 矩阵根底必须回平 (Theme.bg-panel)"
+    );
+    assert!(
+        clip_matrix.contains("background: #080a10;"),
+        "Clip 矩阵头部带必须回平 (#080a10)"
+    );
+    assert!(
+        clip_matrix.contains("Tokens.texture-physical ? Tokens.raised-brush : #10141d"),
+        "Clip 矩阵按钮必须保留质感三元 (raised-brush)"
+    );
+    assert!(
+        !clip_matrix.contains("Tokens.clip-sheen") && !clip_matrix.contains("Tokens.clip-shade"),
+        "Clip 矩阵格面顶光/底影不得回归（编辑面回平）"
+    );
+    let session = read("workspace/session_view.slint");
+    assert!(
+        session.contains("background: Tokens.bg-void;"),
+        "Session 根底必须回平 (bg-void)"
+    );
+    assert!(
+        session.contains("background: Tokens.bg-shell;"),
+        "Session 插槽列必须回平 (bg-shell)"
+    );
+    assert!(
+        session.contains("background: Tokens.bg-panel;"),
+        "Session 插槽格必须回平 (bg-panel)"
+    );
+    assert!(
+        session.contains("Tokens.texture-physical ? ((scene_touch.pressed"),
+        "Session 场景激发行（按钮面）必须保留质感三元"
+    );
+    let overview = read("workspace/song_overview_panel.slint");
+    assert!(
+        overview.contains("background: Tokens.bg-void;"),
+        "全曲总览画布必须回平 (bg-void)"
+    );
+    assert!(
+        !overview.contains("Tokens.void-brush"),
+        "全曲总览不得再用 void-brush（编辑面回平）"
+    );
+    assert!(
+        overview.contains("pill_touch.pressed ? Tokens.raised-brush"),
+        "全曲总览层开关胶囊（按钮面）必须保留质感三元"
+    );
 
     // ConsoleTabs 普查处置钉: 转发块保留（判据面在用，见本节头注）。
     let app = read("app.slint");

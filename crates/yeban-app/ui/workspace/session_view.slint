@@ -50,7 +50,10 @@ export component SessionView inherits Rectangle {
     // 启动请求的**如实**回执（没有引擎 / 事件环满时非空）；默认空串 = 不占视觉空间。
     in property <string> scene-launch-status: "";
 
-    background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-void;
+    // 编辑面回平 (负责人 2026-11-17 拟物重点口径): Session 矩阵本体
+    // (根底/包头/插槽列/插槽格/激发列头) 两套主题同为平色, 质感只留
+    // 给场景激发行与返回钮等按钮面 (下方 raised-brush 三元)。
+    background: Tokens.bg-void;
     clip: true;
 
     accessible-role: main;
@@ -65,7 +68,7 @@ export component SessionView inherits Rectangle {
         height: 28px;
         // ⭐ `#190`：装不下的列不画（⛔ 不再是"画出去被画布 clip 掉、用户看不见"）。
         visible: track_index < root.visible-track-count;
-        background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
+        background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         clip: true;
         accessible-role: list-item;
@@ -93,7 +96,7 @@ export component SessionView inherits Rectangle {
         y: 32px;
         width: 120px;
         height: 68px * root.scenes.length;
-        background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;
+        background: Tokens.bg-shell;
         border-radius: Tokens.radius-sm;
         // ⭐ `#190`：与包头行同一批列（包头不画的列，插槽也不画）。
         visible: track_index < root.visible-track-count;
@@ -113,7 +116,7 @@ export component SessionView inherits Rectangle {
             // 谎报"这一格装了剪辑 / 这一格被选中"。
             // 真落地时要先有槽位来源（投影 → 注入平行数组），再把底色 / 文字 / 选中
             // 分别绑到真实读数上；在那之前三处一律不编。
-            background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
+            background: Tokens.bg-panel;
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: Tokens.line;
@@ -146,7 +149,7 @@ export component SessionView inherits Rectangle {
         y: 0;
         width: 104px;
         height: 28px;
-        background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
+        background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         accessible-role: text;
         accessible-id: "scene-launch-column-header";
