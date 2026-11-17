@@ -966,17 +966,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
         let path = dir.join("settings.json");
-        let mut settings = Settings::default();
-        settings.recent_projects = vec![
-            RecentProject {
-                path: std::path::PathBuf::from("/music/a.yeban"),
-                opened_at_unix_ms: 111,
-            },
-            RecentProject {
-                path: std::path::PathBuf::from("/music/b.yeban"),
-                opened_at_unix_ms: 99,
-            },
-        ];
+        let settings = Settings {
+            recent_projects: vec![
+                RecentProject {
+                    path: std::path::PathBuf::from("/music/a.yeban"),
+                    opened_at_unix_ms: 111,
+                },
+                RecentProject {
+                    path: std::path::PathBuf::from("/music/b.yeban"),
+                    opened_at_unix_ms: 99,
+                },
+            ],
+            ..Default::default()
+        };
         save_to(&path, &settings).expect("写设置");
         let back = load_from(&path);
         assert_eq!(back.recent_projects, settings.recent_projects);

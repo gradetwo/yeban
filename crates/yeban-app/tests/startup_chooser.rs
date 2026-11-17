@@ -32,6 +32,8 @@ use yeban_app::startup_chooser::{
 };
 use yeban_app::templates::{TemplateRoots, TemplateSource};
 
+use slint::Model as _;
+
 const NOW_MS: u64 = 1_700_000_000_000;
 
 /// 临时目录（`Drop` 时清理，**绝不污染仓库**）。形态照
