@@ -4386,8 +4386,8 @@ pub(super) fn select_regions(
             && region.matches_key(note.pitch)
             && region.matches_velocity(note.velocity)
             && region.accepts_rand(rand)
-            && region.cc_gates_ok(&cc_probe)
-            && region.cc_triggers_ok(&cc_probe)
+            && region.cc_gates_ok(cc_probe)
+            && region.cc_triggers_ok(cc_probe)
             && region.trigger.responds_to(TriggerEvent::NoteOn)
     };
     let seq_selects = |region: &Region<'_>| {
@@ -4401,15 +4401,14 @@ pub(super) fn select_regions(
         .filter(|(_, region)| matches(region) && seq_selects(region))
         .map(|(index, _)| index)
         .collect();
-    if indices.is_empty() {
-        if let Some((index, _)) = instrument
+    if indices.is_empty()
+        && let Some((index, _)) = instrument
             .regions()
             .iter()
             .enumerate()
             .find(|(_, region)| matches(region))
-        {
-            indices.push(index);
-        }
+    {
+        indices.push(index);
     }
     indices
 }
