@@ -101,7 +101,7 @@ fn device_rack_menu_naming_is_consistent() {
     let s = code_lines(APP);
     assert!(!s.contains("DSP 效果器机架"));
     assert!(!s.contains("打开底部 设备机架 (DSP)"));
-    assert!(s.contains("title: \"设备机架\""));
+    assert!(s.contains("title: @tr(\"设备机架\")")); // i18n 后源码表示为 @tr 形式（line/ui-i18n）
 }
 
 /// **判据 ⑦**：`on_trigger_shortcut` 不再与界面分支重复处理功能键。

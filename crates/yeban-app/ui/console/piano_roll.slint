@@ -102,7 +102,7 @@ export component PianoRoll inherits Rectangle {
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
-    in property <[string]> tool-labels: ["选择", "铅笔", "剪刀", "力度", "橡皮"];
+    in property <[string]> tool-labels: [@tr("选择"), @tr("铅笔"), @tr("剪刀"), @tr("力度"), @tr("橡皮")];
     in property <int> active-tool: 1;
     // `[UI-NOTE-003]` **工具行号口径的唯一转换点**（台账 R372）: `active-tool` 是 `1`..`5`
     // （`Tool::digit()` 与数字键 `1`..`5` 同一口径），而工具矩阵那圈 `for` 的下标是 `0`..`4`。
@@ -142,7 +142,7 @@ export component PianoRoll inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "piano-roll";
-    accessible-label: "虚拟化钢琴卷帘";
+    accessible-label: @tr("虚拟化钢琴卷帘");
 
     // ---------------------------------------------------------------- 工具矩阵 (§3.3)
     // 与 src/input.rs 的 1..5 数字键是同一份状态: 只读 `active-tool` 的**唯一**写者住在宿主
@@ -170,7 +170,7 @@ export component PianoRoll inherits Rectangle {
         z: 1;
         accessible-role: button;
         accessible-id: "piano-roll-tool-" + root.tool-names[tool_index] + "-button";
-        accessible-label: root.tool-labels[tool_index] + "工具";
+        accessible-label: @tr("{}工具", root.tool-labels[tool_index]);
         accessible-item-index: tool_index;
         accessible-item-count: 5;
         accessible-checkable: true;
@@ -214,14 +214,14 @@ export component PianoRoll inherits Rectangle {
         // 与高度一位未改，而**没有拒绝时**文字仍是同一串、左对齐 ⇒ 像素不变）。
         width: max(0px, parent.width - 272px - 230px);
         height: 20px;
-        text: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · " + root.pitch-range-label;
+        text: root.edit-status-shown ? root.edit-status : @tr("吸附 1/16 · PPQ 960 · {}", root.pitch-range-label);
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         overflow: elide;
         accessible-role: text;
         accessible-id: "piano-roll-status";
-        accessible-label: "卷帘吸附与音域状态";
-        accessible-value: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · " + root.pitch-range-label;
+        accessible-label: @tr("卷帘吸附与音域状态");
+        accessible-value: root.edit-status-shown ? root.edit-status : @tr("吸附 1/16 · PPQ 960 · {}", root.pitch-range-label);
     }
 
     // 右侧本地视图菜单（八度移位 / 量化 / 人性化）
@@ -243,7 +243,7 @@ export component PianoRoll inherits Rectangle {
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "八-";
+                text: @tr("八-");
                 color: root.base-midi-pitch <= 24 ? Tokens.ink-2 : Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -268,7 +268,7 @@ export component PianoRoll inherits Rectangle {
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "八+";
+                text: @tr("八+");
                 color: root.base-midi-pitch >= 96 ? Tokens.ink-2 : Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -293,7 +293,7 @@ export component PianoRoll inherits Rectangle {
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "量化 Q";
+                text: @tr("量化 Q");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -317,7 +317,7 @@ export component PianoRoll inherits Rectangle {
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "人性化 H";
+                text: @tr("人性化 H");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -342,7 +342,7 @@ export component PianoRoll inherits Rectangle {
         background: #0d1018;
         accessible-role: list;
         accessible-id: "piano-roll-keys";
-        accessible-label: "钢琴键列";
+        accessible-label: @tr("钢琴键列");
 
         for key_index in 16 : Rectangle {
             x: 0;
@@ -403,7 +403,7 @@ export component PianoRoll inherits Rectangle {
 
         accessible-role: region;
         accessible-id: "piano-roll-grid";
-        accessible-label: "音符网格画布";
+        accessible-label: @tr("音符网格画布");
 
         // 横向音高车道（保持 14px * lane_index 契约，增大黑白键明暗对比与 1px 底部分隔线）
         for lane_index in 16 : Rectangle {
@@ -456,7 +456,7 @@ export component PianoRoll inherits Rectangle {
             border-color: root.note-selected[note_index] ? Tokens.selection : transparent;
             accessible-role: list-item;
             accessible-id: "note-" + note_ulid + "-rect";
-            accessible-label: "音符 " + note_ulid;
+            accessible-label: @tr("音符 {}", note_ulid);
             accessible-item-index: note_index;
             accessible-item-count: root.note-ulids.length;
             accessible-item-selectable: true;
@@ -487,7 +487,7 @@ export component PianoRoll inherits Rectangle {
         visible: root.show-velocity-lane;
         accessible-role: region;
         accessible-id: "piano-roll-velocity-lane";
-        accessible-label: "力度泳道";
+        accessible-label: @tr("力度泳道");
 
         // `for <标识符>[i] in <model>` 必须带声明标识符；本切片把它从 `_` 换成 `note_ulid`，
         // 因为力度臂的草稿预览要按**身份**选中被拖的那一根柱（见 arrangement_view.slint 的注释）。
@@ -508,7 +508,7 @@ export component PianoRoll inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: slider;
             accessible-id: "velocity-" + velocity_index + "-bar";
-            accessible-label: "力度条 " + velocity_index;
+            accessible-label: @tr("力度条 {}", velocity_index);
             accessible-value-minimum: 0;
             accessible-value-maximum: 127;
             accessible-value-step: 1;
@@ -540,7 +540,7 @@ export component PianoRoll inherits Rectangle {
             background: Tokens.gold-bright;
             accessible-role: slider;
             accessible-id: "piano-roll-playhead";
-            accessible-label: "卷帘走带光标";
+            accessible-label: @tr("卷帘走带光标");
             accessible-value: root.playhead-timecode;
         }
     }
@@ -565,7 +565,7 @@ export component PianoRoll inherits Rectangle {
         // （与 `ui/` 下其它关键节点同一族），否则无头注入只能靠像素坐标 —— 那正是被禁的做法。
         accessible-role: region;
         accessible-id: "piano-roll-scroll-area";
-        accessible-label: "卷帘拖动手势面";
+        accessible-label: @tr("卷帘拖动手势面");
         scroll-event(event) => {
             root.roll-wheel(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt);
             accept
@@ -710,7 +710,7 @@ export component PianoRoll inherits Rectangle {
                 height: 32px;
                 accessible-role: button;
                 accessible-id: "piano-roll-context-menu-humanize";
-                accessible-label: "人性化…";
+                accessible-label: @tr("人性化…");
                 accessible-action-default => {
                     root.humanize-requested();
                     context-menu-popup.close();
@@ -721,7 +721,7 @@ export component PianoRoll inherits Rectangle {
                     y: 0;
                     width: parent.width - 16px;
                     height: parent.height;
-                    text: "人性化…";
+                    text: @tr("人性化…");
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
                     vertical-alignment: center;
@@ -744,7 +744,7 @@ export component PianoRoll inherits Rectangle {
                 height: 32px;
                 accessible-role: button;
                 accessible-id: "piano-roll-context-menu-quantize";
-                accessible-label: "量化…";
+                accessible-label: @tr("量化…");
                 accessible-action-default => {
                     root.quantize-requested();
                     context-menu-popup.close();
@@ -755,7 +755,7 @@ export component PianoRoll inherits Rectangle {
                     y: 0;
                     width: parent.width - 16px;
                     height: parent.height;
-                    text: "量化…";
+                    text: @tr("量化…");
                     color: Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
                     vertical-alignment: center;

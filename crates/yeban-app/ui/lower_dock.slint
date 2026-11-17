@@ -152,7 +152,7 @@ export component UnifiedLowerDock inherits Rectangle {
     border-color: Theme.border-subtle;
     accessible-role: region;
     accessible-id: "console-tab-rail";
-    accessible-label: "底部控制台";
+    accessible-label: @tr("底部控制台");
 
     VerticalLayout {
         padding: 0px;
@@ -182,7 +182,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "设备堆叠";
+                                text: @tr("设备堆叠");
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -194,7 +194,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("stacked"); }
                         }
-                        TooltipBubble { text: "设备堆叠：效果器与混音控制台双层视图 [Alt+S]"; is-visible: tab_stk_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: @tr("设备堆叠：效果器与混音控制台双层视图 [Alt+S]"); is-visible: tab_stk_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -204,7 +204,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "设备机架";
+                                text: @tr("设备机架");
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -216,7 +216,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("devices"); }
                         }
-                        TooltipBubble { text: "设备机架：效果器与虚拟乐器 [D]"; is-visible: tab_dev_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: @tr("设备机架：效果器与虚拟乐器 [D]"); is-visible: tab_dev_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -226,7 +226,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "混音控制台";
+                                text: @tr("混音控制台");
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -238,7 +238,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("mixer"); }
                         }
-                        TooltipBubble { text: "混音控制台 [X]"; is-visible: tab_mix_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: @tr("混音控制台 [X]"); is-visible: tab_mix_touch.has-hover; tip-offset-y: 28px; }
                     }
 
                     Rectangle {
@@ -248,7 +248,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "钢琴卷帘";
+                                text: @tr("钢琴卷帘");
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 700;
@@ -260,7 +260,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.select-tab("pianoroll"); }
                         }
-                        TooltipBubble { text: "钢琴卷帘 [P]"; is-visible: tab_pr_touch.has-hover; tip-offset-y: 28px; }
+                        TooltipBubble { text: @tr("钢琴卷帘 [P]"); is-visible: tab_pr_touch.has-hover; tip-offset-y: 28px; }
                     }
                 }
 
@@ -283,7 +283,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 padding-left: 6px;
                                 padding-right: 6px;
                                 Text {
-                                    text: "音色 [v]";
+                                    text: @tr("音色 [v]");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -298,7 +298,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     root.dock-instrument-menu-open = !root.dock-instrument-menu-open;
                                 }
                             }
-                            TooltipBubble { text: "为当前聚焦轨道切换内置/SFZ 音色"; is-visible: dock-inst-btn.has-hover; tip-offset-y: 26px; }
+                            TooltipBubble { text: @tr("为当前聚焦轨道切换内置/SFZ 音色"); is-visible: dock-inst-btn.has-hover; tip-offset-y: 26px; }
                         }
 
                         Rectangle {
@@ -323,7 +323,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.execute-action("insert-eq"); }
                             }
-                            TooltipBubble { text: "为当前轨插入参量均衡器 EQ"; is-visible: dock-eq-btn.has-hover; tip-offset-y: 26px; }
+                            TooltipBubble { text: @tr("为当前轨插入参量均衡器 EQ"); is-visible: dock-eq-btn.has-hover; tip-offset-y: 26px; }
                         }
 
                         Rectangle {
@@ -336,7 +336,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 padding-left: 6px;
                                 padding-right: 6px;
                                 Text {
-                                    text: "混响";
+                                    text: @tr("混响");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -348,7 +348,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.execute-action("insert-reverb"); }
                             }
-                            TooltipBubble { text: "为当前轨插入空间混响 Reverb"; is-visible: dock-rev-btn.has-hover; tip-offset-y: 26px; }
+                            TooltipBubble { text: @tr("为当前轨插入空间混响 Reverb"); is-visible: dock-rev-btn.has-hover; tip-offset-y: 26px; }
                         }
 
                         Rectangle {
@@ -361,7 +361,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 padding-left: 6px;
                                 padding-right: 6px;
                                 Text {
-                                    text: "量化";
+                                    text: @tr("量化");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -373,7 +373,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.quantize-requested(); }
                             }
-                            TooltipBubble { text: "量化当前轨 MIDI 音符至网格"; is-visible: dock-quant-btn.has-hover; tip-offset-y: 26px; }
+                            TooltipBubble { text: @tr("量化当前轨 MIDI 音符至网格"); is-visible: dock-quant-btn.has-hover; tip-offset-y: 26px; }
                         }
                     }
 
@@ -389,7 +389,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             spacing: 5px;
                             Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.selected-track-color; }
                             Text {
-                                text: "聚焦: " + root.focus-track-name;
+                                text: @tr("聚焦: {}", root.focus-track-name);
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 600;
@@ -403,7 +403,7 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         accessible-id: "console-maximize-button";
                         accessible-role: button;
-                        accessible-label: "最大化 / 还原底部控制台";
+                        accessible-label: @tr("最大化 / 还原底部控制台");
                         accessible-checked: root.console-maximized;
                         accessible-action-default => { root.console-maximize-toggle(); }
                         width: 26px;
@@ -437,7 +437,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             clicked => { root.console-maximize-toggle(); }
                         }
                         TooltipBubble {
-                            text: root.console-maximized ? "退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]" : "最大化全屏此视图 (钢琴卷帘/混音控制台) [Ctrl+Alt+M / F3]";
+                            text: root.console-maximized ? @tr("退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]") : @tr("最大化全屏此视图 (钢琴卷帘/混音控制台) [Ctrl+Alt+M / F3]");
                             is-visible: max_btn_touch.has-hover;
                             tip-offset-x: -80px;
                             tip-offset-y: 26px;
@@ -473,7 +473,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         HorizontalLayout {
                             alignment: space-between;
                             Text {
-                                text: "当前轨道无挂载设备";
+                                text: @tr("当前轨道无挂载设备");
                                 font-family: Tokens.font-ui;
                                 font-size: 12px;
                                 font-weight: 700;
@@ -489,7 +489,7 @@ export component UnifiedLowerDock inherits Rectangle {
                         }
 
                         Text {
-                            text: "该轨道设备链为空，可点击下方按钮快速挂载合成器、效果器或 SFZ 音色库。";
+                            text: @tr("该轨道设备链为空，可点击下方按钮快速挂载合成器、效果器或 SFZ 音色库。");
                             font-family: Tokens.font-ui;
                             font-size: 10px;
                             color: #cbd5e1;
@@ -507,7 +507,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-color: Theme.accent.with-alpha(0.45);
                                 HorizontalLayout {
                                     alignment: center;
-                                    Text { text: "+ 内置合成器"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #f8fafc; vertical-alignment: center; }
+                                    Text { text: @tr("+ 内置合成器"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #f8fafc; vertical-alignment: center; }
                                 }
                                 empty_add_synth := TouchArea {
                                     mouse-cursor: MouseCursor.pointer;
@@ -523,7 +523,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-color: #ffffff18;
                                 HorizontalLayout {
                                     alignment: center;
-                                    Text { text: "+ 参量均衡 EQ"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
+                                    Text { text: @tr("+ 参量均衡 EQ"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
                                 }
                                 empty_add_eq := TouchArea {
                                     mouse-cursor: MouseCursor.pointer;
@@ -543,7 +543,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-color: #ffffff18;
                                 HorizontalLayout {
                                     alignment: center;
-                                    Text { text: "+ 空间混响 Reverb"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
+                                    Text { text: @tr("+ 空间混响 Reverb"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
                                 }
                                 empty_add_rev := TouchArea {
                                     mouse-cursor: MouseCursor.pointer;
@@ -559,7 +559,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 border-color: #ffffff18;
                                 HorizontalLayout {
                                     alignment: center;
-                                    Text { text: "+ 加载 SFZ"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
+                                    Text { text: @tr("+ 加载 SFZ"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: #cbd5e1; vertical-alignment: center; }
                                 }
                                 empty_add_sfz := TouchArea {
                                     mouse-cursor: MouseCursor.pointer;
@@ -606,7 +606,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.device-bypass-toggle(root.device-ids[idx]); }
                                     }
-                                    TooltipBubble { text: root.device-bypassed[idx] ? "启用设备" : "旁通设备"; is-visible: bypass_touch.has-hover; tip-offset-y: 20px; }
+                                    TooltipBubble { text: root.device-bypassed[idx] ? @tr("启用设备") : @tr("旁通设备"); is-visible: bypass_touch.has-hover; tip-offset-y: 20px; }
                                 }
                                 Text {
                                     text: dev_name;
@@ -649,7 +649,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         mouse-cursor: MouseCursor.pointer;
                                         clicked => { root.device-remove(root.device-ids[idx]); }
                                     }
-                                    TooltipBubble { text: "从轨道设备链移除"; is-visible: dev_rm_touch.has-hover; tip-offset-y: 20px; }
+                                    TooltipBubble { text: @tr("从轨道设备链移除"); is-visible: dev_rm_touch.has-hover; tip-offset-y: 20px; }
                                 }
                             }
                         }
@@ -677,7 +677,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             Text {
                                 x: 8px;
                                 y: 3px;
-                                text: "曲线示意 · 未连接参数";
+                                text: @tr("曲线示意 · 未连接参数");
                                 font-family: Tokens.font-mono;
                                 font-size: 8px;
                                 // ⭐ WCAG AA：同 arrangement「▶ 试听」，8px 小字不得低于 #7c8aa0。
@@ -771,7 +771,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: center;
                                     Text {
-                                        text: "切换";
+                                        text: @tr("切换");
                                         font-family: Tokens.font-ui;
                                         font-size: 10px;
                                         font-weight: 600;
@@ -897,7 +897,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                     padding-left: 4px;
                                     padding-right: 4px;
                                     Text {
-                                        text: trk.insert1 != "" ? trk.insert1 : "1: 选音色 [v]";
+                                        text: trk.insert1 != "" ? trk.insert1 : @tr("1: 选音色 [v]");
                                         font-family: Tokens.font-ui;
                                         font-size: 8.5px;
                                         color: insert1_touch.has-hover ? #ffffff : #cbd5e1;
@@ -914,7 +914,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                         root.dock-instrument-menu-open = !root.dock-instrument-menu-open;
                                     }
                                 }
-                                TooltipBubble { text: "点击切换轨道 #\{trk.id} 音色/效果"; is-visible: insert1_touch.has-hover; tip-offset-y: -22px; }
+                                TooltipBubble { text: @tr("点击切换轨道 #{} 音色/效果", trk.id); is-visible: insert1_touch.has-hover; tip-offset-y: -22px; }
                             }
 
                             if root.console-maximized : Rectangle {
@@ -1001,7 +1001,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Text {
                                     x: 3px;
                                     y: 2px;
-                                    text: "EQ · 示意";
+                                    text: @tr("EQ · 示意");
                                     font-family: Tokens.font-mono;
                                     font-size: 8px;
                                     font-weight: 400;
@@ -1066,7 +1066,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             mouse-cursor: MouseCursor.pointer;
                                             clicked => { root.toggle-track-mute(trk.id); }
                                         }
-                                        TooltipBubble { text: "静音此音轨"; is-visible: m_touch.has-hover; tip-offset-y: -22px; }
+                                        TooltipBubble { text: @tr("静音此音轨"); is-visible: m_touch.has-hover; tip-offset-y: -22px; }
                                     }
                                     Rectangle {
                                         width: 16px;
@@ -1088,7 +1088,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             mouse-cursor: MouseCursor.pointer;
                                             clicked => { root.toggle-track-solo(trk.id); }
                                         }
-                                        TooltipBubble { text: "独奏此音轨"; is-visible: s_touch.has-hover; tip-offset-y: -22px; }
+                                        TooltipBubble { text: @tr("独奏此音轨"); is-visible: s_touch.has-hover; tip-offset-y: -22px; }
                                     }
                                 }
                                 Rectangle {
@@ -1122,7 +1122,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             root.mixer-pan-reset(trk.id - 1);
                                         }
                                     }
-                                    TooltipBubble { text: "声像 Pan: " + trk.pan + " (左右拖拽/双击归中)"; is-visible: mix_pan_touch.has-hover; tip-offset-y: -22px; }
+                                    TooltipBubble { text: @tr("声像 Pan: {} (左右拖拽/双击归中)", trk.pan); is-visible: mix_pan_touch.has-hover; tip-offset-y: -22px; }
                                 }
                             }
 
@@ -1195,7 +1195,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             root.mixer-fader-reset(trk.id - 1);
                                         }
                                     }
-                                    TooltipBubble { text: "推子: " + (root.track-volumes.length > tidx ? root.track-volumes[tidx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)) + " dB (上下拖拽/双击归 0dB)"; is-visible: trk_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
+                                    TooltipBubble { text: @tr("推子: {} dB (上下拖拽/双击归 0dB)", root.track-volumes.length > tidx ? root.track-volumes[tidx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)); is-visible: trk_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
                                 }
 
                                 // Level Meter Bar
@@ -1489,7 +1489,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             root.bus-volume-db = 0.0;
                                         }
                                     }
-                                    TooltipBubble { text: "总线推子: " + (Math.round(root.bus-volume-db * 10.0) / 10.0) + " dB (上下拖拽/双击归 0dB)"; is-visible: bus_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
+                                    TooltipBubble { text: @tr("总线推子: {} dB (上下拖拽/双击归 0dB)", Math.round(root.bus-volume-db * 10.0) / 10.0); is-visible: bus_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
                                 }
 
                                 Rectangle {
@@ -1688,7 +1688,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             root.execute-action("master-toggle-mono");
                                         }
                                     }
-                                    TooltipBubble { text: "总输出单声道监听切换 [MONO]"; is-visible: master_mono_touch.has-hover; tip-offset-y: -22px; }
+                                    TooltipBubble { text: @tr("总输出单声道监听切换 [MONO]"); is-visible: master_mono_touch.has-hover; tip-offset-y: -22px; }
                                 }
                                 Text {
                                     text: "0 dBTP";
@@ -1765,7 +1765,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                             root.mixer-master-fader-reset();
                                         }
                                     }
-                                    TooltipBubble { text: "总推子: " + (root.master-volume-display != "" ? root.master-volume-display : ("" + root.master-volume-db)) + " dB (上下拖拽/双击归 0dB)"; is-visible: master_fader_touch.has-hover; tip-offset-x: -24px; tip-offset-y: -22px; }
+                                    TooltipBubble { text: @tr("总推子: {} dB (上下拖拽/双击归 0dB)", root.master-volume-display != "" ? root.master-volume-display : ("" + root.master-volume-db)); is-visible: master_fader_touch.has-hover; tip-offset-x: -24px; tip-offset-y: -22px; }
                                 }
 
                                 // Stereo Master Meter Bar
@@ -1872,7 +1872,7 @@ export component UnifiedLowerDock inherits Rectangle {
                                 horizontal-alignment: center;
                             }
                             Text {
-                                text: "添加混音轨";
+                                text: @tr("添加混音轨");
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 color: add_mix_trk_touch.has-hover ? #f8fafc : #cbd5e1;
@@ -1883,7 +1883,7 @@ export component UnifiedLowerDock inherits Rectangle {
                             mouse-cursor: MouseCursor.pointer;
                             clicked => { root.execute-action("track-add-midi"); }
                         }
-                        TooltipBubble { text: "新建 MIDI 混音音轨"; is-visible: add_mix_trk_touch.has-hover; tip-offset-y: -24px; }
+                        TooltipBubble { text: @tr("新建 MIDI 混音音轨"); is-visible: add_mix_trk_touch.has-hover; tip-offset-y: -24px; }
                     }
                 }
             }
@@ -1956,7 +1956,7 @@ export component UnifiedLowerDock inherits Rectangle {
             padding: 6px;
             spacing: 2px;
             Text {
-                text: "切换轨道 #\{root.dock-instrument-target-id > 0 ? root.dock-instrument-target-id : root.selected-track-id} 音色 / 插入";
+                text: @tr("切换轨道 #{} 音色 / 插入", root.dock-instrument-target-id > 0 ? root.dock-instrument-target-id : root.selected-track-id);
                 font-family: Tokens.font-ui;
                 font-size: 10px;
                 font-weight: 600;
@@ -1965,16 +1965,16 @@ export component UnifiedLowerDock inherits Rectangle {
                 vertical-alignment: center;
             }
             for preset in [
-                { id: "synth:hollow", label: "合成器 • 柔和主音 (Hollow Lead)" },
-                { id: "synth:organ", label: "合成器 • 风琴键音 (Warm Organ)" },
-                { id: "synth:vocal", label: "合成器 • 人声铺底 (Choir Pad)" },
-                { id: "synth:metallic", label: "合成器 • 金属 FM (FM Bell)" },
-                { id: "synth:glass", label: "合成器 • 水晶拨弦 (Glass Pluck)" },
-                { id: "synth:bass", label: "合成器 • 次低音 (Sub Bass)" },
-                { id: "sfz:default", label: "采样库 • 加载 SFZ 音色..." },
-                { id: "fx:eq", label: "效果槽 • 插入 参量均衡 EQ" },
-                { id: "fx:reverb", label: "效果槽 • 插入 空间混响 Reverb" },
-                { id: "fx:compressor", label: "效果槽 • 插入 动态压缩 Compressor" },
+                { id: "synth:hollow", label: @tr("合成器 • 柔和主音 (Hollow Lead)") },
+                { id: "synth:organ", label: @tr("合成器 • 风琴键音 (Warm Organ)") },
+                { id: "synth:vocal", label: @tr("合成器 • 人声铺底 (Choir Pad)") },
+                { id: "synth:metallic", label: @tr("合成器 • 金属 FM (FM Bell)") },
+                { id: "synth:glass", label: @tr("合成器 • 水晶拨弦 (Glass Pluck)") },
+                { id: "synth:bass", label: @tr("合成器 • 次低音 (Sub Bass)") },
+                { id: "sfz:default", label: @tr("采样库 • 加载 SFZ 音色...") },
+                { id: "fx:eq", label: @tr("效果槽 • 插入 参量均衡 EQ") },
+                { id: "fx:reverb", label: @tr("效果槽 • 插入 空间混响 Reverb") },
+                { id: "fx:compressor", label: @tr("效果槽 • 插入 动态压缩 Compressor") },
             ] : Rectangle {
                 height: 28px;
                 border-radius: 4px;

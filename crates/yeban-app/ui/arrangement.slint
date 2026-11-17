@@ -90,7 +90,7 @@ export component ArrangementViewport inherits Rectangle {
     clip: true;
     accessible-role: main;
     accessible-id: "workspace-arrangement-canvas";
-    accessible-label: "工作区编曲画布";
+    accessible-label: @tr("工作区编曲画布");
 
     VerticalLayout {
         padding: 0px;
@@ -133,7 +133,7 @@ export component ArrangementViewport inherits Rectangle {
                                 border-width: 1px;
                                 border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
                                 Text {
-                                    text: "轨道菜单";
+                                    text: @tr("轨道菜单");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -151,7 +151,7 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                                 TooltipBubble {
-                                    text: "编曲轨道与视图本地菜单";
+                                    text: @tr("编曲轨道与视图本地菜单");
                                     is-visible: arr-menu-touch.has-hover;
                                     tip-offset-y: 22px;
                                 }
@@ -169,7 +169,7 @@ export component ArrangementViewport inherits Rectangle {
                                         padding-left: 5px;
                                         padding-right: 5px;
                                         Text {
-                                            text: root.show-chord-track ? "和弦收起" : "和弦展开";
+                                            text: root.show-chord-track ? @tr("和弦收起") : @tr("和弦展开");
                                             font-family: Tokens.font-ui;
                                             font-size: 9.5px;
                                             font-weight: 600;
@@ -185,7 +185,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: root.show-chord-track ? "折叠和弦音轨" : "展开和弦音轨";
+                                        text: root.show-chord-track ? @tr("折叠和弦音轨") : @tr("展开和弦音轨");
                                         is-visible: chord-toggle-touch.has-hover;
                                         tip-offset-y: 22px;
                                     }
@@ -200,7 +200,7 @@ export component ArrangementViewport inherits Rectangle {
                                         padding-left: 6px;
                                         padding-right: 6px;
                                         Text {
-                                            text: "+ 轨道";
+                                            text: @tr("+ 轨道");
                                             font-family: Tokens.font-ui;
                                             font-size: 9.5px;
                                             font-weight: 700;
@@ -216,7 +216,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "添加新音轨 [Ctrl+T]";
+                                        text: @tr("添加新音轨 [Ctrl+T]");
                                         is-visible: add-track-top-touch.has-hover;
                                         tip-offset-y: 22px;
                                     }
@@ -237,7 +237,7 @@ export component ArrangementViewport inherits Rectangle {
                                 padding-right: 6px;
                                 alignment: space-between;
                                 Text {
-                                    text: "全局和弦轨";
+                                    text: @tr("全局和弦轨");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
@@ -245,7 +245,7 @@ export component ArrangementViewport inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                                 Text {
-                                    text: "智能和声声学";
+                                    text: @tr("智能和声声学");
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
                                     color: #b6c2d2;
@@ -424,7 +424,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "▶ 试听";
+                                            text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
                                             color: #b6c2d2;
@@ -439,7 +439,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "试听 Cm9 (主和弦) 配置";
+                                        text: @tr("试听 Cm9 (主和弦) 配置");
                                         is-visible: chord-1-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -466,7 +466,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "▶ 试听";
+                                            text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
                                             color: #b6c2d2;
@@ -481,7 +481,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "试听 AbMaj7 (下中音和弦) 配置";
+                                        text: @tr("试听 AbMaj7 (下中音和弦) 配置");
                                         is-visible: chord-2-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -508,7 +508,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "▶ 试听";
+                                            text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
                                             color: #b6c2d2;
@@ -523,7 +523,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "试听 Fm11 (下属和弦) 配置";
+                                        text: @tr("试听 Fm11 (下属和弦) 配置");
                                         is-visible: chord-3-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -550,7 +550,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "▶ 试听";
+                                            text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
                                             color: #b6c2d2;
@@ -565,7 +565,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "试听 G7#9 (属和弦变化音) 配置";
+                                        text: @tr("试听 G7#9 (属和弦变化音) 配置");
                                         is-visible: chord-4-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -592,7 +592,7 @@ export component ArrangementViewport inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         Text {
-                                            text: "▶ 试听";
+                                            text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
                                             // ⭐ WCAG AA：8px 小字也须 ≥3:1（实测 #64748b 在 #161b28 上仅 3.61:1）。
@@ -609,7 +609,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "试听 Cm11 (扩展主和弦) 配置";
+                                        text: @tr("试听 Cm11 (扩展主和弦) 配置");
                                         is-visible: chord-5-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -668,7 +668,7 @@ export component ArrangementViewport inherits Rectangle {
                                     padding-left: 6px;
                                     padding-right: 6px;
                                     Text {
-                                        text: "+ 轨道";
+                                        text: @tr("+ 轨道");
                                         font-family: Tokens.font-ui;
                                         font-size: 9px;
                                         font-weight: 800;
@@ -684,7 +684,7 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                                 TooltipBubble {
-                                    text: "添加新音轨 [Ctrl+T]";
+                                    text: @tr("添加新音轨 [Ctrl+T]");
                                     is-visible: add-track-right-touch.has-hover;
                                     tip-offset-y: 22px;
                                 }
@@ -699,7 +699,7 @@ export component ArrangementViewport inherits Rectangle {
                                 padding-left: 6px;
                                 padding-right: 6px;
                                 Text {
-                                    text: "右置轨道头模式 (镜像工作区)";
+                                    text: @tr("右置轨道头模式 (镜像工作区)");
                                     font-family: Tokens.font-ui;
                                     font-size: 8px;
                                     color: #cbd5e1;
@@ -823,7 +823,7 @@ export component ArrangementViewport inherits Rectangle {
                                             }
                                         }
                                         TooltipBubble {
-                                            text: "点击更换音色/效果 [当前: " + (trk.insert1 != "" ? trk.insert1 : trk.kind) + "]";
+                                            text: @tr("点击更换音色/效果 [当前: {}]", trk.insert1 != "" ? trk.insert1 : trk.kind);
                                             is-visible: badge-left-touch.has-hover;
                                             tip-offset-y: 22px;
                                         }
@@ -862,7 +862,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: trk.muted ? "取消静音 [M]" : "静音轨道 [M]";
+                                                text: trk.muted ? @tr("取消静音 [M]") : @tr("静音轨道 [M]");
                                                 is-visible: m-btn-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -892,7 +892,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: trk.soloed ? "取消独奏 [S]" : "独奏轨道 [S]";
+                                                text: trk.soloed ? @tr("取消独奏 [S]") : @tr("独奏轨道 [S]");
                                                 is-visible: s-btn-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -922,7 +922,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: trk.armed ? "取消录音准备 [R]" : "录音准备 (Arm) [R]";
+                                                text: trk.armed ? @tr("取消录音准备 [R]") : @tr("录音准备 (Arm) [R]");
                                                 is-visible: r-btn-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -981,7 +981,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "声像: " + trk.pan + " (左右拖拽调节，双击归中)";
+                                                text: @tr("声像: {} (左右拖拽调节，双击归中)", trk.pan);
                                                 is-visible: pan-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1025,7 +1025,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "推子增益: " + (root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)) + " dB (上下拖拽调节，双击归 0dB)";
+                                                text: @tr("推子增益: {} dB (上下拖拽调节，双击归 0dB)", root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0));
                                                 is-visible: vol-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1176,13 +1176,13 @@ export component ArrangementViewport inherits Rectangle {
                                                 x: 4px;
                                                 y: 2px;
                                                 width: parent.width - 8px;
-                                                text: "波形待分析 · 示意";
+                                                text: @tr("波形待分析 · 示意");
                                                 // 窄片段放不下整句 ⇒ 不显示被裁成「波形」的半截误导文案；
                                                 // 完整语义仍保留在代码与 accessible-label 里。
                                                 // 有真实峰值时不再显示该标注。
                                                 visible: parent.width >= 88px && blk.waveform-peaks.length == 0;
                                                 accessible-role: text;
-                                                accessible-label: "波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）";
+                                                accessible-label: @tr("波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）");
                                                 font-family: Tokens.font-mono;
                                                 font-size: 8.5px;
                                                 color: #b6c2d2;
@@ -1208,7 +1208,7 @@ export component ArrangementViewport inherits Rectangle {
                                             if blk.note_count <= 0 && blk.width_px >= 90px : Text {
                                                 x: 8px;
                                                 y: (parent.height - self.height) / 2;
-                                                text: "空片段";
+                                                text: @tr("空片段");
                                                 font-family: Tokens.font-ui;
                                                 font-size: 9.5px;
                                                 color: #b6c2d2;
@@ -1343,7 +1343,7 @@ export component ArrangementViewport inherits Rectangle {
                                             }
                                         }
                                         TooltipBubble {
-                                            text: "点击更换音色/效果 [当前: " + (trk.insert1 != "" ? trk.insert1 : trk.kind) + "]";
+                                            text: @tr("点击更换音色/效果 [当前: {}]", trk.insert1 != "" ? trk.insert1 : trk.kind);
                                             is-visible: badge-right-touch.has-hover;
                                             tip-offset-y: 22px;
                                         }
@@ -1380,7 +1380,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: trk.muted ? "取消静音 [M]" : "静音轨道 [M]";
+                                                text: trk.muted ? @tr("取消静音 [M]") : @tr("静音轨道 [M]");
                                                 is-visible: m-btn-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1409,7 +1409,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: trk.soloed ? "取消独奏 [S]" : "独奏轨道 [S]";
+                                                text: trk.soloed ? @tr("取消独奏 [S]") : @tr("独奏轨道 [S]");
                                                 is-visible: s-btn-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1438,7 +1438,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: trk.armed ? "取消录音准备 [R]" : "录音准备 (Arm) [R]";
+                                                text: trk.armed ? @tr("取消录音准备 [R]") : @tr("录音准备 (Arm) [R]");
                                                 is-visible: r-btn-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1495,7 +1495,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "声像: " + trk.pan + " (左右拖拽调节，双击归中)";
+                                                text: @tr("声像: {} (左右拖拽调节，双击归中)", trk.pan);
                                                 is-visible: pan-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1538,7 +1538,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 }
                                             }
                                             TooltipBubble {
-                                                text: "推子增益: " + (root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0)) + " dB (上下拖拽调节，双击归 0dB)";
+                                                text: @tr("推子增益: {} dB (上下拖拽调节，双击归 0dB)", root.track-volumes.length > idx ? root.track-volumes[idx] : ("" + Math.round(trk.volume_db * 10.0) / 10.0));
                                                 is-visible: vol-r-touch.has-hover;
                                                 tip-offset-y: 24px;
                                             }
@@ -1607,7 +1607,7 @@ export component ArrangementViewport inherits Rectangle {
                                         padding-left: 8px;
                                         padding-right: 8px;
                                         Text {
-                                            text: "+ 点击添加新轨道";
+                                            text: @tr("+ 点击添加新轨道");
                                             font-family: Tokens.font-ui;
                                             font-size: 10px;
                                             font-weight: 600;
@@ -1623,7 +1623,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "创建新音频或MIDI轨道 [Ctrl+T]";
+                                        text: @tr("创建新音频或MIDI轨道 [Ctrl+T]");
                                         is-visible: add-track-btm-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -1679,7 +1679,7 @@ export component ArrangementViewport inherits Rectangle {
                                 y: 0px;
                                 width: parent.width;
                                 height: parent.height;
-                                text: "在此区域拖拽音频、MIDI 文件或双击以新增轨道";
+                                text: @tr("在此区域拖拽音频、MIDI 文件或双击以新增轨道");
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 500;
@@ -1696,7 +1696,7 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
                             TooltipBubble {
-                                text: "双击或点击此区域添加新轨道 [Ctrl+T]";
+                                text: @tr("双击或点击此区域添加新轨道 [Ctrl+T]");
                                 is-visible: drop_zone_touch.has-hover;
                                 tip-offset-y: 20px;
                             }
@@ -1744,7 +1744,7 @@ export component ArrangementViewport inherits Rectangle {
                                         padding-left: 8px;
                                         padding-right: 8px;
                                         Text {
-                                            text: "+ 点击添加新轨道";
+                                            text: @tr("+ 点击添加新轨道");
                                             font-family: Tokens.font-ui;
                                             font-size: 10px;
                                             font-weight: 600;
@@ -1760,7 +1760,7 @@ export component ArrangementViewport inherits Rectangle {
                                         }
                                     }
                                     TooltipBubble {
-                                        text: "创建新音频或MIDI轨道 [Ctrl+T]";
+                                        text: @tr("创建新音频或MIDI轨道 [Ctrl+T]");
                                         is-visible: add-track-btm-r-touch.has-hover;
                                         tip-offset-y: 28px;
                                     }
@@ -1824,14 +1824,14 @@ export component ArrangementViewport inherits Rectangle {
                 padding: 6px;
                 spacing: 2px;
                 for opt in [
-                    { id: "track-add-midi", label: "+ 新建 MIDI 乐器轨" },
-                    { id: "track-add-audio", label: "+ 新建音频轨" },
-                    { id: "track-add-bus", label: "+ 新建辅助发送轨" },
-                    { id: "new-midi-clip", label: "+ 新建 4 小节 MIDI 片段" },
-                    { id: "place-audio-clip", label: "将最新导入音频摆放到音频轨" },
-                    { id: "track-equal-heights", label: "均分所有轨道高度" },
-                    { id: "toggle-chord-lane", label: "显示 / 隐藏和弦轨" },
-                    { id: "track-toggle-headers-side", label: "左 / 右侧切换轨道头" },
+                    { id: "track-add-midi", label: @tr("+ 新建 MIDI 乐器轨") },
+                    { id: "track-add-audio", label: @tr("+ 新建音频轨") },
+                    { id: "track-add-bus", label: @tr("+ 新建辅助发送轨") },
+                    { id: "new-midi-clip", label: @tr("+ 新建 4 小节 MIDI 片段") },
+                    { id: "place-audio-clip", label: @tr("将最新导入音频摆放到音频轨") },
+                    { id: "track-equal-heights", label: @tr("均分所有轨道高度") },
+                    { id: "toggle-chord-lane", label: @tr("显示 / 隐藏和弦轨") },
+                    { id: "track-toggle-headers-side", label: @tr("左 / 右侧切换轨道头") },
                 ] : Rectangle {
                     height: 28px;
                     border-radius: 4px;
@@ -1873,7 +1873,7 @@ export component ArrangementViewport inherits Rectangle {
                 padding: 6px;
                 spacing: 2px;
                 Text {
-                    text: "更换轨道 #\{root.local-menu-track-id} 音色 / 插入";
+                    text: @tr("更换轨道 #{} 音色 / 插入", root.local-menu-track-id);
                     font-family: Tokens.font-ui;
                     font-size: 10px;
                     font-weight: 600;
@@ -1882,16 +1882,16 @@ export component ArrangementViewport inherits Rectangle {
                     vertical-alignment: center;
                 }
                 for preset in [
-                    { id: "synth:hollow", label: "合成器 • 柔和主音 (Hollow Lead)" },
-                    { id: "synth:organ", label: "合成器 • 风琴键音 (Warm Organ)" },
-                    { id: "synth:vocal", label: "合成器 • 人声铺底 (Choir Pad)" },
-                    { id: "synth:metallic", label: "合成器 • 金属 FM (FM Bell)" },
-                    { id: "synth:glass", label: "合成器 • 水晶拨弦 (Glass Pluck)" },
-                    { id: "synth:bass", label: "合成器 • 次低音 (Sub Bass)" },
-                    { id: "sfz:default", label: "采样库 • 加载 SFZ 音色..." },
-                    { id: "fx:eq", label: "效果槽 • 插入 参量均衡 EQ" },
-                    { id: "fx:reverb", label: "效果槽 • 插入 空间混响 Reverb" },
-                    { id: "fx:compressor", label: "效果槽 • 插入 动态压缩 Compressor" },
+                    { id: "synth:hollow", label: @tr("合成器 • 柔和主音 (Hollow Lead)") },
+                    { id: "synth:organ", label: @tr("合成器 • 风琴键音 (Warm Organ)") },
+                    { id: "synth:vocal", label: @tr("合成器 • 人声铺底 (Choir Pad)") },
+                    { id: "synth:metallic", label: @tr("合成器 • 金属 FM (FM Bell)") },
+                    { id: "synth:glass", label: @tr("合成器 • 水晶拨弦 (Glass Pluck)") },
+                    { id: "synth:bass", label: @tr("合成器 • 次低音 (Sub Bass)") },
+                    { id: "sfz:default", label: @tr("采样库 • 加载 SFZ 音色...") },
+                    { id: "fx:eq", label: @tr("效果槽 • 插入 参量均衡 EQ") },
+                    { id: "fx:reverb", label: @tr("效果槽 • 插入 空间混响 Reverb") },
+                    { id: "fx:compressor", label: @tr("效果槽 • 插入 动态压缩 Compressor") },
                 ] : Rectangle {
                     height: 28px;
                     border-radius: 4px;

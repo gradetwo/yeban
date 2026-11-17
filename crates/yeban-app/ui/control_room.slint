@@ -44,7 +44,7 @@ export component ControlRoomMeters inherits Rectangle {
                         HorizontalLayout {
                             padding-left: 5px; padding-right: 5px;
                             Text {
-                                text: "归零";
+                                text: @tr("归零");
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
@@ -187,7 +187,7 @@ export component ControlRoomMeters inherits Rectangle {
                             padding-right: 6px;
                             alignment: center;
                             Text {
-                                text: "A: 近场主箱";
+                                text: @tr("A: 近场主箱");
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
@@ -203,7 +203,7 @@ export component ControlRoomMeters inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: "切换至 A 组全频近场立体声监听音箱";
+                            text: @tr("切换至 A 组全频近场立体声监听音箱");
                             is-visible: mon_a_touch.has-hover;
                             y: 28px;
                         }
@@ -221,7 +221,7 @@ export component ControlRoomMeters inherits Rectangle {
                             padding-right: 6px;
                             alignment: center;
                             Text {
-                                text: "B: 单声道参考";
+                                text: @tr("B: 单声道参考");
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
@@ -237,7 +237,7 @@ export component ControlRoomMeters inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: "切换至 B 组小振膜单声道参考音箱";
+                            text: @tr("切换至 B 组小振膜单声道参考音箱");
                             is-visible: mon_b_touch.has-hover;
                             y: 28px;
                         }
@@ -270,7 +270,7 @@ export component ControlRoomMeters inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: "DIM 衰减监听电平 (-20 dB)";
+                            text: @tr("DIM 衰减监听电平 (-20 dB)");
                             is-visible: dim_touch.has-hover;
                             y: 26px;
                         }
@@ -299,7 +299,7 @@ export component ControlRoomMeters inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: "MONO 单声道求和检验相位互消";
+                            text: @tr("MONO 单声道求和检验相位互消");
                             is-visible: mono_touch.has-hover;
                             y: 26px;
                         }
@@ -328,7 +328,7 @@ export component ControlRoomMeters inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: "SIDE 仅监听立体声差信号 (S=L-R)";
+                            text: @tr("SIDE 仅监听立体声差信号 (S=L-R)");
                             is-visible: side_touch.has-hover;
                             y: 26px;
                         }

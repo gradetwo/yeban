@@ -19,7 +19,7 @@ export component ConsoleTabs inherits Rectangle {
     in property <int> active-tab: 0;
     // tab_name 就是语义 ID 里的 {tab_name}, 只允许小写与连字符
     in property <[string]> tab-names: ["piano-roll", "mixer", "devices"];
-    in property <[string]> tab-labels: ["钢琴卷帘", "混音控制台", "设备机架"];
+    in property <[string]> tab-labels: [@tr("钢琴卷帘"), @tr("混音控制台"), @tr("设备机架")];
     // 卷帘的音符身份 / 力度 / 位置 —— 由 MainWindow 从投影透传（本组件不解释它们）。
     // `note-positions` / `note-ys` / `note-widths` 都是投影算好的逻辑像素：
     // x 由 `start_tick` 整数除 `ticks_per_pixel` 得出，y 由 `pitch` 的车道索引给出。
@@ -103,7 +103,7 @@ export component ConsoleTabs inherits Rectangle {
     // ⭐ 频响曲线真绘制 (G-E1 & G-E2)：SVG Path 描边与填充命令及各频段读数文本。
     in property <string> device-eq-curve-svg: "M 0 50 L 420 50";
     in property <string> device-eq-curve-fill-svg: "";
-    in property <string> device-eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    in property <string> device-eq-curve-info: @tr("平坦响应 (0 dB · 20 Hz – 20 kHz)");
     // ⭐ G-S1 / G-D4 / G-D5 / G-D6：动态与侧链控制扩展（只透传）
     in property <string> sidechain-key-label: "";
     in property <bool> sidechain-available: false;
@@ -140,7 +140,7 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> master-device-eq-device-id: "";
     // ⭐ 一键装乐器（任务单 `#164`）：当前乐器 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
     // 同样只透传投影 —— 本组件不解释、⛔ 不持有第二份路径表。
-    in property <string> instrument-label: "未装乐器";
+    in property <string> instrument-label: @tr("未装乐器");
     in property <[string]> instrument-names: [];
     in property <bool> instrument-install-available: false;
     in property <string> instrument-install-reason: "";
@@ -316,7 +316,7 @@ export component ConsoleTabs inherits Rectangle {
 
     accessible-role: tab-list;
     accessible-id: "console-tab-rail";
-    accessible-label: "底部控制台标签导轨";
+    accessible-label: @tr("底部控制台标签导轨");
 
     // ---------------------------------------------------------------- Tab 导轨
     for tab_index in 3 : Rectangle {
@@ -396,7 +396,7 @@ export component ConsoleTabs inherits Rectangle {
         border-radius: Tokens.radius-sm;
         accessible-role: button;
         accessible-id: "console-maximize-button";
-        accessible-label: "最大化 / 还原底部控制台";
+        accessible-label: @tr("最大化 / 还原底部控制台");
         // 切换按钮：读数来自宿主的视图态（⛔ 不是本组件自己记的开关）。
         accessible-checked: root.console-maximized;
         // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea` 的 `clicked` **逐字同一落点**

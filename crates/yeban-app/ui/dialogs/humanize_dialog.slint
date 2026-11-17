@@ -54,7 +54,7 @@ export component HumanizeDialog inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "humanize-dialog";
-    accessible-label: "人性化与量化";
+    accessible-label: @tr("人性化与量化");
 
     // ⭐ `D-UI-21`：遮罩**真的**吞掉鼠标（与导出对话框同款：`Rectangle` 对鼠标
     // 返回 `EventIgnored`，只有 `TouchArea` 会拦）。这一枚刻意⛔ 没有任何回调：
@@ -108,14 +108,14 @@ export component HumanizeDialog inherits Rectangle {
 
             accessible-role: region;
             accessible-id: "humanize-panel";
-            accessible-label: "人性化与量化面板";
+            accessible-label: @tr("人性化与量化面板");
 
             UiTitleText {
                 x: Tokens.space-6;
                 y: Tokens.space-4;
                 width: parent.width - 96px;
                 height: 24px;
-                text: "人性化 · 量化";
+                text: @tr("人性化 · 量化");
                 color: Tokens.gold-bright;
                 font-size: Tokens.font-size-xl;
             }
@@ -130,7 +130,7 @@ export component HumanizeDialog inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: button;
                 accessible-id: "humanize-close-button";
-                accessible-label: "关闭人性化与量化";
+                accessible-label: @tr("关闭人性化与量化");
                 accessible-action-default => { root.close(); }
 
                 UiText {
@@ -174,7 +174,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 48px;
                 width: parent.width - 48px;
                 height: 16px;
-                text: "人性化（整片段）";
+                text: @tr("人性化（整片段）");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
             }
@@ -184,7 +184,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 72px;
                 width: 160px;
                 height: 16px;
-                text: "时值抖动量（tick）";
+                text: @tr("时值抖动量（tick）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -202,7 +202,7 @@ export component HumanizeDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "humanize-time-input";
-                accessible-label: "时值抖动量（tick）";
+                accessible-label: @tr("时值抖动量（tick）");
                 accessible-value: root.time-jitter;
                 accessible-read-only: false;
                 accepted => { root.apply-humanize(); }
@@ -213,7 +213,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 72px;
                 width: 160px;
                 height: 16px;
-                text: "力度抖动量（±n）";
+                text: @tr("力度抖动量（±n）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -231,7 +231,7 @@ export component HumanizeDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "humanize-velocity-input";
-                accessible-label: "力度抖动量（±n）";
+                accessible-label: @tr("力度抖动量（±n）");
                 accessible-value: root.velocity-jitter;
                 accessible-read-only: false;
                 accepted => { root.apply-humanize(); }
@@ -242,7 +242,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 72px;
                 width: 160px;
                 height: 16px;
-                text: "基础种子（缺省工程种子）";
+                text: @tr("基础种子（缺省工程种子）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -260,7 +260,7 @@ export component HumanizeDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "humanize-seed-input";
-                accessible-label: "基础种子（缺省工程种子）";
+                accessible-label: @tr("基础种子（缺省工程种子）");
                 accessible-value: root.seed;
                 accessible-read-only: false;
                 accepted => { root.apply-humanize(); }
@@ -273,8 +273,8 @@ export component HumanizeDialog inherits Rectangle {
                 height: 16px;
                 accessible-role: text;
                 accessible-id: "humanize-note-line";
-                accessible-label: "基础种子说明";
-                text: "同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎 v2 接上。";
+                accessible-label: @tr("基础种子说明");
+                text: @tr("同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎 v2 接上。");
                 color: Tokens.warn-amber;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;
@@ -291,7 +291,7 @@ export component HumanizeDialog inherits Rectangle {
                 border-color: Tokens.gold;
                 accessible-role: button;
                 accessible-id: "humanize-apply-button";
-                accessible-label: "对选中剪辑应用人性化";
+                accessible-label: @tr("对选中剪辑应用人性化");
                 accessible-action-default => { root.apply-humanize(); }
 
                 humanize-apply-focus := FocusScope {
@@ -315,7 +315,7 @@ export component HumanizeDialog inherits Rectangle {
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: "应用人性化";
+                    text: @tr("应用人性化");
                     color: Tokens.gold-bright;
                     font-size: Tokens.font-size-xs;
                     horizontal-alignment: center;
@@ -335,7 +335,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 196px;
                 width: parent.width - 48px;
                 height: 16px;
-                text: "量化（整片段）";
+                text: @tr("量化（整片段）");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
             }
@@ -345,7 +345,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 220px;
                 width: 160px;
                 height: 16px;
-                text: "网格（tick）";
+                text: @tr("网格（tick）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -363,7 +363,7 @@ export component HumanizeDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "quantize-grid-input";
-                accessible-label: "网格（tick）";
+                accessible-label: @tr("网格（tick）");
                 accessible-value: root.grid;
                 accessible-read-only: false;
                 accepted => { root.apply-quantize(); }
@@ -374,7 +374,7 @@ export component HumanizeDialog inherits Rectangle {
                 y: 220px;
                 width: 160px;
                 height: 16px;
-                text: "强度（0–100%）";
+                text: @tr("强度（0–100%）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -392,7 +392,7 @@ export component HumanizeDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "quantize-strength-input";
-                accessible-label: "强度（0–100%）";
+                accessible-label: @tr("强度（0–100%）");
                 accessible-value: root.strength;
                 accessible-read-only: false;
                 accepted => { root.apply-quantize(); }
@@ -409,7 +409,7 @@ export component HumanizeDialog inherits Rectangle {
                 border-color: Tokens.gold;
                 accessible-role: button;
                 accessible-id: "quantize-apply-button";
-                accessible-label: "对选中剪辑应用量化";
+                accessible-label: @tr("对选中剪辑应用量化");
                 accessible-action-default => { root.apply-quantize(); }
 
                 quantize-apply-focus := FocusScope {
@@ -433,7 +433,7 @@ export component HumanizeDialog inherits Rectangle {
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: "应用量化";
+                    text: @tr("应用量化");
                     color: Tokens.gold-bright;
                     font-size: Tokens.font-size-xs;
                     horizontal-alignment: center;
@@ -457,7 +457,7 @@ export component HumanizeDialog inherits Rectangle {
 
                 accessible-role: text;
                 accessible-id: "humanize-error-line";
-                accessible-label: "人性化或量化失败的原因";
+                accessible-label: @tr("人性化或量化失败的原因");
 
                 UiText {
                     x: 0;

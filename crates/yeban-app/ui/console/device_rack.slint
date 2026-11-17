@@ -132,20 +132,20 @@ export component DeviceRack inherits Rectangle {
     /// 频响曲线下方面积的 SVG Path 指令。
     in property <string> eq-curve-fill-svg: "";
     /// 频响曲线各频段参数读数。
-    in property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    in property <string> eq-curve-info: @tr("平坦响应 (0 dB · 20 Hz – 20 kHz)");
     /// 频响曲线拖动手势回调：归一化坐标 `(norm_x, norm_y)`。
     callback eq-curve-drag(float, float);
     /// 频响曲线手势松开。
     callback eq-curve-release();
 
     // ---------------------------------------------------------------- 动态与侧链扩展 (G-S1, G-D4, G-D5, G-D6)
-    in property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
+    in property <string> sidechain-key-label: @tr("侧链键源: 无 (点击切换)");
     in property <bool> sidechain-available: false;
-    in property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
+    in property <string> compressor-info: @tr("压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB");
     in property <bool> compressor-available: false;
-    in property <string> limiter-info: "限制器: 阈值 -0.1 dBTP · 状态 正常";
+    in property <string> limiter-info: @tr("限制器: 阈值 -0.1 dBTP · 状态 正常");
     in property <bool> limiter-available: false;
-    in property <string> shaper-info: "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)";
+    in property <string> shaper-info: @tr("瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)");
     in property <bool> shaper-available: false;
     /// 循环切换展示轨侧链键源
     callback sidechain-cycle();
@@ -198,7 +198,7 @@ export component DeviceRack inherits Rectangle {
 
     // ---------------------------------------------------------------- 一键装乐器（⭐ 任务单 `#164`）
     /// 展示轨当前乐器的显示文本（`"乐器：<sfz 路径>"` / `"未装乐器"`）—— 逐字来自投影。
-    in property <string> instrument-label: "未装乐器";
+    in property <string> instrument-label: @tr("未装乐器");
     /// 界面一键可装的 SFZ 乐器**显示名**（按钮行按它生成；路径不在这里）。
     in property <[string]> instrument-names: [];
     /// "装乐器"此刻能不能用（工程里得有一条展示轨）。
@@ -357,7 +357,7 @@ export component DeviceRack inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "device-rack";
-    accessible-label: "设备机架";
+    accessible-label: @tr("设备机架");
 
     // ------------------------------------ 两段的水平分离（⭐ 任务单 `#184`）
     //
@@ -447,12 +447,12 @@ export component DeviceRack inherits Rectangle {
         y: Tokens.space-3;
         width: 200px;
         height: 16px;
-        text: root.device-names.length + " 台设备";
+        text: @tr("{} 台设备", root.device-names.length);
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "device-rack-count";
-        accessible-label: root.device-names.length + " 台设备";
+        accessible-label: @tr("{} 台设备", root.device-names.length);
     }
 
     // ---------------------------------------------------------------- 宏入口（⭐ 右侧宏面板）
@@ -471,7 +471,7 @@ export component DeviceRack inherits Rectangle {
         visible: root.macro-open-visible;
         accessible-role: button;
         accessible-id: "macro-open-button";
-        accessible-label: "打开宏面板（" + root.macro-names.length + " 个宏）";
+        accessible-label: @tr("打开宏面板（{} 个宏）", root.macro-names.length);
         accessible-action-default => {
             root.open-macro-panel();
         }
@@ -481,7 +481,7 @@ export component DeviceRack inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "宏 (" + root.macro-names.length + ")";
+            text: @tr("宏 ({})", root.macro-names.length);
             color: Tokens.gold;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -511,7 +511,7 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: image;
         accessible-id: "device-rack-eq-curve";
-        accessible-label: "4 段 EQ 频响曲线";
+        accessible-label: @tr("4 段 EQ 频响曲线");
 
         // 频响网格
         for eq_grid_index in 8 : Rectangle {
@@ -614,14 +614,14 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: groupbox;
         accessible-id: "device-eq-low-gain-panel";
-        accessible-label: "EQ 低架增益 (eq_low_gain)";
+        accessible-label: @tr("EQ 低架增益 (eq_low_gain)");
 
         UiText {
             x: Tokens.space-4;
             y: Tokens.space-2;
             width: parent.width - 16px;
             height: 16px;
-            text: "EQ 低架增益 · eq_low_gain";
+            text: @tr("EQ 低架增益 · eq_low_gain");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -632,12 +632,12 @@ export component DeviceRack inherits Rectangle {
             y: 20px;
             width: parent.width - 16px;
             height: 16px;
-            text: root.eq-available ? root.eq-gain-db + " dB" : "— 本轨没有 eq_low_gain";
+            text: root.eq-available ? root.eq-gain-db + " dB" : @tr("— 本轨没有 eq_low_gain");
             color: root.eq-available ? Tokens.gold : Tokens.ink-2;
             font-size: Tokens.font-size-sm;
             accessible-role: text;
             accessible-id: "device-eq-value";
-            accessible-label: root.eq-available ? root.eq-gain-db + " dB" : "本轨没有可编辑的 eq_low_gain";
+            accessible-label: root.eq-available ? root.eq-gain-db + " dB" : @tr("本轨没有可编辑的 eq_low_gain");
         }
 
         // 滑块语义节点：读屏器读得到值域与当前值（值域是**注入**的，⛔ 不是字面量）。
@@ -650,7 +650,7 @@ export component DeviceRack inherits Rectangle {
             background: transparent;
             accessible-role: slider;
             accessible-id: "device-eq-low-gain-slider";
-            accessible-label: "EQ 低架增益";
+            accessible-label: @tr("EQ 低架增益");
             accessible-orientation: horizontal;
             accessible-value-minimum: root.eq-min-db;
             accessible-value-maximum: root.eq-max-db;
@@ -714,7 +714,7 @@ export component DeviceRack inherits Rectangle {
             y: 72px;
             width: parent.width - 16px;
             height: 16px;
-            text: root.eq-min-db + " … " + root.eq-max-db + " dB（引擎钳制域）";
+            text: @tr("{} … {} dB（引擎钳制域）", root.eq-min-db, root.eq-max-db);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -746,7 +746,7 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: region;
         accessible-id: "send-strip";
-        accessible-label: "发送与轨路由";
+        accessible-label: @tr("发送与轨路由");
 
         // ------------------------------------------------------------ 轨 / 路由段（⭐ `#160`）
         //
@@ -760,7 +760,7 @@ export component DeviceRack inherits Rectangle {
             background: transparent;
             accessible-role: region;
             accessible-id: "track-routing-panel";
-            accessible-label: "轨与路由";
+            accessible-label: @tr("轨与路由");
         }
 
         UiText {
@@ -768,7 +768,7 @@ export component DeviceRack inherits Rectangle {
             y: 6px;
             width: 52px;
             height: 14px;
-            text: "轨 / 路由";
+            text: @tr("轨 / 路由");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -817,7 +817,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.routing-create-available ? Tokens.gold : Tokens.line;
             accessible-role: button;
             accessible-id: "track-create-midi-button";
-            accessible-label: "新建 MIDI 轨";
+            accessible-label: @tr("新建 MIDI 轨");
             accessible-action-default => { root.track-create-midi(); }
 
             UiText {
@@ -853,7 +853,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.routing-create-available ? Tokens.gold : Tokens.line;
             accessible-role: button;
             accessible-id: "track-create-audio-button";
-            accessible-label: "新建音频轨";
+            accessible-label: @tr("新建音频轨");
             accessible-action-default => { root.track-create-audio(); }
 
             UiText {
@@ -861,7 +861,7 @@ export component DeviceRack inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "+ 音频";
+                text: @tr("+ 音频");
                 color: root.routing-create-available ? Tokens.bg-void : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -889,7 +889,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.routing-create-available ? Tokens.gold : Tokens.line;
             accessible-role: button;
             accessible-id: "track-create-aux-button";
-            accessible-label: "新建辅助返回轨";
+            accessible-label: @tr("新建辅助返回轨");
             accessible-action-default => { root.track-create-aux(); }
 
             UiText {
@@ -897,7 +897,7 @@ export component DeviceRack inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "+ 辅助返回";
+                text: @tr("+ 辅助返回");
                 color: root.routing-create-available ? Tokens.bg-void : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -926,7 +926,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.routing-delete-available ? Tokens.line-strong : Tokens.line;
             accessible-role: button;
             accessible-id: "track-delete-button";
-            accessible-label: "删除展示轨";
+            accessible-label: @tr("删除展示轨");
             accessible-action-default => { root.track-delete(); }
 
             UiText {
@@ -934,7 +934,7 @@ export component DeviceRack inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "删除展示轨";
+                text: @tr("删除展示轨");
                 color: root.routing-delete-available ? Tokens.ink-0 : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -983,7 +983,7 @@ export component DeviceRack inherits Rectangle {
             // ⭐ `#184`：380 宽时仍是 220（`#159` 的原值）；窄面板与计数一起均分。
             width: root.send-label-width;
             height: 16px;
-            text: "发送";
+            text: @tr("发送");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -994,13 +994,13 @@ export component DeviceRack inherits Rectangle {
             y: 60px;
             width: root.send-count-width;
             height: 16px;
-            text: root.send-destination-names.length + " 条发送";
+            text: @tr("{} 条发送", root.send-destination-names.length);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: right;
             accessible-role: text;
             accessible-id: "send-count";
-            accessible-label: root.send-destination-names.length + " 条发送";
+            accessible-label: @tr("{} 条发送", root.send-destination-names.length);
         }
 
         // 空态：无发送时**不画**任何行，只写这一句（逐字，判据按它断言）。
@@ -1011,13 +1011,13 @@ export component DeviceRack inherits Rectangle {
             y: 80px;
             width: parent.width - 16px;
             height: 20px;
-            text: "无发送";
+            text: @tr("无发送");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
             visible: root.send-destination-names.length == 0;
             accessible-role: text;
             accessible-id: "send-empty";
-            accessible-label: "无发送";
+            accessible-label: @tr("无发送");
         }
 
         // ⭐ 条目数**就是**投影的发送数 —— 空数组 ⇒ 一行都不画。
@@ -1029,7 +1029,7 @@ export component DeviceRack inherits Rectangle {
             background: transparent;
             accessible-role: list-item;
             accessible-id: "send-" + send_index + "-row";
-            accessible-label: "发送 → " + send_destination + " · " + root.send-gain-labels[send_index];
+            accessible-label: @tr("发送 → {} · {}", send_destination, root.send-gain-labels[send_index]);
             accessible-item-index: send_index;
             accessible-item-count: root.send-destination-names.length;
 
@@ -1079,7 +1079,7 @@ export component DeviceRack inherits Rectangle {
                 background: transparent;
                 accessible-role: slider;
                 accessible-id: "send-" + send_index + "-gain-slider";
-                accessible-label: "发送 " + send_destination + " 增益";
+                accessible-label: @tr("发送 {} 增益", send_destination);
                 accessible-orientation: horizontal;
                 accessible-value-minimum: root.send-gain-min-db;
                 accessible-value-maximum: root.send-gain-max-db;
@@ -1140,7 +1140,7 @@ export component DeviceRack inherits Rectangle {
                 border-color: Tokens.line;
                 accessible-role: button;
                 accessible-id: "send-" + send_index + "-remove-button";
-                accessible-label: "删除发送 → " + send_destination;
+                accessible-label: @tr("删除发送 → {}", send_destination);
                 accessible-action-default => {
                     root.send-remove(root.send-edge-ids[send_index]);
                 }
@@ -1182,7 +1182,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.send-create-available ? Tokens.gold : Tokens.line;
             accessible-role: button;
             accessible-id: "send-create-button";
-            accessible-label: "新建发送";
+            accessible-label: @tr("新建发送");
             // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
             // 不可用时由 `TouchArea.enabled` 拦住指针；无障碍动作与点击落到**同一个**
             // `root.send-create()` —— 宿主对"没有 aux 轨"有自己的拒绝与逐字原因（⑤）。
@@ -1193,7 +1193,7 @@ export component DeviceRack inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "新建发送";
+                text: @tr("新建发送");
                 color: root.send-create-available ? Tokens.bg-void : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -1248,7 +1248,7 @@ export component DeviceRack inherits Rectangle {
             y: 6px;
             width: parent.width - 16px;
             height: 14px;
-            text: "动态、侧链与瞬态控制";
+            text: @tr("动态、侧链与瞬态控制");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -1403,7 +1403,7 @@ export component DeviceRack inherits Rectangle {
         border-color: root.instrument-install-available ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "instrument-install-" + index + "-button";
-        accessible-label: "装乐器 " + instrument_name;
+        accessible-label: @tr("装乐器 {}", instrument_name);
         accessible-action-default => { root.instrument-install(index); }
 
         UiText {
@@ -1411,7 +1411,7 @@ export component DeviceRack inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "装 " + instrument_name;
+            text: @tr("装 {}", instrument_name);
             color: root.instrument-install-available ? Tokens.bg-void : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -1442,7 +1442,7 @@ export component DeviceRack inherits Rectangle {
         border-color: Tokens.line;
         accessible-role: button;
         accessible-id: "instrument-page-prev-button";
-        accessible-label: "上一页乐器";
+        accessible-label: @tr("上一页乐器");
         accessible-action-default => {
             if root.instrument-page > 0 {
                 root.instrument-page = root.instrument-page - 1;
@@ -1484,7 +1484,7 @@ export component DeviceRack inherits Rectangle {
         border-color: Tokens.line;
         accessible-role: button;
         accessible-id: "instrument-page-next-button";
-        accessible-label: "下一页乐器";
+        accessible-label: @tr("下一页乐器");
         accessible-action-default => {
             if root.instrument-page * root.instrument-per-page + root.instrument-per-page
                 < root.instrument-names.length {
@@ -1531,7 +1531,7 @@ export component DeviceRack inherits Rectangle {
         visible: root.sample-library-download-visible;
         accessible-role: button;
         accessible-id: "sample-library-download-button";
-        accessible-label: root.sample-library-installed ? "校验采样库" : "下载采样库";
+        accessible-label: root.sample-library-installed ? @tr("校验采样库") : @tr("下载采样库");
         accessible-action-default => { root.sample-library-download(); }
 
         UiText {
@@ -1539,7 +1539,7 @@ export component DeviceRack inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: root.sample-library-installed ? "校验采样库" : "下载采样库";
+            text: root.sample-library-installed ? @tr("校验采样库") : @tr("下载采样库");
             color: Tokens.bg-void;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -1626,7 +1626,7 @@ export component DeviceRack inherits Rectangle {
         background: transparent;
         accessible-role: region;
         accessible-id: "device-insert-actions";
-        accessible-label: "设备与片段操作";
+        accessible-label: @tr("设备与片段操作");
     }
 
     Rectangle {
@@ -1640,7 +1640,7 @@ export component DeviceRack inherits Rectangle {
         border-color: root.device-insert-available ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "device-insert-eq-button";
-        accessible-label: "装 EQ";
+        accessible-label: @tr("装 EQ");
         accessible-action-default => { root.device-insert-eq(); }
 
         UiText {
@@ -1648,7 +1648,7 @@ export component DeviceRack inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "装 EQ";
+            text: @tr("装 EQ");
             color: root.device-insert-available ? Tokens.bg-void : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -1676,7 +1676,7 @@ export component DeviceRack inherits Rectangle {
         border-color: root.device-insert-available ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "device-insert-reverb-button";
-        accessible-label: "装混响";
+        accessible-label: @tr("装混响");
         accessible-action-default => { root.device-insert-reverb(); }
 
         UiText {
@@ -1684,7 +1684,7 @@ export component DeviceRack inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "装混响";
+            text: @tr("装混响");
             color: root.device-insert-available ? Tokens.bg-void : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -1712,7 +1712,7 @@ export component DeviceRack inherits Rectangle {
         border-color: root.clip-create-available ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "clip-create-button";
-        accessible-label: "新建空的 MIDI 片段";
+        accessible-label: @tr("新建空的 MIDI 片段");
         accessible-action-default => { root.clip-create(); }
 
         UiText {
@@ -1784,8 +1784,8 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: list-item;
         accessible-id: "device-" + device_index + "-card";
-        accessible-label: "设备 " + device_name
-            + (root.device-bypassed[device_index] ? "（已旁通）" : "（生效）");
+        accessible-label: @tr("设备 {}", device_name)
+            + (root.device-bypassed[device_index] ? @tr("（已旁通）") : @tr("（生效）"));
         accessible-item-index: device_index;
         accessible-item-count: root.device-names.length;
 
@@ -1843,7 +1843,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.device-bypassed[device_index] ? Tokens.gold : Tokens.line-strong;
             accessible-role: switch;
             accessible-id: "device-" + device_index + "-bypass-switch";
-            accessible-label: "旁通 " + device_name;
+            accessible-label: @tr("旁通 {}", device_name);
             accessible-checkable: true;
             accessible-checked: root.device-bypassed[device_index];
             // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
@@ -1886,7 +1886,7 @@ export component DeviceRack inherits Rectangle {
             border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "device-" + device_index + "-remove-button";
-            accessible-label: "移除设备 " + device_name;
+            accessible-label: @tr("移除设备 {}", device_name);
             accessible-action-default => {
                 root.device-remove(root.device-ids[device_index]);
             }
@@ -1920,13 +1920,13 @@ export component DeviceRack inherits Rectangle {
         y: 216px;
         width: 420px;
         height: 20px;
-        text: "无设备（点上方「装 EQ」或「装混响」）";
+        text: @tr("无设备（点上方「装 EQ」或「装混响」）");
         color: Tokens.ink-2;
         font-size: Tokens.font-size-sm;
         visible: root.device-names.length == 0;
         accessible-role: text;
         accessible-id: "device-rack-empty";
-        accessible-label: "无设备（点上方「装 EQ」或「装混响」）";
+        accessible-label: @tr("无设备（点上方「装 EQ」或「装混响」）");
     }
 
     // 插件宿主卡片 [v2.0.0] —— 明确未实现, 只登记占位卡片与 ID
@@ -1953,14 +1953,14 @@ export component DeviceRack inherits Rectangle {
         visible: root.placeholder-y + 22px <= root.height;
         accessible-role: list-item;
         accessible-id: "device-plugin-host-placeholder-card";
-        accessible-label: "商业插件宿主卡片 (v2.0.0, 未实现)";
+        accessible-label: @tr("商业插件宿主卡片 (v2.0.0, 未实现)");
 
         UiText {
             x: Tokens.space-4;
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: "商业插件宿主 [v2.0.0 · 未实现]";
+            text: @tr("商业插件宿主 [v2.0.0 · 未实现]");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
             overflow: elide;
@@ -2043,7 +2043,7 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: region;
         accessible-id: "master-device-rack";
-        accessible-label: "主总线设备链";
+        accessible-label: @tr("主总线设备链");
 
         // 标题 —— 逐字来自投影（没有主总线时**就是**不能装的逐字原因）。
         UiText {
@@ -2069,12 +2069,12 @@ export component DeviceRack inherits Rectangle {
             height: 16px;
             // ⭐ `#190`：装不下时这一格让给下面的截断报数（两者**互斥**，几何同一格）。
             visible: root.master-device-names.length <= root.master-visible-card-count;
-            text: root.master-device-names.length + " 台设备";
+            text: @tr("{} 台设备", root.master-device-names.length);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             accessible-role: text;
             accessible-id: "master-device-rack-count";
-            accessible-label: root.master-device-names.length + " 台设备";
+            accessible-label: @tr("{} 台设备", root.master-device-names.length);
         }
 
         // ---- 截断的**如实报数**（⭐ 任务单 `#190`，缺口①）----
@@ -2086,12 +2086,12 @@ export component DeviceRack inherits Rectangle {
             y: Tokens.space-2;
             width: 144px;
             height: 16px;
-            text: "还有 " + (root.master-device-names.length - root.master-visible-card-count) + " 台设备未显示";
+            text: @tr("还有 {} 台设备未显示", root.master-device-names.length - root.master-visible-card-count);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             accessible-role: text;
             accessible-id: "master-device-truncation-note";
-            accessible-label: "还有 " + (root.master-device-names.length - root.master-visible-card-count) + " 台设备未显示";
+            accessible-label: @tr("还有 {} 台设备未显示", root.master-device-names.length - root.master-visible-card-count);
         }
 
         // ---- 两个装设备按钮：可用性由 `master-device-insert-available` 单一决定 ----
@@ -2106,7 +2106,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.master-device-insert-available ? Tokens.gold : Tokens.line;
             accessible-role: button;
             accessible-id: "master-device-insert-eq-button";
-            accessible-label: "给主总线装 EQ";
+            accessible-label: @tr("给主总线装 EQ");
             accessible-action-default => { root.master-device-insert-eq(); }
 
             UiText {
@@ -2114,7 +2114,7 @@ export component DeviceRack inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "装 EQ";
+                text: @tr("装 EQ");
                 color: root.master-device-insert-available ? Tokens.bg-void : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -2142,7 +2142,7 @@ export component DeviceRack inherits Rectangle {
             border-color: root.master-device-insert-available ? Tokens.gold : Tokens.line;
             accessible-role: button;
             accessible-id: "master-device-insert-reverb-button";
-            accessible-label: "给主总线装混响";
+            accessible-label: @tr("给主总线装混响");
             accessible-action-default => { root.master-device-insert-reverb(); }
 
             UiText {
@@ -2150,7 +2150,7 @@ export component DeviceRack inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "装混响";
+                text: @tr("装混响");
                 color: root.master-device-insert-available ? Tokens.bg-void : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
@@ -2208,14 +2208,14 @@ export component DeviceRack inherits Rectangle {
             clip: true;
             accessible-role: groupbox;
             accessible-id: "master-device-eq-panel";
-            accessible-label: "主总线 EQ 低架增益 (eq_low_gain)";
+            accessible-label: @tr("主总线 EQ 低架增益 (eq_low_gain)");
 
             UiText {
                 x: 8px;
                 y: 2px;
                 width: parent.width - 16px;
                 height: 12px;
-                text: "主总线 EQ 低架增益 · eq_low_gain";
+                text: @tr("主总线 EQ 低架增益 · eq_low_gain");
                 color: Tokens.ink-1;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;
@@ -2264,7 +2264,7 @@ export component DeviceRack inherits Rectangle {
                 visible: root.master-device-eq-available;
                 accessible-role: slider;
                 accessible-id: "master-device-eq-slider";
-                accessible-label: "主总线 EQ 低架增益";
+                accessible-label: @tr("主总线 EQ 低架增益");
                 accessible-orientation: horizontal;
                 accessible-value-minimum: root.master-device-eq-min-db;
                 accessible-value-maximum: root.master-device-eq-max-db;
@@ -2345,8 +2345,8 @@ export component DeviceRack inherits Rectangle {
             clip: true;
             accessible-role: list-item;
             accessible-id: "master-device-" + master_device_index + "-card";
-            accessible-label: "主总线设备 " + master_device_name
-                + (root.master-device-bypassed[master_device_index] ? "（已旁通）" : "（生效）");
+            accessible-label: @tr("主总线设备 {}", master_device_name)
+                + (root.master-device-bypassed[master_device_index] ? @tr("（已旁通）") : @tr("（生效）"));
             accessible-item-index: master_device_index;
             accessible-item-count: root.master-device-names.length;
 
@@ -2412,7 +2412,7 @@ export component DeviceRack inherits Rectangle {
                     : Tokens.line-strong;
                 accessible-role: switch;
                 accessible-id: "master-device-" + master_device_index + "-bypass-switch";
-                accessible-label: "旁通主总线设备 " + master_device_name;
+                accessible-label: @tr("旁通主总线设备 {}", master_device_name);
                 accessible-checkable: true;
                 accessible-checked: root.master-device-bypassed[master_device_index];
                 // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
@@ -2461,7 +2461,7 @@ export component DeviceRack inherits Rectangle {
                 border-color: Tokens.line;
                 accessible-role: button;
                 accessible-id: "master-device-" + master_device_index + "-remove-button";
-                accessible-label: "移除主总线设备 " + master_device_name;
+                accessible-label: @tr("移除主总线设备 {}", master_device_name);
                 accessible-action-default => {
                     root.master-device-remove(root.master-device-ids[master_device_index]);
                 }
@@ -2494,13 +2494,13 @@ export component DeviceRack inherits Rectangle {
             y: 72px;
             width: parent.width - 16px;
             height: 20px;
-            text: "无设备（点上方「装 EQ」或「装混响」）";
+            text: @tr("无设备（点上方「装 EQ」或「装混响」）");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
             visible: root.master-device-names.length == 0;
             accessible-role: text;
             accessible-id: "master-device-rack-empty";
-            accessible-label: "无设备（点上方「装 EQ」或「装混响」）";
+            accessible-label: @tr("无设备（点上方「装 EQ」或「装混响」）");
         }
     }
 }

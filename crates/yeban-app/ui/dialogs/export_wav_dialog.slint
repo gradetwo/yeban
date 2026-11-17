@@ -133,7 +133,7 @@ export component ExportWavDialog inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "export-wav-dialog";
-    accessible-label: "WAV 导出设置";
+    accessible-label: @tr("WAV 导出设置");
 
     // ⭐ `D-UI-21`：遮罩**真的**吞掉鼠标。组件根本身是 `Rectangle`，而 `Rectangle` 对鼠标
     // 事件返回 `EventIgnored` —— Slint 里只有 `TouchArea` 会拦（`i-slint-core-1.18.1`
@@ -215,14 +215,14 @@ export component ExportWavDialog inherits Rectangle {
 
             accessible-role: region;
             accessible-id: "export-wav-panel";
-            accessible-label: "WAV 导出设置面板";
+            accessible-label: @tr("WAV 导出设置面板");
 
             UiTitleText {
                 x: Tokens.space-6;
                 y: Tokens.space-4;
                 width: parent.width - 96px;
                 height: 24px;
-                text: "导出 WAV · 选项";
+                text: @tr("导出 WAV · 选项");
                 color: Tokens.gold-bright;
                 font-size: Tokens.font-size-xl;
             }
@@ -237,7 +237,7 @@ export component ExportWavDialog inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: button;
                 accessible-id: "export-wav-close-button";
-                accessible-label: "关闭导出设置";
+                accessible-label: @tr("关闭导出设置");
                 accessible-action-default => { root.close(); }
 
                 UiText {
@@ -291,7 +291,7 @@ export component ExportWavDialog inherits Rectangle {
                 height: 16px;
                 // ⭐ [PATCH UI-WIRING-01]：把**已存在**的键盘入口写进可见文案 ——
                 // 不改这一格就不会有人知道 `Ctrl/Cmd+O` 能挑路径（见下方按钮的登记）。
-                text: "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）";
+                text: @tr("输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -316,7 +316,7 @@ export component ExportWavDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "export-wav-path-input";
-                accessible-label: "WAV 输出路径";
+                accessible-label: @tr("WAV 输出路径");
                 accessible-value: root.path;
                 accessible-read-only: false;
                 // ⭐ `D-UI-20`：`Return` = 默认动作（导出）。`TextInput.accepted` 只在
@@ -345,7 +345,7 @@ export component ExportWavDialog inherits Rectangle {
                 y: 108px;
                 width: 200px;
                 height: 16px;
-                text: "采样率 Hz（auto = 跟随工程）";
+                text: @tr("采样率 Hz（auto = 跟随工程）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -366,7 +366,7 @@ export component ExportWavDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "export-wav-sample-rate-input";
-                accessible-label: "采样率（auto 或 Hz）";
+                accessible-label: @tr("采样率（auto 或 Hz）");
                 accessible-value: root.sample-rate;
                 accessible-read-only: false;
                 accepted => { root.run(); } // 同「导出」钮（见路径框那条注释）
@@ -378,7 +378,7 @@ export component ExportWavDialog inherits Rectangle {
                 y: 108px;
                 width: parent.width - 48px - 216px;
                 height: 16px;
-                text: "位深（16 / 24 / 32f）";
+                text: @tr("位深（16 / 24 / 32f）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -399,7 +399,7 @@ export component ExportWavDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "export-wav-bit-depth-input";
-                accessible-label: "位深（16 / 24 / 32f）";
+                accessible-label: @tr("位深（16 / 24 / 32f）");
                 accessible-value: root.bit-depth;
                 accessible-read-only: false;
                 accepted => { root.run(); } // 同「导出」钮
@@ -418,7 +418,7 @@ export component ExportWavDialog inherits Rectangle {
                 // ⭐ `D-UI-28`：标题原来写"空 = 缺省 8 秒"。今天这一格由宿主按**工程可闻
                 // 末端**播种 ⇒ 打开就能看到全曲长度；措辞改短（比原句还短 ⇒ 200px 那格
                 // ⛔ 不会截断）。空工程播不出 ⇒ 仍留空、后端那条 8 秒缺省继续生效。
-                text: "时长 秒（缺省 = 全曲末端）";
+                text: @tr("时长 秒（缺省 = 全曲末端）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -439,7 +439,7 @@ export component ExportWavDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "export-wav-seconds-input";
-                accessible-label: "导出时长（秒）";
+                accessible-label: @tr("导出时长（秒）");
                 accessible-value: root.seconds;
                 accessible-read-only: false;
                 accepted => { root.run(); } // 同「导出」钮
@@ -456,7 +456,7 @@ export component ExportWavDialog inherits Rectangle {
                 y: 164px;
                 width: parent.width - 48px - 216px;
                 height: 16px;
-                text: "母线限制器（仅本次导出）";
+                text: @tr("母线限制器（仅本次导出）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -473,7 +473,7 @@ export component ExportWavDialog inherits Rectangle {
 
                 accessible-role: switch;
                 accessible-id: "export-wav-limiter-switch";
-                accessible-label: "母线限制器（仅本次导出）";
+                accessible-label: @tr("母线限制器（仅本次导出）");
                 accessible-checkable: true;
                 accessible-checked: root.limiter;
                 // `[UI-A11Y-003]` §7.3：无障碍动作、下面 `TouchArea.clicked`、与
@@ -503,7 +503,7 @@ export component ExportWavDialog inherits Rectangle {
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: root.limiter ? "限制器：开" : "限制器：关";
+                    text: root.limiter ? @tr("限制器：开") : @tr("限制器：关");
                     color: root.limiter ? Tokens.gold-bright : Tokens.ink-1;
                     font-size: Tokens.font-size-xs;
                     horizontal-alignment: center;
@@ -528,14 +528,14 @@ export component ExportWavDialog inherits Rectangle {
 
                 accessible-role: text;
                 accessible-id: "export-wav-options-note";
-                accessible-label: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+                accessible-label: @tr("无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。");
 
                 UiText {
                     x: 0;
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。";
+                    text: @tr("无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。");
                     color: Tokens.ink-2;
                     font-size: Tokens.font-size-xs;
                     overflow: elide;
@@ -554,7 +554,7 @@ export component ExportWavDialog inherits Rectangle {
                 border-color: Tokens.gold;
                 accessible-role: button;
                 accessible-id: "export-wav-run-button";
-                accessible-label: "按这些选项导出 WAV";
+                accessible-label: @tr("按这些选项导出 WAV");
                 accessible-action-default => { root.run(); }
 
                 // ⭐ `D-UI-20`：「导出」的取焦身份。`Return` / `Space` 调的是**同一条**
@@ -581,7 +581,7 @@ export component ExportWavDialog inherits Rectangle {
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: "导出";
+                    text: @tr("导出");
                     color: Tokens.gold-bright;
                     font-size: Tokens.font-size-xs;
                     horizontal-alignment: center;

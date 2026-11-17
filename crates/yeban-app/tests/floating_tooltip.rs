@@ -19,10 +19,16 @@ use yeban_ui_test_port::{Size, UiTestPort};
 fn build_rig() -> LivePort<yeban_app::ui::MainWindow> {
     let view = ViewState::demo();
     let scene = DemoScene::from_view(&view);
-    LivePort::new(Size::new(1280, 800), Permission::Interactive, None, || {
+    let port = LivePort::new(Size::new(1280, 800), Permission::Interactive, None, || {
         host::build_main_window(&view, &scene)
     })
-    .expect("LivePort 必须成功装配")
+    .expect("LivePort 必须成功装配");
+    // 与真实启动路径（main.rs 紧跟主题后调 apply_language）一致：首帧语言
+    // 默认 zh-CN，覆盖 Slint 按系统 locale 的自动选择；否则英文系统上
+    // @tr 提示文案为英文，本判据硬编码的中文提示串永远找不到
+    //（win/mac CI 实证：4 项同以 floating_tooltip.rs:46 失败）。
+    host::apply_language(port.ui(), yeban_app::cli::Language::ZhCn);
+    port
 }
 
 /// 在顶部 `TransportHeaderBar` 按钮行内定位目标提示按钮，返回 `(x, y)` 指针坐标与预期的按钮顶部 `y`。

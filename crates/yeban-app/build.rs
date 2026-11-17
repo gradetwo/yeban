@@ -135,9 +135,17 @@ fn main() {
     // **独立可读**: 只看 build.rs 就知道改环境变量会触发重编。
     println!("cargo:rerun-if-env-changed=SLINT_STYLE");
 
+    // 双语 i18n（line/ui-i18n，设计见 docs/app-i18n-notes.md）：
+    // bundled translations 把 `translations/<lang>/LC_MESSAGES/yeban-app.po`
+    // （域名 = CARGO_PKG_NAME）逐串编进二进制，运行时
+    // `slint::select_bundled_translation` 切换、即时生效（探针实测，见 notes §2）。
+    // 默认翻译上下文关掉 ⇒ 词表按中文原文单一键（与偃师 web 端 i18n 同口径），
+    // 不按组件名分键。
     let config = slint_build::CompilerConfiguration::new()
         .with_debug_info(true)
-        .with_style(style);
+        .with_style(style)
+        .with_bundled_translations("translations")
+        .with_default_translation_context(slint_build::DefaultTranslationContext::None);
     slint_build::compile_with_config("ui/app.slint", config)
         .expect("slint_build::compile_with_config(ui/app.slint) 失败");
 }

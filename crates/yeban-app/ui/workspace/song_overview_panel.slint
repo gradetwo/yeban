@@ -72,7 +72,7 @@ export component SongOverviewPanel inherits Rectangle {
     in property <[float]> envelope-hi: [];
     in property <[bool]> envelope-alert: [];
     // Phase 2（设计稿 §3.6）：曲风档中文名（"均衡" / "管弦" / "电子"，Rust 算好）。
-    in property <string> profile: "均衡";
+    in property <string> profile: @tr("均衡");
     in property <[string]> section-names: [];
     in property <[int]> section-start-bars: [];
     in property <[string]> ruler-labels: [];
@@ -165,7 +165,7 @@ export component SongOverviewPanel inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "song-overview-panel";
-    accessible-label: "整曲多层总览图";
+    accessible-label: @tr("整曲多层总览图");
 
     // ================================================================ ① 点击跳转 / ④ 悬停
     //
@@ -220,7 +220,7 @@ export component SongOverviewPanel inherits Rectangle {
 
         accessible-role: image;
         accessible-id: "song-overview-canvas";
-        accessible-label: "整曲总览图：频率热力图、能量面积与情绪曲线";
+        accessible-label: @tr("整曲总览图：频率热力图、能量面积与情绪曲线");
 
         // ---- 底层：8 行频率热力图（Magma 色表，颜色由 Rust 算好）----
         // 行序：band-row 0 = Air（顶）……band-row 7 = Sub（底）。
@@ -322,7 +322,7 @@ export component SongOverviewPanel inherits Rectangle {
             visible: root.total-bars > 0;
             accessible-role: slider;
             accessible-id: "song-overview-playhead";
-            accessible-label: "总览图走带光标";
+            accessible-label: @tr("总览图走带光标");
             accessible-value: root.playhead-timecode;
         }
 
@@ -341,7 +341,7 @@ export component SongOverviewPanel inherits Rectangle {
             // ⚠ `accessible-id` / `accessible-label` 必须配一个 `accessible-role`（Slint 编译器硬性要求）。
             accessible-role: image;
             accessible-id: "song-overview-band-solo-outline";
-            accessible-label: "独奏频段行";
+            accessible-label: @tr("独奏频段行");
         }
 
         // ============================================================ ② 视口联动框
@@ -362,8 +362,8 @@ export component SongOverviewPanel inherits Rectangle {
 
             accessible-role: slider;
             accessible-id: "song-overview-viewport";
-            accessible-label: "当前编排视口";
-            accessible-value: root.total-bars > 0 ? "第 " + (Math.floor(root.viewport-start-frac * root.total-bars) + 1) + "–" + Math.min(Math.floor((root.viewport-start-frac + root.viewport-width-frac) * root.total-bars) + 1, root.total-bars) + " 小节" : "无数据";
+            accessible-label: @tr("当前编排视口");
+            accessible-value: root.total-bars > 0 ? @tr("第 {}–{} 小节", Math.floor(root.viewport-start-frac * root.total-bars) + 1, Math.min(Math.floor((root.viewport-start-frac + root.viewport-width-frac) * root.total-bars) + 1, root.total-bars)) : @tr("无数据");
 
             // 框体拖动：按下记「指针分数 − 框左缘分数」，移动时按绝对指针分数反推目标左缘。
             //
@@ -426,7 +426,7 @@ export component SongOverviewPanel inherits Rectangle {
                 height: parent.height;
                 accessible-role: slider;
                 accessible-id: "song-overview-viewport-resize";
-                accessible-label: "拖动缩放编排视口";
+                accessible-label: @tr("拖动缩放编排视口");
                 // ⭐ [PATCH UI-A11Y-005]：slider 角色必须有值通道，否则屏读器只能念出
                 // 「拖动缩放编排视口」、念不出当前缩放档。绑**同一条**注入属性
                 // `viewport-ticks-per-pixel`（⛔ 不是第二份读数），零可见像素。
@@ -486,7 +486,7 @@ export component SongOverviewPanel inherits Rectangle {
             visible: root.hover-visible && root.total-bars > 0 && seek-area.has-hover;
             accessible-role: text;
             accessible-id: "song-overview-hover-readout";
-            accessible-label: "悬停小节读数";
+            accessible-label: @tr("悬停小节读数");
             accessible-value: root.hover-text;
 
             UiText {
@@ -513,7 +513,7 @@ export component SongOverviewPanel inherits Rectangle {
 
         accessible-role: image;
         accessible-id: "song-overview-density-strip";
-        accessible-label: "疏密条码与小节标尺";
+        accessible-label: @tr("疏密条码与小节标尺");
 
         // ---- 上方 14 px：旋律/打击双行疏密脉冲条码 ----
         // 旋律行（8 px）：竖线密度编码 Onset 率，底色饱和度编码长音占空比。
@@ -607,7 +607,7 @@ export component SongOverviewPanel inherits Rectangle {
         // 覆盖率判据按字面段匹配 —— 三元字面量（`"a" : "b" : "c"`）会被读成“单段非模板”，
         // 只有第一项能对上注册表，其余三项会被判成“注册表凭空发明元素”。
         accessible-id: "song-overview-layer-" + root.layer-keys[pill-index] + "-pill";
-        accessible-label: pill-index == 0 ? "情绪层开关" : pill-index == 1 ? "能量层开关" : pill-index == 2 ? "频段层开关" : "疏密层开关";
+        accessible-label: pill-index == 0 ? @tr("情绪层开关") : pill-index == 1 ? @tr("能量层开关") : pill-index == 2 ? @tr("频段层开关") : @tr("疏密层开关");
         accessible-checkable: true;
         accessible-checked: pill-index == 0 ? root.show-tension : pill-index == 1 ? root.show-energy : pill-index == 2 ? root.show-bands : root.show-density;
         accessible-action-default => { root.layer-toggle(pill-index); }
@@ -617,7 +617,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: pill-index == 0 ? "情绪" : pill-index == 1 ? "能量" : pill-index == 2 ? "频段" : "疏密";
+            text: pill-index == 0 ? @tr("情绪") : pill-index == 1 ? @tr("能量") : pill-index == 2 ? @tr("频段") : @tr("疏密");
             color: (pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? #060A14 : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -645,10 +645,10 @@ export component SongOverviewPanel inherits Rectangle {
         border-color: collapse_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "song-overview-collapse-button";
-        accessible-label: "折叠 / 展开总览面板";
+        accessible-label: @tr("折叠 / 展开总览面板");
         // ⭐ [PATCH UI-A11Y-005]：静态名字念不出「当前是折叠还是展开」。把与可见 `text`
         // **逐字同一个表达式**接到无障碍值通道（⛔ 不是第二份真相源），零可见像素。
-        accessible-value: root.collapsed ? "总览 ▸" : "总览 ▾";
+        accessible-value: root.collapsed ? @tr("总览 ▸") : @tr("总览 ▾");
         accessible-action-default => { root.toggle-collapsed(); }
 
         UiText {
@@ -656,7 +656,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: root.collapsed ? "总览 ▸" : "总览 ▾";
+            text: root.collapsed ? @tr("总览 ▸") : @tr("总览 ▾");
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -688,7 +688,7 @@ export component SongOverviewPanel inherits Rectangle {
         border-color: fullscreen_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "song-overview-fullscreen-button";
-        accessible-label: "全屏 / 退出全屏总览面板";
+        accessible-label: @tr("全屏 / 退出全屏总览面板");
         accessible-action-default => { root.toggle-fullscreen(); }
 
         UiText {
@@ -696,7 +696,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: root.fullscreen ? "退出全屏" : "全屏";
+            text: root.fullscreen ? @tr("退出全屏") : @tr("全屏");
             color: root.fullscreen ? #060A14 : Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
@@ -726,7 +726,7 @@ export component SongOverviewPanel inherits Rectangle {
         border-color: profile_touch.has-hover ? Tokens.gold : Tokens.line;
         accessible-role: button;
         accessible-id: "song-overview-profile-button";
-        accessible-label: "曲风预设";
+        accessible-label: @tr("曲风预设");
         accessible-value: root.profile;
         accessible-action-default => { root.profile-cycle(); }
 
@@ -735,7 +735,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "预设：" + root.profile;
+            text: @tr("预设：{}", root.profile);
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;

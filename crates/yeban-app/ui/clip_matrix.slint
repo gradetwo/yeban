@@ -44,7 +44,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             border-color: Theme.border-subtle;
                             HorizontalLayout {
                                 padding-left: 6px; padding-right: 6px;
-                                Text { text: "+ 轨道"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #e2e8f0; vertical-alignment: center; }
+                                Text { text: @tr("+ 轨道"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #e2e8f0; vertical-alignment: center; }
                             }
                             cm_add_t := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -59,7 +59,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             border-color: Theme.border-subtle;
                             HorizontalLayout {
                                 padding-left: 6px; padding-right: 6px;
-                                Text { text: "停止"; font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #fca5a5; vertical-alignment: center; }
+                                Text { text: @tr("停止"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #fca5a5; vertical-alignment: center; }
                             }
                             cm_stop_t := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -92,7 +92,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             clicked => { root.trigger-scene(0); }
                         }
                         TooltipBubble {
-                            text: "激发场景 1 (Scene 1) 切片组合";
+                            text: @tr("激发场景 1 (Scene 1) 切片组合");
                             is-visible: s1_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -118,7 +118,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             clicked => { root.trigger-scene(1); }
                         }
                         TooltipBubble {
-                            text: "激发场景 2 (Scene 2) 切片组合";
+                            text: @tr("激发场景 2 (Scene 2) 切片组合");
                             is-visible: s2_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -144,7 +144,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             clicked => { root.trigger-scene(2); }
                         }
                         TooltipBubble {
-                            text: "激发场景 3 (Scene 3) 切片组合";
+                            text: @tr("激发场景 3 (Scene 3) 切片组合");
                             is-visible: s3_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -170,7 +170,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             clicked => { root.trigger-scene(3); }
                         }
                         TooltipBubble {
-                            text: "激发场景 4 (Scene 4) 切片组合";
+                            text: @tr("激发场景 4 (Scene 4) 切片组合");
                             is-visible: s4_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -225,7 +225,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: trk.clip1 != "" ? ("激发片段: " + trk.clip1) : "创建空白片段";
+                            text: trk.clip1 != "" ? (@tr("激发片段: {}", trk.clip1)) : @tr("创建空白片段");
                             is-visible: clip1_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -261,7 +261,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: trk.clip2 != "" ? ("激发片段: " + trk.clip2) : "创建空白片段";
+                            text: trk.clip2 != "" ? (@tr("激发片段: {}", trk.clip2)) : @tr("创建空白片段");
                             is-visible: clip2_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -297,7 +297,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: trk.clip3 != "" ? ("激发片段: " + trk.clip3) : "创建空白片段";
+                            text: trk.clip3 != "" ? (@tr("激发片段: {}", trk.clip3)) : @tr("创建空白片段");
                             is-visible: clip3_touch.has-hover;
                             tip-offset-y: 24px;
                         }
@@ -333,7 +333,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                             }
                         }
                         TooltipBubble {
-                            text: trk.clip4 != "" ? ("激发片段: " + trk.clip4) : "创建空白片段";
+                            text: trk.clip4 != "" ? (@tr("激发片段: {}", trk.clip4)) : @tr("创建空白片段");
                             is-visible: clip4_touch.has-hover;
                             tip-offset-y: 24px;
                         }

@@ -4,17 +4,17 @@ export component CommandPaletteModal inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <string> filter-text: "";
     in-out property <[CommandPaletteItem]> commands: [
-        { id: "persona-default", title: "切换至：夜半全景工作区 (默认 Production)", category: "Layout", shortcut: "1" },
-        { id: "persona-ableton", title: "切换至：现场激发工作区 (Clip 矩阵 Performance)", category: "Layout", shortcut: "2" },
-        { id: "persona-logic",   title: "切换至：线性编曲工作区 (时间轴编曲 Arrange)", category: "Layout", shortcut: "3" },
-        { id: "persona-cubase",  title: "切换至：混音控制台工作区 (母带监听 Mix & Master)", category: "Layout", shortcut: "4" },
-        { id: "toggle-hotspots", title: "打开/关闭 创新工作流与架构透视 (Insights)", category: "Help", shortcut: "H" },
-        { id: "toggle-tooltips", title: "切换悬浮提示开关 (Toggle Hover Tooltips)", category: "View", shortcut: "T" },
-        { id: "tab-stacked",     title: "切换底栏：设备堆叠 (Stacked)", category: "View", shortcut: "F3" },
-        { id: "tab-devices",     title: "切换底栏：设备机架 (Devices)", category: "View", shortcut: "Shift+Tab" },
-        { id: "tab-mixer",       title: "切换底栏：混音控制台 (Mixer)", category: "View", shortcut: "X" },
-        { id: "tab-pianoroll",   title: "切换底栏：钢琴卷帘 (Piano Roll)", category: "View", shortcut: "P" },
-        { id: "action-add-track",title: "新增轨道 (Add Audio/MIDI Track)", category: "Track", shortcut: "Ctrl+T" }
+        { id: "persona-default", title: @tr("切换至：夜半全景工作区 (默认 Production)"), category: "Layout", shortcut: "1" },
+        { id: "persona-ableton", title: @tr("切换至：现场激发工作区 (Clip 矩阵 Performance)"), category: "Layout", shortcut: "2" },
+        { id: "persona-logic",   title: @tr("切换至：线性编曲工作区 (时间轴编曲 Arrange)"), category: "Layout", shortcut: "3" },
+        { id: "persona-cubase",  title: @tr("切换至：混音控制台工作区 (母带监听 Mix & Master)"), category: "Layout", shortcut: "4" },
+        { id: "toggle-hotspots", title: @tr("打开/关闭 创新工作流与架构透视 (Insights)"), category: "Help", shortcut: "H" },
+        { id: "toggle-tooltips", title: @tr("切换悬浮提示开关 (Toggle Hover Tooltips)"), category: "View", shortcut: "T" },
+        { id: "tab-stacked",     title: @tr("切换底栏：设备堆叠 (Stacked)"), category: "View", shortcut: "F3" },
+        { id: "tab-devices",     title: @tr("切换底栏：设备机架 (Devices)"), category: "View", shortcut: "Shift+Tab" },
+        { id: "tab-mixer",       title: @tr("切换底栏：混音控制台 (Mixer)"), category: "View", shortcut: "X" },
+        { id: "tab-pianoroll",   title: @tr("切换底栏：钢琴卷帘 (Piano Roll)"), category: "View", shortcut: "P" },
+        { id: "action-add-track",title: @tr("新增轨道 (Add Audio/MIDI Track)"), category: "Track", shortcut: "Ctrl+T" }
     ];
 
     callback execute-command(string);
@@ -65,7 +65,7 @@ export component CommandPaletteModal inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: "输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)...";
+                                        text: @tr("输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)...");
                                         font-family: Tokens.font-ui;
                                         font-size: 12px;
                                         color: #b6c2d2;
@@ -213,7 +213,7 @@ export component HotspotOverlay inherits Rectangle {
                                 padding-left: 10px;
                                 padding-right: 10px;
                                 Text {
-                                    text: "夜半 专业工作流与现代声学架构";
+                                    text: @tr("夜半 专业工作流与现代声学架构");
                                     font-family: Tokens.font-ui;
                                     font-size: 11px;
                                     font-weight: 800;
@@ -223,7 +223,7 @@ export component HotspotOverlay inherits Rectangle {
                             }
                         }
                         Text {
-                            text: "基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区";
+                            text: @tr("基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
@@ -239,7 +239,7 @@ export component HotspotOverlay inherits Rectangle {
                             padding-left: 10px;
                             padding-right: 10px;
                             Text {
-                                text: "关闭透视";
+                                text: @tr("关闭透视");
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 800;
@@ -273,7 +273,7 @@ export component HotspotOverlay inherits Rectangle {
                         padding: 16px;
                         spacing: 8px;
                         Text {
-                            text: "① 黄金视线轨道头与全景排布";
+                            text: @tr("① 黄金视线轨道头与全景排布");
                             font-family: Tokens.font-ui;
                             font-size: 12px;
                             font-weight: 800;
@@ -281,7 +281,7 @@ export component HotspotOverlay inherits Rectangle {
                             wrap: word-wrap;
                         }
                         Text {
-                            text: "轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。";
+                            text: @tr("轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
@@ -303,7 +303,7 @@ export component HotspotOverlay inherits Rectangle {
                         padding: 16px;
                         spacing: 8px;
                         Text {
-                            text: "② 内联全功能 DSP 设备机架 (Zero Popups)";
+                            text: @tr("② 内联全功能 DSP 设备机架 (Zero Popups)");
                             font-family: Tokens.font-ui;
                             font-size: 12px;
                             font-weight: 800;
@@ -311,7 +311,7 @@ export component HotspotOverlay inherits Rectangle {
                             wrap: word-wrap;
                         }
                         Text {
-                            text: "原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。";
+                            text: @tr("原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
@@ -333,7 +333,7 @@ export component HotspotOverlay inherits Rectangle {
                         padding: 16px;
                         spacing: 8px;
                         Text {
-                            text: "③ 即时混合工作流与无感缓冲热切";
+                            text: @tr("③ 即时混合工作流与无感缓冲热切");
                             font-family: Tokens.font-ui;
                             font-size: 12px;
                             font-weight: 800;
@@ -341,7 +341,7 @@ export component HotspotOverlay inherits Rectangle {
                             wrap: word-wrap;
                         }
                         Text {
-                            text: "现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。";
+                            text: @tr("现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             color: #cbd5e1;
@@ -355,7 +355,7 @@ export component HotspotOverlay inherits Rectangle {
             Rectangle {
                 height: 24px;
                 Text {
-                    text: "提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。";
+                    text: @tr("提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。");
                     font-family: Tokens.font-ui;
                     font-size: 10px;
                     color: #b6c2d2;

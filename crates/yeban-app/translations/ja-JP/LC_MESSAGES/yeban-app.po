@@ -1,0 +1,1756 @@
+# Yeban desktop UI — Japanese (ja-JP) bundled translation.
+# Source language is zh-CN: msgid = the Chinese source string used in @tr("...")
+# in crates/yeban-app/ui/**/*.slint (single key table, no msgctxt — the build
+# disables Slint's default translation context, see build.rs).
+# Coverage is enforced by crates/yeban-app/tests/i18n_coverage.rs:
+# the msgid set here must exactly equal the @tr msgid set in the sources.
+msgid ""
+msgstr ""
+"Project-Id-Version: yeban-app\n"
+"Language: ja-JP\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+# --- transport_bar.slint ---
+msgid "检查器与音色库 [I]"
+msgstr "インスペクターとサウンドライブラリ [I]"
+
+msgid "Clip 激发矩阵 [Tab]"
+msgstr "クリップ・ローンチ・マトリクス [Tab]"
+
+msgid "统一底栏 (混音控制台/钢琴卷帘) [P / X]"
+msgstr "統合ボトムドック（ミキサー／ピアノロール）[P / X]"
+
+msgid "监听控制室与响度计 [F4]"
+msgstr "コントロールルームとラウドネスメーター [F4]"
+
+msgid "指针选区工具: 选择与移动 [1]"
+msgstr "ポインターツール：選択と移動 [1]"
+
+msgid "力度 / 范围工具 [4]"
+msgstr "ベロシティ／範囲ツール [4]"
+
+msgid "剃刀切分工具 [3]"
+msgstr "レイザー分割ツール [3]"
+
+msgid "画笔工具: 绘制音符与自动化 [2 / B]"
+msgstr "ペンツール：ノートとオートメーション描画 [2 / B]"
+
+msgid "返回工程起点 / 归零 [Return]"
+msgstr "プロジェクト先頭へ戻る／ゼロへ [Return]"
+
+msgid "停止播放并复位 [Space]"
+msgstr "停止と再生ヘッドリセット [Space]"
+
+msgid "播放 / 暂停走带 [Space]"
+msgstr "再生／一時停止 [Space]"
+
+msgid "录音准备 / 穿插录音 [R]"
+msgstr "録音待機／パンチイン [R]"
+
+msgid "选区循环播放开关 [C]"
+msgstr "選択範囲ループ再生切替 [C]"
+
+msgid "当前时间码: 小节.拍.分拍"
+msgstr "現在のタイムコード：小節．拍．ティック"
+
+msgid "工程主速度: 点击循环切换 (124/128/140 BPM)"
+msgstr "プロジェクトテンポ：クリックで切替（124/128/140 BPM）"
+
+msgid "C Minor (自然小调)"
+msgstr "Cマイナー（ナチュラルマイナー）"
+
+msgid "D Dorian (多利亚)"
+msgstr "Dドリアン（ドリアン）"
+
+msgid "F Major (大调)"
+msgstr "Fメジャー（メジャー）"
+
+msgid "全局工程调式: 点击循环切换"
+msgstr "プロジェクトキー／スケール：クリックで切替"
+
+msgid "音频缓冲区延迟: 点击热切换 (64/128/512/2048 smp)"
+msgstr "オーディオバッファ：クリックでホット切替（64/128/512/2048 smp）"
+
+msgid "实时音频 DSP CPU 负荷率"
+msgstr "リアルタイムオーディオDSP CPU負荷率"
+
+msgid "默认工作区"
+msgstr "デフォルトワークスペース"
+
+msgid "现场演出模式 (Clip 流)"
+msgstr "ライブパフォーマンスモード（クリップフロー）"
+
+msgid "线性编曲模式 (时间轴流)"
+msgstr "リニアアレンジモード（タイムラインフロー）"
+
+msgid "混音母带模式 (混音控制台流)"
+msgstr "ミックス＆マスターモード（コンソールフロー）"
+
+msgid "快捷命令面板 [Ctrl+K]"
+msgstr "コマンドパレット [Ctrl+K]"
+
+msgid "架构透视与热区诊断 [H]"
+msgstr "アーキテクチャ透視とホットスポット診断 [H]"
+
+msgid "悬浮提示: 已开启 (点击关闭) [T]"
+msgstr "ホバーチップ：オン（クリックでオフ）[T]"
+
+msgid "悬浮提示: 已关闭 (点击开启) [T]"
+msgstr "ホバーチップ：オフ（クリックでオン）[T]"
+
+msgid "界面语言 (点击选择语言)"
+msgstr "インターフェイス言語（クリックで選択）"
+
+# --- app.slint ---
+
+msgid "夜半"
+msgstr "夜半"
+
+msgid "靛青"
+msgstr "インディゴ"
+
+msgid "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB"
+msgstr "コンプレッサー：しきい値 -18.0 dB・レシオ 4:1・GR 0.0 dB"
+
+msgid "平坦响应 (0 dB · 20 Hz – 20 kHz)"
+msgstr "フラットレスポンス（0 dB・20 Hz – 20 kHz）"
+
+msgid "未装乐器"
+msgstr "楽器未読込"
+
+msgid "限制器: 阈值 -0.1 dBTP · 状态 正常"
+msgstr "リミッター：しきい値 -0.1 dBTP・状態 正常"
+
+msgid "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)"
+msgstr "トランジェントシェイパー：アタック +0.0・サステイン +0.0（未アクティブ）"
+
+msgid "侧链键源: 无 (点击切换)"
+msgstr "サイドチェーンキー：なし（クリックで切替）"
+
+msgid "均衡"
+msgstr "バランス"
+
+msgid "选区 无"
+msgstr "選択なし"
+
+msgid "夜半 Yeban"
+msgstr "夜半 Yeban"
+
+msgid "文件"
+msgstr "ファイル"
+
+msgid "新建空白工程"
+msgstr "新規空プロジェクト"
+
+msgid "打开 / 恢复工程..."
+msgstr "プロジェクトを開く／復元…"
+
+msgid "保存工程 (Ctrl+S)"
+msgstr "プロジェクトを保存 (Ctrl+S)"
+
+msgid "另存为 (Ctrl+Shift+S)"
+msgstr "別名で保存 (Ctrl+Shift+S)"
+
+msgid "导出音频 (WAV)..."
+msgstr "オーディオを書き出し (WAV)…"
+
+msgid "导出分轨 (Stems)..."
+msgstr "ステムを書き出し…"
+
+msgid "导出 MIDI 文件..."
+msgstr "MIDIファイルを書き出し…"
+
+msgid "导入 MIDI 文件..."
+msgstr "MIDIファイルを読み込み…"
+
+msgid "导入音频文件..."
+msgstr "オーディオファイルを読み込み…"
+
+msgid "装载 SFZ 音色库..."
+msgstr "SFZライブラリを読み込み…"
+
+msgid "实时录音至 WAV..."
+msgstr "WAVへリアルタイム録音…"
+
+msgid "退出 Yeban"
+msgstr "Yebanを終了"
+
+msgid "编辑"
+msgstr "編集"
+
+msgid "撤销上一步 (Ctrl+Z)"
+msgstr "取り消し (Ctrl+Z)"
+
+msgid "重做 (Ctrl+Shift+Z)"
+msgstr "やり直し (Ctrl+Shift+Z)"
+
+msgid "编曲版本时光机 (Undo Tree)..."
+msgstr "アレンジ版タイムマシン (Undo Tree)…"
+
+msgid "复制片段 (Ctrl+C)"
+msgstr "クリップをコピー (Ctrl+C)"
+
+msgid "粘贴片段 (Ctrl+V)"
+msgstr "クリップをペースト (Ctrl+V)"
+
+msgid "剪切片段 (Ctrl+X)"
+msgstr "クリップをカット (Ctrl+X)"
+
+msgid "音符量化 (Quantize 1/16)..."
+msgstr "ノートをクオンタイズ (1/16)…"
+
+msgid "音符人性化 (Humanize)..."
+msgstr "ノートをヒューマナイズ…"
+
+msgid "AI 编曲提案抽屉 (Musical PR)..."
+msgstr "AIアレンジ提案ドロワー (Musical PR)…"
+
+msgid "轨道"
+msgstr "トラック"
+
+msgid "+ 新建 MIDI 合成器轨 (Ctrl+N)"
+msgstr "+ 新規MIDIシンセトラック (Ctrl+N)"
+
+msgid "+ 新建音频轨"
+msgstr "+ 新規オーディオトラック"
+
+msgid "将最新导入音频摆放到当前音频轨"
+msgstr "最新読み込みオーディオを現在のオーディオトラックへ配置"
+
+msgid "+ 新建辅助总线轨"
+msgstr "+ 新規AUXバストラック"
+
+msgid "删除当前选中轨道"
+msgstr "選択中のトラックを削除"
+
+msgid "给当前轨插入 参量均衡 EQ"
+msgstr "現在のトラックへパラメトリックEQを挿入"
+
+msgid "给当前轨插入 空间混响 Reverb"
+msgstr "現在のトラックへリバーブを挿入"
+
+msgid "给当前轨插入 动态压缩 Compressor"
+msgstr "現在のトラックへコンプレッサーを挿入"
+
+msgid "均分所有轨道高度"
+msgstr "全トラックの高さを均等化"
+
+msgid "走带"
+msgstr "トランスポート"
+
+msgid "播放 / 暂停 (Space)"
+msgstr "再生／一時停止 (Space)"
+
+msgid "停止播放"
+msgstr "停止"
+
+msgid "归零至 001.01.000"
+msgstr "001.01.000へ戻る"
+
+msgid "循环播放开关 (C)"
+msgstr "ループ再生切替 (C)"
+
+msgid "节拍器开关"
+msgstr "メトロノーム切替"
+
+msgid "预备拍开关 (Ctrl+Alt+D)"
+msgstr "カウントイン切替 (Ctrl+Alt+D)"
+
+msgid "混音"
+msgstr "ミックス"
+
+msgid "打开底部 混音控制台 (X)"
+msgstr "下部ミキサーコンソールを開く (X)"
+
+msgid "打开底部 设备机架"
+msgstr "下部デバイスラックを開く"
+
+msgid "主控总线推子归 0dB"
+msgstr "マスターバスフェーダーを0dBへ"
+
+msgid "显隐 监听控制室 (Control Room)"
+msgstr "コントロールルーム表示切替"
+
+msgid "视图"
+msgstr "表示"
+
+msgid "钢琴卷帘 (P)"
+msgstr "ピアノロール (P)"
+
+msgid "混音控制台 (X)"
+msgstr "ミキサーコンソール (X)"
+
+msgid "设备机架"
+msgstr "デバイスラック"
+
+msgid "设备堆叠 (Stacked)"
+msgstr "デバイススタック (Stacked)"
+
+msgid "最大化/还原底部控制台"
+msgstr "下部コンソールを最大化／復元"
+
+msgid "显隐左侧通道检查器 (I)"
+msgstr "左チャンネルインスペクター表示切替 (I)"
+
+msgid "显隐 Clip 激发矩阵 (Tab)"
+msgstr "クリップ・ローンチ・マトリクス表示切替 (Tab)"
+
+msgid "显示 / 隐藏和弦轨"
+msgstr "コードトラック表示／非表示"
+
+msgid "显示 / 隐藏自动化泳道 (A)"
+msgstr "オートメーションレーン表示／非表示 (A)"
+
+msgid "诊断"
+msgstr "診断"
+
+msgid "执行 AI 声学检查与诊断"
+msgstr "AI音響チェックと診断を実行"
+
+msgid "导出工程诊断报告包 (D56)"
+msgstr "プロジェクト診断レポートを書き出し (D56)"
+
+msgid "开启/关闭 悬浮功能提示 (T)"
+msgstr "ホバーチップ表示切替 (T)"
+
+msgid "显隐 架构热区透视 (H)"
+msgstr "アーキテクチャホットスポット表示切替 (H)"
+
+msgid "设置"
+msgstr "設定"
+
+msgid "主工作区与底部控制台的分割线 (220–600px)"
+msgstr "メインワークスペースと下部コンソールの仕切り (220–600px)"
+
+msgid "引擎错误横幅"
+msgstr "エンジンエラーバナー"
+
+msgid "音频引擎提示: {}"
+msgstr "オーディオエンジン通知：{}"
+
+msgid "AI 协作栏: 意图生成与声学诊断"
+msgstr "AIコラボレーションバー：意図生成と音響診断"
+
+msgid "用自然语言描述编曲意图"
+msgstr "アレンジの意図を自然言語で入力"
+
+msgid "声学诊断"
+msgstr "音響診断"
+
+msgid "导出诊断包 (D56)"
+msgstr "診断パッケージを書き出し (D56)"
+
+msgid "音乐提案抽屉 (Musical PR Drawer)"
+msgstr "音楽提案ドロワー (Musical PR)"
+
+# --- console/device_rack.slint ---
+
+msgid "{} 台设备"
+msgstr "デバイス{}台"
+
+msgid "打开宏面板（{} 个宏）"
+msgstr "マクロパネルを開く（{}個のマクロ）"
+
+msgid "宏 ({})"
+msgstr "マクロ ({})"
+
+msgid "4 段 EQ 频响曲线"
+msgstr "4バンドEQ周波数特性カーブ"
+
+msgid "EQ 低架增益 (eq_low_gain)"
+msgstr "EQローシェルフゲイン (eq_low_gain)"
+
+msgid "EQ 低架增益 · eq_low_gain"
+msgstr "EQローシェルフゲイン・eq_low_gain"
+
+msgid "— 本轨没有 eq_low_gain"
+msgstr "— このトラックにeq_low_gainなし"
+
+msgid "本轨没有可编辑的 eq_low_gain"
+msgstr "このトラックに編集可能なeq_low_gainなし"
+
+msgid "EQ 低架增益"
+msgstr "EQローシェルフゲイン"
+
+msgid "{} … {} dB（引擎钳制域）"
+msgstr "{}…{} dB（エンジンクランプ範囲）"
+
+msgid "发送与轨路由"
+msgstr "センドとトラックルーティング"
+
+msgid "轨与路由"
+msgstr "トラックとルーティング"
+
+msgid "轨 / 路由"
+msgstr "トラック／ルーティング"
+
+msgid "新建 MIDI 轨"
+msgstr "新規MIDIトラック"
+
+msgid "新建音频轨"
+msgstr "新規オーディオトラック"
+
+msgid "+ 音频"
+msgstr "+ オーディオ"
+
+msgid "新建辅助返回轨"
+msgstr "新規AUXリターントラック"
+
+msgid "+ 辅助返回"
+msgstr "+ AUXリターン"
+
+msgid "删除展示轨"
+msgstr "表示トラックを削除"
+
+msgid "发送"
+msgstr "センド"
+
+msgid "{} 条发送"
+msgstr "センド{}件"
+
+msgid "无发送"
+msgstr "センドなし"
+
+msgid "发送 → {} · {}"
+msgstr "センド → {}・{}"
+
+msgid "发送 {} 增益"
+msgstr "センド{}ゲイン"
+
+msgid "删除发送 → {}"
+msgstr "センド → {}を削除"
+
+msgid "新建发送"
+msgstr "新規センド"
+
+msgid "动态、侧链与瞬态控制"
+msgstr "ダイナミクス、サイドチェーンとトランジェント制御"
+
+msgid "装乐器 {}"
+msgstr "楽器{}を読み込み"
+
+msgid "装 {}"
+msgstr "{}を読み込み"
+
+msgid "上一页乐器"
+msgstr "前の楽器ページ"
+
+msgid "下一页乐器"
+msgstr "次の楽器ページ"
+
+msgid "校验采样库"
+msgstr "サンプルライブラリを検証"
+
+msgid "下载采样库"
+msgstr "サンプルライブラリをダウンロード"
+
+msgid "设备与片段操作"
+msgstr "デバイスとクリップ操作"
+
+msgid "装 EQ"
+msgstr "EQを読み込み"
+
+msgid "装混响"
+msgstr "リバーブを読み込み"
+
+msgid "新建空的 MIDI 片段"
+msgstr "新規空MIDIクリップ"
+
+msgid "设备 {}"
+msgstr "デバイス{}"
+
+msgid "（已旁通）"
+msgstr "（バイパス中）"
+
+msgid "（生效）"
+msgstr "（有効）"
+
+msgid "旁通 {}"
+msgstr "{}をバイパス"
+
+msgid "移除设备 {}"
+msgstr "デバイス{}を除去"
+
+msgid "无设备（点上方「装 EQ」或「装混响」）"
+msgstr "デバイスなし（上の「EQを読み込み」または「リバーブを読み込み」をクリック）"
+
+msgid "商业插件宿主卡片 (v2.0.0, 未实现)"
+msgstr "商用プラグインホストカード (v2.0.0、未実装)"
+
+msgid "商业插件宿主 [v2.0.0 · 未实现]"
+msgstr "商用プラグインホスト [v2.0.0・未実装]"
+
+msgid "主总线设备链"
+msgstr "マスターバスデバイスチェーン"
+
+msgid "还有 {} 台设备未显示"
+msgstr "ほか{}台のデバイス未表示"
+
+msgid "给主总线装 EQ"
+msgstr "マスターバスへEQを読み込み"
+
+msgid "给主总线装混响"
+msgstr "マスターバスへリバーブを読み込み"
+
+msgid "主总线 EQ 低架增益 (eq_low_gain)"
+msgstr "マスターバスEQローシェルフゲイン (eq_low_gain)"
+
+msgid "主总线 EQ 低架增益 · eq_low_gain"
+msgstr "マスターバスEQローシェルフゲイン・eq_low_gain"
+
+msgid "主总线 EQ 低架增益"
+msgstr "マスターバスEQローシェルフゲイン"
+
+msgid "主总线设备 {}"
+msgstr "マスターバスデバイス{}"
+
+msgid "旁通主总线设备 {}"
+msgstr "マスターバスデバイス{}をバイパス"
+
+msgid "移除主总线设备 {}"
+msgstr "マスターバスデバイス{}を除去"
+
+# --- arrangement.slint ---
+
+msgid "工作区编曲画布"
+msgstr "ワークスペースアレンジキャンバス"
+
+msgid "和弦收起"
+msgstr "コードを折りたたむ"
+
+msgid "和弦展开"
+msgstr "コードを展開"
+
+msgid "折叠和弦音轨"
+msgstr "コードトラックを折りたたむ"
+
+msgid "展开和弦音轨"
+msgstr "コードトラックを展開"
+
+msgid "+ 轨道"
+msgstr "+ トラック"
+
+msgid "添加新音轨 [Ctrl+T]"
+msgstr "新規トラックを追加 [Ctrl+T]"
+
+msgid "轨道菜单"
+msgstr "トラックメニュー"
+
+msgid "编曲轨道与视图本地菜单"
+msgstr "アレンジトラックとビューのコンテキストメニュー"
+
+msgid "全局和弦轨"
+msgstr "グローバルコードトラック"
+
+msgid "智能和声声学"
+msgstr "スマートハーモニー音響"
+
+msgid "▶ 试听"
+msgstr "▶ 試聴"
+
+msgid "试听 Cm9 (主和弦) 配置"
+msgstr "Cm9（トニック）ボイシングを試聴"
+
+msgid "试听 AbMaj7 (下中音和弦) 配置"
+msgstr "AbMaj7（サブメディアント）ボイシングを試聴"
+
+msgid "试听 Fm11 (下属和弦) 配置"
+msgstr "Fm11（サブドミナント）ボイシングを試聴"
+
+msgid "试听 G7#9 (属和弦变化音) 配置"
+msgstr "G7#9（変化ドミナント）ボイシングを試聴"
+
+msgid "试听 Cm11 (扩展主和弦) 配置"
+msgstr "Cm11（拡張トニック）ボイシングを試聴"
+
+msgid "右置轨道头模式 (镜像工作区)"
+msgstr "右側トラックヘッダーモード（ミラーワークスペース）"
+
+msgid "点击更换音色/效果 [当前: {}]"
+msgstr "クリックで音色／エフェクトを変更［現在：{}］"
+
+msgid "取消静音 [M]"
+msgstr "ミュート解除 [M]"
+
+msgid "静音轨道 [M]"
+msgstr "トラックをミュート [M]"
+
+msgid "取消独奏 [S]"
+msgstr "ソロ解除 [S]"
+
+msgid "独奏轨道 [S]"
+msgstr "トラックをソロ [S]"
+
+msgid "取消录音准备 [R]"
+msgstr "録音待機解除 [R]"
+
+msgid "录音准备 (Arm) [R]"
+msgstr "録音待機 (Arm) [R]"
+
+msgid "声像: {} (左右拖拽调节，双击归中)"
+msgstr "パン：{}（左右ドラッグで調整、ダブルクリックで中央へ）"
+
+msgid "推子增益: {} dB (上下拖拽调节，双击归 0dB)"
+msgstr "フェーダーゲイン：{} dB（上下ドラッグで調整、ダブルクリックで0dBへ）"
+
+msgid "波形待分析 · 示意"
+msgstr "波形解析待ち・プレースホルダー"
+
+msgid "波形待分析 · 示意（资产不在会话池或解码失败，当前为 0dB 基准线占位）"
+msgstr "波形解析待ち・プレースホルダー（アセットがセッションプールにないかデコード失敗、現在は0dB基準線を表示）"
+
+msgid "空片段"
+msgstr "空クリップ"
+
+msgid "+ 点击添加新轨道"
+msgstr "+ クリックで新規トラックを追加"
+
+msgid "创建新音频或MIDI轨道 [Ctrl+T]"
+msgstr "新規オーディオ／MIDIトラックを作成 [Ctrl+T]"
+
+msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
+msgstr "ここへオーディオ／MIDIファイルをドラッグ、またはダブルクリックでトラックを追加"
+
+msgid "双击或点击此区域添加新轨道 [Ctrl+T]"
+msgstr "ダブルクリックまたはクリックで新規トラックを追加 [Ctrl+T]"
+
+msgid "+ 新建 MIDI 乐器轨"
+msgstr "+ 新規MIDI楽器トラック"
+
+msgid "+ 新建辅助发送轨"
+msgstr "+ 新規AUXセンドトラック"
+
+msgid "+ 新建 4 小节 MIDI 片段"
+msgstr "+ 新規4小節MIDIクリップ"
+
+msgid "将最新导入音频摆放到音频轨"
+msgstr "最新読み込みオーディオをオーディオトラックへ配置"
+
+msgid "左 / 右侧切换轨道头"
+msgstr "トラックヘッダーを左右切替"
+
+msgid "更换轨道 #{} 音色 / 插入"
+msgstr "トラック#{}の音色／インサートを変更"
+
+msgid "合成器 • 柔和主音 (Hollow Lead)"
+msgstr "シンセ・柔らかいリード (Hollow Lead)"
+
+msgid "合成器 • 风琴键音 (Warm Organ)"
+msgstr "シンセ・ウォームオルガン (Warm Organ)"
+
+msgid "合成器 • 人声铺底 (Choir Pad)"
+msgstr "シンセ・クワイアパッド (Choir Pad)"
+
+msgid "合成器 • 金属 FM (FM Bell)"
+msgstr "シンセ・メタリックFMベル (FM Bell)"
+
+msgid "合成器 • 水晶拨弦 (Glass Pluck)"
+msgstr "シンセ・ガラスプラック (Glass Pluck)"
+
+msgid "合成器 • 次低音 (Sub Bass)"
+msgstr "シンセ・サブベース (Sub Bass)"
+
+msgid "采样库 • 加载 SFZ 音色..."
+msgstr "サンプルライブラリ・SFZ楽器を読み込み…"
+
+msgid "效果槽 • 插入 参量均衡 EQ"
+msgstr "エフェクトスロット・パラメトリックEQを挿入"
+
+msgid "效果槽 • 插入 空间混响 Reverb"
+msgstr "エフェクトスロット・リバーブを挿入"
+
+msgid "效果槽 • 插入 动态压缩 Compressor"
+msgstr "エフェクトスロット・コンプレッサーを挿入"
+
+# --- lower_dock.slint ---
+
+msgid "底部控制台"
+msgstr "下部コンソール"
+
+msgid "设备堆叠"
+msgstr "デバイススタック"
+
+msgid "设备堆叠：效果器与混音控制台双层视图 [Alt+S]"
+msgstr "デバイススタック：エフェクトとミキサーコンソールの二層ビュー [Alt+S]"
+
+msgid "设备机架：效果器与虚拟乐器 [D]"
+msgstr "デバイスラック：エフェクトとバーチャル楽器 [D]"
+
+msgid "混音控制台"
+msgstr "ミキサーコンソール"
+
+msgid "混音控制台 [X]"
+msgstr "ミキサーコンソール [X]"
+
+msgid "钢琴卷帘"
+msgstr "ピアノロール"
+
+msgid "钢琴卷帘 [P]"
+msgstr "ピアノロール [P]"
+
+msgid "音色 [v]"
+msgstr "音色 [v]"
+
+msgid "为当前聚焦轨道切换内置/SFZ 音色"
+msgstr "現在フォーカス中のトラックの内蔵／SFZ音色を切替"
+
+msgid "为当前轨插入参量均衡器 EQ"
+msgstr "現在のトラックへパラメトリックEQを挿入"
+
+msgid "混响"
+msgstr "リバーブ"
+
+msgid "为当前轨插入空间混响 Reverb"
+msgstr "現在のトラックへリバーブを挿入"
+
+msgid "量化"
+msgstr "クオンタイズ"
+
+msgid "量化当前轨 MIDI 音符至网格"
+msgstr "現在のトラックのMIDIノートをグリッドへクオンタイズ"
+
+msgid "聚焦: {}"
+msgstr "フォーカス：{}"
+
+msgid "最大化 / 还原底部控制台"
+msgstr "下部コンソールを最大化／復元"
+
+msgid "退出最大化 / 还原 [Cmd/Ctrl+Alt+M / F3]"
+msgstr "最大化を終了／復元 [Cmd/Ctrl+Alt+M / F3]"
+
+msgid "最大化全屏此视图 (钢琴卷帘/混音控制台) [Ctrl+Alt+M / F3]"
+msgstr "このビューを全画面表示（ピアノロール／ミキサーコンソール）[Ctrl+Alt+M / F3]"
+
+msgid "当前轨道无挂载设备"
+msgstr "現在のトラックにデバイスなし"
+
+msgid "该轨道设备链为空，可点击下方按钮快速挂载合成器、效果器或 SFZ 音色库。"
+msgstr "このトラックのデバイスチェーンは空です。下のボタンからシンセ、エフェクト、SFZライブラリをすばやく追加できます。"
+
+msgid "+ 内置合成器"
+msgstr "+ 内蔵シンセ"
+
+msgid "+ 参量均衡 EQ"
+msgstr "+ パラメトリックEQ"
+
+msgid "+ 空间混响 Reverb"
+msgstr "+ リバーブ"
+
+msgid "+ 加载 SFZ"
+msgstr "+ SFZを読み込み"
+
+msgid "启用设备"
+msgstr "デバイスを有効化"
+
+msgid "旁通设备"
+msgstr "デバイスをバイパス"
+
+msgid "从轨道设备链移除"
+msgstr "トラックのデバイスチェーンから除去"
+
+msgid "曲线示意 · 未连接参数"
+msgstr "カーブ表示・パラメータ未接続"
+
+msgid "切换"
+msgstr "切替"
+
+msgid "1: 选音色 [v]"
+msgstr "1：音色を選択 [v]"
+
+msgid "点击切换轨道 #{} 音色/效果"
+msgstr "クリックでトラック#{}の音色／エフェクトを切替"
+
+msgid "EQ · 示意"
+msgstr "EQ・プレビュー"
+
+msgid "静音此音轨"
+msgstr "このトラックをミュート"
+
+msgid "独奏此音轨"
+msgstr "このトラックをソロ"
+
+msgid "声像 Pan: {} (左右拖拽/双击归中)"
+msgstr "パン：{}（左右ドラッグ／ダブルクリックで中央へ）"
+
+msgid "推子: {} dB (上下拖拽/双击归 0dB)"
+msgstr "フェーダー：{} dB（上下ドラッグ／ダブルクリックで0dBへ）"
+
+msgid "总线推子: {} dB (上下拖拽/双击归 0dB)"
+msgstr "バスフェーダー：{} dB（上下ドラッグ／ダブルクリックで0dBへ）"
+
+msgid "总输出单声道监听切换 [MONO]"
+msgstr "マスター出力モノラルモニター切替 [MONO]"
+
+msgid "总推子: {} dB (上下拖拽/双击归 0dB)"
+msgstr "マスターフェーダー：{} dB（上下ドラッグ／ダブルクリックで0dBへ）"
+
+msgid "添加混音轨"
+msgstr "ミキサートラックを追加"
+
+msgid "新建 MIDI 混音音轨"
+msgstr "新規MIDIミキサートラック"
+
+msgid "切换轨道 #{} 音色 / 插入"
+msgstr "トラック#{}の音色／インサートを切替"
+
+# --- left_panel.slint ---
+
+msgid "+ 添加总线效果"
+msgstr "+ バスエフェクトを追加"
+
+msgid "双振荡器 3D 波表合成器"
+msgstr "デュアルオシレーター3Dウェーブテーブルシンセ"
+
+msgid "内联实时频谱零延迟动态 EQ"
+msgstr "インライン・リアルタイムスペクトラム、ゼロレイテンシーダイナミックEQ"
+
+msgid "支持 MPE 弯音的粒子采样器"
+msgstr "MPEピッチベンド対応グラニュラーサンプラー"
+
+msgid "含 64 个多麦克风分层鼓组"
+msgstr "64マルチマイクレイヤードラムキット"
+
+msgid "模拟 SSL 4000G 总线粘合压缩"
+msgstr "SSL 4000G風バスグルーコンプレッサー"
+
+msgid "带宏旋钮一键失真度映射"
+msgstr "マクロノブ一発歪み量マッピング"
+
+msgid "通道检查器"
+msgstr "チャンネルインスペクター"
+
+msgid "当前音轨与总线信号链检查器"
+msgstr "現在のトラックとバスのシグナルチェーンインスペクター"
+
+msgid "智能音色库"
+msgstr "スマートサウンドライブラリ"
+
+msgid "工程资产、音频切片与采样音色库"
+msgstr "プロジェクトアセット、オーディオスライスとサンプルライブラリ"
+
+msgid "更换音色 [v]"
+msgstr "音色を変更 [v]"
+
+msgid "为当前轨道切换内置合成器音色或插入效果器"
+msgstr "現在のトラックの内蔵シンセ音色を切替、またはエフェクトを挿入"
+
+msgid "均分高度"
+msgstr "高さを均等化"
+
+msgid "重置所有音轨高度为标准紧凑视图"
+msgstr "全トラックの高さを標準コンパクトビューへリセット"
+
+msgid "折叠总线"
+msgstr "バスを折りたたむ"
+
+msgid "展开总线"
+msgstr "バスを展開"
+
+msgid "展开/折叠对应分组总线通道条"
+msgstr "対応するグループバスチャンネルストリップを展開／折りたたむ"
+
+msgid "音色与效果器预设"
+msgstr "楽器とエフェクトプリセット"
+
+msgid "空灵合成 Pad (Hollow)"
+msgstr "空虚なシンセパッド (Hollow)"
+
+msgid "温暖风琴 Organ"
+msgstr "ウォームオルガン"
+
+msgid "人声领唱 Vocal"
+msgstr "リードボーカル"
+
+msgid "金属拨弦 Metallic Pluck"
+msgstr "メタリックプラック"
+
+msgid "玻璃钟琴 Glass Bell"
+msgstr "ガラスベル"
+
+msgid "深沉贝斯 Neuro Bass"
+msgstr "ニューロベース"
+
+msgid "+ 插入 参量均衡 EQ"
+msgstr "+ パラメトリックEQを挿入"
+
+msgid "+ 插入 空间混响 Reverb"
+msgstr "+ リバーブを挿入"
+
+msgid "+ 插入 动态压缩 Compressor"
+msgstr "+ コンプレッサーを挿入"
+
+msgid "当前通道"
+msgstr "現在のチャンネル"
+
+msgid "效果器插槽 (INSERTS)"
+msgstr "エフェクトスロット (INSERTS)"
+
+msgid "点击 + 插入效果器或音色"
+msgstr "+をクリックしてエフェクトまたは音色を挿入"
+
+msgid "效果器插槽: 点击聚焦底栏设备机架"
+msgstr "エフェクトスロット：クリックで下部デバイスラックへフォーカス"
+
+msgid "点击为当前轨道追加/聚焦参量均衡 EQ"
+msgstr "クリックで現在のトラックへパラメトリックEQを追加／フォーカス"
+
+msgid "声像平衡: {} (左右拖拽调节，双击归中)"
+msgstr "パンバランス：{}（左右ドラッグで調整、ダブルクリックで中央へ）"
+
+msgid "音量推子: {} dB (上下拖拽调节，双击归 0dB)"
+msgstr "ボリュームフェーダー：{} dB（上下ドラッグで調整、ダブルクリックで0dBへ）"
+
+msgid "总线效果器 (BUS INSERTS)"
+msgstr "バスエフェクト (BUS INSERTS)"
+
+msgid "BUS COMP · 示意"
+msgstr "BUS COMP・プレビュー"
+
+msgid "总线声像 (左右拖拽调节，双击归中)"
+msgstr "バスパン（左右ドラッグで調整、ダブルクリックで中央へ）"
+
+msgid "总线推子: {} dB (上下拖拽调节，双击归 0dB)"
+msgstr "バスフェーダー：{} dB（上下ドラッグで調整、ダブルクリックで0dBへ）"
+
+msgid "检索"
+msgstr "検索"
+
+msgid "搜索音色、插件、采样包..."
+msgstr "音色、プラグイン、サンプルパックを検索…"
+
+msgid "全部"
+msgstr "すべて"
+
+msgid "点击载入 {} 至当前轨道"
+msgstr "クリックで{}を現在のトラックへ読み込み"
+
+# --- workspace/song_overview_panel.slint ---
+
+msgid "整曲多层总览图"
+msgstr "全曲マルチレイヤー概要図"
+
+msgid "整曲总览图：频率热力图、能量面积与情绪曲线"
+msgstr "全曲概要図：周波数ヒートマップ、エネルギー面積と感情カーブ"
+
+msgid "总览图走带光标"
+msgstr "概要図再生ヘッドカーソル"
+
+msgid "独奏频段行"
+msgstr "ソロバンド行"
+
+msgid "当前编排视口"
+msgstr "現在のアレンジビューポート"
+
+msgid "第 {}–{} 小节"
+msgstr "第{}–{}小節"
+
+msgid "无数据"
+msgstr "データなし"
+
+msgid "拖动缩放编排视口"
+msgstr "ドラッグでアレンジビューポートをズーム"
+
+msgid "悬停小节读数"
+msgstr "ホバー小節表示"
+
+msgid "疏密条码与小节标尺"
+msgstr "密度バーコードと小節ルーラー"
+
+msgid "情绪层开关"
+msgstr "感情レイヤー切替"
+
+msgid "能量层开关"
+msgstr "エネルギーレイヤー切替"
+
+msgid "频段层开关"
+msgstr "バンドレイヤー切替"
+
+msgid "疏密层开关"
+msgstr "密度レイヤー切替"
+
+msgid "情绪"
+msgstr "感情"
+
+msgid "能量"
+msgstr "エネルギー"
+
+msgid "频段"
+msgstr "バンド"
+
+msgid "疏密"
+msgstr "密度"
+
+msgid "折叠 / 展开总览面板"
+msgstr "概要パネルを折りたたむ／展開"
+
+msgid "总览 ▸"
+msgstr "概要 ▸"
+
+msgid "总览 ▾"
+msgstr "概要 ▾"
+
+msgid "全屏 / 退出全屏总览面板"
+msgstr "概要パネルを全画面／全画面終了"
+
+msgid "退出全屏"
+msgstr "全画面を終了"
+
+msgid "全屏"
+msgstr "全画面"
+
+msgid "曲风预设"
+msgstr "スタイルプリセット"
+
+msgid "预设：{}"
+msgstr "プリセット：{}"
+
+# --- console/mixer_console.slint ---
+
+msgid "导出 MIDI（把当前工程写成 SMF 1 文件）"
+msgstr "MIDIを書き出し（現在のプロジェクトをSMF 1ファイルへ書き込む）"
+
+msgid "导出 MIDI"
+msgstr "MIDIを書き出し"
+
+msgid "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）"
+msgstr "プロジェクトを開く（ファイルダイアログで.yebanコンテナを選び、現在のプロジェクトとその場で置き換え）"
+
+msgid "打开工程"
+msgstr "プロジェクトを開く"
+
+msgid "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）"
+msgstr "新規プロジェクト（ファイルダイアログで保存先を選択し、0トラック＋1マスターバスの空コンテナを書き出してその場で切り替え）"
+
+msgid "新建工程"
+msgstr "新規プロジェクト"
+
+msgid "通道条 {}"
+msgstr "チャンネルストリップ{}"
+
+msgid "轨道 {} 声相"
+msgstr "トラック{}パン"
+
+msgid "轨道色标 {}"
+msgstr "トラックカラータグ{}"
+
+msgid "轨道 {} 静音"
+msgstr "トラック{}ミュート"
+
+msgid "轨道 {} 独奏"
+msgstr "トラック{}ソロ"
+
+msgid "轨道 {} 电平表 峰值 {} RMS {} dBFS"
+msgstr "トラック{}メーター ピーク{} RMS {} dBFS"
+
+msgid "轨道 {} 推子"
+msgstr "トラック{}フェーダー"
+
+msgid "轨道 {} SFZ 采样器路径"
+msgstr "トラック{} SFZサンプラーパス"
+
+msgid "轨道 {} 浏览 SFZ 文件"
+msgstr "トラック{} SFZファイルを参照"
+
+msgid "轨道 {} 提交 SFZ 路径"
+msgstr "トラック{} SFZパスを確定"
+
+msgid "轨道 {} 解绑 SFZ 采样器"
+msgstr "トラック{} SFZサンプラーを解除"
+
+msgid "主控通道条"
+msgstr "マスターチャンネルストリップ"
+
+msgid "主控声相"
+msgstr "マスターパン"
+
+msgid "主控色标 {}"
+msgstr "マスターカラータグ{}"
+
+msgid "主控静音"
+msgstr "マスターミュート"
+
+msgid "主控独奏"
+msgstr "マスターソロ"
+
+msgid "主控电平表 峰值 {} RMS {} dBFS"
+msgstr "マスターメーター ピーク{} RMS {} dBFS"
+
+msgid "主控推子"
+msgstr "マスターフェーダー"
+
+# --- workspace/arrangement_view.slint ---
+
+msgid "Arrangement 线性编曲时间轴"
+msgstr "Arrangementリニアアレンジタイムライン"
+
+msgid "横向缩小"
+msgstr "横方向に縮小"
+
+msgid "横向缩放"
+msgstr "横方向ズーム"
+
+msgid "横向放大"
+msgstr "横方向に拡大"
+
+msgid "纵向缩小"
+msgstr "縦方向に縮小"
+
+msgid "纵向缩放"
+msgstr "縦方向ズーム"
+
+msgid "纵向放大"
+msgstr "縦方向に拡大"
+
+msgid "章节 {}"
+msgstr "セクション{}"
+
+msgid "段落色标 {}"
+msgstr "セクションカラータグ{}"
+
+msgid "小节与拍标尺"
+msgstr "小節と拍ルーラー"
+
+msgid "轨道 {}"
+msgstr "トラック{}"
+
+msgid "轨道 {} 录音准备"
+msgstr "トラック{}録音待機"
+
+msgid "编曲空车道拖动滚动面"
+msgstr "アレンジ空レーンのドラッグスクロール面"
+
+msgid "剪辑 {}"
+msgstr "クリップ{}"
+
+msgid "（静音）"
+msgstr "（ミュート）"
+
+msgid "剪辑拖动面 {}"
+msgstr "クリップドラッグ面{}"
+
+msgid "轨道插入位置"
+msgstr "トラック挿入位置"
+
+msgid "走带光标"
+msgstr "再生ヘッドカーソル"
+
+msgid "编曲横向滚动条"
+msgstr "アレンジ横スクロールバー"
+
+# --- console/piano_roll.slint ---
+
+msgid "选择"
+msgstr "選択"
+
+msgid "铅笔"
+msgstr "ペンシル"
+
+msgid "剪刀"
+msgstr "ハサミ"
+
+msgid "力度"
+msgstr "ベロシティ"
+
+msgid "橡皮"
+msgstr "消しゴム"
+
+msgid "虚拟化钢琴卷帘"
+msgstr "仮想化ピアノロール"
+
+msgid "{}工具"
+msgstr "{}ツール"
+
+msgid "吸附 1/16 · PPQ 960 · {}"
+msgstr "スナップ 1/16・PPQ 960・{}"
+
+msgid "卷帘吸附与音域状态"
+msgstr "ピアノロールスナップと音域状態"
+
+msgid "八-"
+msgstr "オクターブ-"
+
+msgid "八+"
+msgstr "オクターブ+"
+
+msgid "量化 Q"
+msgstr "クオンタイズ Q"
+
+msgid "人性化 H"
+msgstr "ヒューマナイズ H"
+
+msgid "钢琴键列"
+msgstr "ピアノ鍵盤列"
+
+msgid "音符网格画布"
+msgstr "ノートグリッドキャンバス"
+
+msgid "音符 {}"
+msgstr "ノート{}"
+
+msgid "力度泳道"
+msgstr "ベロシティレーン"
+
+msgid "力度条 {}"
+msgstr "ベロシティバー{}"
+
+msgid "卷帘走带光标"
+msgstr "ピアノロール再生ヘッドカーソル"
+
+msgid "卷帘拖动手势面"
+msgstr "ピアノロールドラッグジェスチャ面"
+
+msgid "人性化…"
+msgstr "ヒューマナイズ…"
+
+msgid "量化…"
+msgstr "クオンタイズ…"
+
+# --- modals.slint ---
+
+msgid "切换至：夜半全景工作区 (默认 Production)"
+msgstr "切替：夜半パノラマワークスペース（デフォルト Production）"
+
+msgid "切换至：现场激发工作区 (Clip 矩阵 Performance)"
+msgstr "切替：ライブローンチワークスペース（クリップマトリクス Performance）"
+
+msgid "切换至：线性编曲工作区 (时间轴编曲 Arrange)"
+msgstr "切替：リニアアレンジワークスペース（タイムラインアレンジ Arrange）"
+
+msgid "切换至：混音控制台工作区 (母带监听 Mix & Master)"
+msgstr "切替：ミキサーワークスペース（マスターモニタリング Mix & Master）"
+
+msgid "打开/关闭 创新工作流与架构透视 (Insights)"
+msgstr "イノベーションワークフローとアーキテクチャ透視 (Insights) の表示切替"
+
+msgid "切换悬浮提示开关 (Toggle Hover Tooltips)"
+msgstr "ホバーツールチップ表示切替"
+
+msgid "切换底栏：设备堆叠 (Stacked)"
+msgstr "下部ドック切替：デバイススタック (Stacked)"
+
+msgid "切换底栏：设备机架 (Devices)"
+msgstr "下部ドック切替：デバイスラック (Devices)"
+
+msgid "切换底栏：混音控制台 (Mixer)"
+msgstr "下部ドック切替：ミキサーコンソール (Mixer)"
+
+msgid "切换底栏：钢琴卷帘 (Piano Roll)"
+msgstr "下部ドック切替：ピアノロール (Piano Roll)"
+
+msgid "新增轨道 (Add Audio/MIDI Track)"
+msgstr "トラックを追加（オーディオ／MIDIトラック）"
+
+msgid "输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)..."
+msgstr "コマンド入力、ワークスペース切替、モジュールへ移動（例：ミキサーコンソール、ピアノロール、分割）…"
+
+msgid "夜半 专业工作流与现代声学架构"
+msgstr "夜半 プロフェッショナルワークフローと現代音響アーキテクチャ"
+
+msgid "基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区"
+msgstr "RustリアルタイムオーディオエンジンとSlintモダンネイティブレスポンシブデスクトップワークスペース"
+
+msgid "关闭透视"
+msgstr "透視を閉じる"
+
+msgid "① 黄金视线轨道头与全景排布"
+msgstr "① 黄金視線トラックヘッダーとパノラマレイアウト"
+
+msgid "轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。"
+msgstr "トラック名、パートカラー、M/S/Rコアモニタリングをタイムライン左側の黄金視線エリアに配置し、視線とマウスの大きな移動を回避。\nパフォーマンスマトリクスとリニアトラックの一発ミラー切替にも対応し、スタジオ制作とステージ即興を両立。"
+
+msgid "② 内联全功能 DSP 设备机架 (Zero Popups)"
+msgstr "② インライン全機能DSPデバイスラック (Zero Popups)"
+
+msgid "原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。"
+msgstr "ネイティブウェーブテーブルシンセ、8バンドダイナミックEQ、バスグルーコンプレッサーを下部ラックへ直接インライン配置し、全パラメータを一画面で操作、ミリ秒級リアルタイムスペクトラム付き。\n従来ワークステーションのポップアップが重なりタイムラインを隠す問題と決別。ダブルクリックで独立フローティングウィンドウへ展開も可能。"
+
+msgid "③ 即时混合工作流与无感缓冲热切"
+msgstr "③ インスタントハイブリッドワークフローとシームレスバッファホットスワップ"
+
+msgid "现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。"
+msgstr "ライブクリップローンチドロワーと中央リニアタイムラインがシームレスに連携し、クリップ即興ローンチとトラックへのスムーズなドラッグに対応。\nオーディオバッファサイズのホットスワップはプロジェクト再読込なしで即時反映し、マスタリングと制作にプロ級低レイテンシーと高い確定性を提供。"
+
+msgid "提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。"
+msgstr "ヒント：トップバーの「デフォルト／ライブ／アレンジ／ミックス」をいつでもクリックし、4つのプロフェッショナルワークフローを瞬時に切り替え可能。"
+
+# --- transport.slint ---
+
+msgid "停止 (回到起始点)"
+msgstr "停止（先頭へ戻る）"
+
+msgid "录音"
+msgstr "録音"
+
+msgid "速度 BPM"
+msgstr "テンポ BPM"
+
+msgid "主时间码"
+msgstr "メインタイムコード"
+
+msgid "当前分支"
+msgstr "現在のブランチ"
+
+msgid "分支: {}"
+msgstr "ブランチ：{}"
+
+msgid "提交当前编辑为一个 Commit"
+msgstr "現在の編集をコミットとして保存"
+
+msgid "回滚到上一个 Commit"
+msgstr "前のコミットへロールバック"
+
+msgid "保存工程"
+msgstr "プロジェクトを保存"
+
+msgid "保存"
+msgstr "保存"
+
+msgid "打开 AI 编曲提案审核抽屉"
+msgstr "AIアレンジ提案レビュードロワーを開く"
+
+msgid "AI提案"
+msgstr "AI提案"
+
+msgid "节拍器 (Cmd/Ctrl + Alt + N)"
+msgstr "メトロノーム (Cmd/Ctrl + Alt + N)"
+
+msgid "Session 触发矩阵 (F5)"
+msgstr "Sessionローンチマトリクス (F5)"
+
+msgid "Arrangement 时间轴 (F6)"
+msgstr "Arrangementタイムライン (F6)"
+
+msgid "切换 Session / Arrangement (Tab, 仅画布聚焦时)"
+msgstr "Session／Arrangement切替 (Tab、キャンバスフォーカス時のみ)"
+
+msgid "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)"
+msgstr "AIコラボレーションバードロワーを開く (Cmd/Ctrl + Alt + A)"
+
+# --- dialogs/humanize_dialog.slint ---
+
+msgid "人性化与量化"
+msgstr "ヒューマナイズとクオンタイズ"
+
+msgid "人性化与量化面板"
+msgstr "ヒューマナイズとクオンタイズパネル"
+
+msgid "人性化 · 量化"
+msgstr "ヒューマナイズ・クオンタイズ"
+
+msgid "关闭人性化与量化"
+msgstr "ヒューマナイズとクオンタイズを閉じる"
+
+msgid "人性化（整片段）"
+msgstr "ヒューマナイズ（クリップ全体）"
+
+msgid "时值抖动量（tick）"
+msgstr "タイミングジッター量（tick）"
+
+msgid "力度抖动量（±n）"
+msgstr "ベロシティジッター量（±n）"
+
+msgid "基础种子（缺省工程种子）"
+msgstr "ベースシード（デフォルト：プロジェクトシード）"
+
+msgid "基础种子说明"
+msgstr "ベースシードの説明"
+
+msgid "同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎 v2 接上。"
+msgstr "同じベースシードは異なるクリップで同じジッターシーケンスを生成。トラック別派生はエンジンv2で対応。"
+
+msgid "对选中剪辑应用人性化"
+msgstr "選択中のクリップへヒューマナイズを適用"
+
+msgid "应用人性化"
+msgstr "ヒューマナイズを適用"
+
+msgid "量化（整片段）"
+msgstr "クオンタイズ（クリップ全体）"
+
+msgid "网格（tick）"
+msgstr "グリッド（tick）"
+
+msgid "强度（0–100%）"
+msgstr "強度（0–100%）"
+
+msgid "对选中剪辑应用量化"
+msgstr "選択中のクリップへクオンタイズを適用"
+
+msgid "应用量化"
+msgstr "クオンタイズを適用"
+
+msgid "人性化或量化失败的原因"
+msgstr "ヒューマナイズまたはクオンタイズ失敗の理由"
+
+# --- dialogs/export_wav_dialog.slint ---
+
+msgid "WAV 导出设置"
+msgstr "WAV書き出し設定"
+
+msgid "WAV 导出设置面板"
+msgstr "WAV書き出し設定パネル"
+
+msgid "导出 WAV · 选项"
+msgstr "WAV書き出し・オプション"
+
+msgid "关闭导出设置"
+msgstr "書き出し設定を閉じる"
+
+msgid "输出路径（Ctrl/Cmd+O 浏览…；空 = 宿主缺省）"
+msgstr "出力パス（Ctrl/Cmd+Oで参照…；空＝ホスト既定）"
+
+msgid "WAV 输出路径"
+msgstr "WAV出力パス"
+
+msgid "采样率 Hz（auto = 跟随工程）"
+msgstr "サンプルレート Hz（auto＝プロジェクトに従う）"
+
+msgid "采样率（auto 或 Hz）"
+msgstr "サンプルレート（autoまたはHz）"
+
+msgid "位深（16 / 24 / 32f）"
+msgstr "ビット深度（16 / 24 / 32f）"
+
+msgid "时长 秒（缺省 = 全曲末端）"
+msgstr "長さ 秒（既定＝全曲末尾）"
+
+msgid "导出时长（秒）"
+msgstr "書き出し長さ（秒）"
+
+msgid "母线限制器（仅本次导出）"
+msgstr "マスターリミッター（今回の書き出しのみ）"
+
+msgid "限制器：开"
+msgstr "リミッター：オン"
+
+msgid "限制器：关"
+msgstr "リミッター：オフ"
+
+msgid "无效的采样率 / 位深 / 时长会让导出如实失败，不写半成品文件。"
+msgstr "無効なサンプルレート／ビット深度／長さでは書き出しは正しく失敗し、未完成ファイルは書き込まれません。"
+
+msgid "按这些选项导出 WAV"
+msgstr "これらのオプションでWAVを書き出し"
+
+msgid "导出"
+msgstr "書き出し"
+
+# --- module_actions.slint ---
+
+msgid "模块入口"
+msgstr "モジュール入口"
+
+msgid "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入"
+msgstr "モジュール入口：WAV書き出し／MIDI読み込み／SFZ読み込み／録音／ハードウェアMIDI入力"
+
+msgid "导出 WAV（打开采样率 / 位深 / 时长选项）"
+msgstr "WAV書き出し（サンプルレート／ビット深度／長さオプションを開く）"
+
+msgid "导出 WAV"
+msgstr "WAV書き出し"
+
+msgid "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）"
+msgstr "MIDI読み込み（SMFのノートを最初の非マスタートラックへ読み込む）"
+
+msgid "导入 MIDI"
+msgstr "MIDI読み込み"
+
+msgid "装载 SFZ 乐器（报告区域数并探测一个音符）"
+msgstr "SFZ楽器の読み込み（リージョン数を報告し、1ノートを試奏）"
+
+msgid "装载 SFZ"
+msgstr "SFZを読み込み"
+
+msgid "录音（把控制侧测试音录成 24-bit WAV）"
+msgstr "録音（制御側テスト音を24-bit WAVへ録音）"
+
+msgid "录音（测试音）"
+msgstr "録音（テスト音）"
+
+msgid "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）"
+msgstr "ハードウェアMIDI入力（物理ポートのイベントを収集し、ペアになったノートを最初の非マスタートラックへ書き込む）"
+
+msgid "MIDI 输入（硬件）"
+msgstr "MIDI入力（ハードウェア）"
+
+msgid "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）"
+msgstr "直近のハードウェアMIDI入力収集結果（ポート／イベント数／未対応数／破棄イベント数／ジッター／エラーコード）"
+
+msgid "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）"
+msgstr "直近のモジュールアクション結果（パス／フレーム数／ソース／エラーコード）"
+
+msgid "母带削波警示（削波样本数 / 建议减多少 dB）"
+msgstr "マスタークリッピング警告（クリップサンプル数／推奨削減dB）"
+
+msgid "最近一次 MIDI 文件导入的损耗摘要（类数 / 事件数 / 歌词丢失 / 音符通道 / 释放力度）"
+msgstr "直近のMIDIファイル読み込み損失サマリー（クラス数／イベント数／歌詞損失／ノートチャンネル／リリースベロシティ）"
+
+# --- dialogs/undo_tree_modal.slint ---
+
+msgid "编曲版本时光机图谱"
+msgstr "アレンジバージョンタイムマシングラフ"
+
+msgid "版本图谱面板"
+msgstr "バージョングラフパネル"
+
+msgid "编曲时光机 · 版本 DAG"
+msgstr "アレンジタイムマシン・バージョンDAG"
+
+msgid "分支 {} · 可撤销 {} 步 · 已撤销 {} 步 · 提交 {} 条"
+msgstr "ブランチ{}・取り消し可能{}ステップ・取り消し済み{}ステップ・コミット{}件"
+
+msgid "关闭时光机"
+msgstr "タイムマシンを閉じる"
+
+msgid "还没有任何版本提交。撤销历史为空。"
+msgstr "バージョンコミットはまだありません。取り消し履歴は空です。"
+
+msgid "更早的 {} 个版本未画出"
+msgstr "さらに{}個の古いバージョン未描画"
+
+msgid "更早的 {} 个版本未画出（画布只画得下最近 {} 个）"
+msgstr "さらに{}個の古いバージョン未描画（キャンバスは直近{}個まで）"
+
+msgid "撤销一步 (Cmd+Z)"
+msgstr "1ステップ取り消し (Cmd+Z)"
+
+msgid "撤销一步 ({} 步可撤)"
+msgstr "1ステップ取り消し（{}ステップ取り消し可能）"
+
+msgid "无历史可撤"
+msgstr "取り消す履歴なし"
+
+msgid "重做一步"
+msgstr "1ステップやり直し"
+
+msgid "重做一步 ({} 步可重做)"
+msgstr "1ステップやり直し（{}ステップやり直し可能）"
+
+msgid "无历史可重做"
+msgstr "やり直す履歴なし"
+
+msgid "撤销一步与 Cmd+Z 同源 · 点击版本节点回到该版本 · Esc 关闭"
+msgstr "取り消しはCmd+Zと同源・バージョンノードをクリックでそのバージョンへ戻る・Escで閉じる"
+
+# --- dialogs/musical_pr_drawer.slint ---
+
+msgid "AI 编曲提案审核抽屉"
+msgstr "AIアレンジ提案レビュードロワー"
+
+msgid "AI 编曲提案 ({})"
+msgstr "AIアレンジ提案 ({})"
+
+msgid "关闭提案抽屉"
+msgstr "提案ドロワーを閉じる"
+
+msgid "视觉差异图例: 新增 / 删除 / 微调"
+msgstr "ビジュアル差分凡例：追加／削除／微調整"
+
+msgid "+ 新增"
+msgstr "+ 追加"
+
+msgid "删除"
+msgstr "削除"
+
+msgid "↑ 微调"
+msgstr "↑ 微調整"
+
+msgid "遮罩 #000000 (无头截图动态区域)"
+msgstr "マスク #000000（ヘッドレススクリーンショット動的領域）"
+
+msgid "本提案携带 {} 条 op"
+msgstr "この提案は{}件のopを含む"
+
+msgid "采纳提案 (Shift+Enter)"
+msgstr "提案を採用 (Shift+Enter)"
+
+msgid "采纳 (Shift+Enter)"
+msgstr "採用 (Shift+Enter)"
+
+msgid "放弃提案"
+msgstr "提案を破棄"
+
+msgid "放弃"
+msgstr "破棄"
+
+# --- sidebar.slint ---
+
+msgid "搜索乐器 / 采样 / 预置"
+msgstr "楽器／サンプル／プリセットを検索"
+
+msgid "左侧资源浏览器与资产库"
+msgstr "左側リソースブラウザとアセットライブラリ"
+
+msgid "资源库"
+msgstr "リソースライブラリ"
+
+msgid "展开左侧资源栏"
+msgstr "左リソースバーを展開"
+
+msgid "收起左侧资源栏"
+msgstr "左リソースバーを折りたたむ"
+
+msgid "搜索资源"
+msgstr "リソースを検索"
+
+msgid "资源分类 {}"
+msgstr "リソースカテゴリ{}"
+
+msgid "乐器"
+msgstr "楽器"
+
+msgid "采样"
+msgstr "サンプル"
+
+msgid "预置"
+msgstr "プリセット"
+
+# --- workspace/session_view.slint ---
+
+msgid "Session 触发矩阵"
+msgstr "Sessionローンチマトリクス"
+
+msgid "场景一键激发列"
+msgstr "シーン一発ローンチ列"
+
+msgid "场景"
+msgstr "シーン"
+
+msgid "场景 · {}"
+msgstr "シーン・{}"
+
+msgid "激发场景 {}"
+msgstr "シーン{}をローンチ"
+
+msgid "场景色标 {}"
+msgstr "シーンカラータグ{}"
+
+msgid "返回编曲 (Back to Arrangement)"
+msgstr "アレンジへ戻る (Back to Arrangement)"
+
+msgid "→ 编曲"
+msgstr "→ アレンジ"
+
+msgid "场景启动状态"
+msgstr "シーンローンチ状態"
+
+msgid "还有 {} 轨未显示"
+msgstr "ほか{}トラック未表示"
+
+# --- status_bar.slint ---
+
+msgid "空格 播放/暂停 · Tab 切视图 (画布聚焦时) · 1–5 工具 · [ ] A/B 盲听"
+msgstr "スペース 再生／一時停止・Tab ビュー切替（キャンバスフォーカス時）・1–5 ツール・[ ] A/Bブラインドテスト"
+
+msgid "状态栏"
+msgstr "ステータスバー"
+
+msgid "选区信息"
+msgstr "選択情報"
+
+msgid "和弦 {}"
+msgstr "コード{}"
+
+msgid "和弦识别（当前版本无读数）"
+msgstr "コード認識（現バージョンでは表示なし）"
+
+msgid "快捷键提示"
+msgstr "ショートカットヒント"
+
+msgid "最近一次保存工程的结果"
+msgstr "直近のプロジェクト保存結果"
+
+msgid "音频配置与性能目标"
+msgstr "オーディオ設定とパフォーマンス目標"
+
+# --- clip_matrix.slint ---
+
+msgid "停止"
+msgstr "停止"
+
+msgid "激发场景 1 (Scene 1) 切片组合"
+msgstr "シーン1 (Scene 1) クリップ組合せをローンチ"
+
+msgid "激发场景 2 (Scene 2) 切片组合"
+msgstr "シーン2 (Scene 2) クリップ組合せをローンチ"
+
+msgid "激发场景 3 (Scene 3) 切片组合"
+msgstr "シーン3 (Scene 3) クリップ組合せをローンチ"
+
+msgid "激发场景 4 (Scene 4) 切片组合"
+msgstr "シーン4 (Scene 4) クリップ組合せをローンチ"
+
+msgid "激发片段: {}"
+msgstr "クリップをローンチ：{}"
+
+msgid "创建空白片段"
+msgstr "空クリップを作成"
+
+# --- control_room.slint ---
+
+msgid "归零"
+msgstr "ゼロへ戻す"
+
+msgid "A: 近场主箱"
+msgstr "A：ニアフィールドメインモニター"
+
+msgid "切换至 A 组全频近场立体声监听音箱"
+msgstr "Aセット全帯域ニアフィールドステレオモニターへ切替"
+
+msgid "B: 单声道参考"
+msgstr "B：モノラルリファレンス"
+
+msgid "切换至 B 组小振膜单声道参考音箱"
+msgstr "Bセット小口径モノラルリファレンススピーカーへ切替"
+
+msgid "DIM 衰减监听电平 (-20 dB)"
+msgstr "DIM：モニターレベルを減衰（-20 dB）"
+
+msgid "MONO 单声道求和检验相位互消"
+msgstr "MONO：モノラル合算で位相キャンセルを確認"
+
+msgid "SIDE 仅监听立体声差信号 (S=L-R)"
+msgstr "SIDE：ステレオ差信号のみモニター（S=L-R）"
+
+# --- console/console_tabs.slint ---
+
+msgid "底部控制台标签导轨"
+msgstr "下部コンソールタブレール"
+
+# --- dialogs/macro_panel.slint ---
+
+msgid "宏面板"
+msgstr "マクロパネル"
+
+msgid "宏 ({}) · {}"
+msgstr "マクロ ({})・{}"
+
+msgid "宏面板，{}"
+msgstr "マクロパネル、{}"
+
+msgid "关闭宏面板"
+msgstr "マクロパネルを閉じる"
+
+msgid "这条轨没有宏"
+msgstr "このトラックにマクロなし"
+
+msgid "{} 位置"
+msgstr "{}位置"
+
+# --- console/asset_pool_panel.slint ---
+
+msgid "素材池"
+msgstr "アセットプール"
+
+msgid "素材 {} 条"
+msgstr "アセット{}件"
+
+msgid "导入音频（用文件对话框挑一个 WAV 并作为片段导入）"
+msgstr "オーディオを読み込み（ファイルダイアログでWAVを選び、クリップとして読み込む）"
+
+msgid "导入音频"
+msgstr "オーディオを読み込み"
+
+msgid "尚无素材"
+msgstr "アセットはまだありません"

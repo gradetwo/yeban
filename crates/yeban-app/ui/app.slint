@@ -16,7 +16,7 @@ import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
 export component MainWindow inherits Window {
-    title: "夜半";
+    title: @tr("夜半");
     background: Theme.bg-canvas;
     forward-focus: key-handler;
     preferred-width: 1600px;
@@ -215,6 +215,12 @@ export component MainWindow inherits Window {
     in-out property <bool> show-hotspots: false;
     in-out property <string> toast-message: "";
     in-out property <bool> console-maximized: false;
+    // 界面语言当前态（九语 i18n）：语言代码（"zh-CN" 等九语规范名）与
+    // 自称名（"中文" / "English" / ...）。宿主持有的状态
+    // （host::apply_language 唯一写入口），此处只是给走带栏 Group L
+    // 菜单与主菜单读的镜像，.slint 侧不自己翻它。
+    in-out property <string> language-code: "zh-CN";
+    in-out property <string> language-name: "中文";
     in-out property <bool> song-overview-fullscreen: false;
     property <bool> dock-tab-sync-guard: false;
     in-out property <bool> control-room-dim: false;
@@ -284,6 +290,11 @@ export component MainWindow inherits Window {
     callback console-maximize-toggle();
     callback toggle-play();
     callback toggle-record();
+    // 界面语言选择（九语 i18n）：由走带栏 Group L 语言菜单与主菜单
+    // 「设置 → 语言」触发，入参为语言规范名（"fr-FR" 等），宿主接管
+    // （host::apply_language 是唯一写入口，.slint 侧不自己改语言状态；
+    // 显式选择同时写回设置文件，见 host::apply_language_and_save）。
+    callback select-language(string);
     callback revert-to-last-commit();
     callback open-cmd-palette();
     callback open-musical-pr();
@@ -326,7 +337,7 @@ export component MainWindow inherits Window {
     in-out property <bool> master-mute: false;
     in-out property <bool> master-solo: false;
     in-out property <color> master-color: #2c3a63;
-    in-out property <string> master-color-label: "靛青";
+    in-out property <string> master-color-label: @tr("靛青");
     in-out property <string> master-meter-peak: "-120.0";
     in-out property <string> master-meter-rms: "-120.0";
     in-out property <string> master-meter-lufs: "-120.0";
@@ -399,7 +410,7 @@ export component MainWindow inherits Window {
     in-out property <[length]> clip-widths: [];
     in-out property <bool> compact: self.width < Tokens.breakpoint-full-hd * 1px;
     in-out property <bool> compressor-available: false;
-    in-out property <string> compressor-info: "压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB";
+    in-out property <string> compressor-info: @tr("压缩器: 阈值 -18.0 dB · 比率 4:1 · GR 0.0 dB");
     in-out property <bool> console-fixed: !root.console-maximized && root.console-height-px > 0;
     in-out property <int> console-height-px: 0;
     in-out property <length> console-height-readout: 0px;
@@ -424,7 +435,7 @@ export component MainWindow inherits Window {
     in-out property <[string]> device-unrecognised: [];
     in-out property <string> engine-error: "";
     in-out property <string> eq-curve-fill-svg: "";
-    in-out property <string> eq-curve-info: "平坦响应 (0 dB · 20 Hz – 20 kHz)";
+    in-out property <string> eq-curve-info: @tr("平坦响应 (0 dB · 20 Hz – 20 kHz)");
     in-out property <string> eq-curve-svg: "M 0 50 L 420 50";
     // BUS COMP 真实压缩传递曲线（空串 = 无压缩器 ⇒ 卡片保持「示意」）。
     in-out property <string> comp-curve-svg: "";
@@ -449,10 +460,10 @@ export component MainWindow inherits Window {
     in-out property <bool> instrument-install-available: false;
     in-out property <string> instrument-install-reason: "";
     in-out property <string> instrument-install-status: "";
-    in-out property <string> instrument-label: "未装乐器";
+    in-out property <string> instrument-label: @tr("未装乐器");
     in-out property <[string]> instrument-names: [];
     in-out property <bool> limiter-available: false;
-    in-out property <string> limiter-info: "限制器: 阈值 -0.1 dBTP · 状态 正常";
+    in-out property <string> limiter-info: @tr("限制器: 阈值 -0.1 dBTP · 状态 正常");
     in-out property <[string]> macro-names: [];
     in-out property <bool> macro-panel-open: false;
     in-out property <[string]> macro-value-labels: [];
@@ -527,7 +538,7 @@ export component MainWindow inherits Window {
     in-out property <float> send-gain-max-db: 0.0;
     in-out property <float> send-gain-min-db: 0.0;
     in-out property <bool> shaper-available: false;
-    in-out property <string> shaper-info: "瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)";
+    in-out property <string> shaper-info: @tr("瞬态塑形: 启动 +0.0 · 维持 +0.0 (未激活)");
     in-out property <bool> shortcut-layer-focused: false;
     in-out property <int> sidebar-category: 0;
     in-out property <bool> sidebar-collapsed: false;
@@ -537,7 +548,7 @@ export component MainWindow inherits Window {
     in-out property <string> sidebar-search: "";
     in-out property <bool> sidebar-search-focused: false;
     in-out property <bool> sidechain-available: false;
-    in-out property <string> sidechain-key-label: "侧链键源: 无 (点击切换)";
+    in-out property <string> sidechain-key-label: @tr("侧链键源: 无 (点击切换)");
     in-out property <[color]> song-overview-band-colors: [];
     in-out property <int> song-overview-band-solo: -1;
     in-out property <bool> song-overview-collapsed: self.width < 1920px || self.height < 1080px;
@@ -552,7 +563,7 @@ export component MainWindow inherits Window {
     in-out property <bool> song-overview-hover-visible: false;
     in-out property <string> song-overview-key-signature: "";
     in-out property <[float]> song-overview-lufs: [];
-    in-out property <string> song-overview-profile: "均衡";
+    in-out property <string> song-overview-profile: @tr("均衡");
     in-out property <[string]> song-overview-ruler-labels: [];
     in-out property <[float]> song-overview-score-dyn: [];
     in-out property <[string]> song-overview-section-names: [];
@@ -568,7 +579,7 @@ export component MainWindow inherits Window {
     in-out property <bool> splitter-dragging: false;
     in-out property <length> splitter-press-y: 0px;
     in-out property <string> status-device: "—";
-    in-out property <string> status-selection: "选区 无";
+    in-out property <string> status-selection: @tr("选区 无");
     in-out property <string> timecode: "001.01.000";
     in-out property <int> timecode-ticks-bar: 0;
     in-out property <int> timecode-ticks-beat: 0;
@@ -597,7 +608,7 @@ export component MainWindow inherits Window {
     in-out property <bool> undo-tree-open: false;
     in-out property <int> undo-undone: 0;
     in-out property <bool> velocity-drag-active: false;
-    in-out property <string> window-title: "夜半 Yeban";
+    in-out property <string> window-title: @tr("夜半 Yeban");
     in-out property <float> zoom-h-fraction: 0.495;
     in-out property <float> zoom-v-fraction: 0.231;
     callback apply-humanize();
@@ -755,94 +766,112 @@ export component MainWindow inherits Window {
     // platforms without a native menu bar automatically fall back to Slint's MenuBarImpl above window content.
     MenuBar {
         Menu {
-            title: "文件";
-            MenuItem { title: "新建空白工程"; activated => { root.command-execute("file-new"); } }
-            MenuItem { title: "打开 / 恢复工程..."; activated => { root.command-execute("file-open"); } }
-            MenuItem { title: "保存工程 (Ctrl+S)"; activated => { root.command-execute("file-save"); } }
-            MenuItem { title: "另存为 (Ctrl+Shift+S)"; activated => { root.command-execute("file-save-as"); } }
+            title: @tr("文件");
+            MenuItem { title: @tr("新建空白工程"); activated => { root.command-execute("file-new"); } }
+            MenuItem { title: @tr("打开 / 恢复工程..."); activated => { root.command-execute("file-open"); } }
+            MenuItem { title: @tr("保存工程 (Ctrl+S)"); activated => { root.command-execute("file-save"); } }
+            MenuItem { title: @tr("另存为 (Ctrl+Shift+S)"); activated => { root.command-execute("file-save-as"); } }
             MenuSeparator {}
-            MenuItem { title: "导出音频 (WAV)..."; activated => { root.command-execute("open-export-wav"); } }
-            MenuItem { title: "导出分轨 (Stems)..."; activated => { root.command-execute("export-stems"); } }
-            MenuItem { title: "导出 MIDI 文件..."; activated => { root.command-execute("export-midi"); } }
+            MenuItem { title: @tr("导出音频 (WAV)..."); activated => { root.command-execute("open-export-wav"); } }
+            MenuItem { title: @tr("导出分轨 (Stems)..."); activated => { root.command-execute("export-stems"); } }
+            MenuItem { title: @tr("导出 MIDI 文件..."); activated => { root.command-execute("export-midi"); } }
             MenuSeparator {}
-            MenuItem { title: "导入 MIDI 文件..."; activated => { root.command-execute("import-midi"); } }
-            MenuItem { title: "导入音频文件..."; activated => { root.command-execute("import-audio"); } }
-            MenuItem { title: "装载 SFZ 音色库..."; activated => { root.command-execute("load-sfz"); } }
+            MenuItem { title: @tr("导入 MIDI 文件..."); activated => { root.command-execute("import-midi"); } }
+            MenuItem { title: @tr("导入音频文件..."); activated => { root.command-execute("import-audio"); } }
+            MenuItem { title: @tr("装载 SFZ 音色库..."); activated => { root.command-execute("load-sfz"); } }
             MenuSeparator {}
-            MenuItem { title: "实时录音至 WAV..."; activated => { root.command-execute("record-wav"); } }
+            MenuItem { title: @tr("实时录音至 WAV..."); activated => { root.command-execute("record-wav"); } }
             MenuSeparator {}
             // ⭐ 退出（此前「文件」菜单没有退出项，关窗口是唯一出路）。
             // Windows 上 Alt+F4 仍在；这条给的是**菜单里能看见**的出口。
-            MenuItem { title: "退出 Yeban"; activated => { root.command-execute("app-quit"); } }
+            MenuItem { title: @tr("退出 Yeban"); activated => { root.command-execute("app-quit"); } }
         }
         Menu {
-            title: "编辑";
-            MenuItem { title: "撤销上一步 (Ctrl+Z)"; activated => { root.command-execute("undo-step"); } }
-            MenuItem { title: "重做 (Ctrl+Shift+Z)"; activated => { root.command-execute("redo-step"); } }
-            MenuItem { title: "编曲版本时光机 (Undo Tree)..."; activated => { root.command-execute("toggle-undo-tree"); } }
+            title: @tr("编辑");
+            MenuItem { title: @tr("撤销上一步 (Ctrl+Z)"); activated => { root.command-execute("undo-step"); } }
+            MenuItem { title: @tr("重做 (Ctrl+Shift+Z)"); activated => { root.command-execute("redo-step"); } }
+            MenuItem { title: @tr("编曲版本时光机 (Undo Tree)..."); activated => { root.command-execute("toggle-undo-tree"); } }
             MenuSeparator {}
             // 片段剪贴板（ADR-0076 B3）：与 Cmd/Ctrl+C/V/X 走同一组函数。
-            MenuItem { title: "复制片段 (Ctrl+C)"; activated => { root.command-execute("edit-copy"); } }
-            MenuItem { title: "粘贴片段 (Ctrl+V)"; activated => { root.command-execute("edit-paste"); } }
-            MenuItem { title: "剪切片段 (Ctrl+X)"; activated => { root.command-execute("edit-cut"); } }
+            MenuItem { title: @tr("复制片段 (Ctrl+C)"); activated => { root.command-execute("edit-copy"); } }
+            MenuItem { title: @tr("粘贴片段 (Ctrl+V)"); activated => { root.command-execute("edit-paste"); } }
+            MenuItem { title: @tr("剪切片段 (Ctrl+X)"); activated => { root.command-execute("edit-cut"); } }
             MenuSeparator {}
-            MenuItem { title: "音符量化 (Quantize 1/16)..."; activated => { root.command-execute("open-quantize"); } }
-            MenuItem { title: "音符人性化 (Humanize)..."; activated => { root.command-execute("open-humanize"); } }
+            MenuItem { title: @tr("音符量化 (Quantize 1/16)..."); activated => { root.command-execute("open-quantize"); } }
+            MenuItem { title: @tr("音符人性化 (Humanize)..."); activated => { root.command-execute("open-humanize"); } }
             MenuSeparator {}
-            MenuItem { title: "AI 编曲提案抽屉 (Musical PR)..."; activated => { root.command-execute("toggle-musical-pr"); } }
+            MenuItem { title: @tr("AI 编曲提案抽屉 (Musical PR)..."); activated => { root.command-execute("toggle-musical-pr"); } }
         }
         Menu {
-            title: "轨道";
-            MenuItem { title: "+ 新建 MIDI 合成器轨 (Ctrl+N)"; activated => { root.command-execute("track-add-midi"); } }
-            MenuItem { title: "+ 新建音频轨"; activated => { root.command-execute("track-add-audio"); } }
-            MenuItem { title: "将最新导入音频摆放到当前音频轨"; activated => { root.command-execute("place-audio-clip"); } }
-            MenuItem { title: "+ 新建辅助总线轨"; activated => { root.command-execute("track-add-aux"); } }
-            MenuItem { title: "删除当前选中轨道"; activated => { root.command-execute("track-delete"); } }
+            title: @tr("轨道");
+            MenuItem { title: @tr("+ 新建 MIDI 合成器轨 (Ctrl+N)"); activated => { root.command-execute("track-add-midi"); } }
+            MenuItem { title: @tr("+ 新建音频轨"); activated => { root.command-execute("track-add-audio"); } }
+            MenuItem { title: @tr("将最新导入音频摆放到当前音频轨"); activated => { root.command-execute("place-audio-clip"); } }
+            MenuItem { title: @tr("+ 新建辅助总线轨"); activated => { root.command-execute("track-add-aux"); } }
+            MenuItem { title: @tr("删除当前选中轨道"); activated => { root.command-execute("track-delete"); } }
             MenuSeparator {}
-            MenuItem { title: "给当前轨插入 参量均衡 EQ"; activated => { root.command-execute("insert-eq"); } }
-            MenuItem { title: "给当前轨插入 空间混响 Reverb"; activated => { root.command-execute("insert-reverb"); } }
-            MenuItem { title: "给当前轨插入 动态压缩 Compressor"; activated => { root.command-execute("insert-compressor"); } }
+            MenuItem { title: @tr("给当前轨插入 参量均衡 EQ"); activated => { root.command-execute("insert-eq"); } }
+            MenuItem { title: @tr("给当前轨插入 空间混响 Reverb"); activated => { root.command-execute("insert-reverb"); } }
+            MenuItem { title: @tr("给当前轨插入 动态压缩 Compressor"); activated => { root.command-execute("insert-compressor"); } }
             MenuSeparator {}
-            MenuItem { title: "均分所有轨道高度"; activated => { root.command-execute("normalize-heights"); } }
+            MenuItem { title: @tr("均分所有轨道高度"); activated => { root.command-execute("normalize-heights"); } }
         }
         Menu {
-            title: "走带";
-            MenuItem { title: "播放 / 暂停 (Space)"; activated => { root.command-execute("transport-play"); } }
-            MenuItem { title: "停止播放"; activated => { root.command-execute("transport-stop"); } }
-            MenuItem { title: "归零至 001.01.000"; activated => { root.command-execute("transport-rewind"); } }
+            title: @tr("走带");
+            MenuItem { title: @tr("播放 / 暂停 (Space)"); activated => { root.command-execute("transport-play"); } }
+            MenuItem { title: @tr("停止播放"); activated => { root.command-execute("transport-stop"); } }
+            MenuItem { title: @tr("归零至 001.01.000"); activated => { root.command-execute("transport-rewind"); } }
             MenuSeparator {}
-            MenuItem { title: "循环播放开关 (C)"; activated => { root.command-execute("transport-loop"); } }
-            MenuItem { title: "节拍器开关"; activated => { root.command-execute("transport-metronome"); } }
-            MenuItem { title: "预备拍开关 (Ctrl+Alt+D)"; activated => { root.command-execute("transport-count-in"); } }
+            MenuItem { title: @tr("循环播放开关 (C)"); activated => { root.command-execute("transport-loop"); } }
+            MenuItem { title: @tr("节拍器开关"); activated => { root.command-execute("transport-metronome"); } }
+            MenuItem { title: @tr("预备拍开关 (Ctrl+Alt+D)"); activated => { root.command-execute("transport-count-in"); } }
         }
         Menu {
-            title: "混音";
-            MenuItem { title: "打开底部 混音控制台 (X)"; activated => { root.command-execute("tab-mixer"); } }
-            MenuItem { title: "打开底部 设备机架"; activated => { root.command-execute("tab-devices"); } }
+            title: @tr("混音");
+            MenuItem { title: @tr("打开底部 混音控制台 (X)"); activated => { root.command-execute("tab-mixer"); } }
+            MenuItem { title: @tr("打开底部 设备机架"); activated => { root.command-execute("tab-devices"); } }
             MenuSeparator {}
-            MenuItem { title: "主控总线推子归 0dB"; activated => { root.command-execute("master-reset-fader"); } }
-            MenuItem { title: "显隐 监听控制室 (Control Room)"; activated => { root.command-execute("toggle-control-room"); } }
+            MenuItem { title: @tr("主控总线推子归 0dB"); activated => { root.command-execute("master-reset-fader"); } }
+            MenuItem { title: @tr("显隐 监听控制室 (Control Room)"); activated => { root.command-execute("toggle-control-room"); } }
         }
         Menu {
-            title: "视图";
-            MenuItem { title: "钢琴卷帘 (P)"; activated => { root.command-execute("tab-pianoroll"); } }
-            MenuItem { title: "混音控制台 (X)"; activated => { root.command-execute("tab-mixer"); } }
-            MenuItem { title: "设备机架"; activated => { root.command-execute("tab-devices"); } }
-            MenuItem { title: "设备堆叠 (Stacked)"; activated => { root.command-execute("tab-stacked"); } }
+            title: @tr("视图");
+            MenuItem { title: @tr("钢琴卷帘 (P)"); activated => { root.command-execute("tab-pianoroll"); } }
+            MenuItem { title: @tr("混音控制台 (X)"); activated => { root.command-execute("tab-mixer"); } }
+            MenuItem { title: @tr("设备机架"); activated => { root.command-execute("tab-devices"); } }
+            MenuItem { title: @tr("设备堆叠 (Stacked)"); activated => { root.command-execute("tab-stacked"); } }
             MenuSeparator {}
-            MenuItem { title: "最大化/还原底部控制台"; activated => { root.command-execute("toggle-maximize-dock"); } }
-            MenuItem { title: "显隐左侧通道检查器 (I)"; activated => { root.command-execute("toggle-inspector"); } }
-            MenuItem { title: "显隐 Clip 激发矩阵 (Tab)"; activated => { root.command-execute("toggle-clip-matrix"); } }
-            MenuItem { title: "显示 / 隐藏和弦轨"; activated => { root.command-execute("toggle-chord-lane"); } }
-            MenuItem { title: "显示 / 隐藏自动化泳道 (A)"; activated => { root.command-execute("toggle-automation"); } }
+            MenuItem { title: @tr("最大化/还原底部控制台"); activated => { root.command-execute("toggle-maximize-dock"); } }
+            MenuItem { title: @tr("显隐左侧通道检查器 (I)"); activated => { root.command-execute("toggle-inspector"); } }
+            MenuItem { title: @tr("显隐 Clip 激发矩阵 (Tab)"); activated => { root.command-execute("toggle-clip-matrix"); } }
+            MenuItem { title: @tr("显示 / 隐藏和弦轨"); activated => { root.command-execute("toggle-chord-lane"); } }
+            MenuItem { title: @tr("显示 / 隐藏自动化泳道 (A)"); activated => { root.command-execute("toggle-automation"); } }
         }
         Menu {
-            title: "诊断";
-            MenuItem { title: "执行 AI 声学检查与诊断"; activated => { root.command-execute("run-acoustic-diagnosis"); } }
-            MenuItem { title: "导出工程诊断报告包 (D56)"; activated => { root.command-execute("export-diagnostics"); } }
+            title: @tr("诊断");
+            MenuItem { title: @tr("执行 AI 声学检查与诊断"); activated => { root.command-execute("run-acoustic-diagnosis"); } }
+            MenuItem { title: @tr("导出工程诊断报告包 (D56)"); activated => { root.command-execute("export-diagnostics"); } }
             MenuSeparator {}
-            MenuItem { title: "开启/关闭 悬浮功能提示 (T)"; activated => { root.command-execute("toggle-tooltips"); } }
-            MenuItem { title: "显隐 架构热区透视 (H)"; activated => { root.command-execute("toggle-hotspots"); } }
+            MenuItem { title: @tr("开启/关闭 悬浮功能提示 (T)"); activated => { root.command-execute("toggle-tooltips"); } }
+            MenuItem { title: @tr("显隐 架构热区透视 (H)"); activated => { root.command-execute("toggle-hotspots"); } }
+        }
+        // 设置（九语 i18n）：语言选择的主菜单入口，与走带栏 Group L 语言菜单
+        // 同调一个 select-language 回调。当前语言的项名前缀 "✓"（MenuItem 的
+        // checked 属性会在激活时自翻，与 language-code 绑定冲突，故不用它，
+        // 改拼标题前缀；标题用表达式拼接，免得 "✓ 中文" 整串落进覆盖判据
+        // 的硬编码 CJK 白名单）。自称名按定义不走 @tr。
+        // 后续线 line/ui-window-state 在此菜单加「恢复默认布局」。
+        Menu {
+            title: @tr("设置");
+            MenuItem { title: (root.language-code == "zh-CN" ? "✓ " : "") + "中文"; activated => { root.select-language("zh-CN"); } }
+            MenuItem { title: (root.language-code == "en-US" ? "✓ " : "") + "English"; activated => { root.select-language("en-US"); } }
+            MenuItem { title: (root.language-code == "fr-FR" ? "✓ " : "") + "Français"; activated => { root.select-language("fr-FR"); } }
+            MenuItem { title: (root.language-code == "es-ES" ? "✓ " : "") + "Español"; activated => { root.select-language("es-ES"); } }
+            MenuItem { title: (root.language-code == "pt-BR" ? "✓ " : "") + "Português"; activated => { root.select-language("pt-BR"); } }
+            MenuItem { title: (root.language-code == "ja-JP" ? "✓ " : "") + "日本語"; activated => { root.select-language("ja-JP"); } }
+            MenuItem { title: (root.language-code == "ko-KR" ? "✓ " : "") + "한국어"; activated => { root.select-language("ko-KR"); } }
+            MenuItem { title: (root.language-code == "ru-RU" ? "✓ " : "") + "Русский"; activated => { root.select-language("ru-RU"); } }
+            MenuItem { title: (root.language-code == "de-DE" ? "✓ " : "") + "Deutsch"; activated => { root.select-language("de-DE"); } }
         }
     }
 
@@ -943,6 +972,8 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
+                language-code: root.language-code;
+                language-name: root.language-name;
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
@@ -956,6 +987,7 @@ export component MainWindow inherits Window {
                     root.edit-tool-selected(t);
                 }
                 toggle-play() => { root.toggle-play(); }
+                select-language(code) => { root.select-language(code); }
                 toggle-rec() => { root.toggle-record(); }
                 toggle-record => { root.toggle-record(); }
                 toggle-loop() => { root.transport-toggle-loop(); }
@@ -1226,7 +1258,7 @@ export component MainWindow inherits Window {
                 background: transparent;
                 accessible-role: slider;
                 accessible-id: "splitter-workspace-console";
-                accessible-label: "主工作区与底部控制台的分割线 (220–600px)";
+                accessible-label: @tr("主工作区与底部控制台的分割线 (220–600px)");
                 accessible-orientation: horizontal;
                 accessible-value-minimum: 220;
                 accessible-value-maximum: 600;
@@ -1406,11 +1438,11 @@ export component MainWindow inherits Window {
             border-color: #ef4444;
             accessible-role: banner;
             accessible-id: "engine-error-banner";
-            accessible-label: "引擎错误横幅";
+            accessible-label: @tr("引擎错误横幅");
             HorizontalLayout {
                 padding-left: 12px; padding-right: 12px; alignment: space-between;
                 Text {
-                    text: "音频引擎提示: " + root.engine-error;
+                    text: @tr("音频引擎提示: {}", root.engine-error);
                     font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: #fecaca;
                     vertical-alignment: center;
                 }
@@ -1589,30 +1621,30 @@ export component MainWindow inherits Window {
         if false : Rectangle {
             accessible-role: region;
             accessible-id: "ai-rail";
-            accessible-label: "AI 协作栏: 意图生成与声学诊断";
+            accessible-label: @tr("AI 协作栏: 意图生成与声学诊断");
             Rectangle {
                 accessible-role: button;
                 accessible-id: "ai-rail-intent-button";
-                accessible-label: "用自然语言描述编曲意图";
+                accessible-label: @tr("用自然语言描述编曲意图");
             }
             Rectangle {
                 accessible-role: button;
                 accessible-id: "ai-rail-diagnose-button";
-                accessible-label: "声学诊断";
+                accessible-label: @tr("声学诊断");
                 accessible-action-default => { root.run-acoustic-diagnosis(); }
                 TouchArea { clicked => { root.run-acoustic-diagnosis(); } }
             }
             Rectangle {
                 accessible-role: button;
                 accessible-id: "diagnostics-export-action";
-                accessible-label: "导出诊断包 (D56)";
+                accessible-label: @tr("导出诊断包 (D56)");
                 accessible-action-default => { root.export-diagnostics(); }
                 TouchArea { clicked => { root.export-diagnostics(); } }
             }
             Rectangle {
                 accessible-role: button;
                 accessible-id: "ai-rail-musical-pr-button";
-                accessible-label: "音乐提案抽屉 (Musical PR Drawer)";
+                accessible-label: @tr("音乐提案抽屉 (Musical PR Drawer)");
                 accessible-action-default => { root.open-musical-pr(); }
                 TouchArea { clicked => { root.open-musical-pr(); } }
             }

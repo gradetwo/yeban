@@ -44,6 +44,9 @@ const APP_MANIFEST: &str = include_str!("../Cargo.toml");
 
 /// 取 `in property <string> <name>: "<literal>";` 的默认值（**去掉**首尾引号）。
 ///
+/// 双语 i18n（line/ui-i18n）后带文案的默认值写作 `@tr("<literal>")`：解析时先
+/// 脱掉这层包装再按字面量核对 —— 本判据钉的是**值**，不是表示形式。
+///
 /// 只认**行首**的声明（`trim_start` 后以 `in property <string> <name>:` 开头）：注释里
 /// 内联的同名子串（例如登记块里那句"原文 ⇒ 改后"）不会被误认。找不到声明本身即判据失败
 /// —— "属性被改名/被删"是**比文案漂移更严重**的漂移，不能当"没找到就跳过"。
@@ -63,10 +66,17 @@ fn default_literal(source: &str, property: &str) -> String {
         .trim()
         .trim_end_matches(';')
         .trim();
+    // `@tr("…")` 包装（i18n）先脱掉，再按裸字面量核对值。
+    let value = value
+        .strip_prefix("@tr(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(value);
     let literal = value
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or_else(|| panic!("`{needle}` 的默认值必须是双引号字符串字面量；实际 {value:?}"));
+        .unwrap_or_else(|| {
+            panic!("`{needle}` 的默认值必须是双引号字符串字面量（可带 @tr 包装）；实际 {value:?}")
+        });
     literal.to_owned()
 }
 

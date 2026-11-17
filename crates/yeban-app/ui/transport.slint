@@ -120,7 +120,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-play-button";
-        accessible-label: "播放 / 暂停 (Space)";
+        accessible-label: @tr("播放 / 暂停 (Space)");
         accessible-checkable: true;
         accessible-checked: root.playing;
         // `[UI-A11Y-003]` §7.3：无障碍动作。落点与 `play_area` 的 `clicked` 逐字相同 ——
@@ -157,7 +157,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-stop-button";
-        accessible-label: "停止 (回到起始点)";
+        accessible-label: @tr("停止 (回到起始点)");
         // `[UI-A11Y-003]` §7.3：落点与 `stop_area` 的 `clicked` 逐字相同。
         accessible-action-default => { root.stop(); }
 
@@ -195,7 +195,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-record-button";
-        accessible-label: "录音";
+        accessible-label: @tr("录音");
         // ⭐ 现在是**真实状态源**：`recording` 由宿主写（起录 ⇒ true、停录 ⇒ false）。
         // ⚠ 仍**不**声明 `accessible-checkable`：本键的语义是**动作**（按下开始/停止），
         // ⛔ 不是"可勾选的开关" —— 声明它会让屏读器把动作读成开关。
@@ -256,7 +256,7 @@ export component Transport inherits Rectangle {
         border-color: Tokens.line-strong;
         accessible-role: text-input;
         accessible-id: "transport-bpm-field";
-        accessible-label: "速度 BPM";
+        accessible-label: @tr("速度 BPM");
         accessible-value: root.bpm-display;
         accessible-read-only: false;
 
@@ -321,7 +321,7 @@ export component Transport inherits Rectangle {
         border-color: Tokens.line-strong;
         accessible-role: text;
         accessible-id: "transport-timecode";
-        accessible-label: "主时间码";
+        accessible-label: @tr("主时间码");
         // ⭐ [PATCH UI-A11Y-004]：主时间码是**动态读数**（`host::apply_transport` 从
         // `bridge::timecode_for_ticks` 注入 `MainWindow.timecode`，再转发到这里）。
         // 静态名字只念得出「主时间码」，念不出当前码值 ⇒ 把内容也接到无障碍值通道，
@@ -358,7 +358,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: combobox;
         accessible-id: "transport-branch-button";
-        accessible-label: "当前分支";
+        accessible-label: @tr("当前分支");
         accessible-value: root.branch-name;
 
         UiText {
@@ -366,7 +366,7 @@ export component Transport inherits Rectangle {
             y: 0;
             width: parent.width - 24px;
             height: parent.height;
-            text: "分支: " + root.branch-name;
+            text: @tr("分支: {}", root.branch-name);
             color: Tokens.ink-0;
             font-size: Tokens.font-size-md;
         }
@@ -382,7 +382,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-commit-button";
-        accessible-label: "提交当前编辑为一个 Commit";
+        accessible-label: @tr("提交当前编辑为一个 Commit");
 
         UiText {
             x: 0;
@@ -411,7 +411,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-revert-button";
-        accessible-label: "回滚到上一个 Commit";
+        accessible-label: @tr("回滚到上一个 Commit");
         accessible-action-default => { root.revert-to-last-commit(); }
 
         UiText {
@@ -454,7 +454,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-save-button";
-        accessible-label: "保存工程";
+        accessible-label: @tr("保存工程");
         // `[UI-A11Y-003]` §7.3：落点与 `save_area` 的 `clicked` 逐字相同。
         accessible-action-default => { root.save-project(); }
 
@@ -463,7 +463,7 @@ export component Transport inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: "保存";
+            text: @tr("保存");
             color: Tokens.gold;
             font-size: Tokens.font-size-md;
             horizontal-alignment: center;
@@ -521,7 +521,7 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-ai-proposal-badge";
         // 标签**只描述动作**，不再声称"有待审查的提案"（那个读数没有数据源）。
-        accessible-label: "打开 AI 编曲提案审核抽屉";
+        accessible-label: @tr("打开 AI 编曲提案审核抽屉");
         // `[UI-A11Y-003]` §7.3：落点与 `proposal_area` 的 `clicked` 逐字相同。
         accessible-action-default => { root.open-ai-proposals(); }
         // ⛔ 这里**不许**再出现 `accessible-value`：提案条数今天没有数据源，
@@ -534,7 +534,7 @@ export component Transport inherits Rectangle {
             width: parent.width - 8px;
             height: parent.height;
             // ⛔ 这里**不许**再出现 "(待审查)"：它声称的状态没有数据源。
-            text: "AI提案";
+            text: @tr("AI提案");
             // AI 文案 = 负责人的 愁眠 (`selection`, 原则 ③「AI=愁眠」); brand 分支 = #f7e6b0
             // = 原来的 `gold-bright` ⇒ **品牌分支**一位未变（它在 2026-10-07 之前是默认主题）。
             color: Tokens.selection;
@@ -572,7 +572,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-metronome-button";
-        accessible-label: "节拍器 (Cmd/Ctrl + Alt + N)";
+        accessible-label: @tr("节拍器 (Cmd/Ctrl + Alt + N)");
         // ⭐ 真开关：屏读器要能读出"开 / 关"两态 ⇒ 与 `accessible-checked` 一起声明。
         accessible-checkable: true;
         accessible-checked: root.metronome-on;
@@ -609,7 +609,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: tab;
         accessible-id: "transport-view-session-button";
-        accessible-label: "Session 触发矩阵 (F5)";
+        accessible-label: @tr("Session 触发矩阵 (F5)");
         accessible-item-selected: !root.arrangement-view;
         accessible-item-selectable: true;
         // `[UI-A11Y-003]` §7.3：落点与 `view_session_area` 的 `clicked` 逐字相同。
@@ -643,7 +643,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: tab;
         accessible-id: "transport-view-arrangement-button";
-        accessible-label: "Arrangement 时间轴 (F6)";
+        accessible-label: @tr("Arrangement 时间轴 (F6)");
         accessible-item-selected: root.arrangement-view;
         accessible-item-selectable: true;
         // `[UI-A11Y-003]` §7.3：落点与 `view_arr_area` 的 `clicked` 逐字相同。
@@ -678,7 +678,7 @@ export component Transport inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "transport-view-toggle-button";
-        accessible-label: "切换 Session / Arrangement (Tab, 仅画布聚焦时)";
+        accessible-label: @tr("切换 Session / Arrangement (Tab, 仅画布聚焦时)");
         // `[UI-A11Y-003]` §7.3：落点与 `toggle_area` 的 `clicked` 逐字相同。
         accessible-action-default => { root.toggle-view(); }
 
@@ -723,7 +723,7 @@ export component Transport inherits Rectangle {
         // 这里曾写 `(Cmd/Ctrl + 反斜杠)`：键表⛔ 有 `'\\'` 那一臂 ⇒ 念出来的键按下去
         // 什么都不会发生。判据 `tests/d_ui_26_labelled_chords_are_bound.rs` 钉住
         // "界面上印出来的每一把和弦 ⇒ `resolve_logical` 必须解析出动作"。
-        accessible-label: "AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)";
+        accessible-label: @tr("AI 协作栏抽屉 (Cmd/Ctrl + Alt + A)");
         accessible-expandable: true;
         accessible-expanded: root.ai-drawer-open;
         // `[UI-A11Y-003]` §7.3：落点与 `drawer_area` 的 `clicked` 逐字相同。

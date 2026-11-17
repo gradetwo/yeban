@@ -33,7 +33,7 @@ import { Tokens, UiText, UiMonoText, UiTitleText } from "tokens.slint";
 
 export component Sidebar inherits Rectangle {
     in property <bool> compact: false;
-    in property <string> search-hint: "搜索乐器 / 采样 / 预置";
+    in property <string> search-hint: @tr("搜索乐器 / 采样 / 预置");
     // ⭐ 当前分类的条目显示名。默认**空** ⇒ 这一层不再内联任何演示数据；
     // 唯一写者 = 宿主（`host::inject_sidebar`，三个调用点：`host::apply_view` 装配期注入、
     // `select-sidebar-category` 换分类重注入、`sidebar-search-changed` 换搜索词重注入），
@@ -120,7 +120,7 @@ export component Sidebar inherits Rectangle {
 
     accessible-role: complementary;
     accessible-id: "sidebar";
-    accessible-label: "左侧资源浏览器与资产库";
+    accessible-label: @tr("左侧资源浏览器与资产库");
 
     // ---------------------------------------------------------------- 标题行
     Rectangle {
@@ -135,7 +135,7 @@ export component Sidebar inherits Rectangle {
             y: 0;
             width: parent.width - 40px;
             height: parent.height;
-            text: "资源库";
+            text: @tr("资源库");
             color: Tokens.gold;
             font-size: Tokens.font-size-md;
             visible: !root.compact;
@@ -151,7 +151,7 @@ export component Sidebar inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "sidebar-collapse-button";
-            accessible-label: root.compact ? "展开左侧资源栏" : "收起左侧资源栏";
+            accessible-label: root.compact ? @tr("展开左侧资源栏") : @tr("收起左侧资源栏");
             accessible-expandable: true;
             accessible-expanded: !root.compact;
             // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同。
@@ -231,7 +231,7 @@ export component Sidebar inherits Rectangle {
             visible: !root.compact;
             accessible-role: text-input;
             accessible-id: "sidebar-search-field";
-            accessible-label: "搜索资源";
+            accessible-label: @tr("搜索资源");
             accessible-placeholder-text: root.search-hint;
             accessible-value: root.search-text;
             accessible-read-only: false;
@@ -258,7 +258,7 @@ export component Sidebar inherits Rectangle {
         accessible-role: tab;
         accessible-id: "sidebar-category-" + category_index + "-button";
         // 分类名，⛔ 不是序号：屏读器念"资源分类 0"等于没说；与 `elements.rs` 注册表逐字一致。
-        accessible-label: "资源分类 " + (category_index == 0 ? "乐器" : (category_index == 1 ? "采样" : "预置"));
+        accessible-label: @tr("资源分类 {}", category_index == 0 ? @tr("乐器") : (category_index == 1 ? @tr("采样") : @tr("预置")));
         accessible-item-index: category_index;
         accessible-item-count: 3;
         accessible-item-selectable: true;
@@ -271,7 +271,7 @@ export component Sidebar inherits Rectangle {
             y: 0;
             width: parent.width;
             height: parent.height;
-            text: category_index == 0 ? "乐器" : (category_index == 1 ? "采样" : "预置");
+            text: category_index == 0 ? @tr("乐器") : (category_index == 1 ? @tr("采样") : @tr("预置"));
             color: category_index == root.active-category ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
