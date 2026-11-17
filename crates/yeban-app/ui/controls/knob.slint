@@ -55,6 +55,10 @@ export component Knob inherits Rectangle {
         : 0.5;
     /// 指示角: −135° (最小) .. +135° (最大)。
     property <float> angle: -135 + 270 * root.fraction;
+    /// physical 帽面分层色 (外 → 内 10 档): 每档 = `knob-brush`
+    /// 三停点斜坡在该档外半径处的采样 (t = 半径比 × √2/2, 与矩形
+    /// 渐变按包围盒对角的映射一致)。画法缘由见帽面 Rectangle 注。
+    property <[color]> cap-steps: [#1e262e, #212a31, #242d35, #273039, #2a333c, #2d363f, #2f3942, #323c45, #353f49, #37424c];
     /// 拖动起点快照 (手势内私有)。
     property <bool> dragging: false;
     property <length> drag-start-y: 0px;
@@ -121,10 +125,38 @@ export component Knob inherits Rectangle {
         y: parent.height * 0.08;
         width: parent.height * 0.84;
         height: parent.height * 0.84;
-        background: Tokens.knob-brush;
+        // 帽面填充的画法分两套 (2026-11-17 方形帽面修复): 软件渲染器
+        // 对**渐变**填充不按 border-radius 裁剪 (整幅包围盒绘制;
+        // `clip: true` 亦只按包围盒裁, Path 渐变填充只取首停点,
+        // 均盒上实测) —— flat 的帽面同为方形填充, 但单色 + 1px
+        // 圆描边 + 底座环定义轮廓, 肉眼读作正圆; physical 无描边、
+        // 径向渐变明暗差大, 方形直接显形并盖住刻度环。故 physical
+        // 改走下方同心纯色圆盘分层 (纯色填充按 border-radius 正确
+        // 成圆 —— 底座环与禁用罩实证; 分层色采样自 `knob-brush`
+        // 同一斜坡, 令牌色值不动); flat 保持根 background 原路。
+        background: Tokens.texture-physical ? transparent : Tokens.knob-brush;
         border-radius: self.width / 2;
         border-width: Tokens.texture-physical ? 0px : 1px;
         border-color: Tokens.line-strong;
+
+        // 3b. physical 帽面: 同心纯色圆盘 10 档分层 (见 root
+        // `cap-steps` 注), 外档先画、内档叠上。
+        if Tokens.texture-physical: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+
+            for step[idx] in root.cap-steps: Rectangle {
+                x: parent.width * idx / 20;
+                y: parent.height * idx / 20;
+                width: parent.width * (10 - idx) / 10;
+                height: parent.height * (10 - idx) / 10;
+                background: step;
+                border-radius: self.width / 2;
+            }
+        }
 
         // 4. 哑光高光弧 (仅 physical; 左上象限, 弧线 195°→255° 方向的
         //    一段 —— 以 100×100 viewbox 表达: 圆心 (50,50) 半径 38,
