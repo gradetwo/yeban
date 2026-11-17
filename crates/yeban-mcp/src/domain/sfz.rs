@@ -3898,7 +3898,15 @@ fn region_pan_gains(pan_percent: f32) -> (f32, f32) {
     }
     let p = (pan_percent / 100.0).clamp(-1.0, 1.0);
     let angle = (p + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
-    (angle.cos().max(0.0), angle.sin().max(0.0))
+    // ⚠ `libm::cosf` / `libm::sinf` 而不是 `angle.cos()` / `angle.sin()`：
+    // `ARCH-DET-001` 要求"统一启用纯 Rust libm"，禁止落到宿主 libm —— 否则同
+    // 一份工程导出的母带会随平台差 LSB。本 crate 的判据
+    // `probe_authenticity::the_crates_own_transcendental_call_sites_are_the_registered_list`
+    // 会当场把 std 的 `.cos()` / `.sin()` 抓出来（v13 第一版就是这么红的；
+    // 与本文件 `InMemorySfzSample::sine` 的 `libm::sinf` 同款修法）。纯 Rust
+    // libm 在各平台逐位相同，且引擎侧 `mixer::pan_gains` 用的就是同一份
+    // `libm::cosf` / `libm::sinf` ⇒ 两侧增益仍逐位同款，行为零变化。
+    (libm::cosf(angle).max(0.0), libm::sinf(angle).max(0.0))
 }
 
 pub(super) struct NoteWave {
