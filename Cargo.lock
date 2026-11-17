@@ -6643,6 +6643,7 @@ version = "0.0.1"
 dependencies = [
  "libm",
  "rfd",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",

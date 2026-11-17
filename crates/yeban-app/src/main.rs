@@ -949,6 +949,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         production.borrow().engine_handle(),
         Rc::clone(&view_cell),
     );
+    // 新手引导首次启动自动打开（line/onboarding-help）：只在真实装配里判，
+    // 无头 / 测试装配不跑这一句；落盘状态说弹过或走完过就不再弹。
+    let _ = yeban_app::help::show_onboarding_if_first_launch(&ui);
     let undo_display = undo_port.display();
     cli::emit(&[format!(
         "撤销: 可撤销 {} 步 · 已撤销 {} 步 · 分支 {} · 实现 = undo_session (与 MCP 的 yeban_undo 同一份源码)",

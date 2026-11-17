@@ -1,5 +1,5 @@
-import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote } from "tokens.slint";
-export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote } from "tokens.slint";
+import { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
+export { Tokens, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -12,6 +12,10 @@ import { StatusBar } from "status_bar.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { ExportWavDialog } from "dialogs/export_wav_dialog.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
+import { ManualDialog } from "dialogs/help_manual.slint";
+import { ShortcutsDialog } from "dialogs/help_shortcuts.slint";
+import { OnboardingOverlay } from "dialogs/onboarding_overlay.slint";
+import { LessonsDrawer } from "dialogs/lessons_drawer.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { CommandPaletteModal, HotspotOverlay, ToastBanner } from "modals.slint";
 
@@ -600,6 +604,32 @@ export component MainWindow inherits Window {
     in-out property <string> window-title: "夜半 Yeban";
     in-out property <float> zoom-h-fraction: 0.495;
     in-out property <float> zoom-v-fraction: 0.231;
+
+    // ---- 帮助系统（line/onboarding-help）：用户手册 / 快捷键速查 / 新手引导 / 教学课程。
+    // 数据面唯一写者 = 宿主（src/help.rs，经 host::wire_help_system 注册回调）；
+    // 界面只读这些属性、上报下面的 help-* / onboarding-* / lesson* 回调。
+    in-out property <bool> help-manual-open: false;
+    in-out property <[string]> manual-chapters: [];
+    in-out property <int> manual-chapter-index: 0;
+    in-out property <[ManualLine]> manual-lines: [];
+    in-out property <bool> help-shortcuts-open: false;
+    in-out property <[HelpShortcutRow]> help-shortcut-rows: [];
+    in-out property <bool> onboarding-open: false;
+    in-out property <int> onboarding-step-index: 0;
+    in-out property <int> onboarding-step-count: 0;
+    in-out property <string> onboarding-step-title: "";
+    in-out property <string> onboarding-step-body: "";
+    in-out property <int> onboarding-card-zone: 0;
+    in-out property <bool> lessons-open: false;
+    in-out property <[LessonRow]> lesson-rows: [];
+    in-out property <bool> lesson-active: false;
+    in-out property <string> lesson-title: "";
+    in-out property <int> lesson-step-index: 0;
+    in-out property <int> lesson-step-count: 0;
+    in-out property <string> lesson-step-title: "";
+    in-out property <string> lesson-step-body: "";
+    in-out property <string> lesson-step-progress: "";
+    in-out property <string> lesson-feedback: "";
     callback apply-humanize();
     callback apply-quantize();
     callback arrangement-scroll-to(length);
@@ -634,6 +664,9 @@ export component MainWindow inherits Window {
     callback eq-curve-release();
     callback export-midi();
     callback export-wav();
+    callback help-manual-close();
+    callback help-manual-select(int);
+    callback help-shortcuts-close();
     callback ime-composition-changed(bool);
     callback ime-focus-changed(bool);
     callback import-audio();
@@ -642,6 +675,10 @@ export component MainWindow inherits Window {
     callback instrument-probe-drain-requested();
     callback key-action(string, bool, bool, bool, bool) -> bool;
     callback load-sfz();
+    callback lesson-check-step();
+    callback lesson-exit();
+    callback lessons-close();
+    callback lessons-start(string);
     callback macro-drag(int, float);
     callback macro-grab(int, float);
     callback macro-release(int);
@@ -683,6 +720,10 @@ export component MainWindow inherits Window {
     callback note-drag-grab(length, length) -> bool;
     callback note-drag-move(length, length);
     callback note-drag-release(length, length);
+    callback onboarding-back();
+    callback onboarding-dismiss-forever();
+    callback onboarding-next();
+    callback onboarding-skip();
     callback open-export-wav();
     callback open-humanize();
     callback open-project();
@@ -843,6 +884,13 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "开启/关闭 悬浮功能提示 (T)"; activated => { root.command-execute("toggle-tooltips"); } }
             MenuItem { title: "显隐 架构热区透视 (H)"; activated => { root.command-execute("toggle-hotspots"); } }
+        }
+        Menu {
+            title: "帮助";
+            MenuItem { title: "用户手册"; activated => { root.command-execute("help-manual"); } }
+            MenuItem { title: "快捷键速查"; activated => { root.command-execute("help-shortcuts"); } }
+            MenuItem { title: "新手引导"; activated => { root.command-execute("help-onboarding"); } }
+            MenuItem { title: "教学课程"; activated => { root.command-execute("help-lessons"); } }
         }
     }
 
@@ -1500,6 +1548,71 @@ export component MainWindow inherits Window {
             reject => { root.reject-ai-proposal(); }
             close => { root.musical-pr-open = false; }
             select-proposal(id) => { root.select-ai-proposal(id); }
+        }
+
+        // Visible Help Manual Dialog（帮助 → 用户手册）
+        if root.help-manual-open : ManualDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            chapters: root.manual-chapters;
+            chapter-index: root.manual-chapter-index;
+            lines: root.manual-lines;
+            select-chapter(i) => { root.help-manual-select(i); }
+            close => { root.help-manual-close(); }
+        }
+
+        // Visible Shortcuts Dialog（帮助 → 快捷键速查）
+        if root.help-shortcuts-open : ShortcutsDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            rows: root.help-shortcut-rows;
+            close => { root.help-shortcuts-close(); }
+        }
+
+        // Visible Lessons Drawer（帮助 → 教学课程；非模态，上课时要能同时写音符）
+        if root.lessons-open : LessonsDrawer {
+            z: 9550;
+            x: root.width - 384px;
+            y: 52px;
+            width: 372px;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y - 92px);
+            rows: root.lesson-rows;
+            active: root.lesson-active;
+            lesson-title: root.lesson-title;
+            step-index: root.lesson-step-index;
+            step-count: root.lesson-step-count;
+            step-title: root.lesson-step-title;
+            step-body: root.lesson-step-body;
+            step-progress: root.lesson-step-progress;
+            feedback: root.lesson-feedback;
+            start-lesson(id) => { root.lessons-start(id); }
+            check-step => { root.lesson-check-step(); }
+            exit-lesson => { root.lesson-exit(); }
+            close => { root.lessons-close(); }
+        }
+
+        // Visible Onboarding Overlay（首次启动自动打开；帮助 → 新手引导重开）
+        if root.onboarding-open : OnboardingOverlay {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            step-index: root.onboarding-step-index;
+            step-count: root.onboarding-step-count;
+            step-title: root.onboarding-step-title;
+            step-body: root.onboarding-step-body;
+            card-zone: root.onboarding-card-zone;
+            next => { root.onboarding-next(); }
+            back => { root.onboarding-back(); }
+            skip => { root.onboarding-skip(); }
+            dismiss-forever => { root.onboarding-dismiss-forever(); }
         }
 
         // Window-coordinate anchor for floating tooltip (offsets non-native MenuBar height when visible)

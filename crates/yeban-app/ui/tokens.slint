@@ -984,6 +984,28 @@ export struct CommandPaletteItem {
     shortcut: string,
 }
 
+// 帮助系统（line/onboarding-help）：手册渲染行。level 与 src/manual.rs 的
+// ManualLine.level 同义：0 正文 / 1–3 标题 / 4 列表项 / 5 代码行。
+export struct ManualLine {
+    text: string,
+    level: int,
+}
+
+// 帮助系统：快捷键速查一行（数据源 = cli::shortcut_rows()，⛔ 不手抄）。
+export struct HelpShortcutRow {
+    keys: string,
+    action: string,
+    status: string,
+}
+
+// 帮助系统：课程列表一行（status 由宿主按持久化进度算好后写入）。
+export struct LessonRow {
+    lesson-id: string,
+    title: string,
+    summary: string,
+    status: string,
+}
+
 export struct PianoStepRow {
     pitch_name: string,
     is_root: bool,

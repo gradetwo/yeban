@@ -1,0 +1,194 @@
+// 夜半 (Yeban) — 新手引导导览层（帮助系统，line/onboarding-help）
+//
+// 步骤数据由宿主注入（`src/help.rs` 的导览表）：标题、正文、卡片落位区。
+// 每一步的正文都指向一个**真实区域**，且切步时宿主会先把界面导航到那一区
+// （钢琴卷帘步切底部页签、检查器步确保左栏可见）——卡片出现的地方就是
+// 它讲的那块界面，⛔ 不做悬空的假热点。
+// 四个出口语义不同，全部上报宿主落盘：
+//   next()            走完最后一步 ⇒ 标记「已完成」，以后不再自动弹；
+//   skip()            本次跳过 ⇒ 只关层，下次启动还会自动弹；
+//   dismiss-forever() 「不再显示」⇒ 落盘 dismissed，永不再自动弹；
+//   back()            回上一步。
+// 遮罩 TouchArea 先行声明以吞掉点击（D-UI-21）：导览期间下层不可点，
+// 但用户要看的区域不被卡片盖住（落位区由宿主按步选）。
+
+import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+
+export component OnboardingOverlay inherits Rectangle {
+    /// 当前步序号（0 起）与总步数。
+    in property <int> step-index: 0;
+    in property <int> step-count: 1;
+    /// 当前步标题与正文。
+    in property <string> step-title: "";
+    in property <string> step-body: "";
+    /// 卡片落位区：0 居中 / 1 顶部（走带）/ 2 底部上方（控制台）/ 3 左侧之外（检查器）。
+    in property <int> card-zone: 0;
+
+    callback next();
+    callback back();
+    callback skip();
+    callback dismiss-forever();
+
+    background: Tokens.mask-black.with-alpha(0.45);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "onboarding-overlay";
+    accessible-label: "新手引导";
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    card := Rectangle {
+        width: 480px;
+        height: 236px;
+        x: root.card-zone == 3 ? 340px : (root.width - self.width) / 2;
+        y: root.card-zone == 1 ? 72px : (root.card-zone == 2 ? root.height - self.height - 400px : (root.height - self.height) / 2);
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "onboarding-card";
+        accessible-label: "新手引导卡片";
+
+        UiText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 32px;
+            height: 18px;
+            text: "新手引导 · 第 " + (root.step-index + 1) + " / " + root.step-count + " 步";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+        }
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: 34px;
+            width: parent.width - 32px;
+            height: 26px;
+            text: root.step-title;
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        UiText {
+            x: Tokens.space-6;
+            y: 66px;
+            width: parent.width - 32px;
+            height: 96px;
+            text: root.step-body;
+            font-size: Tokens.font-size-md;
+            wrap: word-wrap;
+            vertical-alignment: top;
+        }
+
+        // ---------------------------------------------------------- 出口行
+        Rectangle {
+            x: Tokens.space-6;
+            y: parent.height - 44px;
+            width: 76px;
+            height: 28px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+            visible: root.step-index > 0;
+            accessible-role: button;
+            accessible-id: "onboarding-back-button";
+            accessible-label: "上一步";
+            accessible-action-default => { root.back(); }
+
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "上一步";
+                horizontal-alignment: center;
+                font-size: Tokens.font-size-md;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.back(); }
+            }
+        }
+
+        Rectangle {
+            x: 100px;
+            y: parent.height - 44px;
+            width: 76px;
+            height: 28px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "onboarding-skip-button";
+            accessible-label: "跳过导览";
+            accessible-action-default => { root.skip(); }
+
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "跳过导览";
+                horizontal-alignment: center;
+                font-size: Tokens.font-size-md;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.skip(); }
+            }
+        }
+
+        Rectangle {
+            x: 184px;
+            y: parent.height - 44px;
+            width: 76px;
+            height: 28px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "onboarding-dismiss-button";
+            accessible-label: "不再显示新手引导";
+            accessible-action-default => { root.dismiss-forever(); }
+
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "不再显示";
+                horizontal-alignment: center;
+                font-size: Tokens.font-size-md;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.dismiss-forever(); }
+            }
+        }
+
+        Rectangle {
+            x: parent.width - Tokens.space-6 - 96px;
+            y: parent.height - 44px;
+            width: 96px;
+            height: 28px;
+            background: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "onboarding-next-button";
+            accessible-label: root.step-index + 1 >= root.step-count ? "完成新手引导" : "下一步";
+            accessible-action-default => { root.next(); }
+
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: root.step-index + 1 >= root.step-count ? "开始使用" : "下一步";
+                horizontal-alignment: center;
+                font-size: Tokens.font-size-md;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.next(); }
+            }
+        }
+    }
+}
