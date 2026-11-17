@@ -6304,6 +6304,18 @@ impl PreparedSfz {
         self.regions.len()
     }
 
+    /// ⭐ 声明了**非中性**区域 `pan` 的区域条数（`0` ⇒ 整张表都不需要分声道）。
+    ///
+    /// 消费方据此选通路：`0` ⇒ 走单声道（逐位同接线前）；`> 0` ⇒ 走分声道
+    /// （[`crate::synth::SynthEngine::render_track_stereo`]），源侧声相才有效。
+    #[must_use]
+    pub fn regions_with_pan(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.pan != 0.0)
+            .count()
+    }
+
     /// 区域声相（百分比；`0` ＝ 中性）。单声道通路不施加，分声道通路按它分左右。
     #[must_use]
     pub fn region_pan(&self, index: usize) -> f32 {
