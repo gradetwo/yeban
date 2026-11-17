@@ -1510,6 +1510,8 @@ struct BranchShare<'a> {
     send_advanced: &'a mut [bool; SEND_SLOTS],
     send_automation_frames: &'a mut u64,
     track_scratch: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
+    /// ⭐ stage 4：右声道暂存（见 `EngineRuntime::track_scratch_r` 的文档）。
+    track_scratch_r: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
     /// ⭐ **总线暂存池**（任务单 `#154`）：非 master 节点的立体声累积缓冲。
     ///
     /// 与 `track_scratch` 同一条纪律：**构造期**预分配、逐块复用 ⇒ 零分配。
@@ -1899,7 +1901,58 @@ fn render_branch(
         let process_bus_inserts = buses_needed
             && routing.has_incoming_audio(&track)
             && has_armed_insert_devices(share, &track);
-        if running {
+        // ⭐⭐ **stage 4（实时源侧声相）**：只在这条轨是"**干净轨**"时切分声道通路 ——
+        // 全部条件缺一不可，任一不成立就**整段退回**原来的单声道流水线（逐位不变）：
+        //
+        // * 摊平表里真的有声相（静态 `pan` 或 `pan_onccN`）—— 否则没有意义；
+        // * 没有音频摆放（`audio_clip_schedule` 为 `None`）：片段源是单声道的，
+        //   分成两条要额外决定"片段怎么进立体声图"，不属于本片；
+        // * 没有已武装插入器件 / 不是处理型总线：插入链与压缩器都是**有状态**的
+        //   单声道处理器，对两条缓冲各跑一次会让状态**推进两次**（声音会错），
+        //   复制状态也做不到 ⇒ 有插入的轨保持单声道（**已知偏差**，登记在案）；
+        // * 没有侧链键抽头：抽头只复制单声道，右声道会静默丢掉；
+        // * 参数表对本轨**恒等**（`ParamTable::is_identity`）：平滑器同样有状态；
+        // * PDC 与手动相位对齐在本轨是**零延迟**（`DelayLine::delay() == 0`／未武装）：
+        //   两条延迟线要两份内存，本片不做；
+        // * 只有一条"直连 master、单位增益"的出边且没有发送自动化；
+        // * 没有声相自动化（那条平滑路径只服务单声道）。
+        //
+        // ⚠ 这些条件都是**读**（零分配、零锁）⇒ 判不成立时不花任何额外代价。
+        let prepared_sfz = current.sfz_plan(&track).map(|plan| plan.prepared());
+        let routes_of_track = routing.routes(&track);
+        let stereo_track = running
+            && prepared_sfz
+                .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
+            && current.audio_clip_schedule(&track).is_none()
+            && !has_armed_insert_devices(share, &track)
+            && !process_bus_inserts
+            && routing.key_tap_slot(&track).is_none()
+            && share.params.is_identity(track)
+            && share.pdc.line(&track).is_none_or(|line| line.delay() == 0)
+            && share.phase_bank.effective_delay(&track).is_none()
+            && routes_of_track.len() == 1
+            && routes_of_track[0].destination() == master
+            && routes_of_track[0].gain() == 1.0
+            && !(process_sends && send_armed(share, &routes_of_track[0]))
+            && share.pan_gains[..*share.armed_pan_slots]
+                .iter()
+                .position(|(id, _, _)| *id == track)
+                .is_none_or(|index| !share.armed_pan_armed[index]);
+        if running && stereo_track {
+            // 分声道：左 → `track_scratch`、右 → `track_scratch_r`（区域 `pan` 在源侧施加）。
+            let (left, right) = (
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+            synth.render_track_stereo_with_cc(
+                track,
+                current.schedule(&track),
+                prepared_sfz,
+                left,
+                right,
+                cc,
+            );
+        } else if running {
             // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
             // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
             // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
@@ -1908,7 +1961,7 @@ fn render_branch(
                 current.schedule(&track),
                 // ⭐ SFZ 音源（任务 `#66` 的步 2）：**借用快照里那一份摊平表**
                 // （⛔ 不 clone 里面的 PCM `Vec`）。不在表里 ⇒ `None` ⇒ 逐位不变。
-                current.sfz_plan(&track).map(|plan| plan.prepared()),
+                prepared_sfz,
                 &mut share.track_scratch[..frames],
                 // ⭐ CC 探针（任务单 `#107`）：`None` ⇒ 整条 SFZ 包络路径与接线前逐位相同。
                 cc,
@@ -2003,10 +2056,24 @@ fn render_branch(
         // （读"发送之和 ＋ 自己的声源"，仍是单声道、仍是"插入之后"的口径）；
         // 这里跳过 ⇒ 每量子每节点仍然**恰好一次**（`MeterBank::measure` 的契约）。
         if !process_bus_inserts {
-            if let Some(frame) = share
-                .bank
-                .measure(track, quantum, &share.track_scratch[..frames])
-            {
+            // ⭐ stage 4：分声道轨的电平取样点取"两声道里绝对值较大的那个"（峰值口径）；
+            //   单声道轨仍读 `track_scratch`，一位不动。借 `reverb_scratch[0]` 当临时格
+            //   （它在下面声相段才会被写，此处空闲），⛔ 不新增任何缓冲。
+            let meter_source: &[f32] = if stereo_track {
+                for index in 0..frames {
+                    let left = share.track_scratch[index];
+                    let right = share.track_scratch_r[index];
+                    share.reverb_scratch[0][index] = if left.abs() >= right.abs() {
+                        left
+                    } else {
+                        right
+                    };
+                }
+                &share.reverb_scratch[0][..frames]
+            } else {
+                &share.track_scratch[..frames]
+            };
+            if let Some(frame) = share.bank.measure(track, quantum, meter_source) {
                 share.scratch_meters[produced] = frame;
                 produced += 1;
             } else {
@@ -2166,7 +2233,17 @@ fn render_branch(
                 (share.pan_gains[index].1, share.pan_gains[index].2)
             });
             if single_unit_to_master {
-                sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
+                if stereo_track {
+                    sum_pair_into_bus(
+                        out,
+                        &share.track_scratch[..frames],
+                        &share.track_scratch_r[..frames],
+                        gain_l,
+                        gain_r,
+                    );
+                } else {
+                    sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
+                }
             } else {
                 {
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
@@ -2465,6 +2542,13 @@ pub struct EngineRuntime {
     scratch_meters: [MeterFrame; SCRATCH_METERS],
     /// 单轨渲染结果（声相之前、单声道）。复用同一个缓冲，避免每轨一份。
     track_scratch: [f32; DEFAULT_BLOCK_FRAMES],
+    /// ⭐ **右声道暂存**（stage 4）：只在"干净轨 ＋ 有源侧声相"时使用 —— 那次渲染
+    /// 走 [`SynthEngine::render_track_stereo_with_cc`]，左声道落在 [`Self::track_scratch`]、
+    /// 右声道落在这里。其余轨（绝大多数）这条路一次都不碰 ⇒ 逐位不变。
+    ///
+    /// 体积：`DEFAULT_BLOCK_FRAMES`（128）× `f32` ＝ **512 B**（`EngineRuntime` 的门槛是
+    /// 200 KiB，实测余量足够；尺寸判据会钉住现读值）。
+    track_scratch_r: [f32; DEFAULT_BLOCK_FRAMES],
     /// ⭐ **总线暂存池**（任务单 `#154`）：最多 [`MAX_TRACK_SLOTS`] 条非 master 节点的
     /// **立体声累积缓冲**。
     ///
@@ -3210,6 +3294,7 @@ impl EngineRuntime {
             put!(scratch_events, [EngineEvent::IDLE; SCRATCH_EVENTS]);
             put!(scratch_meters, [MeterFrame::default(); SCRATCH_METERS]);
             put!(track_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
+            put!(track_scratch_r, [0.0; DEFAULT_BLOCK_FRAMES]);
             // ⭐ 总线暂存池：**构造期**一次分配到堆上（`Box<[_; 16]>` = 瘦指针）
             // ⇒ 回调内零分配 [MUST-GATE-001]。
             // ⚠ `vec!`（先在堆上要位、再逐个写）而不是 `Box::new([...; N])`：
@@ -4396,6 +4481,7 @@ impl EngineRuntime {
             scratch_events,
             scratch_meters,
             track_scratch,
+            track_scratch_r,
             routing_buses,
             bank,
             synth,
@@ -5407,6 +5493,7 @@ impl EngineRuntime {
                     send_advanced: &mut *send_advanced,
                     send_automation_frames: &mut *send_automation_frames,
                     track_scratch: &mut *track_scratch,
+                    track_scratch_r: &mut *track_scratch_r,
                     routing_buses: &mut *routing_buses,
                     scratch_meters: &mut *scratch_meters,
                     insert_gain_reductions: &mut *insert_gain_reductions,
@@ -5717,6 +5804,26 @@ fn sum_stereo_into_bus(
 /// 才走它（逐位等价于接线前的求和）。有发送/多目的地/边增益的轨走
 /// [`render_panned_into`] + [`route_panned`]。
 /// PDC 延迟线对齐**已接线**（调用点见 [`EngineRuntime::render_block`] 步骤 3a'）。
+/// ⭐ **stage 4**：把"源侧已经分好左右"的一对缓冲按**轨声相增益**汇入母线。
+///
+/// 与 [`sum_into_bus`] 的唯一区别是：那条是"单声道 × 两个增益"，这条是
+/// "左 × 左增益 ＋ 右 × 右增益"（区域 `pan` 已经在源侧施加，轨声相只是再叠一层）。
+fn sum_pair_into_bus(
+    block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    left: &[f32],
+    right: &[f32],
+    gain_l: f32,
+    gain_r: f32,
+) {
+    let (out_l, out_r) = block.stereo_mut();
+    for (((l, r), source_l), source_r) in
+        out_l.iter_mut().zip(out_r.iter_mut()).zip(left).zip(right)
+    {
+        *l += *source_l * gain_l;
+        *r += *source_r * gain_r;
+    }
+}
+
 fn sum_into_bus(
     block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
     mono: &[f32],
@@ -8920,6 +9027,7 @@ mod tests {
                 send_advanced,
                 send_automation_frames,
                 track_scratch,
+                track_scratch_r,
                 routing_buses,
                 scratch_meters,
                 insert_gain_reductions,
@@ -8981,6 +9089,7 @@ mod tests {
                 send_advanced,
                 send_automation_frames,
                 track_scratch,
+                track_scratch_r,
                 routing_buses,
                 scratch_meters,
                 insert_gain_reductions,
@@ -9824,5 +9933,42 @@ mod tests {
             4,
             "② 事件面：四条都到了（CC ⛔ 不静默丢弃 —— 它计入 events_applied）"
         );
+    }
+
+    /// ⭐ **stage 4 判据**（母线求和那一半）：源侧已经分好左右的两条缓冲，
+    /// 按轨声相增益分别乘、分别加，⛔ 不互相串。
+    #[test]
+    fn the_panned_pair_is_summed_per_channel() {
+        let mut block = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        let window = 3;
+        {
+            let (left, right) = block.stereo_mut();
+            for index in 0..window {
+                left[index] = 1.0;
+                right[index] = 2.0;
+            }
+        }
+        let left_source = [0.5f32, -1.0, 0.25];
+        let right_source = [4.0f32, 0.0, -2.0];
+        sum_pair_into_bus(&mut block, &left_source, &right_source, 0.25, 0.5);
+        let (left, right) = block.stereo_mut();
+        for index in 0..window {
+            assert_eq!(
+                left[index],
+                1.0 + left_source[index] * 0.25,
+                "左声道只吃左源 × 左增益（{index}）"
+            );
+            assert_eq!(
+                right[index],
+                2.0 + right_source[index] * 0.5,
+                "右声道只吃右源 × 右增益（{index}）"
+            );
+        }
+        // 反向腿：把增益对调 ⇒ 读数必须跟着变（证明刚才的相等不是巧合）
+        let mut other = AudioBlock::<DEFAULT_BLOCK_FRAMES>::new();
+        sum_pair_into_bus(&mut other, &left_source, &right_source, 0.5, 0.25);
+        let (left, right) = other.stereo_mut();
+        assert_eq!(left[0], left_source[0] * 0.5, "对调后左声道读数必须变");
+        assert_eq!(right[0], right_source[0] * 0.25, "对调后右声道读数必须变");
     }
 }

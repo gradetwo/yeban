@@ -272,7 +272,10 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// `InsertLimiter` 里，运行时不背）。
 /// ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。
 /// ⭐ **频段独奏片（Songmap follow-ons (a)）＋48 B ⇒ 45 888 B**：新增 band_solo: BandSoloFilter（Biquad 36 B ＋ sample_rate 4 B ＋ Option<usize> 16 B ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B；余量 204800 − 45888 = 158912 B）。
-const ENGINE_RUNTIME_BYTES: usize = 45_888;
+/// ⭐ **pan stage 4 片 ＋512 B ⇒ 46 400 B**：`EngineRuntime` 新增 `track_scratch_r`
+/// （`[f32; DEFAULT_BLOCK_FRAMES]` ＝ 128 × 4 B ＝ 512 B），实时侧"源侧已分声道"的
+/// 轨用它装右声道；其余轨这条路一次都不碰。余量 204800 − 46400 = 158400 B。
+const ENGINE_RUNTIME_BYTES: usize = 46_400;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
