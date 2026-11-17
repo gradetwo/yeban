@@ -26,6 +26,7 @@ use yeban_app::input::InputContext;
 use yeban_app::lessons::{self, LessonCheck};
 use yeban_app::manual;
 use yeban_app::scene::DemoScene;
+use yeban_app::settings;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_model::ids::EntityId;
 use yeban_model::music::MidiNote;
@@ -43,23 +44,32 @@ const NOW_MS: u64 = 1_700_000_000_000;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// `YEBAN_ONBOARDING_FILE` 的 RAII 守卫（Drop 时恢复原值）。
+/// 两个存储路径变量的 RAII 守卫（Drop 时恢复原值）：
+/// `YEBAN_SETTINGS_PATH`（settings 主文件）与 `YEBAN_ONBOARDING_FILE`
+/// （旧独立文件，只在折入时定位）。两变量必须一起指到临时路径，
+/// 判据才不碰真实配置目录与家目录。
 ///
 /// SAFETY（Rust 2024 的 `set_var` 是 `unsafe`）：本文件全部 env 判据先拿
-/// [`ENV_LOCK`]，持锁期间本测试二进制内没有其它线程读这个变量。
+/// [`ENV_LOCK`]，持锁期间本测试二进制内没有其它线程读这两个变量。
 struct StatePathEnv {
-    previous: Option<OsString>,
+    previous_settings: Option<OsString>,
+    previous_onboarding: Option<OsString>,
 }
 
 impl StatePathEnv {
     /// ⚠ 调用方必须先持有 [`ENV_LOCK`]。
-    fn set(path: &Path) -> Self {
-        let previous = std::env::var_os(help_state::HELP_STATE_PATH_ENV);
+    fn set(settings_path: &Path, legacy_path: &Path) -> Self {
+        let previous_settings = std::env::var_os(settings::SETTINGS_PATH_ENV);
+        let previous_onboarding = std::env::var_os(help_state::HELP_STATE_PATH_ENV);
         // SAFETY: 调用方持有 ENV_LOCK；见类型注释。
         unsafe {
-            std::env::set_var(help_state::HELP_STATE_PATH_ENV, path);
+            std::env::set_var(settings::SETTINGS_PATH_ENV, settings_path);
+            std::env::set_var(help_state::HELP_STATE_PATH_ENV, legacy_path);
         }
-        Self { previous }
+        Self {
+            previous_settings,
+            previous_onboarding,
+        }
     }
 }
 
@@ -67,7 +77,11 @@ impl Drop for StatePathEnv {
     fn drop(&mut self) {
         // SAFETY: 守卫在 ENV_LOCK 释放前析构，恢复进入时读到的原值。
         unsafe {
-            match &self.previous {
+            match &self.previous_settings {
+                Some(value) => std::env::set_var(settings::SETTINGS_PATH_ENV, value),
+                None => std::env::remove_var(settings::SETTINGS_PATH_ENV),
+            }
+            match &self.previous_onboarding {
                 Some(value) => std::env::set_var(help_state::HELP_STATE_PATH_ENV, value),
                 None => std::env::remove_var(help_state::HELP_STATE_PATH_ENV),
             }
@@ -78,6 +92,13 @@ impl Drop for StatePathEnv {
 fn temp_state_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "yeban-onboarding-{tag}-{}.json",
+        std::process::id()
+    ))
+}
+
+fn temp_legacy_path(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "yeban-onboarding-legacy-{tag}-{}.json",
         std::process::id()
     ))
 }
@@ -149,27 +170,50 @@ fn help_state_round_trips_and_falls_back_safely() {
     assert_eq!(back, state);
     assert!(!back.should_auto_show_onboarding());
 
+    // 读-改-写不连坐同文件的其它键：先写进一份带语言的设置文件，
+    // 帮助状态写回后语言必须还在。
+    std::fs::write(&path, "{\"version\": 1, \"language\": \"fr-FR\"}").expect("写带语言的文件");
+    help_state::save_to(&path, &state).expect("带语言的文件也必须能写回");
+    let siblings = settings::load_from(&path);
+    assert_eq!(
+        siblings.language,
+        Some(yeban_app::cli::Language::FrFr),
+        "帮助状态写回不许丢同文件的语言"
+    );
+    assert_eq!(siblings.help, state);
+
     // 损坏 ⇒ 默认，不 panic、不把坏文件当状态。
     std::fs::write(&path, "{not json").expect("写坏文件");
     assert_eq!(help_state::load_from(&path), HelpState::default());
 
     // 未来版本 ⇒ 默认（不覆盖新版文件的内容语义由 load 的回退保证）。
-    std::fs::write(&path, "{\"version\": 99}").expect("写未来版本文件");
+    std::fs::write(
+        &path,
+        "{\"version\": 1, \"help\": {\"version\": 99, \"onboarding_dismissed\": true}}",
+    )
+    .expect("写未来版本文件");
     assert_eq!(help_state::load_from(&path), HelpState::default());
 
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn help_state_path_env_override_is_honored() {
+fn help_state_path_env_overrides_are_honored() {
     let _lock = ENV_LOCK.lock().expect("env 锁");
     let path = temp_state_path("envpath");
+    let legacy = temp_legacy_path("envpath");
     let _ = std::fs::remove_file(&path);
-    let _guard = StatePathEnv::set(&path);
+    let _ = std::fs::remove_file(&legacy);
+    let _guard = StatePathEnv::set(&path, &legacy);
+    assert_eq!(
+        settings::settings_path(),
+        path,
+        "YEBAN_SETTINGS_PATH 必须优先于默认设置路径"
+    );
     assert_eq!(
         help_state::state_path().expect("路径必须可解析"),
-        path,
-        "YEBAN_ONBOARDING_FILE 必须优先于默认路径"
+        legacy,
+        "YEBAN_ONBOARDING_FILE 必须优先于默认旧文件路径"
     );
     let state = HelpState {
         onboarding_finished: true,
@@ -177,7 +221,67 @@ fn help_state_path_env_override_is_honored() {
     };
     help_state::save(&state).expect("经 env 路径落盘");
     assert_eq!(help_state::load(), state);
+    // 主存储是 settings 文件：它必须存在、含 help 键；旧文件不许被写出来。
+    let text = std::fs::read_to_string(&path).expect("settings 文件必须写出");
+    assert!(
+        text.contains("\"help\""),
+        "状态必须落进 settings 文件: {text}"
+    );
+    assert!(!legacy.exists(), "旧独立文件不许再被写出（只作折入源）");
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&legacy);
+}
+
+#[test]
+fn legacy_onboarding_file_folds_into_settings_on_first_load() {
+    let _lock = ENV_LOCK.lock().expect("env 锁");
+    let path = temp_state_path("fold");
+    let legacy = temp_legacy_path("fold");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&legacy);
+    // 旧文件里有一份真实状态（独立文件格式），settings 文件还不存在。
+    let mut legacy_state = HelpState {
+        onboarding_dismissed: true,
+        ..HelpState::default()
+    };
+    legacy_state.lessons.insert(
+        "first-melody".to_owned(),
+        help_state::LessonProgress {
+            steps_done: 2,
+            finished: false,
+        },
+    );
+    let legacy_text = serde_json::to_string(&legacy_state).expect("旧状态必须可序列化");
+    std::fs::write(&legacy, legacy_text).expect("写旧文件");
+    let _guard = StatePathEnv::set(&path, &legacy);
+
+    // 首次读 ⇒ 旧状态折入并返回。
+    assert_eq!(help_state::load(), legacy_state);
+    // 折入必须立即落盘进 settings 文件。
+    assert_eq!(settings::load_from(&path).help, legacy_state);
+
+    // 折入后以 settings 为准：旧文件再怎么变也不许影响已折入的状态。
+    std::fs::write(&legacy, "{\"version\": 1, \"onboarding_finished\": true}").expect("改旧文件");
+    assert_eq!(
+        help_state::load(),
+        legacy_state,
+        "折入后 settings 为准，旧文件变化不许回写"
+    );
+
+    // 新状态写回走 settings：旧文件原地不动。
+    let newer = HelpState {
+        onboarding_finished: true,
+        ..HelpState::default()
+    };
+    help_state::save(&newer).expect("新状态必须能落盘");
+    assert_eq!(help_state::load(), newer);
+    assert_eq!(
+        std::fs::read_to_string(&legacy).expect("旧文件必须还在"),
+        "{\"version\": 1, \"onboarding_finished\": true}",
+        "旧文件只作折入源，写回不许动它"
+    );
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&legacy);
 }
 
 // ------------------------------------------------------------ 课程格式与判定
@@ -301,15 +405,24 @@ fn drum_lesson_check_ignores_notes_outside_the_gm_range() {
 fn help_menu_and_host_arms_exist_in_source() {
     let app = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.slint"))
         .expect("app.slint 必须可读");
-    assert!(app.contains("title: \"帮助\""), "菜单栏必须有帮助菜单");
+    // 修复线 A 起帮助菜单标题与四项入口文案走 @tr：源码面断言跟进
+    // （裸字面量形式已不存在，入口与落点本身不变）。
+    assert!(
+        app.contains("title: @tr(\"帮助\")"),
+        "菜单栏必须有帮助菜单（文案走 @tr）"
+    );
     let host = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/host.rs"))
         .expect("host.rs 必须可读");
-    for command in [
-        "help-manual",
-        "help-shortcuts",
-        "help-onboarding",
-        "help-lessons",
+    for (command, title) in [
+        ("help-manual", "用户手册"),
+        ("help-shortcuts", "快捷键速查"),
+        ("help-onboarding", "新手引导"),
+        ("help-lessons", "教学课程"),
     ] {
+        assert!(
+            app.contains(&format!("title: @tr(\"{title}\")")),
+            "帮助菜单 {command} 的标题必须走 @tr"
+        );
         assert!(
             app.contains(&format!("command-execute(\"{command}\")")),
             "帮助菜单必须有 {command} 入口"
@@ -382,8 +495,12 @@ fn build_live_window(
 fn help_system_end_to_end_in_a_live_window() {
     let _lock = ENV_LOCK.lock().expect("env 锁");
     let state_path = temp_state_path("live");
+    let legacy_path = temp_legacy_path("live");
     let _ = std::fs::remove_file(&state_path);
-    let _guard = StatePathEnv::set(&state_path);
+    let _ = std::fs::remove_file(&legacy_path);
+    // 旧文件路径指到不存在的临时文件：活窗口测试里 load() 只读 settings，
+    // 不许碰真实家目录下的旧文件。
+    let _guard = StatePathEnv::set(&state_path, &legacy_path);
 
     let project = yeban_model::samples::filled_project();
     let undo = Rc::new(UndoPort::new(
@@ -565,4 +682,5 @@ fn help_system_end_to_end_in_a_live_window() {
     assert!(!ui.get_lessons_open());
 
     let _ = std::fs::remove_file(&state_path);
+    let _ = std::fs::remove_file(&legacy_path);
 }
