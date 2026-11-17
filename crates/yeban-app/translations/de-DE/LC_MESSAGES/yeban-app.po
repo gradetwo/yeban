@@ -1974,3 +1974,85 @@ msgstr "Sprache"
 
 msgid "质感"
 msgstr "Textur"
+
+# --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
+msgid "帮助"
+msgstr "Hilfe"
+
+msgid "用户手册"
+msgstr "Benutzerhandbuch"
+
+msgid "快捷键速查"
+msgstr "Tastaturkürzel"
+
+msgid "新手引导"
+msgstr "Geführte Tour"
+
+msgid "教学课程"
+msgstr "Lektionen"
+
+msgid "用户手册面板"
+msgstr "Benutzerhandbuch-Panel"
+
+msgid "关闭用户手册"
+msgstr "Benutzerhandbuch schließen"
+
+msgid "手册章节：{}"
+msgstr "Handbuchkapitel: {}"
+
+msgid "快捷键速查面板"
+msgstr "Tastaturkürzel-Panel"
+
+msgid "关闭快捷键速查"
+msgstr "Tastaturkürzel schließen"
+
+msgid "关闭教学课程"
+msgstr "Lektionen schließen"
+
+msgid "课程：{}（{}）"
+msgstr "Lektion: {} ({})"
+
+msgid "第 {} / {} 步"
+msgstr "Schritt {} von {}"
+
+msgid "实测进度：{}"
+msgstr "Gemessener Fortschritt: {}"
+
+msgid "完成本步并检查"
+msgstr "Diesen Schritt abschließen und prüfen"
+
+msgid "完成本步（检查）"
+msgstr "Diesen Schritt abschließen (prüfen)"
+
+msgid "返回课程列表"
+msgstr "Zurück zur Lektionsliste"
+
+msgid "返回课程列表（进度已保存）"
+msgstr "Zurück zur Lektionsliste (Fortschritt gespeichert)"
+
+msgid "新手引导卡片"
+msgstr "Karte der geführten Tour"
+
+msgid "新手引导 · 第 {} / {} 步"
+msgstr "Geführte Tour · Schritt {} von {}"
+
+msgid "上一步"
+msgstr "Vorheriger Schritt"
+
+msgid "跳过导览"
+msgstr "Tour überspringen"
+
+msgid "不再显示新手引导"
+msgstr "Geführte Tour nicht mehr anzeigen"
+
+msgid "不再显示"
+msgstr "Nicht mehr anzeigen"
+
+msgid "完成新手引导"
+msgstr "Geführte Tour beenden"
+
+msgid "下一步"
+msgstr "Nächster Schritt"
+
+msgid "开始使用"
+msgstr "Loslegen"

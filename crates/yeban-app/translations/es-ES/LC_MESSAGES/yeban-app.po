@@ -1974,3 +1974,85 @@ msgstr "Idioma"
 
 msgid "质感"
 msgstr "Textura"
+
+# --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
+msgid "帮助"
+msgstr "Ayuda"
+
+msgid "用户手册"
+msgstr "Manual de usuario"
+
+msgid "快捷键速查"
+msgstr "Atajos de teclado"
+
+msgid "新手引导"
+msgstr "Visita guiada"
+
+msgid "教学课程"
+msgstr "Lecciones"
+
+msgid "用户手册面板"
+msgstr "Panel del manual de usuario"
+
+msgid "关闭用户手册"
+msgstr "Cerrar el manual de usuario"
+
+msgid "手册章节：{}"
+msgstr "Capítulo del manual: {}"
+
+msgid "快捷键速查面板"
+msgstr "Panel de atajos de teclado"
+
+msgid "关闭快捷键速查"
+msgstr "Cerrar los atajos de teclado"
+
+msgid "关闭教学课程"
+msgstr "Cerrar las lecciones"
+
+msgid "课程：{}（{}）"
+msgstr "Lección: {} ({})"
+
+msgid "第 {} / {} 步"
+msgstr "Paso {} de {}"
+
+msgid "实测进度：{}"
+msgstr "Progreso medido: {}"
+
+msgid "完成本步并检查"
+msgstr "Completar este paso y comprobar"
+
+msgid "完成本步（检查）"
+msgstr "Completar este paso (comprobar)"
+
+msgid "返回课程列表"
+msgstr "Volver a la lista de lecciones"
+
+msgid "返回课程列表（进度已保存）"
+msgstr "Volver a la lista de lecciones (progreso guardado)"
+
+msgid "新手引导卡片"
+msgstr "Tarjeta de la visita guiada"
+
+msgid "新手引导 · 第 {} / {} 步"
+msgstr "Visita guiada · Paso {} de {}"
+
+msgid "上一步"
+msgstr "Paso anterior"
+
+msgid "跳过导览"
+msgstr "Omitir la visita"
+
+msgid "不再显示新手引导"
+msgstr "No volver a mostrar la visita guiada"
+
+msgid "不再显示"
+msgstr "No volver a mostrar"
+
+msgid "完成新手引导"
+msgstr "Finalizar la visita guiada"
+
+msgid "下一步"
+msgstr "Paso siguiente"
+
+msgid "开始使用"
+msgstr "Empezar"

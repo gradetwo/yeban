@@ -45,7 +45,7 @@ export component LessonsDrawer inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "lessons-drawer";
-    accessible-label: "教学课程";
+    accessible-label: @tr("教学课程");
 
     Rectangle {
         x: 0;
@@ -59,7 +59,7 @@ export component LessonsDrawer inherits Rectangle {
             y: 0;
             width: parent.width - 76px;
             height: parent.height;
-            text: root.active ? root.lesson-title : "教学课程";
+            text: root.active ? root.lesson-title : @tr("教学课程");
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-lg;
         }
@@ -73,7 +73,7 @@ export component LessonsDrawer inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "lessons-close-button";
-            accessible-label: "关闭教学课程";
+            accessible-label: @tr("关闭教学课程");
             accessible-action-default => { root.close(); }
 
             UiText {
@@ -104,7 +104,7 @@ export component LessonsDrawer inherits Rectangle {
             border-radius: Tokens.radius-md;
             accessible-role: button;
             accessible-id: "lesson-row-" + row.lesson-id;
-            accessible-label: "课程：" + row.title + "（" + row.status + "）";
+            accessible-label: @tr("课程：{}（{}）", row.title, row.status);
             accessible-action-default => { root.start-lesson(row.lesson-id); }
 
             UiTitleText {
@@ -150,7 +150,7 @@ export component LessonsDrawer inherits Rectangle {
         spacing: Tokens.space-3;
 
         UiText {
-            text: "第 " + (root.step-index + 1) + " / " + root.step-count + " 步";
+            text: @tr("第 {} / {} 步", root.step-index + 1, root.step-count);
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
         }
@@ -170,7 +170,7 @@ export component LessonsDrawer inherits Rectangle {
             background: Tokens.line;
         }
         UiText {
-            text: "实测进度：" + root.step-progress;
+            text: @tr("实测进度：{}", root.step-progress);
             color: Tokens.ink-1;
             font-size: Tokens.font-size-sm;
             wrap: word-wrap;
@@ -192,13 +192,13 @@ export component LessonsDrawer inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "lesson-check-step-button";
-            accessible-label: "完成本步并检查";
+            accessible-label: @tr("完成本步并检查");
             accessible-action-default => { root.check-step(); }
 
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "完成本步（检查）";
+                text: @tr("完成本步（检查）");
                 horizontal-alignment: center;
                 font-size: Tokens.font-size-md;
             }
@@ -214,13 +214,13 @@ export component LessonsDrawer inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "lesson-exit-button";
-            accessible-label: "返回课程列表";
+            accessible-label: @tr("返回课程列表");
             accessible-action-default => { root.exit-lesson(); }
 
             UiText {
                 width: parent.width;
                 height: parent.height;
-                text: "返回课程列表（进度已保存）";
+                text: @tr("返回课程列表（进度已保存）");
                 horizontal-alignment: center;
                 font-size: Tokens.font-size-md;
             }

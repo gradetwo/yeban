@@ -1974,3 +1974,85 @@ msgstr "언어"
 
 msgid "质感"
 msgstr "질감"
+
+# --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
+msgid "帮助"
+msgstr "도움말"
+
+msgid "用户手册"
+msgstr "사용자 설명서"
+
+msgid "快捷键速查"
+msgstr "단축키 안내"
+
+msgid "新手引导"
+msgstr "가이드 투어"
+
+msgid "教学课程"
+msgstr "레슨"
+
+msgid "用户手册面板"
+msgstr "사용자 설명서 패널"
+
+msgid "关闭用户手册"
+msgstr "사용자 설명서 닫기"
+
+msgid "手册章节：{}"
+msgstr "설명서 장: {}"
+
+msgid "快捷键速查面板"
+msgstr "단축키 안내 패널"
+
+msgid "关闭快捷键速查"
+msgstr "단축키 안내 닫기"
+
+msgid "关闭教学课程"
+msgstr "레슨 닫기"
+
+msgid "课程：{}（{}）"
+msgstr "레슨: {} ({})"
+
+msgid "第 {} / {} 步"
+msgstr "{} / {} 단계"
+
+msgid "实测进度：{}"
+msgstr "실측 진행도: {}"
+
+msgid "完成本步并检查"
+msgstr "이 단계 완료 및 검사"
+
+msgid "完成本步（检查）"
+msgstr "이 단계 완료 (검사)"
+
+msgid "返回课程列表"
+msgstr "레슨 목록으로 돌아가기"
+
+msgid "返回课程列表（进度已保存）"
+msgstr "레슨 목록으로 돌아가기 (진행 상황 저장됨)"
+
+msgid "新手引导卡片"
+msgstr "가이드 투어 카드"
+
+msgid "新手引导 · 第 {} / {} 步"
+msgstr "가이드 투어 · {} / {} 단계"
+
+msgid "上一步"
+msgstr "이전 단계"
+
+msgid "跳过导览"
+msgstr "투어 건너뛰기"
+
+msgid "不再显示新手引导"
+msgstr "가이드 투어 다시 표시 안 함"
+
+msgid "不再显示"
+msgstr "다시 표시 안 함"
+
+msgid "完成新手引导"
+msgstr "가이드 투어 완료"
+
+msgid "下一步"
+msgstr "다음 단계"
+
+msgid "开始使用"
+msgstr "시작하기"

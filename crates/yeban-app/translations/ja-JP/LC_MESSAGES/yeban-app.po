@@ -1974,3 +1974,85 @@ msgstr "言語"
 
 msgid "质感"
 msgstr "質感"
+
+# --- app.slint + dialogs/help_*.slint + dialogs/lessons_drawer.slint + dialogs/onboarding_overlay.slint (line/fix-onboarding-i18n) ---
+msgid "帮助"
+msgstr "ヘルプ"
+
+msgid "用户手册"
+msgstr "ユーザーマニュアル"
+
+msgid "快捷键速查"
+msgstr "ショートカット一覧"
+
+msgid "新手引导"
+msgstr "ガイドツアー"
+
+msgid "教学课程"
+msgstr "レッスン"
+
+msgid "用户手册面板"
+msgstr "ユーザーマニュアルパネル"
+
+msgid "关闭用户手册"
+msgstr "ユーザーマニュアルを閉じる"
+
+msgid "手册章节：{}"
+msgstr "マニュアルの章：{}"
+
+msgid "快捷键速查面板"
+msgstr "ショートカット一覧パネル"
+
+msgid "关闭快捷键速查"
+msgstr "ショートカット一覧を閉じる"
+
+msgid "关闭教学课程"
+msgstr "レッスンを閉じる"
+
+msgid "课程：{}（{}）"
+msgstr "レッスン：{}（{}）"
+
+msgid "第 {} / {} 步"
+msgstr "ステップ {} / {}"
+
+msgid "实测进度：{}"
+msgstr "実測の進捗：{}"
+
+msgid "完成本步并检查"
+msgstr "このステップを完了してチェック"
+
+msgid "完成本步（检查）"
+msgstr "このステップを完了（チェック）"
+
+msgid "返回课程列表"
+msgstr "レッスン一覧に戻る"
+
+msgid "返回课程列表（进度已保存）"
+msgstr "レッスン一覧に戻る（進捗は保存済み）"
+
+msgid "新手引导卡片"
+msgstr "ガイドツアーカード"
+
+msgid "新手引导 · 第 {} / {} 步"
+msgstr "ガイドツアー・ステップ {} / {}"
+
+msgid "上一步"
+msgstr "前のステップ"
+
+msgid "跳过导览"
+msgstr "ツアーをスキップ"
+
+msgid "不再显示新手引导"
+msgstr "ガイドツアーを今後表示しない"
+
+msgid "不再显示"
+msgstr "今後表示しない"
+
+msgid "完成新手引导"
+msgstr "ガイドツアーを完了"
+
+msgid "下一步"
+msgstr "次のステップ"
+
+msgid "开始使用"
+msgstr "使い始める"
