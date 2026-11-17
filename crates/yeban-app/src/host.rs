@@ -10581,6 +10581,244 @@ fn refresh_sound_pack_installed_flags(ui: &MainWindow) {
     ui.set_sound_pack_installed(booleans(&flags));
 }
 
+/// 鼓机生成对话框接线（`line/drum-machine-p1`）：「编辑 → 鼓机生成 (Drums)...」。
+///
+/// - 打开时播种：风格行从 `yeban_theory::factory_drum_styles()` 投影；五格
+///   文本空 ⇒ 填缺省（复杂度 50 / 强度 80 / 摇摆 = 当前风格定值 / 种子 =
+///   工程 `rng_seed` / 小节数 4）；目标轨说明按 [`crate::bridge::drum_gen_target`]
+///   的解析写明（MIDI 展示轨 ⇒ 落该轨，否则新建鼓轨）。
+/// - 选风格 ⇒ 摇摆框重播为该风格定值（用户改过也会被覆盖，口径写在对话框
+///   文件头）；其余四格不碰。
+/// - 生成：五格在宿主解析（与人性化同一 `parse_humanize_u64`），范围按
+///   theory 口径校验；`Op` 批次由 [`crate::bridge::drum_gen_ops`] 构造
+///   （与 MCP 工具同一配方），经 `UndoPort::commit_ops` 提交；失败写
+///   `drum-gen-error` 且弹窗不关。
+pub fn wire_drum_gen_dialog(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
+    fn drum_gen_target_label(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> String {
+        let Some(project) = port.and_then(|p| p.try_project()) else {
+            return "目标：新建鼓轨".to_owned();
+        };
+        match crate::bridge::drum_gen_target(&project, display_track(ui, &project)) {
+            Some(track) => format!("目标：当前轨道「{}」", track.name),
+            None => "目标：新建鼓轨".to_owned(),
+        }
+    }
+
+    fn seed_drum_gen_fields(ui: &MainWindow, port: Option<&Rc<UndoPort>>) {
+        let Ok(styles) = yeban_theory::factory_drum_styles() else {
+            ui.set_drum_gen_error("出厂风格预置读取失败".into());
+            return;
+        };
+        let rows: Vec<crate::ui::DrumStyleRow> = styles
+            .iter()
+            .enumerate()
+            .map(|(index, preset)| crate::ui::DrumStyleRow {
+                style_index: index as i32,
+                label: preset.name_zh.clone().into(),
+                detail: format!(
+                    "{} BPM · {}",
+                    preset.bpm_default,
+                    match preset.kit_family {
+                        yeban_theory::KitFamily::Acoustic => "原声采样",
+                        yeban_theory::KitFamily::Electronic => "电子合成",
+                    }
+                )
+                .into(),
+            })
+            .collect();
+        ui.set_drum_gen_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+        let style_index = ui.get_drum_gen_style_index();
+        let style_index = if style_index < 0 || style_index as usize >= styles.len() {
+            ui.set_drum_gen_style_index(0);
+            0
+        } else {
+            style_index as usize
+        };
+        if ui.get_drum_gen_complexity().trim().is_empty() {
+            ui.set_drum_gen_complexity("50".into());
+        }
+        if ui.get_drum_gen_intensity().trim().is_empty() {
+            ui.set_drum_gen_intensity("80".into());
+        }
+        if ui.get_drum_gen_swing().trim().is_empty() {
+            ui.set_drum_gen_swing(styles[style_index].swing_permille.to_string().into());
+        }
+        if ui.get_drum_gen_seed().trim().is_empty()
+            && let Some(project) = port.and_then(|p| p.try_project())
+        {
+            ui.set_drum_gen_seed(project.rng_seed.to_string().into());
+        }
+        if ui.get_drum_gen_bars().trim().is_empty() {
+            ui.set_drum_gen_bars("4".into());
+        }
+        ui.set_drum_gen_target_label(drum_gen_target_label(ui, port).into());
+    }
+
+    // ---- 打开 ---------------------------------------------------------------
+    {
+        let weak = ui.as_weak();
+        let port_for_seed = port.clone();
+        ui.on_open_drum_gen(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            seed_drum_gen_fields(&ui, port_for_seed.as_ref());
+            ui.set_drum_gen_error("".into());
+            ui.set_drum_gen_open(true);
+            ui.invoke_focus_drum_gen_dialog();
+        });
+    }
+    // ---- 选风格：摇摆重播为该风格定值 ---------------------------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_drum_gen_style_picked(move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Ok(styles) = yeban_theory::factory_drum_styles() else {
+                return;
+            };
+            if index < 0 || index as usize >= styles.len() {
+                return;
+            }
+            ui.set_drum_gen_style_index(index);
+            ui.set_drum_gen_swing(styles[index as usize].swing_permille.to_string().into());
+        });
+    }
+    // ---- 关闭（只改视图态，⛔ 不碰工程）-------------------------------------
+    {
+        let weak = ui.as_weak();
+        ui.on_close_drum_gen(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let was_open = ui.get_drum_gen_open();
+            ui.set_drum_gen_open(false);
+            if was_open {
+                ui.invoke_focus_shortcut_layer();
+            }
+        });
+    }
+    // ---- 生成 ---------------------------------------------------------------
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        ui.on_apply_drum_gen(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(port) = port.as_ref() else {
+                ui.set_drum_gen_error("没有撤销会话，无法生成".into());
+                return;
+            };
+            let parse =
+                |text: slint::SharedString, label: &str| parse_humanize_u64(text.as_str(), label);
+            let complexity = match parse(ui.get_drum_gen_complexity(), "复杂度") {
+                Ok(v) if v <= 100 => v as u8,
+                Ok(_) => {
+                    ui.set_drum_gen_error("复杂度必须在 0..=100 之间".into());
+                    return;
+                }
+                Err(msg) => {
+                    ui.set_drum_gen_error(msg.into());
+                    return;
+                }
+            };
+            let intensity = match parse(ui.get_drum_gen_intensity(), "强度") {
+                Ok(v) if v <= 100 => v as u8,
+                Ok(_) => {
+                    ui.set_drum_gen_error("强度必须在 0..=100 之间".into());
+                    return;
+                }
+                Err(msg) => {
+                    ui.set_drum_gen_error(msg.into());
+                    return;
+                }
+            };
+            let swing = match parse(ui.get_drum_gen_swing(), "摇摆") {
+                Ok(v) if (500..=700).contains(&v) => v as u16,
+                Ok(_) => {
+                    ui.set_drum_gen_error("摇摆必须在 500..=700 之间".into());
+                    return;
+                }
+                Err(msg) => {
+                    ui.set_drum_gen_error(msg.into());
+                    return;
+                }
+            };
+            let seed = match parse(ui.get_drum_gen_seed(), "基础种子") {
+                Ok(v) => v,
+                Err(msg) => {
+                    ui.set_drum_gen_error(msg.into());
+                    return;
+                }
+            };
+            let bars = match parse(ui.get_drum_gen_bars(), "小节数") {
+                Ok(v) if (1..=16).contains(&v) => v as u32,
+                Ok(_) => {
+                    ui.set_drum_gen_error("小节数必须在 1..=16 之间".into());
+                    return;
+                }
+                Err(msg) => {
+                    ui.set_drum_gen_error(msg.into());
+                    return;
+                }
+            };
+            let Ok(styles) = yeban_theory::factory_drum_styles() else {
+                ui.set_drum_gen_error("出厂风格预置读取失败".into());
+                return;
+            };
+            let style_index = ui.get_drum_gen_style_index();
+            let Some(preset) = usize::try_from(style_index)
+                .ok()
+                .and_then(|index| styles.get(index))
+            else {
+                ui.set_drum_gen_error("请先选择一个风格".into());
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                ui.set_drum_gen_error("没有活跃工程".into());
+                return;
+            };
+            let target =
+                crate::bridge::drum_gen_target(&project, display_track(&ui, &project)).cloned();
+            let ops = match crate::bridge::drum_gen_ops(
+                &project,
+                preset,
+                &yeban_theory::DrumGenParams {
+                    complexity,
+                    intensity,
+                    swing_permille: Some(swing),
+                    seed,
+                    bars,
+                    fill: ui.get_drum_gen_fill(),
+                },
+                target.as_ref(),
+            ) {
+                Ok(ops) => ops,
+                Err(msg) => {
+                    ui.set_drum_gen_error(msg.into());
+                    return;
+                }
+            };
+            if port
+                .commit_ops(now_ms(), "generate drum pattern", ops)
+                .is_err()
+            {
+                ui.set_drum_gen_error("模型拒绝了这次生成（目标轨或片段已不存在）".into());
+                return;
+            }
+            ui.set_drum_gen_error("".into());
+            ui.invoke_close_drum_gen();
+            reproject_now(&ui, port);
+        });
+    }
+}
+
 /// 音源管理对话框接线（主菜单「设置 → 音源管理...」）。
 ///
 /// 打开 ⇒ 先同步发布已安装扫描（本地读盘，快），目录拉取走工作
@@ -20830,6 +21068,7 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "toggle-undo-tree" => ui.invoke_toggle_undo_tree(),
         "open-quantize" => ui.invoke_open_quantize(),
         "open-humanize" => ui.invoke_open_humanize(),
+        "open-drum-gen" => ui.invoke_open_drum_gen(),
         "open-sound-library" => ui.invoke_open_sound_library(),
         "toggle-musical-pr" => ui.invoke_open_musical_pr(),
         "track-add-midi" => ui.invoke_track_create_midi(),

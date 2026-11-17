@@ -2490,6 +2490,115 @@ impl ElementRegistry {
             "基础种子说明：同一基础种子在不同剪辑上产出相同的抖动序列；按轨派生由引擎接上",
             false,
         );
+        // 鼓机生成对话框（line/drum-machine-p1）：默认关闭（`drum-gen-open=false`），
+        // 因此不进运行时控件树、不改任何金帧。打开后宿主把「编辑」菜单的
+        // 「鼓机生成 (Drums)...」接到这里，提交走 `MainWindow.apply-drum-gen`
+        // → `host::wire_drum_gen_dialog` → `bridge::drum_gen_ops`。五格文本
+        // **不在 UI 侧解析**：解析只发生在宿主，非法值写进 `drum-gen-error`
+        // 且不提交半成品。
+        registry.add(
+            "drum-gen-dialog",
+            ElementKind::Region,
+            "dialogs/drum_gen_dialog.slint",
+            "鼓机生成对话框",
+            false,
+        );
+        registry.add(
+            "drum-gen-panel",
+            ElementKind::Region,
+            "dialogs/drum_gen_dialog.slint",
+            "鼓机生成面板",
+            false,
+        );
+        registry.add(
+            "drum-gen-close-button",
+            ElementKind::Button,
+            "dialogs/drum_gen_dialog.slint",
+            "关闭鼓机生成对话框",
+            false,
+        );
+        // 风格行族是**有界**的：行数 = 出厂预置数（宿主从
+        // `yeban_theory::factory_drum_styles()` 投影，一行不多），注册范围
+        // 与数据上限同源（与 `template-row-*` 同一条纪律）。
+        for style_index in 0..yeban_theory::factory_drum_style_ids().len() {
+            registry.add(
+                &format!("drum-gen-style-{style_index}"),
+                ElementKind::Button,
+                "dialogs/drum_gen_dialog.slint",
+                &format!("鼓机风格第 {style_index} 行（出厂预置顺序）"),
+                false,
+            );
+        }
+        registry.add(
+            "drum-gen-complexity-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "复杂度（0..=100，决定音符密度与鬼音）",
+            false,
+        );
+        registry.add(
+            "drum-gen-intensity-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "强度（0..=100，决定力度层级）",
+            false,
+        );
+        registry.add(
+            "drum-gen-swing-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "摇摆（千分比 500..=700，选风格时播种为该风格定值）",
+            false,
+        );
+        registry.add(
+            "drum-gen-bars-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "小节数（1..=16）",
+            false,
+        );
+        registry.add(
+            "drum-gen-seed-input",
+            ElementKind::TextInput,
+            "dialogs/drum_gen_dialog.slint",
+            "基础种子（缺省工程种子；同种子同参数逐字节可复现）",
+            false,
+        );
+        registry.add(
+            "drum-gen-note-line",
+            ElementKind::Text,
+            "dialogs/drum_gen_dialog.slint",
+            "可复现说明：同一种子与参数两次生成，片段逐字节一致",
+            false,
+        );
+        registry.add(
+            "drum-gen-fill-toggle",
+            ElementKind::Button,
+            "dialogs/drum_gen_dialog.slint",
+            "末小节填充开关（开 = 最后一小节换风格填充型）",
+            false,
+        );
+        registry.add(
+            "drum-gen-target-line",
+            ElementKind::Text,
+            "dialogs/drum_gen_dialog.slint",
+            "生成目标轨道（当前 MIDI 轨或新建鼓轨，宿主写明）",
+            false,
+        );
+        registry.add(
+            "drum-gen-apply-button",
+            ElementKind::Button,
+            "dialogs/drum_gen_dialog.slint",
+            "生成鼓型片段",
+            false,
+        );
+        registry.add(
+            "drum-gen-error-line",
+            ElementKind::Text,
+            "dialogs/drum_gen_dialog.slint",
+            "鼓机生成失败原因（空 = 无失败）",
+            false,
+        );
         // 工程模板选择器（从模板新建）：默认关闭（`template-chooser-open=false`），
         // 因此不进运行时控件树、不改任何金帧。行模型由宿主从
         // `templates::build_chooser_rows` 写入（分组标题 + 条目同列），界面不自己分组。

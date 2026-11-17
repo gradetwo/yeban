@@ -2460,6 +2460,8 @@ pub fn build_live_ui_with(
     // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
     // 同一条接线（产品进程在 `main.rs` 的同一处调它）。
     host::wire_humanize_dialog(&window, options.undo.clone());
+    // ⭐ 鼓机生成对话框（line/drum-machine-p1）—— 与产品进程同一条接线。
+    host::wire_drum_gen_dialog(&window, options.undo.clone());
     // ⭐ 音源管理对话框（line/sound-library-manager）—— 与产品进程同一条接线。
     host::wire_sound_library_dialog(&window);
     // ⭐ `[PATCH UI-WIRING-01]`：**WAV 导出选项框的 `Ctrl/Cmd+O` 路径浏览** 在本装配也要有注册者，

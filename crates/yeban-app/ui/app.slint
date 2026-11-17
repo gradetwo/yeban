@@ -1,5 +1,5 @@
-import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
-export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
+import { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
+export { Tokens, TextureMode, ThemeState, YebanTheme, Theme, PersonaMode, TrackData, TimelineBlockData, BrowserItemData, ChordBlockData, CommandPaletteItem, TemplateChooserRow, DrumStyleRow, StartupChooserRow, PianoStepRow, PianoRollNote, ManualLine, HelpShortcutRow, LessonRow } from "tokens.slint";
 
 import { TransportHeaderBar } from "transport_bar.slint";
 import { ZoneBrowserAndInspector } from "left_panel.slint";
@@ -17,6 +17,7 @@ import { ShortcutsDialog } from "dialogs/help_shortcuts.slint";
 import { OnboardingOverlay } from "dialogs/onboarding_overlay.slint";
 import { LessonsDrawer } from "dialogs/lessons_drawer.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
+import { DrumGenDialog } from "dialogs/drum_gen_dialog.slint";
 import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
 import { StartupChooserDialog } from "dialogs/startup_chooser.slint";
 import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
@@ -395,6 +396,7 @@ export component MainWindow inherits Window {
     public function focus-undo-tree-trap() { }
     public function focus-shortcut-layer() { key-handler.focus(); }
     public function focus-humanize-dialog() { }
+    public function focus-drum-gen-dialog() { }
     public function focus-export-wav-dialog() { }
 
     // ---- 契约兼容面: 新 UI 视觉组件树保留, 数据/控制面与 main 对齐 ----
@@ -466,6 +468,19 @@ export component MainWindow inherits Window {
     in-out property <[string]> device-recognised: [];
     in-out property <string> device-track-label: "";
     in-out property <[string]> device-unrecognised: [];
+    // 鼓机生成对话框（line/drum-machine-p1）：风格行与五格文本全部由
+    // 宿主写（`host::wire_drum_gen_dialog`）；默认关着 ⇒ 默认帧不变。
+    in-out property <string> drum-gen-bars: "";
+    in-out property <string> drum-gen-complexity: "";
+    in-out property <string> drum-gen-error: "";
+    in-out property <bool> drum-gen-fill: true;
+    in-out property <string> drum-gen-intensity: "";
+    in-out property <bool> drum-gen-open: false;
+    in-out property <[DrumStyleRow]> drum-gen-rows: [];
+    in-out property <string> drum-gen-seed: "";
+    in-out property <int> drum-gen-style-index: 0;
+    in-out property <string> drum-gen-swing: "";
+    in-out property <string> drum-gen-target-label: "";
     in-out property <string> engine-error: "";
     in-out property <string> eq-curve-fill-svg: "";
     in-out property <string> eq-curve-info: @tr("平坦响应 (0 dB · 20 Hz – 20 kHz)");
@@ -712,6 +727,8 @@ export component MainWindow inherits Window {
     in-out property <string> lesson-step-body: "";
     in-out property <string> lesson-step-progress: "";
     in-out property <string> lesson-feedback: "";
+
+    callback apply-drum-gen();
     callback apply-humanize();
     callback apply-quantize();
     callback arrangement-scroll-to(length);
@@ -728,6 +745,7 @@ export component MainWindow inherits Window {
     callback clip-drag-move(string, length);
     callback clip-drag-release(string, length);
     callback clip-select(string);
+    callback close-drum-gen();
     callback close-export-wav();
     callback close-humanize();
     callback close-undo-tree();
@@ -741,6 +759,7 @@ export component MainWindow inherits Window {
     callback device-eq-grab(string, float);
     callback device-eq-release();
     callback device-insert-eq();
+    callback drum-gen-style-picked(int);
     callback device-insert-reverb();
     callback device-remove(string);
     callback double-clicked(length, length);
@@ -809,6 +828,7 @@ export component MainWindow inherits Window {
     callback onboarding-dismiss-forever();
     callback onboarding-next();
     callback onboarding-skip();
+    callback open-drum-gen();
     callback open-export-wav();
     callback open-humanize();
     callback open-project();
@@ -934,6 +954,7 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: @tr("音符量化 (Quantize 1/16)..."); activated => { root.command-execute("open-quantize"); } }
             MenuItem { title: @tr("音符人性化 (Humanize)..."); activated => { root.command-execute("open-humanize"); } }
+            MenuItem { title: @tr("鼓机生成 (Drums)..."); activated => { root.command-execute("open-drum-gen"); } }
             MenuSeparator {}
             MenuItem { title: @tr("AI 编曲提案抽屉 (Musical PR)..."); activated => { root.command-execute("toggle-musical-pr"); } }
         }
@@ -1786,6 +1807,28 @@ export component MainWindow inherits Window {
             apply-humanize => { root.apply-humanize(); }
             apply-quantize => { root.apply-quantize(); }
             close => { root.close-humanize(); }
+        }
+
+        // Visible Drum Machine Generator Modal Dialog（line/drum-machine-p1）
+        if root.drum-gen-open : DrumGenDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            rows: root.drum-gen-rows;
+            style-index <=> root.drum-gen-style-index;
+            complexity <=> root.drum-gen-complexity;
+            intensity <=> root.drum-gen-intensity;
+            swing <=> root.drum-gen-swing;
+            seed <=> root.drum-gen-seed;
+            bars <=> root.drum-gen-bars;
+            fill <=> root.drum-gen-fill;
+            target-label: root.drum-gen-target-label;
+            error <=> root.drum-gen-error;
+            style-picked(i) => { root.drum-gen-style-picked(i); }
+            apply => { root.apply-drum-gen(); }
+            close => { root.close-drum-gen(); }
         }
 
         // Visible Template Chooser Modal Dialog（从模板新建）

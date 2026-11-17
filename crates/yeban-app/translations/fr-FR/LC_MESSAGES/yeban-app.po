@@ -2056,3 +2056,57 @@ msgstr "Étape suivante"
 
 msgid "开始使用"
 msgstr "Commencer"
+
+msgid "鼓机生成"
+msgstr "Boîte à rythmes"
+
+msgid "鼓机生成面板"
+msgstr "Panneau de la boîte à rythmes"
+
+msgid "关闭鼓机生成"
+msgstr "Fermer la boîte à rythmes"
+
+msgid "风格（选一）"
+msgstr "Style (choisir)"
+
+msgid "复杂度（0–100）"
+msgstr "Complexité (0–100)"
+
+msgid "强度（0–100）"
+msgstr "Intensité (0–100)"
+
+msgid "摇摆（‰，500–700）"
+msgstr "Swing (‰, 500–700)"
+
+msgid "小节数（1–16）"
+msgstr "Mesures (1–16)"
+
+msgid "同种子同参数逐字节可复现说明"
+msgstr "Note : même graine et mêmes paramètres, reproduction à l'octet près"
+
+msgid "同一种子与参数两次生成，片段逐字节一致。"
+msgstr "Même graine et mêmes paramètres produisent un clip identique à l'octet près."
+
+msgid "末小节填充开关"
+msgstr "Basculer le fill de la dernière mesure"
+
+msgid "末小节填充：开"
+msgstr "Fill de la dernière mesure : Oui"
+
+msgid "末小节填充：关"
+msgstr "Fill de la dernière mesure : Non"
+
+msgid "生成目标轨道"
+msgstr "Piste cible de la génération"
+
+msgid "生成鼓型片段"
+msgstr "Générer le clip de pattern de batterie"
+
+msgid "生成"
+msgstr "Générer"
+
+msgid "鼓机生成失败的原因"
+msgstr "Raison de l'échec de la génération de batterie"
+
+msgid "鼓机生成 (Drums)..."
+msgstr "Boîte à rythmes (Drums)..."

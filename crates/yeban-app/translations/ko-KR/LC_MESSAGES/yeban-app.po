@@ -2056,3 +2056,57 @@ msgstr "다음 단계"
 
 msgid "开始使用"
 msgstr "시작하기"
+
+msgid "鼓机生成"
+msgstr "드럼 머신 생성"
+
+msgid "鼓机生成面板"
+msgstr "드럼 머신 생성 패널"
+
+msgid "关闭鼓机生成"
+msgstr "드럼 머신 생성 닫기"
+
+msgid "风格（选一）"
+msgstr "스타일 (하나 선택)"
+
+msgid "复杂度（0–100）"
+msgstr "복잡도 (0–100)"
+
+msgid "强度（0–100）"
+msgstr "강도 (0–100)"
+
+msgid "摇摆（‰，500–700）"
+msgstr "스윙 (‰, 500–700)"
+
+msgid "小节数（1–16）"
+msgstr "마디 수 (1–16)"
+
+msgid "同种子同参数逐字节可复现说明"
+msgstr "참고: 같은 시드와 파라미터는 바이트 단위로 재현됩니다"
+
+msgid "同一种子与参数两次生成，片段逐字节一致。"
+msgstr "같은 시드와 파라미터로는 바이트 단위로 동일한 클립이 생성됩니다."
+
+msgid "末小节填充开关"
+msgstr "마지막 마디 필 토글"
+
+msgid "末小节填充：开"
+msgstr "마지막 마디 필: 켬"
+
+msgid "末小节填充：关"
+msgstr "마지막 마디 필: 끔"
+
+msgid "生成目标轨道"
+msgstr "생성 대상 트랙"
+
+msgid "生成鼓型片段"
+msgstr "드럼 패턴 클립 생성"
+
+msgid "生成"
+msgstr "생성"
+
+msgid "鼓机生成失败的原因"
+msgstr "드럼 생성이 실패한 이유"
+
+msgid "鼓机生成 (Drums)..."
+msgstr "드럼 머신 생성 (Drums)..."

@@ -2056,3 +2056,57 @@ msgstr "Next Step"
 
 msgid "开始使用"
 msgstr "Get Started"
+
+msgid "鼓机生成"
+msgstr "Drum Machine"
+
+msgid "鼓机生成面板"
+msgstr "Drum machine panel"
+
+msgid "关闭鼓机生成"
+msgstr "Close drum machine"
+
+msgid "风格（选一）"
+msgstr "Style (pick one)"
+
+msgid "复杂度（0–100）"
+msgstr "Complexity (0-100)"
+
+msgid "强度（0–100）"
+msgstr "Intensity (0-100)"
+
+msgid "摇摆（‰，500–700）"
+msgstr "Swing (per mille, 500-700)"
+
+msgid "小节数（1–16）"
+msgstr "Bars (1-16)"
+
+msgid "同种子同参数逐字节可复现说明"
+msgstr "Note: same seed and parameters reproduce byte for byte"
+
+msgid "同一种子与参数两次生成，片段逐字节一致。"
+msgstr "Same seed and parameters generate a byte-identical clip."
+
+msgid "末小节填充开关"
+msgstr "Last-bar fill toggle"
+
+msgid "末小节填充：开"
+msgstr "Last-bar fill: On"
+
+msgid "末小节填充：关"
+msgstr "Last-bar fill: Off"
+
+msgid "生成目标轨道"
+msgstr "Generation target track"
+
+msgid "生成鼓型片段"
+msgstr "Generate drum pattern clip"
+
+msgid "生成"
+msgstr "Generate"
+
+msgid "鼓机生成失败的原因"
+msgstr "Reason the drum generation failed"
+
+msgid "鼓机生成 (Drums)..."
+msgstr "Drum Machine (Drums)..."
