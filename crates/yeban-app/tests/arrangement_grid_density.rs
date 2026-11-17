@@ -44,6 +44,20 @@
 //! * 轨道选中边框统一纯白、选中底改定值（行底 `#131a20`／头底
 //!   `#16232b`，判据在 `selection_highlight_uses_accent.rs` 换钉）；
 //!   本文件判据 ⑦ 另钉小节线/拍线对新选中行底的比值不破既有下限。
+//!
+//! ## 八版增补（Wang 2026-11-17 16:08 + 16:09 亲定，照 Logic Pro）
+//!
+//! * 选中改 Logic 式：纯白边框作废，选中只由提亮承载——行底
+//!   `#0f1218`、头底 `#293645`（Logic 亮度比 1.80 线性提亮；判据在
+//!   `selection_highlight_uses_accent.rs` 换钉）；本文件判据 ⑦ 另钉
+//!   小节线/拍线对新选中行底的实算比值（小节线 4.83、拍线 3.38）。
+//! * 行底分界线再深一档：`#5a6672` → `#4e5964`，对最不利行底
+//!   `#181719` 实算 2.50:1，钉在目标窗 2.3–2.7 内，仍暗于拍线
+//!   `#5d6a76`（判据 ⑦）。`#181719` 不再是选中行底，八版起只作
+//!   保守最亮参考底保留（实算比值取最不利情形）。
+//! * 片段底改纯色：编曲区片段块外层底改为不透明 `#090b10`（判据 ⑦
+//!   后新立判据钉住）；Clip 矩阵槽底、下坞轨道徽章底范围外，只列
+//!   清单不动。
 
 use yeban_app::host::{GridDensity, grid_density};
 
@@ -354,10 +368,11 @@ fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
     }
 }
 
-/// ⑦ 七版（Wang 2026-11-17 15:49 + 15:51）：行底分界线提亮定值、卷帘
-/// 播放头改白、选中行底换定值后网格线比值不破下限。
+/// ⑦ 八版（Wang 2026-11-17 16:08 + 16:09）：行底分界线再深一档、选中
+/// 行底换 Logic 式提亮定值后网格线比值不破下限；卷帘播放头改白断言
+/// 保留（七版）。
 #[test]
-fn rev7_divider_roll_playhead_and_selected_row() {
+fn rev8_divider_and_selected_row() {
     let arrangement = include_str!("../ui/arrangement.slint");
 
     // 分界线落点：「行底分界线」注释之后第一个 background 必须是定值。
@@ -368,25 +383,36 @@ fn rev7_divider_roll_playhead_and_selected_row() {
         .chars()
         .take_while(|c| *c != ';')
         .collect();
-    assert_eq!(bg_val.trim(), "#5a6672", "分界线必须用七版定值 #5a6672");
+    assert_eq!(bg_val.trim(), "#4e5964", "分界线必须用八版定值 #4e5964");
 
-    // 分界线比值：对最不利行底 #181719 落在目标窗 3.0–3.1（提亮），
-    // 且相对亮度低于车道拍线 #5d6a76（比拍线暗），对车道底 >= 3.0。
-    let divider = contrast_ratio("#5a6672", "#181719");
+    // 分界线比值：对最不利行底 #181719 落在目标窗 2.3–2.7（再深一档），
+    // 且相对亮度低于车道拍线 #5d6a76（比拍线暗），对车道底实算 2.75。
+    let divider = contrast_ratio("#4e5964", "#181719");
     assert!(
-        (3.0..=3.1).contains(&divider),
-        "分界线比值 {divider:.3} 不在七版目标窗 3.0–3.1"
+        (2.3..=2.7).contains(&divider),
+        "分界线比值 {divider:.3} 不在八版目标窗 2.3–2.7"
     );
     assert!(
-        relative_luminance("#5a6672") < relative_luminance("#5d6a76"),
+        relative_luminance("#4e5964") < relative_luminance("#5d6a76"),
         "分界线必须暗于车道拍线 #5d6a76"
     );
-    assert!(contrast_ratio("#5a6672", "#090b10") >= 3.0);
+    assert!(contrast_ratio("#4e5964", "#090b10") >= 2.75);
 
-    // 选中行底换定值 #131a20 后，小节线/拍线对它的实算比值不破既有
-    // 下限（4.5 / 3.0，与判据 ⑤ 同口径，只是背景换成真实选中行底）。
-    assert!(contrast_ratio("#748392", "#131a20") >= 4.5);
-    assert!(contrast_ratio("#5d6a76", "#131a20") >= 3.0);
+    // 选中行底换定值 #0f1218 后，小节线/拍线对它的实算比值不破既有
+    // 下限（4.5 / 3.0，与判据 ⑤ 同口径，只是背景换成真实选中行底），
+    // 并钉住实算值本身（小节线 4.83、拍线 3.38，窗内浮动只容舍入）。
+    assert!(contrast_ratio("#748392", "#0f1218") >= 4.5);
+    assert!(contrast_ratio("#5d6a76", "#0f1218") >= 3.0);
+    let bar_sel = contrast_ratio("#748392", "#0f1218");
+    assert!(
+        (4.80..=4.86).contains(&bar_sel),
+        "小节线对选中行底比值 {bar_sel:.3} 不在八版实算窗 4.80–4.86"
+    );
+    let beat_sel = contrast_ratio("#5d6a76", "#0f1218");
+    assert!(
+        (3.35..=3.41).contains(&beat_sel),
+        "拍线对选中行底比值 {beat_sel:.3} 不在八版实算窗 3.35–3.41"
+    );
 
     // 卷帘播放头：`piano-roll-playhead` 元素向上的最近一处 background
     // 必须是纯白；白色对卷帘最深行底 #161b26（黑键行）>= 17。
@@ -402,4 +428,33 @@ fn rev7_divider_roll_playhead_and_selected_row() {
         .collect();
     assert_eq!(ph_val.trim(), "#ffffff", "卷帘播放头必须纯白 #ffffff");
     assert!(contrast_ratio("#ffffff", "#161b26") >= 17.0);
+}
+
+/// ⑧ 八版片段底纯色（Wang 2026-11-17 16:09 + 16:10 特写确认）：
+/// 编曲区车道内片段块（MIDI 与音频同一块）的外层底必须是不透明
+/// 纯色 `#090b10`，不得再是 `trk.color.with-alpha(...)` 透底。
+/// 内层轨道色 0.12 叠在实色底上、渲染结果为实色合成色，不在本
+/// 判据的否定范围——断言只钉外层底本身（`timeline-blocks`
+/// 循环之后第一个 background）。
+#[test]
+fn rev8_clip_background_is_opaque_solid() {
+    let arrangement = include_str!("../ui/arrangement.slint");
+    let clips_at = arrangement
+        .find("for blk in root.timeline-blocks")
+        .expect("片段循环在");
+    let rest = &arrangement[clips_at..];
+    let bg_idx = rest.find("background: ").expect("片段块 background 在");
+    let bg_val: String = rest[bg_idx + "background: ".len()..]
+        .chars()
+        .take_while(|c| *c != ';')
+        .collect();
+    assert_eq!(
+        bg_val.trim(),
+        "#090b10",
+        "片段块外层底必须是不透明纯色 #090b10（八版），不得透底"
+    );
+    assert!(
+        !bg_val.contains("with-alpha"),
+        "片段块外层底不得带 with-alpha（否则网格线仍会透过片段底）"
+    );
 }

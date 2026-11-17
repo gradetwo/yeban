@@ -9,17 +9,24 @@
 //! 第二代修法（七版，Wang 2026-11-17 15:51 亲定）：选中边框一律纯白
 //! `#ffffff`（行边框与左右轨道头边框三处同改），选中底色改定值——行底
 //! `#131a20`、头底 `#16232b`（均由现行 accent 合成帧上实测色向白混合
-//! 3% 而来），与轨道色、accent **双脱钩**。本文件随之换钉：原「必须用
-//! accent」的三条断言改为「必须用纯白/定值、且不得再用 accent」；
-//! 「不得用 trk.color」与「色条保留轨道色」两条原样保留（不放宽）。
+//! 3% 而来），与轨道色、accent **双脱钩**。
 //!
-//! ⚠ 纯 `include_str!` 判据；像素级效果由对照帧看守（七版 compare7-*），
+//! 第三代修法（八版，Wang 2026-11-17 16:08 亲定，照 Logic Pro）：纯白
+//! 边框作废——选中行不再有任何边框信号，三处边框回归未选中行同款
+//! （行边框 `#ffffff0a` 0px、头边框 `Theme.border-subtle`）；选中只由
+//! 提亮承载：行底 `#0f1218`、头底 `#293645`，均由未选中底（行
+//! `#090b10`、头 `#1d2733`）按 Logic 截图选中/未选中头底相对亮度比
+//! 1.80 在线性空间同比例提亮而来（头对比度 1.23:1、行 1.05:1；
+//! Logic 自身车道对比度亦仅 1.11:1）。「不得用 trk.color」与「色条
+//! 保留轨道色」两条三代原样保留（不放宽）。
+//!
+//! ⚠ 纯 `include_str!` 判据；像素级效果由对照帧看守（八版 compare8-*），
 //! 本改动会触发 golden 基准重录（`gates-manual` 的 `goldens` 档）。
 
 const ARR: &str = include_str!("../ui/arrangement.slint");
 
 #[test]
-fn selected_track_highlight_uses_white_not_track_color() {
+fn selected_track_highlight_uses_brightening_not_white_border() {
     assert!(
         !ARR.contains("selected-track-id ? trk.color"),
         "选中高亮不得再用 trk.color（与轨道身份色撞色 ⇒ 看不出选中）"
@@ -29,16 +36,16 @@ fn selected_track_highlight_uses_white_not_track_color() {
         "选中高亮不得再用 Theme.accent（七版口径：与 accent 亦脱钩）"
     );
     assert!(
-        ARR.contains("selected-track-id ? #ffffff"),
-        "选中边框必须统一纯白 #ffffff（行边框与轨道头边框）"
+        !ARR.contains("border-color: trk.id == root.selected-track-id ? #ffffff"),
+        "选中边框不得为 #ffffff（八版口径：纯白选中边框作废，回归未选中行同款；轨道名选中变白是原有文字行为，不在本条范围）"
     );
     assert!(
-        ARR.contains("selected-track-id ? #131a20"),
-        "选中行底必须用定值 #131a20"
+        ARR.contains("selected-track-id ? #0f1218"),
+        "选中行底必须用八版定值 #0f1218"
     );
     assert!(
-        ARR.contains("selected-track-id ? #16232b"),
-        "选中轨道头底必须用定值 #16232b"
+        ARR.contains("selected-track-id ? #293645"),
+        "选中轨道头底必须用八版定值 #293645"
     );
 }
 
