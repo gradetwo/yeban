@@ -22,6 +22,16 @@ export component ArrangementViewport inherits Rectangle {
     // 宿主在 `apply_view` 与小节读数同批写入。标尺拍刻度与车道拍线共用这一份
     // 读数（Wang 2026-11-17：网格以拍为常显基本单位，每拍一刻度 / 一线）。
     in-out property <int> beats-per-bar: 4;
+    // 网格密度读数（五版自适应，Wang 2026-11-17 14:37 按 Logic Pro 实测
+    // 规格）：宿主 `grid_density` 按当前小节宽与拍号分子算出、与小节读数
+    // 同批写入。编号步长／线条单位为 2 的幂（小节）；细分份数 0／2／4。
+    // 默认值 = 本组件默认小节宽 128px、4 拍时的 `grid_density` 读数
+    // （宿主在真实装配里必然覆盖，默认值只供独立渲染时自洽）。
+    in-out property <int> grid-label-stride: 1;
+    in-out property <int> grid-line-unit: 1;
+    in-out property <bool> grid-show-beat-ticks: true;
+    in-out property <bool> grid-show-lane-beats: true;
+    in-out property <int> grid-subdiv-per-beat: 4;
     in-out property <length> cycle-start-px: 0px;
     in-out property <length> cycle-end-px: 0px;
     in-out property <bool> show-chord-track: false; // 默认收缩折叠和弦轨，给予主工作区更充裕的高度空间
@@ -307,6 +317,11 @@ export component ArrangementViewport inherits Rectangle {
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个
                             // 水平刻度（`blk.start_px = tick / ticks_per_pixel`）。
                             for i in root.bar-count : Text {
+                                // 编号步长（五版自适应）：只在步长整数倍的
+                                // 小节上标号（步长由宿主按小节宽算，间距
+                                // >= 96px；Logic 图二极端缩小时每 16 小节
+                                // 一个编号）。
+                                visible: (root.bar-start-index + i).mod(max(1, root.grid-label-stride)) == 0;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
                                 width: root.bar-width-px;
@@ -320,21 +335,22 @@ export component ArrangementViewport inherits Rectangle {
                                 vertical-alignment: center;
                             }
 
-                            // 小节刻度 + 拍刻度（Wang 2026-11-17：以拍为单位；
-                            // 对比度口径 2026-11-17 13:01 三版定：按设计文档
-                            // §7.3 [UI-A11Y-003] 第 3 条 WCAG 2.1 AA 实算——
-                            // 拍级 ≥3:1、小节级 ≥4.5:1，对各自实际背景合成后
-                            // 颜色按相对亮度公式算）。四版（Wang 2026-11-17
-                            // 14:17／14:19 亲定）：小节刻度去掉金色，与拍刻度
-                            // 同为灰蓝色相（211°），只亮一档、宽一倍；线宽
-                            // 全体 ×2 试看，刻度高度不变。标尺带底 #1d2733
-                            // （相对亮度 0.0195）：小节刻度 #83909e（0.2724）
-                            // 高 9px、宽 4px，比 4.64:1；拍刻度 #6e7f8f
-                            // （0.2048）高 5px、宽 2px，比 3.67:1。层级靠
-                            // 亮度与线宽区分。小节编号 #cbd5e1 对标尺带
-                            // 10.17:1。
-                            // 无更细的常显刻度：工程没有 division／吸附细分
-                            // 设置，默认态只有拍刻度（细分线不新造设置项）。
+                            // 小节刻度 + 拍刻度 + 细分刻度（五版，Wang
+                            // 2026-11-17 14:37 按 Logic Pro 实测规格定）：
+                            // Logic 图一实测——刻度全 1px 宽，长度分级：
+                            // 小节刻度满刻度行高、拍刻度约半行（下对齐）。
+                            // 本带高 24px，刻度行取带下半 12px：小节 12px、
+                            // 拍 6px、细分 3px（1 : 1/2 : 1/4，下对齐）。
+                            // 颜色沿用四版同色相处理（灰蓝 211°，只差亮度），
+                            // 对标尺带底 #1d2733（相对亮度 0.0195）实算：
+                            // 小节刻度 #83909e（0.2724）比 4.64:1（≥4.5）；
+                            // 拍刻度 #6e7f8f（0.2048）比 3.67:1（≥3）；
+                            // 细分刻度 #66788a（0.1809）比 3.32:1（≥3 硬
+                            // 下限）。小节编号 #cbd5e1 对标尺带 10.17:1。
+                            // 可见性走宿主密度读数（`grid_density`）：小节
+                            // 刻度只在线条单位整数倍的小节上画；拍刻度须
+                            // 每拍 >= 8px；细分份数（每拍 4/2/0）由宿主
+                            // 按细分距 >= 8px 逐档退。
                             for i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
@@ -343,20 +359,38 @@ export component ArrangementViewport inherits Rectangle {
                                 background: transparent;
 
                                 Rectangle {
+                                    visible: (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
                                     x: 0px;
-                                    y: parent.height - 9px;
-                                    width: 4px;
-                                    height: 9px;
+                                    y: parent.height - 12px;
+                                    width: 1px;
+                                    height: 12px;
                                     background: #83909e;
                                 }
 
                                 for beat in root.beats-per-bar : Rectangle {
-                                    visible: beat > 0;
+                                    visible: beat > 0 && root.grid-show-beat-ticks;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
-                                    y: parent.height - 5px;
-                                    width: 2px;
-                                    height: 5px;
+                                    y: parent.height - 6px;
+                                    width: 1px;
+                                    height: 6px;
                                     background: #6e7f8f;
+                                }
+
+                                for beat in root.beats-per-bar : Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: root.bar-width-px;
+                                    height: parent.height;
+                                    background: transparent;
+
+                                    for sub in root.grid-subdiv-per-beat : Rectangle {
+                                        visible: sub > 0;
+                                        x: beat * (root.bar-width-px / max(1, root.beats-per-bar)) + sub * (root.bar-width-px / max(1, root.beats-per-bar) / max(1, root.grid-subdiv-per-beat));
+                                        y: parent.height - 3px;
+                                        width: 1px;
+                                        height: 3px;
+                                        background: #66788a;
+                                    }
                                 }
                             }
 
@@ -1133,31 +1167,34 @@ export component ArrangementViewport inherits Rectangle {
                             horizontal-stretch: 1;
                             clip: true;
 
-                            // [Q6] 小节网格：位置 / 间距与标尺、片段块同源
-                            // （每 4 小节一条强调线，索引 0 起 ⇒ `i.mod(4) == 0`）。
+                            // [Q6] 小节网格：位置 / 间距与标尺、片段块同源。
+                            // 五版（Wang 2026-11-17 14:37 按 Logic Pro 实测
+                            // 规格）：线宽全 1px（Logic 图一车道小节线实测
+                            // 1px、值约 74 / 背景约 52）；取消每 4 小节加重
+                            // 线——Logic 车道与标尺内小节线全均匀。只在
+                            // 线条单位整数倍的小节上画（宿主密度读数；
+                            // 极端缩小时单位粗化为每 2/4/… 小节一条）。
                             for i in root.bar-count : Rectangle {
+                                visible: (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
-                                width: 4px;
+                                width: 1px;
                                 height: parent.height;
-                                background: (root.bar-start-index + i).mod(4) == 0 ? #83909e : #748392;
+                                background: #748392;
                             }
 
-                            // 拍线（Wang 2026-11-17：以拍为单位；对比度口径
-                            // 2026-11-17 13:01 三版定，WCAG 2.1 AA 实算）：
-                            // 节内每拍一根纵线，全部实色、无透明度合成。
-                            // 四版（Wang 2026-11-17 14:17／14:19 亲定）：小节
-                            // 线去掉金色，与拍线同为灰蓝色相（211°），只提高
-                            // 亮度；线宽全体 ×2 试看（拍 2px、小节 4px）。
-                            // 车道底 #090b10（相对亮度 0.0033）：拍线 #687685
-                            // （0.1759，宽 2px）比 4.24:1（≥3）；小节线宽
-                            // 4px，常规 #748392（0.2202）比 5.07:1（≥4.5），
-                            // 每 4 小节 #83909e（0.2724）比 6.04:1。
-                            // 对更亮的车道变体（着色车道 (12,19,25)、选中行
+                            // 拍线（Wang 2026-11-17：以拍为单位；五版按
+                            // Logic 实测规格改 1px 并加缩放门槛）：节内每拍
+                            // 一根纵线，全部实色、无透明度合成。颜色沿用
+                            // 四版：车道底 #090b10（相对亮度 0.0033）上
+                            // 拍线 #687685（0.1759）比 4.24:1（≥3），小节线
+                            // #748392（0.2202）比 5.07:1（≥4.5）；对更亮的
+                            // 车道变体（着色车道 (12,19,25)、选中行
                             // (24,23,25)）实算仍达标：拍线 4.02／3.84:1、
-                            // 小节线 4.81／4.60:1、每 4 小节线 5.74／5.49:1。
-                            // 无更细的常显网格：工程没有 division／吸附细分
-                            // 设置，默认态只有拍线。
+                            // 小节线 4.81／4.60:1。可见性走宿主密度读数：
+                            // 每拍 >= 24px 才画车道拍线（Logic 图一每拍
+                            // 12px 时车道无拍线、只有小节线；24px 为推定
+                            // 阈值，来源见 host::grid_density）。
                             for i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
@@ -1166,10 +1203,10 @@ export component ArrangementViewport inherits Rectangle {
                                 background: transparent;
 
                                 for beat in root.beats-per-bar : Rectangle {
-                                    visible: beat > 0;
+                                    visible: beat > 0 && root.grid-show-lane-beats;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                     y: 0px;
-                                    width: 2px;
+                                    width: 1px;
                                     height: parent.height;
                                     background: #687685;
                                 }
@@ -1741,19 +1778,21 @@ export component ArrangementViewport inherits Rectangle {
                             horizontal-stretch: 1;
 
                             // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
+                            // 五版同车道：小节线 1px、只在线条单位整数倍
+                            // 的小节上画（原有 x >= 0 的裁剪条件保留）。
                             for _i in root.bar-count : Rectangle {
-                                visible: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px;
+                                visible: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px && (root.bar-start-index + _i).mod(max(1, root.grid-line-unit)) == 0;
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
-                                width: 4px;
+                                width: 1px;
                                 height: parent.height;
                                 background: #748392;
                             }
 
                             // 拍线与车道同款（以拍为单位，WCAG 实算同车道，
-                            // 四版同色同宽）：拍线 #687685（2px），小节线
-                            // #748392（4px）；空置行与轨道行同源同强度，
-                            // 整幅网格不断档。
+                            // 五版同色同宽同门槛）：拍线 #687685（1px），
+                            // 小节线 #748392（1px）；空置行与轨道行同源
+                            // 同强度，整幅网格不断档。
                             for _i in root.bar-count : Rectangle {
                                 x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
                                 y: 0px;
@@ -1762,10 +1801,10 @@ export component ArrangementViewport inherits Rectangle {
                                 background: transparent;
 
                                 for beat in root.beats-per-bar : Rectangle {
-                                    visible: beat > 0;
+                                    visible: beat > 0 && root.grid-show-lane-beats;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                     y: 0px;
-                                    width: 2px;
+                                    width: 1px;
                                     height: parent.height;
                                     background: #687685;
                                 }
