@@ -1131,6 +1131,11 @@ export component MainWindow inherits Window {
                 scale-text: root.scale-text;
                 buffer-samples: root.buffer-samples;
                 dsp-cpu-percent: root.dsp-cpu-percent;
+                // ⛔ 这里本轮试过接 `compact: root.window-w < 1600px`（Rust 心跳单向注入窗口宽），
+                // 实测**判据没生效**：1460×700 窗口下 client 实测 1445×642，KEY/SCALE 依旧渲染、
+                // 右岛依旧被裁 ⇒ 注入的宽度没有到达 `TransportHeaderBar`，改过的紧凑分支全是死路，
+                // 已整体回退（源码见 git 历史 95e1c16）。窗口自身宽度做判据会触发 `layoutinfo-h`
+                // 绑定环。⇒ 右岛收窄改走「溢出菜单」并在 Slint 侧重新验证之前，先不要再动 `compact`。
 
                 toggle-zone(z) => {
                     if (z == "browser") { root.show-left-inspector = !root.show-left-inspector; }
@@ -1322,6 +1327,9 @@ export component MainWindow inherits Window {
                     ticks-per-pixel: root.roll-ticks-per-pixel;
                     playhead-px: root.playhead-px;
                     is-looping: root.is-looping;
+                    // ⭐ D1/D2：把引擎实时电平与播放态喂给轨道行电平柱（混音台早就用同一份数据）。
+                    meter-levels: root.track-meter-levels;
+                    is-playing: root.is-playing;
                     bar-positions: root.bar-positions;
                     bar-start-index: root.bar-start-index;
                     bar-count: root.bar-count;
@@ -1445,6 +1453,16 @@ export component MainWindow inherits Window {
                 //   · 给工作区行加 `min-height: 0px` ⇒ dock 被推到窗口底部，反而只剩标签行。
                 // 都不如原样。A1（纵向布局溢出）留给下一轮：需要一条**单向**的窗口高度信号
                 // （Rust 侧窗口 resize 事件写进属性），而不是在 .slint 里回读自己。
+                // ⚠ 本条本轮实测**无效**，已回退成原值（保留记录，避免下一轮重复走）：
+                //   · 用 `root.height` 计算 ⇒ Slint 报 9 条 binding loop；
+                //   · 用 Rust 单向注入的 `window-h` 封顶
+                //     `Math.max(180px, Math.min(lower-dock-height, window-h - 540px))`
+                //     ⇒ 构建通过、抓帧**逐像素零变化**：700px 高窗口下布局本来就把 dock
+                //     压到 ~195px，dock 不是瓶颈。
+                //   · 给工作区行加 `min-height: 0px` ⇒ dock 被推到底部，只剩标签行。
+                // ⇒ A1 的真凶是 `track-heights`（每轨固定 96px）× 轨数 > 可用高度，
+                //   下一轮要么让 Rust 侧 `normalize-track-heights` 接受窗口高度，
+                //   要么给编曲区加纵向滚动条（行高不动）。
                 dock-height: root.lower-dock-height;
                 active-tab: Theme.active-dock-tab;
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;
