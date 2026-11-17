@@ -602,12 +602,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                         .flatten()
                     {
                         *view_tick.borrow_mut() = fresh;
-                        tick = production.tick(
-                            &ui_tick,
-                            &view_tick.borrow(),
-                            mark,
-                            project.as_ref(),
-                        );
+                        tick =
+                            production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
                     }
                 }
                 // 新 UI 的显示态(is-playing / timecode / 电平 / 播放头)与

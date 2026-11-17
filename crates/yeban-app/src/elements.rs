@@ -436,6 +436,23 @@ impl ElementRegistry {
             false,
         );
 
+        // ⭐ ------------------------------------------------- 提示横幅（toast）
+        // UI 缺口补丁 v3：toast 由 `ToastBanner` 组件实例改为 `app.slint` 内的
+        // 内联覆盖层（`if toast-message != ""`），并首次带上 `accessible-id`。
+        // 与引擎错误横幅同族：默认帧无 toast ⇒ 它不进运行时树；
+        // `dynamic_region = false`（只在文案变了的那一跳重画，不是每帧跳变）。
+        //
+        // ⚠ 注册表 label 是静态概括：`.slint` 侧的 `accessible-label` 是
+        // `"提示：" + root.toast-message`（随文案变的动态值），无法逐字相同；
+        // 读屏播报走运行时 label，注册表这一格只作语义登记。
+        registry.add(
+            "toast-banner",
+            ElementKind::Banner,
+            "app.slint",
+            "提示横幅",
+            false,
+        );
+
         // ------------------------------------------------------------ AI 协作栏
         registry.add(
             "ai-rail",
