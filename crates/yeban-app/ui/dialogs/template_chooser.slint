@@ -38,7 +38,7 @@ export component TemplateChooserDialog inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "template-chooser-dialog";
-    accessible-label: "从模板新建";
+    accessible-label: @tr("从模板新建");
 
     // `D-UI-21`：遮罩**真的**吞掉鼠标（与导出对话框 / 时光机同款）。刻意
     // ⛔ 没有任何回调：点遮罩不关面板（关面板只有 ✕ 与 `Esc`），唯一职责
@@ -64,14 +64,14 @@ export component TemplateChooserDialog inherits Rectangle {
 
         accessible-role: region;
         accessible-id: "template-chooser-panel";
-        accessible-label: "模板列表面板";
+        accessible-label: @tr("模板列表面板");
 
         UiTitleText {
             x: Tokens.space-6;
             y: Tokens.space-4;
             width: parent.width - 96px;
             height: 24px;
-            text: "从模板新建";
+            text: @tr("从模板新建");
             color: Tokens.gold-bright;
             font-size: Tokens.font-size-xl;
         }
@@ -81,7 +81,7 @@ export component TemplateChooserDialog inherits Rectangle {
             y: 34px;
             width: parent.width - 96px;
             height: 16px;
-            text: "按曲风 / 子曲风 / 模板名三级组织；选中后以未命名副本打开，编辑不回写模板。";
+            text: @tr("按曲风 / 子曲风 / 模板名三级组织；选中后以未命名副本打开，编辑不回写模板。");
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             overflow: elide;
@@ -97,7 +97,7 @@ export component TemplateChooserDialog inherits Rectangle {
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "template-chooser-close-button";
-            accessible-label: "关闭模板选择器";
+            accessible-label: @tr("关闭模板选择器");
             accessible-action-default => { root.close(); }
 
             UiText {
@@ -136,7 +136,7 @@ export component TemplateChooserDialog inherits Rectangle {
 
             accessible-role: list;
             accessible-id: "template-chooser-list";
-            accessible-label: "模板分组列表";
+            accessible-label: @tr("模板分组列表");
 
             Flickable {
                 x: 0;
@@ -231,14 +231,14 @@ export component TemplateChooserDialog inherits Rectangle {
 
             accessible-role: text;
             accessible-id: "template-chooser-empty-state";
-            accessible-label: "还没有任何模板。先用另存为模板把当前工程存为模板。";
+            accessible-label: @tr("还没有任何模板。先用另存为模板把当前工程存为模板。");
 
             UiText {
                 x: Tokens.space-4;
                 y: 0;
                 width: parent.width - 8px;
                 height: parent.height;
-                text: "还没有任何模板。先用「文件 → 另存为模板…」把当前工程存为模板。";
+                text: @tr("还没有任何模板。先用「文件 → 另存为模板…」把当前工程存为模板。");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-sm;
                 overflow: elide;
@@ -255,14 +255,14 @@ export component TemplateChooserDialog inherits Rectangle {
 
             accessible-role: text;
             accessible-id: "template-chooser-truncation-note";
-            accessible-label: "还有更多模板行未画出";
+            accessible-label: @tr("还有更多模板行未画出");
 
             UiText {
                 x: 0;
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "还有 " + root.hidden-rows + " 行未画出（列表一次最多画 64 行）";
+                text: @tr("还有 {} 行未画出（列表一次最多画 64 行）", root.hidden-rows);
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;

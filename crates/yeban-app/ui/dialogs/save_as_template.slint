@@ -63,7 +63,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
 
     accessible-role: region;
     accessible-id: "save-as-template-dialog";
-    accessible-label: "另存为模板";
+    accessible-label: @tr("另存为模板");
 
     // `D-UI-21`：遮罩**真的**吞掉鼠标（与人性化对话框同款）。刻意 ⛔ 没有
     // 任何回调：点遮罩不关面板（关面板只有 ✕ 与 `Esc`）。
@@ -114,14 +114,14 @@ export component SaveAsTemplateDialog inherits Rectangle {
 
             accessible-role: region;
             accessible-id: "save-as-template-panel";
-            accessible-label: "另存为模板面板";
+            accessible-label: @tr("另存为模板面板");
 
             UiTitleText {
                 x: Tokens.space-6;
                 y: Tokens.space-4;
                 width: parent.width - 96px;
                 height: 24px;
-                text: "另存为模板";
+                text: @tr("另存为模板");
                 color: Tokens.gold-bright;
                 font-size: Tokens.font-size-xl;
             }
@@ -131,7 +131,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 y: 34px;
                 width: parent.width - 96px;
                 height: 16px;
-                text: "存进我的模板目录；存的是当前工程原样（不剥离片段内容）。";
+                text: @tr("存进我的模板目录；存的是当前工程原样（不剥离片段内容）。");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 overflow: elide;
@@ -147,7 +147,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 accessible-role: button;
                 accessible-id: "save-as-template-close-button";
-                accessible-label: "关闭另存为模板";
+                accessible-label: @tr("关闭另存为模板");
                 accessible-action-default => { root.close(); }
 
                 save-template-close-focus := FocusScope {
@@ -191,7 +191,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 y: 60px;
                 width: 160px;
                 height: 16px;
-                text: "曲风（一级分类）";
+                text: @tr("曲风（一级分类）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -209,7 +209,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "template-style-input";
-                accessible-label: "曲风";
+                accessible-label: @tr("曲风");
                 accessible-value: root.style;
                 accessible-read-only: false;
                 edited => {
@@ -225,7 +225,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 y: 116px;
                 width: 160px;
                 height: 16px;
-                text: "子曲风（二级分类）";
+                text: @tr("子曲风（二级分类）");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -243,7 +243,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "template-substyle-input";
-                accessible-label: "子曲风";
+                accessible-label: @tr("子曲风");
                 accessible-value: root.substyle;
                 accessible-read-only: false;
                 edited => {
@@ -259,7 +259,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 y: 172px;
                 width: 160px;
                 height: 16px;
-                text: "模板名";
+                text: @tr("模板名");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }
@@ -277,7 +277,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 vertical-alignment: center;
                 accessible-role: text-input;
                 accessible-id: "template-name-input";
-                accessible-label: "模板名";
+                accessible-label: @tr("模板名");
                 accessible-value: root.name;
                 accessible-read-only: false;
                 edited => {
@@ -297,7 +297,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
 
                 accessible-role: text;
                 accessible-id: "template-save-hint-line";
-                accessible-label: "已有模板分类";
+                accessible-label: @tr("已有模板分类");
 
                 UiText {
                     x: 0;
@@ -321,14 +321,14 @@ export component SaveAsTemplateDialog inherits Rectangle {
 
                 accessible-role: text;
                 accessible-id: "template-save-exists-note";
-                accessible-label: "同名模板已存在";
+                accessible-label: @tr("同名模板已存在");
 
                 UiText {
                     x: 0;
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: root.exists ? "该分类下已有同名模板。再点一次「覆盖已有模板」才会替换它。" : "";
+                    text: root.exists ? @tr("该分类下已有同名模板。再点一次「覆盖已有模板」才会替换它。") : "";
                     color: Tokens.warn-amber;
                     font-size: Tokens.font-size-xs;
                     overflow: elide;
@@ -345,7 +345,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
 
                 accessible-role: text;
                 accessible-id: "template-save-error-line";
-                accessible-label: "另存为模板失败的原因";
+                accessible-label: @tr("另存为模板失败的原因");
 
                 UiText {
                     x: 0;
@@ -371,7 +371,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 border-color: Tokens.gold;
                 accessible-role: button;
                 accessible-id: "template-save-button";
-                accessible-label: "存为模板";
+                accessible-label: @tr("存为模板");
                 accessible-action-default => { root.submit(); }
 
                 template-save-focus := FocusScope {
@@ -395,7 +395,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    text: root.exists ? "覆盖已有模板" : "存为模板";
+                    text: root.exists ? @tr("覆盖已有模板") : @tr("存为模板");
                     color: Tokens.gold-bright;
                     font-size: Tokens.font-size-xs;
                     horizontal-alignment: center;
@@ -414,7 +414,7 @@ export component SaveAsTemplateDialog inherits Rectangle {
                 y: parent.height - 32px;
                 width: parent.width - 32px;
                 height: 20px;
-                text: "填已有分类名 = 存进已有分类 · 填新名 = 新建分类 · Esc 关闭";
+                text: @tr("填已有分类名 = 存进已有分类 · 填新名 = 新建分类 · Esc 关闭");
                 color: Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
             }

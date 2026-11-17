@@ -102,12 +102,43 @@ pub enum TemplateSource {
 }
 
 impl TemplateSource {
-    /// 选择器里的分组标题（中文内联，与界面文案同一口径）。
+    /// 选择器里的分组标题（源语言 zh-CN 原文）。
     #[must_use]
     pub fn group_label(self) -> &'static str {
         match self {
             TemplateSource::Factory => "工厂模板",
             TemplateSource::User => "我的模板",
+        }
+    }
+
+    /// 选择器里的分组标题（当前界面语言下的显示名，九语闭集）。
+    ///
+    /// 这是宿主写入行模型的闭集常驻显示标签（与总览档名
+    /// `song_overview::profile_display_name_for`、状态栏选区格同一口径）：
+    /// 写点 [`build_chooser_rows`] 按调用方给的语言取名。行模型在打开
+    /// 选择器那一刻按当时的界面语言构建，语言切换后重新打开即是新语言
+    /// （选择器是模态弹窗，不在 `host::apply_language` 的常驻重标面内）。
+    #[must_use]
+    pub fn group_label_for(self, lang: crate::cli::Language) -> &'static str {
+        use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+        match (self, lang) {
+            (_, ZhCn) => self.group_label(),
+            (TemplateSource::Factory, EnUs) => "Factory Templates",
+            (TemplateSource::User, EnUs) => "My Templates",
+            (TemplateSource::Factory, FrFr) => "Modèles d'usine",
+            (TemplateSource::User, FrFr) => "Mes modèles",
+            (TemplateSource::Factory, EsEs) => "Plantillas de fábrica",
+            (TemplateSource::User, EsEs) => "Mis plantillas",
+            (TemplateSource::Factory, PtBr) => "Modelos de fábrica",
+            (TemplateSource::User, PtBr) => "Meus modelos",
+            (TemplateSource::Factory, JaJp) => "ファクトリーテンプレート",
+            (TemplateSource::User, JaJp) => "マイテンプレート",
+            (TemplateSource::Factory, KoKr) => "팩토리 템플릿",
+            (TemplateSource::User, KoKr) => "내 템플릿",
+            (TemplateSource::Factory, RuRu) => "Заводские шаблоны",
+            (TemplateSource::User, RuRu) => "Мои шаблоны",
+            (TemplateSource::Factory, DeDe) => "Werksvorlagen",
+            (TemplateSource::User, DeDe) => "Meine Vorlagen",
         }
     }
 }
@@ -241,9 +272,14 @@ pub struct ChooserRow {
 ///
 /// 入参必须是 [`list_templates`] 的输出（已按来源 / 曲风 / 子曲风 / 模板名
 /// 排序）：分组标题在它的第一个成员之前出现一次。空组不出现（某来源一个
-/// 模板都没有 ⇒ 它的分组标题也不画，选择器画整体空态）。
+/// 模板都没有 ⇒ 它的分组标题也不画，选择器画整体空态）。来源分组标题是
+/// 闭集标签，按 `lang` 取名（[`TemplateSource::group_label_for`]）；曲风 /
+/// 子曲风 / 模板名是用户内容，原样显示、不翻译。
 #[must_use]
-pub fn build_chooser_rows(entries: &[TemplateEntry]) -> Vec<ChooserRow> {
+pub fn build_chooser_rows(
+    entries: &[TemplateEntry],
+    lang: crate::cli::Language,
+) -> Vec<ChooserRow> {
     let mut rows = Vec::new();
     // 三级分组键都带上来源：两个来源可以有同名曲风 / 子曲风，各自成组。
     let mut current_source: Option<TemplateSource> = None;
@@ -253,7 +289,7 @@ pub fn build_chooser_rows(entries: &[TemplateEntry]) -> Vec<ChooserRow> {
         if current_source != Some(entry.source) {
             rows.push(ChooserRow {
                 kind: ChooserRowKind::Source,
-                label: entry.source.group_label().to_owned(),
+                label: entry.source.group_label_for(lang).to_owned(),
                 entry_index: None,
             });
             current_source = Some(entry.source);
@@ -422,4 +458,32 @@ pub fn save_template_archive(
     let report = crate::save::save_archive_file(archive, &target)
         .map_err(|error| SaveTemplateError::Io(format!("模板落盘失败: {error}")))?;
     Ok((target, report.bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TemplateSource;
+    use crate::cli::Language::{self, DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+
+    /// 分组标题九语闭集逐条钉死：任一语言缺译 / 误译当场红（与总览档名
+    /// `profile_display_name_for` 的九语单测同一口径）。
+    #[test]
+    fn group_labels_cover_all_nine_languages() {
+        let expected: [(Language, &str, &str); 9] = [
+            (ZhCn, "工厂模板", "我的模板"),
+            (EnUs, "Factory Templates", "My Templates"),
+            (FrFr, "Modèles d'usine", "Mes modèles"),
+            (EsEs, "Plantillas de fábrica", "Mis plantillas"),
+            (PtBr, "Modelos de fábrica", "Meus modelos"),
+            (JaJp, "ファクトリーテンプレート", "マイテンプレート"),
+            (KoKr, "팩토리 템플릿", "내 템플릿"),
+            (RuRu, "Заводские шаблоны", "Мои шаблоны"),
+            (DeDe, "Werksvorlagen", "Meine Vorlagen"),
+        ];
+        assert_eq!(expected.len(), Language::ALL.len(), "九语必须全覆盖");
+        for (lang, factory, user) in expected {
+            assert_eq!(TemplateSource::Factory.group_label_for(lang), factory);
+            assert_eq!(TemplateSource::User.group_label_for(lang), user);
+        }
+    }
 }

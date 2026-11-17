@@ -8688,7 +8688,7 @@ pub fn wire_project_templates(
                 return;
             };
             let listing = crate::templates::list_templates(&roots_open);
-            let rows = crate::templates::build_chooser_rows(&listing);
+            let rows = crate::templates::build_chooser_rows(&listing, current_language());
             let hidden = rows
                 .len()
                 .saturating_sub(crate::templates::TEMPLATE_CHOOSER_MAX_ROWS);

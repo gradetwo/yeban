@@ -206,7 +206,7 @@ fn chooser_rows_group_by_source_style_substyle_in_order() {
         );
     }
     let listing = list_templates(&roots);
-    let rows = build_chooser_rows(&listing);
+    let rows = build_chooser_rows(&listing, yeban_app::cli::Language::ZhCn);
     let shape: Vec<(ChooserRowKind, &str)> = rows
         .iter()
         .map(|row| (row.kind, row.label.as_str()))

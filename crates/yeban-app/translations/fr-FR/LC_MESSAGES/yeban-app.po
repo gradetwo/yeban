@@ -1758,3 +1758,86 @@ msgstr "Aucune ressource pour l'instant"
 # --- app.slint (line/ui-window-state) ---
 msgid "恢复默认布局"
 msgstr "Restaurer la disposition par défaut"
+
+# --- app.slint + dialogs (line/project-templates) ---
+
+msgid "从模板新建"
+msgstr "Nouveau à partir d'un modèle"
+
+msgid "从模板新建..."
+msgstr "Nouveau à partir d'un modèle..."
+
+msgid "关闭另存为模板"
+msgstr "Fermer Enregistrer comme modèle"
+
+msgid "关闭模板选择器"
+msgstr "Fermer le sélecteur de modèles"
+
+msgid "另存为模板"
+msgstr "Enregistrer comme modèle"
+
+msgid "另存为模板..."
+msgstr "Enregistrer comme modèle..."
+
+msgid "另存为模板失败的原因"
+msgstr "Raison de l'échec de l'enregistrement du modèle"
+
+msgid "另存为模板面板"
+msgstr "Panneau Enregistrer comme modèle"
+
+msgid "同名模板已存在"
+msgstr "Un modèle portant ce nom existe déjà"
+
+msgid "填已有分类名 = 存进已有分类 · 填新名 = 新建分类 · Esc 关闭"
+msgstr "Nom de catégorie existant = enregistrer dedans · Nouveau nom = créer une catégorie · Échap pour fermer"
+
+msgid "子曲风"
+msgstr "Sous-style"
+
+msgid "子曲风（二级分类）"
+msgstr "Sous-style (catégorie de deuxième niveau)"
+
+msgid "存为模板"
+msgstr "Enregistrer comme modèle"
+
+msgid "存进我的模板目录；存的是当前工程原样（不剥离片段内容）。"
+msgstr "Enregistré dans votre dossier de modèles ; le projet actuel est conservé tel quel (le contenu des clips n'est pas retiré)."
+
+msgid "已有模板分类"
+msgstr "Catégories de modèles existantes"
+
+msgid "按曲风 / 子曲风 / 模板名三级组织；选中后以未命名副本打开，编辑不回写模板。"
+msgstr "Organisés en trois niveaux : style / sous-style / nom du modèle ; le modèle choisi s'ouvre comme copie sans titre, et les modifications ne sont jamais réécrites dans le modèle."
+
+msgid "曲风"
+msgstr "Style"
+
+msgid "曲风（一级分类）"
+msgstr "Style (catégorie de premier niveau)"
+
+msgid "模板分组列表"
+msgstr "Liste des modèles groupés"
+
+msgid "模板列表面板"
+msgstr "Panneau de la liste des modèles"
+
+msgid "模板名"
+msgstr "Nom du modèle"
+
+msgid "覆盖已有模板"
+msgstr "Écraser le modèle existant"
+
+msgid "该分类下已有同名模板。再点一次「覆盖已有模板」才会替换它。"
+msgstr "Cette catégorie contient déjà un modèle portant ce nom. Cliquez à nouveau sur « Écraser le modèle existant » pour le remplacer."
+
+msgid "还有 {} 行未画出（列表一次最多画 64 行）"
+msgstr "{} lignes supplémentaires ne sont pas affichées (la liste affiche au maximum 64 lignes à la fois)"
+
+msgid "还有更多模板行未画出"
+msgstr "D'autres lignes de modèles ne sont pas affichées"
+
+msgid "还没有任何模板。先用「文件 → 另存为模板…」把当前工程存为模板。"
+msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comme modèle via « Fichier → Enregistrer comme modèle… »."
+
+msgid "还没有任何模板。先用另存为模板把当前工程存为模板。"
+msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comme modèle."
