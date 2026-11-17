@@ -9050,6 +9050,10 @@ pub fn wire_startup_chooser(
     }
 
     // ---- 条目打开（双击 / 「打开」按钮共用这一跳） --------------------
+    // 本闭包 move 走 titled / untitled 本体；后面两个闭包各用一份
+    // 提前克隆（Rc 克隆只加计数，不复制运行时）。
+    let untitled_for_new = Rc::clone(&untitled);
+    let titled_for_existing = Rc::clone(&titled);
     {
         let weak = ui.as_weak();
         let data_open = Rc::clone(&data);
@@ -9174,6 +9178,7 @@ pub fn wire_startup_chooser(
     // ---- 新建工程（Empty + Details） ----------------------------------
     {
         let weak = ui.as_weak();
+        let untitled = untitled_for_new;
         ui.on_startup_new_project(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -9249,6 +9254,7 @@ pub fn wire_startup_chooser(
     // ---- 打开已有工程…（文件选择器） ----------------------------------
     {
         let weak = ui.as_weak();
+        let titled = titled_for_existing;
         ui.on_startup_open_existing(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");

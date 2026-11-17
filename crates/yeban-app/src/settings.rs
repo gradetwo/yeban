@@ -732,6 +732,7 @@ mod tests {
         let settings = Settings {
             language: Some(Language::FrFr),
             layout: None,
+            recent_projects: Vec::new(),
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -796,6 +797,7 @@ mod tests {
         let settings = Settings {
             language: Some(Language::JaJp),
             layout: Some(distinctive_layout()),
+            recent_projects: Vec::new(),
         };
         save_to(&path, &settings).expect("临时目录写设置必须成功");
         let text = std::fs::read_to_string(&path).expect("刚写的文件必须能读");
@@ -902,6 +904,7 @@ mod tests {
         let initial = Settings {
             language: Some(Language::FrFr),
             layout: Some(distinctive_layout()),
+            recent_projects: Vec::new(),
         };
         save_to(&path, &initial).expect("写初始设置");
         // 改语言（save_language 的读-改-写形态）。
