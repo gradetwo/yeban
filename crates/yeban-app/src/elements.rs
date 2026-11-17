@@ -350,6 +350,37 @@ impl ElementRegistry {
             "AI 协作栏抽屉",
             false,
         );
+        // ⭐ 窄窗溢出（Wang 2026-11-17 裁决 F2）：`transport_bar.slint` 的 ⋯ 钮与
+        // 弹出层三行。只在 `overflow` 档在场；注册表按"无条件声明"登记
+        // （与 `session-track-truncation-note` 同一条纪律，缺失不算红）。
+        registry.add(
+            "transport-overflow-button",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "顶栏溢出菜单 (⋯)",
+            false,
+        );
+        registry.add(
+            "transport-overflow-scale-row",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "溢出层调式行 (KEY / SCALE)",
+            false,
+        );
+        registry.add(
+            "transport-overflow-buffer-row",
+            ElementKind::Button,
+            "transport_bar.slint",
+            "溢出层缓冲行 (BUFFER)",
+            false,
+        );
+        registry.add(
+            "transport-overflow-dsp-row",
+            ElementKind::Text,
+            "transport_bar.slint",
+            "溢出层 DSP 读数行",
+            false,
+        );
 
         // ------------------------------------------------------------ splitter
         registry.add(

@@ -103,21 +103,21 @@ fn tiers_follow_real_resizes_in_both_directions() {
         (false, false, false, false, false),
     );
 
-    port.resize(Size::new(1600, 900)).expect("resize 到 1600");
+    port.window().resize(Size::new(1600, 900)).expect("resize 到 1600");
     assert_tier(
         "扫档 1600",
         observe(&port, "扫档 1600"),
         (true, false, false, false, true),
     );
 
-    port.resize(Size::new(1445, 700)).expect("resize 到 1445");
+    port.window().resize(Size::new(1445, 700)).expect("resize 到 1445");
     assert_tier(
         "扫档 1445",
         observe(&port, "扫档 1445"),
         (true, true, true, true, true),
     );
 
-    port.resize(Size::new(1920, 1080)).expect("resize 回 1920");
+    port.window().resize(Size::new(1920, 1080)).expect("resize 回 1920");
     assert_tier(
         "扫档回 1920",
         observe(&port, "扫档回 1920"),
