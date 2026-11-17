@@ -15,6 +15,7 @@ import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
 import { HumanizeDialog } from "dialogs/humanize_dialog.slint";
 import { TemplateChooserDialog } from "dialogs/template_chooser.slint";
 import { SaveAsTemplateDialog } from "dialogs/save_as_template.slint";
+import { SoundLibraryDialog } from "dialogs/sound_library_dialog.slint";
 import { CommandPaletteModal, HotspotOverlay } from "modals.slint";
 
 export component MainWindow inherits Window {
@@ -464,6 +465,26 @@ export component MainWindow inherits Window {
     in-out property <string> humanize-strength: "";
     in-out property <string> humanize-time-jitter: "";
     in-out property <string> humanize-velocity-jitter: "";
+    // 音源管理对话框（line/sound-library-manager）：平行数组与三态全部
+    // 由宿主写（`host::wire_sound_library_dialog`），形态与对话框文件头
+    // 的数据契约一致；默认全空 + 关着 ⇒ 默认帧不变。
+    in-out property <bool> sound-library-open: false;
+    in-out property <[string]> sound-installed-ids: [];
+    in-out property <[string]> sound-installed-names: [];
+    in-out property <[string]> sound-installed-locations: [];
+    in-out property <[string]> sound-installed-sizes: [];
+    in-out property <[bool]> sound-installed-deletable: [];
+    in-out property <int> sound-catalog-state: 0;
+    in-out property <[string]> sound-pack-ids: [];
+    in-out property <[string]> sound-pack-names: [];
+    in-out property <[string]> sound-pack-versions: [];
+    in-out property <[string]> sound-pack-sizes: [];
+    in-out property <[string]> sound-pack-descriptions: [];
+    in-out property <[bool]> sound-pack-installed: [];
+    in-out property <string> sound-downloading-id: "";
+    in-out property <int> sound-download-progress: -1;
+    in-out property <string> sound-library-status: "";
+    in-out property <bool> sound-library-status-is-error: false;
     in-out property <bool> instrument-install-available: false;
     in-out property <string> instrument-install-reason: "";
     in-out property <string> instrument-install-status: "";
@@ -718,6 +739,15 @@ export component MainWindow inherits Window {
     callback open-humanize();
     callback open-project();
     callback open-quantize();
+    // 音源管理（line/sound-library-manager）：菜单命令 `open-sound-library`
+    // 打开；其余四个是对话框发回宿主的动作与异步排空 ping（接线见
+    // `host::wire_sound_library_dialog`）。
+    callback open-sound-library();
+    callback close-sound-library();
+    callback sound-library-refresh-catalog();
+    callback sound-library-download(string);
+    callback sound-library-delete(string);
+    callback sound-library-drain-requested();
     callback piano-key-pressed(int);
     callback piano-key-released(int);
     callback piano-roll-octave-shift(int);
@@ -899,6 +929,8 @@ export component MainWindow inherits Window {
             MenuItem { title: (root.language-code == "ru-RU" ? "✓ " : "") + "Русский"; activated => { root.select-language("ru-RU"); } }
             MenuItem { title: (root.language-code == "de-DE" ? "✓ " : "") + "Deutsch"; activated => { root.select-language("de-DE"); } }
             MenuItem { title: @tr("恢复默认布局"); activated => { root.reset-window-layout(); } }
+            MenuSeparator {}
+            MenuItem { title: @tr("音源管理..."); activated => { root.command-execute("open-sound-library"); } }
         }
     }
 
@@ -1657,6 +1689,35 @@ export component MainWindow inherits Window {
             confirm => { root.confirm-save-as-template(); }
             overwrite => { root.confirm-template-overwrite(); }
             close => { root.template-save-open = false; }
+        }
+
+        // Visible Sound Library Manager Dialog（line/sound-library-manager）
+        if root.sound-library-open : SoundLibraryDialog {
+            z: 9600;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: Math.max(240px, root.height - key-handler.absolute-position.y);
+            installed-ids: root.sound-installed-ids;
+            installed-names: root.sound-installed-names;
+            installed-locations: root.sound-installed-locations;
+            installed-sizes: root.sound-installed-sizes;
+            installed-deletable: root.sound-installed-deletable;
+            catalog-state: root.sound-catalog-state;
+            pack-ids: root.sound-pack-ids;
+            pack-names: root.sound-pack-names;
+            pack-versions: root.sound-pack-versions;
+            pack-sizes: root.sound-pack-sizes;
+            pack-descriptions: root.sound-pack-descriptions;
+            pack-installed: root.sound-pack-installed;
+            downloading-id: root.sound-downloading-id;
+            download-progress: root.sound-download-progress;
+            status: root.sound-library-status;
+            status-is-error: root.sound-library-status-is-error;
+            close => { root.close-sound-library(); }
+            refresh-catalog => { root.sound-library-refresh-catalog(); }
+            download-pack(id) => { root.sound-library-download(id); }
+            delete-library(id) => { root.sound-library-delete(id); }
         }
 
         // Visible Musical PR Drawer

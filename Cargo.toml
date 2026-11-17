@@ -79,6 +79,12 @@ midly = { version = "0.5.3", default-features = false }
 midir = { version = "=0.11.1", default-features = false }
 notify = { version = "8.2.0", default-features = false }
 zip = { version = "9.0.3", default-features = false }
+# 音源管理（line/sound-library-manager）：仓内此前**没有任何** HTTP 客户端，
+# 而可下载目录与音源包都在 https 地址上（TLS 必需、手写不可行）⇒ 引入 ureq
+# （rustls 后端）。许可 MIT OR Apache-2.0，传递依赖 rustls / ring / webpki-roots
+# 均在 deny.toml 白名单内（ring 的 clarify 豁免本就是为引入 TLS 预留的）。
+# 只被 yeban-app 消费（音源目录拉取与包下载），⛔ 不进任何引擎层 crate。
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 flate2 = { version = "1.1.10", default-features = false }
 rstar = { version = "0.13.0", default-features = false }
 signalsmith-stretch = { version = "0.1.3", default-features = false }

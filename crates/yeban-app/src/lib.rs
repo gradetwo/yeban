@@ -174,8 +174,13 @@ pub mod settings;
 // 见该模块文档的"为什么是一个函数而不是搬 `live_surface.rs`"。
 pub mod sample_editor;
 pub mod samples;
+// ⭐ **音源管理**（line/sound-library-manager）：已安装音源库扫描、
+// 可下载目录（yeban-extras `sounds/catalog.json`）拉取与解析、包下载
+// （SHA-256 + 大小对账后才装）、解包安装与删除的纯逻辑层；界面在
+// `ui/dialogs/sound_library_dialog.slint`，接线在 `host`。
 pub mod save_action;
 pub mod scene;
+pub mod sound_library;
 // ⭐ **整曲多层可视化总览图（Song Overview）Phase 1 UI 面板**：stub view-model +
 // 4 项核心交互的接线（点击跳转 / 视口联动框 / 图层胶囊 / 悬停读数）。
 // 数据是按设计稿 §8.2 列式形状造的固定假数据；dsp 分析线落地后换真实映射。

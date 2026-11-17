@@ -1845,3 +1845,55 @@ msgstr "Il n'y a encore aucun modèle. Enregistrez d'abord le projet actuel comm
 # --- app.slint (ui-patch-v3) ---
 msgid "提示：{}"
 msgstr "Avis : {}"
+# --- sound_library_dialog.slint / app.slint (line/sound-library-manager) ---
+
+msgid "音源管理..."
+msgstr "Gestionnaire de la bibliothèque de sons..."
+
+msgid "音源管理"
+msgstr "Gestionnaire de la bibliothèque de sons"
+
+msgid "关闭音源管理"
+msgstr "Fermer le gestionnaire de la bibliothèque de sons"
+
+msgid "已安装"
+msgstr "Installés"
+
+msgid "可下载"
+msgstr "Disponibles au téléchargement"
+
+msgid "内置"
+msgstr "Intégré"
+
+msgid "删除音源库"
+msgstr "Supprimer la bibliothèque de sons"
+
+msgid "确认删除"
+msgstr "Confirmer la suppression"
+
+msgid "取消"
+msgstr "Annuler"
+
+msgid "下载"
+msgstr "Télécharger"
+
+msgid "下载音源包"
+msgstr "Télécharger le pack de sons"
+
+msgid "重试"
+msgstr "Réessayer"
+
+msgid "正在获取目录..."
+msgstr "Récupération du catalogue..."
+
+msgid "无法获取下载目录，请检查网络后重试"
+msgstr "Impossible de récupérer le catalogue de téléchargement. Vérifiez votre réseau, puis réessayez."
+
+msgid "暂无可下载音源"
+msgstr "Aucun son disponible au téléchargement pour le moment"
+
+msgid "下载中"
+msgstr "Téléchargement"
+
+msgid "音源管理状态"
+msgstr "État du gestionnaire de la bibliothèque de sons"

@@ -1011,6 +1011,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⭐ 钢琴卷帘右键菜单的人性化 / 量化对话框 —— 与上面 `wire_module_actions`
     // 同一条接线（无头装配在 `live_surface.rs` 的同一处调它）。
     host::wire_humanize_dialog(&ui, Some(Rc::clone(&undo_port)));
+    // ⭐ 音源管理对话框（line/sound-library-manager）：主菜单「设置 →
+    // 音源管理...」的接线（打开才拉目录，⛔ 启动不联网）。
+    host::wire_sound_library_dialog(&ui);
     // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
     // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。
     // ⛔ 它**不**提交工程内容：提交仍是既有的 SET / 回车那一处

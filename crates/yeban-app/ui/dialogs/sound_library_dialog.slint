@@ -1,0 +1,600 @@
+// 夜半 (Yeban) — 音源管理对话框
+//
+// 规范来源：Wang 2026-11-17 令（学 Logic Pro Sound Library 管理器的
+// 思想：已安装与可下载分开管、下载校验后才装；布局按夜半自己的设计）。
+// 主菜单「设置 → 音源管理...」打开（命令 `open-sound-library`，宿主接线
+// `host::wire_sound_library_dialog`）。与人性化对话框同结构：弹窗默认
+// **关着**（`MainWindow.sound-library-open = false`），因此默认帧与
+// golden 基准一位不变；打开后是整帧遮罩（与导出对话框同款）。
+//
+// ## 数据契约（⛔ 本文件不做任何实事）
+//
+// - 列表数据全部由宿主以**平行数组**写入（与 Musical PR 抽屉同款形态）：
+//   已安装 = ids / names / locations / sizes / deletable 五条等长数组；
+//   可下载 = ids / names / versions / sizes / descriptions / installed
+//   六条等长数组。名字、位置、大小都是**数据**（用户内容与宿主读数），
+//   不是界面文案，⛔ 不走 `@tr`；本文件的静态标签才走 `@tr`。
+// - 目录三态由 `catalog-state` 表达：`0` 拉取中 / `1` 已拿到（包数组
+//   可以为空 —— 空是真实状态，显示「暂无可下载音源」）/ `2` 拿不到
+//   （离线或目录不可用，只显示已安装部分 + 明确提示 + 重试钮）。
+// - 下载、删除、校验、解包全在宿主与 `crate::sound_library` 里做；
+//   本文件只发回调（`download-pack(id)` / `delete-library(id)` /
+//   `refresh-catalog()` / `close()`）并显示宿主写回的进度与状态行。
+//
+// ## 删除确认（两步，⛔ 不用系统确认框）
+//
+// 点「删除」只把该行切到确认态（`confirm-delete-id` 记下行 id，行尾
+// 展开「确认删除 / 取消」），再点「确认删除」才发 `delete-library`；
+// 点「取消」或关窗（`if` 块重建）即复位。内置库那一行没有删除钮，
+// 只显示「内置」标记（宿主与逻辑层还会再挡一次，双保险）。
+
+import { Tokens, UiText, UiTitleText } from "../tokens.slint";
+
+export component SoundLibraryDialog inherits Rectangle {
+    // ---- 已安装（宿主写，平行数组）--------------------------------------
+    in property <[string]> installed-ids;
+    in property <[string]> installed-names;
+    in property <[string]> installed-locations;
+    in property <[string]> installed-sizes;
+    in property <[bool]> installed-deletable;
+    // ---- 可下载（宿主写，平行数组 + 三态）--------------------------------
+    in property <int> catalog-state: 0;
+    in property <[string]> pack-ids;
+    in property <[string]> pack-names;
+    in property <[string]> pack-versions;
+    in property <[string]> pack-sizes;
+    in property <[string]> pack-descriptions;
+    in property <[bool]> pack-installed;
+    // ---- 下载进度（宿主写：正在下的包 id + 百分比，-1 = 没在下）-----------
+    in property <string> downloading-id: "";
+    in property <int> download-progress: -1;
+    // ---- 状态行（宿主写：最近一次操作的真实结果）--------------------------
+    in property <string> status: "";
+    in property <bool> status-is-error: false;
+    // ---- 删除确认态（本文件自有：正在确认删除的行 id，空 = 无）-------------
+    in-out property <string> confirm-delete-id: "";
+
+    callback close();
+    callback refresh-catalog();
+    callback download-pack(string);
+    callback delete-library(string);
+
+    /// 列表可用宽度（面板宽减去左右留白）。
+    property <length> list-w: Math.min(820px, root.width - 32px) - 48px;
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "sound-library-dialog";
+    accessible-label: @tr("音源管理");
+
+    // 遮罩吞掉鼠标（与人性化对话框同款）：点遮罩不关面板，关面板只有
+    // ✕ 与 Esc。刻意没有任何回调，唯一职责是把这一击吃掉。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    // 键盘：Esc 关闭（模态持有 Esc）；各按钮自带 FocusScope 支持
+    // Return / Space 激活（与人性化对话框的按钮同款）。
+    sound-library-trap := FocusScope {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") {
+                root.close();
+                accept
+            } else {
+                reject
+            }
+        }
+
+        panel := Rectangle {
+            x: (root.width - Math.min(820px, root.width - 32px)) / 2;
+            y: (root.height - Math.min(600px, root.height - 32px)) / 2;
+            width: Math.min(820px, root.width - 32px);
+            height: Math.min(600px, root.height - 32px);
+            background: Tokens.bg-panel;
+            border-radius: Tokens.radius-lg;
+            border-width: 1px;
+            border-color: Tokens.gold-deep;
+            clip: true;
+
+            accessible-role: region;
+            accessible-id: "sound-library-panel";
+            accessible-label: @tr("音源管理");
+
+            UiTitleText {
+                x: Tokens.space-6;
+                y: Tokens.space-4;
+                width: parent.width - 96px;
+                height: 24px;
+                text: @tr("音源管理");
+                color: Tokens.gold-bright;
+                font-size: Tokens.font-size-xl;
+            }
+
+            // 关闭
+            Rectangle {
+                x: parent.width - 36px;
+                y: Tokens.space-4;
+                width: 24px;
+                height: 24px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                accessible-role: button;
+                accessible-id: "sound-library-close-button";
+                accessible-label: @tr("关闭音源管理");
+                accessible-action-default => { root.close(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "×";
+                    color: Tokens.ink-1;
+                    font-size: Tokens.font-size-xl;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                }
+            }
+
+            // -------------------------------------------------------- 已安装
+            UiText {
+                x: Tokens.space-6;
+                y: 52px;
+                width: 200px;
+                height: 18px;
+                text: @tr("已安装");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+            }
+
+            installed-flick := Flickable {
+                x: Tokens.space-6;
+                y: 78px;
+                width: root.list-w;
+                height: 150px;
+                content-height: root.installed-names.length * 46px;
+
+                for installed-name[i] in root.installed-names : Rectangle {
+                    x: 0;
+                    y: i * 46px;
+                    width: root.list-w;
+                    height: 44px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-md;
+
+                    UiText {
+                        x: 12px;
+                        y: 0;
+                        width: 190px;
+                        height: parent.height;
+                        text: installed-name;
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        overflow: elide;
+                    }
+
+                    UiText {
+                        x: 210px;
+                        y: 0;
+                        width: root.list-w - 480px;
+                        height: parent.height;
+                        text: root.installed-locations[i];
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        overflow: elide;
+                    }
+
+                    UiText {
+                        x: root.list-w - 262px;
+                        y: 0;
+                        width: 72px;
+                        height: parent.height;
+                        text: root.installed-sizes[i];
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        horizontal-alignment: right;
+                        overflow: elide;
+                    }
+
+                    // 内置标记（不可删的那一条）
+                    if !root.installed-deletable[i] : UiText {
+                        x: root.list-w - 104px;
+                        y: 0;
+                        width: 92px;
+                        height: parent.height;
+                        text: @tr("内置");
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        horizontal-alignment: center;
+                    }
+
+                    // 删除钮（可删且不在确认态时）
+                    if root.installed-deletable[i] && root.confirm-delete-id != root.installed-ids[i] : Rectangle {
+                        x: root.list-w - 104px;
+                        y: 8px;
+                        width: 92px;
+                        height: 28px;
+                        background: Tokens.bg-void;
+                        border-radius: Tokens.radius-sm;
+                        border-width: 1px;
+                        border-color: Tokens.gold-deep;
+                        accessible-role: button;
+                        accessible-id: "sound-library-delete-button";
+                        accessible-label: @tr("删除音源库");
+                        accessible-action-default => { root.confirm-delete-id = root.installed-ids[i]; }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("删除");
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.confirm-delete-id = root.installed-ids[i]; }
+                        }
+                    }
+
+                    // 确认态：行尾展开确认 / 取消（覆盖在行上，不发回调直到确认）
+                    if root.installed-deletable[i] && root.confirm-delete-id == root.installed-ids[i] : Rectangle {
+                        x: root.list-w - 216px;
+                        y: 0;
+                        width: 216px;
+                        height: parent.height;
+                        background: Tokens.bg-panel;
+
+                        Rectangle {
+                            x: 0;
+                            y: 8px;
+                            width: 104px;
+                            height: 28px;
+                            background: Tokens.bg-void;
+                            border-radius: Tokens.radius-sm;
+                            border-width: 1px;
+                            border-color: Tokens.record-red;
+                            accessible-role: button;
+                            accessible-id: "sound-library-delete-confirm-button";
+                            accessible-label: @tr("确认删除");
+                            accessible-action-default => { root.delete-library(root.installed-ids[i]); root.confirm-delete-id = ""; }
+
+                            UiText {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                text: @tr("确认删除");
+                                color: Tokens.record-red;
+                                font-size: Tokens.font-size-xs;
+                                horizontal-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => { root.delete-library(root.installed-ids[i]); root.confirm-delete-id = ""; }
+                            }
+                        }
+
+                        Rectangle {
+                            x: 112px;
+                            y: 8px;
+                            width: 92px;
+                            height: 28px;
+                            background: Tokens.bg-void;
+                            border-radius: Tokens.radius-sm;
+                            border-width: 1px;
+                            border-color: Tokens.gold-deep;
+                            accessible-role: button;
+                            accessible-id: "sound-library-delete-cancel-button";
+                            accessible-label: @tr("取消");
+                            accessible-action-default => { root.confirm-delete-id = ""; }
+
+                            UiText {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                text: @tr("取消");
+                                color: Tokens.ink-1;
+                                font-size: Tokens.font-size-xs;
+                                horizontal-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => { root.confirm-delete-id = ""; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 分界线
+            Rectangle {
+                x: Tokens.space-6;
+                y: 240px;
+                width: root.list-w;
+                height: 1px;
+                background: Tokens.gold-deep.with-alpha(0.5);
+            }
+
+            // -------------------------------------------------------- 可下载
+            UiText {
+                x: Tokens.space-6;
+                y: 252px;
+                width: 200px;
+                height: 18px;
+                text: @tr("可下载");
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+            }
+
+            // 拉不到时的重试钮（目录区右上角）
+            if root.catalog-state == 2 : Rectangle {
+                x: Tokens.space-6 + root.list-w - 92px;
+                y: 246px;
+                width: 92px;
+                height: 28px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.gold;
+                accessible-role: button;
+                accessible-id: "sound-library-retry-button";
+                accessible-label: @tr("重试");
+                accessible-action-default => { root.refresh-catalog(); }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: @tr("重试");
+                    color: Tokens.gold-bright;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.refresh-catalog(); }
+                }
+            }
+
+            // 三态文案（居中显示在包列表区）
+            if root.catalog-state == 0 : UiText {
+                x: Tokens.space-6;
+                y: 330px;
+                width: root.list-w;
+                height: 20px;
+                text: @tr("正在获取目录...");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-sm;
+                horizontal-alignment: center;
+            }
+
+            if root.catalog-state == 2 : UiText {
+                x: Tokens.space-6;
+                y: 330px;
+                width: root.list-w;
+                height: 20px;
+                text: @tr("无法获取下载目录，请检查网络后重试");
+                color: Tokens.warn-amber;
+                font-size: Tokens.font-size-sm;
+                horizontal-alignment: center;
+            }
+
+            if root.catalog-state == 1 && root.pack-names.length == 0 : UiText {
+                x: Tokens.space-6;
+                y: 330px;
+                width: root.list-w;
+                height: 20px;
+                text: @tr("暂无可下载音源");
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-sm;
+                horizontal-alignment: center;
+            }
+
+            pack-flick := Flickable {
+                x: Tokens.space-6;
+                y: 282px;
+                width: root.list-w;
+                height: panel.height - 282px - 52px;
+                content-height: root.pack-names.length * 54px;
+
+                for pack-name[i] in root.pack-names : Rectangle {
+                    x: 0;
+                    y: i * 54px;
+                    width: root.list-w;
+                    height: 52px;
+                    background: Tokens.bg-raised;
+                    border-radius: Tokens.radius-md;
+
+                    UiText {
+                        x: 12px;
+                        y: 0;
+                        width: 180px;
+                        height: parent.height;
+                        text: pack-name;
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        overflow: elide;
+                    }
+
+                    UiText {
+                        x: 200px;
+                        y: 0;
+                        width: 56px;
+                        height: parent.height;
+                        text: root.pack-versions[i];
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        overflow: elide;
+                    }
+
+                    UiText {
+                        x: 264px;
+                        y: 0;
+                        width: root.list-w - 264px - 200px;
+                        height: parent.height;
+                        text: root.pack-descriptions[i];
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        overflow: elide;
+                    }
+
+                    UiText {
+                        x: root.list-w - 262px;
+                        y: 0;
+                        width: 72px;
+                        height: parent.height;
+                        text: root.pack-sizes[i];
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-xs;
+                        horizontal-alignment: right;
+                        overflow: elide;
+                    }
+
+                    // 已装上的包：如实标已安装，不再给下载钮
+                    if root.pack-installed[i] : UiText {
+                        x: root.list-w - 104px;
+                        y: 0;
+                        width: 92px;
+                        height: parent.height;
+                        text: @tr("已安装");
+                        color: Tokens.ok-green;
+                        font-size: Tokens.font-size-xs;
+                        horizontal-alignment: center;
+                    }
+
+                    // 正在下的包：进度条 + 读数（替换下载钮的位置）
+                    if !root.pack-installed[i] && root.downloading-id == root.pack-ids[i] : Rectangle {
+                        x: root.list-w - 104px;
+                        y: 0;
+                        width: 92px;
+                        height: parent.height;
+                        background: transparent;
+
+                        Rectangle {
+                            x: 0;
+                            y: 12px;
+                            width: 92px;
+                            height: 6px;
+                            background: Tokens.bg-void;
+                            border-radius: 3px;
+
+                            Rectangle {
+                                x: 0;
+                                y: 0;
+                                width: 92px * Math.max(0, Math.min(100, root.download-progress)) / 100;
+                                height: parent.height;
+                                background: Tokens.gold;
+                                border-radius: 3px;
+                            }
+                        }
+
+                        UiText {
+                            x: 0;
+                            y: 24px;
+                            width: 92px;
+                            height: 16px;
+                            text: root.download-progress >= 0
+                                ? @tr("下载中") + " " + root.download-progress + "%"
+                                : @tr("下载中");
+                            color: Tokens.ink-2;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    // 下载钮
+                    if !root.pack-installed[i] && root.downloading-id != root.pack-ids[i] : Rectangle {
+                        x: root.list-w - 104px;
+                        y: 12px;
+                        width: 92px;
+                        height: 28px;
+                        background: Tokens.bg-raised;
+                        border-radius: Tokens.radius-sm;
+                        border-width: 1px;
+                        border-color: Tokens.gold;
+                        accessible-role: button;
+                        accessible-id: "sound-library-download-button";
+                        accessible-label: @tr("下载音源包");
+                        accessible-action-default => { root.download-pack(root.pack-ids[i]); }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("下载");
+                            color: Tokens.gold-bright;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { root.download-pack(root.pack-ids[i]); }
+                        }
+                    }
+                }
+            }
+
+            // -------------------------------------------------------- 状态行
+            Rectangle {
+                x: Tokens.space-6;
+                y: panel.height - 40px;
+                width: root.list-w;
+                height: 20px;
+                clip: true;
+
+                accessible-role: text;
+                accessible-id: "sound-library-status-line";
+                accessible-label: @tr("音源管理状态");
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.status;
+                    color: root.status-is-error ? Tokens.record-red : Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

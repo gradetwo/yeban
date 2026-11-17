@@ -2469,6 +2469,75 @@ impl ElementRegistry {
             "存为模板（同名时变覆盖确认）",
             false,
         );
+        // 音源管理对话框（`line/sound-library-manager`）：默认关闭
+        // （`sound-library-open=false`），因此不进运行时控件树、不改任何
+        // 金帧。打开后宿主接线在 `host::wire_sound_library_dialog`：已安装
+        // 列表来自采样库根扫描，可下载列表来自 yeban-extras 的目录文件；
+        // 行内按钮（删除 / 确认 / 取消 / 下载）的 id 是字面量（⛔ 不带行号
+        // 插值），故与静态条目同款登记。
+        registry.add(
+            "sound-library-dialog",
+            ElementKind::Region,
+            "dialogs/sound_library_dialog.slint",
+            "音源管理对话框",
+            false,
+        );
+        registry.add(
+            "sound-library-panel",
+            ElementKind::Region,
+            "dialogs/sound_library_dialog.slint",
+            "音源管理面板",
+            false,
+        );
+        registry.add(
+            "sound-library-close-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "关闭音源管理",
+            false,
+        );
+        registry.add(
+            "sound-library-status-line",
+            ElementKind::Text,
+            "dialogs/sound_library_dialog.slint",
+            "音源管理状态行（空 = 无消息）",
+            false,
+        );
+        registry.add(
+            "sound-library-retry-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "重试获取下载目录",
+            false,
+        );
+        registry.add(
+            "sound-library-delete-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "删除音源库",
+            false,
+        );
+        registry.add(
+            "sound-library-delete-confirm-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "确认删除音源库",
+            false,
+        );
+        registry.add(
+            "sound-library-delete-cancel-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "取消删除音源库",
+            false,
+        );
+        registry.add(
+            "sound-library-download-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "下载音源包",
+            false,
+        );
         // 卷帘右键上下文菜单的两项：默认不显示（菜单只在右键按下那一刻弹出），
         // 因此不进运行时控件树、不改任何金帧。点击后只上抛 `humanize-requested` /
         // `quantize-requested`，播种与提交全在宿主。
@@ -2960,7 +3029,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 28] = [
+    const SLINT_MANIFEST: [&str; 29] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -2985,6 +3054,8 @@ mod tests {
         "dialogs/export_wav_dialog.slint",
         // 人性化 / 量化选项框（`line/humanize-ui-entry`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/humanize_dialog.slint",
+        // 音源管理对话框（`line/sound-library-manager`）：隐藏模态，默认关闭 ⇒ 金帧不变。
+        "dialogs/sound_library_dialog.slint",
         // 宏面板（`[UI-NOTE-004]` 的宏轨那一格）：右侧抽屉，默认关闭 ⇒ 金帧不变。
         "dialogs/macro_panel.slint",
         // 工程模板两框（`line/project-templates`）：隐藏模态，默认关闭 ⇒ 金帧不变。
