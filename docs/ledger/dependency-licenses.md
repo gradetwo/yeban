@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `773fa1e51fa4f44d`
+- `Cargo.lock` SHA-256（前 16 位）: `a9fe5fb37742b634`
 - 外部依赖包数: **654**（不含 29 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -480,7 +480,7 @@
 | `scopeguard` | `1.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `sctk-adwaita` | `0.10.1` | `MIT` | 传递 | — |
 | `semver` | `1.0.28` | `MIT OR Apache-2.0` | 传递 | — |
-| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-mcp`, `yeban-model`, `yeban-otcp`, `yeban-ui-mcp`, `yeban-ui-test-port` |
+| `serde` | `1.0.229` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-mcp`, `yeban-model`, `yeban-otcp`, `yeban-ui-mcp`, `yeban-ui-test-port` |
 | `serde_core` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_derive` | `1.0.229` | `MIT OR Apache-2.0` | 传递 | — |
 | `serde_json` | `1.0.151` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-mcp`, `yeban-model`, `yeban-otcp`, `yeban-render`, `yeban-ui-mcp`, `yeban-ui-test-port` |

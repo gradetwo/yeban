@@ -111,6 +111,9 @@ pub mod export_wav;
 // 判据靠替换它来测"对话框被调用了 / 选了路径 ⇒ 模型被提交"。
 pub mod file_picker;
 pub mod headless_idle;
+// 帮助系统（line/onboarding-help）：状态存储 / 手册 / 课程判定 / 宿主应用层。
+pub mod help;
+pub mod help_state;
 pub mod host;
 pub mod import_audio;
 // ⭐ **真导入 `.logicx`**（任务单 `#149`，刀 2）：读 `yeban-render` 的只读探针读数，
@@ -122,7 +125,9 @@ pub mod import_audio;
 pub mod import_logic;
 pub mod import_midi;
 pub mod input;
+pub mod lessons;
 pub mod lyrics_export;
+pub mod manual;
 pub mod meters;
 pub mod metronome;
 pub mod midi_in;

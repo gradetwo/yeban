@@ -1,0 +1,155 @@
+// 夜半 (Yeban) — 用户手册对话框（帮助系统，line/onboarding-help）
+//
+// 数据面全部由宿主注入：章节标题表与当前章的渲染行来自 `docs/manual/` 的
+// Markdown 源（`src/manual.rs` 用 include_str! 编入、按行解析）。
+// 本组件只画它读到的东西：章节点击 → `select-chapter(i)` 上报下标
+// （章节表是宿主的常量表，下标即身份，不存在重投影漂移），关闭 → `close()`。
+// 遮罩 TouchArea 先行声明以吞掉点击（D-UI-21：Rectangle 本身不拦鼠标）。
+
+import { Tokens, UiText, UiTitleText, ManualLine } from "../tokens.slint";
+
+export component ManualDialog inherits Rectangle {
+    /// 章节标题表（目录顺序 = 手册顺序）。
+    in property <[string]> chapters: [];
+    /// 当前章下标（宿主夹紧到合法范围）。
+    in property <int> chapter-index: 0;
+    /// 当前章的渲染行（level：0 正文 / 1–3 标题 / 4 列表项 / 5 代码行）。
+    in property <[ManualLine]> lines: [];
+
+    callback select-chapter(int);
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "help-manual-dialog";
+    accessible-label: "用户手册";
+
+    // D-UI-21：遮罩吞掉鼠标（点遮罩不关，关只走 ✕ 与宿主回调）。
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        x: (root.width - 920px) / 2;
+        y: (root.height - 620px) / 2;
+        width: 920px;
+        height: 620px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "help-manual-panel";
+        accessible-label: "用户手册面板";
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: "用户手册";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "help-manual-close-button";
+            accessible-label: "关闭用户手册";
+            accessible-action-default => { root.close(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "✕";
+                horizontal-alignment: center;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+        }
+
+        // ---------------------------------------------------------- 章节目录
+        Rectangle {
+            x: Tokens.space-6;
+            y: 48px;
+            width: 188px;
+            height: parent.height - 64px;
+            background: Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-md;
+
+            VerticalLayout {
+                x: Tokens.space-3;
+                y: Tokens.space-3;
+                width: parent.width - 12px;
+                spacing: Tokens.space-2;
+
+                for title[i] in root.chapters: Rectangle {
+                    height: 28px;
+                    background: i == root.chapter-index ? Tokens.bg-raised : transparent;
+                    border-radius: Tokens.radius-sm;
+                    accessible-role: button;
+                    accessible-id: "help-manual-chapter-" + i;
+                    accessible-label: "手册章节：" + title;
+                    accessible-action-default => { root.select-chapter(i); }
+
+                    UiText {
+                        x: Tokens.space-3;
+                        y: 0;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        text: title;
+                        color: i == root.chapter-index ? Tokens.gold-bright : Tokens.ink-1;
+                        font-size: Tokens.font-size-md;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.select-chapter(i); }
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------- 章节正文
+        body_flick := Flickable {
+            x: 224px;
+            y: 48px;
+            width: parent.width - 240px;
+            height: parent.height - 64px;
+            content-width: self.width;
+            content-height: Math.max(self.height, body_layout.preferred-height);
+
+            body_layout := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: body_flick.width;
+                padding-right: Tokens.space-4;
+                spacing: Tokens.space-3;
+
+                for line in root.lines: UiText {
+                    text: (line.level == 4 ? "· " : "") + line.text;
+                    font-size: line.level == 1 ? Tokens.font-size-xl : (line.level == 2 ? Tokens.font-size-lg : Tokens.font-size-md);
+                    font-weight: line.level >= 1 && line.level <= 3 ? Tokens.font-weight-semibold : Tokens.font-weight-regular;
+                    color: line.level == 1 ? Tokens.gold-bright : (line.level == 5 ? Tokens.ink-1 : Tokens.ink-0);
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

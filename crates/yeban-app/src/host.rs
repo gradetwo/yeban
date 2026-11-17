@@ -21705,6 +21705,12 @@ pub fn wire_aether_actions(
                             ui.set_toast_message(format!("[退出] 事件循环未退出：{err}").into());
                         }
                     }
+                    // ⭐ 帮助菜单四入口（line/onboarding-help）：落点全在
+                    // `crate::help`，数据面由那一层写进 MainWindow 属性。
+                    "help-manual" => crate::help::open_manual(&ui),
+                    "help-shortcuts" => crate::help::open_shortcuts(&ui),
+                    "help-onboarding" => crate::help::open_onboarding(&ui),
+                    "help-lessons" => crate::help::open_lessons(&ui, &port),
                     other => dispatch_aether_command(&ui, other),
                 }
             }
@@ -22359,6 +22365,108 @@ pub fn wire_aether_actions(
         move || {
             if let Some(ui) = w.upgrade() {
                 ui.set_show_cmd_palette(true);
+            }
+        }
+    });
+
+    // 帮助系统（line/onboarding-help）：手册 / 速查 / 引导 / 课程的全部回调。
+    // 放在本函数最后：引导切步要 invoke command-execute，必须等它注册完。
+    wire_help_system(ui, &port);
+}
+
+/// 帮助系统的回调注册（line/onboarding-help）。落点全在 `crate::help`；
+/// 本函数只做弱句柄装配，保证真实装配（main.rs）与无头装配
+/// （tests 的 build_main_window 路径）拿到同一套接线。
+pub fn wire_help_system(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+
+    ui.on_help_manual_select({
+        let w = weak.clone();
+        move |index| {
+            if let Some(ui) = w.upgrade() {
+                crate::help::apply_manual_chapter(&ui, index);
+            }
+        }
+    });
+    ui.on_help_manual_close({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::close_manual(&ui);
+            }
+        }
+    });
+    ui.on_help_shortcuts_close({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::close_shortcuts(&ui);
+            }
+        }
+    });
+    ui.on_onboarding_next({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::onboarding_next(&ui);
+            }
+        }
+    });
+    ui.on_onboarding_back({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::onboarding_back(&ui);
+            }
+        }
+    });
+    ui.on_onboarding_skip({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::onboarding_skip(&ui);
+            }
+        }
+    });
+    ui.on_onboarding_dismiss_forever({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::onboarding_dismiss_forever(&ui);
+            }
+        }
+    });
+    ui.on_lessons_start({
+        let w = weak.clone();
+        let port = Rc::clone(port);
+        move |lesson_id| {
+            if let Some(ui) = w.upgrade() {
+                crate::help::start_lesson(&ui, &port, lesson_id.as_str());
+            }
+        }
+    });
+    ui.on_lesson_check_step({
+        let w = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::check_current_step(&ui, &port);
+            }
+        }
+    });
+    ui.on_lesson_exit({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::exit_lesson(&ui);
+            }
+        }
+    });
+    ui.on_lessons_close({
+        let w = weak.clone();
+        move || {
+            if let Some(ui) = w.upgrade() {
+                crate::help::close_lessons(&ui);
             }
         }
     });

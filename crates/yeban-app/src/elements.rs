@@ -2250,6 +2250,157 @@ impl ElementRegistry {
             "按当前选项导出 WAV",
             false,
         );
+        // 帮助系统（`line/onboarding-help`）：帮助菜单四入口的落点，全部默认关闭 ⇒
+        // 不进运行时控件树，也不改任何金帧。章节按钮与课程开始按钮是**数据驱动**的
+        // 动态 ID：章节以 `manual::CHAPTERS` 为准、课程以 `lessons::catalog()` 为准，
+        // ⛔ 不在这里手抄第二份清单。
+        registry.add(
+            "help-manual-dialog",
+            ElementKind::Region,
+            "dialogs/help_manual.slint",
+            "用户手册对话框",
+            false,
+        );
+        registry.add(
+            "help-manual-panel",
+            ElementKind::Region,
+            "dialogs/help_manual.slint",
+            "用户手册面板",
+            false,
+        );
+        for (index, chapter) in crate::manual::CHAPTERS.iter().enumerate() {
+            registry.add(
+                &format!("help-manual-chapter-{index}"),
+                ElementKind::Button,
+                "dialogs/help_manual.slint",
+                chapter.title,
+                false,
+            );
+        }
+        registry.add(
+            "help-manual-close-button",
+            ElementKind::Button,
+            "dialogs/help_manual.slint",
+            "关闭用户手册",
+            false,
+        );
+        registry.add(
+            "help-shortcuts-dialog",
+            ElementKind::Region,
+            "dialogs/help_shortcuts.slint",
+            "快捷键速查对话框",
+            false,
+        );
+        registry.add(
+            "help-shortcuts-panel",
+            ElementKind::Region,
+            "dialogs/help_shortcuts.slint",
+            "快捷键速查面板",
+            false,
+        );
+        registry.add(
+            "help-shortcuts-close-button",
+            ElementKind::Button,
+            "dialogs/help_shortcuts.slint",
+            "关闭快捷键速查",
+            false,
+        );
+        registry.add(
+            "onboarding-overlay",
+            ElementKind::Region,
+            "dialogs/onboarding_overlay.slint",
+            "新手引导",
+            false,
+        );
+        registry.add(
+            "onboarding-card",
+            ElementKind::Region,
+            "dialogs/onboarding_overlay.slint",
+            "新手引导卡片",
+            false,
+        );
+        registry.add(
+            "onboarding-next-button",
+            ElementKind::Button,
+            "dialogs/onboarding_overlay.slint",
+            "引导下一步",
+            false,
+        );
+        registry.add(
+            "onboarding-back-button",
+            ElementKind::Button,
+            "dialogs/onboarding_overlay.slint",
+            "引导上一步",
+            false,
+        );
+        registry.add(
+            "onboarding-skip-button",
+            ElementKind::Button,
+            "dialogs/onboarding_overlay.slint",
+            "跳过引导",
+            false,
+        );
+        registry.add(
+            "onboarding-dismiss-button",
+            ElementKind::Button,
+            "dialogs/onboarding_overlay.slint",
+            "不再显示引导",
+            false,
+        );
+        registry.add(
+            "lessons-drawer",
+            ElementKind::Region,
+            "dialogs/lessons_drawer.slint",
+            "教学课程抽屉",
+            false,
+        );
+        registry.add(
+            "lessons-close-button",
+            ElementKind::Button,
+            "dialogs/lessons_drawer.slint",
+            "关闭教学课程",
+            false,
+        );
+        // 课程行登记名 ⛔ 不带课程标题：`registry_follows_the_projected_project` 判据
+        // 禁止任何登记标签出现演示夹具的轨道名（`鼓`），而鼓轨课标题里正有这个字 ——
+        // 标题是课程数据、不进注册表标签，行本身的语义由 ID 承载。
+        for lesson in crate::lessons::catalog() {
+            registry.add(
+                &format!("lesson-row-{}", lesson.id),
+                ElementKind::Button,
+                "dialogs/lessons_drawer.slint",
+                "教学课程行",
+                false,
+            );
+        }
+        registry.add(
+            "lesson-step-progress",
+            ElementKind::Text,
+            "dialogs/lessons_drawer.slint",
+            "实测进度",
+            false,
+        );
+        registry.add(
+            "lesson-feedback",
+            ElementKind::Text,
+            "dialogs/lessons_drawer.slint",
+            "检查反馈",
+            false,
+        );
+        registry.add(
+            "lesson-check-step-button",
+            ElementKind::Button,
+            "dialogs/lessons_drawer.slint",
+            "完成本步（检查）",
+            false,
+        );
+        registry.add(
+            "lesson-exit-button",
+            ElementKind::Button,
+            "dialogs/lessons_drawer.slint",
+            "退出课程",
+            false,
+        );
         // 人性化 / 量化选项框：默认关闭（`humanize-open=false`），因此不进运行时控件树，
         // 也不改任何金帧。打开后宿主把卷帘右键菜单的两项接到这里，真正的提交仍走
         // `MainWindow.apply-humanize` / `apply-quantize` → `host::wire_humanize_dialog`。
@@ -3174,7 +3325,7 @@ mod tests {
     /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
     /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
     /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
-    const SLINT_MANIFEST: [&str; 35] = [
+    const SLINT_MANIFEST: [&str; 39] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -3197,6 +3348,12 @@ mod tests {
         "dialogs/undo_tree_modal.slint",
         // 导出 WAV 选项框（`[UI-NOTE-004]`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/export_wav_dialog.slint",
+        // 帮助系统四件（`line/onboarding-help`）：用户手册 / 快捷键速查 / 新手引导 /
+        // 教学课程，全部默认关闭 ⇒ 金帧不变。
+        "dialogs/help_manual.slint",
+        "dialogs/help_shortcuts.slint",
+        "dialogs/onboarding_overlay.slint",
+        "dialogs/lessons_drawer.slint",
         // 人性化 / 量化选项框（`line/humanize-ui-entry`）：隐藏模态，默认关闭 ⇒ 金帧不变。
         "dialogs/humanize_dialog.slint",
         // 音源管理对话框（`line/sound-library-manager`）：隐藏模态，默认关闭 ⇒ 金帧不变。

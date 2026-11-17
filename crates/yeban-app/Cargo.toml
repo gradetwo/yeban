@@ -154,6 +154,10 @@ yeban-diagnostics = { path = "../yeban-diagnostics" }
 # （`tests/in_process_mcp.rs` 要解析 JSON-RPC 响应）；dev 目标看得见普通依赖，
 # 因此那一段不需要重复列出。
 serde_json = { workspace = true }
+# serde（derive）：**只**为帮助系统的状态文件与课程数据格式（src/help_state.rs /
+# src/lessons.rs）。包早就在依赖图里（yeban-model → serde），本行只加一条直接边；
+# 依赖图变化 ⇒ 按纪律重生成 docs/ledger/dependency-licenses.md 并一起提交。
+serde = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # 音源管理（line/sound-library-manager）：目录拉取 / 包下载 / 校验 / 解包

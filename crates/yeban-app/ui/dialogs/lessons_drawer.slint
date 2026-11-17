@@ -1,0 +1,233 @@
+// 夜半 (Yeban) — 教学课程抽屉（帮助系统，line/onboarding-help）
+//
+// 两种视图，一份数据面（全部由宿主注入，源头是 `src/lessons.rs` 的课程表
+// 与 `src/help_state.rs` 的持久化进度）：
+//   * 列表视图（active == false）：每节课一行，状态文案由宿主按落盘进度算
+//     （未开始 / 进行中 · 第 N 步 / 已完成）；点一行 → `start-lesson(id)`
+//     上报课程身份原文。
+//   * 上课视图（active == true）：当前步的标题 / 正文 / **实测进度**
+//     （step-progress 是判定器读真实工程算出的数字，不是文案）。
+//     「完成本步（检查）」→ `check-step()`：宿主判定通过才推进并落盘；
+//     不通过时 feedback 逐字写明还差什么。⛔ 没有「跳过本步」——
+//     完成判定验真实工程状态是本线的硬约束。
+// 抽屉是非模态的：上课时用户要能同时操作编曲区与钢琴卷帘写音符，
+// 模态会让样例课根本做不了（呈现选型见回执普查结论 2）。
+
+import { Tokens, UiText, UiTitleText, LessonRow } from "../tokens.slint";
+
+export component LessonsDrawer inherits Rectangle {
+    /// 课程列表行（宿主按课程表 + 落盘进度生成）。
+    in property <[LessonRow]> rows: [];
+    /// 是否正在上课。
+    in property <bool> active: false;
+    /// 当前课标题。
+    in property <string> lesson-title: "";
+    /// 当前步序号（0 起）与总步数。
+    in property <int> step-index: 0;
+    in property <int> step-count: 0;
+    /// 当前步标题与正文。
+    in property <string> step-title: "";
+    in property <string> step-body: "";
+    /// 判定器给出的实测进度（打开面板与每次检查时刷新）。
+    in property <string> step-progress: "";
+    /// 判定未通过时的反馈（通过并推进后清空）。
+    in property <string> feedback: "";
+
+    callback start-lesson(string);
+    callback check-step();
+    callback exit-lesson();
+    callback close();
+
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.gold-deep;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "lessons-drawer";
+    accessible-label: "教学课程";
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 36px;
+        background: Tokens.bg-panel-alt;
+
+        UiTitleText {
+            x: Tokens.space-4;
+            y: 0;
+            width: parent.width - 76px;
+            height: parent.height;
+            text: root.active ? root.lesson-title : "教学课程";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-lg;
+        }
+
+        Rectangle {
+            x: parent.width - 28px;
+            y: 8px;
+            width: 20px;
+            height: 20px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "lessons-close-button";
+            accessible-label: "关闭教学课程";
+            accessible-action-default => { root.close(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "✕";
+                horizontal-alignment: center;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 列表视图
+    if !root.active: VerticalLayout {
+        x: Tokens.space-4;
+        y: 48px;
+        width: parent.width - 16px;
+        spacing: Tokens.space-3;
+
+        for row in root.rows: Rectangle {
+            height: 76px;
+            background: Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-md;
+            accessible-role: button;
+            accessible-id: "lesson-row-" + row.lesson-id;
+            accessible-label: "课程：" + row.title + "（" + row.status + "）";
+            accessible-action-default => { root.start-lesson(row.lesson-id); }
+
+            UiTitleText {
+                x: Tokens.space-4;
+                y: Tokens.space-3;
+                width: parent.width - 16px;
+                height: 20px;
+                text: row.title;
+                font-size: Tokens.font-size-lg;
+            }
+            UiText {
+                x: Tokens.space-4;
+                y: 28px;
+                width: parent.width - 16px;
+                height: 30px;
+                text: row.summary;
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-sm;
+                wrap: word-wrap;
+                vertical-alignment: top;
+            }
+            UiText {
+                x: Tokens.space-4;
+                y: 56px;
+                width: parent.width - 16px;
+                height: 16px;
+                text: row.status;
+                color: Tokens.gold;
+                font-size: Tokens.font-size-sm;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.start-lesson(row.lesson-id); }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 上课视图
+    if root.active: VerticalLayout {
+        x: Tokens.space-4;
+        y: 48px;
+        width: parent.width - 16px;
+        spacing: Tokens.space-3;
+
+        UiText {
+            text: "第 " + (root.step-index + 1) + " / " + root.step-count + " 步";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+        }
+        UiTitleText {
+            text: root.step-title;
+            font-size: Tokens.font-size-xl;
+            color: Tokens.gold-bright;
+        }
+        UiText {
+            text: root.step-body;
+            font-size: Tokens.font-size-md;
+            wrap: word-wrap;
+            vertical-alignment: top;
+        }
+        Rectangle {
+            height: 1px;
+            background: Tokens.line;
+        }
+        UiText {
+            text: "实测进度：" + root.step-progress;
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-sm;
+            wrap: word-wrap;
+            vertical-alignment: top;
+            accessible-id: "lesson-step-progress";
+        }
+        if root.feedback != "": UiText {
+            text: root.feedback;
+            color: Tokens.accent;
+            font-size: Tokens.font-size-sm;
+            wrap: word-wrap;
+            vertical-alignment: top;
+            accessible-id: "lesson-feedback";
+        }
+
+        Rectangle {
+            height: 32px;
+            background: Tokens.gold-deep;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "lesson-check-step-button";
+            accessible-label: "完成本步并检查";
+            accessible-action-default => { root.check-step(); }
+
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "完成本步（检查）";
+                horizontal-alignment: center;
+                font-size: Tokens.font-size-md;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.check-step(); }
+            }
+        }
+
+        Rectangle {
+            height: 28px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "lesson-exit-button";
+            accessible-label: "返回课程列表";
+            accessible-action-default => { root.exit-lesson(); }
+
+            UiText {
+                width: parent.width;
+                height: parent.height;
+                text: "返回课程列表（进度已保存）";
+                horizontal-alignment: center;
+                font-size: Tokens.font-size-md;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.exit-lesson(); }
+            }
+        }
+    }
+}

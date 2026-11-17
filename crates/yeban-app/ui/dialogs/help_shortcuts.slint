@@ -1,0 +1,129 @@
+// 夜半 (Yeban) — 快捷键速查对话框（帮助系统，line/onboarding-help）
+//
+// 行数据由宿主从 `crate::cli::shortcut_rows()` 生成（与 `--print-shortcuts`
+// 同一张策略表），⛔ 不在本文件或宿主里手抄第二份键位表：
+// 表改了，速查自动跟着改，判据逐行对账。
+// 遮罩 TouchArea 先行声明以吞掉点击（D-UI-21）。
+
+import { Tokens, UiText, UiTitleText, UiMonoText, HelpShortcutRow } from "../tokens.slint";
+
+export component ShortcutsDialog inherits Rectangle {
+    /// 速查行：keys = 规范键位（已按平台折叠 Cmd/Ctrl），action = 动作说明，
+    /// status = 落地状态（空 = 已落地；非空 = 键已绑定但宿主暂无实现）。
+    in property <[HelpShortcutRow]> rows: [];
+
+    callback close();
+
+    background: Tokens.mask-black.with-alpha(0.65);
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "help-shortcuts-dialog";
+    accessible-label: "快捷键速查";
+
+    TouchArea {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        x: (root.width - 760px) / 2;
+        y: (root.height - 620px) / 2;
+        width: 760px;
+        height: 620px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-lg;
+        border-width: 1px;
+        border-color: Tokens.gold-deep;
+        clip: true;
+
+        accessible-role: region;
+        accessible-id: "help-shortcuts-panel";
+        accessible-label: "快捷键速查面板";
+
+        UiTitleText {
+            x: Tokens.space-6;
+            y: Tokens.space-4;
+            width: parent.width - 96px;
+            height: 24px;
+            text: "快捷键速查";
+            color: Tokens.gold-bright;
+            font-size: Tokens.font-size-xl;
+        }
+
+        Rectangle {
+            x: parent.width - 36px;
+            y: Tokens.space-4;
+            width: 24px;
+            height: 24px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            accessible-role: button;
+            accessible-id: "help-shortcuts-close-button";
+            accessible-label: "关闭快捷键速查";
+            accessible-action-default => { root.close(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "✕";
+                horizontal-alignment: center;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+        }
+
+        rows_flick := Flickable {
+            x: Tokens.space-6;
+            y: 48px;
+            width: parent.width - 32px;
+            height: parent.height - 64px;
+            content-width: self.width;
+            content-height: Math.max(self.height, rows_layout.preferred-height);
+
+            rows_layout := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: rows_flick.width;
+                spacing: Tokens.space-2;
+
+                for row in root.rows: Rectangle {
+                    height: 22px;
+
+                    UiMonoText {
+                        x: 0;
+                        y: 0;
+                        width: 300px;
+                        height: parent.height;
+                        text: row.keys;
+                        color: Tokens.gold;
+                        font-size: Tokens.font-size-md;
+                    }
+                    UiText {
+                        x: 308px;
+                        y: 0;
+                        width: parent.width - 420px;
+                        height: parent.height;
+                        text: row.action;
+                        font-size: Tokens.font-size-md;
+                    }
+                    UiText {
+                        x: parent.width - 104px;
+                        y: 0;
+                        width: 104px;
+                        height: parent.height;
+                        text: row.status;
+                        color: Tokens.ink-2;
+                        font-size: Tokens.font-size-sm;
+                    }
+                }
+            }
+        }
+    }
+}
