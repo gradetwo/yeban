@@ -538,7 +538,7 @@ export component DeviceRack inherits Rectangle {
             background: Tokens.gold-deep;
         }
 
-        // 频响填充（半透明）
+        // 频响填充（实色：金色以 0.125 等效合成于曲线区底 bg-shell，去透明）
         Path {
             x: 0;
             y: 0;
@@ -550,7 +550,7 @@ export component DeviceRack inherits Rectangle {
             viewbox-height: 100;
             fit: ImageFit.fill;
             commands: root.eq-curve-fill-svg;
-            fill: #d4a01720;
+            fill: #d4a017.mix(Tokens.bg-shell, 0.125);
             stroke-width: 0px;
         }
 

@@ -184,12 +184,14 @@ export component HybridClipMatrixDrawer inherits Rectangle {
             spacing: 0px;
             vertical-stretch: 1;
 
+            // 选中行不用轨道色：底色提亮一档（bg-panel → bg-surface）承载选中，与编曲选中同口径。
+            // 槽底/边框：轨道色以原 alpha 等效合成到面板底（mix）落为实色，不再透叠。
             for trk in root.tracks : Rectangle {
                 vertical-stretch: 1;
                 min-height: 64px;
                 max-height: 160px;
-                background: trk.id == root.selected-track-id ? trk.color.with-alpha(0.06) : transparent;
-                border-color: #ffffff0a;
+                background: trk.id == root.selected-track-id ? Theme.bg-surface : transparent;
+                border-color: Tokens.line;
 
                 HorizontalLayout {
                     padding: 5px;
@@ -197,10 +199,10 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 1
                     Rectangle {
-                        background: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip1_touch.has-hover ? #00000045 : #00000025);
+                        background: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip1_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+                        border-color: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
 
                         HorizontalLayout {
                             padding-left: 4px;
@@ -233,10 +235,10 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 2
                     Rectangle {
-                        background: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip2_touch.has-hover ? #00000045 : #00000025);
+                        background: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip2_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+                        border-color: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
 
                         HorizontalLayout {
                             padding-left: 4px;
@@ -269,10 +271,10 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 3
                     Rectangle {
-                        background: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip3_touch.has-hover ? #00000045 : #00000025);
+                        background: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip3_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+                        border-color: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
 
                         HorizontalLayout {
                             padding-left: 4px;
@@ -305,10 +307,10 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 4
                     Rectangle {
-                        background: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.with-alpha(0.32) : trk.color.with-alpha(0.18)) : (clip4_touch.has-hover ? #00000045 : #00000025);
+                        background: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip4_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
-                        border-color: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.with-alpha(0.85) : trk.color.with-alpha(0.5)) : #ffffff08;
+                        border-color: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
 
                         HorizontalLayout {
                             padding-left: 4px;
