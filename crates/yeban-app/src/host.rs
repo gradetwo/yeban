@@ -9348,7 +9348,7 @@ pub fn wire_startup_chooser(
                 return;
             };
             ui.set_startup_chooser_open(false);
-            slint::ComponentHandle::hide(&ui);
+            let _ = slint::ComponentHandle::hide(&ui);
             if let Err(error) = slint::quit_event_loop() {
                 eprintln!("startup-chooser: 退出事件循环失败: {error}");
             }
