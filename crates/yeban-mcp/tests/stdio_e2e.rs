@@ -1436,13 +1436,15 @@ fn the_cli_surface_is_a_published_contract() {
     assert!(!err.is_empty());
 }
 
-/// **`--print-token` 的两条平台契约**：Unix 上"生成一次、之后复用"，
-/// 非 Unix 上**明确拒绝**（POSIX 0600 做不到）。
+/// **`--print-token` 的平台契约**：全平台"生成一次、之后复用"。
 ///
 /// 为什么需要它：令牌文件是**跨进程**的鉴权依据，而这条路径（`load_or_create` +
 /// "已生成/已复用" 两态）此前没有判据 —— 把 `if config.print_token` 短路时全绿。
 /// ⚠ **平台分支是实测教训**：第一版只写了 Unix 那一半，Windows 腿立刻红
-/// （二进制在非 Unix 上按设计拒绝 0600 校验 ⇒ 退出码非 0）。两条契约现在都钉住。
+/// （二进制在非 Unix 上按设计拒绝 0600 校验 ⇒ 退出码非 0）。Windows 令牌
+/// 文件 ACL 合并（291fc4fc6）后，非 Unix 不再拒绝：令牌文件改走 owner-only
+/// ACL（icacls 断继承 + 读回校验，语义等价 0600，收不紧 fail-closed），
+/// `--print-token` 在 Windows 上与 Unix 同行为；旧"非 Unix 必须拒绝"分支已删。
 ///
 /// 单位 = 一次进程的 `(退出码, stdout, stderr)` + 令牌文件的内容。**不依赖墙钟**。
 ///
@@ -1455,15 +1457,10 @@ fn the_print_token_flag_writes_then_reuses_the_token_file() {
     let shown = path.display().to_string();
 
     let (code, out, err) = run_cli(&["--print-token", "--token-file", &shown], "");
-    if !cfg!(unix) {
-        // 非 Unix：**明确拒绝**（不是静默放过权限）。
-        assert_ne!(code, 0, "非 Unix 上 `--print-token` 必须非零退出: {err}");
-        assert!(
-            err.contains("0600"),
-            "报文必须说明「0600 权限校验做不到」这个原因: {err}"
-        );
-        return;
-    }
+    // 全平台同一契约：生成成功。Windows 上令牌文件由 owner-only ACL 落盘
+    // （291fc4fc6），stderr 同样报"权限 0600"；收不紧时实现侧 fail-closed，
+    // 这里拿不到退出码 0。
+    assert!(err.contains("权限 0600"), "必须报出权限 0600: {err}");
 
     assert_eq!(code, 0, "--print-token 必须成功退出: {err}");
     let token = out.trim();

@@ -603,8 +603,9 @@ msgstr "Clip vide"
 msgid "+ 点击添加新轨道"
 msgstr "+ Cliquer pour ajouter une piste"
 
-msgid "创建新音频或MIDI轨道 [Ctrl+T]"
-msgstr "Créer une piste audio ou MIDI [Ctrl+T]"
+
+msgid "创建新音频或MIDI轨道"
+msgstr "Créer une piste audio ou MIDI"
 
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "Glissez des fichiers audio ou MIDI ici, ou double-cliquez pour ajouter une piste"

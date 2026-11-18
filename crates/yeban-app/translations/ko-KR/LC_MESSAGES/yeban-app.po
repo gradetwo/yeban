@@ -603,8 +603,9 @@ msgstr "빈 클립"
 msgid "+ 点击添加新轨道"
 msgstr "+ 클릭하여 새 트랙 추가"
 
-msgid "创建新音频或MIDI轨道 [Ctrl+T]"
-msgstr "새 오디오 또는 MIDI 트랙 만들기 [Ctrl+T]"
+
+msgid "创建新音频或MIDI轨道"
+msgstr "새 오디오 또는 MIDI 트랙 만들기"
 
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "이 영역에 오디오, MIDI 파일을 드래그하거나 더블 클릭하여 트랙 추가"

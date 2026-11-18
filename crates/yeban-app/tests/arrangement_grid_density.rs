@@ -391,7 +391,7 @@ fn density_wiring_and_colors_are_in_place() {
     // 清零（底回蓝调重算）；十一版线色 #979fa8 / #74808b 随补丁
     // 在令牌与落点两处清零。
     let tokens = include_str!("../ui/tokens.slint");
-    for color in ["#83909e", "#6e7f8f", "#66788a", "#3c424a", "#343a42"] {
+    for color in ["#83909e", "#6e7f8f", "#66788a", "#3d444d", "#363c45"] {
         assert!(
             tokens.contains(color),
             "网格色 {color} 缺失（tokens.slint）"
@@ -421,7 +421,7 @@ fn density_wiring_and_colors_are_in_place() {
     // 紧窗（本文件 WCAG 式实算，窗只容舍入）。标尺三色对标尺带
     // 底（扁平 bg-shell #262a2f）：小节 4.43 / 拍 3.50 / 细分
     // 3.18。车道两色对车道底（扁平 bg-lane #2b3036）：小节
-    // 1.31 / 拍 1.16。
+    // 1.35 / 拍 1.20（f7c5192f 改钉：车道小节/拍线色 #3c424a/#343a42 → #3d444d/#363c45，判据跟进 Wang 取值）。
     let ruler_bar = contrast_ratio("#83909e", "#262a2f");
     assert!(
         (4.38..=4.48).contains(&ruler_bar),
@@ -437,15 +437,15 @@ fn density_wiring_and_colors_are_in_place() {
         (3.13..=3.23).contains(&ruler_sub),
         "标尺细分刻度比值 {ruler_sub:.3} 不在实测窗 3.13–3.23"
     );
-    let lane_bar = contrast_ratio("#3c424a", "#2b3036");
+    let lane_bar = contrast_ratio("#3d444d", "#2b3036");
     assert!(
-        (1.26..=1.36).contains(&lane_bar),
-        "车道小节线比值 {lane_bar:.3} 不在实测窗 1.26–1.36"
+        (1.30..=1.40).contains(&lane_bar),
+        "车道小节线比值 {lane_bar:.3} 不在实测窗 1.30–1.40"
     );
-    let lane_beat = contrast_ratio("#343a42", "#2b3036");
+    let lane_beat = contrast_ratio("#363c45", "#2b3036");
     assert!(
-        (1.11..=1.21).contains(&lane_beat),
-        "车道拍线比值 {lane_beat:.3} 不在实测窗 1.11–1.21"
+        (1.15..=1.25).contains(&lane_beat),
+        "车道拍线比值 {lane_beat:.3} 不在实测窗 1.15–1.25"
     );
     // 层级方向不降：小节 > 拍 > 细分（标尺）、小节 > 拍（车道）。
     assert!(ruler_bar > ruler_beat && ruler_beat > ruler_sub);

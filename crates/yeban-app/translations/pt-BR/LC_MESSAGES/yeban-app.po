@@ -603,8 +603,9 @@ msgstr "Clip vazio"
 msgid "+ 点击添加新轨道"
 msgstr "+ Clique para adicionar uma nova faixa"
 
-msgid "创建新音频或MIDI轨道 [Ctrl+T]"
-msgstr "Criar uma nova faixa de áudio ou MIDI [Ctrl+T]"
+
+msgid "创建新音频或MIDI轨道"
+msgstr "Criar uma nova faixa de áudio ou MIDI"
 
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "Arraste arquivos de áudio ou MIDI para cá, ou clique duas vezes para adicionar uma faixa"
