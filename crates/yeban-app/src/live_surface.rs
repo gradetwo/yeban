@@ -127,7 +127,7 @@ use yeban_app::input::{Focus, InputContext, LogicalKey, Modifiers, PhysicalKey, 
 #[cfg(feature = "in-process-mcp")]
 use yeban_app::mcp_mount::ProjectAuthorityHandle;
 use yeban_app::meters::MeterRuntime;
-use yeban_app::save::{SaveError, save_project_file};
+use yeban_app::save::{SaveError, save_archive_file, save_project_file};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_engine::meter::MeterCollector;
@@ -1010,7 +1010,27 @@ impl LiveAdminSurface {
             }
             None => (self.project.clone(), false),
         };
-        let saved = save_project_file(&save_source, &path).map_err(|error| match error {
+        let (saved, asset_count) = if let Some(port) = self.undo.as_ref() {
+            // ⭐ 保真写：这条腿以前调 `save_project_file`（= 工程 + **空**图谱 + **空**资产池），
+            // 于是"控制面打开一个带资产的工程 → `ui/force_save`"会把 `assets/{sha256}`
+            // 和 `history.dag` **静默写空**：49605 B 的工程保存后只剩 5287 B，
+            // `assets-indexed=1` 却 `asset-blobs=0`（引用悬空，画面上仍是"保存成功"）。
+            // 真实界面那条腿（`host` 的 `on_save_project`）早就用
+            // `SaveRequest::with_history_dag_and_assets` 带上了这两层，只有控制面这条漏了。
+            // 现在两边同源：工程 + `encode_history_dag(graph)` + `port.assets()`。
+            let assets = port.assets();
+            let asset_count = assets.len();
+            let archive = yeban_model::container::ProjectArchive {
+                project: save_source.clone(),
+                history_dag: yeban_model::commit::encode_history_dag(&port.graph()),
+                assets,
+                embedded_presets: Vec::new(),
+            };
+            (save_archive_file(&archive, &path), asset_count)
+        } else {
+            (save_project_file(&save_source, &path), 0)
+        };
+        let saved = saved.map_err(|error| match error {
             SaveError::Container(inner) => PortError::Rejected {
                 message: format!("容器写出被拒绝: {inner}"),
             },
@@ -1031,8 +1051,13 @@ impl LiveAdminSurface {
                     "writtenFromUndoPort",
                     ReportValue::Bool(written_from_undo_port),
                 ),
-                // 容器布局：`project.json` + `history.dag`（空图谱），见 `crate::save` 的边界。
-                ("containerEntries", ReportValue::Uint(2)),
+                // 资产池真实写出去几条（`assets/{sha256}`）—— 从前这里恒报 0 却仍写"保存成功"。
+                ("assets", ReportValue::Uint(asset_count as u64)),
+                // 容器布局：`project.json` + `history.dag` + 每条资产一个 `assets/{sha256}`。
+                (
+                    "containerEntries",
+                    ReportValue::Uint(2 + asset_count as u64),
+                ),
             ],
         ));
         Ok(())
