@@ -2275,7 +2275,9 @@ mod tests {
         };
         let last_audible = |samples: &[f32]| -> usize {
             samples
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .rposition(|frame| frame[0].abs() > 0.05 || frame[1].abs() > 0.05)
                 .unwrap_or(0)
         };
