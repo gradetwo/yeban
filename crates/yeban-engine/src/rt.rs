@@ -667,6 +667,18 @@ pub struct EngineStats {
     /// "主总线的 EQ 真的生效"就只能从音频输出反推（行为判据见
     /// `tests/master_insert.rs` 的 M1/M2/M3）。
     pub master_insert_frames: u64,
+    /// ⭐ **stage 18 覆盖度见证**：**真的走了分声道渲染**的帧数（累计）。
+    ///
+    /// 与 [`Self::master_insert_frames`] 同族（都是"这条路径真的被走到"的机械形式），
+    /// 但量的是**源侧**：`render_track_stereo_with_cc` 每轨每量子至多 `＋frames`。
+    ///
+    /// * 工程里**没有**带区域声相的 SFZ / 没有 `pan_*ccN` 区域 ⇒ **恒为 0**；
+    /// * 有声相区域 ⇒ 窗口内 `stereo_track_frames ≤ 量子数 × 128 × 轨数`（⛔ 不是 2×：
+    ///   只数"被分声道渲染的帧"，不数两条声道各自的样本）。
+    ///
+    /// 没有它，"分声道这条路真的在跑"在居中声相的夹具上**无法与单声道区分**
+    /// （两条声道本来就相同）；行为判据见 `tests/sfz_pan_insert_joint.rs`。
+    pub stereo_track_frames: u64,
     /// **实时侧参数目标表**累计把增益乘过的帧数（[`crate::param`]；0 = 从未乘过）。
     ///
     /// 它是"`SetParam` 真的改变了声音"的**见证**：没有它，`events_applied` 只能证明
@@ -1539,6 +1551,8 @@ struct BranchShare<'a> {
     /// （快路的机械形式）；有器件时**每量子恰好** `＋frames`（⛔ 不是 2×）。
     master_insert_frames: &'a mut u64,
     pan_automation_frames: &'a mut u64,
+    /// ⭐ stage 18：本量子**真的走了分声道渲染**的帧数（跨轨累加）。
+    stereo_track_frames: &'a mut u64,
     meter_capacity_drops: &'a mut u64,
     pan_gains: &'a mut [(EntityId, f32, f32)],
 }
@@ -1998,6 +2012,8 @@ fn render_branch(
                 right,
                 cc,
             );
+            // ⭐ stage 18：覆盖度见证（每轨每量子至多一次）。
+            *share.stereo_track_frames = share.stereo_track_frames.wrapping_add(frames as u64);
         } else if running {
             // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
             // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
@@ -2796,6 +2812,14 @@ pub struct EngineRuntime {
     /// 常量路径相同（都不分配、都不加锁）⇒ 没有这个数，"四元组全 0"可能是空转。
     /// 读口见 [`EngineRuntime::pan_automation_frames`]。
     pan_automation_frames: u64,
+    /// ⭐ **stage 18 覆盖度见证**：**真的走了分声道渲染**（源侧 `render_track_stereo`）
+    /// 的帧数（累计，跨轨累加）。
+    ///
+    /// 为什么需要它：stage 2–17 把"分声道"铺到了源侧、轨插入链、总线与主总线，
+    /// 但那一切都能在**单声道**夹具上"看起来一样绿"（居中声相时两条声道本来就相同）。
+    /// 没有这个数，"分声道真的被走到"就只能从别的计数（插入帧数）间接猜。
+    /// 读口见 [`EngineRuntime::stereo_track_frames`]。
+    stereo_track_frames: u64,
     /// 被拒绝的声相**值**数（非有限 / 负数）。
     pan_automation_value_rejects: u64,
     /// **R76 的读数**：已经设好的声相自动化目标被**同量子的快照武装**取消掉的次数。
@@ -3508,6 +3532,7 @@ impl EngineRuntime {
                 vec![false; MAX_TRACK_SLOTS].into_boxed_slice()
             );
             put!(pan_automation_frames, 0);
+            put!(stereo_track_frames, 0);
             put!(pan_automation_value_rejects, 0);
             put!(pan_automation_resets, 0);
             // ⭐ 逐边发送量（任务单 `#261`）：**构造期**预分配全部槽位（回调内绝不
@@ -3953,6 +3978,7 @@ impl EngineRuntime {
             insert_convolution_frames: self.insert_convolution_frames,
             insert_convolution_rejects: self.insert_convolution_rejects,
             master_insert_frames: self.master_insert_frames,
+            stereo_track_frames: self.stereo_track_frames,
             param_gain_frames: self.params.gain_frames(),
             param_master_gain_frames: self.params.master_gain_frames(),
             param_gain_rejects: self.params.rejections(),
@@ -4059,6 +4085,16 @@ impl EngineRuntime {
     #[must_use]
     pub const fn pan_automation_frames(&self) -> u64 {
         self.pan_automation_frames
+    }
+
+    /// ⭐ **stage 18 覆盖度见证**：**真的走了分声道渲染**的帧数（累计）。
+    ///
+    /// 口径：每轨每量子至多 `＋frames`（只在 [`EngineRuntime::render_block`] 的分声道
+    /// 分支里累加一次），因此它是"分声道路径被走到的**总帧数**"，⛔ 不是"两声道的
+    /// 样本总数"（那会是两倍）。
+    #[must_use]
+    pub const fn stereo_track_frames(&self) -> u64 {
+        self.stereo_track_frames
     }
 
     /// **不静默**：被拒绝的声相自动化**值**数（非有限 / 负数）。
@@ -4665,6 +4701,7 @@ impl EngineRuntime {
             armed_pan_r,
             armed_pan_armed,
             pan_automation_frames,
+            stereo_track_frames,
             pan_automation_value_rejects,
             pan_automation_resets,
             // ⭐ 逐边发送量（`#261`）：事件循环写目标、逐样本路径推进它们。
@@ -5640,6 +5677,7 @@ impl EngineRuntime {
                     insert_convolution_frames: &mut *insert_convolution_frames,
                     master_insert_frames: &mut *master_insert_frames,
                     pan_automation_frames: &mut *pan_automation_frames,
+                    stereo_track_frames: &mut *stereo_track_frames,
                     meter_capacity_drops: &mut *meter_capacity_drops,
                     pan_gains: &mut pan_gains,
                     key_taps: &mut *key_taps,
@@ -9261,6 +9299,8 @@ mod tests {
             let produced = 0usize;
             // 与 `render_block` 同源：本量子的声相增益表是 `armed_pan_gains` 的副本。
             let mut pan_gains = [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS];
+            // ⭐ stage 18：本判据不看分声道覆盖度，只借一个计数器占位。
+            let mut stereo_track_frames = 0u64;
             pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
             let mut share = BranchShare {
                 pdc,
@@ -9306,6 +9346,7 @@ mod tests {
                 insert_convolution_frames,
                 master_insert_frames,
                 pan_automation_frames,
+                stereo_track_frames: &mut stereo_track_frames,
                 meter_capacity_drops,
                 pan_gains: &mut pan_gains,
                 key_taps,

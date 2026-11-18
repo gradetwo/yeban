@@ -49,9 +49,10 @@ fn dc_sample(amplitude: f32, frames: usize) -> InMemorySample {
 }
 
 /// `pan` 由参数决定（`100` ＝ 硬右、`0` ＝ 居中）；其余逐字相同。
-fn plan_with_pan(pan: i32, sample: &InMemorySample) -> SfzPlan {
+fn plan_with_pan(pan: Option<i32>, sample: &InMemorySample) -> SfzPlan {
+    let pan_text = pan.map_or(String::new(), |pan| format!(" pan={pan}"));
     let text = format!(
-        "<region> sample=a.wav key=60 pitch_keycenter=60 pan={pan} \
+        "<region> sample=a.wav key=60 pitch_keycenter=60{pan_text} \
          loop_mode=loop_continuous loop_start=0 loop_end=1000 \
          ampeg_attack=0.001 ampeg_sustain=100 ampeg_release=0.001 amp_veltrack=0"
     );
@@ -82,7 +83,7 @@ fn mount(project: &mut YebanProjectV1, track: EntityId, device: Option<DeviceDef
 }
 
 /// 渲染一条腿：`pan` ＋ 是否挂通道条。
-fn render_leg(pan: i32, strip: bool) -> support::Render {
+fn render_leg(pan: Option<i32>, strip: bool) -> support::Render {
     let mut fixture = note_project(&NOTES);
     let track = fixture.track;
     if strip {
@@ -98,9 +99,11 @@ fn render_leg(pan: i32, strip: bool) -> support::Render {
 
 #[test]
 fn a_panned_sfz_region_keeps_left_silent_through_an_armed_insert_device() {
-    let bare = render_leg(100, false);
-    let with_strip = render_leg(100, true);
-    let centred = render_leg(0, false);
+    let bare = render_leg(Some(100), false);
+    let with_strip = render_leg(Some(100), true);
+    let centred = render_leg(Some(0), false);
+    // ⭐ stage 18 反向腿：**没有 `pan`** 的区域 ⇒ 分声道路径**不该**被走到。
+    let mono = render_leg(None, false);
 
     // ⚠ `pan=100` 的左增益是 `cos(π/2)` ＝ **6.1e-8**（不是精确 0）⇒ 左缓冲里有一层
     // 浮点残留；口径取"残留量级 ≤ 1e-6、且远小于右声道"。
@@ -121,15 +124,32 @@ fn a_panned_sfz_region_keeps_left_silent_through_an_armed_insert_device() {
     println!(
         "[stage17] pan=100 无设备：左逐位 0={}、右峰={:.6}；pan=100 ＋ 通道条：\
          左逐位 0={}、右峰={:?}、insert_strip_frames={}；pan=0 无设备：左峰={:.6}；\
-         指纹 无设备={:#018x} / 有设备={:#018x}",
+         stereo_track_frames 有设备={} / 无 pan={}；指纹 无设备={:#018x} / 有设备={:#018x}",
         bare_left_is_silent,
         bare_right_peak,
         strip_left_is_silent,
         strip_right_peak,
         with_strip.stats.insert_strip_frames,
         centred_left_peak,
+        with_strip.stats.stereo_track_frames,
+        mono.stats.stereo_track_frames,
         bare.fingerprint(),
         with_strip.fingerprint(),
+    );
+
+    // ⭐ stage 18：分声道路径真的被走到，且**每轨每量子恰好一次**（不是 2×）。
+    let expected_stereo_frames = (QUANTA * yeban_engine::block::DEFAULT_BLOCK_FRAMES) as u64;
+    assert_eq!(
+        bare.stats.stereo_track_frames, expected_stereo_frames,
+        "带区域声相的轨必须走分声道渲染（每量子恰好 ＋frames）"
+    );
+    assert_eq!(
+        with_strip.stats.stereo_track_frames, expected_stereo_frames,
+        "挂插入器件不得改变分声道渲染帧数（⛔ 不是 2×）"
+    );
+    assert_eq!(
+        mono.stats.stereo_track_frames, 0,
+        "没有 pan 的区域不得走分声道路径（反向腿）"
     );
 
     // 腿 1：硬右 ⇒ 源侧左只剩浮点残留、右真的出声。
