@@ -5400,14 +5400,22 @@ fn prepare_sampler_track(
     // ⭐ `#279`：池里那份已解码 PCM 是 `Arc<Vec<f32>>` ⇒ 这里只 `Arc::clone`
     // （⛔ 不再 `as_ref().clone()` 复制元素）；引擎摊平表随后也 `Arc::clone` 同一份
     // ⇒ 整条渲染只有**一份** PCM 字节。
-    // ⚠ 武装元组里的声道数恒填 1：MCP 侧解码（`domain::sfz`）现仍折单声道，
-    // PCM 本来就是单声道 ⇒ 如实填 1（保声道缺口已登记台账规格，另立线）。
+    // ⭐ 武装元组里的声道数取读数本身：MCP 侧解码（`domain::sfz`）已保声道
+    // （台账 §15.8 接线）⇒ 交错 PCM 与真实声道数一起交出，引擎据此走立体声
+    // 通路（`has_multichannel_samples`）；单声道样本填 1、与改前逐位相同。
     let samples: Vec<ArmedSfzSample> = table
         .into_iter()
         .filter_map(|(raw_path, outcome)| {
-            outcome
-                .ok()
-                .map(|reading| (raw_path, (Arc::clone(&reading.pcm), 1, reading.sample_hz)))
+            outcome.ok().map(|reading| {
+                (
+                    raw_path,
+                    (
+                        Arc::clone(&reading.pcm),
+                        reading.channels,
+                        reading.sample_hz,
+                    ),
+                )
+            })
         })
         .collect();
     let decoded: BTreeSet<String> = samples.iter().map(|(path, _)| path.clone()).collect();

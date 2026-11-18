@@ -543,15 +543,21 @@ fn fault_message(fault: &Fault) -> String {
 /// 提供表 → 引擎武装样本：读到的进表（`Arc` 共享同一份 PCM），读不到的
 /// 跳过（缺样本不是错误，见模块文档：引擎标 `NO_SAMPLE` ＋ 计数）。
 fn samples_from_table(table: SampledProviderTable) -> Vec<ArmedSfzSample> {
-    // ⚠ 声道数恒填 1：MCP 侧解码（`domain::sfz`）现仍按声道 0 折单声道，
-    // PCM 本来就是单声道 ⇒ 如实填 1。MCP 解码保声道是独立缺口（已登记
-    // 台账规格，另立线），⛔ 不在本线顺手改。
+    // ⭐ 声道数取读数本身：MCP 侧解码（`domain::sfz`）已保声道（台账 §15.8
+    // 接线）⇒ 交错 PCM 与真实声道数一起交出；单声道样本填 1、与改前一致。
     table
         .into_iter()
         .filter_map(|(raw_path, outcome)| {
-            outcome
-                .ok()
-                .map(|reading| (raw_path, (Arc::clone(&reading.pcm), 1, reading.sample_hz)))
+            outcome.ok().map(|reading| {
+                (
+                    raw_path,
+                    (
+                        Arc::clone(&reading.pcm),
+                        reading.channels,
+                        reading.sample_hz,
+                    ),
+                )
+            })
         })
         .collect()
 }

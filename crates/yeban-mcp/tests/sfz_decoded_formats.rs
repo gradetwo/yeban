@@ -6,7 +6,10 @@
 //! ⇒ 真实库 `freepats-spanish-classical-guitar`（**FLAC**）的 48/48 区域全部失败
 //! （逐字 `hound 失败: Ill-formed WAVE file: no RIFF tag found`）⇒ 渲染回退内存正弦。
 //! 现在与 app 的 `sfz_load::read_sample_file` **同一条分派**：`.wav`/`.wave` 走既有
-//! hound 腿，其余走 `yeban_decode::decode_mono_channel0`（symphonia ＋ 声道 0 折叠）。
+//! hound 腿，其余走 `yeban_decode::decode_path`（symphonia）。⭐ 立体声样本通路
+//! 的 MCP 侧接线（台账 §15.8）后两条腿都**保声道**：交错样本连同声道数原样
+//! 交出，`sampleSource` 随之多一段 `channels=C`（与 app 两腿同形）；保声道的
+//! 专项判据在 `tests/sfz_stereo_decode.rs`。
 //!
 //! ## 判定量（每个数字都有单位）
 //!
@@ -15,7 +18,7 @@
 //! | `sampleFilesReadCount` | 本次装载真的读到的**不同样本文件** | 个 |
 //! | `sampleFilesFailedCount` | 读失败的**不同样本文件** | 个 |
 //! | `sampleFramesLoaded` | 累计解码帧数（所有文件之和） | 帧 |
-//! | `sampleSource` | 如实来源串：`file(<path> frames=N rate=R)` 或回退原因 | 字符串 |
+//! | `sampleSource` | 如实来源串：`file(<path> frames=N channels=C rate=R)` 或回退原因 | 字符串 |
 //! | `notesUsingFileSample` | 用文件样本发声的音符 | 个 |
 //! | `notesUsingSineFallback` | 回退内存正弦的音符 | 个 |
 //!
@@ -201,8 +204,8 @@ fn a_flac_sample_is_really_read_and_rendered() {
     let source = loaded["sampleSource"].as_str().expect("sampleSource");
     assert!(source.starts_with("file("), "来源必须点名文件: {source}");
     assert!(
-        source.contains("frames=512 rate=8000"),
-        "FLAC 的帧数/采样率必须原样上报: {source}"
+        source.contains("frames=512 channels=1 rate=8000"),
+        "FLAC 的帧数/声道数/采样率必须原样上报: {source}"
     );
     let state = loaded["regionDetails"][0]["sampleFileState"]
         .as_str()
@@ -250,8 +253,8 @@ fn an_ogg_sample_is_really_read_and_rendered() {
     let source = loaded["sampleSource"].as_str().expect("sampleSource");
     assert!(source.starts_with("file("), "来源必须点名文件: {source}");
     assert!(
-        source.contains("frames=128 rate=44100"),
-        "OGG 的帧数/采样率必须原样上报: {source}"
+        source.contains("frames=128 channels=1 rate=44100"),
+        "OGG 的帧数/声道数/采样率必须原样上报: {source}"
     );
     assert!(
         rendered["notesUsingFileSample"].as_u64().unwrap_or(0) > 0,
@@ -260,10 +263,11 @@ fn an_ogg_sample_is_really_read_and_rendered() {
     assert_eq!(rendered["notesUsingSineFallback"], 0, "{rendered}");
 }
 
-/// 判据 ③：**PCM WAV 不退化** —— 同一条语句在 `.wav` 上仍报逐字相同的读数。
+/// 判据 ③：**PCM WAV 不退化** —— 同一条语句在 `.wav` 上仍走 hound 腿、读数口径不变。
 ///
-/// `frames=48000 rate=48000` 这一串就是既有 WAV 腿的读数口径；本判据把它**逐字**钉住，
-/// 因为 `#223` 改了 `read_sample_file` 的分派（WAV 必须仍走原腿）。
+/// `frames=48000 … rate=48000` 就是 WAV 腿的读数口径；本判据把它钉住。
+/// ⭐ 立体声接线（台账 §15.8）后读数多一段 `channels=1`（保声道腿与 app 同形），
+/// 帧数与采样率逐字不变、PCM 逐位不变（单声道腿与保声道腿同一份换算本体）。
 #[test]
 fn a_plain_wav_keeps_its_exact_reading() {
     let scratch = Scratch::new("wav");
@@ -281,8 +285,8 @@ fn a_plain_wav_keeps_its_exact_reading() {
     assert_eq!(loaded["sampleFramesLoaded"], 48_000, "{loaded}");
     let source = loaded["sampleSource"].as_str().expect("sampleSource");
     assert!(
-        source.contains("frames=48000 rate=48000"),
-        "WAV 腿的读数必须逐字不变: {source}"
+        source.contains("frames=48000 channels=1 rate=48000"),
+        "WAV 腿的读数口径必须不变（帧数/采样率逐字、多一段声道数）: {source}"
     );
     assert!(
         rendered["notesUsingFileSample"].as_u64().unwrap_or(0) > 0,
@@ -312,7 +316,7 @@ fn a_flac_with_an_unknown_suffix_goes_through_the_generic_leg() {
     assert_eq!(loaded["sampleFilesReadCount"], 1, "{loaded}");
     let source = loaded["sampleSource"].as_str().expect("sampleSource");
     assert!(
-        source.contains("frames=256 rate=8000"),
+        source.contains("frames=256 channels=1 rate=8000"),
         "无后缀也必须按内容解码: {source}"
     );
 }

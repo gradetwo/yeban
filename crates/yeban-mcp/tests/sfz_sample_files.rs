@@ -205,8 +205,8 @@ fn a_real_sample_file_changes_the_rendered_bytes_and_both_sides_are_audible() {
     let source = data["sampleSource"].as_str().expect("sampleSource");
     assert!(source.starts_with("file("), "来源必须点名文件: {source}");
     assert!(
-        source.contains("frames=48000 rate=48000"),
-        "来源必须带帧数与采样率: {source}"
+        source.contains("frames=48000 channels=1 rate=48000"),
+        "来源必须带帧数、声道数与采样率: {source}"
     );
     assert!(
         data["regionDetails"][0]["sampleFileState"]

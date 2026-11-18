@@ -896,10 +896,23 @@ fn feed_whole(job: &StreamJob, shutdown: &AtomicBool) {
         }
     };
     let total = reading.frames;
-    let mut source = WholeFileSource {
-        pcm: &reading.pcm,
-        offset: 0,
+    // ⭐ 流式腿是**单声道设计**（台账 §15.8 的另一条缺口：流式读腿保声道
+    // 另立线）⇒ `read_sample_file` 保声道后，多声道样本在这里**显式取声道 0**
+    // 再喂（与改前折声道 0 的输出逐位一致）。⛔ 不把交错样本直接当单声道
+    // 喂 —— 那会左右交替误读、音高减半且无声告警。
+    let mono_storage: Vec<f32>;
+    let pcm: &[f32] = if reading.channels > 1 {
+        mono_storage = reading
+            .pcm
+            .iter()
+            .step_by(usize::from(reading.channels))
+            .copied()
+            .collect();
+        &mono_storage
+    } else {
+        &reading.pcm
     };
+    let mut source = WholeFileSource { pcm, offset: 0 };
     let _ = feed_loop(job, shutdown, Some(total), &mut source);
 }
 

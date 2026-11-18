@@ -50,9 +50,11 @@
 //!
 //! 1. **采样文件会被真读**：`Region::sample_path()`（含 `<control> default_path=` 前缀的
 //!    **有效路径**）指向的样本由 [`read_sample_file`] 解码（`#223` 起与 app 的
-//!    `sfz_load::read_sample_file` **同一条分派**：`.wav`/`.wave` 走既有 hound 腿
-//!    `yeban_render::wav::read_plain_wav_mono_f32`，其余走 `yeban_decode::decode_mono_channel0`
-//!    ＝ symphonia ＋ 声道 0 折叠），经 [`SampleCache`] 去重并受三条上限约束；
+//!    `sfz_load::read_sample_file` **同一条分派**：`.wav`/`.wave` 走 hound **保声道**腿
+//!    `yeban_render::wav::read_plain_wav_f32`，其余走 `yeban_decode::decode_path`
+//!    ＝ symphonia 解码、交错样本原样保留；⭐ 立体声样本通路的 MCP 侧接线
+//!    （台账 §15.8）：样本连同声道数进 [`SampleFileReading`]，引擎摊平据此走
+//!    立体声通路；声道数 >2 与 app 同一条响亮拒绝），经 [`SampleCache`] 去重并受三条上限约束；
 //!    响应里的 `sampleSource` / `sampleFilesRead` 逐字反映读了哪些文件。
 //!    ⚠ 读不到（或没有区域声明 `sample=`）时，**只有 `yeban_render_sfz_wav` 这条
 //!    试听导出路径**会如实回退到 [`InMemorySfzSample::sine`]（内存正弦）并把原因写进
@@ -101,7 +103,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yeban_model::{AssetHash, AutomationTarget, ClipContent, EntityId, PPQ, YebanProjectV1};
-use yeban_render::wav::{read_plain_wav_mono_f32, read_plain_wav_mono_f32_from_bytes};
+use yeban_render::wav::{read_plain_wav_f32, read_plain_wav_f32_from_bytes};
 use yeban_sfz::PlayDirection;
 use yeban_sfz::SampleEnd;
 use yeban_sfz::instrument::{
@@ -403,16 +405,18 @@ pub const FALLBACK_SINE_HZ: f32 = 440.0;
 /// 内存正弦回退的采样率（Hz）——与 `app` 侧同值。
 pub const FALLBACK_SINE_HZ_RATE: f32 = 48_000.0;
 
-/// 读一个样本文件的结果（单声道，归一化到 `[-1, 1]`）。
+/// 读一个样本文件的结果（**保声道**：交错 PCM，归一化到 `[-1, 1]`）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct SampleFileReading {
-    /// 单声道 PCM。
+    /// 交错 PCM（帧 × 声道；单声道文件就是每帧一个样本，与改前逐位相同）。
     pub pcm: Arc<Vec<f32>>,
+    /// 声道数（1 ＝ 单声道、2 ＝ 立体声；>2 在读取处已响亮拒绝，不会到这里）。
+    pub channels: u16,
     /// 文件自身的采样率（Hz）。
     pub sample_hz: f32,
-    /// 帧数（= `pcm.len()`）。
+    /// 帧数（**每声道**帧数 ＝ `pcm.len() / channels`，与装载预算口径一致）。
     pub frames: u64,
-    /// 如实描述（`file(<path> frames=N rate=R)`）。
+    /// 如实描述（`file(<path> frames=N channels=C rate=R)`）。
     pub describe: String,
 }
 
@@ -422,15 +426,17 @@ pub struct SampleFileReading {
 ///
 /// | 后缀 | 解码腿 | 依据 |
 /// | :--- | :--- | :--- |
-/// | `wav` / `wave`（大小写不敏感） | [`yeban_render::wav::read_plain_wav_mono_f32`]（hound） | ⭐ **既有 WAV 路径逐位不变**（归一化口径与读数都靠它） |
-/// | **其余**（含 `.flac` / `.ogg` / 无后缀） | [`yeban_decode::decode_mono_channel0`]（symphonia） | 与 app 的非 WAV 腿**同一份**实现（`#223` 把它下移到 `yeban-decode`） |
+/// | `wav` / `wave`（大小写不敏感） | [`yeban_render::wav::read_plain_wav_f32`]（hound） | ⭐ **保声道**：与单声道腿同一份换算本体（声道 0 逐位相同），交错 PCM 原样读出 |
+/// | **其余**（含 `.flac` / `.ogg` / 无后缀） | [`yeban_decode::decode_path`]（symphonia） | ⭐ **保声道**：交错样本原样（与 app 的非 WAV 腿同一口径） |
 ///
 /// ⚠ **为什么按后缀而不是按内容嗅探**：与 app 的 `decode_sample_classified` 逐字同一条
 /// 理由 —— 内容嗅探会给 `.wav` 增加一次探测，并让"哪个读取器先认领"变成隐含规则；
 /// 按后缀分派让"WAV 走老腿、读数逐字不变"这条**可判据的**承诺成立。
 ///
 /// ⚠ **归一化不在本函数里**：WAV 腿的归一化在 `yeban-render`，非 WAV 腿的归一化在
-/// `yeban-decode`（symphonia）＋ `decode_mono_channel0` 的声道 0 折叠。
+/// `yeban-decode`（symphonia）；两条腿都 ⛔ 不折声道，`describe` 同形
+/// （`file(<path> frames=<每声道帧数> channels=<声道数> rate=<采样率>)`，与 app 两腿同形）。
+/// 声道数 >2 ⇒ [`unsupported_channel_count`] 响亮拒绝（与 app 同一条、同一句文案）。
 ///
 /// 本函数只多做两件属于 MCP 侧的事：
 /// ① **先看 `metadata.len()`** 再决定读不读（两条腿都会把整份 PCM 读进内存）；
@@ -453,24 +459,58 @@ pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
             MAX_SAMPLE_FILE_BYTES
         ));
     }
-    let (pcm, sample_rate, describe) = if is_plain_wav_suffix(path) {
-        read_plain_wav_mono_f32(path).map_err(|error| format!("{}: {error}", path.display()))?
+    let (pcm, channels, sample_rate, describe) = if is_plain_wav_suffix(path) {
+        let (pcm, channels, sample_rate, describe) =
+            read_plain_wav_f32(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        if channels > 2 {
+            return Err(unsupported_channel_count(
+                &path.display().to_string(),
+                channels,
+            ));
+        }
+        (pcm, channels, sample_rate, describe)
     } else {
-        // ⭐ `#223`：FLAC／OGG 等由 `yeban-decode` 按**内容**探测容器；折成声道 0 与
-        // 描述串的唯一实现都在那里（⛔ 本层不写第二份 `step_by(channels)`）。
-        let mono =
-            yeban_decode::decode_mono_channel0(path, &yeban_decode::DecodeOptions::default())
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-        let describe = mono.describe(path);
-        (mono.pcm, mono.sample_hz, describe)
+        // ⭐ 立体声接线（台账 §15.8）：FLAC／OGG 等由 `yeban-decode` 按**内容**探测
+        // 容器，交错样本**原样**交出（⛔ 不再 `step_by` 折声道 0 —— 那是 R315
+        // 单声道口径，已被立体声样本通路取代；与 app 的 `decode_with_yeban_decode`
+        // 逐条同形：声道数随 PCM 一起交出、`describe` 同形、帧数按每声道计）。
+        let asset = yeban_decode::decode_path(path, &yeban_decode::DecodeOptions::default())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        // `decode_path` 保证 `channels >= 1`（0 声道的布局在闸门处就被拒）。
+        let channels = asset.channels();
+        if channels > 2 {
+            return Err(unsupported_channel_count(
+                &path.display().to_string(),
+                channels,
+            ));
+        }
+        let pcm: Vec<f32> = asset.samples().to_vec();
+        let describe = format!(
+            "file({} frames={} channels={} rate={})",
+            path.display(),
+            pcm.len() / usize::from(channels.max(1)),
+            channels,
+            asset.sample_rate()
+        );
+        (pcm, channels, asset.sample_rate(), describe)
     };
-    let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+    let frames = u64::try_from(pcm.len() / usize::from(channels.max(1))).unwrap_or(u64::MAX);
     Ok(SampleFileReading {
         pcm: Arc::new(pcm),
+        channels,
         sample_hz: sample_rate as f32,
         frames,
         describe,
     })
+}
+
+/// 声道数 >2 的**响亮拒绝**文案（与 app 的 `sfz_load::unsupported_channel_count`
+/// 同一条、同一句：引擎只支持单声道与立体声样本，多声道文件如实报失败、
+/// ⛔ 不静默丢声道）。
+fn unsupported_channel_count(display: &str, channels: u16) -> String {
+    format!(
+        "`{display}`: unsupported channel count {channels} (only mono and stereo sample files are supported)"
+    )
 }
 
 /// 后缀是不是**既有 hound WAV 腿**的那一族（`wav` / `wave`，大小写不敏感）。
@@ -2589,10 +2629,10 @@ fn collapse_embedded_path(path: &str) -> String {
 
 /// 从 CAS 字节解码一份样本（与 [`read_sample_file`] 同一条格式口径，⛔ 不另写一份）。
 ///
-/// * WAV（`wav` / `wave` 后缀）⇒ [`read_plain_wav_mono_f32_from_bytes`]
-///   （hound 腿，与盘上腿**逐位相同**）；
-/// * 其余 ⇒ `yeban-decode` 按内容探测（与盘上非 WAV 腿同一条）后折声道 0
-///   （与 [`yeban_decode::decode_mono_channel0`] 同一个 `step_by(channels)`）。
+/// * WAV（`wav` / `wave` 后缀）⇒ [`read_plain_wav_f32_from_bytes`]
+///   （hound **保声道**腿，与盘上腿**逐位相同**）；
+/// * 其余 ⇒ `yeban-decode` 按内容探测（与盘上非 WAV 腿同一条），交错样本原样
+///   （⛔ 不再折声道 0；声道数 >2 与盘上腿同一条响亮拒绝）。
 ///
 /// 单文件字节上限与盘上腿同一条（[`MAX_SAMPLE_FILE_BYTES`]，⛔ 不截断）；
 /// 描述串用调用方给的 `display`（渲染根相对键，跨机稳定）。
@@ -2607,24 +2647,33 @@ pub(crate) fn decode_sample_bytes(
             "{display} 有 {len} 字节, 超过单文件上限 {MAX_SAMPLE_FILE_BYTES} 字节 (拒绝读取, ⛔ 不截断)"
         ));
     }
-    let (pcm, sample_rate, describe) = if is_plain_wav_suffix(Path::new(display)) {
-        read_plain_wav_mono_f32_from_bytes(bytes, display)
-            .map_err(|error| format!("{display}: {error:?}"))?
+    let (pcm, channels, sample_rate, describe) = if is_plain_wav_suffix(Path::new(display)) {
+        let (pcm, channels, sample_rate, describe) = read_plain_wav_f32_from_bytes(bytes, display)
+            .map_err(|error| format!("{display}: {error:?}"))?;
+        if channels > 2 {
+            return Err(unsupported_channel_count(display, channels));
+        }
+        (pcm, channels, sample_rate, describe)
     } else {
         let asset = yeban_decode::decode_bytes(bytes, &yeban_decode::DecodeOptions::default())
             .map_err(|error| format!("{display}: {error}"))?;
-        let channels = usize::from(asset.channels().max(1));
-        let pcm: Vec<f32> = asset.samples().iter().step_by(channels).copied().collect();
+        let channels = asset.channels();
+        if channels > 2 {
+            return Err(unsupported_channel_count(display, channels));
+        }
+        let pcm: Vec<f32> = asset.samples().to_vec();
         let describe = format!(
-            "file({display} frames={} rate={})",
-            pcm.len(),
+            "file({display} frames={} channels={} rate={})",
+            pcm.len() / usize::from(channels.max(1)),
+            channels,
             asset.sample_rate()
         );
-        (pcm, asset.sample_rate(), describe)
+        (pcm, channels, asset.sample_rate(), describe)
     };
-    let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+    let frames = u64::try_from(pcm.len() / usize::from(channels.max(1))).unwrap_or(u64::MAX);
     Ok(SampleFileReading {
         pcm: Arc::new(pcm),
+        channels,
         sample_hz: sample_rate as f32,
         frames,
         describe,
@@ -4235,19 +4284,36 @@ pub(super) fn note_wave_at_with_cuts(
             let file_rate = region
                 .playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz))
                 * tune_ratio;
-            let (from, to) = sample_span_bounds(region, reading.pcm.len(), rand);
+            // ⭐ 本渲染器（`yeban_render_sfz_wav` 试听／读数路）的层模型是
+            // **单声道波形＋区域声像** ⇒ 多声道样本在这里**显式取声道 0**
+            // （与改前折声道 0 的读数逐位一致）。⛔ 不是静默折叠：装载读数的
+            // `describe` 如实带 `channels=<n>`；真立体声走 `yeban_render_master`
+            // 的引擎支路（保声道提供表 ⇒ 引擎立体声通路，台账 §15.8）。
+            let mono_storage: Vec<f32>;
+            let sample_pcm: &[f32] = if reading.channels > 1 {
+                mono_storage = reading
+                    .pcm
+                    .iter()
+                    .step_by(usize::from(reading.channels))
+                    .copied()
+                    .collect();
+                &mono_storage
+            } else {
+                &reading.pcm
+            };
+            let (from, to) = sample_span_bounds(region, sample_pcm.len(), rand);
             // ⭐ 循环展开：引擎把 `loop_mode` 区域按 `[loop_start, loop_end)` 反复读到
             // 音符结束；离线此前只响一遍 ⇒ 长音在第一个循环长度处就断。
             let source: Vec<f32> = if spec.loops() {
                 loop_expanded_pcm(
-                    &reading.pcm[from..to],
+                    &sample_pcm[from..to],
                     spec.loop_window,
                     from as u64,
                     span,
                     file_rate,
                 )
             } else {
-                reading.pcm[from..to].to_vec()
+                sample_pcm[from..to].to_vec()
             };
             let pcm = if spec.direction == PlayDirection::Reverse {
                 let mut reversed = source;
