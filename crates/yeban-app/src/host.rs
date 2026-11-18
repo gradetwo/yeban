@@ -16951,41 +16951,42 @@ pub fn clipboard_cut(
     true
 }
 
-/// `Cmd/Ctrl+T` 在播放头位置切分选中的剪辑（Logic Pro 对齐）。
-fn split_selected_clip_at_playhead(
-    ui: &MainWindow,
-    port: &Rc<UndoPort>,
+/// 选中剪辑的身份 + 切分点 ⇒ 待提交的**切分 op 组合**（纯函数，有判据）。
+///
+/// 这是 [`split_selected_clip_at_playhead`] 的 op 构造部分，原样抽出供其它
+/// 界面（TUI）复用：组合形状与 GUI 路径逐字一致——左半靠
+/// [`clip_duration_ops_for`] 缩短、跨点音符在左侧截断并在右半续接、
+/// 右半是新池条目（名后缀 ` (Part 2)`）＋新摆放（继承 loop/muted/offset），
+/// 整批一次提交、一步撤销。**不需要任何新 `Op` 变体**。
+///
+/// 拒绝退化切分（返回 `None` ⇒ 调用方什么都不做）：身份解析不到、切分点
+/// 不严格落在摆放内部、或缩短左半的 op 构造为空时都回 `None`。
+/// 返回值第二元是右半摆放的身份字符串（调用方据它更新自己的选中态）。
+#[must_use]
+pub fn clip_split_ops_for(
     project: &yeban_model::YebanProjectV1,
-) -> bool {
-    let selected = ui.get_selected_clip_ulid();
-    if selected.is_empty() {
-        return false;
-    }
-    let Some((track_id, _placement_id, placement)) = clip_placement_for(project, selected.as_str())
-    else {
-        return false;
-    };
-    let split_tick = playhead_tick(ui);
+    selected_clip_ulid: &str,
+    split_tick: u64,
+) -> Option<(Vec<yeban_model::ops::Op>, String)> {
+    let (track_id, _placement_id, placement) = clip_placement_for(project, selected_clip_ulid)?;
     let clip_start = placement.start_tick;
     let clip_end = placement
         .start_tick
         .saturating_add(placement.duration_ticks);
     if split_tick <= clip_start || split_tick >= clip_end {
-        return false;
+        return None;
     }
     let left_duration = split_tick.saturating_sub(clip_start);
     let right_duration = clip_end.saturating_sub(split_tick);
     if left_duration == 0 || right_duration == 0 {
-        return false;
+        return None;
     }
-    let Some(clip_entry) = project.clip_pool.get(&placement.clip_id) else {
-        return false;
-    };
+    let clip_entry = project.clip_pool.get(&placement.clip_id)?;
 
     let shorten_delta = -((placement.duration_ticks.saturating_sub(left_duration)) as i64);
-    let mut ops = clip_duration_ops_for(project, selected.as_str(), shorten_delta);
+    let mut ops = clip_duration_ops_for(project, selected_clip_ulid, shorten_delta);
     if ops.is_empty() {
-        return false;
+        return None;
     }
 
     let right_clip_id = yeban_model::EntityId::new();
@@ -17066,6 +17067,26 @@ fn split_selected_clip_at_playhead(
         placement: right_placement,
     });
 
+    Some((ops, new_right_id))
+}
+
+/// `Cmd/Ctrl+T` 在播放头位置切分选中的剪辑（Logic Pro 对齐）。
+/// op 组合走 [`clip_split_ops_for`]（与 TUI 共用同一构造点），本函数只做
+/// 界面侧的选中/播放头读取、提交与选中态更新。
+fn split_selected_clip_at_playhead(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> bool {
+    let selected = ui.get_selected_clip_ulid();
+    if selected.is_empty() {
+        return false;
+    }
+    let Some((ops, new_right_id)) =
+        clip_split_ops_for(project, selected.as_str(), playhead_tick(ui))
+    else {
+        return false;
+    };
     if port
         .commit_ops(now_ms(), "split clip at playhead", ops)
         .is_err()
