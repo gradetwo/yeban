@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::{ComponentHandle as _, PhysicalSize, Rgb8Pixel};
-use yeban_app::cli::{self, Language, Theme};
+use yeban_app::cli::{self, Language, Texture, Theme};
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::startup_chooser::NewProjectDetails;
@@ -138,6 +138,13 @@ fn main() {
     let scene = DemoScene::from_view(&view);
     let ui = host::build_main_window(&view, &scene).expect("构造主窗口");
     host::apply_theme(&ui, Theme::Yeban);
+    // 第二个命令行参数选质感：`flat` / 其它一律 physical。
+    // 启动器要和主界面同一套皮肤，两种质感都得单独出一轮证据图。
+    let texture = match std::env::args().nth(2).as_deref() {
+        Some("flat") => Texture::Flat,
+        _ => Texture::Physical,
+    };
+    host::apply_texture(&ui, texture);
     host::apply_language(&ui, Language::ZhCn);
 
     // 换工程运行时（取证装配：无引擎，after 空转——帧只看选择器本身）。

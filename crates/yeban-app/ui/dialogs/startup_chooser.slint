@@ -69,10 +69,10 @@ export component StartupChooserDialog inherits Rectangle {
         y: (root.height - 600px) / 2;
         width: 880px;
         height: 600px;
-        background: Tokens.bg-panel;
+        background: Tokens.panel-brush;
         border-radius: Tokens.radius-lg;
         border-width: 1px;
-        border-color: Tokens.gold-deep;
+        border-color: Tokens.line;
         clip: true;
 
         accessible-role: region;
@@ -85,7 +85,7 @@ export component StartupChooserDialog inherits Rectangle {
             width: parent.width - 96px;
             height: 24px;
             text: @tr("选择工程");
-            color: Tokens.gold-bright;
+            color: Tokens.ink-0;
             font-size: Tokens.font-size-xl;
         }
 
@@ -106,7 +106,7 @@ export component StartupChooserDialog inherits Rectangle {
             y: Tokens.space-4;
             width: 24px;
             height: 24px;
-            background: Tokens.bg-void;
+            background: Tokens.bg-lane2;
             border-radius: Tokens.radius-sm;
             accessible-role: button;
             accessible-id: "startup-chooser-close-button";
@@ -141,10 +141,10 @@ export component StartupChooserDialog inherits Rectangle {
             y: 68px;
             width: 168px;
             height: 40px;
-            background: root.category == 0 ? Tokens.bg-raised : transparent;
+            background: root.category == 0 ? Tokens.accent.mix(Tokens.bg-shell, 0.16) : transparent;
             border-radius: Tokens.radius-md;
             border-width: root.category == 0 ? 1px : 0px;
-            border-color: Tokens.gold-deep;
+            border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "startup-nav-new";
             accessible-label: @tr("新建工程");
@@ -156,7 +156,7 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width - 24px;
                 height: parent.height;
                 text: @tr("新建工程");
-                color: root.category == 0 ? Tokens.gold-bright : Tokens.ink-1;
+                color: root.category == 0 ? Tokens.ink-0 : Tokens.ink-1;
                 font-size: Tokens.font-size-md;
                 vertical-alignment: center;
                 overflow: elide;
@@ -175,10 +175,10 @@ export component StartupChooserDialog inherits Rectangle {
             y: 68px + 44px;
             width: 168px;
             height: 40px;
-            background: root.category == 1 ? Tokens.bg-raised : transparent;
+            background: root.category == 1 ? Tokens.accent.mix(Tokens.bg-shell, 0.16) : transparent;
             border-radius: Tokens.radius-md;
             border-width: root.category == 1 ? 1px : 0px;
-            border-color: Tokens.gold-deep;
+            border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "startup-nav-recent";
             accessible-label: @tr("最近打开");
@@ -190,7 +190,7 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width - 24px;
                 height: parent.height;
                 text: @tr("最近打开");
-                color: root.category == 1 ? Tokens.gold-bright : Tokens.ink-1;
+                color: root.category == 1 ? Tokens.ink-0 : Tokens.ink-1;
                 font-size: Tokens.font-size-md;
                 vertical-alignment: center;
                 overflow: elide;
@@ -209,10 +209,10 @@ export component StartupChooserDialog inherits Rectangle {
             y: 68px + 88px;
             width: 168px;
             height: 40px;
-            background: root.category == 2 ? Tokens.bg-raised : transparent;
+            background: root.category == 2 ? Tokens.accent.mix(Tokens.bg-shell, 0.16) : transparent;
             border-radius: Tokens.radius-md;
             border-width: root.category == 2 ? 1px : 0px;
-            border-color: Tokens.gold-deep;
+            border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "startup-nav-demos";
             accessible-label: @tr("演示工程");
@@ -224,7 +224,7 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width - 24px;
                 height: parent.height;
                 text: @tr("演示工程");
-                color: root.category == 2 ? Tokens.gold-bright : Tokens.ink-1;
+                color: root.category == 2 ? Tokens.ink-0 : Tokens.ink-1;
                 font-size: Tokens.font-size-md;
                 vertical-alignment: center;
                 overflow: elide;
@@ -243,10 +243,10 @@ export component StartupChooserDialog inherits Rectangle {
             y: 68px + 132px;
             width: 168px;
             height: 40px;
-            background: root.category == 3 ? Tokens.bg-raised : transparent;
+            background: root.category == 3 ? Tokens.accent.mix(Tokens.bg-shell, 0.16) : transparent;
             border-radius: Tokens.radius-md;
             border-width: root.category == 3 ? 1px : 0px;
-            border-color: Tokens.gold-deep;
+            border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "startup-nav-factory";
             accessible-label: @tr("工程模板");
@@ -258,7 +258,7 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width - 24px;
                 height: parent.height;
                 text: @tr("工程模板");
-                color: root.category == 3 ? Tokens.gold-bright : Tokens.ink-1;
+                color: root.category == 3 ? Tokens.ink-0 : Tokens.ink-1;
                 font-size: Tokens.font-size-md;
                 vertical-alignment: center;
                 overflow: elide;
@@ -277,10 +277,10 @@ export component StartupChooserDialog inherits Rectangle {
             y: 68px + 176px;
             width: 168px;
             height: 40px;
-            background: root.category == 4 ? Tokens.bg-raised : transparent;
+            background: root.category == 4 ? Tokens.accent.mix(Tokens.bg-shell, 0.16) : transparent;
             border-radius: Tokens.radius-md;
             border-width: root.category == 4 ? 1px : 0px;
-            border-color: Tokens.gold-deep;
+            border-color: Tokens.line;
             accessible-role: button;
             accessible-id: "startup-nav-user";
             accessible-label: @tr("我的模板");
@@ -292,7 +292,7 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width - 24px;
                 height: parent.height;
                 text: @tr("我的模板");
-                color: root.category == 4 ? Tokens.gold-bright : Tokens.ink-1;
+                color: root.category == 4 ? Tokens.ink-0 : Tokens.ink-1;
                 font-size: Tokens.font-size-md;
                 vertical-alignment: center;
                 overflow: elide;
@@ -325,7 +325,7 @@ export component StartupChooserDialog inherits Rectangle {
                 background: Tokens.bg-raised;
                 border-radius: Tokens.radius-md;
                 border-width: 1px;
-                border-color: Tokens.gold-deep;
+                border-color: Tokens.line;
                 accessible-role: list-item;
                 accessible-id: "startup-empty-project";
                 accessible-label: @tr("空工程");
@@ -337,7 +337,7 @@ export component StartupChooserDialog inherits Rectangle {
                     width: parent.width - 32px;
                     height: 22px;
                     text: @tr("空工程");
-                    color: Tokens.gold-bright;
+                    color: Tokens.ink-0;
                     font-size: Tokens.font-size-lg;
                 }
 
@@ -428,7 +428,7 @@ export component StartupChooserDialog inherits Rectangle {
                     y: 2px;
                     width: 76px;
                     height: 28px;
-                    background: Tokens.bg-void;
+                    background: Tokens.bg-lane2;
                     border-radius: Tokens.radius-sm;
                     border-width: 1px;
                     border-color: Tokens.line;
@@ -441,7 +441,7 @@ export component StartupChooserDialog inherits Rectangle {
                         text <=> root.tempo-text;
                         single-line: true;
                         font-family: Tokens.font-ui;
-                        color: Tokens.gold;
+                        color: Tokens.accent;
                         font-size: Tokens.font-size-md;
                         vertical-alignment: center;
                         accessible-role: text-input;
@@ -543,7 +543,7 @@ export component StartupChooserDialog inherits Rectangle {
                     width: 110px;
                     height: 32px;
                     text: root.key-label;
-                    color: Tokens.gold;
+                    color: Tokens.accent;
                     font-size: Tokens.font-size-md;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -632,7 +632,7 @@ export component StartupChooserDialog inherits Rectangle {
                     width: 28px;
                     height: 32px;
                     text: root.time-num;
-                    color: Tokens.gold;
+                    color: Tokens.accent;
                     font-size: Tokens.font-size-md;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -720,7 +720,7 @@ export component StartupChooserDialog inherits Rectangle {
                     width: 28px;
                     height: 32px;
                     text: ["1", "2", "4", "8", "16", "32"][root.time-den-index];
-                    color: Tokens.gold;
+                    color: Tokens.accent;
                     font-size: Tokens.font-size-md;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -775,10 +775,10 @@ export component StartupChooserDialog inherits Rectangle {
                     y: 122px;
                     width: 84px;
                     height: 28px;
-                    background: root.rate-index == rate-idx ? Tokens.bg-raised : Tokens.bg-void;
+                    background: root.rate-index == rate-idx ? Tokens.accent.mix(Tokens.bg-lane2, 0.16) : Tokens.bg-lane2;
                     border-radius: Tokens.radius-sm;
                     border-width: root.rate-index == rate-idx ? 1px : 0px;
-                    border-color: Tokens.gold-deep;
+                    border-color: Tokens.line;
                     accessible-role: button;
                     accessible-id: "startup-rate-chip-" + rate-idx;
                     accessible-label: @tr("采样率");
@@ -790,7 +790,7 @@ export component StartupChooserDialog inherits Rectangle {
                         width: parent.width;
                         height: parent.height;
                         text: rate-label;
-                        color: root.rate-index == rate-idx ? Tokens.gold-bright : Tokens.ink-1;
+                        color: root.rate-index == rate-idx ? Tokens.ink-0 : Tokens.ink-1;
                         font-size: Tokens.font-size-sm;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -812,7 +812,7 @@ export component StartupChooserDialog inherits Rectangle {
             y: 68px;
             width: parent.width - 200px - 24px;
             height: parent.height - 68px - 64px;
-            background: Tokens.bg-void;
+            background: Tokens.bg-lane2;
             border-radius: Tokens.radius-md;
             border-width: 1px;
             border-color: Tokens.line;
@@ -931,7 +931,7 @@ export component StartupChooserDialog inherits Rectangle {
                             width: parent.width - 72px;
                             height: parent.height;
                             text: row.label;
-                            color: row.kind == 0 ? Tokens.gold-bright : Tokens.ink-1;
+                            color: row.kind == 0 ? Tokens.ink-0 : Tokens.ink-1;
                             font-size: row.kind == 0 ? Tokens.font-size-sm : Tokens.font-size-xs;
                             vertical-alignment: center;
                             overflow: elide;
@@ -1061,10 +1061,13 @@ export component StartupChooserDialog inherits Rectangle {
             y: parent.height - 52px;
             width: 132px;
             height: 36px;
-            background: Tokens.bg-raised;
+            // 主操作用实心 accent（与主界面 transport 的"主按钮"同一套），
+            // 取消保持中性面 —— 一眼能分出"确认"和"退出"。
+            background: Tokens.accent;
             border-radius: Tokens.radius-md;
             border-width: 1px;
-            border-color: Tokens.gold-deep;
+            border-color: Tokens.accent;
+            // 不可点时压到 45%：CTA 是实心 accent，必须留一个"灰掉"的明确信号。
             opacity: root.category == 0 || root.selected-entry >= 0 ? 1.0 : 0.45;
             accessible-role: button;
             accessible-id: "startup-confirm-button";
@@ -1080,7 +1083,7 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 text: root.category == 0 ? @tr("创建新工程") : @tr("打开");
-                color: Tokens.gold-bright;
+                color: Tokens.ink-0;
                 font-size: Tokens.font-size-md;
                 horizontal-alignment: center;
                 vertical-alignment: center;

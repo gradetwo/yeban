@@ -310,11 +310,11 @@ export global Tokens {
     //   `theme == brand  ? <本仓品牌深色的十六进制字面量>` —— 一位未改, 但**不再是默认外观**
     //   `theme == inkmoor/plume ? <负责人另两套字面量>`    —— 见 §6e
     //   否则              `<Palette.*>`                    —— 设计系统角色 (四个内建风格名)
-    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #121417 : #22262a) : (ThemeState.theme == YebanTheme.inkmoor ? #0e1114 : (ThemeState.theme == YebanTheme.plume ? #14100d : Palette.background)));
-    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #171a1d : #30343b) : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.background)));
-    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #1b1f23 : #30343b) : (ThemeState.theme == YebanTheme.inkmoor ? #141920 : (ThemeState.theme == YebanTheme.plume ? #1b1512 : Palette.alternate-background)));
-    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #20242a : #30343b) : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
-    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #272c32 : #373c44) : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
+    out property <color> bg-void: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #121314 : #22262a) : (ThemeState.theme == YebanTheme.inkmoor ? #0e1114 : (ThemeState.theme == YebanTheme.plume ? #14100d : Palette.background)));
+    out property <color> bg-shell: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #171819 : #30343b) : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.background)));
+    out property <color> bg-panel: ThemeState.theme == YebanTheme.brand ? #151d38 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #1b1d1f : #30343b) : (ThemeState.theme == YebanTheme.inkmoor ? #141920 : (ThemeState.theme == YebanTheme.plume ? #1b1512 : Palette.alternate-background)));
+    out property <color> bg-panel-alt: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #202224 : #30343b) : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
+    out property <color> bg-raised: ThemeState.theme == YebanTheme.brand ? #232f5c : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #27292c : #373c44) : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
 
     // ---------------------------------------------------------------------
     // 6b. `yeban` 的取值 —— 2026-10-07 负责人下发的**指定调色板** (HTML mock)
@@ -335,8 +335,8 @@ export global Tokens {
     //
     // 令牌 ← 负责人取值 ← 负责人色名 / 角色 (逐条, 一个数字都没改):
     //   bg-void        <- #0e1216  玄夜      bg-base    主背景
-    //   bg-shell       <- #11161c  墨池      bg-lane    内凹/交替面 (混音条、设备架、卷帘网格)
-    //   bg-lane        <- #11161c  墨池      bg-lane    轨道车道 (偶)
+    //   bg-shell       <- #141517  墨池      bg-lane    内凹/交替面 (混音条、设备架、卷帘网格)
+    //   bg-lane        <- #141517  墨池      bg-lane    轨道车道 (偶)
     //   bg-lane2       <- #0d1116  墨池·深   bg-lane2   轨道车道 (奇)
     //   bg-panel       <- #131a22  黛蓝·暗   bg-panel   面板 / 走带条
     //   bg-head        <- #161e28  鸦青·暗   bg-head    轨道包头 (奇; 偶仍用 bg-panel)
@@ -379,13 +379,13 @@ export global Tokens {
     //     「交替面板」与「包头」在我们是两个角色 ⇒ 共用同一级。
     //   - `bg-control` 与 `bg-raised` 同值 (绀灰 #1e2733): 比 鸦青·暗 再亮一级的只有 绀灰,
     //     而保存键的板必须比 AI 徽章的板亮 (顶栏撞色缺陷的修法, 见 §6c)。
-    //   - `bg-shell` 与 `bg-lane` 同值 (墨池 #11161c): 负责人只给了一级「轨道车道」,
+    //   - `bg-shell` 与 `bg-lane` 同值 (墨池 #141517): 负责人只给了一级「轨道车道」,
     //     我们的「内凹/交替面」没有独立名字 ⇒ 落在同一级。
     //   - `accent` 与 `gold` 同为 渔火 #c6a47c: 负责人的角色表把 渔火 同时给了「主强调」与
     //     「片段」⇒ **暖强调色相唯一**(整个 yeban 只有一个暖强调色), 但**令牌不唯一**。
-    out property <color> bg-lane: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #1d2126 : #2b3036) : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.alternate-background)));
-    out property <color> bg-lane2: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #191d21 : #272c31) : (ThemeState.theme == YebanTheme.inkmoor ? #0f1317 : (ThemeState.theme == YebanTheme.plume ? #151110 : Palette.background)));
-    out property <color> bg-head: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #242930 : #31363c) : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
+    out property <color> bg-lane: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #1d1f21 : #2b3036) : (ThemeState.theme == YebanTheme.inkmoor ? #12161b : (ThemeState.theme == YebanTheme.plume ? #181310 : Palette.alternate-background)));
+    out property <color> bg-lane2: ThemeState.theme == YebanTheme.brand ? #060a14 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #191b1d : #272c31) : (ThemeState.theme == YebanTheme.inkmoor ? #0f1317 : (ThemeState.theme == YebanTheme.plume ? #151110 : Palette.background)));
+    out property <color> bg-head: ThemeState.theme == YebanTheme.brand ? #0d1326 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #232629 : #31363c) : (ThemeState.theme == YebanTheme.inkmoor ? #171c24 : (ThemeState.theme == YebanTheme.plume ? #1f1814 : Palette.alternate-background)));
 
     // ---------------------------------------------------------------------
     // 6b-bis. 旧的采样推导 (2026-10-06, 提交 a19b2e0) —— **已被取代, 留档不复用**
@@ -457,7 +457,7 @@ export global Tokens {
     //     品牌调色板改名 `--theme brand`(取值一位未改、仍可选), `yeban` 保留为别名;
     //     代价照实记为 5 张 Linux 基准走手动档 `gates-manual.yml` 的 `gate=goldens`
     //     重录 + 人工复核 (`HD-56`)。上一段的"默认像素不动"是**当时**的权衡读数, 不改写。
-    out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #272c32 : #373c44) : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
+    out property <color> bg-control: ThemeState.theme == YebanTheme.brand ? #1b2447 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #27292c : #373c44) : (ThemeState.theme == YebanTheme.inkmoor ? #1d232d : (ThemeState.theme == YebanTheme.plume ? #271f19 : Palette.control-background)));
     out property <color> accent: ThemeState.theme == YebanTheme.brand ? #d94a4a : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #6fb8a4 : #6d94c4) : (ThemeState.theme == YebanTheme.inkmoor ? #c9a26b : (ThemeState.theme == YebanTheme.plume ? #c68252 : Palette.accent-background)));
 
     // 文字/墨色与次级灰蓝。设计系统侧没有"三级灰"这个角色, 用 foreground →
@@ -467,8 +467,8 @@ export global Tokens {
     out property <color> ink-2: ThemeState.theme == YebanTheme.brand ? #5a6b8a : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #828b95 : #99a2ad) : (ThemeState.theme == YebanTheme.inkmoor ? #6a6f78 : (ThemeState.theme == YebanTheme.plume ? #6f665a : Palette.control-foreground)));
 
     // 分隔线与栅格 (发丝线: 负责人的 stroke / stroke2 两级)
-    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #2e343b : #414751) : (ThemeState.theme == YebanTheme.inkmoor ? #20242b : (ThemeState.theme == YebanTheme.plume ? #2a2520 : Palette.border)));
-    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #3c444d : #525963) : (ThemeState.theme == YebanTheme.inkmoor ? #282d35 : (ThemeState.theme == YebanTheme.plume ? #332d26 : Palette.border)));
+    out property <color> line: ThemeState.theme == YebanTheme.brand ? #1e2745 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #2d3033 : #414751) : (ThemeState.theme == YebanTheme.inkmoor ? #20242b : (ThemeState.theme == YebanTheme.plume ? #2a2520 : Palette.border)));
+    out property <color> line-strong: ThemeState.theme == YebanTheme.brand ? #2c3a63 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #3b3e42 : #525963) : (ThemeState.theme == YebanTheme.inkmoor ? #282d35 : (ThemeState.theme == YebanTheme.plume ? #332d26 : Palette.border)));
     // ── §13 皮肤层 (Skin) ────────────────────────────────────────────────
     // 目的: 把历史上散落在各界面文件里的硬编码叠色, 收敛成一组语义化令牌。
     // 新增皮肤只需实现本段 (以及 §6 核心色板), 不必再改 arrangement/lower_dock 等。
@@ -487,10 +487,15 @@ export global Tokens {
     out property <color> skin-scrim: #000000.with-alpha(0.35);
 
     // 控件面 (不透明纯色)
-    out property <color> skin-inset: texture-physical ? #0c0f11 : #1a1e22;
+    out property <color> skin-inset: texture-physical ? #0d0e10 : #1a1e22;
     out property <color> skin-chip: texture-physical ? #23282e : #343a41;
     out property <color> skin-chip-hover: texture-physical ? #2c3238 : #3e444b;
-    out property <color> skin-lane-alt: texture-physical ? #191d21 : #21252a;
+    out property <color> skin-lane-alt: texture-physical ? #191b1d : #21252a;
+    // 钢琴卷帘音高行两档（2026-11-18：车道必须能一眼分出行，白键行亮、黑键行暗）。
+    // 音高行两档：flat 只留"半个黑键"的差（#2d3238 / #272c31，ΔL≈4%），
+    // 否则 14px 一行的高频横条会在整屏铺成"斑马纹"，看久了眼睛累。
+    out property <color> roll-lane-white: texture-physical ? #202427 : #2d3238;
+    out property <color> roll-lane-black: texture-physical ? #181b1e : #272c31;
     out property <color> skin-ghost: texture-physical ? #353b42 : #464c54;
 
     // 状态色 (低饱和, 仅激活时出现, 避免视觉中心花花绿绿)
@@ -502,10 +507,10 @@ export global Tokens {
     out property <color> skin-meter-hot: texture-physical ? #b0655f : #bd6a63;
 
     // 轨道区网格 (背景层；Logic 式低反差——线只比车道底亮一档，不抢画面)
-    out property <color> skin-grid-row: texture-physical ? #16191d : #23272c;   // 行底分隔线 (深于底色)
-    out property <color> skin-grid-bar: texture-physical ? #2a3037 : #3c424a;   // 小节线
-    out property <color> skin-grid-beat: texture-physical ? #242930 : #343a42;  // 拍线
-    out property <color> skin-grid-sub: texture-physical ? #212529 : #30353d;   // 拍内细分线
+    out property <color> skin-grid-row: texture-physical ? #232629 : #333941;   // 行底线（只比底色亮半档，不抢视线）
+    out property <color> skin-grid-bar: texture-physical ? #2c3237 : #3d444d;   // 小节线
+    out property <color> skin-grid-beat: texture-physical ? #262b2e : #363c45;  // 拍线
+    out property <color> skin-grid-sub: texture-physical ? #212528 : #30363e;   // 拍内细分
 
     // 旋钮帽阶梯 (10 档, 供 controls/knob.slint 的 cap-steps 使用)
     out property <[color]> knob-cap-steps: [#1e262e, #212a31, #242d35, #273039, #2a333c, #2d363f, #2f3942, #323c45, #353f49, #37424c];
@@ -835,19 +840,19 @@ export global Tokens {
     // physical 是一套独立色板 ⇒ brand / yeban 两支的 physical 停点
     // 收敛为同一组值, 不再按配色主题分叉; flat 分支一位不动。
     out property <brush> panel-brush: !texture-physical ? @linear-gradient(180deg, bg-panel, bg-panel)
-        : @linear-gradient(180deg, #262f37, #1b2329 45%, #141a1f);
+        : @linear-gradient(180deg, #242628, #1c1e20 45%, #17181a);
     out property <brush> panel-alt-brush: !texture-physical ? @linear-gradient(180deg, bg-panel-alt, bg-panel-alt)
-        : @linear-gradient(180deg, #2e3740, #232b33 45%, #1b2329);
+        : @linear-gradient(180deg, #2a2c2e, #1d1f21 45%, #191a1c);
     out property <brush> shell-brush: !texture-physical ? @linear-gradient(180deg, bg-shell, bg-shell)
-        : @linear-gradient(180deg, #20282f, #171f26 45%, #11161c);
+        : @linear-gradient(180deg, #1e2022, #18191b 45%, #141516);
     // 2026-11-17 加码一档 (二期复盘「差别不大」+ Logic 口径: 加码只进
     // 交互控件 —— 本刷是推子帽/按键/开关头的帽面刷, 属交互件): 亮端与
     // 暗端各再拉开一步, 中停点基本不动, 帽面受光/背光一眼可分。
     out property <brush> raised-brush: !texture-physical ? @linear-gradient(180deg, bg-raised, bg-raised)
-        : @linear-gradient(180deg, #3e4a54, #2e3a41 50%, #232b31);
+        : @linear-gradient(180deg, #36393c, #2a2d30 50%, #1f2124);
     /// 凹陷 / 熄灭面 (旁通卡片、表槽、推子轨槽的底)。
     out property <brush> void-brush: !texture-physical ? @linear-gradient(180deg, bg-void, bg-void)
-        : @linear-gradient(180deg, #0a0e12, #0e1318 55%, #131a20);
+        : @linear-gradient(180deg, #0b0d0f, #101214 55%, #15171a);
 
     // ---- 阴影 (投影恒落向右下 = 光源左上的唯一解) -------------------------
     out property <color> shadow-color: #000000;
@@ -888,7 +893,7 @@ export global Tokens {
         : @radial-gradient(circle, #3a454f, #252e36 55%, #12181e);
     /// 旋钮底座环 (刻度环的座): 比面板深一档的环色 (加码后更深一格,
     /// 衬出刻度环与旋帽)。
-    out property <color> knob-ring: texture-physical ? #0a0e12 : line;
+    out property <color> knob-ring: texture-physical ? #0b0d0f : line;
     /// 哑光高光弧: 白色 16% (2026-11-17 加码, 原 10%), 只出现在旋帽的
     /// **左上**象限 (光源方向)。
     out property <color> knob-highlight: #ffffff.with-alpha(texture-physical ? 0.12 : 0.0);
@@ -1008,20 +1013,25 @@ export global Tokens {
 // 编曲区轨道头 (未选中行): flat = 现行字面 #0b0e16; physical = 磨砂
 // 金属微渐变 (顶受光 / 底沉降, 与 panel-brush 同族)。
 out property <brush> track-head-brush: texture-physical
-    ? @linear-gradient(180deg, #232c34, #1b2329 45%, #141a1f)
+    ? @linear-gradient(180deg, #232c34, #1d1f22 45%, #15171a)
     : @linear-gradient(180deg, #0b0e16, #0b0e16);
 // 钢琴卷帘键列: 白键帽 (键面本身) / 黑键行底 / 黑键突起帽。
 // 2026-11-17 对色: 三刷 physical 停点换 Bitwig 键面家族 (白键浅
 // 蓝灰 / 黑键深蓝灰), flat 分支一位不动。
 out property <brush> roll-key-white-brush: texture-physical
     ? @linear-gradient(180deg, #d2d7db, #b7bdc2 55%, #989fa5)
-    : @linear-gradient(180deg, #e4e9f2, #e4e9f2);
+    : @linear-gradient(180deg, #d9dfe9, #d9dfe9);
 out property <brush> roll-key-black-brush: texture-physical
-    ? @linear-gradient(180deg, #242d33, #1b2329 55%, #131a1f)
+    ? @linear-gradient(180deg, #242d33, #1d1f22 55%, #131a1f)
     : @linear-gradient(180deg, #191e2b, #191e2b);
 out property <brush> roll-key-cap-brush: texture-physical
     ? @linear-gradient(180deg, #1a2229, #11171d 60%, #0a0f14)
     : @linear-gradient(180deg, #0b0e15, #0b0e15);
+// 键列配套色（2026-11-18 真实黑白键改造新增）：白键分隔线 / 黑键描边 / 白键上的音名墨色。
+// 纪律同全表：不透明 6 位 #rrggbb，纹理差异用三元，不用 alpha。
+out property <color> roll-key-split: texture-physical ? #a3a9ae : #c9cfd9;
+out property <color> roll-key-edge: texture-physical ? #06090b : #0d1118;
+out property <color> roll-key-ink: texture-physical ? #39404a : #5b646f;
 }
 
 // 全部文本图元的统一起点: 一处固定字体族 / 字重与默认墨色, 免得 81 个 Text 各写一遍。
@@ -1438,28 +1448,28 @@ export global Theme {
     //     `ThemeState.theme` 的多选一表达式 ⇒ 自绘调色板真正流到窗口绘制。
     // ⛔ 不新增十六进制字面量：所有颜色仍以 `Tokens` 为唯一事实源。
     out property <color> bg-canvas:
-        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #1d2126 : (
+        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #1d1f21 : (
             persona == PersonaMode.AbletonLive ? #23272c :
             persona == PersonaMode.LogicPro    ? #262a30 :
             persona == PersonaMode.CubasePro   ? #24282d : #272b31
         )) : Tokens.bg-void;
 
     out property <color> bg-panel:
-        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #1b1f23 : (
+        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #1b1d1f : (
             persona == PersonaMode.AbletonLive ? #282c32 :
             persona == PersonaMode.LogicPro    ? #2a2e34 :
             persona == PersonaMode.CubasePro   ? #272b31 : #2b2f35
         )) : Tokens.bg-shell;
 
     out property <color> bg-surface:
-        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #20242a : (
+        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #202224 : (
             persona == PersonaMode.AbletonLive ? #2e3238 :
             persona == PersonaMode.LogicPro    ? #30343a :
             persona == PersonaMode.CubasePro   ? #2d3137 : #31353b
         )) : Tokens.bg-panel;
 
     out property <color> border-subtle:
-        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #2e343b : (
+        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #2d3033 : (
             persona == PersonaMode.AbletonLive ? #3a4048 :
             persona == PersonaMode.LogicPro    ? #3c424a :
             persona == PersonaMode.CubasePro   ? #383e46 : #3e444c
@@ -1477,7 +1487,7 @@ export global Theme {
         persona == PersonaMode.CubasePro   ? 3px : 4px;
 
     out property <color> header-bg:
-        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #242930 : (
+        ThemeState.theme == YebanTheme.yeban ? (Tokens.texture-physical ? #232629 : (
             persona == PersonaMode.AbletonLive ? #2a2e35 :
             persona == PersonaMode.LogicPro    ? #2c3037 :
             persona == PersonaMode.CubasePro   ? #292d34 : #2d3138

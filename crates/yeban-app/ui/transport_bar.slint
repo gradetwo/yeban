@@ -616,16 +616,19 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group A: Brand Mark (Official Studio Logo Mark)
             Rectangle {
-                // 二期质感: 品牌块走 §10 外壳刷 (flat = 现行字面 Tokens.bg-panel)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-panel;
+                // 二期质感: 品牌块走 §10 外壳刷。扁平支**不再给背板** (2026-11-19 口径:
+                // 扁平工具条上的图标按钮不许带一块常驻方块, 只剩图标本体; 拟物保留实体铭牌)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : transparent;
                 border-radius: 4px;
-                border-width: 1px;
+                border-width: Tokens.texture-physical ? 1px : 0px;
                 border-color: Tokens.line-strong;
                 width: 36px;
                 height: 28px;
 
                 Image {
-                    source: @image-url("../../../assets/brand/png/yeban-dark-64.png");
+                    // 扁平支用抠掉底色的月亮 (`yeban-moon-keyed-64.png`，由 dark 版图标
+                    // 逐像素 alpha key 得到)：品牌按钮不再带一块深蓝方块；拟物支保留实体铭牌图。
+                    source: Tokens.texture-physical ? @image-url("../../../assets/brand/png/yeban-dark-64.png") : @image-url("../../../assets/brand/png/yeban-moon-keyed-64.png");
                     width: 24px;
                     height: 24px;
                     x: (parent.width - self.width) / 2;
@@ -637,10 +640,10 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
             Rectangle {
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
+                // 二期质感: 组板走 §10 外壳刷。扁平支 no plate (见品牌块同条注释)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : transparent;
                 border-radius: Theme.radius;
-                border-width: 1px;
+                border-width: Tokens.texture-physical ? 1px : 0px;
                 border-color: Tokens.line;
                 height: 28px;
 
@@ -653,7 +656,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-browser ? Tokens.bg-raised : transparent;
+                        background: root.show-browser ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.show-browser ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -673,7 +676,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-clipmatrix ? Tokens.bg-raised : transparent;
+                        background: root.show-clipmatrix ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.show-clipmatrix ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -693,7 +696,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-lower-dock ? Tokens.bg-raised : transparent;
+                        background: root.show-lower-dock ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.show-lower-dock ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -713,7 +716,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-control-room ? Tokens.bg-raised : transparent;
+                        background: root.show-control-room ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.show-control-room ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -733,10 +736,10 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group C: Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
             Rectangle {
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
+                // 二期质感: 组板走 §10 外壳刷。扁平支 no plate (见品牌块同条注释)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : transparent;
                 border-radius: Theme.radius;
-                border-width: 1px;
+                border-width: Tokens.texture-physical ? 1px : 0px;
                 border-color: Tokens.line;
                 height: 28px;
 
@@ -749,7 +752,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "pointer" ? Tokens.bg-raised : transparent;
+                        background: root.active-tool == "pointer" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "pointer" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -768,7 +771,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "range" ? Tokens.bg-raised : transparent;
+                        background: root.active-tool == "range" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "range" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -787,7 +790,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "split" ? Tokens.bg-raised : transparent;
+                        background: root.active-tool == "split" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "split" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -806,7 +809,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "draw" ? Tokens.bg-raised : transparent;
+                        background: root.active-tool == "draw" ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "draw" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -832,10 +835,11 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group D: Cohesive Logic 12 Transport Control Cluster (Unified height, styling, vector iconography, and balanced visual weight)
             Rectangle {
-                // 二期质感: 走带簇底板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2); 簇内按钮状态色不动。
-                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
+                // 二期质感: 走带簇底板走 §10 外壳刷。扁平支 no plate (见品牌块同条注释);
+                // 簇内按钮状态色不动。
+                background: Tokens.texture-physical ? Tokens.shell-brush : transparent;
                 border-radius: 5px;
-                border-width: 1px;
+                border-width: Tokens.texture-physical ? 1px : 0px;
                 border-color: Tokens.bg-lane2;
                 height: 28px;
 
@@ -1201,7 +1205,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.YebanDefault ? Tokens.bg-raised : transparent;
+                        background: Theme.persona == PersonaMode.YebanDefault ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: Theme.persona == PersonaMode.YebanDefault ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
@@ -1239,7 +1243,7 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.LogicPro ? Tokens.bg-raised : transparent;
+                        background: Theme.persona == PersonaMode.LogicPro ? Tokens.selection.mix(Tokens.bg-shell, 0.16) : transparent;
                         border-radius: 3px;
                         border-width: Theme.persona == PersonaMode.LogicPro ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);

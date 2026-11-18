@@ -838,13 +838,14 @@ export component UnifiedLowerDock inherits Rectangle {
                     for trk[tidx] in root.tracks : Rectangle {
                         width: 82px;
                         vertical-stretch: 1;
-                        // 一期质感: physical 走 §10 面板刷 + 面板级落影; flat 分支保留旧值，
-                        // 且选中不靠色边框：底色提亮一档承载（Tokens.bg-shell 向白混合 3% ⇒ Tokens.skin-inset，
-                        // 相对亮度约 1.7 倍，与编曲选中提亮同量级）。
-                        background: Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.skin-inset : Tokens.bg-shell);
+                        // flat：选中不做"换一档灰"，而是和编曲轨道头同一套语言——
+                        // 条面蘸一点 accent（bg-shell 混 14% accent），读作"这条被选中"，
+                        // 又不会像 skin-inset 那样在通道条上砸出一块比邻居更暗的洞。
+                        background: Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.accent.mix(Tokens.bg-shell, 0.14) : Tokens.bg-shell);
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: Tokens.skin-chip;
+                        // 选中在两套主题里都留一个明确的身份边（physical 没有色差，只能靠边框）。
+                        border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.85) : Tokens.skin-chip;
                         drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
                         drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
                         drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
@@ -1018,8 +1019,9 @@ export component UnifiedLowerDock inherits Rectangle {
                             // 4. EQ Curve Preview (Revealed when maximized)
                             if root.console-maximized : Rectangle {
                                 height: 30px;
-                                // 一期质感: flat 分支保留旧值; physical 走 §10 玻璃刷。
-                                background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-shell;
+                                // 通道条本体已经是 bg-shell，内嵌屏再取同一色就"看不见这块屏"；
+                                // 凹槽统一走 bg-lane2（比条体暗一档，读作"嵌进去"）。
+                                background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Tokens.skin-chip;
@@ -1377,8 +1379,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 50px;
                                     height: 17px;
-                                    // 一期质感: flat 分支保留旧值; physical 走壳面刷。
-                                    background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;
+                                    // dB 读数牌：与通道条本体拉开一档，否则 flat 下整块与条面同色、看不出来。
+                                    background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: Tokens.skin-chip;
@@ -1719,8 +1721,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 50px;
                                     height: 17px;
-                                    // 一期质感: flat 分支保留旧值; physical 走壳面刷。
-                                    background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;
+                                    // dB 读数牌：与通道条本体拉开一档，否则 flat 下整块与条面同色、看不出来。
+                                    background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: Tokens.skin-chip;
@@ -1765,8 +1767,9 @@ export component UnifiedLowerDock inherits Rectangle {
                     Rectangle {
                         width: 92px;
                         vertical-stretch: 1;
-                        // 一期质感: flat 分支保留旧值; physical 走 §10 壳面刷 + 面板级落影。
-                        background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
+                        // 面板底与其它通道条同一档（flat = bg-shell），身份靠青绿描边 + MASTER 徽章，
+                        // 不靠"整条换一个更暗的底色"——那会让总线看起来像掉进凹槽里。
+                        background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-shell;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: Theme.accent.with-alpha(0.35);
@@ -2086,8 +2089,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                 Rectangle {
                                     width: 50px;
                                     height: 17px;
-                                    // 一期质感: flat 分支保留旧值; physical 走壳面刷。
-                                    background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;
+                                    // dB 读数牌：与通道条本体拉开一档，否则 flat 下整块与条面同色、看不出来。
+                                    background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                                     border-radius: 2px;
                                     border-width: 1px;
                                     border-color: Tokens.skin-chip;
@@ -2131,8 +2134,9 @@ export component UnifiedLowerDock inherits Rectangle {
                     // Empty / Add Channel Strip Slot in Mixer mode (Fixed width: 72px)
                     if root.active-tab == "mixer" : Rectangle {
                         width: 72px;
-                        // 一期质感: flat 分支保留悬停/常态原值; physical 走凹面刷 (悬停面板刷)。
-                        background: Tokens.texture-physical ? (add_mix_trk_touch.has-hover ? Tokens.panel-brush : Tokens.void-brush) : (add_mix_trk_touch.has-hover ? Tokens.bg-lane : Tokens.bg-lane2);
+                        // 空槽不再用 void-brush（拟物下等于一个近黑窟窿，与页面底色断层）；
+                        // 统一 bg-lane2 + 1px 描边，读成"一个可放通道的空位"。
+                        background: add_mix_trk_touch.has-hover ? Tokens.panel-brush : Tokens.bg-lane2;
                         border-radius: 4px;
                         border-width: 1px;
                         border-color: add_mix_trk_touch.has-hover ? Theme.accent : Tokens.line;

@@ -273,7 +273,7 @@ export component MixerConsole inherits Rectangle {
     // ⛔ 这里不隐藏任何控件：窄档只是换座位（`#186` 的判据要求所有控件仍在树里）。
     property <bool> narrow: root.width < 1182px;
 
-    background: Tokens.bg-void;
+    background: Tokens.bg-lane;
     clip: true;
 
     accessible-role: region;
@@ -513,7 +513,7 @@ export component MixerConsole inherits Rectangle {
             height: parent.height - 16px;
             // brush 令牌在 flat 时恒等于对应的扁平纯色 (panel = bg-panel /
             // shell = bg-shell), 故无条件绑 brush, 不写模式三元。
-            background: track_index.mod(2) == 0 ? Tokens.panel-brush : Tokens.shell-brush;
+            background: Tokens.panel-brush;
             border-radius: Tokens.radius-md;
             border-width: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? 2px : (Tokens.texture-physical ? 0px : 1px);
             border-color: (root.selected-track-id != "" && root.selected-track-id == root.track-ids[track_index]) ? Tokens.gold : Tokens.line;
@@ -731,7 +731,7 @@ export component MixerConsole inherits Rectangle {
                 y: 208px;
                 width: 18px;
                 height: 16px;
-                background: Tokens.bg-void;
+                background: Tokens.bg-lane2;
                 border-radius: Tokens.radius-sm;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -769,7 +769,7 @@ export component MixerConsole inherits Rectangle {
                 y: 228px;
                 width: 40px;
                 height: 16px;
-                background: Tokens.bg-void;
+                background: Tokens.bg-lane2;
                 border-radius: Tokens.radius-sm;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -806,7 +806,7 @@ export component MixerConsole inherits Rectangle {
                 y: 228px;
                 width: 40px;
                 height: 16px;
-                background: Tokens.bg-void;
+                background: Tokens.bg-lane2;
                 border-radius: Tokens.radius-sm;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -859,7 +859,7 @@ export component MixerConsole inherits Rectangle {
                 y: 262px;
                 width: 18px;
                 height: 16px;
-                background: Tokens.bg-void;
+                background: Tokens.bg-lane2;
                 border-radius: Tokens.radius-sm;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -907,7 +907,7 @@ export component MixerConsole inherits Rectangle {
                 y: 262px;
                 width: 18px;
                 height: 16px;
-                background: Tokens.bg-void;
+                background: Tokens.bg-lane2;
                 border-radius: Tokens.radius-sm;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -1029,7 +1029,7 @@ export component MixerConsole inherits Rectangle {
         y: Tokens.space-4;
         width: 104px;
         height: parent.height - 16px;
-        background: Tokens.panel-alt-brush;
+        background: Tokens.panel-brush;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.gold-deep;

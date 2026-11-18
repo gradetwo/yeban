@@ -899,13 +899,13 @@ export component ArrangementViewport inherits Rectangle {
                 content-width: self.width;
                 content-height: max(self.height, root.sheet-height + 42px + 46px);
                 interactive: true;
-                // ─── 轨道区背景网格（整幅铺满）───────────────────────
-                // 负责人 2026-11-18 口径：网格是**背景**，不是行内装饰——
-                // 一层铺满 Flickable 全高（含轨道行与下方空置区），空轨道
-                // 与空置区同样有网格；层级自下而上 =
-                // 车道底色 → 行分隔线 → 小节/拍/细分线 → 行选中态 → 片段。
-                // 两套主题同一套 mark：同 x、同 1px、同门槛，只有线色不同
-                //（§13 skin-grid-*，Logic 式低反差：线只比底色亮一档）。
+                // ─── 轨道区背景网格（铺满整块车道区）──────────────────
+                // 2026-11-18 口径（负责人）：
+                //   ① **轨道头列是纯色面**，不许出现任何格线（横向/纵向都不许）；
+                //   ② 水平行线铺满整个车道编辑区——空轨道、轨道列表以下的
+                //      空置区、滚动出来的区域都要有线，线距沿用最后一轨的行高；
+                //   ③ 网格是背景，竖线压在水平行线之上；两套主题同一套 mark。
+                // 层级自下而上 = 底色 → 轨道头纯色列 → 行线 → 小节/拍/细分 → 行选中态。
                 Rectangle {
                     x: 0px;
                     y: 0px;
@@ -913,64 +913,99 @@ export component ArrangementViewport inherits Rectangle {
                     height: max(parent.height, root.sheet-height + 88px);
                     background: Tokens.bg-lane;
 
-                    // 行底分隔线（先画，网格后画 ⇒ 竖线压在横线之上）
-                    for _row[idx] in root.tracks : Rectangle {
-                        x: 0px;
-                        y: root.track-ys[idx] + root.track-heights[idx] - 1px;
-                        width: parent.width;
-                        height: 1px;
-                        background: Tokens.skin-grid-row;
+                    // ① 轨道头列：纯色背景，不叠网格
+                    Rectangle {
+                        x: Theme.track-headers-on-right ? parent.width - root.headers-width : 0px;
+                        y: 0px;
+                        width: root.headers-width;
+                        height: parent.height;
+                        background: Tokens.bg-panel;
                     }
 
-                    // 小节线
-                    for _bar in root.bar-count : Rectangle {
-                        visible: (root.bar-start-index + _bar).mod(max(1, root.grid-line-unit)) == 0;
-                        x: ((root.bar-start-index + _bar) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _bar] : (root.bar-start-index + _bar) * root.bar-width-px) - root.scroll-x;
+                    // ② 车道容器：所有格线只在这一块里画，x 从车道原点起算
+                    arr_lane_bg := Rectangle {
+                        x: Theme.track-headers-on-right ? 0px : root.headers-width;
                         y: 0px;
-                        width: 1px;
+                        width: parent.width - root.headers-width;
                         height: parent.height;
-                        background: Tokens.skin-grid-bar;
-                    }
+                        background: Tokens.bg-lane;
+                        clip: true;
 
-                    // 拍线 + 拍内细分（每拍 >= 24px 画拍线；>= 48px 再画 1/4 细分）
-                    for _beat_bar in root.bar-count : Rectangle {
-                        x: ((root.bar-start-index + _beat_bar) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _beat_bar] : (root.bar-start-index + _beat_bar) * root.bar-width-px) - root.scroll-x;
-                        y: 0px;
-                        width: root.bar-width-px;
-                        height: parent.height;
-                        background: transparent;
+                        // 行线续画到整区所需的几何（末尾一行以下的空置区同样有线）
+                        property <length> lane-bottom: root.track-heights.length > 0
+                            ? root.track-ys[root.track-heights.length - 1] + root.track-heights[root.track-heights.length - 1]
+                            : 0px;
+                        property <length> ghost-pitch: root.track-heights.length > 0
+                            ? max(24px, root.track-heights[root.track-heights.length - 1])
+                            : 32px;
+                        property <int> ghost-rows: Math.max(0, Math.floor((parent.height - self.lane-bottom) / self.ghost-pitch));
 
-                        for beat in root.beats-per-bar : Rectangle {
-                            visible: beat > 0 && root.grid-show-lane-beats;
-                            x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                        // 行底分隔线（已有轨道）
+                        for _row[idx] in root.tracks : Rectangle {
+                            x: 0px;
+                            y: root.track-ys[idx] + root.track-heights[idx] - 1px;
+                            width: parent.width;
+                            height: 1px;
+                            background: Tokens.skin-grid-row;
+                        }
+
+                        // 行底分隔线（末轨以下续画，铺满整块编辑区）
+                        for _ghost in arr_lane_bg.ghost-rows : Rectangle {
+                            x: 0px;
+                            y: arr_lane_bg.lane-bottom + _ghost * arr_lane_bg.ghost-pitch + arr_lane_bg.ghost-pitch - 1px;
+                            width: parent.width;
+                            height: 1px;
+                            background: Tokens.skin-grid-row;
+                        }
+
+                        // 小节线
+                        for _bar in root.bar-count : Rectangle {
+                            visible: (root.bar-start-index + _bar).mod(max(1, root.grid-line-unit)) == 0;
+                            x: ((root.bar-start-index + _bar) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _bar] : (root.bar-start-index + _bar) * root.bar-width-px) - root.scroll-x;
                             y: 0px;
                             width: 1px;
                             height: parent.height;
-                            background: Tokens.skin-grid-beat;
+                            background: Tokens.skin-grid-bar;
+                        }
 
-                            for sub in [1, 2, 3] : Rectangle {
-                                visible: (root.bar-width-px / max(1, root.beats-per-bar)) >= 48px;
-                                x: sub * ((root.bar-width-px / max(1, root.beats-per-bar)) / 4);
+                        // 拍线 + 拍内细分（每拍 >= 24px 画拍线；>= 48px 再画 1/4 细分）
+                        for _beat_bar in root.bar-count : Rectangle {
+                            x: ((root.bar-start-index + _beat_bar) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _beat_bar] : (root.bar-start-index + _beat_bar) * root.bar-width-px) - root.scroll-x;
+                            y: 0px;
+                            width: root.bar-width-px;
+                            height: parent.height;
+                            background: transparent;
+
+                            for beat in root.beats-per-bar : Rectangle {
+                                visible: beat > 0 && root.grid-show-lane-beats;
+                                x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
-                                background: Tokens.skin-grid-sub;
+                                background: Tokens.skin-grid-beat;
+
+                                for sub in [1, 2, 3] : Rectangle {
+                                    visible: (root.bar-width-px / max(1, root.beats-per-bar)) >= 48px;
+                                    x: sub * ((root.bar-width-px / max(1, root.beats-per-bar)) / 4);
+                                    y: 0px;
+                                    width: 1px;
+                                    height: parent.height;
+                                    background: Tokens.skin-grid-sub;
+                                }
                             }
                         }
-                    }
 
-                    // 行选中态（半透明提亮，压在网格上、片段下）
-                    for _sel[idx] in root.tracks : Rectangle {
-                        visible: _sel.id == root.selected-track-id;
-                        x: 0px;
-                        y: root.track-ys[idx];
-                        width: parent.width;
-                        height: root.track-heights[idx];
-                        background: Theme.accent.with-alpha(0.06);
+                        // 行选中态（半透明提亮，压在网格上、片段下）
+                        for _sel[idx] in root.tracks : Rectangle {
+                            visible: _sel.id == root.selected-track-id;
+                            x: 0px;
+                            y: root.track-ys[idx];
+                            width: parent.width;
+                            height: root.track-heights[idx];
+                            background: Theme.accent.with-alpha(0.06);
+                        }
                     }
                 }
-
-
                 // 背景滚轮兜底（含顶部 42px 留白与末尾空白区），保证双指横向/纵向滑动在整块区域均响应
                 TouchArea {
                     x: 0px;

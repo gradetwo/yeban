@@ -140,6 +140,18 @@ export component PianoRoll inherits Rectangle {
     // 编辑面回平 (负责人 2026-11-17 拟物重点口径): 卷帘根底/网格/车道/
     // 力度泳道两套主题同为平色 (二期加的 §10/§12 刷已撤), 质感只留给
     // 工具按钮、键盘本体与右键菜单 (下方三元)。
+    // ── 可见音高窗口（2026-11-18 负责人口径）────────────────────────
+    // ① 行数随面板高度铺满：下坞拖高/最大化时，下方不再出现"没有格线
+    //    也没有琴键"的空白块（原实现固定 16 行 × 14px = 224px）。
+    // ② 下界锁在 MIDI 24（C0）：C0 以下不铺车道，避免一片空。
+    //    上界仍是投影的 `base-midi-pitch + 15`（row 0 最高音），音符
+    //    位置由 `note-ys` 注入、不随本窗口变化 ⇒ 前 16 行逐像素不变。
+    // ③ 最少 8 行：面板被拖到极矮时也保留可读的最小窗口。
+    property <int> visible-rows: Math.max(8, Math.floor((self.height - 28px) / 14px));
+    property <int> roll-rows: Math.min(self.visible-rows, Math.max(8, root.base-midi-pitch - 8));
+    function row-pitch(row: int) -> int { return root.base-midi-pitch + 15 - row; }
+    function row-is-white(row: int) -> bool { return root.white-key-pattern[root.row-pitch(row).mod(12)]; }
+
     background: Tokens.bg-void;
     clip: true;
 
@@ -165,9 +177,12 @@ export component PianoRoll inherits Rectangle {
         y: Tokens.space-2;
         width: 48px;
         height: 20px;
-        // 二期质感: 工具钮走 §10 凸起/面板刷 (flat 走色值支, 同根底注)。
-        background: root.active-tool-index == tool_index ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised) : (Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt);
+        // 二期质感: 工具钮走 §10 凸起/面板刷。扁平支 (2026-11-19 口径): 未选中**不留背板**
+        // —— 图标/文字直接落在工具条上, 选中才是唯一带底的那一格。
+        background: root.active-tool-index == tool_index ? (Tokens.texture-physical ? Tokens.raised-brush : Tokens.selection.mix(Tokens.bg-shell, 0.16)) : (Tokens.texture-physical ? Tokens.panel-alt-brush : transparent);
         border-radius: Tokens.radius-sm;
+        border-width: (root.active-tool-index == tool_index && !Tokens.texture-physical) ? 1px : 0px;
+        border-color: Tokens.selection.with-alpha(0.85);
         // 最前: 本组件末尾那条覆盖全高的滚动手势 `TouchArea` 也是 `root` 的兄弟,
         // 且声明在更后面。这条 `z` 让工具行**确定**先被本节点接住
         // (否则 Slint 的 `FrontToBack` 命中测试会把整块卷帘交给收发滚动手势的那一个)。
@@ -337,67 +352,91 @@ export component PianoRoll inherits Rectangle {
         }
     }
 
-    // ---------------------------------------------------------------- 琴键列 (真实黑白键帽质感与音名)
+    // ---------------------------------------------------------------- 琴键列 (真实黑白键: 白键连成平面, 黑键短一段插在上面)
+    // 2026-11-18 负责人口径：键列不再是"每行一块方砖"，改成真实钢琴的观感 ——
+    // 白键是一整片连续的浅色平面（只在 E|F、B|C 这种两个白键直接相邻处画
+    // 分隔线），黑键是从左缘伸出、比白键短一段的窄键帽，压在平面之上。
     Rectangle {
         x: 0;
         y: 28px;
         width: 56px;
         height: parent.height - 28px;
-        // 二期质感: 键列容器走 §10 外壳刷 (flat = 现行字面 Tokens.bg-panel)。
-        background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane;
+        // 白键平面（physical 走 §12 键刷的纵向明暗，flat 仍旧平色）
+        background: Tokens.roll-key-white-brush;
+        clip: true;
         accessible-role: list;
         accessible-id: "piano-roll-keys";
         accessible-label: @tr("钢琴键列");
 
-        for key_index in 16 : Rectangle {
-            x: 0;
+        // 白键之间的分隔：只有当本行与下一行都是白键时才是"两颗白键贴着"
+        for key_index in root.roll-rows : Rectangle {
+            visible: root.row-is-white(key_index);
+            x: 0px;
+            y: 14px * key_index + 13px;
+            width: parent.width;
+            height: 1px;
+            background: Tokens.roll-key-split;
+        }
+
+        // 短黑键：宽度只有白键的 6 成，纵向留缝 ⇒ 看得出是"夹在白键中间"
+        for key_index in root.roll-rows : Rectangle {
+            visible: !root.row-is-white(key_index);
+            x: 0px;
+            y: 14px * key_index + 1px;
+            width: 30px;
+            height: 9px;
+            border-radius: 3px;
+            background: root.audition-active-row == key_index ? Tokens.selection : (Tokens.texture-physical ? Tokens.roll-key-cap-brush : Tokens.roll-key-black-brush);
+            border-width: 1px;
+            border-color: root.audition-active-row == key_index ? Tokens.selection : Tokens.roll-key-edge;
+
+            // 键帽受光面（只拟物，扁平不描高光）
+            if Tokens.texture-physical : Rectangle {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 3px;
+                height: 2px;
+                background: Tokens.bevel-light;
+            }
+        }
+
+        // 试听/敲击时整行提亮（白键行同样显示）
+        for key_index in root.roll-rows : Rectangle {
+            visible: root.audition-active-row == key_index && root.row-is-white(key_index);
+            x: 0px;
             y: 14px * key_index;
             width: parent.width;
             height: 14px;
-            // 二期质感: 键面走 §12 键刷 (flat 走字面色支, 同根底注); 试听高亮是状态色, 不动。
-            background: root.audition-active-row == key_index ? Tokens.selection :
-                (Tokens.texture-physical ? (root.lane-is-white[key_index] ? Tokens.roll-key-white-brush : Tokens.roll-key-black-brush) : (root.lane-is-white[key_index] ? Tokens.skin-text-strong : Tokens.bg-lane2));
-            border-width: 1px;
-            border-color: root.lane-is-white[key_index] ? Tokens.skin-text-dim : Tokens.skin-inset;
+            background: Tokens.selection.with-alpha(0.55);
+        }
 
-            // 黑键立体突起键帽（占左侧 34px）
-            if !root.lane-is-white[key_index] : Rectangle {
-                x: 0px;
-                y: 1px;
-                width: 34px;
-                height: 12px;
-                border-radius: 1.5px;
-                background: root.audition-active-row == key_index ? Tokens.selection : (Tokens.texture-physical ? Tokens.roll-key-cap-brush : Tokens.skin-lane-alt);
-                border-width: 1px;
-                border-color: Tokens.line;
-            }
+        // C 音（八度锚点）标示点
+        for key_index in root.roll-rows : Rectangle {
+            visible: root.row-pitch(key_index).mod(12) == 0;
+            x: 6px;
+            y: 14px * key_index + 6px;
+            width: 4px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.track-synth;
+        }
 
-            // C 音（八度锚点）标示点：随垂直滚动基音动态定位到每个 C 音行
-            if ((root.base-midi-pitch + 15 - key_index).mod(12) == 0) : Rectangle {
-                x: 3px;
-                y: 5px;
-                width: 4px;
-                height: 4px;
-                border-radius: 2px;
-                background: Theme.track-synth;
-            }
-
-            UiMonoText {
-                x: 34px;
-                y: 0px;
-                width: parent.width - 36px;
-                height: parent.height;
-                text: root.lane-key-labels[key_index];
-                color: root.audition-active-row == key_index ? Tokens.skin-inset :
-                    (root.lane-is-white[key_index] ? Tokens.bg-lane2 : Tokens.skin-text-body);
-                font-size: 9px;
-                font-weight: 400;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
+        // 音名：投影给的前 16 行照旧显示，展开出来的行只画键面（不造假标签）
+        for key_index in root.roll-rows : UiMonoText {
+            // 信息降噪（2026-11-18）：整列只标 C 音锚点，其余音名靠键面形状识别。
+            visible: key_index < root.lane-key-labels.length && root.row-pitch(key_index).mod(12) == 0;
+            x: 36px;
+            y: 14px * key_index;
+            width: parent.width - 38px;
+            height: 14px;
+            text: key_index < root.lane-key-labels.length ? root.lane-key-labels[key_index] : "";
+            color: Tokens.roll-key-ink;
+            font-size: 9px;
+            font-weight: 400;
+            horizontal-alignment: right;
+            vertical-alignment: center;
         }
     }
-
     // ---------------------------------------------------------------- 卷帘网格 (高对比黑白键背景 + 清晰格线)
     Rectangle {
         x: 56px;
@@ -414,34 +453,34 @@ export component PianoRoll inherits Rectangle {
         accessible-id: "piano-roll-grid";
         accessible-label: @tr("音符网格画布");
 
-        // 横向音高车道（保持 14px * lane_index 契约，增大黑白键明暗对比与 1px 底部分隔线）
-        for lane_index in 16 : Rectangle {
+        // 横向音高车道：行数 = root.roll-rows（随面板铺满、下界锁 C0），
+        // 前 16 行的色档与旧版逐像素一致（根音行 / 白键行 / 黑键行）。
+        for lane_index in root.roll-rows : Rectangle {
             x: 0;
             y: 14px * lane_index;
             width: parent.width;
             height: 14px;
-            // 车道三档 (根音行 / 白键行 / 黑键行): flat 字面平色
-            // (2026-11-17 回平口径); physical 随网格底同幅上移
-            // (+6/+7/+0), 三档间距与对底关系不变。
-            background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? Tokens.skin-grid-bar : Tokens.line) :
-                (root.lane-is-white[lane_index] ? (Tokens.texture-physical ? Tokens.skin-lane-alt : Tokens.bg-panel) : (Tokens.texture-physical ? Tokens.bg-lane2 : Tokens.bg-panel-alt));
+            // C 行不再整行铺一条亮线（一整条 14px 的 #414751 会在整屏横着切出
+            // 一道"灰带"，抢音符的视线）；根部只把底边线加重一档，行本身走车道色。
+            background: (!root.row-is-white(lane_index)) ? Tokens.roll-lane-black : Tokens.roll-lane-white;
 
             Rectangle {
                 x: 0;
                 y: parent.height - 1px;
                 width: parent.width;
                 height: 1px;
-                background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? Tokens.skin-grid-bar : Tokens.line-strong) : (Tokens.texture-physical ? Tokens.skin-grid-beat : Tokens.bg-lane2);
+                // 八度根音把底边线加重到"小节线"那一档（与编曲区 skin-grid-bar 同强度）；
+                // 其余行只留一条和车道几乎同色的细线，避免 14px 行高里铺出密集横条。
+                background: (root.row-pitch(lane_index).mod(12) == 0) ? Tokens.skin-grid-bar : Tokens.bg-lane2;
             }
         }
-
         // 纵向小节线 (960 PPQ 下的 1/16 网格等模型线落地，随 scroll-x 无缝横向平铺)
         for grid_index in 24 : Rectangle {
             x: Tokens.space-5 + 48px * (grid_index + 24 * Math.max(0, Math.floor((root.scroll-x - 48 * grid_index + 1103) / 1152))) - root.scroll-x * 1px;
             y: 0;
             width: 1px;
             height: parent.height;
-            background: grid_index.mod(4) == 0 ? Tokens.line-strong : Tokens.line;
+            background: grid_index.mod(4) == 0 ? Tokens.skin-grid-bar : Tokens.skin-grid-beat;
         }
 
         // ------------------------------------------------------------ 音符图元
