@@ -517,6 +517,13 @@ pub struct EngineTrackSource {
     /// 留一个句柄（[`Self::steal_counter`]）。写入只发生在 `render_block` 末尾
     /// （一次 relaxed `store`），⛔ 不影响音频。
     steals: Arc<AtomicU64>,
+    /// ⭐ **跨起点音符的追补预滚起点**（区间渲染修复）：`seek_to` 检出有音符
+    /// 跨过定位点（`start_sample < frame < end_sample`）时记下其中最早的
+    /// `start_sample`，首个 `render_block` 先把引擎从该点**预滚**到定位点
+    /// （内部渲染并丢弃输出），声部状态由此与全程渲染在定位点处一致。
+    /// `None` = 无跨点音符（或预滚已消费）⇒ 定位走冷启动旧路径，逐位不变。
+    /// 机制全貌见 [`AudioSource::seek_to`] 的实现文档。
+    chase_from: Option<u64>,
 }
 
 impl EngineTrackSource {
@@ -564,6 +571,7 @@ impl EngineTrackSource {
             // ⭐ `#341`：默认**没有** CC 探针 ⇒ `render_track`（逐位等于接线前）。
             cc: None,
             steals: Arc::new(AtomicU64::new(0)),
+            chase_from: None,
         })
     }
 
@@ -671,20 +679,47 @@ impl EngineTrackSource {
 }
 
 impl AudioSource for EngineTrackSource {
-    /// ⭐ 第五份报告 B-1：冷启动定位。
+    /// ⭐ 定位语义（第五份报告 B-1 的冷启动定位 + 本次修复的跨点追补）。
     ///
-    /// ⚠ 引擎自己的 `seek` 是**走带语义**：它复位声部并跳播放头，但
-    /// 触发循环对"跨过定位点的音符"（`end_sample > position`）会
-    /// **补触发**（跳进一个正被按住的音符要能听见它）—— 那是实时
-    /// 播放要的，⛔ 不是区间渲染要的。故本函数在 `seek` 之外再把
-    /// 本源的调度表换成只含 `start_sample >= frame` 的音符的副本：
-    /// 跨起点的音符整体不在表里，三条支路（复音/SFZ/鼓机）都无从
-    /// 补触发。音高形状旁表**整张保留**（音符的 `pitch_shape` 是
-    /// 它的下标，压缩会让下标失效）；轨增益门与调律偏移照抄。
+    /// **有音符跨过定位点**（`start_sample < frame < end_sample`）⇒ **追补**：
+    /// B-1 的旧做法把这类音符整体过滤掉 ⇒ 区间起点落在长音中间时整段
+    /// 静音（实测：区间 −70 LUFS、成品同段 −18.43 LUFS —— 试听与成品
+    /// 不是同一个声音）。本函数改为只把跨点音符里最早的 `start_sample`
+    /// 记进 `chase_from`，**不 seek、不换表**；首个 `render_block` 先把
+    /// 引擎 seek 到该点，再内部渲染 `[chase_from, frame)` 并丢弃输出
+    /// （预滚），停在 `frame` 处。三条支路（SFZ 分段触发／复音／鼓机）
+    /// 都按绝对样本位置发声 ⇒ 预滚走完时声部的样本位置、包络与相位与
+    /// 全程渲染在 `frame` 处同状态，区间产物与全程同段一致（判据
+    /// `a_note_spanning_the_range_start_is_chased_by_preroll`）。预滚
+    /// 成本 = 跨点音符已发声的时长，⛔ 不退化成全程渲染。
+    ///
+    /// **没有音符跨过定位点** ⇒ 冷启动旧路径（与 B-1 逐字相同）：引擎
+    /// `seek` 复位声部并跳播放头，调度表换成只含 `start_sample >= frame`
+    /// 的音符的副本。定位点恰好落在音符边界（起点与某音符起点重合、
+    /// 或只有已结束的音符在前面）时走的就是这条 ⇒ 产物与改前逐位一致。
+    /// 音高形状旁表**整张保留**（音符的 `pitch_shape` 是它的下标，
+    /// 压缩会让下标失效）；轨增益门与调律偏移照抄。
+    ///
+    /// 残余冷启动（如实登记，⛔ 不假装全等）：定位点之前**已结束**音符
+    /// 的释放尾不重建；预滚起点之前的声部池窃取历史不重演（只影响池
+    /// 饱和时的窃取选择）；图内效果状态与宿主插件音源不在本源管辖内，
+    /// 仍是冷启动（见 `PluginTrackSource::seek_to`）。
     ///
     /// 前提：定位发生在任何一块渲染之前（引擎槽位游标仍为 0，
-    /// 与过滤后的表对齐）—— `RenderPlan::execute` 的调用点满足。
+    /// 与调度表对齐）—— `RenderPlan::execute` 的调用点满足。
     fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        let chase_from = self.schedule.as_ref().and_then(|schedule| {
+            schedule
+                .notes()
+                .iter()
+                .filter(|note| note.start_sample() < frame && note.end_sample() > frame)
+                .map(|note| note.start_sample())
+                .min()
+        });
+        if let Some(from) = chase_from {
+            self.chase_from = Some(from);
+            return Ok(());
+        }
         self.engine.seek(frame);
         if let Some(schedule) = &self.schedule {
             let kept: Vec<yeban_engine::synth::ScheduledNote> = schedule
@@ -706,6 +741,38 @@ impl AudioSource for EngineTrackSource {
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        // ⭐ 追补预滚（`seek_to` 检出跨点音符时记下）：必须在下面的推进
+        //    契约检查**之前**消费 —— 预滚把引擎从跨点音符的最早起点
+        //    逐块渲染到 `context.first_frame` 为止（输出丢弃），结束时
+        //    引擎恰好停在块起点，契约照常成立。递归深度恒为 1：
+        //    `chase_from` 在进入循环前已被 `take` 走，内层调用不再预滚。
+        //    无待办时整段跳过，正常路径逐位不变。
+        if let Some(from) = self.chase_from.take() {
+            if from < context.first_frame {
+                self.engine.seek(from);
+                let channels = context.channels.max(1);
+                let mut scratch = vec![0.0_f32; 128 * channels];
+                let mut position = from;
+                while position < context.first_frame {
+                    let frames =
+                        usize::try_from((context.first_frame - position).min(128)).unwrap_or(128);
+                    let block = BlockContext {
+                        block_index: 0,
+                        first_frame: position,
+                        frames,
+                        channels: context.channels,
+                        sample_rate: context.sample_rate,
+                        seed: context.seed,
+                    };
+                    self.render_block(block, &mut scratch[..frames * channels])?;
+                    position += frames as u64;
+                }
+            } else {
+                // 防御：定位点不晚于首块起点时无从预滚，退回旧定位
+                // （`seek_to` 的追补分支按构造不会产生这种组合）。
+                self.engine.seek(context.first_frame);
+            }
+        }
         // ⭐ `ADR-0011` 未决 ②：把"块无关是契约性的"落成**可失败的前置条件**。
         //    本源的播放头必须与调用方声明的块起点一致；不一致 ⇒ 指名失败，
         //    ⛔ 不静默地按错误位置渲染（那会产出不可复现的母带）。
@@ -1579,6 +1646,181 @@ mod tests {
         assert_eq!(source.position(), 128, "被拒绝的块不得推进播放头");
     }
 
+    /// 长音夹具：单轨一个长音（绝对 tick 1920..5760，前 1920 tick 静音），
+    /// 直连 master。帧数口径一律从快照调度表现读（不手抄速度换算）。
+    fn long_note_project() -> (YebanProjectV1, Vec<EntityId>) {
+        use std::str::FromStr as _;
+
+        use yeban_model::{
+            ClipContent, ClipPlacement, ClipPoolEntry, LoopConfig, MidiNote, RoutingEdge,
+            RoutingKind, SampleRate, TrackKind, TrackV3,
+        };
+
+        let id = |seed: usize| {
+            EntityId::from_str(&format!("01J8ZN{seed:020}")).expect("夹具 ULID 必须合法")
+        };
+        let master = id(1);
+        let track = id(100);
+        let clip = id(1_000);
+        let placement = id(2_000);
+        let note = id(3_000);
+        let edge = id(4_000);
+        let mut project = YebanProjectV1 {
+            title: "long-note range fixture".to_owned(),
+            master_bus_track_id: master,
+            ..YebanProjectV1::default()
+        };
+        project.audio_config.sample_rate = SampleRate::Hz48000;
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                name: "Master".to_owned(),
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.nodes.push(master);
+        let mut track_params = TrackV3 {
+            id: track,
+            name: "Long".to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        };
+        track_params.clips.insert(
+            placement,
+            ClipPlacement {
+                id: placement,
+                clip_id: clip,
+                start_tick: 0,
+                duration_ticks: 5_760,
+                loop_config: LoopConfig::default(),
+                muted: false,
+                offset_samples: None,
+            },
+        );
+        project.tracks.insert(track, track_params);
+        let mut notes = BTreeMap::new();
+        notes.insert(note, MidiNote::new(note, 1_920, 60, 3_840));
+        project.clip_pool.insert(
+            clip,
+            ClipPoolEntry {
+                id: clip,
+                name: "Long clip".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        project.routing_graph.nodes.push(track);
+        project.routing_graph.edges.insert(
+            edge,
+            RoutingEdge {
+                id: edge,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("长音夹具必须合法: {error}"));
+        (project, vec![track])
+    }
+
+    /// ⭐ 区间渲染跨点追补判据（本次修复的验收面）：
+    ///
+    /// 夹具：单轨一个长音（绝对 tick 1920..5760）。三条腿：
+    /// 1. **中段起点响度**：`seek_to(音符中点)` 后渲染到音符结束之后 ——
+    ///    该段门限积分响度与全程渲染同段之差 ≤ 1 LU，且不得为静音
+    ///    （修复前：跨点音符被过滤 ⇒ 整段全静音，实测 −70 LUFS 对
+    ///    成品同段 −18.43 LUFS）；
+    /// 2. **中段逐位**：中段起点的产物与全程同段逐位相同 —— 源层预滚
+    ///    走的是同一条按绝对位置发声的路径（＋块长无关性），声部状态
+    ///    在起点处应当同状态；本腿比腿 1 更严，是机制本身的钉子；
+    /// 3. **边界起点逐位**：`seek_to(音符起点)` 的产物与全程同段逐位
+    ///    相同（无跨点音符 ⇒ 旧路径，正常路径不得被追补改动）。
+    #[test]
+    fn a_note_spanning_the_range_start_is_chased_by_preroll() {
+        let (project, ids) = long_note_project();
+        let track = ids[0];
+        let timbre = EngineTimbre::from_project(&project).expect("长音夹具必须成快照");
+        let schedule = timbre.snapshot.schedules()[&track].clone();
+        let note = schedule.notes()[0];
+        let (start, end) = (note.start_sample(), note.end_sample());
+        assert!(end - start >= 48_000, "夹具长音至少 1 秒: {start}..{end}");
+        // 中点故意取非 128 整数倍偏移，逼预滚走"块边界与全程不同"的一般情形。
+        let mid = start + (end - start) / 2 + 37;
+
+        let render_from = |seek: Option<u64>, from: u64, frames: u64| -> Vec<f32> {
+            let mut source = timbre.track_source(track).expect("必须能武装");
+            if let Some(frame) = seek {
+                source.seek_to(frame).expect("定位必须成功");
+            }
+            let mut mono = Vec::with_capacity(usize::try_from(frames).unwrap());
+            let mut out = vec![0.0_f32; 128];
+            let mut first = from;
+            let mut index = 0u64;
+            while first < from + frames {
+                let len = usize::try_from((from + frames - first).min(128)).unwrap();
+                source
+                    .render_block(
+                        BlockContext {
+                            block_index: index,
+                            first_frame: first,
+                            frames: len,
+                            channels: 1,
+                            sample_rate: 48_000,
+                            seed: 1,
+                        },
+                        &mut out[..len],
+                    )
+                    .expect("连续升序的块必须被接受");
+                mono.extend_from_slice(&out[..len]);
+                first += len as u64;
+                index += 1;
+            }
+            mono
+        };
+
+        let tail = end + 4_800;
+        let full = render_from(None, 0, tail);
+        let tail_usize = usize::try_from(tail).unwrap();
+        let mid_usize = usize::try_from(mid).unwrap();
+        let full_mid = &full[mid_usize..tail_usize];
+
+        // 腿 1 + 2：中段起点。
+        let ranged = render_from(Some(mid), mid, tail - mid);
+        let lufs_full = crate::loudness::LoudnessMeter::integrated_mono(full_mid);
+        let lufs_ranged = crate::loudness::LoudnessMeter::integrated_mono(&ranged);
+        println!(
+            "### [range-chase] note={start}..{end} mid={mid} full={lufs_full:.2} LUFS \
+             ranged={lufs_ranged:.2} LUFS bit_identical={}",
+            ranged[..] == *full_mid
+        );
+        assert!(
+            lufs_ranged.is_finite() && lufs_ranged > -70.0,
+            "区间段不得为静音: {lufs_ranged} LUFS"
+        );
+        assert!(
+            (lufs_ranged - lufs_full).abs() <= 1.0,
+            "区间响度与全程同段之差必须 ≤ 1 LU: {lufs_ranged} vs {lufs_full}"
+        );
+        assert_eq!(
+            ranged[..],
+            *full_mid,
+            "源层预滚后区间产物必须与全程同段逐位相同"
+        );
+
+        // 腿 3：边界起点（恰为音符起点）逐位同全程同段。
+        let start_usize = usize::try_from(start).unwrap();
+        let at_boundary = render_from(Some(start), start, tail - start);
+        assert_eq!(
+            at_boundary[..],
+            full[start_usize..tail_usize],
+            "边界起点的产物必须与全程同段逐位相同（正常路径不得被改动）"
+        );
+    }
+
     /// 多轨夹具：`n` 条 MIDI 轨（第 i 条音高 `48 + i % 24`）各一个 480-tick 音符，
     /// 全部直连 master。身份按声明顺序升序 ⇒ `BTreeMap` 迭代序 = 声明序。
     fn many_track_project(n: usize) -> (YebanProjectV1, Vec<EntityId>) {
@@ -1860,6 +2102,7 @@ mod tests {
             mono: Vec::new(),
             pan: (1.0, 1.0),
             steals: Arc::new(AtomicU64::new(0)),
+            chase_from: None,
         };
         assert_eq!(
             render_peak(&mut legacy, 4_800),

@@ -31,7 +31,7 @@
 //! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
 //! | 14 | ⭐ `#315`/`#337` 侧链边的**三个读数**：`sidechainEdgesSummedAsOrdinaryAudio`（真的被当普通音频边求和了几条，取自 `RenderPlan::edge_ids()`；`#337` 起恒 `0`）/ `sidechainEdgesInRoutingGraph`（路由图里声明了几条）/ `sidechainEdgesDeclaredWithoutKeyInput`（声明了但**没有键输入路径**的条数）。A `(0,0,0)`；B 平行侧链 `(0,1,1)` 且母带与 A 逐字节相同；B2 `(0,2,2)`；D 悬挂边 `(0,1,1)` 且 `unsupported` 仍报 `sidechainRouting` | 把侧链边当音频边求和（B 与 A 的字节不再相等，且求和读数变 1）/ 从路由图数求和条数 / 把"没有键输入路径"读数恒写成 0 / 让 `bus_nodes` 把侧链边当成音频入边（推子位置改变 ⇒ 加侧链与去侧链母带不同） |
 //! | 15 | ⭐ `ADR-0020`：`contributions: true` 报的逐轨贡献 == **独立**"只静音该轨 + 再渲染"的本地逐样本差（< 1e-9 dB）；开关不改 `sha256` / `masterDigest` / 磁盘字节；渲染前已静音的轨 ⇒ `alreadyMuted: true` + `null`，且不为它渲染 | 读数是估读/常数 / 开关参与母带构建 / 在归一化后的母带上比 |
-//! | 16 | ⭐ 部分渲染（`startTick` / `endTick`）：区间内音符的产物负载 == 全程产物同区间**逐字节**（跨起点音符冷启动不追补、区间静音）；只给一端时另一端取工程首/尾；非法区间（逆序/零长/负数/与 `contributions` 同给/换算后为空或超长）拒且不落盘；`targetLufs` 施加于**区间**（先切后施加），增益 ≈ 全程与区间的响度差 | 切片后从随机流中段重新抖动（相位错位）/ 响度在全程上施加（区间复测必不达标）/ 非法区间仍落盘 |
+//! | 16 | ⭐ 部分渲染（`startTick` / `endTick`）：区间内音符的产物负载 == 全程产物同区间**逐字节**（跨起点音符由引擎音源预滚追补、与全程同段逐字节相同）；只给一端时另一端取工程首/尾；非法区间（逆序/零长/负数/与 `contributions` 同给/换算后为空或超长）拒且不落盘；`targetLufs` 施加于**区间**（先切后施加），增益 ≈ 全程与区间的响度差 | 切片后从随机流中段重新抖动（相位错位）/ 响度在全程上施加（区间复测必不达标）/ 非法区间仍落盘 / 跨起点音符被过滤成静音 |
 //!
 //! ## 临时目录纪律
 //!
@@ -1009,8 +1009,10 @@ fn project_with_note_at(start_tick: u64, duration_ticks: u64) -> YebanProjectV1 
 
 /// ⭐ 部分渲染判据 1（**真区间渲染**，第五份报告 B-1 改版）：
 /// 音符整个落在区间内时，区间产物与全程产物同区间**逐字节相同**
-/// （TPDF 抖动同相位）；音符**跨过区间起点**时冷启动不追补 ——
-/// 区间是静音（浮点域峰值 0），⛔ 不再是旧"先渲全程再切"的切片。
+/// （TPDF 抖动同相位）；音符**跨过区间起点**时由内置引擎音源
+/// **预滚追补** —— 区间与全程同段逐字节相同（本夹具无图内效果
+/// 状态，源层一致即端到端一致），⛔ 不再是 B-1 的冷启动静音，
+/// 也不是旧"先渲全程再切"的切片（成本仍是区间渲染的成本）。
 /// 回执 `renderRange` 回显请求的 tick 与换算后的实际帧区间；缺省调用
 /// 没有 `renderRange` 键、`request` 回显的两个 tick 是 `null`。
 #[test]
@@ -1103,11 +1105,20 @@ fn a_middle_range_is_the_full_render_sliced_byte_for_byte() {
     assert_eq!(preview["wouldWrite"]["frames"], 24_000);
     assert_eq!(preview["renderRange"]["frames"], 24_000);
 
-    // ⭐ B-1 冷启动：缺省夹具的音符从 tick 0 贯穿全程（跨过区间起点
-    // 480）⇒ 不追补发声，区间浮点域峰值 = 0（⛔ 不是全程切片里的
-    // 持续音）。这条钉住"真区间渲染"与旧"先渲再切"的语义分界。
+    // ⭐ 跨起点追补：缺省夹具的音符从 tick 0 贯穿全程（跨过区间起点
+    // 480）⇒ 内置引擎音源预滚追补，区间产物与全程同段逐样本相同。
+    // 修复前这条钉的是相反语义（音符被过滤 ⇒ 区间浮点域峰值 = 0、
+    // 整段静音，试听与成品不是同一个声音）；现在钉追补后的等值。
     let (mut cold_dispatcher, cold_auth) =
         dispatcher_with(&project(&Spec::default()), &scratch.join("cold.yeban"));
+    let cold_full_path = scratch.join("cold-full.wav");
+    let cold_full = call(
+        &mut cold_dispatcher,
+        &cold_auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": cold_full_path.display().to_string()}),
+    );
+    assert_eq!(cold_full["status"], "success", "{cold_full}");
+    let cold_full_samples = verify_file_shape(&cold_full, &cold_full_path);
     let cold_path = scratch.join("cold.wav");
     let cold = call(
         &mut cold_dispatcher,
@@ -1120,16 +1131,22 @@ fn a_middle_range_is_the_full_render_sliced_byte_for_byte() {
     );
     assert_eq!(cold["status"], "success", "{cold}");
     assert_eq!(cold["data"]["frames"], 24_000);
+    let cold_samples = verify_file_shape(&cold, &cold_path);
     assert_eq!(
-        cold["data"]["peak"]["after"], 0.0,
-        "跨起点的音符不追补 ⇒ 区间必须是静音（浮点域）: {cold}"
+        cold_samples,
+        cold_full_samples[24_000..72_000],
+        "跨起点的音符经预滚追补后, 区间必须与全程同段逐样本相同"
+    );
+    assert!(
+        cold["data"]["peak"]["after"].as_f64().expect("区间峰值") > 0.0,
+        "追补后区间不得为静音（浮点域）: {cold}"
     );
     assert!(
         cold["data"]["renderRange"]["coldStart"]
             .as_str()
             .expect("coldStart 必须是字符串")
-            .contains("不追补"),
-        "回执必须写明冷启动语义: {}",
+            .contains("预滚追补"),
+        "回执必须写明跨起点音符的追补语义: {}",
         cold["data"]["renderRange"]
     );
 }
