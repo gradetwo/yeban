@@ -10032,6 +10032,10 @@ impl SfzVoicePool {
     ///    （否则释放段会被 note-off 当场切断）—— 见 [`Self::slot_readings`]；
     /// 3. 把声部的推进状态（段位 / 计数 / note-off↔epoch）按需交给 [`EnvRun`]，
     ///    写完再**写回**（跨块延续）。
+    // ⚠ `clippy::too_many_arguments`：8 个参数是互不相关的输入维度（槽 / 摊平表 /
+    //    块位置 / 输出 / CC 探针 / 弯音探针 / 取数声道），与 `render_note_into_with_cc`
+    //    同一条口径 —— 合并成结构体只会让三个调用点写样板。
+    #[allow(clippy::too_many_arguments)]
     fn render_slot(
         &mut self,
         index: usize,
