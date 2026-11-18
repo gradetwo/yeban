@@ -385,6 +385,14 @@ pub enum Warning {
     /// 写出域外）维持现行明确 `Err`，⛔ 不经本变体放宽；非数值 / 非有限的
     /// 畸形取值维持现行 `InvalidFloat` / `NonFiniteFloat`。
     ///
+    /// ⭐ **追加修订段（Wang 2026-11-18 后续裁决）—— 被修订的是上面「静态
+    /// 参数值本身越界维持现行明确 `Err`」那一支里的声像族部分**（⛔ 原文
+    /// 一字未删）：`pan` / `position` / `width` 三个**静态**声像值越界不再
+    /// 维持旧口径（`pan` 原样透传、`position` / `width` 未建模而忽略），
+    /// 改走同族新变体 [`Warning::ClampedStaticValue`]（装载期钳位 ＋ 告警、
+    /// 不拒载）；声像族**之外**的静态值（如 `amp_veltrack`）逐字维持
+    /// 明确 `Err`，本段不放宽任何其它静态参数。
+    ///
     /// 载荷里的两个数是**换算后**的调制量（`s` / `ms` / `%` 后缀已折算）
     /// 与其钳位值，以文本形式保存（与 [`Warning::MalformedSetCc`] 的
     /// `value` 同款，保 `Warning: Eq`）。同一声明经作用域继承被多个 region
@@ -400,6 +408,38 @@ pub enum Warning {
         /// 换算后的原调制量（文本形式）。
         value: String,
         /// 钳位后的调制量（文本形式；即值域的某一端）。
+        clamped: String,
+    },
+    /// 声像族**静态**值（`pan` / `position` / `width` 本体，⛔ 不含任何
+    /// `*_ccN` / `*_onccN` 调制形）越过规范值域 `-100..=100`：已在**装载期
+    /// 钳位到值域边界**、文件继续装载（Wang 2026-11-18 裁决，与调制深度
+    /// 钳位同一条规矩：越界钳位 ＋ 响亮告警、不拒载 —— sfizz 同档处理，
+    /// ARIA 求值期饱和等价；旧口径是 `pan` 原样透传、求值期才钳位，
+    /// `position` / `width` 则未建模而被忽略）。
+    ///
+    /// ⚠ 分工：**只有声像族这三个静态 opcode** 走本变体；其它静态参数值
+    /// 越界维持现行明确 `Err`（如 `amp_veltrack=101` 仍
+    /// [`SfzError::FloatOutOfRange`]，⛔ 不经本变体放宽）；三个参数的
+    /// 调制深度走 [`Warning::ClampedModulationDepth`]；非数值 / 非有限的
+    /// 畸形取值维持现行 `InvalidFloat` / `NonFiniteFloat`（`pan` 本体）。
+    ///
+    /// ⚠ `position` / `width` 在本装载器里**尚无存储与求值语义**（未建模
+    /// 参数）：本变体记录的是装载期在读取点做的**值域执法** —— 可解析的
+    /// 有限数值越界即告警（钳位值即其生效值，将来建模时在同一读取点
+    /// 落存储）；不可解析 / 非有限的写法维持旧行为（按未建模 opcode
+    /// 忽略，⛔ 不因本变体新增拒载）。
+    ///
+    /// 去重口径与 [`Warning::ClampedModulationDepth`] 相同：同一声明经
+    /// 作用域继承被多个 region 重读时，跨 region 按 (opcode, 原值,
+    /// 钳位值) 只记第一次出现（见 [`Parser::finalize_region`]）。
+    ClampedStaticValue {
+        /// 1-based 行号（归约该 region 的段头行，与调制钳位告警同口径）。
+        line: usize,
+        /// opcode 名（原文：`pan` / `position` / `width`）。
+        opcode: String,
+        /// 原静态值（文本形式）。
+        value: String,
+        /// 钳位后的静态值（文本形式；即值域的某一端）。
         clamped: String,
     },
     /// 警告数达到 [`ParseLimits::max_warnings`] 后的**截断标记**。
@@ -457,6 +497,15 @@ impl core::fmt::Display for Warning {
             } => write!(
                 f,
                 "line {line}: `{opcode}` modulation depth {value} out of range, clamped to {clamped}"
+            ),
+            Self::ClampedStaticValue {
+                line,
+                opcode,
+                value,
+                clamped,
+            } => write!(
+                f,
+                "line {line}: `{opcode}` value {value} out of range, clamped to {clamped}"
             ),
             Self::Truncated { kept, dropped } => write!(
                 f,
@@ -1003,6 +1052,31 @@ fn expand_macros<'a>(
 /// 宏替换后那一行降级为 `Owned`。
 pub(crate) type OpcodeMap<'a> = BTreeMap<Cow<'a, str>, Cow<'a, str>>;
 
+/// 钳位告警的**去重键**：`(变体判别, opcode, 原值, 钳位值)`。
+///
+/// 两个钳位变体（调制深度 [`Warning::ClampedModulationDepth`] 与声像族
+/// 静态值 [`Warning::ClampedStaticValue`]）共用同一条去重口径（见
+/// [`Parser::finalize_region`]）；变体判别入键 ⇒ 两个变体之间不互相吞掉
+/// （同一 (opcode, 原值, 钳位值) 在两边各记一条）。非钳位告警 ⇒ `None`
+/// （不去重，逐条进报告）。
+fn clamp_note_key(warning: &Warning) -> Option<(u8, &str, &str, &str)> {
+    match warning {
+        Warning::ClampedModulationDepth {
+            opcode,
+            value,
+            clamped,
+            ..
+        } => Some((0, opcode, value, clamped)),
+        Warning::ClampedStaticValue {
+            opcode,
+            value,
+            clamped,
+            ..
+        } => Some((1, opcode, value, clamped)),
+        _ => None,
+    }
+}
+
 struct Parser<'a> {
     limits: ParseLimits,
     macros: MacroTable<'a>,
@@ -1470,12 +1544,14 @@ impl<'a> Parser<'a> {
         // ⭐ 文件自带 (a) 与解析入参的外部移位在此相加成施加用的总移位；
         // (a) 单独一份传给归约，逐 region 记进 `Region::declared_note_shift`。
         let declared_shift = self.control_note_offset + self.control_octave_offset * 12;
-        // 归约期的非致命降级（调制深度钳位）随归约结果带回，再逐条过
-        // [`Parser::warn`] —— 上限与截断标记只有一条通道（⛔ 不绕过它直填）。
-        // ⚠ 钳位告警按 (opcode, 原值, 钳位值) **去重**：同一条 `<global>`
-        // 声明会被每个 region 经作用域继承重读一次（Karoryfer 实测上千条
-        // region），逐条记会顶满告警上限、挤掉别的不同告警 —— 同一事实
-        // 在一份装载报告里只记第一次出现的那条（行号即其 region 段头行）。
+        // 归约期的非致命降级（调制深度钳位与声像族静态值钳位）随归约结果
+        // 带回，再逐条过 [`Parser::warn`] —— 上限与截断标记只有一条通道
+        // （⛔ 不绕过它直填）。
+        // ⚠ 钳位告警按 (变体, opcode, 原值, 钳位值) **去重**：同一条
+        // `<global>` 声明会被每个 region 经作用域继承重读一次（Karoryfer
+        // 实测上千条 region），逐条记会顶满告警上限、挤掉别的不同告警
+        // —— 同一事实在一份装载报告里只记第一次出现的那条（行号即其
+        // region 段头行）。
         let (built, region_warnings) = build_region(
             &self.region,
             &self.group,
@@ -1489,26 +1565,11 @@ impl<'a> Parser<'a> {
             line,
         )?;
         for warning in region_warnings {
-            if let Warning::ClampedModulationDepth {
-                opcode,
-                value,
-                clamped,
-                ..
-            } = &warning
-            {
-                let already_noted = self.warnings.iter().any(|existing| {
-                    matches!(
-                        existing,
-                        Warning::ClampedModulationDepth {
-                            opcode: noted_opcode,
-                            value: noted_value,
-                            clamped: noted_clamped,
-                            ..
-                        } if noted_opcode == opcode
-                            && noted_value == value
-                            && noted_clamped == clamped
-                    )
-                });
+            if let Some(key) = clamp_note_key(&warning) {
+                let already_noted = self
+                    .warnings
+                    .iter()
+                    .any(|existing| clamp_note_key(existing) == Some(key));
                 if already_noted {
                     continue;
                 }
@@ -3313,7 +3374,7 @@ mod tests {
     ///
     /// R48：这张表**必须**与 `warning_arm` 的臂编号一一对应
     /// （由 `the_warning_golden_table_covers_every_arm_number` 守住）。
-    fn warning_display_cases() -> [(Warning, &'static str); 9] {
+    fn warning_display_cases() -> [(Warning, &'static str); 10] {
         [
             (
                 Warning::IgnoredHeader {
@@ -3372,6 +3433,15 @@ mod tests {
                 },
                 "line 14: `pan_oncc10` modulation depth 200 out of range, clamped to 100",
             ),
+            (
+                Warning::ClampedStaticValue {
+                    line: 15,
+                    opcode: "pan".to_string(),
+                    value: "200".to_string(),
+                    clamped: "100".to_string(),
+                },
+                "line 15: `pan` value 200 out of range, clamped to 100",
+            ),
         ]
     }
 
@@ -3380,7 +3450,7 @@ mod tests {
         // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
         // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
         let cases = warning_display_cases();
-        assert_eq!(cases.len(), 9, "one case per variant");
+        assert_eq!(cases.len(), 10, "one case per variant");
         for (warning, expected) in cases {
             assert_eq!(format!("{warning}"), expected, "Display for {warning:?}");
         }
@@ -3403,6 +3473,7 @@ mod tests {
             Warning::MalformedSetCc { .. } => 6,
             Warning::Truncated { .. } => 7,
             Warning::ClampedModulationDepth { .. } => 8,
+            Warning::ClampedStaticValue { .. } => 9,
         }
     }
 

@@ -1149,7 +1149,12 @@ pub struct Region<'a> {
     /// the range. Negative values invert the signal."，且 §2 的公式只给 `delta` 的域
     /// ⇒ 本 crate 沿用`不发明夹取`的裁决（缺省 `100.0` ⇒ 乘子恰 `1.0` ⇒ 接线前逐位相同）。
     pub amplitude: f32,
-    /// 声相（%，规范范围 -100..=100；本实现只要求有限）。
+    /// 声相（%，规范范围 -100..=100）。
+    ///
+    /// ⭐ 装载期已做值域执法（Wang 2026-11-18 裁决）：域内值原样；
+    /// 越界值在装载期钳位到端点并记 [`Warning::ClampedStaticValue`]
+    /// 告警（旧口径是原样透传、求值期才钳位 —— 求值期本来就钳位
+    /// ⇒ 听感零变化，见 [`clamp_static_pan_family`]）。
     pub pan: f32,
     /// 轮替序号（`seq_position`，默认 1）。
     pub seq_position: u32,
@@ -2482,8 +2487,58 @@ pub(crate) struct RegionShift {
     pub declared: i32,
 }
 
+/// 声像族静态值（`pan` / `position` / `width`）的规范值域下界（%）。
+///
+/// 出处：三页的表格行 Range 均为 `-100 to 100`
+/// （<https://sfzformat.com/opcodes/pan/>、
+/// <https://sfzformat.com/opcodes/position/>、
+/// <https://sfzformat.com/opcodes/width/>），与 `pan` 调制量的域
+/// （[`crate::modulation::MIN_MODULATION_DELTA`]）同数 —— 但这是**静态
+/// 本体**的域，⛔ 不与调制量共用常量（两条钳位线分工见
+/// [`Warning::ClampedStaticValue`]）。
+pub const PAN_FAMILY_MIN: f32 = -100.0;
+
+/// 声像族静态值（`pan` / `position` / `width`）的规范值域上界（%）。
+pub const PAN_FAMILY_MAX: f32 = 100.0;
+
+/// 声像族**静态**值的装载期值域执法（Wang 2026-11-18 裁决）：
+///
+/// * 域内（[`PAN_FAMILY_MIN`]..=[`PAN_FAMILY_MAX`]，含两端）⇒ 原样返回、
+///   无告警；
+/// * 越界 ⇒ 钳位到近端边界，并经归约告警通道记一条
+///   [`Warning::ClampedStaticValue`]（跨 region 去重由解析器在
+///   `finalize_region` 按 (opcode, 原值, 钳位值) 做，见 `parser.rs`）；
+/// * 调用方保证 `value` 有限（`pan` 走 `as_f32` 的有限检查；
+///   `position` / `width` 只对解析成功且有限的数值调用本函数）⇒
+///   `clamp` 不会遇到 NaN。
+///
+/// ⚠ 本函数只做**静态本体**的值域执法：三个参数的调制深度
+/// （`*_ccN` / `*_onccN`）走 [`Warning::ClampedModulationDepth`] 的
+/// 既有路径，⛔ 不经这里；钳位后的基准再与调制增量在求值期相加，
+/// 求值本体 [`crate::modulation::pan_value_with_baked`] 对和值另有
+/// 一次同域钳位 ⇒ 双重钳位只会收敛到端点，不产生域外怪值。
+fn clamp_static_pan_family(
+    opcode: &'static str,
+    value: f32,
+    line: usize,
+    warnings: &mut Vec<Warning>,
+) -> f32 {
+    if (PAN_FAMILY_MIN..=PAN_FAMILY_MAX).contains(&value) {
+        return value;
+    }
+    let clamped = value.clamp(PAN_FAMILY_MIN, PAN_FAMILY_MAX);
+    warnings.push(Warning::ClampedStaticValue {
+        line,
+        opcode: opcode.to_string(),
+        value: format!("{value}"),
+        clamped: format!("{clamped}"),
+    });
+    clamped
+}
+
 /// 归约一个 region。返回值第二元是归约期的非致命降级记录（调制深度
-/// 钳位，[`Warning::ClampedModulationDepth`]）：随结果带出，由调用方
+/// 钳位 [`Warning::ClampedModulationDepth`] 与声像族静态值钳位
+/// [`Warning::ClampedStaticValue`]）：随结果带出，由调用方
 /// （解析器）逐条过自己的告警通道（含上限与截断标记）。
 pub(crate) fn build_region<'a>(
     region_map: &OpcodeMap<'a>,
@@ -2845,10 +2900,30 @@ pub(crate) fn build_region<'a>(
         Some(value) => value.as_f32()?,
         None => AMPLITUDE_DEFAULT_PERCENT,
     };
+    // ⭐ 声相（`pan`，%；规范范围 −100..=100，缺省 0）。
+    // ⭐ **行为变更（Wang 2026-11-18 裁决）**：旧口径是原样透传、求值期
+    // 才钳位；新口径与调制深度钳位同规矩 —— **装载期钳位 ＋
+    // [`Warning::ClampedStaticValue`] 告警、不拒载**（求值期本来就钳位
+    // ⇒ 听感零变化）。畸形 / 非有限维持 `as_f32` 的现行明确 `Err`，
+    // ⛔ 不经钳位放宽。
     let pan = match scopes.get("pan") {
-        Some(value) => value.as_f32()?,
+        Some(value) => clamp_static_pan_family("pan", value.as_f32()?, line, &mut warnings),
         None => 0.0,
     };
+    // ⭐ 声像族其余两员（`position` / `width`，%；规范范围同为
+    // −100..=100）：本装载器**尚未建模**这两个参数（无存储、无求值，
+    // 旧行为是按未知 opcode 忽略）。Wang 2026-11-18 裁决把声像族静态值
+    // 的值域执法放在装载期 ⇒ 在此读取点对**可解析的有限数值**做越界
+    // 检查并告警（钳位值即生效值，将来建模时在同一读取点落存储）；
+    // 不可解析 / 非有限的写法维持旧行为（忽略，⛔ 不新增拒载），
+    // 域内值同样无告警、行为逐字不变。
+    for opcode in ["position", "width"] {
+        if let Some(value) = scopes.get(opcode)
+            && let Ok(parsed) = value.as_f32()
+        {
+            clamp_static_pan_family(opcode, parsed, line, &mut warnings);
+        }
+    }
 
     // ---- 轮替 / 分组 ----
     let seq_position = read_u32(&scopes, "seq_position", None, 1)?;
@@ -9634,6 +9709,32 @@ v127=1
         assert_eq!(first_region("<region>sample=a.wav").pan, 0.0);
         assert_eq!(first_region("<region>sample=a.wav pan=-100").pan, -100.0);
         assert_eq!(first_region("<region>sample=a.wav pan=100").pan, 100.0);
+    }
+
+    #[test]
+    fn an_out_of_range_pan_is_clamped_at_load_time_with_a_warning() {
+        // ⭐ **追加判据（Wang 2026-11-18 裁决）—— 修订的是上面
+        // `the_pan_default_is_zero_and_the_value_is_verbatim` 的隐含口径**
+        // （旧口径：越界 `pan` 原样透传、求值期才钳位）：越界静态 `pan`
+        // 改为**装载期钳位 ＋ `ClampedStaticValue` 告警**；域内三条断言
+        // 逐字未变（仍在上面那条测试里）。告警的完整钉法（载荷 / 去重 /
+        // `position` / `width`）在集成判据 `tests/static_pan_clamp.rs`。
+        let over = parse_text("<region>sample=a.wav pan=200", &Default::default())
+            .expect("越界静态 pan 必须可装载（钳位、不拒载）");
+        assert_eq!(over.regions()[0].pan, 100.0);
+        assert_eq!(
+            over.warnings(),
+            &[Warning::ClampedStaticValue {
+                line: 1,
+                opcode: "pan".to_string(),
+                value: "200".to_string(),
+                clamped: "100".to_string(),
+            }]
+        );
+        let under = parse_text("<region>sample=a.wav pan=-250", &Default::default())
+            .expect("越界静态 pan 必须可装载（钳位、不拒载）");
+        assert_eq!(under.regions()[0].pan, -100.0);
+        assert_eq!(under.warnings().len(), 1);
     }
 
     #[test]
