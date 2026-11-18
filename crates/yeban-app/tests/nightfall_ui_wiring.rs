@@ -67,6 +67,7 @@ fn synth_track(id: EntityId, name: &str, kind: TrackKind) -> TrackV3 {
         sampler: None,
         preset: None,
         devices: Vec::new(),
+        lane_chains: Vec::new(),
         macros: Vec::new(),
         automation_lanes: BTreeMap::new(),
         clips: BTreeMap::new(),
