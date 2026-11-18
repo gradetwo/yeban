@@ -269,10 +269,10 @@ impl DrumNoteMap {
         } else {
             let mut index = 0;
             while index < EXTRA_NOTE_SLOTS {
-                if let Some(note) = self.extra[index] {
-                    if note == pitch {
-                        return Some(EXTRA_VOICES[index]);
-                    }
+                if let Some(note) = self.extra[index]
+                    && note == pitch
+                {
+                    return Some(EXTRA_VOICES[index]);
                 }
                 index += 1;
             }

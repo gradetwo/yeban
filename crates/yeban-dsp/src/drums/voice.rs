@@ -388,10 +388,7 @@ impl Generator {
                 generator.body_env.gate_on();
                 generator.tail_env.gate_on();
             }
-            super::VOICE_SHAKER
-            | super::VOICE_COWBELL
-            | super::VOICE_CRASH
-            | super::VOICE_RIDE => {
+            super::VOICE_SHAKER | super::VOICE_COWBELL | super::VOICE_CRASH | super::VOICE_RIDE => {
                 generator.body_env.gate_on();
             }
             _ => {}
@@ -427,10 +424,9 @@ impl Generator {
                 self.body_env.value()
             }
             super::VOICE_RIMSHOT => self.body_env.value().max(self.tail_env.value()),
-            super::VOICE_SHAKER
-            | super::VOICE_COWBELL
-            | super::VOICE_CRASH
-            | super::VOICE_RIDE => self.body_env.value(),
+            super::VOICE_SHAKER | super::VOICE_COWBELL | super::VOICE_CRASH | super::VOICE_RIDE => {
+                self.body_env.value()
+            }
             _ => 0.0,
         }
     }
@@ -460,13 +456,10 @@ impl Generator {
             super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
                 !self.body_env.is_active()
             }
-            super::VOICE_RIMSHOT => {
-                !self.body_env.is_active() && !self.tail_env.is_active()
+            super::VOICE_RIMSHOT => !self.body_env.is_active() && !self.tail_env.is_active(),
+            super::VOICE_SHAKER | super::VOICE_COWBELL | super::VOICE_CRASH | super::VOICE_RIDE => {
+                !self.body_env.is_active()
             }
-            super::VOICE_SHAKER
-            | super::VOICE_COWBELL
-            | super::VOICE_CRASH
-            | super::VOICE_RIDE => !self.body_env.is_active(),
             _ => true,
         }
     }
@@ -598,12 +591,8 @@ impl Generator {
                     params.noise_highpass_hz,
                     params.noise_lowpass_hz,
                 );
-                self.body_env.set_params(
-                    params.attack_s,
-                    params.decay_s,
-                    0.0,
-                    params.decay_s,
-                );
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
                 let tail_s = params.decay_s * RIM_TAIL_RATIO;
                 self.tail_env
                     .set_params(params.attack_s, tail_s, 0.0, tail_s);

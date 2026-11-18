@@ -620,20 +620,8 @@ fn parse_bus(obj: &[(String, Json)]) -> Result<DrumBusPreset, DrumPresetError> {
             makeup_db: get_f32_ranged(glue, "makeup_db", "bus.glue.makeup_db", -12.0, 12.0)?,
         },
         clipper: DrumBusClipperPreset {
-            drive_db: get_f32_ranged(
-                clipper,
-                "drive_db",
-                "bus.clipper.drive_db",
-                0.0,
-                24.0,
-            )?,
-            ceiling_db: get_f32_ranged(
-                clipper,
-                "ceiling_db",
-                "bus.clipper.ceiling_db",
-                -6.0,
-                0.0,
-            )?,
+            drive_db: get_f32_ranged(clipper, "drive_db", "bus.clipper.drive_db", 0.0, 24.0)?,
+            ceiling_db: get_f32_ranged(clipper, "ceiling_db", "bus.clipper.ceiling_db", -6.0, 0.0)?,
             knee_db: get_f32_ranged(clipper, "knee_db", "bus.clipper.knee_db", 0.0, 6.0)?,
             mix: get_f32_ranged(clipper, "mix", "bus.clipper.mix", 0.0, 1.0)?,
             oversample,
@@ -2214,7 +2202,10 @@ mod tests {
         );
 
         let acoustic = MINIMAL
-            .replace("\"kit_family\": \"electronic\"", "\"kit_family\": \"acoustic\"")
+            .replace(
+                "\"kit_family\": \"electronic\"",
+                "\"kit_family\": \"acoustic\"",
+            )
             .replace(
                 "\"swing_permille\": 515, \"bars\": 1,",
                 "\"swing_permille\": 515, \"bars\": 1, \

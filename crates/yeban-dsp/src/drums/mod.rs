@@ -2826,7 +2826,10 @@ mod tests {
         let (mut left, mut right) = (vec![0.0f32; 4_800], vec![0.0f32; 4_800]);
         machine.render_stereo(0, &mut left, &mut right);
         let rms = |buf: &[f32]| {
-            (buf.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>() / buf.len() as f64)
+            (buf.iter()
+                .map(|s| f64::from(*s) * f64::from(*s))
+                .sum::<f64>()
+                / buf.len() as f64)
                 .sqrt()
         };
         assert!(
@@ -2854,10 +2857,7 @@ mod tests {
         let default_out = render_kit(DrumKitParams::DEFAULT);
         let recipe_out = render_kit(DrumKitParams::RECIPE_909);
         assert!(default_out.iter().any(|s| *s != 0.0), "夹具必须出声");
-        assert_ne!(
-            default_out, recipe_out,
-            "909 配方与默认配方的波形必须不同"
-        );
+        assert_ne!(default_out, recipe_out, "909 配方与默认配方的波形必须不同");
         assert_eq!(DrumKitParams::RECIPE_909.kick.decay_s, 0.30);
         assert_eq!(DrumKitParams::RECIPE_909.hihat.base_hz, 340.0);
     }

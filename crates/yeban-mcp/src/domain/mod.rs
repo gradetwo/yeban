@@ -4312,8 +4312,9 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                         },
                     });
                     ops.push(Op::AddRoutingNode { node: bus_id });
-                    for (slot_index, spec) in
-                        yeban_theory::drum_bus_device_specs(bus).into_iter().enumerate()
+                    for (slot_index, spec) in yeban_theory::drum_bus_device_specs(bus)
+                        .into_iter()
+                        .enumerate()
                     {
                         ops.push(Op::InsertDevice {
                             track_id: bus_id,

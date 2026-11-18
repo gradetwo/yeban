@@ -2929,8 +2929,9 @@ pub fn drum_gen_ops(
                         },
                     });
                     ops.push(Op::AddRoutingNode { node: bus_id });
-                    for (slot_index, spec) in
-                        yeban_theory::drum_bus_device_specs(bus).into_iter().enumerate()
+                    for (slot_index, spec) in yeban_theory::drum_bus_device_specs(bus)
+                        .into_iter()
+                        .enumerate()
                     {
                         ops.push(Op::InsertDevice {
                             track_id: bus_id,
@@ -10407,8 +10408,8 @@ mod tests {
         let ops = drum_gen_ops(&project, &preset, &params, None).expect("新建鼓轨批次");
         assert_eq!(
             ops.len(),
-            8,
-            "建轨 3 + 装鼓组 1 + 效果层 2 + 片段 2: {ops:?}"
+            14,
+            "建轨 2 + 总线 6 + 装鼓组 1 + 效果层 3 + 片段 2: {ops:?}"
         );
         match &ops[0] {
             Op::AddTrack { track } => {
@@ -10419,21 +10420,56 @@ mod tests {
             other => panic!("unexpected op: {other:?}"),
         }
         assert!(matches!(ops[1], Op::AddRoutingNode { .. }));
+        // 鼓总线：建轨 + 路由节点 + 胶水压缩 + 软削波 + 两条连线。
         match &ops[2] {
+            Op::AddTrack { track } => {
+                assert_eq!(track.name, "Trap Drum Bus");
+                assert_eq!(track.kind, TrackKind::AuxReturn);
+                assert_eq!(track.volume_db, 0.0);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(matches!(ops[3], Op::AddRoutingNode { .. }));
+        match &ops[4] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 0);
+                assert_eq!(device.name, "Glue Compressor");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        match &ops[5] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 1);
+                assert_eq!(device.name, "Soft Clipper");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        match &ops[6] {
             Op::ConnectRouting { edge } => {
+                assert_eq!(edge.kind, RoutingKind::BusToMaster);
                 assert_eq!(edge.destination_node, project.master_bus_track_id);
             }
             other => panic!("unexpected op: {other:?}"),
         }
-        match &ops[3] {
+        match &ops[7] {
+            Op::ConnectRouting { edge } => {
+                assert_eq!(edge.kind, RoutingKind::TrackToBus);
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        match &ops[8] {
             Op::InsertDevice { device, .. } => {
                 assert_eq!(device.kind, DeviceKind::InternalInstrument);
                 assert!(device.params.iter().any(|p| p.name == "kick_note"));
             }
             other => panic!("unexpected op: {other:?}"),
         }
-        // 效果层接在鼓组之后：通道条（槽 1）+ 混响（槽 2），参数与风格文件一致。
-        match &ops[4] {
+        // 效果层接在鼓组之后：通道条（槽 1）+ 混响（槽 2）+ 延迟（槽 3），参数与风格文件一致。
+        match &ops[9] {
             Op::InsertDevice {
                 slot_index, device, ..
             } => {
@@ -10456,7 +10492,7 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
-        match &ops[5] {
+        match &ops[10] {
             Op::InsertDevice {
                 slot_index, device, ..
             } => {
@@ -10465,9 +10501,18 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
+        match &ops[11] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 3);
+                assert_eq!(device.name, "Delay");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
         // 片段音符与 theory 生成逐项一致（tick / 音高 / 力度 / 时值）。
         let expected = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();
-        match &ops[6] {
+        match &ops[12] {
             Op::AddClip { clip } => match &clip.content {
                 ClipContent::Midi { notes } => {
                     assert_eq!(notes.len(), expected.len());
@@ -10487,7 +10532,7 @@ mod tests {
             },
             other => panic!("unexpected op: {other:?}"),
         }
-        match &ops[7] {
+        match &ops[13] {
             Op::AddClipPlacement { placement, .. } => {
                 assert_eq!(placement.start_tick, 0);
                 assert_eq!(placement.duration_ticks, 4 * yeban_theory::TICKS_PER_BAR);
@@ -10495,7 +10540,6 @@ mod tests {
             other => panic!("unexpected op: {other:?}"),
         }
     }
-
     #[test]
     fn drum_gen_ops_new_track_acoustic_binds_sfz_kit() {
         let project = filled_project();
@@ -10503,7 +10547,8 @@ mod tests {
             .unwrap()
             .expect("rock 预置必须存在");
         let ops = drum_gen_ops(&project, &preset, &drum_params(), None).expect("新建鼓轨批次");
-        match &ops[3] {
+        // 鼓总线 6 笔之后才是采样器绑定（ops[8]）。
+        match &ops[8] {
             Op::SetTrackSampler { new_sampler, .. } => {
                 assert_eq!(
                     new_sampler.as_ref().map(|s| s.path.as_str()),
@@ -10515,10 +10560,10 @@ mod tests {
         // rock 的效果层：通道条 + 磁带 + 混响（采样器不占器件槽，槽位从 0 起）。
         assert_eq!(
             ops.len(),
-            9,
-            "建轨 3 + 绑鼓组 1 + 效果层 3 + 片段 2: {ops:?}"
+            14,
+            "建轨 2 + 总线 6 + 绑鼓组 1 + 效果层 3 + 片段 2: {ops:?}"
         );
-        let fx_names: Vec<&str> = ops[4..7]
+        let fx_names: Vec<&str> = ops[9..12]
             .iter()
             .map(|op| match op {
                 Op::InsertDevice { device, .. } => device.name.as_str(),
@@ -10527,7 +10572,6 @@ mod tests {
             .collect();
         assert_eq!(fx_names, ["Channel Strip", "Tape Saturation", "Reverb"]);
     }
-
     #[test]
     fn drum_gen_ops_existing_equipped_track_keeps_its_kit() {
         let mut project = filled_project();
@@ -10555,8 +10599,8 @@ mod tests {
         let ops =
             drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
         // 鼓组不动（无装鼓组笔），但效果层照常补齐（该轨没有任何效果）：
-        // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 片段两笔。
-        assert_eq!(ops.len(), 4, "效果层 2 + 片段 2: {ops:?}");
+        // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 延迟（槽 3）+ 片段两笔。
+        assert_eq!(ops.len(), 5, "效果层 3 + 片段 2: {ops:?}");
         assert!(
             !ops.iter()
                 .any(|op| matches!(op, Op::SetTrackSampler { .. })),
@@ -10588,8 +10632,17 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
-        assert!(matches!(ops[2], Op::AddClip { .. }));
-        match &ops[3] {
+        match &ops[2] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 3);
+                assert_eq!(device.name, "Delay");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(matches!(ops[3], Op::AddClip { .. }));
+        match &ops[4] {
             Op::AddClipPlacement {
                 track_id: placed_on,
                 ..
@@ -10597,7 +10650,6 @@ mod tests {
             other => panic!("unexpected op: {other:?}"),
         }
     }
-
     #[test]
     fn drum_gen_ops_existing_track_with_user_reverb_keeps_it() {
         let mut project = filled_project();

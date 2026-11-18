@@ -3015,10 +3015,10 @@ impl SynthEngine {
         // ⭐ 鼓机 / 复音的兜底支路没有源侧声相 ⇒ 它们只写了左声道，
         // 这里把左声道整份复制给右（"两声道同值"）；SFZ 分段路已在写的时候就分好了。
         // 例外：鼓机已按逐件声像分声道写过（`drum_stereo_written`）⇒ 不复制。
-        if let Some(right) = out_r {
-            if !drum_stereo_written {
-                right.copy_from_slice(out);
-            }
+        if let Some(right) = out_r
+            && !drum_stereo_written
+        {
+            right.copy_from_slice(out);
         }
     }
 }
