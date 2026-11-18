@@ -1573,6 +1573,9 @@ struct BranchShare<'a> {
     /// 与 `track_scratch` 同一条纪律：**构造期**预分配、逐块复用 ⇒ 零分配。
     /// 只有 `RoutingPlan::uses_buses()` 为真时才清空/使用（默认路径整段跳过）。
     routing_buses: &'a mut [AudioBlock<DEFAULT_BLOCK_FRAMES>],
+    /// ⭐ **节点自有内容暂存池**（逐边 PDC 残余两形状修复；借用视图，见
+    /// `EngineRuntime::node_stash`）。与 `routing_buses` 同下标（`slot_of`）。
+    node_stash: &'a mut [AudioBlock<DEFAULT_BLOCK_FRAMES>],
     /// ⭐ **侧链键抽头池**（v1）：`[源槽位][帧]` 的单声道抽头，槽位 =
     /// [`crate::routing::RoutingPlan::slot_of`]（与总线暂存池同源）。
     /// 构造期预分配、逐块复用 ⇒ 零分配；每量子起点由 `render_branch` 清零
@@ -1928,6 +1931,12 @@ fn render_branch(
             bus.silence();
             bus.set_frames(frames);
         }
+        // ⭐ 残余两形状修复：自有暂存池同纪律清零（逐轨段写入、3a⁗ 消费；
+        // 没被写过的槽位必须读作静音 ⇒ 每量子起点与累积槽一起清）。
+        for stash in share.node_stash[..routing.len()].iter_mut() {
+            stash.silence();
+            stash.set_frames(frames);
+        }
     }
 
     // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
@@ -2004,6 +2013,15 @@ fn render_branch(
         let process_bus_inserts = buses_needed
             && routing.has_incoming_audio(&track)
             && has_armed_insert_devices(share, &track);
+        // ⭐ **逐边 PDC 残余两形状修复**：有入边、又不是处理型总线的节点
+        // （纯总线与「自有片段 + 入边」的混合轨）⇒ 自有内容**不在逐轨段
+        // 喂线/路由**：它在声相段按旧口径分级后暂存（`node_stash`），等
+        // 3a⁗ 在输出级之后与收入汇合，补偿线每量子只喂汇合后的一份流。
+        // 旧做法两遍各喂一次同一条线：`D ≤ 128` 且自有为静音时两遍输出
+        // 恰分区（纯总线旧行为），`D > 128` 分区破裂、自有非静音时两份
+        // 真实流交错 —— 两形状的实测见 `tests/pdc_residual_shapes.rs`。
+        let defer_own_to_forward =
+            buses_needed && routing.has_incoming_audio(&track) && !process_bus_inserts;
         // ⭐⭐ **stage 4（实时源侧声相）**：只在这条轨是"**干净轨**"时切分声道通路 ——
         // 全部条件缺一不可，任一不成立就**整段退回**原来的单声道流水线（逐位不变）：
         //
@@ -2225,7 +2243,13 @@ fn render_branch(
         // 不全等时**跳过**它 —— 那一路的补偿量在声相之后逐边施加（`EdgeBank`），
         // 若两边都施加就会补偿两次。代价如实登记：这一档下本轨的节点级延迟线
         // 本量子不推进（与总线转发段 stage 26 慢路同一条边界）。
-        if track_edges_uniform {
+        //
+        // ⭐ **残余两形状修复再加一条跳过**：`defer_own_to_forward` 的节点
+        // （有入边、非处理型总线）在这里**也不喂线** —— 它的线在 3a⁗ 由
+        // 汇合后的完整输出喂**唯一一次**（节点级与逐边两档同理：逐边档的
+        // 边线在逐轨段的 `route_panned_or_per_edge!` 里喂，同样随路由一起
+        // 推迟）。在这里先喂自有内容、3a⁗ 再喂收入，就是两形状的病根。
+        if track_edges_uniform && !defer_own_to_forward {
             if stereo_track {
                 // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
                 share.pdc.apply_pair(
@@ -2347,7 +2371,81 @@ fn render_branch(
                 }
             }};
         }
-        if process_bus_inserts {
+        if defer_own_to_forward {
+            // ⭐ **逐边 PDC 残余两形状修复**：自有内容在这里**只分级、只暂存**
+            // —— 分级口径与普通轨的慢路**逐字同款**（声相自动化走平滑版、
+            // 静态走常量版；单声道 / 分声道成对两档都在），写进本节点的
+            // 自有暂存槽 `node_stash`，⛔ 不路由、⛔ 不喂补偿线（节点级线
+            // 已在上面跳过，逐边线随路由一起推迟）。3a⁗ 转发本节点时在
+            // **输出级之后**把暂存并入完整输出，汇合流只喂线一次。
+            //
+            // 为什么暂存而不是并入自己的累积槽：累积槽里的收入要在 3a⁗
+            // 过**输出级**（`#299`：输出级只作用于收入，自有内容走它自己
+            // 的 params 分级，B7 钉两者声相逐位同值但推子/门限口径不同）
+            // ⇒ 自有内容若先进累积槽会被输出级再作用一次。处理型总线
+            // 不走这里：它在 3a⁗ 还要过插入链，自有源必须先进累积槽
+            // （`#158` 的既有口径，一字不动）。
+            if let Some(stash_index) = routing.slot_of(&track) {
+                if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
+                    let (left_source, right_source) = if stereo_track {
+                        (
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                        )
+                    } else {
+                        (
+                            &share.track_scratch[..frames],
+                            &share.track_scratch[..frames],
+                        )
+                    };
+                    let (stash_left, stash_right) = share.node_stash[stash_index].stereo_mut();
+                    if stereo_track {
+                        render_panned_pair_into_smoothed(
+                            &mut stash_left[..frames],
+                            &mut stash_right[..frames],
+                            left_source,
+                            right_source,
+                            &mut share.armed_pan_l[index],
+                            &mut share.armed_pan_r[index],
+                        );
+                    } else {
+                        render_panned_into_smoothed(
+                            &mut stash_left[..frames],
+                            &mut stash_right[..frames],
+                            left_source,
+                            &mut share.armed_pan_l[index],
+                            &mut share.armed_pan_r[index],
+                        );
+                    }
+                    *share.pan_automation_frames =
+                        share.pan_automation_frames.wrapping_add(frames as u64);
+                } else {
+                    // 找不到槽位 ⇒ **居中**（与普通轨静态路同一条口径）。
+                    let (gain_l, gain_r) = pan_index.map_or((1.0f32, 1.0f32), |index| {
+                        (share.pan_gains[index].1, share.pan_gains[index].2)
+                    });
+                    let (stash_left, stash_right) = share.node_stash[stash_index].stereo_mut();
+                    if stereo_track {
+                        render_panned_pair_into(
+                            &mut stash_left[..frames],
+                            &mut stash_right[..frames],
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                            gain_l,
+                            gain_r,
+                        );
+                    } else {
+                        render_panned_into(
+                            &mut stash_left[..frames],
+                            &mut stash_right[..frames],
+                            &share.track_scratch[..frames],
+                            gain_l,
+                            gain_r,
+                        );
+                    }
+                }
+            }
+        } else if process_bus_inserts {
             // ⭐ 任务单 `#158`：**处理型总线**的自身声源先以"声相之后"的立体声并入
             // **自己的**总线暂存槽（单位增益）。出边的增益**不在这里乘**：等 3a⁗
             // 把"发送之和 ＋ 这份声源"一起送过插入链之后，再按每条出边乘一次。
@@ -2640,6 +2738,26 @@ fn render_branch(
                     }
                 }
             }
+            // ⭐ **逐边 PDC 残余两形状修复的汇合点**：非处理型总线节点的
+            // 自有内容在逐轨段只分级、只暂存（`node_stash`，见逐轨段的
+            // `defer_own_to_forward` 分支）。在这里 —— **输出级之后、
+            // 补偿之前** —— 把它并入本节点的完整输出（此刻躺在
+            // `reverb_scratch` 里）：收入保持输出级的旧口径（输出级只
+            // 作用于收入），自有内容保持逐轨段的完整分级，汇合流随后
+            // 只喂补偿线**一次**（节点级 / 逐边两档同理）。
+            //
+            // 处理型总线跳过：它的自有源已在逐轨段并入累积槽、且已过
+            // 插入链与输出级（`#158` / `#299` 的既有口径）⇒ 它的暂存
+            // 恒为静音，跳过合并也避免对已钉死的总线路径多做一次加法。
+            if !processing_bus {
+                let stash_left = share.node_stash[index].left();
+                let stash_right = share.node_stash[index].right();
+                let (first, second) = share.reverb_scratch.split_at_mut(1);
+                for frame in 0..frames {
+                    first[0][frame] += stash_left[frame];
+                    second[0][frame] += stash_right[frame];
+                }
+            }
             // ⭐ **stage 22 —— 总线级 PDC 落地**；⭐ **stage 26 —— 逐边**。
             //
             // 位置：**输出级之后、转发之前**（`D` 的定义就是"这个节点的输出晚
@@ -2904,6 +3022,14 @@ pub struct EngineRuntime {
     /// ⚠ 只在 [`crate::snapshot::EngineSnapshot::routing`] 的 `uses_buses()` 为真时
     /// 清空/使用 ⇒ 默认工程（全部直连 master）**一个字节都不碰**。
     routing_buses: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>]>,
+    /// ⭐ **节点自有内容暂存池**（逐边 PDC 残余两形状修复）：与 `routing_buses`
+    /// 同尺寸、同纪律（`new_boxed` 构造期一次分配 ⇒ 回调内零分配）。
+    ///
+    /// 有入边且非处理型总线的节点，其自有内容在逐轨段按旧口径分级后写
+    /// 这里（下标 = `slot_of`），3a⁗ 在输出级之后并入本节点输出、汇合流
+    /// 只喂补偿线一次 —— 逐轨段与转发段各喂一次同一条线，会让那条线
+    /// 每量子推进两遍（`D > 128` 落点错位 / 两份真实流交错）。
+    node_stash: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>]>,
     /// ⭐ **侧链键抽头池**（v1）：`[源槽位][帧]` 的单声道抽头。
     ///
     /// 为什么是堆上的定长数组（`Box<[[f32; 128]; 16]>`，值尺寸 = **一个瘦指针 8 B**）：
@@ -3672,6 +3798,12 @@ impl EngineRuntime {
             // 时是 1 MiB）再搬进 Box —— 实测会直接把测试线程的 2 MiB 栈打爆。
             put!(
                 routing_buses,
+                vec![AudioBlock::new(); MAX_TRACK_SLOTS].into_boxed_slice()
+            );
+            // ⭐ 节点自有内容暂存池（残余两形状修复）：与总线暂存池同一条
+            // 纪律 —— **构造期**一次分配到堆上 ⇒ 回调内零分配。
+            put!(
+                node_stash,
                 vec![AudioBlock::new(); MAX_TRACK_SLOTS].into_boxed_slice()
             );
             // ⭐ 侧链键抽头池（v1）：与总线暂存池同一条纪律 —— **构造期**一次分配
@@ -4884,6 +5016,7 @@ impl EngineRuntime {
             track_scratch,
             track_scratch_r,
             routing_buses,
+            node_stash,
             bank,
             synth,
             transport,
@@ -5910,6 +6043,7 @@ impl EngineRuntime {
                     track_scratch: &mut *track_scratch,
                     track_scratch_r: &mut *track_scratch_r,
                     routing_buses: &mut *routing_buses,
+                    node_stash: &mut *node_stash,
                     scratch_meters: &mut *scratch_meters,
                     insert_gain_reductions: &mut *insert_gain_reductions,
                     insert_max_reduction_db: &mut *insert_max_reduction_db,
@@ -9531,6 +9665,7 @@ mod tests {
                 track_scratch,
                 track_scratch_r,
                 routing_buses,
+                node_stash,
                 scratch_meters,
                 insert_gain_reductions,
                 insert_max_reduction_db,
@@ -9597,6 +9732,7 @@ mod tests {
                 track_scratch,
                 track_scratch_r,
                 routing_buses,
+                node_stash,
                 scratch_meters,
                 insert_gain_reductions,
                 insert_max_reduction_db,
