@@ -46,8 +46,12 @@ export component OnboardingOverlay inherits Rectangle {
     card := Rectangle {
         width: 480px;
         height: 236px;
-        x: root.card-zone == 3 ? 340px : (root.width - self.width) / 2;
-        y: root.card-zone == 1 ? 72px : (root.card-zone == 2 ? root.height - self.height - 400px : (root.height - self.height) / 2);
+        // 落位夹取（A6）：zone 公式只给预算值，实际坐标再夹进浮层可视区
+        // （四边留 8px，下限 8px 防负值）——窗口矮于组件 min-height 时
+        // 预算值会越界（zone 2 在层高 < 636px 时为负、zone 1 在层高
+        // < 316px 时溢底），无夹取时卡片被窗口边缘裁掉、出口按钮点不到。
+        x: Math.max(8px, Math.min(root.card-zone == 3 ? 340px : (root.width - self.width) / 2, root.width - self.width - 8px));
+        y: Math.max(8px, Math.min(root.card-zone == 1 ? 72px : (root.card-zone == 2 ? root.height - self.height - 400px : (root.height - self.height) / 2), root.height - self.height - 8px));
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-lg;
         border-width: 1px;
