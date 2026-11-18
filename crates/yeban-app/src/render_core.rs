@@ -106,7 +106,7 @@ use yeban_engine::synth::SynthEngine;
 use crate::audio_clip;
 use crate::export_wav::{NoteToneSource, WavExportError, WavExportOptions, track_notes_in_frames};
 // ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`；与 MCP 共用同一份实现。
-use yeban_render::engine_source::EngineTrackSource;
+use yeban_render::engine_source::{EngineTrackSource, LaneSplitSource};
 
 // **空轨的运行态**：一个不产生任何样本、也不占用任何内存的源。
 //
@@ -1025,19 +1025,41 @@ pub fn render_project_f32_with_plans_under(
             // 分流取消，全部走 [`track_pan_of`]（它内部是 `audio_clip::track_pan_gains`）。
             // `render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan（`#251` 的落点不变）。
             let pan = track_pan_of(project, track_id, suppress_static_pan(track_id));
-            sources.insert(
-                track_id,
-                // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
-                //    快照里，⛔ 不按源再 clone 一份（见 `EngineTrackSource` 的字段文档）。
-                // ⭐ `#251`：`render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan。
-                Box::new(
-                    EngineTrackSource::new(std::sync::Arc::clone(snapshot), track_id)?
+            // ⭐ 逐件链（期 3）：带 `lane_chains` 的轨走分组源（与 MCP 同一份
+            //    `LaneSplitSource`），否则走单引擎源 ⇒ 无逐件链的轨逐位不变。
+            // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
+            //    快照里，⛔ 不按源再 clone 一份（见 `EngineTrackSource` 的字段文档）。
+            // ⭐ `#251`：`render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan。
+            let lane_chains: &[yeban_model::LaneChainDef] = project
+                .tracks
+                .get(&track_id)
+                .map_or(&[], |track| track.lane_chains.as_slice());
+            if lane_chains.is_empty() {
+                sources.insert(
+                    track_id,
+                    Box::new(
+                        EngineTrackSource::new(std::sync::Arc::clone(snapshot), track_id)?
+                            .with_pan(pan)
+                            // ⭐ `#341`：把 `MidiCc` 泳道接成离线探针（无 CC 泳道时内部仍是
+                            // `None` ⇒ 输出与接线前逐位相同）。
+                            .with_cc(project),
+                    ),
+                );
+            } else {
+                sources.insert(
+                    track_id,
+                    Box::new(
+                        LaneSplitSource::new(
+                            std::sync::Arc::clone(snapshot),
+                            track_id,
+                            lane_chains,
+                            project.bpm,
+                        )?
                         .with_pan(pan)
-                        // ⭐ `#341`：把 `MidiCc` 泳道接成离线探针（无 CC 泳道时内部仍是
-                        // `None` ⇒ 输出与接线前逐位相同）。
                         .with_cc(project),
-                ),
-            );
+                    ),
+                );
+            }
         }
         let mut label = "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned();
         if !sfz_decoded.is_empty() {
