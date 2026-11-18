@@ -7,7 +7,7 @@
 #      实测本 crate 这三类 needle **各 0 处** ⇒ 当前口径**无漏判**（不是靠巧合）。
 #   ③ 注释：跳过 trim_start() 后以 // 开头的行。
 #   ④ 行尾：text.lines() 已去 \n／\r；读表时走 read_evidence_text() 再归一化（R134）。
-# 合计 122 处：literal 69 ／ variable 53；其中 **twin_point_risk 0 处**
+# 合计 124 处：literal 69 ／ variable 55；其中 **twin_point_risk 0 处**
 src/band_solo.rs|221|variable|&ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|443|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|444|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
@@ -22,15 +22,17 @@ src/device_param.rs|558|variable||(spelling|variable_needle|needle 非字面量�
 src/device_param.rs|730|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/device_param.rs|870|variable||(spelling|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/anatomy.rs|309|variable||preset| preset.id == id|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1368|variable|&kit.kick.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1369|variable|&kit.kick.glide_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1370|variable|&kit.kick.glide_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1371|variable|&kit.kick.attack_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1372|variable|&kit.kick.decay_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1399|variable|&kit.snare.tone_ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1412|variable|&kit.clap.burst_spacing_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1667|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/drums/mod.rs|1939|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2098|variable|&kit.kick.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2099|variable|&kit.kick.glide_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2100|variable|&kit.kick.glide_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2101|variable|&kit.kick.attack_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2102|variable|&kit.kick.decay_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2129|variable|&kit.snare.tone_ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2142|variable|&kit.clap.burst_spacing_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2154|variable|&kit.tom.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2157|variable|&kit.crash.decay_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2478|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|2750|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/gate.rs|235|variable|&sr|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|1570|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/meter.rs|1574|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

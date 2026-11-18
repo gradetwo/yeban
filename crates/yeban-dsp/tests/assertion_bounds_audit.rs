@@ -179,6 +179,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "测试内断言：定长静音块经带通后右声道全零，规模由测试构造固定，非生产路径",
     ),
     (
+        "src/drums/mod.rs",
+        "out.iter().all(|s| s.is_finite()),",
+        "测试内断言：`out` 为 `vec![0.0f32; 9_600]` 定长渲染块（新音色出声测试），规模由测试构造固定，非生产路径",
+    ),
+    (
         "src/tape.rs",
         "dirty.iter().chain(dirty_r.iter()).all(|s| s.is_finite()),",
         "测试内断言：256 样本定长脏块经处理后全有限，规模由测试构造固定，非生产路径",

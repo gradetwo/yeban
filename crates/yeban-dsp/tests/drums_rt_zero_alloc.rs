@@ -246,8 +246,8 @@ fn a_delayed_hit_shifts_the_waveform_by_exactly_the_hit_offset() {
 /// 92% 只跑"静音快路径" ⇒ 判据在**空转**。本判据的覆盖度自检有五条：
 ///
 /// 1. **有声帧占比 ≥ 90%** —— 窗口里真的在发声；
-/// 2. **5 个音色都真的占用过槽位**（逐量子读 [`DrumMachine::debug_slot`]，
-///    把出现过的音色判别值记进 `[bool; 5]`）；
+/// 2. **全部音色都真的占用过槽位**（逐量子读 [`DrumMachine::debug_slot`]，
+///    把出现过的音色判别值记进 `[bool; DrumVoice::ALL.len()]`）；
 /// 3. `triggers()` 等于夹具自己的记账；
 /// 4. `voice_steals() > 0` —— 窃取/淡出分支真的被走到；
 /// 5. `hat_chokes() > 0` —— 闭镲 choke 开镲那条分支真的被走到。
@@ -276,7 +276,7 @@ fn rt_path_allocates_nothing_over_10_000_quanta() {
     let mut triggered: u64 = 0;
     let mut rendered_frames: u64 = 0;
     let mut nonzero_frames: u64 = 0;
-    let mut voices_seen = [false; 5];
+    let mut voices_seen = [false; DrumVoice::ALL.len()];
     // 新面（`latency_samples`）的运行期零分配判据：在**同一个观测窗口**内每个量子
     // 取一次读数，并把读数累加 —— 分配计数因此也覆盖这个新成员。
     let mut latency_calls: u64 = 0;
