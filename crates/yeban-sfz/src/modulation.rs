@@ -2415,11 +2415,11 @@ mod tests {
         // ⇒ 上面那条 `ALL[5] == Amplitude` 逐位不变。
         // ⛔ **原句（历史，⛔ 不再作为断言）**：
         // `assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);`
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 4], ModTarget::Tune);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 6], ModTarget::Tune);
         // ⭐ 本片（stage 3）：`Pan` 加在 `Volume` **之后** ⇒ "末尾"移到 `Pan`，
         // `Volume` 退到 `COUNT − 2`；既有十个目标的下标**一个都没动**。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Volume);
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Pan);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 5], ModTarget::Volume);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 4], ModTarget::Pan);
         // ⭐ 本片（stage 5）：`Cutoff` 加在 `Pan` **之后** ⇒ "末尾"移到 `Cutoff`；
         // 既有十一个目标的下标**一个都没动**。
         //
@@ -2427,9 +2427,12 @@ mod tests {
         // "`Cutoff` 在 `COUNT - 1`（＝末尾）"那一支**（⛔ 原文一字未删，
         // 口径同台账第 278 条）：补全片把 `Position`／`Width` 加在 `Cutoff`
         // **之后** ⇒ "末尾"移到 `Width`，`Cutoff` 退到 `COUNT - 3`、`Position`
-        // 居 `COUNT - 2`。⚠ **被修订的只是"末尾"这个位置**：既有十二个目标
-        // 的下标**一个都没动** ⇒ 上面 `COUNT - 4` 起的四条相对断言逐位不变，
-        // 本条由 `COUNT - 1` 改钉 `COUNT - 3`。
+        // 居 `COUNT - 2`。⚠ **被修订的只是从末尾数的相对位置**：既有十二个
+        // 目标的下标**一个都没动**（以下方 `index()` 的绝对断言为据）；
+        // 从末尾数的相对钉全体后移两位 —— 上面 `Tune` 由 `COUNT - 4`
+        // 改钉 `COUNT - 6`、`Volume` 由 `COUNT - 3` 改钉 `COUNT - 5`、
+        // `Pan` 由 `COUNT - 2` 改钉 `COUNT - 4`、本条 `Cutoff` 由
+        // `COUNT - 1` 改钉 `COUNT - 3`。
         assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Cutoff);
         assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Position);
         assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Width);

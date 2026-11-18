@@ -17,6 +17,13 @@
 //! 对它们钉的是**装载期值域执法**（越界数值告警、畸形写法维持忽略、
 //! ⛔ 不新增拒载）。
 //!
+//! ⭐ **追加修订段（声像族建模补全片，Wang 2026-11-18）—— 被修订的是
+//! 上一段里「`position` / `width` 尚无存储与求值语义、畸形写法维持
+//! 忽略」那一支**（⛔ 原文一字未删）：两参数现已建模（`Region` 存储 ＋
+//! 调制目标 ＋ 引擎立体声级），畸形 / 非有限写法改走与 `pan` 相同的
+//! 明确 `Err`（`InvalidFloat` / `NonFiniteFloat`，「默认不能静默」）；
+//! 判据 3 顺带补钉存储值、判据 6 的 `position` / `width` 支按此改钉。
+//!
 //! | # | 判据 | 判定量 |
 //! | :--- | :--- | :--- |
 //! | 1 | `pan=200` 可装载、存储值落 100、告警载荷逐字可查 | `Region::pan` ＋ `Warning::ClampedStaticValue` |
@@ -24,7 +31,7 @@
 //! | 3 | `position=150` / `width=-250` 可装载且各出一条点名告警 | `Warning::ClampedStaticValue` |
 //! | 4 | 域内值（含两端点）原样、无告警 | `warnings()` 为空 ＋ `Region::pan` |
 //! | 5 | 同一声明跨 region 只告警一次；不同原值各记一条；被覆盖的越界值不告警 | 告警条数与载荷 |
-//! | 6 | 声像族之外的严格口径未被误伤；`pan` 本体畸形仍 `Err`；`position` / `width` 畸形维持忽略 | `SfzError` 变体 ＋ 装载成败 |
+//! | 6 | 声像族之外的严格口径未被误伤；`pan` 本体畸形仍 `Err`；`position` / `width` 畸形改与 `pan` 同口径 `Err`（建模补全片改钉） | `SfzError` 变体 ＋ 装载成败 |
 //! | 7 | 钳位后的基准与调制增量叠加，求值仍落在 `-100..=100`（无双重钳位怪值） | `pan_value_with_baked` |
 //! | 8 | 真实文件回归：bear-sax（静态 `pan` 域内 ＋ `pan_oncc10=200`）与 virtuosity-drums（静态 `width=0`）装载成功、region 数与基线一致、无新增静态钳位告警 | include 展开 ＋ 解析归约（**装载级**；样本解码不在本 crate） |
 
@@ -106,10 +113,18 @@ fn pan_below_the_range_is_clamped_to_minus_100_at_load() {
 
 #[test]
 fn position_and_width_out_of_range_warn_and_still_load() {
-    // `position` / `width` 尚无存储语义：判据钉的是装载期值域执法
-    // （可装载 ＋ 点名告警），⛔ 不声称测到存储/求值。
+    // 建模补全片后判据加强：除装载期值域执法（可装载 ＋ 点名告警）外，
+    // 钳位值即存储值（`Region::position` / `Region::width`）。
     let position = load("<region> sample=a.wav position=150");
     assert_eq!(position.regions().len(), 1);
+    assert_eq!(
+        position.regions()[0].position, 100.0,
+        "钳位后的 100 必须即存储的 position 基准"
+    );
+    assert_eq!(
+        load("<region> sample=a.wav width=-250").regions()[0].width, -100.0,
+        "钳位后的 -100 必须即存储的 width 基准"
+    );
     assert_eq!(
         position.warnings(),
         &[Warning::ClampedStaticValue {
@@ -234,15 +249,17 @@ fn strictness_outside_the_pan_family_is_unchanged() {
         parse_text("<region> sample=a.wav pan=inf", &ParseLimits::default()),
         Err(SfzError::NonFiniteFloat { .. })
     ));
-    // `position` / `width` 未建模：畸形写法维持旧行为（忽略、可装载、
-    // 无告警），⛔ 不因本线新增拒载。
-    let instrument = load("<region> sample=a.wav width=abc position=inf");
-    assert_eq!(instrument.regions().len(), 1);
-    assert!(
-        instrument.warnings().is_empty(),
-        "未建模参数的畸形写法不得产生告警，实得 {:?}",
-        instrument.warnings()
-    );
+    // ⭐ 建模补全片改钉（原钉「未建模、畸形维持忽略」见文件头修订段）：
+    // `position` / `width` 已建模 ⇒ 畸形 / 非有限与 `pan` 同口径明确
+    // `Err`，⛔ 不再静默忽略。
+    assert!(matches!(
+        parse_text("<region> sample=a.wav width=abc", &ParseLimits::default()),
+        Err(SfzError::InvalidFloat { .. })
+    ));
+    assert!(matches!(
+        parse_text("<region> sample=a.wav position=inf", &ParseLimits::default()),
+        Err(SfzError::NonFiniteFloat { .. })
+    ));
 }
 
 #[test]
@@ -355,4 +372,32 @@ fn real_instruments_with_in_range_stereo_values_gain_no_new_warnings() {
             drums.warnings()
         );
     });
+}
+
+#[test]
+fn position_and_width_defaults_are_the_neutral_values() {
+    // ⭐ 建模补全片判据：没写 `position` / `width` 的 region，存储值必须是
+    // 中性缺省 —— `position` 0（居中）、`width` 100（立体声原样不变；
+    // sfizz `Defaults.cpp` 与 sfzformat.com 的 width 页共同钉死，⛔ 不是 0）。
+    let instrument = load("<region> sample=a.wav");
+    assert_eq!(instrument.regions()[0].position, 0.0);
+    assert_eq!(instrument.regions()[0].width, 100.0);
+    // 显式写中性值同样无告警（域内）。
+    let explicit = load("<region> sample=a.wav position=0 width=100");
+    assert_eq!(explicit.regions()[0].position, 0.0);
+    assert_eq!(explicit.regions()[0].width, 100.0);
+    assert!(explicit.warnings().is_empty());
+}
+
+#[test]
+fn position_and_width_follow_the_pan_scope_inheritance() {
+    // 作用域继承与 `pan` 同一条链：global 被 group 覆盖、group 被 region 覆盖。
+    let text = "<global> width=10 position=-20\n<group> width=30\n<region> sample=a.wav position=5";
+    let instrument = load(text);
+    assert_eq!(instrument.regions()[0].width, 30.0, "group 的 width 必须赢过 global");
+    assert_eq!(instrument.regions()[0].position, 5.0, "region 的 position 必须赢过 global");
+    // 只在 global 声明时原样继承。
+    let inherited = load("<global> width=-40 position=25\n<region> sample=a.wav");
+    assert_eq!(inherited.regions()[0].width, -40.0);
+    assert_eq!(inherited.regions()[0].position, 25.0);
 }
