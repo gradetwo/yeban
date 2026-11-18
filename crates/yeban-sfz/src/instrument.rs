@@ -6702,7 +6702,6 @@ mod tests {
     // 判目标字面量就是 f32 字面量本身，不需要放宽。`off_time` 只有两条产生路径
     // （解析期十进制字面量取最近 f32、缺省常量），没有超越函数参与，逐位确定。
 
-    #[test]
     /// ⭐ **stage 19**：`off_curve` / `off_shape` 的解析 ＋ 缺省 ＋ 响亮拒绝。
     #[test]
     fn off_curve_and_off_shape_are_read_with_spec_defaults_and_loud_rejection() {
@@ -6745,6 +6744,7 @@ mod tests {
         println!("[stage19] off_curve/off_shape 解析判据：缺省 10 / -10.3616、六族合法、五类拒绝");
     }
 
+    #[test]
     fn off_time_defaults_to_the_spec_value_and_is_not_folded_into_a_zero() {
         // 规范表格 Default = 0.006 秒（<https://sfzformat.com/opcodes/off_time/>）。
         // 缺省必须是「未给出」（`None`）+ 生效值 0.006，**不是** 0.0：
