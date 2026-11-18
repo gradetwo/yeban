@@ -7998,9 +7998,10 @@ fn with_sidechain_edge(
     project
 }
 
-/// 逐件链读数（逐件处理线期 2）：无逐件链的工程报 `0 / 0`；带两组
-/// 逐件链的工程报「声明 2 / 未应用 2」——离线逐件渲染在期 3 落地，
-/// 本期一条都不应用，两数如实同报，⛔ 不许报未应用 0 冒充已生效。
+/// 逐件链读数（逐件处理线期 2 立、期 3 改钉）：无逐件链的工程报
+/// `0 / 0`；带两组逐件链的工程报「声明 2 / 未应用 0」——期 3 的
+/// LaneSplitSource 已把离线逐件渲染接通，两组链都应用，未应用数
+/// 是「声明 − 已应用」的如实读数，⛔ 不许把未应用报成已生效。
 #[test]
 fn lane_chain_counts_report_declared_and_unapplied() {
     let baseline = render_or_ok(&project(&Spec::default()), "lane-baseline");
@@ -8030,7 +8031,7 @@ fn lane_chain_counts_report_declared_and_unapplied() {
     with_lanes.validate().expect("带逐件链的夹具必须合法");
     let rendered = render_or_ok(&with_lanes, "lane-two");
     assert_eq!(rendered["data"]["laneChainsDeclared"], 2, "{rendered}");
-    assert_eq!(rendered["data"]["laneChainsUnapplied"], 2, "{rendered}");
+    assert_eq!(rendered["data"]["laneChainsUnapplied"], 0, "{rendered}");
 
     // 两个读数必须声明在 `outputSchema` 里（否则 agent 读不到它们）。
     let schema = yeban_mcp::tools::catalog()["tools"]
