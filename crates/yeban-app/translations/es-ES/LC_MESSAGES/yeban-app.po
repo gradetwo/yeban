@@ -606,6 +606,9 @@ msgstr "+ Clic para añadir una pista"
 msgid "创建新音频或MIDI轨道 [Ctrl+T]"
 msgstr "Crear una pista de audio o MIDI [Ctrl+T]"
 
+msgid "创建新音频或MIDI轨道"
+msgstr "Crear una pista de audio o MIDI"
+
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "Arrastra archivos de audio o MIDI aquí, o haz doble clic para añadir una pista"
 

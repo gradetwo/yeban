@@ -226,13 +226,17 @@ fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
     );
 }
 
-/// 鼓机符号白名单：`yeban-app` 调 `yeban-theory` 只许这 11 个符号。
+/// 鼓机符号白名单：`yeban-app` 调 `yeban-theory` 只许这 13 个符号。
 ///
 /// 实测（2026-11-17，`crates/yeban-app/src` 去 `//` 注释后）：23 处引用、3 个文件
-/// （`bridge.rs` / `host.rs` / `elements.rs`），符号恰为这 11 个。
+/// （`bridge.rs` / `host.rs` / `elements.rs`），符号恰为这 11 个；2026-11-18
+/// 鼓机效果层又加 `DrumFxFamilies` / `DrumFxPreset`（`drum_preset.rs`，仅供
+/// `bridge.rs` 落逐风格 FX），共 29 处 / 13 符号。
 /// `factory_drum_style` 与 `factory_drum_styles` 是两个不同符号，须各列一条。
-const DRUM_THEORY_SYMBOLS: [&str; 11] = [
+const DRUM_THEORY_SYMBOLS: [&str; 13] = [
     "ACOUSTIC_KIT_SFZ_PATH",
+    "DrumFxFamilies",
+    "DrumFxPreset",
     "DrumGenParams",
     "DrumKitSetup",
     "DrumStylePreset",
@@ -294,8 +298,8 @@ fn theory_references_in_code(code: &str) -> (Vec<String>, Vec<String>) {
 ///   1. 清单里有 `yeban-theory` 边（鼓机线需要它；撤边会先断鼓机编译，本条直接钉前提）；
 ///   2. 全部 `yeban_theory::` 符号都在白名单内；
 ///   3. 没有白名单扫不到的形态（大括号导入、裸 `use`）；
-///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 23 处 / 3 文件 /
-///      11 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
+///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 29 处 / 3 文件 /
+///      13 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
 ///
 /// 另附 R56 合成对照（与真扫描同一段代码）：纯鼓片段 ⇒ 干净；含 `Chord` /
 /// `detect_chord` 的片段 ⇒ 点名报出；大括号导入 / 裸 `use` ⇒ 报"未入账"；
@@ -359,7 +363,7 @@ fn theory_edge_is_drum_only_and_chord_still_has_no_recognition() {
     // (4) 非真空下界（实测 23 处 / 3 文件 / 11 符号）。
     assert!(
         total_uses >= 10,
-        "引用数非真空：`yeban_theory::` 引用必须 ≥ 10 处（实测 23 处），当前 {total_uses} 处。\
+        "引用数非真空：`yeban_theory::` 引用必须 ≥ 10 处（实测 29 处），当前 {total_uses} 处。\
          引用塌了 ⇒ 要么鼓机接线被删了，要么扫描本身坏了。"
     );
     assert!(
@@ -368,7 +372,7 @@ fn theory_edge_is_drum_only_and_chord_still_has_no_recognition() {
     );
     assert!(
         distinct.len() >= 5,
-        "符号面非真空：不同 theory 符号必须 ≥ 5 个（实测 11 个），当前 {} 个。",
+        "符号面非真空：不同 theory 符号必须 ≥ 5 个（实测 13 个），当前 {} 个。",
         distinct.len()
     );
 

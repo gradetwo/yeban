@@ -75,14 +75,26 @@ fn lower_dock_badges_are_solid_mixes() {
 
 #[test]
 fn lower_dock_strip_selection_is_brightness_not_accent_border() {
+    // f7c5192f 改钉（Wang 自推）：skin-inset 在通道条上像"砸出一块比邻居
+    // 更暗的洞"，选中改走 bg-shell 蘸 14% accent（扁平）/ panel-brush
+    // （拟物），另配 accent 边框。旧"底色一档差"规则在此条作废，判据
+    // 跟进 Wang 取值，不回退。
     assert!(
-        LOWER_DOCK
-            .contains("trk.id == root.selected-track-id ? Tokens.skin-inset : Tokens.bg-shell"),
-        "通道条选中必须靠底色一档差承载（补丁包第四轮改钉：字面 #0f1117/#080a10 换令牌 skin-inset 对 bg-shell）"
+        LOWER_DOCK.contains(
+            "trk.id == root.selected-track-id ? Tokens.accent.mix(Tokens.bg-shell, 0.14) : Tokens.bg-shell"
+        ),
+        "通道条选中必须走 bg-shell 蘸 14% accent（f7c5192f 改钉）"
     );
     assert!(
-        !LOWER_DOCK.contains("selected-track-id ? Theme.accent : #191f2c"),
-        "通道条选中不得再用 accent 色边框"
+        LOWER_DOCK.contains(
+            "border-color: trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.85) : Tokens.skin-chip;"
+        ),
+        "通道条选中边框必须走 accent 0.85（f7c5192f 改钉）"
+    );
+    assert!(
+        !LOWER_DOCK
+            .contains("trk.id == root.selected-track-id ? Tokens.skin-inset : Tokens.bg-shell"),
+        "通道条选中不得再用旧 skin-inset 一档差（f7c5192f 已改）"
     );
 }
 

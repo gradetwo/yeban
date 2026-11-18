@@ -606,6 +606,9 @@ msgstr "+ Klicken, um eine neue Spur hinzuzufügen"
 msgid "创建新音频或MIDI轨道 [Ctrl+T]"
 msgstr "Neue Audio- oder MIDI-Spur erstellen [Ctrl+T]"
 
+msgid "创建新音频或MIDI轨道"
+msgstr "Neue Audio- oder MIDI-Spur erstellen"
+
 msgid "在此区域拖拽音频、MIDI 文件或双击以新增轨道"
 msgstr "Audio- oder MIDI-Dateien hierher ziehen oder doppelklicken, um eine Spur hinzuzufügen"
 

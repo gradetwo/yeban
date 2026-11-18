@@ -105,8 +105,8 @@ fn the_live_dock_panels_bind_texture_tokens_with_flat_fallback() {
     .expect("读 lower_dock.slint");
     for (needle, what) in [
         (
-            "Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.skin-inset : Tokens.bg-shell)",
-            "通道条/总线条背景 (panel-brush; 补丁包第四轮改钉: flat 支换选中 skin-inset / 未选中 bg-shell)",
+            "Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.accent.mix(Tokens.bg-shell, 0.14) : Tokens.bg-shell)",
+            "通道条/总线条背景 (panel-brush; f7c5192f 改钉: flat 支换选中 bg-shell 蘸 14% accent / 未选中 bg-shell)",
         ),
         (
             "Tokens.texture-physical ? Tokens.shell-brush : Theme.bg-surface",
@@ -176,8 +176,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "轨道头刷 flat 分支 = 现行字面 #0b0e16",
         ),
         (
-            ": @linear-gradient(180deg, #e4e9f2, #e4e9f2);",
-            "卷帘白键刷 flat 分支 = 现行字面 #e4e9f2",
+            ": @linear-gradient(180deg, #d9dfe9, #d9dfe9);",
+            "卷帘白键刷 flat 分支 = 现行字面 #d9dfe9（f7c5192f 改钉）",
         ),
         (
             ": @linear-gradient(180deg, #191e2b, #191e2b);",
@@ -644,10 +644,10 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
     }
     // 补丁包第四轮改钉: `background: Tokens.bg-panel;` 从裸底禁单
     // 豁免——bg-panel 令牌定义本身已含质感支 (yeban 支
-    // texture-physical ? #1b1f23 : #30343b), 裸用点经令牌跟随
+    // texture-physical ? #1b1d1f : #30343b, f7c5192f 改钉), 裸用点经令牌跟随
     // 质感; 改钉令牌定义支, 防豁免失效。
     assert!(
-        read("tokens.slint").contains("texture-physical ? #1b1f23 : #30343b"),
+        read("tokens.slint").contains("texture-physical ? #1b1d1f : #30343b"),
         "Tokens.bg-panel 定义必须含质感支 (裸用豁免的前提)"
     );
     // 逐面代表钉。
