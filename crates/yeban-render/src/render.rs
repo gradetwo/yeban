@@ -684,6 +684,18 @@ impl OutputStage {
     }
 }
 
+/// 一条侧链边的声明：`(边身份, 源节点, 目的节点, 边的 gain_db, 源 lane 键, 目的 lane 键)`。
+/// 独立别名只为把六元组收成一个名字（三处直接拼六元组会触
+/// `clippy::type_complexity`）；语义与 `RenderPlan::sidechain_edges` 的注释一致。
+type SidechainEdgeDecl = (
+    EntityId,
+    EntityId,
+    EntityId,
+    Option<f32>,
+    Option<u8>,
+    Option<u8>,
+);
+
 /// 编译后的执行计划。
 pub struct RenderPlan {
     /// 全部保留节点, 按 `(层号, EntityId)` 排列 —— 因此每层是连续区间。
@@ -701,14 +713,7 @@ pub struct RenderPlan {
     /// 侧链边声明（编译期从图里抽出，边身份升序）：
     /// `(边身份, 源节点, 目的节点, 边的 gain_db, 源 lane 键, 目的 lane 键)`。
     /// 只存声明，不存求值状态；求值状态在 `key_routes` 与 `lane_key_routes`。
-    sidechain_edges: Vec<(
-        EntityId,
-        EntityId,
-        EntityId,
-        Option<f32>,
-        Option<u8>,
-        Option<u8>,
-    )>,
+    sidechain_edges: Vec<SidechainEdgeDecl>,
     /// 已求值的键路由：目的槽位 -> （源槽位，边身份）。v1 单键：每目的至多一条。
     key_routes: BTreeMap<usize, (usize, EntityId)>,
     /// 已求值的 **lane 级**键路由（逐件＋侧链期 4）：节点 -> 该轨内的
@@ -1080,14 +1085,7 @@ impl RenderPlan {
 
         // 侧链声明（`#337` 的另一半：边本身不搬音频，但声明要留给键挂接）。
         // `BTreeMap` 值迭代 = 边身份升序 ⇒ 挂接时"第一条生效"即按此顺序。
-        let sidechain_edges: Vec<(
-            EntityId,
-            EntityId,
-            EntityId,
-            Option<f32>,
-            Option<u8>,
-            Option<u8>,
-        )> = graph
+        let sidechain_edges: Vec<SidechainEdgeDecl> = graph
             .edges
             .values()
             .filter(|edge| edge.kind == RoutingKind::Sidechain)
@@ -1853,14 +1851,7 @@ impl RenderPlan {
 /// 判定用可达性：边 `u → v` 在环上 ⇔ `v` 能沿同层声明边到达 `u`。图规模
 /// 是工程节点数，逐点 DFS 是编译期一次性成本。
 fn same_layer_cycle_edge_ids(
-    declarations: &[(
-        EntityId,
-        EntityId,
-        EntityId,
-        Option<f32>,
-        Option<u8>,
-        Option<u8>,
-    )],
+    declarations: &[SidechainEdgeDecl],
     slot_of: &BTreeMap<EntityId, usize>,
     level_of_slot: &[u32],
 ) -> BTreeSet<EntityId> {
