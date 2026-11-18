@@ -9327,13 +9327,13 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     // 上面两条 `88 → 240` 的腿整条有效）；⛔ `SfzVoice` / 池 / `EngineRuntime` 三条
     // **＋0 边界一条未动**（下面三条断言逐字保留）。
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ `#113` 后的**绝对值**基线（`6152 ＋ 8`；⛔ 三条实时边界仍 ＋0）；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（`seq_position` / `seq_length` 两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(
         region,
-        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8,
+        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8 + 8,
         "⭐ `#113` 的**增量** ＝ `direction: PlayDirection` ＋ 尾部对齐（⛔ 不是 `per-table` 那一份）；\
          ⭐ 现读 `6152 ＋ 16`：后 8 B 是 **round-robin** 的两个 `u32`\
          → ⭐ **`#331` 修订：再加 `off_time: f32` 的 8 B ⇒ `6152 ＋ 16 ＋ 8`。\
@@ -9342,7 +9342,7 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
          → ⭐ **keytrack 片再修订：随机轮替片再加 `lorand` / `hirand` 的 8 B（式子里第三个加数），\
          本片再加 `amp_keytrack` / `amp_keycenter` 的 8 B ⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8`**\
          → ⭐ **滤波片再 ＋24（滤波六标量）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8 ＋ 24`**\
-         → ⭐ **包络族片再 ＋32（`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标）⇒ 式子尾加 `+ 32`** → ⭐ **声像族建模补全片再 ＋8（`position`／`width` 两 f32）⇒ 式子尾再加 `+ 8`**"
+         → ⭐ **包络族片再 ＋32（`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标）⇒ 式子尾加 `+ 32`** → ⭐ **声像族建模补全片再 ＋8（`position`／`width` 两 f32）⇒ 式子尾再加 `+ 8`** → ⭐ **stage 19 片再 ＋8（`off_curve`／`off_shape` 两字段，v32 链；合入时补入，本链原式未含此项）⇒ 式子尾再加 `+ 8`**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -10124,20 +10124,20 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
         200 * 1024 - runtime
     );
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ 本单唯一的代价：`PreparedRegion` `6152 → 6160`（＋8 ＝ `direction` ＋ 对齐；摊平期）；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(
         region,
-        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8,
+        6152 + 16 + 8 + 8 + 8 + 24 + 32 + 8 + 40 + 8 + 8,
         "⭐ 增量腿：`direction: PlayDirection`（`size_of` ＝ 1）＋ 尾部对齐 ＝ ＋8；\
          ⭐ **round-robin 的两个 `u32`** 再 ＋8 ⇒ 合计 `6152 ＋ 16`\
          → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ `6152 ＋ 16 ＋ 8`（原文式子保留在式子里）**\
          → ⭐ **随机轮替片再 ＋8（`lorand` / `hirand`）⇒ `6152 ＋ 16 ＋ 8 ＋ 8`**\
          → ⭐ **keytrack 片再 ＋8（`amp_keytrack` / `amp_keycenter`）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8`**\
          → ⭐ **滤波片再 ＋24（滤波六标量）⇒ `6152 ＋ 16 ＋ 8 ＋ 8 ＋ 8 ＋ 24`**\
-         → ⭐ **包络族片再 ＋32（`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标）⇒ 式子尾加 `+ 32`** → ⭐ **声像族建模补全片再 ＋8（`position`／`width` 两 f32）⇒ 式子尾再加 `+ 8`**"
+         → ⭐ **包络族片再 ＋32（`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标）⇒ 式子尾加 `+ 32`** → ⭐ **声像族建模补全片再 ＋8（`position`／`width` 两 f32）⇒ 式子尾再加 `+ 8`** → ⭐ **stage 19 片再 ＋8（`off_curve`／`off_shape` 两字段，v32 链；合入时补入，本链原式未含此项）⇒ 式子尾再加 `+ 8`**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(
@@ -10441,9 +10441,9 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ `#115` 的 `amplitude: f32` 落进既有尾部对齐空隙 ⇒ `PreparedRegion` **＋0**；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168**（两个 `u32`） → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -11083,10 +11083,10 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ `#116` ⛔ 没有新增任何每区域字段（基准 `tune` 早在 `rate_per_note` 里、\
          调制项早在 `cc_mods` 里）⇒ `PreparedRegion` **＋0**；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -12089,9 +12089,9 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
         200 * 1024
     );
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ `#117` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -13169,9 +13169,9 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ `#118` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0；\
-         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -14115,9 +14115,9 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
         200 * 1024 - runtime,
     );
     assert_eq!(
-        region, 6304,
+        region, 6312,
         "⭐ `#119` 没新增任何每区域字段（`volume` 基准早在 `volume_gain` 里、乘子是栈上值）\
-         ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6304**"
+         ⇒ `PreparedRegion` ＋0；⭐ **round-robin 片再 ＋8 ⇒ 6168** → ⭐ **`#331` 修订：`off_time: f32` 再 ＋8 ⇒ 6176** → ⭐ **随机轮替片修订：`lorand` / `hirand` 两个 `f32` 再 ＋8 ⇒ 6184** → ⭐ **keytrack 片修订：`amp_keytrack` / `amp_keycenter` 两字段再 ＋8 ⇒ 6192 → ⭐ **滤波片修订：滤波六字段 ＋24 ⇒ 6216** → ⭐ **包络族片修订：`ampeg_delay`／`ampeg_start` 两 f32 ＋ `fileg_eg`／`pitcheg_eg` 两 u16 下标再 ＋32 ⇒ 6248 → 6256**（本片：`offset_random` 的 `u32` 与 `amp_random` 的 `f32` 再 ＋8） → ⭐ **声像族建模补全片修订：`position`／`width` 两个 `f32` 再 ＋8 ⇒ 6312（v32 合入后再修订：本链未逐项列出的释放掩码片 40 B 与 stage 19 片 8 B 在内）**"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(
@@ -16294,9 +16294,9 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     // ---- ⑦ 尺寸（`size_of` 现读，⛔ 不手抄）：四个全 ＋0 ----
     assert_eq!(
         ModTarget::COUNT,
-        12,
+        14,
         "⛔ `#124` ⛔ 不加目标（本片 stage 5 加的是 `Cutoff`：11 → 12；stage 3 加的是 `Pan`：10 → 11）（`gain_ccN` 落**既有**的 `Volume`）；\
-         ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**"
+         ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**／⭐ **声像族建模补全片修订：`ModTarget` 尾加 `Position`／`Width` ⇒ 目标数 12 → 14**"
     );
     assert_eq!(ModTarget::ALL[9], ModTarget::Volume);
     assert_eq!(ModTarget::Volume.mod_unit(), ModUnit::Decibels);
