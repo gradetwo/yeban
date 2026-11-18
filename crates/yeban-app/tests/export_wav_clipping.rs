@@ -157,7 +157,9 @@ fn project_with_tracks(tracks: &[(&str, f32)]) -> YebanProjectV1 {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
     }
     project.validate().expect("夹具工程必须合法");
@@ -252,7 +254,9 @@ fn audio_clip_project(dir: &Path) -> (YebanProjectV1, BTreeMap<AssetHash, Vec<u8
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     project.validate().expect("音频片段夹具必须合法");
     (project, assets)

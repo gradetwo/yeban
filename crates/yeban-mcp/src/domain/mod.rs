@@ -4361,7 +4361,9 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                             destination_node: project.master_bus_track_id,
                             kind: yeban_model::RoutingKind::BusToMaster,
                             gain_db: None,
-                        },
+                                                    source_lane: None,
+                            dest_lane: None,
+},
                     });
                     bus_note = format!(
                         "鼓总线：Glue Compressor（{}:1 / {:.0} ms）→ Soft Clipper（ceiling {:.1} dB）",
@@ -4380,7 +4382,9 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                     destination_node: drum_destination,
                     kind: yeban_model::RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             });
             (id, None)
         }

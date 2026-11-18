@@ -341,7 +341,9 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
             destination_node: hall_id,
             kind: yeban_model::project::RoutingKind::SendToAux,
             gain_db: Some(-16.0),
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     let e2 = eid("01ZZZZZZ2PNG8SN84H987MWK7Q");
     routing_graph.edges.insert(
@@ -352,7 +354,9 @@ fn synth_nightfall_scale_project() -> YebanProjectV1 {
             destination_node: room_id,
             kind: yeban_model::project::RoutingKind::SendToAux,
             gain_db: Some(-20.0),
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     YebanProjectV1 {

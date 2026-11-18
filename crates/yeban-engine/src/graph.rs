@@ -1557,7 +1557,9 @@ mod tests {
                     destination_node: *destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             );
         }
         graph.nodes = nodes.into_iter().collect();
@@ -1807,7 +1809,9 @@ mod tests {
                 destination_node: m,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
         assert_eq!(
             PdcPlan::compute(&broken, m, &LatencyTable::new()),

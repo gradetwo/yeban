@@ -104,6 +104,8 @@ fn audio_edge(id: EntityId, source: EntityId, destination: EntityId) -> RoutingE
         kind: RoutingKind::TrackToBus,
         gain_db: None,
     }
+    source_lane: None,
+    dest_lane: None,
 }
 
 fn sidechain_edge(id: EntityId, source: EntityId, destination: EntityId) -> RoutingEdge {
@@ -114,6 +116,8 @@ fn sidechain_edge(id: EntityId, source: EntityId, destination: EntityId) -> Rout
         kind: RoutingKind::Sidechain,
         gain_db: None,
     }
+    source_lane: None,
+    dest_lane: None,
 }
 
 /// 判据：无入边、实体序在前的源 ⇒ 键路由成立；目的与源的槽位同一把尺子。
@@ -288,7 +292,9 @@ fn keyed_fixture(with_compressor: bool) -> (YebanProjectV1, EntityId, EntityId, 
             destination_node: pad,
             kind: RoutingKind::Sidechain,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     (project, kick, pad, edge)
 }

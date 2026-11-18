@@ -140,7 +140,9 @@ fn master_project() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     YebanProjectV1 {

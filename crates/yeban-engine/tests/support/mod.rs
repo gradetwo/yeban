@@ -292,7 +292,9 @@ pub fn audio_clip_project_at(start_tick: u64, duration_ticks: u64, gain_db: f32)
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     Fixture {
@@ -383,7 +385,9 @@ pub fn build(notes: &[NoteSpec], kind: TrackKind, without_clip: bool) -> Fixture
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     Fixture {
@@ -472,7 +476,9 @@ pub fn two_track_project(
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
     }
     tracks.insert(
@@ -669,7 +675,9 @@ fn rebind_project(
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
     }
 

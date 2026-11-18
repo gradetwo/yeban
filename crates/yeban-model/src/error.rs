@@ -315,6 +315,14 @@ pub enum ModelError {
         value: f32,
     },
 
+    /// 路由边带了逐件 lane 端点，但边的类型不是侧链（逐件＋侧链期 4：
+    /// lane 端点只对侧链边有意义，其它类型带端点响亮拒绝、不静默忽略）。
+    #[error("routing edge `{edge}` carries lane endpoints but is not a sidechain edge")]
+    RoutingLaneEndpointsOnNonSidechain {
+        /// 出问题那条边的身份。
+        edge: EntityId,
+    },
+
     /// 同一集合中出现了重复身份。
     #[error("duplicate entity id `{id}`")]
     DuplicateEntityId {

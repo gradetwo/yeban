@@ -137,7 +137,9 @@ fn lane_chains_on_an_unrendered_track_stay_unapplied() {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     project.validate().expect("空轨逐件链夹具必须合法");
 

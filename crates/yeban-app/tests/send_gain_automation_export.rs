@@ -213,7 +213,9 @@ fn project(tune: &Tune, bytes: &[u8], seed: u32) -> YebanProjectV1 {
             destination_node: aux,
             kind: RoutingKind::SendToAux,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     project.routing_graph.edges.insert(
         aux_edge,
@@ -223,7 +225,9 @@ fn project(tune: &Tune, bytes: &[u8], seed: u32) -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     if !tune.points.is_empty() || tune.read_enabled {
         let target = AutomationTarget::SendGain {

@@ -128,7 +128,9 @@ fn project(track_volume_db: f32, mute: bool) -> (YebanProjectV1, EntityId) {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     project.validate().expect("夹具工程必须合法");
     (project, lead)

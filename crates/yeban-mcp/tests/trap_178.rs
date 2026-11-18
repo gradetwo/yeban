@@ -164,7 +164,9 @@ fn fixture(empty_clip: bool) -> Fixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             ),
             (
                 empty_edge,
@@ -174,7 +176,9 @@ fn fixture(empty_clip: bool) -> Fixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             ),
         ]),
     };
@@ -245,7 +249,9 @@ fn bus_fixture() -> BusFixture {
                 destination_node: destination,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         )
     };
     project.routing_graph.nodes.extend([bus, bus2, quiet_bus]);
@@ -363,7 +369,9 @@ fn silent_fixture() -> SilentFixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             ),
             (
                 empty_edge,
@@ -373,7 +381,9 @@ fn silent_fixture() -> SilentFixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             ),
         ]),
     };

@@ -205,7 +205,9 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     // aux 返回轨：名字逐字 `Aux Return`（判据读数用），一条 BusToMaster 出口。
@@ -227,7 +229,9 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     project.validate().expect("夹具工程必须合法");

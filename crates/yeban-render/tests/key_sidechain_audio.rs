@@ -91,7 +91,9 @@ fn graph(sidechain_gain_db: Option<f32>) -> RoutingGraph {
                 destination_node,
                 kind,
                 gain_db,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
     };
     // kick 只用来出键：到 master 的那条音频边压到 −40 dB，否则它自己会盖住 bus 的读数。

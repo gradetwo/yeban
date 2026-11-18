@@ -86,7 +86,9 @@ fn add_edge(
             destination_node: destination,
             kind,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 }
 

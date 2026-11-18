@@ -96,7 +96,9 @@ fn graph(nodes: &[EntityId], edges: &[(EntityId, EntityId, RoutingKind)]) -> Rou
                 destination_node,
                 kind,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
     }
     RoutingGraph {

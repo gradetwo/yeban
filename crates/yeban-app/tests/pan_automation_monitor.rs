@@ -178,7 +178,9 @@ fn fixture(pan_lane: bool, volume_lane: bool) -> (YebanProjectV1, EntityId) {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
 
     if pan_lane {

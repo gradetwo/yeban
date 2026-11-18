@@ -167,7 +167,9 @@ fn project() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-        },
+                    source_lane: None,
+            dest_lane: None,
+},
     );
     project.routing_graph.nodes.sort_unstable();
     project.validate().expect("夹具工程必须合法");

@@ -1467,7 +1467,9 @@ mod tests {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                },
+                                    source_lane: None,
+                    dest_lane: None,
+},
             );
         }
 
@@ -1840,7 +1842,9 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
         let sidechain = EntityId::new();
         project.routing_graph.edges.insert(
@@ -1851,7 +1855,9 @@ mod tests {
                 destination_node: bus,
                 kind: RoutingKind::Sidechain,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
         project.validate().expect("夹具合法");
 
@@ -1870,7 +1876,9 @@ mod tests {
                 destination_node: bus,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
         project.validate().expect("夹具合法");
         assert!(
@@ -1961,7 +1969,9 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-            },
+                            source_lane: None,
+                dest_lane: None,
+},
         );
         (project, track_id)
     }

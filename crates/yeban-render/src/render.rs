@@ -1975,7 +1975,9 @@ mod tests {
             kind: RoutingKind::TrackToBus,
             gain_db,
         }
-    }
+            source_lane: None,
+        dest_lane: None,
+}
 
     fn graph(nodes: &[EntityId], edges: Vec<RoutingEdge>) -> RoutingGraph {
         RoutingGraph {
@@ -3425,7 +3427,9 @@ mod tests {
             kind: RoutingKind::Sidechain,
             gain_db: None,
         }
-    }
+            source_lane: None,
+        dest_lane: None,
+}
 
     /// 造一条带压缩器的插入链（bus 上的键目的）：阈值 −12 dB、4:1、硬膝、
     /// 检波 1 ms、起振 1 ms、释放 50 ms、无 makeup。
