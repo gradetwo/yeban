@@ -432,10 +432,12 @@ impl App {
         let seconds = self.project_len_ticks() as f64 / self.ticks_per_beat().max(1) as f64 * 60.0
             / self.project.bpm.max(1.0);
         let frames = (seconds * f64::from(sample_rate)).ceil() as u64;
-        let mut options = WavExportOptions::default();
-        options.frames = frames.max(1);
-        options.sample_rate = sample_rate;
-        options.channels = 2;
+        let options = WavExportOptions {
+            frames: frames.max(1),
+            sample_rate,
+            channels: 2,
+            ..Default::default()
+        };
         let assets: Vec<(yeban_model::ids::AssetHash, Vec<u8>)> = self
             .archive
             .as_ref()
@@ -531,12 +533,11 @@ impl App {
             || event.modifiers.contains(KeyModifiers::ALT);
         // 冲突 K1 的解：无修饰数字归 Vi 计数前缀，先于 GUI 解析
         // （GUI 的裸数字是选工具，TUI v1 无工具系统，无落点）。
-        if !modified {
-            if let KeyCode::Char(ch @ '0'..='9') = event.code {
-                if self.vi.feed_char(ch) == ViOutcome::Pending {
-                    return;
-                }
-            }
+        if !modified
+            && let KeyCode::Char(ch @ '0'..='9') = event.code
+            && self.vi.feed_char(ch) == ViOutcome::Pending
+        {
+            return;
         }
         // 第一段：GUI 共享键 —— 与 GUI 同一张策略表、同一个解析器。
         if let Some((logical, modifiers)) = to_logical(event) {
@@ -550,18 +551,16 @@ impl App {
             }
         }
         // 第二段：Vi 导航层（只吃无修饰/仅 Shift 的字符键）。
-        if !modified {
-            if let KeyCode::Char(ch) = event.code {
-                match self.vi.feed_char(ch) {
-                    ViOutcome::Pending => {}
-                    ViOutcome::Motion(motion, count) => self.apply_motion(motion, count),
-                    ViOutcome::EnterCommand => {
-                        self.mode = Mode::Command;
-                        self.cmdline.clear();
-                    }
-                    ViOutcome::EnterInsert => self.begin_rename(),
-                    ViOutcome::NotVi => {}
+        if !modified && let KeyCode::Char(ch) = event.code {
+            match self.vi.feed_char(ch) {
+                ViOutcome::Pending => {}
+                ViOutcome::Motion(motion, count) => self.apply_motion(motion, count),
+                ViOutcome::EnterCommand => {
+                    self.mode = Mode::Command;
+                    self.cmdline.clear();
                 }
+                ViOutcome::EnterInsert => self.begin_rename(),
+                ViOutcome::NotVi => {}
             }
         }
     }
