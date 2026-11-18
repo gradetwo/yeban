@@ -322,6 +322,15 @@ pub struct PlaybackSpec {
     pub pitcheg: crate::eg::EgDef,
     /// 该 region 的 `pan`（百分比，原样；声相定律由调用方决定）。
     pub pan: f32,
+    /// ⭐ 该 region 的 `position`（百分比，原样；声像族建模补全片）。
+    ///
+    /// 只对立体声样本生效、作用在 `width` 之后；单声道样本不施加
+    /// （sfizz 口径）。施加方式由调用方决定（见 yeban-engine 的立体声级）。
+    pub position: f32,
+    /// ⭐ 该 region 的 `width`（百分比，原样；缺省 100 ＝ 立体声原样）。
+    ///
+    /// 只对立体声样本生效；单声道样本不施加（sfizz 口径）。
+    pub width: f32,
     /// 该 region 的 `trigger`（原样）。
     pub trigger: Trigger,
     /// 该 region 的 `off_mode`（原样；缺省 [`OffMode::Fast`]）。
@@ -812,6 +821,8 @@ impl<'a> Region<'a> {
             fileg: self.fileg,
             pitcheg: self.pitcheg,
             pan: self.pan,
+            position: self.position,
+            width: self.width,
             trigger: self.trigger,
             off_mode: self.off_mode,
             off_time: self.off_time,
@@ -1615,6 +1626,8 @@ mod tests {
                             amp_random: 0.0,
                             amplitude: crate::instrument::AMPLITUDE_DEFAULT_PERCENT,
                             pan: 0.0,
+                            position: 0.0,
+                            width: 100.0,
                             seq_position: 1,
                             seq_length: 1,
                             lorand: crate::instrument::LORAND_DEFAULT,
@@ -2301,6 +2314,8 @@ mod tests {
                 second.crossfade_gain,
             ),
             ("pan", first.pan, second.pan),
+            ("position", first.position, second.position),
+            ("width", first.width, second.width),
             ("total_gain", first.total_gain(), second.total_gain()),
         ] {
             assert_eq!(
