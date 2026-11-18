@@ -29,7 +29,7 @@
 //! 「边不存在 ⇒ 能力不存在」随之失效，分支 CI 单败本判据。边是真实需要的（删边等于把鼓机
 //! 生成搬出 app 或走 MCP 环回，与台账第 105 行「同一 theory 生成层」的设计冲突），故修法
 //! 不是撤边，而是把判据改写成**真不变量**：边存在，但 `yeban_theory::` 引用全在鼓机白名单内
-//! （11 个符号，实测 23 处 / 3 文件），且 `chord` 仍无写者（判据 ③）、仍显示 `(none)`
+//! （14 个符号，实测 31 处 / 3 文件），且 `chord` 仍无写者（判据 ③）、仍显示 `(none)`
 //! （判据 ①）。新判据自带 R56 合成正负对照。可见文本一位未动 ⇒ 无基准重录。
 //!
 //! ⚠ 本文件**不**证明界面是诚实的。它证明"登记、写者、数据源名与无读数形态"这四件事
@@ -226,14 +226,14 @@ fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
     );
 }
 
-/// 鼓机符号白名单：`yeban-app` 调 `yeban-theory` 只许这 13 个符号。
+/// 鼓机符号白名单：`yeban-app` 调 `yeban-theory` 只许这 14 个符号。
 ///
 /// 实测（2026-11-17，`crates/yeban-app/src` 去 `//` 注释后）：23 处引用、3 个文件
 /// （`bridge.rs` / `host.rs` / `elements.rs`），符号恰为这 11 个；2026-11-18
-/// 鼓机效果层又加 `DrumFxFamilies` / `DrumFxPreset`（`drum_preset.rs`，仅供
-/// `bridge.rs` 落逐风格 FX），共 29 处 / 13 符号。
+/// 鼓机效果层又加 `DrumFxFamilies` / `DrumFxPreset` / `drum_fx_device_specs`（`drum_preset.rs`，仅供
+/// `bridge.rs` 落逐风格 FX 器件配方），共 31 处 / 14 符号。
 /// `factory_drum_style` 与 `factory_drum_styles` 是两个不同符号，须各列一条。
-const DRUM_THEORY_SYMBOLS: [&str; 13] = [
+const DRUM_THEORY_SYMBOLS: [&str; 14] = [
     "ACOUSTIC_KIT_SFZ_PATH",
     "DrumFxFamilies",
     "DrumFxPreset",
@@ -242,6 +242,7 @@ const DRUM_THEORY_SYMBOLS: [&str; 13] = [
     "DrumStylePreset",
     "KitFamily",
     "TICKS_PER_BAR",
+    "drum_fx_device_specs",
     "factory_drum_style",
     "factory_drum_style_ids",
     "factory_drum_styles",
@@ -298,8 +299,8 @@ fn theory_references_in_code(code: &str) -> (Vec<String>, Vec<String>) {
 ///   1. 清单里有 `yeban-theory` 边（鼓机线需要它；撤边会先断鼓机编译，本条直接钉前提）；
 ///   2. 全部 `yeban_theory::` 符号都在白名单内；
 ///   3. 没有白名单扫不到的形态（大括号导入、裸 `use`）；
-///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 29 处 / 3 文件 /
-///      13 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
+///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 31 处 / 3 文件 /
+///      14 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
 ///
 /// 另附 R56 合成对照（与真扫描同一段代码）：纯鼓片段 ⇒ 干净；含 `Chord` /
 /// `detect_chord` 的片段 ⇒ 点名报出；大括号导入 / 裸 `use` ⇒ 报"未入账"；
@@ -360,10 +361,10 @@ fn theory_edge_is_drum_only_and_chord_still_has_no_recognition() {
         violations.join("\n")
     );
 
-    // (4) 非真空下界（实测 23 处 / 3 文件 / 11 符号）。
+    // (4) 非真空下界（实测 31 处 / 3 文件 / 14 符号）。
     assert!(
         total_uses >= 10,
-        "引用数非真空：`yeban_theory::` 引用必须 ≥ 10 处（实测 29 处），当前 {total_uses} 处。\
+        "引用数非真空：`yeban_theory::` 引用必须 ≥ 10 处（实测 31 处），当前 {total_uses} 处。\
          引用塌了 ⇒ 要么鼓机接线被删了，要么扫描本身坏了。"
     );
     assert!(
@@ -372,7 +373,7 @@ fn theory_edge_is_drum_only_and_chord_still_has_no_recognition() {
     );
     assert!(
         distinct.len() >= 5,
-        "符号面非真空：不同 theory 符号必须 ≥ 5 个（实测 13 个），当前 {} 个。",
+        "符号面非真空：不同 theory 符号必须 ≥ 5 个（实测 14 个），当前 {} 个。",
         distinct.len()
     );
 

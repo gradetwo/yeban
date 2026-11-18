@@ -603,8 +603,6 @@ msgstr "Leerer Clip"
 msgid "+ 点击添加新轨道"
 msgstr "+ Klicken, um eine neue Spur hinzuzufügen"
 
-msgid "创建新音频或MIDI轨道 [Ctrl+T]"
-msgstr "Neue Audio- oder MIDI-Spur erstellen [Ctrl+T]"
 
 msgid "创建新音频或MIDI轨道"
 msgstr "Neue Audio- oder MIDI-Spur erstellen"

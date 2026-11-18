@@ -21,6 +21,27 @@ fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(ToString::to_string).collect()
 }
 
+/// 按词界匹配 `needle`：`needle` 后随 `-` / 字母数字 / 下划线的不算命中。
+/// 退役令牌名是现行令牌的前缀时（如 `Tokens.roll-lane` 之于
+/// `Tokens.roll-lane-black` / `Tokens.roll-lane-white` 平色），裸 `contains`
+/// 会误伤，须走词界匹配。
+fn contains_token(haystack: &str, needle: &str) -> bool {
+    let mut rest = haystack;
+    while let Some(idx) = rest.find(needle) {
+        let after = &rest[idx + needle.len()..];
+        let boundary = after
+            .chars()
+            .next()
+            .map(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .unwrap_or(true);
+        if boundary {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // 判据 ①: CLI 层（不碰 Slint）
 // ---------------------------------------------------------------------------
@@ -214,8 +235,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
     let roll = read("console/piano_roll.slint");
     for (needle, what) in [
         (
-            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane",
-            "键列容器 (shell-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane)",
+            "background: Tokens.roll-key-white-brush;",
+            "键列容器即白键平面 (f7c5192f3 改钉: 容器底即白键刷, 不再是 shell-brush/bg-lane 三元)",
         ),
         ("Tokens.roll-key-white-brush", "白键面走 §12 键刷"),
         ("Tokens.roll-key-black-brush", "黑键行走 §12 键刷"),
@@ -234,8 +255,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "网格底 (补丁包第四轮改钉: 两支同走 bg-lane 令牌, 质感差在令牌内)",
         ),
         (
-            "background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? Tokens.skin-grid-bar : Tokens.line) :",
-            "车道三档 (补丁包第四轮改钉: 根音行走 skin-grid-bar / line, 白/黑键行走 bg-panel 系令牌)",
+            "background: (root.row-pitch(lane_index).mod(12) == 0) ? Tokens.skin-grid-bar : Tokens.bg-lane2;",
+            "车道三档 (18f8bafd2 改钉: 根音行底边走 skin-grid-bar, 其余行 bg-lane2; 行身走 roll-lane 黑/白)",
         ),
         (
             "background: Tokens.bg-panel;",
@@ -256,13 +277,16 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "渐变刷不得直作 background (flat 圆角 AA 纪律): {gone}"
         );
     }
-    for gone in [
-        "Tokens.roll-lane",
-        "Tokens.roll-grid-brush",
-        "Tokens.void-brush",
-    ] {
+    for gone in ["Tokens.roll-grid-brush", "Tokens.void-brush"] {
         assert!(!roll.contains(gone), "卷帘编辑面质感刷不得回归: {gone}");
     }
+    // `Tokens.roll-lane` 退役刷不得回归；f7c5192f3 起行身走
+    // `Tokens.roll-lane-black` / `Tokens.roll-lane-white` 平色令牌，裸子串
+    // 匹配会误伤，故按词界匹配。
+    assert!(
+        !contains_token(&roll, "Tokens.roll-lane"),
+        "卷帘编辑面质感刷不得回归: Tokens.roll-lane"
+    );
 
     // ② 左栏检查器 + 智能音色库。
     let left = read("left_panel.slint");
@@ -320,8 +344,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "走带栏体 (panel-brush, flat Theme.header-bg)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-panel",
-            "走带组板 (shell-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-panel)",
+            "Tokens.texture-physical ? Tokens.shell-brush : transparent",
+            "走带组板 (f7c5192f3 改钉: flat 支 no plate, 不再是 bg-panel)",
         ),
         (
             "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2",

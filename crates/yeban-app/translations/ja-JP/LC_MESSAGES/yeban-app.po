@@ -603,8 +603,6 @@ msgstr "空クリップ"
 msgid "+ 点击添加新轨道"
 msgstr "+ クリックで新規トラックを追加"
 
-msgid "创建新音频或MIDI轨道 [Ctrl+T]"
-msgstr "新規オーディオ／MIDIトラックを作成 [Ctrl+T]"
 
 msgid "创建新音频或MIDI轨道"
 msgstr "新規オーディオ／MIDIトラックを作成"
