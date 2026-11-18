@@ -84,6 +84,16 @@ use yeban_model::{EntityId, PPQ, YebanProjectV1};
 ///   （223 条、`95f70eb8…`）也一位没动 —— 主总线复用了 `filled_project()` 的同一个
 ///   `fixture_id(1)`，因此 union 里早已存在那些路径。
 /// - `project.filled.json`：不变。
+///
+/// ⚠ 2026-11-18 重钉（逐件＋侧链期 4 契约兑现 ＋ 夹具节点不变量）：
+/// - `project.filled.json`：`f7c0b635…` → `203fbb6c…`；原因 = 规范夹具新增一条
+///   带 lane 端点的 Sidechain 边（lead 的 35 号 lane 组键控 bass 的 36 号组），
+///   且 `routing_graph.nodes` 改按身份升序（op 层「nodes 恒有序」不变量）。
+///   契约自期 4 起即声明 `source_lane` / `dest_lane` 为可选属性，棘轮方向 B′
+///   要求规范夹具真实落盘一处，否则该判据在这两条路径上空转。键路径集合
+///   229 → 231 条、摘要随之换钉：新增的恰为这两条已声明路径，无新键面，
+///   不是 MODEL-ISO-001 违规（两字段带 serde default，旧工程照读）。
+/// - `project.default.json`：不变。
 const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     (
         "project.default.json",
@@ -91,7 +101,7 @@ const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     ),
     (
         "project.filled.json",
-        "f7c0b635611dc7610e628b9878e8b957d9f5e74c50ea71dc68e1d97c8ed76538",
+        "203fbb6c3fe36595e83cbedeeb22993977f435965ce2714c974eca7a6ef387ce",
     ),
 ];
 
@@ -122,10 +132,10 @@ const FROZEN_PROJECT_TOP_LEVEL_KEYS: [&str; 21] = [
 
 /// 工程 JSON 的**递归键路径集合**（`a.b.*` 形式，已排序）的 SHA-256。
 const FROZEN_PROJECT_KEY_PATH_SHA256: &str =
-    "537de4890b30683f98ab35dc52f23de5694bec837e5750bc08248113de5a34bb";
+    "dc0dfe0cdbb50f8eac220197e22f9ef188f9291eedeb8699b6b7453f0bbc4fcf";
 
 /// 上面那个集合的元素个数（防止"哈希对了但集合空了"这类退化）。
-const FROZEN_PROJECT_KEY_PATH_COUNT: usize = 229;
+const FROZEN_PROJECT_KEY_PATH_COUNT: usize = 231;
 
 /// 本机配置 JSON 的键集合（冻结：加字段即红）。
 const FROZEN_LOCAL_CONFIG_KEYS: [&str; 4] = [
@@ -2090,8 +2100,8 @@ fn session_writers_do_not_rewrite_the_payload_they_are_given() {
 fn history_dag_and_container_zip_bytes_are_frozen() {
     const DAG_SHA256: &str = "54c9212169a07d34e54ab58114090e88d86f06371c53002f91f3295e8c5cbc32";
     const DAG_LEN: usize = 911;
-    const ZIP_SHA256: &str = "057a08100d0977aceffefcc3cb5816fb6ab6e92d53558481cf14e8ec6fc3ff1b";
-    const ZIP_LEN: usize = 5537;
+    const ZIP_SHA256: &str = "85338413093035245a1dd8778cb9cf305d19d686b88bc4b78323b9a70954ae68";
+    const ZIP_LEN: usize = 5715;
 
     let id1 = EntityId::from_str("01J8ZQ00000000000000000001").expect("id1");
     let id2 = EntityId::from_str("01J8ZQ00000000000000000002").expect("id2");
