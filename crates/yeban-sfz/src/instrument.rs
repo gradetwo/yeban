@@ -2609,6 +2609,10 @@ fn clamp_static_pan_family(
 /// 钳位 [`Warning::ClampedModulationDepth`] 与声像族静态值钳位
 /// [`Warning::ClampedStaticValue`]）：随结果带出，由调用方
 /// （解析器）逐条过自己的告警通道（含上限与截断标记）。
+// ⚠ `clippy::too_many_arguments`：四个作用域表 + 消费登记 + 路径 + 移位
+// + 行号是互不相关的输入维度（消费登记是未知 opcode 告警的依据，由
+// 解析器持有、跨 region 累积），与引擎侧同款裁决一致地就地 allow。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_region<'a>(
     region_map: &OpcodeMap<'a>,
     group_map: &OpcodeMap<'a>,
