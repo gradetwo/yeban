@@ -10791,6 +10791,65 @@ mod tests {
         }
     }
 
+    /// ⭐ 逐件＋侧链期 4：预置的侧链声明必须落成同轨 lane 级侧链边
+    /// （`ConnectRouting`，source_lane=key 键、dest_lane=本组首键），
+    /// 不许只写逐件链就把声明丢了。
+    #[test]
+    fn drum_gen_ops_emits_lane_sidechain_edge() {
+        let project = filled_project();
+        let steps = "[[100,1,0],[100,1,0],[100,1,0],[100,1,0],\
+            [100,1,0],[100,1,0],[100,1,0],[100,1,0],\
+            [100,1,0],[100,1,0],[100,1,0],[100,1,0],\
+            [100,1,0],[100,1,0],[100,1,0],[100,1,0]]";
+        let lanes: Vec<String> = [35u8, 36, 42]
+            .iter()
+            .map(|key| {
+                format!("{{\"role\": \"lane{key}\", \"gm_key\": {key}, \"steps\": {steps}}}")
+            })
+            .collect();
+        let json = format!(
+            "{{\
+                \"format\": \"yeban-drum-style\", \"version\": 1,\
+                \"id\": \"fixture-sc\", \"name\": \"Fixture SC\", \"name_zh\": \"夹具\",\
+                \"source\": {{\"kind\": \"constructed\", \"groove_genre_id\": \"none\",\
+                           \"tuning\": []}},\
+                \"kit_family\": \"electronic\",\
+                \"bpm\": {{\"default\": 120, \"min\": 100, \"max\": 140}},\
+                \"swing_permille\": 500, \"bars\": 1,\
+                \"lanes\": [{}],\
+                \"lane_chains\": [\
+                    {{\"name\": \"bass\", \"keys\": [35], \"chain\": {{\
+                        \"comp\": {{\"threshold_db\": -18, \"ratio\": 3, \"knee_db\": 6,\
+                                  \"attack_s\": 0.01, \"release_s\": 0.12, \"makeup_db\": 1}},\
+                        \"sidechain\": {{\"key_keys\": [36]}}}}}},\
+                    {{\"name\": \"kick\", \"keys\": [36], \"chain\": {{\
+                        \"eq\": {{\"low_db\": 0, \"mid_db\": 0, \"high_db\": 0,\
+                                \"low_hz\": 200, \"mid_hz\": 1000, \"mid_q\": 0.9,\
+                                \"high_hz\": 6000, \"hpf_hz\": 20, \"cutoff_hz\": 20000}}}}}}\
+                ]\
+            }}",
+            lanes.join(", ")
+        );
+        let preset = yeban_theory::DrumStylePreset::from_json(&json).expect("侧链预置必须可解析");
+        let ops = drum_gen_ops(&project, &preset, &drum_params(), None).expect("新轨批次");
+        let sidechain_edges: Vec<&RoutingEdge> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::ConnectRouting { edge } if edge.kind == RoutingKind::Sidechain => Some(edge),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sidechain_edges.len(),
+            1,
+            "侧链声明必须恰好落一条边: {ops:?}"
+        );
+        let edge = sidechain_edges[0];
+        assert_eq!(edge.source_node, edge.destination_node, "同轨边");
+        assert_eq!(edge.source_lane, Some(36));
+        assert_eq!(edge.dest_lane, Some(35));
+    }
+
     #[test]
     fn drum_gen_ops_existing_track_with_user_lane_chains_keeps_them() {
         let mut project = filled_project();
