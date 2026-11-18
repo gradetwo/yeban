@@ -753,7 +753,10 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
     // 跟随播放头颜色，只钉位置——x=245、2px 线宽、12px 内缩等几何值
     // 一律不动（六版只改了颜色，未动时间轴起点与播放头左缘几何；
     // 旧 accent 探针在六版头 CI run 44039699951 唯一一败即源于此）。
-    const PLAYHEAD_RGB: [u8; 3] = [0xff, 0xff, 0xff];
+    // 重设计补丁包第四轮（Wang 2026-11-18 定判据按补丁包修改）：
+    // 播放头改走 Tokens.skin-text-strong（扁平 #f4f7fa），探针色
+    // 同步换钉；几何钉（x=245、2px 线宽、12px 内缩）一律不动。
+    const PLAYHEAD_RGB: [u8; 3] = [0xf4, 0xf7, 0xfa];
 
     // 1. 初始冷启动 tick 0: 播放头与 Bar 1 / 轨道内容起点逐像素对齐，时间码 = 001.01.000
     assert_eq!(live.ui().get_playhead_ticks(), 0);
@@ -1038,14 +1041,28 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
     let headers_w = live.ui().get_track_headers_width().round() as i32;
     let canvas_right = canvas.x + i32::try_from(canvas.width).unwrap();
     let right_timeline_end = canvas_right - headers_w - 5;
-    for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
-        for x in right_timeline_end..(right_timeline_end + 5) {
-            let px = img_right.pixel(x as u32, y).unwrap();
-            assert!(
-                !is_close_rgb(px, PLAYHEAD_RGB),
-                "右置轨道头模式下 tick 0 播放头不得泄漏到右侧分隔线 (x={x}, y={y}, rgb={px:?})"
-            );
+    // 泄漏判定改连续行程规则（补丁包第四轮改钉）：播放头是贯穿
+    // 全高的 2px 竖线，真泄漏必在分隔线带内形成 >= 30px 的连续
+    // 竖行程；和弦名 / 提示气泡等 skin-text-strong 文字字形至多
+    // 约 12px 行程，不得计入泄漏。实证：右置切换后出现的提示
+    // 气泡「[视图] 轨道头已切换到右侧」文字落入分隔线带，旧的
+    // 逐像素扫描将其误判为播放头泄漏（帧已存档
+    // aether-right-header.png 亲看确认）。
+    for x in right_timeline_end..(right_timeline_end + 5) {
+        let mut run = 0u32;
+        let mut max_run = 0u32;
+        for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
+            if is_close_rgb(img_right.pixel(x as u32, y).unwrap(), PLAYHEAD_RGB) {
+                run += 1;
+                max_run = max_run.max(run);
+            } else {
+                run = 0;
+            }
         }
+        assert!(
+            max_run < 30,
+            "右置轨道头模式下 tick 0 播放头不得泄漏到右侧分隔线 (x={x}, 最长连续行程 {max_run}px)"
+        );
     }
     for x in right_timeline_end..canvas_right {
         let px = img_right.pixel(x as u32, (canvas.y + 2) as u32).unwrap();
@@ -1064,14 +1081,22 @@ fn playhead_aligns_with_timeline_origin_across_seek_rewind_scroll_and_zoom() {
         host::apply_view(ui, &fresh, 1440.0, 0.0);
     }
     let img_right_clipped = live.window().capture().expect("右置越界裁剪帧");
-    for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
-        for x in right_timeline_end..(right_timeline_end + 5) {
-            let px = img_right_clipped.pixel(x as u32, y).unwrap();
-            assert!(
-                !is_close_rgb(px, PLAYHEAD_RGB),
-                "播放头越过右置时间轴右沿后不得泄漏到右侧分隔线 (x={x}, y={y}, rgb={px:?})"
-            );
+    // 同上：连续行程规则（提示气泡等文字不得计入泄漏）。
+    for x in right_timeline_end..(right_timeline_end + 5) {
+        let mut run = 0u32;
+        let mut max_run = 0u32;
+        for y in (canvas.y + 1) as u32..(canvas.y + 54) as u32 {
+            if is_close_rgb(img_right_clipped.pixel(x as u32, y).unwrap(), PLAYHEAD_RGB) {
+                run += 1;
+                max_run = max_run.max(run);
+            } else {
+                run = 0;
+            }
         }
+        assert!(
+            max_run < 30,
+            "播放头越过右置时间轴右沿后不得泄漏到右侧分隔线 (x={x}, 最长连续行程 {max_run}px)"
+        );
     }
     for x in right_timeline_end..canvas_right {
         let px = img_right_clipped

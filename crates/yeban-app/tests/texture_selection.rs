@@ -105,32 +105,32 @@ fn the_live_dock_panels_bind_texture_tokens_with_flat_fallback() {
     .expect("读 lower_dock.slint");
     for (needle, what) in [
         (
-            "Tokens.texture-physical ? Tokens.panel-brush : #080a10",
-            "通道条/总线条背景 (panel-brush, flat #080a10)",
+            "Tokens.texture-physical ? Tokens.panel-brush : (trk.id == root.selected-track-id ? Tokens.skin-inset : Tokens.bg-shell)",
+            "通道条/总线条背景 (panel-brush; 补丁包第四轮改钉: flat 支换选中 skin-inset / 未选中 bg-shell)",
         ),
         (
             "Tokens.texture-physical ? Tokens.shell-brush : Theme.bg-surface",
             "混音区外容器背景 (shell-brush, flat Theme.bg-surface)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.void-brush : #06080d",
-            "推子导轨背景 (void-brush, flat #06080d)",
+            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2",
+            "推子导轨背景 (void-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane2)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.raised-brush : #94a3b8",
-            "推子帽背景 (raised-brush, flat #94a3b8)",
+            "Tokens.texture-physical ? Tokens.raised-brush : Tokens.ink-1",
+            "推子帽背景 (raised-brush; 补丁包第四轮改钉: flat 支换 Tokens.ink-1)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.glass-brush : #06080d",
-            "电平槽/设备屏背景 (glass-brush, flat #06080d)",
+            "Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2",
+            "电平槽/设备屏背景 (glass-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane2)",
         ),
         (
             "Tokens.texture-physical ? (root.device-bypassed[idx] ? Tokens.void-brush : Tokens.panel-brush) : Theme.bg-surface",
             "设备卡片背景 (旁通 void-brush, 常态 panel-brush)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.raised-brush : #cbd5e1",
-            "主推子帽背景 (raised-brush, flat #cbd5e1)",
+            "Tokens.texture-physical ? Tokens.raised-brush : Tokens.skin-text-body",
+            "主推子帽背景 (raised-brush; 补丁包第四轮改钉: flat 支换 Tokens.skin-text-body)",
         ),
     ] {
         assert!(
@@ -214,8 +214,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
     let roll = read("console/piano_roll.slint");
     for (needle, what) in [
         (
-            "Tokens.texture-physical ? Tokens.shell-brush : #0d1018",
-            "键列容器 (shell-brush, flat #0d1018)",
+            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane",
+            "键列容器 (shell-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane)",
         ),
         ("Tokens.roll-key-white-brush", "白键面走 §12 键刷"),
         ("Tokens.roll-key-black-brush", "黑键行走 §12 键刷"),
@@ -230,12 +230,12 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
         // flat 支仍为回平字面值。
         ("background: Tokens.bg-void;", "卷帘根底回平 (bg-void 平色)"),
         (
-            "background: Tokens.texture-physical ? #20272e : #1a202e;",
-            "网格底 (flat 回平 #1a202e; physical Bitwig 采样 #20272e)",
+            "background: Tokens.texture-physical ? Tokens.bg-lane : Tokens.bg-lane;",
+            "网格底 (补丁包第四轮改钉: 两支同走 bg-lane 令牌, 质感差在令牌内)",
         ),
         (
-            "background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? #323d4b : #2c364b) :",
-            "车道三档 (flat 字面平色; physical 随底上移)",
+            "background: ((root.base-midi-pitch + 15 - lane_index).mod(12) == 0) ? (Tokens.texture-physical ? Tokens.skin-grid-bar : Tokens.line) :",
+            "车道三档 (补丁包第四轮改钉: 根音行走 skin-grid-bar / line, 白/黑键行走 bg-panel 系令牌)",
         ),
         (
             "background: Tokens.bg-panel;",
@@ -272,28 +272,28 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "左栏根底 (panel-brush, flat Theme.bg-panel)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.shell-brush : #080a10",
-            "子页签栏 (shell-brush, flat #080a10)",
+            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell",
+            "子页签栏 (shell-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-shell)",
         ),
         (
             "Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface",
             "轨道头卡/通道条/总线条/音色条目卡 (panel-brush, flat Theme.bg-surface)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.glass-brush : #06080d",
-            "EQ 屏/总线压缩屏 (glass-brush, flat #06080d)",
+            "Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2",
+            "EQ 屏/总线压缩屏 (glass-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane2)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.void-brush : #06080d",
-            "推子导轨/表井/搜索框 (void-brush, flat #06080d)",
+            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2",
+            "推子导轨/表井/搜索框 (void-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane2)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.raised-brush : #94a3b8",
-            "推子帽 (raised-brush, flat #94a3b8)",
+            "Tokens.texture-physical ? Tokens.raised-brush : Tokens.ink-1",
+            "推子帽 (raised-brush; 补丁包第四轮改钉: flat 支换 Tokens.ink-1)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.glass-brush : #080c14",
-            "dB 读数牌 (glass-brush, flat #080c14)",
+            "Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-shell",
+            "dB 读数牌 (glass-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-shell)",
         ),
     ] {
         assert!(
@@ -320,20 +320,20 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "走带栏体 (panel-brush, flat Theme.header-bg)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.shell-brush : #0a0d14",
-            "走带组板 (shell-brush, flat #0a0d14)",
+            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-panel",
+            "走带组板 (shell-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-panel)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.shell-brush : #090c12",
-            "走带簇底板 (shell-brush, flat #090c12)",
+            "Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2",
+            "走带簇底板 (shell-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane2)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.glass-brush : #05070a",
-            "LCD 框 (glass-brush, flat #05070a)",
+            "Tokens.texture-physical ? Tokens.glass-brush : Tokens.skin-inset",
+            "LCD 框 (glass-brush; 补丁包第四轮改钉: flat 支换 Tokens.skin-inset)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.raised-brush : #10141d",
-            "命令钮 (raised-brush, flat #10141d)",
+            "Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel",
+            "命令钮 (raised-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-panel)",
         ),
     ] {
         assert!(
@@ -350,12 +350,12 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
     let arrangement = read("arrangement.slint");
     for (needle, what) in [
         (
-            "background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);",
-            "轨道头底走裁决甲三元 (拟物 §12 头刷/accent 选中, 扁平十一版定值)",
+            "background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.12) : Tokens.bg-panel);",
+            "轨道头底走三元 (拟物 §12 头刷/accent α0.10 选中; 补丁包第四轮改钉: 扁平支改 accent α0.12 选中 / bg-panel 未选中)",
         ),
         (
-            "Tokens.texture-physical ? Tokens.void-brush : #06080d",
-            "轨道头表井 (void-brush, flat #06080d)",
+            "Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane",
+            "轨道头表井 (void-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-lane)",
         ),
     ] {
         assert!(
@@ -513,21 +513,21 @@ fn the_track_area_follows_the_four_ui_rulings() {
     );
     for (needle, what) in [
         (
-            "background: Tokens.texture-physical ? Tokens.divider-row : #040508;",
-            "行底分界线走裁决甲三元 (拟物 divider-row, 扁平十一版暗线 #040508)",
+            "background: Tokens.skin-grid-row;",
+            "行底分界线走 skin-grid-row 令牌 (补丁包第四轮改钉: 裁决甲三元改令牌, 暗线方向由 grid 判据实算看守)",
         ),
         (
             "background: Tokens.divider-row-highlight;",
             "分界刻蚀高光走 divider-row-highlight",
         ),
         (
-            "background: Tokens.texture-physical ? Tokens.ruler-brush : #1d2733;",
-            "标尺底走裁决甲三元 (拟物 ruler-brush, 扁平十一版定值 #1d2733)",
+            "background: Tokens.texture-physical ? Tokens.ruler-brush : Tokens.bg-shell;",
+            "标尺底走三元 (拟物 ruler-brush; 补丁包第四轮改钉: 扁平支换 Tokens.bg-shell)",
         ),
         ("color: Tokens.ruler-ink;", "小节号走 ruler-ink"),
         (
-            "Tokens.divider-grid-strong : Tokens.divider-grid",
-            "网格强弱两档走令牌 (裁决甲拟物支)",
+            "background: Tokens.ruler-tick-bar;",
+            "标尺刻度走 ruler-tick-* 令牌 (补丁包第四轮改钉: 取代 divider-grid 两档)",
         ),
     ] {
         assert!(
@@ -542,14 +542,14 @@ fn the_track_area_follows_the_four_ui_rulings() {
     // 活在质感三元的拟物支, 两串改钉三元全串 (扁平支分别为恒
     // #ffffff0a 行框与十一版暗线恒画)。
     assert!(
-        arrangement.contains("border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a) : #ffffff0a;"),
-        "裁决甲: 行边框必须走三元 (拟物支保留 main 的 accent 边 + #ffffff0a 淡框, 扁平支恒 #ffffff0a)"
+        arrangement.contains("border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle) : Theme.border-subtle;"),
+        "补丁包第四轮: 轨道头边框必须走三元 (拟物支选中 accent α0.80 边, 两支未选中同为 border-subtle)"
     );
     assert!(
-        arrangement.contains(
+        !arrangement.contains(
             "visible: Tokens.texture-physical ? trk.id != root.selected-track-id : true;"
         ),
-        "裁决甲: 行底分界线的 main 选中行门控只许在拟物支 (扁平支暗线恒画)"
+        "补丁包第四轮: 行底分界线的质感门控已撤销 (skin-grid-row 恒画), 旧门控串不得回归"
     );
 
     // 全 UI 同类排查的删除钉（各文件实际删掉的区域名/描述标签）。
@@ -629,7 +629,6 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
             "{rel} 必须有质感三元落点（三期拟物化）"
         );
         for bare in [
-            "background: Tokens.bg-panel;",
             "background: Tokens.bg-panel-alt;",
             "background: Tokens.bg-void;",
             "background: Tokens.bg-raised;",
@@ -643,12 +642,20 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
             );
         }
     }
+    // 补丁包第四轮改钉: `background: Tokens.bg-panel;` 从裸底禁单
+    // 豁免——bg-panel 令牌定义本身已含质感支 (yeban 支
+    // texture-physical ? #1b1f23 : #30343b), 裸用点经令牌跟随
+    // 质感; 改钉令牌定义支, 防豁免失效。
+    assert!(
+        read("tokens.slint").contains("texture-physical ? #1b1f23 : #30343b"),
+        "Tokens.bg-panel 定义必须含质感支 (裸用豁免的前提)"
+    );
     // 逐面代表钉。
     for (rel, needle, what) in [
         (
             "control_room.slint",
-            "Tokens.texture-physical ? Tokens.glass-brush : #06080d",
-            "控制室主表井走 glass-brush",
+            "Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2",
+            "控制室主表井走 glass-brush (补丁包第四轮改钉: flat 支换 Tokens.bg-lane2)",
         ),
         (
             "control_room.slint",
@@ -662,8 +669,8 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
         ),
         (
             "modals.slint",
-            "Tokens.texture-physical ? Tokens.panel-brush : #11141d;",
-            "命令面板体走 panel-brush",
+            "Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel-alt;",
+            "命令面板体走 panel-brush (补丁包第四轮改钉: flat 支换 Tokens.bg-panel-alt)",
         ),
         (
             "console/asset_pool_panel.slint",
@@ -683,12 +690,12 @@ fn the_phase3_surfaces_bind_texture_tokens_with_flat_fallback() {
         "Clip 矩阵根底必须回平 (Theme.bg-panel)"
     );
     assert!(
-        clip_matrix.contains("background: #080a10;"),
-        "Clip 矩阵头部带必须回平 (#080a10)"
+        clip_matrix.contains("background: Tokens.bg-shell;"),
+        "Clip 矩阵头部带必须回平 (补丁包第四轮改钉: 字面 #080a10 换 Tokens.bg-shell)"
     );
     assert!(
-        clip_matrix.contains("Tokens.texture-physical ? Tokens.raised-brush : #10141d"),
-        "Clip 矩阵按钮必须保留质感三元 (raised-brush)"
+        clip_matrix.contains("Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel"),
+        "Clip 矩阵按钮必须保留质感三元 (raised-brush; 补丁包第四轮改钉: flat 支换 Tokens.bg-panel)"
     );
     assert!(
         !clip_matrix.contains("Tokens.clip-sheen") && !clip_matrix.contains("Tokens.clip-shade"),

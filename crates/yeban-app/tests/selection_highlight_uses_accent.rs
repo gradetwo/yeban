@@ -38,6 +38,14 @@
 //! 左头边/右头底/右头边，全部位于三元拟物支内）；扁平支的十一版
 //! 定值断言（`#273146` / `#293645`）原样保留、强度不降。
 //!
+//! 第六代（重设计补丁包第四轮，Wang 2026-11-18 定判据按补丁包
+//! 修改）：行选中改独立透叠层（`visible` 门控 + accent α0.06，
+//! 双主题同形，压网格上、片段下）；轨道头底扁平支改 accent
+//! α0.12 / 未选中 `Tokens.bg-panel`，头边三元串不变。改钉为：
+//! 透叠层两串 + 头底/头边三元全串（左右各一份）+ accent 选中形
+//! 恰 4 处（左头底/左头边/右头底/右头边）；`#273146` / `#293645`
+//! 字面钉撤销（两值在文件他处仍有无关出现，字面钉已成空钉）。
+//!
 //! ⚠ 纯 `include_str!` 判据；像素级效果由对照帧看守（八版 compare8-*），
 //! 本改动会触发 golden 基准重录（`gates-manual` 的 `goldens` 档）。
 
@@ -49,16 +57,22 @@ fn selected_track_highlight_uses_brightening_not_white_border() {
         !ARR.contains("selected-track-id ? trk.color"),
         "选中高亮不得再用 trk.color（与轨道身份色撞色 ⇒ 看不出选中）"
     );
-    // 裁决甲 (Wang 2026-11-17 19:58) 改钉: accent 选中形只许出现在
-    // 质感三元的拟物支。四个三元全串逐一钉 (头底/头边两串左右两头
-    // 各一份, 下方另钉计数 2)。
+    // 补丁包第四轮 (Wang 2026-11-18) 改钉: 行选中 = 独立透叠层
+    // (visible 门控 + accent α0.06, 双主题同形); 头底/头边三元
+    // 全串逐一钉 (左右两头各一份, 下方另钉计数 2)。
+    assert!(
+        ARR.contains("visible: _sel.id == root.selected-track-id;"),
+        "行选中透叠层必须由 visible 门控（只画选中行）"
+    );
+    assert!(
+        ARR.contains("background: Theme.accent.with-alpha(0.06);"),
+        "行选中必须靠 accent α0.06 透叠层承载（压网格上、片段下）"
+    );
     for full in [
-        "background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent) : (trk.id == root.selected-track-id ? #273146 : transparent);",
-        "border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a) : #ffffff0a;",
-        "background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);",
+        "background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.12) : Tokens.bg-panel);",
         "border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle) : Theme.border-subtle;",
     ] {
-        assert!(ARR.contains(full), "裁决甲三元全串缺失: {full}");
+        assert!(ARR.contains(full), "头底/头边三元全串缺失: {full}");
     }
     assert_eq!(
         ARR.matches("background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10)").count(),
@@ -73,19 +87,11 @@ fn selected_track_highlight_uses_brightening_not_white_border() {
     assert_eq!(
         ARR.matches("selected-track-id ? Theme.accent").count(),
         6,
-        "accent 选中形只许在三元拟物支出现, 恰 6 处 (行底/行边/左头底/左头边/右头底/右头边)"
+        "accent 选中形恰 6 处 (头底每头两支: 拟物 α0.10 + 扁平 α0.12; 头边每头一支 α0.80; 行选中已改独立透叠层, 不计入)"
     );
     assert!(
         !ARR.contains("border-color: trk.id == root.selected-track-id ? #ffffff"),
         "选中边框不得为 #ffffff（八版口径：纯白选中边框作废，回归未选中行同款；轨道名选中变白是原有文字行为，不在本条范围）"
-    );
-    assert!(
-        ARR.contains("selected-track-id ? #273146"),
-        "选中行底必须用十一版定值 #273146（八版 1.80 提亮比按新车道底重算；裁决甲下位于三元扁平支）"
-    );
-    assert!(
-        ARR.contains("selected-track-id ? #293645"),
-        "选中轨道头底必须用八版定值 #293645（裁决甲下位于三元扁平支）"
     );
 }
 

@@ -129,6 +129,31 @@
 //!   ⑦ 分界线落点（`Tokens.texture-physical ? Tokens.divider-row
 //!   : #040508`）。色值本身的亮度/比值断言（⑤⑦ 的实算窗）不变，
 //!   强度不降；⑤ 的五色存在钉在扁平支原样成立。
+//!
+//! ## 重设计补丁包第四轮改钉（Wang 2026-11-18 定：判据按本补丁包修改）
+//!
+//! * 网格色全部迁入 `tokens.slint` 的 `skin-grid-*`（车道）/
+//!   `ruler-tick-*`（标尺）令牌，双主题各一份值；`arrangement.slint`
+//!   只消费令牌。⑤ 的存在钉改钉令牌定义，⑥ 的刻度定位改按令牌串。
+//! * 网格线改 Logic 式低反差：十一版线色 `#979fa8` / `#74808b`
+//!   删除，拍线 ≥3:1 / 小节线 ≥4.5:1 的下限对本包网格线不再适用；
+//!   ⑤⑦ 的比值断言改按补丁令牌实测值钉紧窗（车道小节 1.31 / 拍
+//!   1.16 对扁平车道底；标尺小节 4.43 / 拍 3.50 / 细分 3.18 对扁平
+//!   标尺带底）。层级方向（分界线 < 拍线 < 小节线）与几何断言
+//!   （⑥ 刻度 12/6/3 与净空）强度不降。
+//! * 车道底改走 `Tokens.bg-lane`（扁平 `#2b3036` / 拟物 `#1d2126`）；
+//!   选中行改 accent α0.06 透叠（落点在 `selection_highlight` 判据），
+//!   本文件按 sRGB 合成有效色（扁平 `#2f363f` / 拟物 `#222a2e`）实算。
+//! * 分界线改走 `Tokens.skin-grid-row`，暗线方向保留（两主题均暗于
+//!   车道底），比值改实测窗（扁平 1.13 / 拟物 1.09）。
+//! * 播放头（编曲 + 卷帘）改走 `Tokens.skin-text-strong`，纯白清零；
+//!   ⑦ 卷帘播放头比值改实测窗（扁平 11.63 / 拟物 13.75），⑨ 纯白
+//!   计数 2 → 0、skin-text-strong 计数钉 2。
+//! * 和弦块底改走 `Theme.track-*` 本体 + `.brighter(0.18)` hover、
+//!   边框 `.brighter(0.08)` / `.darker(0.12)`；和弦名文字
+//!   （`skin-text-strong`）对常态底的 ≥4.5 下限按 Wang 口径以补丁
+//!   取值合入，⑨ 改钉实测窗（扁平 3.93/4.17/3.65/3.70、拟物
+//!   2.51/3.16/2.79/2.79）。
 
 use yeban_app::host::{GridDensity, grid_density};
 
@@ -307,6 +332,26 @@ fn contrast_ratio(a: &str, b: &str) -> f32 {
     (hi + 0.05) / (lo + 0.05)
 }
 
+/// sRGB 空间 alpha 合成（与 Slint 渲染一致）：`fg` 以 `alpha` 叠在
+/// `bg` 上，返回合成色 hex（逐通道四舍五入）。选中行有效底实算用。
+fn alpha_over(fg: &str, alpha: f32, bg: &str) -> String {
+    let parse = |hex: &str| {
+        let h = hex.trim_start_matches('#');
+        [
+            u8::from_str_radix(&h[0..2], 16).expect("合法十六进制") as f32,
+            u8::from_str_radix(&h[2..4], 16).expect("合法十六进制") as f32,
+            u8::from_str_radix(&h[4..6], 16).expect("合法十六进制") as f32,
+        ]
+    };
+    let (f, b) = (parse(fg), parse(bg));
+    let mut out = String::from("#");
+    for i in 0..3 {
+        let v = (f[i] * alpha + b[i] * (1.0 - alpha)).round() as u8;
+        out.push_str(&format!("{v:02x}"));
+    }
+    out
+}
+
 /// ⑤ 接线与色值：宿主写入点、`.slint` 消费点、五色与比值下限。
 #[test]
 fn density_wiring_and_colors_are_in_place() {
@@ -338,11 +383,25 @@ fn density_wiring_and_colors_are_in_place() {
             "arrangement.slint 未消费 {property}"
         );
     }
-    // 网格五色齐备；四版以前的金色（#a3804f / #c6a47c）清零；
-    // 十版起旧车道线色（#748392 / #5d6a76）清零（已按新底重算）；
-    // 十一版起十版底与线色全组清零（底回蓝调重算）。
-    for color in ["#83909e", "#6e7f8f", "#66788a", "#979fa8", "#74808b"] {
-        assert!(arrangement.contains(color), "网格色 {color} 缺失");
+    // 网格色齐备（补丁包第四轮改钉：色值迁入 tokens.slint 的
+    // ruler-tick-* / skin-grid-* 令牌，存在钉改钉令牌定义文件；
+    // 扁平支：标尺三色 + 车道小节/拍两色）；四版以前的金色
+    // （#a3804f / #c6a47c）清零；十版起旧车道线色（#748392 /
+    // #5d6a76）清零（已按新底重算）；十一版起十版底与线色全组
+    // 清零（底回蓝调重算）；十一版线色 #979fa8 / #74808b 随补丁
+    // 在令牌与落点两处清零。
+    let tokens = include_str!("../ui/tokens.slint");
+    for color in ["#83909e", "#6e7f8f", "#66788a", "#3c424a", "#343a42"] {
+        assert!(
+            tokens.contains(color),
+            "网格色 {color} 缺失（tokens.slint）"
+        );
+    }
+    for gone in ["#979fa8", "#74808b"] {
+        assert!(
+            !tokens.contains(gone) && !arrangement.contains(gone),
+            "十一版线色 {gone} 应随补丁清零"
+        );
     }
     for gold in ["#a3804f", "#c6a47c"] {
         assert!(!arrangement.contains(gold), "金色 {gold} 仍在网格里");
@@ -356,26 +415,41 @@ fn density_wiring_and_colors_are_in_place() {
         );
     }
 
-    // 比值下限（实算，不钉字面）：标尺三色对标尺带 #1d2733——小节级
-    // >= 4.5、拍级与细分级 >= 3.0（细分 3.0 是五版定值的硬下限）。
-    // 标尺带与车道底不共用令牌，十版不动。
-    assert!(contrast_ratio("#83909e", "#1d2733") >= 4.5);
-    assert!(contrast_ratio("#6e7f8f", "#1d2733") >= 3.0);
-    assert!(contrast_ratio("#66788a", "#1d2733") >= 3.0);
-    // 车道两色（十一版按新底重算）：最不利底 = 选中行底 #273146
-    // （新底组里最亮）；未选中行底 #1d2333 次之。
-    assert!(contrast_ratio("#979fa8", "#273146") >= 4.5);
-    assert!(contrast_ratio("#74808b", "#273146") >= 3.0);
-    assert!(contrast_ratio("#979fa8", "#1d2333") >= 4.5);
-    assert!(contrast_ratio("#74808b", "#1d2333") >= 3.0);
-    // 拍线目标窗（六版定，比率目标不变）：对最不利底的比值须落在
-    // 3.15–3.30——下限仍是上面的 >= 3.0（不放宽），窗断言额外钉住
-    // 「淡」的幅度，防止日后悄悄调回更亮。
-    let lane_beat = contrast_ratio("#74808b", "#273146");
+    // 比值改钉（Wang 2026-11-18 口径：判据按补丁包第四轮修改）：
+    // 网格线改 Logic 式低反差，十一版的拍线 >= 3:1 / 小节线
+    // >= 4.5:1 下限对本包网格线不再适用；改按补丁令牌实测值钉
+    // 紧窗（本文件 WCAG 式实算，窗只容舍入）。标尺三色对标尺带
+    // 底（扁平 bg-shell #262a2f）：小节 4.43 / 拍 3.50 / 细分
+    // 3.18。车道两色对车道底（扁平 bg-lane #2b3036）：小节
+    // 1.31 / 拍 1.16。
+    let ruler_bar = contrast_ratio("#83909e", "#262a2f");
     assert!(
-        (3.15..=3.30).contains(&lane_beat),
-        "车道拍线比值 {lane_beat:.3} 不在目标窗 3.15–3.30"
+        (4.38..=4.48).contains(&ruler_bar),
+        "标尺小节刻度比值 {ruler_bar:.3} 不在实测窗 4.38–4.48"
     );
+    let ruler_beat = contrast_ratio("#6e7f8f", "#262a2f");
+    assert!(
+        (3.45..=3.55).contains(&ruler_beat),
+        "标尺拍刻度比值 {ruler_beat:.3} 不在实测窗 3.45–3.55"
+    );
+    let ruler_sub = contrast_ratio("#66788a", "#262a2f");
+    assert!(
+        (3.13..=3.23).contains(&ruler_sub),
+        "标尺细分刻度比值 {ruler_sub:.3} 不在实测窗 3.13–3.23"
+    );
+    let lane_bar = contrast_ratio("#3c424a", "#2b3036");
+    assert!(
+        (1.26..=1.36).contains(&lane_bar),
+        "车道小节线比值 {lane_bar:.3} 不在实测窗 1.26–1.36"
+    );
+    let lane_beat = contrast_ratio("#343a42", "#2b3036");
+    assert!(
+        (1.11..=1.21).contains(&lane_beat),
+        "车道拍线比值 {lane_beat:.3} 不在实测窗 1.11–1.21"
+    );
+    // 层级方向不降：小节 > 拍 > 细分（标尺）、小节 > 拍（车道）。
+    assert!(ruler_bar > ruler_beat && ruler_beat > ruler_sub);
+    assert!(lane_bar > lane_beat);
 }
 
 /// 从 `src[..end]` 里最后一个 `{marker}` 之后读出 px 数值（`.slint`
@@ -422,18 +496,20 @@ fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
 
     // 三档刻度：各自 background 行之前最近的 height（刻度高）与
     // `parent.height - Npx`（刻度底距带底的距离，即刻度行上沿位置）。
+    // 补丁包第四轮起刻度色走 Tokens.ruler-tick-* 令牌，定位串改
+    // 令牌名；几何断言（分级比例 + 净空）强度不降。
     let tick = |color: &str| {
         let at = arrangement
             .find(&format!("background: {color};"))
-            .unwrap_or_else(|| panic!("刻度色 {color} 在"));
+            .unwrap_or_else(|| panic!("刻度落点 {color} 在"));
         (
             last_px_before(arrangement, at, "height: "),
             last_px_before(arrangement, at, "parent.height - "),
         )
     };
-    let (bar_h, bar_from_bottom) = tick("#83909e");
-    let (beat_h, beat_from_bottom) = tick("#6e7f8f");
-    let (sub_h, sub_from_bottom) = tick("#66788a");
+    let (bar_h, bar_from_bottom) = tick("Tokens.ruler-tick-bar");
+    let (beat_h, beat_from_bottom) = tick("Tokens.ruler-tick-beat");
+    let (sub_h, sub_from_bottom) = tick("Tokens.ruler-tick-sub");
 
     // 分级比例不变：小节满刻度行、拍 1/2、细分 1/4。
     assert_eq!(beat_h * 2.0, bar_h, "拍刻度须为小节刻度高的一半");
@@ -453,35 +529,42 @@ fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
     }
 }
 
-/// ⑦ 十一版（Wang 2026-11-17 18:51 + 18:52 + 18:53）：车道底改回
-/// 蓝调 `#1d2333`（相对亮度带 0.014–0.020）、选中行底按 1.80 提亮比
-/// 重算、分界线改暗线（相对亮度低于两底）、线色按新底重算后比值
-/// 不破下限；卷帘播放头改白断言保留（七版）。
+/// ⑦ 分界线与选中行（十一版原题；补丁包第四轮 2026-11-18 改钉）：
+/// 车道底改走 `Tokens.bg-lane`、分界线改走 `Tokens.skin-grid-row`
+/// （暗线方向保留）、选中行改 accent α0.06 透叠（按 sRGB 合成有效
+/// 色实算）、网格线比值改实测窗、卷帘播放头改走
+/// `Tokens.skin-text-strong`（比值实测窗）。
 #[test]
 fn rev11_divider_and_selected_row() {
     let arrangement = include_str!("../ui/arrangement.slint");
 
-    // 车道底落点：车道容器底必须走裁决甲三元 (扁平支 = 十一版定值
-    // #1d2333, 其实算相对亮度落入 Wang 18:53 亲定的目标带
-    // 0.014–0.020; 拟物支 transparent 复现 main 无底色形态), 全串钉。
+    // 车道底落点：背景层 Rectangle 走 Tokens.bg-lane 平色（令牌内
+    // 含双主题支：扁平 #2b3036 / 拟物 #1d2126，相对亮度实测窗）。
     assert!(
-        arrangement.contains("background: Tokens.texture-physical ? transparent : #1d2333;"),
-        "车道容器底必须走裁决甲三元 (扁平支十一版定值 #1d2333)"
+        arrangement.contains("background: Tokens.bg-lane;"),
+        "车道容器底必须走 Tokens.bg-lane"
     );
-    let base_lum = relative_luminance("#1d2333");
+    let base_lum = relative_luminance("#2b3036");
     assert!(
-        (0.014..=0.020).contains(&base_lum),
-        "车道底相对亮度 {base_lum:.4} 不在目标带 0.014–0.020"
+        (0.027..=0.031).contains(&base_lum),
+        "扁平车道底相对亮度 {base_lum:.4} 不在实测窗 0.027–0.031"
     );
-    // 选中行底：相对亮度比维持八版 1.80（对未选中行底 #1d2333 实算）。
-    let lift = relative_luminance("#273146") / base_lum;
+    let phys_lum = relative_luminance("#1d2126");
     assert!(
-        (1.79..=1.81).contains(&lift),
-        "选中行提亮比 {lift:.3} 不在 1.80 ± 0.01"
+        (0.013..=0.017).contains(&phys_lum),
+        "拟物车道底相对亮度 {phys_lum:.4} 不在实测窗 0.013–0.017"
     );
+    // 选中行有效底：accent α0.06 透叠车道底的 sRGB 合成色（扁平
+    // accent #6d94c4 → #2f363f；拟物 accent #6fb8a4 → #222a2e）。
+    // 落点形态在 selection_highlight_uses_accent 判据钉。
+    let sel_flat = alpha_over("#6d94c4", 0.06, "#2b3036");
+    assert_eq!(sel_flat, "#2f363f", "扁平选中行有效底合成不符");
+    let sel_phys = alpha_over("#6fb8a4", 0.06, "#1d2126");
+    assert_eq!(sel_phys, "#222a2e", "拟物选中行有效底合成不符");
 
-    // 分界线落点：「行底分界线」注释之后第一个 background 必须是定值。
-    let divider_at = arrangement.find("行底分界线").expect("分界线注释在");
+    // 分界线落点：「行底分隔线」注释之后第一个 background 必须是
+    // Tokens.skin-grid-row（补丁包第四轮：由裁决甲三元改令牌）。
+    let divider_at = arrangement.find("行底分隔线").expect("分界线注释在");
     let rest = &arrangement[divider_at..];
     let bg_idx = rest.find("background: ").expect("分界线 background 在");
     let bg_val: String = rest[bg_idx + "background: ".len()..]
@@ -490,59 +573,68 @@ fn rev11_divider_and_selected_row() {
         .collect();
     assert_eq!(
         bg_val.trim(),
-        "Tokens.texture-physical ? Tokens.divider-row : #040508",
-        "分界线必须走裁决甲三元 (扁平支十一版暗线定值 #040508, 拟物支 divider-row)"
+        "Tokens.skin-grid-row",
+        "分界线必须走 Tokens.skin-grid-row"
     );
 
-    // 分界线方向（十一版改暗线，Wang 18:52）：相对亮度必须低于
-    // 未选中行底与选中行底（暗于背景），且低于车道拍线。
-    let divider_lum = relative_luminance("#040508");
+    // 分界线方向（暗线，十一版方向保留）：两主题分界色相对亮度
+    // 均低于各自车道底，且低于各自拍线。
+    let divider_lum = relative_luminance("#23272c");
     assert!(
-        divider_lum < base_lum && divider_lum < relative_luminance("#273146"),
-        "分界线 #040508 必须暗于两行底（暗线方向）"
+        divider_lum < base_lum && divider_lum < relative_luminance("#343a42"),
+        "扁平分界线 #23272c 必须暗于车道底与拍线（暗线方向）"
     );
+    let divider_phys_lum = relative_luminance("#16191d");
     assert!(
-        divider_lum < relative_luminance("#74808b"),
-        "分界线必须暗于车道拍线 #74808b"
+        divider_phys_lum < phys_lum && divider_phys_lum < relative_luminance("#242930"),
+        "拟物分界线 #16191d 必须暗于车道底与拍线（暗线方向）"
     );
-    // 分界线比值（暗线对亮底方向）：对未选中行底实算 1.30（窗
-    // 1.28–1.32）、对选中行底实算 1.57（窗 1.54–1.59）。⚠ Wang 原
-    // 目标窗 2.3–2.7 在暗方向物理不可达（纯黑对未选中底上限
-    // 1.34:1），此处按实算紧窗钉住。
-    let divider_lane = contrast_ratio("#040508", "#1d2333");
+    // 分界线比值（实测窗）：扁平对车道底 1.13、拟物 1.09。
+    let divider_lane = contrast_ratio("#23272c", "#2b3036");
     assert!(
-        (1.28..=1.32).contains(&divider_lane),
-        "分界线对未选中行底比值 {divider_lane:.3} 不在实算窗 1.28–1.32"
+        (1.08..=1.18).contains(&divider_lane),
+        "扁平分界线对车道底比值 {divider_lane:.3} 不在实测窗 1.08–1.18"
     );
-    let divider_sel = contrast_ratio("#040508", "#273146");
+    let divider_phys = contrast_ratio("#16191d", "#1d2126");
     assert!(
-        (1.54..=1.59).contains(&divider_sel),
-        "分界线对选中行底比值 {divider_sel:.3} 不在实算窗 1.54–1.59"
+        (1.04..=1.14).contains(&divider_phys),
+        "拟物分界线对车道底比值 {divider_phys:.3} 不在实测窗 1.04–1.14"
     );
 
-    // 选中行底 #273146 下，小节线/拍线对它的实算比值不破既有下限
-    // （4.5 / 3.0，与判据 ⑤ 同口径），并钉住实算值本身（小节线
-    // 4.86、拍线 3.22，窗内浮动只容舍入）。
-    assert!(contrast_ratio("#979fa8", "#273146") >= 4.5);
-    assert!(contrast_ratio("#74808b", "#273146") >= 3.0);
-    let bar_sel = contrast_ratio("#979fa8", "#273146");
+    // 网格线对选中行有效底（实测窗，Wang 2026-11-18 改钉口径）：
+    // 扁平小节 1.20 / 拍 1.06；拟物小节 1.10 / 拍 1.00。
+    let bar_sel = contrast_ratio("#3c424a", &sel_flat);
     assert!(
-        (4.83..=4.89).contains(&bar_sel),
-        "小节线对选中行底比值 {bar_sel:.3} 不在实算窗 4.83–4.89"
+        (1.15..=1.25).contains(&bar_sel),
+        "扁平小节线对选中行比值 {bar_sel:.3} 不在实测窗 1.15–1.25"
     );
-    let beat_sel = contrast_ratio("#74808b", "#273146");
+    let beat_sel = contrast_ratio("#343a42", &sel_flat);
     assert!(
-        (3.15..=3.30).contains(&beat_sel),
-        "拍线对选中行底比值 {beat_sel:.3} 不在实算窗 3.15–3.30"
+        (1.01..=1.11).contains(&beat_sel),
+        "扁平拍线对选中行比值 {beat_sel:.3} 不在实测窗 1.01–1.11"
     );
-    // 层级（对选中行底的绝对对比）：分界线 < 拍线 < 小节线。
+    let bar_sel_p = contrast_ratio("#2a3037", &sel_phys);
     assert!(
-        divider_sel < beat_sel && beat_sel < bar_sel,
-        "层级须 分界线 < 拍线 < 小节线（实算 {divider_sel:.3} / {beat_sel:.3} / {bar_sel:.3}）"
+        (1.05..=1.15).contains(&bar_sel_p),
+        "拟物小节线对选中行比值 {bar_sel_p:.3} 不在实测窗 1.05–1.15"
+    );
+    let beat_sel_p = contrast_ratio("#242930", &sel_phys);
+    assert!(
+        (0.95..=1.05).contains(&beat_sel_p),
+        "拟物拍线对选中行比值 {beat_sel_p:.3} 不在实测窗 0.95–1.05"
+    );
+    // 层级（对车道底的绝对对比）：分界线 < 拍线 < 小节线。
+    let beat_lane = contrast_ratio("#343a42", "#2b3036");
+    let bar_lane = contrast_ratio("#3c424a", "#2b3036");
+    assert!(
+        divider_lane < beat_lane && beat_lane < bar_lane,
+        "层级须 分界线 < 拍线 < 小节线（实算 {divider_lane:.3} / {beat_lane:.3} / {bar_lane:.3}）"
     );
 
     // 卷帘播放头：`piano-roll-playhead` 元素向上的最近一处 background
-    // 必须是纯白；白色对卷帘最深行底 #161b26（黑键行）>= 17。
+    // 必须走 Tokens.skin-text-strong（补丁包第四轮，取代纯白）；
+    // 对卷帘最深行底（扁平 bg-panel-alt #30343b）实算 11.63、
+    // 拟物（#eef1f4 对 #20242a）13.75，钉实测窗。
     let piano_roll = include_str!("../ui/console/piano_roll.slint");
     let ph_at = piano_roll
         .find("accessible-id: \"piano-roll-playhead\"")
@@ -553,8 +645,21 @@ fn rev11_divider_and_selected_row() {
         .chars()
         .take_while(|c| *c != ';')
         .collect();
-    assert_eq!(ph_val.trim(), "#ffffff", "卷帘播放头必须纯白 #ffffff");
-    assert!(contrast_ratio("#ffffff", "#161b26") >= 17.0);
+    assert_eq!(
+        ph_val.trim(),
+        "Tokens.skin-text-strong",
+        "卷帘播放头必须走 Tokens.skin-text-strong"
+    );
+    let ph_flat = contrast_ratio("#f4f7fa", "#30343b");
+    assert!(
+        (11.4..=11.9).contains(&ph_flat),
+        "扁平播放头对卷帘最深行底比值 {ph_flat:.3} 不在实测窗 11.4–11.9"
+    );
+    let ph_phys = contrast_ratio("#eef1f4", "#20242a");
+    assert!(
+        (13.5..=14.0).contains(&ph_phys),
+        "拟物播放头对卷帘最深行底比值 {ph_phys:.3} 不在实测窗 13.5–14.0"
+    );
 }
 
 /// RGB → HSL（与 `bridge::clip_base_color` 的压暗规则对账用：
@@ -708,14 +813,16 @@ fn rev10_clip_background_is_pure_track_color() {
     );
 }
 
-/// ⑨ 片段内标记与和弦块纯色（和弦为九版 Wang 2026-11-17 16:43，
-/// 标记为十版 18:28，十一版仅换车道小节线重算值）：波形峰值柱/
-/// MIDI 音符条改走投影派生色 `blk.marker-color`、片段内导线走
-/// `blk.guide-color`（同出派生函数）；纯白只剩播放头线/菱形头
-/// 2 处（Wang 亲定播放头纯白不动）；车道小节线改十一版重算值
-/// `#979fa8` 2 处、旧值 `#a7b0ba` 与 `#748392` 清零；五块和弦底
-/// 为和弦色纯色本体、hover/边框为同色明度档实色，八版合成等效
-/// 实色与更早的 alpha 字面量全清零（沿九版）。
+/// ⑨ 片段内标记与和弦块（标记为十版 Wang 2026-11-17 18:28；
+/// 和弦块与播放头落点为补丁包第四轮 2026-11-18 改钉）：波形峰值
+/// 柱/MIDI 音符条走投影派生色 `blk.marker-color`、片段内导线走
+/// `blk.guide-color`（同出派生函数）；播放头线/菱形头改走
+/// `Tokens.skin-text-strong` 2 处、纯白清零；网格线改走
+/// `skin-grid-*` 令牌（背景层各 1 处）、十一版字面线色清零；
+/// 五块和弦底改走 `Theme.track-*` 本体 + `.brighter(0.18)` hover、
+/// 边框 `.brighter(0.08)` / `.darker(0.12)`，和弦名文字对常态底
+/// 比值改钉实测窗；八版合成等效实色与更早的 alpha 字面量全清零
+/// （沿九版）。
 #[test]
 fn rev11_clip_markers_and_chord_blocks_are_pure() {
     let arrangement = include_str!("../ui/arrangement.slint");
@@ -728,22 +835,35 @@ fn rev11_clip_markers_and_chord_blocks_are_pure() {
     ] {
         assert!(!arrangement.contains(old), "片段内透画标记 {old} 仍在");
     }
-    // 纯白落点计数：十版只剩播放头线/菱形头 2 处（峰值柱/音符条
-    // 已改走 blk.marker-color，判据 ⑧ 钉计数 2）。
+    // 播放头落点计数（补丁包第四轮改钉）：纯白 #ffffff 清零，
+    // 编曲播放头线/菱形头 2 处改走 Tokens.skin-text-strong
+    // （峰值柱/音符条走 blk.marker-color，判据 ⑧ 钉计数 2）。
     assert_eq!(
         arrangement.matches("background: #ffffff;").count(),
-        2,
-        "纯白实色落点应为 2 处（播放头线/菱形头；片段标记已改派生色）"
+        0,
+        "纯白实色落点应清零（播放头已改走 skin-text-strong）"
     );
     assert_eq!(
-        arrangement.matches("background: #979fa8;").count(),
+        arrangement
+            .matches("background: Tokens.skin-text-strong;")
+            .count(),
         2,
-        "#979fa8 落点应为 2 处（车道小节线两处）"
+        "skin-text-strong 落点应为 2 处（编曲播放头线/菱形头）"
     );
-    assert!(
-        !arrangement.contains("#748392") && !arrangement.contains("#a7b0ba"),
-        "旧小节线色 #748392 / #a7b0ba 应清零（十一版已按新底重算为 #979fa8）"
-    );
+    // 网格线落点改走 skin-grid-* 令牌（背景层各 1 处）；十一版
+    // 字面线色 #979fa8 / #74808b 与更早的 #748392 / #a7b0ba 清零。
+    for tok in ["skin-grid-bar", "skin-grid-beat", "skin-grid-sub"] {
+        assert_eq!(
+            arrangement
+                .matches(&format!("background: Tokens.{tok};"))
+                .count(),
+            1,
+            "{tok} 落点应为 1 处（背景层）"
+        );
+    }
+    for gone in ["#979fa8", "#74808b", "#748392", "#a7b0ba"] {
+        assert!(!arrangement.contains(gone), "旧线色 {gone} 应清零");
+    }
     // 派生标记对最不利落码底（白色轨道：派生 #fcfcfc 对压暗底
     // #8f8f8f）实算 3.15 >= 3.0；其余调色板底由判据 ⑧ 的普查
     // 逐色钉精确值看守。
@@ -777,27 +897,55 @@ fn rev11_clip_markers_and_chord_blocks_are_pure() {
     ] {
         assert!(!arrangement.contains(old), "八版和弦块混黑实色 {old} 仍在");
     }
-    // 九版纯色齐备：四色底（Cm 两块同色）+ hover 明度档 + 边框深档。
-    for pure in [
-        "#387691", "#326a82", "#2a586c", "#31677f", "#705e88", "#7a6694", "#57496a", "#645479",
-        "#347864", "#2e6a58", "#255446", "#2c6655", "#9a6a38", "#8b6033", "#75502a", "#875d31",
+    // 和弦块底形（补丁包第四轮改钉）：底走 Theme.track-* 本体
+    // （chord-1/5 同 synth），hover = .brighter(0.18)，边框 =
+    // hover .brighter(0.08) / 常态 .darker(0.12)，逐形钉。
+    for form in [
+        "Theme.track-synth.brighter(0.18) : Theme.track-synth;",
+        "Theme.track-pad.brighter(0.18) : Theme.track-pad;",
+        "Theme.track-vocal.brighter(0.18) : Theme.track-vocal;",
+        "Theme.track-drum.brighter(0.18) : Theme.track-drum;",
     ] {
-        assert!(arrangement.contains(pure), "和弦块纯色 {pure} 缺失");
+        assert!(arrangement.contains(form), "和弦块底形 {form} 缺失");
     }
-    // 和弦名文字对纯色底（含 hover 底）>= 4.5（本文件 WCAG 式实算）。
-    for (text, base) in [
-        ("#f1f5f9", "#387691"),
-        ("#f1f5f9", "#326a82"),
-        ("#f1f5f9", "#705e88"),
-        ("#f1f5f9", "#7a6694"),
-        ("#f1f5f9", "#347864"),
-        ("#f1f5f9", "#2e6a58"),
-        ("#ffffff", "#9a6a38"),
-        ("#ffffff", "#8b6033"),
+    assert_eq!(
+        arrangement
+            .matches("Theme.track-synth.brighter(0.18) : Theme.track-synth;")
+            .count(),
+        2,
+        "synth 和弦块应为 2 块（chord-1/5）"
+    );
+    for edge in [
+        "Theme.track-synth.brighter(0.08)",
+        "Theme.track-synth.darker(0.12)",
+        "Theme.track-pad.brighter(0.08)",
+        "Theme.track-pad.darker(0.12)",
+        "Theme.track-vocal.brighter(0.08)",
+        "Theme.track-vocal.darker(0.12)",
+        "Theme.track-drum.brighter(0.08)",
+        "Theme.track-drum.darker(0.12)",
     ] {
+        assert!(arrangement.contains(edge), "和弦块边框形 {edge} 缺失");
+    }
+    // 和弦名文字（skin-text-strong）对常态底实算（Wang 2026-11-18
+    // 口径：以补丁包取值合入，原 >= 4.5 下限对本包和弦文字不再
+    // 适用，改钉实测窗）：扁平 #f4f7fa 对 synth 3.93 / pad 4.17 /
+    // vocal 3.65 / drum 3.70；拟物 #eef1f4 对 synth 2.51 / pad
+    // 3.16 / vocal 2.79 / drum 2.79。
+    for (text, base, lo, hi) in [
+        ("#f4f7fa", "#5c7f9c", 3.78_f32, 4.08_f32),
+        ("#f4f7fa", "#7d7291", 4.02, 4.32),
+        ("#f4f7fa", "#5b8a78", 3.50, 3.80),
+        ("#f4f7fa", "#9a7a52", 3.55, 3.85),
+        ("#eef1f4", "#6f9fbf", 2.36, 2.66),
+        ("#eef1f4", "#8a80b8", 3.01, 3.31),
+        ("#eef1f4", "#4fa07a", 2.64, 2.94),
+        ("#eef1f4", "#b8883f", 2.64, 2.94),
+    ] {
+        let ratio = contrast_ratio(text, base);
         assert!(
-            contrast_ratio(text, base) >= 4.5,
-            "和弦文字 {text} 对底 {base} 对比不足 4.5"
+            (lo..=hi).contains(&ratio),
+            "和弦文字 {text} 对底 {base} 比值 {ratio:.3} 不在实测窗 {lo}–{hi}"
         );
     }
 }

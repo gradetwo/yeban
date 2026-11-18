@@ -34,8 +34,8 @@ fn clip_matrix_slots_are_solid_track_color_mixes() {
         "有片段槽边框必须是轨道色等效合成实色（mix 0.5）"
     );
     assert!(
-        CLIP_MATRIX.contains("#000000.mix(Theme.bg-panel, 0.145)"),
-        "空槽底必须是等效合成实色"
+        CLIP_MATRIX.contains("Tokens.bg-void.mix(Theme.bg-panel, 0.145)"),
+        "空槽底必须是等效合成实色（补丁包第四轮改钉：基色 #000000 换 Tokens.bg-void，mix 0.145 不变）"
     );
     assert!(
         !CLIP_MATRIX.contains("with-alpha(0.18)")
@@ -64,20 +64,21 @@ fn lower_dock_badges_are_solid_mixes() {
         "当前轨徽章底必须是等效合成实色"
     );
     assert!(
-        LOWER_DOCK.contains("trk.color.mix(#080a10, 0.18)"),
-        "轨名徽章底必须是等效合成实色"
+        LOWER_DOCK.contains("trk.color.mix(Tokens.bg-shell, 0.18)"),
+        "轨名徽章底必须是等效合成实色（补丁包第四轮改钉：基底 #080a10 换 Tokens.bg-shell，mix 0.18 不变）"
     );
     assert!(
-        LOWER_DOCK.contains("Theme.track-bus.mix(#080a10, 0.20)"),
-        "总线徽章底必须是等效合成实色"
+        LOWER_DOCK.contains("Theme.track-bus.mix(Tokens.bg-shell, 0.20)"),
+        "总线徽章底必须是等效合成实色（补丁包第四轮改钉：基底 #080a10 换 Tokens.bg-shell，mix 0.20 不变）"
     );
 }
 
 #[test]
 fn lower_dock_strip_selection_is_brightness_not_accent_border() {
     assert!(
-        LOWER_DOCK.contains("selected-track-id ? #0f1117 : #080a10"),
-        "通道条选中必须靠底色提亮一档（#0f1117）承载"
+        LOWER_DOCK
+            .contains("trk.id == root.selected-track-id ? Tokens.skin-inset : Tokens.bg-shell"),
+        "通道条选中必须靠底色一档差承载（补丁包第四轮改钉：字面 #0f1117/#080a10 换令牌 skin-inset 对 bg-shell）"
     );
     assert!(
         !LOWER_DOCK.contains("selected-track-id ? Theme.accent : #191f2c"),
@@ -104,16 +105,16 @@ fn hairline_literals_are_gone_from_dock_transport_modals() {
         "发丝线必须换成实色 line/line-strong 令牌"
     );
     assert!(
-        !MODALS.contains("#00000030") && MODALS.contains("#12161f"),
-        "命令面板分类 chip 底必须是等效合成实色 #12161f"
+        !MODALS.contains("#00000030") && MODALS.contains("Tokens.skin-chip"),
+        "命令面板分类 chip 底必须是实色（补丁包第四轮改钉：字面 #12161f 换 Tokens.skin-chip 令牌）"
     );
 }
 
 #[test]
 fn device_rack_eq_fill_is_solid() {
     assert!(
-        DEVICE_RACK.contains("#d4a017.mix(Tokens.bg-shell, 0.125)"),
-        "EQ 频响填充必须是金色等效合成实色（mix bg-shell 0.125）"
+        DEVICE_RACK.contains("Tokens.skin-mute.mix(Tokens.bg-shell, 0.125)"),
+        "EQ 频响填充必须是等效合成实色（补丁包第四轮改钉：金色 #d4a017 换 Tokens.skin-mute，mix bg-shell 0.125 不变）"
     );
     assert!(
         !DEVICE_RACK.contains("#d4a01720"),

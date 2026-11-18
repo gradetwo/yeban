@@ -43,12 +43,18 @@ fn muted_text_labels_are_brighter_than_94a3b8() {
 
 #[test]
 fn decorative_strips_may_keep_the_old_tone() {
-    // 装饰线（background/stroke）不在提亮范围：至少保留一处，证明没有误改装饰色。
-    let left = FILES[0].1;
-    assert!(
-        left.contains("background: #94a3b8;") || left.contains("#94a3b8"),
-        "装饰线不应被一并提亮（避免抢文字注意力）"
-    );
+    // 改钉（重设计补丁包第四轮，Wang 2026-11-18 定判据按补丁包
+    // 修改）：#94a3b8 已随新调色板在 ui/ 全清零——旧钉「装饰线
+    // 至少保留一处 #94a3b8」的前提（只提亮文字、不动装饰）被
+    // 整套换色取代。本条改钉为：该色在 8 个界面文件里不得回归
+    // （文字与装饰两处都不许；装饰线现走 line 令牌，由
+    // texture_selection / dealpha_views_solid 判据看守）。
+    for (name, src) in FILES {
+        assert!(
+            !src.contains("#94a3b8"),
+            "{name} 不得再出现已清零的 #94a3b8"
+        );
+    }
 }
 
 // ===========================================================================
