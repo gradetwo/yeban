@@ -19,3 +19,22 @@
   `a_sample_file_over_64_mib_loads_after_the_byte_gate_alignment`
   （24-bit 立体声 12 000 000 帧真 WAV，盘上 72 000 044 B，必须读入）。
 - 待：盒上 yeban-sfz 全套＋yeban-mcp sfz 相关测试、clippy、fmt。
+
+## 2026-11-18 20:40–20:42 磁盘问答（父 agent 问）
+- 20:40–20:42 之间我删的是：`/data/workspace/yeban-range-warmup/target`
+  （线一工作树在盒上的构建目录，du 5.6 GB）。原因：CHECK_APP 首跑
+  以 ENOSPC 退出 101（rustc 建临时目录失败，非代码问题）；线一已验完
+  并推送（tip c269887be），其盒上 target 按清盘原则可删。删后 df 回
+  5.6 GB（父 agent 20:42 live 复核 5.4 GB，差额是随后重跑 CHECK_APP
+  写回的约 0.2 GB）。未动：sfz-gate 的 target（4.6 GB）、两树源码、
+  全部日志与脚本。执行前已核 hostname=instabox-yanshi-dev。
+
+## 2026-11-18 21:2x 盒上全套验证全绿（sfz-verify1.log＋sfz-check-app.log）
+- FMT=0；CLIPPY_MCP（--all-targets -D warnings）=0；TEST_SFZ_PKG
+  （yeban-sfz 全套）=0；TEST_MCP_SFZ_FILES=0（新回归
+  `a_sample_file_over_64_mib_loads_after_the_byte_gate_alignment` 与
+  超限拒绝判据均在日志里具名 ok，来源串
+  `frames=12000000 channels=2 rate=48000`）；TEST_MCP_LIB=0
+  （750 passed）；CHECK_APP（yeban-app --lib）首跑 101 系满盘 ENOSPC，
+  清掉线一盒上 target 后重跑 =0。
+- 线二完工，推分支 line/sfz-file-size-gate。
