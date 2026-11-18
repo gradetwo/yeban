@@ -1,0 +1,28 @@
+[package]
+name = "yeban-tui"
+description = "夜半终端界面 (ratatui + crossterm): 与 GUI 共用 yeban-app 的引擎宿主、工程读写与快捷键策略表, 只换呈现层"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "yeban_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "yeban-tui"
+path = "src/main.rs"
+
+[dependencies]
+# 路线甲 (见 src/lib.rs 的接缝说明): 依赖 yeban-app 库, 只调用其无 Slint 窗口的部件
+# (engine_host / open / save / render_core / export_wav / cli::shortcut_rows /
+# input::InputContext)。Slint 被链接但从不初始化。
+yeban-app = { path = "../yeban-app" }
+yeban-model = { workspace = true }
+yeban-engine = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+unicode-width = { workspace = true }
