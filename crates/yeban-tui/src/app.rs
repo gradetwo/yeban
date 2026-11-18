@@ -501,7 +501,7 @@ impl App {
                 .filter(|p| p.start_tick >= tick)
                 .min_by_key(|p| p.start_tick)
         })?;
-        Some((track_id, placement.id, placement.clone()))
+        Some((track_id, placement.id, *placement))
     }
 
     /// 平移光标处片段 `bars` 小节（负数向左；片段网格焦点下的 `H`/`L`）。

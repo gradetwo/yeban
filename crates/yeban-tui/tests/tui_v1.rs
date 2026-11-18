@@ -242,19 +242,27 @@ fn undo_redo_wired_through_gui_and_vi_keys() {
         "Ctrl+Shift+Z 应重做静音"
     );
 
-    // 计数撤销：再叠两笔编辑（第二条轨静音 + 本轨独奏），3u 一次全退。
+    // 计数撤销：再叠两笔编辑（第二条轨静音 + 本轨独奏切换），3u 一次全退。
+    // 注意：演示工程首轨的初始独奏状态由夹具决定（实测为开），只断言「切换」。
+    let was_solo = app.project.tracks[&track_id].solo;
     let other_id = app.track_ids[1];
     app.handle_key(char_key('j'));
     app.handle_key(char_key('m'));
     assert!(app.project.tracks[&other_id].mute);
     app.handle_key(char_key('k'));
     app.handle_key(char_key('s'));
-    assert!(app.project.tracks[&track_id].solo);
+    assert_eq!(
+        app.project.tracks[&track_id].solo, !was_solo,
+        "s 应切换独奏"
+    );
     app.handle_key(char_key('3'));
     app.handle_key(char_key('u'));
     assert!(!app.project.tracks[&track_id].mute, "3u 应退掉第一笔静音");
     assert!(!app.project.tracks[&other_id].mute, "3u 应退掉第二笔静音");
-    assert!(!app.project.tracks[&track_id].solo, "3u 应退掉独奏");
+    assert_eq!(
+        app.project.tracks[&track_id].solo, was_solo,
+        "3u 应把独奏退回初始态"
+    );
     // 史已空：再按 u 只如实被拒，工程不动。
     app.handle_key(char_key('u'));
     assert!(!app.project.tracks[&track_id].mute);
@@ -308,6 +316,8 @@ fn grid_clip_move_delete_tempo_and_seek() {
         app.project.tracks[&track_id].clips[&placement_id].start_tick, old_start,
         "u 应撤销平移"
     );
+    // 光标还停在平移后的位置（撤销不挪光标，与 GUI 同）：先把光标移回片段起点。
+    app.cursor_bar = usize::try_from(old_start / app.bar_ticks()).unwrap_or(0);
 
     // Delete：删光标处摆放（GUI 画布键 DeleteSelection 的落点）。
     app.handle_key(key(KeyCode::Delete));
