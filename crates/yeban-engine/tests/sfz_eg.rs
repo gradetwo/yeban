@@ -354,7 +354,6 @@ fn e9_parse_errors_are_loud() {
         "pitcheg_depth=-12001",  // depth 越界（负）
         "fileg_attack=-1",       // 负时间
         "pitcheg_sustain=101",   // sustain 越界
-        "fileg_vel2depth=12001", // vel2 depth 越界
         "ampeg_delay=101",       // 时间越界
         "ampeg_start=101",       // 百分比越界
         "ampeg_vel2delay=-101",  // vel2 时间越界
@@ -366,6 +365,30 @@ fn e9_parse_errors_are_loud() {
             "⭐ {bad} 必须响亮 Err"
         );
     }
+
+    // ⭐ 修订（Wang 2026-11-18 钳位裁决，与 v32 stage 23 对 sfz_instrument 六条
+    // 的改钉同口径）：`fileg_vel2depth` 是**调制深度**，不属上面的静态值清单。
+    // 越界时装载成功、钳位到深度上界 12000，并留下 `ClampedModulationDepth`
+    // 响亮告警（⛔ 不是静默接受：无告警或钳错值都红）。
+    let instrument = SfzInstrument::load(
+        "<region> sample=a.wav fileg_vel2depth=12001".to_string(),
+        &Default::default(),
+    )
+    .expect("⭐ vel2 深度越界必须被接受（钳位），不得 Err");
+    let hit = instrument
+        .warnings()
+        .iter()
+        .find_map(|warning| match warning {
+            yeban_sfz::Warning::ClampedModulationDepth {
+                value,
+                clamped,
+                ..
+            } => Some((value.clone(), clamped.clone())),
+            _ => None,
+        })
+        .expect("⭐ 钳位必须留下 ClampedModulationDepth 告警");
+    assert_eq!(hit.0, "12001", "告警 value 必须是原文越界值");
+    assert_eq!(hit.1, "12000", "告警 clamped 必须是深度上界");
 }
 
 /// ⭐ E10：摊平表带出两族定义与 ampeg 两新参的基准读数。

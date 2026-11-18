@@ -505,7 +505,6 @@ impl PdcPlan {
     }
 
     /// 按 `EntityId` 升序的全部下游式补偿（`master` 自己的值恒为 0，故不单独过滤）。
-    #[must_use]
     pub fn chain_compensations(&self) -> impl Iterator<Item = (&EntityId, &u32)> {
         self.chain_compensation.iter()
     }
