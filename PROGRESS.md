@@ -12,3 +12,12 @@
   再渲染真正的块。无跨点音符 ⇒ 旧路径逐字保留（边界起点逐位不变）。
 - 残余冷启动（回执继续诚实登记）：起点前已结束音符的释放尾不重建；预滚点之前
   的声部池窃取历史不重演；宿主插件音源与图内效果尾音仍冷启动。
+
+## 2026-11-18 20:4x 首轮盒验（yanshi-dev）
+- 新判据 `a_note_spanning_the_range_start_is_chased_by_preroll` 首轮通过：
+  夹具长音帧 48000..144000，中点 96037 起渲 ⇒ 全程同段 −7.68 LUFS、
+  区间 −7.68 LUFS、bit_identical=true；边界起点逐位相同。TEST_EXIT=0
+  （日志 /data/workspace/range-test1.log）。
+- MCP 侧回执/工具文档/判据已按追补语义改写（提交 d8986b405）。
+- 本地 cargo fmt --check 通过。待：盒上 render --lib 全套、mcp
+  render_master 判据、clippy（render/mcp --all-targets）、app --lib check。
