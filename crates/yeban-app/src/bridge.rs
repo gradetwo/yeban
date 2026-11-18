@@ -9440,8 +9440,8 @@ mod tests {
         let roll = std::fs::read_to_string(ui.join("console/piano_roll.slint"))
             .expect("读 piano_roll.slint");
         for required in [
-            "for key_index in 16",
-            "for lane_index in 16",
+            "for key_index in root.roll-rows",
+            "for lane_index in root.roll-rows",
             "14px * lane_index",
             "root.note-positions[note_index]",
             "root.note-ys[note_index]",
