@@ -1356,6 +1356,10 @@ pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
                 ("ride_note".to_owned(), 51.0),
                 ("cowbell_note".to_owned(), 56.0),
                 ("shaker_note".to_owned(), 82.0),
+                // 独立 808 低音（逐件＋侧链期 4）：GM 35（原声低鼓位）。
+                // 电子族此前 35 无映射（静默不触发），本期起触发独立
+                // 808 声部——trap/phonk 的 808 从此与 36 号 kick 分家。
+                ("bass808_note".to_owned(), 35.0),
             ];
             for (name, value) in synth_style_params(preset.id.as_str()) {
                 params.push((name.to_owned(), value));
@@ -1459,6 +1463,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.0),
             ("ride_level", 0.6),
             ("ride_pan", 0.55),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 49.0),
+            ("bass808_glide_hz", 120.0),
+            ("bass808_glide_s", 0.05),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 1.8),
+            ("bass808_level", 0.95),
+            ("bass808_pan", 0.0),
         ],
         "drill" => vec![
             ("kick_tune_hz", 47.0),
@@ -1538,6 +1550,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 0.9),
             ("ride_level", 0.55),
             ("ride_pan", 0.25),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 49.0),
+            ("bass808_glide_hz", 125.0),
+            ("bass808_glide_s", 0.03),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 1.2),
+            ("bass808_level", 0.95),
+            ("bass808_pan", 0.0),
         ],
         "phonk" => vec![
             ("kick_tune_hz", 50.0),
@@ -1617,6 +1637,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.1),
             ("ride_level", 0.6),
             ("ride_pan", 0.55),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 46.0),
+            ("bass808_glide_hz", 115.0),
+            ("bass808_glide_s", 0.05),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 1.5),
+            ("bass808_level", 0.95),
+            ("bass808_pan", 0.0),
         ],
         "edm" => vec![
             ("kick_tune_hz", 50.0),
@@ -1696,6 +1724,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.1),
             ("ride_level", 0.7),
             ("ride_pan", 0.35),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 50.0),
+            ("bass808_glide_hz", 100.0),
+            ("bass808_glide_s", 0.04),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 0.8),
+            ("bass808_level", 0.9),
+            ("bass808_pan", 0.0),
         ],
         "house" => vec![
             ("kick_tune_hz", 50.0),
@@ -1775,6 +1811,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.0),
             ("ride_level", 0.65),
             ("ride_pan", 0.55),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 50.0),
+            ("bass808_glide_hz", 100.0),
+            ("bass808_glide_s", 0.04),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 1.0),
+            ("bass808_level", 0.9),
+            ("bass808_pan", 0.0),
         ],
         "techno" => vec![
             ("kick_tune_hz", 52.0),
@@ -1854,6 +1898,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.05),
             ("ride_level", 0.68),
             ("ride_pan", 0.32),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 50.0),
+            ("bass808_glide_hz", 105.0),
+            ("bass808_glide_s", 0.04),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 0.7),
+            ("bass808_level", 0.85),
+            ("bass808_pan", 0.0),
         ],
         "lofi" => vec![
             ("kick_tune_hz", 48.0),
@@ -1933,6 +1985,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 0.95),
             ("ride_level", 0.55),
             ("ride_pan", 0.22),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 45.0),
+            ("bass808_glide_hz", 90.0),
+            ("bass808_glide_s", 0.08),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 1.1),
+            ("bass808_level", 0.8),
+            ("bass808_pan", 0.0),
         ],
         "hiphop" => vec![
             ("kick_tune_hz", 46.0),
@@ -2012,6 +2072,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.05),
             ("ride_level", 0.62),
             ("ride_pan", 0.28),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 49.0),
+            ("bass808_glide_hz", 118.0),
+            ("bass808_glide_s", 0.05),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 1.3),
+            ("bass808_level", 0.95),
+            ("bass808_pan", 0.0),
         ],
         _ => vec![
             ("kick_tune_hz", 50.0),
@@ -2091,6 +2159,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
             ("ride_decay_s", 1.1),
             ("ride_level", 0.7),
             ("ride_pan", 0.35),
+            // 独立 808 低音（期 4）：逐风格定值与 kick 同族分工。
+            ("bass808_tune_hz", 50.0),
+            ("bass808_glide_hz", 100.0),
+            ("bass808_glide_s", 0.04),
+            ("bass808_attack_s", 0.002),
+            ("bass808_decay_s", 0.9),
+            ("bass808_level", 0.9),
+            ("bass808_pan", 0.0),
         ],
     }
 }

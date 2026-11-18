@@ -102,6 +102,7 @@
 //! | `kit.cowbell.*` | `cowbell_freq_a_hz`、`cowbell_freq_b_hz`、`cowbell_highpass_hz`、`cowbell_lowpass_hz`、`cowbell_attack_s`、`cowbell_decay_s`、`cowbell_level`、`cowbell_pan` |
 //! | `kit.crash.*` | `crash_base_hz`、`crash_highpass_hz`、`crash_lowpass_hz`、`crash_attack_s`、`crash_decay_s`、`crash_level`、`crash_pan` |
 //! | `kit.ride.*` | `ride_base_hz`、`ride_highpass_hz`、`ride_lowpass_hz`、`ride_attack_s`、`ride_decay_s`、`ride_level`、`ride_pan` |
+//! | `kit.bass808.*` | `bass808_tune_hz`、`bass808_glide_hz`、`bass808_glide_s`、`bass808_attack_s`、`bass808_decay_s`、`bass808_level`、`bass808_pan`（逐件＋侧链期 4 新增：独立 808 低音，键位名 `bass808_note` 进可选名单槽位 8） |
 //! | `kit.master_level` | `master_level` |
 //!
 //! ⛔ **没有别名**，这是**刻意**的：`crates/yeban-dsp/src/drums/mod.rs` 的音色参数是
@@ -245,6 +246,7 @@ impl DrumNoteMap {
             DrumVoice::Ride => self.extra[5] = Some(note),
             DrumVoice::Cowbell => self.extra[6] = Some(note),
             DrumVoice::Shaker => self.extra[7] = Some(note),
+            DrumVoice::Bass808 => self.extra[8] = Some(note),
             _ => {}
         }
         self
@@ -315,6 +317,7 @@ impl DrumNoteMap {
             DrumVoice::Ride => self.extra[5],
             DrumVoice::Cowbell => self.extra[6],
             DrumVoice::Shaker => self.extra[7],
+            DrumVoice::Bass808 => self.extra[8],
         }
     }
 
@@ -525,8 +528,8 @@ fn note_slot(name: &str) -> Option<usize> {
     }
 }
 
-/// 可选八件的键位槽位数（2026-11-18）。
-const EXTRA_NOTE_SLOTS: usize = 8;
+/// 可选键位槽位数（2026-11-18 八件；逐件＋侧链期 4 加 808 低音为 9）。
+const EXTRA_NOTE_SLOTS: usize = 9;
 
 /// 可选八件的**规范拼写**（下标 = 可选键位槽位）。
 ///
@@ -542,6 +545,7 @@ pub const DRUM_EXTRA_NOTE_NAMES: [&str; EXTRA_NOTE_SLOTS] = [
     "ride_note",
     "cowbell_note",
     "shaker_note",
+    "bass808_note",
 ];
 
 /// 可选槽位 → 鼓件（下标与 [`DRUM_EXTRA_NOTE_NAMES`] 同序）。
@@ -554,6 +558,7 @@ const EXTRA_VOICES: [DrumVoice; EXTRA_NOTE_SLOTS] = [
     DrumVoice::Ride,
     DrumVoice::Cowbell,
     DrumVoice::Shaker,
+    DrumVoice::Bass808,
 ];
 
 /// 参数名 → **可选**键位下标（`None` = 不是可选键位名）。
@@ -572,6 +577,7 @@ fn extra_note_slot(name: &str) -> Option<usize> {
         "ride_note" => Some(5),
         "cowbell_note" => Some(6),
         "shaker_note" => Some(7),
+        "bass808_note" => Some(8),
         _ => None,
     }
 }
@@ -721,6 +727,14 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "ride_decay_s" => kit.ride.decay_s = value,
         "ride_level" => kit.ride.level = value,
         "ride_pan" => kit.ride.pan = value,
+        // --- 独立 808 低音（逐件＋侧链期 4） ---
+        "bass808_tune_hz" => kit.bass808.tune_hz = value,
+        "bass808_glide_hz" => kit.bass808.glide_hz = value,
+        "bass808_glide_s" => kit.bass808.glide_s = value,
+        "bass808_attack_s" => kit.bass808.attack_s = value,
+        "bass808_decay_s" => kit.bass808.decay_s = value,
+        "bass808_level" => kit.bass808.level = value,
+        "bass808_pan" => kit.bass808.pan = value,
         // --- 总线 ---
         "master_level" => kit.master_level = value,
         _ => return false,
