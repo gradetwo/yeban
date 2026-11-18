@@ -7689,7 +7689,7 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         // 才算一位不动 —— 框选出多选后点回主选中片段，集合必须收回单元素
         // （line/blank-drag-selection 补的半个条件）。
         if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str()
-            && ui.get_selected_clip_ulids().len() == 1
+            && ui.get_selected_clip_ulids().row_count() == 1
         {
             return;
         }
