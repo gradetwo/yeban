@@ -1970,7 +1970,6 @@ fn render_branch(
         //
         // ⚠ 这些条件都是**读**（零分配、零锁）⇒ 判不成立时不花任何额外代价。
         let prepared_sfz = current.sfz_plan(&track).map(|plan| plan.prepared());
-        let routes_of_track = routing.routes(&track);
         let stereo_track = running
             && prepared_sfz
                 .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
@@ -1979,10 +1978,11 @@ fn render_branch(
             // 有立体声入口 ⇒ 不再按"有无插入"排除；只剩"处理型总线"这一条。
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
-            && routes_of_track.len() == 1
-            && routes_of_track[0].destination() == master
-            && routes_of_track[0].gain() == 1.0
-            && !(process_sends && send_armed(share, &routes_of_track[0]));
+            // ⭐ **stage 16**：路由形状**不再是**分声道的前提 —— 慢路
+            // （发送／多目的地／边增益）的声相段现在也按左右分别施加
+            // （`render_panned_pair_into`），`route_panned` 本来就吃立体声源
+            // ⇒ `routes_of_track` 的旧条件（单边直连 master、单位增益、无发送自动化）全部删除。
+            ;
 
         if running && stereo_track {
             // 分声道：左 → `track_scratch`、右 → `track_scratch_r`（区域 `pan` 在源侧施加）。
@@ -2279,15 +2279,40 @@ fn render_branch(
             } else {
                 // 声相自动化 + 非平凡路由：先把"声相之后"的立体声写进暂存
                 // （平滑器**每帧只推进一次**），再按边分别搬运。
+                // ⭐ **stage 16**：分声道轨用成对版本 —— 左乘左增益、右乘右增益，
+                // 与快路的 `sum_pair_into_bus_smoothed` **同一把尺子**（⛔ 不再把
+                // 左右先压成一条 `track_scratch` 再乘两个增益）。
                 {
+                    let (left_source, right_source) = if stereo_track {
+                        (
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                        )
+                    } else {
+                        (
+                            &share.track_scratch[..frames],
+                            &share.track_scratch[..frames],
+                        )
+                    };
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
-                    render_panned_into_smoothed(
-                        &mut first[0][..frames],
-                        &mut second[0][..frames],
-                        &share.track_scratch[..frames],
-                        &mut share.armed_pan_l[index],
-                        &mut share.armed_pan_r[index],
-                    );
+                    if stereo_track {
+                        render_panned_pair_into_smoothed(
+                            &mut first[0][..frames],
+                            &mut second[0][..frames],
+                            left_source,
+                            right_source,
+                            &mut share.armed_pan_l[index],
+                            &mut share.armed_pan_r[index],
+                        );
+                    } else {
+                        render_panned_into_smoothed(
+                            &mut first[0][..frames],
+                            &mut second[0][..frames],
+                            left_source,
+                            &mut share.armed_pan_l[index],
+                            &mut share.armed_pan_r[index],
+                        );
+                    }
                 }
                 route_panned(
                     routes,
@@ -2334,13 +2359,25 @@ fn render_branch(
             } else {
                 {
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
-                    render_panned_into(
-                        &mut first[0][..frames],
-                        &mut second[0][..frames],
-                        &share.track_scratch[..frames],
-                        gain_l,
-                        gain_r,
-                    );
+                    if stereo_track {
+                        // ⭐ stage 16：分声道 ⇒ 左右分别乘（与 `sum_pair_into_bus` 同尺子）。
+                        render_panned_pair_into(
+                            &mut first[0][..frames],
+                            &mut second[0][..frames],
+                            &share.track_scratch[..frames],
+                            &share.track_scratch_r[..frames],
+                            gain_l,
+                            gain_r,
+                        );
+                    } else {
+                        render_panned_into(
+                            &mut first[0][..frames],
+                            &mut second[0][..frames],
+                            &share.track_scratch[..frames],
+                            gain_l,
+                            gain_r,
+                        );
+                    }
                 }
                 route_panned(
                     routes,
@@ -5988,6 +6025,54 @@ fn sum_into_bus_smoothed(
 /// **同一把尺子**（构造期 `cos/sin`）。
 ///
 /// 实时约束：逐样本两次乘，零分配、零锁、零 I/O [MUST-GATE-001]。
+/// ⭐ **stage 16**：成对版 [`render_panned_into`] —— 源侧已分好左右时**分别**乘。
+///
+/// 口径与 [`sum_pair_into_bus`] 完全一致：**左 × 左增益、右 × 右增益**（⛔ 不交叉、
+/// ⛔ 不先压成中值）。用途是慢路（发送／多目的地／边增益）的"声相之后"暂存，
+/// 让分声道信号在按边搬运之前**不被下混**。
+///
+/// 实时约束：逐样本两次乘，零分配、零锁、零 I/O [MUST-GATE-001]。
+fn render_panned_pair_into(
+    left: &mut [f32],
+    right: &mut [f32],
+    source_left: &[f32],
+    source_right: &[f32],
+    gain_l: f32,
+    gain_r: f32,
+) {
+    for (((l, r), sl), sr) in left
+        .iter_mut()
+        .zip(right.iter_mut())
+        .zip(source_left)
+        .zip(source_right)
+    {
+        *l = *sl * gain_l;
+        *r = *sr * gain_r;
+    }
+}
+
+/// 与 [`render_panned_pair_into`] 同形，但两个增益**逐帧**从平滑器里取
+/// （声相自动化 ＋ 慢路，stage 16）。每帧每个平滑器**恰好推进一次**。
+fn render_panned_pair_into_smoothed(
+    left: &mut [f32],
+    right: &mut [f32],
+    source_left: &[f32],
+    source_right: &[f32],
+    gain_l: &mut ParamSmoother,
+    gain_r: &mut ParamSmoother,
+) {
+    for (((l, r), sl), sr) in left
+        .iter_mut()
+        .zip(right.iter_mut())
+        .zip(source_left)
+        .zip(source_right)
+    {
+        *l = *sl * gain_l.process();
+        *r = *sr * gain_r.process();
+    }
+}
+
+/// ⭐ 把一条轨的**声相之后**立体声写进暂存（**赋值**，不是累加）—— 任务单 `#154`。
 fn render_panned_into(left: &mut [f32], right: &mut [f32], mono: &[f32], gain_l: f32, gain_r: f32) {
     for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
         *l = *m * gain_l;
@@ -10053,6 +10138,53 @@ mod tests {
             4,
             "② 事件面：四条都到了（CC ⛔ 不静默丢弃 —— 它计入 events_applied）"
         );
+    }
+
+    /// ⭐ **stage 16 判据**：慢路的"声相之后"暂存按**左右分别**乘，⛔ 不下混、⛔ 不串线。
+    #[test]
+    fn the_panned_pair_route_scales_left_and_right_separately() {
+        let source_left = [0.5f32, -0.25, 0.125, 0.75];
+        let source_right = [-0.5f32, 0.25, -0.125, -0.75];
+        let (gain_l, gain_r) = (0.25f32, 0.5f32);
+        let mut left = [0.0f32; 4];
+        let mut right = [0.0f32; 4];
+        render_panned_pair_into(
+            &mut left,
+            &mut right,
+            &source_left,
+            &source_right,
+            gain_l,
+            gain_r,
+        );
+        let expected_left: [f32; 4] = core::array::from_fn(|index| source_left[index] * gain_l);
+        let expected_right: [f32; 4] = core::array::from_fn(|index| source_right[index] * gain_r);
+        assert_eq!(
+            left.map(f32::to_bits),
+            expected_left.map(f32::to_bits),
+            "左必须是 左×左增益"
+        );
+        assert_eq!(
+            right.map(f32::to_bits),
+            expected_right.map(f32::to_bits),
+            "右必须是 右×右增益"
+        );
+        let mut left_again = [0.0f32; 4];
+        let mut right_again = [0.0f32; 4];
+        let silent_right = [0.0f32; 4];
+        render_panned_pair_into(
+            &mut left_again,
+            &mut right_again,
+            &source_left,
+            &silent_right,
+            gain_l,
+            gain_r,
+        );
+        assert_eq!(
+            left_again.map(f32::to_bits),
+            left.map(f32::to_bits),
+            "右源不得漏进左"
+        );
+        println!("[stage16] 成对声相：left={left:?} right={right:?}");
     }
 
     /// ⭐ **stage 4 判据**（母线求和那一半）：源侧已经分好左右的两条缓冲，
