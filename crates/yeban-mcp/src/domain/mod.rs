@@ -5113,9 +5113,11 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
     let data = engine_state::snapshot(
         project,
         domain.session(),
-        domain.engine_readings(),
-        domain.scene_launches_applied(),
-        domain.pdc_readings(),
+        engine_state::HostReadings {
+            mirror: domain.engine_readings(),
+            scene_launches_applied: domain.scene_launches_applied(),
+            pdc: domain.pdc_readings(),
+        },
         domain.undo_display().undoable,
         track_id,
         engine_state::ReadingsCursor {

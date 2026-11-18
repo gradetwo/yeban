@@ -67,6 +67,10 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("aether_real_project_live.rs"),
     ),
     (
+        "tests/clip_marquee_selection.rs",
+        include_str!("clip_marquee_selection.rs"),
+    ),
+    (
         "tests/device_clip_creation.rs",
         include_str!("device_clip_creation.rs"),
     ),
@@ -135,7 +139,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 35;
+const MIN_SOURCES: usize = 36;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;

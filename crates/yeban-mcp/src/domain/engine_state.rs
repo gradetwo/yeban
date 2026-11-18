@@ -455,6 +455,21 @@ pub struct ReadingsCursor<'a> {
     pub since: Option<u64>,
 }
 
+/// 宿主注入的读数三件：完整镜像、单独注入的场景启动计数、PDC 标量读数。
+///
+/// 收成一个结构体而不是三个参数：`clippy::too_many_arguments` 在本仓是承重信号
+/// （见 [`ReadingsCursor`] 的同款理由），而且三者同源 —— 都是宿主同一次注入
+/// 给出的读数，分开传就允许"镜像与标量读数不是同一次注入"这种自相矛盾的调用。
+#[derive(Clone, Copy, Debug)]
+pub struct HostReadings {
+    /// 完整读数镜像（`None` = 宿主未注入完整快照）。
+    pub mirror: Option<EngineReadings>,
+    /// 单独注入的场景启动计数（优先于镜像里的同名格）。
+    pub scene_launches_applied: Option<u64>,
+    /// 单独注入的 PDC 读数（逐格优先于镜像里的同名格）。
+    pub pdc: Option<PdcReadings>,
+}
+
 /// 组装一次查询的 `data`。
 ///
 /// `readings` 是客户端的**读数游标**（上一个它见过的 `readingsRevision`）；缺省 ⇒
@@ -467,9 +482,7 @@ pub struct ReadingsCursor<'a> {
 pub fn snapshot(
     project: &YebanProjectV1,
     session: &SessionRuntimeState,
-    mirror: Option<EngineReadings>,
-    scene_launches_applied: Option<u64>,
-    pdc: Option<PdcReadings>,
+    host: HostReadings,
     undo_cursor: usize,
     track_id: Option<EntityId>,
     readings: ReadingsCursor<'_>,
@@ -491,7 +504,7 @@ pub fn snapshot(
             project.time_signature.denominator,
         ),
     );
-    let mut engine = engine_value(project, mirror, scene_launches_applied, pdc);
+    let mut engine = engine_value(project, host.mirror, host.scene_launches_applied, host.pdc);
     if let Value::Object(fields) = &mut engine {
         // 客户端从这里取下一次调用要用的游标（`readingsRevision`）。
         fields.insert(
@@ -659,9 +672,11 @@ mod tests {
         let value = snapshot(
             &project,
             &session,
-            None,
-            None,
-            None,
+            HostReadings {
+                mirror: None,
+                scene_launches_applied: None,
+                pdc: None,
+            },
             0,
             None,
             ReadingsCursor {
@@ -681,9 +696,11 @@ mod tests {
         let fault = snapshot(
             &project,
             &session,
-            None,
-            None,
-            None,
+            HostReadings {
+                mirror: None,
+                scene_launches_applied: None,
+                pdc: None,
+            },
             0,
             Some(ghost),
             ReadingsCursor {

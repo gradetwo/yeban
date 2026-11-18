@@ -217,7 +217,7 @@ fn two_edges_with_different_downstream_points_are_compensated_per_edge() {
             .expect("送总线的边必须在计划里");
         assert_eq!(
             (direct, via_bus),
-            (REPORTED_LATENCY as u32, 0),
+            (REPORTED_LATENCY, 0),
             "计划：直连边吃 64（master 的最晚到达）、总线边吃 0（总线自己的 64 在它之后）"
         );
         assert_ne!(

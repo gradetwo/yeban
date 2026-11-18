@@ -4723,7 +4723,7 @@ mod tests {
     /// ⛔ 靠手抄数字守不住；把真响应喂进名册才叫读数。
     #[test]
     fn the_query_track_roster_accepts_the_measured_snapshot_and_shares_its_key_sets() {
-        use crate::domain::engine_state::{ReadingsCursor, snapshot};
+        use crate::domain::engine_state::{HostReadings, ReadingsCursor, snapshot};
         let project = yeban_model::samples::filled_project();
         let session = yeban_model::SessionRuntimeState::new();
         let track_id = *project
@@ -4735,9 +4735,11 @@ mod tests {
         let data = snapshot(
             &project,
             &session,
-            None,
-            None,
-            None,
+            HostReadings {
+                mirror: None,
+                scene_launches_applied: None,
+                pdc: None,
+            },
             0,
             Some(track_id),
             ReadingsCursor {
@@ -4847,15 +4849,17 @@ mod tests {
     /// ⭐ s35 判据五：`stateSources` 的九键**实测**等于生产者那段 `json!` 的键集，且九个值全为字符串。
     #[test]
     fn the_state_sources_roster_is_the_producers_nine_string_keys() {
-        use crate::domain::engine_state::{ReadingsCursor, snapshot};
+        use crate::domain::engine_state::{HostReadings, ReadingsCursor, snapshot};
         let project = yeban_model::samples::filled_project();
         let session = yeban_model::SessionRuntimeState::new();
         let data = snapshot(
             &project,
             &session,
-            None,
-            None,
-            None,
+            HostReadings {
+                mirror: None,
+                scene_launches_applied: None,
+                pdc: None,
+            },
             0,
             None,
             ReadingsCursor {

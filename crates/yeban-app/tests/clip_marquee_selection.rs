@@ -278,7 +278,10 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
         .map(|id| id.to_string())
         .collect();
     assert!(
-        after_add.contains(&other.placement_id) && expected.iter().all(|id| after_add.contains(id)),
+        !expected.is_empty()
+            && expected.len() == after_add.len() - 1
+            && after_add.contains(&other.placement_id)
+            && expected.iter().all(|id| after_add.contains(id)),
         "加选必须并入现有选区：{after_add:?}"
     );
     assert_eq!(
