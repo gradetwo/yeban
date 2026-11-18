@@ -469,7 +469,13 @@ pub fn filled_project() -> YebanProjectV1 {
         track_order: Vec::new(),
         master_bus_track_id: master_id,
         routing_graph: RoutingGraph {
-            nodes: vec![lead_id, bass_id, aux_id, master_id],
+            // `nodes` 必须按身份升序：op 层的 `AddRoutingNode` 按字典序
+            // 插入（ops.rs 的不变量「nodes 恒有序 ⇒ 增删互为逆且无需
+            // 载荷」）。此前这里是 [lead, bass, aux, master]（master 最
+            // 小却排末位），RemoveRoutingNode 的逆操作只能靠 partition_
+            // point 在未分区序列上的落点巧合才逐字节还原；夹具新增侧链
+            // 边改变了 MCP 判据的选点后即暴露。规范夹具带头守不变量。
+            nodes: vec![master_id, lead_id, bass_id, aux_id],
             edges,
         },
         scenes: BTreeMap::from([(
