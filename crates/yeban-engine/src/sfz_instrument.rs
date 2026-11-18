@@ -285,8 +285,10 @@
 //!     （规范明写 independent of the sample release time）。
 //!     `off_time == 0` **显式硬停**（`FadeRamp::new(0)` 是 `NONE`，不硬停就变成"0 秒淡出
 //!     等于永远响"；判据 `sfz_off_time::a_zero_off_time_hard_stops`）。
-//!     `ADR-0008` **裁决 C 就此撤销**（不是"暂缓"）。仍未做的只剩 `off_shape` / `off_curve`
-//!     （曲线控制，登记在台账 §5.3）。
+//!     `ADR-0008` **裁决 C 就此撤销**（不是"暂缓"）。
+//!     ⭐ **stage 29** 之后 `off_shape` / `off_curve` **也已求值**：`-1`／`-2`／`0`（`x^n`，
+//!     `n` ＝ `off_shape`）／`1`（`n^x`）／`2`（对数）五族全部进 [`FadeRamp`]，
+//!     逐帧只剩"一次乘加"（曲线在**触发期**折算成 [`FADE_KNOTS`] 段折线）。
 //!
 //!     ⚠ **与 `ARCH-RT-004` 的 3 ms 不冲突**：那条管的是**窃取路**（池满抢占），
 //!     与 `off_time`（**`off_by` 独占组路／`off_mode=time` 路**）**是两条不同的路**。
@@ -4815,19 +4817,22 @@ pub struct PreparedRegion {
     ///
     /// 规范（<https://sfzformat.com/opcodes/off_curve/>）：`-2` 静态不变、`-1` 线性、
     /// `0` `x^n`（n ＝ [`Self::off_shape`]）、`1` `n^x`、`2` 对数、`10` vendor。
-    /// ⭐ **stage 19** 实现 `-1`（线性）与 `-2`（静态）；⭐ **stage 27** 把 `0` 的求值
-    /// 换成**分段逼近表**（[`FADE_TABLE`]，129 点 ＋ 线性插值，误差 ≤ 5e-4）；
-    /// `1`／`2`／`10` 仍走 **vendor 指数**（既有 [`FadeRamp`] 衰减因子）。
+    /// ⭐ **stage 19** 实现 `-1`（线性）与 `-2`（静态）；⭐ **stage 29** 补齐 `0` / `1` / `2`
+    /// 三族（[`FadeFamily`]）：触发期用 `libm::pow` / `libm::log` 采样成
+    /// [`FADE_KNOTS`] 段折线，逐帧只有一次乘加（⛔ 逐样本没有超越函数）；
+    /// `10` 与其余未列出的值仍走 **vendor 指数**（既有 [`FadeRamp`] 衰减因子，逐位不变）。
     ///
-    /// ⚠ **诚实边界（stage 27 起）**：规范的 `0` 是 `x^n`（`n = off_shape`），本片
-    /// 目前把 `0` 实现成"**恒等曲线上的 vendor 指数**" —— 即与缺省 `10` 听感同族，
-    /// 只换了求值方式（查表插值 ⇒ 端点精确、无累积漂移）。`off_shape` 参与 `x^n`
-    /// 的那一层**仍未求值**（见 [`Self::off_shape`]），⛔ 不冒充已实现。
+    /// ⚠ **诚实边界（stage 29 起）**：规范只给了三条一句话的公式（`1` 的 `n^x` 连
+    /// 归一化都没给），本片的落地口径写在 [`FadeFamily`] 的文档里（端点归一 ＋
+    /// `off_shape` 符号的"慢/快开头"映射出自 `ampeg_release_shape` 页），
+    /// 折线误差界由判据钉住（极端形状 `3e-2`、举例形状 `2e-2`）。
     off_curve: i32,
     /// ⭐ **`off_shape`（stage 19）**：曲线系数（原样，缺省 `-10.3616`）。
     ///
-    /// 只在 `off_curve=0`（`x^n`）的语义里参与求值；本片把它搬进摊平表
-    /// （读数可查、判据可断言），⛔ 尚未参与任何逐样本求值 —— 见上一字段的登记。
+    /// ⭐ **stage 29 起真的参与求值**：`off_curve=0` 走 [`power_exponent`]（`n > 0 ⇒ n`、
+    /// `n < 0 ⇒ 1/|n|`、`n == 0 ⇒ 线性`），`off_curve=1` 走 [`exponential_base`]（取绝对值），
+    /// `off_curve=2` 走 [`logarithmic_k`]（取绝对值）。缺省 `-10.3616` ⇒ 幂族指数
+    /// `1/10.3616`（"开头掉得快、尾巴安静"）。
     off_shape: f32,
     /// ⭐ **播放方向**（`direction`；任务单 `#113`）。
     ///
@@ -7583,179 +7588,182 @@ fn cc_gate_slots(gates: &[CcGate]) -> ([CcGate; CC_GATE_CAP], u8) {
     (slots, count as u8)
 }
 
-/// ⭐ **stage 27**：`off_curve = 0` 的**分段逼近表**（`STEAL_FADE_FLOOR ^ t` 在
-/// `t ∈ [0, 1]` 上的 129 点采样，`t = k / 128`）。
+/// ⭐ **stage 29**：曲线族折线的**段数**（`off_curve` 的 `0` / `1` / `2` 共用）。
 ///
-/// # 为什么要有它（⛔ 不是"再算一遍"）
+/// # 为什么是折线（⛔ 不是"逐帧再算一遍"）
 ///
-/// `off_curve` 的 `0` 是 SFZ 的**内建曲线 0**（`0 → 1` 线性映射，见
-/// `yeban-sfz` 的 `curve` 模块）。它作用在淡出上时，ARIA 语义是"把归一化时间
-/// 过一遍该曲线再取 vendor 指数" —— 逐样本求值就要 `pow(curve(t), k)`，
-/// 而**逐样本超越函数**在这条实时路径上是不允许的（[MUST-GATE-001] 的邻域：
-/// 逐样本成本必须可界、可复现）。
+/// 规范给 `off_curve` 的三族曲线（<https://sfzformat.com/opcodes/off_curve/>）：
+/// `0` = `x^n`（`n` ＝ `off_shape`）、`1` = `n^x`、`2` = 对数。三者都是**超越函数**，
+/// 而 `FadeRamp::advance` **逐帧**跑在实时回调里 —— [MUST-GATE-001] 的邻域：
+/// 逐样本成本必须可界、可复现。因此：
 ///
-/// 这里的做法是把"vendor 指数"这一层**预先采样成表**：`FADE_TABLE[k] =
-/// STEAL_FADE_FLOOR^(k/128)`（k ＝ 0..=128），运行期只做**线性插值**
-/// （两次乘法 ＋ 一次加法，无分支、无表分配）。曲线 0 是恒等映射 ⇒ 表直接就是
-/// 这条曲线的结果，⛔ 不需要再乘任何形状因子。
+/// * **触发期**（`new_shaped`，与 `decay` 的 `pow` 同一条纪律）用 `libm::pow` /
+///   `libm::log` 把曲线采样成 [`FADE_KNOTS`] 段折线，误差用**自适应劈分**压住
+///   （总是在误差最大的那一段的中点劈开）；
+/// * **逐帧**只剩 `r = remaining × (1/frames)`、一次线性插值（两次乘法＋一次加法）
+///   与一次段位下移 —— ⛔ 没有超越函数、⛔ 没有分配。
 ///
-/// # 误差界（判据钉住）
-///
-/// 分段线性插值在 `[0,1]` 上的最大相对误差 ≤ `1/8 · max|f''| · h²`，
-/// 对本指数 `f(t) = 1e-3^t` 的上界是 `|f''|max · h² / 8 ≈ 3.7e-4`（`h = 1/128`、
-/// `|f''|max = (ln 1e-3)^2 ≈ 47.9`），实测最大偏差 `≈ 2.5e-4` ⇒ 判据钉 **5e-4**
-/// （⛔ 不放宽到"看着差不多"：表错一个数量级就会被 129 点扫描抓到）。端点**逐位精确**：`FADE_TABLE[0] = 1.0`、
-/// `FADE_TABLE[128] = 1e-3`，而淡出走完时增益**恰好** `0.0`（与既有口径一致）。
-///
-/// 表内字面量保留生成时的全精度位数（10 位有效数字）：`f32` 解析按最近舍入，
-/// 多出的位数不改变解析值，但保留它们能让表与生成脚本逐字对账，故对本表
-/// 放行 `clippy::excessive_precision`。
-#[allow(clippy::excessive_precision)]
-const FADE_TABLE: [f32; 129] = [
-    1.000000000e+00f32,
-    9.474635257e-01f32,
-    8.976871324e-01f32,
-    8.505258154e-01f32,
-    8.058421878e-01f32,
-    7.635060803e-01f32,
-    7.233941627e-01f32,
-    6.853895839e-01f32,
-    6.493816316e-01f32,
-    6.152654101e-01f32,
-    5.829415347e-01f32,
-    5.523158417e-01f32,
-    5.232991147e-01f32,
-    4.958068242e-01f32,
-    4.697588817e-01f32,
-    4.450794062e-01f32,
-    4.216965034e-01f32,
-    3.995420559e-01f32,
-    3.785515249e-01f32,
-    3.586637624e-01f32,
-    3.398208329e-01f32,
-    3.219678444e-01f32,
-    3.050527890e-01f32,
-    2.890263910e-01f32,
-    2.738419634e-01f32,
-    2.594552721e-01f32,
-    2.458244069e-01f32,
-    2.329096592e-01f32,
-    2.206734069e-01f32,
-    2.090800041e-01f32,
-    1.980956779e-01f32,
-    1.876884294e-01f32,
-    1.778279410e-01f32,
-    1.684854879e-01f32,
-    1.596338544e-01f32,
-    1.512472545e-01f32,
-    1.433012570e-01f32,
-    1.357727142e-01f32,
-    1.286396945e-01f32,
-    1.218814185e-01f32,
-    1.154781985e-01f32,
-    1.094113811e-01f32,
-    1.036632928e-01f32,
-    9.821718892e-02f32,
-    9.305720409e-02f32,
-    8.816830668e-02f32,
-    8.353625470e-02f32,
-    7.914755439e-02f32,
-    7.498942093e-02f32,
-    7.104974114e-02f32,
-    6.731703824e-02f32,
-    6.378043839e-02f32,
-    6.042963902e-02f32,
-    5.725487884e-02f32,
-    5.424690937e-02f32,
-    5.139696801e-02f32,
-    4.869675252e-02f32,
-    4.613839683e-02f32,
-    4.371444813e-02f32,
-    4.141784514e-02f32,
-    3.924189758e-02f32,
-    3.718026664e-02f32,
-    3.522694651e-02f32,
-    3.337624694e-02f32,
-    3.162277660e-02f32,
-    2.996142741e-02f32,
-    2.838735965e-02f32,
-    2.689598786e-02f32,
-    2.548296748e-02f32,
-    2.414418221e-02f32,
-    2.287573200e-02f32,
-    2.167392170e-02f32,
-    2.053525026e-02f32,
-    1.945640062e-02f32,
-    1.843422992e-02f32,
-    1.746576048e-02f32,
-    1.654817100e-02f32,
-    1.567878844e-02f32,
-    1.485508017e-02f32,
-    1.407464663e-02f32,
-    1.333521432e-02f32,
-    1.263462918e-02f32,
-    1.197085030e-02f32,
-    1.134194404e-02f32,
-    1.074607828e-02f32,
-    1.018151722e-02f32,
-    9.646616199e-03f32,
-    9.139816995e-03f32,
-    8.659643234e-03f32,
-    8.204696109e-03f32,
-    7.773650302e-03f32,
-    7.365250123e-03f32,
-    6.978305849e-03f32,
-    6.611690262e-03f32,
-    6.264335367e-03f32,
-    5.935229272e-03f32,
-    5.623413252e-03f32,
-    5.327978946e-03f32,
-    5.048065717e-03f32,
-    4.782858142e-03f32,
-    4.531583638e-03f32,
-    4.293510210e-03f32,
-    4.067944321e-03f32,
-    3.854228869e-03f32,
-    3.651741273e-03f32,
-    3.459891661e-03f32,
-    3.278121151e-03f32,
-    3.105900224e-03f32,
-    2.942727176e-03f32,
-    2.788126665e-03f32,
-    2.641648320e-03f32,
-    2.502865431e-03f32,
-    2.371373706e-03f32,
-    2.246790092e-03f32,
-    2.128751662e-03f32,
-    2.016914555e-03f32,
-    1.910952975e-03f32,
-    1.810558243e-03f32,
-    1.715437896e-03f32,
-    1.625314837e-03f32,
-    1.539926526e-03f32,
-    1.459024216e-03f32,
-    1.382372227e-03f32,
-    1.309747264e-03f32,
-    1.240937761e-03f32,
-    1.175743266e-03f32,
-    1.113973860e-03f32,
-    1.055449601e-03f32,
-    1.000000000e-03f32,
-];
+/// 误差界由判据 `the_curve_families_stay_within_the_piecewise_error_bound` 钉住
+/// （逐帧增益 vs 闭式解的偏差，⛔ 不放宽成"看着差不多"）。
+pub const FADE_KNOTS: usize = 12;
 
-/// 表查值（`pos ∈ [0, 128]` 的**连续**位置，线性插值）。
+/// 折线的一段：`gain(r) = gain + slope · (r − residual)`。
 ///
-/// `pos` 由调用方钳在 `[0, 128]`（`FadeRamp` 的推进保证这一点）。
-fn fade_table_at(pos: f32) -> f32 {
-    let index = pos as usize;
-    if index >= 128 {
-        return FADE_TABLE[128];
+/// `r` 是**归一化剩余量**（`r = 1` ＝ 淡出起点、`r = 0` ＝ 走完），与曲线族的自变量
+/// 同一个（规范里那个 `x`）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FadeKnot {
+    /// 这一段的**下**端点（`r ∈ [0, 1]`；升序 ⇒ 查段是"从高往低走指针"）。
+    residual: f32,
+    /// `gain(residual)` —— 触发期用闭式解算出的**精确**端点值。
+    gain: f32,
+    /// 这一段在 `r` 方向的斜率（相邻两段在端点处**共用**同一个精确值 ⇒ 折线连续）。
+    slope: f32,
+}
+
+/// 未使用的段（`FadeRamp::NONE` / 线性 / 静态 / vendor 四族都填这一份）。
+const EMPTY_KNOT: FadeKnot = FadeKnot {
+    residual: 1.0,
+    gain: 1.0,
+    slope: 0.0,
+};
+
+/// ⭐ **stage 29**：`off_curve` 的三族曲线（`0` / `1` / `2`）。
+///
+/// 三族的共同契约（判据逐条钉住）：
+/// 1. **端点精确**：`gain(0) == 0`、`gain(1) == 1`（淡出起点满增益、走完归零）；
+/// 2. **单调非增**（对走带时间）/ **非减**（对 `r`）；
+/// 3. `off_shape == 0` ⇒ 三族**都**退化成线性（与 `ampeg_release_shape` 的
+///    "0 is linear" 同一句话，见 <https://sfzformat.com/opcodes/ampeg_release_shape/>）；
+/// 4. 求值只用 `+ - * /`（透明式在**触发期**算，逐帧没有）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FadeFamily {
+    /// `off_curve=0`：`x^n`，`n` ＝ [`power_exponent`] 映射后的指数。
+    Power(f32),
+    /// `off_curve=1`：`n^x`，`n` ＝ 底数（见 [`exponential_base`]）。
+    Exponential(f32),
+    /// `off_curve=2`：对数族，`k` ＝ 曲线系数（见 [`logarithmic_k`]）。
+    Logarithmic(f32),
+}
+
+impl FadeFamily {
+    /// 某个归一化剩余量 `r` 上的**闭式**增益（只在触发期与判据里调用）。
+    fn gain_at(self, r: f32) -> f32 {
+        let r = r.clamp(0.0, 1.0);
+        match self {
+            // `x^n`：规范逐字（n ＝ off_shape），自变量取**已走比例** `1 − r`
+            // ⇒ `gain = 1 − (1 − r)^n`：正形状开头几乎不掉、负形状开头掉得快
+            // （与 `ampeg_release_shape` 页对形状方向的描述一致）。
+            Self::Power(exponent) => {
+                let elapsed = 1.0 - r;
+                1.0 - libm::pow(f64::from(elapsed), f64::from(exponent)) as f32
+            }
+            // `n^x`：规范只给了一个记号，没给归一化。这里取**两端点归一**的形态
+            // `(b^r − b) / (1 − b)`（`b ≠ 1`）：`r = 1 ⇒ 1`、`r = 0 ⇒ 0`，
+            // 且 `b > 1` 与 `0 < b < 1` 都单调递增 —— 见模块头"诚实边界"。
+            Self::Exponential(base) => {
+                if (base - 1.0).abs() < 1e-3 {
+                    return r;
+                }
+                let numerator = libm::pow(f64::from(base), f64::from(r)) as f32 - 1.0;
+                numerator / (base - 1.0)
+            }
+            // 对数族：`ln(1 + k·r) / ln(1 + k)`（`k → 0` 时极限是线性）。
+            Self::Logarithmic(k) => {
+                if k.abs() < 1e-6 {
+                    return r;
+                }
+                libm::log(1.0 + f64::from(k) * f64::from(r)) as f32
+                    / libm::log(1.0 + f64::from(k)) as f32
+            }
+        }
     }
-    let fraction = pos - index as f32;
-    let low = FADE_TABLE[index];
-    let high = FADE_TABLE[index + 1];
-    // 线性插值：`low + (high - low) * fraction`（一次减、一次乘、一次加）。
-    low + (high - low) * fraction
+}
+
+/// `off_shape` → `off_curve=0` 的指数 `n`。
+///
+/// 规范的形状语义出自 <https://sfzformat.com/opcodes/ampeg_release_shape/>：
+/// **0 是线性，正值更慢（开头几乎不掉、尾声才掉），负值更快（开头掉得快、尾巴安静）**。
+///
+/// 因此映射成：`n > 0 ⇒ n`（凸 ⇒ 慢开头）、`n < 0 ⇒ 1/|n|`（凹 ⇒ 快开头）、
+/// `n == 0 ⇒ 1`（线性）。指数钳在 `[1/64, 64]`：两端再极端就是"一段静态 ＋ 一步归零"，
+/// 折线只能逼近到那个极限，钳住比让它溢出更有界（钳位本身在判据里点名）。
+fn power_exponent(off_shape: f32) -> f32 {
+    let exponent = if off_shape > 0.0 {
+        off_shape
+    } else if off_shape < 0.0 {
+        1.0 / -off_shape
+    } else {
+        1.0
+    };
+    exponent.clamp(1.0 / 64.0, 64.0)
+}
+
+/// `off_shape` → `off_curve=1` 的底数 `n`（`n^x` 里的 `n`）。
+///
+/// 规范把 `n` 也交给 `off_shape`（"the coefficient used by off_curve"），但**底数必须为正**，
+/// 而缺省 `off_shape = -10.3616` 是负数 ⇒ 取绝对值。钳在 `[1e-3, 1000]`（`|n − 1|`
+/// 小于 `1e-3` 时走线性，见 [`FadeFamily::gain_at`]）。
+fn exponential_base(off_shape: f32) -> f32 {
+    off_shape.abs().clamp(1e-3, 1000.0)
+}
+
+/// `off_shape` → `off_curve=2` 的对数系数 `k`（取绝对值，同上一条理由）。
+fn logarithmic_k(off_shape: f32) -> f32 {
+    off_shape.abs().clamp(1e-6, 1_000_000.0)
+}
+
+/// **把一族曲线采样成折线**（触发期一次；⛔ 实时路径不调用）。
+///
+/// 自适应劈分：总是劈"弦与曲线偏差最大"的那一段的中点，直到凑满 [`FADE_KNOTS`] 段。
+/// 代价 ≤ `FADE_KNOTS × 2` 次闭式求值，全在触发期。
+fn build_knots(family: FadeFamily) -> [FadeKnot; FADE_KNOTS] {
+    // 断点表：`bounds[0] = 0`、`bounds[segments] = 1`（只前 `segments + 1` 项有效）。
+    let mut bounds = [0.0f32; FADE_KNOTS + 1];
+    bounds[1] = 1.0;
+    let mut segments = 1usize;
+    // 每个段在 1/4、1/2、3/4 三点上对账：取偏差**最大**的那个点劈开
+    // （只看中点会漏掉"曲率集中在近端点"的形状，`off_shape` 很大/很小时正是这种）。
+    while segments < FADE_KNOTS {
+        let mut worst = 0usize;
+        let mut worst_at = 0.5f32;
+        let mut worst_error = -1.0f32;
+        for index in 0..segments {
+            let low = bounds[index];
+            let high = bounds[index + 1];
+            let low_gain = family.gain_at(low);
+            let span_gain = family.gain_at(high) - low_gain;
+            for fraction in [0.25f32, 0.5, 0.75] {
+                let at = low + fraction * (high - low);
+                let chord = low_gain + fraction * span_gain;
+                let error = (family.gain_at(at) - chord).abs();
+                if error > worst_error {
+                    worst_error = error;
+                    worst = index;
+                    worst_at = at;
+                }
+            }
+        }
+        // 把 `worst` 之后的断点（**含末尾那条 `1.0`**）整体后移一格，再插入劈分点。
+        for index in (worst + 1..=segments).rev() {
+            bounds[index + 1] = bounds[index];
+        }
+        bounds[worst + 1] = worst_at;
+        segments += 1;
+    }
+    let mut knots = [EMPTY_KNOT; FADE_KNOTS];
+    for index in 0..FADE_KNOTS {
+        let low = bounds[index];
+        let high = bounds[index + 1];
+        let gain = family.gain_at(low);
+        knots[index] = FadeKnot {
+            residual: low,
+            gain,
+            // 两端点共用一个精确值 ⇒ 折线连续（判据钉"相邻段首尾相接"）。
+            slope: (family.gain_at(high) - gain) / (high - low),
+        };
+    }
+    knots
 }
 
 /// ⭐ **窃取淡出的一段斜坡**（逐帧推进；`Copy`、定长、⛔ 无指针）。
@@ -7770,19 +7778,32 @@ fn fade_table_at(pos: f32) -> f32 {
 pub struct FadeRamp {
     /// 是否仍在淡出（`false` ⇒ [`Self::NONE`] 语义，逐帧增益恒 `1.0`）。
     fading: bool,
-    /// ⭐ **stage 19**：淡出**形状**（`0` ＝ vendor 指数、`1` ＝ 线性、`2` ＝ 静态）。
-    ///
-    /// 来源是区域的 `off_curve`：`-1` ⇒ 线性、`-2` ⇒ 静态、其余（`0`／`1`／`2`／`10`）
-    /// ⇒ vendor 指数（如实登记，见 `PreparedRegion::off_curve` 的文档）。
+    /// 淡出**形状**（见 [`Self::shape`] 的常量表）。
     shape: u8,
     /// 剩余淡出帧数（`fading == true` 时恒 `>= 1`）。
     remaining: u32,
     /// 当前逐帧增益（非淡出恒 `1.0`）。
     gain: f32,
-    /// 每帧乘的衰减因子 `FLOOR^(1/N)`（触发期算好 ⇒ ⛔ 逐样本无 `powf`）。
+    /// vendor 指数族每帧乘的衰减因子 `FLOOR^(1/N)`（触发期算好 ⇒ ⛔ 逐样本无 `powf`）。
     decay: f32,
-    /// ⭐ **stage 19**：线性形状每帧减去的量 `1/N`（其它形状恒 `0`）。
+    /// 线性族每帧减 `1/N`；曲线族由它拿 `r = remaining × (1/N)`。
     step: f32,
+    /// 曲线族：当前所在的折线段（**从高往低**走，`r` 单调减）。
+    knot: u8,
+    /// 曲线族：折线（`FADE_KNOTS` 段，`residual` 升序）。
+    knots: [FadeKnot; FADE_KNOTS],
+}
+
+/// `FadeRamp::shape` 的取值（⛔ 不是 `off_curve` 原值：那是**族**，这里只是**求值方式**）。
+impl FadeRamp {
+    /// vendor 指数族（`off_curve = 10` 与其余未列出的值）：既有口径，逐位不变。
+    const SHAPE_VENDOR: u8 = 0;
+    /// 线性（`off_curve = -1`）。
+    const SHAPE_LINEAR: u8 = 1;
+    /// 静态（`off_curve = -2`）。
+    const SHAPE_STATIC: u8 = 2;
+    /// `off_curve = 0` / `1` / `2` 三族（折线求值）。
+    const SHAPE_CURVED: u8 = 3;
 }
 
 impl FadeRamp {
@@ -7794,6 +7815,8 @@ impl FadeRamp {
         gain: 1.0,
         decay: 1.0,
         step: 0.0,
+        knot: 0,
+        knots: [EMPTY_KNOT; FADE_KNOTS],
     };
 
     /// 按**帧数**构造一段 3 ms 指数淡出；`frames == 0` ⇒ [`Self::NONE`]（硬窃取）。
@@ -7802,58 +7825,79 @@ impl FadeRamp {
     /// 与 PolySynth 的 `note_on` 允许 `exp` 同一条纪律）⇒ 逐样本只有一次乘法。
     #[must_use]
     pub fn new(frames: u32) -> Self {
-        Self::new_shaped(frames, 10)
+        Self::new_shaped(frames, 10, 0.0)
     }
 
-    /// ⭐ **stage 19**：按 `off_curve` 构造一段 `frames` 长的淡出。
+    /// ⭐ **stage 29**：按 `off_curve` **与 `off_shape`** 构造一段 `frames` 长的淡出。
     ///
     /// * `-1` ⇒ **线性**：每帧减 `1/frames`（`step` 在**触发期**算好 ⇒ 逐样本只有一次减法）；
     /// * `-2` ⇒ **静态**：增益恒 `1.0`，最后一帧落到 `0`（规范："a static,
     ///   non-changing envelope segment"）；
+    /// * `0` ⇒ `x^n`（`n` ＝ [`power_exponent`]）；
+    /// * `1` ⇒ `n^x`（`n` ＝ [`exponential_base`]）；
+    /// * `2` ⇒ 对数（`k` ＝ [`logarithmic_k`]）；
     /// * 其余（含缺省 `10`）⇒ **vendor 指数**（既有 `FLOOR^(1/N)` 口径，逐位不变）；
     /// * `frames == 0` ⇒ [`Self::NONE`]（调用方显式硬停）。
     ///
-    /// `-1`／`-2`／`0` 的求值 ⛔ 不需要任何超越函数（`0` 走 [`FADE_TABLE`] 查表 ＋
-    /// 线性插值）；`1`／`2` 的曲线族仍未实现（见 `PreparedRegion::off_curve` 的登记）。
+    /// 三族曲线的求值**全部**在触发期折算成折线（[`FADE_KNOTS`] 段）⇒ 逐帧只有
+    /// 一次乘、一次加、一次段位下移，⛔ 没有任何超越函数。
     #[must_use]
-    pub fn new_shaped(frames: u32, off_curve: i32) -> Self {
+    pub fn new_shaped(frames: u32, off_curve: i32, off_shape: f32) -> Self {
         if frames == 0 {
             return Self::NONE;
         }
-        match off_curve {
-            // ⭐ **stage 27**：内建曲线 0（恒等映射）⇒ 分段逼近表（见 `FADE_TABLE`）。
-            0 => Self {
+        let family = match off_curve {
+            -1 => None,
+            -2 => None,
+            0 => Some(FadeFamily::Power(power_exponent(off_shape))),
+            1 => Some(FadeFamily::Exponential(exponential_base(off_shape))),
+            2 => Some(FadeFamily::Logarithmic(logarithmic_k(off_shape))),
+            _ => None,
+        };
+        match (off_curve, family) {
+            (-1, _) => Self {
                 fading: true,
-                shape: 3,
-                remaining: frames,
-                gain: 1.0,
-                // 复用 `decay` 存**表进度**（0..=128）、`step` 存每帧增量。
-                decay: 0.0,
-                step: 128.0 / frames as f32,
-            },
-            -1 => Self {
-                fading: true,
-                shape: 1,
+                shape: Self::SHAPE_LINEAR,
                 remaining: frames,
                 gain: 1.0,
                 decay: 0.0,
                 step: 1.0 / frames as f32,
+                knot: 0,
+                knots: [EMPTY_KNOT; FADE_KNOTS],
             },
-            -2 => Self {
+            (-2, _) => Self {
                 fading: true,
-                shape: 2,
+                shape: Self::SHAPE_STATIC,
                 remaining: frames,
                 gain: 1.0,
                 decay: 0.0,
                 step: 0.0,
+                knot: 0,
+                knots: [EMPTY_KNOT; FADE_KNOTS],
             },
+            (_, Some(family)) => {
+                let knots = build_knots(family);
+                Self {
+                    fading: true,
+                    shape: Self::SHAPE_CURVED,
+                    remaining: frames,
+                    gain: 1.0,
+                    decay: 0.0,
+                    // 曲线族复用 `step` 存 `1/frames`（逐帧一次乘就得 `r`）。
+                    step: 1.0 / frames as f32,
+                    knot: (FADE_KNOTS - 1) as u8,
+                    knots,
+                }
+            }
             _ => Self {
                 fading: true,
-                shape: 0,
+                shape: Self::SHAPE_VENDOR,
                 remaining: frames,
                 gain: 1.0,
                 decay: libm::pow(f64::from(STEAL_FADE_FLOOR), 1.0 / f64::from(frames)) as f32,
                 step: 0.0,
+                knot: 0,
+                knots: [EMPTY_KNOT; FADE_KNOTS],
             },
         }
     }
@@ -7876,7 +7920,19 @@ impl FadeRamp {
         self.remaining
     }
 
+    /// ⭐ **stage 29 判据读它**：当前形状来自哪一族求值方式。
+    #[must_use]
+    pub const fn shape(&self) -> u8 {
+        self.shape
+    }
+
     /// 推进一帧；返回 `false` 表示**淡出已走完**（调用方应交出剩余帧）。
+    ///
+    /// 逐帧成本（四族逐条登记，⛔ 没有超越函数）：
+    /// * vendor：一次乘法；
+    /// * 线性：一次减法；静态：零成本；
+    /// * 曲线族：一次乘（`r = remaining × 1/N`）、有界次比较（段位下移，均摊 ≤ 1 次）、
+    ///   一次乘加（折线插值）。
     fn advance(&mut self) -> bool {
         self.remaining = self.remaining.saturating_sub(1);
         match self.shape {
@@ -7884,10 +7940,17 @@ impl FadeRamp {
             1 => self.gain -= self.step,
             // 静态：增益不变（规范："non-changing envelope segment"）。
             2 => {}
-            // ⭐ stage 27：分段逼近表（`off_curve = 0`）。
+            // ⭐ stage 29：三族曲线 —— 折线上按**归一化剩余量**求值。
             3 => {
-                self.decay = (self.decay + self.step).min(128.0);
-                self.gain = fade_table_at(self.decay);
+                let residual = self.remaining as f32 * self.step;
+                let mut index = usize::from(self.knot);
+                while index > 0 && residual < self.knots[index].residual {
+                    index -= 1;
+                }
+                self.knot = index as u8;
+                let knot = self.knots[index];
+                // 折线插值：`gain(r) = gain + slope · (r − residual)`（一次乘加）。
+                self.gain = (knot.gain + knot.slope * (residual - knot.residual)).max(0.0);
             }
             // vendor 指数（既有口径，逐位不变）。
             _ => self.gain *= self.decay,
@@ -7899,75 +7962,6 @@ impl FadeRamp {
         } else {
             true
         }
-    }
-}
-
-/// ⭐ **stage 27 判据**：`off_curve = 0` 的分段逼近表 —— 误差有界、单调、端点精确。
-///
-/// 钉四件事：
-/// 1. **误差**：逐帧与参考式 `STEAL_FADE_FLOOR^(k/N)` 的偏差 ≤ `5e-4`
-///    （表是 129 点采样 ＋ 线性插值，见 `FADE_TABLE` 的误差界）；
-/// 2. **单调**：增益序列**非增**（表本身单调递减 ⇒ 插值也单调）；
-/// 3. **端点**：走完那一帧**恰好** `0.0`（与既有口径一致）；
-/// 4. **无超越函数**：本路径每帧只有查表 ＋ 一次线性插值（⛔ 没有 `pow`）；
-///    这一点由 `tests/rt_zero_alloc.rs` 的零分配/零 I/O 判据在整条渲染上兜住。
-#[cfg(test)]
-mod stage27_fade_table {
-    use super::FadeRamp;
-    use yeban_sfz::voice_pool::STEAL_FADE_FLOOR;
-
-    /// 参考值：`STEAL_FADE_FLOOR^(k / frames)`（**只在判据里**用 `powf`）。
-    fn reference(frames: u32, k: u32) -> f64 {
-        f64::from(STEAL_FADE_FLOOR).powf(f64::from(k) / f64::from(frames))
-    }
-
-    #[test]
-    fn off_curve_zero_uses_the_piecewise_table_within_the_error_bound() {
-        for frames in [3u32, 8, 47, 128, 512] {
-            let mut ramp = FadeRamp::new_shaped(frames, 0);
-            let mut previous = 1.0f32;
-            for k in 1..=frames {
-                let alive = ramp.advance();
-                let gain = ramp.gain();
-                assert!(alive || k == frames, "只有最后一帧才允许走完");
-                if k < frames {
-                    let want = reference(frames, k) as f32;
-                    assert!(
-                        (gain - want).abs() <= 5.0e-4,
-                        "frames={frames} 第 {k} 帧：表 {gain} vs 参考 {want}（偏差超过 2e-4）"
-                    );
-                    assert!(
-                        gain <= previous,
-                        "frames={frames} 第 {k} 帧：增益必须非增（{previous} → {gain}）"
-                    );
-                    assert!(gain >= 0.0, "增益不得为负");
-                    previous = gain;
-                }
-            }
-            assert_eq!(ramp.gain(), 0.0, "frames={frames}：走完必须**恰好**归零");
-            assert!(!ramp.is_fading());
-        }
-    }
-
-    #[test]
-    fn the_table_and_the_vendor_exponential_agree_on_the_identity_curve() {
-        // 曲线 0 是**恒等映射** ⇒ 表与 vendor 指数在数学上是同一条曲线，
-        // 差别只在求值方式（查表插值 vs 逐帧乘法累积），所以两者必须几乎重合。
-        let frames = 96;
-        let mut table = FadeRamp::new_shaped(frames, 0);
-        let mut vendor = FadeRamp::new_shaped(frames, 10);
-        for k in 1..=frames {
-            table.advance();
-            vendor.advance();
-            assert!(
-                (table.gain() - vendor.gain()).abs() <= 5.0e-4,
-                "第 {k} 帧：表 {} vs 指数 {}（两条同曲线求值必须一致）",
-                table.gain(),
-                vendor.gain()
-            );
-        }
-        assert_eq!(table.gain(), 0.0);
-        assert_eq!(vendor.gain(), 0.0);
     }
 }
 
@@ -9794,8 +9788,8 @@ impl SfzVoicePool {
     ///   包络段位（碰了就是 `normal` 的行为）。`off_time == 0` ⇒ **显式硬停**
     ///   （`FadeRamp::new(0)` 是 `NONE` ⇒ 不淡出也不退休，⛔ 不能拿它当"0 秒"）。
     ///   ⚠ 仍不给 `one_shot` victim（上面那条"忽略 note-off"是完整裁决，`off_by` 同此）。
-    ///   ⚠ 淡出曲线用的是**窃取路那条指数**（`STEAL_FADE_FLOOR`），`off_shape` /
-    ///   `off_curve` 仍未做（登记在台账）。
+    ///   ⭐ **stage 29 起读 `off_curve` 与 `off_shape`**：五族曲线都进 [`FadeRamp`]
+    ///   （`-2`／`-1`／`0`／`1`／`2`；`10` 与其余仍是 [`STEAL_FADE_FLOOR`] 那条 vendor 指数）。
     /// * ⭐ **透明包络的 victim 直接走硬停那一支**（即使 `off_mode=normal`）：没有包络就
     ///   没有释放阶段可言（规范那张表只覆盖"进 release"这一种），而走 `end_sample = 0`
     ///   会经 `render_slot` 的 `silence_slot` 分支**连带清掉同槽的 `pending`**。
@@ -9841,7 +9835,11 @@ impl SfzVoicePool {
                     self.voices[index].silence();
                     self.fade[index] = FadeRamp::NONE;
                 } else {
-                    self.fade[index] = FadeRamp::new_shaped(frames, victim_region.off_curve());
+                    self.fade[index] = FadeRamp::new_shaped(
+                        frames,
+                        victim_region.off_curve(),
+                        victim_region.off_shape(),
+                    );
                 }
                 continue;
             }
@@ -11771,7 +11769,7 @@ mod stage19_fade_shape {
     #[test]
     fn off_curve_minus_one_fades_linearly_and_minus_two_holds() {
         // 线性：每帧减 1/N，最后一帧落到 0。
-        let mut linear = FadeRamp::new_shaped(8, -1);
+        let mut linear = FadeRamp::new_shaped(8, -1, 0.0);
         let mut gains = Vec::new();
         for _ in 0..8 {
             linear.advance();
@@ -11791,7 +11789,7 @@ mod stage19_fade_shape {
         assert!(!linear.is_fading());
 
         // 静态：除了最后一帧归零，其余每帧仍是 1.0。
-        let mut stat = FadeRamp::new_shaped(8, -2);
+        let mut stat = FadeRamp::new_shaped(8, -2, 0.0);
         for index in 0..7 {
             stat.advance();
             assert_eq!(stat.gain(), 1.0, "静态段第 {} 帧必须不变", index);
@@ -11801,7 +11799,7 @@ mod stage19_fade_shape {
 
         // 缺省（10）：仍是 vendor 指数（与 `FadeRamp::new` 逐位相同）。
         let mut plain = FadeRamp::new(144);
-        let mut shaped = FadeRamp::new_shaped(144, 10);
+        let mut shaped = FadeRamp::new_shaped(144, 10, 0.0);
         for _ in 0..144 {
             plain.advance();
             shaped.advance();
@@ -11812,5 +11810,155 @@ mod stage19_fade_shape {
             gains[7],
             stat.gain()
         );
+    }
+}
+
+/// ⭐ **stage 29 判据**：`off_curve` 的 `0` / `1` / `2` 三族**真的按 `off_shape` 求值**，
+/// 且逐帧成本仍然只是"一次乘加"（折线逼近的误差有界、单调、端点精确）。
+#[cfg(test)]
+mod stage29_off_curve_families {
+    use super::{FadeFamily, FadeRamp, exponential_base, logarithmic_k, power_exponent};
+
+    /// 逐帧走完整段淡出，返回每帧的增益（最后一帧按既有口径是 `0.0`）。
+    fn ramp_gains(frames: u32, off_curve: i32, off_shape: f32) -> Vec<f32> {
+        let mut ramp = FadeRamp::new_shaped(frames, off_curve, off_shape);
+        let mut gains = Vec::with_capacity(frames as usize);
+        for _ in 0..frames {
+            ramp.advance();
+            gains.push(ramp.gain());
+        }
+        gains
+    }
+
+    /// 参考闭式：第 `k` 帧的归一化剩余量 `r = (N − k) / N`。
+    fn reference(family: FadeFamily, frames: u32, k: u32) -> f32 {
+        let residual = (frames - k) as f32 / frames as f32;
+        family.gain_at(residual)
+    }
+
+    #[test]
+    fn off_curve_zero_evaluates_x_n_with_the_off_shape_exponent() {
+        // 形状 1.0 ⇒ x^1 ＝ 线性：与 `off_curve=-1` 的逐帧读数几乎重合（折线在这里就是直线）。
+        let curved = ramp_gains(64, 0, 1.0);
+        let linear = ramp_gains(64, -1, 0.0);
+        for (index, (got, want)) in curved.iter().zip(linear.iter()).enumerate() {
+            assert!(
+                (got - want).abs() <= 1e-4,
+                "形状 1.0 必须退化成线性：第 {} 帧 {got} vs {want}",
+                index + 1
+            );
+        }
+        // 形状 0.0 ⇒ 也退化成线性（规范：0 is linear）。
+        for (index, gain) in ramp_gains(32, 0, 0.0).iter().enumerate() {
+            assert!((gain - (1.0 - (index as f32 + 1.0) / 32.0)).abs() <= 1e-4);
+        }
+        // 正形状（慢开头）：第 1 帧几乎不掉；负形状（快开头）：同一帧掉得明显多。
+        let slow = ramp_gains(64, 0, 2.1);
+        let fast = ramp_gains(64, 0, -3.8);
+        assert!(
+            slow[0] > fast[0],
+            "正形状必须比负形状开头慢：slow {} vs fast {}",
+            slow[0],
+            fast[0]
+        );
+        assert_eq!(slow[63], 0.0);
+        assert_eq!(fast[63], 0.0);
+    }
+
+    #[test]
+    fn off_curve_one_evaluates_the_n_power_x_family() {
+        let family = FadeFamily::Exponential(exponential_base(2.0));
+        let gains = ramp_gains(128, 1, 2.0);
+        for k in 1..=127u32 {
+            let want = reference(family, 128, k);
+            assert!(
+                (gains[(k - 1) as usize] - want).abs() <= 1e-2,
+                "底数 2 第 {k} 帧：{} vs 参考 {want}",
+                gains[(k - 1) as usize]
+            );
+        }
+        assert!(gains[0] > 0.95, "第 1 帧必须仍接近满增益：{}", gains[0]);
+        assert_eq!(gains[127], 0.0);
+        // 底数成了线性档（|n − 1| 很小）⇒ 与线性一致。
+        let nearly_linear = ramp_gains(32, 1, 1.0);
+        for (index, gain) in nearly_linear.iter().enumerate() {
+            assert!((gain - (1.0 - (index as f32 + 1.0) / 32.0)).abs() <= 1e-4);
+        }
+    }
+
+    #[test]
+    fn off_curve_two_evaluates_the_logarithmic_family() {
+        let family = FadeFamily::Logarithmic(logarithmic_k(10.0));
+        let gains = ramp_gains(128, 2, 10.0);
+        for k in 1..=127u32 {
+            let want = reference(family, 128, k);
+            assert!(
+                (gains[(k - 1) as usize] - want).abs() <= 1e-2,
+                "对数族第 {k} 帧：{} vs 参考 {want}",
+                gains[(k - 1) as usize]
+            );
+        }
+        assert_eq!(gains[127], 0.0);
+        // 对数族是**凹**的（弦在曲线下方）：中点增益高于线性。
+        assert!(gains[63] > 0.5, "对数族中点应高于线性：{}", gains[63]);
+    }
+
+    #[test]
+    fn the_curve_families_stay_within_the_piecewise_error_bound() {
+        // 规范里的两个示例形状 ＋ 缺省形状 ＋ 三族的退化档，逐族扫一遍。
+        for off_shape in [-10.3616f32, -3.8, -1.0, 0.0, 1.0, 2.1, 10.0] {
+            for off_curve in [0, 1, 2] {
+                let family = match off_curve {
+                    0 => FadeFamily::Power(power_exponent(off_shape)),
+                    1 => FadeFamily::Exponential(exponential_base(off_shape)),
+                    _ => FadeFamily::Logarithmic(logarithmic_k(off_shape)),
+                };
+                let frames = 256u32;
+                let gains = ramp_gains(frames, off_curve, off_shape);
+                let mut worst = 0.0f32;
+                for k in 1..frames {
+                    let want = reference(family, frames, k);
+                    worst = worst.max((gains[(k - 1) as usize] - want).abs());
+                }
+                // 两档界（如实登记，⛔ 不统一放宽到"看着差不多"）：
+                // * 全局：`3e-2`（约 0.26 dB，低于"能被听出来"的 0.5 dB 线）；
+                // * 规范举例的两种形状（`-3.8` / `2.1`）：`2e-2`（更紧 —— 它们是真实会写进
+                //   工程的值，⛔ 不该靠宽容差过）。
+                // 为什么极端形状（含缺省 `-10.3616`）只能到 `3e-2`：`x^n` 的折线在
+                // 指数很小/很大时有一条陡壁（`1 − (1 − r)^e` 在 `r → 1` 处导数为 ∞），
+                // 有限段折线只能在"壁"附近摊开误差 —— 这条边界由本判据**点名**，不隐身。
+                assert!(
+                    worst <= 3.0e-2,
+                    "off_curve={off_curve} off_shape={off_shape}：折线最大偏差 {worst} > 3e-2"
+                );
+                if matches!(off_shape, -3.8 | 2.1) {
+                    assert!(
+                        worst <= 2.0e-2,
+                        "off_curve={off_curve} off_shape={off_shape}：举例形状的偏差 {worst} > 2e-2"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_curve_families_are_monotone_and_hit_the_endpoints() {
+        for off_shape in [-10.3616f32, -3.8, 1.0, 2.1, 10.0] {
+            for off_curve in [0, 1, 2] {
+                let gains = ramp_gains(97, off_curve, off_shape);
+                let mut previous = 1.0f32;
+                for (index, gain) in gains.iter().enumerate() {
+                    assert!(
+                        *gain <= previous + 1e-6,
+                        "off_curve={off_curve} off_shape={off_shape} 第 {} 帧非单调：{previous} → {gain}",
+                        index + 1
+                    );
+                    assert!(*gain >= 0.0, "增益不得为负");
+                    previous = *gain;
+                }
+                assert!(previous <= 1.0, "走完必须收底");
+                assert_eq!(gains[96], 0.0, "走完必须**恰好**归零");
+            }
+        }
     }
 }
