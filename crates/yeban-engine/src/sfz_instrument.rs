@@ -6670,6 +6670,18 @@ impl PreparedSfz {
             .count()
     }
 
+    /// 本条乐器有没有**多声道**样本（去重样本表里任一 `channels > 1`）。
+    ///
+    /// 消费方选通路时必须与 [`Self::regions_with_pan`] ／
+    /// [`Self::regions_with_cc_pan`] **一起判**：样本本身带右声道时，即使
+    /// 区域声相全中性，单声道通路也只取声道 0 ⇒ 右声道整段丢失；只有
+    /// 分声道通路（[`crate::synth::SynthEngine::render_track_stereo`]）
+    /// 保得住它。⛔ 本读数只扫**样本表**（摊平期已定型），不看区域。
+    #[must_use]
+    pub fn has_multichannel_samples(&self) -> bool {
+        self.samples.iter().any(|sample| sample.channels() > 1)
+    }
+
     /// 区域声相（百分比；`0` ＝ 中性）。单声道通路不施加，分声道通路按它分左右。
     #[must_use]
     pub fn region_pan(&self, index: usize) -> f32 {
