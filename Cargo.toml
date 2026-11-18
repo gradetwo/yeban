@@ -62,8 +62,10 @@ criterion = { version = "0.8.2" }
 iai-callgrind = { version = "0.16.1" }
 
 # --- 实时音频 / UI / 解码 (由后续能力切片引入, 现在仅登记) ---
-slint = { version = "1.18.1", default-features = false }
-slint-build = { version = "1.18.1", default-features = false }
+# slint 本体同样用 "=" 钉死: 1.19.0 (2026-11-16 发布) 与
+# i-slint-backend-testing 1.18.1 冲突, 无约束的 cargo update 会解析失败。
+slint = { version = "=1.18.1", default-features = false }
+slint-build = { version = "=1.18.1", default-features = false }
 # 内部 crate, 不遵循 semver: 必须与 slint 精确同版本, 因此用 "=" 前缀。
 i-slint-backend-testing = { version = "=1.18.1", default-features = false }
 cpal = { version = "0.18.2", default-features = false }
