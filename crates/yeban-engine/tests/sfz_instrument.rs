@@ -280,7 +280,11 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// 内联体积里**：声部池是**堆上**的（`EngineRuntime` 只持有一个指针/盒）。
 /// ⇒ 本片把 `SfzVoicePool` 的尺寸钉值改到 `10_504 B`，`EngineRuntime` 的钉值
 /// **保持 46_480 B**（改它反而会把"池在堆上"这条事实记反）。门槛仍是 200 KiB。
-const ENGINE_RUNTIME_BYTES: usize = 46_480;
+/// ⭐ **逐边 PDC 残余两形状修复**：**46_496 B**（＋16 B）—— `EngineRuntime` 新增
+/// `node_stash: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>]>` 胖指针（有入边且非处理型
+/// 总线节点的自有内容暂存池，与 `routing_buses` 同尺寸；池本体在堆上、构造期
+/// 分配）。余量 204800 − 46496 = 158304 B。
+const ENGINE_RUNTIME_BYTES: usize = 46_496;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
