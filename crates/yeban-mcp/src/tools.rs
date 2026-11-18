@@ -2574,7 +2574,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-DRUM-GENERATE",
         name: "yeban_generate_drum_pattern",
-        summary: "鼓机一期：按风格预置生成鼓型并落成目标轨上的 MIDI 片段（提案路径，`autoMerge` 可一次调用落 main）。风格 = 出厂 10 预置（trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock，数据改编自 groove 仓 MIT pattern 并经调优）；三旋钮 complexity（密度/鬼音）/ intensity（力度）/ swingPermille（摇摆，缺省取风格定值）+ seed（同种子同参数逐字节可复现）。`trackId` 缺省 ⇒ 新建鼓轨；目标轨尚无音源时按风格族装默认鼓组（原声族 = Virtuosity Drums SFZ 采样、电子族 = 合成鼓机 808 系），已有音源则沿用。ratchet/hat roll 在音符事件层展开，无新片段类型；生成片段可在编曲区与钢琴卷帘继续编辑。风格不存在 ⇒ STYLE_NOT_FOUND（回执带 availableStyles）。",
+        summary: "鼓机一期：按风格预置生成鼓型并落成目标轨上的 MIDI 片段（提案路径，`autoMerge` 可一次调用落 main）。风格 = 出厂 14 预置（trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock + v2 新增 jazz/funk/rnb/hiphop；前 10 个数据改编自 groove 仓 MIT pattern 并经调优，新 4 个源数据取自 theory GENRES 注册表）；三旋钮 complexity（密度/鬼音）/ intensity（力度）/ swingPermille（摇摆，缺省取风格定值）+ seed（同种子同参数逐字节可复现）。`trackId` 缺省 ⇒ 新建鼓轨；目标轨尚无音源时按风格族装默认鼓组（原声族 = Virtuosity Drums SFZ 采样、电子族 = 合成鼓机（808/909 系配方逐风格定值、13 音色带声像）），已有音源则沿用。ratchet/hat roll 在音符事件层展开，无新片段类型；生成片段可在编曲区与钢琴卷帘继续编辑。风格不存在 ⇒ STYLE_NOT_FOUND（回执带 availableStyles）。",
         scope: Scope::AppAdmin,
         // 提案路径：建提案（ProjectState），autoMerge 时同一调用内合并；⛔ 不直写 main。
         side_effect: SideEffect::ProjectState,
@@ -2586,7 +2586,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "style",
                 "string",
                 true,
-                "风格预置 id（出厂 10 个：trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock）；不存在 ⇒ STYLE_NOT_FOUND",
+                "风格预置 id（出厂 14 个：trap/drill/phonk/lofi/boombap/house/techno/edm/pop/rock/jazz/funk/rnb/hiphop）；不存在 ⇒ STYLE_NOT_FOUND",
             ),
             param(
                 "trackId",

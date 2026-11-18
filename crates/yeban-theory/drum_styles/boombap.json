@@ -2,8 +2,8 @@
   "format": "yeban-drum-style",
   "version": 1,
   "id": "boombap",
-  "name": "Boom Bap",
-  "name_zh": "经典嘻哈 Boom Bap",
+  "name": "Acoustic Boom Bap",
+  "name_zh": "原声嘻哈 Acoustic Boom Bap",
   "source": {
     "kind": "groove-adapted",
     "groove_genre_id": "boom-bap",
@@ -16,42 +16,44 @@
       "velocity shaping applied to flat lane(s): snare(38) (grid formula; varied lanes keep source velocities)",
       "bar 2 variation: closed hat at step 30 converted to open hat (end-of-bar open hat)",
       "swing: groove source swing 35% converts to 675 permille; fixed style value 570 used",
-      "fill: snare density ramp (8ths to 16ths) + tom run 48/45/43 + crash 49 on last cell"
+      "fill: snare density ramp (8ths to 16ths) + tom run 48/45/43 + crash 49 on last cell",
+      "v2 (2026-11-18): renamed Acoustic Boom Bap; kit stays Programs/01-basic-kit.sfz - Programs/08-vintage-mic.sfz has no regions on keys 46/56/82 (probed 2026-11-18) and this pattern uses key 82 (shaker); FX retuned darker with heavier tape instead"
     ]
   },
   "kit_family": "acoustic",
+  "sfz_path": "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz",
   "fx": {
     "eq": {
-      "low_db": 2.0,
-      "mid_db": -1.0,
-      "high_db": 1.0,
-      "low_hz": 200,
-      "mid_hz": 900,
+      "low_db": 2.5,
+      "mid_db": -1.5,
+      "high_db": -1.0,
+      "low_hz": 180,
+      "mid_hz": 700,
       "mid_q": 0.9,
       "high_hz": 4200,
       "hpf_hz": 30,
-      "cutoff_hz": 20000
+      "cutoff_hz": 16000
     },
     "comp": {
-      "threshold_db": -16,
+      "threshold_db": -17,
       "ratio": 3,
       "knee_db": 6,
       "attack_s": 0.01,
-      "release_s": 0.14,
-      "makeup_db": 1.5
+      "release_s": 0.15,
+      "makeup_db": 1.8
     },
     "output_db": 0.0,
     "reverb": {
-      "size": 0.38,
-      "damp": 0.5,
-      "wet": 0.14,
+      "size": 0.42,
+      "damp": 0.55,
+      "wet": 0.15,
       "predelay_s": 0.008
     },
     "tape": {
-      "drive": 0.3,
-      "mix": 0.45,
-      "hf_hz": 9000,
-      "asym": 0.25
+      "drive": 0.4,
+      "mix": 0.55,
+      "hf_hz": 8000,
+      "asym": 0.3
     }
   },
   "bpm": {

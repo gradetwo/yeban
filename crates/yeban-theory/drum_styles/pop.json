@@ -2,8 +2,8 @@
   "format": "yeban-drum-style",
   "version": 1,
   "id": "pop",
-  "name": "Pop",
-  "name_zh": "流行 Pop",
+  "name": "Acoustic Pop",
+  "name_zh": "原声流行 Acoustic Pop",
   "source": {
     "kind": "groove-adapted",
     "groove_genre_id": "synth-pop",
@@ -16,36 +16,38 @@
       "velocity shaping applied to flat lane(s): snare(38), shaker(82) (grid formula; varied lanes keep source velocities)",
       "bar 2 variation: closed hat at step 30 converted to open hat (end-of-bar open hat)",
       "swing: groove source swing 0% converts to 500 permille; fixed style value 515 used",
-      "fill: snare density ramp (8ths to 16ths) + tom run 48/45/43 + crash 49 on last cell"
+      "fill: snare density ramp (8ths to 16ths) + tom run 48/45/43 + crash 49 on last cell",
+      "v2 (2026-11-18): renamed Acoustic Pop; kit stays Programs/01-basic-kit.sfz (the only Virtuosity program whose keymap covers this pattern's keys incl. 46/82, probed 2026-11-18); FX retuned per the v2 brief (low shelf +2.5 dB, 250 Hz area cut via mid band, high-shelf air, bright plate-style reverb)"
     ]
   },
   "kit_family": "acoustic",
+  "sfz_path": "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz",
   "fx": {
     "eq": {
-      "low_db": 1.5,
-      "mid_db": 1.0,
+      "low_db": 2.5,
+      "mid_db": -2.0,
       "high_db": 2.5,
-      "low_hz": 180,
-      "mid_hz": 2200,
-      "mid_q": 1.1,
-      "high_hz": 6000,
-      "hpf_hz": 35,
+      "low_hz": 120,
+      "mid_hz": 300,
+      "mid_q": 1.0,
+      "high_hz": 7000,
+      "hpf_hz": 30,
       "cutoff_hz": 20000
     },
     "comp": {
-      "threshold_db": -14,
-      "ratio": 3.5,
+      "threshold_db": -16,
+      "ratio": 2.5,
       "knee_db": 6,
-      "attack_s": 0.006,
-      "release_s": 0.1,
-      "makeup_db": 2.0
+      "attack_s": 0.008,
+      "release_s": 0.12,
+      "makeup_db": 1.5
     },
     "output_db": 0.0,
     "reverb": {
-      "size": 0.45,
-      "damp": 0.35,
-      "wet": 0.16,
-      "predelay_s": 0.015
+      "size": 0.55,
+      "damp": 0.25,
+      "wet": 0.2,
+      "predelay_s": 0.012
     }
   },
   "bpm": {

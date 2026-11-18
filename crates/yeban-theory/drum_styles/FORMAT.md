@@ -87,8 +87,18 @@ triple `[velocity, ratchet, tier]`:
   (<34 core only, 34..66 core+standard, >=67 all tiers + ghost notes).
 
 GM keys used by the factory presets: kick 36, rim 37, snare 38, clap 39,
-closed hat 42, open hat 46, toms 43/45/48, crash 49, ride 51, cowbell 56,
-shaker 82.
+closed hat 42, pedal hat 44, open hat 46, toms 43/45/48, crash 49,
+ride 51, ride bell 53, cowbell 56, shaker 82.
+
+Coverage rule (loud, never silent): generation refuses a preset whose
+pattern hits a key with no voice. Electronic voices are the synth kit's
+13 note slots. Acoustic coverage depends on the chosen SFZ program —
+the Virtuosity programs do **not** share one keymap: only
+`01-basic-kit.sfz` (basic keymap) has regions on key 46; the other
+factory programs use the continuous CC4-pedal hi-hat keymap (hat on
+42, nothing on 46), and `08-vintage-mic.sfz` / `03-kick-mic.sfz` also
+lack 56 and 82 (probed per program, 2026-11-18). Presets assigned to
+those programs must not use the missing keys.
 
 ## Generation conventions
 

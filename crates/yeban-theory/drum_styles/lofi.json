@@ -16,42 +16,43 @@
       "velocity shaping applied to flat lane(s): rim(37) (grid formula; varied lanes keep source velocities)",
       "bar 2 variation: soft kick pickup at step 30 (end-of-bar kick variation)",
       "swing: groove source swing 30% converts to 650 permille; fixed style value 590 used",
-      "fill: sparse snare variation only (no crash/tom; kept restrained for lo-fi)"
+      "fill: sparse snare variation only (no crash/tom; kept restrained for lo-fi)",
+      "v2 (2026-11-18): family changed acoustic -> electronic per the v2 brief (HipHop synth base + dark processing); the Virtuosity lofi mapping is not a standalone program (it is an include fragment - parse error as an entry point, probed 2026-11-18). Bitcrusher / vinyl noise floor / wow & flutter have no devices yet: approximated with heavy tape, an 8.5 kHz track lowpass and dark reverb; the missing devices are listed as gap lines in the receipt"
     ]
   },
-  "kit_family": "acoustic",
+  "kit_family": "electronic",
   "fx": {
     "eq": {
       "low_db": 1.5,
       "mid_db": -2.0,
-      "high_db": -4.0,
-      "low_hz": 220,
+      "high_db": -5.0,
+      "low_hz": 200,
       "mid_hz": 800,
       "mid_q": 0.8,
-      "high_hz": 3800,
-      "hpf_hz": 40,
-      "cutoff_hz": 6500
+      "high_hz": 3500,
+      "hpf_hz": 35,
+      "cutoff_hz": 8500
     },
     "comp": {
-      "threshold_db": -20,
-      "ratio": 4,
+      "threshold_db": -19,
+      "ratio": 3,
       "knee_db": 8,
-      "attack_s": 0.015,
-      "release_s": 0.18,
-      "makeup_db": 2.0
+      "attack_s": 0.012,
+      "release_s": 0.16,
+      "makeup_db": 1.5
     },
     "output_db": -0.5,
     "reverb": {
-      "size": 0.5,
-      "damp": 0.7,
-      "wet": 0.2,
-      "predelay_s": 0.012
+      "size": 0.45,
+      "damp": 0.8,
+      "wet": 0.18,
+      "predelay_s": 0.01
     },
     "tape": {
-      "drive": 0.55,
-      "mix": 0.7,
-      "hf_hz": 6000,
-      "asym": 0.35
+      "drive": 0.6,
+      "mix": 0.75,
+      "hf_hz": 5500,
+      "asym": 0.4
     }
   },
   "bpm": {

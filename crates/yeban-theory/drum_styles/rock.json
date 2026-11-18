@@ -2,8 +2,8 @@
   "format": "yeban-drum-style",
   "version": 1,
   "id": "rock",
-  "name": "Rock",
-  "name_zh": "摇滚 Rock",
+  "name": "Acoustic Rock",
+  "name_zh": "原声摇滚 Acoustic Rock",
   "source": {
     "kind": "groove-adapted",
     "groove_genre_id": "hard-rock",
@@ -15,42 +15,44 @@
       "expanded to 2 bars (bar 2 starts as a copy of bar 1)",
       "velocity shaping applied to flat lane(s): snare(38), shaker(82) (grid formula; varied lanes keep source velocities)",
       "bar 2 variation: closed hat at step 28 converted to open hat (end-of-bar open hat)",
-      "fill: snare density ramp (8ths to 16ths) + tom run 48/45/43 + crash 49 on last cell"
+      "fill: snare density ramp (8ths to 16ths) + tom run 48/45/43 + crash 49 on last cell",
+      "v2 (2026-11-18): renamed Acoustic Rock; kit stays Programs/01-basic-kit.sfz - Programs/02-full-kit.sfz (8902 regions) cannot voice this pattern today: its keymap puts the hi-hat on key 42 under CC4 pedal control and has no regions on key 46 (probed 2026-11-18), so the open-hat hits would be silent; full-kit adoption is a separate gap line. Differentiation vs Acoustic Pop is in FX: tape saturation, long room reverb (size 0.80) with 38 ms predelay, harder track compression"
     ]
   },
   "kit_family": "acoustic",
+  "sfz_path": "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz",
   "fx": {
     "eq": {
-      "low_db": 2.5,
-      "mid_db": -1.5,
+      "low_db": 3.0,
+      "mid_db": -1.0,
       "high_db": 2.0,
-      "low_hz": 160,
-      "mid_hz": 500,
+      "low_hz": 140,
+      "mid_hz": 600,
       "mid_q": 1.0,
-      "high_hz": 5000,
-      "hpf_hz": 45,
+      "high_hz": 5500,
+      "hpf_hz": 40,
       "cutoff_hz": 20000
     },
     "comp": {
       "threshold_db": -18,
-      "ratio": 4.5,
+      "ratio": 4,
       "knee_db": 6,
       "attack_s": 0.012,
-      "release_s": 0.09,
-      "makeup_db": 2.5
+      "release_s": 0.1,
+      "makeup_db": 2.0
     },
     "output_db": 0.0,
     "reverb": {
-      "size": 0.55,
-      "damp": 0.45,
-      "wet": 0.18,
-      "predelay_s": 0.01
+      "size": 0.8,
+      "damp": 0.4,
+      "wet": 0.22,
+      "predelay_s": 0.038
     },
     "tape": {
-      "drive": 0.2,
-      "mix": 0.3,
-      "hf_hz": 12000,
-      "asym": 0.15
+      "drive": 0.35,
+      "mix": 0.5,
+      "hf_hz": 11000,
+      "asym": 0.2
     }
   },
   "bpm": {
