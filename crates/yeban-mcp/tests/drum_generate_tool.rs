@@ -94,9 +94,12 @@ fn generates_into_new_track_with_synth_kit() {
 
     let project = project(&dispatcher);
     let track = drum_track(project, "Trap Drums");
-    // 电子族：无采样器，一台内置乐器设备，五个键位名参数齐全。
+    // 电子族：无采样器，一台内置乐器设备，五个键位名参数齐全；
+    // 其后是效果层（trap：通道条 + 混响）。
     assert!(track.sampler.is_none());
-    assert_eq!(track.devices.len(), 1);
+    assert_eq!(track.devices.len(), 3);
+    assert_eq!(track.devices[1].name, "Channel Strip");
+    assert_eq!(track.devices[2].name, "Reverb");
     let device = &track.devices[0];
     assert_eq!(device.kind, yeban_model::DeviceKind::InternalInstrument);
     let names: Vec<&str> = device.params.iter().map(|p| p.name.as_str()).collect();
@@ -144,7 +147,9 @@ fn acoustic_style_binds_sfz_sampler() {
     let track = drum_track(project, "Rock Drums");
     let sampler = track.sampler.as_ref().expect("原声族必须绑采样器");
     assert_eq!(sampler.path, yeban_theory::ACOUSTIC_KIT_SFZ_PATH);
-    assert!(track.devices.is_empty());
+    // rock 的效果层：通道条 + 磁带 + 混响。
+    let names: Vec<&str> = track.devices.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["Channel Strip", "Tape Saturation", "Reverb"]);
 }
 
 #[test]
@@ -237,9 +242,13 @@ fn existing_track_with_instrument_keeps_kit() {
     let project = project(&dispatcher);
     let lead_id = EntityId::from_str(LEAD).expect("ULID");
     let lead = project.tracks.get(&lead_id).expect("lead 轨");
-    // 原有 PolySynth 设备不动、不绑采样器；只多一条摆放。
-    assert_eq!(lead.devices.len(), 1);
+    // 原有 PolySynth 设备不动、不绑采样器；其后补 rock 的效果层
+    // （通道条 + 磁带 + 混响），再多一条摆放。
+    assert_eq!(lead.devices.len(), 4);
     assert_eq!(lead.devices[0].name, "Yeban PolySynth");
+    assert_eq!(lead.devices[1].name, "Channel Strip");
+    assert_eq!(lead.devices[2].name, "Tape Saturation");
+    assert_eq!(lead.devices[3].name, "Reverb");
     assert!(lead.sampler.is_none());
     assert!(
         lead.clips

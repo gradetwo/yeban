@@ -19,6 +19,40 @@
     ]
   },
   "kit_family": "acoustic",
+  "fx": {
+    "eq": {
+      "low_db": 2.5,
+      "mid_db": -1.5,
+      "high_db": 2.0,
+      "low_hz": 160,
+      "mid_hz": 500,
+      "mid_q": 1.0,
+      "high_hz": 5000,
+      "hpf_hz": 45,
+      "cutoff_hz": 20000
+    },
+    "comp": {
+      "threshold_db": -18,
+      "ratio": 4.5,
+      "knee_db": 6,
+      "attack_s": 0.012,
+      "release_s": 0.09,
+      "makeup_db": 2.5
+    },
+    "output_db": 0.0,
+    "reverb": {
+      "size": 0.55,
+      "damp": 0.45,
+      "wet": 0.18,
+      "predelay_s": 0.01
+    },
+    "tape": {
+      "drive": 0.2,
+      "mix": 0.3,
+      "hf_hz": 12000,
+      "asym": 0.15
+    }
+  },
   "bpm": {
     "default": 125,
     "min": 115,
