@@ -3,27 +3,27 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `8db8943ba8cbac6f`
-- 外部依赖包数: **657**（不含 29 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `61ab2c7124c1bab3`
+- 外部依赖包数: **694**（不含 30 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
 
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
-| `MIT OR Apache-2.0` | 304 |
-| `MIT` | 132 |
+| `MIT OR Apache-2.0` | 319 |
+| `MIT` | 147 |
 | `Apache-2.0 OR MIT` | 54 |
 | `Unicode-3.0` | 27 |
-| `Apache-2.0` | 19 |
+| `Apache-2.0` | 20 |
+| `MIT/Apache-2.0` | 18 |
 | `Zlib OR Apache-2.0 OR MIT` | 16 |
 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 14 |
-| `MIT/Apache-2.0` | 14 |
 | `MPL-2.0` | 10 |
 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 9 |
 | `BSD-3-Clause` | 7 |
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
-| `Apache-2.0/MIT` | 4 |
+| `Apache-2.0/MIT` | 5 |
 | `Unlicense OR MIT` | 4 |
 | `Zlib` | 4 |
 | `ISC` | 3 |
@@ -40,6 +40,7 @@
 | `Apache-2.0 / MIT` | 1 |
 | `Apache-2.0 AND ISC` | 1 |
 | `Apache-2.0 AND MIT` | 1 |
+| `Apache-2.0 OR BSL-1.0` | 1 |
 | `Apache-2.0 OR ISC OR MIT` | 1 |
 | `BSD-2-Clause` | 1 |
 | `BSD-2-Clause OR MIT OR Apache-2.0` | 1 |
@@ -77,6 +78,7 @@
 | `android_system_properties` | `0.1.6` | `MIT OR Apache-2.0` | 传递 | — |
 | `annotate-snippets` | `0.12.16` | `MIT OR Apache-2.0` | 传递 | — |
 | `anstyle` | `1.0.14` | `MIT OR Apache-2.0` | 传递 | — |
+| `approx` | `0.5.1` | `Apache-2.0` | 传递 | — |
 | `arboard` | `3.6.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `arrayref` | `0.3.9` | `BSD-2-Clause` | 传递 | — |
 | `arrayvec` | `0.7.8` | `MIT OR Apache-2.0` | 传递 | — |
@@ -123,6 +125,7 @@
 | `calloop` | `0.13.0` | `MIT` | 传递 | — |
 | `calloop` | `0.14.5` | `MIT` | 传递 | — |
 | `calloop-wayland-source` | `0.3.0` | `MIT` | 传递 | — |
+| `castaway` | `0.2.4` | `MIT` | 传递 | — |
 | `cc` | `1.6.0` | `MIT OR Apache-2.0` | 直接 | `signalsmith-stretch` |
 | `cexpr` | `0.6.0` | `Apache-2.0/MIT` | 传递 | — |
 | `cfg-if` | `1.0.5` | `MIT OR Apache-2.0` | 传递 | — |
@@ -136,6 +139,7 @@
 | `codespan-reporting` | `0.13.1` | `Apache-2.0` | 传递 | — |
 | `color_quant` | `1.1.0` | `MIT` | 传递 | — |
 | `combine` | `4.6.8` | `MIT` | 传递 | — |
+| `compact_str` | `0.9.1` | `MIT` | 传递 | — |
 | `concurrent-queue` | `2.5.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `const-field-offset` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `const-field-offset-macro` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
@@ -156,10 +160,15 @@
 | `crossbeam-deque` | `0.8.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `crossbeam-epoch` | `0.9.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `crossbeam-utils` | `0.8.23` | `MIT OR Apache-2.0` | 传递 | — |
+| `crossterm` | `0.29.0` | `MIT` | 直接 | `yeban-tui` |
+| `crossterm_winapi` | `0.9.1` | `MIT` | 传递 | — |
 | `crunchy` | `0.2.4` | `MIT` | 传递 | — |
 | `crypto-common` | `0.2.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `ctor` | `0.10.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `cursor-icon` | `1.2.0` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
+| `darling` | `0.24.1` | `MIT` | 传递 | — |
+| `darling_core` | `0.24.1` | `MIT` | 传递 | — |
+| `darling_macro` | `0.24.1` | `MIT` | 传递 | — |
 | `dasp` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `signalsmith-stretch` |
 | `dasp_envelope` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `dasp_frame` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
@@ -172,6 +181,7 @@
 | `dasp_slice` | `0.11.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `dasp_window` | `0.11.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `data-url` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
+| `deranged` | `0.5.9` | `MIT OR Apache-2.0` | 传递 | — |
 | `derive_more` | `2.1.1` | `MIT` | 传递 | — |
 | `derive_more-impl` | `2.1.1` | `MIT` | 传递 | — |
 | `digest` | `0.11.3` | `MIT OR Apache-2.0` | 传递 | — |
@@ -288,6 +298,7 @@
 | `icu_provider` | `2.3.1` | `Unicode-3.0` | 传递 | — |
 | `icu_segmenter` | `2.3.0` | `Unicode-3.0` | 传递 | — |
 | `icu_segmenter_data` | `2.3.0` | `Unicode-3.0` | 传递 | — |
+| `ident_case` | `1.0.1` | `MIT/Apache-2.0` | 传递 | — |
 | `idna` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `idna_adapter` | `1.2.2` | `Apache-2.0 OR MIT` | 传递 | — |
 | `image` | `0.25.10` | `MIT OR Apache-2.0` | 传递 | — |
@@ -295,10 +306,13 @@
 | `imagesize` | `0.15.0` | `MIT` | 传递 | — |
 | `imgref` | `1.12.3` | `CC0-1.0 OR Apache-2.0` | 传递 | — |
 | `indexmap` | `2.14.2` | `Apache-2.0 OR MIT` | 传递 | — |
+| `indoc` | `2.0.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `input` | `0.10.0` | `MIT` | 传递 | — |
 | `input-sys` | `1.19.0` | `MIT` | 传递 | — |
+| `instability` | `0.3.14` | `MIT` | 传递 | — |
 | `io-lifetimes` | `1.0.11` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 传递 | — |
 | `itertools` | `0.13.0` | `MIT OR Apache-2.0` | 传递 | — |
+| `itertools` | `0.14.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `itertools` | `0.15.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `itoa` | `1.0.18` | `MIT OR Apache-2.0` | 传递 | — |
 | `jni` | `0.22.4` | `MIT OR Apache-2.0` | 传递 | — |
@@ -308,6 +322,7 @@
 | `jni-sys-macros` | `0.4.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `jobserver` | `0.1.35` | `MIT OR Apache-2.0` | 传递 | — |
 | `js-sys` | `0.3.106` | `MIT OR Apache-2.0` | 传递 | — |
+| `kasuari` | `0.4.13` | `MIT OR Apache-2.0` | 传递 | — |
 | `keyboard-types` | `0.7.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `khronos_api` | `3.1.0` | `Apache-2.0` | 传递 | — |
 | `kurbo` | `0.13.1` | `Apache-2.0 OR MIT` | 传递 | — |
@@ -319,6 +334,7 @@
 | `libseat` | `0.2.4` | `MIT` | 传递 | — |
 | `libseat-sys` | `0.2.0` | `MIT` | 传递 | — |
 | `libudev-sys` | `0.1.4` | `MIT` | 传递 | — |
+| `line-clipping` | `0.3.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `linebender_resource_handle` | `0.1.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `linux-raw-sys` | `0.12.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 传递 | — |
 | `linux-raw-sys` | `0.4.15` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 传递 | — |
@@ -327,6 +343,7 @@
 | `litrs` | `1.0.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `lock_api` | `0.4.14` | `MIT OR Apache-2.0` | 传递 | — |
 | `log` | `0.4.34` | `MIT OR Apache-2.0` | 传递 | — |
+| `lru` | `0.18.5` | `MIT` | 传递 | — |
 | `lyon_algorithms` | `1.0.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `lyon_extra` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `lyon_geom` | `1.0.19` | `MIT OR Apache-2.0` | 传递 | — |
@@ -339,6 +356,7 @@
 | `minimal-lexical` | `0.2.1` | `MIT/Apache-2.0` | 传递 | — |
 | `miniz_oxide` | `0.8.9` | `MIT OR Zlib OR Apache-2.0` | 传递 | — |
 | `miniz_oxide` | `0.9.1` | `MIT OR Zlib OR Apache-2.0` | 传递 | — |
+| `mio` | `1.2.5` | `MIT` | 传递 | — |
 | `moxcms` | `0.8.1` | `BSD-3-Clause OR Apache-2.0` | 传递 | — |
 | `muda` | `0.19.3` | `Apache-2.0 OR MIT` | 传递 | — |
 | `naga` | `30.0.1` | `MIT OR Apache-2.0` | 传递 | — |
@@ -352,11 +370,13 @@
 | `nom` | `7.1.3` | `MIT` | 传递 | — |
 | `nom` | `8.0.0` | `MIT` | 传递 | — |
 | `num-complex` | `0.4.6` | `MIT OR Apache-2.0` | 传递 | — |
+| `num-conv` | `0.2.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `num-derive` | `0.4.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `num-integer` | `0.1.47` | `MIT OR Apache-2.0` | 传递 | — |
 | `num-traits` | `0.2.19` | `MIT OR Apache-2.0` | 传递 | — |
 | `num_enum` | `0.7.6` | `BSD-3-Clause OR MIT OR Apache-2.0` | 传递 | — |
 | `num_enum_derive` | `0.7.6` | `BSD-3-Clause OR MIT OR Apache-2.0` | 传递 | — |
+| `num_threads` | `0.1.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `objc-sys` | `0.3.5` | `MIT` | 传递 | — |
 | `objc2` | `0.5.2` | `MIT` | 传递 | — |
 | `objc2` | `0.6.4` | `MIT` | 传递 | — |
@@ -394,6 +414,9 @@
 | `ordered-stream` | `0.2.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `os_pipe` | `1.2.3` | `MIT` | 传递 | — |
 | `owned_ttf_parser` | `0.25.1` | `Apache-2.0` | 传递 | — |
+| `palette` | `0.7.7` | `MIT OR Apache-2.0` | 传递 | — |
+| `palette_derive` | `0.7.7` | `MIT OR Apache-2.0` | 传递 | — |
+| `palette_math` | `0.7.7` | `MIT OR Apache-2.0` | 传递 | — |
 | `parking` | `2.2.1` | `Apache-2.0 OR MIT` | 传递 | — |
 | `parking_lot` | `0.12.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `parking_lot_core` | `0.9.12` | `MIT OR Apache-2.0` | 传递 | — |
@@ -422,6 +445,7 @@
 | `portable-atomic` | `1.15.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `portable-atomic-util` | `0.2.8` | `Apache-2.0 OR MIT` | 传递 | — |
 | `potential_utf` | `0.1.6` | `Unicode-3.0` | 传递 | — |
+| `powerfmt` | `0.2.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `ppv-lite86` | `0.2.21` | `MIT OR Apache-2.0` | 传递 | — |
 | `presser` | `0.3.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `prettyplease` | `0.2.37` | `MIT OR Apache-2.0` | 传递 | — |
@@ -444,6 +468,10 @@
 | `rand_core` | `0.9.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `rand_xorshift` | `0.4.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `range-alloc` | `0.1.5` | `MIT OR Apache-2.0` | 传递 | — |
+| `ratatui` | `0.30.2` | `MIT` | 直接 | `yeban-tui` |
+| `ratatui-core` | `0.1.2` | `MIT` | 传递 | — |
+| `ratatui-crossterm` | `0.1.2` | `MIT` | 传递 | — |
+| `ratatui-widgets` | `0.3.2` | `MIT` | 传递 | — |
 | `raw-window-handle` | `0.6.2` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |
 | `raw-window-metal` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `rayon` | `1.12.0` | `MIT OR Apache-2.0` | 直接 | `yeban-dsp`, `yeban-render` |
@@ -477,6 +505,7 @@
 | `rustls-pki-types` | `1.16.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `rustls-webpki` | `0.103.17` | `ISC` | 传递 | — |
 | `rustversion` | `1.0.23` | `MIT OR Apache-2.0` | 传递 | — |
+| `ryu` | `1.0.23` | `Apache-2.0 OR BSL-1.0` | 传递 | — |
 | `same-file` | `1.0.6` | `Unlicense/MIT` | 传递 | — |
 | `scoped-tls` | `1.0.1` | `MIT/Apache-2.0` | 传递 | — |
 | `scoped-tls-hkt` | `0.1.5` | `MIT/Apache-2.0` | 传递 | — |
@@ -492,6 +521,8 @@
 | `sha2` | `0.11.0` | `MIT OR Apache-2.0` | 直接 | `yeban-app`, `yeban-diagnostics`, `yeban-model`, `yeban-render` |
 | `shlex` | `1.3.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `shlex` | `2.0.1` | `MIT OR Apache-2.0` | 传递 | — |
+| `signal-hook` | `0.3.18` | `Apache-2.0/MIT` | 传递 | — |
+| `signal-hook-mio` | `0.2.5` | `MIT OR Apache-2.0` | 传递 | — |
 | `signal-hook-registry` | `1.4.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `simd-adler32` | `0.3.10` | `MIT` | 传递 | — |
 | `simd_cesu8` | `1.2.0` | `Apache-2.0 OR MIT` | 传递 | — |
@@ -519,6 +550,7 @@
 | `static_assertions` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `strength_reduce` | `0.2.4` | `MIT OR Apache-2.0` | 传递 | — |
 | `strict-num` | `0.1.1` | `MIT` | 传递 | — |
+| `strsim` | `0.11.1` | `MIT` | 传递 | — |
 | `strum` | `0.28.0` | `MIT` | 传递 | — |
 | `strum_macros` | `0.28.0` | `MIT` | 传递 | — |
 | `subtle` | `2.6.1` | `BSD-3-Clause` | 传递 | — |
@@ -546,6 +578,8 @@
 | `thiserror` | `2.0.21` | `MIT OR Apache-2.0` | 直接 | `yeban-decode`, `yeban-engine`, `yeban-mcp`, `yeban-model`, `yeban-sfz`, `yeban-theory`, `yeban-ui-mcp` |
 | `thiserror-impl` | `1.0.69` | `MIT OR Apache-2.0` | 传递 | — |
 | `thiserror-impl` | `2.0.21` | `MIT OR Apache-2.0` | 传递 | — |
+| `time` | `0.3.55` | `MIT OR Apache-2.0` | 传递 | — |
+| `time-core` | `0.1.9` | `MIT OR Apache-2.0` | 传递 | — |
 | `tiny-skia` | `0.11.4` | `BSD-3-Clause` | 传递 | — |
 | `tiny-skia` | `0.12.0` | `BSD-3-Clause` | 传递 | — |
 | `tiny-skia-path` | `0.11.4` | `BSD-3-Clause` | 传递 | — |
@@ -578,8 +612,9 @@
 | `unicode-linebreak` | `0.1.5` | `Apache-2.0` | 传递 | — |
 | `unicode-script` | `0.5.8` | `MIT OR Apache-2.0` | 传递 | — |
 | `unicode-segmentation` | `1.13.3` | `MIT OR Apache-2.0` | 传递 | — |
+| `unicode-truncate` | `2.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `unicode-vo` | `0.1.0` | `MIT/Apache-2.0` | 传递 | — |
-| `unicode-width` | `0.2.2` | `MIT OR Apache-2.0` | 传递 | — |
+| `unicode-width` | `0.2.2` | `MIT OR Apache-2.0` | 直接 | `yeban-tui` |
 | `unicode-xid` | `0.2.6` | `MIT OR Apache-2.0` | 传递 | — |
 | `untrusted` | `0.9.0` | `ISC` | 传递 | — |
 | `unty` | `0.0.4` | `MIT OR Apache-2.0` | 传递 | — |
@@ -623,7 +658,10 @@
 | `wgpu-hal` | `30.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `wgpu-naga-bridge` | `30.0.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `wgpu-types` | `30.0.1` | `MIT OR Apache-2.0` | 传递 | — |
+| `winapi` | `0.3.9` | `MIT/Apache-2.0` | 传递 | — |
+| `winapi-i686-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | 传递 | — |
 | `winapi-util` | `0.1.11` | `Unlicense OR MIT` | 传递 | — |
+| `winapi-x86_64-pc-windows-gnu` | `0.4.0` | `MIT/Apache-2.0` | 传递 | — |
 | `windowfunctions` | `0.1.1` | `MIT` | 传递 | — |
 | `windows` | `0.62.2` | `MIT OR Apache-2.0` | 传递 | — |
 | `windows-collections` | `0.3.2` | `MIT OR Apache-2.0` | 传递 | — |
