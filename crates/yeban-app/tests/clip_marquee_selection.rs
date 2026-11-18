@@ -42,11 +42,11 @@ const NOW_MS: u64 = 1_700_000_000_000;
 const WINDOW: Size = Size::new(1440, 900);
 /// 编曲视口的滚动面（`elements.rs` 已注册）。
 const FLICKABLE: &str = "arr-lanes-flickable";
-/// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width` + 5px 间隔
-/// （`ui/arrangement.slint` 的 `timeline-origin-x`，表头在左时）。
-/// ⚠ `headers-width` 在实窗里绑的是根属性 `track-headers-width`（240px，
-/// ⛔ 不是 ArrangementViewport 的组件默认值 216px）⇒ 判据从窗口现读，见
-/// 各自主流程里的 `origin_x`。
+// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width` + 5px 间隔
+// （`ui/arrangement.slint` 的 `timeline-origin-x`，表头在左时）。
+// ⚠ `headers-width` 在实窗里绑的是根属性 `track-headers-width`（240px，
+// ⛔ 不是 ArrangementViewport 的组件默认值 216px）⇒ 判据从窗口现读，见
+// 各自主流程里的 `origin_x`。
 
 /// 片段的**绘制几何**（与 `host::clip_marquee_hits` 的文档逐项同源 —— 这里是
 /// 判据侧的独立复算：x / 宽的钳位、y 的 +4、高 的 max(52, 行高 − 8)）。

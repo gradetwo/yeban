@@ -23,9 +23,9 @@ use yeban_ui_test_port::{
 const NOW_MS: u64 = 1_700_000_000_000;
 const WINDOW: Size = Size::new(1440, 900);
 const FLICKABLE: &str = "arr-lanes-flickable";
-/// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width` + 5（实窗里
-/// `headers-width` 绑根属性 `track-headers-width` = 240px，⛔ 不是组件
-/// 默认值 216px）⇒ 主流程里从窗口现读。
+// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width` + 5（实窗里
+// `headers-width` 绑根属性 `track-headers-width` = 240px，⛔ 不是组件
+// 默认值 216px）⇒ 主流程里从窗口现读。
 
 fn save(image: &Rgb8Image, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(path, encode_rgb8(image))?;
