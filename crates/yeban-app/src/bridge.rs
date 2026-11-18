@@ -10646,9 +10646,67 @@ mod tests {
         assert!(inserted.iter().any(|d| d.name == "Tape Saturation"));
     }
 
+    /// 段 2 跨 crate 对钉：theory 的 edm 风格表（909 基表）核心四件
+    /// （底鼓/军鼓/踩镲/拍手）必须与 `yeban-dsp` 的
+    /// `DrumKitParams::RECIPE_909` 逐值相同——两处各写一份定值，
+    /// 漂移必须变红。house/techno 是 909 变体（house 开镲更长、
+    /// techno 底鼓更短更硬），不进本钉。
+    #[test]
+    fn theory_909_tables_match_the_dsp_recipe_909() {
+        use yeban_dsp::drums::DrumKitParams;
+        let recipe = DrumKitParams::RECIPE_909;
+        let expected: Vec<(&str, f32)> = vec![
+            ("kick_tune_hz", recipe.kick.tune_hz),
+            ("kick_glide_hz", recipe.kick.glide_hz),
+            ("kick_glide_s", recipe.kick.glide_s),
+            ("kick_decay_s", recipe.kick.decay_s),
+            ("snare_tone_hz", recipe.snare.tone_hz),
+            ("snare_tone_ratio", recipe.snare.tone_ratio),
+            ("snare_tone_decay_s", recipe.snare.tone_decay_s),
+            ("snare_noise_highpass_hz", recipe.snare.noise_highpass_hz),
+            ("snare_noise_lowpass_hz", recipe.snare.noise_lowpass_hz),
+            ("snare_noise_decay_s", recipe.snare.noise_decay_s),
+            ("hihat_base_hz", recipe.hihat.base_hz),
+            ("hihat_highpass_hz", recipe.hihat.highpass_hz),
+            ("hihat_lowpass_hz", recipe.hihat.lowpass_hz),
+            ("hihat_closed_decay_s", recipe.hihat.closed_decay_s),
+            ("hihat_open_decay_s", recipe.hihat.open_decay_s),
+            ("clap_highpass_hz", recipe.clap.highpass_hz),
+            ("clap_lowpass_hz", recipe.clap.lowpass_hz),
+            ("clap_bursts", recipe.clap.bursts as f32),
+            ("clap_burst_decay_s", recipe.clap.burst_decay_s),
+            ("clap_burst_spacing_s", recipe.clap.burst_spacing_s),
+            ("clap_decay_s", recipe.clap.decay_s),
+        ];
+        for id in ["edm"] {
+            let preset = yeban_theory::factory_drum_style(id)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{id} 预置必须存在"));
+            let yeban_theory::DrumKitSetup::SynthDevice { params, .. } =
+                yeban_theory::kit_setup(&preset)
+            else {
+                panic!("{id} 必须是合成鼓组");
+            };
+            for (name, value) in &expected {
+                let found = params
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| *v)
+                    .unwrap_or_else(|| panic!("{id} 参数表缺 {name}"));
+                assert_eq!(
+                    found.to_bits(),
+                    value.to_bits(),
+                    "{id} 的 {name} 与 RECIPE_909 不一致"
+                );
+            }
+        }
+    }
+
     #[test]
     fn drum_gen_ops_factory_styles_all_carry_the_full_fx_layer() {
-        use yeban_dsp::device_param::{DelayField, ReverbField, StripField, TapeField};
+        use yeban_dsp::device_param::{
+            ClipperField, DelayField, ReverbField, StripField, TapeField,
+        };
         let project = filled_project();
         for preset in yeban_theory::factory_drum_styles().expect("出厂预置") {
             let fx = preset.fx.expect("出厂风格必须带 fx 段");
@@ -10665,11 +10723,16 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            let expected = 2 + usize::from(fx.tape.is_some()) + usize::from(fx.delay.is_some());
+            // 轨 FX（通道条 + 混响 + 可选磁带/延迟）+ 鼓总线链
+            // （胶水压缩 + 软削波，段 1 起新建轨路径恒有）。
+            let expected = 2
+                + usize::from(fx.tape.is_some())
+                + usize::from(fx.delay.is_some())
+                + if preset.bus.is_some() { 2 } else { 0 };
             assert_eq!(
                 effects.len(),
                 expected,
-                "{} 效果器件数（通道条 + 混响 + 可选磁带/延迟）",
+                "{} 效果器件数（通道条 + 混响 + 可选磁带/延迟 + 总线两台）",
                 preset.id
             );
             // 每个参数名都必须被 dsp 族拼写表识别（写错名 = 死参数）。
@@ -10679,7 +10742,8 @@ mod tests {
                         StripField::from_name(&param.name).is_some()
                             || TapeField::from_name(&param.name).is_some()
                             || ReverbField::from_name(&param.name).is_some()
-                            || DelayField::from_name(&param.name).is_some(),
+                            || DelayField::from_name(&param.name).is_some()
+                            || ClipperField::from_name(&param.name).is_some(),
                         "{} 的器件 {} 参数 {} 不被任何效果族识别",
                         preset.id,
                         device.name,

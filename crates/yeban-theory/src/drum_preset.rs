@@ -872,9 +872,10 @@ pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
 /// 全部参数逐项写全（⛔ 不许"没写的走器件默认"——一期电子 6 风格
 /// 军鼓/拍手/踩镲逐值相同的事故正是默认回退造成的）。性格分工：
 /// trap/drill/phonk/hiphop = 808 系（长底鼓，trap 与 drill 靠滑音
-/// 时长与军鼓带宽区分）；house/techno/edm = 909 式配方（与
-/// `yeban-dsp` 的 `DrumKitParams::RECIPE_909` 同值，核心四件由
-/// 引擎判据跨 crate 对钉）；lofi = HipHop 合成底 + 整体压暗
+/// 时长与军鼓带宽区分）；edm = 909 基表（与 `yeban-dsp` 的
+/// `DrumKitParams::RECIPE_909` 核心四件逐值相同，由 yeban-app 的
+/// 跨 crate 判据对钉），house/techno = 909 变体（house 开镲更长、
+/// techno 底鼓更短更硬）；lofi = HipHop 合成底 + 整体压暗
 /// （高频收窄，空间与底噪近似在预置 FX 层）。未知 id 落 909 基表
 /// （出厂预置的 id 集合由 FACTORY_SOURCES 钉住，未知 id 只来自
 /// 用户自写预置文件，取基表是装配默认值、不是静默近似音色）。
