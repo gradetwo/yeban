@@ -927,6 +927,7 @@ impl App {
         let start_tick = cursor_tick.saturating_sub(placement.start_tick);
         let pitch = self.selected_note().map_or(60, |(_, _, note)| note.pitch);
         let note = MidiNote::new(EntityId::new(), start_tick, pitch, self.ticks_per_beat());
+        let note_id = note.id;
         self.commit_edit(
             "tui: add note",
             vec![Op::AddNote {
@@ -937,7 +938,7 @@ impl App {
             "加音符",
         );
         // 选中新加的音符（按排序后的位置回填下标）。
-        let position = self.view_notes().iter().position(|n| n.id == note.id);
+        let position = self.view_notes().iter().position(|n| n.id == note_id);
         if let (Some(ListView::Notes { selected, .. }), Some(index)) =
             (&mut self.list_view, position)
         {
