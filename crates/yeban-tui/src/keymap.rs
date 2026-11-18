@@ -31,6 +31,13 @@
 //! | 命令行 | 无 | `:` 进入（`q/w/wq/play/stop/rewind/export/open/demo`） | TUI 新增（模式层） |
 //! | 轨道改名 | 双击轨道头 | `i` 进入 Insert 改名，`Enter` 提交、`Esc` 取消 | TUI 新增（模式层） |
 //! | 退出 | 关窗 | `:q`（脏时拦）、`:q!` 强退 | TUI 新增（模式层） |
+//! | 片段切分 | `Cmd/Ctrl+T`（播放头处） | `Ctrl+T`（同）→ 切分光标处片段 | 已接（三期，走 `host::clip_split_ops_for`） |
+//! | 片段复制/剪切/粘贴 | `Cmd/Ctrl+C/X/V` | 同键 → 光标处片段；粘贴落选中轨光标处 | 已接（三期，组合照 GUI `clipboard_*`） |
+//! | 片段改名 | （GUI 未接，MCP 有） | 片段网格焦点 `i` → Insert 改名（`Op::SetClipName`） | TUI 新增（三期，模式层） |
+//! | 音符视图 | 钢琴卷帘（GUI） | 片段网格焦点 `n` 或 `:notes` 开、Esc 关 | TUI 新增（三期，视图层） |
+//! | 音符选择/移动 | 卷帘选区 + 方向键微移 | 视图内 `j/k` 选、`h/l` 移时、`J/K` 移高、方向键同 GUI 微移 | 已接（三期，走 `nudge_delta_for`） |
+//! | 音符增/删/时值/力度 | 卷帘工具 | 视图内 `a` 加、`Delete` 删、`<`/`>` 时值、`-`/`+` 力度 | TUI 新增（三期，视图层） |
+//! | 片段池视图 | （GUI 无池管理面，MCP 有） | `:pool` 开、Esc 关；视图内 `Delete` 删条目 | TUI 新增（三期，视图层） |
 //!
 //! # 冲突清单（按「共享动作从 GUI、导航从 Vi」解）
 //!
@@ -49,6 +56,13 @@
 //! - **K5 `q`**：Vi 习惯裸 `q` 退出。TUI 只认 `:q`（模式层），裸 `q` 不绑定，防误触。
 //! - **K6 `Tab`**：GUI `Tab`（画布聚焦）= 视图切换；TUI 无多视图，适配为窗格焦点
 //!   循环 —— 同一个「视图层切换」语义，不新占别的键。
+//! - **K7 列表视图（三期）**：音符/片段池视图是片段网格窗格的**内容变体**，
+//!   不是新窗格（Tab 循环仍三格，K6 不变）。视图内的删除与微移不新占键：
+//!   复用共享表的 `DeleteSelection` 与 `NudgeSelection`，在分发层按视图定
+//!   落点（与二期 `DeleteSelection` 按焦点分流同一手法）；裸 `-`/`+` 在共享
+//!   表是缩放，只在音符视图内分流为力度，视图外行为不变。新占的键只有
+//!   裸 `n`（共享表 PassThrough、Vi 层未占）与视图内的 `a`/`<`/`>`/`J`/`K`
+//!   （均为 PassThrough 或未占，视图外不拦截）。
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use yeban_app::input::{LogicalKey, Modifiers};
