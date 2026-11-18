@@ -97,6 +97,7 @@ pub fn apply(
                 domain.session(),
                 domain.engine_readings(),
                 domain.scene_launches_applied(),
+                domain.pdc_readings(),
                 domain.undo_state().undone(),
                 None,
                 engine_state::ReadingsCursor {

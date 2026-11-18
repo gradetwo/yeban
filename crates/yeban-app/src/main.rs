@@ -649,6 +649,15 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                         );
                     }
                 }
+                // ⭐ **stage 29**：PDC 三读数的搬运点（同一拍、同一个 `EngineHost`）。
+                // 与场景启动分开：它不依赖场景启动口是否接上 —— 只要控制面在，
+                // `engine.pdcChainCompensationMax` / `pdcCompensatedNodes` /
+                // `pdcEdgeCompensationMax` 就该每拍刷新（没有引擎时如实注入 `None`）。
+                #[cfg(feature = "in-process-mcp")]
+                if let Some(handle) = readings_tick.as_ref() {
+                    let engine = production.engine_handle();
+                    yeban_app::mcp_mount::publish_performance_ledger(handle, &engine.borrow());
+                }
                 // ⭐ **实时腿的发布点**（⭐ 与"编辑 ⇒ 发声"共用同一个 60Hz 节拍、同一个
                 // `EngineHost`）：会话线程在窗口内采到的事件在这里进引擎的音符路径。
                 // ⚠ 车道空时是一次 `Mutex` 判空（⛔ 不进音频线程、⛔ 不加任何音频侧工作）；

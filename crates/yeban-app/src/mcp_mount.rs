@@ -139,7 +139,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use yeban_mcp::Dispatcher;
-use yeban_mcp::domain::engine_state::EngineReadings;
+use yeban_mcp::domain::engine_state::{EngineReadings, PdcReadings};
 use yeban_mcp::domain::error::Fault;
 use yeban_mcp::domain::scene_launch::SceneLaunchRequest as McpSceneLaunchRequest;
 use yeban_mcp::domain::store::{self, AcquiredLock, LockMode};
@@ -468,6 +468,15 @@ impl EngineReadingsHandle {
     pub fn set_scene_launches_applied(&self, applied: Option<u64>) {
         self.server.set_scene_launches_applied(applied);
     }
+
+    /// ⭐ **stage 29**：注入 / 清除引擎的 **PDC 三读数**（`None` = 不知道）。
+    ///
+    /// 与 [`Self::set_scene_launches_applied`] 分开的理由同它：三格是心跳每次都能刷新的
+    /// **标量事实**，塞进完整读数快照只会让 `readingsRevision` 空转。它也**不**推进
+    /// 读数修订号。
+    pub fn set_pdc_readings(&self, readings: Option<PdcReadings>) {
+        self.server.set_pdc_readings(readings);
+    }
 }
 
 /// **宿主侧场景启动句柄**（`#290`）。
@@ -553,6 +562,25 @@ pub fn apply_scene_launch_requests(
 /// `null`，⛔ 不保留上一代引擎的旧数字。
 pub fn publish_scene_launches_applied(handle: &EngineReadingsHandle, engine: &EngineHost) {
     handle.set_scene_launches_applied(engine.scene_launches_applied());
+}
+
+/// ⭐ **stage 29**：把引擎的三格 PDC 读数注入控制面（`None` = 这一代引擎拿不到）。
+///
+/// 三格直接取自 [`EngineHost::performance_ledger`]：**节点式峰值**
+/// （`pdc_chain_compensation_max`）、**吃到补偿的节点数**（`pdc_compensated_nodes`）、
+/// **逐边峰值**（`pdc_edge_compensation_max`）。一个数都不由 app 推算
+/// （台账的"同一份读数搬运"纪律）。
+///
+/// 没有引擎（`performance_ledger()` 为 `None`）⇒ 注入 `None` ⇒
+/// `engine.pdcChainCompensationMax` / `pdcCompensatedNodes` / `pdcEdgeCompensationMax`
+/// 如实为 `null`，⛔ 不沿用上一代引擎的旧数字，也⛔ 不编造 `0`。
+pub fn publish_performance_ledger(handle: &EngineReadingsHandle, engine: &EngineHost) {
+    let readings = engine.performance_ledger().map(|ledger| PdcReadings {
+        chain_compensation_max: Some(ledger.pdc_chain_compensation_max),
+        compensated_nodes: Some(ledger.pdc_compensated_nodes),
+        edge_compensation_max: Some(ledger.pdc_edge_compensation_max),
+    });
+    handle.set_pdc_readings(readings);
 }
 
 /// **宿主侧工程权威句柄**（`ROAD-M4-008` 选项 (a) 的交付侧，2026-10-06；第二片 2026-10-06）。

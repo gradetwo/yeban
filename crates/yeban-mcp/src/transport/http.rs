@@ -629,6 +629,17 @@ impl HttpServer {
         self.lock().domain_mut().set_scene_launches_applied(applied);
     }
 
+    /// ⭐ **stage 29 宿主侧 PDC 读数注入口**：把 `PerformanceLedger` 里的三格
+    /// （节点式峰值 / 吃到补偿的节点数 / 逐边峰值）交给正在服务的那一个会话
+    /// （`None` = 这一代引擎/宿主拿不到）。
+    ///
+    /// 与 [`Self::set_scene_launches_applied`] 同一个理由与同一条纪律：分发器在
+    /// `Mutex` 里，宿主只能在挂载之后通过这个口子写入；它是**标量读数**，
+    /// ⛔ 不推进 `readings_revision`、⛔ 不改工程文档、⛔ 不是第二条 JSON-RPC 通道。
+    pub fn set_pdc_readings(&self, readings: Option<crate::domain::engine_state::PdcReadings>) {
+        self.lock().domain_mut().set_pdc_readings(readings);
+    }
+
     /// **宿主侧只读投影口**：把正在服务的那**一个**会话的领域状态交给宿主**读一次**。
     ///
     /// 为什么住在传输层：与 [`Self::set_engine_readings`] 同一个理由 —— 分发器在

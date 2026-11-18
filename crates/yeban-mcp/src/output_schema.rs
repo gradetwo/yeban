@@ -4737,6 +4737,7 @@ mod tests {
             &session,
             None,
             None,
+            None,
             0,
             Some(track_id),
             ReadingsCursor {
@@ -4852,6 +4853,7 @@ mod tests {
         let data = snapshot(
             &project,
             &session,
+            None,
             None,
             None,
             0,

@@ -248,6 +248,13 @@ pub struct Domain {
     /// 线程上，`EngineHost` 拿不到 stats）⇒ `engine.sceneLaunchesApplied` 如实为
     /// `null`，⛔ 不沿用上一代引擎的旧数字。
     scene_launches_applied: Option<u64>,
+    /// ⭐ **stage 29**：宿主注入的**PDC 三读数**（`PerformanceLedger` 里与补偿有关的
+    /// 三格：节点式峰值 / 吃到补偿的节点数 / 逐边峰值）。
+    ///
+    /// `None` = 宿主没有注入（或这一代引擎拿不到）⇒ `engine.pdc*` 三格如实为 `null`，
+    /// ⛔ 不编造 `0`。与 [`Self::scene_launches_applied`] 同一条纪律：它是**标量读数**，
+    /// 不推进 `readings_revision`（不是一条完整的 [`engine_state::EngineReadings`]）。
+    pdc: Option<engine_state::PdcReadings>,
     /// 宿主注入的整曲总览分析 provider（`get_song_overview` 的唯一分析来源）。
     ///
     /// `None` = 宿主既没有注入、也没有调 [`Self::install_real_providers`]
@@ -347,6 +354,7 @@ impl Domain {
             scene_launch_host_attached: false,
             pending_scene_launches: Vec::new(),
             scene_launches_applied: None,
+            pdc: None,
             song_overview_provider: None,
             song_overview_cache: Mutex::new(song_overview::SharedOverviewCache::new()),
             phase_align_auto_provider: None,
@@ -556,6 +564,33 @@ impl Domain {
     #[must_use]
     pub const fn scene_launches_applied(&self) -> Option<u64> {
         self.scene_launches_applied
+    }
+
+    /// ⭐ **stage 29**：注入宿主读到的**PDC 三读数**（`None` = 不知道）。
+    ///
+    /// **只对宿主开放**：没有任何 JSON-RPC 方法能到达它（判据
+    /// `tools_never_write_the_engine_mirror` 的同一把尺子：工具前后三格逐位相同）。
+    /// 与 [`Self::set_scene_launches_applied`] 同一条纪律 —— 它是**标量读数**，
+    /// ⛔ 不推进 `readings_revision`（不是一条完整的 [`engine_state::EngineReadings`]）。
+    ///
+    /// 同时把三格回写进已注入的完整快照（若有）：两个来源对同一件事必须是**同一个数**
+    /// （否则"当前读数"与"游标读数"会读出两套值，正是账本坑⑪ 的形状）。
+    pub fn set_pdc_readings(&mut self, pdc: Option<engine_state::PdcReadings>) {
+        self.pdc = pdc;
+        if let Some(engine) = self.engine.as_mut() {
+            let chain = pdc.and_then(|readings| readings.chain_compensation_max);
+            let nodes = pdc.and_then(|readings| readings.compensated_nodes);
+            let edge = pdc.and_then(|readings| readings.edge_compensation_max);
+            engine.pdc_chain_compensation_max = chain;
+            engine.pdc_compensated_nodes = nodes;
+            engine.pdc_edge_compensation_max = edge;
+        }
+    }
+
+    /// 宿主注入的 PDC 三读数（`None` = 不知道）。
+    #[must_use]
+    pub const fn pdc_readings(&self) -> Option<engine_state::PdcReadings> {
+        self.pdc
     }
 
     /// 宿主注入的整曲总览分析 provider（`None` = 未注入）。
@@ -1008,8 +1043,13 @@ impl Domain {
         // 与旧引擎的 applied 计数一律作废（⛔ 不让它们跨打开边界存活）。
         self.pending_scene_launches.clear();
         self.scene_launches_applied = None;
+        self.pdc = None;
         if let Some(engine) = self.engine.as_mut() {
             engine.scene_launches_applied = None;
+            // ⭐ stage 29：三格 PDC 读数随工程边界一起作废（⛔ 不跨打开/关闭存活）。
+            engine.pdc_chain_compensation_max = None;
+            engine.pdc_compensated_nodes = None;
+            engine.pdc_edge_compensation_max = None;
         }
         self.undo = undo_session::UndoState::new(AGENT_NAME);
         if let Some(history) = seed.history {
@@ -1050,8 +1090,13 @@ impl Domain {
         // 会话运行态随工程关闭一起作废（与 `reset_history` 同口径）。
         self.pending_scene_launches.clear();
         self.scene_launches_applied = None;
+        self.pdc = None;
         if let Some(engine) = self.engine.as_mut() {
             engine.scene_launches_applied = None;
+            // ⭐ stage 29：三格 PDC 读数随工程边界一起作废（⛔ 不跨打开/关闭存活）。
+            engine.pdc_chain_compensation_max = None;
+            engine.pdc_compensated_nodes = None;
+            engine.pdc_edge_compensation_max = None;
         }
         let saved = !active.read_only;
         Some((active.path, saved))
@@ -5070,6 +5115,7 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
         domain.session(),
         domain.engine_readings(),
         domain.scene_launches_applied(),
+        domain.pdc_readings(),
         domain.undo_display().undoable,
         track_id,
         engine_state::ReadingsCursor {

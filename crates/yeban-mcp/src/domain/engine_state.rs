@@ -94,6 +94,48 @@ pub struct EngineReadings {
     /// `EngineHost` 没有它的 stats）⇒ 响应里 `sceneLaunchesApplied` 如实为 `null`，
     /// ⛔ 不沿用上一代引擎的旧数字。
     pub scene_launches_applied: Option<u64>,
+    /// ⭐ **stage 29**：PDC **下游求和式**补偿里最大的一个补偿量（帧）。
+    ///
+    /// 来源是宿主注入的 [`PdcReadings`]（`PerformanceLedger::pdc_chain_compensation_max`
+    /// 的只读镜像）；`None` = 这一代引擎/宿主拿不到它 ⇒ 响应里如实 `null`，
+    /// ⛔ 不编造 `0`（`0` 是一个**有意义**的读数：真的没有补偿量）。
+    pub pdc_chain_compensation_max: Option<u32>,
+    /// ⭐ **stage 29**：补偿量 **> 0** 的节点数（同上一字段的来源）。
+    pub pdc_compensated_nodes: Option<usize>,
+    /// ⭐ **stage 29**：**逐边**补偿里最大的一个补偿量（帧）。
+    ///
+    /// 与 [`Self::pdc_chain_compensation_max`] 是两个口径：后者"一个节点一条线"，
+    /// 本字段"一条边一条线"，两者本来就可以不同。
+    pub pdc_edge_compensation_max: Option<u32>,
+}
+
+/// ⭐ **stage 29**：宿主读到的 **PDC 三读数**（`PerformanceLedger` 里与补偿有关的三格）。
+///
+/// 它是 [`Domain::set_pdc_readings`](super::Domain::set_pdc_readings) 的载荷，
+/// 与 [`EngineReadings`] 的完整快照分开的理由与 `scene_launches_applied` 同一条：
+/// 三格读数是**心跳每次都能刷新**的标量事实，而完整快照只在设备/响度真的换了一代
+/// 时才重新组装 ⇒ 塞进读数尾部只会制造"没有新字段"的假更新（`readingsRevision` 空转）。
+///
+/// 三个字段**各自独立**：`None` 表示这一格不知道，⛔ 不用另一格的值顶替。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PdcReadings {
+    /// `PerformanceLedger::pdc_chain_compensation_max`（节点式峰值，帧）。
+    pub chain_compensation_max: Option<u32>,
+    /// `PerformanceLedger::pdc_compensated_nodes`（吃到补偿的节点数）。
+    pub compensated_nodes: Option<usize>,
+    /// `PerformanceLedger::pdc_edge_compensation_max`（逐边峰值，帧）。
+    pub edge_compensation_max: Option<u32>,
+}
+
+impl Default for PdcReadings {
+    /// 三格全部**缺席**（⛔ 不是三格 `0`）。
+    fn default() -> Self {
+        Self {
+            chain_compensation_max: None,
+            compensated_nodes: None,
+            edge_compensation_max: None,
+        }
+    }
 }
 
 impl Default for EngineReadings {
@@ -108,6 +150,9 @@ impl Default for EngineReadings {
             loudness_range_lu: None,
             true_peak_dbfs: None,
             scene_launches_applied: None,
+            pdc_chain_compensation_max: None,
+            pdc_compensated_nodes: None,
+            pdc_edge_compensation_max: None,
         }
     }
 }
@@ -156,6 +201,7 @@ pub fn engine_value(
     project: &YebanProjectV1,
     mirror: Option<EngineReadings>,
     scene_launches_applied: Option<u64>,
+    pdc: Option<PdcReadings>,
 ) -> Value {
     let project_rate = project.sample_rate().hz();
     let (buffer_frames, mirror_rate, matches) = match mirror {
@@ -170,6 +216,16 @@ pub fn engine_value(
     // 其次取完整读数镜像里的同名字段（老客户端 / 判据只注入 `EngineReadings` 时）。
     let applied = scene_launches_applied
         .or_else(|| mirror.and_then(|readings| readings.scene_launches_applied));
+    // ⭐ **stage 29**：三格 PDC 读数各自独立回落（标量注入口优先，其次完整快照）。
+    let pdc_chain_compensation_max = pdc
+        .and_then(|readings| readings.chain_compensation_max)
+        .or_else(|| mirror.and_then(|readings| readings.pdc_chain_compensation_max));
+    let pdc_compensated_nodes = pdc
+        .and_then(|readings| readings.compensated_nodes)
+        .or_else(|| mirror.and_then(|readings| readings.pdc_compensated_nodes));
+    let pdc_edge_compensation_max = pdc
+        .and_then(|readings| readings.edge_compensation_max)
+        .or_else(|| mirror.and_then(|readings| readings.pdc_edge_compensation_max));
     serde_json::json!({
         "sampleRate": project_rate,
         "sampleRateSource": "project.audio_config.sample_rate",
@@ -185,6 +241,13 @@ pub fn engine_value(
         // ⭐ `#290`：量化场景启动的累计生效次数（宿主心跳注入；`None` ⇒ `null`）。
         "sceneLaunchesApplied": applied,
         "sceneLaunchesAppliedSource": if applied.is_some() { "hostEngineMirror" } else { "unavailable" },
+        // ⭐ **stage 29**：PDC 三读数。宿主**单独**注入的那一组优先（心跳每次刷新），
+        // 其次取完整读数镜像里的同名字段（判据/老客户端只注入 `EngineReadings` 时）。
+        // 三个字段各自独立回落：⛔ 不用一格的值顶替另一格。
+        "pdcChainCompensationMax": pdc_chain_compensation_max,
+        "pdcCompensatedNodes": pdc_compensated_nodes,
+        "pdcEdgeCompensationMax": pdc_edge_compensation_max,
+        "pdcSource": if pdc.is_some() { "hostPerformanceLedger" } else { "unavailable" },
         "mirrorSampleRate": mirror_rate,
         "sampleRateMatchesMirror": matches,
     })
@@ -207,6 +270,10 @@ pub fn readings_record(revision: u64, readings: EngineReadings) -> Value {
         "truePeakDbfs": readings.true_peak_dbfs,
         // ⭐ `#290`：与当前读数同一口径；没有注入时为 `null`。
         "sceneLaunchesApplied": readings.scene_launches_applied,
+        // ⭐ **stage 29**：三格 PDC 读数与当前读数同一口径（缺席即 `null`）。
+        "pdcChainCompensationMax": readings.pdc_chain_compensation_max,
+        "pdcCompensatedNodes": readings.pdc_compensated_nodes,
+        "pdcEdgeCompensationMax": readings.pdc_edge_compensation_max,
     })
 }
 
@@ -402,6 +469,7 @@ pub fn snapshot(
     session: &SessionRuntimeState,
     mirror: Option<EngineReadings>,
     scene_launches_applied: Option<u64>,
+    pdc: Option<PdcReadings>,
     undo_cursor: usize,
     track_id: Option<EntityId>,
     readings: ReadingsCursor<'_>,
@@ -423,7 +491,7 @@ pub fn snapshot(
             project.time_signature.denominator,
         ),
     );
-    let mut engine = engine_value(project, mirror, scene_launches_applied);
+    let mut engine = engine_value(project, mirror, scene_launches_applied, pdc);
     if let Value::Object(fields) = &mut engine {
         // 客户端从这里取下一次调用要用的游标（`readingsRevision`）。
         fields.insert(
@@ -521,7 +589,7 @@ mod tests {
     #[test]
     fn engine_value_reads_the_sample_rate_from_the_project_and_the_buffer_from_the_mirror() {
         let project = filled_project();
-        let bare = engine_value(&project, None, None);
+        let bare = engine_value(&project, None, None, None);
         assert_eq!(bare["sampleRate"], 48_000);
         assert_eq!(bare["bufferFrames"], Value::Null);
         assert_eq!(bare["bufferSource"], "unavailable");
@@ -534,6 +602,7 @@ mod tests {
                 buffer_frames: 128,
                 ..EngineReadings::default()
             }),
+            None,
             None,
         );
         assert_eq!(with["bufferFrames"], 128);
@@ -550,6 +619,7 @@ mod tests {
                 ..EngineReadings::default()
             }),
             None,
+            None,
         );
         assert_eq!(matching["sampleRateMatchesMirror"], true);
     }
@@ -557,10 +627,10 @@ mod tests {
     #[test]
     fn scene_launches_applied_is_null_without_injection_and_echoed_when_injected() {
         let project = filled_project();
-        let absent = engine_value(&project, None, None);
+        let absent = engine_value(&project, None, None, None);
         assert!(absent["sceneLaunchesApplied"].is_null());
         assert_eq!(absent["sceneLaunchesAppliedSource"], "unavailable");
-        let injected = engine_value(&project, None, Some(3));
+        let injected = engine_value(&project, None, Some(3), None);
         assert_eq!(injected["sceneLaunchesApplied"], 3);
         assert_eq!(injected["sceneLaunchesAppliedSource"], "hostEngineMirror");
     }
@@ -591,6 +661,7 @@ mod tests {
             &session,
             None,
             None,
+            None,
             0,
             None,
             ReadingsCursor {
@@ -610,6 +681,7 @@ mod tests {
         let fault = snapshot(
             &project,
             &session,
+            None,
             None,
             None,
             0,
@@ -641,6 +713,9 @@ mod tests {
             loudness_range_lu: Some(6.0),
             true_peak_dbfs: Some(-1.0),
             scene_launches_applied: Some(2),
+            pdc_chain_compensation_max: Some(64),
+            pdc_compensated_nodes: Some(2),
+            pdc_edge_compensation_max: Some(96),
         };
         let tail = [(3_u64, measured), (4, EngineReadings::default())];
 
@@ -711,12 +786,12 @@ mod tests {
             "truePeakDbfs",
         ];
         // 无镜像：**不知道**，如实 null（不编造 0）。
-        let absent = engine_value(&project, None, None);
+        let absent = engine_value(&project, None, None, None);
         for key in keys {
             assert!(absent[key].is_null(), "{key} 无镜像时必须是 null");
         }
         // 有镜像但**尚未测量**：仍为 null —— 与"测得静音"区分（账本第 327/328 轮）。
-        let unmeasured = engine_value(&project, Some(EngineReadings::default()), None);
+        let unmeasured = engine_value(&project, Some(EngineReadings::default()), None, None);
         for key in keys {
             assert!(unmeasured[key].is_null(), "{key} 未测量时必须是 null");
         }
@@ -732,6 +807,7 @@ mod tests {
                 ..EngineReadings::default()
             }),
             None,
+            None,
         );
         for (key, want) in [
             ("integratedLufs", -14.0_f64),
@@ -746,5 +822,84 @@ mod tests {
                 "{key} 应在容差内回显：got {got}, want {want}"
             );
         }
+    }
+
+    /// ⭐ **stage 29 判据**：PDC 三读数 —— 缺席即 `null`、注入即逐字回显、
+    /// 三个字段各自独立（⛔ 不用一格顶替另一格）、完整快照可作回落来源。
+    #[test]
+    fn pdc_readings_are_null_without_injection_and_echoed_field_by_field() {
+        let project = filled_project();
+
+        // ① 什么都没注入：三格如实 null（⛔ 不编造 0 —— 0 是"真的没有补偿量"）。
+        let absent = engine_value(&project, None, None, None);
+        for key in [
+            "pdcChainCompensationMax",
+            "pdcCompensatedNodes",
+            "pdcEdgeCompensationMax",
+        ] {
+            assert!(absent[key].is_null(), "{key} 无注入时必须是 null");
+        }
+        assert_eq!(absent["pdcSource"], "unavailable");
+
+        // ② 只注入一格：另外两格仍是 null（各自独立 ⇒ ⛔ 不互相顶替）。
+        let only_chain = engine_value(
+            &project,
+            None,
+            None,
+            Some(PdcReadings {
+                chain_compensation_max: Some(64),
+                ..PdcReadings::default()
+            }),
+        );
+        assert_eq!(only_chain["pdcChainCompensationMax"], 64);
+        assert!(only_chain["pdcCompensatedNodes"].is_null());
+        assert!(only_chain["pdcEdgeCompensationMax"].is_null());
+        assert_eq!(only_chain["pdcSource"], "hostPerformanceLedger");
+
+        // ③ 三格全注入：逐字回显（含 0 —— 0 是有效读数，不是"缺席"）。
+        let injected = engine_value(
+            &project,
+            None,
+            None,
+            Some(PdcReadings {
+                chain_compensation_max: Some(64),
+                compensated_nodes: Some(2),
+                edge_compensation_max: Some(0),
+            }),
+        );
+        assert_eq!(injected["pdcChainCompensationMax"], 64);
+        assert_eq!(injected["pdcCompensatedNodes"], 2);
+        assert_eq!(injected["pdcEdgeCompensationMax"], 0);
+
+        // ④ 只注入完整快照（老客户端/判据）：三格从镜像回落，来源仍是同一个口。
+        let mirror_only = engine_value(
+            &project,
+            Some(EngineReadings {
+                pdc_chain_compensation_max: Some(32),
+                pdc_compensated_nodes: Some(1),
+                pdc_edge_compensation_max: Some(96),
+                ..EngineReadings::default()
+            }),
+            None,
+            None,
+        );
+        assert_eq!(mirror_only["pdcChainCompensationMax"], 32);
+        assert_eq!(mirror_only["pdcCompensatedNodes"], 1);
+        assert_eq!(mirror_only["pdcEdgeCompensationMax"], 96);
+
+        // ⑤ 标量注入口**优先**于完整快照（心跳每拍刷新的那一路是权威）。
+        let both = engine_value(
+            &project,
+            Some(EngineReadings {
+                pdc_chain_compensation_max: Some(32),
+                ..EngineReadings::default()
+            }),
+            None,
+            Some(PdcReadings {
+                chain_compensation_max: Some(64),
+                ..PdcReadings::default()
+            }),
+        );
+        assert_eq!(both["pdcChainCompensationMax"], 64);
     }
 }
