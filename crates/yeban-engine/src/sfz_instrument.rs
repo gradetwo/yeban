@@ -2853,7 +2853,7 @@ impl SfzInstrument {
                     (None, Some(sample)) => sample,
                     (None, None) => continue,
                 };
-                let pcm_len = source.pcm.len();
+                let pcm_len = source.frames();
                 let rates = RenderRates::new(source.sample_hz, engine_hz);
                 // ⭐ 任务单 `#217`：`sample=*silence` 的 region **存在、会被选中**，但
                 // ⛔ **不产生任何采样输出**。必须在**这里**判，⛔ 不能靠"PCM 为空"：
@@ -3097,6 +3097,8 @@ impl SfzInstrument {
                 );
                 let region_written = mix_span_into(
                     &source.pcm,
+                    usize::from(source.channels.max(1)),
+                    0,
                     &mut position,
                     rate,
                     rate,
@@ -6996,14 +6998,14 @@ impl PreparedSfz {
             if !rate_is_usable(rate) || pcm.is_empty() {
                 continue;
             }
-            let Some((start, source_end)) = region.span_bounds(pcm.len()) else {
+            let Some((start, source_end)) = region.span_bounds(sample.frames()) else {
                 continue;
             };
             // ⭐ 增益（任务单 `#108`）：CC 轴交叉淡化按**同一**探针求值
             // （`cc == None` ⇒ `gain_at` 的老口径，逐位不变）。
             let gain = region.gain_at_with_cc(note, velocity, cc);
             // ⭐ 循环窗口（本单）：归约已把模式／退化／越界三条判完（`None` ⇒ 不循环）。
-            let loop_window = region.loop_window(pcm.len(), sample.loop_points());
+            let loop_window = region.loop_window(sample.frames(), sample.loop_points());
             // ⭐ **播放方向**（任务单 `#113`）：与离线/实时两条路**同一份**归约
             // （[`reduce_travel`]）。⚠ `forward` ⇒ 三项逐位不变（判据 `S33`/`S37`/`S65`）。
             let (mut position, rate, source_end) =
@@ -7041,6 +7043,8 @@ impl PreparedSfz {
             let filter_base_hz = egs.base_cutoff_hz;
             let region_written = mix_span_into(
                 pcm,
+                usize::from(sample.channels().max(1)),
+                0,
                 &mut position,
                 rate,
                 rate,
@@ -7983,6 +7987,15 @@ fn configured_voice_filter(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mix_span_into<'a>(
     pcm: &[f32],
+    // ⭐ **源声道**（立体声样本通路片）：`pcm` 是**交错**存储 ⇒
+    // `src_channels` 是交错步长（`1` ＝ 单声道、`2` ＝ 立体声），帧数
+    // ＝ `pcm.len() / src_channels`，取数下标 ＝ `index * src_channels
+    // + src_channel`；`src_channel` 是本次取哪一声道（单声道输出通路
+    // 恒 `0`；分声道通路由声部池按声道各调一次本函数）。
+    // `src_channels == 1` 时每个下标/帧数表达式退化为接线前原式
+    // ⇒ 单声道逐位不变。⛔ 调用方保证 `src_channel < src_channels`。
+    src_channels: usize,
+    src_channel: usize,
     position: &mut f32,
     rate: f32,
     // ⭐ **本段末的速率**（`rate == rate_end` ⇒ 恒定，与接线前**逐位相同**）。
@@ -8020,6 +8033,12 @@ pub(crate) fn mix_span_into<'a>(
     // ⭐ 反向的闸门要用**浮点**比（整数下标会漏掉 `low + 0.5` 那一帧）⇒ 循环外转一次。
     // ⚠ `source_end` 在 `reverse` 时是**下界**（见本函数文档的追加修订段）。
     let travel_bound = source_end as f32;
+    // ⭐ **源帧数**（立体声样本通路片）：交错存储下"长度"一律是**帧**，
+    // ⛔ 不是样本个数。下面所有以 `pcm_len` 为名的既有口径（钳位腿、
+    // 停止闸门、窗口终点比较）都换算到帧上；`stride == 1` 时
+    // `frames == pcm.len()` ⇒ 逐字退化为接线前表达式。
+    let stride = src_channels.max(1);
+    let frames = pcm.len() / stride;
     // ⭐ **钳位腿**（任务单 `#97`）：窗口终点**恰好等于** PCM 长度时，回绕点上要读的
     // `index + 1` 落在 PCM 之外 ⇒ 把"插值要读的下一格"钳到**最后一格**
     // （`Some(last)` ⇒ 本声部走钳位腿；`pcm` 为空时 `checked_sub` ⇒ `None`）。
@@ -8027,12 +8046,15 @@ pub(crate) fn mix_span_into<'a>(
     // ⭐ ⭐ **追加修订段（任务单 `#113`）**：反向**恒**走钳位腿 —— 反向从区间高端起步，
     // 最高一格可以恰好是 `pcm_len − 1` ⇒ `index + 1` 越界；`forward` 那一侧的触发条件
     // 逐字未变（表达式仍是同一个 `loop_window.filter(...)`）。
+    // ⭐ ⭐ **追加修订段（立体声样本通路片）—— 被修订的是本块里的 `pcm.len()`**
+    // （⛔ 原文保留在上）：钳位腿的"最后一格"与窗口终点比较改按**帧**
+    // （`frames`）；`stride == 1` 时两者同值 ⇒ 既有读数逐位不变。
     let tail_clamp = if reverse {
-        pcm.len().checked_sub(1)
+        frames.checked_sub(1)
     } else {
         loop_window
-            .filter(|window| window.end as usize == pcm.len())
-            .and_then(|_| pcm.len().checked_sub(1))
+            .filter(|window| window.end as usize == frames)
+            .and_then(|_| frames.checked_sub(1))
     };
     // ⭐ 块内线性 ramp 的步长（`rate == rate_end` ⇒ 恰 `0.0`）。
     // `out.is_empty()` 时不会被读到，但除法要在循环外做掉（⛔ 逐样本不做除法）。
@@ -8102,7 +8124,7 @@ pub(crate) fn mix_span_into<'a>(
             // （正常值下与 `+ 1` 逐位相同）。
             (index as u64).saturating_add(1) >= source_end
         };
-        if past_source_end || next >= pcm.len() {
+        if past_source_end || next >= frames {
             break;
         }
         // ⭐ 包络（本片新增）：`None` ⇒ `1.0` ⇒ 下面那个乘法是**恒等**的 `× 1.0`
@@ -8210,8 +8232,13 @@ pub(crate) fn mix_span_into<'a>(
             pitch_mult *= (level * pitch.depth() / 1200.0).exp2();
         }
         let frac = *position - index as f32;
-        // ⚠ `next`（⭐ 钳位腿上是最后一格）⛔ 不是 `index + 1`：越界读一次都不允许。
-        let sample = pcm[index] * (1.0 - frac) + pcm[next] * frac;
+        // ⚠ `next`（⭐ 钳位腿上是最后一帧）⛔ 不是 `index + 1`：越界读一次都不允许。
+        // ⭐ 取数（立体声样本通路片）：交错下标 `帧 × stride + 声道`。
+        // `stride == 1 && src_channel == 0` 时就是 `pcm[index]` / `pcm[next]`
+        // ⇒ 与接线前逐字相同；立体声时取本声道（单声道输出通路恒取声道 0
+        // ＝ R315 时代听到的那一份，⛔ 不下混、不发明规则）。
+        let sample = pcm[index * stride + src_channel] * (1.0 - frac)
+            + pcm[next * stride + src_channel] * frac;
         // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
         // ⭐ 滤波在增益之前（见本函数文档的信号序）；直通时 `process`
@@ -9287,7 +9314,7 @@ impl SfzVoicePool {
             let Some(sample) = plan.sample(region.sample_index) else {
                 continue;
             };
-            let pcm_len = sample.pcm().len();
+            let pcm_len = sample.frames();
             // ⭐⭐ B8 轨级调律：触发期把轨偏移乘进基准步进（同一份换算；
             // `0.0` ⇒ 恰 `1.0` ⇒ 速率与接线前逐位相同）。乘子恒正 ⇒ 不改行进方向。
             let rate = region.rate_per_note[n] * tune_ratio_from_cents(tune_cents);
@@ -9936,6 +9963,8 @@ impl SfzVoicePool {
             );
             let written = mix_span_into(
                 sample.pcm(),
+                usize::from(sample.channels().max(1)),
+                0,
                 &mut local,
                 readings.rate,
                 readings.rate,
@@ -10105,6 +10134,8 @@ impl SfzVoicePool {
         }
         let written = mix_span_into(
             sample.pcm(),
+            usize::from(sample.channels().max(1)),
+            0,
             &mut local,
             rate,
             rate_end,
@@ -10196,7 +10227,7 @@ impl SfzVoicePool {
     ) -> Option<SlotReadings> {
         let region = plan.regions().get(voice.region_index as usize)?;
         let sample = plan.sample(voice.sample_index)?;
-        let pcm_len = sample.pcm().len();
+        let pcm_len = sample.frames();
         // ⭐ `#331`：循环窗口的缺省点来自**该声部自己那份样本**（`smpl` 块）。
         let loop_window = region.loop_window(pcm_len, sample.loop_points());
         // ⭐ ⭐ CC 轴交叉淡化（任务单 `#108`）：**逐块现算**本声部的逐样本增益 ——
