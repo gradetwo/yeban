@@ -2482,6 +2482,9 @@ pub(crate) struct RegionShift {
     pub declared: i32,
 }
 
+/// 归约一个 region。返回值第二元是归约期的非致命降级记录（调制深度
+/// 钳位，[`Warning::ClampedModulationDepth`]）：随结果带出，由调用方
+/// （解析器）逐条过自己的告警通道（含上限与截断标记）。
 pub(crate) fn build_region<'a>(
     region_map: &OpcodeMap<'a>,
     group_map: &OpcodeMap<'a>,
@@ -2490,7 +2493,7 @@ pub(crate) fn build_region<'a>(
     default_path: Option<Cow<'a, str>>,
     shift: RegionShift,
     line: usize,
-) -> Result<Option<Region<'a>>, SfzError> {
+) -> Result<(Option<Region<'a>>, Vec<Warning>), SfzError> {
     let note_shift = shift.applied;
     let scopes = Scopes {
         region: region_map,
@@ -2499,12 +2502,13 @@ pub(crate) fn build_region<'a>(
         global: global_map,
         line,
     };
+    let mut warnings: Vec<Warning> = Vec::new();
 
     let Some(sample_value) = scopes.get("sample") else {
-        return Ok(None);
+        return Ok((None, warnings));
     };
     if sample_value.as_str().is_empty() {
-        return Ok(None);
+        return Ok((None, warnings));
     }
     let sample = sample_value.value;
 
@@ -2677,10 +2681,10 @@ pub(crate) fn build_region<'a>(
     let ampeg_start = read_ampeg_sustain(&scopes, "ampeg_start", AMPEG_START_DEFAULT_PERCENT)?;
     // ⭐ CC 调制（`ampeg_*ccN` / `_onccN` / `_curveccN` ＋ `#115` 的 `amplitude_*`）：
     // 与基准值**分开**归约（调制量不是取值；缺失 ⇒ 空表 ⇒ 无调制）。
-    let cc_mods = read_cc_mods(&scopes, line)?;
+    let cc_mods = read_cc_mods(&scopes, line, &mut warnings)?;
     // ⭐ 力度调制（`ampeg_vel2*`；任务单 `#106`）：**第二支独立输入**，与上面那支
     // 分开归约（一个来自 CC 状态、一个来自**音符力度**；缺失 ⇒ `None` ⇒ 无调制）。
-    let ampeg_vel2 = read_ampeg_vel2_mods(&scopes, line)?;
+    let ampeg_vel2 = read_ampeg_vel2_mods(&scopes, line, &mut warnings)?;
 
     // ---- 播放区间 / 方向（显式区间与方向，见 <https://sfzformat.com/opcodes/offset/>、
     //      <https://sfzformat.com/opcodes/end/>、<https://sfzformat.com/opcodes/direction/>） ----
@@ -2785,15 +2789,15 @@ pub(crate) fn build_region<'a>(
     // 时间／百分比读（缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err）；`depth` 是**整数**
     // 音分（走 [`read_i32`]，带小数点 ⇒ 响亮报错）；`vel2*` 单独归约
     // （[`read_eg_vel2`]）。`*_onccN` 一族⛔ 不在本片（见 [`crate::eg`] 的范围裁决）。
-    let fileg = read_eg(&scopes, "fileg", line)?;
-    let pitcheg = read_eg(&scopes, "pitcheg", line)?;
+    let fileg = read_eg(&scopes, "fileg", line, &mut warnings)?;
+    let pitcheg = read_eg(&scopes, "pitcheg", line, &mut warnings)?;
     // ---- ⭐ LFO 三族 + 可分配 LFO（SFZ LFO 片，审计 C21/C22）----
     // v1 三族同构（[`read_v1_lfo`] 一份实现）：静态四参走带域浮点读
     // （缺失 ⇒ 规范缺省、越界 ⇒ 明确 Err，⛔ 不钳位）；cc/aft 伴随单独
     // 归约。depth 域随族：amplfo = dB ±10、fillfo/pitchlfo = 音分 ±1200。
-    let amplfo = read_v1_lfo(&scopes, "amplfo", -10.0, 10.0, line)?;
-    let fillfo = read_v1_lfo(&scopes, "fillfo", -1200.0, 1200.0, line)?;
-    let pitchlfo = read_v1_lfo(&scopes, "pitchlfo", -1200.0, 1200.0, line)?;
+    let amplfo = read_v1_lfo(&scopes, "amplfo", -10.0, 10.0, line, &mut warnings)?;
+    let fillfo = read_v1_lfo(&scopes, "fillfo", -1200.0, 1200.0, line, &mut warnings)?;
+    let pitchlfo = read_v1_lfo(&scopes, "pitchlfo", -1200.0, 1200.0, line, &mut warnings)?;
     let lfos = read_generic_lfos(&scopes, line)?;
     // 弯音范围：两个端点各自独立，规范缺省 200 / -200，Range 都是 ±9600 音分
     // （<https://sfzformat.com/opcodes/bend_up/>、<https://sfzformat.com/opcodes/bend_down/>）。
@@ -2913,7 +2917,7 @@ pub(crate) fn build_region<'a>(
     )?;
 
     // ---- portamento 的 pitch 包络（egN_*，见 crate::pitch_eg） ----
-    let pitch_eg = crate::pitch_eg::read_pitch_eg(&scopes)?;
+    let pitch_eg = crate::pitch_eg::read_pitch_eg(&scopes, &mut warnings)?;
 
     // ---- 交叉淡化（xfin_* / xfout_*，见 crate::crossfade） ----
     let crossfades = read_crossfades(&scopes, line)?;
@@ -2921,84 +2925,87 @@ pub(crate) fn build_region<'a>(
     // ---- 标签（`*_label` 头族，见 crate::label） ----
     let labels = read_labels(&scopes, line)?;
 
-    Ok(Some(Region {
-        sample,
-        default_path: default_path.filter(|path| !path.is_empty()),
-        lokey,
-        hikey,
-        pitch_keycenter,
-        pitch_keycenter_spelling,
-        declared_note_shift: shift.declared,
-        trigger_by_note,
-        trigger,
-        off_mode,
-        off_time,
-        rt_decay,
-        lovel,
-        hivel,
-        lochan,
-        hichan,
-        amp_veltrack,
-        velocity_curve,
-        amp_keytrack,
-        amp_keycenter,
-        loop_start,
-        loop_end,
-        loop_mode,
-        offset_random,
-        ampeg_attack,
-        ampeg_hold,
-        ampeg_decay,
-        ampeg_sustain,
-        ampeg_release,
-        ampeg_delay,
-        ampeg_start,
-        cc_mods,
-        ampeg_vel2,
-        fileg,
-        pitcheg,
-        amplfo,
-        fillfo,
-        pitchlfo,
-        lfos,
-        pitch_eg,
-        offset,
-        end,
-        direction,
-        tune,
-        transpose,
-        pitch_keytrack,
-        fil_type,
-        cutoff,
-        resonance,
-        fil_keytrack,
-        fil_keycenter,
-        fil_veltrack,
-        bend_up,
-        bend_down,
-        volume,
-        amp_random,
-        amplitude,
-        pan,
-        seq_position,
-        seq_length,
-        lorand,
-        hirand,
-        group,
-        off_by,
-        note_polyphony,
-        sw_last,
-        sw_default,
-        sw_lokey,
-        sw_hikey,
-        sw_down,
-        sw_up,
-        cc_gates,
-        cc_triggers,
-        crossfades,
-        labels,
-        source_line: line,
-    }))
+    Ok((
+        Some(Region {
+            sample,
+            default_path: default_path.filter(|path| !path.is_empty()),
+            lokey,
+            hikey,
+            pitch_keycenter,
+            pitch_keycenter_spelling,
+            declared_note_shift: shift.declared,
+            trigger_by_note,
+            trigger,
+            off_mode,
+            off_time,
+            rt_decay,
+            lovel,
+            hivel,
+            lochan,
+            hichan,
+            amp_veltrack,
+            velocity_curve,
+            amp_keytrack,
+            amp_keycenter,
+            loop_start,
+            loop_end,
+            loop_mode,
+            offset_random,
+            ampeg_attack,
+            ampeg_hold,
+            ampeg_decay,
+            ampeg_sustain,
+            ampeg_release,
+            ampeg_delay,
+            ampeg_start,
+            cc_mods,
+            ampeg_vel2,
+            fileg,
+            pitcheg,
+            amplfo,
+            fillfo,
+            pitchlfo,
+            lfos,
+            pitch_eg,
+            offset,
+            end,
+            direction,
+            tune,
+            transpose,
+            pitch_keytrack,
+            fil_type,
+            cutoff,
+            resonance,
+            fil_keytrack,
+            fil_keycenter,
+            fil_veltrack,
+            bend_up,
+            bend_down,
+            volume,
+            amp_random,
+            amplitude,
+            pan,
+            seq_position,
+            seq_length,
+            lorand,
+            hirand,
+            group,
+            off_by,
+            note_polyphony,
+            sw_last,
+            sw_default,
+            sw_lokey,
+            sw_hikey,
+            sw_down,
+            sw_up,
+            cc_gates,
+            cc_triggers,
+            crossfades,
+            labels,
+            source_line: line,
+        }),
+        warnings,
+    ))
 }
 
 /// 识别 `loccN` / `hiccN`，返回 `(是否下界, CC 号)`。
@@ -3660,9 +3667,25 @@ fn read_rand_bound(
 /// 顺序**确定**：`BTreeMap` 的键序 ＝ [`ModTarget`] 声明序（五个 `ampeg_*` 在前、
 /// `amplitude` 在末尾）× CC 号升序（[ARCH-DET-001]）。
 /// ⭐ **包络族片注**：ampeg 目标现为**七个**（尾加 `delay`／`start`），同上按七个读。
-fn read_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<CcMod>, SfzError> {
-    // 键 = (目标, CC 号)；值 = (delta, curve 下标)。两个分量各自独立合并。
-    let mut table: BTreeMap<(ModTarget, u8), (Option<f32>, Option<u8>)> = BTreeMap::new();
+///
+/// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是上面那句
+/// 「**越界/畸形 ⇒ 明确 `Err`**（第 259 条：⛔ 不静默降级、⛔ 不钳位）」里的
+/// **越界**那一支**（⛔ 原文一字未删，口径同台账第 278 条）：`delta` 是调制量
+/// ⇒ 越界改为**钳位 ＋ [`Warning::ClampedModulationDepth`]**（处置与理由见
+/// [`read_modulation_delta`] 的追加修订段）；**畸形**（认不出 / 非有限）与
+/// **曲线下标越界**（[`read_modulation_curve_index`]，那是下标不是量）
+/// **逐字未变**、仍是明确 `Err`。钳位告警只为**归约胜出**的那份取值发出：
+/// 表里每项连同它的钳位记录一起被后写覆盖，未生效的取值不告警。
+/// [`read_cc_mods`] 的归约中间表条目：`(delta 及其钳位记录, curve 下标)`。
+type CcModSlot = (Option<(f32, Option<Warning>)>, Option<u8>);
+
+fn read_cc_mods(
+    scopes: &Scopes<'_, '_>,
+    line: usize,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<CcMod>, SfzError> {
+    // 键 = (目标, CC 号)；值 = (delta 及其钳位记录, curve 下标)。两个分量各自独立合并。
+    let mut table: BTreeMap<(ModTarget, u8), CcModSlot> = BTreeMap::new();
     for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
         for (name, value) in map {
             let name = name.as_ref();
@@ -3691,19 +3714,23 @@ fn read_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<CcMod>, SfzE
             }
         }
     }
-    let mods: Vec<CcMod> = table
-        .into_iter()
-        .filter_map(|((target, cc), (delta, curve))| {
-            // 只有 `_curveccN`、没有 `delta` ⇒ 没有任何量被调制（模块文档裁决 4）。
-            let delta = delta?;
-            Some(CcMod {
-                target,
-                cc,
-                delta,
-                curve: curve.unwrap_or(0),
-            })
-        })
-        .collect();
+    let mut mods: Vec<CcMod> = Vec::new();
+    for ((target, cc), (delta, curve)) in table {
+        // 只有 `_curveccN`、没有 `delta` ⇒ 没有任何量被调制（模块文档裁决 4）。
+        let Some((delta, clamp_note)) = delta else {
+            continue;
+        };
+        // 钳位告警只在归约**胜出**的取值上发出（见本函数文档的追加修订段）。
+        if let Some(note) = clamp_note {
+            warnings.push(note);
+        }
+        mods.push(CcMod {
+            target,
+            cc,
+            delta,
+            curve: curve.unwrap_or(0),
+        });
+    }
     if mods.len() > AMPEG_MOD_CAP {
         return Err(SfzError::TooManyAmpegModulations {
             line,
@@ -3733,11 +3760,21 @@ fn read_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<CcMod>, SfzE
 ///
 /// 顺序**确定**：`[Option<f32>; COUNT]` 按 [`AmpegParam`] 声明序索引
 /// （[ARCH-DET-001]；求和时力度项永远在 CC 项**之后**）。
+///
+/// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是上面那句
+/// 「**越界/畸形 ⇒ 明确 `Err`**（第 259 条：⛔ 不静默降级、⛔ 不钳位）」里的
+/// **越界**那一支**（⛔ 原文一字未删，口径同台账第 278 条）：力度调制量与
+/// CC 调制量是同一类量 ⇒ 越界随 [`read_modulation_delta`] 改为**钳位 ＋
+/// 告警**；畸形逐字未变、仍是明确 `Err`。
 fn read_ampeg_vel2_mods(
     scopes: &Scopes<'_, '_>,
     line: usize,
+    warnings: &mut Vec<Warning>,
 ) -> Result<[Option<f32>; AmpegParam::COUNT], SfzError> {
-    let mut table: [Option<f32>; AmpegParam::COUNT] = [None; AmpegParam::COUNT];
+    // 值连同钳位记录一起被后写覆盖（告警只为胜出取值发出，口径同
+    // [`read_cc_mods`] 的追加修订段）。
+    let mut table: [Option<(f32, Option<Warning>)>; AmpegParam::COUNT] =
+        core::array::from_fn(|_| None);
     for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
         for (name, value) in map {
             let name = name.as_ref();
@@ -3755,7 +3792,13 @@ fn read_ampeg_vel2_mods(
             table[param.index()] = Some(read_modulation_delta(value.as_ref(), name, target, line)?);
         }
     }
-    Ok(table)
+    Ok(table.map(|entry| {
+        let (delta, clamp_note) = entry?;
+        if let Some(note) = clamp_note {
+            warnings.push(note);
+        }
+        Some(delta)
+    }))
 }
 
 /// ⭐ `fileg_<param>` / `pitcheg_<param>` 的全名（`&'static str`；
@@ -3794,7 +3837,12 @@ fn eg_opcode_name(prefix: &str, param: EgParam) -> &'static str {
 /// * `depth` 是**整数**音分，走 [`read_i32`]（−12000..=12000；带小数 ⇒ 响亮报错，
 ///   与 `fil_keytrack` 同款）；
 /// * `vel2*` 走 [`read_eg_vel2`] 单独归约（与基准分开，与 `ampeg_vel2` 同形）。
-fn read_eg(scopes: &Scopes<'_, '_>, prefix: &'static str, line: usize) -> Result<EgDef, SfzError> {
+fn read_eg(
+    scopes: &Scopes<'_, '_>,
+    prefix: &'static str,
+    line: usize,
+    warnings: &mut Vec<Warning>,
+) -> Result<EgDef, SfzError> {
     let time = |param: EgParam| {
         read_ampeg_time(
             scopes,
@@ -3828,7 +3876,7 @@ fn read_eg(scopes: &Scopes<'_, '_>, prefix: &'static str, line: usize) -> Result
     };
     Ok(EgDef {
         params,
-        vel2: read_eg_vel2(scopes, prefix, line)?,
+        vel2: read_eg_vel2(scopes, prefix, line, warnings)?,
     })
 }
 
@@ -3843,17 +3891,26 @@ fn read_eg(scopes: &Scopes<'_, '_>, prefix: &'static str, line: usize) -> Result
 /// ⚠ 名字识别**不走** [`parse_modulation_name`]：本族⛔ 不进 `ModTarget`
 /// （范围裁决见 [`crate::eg`]）⇒ `fileg_vel2attack` 在调制层仍是 `None`
 /// （巡检 S118 的反例照旧），只有本函数认它。
+///
+/// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是上面那句
+/// 「**越界/畸形 ⇒ 明确 `Err`**」里的**越界**那一支**（⛔ 原文一字未删，
+/// 口径同台账第 278 条）：本族读的是力度**调制量** ⇒ 越界随
+/// [`read_modulation_delta`] 改为**钳位 ＋ 告警**（只为归约胜出的取值
+/// 发出）；畸形逐字未变、仍是明确 `Err`。基准参数（段时 / 电平 / `depth`
+/// 本体）不在本函数，逐字未动。
 fn read_eg_vel2(
     scopes: &Scopes<'_, '_>,
     prefix: &str,
     line: usize,
+    warnings: &mut Vec<Warning>,
 ) -> Result<[Option<f32>; EgParam::COUNT], SfzError> {
     let vel2_prefix = if prefix == "fileg" {
         "fileg_vel2"
     } else {
         "pitcheg_vel2"
     };
-    let mut table: [Option<f32>; EgParam::COUNT] = [None; EgParam::COUNT];
+    let mut table: [Option<(f32, Option<Warning>)>; EgParam::COUNT] =
+        core::array::from_fn(|_| None);
     for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
         for (name, value) in map {
             let name = name.as_ref();
@@ -3866,7 +3923,13 @@ fn read_eg_vel2(
             table[param.index()] = Some(read_eg_vel2_delta(value.as_ref(), name, param, line)?);
         }
     }
-    Ok(table)
+    Ok(table.map(|entry| {
+        let (delta, clamp_note) = entry?;
+        if let Some(note) = clamp_note {
+            warnings.push(note);
+        }
+        Some(delta)
+    }))
 }
 
 /// 读一个 `*_vel2<param>` 的 `delta`（政策与 [`read_modulation_delta`] 同形，
@@ -3875,7 +3938,17 @@ fn read_eg_vel2(
 /// * 秒：认 `ms` / `s` 后缀；百分比：认 `%`；音分：⛔ 不剥任何后缀；
 /// * 认不出 ⇒ [`SfzError::InvalidFloat`]；非有限 ⇒ [`SfzError::NonFiniteFloat`]；
 /// * 越界 ⇒ [`SfzError::FloatOutOfRange`]（域 ＝ [`EgParam::vel2_range`]）。
-fn read_eg_vel2_delta(raw: &str, name: &str, param: EgParam, line: usize) -> Result<f32, SfzError> {
+///
+/// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是上面第三条
+/// 「越界 ⇒ `FloatOutOfRange`」那一支**（⛔ 原文一字未删，口径同台账
+/// 第 278 条）：调制量越界改为**钳位 ＋ [`Warning::ClampedModulationDepth`]**，
+/// 与 [`read_modulation_delta`] 同一口径；前两条逐字未变。
+fn read_eg_vel2_delta(
+    raw: &str,
+    name: &str,
+    param: EgParam,
+    line: usize,
+) -> Result<(f32, Option<Warning>), SfzError> {
     let raw = raw.trim();
     let (number, scale) = match param.mod_unit() {
         ModUnit::Seconds => {
@@ -3904,16 +3977,21 @@ fn read_eg_vel2_delta(raw: &str, name: &str, param: EgParam, line: usize) -> Res
     }
     let value = parsed * scale;
     let (min, max) = param.vel2_range();
-    if !(min..=max).contains(&value) {
-        return Err(SfzError::FloatOutOfRange {
+    if (min..=max).contains(&value) {
+        return Ok((value, None));
+    }
+    // Wang 2026-11-18 裁决：调制量越界 ⇒ 钳位 ＋ 告警（见本函数文档的
+    // 追加修订段）；`value` 已通过有限检查 ⇒ `clamp` 不会遇到 NaN。
+    let clamped = value.clamp(min, max);
+    Ok((
+        clamped,
+        Some(Warning::ClampedModulationDepth {
             line,
             opcode: name.to_string(),
-            value,
-            min,
-            max,
-        });
-    }
-    Ok(value)
+            value: format!("{value}"),
+            clamped: format!("{clamped}"),
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -3978,15 +4056,11 @@ fn read_lfo_float(
     }
 }
 
-/// 读一个原始字符串形式的 LFO 浮点量（迭代 opcode 表时用；政策同
-/// [`read_lfo_float`]，`max = f32::MAX` 一档表示只验有限与下界）。
-fn parse_lfo_float(
-    raw: &str,
-    name: &str,
-    min: f32,
-    max: f32,
-    line: usize,
-) -> Result<f32, SfzError> {
+/// 读一个原始字符串形式的 LFO 浮点数（**只**做语法与有限检查，⛔ 不查域）：
+/// [`parse_lfo_float`]（静态量，越界 `Err`）与
+/// [`parse_lfo_modulation_float`]（调制量，越界钳位 ＋ 告警）共用这一份，
+/// ⛔ 不让两种域政策各写一遍解析。
+fn parse_lfo_number(raw: &str, name: &str, line: usize) -> Result<f32, SfzError> {
     let parsed = raw
         .trim()
         .parse::<f32>()
@@ -4002,6 +4076,23 @@ fn parse_lfo_float(
             value: raw.to_string(),
         });
     }
+    Ok(parsed)
+}
+
+/// 读一个原始字符串形式的 LFO 浮点量（迭代 opcode 表时用；政策同
+/// [`read_lfo_float`]，`max = f32::MAX` 一档表示只验有限与下界）。
+///
+/// ⚠ 本函数服务的是**静态量**（本体参、阶梯电平、`phase` 等）⇒ 越界维持
+/// 明确 `Err`（Wang 2026-11-18 裁决只放宽**调制量**，见
+/// [`parse_lfo_modulation_float`]）。
+fn parse_lfo_float(
+    raw: &str,
+    name: &str,
+    min: f32,
+    max: f32,
+    line: usize,
+) -> Result<f32, SfzError> {
+    let parsed = parse_lfo_number(raw, name, line)?;
     if parsed < min || (max != f32::MAX && parsed > max) {
         return Err(SfzError::FloatOutOfRange {
             line,
@@ -4014,12 +4105,44 @@ fn parse_lfo_float(
     Ok(parsed)
 }
 
+/// 读一个 LFO 的 **CC 调制量**（`*_depthccN` / `*_freqccN` 及其 `_onccN`
+/// 别名形）：语法与有限检查与 [`parse_lfo_float`] 同一份
+/// （[`parse_lfo_number`]），但越界处置相反 —— 调制量越界**钳位 ＋
+/// [`Warning::ClampedModulationDepth`]**（Wang 2026-11-18 裁决，与
+/// [`read_modulation_delta`] 同一口径），⛔ 不整份拒绝。
+fn parse_lfo_modulation_float(
+    raw: &str,
+    name: &str,
+    min: f32,
+    max: f32,
+    line: usize,
+) -> Result<(f32, Option<Warning>), SfzError> {
+    let parsed = parse_lfo_number(raw, name, line)?;
+    if (min..=max).contains(&parsed) {
+        return Ok((parsed, None));
+    }
+    let clamped = parsed.clamp(min, max);
+    Ok((
+        clamped,
+        Some(Warning::ClampedModulationDepth {
+            line,
+            opcode: name.to_string(),
+            value: format!("{parsed}"),
+            clamped: format!("{clamped}"),
+        }),
+    ))
+}
+
 /// 归约一族 v1 LFO 的 `*_depthccN` / `*_freqccN`（含 `_onccN` 别名形）。
 ///
 /// 作用域链 `global → master → group → region`，同一 cc 后者胜；
 /// 归约后按 cc 升序（确定性求和）。cc 号走既有调制口径
 /// [`parse_modulation_cc`]（0..=255 的写法域，存进 `u8` 时 >127 的
 /// 探针永远读不到 —— 与 `CcMod` 的既有处理一致）。
+///
+/// ⚠ 取值是 **CC 调制量** ⇒ 越界钳位 ＋ 告警（[`parse_lfo_modulation_float`]，
+/// Wang 2026-11-18 裁决；只为归约胜出的取值发出）；同一族的**本体参**
+/// （`amplfo_depth` 等静态量）走 [`read_lfo_float`]，越界维持明确 `Err`。
 fn read_v1_lfo_cc(
     scopes: &Scopes<'_, '_>,
     prefix: &str,
@@ -4027,10 +4150,11 @@ fn read_v1_lfo_cc(
     min: f32,
     max: f32,
     line: usize,
+    warnings: &mut Vec<Warning>,
 ) -> Result<Vec<LfoCcMod>, SfzError> {
     let plain = format!("{prefix}_{kind}cc");
     let oncc = format!("{prefix}_{kind}_oncc");
-    let mut table: BTreeMap<u8, f32> = BTreeMap::new();
+    let mut table: BTreeMap<u8, (f32, Option<Warning>)> = BTreeMap::new();
     for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
         for (name, value) in map {
             let name = name.as_ref();
@@ -4044,12 +4168,20 @@ fn read_v1_lfo_cc(
                 continue;
             }
             let cc = parse_modulation_cc(digits, name, line)?;
-            table.insert(cc, parse_lfo_float(value.as_ref(), name, min, max, line)?);
+            table.insert(
+                cc,
+                parse_lfo_modulation_float(value.as_ref(), name, min, max, line)?,
+            );
         }
     }
     Ok(table
         .into_iter()
-        .map(|(cc, delta)| LfoCcMod { cc, delta })
+        .map(|(cc, (delta, clamp_note))| {
+            if let Some(note) = clamp_note {
+                warnings.push(note);
+            }
+            LfoCcMod { cc, delta }
+        })
         .collect())
 }
 
@@ -4064,6 +4196,7 @@ fn read_v1_lfo(
     depth_min: f32,
     depth_max: f32,
     line: usize,
+    warnings: &mut Vec<Warning>,
 ) -> Result<V1Lfo, SfzError> {
     let ranged = |suffix: &'static str, min: f32, max: f32| {
         read_lfo_float(scopes, v1_lfo_name(prefix, suffix), min, max, 0.0)
@@ -4073,8 +4206,10 @@ fn read_v1_lfo(
         fade: ranged("fade", 0.0, 100.0)?,
         freq: ranged("freq", 0.0, 20.0)?,
         depth: ranged("depth", depth_min, depth_max)?,
-        depth_cc: read_v1_lfo_cc(scopes, prefix, "depth", depth_min, depth_max, line)?,
-        freq_cc: read_v1_lfo_cc(scopes, prefix, "freq", -200.0, 200.0, line)?,
+        depth_cc: read_v1_lfo_cc(
+            scopes, prefix, "depth", depth_min, depth_max, line, warnings,
+        )?,
+        freq_cc: read_v1_lfo_cc(scopes, prefix, "freq", -200.0, 200.0, line, warnings)?,
         depth_chanaft: ranged("depthchanaft", depth_min, depth_max)?,
         depth_polyaft: ranged("depthpolyaft", depth_min, depth_max)?,
         freq_chanaft: ranged("freqchanaft", -200.0, 200.0)?,
@@ -4353,12 +4488,29 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
 /// ⚠ **被修订的只是行数**：上表前三行**逐字未动**（`Seconds` 仍只认 `s` / `ms`、
 /// `Percent` 仍只认 `%`、`Cents` 仍只认 `""`）⇒ `#104`～`#118` 的既有读数**逐位不变**。
 /// ⭐ 为什么 dB 要**新开一行**而⛔ 不并进 `Cents`：见 [`crate::modulation`] §8.2 的裁定。
+///
+/// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是本函数引言第 2 条
+/// 「越界一律 [`SfzError::FloatOutOfRange`]」那一支**（⛔ 原文一字未删，口径同
+/// 台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：本函数读的是
+/// **调制量**（modulation depth），不是静态参数值 —— 调制量越过
+/// [`ModTarget::delta_range`] 时改为**钳位到值域边界**并产出一条
+/// [`Warning::ClampedModulationDepth`]（经调用方的告警通道响亮记录），
+/// ⛔ 不再整份拒绝装载。动因：登记语料里 4 款 Karoryfer 乐器在 `<global>`
+/// 写 `pan_oncc10=200`（`pan` 的 Modulation 表域是 `-100..=100`），旧口径下
+/// 整份不可加载；其它播放器（sfizz / ARIA 系）对这类写法是接受并钳制的。
+/// ⚠ **被修订的只是越界处置**：后缀政策、非有限检查（`NonFiniteFloat`）、
+/// 认不出（`InvalidFloat`）、负值合法、域的来源（`delta_range`）**逐字未变**；
+/// 静态参数值越界（如 `amp_veltrack`）维持明确 `Err`，⛔ 不经本函数。
+/// 返回值因此带上钳位记录：`(换算并钳位后的调制量, Option<Warning>)` ——
+/// `None` ＝ 原值在域内（无告警）；告警由**归约的胜出方**发出（同一
+/// `(目标, CC)` 被弱作用域的越界值写过、又被强作用域的域内值覆盖时，
+/// 生效的是域内值 ⇒ 不为未生效的取值告警）。
 fn read_modulation_delta(
     raw: &str,
     name: &str,
     target: ModTarget,
     line: usize,
-) -> Result<f32, SfzError> {
+) -> Result<(f32, Option<Warning>), SfzError> {
     let raw = raw.trim();
     // ⭐⭐ `#117`：后缀分支**逐单位类别分派**（[`ModTarget::mod_unit`]）——
     // ⛔ 不再是 `is_time()` 的二分（那会把 `%` 一族与 `cents` 一族混在一起）。
@@ -4406,16 +4558,21 @@ fn read_modulation_delta(
     // ⭐⭐ `#116`：域的**唯一**来源（`tune` ⇒ ±9600 音分；`volume` ⇒ -144..=48 dB；
     // `amplitude` ⇒ 任意有限值（`#206`）；`ampeg_*` ⇒ ±100）。
     let (min, max) = target.delta_range();
-    if !(min..=max).contains(&value) {
-        return Err(SfzError::FloatOutOfRange {
+    if (min..=max).contains(&value) {
+        return Ok((value, None));
+    }
+    // ⭐ Wang 2026-11-18 裁决：调制量越界 ⇒ 钳位 ＋ 告警（见本函数文档的
+    // 追加修订段）；`value` 在此已通过有限检查 ⇒ `clamp` 不会遇到 NaN。
+    let clamped = value.clamp(min, max);
+    Ok((
+        clamped,
+        Some(Warning::ClampedModulationDepth {
             line,
             opcode: name.to_string(),
-            value,
-            min,
-            max,
-        });
-    }
-    Ok(value)
+            value: format!("{value}"),
+            clamped: format!("{clamped}"),
+        }),
+    ))
 }
 
 /// 读调制量的浮点：**严格 `parse::<f32>()` 优先**；只有严格解析失败、且文本以
@@ -7959,6 +8116,11 @@ type=com.mda.Limiter
 
     #[test]
     fn lfo_v1_out_of_range_is_a_loud_error() {
+        // ⚠ 本表只剩**本体参**（静态量）：`amplfo_depth` / `pitchlfo_freq` /
+        // `pitchlfo_delay` 这类静态值越界维持响亮 `Err`（Wang 2026-11-18
+        // 裁决只放宽调制量）。原表里的两条 CC 调制量
+        // （`amplfo_freqcc1=201` / `amplfo_depthcc1=11`）已移到
+        // `lfo_v1_cc_depth_out_of_range_is_clamped_with_a_warning`。
         for text in [
             "<region>sample=a.wav amplfo_depth=10.5",
             "<region>sample=a.wav amplfo_depth=-11",
@@ -7966,14 +8128,58 @@ type=com.mda.Limiter
             "<region>sample=a.wav fillfo_depth=-1201",
             "<region>sample=a.wav pitchlfo_freq=21",
             "<region>sample=a.wav pitchlfo_delay=101",
-            "<region>sample=a.wav amplfo_freqcc1=201",
-            "<region>sample=a.wav amplfo_depthcc1=11",
         ] {
             assert!(
                 parse_text(text, &Default::default()).is_err(),
                 "越界必须响亮报错：{text}"
             );
         }
+    }
+
+    #[test]
+    fn lfo_v1_cc_depth_out_of_range_is_clamped_with_a_warning() {
+        // ⭐ Wang 2026-11-18 裁决：`*_depthccN` / `*_freqccN` 是 CC 调制量
+        // ⇒ 越界钳位到该族的值域端点 ＋ 一条 `ClampedModulationDepth` 告警
+        // （freq 伴随域 ±200、amp depth 域 ±10），⛔ 不整份拒绝。
+        let freq = parse_text(
+            "<region>sample=a.wav amplfo_freqcc1=201",
+            &Default::default(),
+        )
+        .expect("越界的 freq 调制量必须可装载");
+        assert_eq!(
+            freq.regions()[0].amplfo.freq_cc,
+            vec![crate::lfo::LfoCcMod {
+                cc: 1,
+                delta: 200.0
+            }]
+        );
+        assert!(
+            freq.warnings().iter().any(|warning| matches!(
+                warning,
+                Warning::ClampedModulationDepth { opcode, value, clamped, .. }
+                    if opcode == "amplfo_freqcc1" && value == "201" && clamped == "200"
+            )),
+            "钳位必须留下告警，实得 {:?}",
+            freq.warnings()
+        );
+        let depth = parse_text(
+            "<region>sample=a.wav amplfo_depthcc1=11",
+            &Default::default(),
+        )
+        .expect("越界的 depth 调制量必须可装载");
+        assert_eq!(
+            depth.regions()[0].amplfo.depth_cc,
+            vec![crate::lfo::LfoCcMod { cc: 1, delta: 10.0 }]
+        );
+        assert!(
+            depth.warnings().iter().any(|warning| matches!(
+                warning,
+                Warning::ClampedModulationDepth { opcode, value, clamped, .. }
+                    if opcode == "amplfo_depthcc1" && value == "11" && clamped == "10"
+            )),
+            "钳位必须留下告警，实得 {:?}",
+            depth.warnings()
+        );
     }
 
     #[test]
@@ -10347,6 +10553,12 @@ v127=1
 
     /// ⭐ 任务单 `#106`：**五形态的域与单位后缀**（`-100..=100`；时间认 `s`/`ms`、
     /// `sustain` 认 `%`）＋ 畸形 ⇒ 响亮 `Err` ＋ 同类里的合法样例被接受。
+    ///
+    /// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是下面
+    /// 「越界 ⇒ 响亮 `Err`」那一支**（⛔ 原判据文本在代码里以修订形保留）：
+    /// 力度调制量越界改为**钳位到 ±100 ＋ `ClampedModulationDepth` 告警**
+    /// （与 CC 调制量同一口径，见 [`read_modulation_delta`] 的追加修订段）；
+    /// 畸形（认不出 / 非有限）逐字未变、仍是响亮 `Err`。
     #[test]
     fn ampeg_vel2_values_are_read_with_unit_suffixes_and_loud_errors() {
         let text = "<region> sample=a.wav \
@@ -10359,11 +10571,61 @@ v127=1
         assert_eq!(region.ampeg_vel2(AmpegParam::Decay), Some(1.5));
         assert_eq!(region.ampeg_vel2(AmpegParam::Sustain), Some(-25.0));
         assert_eq!(region.ampeg_vel2(AmpegParam::Release), Some(100.0));
-        // ⛔ 越界 / 畸形 ⇒ 响亮 `Err`（⛔ 不钳位、⛔ 不静默降级）。
-        let bad: [(&str, &str); 6] = [
-            ("ampeg_vel2attack=100.5", "FloatOutOfRange"),
-            ("ampeg_vel2attack=-100.5", "FloatOutOfRange"),
-            ("ampeg_vel2sustain=101", "FloatOutOfRange"),
+        // ⭐ 修订后口径（Wang 2026-11-18 裁决）：**越界 ⇒ 钳位 ＋ 告警**
+        //（读数落到值域端点、告警载荷逐字钉住）；**畸形 ⇒ 响亮 `Err`**（逐字未变）。
+        let clamped_cases: [(&str, AmpegParam, f32, &str, &str); 3] = [
+            (
+                "ampeg_vel2attack=100.5",
+                AmpegParam::Attack,
+                100.0,
+                "100.5",
+                "100",
+            ),
+            (
+                "ampeg_vel2attack=-100.5",
+                AmpegParam::Attack,
+                -100.0,
+                "-100.5",
+                "-100",
+            ),
+            (
+                "ampeg_vel2sustain=101",
+                AmpegParam::Sustain,
+                100.0,
+                "101",
+                "100",
+            ),
+        ];
+        for (opcode, param, want_delta, want_value, want_clamped) in clamped_cases {
+            let source = format!("<region> sample=a.wav {opcode}\n");
+            let instrument = parse_text(&source, &Default::default())
+                .unwrap_or_else(|error| panic!("`{opcode}` 越界调制量必须可装载：{error}"));
+            assert_eq!(
+                instrument.regions()[0].ampeg_vel2(param),
+                Some(want_delta),
+                "`{opcode}` 必须钳位到值域端点"
+            );
+            let notes: Vec<&Warning> = instrument
+                .warnings()
+                .iter()
+                .filter(|warning| matches!(warning, Warning::ClampedModulationDepth { .. }))
+                .collect();
+            assert_eq!(notes.len(), 1, "`{opcode}` 必须恰一条钳位告警");
+            match notes[0] {
+                Warning::ClampedModulationDepth {
+                    opcode: warned_opcode,
+                    value,
+                    clamped,
+                    ..
+                } => {
+                    assert_eq!(warned_opcode, opcode.split('=').next().unwrap());
+                    assert_eq!(value, want_value);
+                    assert_eq!(clamped, want_clamped);
+                }
+                _ => unreachable!(),
+            }
+        }
+        let bad: [(&str, &str); 3] = [
             ("ampeg_vel2attack=abc", "InvalidFloat"),
             ("ampeg_vel2hold=50%", "InvalidFloat"),
             ("ampeg_vel2attack=inf", "NonFiniteFloat"),
@@ -10373,33 +10635,40 @@ v127=1
             let outcome = parse_text(&source, &Default::default());
             println!("[sfz/ampeg-vel2] {opcode} ⇒ {outcome:?}");
             let ok = match want {
-                "FloatOutOfRange" => {
-                    matches!(outcome, Err(SfzError::FloatOutOfRange { min, max, .. })
-                        if min == -100.0 && max == 100.0)
-                }
                 "InvalidFloat" => matches!(outcome, Err(SfzError::InvalidFloat { .. })),
                 _ => matches!(outcome, Err(SfzError::NonFiniteFloat { .. })),
             };
             assert!(ok, "`{opcode}` 必须是 `{want}`，实得 {outcome:?}");
         }
         // ⭐ 同批数据里的**合法样例**单独出现必须被接受（负判据的正对照）。
-        for legal in [
-            "ampeg_vel2attack=-100.5s",
-            "ampeg_vel2decay=0",
-            "ampeg_vel2sustain=100%",
-        ] {
+        for legal in ["ampeg_vel2decay=0", "ampeg_vel2sustain=100%"] {
             let source = format!("<region> sample=a.wav {legal}\n");
             let outcome = parse_text(&source, &Default::default());
-            // `-100.5s` ⇒ 换算后 −100.5 < −100 ⇒ 仍越界；用一条**真**合法的样例做正对照。
-            if legal.starts_with("ampeg_vel2attack") {
-                assert!(outcome.is_err(), "换算后越界仍必须 `Err`：{outcome:?}");
-                continue;
-            }
             assert!(
                 outcome.is_ok(),
                 "⭐ 合法样例 `{legal}` 必须被接受：{outcome:?}"
             );
         }
+        // `-100.5s` ⇒ 换算后 −100.5 < −100：修订前是「换算后越界仍必须
+        // `Err`」，修订后是钳位到 −100 ＋ 一条告警（换算在钳位之前，逐字钉住）。
+        let converted = parse_text(
+            "<region> sample=a.wav ampeg_vel2attack=-100.5s\n",
+            &Default::default(),
+        )
+        .expect("换算后越界的调制量必须可装载");
+        assert_eq!(
+            converted.regions()[0].ampeg_vel2(AmpegParam::Attack),
+            Some(-100.0)
+        );
+        assert!(
+            converted.warnings().iter().any(|warning| matches!(
+                warning,
+                Warning::ClampedModulationDepth { value, clamped, .. }
+                    if value == "-100.5" && clamped == "-100"
+            )),
+            "换算后的钳位必须留下告警，实得 {:?}",
+            converted.warnings()
+        );
         // ⛔ 不属本族的名字按未知 opcode 忽略（既有口径）：整份仍 `Ok`，且**不产生**读数。
         let ignored = parse_text(
             "<region> sample=a.wav ampeg_vel2foo=1 ampeg_vel2=1 ampeg_vel2attackcc1=1\n",
