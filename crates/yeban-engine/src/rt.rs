@@ -679,6 +679,12 @@ pub struct EngineStats {
     /// 没有它，"分声道这条路真的在跑"在居中声相的夹具上**无法与单声道区分**
     /// （两条声道本来就相同）；行为判据见 `tests/sfz_pan_insert_joint.rs`。
     pub stereo_track_frames: u64,
+    /// ⭐ **stage 20 覆盖度见证**：**处理型总线**插入链累计处理过的帧数（0 ＝ 从未处理）。
+    ///
+    /// 与 [`Self::insert_strip_frames`] 等族分开口径：那些数把轨与总线混在一起。
+    /// 没有它，"总线的插入链真的在跑（stage 15 起是立体声）"就无法与"只有轨上有器件"
+    /// 区分；行为判据见 `tests/bus_insert.rs` 的 B1/B2/B3。
+    pub bus_insert_frames: u64,
     /// **实时侧参数目标表**累计把增益乘过的帧数（[`crate::param`]；0 = 从未乘过）。
     ///
     /// 它是"`SetParam` 真的改变了声音"的**见证**：没有它，`events_applied` 只能证明
@@ -1553,6 +1559,8 @@ struct BranchShare<'a> {
     pan_automation_frames: &'a mut u64,
     /// ⭐ stage 18：本量子**真的走了分声道渲染**的帧数（跨轨累加）。
     stereo_track_frames: &'a mut u64,
+    /// ⭐ stage 20：处理型总线插入链累计处理过的帧数。
+    bus_insert_frames: &'a mut u64,
     meter_capacity_drops: &'a mut u64,
     pan_gains: &'a mut [(EntityId, f32, f32)],
 }
@@ -2458,6 +2466,8 @@ fn render_branch(
                 ) {
                     insert_current_seen = true;
                 }
+                // ⭐ stage 20：覆盖度见证（每条处理型总线每量子恰好一次）。
+                *share.bus_insert_frames = share.bus_insert_frames.wrapping_add(frames as u64);
                 // ③ ⭐ **stage 15**：原样搬回两路（左→左、右→右）。
                 {
                     let (bus_left, bus_right) = share.routing_buses[index].stereo_mut();
@@ -2820,6 +2830,12 @@ pub struct EngineRuntime {
     /// 没有这个数，"分声道真的被走到"就只能从别的计数（插入帧数）间接猜。
     /// 读口见 [`EngineRuntime::stereo_track_frames`]。
     stereo_track_frames: u64,
+    /// ⭐ **stage 20 覆盖度见证**：**处理型总线的插入链**累计处理过的帧数（0 ＝ 从未处理）。
+    ///
+    /// 与 `insert_strip_frames` 等族**分开口径**：那些数把"轨与总线"混在一起，
+    /// 回答不了"总线上的那条链（stage 15 起是立体声）到底跑没跑"。
+    /// 读口见 [`EngineRuntime::bus_insert_frames`]。
+    bus_insert_frames: u64,
     /// 被拒绝的声相**值**数（非有限 / 负数）。
     pan_automation_value_rejects: u64,
     /// **R76 的读数**：已经设好的声相自动化目标被**同量子的快照武装**取消掉的次数。
@@ -3533,6 +3549,7 @@ impl EngineRuntime {
             );
             put!(pan_automation_frames, 0);
             put!(stereo_track_frames, 0);
+            put!(bus_insert_frames, 0);
             put!(pan_automation_value_rejects, 0);
             put!(pan_automation_resets, 0);
             // ⭐ 逐边发送量（任务单 `#261`）：**构造期**预分配全部槽位（回调内绝不
@@ -3979,6 +3996,7 @@ impl EngineRuntime {
             insert_convolution_rejects: self.insert_convolution_rejects,
             master_insert_frames: self.master_insert_frames,
             stereo_track_frames: self.stereo_track_frames,
+            bus_insert_frames: self.bus_insert_frames,
             param_gain_frames: self.params.gain_frames(),
             param_master_gain_frames: self.params.master_gain_frames(),
             param_gain_rejects: self.params.rejections(),
@@ -4095,6 +4113,14 @@ impl EngineRuntime {
     #[must_use]
     pub const fn stereo_track_frames(&self) -> u64 {
         self.stereo_track_frames
+    }
+
+    /// ⭐ **stage 20 覆盖度见证**：处理型总线插入链累计处理过的帧数。
+    ///
+    /// 口径：每条处理型总线每量子至多 `＋frames`（链在转发阶段**每量子恰好跑一次**）。
+    #[must_use]
+    pub const fn bus_insert_frames(&self) -> u64 {
+        self.bus_insert_frames
     }
 
     /// **不静默**：被拒绝的声相自动化**值**数（非有限 / 负数）。
@@ -4702,6 +4728,7 @@ impl EngineRuntime {
             armed_pan_armed,
             pan_automation_frames,
             stereo_track_frames,
+            bus_insert_frames,
             pan_automation_value_rejects,
             pan_automation_resets,
             // ⭐ 逐边发送量（`#261`）：事件循环写目标、逐样本路径推进它们。
@@ -5678,6 +5705,7 @@ impl EngineRuntime {
                     master_insert_frames: &mut *master_insert_frames,
                     pan_automation_frames: &mut *pan_automation_frames,
                     stereo_track_frames: &mut *stereo_track_frames,
+                    bus_insert_frames: &mut *bus_insert_frames,
                     meter_capacity_drops: &mut *meter_capacity_drops,
                     pan_gains: &mut pan_gains,
                     key_taps: &mut *key_taps,
@@ -9299,8 +9327,9 @@ mod tests {
             let produced = 0usize;
             // 与 `render_block` 同源：本量子的声相增益表是 `armed_pan_gains` 的副本。
             let mut pan_gains = [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS];
-            // ⭐ stage 18：本判据不看分声道覆盖度，只借一个计数器占位。
+            // ⭐ stage 18／20：本判据不看覆盖度读数，只借两个计数器占位。
             let mut stereo_track_frames = 0u64;
+            let mut bus_insert_frames = 0u64;
             pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
             let mut share = BranchShare {
                 pdc,
@@ -9347,6 +9376,7 @@ mod tests {
                 master_insert_frames,
                 pan_automation_frames,
                 stereo_track_frames: &mut stereo_track_frames,
+                bus_insert_frames: &mut bus_insert_frames,
                 meter_capacity_drops,
                 pan_gains: &mut pan_gains,
                 key_taps,

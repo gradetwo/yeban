@@ -308,6 +308,17 @@ fn b1_the_bus_reverb_tail_is_audible_after_the_note_ends() {
         wet.stats.insert_reverb_frames, expected_frames,
         "总线混响必须**恰好每量子处理一次**（每节点每量子一次）"
     );
+    // ⭐ **stage 20**：总线插入链自己的覆盖度读数 —— 与"轨上器件"分开口径。
+    // ⚠ `wet=0` 的臂**仍挂着已武装器件**（`has_armed_insert_devices` 为真）⇒ 链照样跑
+    // （与主总线 M5 的"武装即跑"同一口径），只是混响级不推进。
+    assert_eq!(
+        dry.stats.bus_insert_frames, expected_frames,
+        "已武装但湿声为 0 ⇒ 总线链照样每量子跑一次（⛔ 不是 0）"
+    );
+    assert_eq!(
+        wet.stats.bus_insert_frames, expected_frames,
+        "处理型总线的插入链必须每量子恰好处理一次（⛔ 不是 2×）"
+    );
     assert!(
         dry_tail < 1e-5,
         "wet=0 的尾窗必须是静音（release 0.05 s ≪ 200 ms）：{dry_tail:.9}"

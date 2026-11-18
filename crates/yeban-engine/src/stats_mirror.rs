@@ -185,6 +185,8 @@ pub struct EngineStatsMirror {
     master_insert_frames: AtomicU64,
     /// ⭐ stage 18：分声道渲染帧数（与 `rt.rs` 的 `EngineStats::stereo_track_frames` 同源）。
     stereo_track_frames: AtomicU64,
+    /// ⭐ stage 20：总线插入链帧数（与 `rt.rs` 的 `EngineStats::bus_insert_frames` 同源）。
+    bus_insert_frames: AtomicU64,
     param_gain_frames: AtomicU64,
     param_master_gain_frames: AtomicU64,
     param_gain_rejects: AtomicU64,
@@ -264,6 +266,7 @@ impl EngineStatsMirror {
             insert_convolution_rejects: AtomicU64::new(0),
             master_insert_frames: AtomicU64::new(0),
             stereo_track_frames: AtomicU64::new(0),
+            bus_insert_frames: AtomicU64::new(0),
             param_gain_frames: AtomicU64::new(0),
             param_master_gain_frames: AtomicU64::new(0),
             param_gain_rejects: AtomicU64::new(0),
@@ -384,6 +387,8 @@ impl EngineStatsMirror {
             .store(stats.master_insert_frames, Ordering::Relaxed);
         self.stereo_track_frames
             .store(stats.stereo_track_frames, Ordering::Relaxed);
+        self.bus_insert_frames
+            .store(stats.bus_insert_frames, Ordering::Relaxed);
         self.param_gain_frames
             .store(stats.param_gain_frames, Ordering::Relaxed);
         self.param_master_gain_frames
@@ -509,6 +514,7 @@ impl EngineStatsMirror {
             insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
             master_insert_frames: self.master_insert_frames.load(Ordering::Relaxed),
             stereo_track_frames: self.stereo_track_frames.load(Ordering::Relaxed),
+            bus_insert_frames: self.bus_insert_frames.load(Ordering::Relaxed),
             param_gain_frames: self.param_gain_frames.load(Ordering::Relaxed),
             param_master_gain_frames: self.param_master_gain_frames.load(Ordering::Relaxed),
             param_gain_rejects: self.param_gain_rejects.load(Ordering::Relaxed),
@@ -614,6 +620,7 @@ mod tests {
             insert_convolution_rejects: 28,
             master_insert_frames: 54,
             stereo_track_frames: 57,
+            bus_insert_frames: 58,
             param_gain_frames: 40,
             param_master_gain_frames: 44,
             param_gain_rejects: 41,
