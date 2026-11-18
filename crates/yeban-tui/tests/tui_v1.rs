@@ -34,8 +34,16 @@ fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer().clone();
     let mut out = String::new();
     for y in 0..buffer.area.height {
-        for x in 0..buffer.area.width {
-            out.push_str(buffer[(x, y)].symbol());
+        let mut x = 0;
+        while x < buffer.area.width {
+            let symbol = buffer[(x, y)].symbol();
+            out.push_str(symbol);
+            // 双宽字符（中文等）的后继格是占位空格，跳过它文本才连读。
+            x += if unicode_width::UnicodeWidthStr::width(symbol) >= 2 {
+                2
+            } else {
+                1
+            };
         }
         out.push('\n');
     }
@@ -62,7 +70,7 @@ fn layout_renders_demo_project_panes() {
         "贝斯",
         "Master",
         "NORMAL",
-        "001.1",
+        "000.0",
         "▼",
         "乐器",
         "音量",
@@ -94,7 +102,7 @@ fn key_dispatch_gui_shared_and_vi_layers() {
     app.handle_key(char_key(' '));
     assert!(app.is_playing(), "Space 后应处于播放态");
     app.handle_key(char_key(' '));
-    app.tick(0.05);
+    app.tick();
     assert!(!app.is_playing(), "再按 Space 应暂停/停止");
 
     // GUI 共享键：m 静音选中轨（主总线初始未静音）。
@@ -151,7 +159,7 @@ fn transport_advances_under_wall_clock_pump() {
     let mut advanced = 0_u64;
     for _ in 0..40 {
         std::thread::sleep(Duration::from_millis(50));
-        app.tick(0.05);
+        app.tick();
         advanced = app.transport().position_ticks;
         if advanced > 0 {
             break;
@@ -162,7 +170,7 @@ fn transport_advances_under_wall_clock_pump() {
         "播放 2 秒内播放头应前进，实际 position_ticks = {advanced}"
     );
     app.stop();
-    app.tick(0.05);
+    app.tick();
     assert_eq!(app.transport().state, TransportState::Stopped);
 }
 
@@ -174,13 +182,13 @@ fn export_wav_writes_real_audio_file() {
     let receipt = app.export_wav(&path).expect("export");
     assert_eq!(receipt.sample_rate, 48_000);
     assert_eq!(receipt.bits, 24);
-    // 默认导出 8 秒 × 48 kHz = 384,000 帧。
-    assert_eq!(receipt.frames, 384_000);
+    // 导出帧数取工程时长：演示工程内容 5.0 秒 × 48 kHz = 240,000 帧。
+    assert_eq!(receipt.frames, 240_000);
     let bytes = std::fs::read(&path).expect("read wav");
     assert_eq!(&bytes[0..4], b"RIFF");
     assert_eq!(receipt.bytes, bytes.len() as u64);
     // 24-bit 立体声：数据量 ≈ 帧数 × 2 声道 × 3 字节 + WAV 头。
-    let expected_min = 384_000_u64 * 2 * 3;
+    let expected_min = 240_000_u64 * 2 * 3;
     assert!(
         receipt.bytes >= expected_min && receipt.bytes < expected_min + 4096,
         "WAV 字节数异常：{}",
