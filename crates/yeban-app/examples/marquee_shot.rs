@@ -101,8 +101,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (heights[clip.track_index] - 8.0).max(52.0),
         )
     };
-    // 空白按下点：第一条轨道行内第一处 ≥40px 空档中点。
-    let (mut sx, mut sy) = (0.0_f32, 0.0_f32);
+    // 空白按下点：第一条轨道行内第一处 ≥40px 空档中点（连同所在轨号返回，
+    // 目标必须取**异轨**片段 —— 同轨目标会让矩形高度塌成 0，只剩一条线，
+    // 目视等于没画：第一版实帧就是这样被诊断出来的）。
+    let (mut sx, mut sy, mut start_track) = (0.0_f32, 0.0_f32, usize::MAX);
     'scan: for track in 0..view.tracks.len() {
         let mut intervals: Vec<(f32, f32)> = view
             .clips
@@ -119,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if start - cursor >= 40.0 && cursor + 20.0 < visible_tx_max {
                 sx = cursor + 20.0;
                 sy = ys[track] + heights[track] / 2.0;
+                start_track = track;
                 break 'scan;
             }
             cursor = cursor.max(end);
@@ -126,16 +129,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if visible_tx_max - cursor >= 40.0 && cursor + 20.0 < visible_tx_max {
             sx = cursor + 20.0;
             sy = ys[track] + heights[track] / 2.0;
+            start_track = track;
             break 'scan;
         }
     }
-    // 目标：异轨可见片段的中心。
+    // 目标：异轨可见片段的中心（与判据 `clip_marquee_selection` 同款选法）。
     let target = view
         .clips
         .iter()
         .find(|c| {
-            let (x, y, w, _) = block(c);
-            y != sy && x + w / 2.0 < visible_tx_max
+            let (x, _, w, _) = block(c);
+            c.track_index != start_track && x + w / 2.0 < visible_tx_max
         })
         .ok_or("必须有异轨可见片段")?;
     let (tx0, ty0, tw, th) = block(target);
