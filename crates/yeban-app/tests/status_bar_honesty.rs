@@ -233,21 +233,27 @@ fn the_two_wired_cells_have_exactly_one_host_writer_and_chord_still_has_none() {
 /// 鼓机效果层又加 `DrumFxFamilies` / `DrumFxPreset` / `drum_fx_device_specs`（`drum_preset.rs`，仅供
 /// `bridge.rs` 落逐风格 FX 器件配方），共 31 处 / 14 符号。
 /// `factory_drum_style` 与 `factory_drum_styles` 是两个不同符号，须各列一条。
-const DRUM_THEORY_SYMBOLS: [&str; 14] = [
+const DRUM_THEORY_SYMBOLS: [&str; 20] = [
     "ACOUSTIC_KIT_SFZ_PATH",
+    "DrumFxDeviceSpec",
     "DrumFxFamilies",
     "DrumFxPreset",
     "DrumGenParams",
     "DrumKitSetup",
+    "DrumLaneChainPreset",
     "DrumStylePreset",
     "KitFamily",
     "TICKS_PER_BAR",
+    "drum_bus_device_specs",
     "drum_fx_device_specs",
+    "drum_lane_device_specs",
     "factory_drum_style",
     "factory_drum_style_ids",
     "factory_drum_styles",
     "generate_drum_pattern",
     "kit_setup",
+    "lane_chain_generation_violations",
+    "uncovered_pattern_keys",
 ];
 
 /// 扫一段源码，返回（`yeban_theory::` 符号表，未入账的行）。
@@ -299,8 +305,8 @@ fn theory_references_in_code(code: &str) -> (Vec<String>, Vec<String>) {
 ///   1. 清单里有 `yeban-theory` 边（鼓机线需要它；撤边会先断鼓机编译，本条直接钉前提）；
 ///   2. 全部 `yeban_theory::` 符号都在白名单内；
 ///   3. 没有白名单扫不到的形态（大括号导入、裸 `use`）；
-///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 31 处 / 3 文件 /
-///      14 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
+///   4. 非真空下界：引用 ≥ 10 处、跨 ≥ 2 个文件、不同符号 ≥ 5 个（实测 42 处 / 3 文件 /
+///      20 符号）—— 扫描域塌成空/个位数时本条先红（R93/R100）。
 ///
 /// 另附 R56 合成对照（与真扫描同一段代码）：纯鼓片段 ⇒ 干净；含 `Chord` /
 /// `detect_chord` 的片段 ⇒ 点名报出；大括号导入 / 裸 `use` ⇒ 报"未入账"；

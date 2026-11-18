@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 328 条：collection_size 68 ／ value_bound 247 ／ element_value_bound 5 ／ condition_counter 8
+# 合计 329 条：collection_size 68 ／ value_bound 248 ／ element_value_bound 5 ／ condition_counter 8
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -94,6 +94,7 @@ src/drums/mod.rs|an_untouched_machine_renders_bit_exact_silence|value_bound|asse
 src/drums/mod.rs|finite_values_outside_a_domain_reach_the_bound_exactly|value_bound|assert_eq!(clean.snare.tone_hz, MIN_FREQ_HZ, "0 Hz 不是合法音高"
 src/drums/mod.rs|hostile_parameters_never_produce_a_non_finite_sample|value_bound|assert_eq!(bad, 0, "{} 产出 {bad} 个非有限样本", voice.name()
 src/drums/mod.rs|more_hits_than_slots_steals_the_lowest_level_slot_deterministically|value_bound|assert_eq!(machine.triggers(), (DRUM_SLOTS + 1) as u64
+src/drums/mod.rs|recipe_909_renders_differently_from_the_default_recipe|value_bound|assert_ne!(default_out, recipe_out, "909 配方与默认配方的波形必须不同"
 src/drums/mod.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(                 mismatch.is_none(),                 "块长 {split} 帧的切分在第 {} 个样本上与整块
 src/drums/mod.rs|set_params_during_a_fade_does_not_cancel_the_fade|value_bound|assert!(fading_before > 0, "夹具必须至少造出一个淡出中的槽位"
 src/drums/mod.rs|the_default_steal_fade_is_the_three_millisecond_constant|collection_size|assert_eq!(steal_fade_frames_for(48_000.0), 144
