@@ -5832,7 +5832,7 @@ const AMPEG_FOUR_FORMS: &str = "<curve>curve_index=7\n\
                                 <region> sample=a.wav key=64 pitch_keycenter=60 ampeg_hold=0.1\n";
 
 /// S54 负判据要认的几种 `Err` 形状。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModErrorShape {
     IntRange255,
     FloatRange100,
@@ -5861,6 +5861,57 @@ fn matches_mod_error(error: &SfzError, shape: ModErrorShape) -> bool {
         ModErrorShape::InvalidFloat => matches!(error, SfzError::InvalidFloat { .. }),
         ModErrorShape::NonFinite => matches!(error, SfzError::NonFiniteFloat { .. }),
     }
+}
+
+/// ⭐ **stage 23**：从期望的错误文本里取出 `value <x> out of range <min>..=<max>`。
+///
+/// 越界**调制深度**自 `dbb31015` 起不再 `Err` ⇒ 判据要拿同一批数字去读告警载荷
+/// （`value` ＝ 原文、`clamped` ＝ 边界），所以先把三段数字从 needle 里解析出来。
+fn parse_out_of_range(needle: &str) -> Option<(f64, f64, f64)> {
+    let rest = needle.split("value ").nth(1)?;
+    let mut parts = rest.split(' ');
+    let value: f64 = parts.next()?.parse().ok()?;
+    // 余下形如 `out of range -100..=100`
+    let range = parts.find(|part| part.contains("..="))?;
+    let (min, max) = range.split_once("..=")?;
+    Some((value, min.parse().ok()?, max.parse().ok()?))
+}
+
+/// ⭐ **stage 23**：越界**调制深度** ⇒ 装载成功 ＋ `ClampedModulationDepth` 告警。
+///
+/// 载荷逐字对账：`value` 必须是原文里的那个越界值，`clamped` 必须是边界。
+/// ⛔ 这不是"接受就算过"：没有告警、钳错方向、或钳到别的数都会红。
+fn assert_depth_clamped(text: &str, needle: &str) {
+    let (value, min, max) = parse_out_of_range(needle).expect("needle 形状必须可解析");
+    let expected = if value > max { max } else { min };
+    let instrument = SfzInstrument::load(text.to_owned(), &Default::default())
+        .unwrap_or_else(|error| panic!("越界深度必须被**接受**（钳位），实得 Err：{error}"));
+    let hit = instrument
+        .warnings()
+        .iter()
+        .find_map(|warning| match warning {
+            yeban_sfz::Warning::ClampedModulationDepth {
+                value: original,
+                clamped,
+                ..
+            } => Some((original.clone(), clamped.clone())),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("必须留下 ClampedModulationDepth 告警：{needle}"));
+    assert_eq!(
+        hit.0,
+        format!("{value}"),
+        "告警里的 value 必须是原文那个越界值"
+    );
+    assert_eq!(
+        hit.1,
+        format!("{expected}"),
+        "告警里的 clamped 必须是边界（{needle}）"
+    );
+    println!(
+        "[engine-sfz/stage23] 钳位 `{needle}` ⇒ value={} clamped={}",
+        hit.0, hit.1
+    );
 }
 
 /// ⭐ S54（任务单 `#104`；§4.1）：**四形态各至少一条 ＋ 缺省 ＋ 非法 ⇒ `Err`**。
@@ -5928,6 +5979,11 @@ fn s54_the_four_ampeg_cc_forms_are_parsed_with_their_domains() {
         ("ampeg_attackcc100=inf", ModErrorShape::NonFinite),
     ];
     for (illegal, shape) in bad {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起改为「钳到边界 ＋ 告警」，
+        // ⛔ 不再是 `Err`。这一类在下面单独一轮里判（同一批 `legal` ＋ `illegal` 数据）。
+        if shape == ModErrorShape::FloatRange100 {
+            continue;
+        }
         // ⭐ 同一批数据里带一个**合法样例**（`legal`）：它能被接受（见下一条断言），
         // 因此这里的 `Err` 必然是 `illegal` 那一行造成的。
         let text = format!(
@@ -5942,6 +5998,38 @@ fn s54_the_four_ampeg_cc_forms_are_parsed_with_their_domains() {
         );
         println!("[engine-sfz/S54] {illegal} ⇒ {error}");
     }
+    // ⭐ **stage 23**：同一批数据里的越界**深度**必须被接受，并留下钳位告警。
+    for (illegal, shape) in bad {
+        if shape != ModErrorShape::FloatRange100 {
+            continue;
+        }
+        let text = format!("<region> sample=a.wav key=60 pitch_keycenter=60 {legal} {illegal}\n");
+        let (value, _, max) = parse_out_of_range(&format!(
+            "value {} out of range -100..=100",
+            illegal.rsplit_once('=').expect("必须有 =").1
+        ))
+        .expect("越界值必须可解析");
+        let click = if value > max { "100" } else { "-100" };
+        let instrument = SfzInstrument::load(text, &Default::default())
+            .unwrap_or_else(|error| panic!("{illegal} 必须被接受（钳位），实得 Err：{error}"));
+        let hit = instrument
+            .warnings()
+            .iter()
+            .find_map(|warning| match warning {
+                yeban_sfz::Warning::ClampedModulationDepth { value, clamped, .. } => {
+                    Some((value.clone(), clamped.clone()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{illegal} 必须留下 ClampedModulationDepth 告警"));
+        assert_eq!(
+            hit.0,
+            illegal.rsplit_once('=').unwrap().1,
+            "告警 value 必须是原文值"
+        );
+        assert_eq!(hit.1, click, "{illegal} 必须钳到边界 {click}");
+    }
+
     // ⭐ 同一条合法样例**单独**出现 ⇒ 必须被接受（负判据的正对照）。
     let accepted = SfzInstrument::load(
         format!("<region> sample=a.wav key=60 pitch_keycenter=60 {legal}\n"),
@@ -6344,6 +6432,11 @@ fn s59_the_five_vel2_forms_are_parsed_with_their_domains() {
         ("ampeg_vel2attack=inf", ModErrorShape::NonFinite),
     ];
     for (illegal, shape) in bad {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起改为「钳到边界 ＋ 告警」，
+        // ⛔ 不再是 `Err`。这一类在下面单独一轮里判（同一批 `legal` ＋ `illegal` 数据）。
+        if shape == ModErrorShape::FloatRange100 {
+            continue;
+        }
         // ⭐ 同一批数据里带一个**合法样例**（`legal`）：它能被接受（见下一条断言），
         // 因此这里的 `Err` 必然是 `illegal` 那一行造成的。
         let text = format!(
@@ -6358,6 +6451,38 @@ fn s59_the_five_vel2_forms_are_parsed_with_their_domains() {
         );
         println!("[engine-sfz/S59] {illegal} ⇒ {error}");
     }
+    // ⭐ **stage 23**：同一批数据里的越界**深度**必须被接受，并留下钳位告警。
+    for (illegal, shape) in bad {
+        if shape != ModErrorShape::FloatRange100 {
+            continue;
+        }
+        let text = format!("<region> sample=a.wav key=60 pitch_keycenter=60 {legal} {illegal}\n");
+        let (value, _, max) = parse_out_of_range(&format!(
+            "value {} out of range -100..=100",
+            illegal.rsplit_once('=').expect("必须有 =").1
+        ))
+        .expect("越界值必须可解析");
+        let click = if value > max { "100" } else { "-100" };
+        let instrument = SfzInstrument::load(text, &Default::default())
+            .unwrap_or_else(|error| panic!("{illegal} 必须被接受（钳位），实得 Err：{error}"));
+        let hit = instrument
+            .warnings()
+            .iter()
+            .find_map(|warning| match warning {
+                yeban_sfz::Warning::ClampedModulationDepth { value, clamped, .. } => {
+                    Some((value.clone(), clamped.clone()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{illegal} 必须留下 ClampedModulationDepth 告警"));
+        assert_eq!(
+            hit.0,
+            illegal.rsplit_once('=').unwrap().1,
+            "告警 value 必须是原文值"
+        );
+        assert_eq!(hit.1, click, "{illegal} 必须钳到边界 {click}");
+    }
+
     // ⭐ 同一条合法样例**单独**出现 ⇒ 必须被接受（负判据的正对照）。
     let accepted = SfzInstrument::load(
         format!("<region> sample=a.wav key=60 pitch_keycenter=60 {legal}\n"),
@@ -10402,6 +10527,14 @@ fn s101_amplitude_parses_its_domain_errs_are_loud_and_absence_is_a_no_op() {
             "line 1: `amplitude_oncc300` value 300 out of range 0..=255",
         ),
     ] {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起是「钳到边界 ＋ 告警」，
+        // ⛔ 不是 `Err`。凡期望文本里带 `out of range` 的行都走这条路。
+        // ⚠ `0..=255` 是 **CC 号 / 曲线下标** 的域 ⇒ 它越界仍然 `Err`
+        // （`dbb31015` 只钳"调制**深度**"，⛔ 没有放宽下标）。
+        if needle.contains("out of range") && !needle.contains("0..=255") {
+            assert_depth_clamped(text, needle);
+            continue;
+        }
         let error = SfzInstrument::load(text.to_owned(), &Default::default())
             .expect_err(&format!("{label} 必须响亮 Err"));
         let shown = format!("{error}");
@@ -11051,6 +11184,14 @@ fn s107_tune_parses_its_domain_errs_are_loud_and_absence_is_a_no_op() {
             "line 1: `ampeg_attack_oncc1` value 101 out of range -100..=100",
         ),
     ] {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起是「钳到边界 ＋ 告警」，
+        // ⛔ 不是 `Err`。凡期望文本里带 `out of range` 的行都走这条路。
+        // ⚠ `0..=255` 是 **CC 号 / 曲线下标** 的域 ⇒ 它越界仍然 `Err`
+        // （`dbb31015` 只钳"调制**深度**"，⛔ 没有放宽下标）。
+        if needle.contains("out of range") && !needle.contains("0..=255") {
+            assert_depth_clamped(text, needle);
+            continue;
+        }
         let error = SfzInstrument::load(text.to_owned(), &Default::default())
             .expect_err(&format!("{label} 必须响亮 Err"));
         let shown = format!("{error}");
@@ -12539,6 +12680,14 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
             "line 1: `ampeg_attack_oncc1` value 101 out of range -100..=100",
         ),
     ] {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起是「钳到边界 ＋ 告警」，
+        // ⛔ 不是 `Err`。凡期望文本里带 `out of range` 的行都走这条路。
+        // ⚠ `0..=255` 是 **CC 号 / 曲线下标** 的域 ⇒ 它越界仍然 `Err`
+        // （`dbb31015` 只钳"调制**深度**"，⛔ 没有放宽下标）。
+        if needle.contains("out of range") && !needle.contains("0..=255") {
+            assert_depth_clamped(text, needle);
+            continue;
+        }
         let error = SfzInstrument::load(text.to_owned(), &Default::default())
             .expect_err(&format!("{label} 必须响亮 Err"));
         let shown = format!("{error}");
@@ -13579,6 +13728,14 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
             "line 1: `tune_oncc1` value 9601 out of range -9600..=9600",
         ),
     ] {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起是「钳到边界 ＋ 告警」，
+        // ⛔ 不是 `Err`。凡期望文本里带 `out of range` 的行都走这条路。
+        // ⚠ `0..=255` 是 **CC 号 / 曲线下标** 的域 ⇒ 它越界仍然 `Err`
+        // （`dbb31015` 只钳"调制**深度**"，⛔ 没有放宽下标）。
+        if needle.contains("out of range") && !needle.contains("0..=255") {
+            assert_depth_clamped(text, needle);
+            continue;
+        }
         let error = SfzInstrument::load(text.to_owned(), &Default::default())
             .expect_err(&format!("{label} 必须响亮 Err"));
         let shown = format!("{error}");
@@ -15815,6 +15972,14 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
             "line 1: `gain_cc300` value 300 out of range 0..=255",
         ),
     ] {
+        // ⭐ **stage 23**：越界**调制深度**自 `dbb31015` 起是「钳到边界 ＋ 告警」，
+        // ⛔ 不是 `Err`。凡期望文本里带 `out of range` 的行都走这条路。
+        // ⚠ `0..=255` 是 **CC 号 / 曲线下标** 的域 ⇒ 它越界仍然 `Err`
+        // （`dbb31015` 只钳"调制**深度**"，⛔ 没有放宽下标）。
+        if needle.contains("out of range") && !needle.contains("0..=255") {
+            assert_depth_clamped(text, needle);
+            continue;
+        }
         let error = SfzInstrument::load(text.to_owned(), &Default::default())
             .expect_err(&format!("{label} 必须响亮 Err"));
         let shown = format!("{error}");

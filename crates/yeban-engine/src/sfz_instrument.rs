@@ -2023,6 +2023,13 @@ pub struct SfzInstrument {
     include_issues: Vec<IncludeIssue>,
     /// 构造期解析得到的**区域数**（元数据，供控制侧快速查询）。
     region_count: usize,
+    /// ⭐ **stage 23**：解析期的**非致命警告**（`yeban_sfz::Warning`）。
+    ///
+    /// 为什么必须在引擎层留下：`yeban-sfz` 的 `Instrument::warnings()` 早就有了，
+    /// 但引擎的 `load` 一路 `?` 之后把 `Instrument` 丢掉 ⇒ 像
+    /// [`Warning::ClampedModulationDepth`] 这种"**值被钳了**"的告警**在引擎路径上
+    /// 完全不可见**（判据只能去 sfz crate 里看）。这里留一份，控制面与判据都能读。
+    warnings: Vec<yeban_sfz::Warning>,
     /// ⭐ **外部移位**（半音；阶段 2 记法适配的施加值，缺省 0）。
     ///
     /// 与文件自带 (a) 的分工：(a) 在解析归约时按 `<control>` 位置生效（`yeban-sfz`
@@ -2069,12 +2076,15 @@ impl SfzInstrument {
     /// # Errors
     /// 文本非法（语法、超限等）时原样透出 [`SfzError`]，⛔ 不 panic。
     pub fn load(text: String, limits: &ParseLimits) -> Result<Self, SfzError> {
-        let region_count = parse_text(&text, limits)?.regions().len();
+        let parsed = parse_text(&text, limits)?;
+        let region_count = parsed.regions().len();
+        let warnings = parsed.warnings().to_vec();
         Ok(Self {
             text,
             sources: None,
             include_issues: Vec::new(),
             region_count,
+            warnings,
             external_shift: 0,
             notation_detection: None,
         })
@@ -2113,12 +2123,15 @@ impl SfzInstrument {
     ) -> Result<Self, SfzError> {
         let resolver = yeban_sfz::IncludeResolver::new(base_dir, *limits)?;
         let resolution = resolver.resolve_text_lossy(entry, &text)?;
-        let region_count = parse_sources(&resolution.sources, limits)?.regions().len();
+        let parsed = parse_sources(&resolution.sources, limits)?;
+        let region_count = parsed.regions().len();
+        let warnings = parsed.warnings().to_vec();
         Ok(Self {
             text,
             sources: Some(Arc::from(resolution.sources)),
             include_issues: resolution.issues,
             region_count,
+            warnings,
             external_shift: 0,
             notation_detection: None,
         })
@@ -2134,6 +2147,16 @@ impl SfzInstrument {
     #[must_use]
     pub fn region_count(&self) -> usize {
         self.region_count
+    }
+
+    /// ⭐ **stage 23**：解析期的**非致命警告**（引擎路径上的可读副本）。
+    ///
+    /// 形状与 [`yeban_sfz::Instrument::warnings`] **逐字相同**（同一次解析的同一批
+    /// 条目，⛔ 不是重新推导）。典型用途：`Warning::ClampedModulationDepth`
+    /// —— "这个调制深度被钳到了边界"，钳位前后两个值都在载荷里。
+    #[must_use]
+    pub fn warnings(&self) -> &[yeban_sfz::Warning] {
+        &self.warnings
     }
 
     /// 原始文本（根文件；调用方可能需要原样回写/哈希）。
