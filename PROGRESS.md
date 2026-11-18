@@ -21,3 +21,11 @@
 - MCP 侧回执/工具文档/判据已按追补语义改写（提交 d8986b405）。
 - 本地 cargo fmt --check 通过。待：盒上 render --lib 全套、mcp
   render_master 判据、clippy（render/mcp --all-targets）、app --lib check。
+
+## 2026-11-18 21:1x 盒上全套验证全绿（range-verify2.log）
+- FMT=0；CLIPPY_RENDER（--all-targets -D warnings）=0；
+  TEST_RENDER（yeban-render --lib 全套）=0（333 passed）；
+  CLIPPY_MCP=0；TEST_MCP_RENDER_MASTER=0（改写后的跨点段端到端
+  逐字节等值通过）；TEST_MCP_LIB=0（750 passed）；CHECK_APP
+  （yeban-app --lib，本线仅注释改动）=0。
+- 线一完工，推分支 line/range-render-warmup。
