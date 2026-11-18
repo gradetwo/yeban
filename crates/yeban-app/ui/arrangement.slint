@@ -58,6 +58,22 @@ export component ArrangementViewport inherits Rectangle {
     in-out property <length> scroll-x: 0px;
     /// 当前选中的**剪辑摆放身份**（空串 = 没有选中）—— 块边框高亮与点击回填共用。
     in-out property <string> selected-clip-ulid: "";
+    /// 框选选区（line/blank-drag-selection）：命中的片段身份集（宿主拥有，
+    /// 单击时 = [主选中]、框选时 = 命中集）；与 `timeline-block-selected` 标志
+    /// 是同一份状态的两个投影，界面只读。
+    in property <[string]> selected-clip-ulids: [];
+    /// 与 `timeline-blocks` 同序同长的选中标志（宿主重算）；长度不一致时
+    /// 块高亮回落到只认主选中（投影刚换、标志未跟上的那一帧不许误亮）。
+    in property <[bool]> timeline-block-selected: [];
+    // 框选草稿（界面本地瞬态，⛔ 不进宿主 / 不进撤销栈）：坐标是 **Flickable
+    // 内容帧**（与 `track-ys` 同帧）；`marquee-active` = 已越过 4px 阈值。
+    property <length> marquee-x0: 0px;
+    property <length> marquee-y0: 0px;
+    property <length> marquee-x1: 0px;
+    property <length> marquee-y1: 0px;
+    property <bool> marquee-pressed: false;
+    property <bool> marquee-active: false;
+    property <bool> marquee-additive: false;
 
     callback select-track(int);
     callback toggle-mute(int);
@@ -113,6 +129,10 @@ export component ArrangementViewport inherits Rectangle {
     callback mixer-pan-reset(int);
     callback execute-action(string);
     callback clip-select(string);
+    /// 框选收尾：矩形四边（x = **时间轴像素帧**，与 `blk.start_px` 同帧；
+    /// y = Flickable 内容帧，与 `track-ys` 同帧；未归一化）+ 加选标志。
+    /// 界面只做坐标帧换算，命中判定在宿主。
+    callback clip-marquee-select(length, length, length, length, bool);
 
     background: Theme.bg-canvas;
     clip: true;
@@ -1399,15 +1419,59 @@ export component ArrangementViewport inherits Rectangle {
                             clip: true;
 
                             // 背景选择与滚轮面必须先于片段块声明，避免遮挡 Clip 点击
+                            //
+                            // ⭐ 框选（line/blank-drag-selection，Wang 2026-11-18 口径，
+                            // 照 Logic Pro）：空白车道拖拽 = 橡皮筋框选，⛔ 不做拖拽滚动；
+                            // 滚动只走滚轮 / Shift+滚轮 / 滚动条（`scroll-event` 不变）。
+                            // 手势状态机（与剪辑体拖拽同款 4px 阈值）：按下记起点（内容帧），
+                            // 越阈值才激活框选；松手未激活 ⇒ 仍是原来的单击选轨；
+                            // 激活 ⇒ 把矩形（换算到时间轴像素帧）报给宿主算命中。
+                            // 起点所在车道的 TouchArea 靠指针捕获继续收 move/up，
+                            // 因此跨车道拖拽的坐标仍在本面局部帧里，换算用本行偏移。
                             TouchArea {
-                                clicked => { root.select-track(trk.id); }
+                                pointer-event(event) => {
+                                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                        root.marquee-x0 = self.mouse-x + root.timeline-origin-x;
+                                        root.marquee-y0 = self.mouse-y + root.track-ys[idx];
+                                        root.marquee-x1 = root.marquee-x0;
+                                        root.marquee-y1 = root.marquee-y0;
+                                        root.marquee-additive = event.modifiers.shift;
+                                        root.marquee-pressed = true;
+                                        root.marquee-active = false;
+                                    } else if event.kind == PointerEventKind.move && root.marquee-pressed {
+                                        root.marquee-x1 = self.mouse-x + root.timeline-origin-x;
+                                        root.marquee-y1 = self.mouse-y + root.track-ys[idx];
+                                        if !root.marquee-active
+                                            && (Math.abs(root.marquee-x1 - root.marquee-x0) > 4px
+                                                || Math.abs(root.marquee-y1 - root.marquee-y0) > 4px) {
+                                            root.marquee-active = true;
+                                        }
+                                    } else if event.kind == PointerEventKind.up {
+                                        if root.marquee-pressed && root.marquee-active {
+                                            root.clip-marquee-select(
+                                                root.marquee-x0 - root.timeline-origin-x + root.scroll-x,
+                                                root.marquee-y0,
+                                                root.marquee-x1 - root.timeline-origin-x + root.scroll-x,
+                                                root.marquee-y1,
+                                                root.marquee-additive);
+                                        } else if root.marquee-pressed {
+                                            // 未越阈值 = 单击：保持原语义（选中本轨）。
+                                            root.select-track(trk.id);
+                                        }
+                                        root.marquee-pressed = false;
+                                        root.marquee-active = false;
+                                    } else if event.kind == PointerEventKind.cancel {
+                                        root.marquee-pressed = false;
+                                        root.marquee-active = false;
+                                    }
+                                }
                                 scroll-event(event) => {
                                     root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                                 }
                             }
 
                             // Timeline Clips for this track
-                            for blk in root.timeline-blocks : Rectangle {
+                            for blk[blk_idx] in root.timeline-blocks : Rectangle {
                                 if blk.track_id == trk.id : Rectangle {
                                     x: blk.start_px - root.scroll-x;
                                     y: 4px;
@@ -1427,7 +1491,9 @@ export component ArrangementViewport inherits Rectangle {
                                     // 同色边框去除（九版，Wang 16:43）：未选中片段原有
                                     // trk.color α0.55 同色边框整圈去掉（宽 0，无边框）；
                                     // 选中片段的 2px 纯白边框保留（选中指示，非同色边框）。
-                                    border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 0px;
+                                    // 选中 = 主选中 **或** 框选标志（标志与块同序同长时才读，
+                                    // 长度对不上 ⇒ 只认主选中，⛔ 不错位误亮）。
+                                    border-width: blk.clip_ulid != "" && (blk.clip_ulid == root.selected-clip-ulid || (root.timeline-block-selected.length == root.timeline-blocks.length && root.timeline-block-selected[blk_idx])) ? 2px : 0px;
                                     border-color: Tokens.skin-text-strong;
                                     clip: true;
 
@@ -2098,6 +2164,21 @@ export component ArrangementViewport inherits Rectangle {
                             }
                         }
                     }
+                }
+
+                // 框选矩形（line/blank-drag-selection）：只在草稿激活时画。
+                // 颜色用现行令牌 `Tokens.selection`：框选属半透明保留例外
+                // （Wang 口径），填充取低 alpha、边框取令牌实色；编辑面其余
+                // 部分保持实色不变。纯 Rectangle 不接指针事件，不挡命中。
+                Rectangle {
+                    visible: root.marquee-active;
+                    x: Math.min(root.marquee-x0, root.marquee-x1);
+                    y: Math.min(root.marquee-y0, root.marquee-y1);
+                    width: Math.abs(root.marquee-x1 - root.marquee-x0);
+                    height: Math.abs(root.marquee-y1 - root.marquee-y0);
+                    background: Tokens.selection.with-alpha(0.15);
+                    border-width: 1px;
+                    border-color: Tokens.selection;
                 }
             }
 

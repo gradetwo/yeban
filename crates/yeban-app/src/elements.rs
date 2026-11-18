@@ -933,10 +933,10 @@ impl ElementRegistry {
             false,
         );
         registry.add(
-            "arrangement-lane-scroll-area",
+            "arrangement-lane-marquee-area",
             ElementKind::Region,
             "workspace/arrangement_view.slint",
-            "编曲空车道拖动滚动面",
+            "编曲空车道框选面",
             false,
         );
         registry.add(
