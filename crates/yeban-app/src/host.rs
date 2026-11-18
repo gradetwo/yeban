@@ -393,6 +393,19 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_section_colors(colors(&view.section_colors()));
     ui.set_section_color_labels(strings(&view.section_color_labels()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
+    // ⭐ 框选标志（line/blank-drag-selection）：与 `clip-ulids` 同序同长，按界面上
+    // 的选区集 `selected-clip-ulids` 现算（选区是界面态、⛔ 不在 `ViewState` 里）。
+    // 与音符面 `flags_for_ids` 同一条口径：每次重注入都重算，只在点击时设 ⇒
+    // 滚动 / 撤销重注入后必然与新可见集错位。这一个数组与这一处写入点分别计入
+    // `PER_FRAME_ARRAY_REWRITE_BUDGET` 与 `APPLY_VIEW_WRITE_SITE_BUDGET`
+    // （见 `tests/perf_draw_budget.rs` 的读数与注释）。
+    ui.set_clip_selected_flags(booleans(&crate::input::flags_for_ids(
+        &ui.get_selected_clip_ulids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>(),
+        &view.clip_ulids(),
+    )));
     ui.set_clip_labels(strings(&view.clip_labels()));
     // ⭐ 每条摆放的静音态（`D-UI-16`）：`Cmd/Ctrl+M` 拨的就是这一位，界面必须**看得见**结果。
     // 唯一事实源是 `ClipPlacement::muted`（工程字段），⛔ 界面不自己记一份；与 `track-mutes`
@@ -657,6 +670,12 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 混音台提交后的 refresh_undo_window 重调 apply_view, 状态自然跟进。
     ui.set_tracks(ModelRc::new(VecModel::from(view_to_tracks(view))));
     ui.set_timeline_blocks(ModelRc::new(VecModel::from(view_to_timeline_blocks(view))));
+    // 框选标志（结构面，line/blank-drag-selection）：块数组刚被整体替换 ⇒ 与它
+    // 同序的 `timeline-block-selected` 必须同帧按选区集重算，⛔ 不许留上一份
+    // 工程的标志配新块（写入点收在 `refresh_timeline_block_selected` 里，
+    // 与 `apply_current_scene` / `inject_sidebar` 同款收拢法；数组本身计入
+    // `PER_FRAME_ARRAY_REWRITE_BUDGET`，见 `tests/perf_draw_budget.rs`）。
+    refresh_timeline_block_selected(ui);
     ui.set_notes(ModelRc::new(VecModel::from(view_to_notes(view))));
 }
 
@@ -7550,6 +7569,70 @@ pub fn apply_proposal_drawer(
     ui.set_musical_pr_resolve_reason(SharedString::from(values.resolve_reason.as_str()));
 }
 
+/// ⭐ 框选命中判定（line/blank-drag-selection，纯函数 ⇒ 可单测）：橡皮筋矩形
+/// 与每条片段的**绘制几何**做相交判定，返回命中的摆放身份（按视图序）。
+///
+/// 坐标帧：x = **时间轴像素帧**（与投影的剪辑 x 同帧），y = **行几何帧**
+/// （与 `track-ys` 同帧）；矩形未归一化（任意拖拽方向都对）。
+/// 块几何与 `view_to_timeline_blocks` + `ui/arrangement.slint` 的块绘制
+/// **逐项同源**：x = `clip.x.max(0)`、宽 = `clip.width.max(12)`、
+/// y = `track_ys[track] + 4`、高 = `max(52, track_heights[track] - 8)`。
+/// 相交取**严格重叠**（边接触不算命中），与橡皮筋的视觉读法一致。
+/// 行几何缺位（下标越界）的片段不命中 —— ⛔ 不猜它的位置。
+#[must_use]
+pub fn clip_marquee_hits(view: &ViewState, x1: f32, y1: f32, x2: f32, y2: f32) -> Vec<String> {
+    let (rx0, rx1) = (x1.min(x2), x1.max(x2));
+    let (ry0, ry1) = (y1.min(y2), y1.max(y2));
+    let ys = view.track_ys();
+    let heights = view.track_heights();
+    view.clips
+        .iter()
+        .filter(|clip| {
+            let (Some(&top), Some(&height)) =
+                (ys.get(clip.track_index), heights.get(clip.track_index))
+            else {
+                return false;
+            };
+            let bx0 = clip.x.max(0.0);
+            let bx1 = bx0 + clip.width.max(12.0);
+            let by0 = top + 4.0;
+            let by1 = by0 + (height - 8.0).max(52.0);
+            bx0 < rx1 && rx0 < bx1 && by0 < ry1 && ry0 < by1
+        })
+        .map(|clip| clip.placement_id.clone())
+        .collect()
+}
+
+/// 按界面上的选区集重算 `timeline-block-selected`（与 `timeline-blocks`
+/// 同序同长）。写者只有两处：[`apply_view`]（块数组整体替换后）与
+/// [`apply_clip_selection`]（选区变化时）—— 两处都是"另一份同序数据刚变"的
+/// 同一帧，⛔ 不许第三处单独写这个标志（标志与集错位是本仓反复记录的错位类）。
+pub fn refresh_timeline_block_selected(ui: &MainWindow) {
+    use slint::Model as _;
+    let selected: Vec<String> = ui
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let ids: Vec<String> = ui
+        .get_timeline_blocks()
+        .iter()
+        .map(|block| block.clip_ulid.to_string())
+        .collect();
+    ui.set_timeline_block_selected(booleans(&crate::input::flags_for_ids(&selected, &ids)));
+}
+
+/// ⭐ 剪辑选区的**唯一写者**（line/blank-drag-selection）：单击与框选两条臂
+/// 都经这里落选区 —— `selected-clip-ulids`（身份集）+ `selected-clip-ulid`
+/// （主选中，单目标动作的读点）+ 与块同序的标志，三者同写。
+/// `primary` 应当是集合成员（空集 ⇒ 空串）；本函数不校验成员关系，
+/// 调用方按各自语义给（单击 = 该片段；框选替换 = 命中首元；加选 = 原主选中）。
+pub fn apply_clip_selection(ui: &MainWindow, selected: &[String], primary: &str) {
+    ui.set_selected_clip_ulids(strings(selected));
+    ui.set_selected_clip_ulid(primary.into());
+    refresh_timeline_block_selected(ui);
+}
+
 /// ⭐ 剪辑选中态**及其作用面**（`[UI-NOTE-001]` 的"当前编辑片段"）。
 ///
 /// | 读 / 写 | 事实源 |
@@ -7572,6 +7655,8 @@ pub fn apply_proposal_drawer(
 pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Option<Rc<UndoPort>>) {
     let weak = ui.as_weak();
     let undo_for_select = undo.clone();
+    let view_for_marquee = view.clone();
+    let undo_for_marquee = undo.clone();
     ui.on_clip_select(move |clip_ulid| {
         use slint::Model as _;
         let Some(ui) = weak.upgrade() else {
@@ -7600,7 +7685,12 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
                 }
             }
         }
-        if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str() {
+        // 幂等短路（判据 ⑤「不白重画」）：主选中相同 **且** 选区集已是单元素集
+        // 才算一位不动 —— 框选出多选后点回主选中片段，集合必须收回单元素
+        // （line/blank-drag-selection 补的半个条件）。
+        if ui.get_selected_clip_ulid().as_str() == clip_ulid.as_str()
+            && ui.get_selected_clip_ulids().len() == 1
+        {
             return;
         }
         // ⭐ 精准联动：横向滚到该片段起点、音域对齐该片段音符（比整轨更准）。
@@ -7614,6 +7704,9 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         if let Some(project) = undo_for_select.as_ref().and_then(|port| port.try_project()) {
             fill_region_card(&ui, &project, clip_ulid.as_str());
         }
+        // 选区集合同步（line/blank-drag-selection）：单击 = 单元素集。放在
+        // `apply_view` 之前 ⇒ 重注入时两面标志都按新集重算。
+        ui.set_selected_clip_ulids(strings(&[clip_ulid.to_string()]));
         ui.set_selected_clip_ulid(clip_ulid);
         // 作用域重注入：只读的重投影，不 `commit_ops`。
         let scroll = ui.get_roll_scroll_x();
@@ -7625,6 +7718,53 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         let snapshot = view.borrow().clone();
         let state: &ViewState = fresh.as_ref().unwrap_or(&snapshot);
         apply_view(&ui, state, width, scroll);
+    });
+    // ⭐ 框选（line/blank-drag-selection）：界面只报矩形（时间轴像素帧 ×
+    // 行几何帧）+ 加选标志；命中判定走纯函数 [`clip_marquee_hits`]（几何取
+    // **当前**投影：有撤销端口时按现工程重投影，与 `on_clip_select` 的
+    // fresh/fallback 同一手法），落选区走唯一写者 [`apply_clip_selection`]。
+    // 语义（照 Logic Pro 橡皮筋）：无修饰 = 命中集替换选区（空命中 = 清空）；
+    // Shift = 并入现有选区、主选中保住原值。视图态操作，⛔ 不进撤销栈、
+    // 不重投影（块没变，只有选中变）。
+    ui.on_clip_marquee_select({
+        let weak = ui.as_weak();
+        move |x1, y1, x2, y2, additive| {
+            use slint::Model as _;
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let fresh = undo_for_marquee
+                .as_ref()
+                .and_then(|port| port.try_project())
+                .and_then(|project| project_with_view_state(&project, &ui).ok());
+            let snapshot = view_for_marquee.borrow().clone();
+            let state: &ViewState = fresh.as_ref().unwrap_or(&snapshot);
+            let hits = clip_marquee_hits(state, x1, y1, x2, y2);
+            let mut selected: Vec<String> = if additive {
+                ui.get_selected_clip_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for hit in hits {
+                if !selected.contains(&hit) {
+                    selected.push(hit);
+                }
+            }
+            let primary = if additive {
+                let current = ui.get_selected_clip_ulid().to_string();
+                if selected.contains(&current) {
+                    current
+                } else {
+                    selected.first().cloned().unwrap_or_default()
+                }
+            } else {
+                selected.first().cloned().unwrap_or_default()
+            };
+            apply_clip_selection(&ui, &selected, &primary);
+        }
     });
     ui.on_clip_double_click({
         let weak = ui.as_weak();
@@ -15866,6 +16006,9 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
 //   ⛔ 不给柱体加最小高度、⛔ 不放宽本臂的 `velocity > 0` 门 —— 那会发明新 affordance）；
 // - **辅助键**（`Shift` 微移 / `Alt` 复制）：与 `[UI-NOTE-005]` 有未裁决冲突 ⇒ ⛔ 不读修饰键；
 // - **空白处拖拽**：语义一位不改（仍是滚动；marquee 未裁决）⇒ ⛔ 不做框选。
+//   ⭐ 2026-11-18 补记（line/blank-drag-selection）：Wang 已裁决**编曲区**
+//   空白拖拽 = 框选（照 Logic Pro），编曲两面已落地（`clip_marquee_hits` /
+//   `apply_clip_selection`）；本条只管**卷帘**——卷帘空白拖拽仍是滚动，不在本线。
 
 /// `[UI-NOTE-003]` 一次指针拖动在**宿主帧**下解析出的音符位移：`(delta_tick, delta_pitch)`。
 ///
