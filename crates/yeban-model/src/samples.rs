@@ -381,6 +381,24 @@ pub fn filled_project() -> YebanProjectV1 {
         );
     }
 
+    // 侧链边（逐件＋侧链期 4 的 lane 端点）：bass 的 36 号 lane 组键控
+    // lead 的 35 号 lane 组。契约把 source_lane / dest_lane 声明为可选
+    // 属性，规范夹具必须真实落盘一处，否则 schema_ratchet 方向 B′ 在
+    // 这两条路径上空转（该判据给出的修法一）。边身份取 64：60–62 为
+    // 既有三边，63 已被 op 样本的 ConnectRouting 占用。
+    edges.insert(
+        fixture_id(64),
+        RoutingEdge {
+            id: fixture_id(64),
+            source_node: bass_id,
+            destination_node: lead_id,
+            kind: RoutingKind::Sidechain,
+            gain_db: None,
+            source_lane: Some(36),
+            dest_lane: Some(35),
+        },
+    );
+
     YebanProjectV1 {
         schema_version: SCHEMA_VERSION,
         min_reader_version: MIN_READER_VERSION,
@@ -1363,7 +1381,7 @@ mod tests {
         assert_eq!(project.check_readable(), Ok(()));
         assert_eq!(project.tracks.len(), 4);
         assert_eq!(project.clip_pool.len(), 2);
-        assert_eq!(project.routing_graph.edges.len(), 3);
+        assert_eq!(project.routing_graph.edges.len(), 4);
         assert_eq!(project.sections.len(), 2);
         assert_eq!(project.scenes.len(), 1);
         assert_eq!(project.assets.len(), 1);
@@ -1441,7 +1459,7 @@ mod tests {
         assert_eq!(project.validate(), Ok(()));
         assert_eq!(
             project.routing_graph.edges.len(),
-            4,
+            5,
             "样例里的 ConnectRouting 必须生效"
         );
         // 撤销必须精确还原：样本对本身就是一组可逆的领域操作。
