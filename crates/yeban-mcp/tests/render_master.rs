@@ -10378,3 +10378,122 @@ fn master_fader_above_unity_is_named_by_a_warning() {
         "推子 0 dB 不许出现 masterFaderAboveUnity 预警: {bare_warnings:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 母带推子位置（修复）：推子必须在限幅器**之前** —— 推过 0 dB 不再削波
+// ---------------------------------------------------------------------------
+
+/// 一台挂在主总线上的**限幅器**器件：参数名走 `limiter_` 前缀口径
+/// （`yeban-dsp` 的 `LimiterField::SPELLINGS`），取值 = 器件缺省
+/// （阈值 −1 dBFS、天花板 −0.3 dBFS、释放 80 ms、前瞻 48 帧、真峰值开）。
+/// `latency_samples` 恒 0：限幅器延迟由它自己的 `limiter_lookahead` 参数
+/// 申报（`yeban_render::render::track_latencies`），⛔ 不写进插件字段。
+fn master_limiter(seed: u32) -> DeviceDefinition {
+    let param = |name: &str, value: f32| ParameterValue {
+        name: name.to_owned(),
+        value,
+        unit: None,
+    };
+    DeviceDefinition {
+        id: id(seed),
+        name: "Limiter".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: vec![
+            param("limiter_threshold_db", -1.0),
+            param("limiter_ceiling_db", -0.3),
+            param("limiter_release_ms", 80.0),
+            param("limiter_lookahead", 48.0),
+            param("limiter_true_peak", 1.0),
+        ],
+        latency_samples: 0,
+        plugin: None,
+    }
+}
+
+/// ⭐ 母带链序修复：主总线推子在**限幅器之前**（限幅器是母带链最后一环）。
+///
+/// 夹具：满力度 + lead +12 dB 把母带顶过限幅器阈值，主总线挂限幅器
+/// （天花板 −0.3 dBFS），主推子分别推到 +2 dB 与 +4 dB（与用户实测同口径：
+/// `clippedSamples` 数 `|s| > 1.0` 的样本个数）。
+///
+/// - 修前（推子在限幅器**之后**，装配第 9 步对整段输出再乘）：限幅器把峰值
+///   钉在 −0.3 dBFS 后，推子再整体抬 +2/+4 dB ⇒ 大量样本越过 1.0，
+///   `clippedSamples > 0`、且 +4 dB 的计数大于 +2 dB（实测形态同源）。
+/// - 修后（推子在限幅器**之前**）：推子只是把更多信号送进限幅器，
+///   成品峰值仍被天花板钉住 ⇒ `clippedSamples == 0`、真峰值 ≤ 0 dBFS，
+///   且峰值仍贴着天花板（> 0.9）—— 证明信号真的响、限幅器真的在工作，
+///   ⛔ 不是「静音/没渲染」的假绿。
+#[test]
+fn master_fader_before_the_limiter_cannot_clip_the_export() {
+    let scratch = Scratch::new("master-fader-before-limiter");
+    let mut counts = Vec::new();
+    for fader_db in [2.0f32, 4.0f32] {
+        let loud = Spec {
+            velocity: 127,
+            volume_db: 12.0,
+            ..Spec::default()
+        };
+        let mut proj = project(&loud);
+        let master_id = proj.master_bus_track_id;
+        let master = proj.tracks.get_mut(&master_id).expect("主总线轨必须在");
+        master.devices = vec![master_limiter(60)];
+        master.volume_db = fader_db;
+        proj.validate().unwrap_or_else(|error| {
+            panic!("带限幅器与 +{fader_db} dB 推子的夹具工程必须合法: {error}")
+        });
+
+        let (mut dispatcher, auth) = dispatcher_with(&proj, &scratch.join("demo.yeban"));
+        let out_name = format!("fader-{fader_db}.wav");
+        let out = scratch.join(&out_name);
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({
+                "format": "wav",
+                "sampleRate": 48000,
+                "path": out.display().to_string(),
+            }),
+        );
+        assert_eq!(result["status"], "success", "推子 +{fader_db} dB: {result}");
+        let data = &result["data"];
+        let clipped = data["clippedSamples"]
+            .as_u64()
+            .expect("clippedSamples 必须是整数");
+        counts.push(clipped);
+        assert_eq!(
+            clipped, 0,
+            "推子 +{fader_db} dB 在限幅器**之前** ⇒ 削波样本必须为 0（限幅器是母带链最后一环）: {data}"
+        );
+        let true_peak = data["truePeakDbfs"]
+            .as_f64()
+            .expect("truePeakDbfs 必须是数");
+        assert!(
+            true_peak <= 0.0,
+            "推子 +{fader_db} dB 的真峰值必须 ≤ 0 dBFS（天花板 −0.3 dBFS 兜底），实测 {true_peak}"
+        );
+        let peak = data["peak"]["before"]
+            .as_f64()
+            .expect("peak.before 必须是数");
+        assert!(
+            peak > 0.9,
+            "推子 +{fader_db} dB 的峰值必须贴着限幅器天花板（≈0.966），实测 {peak} —— 低于此值说明夹具没把限幅器顶起来，本判据会变假绿"
+        );
+        // 削波预警必须随计数归零而消失（预警与计数同一事实的两面）。
+        let clipping_warnings = result["data"]["warnings"]
+            .as_array()
+            .expect("warnings 必须是数组")
+            .iter()
+            .filter(|warning| warning["code"] == "exportClipping")
+            .count();
+        assert_eq!(
+            clipping_warnings, 0,
+            "推子 +{fader_db} dB 不许出现 exportClipping 预警: {}",
+            result["data"]["warnings"]
+        );
+    }
+    println!(
+        "[master-fader] +2 dB clipped = {}，+4 dB clipped = {}（修复前应为大正数，修复后恒 0）",
+        counts[0], counts[1]
+    );
+}

@@ -81,7 +81,7 @@ use yeban_model::project::SampleRate;
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_render::dither::{BitDepth, quantize};
 use yeban_render::mastering::{
-    ExportPreset, GainBound, LOUDNESS_TARGET_TOLERANCE_LU, NormalizeOutcome,
+    ClipperParams, ExportPreset, GainBound, LOUDNESS_TARGET_TOLERANCE_LU, NormalizeOutcome,
 };
 // ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`（CLI 与 MCP 共用同一份，⛔ 不写第二份）。
 #[cfg(test)]
@@ -348,6 +348,12 @@ pub struct WavLoudnessReport {
     pub achieved_true_peak_dbtp: Option<f32>,
     /// 定下这个增益的约束。
     pub bound: GainBound,
+    /// 本次挂上的母带削波段参数（`--mastering-clipper` / MCP `masteringClipper`）；
+    /// `None` = 没挂削波段。与 MCP 响应 `data.mastering.clipper` 同一份参数。
+    pub mastering_clipper: Option<ClipperParams>,
+    /// 削波段实测压低的波峰因数（dB；削波前 − 削波后）；没挂削波段 ⇒ `0.0`。
+    /// 与 MCP 响应 `data.mastering.crestReductionDb` 同一份读数。
+    pub crest_reduction_db: f32,
 }
 
 impl WavLoudnessReport {
@@ -368,6 +374,8 @@ impl WavLoudnessReport {
                 .is_finite()
                 .then_some(outcome.after.true_peak_dbtp),
             bound: outcome.bound,
+            mastering_clipper: preset.clipper(),
+            crest_reduction_db: outcome.crest_reduction_db,
         }
     }
 }
@@ -481,10 +489,24 @@ impl WavExportReport {
             GainBound::TruePeakCeiling => "TruePeakCeiling",
             GainBound::NothingToDo => "NothingToDo",
         };
-        Some(format!(
+        let mut note = format!(
             "loudness: target={target} LUFS achieved={achieved} LUFS gain={:+.2} dB bound={bound} truePeak={true_peak} dBTP",
             loudness.gain_db
-        ))
+        );
+        // ⭐ 削波段回执（与 MCP `data.mastering` 同口径）：只在挂了削波段时**追加**
+        // 一段；没挂 ⇒ 提示行逐字不变（既有文本判据钉的就是没挂的形态）。
+        if let Some(clipper) = loudness.mastering_clipper {
+            note = format!(
+                "{note} clipper: drive={:.1} dB ceiling={:.1} dB knee={:.1} dB mix={:.2} oversample={:.0}x crestReduction={:.2} dB",
+                clipper.drive_db,
+                clipper.ceiling_db,
+                clipper.knee_db,
+                clipper.mix,
+                clipper.oversample,
+                loudness.crest_reduction_db
+            );
+        }
+        Some(note)
     }
 }
 

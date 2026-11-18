@@ -606,6 +606,112 @@ fn the_real_cli_prints_the_loudness_line_only_when_the_switches_are_given() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `--mastering-clipper` 真的挂上母带链：同工程、同响度目标下，带削波段的
+/// 产物必须与不带削波段的产物**逐字节不同**（drive 拉满时波峰因数被实测压低），
+/// 且 stdout 的 `loudness:` 行回执削波段参数与 `crestReduction`（与 MCP 响应
+/// `data.mastering` 同口径的回执面）。
+#[test]
+fn the_real_cli_mastering_clipper_reaches_the_chain_and_the_receipt() {
+    let dir = scratch_dir("cli-clipper");
+    let project = project_with_tracks(&[("Lead", 0.0)]);
+    let container = write_container(&dir, "lead.yeban", &project);
+
+    let plain = dir.join("plain.wav");
+    let (code, _stdout, stderr) = run_cli(&[
+        "--open",
+        container.to_str().expect("utf8"),
+        "--export-wav",
+        plain.to_str().expect("utf8"),
+        "--wav-seconds",
+        "1",
+        "--loudness-target",
+        "-16",
+    ]);
+    assert_eq!(code, 0, "不带削波段的导出必须成功; stderr={stderr}");
+
+    let clipped = dir.join("clipped.wav");
+    let (code, stdout, stderr) = run_cli(&[
+        "--open",
+        container.to_str().expect("utf8"),
+        "--export-wav",
+        clipped.to_str().expect("utf8"),
+        "--wav-seconds",
+        "1",
+        "--loudness-target",
+        "-16",
+        "--mastering-clipper",
+        "driveDb=18,ceilingDb=-0.5",
+    ]);
+    assert_eq!(code, 0, "带削波段的导出必须成功; stderr={stderr}");
+    assert_ne!(
+        sha_hex(&plain),
+        sha_hex(&clipped),
+        "削波段必须真的挂上母带链：drive=18 时产物不得与无削波段产物逐字节相同"
+    );
+    let note = stdout
+        .lines()
+        .find(|line| line.starts_with("loudness:"))
+        .unwrap_or_else(|| panic!("带削波段时 stdout 必须有 loudness: 行:\n{stdout}"));
+    assert!(note.contains("clipper:"), "回执必须有削波段: {note}");
+    assert!(note.contains("drive=18.0"), "回执必须有 drive: {note}");
+    assert!(note.contains("ceiling=-0.5"), "回执必须有 ceiling: {note}");
+    let crest = note
+        .split("crestReduction=")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or_else(|| panic!("回执必须有可解析的 crestReduction 数值: {note}"));
+    assert!(
+        crest > 0.0,
+        "drive=18 必须实测压低波峰因数（crestReduction > 0），实际 {crest}: {note}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `--mastering-clipper` 与 MCP 同口径的两条硬校验在真 CLI 上响亮生效：
+/// ① 不与 `--loudness-target` 同给 ⇒ 非零退出、点名 `--loudness-target`；
+/// ② 子键非法 ⇒ 非零退出、点名子键。两条都不许写出产物文件。
+#[test]
+fn the_real_cli_mastering_clipper_validates_like_the_mcp() {
+    let dir = scratch_dir("cli-clipper-invalid");
+    let project = project_with_tracks(&[("Lead", 0.0)]);
+    let container = write_container(&dir, "lead.yeban", &project);
+    let out = dir.join("never.wav");
+
+    let (code, stdout, stderr) = run_cli(&[
+        "--open",
+        container.to_str().expect("utf8"),
+        "--export-wav",
+        out.to_str().expect("utf8"),
+        "--mastering-clipper",
+        "driveDb=8",
+    ]);
+    assert_ne!(code, 0, "削波段不带响度目标必须失败");
+    assert!(
+        format!("{stdout}{stderr}").contains("--loudness-target"),
+        "报错必须点名 --loudness-target:\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert!(!out.exists(), "校验失败不得写出产物");
+
+    let (code, stdout, stderr) = run_cli(&[
+        "--open",
+        container.to_str().expect("utf8"),
+        "--export-wav",
+        out.to_str().expect("utf8"),
+        "--loudness-target",
+        "-16",
+        "--mastering-clipper",
+        "driveDb=99",
+    ]);
+    assert_ne!(code, 0, "子键越界必须失败");
+    assert!(
+        format!("{stdout}{stderr}").contains("driveDb"),
+        "报错必须点名子键 driveDb:\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert!(!out.exists(), "校验失败不得写出产物");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// 导出侧容差与 MCP `render_master` 的判定容差同值。
 ///
 /// 两仓的口径刻意不共享常量（见 `yeban-render` 的 [`LOUDNESS_TARGET_TOLERANCE_LU`] 文档）：

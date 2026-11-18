@@ -50,7 +50,7 @@ use yeban_model::EntityId;
 use yeban_model::container::ProjectArchive;
 use yeban_model::project::{SampleRate, TrackV3, YebanProjectV1};
 use yeban_render::dither::BitDepth;
-use yeban_render::mastering::ExportPreset;
+use yeban_render::mastering::{ClipperParams, ExportPreset};
 use yeban_render::midi::MidiFormat;
 
 use crate::bridge::{BridgeError, ViewState};
@@ -263,6 +263,14 @@ pub const LOUDNESS_TARGET_SWITCH: &str = "--loudness-target";
 /// 与 [`LOUDNESS_TARGET_SWITCH`] 同档：只改 `--export-wav` 的产物（上限赢时减小增益），
 /// ⛔ 不进 `ACTION_SWITCHES`。取值必须 ≤ 0 dBTP（上限高于满量程没有语义）。
 pub const TRUE_PEAK_CEILING_SWITCH: &str = "--true-peak-ceiling";
+
+/// `--mastering-clipper` 的字面值（`--export-wav` 的母带削波段参数）。
+///
+/// 与 [`LOUDNESS_TARGET_SWITCH`] 同档：只改 `--export-wav` 的产物，⛔ 不进
+/// `ACTION_SWITCHES`。子键与 MCP `render_master.masteringClipper` **完全同口径**
+/// （同名、同缺省、同范围、同校验 —— 见 `parse_mastering_clipper`）；此前 CLI
+/// 传不了这个开关，削波段只能经 MCP 挂上，本开关补齐 CLI 出口。
+pub const MASTERING_CLIPPER_SWITCH: &str = "--mastering-clipper";
 
 /// 让 `--export-logic` 真的可执行的那个**非默认** feature 名。
 ///
@@ -566,6 +574,11 @@ pub fn usage_text() -> String {
   --true-peak-ceiling <dbtp> --export-wav 的真峰值上限 (dBTP, 必须 ≤ 0):
                            上限赢时减小增益 (目标没达到是预期, 如实报告);
                            只给上限不给目标时只做上限 (超了就衰减, 不抬响度)
+  --mastering-clipper <spec> --export-wav 的母带削波段 (与 MCP masteringClipper 同口径):
+                           逗号分隔 子键=数值: driveDb (0..=24) / ceilingDb (-6..=0) /
+                           kneeDb (0..=6) / mix (0..=1) / oversample (1|2|4|8);
+                           缺省子键取缺省值 (drive 6 / ceiling -1 / knee 3 / mix 1 / x4);
+                           必须与 --loudness-target 同给 (削波段排在响度增益之前)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
@@ -1945,6 +1958,17 @@ pub struct Options {
     /// 时只做上限（超了就衰减，不抬响度）。取值必须是 ≤ 0 的有限数
     /// （范围外 ⇒ [`ParseError::TruePeakCeilingInvalid`]）。
     pub true_peak_ceiling: Option<f32>,
+    /// `--mastering-clipper <spec>`：`--export-wav` 的母带削波段参数。
+    ///
+    /// 取值是逗号分隔的 `子键=数值` 对（`driveDb` / `ceilingDb` / `kneeDb` /
+    /// `mix` / `oversample`），与 MCP `render_master.masteringClipper`
+    /// **完全同口径**（同名、同缺省、同范围、同校验，见
+    /// `parse_mastering_clipper`）；缺省的子键取 [`ClipperParams::DEFAULT`]。
+    /// 与 [`Self::loudness_target`] 同一条预设：削波段排在响度增益**之前**
+    /// （[`ExportPreset::with_clipper`]）。⛔ 必须与 `--loudness-target` 同给
+    /// （与 MCP 同口径：没有响度目标就没有母带预设可挂），单独给 ⇒ 用法错误；
+    /// 子键非法 ⇒ [`ParseError::MasteringClipperInvalid`]。
+    pub mastering_clipper: Option<ClipperParams>,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -2715,6 +2739,11 @@ pub enum ParseError {
     ///
     /// ⛔ 不接受正数（上限高于满量程没有语义）；⛔ 不接受 `NaN` / `inf`。
     TruePeakCeilingInvalid(String),
+    /// `--mastering-clipper` 的取值非法（未知子键 / 非数值 / 范围外 / 重复子键）。
+    ///
+    /// payload 是原取值加逐字原因（点名子键）。⛔ 不静默钳制、不忽略未知子键
+    /// （与 MCP `masteringClipper` 同口径：同名、同取值、同校验）。
+    MasteringClipperInvalid(String),
     /// `--wav-frames` 与 `--wav-seconds` 同时给了。
     ///
     /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
@@ -2997,6 +3026,12 @@ impl fmt::Display for ParseError {
             Self::TruePeakCeilingInvalid(value) => write!(
                 formatter,
                 "`--true-peak-ceiling` 的取值 `{value}` 非法 (需要小于等于 0 的有限 dBTP 数)"
+            ),
+            Self::MasteringClipperInvalid(value) => write!(
+                formatter,
+                "`--mastering-clipper` 的取值 `{value}` 非法 (需要逗号分隔的 子键=数值: \
+                 driveDb 0..=24 / ceilingDb -6..=0 / kneeDb 0..=6 / mix 0..=1 / \
+                 oversample 1|2|4|8, 与 MCP masteringClipper 同口径)"
             ),
             Self::WavFramesConflict => write!(
                 formatter,
@@ -3556,6 +3591,16 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     return Err(ParseError::DuplicateOption(TRUE_PEAK_CEILING_SWITCH));
                 }
                 options.true_peak_ceiling = Some(ceiling);
+            }
+            "--mastering-clipper" => {
+                // 与 MCP `masteringClipper` 完全同口径的子键解析（见
+                // `parse_mastering_clipper`）：未知子键/范围外一律响亮拒绝。
+                let value = take_value(MASTERING_CLIPPER_SWITCH, inline, args, &mut cursor)?;
+                let params = parse_mastering_clipper(&value)?;
+                if options.mastering_clipper.is_some() {
+                    return Err(ParseError::DuplicateOption(MASTERING_CLIPPER_SWITCH));
+                }
+                options.mastering_clipper = Some(params);
             }
             "--limiter" => {
                 // 布尔修饰开关：⛔ 不吃值（与 `--wav-*` 同档，只改 `--export-wav`
@@ -4253,6 +4298,95 @@ fn set_once_seconds(
     }
     *slot = Some(value);
     Ok(())
+}
+
+/// 解析 `--mastering-clipper` 的取值：逗号分隔的 `子键=数值` 对。
+///
+/// 子键与 MCP `render_master.masteringClipper` **完全同口径**（MCP 侧解析在
+/// `yeban-mcp` 的 `domain/render.rs::parse_mastering_clipper`）：
+/// `driveDb`（0..=24）/ `ceilingDb`（-6..=0）/ `kneeDb`（0..=6）/ `mix`（0..=1）/
+/// `oversample`（只准 1/2/4/8）。缺省的子键取 [`ClipperParams::DEFAULT`]
+/// （与 MCP 只给部分子键时的缺省**同一份**）。
+///
+/// ⛔ 不静默：未知子键、非数值、范围外、同一子键给两次、空段，一律
+/// [`ParseError::MasteringClipperInvalid`] 并点名子键/原因 —— 不钳制、不忽略。
+fn parse_mastering_clipper(value: &str) -> Result<ClipperParams, ParseError> {
+    let invalid =
+        |reason: String| ParseError::MasteringClipperInvalid(format!("{value}（{reason}）"));
+    let mut params = ClipperParams::DEFAULT;
+    let mut seen: Vec<&str> = Vec::new();
+    for pair in value.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            return Err(invalid("空的参数段".to_owned()));
+        }
+        let Some((key, raw)) = pair.split_once('=') else {
+            return Err(invalid(format!("参数段 `{pair}` 不是 `子键=数值` 形式")));
+        };
+        let key = key.trim();
+        let raw = raw.trim();
+        if seen.contains(&key) {
+            return Err(invalid(format!("子键 `{key}` 给了两次")));
+        }
+        seen.push(key);
+        let number = |raw: &str| -> Result<f32, ParseError> {
+            raw.parse::<f32>()
+                .ok()
+                .filter(|parsed: &f32| parsed.is_finite())
+                .ok_or_else(|| invalid(format!("子键 `{key}` 的取值 `{raw}` 不是有限数")))
+        };
+        match key {
+            "driveDb" => {
+                let parsed = number(raw)?;
+                if !(0.0..=24.0).contains(&parsed) {
+                    return Err(invalid(format!(
+                        "子键 `driveDb` 的取值 {parsed} 不在 0..=24 内"
+                    )));
+                }
+                params.drive_db = parsed;
+            }
+            "ceilingDb" => {
+                let parsed = number(raw)?;
+                if !(-6.0..=0.0).contains(&parsed) {
+                    return Err(invalid(format!(
+                        "子键 `ceilingDb` 的取值 {parsed} 不在 -6..=0 内"
+                    )));
+                }
+                params.ceiling_db = parsed;
+            }
+            "kneeDb" => {
+                let parsed = number(raw)?;
+                if !(0.0..=6.0).contains(&parsed) {
+                    return Err(invalid(format!(
+                        "子键 `kneeDb` 的取值 {parsed} 不在 0..=6 内"
+                    )));
+                }
+                params.knee_db = parsed;
+            }
+            "mix" => {
+                let parsed = number(raw)?;
+                if !(0.0..=1.0).contains(&parsed) {
+                    return Err(invalid(format!("子键 `mix` 的取值 {parsed} 不在 0..=1 内")));
+                }
+                params.mix = parsed;
+            }
+            "oversample" => {
+                let parsed = number(raw)?;
+                if ![1.0, 2.0, 4.0, 8.0].contains(&parsed) {
+                    return Err(invalid(format!(
+                        "子键 `oversample` 的取值 {parsed} 不在 {{1, 2, 4, 8}} 内"
+                    )));
+                }
+                params.oversample = parsed;
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "未知子键 `{key}`（只准 driveDb / ceilingDb / kneeDb / mix / oversample）"
+                )));
+            }
+        }
+    }
+    Ok(params)
 }
 
 fn take_value(
@@ -6604,6 +6738,15 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             "`--record-seconds` 必须与 `--record-wav` 一起给".to_owned(),
         ));
     }
+    // ⭐ 与 MCP `masteringClipper` 同口径：削波段挂在响度预设上，没有响度目标
+    // 就没有预设可挂 ⇒ 必须与 `--loudness-target` 同给，⛔ 不静默忽略。
+    if options.mastering_clipper.is_some() && options.loudness_target.is_none() {
+        return Err(CliError::Usage(
+            "`--mastering-clipper` 必须与 `--loudness-target` 一起给（削波段挂在响度预设上，\
+             与 MCP masteringClipper 同口径）"
+                .to_owned(),
+        ));
+    }
     // `--wav-*` 是 `--export-wav` 的**修饰**开关（⛔ 不选进程形态）⇒ 单独给就是
     // 一次"以为改了产物形状、其实一个字节都没动"的假绿。与 `--record-seconds` 同款。
     for (given, name) in [
@@ -6619,6 +6762,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         (
             options.true_peak_ceiling.is_some(),
             TRUE_PEAK_CEILING_SWITCH,
+        ),
+        // ⭐ 母带削波段同属 `--export-wav` 的修饰开关（只改产物，不选进程形态）。
+        (
+            options.mastering_clipper.is_some(),
+            MASTERING_CLIPPER_SWITCH,
         ),
     ] {
         if given && options.export_wav.is_none() {
@@ -7120,9 +7268,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         wav_options.threads = options.wav_threads;
         // ⭐ 响度归一化预设：两个开关都不给 ⇒ `None` ⇒ 旧导出逐字节不变；
         // 给了任一个 ⇒ 拼成一份预设（没给的那一项是 `None` = 不约束那一侧）。
+        // ⭐ 削波段（`--mastering-clipper`）挂同一份预设（`with_clipper`）：
+        // 校验段已保证它必与 `--loudness-target` 同给 ⇒ 这里 `target` 必为
+        // `Some`；不给削波段 ⇒ 预设与旧行为逐字相同。
         wav_options.loudness = match (options.loudness_target, options.true_peak_ceiling) {
             (None, None) => None,
-            (target, ceiling) => Some(ExportPreset::new(target, ceiling)),
+            (target, ceiling) => {
+                Some(ExportPreset::new(target, ceiling).with_clipper(options.mastering_clipper))
+            }
         };
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
@@ -11007,5 +11160,76 @@ mod author_report_tests {
             first, second,
             "⭐ 控制臂：author 不变 ⇒ 报告行必须**逐字**不变"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `--mastering-clipper`：与 MCP `masteringClipper` 完全同口径
+    // （同名、同缺省、同范围、同校验 —— 子键解析见 `parse_mastering_clipper`）
+    // ------------------------------------------------------------------
+
+    /// 全子键规格 ⇒ 逐字段等于手写的期望参数（与 MCP 同一份 JSON
+    /// `{"driveDb":8,"ceilingDb":-0.5,"kneeDb":3,"mix":0.5,"oversample":2}`
+    /// 解析出的 `ClipperParams` 逐字段相同）。
+    #[test]
+    fn mastering_clipper_full_spec_parses_to_the_mcp_params() {
+        let options = parse(&[
+            "--open".to_owned(),
+            "song.yeban".to_owned(),
+            "--export-wav".to_owned(),
+            "out.wav".to_owned(),
+            "--loudness-target".to_owned(),
+            "-16".to_owned(),
+            "--mastering-clipper".to_owned(),
+            "driveDb=8,ceilingDb=-0.5,kneeDb=3,mix=0.5,oversample=2".to_owned(),
+        ])
+        .expect("全子键规格必须解析成功");
+        assert_eq!(
+            options.mastering_clipper,
+            Some(ClipperParams {
+                drive_db: 8.0,
+                ceiling_db: -0.5,
+                knee_db: 3.0,
+                mix: 0.5,
+                oversample: 2.0,
+            }),
+            "CLI 子键解析必须与 MCP masteringClipper 逐字段同口径"
+        );
+    }
+
+    /// 只给部分子键 ⇒ 其余取 `ClipperParams::DEFAULT`（与 MCP 只给部分
+    /// 子键时的缺省同一份）；内联 `--mastering-clipper=...` 形态同样可达。
+    #[test]
+    fn mastering_clipper_partial_spec_falls_back_to_the_mcp_defaults() {
+        let options = parse(&["--mastering-clipper=driveDb=10".to_owned()])
+            .expect("部分子键规格必须解析成功");
+        let mut expected = ClipperParams::DEFAULT;
+        expected.drive_db = 10.0;
+        assert_eq!(options.mastering_clipper, Some(expected));
+    }
+
+    /// 非法子键一律响亮拒绝并点名：范围外、未知子键、非法过采样、重复子键。
+    #[test]
+    fn mastering_clipper_rejects_bad_specs_loudly_and_names_the_subkey() {
+        for (spec, needle) in [
+            ("driveDb=25", "driveDb"),
+            ("ceilingDb=0.5", "ceilingDb"),
+            ("kneeDb=-1", "kneeDb"),
+            ("mix=1.5", "mix"),
+            ("oversample=3", "oversample"),
+            ("bogus=1", "bogus"),
+            ("mix=0.5,mix=0.6", "mix"),
+            ("driveDb=loud", "driveDb"),
+        ] {
+            let error = parse(&["--mastering-clipper".to_owned(), spec.to_owned()])
+                .expect_err("非法规格必须被拒绝");
+            assert!(
+                matches!(error, ParseError::MasteringClipperInvalid(_)),
+                "规格 `{spec}` 必须走 MasteringClipperInvalid，实际: {error:?}"
+            );
+            assert!(
+                error.to_string().contains(needle),
+                "规格 `{spec}` 的报错必须点名子键 `{needle}`，实际: {error}"
+            );
+        }
     }
 }
