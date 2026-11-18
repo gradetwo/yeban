@@ -2049,17 +2049,27 @@ mod tests {
         );
     }
 
-    /// ⭐ 判据（B-1，app 侧补齐）：**引擎音源**的区间等价（经 app 的
-    /// 复合源与探针包装走生产装配）。
+    /// ⭐ 判据（B-1 的引擎路径，2026-11-18 按 Wang 区间渲染修复委托
+    /// 改语义）：**引擎音源**的区间等价（经 app 的复合源与探针包装
+    /// 走生产装配）。
+    ///
+    /// 旧 B-1 口径要求跨起点音符在区间内不发声（与无跨起点工程的
+    /// 全程切片比对）。2026-11-18 Wang 实测区间导出 −70 LUFS 静默、
+    /// 成品同段 −18.43 LUFS，委托改为「区间产物与全程同段一致」：
+    /// `EngineTrackSource::seek_to` 对跨起点音符做预滚追补（自该音
+    /// 起点内部渲染到区间起点再丢弃），故本判据改与**带跨起点音符
+    /// 的全程渲染**同段比对。最小音源与 SfzTrackSource 两条路径未
+    /// 随本次修复改动，仍按 B-1 旧口径（各自判据未动；SfzTrackSource
+    /// 的追补一致性另立缺口）。
     ///
     /// 容差：引擎声部槽的分配顺序在冷启动下可不同 ⇒ 求和顺序可不同，
     /// 只允许浮点结合律量级的差（最大绝对差 ≤ 1e-5，线性幅度），
-    /// ⛔ 不是音质容差。跨起点独占仍要求逐样本全零。
+    /// ⛔ 不是音质容差。
     #[test]
     fn range_render_engine_source_matches_full_slice_within_tolerance() {
         let (with_cross, _) = range_project(&[(0, 480, 60), (960, 1_920, 64), (2_400, 480, 67)]);
         let (no_cross, _) = range_project(&[(0, 480, 60), (2_400, 480, 67)]);
-        let full = render_range(&no_cross, true, 0, 96_000);
+        let full = render_range(&with_cross, true, 0, 96_000);
         let ranged = render_range(&with_cross, true, 48_000, 48_000);
         let expected = &full[48_000 * 2..];
         assert_eq!(ranged.len(), expected.len());
@@ -2073,12 +2083,37 @@ mod tests {
             "引擎区间渲染与全程切片的最大差 {max_diff} 超过容差 1e-5"
         );
         assert!(peak(&ranged) > 0.0, "区间内音符必须发声（牙齿）");
-        let (cross_only, _) = range_project(&[(960, 1_920, 64)]);
-        let silenced = render_range(&cross_only, true, 48_000, 48_000);
-        assert_eq!(silenced.len(), 48_000 * 2, "区间输出长度 = 请求帧数 × 声道");
+        // 牙齿：区间产物必须与无跨起点工程的同段不同（跨起点音符
+        // 经追补后在区间内有真实贡献，不是把旧口径的静默又测回来）。
+        let no_cross_full = render_range(&no_cross, true, 0, 96_000);
         assert!(
-            silenced.iter().all(|sample| *sample == 0.0),
-            "引擎路径跨起点音符不得发声"
+            ranged
+                .iter()
+                .zip(no_cross_full[48_000 * 2..].iter())
+                .any(|(a, b)| (a - b).abs() > 1e-5),
+            "跨起点音符经追补必须在区间内留下与全程一致的贡献（牙齿）"
+        );
+        // 跨起点独占：不再全零，与自身全程切片同段一致。
+        let (cross_only, _) = range_project(&[(960, 1_920, 64)]);
+        let cross_ranged = render_range(&cross_only, true, 48_000, 48_000);
+        let cross_full = render_range(&cross_only, true, 0, 96_000);
+        assert_eq!(
+            cross_ranged.len(),
+            48_000 * 2,
+            "区间输出长度 = 请求帧数 × 声道"
+        );
+        let cross_diff = cross_ranged
+            .iter()
+            .zip(cross_full[48_000 * 2..].iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            cross_diff <= 1e-5,
+            "跨起点独占时区间渲染与全程切片的最大差 {cross_diff} 超过容差 1e-5"
+        );
+        assert!(
+            peak(&cross_ranged) > 0.0,
+            "跨起点音符经追补必须在区间内发声（牙齿）"
         );
     }
 

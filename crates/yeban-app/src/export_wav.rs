@@ -867,8 +867,9 @@ impl NoteToneSource {
 
 impl AudioSource for NoteToneSource {
     /// ⭐ 第五份报告 B-1（app 侧补齐）：冷启动定位 —— 起点在 `frame`
-    /// 之前的音符**整体丢弃**（跨起点音符不发声，与
-    /// `EngineTrackSource::seek_to` 的调度表过滤同一条口径）。
+    /// 之前的音符**整体丢弃**（跨起点音符不发声）。本夹具源自成一
+    /// 口径；生产引擎源 `EngineTrackSource::seek_to` 已于 2026-11-18
+    /// 改为预滚追补（跨起点音符发声、与全程一致），两者不再同口径。
     /// 起点 ≥ `frame` 的音符逐位不变：`sample_at` 是绝对帧的纯函数，
     /// 相位与首尾包络都按音符**自身起点**算，与从 0 渲染的切片一致。
     fn seek_to(&mut self, frame: u64) -> Result<(), String> {
