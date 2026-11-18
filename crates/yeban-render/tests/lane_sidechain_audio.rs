@@ -519,7 +519,7 @@ fn lane_endpoints_only_on_sidechain_edges() {
     assert!(base.validate().is_err(), "非侧链边带 lane 端点必须响亮拒绝");
     let sidechain = RoutingEdge {
         kind: RoutingKind::Sidechain,
-        ..base.clone()
+        ..base
     };
     assert!(sidechain.validate().is_ok(), "侧链边带 lane 端点合法");
     // 旧工程 JSON 没有 source_lane/dest_lane 字段 ⇒ 加载为 None。
