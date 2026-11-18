@@ -159,7 +159,11 @@ pub const PITCH_LANE_BASE: u8 = 60;
 pub const PITCH_LANE_HEIGHT_PX: f32 = 14.0;
 
 /// 音符块在车道内的纵向内缩（与 `piano_roll.slint` 的 `+ 6px` 对齐）。
-pub const NOTE_INSET_Y_PX: f32 = 6.0;
+/// 音符块顶沿相对泳道顶沿的内缩（逻辑像素）。**必须与块高一起满足
+/// `NOTE_INSET_Y_PX + NOTE_BLOCK_HEIGHT_PX <= PITCH_LANE_HEIGHT_PX`**，否则音符会
+/// 跨过本行底线、压进下一行（实测教训：原值 6.0 配块高 12px，6+12=18 > 14，
+/// 每个音符块都溢出 4px，界面上看起来"方块压在水平线上"）。
+pub const NOTE_INSET_Y_PX: f32 = 2.0;
 
 /// 卷帘左侧琴键列的宽度（逻辑像素）—— 与 `ui/console/piano_roll.slint` 里琴键列的
 /// `width: 56px` 及网格画布的 `x: 56px` 同一读数。

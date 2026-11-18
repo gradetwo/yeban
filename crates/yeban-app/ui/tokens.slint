@@ -410,6 +410,15 @@ export global Tokens {
     out property <color> gold-deep: ThemeState.theme == YebanTheme.brand ? #b8933e : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #4f8f7f : #8fa9c6) : (ThemeState.theme == YebanTheme.inkmoor ? #7c93a8 : (ThemeState.theme == YebanTheme.plume ? #6f8d96 : Palette.accent-background)));
 
     // ---------------------------------------------------------------------
+    // 6b-bis. 力度三阶（音符块按力度上色，口径对齐 Logic Pro）
+    // 三档**同一支色相**的明度阶梯，不做彩虹：低力度压暗、高力度提亮。
+    // mark 是块内那条"相对长度=力度"的横线，必须是比底色更亮的同族色。
+    out property <color> note-vel-low: ThemeState.theme == YebanTheme.brand ? #9c6a3a : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #3f5f57 : #45607f) : gold-deep);
+    out property <color> note-vel-mid: gold;
+    out property <color> note-vel-high: ThemeState.theme == YebanTheme.brand ? #e8cf94 : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #b9e0d4 : #9ec4e4) : gold-bright);
+    out property <color> note-vel-mark: ThemeState.theme == YebanTheme.brand ? #fff6dd : (ThemeState.theme == YebanTheme.yeban ? (texture-physical ? #e4f2ee : #e2ebf7) : gold-bright);
+
+    // ---------------------------------------------------------------------
     // 6c. 两支**新增**令牌 —— 为"顶栏两块同色板"这条缺陷而加 (2026-10-06)
     // ---------------------------------------------------------------------
     //
