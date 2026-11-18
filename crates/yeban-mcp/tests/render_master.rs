@@ -54,8 +54,8 @@ use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
     ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition, DeviceKind, EntityId, LaneChainDef,
-    LoopConfig, MidiNote, ParameterValue, RoutingEdge, RoutingKind, SampleRate, TrackKind,
-    TrackV3, YebanProjectV1,
+    LoopConfig, MidiNote, ParameterValue, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3,
+    YebanProjectV1,
 };
 use yeban_render::rf64::{BEXT_FIXED_LEN, parse_container};
 

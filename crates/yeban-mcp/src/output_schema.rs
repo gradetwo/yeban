@@ -2146,14 +2146,8 @@ fn render_master() -> Value {
         );
         // ⭐ 逐件处理线期 2：逐件链两个读数同样是**单独插入**（同一处
         // 递归上限），与 Required 里的两条一一对应。
-        properties.insert(
-            "laneChainsDeclared".to_owned(),
-            json!({"type": "integer"}),
-        );
-        properties.insert(
-            "laneChainsUnapplied".to_owned(),
-            json!({"type": "integer"}),
-        );
+        properties.insert("laneChainsDeclared".to_owned(), json!({"type": "integer"}));
+        properties.insert("laneChainsUnapplied".to_owned(), json!({"type": "integer"}));
         // ⭐ `ADR-0020`：可选键 ⇒ ⛔ 不进 `required`（缺省时它们不存在）。
         properties.insert(
             "contributions".to_owned(),

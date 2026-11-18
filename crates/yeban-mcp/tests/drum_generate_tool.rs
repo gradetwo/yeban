@@ -374,9 +374,5 @@ fn existing_track_with_user_lane_chains_keeps_them() {
     );
     let project = project(&dispatcher);
     let lead = project.tracks.get(&lead_id).expect("lead 轨");
-    assert_eq!(
-        lead.lane_chains,
-        vec![user_chain],
-        "用户逐件链必须逐值保留"
-    );
+    assert_eq!(lead.lane_chains, vec![user_chain], "用户逐件链必须逐值保留");
 }

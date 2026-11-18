@@ -4890,9 +4890,11 @@ mod tests {
             track(Some(value)).validate()
         })?;
         for bad in [1.5_f32, -1.5, 2.0] {
-            rejects_matching("逐件链声相越界", track(Some(bad)).validate(), |error| {
-                matches!(error, ModelError::LaneChainPanOutOfRange { .. })
-            })?;
+            rejects_matching(
+                "逐件链声相越界",
+                track(Some(bad)).validate(),
+                |error| matches!(error, ModelError::LaneChainPanOutOfRange { .. }),
+            )?;
         }
         accepts("None（居中）", track(None).validate())?;
         for edge in [-1.0_f32, -0.5, 0.0, 1.0] {

@@ -2,10 +2,7 @@
 //! `TrackV3::lane_chains` 缺省不落盘、旧工程 JSON 逐字节可读且重序列化
 //! 不变、带逐件链的工程往返一致、规范化校验逐条响亮拒绝。
 
-use std::str::FromStr;
-use yeban_model::{
-    DeviceDefinition, EntityId, LaneChainDef, ModelError, TrackKind, TrackV3, YebanProjectV1,
-};
+use yeban_model::{DeviceDefinition, LaneChainDef, ModelError, TrackV3, YebanProjectV1};
 
 fn hats_chain() -> LaneChainDef {
     LaneChainDef {
@@ -46,8 +43,7 @@ fn lane_chains_absent_by_default_and_old_json_loads_unchanged() {
         !project_json.contains("\"lane_chains\""),
         "无逐件链的工程不得写出 `lane_chains` 键: {project_json}"
     );
-    let project_back: YebanProjectV1 =
-        serde_json::from_str(&project_json).expect("旧工程必须可读");
+    let project_back: YebanProjectV1 = serde_json::from_str(&project_json).expect("旧工程必须可读");
     assert_eq!(project_back, doc);
     project_back.validate().expect("旧工程必须校验通过");
 }
@@ -149,10 +145,7 @@ fn track_validate_rejects_unnormalized_lane_chains() {
             ..hats_chain()
         },
     ]);
-    assert_eq!(
-        unordered.validate(),
-        Err(ModelError::LaneChainsNotOrdered)
-    );
+    assert_eq!(unordered.validate(), Err(ModelError::LaneChainsNotOrdered));
     // 组数超上限（17 组）。
     let too_many = track_with(
         (0..17u8)
@@ -166,10 +159,7 @@ fn track_validate_rejects_unnormalized_lane_chains() {
     );
     assert_eq!(
         too_many.validate(),
-        Err(ModelError::LaneChainCountOutOfRange {
-            count: 17,
-            max: 16
-        })
+        Err(ModelError::LaneChainCountOutOfRange { count: 17, max: 16 })
     );
     // 链内设备带非零延迟（逐件分支不做 PDC）。
     let latency_device = DeviceDefinition {

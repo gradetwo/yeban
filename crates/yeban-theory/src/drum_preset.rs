@@ -684,10 +684,7 @@ fn parse_comp(obj: &[(String, Json)], base: &str) -> Result<DrumCompPreset, Drum
 }
 
 /// 解析混响段（`{base}.reverb`）：整段字段必填。`fx` 与逐件链共用。
-fn parse_reverb(
-    obj: &[(String, Json)],
-    base: &str,
-) -> Result<DrumReverbPreset, DrumPresetError> {
+fn parse_reverb(obj: &[(String, Json)], base: &str) -> Result<DrumReverbPreset, DrumPresetError> {
     Ok(DrumReverbPreset {
         size: get_f32_ranged(obj, "size", &format!("{base}.reverb.size"), 0.0, 1.0)?,
         damp: get_f32_ranged(obj, "damp", &format!("{base}.reverb.damp"), 0.0, 1.0)?,
@@ -716,17 +713,16 @@ fn parse_tape(obj: &[(String, Json)], base: &str) -> Result<DrumTapePreset, Drum
 fn parse_delay(obj: &[(String, Json)], base: &str) -> Result<DrumDelayPreset, DrumPresetError> {
     let ping_pong = match get(obj, "ping_pong")? {
         Json::Bool(b) => *b,
-        _ => return Err(field_err(&format!("{base}.delay.ping_pong"), "expected a boolean")),
+        _ => {
+            return Err(field_err(
+                &format!("{base}.delay.ping_pong"),
+                "expected a boolean",
+            ));
+        }
     };
     Ok(DrumDelayPreset {
         time_s: get_f32_ranged(obj, "time_s", &format!("{base}.delay.time_s"), 0.01, 2.0)?,
-        feedback: get_f32_ranged(
-            obj,
-            "feedback",
-            &format!("{base}.delay.feedback"),
-            0.0,
-            0.9,
-        )?,
+        feedback: get_f32_ranged(obj, "feedback", &format!("{base}.delay.feedback"), 0.0, 0.9)?,
         mix: get_f32_ranged(obj, "mix", &format!("{base}.delay.mix"), 0.0, 0.6)?,
         damp: get_f32_ranged(obj, "damp", &format!("{base}.delay.damp"), 0.0, 1.0)?,
         ping_pong,
@@ -896,9 +892,9 @@ fn parse_lane_chains(
         let comp = match get_opt(chain_obj, "comp") {
             None => None,
             Some(raw_comp) => {
-                let comp_obj = raw_comp.as_object().ok_or_else(|| {
-                    field_err(&format!("{base}.comp"), "comp must be an object")
-                })?;
+                let comp_obj = raw_comp
+                    .as_object()
+                    .ok_or_else(|| field_err(&format!("{base}.comp"), "comp must be an object"))?;
                 Some(parse_comp(comp_obj, &base)?)
             }
         };
@@ -914,9 +910,9 @@ fn parse_lane_chains(
         let tape = match get_opt(chain_obj, "tape") {
             None => None,
             Some(raw_tape) => {
-                let tape_obj = raw_tape.as_object().ok_or_else(|| {
-                    field_err(&format!("{base}.tape"), "tape must be an object")
-                })?;
+                let tape_obj = raw_tape
+                    .as_object()
+                    .ok_or_else(|| field_err(&format!("{base}.tape"), "tape must be an object"))?;
                 Some(parse_tape(tape_obj, &base)?)
             }
         };
@@ -2961,9 +2957,7 @@ mod tests {
         let lanes: Vec<String> = lane_keys
             .iter()
             .map(|key| {
-                format!(
-                    "{{\"role\": \"lane{key}\", \"gm_key\": {key}, \"steps\": {STEPS16}}}"
-                )
+                format!("{{\"role\": \"lane{key}\", \"gm_key\": {key}, \"steps\": {STEPS16}}}")
             })
             .collect();
         format!(
@@ -3016,7 +3010,10 @@ mod tests {
         let names: Vec<&str> = specs[0].params.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"eq_enabled"));
         assert!(names.contains(&"hpf_hz"));
-        assert!(!names.contains(&"compressor_enabled"), "无 comp 段不得拼压缩");
+        assert!(
+            !names.contains(&"compressor_enabled"),
+            "无 comp 段不得拼压缩"
+        );
         assert!(!names.contains(&"output_gain_db"), "逐件链无 output 微调");
     }
 
@@ -3049,7 +3046,10 @@ mod tests {
             .position(|n| *n == "compressor_enabled")
             .unwrap();
         assert!(eq_pos < comp_pos);
-        assert!(strip_names.contains(&"cutoff_hz"), "cutoff < 20000 必须拼低通");
+        assert!(
+            strip_names.contains(&"cutoff_hz"),
+            "cutoff < 20000 必须拼低通"
+        );
     }
 
     #[test]
@@ -3132,7 +3132,10 @@ mod tests {
         .expect("sidechain declaration parses");
         let violations = lane_chain_generation_violations(&sidechained);
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("期 4"), "违规须点名期次: {violations:?}");
+        assert!(
+            violations[0].contains("期 4"),
+            "违规须点名期次: {violations:?}"
+        );
 
         // 原声 basic：帽组 {42,44,46}，预置用到 42/46。只把 42 分组 ⇒
         // 46 留在整轨链上，choke 组被拆 ⇒ 违规。
@@ -3167,9 +3170,13 @@ mod tests {
 
     #[test]
     fn choke_groups_match_probed_programs() {
-        let basic = choke_groups(Some("assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz"));
+        let basic = choke_groups(Some(
+            "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz",
+        ));
         assert!(basic.contains(&vec![42, 44, 46]));
-        let other = choke_groups(Some("assets/samples/virtuosity-drums/Programs/06-mid-mic.sfz"));
+        let other = choke_groups(Some(
+            "assets/samples/virtuosity-drums/Programs/06-mid-mic.sfz",
+        ));
         assert!(other.contains(&vec![42, 44, 92]));
         // 缺省（无 sfz_path = 默认基础组）按 basic 计。
         assert!(choke_groups(None).contains(&vec![42, 44, 46]));
