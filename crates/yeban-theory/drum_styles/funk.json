@@ -36,9 +36,9 @@
       "knee_db": 4,
       "attack_s": 0.003,
       "release_s": 0.06,
-      "makeup_db": 2.0
+      "makeup_db": 4.0
     },
-    "output_db": 0.0,
+    "output_db": 4.0,
     "reverb": {
       "size": 0.25,
       "damp": 0.5,
@@ -1492,7 +1492,7 @@
       "knee_db": 4,
       "attack_s": 0.03,
       "release_s": 0.12,
-      "makeup_db": 1.5
+      "makeup_db": 4.0
     },
     "clipper": {
       "drive_db": 0.5,

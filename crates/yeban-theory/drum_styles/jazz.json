@@ -12,12 +12,12 @@
     "converted": "2026-11-18",
     "tuning": [
       "bpm range and swing taken from GENRES entry 'jazz_swing' (bpm 120-260, swing 66% -> 660 permille); preset default 150 BPM",
-      "lanes authored for this preset in the swing-jazz idiom (ride-led, feathered kick, pedal chick on beats 2 & 4, comping snare); no key-46 hits: the assigned program Programs/07-room-mic.sfz uses the continuous CC4 hi-hat keymap and has no regions on key 46 (probed 2026-11-18)",
-      "kit: Virtuosity room-mic program (room perspective for the small-room / chamber brief); brush articulations in this library are unverified - listed as a gap in the line receipt"
+      "lanes authored for this preset in the swing-jazz idiom (ride-led, feathered kick, pedal chick on beats 2 & 4, comping snare); no key-46 hits: the assigned program Programs/06-mid-mic.sfz uses the continuous CC4 hi-hat keymap and has no regions on key 46 (probed 2026-11-18)",
+      "kit: Virtuosity mid-mic program (mid-microphone perspective, warm and close for the small-room / chamber brief). Programs/07-room-mic.sfz was the first choice but its room/ sample folder is absent from the local library copy (all 1938 regions sample-missing at render, verified 2026-11-18), so mid-mic is the shipping assignment; brush articulations in this library are unverified - listed as a gap in the line receipt"
     ]
   },
   "kit_family": "acoustic",
-  "sfz_path": "assets/samples/virtuosity-drums/Programs/07-room-mic.sfz",
+  "sfz_path": "assets/samples/virtuosity-drums/Programs/06-mid-mic.sfz",
   "fx": {
     "eq": {
       "low_db": 1.0,
@@ -36,9 +36,9 @@
       "knee_db": 6,
       "attack_s": 0.02,
       "release_s": 0.2,
-      "makeup_db": 0.8
+      "makeup_db": 5.3
     },
-    "output_db": 0.0,
+    "output_db": 6.0,
     "reverb": {
       "size": 0.5,
       "damp": 0.45,
@@ -1744,7 +1744,7 @@
       "knee_db": 6,
       "attack_s": 0.03,
       "release_s": 0.25,
-      "makeup_db": 0.8
+      "makeup_db": 5.8
     },
     "clipper": {
       "drive_db": 0.0,

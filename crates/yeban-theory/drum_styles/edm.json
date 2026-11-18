@@ -40,12 +40,19 @@
       "release_s": 0.09,
       "makeup_db": 2.0
     },
-    "output_db": 1.0,
+    "output_db": -0.5,
     "reverb": {
       "size": 0.5,
       "damp": 0.3,
       "wet": 0.15,
       "predelay_s": 0.02
+    },
+    "delay": {
+      "time_s": 0.352,
+      "feedback": 0.32,
+      "mix": 0.13,
+      "damp": 0.4,
+      "ping_pong": true
     }
   },
   "bpm": {
@@ -1242,7 +1249,7 @@
       "knee_db": 6,
       "attack_s": 0.03,
       "release_s": 0.12,
-      "makeup_db": 2.0
+      "makeup_db": 0.5
     },
     "clipper": {
       "drive_db": 2.0,

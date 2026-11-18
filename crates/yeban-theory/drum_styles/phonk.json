@@ -57,7 +57,7 @@
     "delay": {
       "time_s": 0.333,
       "feedback": 0.3,
-      "mix": 0.1,
+      "mix": 0.13,
       "damp": 0.5,
       "ping_pong": true
     }
@@ -1674,7 +1674,7 @@
       "knee_db": 6,
       "attack_s": 0.03,
       "release_s": 0.15,
-      "makeup_db": 1.8
+      "makeup_db": 0.5
     },
     "clipper": {
       "drive_db": 1.5,

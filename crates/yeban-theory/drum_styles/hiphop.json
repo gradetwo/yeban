@@ -37,7 +37,7 @@
       "release_s": 0.13,
       "makeup_db": 1.8
     },
-    "output_db": 0.0,
+    "output_db": 1.5,
     "reverb": {
       "size": 0.4,
       "damp": 0.5,
@@ -49,6 +49,13 @@
       "mix": 0.4,
       "hf_hz": 9000,
       "asym": 0.25
+    },
+    "delay": {
+      "time_s": 0.489,
+      "feedback": 0.26,
+      "mix": 0.1,
+      "damp": 0.45,
+      "ping_pong": true
     }
   },
   "bpm": {
@@ -1743,7 +1750,7 @@
       "knee_db": 6,
       "attack_s": 0.03,
       "release_s": 0.18,
-      "makeup_db": 1.4
+      "makeup_db": 2.6
     },
     "clipper": {
       "drive_db": 1.0,

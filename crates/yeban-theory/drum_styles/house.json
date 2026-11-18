@@ -40,7 +40,7 @@
       "release_s": 0.11,
       "makeup_db": 1.5
     },
-    "output_db": 0.0,
+    "output_db": 1.5,
     "reverb": {
       "size": 0.4,
       "damp": 0.4,
@@ -50,7 +50,7 @@
     "delay": {
       "time_s": 0.242,
       "feedback": 0.22,
-      "mix": 0.07,
+      "mix": 0.1,
       "damp": 0.45,
       "ping_pong": true
     }
