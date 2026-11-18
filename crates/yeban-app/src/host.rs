@@ -269,6 +269,51 @@ fn viewport_width_or_fallback(ui: &MainWindow, fallback: f32) -> f32 {
     }
 }
 
+/// 把窗口**逻辑高**单向注入 `MainWindow.window-h`，窗口尺寸变化时刷新。
+///
+/// 这是**唯一**能让 `.slint` 知道"窗口有多高"的路子：回读 `root.height` 是双向的
+/// （布局高 → 算式 → 再改布局），Slint 会报成串 binding loop，`ui/app.slint` 下坞段
+/// 的历史记录里已经踩过两次。⛔ 任何"按窗口高封顶"的算式都只许读 `window-h`。
+///
+/// ⚠ 已知**不能**用它直接封顶下坞高度：下坞内部（钢琴卷帘/混音台）有硬性最小高，
+/// 实测把 dock 压到 180px 会让整块下坞塌成 0（连卷帘一起消失）。想缩下坞必须先让
+/// 下坞内容的最小高可缩。眼下它只用于**拖拽上限**（用户自己拖不超过窗口）。
+///
+/// 用 300ms 轮询而不是 resize 回调：Slint 1.18 的 Rust 侧没有导出 resize 通知，
+/// 每次只读一次 `Window::size()`，且只在真变了才写属性，不给投影路径增负担。
+fn install_window_height_signal(ui: &MainWindow) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    thread_local! {
+        static WINDOW_H_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    }
+
+    let weak = ui.as_weak();
+    let push = Rc::new(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        // ⚠ `Window::size()` 是**物理**像素，而 `.slint` 布局按逻辑点排 ⇒ 必须除掉缩放比，
+        // 否则 1.5 倍屏上注入 1050 而不是 700。
+        let scale = ui.window().scale_factor() as f32;
+        let h = ui.window().size().height as f32 / if scale > 0.01 { scale } else { 1.0 };
+        if h.is_finite() && h > 0.0 && (ui.get_window_h() - h).abs() > 0.5 {
+            ui.set_window_h(h);
+        }
+    });
+    push();
+
+    let tick = Rc::clone(&push);
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(300),
+        move || tick(),
+    );
+    WINDOW_H_TIMER.with(|slot| *slot.borrow_mut() = Some(timer));
+}
+
 /// 把投影状态**单向**注入一个已存在的 `MainWindow`。
 ///
 /// 幂等：对同一个 `ViewState` 重复调用得到同一个界面（判据
@@ -18281,6 +18326,7 @@ pub fn build_main_window_with_console_tab(
     let view_snapshot = std::rc::Rc::new(view.clone());
     install_roll_click(&ui, std::rc::Rc::clone(&view_snapshot), None);
     install_roll_scroll(&ui, view_snapshot, None);
+    install_window_height_signal(&ui);
     wire_aether_callbacks(&ui);
 
     Ok(ui)

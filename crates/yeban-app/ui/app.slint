@@ -194,6 +194,10 @@ export component MainWindow inherits Window {
     in-out property <length> control-room-width: 200px; // [min: 160px, max: 300px]
     in-out property <length> lower-dock-height: 320px;  // [min: 180px, max: 480px]
     in-out property <length> track-headers-width: 240px;// [min: 180px, max: 320px]
+    // 窗口**逻辑高**：由宿主 (`host::install_window_height_signal`) 单向写入，窗口
+    // 尺寸变化时刷新。⛔ 需要"按窗口高封顶"的地方一律读这个属性，不许回读
+    // `root.height` —— 回读会与布局互喂，Slint 会报成串 binding loop。
+    in-out property <length> window-h: 700px;
     in-out property <bool> show-floating-toast: false;
 
     // Zone Visibility State (Default: clean arrangement workspace with side/dock panels folded)
@@ -1504,7 +1508,13 @@ export component MainWindow inherits Window {
                     mouse-cursor: MouseCursor.row-resize;
                     moved => {
                         let delta = self.mouse-y - self.pressed-y;
-                        root.lower-dock-height = Math.min(480px, Math.max(180px, root.lower-dock-height - delta));
+                        // 拖拽上限跟着窗口高走：`window-h - 320px` 保证拖到底也还剩编曲区
+                        // 约 320px（A1：700 高窗口里 dock 固定 320 时编曲区只剩 262）。
+                        // ⚠ 下限**必须**留在 320px：下坞内容（卷帘键盘行/混音台）有硬性最小高，
+                        //   实测压到 180 会让整块下坞塌成 0，所以这里只收紧"能拖多高"，
+                        //   绝不让拖拽把下坞拖进塌陷区间。
+                        let max-h = Math.max(320px, Math.min(480px, root.window-h - 320px));
+                        root.lower-dock-height = Math.min(max-h, Math.max(180px, root.lower-dock-height - delta));
                     }
                     double-clicked => {
                         root.lower-dock-height = 320px;
@@ -1527,9 +1537,14 @@ export component MainWindow inherits Window {
                 //     ⇒ 构建通过、抓帧**逐像素零变化**：700px 高窗口下布局本来就把 dock
                 //     压到 ~195px，dock 不是瓶颈。
                 //   · 给工作区行加 `min-height: 0px` ⇒ dock 被推到底部，只剩标签行。
-                // ⇒ A1 的真凶是 `track-heights`（每轨固定 96px）× 轨数 > 可用高度，
-                //   下一轮要么让 Rust 侧 `normalize-track-heights` 接受窗口高度，
-                //   要么给编曲区加纵向滚动条（行高不动）。
+                // ⭐ 2026-11-18 复查：上面两条记录里"dock 不是瓶颈"这条**是错的** ——
+                //   `crates/yeban-app/tests/ui_geometry_probe.rs` 在测试口里量到 700 高窗口下
+                //   dock 就是实打实的 320、编曲画布只剩 262（内容 422 ⇒ 只露 2.8 轨）。
+                // ⚠ 同轮试过 `Math.max(180px, Math.min(lower-dock-height, window-h - 500px))`：
+                //   测试口里读数正确（dock 320→200、画布 262→382），但**实机整块下坞消失**
+                //   （钢琴卷帘一起没），说明下坞内部内容有硬性最小高度，压到 180 时布局直接塌成 0。
+                //   ⇒ 想缩下坞必须**先**让卷帘/混音台的最小高可缩，再谈封顶；否则一行算式就会
+                //     把整个下坞弄没。本轮已回退，保留这条结论避免重复走。
                 dock-height: root.lower-dock-height;
                 active-tab: Theme.active-dock-tab;
                 selected-track-color: root.tracks.length > 0 ? root.tracks[root.safe-selected-idx].color : Theme.track-synth;

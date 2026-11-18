@@ -896,8 +896,13 @@ export component ArrangementViewport inherits Rectangle {
             arr_tracks_flickable := Flickable {
                 width: parent.width;
                 height: parent.height;
+                accessible-role: list;
+                accessible-id: "arr-lanes-flickable";
                 content-width: self.width;
-                content-height: max(self.height, root.sheet-height + 42px + 46px);
+                // ⚠ 不再写 `max(self.height, …)`：Flickable 的高度由父槽位决定，
+                // 内容高只由轨道投影决定。两者分开，`content-height > height` 才能在
+                // 轨道装不下时成立 —— 滚轮与滚动条都靠这个判据。
+                content-height: root.sheet-height + 42px + 46px;
                 interactive: true;
                 // ─── 轨道区背景网格（铺满整块车道区）──────────────────
                 // 2026-11-18 口径（负责人）：
