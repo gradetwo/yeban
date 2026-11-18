@@ -2,7 +2,7 @@
 //!
 //! 格式是 JSON，模式见 `crates/yeban-theory/drum_styles/FORMAT.md`。本模块
 //! 只做三件事：把 JSON 文本解析成 [`DrumStylePreset`]、校验形状与值域、
-//! 给出仓内出厂的 10 个风格（`include_str!` 嵌入，解析逻辑与将来从
+//! 给出仓内出厂的 14 个风格（`include_str!` 嵌入，解析逻辑与将来从
 //! yeban-extras 下载的同格式文件共用同一条路径）。
 //!
 //! 数据来源：出厂 10 风格改编自 groove 仓（`gradetwo/groove`，MIT）的
@@ -1598,13 +1598,14 @@ fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
 // 击点覆盖审计（段 5 守卫：绑到不存在音色的击点必须响亮失败，不许无声）
 // ---------------------------------------------------------------------------
 
-/// 原声默认鼓组（Virtuosity 系全部出厂程序共用同一张 GM 键位图）里
+/// 原声默认鼓组（`01-basic-kit.sfz` 的 `keymap_basic.sfz` 键位图）里
 /// **有 region 落点**的鼓件键位。出处：`Programs/keymaps/keymap_basic.sfz`
 /// 的 `#define` 键位表（鼓件部分）+ 2026-11-18 全库装载审计逐键核对
-/// （出厂预置用到的每个键都有样本发声）。扩展打击乐键（54–84 的
-/// 非鼓件部分）**不**列入：它们在部分单麦程序里没有 region，列入会
-/// 让守卫对没声音的键放行 —— 宁可将来真用到时守卫响亮报错、人工
-/// 复核后再扩表，也不让表先行放宽。
+/// （出厂预置用到的每个键都有样本发声）。⚠ 其它 Virtuosity 程序用
+/// 另一张键位图、覆盖更小，逐程序修正见 [`acoustic_covered_keys`]。
+/// 扩展打击乐键（54–84 的非鼓件部分）**不**列入：它们在部分单麦
+/// 程序里没有 region，列入会让守卫对没声音的键放行 —— 宁可将来
+/// 真用到时守卫响亮报错、人工复核后再扩表，也不让表先行放宽。
 pub const ACOUSTIC_KIT_KEYS: &[u8] = &[
     35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 53, 55, 57, 59, 82,
 ];
@@ -1614,8 +1615,8 @@ pub const ACOUSTIC_KIT_KEYS: &[u8] = &[
 ///
 /// - 电子族：音色集 = [`kit_setup`] 的合成鼓机参数表里全部 `*_note`
 ///   键位（引擎鼓机识别口径的同一份名单，⛔ 不另抄一份）；
-/// - 原声族：音色集 = [`ACOUSTIC_KIT_KEYS`]（按预置选定的 SFZ 程序
-///   共用同一张键位图，见该常量文档）。
+/// - 原声族：音色集 = [`ACOUSTIC_KIT_KEYS`] 按预置选定的 SFZ 程序
+///   修正（见 [`acoustic_covered_keys`]：完整键位图程序缺 46 等键）。
 ///
 /// 生成路径（MCP `yeban_generate_drum_pattern` 与 UI `drum_gen_ops`）
 /// 在生成前调用本函数，非空即响亮拒绝 —— 这是 Wang「默认不能静默」
@@ -1632,7 +1633,7 @@ pub fn uncovered_pattern_keys(preset: &DrumStylePreset) -> Vec<(String, u8)> {
                 .collect(),
             DrumKitSetup::AcousticSfz { .. } => Vec::new(),
         },
-        KitFamily::Acoustic => ACOUSTIC_KIT_KEYS.to_vec(),
+        KitFamily::Acoustic => acoustic_covered_keys(preset.sfz_path.as_deref()),
     };
     let mut uncovered = Vec::new();
     let mut check = |lanes: &[DrumLanePreset]| {
@@ -1649,12 +1650,39 @@ pub fn uncovered_pattern_keys(preset: &DrumStylePreset) -> Vec<(String, u8)> {
     uncovered
 }
 
+/// 原声族在**指定 SFZ 程序**下的实际覆盖键集（[`uncovered_pattern_keys`]
+/// 的原声分支）。
+///
+/// ⚠ Virtuosity 的程序并不共用一张键位图（2026-11-18 逐程序装载
+/// 探针实测，探针口径 = note 触发 region 的键区间覆盖计数）：
+/// `01-basic-kit.sfz` 用 `keymap_basic.sfz`（GM 分键，开镲独立在
+/// 46）；其余出厂程序用 `keymap.sfz`——踩镲是 CC4 踏板连续乐器、
+/// 全部落在 42，**46 没有任何 region**；`08-vintage-mic.sfz` 与
+/// `03-kick-mic.sfz` 还缺 56（牛铃）与 82（沙锤）。未知程序按
+/// basic 全集计（出厂预置只用已探针核过的程序；用户自选程序的
+/// 装载期覆盖审计是另一条线，见预置格式文档）。
+fn acoustic_covered_keys(sfz_path: Option<&str>) -> Vec<u8> {
+    let mut keys = ACOUSTIC_KIT_KEYS.to_vec();
+    let Some(path) = sfz_path else {
+        return keys;
+    };
+    let file = path.rsplit('/').next().unwrap_or(path);
+    if file != "01-basic-kit.sfz" {
+        // 完整键位图程序：开镲不在 46（并入 42 + CC4 踏板）。
+        keys.retain(|key| *key != 46);
+    }
+    if matches!(file, "08-vintage-mic.sfz" | "03-kick-mic.sfz") {
+        keys.retain(|key| !matches!(key, 56 | 82));
+    }
+    keys
+}
+
 // ---------------------------------------------------------------------------
 // 出厂预置（嵌入文本与磁盘文件同一格式）
 // ---------------------------------------------------------------------------
 
 /// 出厂 10 风格的嵌入源（id 与文件一一对应）。
-const FACTORY_SOURCES: [(&str, &str); 10] = [
+const FACTORY_SOURCES: [(&str, &str); 14] = [
     ("trap", include_str!("../drum_styles/trap.json")),
     ("drill", include_str!("../drum_styles/drill.json")),
     ("phonk", include_str!("../drum_styles/phonk.json")),
@@ -1665,6 +1693,10 @@ const FACTORY_SOURCES: [(&str, &str); 10] = [
     ("edm", include_str!("../drum_styles/edm.json")),
     ("pop", include_str!("../drum_styles/pop.json")),
     ("rock", include_str!("../drum_styles/rock.json")),
+    ("jazz", include_str!("../drum_styles/jazz.json")),
+    ("funk", include_str!("../drum_styles/funk.json")),
+    ("rnb", include_str!("../drum_styles/rnb.json")),
+    ("hiphop", include_str!("../drum_styles/hiphop.json")),
 ];
 
 /// 出厂风格 id 清单（顺序即 UI 列表顺序）。
@@ -2133,7 +2165,7 @@ mod tests {
     #[test]
     fn factory_styles_all_carry_individually_tuned_fx() {
         let styles = factory_drum_styles().expect("factory presets parse");
-        assert_eq!(styles.len(), 10);
+        assert_eq!(styles.len(), 14);
         let mut signatures = std::collections::BTreeSet::new();
         for style in &styles {
             let fx = style
@@ -2149,6 +2181,146 @@ mod tests {
             signatures.len() > 1,
             "factory fx must be tuned per style, not one shared parameter set"
         );
+    }
+
+    /// 段 5 守卫钉子（Wang「默认不能静默」）：14 个出厂预置的全部
+    /// 击点（主道 + fill）都必须绑得到音色——`uncovered_pattern_keys`
+    /// 对每一份出厂预置都为空。
+    #[test]
+    fn every_factory_preset_hit_has_a_voice() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        assert_eq!(styles.len(), 14);
+        for style in &styles {
+            let uncovered = uncovered_pattern_keys(style);
+            assert!(
+                uncovered.is_empty(),
+                "{} 有绑不到音色的击点：{uncovered:?}",
+                style.id
+            );
+        }
+    }
+
+    /// 守卫的反面钉子：绑到不存在音色的击点必须被报出来（电子族
+    /// 未知键 99；原声族在完整键位图程序上用开镲键 46）。
+    #[test]
+    fn the_guard_names_hits_bound_to_missing_voices() {
+        let electronic = MINIMAL.replace("\"gm_key\": 36", "\"gm_key\": 99");
+        let preset = DrumStylePreset::from_json(&electronic).expect("parses");
+        assert_eq!(
+            uncovered_pattern_keys(&preset),
+            vec![("kick".to_owned(), 99)],
+            "电子族键 99 无音色必须被点名"
+        );
+
+        let acoustic = MINIMAL
+            .replace("\"kit_family\": \"electronic\"", "\"kit_family\": \"acoustic\"")
+            .replace(
+                "\"swing_permille\": 515, \"bars\": 1,",
+                "\"swing_permille\": 515, \"bars\": 1, \
+                 \"sfz_path\": \"assets/samples/virtuosity-drums/Programs/07-room-mic.sfz\",",
+            )
+            .replace("\"gm_key\": 36", "\"gm_key\": 46");
+        let preset = DrumStylePreset::from_json(&acoustic).expect("parses");
+        assert_eq!(
+            uncovered_pattern_keys(&preset),
+            vec![("kick".to_owned(), 46)],
+            "完整键位图程序（07-room-mic）上键 46 无 region 必须被点名"
+        );
+    }
+
+    /// 段 1 钉子：14 个出厂预置全部带鼓总线段，且胶水压缩落在
+    /// Wang 定值带内（比 2:1–4:1、启动 30 ms）。
+    #[test]
+    fn every_factory_preset_carries_a_drum_bus_in_the_ruled_band() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        for style in &styles {
+            let bus = style
+                .bus
+                .unwrap_or_else(|| panic!("factory style {} must carry a bus section", style.id));
+            assert!(
+                (2.0..=4.0).contains(&bus.glue.ratio),
+                "{} 胶水压缩比 {} 不在 2:1–4:1 带内",
+                style.id,
+                bus.glue.ratio
+            );
+            assert!(
+                (bus.glue.attack_s - 0.03).abs() < 1e-6,
+                "{} 胶水启动 {} 不是 30 ms",
+                style.id,
+                bus.glue.attack_s
+            );
+            let specs = drum_bus_device_specs(&bus);
+            assert_eq!(specs.len(), 2, "{} 总线链必须是胶水 + 削波两台", style.id);
+        }
+    }
+
+    /// 段 2 钉子：电子族逐风格参数表两两不同（非键位参数至少差
+    /// 8 项）——不许再出现"trap 与 drill 音色差异为 0"。
+    #[test]
+    fn electronic_factory_styles_have_pairwise_distinct_synth_tables() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let electronic: Vec<&DrumStylePreset> = styles
+            .iter()
+            .filter(|style| style.kit_family == KitFamily::Electronic)
+            .collect();
+        assert_eq!(electronic.len(), 8, "电子族应为 8 个风格");
+        let tables: Vec<Vec<(String, f32)>> = electronic
+            .iter()
+            .map(|style| match kit_setup(style) {
+                DrumKitSetup::SynthDevice { params, .. } => params
+                    .into_iter()
+                    .filter(|(name, _)| !name.ends_with("_note"))
+                    .collect(),
+                DrumKitSetup::AcousticSfz { .. } => panic!("electronic style must be synth"),
+            })
+            .collect();
+        for (i, a) in tables.iter().enumerate() {
+            for (j, b) in tables.iter().enumerate().skip(i + 1) {
+                let differing = a
+                    .iter()
+                    .zip(b.iter())
+                    .filter(|((an, av), (bn, bv))| an == bn && av.to_bits() != bv.to_bits())
+                    .count();
+                assert!(
+                    differing >= 8,
+                    "{} 与 {} 的合成参数只差 {differing} 项（下限 8）",
+                    electronic[i].id,
+                    electronic[j].id
+                );
+            }
+        }
+    }
+
+    /// 段 3 钉子：原声族的程序分配与命名——新风格用各自的麦克风
+    /// 视角程序（ pairwise 不同），Acoustic 前缀齐全。
+    #[test]
+    fn acoustic_factory_styles_carry_acoustic_names_and_chosen_programs() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let acoustic: Vec<&DrumStylePreset> = styles
+            .iter()
+            .filter(|style| style.kit_family == KitFamily::Acoustic)
+            .collect();
+        assert_eq!(acoustic.len(), 6, "原声族应为 6 个风格");
+        for style in &acoustic {
+            assert!(
+                style.name.starts_with("Acoustic "),
+                "{} 的英文名 {} 缺 Acoustic 前缀",
+                style.id,
+                style.name
+            );
+            match kit_setup(style) {
+                DrumKitSetup::AcousticSfz { .. } => {}
+                DrumKitSetup::SynthDevice { .. } => panic!("acoustic style must be SFZ"),
+            }
+        }
+        let path_of = |id: &str| match kit_setup(acoustic.iter().find(|s| s.id == id).unwrap()) {
+            DrumKitSetup::AcousticSfz { sfz_path } => sfz_path,
+            DrumKitSetup::SynthDevice { .. } => unreachable!(),
+        };
+        assert!(path_of("jazz").ends_with("07-room-mic.sfz"));
+        assert!(path_of("funk").ends_with("04-snare-mic.sfz"));
+        assert!(path_of("rnb").ends_with("05-oh-mic.sfz"));
+        assert!(path_of("pop").ends_with("01-basic-kit.sfz"));
     }
 
     #[test]
