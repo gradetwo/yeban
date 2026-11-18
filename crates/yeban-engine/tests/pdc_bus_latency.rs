@@ -30,9 +30,6 @@ use yeban_model::{
     MidiNote, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
 
-/// 夹具栅格：120 BPM / 48 kHz / 960 PPQ ⇒ 1 tick = 25 样本。
-const SAMPLES_PER_TICK: u64 = 25;
-
 /// `fast` 支路上那台设备的**上报**延迟（采样点）。正好两个量子的一半，肉眼可辨。
 const REPORTED_LATENCY: u32 = 64;
 
