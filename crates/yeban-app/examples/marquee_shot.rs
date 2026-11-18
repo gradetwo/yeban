@@ -23,8 +23,9 @@ use yeban_ui_test_port::{
 const NOW_MS: u64 = 1_700_000_000_000;
 const WINDOW: Size = Size::new(1440, 900);
 const FLICKABLE: &str = "arr-lanes-flickable";
-/// 车道区左缘在 Flickable 局部帧的偏移 = headers-width（216）+ 5。
-const TIMELINE_ORIGIN_X: f64 = 221.0;
+/// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width` + 5（实窗里
+/// `headers-width` 绑根属性 `track-headers-width` = 240px，⛔ 不是组件
+/// 默认值 216px）⇒ 主流程里从窗口现读。
 
 fn save(image: &Rgb8Image, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(path, encode_rgb8(image))?;
@@ -86,7 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find_by_id(FLICKABLE)
         .and_then(|h| h.bounds)
         .ok_or("编曲滚动面必须有几何")?;
-    let visible_tx_max = bounds.width as f32 - TIMELINE_ORIGIN_X as f32 - 24.0;
+    let origin_x = f64::from(port.ui().get_track_headers_width()) + 5.0;
+    let visible_tx_max = bounds.width as f32 - origin_x as f32 - 24.0;
 
     // 与判据同款的几何复算：块 = (x.max(0), track_ys+4, w.max(12), max(52, h-8))。
     let ys = view.track_ys();
@@ -147,21 +149,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     port.dispatch_pointer_down(
         FLICKABLE,
-        TIMELINE_ORIGIN_X + f64::from(sx),
+        origin_x + f64::from(sx),
         f64::from(sy),
         PointerButton::Left,
     )?;
     for step in 1..=3 {
         let t = f64::from(step) / 3.0;
         port.dispatch_pointer_move(
-            f64::from(bounds.x) + TIMELINE_ORIGIN_X + f64::from(sx) + f64::from(ex - sx) * t,
+            f64::from(bounds.x) + origin_x + f64::from(sx) + f64::from(ex - sx) * t,
             f64::from(bounds.y) + f64::from(sy) + f64::from(ey - sy) * t,
         )?;
     }
     let drag_frame = port.window().capture()?;
     save(&drag_frame, &out.join("marquee-drag.png"))?;
     // 3x 裁切中心 = 矩形窗口帧中心。
-    let ccx = (f64::from(bounds.x) + TIMELINE_ORIGIN_X + f64::from(sx + ex) / 2.0) as u32;
+    let ccx = (f64::from(bounds.x) + origin_x + f64::from(sx + ex) / 2.0) as u32;
     let ccy = (f64::from(bounds.y) + f64::from(sy + ey) / 2.0) as u32;
     save(
         &crop3x(&drag_frame, ccx, ccy, 720, 480),

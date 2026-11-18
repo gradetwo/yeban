@@ -42,9 +42,11 @@ const NOW_MS: u64 = 1_700_000_000_000;
 const WINDOW: Size = Size::new(1440, 900);
 /// 编曲视口的滚动面（`elements.rs` 已注册）。
 const FLICKABLE: &str = "arr-lanes-flickable";
-/// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width`（216px）+ 5px 间隔
+/// 车道区左缘在 Flickable 局部帧的偏移 = `headers-width` + 5px 间隔
 /// （`ui/arrangement.slint` 的 `timeline-origin-x`，表头在左时）。
-const TIMELINE_ORIGIN_X: f64 = 221.0;
+/// ⚠ `headers-width` 在实窗里绑的是根属性 `track-headers-width`（240px，
+/// ⛔ 不是 ArrangementViewport 的组件默认值 216px）⇒ 判据从窗口现读，见
+/// 各自主流程里的 `origin_x`。
 
 /// 片段的**绘制几何**（与 `host::clip_marquee_hits` 的文档逐项同源 —— 这里是
 /// 判据侧的独立复算：x / 宽的钳位、y 的 +4、高 的 max(52, 行高 − 8)）。
@@ -173,7 +175,8 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
         .expect("控件树里必须有编曲滚动面")
         .bounds
         .expect("滚动面必须有几何");
-    let visible_tx_max = (bounds.width as f32) - (TIMELINE_ORIGIN_X as f32) - 24.0;
+    let origin_x = f64::from(port.ui().get_track_headers_width()) + 5.0;
+    let visible_tx_max = (bounds.width as f32) - (origin_x as f32) - 24.0;
 
     // 按下点：空白车道；目标：另一条轨道上、可见宽内的一条片段。
     let (start_track, sx, sy) = blank_start(&view, visible_tx_max);
@@ -191,7 +194,7 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
     // ② 真实拖拽：按下（Flickable 局部坐标）→ 三步移动（窗口绝对坐标）→ 松手。
     port.dispatch_pointer_down(
         FLICKABLE,
-        TIMELINE_ORIGIN_X + f64::from(sx),
+        origin_x + f64::from(sx),
         f64::from(sy),
         PointerButton::Left,
     )
@@ -199,7 +202,7 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
     for step in 1..=3 {
         let t = f64::from(step) / 3.0;
         port.dispatch_pointer_move(
-            f64::from(bounds.x) + TIMELINE_ORIGIN_X + f64::from(sx) + (f64::from(ex - sx)) * t,
+            f64::from(bounds.x) + origin_x + f64::from(sx) + (f64::from(ex - sx)) * t,
             f64::from(bounds.y) + f64::from(sy) + (f64::from(ey - sy)) * t,
         )
         .expect("拖动必须送达");
@@ -244,7 +247,7 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
     // ③ 空白单击：选区一位不动。
     port.dispatch_pointer_down(
         FLICKABLE,
-        TIMELINE_ORIGIN_X + f64::from(sx),
+        origin_x + f64::from(sx),
         f64::from(sy),
         PointerButton::Left,
     )
