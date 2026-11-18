@@ -243,6 +243,75 @@ pub fn centered_pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
     }
 }
 
+/// ⭐⭐ **SFZ 立体声级**（声像族建模补全片）：对一对立体声缓冲**原地**施加
+/// `width`（声场宽度）与 `position`（声像位置），是 sfizz 声像链的后两级。
+///
+/// ## 链条顺序（照 sfizz `Voice::panStageStereo`）
+///
+/// ```text
+/// pan（区域声相，调用方先行施加） → width → position
+/// ```
+///
+/// 本函数只做后两级：区域 `pan` 在夜半的落点是声部源侧的
+/// [`centered_pan_gains`] 分配（见 `yeban-sfz` 摊平表的分声道通路），
+/// 调用方先做完那一级再调本函数，顺序与 sfizz 一致。
+///
+/// ## 公式（sfizz `src/sfizz/Panning.cpp` 的 `tickWidth` / `tickPan`）
+///
+/// * `width`：`ν = width/100 ∈ [-1, 1]`、`w = (ν + 1) / 2`、
+///   `c1 = cos(w·π/2)`、`c2 = sin(w·π/2)`；
+///   `L' = c2·L + c1·R`、`R' = c1·L + c2·R`。
+///   ⇒ `width = 0` 时 `L' = R' = (L + R)·√2/2`（合成单声道，自带求和补偿）；
+///   `width = -100` 时左右**互换**；`width = 100` 时恒等。
+///   用 mid/side 的话说：mid 增益 `c1 + c2`、side 增益 `c2 - c1`
+///   （`width < 0` 时 side 反号 ⇒ 声像镜像）。
+/// * `position`：与 `pan` **同一条**等功率律（[`pan_gains`] 的
+///   `ConstantPowerMinus3dB`：`L ×= cos θ`、`R ×= sin θ`、
+///   `θ = (position/100 + 1)·π/4`）—— sfizz 就是把 `position` 当作
+///   第二个 `pan()` 级施加（**没有**交叉馈送项；交叉混合只在 `width`
+///   级里）。与 `pan` 的区别只在位置：`pan` 是第一级（单声道时即其
+///   定位、立体声时是平衡），`position` 在 `width` 之后移动**整个
+///   已成形的声像**。
+///
+/// ## 中性与边界
+///
+/// * `width == 100 && position == 0`（即缺省组合）⇒ **逐位不变**
+///   （两级各自短路跳过，⛔ 不做任何浮点运算）；
+/// * 非有限的 `width` ⇒ 跳过 width 级；非有限的 `position` ⇒ 跳过
+///   position 级（与 [`pan_gains`] 的非有限口径一致，⛔ 不产出 NaN 扩散）；
+/// * 两缓冲长度不同 ⇒ 只处理共同前缀（`zip` 语义）；
+/// * ⚠ **单声道源不要调用本函数**：sfizz 对单声道样本走 `panStageMono`，
+///   `width` / `position` **完全不施加**（规范亦写明两者 "only operational
+///   for stereo samples"）。夜半当前 SFZ 样本在摊平期是单声道 PCM
+///   ⇒ 声部分声道通路**不**调用本函数（接线点在将来立体声样本通路的
+///   源侧分配处）；本函数的判据用合成双声道缓冲钉住公式本身。
+pub fn apply_stereo_width_position(
+    left: &mut [f32],
+    right: &mut [f32],
+    width: f32,
+    position: f32,
+) {
+    if width.is_finite() && width != 100.0 {
+        let nu = (width / 100.0).clamp(-1.0, 1.0);
+        let w = (nu + 1.0) * 0.5;
+        let angle = w * core::f32::consts::FRAC_PI_2;
+        let coeff1 = libm::cosf(angle);
+        let coeff2 = libm::sinf(angle);
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let (lv, rv) = (*l, *r);
+            *l = lv * coeff2 + rv * coeff1;
+            *r = lv * coeff1 + rv * coeff2;
+        }
+    }
+    if position.is_finite() && position != 0.0 {
+        let (gain_l, gain_r) = pan_gains(position / 100.0, PanLaw::ConstantPowerMinus3dB);
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            *l *= gain_l;
+            *r *= gain_r;
+        }
+    }
+}
+
 /// 盲听 A/B 的等功率交叉淡化时长（毫秒）—— [ARCH-RT-005] / [RSK-30]。
 ///
 /// 规范值 **30 ms**；48 kHz 下折合 [`crossfade_len_frames`] = **1440** 采样点。
@@ -787,5 +856,78 @@ mod tests {
         // 退化输入：兜到下限（⛔ 不是 0）。
         assert_eq!(audition_preroll_frames(0.0), AUDITION_PREROLL_SAMPLES);
         assert_eq!(audition_preroll_frames(f32::NAN), AUDITION_PREROLL_SAMPLES);
+    }
+
+    /// ⭐ **声像族建模补全片判据（立体声级本体，照 sfizz `Panning.cpp`)**：
+    /// 合成双声道缓冲上逐条钉 `apply_stereo_width_position` 的公式行为。
+    #[test]
+    fn stereo_width_position_stage_matches_the_sfizz_formulas() {
+        let orig_left = [0.8f32, -0.4, 0.2, 0.0];
+        let orig_right = [0.1f32, 0.5, -0.6, 0.3];
+        let run = |width: f32, position: f32| {
+            let mut left = orig_left;
+            let mut right = orig_right;
+            apply_stereo_width_position(&mut left, &mut right, width, position);
+            (left, right)
+        };
+        let bits = |buf: &[f32]| buf.iter().map(|v| v.to_bits()).collect::<Vec<u32>>();
+        let close = |a: &[f32], b: &[f32]| {
+            a.iter()
+                .zip(b.iter())
+                .all(|(x, y)| (x - y).abs() <= 1e-6 * (1.0 + x.abs().max(y.abs())))
+        };
+
+        // ① 缺省中性（width=100、position=0）⇒ 逐位不变。
+        let (left, right) = run(100.0, 0.0);
+        assert_eq!(bits(&left), bits(&orig_left));
+        assert_eq!(bits(&right), bits(&orig_right));
+
+        // ② width=0 ⇒ 两声道相等（浮点容差内）：L' == R' == (L+R)·√2/2。
+        let (left, right) = run(0.0, 0.0);
+        assert!(close(&left, &right), "width=0 时 L 必须 == R：{left:?} vs {right:?}");
+        let mid: Vec<f32> = orig_left
+            .iter()
+            .zip(orig_right.iter())
+            .map(|(l, r)| (l + r) * core::f32::consts::FRAC_1_SQRT_2)
+            .collect();
+        assert!(close(&left, &mid), "width=0 的公共值必须是 mid·√2/2：{left:?}");
+
+        // ③ width=-100 ⇒ side 反转：左右内容互换。
+        let (left, right) = run(-100.0, 0.0);
+        assert!(close(&left, &orig_right), "width=-100 时 L 必须 == 原 R");
+        assert!(close(&right, &orig_left), "width=-100 时 R 必须 == 原 L");
+
+        // ④ position 两极端（width 中性）：+100 ⇒ 左 ≈ 0、右原样；
+        //    -100 ⇒ 右 ≈ 0、左原样（position 是第二级 pan，无交叉馈送）。
+        let (left, right) = run(100.0, 100.0);
+        assert!(
+            left.iter().all(|v| v.abs() <= 1e-6),
+            "position=100 时左声道必须 ≈ 0：{left:?}"
+        );
+        assert!(close(&right, &orig_right), "position=100 时右声道必须原样");
+        let (left, right) = run(100.0, -100.0);
+        assert!(close(&left, &orig_left), "position=-100 时左声道必须原样");
+        assert!(
+            right.iter().all(|v| v.abs() <= 1e-6),
+            "position=-100 时右声道必须 ≈ 0：{right:?}"
+        );
+
+        // ⑤ 顺序钉：先 width 后 position —— width=0 的单声道和经
+        //    position=100 必须整体落到右声道（左 ≈ 0、右 == mid·√2/2）。
+        let (left, right) = run(0.0, 100.0);
+        assert!(left.iter().all(|v| v.abs() <= 1e-6));
+        assert!(close(&right, &mid), "width→position 的顺序结果必须是 mid 落右：{right:?}");
+
+        // ⑥ 非有限输入只跳过**自己那一级**（逐级独立守卫），⛔ 不把 NaN
+        //    扩散进缓冲、也不连坐另一级：width=NaN + position=0 ⇒ 全不动；
+        //    width=0 + position=∞ ⇒ width 级照常单声道化、position 级跳过。
+        let (left, right) = run(f32::NAN, 0.0);
+        assert_eq!(bits(&left), bits(&orig_left));
+        assert_eq!(bits(&right), bits(&orig_right));
+        let (left, right) = run(0.0, f32::INFINITY);
+        assert!(
+            close(&left, &right),
+            "position 非有限时 width 级必须照常生效：{left:?} vs {right:?}"
+        );
     }
 }

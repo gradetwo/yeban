@@ -20,7 +20,10 @@
 
 use std::path::{Path, PathBuf};
 
-use yeban_sfz::modulation::{CcMod, ModTarget};
+use yeban_sfz::curve::Curve;
+use yeban_sfz::modulation::{
+    CcMod, ModTarget, bake_cc_mods, position_value_with_baked, width_value_with_baked,
+};
 use yeban_sfz::{IncludeResolver, ParseLimits, SfzError, Warning, parse_sources, parse_text};
 
 /// 一条输入里全部钳位告警（顺序即装载报告顺序）。
@@ -237,4 +240,85 @@ fn the_four_karoryfer_instruments_load_with_regions_and_clamp_warnings() {
             notes.len()
         );
     }
+}
+
+/// 取唯一的指定目标调制项（声像族建模补全片用；`pan` 版见 `the_pan_mod`）。
+fn the_stereo_mod(text: &str, target: ModTarget) -> CcMod {
+    let instrument = parse_text(text, &ParseLimits::default())
+        .unwrap_or_else(|error| panic!("`{text}` 必须可装载：{error}"));
+    let mods: Vec<&CcMod> = instrument.regions()[0]
+        .cc_modulations()
+        .iter()
+        .filter(|item| item.target == target)
+        .collect();
+    assert_eq!(mods.len(), 1, "`{text}` 必须恰一条 {target:?} 调制项");
+    *mods[0]
+}
+
+#[test]
+fn position_and_width_oncc_depths_clamp_like_pan() {
+    // 声像族两名新目标与 `pan` 同口径：深度越界装载期钳位 + 点名告警。
+    let position = the_stereo_mod(
+        "<region> sample=a.wav position_oncc10=200",
+        ModTarget::Position,
+    );
+    assert_eq!(position.cc, 10);
+    assert_eq!(position.delta, 100.0, "position 深度必须落到值域上界 100");
+    assert_eq!(
+        clamp_notes("<region> sample=a.wav position_oncc10=200"),
+        vec![Warning::ClampedModulationDepth {
+            line: 1,
+            opcode: "position_oncc10".to_string(),
+            value: "200".to_string(),
+            clamped: "100".to_string(),
+        }]
+    );
+    let width = the_stereo_mod("<region> sample=a.wav width_oncc10=-200", ModTarget::Width);
+    assert_eq!(width.delta, -100.0, "width 深度必须落到值域下界 -100");
+    // 域内深度无告警。
+    assert!(clamp_notes("<region> sample=a.wav width_oncc10=-100").is_empty());
+}
+
+#[test]
+fn position_and_width_evaluate_with_baked_cc() {
+    // position：基准 10 + `position_oncc1=50`，CC 满 ⇒ 60，CC 为 0 ⇒ 10，
+    // probe 缺席 ⇒ 基准原样（与 `pan_value_with_baked` 同口径）。
+    let instrument = parse_text(
+        "<region> sample=a.wav position=10 position_oncc1=50",
+        &ParseLimits::default(),
+    )
+    .unwrap();
+    let region = &instrument.regions()[0];
+    let baked = bake_cc_mods(region.cc_modulations(), Curve::built_in);
+    assert_eq!(
+        position_value_with_baked(region.position, &baked, Some(&|_| 127)),
+        60.0
+    );
+    assert_eq!(
+        position_value_with_baked(region.position, &baked, Some(&|_| 0)),
+        10.0
+    );
+    assert_eq!(position_value_with_baked(region.position, &baked, None), 10.0);
+    // width：缺省基准 100 + `width_oncc1=-100`，CC 满 ⇒ 0（单声道化点）。
+    let instrument = parse_text(
+        "<region> sample=a.wav width_oncc1=-100",
+        &ParseLimits::default(),
+    )
+    .unwrap();
+    let region = &instrument.regions()[0];
+    assert_eq!(region.width, 100.0, "width 缺省必须是 100（立体声原样）");
+    let baked = bake_cc_mods(region.cc_modulations(), Curve::built_in);
+    assert_eq!(width_value_with_baked(region.width, &baked, Some(&|_| 127)), 0.0);
+    // 求值和越界钳回：80 + 50 ⇒ 100（不是 130、不是回绕）。
+    let instrument = parse_text(
+        "<region> sample=a.wav position=80 position_oncc1=50",
+        &ParseLimits::default(),
+    )
+    .unwrap();
+    let region = &instrument.regions()[0];
+    let baked = bake_cc_mods(region.cc_modulations(), Curve::built_in);
+    assert_eq!(
+        position_value_with_baked(region.position, &baked, Some(&|_| 127)),
+        100.0
+    );
 }

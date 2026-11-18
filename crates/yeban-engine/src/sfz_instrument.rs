@@ -1972,7 +1972,8 @@ use yeban_sfz::lfo::{GenericLfo, V1Lfo};
 // [`volume_ratio_with_baked`]（同样是 `yeban-sfz` 的**同一份**实现）。
 use yeban_sfz::modulation::{
     AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
-    cc_value_with_baked_and_vel2, pan_value_with_baked, tune_ratio_from_cents,
+    cc_value_with_baked_and_vel2, pan_value_with_baked, position_value_with_baked,
+    tune_ratio_from_cents, width_value_with_baked,
     tune_ratio_with_baked, volume_ratio_with_baked,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
@@ -4512,6 +4513,21 @@ pub struct PreparedRegion {
     /// 单声道路径（[`SfzVoicePool::render_into_with_probes`]）⛔ 不施加声相，
     /// 与接线前**逐位相同**。换算用 [`crate::mixer::centered_pan_gains`]（与母线同一份定律）。
     pan: f32,
+    /// ⭐ **区域立体声像位置**（`position`，百分比 -100..=100；0 ＝ 中性；
+    /// 声像族建模补全片）。
+    ///
+    /// 只对**立体声样本**生效（sfizz 口径：单声道样本走单声道级、两者
+    /// 都不施加）；施加在 [`crate::mixer::apply_stereo_width_position`]
+    /// 的第二级。夜半当前样本是单声道 PCM ⇒ 本字段先**承载与求值**
+    /// （[`Self::position_with_cc`]），声部通路暂不施加 —— 立体声样本
+    /// 通路是另一条缺口（见该函数的接线点说明）。
+    position: f32,
+    /// ⭐ **区域立体声宽度**（`width`，百分比 -100..=100；**100** ＝ 中性
+    /// ＝ 立体声原样；声像族建模补全片）。
+    ///
+    /// 口径同 [`Self::position`]：施加在
+    /// [`crate::mixer::apply_stereo_width_position`] 的第一级。
+    width: f32,
     /// ⭐ **释放采样随按住时长衰减**（`rt_decay`，dB/秒；本片）。
     ///
     /// 解析与取值域在 `yeban-sfz`（`0 ..= 200`、越界响亮 `FloatOutOfRange`）。
@@ -5753,6 +5769,43 @@ impl PreparedRegion {
             .any(|item| item.target == ModTarget::Pan)
     }
 
+    /// ⭐⭐ **`position` 调制的有效声像位置**（声像族建模补全片）：
+    /// `base ＋ Σ delta × curve(cc)`，钳 `±100`。
+    ///
+    /// * `cc == None` ⇒ 一项 CC 都不读 ⇒ **原样返回静态 `position`**；
+    /// * 求值本体是 `yeban-sfz` 的 [`position_value_with_baked`]
+    ///   （离线／摊平／实时**同一份**，与 [`Self::pan_with_cc`] 同款）。
+    #[must_use]
+    pub fn position_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        position_value_with_baked(self.position, self.cc_modulations(), cc)
+    }
+
+    /// 本区域是否带**逐块可变**的 `position`（`position_onccN` 一族）。
+    #[must_use]
+    pub fn has_position_modulation(&self) -> bool {
+        self.cc_modulations()
+            .iter()
+            .any(|item| item.target == ModTarget::Position)
+    }
+
+    /// ⭐⭐ **`width` 调制的有效声场宽度**（声像族建模补全片）：
+    /// `base ＋ Σ delta × curve(cc)`，钳 `±100`（基准缺省 100）。
+    ///
+    /// * `cc == None` ⇒ 一项 CC 都不读 ⇒ **原样返回静态 `width`**；
+    /// * 求值本体是 `yeban-sfz` 的 [`width_value_with_baked`]（同一份）。
+    #[must_use]
+    pub fn width_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        width_value_with_baked(self.width, self.cc_modulations(), cc)
+    }
+
+    /// 本区域是否带**逐块可变**的 `width`（`width_onccN` 一族）。
+    #[must_use]
+    pub fn has_width_modulation(&self) -> bool {
+        self.cc_modulations()
+            .iter()
+            .any(|item| item.target == ModTarget::Width)
+    }
+
     /// ⭐⭐ **`volume` 调制的线性增益乘子**（任务单 `#119`）：
     /// `2 ^ (Σ delta × curve(cc) × log2(10) / 20)`（＝ `10 ^ (dB / 20)`）。
     ///
@@ -6628,6 +6681,75 @@ impl PreparedSfz {
             .map_or(0.0, |region| region.pan_with_cc(cc))
     }
 
+    /// 声明了**非中性**区域 `position` 的区域条数（`0` ⇒ 立体声级的位置级
+    /// 恒为中性；声像族建模补全片，口径同 [`Self::regions_with_pan`]）。
+    #[must_use]
+    pub fn regions_with_position(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.position != 0.0)
+            .count()
+    }
+
+    /// 区域立体声像位置（百分比；`0` ＝ 中性）。
+    #[must_use]
+    pub fn region_position(&self, index: usize) -> f32 {
+        self.regions.get(index).map_or(0.0, |region| region.position)
+    }
+
+    /// 表里带 `position_onccN` 的区域条数。
+    #[must_use]
+    pub fn regions_with_cc_position(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.has_position_modulation())
+            .count()
+    }
+
+    /// ⭐ **本块有效的区域声像位置**（声像族建模补全片）：静态 `position`
+    /// ＋ `position_onccN` 的逐块调制，钳 `±100`。`cc == None` ⇒ 与
+    /// [`Self::region_position`] 逐位相同。
+    #[must_use]
+    pub fn region_position_with_cc(&self, index: usize, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        self.regions
+            .get(index)
+            .map_or(0.0, |region| region.position_with_cc(cc))
+    }
+
+    /// 声明了**非中性**区域 `width` 的区域条数（中性 ＝ **100**，⛔ 不是 0）。
+    #[must_use]
+    pub fn regions_with_width(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.width != 100.0)
+            .count()
+    }
+
+    /// 区域立体声宽度（百分比；`100` ＝ 中性 ＝ 立体声原样）。
+    #[must_use]
+    pub fn region_width(&self, index: usize) -> f32 {
+        self.regions.get(index).map_or(100.0, |region| region.width)
+    }
+
+    /// 表里带 `width_onccN` 的区域条数。
+    #[must_use]
+    pub fn regions_with_cc_width(&self) -> usize {
+        self.regions
+            .iter()
+            .filter(|region| region.has_width_modulation())
+            .count()
+    }
+
+    /// ⭐ **本块有效的区域声场宽度**（声像族建模补全片）：静态 `width`
+    /// ＋ `width_onccN` 的逐块调制，钳 `±100`。`cc == None` ⇒ 与
+    /// [`Self::region_width`] 逐位相同。
+    #[must_use]
+    pub fn region_width_with_cc(&self, index: usize, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        self.regions
+            .get(index)
+            .map_or(100.0, |region| region.width_with_cc(cc))
+    }
+
     /// 摊平后的区域表（**只读**；判据与控制侧读数用）。
     #[must_use]
     pub fn regions(&self) -> &[PreparedRegion] {
@@ -7151,6 +7273,8 @@ fn flatten_regions(
                 release_key_mask,
                 release_vel_mask,
                 pan: region.pan,
+                position: region.position,
+                width: region.width,
                 rt_decay: region.rt_decay,
                 vel_mask,
                 trigger: region.trigger,
