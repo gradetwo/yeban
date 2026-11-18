@@ -126,13 +126,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 类 4 的丢弃声明（opcode → 原始值），来自解析告警。
         let mut discarded: Vec<(u16, String)> = Vec::new();
         for warning in instrument.warnings() {
-            if let Warning::MalformedSetCc { opcode, value, .. } = warning {
-                if let Some(cc) = opcode
+            if let Warning::MalformedSetCc { opcode, value, .. } = warning
+                && let Some(cc) = opcode
                     .strip_prefix("set_cc")
                     .and_then(|d| d.parse::<u16>().ok())
-                {
-                    discarded.push((cc, value.clone()));
-                }
+            {
+                discarded.push((cc, value.clone()));
             }
         }
 
