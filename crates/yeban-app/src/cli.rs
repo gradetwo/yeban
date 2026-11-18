@@ -5099,6 +5099,7 @@ pub fn load_project_with_clock(
                     history_dag: Vec::new(),
                     assets: options.sample.assets(),
                     embedded_presets: Vec::new(),
+                    load_notes: Vec::new(),
                 },
                 source: ProjectSource::Sample(options.sample),
             })
@@ -8413,6 +8414,7 @@ mod tests {
                 history_dag: Vec::new(),
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
             },
             &path,
         )
@@ -11021,6 +11023,7 @@ mod tests {
                 history_dag: Vec::new(),
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
             },
             source: ProjectSource::Sample(Sample::Default),
         };
@@ -11087,6 +11090,7 @@ mod author_report_tests {
                 history_dag: Vec::new(),
                 assets: Vec::new(),
                 embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
             },
             source: ProjectSource::Sample(Sample::Default),
         }

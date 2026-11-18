@@ -191,8 +191,13 @@ fn project_container_round_trips() {
         history_dag,
         assets: read_assets,
         embedded_presets: read_presets,
+        load_notes: read_notes,
     } = read_project_container(&bytes, &ContainerLimits::default()).expect("读回必须成功");
     assert!(read_presets.is_empty(), "无内嵌预制的容器读回必须为空");
+    assert!(
+        read_notes.is_empty(),
+        "有序工程的装载不得留痕: {read_notes:?}"
+    );
 
     assert_eq!(read_project, project);
     assert_eq!(history_dag, history);
@@ -208,6 +213,46 @@ fn project_container_round_trips() {
     );
     assert_eq!(name.len(), ASSETS_DIR.len() + 1 + 64);
     assert!(name.starts_with("assets/"));
+}
+
+/// ⭐ 判据（[MODEL-AST-003] 装载强制）：文件里 `routing_graph.nodes`
+/// 未按字典序排列的工程，装载后必须有序、文档其余部分逐字守恒，且
+/// 装载留痕里必须有且只有一条指名记录（⛔ 不静默改序）。
+#[test]
+fn unsorted_routing_nodes_are_sorted_on_load_with_a_note() {
+    let mut project = yeban_model::samples::filled_project();
+    let sorted = project.routing_graph.nodes.clone();
+    assert!(sorted.len() >= 2, "夹具节点至少两个: {sorted:?}");
+    assert!(
+        sorted.windows(2).all(|pair| pair[0] < pair[1]),
+        "夹具节点必须有序: {sorted:?}"
+    );
+    project.routing_graph.nodes.reverse();
+    assert!(
+        !project.routing_graph.nodes.is_sorted(),
+        "反转后必须未排序（否则判据无牙）"
+    );
+    let bytes = write_project_container(&project, b"[]", &BTreeMap::new()).expect("写入必须成功");
+    let archive =
+        read_project_container(&bytes, &ContainerLimits::default()).expect("读回必须成功");
+    assert_eq!(
+        archive.project.routing_graph.nodes, sorted,
+        "装载后 nodes 必须按字典序"
+    );
+    let mut expected = project.clone();
+    expected.routing_graph.nodes = sorted;
+    assert_eq!(archive.project, expected, "除 nodes 顺序外文档必须逐字守恒");
+    assert_eq!(
+        archive.load_notes.len(),
+        1,
+        "改序必须留痕恰一条: {:?}",
+        archive.load_notes
+    );
+    assert!(
+        archive.load_notes[0].contains("routing_graph.nodes"),
+        "留痕必须指名 routing_graph.nodes: {:?}",
+        archive.load_notes
+    );
 }
 
 /// §5.3 的**容器组成边界**：条目名是规范字面量、顺序固定，且 0 / 1 / N 条资产都成立。

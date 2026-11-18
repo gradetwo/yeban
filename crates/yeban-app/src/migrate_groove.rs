@@ -816,6 +816,7 @@ fn migrate_bytes(
             history_dag: Vec::new(),
             assets: Vec::new(),
             embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
         },
         report,
     ))

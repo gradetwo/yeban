@@ -154,6 +154,7 @@ impl App {
             history_dag: Vec::new(),
             assets,
             embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
         };
         Self::assemble(project, Some(archive), None)
     }
@@ -193,6 +194,7 @@ impl App {
             history_dag: Vec::new(),
             assets: Vec::new(),
             embedded_presets: Vec::new(),
+            load_notes: Vec::new(),
         });
         let source = project_path
             .as_ref()

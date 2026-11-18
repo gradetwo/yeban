@@ -7950,6 +7950,45 @@ mod tests {
         assert_eq!(doc.routing_graph.nodes, before, "增删必须互为逆");
     }
 
+    /// ⭐ 判据（[MODEL-AST-003] 装载强制的下游）：未排序工程经装载
+    /// （serde 往返）后 `nodes` 有序；在此之上删节点再撤销（逆操作
+    /// ＝ `AddRoutingNode` 再插入），`nodes` 必须与装载后逐字相同。
+    ///
+    /// 为什么需要：装载不强制时，撤销删节点走二分插入、落点由未排序
+    /// 列表决定 ⇒ 整表被重排（`filled_project` 夹具注释里登记过同型
+    /// 巧合还原）。本判据把「装载」这一步真走一遍，而不是手工把夹具
+    /// 排好序再测增删。
+    #[test]
+    fn undoing_a_node_removal_on_a_loaded_document_does_not_reorder_nodes() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        doc.routing_graph.nodes.reverse();
+        assert!(
+            !doc.routing_graph.nodes.is_sorted(),
+            "反转后必须未排序（否则判据无牙）"
+        );
+        let json = serde_json::to_string(&doc).expect("序列化夹具");
+        let mut loaded: YebanProjectV1 = serde_json::from_str(&json).expect("装载夹具");
+        let after_load = loaded.routing_graph.nodes.clone();
+        assert!(
+            after_load.len() >= 2,
+            "装载后节点至少两个, 否则下面的有序性断言是空转的: {after_load:?}"
+        );
+        assert!(
+            after_load.windows(2).all(|pair| pair[0] < pair[1]),
+            "装载后 nodes 必须有序: {after_load:?}"
+        );
+
+        let remove = Op::RemoveRoutingNode { node: f.bass };
+        remove.apply(&mut loaded).expect("删节点");
+        let inverse = remove.structural_inverse().expect("删节点必须有结构逆");
+        inverse.apply(&mut loaded).expect("撤销删节点");
+        assert_eq!(
+            loaded.routing_graph.nodes, after_load,
+            "撤销删节点不得重排 nodes"
+        );
+    }
+
     /// `MoveNote` 的增量取反溢出（`i64::MIN`）必须被**拒绝**，不得 wrapping。
     ///
     /// 为什么需要：`structural_inverse` 用 `checked_neg` 防溢出，但它只有在"逆操作的
