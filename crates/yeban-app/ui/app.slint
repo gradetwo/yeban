@@ -188,6 +188,13 @@ export component MainWindow inherits Window {
     property <int> safe-selected-idx: root.tracks.length > 0 ? Math.max(0, Math.min(root.tracks.length - 1, root.selected-track-index - 1)) : 0;
     in-out property <string> left-panel-tab: "inspector";
 
+    // 检查器「片段级（Region）」读数：由 host 在选中片段时投影（只读，不参与编辑）。
+    // 空串 + has-region=false = 如实"没有选中片段"，⛔ 不留上一条的陈旧名字。
+    in-out property <bool> has-region: false;
+    in-out property <string> region-title: "";
+    in-out property <string> region-detail: "";
+    in-out property <int> region-count: 1;
+
     // Dynamic Sizing with Min/Max Bounds (拖拽调整区域尺寸)
     in-out property <length> left-panel-width: 256px;   // [min: 200px, max: 380px]
     in-out property <length> clip-matrix-width: 240px;  // [min: 180px, max: 360px]
@@ -1025,9 +1032,15 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: @tr("最大化/还原底部控制台"); activated => { root.command-execute("toggle-maximize-dock"); } }
             MenuItem { title: @tr("显隐左侧通道检查器 (I)"); activated => { root.command-execute("toggle-inspector"); } }
+            MenuItem { title: @tr("打开浏览器 · 音色/采样/预设/效果 (⇧⌘B)"); activated => { root.command-execute("toggle-browser"); } }
             MenuItem { title: @tr("显隐 Clip 激发矩阵 (Tab)"); activated => { root.command-execute("toggle-clip-matrix"); } }
             MenuItem { title: @tr("显示 / 隐藏和弦轨"); activated => { root.command-execute("toggle-chord-lane"); } }
             MenuItem { title: @tr("显示 / 隐藏自动化泳道 (A)"); activated => { root.command-execute("toggle-automation"); } }
+            MenuSeparator {}
+            // 网格强度（Logic 13 口径：默认"轻"，只在需要精准对齐时调高）
+            MenuItem { title: @tr("网格强度 · 轻（默认）"); activated => { root.command-execute("grid-strength-light"); } }
+            MenuItem { title: @tr("网格强度 · 标准"); activated => { root.command-execute("grid-strength-normal"); } }
+            MenuItem { title: @tr("网格强度 · 强"); activated => { root.command-execute("grid-strength-strong"); } }
         }
         Menu {
             title: @tr("诊断");
@@ -1277,6 +1290,10 @@ export component MainWindow inherits Window {
                 if root.show-left-inspector : ZoneBrowserAndInspector {
                     panel-width: root.left-panel-width;
                     active-tab: root.left-panel-tab;
+                    has-region: root.has-region;
+                    region-title: root.region-title;
+                    region-detail: root.region-detail;
+                    region-count: root.region-count;
                     eq-curve-svg: root.eq-curve-svg;
                     comp-curve-svg: root.comp-curve-svg;
                     switch-tab(t) => { root.left-panel-tab = t; }

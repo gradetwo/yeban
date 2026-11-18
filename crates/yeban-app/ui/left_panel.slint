@@ -1,5 +1,58 @@
 import { Theme, BrowserItemData, Tokens, TooltipBubble } from "tokens.slint";
 
+// 检查器分组标题（Logic Pro 13 的检查器按**作用域**分组：Region / Track / Channel strip）
+// 一行里只有三样东西：色标、分组名、折叠箭头 —— 分组本身要能一眼扫过，不做装饰。
+component SectionHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> meta: "";
+    in property <bool> open: true;
+    callback toggle();
+    height: 22px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 6px;
+        padding-left: 2px;
+
+        Rectangle {
+            width: 2px;
+            height: 11px;
+            border-radius: 1px;
+            background: Theme.accent.with-alpha(0.65);
+            y: 5.5px;
+        }
+        Text {
+            text: root.title;
+            font-family: Tokens.font-mono;
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.9px;
+            color: Tokens.skin-text-body;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.meta;
+            font-family: Tokens.font-ui;
+            font-size: 9px;
+            color: Tokens.skin-text-dim;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: root.open ? "▾" : "▸";
+            font-family: Tokens.font-mono;
+            font-size: 9px;
+            color: Tokens.skin-text-dim;
+            vertical-alignment: center;
+        }
+    }
+    header_touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.toggle(); }
+    }
+}
+
 export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> active-tab: "inspector"; // "inspector" | "browser"
     in-out property <int> selected-track-id: 3;
@@ -32,15 +85,34 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <[string]> bus-inserts: ["Tape Saturator", "Vintage Verb", @tr("+ 添加总线效果")];
     in-out property <bool> show-bus-strip: false; // 默认折叠总线通道条，收缩至专注单轨检查器
 
+    // ---- 片段级（Region）只读摘要 -------------------------------------------------
+    // Logic 13 的检查器把参数按作用域分成三组，第一组就是"选中片段"。
+    // 这里只做**只读投影**：有选中片段时显示名字与位置，没有时说清楚是没有 ——
+    // 不摆一排不可用的旋钮（那正是信息过载的来源）。
+    in-out property <bool> has-region: false;
+    in-out property <string> region-title: "";
+    in-out property <string> region-detail: "";
+    in-out property <int> region-count: 1;
+
+    // 三组折叠状态（默认全开；折叠只影响本组，互不牵连）
+    in-out property <bool> show-group-region: true;
+    in-out property <bool> show-group-track: true;
+    in-out property <bool> show-group-channel: true;
+
     in-out property <string> search-query: "";
-    in-out property <string> active-tag: "all"; // all, Synth, Drums, DSP, MPE
+    // 分组：all | instrument | sample | preset | effect
+    // （对齐 Logic Pro 13 的"统一浏览器"：采样/乐器/预设/效果链/本机位置都在一个入口里，
+    //  不再让"音色库 / 采样池 / 设备机架 / 预设菜单"分散成四个入口。）
+    in-out property <string> active-tag: "all";
+    // ⛔ 条数是**布局契约**的一部分：左栏可用高度约 640px，search(30) + 分组行(24)
+    //    + 条目(46/条) + 位置区(约 90) 必须落在其内，否则 Flickable 的 preferred-height
+    //    会反压父布局，把编曲区挤扁（实测 8 条即触发）。示例数据取 5 条，四类各至少一条。
     in-out property <[BrowserItemData]> browser-items: [
-        { name: "Wavetable MPE Synth", desc: @tr("双振荡器 3D 波表合成器"), tag: "Synth", format: "Native DSP" },
-        { name: "Pro-QLinear 8", desc: @tr("内联实时频谱零延迟动态 EQ"), tag: "DSP", format: "Native DSP" },
-        { name: "Granulator IV Cloud", desc: @tr("支持 MPE 弯音的粒子采样器"), tag: "MPE", format: "Native DSP" },
-        { name: "Cyberpunk 124BPM Drum Kit", desc: @tr("含 64 个多麦克风分层鼓组"), tag: "Drums", format: "Sample Pack" },
-        { name: "VCA Glue Bus Compressor", desc: @tr("模拟 SSL 4000G 总线粘合压缩"), tag: "DSP", format: "CLAP / Native" },
-        { name: "Sub Bass 808 Glide Rack", desc: @tr("带宏旋钮一键失真度映射"), tag: "Synth", format: "Instrument Rack" }
+        { name: "Wavetable MPE Synth", desc: @tr("双振荡器 3D 波表合成器"), tag: "instrument", format: "Native DSP" },
+        { name: "Pro-QLinear 8", desc: @tr("内联实时频谱零延迟动态 EQ"), tag: "effect", format: "CLAP / Native" },
+        { name: "Cyberpunk 124BPM Drum Kit", desc: @tr("含 64 个多麦克风分层鼓组"), tag: "sample", format: "Sample Pack" },
+        { name: "VCA Glue Bus Compressor", desc: @tr("模拟 SSL 4000G 总线粘合压缩"), tag: "effect", format: "CLAP / Native" },
+        { name: "Large Hall Verb", desc: @tr("2.8 秒大房间混响预设"), tag: "preset", format: "FX Preset" }
     ];
 
     in-out property <bool> show-instrument-menu: false;
@@ -120,7 +192,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         Text {
-                            text: @tr("智能音色库");
+                            text: @tr("浏览器");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             font-weight: 700;
@@ -135,7 +207,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             root.switch-tab("browser");
                         }
                     }
-                    TooltipBubble { text: @tr("工程资产、音频切片与采样音色库"); is-visible: tab_brow_touch.has-hover; tip-offset-y: 30px; }
+                    TooltipBubble { text: @tr("浏览器：音色 / 采样 / 预设 / 效果链 / 工程资产，一个入口 [B]"); is-visible: tab_brow_touch.has-hover; tip-offset-y: 30px; }
                 }
             }
         }
@@ -155,8 +227,63 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 padding: 8px;
                 spacing: 8px;
 
+            // ── 组 1：片段级参数（Region）────────────────────────────────────
+            SectionHeader {
+                title: "REGION";
+                meta: root.has-region ? (root.region-count > 1 ? @tr("{} 个片段", root.region-count) : @tr("片段级")) : @tr("未选中");
+                open: root.show-group-region;
+                toggle => { root.show-group-region = !root.show-group-region; }
+            }
+            if root.show-group-region : Rectangle {
+                height: root.has-region ? 52px : 32px;
+                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                if root.has-region : VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 2px;
+                    alignment: center;
+                    Text {
+                        text: root.region-title;
+                        font-family: Tokens.font-ui;
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Tokens.skin-text-strong;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.region-detail;
+                        font-family: Tokens.font-mono;
+                        font-size: 9px;
+                        color: Tokens.skin-text-dim;
+                        overflow: elide;
+                    }
+                }
+                if !root.has-region : HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        text: @tr("未选中片段 · 在编曲区点一个片段");
+                        font-family: Tokens.font-ui;
+                        font-size: 9.5px;
+                        color: Tokens.skin-text-dim;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // ── 组 2：轨道级参数（Track）────────────────────────────────────
+            SectionHeader {
+                title: "TRACK";
+                meta: root.selected-track-name;
+                open: root.show-group-track;
+                toggle => { root.show-group-track = !root.show-group-track; }
+            }
+
             // Track Header Card
-            Rectangle {
+            if root.show-group-track : Rectangle {
                 // 二期质感: 卡面走 §10 面板刷 + 面板落影 (flat = Theme.bg-surface, 落影 alpha 为 0)。
                 background: Tokens.texture-physical ? Tokens.panel-brush : Theme.bg-surface;
                 drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
@@ -311,7 +438,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
             }
 
             // Inline Instrument / FX Quick Picker Menu
-            if root.show-instrument-menu : Rectangle {
+            if root.show-instrument-menu && root.show-group-track : Rectangle {
                 // 二期质感: 菜单面走 §10 面板刷 + 面板落影 (flat = 现行字面 Tokens.bg-panel, 落影 alpha 为 0)。
                 background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
                 drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
@@ -362,8 +489,16 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
             }
 
+            // ── 组 3：通道条（Channel Strip）─────────────────────────────────
+            SectionHeader {
+                title: "CHANNEL STRIP";
+                meta: root.show-bus-strip ? @tr("含总线") : @tr("仅当前轨道");
+                open: root.show-group-channel;
+                toggle => { root.show-group-channel = !root.show-group-channel; }
+            }
+
             // Dual Channel Strips Side-by-Side (Top-to-Bottom Signal Flow)
-            HorizontalLayout {
+            if root.show-group-channel : HorizontalLayout {
                 spacing: 8px;
                 vertical-stretch: 1;
 
@@ -1249,76 +1384,76 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Synth" ? Theme.track-synth : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
+                    background: root.active-tag == "instrument" ? Theme.track-synth : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "Synth" ? Theme.track-synth : Theme.border-subtle;
+                    border-color: root.active-tag == "instrument" ? Theme.track-synth : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
                         Text {
-                            text: "#Synth";
+                            text: @tr("音色");
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.active-tag == "Synth" ? Tokens.skin-inset : Tokens.skin-text-body;
+                            color: root.active-tag == "instrument" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
                     TouchArea {
                         clicked => {
-                            root.active-tag = "Synth";
-                            root.select-tag("Synth");
+                            root.active-tag = "instrument";
+                            root.select-tag("instrument");
                         }
                     }
                 }
 
                 Rectangle {
-                    background: root.active-tag == "DSP" ? Theme.status-ok : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
+                    background: root.active-tag == "effect" ? Theme.status-ok : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "DSP" ? Theme.status-ok : Theme.border-subtle;
+                    border-color: root.active-tag == "effect" ? Theme.status-ok : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
                         Text {
-                            text: "#DSP";
+                            text: @tr("效果");
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.active-tag == "DSP" ? Tokens.skin-inset : Tokens.skin-text-body;
+                            color: root.active-tag == "effect" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
                     TouchArea {
                         clicked => {
-                            root.active-tag = "DSP";
-                            root.select-tag("DSP");
+                            root.active-tag = "effect";
+                            root.select-tag("effect");
                         }
                     }
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Drums" ? Theme.track-drum : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
+                    background: root.active-tag == "sample" ? Theme.track-drum : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
-                    border-color: root.active-tag == "Drums" ? Theme.track-drum : Theme.border-subtle;
+                    border-color: root.active-tag == "sample" ? Theme.track-drum : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
                         Text {
-                            text: "#Drums";
+                            text: @tr("采样");
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.active-tag == "Drums" ? Tokens.skin-inset : Tokens.skin-text-body;
+                            color: root.active-tag == "sample" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
                     TouchArea {
                         clicked => {
-                            root.active-tag = "Drums";
-                            root.select-tag("Drums");
+                            root.active-tag = "sample";
+                            root.select-tag("sample");
                         }
                     }
                 }

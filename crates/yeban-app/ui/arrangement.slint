@@ -951,7 +951,7 @@ export component ArrangementViewport inherits Rectangle {
                             y: root.track-ys[idx] + root.track-heights[idx] - 1px;
                             width: parent.width;
                             height: 1px;
-                            background: Tokens.skin-grid-row;
+                            background: Tokens.grid-row;
                         }
 
                         // 行底分隔线（末轨以下续画，铺满整块编辑区）
@@ -960,7 +960,7 @@ export component ArrangementViewport inherits Rectangle {
                             y: arr_lane_bg.lane-bottom + _ghost * arr_lane_bg.ghost-pitch + arr_lane_bg.ghost-pitch - 1px;
                             width: parent.width;
                             height: 1px;
-                            background: Tokens.skin-grid-row;
+                            background: Tokens.grid-row;
                         }
 
                         // 小节线
@@ -970,7 +970,7 @@ export component ArrangementViewport inherits Rectangle {
                             y: 0px;
                             width: 1px;
                             height: parent.height;
-                            background: Tokens.skin-grid-bar;
+                            background: Tokens.grid-bar;
                         }
 
                         // 拍线 + 拍内细分（每拍 >= 24px 画拍线；>= 48px 再画 1/4 细分）
@@ -987,7 +987,7 @@ export component ArrangementViewport inherits Rectangle {
                                 y: 0px;
                                 width: 1px;
                                 height: parent.height;
-                                background: Tokens.skin-grid-beat;
+                                background: Tokens.grid-beat;
 
                                 for sub in [1, 2, 3] : Rectangle {
                                     visible: (root.bar-width-px / max(1, root.beats-per-bar)) >= 48px;
@@ -995,7 +995,7 @@ export component ArrangementViewport inherits Rectangle {
                                     y: 0px;
                                     width: 1px;
                                     height: parent.height;
-                                    background: Tokens.skin-grid-sub;
+                                    background: Tokens.grid-sub;
                                 }
                             }
                         }

@@ -1174,6 +1174,9 @@ pub enum Action {
     ToggleMixer,
     /// `E`/`P`: 展开/收起/切换底部编辑器与钢琴卷帘 (Logic Pro `E`/`P` 对齐)。
     ToggleEditor,
+    /// `Cmd/Ctrl+Shift+B`: 打开**统一浏览器**（音色/采样/预设/效果链/位置一个入口，
+    /// Logic Pro 13 的 `B` 对齐）。裸 `b` 已被铅笔工具占用，故走带修饰的组合键。
+    ToggleBrowser,
     /// `A`: 展开/收起自动化泳道显示 (Logic Pro `A` 对齐)。
     ToggleAutomation,
     /// `C`: 走带循环区 (Cycle/Loop) 开关 (Logic Pro `C` 对齐)。
@@ -1319,6 +1322,9 @@ impl InputContext {
                 // `Shift` / `Alt` 变体仍放行（⛔ 不顺手发明"聚焦后一个控件"这类邻近语义）。
                 (Key::Character('f'), false, false) => {
                     Resolution::Action(Action::FocusSidebarSearch)
+                }
+                (Key::Character('b'), true, false) => {
+                    Resolution::Action(Action::ToggleBrowser)
                 }
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
                 // **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键（轨静音是裸 `m`，

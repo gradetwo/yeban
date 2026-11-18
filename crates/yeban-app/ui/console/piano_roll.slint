@@ -471,7 +471,7 @@ export component PianoRoll inherits Rectangle {
                 height: 1px;
                 // 八度根音把底边线加重到"小节线"那一档（与编曲区 skin-grid-bar 同强度）；
                 // 其余行只留一条和车道几乎同色的细线，避免 14px 行高里铺出密集横条。
-                background: (root.row-pitch(lane_index).mod(12) == 0) ? Tokens.skin-grid-bar : Tokens.bg-lane2;
+                background: (root.row-pitch(lane_index).mod(12) == 0) ? Tokens.grid-bar : Tokens.bg-lane2;
             }
         }
         // 纵向网格：**拍线 + 小节线**两级，随 scroll-x 无缝横向平铺。
@@ -489,7 +489,7 @@ export component PianoRoll inherits Rectangle {
             // 车道底色那一档（bg-lane2，只作为背景纹理存在）。
             // 实测教训：8px 拍线若和 bar 线同强度，整屏就是一道竖栅栏，比原来的
             // "48px 一根错位线"更累眼 —— 网格是背景，永远不许比音符亮。
-            background: grid_index.mod(4) == 0 ? Tokens.skin-grid-beat : Tokens.bg-lane2;
+            background: grid_index.mod(4) == 0 ? Tokens.grid-beat : Tokens.bg-lane2;
         }
 
         // ------------------------------------------------------------ 音符图元

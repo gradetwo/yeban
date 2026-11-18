@@ -7609,6 +7609,11 @@ pub fn wire_clip_scope(ui: &MainWindow, view: Rc<RefCell<ViewState>>, undo: Opti
         if let Some(project) = undo_for_select.as_ref().and_then(|port| port.try_project()) {
             let _ = roll_focus_on_clip(&ui, &project, clip_ulid.as_str());
         }
+        // 检查器「片段级（Region）」组：**只读投影**（名字 / 起始小节 / 长度）。
+        // Logic 13 的检查器第一组就是"选中片段"；这里只给读数，不给一排不可用的旋钮。
+        if let Some(project) = undo_for_select.as_ref().and_then(|port| port.try_project()) {
+            fill_region_card(&ui, &project, clip_ulid.as_str());
+        }
         ui.set_selected_clip_ulid(clip_ulid);
         // 作用域重注入：只读的重投影，不 `commit_ops`。
         let scroll = ui.get_roll_scroll_x();
@@ -13608,6 +13613,17 @@ fn apply_action(
             ui.set_console_tab(0);
             true
         }
+        // Logic Pro 13 工作流：B 打开**统一浏览器**（音色 / 采样 / 预设 / 效果链 / 位置 一个入口）。
+        // 我们的裸 `b` 已经是铅笔工具（`Action::TogglePencilTool`）⇒ 键盘走
+        // `Cmd/Ctrl+Shift+B`，语义与 Logic 的 B 等价，且不覆盖既有键。
+        Action::ToggleBrowser => {
+            if !ui.get_show_left_inspector() {
+                ui.set_show_left_inspector(true);
+                ui.invoke_zone_toggle("inspector".into());
+            }
+            ui.set_left_panel_tab("browser".into());
+            true
+        }
         // Logic Pro 工作流：A 自动化泳道显示
         Action::ToggleAutomation => {
             let current = ui.get_automation_visible();
@@ -16565,6 +16581,39 @@ fn clip_placement_for<'p>(
     })
 }
 
+/// 把选中片段投影到检查器「片段级」组（名字 / 起始小节 / 长度）。
+///
+/// 只读：不写工程、不 commit。找不到身份就如实清空（见 [`clear_region_card`]）。
+fn fill_region_card(ui: &MainWindow, project: &yeban_model::YebanProjectV1, placement_ulid: &str) {
+    let Some((_track_id, _placement_id, placement)) = clip_placement_for(project, placement_ulid)
+    else {
+        clear_region_card(ui);
+        return;
+    };
+    let name = project
+        .clip_pool
+        .get(&placement.clip_id)
+        .map(|entry| entry.name.clone())
+        .unwrap_or_default();
+    let start_bar = placement.start_tick / 3840 + 1;
+    let len_beats = placement.duration_ticks as f32 / 960.0;
+    ui.set_region_title(name.into());
+    ui.set_region_detail(format!("第 {start_bar} 小节 · {len_beats:.1} 拍").into());
+    ui.set_region_count(1);
+    ui.set_has_region(true);
+}
+
+/// 清空检查器「片段级」组（删片段 / 换工程 / 选中失效时调用）。
+///
+/// 与 [`fill_region_card`] 成对：**显示时如实说有，失效时如实说没有**，
+/// ⛔ 不留上一段的陈旧名字（那会让人以为还选着东西）。
+fn clear_region_card(ui: &MainWindow) {
+    ui.set_has_region(false);
+    ui.set_region_title("".into());
+    ui.set_region_detail("".into());
+    ui.set_region_count(0);
+}
+
 /// 选中剪辑的身份 ⇒ 待提交的 `Op::RemoveClipPlacement`（剪辑删除的**唯一** op 构造点）。
 ///
 /// 与 [`delete_ops_for`] 同一取向：**解析不到就回空**，⛔ 不删一个猜的对象。
@@ -16733,6 +16782,7 @@ fn delete_selected_clip_placement(
     }
     cancel_clip_drag(ui);
     ui.set_selected_clip_ulid("".into());
+    clear_region_card(ui);
     refresh_undo_window(ui, port, true);
     true
 }
@@ -16992,6 +17042,7 @@ pub fn clipboard_cut(
         return false;
     }
     ui.set_selected_clip_ulid("".into());
+    clear_region_card(ui);
     refresh_undo_window(ui, port, true);
     true
 }
@@ -21331,6 +21382,26 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
         "toggle-inspector" => {
             ui.set_show_left_inspector(!ui.get_show_left_inspector());
             ui.invoke_zone_toggle("inspector".into());
+        }
+        // 与 `Action::ToggleBrowser` 同一语义（菜单条目走这里，快捷键走解析表）：
+        // 左栏若关着就先展开，再把页签落到浏览器 —— 不做"切了页签却看不见"的半截动作。
+        "toggle-browser" => {
+            if !ui.get_show_left_inspector() {
+                ui.set_show_left_inspector(true);
+                ui.invoke_zone_toggle("inspector".into());
+            }
+            ui.set_left_panel_tab("browser".into());
+        }
+        // 网格强度（Logic Pro 13 的第 3 条借鉴）：默认 0=轻，可调到 1=标准 / 2=强。
+        // 值一路传到 `Tokens.grid-strength`，四个派生网格色随之重新混合；
+        // 不做持久化（视图态，不进工程、不进撤销栈，与 Logic 一致）。
+        "grid-strength-light" | "grid-strength-normal" | "grid-strength-strong" => {
+            let level = match cmd {
+                "grid-strength-normal" => 1,
+                "grid-strength-strong" => 2,
+                _ => 0,
+            };
+            ui.global::<crate::ui::Tokens<'_>>().set_grid_strength(level);
         }
         "toggle-clip-matrix" => {
             ui.set_show_clip_matrix(!ui.get_show_clip_matrix());

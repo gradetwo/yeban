@@ -521,6 +521,23 @@ export global Tokens {
     out property <color> skin-grid-beat: texture-physical ? #262b2e : #363c45;  // 拍线
     out property <color> skin-grid-sub: texture-physical ? #212528 : #30363e;   // 拍内细分
 
+    // ---------------------------------------------------------------------
+    // 网格强度（网格是**背景**，不是内容）
+    // ---------------------------------------------------------------------
+    //
+    // 依据 Logic Pro 13 的实测教训：13 的默认网格"又黑又重"，专业用户升级后
+    // 第一件事就是把它调浅 —— 说明默认值只能做"结构提示"，不能当视觉主角。
+    // 这里给三档，默认 0（轻）：越轻 = 与车道底色混合越多。
+    //   grid-strength: 0 = 轻（默认） / 1 = 标准 / 2 = 强（基色原样）
+    // 使用处一律走 `grid-row / grid-bar / grid-beat / grid-sub`；
+    // `skin-grid-*` 保留为**基色**（供强度 2 与测试取值）。
+    in-out property <int> grid-strength: 0;
+    private property <float> grid-fade: grid-strength == 0 ? 0.55 : (grid-strength == 1 ? 0.22 : 0.0);
+    out property <color> grid-row: skin-grid-row.mix(bg-lane, grid-fade);
+    out property <color> grid-bar: skin-grid-bar.mix(bg-lane, grid-fade);
+    out property <color> grid-beat: skin-grid-beat.mix(bg-lane, grid-fade);
+    out property <color> grid-sub: skin-grid-sub.mix(bg-lane, grid-fade);
+
     // 旋钮帽阶梯 (10 档, 供 controls/knob.slint 的 cap-steps 使用)
     out property <[color]> knob-cap-steps: [#1e262e, #212a31, #242d35, #273039, #2a333c, #2d363f, #2f3942, #323c45, #353f49, #37424c];
 
