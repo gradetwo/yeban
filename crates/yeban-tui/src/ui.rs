@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 use yeban_engine::transport::TransportState;
 use yeban_model::project::TrackV3;
 
-use crate::app::{App, track_kind_label};
+use crate::app::{App, ListView, track_kind_label};
 use crate::keymap::{Mode, Pane};
 use crate::theme;
 
@@ -165,11 +165,28 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let focused = app.focus == Pane::Grid;
-    let block = pane_block("片段", focused);
+    // 三期：列表视图（音符 / 片段池）是本窗格的内容变体，标题随视图变。
+    let title = match app.list_view {
+        Some(ListView::Notes { .. }) => "片段 · 音符",
+        Some(ListView::Pool { .. }) => "片段 · 池",
+        None => "片段",
+    };
+    let block = pane_block(title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
         return;
+    }
+    match app.list_view {
+        Some(ListView::Notes { .. }) => {
+            draw_notes_list(frame, inner, app);
+            return;
+        }
+        Some(ListView::Pool { .. }) => {
+            draw_pool_list(frame, inner, app);
+            return;
+        }
+        None => {}
     }
     let bar_cols = app.bar_cols.max(1);
     let visible = usize::from(inner.width) / bar_cols;
@@ -272,6 +289,115 @@ fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
     let paragraph = Paragraph::new(lines).style(Style::default().bg(theme::BG_PANEL));
     frame.render_widget(paragraph, inner);
+}
+
+/// MIDI 音高 → IPN 音名（C4 = 60，与工程内部记法同一标准；仅显示用）。
+fn pitch_name(pitch: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let name = NAMES[usize::from(pitch % 12)];
+    let octave = i32::from(pitch / 12) - 1;
+    format!("{name}{octave}")
+}
+
+/// 音符列表视图（三期）：对象片段的音符按 (起点, 音高) 排序逐行列出，
+/// 位置是片段内相对 tick 换算的小节.拍+余数。
+fn draw_notes_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(ListView::Notes {
+        clip_id, selected, ..
+    }) = app.list_view
+    else {
+        return;
+    };
+    let clip_name = app
+        .project
+        .clip_pool
+        .get(&clip_id)
+        .map(|entry| entry.name.clone())
+        .unwrap_or_default();
+    let notes = app.view_notes();
+    let bar_ticks = app.bar_ticks().max(1);
+    let beat_ticks = app.ticks_per_beat().max(1);
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(notes.len() + 1);
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!("  「{clip_name}」共 {} 个音符", notes.len()),
+        Style::default().fg(theme::INK2),
+    ))));
+    for (index, note) in notes.iter().enumerate() {
+        let is_selected = index == selected;
+        let cursor = if is_selected { "▸" } else { " " };
+        let bar = note.start_tick / bar_ticks;
+        let beat = (note.start_tick % bar_ticks) / beat_ticks;
+        let rem = note.start_tick % beat_ticks;
+        let text = format!(
+            "{cursor}{}.{}+{rem:03}  {:>4}({:>3})  时值 {:>5}  力度 {:>3}",
+            bar + 1,
+            beat + 1,
+            pitch_name(note.pitch),
+            note.pitch,
+            note.duration_ticks,
+            note.velocity,
+        );
+        let mut style = Style::default().fg(if is_selected {
+            theme::INK0
+        } else {
+            theme::INK1
+        });
+        if is_selected {
+            style = style.bg(theme::BG_RAISED).add_modifier(Modifier::BOLD);
+        }
+        items.push(ListItem::new(Line::from(Span::styled(text, style))));
+    }
+    if notes.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  （无音符：按 a 在光标处加一个）",
+            Style::default().fg(theme::INK2),
+        ))));
+    }
+    let list = List::new(items);
+    let mut state = ListState::default();
+    state.select(Some(selected + 1));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// 片段池列表视图（三期）：每行一个池条目（名 / 内容 / 引用数）。
+/// 引用数 > 0 的条目删除会被模型拒绝（`ClipInUse`），行内先把数亮出来。
+fn draw_pool_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(ListView::Pool { selected }) = app.list_view else {
+        return;
+    };
+    let rows = app.pool_rows();
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(rows.len() + 1);
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!("  共 {} 个片段池条目", rows.len()),
+        Style::default().fg(theme::INK2),
+    ))));
+    for (index, (entry, refs)) in rows.iter().enumerate() {
+        let is_selected = index == selected;
+        let cursor = if is_selected { "▸" } else { " " };
+        let kind = match &entry.content {
+            yeban_model::project::ClipContent::Midi { notes } => {
+                format!("MIDI {} 音符", notes.len())
+            }
+            yeban_model::project::ClipContent::Audio { .. } => "音频".to_owned(),
+        };
+        let name = pad_to(&truncate_to(&entry.name, 24), 24);
+        let text = format!("{cursor}{name} {kind}  引用 {refs} 处");
+        let mut style = Style::default().fg(if is_selected {
+            theme::INK0
+        } else {
+            theme::INK1
+        });
+        if is_selected {
+            style = style.bg(theme::BG_RAISED).add_modifier(Modifier::BOLD);
+        }
+        items.push(ListItem::new(Line::from(Span::styled(text, style))));
+    }
+    let list = List::new(items);
+    let mut state = ListState::default();
+    state.select(Some(selected + 1));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -442,7 +568,10 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled("▌", Style::default().fg(theme::GOLD_BRIGHT)),
         ]),
         Mode::Insert => Line::from(Span::styled(
-            "-- INSERT 改名中：Enter 提交 · Esc 取消 --",
+            format!(
+                "-- INSERT 改名中：{}▌ · Enter 提交 · Esc 取消 --",
+                app.rename.as_deref().unwrap_or_default()
+            ),
             Style::default().fg(theme::RECORD_RED),
         )),
         Mode::Normal => {
@@ -450,15 +579,21 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .vi_count()
                 .map(|count| format!(" 计数 {count}"))
                 .unwrap_or_default();
-            Line::from(Span::styled(
-                format!(
+            let text = match app.list_view {
+                Some(ListView::Notes { .. }) => format!(
+                    "-- 音符视图 -- j/k 选 · h/l 移时 · J/K 移高 · a 加 · Del 删 · <> 时值 · -/+ 力度 · Esc 返回{count}"
+                ),
+                Some(ListView::Pool { .. }) => format!(
+                    "-- 片段池 -- j/k 选 · Del 删条目（被引用会被模型拒绝） · Esc 返回{count}"
+                ),
+                None => format!(
                     "-- NORMAL -- 焦点 {} ·{}{} · Space 播放 · M 静音 · S 独奏 · : 命令 · i 改名",
                     app.focus.label(),
                     app.selected_track_name().unwrap_or_default(),
                     count
                 ),
-                Style::default().fg(theme::INK2),
-            ))
+            };
+            Line::from(Span::styled(text, Style::default().fg(theme::INK2)))
         }
     };
     frame.render_widget(

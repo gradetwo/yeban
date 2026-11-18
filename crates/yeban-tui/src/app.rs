@@ -25,8 +25,11 @@ use yeban_engine::ring::TransportCommand;
 use yeban_engine::transport::{TransportReading, TransportState};
 use yeban_model::container::ProjectArchive;
 use yeban_model::ids::EntityId;
+use yeban_model::music::MidiNote;
 use yeban_model::ops::Op;
-use yeban_model::project::{AutomationTarget, ClipPlacement, TrackKind, YebanProjectV1};
+use yeban_model::project::{
+    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, TrackKind, YebanProjectV1,
+};
 
 use crate::keymap::{Mode, Pane, ViMachine, ViMotion, ViOutcome, to_logical};
 
@@ -41,6 +44,38 @@ pub struct ExportReceipt {
     pub sample_rate: u32,
     /// 位深（bits per sample）。
     pub bits: u16,
+}
+
+/// 片段网格窗格的列表视图（三期）：普通网格之外的两种内容变体。
+/// 焦点循环仍是三窗格（K6 不变），视图只是网格窗格里换了内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListView {
+    /// 音符列表：对象在打开时捕获（轨道 / 摆放 / 池条目），视图内编辑
+    /// 该池条目的音符（`selected` 是按 (起点, 音高, 身份) 排序后的下标）。
+    Notes {
+        /// 音符所属轨道（op 寻址用）。
+        track_id: EntityId,
+        /// 打开视图的摆放（加音符时换算片段内相对起点用）。
+        placement_id: EntityId,
+        /// 池条目身份（音符住在条目的 content 里）。
+        clip_id: EntityId,
+        /// 选中音符的下标。
+        selected: usize,
+    },
+    /// 片段池列表：`selected` 是按 (名, 身份) 排序后的下标。
+    Pool {
+        /// 选中条目的下标。
+        selected: usize,
+    },
+}
+
+/// 改名目标（三期起 Insert 改名有两种对象：轨道 / 片段池条目）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenameTarget {
+    /// 轨道名（`Op::SetTrackName`，二期行为）。
+    Track(EntityId),
+    /// 片段池条目名（`Op::SetClipName`，三期新增）。
+    Clip(EntityId),
 }
 
 /// 当前墙钟（毫秒，Unix 纪元）：撤销会话的提交时间戳来源（与 GUI 同一口径，
@@ -88,6 +123,12 @@ pub struct App {
     pub cmdline: String,
     /// 改名缓冲（Insert 模式；`None` = 未在改名）。
     pub rename: Option<String>,
+    /// 改名目标（与 `rename` 同生同灭；`None` = 未在改名）。
+    rename_target: Option<RenameTarget>,
+    /// 进程内片段剪贴板（三期；与 GUI 同形状：池条目 + 源摆放快照）。
+    pub clipboard: Option<(ClipPoolEntry, ClipPlacement)>,
+    /// 片段网格的列表视图（三期；`None` = 普通网格）。
+    pub list_view: Option<ListView>,
     /// 日志行（最新在尾；底栏显示最后一条）。
     pub log: Vec<String>,
     /// 有未保存修改。
@@ -115,6 +156,15 @@ impl App {
             embedded_presets: Vec::new(),
         };
         Self::assemble(project, Some(archive), None)
+    }
+
+    /// 以给定工程起一个新会话（无文件路径；资产走空归档）。
+    /// 测试夹具与嵌入场景用；生产路径是 [`Self::with_demo`] / [`Self::open_file`]。
+    ///
+    /// # Errors
+    /// 引擎图构建失败时返回错误文本。
+    pub fn with_project(project: YebanProjectV1) -> Result<Self, String> {
+        Self::assemble(project, None, None)
     }
 
     /// 从文件打开工程（全保真归档路径）。
@@ -180,6 +230,9 @@ impl App {
             input_ctx: InputContext::new(),
             cmdline: String::new(),
             rename: None,
+            rename_target: None,
+            clipboard: None,
+            list_view: None,
             log: Vec::new(),
             dirty: false,
             master_peak: 0.0,
@@ -350,6 +403,13 @@ impl App {
     fn sync_from_port(&mut self) {
         self.project = self.port.project();
         self.refresh_track_ids();
+        // 音符视图的对象若已不在池中（撤销删池条目等），关掉视图，
+        // ⛔ 不留一个指向不存在片段的编辑面。
+        if let Some(ListView::Notes { clip_id, .. }) = self.list_view
+            && !self.project.clip_pool.contains_key(&clip_id)
+        {
+            self.list_view = None;
+        }
     }
 
     /// 把当前镜像增量发布到引擎（标记取端口显示态，与 GUI 同一口径）。
@@ -558,6 +618,436 @@ impl App {
         );
     }
 
+    // ------------------------------------------------------------------
+    // 三期：切分 / 复制粘贴 / 片段改名 / 音符编辑 / 池条目删除
+    // （核心能力审计见 docs/phase3-core-audit.md；全部经 commit_edit 提交）
+    // ------------------------------------------------------------------
+
+    /// 在播放头处切分光标处片段（GUI `Ctrl+T` 的落点）。
+    /// op 组合与 GUI 共用 `yeban_app::host::clip_split_ops_for`（同一构造点）：
+    /// 左半缩短、跨点音符截断续接、右半是新池条目 + 新摆放，一步撤销。
+    /// 切分点不严格落在片段内部时组合为空，如实报不可切（先 `:seek` 到片段内）。
+    pub fn split_clip_at_playhead(&mut self) {
+        let Some((_track_id, placement_id, _placement)) = self.clip_at_cursor() else {
+            self.log_line("光标处无片段可切分".to_owned());
+            return;
+        };
+        let playhead = self.transport().position_ticks;
+        let Some((ops, _right_id)) =
+            yeban_app::host::clip_split_ops_for(&self.project, &placement_id.to_string(), playhead)
+        else {
+            self.log_line("切分点不在片段内部：先 :seek 到片段内再切".to_owned());
+            return;
+        };
+        self.commit_edit("tui: split clip at playhead", ops, "切分片段");
+    }
+
+    /// 复制光标处片段到进程内剪贴板（GUI `Ctrl+C` 的落点）。
+    /// 剪贴板形状与 GUI 同：池条目 + 源摆放各一份快照；本动作不改工程。
+    pub fn copy_clip_at_cursor(&mut self) {
+        let Some((_track_id, _placement_id, placement)) = self.clip_at_cursor() else {
+            self.log_line("光标处无片段可复制".to_owned());
+            return;
+        };
+        let Some(entry) = self.project.clip_pool.get(&placement.clip_id) else {
+            return;
+        };
+        let name = entry.name.clone();
+        self.clipboard = Some((entry.clone(), placement));
+        self.log_line(format!("已复制片段「{name}」"));
+    }
+
+    /// 把剪贴板粘贴到选中轨的光标处（GUI `Ctrl+V` 的落点）。
+    /// 组合逐项照 GUI 的 `clipboard_paste`：片段与每个音符换新身份，
+    /// `AddClip` + `AddClipPlacement` 一次提交、一步撤销。
+    /// 形态差异（审计已登记）：落点用小节光标（GUI 用播放头；
+    /// TUI 的 `:seek` 同步移动两者，光标即 TUI 的编辑点）；主总线不接收粘贴。
+    pub fn paste_clipboard(&mut self) {
+        let Some((entry, base)) = self.clipboard.clone() else {
+            self.log_line("剪贴板为空：先 Ctrl+C 复制片段".to_owned());
+            return;
+        };
+        let Some(track_id) = self.selected_track_id() else {
+            return;
+        };
+        if track_id == self.project.master_bus_track_id {
+            self.log_line("主总线不接收粘贴".to_owned());
+            return;
+        }
+        if !self.project.tracks.contains_key(&track_id) {
+            return;
+        }
+        let new_clip_id = EntityId::new();
+        let content = match &entry.content {
+            ClipContent::Midi { notes } => {
+                let mut fresh = std::collections::BTreeMap::new();
+                for note in notes.values() {
+                    let mut copy = note.clone();
+                    copy.id = EntityId::new();
+                    fresh.insert(copy.id, copy);
+                }
+                ClipContent::Midi { notes: fresh }
+            }
+            ClipContent::Audio { asset, gain_db } => ClipContent::Audio {
+                asset: asset.clone(),
+                gain_db: *gain_db,
+            },
+        };
+        let new_entry = ClipPoolEntry {
+            id: new_clip_id,
+            name: entry.name.clone(),
+            content,
+        };
+        let start_tick = u64::try_from(self.cursor_bar).unwrap_or(0) * self.bar_ticks();
+        let placement = ClipPlacement {
+            id: EntityId::new(),
+            clip_id: new_clip_id,
+            start_tick,
+            duration_ticks: base.duration_ticks,
+            loop_config: base.loop_config,
+            muted: false,
+            offset_samples: base.offset_samples,
+        };
+        self.commit_edit(
+            "tui: paste clip",
+            vec![
+                Op::AddClip { clip: new_entry },
+                Op::AddClipPlacement {
+                    track_id,
+                    placement,
+                },
+            ],
+            "粘贴片段",
+        );
+    }
+
+    /// 剪切光标处片段（GUI `Ctrl+X` 的落点）= 复制 + 删摆放，**一次**提交：
+    /// 与 GUI 的 `clipboard_cut` 同形，撤销一次同时回滚两者。
+    /// 删摆放的 op 走 GUI 同一构造点 `clip_delete_ops_for`（只删摆放，
+    /// 池条目留下——粘贴靠剪贴板快照，不靠池条目）。
+    pub fn cut_clip_at_cursor(&mut self) {
+        let Some((_track_id, placement_id, placement)) = self.clip_at_cursor() else {
+            self.log_line("光标处无片段可剪切".to_owned());
+            return;
+        };
+        let Some(entry) = self.project.clip_pool.get(&placement.clip_id) else {
+            return;
+        };
+        self.clipboard = Some((entry.clone(), placement));
+        let ops = yeban_app::host::clip_delete_ops_for(&self.project, &placement_id.to_string());
+        if ops.is_empty() {
+            return;
+        }
+        self.commit_edit("tui: cut clip", ops, "剪切片段");
+    }
+
+    /// 打开音符视图（对象 = 光标处片段；必须是 MIDI 片段）。
+    /// 裸 `n` 与 `:notes` 的共同落点。
+    pub fn open_notes_view(&mut self) {
+        let Some((track_id, placement_id, placement)) = self.clip_at_cursor() else {
+            self.log_line("光标处无片段：先把光标移到片段上".to_owned());
+            return;
+        };
+        let Some(entry) = self.project.clip_pool.get(&placement.clip_id) else {
+            return;
+        };
+        if !matches!(entry.content, ClipContent::Midi { .. }) {
+            self.log_line("光标处片段不是 MIDI 片段，无音符可编辑".to_owned());
+            return;
+        }
+        let name = entry.name.clone();
+        self.list_view = Some(ListView::Notes {
+            track_id,
+            placement_id,
+            clip_id: placement.clip_id,
+            selected: 0,
+        });
+        self.log_line(format!("音符视图「{name}」：Esc 返回片段网格"));
+    }
+
+    /// 打开片段池视图（`:pool` 的落点）。
+    pub fn open_pool_view(&mut self) {
+        if self.project.clip_pool.is_empty() {
+            self.log_line("片段池为空".to_owned());
+            return;
+        }
+        self.list_view = Some(ListView::Pool { selected: 0 });
+        self.log_line("片段池视图：Esc 返回片段网格".to_owned());
+    }
+
+    /// 关掉列表视图，回到普通片段网格（`Esc` 的视图内落点）。
+    pub fn close_list_view(&mut self) {
+        self.list_view = None;
+    }
+
+    /// 音符视图的对象片段的音符快照（按 (起点, 音高, 身份) 排序）。
+    /// 视图外或对象不是 MIDI 片段时返回空。
+    #[must_use]
+    pub fn view_notes(&self) -> Vec<MidiNote> {
+        let Some(ListView::Notes { clip_id, .. }) = self.list_view else {
+            return Vec::new();
+        };
+        let Some(entry) = self.project.clip_pool.get(&clip_id) else {
+            return Vec::new();
+        };
+        let ClipContent::Midi { notes } = &entry.content else {
+            return Vec::new();
+        };
+        let mut list: Vec<MidiNote> = notes.values().cloned().collect();
+        list.sort_by(|a, b| (a.start_tick, a.pitch, a.id).cmp(&(b.start_tick, b.pitch, b.id)));
+        list
+    }
+
+    /// 片段池行快照（按 (名, 身份) 排序）：条目 + 引用它的摆放数。
+    #[must_use]
+    pub fn pool_rows(&self) -> Vec<(ClipPoolEntry, usize)> {
+        let mut counts: std::collections::BTreeMap<EntityId, usize> =
+            std::collections::BTreeMap::new();
+        for track in self.project.tracks.values() {
+            for placement in track.clips.values() {
+                *counts.entry(placement.clip_id).or_insert(0) += 1;
+            }
+        }
+        let mut rows: Vec<(ClipPoolEntry, usize)> = self
+            .project
+            .clip_pool
+            .values()
+            .map(|entry| (entry.clone(), counts.get(&entry.id).copied().unwrap_or(0)))
+            .collect();
+        rows.sort_by(|a, b| a.0.name.cmp(&b.0.name).then(a.0.id.cmp(&b.0.id)));
+        rows
+    }
+
+    /// 列表视图内的选中下标移动（Vi `j/k` 与 `gg/G` 按视图分流到这里）。
+    fn view_move_selection(&mut self, delta: i32) {
+        let (len, selected) = match self.list_view {
+            Some(ListView::Notes { .. }) => {
+                let len = self.view_notes().len();
+                let Some(ListView::Notes { selected, .. }) = self.list_view else {
+                    return;
+                };
+                (len, selected)
+            }
+            Some(ListView::Pool { selected }) => (self.pool_rows().len(), selected),
+            None => return,
+        };
+        let next = if len == 0 {
+            0
+        } else {
+            usize::try_from((selected as i32 + delta).clamp(0, len as i32 - 1)).unwrap_or(0)
+        };
+        match &mut self.list_view {
+            Some(ListView::Notes { selected, .. }) | Some(ListView::Pool { selected }) => {
+                *selected = next;
+            }
+            None => {}
+        }
+    }
+
+    /// 列表视图内跳到首/尾（Vi `gg`/`G` 按视图分流到这里）。
+    fn view_select_edge(&mut self, last: bool) {
+        let len = match self.list_view {
+            Some(ListView::Notes { .. }) => self.view_notes().len(),
+            Some(ListView::Pool { .. }) => self.pool_rows().len(),
+            None => return,
+        };
+        let next = if last { len.saturating_sub(1) } else { 0 };
+        match &mut self.list_view {
+            Some(ListView::Notes { selected, .. }) | Some(ListView::Pool { selected }) => {
+                *selected = next;
+            }
+            None => {}
+        }
+    }
+
+    /// 当前选中的音符（音符视图内）：(轨道, 池条目, 音符快照)。
+    fn selected_note(&self) -> Option<(EntityId, EntityId, MidiNote)> {
+        let Some(ListView::Notes {
+            track_id,
+            clip_id,
+            selected,
+            ..
+        }) = self.list_view
+        else {
+            return None;
+        };
+        self.view_notes()
+            .get(selected)
+            .map(|note| (track_id, clip_id, note.clone()))
+    }
+
+    /// 移动选中音符（`MoveNote` 增量；起点不为负、音高夹 0..=127，
+    /// 夹紧后无变化就不提交）。方向键与 `h/l`、`J/K` 的共同落点，
+    /// 换算走 GUI 同一函数 `nudge_delta_for` 的调用方在这里组装增量。
+    pub fn move_selected_note(&mut self, delta_tick: i64, delta_pitch: i8) {
+        let Some((track_id, clip_id, note)) = self.selected_note() else {
+            return;
+        };
+        let delta_tick = delta_tick.max(-i64::try_from(note.start_tick).unwrap_or(i64::MAX));
+        let new_pitch = (i16::from(note.pitch) + i16::from(delta_pitch)).clamp(0, 127);
+        let delta_pitch = i8::try_from(new_pitch - i16::from(note.pitch)).unwrap_or(0);
+        if delta_tick == 0 && delta_pitch == 0 {
+            self.log_line("音符已在边界，无变化".to_owned());
+            return;
+        }
+        self.commit_edit(
+            "tui: move note",
+            vec![Op::MoveNote {
+                track_id,
+                clip_id,
+                note_id: note.id,
+                delta_tick,
+                delta_pitch,
+            }],
+            "移动音符",
+        );
+    }
+
+    /// 在光标处加一个音符（音符视图内裸 `a`）：新身份，起点 = 光标在
+    /// 片段内的相对 tick，音高 = 选中音符的音高（无选中时 60），
+    /// 时值 = 一拍，力度 = 100（`MidiNote::new` 的缺省力度）。
+    pub fn add_note_at_cursor(&mut self) {
+        let Some(ListView::Notes {
+            track_id,
+            placement_id,
+            clip_id,
+            ..
+        }) = self.list_view
+        else {
+            return;
+        };
+        let Some(track) = self.project.tracks.get(&track_id) else {
+            return;
+        };
+        let Some(placement) = track.clips.get(&placement_id) else {
+            self.log_line("视图的摆放已不存在：Esc 返回后重开".to_owned());
+            return;
+        };
+        let cursor_tick = u64::try_from(self.cursor_bar).unwrap_or(0) * self.bar_ticks();
+        let start_tick = cursor_tick.saturating_sub(placement.start_tick);
+        let pitch = self.selected_note().map_or(60, |(_, _, note)| note.pitch);
+        let note = MidiNote::new(EntityId::new(), start_tick, pitch, self.ticks_per_beat());
+        self.commit_edit(
+            "tui: add note",
+            vec![Op::AddNote {
+                track_id,
+                clip_id,
+                note,
+            }],
+            "加音符",
+        );
+        // 选中新加的音符（按排序后的位置回填下标）。
+        let position = self.view_notes().iter().position(|n| n.id == note.id);
+        if let (Some(ListView::Notes { selected, .. }), Some(index)) =
+            (&mut self.list_view, position)
+        {
+            *selected = index;
+        }
+    }
+
+    /// 删除选中音符（音符视图内 `Delete` 的落点；`DeleteNote` 自带撤销载荷）。
+    pub fn delete_selected_note(&mut self) {
+        let Some((track_id, clip_id, note)) = self.selected_note() else {
+            self.log_line("音符视图内无选中音符".to_owned());
+            return;
+        };
+        self.commit_edit(
+            "tui: delete note",
+            vec![Op::DeleteNote {
+                track_id,
+                clip_id,
+                note_id: note.id,
+                previous_note: note,
+            }],
+            "删除音符",
+        );
+        self.clamp_view_selection();
+    }
+
+    /// 改选中音符的时值（音符视图内 `<`/`>`）：一步 = 一拍，
+    /// 下限 = 一个吸附网格（240 tick，与 GUI 微移网格同值），走 `SetNoteTiming`。
+    pub fn resize_selected_note(&mut self, beats: i32) {
+        let Some((track_id, clip_id, note)) = self.selected_note() else {
+            return;
+        };
+        let step = i64::try_from(self.ticks_per_beat()).unwrap_or(i64::MAX) * i64::from(beats);
+        let new_duration = i64::try_from(note.duration_ticks)
+            .unwrap_or(i64::MAX)
+            .saturating_add(step)
+            .max(i64::try_from(yeban_app::host::ROLL_SNAP_GRID_TICKS).unwrap_or(240));
+        let new_duration = u64::try_from(new_duration).unwrap_or(note.duration_ticks);
+        if new_duration == note.duration_ticks {
+            self.log_line("时值已在下限，无变化".to_owned());
+            return;
+        }
+        self.commit_edit(
+            "tui: set note timing",
+            vec![Op::SetNoteTiming {
+                track_id,
+                clip_id,
+                note_id: note.id,
+                old_start_tick: note.start_tick,
+                old_duration_ticks: note.duration_ticks,
+                new_start_tick: note.start_tick,
+                new_duration_ticks: new_duration,
+            }],
+            "改音符时值",
+        );
+    }
+
+    /// 改选中音符的力度（音符视图内 `-`/`+` 分流）：±10，夹 1..=127，
+    /// 走 `ModifyNoteVelocity`。
+    pub fn nudge_selected_note_velocity(&mut self, delta: i32) {
+        let Some((track_id, clip_id, note)) = self.selected_note() else {
+            return;
+        };
+        let new_vel = (i32::from(note.velocity) + delta).clamp(1, 127);
+        if new_vel == i32::from(note.velocity) {
+            self.log_line("力度已在边界，无变化".to_owned());
+            return;
+        }
+        self.commit_edit(
+            "tui: set note velocity",
+            vec![Op::ModifyNoteVelocity {
+                track_id,
+                clip_id,
+                note_id: note.id,
+                old_vel: note.velocity,
+                new_vel: u8::try_from(new_vel).unwrap_or(note.velocity),
+            }],
+            &format!("力度 {} → {new_vel}", note.velocity),
+        );
+    }
+
+    /// 删除选中的片段池条目（池视图内 `Delete` 的落点；`Op::RemoveClip`）。
+    /// 被摆放引用时模型以 `ClipInUse` 硬拒，拒绝原因经提交口如实记日志，
+    /// ⛔ 不代删摆放。
+    pub fn delete_selected_pool_entry(&mut self) {
+        let Some(ListView::Pool { selected }) = self.list_view else {
+            return;
+        };
+        let rows = self.pool_rows();
+        let Some((entry, refs)) = rows.get(selected) else {
+            return;
+        };
+        let (entry, refs) = (entry.clone(), *refs);
+        let name = entry.name.clone();
+        self.commit_edit(
+            "tui: remove clip from pool",
+            vec![Op::RemoveClip {
+                clip_id: entry.id,
+                previous_clip: entry,
+            }],
+            &format!("删除池条目「{name}」（{refs} 处引用）"),
+        );
+        self.clamp_view_selection();
+    }
+
+    /// 视图内删除后把选中下标夹回有效范围。
+    fn clamp_view_selection(&mut self) {
+        self.view_move_selection(0);
+    }
+
     /// 定位播放头到第 `bar` 小节（0 起；走带状态，非文档编辑，不进撤销史）。
     pub fn seek_to_bar(&mut self, bar: usize) {
         let ticks = u64::try_from(bar).unwrap_or(0) * self.bar_ticks();
@@ -745,8 +1235,13 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, event: KeyEvent) {
-        // Esc：清计数与半成品序列（GUI 解析对 Esc 是 PassThrough，落到这里）。
+        // Esc：列表视图开着时先关视图（三期），否则清计数与半成品序列
+        // （GUI 解析对 Esc 是 PassThrough，落到这里）。
         if event.code == KeyCode::Esc {
+            if self.list_view.is_some() {
+                self.close_list_view();
+                self.log_line("返回片段网格".to_owned());
+            }
             self.vi.reset();
             return;
         }
@@ -779,11 +1274,54 @@ impl App {
         }
         // 第二段：Vi 导航层（只吃无修饰/仅 Shift 的字符键）。
         if !modified && let KeyCode::Char(ch) = event.code {
+            // 音符视图内的编辑键（三期，TUI 自加；这些键在共享表里是
+            // PassThrough 或未占，视图外不拦截、行为不变）：
+            // `J`/`K` 移音高 ±1 半音、`a` 加音符、`<`/`>` 改时值 ∓/± 一拍。
+            // 时间移动与选择走 Vi 动作层（h/l、j/k 按视图分流，见 apply_motion）
+            // 与方向键（NudgeSelection 分流，见 dispatch_gui_action）。
+            if matches!(self.list_view, Some(ListView::Notes { .. })) {
+                match ch {
+                    'J' => {
+                        self.vi.reset();
+                        self.move_selected_note(0, 1);
+                        return;
+                    }
+                    'K' => {
+                        self.vi.reset();
+                        self.move_selected_note(0, -1);
+                        return;
+                    }
+                    'a' => {
+                        self.vi.reset();
+                        self.add_note_at_cursor();
+                        return;
+                    }
+                    '<' => {
+                        self.vi.reset();
+                        self.resize_selected_note(-1);
+                        return;
+                    }
+                    '>' => {
+                        self.vi.reset();
+                        self.resize_selected_note(1);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            // 片段网格焦点下开音符视图（TUI 自加键）：裸 `n`（共享表
+            // PassThrough、Vi 层未占）。视图已开时不重复开。
+            if ch == 'n' && self.focus == Pane::Grid && self.list_view.is_none() {
+                self.vi.reset();
+                self.open_notes_view();
+                return;
+            }
             // 片段网格焦点下的片段平移键（TUI 自加）：`H`/`L` 按小节平移
             // 光标处片段（计数前缀 = 小节数）。删除不用自加键 —— 走 GUI 的
             // `Delete`/`Backspace`（画布语义 = `DeleteSelection`，见分发层）。
-            // 轨道/检查器焦点下 `H`/`L` 不绑定（落 Vi 层得 NotVi）。
-            if self.focus == Pane::Grid && matches!(ch, 'H' | 'L') {
+            // 轨道/检查器焦点下 `H`/`L` 不绑定（落 Vi 层得 NotVi）；
+            // 列表视图开着时也不绑定（视图内 h/l 是音符级移动，粒度不同）。
+            if self.focus == Pane::Grid && self.list_view.is_none() && matches!(ch, 'H' | 'L') {
                 let count = i32::try_from(self.vi.count().unwrap_or(1)).unwrap_or(i32::MAX);
                 self.vi.reset();
                 if ch == 'H' {
@@ -809,6 +1347,30 @@ impl App {
 
     fn apply_motion(&mut self, motion: ViMotion, count: usize) {
         let count = i32::try_from(count).unwrap_or(i32::MAX);
+        // 三期：列表视图开着时，Vi 动作按视图分流——j/k/gg/G 动视图内的
+        // 选中下标；音符视图里 h/l 动选中音符的时间（一格 = 吸附网格
+        // 240 tick，与 GUI 微移的 Grid 档同值）；池视图里 h/l 无动作。
+        if self.list_view.is_some() {
+            match motion {
+                ViMotion::TrackDown => self.view_move_selection(count),
+                ViMotion::TrackUp => self.view_move_selection(-count),
+                ViMotion::BarRight | ViMotion::BarLeft => {
+                    if matches!(self.list_view, Some(ListView::Notes { .. })) {
+                        let grid =
+                            i64::try_from(yeban_app::host::ROLL_SNAP_GRID_TICKS).unwrap_or(240);
+                        let delta = grid * i64::from(count);
+                        if motion == ViMotion::BarRight {
+                            self.move_selected_note(delta, 0);
+                        } else {
+                            self.move_selected_note(-delta, 0);
+                        }
+                    }
+                }
+                ViMotion::First => self.view_select_edge(false),
+                ViMotion::Last => self.view_select_edge(true),
+            }
+            return;
+        }
         match motion {
             ViMotion::TrackDown => self.move_selection(count),
             ViMotion::TrackUp => self.move_selection(-count),
@@ -871,21 +1433,85 @@ impl App {
                 self.log_line("焦点 → 片段（TUI 对 GUI 编辑器的形态适配）".to_owned());
             }
             Action::ZoomIn => {
-                self.bar_cols = (self.bar_cols + 1).min(8);
+                // 三期分流：音符视图内裸 `+` 是力度 +10（与 `-` 成对，
+                // 同 DeleteSelection 的按视图分流手法）；视图外照旧缩放。
+                if matches!(self.list_view, Some(ListView::Notes { .. })) {
+                    self.nudge_selected_note_velocity(10);
+                } else {
+                    self.bar_cols = (self.bar_cols + 1).min(8);
+                }
             }
             Action::ZoomOut => {
-                self.bar_cols = self.bar_cols.saturating_sub(1).max(2);
+                if matches!(self.list_view, Some(ListView::Notes { .. })) {
+                    self.nudge_selected_note_velocity(-10);
+                } else {
+                    self.bar_cols = self.bar_cols.saturating_sub(1).max(2);
+                }
+            }
+            Action::SplitAtPlayhead => {
+                // GUI `Ctrl+T`（三期）：片段网格焦点下切分光标处片段。
+                if self.focus == Pane::Grid {
+                    self.split_clip_at_playhead();
+                } else {
+                    self.log_line("切分只在片段网格焦点下接入（Tab 切焦点）".to_owned());
+                }
+            }
+            Action::CopyClipboard => {
+                // GUI `Ctrl+C`（三期）：片段网格焦点下复制光标处片段。
+                if self.focus == Pane::Grid {
+                    self.copy_clip_at_cursor();
+                } else {
+                    self.log_line("复制片段只在片段网格焦点下接入（Tab 切焦点）".to_owned());
+                }
+            }
+            Action::PasteClipboard => {
+                // GUI `Ctrl+V`（三期）：粘贴到选中轨的光标处。
+                if self.focus == Pane::Grid {
+                    self.paste_clipboard();
+                } else {
+                    self.log_line("粘贴片段只在片段网格焦点下接入（Tab 切焦点）".to_owned());
+                }
+            }
+            Action::CutClipboard => {
+                // GUI `Ctrl+X`（三期）：剪切光标处片段（复制 + 删摆放，一步撤销）。
+                if self.focus == Pane::Grid {
+                    self.cut_clip_at_cursor();
+                } else {
+                    self.log_line("剪切片段只在片段网格焦点下接入（Tab 切焦点）".to_owned());
+                }
+            }
+            Action::NudgeSelection { step, direction } => {
+                // GUI 方向键（`[UI-NOTE-005]`，三期）：只在音符视图内接落点
+                // ——移动选中音符，换算走 GUI 同一函数 `nudge_delta_for`
+                // （Grid 240 tick / Tick 1 / Semitone ±1 / Octave ±12）。
+                // 视图外 TUI 无音符选区，保持未接、如实记日志。
+                if matches!(self.list_view, Some(ListView::Notes { .. })) {
+                    let (delta_tick, delta_pitch) =
+                        yeban_app::host::nudge_delta_for(step, direction);
+                    self.move_selected_note(delta_tick, delta_pitch);
+                } else {
+                    self.log_line("微移音符只在音符视图内接入（片段网格里按 n 打开）".to_owned());
+                }
             }
             Action::Undo => self.undo(1),
             Action::Redo => self.redo(1),
             Action::DeleteSelection => {
-                // GUI 画布的 `Delete`/`Backspace`：片段网格焦点下删光标处
-                // 片段（经撤销端口，可撤销）；其它焦点下 TUI 尚无选区删除，
-                // 如实报未接，不假装。
-                if self.focus == Pane::Grid {
-                    self.delete_clip_at_cursor();
-                } else {
-                    self.log_line("删除选区只在片段网格焦点下接入（Tab 切焦点）".to_owned());
+                // GUI 画布的 `Delete`/`Backspace`：删「当前选中的对象」，
+                // 对象随视图定（三期）——音符视图删选中音符、池视图删选中
+                // 池条目、普通网格删光标处片段摆放；都经撤销端口可撤销。
+                // 其它焦点下 TUI 尚无选区删除，如实报未接，不假装。
+                match self.list_view {
+                    Some(ListView::Notes { .. }) => self.delete_selected_note(),
+                    Some(ListView::Pool { .. }) => self.delete_selected_pool_entry(),
+                    None => {
+                        if self.focus == Pane::Grid {
+                            self.delete_clip_at_cursor();
+                        } else {
+                            self.log_line(
+                                "删除选区只在片段网格焦点下接入（Tab 切焦点）".to_owned(),
+                            );
+                        }
+                    }
                 }
             }
             other => {
@@ -900,7 +1526,18 @@ impl App {
 
     fn begin_rename(&mut self) {
         if self.focus == Pane::Grid {
-            self.log_line("改名在轨道/检查器焦点下可用（Tab 切换焦点）".to_owned());
+            // 三期：片段网格焦点下改的是光标处片段的池条目名
+            // （`Op::SetClipName`；二期时此处只有轨道改名、片段改名未接）。
+            let Some((_track_id, _placement_id, placement)) = self.clip_at_cursor() else {
+                self.log_line("光标处无片段可改名".to_owned());
+                return;
+            };
+            let Some(entry) = self.project.clip_pool.get(&placement.clip_id) else {
+                return;
+            };
+            self.rename = Some(entry.name.clone());
+            self.rename_target = Some(RenameTarget::Clip(placement.clip_id));
+            self.mode = Mode::Insert;
             return;
         }
         let Some(id) = self.selected_track_id() else {
@@ -908,6 +1545,7 @@ impl App {
         };
         if let Some(track) = self.project.tracks.get(&id) {
             self.rename = Some(track.name.clone());
+            self.rename_target = Some(RenameTarget::Track(id));
             self.mode = Mode::Insert;
         }
     }
@@ -916,32 +1554,55 @@ impl App {
         match event.code {
             KeyCode::Esc => {
                 self.rename = None;
+                self.rename_target = None;
                 self.mode = Mode::Normal;
                 self.log_line("改名取消".to_owned());
             }
             KeyCode::Enter => {
                 let new_name = self.rename.take().unwrap_or_default();
+                let target = self.rename_target.take();
                 self.mode = Mode::Normal;
                 let trimmed = new_name.trim().to_owned();
                 if trimmed.is_empty() {
                     self.log_line("改名取消：名字为空".to_owned());
                     return;
                 }
-                if let Some(id) = self.selected_track_id()
-                    && let Some(track) = self.project.tracks.get(&id)
-                {
-                    let old_name = track.name.clone();
-                    if old_name != trimmed {
-                        self.commit_edit(
-                            "tui: set track name",
-                            vec![Op::SetTrackName {
-                                track_id: id,
-                                old_name,
-                                new_name: trimmed.clone(),
-                            }],
-                            &format!("改名为「{trimmed}」"),
-                        );
+                match target {
+                    Some(RenameTarget::Track(id)) => {
+                        if let Some(track) = self.project.tracks.get(&id) {
+                            let old_name = track.name.clone();
+                            if old_name != trimmed {
+                                self.commit_edit(
+                                    "tui: set track name",
+                                    vec![Op::SetTrackName {
+                                        track_id: id,
+                                        old_name,
+                                        new_name: trimmed.clone(),
+                                    }],
+                                    &format!("改名为「{trimmed}」"),
+                                );
+                            }
+                        }
                     }
+                    Some(RenameTarget::Clip(clip_id)) => {
+                        // 旧名从当前文档读（模型的 OpStateMismatch 前置条件
+                        // 逐值比较，⛔ 不采信打开视图时的旧快照）。
+                        if let Some(entry) = self.project.clip_pool.get(&clip_id) {
+                            let old_name = entry.name.clone();
+                            if old_name != trimmed {
+                                self.commit_edit(
+                                    "tui: set clip name",
+                                    vec![Op::SetClipName {
+                                        clip_id,
+                                        old_name,
+                                        new_name: trimmed.clone(),
+                                    }],
+                                    &format!("片段改名为「{trimmed}」"),
+                                );
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             KeyCode::Backspace => {
@@ -1056,6 +1717,14 @@ impl App {
             }
             "stop" => self.stop(),
             "rewind" => self.go_to_beginning(),
+            "notes" => {
+                // :notes —— 打开光标处片段的音符视图（与裸 `n` 同一落点）。
+                self.open_notes_view();
+            }
+            "pool" => {
+                // :pool —— 打开片段池视图（删条目在视图内 Delete）。
+                self.open_pool_view();
+            }
             "export" => {
                 // 形态：export wav <path> 或 export <path>（默认 wav）。
                 let target = rest.strip_prefix("wav ").map(str::trim).unwrap_or(rest);
