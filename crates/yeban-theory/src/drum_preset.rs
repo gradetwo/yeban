@@ -511,6 +511,124 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
     })
 }
 
+/// 效果族在场标记（生成侧的去重判据由调用方按参数名扫轨上已有器件得出，
+/// 判读口径在调用方：参数名命中 `yeban-dsp` 的族拼写表）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DrumFxFamilies {
+    /// 通道条族（EQ/滤波/压缩）已在场。
+    pub strip: bool,
+    /// 磁带族已在场。
+    pub tape: bool,
+    /// 混响族已在场。
+    pub reverb: bool,
+    /// 延迟族已在场。
+    pub delay: bool,
+}
+
+/// 一台待装效果器件的配方（名字 + 参数表）；身份（`EntityId`）由调用方
+/// 按各自纪律分配（UI 路径随机、MCP 路径确定性派生），配方只有这一份，
+/// 保证两条生成路径装出的效果层逐参数一致。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrumFxDeviceSpec {
+    /// 效果族标识（`strip` / `tape` / `reverb` / `delay`）。
+    pub family: &'static str,
+    /// 器件显示名。
+    pub name: &'static str,
+    /// `(参数名, 值)` 表，顺序稳定。参数名一律用 `yeban-dsp`
+    /// `device_param` 的规范拼写（与共享契约 `EFFECT_GROUPS` 一致）。
+    pub params: Vec<(String, f32)>,
+}
+
+/// 把 `fx` 段翻译成器件配方（跳过 `present` 里已在场的族）。
+///
+/// ⚠ EQ 与压缩必须合在**同一台**通道条器件里：插入链投影对通道条族只取
+/// 第一台命中器件，分开装两台（EQ 一台、压缩一台）时第二台会被静默忽略。
+/// 开关参数（`eq_enabled` 等）显式写出，保证对应级一定执行（投影的
+/// 「没写旋钮的级不执行」口径）。
+#[must_use]
+pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<DrumFxDeviceSpec> {
+    let mut specs = Vec::new();
+    if !present.strip {
+        let mut params: Vec<(String, f32)> = vec![
+            ("eq_enabled".to_owned(), 1.0),
+            ("eq_low_gain".to_owned(), fx.eq_low_db),
+            ("eq_low_freq".to_owned(), fx.eq_low_hz),
+            ("eq_mid_gain".to_owned(), fx.eq_mid_db),
+            ("eq_mid_freq".to_owned(), fx.eq_mid_hz),
+            ("eq_mid_q".to_owned(), fx.eq_mid_q),
+            ("eq_high_gain".to_owned(), fx.eq_high_db),
+            ("eq_high_freq".to_owned(), fx.eq_high_hz),
+        ];
+        if fx.hpf_hz > 0.0 {
+            params.push(("hpf_hz".to_owned(), fx.hpf_hz));
+        }
+        if fx.cutoff_hz < 20_000.0 {
+            params.push(("filter_enabled".to_owned(), 1.0));
+            params.push(("cutoff_hz".to_owned(), fx.cutoff_hz));
+        }
+        params.push(("compressor_enabled".to_owned(), 1.0));
+        params.push(("threshold_db".to_owned(), fx.comp_threshold_db));
+        params.push(("ratio".to_owned(), fx.comp_ratio));
+        params.push(("knee_db".to_owned(), fx.comp_knee_db));
+        params.push(("attack_s".to_owned(), fx.comp_attack_s));
+        params.push(("release_s".to_owned(), fx.comp_release_s));
+        params.push(("makeup_db".to_owned(), fx.comp_makeup_db));
+        if fx.output_db != 0.0 {
+            params.push(("output_gain_db".to_owned(), fx.output_db));
+        }
+        specs.push(DrumFxDeviceSpec {
+            family: "strip",
+            name: "Channel Strip",
+            params,
+        });
+    }
+    if let Some(tape) = &fx.tape
+        && !present.tape
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "tape",
+            name: "Tape Saturation",
+            params: vec![
+                ("tape_drive".to_owned(), tape.drive),
+                ("tape_mix".to_owned(), tape.mix),
+                ("tape_hf_hz".to_owned(), tape.hf_hz),
+                ("tape_asym".to_owned(), tape.asym),
+            ],
+        });
+    }
+    if !present.reverb {
+        specs.push(DrumFxDeviceSpec {
+            family: "reverb",
+            name: "Reverb",
+            params: vec![
+                ("reverb_size".to_owned(), fx.reverb_size),
+                ("reverb_damp".to_owned(), fx.reverb_damp),
+                ("reverb_wet".to_owned(), fx.reverb_wet),
+                ("reverb_predelay".to_owned(), fx.reverb_predelay_s),
+            ],
+        });
+    }
+    if let Some(delay) = &fx.delay
+        && !present.delay
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "delay",
+            name: "Delay",
+            params: vec![
+                ("delay_time_s".to_owned(), delay.time_s),
+                ("delay_feedback".to_owned(), delay.feedback),
+                ("delay_mix".to_owned(), delay.mix),
+                ("delay_damp".to_owned(), delay.damp),
+                (
+                    "delay_ping_pong".to_owned(),
+                    if delay.ping_pong { 1.0 } else { 0.0 },
+                ),
+            ],
+        });
+    }
+    specs
+}
+
 // ---------------------------------------------------------------------------
 // 鼓组装配（默认鼓组一份；按族分工，GM 映射统一）
 // ---------------------------------------------------------------------------

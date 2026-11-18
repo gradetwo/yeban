@@ -2954,7 +2954,7 @@ pub fn drum_gen_ops(
     }
 
     if let Some(fx) = &preset.fx {
-        let present = target.map_or_else(DrumFxFamilies::default, |track| {
+        let present = target.map_or_else(yeban_theory::DrumFxFamilies::default, |track| {
             drum_fx_families_present(&track.devices)
         });
         let mut slot_index = target.map_or(0, |track| track.devices.len());
@@ -3008,24 +3008,15 @@ pub fn drum_gen_ops(
     Ok(ops)
 }
 
-/// 效果族在场标记（[`drum_gen_ops`] 的效果层去重判据）。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct DrumFxFamilies {
-    strip: bool,
-    tape: bool,
-    reverb: bool,
-    delay: bool,
-}
-
 /// 扫一遍轨上已有器件，按**参数名**判哪些效果族已经在场：非旁通的
 /// `InternalEffect` 器件只要带任一该族的已识别参数名（`yeban_dsp::
 /// device_param` 的拼写表）就算该族在场。按名判而不按器件名猜，与插入
 /// 链投影（`yeban_render::InsertChain::from_devices`）的识别口径一致——
 /// 投影按族取第一台命中器件，用户已有的同族效果会先被投影选中，
 /// 再叠一台只会成为死器件。
-fn drum_fx_families_present(devices: &[DeviceDefinition]) -> DrumFxFamilies {
+fn drum_fx_families_present(devices: &[DeviceDefinition]) -> yeban_theory::DrumFxFamilies {
     use yeban_dsp::device_param::{DelayField, ReverbField, StripField, TapeField};
-    let mut present = DrumFxFamilies::default();
+    let mut present = yeban_theory::DrumFxFamilies::default();
     for device in devices {
         if device.bypassed || device.kind != DeviceKind::InternalEffect {
             continue;
@@ -3040,107 +3031,32 @@ fn drum_fx_families_present(devices: &[DeviceDefinition]) -> DrumFxFamilies {
     present
 }
 
-fn fx_param(name: &str, value: f32) -> ParameterValue {
-    ParameterValue {
-        name: name.to_owned(),
-        value,
-        unit: None,
-    }
-}
-
-fn fx_device(name: &str, params: Vec<ParameterValue>) -> DeviceDefinition {
-    DeviceDefinition {
-        id: EntityId::new(),
-        name: name.to_owned(),
-        kind: DeviceKind::InternalEffect,
-        bypassed: false,
-        params,
-        latency_samples: 0,
-        plugin: None,
-    }
-}
-
-/// 把预置的 `fx` 段翻译成效果器件（跳过 `present` 里已在场的族）。
-///
-/// ⚠ EQ 与压缩必须合在**同一台**通道条器件里：插入链投影对通道条族只取
-/// 第一台命中器件，分开装两台（EQ 一台、压缩一台）时第二台会被静默忽略。
-/// 参数名一律用 `yeban_dsp::device_param` 的规范拼写（与共享契约
-/// `effect_params::EFFECT_GROUPS` 一致）；开关参数（`eq_enabled` 等）
-/// 显式写出，保证对应级一定执行（投影的「没写旋钮的级不执行」口径）。
+/// 把预置 `fx` 段的器件配方（[`yeban_theory::drum_fx_device_specs`]，
+/// 与 MCP 路径共用一份）落成本路径的器件（身份随机分配）。
 fn drum_fx_devices(
     fx: &yeban_theory::DrumFxPreset,
-    present: DrumFxFamilies,
+    present: yeban_theory::DrumFxFamilies,
 ) -> Vec<DeviceDefinition> {
-    let mut devices = Vec::new();
-    if !present.strip {
-        let mut params = vec![
-            fx_param("eq_enabled", 1.0),
-            fx_param("eq_low_gain", fx.eq_low_db),
-            fx_param("eq_low_freq", fx.eq_low_hz),
-            fx_param("eq_mid_gain", fx.eq_mid_db),
-            fx_param("eq_mid_freq", fx.eq_mid_hz),
-            fx_param("eq_mid_q", fx.eq_mid_q),
-            fx_param("eq_high_gain", fx.eq_high_db),
-            fx_param("eq_high_freq", fx.eq_high_hz),
-        ];
-        if fx.hpf_hz > 0.0 {
-            params.push(fx_param("hpf_hz", fx.hpf_hz));
-        }
-        if fx.cutoff_hz < 20_000.0 {
-            params.push(fx_param("filter_enabled", 1.0));
-            params.push(fx_param("cutoff_hz", fx.cutoff_hz));
-        }
-        params.push(fx_param("compressor_enabled", 1.0));
-        params.push(fx_param("threshold_db", fx.comp_threshold_db));
-        params.push(fx_param("ratio", fx.comp_ratio));
-        params.push(fx_param("knee_db", fx.comp_knee_db));
-        params.push(fx_param("attack_s", fx.comp_attack_s));
-        params.push(fx_param("release_s", fx.comp_release_s));
-        params.push(fx_param("makeup_db", fx.comp_makeup_db));
-        if fx.output_db != 0.0 {
-            params.push(fx_param("output_gain_db", fx.output_db));
-        }
-        devices.push(fx_device("Channel Strip", params));
-    }
-    if let Some(tape) = &fx.tape
-        && !present.tape
-    {
-        devices.push(fx_device(
-            "Tape Saturation",
-            vec![
-                fx_param("tape_drive", tape.drive),
-                fx_param("tape_mix", tape.mix),
-                fx_param("tape_hf_hz", tape.hf_hz),
-                fx_param("tape_asym", tape.asym),
-            ],
-        ));
-    }
-    if !present.reverb {
-        devices.push(fx_device(
-            "Reverb",
-            vec![
-                fx_param("reverb_size", fx.reverb_size),
-                fx_param("reverb_damp", fx.reverb_damp),
-                fx_param("reverb_wet", fx.reverb_wet),
-                fx_param("reverb_predelay", fx.reverb_predelay_s),
-            ],
-        ));
-    }
-    if let Some(delay) = &fx.delay
-        && !present.delay
-    {
-        devices.push(fx_device(
-            "Delay",
-            vec![
-                fx_param("delay_time_s", delay.time_s),
-                fx_param("delay_feedback", delay.feedback),
-                fx_param("delay_mix", delay.mix),
-                fx_param("delay_damp", delay.damp),
-                fx_param("delay_ping_pong", if delay.ping_pong { 1.0 } else { 0.0 }),
-            ],
-        ));
-    }
-    devices
+    yeban_theory::drum_fx_device_specs(fx, present)
+        .into_iter()
+        .map(|spec| DeviceDefinition {
+            id: EntityId::new(),
+            name: spec.name.to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: spec
+                .params
+                .into_iter()
+                .map(|(name, value)| ParameterValue {
+                    name,
+                    value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+            plugin: None,
+        })
+        .collect()
 }
 
 /// 解析摆放音频片段的目标轨：显式选中了某轨时尊重用户选择（非 `Audio` 轨由上游拒绝，
@@ -10571,15 +10487,17 @@ mod tests {
         // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 片段两笔。
         assert_eq!(ops.len(), 4, "效果层 2 + 片段 2: {ops:?}");
         assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Op::SetTrackSampler { .. })),
+            "已有鼓组不得重绑采样器: {ops:?}"
+        );
+        assert!(
             !ops.iter().any(|op| matches!(
                 op,
-                Op::SetTrackSampler { .. }
-                    | Op::InsertDevice {
-                        device,
-                        ..
-                    } if device.kind == DeviceKind::InternalInstrument
+                Op::InsertDevice { device, .. }
+                    if device.kind == DeviceKind::InternalInstrument
             )),
-            "已有鼓组不得重装: {ops:?}"
+            "已有鼓组不得重装乐器: {ops:?}"
         );
         match &ops[0] {
             Op::InsertDevice {
