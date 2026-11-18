@@ -1923,18 +1923,6 @@ pub fn switches_compressor(automation: &DeviceParamAutomation) -> bool {
         && automation.field() == Some(DeviceParamField::Strip(StripField::CompressorEnabled))
 }
 
-/// 会执行压缩的轨 = **静态投影会压缩** ∪ **有一条非恒等 `compressor_enabled` 泳道**。
-///
-/// 这是 pre-pan tap 的**唯一**生产判据（app 的 `render_core` 与 MCP 的
-/// `domain::render` 共用）。静态那一半原样来自
-/// [`crate::inserts::statically_compressing_nodes`]（与
-/// [`crate::inserts::InsertChain::compresses_statically`]
-/// 同解，`tests/insert_chain.rs` 钉住）；泳道那一半来自 [`switches_compressor`]。
-///
-/// 恒等泳道（`read_enabled:false` / 空 / 每点钳制后等于静态值 / 宏级联不落点）不置位；
-/// 只自动化了 `threshold_db` 等其它压缩参数的轨也**不**置位 —— 静态关时那台压缩器
-/// 仍然不执行（`#304` 边界 1），检波参考点无需搬。
-#[must_use]
 /// ⭐ 逐件＋侧链期 4：把工程里每条带 `lane_chains` 的轨投影成
 /// [`crate::render::LaneKeyLayout`]（组键集合 ＋ 逐组武装判定），供
 /// [`crate::render::RenderPlan::attach_lane_key_routes`] 消费。
@@ -1978,6 +1966,18 @@ pub fn lane_key_layouts(
     out
 }
 
+/// 会执行压缩的轨 = **静态投影会压缩** ∪ **有一条非恒等 `compressor_enabled` 泳道**。
+///
+/// 这是 pre-pan tap 的**唯一**生产判据（app 的 `render_core` 与 MCP 的
+/// `domain::render` 共用）。静态那一半原样来自
+/// [`crate::inserts::statically_compressing_nodes`]（与
+/// [`crate::inserts::InsertChain::compresses_statically`]
+/// 同解，`tests/insert_chain.rs` 钉住）；泳道那一半来自 [`switches_compressor`]。
+///
+/// 恒等泳道（`read_enabled:false` / 空 / 每点钳制后等于静态值 / 宏级联不落点）不置位；
+/// 只自动化了 `threshold_db` 等其它压缩参数的轨也**不**置位 —— 静态关时那台压缩器
+/// 仍然不执行（`#304` 边界 1），检波参考点无需搬。
+#[must_use]
 pub fn compressing_nodes_with_lanes(
     tracks: &BTreeMap<EntityId, TrackV3>,
     automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
