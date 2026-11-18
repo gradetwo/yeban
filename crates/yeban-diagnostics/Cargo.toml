@@ -18,5 +18,13 @@ path = "src/lib.rs"
 zip.workspace = true
 sha2.workspace = true
 
+[dev-dependencies]
+# 回归测试 `bundle_entries_are_stored_not_deflated` 必须在 deflate 已启用的
+# 图里跑才有牙：工作区内 `yeban-app` 为解音源包而开 `zip/deflate`，经 feature
+# unification 会把 `SimpleFileOptions::default()` 的压缩法翻成 `Deflated`；只跑
+# 本包的 lib 测试时若不显式开 deflate，默认仍是 Stored，测试无 fix 也能过。
+# 这里只给测试目标补 feature，不动 lib 的依赖边、不新增 crate。
+zip = { workspace = true, features = ["deflate"] }
+
 [lints]
 workspace = true

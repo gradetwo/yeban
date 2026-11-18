@@ -221,10 +221,16 @@ pub fn export_diagnostics(
     });
 
     // 4) 写 zip（依赖是根清单预留的 `zip 8.6`）。
+    // 压缩法必须显式钉死 `Stored`：容器读取器（`yeban_model::container`）按设计只
+    // 接受 stored（不引入 flate2）；而 `SimpleFileOptions::default()` 的压缩法是
+    // feature 门控的 —— 工作区内任一成员启用 `zip/deflate`（`yeban-app` 为解音源
+    // 包而开）就会经 feature unification 把全工作区的默认翻成 `Deflated`，包写出
+    // 后读不回（CI run 44218024936：`UnsupportedCompression { index: 0, method: 8 }`）。
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut zw = zip::ZipWriter::new(&mut buf);
-        let opts = zip::write::SimpleFileOptions::default();
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for (name, bytes) in &items {
             zw.start_file(name.as_str(), opts)
                 .map_err(|e| DiagError::Zip(e.to_string()))?;
@@ -261,4 +267,52 @@ pub fn export_diagnostics(
 pub fn unavailable_config_json() -> String {
     r#"{"note":"config layer is not exposed to this surface in this build","source":"unavailable"}"#
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：诊断包的每个条目必须以 `stored`（method 0）写出。
+    ///
+    /// 读者 `yeban_model::container::read_container` 按设计只接受 stored（不引入
+    /// flate2）；而 `zip::write::SimpleFileOptions::default()` 的压缩法是 feature
+    /// 门控的 —— 工作区内任一成员启用 `zip/deflate`（`yeban-app` 为解音源包而开）
+    /// 就会经 feature unification 把全工作区的默认翻成 `Deflated`（method 8），
+    /// 于是包写出后读不回（CI run 44218024936：`UnsupportedCompression { index: 0,
+    /// method: 8 }`，判据 `diagnostics_bundle_content_matches_the_project_included_flag`
+    /// 在 `extension_tools.rs` 红）。方法必须显式钉死，绝不能留给默认值 —— 本测试
+    /// 钉的就是写出侧的每个条目，不是读回侧的偶然通过。
+    #[test]
+    fn bundle_entries_are_stored_not_deflated() {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-diagnostics-stored-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("wall clock before epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let inputs = BundleInputs {
+            state_json: Some(r#"{"transport":"stopped"}"#),
+            config_json: Some(r#"{"note":"test"}"#),
+            logs: &[("test.log".to_string(), b"log line\n".to_vec())],
+            ..Default::default()
+        };
+        let report = export_diagnostics(&dir, inputs).expect("导出诊断包");
+        let bytes = std::fs::read(&report.path).expect("读回诊断包");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("打开诊断包");
+        assert!(!archive.is_empty(), "诊断包不应为空");
+        for i in 0..archive.len() {
+            let file = archive.by_index(i).expect("读条目");
+            let name = file.name().expect("条目名").into_owned();
+            assert_eq!(
+                file.compression(),
+                zip::CompressionMethod::Stored,
+                "条目 {name} 必须以 stored 写出（容器读取器拒 deflate），实为 {:?}",
+                file.compression()
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
