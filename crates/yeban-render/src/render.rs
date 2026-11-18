@@ -664,6 +664,12 @@ pub struct RenderPlan {
     sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>)>,
     /// 已求值的键路由：目的槽位 -> （源槽位，边身份）。v1 单键：每目的至多一条。
     key_routes: BTreeMap<usize, (usize, EntityId)>,
+    /// 同层键的层内渲染序：层号 -> 该层全部槽位的渲染顺序（拓扑序，源在目的之前）。
+    ///
+    /// 只为「有已求值同层键边」的层登记；不在表里的层在 `execute` 里走并行
+    /// 渲染（原路，逐位不变）。由 `attach_key_armed_nodes` 在求值后按
+    /// `key_routes` 重算。
+    layer_key_orders: BTreeMap<usize, Vec<usize>>,
 }
 
 impl Debug for RenderPlan {
@@ -1203,6 +1209,7 @@ impl RenderPlan {
             slot_of,
             sidechain_edges,
             key_routes: BTreeMap::new(),
+            layer_key_orders: BTreeMap::new(),
         })
     }
 
@@ -1224,11 +1231,19 @@ impl RenderPlan {
     /// 的边求值，其余登记未求值：
     /// - 目的节点已武装（在 `armed` 里：静态压缩器启用，或非恒等压缩器泳道）；
     /// - 源节点在保留子图里（有槽位）；
-    /// - 源的层号**严格小于**目的的层号（同层源因并行不可用；自边与环边因此
-    ///   至少一个方向落选，环永远不能完全求值）。
-    ///   求值后：目的的 `key_input` 指向源槽位、源的 `key_tap` 置真并按块宽分配
-    ///   抽头缓冲、`key_routes` 登记该边。未武装的目的、源不在子图、层序不满足
-    ///   的边一律不求值（收据里仍计未求值）。
+    /// - 源的层号**不大于**目的的层号（逆层边落选）；同层边还须不在声明环上
+    ///   （见下）。
+    ///
+    /// 同层求值（逐件＋侧链线期 1）：同层节点在 `execute` 里原本并行渲染、
+    /// 彼此读不到对方本块的抽头，旧规则因此要求源层严格更小。同层边求值后，
+    /// 该层改走**串行**渲染并按已求值同层边拓扑排序（源在目的之前，见
+    /// `layer_key_orders`），键缓冲在本块内即刻可用。**成环的同层边一律不
+    /// 求值**：环检测看全部同层声明边（两端都在保留子图里），落在有向环上
+    /// 的边（含自边）整组落选、计未求值，其余边不受影响；渲染不因此报错。
+    ///
+    /// 求值后：目的的 `key_input` 指向源槽位、源的 `key_tap` 置真并按块宽分配
+    /// 抽头缓冲、`key_routes` 登记该边。未武装的目的、源不在子图、层序不满足
+    /// 或成环的边一律不求值（收据里仍计未求值）。
     ///
     /// 调用纪律：构造期调用（允许分配），渲染执行前完成；执行中不调用。
     pub fn attach_key_armed_nodes(&mut self, armed: &BTreeSet<EntityId>) {
@@ -1239,6 +1254,8 @@ impl RenderPlan {
         }
         // 先克隆声明表：下面既读声明又写状态，借用上分不开。
         let declarations = self.sidechain_edges.clone();
+        // 成环的同层声明边整组落选（环外边不受影响）。
+        let cycle_edges = same_layer_cycle_edge_ids(&declarations, &self.slot_of, &level_of_slot);
         let block_width = self.options.block_size * self.options.channels;
         for (edge_id, source_node, dest_node, key_gain_db) in declarations {
             let Some(&dest_slot) = self.slot_of.get(&dest_node) else {
@@ -1253,7 +1270,12 @@ impl RenderPlan {
             let Some(&source_slot) = self.slot_of.get(&source_node) else {
                 continue;
             };
-            if level_of_slot[source_slot] >= level_of_slot[dest_slot] {
+            if level_of_slot[source_slot] > level_of_slot[dest_slot] {
+                continue;
+            }
+            if level_of_slot[source_slot] == level_of_slot[dest_slot]
+                && cycle_edges.contains(&edge_id)
+            {
                 continue;
             }
             self.states[dest_slot].key_input = Some(source_slot);
@@ -1264,6 +1286,50 @@ impl RenderPlan {
             }
             self.key_routes.insert(dest_slot, (source_slot, edge_id));
         }
+        self.refresh_layer_key_orders();
+    }
+
+    /// 按当前 `key_routes` 重算同层键的层内渲染序（`attach_key_armed_nodes` 末尾调用）。
+    ///
+    /// 约束只有已求值的同层键边（源在目的之前）；无环已由挂接时的环检测
+    /// 保证 ⇒ Kahn 拓扑排必覆盖全层。就绪集合取槽位升序 ⇒ 顺序确定。
+    fn refresh_layer_key_orders(&mut self) {
+        let mut orders: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (layer, &(start, end)) in self.layers.iter().enumerate() {
+            let mut adjacency: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            let mut indegree: BTreeMap<usize, usize> = (start..end).map(|slot| (slot, 0)).collect();
+            for (&dest_slot, &(source_slot, _)) in &self.key_routes {
+                if (start..end).contains(&source_slot) && (start..end).contains(&dest_slot) {
+                    adjacency.entry(source_slot).or_default().push(dest_slot);
+                    *indegree.get_mut(&dest_slot).expect("层内槽位必在入度表里") += 1;
+                }
+            }
+            if adjacency.is_empty() {
+                continue;
+            }
+            let mut ready: BTreeSet<usize> = indegree
+                .iter()
+                .filter(|&(_, &degree)| degree == 0)
+                .map(|(&slot, _)| slot)
+                .collect();
+            let mut order = Vec::with_capacity(end - start);
+            while let Some(&slot) = ready.iter().next() {
+                ready.remove(&slot);
+                order.push(slot);
+                if let Some(dests) = adjacency.get(&slot) {
+                    for &dest in dests {
+                        let degree = indegree.get_mut(&dest).expect("层内槽位必在入度表里");
+                        *degree -= 1;
+                        if *degree == 0 {
+                            ready.insert(dest);
+                        }
+                    }
+                }
+            }
+            debug_assert_eq!(order.len(), end - start, "同层键边无环 ⇒ 拓扑序覆盖全层");
+            orders.insert(layer, order);
+        }
+        self.layer_key_orders = orders;
     }
 
     /// 已求值的键路由边身份（按目的槽位序）。收据的"未求值"计数 =
@@ -1562,6 +1628,7 @@ impl RenderPlan {
         pool.install(|| -> Result<(), RenderError> {
             let states = &mut self.states;
             let layers = &self.layers;
+            let layer_key_orders = &self.layer_key_orders;
             let master_slot = self.master_slot;
             for block_index in 0..blocks {
                 // ⭐ B-1：块从 `start_frame` 起连续推进（源的推进契约读的是
@@ -1579,7 +1646,23 @@ impl RenderPlan {
                 };
                 let width = context.width();
 
-                for &(start, end) in layers {
+                for (layer, &(start, end)) in layers.iter().enumerate() {
+                    if let Some(order) = layer_key_orders.get(&layer) {
+                        // 同层键层（逐件＋侧链线期 1）：串行拓扑序渲染 —— 目的
+                        // 必须读到源**本块**的抽头，并行渲染做不到。把当前节点
+                        // 的状态整份取出、整个 `states` 作 `done`（下标 = 绝对
+                        // 槽位，与 `render_node` 的读法一致；占位状态从不被
+                        // 渲染，见 `detached_state`），渲完立即换回。
+                        for &slot in order {
+                            let node_id = states[slot].node;
+                            let mut state =
+                                std::mem::replace(&mut states[slot], detached_state(node_id));
+                            let rendered = render_node(&mut state, &*states, context, width);
+                            states[slot] = state;
+                            rendered?;
+                        }
+                        continue;
+                    }
                     let (done, current) = states.split_at_mut(start);
                     let done: &[NodeState] = done;
                     let current = &mut current[..end - start];
@@ -1604,6 +1687,82 @@ impl RenderPlan {
             longest_path_frames: self.longest_path_frames,
             digest,
         })
+    }
+}
+
+/// 同层侧链声明边里落在有向环上的边身份集合（逐件＋侧链线期 1）。
+///
+/// 环检测只看**同层**声明边（源、目的都在保留子图里）：跨层边的源层严格
+/// 更小、沿边层号严格递增 ⇒ 不可能成环；环必全同层。自边是长度为 1 的环。
+/// 判定用可达性：边 `u → v` 在环上 ⇔ `v` 能沿同层声明边到达 `u`。图规模
+/// 是工程节点数，逐点 DFS 是编译期一次性成本。
+fn same_layer_cycle_edge_ids(
+    declarations: &[(EntityId, EntityId, EntityId, Option<f32>)],
+    slot_of: &BTreeMap<EntityId, usize>,
+    level_of_slot: &[u32],
+) -> BTreeSet<EntityId> {
+    let mut adjacency: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut same_layer: Vec<(EntityId, usize, usize)> = Vec::new();
+    for (edge_id, source_node, dest_node, _) in declarations {
+        let (Some(&source_slot), Some(&dest_slot)) =
+            (slot_of.get(source_node), slot_of.get(dest_node))
+        else {
+            continue;
+        };
+        if level_of_slot[source_slot] != level_of_slot[dest_slot] {
+            continue;
+        }
+        adjacency.entry(source_slot).or_default().push(dest_slot);
+        same_layer.push((*edge_id, source_slot, dest_slot));
+    }
+    // 每个有出边的节点沿声明边可达的集合（含自身，当且仅当它在环上或有自边）。
+    let mut reachable: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for &start in adjacency.keys() {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![start];
+        while let Some(node) = stack.pop() {
+            if !seen.insert(node) {
+                continue;
+            }
+            if let Some(next) = adjacency.get(&node) {
+                stack.extend(next.iter().copied());
+            }
+        }
+        reachable.insert(start, seen);
+    }
+    same_layer
+        .iter()
+        .filter(|(_, source_slot, dest_slot)| {
+            reachable
+                .get(dest_slot)
+                .is_some_and(|set| set.contains(source_slot))
+        })
+        .map(|(edge_id, _, _)| *edge_id)
+        .collect()
+}
+
+/// 占位状态：同层键层串行渲染时，把当前节点的状态整份取出后留在槽位里的
+/// 空壳。它**从不被渲染**（`render_node` 只读已渲染节点的 `buffer` /
+/// `key_buffer`；当前节点不是自己的入边源，已求值的键源也必已渲染），
+/// 渲染完立即换回真状态。
+fn detached_state(node: EntityId) -> NodeState {
+    NodeState {
+        node,
+        buffer: Vec::new(),
+        source: None,
+        incoming: Vec::new(),
+        send_automations: Vec::new(),
+        device_param_automations: Vec::new(),
+        delay_lines: Vec::new(),
+        scratch: Vec::new(),
+        inserts: None,
+        phase_delay: None,
+        phase_invert: false,
+        key_buffer: Vec::new(),
+        key_input: None,
+        key_tap: false,
+        key_gain: 1.0,
+        output: OutputStage::new(),
     }
 }
 
@@ -3300,7 +3459,8 @@ mod tests {
         InsertChain::from_devices(&[device], 48_000, 120.0)
     }
 
-    /// 判据：键路由只在"目的已武装 + 源在子图 + 源层严格更早"时求值；
+    /// 判据：键路由只在"目的已武装 + 源在子图 + 源层不晚于目的层"时求值
+    /// （本例为跨层严格更早的情形；同层情形见 `key_route_evaluated_for_same_layer_source`）；
     /// 求值后目的记源槽位、源记抽头并配好块宽缓冲；重复挂接不改写。
     #[test]
     fn key_route_evaluated_only_for_armed_destination_with_earlier_layer_source() {
@@ -3380,9 +3540,9 @@ mod tests {
         assert!(!plan.states[kick_slot].key_tap);
     }
 
-    /// 判据：源层不严格更早（同层自边、逆层边）⇒ 不求值。
+    /// 判据：自边（同层声明环的长度 1 形态）与逆层边（源层大于目的层）⇒ 不求值。
     #[test]
-    fn key_route_rejected_when_source_layer_not_strictly_earlier() {
+    fn key_route_rejected_for_self_loop_and_reverse_layer_source() {
         let master = ulid(0xFFFF);
         let kick = ulid(1);
         let bus = ulid(2);
@@ -3400,6 +3560,145 @@ mod tests {
         let armed: BTreeSet<EntityId> = [kick, bus].into_iter().collect();
         plan.attach_key_armed_nodes(&armed);
         assert!(plan.key_evaluated_edge_ids().is_empty());
+    }
+
+    /// 判据（期 1）：同层轨→轨键求值 —— 源槽位排在目的之后（按身份排序）也
+    /// 求值，靠的是层内拓扑序而不是槽位序；该层登记串行渲染序且源在目的之前。
+    #[test]
+    fn key_route_evaluated_for_same_layer_source() {
+        let master = ulid(0xFFFF);
+        let pad = ulid(1);
+        let kick = ulid(2);
+        let bus = ulid(3);
+        let key_edge = ulid(100);
+        let routing = graph(
+            &[master, pad, kick, bus],
+            vec![
+                edge(pad, bus, None),
+                edge(kick, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(key_edge, kick, pad),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let levels = plan.node_levels();
+        assert_eq!(
+            levels[&kick], levels[&pad],
+            "kick 与 pad 必须同层（本判据的前提）"
+        );
+        let armed: BTreeSet<EntityId> = [pad].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert_eq!(plan.key_evaluated_edge_ids(), vec![key_edge]);
+        let slots = plan.nodes();
+        let pad_slot = slots
+            .iter()
+            .position(|node| *node == pad)
+            .expect("pad 在计划里");
+        let kick_slot = slots
+            .iter()
+            .position(|node| *node == kick)
+            .expect("kick 在计划里");
+        assert!(
+            pad_slot < kick_slot,
+            "夹具要求源槽位排在目的之后（本判据的难点）"
+        );
+        assert_eq!(plan.states[pad_slot].key_input, Some(kick_slot));
+        assert!(plan.states[kick_slot].key_tap);
+        let order = &plan.layer_key_orders[&levels[&kick]];
+        let kick_pos = order
+            .iter()
+            .position(|slot| *slot == kick_slot)
+            .expect("源在层内序里");
+        let pad_pos = order
+            .iter()
+            .position(|slot| *slot == pad_slot)
+            .expect("目的在层内序里");
+        assert!(kick_pos < pad_pos, "层内拓扑序里源必须在目的之前");
+    }
+
+    /// 判据（期 1）：同层链 a→b→c 两条都求值，层内序为 a、b、c。
+    #[test]
+    fn key_route_evaluated_for_same_layer_chain_in_topological_order() {
+        let master = ulid(0xFFFF);
+        let a = ulid(1);
+        let b = ulid(2);
+        let c = ulid(3);
+        let bus = ulid(4);
+        let routing = graph(
+            &[master, a, b, c, bus],
+            vec![
+                edge(a, bus, None),
+                edge(b, bus, None),
+                edge(c, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(ulid(100), a, b),
+                sidechain_edge(ulid(101), b, c),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let armed: BTreeSet<EntityId> = [b, c].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert_eq!(
+            plan.key_evaluated_edge_ids(),
+            vec![ulid(100), ulid(101)],
+            "同层链两条都必须求值"
+        );
+        let levels = plan.node_levels();
+        let order = &plan.layer_key_orders[&levels[&a]];
+        let slots = plan.nodes();
+        let position = |node: EntityId| {
+            let slot = slots.iter().position(|n| *n == node).expect("节点在计划里");
+            order
+                .iter()
+                .position(|s| *s == slot)
+                .expect("节点在层内序里")
+        };
+        assert!(position(a) < position(b) && position(b) < position(c));
+    }
+
+    /// 判据（期 1）：同层双向边成环 ⇒ 两条都落选（计未求值），渲染照常成功、
+    /// 节目原样汇合（环边不许偷偷生效，也不许让渲染报错）。
+    #[test]
+    fn key_route_rejected_for_same_layer_cycle_and_render_still_succeeds() {
+        let master = ulid(0xFFFF);
+        let a = ulid(1);
+        let b = ulid(2);
+        let bus = ulid(3);
+        let routing = graph(
+            &[master, a, b, bus],
+            vec![
+                edge(a, bus, None),
+                edge(b, bus, None),
+                edge(bus, master, None),
+                sidechain_edge(ulid(100), a, b),
+                sidechain_edge(ulid(101), b, a),
+            ],
+        );
+        let options = RenderOptions::l1(256, 2, 48_000, 0).with_threads(1);
+        let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
+        let armed: BTreeSet<EntityId> = [a, b].into_iter().collect();
+        plan.attach_key_armed_nodes(&armed);
+        assert!(
+            plan.key_evaluated_edge_ids().is_empty(),
+            "环上两条边都必须落选"
+        );
+        assert!(
+            plan.layer_key_orders.is_empty(),
+            "无已求值同层边 ⇒ 不登记串行序"
+        );
+        let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        sources.insert(a, Box::new(ConstantSource(0.25)));
+        sources.insert(b, Box::new(ConstantSource(0.5)));
+        let output = plan.execute(sources).expect("成环声明不得让渲染失败");
+        for (index, sample) in output.samples.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.75f32.to_bits(),
+                "第 {index} 个样本必须逐位等于 0.25 + 0.5（两路原样汇合）"
+            );
+        }
     }
 
     /// 判据：v1 单键 —— 同一目的的多条边中边身份升序第一条生效，其余未求值；
