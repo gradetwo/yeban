@@ -9,7 +9,7 @@ import { Theme, PersonaMode, Tokens, TooltipBubble } from "tokens.slint";
 component IconInspectorToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #b6c2d2;
+    in property <color> inactive-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -67,7 +67,7 @@ component IconInspectorToggle inherits Rectangle {
 component IconClipMatrixToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #b6c2d2;
+    in property <color> inactive-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -117,7 +117,7 @@ component IconClipMatrixToggle inherits Rectangle {
 component IconLowerDockToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #b6c2d2;
+    in property <color> inactive-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -175,7 +175,7 @@ component IconLowerDockToggle inherits Rectangle {
 component IconControlRoomToggle inherits Rectangle {
     in property <bool> active: false;
     in property <color> active-color: Theme.accent;
-    in property <color> inactive-color: #b6c2d2;
+    in property <color> inactive-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -234,7 +234,7 @@ component IconControlRoomToggle inherits Rectangle {
 
 component IconToolPointer inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -251,7 +251,7 @@ component IconToolPointer inherits Rectangle {
 
 component IconToolRange inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -321,7 +321,7 @@ component IconToolRange inherits Rectangle {
 
 component IconToolSplit inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -339,7 +339,7 @@ component IconToolSplit inherits Rectangle {
 
 component IconToolDraw inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -360,7 +360,7 @@ component IconToolDraw inherits Rectangle {
 
 component IconPersonaDefault inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -396,7 +396,7 @@ component IconPersonaDefault inherits Rectangle {
 
 component IconPersonaPerformance inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -412,7 +412,7 @@ component IconPersonaPerformance inherits Rectangle {
 
 component IconPersonaArranger inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -434,13 +434,13 @@ component IconPersonaArranger inherits Rectangle {
         y: 0;
         width: 1.2px;
         height: 12px;
-        background: root.selected ? #ffffff : Theme.accent;
+        background: root.selected ? Tokens.skin-text-strong : Theme.accent;
     }
 }
 
 component IconPersonaMixer inherits Rectangle {
     in property <bool> selected: false;
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
 
     width: 14px;
     height: 12px;
@@ -488,7 +488,7 @@ component IconEyeInsight inherits Rectangle {
 // --- 5. Transport Cluster Vector Icons ---
 
 component IconTransportRewind inherits Rectangle {
-    in property <color> icon-color: #cbd5e1;
+    in property <color> icon-color: Tokens.skin-text-body;
     width: 13px;
     height: 10px;
 
@@ -511,7 +511,7 @@ component IconTransportRewind inherits Rectangle {
 }
 
 component IconTransportStop inherits Rectangle {
-    in property <color> icon-color: #cbd5e1;
+    in property <color> icon-color: Tokens.skin-text-body;
     width: 9px;
     height: 9px;
 
@@ -524,7 +524,7 @@ component IconTransportStop inherits Rectangle {
 }
 
 component IconTransportPlay inherits Rectangle {
-    in property <color> icon-color: #10b981;
+    in property <color> icon-color: Tokens.skin-meter-low;
     width: 10px;
     height: 11px;
 
@@ -539,7 +539,7 @@ component IconTransportPlay inherits Rectangle {
 }
 
 component IconTransportRecord inherits Rectangle {
-    in property <color> icon-color: #ef4444;
+    in property <color> icon-color: Tokens.skin-arm;
     width: 9px;
     height: 9px;
 
@@ -552,7 +552,7 @@ component IconTransportRecord inherits Rectangle {
 }
 
 component IconTransportLoop inherits Rectangle {
-    in property <color> icon-color: #b6c2d2;
+    in property <color> icon-color: Tokens.skin-text-dim;
     width: 12px;
     height: 10px;
 
@@ -616,8 +616,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group A: Brand Mark (Official Studio Logo Mark)
             Rectangle {
-                // 二期质感: 品牌块走 §10 外壳刷 (flat = 现行字面 #10131a)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #10131a;
+                // 二期质感: 品牌块走 §10 外壳刷 (flat = 现行字面 Tokens.bg-panel)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-panel;
                 border-radius: 4px;
                 border-width: 1px;
                 border-color: Tokens.line-strong;
@@ -637,8 +637,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group B: Zone Visibility Toggles (检查器 [I], Clip 矩阵 [Tab], 底栏 [P/X], 监听室 [F4])
             Rectangle {
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -653,14 +653,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-browser ? #132636 : transparent;
+                        background: root.show-browser ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.show-browser ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconInspectorToggle {
                             active: root.show-browser;
                             active-color: Theme.accent;
-                            inactive-color: #b6c2d2;
+                            inactive-color: Tokens.skin-text-dim;
                         }
                         touch_insp := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -673,14 +673,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-clipmatrix ? #132636 : transparent;
+                        background: root.show-clipmatrix ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.show-clipmatrix ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconClipMatrixToggle {
                             active: root.show-clipmatrix;
                             active-color: Theme.accent;
-                            inactive-color: #b6c2d2;
+                            inactive-color: Tokens.skin-text-dim;
                         }
                         touch_clip := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -693,14 +693,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-lower-dock ? #132636 : transparent;
+                        background: root.show-lower-dock ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.show-lower-dock ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconLowerDockToggle {
                             active: root.show-lower-dock;
                             active-color: Theme.accent;
-                            inactive-color: #b6c2d2;
+                            inactive-color: Tokens.skin-text-dim;
                         }
                         touch_dock := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -713,14 +713,14 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.show-control-room ? #132636 : transparent;
+                        background: root.show-control-room ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.show-control-room ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconControlRoomToggle {
                             active: root.show-control-room;
                             active-color: Theme.accent;
-                            inactive-color: #b6c2d2;
+                            inactive-color: Tokens.skin-text-dim;
                         }
                         touch_room := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -733,8 +733,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group C: Edit Tools (选区 [1], 范围 [2], 切分 [3], 画笔 [4])
             Rectangle {
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -749,13 +749,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "pointer" ? #132636 : transparent;
+                        background: root.active-tool == "pointer" ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "pointer" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolPointer {
                             selected: root.active-tool == "pointer";
-                            icon-color: root.active-tool == "pointer" ? Theme.accent : #b6c2d2;
+                            icon-color: root.active-tool == "pointer" ? Theme.accent : Tokens.skin-text-dim;
                         }
                         touch_ptr := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -768,13 +768,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "range" ? #132636 : transparent;
+                        background: root.active-tool == "range" ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "range" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolRange {
                             selected: root.active-tool == "range";
-                            icon-color: root.active-tool == "range" ? Theme.accent : #b6c2d2;
+                            icon-color: root.active-tool == "range" ? Theme.accent : Tokens.skin-text-dim;
                         }
                         touch_rng := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -787,13 +787,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "split" ? #132636 : transparent;
+                        background: root.active-tool == "split" ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "split" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolSplit {
                             selected: root.active-tool == "split";
-                            icon-color: root.active-tool == "split" ? Theme.accent : #b6c2d2;
+                            icon-color: root.active-tool == "split" ? Theme.accent : Tokens.skin-text-dim;
                         }
                         touch_splt := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -806,13 +806,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: root.active-tool == "draw" ? #132636 : transparent;
+                        background: root.active-tool == "draw" ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: root.active-tool == "draw" ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconToolDraw {
                             selected: root.active-tool == "draw";
-                            icon-color: root.active-tool == "draw" ? Theme.accent : #b6c2d2;
+                            icon-color: root.active-tool == "draw" ? Theme.accent : Tokens.skin-text-dim;
                         }
                         touch_drw := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -832,11 +832,11 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group D: Cohesive Logic 12 Transport Control Cluster (Unified height, styling, vector iconography, and balanced visual weight)
             Rectangle {
-                // 二期质感: 走带簇底板走 §10 外壳刷 (flat = 现行字面 #090c12); 簇内按钮状态色不动。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #090c12;
+                // 二期质感: 走带簇底板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2); 簇内按钮状态色不动。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                 border-radius: 5px;
                 border-width: 1px;
-                border-color: #1c2333;
+                border-color: Tokens.bg-lane2;
                 height: 28px;
 
                 HorizontalLayout {
@@ -849,11 +849,11 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
-                        background: btn_rewind_touch.has-hover ? #161e2e : transparent;
+                        background: btn_rewind_touch.has-hover ? Tokens.bg-lane2 : transparent;
                         border-width: btn_rewind_touch.has-hover ? 1px : 0;
-                        border-color: #334155;
+                        border-color: Tokens.line-strong;
                         IconTransportRewind {
-                            icon-color: btn_rewind_touch.has-hover ? #f8fafc : #cbd5e1;
+                            icon-color: btn_rewind_touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                         }
                         btn_rewind_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -867,11 +867,11 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
-                        background: (!root.is-playing && !root.is-recording) ? #161f30 : (btn_stop_touch.has-hover ? #141b29 : transparent);
+                        background: (!root.is-playing && !root.is-recording) ? Tokens.bg-lane2 : (btn_stop_touch.has-hover ? Tokens.bg-lane2 : transparent);
                         border-width: (!root.is-playing && !root.is-recording) ? 1px : (btn_stop_touch.has-hover ? 1px : 0);
-                        border-color: (!root.is-playing && !root.is-recording) ? #2e3d55 : #253347;
+                        border-color: (!root.is-playing && !root.is-recording) ? Tokens.bg-panel-alt : Tokens.bg-panel-alt;
                         IconTransportStop {
-                            icon-color: (!root.is-playing && !root.is-recording) ? #f8fafc : (btn_stop_touch.has-hover ? #cbd5e1 : #b6c2d2);
+                            icon-color: (!root.is-playing && !root.is-recording) ? Tokens.skin-text-strong : (btn_stop_touch.has-hover ? Tokens.skin-text-body : Tokens.skin-text-dim);
                         }
                         btn_stop_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -889,11 +889,11 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 36px;
                         height: 24px;
                         border-radius: 3px;
-                        background: root.is-playing ? #10b981 : (btn_play_touch.has-hover ? #10b981.with-alpha(0.28) : #10b981.with-alpha(0.18));
+                        background: root.is-playing ? Tokens.skin-meter-low : (btn_play_touch.has-hover ? Tokens.skin-meter-low.with-alpha(0.28) : Tokens.skin-meter-low.with-alpha(0.18));
                         border-width: 1px;
-                        border-color: root.is-playing ? #059669 : #10b981.with-alpha(0.45);
+                        border-color: root.is-playing ? Tokens.skin-meter-low : Tokens.skin-meter-low.with-alpha(0.45);
                         IconTransportPlay {
-                            icon-color: root.is-playing ? #020617 : #10b981;
+                            icon-color: root.is-playing ? Tokens.skin-inset : Tokens.skin-meter-low;
                         }
                         btn_play_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -907,11 +907,11 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
-                        background: root.is-recording ? #ef4444 : (btn_rec_touch.has-hover ? #ef4444.with-alpha(0.28) : #ef4444.with-alpha(0.18));
+                        background: root.is-recording ? Tokens.skin-arm : (btn_rec_touch.has-hover ? Tokens.skin-arm.with-alpha(0.28) : Tokens.skin-arm.with-alpha(0.18));
                         border-width: 1px;
-                        border-color: root.is-recording ? #dc2626 : #ef4444.with-alpha(0.45);
+                        border-color: root.is-recording ? Tokens.skin-arm : Tokens.skin-arm.with-alpha(0.45);
                         IconTransportRecord {
-                            icon-color: root.is-recording ? #ffffff : #ef4444;
+                            icon-color: root.is-recording ? Tokens.skin-text-strong : Tokens.skin-arm;
                         }
                         btn_rec_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -927,11 +927,11 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 32px;
                         height: 24px;
                         border-radius: 3px;
-                        background: root.is-looping ? Theme.accent.with-alpha(0.22) : (btn_loop_touch.has-hover ? #161e2e : transparent);
+                        background: root.is-looping ? Theme.accent.with-alpha(0.22) : (btn_loop_touch.has-hover ? Tokens.bg-lane2 : transparent);
                         border-width: root.is-looping ? 1px : (btn_loop_touch.has-hover ? 1px : 0);
-                        border-color: root.is-looping ? Theme.accent.with-alpha(0.70) : #334155;
+                        border-color: root.is-looping ? Theme.accent.with-alpha(0.70) : Tokens.line-strong;
                         IconTransportLoop {
-                            icon-color: root.is-looping ? Theme.accent : (btn_loop_touch.has-hover ? #cbd5e1 : #b6c2d2);
+                            icon-color: root.is-looping ? Theme.accent : (btn_loop_touch.has-hover ? Tokens.skin-text-body : Tokens.skin-text-dim);
                         }
                         btn_loop_touch := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -945,11 +945,11 @@ export component TransportHeaderBar inherits Rectangle {
             // Group E: Digital Precision LCD HUD Display Bezel (High-contrast WCAG AA)
             Rectangle {
                 height: 28px;
-                // 二期质感: LCD 框走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #05070a, 反光 alpha 为 0)。
-                background: Tokens.texture-physical ? Tokens.glass-brush : #05070a;
+                // 二期质感: LCD 框走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 Tokens.skin-inset, 反光 alpha 为 0)。
+                background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.skin-inset;
                 border-radius: 5px;
                 border-width: 1px;
-                border-color: #1a202c;
+                border-color: Tokens.bg-lane2;
 
                 // 反光带刻意内收: 本框原无 clip (框内 TooltipBubble 须溢出
                 // 显示), 不为反光加 clip; 带脚避开 5px 圆角区即可。
@@ -985,7 +985,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8.5px;
                                 letter-spacing: 0.4px;
-                                color: #b6c2d2;
+                                color: Tokens.skin-text-dim;
                                 font-weight: 400;
                             }
                             // 固定宽度 + 左对齐：`001.01.000` → `1000.01.000` 只多一位数，
@@ -1017,7 +1017,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8.5px;
                                 letter-spacing: 0.4px;
-                                color: #b6c2d2;
+                                color: Tokens.skin-text-dim;
                                 font-weight: 400;
                             }
                             // 同上：`99.00` / `128.00` / `140.00` 位数不同会让相邻列来回移动。
@@ -1054,7 +1054,7 @@ export component TransportHeaderBar inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 8.5px;
                                 letter-spacing: 0.4px;
-                                color: #b6c2d2;
+                                color: Tokens.skin-text-dim;
                                 font-weight: 400;
                             }
                             Text {
@@ -1091,8 +1091,8 @@ export component TransportHeaderBar inherits Rectangle {
             // "BUFF"，1920 宽甚至整体不渲染（细节实测 §4.6 / 控件体检 §5）。
             Rectangle {
                 width: 128px;
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -1108,7 +1108,7 @@ export component TransportHeaderBar inherits Rectangle {
                         font-family: Tokens.font-mono;
                         font-size: 9px;
                         letter-spacing: 0.3px;
-                        color: #b6c2d2;
+                        color: Tokens.skin-text-dim;
                         font-weight: 400;
                         vertical-alignment: center;
                     }
@@ -1135,8 +1135,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group G: DSP CPU Gauge (High-contrast)
             Rectangle {
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -1154,7 +1154,7 @@ export component TransportHeaderBar inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             letter-spacing: 0.3px;
-                            color: #b6c2d2;
+                            color: Tokens.skin-text-dim;
                             font-weight: 400;
                         }
                         Text {
@@ -1168,7 +1168,7 @@ export component TransportHeaderBar inherits Rectangle {
                     }
                     Rectangle {
                         height: 3px;
-                        background: #080a10;
+                        background: Tokens.bg-shell;
                         border-radius: 1.5px;
                         Rectangle {
                             x: 0;
@@ -1185,8 +1185,8 @@ export component TransportHeaderBar inherits Rectangle {
 
             // Group H: Workspace Persona Switcher (默认 / 演出 / 编曲 / 混音)
             Rectangle {
-                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 #0a0d14)。
-                background: Tokens.texture-physical ? Tokens.shell-brush : #0a0d14;
+                // 二期质感: 组板走 §10 外壳刷 (flat = 现行字面 Tokens.bg-lane2)。
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Tokens.line;
@@ -1201,13 +1201,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.YebanDefault ? #132636 : transparent;
+                        background: Theme.persona == PersonaMode.YebanDefault ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: Theme.persona == PersonaMode.YebanDefault ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconPersonaDefault {
                             selected: Theme.persona == PersonaMode.YebanDefault;
-                            icon-color: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : #b6c2d2;
+                            icon-color: Theme.persona == PersonaMode.YebanDefault ? Theme.accent : Tokens.skin-text-dim;
                         }
                         touch_p_def := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1220,13 +1220,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.AbletonLive ? #2d2014 : transparent;
+                        background: Theme.persona == PersonaMode.AbletonLive ? Tokens.bg-shell : transparent;
                         border-radius: 3px;
                         border-width: Theme.persona == PersonaMode.AbletonLive ? 1px : 0;
                         border-color: Theme.track-drum.with-alpha(0.6);
                         IconPersonaPerformance {
                             selected: Theme.persona == PersonaMode.AbletonLive;
-                            icon-color: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : #b6c2d2;
+                            icon-color: Theme.persona == PersonaMode.AbletonLive ? Theme.track-drum : Tokens.skin-text-dim;
                         }
                         touch_p_live := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1239,13 +1239,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.LogicPro ? #132636 : transparent;
+                        background: Theme.persona == PersonaMode.LogicPro ? Tokens.bg-raised : transparent;
                         border-radius: 3px;
                         border-width: Theme.persona == PersonaMode.LogicPro ? 1px : 0;
                         border-color: Theme.accent.with-alpha(0.6);
                         IconPersonaArranger {
                             selected: Theme.persona == PersonaMode.LogicPro;
-                            icon-color: Theme.persona == PersonaMode.LogicPro ? Theme.accent : #b6c2d2;
+                            icon-color: Theme.persona == PersonaMode.LogicPro ? Theme.accent : Tokens.skin-text-dim;
                         }
                         touch_p_log := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1258,13 +1258,13 @@ export component TransportHeaderBar inherits Rectangle {
                     Rectangle {
                         width: 28px;
                         height: 24px;
-                        background: Theme.persona == PersonaMode.CubasePro ? #162620 : transparent;
+                        background: Theme.persona == PersonaMode.CubasePro ? Tokens.bg-shell : transparent;
                         border-radius: 3px;
                         border-width: Theme.persona == PersonaMode.CubasePro ? 1px : 0;
                         border-color: Theme.track-vocal.with-alpha(0.6);
                         IconPersonaMixer {
                             selected: Theme.persona == PersonaMode.CubasePro;
-                            icon-color: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : #b6c2d2;
+                            icon-color: Theme.persona == PersonaMode.CubasePro ? Theme.track-vocal : Tokens.skin-text-dim;
                         }
                         touch_p_cu := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -1279,8 +1279,8 @@ export component TransportHeaderBar inherits Rectangle {
             Rectangle {
                 width: 52px;
                 height: 28px;
-                // 二期质感: 命令钮走 §10 凸起刷 (flat = 现行字面 #10141d)。
-                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
+                // 二期质感: 命令钮走 §10 凸起刷 (flat = 现行字面 Tokens.bg-panel)。
+                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
@@ -1323,7 +1323,7 @@ export component TransportHeaderBar inherits Rectangle {
             Rectangle {
                 width: 30px;
                 height: 28px;
-                background: Theme.show-tooltips ? Theme.accent.with-alpha(0.18) : #10141d;
+                background: Theme.show-tooltips ? Theme.accent.with-alpha(0.18) : Tokens.bg-panel;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.show-tooltips ? Theme.accent.with-alpha(0.5) : Theme.border-subtle;
@@ -1336,7 +1336,7 @@ export component TransportHeaderBar inherits Rectangle {
                         width: 4px;
                         height: 4px;
                         border-radius: 2px;
-                        background: Theme.show-tooltips ? Theme.accent : #94a3b8;
+                        background: Theme.show-tooltips ? Theme.accent : Tokens.ink-1;
                         y: (parent.height - self.height) / 2;
                     }
 
@@ -1345,7 +1345,7 @@ export component TransportHeaderBar inherits Rectangle {
                         font-family: Tokens.font-mono;
                         font-size: 10.5px;
                         font-weight: 400;
-                        color: Theme.show-tooltips ? Theme.accent : #b6c2d2;
+                        color: Theme.show-tooltips ? Theme.accent : Tokens.skin-text-dim;
                         vertical-alignment: center;
                     }
                 }

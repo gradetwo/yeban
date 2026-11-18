@@ -249,12 +249,12 @@ export component SongOverviewPanel inherits Rectangle {
             y: parent.height - max(0.0, min(1.0, (root.lufs[bar] + 36.0) / 30.0)) * parent.height;
             width: parent.width / root.total-bars + 1px;
             height: max(0.0, min(1.0, (root.lufs[bar] + 36.0) / 30.0)) * parent.height;
-            background: #38BDF8;
+            background: Tokens.selection;
             opacity: 0.22;
             visible: root.show-energy;
         }
 
-        // ---- Phase 2（设计稿 §5.1）：谱面力度细虚线（近白 #F8FAFC，1.5 px），叠在
+        // ---- Phase 2（设计稿 §5.1）：谱面力度细虚线（近白 Tokens.skin-text-strong，1.5 px），叠在
         // LUFS 面积上，与能量层同显隐（`show-energy`）。每小节一段居中短线（55%
         // 宽），小节间留白即虚线断点；纵轴与张力线同一 0–1 量程，形状可直接对照。
         for bar in root.total-bars : Rectangle {
@@ -262,11 +262,11 @@ export component SongOverviewPanel inherits Rectangle {
             y: (1.0 - root.score-dyn[bar]) * (parent.height - 1.5px);
             width: 0.55 * parent.width / root.total-bars;
             height: 1.5px;
-            background: #F8FAFC;
+            background: Tokens.skin-text-strong;
             visible: root.show-energy;
         }
 
-        // ---- Phase 2（设计稿 §3.5）：期望结构包络带（浅灰 #9CA3AF，Alpha 0.20）。
+        // ---- Phase 2（设计稿 §3.5）：期望结构包络带（浅灰 Tokens.ink-1，Alpha 0.20）。
         // 每小节一格，纵向 = [envelope-lo, envelope-hi]；无等级（哨兵 −1）不画。
         // 画在能量层之后、张力线之前；带是张力期望，随 `show-tension` 显隐。
         for bar in root.total-bars : Rectangle {
@@ -274,19 +274,19 @@ export component SongOverviewPanel inherits Rectangle {
             y: (1.0 - root.envelope-hi[bar]) * parent.height;
             width: parent.width / root.total-bars + 1px;
             height: max(0.0, (root.envelope-hi[bar] - root.envelope-lo[bar])) * parent.height;
-            background: #9CA3AF;
+            background: Tokens.ink-1;
             opacity: 0.20;
             visible: root.show-tension && root.envelope-lo[bar] >= 0.0;
         }
 
-        // ---- Phase 2（设计稿 §3.5）：偏离告警高亮（琥珀 #F59E0B，Alpha 0.18，
+        // ---- Phase 2（设计稿 §3.5）：偏离告警高亮（琥珀 Tokens.skin-mute，Alpha 0.18，
         // 贯穿画布全高）。只在 `envelope-alert` 为真的小节画，与期望带同显隐。
         for bar in root.total-bars : Rectangle {
             x: bar * parent.width / root.total-bars;
             y: 0;
             width: parent.width / root.total-bars + 1px;
             height: parent.height;
-            background: #F59E0B;
+            background: Tokens.skin-mute;
             opacity: 0.18;
             visible: root.show-tension && root.envelope-alert[bar];
         }
@@ -298,7 +298,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: max(0px, (1.0 - root.tension[bar]) * (parent.height - 2.5px) - 4px);
             width: parent.width / root.total-bars + 1px;
             height: 10.5px;
-            background: #0B0D12;
+            background: Tokens.skin-inset;
             opacity: 0.55;
             visible: root.show-tension;
         }
@@ -356,7 +356,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: min(root.viewport-width-frac, 1.0 - root.viewport-start-frac) * parent.width;
             height: parent.height;
-            background: #FFFFFF;
+            background: Tokens.skin-text-strong;
             opacity: 0.10;
             border-width: 1px;
             border-color: Tokens.gold;
@@ -473,7 +473,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 4px;
             width: min(300px, parent.width);
             height: 30px;
-            background: #0B0D12;
+            background: Tokens.skin-inset;
             opacity: 0.92;
             border-width: 1px;
             border-color: Tokens.line-strong;
@@ -524,7 +524,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 0;
             width: parent.width / root.total-bars;
             height: 8px;
-            background: #34D399;
+            background: Tokens.skin-meter-low;
             opacity: root.density-duty[bar] * 0.25;
             visible: root.show-density;
         }
@@ -533,7 +533,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 8px - root.density-pitched[bar] * 8px;
             width: parent.width / root.total-bars;
             height: root.density-pitched[bar] * 8px;
-            background: #34D399;
+            background: Tokens.skin-meter-low;
             visible: root.show-density;
         }
         // 打击行（6 px）：珊瑚橙竖线，底对齐。
@@ -542,7 +542,7 @@ export component SongOverviewPanel inherits Rectangle {
             y: 14px - root.density-perc[bar] * 6px;
             width: parent.width / root.total-bars;
             height: root.density-perc[bar] * 6px;
-            background: #FB923C;
+            background: Tokens.skin-mute;
             visible: root.show-density;
         }
 
@@ -623,7 +623,7 @@ export component SongOverviewPanel inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: pill-index == 0 ? @tr("情绪") : pill-index == 1 ? @tr("能量") : pill-index == 2 ? @tr("频段") : @tr("疏密");
-            color: (pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? #060A14 : Tokens.ink-2;
+            color: (pill-index == 0 && root.show-tension) || (pill-index == 1 && root.show-energy) || (pill-index == 2 && root.show-bands) || (pill-index == 3 && root.show-density) ? Tokens.bg-void : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
         }
@@ -702,7 +702,7 @@ export component SongOverviewPanel inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: root.fullscreen ? @tr("退出全屏") : @tr("全屏");
-            color: root.fullscreen ? #060A14 : Tokens.ink-1;
+            color: root.fullscreen ? Tokens.bg-void : Tokens.ink-1;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
         }

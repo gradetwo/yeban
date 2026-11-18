@@ -21,7 +21,7 @@ export component CommandPaletteModal inherits Rectangle {
     callback close-modal();
 
     if root.is-open : Rectangle {
-        background: #020612bb;
+        background: Tokens.bg-void.with-alpha(0.73);
 
         VerticalLayout {
             alignment: center;
@@ -32,10 +32,10 @@ export component CommandPaletteModal inherits Rectangle {
                 Rectangle {
                     width: 560px;
                     height: 400px;
-                    background: Tokens.texture-physical ? Tokens.panel-brush : #11141d;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel-alt;
                     border-radius: 8px;
                     border-width: 1px;
-                    border-color: #262e3d;
+                    border-color: Tokens.bg-panel-alt;
                     clip: true;
 
                     VerticalLayout {
@@ -45,7 +45,7 @@ export component CommandPaletteModal inherits Rectangle {
                         // Header with input
                         Rectangle {
                             height: 48px;
-                            background: Tokens.texture-physical ? Tokens.panel-alt-brush : #151a24;
+                            background: Tokens.texture-physical ? Tokens.panel-alt-brush : Tokens.bg-panel-alt;
                             border-color: Tokens.line;
 
                             HorizontalLayout {
@@ -68,13 +68,13 @@ export component CommandPaletteModal inherits Rectangle {
                                         text: @tr("输入命令、切换工作区或定位模块 (如: 混音控制台, 钢琴卷帘, 切分)...");
                                         font-family: Tokens.font-ui;
                                         font-size: 12px;
-                                        color: #b6c2d2;
+                                        color: Tokens.skin-text-dim;
                                         vertical-alignment: center;
                                     }
                                 }
 
                                 Rectangle {
-                                    background: esc_touch.has-hover ? #28324a : (Tokens.texture-physical ? Tokens.raised-brush : #1e2536);
+                                    background: esc_touch.has-hover ? Tokens.skin-chip-hover : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.skin-chip);
                                     border-radius: 4px;
                                     height: 24px;
                                     border-width: 1px;
@@ -87,7 +87,7 @@ export component CommandPaletteModal inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #cbd5e1;
+                                            color: Tokens.skin-text-body;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -107,7 +107,7 @@ export component CommandPaletteModal inherits Rectangle {
 
                             for cmd in root.commands : Rectangle {
                                 height: 32px;
-                                background: cmd_touch.has-hover ? #1f2738 : (Tokens.texture-physical ? Tokens.panel-brush : #161b26);
+                                background: cmd_touch.has-hover ? Tokens.skin-chip-hover : (Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel-alt);
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: cmd_touch.has-hover ? Theme.accent : Tokens.line;
@@ -121,7 +121,7 @@ export component CommandPaletteModal inherits Rectangle {
                                         font-family: Tokens.font-ui;
                                         font-size: 11px;
                                         font-weight: 600;
-                                        color: #f1f5f9;
+                                        color: Tokens.skin-text-strong;
                                         vertical-alignment: center;
                                     }
 
@@ -129,7 +129,7 @@ export component CommandPaletteModal inherits Rectangle {
                                         spacing: 6px;
                                         alignment: end;
                                         Rectangle {
-                                            background: #12161f;
+                                            background: Tokens.bg-panel;
                                             border-radius: 3px;
                                             border-width: 1px;
                                             border-color: Tokens.line;
@@ -142,7 +142,7 @@ export component CommandPaletteModal inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 9.5px;
                                                     font-weight: 400;
-                                                    color: #cbd5e1;
+                                                    color: Tokens.skin-text-body;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -190,7 +190,7 @@ export component HotspotOverlay inherits Rectangle {
     callback close-overlay();
 
     if root.is-open : Rectangle {
-        background: #020612cc;
+        background: Tokens.bg-void.with-alpha(0.80);
 
         VerticalLayout {
             padding: 24px;
@@ -217,7 +217,7 @@ export component HotspotOverlay inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 11px;
                                     font-weight: 800;
-                                    color: #020617;
+                                    color: Tokens.skin-inset;
                                     vertical-alignment: center;
                                 }
                             }
@@ -226,13 +226,13 @@ export component HotspotOverlay inherits Rectangle {
                             text: @tr("基于 Rust 实时音频引擎与 Slint 现代化原生响应式桌面工作区");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
-                            color: #cbd5e1;
+                            color: Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
 
                     Rectangle {
-                        background: close_hotspot_touch.has-hover ? #c54f4f : #a84343;
+                        background: close_hotspot_touch.has-hover ? Tokens.skin-arm : Tokens.skin-arm;
                         border-radius: 4px;
                         height: 26px;
                         HorizontalLayout {
@@ -243,7 +243,7 @@ export component HotspotOverlay inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 800;
-                                color: #ffffff;
+                                color: Tokens.skin-text-strong;
                                 vertical-alignment: center;
                             }
                         }
@@ -264,7 +264,7 @@ export component HotspotOverlay inherits Rectangle {
                 Rectangle {
                     width: 350px;
                     height: 190px;
-                    background: Tokens.texture-physical ? Tokens.panel-brush : #0e1320;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.accent;
@@ -284,7 +284,7 @@ export component HotspotOverlay inherits Rectangle {
                             text: @tr("轨道名称、声部色彩与 M/S/R 核心监控置于时间轴左侧黄金视线区，避免视线与鼠标大跨度跳跃。\n同时支持演出矩阵与线性轨道一键镜像切换，兼顾棚内制作与舞台即兴。");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
-                            color: #cbd5e1;
+                            color: Tokens.skin-text-body;
                             wrap: word-wrap;
                         }
                     }
@@ -294,7 +294,7 @@ export component HotspotOverlay inherits Rectangle {
                 Rectangle {
                     width: 350px;
                     height: 190px;
-                    background: Tokens.texture-physical ? Tokens.panel-brush : #0e1320;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.status-ok;
@@ -314,7 +314,7 @@ export component HotspotOverlay inherits Rectangle {
                             text: @tr("原生波表合成器、8段动态均衡器与总线粘合压缩器直接内联于底部机架，所有参数一屏触达并具备毫秒级实时频谱。\n彻底告别传统工作站中弹窗重叠遮挡时间轴的痛点，双击亦可按需展开独立浮窗。");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
-                            color: #cbd5e1;
+                            color: Tokens.skin-text-body;
                             wrap: word-wrap;
                         }
                     }
@@ -324,7 +324,7 @@ export component HotspotOverlay inherits Rectangle {
                 Rectangle {
                     width: 350px;
                     height: 190px;
-                    background: Tokens.texture-physical ? Tokens.panel-brush : #0e1320;
+                    background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: Theme.track-drum;
@@ -344,7 +344,7 @@ export component HotspotOverlay inherits Rectangle {
                             text: @tr("现场 Clip 激发抽屉与中心线性时间轴无缝联动，支持片段即兴激发与平滑拖拽入轨。\n音频缓冲区大小热切换实时生效无需重新载入工程，为母带与创作提供专业级低时延与强确定性。");
                             font-family: Tokens.font-ui;
                             font-size: 11px;
-                            color: #cbd5e1;
+                            color: Tokens.skin-text-body;
                             wrap: word-wrap;
                         }
                     }
@@ -358,7 +358,7 @@ export component HotspotOverlay inherits Rectangle {
                     text: @tr("提示：您可以随时点击顶栏「默认 / 演出 / 编曲 / 混音」在 4 种专业工作流间秒级切换。");
                     font-family: Tokens.font-ui;
                     font-size: 10px;
-                    color: #b6c2d2;
+                    color: Tokens.skin-text-dim;
                     horizontal-alignment: center;
                 }
             }
@@ -377,7 +377,7 @@ export component ToastBanner inherits Rectangle {
         y: 54px; // 移至右上角顶部栏下方，避免覆盖低轨道主工作区
         width: 310px;
         height: 34px;
-        background: Tokens.texture-physical ? Tokens.panel-brush : #0e1422f6;
+        background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-void.with-alpha(0.96);
         border-radius: 6px;
         border-width: 1px;
         border-color: Theme.accent.with-alpha(0.6);
@@ -403,7 +403,7 @@ export component ToastBanner inherits Rectangle {
                     font-family: Tokens.font-ui;
                     font-size: 10px;
                     font-weight: 600;
-                    color: #f8fafc;
+                    color: Tokens.skin-text-strong;
                     vertical-alignment: center;
                     // report-3 §7 #10：控制室 toast 含 4 个字段，单行只能显示成
                     // 「· ...」。允许按词换行（两行 10px 字仍在 34px 气泡内），
@@ -423,7 +423,7 @@ export component ToastBanner inherits Rectangle {
                     text: "✕";
                     font-family: Tokens.font-ui;
                     font-size: 10.5px;
-                    color: #cbd5e1;
+                    color: Tokens.skin-text-body;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }

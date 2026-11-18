@@ -37,7 +37,7 @@ export component ControlRoomMeters inherits Rectangle {
                 HorizontalLayout {
                     spacing: 4px;
                     Rectangle {
-                        background: cr_reset_t.has-hover ? Theme.accent.with-alpha(0.25) : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                        background: cr_reset_t.has-hover ? Theme.accent.with-alpha(0.25) : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: Theme.border-subtle;
@@ -48,7 +48,7 @@ export component ControlRoomMeters inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
-                                color: #e2e8f0;
+                                color: Tokens.skin-text-body;
                                 vertical-alignment: center;
                             }
                         }
@@ -101,7 +101,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             letter-spacing: 0.4px;
-                            color: #b6c2d2;
+                            color: Tokens.skin-text-dim;
                             font-weight: 400;
                             vertical-alignment: center;
                         }
@@ -122,7 +122,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             letter-spacing: 0.4px;
-                            color: #b6c2d2;
+                            color: Tokens.skin-text-dim;
                             font-weight: 400;
                             vertical-alignment: center;
                         }
@@ -143,7 +143,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9px;
                             letter-spacing: 0.4px;
-                            color: #b6c2d2;
+                            color: Tokens.skin-text-dim;
                             font-weight: 400;
                             vertical-alignment: center;
                         }
@@ -170,7 +170,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : (mon_a_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
+                        background: root.active-monitor == "main" ? Theme.accent.with-alpha(0.2) : (mon_a_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel));
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "main" ? 1px : 0;
                         border-color: Theme.accent;
@@ -184,7 +184,7 @@ export component ControlRoomMeters inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
-                                color: root.active-monitor == "main" ? Theme.accent : #cbd5e1;
+                                color: root.active-monitor == "main" ? Theme.accent : Tokens.skin-text-body;
                                 vertical-alignment: center;
                             }
                         }
@@ -204,7 +204,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 24px;
-                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : (mon_b_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
+                        background: root.active-monitor == "alt" ? Theme.accent.with-alpha(0.2) : (mon_b_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel));
                         border-radius: Theme.radius;
                         border-width: root.active-monitor == "alt" ? 1px : 0;
                         border-color: Theme.accent;
@@ -218,7 +218,7 @@ export component ControlRoomMeters inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 9.5px;
                                 font-weight: 600;
-                                color: root.active-monitor == "alt" ? Theme.accent : #cbd5e1;
+                                color: root.active-monitor == "alt" ? Theme.accent : Tokens.skin-text-body;
                                 vertical-alignment: center;
                             }
                         }
@@ -242,7 +242,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : (dim_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
+                        background: root.is-dim ? Theme.status-warn.with-alpha(0.25) : (dim_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-dim ? Theme.status-warn : Theme.border-subtle;
@@ -251,7 +251,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.is-dim ? Theme.status-warn : #cbd5e1;
+                            color: root.is-dim ? Theme.status-warn : Tokens.skin-text-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -271,7 +271,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : (mono_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
+                        background: root.is-mono ? Theme.accent.with-alpha(0.25) : (mono_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-mono ? Theme.accent : Theme.border-subtle;
@@ -280,7 +280,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.is-mono ? Theme.accent : #cbd5e1;
+                            color: root.is-mono ? Theme.accent : Tokens.skin-text-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -300,7 +300,7 @@ export component ControlRoomMeters inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : (side_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d));
+                        background: root.is-side ? Theme.status-alert.with-alpha(0.25) : (side_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.is-side ? Theme.status-alert : Theme.border-subtle;
@@ -309,7 +309,7 @@ export component ControlRoomMeters inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.is-side ? Theme.status-alert : #cbd5e1;
+                            color: root.is-side ? Theme.status-alert : Tokens.skin-text-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -332,7 +332,7 @@ export component ControlRoomMeters inherits Rectangle {
 
         // Stereo Master Twin Bar Meters (Precision vertical LED bars)
         Rectangle {
-            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
+            background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2;
             border-radius: Theme.radius;
             border-width: 1px;
             border-color: Theme.border-subtle;
@@ -354,7 +354,7 @@ export component ControlRoomMeters inherits Rectangle {
                         text: mark;
                         font-family: Tokens.font-mono;
                         font-size: 9px;
-                        color: #b6c2d2;
+                        color: Tokens.skin-text-dim;
                         font-weight: 400;
                     }
                 }
@@ -362,10 +362,10 @@ export component ControlRoomMeters inherits Rectangle {
                 // Left Meter Bar
                 Rectangle {
                     width: 14px;
-                    background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
+                    background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                     border-radius: 2px;
                     border-width: 1px;
-                    border-color: #ffffff0a;
+                    border-color: Tokens.skin-hover;
                     clip: true;
 
                     Rectangle {
@@ -381,10 +381,10 @@ export component ControlRoomMeters inherits Rectangle {
                 // Right Meter Bar
                 Rectangle {
                     width: 14px;
-                    background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
+                    background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                     border-radius: 2px;
                     border-width: 1px;
-                    border-color: #ffffff0a;
+                    border-color: Tokens.skin-hover;
                     clip: true;
 
                     Rectangle {
@@ -402,7 +402,7 @@ export component ControlRoomMeters inherits Rectangle {
         // Master Output Footer
         Rectangle {
             height: 24px;
-            background: Tokens.texture-physical ? Tokens.shell-brush : #080a10;
+            background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;
             border-radius: 3px;
             border-width: 1px;
             border-color: Theme.border-subtle;
@@ -412,7 +412,7 @@ export component ControlRoomMeters inherits Rectangle {
                 font-size: 9px;
                 letter-spacing: 0.4px;
                 font-weight: 400;
-                color: #b6c2d2;
+                color: Tokens.skin-text-dim;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }

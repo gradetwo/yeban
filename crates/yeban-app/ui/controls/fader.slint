@@ -117,7 +117,7 @@ export component Fader inherits Rectangle {
             y: parent.height / 2;
             width: parent.width - 4px;
             height: 1px;
-            background: #ffffff.with-alpha(Tokens.texture-physical ? 0.28 : 0.0);
+            background: Tokens.skin-text-strong.with-alpha(Tokens.texture-physical ? 0.28 : 0.0);
         }
 
         // physical: 下沿背光线 (斜面暗边)。

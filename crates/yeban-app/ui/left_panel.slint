@@ -3,7 +3,7 @@ import { Theme, BrowserItemData, Tokens, TooltipBubble } from "tokens.slint";
 export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <string> active-tab: "inspector"; // "inspector" | "browser"
     in-out property <int> selected-track-id: 3;
-    in-out property <color> selected-track-color: #387691;
+    in-out property <color> selected-track-color: Theme.track-synth;
     in-out property <string> selected-track-name: "01. Lead Neuro Bass";
     in-out property <string> selected-track-badge: "TRK 01 · SYNTH";
     in-out property <string> selected-track-bus: "Bus 1 (Synth Grp)";
@@ -77,7 +77,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
         // Subtab switcher
         Rectangle {
             height: 34px;
-            background: Tokens.texture-physical ? Tokens.shell-brush : #080a10;
+            background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-shell;
             border-color: Theme.border-subtle;
 
             HorizontalLayout {
@@ -97,7 +97,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             font-weight: 700;
-                            color: root.active-tab == "inspector" ? Theme.accent : #b6c2d2;
+                            color: root.active-tab == "inspector" ? Theme.accent : Tokens.skin-text-dim;
                             vertical-alignment: center;
                         }
                     }
@@ -124,7 +124,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 11px;
                             font-weight: 700;
-                            color: root.active-tab == "browser" ? Theme.accent : #b6c2d2;
+                            color: root.active-tab == "browser" ? Theme.accent : Tokens.skin-text-dim;
                             vertical-alignment: center;
                         }
                     }
@@ -212,7 +212,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         font-family: Tokens.font-ui;
                                         font-size: 9.5px;
                                         font-weight: 600;
-                                        color: #f8fafc;
+                                        color: Tokens.skin-text-strong;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -254,7 +254,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         font-family: Tokens.font-ui;
                         font-size: 13px;
                         font-weight: 700;
-                        color: #f8fafc;
+                        color: Tokens.skin-text-strong;
                         overflow: elide;
                     }
 
@@ -267,7 +267,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 font-family: Tokens.font-mono;
                                 font-size: 9px;
                                 letter-spacing: 0.4px;
-                                color: #b6c2d2;
+                                color: Tokens.skin-text-dim;
                                 font-weight: 400;
                                 vertical-alignment: center;
                             }
@@ -286,7 +286,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             background: root.show-bus-strip ? Theme.track-bus.with-alpha(0.25) : transparent;
                             border-radius: 2px;
                             border-width: 1px;
-                            border-color: root.show-bus-strip ? Theme.track-bus : #ffffff15;
+                            border-color: root.show-bus-strip ? Theme.track-bus : Tokens.skin-hairline;
                             height: 18px;
                             HorizontalLayout {
                                 padding-left: 5px;
@@ -296,7 +296,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
-                                    color: root.show-bus-strip ? Theme.track-bus : #cbd5e1;
+                                    color: root.show-bus-strip ? Theme.track-bus : Tokens.skin-text-body;
                                     vertical-alignment: center;
                                 }
                             }
@@ -312,8 +312,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
             // Inline Instrument / FX Quick Picker Menu
             if root.show-instrument-menu : Rectangle {
-                // 二期质感: 菜单面走 §10 面板刷 + 面板落影 (flat = 现行字面 #0d121c, 落影 alpha 为 0)。
-                background: Tokens.texture-physical ? Tokens.panel-brush : #0d121c;
+                // 二期质感: 菜单面走 §10 面板刷 + 面板落影 (flat = 现行字面 Tokens.bg-panel, 落影 alpha 为 0)。
+                background: Tokens.texture-physical ? Tokens.panel-brush : Tokens.bg-panel;
                 drop-shadow-color: Tokens.shadow-color.with-alpha(Tokens.shadow-panel-alpha);
                 drop-shadow-offset-x: Tokens.shadow-panel-offset-x;
                 drop-shadow-offset-y: Tokens.shadow-panel-offset-y;
@@ -328,8 +328,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         alignment: space-between;
                         Text { text: @tr("音色与效果器预设"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 700; color: Theme.accent; vertical-alignment: center; }
                         Rectangle {
-                            width: 16px; height: 16px; border-radius: 3px; background: #1e293b;
-                            Text { text: "×"; font-family: Tokens.font-ui; font-size: 11px; color: #f8fafc; horizontal-alignment: center; vertical-alignment: center; }
+                            width: 16px; height: 16px; border-radius: 3px; background: Tokens.line;
+                            Text { text: "×"; font-family: Tokens.font-ui; font-size: 11px; color: Tokens.skin-text-strong; horizontal-alignment: center; vertical-alignment: center; }
                             TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.show-instrument-menu = false; } }
                         }
                     }
@@ -346,10 +346,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                     ] : Rectangle {
                         height: 20px;
                         border-radius: 3px;
-                        background: insp_opt_t.has-hover ? Theme.accent.with-alpha(0.22) : (Tokens.texture-physical ? Tokens.raised-brush : #141926);
+                        background: insp_opt_t.has-hover ? Theme.accent.with-alpha(0.22) : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-raised);
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px;
-                            Text { text: opt.label; font-family: Tokens.font-ui; font-size: 9.5px; color: #f1f5f9; vertical-alignment: center; }
+                            Text { text: opt.label; font-family: Tokens.font-ui; font-size: 9.5px; color: Tokens.skin-text-strong; vertical-alignment: center; }
                         }
                         insp_opt_t := TouchArea {
                             mouse-cursor: MouseCursor.pointer;
@@ -423,7 +423,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     text: @tr("效果器插槽 (INSERTS)");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
-                                    color: #cbd5e1;
+                                    color: Tokens.skin-text-body;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
@@ -431,7 +431,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     text: "PRE-FADER";
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
-                                    color: #b6c2d2;
+                                    color: Tokens.skin-text-dim;
                                     vertical-alignment: center;
                                 }
                             }
@@ -441,7 +441,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     && (root.selected-track-inserts.length < 2 || root.selected-track-inserts[1] == "")
                                     && (root.selected-track-inserts.length < 3 || root.selected-track-inserts[2] == "")) : Rectangle {
                                 height: 24px;
-                                background: empty_ins_touch.has-hover ? Theme.accent.with-alpha(0.18) : (Tokens.texture-physical ? Tokens.void-brush : #0b0e16);
+                                background: empty_ins_touch.has-hover ? Theme.accent.with-alpha(0.18) : (Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2);
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -451,7 +451,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         text: @tr("点击 + 插入效果器或音色");
                                         font-family: Tokens.font-ui;
                                         font-size: 9.5px;
-                                        color: #cbd5e1;
+                                        color: Tokens.skin-text-body;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -465,7 +465,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 // [Q4] 空槽不画：投影只给**真实设备链**，没有设备就没有这一行。
                                 visible: ins != "";
                                 height: ins != "" ? 22px : 0px;
-                                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
+                                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -478,14 +478,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 400;
-                                        color: #b6c2d2;
+                                        color: Tokens.skin-text-dim;
                                         vertical-alignment: center;
                                     }
                                     Text {
                                         text: ins;
                                         font-family: Tokens.font-ui;
                                         font-size: 10px;
-                                        color: #f1f5f9;
+                                        color: Tokens.skin-text-strong;
                                         font-weight: 600;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -510,8 +510,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // Section 3: EQ Curve Thumbnail Preview
                         Rectangle {
                             height: 38px;
-                            // 二期质感: EQ 屏走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #06080d, 反光 alpha 为 0)。
-                            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
+                            // 二期质感: EQ 屏走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 Tokens.bg-lane2, 反光 alpha 为 0)。
+                            background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2;
                             border-radius: 3px;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
@@ -569,7 +569,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
                                     letter-spacing: 0.4px;
-                                    color: #b6c2d2;
+                                    color: Tokens.skin-text-dim;
                                     font-weight: 400;
                                 }
                             }
@@ -586,7 +586,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 96px;
                                 height: 20px;
-                                background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
+                                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -599,7 +599,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 400;
-                                        color: #b6c2d2;
+                                        color: Tokens.skin-text-dim;
                                         vertical-alignment: center;
                                     }
                                     HorizontalLayout {
@@ -609,7 +609,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                             width: 24px;
                                             height: 4px;
                                             y: 8px;
-                                            background: #141a24;
+                                            background: Tokens.bg-panel-alt;
                                             border-radius: 2px;
                                             Rectangle {
                                                 x: 10px + Math.max(-1.0, Math.min(1.0, root.selected-track-pan-value)) * 10px;
@@ -624,7 +624,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9.5px;
                                             font-weight: 400;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -658,19 +658,19 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             VerticalLayout {
                                 alignment: space-between;
                                 height: 104px;
-                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 8.5px; color: #f8fafc; horizontal-alignment: right; }
-                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
+                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-strong; horizontal-alignment: right; }
+                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
                             }
 
                             // Fader rail
                             Rectangle {
                                 width: 24px;
                                 height: 104px;
-                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -681,7 +681,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: 4px;
                                     width: 4px;
                                     height: parent.height - 8px;
-                                    background: #000000;
+                                    background: Tokens.bg-void;
                                     border-radius: 1px;
                                 }
 
@@ -691,7 +691,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: tick_y;
                                     width: 18px;
                                     height: 1px;
-                                    background: #ffffff14;
+                                    background: Tokens.skin-hairline;
                                 }
 
                                 // Tactile fader cap
@@ -700,10 +700,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.selected-track-vol + 60.0) / 66.0)));
                                     width: 22px;
                                     height: 15px;
-                                    background: Tokens.texture-physical ? Tokens.raised-brush : #94a3b8;
+                                    background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.ink-1;
                                     border-radius: 2px;
                                     border-width: 1px;
-                                    border-color: #cbd5e1;
+                                    border-color: Tokens.skin-text-body;
 
                                     Rectangle {
                                         x: 0;
@@ -735,7 +735,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 8px;
                                 height: 104px;
-                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -758,7 +758,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 58px;
                                 height: 18px;
-                                background: Tokens.texture-physical ? Tokens.glass-brush : #080c14;
+                                background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-shell;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -839,7 +839,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     text: @tr("总线效果器 (BUS INSERTS)");
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
-                                    color: #cbd5e1;
+                                    color: Tokens.skin-text-body;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
@@ -847,7 +847,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                             for ins[idx] in root.bus-inserts : Rectangle {
                                 height: 22px;
-                                background: Tokens.texture-physical ? Tokens.raised-brush : #10141d;
+                                background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -860,14 +860,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 400;
-                                        color: #b6c2d2;
+                                        color: Tokens.skin-text-dim;
                                         vertical-alignment: center;
                                     }
                                     Text {
                                         text: ins;
                                         font-family: Tokens.font-ui;
                                         font-size: 10px;
-                                        color: #f1f5f9;
+                                        color: Tokens.skin-text-strong;
                                         font-weight: 600;
                                         vertical-alignment: center;
                                         overflow: elide;
@@ -880,8 +880,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         // Section 3: Bus Comp Preview
                         Rectangle {
                             height: 38px;
-                            // 二期质感: 压缩屏走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 #06080d, 反光 alpha 为 0)。
-                            background: Tokens.texture-physical ? Tokens.glass-brush : #06080d;
+                            // 二期质感: 压缩屏走 §10 玻璃刷 + 斜向反光 (flat = 现行字面 Tokens.bg-lane2, 反光 alpha 为 0)。
+                            background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-lane2;
                             border-radius: 3px;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
@@ -938,7 +938,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-family: Tokens.font-mono;
                                     font-size: 8.5px;
                                     letter-spacing: 0.4px;
-                                    color: #b6c2d2;
+                                    color: Tokens.skin-text-dim;
                                     font-weight: 400;
                                 }
                             }
@@ -950,7 +950,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 96px;
                                 height: 20px;
-                                background: Tokens.texture-physical ? Tokens.void-brush : #0a0d14;
+                                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -963,7 +963,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9px;
                                         font-weight: 400;
-                                        color: #b6c2d2;
+                                        color: Tokens.skin-text-dim;
                                         vertical-alignment: center;
                                     }
                                     Text {
@@ -971,7 +971,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         font-family: Tokens.font-mono;
                                         font-size: 9.5px;
                                         font-weight: 400;
-                                        color: #f1f5f9;
+                                        color: Tokens.skin-text-strong;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -1008,18 +1008,18 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             VerticalLayout {
                                 alignment: space-between;
                                 height: 104px;
-                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 8.5px; color: #f8fafc; horizontal-alignment: right; }
-                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
-                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 8.5px; color: #b6c2d2; horizontal-alignment: right; }
+                                Text { text: "+6"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: " 0"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-strong; horizontal-alignment: right; }
+                                Text { text: "-6"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: "-12"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: "-24"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
+                                Text { text: "-∞"; font-family: Tokens.font-mono; font-size: 8.5px; color: Tokens.skin-text-dim; horizontal-alignment: right; }
                             }
 
                             Rectangle {
                                 width: 24px;
                                 height: 104px;
-                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                                 border-radius: 3px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1029,7 +1029,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: 4px;
                                     width: 4px;
                                     height: parent.height - 8px;
-                                    background: #000000;
+                                    background: Tokens.bg-void;
                                     border-radius: 1px;
                                 }
 
@@ -1038,7 +1038,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: tick_y;
                                     width: 18px;
                                     height: 1px;
-                                    background: #ffffff14;
+                                    background: Tokens.skin-hairline;
                                 }
 
                                 Rectangle {
@@ -1046,10 +1046,10 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-track-vol + 60.0) / 66.0)));
                                     width: 22px;
                                     height: 15px;
-                                    background: Tokens.texture-physical ? Tokens.raised-brush : #94a3b8;
+                                    background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.ink-1;
                                     border-radius: 2px;
                                     border-width: 1px;
-                                    border-color: #cbd5e1;
+                                    border-color: Tokens.skin-text-body;
 
                                     Rectangle {
                                         x: 0;
@@ -1085,7 +1085,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 8px;
                                 height: 104px;
-                                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1108,7 +1108,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             Rectangle {
                                 width: 58px;
                                 height: 18px;
-                                background: Tokens.texture-physical ? Tokens.glass-brush : #080c14;
+                                background: Tokens.texture-physical ? Tokens.glass-brush : Tokens.bg-shell;
                                 border-radius: 2px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
@@ -1149,7 +1149,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
             // Search input field (Real TextInput)
             Rectangle {
                 height: 30px;
-                background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane2;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: browser_search_input.has-focus ? Theme.accent : Theme.border-subtle;
@@ -1163,7 +1163,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         font-family: Tokens.font-ui;
                         font-size: 10px;
                         font-weight: 600;
-                        color: #b6c2d2;
+                        color: Tokens.skin-text-dim;
                         vertical-alignment: center;
                     }
                     Rectangle {
@@ -1176,7 +1176,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             text: @tr("搜索音色、插件、采样包...");
                             font-family: Tokens.font-ui;
                             font-size: 10.5px;
-                            color: #b6c2d2;
+                            color: Tokens.skin-text-dim;
                             vertical-alignment: center;
                         }
                         browser_search_input := TextInput {
@@ -1185,7 +1185,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             text <=> root.search-query;
                             font-family: Tokens.font-ui;
                             font-size: 10.5px;
-                            color: #f8fafc;
+                            color: Tokens.skin-text-strong;
                             vertical-alignment: center;
                             single-line: true;
                             edited => {
@@ -1198,12 +1198,12 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                         height: 18px;
                         y: 6px;
                         border-radius: 3px;
-                        background: clear_q_t.has-hover ? #1e293b : transparent;
+                        background: clear_q_t.has-hover ? Tokens.line : transparent;
                         Text {
                             text: "×";
                             font-family: Tokens.font-ui;
                             font-size: 11px;
-                            color: #cbd5e1;
+                            color: Tokens.skin-text-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -1224,7 +1224,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 height: 22px;
 
                 Rectangle {
-                    background: root.active-tag == "all" ? Theme.accent : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                    background: root.active-tag == "all" ? Theme.accent : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "all" ? Theme.accent : Theme.border-subtle;
@@ -1236,7 +1236,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-ui;
                             font-size: 9.5px;
                             font-weight: 600;
-                            color: root.active-tag == "all" ? #020617 : #cbd5e1;
+                            color: root.active-tag == "all" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
@@ -1249,7 +1249,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Synth" ? Theme.track-synth : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                    background: root.active-tag == "Synth" ? Theme.track-synth : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "Synth" ? Theme.track-synth : Theme.border-subtle;
@@ -1261,7 +1261,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.active-tag == "Synth" ? #020617 : #cbd5e1;
+                            color: root.active-tag == "Synth" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
@@ -1274,7 +1274,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "DSP" ? Theme.status-ok : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                    background: root.active-tag == "DSP" ? Theme.status-ok : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "DSP" ? Theme.status-ok : Theme.border-subtle;
@@ -1286,7 +1286,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.active-tag == "DSP" ? #020617 : #cbd5e1;
+                            color: root.active-tag == "DSP" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
@@ -1299,7 +1299,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                 }
 
                 Rectangle {
-                    background: root.active-tag == "Drums" ? Theme.track-drum : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                    background: root.active-tag == "Drums" ? Theme.track-drum : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                     border-radius: 11px;
                     border-width: 1px;
                     border-color: root.active-tag == "Drums" ? Theme.track-drum : Theme.border-subtle;
@@ -1311,7 +1311,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                             font-family: Tokens.font-mono;
                             font-size: 9.5px;
                             font-weight: 400;
-                            color: root.active-tag == "Drums" ? #020617 : #cbd5e1;
+                            color: root.active-tag == "Drums" ? Tokens.skin-inset : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
@@ -1356,7 +1356,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 11px;
                                     font-weight: 700;
-                                    color: #f8fafc;
+                                    color: Tokens.skin-text-strong;
                                     overflow: elide;
                                 }
                                 Rectangle {
@@ -1381,7 +1381,7 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 text: item.desc;
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
-                                color: #cbd5e1;
+                                color: Tokens.skin-text-body;
                                 overflow: elide;
                             }
                         }

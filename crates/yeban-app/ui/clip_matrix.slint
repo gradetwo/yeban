@@ -23,7 +23,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
         // Top Header Row with Scene Launchers
         Rectangle {
             height: 54px;
-            background: #080a10;
+            background: Tokens.bg-shell;
             border-color: Theme.border-subtle;
 
             VerticalLayout {
@@ -41,12 +41,12 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         Rectangle {
                             height: 18px;
                             border-radius: 3px;
-                            background: cm_add_t.has-hover ? Theme.accent.with-alpha(0.25) : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                            background: cm_add_t.has-hover ? Theme.accent.with-alpha(0.25) : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             HorizontalLayout {
                                 padding-left: 6px; padding-right: 6px;
-                                Text { text: @tr("+ 轨道"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #e2e8f0; vertical-alignment: center; }
+                                Text { text: @tr("+ 轨道"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: Tokens.skin-text-body; vertical-alignment: center; }
                             }
                             cm_add_t := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -56,12 +56,12 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                         Rectangle {
                             height: 18px;
                             border-radius: 3px;
-                            background: cm_stop_t.has-hover ? #ef444433 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                            background: cm_stop_t.has-hover ? Tokens.skin-arm.with-alpha(0.20) : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             HorizontalLayout {
                                 padding-left: 6px; padding-right: 6px;
-                                Text { text: @tr("停止"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: #fca5a5; vertical-alignment: center; }
+                                Text { text: @tr("停止"); font-family: Tokens.font-ui; font-size: 9.5px; font-weight: 600; color: Tokens.skin-text-strong; vertical-alignment: center; }
                             }
                             cm_stop_t := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
@@ -76,7 +76,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: s1_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                        background: s1_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: s1_touch.has-hover ? Theme.accent : Theme.border-subtle;
@@ -102,7 +102,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: s2_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                        background: s2_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: s2_touch.has-hover ? Theme.accent : Theme.border-subtle;
@@ -128,7 +128,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: s3_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                        background: s3_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: s3_touch.has-hover ? Theme.accent : Theme.border-subtle;
@@ -154,7 +154,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     Rectangle {
                         height: 22px;
-                        background: s4_touch.has-hover ? #182030 : (Tokens.texture-physical ? Tokens.raised-brush : #10141d);
+                        background: s4_touch.has-hover ? Tokens.skin-chip : (Tokens.texture-physical ? Tokens.raised-brush : Tokens.bg-panel);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: s4_touch.has-hover ? Theme.accent : Theme.border-subtle;
@@ -201,7 +201,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 1
                     Rectangle {
-                        background: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip1_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
+                        background: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip1_touch.has-hover ? Tokens.bg-void.mix(Theme.bg-panel, 0.271) : Tokens.bg-void.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: trk.clip1 != "" ? (clip1_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
@@ -217,7 +217,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                                 font-family: trk.clip1 != "" ? Tokens.font-ui : Tokens.font-mono;
                                 font-size: trk.clip1 != "" ? 10px : 11px;
                                 font-weight: trk.clip1 != "" ? 600 : 400;
-                                color: trk.clip1 != "" ? #f8fafc : #b6c2d2;
+                                color: trk.clip1 != "" ? Tokens.skin-text-strong : Tokens.skin-text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -239,7 +239,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 2
                     Rectangle {
-                        background: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip2_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
+                        background: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip2_touch.has-hover ? Tokens.bg-void.mix(Theme.bg-panel, 0.271) : Tokens.bg-void.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: trk.clip2 != "" ? (clip2_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
@@ -255,7 +255,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                                 font-family: trk.clip2 != "" ? Tokens.font-ui : Tokens.font-mono;
                                 font-size: trk.clip2 != "" ? 10px : 11px;
                                 font-weight: trk.clip2 != "" ? 600 : 400;
-                                color: trk.clip2 != "" ? #f8fafc : #b6c2d2;
+                                color: trk.clip2 != "" ? Tokens.skin-text-strong : Tokens.skin-text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -277,7 +277,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 3
                     Rectangle {
-                        background: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip3_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
+                        background: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip3_touch.has-hover ? Tokens.bg-void.mix(Theme.bg-panel, 0.271) : Tokens.bg-void.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: trk.clip3 != "" ? (clip3_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
@@ -293,7 +293,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                                 font-family: trk.clip3 != "" ? Tokens.font-ui : Tokens.font-mono;
                                 font-size: trk.clip3 != "" ? 10px : 11px;
                                 font-weight: trk.clip3 != "" ? 600 : 400;
-                                color: trk.clip3 != "" ? #f8fafc : #b6c2d2;
+                                color: trk.clip3 != "" ? Tokens.skin-text-strong : Tokens.skin-text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -315,7 +315,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
 
                     // Clip 4
                     Rectangle {
-                        background: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip4_touch.has-hover ? #000000.mix(Theme.bg-panel, 0.271) : #000000.mix(Theme.bg-panel, 0.145));
+                        background: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.32) : trk.color.mix(Theme.bg-panel, 0.18)) : (clip4_touch.has-hover ? Tokens.bg-void.mix(Theme.bg-panel, 0.271) : Tokens.bg-void.mix(Theme.bg-panel, 0.145));
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: trk.clip4 != "" ? (clip4_touch.has-hover ? trk.color.mix(Theme.bg-panel, 0.85) : trk.color.mix(Theme.bg-panel, 0.5)) : Tokens.line;
@@ -331,7 +331,7 @@ export component HybridClipMatrixDrawer inherits Rectangle {
                                 font-family: trk.clip4 != "" ? Tokens.font-ui : Tokens.font-mono;
                                 font-size: trk.clip4 != "" ? 10px : 11px;
                                 font-weight: trk.clip4 != "" ? 600 : 400;
-                                color: trk.clip4 != "" ? #f8fafc : #b6c2d2;
+                                color: trk.clip4 != "" ? Tokens.skin-text-strong : Tokens.skin-text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 overflow: elide;

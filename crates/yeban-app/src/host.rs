@@ -8642,6 +8642,18 @@ impl PortOpenProject {
     }
 }
 
+/// 关掉「启动工程选择器」（幂等）。
+///
+/// 任何**真把工程换进界面**的入口都必须走这一跳。启动器（`startup-chooser-open`）
+/// 只有在没有 `--open` 启动时才由装配点打开，而菜单里的「打开工程」「新建工程」
+/// 「从模板新建」在启动器开着的时候同样是可点的——这些路径先前只写自己的回执、
+/// 不关启动器，于是出现「工程已经加载完、启动器窗口还盖在上面不消失」
+/// （2026-11-18 报的启动器问题）。打开失败时**不**关：选择器留着让用户换一条再试，
+/// 与 [`wire_startup_chooser`] 的失败口径一致。
+pub fn close_startup_chooser(ui: &MainWindow) {
+    ui.set_startup_chooser_open(false);
+}
+
 /// ⭐ **运行期「打开工程」的唯一接线**：`.slint` 的 `open-project` 回调 ⇒ 对话框 ⇒
 /// [`OpenProjectRuntime`] ⇒ **既有**的 `module-status` 回执通道。
 ///
@@ -8724,6 +8736,9 @@ pub fn wire_open_project(
                 false,
             ),
         };
+        if ok {
+            close_startup_chooser(&ui);
+        }
         apply_module_receipt(&ui, &receipt, ok);
         module_trace("open-project", started, &receipt);
     });
@@ -8933,6 +8948,9 @@ pub fn wire_new_project(
                 false,
             ),
         };
+        if ok {
+            close_startup_chooser(&ui);
+        }
         apply_module_receipt(&ui, &receipt, ok);
         module_trace("new-project", started, &receipt);
     });
@@ -9072,6 +9090,9 @@ pub fn wire_project_templates(
                     false,
                 ),
             };
+            if ok {
+                close_startup_chooser(&ui);
+            }
             apply_module_receipt(&ui, &receipt, ok);
             module_trace("new-from-template", started, &receipt);
         });

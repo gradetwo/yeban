@@ -58,7 +58,7 @@ export component Knob inherits Rectangle {
     /// physical 帽面分层色 (外 → 内 10 档): 每档 = `knob-brush`
     /// 三停点斜坡在该档外半径处的采样 (t = 半径比 × √2/2, 与矩形
     /// 渐变按包围盒对角的映射一致)。画法缘由见帽面 Rectangle 注。
-    property <[color]> cap-steps: [#1e262e, #212a31, #242d35, #273039, #2a333c, #2d363f, #2f3942, #323c45, #353f49, #37424c];
+    property <[color]> cap-steps: Tokens.knob-cap-steps;
     /// 拖动起点快照 (手势内私有)。
     property <bool> dragging: false;
     property <length> drag-start-y: 0px;

@@ -1103,8 +1103,8 @@ export component ArrangementView inherits Rectangle {
             y: 0;
             width: parent.width;
             height: 18px;
-            // 静音态 = 包头底色从 `bg-raised`（绀灰 `#1e2733`）沉到 `bg-void`
-            // （玄夜 `#0e1216`，每通道约低一半 ⇒ "这一条不出声"）。
+            // 静音态 = 包头底色从 `bg-raised`（绀灰 `Tokens.bg-raised`）沉到 `bg-void`
+            // （玄夜 `Tokens.skin-inset`，每通道约低一半 ⇒ "这一条不出声"）。
             // 与上面轨静音按钮的 `record-red` **不同**：按钮是一枚小方片，整条 18px 包头
             // 若也刷红会把整行染成告警色；这里取"沉下去"的读法。名字里带上"（静音）"
             // 让读屏念得出来。未静音（默认全 false）⇒ 逐像素不变。

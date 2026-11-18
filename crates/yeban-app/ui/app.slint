@@ -29,7 +29,7 @@ export component MainWindow inherits Window {
     // 窗口底: flat 走现行 Theme.bg-canvas 一位不动; physical 换
     // Bitwig 色板窗口底 #141a1f (2026-11-17 拟物对色, 见
     // docs/skeuo-bitwig-palette-20261117.md)。
-    background: Tokens.texture-physical ? #141a1f : Theme.bg-canvas;
+    background: Tokens.texture-physical ? Tokens.bg-shell : Theme.bg-canvas;
     forward-focus: key-handler;
     preferred-width: 1600px;
     preferred-height: 920px;
@@ -59,7 +59,7 @@ export component MainWindow inherits Window {
             id: 1,
             name: "01. Lead Neuro Bass",
             kind: "SYNTH · MPE",
-            color: #387691,
+            color: Theme.track-synth,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -2.5,
             pan: "C",
@@ -79,7 +79,7 @@ export component MainWindow inherits Window {
             id: 2,
             name: "02. Punchy Tech Drums",
             kind: "DRUM RACK",
-            color: #9a6a38,
+            color: Theme.track-drum,
             bus: "Bus 2 (Drum Grp)",
             volume_db: -1.0,
             pan: "C",
@@ -99,7 +99,7 @@ export component MainWindow inherits Window {
             id: 3,
             name: "03. Atmos Granular Pad",
             kind: "GRANULAR",
-            color: #705e88,
+            color: Theme.track-pad,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -6.0,
             pan: "12L",
@@ -119,7 +119,7 @@ export component MainWindow inherits Window {
             id: 4,
             name: "04. Lead Vocal Comp",
             kind: "AUDIO · COMP",
-            color: #347864,
+            color: Theme.track-vocal,
             bus: "Bus 3 (Vocal Grp)",
             volume_db: -1.8,
             pan: "C",
@@ -139,7 +139,7 @@ export component MainWindow inherits Window {
             id: 5,
             name: "05. Arp Pluck Sequencer",
             kind: "MIDI · STEP",
-            color: #8a4f6d,
+            color: Theme.track-seq,
             bus: "Bus 1 (Synth Grp)",
             volume_db: -4.2,
             pan: "18R",
@@ -158,30 +158,30 @@ export component MainWindow inherits Window {
     ];
 
     in-out property <[TimelineBlockData]> timeline-blocks: [
-        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
-        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
-        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
-        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
-        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
-        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #387691, base_color: #387691, text_color: #f1f5f9, guide_color: #c9edfc, marker_color: #c9edfc },
-        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
-        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
-        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
-        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
-        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: #9a6a38, base_color: #9a6a38, text_color: #ffffff, guide_color: #fce2c7, marker_color: #fce2c7 },
-        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
-        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
-        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
-        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: false, gain_label: "0dB", color: #705e88, base_color: #705e88, text_color: #f1f5f9, guide_color: #eee2fc, marker_color: #eee2fc },
-        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
-        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
-        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
-        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
-        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: #347864, base_color: #347864, text_color: #f1f5f9, guide_color: #cdfcee, marker_color: #cdfcee },
-        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb },
-        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb },
-        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb },
-        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: #8a4f6d, base_color: #8a4f6d, text_color: #f1f5f9, guide_color: #fcd8eb, marker_color: #fcd8eb }
+        { track_id: 1, label: "Neuro Riff Intro", start_px: 0px, width_px: 155px, is_audio: false, gain_label: "0dB", color: Theme.track-synth, base_color: Theme.track-synth, text_color: Tokens.skin-text-strong, guide_color: Theme.track-synth, marker_color: Theme.track-synth },
+        { track_id: 1, label: "Main Drop MPE Bass", start_px: 160px, width_px: 235px, is_audio: false, gain_label: "0dB", color: Theme.track-synth, base_color: Theme.track-synth, text_color: Tokens.skin-text-strong, guide_color: Theme.track-synth, marker_color: Theme.track-synth },
+        { track_id: 1, label: "Neuro Groove Chorus", start_px: 405px, width_px: 280px, is_audio: false, gain_label: "0dB", color: Theme.track-synth, base_color: Theme.track-synth, text_color: Tokens.skin-text-strong, guide_color: Theme.track-synth, marker_color: Theme.track-synth },
+        { track_id: 1, label: "Bass Bridge Modulation", start_px: 700px, width_px: 240px, is_audio: false, gain_label: "0dB", color: Theme.track-synth, base_color: Theme.track-synth, text_color: Tokens.skin-text-strong, guide_color: Theme.track-synth, marker_color: Theme.track-synth },
+        { track_id: 1, label: "Sub Glide Drop 2", start_px: 955px, width_px: 320px, is_audio: false, gain_label: "0dB", color: Theme.track-synth, base_color: Theme.track-synth, text_color: Tokens.skin-text-strong, guide_color: Theme.track-synth, marker_color: Theme.track-synth },
+        { track_id: 1, label: "Outro Sub Reso", start_px: 1290px, width_px: 360px, is_audio: false, gain_label: "0dB", color: Theme.track-synth, base_color: Theme.track-synth, text_color: Tokens.skin-text-strong, guide_color: Theme.track-synth, marker_color: Theme.track-synth },
+        { track_id: 2, label: "Drum Fill", start_px: 80px, width_px: 75px, is_audio: true, gain_label: "Gain: +1.5dB", color: Theme.track-drum, base_color: Theme.track-drum, text_color: Tokens.skin-text-strong, guide_color: Theme.track-drum, marker_color: Theme.track-drum },
+        { track_id: 2, label: "124BPM Full Tech Loop", start_px: 160px, width_px: 395px, is_audio: true, gain_label: "Gain: 0dB", color: Theme.track-drum, base_color: Theme.track-drum, text_color: Tokens.skin-text-strong, guide_color: Theme.track-drum, marker_color: Theme.track-drum },
+        { track_id: 2, label: "Snare Roll Build", start_px: 565px, width_px: 280px, is_audio: true, gain_label: "Gain: +1dB", color: Theme.track-drum, base_color: Theme.track-drum, text_color: Tokens.skin-text-strong, guide_color: Theme.track-drum, marker_color: Theme.track-drum },
+        { track_id: 2, label: "Drop Groove + Cymbals", start_px: 860px, width_px: 380px, is_audio: true, gain_label: "Gain: 0dB", color: Theme.track-drum, base_color: Theme.track-drum, text_color: Tokens.skin-text-strong, guide_color: Theme.track-drum, marker_color: Theme.track-drum },
+        { track_id: 2, label: "Outro Percussion Stems", start_px: 1260px, width_px: 420px, is_audio: true, gain_label: "Gain: -0.5dB", color: Theme.track-drum, base_color: Theme.track-drum, text_color: Tokens.skin-text-strong, guide_color: Theme.track-drum, marker_color: Theme.track-drum },
+        { track_id: 3, label: "Cm9 -> AbMaj7 Granular Cloud", start_px: 0px, width_px: 480px, is_audio: false, gain_label: "0dB", color: Theme.track-pad, base_color: Theme.track-pad, text_color: Tokens.skin-text-strong, guide_color: Theme.track-pad, marker_color: Theme.track-pad },
+        { track_id: 3, label: "Shimmer Pad High", start_px: 495px, width_px: 350px, is_audio: false, gain_label: "0dB", color: Theme.track-pad, base_color: Theme.track-pad, text_color: Tokens.skin-text-strong, guide_color: Theme.track-pad, marker_color: Theme.track-pad },
+        { track_id: 3, label: "Ambient Drone Mid", start_px: 860px, width_px: 360px, is_audio: false, gain_label: "0dB", color: Theme.track-pad, base_color: Theme.track-pad, text_color: Tokens.skin-text-strong, guide_color: Theme.track-pad, marker_color: Theme.track-pad },
+        { track_id: 3, label: "Granular Shimmer Outro", start_px: 1240px, width_px: 450px, is_audio: false, gain_label: "0dB", color: Theme.track-pad, base_color: Theme.track-pad, text_color: Tokens.skin-text-strong, guide_color: Theme.track-pad, marker_color: Theme.track-pad },
+        { track_id: 4, label: "Lead Vox Take 3 (Swipe Comp)", start_px: 160px, width_px: 235px, is_audio: true, gain_label: "Gain: 0dB", color: Theme.track-vocal, base_color: Theme.track-vocal, text_color: Tokens.skin-text-strong, guide_color: Theme.track-vocal, marker_color: Theme.track-vocal },
+        { track_id: 4, label: "Chorus Harmonies", start_px: 405px, width_px: 280px, is_audio: true, gain_label: "Gain: 0dB", color: Theme.track-vocal, base_color: Theme.track-vocal, text_color: Tokens.skin-text-strong, guide_color: Theme.track-vocal, marker_color: Theme.track-vocal },
+        { track_id: 4, label: "Lead Vox Hook 2", start_px: 700px, width_px: 240px, is_audio: true, gain_label: "Gain: 0dB", color: Theme.track-vocal, base_color: Theme.track-vocal, text_color: Tokens.skin-text-strong, guide_color: Theme.track-vocal, marker_color: Theme.track-vocal },
+        { track_id: 4, label: "Double Vox Layer", start_px: 955px, width_px: 290px, is_audio: true, gain_label: "Gain: -1dB", color: Theme.track-vocal, base_color: Theme.track-vocal, text_color: Tokens.skin-text-strong, guide_color: Theme.track-vocal, marker_color: Theme.track-vocal },
+        { track_id: 4, label: "Vocal Adlibs Reverb Tail", start_px: 1260px, width_px: 380px, is_audio: true, gain_label: "Gain: -1.5dB", color: Theme.track-vocal, base_color: Theme.track-vocal, text_color: Tokens.skin-text-strong, guide_color: Theme.track-vocal, marker_color: Theme.track-vocal },
+        { track_id: 5, label: "Polymetric Arp 5/16", start_px: 80px, width_px: 320px, is_audio: false, gain_label: "0dB", color: Theme.track-seq, base_color: Theme.track-seq, text_color: Tokens.skin-text-strong, guide_color: Theme.track-seq, marker_color: Theme.track-seq },
+        { track_id: 5, label: "Synth Arp Riff 2", start_px: 415px, width_px: 270px, is_audio: false, gain_label: "0dB", color: Theme.track-seq, base_color: Theme.track-seq, text_color: Tokens.skin-text-strong, guide_color: Theme.track-seq, marker_color: Theme.track-seq },
+        { track_id: 5, label: "Modulated Arp Bridge", start_px: 700px, width_px: 360px, is_audio: false, gain_label: "0dB", color: Theme.track-seq, base_color: Theme.track-seq, text_color: Tokens.skin-text-strong, guide_color: Theme.track-seq, marker_color: Theme.track-seq },
+        { track_id: 5, label: "Filtered Outro Arp", start_px: 1080px, width_px: 480px, is_audio: false, gain_label: "0dB", color: Theme.track-seq, base_color: Theme.track-seq, text_color: Tokens.skin-text-strong, guide_color: Theme.track-seq, marker_color: Theme.track-seq }
     ];
 
     in-out property <int> selected-track-index: 3;
@@ -366,7 +366,7 @@ export component MainWindow inherits Window {
     in-out property <string> master-pan: "C";
     in-out property <bool> master-mute: false;
     in-out property <bool> master-solo: false;
-    in-out property <color> master-color: #2c3a63;
+    in-out property <color> master-color: Theme.track-bass;
     in-out property <string> master-color-label: @tr("靛青");
     in-out property <string> master-meter-peak: "-120.0";
     in-out property <string> master-meter-rms: "-120.0";
@@ -1667,7 +1667,7 @@ export component MainWindow inherits Window {
             y: 54px;
             width: 310px;
             height: 34px;
-            background: #0e1422f6;
+            background: Tokens.bg-void.with-alpha(0.96);
             border-radius: 6px;
             border-width: 1px;
             border-color: Theme.accent.with-alpha(0.6);
@@ -1696,7 +1696,7 @@ export component MainWindow inherits Window {
                         font-family: Tokens.font-ui;
                         font-size: 10px;
                         font-weight: 600;
-                        color: #f8fafc;
+                        color: Tokens.skin-text-strong;
                         vertical-alignment: center;
                         wrap: word-wrap;
                         overflow: elide;
@@ -1709,12 +1709,12 @@ export component MainWindow inherits Window {
                     height: 18px;
                     y: 8px;
                     border-radius: 9px;
-                    background: #ffffff14;
+                    background: Tokens.skin-hairline;
                     Text {
                         text: "✕";
                         font-family: Tokens.font-ui;
                         font-size: 10.5px;
-                        color: #cbd5e1;
+                        color: Tokens.skin-text-body;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -1735,10 +1735,10 @@ export component MainWindow inherits Window {
             y: 52px;
             width: root.width - 32px;
             height: 36px;
-            background: #450a0af2;
+            background: Tokens.skin-arm.with-alpha(0.95);
             border-radius: 6px;
             border-width: 1px;
-            border-color: #ef4444;
+            border-color: Tokens.skin-arm;
             accessible-role: banner;
             accessible-id: "engine-error-banner";
             accessible-label: @tr("引擎错误横幅");
@@ -1746,12 +1746,12 @@ export component MainWindow inherits Window {
                 padding-left: 12px; padding-right: 12px; alignment: space-between;
                 Text {
                     text: @tr("音频引擎提示: {}", root.engine-error);
-                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: #fecaca;
+                    font-family: Tokens.font-ui; font-size: 11px; font-weight: 700; color: Tokens.skin-arm;
                     vertical-alignment: center;
                 }
                 Rectangle {
-                    width: 20px; height: 20px; y: 8px; border-radius: 3px; background: #7f1d1d;
-                    Text { text: "×"; font-size: 12px; color: #fecaca; horizontal-alignment: center; vertical-alignment: center; }
+                    width: 20px; height: 20px; y: 8px; border-radius: 3px; background: Tokens.skin-arm;
+                    Text { text: "×"; font-size: 12px; color: Tokens.skin-arm; horizontal-alignment: center; vertical-alignment: center; }
                     TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.engine-error = ""; } }
                 }
             }
@@ -2028,10 +2028,10 @@ export component MainWindow inherits Window {
                 y: (Theme.hover-tip-y + Theme.hover-tip-target-h + 34px > root.height) ?
                     Math.max(6px, Theme.hover-tip-y - self.height - 6px) :
                     (Theme.hover-tip-y + Theme.hover-tip-target-h + 6px);
-                background: #090e1cf8;
+                background: Tokens.bg-void.with-alpha(0.97);
                 border-radius: 4px;
                 border-width: 1px;
-                border-color: #38bdf888;
+                border-color: Theme.accent.with-alpha(0.53);
 
                 tip-layout := HorizontalLayout {
                     padding-left: 8px;
@@ -2052,7 +2052,7 @@ export component MainWindow inherits Window {
                         font-family: Tokens.font-ui;
                         font-size: Tokens.font-size-xs;
                         font-weight: 600;
-                        color: #f8fafc;
+                        color: Tokens.skin-text-strong;
                         vertical-alignment: center;
                     }
                 }

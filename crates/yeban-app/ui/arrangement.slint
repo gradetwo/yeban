@@ -163,10 +163,10 @@ export component ArrangementViewport inherits Rectangle {
                                 // 超长语种由 elide 兜底，避免把同行右侧的"和弦展开/＋轨道"挤出去。
                                 width: Math.min(96px, Math.max(72px, menu-label.preferred-width + 10px));
                                 height: 18px;
-                                background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? #253045 : #161b28);
+                                background: root.active-local-menu == "tracks" ? Theme.accent : (arr-menu-touch.has-hover ? Tokens.bg-panel-alt : Tokens.bg-panel-alt);
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: root.active-local-menu == "tracks" ? Theme.accent : #ffffff18;
+                                border-color: root.active-local-menu == "tracks" ? Theme.accent : Tokens.skin-active;
                                 menu-label := Text {
                                     text: @tr("轨道菜单");
                                     width: Math.min(menu-label.preferred-width, parent.width - 6px);
@@ -174,7 +174,7 @@ export component ArrangementViewport inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
-                                    color: root.active-local-menu == "tracks" ? #020617 : #e2e8f0;
+                                    color: root.active-local-menu == "tracks" ? Tokens.skin-inset : Tokens.skin-text-body;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
@@ -197,10 +197,10 @@ export component ArrangementViewport inherits Rectangle {
                                 spacing: 4px;
                                 // Chord Track fold toggle
                                 Rectangle {
-                                    background: root.show-chord-track ? Theme.accent.with-alpha(0.25) : (chord-toggle-touch.has-hover ? #ffffff0d : transparent);
+                                    background: root.show-chord-track ? Theme.accent.with-alpha(0.25) : (chord-toggle-touch.has-hover ? Tokens.skin-hover : transparent);
                                     border-radius: 2px;
                                     border-width: 1px;
-                                    border-color: root.show-chord-track ? Theme.accent : #ffffff14;
+                                    border-color: root.show-chord-track ? Theme.accent : Tokens.skin-hairline;
                                     height: 18px;
                                     HorizontalLayout {
                                         padding-left: 5px;
@@ -210,7 +210,7 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-ui;
                                             font-size: 9.5px;
                                             font-weight: 600;
-                                            color: root.show-chord-track ? Theme.accent : #cbd5e1;
+                                            color: root.show-chord-track ? Theme.accent : Tokens.skin-text-body;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -264,10 +264,10 @@ export component ArrangementViewport inherits Rectangle {
 
                         if root.show-chord-track : Rectangle {
                             height: 22px;
-                            background: #141a26;
+                            background: Tokens.bg-lane2;
                             border-radius: 3px;
                             border-width: 1px;
-                            border-color: #1e2638;
+                            border-color: Tokens.bg-panel;
 
                             HorizontalLayout {
                                 padding-left: 6px;
@@ -278,14 +278,14 @@ export component ArrangementViewport inherits Rectangle {
                                     font-family: Tokens.font-ui;
                                     font-size: 9.5px;
                                     font-weight: 600;
-                                    color: #cbd5e1;
+                                    color: Tokens.skin-text-body;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: @tr("智能和声声学");
                                     font-family: Tokens.font-ui;
                                     font-size: 9px;
-                                    color: #b6c2d2;
+                                    color: Tokens.skin-text-dim;
                                     vertical-alignment: center;
                                 }
                             }
@@ -341,9 +341,9 @@ export component ArrangementViewport inherits Rectangle {
                             // #0e1118 只有 1.04:1, 带与车道几乎同色;
                             // 轨道头底色同值, 整条头部带同面)。边框色
                             // 同理: main 形态无边框色 (透明), 扁平支
-                            // 保留十一版 #ffffff0a。
-                            background: Tokens.texture-physical ? Tokens.ruler-brush : #1d2733;
-                            border-color: Tokens.texture-physical ? transparent : #ffffff0a;
+                            // 保留十一版 Tokens.skin-hover。
+                            background: Tokens.texture-physical ? Tokens.ruler-brush : Tokens.bg-shell;
+                            border-color: Tokens.texture-physical ? transparent : Tokens.skin-hover;
                             clip: true;
 
                             // [Q6] 标尺格数与间距来自投影（`host::apply_view` 的
@@ -375,35 +375,26 @@ export component ArrangementViewport inherits Rectangle {
                                 vertical-alignment: center;
                             }
 
-                            // 小节刻度线: 标尺底部 5px, 与编曲区网格竖线同 x ——
-                            // 眼睛从小节号垂直落下即对上网格 (四条之 4 的对齐要求)。
-                            // 拟物支形态 (main, 逐形照旧): 刻度只在拟物套出现
-                            // (刻蚀感的一部分)。扁平支走下方三档字面刻度块
-                            // (裁决甲, Wang 2026-11-17 19:58: 整块二选一)。
-                            for i in root.bar-count : Rectangle {
-                                visible: Tokens.texture-physical;
-                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
-                                y: parent.height - 5px;
-                                width: 1px;
-                                height: 5px;
-                                background: Tokens.divider-grid-strong;
-                            }
+                            // 刻度三档 (小节 / 拍 / 拍内细分), 2026-11-18 起
+                            // **两套主题共用**这一块: 拟物先前只有一条 5px 的小节
+                            // 刻度 (刻蚀感), 扁平有三档字面色阶, 用户要求拟物也按
+                            // 扁平那样加拍内刻度 ⇒ 合并成一套几何 (1 : 1/2 : 1/4,
+                            // 12 / 6 / 3 px, 下对齐), 色值改走 `Tokens.ruler-tick-*`
+                            // (拟物各降一档, 见 tokens.slint 该组注释)。
+                            // 可见性仍走宿主密度读数 (`grid_density`): 小节刻度只在
+                            // 线条单位整数倍的小节上画; 拍刻度须每拍 >= 8px; 细分
+                            // 份数 (每拍 4/2/0) 由宿主按细分距 >= 8px 逐档退。
 
-                            // 扁平支刻度块 (裁决甲): 本块每个 visible 均加
-                            // `!Tokens.texture-physical` 门控, 与上方拟物支
-                            // 令牌刻度整块二选一, 色值/几何逐值照旧。
                             // 小节刻度 + 拍刻度 + 细分刻度（五版，Wang
                             // 2026-11-17 14:37 按 Logic Pro 实测规格定）：
                             // Logic 图一实测——刻度全 1px 宽，长度分级：
                             // 小节刻度满刻度行高、拍刻度约半行（下对齐）。
                             // 本带高 24px，刻度行取带下半 12px：小节 12px、
                             // 拍 6px、细分 3px（1 : 1/2 : 1/4，下对齐）。
-                            // 颜色沿用四版同色相处理（灰蓝 211°，只差亮度），
-                            // 对标尺带底 #1d2733（相对亮度 0.0195）实算：
-                            // 小节刻度 #83909e（0.2724）比 4.64:1（≥4.5）；
-                            // 拍刻度 #6e7f8f（0.2048）比 3.67:1（≥3）；
-                            // 细分刻度 #66788a（0.1809）比 3.32:1（≥3 硬
-                            // 下限）。小节编号 #cbd5e1 对标尺带 10.17:1。
+                            // 亮度门槛（扁平套，对标尺带底 #1d2733 实算）：
+                            // 小节 4.64:1（≥4.5）；拍 3.67:1（≥3）；
+                            // 细分 3.32:1（≥3 硬下限）。拟物套同门槛、各降一档。
+                            // 小节编号 Tokens.ruler-ink 对标尺带 10.17:1。
                             // 可见性走宿主密度读数（`grid_density`）：小节
                             // 刻度只在线条单位整数倍的小节上画；拍刻度须
                             // 每拍 >= 8px；细分份数（每拍 4/2/0）由宿主
@@ -416,21 +407,21 @@ export component ArrangementViewport inherits Rectangle {
                                 background: transparent;
 
                                 Rectangle {
-                                    visible: !Tokens.texture-physical && (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
+                                    visible: (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
                                     x: 0px;
                                     y: parent.height - 12px;
                                     width: 1px;
                                     height: 12px;
-                                    background: #83909e;
+                                    background: Tokens.ruler-tick-bar;
                                 }
 
                                 for beat in root.beats-per-bar : Rectangle {
-                                    visible: beat > 0 && root.grid-show-beat-ticks && !Tokens.texture-physical;
+                                    visible: beat > 0 && root.grid-show-beat-ticks;
                                     x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
                                     y: parent.height - 6px;
                                     width: 1px;
                                     height: 6px;
-                                    background: #6e7f8f;
+                                    background: Tokens.ruler-tick-beat;
                                 }
 
                                 for beat in root.beats-per-bar : Rectangle {
@@ -441,12 +432,12 @@ export component ArrangementViewport inherits Rectangle {
                                     background: transparent;
 
                                     for sub in root.grid-subdiv-per-beat : Rectangle {
-                                        visible: sub > 0 && !Tokens.texture-physical;
+                                        visible: sub > 0;
                                         x: beat * (root.bar-width-px / max(1, root.beats-per-bar)) + sub * (root.bar-width-px / max(1, root.beats-per-bar) / max(1, root.grid-subdiv-per-beat));
                                         y: parent.height - 3px;
                                         width: 1px;
                                         height: 3px;
-                                        background: #66788a;
+                                        background: Tokens.ruler-tick-sub;
                                     }
                                 }
                             }
@@ -486,10 +477,10 @@ export component ArrangementViewport inherits Rectangle {
                                 y: 2px;
                                 width: 114px;
                                 height: 20px;
-                                background: #0b0e16cc;
+                                background: Tokens.bg-void.with-alpha(0.80);
                                 border-radius: 3px;
                                 border-width: 1px;
-                                border-color: #ffffff14;
+                                border-color: Tokens.skin-hairline;
 
                                 HorizontalLayout {
                                     padding-left: 3px;
@@ -501,32 +492,32 @@ export component ArrangementViewport inherits Rectangle {
                                         width: 25px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: hz-out-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "H−"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        background: hz-out-touch.has-hover ? Tokens.skin-chip : transparent;
+                                        Text { text: "H−"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
                                         hz-out-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(false); } }
                                     }
                                     Rectangle {
                                         width: 25px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: hz-in-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "H+"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        background: hz-in-touch.has-hover ? Tokens.skin-chip : transparent;
+                                        Text { text: "H+"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
                                         hz-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-h-step(true); } }
                                     }
                                     Rectangle {
                                         width: 25px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: vt-out-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "V−"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        background: vt-out-touch.has-hover ? Tokens.skin-chip : transparent;
+                                        Text { text: "V−"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
                                         vt-out-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-v-step(false); } }
                                     }
                                     Rectangle {
                                         width: 25px;
                                         height: 16px;
                                         border-radius: 2px;
-                                        background: vt-in-touch.has-hover ? #1f2736 : transparent;
-                                        Text { text: "V+"; font-family: Tokens.font-mono; font-size: 9.5px; color: #cbd5e1; horizontal-alignment: center; vertical-alignment: center; }
+                                        background: vt-in-touch.has-hover ? Tokens.skin-chip : transparent;
+                                        Text { text: "V+"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
                                         vt-in-touch := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { root.zoom-v-step(true); } }
                                     }
                                 }
@@ -536,7 +527,7 @@ export component ArrangementViewport inherits Rectangle {
                         // Chord Progression Track (30px) - Harmonized with mineral color order (Collapsible)
                         if root.show-chord-track : Rectangle {
                             height: 30px;
-                            background: #0d1017;
+                            background: Tokens.skin-inset;
 
                             HorizontalLayout {
                                 padding: 3px;
@@ -546,16 +537,16 @@ export component ArrangementViewport inherits Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
                                     // 九版（Wang 16:43）：和弦块底改和弦色纯色本体
-                                    // #387691（八版合成等效实色 = 和弦色混黑，废）。
+                                    // Theme.track-synth（八版合成等效实色 = 和弦色混黑，废）。
                                     // hover 按同色明度微调（±0.04，方向取文字仍
                                     // >= 4.5 的一侧，本块为 -0.04）；边框为同色更深
                                     // 一档实色（明度 -0.10 / hover -0.05），不用
                                     // alpha。文字按底色选近白/纯白/纯黑（>= 4.5）。
                                     // 五块同规则，数值各自按其和弦色算。
-                                    background: chord-1-touch.has-hover ? #326a82 : #387691;
+                                    background: chord-1-touch.has-hover ? Theme.track-synth.brighter(0.18) : Theme.track-synth;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-1-touch.has-hover ? #31677f : #2a586c;
+                                    border-color: chord-1-touch.has-hover ? Theme.track-synth.brighter(0.08) : Theme.track-synth.darker(0.12);
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -566,14 +557,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -594,10 +585,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-2-touch.has-hover ? #7a6694 : #705e88;
+                                    background: chord-2-touch.has-hover ? Theme.track-pad.brighter(0.18) : Theme.track-pad;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-2-touch.has-hover ? #645479 : #57496a;
+                                    border-color: chord-2-touch.has-hover ? Theme.track-pad.brighter(0.08) : Theme.track-pad.darker(0.12);
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -608,14 +599,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -636,10 +627,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-3-touch.has-hover ? #2e6a58 : #347864;
+                                    background: chord-3-touch.has-hover ? Theme.track-vocal.brighter(0.18) : Theme.track-vocal;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-3-touch.has-hover ? #2c6655 : #255446;
+                                    border-color: chord-3-touch.has-hover ? Theme.track-vocal.brighter(0.08) : Theme.track-vocal.darker(0.12);
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -650,14 +641,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -678,10 +669,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-4-touch.has-hover ? #8b6033 : #9a6a38;
+                                    background: chord-4-touch.has-hover ? Theme.track-drum.brighter(0.18) : Theme.track-drum;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-4-touch.has-hover ? #875d31 : #75502a;
+                                    border-color: chord-4-touch.has-hover ? Theme.track-drum.brighter(0.08) : Theme.track-drum.darker(0.12);
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -692,14 +683,14 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 10px;
                                             font-weight: 400;
-                                            color: #ffffff;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 9px;
-                                            color: #ffffff;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -720,10 +711,10 @@ export component ArrangementViewport inherits Rectangle {
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     min-width: 90px;
-                                    background: chord-5-touch.has-hover ? #326a82 : #387691;
+                                    background: chord-5-touch.has-hover ? Theme.track-synth.brighter(0.18) : Theme.track-synth;
                                     border-radius: Theme.radius;
                                     border-width: 1px;
-                                    border-color: chord-5-touch.has-hover ? #31677f : #2a586c;
+                                    border-color: chord-5-touch.has-hover ? Theme.track-synth.brighter(0.08) : Theme.track-synth.darker(0.12);
 
                                     HorizontalLayout {
                                         padding-left: 8px;
@@ -734,16 +725,16 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 700;
-                                            color: #f1f5f9;
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                         Text {
                                             text: @tr("▶ 试听");
                                             font-family: Tokens.font-ui;
                                             font-size: 8px;
-                                            // 九版：底改和弦色纯色 #387691，文字随块统一
-                                            // 用 #f1f5f9（对纯色底实算 4.60:1，>= 4.5）。
-                                            color: #f1f5f9;
+                                            // 九版：底改和弦色纯色 Theme.track-synth，文字随块统一
+                                            // 用 Tokens.skin-text-strong（对纯色底实算 4.60:1，>= 4.5）。
+                                            color: Tokens.skin-text-strong;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -850,7 +841,7 @@ export component ArrangementViewport inherits Rectangle {
                                     text: @tr("右置轨道头模式 (镜像工作区)");
                                     font-family: Tokens.font-ui;
                                     font-size: 8px;
-                                    color: #cbd5e1;
+                                    color: Tokens.skin-text-body;
                                     vertical-alignment: center;
                                 }
                             }
@@ -896,7 +887,7 @@ export component ArrangementViewport inherits Rectangle {
             // 侧原本无底色 (透出 root 的 Theme.bg-canvas), 十一版
             // 字面底只许落扁平支 ⇒ 写成质感三元, 拟物支 transparent
             // 逐像素复现 main 形态。
-            background: Tokens.texture-physical ? transparent : #1d2333;
+            background: Tokens.texture-physical ? transparent : Tokens.bg-lane;
 
             // ⭐ 轨道一多（16 轨 × 56px = 896px）时，固定高度的 VerticalLayout 会把
             // 内容撑出工作区、把下方钢琴卷帘/混音台顶出窗口。这里改成纵向 Flickable：
@@ -908,6 +899,77 @@ export component ArrangementViewport inherits Rectangle {
                 content-width: self.width;
                 content-height: max(self.height, root.sheet-height + 42px + 46px);
                 interactive: true;
+                // ─── 轨道区背景网格（整幅铺满）───────────────────────
+                // 负责人 2026-11-18 口径：网格是**背景**，不是行内装饰——
+                // 一层铺满 Flickable 全高（含轨道行与下方空置区），空轨道
+                // 与空置区同样有网格；层级自下而上 =
+                // 车道底色 → 行分隔线 → 小节/拍/细分线 → 行选中态 → 片段。
+                // 两套主题同一套 mark：同 x、同 1px、同门槛，只有线色不同
+                //（§13 skin-grid-*，Logic 式低反差：线只比底色亮一档）。
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: max(parent.height, root.sheet-height + 88px);
+                    background: Tokens.bg-lane;
+
+                    // 行底分隔线（先画，网格后画 ⇒ 竖线压在横线之上）
+                    for _row[idx] in root.tracks : Rectangle {
+                        x: 0px;
+                        y: root.track-ys[idx] + root.track-heights[idx] - 1px;
+                        width: parent.width;
+                        height: 1px;
+                        background: Tokens.skin-grid-row;
+                    }
+
+                    // 小节线
+                    for _bar in root.bar-count : Rectangle {
+                        visible: (root.bar-start-index + _bar).mod(max(1, root.grid-line-unit)) == 0;
+                        x: ((root.bar-start-index + _bar) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _bar] : (root.bar-start-index + _bar) * root.bar-width-px) - root.scroll-x;
+                        y: 0px;
+                        width: 1px;
+                        height: parent.height;
+                        background: Tokens.skin-grid-bar;
+                    }
+
+                    // 拍线 + 拍内细分（每拍 >= 24px 画拍线；>= 48px 再画 1/4 细分）
+                    for _beat_bar in root.bar-count : Rectangle {
+                        x: ((root.bar-start-index + _beat_bar) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _beat_bar] : (root.bar-start-index + _beat_bar) * root.bar-width-px) - root.scroll-x;
+                        y: 0px;
+                        width: root.bar-width-px;
+                        height: parent.height;
+                        background: transparent;
+
+                        for beat in root.beats-per-bar : Rectangle {
+                            visible: beat > 0 && root.grid-show-lane-beats;
+                            x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
+                            y: 0px;
+                            width: 1px;
+                            height: parent.height;
+                            background: Tokens.skin-grid-beat;
+
+                            for sub in [1, 2, 3] : Rectangle {
+                                visible: (root.bar-width-px / max(1, root.beats-per-bar)) >= 48px;
+                                x: sub * ((root.bar-width-px / max(1, root.beats-per-bar)) / 4);
+                                y: 0px;
+                                width: 1px;
+                                height: parent.height;
+                                background: Tokens.skin-grid-sub;
+                            }
+                        }
+                    }
+
+                    // 行选中态（半透明提亮，压在网格上、片段下）
+                    for _sel[idx] in root.tracks : Rectangle {
+                        visible: _sel.id == root.selected-track-id;
+                        x: 0px;
+                        y: root.track-ys[idx];
+                        width: parent.width;
+                        height: root.track-heights[idx];
+                        background: Theme.accent.with-alpha(0.06);
+                    }
+                }
+
 
                 // 背景滚轮兜底（含顶部 42px 留白与末尾空白区），保证双指横向/纵向滑动在整块区域均响应
                 TouchArea {
@@ -928,14 +990,14 @@ export component ArrangementViewport inherits Rectangle {
                     // 扁平支 = 十一版形态（八版 Logic 式：七版纯白边框
                     // 作废，选中只由提亮承载——车道底改回蓝调 #1d2333
                     // 后选中行底按相对亮度比 1.80 重算为 #273146，相对
-                    // 亮度 0.0307；行边框 #ffffff0a 0px 与未选中行同款；
+                    // 亮度 0.0307；行边框 Tokens.skin-hover 0px 与未选中行同款；
                     // 轨道色与 accent 双脱钩，色条仍保留轨道色）。
                     // 拟物支 = main 形态（选中行 accent α0.08 底 +
-                    // α0.70 边 1.5px，未选中 #ffffff0a 淡框）。
-                    background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.08) : transparent) : (trk.id == root.selected-track-id ? #273146 : transparent);
-                    border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.70) : #ffffff0a) : #ffffff0a;
-                    border-width: Tokens.texture-physical ? (trk.id == root.selected-track-id ? 1.5px : 0px) : 0px;
-
+                    // α0.70 边 1.5px，未选中 Tokens.skin-hover 淡框）。
+                    // 行底与选中态统一由轨道区背景层绘制（网格在上面、片段再压上来）；
+                    // 行本体保持透明，避免把整幅网格挡住。
+                    background: transparent;
+                    border-width: 0px;
                     HorizontalLayout {
                         spacing: 0px;
 
@@ -949,7 +1011,7 @@ export component ArrangementViewport inherits Rectangle {
                             // Logic 式: 未选中头底 #1d2733 按亮度比 1.80
                             // 线性提亮; 边框恒 Theme.border-subtle 与未选中
                             // 行同款, 七版 #16232b 与纯白边框同废)。
-                            background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);
+                            background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.12) : Tokens.bg-panel);
                             border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle) : Theme.border-subtle;
 
                             // Left color strip (illuminated on focus)
@@ -983,16 +1045,16 @@ export component ArrangementViewport inherits Rectangle {
                                         font-family: Tokens.font-ui;
                                         font-size: 11px;
                                         font-weight: 700;
-                                        color: trk.id == root.selected-track-id ? #ffffff : #cbd5e1;
+                                        color: trk.id == root.selected-track-id ? Tokens.skin-text-strong : Tokens.skin-text-body;
                                         overflow: elide;
                                         vertical-alignment: center;
                                         horizontal-stretch: 1;
                                     }
                                     Rectangle {
-                                        background: badge-left-touch.has-hover ? #1e293b : #00000050;
+                                        background: badge-left-touch.has-hover ? Tokens.line : Tokens.skin-scrim;
                                         border-radius: 2px;
                                         border-width: 1px;
-                                        border-color: badge-left-touch.has-hover ? Theme.accent : #ffffff14;
+                                        border-color: badge-left-touch.has-hover ? Theme.accent : Tokens.skin-hairline;
                                         // 108px 在 1460 宽窗口下仍然差几个像素：`Yeban PolySynth [v]`
                                         // 实测被省成「Yeban PolySyn…」，名字尾巴和 `[v]` 换音色入口都读不清。
                                         // 抬到 140px，长音色名能整段显示（轨道名是 stretch + elide，不会溢出）。
@@ -1008,7 +1070,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 horizontal-stretch: 1;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
-                                                color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
+                                                color: badge-left-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                                                 font-weight: 400;
                                                 overflow: elide;
                                                 vertical-alignment: center;
@@ -1017,7 +1079,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: " [v]";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
-                                                color: badge-left-touch.has-hover ? #f8fafc : #cbd5e1;
+                                                color: badge-left-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                                                 font-weight: 400;
                                                 vertical-alignment: center;
                                             }
@@ -1053,15 +1115,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #f59e0b : (m-btn-touch.has-hover ? #1f2432 : #141822);
+                                            background: trk.muted ? Tokens.skin-mute : (m-btn-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
-                                            border-color: trk.muted ? #d97706 : #ffffff14;
+                                            border-color: trk.muted ? Tokens.skin-mute : Tokens.skin-hairline;
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 10px;
                                                 font-weight: 400;
-                                                color: trk.muted ? #0f172a : (m-btn-touch.has-hover ? #f8fafc : #cbd5e1);
+                                                color: trk.muted ? Tokens.bg-lane2 : (m-btn-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1083,15 +1145,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? #eab308 : (s-btn-touch.has-hover ? #1f2432 : #141822);
+                                            background: trk.soloed ? Tokens.skin-mute : (s-btn-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
-                                            border-color: trk.soloed ? #ca8a04 : #ffffff14;
+                                            border-color: trk.soloed ? Tokens.skin-mute : Tokens.skin-hairline;
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 10px;
                                                 font-weight: 400;
-                                                color: trk.soloed ? #0f172a : (s-btn-touch.has-hover ? #f8fafc : #cbd5e1);
+                                                color: trk.soloed ? Tokens.bg-lane2 : (s-btn-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1113,15 +1175,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #ef4444 : (r-btn-touch.has-hover ? #1f2432 : #141822);
+                                            background: trk.armed ? Tokens.skin-arm : (r-btn-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
-                                            border-color: trk.armed ? #dc2626 : #ffffff14;
+                                            border-color: trk.armed ? Tokens.skin-arm : Tokens.skin-hairline;
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 10px;
                                                 font-weight: 400;
-                                                color: trk.armed ? #ffffff : (r-btn-touch.has-hover ? #f8fafc : #cbd5e1);
+                                                color: trk.armed ? Tokens.skin-text-strong : (r-btn-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1149,10 +1211,10 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 38px;
                                             height: 20px;
-                                            background: pan-touch.has-hover ? #182030 : #10141e;
+                                            background: pan-touch.has-hover ? Tokens.skin-chip : Tokens.skin-inset;
                                             border-radius: 3px;
                                             border-width: 1px;
-                                            border-color: #ffffff14;
+                                            border-color: Tokens.skin-hairline;
                                             HorizontalLayout {
                                                 alignment: center;
                                                 spacing: 2px;
@@ -1161,7 +1223,7 @@ export component ArrangementViewport inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 8.5px;
                                                     font-weight: 400;
-                                                    color: #b6c2d2;
+                                                    color: Tokens.skin-text-dim;
                                                     vertical-alignment: center;
                                                 }
                                                 Text {
@@ -1169,7 +1231,7 @@ export component ArrangementViewport inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 9px;
                                                     font-weight: 400;
-                                                    color: #e2e8f0;
+                                                    color: Tokens.skin-text-body;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -1202,17 +1264,17 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 44px;
                                             height: 20px;
-                                            background: vol-touch.has-hover ? #182030 : transparent;
+                                            background: vol-touch.has-hover ? Tokens.skin-chip : transparent;
                                             border-radius: 3px;
                                             border-width: vol-touch.has-hover ? 1px : 0px;
-                                            border-color: #ffffff14;
+                                            border-color: Tokens.skin-hairline;
                                             HorizontalLayout {
                                                 alignment: center;
                                                 Text {
                                                     text: root.track-volumes.length > idx ? (root.track-volumes[idx] + "dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + "dB");
                                                     font-family: Tokens.font-mono;
                                                     font-size: 9.5px;
-                                                    color: #e2e8f0;
+                                                    color: Tokens.skin-text-body;
                                                     font-weight: 400;
                                                     vertical-alignment: center;
                                                 }
@@ -1246,10 +1308,10 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 6px;
                                             height: 20px;
-                                            background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                                            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane;
                                             border-radius: 1.5px;
                                             border-width: 0.8px;
-                                            border-color: #ffffff14;
+                                            border-color: Tokens.skin-hairline;
                                             clip: true;
 
                                             Rectangle {
@@ -1258,7 +1320,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 width: 6px;
                                                 height: trk.muted ? 0px : (meter-val(idx) * parent.height);
                                                 border-radius: 1px;
-                                                background: meter-val(idx) > 0.8 ? #ef4444 : (meter-val(idx) > 0.6 ? #f59e0b : #10b981);
+                                                background: meter-val(idx) > 0.8 ? Tokens.skin-arm : (meter-val(idx) > 0.6 ? Tokens.skin-mute : Tokens.skin-meter-low);
                                             }
                                         }
                                     }
@@ -1296,76 +1358,6 @@ export component ArrangementViewport inherits Rectangle {
                             horizontal-stretch: 1;
                             clip: true;
 
-                            // [Q6] 小节网格：位置 / 间距与标尺、片段块同源。
-                            // 裁决甲 (Wang 2026-11-17 19:58): 整块二选一——
-                            // 拟物支 = main 形态 (每 4 小节一条强调线, 索引
-                            // 0 起 ⇒ `i.mod(4) == 0`; 线色走令牌 (四条之
-                            // 3 / 4): 强档 = divider-grid-strong, 弱档 =
-                            // divider-grid; 与标尺底部刻度同 x 对齐; 无
-                            // 拍线元素); 扁平支 = 十一版形态 (下方第二块:
-                            // #979fa8 均匀线 + 拍线 #74808b)。
-                            for i in root.bar-count : Rectangle {
-                                visible: Tokens.texture-physical && (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
-                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
-                                y: 0px;
-                                width: 1px;
-                                height: parent.height;
-                                background: (root.bar-start-index + i).mod(4) == 0 ? Tokens.divider-grid-strong : Tokens.divider-grid;
-                            }
-
-                            // 扁平支车道网格 (十一版, 逐值照旧; visible 加
-                            // `!Tokens.texture-physical` 门控, 与上方拟物支
-                            // 整块二选一)。五版（Wang 2026-11-17 14:37 按
-                            // Logic Pro 实测规格）：线宽全 1px（Logic 图一
-                            // 车道小节线实测 1px、值约 74 / 背景约 52）；
-                            // 取消每 4 小节加重线——Logic 车道与标尺内小节
-                            // 线全均匀。只在线条单位整数倍的小节上画
-                            // （宿主密度读数；极端缩小时单位粗化为每
-                            // 2/4/… 小节一条）。十一版（2026-11-17
-                            // 18:51）：车道底改回蓝调 #1d2333 后线色按新
-                            // 底重算——小节线 #979fa8（相对亮度 0.3420）：
-                            // 对选中行底 #273146 实算 4.86:1（>= 4.5
-                            // 下限）、对未选中行底 #1d2333 5.85:1。
-                            for i in root.bar-count : Rectangle {
-                                visible: !Tokens.texture-physical && (root.bar-start-index + i).mod(max(1, root.grid-line-unit)) == 0;
-                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
-                                y: 0px;
-                                width: 1px;
-                                height: parent.height;
-                                background: #979fa8;
-                            }
-
-                            // 拍线（Wang 2026-11-17：以拍为单位；五版按
-                            // Logic 实测规格改 1px 并加缩放门槛）：节内每拍
-                            // 一根纵线，全部实色、无透明度合成。六版按
-                            // Wang 15:06 终判再淡一档（目标约 3.2:1、硬下限
-                            // ≥3、目标窗 3.15–3.30，比率目标历版不变）。
-                            // 十一版（2026-11-17 18:51）：车道底改回蓝调
-                            // #1d2333 后按新底重算——拍线 #74808b（相对
-                            // 亮度 0.2102）：对最不利底（选中行 #273146）
-                            // 实算 3.22:1（窗内）、对未选中行底 #1d2333
-                            // 3.88:1；小节线 #979fa8（0.3420）对两底
-                            // 4.86／5.85:1。
-                            // 读数：每拍 >= 24px 才画车道拍线（Logic
-                            // 图一每拍 12px 时车道无拍线、只有小节线；
-                            // 24px 为推定阈值，来源见 host::grid_density）。
-                            for i in root.bar-count : Rectangle {
-                                x: ((root.bar-start-index + i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + i] : (root.bar-start-index + i) * root.bar-width-px) - root.scroll-x;
-                                y: 0px;
-                                width: root.bar-width-px;
-                                height: parent.height;
-                                background: transparent;
-
-                                for beat in root.beats-per-bar : Rectangle {
-                                    visible: beat > 0 && root.grid-show-lane-beats && !Tokens.texture-physical;
-                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
-                                    y: 0px;
-                                    width: 1px;
-                                    height: parent.height;
-                                    background: #74808b;
-                                }
-                            }
-
                             // 背景选择与滚轮面必须先于片段块声明，避免遮挡 Clip 点击
                             TouchArea {
                                 clicked => { root.select-track(trk.id); }
@@ -1396,7 +1388,7 @@ export component ArrangementViewport inherits Rectangle {
                                     // trk.color α0.55 同色边框整圈去掉（宽 0，无边框）；
                                     // 选中片段的 2px 纯白边框保留（选中指示，非同色边框）。
                                     border-width: blk.clip_ulid != "" && blk.clip_ulid == root.selected-clip-ulid ? 2px : 0px;
-                                    border-color: #ffffff;
+                                    border-color: Tokens.skin-text-strong;
                                     clip: true;
 
                                     VerticalLayout {
@@ -1582,7 +1574,7 @@ export component ArrangementViewport inherits Rectangle {
                             // main 形态, 扁平支十一版定值 #293645 / 边框
                             // Theme.border-subtle, 七版 #16232b 与纯白边框
                             // 同废; 解法与左头逐字一致)。
-                            background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? #293645 : #1d2733);
+                            background: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.10) : Tokens.track-head-brush) : (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.12) : Tokens.bg-panel);
                             border-color: Tokens.texture-physical ? (trk.id == root.selected-track-id ? Theme.accent.with-alpha(0.80) : Theme.border-subtle) : Theme.border-subtle;
 
                             Rectangle {
@@ -1615,16 +1607,16 @@ export component ArrangementViewport inherits Rectangle {
                                         font-family: Tokens.font-ui;
                                         font-size: 11px;
                                         font-weight: 700;
-                                        color: trk.id == root.selected-track-id ? #ffffff : #cbd5e1;
+                                        color: trk.id == root.selected-track-id ? Tokens.skin-text-strong : Tokens.skin-text-body;
                                         overflow: elide;
                                         vertical-alignment: center;
                                         horizontal-stretch: 1;
                                     }
                                     Rectangle {
-                                        background: badge-right-touch.has-hover ? #1e293b : #00000050;
+                                        background: badge-right-touch.has-hover ? Tokens.line : Tokens.skin-scrim;
                                         border-radius: 2px;
                                         border-width: 1px;
-                                        border-color: badge-right-touch.has-hover ? Theme.accent : #ffffff14;
+                                        border-color: badge-right-touch.has-hover ? Theme.accent : Tokens.skin-hairline;
                                         max-width: 140px;
                                         HorizontalLayout {
                                             padding-left: 4px;
@@ -1635,7 +1627,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 horizontal-stretch: 1;
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
-                                                color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
+                                                color: badge-right-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                                                 font-weight: 400;
                                                 overflow: elide;
                                                 vertical-alignment: center;
@@ -1644,7 +1636,7 @@ export component ArrangementViewport inherits Rectangle {
                                                 text: " [v]";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 9px;
-                                                color: badge-right-touch.has-hover ? #f8fafc : #cbd5e1;
+                                                color: badge-right-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                                                 font-weight: 400;
                                                 vertical-alignment: center;
                                             }
@@ -1678,15 +1670,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.muted ? #f59e0b : (m-btn-r-touch.has-hover ? #1f2432 : #141822);
+                                            background: trk.muted ? Tokens.skin-mute : (m-btn-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
-                                            border-color: trk.muted ? #d97706 : #ffffff14;
+                                            border-color: trk.muted ? Tokens.skin-mute : Tokens.skin-hairline;
                                             Text {
                                                 text: "M";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 10px;
                                                 font-weight: 400;
-                                                color: trk.muted ? #0f172a : (m-btn-r-touch.has-hover ? #f8fafc : #cbd5e1);
+                                                color: trk.muted ? Tokens.bg-lane2 : (m-btn-r-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1707,15 +1699,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.soloed ? #eab308 : (s-btn-r-touch.has-hover ? #1f2432 : #141822);
+                                            background: trk.soloed ? Tokens.skin-mute : (s-btn-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
-                                            border-color: trk.soloed ? #ca8a04 : #ffffff14;
+                                            border-color: trk.soloed ? Tokens.skin-mute : Tokens.skin-hairline;
                                             Text {
                                                 text: "S";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 10px;
                                                 font-weight: 400;
-                                                color: trk.soloed ? #0f172a : (s-btn-r-touch.has-hover ? #f8fafc : #cbd5e1);
+                                                color: trk.soloed ? Tokens.bg-lane2 : (s-btn-r-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1736,15 +1728,15 @@ export component ArrangementViewport inherits Rectangle {
                                             width: 20px;
                                             height: 20px;
                                             border-radius: 3px;
-                                            background: trk.armed ? #ef4444 : (r-btn-r-touch.has-hover ? #1f2432 : #141822);
+                                            background: trk.armed ? Tokens.skin-arm : (r-btn-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel);
                                             border-width: 1px;
-                                            border-color: trk.armed ? #dc2626 : #ffffff14;
+                                            border-color: trk.armed ? Tokens.skin-arm : Tokens.skin-hairline;
                                             Text {
                                                 text: "R";
                                                 font-family: Tokens.font-mono;
                                                 font-size: 10px;
                                                 font-weight: 400;
-                                                color: trk.armed ? #ffffff : (r-btn-r-touch.has-hover ? #f8fafc : #cbd5e1);
+                                                color: trk.armed ? Tokens.skin-text-strong : (r-btn-r-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body);
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
                                             }
@@ -1770,10 +1762,10 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 38px;
                                             height: 20px;
-                                            background: pan-r-touch.has-hover ? #182030 : #10141e;
+                                            background: pan-r-touch.has-hover ? Tokens.skin-chip : Tokens.skin-inset;
                                             border-radius: 3px;
                                             border-width: 1px;
-                                            border-color: #ffffff14;
+                                            border-color: Tokens.skin-hairline;
                                             HorizontalLayout {
                                                 alignment: center;
                                                 spacing: 2px;
@@ -1782,7 +1774,7 @@ export component ArrangementViewport inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 8.5px;
                                                     font-weight: 400;
-                                                    color: #b6c2d2;
+                                                    color: Tokens.skin-text-dim;
                                                     vertical-alignment: center;
                                                 }
                                                 Text {
@@ -1790,7 +1782,7 @@ export component ArrangementViewport inherits Rectangle {
                                                     font-family: Tokens.font-mono;
                                                     font-size: 9px;
                                                     font-weight: 400;
-                                                    color: #e2e8f0;
+                                                    color: Tokens.skin-text-body;
                                                     vertical-alignment: center;
                                                 }
                                             }
@@ -1822,17 +1814,17 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 44px;
                                             height: 20px;
-                                            background: vol-r-touch.has-hover ? #182030 : transparent;
+                                            background: vol-r-touch.has-hover ? Tokens.skin-chip : transparent;
                                             border-radius: 3px;
                                             border-width: vol-r-touch.has-hover ? 1px : 0px;
-                                            border-color: #ffffff14;
+                                            border-color: Tokens.skin-hairline;
                                             HorizontalLayout {
                                                 alignment: center;
                                                 Text {
                                                     text: root.track-volumes.length > idx ? (root.track-volumes[idx] + "dB") : ("" + (Math.round(trk.volume_db * 10.0) / 10.0) + "dB");
                                                     font-family: Tokens.font-mono;
                                                     font-size: 9.5px;
-                                                    color: #e2e8f0;
+                                                    color: Tokens.skin-text-body;
                                                     font-weight: 400;
                                                     vertical-alignment: center;
                                                 }
@@ -1865,10 +1857,10 @@ export component ArrangementViewport inherits Rectangle {
                                         Rectangle {
                                             width: 6px;
                                             height: 20px;
-                                            background: Tokens.texture-physical ? Tokens.void-brush : #06080d;
+                                            background: Tokens.texture-physical ? Tokens.void-brush : Tokens.bg-lane;
                                             border-radius: 1.5px;
                                             border-width: 0.8px;
-                                            border-color: #ffffff14;
+                                            border-color: Tokens.skin-hairline;
                                             clip: true;
 
                                             Rectangle {
@@ -1877,46 +1869,13 @@ export component ArrangementViewport inherits Rectangle {
                                                 width: 6px;
                                                 height: trk.muted ? 0px : (meter-val(idx) * parent.height);
                                                 border-radius: 1px;
-                                                background: meter-val(idx) > 0.8 ? #ef4444 : (meter-val(idx) > 0.6 ? #f59e0b : #10b981);
+                                                background: meter-val(idx) > 0.8 ? Tokens.skin-arm : (meter-val(idx) > 0.6 ? Tokens.skin-mute : Tokens.skin-meter-low);
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    // 行底分界线（Wang 2026-11-16：学 Logic 的行间低对比细线）：整行一根
-                    // ⇒ 轨道头列与车道侧同一 y 位对齐。八版起选中行亦画本线
-                    // （七版纯白边框已废，选中行不再靠边框分界）。
-                    // 十一版改暗线（Wang 2026-11-17 18:52 亲定，推翻
-                    // 八版以来的亮线方向）：分界线改为比车道底更深的
-                    // 同色系深色——定值 #040508（相对亮度 0.0015，低于
-                    // 未选中行底 #1d2333 与选中行底 #273146）：暗线对
-                    // 两底实算 1.30:1 / 1.57:1。⚠ 暗线对比有物理上限：
-                    // 车道底相对亮度仅 0.0170，纯黑对未选中底也只有
-                    // 1.34:1，旧亮线的 2.3–2.7 窗在暗方向不可达；本值
-                    // 取同色系近黑（距纯黑上限约 0.04）。层级按绝对
-                    // 对比仍为 分界线 < 拍线 < 小节线。只改本落点，
-                    // ⛔ 不动 Theme.border-subtle 本体（其它分隔仍用它）。
-                    Rectangle {
-                        x: 0px;
-                        y: parent.height - 1px;
-                        width: parent.width;
-                        height: 1px;
-                        // 裁决甲 (Wang 2026-11-17 19:58): 质感三元——拟物
-                        // 支 = main 形态 (divider-row + 选中行门控), 扁平
-                        // 支 = 十一版暗线 #040508 恒画 (上方长注释)。
-                        background: Tokens.texture-physical ? Tokens.divider-row : #040508;
-                        visible: Tokens.texture-physical ? trk.id != root.selected-track-id : true;
-                    }
-
-                    // 刻蚀高光 (只拟物套): 主线下方 1px (下一行顶沿)。
-                    Rectangle {
-                        x: 0px;
-                        y: parent.height;
-                        width: parent.width;
-                        height: 1px;
-                        background: Tokens.divider-row-highlight;
                     }
                 }
 
@@ -1939,10 +1898,10 @@ export component ArrangementViewport inherits Rectangle {
                                 alignment: center;
                                 Rectangle {
                                     height: 24px;
-                                    background: add-track-btm-touch.has-hover ? #1f2736 : #141a24;
+                                    background: add-track-btm-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel-alt;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: #ffffff14;
+                                    border-color: Tokens.skin-hairline;
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -1951,7 +1910,7 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-ui;
                                             font-size: 10px;
                                             font-weight: 600;
-                                            color: #cbd5e1;
+                                            color: Tokens.skin-text-body;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -2000,55 +1959,6 @@ export component ArrangementViewport inherits Rectangle {
                         Rectangle {
                             horizontal-stretch: 1;
 
-                            // [Q6] 行内网格与顶部标尺同源（bar-count / bar-width-px / scroll-x）
-                            // 五版同车道：小节线 1px、只在线条单位整数倍
-                            // 的小节上画（原有 x >= 0 的裁剪条件保留）。
-                            // 十一版线色同车道重算值（小节线 #979fa8）。
-                            // 裁决甲：与车道同解整块二选一（拟物支令牌
-                            // divider-grid、扁平支十一版字面色 + 拍线），
-                            // 两区同解不断档。
-                            for _i in root.bar-count : Rectangle {
-                                visible: Tokens.texture-physical && ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px && (root.bar-start-index + _i).mod(max(1, root.grid-line-unit)) == 0;
-                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
-                                y: 0px;
-                                width: 1px;
-                                height: parent.height;
-                                background: Tokens.divider-grid;
-                            }
-
-                            // 扁平支空置区网格 (十一版, 与车道同款同解):
-                            // 小节线 #979fa8 + 拍线 #74808b, visible 加
-                            // `!Tokens.texture-physical` 门控。
-                            for _i in root.bar-count : Rectangle {
-                                visible: !Tokens.texture-physical && ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x >= 0px && (root.bar-start-index + _i).mod(max(1, root.grid-line-unit)) == 0;
-                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
-                                y: 0px;
-                                width: 1px;
-                                height: parent.height;
-                                background: #979fa8;
-                            }
-
-                            // 拍线与车道同款（以拍为单位，WCAG 实算同车道，
-                            // 五版同色同宽同门槛，六版同再淡一档）：拍线
-                            // #74808b（1px，十一版按新底重算），小节线
-                            // #979fa8（1px）；空置行与轨道行同源同强度，
-                            // 整幅网格不断档。
-                            for _i in root.bar-count : Rectangle {
-                                x: ((root.bar-start-index + _i) < root.bar-positions.length ? root.bar-positions[root.bar-start-index + _i] : (root.bar-start-index + _i) * root.bar-width-px) - root.scroll-x;
-                                y: 0px;
-                                width: root.bar-width-px;
-                                height: parent.height;
-                                background: transparent;
-
-                                for beat in root.beats-per-bar : Rectangle {
-                                    visible: beat > 0 && root.grid-show-lane-beats && !Tokens.texture-physical;
-                                    x: beat * (root.bar-width-px / max(1, root.beats-per-bar));
-                                    y: 0px;
-                                    width: 1px;
-                                    height: parent.height;
-                                    background: #74808b;
-                                }
-                            }
 
                             // 空态提示按**视口**居中：此前放在内容网格的同级
                             // HorizontalLayout 里，按 bar-count × bar-width 的内容宽度
@@ -2063,7 +1973,7 @@ export component ArrangementViewport inherits Rectangle {
                                 font-family: Tokens.font-ui;
                                 font-size: 10px;
                                 font-weight: 500;
-                                color: #b6c2d2;
+                                color: Tokens.skin-text-dim;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 wrap: word-wrap;
@@ -2116,10 +2026,10 @@ export component ArrangementViewport inherits Rectangle {
                                 alignment: center;
                                 Rectangle {
                                     height: 24px;
-                                    background: add-track-btm-r-touch.has-hover ? #1f2736 : #141a24;
+                                    background: add-track-btm-r-touch.has-hover ? Tokens.skin-chip : Tokens.bg-panel-alt;
                                     border-radius: 4px;
                                     border-width: 1px;
-                                    border-color: #ffffff14;
+                                    border-color: Tokens.skin-hairline;
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -2128,7 +2038,7 @@ export component ArrangementViewport inherits Rectangle {
                                             font-family: Tokens.font-ui;
                                             font-size: 10px;
                                             font-weight: 600;
-                                            color: #cbd5e1;
+                                            color: Tokens.skin-text-body;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -2162,7 +2072,7 @@ export component ArrangementViewport inherits Rectangle {
         clip: true;
 
         // 播放头颜色（六版，Wang 2026-11-17 15:09）：竖线与头部改
-        // 纯白 #ffffff——播放头是视觉中心，对最深车道行底 #181719
+        // 纯白 Tokens.skin-text-strong——播放头是视觉中心，对最深车道行底 #181719
         // 实算 17.87:1，醒目度最高。只改编曲区这一处落点，⛔ 不动
         // Theme.accent 本体（全局唯一强调色，录音键 ● 与循环带等
         // 仍用它）；钢琴卷帘播放头不在本笔范围。
@@ -2171,7 +2081,7 @@ export component ArrangementViewport inherits Rectangle {
             y: 0px;
             width: 2px;
             height: parent.height;
-            background: #ffffff;
+            background: Tokens.skin-text-strong;
 
             // Diamond head at ruler top
             Rectangle {
@@ -2179,7 +2089,7 @@ export component ArrangementViewport inherits Rectangle {
                 y: 0px;
                 width: 10px;
                 height: 10px;
-                background: #ffffff;
+                background: Tokens.skin-text-strong;
                 border-radius: 2px;
             }
         }
@@ -2199,12 +2109,12 @@ export component ArrangementViewport inherits Rectangle {
             y: 50px;
             width: 196px;
             height: Math.min(parent.height - 58px, arr_tracks_menu_col.preferred-height);
-            background: #141923;
+            background: Tokens.bg-panel;
             border-radius: 6px;
             border-width: 1px;
             border-color: Theme.accent;
             drop-shadow-blur: 14px;
-            drop-shadow-color: #00000090;
+            drop-shadow-color: Tokens.skin-scrim;
             arr_tracks_menu_col := VerticalLayout {
                 padding: 6px;
                 spacing: 2px;
@@ -2228,7 +2138,7 @@ export component ArrangementViewport inherits Rectangle {
                             text: opt.label;
                             font-family: Tokens.font-ui;
                             font-size: 10.5px;
-                            color: trk-m-touch.has-hover ? #ffffff : #cbd5e1;
+                            color: trk-m-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                             vertical-alignment: center;
                         }
                     }
@@ -2248,12 +2158,12 @@ export component ArrangementViewport inherits Rectangle {
             y: 54px;
             width: 228px;
             height: Math.min(parent.height - 62px, arr_inst_menu_col.preferred-height);
-            background: #141923;
+            background: Tokens.bg-panel;
             border-radius: 6px;
             border-width: 1px;
             border-color: Theme.accent;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: Tokens.skin-scrim;
             arr_inst_menu_col := VerticalLayout {
                 padding: 6px;
                 spacing: 2px;
@@ -2288,7 +2198,7 @@ export component ArrangementViewport inherits Rectangle {
                             text: preset.label;
                             font-family: Tokens.font-ui;
                             font-size: 10px;
-                            color: inst-m-touch.has-hover ? #ffffff : #cbd5e1;
+                            color: inst-m-touch.has-hover ? Tokens.skin-text-strong : Tokens.skin-text-body;
                             vertical-alignment: center;
                             overflow: elide;
                         }
