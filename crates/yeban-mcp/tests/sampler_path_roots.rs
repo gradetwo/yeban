@@ -579,6 +579,8 @@ fn two_tracks_sharing_one_sample_file_both_sound() {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     two.validate().expect("两轨夹具必须合法");

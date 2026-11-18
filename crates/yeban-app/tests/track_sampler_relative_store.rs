@@ -174,6 +174,8 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
 
@@ -195,6 +197,8 @@ fn fixture_project(master: EntityId, midi: EntityId, aux: EntityId) -> YebanProj
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
 

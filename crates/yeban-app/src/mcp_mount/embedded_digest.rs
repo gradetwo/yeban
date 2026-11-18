@@ -296,6 +296,8 @@ pub(super) fn add_track(
             destination_node: project.master_bus_track_id,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     id

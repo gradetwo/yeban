@@ -149,6 +149,8 @@ fn project() -> YebanProjectV1 {
                 destination_node,
                 kind,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }
@@ -256,6 +258,8 @@ fn a_neutral_bus_is_bit_identical_to_the_direct_project() {
                 destination_node: id("M1"),
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         direct.validate().expect("直连夹具合法");

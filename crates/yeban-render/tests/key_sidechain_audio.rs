@@ -91,6 +91,8 @@ fn graph(sidechain_gain_db: Option<f32>) -> RoutingGraph {
                 destination_node,
                 kind,
                 gain_db,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     };

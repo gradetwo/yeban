@@ -380,7 +380,10 @@ impl Generator {
                 // clap：第 0 个 onset 立刻发出。
                 generator.gate_clap_onset();
             }
-            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
+            super::VOICE_TOM_LOW
+            | super::VOICE_TOM_MID
+            | super::VOICE_TOM_HIGH
+            | super::VOICE_BASS808 => {
                 generator.pitch_env.gate_on();
                 generator.body_env.gate_on();
             }
@@ -420,9 +423,10 @@ impl Generator {
             super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => self.body_env.value(),
             super::VOICE_SNARE => self.body_env.value().max(self.tail_env.value()),
             super::VOICE_CLAP => self.burst_env.value().max(self.tail_env.value()),
-            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
-                self.body_env.value()
-            }
+            super::VOICE_TOM_LOW
+            | super::VOICE_TOM_MID
+            | super::VOICE_TOM_HIGH
+            | super::VOICE_BASS808 => self.body_env.value(),
             super::VOICE_RIMSHOT => self.body_env.value().max(self.tail_env.value()),
             super::VOICE_SHAKER | super::VOICE_COWBELL | super::VOICE_CRASH | super::VOICE_RIDE => {
                 self.body_env.value()
@@ -453,9 +457,10 @@ impl Generator {
                     && !self.burst_env.is_active()
                     && !self.tail_env.is_active()
             }
-            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
-                !self.body_env.is_active()
-            }
+            super::VOICE_TOM_LOW
+            | super::VOICE_TOM_MID
+            | super::VOICE_TOM_HIGH
+            | super::VOICE_BASS808 => !self.body_env.is_active(),
             super::VOICE_RIMSHOT => !self.body_env.is_active() && !self.tail_env.is_active(),
             super::VOICE_SHAKER | super::VOICE_COWBELL | super::VOICE_CRASH | super::VOICE_RIDE => {
                 !self.body_env.is_active()
@@ -579,6 +584,16 @@ impl Generator {
                 self.body_env
                     .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
             }
+            super::VOICE_BASS808 => {
+                let params = &kit.bass808;
+                self.voice_level = params.level;
+                self.inc_lo = increment_for(params.tune_hz, sample_rate);
+                self.inc_hi = increment_for(params.glide_hz, sample_rate);
+                self.pitch_env
+                    .set_params(0.0, params.glide_s, 0.0, params.glide_s);
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+            }
             super::VOICE_RIMSHOT => {
                 let params = &kit.rim;
                 self.voice_level = params.level;
@@ -673,7 +688,10 @@ impl Generator {
             super::VOICE_CLAP => self.clap(),
             // 桶鼓复用底鼓经典声部的滑音正弦体（同 pitch_env/body_env
             // 槽位），音高由 reconfigure 的比例定。
-            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => self.kick(),
+            super::VOICE_TOM_LOW
+            | super::VOICE_TOM_MID
+            | super::VOICE_TOM_HIGH
+            | super::VOICE_BASS808 => self.kick(),
             super::VOICE_RIMSHOT => self.rimshot(),
             super::VOICE_SHAKER => self.shaker(),
             super::VOICE_COWBELL => self.cowbell(),

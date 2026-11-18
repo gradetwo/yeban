@@ -218,6 +218,8 @@ fn project_with_one_note(tag: &str) -> (YebanProjectV1, EntityId) {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project.validate().expect("夹具工程必须合法");

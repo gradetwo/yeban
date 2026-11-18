@@ -11209,6 +11209,8 @@ fn compile_inner(
                         destination_node: *destination_node,
                         kind: *kind,
                         gain_db: *gain_db,
+                        source_lane: None,
+                        dest_lane: None,
                     },
                 }
             }
@@ -11323,6 +11325,8 @@ fn compile_inner(
                                     destination_node: master_id,
                                     kind,
                                     gain_db: None,
+                                    source_lane: None,
+                                    dest_lane: None,
                                 },
                             });
                         }

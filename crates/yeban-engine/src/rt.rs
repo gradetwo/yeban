@@ -6674,6 +6674,8 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         let mut tracks = BTreeMap::new();
@@ -6722,6 +6724,8 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         let mut tracks = BTreeMap::new();
@@ -6781,6 +6785,8 @@ mod tests {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             );
             let model = TrackV3 {
@@ -6835,6 +6841,8 @@ mod tests {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             );
             let model = TrackV3 {
@@ -7036,6 +7044,8 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         let mut tracks = BTreeMap::new();
@@ -8207,6 +8217,8 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
@@ -8317,6 +8329,8 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         let mut tracks = BTreeMap::new();

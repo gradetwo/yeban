@@ -239,6 +239,8 @@ mod contract_tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             };
             edges.insert(created.id, created);
         }

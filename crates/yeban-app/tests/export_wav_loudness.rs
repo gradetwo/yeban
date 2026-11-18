@@ -153,6 +153,8 @@ fn sine_clip_project(dir: &Path, amplitude: f32) -> (YebanProjectV1, BTreeMap<As
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project.validate().expect("夹具工程必须合法");
@@ -233,6 +235,8 @@ fn project_with_tracks(tracks: &[(&str, f32)]) -> YebanProjectV1 {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }

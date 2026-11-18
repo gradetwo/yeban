@@ -243,6 +243,8 @@ fn fixture_with_lane(on: LaneOn) -> (YebanProjectV1, BTreeMap<AssetHash, Vec<u8>
                 destination_node: bus,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         project.routing_graph.edges.insert(
@@ -253,6 +255,8 @@ fn fixture_with_lane(on: LaneOn) -> (YebanProjectV1, BTreeMap<AssetHash, Vec<u8>
                 destination_node: master,
                 kind: RoutingKind::BusToMaster,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     } else {
@@ -265,6 +269,8 @@ fn fixture_with_lane(on: LaneOn) -> (YebanProjectV1, BTreeMap<AssetHash, Vec<u8>
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }
@@ -549,6 +555,8 @@ fn fixture_aux_with_source(
             destination_node: aux,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project.routing_graph.edges.insert(
@@ -559,6 +567,8 @@ fn fixture_aux_with_source(
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project
@@ -700,6 +710,8 @@ fn fixture_midi_with_lane(with_lane: bool) -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project
@@ -854,6 +866,8 @@ fn fixture_midi_aux_with_source(with_lane: bool) -> YebanProjectV1 {
             destination_node: aux,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project.routing_graph.edges.insert(
@@ -864,6 +878,8 @@ fn fixture_midi_aux_with_source(with_lane: bool) -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project

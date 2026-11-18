@@ -4361,6 +4361,8 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                             destination_node: project.master_bus_track_id,
                             kind: yeban_model::RoutingKind::BusToMaster,
                             gain_db: None,
+                            source_lane: None,
+                            dest_lane: None,
                         },
                     });
                     bus_note = format!(
@@ -4380,6 +4382,8 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                     destination_node: drum_destination,
                     kind: yeban_model::RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             });
             (id, None)
@@ -4548,6 +4552,43 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                 old_lane_chains: existing_chains,
                 new_lane_chains: lane_chains,
             });
+            // ⭐ 逐件＋侧链期 4：预置的侧链声明落成同轨 lane 级侧链边
+            // （key = key 键组所在 lane 的链前信号，目的 = 本组）。
+            // 重复生成进已有轨时同端点边已存在则跳过（⛔ 不叠加重复边）。
+            for chain in preset.lane_chains.iter() {
+                let Some(sidechain) = &chain.sidechain else {
+                    continue;
+                };
+                let (Some(&source_key), Some(&dest_key)) =
+                    (sidechain.key_keys.first(), chain.keys.first())
+                else {
+                    continue;
+                };
+                let already = project.routing_graph.edges.values().any(|edge| {
+                    edge.kind == yeban_model::RoutingKind::Sidechain
+                        && edge.source_node == track_id
+                        && edge.destination_node == track_id
+                        && edge.source_lane == Some(source_key)
+                        && edge.dest_lane == Some(dest_key)
+                });
+                if already {
+                    continue;
+                }
+                ops.push(Op::ConnectRouting {
+                    edge: yeban_model::RoutingEdge {
+                        id: ids::deterministic_id(&format!(
+                            "drum-gen:sidechain-edge:{label}:{}",
+                            chain.name
+                        )),
+                        source_node: track_id,
+                        destination_node: track_id,
+                        kind: yeban_model::RoutingKind::Sidechain,
+                        gain_db: None,
+                        source_lane: Some(source_key),
+                        dest_lane: Some(dest_key),
+                    },
+                });
+            }
         }
     }
 

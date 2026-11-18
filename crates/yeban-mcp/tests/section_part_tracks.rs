@@ -69,6 +69,8 @@ fn three_track_project() -> (yeban_model::YebanProjectV1, [EntityId; 3]) {
             destination_node: bus_id,
             kind: yeban_model::RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project.validate().expect("扩展夹具必须合法");

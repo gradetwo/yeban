@@ -34,6 +34,8 @@ fn minimal_snapshot() -> (EngineSnapshot, EntityId) {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     let mut tracks = BTreeMap::new();

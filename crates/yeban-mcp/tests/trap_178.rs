@@ -164,6 +164,8 @@ fn fixture(empty_clip: bool) -> Fixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             ),
             (
@@ -174,6 +176,8 @@ fn fixture(empty_clip: bool) -> Fixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             ),
         ]),
@@ -245,6 +249,8 @@ fn bus_fixture() -> BusFixture {
                 destination_node: destination,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         )
     };
@@ -363,6 +369,8 @@ fn silent_fixture() -> SilentFixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             ),
             (
@@ -373,6 +381,8 @@ fn silent_fixture() -> SilentFixture {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             ),
         ]),

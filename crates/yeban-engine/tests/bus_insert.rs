@@ -192,6 +192,8 @@ fn build_project(master: EntityId, tracks: &[TrackSpec], edges: &[EdgeSpec]) -> 
                 destination_node: edge.destination,
                 kind: edge.kind,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }

@@ -272,11 +272,16 @@ pub enum DrumVoice {
     Crash = 11,
     /// 叮叮镲（6 条非谐方波 → 更高带通 → 长衰减）。
     Ride = 12,
+    /// 独立 808 低音（下滑正弦、长衰减；逐件＋侧链期 4 追加，
+    /// 判别值只许往后追加的规矩不变）。与底鼓同体（滑音正弦），
+    /// 但**独立键位、独立参数**：trap/phonk 里 808 不再与底鼓
+    /// 共用 36 号键的音色，侧链验收的被闪避对象就是它。
+    Bass808 = 13,
 }
 
 impl DrumVoice {
     /// 全部音色（顺序 = 判别值顺序），供 UI/MCP 枚举与判据遍历。
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Kick,
         Self::Snare,
         Self::ClosedHat,
@@ -290,6 +295,7 @@ impl DrumVoice {
         Self::Cowbell,
         Self::Crash,
         Self::Ride,
+        Self::Bass808,
     ];
 
     /// 判别值（与 [`Generator`] 内的 `u8` 同口径）。
@@ -315,6 +321,7 @@ impl DrumVoice {
             Self::Cowbell => "cowbell",
             Self::Crash => "crash",
             Self::Ride => "ride",
+            Self::Bass808 => "bass808",
         }
     }
 
@@ -335,6 +342,7 @@ impl DrumVoice {
             10 => Some(Self::Cowbell),
             11 => Some(Self::Crash),
             12 => Some(Self::Ride),
+            13 => Some(Self::Bass808),
             _ => None,
         }
     }
@@ -366,6 +374,8 @@ pub(crate) const VOICE_COWBELL: u8 = DrumVoice::Cowbell as u8;
 pub(crate) const VOICE_CRASH: u8 = DrumVoice::Crash as u8;
 /// 叮叮镲的判别值。
 pub(crate) const VOICE_RIDE: u8 = DrumVoice::Ride as u8;
+/// 独立 808 低音的判别值。
+pub(crate) const VOICE_BASS808: u8 = DrumVoice::Bass808 as u8;
 
 /// 低桶鼓相对 `TomParams::tune_hz` 的音高比（本模块选定：约 −4 半音）。
 pub const TOM_LOW_RATIO: f32 = 0.79;
@@ -481,6 +491,63 @@ impl KickParams {
 }
 
 impl Default for KickParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 独立 808 低音参数（逐件＋侧链期 4）。与 [`KickParams`] 同形
+/// （下滑正弦的六个旋钮 + 声像），但默认值按 808 低音定：静止
+/// 频率更低（49 Hz ≈ G1）、衰减长得多（1.4 s：持续低音的尾巴
+/// 就是被侧链闪避的节目本身）、下滑更缓（0.06 s）。
+/// ⚠ 数字**没有外部出处**（模块文档 §1 同口径）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bass808Params {
+    /// **尾巴**基频（Hz），音高包络走完后的静止频率。默认 `49.0`（G1）。
+    pub tune_hz: f32,
+    /// **起始**基频（Hz），音高包络 = 1 时的频率。默认 `110.0`（A2）。
+    pub glide_hz: f32,
+    /// 音高包络时间（秒）。默认 `0.06`。
+    pub glide_s: f32,
+    /// 起振时间（秒）。默认 `0.002`（比底鼓略软，低音不需要咔哒起振）。
+    pub attack_s: f32,
+    /// 幅度包络时间（秒，6 个时间常数口径）。默认 `1.4`。
+    pub decay_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.95`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`，0 = 正中）。默认 `0.0`。
+    pub pan: f32,
+}
+
+impl Bass808Params {
+    /// 默认参数（每个字段的理由见字段注释）。
+    pub const DEFAULT: Self = Self {
+        tune_hz: 49.0,
+        glide_hz: 110.0,
+        glide_s: 0.06,
+        attack_s: 0.002,
+        decay_s: 1.4,
+        level: 0.95,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本（合法域与 [`KickParams::sanitised`]
+    /// 同表：频率/包络/时间/电平/声像各自的钳制函数，全定义）。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        Self {
+            tune_hz: clamp_freq(self.tune_hz),
+            glide_hz: clamp_freq(self.glide_hz),
+            glide_s: clamp_envelope(self.glide_s),
+            attack_s: clamp_time(self.attack_s),
+            decay_s: clamp_time(self.decay_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for Bass808Params {
     fn default() -> Self {
         Self::DEFAULT
     }
@@ -1078,6 +1145,8 @@ pub struct DrumKitParams {
     pub crash: CrashParams,
     /// 叮叮镲。
     pub ride: RideParams,
+    /// 独立 808 低音（逐件＋侧链期 4）。
+    pub bass808: Bass808Params,
     /// 总线电平（`0..=1`）。默认 `1.0`。
     ///
     /// ⚠ 它是**线性增益**，不是 dB（本 crate 的口径：参数一律 `f32`、
@@ -1101,6 +1170,7 @@ impl DrumKitParams {
         cowbell: CowbellParams::DEFAULT,
         crash: CrashParams::DEFAULT,
         ride: RideParams::DEFAULT,
+        bass808: Bass808Params::DEFAULT,
         master_level: 1.0,
     };
 
@@ -1162,6 +1232,7 @@ impl DrumKitParams {
         cowbell: CowbellParams::DEFAULT,
         crash: CrashParams::DEFAULT,
         ride: RideParams::DEFAULT,
+        bass808: Bass808Params::DEFAULT,
         master_level: 1.0,
     };
 
@@ -1181,6 +1252,7 @@ impl DrumKitParams {
             cowbell: self.cowbell.sanitised(),
             crash: self.crash.sanitised(),
             ride: self.ride.sanitised(),
+            bass808: self.bass808.sanitised(),
             master_level: clamp_gain(self.master_level),
         }
     }
@@ -1204,6 +1276,7 @@ impl DrumKitParams {
                 DrumVoice::Cowbell => self.cowbell.pan,
                 DrumVoice::Crash => self.crash.pan,
                 DrumVoice::Ride => self.ride.pan,
+                DrumVoice::Bass808 => self.bass808.pan,
             };
             table[voice as usize] = pan_gains(pan);
         }
@@ -2007,6 +2080,15 @@ mod tests {
                 level: 0.5,
                 pan: 0.25,
             },
+            bass808: Bass808Params {
+                tune_hz: f32::NAN,
+                glide_hz: f32::INFINITY,
+                glide_s: -5.0,
+                attack_s: f32::NAN,
+                decay_s: 1.0e9,
+                level: f32::NEG_INFINITY,
+                pan: f32::NAN,
+            },
             master_level: f32::NAN,
         };
         let kit = hostile.sanitised();
@@ -2322,6 +2404,15 @@ mod tests {
                 attack_s: f32::NAN,
                 decay_s: f32::NAN,
                 level: f32::NAN,
+                pan: f32::NAN,
+            },
+            bass808: Bass808Params {
+                tune_hz: f32::NAN,
+                glide_hz: f32::INFINITY,
+                glide_s: -5.0,
+                attack_s: f32::NAN,
+                decay_s: 1.0e9,
+                level: f32::NEG_INFINITY,
                 pan: f32::NAN,
             },
             master_level: f32::INFINITY,

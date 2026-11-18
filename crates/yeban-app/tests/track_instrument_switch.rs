@@ -207,6 +207,8 @@ fn project_with_two_tracks() -> (YebanProjectV1, EntityId, EntityId) {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }

@@ -3153,6 +3153,8 @@ pub fn plan_with_options(
                 destination_node: bus,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         });
     }
@@ -3285,6 +3287,8 @@ mod tests {
             destination_node: destination,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         }
     }
 

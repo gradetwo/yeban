@@ -113,6 +113,8 @@ pub fn reference_project(
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db,
+            source_lane: None,
+            dest_lane: None,
         };
         edges.insert(edge.id, edge);
     }

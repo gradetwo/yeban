@@ -4326,6 +4326,8 @@ mod tests {
                         destination_node: f.master,
                         kind: RoutingKind::TrackToBus,
                         gain_db: None,
+                        source_lane: None,
+                        dest_lane: None,
                     },
                 )]),
             },
@@ -4385,6 +4387,8 @@ mod tests {
             destination_node: f.master,
             kind: RoutingKind::TrackToBus,
             gain_db: Some(-6.0),
+            source_lane: None,
+            dest_lane: None,
         };
         let new_device = DeviceDefinition {
             id: fresh_device,
@@ -4623,6 +4627,8 @@ mod tests {
                     destination_node: f.master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             },
             Op::SetRoutingGain {
@@ -7594,6 +7600,8 @@ mod tests {
                             destination_node: destination,
                             kind: RoutingKind::SendToAux,
                             gain_db: Some(-6.0),
+                            source_lane: None,
+                            dest_lane: None,
                         },
                     };
                 }
@@ -8035,6 +8043,8 @@ mod tests {
                     destination_node: destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             }
             .apply(&mut doc)
@@ -8071,6 +8081,8 @@ mod tests {
                     destination_node: f.master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: Some(gain),
+                    source_lane: None,
+                    dest_lane: None,
                 },
             }
             .apply(&mut doc)

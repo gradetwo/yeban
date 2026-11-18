@@ -112,6 +112,8 @@ fn graph() -> RoutingGraph {
                 destination_node,
                 kind,
                 gain_db,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     };

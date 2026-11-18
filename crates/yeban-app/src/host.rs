@@ -5344,6 +5344,8 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 destination_node: destination,
                 kind: yeban_model::RoutingKind::SendToAux,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             };
             // `ConnectRouting` 的前置条件是"两端已在 `routing_graph.nodes` 里"。
             // 端点缺失时在**同一次** `commit_ops` 里先补节点（`Op::Batch` 顺序施加）
@@ -14378,6 +14380,8 @@ fn ensure_track_instrument_ops(
                     destination_node: master.id,
                     kind: yeban_model::project::RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             });
         }

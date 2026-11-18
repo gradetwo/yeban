@@ -208,6 +208,8 @@ mod tests {
                 destination_node: destination,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             };
             project.routing_graph.edges.insert(edge.id, edge);
         }

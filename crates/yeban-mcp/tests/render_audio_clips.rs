@@ -397,6 +397,8 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project
@@ -1426,6 +1428,8 @@ fn pdc_shifts_the_audio_clip_branch_by_exactly_the_device_latency() {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }
@@ -1900,6 +1904,8 @@ fn with_send_bus(mut fixture: Fixture) -> Fixture {
             destination_node: aux,
             kind: RoutingKind::SendToAux,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     fixture.project.routing_graph.edges.insert(
@@ -1910,6 +1916,8 @@ fn with_send_bus(mut fixture: Fixture) -> Fixture {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     fixture.project.validate().expect("发送总线夹具必须合法");

@@ -1923,6 +1923,49 @@ pub fn switches_compressor(automation: &DeviceParamAutomation) -> bool {
         && automation.field() == Some(DeviceParamField::Strip(StripField::CompressorEnabled))
 }
 
+/// ⭐ 逐件＋侧链期 4：把工程里每条带 `lane_chains` 的轨投影成
+/// [`crate::render::LaneKeyLayout`]（组键集合 ＋ 逐组武装判定），供
+/// [`crate::render::RenderPlan::attach_lane_key_routes`] 消费。
+///
+/// 武装判定 = 该组的链投影 `InsertChain::compresses_statically` —— 与
+/// [`crate::engine_source::LaneSplitSource`] 构造组运行态的**同一份投影**
+/// （`InsertChain::from_devices`），⛔ 不是第二套判定。lane 器件不可
+/// 自动化（期 3 既定边界）⇒ 静态判定即运行事实，不需要泳道并集。
+/// 没有 `lane_chains` 的轨不进表（其 lane 边无布局可解析 ⇒ 未求值）。
+#[must_use]
+pub fn lane_key_layouts(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+) -> BTreeMap<EntityId, crate::render::LaneKeyLayout> {
+    let mut out = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        if track.lane_chains.is_empty() {
+            continue;
+        }
+        let groups = track
+            .lane_chains
+            .iter()
+            .map(|chain| chain.keys.clone())
+            .collect();
+        let armed_groups = track
+            .lane_chains
+            .iter()
+            .map(|chain| {
+                crate::inserts::InsertChain::from_devices(&chain.devices, sample_rate, project.bpm)
+                    .compresses_statically()
+            })
+            .collect();
+        out.insert(
+            *track_id,
+            crate::render::LaneKeyLayout {
+                groups,
+                armed_groups,
+            },
+        );
+    }
+    out
+}
+
 /// 会执行压缩的轨 = **静态投影会压缩** ∪ **有一条非恒等 `compressor_enabled` 泳道**。
 ///
 /// 这是 pre-pan tap 的**唯一**生产判据（app 的 `render_core` 与 MCP 的
@@ -2518,6 +2561,8 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::SendToAux,
                 gain_db: edge_gain_db,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         (project, track_id, edge_id)

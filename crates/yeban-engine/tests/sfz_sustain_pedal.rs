@@ -132,6 +132,8 @@ fn p4_the_synth_defers_both_the_release_voice_and_the_note_stop_until_pedal_up()
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     let mut tracks = BTreeMap::new();

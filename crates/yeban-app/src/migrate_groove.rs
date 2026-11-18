@@ -658,6 +658,8 @@ fn migrate_bytes(
                 destination_node: master_id,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         track_entities.insert(track_id.clone(), entity_id);

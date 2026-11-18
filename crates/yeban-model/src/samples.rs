@@ -375,6 +375,8 @@ pub fn filled_project() -> YebanProjectV1 {
                 destination_node: destination,
                 kind,
                 gain_db,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }
@@ -565,6 +567,8 @@ pub fn filled_stamped_op() -> StampedOp {
                         destination_node: aux_id,
                         kind: RoutingKind::SendToAux,
                         gain_db: Some(-12.0),
+                        source_lane: None,
+                        dest_lane: None,
                     },
                 },
             ],
@@ -933,6 +937,8 @@ pub fn demo_project() -> YebanProjectV1 {
                 destination_node: master_id,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }

@@ -222,6 +222,8 @@ fn fixture_project(fixture: &Fixture, with_source: bool, with_send: bool) -> Yeb
                 destination_node,
                 kind,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }
@@ -235,6 +237,8 @@ fn fixture_project(fixture: &Fixture, with_source: bool, with_send: bool) -> Yeb
                 destination_node: aux,
                 kind: RoutingKind::SendToAux,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }

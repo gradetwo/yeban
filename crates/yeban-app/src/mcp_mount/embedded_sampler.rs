@@ -592,6 +592,8 @@ fn single_track_sampler_project(pan: f32, sampler: &str) -> yeban_model::YebanPr
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     project.routing_graph.nodes.sort_unstable();

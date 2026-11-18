@@ -77,7 +77,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
-use yeban_model::{EntityId, RoutingGraph, TrackV3, YebanProjectV1};
+use yeban_model::{EntityId, RoutingGraph, RoutingKind, TrackV3, YebanProjectV1};
 
 /// PDC 计算的错误类型。
 ///
@@ -285,6 +285,14 @@ impl PdcPlan {
         let mut successors: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
         let mut predecessors: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
         for edge in graph.edges.values() {
+            // ⭐ 逐件＋侧链期 4：侧链边是**键输入**、不是音频通路 ——
+            // 它不搬样本、不带延迟，不得进 PDC 邻接：否则同轨自键
+            // （源 = 目的）或两轨互键都会被误判成环、整份快照建不出来。
+            // 键边的求值规则在渲染计划侧（`yeban-render` 的键挂接），
+            // 悬空键边在那里计未求值，不归 PDC 管。
+            if edge.kind == RoutingKind::Sidechain {
+                continue;
+            }
             for endpoint in [edge.source_node, edge.destination_node] {
                 if !nodes.contains(&endpoint) {
                     return Err(PdcError::DanglingEdge { node: endpoint });
@@ -1557,6 +1565,8 @@ mod tests {
                     destination_node: *destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             );
         }
@@ -1807,6 +1817,8 @@ mod tests {
                 destination_node: m,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+                source_lane: None,
+                dest_lane: None,
             },
         );
         assert_eq!(

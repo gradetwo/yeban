@@ -1762,6 +1762,16 @@ pub struct RoutingEdge {
     /// 该边的增益 (dB)；`None` 表示单位增益。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain_db: Option<f32>,
+    /// 侧链边的**源 lane 键**（逐件＋侧链期 4）：`Some(key)` 表示键信号
+    /// 取源节点轨道上含该键的逐件链组的**链前**信号（设计 §6 R4 定案）；
+    /// `None` 表示节点级（既有行为，逐位不变）。仅侧链边可带
+    /// （[`Self::validate`] 响亮拒绝其它类型带端点）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_lane: Option<u8>,
+    /// 侧链边的**目的 lane 键**（逐件＋侧链期 4）：`Some(key)` 表示键只喂
+    /// 目的节点轨道上含该键的逐件链组；`None` 表示节点级。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_lane: Option<u8>,
 }
 
 impl RoutingEdge {
@@ -1778,6 +1788,11 @@ impl RoutingEdge {
                 field: "routing.edge.gain_db",
                 value: f64::from(gain_db),
             });
+        }
+        if (self.source_lane.is_some() || self.dest_lane.is_some())
+            && self.kind != RoutingKind::Sidechain
+        {
+            return Err(ModelError::RoutingLaneEndpointsOnNonSidechain { edge: self.id });
         }
         Ok(())
     }
@@ -2984,6 +2999,8 @@ mod tests {
                     destination_node: node_b,
                     kind: RoutingKind::TrackToBus,
                     gain_db: Some(-3.0),
+                    source_lane: None,
+                    dest_lane: None,
                 },
             );
         }
@@ -3018,6 +3035,8 @@ mod tests {
                     destination_node: ghost,
                     kind: RoutingKind::BusToMaster,
                     gain_db: None,
+                    source_lane: None,
+                    dest_lane: None,
                 },
             )]),
         };
@@ -3110,6 +3129,8 @@ mod tests {
             destination_node: node_b,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         };
         let edge_json = serde_json::to_string(&edge).expect("serialize");
         let json = format!(
@@ -4972,6 +4993,8 @@ mod tests {
             destination_node: fixture_id(2),
             kind: RoutingKind::TrackToBus,
             gain_db,
+            source_lane: None,
+            dest_lane: None,
         };
         rejects_non_finite_f32("routing.edge.gain_db", |value| edge(Some(value)).validate())?;
         accepts("None（单位增益）", edge(None).validate())?;
@@ -5092,6 +5115,8 @@ mod tests {
                         destination_node: master,
                         kind: RoutingKind::BusToMaster,
                         gain_db: None,
+                        source_lane: None,
+                        dest_lane: None,
                     },
                 )]),
             },
@@ -6759,6 +6784,8 @@ mod tests {
             destination_node,
             kind: RoutingKind::BusToMaster,
             gain_db,
+            source_lane: None,
+            dest_lane: None,
         };
 
         // ---- 正对照：一张自洽的图必须通过（否则下面的"拒绝"会退化成"什么都拒绝"）----
@@ -6855,6 +6882,8 @@ mod tests {
             destination_node,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         };
 
         // 1) 自环：结构上自洽 ⇒ 通过（环由下游判）。
@@ -7157,6 +7186,8 @@ mod tests {
             destination_node: node_b,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         };
         let base = RoutingGraph {
             nodes: vec![node_a, node_b],

@@ -103,6 +103,8 @@ fn audio_edge(id: EntityId, source: EntityId, destination: EntityId) -> RoutingE
         destination_node: destination,
         kind: RoutingKind::TrackToBus,
         gain_db: None,
+        source_lane: None,
+        dest_lane: None,
     }
 }
 
@@ -113,6 +115,8 @@ fn sidechain_edge(id: EntityId, source: EntityId, destination: EntityId) -> Rout
         destination_node: destination,
         kind: RoutingKind::Sidechain,
         gain_db: None,
+        source_lane: None,
+        dest_lane: None,
     }
 }
 
@@ -288,6 +292,8 @@ fn keyed_fixture(with_compressor: bool) -> (YebanProjectV1, EntityId, EntityId, 
             destination_node: pad,
             kind: RoutingKind::Sidechain,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
     (project, kick, pad, edge)

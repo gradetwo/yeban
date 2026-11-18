@@ -170,6 +170,8 @@ fn build_project(
                 destination_node: edge.destination,
                 kind: edge.kind,
                 gain_db: edge.gain_db,
+                source_lane: None,
+                dest_lane: None,
             },
         );
     }

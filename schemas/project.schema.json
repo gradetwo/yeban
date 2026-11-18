@@ -1073,6 +1073,22 @@
                   "number",
                   "null"
                 ]
+              },
+              "source_lane": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 127
+              },
+              "dest_lane": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 127
               }
             }
           }

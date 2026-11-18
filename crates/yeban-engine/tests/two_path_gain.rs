@@ -115,6 +115,8 @@ fn project(mute: bool, velocity: u8) -> (YebanProjectV1, EntityId) {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
+            source_lane: None,
+            dest_lane: None,
         },
     );
 
