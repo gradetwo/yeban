@@ -1,4 +1,4 @@
-//! 4 个鼓机音色的**合成配方**（信号发生层）[ARCH-RT-001, ARCH-DET-001]。
+//! 13 个鼓机音色的**合成配方**（信号发生层）[ARCH-RT-001, ARCH-DET-001]。
 //!
 //! 本文件只管"一个槽位怎么发声"：波形、包络、带通、噪声、clap 的 burst 定时。
 //! 槽位分配、确定性窃取与 3 ms 淡出在 [`super`]（`drums/mod.rs`）。
@@ -246,7 +246,7 @@ impl Band {
 
 /// 一个槽位的**信号发生器状态**。
 ///
-/// 容量对 4 个音色取并集：kick 用 `pitch_env` + `body_env` + `phases[0]`，
+/// 容量对 13 个音色取并集：kick/tom 用 `pitch_env` + `body_env` + `phases[0]`，
 /// snare 用 `body_env`（音调）+ `tail_env`（噪声）+ `phases[0..2]` + `rng`，
 /// 踩镲用 `body_env` + `phases[0..6]`，拍手用 `burst_env` + `tail_env` + `rng`。
 /// 未用到的字段保持 [`Adsr`] 的 Idle（值 0）⇒ 它们不发声，也不产生 `NaN`。
@@ -376,10 +376,25 @@ impl Generator {
             super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => {
                 generator.body_env.gate_on();
             }
-            _ => {
+            super::VOICE_CLAP => {
                 // clap：第 0 个 onset 立刻发出。
                 generator.gate_clap_onset();
             }
+            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
+                generator.pitch_env.gate_on();
+                generator.body_env.gate_on();
+            }
+            super::VOICE_RIMSHOT => {
+                generator.body_env.gate_on();
+                generator.tail_env.gate_on();
+            }
+            super::VOICE_SHAKER
+            | super::VOICE_COWBELL
+            | super::VOICE_CRASH
+            | super::VOICE_RIDE => {
+                generator.body_env.gate_on();
+            }
+            _ => {}
         }
         generator
     }
@@ -407,7 +422,16 @@ impl Generator {
             }
             super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => self.body_env.value(),
             super::VOICE_SNARE => self.body_env.value().max(self.tail_env.value()),
-            _ => self.burst_env.value().max(self.tail_env.value()),
+            super::VOICE_CLAP => self.burst_env.value().max(self.tail_env.value()),
+            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
+                self.body_env.value()
+            }
+            super::VOICE_RIMSHOT => self.body_env.value().max(self.tail_env.value()),
+            super::VOICE_SHAKER
+            | super::VOICE_COWBELL
+            | super::VOICE_CRASH
+            | super::VOICE_RIDE => self.body_env.value(),
+            _ => 0.0,
         }
     }
 
@@ -428,11 +452,22 @@ impl Generator {
             }
             super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => !self.body_env.is_active(),
             super::VOICE_SNARE => !self.body_env.is_active() && !self.tail_env.is_active(),
-            _ => {
+            super::VOICE_CLAP => {
                 self.burst_index + 1 >= self.bursts
                     && !self.burst_env.is_active()
                     && !self.tail_env.is_active()
             }
+            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
+                !self.body_env.is_active()
+            }
+            super::VOICE_RIMSHOT => {
+                !self.body_env.is_active() && !self.tail_env.is_active()
+            }
+            super::VOICE_SHAKER
+            | super::VOICE_COWBELL
+            | super::VOICE_CRASH
+            | super::VOICE_RIDE => !self.body_env.is_active(),
+            _ => true,
         }
     }
 
@@ -518,7 +553,7 @@ impl Generator {
                 self.body_env
                     .set_params(params.attack_s, decay_s, 0.0, decay_s);
             }
-            _ => {
+            super::VOICE_CLAP => {
                 let params = &kit.clap;
                 self.voice_level = params.level;
                 self.band
@@ -536,6 +571,85 @@ impl Generator {
                 self.tail_env
                     .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
             }
+            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => {
+                let params = &kit.tom;
+                self.voice_level = params.level;
+                let ratio = match self.voice {
+                    super::VOICE_TOM_LOW => super::TOM_LOW_RATIO,
+                    super::VOICE_TOM_HIGH => super::TOM_HIGH_RATIO,
+                    _ => 1.0,
+                };
+                self.inc_lo = increment_for(params.tune_hz * ratio, sample_rate);
+                self.inc_hi = increment_for(params.glide_hz * ratio, sample_rate);
+                self.pitch_env
+                    .set_params(0.0, params.glide_s, 0.0, params.glide_s);
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+            }
+            super::VOICE_RIMSHOT => {
+                let params = &kit.rim;
+                self.voice_level = params.level;
+                self.incs = [0.0; HAT_PARTIALS];
+                self.incs[0] = increment_for(params.tone_hz, sample_rate);
+                self.tone_level = RIM_TONE_LEVEL;
+                self.noise_level = RIM_NOISE_LEVEL;
+                self.band.reconfigure(
+                    sample_rate,
+                    params.noise_highpass_hz,
+                    params.noise_lowpass_hz,
+                );
+                self.body_env.set_params(
+                    params.attack_s,
+                    params.decay_s,
+                    0.0,
+                    params.decay_s,
+                );
+                let tail_s = params.decay_s * RIM_TAIL_RATIO;
+                self.tail_env
+                    .set_params(params.attack_s, tail_s, 0.0, tail_s);
+            }
+            super::VOICE_SHAKER => {
+                let params = &kit.shaker;
+                self.voice_level = params.level;
+                self.band
+                    .reconfigure(sample_rate, params.highpass_hz, params.lowpass_hz);
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+            }
+            super::VOICE_COWBELL => {
+                let params = &kit.cowbell;
+                self.voice_level = params.level;
+                self.incs = [0.0; HAT_PARTIALS];
+                self.incs[0] = increment_for(params.freq_a_hz, sample_rate);
+                self.incs[1] = increment_for(params.freq_b_hz, sample_rate);
+                self.band
+                    .reconfigure(sample_rate, params.highpass_hz, params.lowpass_hz);
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+            }
+            super::VOICE_CRASH => {
+                let params = &kit.crash;
+                self.voice_level = params.level;
+                for (index, increment) in self.incs.iter_mut().enumerate() {
+                    *increment = increment_for(params.base_hz * HAT_RATIOS[index], sample_rate);
+                }
+                self.band
+                    .reconfigure(sample_rate, params.highpass_hz, params.lowpass_hz);
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+            }
+            super::VOICE_RIDE => {
+                let params = &kit.ride;
+                self.voice_level = params.level;
+                for (index, increment) in self.incs.iter_mut().enumerate() {
+                    *increment = increment_for(params.base_hz * HAT_RATIOS[index], sample_rate);
+                }
+                self.band
+                    .reconfigure(sample_rate, params.highpass_hz, params.lowpass_hz);
+                self.body_env
+                    .set_params(params.attack_s, params.decay_s, 0.0, params.decay_s);
+            }
+            _ => {}
         }
     }
 
@@ -568,6 +682,14 @@ impl Generator {
             super::VOICE_SNARE => self.snare(),
             super::VOICE_CLOSED_HAT | super::VOICE_OPEN_HAT => self.hihat(),
             super::VOICE_CLAP => self.clap(),
+            // 桶鼓复用底鼓经典声部的滑音正弦体（同 pitch_env/body_env
+            // 槽位），音高由 reconfigure 的比例定。
+            super::VOICE_TOM_LOW | super::VOICE_TOM_MID | super::VOICE_TOM_HIGH => self.kick(),
+            super::VOICE_RIMSHOT => self.rimshot(),
+            super::VOICE_SHAKER => self.shaker(),
+            super::VOICE_COWBELL => self.cowbell(),
+            // 碎镲/叮叮镲复用踩镲的分音簇 + 带通体（包络时长区分）。
+            super::VOICE_CRASH | super::VOICE_RIDE => self.hihat(),
             _ => 0.0,
         };
         self.frame = self.frame.saturating_add(1);
@@ -664,4 +786,53 @@ impl Generator {
             .max(self.tail_env.process(true));
         noise * envelope
     }
+
+    /// 边击：**高频正弦体 + 短带通噪声**（木质敲击的配方近似）。
+    /// 正弦走 `body_env`，噪声走更短的 `tail_env`（时长 = decay ×
+    /// [`RIM_TAIL_RATIO`]）；混合比是配方常量 [`RIM_TONE_LEVEL`] /
+    /// [`RIM_NOISE_LEVEL`]，与军鼓同口径不做参数。
+    #[inline]
+    fn rimshot(&mut self) -> f32 {
+        let tone = sine_from_phase(self.phases[0]);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let step = self.incs[0] as u32;
+        self.phases[0] = self.phases[0].wrapping_add(step);
+        let tone = tone * self.tone_level * self.body_env.process(true);
+        let white = self.rng.next_bipolar();
+        let noise = self.band.process(white) * self.noise_level * self.tail_env.process(true);
+        tone + noise
+    }
+
+    /// 沙锤：**带通白噪声 × 慢起音包络**（颗粒摩擦声的配方近似）。
+    #[inline]
+    fn shaker(&mut self) -> f32 {
+        let white = self.rng.next_bipolar();
+        self.band.process(white) * self.body_env.process(true)
+    }
+
+    /// 牛铃：**双基频方波 × 带通 × 包络**（与踩镲同分音簇机制，
+    /// 只用前两条分音、基频取铃的两个主模态）。
+    #[inline]
+    fn cowbell(&mut self) -> f32 {
+        let mut sum = 0.0f32;
+        for index in 0..2 {
+            sum += if self.phases[index] < HALF_PHASE {
+                1.0
+            } else {
+                -1.0
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let step = self.incs[index] as u32;
+            self.phases[index] = self.phases[index].wrapping_add(step);
+        }
+        self.band.process(sum * 0.5) * self.body_env.process(true)
+    }
 }
+
+/// 边击正弦体的配方混合电平（与军鼓的 tone/noise 同口径：配方常量，
+/// 不做旋钮）。
+const RIM_TONE_LEVEL: f32 = 0.75;
+/// 边击噪声的配方混合电平。
+const RIM_NOISE_LEVEL: f32 = 0.55;
+/// 边击噪声尾时长占整体 decay 的比例（噪声比木质体先消失）。
+const RIM_TAIL_RATIO: f32 = 0.6;
