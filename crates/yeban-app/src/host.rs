@@ -296,7 +296,7 @@ fn install_window_height_signal(ui: &MainWindow) {
         };
         // ⚠ `Window::size()` 是**物理**像素，而 `.slint` 布局按逻辑点排 ⇒ 必须除掉缩放比，
         // 否则 1.5 倍屏上注入 1050 而不是 700。
-        let scale = ui.window().scale_factor() as f32;
+        let scale = ui.window().scale_factor();
         let h = ui.window().size().height as f32 / if scale > 0.01 { scale } else { 1.0 };
         if h.is_finite() && h > 0.0 && (ui.get_window_h() - h).abs() > 0.5 {
             ui.set_window_h(h);
