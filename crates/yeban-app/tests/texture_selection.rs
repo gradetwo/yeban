@@ -255,8 +255,8 @@ fn the_phase2_surfaces_bind_texture_tokens_with_flat_fallback() {
             "网格底 (补丁包第四轮改钉: 两支同走 bg-lane 令牌, 质感差在令牌内)",
         ),
         (
-            "background: (root.row-pitch(lane_index).mod(12) == 0) ? Tokens.skin-grid-bar : Tokens.bg-lane2;",
-            "车道三档 (18f8bafd2 改钉: 根音行底边走 skin-grid-bar, 其余行 bg-lane2; 行身走 roll-lane 黑/白)",
+            "background: (root.row-pitch(lane_index).mod(12) == 0) ? Tokens.grid-bar : Tokens.bg-lane2;",
+            "车道三档 (2026-11-18 夜改钉: 根音行底边走 grid-bar 强度层 (基色 skin-grid-bar), 其余行 bg-lane2; 行身走 roll-lane 黑/白)",
         ),
         (
             "background: Tokens.bg-panel;",
@@ -537,8 +537,8 @@ fn the_track_area_follows_the_four_ui_rulings() {
     );
     for (needle, what) in [
         (
-            "background: Tokens.skin-grid-row;",
-            "行底分界线走 skin-grid-row 令牌 (补丁包第四轮改钉: 裁决甲三元改令牌, 暗线方向由 grid 判据实算看守)",
+            "background: Tokens.grid-row;",
+            "行底分界线走 grid-row 强度层令牌 (2026-11-18 夜改钉: 基色 skin-grid-row 经 tokens 强度派生; 基色值由 grid 判据看守)",
         ),
         (
             "background: Tokens.divider-row-highlight;",
@@ -573,7 +573,7 @@ fn the_track_area_follows_the_four_ui_rulings() {
         !arrangement.contains(
             "visible: Tokens.texture-physical ? trk.id != root.selected-track-id : true;"
         ),
-        "补丁包第四轮: 行底分界线的质感门控已撤销 (skin-grid-row 恒画), 旧门控串不得回归"
+        "补丁包第四轮: 行底分界线的质感门控已撤销 (grid-row 恒画), 旧门控串不得回归"
     );
 
     // 全 UI 同类排查的删除钉（各文件实际删掉的区域名/描述标签）。

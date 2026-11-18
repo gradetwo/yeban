@@ -146,6 +146,8 @@
 //!   本文件按 sRGB 合成有效色（扁平 `#2f363f` / 拟物 `#222a2e`）实算。
 //! * 分界线改走 `Tokens.skin-grid-row`，暗线方向保留（两主题均暗于
 //!   车道底），比值改实测窗（扁平 1.13 / 拟物 1.09）。
+//!   （2026-11-18 夜：Logic13 强度层落地，使用处改走 `grid-*`，
+//!   `skin-grid-*` 退为基色；⑦⑨ 落点钉随架构改钉，见各判据内注。）
 //! * 播放头（编曲 + 卷帘）改走 `Tokens.skin-text-strong`，纯白清零；
 //!   ⑦ 卷帘播放头比值改实测窗（扁平 11.63 / 拟物 13.75），⑨ 纯白
 //!   计数 2 → 0、skin-text-strong 计数钉 2。
@@ -529,8 +531,10 @@ fn ruler_numbers_keep_a_clear_zone_above_the_ticks() {
     }
 }
 
-/// ⑦ 分界线与选中行（十一版原题；补丁包第四轮 2026-11-18 改钉）：
-/// 车道底改走 `Tokens.bg-lane`、分界线改走 `Tokens.skin-grid-row`
+/// ⑦ 分界线与选中行（十一版原题；补丁包第四轮 2026-11-18 改钉；
+/// 2026-11-18 夜随 Logic13 网格强度架构再改钉）：
+/// 车道底改走 `Tokens.bg-lane`、分界线改走 `Tokens.grid-row`
+/// （强度层令牌，基色 `skin-grid-row`）
 /// （暗线方向保留）、选中行改 accent α0.06 透叠（按 sRGB 合成有效
 /// 色实算）、网格线比值改实测窗、卷帘播放头改走
 /// `Tokens.skin-text-strong`（比值实测窗）。
@@ -563,7 +567,10 @@ fn rev11_divider_and_selected_row() {
     assert_eq!(sel_phys, "#222a2e", "拟物选中行有效底合成不符");
 
     // 分界线落点：「行底分隔线」注释之后第一个 background 必须是
-    // Tokens.skin-grid-row（补丁包第四轮：由裁决甲三元改令牌）。
+    // Tokens.grid-row（2026-11-18 夜改钉：Logic13 强度层落地后使用
+    // 处一律走 grid-*，skin-grid-* 退为基色、只许经 tokens 派生；
+    // 决策依据 Logic Pro——网格是背景、默认要轻，强度层即调轻
+    // 机制，使用处直用基色会绕过它并破坏线层级）。
     let divider_at = arrangement.find("行底分隔线").expect("分界线注释在");
     let rest = &arrangement[divider_at..];
     let bg_idx = rest.find("background: ").expect("分界线 background 在");
@@ -573,8 +580,16 @@ fn rev11_divider_and_selected_row() {
         .collect();
     assert_eq!(
         bg_val.trim(),
-        "Tokens.skin-grid-row",
-        "分界线必须走 Tokens.skin-grid-row"
+        "Tokens.grid-row",
+        "分界线必须走 Tokens.grid-row（强度层；基色 skin-grid-row）"
+    );
+
+    // 派生链：grid-row 必须在 tokens.slint 里由基色 skin-grid-row
+    // 向车道底按 grid-fade 混合派生（强度 2 时 fade = 0 即基色原样）。
+    let tokens = include_str!("../ui/tokens.slint");
+    assert!(
+        tokens.contains("grid-row: skin-grid-row.mix(bg-lane, grid-fade)"),
+        "Tokens.grid-row 必须由 skin-grid-row 经强度层派生"
     );
 
     // 分界线方向（暗线，十一版方向保留）：两主题分界色相对亮度
@@ -711,8 +726,9 @@ fn rev10_clip_background_is_pure_track_color() {
     };
 
     let arrangement = include_str!("../ui/arrangement.slint");
+    // 锚点含下标变量：框选线给循环加了 [blk_idx]（选中标志同序同长）。
     let clips_at = arrangement
-        .find("for blk in root.timeline-blocks")
+        .find("for blk[blk_idx] in root.timeline-blocks")
         .expect("片段循环在");
     let rest = &arrangement[clips_at..];
     let bg_idx = rest.find("background: ").expect("片段块 background 在");
@@ -818,7 +834,8 @@ fn rev10_clip_background_is_pure_track_color() {
 /// 柱/MIDI 音符条走投影派生色 `blk.marker-color`、片段内导线走
 /// `blk.guide-color`（同出派生函数）；播放头线/菱形头改走
 /// `Tokens.skin-text-strong` 2 处、纯白清零；网格线改走
-/// `skin-grid-*` 令牌（背景层各 1 处）、十一版字面线色清零；
+/// `grid-*` 强度令牌（背景层各 1 处，基色 `skin-grid-*` 不得直用；
+/// 2026-11-18 夜随 Logic13 强度架构改钉）、十一版字面线色清零；
 /// 五块和弦底改走 `Theme.track-*` 本体 + `.brighter(0.18)` hover、
 /// 边框 `.brighter(0.08)` / `.darker(0.12)`，和弦名文字对常态底
 /// 比值改钉实测窗；八版合成等效实色与更早的 alpha 字面量全清零
@@ -850,15 +867,31 @@ fn rev11_clip_markers_and_chord_blocks_are_pure() {
         2,
         "skin-text-strong 落点应为 2 处（编曲播放头线/菱形头）"
     );
-    // 网格线落点改走 skin-grid-* 令牌（背景层各 1 处）；十一版
-    // 字面线色 #979fa8 / #74808b 与更早的 #748392 / #a7b0ba 清零。
-    for tok in ["skin-grid-bar", "skin-grid-beat", "skin-grid-sub"] {
+    // 网格线落点改走 grid-* 强度令牌（背景层各 1 处）；基色
+    // skin-grid-* 不得在编曲区直接落点（只许经 tokens.slint 的
+    // 强度派生消费）。十一版字面线色 #979fa8 / #74808b 与更早的
+    // #748392 / #a7b0ba 清零。
+    for tok in ["grid-bar", "grid-beat", "grid-sub"] {
         assert_eq!(
             arrangement
                 .matches(&format!("background: Tokens.{tok};"))
                 .count(),
             1,
             "{tok} 落点应为 1 处（背景层）"
+        );
+    }
+    for base in [
+        "skin-grid-row",
+        "skin-grid-bar",
+        "skin-grid-beat",
+        "skin-grid-sub",
+    ] {
+        assert_eq!(
+            arrangement
+                .matches(&format!("background: Tokens.{base};"))
+                .count(),
+            0,
+            "{base} 是基色，不得在编曲区直接落点（须走 grid-* 强度层）"
         );
     }
     for gone in ["#979fa8", "#74808b", "#748392", "#a7b0ba"] {
