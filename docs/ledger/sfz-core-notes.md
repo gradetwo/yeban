@@ -1101,7 +1101,7 @@ SFZ 规范自带的移位 opcode（14.3）与装载侧对外部记法的适配�
 
 ### 15.2 存储形状：交错
 
-样本以交错 `f32` 存储（同一帧的各声道相邻）。`InMemorySample` 与 `PreparedSample` 各新增一个 `channels: u16` 字段。选交错的理由有三条。第一，两个解码器原生输出都是交错（hound 经 `yeban-render`、symphonia 经 `yeban-decode`），零重排。第二，取数是单次乘加（下标 = 帧 × 声道数 + 声道），逐样本循环只改步长与长度口径（帧数）。第三，单声道时步长为 1，全部下标算术退化成原表达式，逐位不变是结构性的，不靠分支保证。代价如实登记：`PreparedSample` 48 → 56 B（摊平期对象，不进实时路径）；`SfzVoicePool` 6600 → 8136 B（新增 `filters_r`，见 15.3）。
+样本以交错 `f32` 存储（同一帧的各声道相邻）。`InMemorySample` 与 `PreparedSample` 各新增一个 `channels: u16` 字段。选交错的理由有三条。第一，两个解码器原生输出都是交错（hound 经 `yeban-render`、symphonia 经 `yeban-decode`），零重排。第二，取数是单次乘加（下标 = 帧 × 声道数 + 声道），逐样本循环只改步长与长度口径（帧数）。第三，单声道时步长为 1，全部下标算术退化成原表达式，逐位不变是结构性的，不靠分支保证。代价如实登记：`PreparedSample` 48 → 56 B（摊平期对象，不进实时路径）；`SfzVoicePool` 6664 → 8200 B（新增 `filters_r`，见 15.3；合入树口径，本线旧基线为 6600 → 8136）。
 
 ### 15.3 声部渲染链
 
@@ -1121,7 +1121,7 @@ sfizz 的 `FilePool::getReaderInformation` 只收 1 或 2 声道（其它声道�
 
 ### 15.7 判据与改钉
 
-新增 S121–S125（`crates/yeban-engine/tests/sfz_instrument.rs`）：中性声像逐声道逐位、width=0 塌中置、position 两极、单声道出口取声道 0 逐位、记账口径。尺寸改钉 12 处：池 6600 → 8136 共 11 处、`PreparedSample` 48 → 56 一处（S12b），每处在断言消息尾追加修订段。app 侧改钉三处：`sfz_decoded_formats` 判据 ②、`sfz_ogg_decoded` 判据 ④ 与 ⑤，两文件头各留修订段；两文件的单声道判据（FLAC ①③、OGG ①②③⑥）断言未动。render 侧新增保声道读腿判据一条（新腿与单声道腿的声道 0 逐位相同、字节腿与路径腿逐位相同）。
+新增 S121–S125（`crates/yeban-engine/tests/sfz_instrument.rs`）：中性声像逐声道逐位、width=0 塌中置、position 两极、单声道出口取声道 0 逐位、记账口径。尺寸改钉 15 处：池 6664 → 8200 共 14 处（合入树口径；本线旧基线为 6600 → 8136 共 11 处）、`PreparedSample` 48 → 56 一处（S12b），每处在断言消息尾追加修订段。app 侧改钉三处：`sfz_decoded_formats` 判据 ②、`sfz_ogg_decoded` 判据 ④ 与 ⑤，两文件头各留修订段；两文件的单声道判据（FLAC ①③、OGG ①②③⑥）断言未动。render 侧新增保声道读腿判据一条（新腿与单声道腿的声道 0 逐位相同、字节腿与路径腿逐位相同）。
 
 真实文件回归（2026-11-18，wow 盒）：五款乐器 region 数在基线树（`1858ef53`）与本线树上逐一相同：bear-sax 1551、bigcat-cello 2446、meatbass 768、string-cyborgs 246、virtuosity-drums 1676。Virtuosity Drums 的 cuica 样本（立体声 24-bit、18,856 帧）整段渲染：基线树 side/mid RMS 比 = 0.0000（纯单声道），本线 = 1.8676（与该文件自身的原始声像宽度同量级，声像完整通过）。
 
