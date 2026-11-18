@@ -26,7 +26,8 @@
 //! ⚠ 这三处都只在**opcode 没出现**时生效：显式取值（含显式 `0`）一律原样读入。
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use crate::curve::{Curve, CurvePoint};
@@ -2455,10 +2456,32 @@ pub(crate) struct Scopes<'m, 'a> {
     pub(crate) master: &'m OpcodeMap<'a>,
     pub(crate) global: &'m OpcodeMap<'a>,
     pub(crate) line: usize,
+    /// ⭐ **已消费 opcode 名的登记表**（未知 opcode 告警的依据，见
+    /// [`crate::parser::Warning::UnknownOpcode`]）：[`Scopes::get`] 查过的
+    /// 名字与各家族遍历**认领**过的名字都记在这里；归约结束后作用域表
+    /// 里**没**被记过的名字就是没有任何一处读它 ⇒ 解析器逐名告警
+    /// （Wang 2026-11-18「默认不能静默」）。由解析器持有、跨 region
+    /// 累积（消费事实不因 region 边界失效）。
+    pub(crate) consumed: &'m RefCell<BTreeSet<String>>,
+}
+
+/// 消费登记的唯一实现（见 [`Scopes::consumed`]）：不经 `Scopes` 的
+/// 收集器（如 [`collect_cc_intervals`]）共用这一份，⛔ 不各写一份。
+pub(crate) fn note_consumed_name(consumed: &RefCell<BTreeSet<String>>, name: &str) {
+    let mut set = consumed.borrow_mut();
+    if !set.contains(name) {
+        set.insert(name.to_string());
+    }
 }
 
 impl<'a> Scopes<'_, 'a> {
+    /// 记下「这个名字本装载器认得」（消费登记；重复登记无副作用）。
+    pub(crate) fn note_consumed(&self, name: &str) {
+        note_consumed_name(self.consumed, name);
+    }
+
     fn get(&self, name: &'static str) -> Option<OpcodeValue<'a>> {
+        self.note_consumed(name);
         [self.region, self.group, self.master, self.global]
             .into_iter()
             .find_map(|map| map.get(name))
@@ -2591,6 +2614,7 @@ pub(crate) fn build_region<'a>(
     group_map: &OpcodeMap<'a>,
     master_map: &OpcodeMap<'a>,
     global_map: &OpcodeMap<'a>,
+    consumed: &RefCell<BTreeSet<String>>,
     default_path: Option<Cow<'a, str>>,
     shift: RegionShift,
     line: usize,
@@ -2602,6 +2626,7 @@ pub(crate) fn build_region<'a>(
         master: master_map,
         global: global_map,
         line,
+        consumed,
     };
     let mut warnings: Vec<Warning> = Vec::new();
 
@@ -3055,6 +3080,7 @@ pub(crate) fn build_region<'a>(
         line,
         parse_cc_gate_name,
         false,
+        consumed,
     )?;
 
     // ---- ⭐ CC 触发门（`on_loccN` / `on_hiccN`，别名 `start_*`；
@@ -3064,6 +3090,7 @@ pub(crate) fn build_region<'a>(
         line,
         parse_on_cc_trigger_name,
         true,
+    consumed,
     )?;
 
     // ---- portamento 的 pitch 包络（egN_*，见 crate::pitch_eg） ----
@@ -3217,6 +3244,7 @@ fn collect_cc_intervals(
     line: usize,
     parse_name: fn(&str) -> Option<(bool, u8)>,
     allow_unassigned: bool,
+    consumed: &RefCell<BTreeSet<String>>,
 ) -> Result<Vec<CcGate>, SfzError> {
     let mut gates: BTreeMap<u8, (Option<u8>, Option<u8>)> = BTreeMap::new();
     for map in maps {
@@ -3224,6 +3252,7 @@ fn collect_cc_intervals(
             let Some((is_low, cc)) = parse_name(name.as_ref()) else {
                 continue;
             };
+            note_consumed_name(consumed, name.as_ref());
             let parsed = parse_int(value.as_ref()).ok_or_else(|| SfzError::InvalidInteger {
                 line,
                 opcode: name.to_string(),
@@ -3300,6 +3329,7 @@ fn read_velocity_curve(
             let Some(digits) = parse_velocity_curve_name(name.as_ref()) else {
                 continue;
             };
+            scopes.note_consumed(name.as_ref());
             let index: u8 = digits
                 .parse()
                 .ok()
@@ -3443,6 +3473,7 @@ fn read_labels<'a>(scopes: &Scopes<'_, 'a>, line: usize) -> Result<Labels<'a>, S
             let Some(index) = cc_label_index(name.as_ref(), line)? else {
                 continue;
             };
+            scopes.note_consumed(name.as_ref());
             cc_labels.insert(index, value.clone());
         }
     }
@@ -3485,16 +3516,19 @@ fn read_crossfades(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Crossfade
             let name = name.as_ref();
             match name {
                 "xf_keycurve" => {
+                    scopes.note_consumed(name);
                     key_curve = OpcodeValue::new("xf_keycurve", value.clone(), line)
                         .as_option(XfCurve::OPTIONS, XfCurve::ALLOWED)?;
                     continue;
                 }
                 "xf_velcurve" => {
+                    scopes.note_consumed(name);
                     vel_curve = OpcodeValue::new("xf_velcurve", value.clone(), line)
                         .as_option(XfCurve::OPTIONS, XfCurve::ALLOWED)?;
                     continue;
                 }
                 "xf_cccurve" => {
+                    scopes.note_consumed(name);
                     cc_curve = OpcodeValue::new("xf_cccurve", value.clone(), line)
                         .as_option(XfCurve::OPTIONS, XfCurve::ALLOWED)?;
                     continue;
@@ -3514,6 +3548,7 @@ fn read_crossfades(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Crossfade
                 _ => None,
             };
             if let Some((slot, is_low)) = endpoint {
+                scopes.note_consumed(name);
                 let parsed = read_xf_endpoint(name, value.as_ref(), line)?;
                 if is_low {
                     slot.low = Some(parsed);
@@ -3524,6 +3559,7 @@ fn read_crossfades(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Crossfade
             }
 
             if let Some((direction, is_low, cc)) = parse_cc_crossfade_name(name) {
+                scopes.note_consumed(name);
                 let parsed = read_xf_endpoint(name, value.as_ref(), line)?;
                 let slot = match direction {
                     XfDirection::In => cc_in.entry(cc).or_default(),
@@ -3625,6 +3661,11 @@ fn read_u32(
     let value = scopes
         .get(name)
         .or_else(|| alias.and_then(|alias| scopes.get(alias)));
+    // 别名拼写本身也是「认得的名字」：主名命中时别名不会被查，但文件里
+    // 写了别名就必须算已消费（⛔ 不能因为主名先命中就把别名报成未知）。
+    if let Some(alias) = alias {
+        scopes.note_consumed(alias);
+    }
     match value {
         Some(value) => Ok(value.as_int(0, i64::from(u32::MAX))? as u32),
         None => Ok(fallback),
@@ -3846,6 +3887,7 @@ fn read_cc_mods(
             let Some((target, form, digits)) = parse_modulation_name(name) else {
                 continue;
             };
+            scopes.note_consumed(name);
             // ⭐ 力度形态（任务单 `#106`）**不属这张表**：它载的是**力度**调制量、
             // ⛔ 不是 CC（名字里连下标都没有），也⛔ 不走 `_curveccN` 那支曲线
             // ⇒ 由 `read_ampeg_vel2_mods` 单独归约。⚠ 必须在这里就分道，
@@ -3943,6 +3985,7 @@ fn read_ampeg_vel2_mods(
             let Some(param) = target.ampeg() else {
                 continue;
             };
+            scopes.note_consumed(name);
             table[param.index()] = Some(read_modulation_delta(value.as_ref(), name, target, line)?);
         }
     }
@@ -4074,6 +4117,7 @@ fn read_eg_vel2(
             let Some(param) = EgParam::from_name(param_name) else {
                 continue;
             };
+            scopes.note_consumed(name);
             table[param.index()] = Some(read_eg_vel2_delta(value.as_ref(), name, param, line)?);
         }
     }
@@ -4321,6 +4365,7 @@ fn read_v1_lfo_cc(
             if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
                 continue;
             }
+            scopes.note_consumed(name);
             let cc = parse_modulation_cc(digits, name, line)?;
             table.insert(
                 cc,
@@ -4446,6 +4491,7 @@ fn read_generic_lfos(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Generic
                 slot.retain(|item| item.cc != cc);
                 slot.push(LfoCcMod { cc, delta });
                 slot.sort_by_key(|item| item.cc);
+                scopes.note_consumed(name);
                 continue;
             }
             // ---- 阶梯电平 stepX ----
@@ -4463,6 +4509,7 @@ fn read_generic_lfos(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Generic
                 table
                     .entry(index)
                     .or_insert_with(|| GenericLfo::empty(index));
+                scopes.note_consumed(name);
                 continue;
             }
             if !matches!(
@@ -4481,6 +4528,7 @@ fn read_generic_lfos(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<Generic
             ) {
                 continue;
             }
+            scopes.note_consumed(name);
             let entry = table
                 .entry(index)
                 .or_insert_with(|| GenericLfo::empty(index));
