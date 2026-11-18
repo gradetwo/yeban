@@ -7,15 +7,15 @@
 //! | M2 | master `reverb_wet: 1` ⇒ 音符结束后 **200–700 ms** 的尾窗 RMS 显著高于 `reverb_wet: 0`；`master_insert_frames` 与 `insert_reverb_frames` 都 == 渲染帧数（每量子**恰好一次**） | 链跑两遍（计数 2×、尾巴两倍速衰减）/ 链没接 |
 //! | M3 | **快路**：master 无设备 ⇒ `master_insert_frames == 0`、三个插入计数全 0、输出**非静音**（判据不是空转）；同夹具只给 master 挂一台湿混响 ⇒ 计数 == 渲染帧数且指纹**必变** | 无设备也进插入路径（下混会改变硬声相的 L/R） |
 //! | M4 | **旁通**：master 的设备 `bypassed = true` ⇒ 计数全 0、指纹与"无设备"**逐位相同** | 旁通设备仍被武装 |
-//! | M5 | **裁决 (甲) 的代价可判**：master 有**已武装但听不见**的器件（`reverb_wet: 0`）⇒ 母线被下混成单声道（L == R）；无设备时同一硬声相夹具 L ≠ R | "武装但不可闻"没有进下混分支 / 没有下混 |
+//! | M5 | ⭐ **stage 15**：master 有**已武装但听不见**的器件（`reverb_wet: 0`）⇒ 母线**仍保留左右差异**（L ≠ R）且指纹与无设备**逐位相同**；无设备时同一硬声相夹具同样 L ≠ R | 立体声链又退回下混 / 湿声为 0 却改了样本 |
 //!
 //! 判据全部走**产品路径**：`YebanProjectV1` → `EngineSnapshot::from_project` →
 //! `EngineRuntime::process_quantum`（`support::render`）。时间栅格与
 //! `tests/bus_insert.rs` 相同：120 BPM / 48 kHz / 960 PPQ ⇒ **1 tick = 25 样本**。
 //!
-//! ⚠ **本文件不证明"与导出逐位相同"**：实时主总线插入是**下混成单声道**
-//! （裁决 (甲)），离线（`yeban-render`）是**真立体声**插入；对齐的是"有/没有"插入，
-//! 不是逐位（报告 §7 登记，与 `#155`／`#158` 同族）。
+//! ⭐ **stage 15** 起实时主总线插入也是**真立体声**（与离线 `yeban-render` 同口径）；
+//! 本文件仍不主张"与导出逐位相同"（两边的算法面不同），只主张"有/没有"插入与
+//! "左/右是否保留"这两件事。
 
 mod support;
 
@@ -386,17 +386,20 @@ fn m4_a_bypassed_master_insert_returns_the_dry_signal() {
     );
 }
 
-/// M5：**裁决 (甲) 的代价可判** —— master 上"武装但听不见"的器件照样触发下混。
+/// M5（⭐ **stage 15 改写**）：主总线插入链**不再下混** —— 左右差异全程保留。
+///
+/// 旧口径（裁决 (甲)）是"master 只要有已武装器件就把母线压成单声道再复制两路"，
+/// 代价是硬声相夹具的 `L == R`。stage 15 起这条代价**不再存在**：四级插入器件
+/// 都在**同一件器件内部**带立体声入口（左右各一份内部状态 ⇒ ⛔ 不需要两份器件、
+/// 插入池不翻倍）⇒ 链直接跑在 `L/R` 两条缓冲上。
 ///
 /// 硬声相（`pan = -1.0`）的夹具：
-/// * master **无设备** ⇒ 母线保留左右差异（`L ≠ R`）；
+/// * master **无设备** ⇒ `L ≠ R`；
 /// * master 挂 `reverb_wet: 0`（已武装、`is_active()` 为假 ⇒ **不碰样本**）
-///   ⇒ 3a⁗⁗ 仍然下混成单声道再复制两路 ⇒ `L == R`，且计数 == 渲染帧数。
-///
-/// 这条判据把"下混是**只要武装就发生**"这一代价钉住（⛔ 不是"湿声为 0 就绕过"）——
-/// 与 `#158` 的 B4 同一条口径；没有它，"代价"只在注释里。
+///   ⇒ `L ≠ R` 仍然成立，且**指纹与无设备逐位相同**（设备真的没碰样本）；
+/// * 计数：`master_insert_frames` == 渲染帧数、`insert_reverb_frames` == 0。
 #[test]
-fn m5_an_armed_but_silent_master_device_still_downmixes_the_bus() {
+fn m5_an_armed_but_silent_master_device_keeps_the_stereo_bus() {
     let note = NoteSpec::at(0, 960, 48, 40);
     let dry = master_project(note, -1.0, 0.0, Vec::new());
     let armed_silent = master_project(note, -1.0, 0.0, vec![reverb_device(0.0, 0.8)]);
@@ -445,8 +448,13 @@ fn m5_an_armed_but_silent_master_device_still_downmixes_the_bus() {
         "无设备时硬声相必须保留左右差异（否则 M5 的第一条腿没有对照）"
     );
     assert!(
-        armed_lr_equal,
-        "master 有已武装器件 ⇒ 母线被下混成单声道并复制两路（裁决 (甲) 的代价）"
+        !armed_lr_equal,
+        "stage 15：master 有已武装器件时母线**不再下混**（硬声相必须保留左右差异）"
+    );
+    assert_eq!(
+        armed_silent.fingerprint(),
+        dry.fingerprint(),
+        "湿声为 0 的器件不碰样本 ⇒ 输出必须与无设备逐位相同"
     );
     assert_eq!(
         armed_silent.stats.master_insert_frames, expected_frames,
@@ -460,9 +468,10 @@ fn m5_an_armed_but_silent_master_device_still_downmixes_the_bus() {
         dry_energy > 0.0 && armed_energy > 0.0,
         "两条腿都必须真的出声（否则 L==R 可能是两边都静音）"
     );
-    assert_ne!(
-        dry.fingerprint(),
-        armed_silent.fingerprint(),
-        "下混本身就会改变硬声相母线的输出 ⇒ 指纹必变"
+    // ⭐ stage 15：不再下混 ⇒ "武装但静音"必须与无设备**逐位相同**（上面已断言），
+    // 这里只留一条反向腿，确保夹具不是两边都静音。
+    assert!(
+        dry_energy > 0.0,
+        "夹具必须真的出声（否则 L==R 可能是两边都静音）"
     );
 }

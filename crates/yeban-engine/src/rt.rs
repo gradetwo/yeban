@@ -1422,31 +1422,6 @@ fn master_last(
 ///
 /// 只扫 `armed_*_slots` 截出的**定长前缀**（默认工程全是空切片）⇒ 零分配、零锁、
 /// 零 I/O [MUST-GATE-001]。
-/// ⭐ **stage 11／12**：本节点武装的插入器件是否**全部**有立体声入口
-/// （通道条 `process_stereo`、混响 `process(left, right)`）；采样延迟与卷积仍是
-/// 单声道器件 ⇒ 只要它们任一级武装，本轨就必须留在单声道。
-///
-/// 分声道通路现在能吃通道条（`ChannelStrip::process_stereo` 是真立体声实现），
-/// 但另外三级仍是单声道器件（各自的延迟线与弹道只有一份状态）⇒ 只要它们中
-/// 任何一级对本节点武装，本轨就必须留在单声道。
-fn only_stereo_inserts(share: &BranchShare<'_>, node: &EntityId) -> bool {
-    let strip_armed = share.armed_strips[..*share.armed_insert_slots]
-        .iter()
-        .any(|(id, strip)| id == node && strip.is_some());
-    let reverb_armed = share.armed_reverbs[..*share.armed_reverb_slots]
-        .iter()
-        .any(|(id, _)| id == node);
-    if !(strip_armed || reverb_armed) {
-        return false;
-    }
-    !share.armed_sample_delays[..*share.armed_sample_delay_slots]
-        .iter()
-        .any(|(id, armed)| *armed && id == node)
-        && !share.armed_convs[..*share.armed_conv_slots]
-            .iter()
-            .any(|(id, armed)| *armed && id == node)
-}
-
 fn has_armed_insert_devices(share: &BranchShare<'_>, node: &EntityId) -> bool {
     share.armed_strips[..*share.armed_insert_slots]
         .iter()
@@ -1619,7 +1594,16 @@ fn process_insert_chain(
         .position(|(id, armed)| *armed && id == &track)
     {
         let device = &mut share.sample_delay_pool[index];
-        device.process_mono(&mut share.track_scratch[..frames]);
+        if stereo {
+            // ⭐ stage 14：左右各走自己那条线、一个游标只推进一次。
+            let (left, right) = (
+                &mut share.track_scratch[..frames],
+                &mut share.track_scratch_r[..frames],
+            );
+            device.process_pair(left, right);
+        } else {
+            device.process_mono(&mut share.track_scratch[..frames]);
+        }
         *share.insert_sample_delay_frames =
             share.insert_sample_delay_frames.wrapping_add(frames as u64);
         // ⚠ 不置 `seen`：`seen` 只表示\"通道条跑过、读数可用\"（调用方据此决定
@@ -1744,7 +1728,21 @@ fn process_insert_chain(
         .position(|(id, armed)| *armed && id == &track)
     {
         let conv = &mut share.conv_pool[index];
-        if conv.is_active() {
+        if conv.is_active() && stereo {
+            // ⭐ stage 13：交织成 L/R 后交给卷积的立体声块接口，**原样读回**两条缓冲
+            // （⛔ 不再取中值下混）。
+            for frame in 0..frames {
+                share.conv_scratch[2 * frame] = share.track_scratch[frame];
+                share.conv_scratch[2 * frame + 1] = share.track_scratch_r[frame];
+            }
+            conv.process(&mut share.conv_scratch[..2 * frames]);
+            for frame in 0..frames {
+                share.track_scratch[frame] = share.conv_scratch[2 * frame];
+                share.track_scratch_r[frame] = share.conv_scratch[2 * frame + 1];
+            }
+            *share.insert_convolution_frames =
+                share.insert_convolution_frames.wrapping_add(frames as u64);
+        } else if conv.is_active() {
             for frame in 0..frames {
                 let mono = share.track_scratch[frame];
                 share.conv_scratch[2 * frame] = mono;
@@ -1977,7 +1975,8 @@ fn render_branch(
             && prepared_sfz
                 .is_some_and(|plan| plan.regions_with_pan() > 0 || plan.regions_with_cc_pan() > 0)
             && current.audio_clip_schedule(&track).is_none()
-            && (!has_armed_insert_devices(share, &track) || only_stereo_inserts(share, &track))
+            // ⭐ stage 11–14：四级插入器件（通道条／混响／卷积／采样延迟）**全部**
+            // 有立体声入口 ⇒ 不再按"有无插入"排除；只剩"处理型总线"这一条。
             && !process_bus_inserts
             && routing.key_tap_slot(&track).is_none()
             && routes_of_track.len() == 1
@@ -2386,12 +2385,13 @@ fn render_branch(
             let processing_bus =
                 routing.has_incoming_audio(node) && has_armed_insert_devices(share, node);
             if processing_bus {
-                // ① 下混（`(L + R) · 0.5`，裁决 **(甲)**）：先写进 `track_scratch`。
+                // ① ⭐ **stage 15**：**不再下混** —— 左右分别搬进两条 scratch，
+                //    插入链按立体声跑（四级器件都有自己的立体声入口，一件器件内部
+                //    左右各一份状态 ⇒ ⛔ 不需要两份器件、池不翻倍）。
                 {
                     let (bus_left, bus_right) = share.routing_buses[index].stereo_mut();
-                    for frame in 0..frames {
-                        share.track_scratch[frame] = (bus_left[frame] + bus_right[frame]) * 0.5;
-                    }
+                    share.track_scratch[..frames].copy_from_slice(&bus_left[..frames]);
+                    share.track_scratch_r[..frames].copy_from_slice(&bus_right[..frames]);
                 }
                 // ② 插入链**一次**（与逐轨阶段同一个助手、同一组计数/量规）。
                 if process_insert_chain(
@@ -2401,16 +2401,15 @@ fn render_branch(
                     &mut insert_current_db,
                     &mut insert_detector_db,
                     routing.key_route(node),
-                    false, // 处理型总线：单声道（v1 口径未变）
+                    true, // ⭐ stage 15：总线插入链走立体声
                 ) {
                     insert_current_seen = true;
                 }
-                // ③ 复制回两路（单声道 → L/R 同值）：下混的逆操作**不是**重建立体声，
-                // 而是把处理后的中值放到两路 —— 这就是"单声道插入"的全部口径。
+                // ③ ⭐ **stage 15**：原样搬回两路（左→左、右→右）。
                 {
                     let (bus_left, bus_right) = share.routing_buses[index].stereo_mut();
                     bus_left[..frames].copy_from_slice(&share.track_scratch[..frames]);
-                    bus_right[..frames].copy_from_slice(&share.track_scratch[..frames]);
+                    bus_right[..frames].copy_from_slice(&share.track_scratch_r[..frames]);
                 }
                 // ④ 电平帧（**插入之后**；逐轨循环已为它跳过 ⇒ 每量子恰好一次）。
                 //
@@ -2418,10 +2417,21 @@ fn render_branch(
                 // 循环之前按 `metered_tracks - track_budget` 一次性记过（见本函数开头
                 // 的 `meter_capacity_drops` 段）⇒ 这里只是不发布这一帧。
                 if produced < track_budget {
+                    // ⭐ stage 15：电平取两条声道的峰值较大者（与逐轨 stage 4 同口径），
+                    // 借 `reverb_scratch[0]` 当临时格（此处空闲）。
+                    for frame in 0..frames {
+                        let left = share.track_scratch[frame];
+                        let right = share.track_scratch_r[frame];
+                        share.reverb_scratch[0][frame] = if left.abs() >= right.abs() {
+                            left
+                        } else {
+                            right
+                        };
+                    }
                     if let Some(frame) =
                         share
                             .bank
-                            .measure(*node, quantum, &share.track_scratch[..frames])
+                            .measure(*node, quantum, &share.reverb_scratch[0][..frames])
                     {
                         share.scratch_meters[produced] = frame;
                         produced += 1;
@@ -2512,12 +2522,11 @@ fn render_branch(
     // ⇒ 下面的下混/复制/器件推进**整段跳过**，`master_insert_frames` 不增长
     // ⇒ 默认工程（无设备）的输出与接线前**逐位相同**。
     if process_master_chain && has_armed_insert_devices(share, &master) {
-        // ① 下混（`(L + R) · 0.5`，裁决 (甲)）：先写进 `track_scratch`。
+        // ① ⭐ **stage 15**：不再下混 —— 左右分别搬进两条 scratch，链按立体声跑。
         {
             let (bus_left, bus_right) = out.stereo_mut();
-            for frame in 0..frames {
-                share.track_scratch[frame] = (bus_left[frame] + bus_right[frame]) * 0.5;
-            }
+            share.track_scratch[..frames].copy_from_slice(&bus_left[..frames]);
+            share.track_scratch_r[..frames].copy_from_slice(&bus_right[..frames]);
         }
         // ② 插入链**一次**（与逐轨/总线调用点同一个助手、同一组计数/量规）。
         if process_insert_chain(
@@ -2527,16 +2536,15 @@ fn render_branch(
             &mut insert_current_db,
             &mut insert_detector_db,
             routing.key_route(&master),
-            false, // 主总线：单声道（v1 口径未变）
+            true, // ⭐ stage 15：主总线插入链走立体声
         ) {
             insert_current_seen = true;
         }
-        // ③ 复制回两路（单声道 → L/R 同值）：下混的逆操作**不是**重建立体声，
-        // 而是把处理后的中值放到两路 —— 这就是"单声道主总线插入"的全部口径。
+        // ③ ⭐ **stage 15**：原样搬回两路（左→左、右→右）—— 母线保留左右差异。
         {
             let (bus_left, bus_right) = out.stereo_mut();
             bus_left[..frames].copy_from_slice(&share.track_scratch[..frames]);
-            bus_right[..frames].copy_from_slice(&share.track_scratch[..frames]);
+            bus_right[..frames].copy_from_slice(&share.track_scratch_r[..frames]);
         }
         // ④ 覆盖度见证：主总线的链真的处理了本量子的帧（每量子**恰好** +frames）。
         *share.master_insert_frames = share.master_insert_frames.wrapping_add(frames as u64);
