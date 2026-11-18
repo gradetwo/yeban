@@ -31,7 +31,7 @@ use yeban_model::{
     YebanProjectV1,
 };
 use yeban_render::engine_source::ArmedSfzInput;
-use yeban_render::{RenderSettings, render_project_to_buffer};
+use yeban_render::song_overview::{RenderSettings, render_project_to_buffer};
 
 const ACOUSTIC_KEYS: [u8; 10] = [36, 37, 38, 42, 43, 45, 46, 48, 49, 82];
 const SYNTH_KEYS: [u8; 5] = [36, 38, 39, 42, 46];
