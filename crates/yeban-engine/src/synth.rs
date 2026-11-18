@@ -2941,13 +2941,23 @@ impl SynthEngine {
         }
 
         // --- 2) 逐样本合成 ---
+        // 鼓机分声道渲染标记：为真时末尾不再把左声道复制给右声道
+        // （逐件声像已写进右声道）。有实时试听声部要混时退回旧行为
+        // （试听声部只有单声道一份，复制保它两边都在）。
+        let mut drum_stereo_written = false;
         match drum_map {
             // 鼓机：器件自己把 `out` 清零再落样本（"无占用槽位 ⇒ 逐位静音"）。
             // 尾音的回收也在 `render` 里（包络走完的槽位被置回空闲）。
             // ⚠ SFZ 池在这里被**释放**：本轨的音源是鼓机 ⇒ ⛔ 不留采样尾巴。
             Some(_) => {
                 slot.sfz.silence();
-                drums[index].render(position, out);
+                match out_r.as_deref_mut() {
+                    Some(right) if !has_live_poly_voice(&slot.synth) => {
+                        drums[index].render_stereo(position, out, right);
+                        drum_stereo_written = true;
+                    }
+                    _ => drums[index].render(position, out),
+                }
             }
             None => match sfz {
                 // ⭐ SFZ：逐**声部**混（线性插值 + 增益乘加），位置跨量子延续。
@@ -3004,7 +3014,10 @@ impl SynthEngine {
         }
         // ⭐ 鼓机 / 复音的兜底支路没有源侧声相 ⇒ 它们只写了左声道，
         // 这里把左声道整份复制给右（"两声道同值"）；SFZ 分段路已在写的时候就分好了。
-        if let Some(right) = out_r {
+        // 例外：鼓机已按逐件声像分声道写过（`drum_stereo_written`）⇒ 不复制。
+        if let Some(right) = out_r
+            && !drum_stereo_written
+        {
             right.copy_from_slice(out);
         }
     }

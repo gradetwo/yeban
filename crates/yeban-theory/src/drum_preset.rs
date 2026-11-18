@@ -2,7 +2,7 @@
 //!
 //! 格式是 JSON，模式见 `crates/yeban-theory/drum_styles/FORMAT.md`。本模块
 //! 只做三件事：把 JSON 文本解析成 [`DrumStylePreset`]、校验形状与值域、
-//! 给出仓内出厂的 10 个风格（`include_str!` 嵌入，解析逻辑与将来从
+//! 给出仓内出厂的 14 个风格（`include_str!` 嵌入，解析逻辑与将来从
 //! yeban-extras 下载的同格式文件共用同一条路径）。
 //!
 //! 数据来源：出厂 10 风格改编自 groove 仓（`gradetwo/groove`，MIT）的
@@ -191,6 +191,54 @@ pub struct DrumFxPreset {
     pub delay: Option<DrumDelayPreset>,
 }
 
+/// 鼓总线胶水压缩段（`bus.glue`）：把整组鼓粘成一个整体的慢起振压缩。
+/// 数值口径照 Wang 的 v2 定值：比 2:1–4:1、起振 30 ms 让瞬态先过、
+/// 增益衰减目标 1–2 dB（由阈值与 makeup 共同落）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumBusGluePreset {
+    /// 压缩阈值（dBFS）−60..=0。
+    pub threshold_db: f32,
+    /// 压缩比 1..=20（出厂定值 2..=4）。
+    pub ratio: f32,
+    /// 压缩软膝（dB）0..=24。
+    pub knee_db: f32,
+    /// 压缩起振（秒）0.0005..=0.2（出厂定值 0.03）。
+    pub attack_s: f32,
+    /// 压缩释放（秒）0.01..=1。
+    pub release_s: f32,
+    /// 压缩 makeup（dB）−12..=12。
+    pub makeup_db: f32,
+}
+
+/// 鼓总线末级软削波段（`bus.clipper`）：链上最后一台，削个别瞬态尖峰、
+/// 防削波失真并抬整体响度。`ceiling_db` 是削波渐近线，出厂定值 −0.3
+/// 量级，保证渲染真峰值留 −0.1 dBTP 以上的余量。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumBusClipperPreset {
+    /// 输入驱动（dB）0..=24。
+    pub drive_db: f32,
+    /// 削波渐近线（dBFS）−6..=0。
+    pub ceiling_db: f32,
+    /// 软膝宽度（dB）0..=6。
+    pub knee_db: f32,
+    /// 干湿比 0..=1。
+    pub mix: f32,
+    /// 过采样倍数（1/2/4/8）。
+    pub oversample: u32,
+}
+
+/// 鼓总线段（`bus`）：生成时新建一条鼓总线轨（`AuxReturn`），鼓轨先
+/// 进总线、总线再进主总线；总线链 = 胶水压缩 → 末级 Soft Clipper。
+/// 字段缺失（旧格式文件无 `bus`）⇒ 生成不建总线，鼓轨直连主总线，
+/// 与一期行为一致；出厂 14 风格全部带 `bus`（判据钉住）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumBusPreset {
+    /// 胶水压缩。
+    pub glue: DrumBusGluePreset,
+    /// 末级软削波。
+    pub clipper: DrumBusClipperPreset,
+}
+
 /// 一个风格预置。（不派生 `Eq`：`fx` 段含 `f32`。）
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumStylePreset {
@@ -222,6 +270,11 @@ pub struct DrumStylePreset {
     pub fill_lanes: Option<Vec<DrumLanePreset>>,
     /// 效果层预置（`fx` 段）；`None` = 文件未带效果段，生成走干声。
     pub fx: Option<DrumFxPreset>,
+    /// 鼓总线预置（`bus` 段）；`None` = 文件未带总线段，生成不建总线。
+    pub bus: Option<DrumBusPreset>,
+    /// 原声族的 SFZ 鼓组路径覆盖（`sfz_path` 字段，仓库相对路径）；
+    /// `None` = 用默认基础组 [`ACOUSTIC_KIT_SFZ_PATH`]。电子族忽略。
+    pub sfz_path: Option<String>,
 }
 
 impl DrumStylePreset {
@@ -318,6 +371,31 @@ impl DrumStylePreset {
                 Some(parse_fx(fx_obj)?)
             }
         };
+        let bus = match get_opt(obj, "bus") {
+            None => None,
+            Some(bus_json) => {
+                let bus_obj = bus_json
+                    .as_object()
+                    .ok_or_else(|| field_err("bus", "bus must be an object"))?;
+                Some(parse_bus(bus_obj)?)
+            }
+        };
+        let sfz_path = match get_opt(obj, "sfz_path") {
+            None => None,
+            Some(raw) => {
+                let path = match raw {
+                    Json::Str(s) => s.clone(),
+                    _ => return Err(field_err("sfz_path", "expected a string")),
+                };
+                if path.is_empty() || !path.ends_with(".sfz") || path.contains("..") {
+                    return Err(field_err(
+                        "sfz_path",
+                        format!("expected a repo-relative .sfz path, got `{path}`"),
+                    ));
+                }
+                Some(path)
+            }
+        };
         Ok(Self {
             id,
             name,
@@ -333,6 +411,8 @@ impl DrumStylePreset {
             lanes,
             fill_lanes,
             fx,
+            bus,
+            sfz_path,
         })
     }
 
@@ -511,6 +591,44 @@ fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
     })
 }
 
+fn parse_bus(obj: &[(String, Json)]) -> Result<DrumBusPreset, DrumPresetError> {
+    let glue = get_obj(obj, "glue")?;
+    let clipper = get_obj(obj, "clipper")?;
+    let oversample_raw = get_u64(clipper, "oversample")?;
+    let oversample = u32::try_from(oversample_raw)
+        .ok()
+        .filter(|v| matches!(v, 1 | 2 | 4 | 8))
+        .ok_or_else(|| {
+            field_err(
+                "bus.clipper.oversample",
+                format!("oversample must be 1, 2, 4 or 8, got {oversample_raw}"),
+            )
+        })?;
+    Ok(DrumBusPreset {
+        glue: DrumBusGluePreset {
+            threshold_db: get_f32_ranged(
+                glue,
+                "threshold_db",
+                "bus.glue.threshold_db",
+                -60.0,
+                0.0,
+            )?,
+            ratio: get_f32_ranged(glue, "ratio", "bus.glue.ratio", 1.0, 20.0)?,
+            knee_db: get_f32_ranged(glue, "knee_db", "bus.glue.knee_db", 0.0, 24.0)?,
+            attack_s: get_f32_ranged(glue, "attack_s", "bus.glue.attack_s", 0.0005, 0.2)?,
+            release_s: get_f32_ranged(glue, "release_s", "bus.glue.release_s", 0.01, 1.0)?,
+            makeup_db: get_f32_ranged(glue, "makeup_db", "bus.glue.makeup_db", -12.0, 12.0)?,
+        },
+        clipper: DrumBusClipperPreset {
+            drive_db: get_f32_ranged(clipper, "drive_db", "bus.clipper.drive_db", 0.0, 24.0)?,
+            ceiling_db: get_f32_ranged(clipper, "ceiling_db", "bus.clipper.ceiling_db", -6.0, 0.0)?,
+            knee_db: get_f32_ranged(clipper, "knee_db", "bus.clipper.knee_db", 0.0, 6.0)?,
+            mix: get_f32_ranged(clipper, "mix", "bus.clipper.mix", 0.0, 1.0)?,
+            oversample,
+        },
+    })
+}
+
 /// 效果族在场标记（生成侧的去重判据由调用方按参数名扫轨上已有器件得出，
 /// 判读口径在调用方：参数名命中 `yeban-dsp` 的族拼写表）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -629,6 +747,43 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
     specs
 }
 
+/// 把 `bus` 段翻译成鼓总线链的器件配方：胶水压缩在前、Soft Clipper
+/// 末级。链内次序由插入链投影的固定级序保证（压缩级 → 削波级），
+/// 这里只需给出两台器件。参数名用 `yeban-dsp` `device_param` 的规范
+/// 拼写（压缩 = 通道条压缩拼写、削波 = `ClipperField` 拼写）。
+#[must_use]
+pub fn drum_bus_device_specs(bus: &DrumBusPreset) -> Vec<DrumFxDeviceSpec> {
+    vec![
+        DrumFxDeviceSpec {
+            family: "glue",
+            name: "Glue Compressor",
+            params: vec![
+                ("compressor_enabled".to_owned(), 1.0),
+                ("threshold_db".to_owned(), bus.glue.threshold_db),
+                ("ratio".to_owned(), bus.glue.ratio),
+                ("knee_db".to_owned(), bus.glue.knee_db),
+                ("attack_s".to_owned(), bus.glue.attack_s),
+                ("release_s".to_owned(), bus.glue.release_s),
+                ("makeup_db".to_owned(), bus.glue.makeup_db),
+            ],
+        },
+        DrumFxDeviceSpec {
+            family: "clipper",
+            name: "Soft Clipper",
+            params: vec![
+                ("clipper_drive_db".to_owned(), bus.clipper.drive_db),
+                ("clipper_ceiling_db".to_owned(), bus.clipper.ceiling_db),
+                ("clipper_knee_db".to_owned(), bus.clipper.knee_db),
+                ("clipper_mix".to_owned(), bus.clipper.mix),
+                (
+                    "clipper_oversample".to_owned(),
+                    bus.clipper.oversample as f32,
+                ),
+            ],
+        },
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // 鼓组装配（默认鼓组一份；按族分工，GM 映射统一）
 // ---------------------------------------------------------------------------
@@ -644,7 +799,7 @@ pub enum DrumKitSetup {
     /// 原声：轨采样器绑定到 SFZ 定义文件。
     AcousticSfz {
         /// SFZ 路径（仓库相对）。
-        sfz_path: &'static str,
+        sfz_path: String,
     },
     /// 电子：轨上插入一台内置乐器设备，参数表即鼓机识别所需的
     /// 五个键位名 + 音色参数（名字口径见 `yeban-engine` 的 `drums`
@@ -667,25 +822,32 @@ pub enum DrumKitSetup {
 pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
     match preset.kit_family {
         KitFamily::Acoustic => DrumKitSetup::AcousticSfz {
-            sfz_path: ACOUSTIC_KIT_SFZ_PATH,
+            sfz_path: preset
+                .sfz_path
+                .clone()
+                .unwrap_or_else(|| ACOUSTIC_KIT_SFZ_PATH.to_owned()),
         },
         KitFamily::Electronic => {
+            // 键位：核心五件 + 可选八件（引擎 `drums` 模块 §3.2 的
+            // 可选键位名单）。GM 键位与原声族统一。
             let mut params: Vec<(String, f32)> = vec![
                 ("kick_note".to_owned(), 36.0),
                 ("snare_note".to_owned(), 38.0),
                 ("closed_hat_note".to_owned(), 42.0),
                 ("open_hat_note".to_owned(), 46.0),
                 ("clap_note".to_owned(), 39.0),
+                ("rim_note".to_owned(), 37.0),
+                ("tom_low_note".to_owned(), 43.0),
+                ("tom_mid_note".to_owned(), 45.0),
+                ("tom_high_note".to_owned(), 48.0),
+                ("crash_note".to_owned(), 49.0),
+                ("ride_note".to_owned(), 51.0),
+                ("cowbell_note".to_owned(), 56.0),
+                ("shaker_note".to_owned(), 82.0),
             ];
-            // 电子族的音色定值（808 系）：长衰减底鼓是 trap/drill 的
-            // 定义性音色；house/techno/edm 用较短的标准底鼓。
-            let (kick_decay_s, kick_tune_hz) = match preset.id.as_str() {
-                "trap" | "drill" => (0.95, 48.0),
-                "phonk" => (0.70, 52.0),
-                _ => (0.42, 55.0),
-            };
-            params.push(("kick_decay_s".to_owned(), kick_decay_s));
-            params.push(("kick_tune_hz".to_owned(), kick_tune_hz));
+            for (name, value) in synth_style_params(preset.id.as_str()) {
+                params.push((name.to_owned(), value));
+            }
             DrumKitSetup::SynthDevice {
                 device_name: "Yeban Drum Kit (Synth)",
                 params,
@@ -694,12 +856,822 @@ pub fn kit_setup(preset: &DrumStylePreset) -> DrumKitSetup {
     }
 }
 
+/// 电子族**逐风格**的合成参数全表（段 2）：每种风格把 13 个音色的
+/// 全部参数逐项写全（⛔ 不许"没写的走器件默认"——一期电子 6 风格
+/// 军鼓/拍手/踩镲逐值相同的事故正是默认回退造成的）。性格分工：
+/// trap/drill/phonk/hiphop = 808 系（长底鼓，trap 与 drill 靠滑音
+/// 时长与军鼓带宽区分）；edm = 909 基表（与 `yeban-dsp` 的
+/// `DrumKitParams::RECIPE_909` 核心四件逐值相同，由 yeban-app 的
+/// 跨 crate 判据对钉），house/techno = 909 变体（house 开镲更长、
+/// techno 底鼓更短更硬）；lofi = HipHop 合成底 + 整体压暗
+/// （高频收窄，空间与底噪近似在预置 FX 层）。未知 id 落 909 基表
+/// （出厂预置的 id 集合由 FACTORY_SOURCES 钉住，未知 id 只来自
+/// 用户自写预置文件，取基表是装配默认值、不是静默近似音色）。
+fn synth_style_params(id: &str) -> Vec<(&'static str, f32)> {
+    match id {
+        "trap" => vec![
+            ("kick_tune_hz", 45.0),
+            ("kick_glide_hz", 150.0),
+            ("kick_glide_s", 0.05),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 1.1),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 200.0),
+            ("snare_tone_ratio", 1.8),
+            ("snare_tone_decay_s", 0.06),
+            ("snare_tone_level", 0.4),
+            ("snare_noise_highpass_hz", 2500.0),
+            ("snare_noise_lowpass_hz", 12000.0),
+            ("snare_noise_decay_s", 0.07),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 1.0),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 320.0),
+            ("hihat_highpass_hz", 8000.0),
+            ("hihat_lowpass_hz", 16000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.04),
+            ("hihat_open_decay_s", 0.3),
+            ("hihat_level", 0.65),
+            ("hihat_pan", 0.15),
+            ("clap_highpass_hz", 1800.0),
+            ("clap_lowpass_hz", 7000.0),
+            ("clap_bursts", 3.0),
+            ("clap_burst_decay_s", 0.011),
+            ("clap_burst_spacing_s", 0.008),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.18),
+            ("clap_level", 0.7),
+            ("clap_pan", -0.1),
+            ("tom_tune_hz", 90.0),
+            ("tom_glide_hz", 130.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.35),
+            ("tom_level", 0.8),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1800.0),
+            ("rim_noise_highpass_hz", 1500.0),
+            ("rim_noise_lowpass_hz", 6500.0),
+            ("rim_decay_s", 0.045),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.7),
+            ("rim_pan", 0.1),
+            ("shaker_highpass_hz", 6000.0),
+            ("shaker_lowpass_hz", 14000.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.12),
+            ("shaker_level", 0.55),
+            ("shaker_pan", 0.55),
+            ("cowbell_freq_a_hz", 560.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.25),
+            ("cowbell_level", 0.6),
+            ("cowbell_pan", -0.2),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 6000.0),
+            ("crash_lowpass_hz", 15000.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.4),
+            ("crash_level", 0.7),
+            ("crash_pan", -0.5),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7500.0),
+            ("ride_lowpass_hz", 16000.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.0),
+            ("ride_level", 0.6),
+            ("ride_pan", 0.55),
+        ],
+        "drill" => vec![
+            ("kick_tune_hz", 47.0),
+            ("kick_glide_hz", 170.0),
+            ("kick_glide_s", 0.07),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.85),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 210.0),
+            ("snare_tone_ratio", 1.8),
+            ("snare_tone_decay_s", 0.05),
+            ("snare_tone_level", 0.45),
+            ("snare_noise_highpass_hz", 3000.0),
+            ("snare_noise_lowpass_hz", 11000.0),
+            ("snare_noise_decay_s", 0.055),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 1.0),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 330.0),
+            ("hihat_highpass_hz", 8500.0),
+            ("hihat_lowpass_hz", 16000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.035),
+            ("hihat_open_decay_s", 0.25),
+            ("hihat_level", 0.6),
+            ("hihat_pan", 0.1),
+            ("clap_highpass_hz", 2000.0),
+            ("clap_lowpass_hz", 6500.0),
+            ("clap_bursts", 3.0),
+            ("clap_burst_decay_s", 0.011),
+            ("clap_burst_spacing_s", 0.008),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.15),
+            ("clap_level", 0.65),
+            ("clap_pan", -0.2),
+            ("tom_tune_hz", 95.0),
+            ("tom_glide_hz", 140.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.3),
+            ("tom_level", 0.75),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1900.0),
+            ("rim_noise_highpass_hz", 1300.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.04),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.75),
+            ("rim_pan", 0.15),
+            ("shaker_highpass_hz", 6500.0),
+            ("shaker_lowpass_hz", 14500.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.1),
+            ("shaker_level", 0.5),
+            ("shaker_pan", 0.35),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.22),
+            ("cowbell_level", 0.55),
+            ("cowbell_pan", -0.25),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 5200.0),
+            ("crash_lowpass_hz", 14800.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.2),
+            ("crash_level", 0.65),
+            ("crash_pan", -0.2),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7200.0),
+            ("ride_lowpass_hz", 15800.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 0.9),
+            ("ride_level", 0.55),
+            ("ride_pan", 0.25),
+        ],
+        "phonk" => vec![
+            ("kick_tune_hz", 50.0),
+            ("kick_glide_hz", 140.0),
+            ("kick_glide_s", 0.04),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.7),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 180.0),
+            ("snare_tone_ratio", 1.8),
+            ("snare_tone_decay_s", 0.08),
+            ("snare_tone_level", 0.5),
+            ("snare_noise_highpass_hz", 1800.0),
+            ("snare_noise_lowpass_hz", 8000.0),
+            ("snare_noise_decay_s", 0.09),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 0.95),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 300.0),
+            ("hihat_highpass_hz", 6500.0),
+            ("hihat_lowpass_hz", 12000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.05),
+            ("hihat_open_decay_s", 0.35),
+            ("hihat_level", 0.6),
+            ("hihat_pan", 0.1),
+            ("clap_highpass_hz", 1500.0),
+            ("clap_lowpass_hz", 5500.0),
+            ("clap_bursts", 4.0),
+            ("clap_burst_decay_s", 0.011),
+            ("clap_burst_spacing_s", 0.009),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.22),
+            ("clap_level", 0.75),
+            ("clap_pan", -0.05),
+            ("tom_tune_hz", 85.0),
+            ("tom_glide_hz", 140.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.4),
+            ("tom_level", 0.8),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1600.0),
+            ("rim_noise_highpass_hz", 1300.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.05),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.7),
+            ("rim_pan", 0.25),
+            ("shaker_highpass_hz", 5000.0),
+            ("shaker_lowpass_hz", 11000.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.16),
+            ("shaker_level", 0.6),
+            ("shaker_pan", 0.25),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 800.0),
+            ("cowbell_highpass_hz", 400.0),
+            ("cowbell_lowpass_hz", 4000.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.35),
+            ("cowbell_level", 0.85),
+            ("cowbell_pan", -0.3),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 4500.0),
+            ("crash_lowpass_hz", 12000.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.5),
+            ("crash_level", 0.7),
+            ("crash_pan", -0.3),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 6000.0),
+            ("ride_lowpass_hz", 13000.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.1),
+            ("ride_level", 0.6),
+            ("ride_pan", 0.55),
+        ],
+        "edm" => vec![
+            ("kick_tune_hz", 50.0),
+            ("kick_glide_hz", 160.0),
+            ("kick_glide_s", 0.02),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.3),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 190.0),
+            ("snare_tone_ratio", 1.784),
+            ("snare_tone_decay_s", 0.1),
+            ("snare_tone_level", 0.5),
+            ("snare_noise_highpass_hz", 1800.0),
+            ("snare_noise_lowpass_hz", 12000.0),
+            ("snare_noise_decay_s", 0.09),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 1.0),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 340.0),
+            ("hihat_highpass_hz", 7000.0),
+            ("hihat_lowpass_hz", 15000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.05),
+            ("hihat_open_decay_s", 0.4),
+            ("hihat_level", 0.7),
+            ("hihat_pan", 0.2),
+            ("clap_highpass_hz", 1500.0),
+            ("clap_lowpass_hz", 6000.0),
+            ("clap_bursts", 4.0),
+            ("clap_burst_decay_s", 0.012),
+            ("clap_burst_spacing_s", 0.01),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.25),
+            ("clap_level", 0.8),
+            ("clap_pan", -0.15),
+            ("tom_tune_hz", 100.0),
+            ("tom_glide_hz", 150.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.28),
+            ("tom_level", 0.9),
+            ("tom_pan", 0.1),
+            ("rim_tone_hz", 1700.0),
+            ("rim_noise_highpass_hz", 1200.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.05),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.8),
+            ("rim_pan", -0.1),
+            ("shaker_highpass_hz", 5000.0),
+            ("shaker_lowpass_hz", 12000.0),
+            ("shaker_attack_s", 0.008),
+            ("shaker_decay_s", 0.14),
+            ("shaker_level", 0.6),
+            ("shaker_pan", 0.4),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.28),
+            ("cowbell_level", 0.65),
+            ("cowbell_pan", -0.3),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 5000.0),
+            ("crash_lowpass_hz", 15000.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.6),
+            ("crash_level", 0.8),
+            ("crash_pan", -0.3),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7000.0),
+            ("ride_lowpass_hz", 16000.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.1),
+            ("ride_level", 0.7),
+            ("ride_pan", 0.35),
+        ],
+        "house" => vec![
+            ("kick_tune_hz", 50.0),
+            ("kick_glide_hz", 160.0),
+            ("kick_glide_s", 0.02),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.3),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 190.0),
+            ("snare_tone_ratio", 1.784),
+            ("snare_tone_decay_s", 0.1),
+            ("snare_tone_level", 0.5),
+            ("snare_noise_highpass_hz", 1800.0),
+            ("snare_noise_lowpass_hz", 12000.0),
+            ("snare_noise_decay_s", 0.09),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 0.95),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 340.0),
+            ("hihat_highpass_hz", 7000.0),
+            ("hihat_lowpass_hz", 15000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.05),
+            ("hihat_open_decay_s", 0.45),
+            ("hihat_level", 0.7),
+            ("hihat_pan", 0.15),
+            ("clap_highpass_hz", 1500.0),
+            ("clap_lowpass_hz", 6000.0),
+            ("clap_bursts", 4.0),
+            ("clap_burst_decay_s", 0.012),
+            ("clap_burst_spacing_s", 0.01),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.25),
+            ("clap_level", 0.8),
+            ("clap_pan", -0.1),
+            ("tom_tune_hz", 105.0),
+            ("tom_glide_hz", 140.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.26),
+            ("tom_level", 0.85),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1750.0),
+            ("rim_noise_highpass_hz", 1300.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.05),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.85),
+            ("rim_pan", -0.05),
+            ("shaker_highpass_hz", 5500.0),
+            ("shaker_lowpass_hz", 12500.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.13),
+            ("shaker_level", 0.65),
+            ("shaker_pan", 0.35),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.28),
+            ("cowbell_level", 0.65),
+            ("cowbell_pan", 0.15),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 5200.0),
+            ("crash_lowpass_hz", 14800.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.5),
+            ("crash_level", 0.75),
+            ("crash_pan", -0.5),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7200.0),
+            ("ride_lowpass_hz", 15800.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.0),
+            ("ride_level", 0.65),
+            ("ride_pan", 0.55),
+        ],
+        "techno" => vec![
+            ("kick_tune_hz", 52.0),
+            ("kick_glide_hz", 165.0),
+            ("kick_glide_s", 0.018),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.26),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 195.0),
+            ("snare_tone_ratio", 1.784),
+            ("snare_tone_decay_s", 0.1),
+            ("snare_tone_level", 0.5),
+            ("snare_noise_highpass_hz", 2000.0),
+            ("snare_noise_lowpass_hz", 12500.0),
+            ("snare_noise_decay_s", 0.08),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 1.0),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 345.0),
+            ("hihat_highpass_hz", 7500.0),
+            ("hihat_lowpass_hz", 15500.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.045),
+            ("hihat_open_decay_s", 0.35),
+            ("hihat_level", 0.72),
+            ("hihat_pan", 0.18),
+            ("clap_highpass_hz", 1600.0),
+            ("clap_lowpass_hz", 6200.0),
+            ("clap_bursts", 4.0),
+            ("clap_burst_decay_s", 0.012),
+            ("clap_burst_spacing_s", 0.01),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.22),
+            ("clap_level", 0.8),
+            ("clap_pan", -0.12),
+            ("tom_tune_hz", 98.0),
+            ("tom_glide_hz", 140.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.27),
+            ("tom_level", 0.88),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1750.0),
+            ("rim_noise_highpass_hz", 1300.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.048),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.82),
+            ("rim_pan", 0.25),
+            ("shaker_highpass_hz", 5200.0),
+            ("shaker_lowpass_hz", 12800.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.135),
+            ("shaker_level", 0.62),
+            ("shaker_pan", 0.38),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.29),
+            ("cowbell_level", 0.68),
+            ("cowbell_pan", 0.18),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 5200.0),
+            ("crash_lowpass_hz", 14800.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.55),
+            ("crash_level", 0.78),
+            ("crash_pan", -0.28),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7200.0),
+            ("ride_lowpass_hz", 15800.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.05),
+            ("ride_level", 0.68),
+            ("ride_pan", 0.32),
+        ],
+        "lofi" => vec![
+            ("kick_tune_hz", 48.0),
+            ("kick_glide_hz", 130.0),
+            ("kick_glide_s", 0.04),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.55),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 175.0),
+            ("snare_tone_ratio", 1.8),
+            ("snare_tone_decay_s", 0.08),
+            ("snare_tone_level", 0.55),
+            ("snare_noise_highpass_hz", 1500.0),
+            ("snare_noise_lowpass_hz", 7000.0),
+            ("snare_noise_decay_s", 0.1),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 0.95),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 290.0),
+            ("hihat_highpass_hz", 5500.0),
+            ("hihat_lowpass_hz", 10000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.055),
+            ("hihat_open_decay_s", 0.32),
+            ("hihat_level", 0.55),
+            ("hihat_pan", 0.08),
+            ("clap_highpass_hz", 1300.0),
+            ("clap_lowpass_hz", 5000.0),
+            ("clap_bursts", 3.0),
+            ("clap_burst_decay_s", 0.011),
+            ("clap_burst_spacing_s", 0.009),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.24),
+            ("clap_level", 0.7),
+            ("clap_pan", -0.05),
+            ("tom_tune_hz", 88.0),
+            ("tom_glide_hz", 140.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.38),
+            ("tom_level", 0.78),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1500.0),
+            ("rim_noise_highpass_hz", 1000.0),
+            ("rim_noise_lowpass_hz", 5000.0),
+            ("rim_decay_s", 0.055),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.72),
+            ("rim_pan", 0.25),
+            ("shaker_highpass_hz", 4500.0),
+            ("shaker_lowpass_hz", 9500.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.17),
+            ("shaker_level", 0.58),
+            ("shaker_pan", 0.2),
+            ("cowbell_freq_a_hz", 520.0),
+            ("cowbell_freq_b_hz", 780.0),
+            ("cowbell_highpass_hz", 350.0),
+            ("cowbell_lowpass_hz", 3800.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.34),
+            ("cowbell_level", 0.7),
+            ("cowbell_pan", -0.1),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 4000.0),
+            ("crash_lowpass_hz", 10000.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.3),
+            ("crash_level", 0.62),
+            ("crash_pan", -0.2),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 5500.0),
+            ("ride_lowpass_hz", 11000.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 0.95),
+            ("ride_level", 0.55),
+            ("ride_pan", 0.22),
+        ],
+        "hiphop" => vec![
+            ("kick_tune_hz", 46.0),
+            ("kick_glide_hz", 145.0),
+            ("kick_glide_s", 0.045),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.8),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 185.0),
+            ("snare_tone_ratio", 1.8),
+            ("snare_tone_decay_s", 0.08),
+            ("snare_tone_level", 0.5),
+            ("snare_noise_highpass_hz", 2000.0),
+            ("snare_noise_lowpass_hz", 10000.0),
+            ("snare_noise_decay_s", 0.085),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 1.0),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 310.0),
+            ("hihat_highpass_hz", 7000.0),
+            ("hihat_lowpass_hz", 13000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.045),
+            ("hihat_open_decay_s", 0.35),
+            ("hihat_level", 0.62),
+            ("hihat_pan", 0.3),
+            ("clap_highpass_hz", 1700.0),
+            ("clap_lowpass_hz", 6500.0),
+            ("clap_bursts", 4.0),
+            ("clap_burst_decay_s", 0.011),
+            ("clap_burst_spacing_s", 0.009),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.2),
+            ("clap_level", 0.8),
+            ("clap_pan", -0.2),
+            ("tom_tune_hz", 92.0),
+            ("tom_glide_hz", 140.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.33),
+            ("tom_level", 0.8),
+            ("tom_pan", 0.15),
+            ("rim_tone_hz", 1750.0),
+            ("rim_noise_highpass_hz", 1300.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.045),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.8),
+            ("rim_pan", 0.08),
+            ("shaker_highpass_hz", 5500.0),
+            ("shaker_lowpass_hz", 12000.0),
+            ("shaker_attack_s", 0.007),
+            ("shaker_decay_s", 0.13),
+            ("shaker_level", 0.55),
+            ("shaker_pan", 0.28),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.27),
+            ("cowbell_level", 0.6),
+            ("cowbell_pan", -0.18),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 5200.0),
+            ("crash_lowpass_hz", 14800.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.45),
+            ("crash_level", 0.72),
+            ("crash_pan", -0.22),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7200.0),
+            ("ride_lowpass_hz", 15800.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.05),
+            ("ride_level", 0.62),
+            ("ride_pan", 0.28),
+        ],
+        _ => vec![
+            ("kick_tune_hz", 50.0),
+            ("kick_glide_hz", 160.0),
+            ("kick_glide_s", 0.02),
+            ("kick_attack_s", 0.0005),
+            ("kick_decay_s", 0.3),
+            ("kick_level", 1.0),
+            ("kick_pan", 0.0),
+            ("snare_tone_hz", 190.0),
+            ("snare_tone_ratio", 1.784),
+            ("snare_tone_decay_s", 0.1),
+            ("snare_tone_level", 0.5),
+            ("snare_noise_highpass_hz", 1800.0),
+            ("snare_noise_lowpass_hz", 12000.0),
+            ("snare_noise_decay_s", 0.09),
+            ("snare_noise_level", 1.0),
+            ("snare_attack_s", 0.0005),
+            ("snare_level", 1.0),
+            ("snare_pan", 0.0),
+            ("hihat_base_hz", 340.0),
+            ("hihat_highpass_hz", 7000.0),
+            ("hihat_lowpass_hz", 15000.0),
+            ("hihat_attack_s", 0.0005),
+            ("hihat_closed_decay_s", 0.05),
+            ("hihat_open_decay_s", 0.4),
+            ("hihat_level", 0.7),
+            ("hihat_pan", 0.2),
+            ("clap_highpass_hz", 1500.0),
+            ("clap_lowpass_hz", 6000.0),
+            ("clap_bursts", 4.0),
+            ("clap_burst_decay_s", 0.012),
+            ("clap_burst_spacing_s", 0.01),
+            ("clap_attack_s", 0.0005),
+            ("clap_decay_s", 0.25),
+            ("clap_level", 0.8),
+            ("clap_pan", -0.15),
+            ("tom_tune_hz", 100.0),
+            ("tom_glide_hz", 150.0),
+            ("tom_glide_s", 0.03),
+            ("tom_attack_s", 0.0005),
+            ("tom_decay_s", 0.28),
+            ("tom_level", 0.9),
+            ("tom_pan", 0.1),
+            ("rim_tone_hz", 1700.0),
+            ("rim_noise_highpass_hz", 1200.0),
+            ("rim_noise_lowpass_hz", 6000.0),
+            ("rim_decay_s", 0.05),
+            ("rim_attack_s", 0.0005),
+            ("rim_level", 0.8),
+            ("rim_pan", -0.1),
+            ("shaker_highpass_hz", 5000.0),
+            ("shaker_lowpass_hz", 12000.0),
+            ("shaker_attack_s", 0.008),
+            ("shaker_decay_s", 0.14),
+            ("shaker_level", 0.6),
+            ("shaker_pan", 0.4),
+            ("cowbell_freq_a_hz", 540.0),
+            ("cowbell_freq_b_hz", 845.0),
+            ("cowbell_highpass_hz", 500.0),
+            ("cowbell_lowpass_hz", 4500.0),
+            ("cowbell_attack_s", 0.0005),
+            ("cowbell_decay_s", 0.28),
+            ("cowbell_level", 0.65),
+            ("cowbell_pan", -0.3),
+            ("crash_base_hz", 300.0),
+            ("crash_highpass_hz", 5000.0),
+            ("crash_lowpass_hz", 15000.0),
+            ("crash_attack_s", 0.0005),
+            ("crash_decay_s", 1.6),
+            ("crash_level", 0.8),
+            ("crash_pan", -0.3),
+            ("ride_base_hz", 420.0),
+            ("ride_highpass_hz", 7000.0),
+            ("ride_lowpass_hz", 16000.0),
+            ("ride_attack_s", 0.0005),
+            ("ride_decay_s", 1.1),
+            ("ride_level", 0.7),
+            ("ride_pan", 0.35),
+        ],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 击点覆盖审计（段 5 守卫：绑到不存在音色的击点必须响亮失败，不许无声）
+// ---------------------------------------------------------------------------
+
+/// 原声默认鼓组（`01-basic-kit.sfz` 的 `keymap_basic.sfz` 键位图）里
+/// **有 region 落点**的鼓件键位。出处：`Programs/keymaps/keymap_basic.sfz`
+/// 的 `#define` 键位表（鼓件部分）+ 2026-11-18 全库装载审计逐键核对
+/// （出厂预置用到的每个键都有样本发声）。⚠ 其它 Virtuosity 程序用
+/// 另一张键位图、覆盖更小，逐程序修正见 [`acoustic_covered_keys`]。
+/// 扩展打击乐键（54–84 的非鼓件部分）**不**列入：它们在部分单麦
+/// 程序里没有 region，列入会让守卫对没声音的键放行 —— 宁可将来
+/// 真用到时守卫响亮报错、人工复核后再扩表，也不让表先行放宽。
+pub const ACOUSTIC_KIT_KEYS: &[u8] = &[
+    35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 53, 55, 57, 59, 82,
+];
+
+/// 本预置的 pattern（主道 + fill）里**有击点但绑不到任何音色**的鼓道：
+/// 返回 `(role, gm_key)` 清单，空 = 全部击点有声。
+///
+/// - 电子族：音色集 = [`kit_setup`] 的合成鼓机参数表里全部 `*_note`
+///   键位（引擎鼓机识别口径的同一份名单，⛔ 不另抄一份）；
+/// - 原声族：音色集 = [`ACOUSTIC_KIT_KEYS`] 按预置选定的 SFZ 程序
+///   修正（见 [`acoustic_covered_keys`]：完整键位图程序缺 46 等键）。
+///
+/// 生成路径（MCP `yeban_generate_drum_pattern` 与 UI `drum_gen_ops`）
+/// 在生成前调用本函数，非空即响亮拒绝 —— 这是 Wang「默认不能静默」
+/// 规则在鼓机上的落点：一期电子族 shaker 道（键 82）整道无声的事故
+/// 不许重演。
+#[must_use]
+pub fn uncovered_pattern_keys(preset: &DrumStylePreset) -> Vec<(String, u8)> {
+    let covered: Vec<u8> = match preset.kit_family {
+        KitFamily::Electronic => match kit_setup(preset) {
+            DrumKitSetup::SynthDevice { params, .. } => params
+                .iter()
+                .filter(|(name, _)| name.ends_with("_note"))
+                .map(|(_, value)| *value as u8)
+                .collect(),
+            DrumKitSetup::AcousticSfz { .. } => Vec::new(),
+        },
+        KitFamily::Acoustic => acoustic_covered_keys(preset.sfz_path.as_deref()),
+    };
+    let mut uncovered = Vec::new();
+    let mut check = |lanes: &[DrumLanePreset]| {
+        for lane in lanes {
+            if lane.steps.iter().any(|step| step.is_hit()) && !covered.contains(&lane.gm_key) {
+                uncovered.push((lane.role.clone(), lane.gm_key));
+            }
+        }
+    };
+    check(&preset.lanes);
+    if let Some(fill) = &preset.fill_lanes {
+        check(fill);
+    }
+    uncovered
+}
+
+/// 原声族在**指定 SFZ 程序**下的实际覆盖键集（[`uncovered_pattern_keys`]
+/// 的原声分支）。
+///
+/// ⚠ Virtuosity 的程序并不共用一张键位图（2026-11-18 逐程序装载
+/// 探针实测，探针口径 = note 触发 region 的键区间覆盖计数）：
+/// `01-basic-kit.sfz` 用 `keymap_basic.sfz`（GM 分键，开镲独立在
+/// 46）；其余出厂程序用 `keymap.sfz`——踩镲是 CC4 踏板连续乐器、
+/// 全部落在 42，**46 没有任何 region**；`08-vintage-mic.sfz` 与
+/// `03-kick-mic.sfz` 还缺 56（牛铃）与 82（沙锤）。未知程序按
+/// basic 全集计（出厂预置只用已探针核过的程序；用户自选程序的
+/// 装载期覆盖审计是另一条线，见预置格式文档）。
+fn acoustic_covered_keys(sfz_path: Option<&str>) -> Vec<u8> {
+    let mut keys = ACOUSTIC_KIT_KEYS.to_vec();
+    let Some(path) = sfz_path else {
+        return keys;
+    };
+    let file = path.rsplit('/').next().unwrap_or(path);
+    if file != "01-basic-kit.sfz" {
+        // 完整键位图程序：开镲不在 46（并入 42 + CC4 踏板）。
+        keys.retain(|key| *key != 46);
+    }
+    if matches!(file, "08-vintage-mic.sfz" | "03-kick-mic.sfz") {
+        keys.retain(|key| !matches!(key, 56 | 82));
+    }
+    keys
+}
+
 // ---------------------------------------------------------------------------
 // 出厂预置（嵌入文本与磁盘文件同一格式）
 // ---------------------------------------------------------------------------
 
 /// 出厂 10 风格的嵌入源（id 与文件一一对应）。
-const FACTORY_SOURCES: [(&str, &str); 10] = [
+const FACTORY_SOURCES: [(&str, &str); 14] = [
     ("trap", include_str!("../drum_styles/trap.json")),
     ("drill", include_str!("../drum_styles/drill.json")),
     ("phonk", include_str!("../drum_styles/phonk.json")),
@@ -710,6 +1682,10 @@ const FACTORY_SOURCES: [(&str, &str); 10] = [
     ("edm", include_str!("../drum_styles/edm.json")),
     ("pop", include_str!("../drum_styles/pop.json")),
     ("rock", include_str!("../drum_styles/rock.json")),
+    ("jazz", include_str!("../drum_styles/jazz.json")),
+    ("funk", include_str!("../drum_styles/funk.json")),
+    ("rnb", include_str!("../drum_styles/rnb.json")),
+    ("hiphop", include_str!("../drum_styles/hiphop.json")),
 ];
 
 /// 出厂风格 id 清单（顺序即 UI 列表顺序）。
@@ -1178,7 +2154,7 @@ mod tests {
     #[test]
     fn factory_styles_all_carry_individually_tuned_fx() {
         let styles = factory_drum_styles().expect("factory presets parse");
-        assert_eq!(styles.len(), 10);
+        assert_eq!(styles.len(), 14);
         let mut signatures = std::collections::BTreeSet::new();
         for style in &styles {
             let fx = style
@@ -1194,6 +2170,149 @@ mod tests {
             signatures.len() > 1,
             "factory fx must be tuned per style, not one shared parameter set"
         );
+    }
+
+    /// 段 5 守卫钉子（Wang「默认不能静默」）：14 个出厂预置的全部
+    /// 击点（主道 + fill）都必须绑得到音色——`uncovered_pattern_keys`
+    /// 对每一份出厂预置都为空。
+    #[test]
+    fn every_factory_preset_hit_has_a_voice() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        assert_eq!(styles.len(), 14);
+        for style in &styles {
+            let uncovered = uncovered_pattern_keys(style);
+            assert!(
+                uncovered.is_empty(),
+                "{} 有绑不到音色的击点：{uncovered:?}",
+                style.id
+            );
+        }
+    }
+
+    /// 守卫的反面钉子：绑到不存在音色的击点必须被报出来（电子族
+    /// 未知键 99；原声族在完整键位图程序上用开镲键 46）。
+    #[test]
+    fn the_guard_names_hits_bound_to_missing_voices() {
+        let electronic = MINIMAL.replace("\"gm_key\": 36", "\"gm_key\": 99");
+        let preset = DrumStylePreset::from_json(&electronic).expect("parses");
+        assert_eq!(
+            uncovered_pattern_keys(&preset),
+            vec![("kick".to_owned(), 99)],
+            "电子族键 99 无音色必须被点名"
+        );
+
+        let acoustic = MINIMAL
+            .replace(
+                "\"kit_family\": \"electronic\"",
+                "\"kit_family\": \"acoustic\"",
+            )
+            .replace(
+                "\"swing_permille\": 515, \"bars\": 1,",
+                "\"swing_permille\": 515, \"bars\": 1, \
+                 \"sfz_path\": \"assets/samples/virtuosity-drums/Programs/07-room-mic.sfz\",",
+            )
+            .replace("\"gm_key\": 36", "\"gm_key\": 46");
+        let preset = DrumStylePreset::from_json(&acoustic).expect("parses");
+        assert_eq!(
+            uncovered_pattern_keys(&preset),
+            vec![("kick".to_owned(), 46)],
+            "完整键位图程序（07-room-mic）上键 46 无 region 必须被点名"
+        );
+    }
+
+    /// 段 1 钉子：14 个出厂预置全部带鼓总线段，且胶水压缩落在
+    /// Wang 定值带内（比 2:1–4:1、启动 30 ms）。
+    #[test]
+    fn every_factory_preset_carries_a_drum_bus_in_the_ruled_band() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        for style in &styles {
+            let bus = style
+                .bus
+                .unwrap_or_else(|| panic!("factory style {} must carry a bus section", style.id));
+            assert!(
+                (2.0..=4.0).contains(&bus.glue.ratio),
+                "{} 胶水压缩比 {} 不在 2:1–4:1 带内",
+                style.id,
+                bus.glue.ratio
+            );
+            assert!(
+                (bus.glue.attack_s - 0.03).abs() < 1e-6,
+                "{} 胶水启动 {} 不是 30 ms",
+                style.id,
+                bus.glue.attack_s
+            );
+            let specs = drum_bus_device_specs(&bus);
+            assert_eq!(specs.len(), 2, "{} 总线链必须是胶水 + 削波两台", style.id);
+        }
+    }
+
+    /// 段 2 钉子：电子族逐风格参数表两两不同（非键位参数至少差
+    /// 8 项）——不许再出现"trap 与 drill 音色差异为 0"。
+    #[test]
+    fn electronic_factory_styles_have_pairwise_distinct_synth_tables() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let electronic: Vec<&DrumStylePreset> = styles
+            .iter()
+            .filter(|style| style.kit_family == KitFamily::Electronic)
+            .collect();
+        assert_eq!(electronic.len(), 8, "电子族应为 8 个风格");
+        let tables: Vec<Vec<(String, f32)>> = electronic
+            .iter()
+            .map(|style| match kit_setup(style) {
+                DrumKitSetup::SynthDevice { params, .. } => params
+                    .into_iter()
+                    .filter(|(name, _)| !name.ends_with("_note"))
+                    .collect(),
+                DrumKitSetup::AcousticSfz { .. } => panic!("electronic style must be synth"),
+            })
+            .collect();
+        for (i, a) in tables.iter().enumerate() {
+            for (j, b) in tables.iter().enumerate().skip(i + 1) {
+                let differing = a
+                    .iter()
+                    .zip(b.iter())
+                    .filter(|((an, av), (bn, bv))| an == bn && av.to_bits() != bv.to_bits())
+                    .count();
+                assert!(
+                    differing >= 8,
+                    "{} 与 {} 的合成参数只差 {differing} 项（下限 8）",
+                    electronic[i].id,
+                    electronic[j].id
+                );
+            }
+        }
+    }
+
+    /// 段 3 钉子：原声族的程序分配与命名——新风格用各自的麦克风
+    /// 视角程序（ pairwise 不同），Acoustic 前缀齐全。
+    #[test]
+    fn acoustic_factory_styles_carry_acoustic_names_and_chosen_programs() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        let acoustic: Vec<&DrumStylePreset> = styles
+            .iter()
+            .filter(|style| style.kit_family == KitFamily::Acoustic)
+            .collect();
+        assert_eq!(acoustic.len(), 6, "原声族应为 6 个风格");
+        for style in &acoustic {
+            assert!(
+                style.name.starts_with("Acoustic "),
+                "{} 的英文名 {} 缺 Acoustic 前缀",
+                style.id,
+                style.name
+            );
+            match kit_setup(style) {
+                DrumKitSetup::AcousticSfz { .. } => {}
+                DrumKitSetup::SynthDevice { .. } => panic!("acoustic style must be SFZ"),
+            }
+        }
+        let path_of = |id: &str| match kit_setup(acoustic.iter().find(|s| s.id == id).unwrap()) {
+            DrumKitSetup::AcousticSfz { sfz_path } => sfz_path,
+            DrumKitSetup::SynthDevice { .. } => unreachable!(),
+        };
+        assert!(path_of("jazz").ends_with("06-mid-mic.sfz"));
+        assert!(path_of("funk").ends_with("04-snare-mic.sfz"));
+        assert!(path_of("rnb").ends_with("05-oh-mic.sfz"));
+        assert!(path_of("pop").ends_with("01-basic-kit.sfz"));
     }
 
     #[test]

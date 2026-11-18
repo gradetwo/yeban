@@ -4245,6 +4245,23 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
     let start_tick = arg_u64(call, "startTick")?.unwrap_or(0);
     let swing_resolved = swing.unwrap_or(preset.swing_permille);
 
+    // 击点覆盖审计（默认不能静默）：pattern 里有击点但绑不到音色的
+    // 鼓道 ⇒ 响亮拒绝，不许整道无声地生成出去。
+    let uncovered = yeban_theory::uncovered_pattern_keys(&preset);
+    if !uncovered.is_empty() {
+        let lanes: Vec<String> = uncovered
+            .iter()
+            .map(|(role, key)| format!("{role}(key {key})"))
+            .collect();
+        return Err(Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "风格 `{style}` 的这些鼓道有击点但绑不到音色（生成会无声）: {}",
+                lanes.join(", ")
+            ),
+        ));
+    }
+
     // 目标轨：给 `trackId` 用既有轨；缺省新建鼓轨。
     let requested_track = if call.arguments.get("trackId").is_some() {
         Some(arg_id(call, "trackId")?)
@@ -4256,11 +4273,15 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         requested_track.map_or_else(|| "new".to_owned(), |id| id.to_canonical_string()),
     );
     let mut ops: Vec<Op> = Vec::new();
+    let mut bus_note = "无鼓总线（预置未带 bus 段）".to_owned();
     let (track_id, existing_track) = match requested_track {
         Some(id) => {
             let track = project
                 .track(&id)
                 .map_err(|error| error::from_model("音轨查找", &error))?;
+            if preset.bus.is_some() {
+                bus_note = "目标为既有轨，未新建鼓总线（沿用现有路由）".to_owned();
+            }
             (id, Some(track.clone()))
         }
         None => {
@@ -4275,11 +4296,75 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                 },
             });
             ops.push(Op::AddRoutingNode { node: id });
+            // 鼓总线（预置带 bus 段时）：新建 AuxReturn 总线轨，鼓轨先进
+            // 总线、总线再进主总线；总线链（胶水压缩 → Soft Clipper）
+            // 挂在总线轨上。无 bus 段 ⇒ 鼓轨直连主总线（一期行为）。
+            let drum_destination = match &preset.bus {
+                Some(bus) => {
+                    let bus_id = ids::deterministic_id(&format!("drum-gen:bus:{label}"));
+                    ops.push(Op::AddTrack {
+                        track: TrackV3 {
+                            id: bus_id,
+                            name: format!("{} Drum Bus", preset.name),
+                            kind: yeban_model::TrackKind::AuxReturn,
+                            volume_db: 0.0,
+                            ..TrackV3::default()
+                        },
+                    });
+                    ops.push(Op::AddRoutingNode { node: bus_id });
+                    for (slot_index, spec) in yeban_theory::drum_bus_device_specs(bus)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        ops.push(Op::InsertDevice {
+                            track_id: bus_id,
+                            slot_index,
+                            device: DeviceDefinition {
+                                id: ids::deterministic_id(&format!(
+                                    "drum-gen:bus-{}:{label}",
+                                    spec.family
+                                )),
+                                name: spec.name.to_owned(),
+                                kind: DeviceKind::InternalEffect,
+                                bypassed: false,
+                                params: spec
+                                    .params
+                                    .into_iter()
+                                    .map(|(name, value)| yeban_model::ParameterValue {
+                                        name,
+                                        value,
+                                        unit: None,
+                                    })
+                                    .collect(),
+                                latency_samples: 0,
+                                plugin: None,
+                            },
+                        });
+                    }
+                    ops.push(Op::ConnectRouting {
+                        edge: yeban_model::RoutingEdge {
+                            id: ids::deterministic_id(&format!("drum-gen:bus-edge:{label}")),
+                            source_node: bus_id,
+                            destination_node: project.master_bus_track_id,
+                            kind: yeban_model::RoutingKind::BusToMaster,
+                            gain_db: None,
+                        },
+                    });
+                    bus_note = format!(
+                        "鼓总线：Glue Compressor（{}:1 / {:.0} ms）→ Soft Clipper（ceiling {:.1} dB）",
+                        bus.glue.ratio,
+                        bus.glue.attack_s * 1000.0,
+                        bus.clipper.ceiling_db
+                    );
+                    bus_id
+                }
+                None => project.master_bus_track_id,
+            };
             ops.push(Op::ConnectRouting {
                 edge: yeban_model::RoutingEdge {
                     id: ids::deterministic_id(&format!("drum-gen:edge:{label}")),
                     source_node: id,
-                    destination_node: project.master_bus_track_id,
+                    destination_node: drum_destination,
                     kind: yeban_model::RoutingKind::TrackToBus,
                     gain_db: None,
                 },
@@ -4292,7 +4377,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
     let has_instrument = existing_track
         .as_ref()
         .is_some_and(|track| track.sampler.is_some() || !track.devices.is_empty());
-    let mut kit_note = "轨上已有音源，沿用现有鼓组";
+    let mut kit_note = "轨上已有音源，沿用现有鼓组".to_owned();
     let mut kit_added_device = false;
     if !has_instrument {
         match yeban_theory::kit_setup(&preset) {
@@ -4307,7 +4392,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                         note_octave_override: None,
                     }),
                 });
-                kit_note = "装默认鼓组：Virtuosity Drums 基础组（SFZ 采样）";
+                kit_note = format!("装默认鼓组：SFZ 采样（{sfz_path}）");
             }
             yeban_theory::DrumKitSetup::SynthDevice {
                 device_name,
@@ -4334,7 +4419,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                         plugin: None,
                     },
                 });
-                kit_note = "装默认鼓组：合成鼓机（808 系电子件）";
+                kit_note = "装默认鼓组：合成鼓机（电子件）".to_owned();
             }
         }
     }
@@ -4457,7 +4542,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         "generate_drum_pattern",
         format!("生成鼓型：{} → 音轨 {track_id}", preset.name),
         format!(
-            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}",
+            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}；{bus_note}",
             generated.len(),
         ),
         ops,

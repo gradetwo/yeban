@@ -1,11 +1,12 @@
-//! 鼓机（4 个经典音色的**合成配方**）[ARCH-RT-001, ARCH-RT-004, ARCH-DSP-001, ARCH-DET-001]。
+//! 鼓机（经典音色的**合成配方**）[ARCH-RT-001, ARCH-RT-004, ARCH-DSP-001, ARCH-DET-001]。
 //!
 //! # 0. ⚠ 本模块是什么、**不是**什么
 //!
 //! 规范原文（`docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:110`）写的是
 //! **"鼓机电路建模 ➔ `crates/yeban-dsp/src/drums/`（808/909 模拟电路物理建模）"**。
-//! **本模块不是那个。** 本模块是**经典鼓机音色的合成配方实现**：4 个音色
-//! （底鼓 / 军鼓 / 踩镲 / 拍手），用波形 + 包络 + 噪声 + 带通直接合成。
+//! **本模块不是那个。** 本模块是**经典鼓机音色的合成配方实现**：13 个音色
+//! （底鼓 / 军鼓 / 踩镲 / 拍手 + 2026-11-18 补的桶鼓×3 / 边击 / 沙锤 /
+//! 牛铃 / 碎镲 / 叮叮镲），用波形 + 包络 + 噪声 + 带通直接合成。
 //! 它**不是**任何硬件的电路模型，也**不是**逐级模拟电路建模。
 //!
 //! ## 0.1 未实现清单（**本模块最重要的一条**）
@@ -25,13 +26,13 @@
 //! | 8 | 808 军鼓／拍手的**带通噪声电路**（具体 Q、中心频率、两级带通、噪声门） | 四级 `x − LP(拐点)` 级联（高通的近似）＋ 一级 `LP` 低通；谐振固定 0。**没有**专用的带通/状态变量滤波器 |
 //! | 9 | 808 踩镲的**金属振荡器**（6 位二进制计数器 + 移位寄存器近似正弦） | 6 条**连续方波**，比值为本模块选定的非谐组 |
 //! | 10 | 808 踩镲的**采样保持／真值表**与 808 拍手的**噪声门控时序电路** | 连续方波、连续白噪声；定时只有整数帧计数 |
-//! | 11 | **909 的一切**（909 是采样 + 模拟混合，其底鼓/军鼓/踩镲电路与 808 不同） | 没有任何 909 专用配方；本模块只有一套配方 |
-//! | 12 | 808 的其它音色：**手鼓 / 桶鼓 / 康加 / 铃鼓 / 牛铃 / 镲（Cymbal）/ 边击 / 雷声 / 沙锤** | 只有 4 个音色 |
-//! | 13 | **每音色独立输出与独立声像**（808 每路一个独立输出插孔） | 单声道求和（`render` 是单声道 `&mut [f32]`） |
+//! | 11 | **909 的电路与采样部分**（909 是采样 + 模拟混合，其底鼓/军鼓/踩镲电路与 808 不同） | ⭐ 2026-11-18 补**参数级 909 式配方** [`DrumKitParams::RECIPE_909`]（定值对照见该常量文档）；仍**不是**电路建模、没有采样回放（第 18 条照旧） |
+//! | 12 | 808 的其它音色：**手鼓 / 桶鼓 / 康加 / 铃鼓 / 牛铃 / 镲（Cymbal）/ 边击 / 雷声 / 沙锤** | ⭐ 2026-11-18 补齐其中 6 类：桶鼓（低/中/高）、边击、沙锤、牛铃、碎镲、叮叮镲（配方合成，结构见各参数类型文档）；手鼓/康加/雷声仍无 |
+//! | 13 | **每音色独立输出**（808 每路一个独立输出插孔） | 仍是求和输出；但**独立声像**已补：每音色 `pan` 参数 + [`DrumMachine::render_stereo`]（等功率、中心归一） |
 //! | 14 | **重音（accent）总线**及其对每个音色的非线性影响 | 只有 [`DrumHit::gain`] 的线性增益 |
 //! | 15 | 音色参数的**自动化曲线与工程持久化**（`yeban-model` 的设备定义 / `DeviceDefinition`） | 只有 [`DrumKitParams`]（静态参数）；没有自动化、没有持久化 |
 //! | 16 | 与**引擎 / 界面 / MCP** 的接线（设备注册、PDC 延迟上报、混音路由） | 无。接线是引擎侧的独立裁决（本票不接） |
-//! | 17 | **立体声**、每音色声像、并行压缩（New York Compression）发送 | 无 |
+//! | 17 | **立体声**、每音色声像、并行压缩（New York Compression）发送 | ⭐ 立体声与每音色声像 2026-11-18 已补（第 13 条）；并行压缩发送仍无（引擎无逐件发送面） |
 //! | 18 | **采样回放**（909 的 crash/ride/clap 等本来就用采样） | 无采样器；本模块只做合成 |
 //! | 19 | **抗混叠**：真实 808 的金属振荡器是**移位寄存器伪随机序列**（谱近似平坦），本模块是 6 条**连续方波**（谱按 `1/n` 衰减） | 方波不做限带 ⇒ 高次谐波**会折返**。后果是本机实测的谱重心只有 **3289 Hz**（真 808 踩镲要亮得多）。这条是"设计选择 + 已知缺陷"，不是"近似 808" |
 //! | 20 | **专用的带通／状态变量滤波器**（多模、可调 Q） | 带通由既有 [`crate::filter::LadderFilter`] 组合：`LP(hi) ∘ (x − LP(lo))⁴`。⚠ [`crate::shaping::Biquad`]（`shaping.rs:252`）**是私有类型**，本 crate 的公共面里没有带通 |
@@ -238,8 +239,10 @@ pub const DRUM_SLOTS: usize = 16;
 /// 鼓件，调用方与界面按鼓件寻址；且二者是**不同的 choke 角色**
 /// （闭镲 choke 开镲，反之不成立）。
 ///
-/// ⚠ 4 个音色只是"经典鼓机里最常见的 4 件"，**不是**"808/909 的完整鼓组"
-/// （见 §0.1 第 11、12 条：909 专用配方与其余 808 音色都没做）。
+/// ⚠ 这 13 个音色是"经典鼓机鼓组的配方合成"，**不是**"808/909 的电路
+/// 建模"（见 §0.1 第 11、12 条：909 只补了参数级配方，手鼓/康加/雷声
+/// 等仍未做）。判别值 0–4 是既有五件，**只许往后追加、不许重排**
+/// （引擎的键位碰撞裁决与判据按此序）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum DrumVoice {
@@ -253,16 +256,40 @@ pub enum DrumVoice {
     OpenHat = 3,
     /// 拍手（带通噪声 × 多次 onset + 长尾巴）。
     Clap = 4,
+    /// 低桶鼓（下滑正弦，`TomParams::tune_hz × TOM_LOW_RATIO`）。
+    TomLow = 5,
+    /// 中桶鼓（下滑正弦，`TomParams::tune_hz` 本值）。
+    TomMid = 6,
+    /// 高桶鼓（下滑正弦，`TomParams::tune_hz × TOM_HIGH_RATIO`）。
+    TomHigh = 7,
+    /// 边击（高音调正弦 + 带通噪声咔哒，极短衰减）。
+    Rimshot = 8,
+    /// 沙锤（带通噪声 × 慢起振包络）。
+    Shaker = 9,
+    /// 牛铃（双方波 → 带通 → 中长衰减）。
+    Cowbell = 10,
+    /// 碎镲（6 条非谐方波 → 带通 → 长衰减）。
+    Crash = 11,
+    /// 叮叮镲（6 条非谐方波 → 更高带通 → 长衰减）。
+    Ride = 12,
 }
 
 impl DrumVoice {
     /// 全部音色（顺序 = 判别值顺序），供 UI/MCP 枚举与判据遍历。
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 13] = [
         Self::Kick,
         Self::Snare,
         Self::ClosedHat,
         Self::OpenHat,
         Self::Clap,
+        Self::TomLow,
+        Self::TomMid,
+        Self::TomHigh,
+        Self::Rimshot,
+        Self::Shaker,
+        Self::Cowbell,
+        Self::Crash,
+        Self::Ride,
     ];
 
     /// 判别值（与 [`Generator`] 内的 `u8` 同口径）。
@@ -280,6 +307,14 @@ impl DrumVoice {
             Self::ClosedHat => "closed_hat",
             Self::OpenHat => "open_hat",
             Self::Clap => "clap",
+            Self::TomLow => "tom_low",
+            Self::TomMid => "tom_mid",
+            Self::TomHigh => "tom_high",
+            Self::Rimshot => "rimshot",
+            Self::Shaker => "shaker",
+            Self::Cowbell => "cowbell",
+            Self::Crash => "crash",
+            Self::Ride => "ride",
         }
     }
 
@@ -292,6 +327,14 @@ impl DrumVoice {
             2 => Some(Self::ClosedHat),
             3 => Some(Self::OpenHat),
             4 => Some(Self::Clap),
+            5 => Some(Self::TomLow),
+            6 => Some(Self::TomMid),
+            7 => Some(Self::TomHigh),
+            8 => Some(Self::Rimshot),
+            9 => Some(Self::Shaker),
+            10 => Some(Self::Cowbell),
+            11 => Some(Self::Crash),
+            12 => Some(Self::Ride),
             _ => None,
         }
     }
@@ -307,6 +350,27 @@ pub(crate) const VOICE_CLOSED_HAT: u8 = DrumVoice::ClosedHat as u8;
 pub(crate) const VOICE_OPEN_HAT: u8 = DrumVoice::OpenHat as u8;
 /// 拍手的判别值。
 pub(crate) const VOICE_CLAP: u8 = DrumVoice::Clap as u8;
+/// 低桶鼓的判别值。
+pub(crate) const VOICE_TOM_LOW: u8 = DrumVoice::TomLow as u8;
+/// 中桶鼓的判别值。
+pub(crate) const VOICE_TOM_MID: u8 = DrumVoice::TomMid as u8;
+/// 高桶鼓的判别值。
+pub(crate) const VOICE_TOM_HIGH: u8 = DrumVoice::TomHigh as u8;
+/// 边击的判别值。
+pub(crate) const VOICE_RIMSHOT: u8 = DrumVoice::Rimshot as u8;
+/// 沙锤的判别值。
+pub(crate) const VOICE_SHAKER: u8 = DrumVoice::Shaker as u8;
+/// 牛铃的判别值。
+pub(crate) const VOICE_COWBELL: u8 = DrumVoice::Cowbell as u8;
+/// 碎镲的判别值。
+pub(crate) const VOICE_CRASH: u8 = DrumVoice::Crash as u8;
+/// 叮叮镲的判别值。
+pub(crate) const VOICE_RIDE: u8 = DrumVoice::Ride as u8;
+
+/// 低桶鼓相对 `TomParams::tune_hz` 的音高比（本模块选定：约 −4 半音）。
+pub const TOM_LOW_RATIO: f32 = 0.79;
+/// 高桶鼓相对 `TomParams::tune_hz` 的音高比（本模块选定：约 +4 半音）。
+pub const TOM_HIGH_RATIO: f32 = 1.26;
 
 // ---------------------------------------------------------------------------
 // 参数合法域（全部在 `sanitised` 里用；逐样本路径只读钳好的值）
@@ -372,6 +436,9 @@ pub struct KickParams {
     pub decay_s: f32,
     /// 音色电平（`0..=1`）。默认 `1.0`。
     pub level: f32,
+    /// 逐件声像（`−1..=1`，0 = 正中）。只被 [`DrumMachine::render_stereo`]
+    /// 消费；单声道 `render` 与接线前逐位相同。默认 `0.0`。
+    pub pan: f32,
 }
 
 impl KickParams {
@@ -383,6 +450,7 @@ impl KickParams {
         attack_s: 0.0005,
         decay_s: 0.40,
         level: 1.0,
+        pan: 0.0,
     };
 
     /// 把所有字段钳到合法域后的副本。**全定义**：任何输入（含 `NaN`/`∞`）都有返回。
@@ -407,6 +475,7 @@ impl KickParams {
             attack_s: clamp_time(self.attack_s),
             decay_s: clamp_time(self.decay_s),
             level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
         }
     }
 }
@@ -451,6 +520,8 @@ pub struct SnareParams {
     pub attack_s: f32,
     /// 音色电平（`0..=1`）。默认 `1.0`。
     pub level: f32,
+    /// 逐件声像（`−1..=1`，0 = 正中；只被 `render_stereo` 消费）。默认 `0.0`。
+    pub pan: f32,
 }
 
 impl SnareParams {
@@ -466,6 +537,7 @@ impl SnareParams {
         noise_level: 1.0,
         attack_s: 0.0005,
         level: 1.0,
+        pan: 0.0,
     };
 
     /// 把所有字段钳到合法域后的副本。**全定义**（`NaN` 归下界，理由同
@@ -493,6 +565,7 @@ impl SnareParams {
             noise_level: clamp_gain(self.noise_level),
             attack_s: clamp_time(self.attack_s),
             level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
         }
     }
 }
@@ -526,6 +599,8 @@ pub struct HiHatParams {
     pub open_decay_s: f32,
     /// 音色电平（`0..=1`）。默认 `0.7`（踩镲在鼓组里通常比底鼓轻）。
     pub level: f32,
+    /// 逐件声像（`−1..=1`，0 = 正中；只被 `render_stereo` 消费）。默认 `0.0`。
+    pub pan: f32,
 }
 
 impl HiHatParams {
@@ -538,6 +613,7 @@ impl HiHatParams {
         closed_decay_s: 0.045,
         open_decay_s: 0.32,
         level: 0.7,
+        pan: 0.0,
     };
 
     /// 把所有字段钳到合法域后的副本。**全定义**（`NaN` 归下界，理由同
@@ -560,6 +636,7 @@ impl HiHatParams {
             closed_decay_s: clamp_time(self.closed_decay_s),
             open_decay_s: clamp_time(self.open_decay_s),
             level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
         }
     }
 }
@@ -596,6 +673,8 @@ pub struct ClapParams {
     pub decay_s: f32,
     /// 音色电平（`0..=1`）。默认 `0.8`。
     pub level: f32,
+    /// 逐件声像（`−1..=1`，0 = 正中；只被 `render_stereo` 消费）。默认 `0.0`。
+    pub pan: f32,
 }
 
 impl ClapParams {
@@ -609,6 +688,7 @@ impl ClapParams {
         attack_s: 0.0005,
         decay_s: 0.22,
         level: 0.8,
+        pan: 0.0,
     };
 
     /// 把所有字段钳到合法域后的副本。**全定义**（`NaN` 归下界，理由同
@@ -633,6 +713,7 @@ impl ClapParams {
             attack_s: clamp_time(self.attack_s),
             decay_s: clamp_time(self.decay_s),
             level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
         }
     }
 }
@@ -643,7 +724,333 @@ impl Default for ClapParams {
     }
 }
 
-/// 整套鼓组的参数（4 个音色 + 总线电平）。
+/// 桶鼓参数（低/中/高三件共用；音高由 [`TOM_LOW_RATIO`] / 本值 /
+/// [`TOM_HIGH_RATIO`] 分开）。配方与底鼓同构：一条下滑正弦。
+/// 默认值理由见字段注释；⚠ 数字**没有外部出处**（模块文档 §1）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TomParams {
+    /// **中桶鼓**尾巴基频（Hz）。默认 `100.0`。
+    pub tune_hz: f32,
+    /// 起始基频（Hz）。默认 `150.0`（下滑量比底鼓小：桶鼓的音高弯折更 subtle）。
+    pub glide_hz: f32,
+    /// 音高包络时间（秒）。默认 `0.03`。
+    pub glide_s: f32,
+    /// 起振时间（秒）。默认 `0.0005`。
+    pub attack_s: f32,
+    /// 幅度包络时间（秒）。默认 `0.28`。
+    pub decay_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.9`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`）。默认 `0.0`（预置按左→右排开三件桶鼓）。
+    pub pan: f32,
+}
+
+impl TomParams {
+    /// 默认参数。
+    pub const DEFAULT: Self = Self {
+        tune_hz: 100.0,
+        glide_hz: 150.0,
+        glide_s: 0.03,
+        attack_s: 0.0005,
+        decay_s: 0.28,
+        level: 0.9,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本（`NaN` 归下界，口径同 [`KickParams::sanitised`]）。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        Self {
+            tune_hz: clamp_freq(self.tune_hz),
+            glide_hz: clamp_freq(self.glide_hz),
+            glide_s: clamp_envelope(self.glide_s),
+            attack_s: clamp_time(self.attack_s),
+            decay_s: clamp_time(self.decay_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for TomParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 边击参数：高音调正弦（鼓圈共振）+ 带通噪声咔哒，两者同走极短衰减。
+/// 分量电平比是发生器内的模块常量（见 `voice.rs` 的 rimshot 实现）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RimParams {
+    /// 音调分量频率（Hz）。默认 `1700.0`（边击的金属敲击点）。
+    pub tone_hz: f32,
+    /// 噪声**高通**拐点（Hz，补形式口径同 [`SnareParams::noise_highpass_hz`]）。默认 `1_200.0`。
+    pub noise_highpass_hz: f32,
+    /// 噪声**低通**拐点（Hz）。默认 `6_000.0`。
+    pub noise_lowpass_hz: f32,
+    /// 包络时间（秒，音调与噪声共用；噪声尾取其 0.6 倍，见 `voice.rs`）。默认 `0.05`。
+    pub decay_s: f32,
+    /// 起振时间（秒）。默认 `0.0005`。
+    pub attack_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.8`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`）。默认 `0.0`。
+    pub pan: f32,
+}
+
+impl RimParams {
+    /// 默认参数。
+    pub const DEFAULT: Self = Self {
+        tone_hz: 1_700.0,
+        noise_highpass_hz: 1_200.0,
+        noise_lowpass_hz: 6_000.0,
+        decay_s: 0.05,
+        attack_s: 0.0005,
+        level: 0.8,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本（带通两端口径同 [`SnareParams::sanitised`]）。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let (noise_highpass_hz, noise_lowpass_hz) =
+            sanitise_band(self.noise_highpass_hz, self.noise_lowpass_hz);
+        Self {
+            tone_hz: clamp_freq(self.tone_hz),
+            noise_highpass_hz,
+            noise_lowpass_hz,
+            decay_s: clamp_time(self.decay_s),
+            attack_s: clamp_time(self.attack_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for RimParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 沙锤参数：带通白噪声 × 一次完整的起振/衰减包络（"嚓——"的颗粒感
+/// 来自带通后的噪声本身，不做颗粒门控）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShakerParams {
+    /// **高通**拐点（Hz，补形式口径同上）。默认 `5_000.0`。
+    pub highpass_hz: f32,
+    /// **低通**拐点（Hz）。默认 `12_000.0`。
+    pub lowpass_hz: f32,
+    /// 起振时间（秒）。默认 `0.008`（沙粒被摇起来的过程，比其它鼓件慢）。
+    pub attack_s: f32,
+    /// 衰减时间（秒）。默认 `0.14`。
+    pub decay_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.6`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`）。默认 `0.0`。
+    pub pan: f32,
+}
+
+impl ShakerParams {
+    /// 默认参数。
+    pub const DEFAULT: Self = Self {
+        highpass_hz: 5_000.0,
+        lowpass_hz: 12_000.0,
+        attack_s: 0.008,
+        decay_s: 0.14,
+        level: 0.6,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let (highpass_hz, lowpass_hz) = sanitise_band(self.highpass_hz, self.lowpass_hz);
+        Self {
+            highpass_hz,
+            lowpass_hz,
+            attack_s: clamp_time(self.attack_s),
+            decay_s: clamp_time(self.decay_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for ShakerParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 牛铃参数：两条方波（不成整数比 ⇒ 金属感）→ 带通 → 中长衰减。
+/// 频率对 540/845 是本模块选定（808 牛铃的经典做法是两条方波过带通，
+/// 具体数字无外部出处，同模块文档 §1 口径）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CowbellParams {
+    /// 第一条方波频率（Hz）。默认 `540.0`。
+    pub freq_a_hz: f32,
+    /// 第二条方波频率（Hz）。默认 `845.0`。
+    pub freq_b_hz: f32,
+    /// **高通**拐点（Hz，补形式口径同上）。默认 `500.0`。
+    pub highpass_hz: f32,
+    /// **低通**拐点（Hz）。默认 `4_500.0`。
+    pub lowpass_hz: f32,
+    /// 起振时间（秒）。默认 `0.0005`。
+    pub attack_s: f32,
+    /// 衰减时间（秒）。默认 `0.30`。
+    pub decay_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.7`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`）。默认 `0.0`。
+    pub pan: f32,
+}
+
+impl CowbellParams {
+    /// 默认参数。
+    pub const DEFAULT: Self = Self {
+        freq_a_hz: 540.0,
+        freq_b_hz: 845.0,
+        highpass_hz: 500.0,
+        lowpass_hz: 4_500.0,
+        attack_s: 0.0005,
+        decay_s: 0.30,
+        level: 0.7,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let (highpass_hz, lowpass_hz) = sanitise_band(self.highpass_hz, self.lowpass_hz);
+        Self {
+            freq_a_hz: clamp_freq(self.freq_a_hz),
+            freq_b_hz: clamp_freq(self.freq_b_hz),
+            highpass_hz,
+            lowpass_hz,
+            attack_s: clamp_time(self.attack_s),
+            decay_s: clamp_time(self.decay_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for CowbellParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 碎镲参数：与踩镲同构（6 条非谐方波 → 带通 → 包络），差别只在
+/// 基频、带通与衰减（长尾 + 更宽的带）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrashParams {
+    /// 6 条方波的基频（Hz）。默认 `300.0`。
+    pub base_hz: f32,
+    /// **高通**拐点（Hz，补形式口径同上）。默认 `5_000.0`。
+    pub highpass_hz: f32,
+    /// **低通**拐点（Hz）。默认 `15_000.0`。
+    pub lowpass_hz: f32,
+    /// 起振时间（秒）。默认 `0.0005`。
+    pub attack_s: f32,
+    /// 衰减时间（秒）。默认 `1.6`。
+    pub decay_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.8`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`）。默认 `0.0`。
+    pub pan: f32,
+}
+
+impl CrashParams {
+    /// 默认参数。
+    pub const DEFAULT: Self = Self {
+        base_hz: 300.0,
+        highpass_hz: 5_000.0,
+        lowpass_hz: 15_000.0,
+        attack_s: 0.0005,
+        decay_s: 1.6,
+        level: 0.8,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let (highpass_hz, lowpass_hz) = sanitise_band(self.highpass_hz, self.lowpass_hz);
+        Self {
+            base_hz: clamp_freq(self.base_hz),
+            highpass_hz,
+            lowpass_hz,
+            attack_s: clamp_time(self.attack_s),
+            decay_s: clamp_time(self.decay_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for CrashParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 叮叮镲参数：与碎镲同构，基频更高、带通更靠上、衰减略短
+/// （"叮"的音高感比"嚓"强）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RideParams {
+    /// 6 条方波的基频（Hz）。默认 `420.0`。
+    pub base_hz: f32,
+    /// **高通**拐点（Hz，补形式口径同上）。默认 `7_000.0`。
+    pub highpass_hz: f32,
+    /// **低通**拐点（Hz）。默认 `16_000.0`。
+    pub lowpass_hz: f32,
+    /// 起振时间（秒）。默认 `0.0005`。
+    pub attack_s: f32,
+    /// 衰减时间（秒）。默认 `1.1`。
+    pub decay_s: f32,
+    /// 音色电平（`0..=1`）。默认 `0.7`。
+    pub level: f32,
+    /// 逐件声像（`−1..=1`）。默认 `0.0`。
+    pub pan: f32,
+}
+
+impl RideParams {
+    /// 默认参数。
+    pub const DEFAULT: Self = Self {
+        base_hz: 420.0,
+        highpass_hz: 7_000.0,
+        lowpass_hz: 16_000.0,
+        attack_s: 0.0005,
+        decay_s: 1.1,
+        level: 0.7,
+        pan: 0.0,
+    };
+
+    /// 把所有字段钳到合法域后的副本。
+    #[must_use]
+    pub fn sanitised(self) -> Self {
+        let (highpass_hz, lowpass_hz) = sanitise_band(self.highpass_hz, self.lowpass_hz);
+        Self {
+            base_hz: clamp_freq(self.base_hz),
+            highpass_hz,
+            lowpass_hz,
+            attack_s: clamp_time(self.attack_s),
+            decay_s: clamp_time(self.decay_s),
+            level: clamp_gain(self.level),
+            pan: clamp_pan(self.pan),
+        }
+    }
+}
+
+impl Default for RideParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// 整套鼓组的参数（10 个音色组 + 总线电平）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrumKitParams {
     /// 底鼓。
@@ -659,6 +1066,18 @@ pub struct DrumKitParams {
     pub hihat: HiHatParams,
     /// 拍手。
     pub clap: ClapParams,
+    /// 桶鼓（低/中/高共用）。
+    pub tom: TomParams,
+    /// 边击。
+    pub rim: RimParams,
+    /// 沙锤。
+    pub shaker: ShakerParams,
+    /// 牛铃。
+    pub cowbell: CowbellParams,
+    /// 碎镲。
+    pub crash: CrashParams,
+    /// 叮叮镲。
+    pub ride: RideParams,
     /// 总线电平（`0..=1`）。默认 `1.0`。
     ///
     /// ⚠ 它是**线性增益**，不是 dB（本 crate 的口径：参数一律 `f32`、
@@ -667,7 +1086,8 @@ pub struct DrumKitParams {
 }
 
 impl DrumKitParams {
-    /// 默认鼓组（= 4 个音色各自的 [`Default`]）。
+    /// 默认鼓组（= 各音色各自的 [`Default`]）。配方性格 = 808 系
+    /// （长底鼓、暗一点的镲带），与 [`Self::RECIPE_909`] 对照。
     pub const DEFAULT: Self = Self {
         kick: KickParams::DEFAULT,
         kick_style: KickStyle::Classic,
@@ -675,10 +1095,77 @@ impl DrumKitParams {
         snare: SnareParams::DEFAULT,
         hihat: HiHatParams::DEFAULT,
         clap: ClapParams::DEFAULT,
+        tom: TomParams::DEFAULT,
+        rim: RimParams::DEFAULT,
+        shaker: ShakerParams::DEFAULT,
+        cowbell: CowbellParams::DEFAULT,
+        crash: CrashParams::DEFAULT,
+        ride: RideParams::DEFAULT,
         master_level: 1.0,
     };
 
-    /// 把 4 个音色与总线电平全部钳到合法域后的副本（`NaN` 归下界）。
+    /// **909 式配方**（参数级配方，⛔ 不是 909 电路建模，见模块文档
+    /// §0.1 第 11 条）：与 [`Self::DEFAULT`]（808 系）的差别是可逐项
+    /// 对账的一组定值——底鼓更短更冲（decay 0.30、glide 160 Hz、
+    /// glide_s 0.02）、军鼓噪声带更宽更亮（1.8–12 kHz）、踩镲基频与
+    /// 带通更高（340 Hz / 7–15 kHz）、拍手带更宽（1.5–6 kHz）。
+    /// 新增音色（桶鼓/边击/沙锤/牛铃/镲）与声像同 DEFAULT。
+    pub const RECIPE_909: Self = Self {
+        kick: KickParams {
+            tune_hz: 50.0,
+            glide_hz: 160.0,
+            glide_s: 0.02,
+            attack_s: 0.0005,
+            decay_s: 0.30,
+            level: 1.0,
+            pan: 0.0,
+        },
+        kick_style: KickStyle::Classic,
+        anatomy: AnatomyKickParams::DEFAULT,
+        snare: SnareParams {
+            tone_hz: 190.0,
+            tone_ratio: 1.784,
+            tone_decay_s: 0.10,
+            tone_level: 0.5,
+            noise_highpass_hz: 1_800.0,
+            noise_lowpass_hz: 12_000.0,
+            noise_decay_s: 0.09,
+            noise_level: 1.0,
+            attack_s: 0.0005,
+            level: 1.0,
+            pan: 0.0,
+        },
+        hihat: HiHatParams {
+            base_hz: 340.0,
+            highpass_hz: 7_000.0,
+            lowpass_hz: 15_000.0,
+            attack_s: 0.0005,
+            closed_decay_s: 0.05,
+            open_decay_s: 0.40,
+            level: 0.7,
+            pan: 0.0,
+        },
+        clap: ClapParams {
+            highpass_hz: 1_500.0,
+            lowpass_hz: 6_000.0,
+            bursts: 4,
+            burst_decay_s: 0.012,
+            burst_spacing_s: 0.010,
+            attack_s: 0.0005,
+            decay_s: 0.25,
+            level: 0.8,
+            pan: 0.0,
+        },
+        tom: TomParams::DEFAULT,
+        rim: RimParams::DEFAULT,
+        shaker: ShakerParams::DEFAULT,
+        cowbell: CowbellParams::DEFAULT,
+        crash: CrashParams::DEFAULT,
+        ride: RideParams::DEFAULT,
+        master_level: 1.0,
+    };
+
+    /// 把全部音色与总线电平钳到合法域后的副本（`NaN` 归下界）。
     #[must_use]
     pub fn sanitised(self) -> Self {
         Self {
@@ -688,9 +1175,58 @@ impl DrumKitParams {
             snare: self.snare.sanitised(),
             hihat: self.hihat.sanitised(),
             clap: self.clap.sanitised(),
+            tom: self.tom.sanitised(),
+            rim: self.rim.sanitised(),
+            shaker: self.shaker.sanitised(),
+            cowbell: self.cowbell.sanitised(),
+            crash: self.crash.sanitised(),
+            ride: self.ride.sanitised(),
             master_level: clamp_gain(self.master_level),
         }
     }
+
+    /// 逐音色的立体声声像增益表（下标 = [`DrumVoice`] 判别值）：
+    /// `(左, 右)`，声像律 = 等功率、中心归一（pan = 0 时恰为 `(1, 1)`
+    /// ⇒ 全居中时 `render_stereo` 与单声道 `render` 的两声道同值）。
+    /// 闭/开镲共用 `hihat.pan`，三件桶鼓共用 `tom.pan`。
+    #[must_use]
+    pub fn pan_table(&self) -> [(f32, f32); DrumVoice::ALL.len()] {
+        let mut table = [(1.0f32, 1.0f32); DrumVoice::ALL.len()];
+        for voice in DrumVoice::ALL {
+            let pan = match voice {
+                DrumVoice::Kick => self.kick.pan,
+                DrumVoice::Snare => self.snare.pan,
+                DrumVoice::ClosedHat | DrumVoice::OpenHat => self.hihat.pan,
+                DrumVoice::Clap => self.clap.pan,
+                DrumVoice::TomLow | DrumVoice::TomMid | DrumVoice::TomHigh => self.tom.pan,
+                DrumVoice::Rimshot => self.rim.pan,
+                DrumVoice::Shaker => self.shaker.pan,
+                DrumVoice::Cowbell => self.cowbell.pan,
+                DrumVoice::Crash => self.crash.pan,
+                DrumVoice::Ride => self.ride.pan,
+            };
+            table[voice as usize] = pan_gains(pan);
+        }
+        table
+    }
+}
+
+/// 声像增益对：等功率律（`cos/sin`）× √2 归一到中心 = 1。
+/// `pan` 先钳到 `[−1, 1]`（`NaN` ⇒ 0 = 正中，与 `sanitised` 的
+/// [`clamp_pan`] 同口径；本函数对已钳值调用时结果不变）。
+#[must_use]
+pub fn pan_gains(pan: f32) -> (f32, f32) {
+    let pan = clamp_pan(pan);
+    if pan == 0.0 {
+        // 中心精确归一：cos(π/4)·√2 在 f32 下差 1 ulp，不许让既有
+        // 居中鼓组的样本因立体声接线漂移。
+        return (1.0, 1.0);
+    }
+    let angle = (pan + 1.0) * core::f32::consts::FRAC_PI_4;
+    (
+        libm::cosf(angle) * core::f32::consts::SQRT_2,
+        libm::sinf(angle) * core::f32::consts::SQRT_2,
+    )
 }
 
 impl Default for DrumKitParams {
@@ -744,6 +1280,16 @@ fn clamp_spacing(value: f32) -> f32 {
 fn clamp_gain(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// 声像钳制：合法域 `[−1, 1]`；`NaN` ⇒ `0`（正中，不偏向任何一边）。
+#[must_use]
+fn clamp_pan(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(-1.0, 1.0)
     } else {
         0.0
     }
@@ -1240,51 +1786,95 @@ impl<const SLOTS: usize> DrumMachine<SLOTS> {
             let now = position.saturating_add(frame as u64);
             let mut accumulator = 0.0f32;
             for slot in &mut self.slots {
-                if !slot.active || now < slot.start_sample {
-                    continue;
-                }
-                // --- 淡出：旧一击指数衰减；期满换成挂起的新一击 ---
-                if slot.fade_remaining > 0 {
-                    slot.fade_remaining -= 1;
-                    let value = slot.generator.next();
-                    if slot.fade_remaining == 0 {
-                        match slot.pending.take() {
-                            Some(pending) => {
-                                // 新一击从这一帧开始（相位从 0、包络从 0 起振）。
-                                // 旧一击在上一帧已衰减到 ≈0 ⇒ 中间没有"两个波形的和"。
-                                let pending = PendingHit {
-                                    start_sample: pending.start_sample.max(now),
-                                    ..pending
-                                };
-                                slot.arm(pending);
-                            }
-                            None => {
-                                *slot = Slot::IDLE;
-                                continue;
-                            }
-                        }
-                    } else {
-                        if value != 0.0 {
-                            sounding = sounding.saturating_add(1);
-                        }
-                        accumulator += value * slot.gain;
-                        continue;
+                if let Some(value) = slot_frame_value(slot, now) {
+                    if value != 0.0 {
+                        sounding = sounding.saturating_add(1);
                     }
+                    accumulator += value * slot.gain;
                 }
-                if slot.generator.is_finished() {
-                    *slot = Slot::IDLE;
-                    continue;
-                }
-                let sample = slot.generator.next();
-                if sample != 0.0 {
-                    sounding = sounding.saturating_add(1);
-                }
-                accumulator += sample * slot.gain;
             }
             *output = accumulator * master;
         }
         self.sounding_slot_frames = self.sounding_slot_frames.saturating_add(sounding);
     }
+
+    /// 分声道渲染（**实时路径**，纪律同 [`Self::render`]）：每槽位的
+    /// 样本只算一次，按 [`DrumKitParams::pan_table`] 的逐件声像增益
+    /// 分到左右。全部声像居中（pan = 0）时左右与单声道 `render`
+    /// **逐位相同**（增益恰为 1.0）。两缓冲长度不同时只写共同长度
+    /// 的前缀（引擎调用点恒给等长缓冲）。
+    pub fn render_stereo(&mut self, position: u64, left: &mut [f32], right: &mut [f32]) {
+        left.fill(0.0);
+        right.fill(0.0);
+        if !self.slots.iter().any(|slot| slot.active) {
+            return;
+        }
+        let master = self.params.master_level;
+        let pan_table = self.params.pan_table();
+        let frames = left.len().min(right.len());
+        let mut sounding: u64 = 0;
+        for frame in 0..frames {
+            #[allow(clippy::cast_possible_truncation)]
+            let now = position.saturating_add(frame as u64);
+            let (mut acc_left, mut acc_right) = (0.0f32, 0.0f32);
+            for slot in &mut self.slots {
+                let voice = usize::from(slot.generator.voice());
+                if let Some(value) = slot_frame_value(slot, now) {
+                    if value != 0.0 {
+                        sounding = sounding.saturating_add(1);
+                    }
+                    let (gain_left, gain_right) = pan_table[voice];
+                    acc_left += value * slot.gain * gain_left;
+                    acc_right += value * slot.gain * gain_right;
+                }
+            }
+            left[frame] = acc_left * master;
+            right[frame] = acc_right * master;
+        }
+        self.sounding_slot_frames = self.sounding_slot_frames.saturating_add(sounding);
+    }
+}
+
+/// 一个槽位在绝对位置 `now` 这一帧的原始样本（未乘槽位增益/总线电平）；
+/// 本帧无贡献（未占用、未到起始位置、淡出收尾且无挂起新一击、包络已
+/// 走完）返回 `None`。淡出接管与槽位回收的副作用都在这里，与单声道
+/// `render` 接线前的逐帧逻辑**逐字同义**（该函数的每条分支都对应原
+/// 循环里的一条路径，`render` 与 `render_stereo` 共用 ⇒ 两条渲染路
+/// 的时序行为不可能分叉）。
+fn slot_frame_value(slot: &mut Slot, now: u64) -> Option<f32> {
+    if !slot.active || now < slot.start_sample {
+        return None;
+    }
+    // --- 淡出：旧一击指数衰减；期满换成挂起的新一击 ---
+    if slot.fade_remaining > 0 {
+        slot.fade_remaining -= 1;
+        let value = slot.generator.next();
+        if slot.fade_remaining == 0 {
+            match slot.pending.take() {
+                Some(pending) => {
+                    // 新一击从这一帧开始（相位从 0、包络从 0 起振）。
+                    // 旧一击在上一帧已衰减到 ≈0 ⇒ 中间没有"两个波形的和"；
+                    // 本帧改走下面新一击的正常发声路径，淡出值不计入。
+                    let pending = PendingHit {
+                        start_sample: pending.start_sample.max(now),
+                        ..pending
+                    };
+                    slot.arm(pending);
+                }
+                None => {
+                    *slot = Slot::IDLE;
+                    return None;
+                }
+            }
+        } else {
+            return Some(value);
+        }
+    }
+    if slot.generator.is_finished() {
+        *slot = Slot::IDLE;
+        return None;
+    }
+    Some(slot.generator.next())
 }
 
 impl<const SLOTS: usize> Default for DrumMachine<SLOTS> {
@@ -1309,6 +1899,7 @@ mod tests {
                 attack_s: f32::NAN,
                 decay_s: 1.0e9,
                 level: f32::NEG_INFINITY,
+                pan: f32::NAN,
             },
             kick_style: KickStyle::Anatomy,
             anatomy: AnatomyKickParams {
@@ -1339,6 +1930,7 @@ mod tests {
                 noise_level: -3.0,
                 attack_s: f32::NAN,
                 level: 42.0,
+                pan: 7.0,
             },
             hihat: HiHatParams {
                 base_hz: f32::NAN,
@@ -1348,6 +1940,7 @@ mod tests {
                 closed_decay_s: f32::NAN,
                 open_decay_s: 1.0e9,
                 level: 1.5,
+                pan: f32::NEG_INFINITY,
             },
             clap: ClapParams {
                 highpass_hz: f32::NAN,
@@ -1358,6 +1951,61 @@ mod tests {
                 attack_s: f32::NAN,
                 decay_s: 1.0e9,
                 level: f32::NAN,
+                pan: -7.0,
+            },
+            tom: TomParams {
+                tune_hz: f32::NAN,
+                glide_hz: -1.0,
+                glide_s: f32::INFINITY,
+                attack_s: f32::NAN,
+                decay_s: 1.0e9,
+                level: 42.0,
+                pan: f32::NAN,
+            },
+            rim: RimParams {
+                tone_hz: f32::INFINITY,
+                noise_highpass_hz: 9_000.0,
+                noise_lowpass_hz: 100.0,
+                decay_s: f32::NAN,
+                attack_s: -1.0,
+                level: -3.0,
+                pan: 2.0,
+            },
+            shaker: ShakerParams {
+                highpass_hz: f32::NAN,
+                lowpass_hz: f32::NAN,
+                attack_s: 1.0e9,
+                decay_s: 0.0,
+                level: f32::INFINITY,
+                pan: f32::NAN,
+            },
+            cowbell: CowbellParams {
+                freq_a_hz: -5.0,
+                freq_b_hz: f32::NAN,
+                highpass_hz: 1.0,
+                lowpass_hz: 1.0,
+                attack_s: f32::NAN,
+                decay_s: -1.0,
+                level: 1.5,
+                pan: -2.0,
+            },
+            crash: CrashParams {
+                base_hz: f32::NAN,
+                highpass_hz: f32::INFINITY,
+                lowpass_hz: 100.0,
+                attack_s: -1.0,
+                decay_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
+            },
+            ride: RideParams {
+                base_hz: 1.0e9,
+                highpass_hz: 100.0,
+                lowpass_hz: 9_000.0,
+                attack_s: f32::INFINITY,
+                decay_s: -5.0,
+                level: 0.5,
+                pan: 0.25,
             },
             master_level: f32::NAN,
         };
@@ -1412,6 +2060,20 @@ mod tests {
         assert!((MIN_BURST_SPACING_S..=MAX_BURST_SPACING_S).contains(&kit.clap.burst_spacing_s));
         assert!(kit.clap.lowpass_hz > kit.clap.highpass_hz);
         assert_eq!(kit.master_level, 0.0);
+        // 声像：NaN/±∞ ⇒ 0（正中），越界 ⇒ 钳到 ±1。
+        assert_eq!(kit.kick.pan, 0.0);
+        assert_eq!(kit.snare.pan, 1.0);
+        assert_eq!(kit.hihat.pan, 0.0);
+        assert_eq!(kit.clap.pan, -1.0);
+        assert_eq!(kit.tom.pan, 0.0);
+        assert_eq!(kit.rim.pan, 1.0);
+        assert_eq!(kit.cowbell.pan, -1.0);
+        assert_eq!(kit.ride.pan, 0.25);
+        assert!((MIN_FREQ_HZ..=MAX_FREQ_HZ).contains(&kit.tom.tune_hz));
+        assert!(kit.rim.noise_lowpass_hz >= kit.rim.noise_highpass_hz * MIN_BAND_RATIO);
+        assert!(kit.shaker.lowpass_hz > kit.shaker.highpass_hz);
+        assert!((MIN_TIME_S..=MAX_TIME_S).contains(&kit.crash.decay_s));
+        assert_eq!(kit.crash.level, 0.0, "NaN 音量必须退化为静音");
 
         // 全部字段有限（逐个 walk，不靠上面逐条的抽样）。
         for value in [
@@ -1552,6 +2214,7 @@ mod tests {
                 attack_s: f32::INFINITY,
                 decay_s: f32::NAN,
                 level: f32::NAN,
+                pan: f32::NAN,
             },
             // 敌意渲染走 Anatomy 声部：`set_params` 的钳制 + `trigger` 的
             // 速度快照必须让 Anatomy 声部同样产出全有限样本。
@@ -1584,6 +2247,7 @@ mod tests {
                 noise_level: f32::NAN,
                 attack_s: f32::NAN,
                 level: f32::NAN,
+                pan: f32::INFINITY,
             },
             hihat: HiHatParams {
                 base_hz: f32::INFINITY,
@@ -1593,6 +2257,7 @@ mod tests {
                 closed_decay_s: f32::NAN,
                 open_decay_s: f32::NAN,
                 level: f32::NAN,
+                pan: f32::NAN,
             },
             clap: ClapParams {
                 highpass_hz: f32::NAN,
@@ -1603,6 +2268,61 @@ mod tests {
                 attack_s: f32::NAN,
                 decay_s: f32::NAN,
                 level: f32::NAN,
+                pan: f32::NAN,
+            },
+            tom: TomParams {
+                tune_hz: f32::NAN,
+                glide_hz: f32::NAN,
+                glide_s: f32::NAN,
+                attack_s: f32::NAN,
+                decay_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
+            },
+            rim: RimParams {
+                tone_hz: f32::NAN,
+                noise_highpass_hz: f32::NAN,
+                noise_lowpass_hz: f32::NAN,
+                decay_s: f32::NAN,
+                attack_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
+            },
+            shaker: ShakerParams {
+                highpass_hz: f32::NAN,
+                lowpass_hz: f32::NAN,
+                attack_s: f32::NAN,
+                decay_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
+            },
+            cowbell: CowbellParams {
+                freq_a_hz: f32::NAN,
+                freq_b_hz: f32::NAN,
+                highpass_hz: f32::NAN,
+                lowpass_hz: f32::NAN,
+                attack_s: f32::NAN,
+                decay_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
+            },
+            crash: CrashParams {
+                base_hz: f32::NAN,
+                highpass_hz: f32::NAN,
+                lowpass_hz: f32::NAN,
+                attack_s: f32::NAN,
+                decay_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
+            },
+            ride: RideParams {
+                base_hz: f32::NAN,
+                highpass_hz: f32::NAN,
+                lowpass_hz: f32::NAN,
+                attack_s: f32::NAN,
+                decay_s: f32::NAN,
+                level: f32::NAN,
+                pan: f32::NAN,
             },
             master_level: f32::INFINITY,
         };
@@ -2018,5 +2738,127 @@ mod tests {
                 tail[index]
             );
         }
+    }
+
+    /// 量什么：2026-11-18 新增的 8 个音色（桶鼓×3/边击/沙锤/牛铃/
+    /// 碎镲/叮叮镲）在默认配方下逐个是否**真的出声**（峰值，单位：
+    /// 满幅比例）且全有限——段 2 的存在性钉子（此前键 82 沙锤等击点
+    /// 全部无声）。
+    #[test]
+    fn the_eight_new_voices_all_render_audibly() {
+        let new_voices = [
+            DrumVoice::TomLow,
+            DrumVoice::TomMid,
+            DrumVoice::TomHigh,
+            DrumVoice::Rimshot,
+            DrumVoice::Shaker,
+            DrumVoice::Cowbell,
+            DrumVoice::Crash,
+            DrumVoice::Ride,
+        ];
+        for voice in new_voices {
+            let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+            machine.set_params(DrumKitParams::DEFAULT);
+            machine.trigger(DrumHit::new(voice, 0, 1.0));
+            let mut out = vec![0.0f32; 9_600];
+            machine.render(0, &mut out);
+            let peak = out.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+            assert!(
+                out.iter().all(|s| s.is_finite()),
+                "{} 产出非有限样本",
+                voice.name()
+            );
+            assert!(
+                peak > 0.05,
+                "{} 峰值只有 {peak}（应明显出声）",
+                voice.name()
+            );
+        }
+    }
+
+    /// 量什么：全居中声像时 `render_stereo` 的左右声道与单声道
+    /// `render` 是否**逐位相同**（声像律中心归一的钉子——既有工程
+    /// 的鼓声不得因立体声接线改变一个样本）。
+    #[test]
+    fn stereo_with_centered_pans_matches_mono_bit_for_bit() {
+        let mut mono = DrumMachine::<DRUM_SLOTS>::new(48_000);
+        mono.set_params(DrumKitParams::DEFAULT);
+        let mut stereo = DrumMachine::<DRUM_SLOTS>::new(48_000);
+        stereo.set_params(DrumKitParams::DEFAULT);
+        for machine in [&mut mono, &mut stereo] {
+            machine.trigger(DrumHit::new(DrumVoice::Kick, 0, 1.0));
+            machine.trigger(DrumHit::new(DrumVoice::Snare, 0, 0.9));
+            machine.trigger(DrumHit::new(DrumVoice::Shaker, 100, 0.8));
+        }
+        let mut mono_out = vec![0.0f32; 4_800];
+        mono.render(0, &mut mono_out);
+        let (mut left, mut right) = (vec![0.0f32; 4_800], vec![0.0f32; 4_800]);
+        stereo.render_stereo(0, &mut left, &mut right);
+        assert!(mono_out.iter().any(|s| *s != 0.0), "夹具必须出声");
+        for index in 0..mono_out.len() {
+            assert_eq!(
+                left[index].to_bits(),
+                mono_out[index].to_bits(),
+                "第 {index} 帧左声道与单声道不同"
+            );
+            assert_eq!(
+                right[index].to_bits(),
+                mono_out[index].to_bits(),
+                "第 {index} 帧右声道与单声道不同"
+            );
+        }
+    }
+
+    /// 量什么：声像定值是否真的移动能量（军鼓全右 ⇒ 右 RMS 远大于
+    /// 左；单位：RMS 比）。
+    #[test]
+    fn stereo_pan_moves_energy_to_the_panned_side() {
+        let kit = DrumKitParams {
+            snare: SnareParams {
+                pan: 1.0,
+                ..SnareParams::DEFAULT
+            },
+            ..DrumKitParams::DEFAULT
+        };
+        let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+        machine.set_params(kit);
+        machine.trigger(DrumHit::new(DrumVoice::Snare, 0, 1.0));
+        let (mut left, mut right) = (vec![0.0f32; 4_800], vec![0.0f32; 4_800]);
+        machine.render_stereo(0, &mut left, &mut right);
+        let rms = |buf: &[f32]| {
+            (buf.iter()
+                .map(|s| f64::from(*s) * f64::from(*s))
+                .sum::<f64>()
+                / buf.len() as f64)
+                .sqrt()
+        };
+        assert!(
+            rms(&right) > rms(&left) * 4.0,
+            "全右声像下右/左 RMS 应悬殊（实测 左 {} 右 {}）",
+            rms(&left),
+            rms(&right)
+        );
+    }
+
+    /// 量什么：909 式配方与默认（808 系）配方渲染同一击是否**不同**
+    /// （配方差异必须落到波形上，不是只改了常量表）。
+    #[test]
+    fn recipe_909_renders_differently_from_the_default_recipe() {
+        let render_kit = |kit: DrumKitParams| {
+            let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);
+            machine.set_params(kit);
+            machine.trigger(DrumHit::new(DrumVoice::Kick, 0, 1.0));
+            machine.trigger(DrumHit::new(DrumVoice::Snare, 0, 1.0));
+            machine.trigger(DrumHit::new(DrumVoice::ClosedHat, 0, 1.0));
+            let mut out = vec![0.0f32; 9_600];
+            machine.render(0, &mut out);
+            out
+        };
+        let default_out = render_kit(DrumKitParams::DEFAULT);
+        let recipe_out = render_kit(DrumKitParams::RECIPE_909);
+        assert!(default_out.iter().any(|s| *s != 0.0), "夹具必须出声");
+        assert_ne!(default_out, recipe_out, "909 配方与默认配方的波形必须不同");
+        assert_eq!(DrumKitParams::RECIPE_909.kick.decay_s, 0.30);
+        assert_eq!(DrumKitParams::RECIPE_909.hihat.base_hz, 340.0);
     }
 }

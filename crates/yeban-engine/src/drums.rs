@@ -89,12 +89,19 @@
 //! | `closed_hat_note` | `closed_hat_note` |
 //! | `open_hat_note` | `open_hat_note` |
 //! | `clap_note` | `clap_note` |
-//! | `kit.kick.*` | `kick_tune_hz`、`kick_glide_hz`、`kick_glide_s`、`kick_attack_s`、`kick_decay_s`、`kick_level` |
+//! | 可选键位（2026-11-18 新增 8 件） | `rim_note`、`tom_low_note`、`tom_mid_note`、`tom_high_note`、`crash_note`、`ride_note`、`cowbell_note`、`shaker_note`（**可选**：不写 = 该件无键位、不触发，不影响五键识别；写了但非有限 = 整台不识别，与五键同规则 5。识别名单在**独立的** `extra_note_slot`，不进 `note_slot` —— 仓内判据按源码钉 `note_slot` 恰为五名） |
+//! | `kit.kick.*` | `kick_tune_hz`、`kick_glide_hz`、`kick_glide_s`、`kick_attack_s`、`kick_decay_s`、`kick_level`、`kick_pan` |
 //! | `kit.kick_style` | `kick_style`（`0` = 经典、`>= 0.5` = Anatomy，见 [`KickStyle::from_f32`]） |
 //! | `kit.anatomy.*` | `anatomy_softness`、`anatomy_click_amount`、`anatomy_tame_highs`、`anatomy_grit`、`anatomy_boom_to_where`、`anatomy_hit_skin`、`anatomy_rumble`、`anatomy_base_pitch_hz`、`anatomy_volume`、`anatomy_sub_mute`、`anatomy_sub_solo`、`anatomy_thump_mute`、`anatomy_thump_solo`、`anatomy_click_mute`、`anatomy_click_solo` |
-//! | `kit.snare.*` | `snare_tone_hz`、`snare_tone_ratio`、`snare_tone_decay_s`、`snare_tone_level`、`snare_noise_highpass_hz`、`snare_noise_lowpass_hz`、`snare_noise_decay_s`、`snare_noise_level`、`snare_attack_s`、`snare_level` |
-//! | `kit.hihat.*` | `hihat_base_hz`、`hihat_highpass_hz`、`hihat_lowpass_hz`、`hihat_attack_s`、`hihat_closed_decay_s`、`hihat_open_decay_s`、`hihat_level` |
-//! | `kit.clap.*` | `clap_highpass_hz`、`clap_lowpass_hz`、`clap_bursts`、`clap_burst_decay_s`、`clap_burst_spacing_s`、`clap_attack_s`、`clap_decay_s`、`clap_level` |
+//! | `kit.snare.*` | `snare_tone_hz`、`snare_tone_ratio`、`snare_tone_decay_s`、`snare_tone_level`、`snare_noise_highpass_hz`、`snare_noise_lowpass_hz`、`snare_noise_decay_s`、`snare_noise_level`、`snare_attack_s`、`snare_level`、`snare_pan` |
+//! | `kit.hihat.*` | `hihat_base_hz`、`hihat_highpass_hz`、`hihat_lowpass_hz`、`hihat_attack_s`、`hihat_closed_decay_s`、`hihat_open_decay_s`、`hihat_level`、`hihat_pan` |
+//! | `kit.clap.*` | `clap_highpass_hz`、`clap_lowpass_hz`、`clap_bursts`、`clap_burst_decay_s`、`clap_burst_spacing_s`、`clap_attack_s`、`clap_decay_s`、`clap_level`、`clap_pan` |
+//! | `kit.tom.*` | `tom_tune_hz`、`tom_glide_hz`、`tom_glide_s`、`tom_attack_s`、`tom_decay_s`、`tom_level`、`tom_pan` |
+//! | `kit.rim.*` | `rim_tone_hz`、`rim_noise_highpass_hz`、`rim_noise_lowpass_hz`、`rim_decay_s`、`rim_attack_s`、`rim_level`、`rim_pan` |
+//! | `kit.shaker.*` | `shaker_highpass_hz`、`shaker_lowpass_hz`、`shaker_attack_s`、`shaker_decay_s`、`shaker_level`、`shaker_pan` |
+//! | `kit.cowbell.*` | `cowbell_freq_a_hz`、`cowbell_freq_b_hz`、`cowbell_highpass_hz`、`cowbell_lowpass_hz`、`cowbell_attack_s`、`cowbell_decay_s`、`cowbell_level`、`cowbell_pan` |
+//! | `kit.crash.*` | `crash_base_hz`、`crash_highpass_hz`、`crash_lowpass_hz`、`crash_attack_s`、`crash_decay_s`、`crash_level`、`crash_pan` |
+//! | `kit.ride.*` | `ride_base_hz`、`ride_highpass_hz`、`ride_lowpass_hz`、`ride_attack_s`、`ride_decay_s`、`ride_level`、`ride_pan` |
 //! | `kit.master_level` | `master_level` |
 //!
 //! ⛔ **没有别名**，这是**刻意**的：`crates/yeban-dsp/src/drums/mod.rs` 的音色参数是
@@ -181,14 +188,17 @@ use yeban_model::{DeviceDefinition, DeviceKind};
 // （类型同一性）。
 pub use yeban_dsp::drums::{
     ANATOMY_KICK_PRESETS, AnatomyKickCategory, AnatomyKickParams, AnatomyKickPreset, ClapParams,
-    DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, HiHatParams, KickParams, KickStyle,
-    SnareParams,
+    CowbellParams, CrashParams, DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice,
+    HiHatParams, KickParams, KickStyle, RideParams, RimParams, ShakerParams, SnareParams,
+    TomParams,
 };
 
-/// 一台鼓机的**键位映射**：五个鼓件各自的 MIDI 音高（`0..=127`）。
+/// 一台鼓机的**键位映射**：五个必备鼓件 + 八个可选鼓件各自的 MIDI
+/// 音高（`0..=127`）。
 ///
 /// 它**必须**由工程逐件写出（模块文档 §3.1）：引擎不发明默认键位。
-/// 一个音高只触发一个鼓件，碰撞时的裁决见模块文档 §4.2。
+/// 一个音高只触发一个鼓件，碰撞时的裁决见模块文档 §4.2。可选八件
+/// （2026-11-18）不写就没有键位、不影响五键识别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrumNoteMap {
     /// 底鼓的音高。
@@ -201,10 +211,14 @@ pub struct DrumNoteMap {
     open_hat: u8,
     /// 拍手的音高。
     clap: u8,
+    /// 可选八件的音高（下标 = [`extra_note_slot`] 的槽位序；
+    /// `None` = 工程没给这件写键位）。
+    extra: [Option<u8>; EXTRA_NOTE_SLOTS],
 }
 
 impl DrumNoteMap {
     /// 逐件给出音高（构造期；值域 `0..=127` 由 [`DrumsParams::from_devices`] 保证）。
+    /// 可选八件默认无键位，用 [`Self::with_extra`] 逐件补。
     #[must_use]
     pub const fn new(kick: u8, snare: u8, closed_hat: u8, open_hat: u8, clap: u8) -> Self {
         Self {
@@ -213,12 +227,33 @@ impl DrumNoteMap {
             closed_hat,
             open_hat,
             clap,
+            extra: [None; EXTRA_NOTE_SLOTS],
         }
+    }
+
+    /// 给一件**可选**鼓件设键位（构造期链式调用）。核心五件走
+    /// [`Self::new`]，传核心五件到这里是无操作（它们的键位不可被
+    /// 可选通道覆盖）。
+    #[must_use]
+    pub const fn with_extra(mut self, voice: DrumVoice, note: u8) -> Self {
+        match voice {
+            DrumVoice::Rimshot => self.extra[0] = Some(note),
+            DrumVoice::TomLow => self.extra[1] = Some(note),
+            DrumVoice::TomMid => self.extra[2] = Some(note),
+            DrumVoice::TomHigh => self.extra[3] = Some(note),
+            DrumVoice::Crash => self.extra[4] = Some(note),
+            DrumVoice::Ride => self.extra[5] = Some(note),
+            DrumVoice::Cowbell => self.extra[6] = Some(note),
+            DrumVoice::Shaker => self.extra[7] = Some(note),
+            _ => {}
+        }
+        self
     }
 
     /// 该音高触发哪个鼓件（`None` = 本映射里没有它 ⇒ 不触发）。
     ///
-    /// 顺序 = [`DrumVoice`] 的判别值顺序（模块文档 §4.2 的碰撞裁决）。
+    /// 顺序：核心五件先（判别值顺序，模块文档 §4.2 的碰撞裁决），
+    /// 然后可选八件按 [`DRUM_EXTRA_NOTE_NAMES`] 的槽位序。
     #[must_use]
     pub const fn voice_for(&self, pitch: u8) -> Option<DrumVoice> {
         if pitch == self.kick {
@@ -232,11 +267,22 @@ impl DrumNoteMap {
         } else if pitch == self.clap {
             Some(DrumVoice::Clap)
         } else {
+            let mut index = 0;
+            while index < EXTRA_NOTE_SLOTS {
+                if let Some(note) = self.extra[index]
+                    && note == pitch
+                {
+                    return Some(EXTRA_VOICES[index]);
+                }
+                index += 1;
+            }
             None
         }
     }
 
     /// 该鼓件的音高（[`Self::voice_for`] 的逆，碰撞时可能不成立 —— 见模块文档 §4.2）。
+    /// 可选八件未写键位时返回 `0`（哨兵值：用 [`Self::extra_note_for`]
+    /// 区分"键位是 0"与"没写"）。
     #[must_use]
     pub const fn note_for(&self, voice: DrumVoice) -> u8 {
         match voice {
@@ -245,6 +291,30 @@ impl DrumNoteMap {
             DrumVoice::ClosedHat => self.closed_hat,
             DrumVoice::OpenHat => self.open_hat,
             DrumVoice::Clap => self.clap,
+            _ => match self.extra_note_for(voice) {
+                Some(note) => note,
+                None => 0,
+            },
+        }
+    }
+
+    /// 可选八件的键位（`None` = 没写；核心五件恒 `Some`）。
+    #[must_use]
+    pub const fn extra_note_for(&self, voice: DrumVoice) -> Option<u8> {
+        match voice {
+            DrumVoice::Kick => Some(self.kick),
+            DrumVoice::Snare => Some(self.snare),
+            DrumVoice::ClosedHat => Some(self.closed_hat),
+            DrumVoice::OpenHat => Some(self.open_hat),
+            DrumVoice::Clap => Some(self.clap),
+            DrumVoice::Rimshot => self.extra[0],
+            DrumVoice::TomLow => self.extra[1],
+            DrumVoice::TomMid => self.extra[2],
+            DrumVoice::TomHigh => self.extra[3],
+            DrumVoice::Crash => self.extra[4],
+            DrumVoice::Ride => self.extra[5],
+            DrumVoice::Cowbell => self.extra[6],
+            DrumVoice::Shaker => self.extra[7],
         }
     }
 
@@ -333,6 +403,10 @@ impl DrumsParams {
         let mut kit = DrumKitParams::DEFAULT;
         // 五个键位：`None` = 没写或写了非有限值 ⇒ 这台设备不是鼓机（规则 5）。
         let mut notes: [Option<u8>; NOTE_SLOTS] = [None; NOTE_SLOTS];
+        // 可选八件：不写 = 无键位（不影响识别）；写了但非有限 = 与
+        // 五键同规则 5，整台不识别（`extra_broken`）。
+        let mut extra: [Option<u8>; EXTRA_NOTE_SLOTS] = [None; EXTRA_NOTE_SLOTS];
+        let mut extra_broken = false;
         for param in &device.params {
             let name = param.name.to_ascii_lowercase();
             let value = param.value;
@@ -340,9 +414,24 @@ impl DrumsParams {
                 notes[index] = note_from_f32(value);
                 continue;
             }
+            if let Some(index) = extra_note_slot(&name) {
+                match note_from_f32(value) {
+                    Some(note) => extra[index] = Some(note),
+                    None => extra_broken = true,
+                }
+                continue;
+            }
             apply_kit_knob(&mut kit, &name, value);
         }
-        let notes = DrumNoteMap::new(notes[0]?, notes[1]?, notes[2]?, notes[3]?, notes[4]?);
+        if extra_broken {
+            return None;
+        }
+        let mut notes = DrumNoteMap::new(notes[0]?, notes[1]?, notes[2]?, notes[3]?, notes[4]?);
+        for (index, note) in extra.iter().enumerate() {
+            if let Some(note) = note {
+                notes = notes.with_extra(EXTRA_VOICES[index], *note);
+            }
+        }
         // 规则 6：快照里存的就是音频线程将要用的那一份数。
         Some(Self {
             kit: kit.sanitised(),
@@ -436,6 +525,57 @@ fn note_slot(name: &str) -> Option<usize> {
     }
 }
 
+/// 可选八件的键位槽位数（2026-11-18）。
+const EXTRA_NOTE_SLOTS: usize = 8;
+
+/// 可选八件的**规范拼写**（下标 = 可选键位槽位）。
+///
+/// 与五键的 [`DRUM_NOTE_NAMES`] 分开：五键是识别的**必要条件**，
+/// 八件是可选扩展——诊断 `incomplete_drum_note_map` 只点名五键，
+/// 缺可选键位不是"不完整"。
+pub const DRUM_EXTRA_NOTE_NAMES: [&str; EXTRA_NOTE_SLOTS] = [
+    "rim_note",
+    "tom_low_note",
+    "tom_mid_note",
+    "tom_high_note",
+    "crash_note",
+    "ride_note",
+    "cowbell_note",
+    "shaker_note",
+];
+
+/// 可选槽位 → 鼓件（下标与 [`DRUM_EXTRA_NOTE_NAMES`] 同序）。
+const EXTRA_VOICES: [DrumVoice; EXTRA_NOTE_SLOTS] = [
+    DrumVoice::Rimshot,
+    DrumVoice::TomLow,
+    DrumVoice::TomMid,
+    DrumVoice::TomHigh,
+    DrumVoice::Crash,
+    DrumVoice::Ride,
+    DrumVoice::Cowbell,
+    DrumVoice::Shaker,
+];
+
+/// 参数名 → **可选**键位下标（`None` = 不是可选键位名）。
+///
+/// ⛔ 独立于 [`note_slot`]：仓内判据按源码读 `note_slot` 的字符串
+/// 字面量并断言恰为五名（"引擎的识别名单"）；可选八件的名单住在
+/// 这里，扩容不惊动那条判据。
+#[must_use]
+fn extra_note_slot(name: &str) -> Option<usize> {
+    match name {
+        "rim_note" => Some(0),
+        "tom_low_note" => Some(1),
+        "tom_mid_note" => Some(2),
+        "tom_high_note" => Some(3),
+        "crash_note" => Some(4),
+        "ride_note" => Some(5),
+        "cowbell_note" => Some(6),
+        "shaker_note" => Some(7),
+        _ => None,
+    }
+}
+
 /// 键位取值：非有限 ⇒ `None`（规则 5：整台设备不识别）；否则四舍五入并钳到 `0..=127`。
 #[must_use]
 fn note_from_f32(value: f32) -> Option<u8> {
@@ -484,6 +624,7 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "kick_attack_s" => kit.kick.attack_s = value,
         "kick_decay_s" => kit.kick.decay_s = value,
         "kick_level" => kit.kick.level = value,
+        "kick_pan" => kit.kick.pan = value,
         // --- 底鼓声部选择与 Anatomy 参数 ---
         "kick_style" => kit.kick_style = KickStyle::from_f32(value),
         "anatomy_softness" => kit.anatomy.softness = value,
@@ -512,6 +653,7 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "snare_noise_level" => kit.snare.noise_level = value,
         "snare_attack_s" => kit.snare.attack_s = value,
         "snare_level" => kit.snare.level = value,
+        "snare_pan" => kit.snare.pan = value,
         // --- 踩镲（闭/开共用一套配方）---
         "hihat_base_hz" => kit.hihat.base_hz = value,
         "hihat_highpass_hz" => kit.hihat.highpass_hz = value,
@@ -520,6 +662,7 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "hihat_closed_decay_s" => kit.hihat.closed_decay_s = value,
         "hihat_open_decay_s" => kit.hihat.open_decay_s = value,
         "hihat_level" => kit.hihat.level = value,
+        "hihat_pan" => kit.hihat.pan = value,
         // --- 拍手 ---
         "clap_highpass_hz" => kit.clap.highpass_hz = value,
         "clap_lowpass_hz" => kit.clap.lowpass_hz = value,
@@ -529,6 +672,55 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
         "clap_attack_s" => kit.clap.attack_s = value,
         "clap_decay_s" => kit.clap.decay_s = value,
         "clap_level" => kit.clap.level = value,
+        "clap_pan" => kit.clap.pan = value,
+        // --- 桶鼓（低/中/高共用一套配方，音高比例在 dsp 侧）---
+        "tom_tune_hz" => kit.tom.tune_hz = value,
+        "tom_glide_hz" => kit.tom.glide_hz = value,
+        "tom_glide_s" => kit.tom.glide_s = value,
+        "tom_attack_s" => kit.tom.attack_s = value,
+        "tom_decay_s" => kit.tom.decay_s = value,
+        "tom_level" => kit.tom.level = value,
+        "tom_pan" => kit.tom.pan = value,
+        // --- 边击 ---
+        "rim_tone_hz" => kit.rim.tone_hz = value,
+        "rim_noise_highpass_hz" => kit.rim.noise_highpass_hz = value,
+        "rim_noise_lowpass_hz" => kit.rim.noise_lowpass_hz = value,
+        "rim_decay_s" => kit.rim.decay_s = value,
+        "rim_attack_s" => kit.rim.attack_s = value,
+        "rim_level" => kit.rim.level = value,
+        "rim_pan" => kit.rim.pan = value,
+        // --- 沙锤 ---
+        "shaker_highpass_hz" => kit.shaker.highpass_hz = value,
+        "shaker_lowpass_hz" => kit.shaker.lowpass_hz = value,
+        "shaker_attack_s" => kit.shaker.attack_s = value,
+        "shaker_decay_s" => kit.shaker.decay_s = value,
+        "shaker_level" => kit.shaker.level = value,
+        "shaker_pan" => kit.shaker.pan = value,
+        // --- 牛铃 ---
+        "cowbell_freq_a_hz" => kit.cowbell.freq_a_hz = value,
+        "cowbell_freq_b_hz" => kit.cowbell.freq_b_hz = value,
+        "cowbell_highpass_hz" => kit.cowbell.highpass_hz = value,
+        "cowbell_lowpass_hz" => kit.cowbell.lowpass_hz = value,
+        "cowbell_attack_s" => kit.cowbell.attack_s = value,
+        "cowbell_decay_s" => kit.cowbell.decay_s = value,
+        "cowbell_level" => kit.cowbell.level = value,
+        "cowbell_pan" => kit.cowbell.pan = value,
+        // --- 碎镲 ---
+        "crash_base_hz" => kit.crash.base_hz = value,
+        "crash_highpass_hz" => kit.crash.highpass_hz = value,
+        "crash_lowpass_hz" => kit.crash.lowpass_hz = value,
+        "crash_attack_s" => kit.crash.attack_s = value,
+        "crash_decay_s" => kit.crash.decay_s = value,
+        "crash_level" => kit.crash.level = value,
+        "crash_pan" => kit.crash.pan = value,
+        // --- 叮叮镲 ---
+        "ride_base_hz" => kit.ride.base_hz = value,
+        "ride_highpass_hz" => kit.ride.highpass_hz = value,
+        "ride_lowpass_hz" => kit.ride.lowpass_hz = value,
+        "ride_attack_s" => kit.ride.attack_s = value,
+        "ride_decay_s" => kit.ride.decay_s = value,
+        "ride_level" => kit.ride.level = value,
+        "ride_pan" => kit.ride.pan = value,
         // --- 总线 ---
         "master_level" => kit.master_level = value,
         _ => return false,
@@ -543,7 +735,7 @@ fn apply_kit_knob(kit: &mut DrumKitParams, name: &str, value: f32) -> bool {
 /// `from_device` 消费什么，这里就承认什么。
 #[must_use]
 pub fn consumes_drum_param(name_lower: &str) -> bool {
-    if note_slot(name_lower).is_some() {
+    if note_slot(name_lower).is_some() || extra_note_slot(name_lower).is_some() {
         return true;
     }
     let mut probe = DrumKitParams::DEFAULT;
@@ -764,10 +956,21 @@ mod tests {
         assert_eq!(notes.as_array(), [36, 38, 42, 46, 39]);
         assert_eq!(notes.kick(), 36);
         assert_eq!(notes.clap(), 39);
-        // `as_array` 与 `note_for` 必须给出同一组数（逐件）。
-        for (index, voice) in DrumVoice::ALL.iter().enumerate() {
+        // `as_array` 与 `note_for` 必须给出同一组数（核心五件逐件；
+        // 可选八件不在 `as_array` 里，走 `extra_note_for`）。
+        const CORE_FIVE: [DrumVoice; 5] = [
+            DrumVoice::Kick,
+            DrumVoice::Snare,
+            DrumVoice::ClosedHat,
+            DrumVoice::OpenHat,
+            DrumVoice::Clap,
+        ];
+        for (index, voice) in CORE_FIVE.iter().enumerate() {
             assert_eq!(notes.as_array()[index], notes.note_for(*voice));
         }
+        // 未写可选键位：`extra_note_for` 为 None、`voice_for` 不触发。
+        assert_eq!(notes.extra_note_for(DrumVoice::Shaker), None);
+        assert_eq!(notes.voice_for(82), None);
         assert_eq!(notes.note_for(DrumVoice::Kick), 36);
         assert_eq!(notes.note_for(DrumVoice::Snare), 38);
         assert_eq!(notes.note_for(DrumVoice::ClosedHat), 42);
@@ -946,6 +1149,67 @@ mod tests {
             source.contains("pub use yeban_dsp::drums::{"),
             "engine 的 drums.rs 必须是 dsp 鼓机与其参数类型的再导出"
         );
+    }
+
+    /// 判据（2026-11-18 段 2）：**可选八件**的键位与旋钮走独立名单
+    /// 落地——写了就触发、旋钮进配方；可选键位写非有限值与五键同
+    /// 规则（整台不识别）；核心五件与可选件同音高时核心件优先。
+    #[test]
+    fn extra_voices_arm_through_the_separate_name_list() {
+        let mut with_extras: Vec<(&str, f32)> = NOTES.to_vec();
+        with_extras.extend_from_slice(&[
+            ("shaker_note", 82.0),
+            ("tom_low_note", 43.0),
+            ("crash_note", 49.0),
+            ("shaker_decay_s", 0.33),
+            ("tom_decay_s", 0.44),
+            ("crash_pan", -0.5),
+            ("snare_pan", 0.25),
+        ]);
+        let params = DrumsParams::from_devices(&[kit_device(
+            DeviceKind::InternalInstrument,
+            false,
+            &with_extras,
+        )])
+        .expect("五键写全 + 可选键位 ⇒ 必须武装");
+        let notes = params.notes();
+        assert_eq!(notes.voice_for(82), Some(DrumVoice::Shaker));
+        assert_eq!(notes.voice_for(43), Some(DrumVoice::TomLow));
+        assert_eq!(notes.voice_for(49), Some(DrumVoice::Crash));
+        assert_eq!(notes.extra_note_for(DrumVoice::Shaker), Some(82));
+        assert_eq!(notes.extra_note_for(DrumVoice::Ride), None);
+        let kit = params.kit();
+        assert_eq!(kit.shaker.decay_s.to_bits(), 0.33f32.to_bits());
+        assert_eq!(kit.tom.decay_s.to_bits(), 0.44f32.to_bits());
+        assert_eq!(kit.crash.pan.to_bits(), (-0.5f32).to_bits());
+        assert_eq!(kit.snare.pan.to_bits(), 0.25f32.to_bits());
+        assert!(consumes_drum_param("shaker_note"));
+        assert!(consumes_drum_param("tom_decay_s"));
+        assert!(consumes_drum_param("ride_pan"));
+
+        // 可选键位非有限 ⇒ 整台不识别（与五键同规则 5）。
+        let mut broken: Vec<(&str, f32)> = NOTES.to_vec();
+        broken.push(("ride_note", f32::NAN));
+        assert!(
+            DrumsParams::from_devices(&[kit_device(
+                DeviceKind::InternalInstrument,
+                false,
+                &broken,
+            )])
+            .is_none(),
+            "可选键位写 NaN 必须整台不识别"
+        );
+
+        // 碰撞：可选件与核心件同音高 ⇒ 核心件优先（五键先查）。
+        let mut colliding: Vec<(&str, f32)> = NOTES.to_vec();
+        colliding.push(("cowbell_note", 38.0));
+        let params = DrumsParams::from_devices(&[kit_device(
+            DeviceKind::InternalInstrument,
+            false,
+            &colliding,
+        )])
+        .expect("五键写全 ⇒ 必须武装");
+        assert_eq!(params.notes().voice_for(38), Some(DrumVoice::Snare));
     }
 
     /// 判据：`clap_bursts` 的 `f32 → u32` **上界是 u16 全域**，不是 u8。
