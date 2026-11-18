@@ -56,7 +56,7 @@
 //! | ~~`notePitchBend`~~ | ⭐ **已退役（`#311b`）**：弯音曲线由引擎**真的求值**（音符局部 64 样本网格重算 `phase_inc`），因此**不再**登记。判据见 `yeban-engine/tests/pitch_bend.rs` 与 `render_master.rs` 的 `the_master_bends...` |
 //! | `noteLyrics` | **母带不会唱**：没有歌声合成（SVS 不存在），`syllable` / `phonemes` 不出声。⚠ 歌词**不是**"没有载体"：`syllable`（非空）已能写成 SMF `FF 05` 歌词元事件（`#312`），导入侧也按"唯一才归属"读回（`#317`）；`phonemes` 仍无 SMF 载体（SMF 只有一种文本槽，写进去等于把 SVS 对齐数据伪装成歌词 ⇒ 导出侧另报键 `phonemes`）。触发条件不变：任一音符带 `syllable` 或非空 `phonemes` 就登记 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
-//! | `sidechainRouting` | 侧链边是**键输入**的数据形态，本渲染器**有键输入消费面（v1）**：压缩器的检波器可读键信号（`Compressor::process_gain_with_key`），离线 `RenderPlan::attach_key_armed_nodes` 按目的武装 / 源在保留子图 / 源层号严格更小 / 每目的边身份升序第一条合格边挂接。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。`#337` 起侧链边**不再**被当成普通音频边求和（修前平行时会 +6.0206 dB），因此"实际发生了什么"要看三个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**，修后恒 `0`）、`data.sidechainEdgesInRoutingGraph`（声明了几条）、以及 `data.sidechainEdgesDeclaredWithoutKeyInput`（**声明了、但没有键输入路径**的条数）。`0 / 0 / 0` = 没有侧链；`0 / N / K` = N 条侧链声明了、K 条没有被求值（K = N 时一条都没有被求值）；`0 / N / 0` = 全部求值。修前 `#315` 的两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
+//! | `sidechainRouting` | 侧链边是**键输入**的数据形态，本渲染器**有键输入消费面（v1）**：压缩器的检波器可读键信号（`Compressor::process_gain_with_key`），离线 `RenderPlan::attach_key_armed_nodes` 按目的武装 / 源在保留子图 / 源层号 ≤ 目的层号（同层按拓扑序求值，成环边整组落选） / 每目的边身份升序第一条合格边挂接。⚠ `#315`：**这个键的判据是"图里有没有这种数据"**（一条两端都到不了 master 的悬挂边也照报），**说不出"发生了什么事"**。`#337` 起侧链边**不再**被当成普通音频边求和（修前平行时会 +6.0206 dB），因此"实际发生了什么"要看三个读数：`data.sidechainEdgesSummedAsOrdinaryAudio`（**真的被当成普通音频边求和进母带了几条**，修后恒 `0`）、`data.sidechainEdgesInRoutingGraph`（声明了几条）、以及 `data.sidechainEdgesDeclaredWithoutKeyInput`（**声明了、但没有键输入路径**的条数）。`0 / 0 / 0` = 没有侧链；`0 / N / K` = N 条侧链声明了、K 条没有被求值（K = N 时一条都没有被求值）；`0 / N / 0` = 全部求值。修前 `#315` 的两个数**都不存在** ⇒ "报不支持却悄悄 +6.0206 dB"在响应里连一个字都没有（`#314` 的缺陷） |
 //! | `sfzAmplitude` | ⭐ `#274`：命中区域的 **`amplitude_oncc*`（CC 调制那一半）** 没有求值 —— 静态 `amplitude` 已由引擎的 SFZ 支路应用；CC 增量需要 CC 状态，本层没有。**只**在真的声明了 CC 调制时出现（静态 `amplitude=50` ⇒ ⛔ 不报） |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
@@ -3922,7 +3922,7 @@ pub fn build(
     // ⭐ 侧链键输入（v1）：主计划编译好、设备泳道挂好之后挂接键路由。
     // 武装集合就是 `compressing`（静态压缩器启用 ∪ 非恒等 `compressor_enabled` 泳道，
     // 与 pre-pan tap 同一口径，⛔ 不手抄第二份判据）。求值规则见
-    // `RenderPlan::attach_key_armed_nodes`（目的武装、源在子图、源层号严格更小、
+    // `RenderPlan::attach_key_armed_nodes`（目的武装、源在子图、源层号 ≤ 目的层号（同层按拓扑序求值，成环边整组落选）、
     // 每目的边身份升序第一条合格边生效）。没有键输入路径的条数 = 声明条数 −
     // 真的接上键输入的条数（已求值边恒是声明边的子集，减法不下溢）。
     plan.attach_key_armed_nodes(&compressing);
