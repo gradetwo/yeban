@@ -85,6 +85,7 @@
 //! 本模块会滑到底 —— 那时应补 `sustain` 而不是改这里的读法。
 
 use crate::error::SfzError;
+use crate::parser::Warning;
 
 /// portamento 用哪一路 key-delta 输入。
 ///
@@ -198,8 +199,17 @@ impl PitchEg {
 /// * 取值不是浮点 ⇒ [`SfzError::InvalidFloat`]；
 /// * 取值越界（`level` 不在 `-1..=1`、`time` 不在 `0..=100`、`depth` 不在 `±9600`）
 ///   ⇒ [`SfzError::FloatOutOfRange`]。⛔ 不钳位、⛔ 不静默丢弃。
+///
+/// ⭐ ⭐ **追加修订段（Wang 2026-11-18 裁决）—— 被修订的是上面第二条里
+/// `depth` 的那一支**（⛔ 原文一字未删，口径同台账第 278 条）：
+/// `egN_pitch_oncc140|141` 的取值就是**调制深度**（音分）⇒ 越界改为
+/// **钳位到 ±9600 ＋ [`Warning::ClampedModulationDepth`]**，与
+/// [`crate::instrument`] 的调制量读取同一口径；`level` / `time` 是包络
+/// 本体参数、不是调制量，逐字未变（越界仍 `FloatOutOfRange`，非有限的
+/// `depth` 也仍按 `FloatOutOfRange` —— 与本函数既有口径一致）。
 pub(crate) fn read_pitch_eg<'a>(
     scopes: &crate::instrument::Scopes<'_, 'a>,
+    warnings: &mut Vec<Warning>,
 ) -> Result<Option<PitchEg>, SfzError> {
     for index in 1..=PitchEg::MAX_INDEX {
         let name140 = format!("eg{index}_pitch_oncc140");
@@ -212,7 +222,7 @@ pub(crate) fn read_pitch_eg<'a>(
             (None, Some(_)) => (PitchEgSource::KeyDeltaAbsolute, name141),
             (None, None) => continue,
         };
-        let depth = read_f32(scopes, &opcode, -9600.0, 9600.0)?.unwrap_or(0.0);
+        let depth = read_depth(scopes, &opcode, warnings)?;
         let level0 = read_f32(scopes, &format!("eg{index}_level0"), -1.0, 1.0)?.unwrap_or(0.0);
         let level1 = read_f32(scopes, &format!("eg{index}_level1"), -1.0, 1.0)?.unwrap_or(0.0);
         let time1 = read_f32(
@@ -225,6 +235,46 @@ pub(crate) fn read_pitch_eg<'a>(
         return Ok(Some(PitchEg::new(level0, level1, time1, depth, source)));
     }
     Ok(None)
+}
+
+/// 读 `egN_pitch_oncc140|141` 的**深度**（调制量，音分）：缺失 ⇒ 0；
+/// 不是浮点 ⇒ [`SfzError::InvalidFloat`]（与 [`read_f32`] 同款）；
+/// 非有限 ⇒ [`SfzError::FloatOutOfRange`]（本模块既有口径，逐字未变）；
+/// 有限但越过 ±9600 ⇒ **钳位 ＋ [`Warning::ClampedModulationDepth`]**
+/// （Wang 2026-11-18 裁决，见 [`read_pitch_eg`] 的追加修订段）。
+fn read_depth(
+    scopes: &crate::instrument::Scopes<'_, '_>,
+    opcode: &str,
+    warnings: &mut Vec<Warning>,
+) -> Result<f32, SfzError> {
+    let Some(value) = scope_value(scopes, opcode) else {
+        return Ok(0.0);
+    };
+    let parsed = value.parse::<f32>().map_err(|_| SfzError::InvalidFloat {
+        line: scopes.line,
+        opcode: opcode.to_string(),
+        value: value.to_string(),
+    })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::FloatOutOfRange {
+            line: scopes.line,
+            opcode: opcode.to_string(),
+            value: parsed,
+            min: -9600.0,
+            max: 9600.0,
+        });
+    }
+    if (-9600.0..=9600.0).contains(&parsed) {
+        return Ok(parsed);
+    }
+    let clamped = parsed.clamp(-9600.0, 9600.0);
+    warnings.push(Warning::ClampedModulationDepth {
+        line: scopes.line,
+        opcode: opcode.to_string(),
+        value: format!("{parsed}"),
+        clamped: format!("{clamped}"),
+    });
+    Ok(clamped)
 }
 
 /// 在 `region → group → master → global` 里查一个**动态名** opcode 的原始取值。
