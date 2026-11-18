@@ -233,9 +233,9 @@ fn project(
                 destination_node: ids.master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
 
@@ -726,9 +726,9 @@ fn fan_in_project(master: EntityId, branches: &[EntityId]) -> YebanProjectV1 {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     tracks.insert(

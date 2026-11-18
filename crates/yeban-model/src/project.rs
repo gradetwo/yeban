@@ -2999,9 +2999,9 @@ mod tests {
                     destination_node: node_b,
                     kind: RoutingKind::TrackToBus,
                     gain_db: Some(-3.0),
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             );
         }
         let graph = RoutingGraph {
@@ -3035,9 +3035,9 @@ mod tests {
                     destination_node: ghost,
                     kind: RoutingKind::BusToMaster,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             )]),
         };
         assert_eq!(
@@ -3129,9 +3129,9 @@ mod tests {
             destination_node: node_b,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
         let edge_json = serde_json::to_string(&edge).expect("serialize");
         let json = format!(
             "{{\"nodes\":[{:?},{:?}],\"edges\":[{edge_json},{edge_json}]}}",
@@ -4993,9 +4993,9 @@ mod tests {
             destination_node: fixture_id(2),
             kind: RoutingKind::TrackToBus,
             gain_db,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
         rejects_non_finite_f32("routing.edge.gain_db", |value| edge(Some(value)).validate())?;
         accepts("None（单位增益）", edge(None).validate())?;
         for value in [-f32::MAX, f32::MAX] {
@@ -5115,9 +5115,9 @@ mod tests {
                         destination_node: master,
                         kind: RoutingKind::BusToMaster,
                         gain_db: None,
-                                            source_lane: None,
+                        source_lane: None,
                         dest_lane: None,
-},
+                    },
                 )]),
             },
             ..YebanProjectV1::default()
@@ -6784,9 +6784,9 @@ mod tests {
             destination_node,
             kind: RoutingKind::BusToMaster,
             gain_db,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
 
         // ---- 正对照：一张自洽的图必须通过（否则下面的"拒绝"会退化成"什么都拒绝"）----
         let valid = RoutingGraph {
@@ -6882,9 +6882,9 @@ mod tests {
             destination_node,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
 
         // 1) 自环：结构上自洽 ⇒ 通过（环由下游判）。
         let self_loop = RoutingGraph {
@@ -7186,9 +7186,9 @@ mod tests {
             destination_node: node_b,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
         let base = RoutingGraph {
             nodes: vec![node_a, node_b],
             edges: BTreeMap::from([(edge_id, edge)]),

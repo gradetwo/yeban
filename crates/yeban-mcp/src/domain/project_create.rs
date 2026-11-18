@@ -447,9 +447,9 @@ pub fn build_with_clock(
                 destination_node: master_id,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         });
         track_ids.push(track_id);
     }

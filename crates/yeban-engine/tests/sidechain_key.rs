@@ -292,9 +292,9 @@ fn keyed_fixture(with_compressor: bool) -> (YebanProjectV1, EntityId, EntityId, 
             destination_node: pad,
             kind: RoutingKind::Sidechain,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     (project, kick, pad, edge)
 }

@@ -2080,7 +2080,7 @@ mod tests {
                 level: 0.5,
                 pan: 0.25,
             },
-                        bass808: Bass808Params {
+            bass808: Bass808Params {
                 tune_hz: f32::NAN,
                 glide_hz: f32::INFINITY,
                 glide_s: -5.0,
@@ -2089,7 +2089,7 @@ mod tests {
                 level: f32::NEG_INFINITY,
                 pan: f32::NAN,
             },
-master_level: f32::NAN,
+            master_level: f32::NAN,
         };
         let kit = hostile.sanitised();
 
@@ -2406,7 +2406,7 @@ master_level: f32::NAN,
                 level: f32::NAN,
                 pan: f32::NAN,
             },
-                        bass808: Bass808Params {
+            bass808: Bass808Params {
                 tune_hz: f32::NAN,
                 glide_hz: f32::INFINITY,
                 glide_s: -5.0,
@@ -2415,7 +2415,7 @@ master_level: f32::NAN,
                 level: f32::NEG_INFINITY,
                 pan: f32::NAN,
             },
-master_level: f32::INFINITY,
+            master_level: f32::INFINITY,
         };
         for voice in DrumVoice::ALL {
             let mut machine = DrumMachine::<DRUM_SLOTS>::new(48_000);

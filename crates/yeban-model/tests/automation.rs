@@ -134,9 +134,9 @@ fn fixture() -> (YebanProjectV1, Fixture) {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         )]),
     };
     let fixture = Fixture {

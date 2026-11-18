@@ -1318,7 +1318,9 @@ fn fill_group_keyed(
     if frames == 0 {
         return Ok(());
     }
-    if group.has_notes && let Some(runtime) = &mut group.runtime {
+    if group.has_notes
+        && let Some(runtime) = &mut group.runtime
+    {
         let mut offset = 0usize;
         while offset < frames {
             let chunk = (frames - offset).min(L1_BLOCK_SIZE);
@@ -1326,7 +1328,8 @@ fn fill_group_keyed(
             match route {
                 Some(route) => runtime.process_with_key(
                     segment,
-                    &key_buffers[route.source_group][offset * channels..(offset + chunk) * channels],
+                    &key_buffers[route.source_group]
+                        [offset * channels..(offset + chunk) * channels],
                     route.key_gain,
                 ),
                 None => runtime.process(segment),
@@ -1856,9 +1859,9 @@ mod tests {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             );
             ids.push(track);
         }
@@ -2223,9 +2226,9 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         project
             .validate()

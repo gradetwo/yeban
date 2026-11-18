@@ -112,9 +112,9 @@ fn graph() -> RoutingGraph {
                 destination_node,
                 kind,
                 gain_db,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     };
     add(ulid(10), pad(), bus(), RoutingKind::TrackToBus, None);

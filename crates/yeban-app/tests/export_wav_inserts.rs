@@ -133,9 +133,9 @@ fn attach(project: &mut YebanProjectV1, track: TrackV3, entry: ClipPoolEntry, ed
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
 }
 

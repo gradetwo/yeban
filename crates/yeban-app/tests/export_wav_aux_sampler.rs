@@ -183,9 +183,9 @@ fn fixture_project(with_aux: bool, send_gain_db: Option<f32>) -> YebanProjectV1 
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
 
@@ -211,9 +211,9 @@ fn fixture_project(with_aux: bool, send_gain_db: Option<f32>) -> YebanProjectV1 
                 destination_node: master,
                 kind: RoutingKind::BusToMaster,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         project.routing_graph.edges.insert(
             send_edge,
@@ -223,9 +223,9 @@ fn fixture_project(with_aux: bool, send_gain_db: Option<f32>) -> YebanProjectV1 
                 destination_node: aux,
                 kind: RoutingKind::SendToAux,
                 gain_db: send_gain_db,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
 
@@ -334,9 +334,9 @@ fn aux_source_only_project() -> YebanProjectV1 {
                 destination_node,
                 kind,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
 

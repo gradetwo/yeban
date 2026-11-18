@@ -4326,9 +4326,9 @@ mod tests {
                         destination_node: f.master,
                         kind: RoutingKind::TrackToBus,
                         gain_db: None,
-                                            source_lane: None,
+                        source_lane: None,
                         dest_lane: None,
-},
+                    },
                 )]),
             },
             sections: BTreeMap::from([(
@@ -4387,9 +4387,9 @@ mod tests {
             destination_node: f.master,
             kind: RoutingKind::TrackToBus,
             gain_db: Some(-6.0),
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
         let new_device = DeviceDefinition {
             id: fresh_device,
             name: "Insert".to_owned(),
@@ -4627,9 +4627,9 @@ mod tests {
                     destination_node: f.master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             },
             Op::SetRoutingGain {
                 edge_id: f.edge,
@@ -7600,9 +7600,9 @@ mod tests {
                             destination_node: destination,
                             kind: RoutingKind::SendToAux,
                             gain_db: Some(-6.0),
-                                                    source_lane: None,
+                            source_lane: None,
                             dest_lane: None,
-},
+                        },
                     };
                 }
             }
@@ -8043,9 +8043,9 @@ mod tests {
                     destination_node: destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             }
             .apply(&mut doc)
             .expect_err("端点不在 nodes 里的路由边必须被拒");
@@ -8081,9 +8081,9 @@ mod tests {
                     destination_node: f.master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: Some(gain),
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             }
             .apply(&mut doc)
             .expect_err("非有限增益的路由边必须被拒");

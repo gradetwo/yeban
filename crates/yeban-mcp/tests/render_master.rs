@@ -307,9 +307,9 @@ fn project(spec: &Spec) -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project
         .validate()
@@ -393,9 +393,9 @@ fn two_track_clip_project(lead_volume_db: f32, pad_volume_db: f32) -> YebanProje
             destination_node: id(1),
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project
         .validate()
@@ -458,9 +458,9 @@ fn many_track_clip_project(tracks: usize) -> YebanProjectV1 {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     project
@@ -1354,9 +1354,9 @@ fn loud_then_quiet_project() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.validate().expect("夹具工程必须合法");
     project
@@ -6135,9 +6135,9 @@ fn two_track_project() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.validate().expect("两轨夹具必须合法");
     project
@@ -6498,9 +6498,9 @@ fn the_known_unsupported_list_is_not_decoration() {
                     destination_node: id(1),
                     kind: RoutingKind::Sidechain,
                     gain_db: None::<f32>,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             );
             project.validate().expect("夹具合法");
             render_or_ok(&project, "sidechain")
@@ -7387,9 +7387,9 @@ fn bus_project() -> YebanProjectV1 {
             destination_node: bus,
             kind: RoutingKind::SendToAux,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     let from_bus = id(51);
     project.routing_graph.edges.insert(
@@ -7400,9 +7400,9 @@ fn bus_project() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.routing_graph.edges.remove(&id(40));
     project.validate().expect("总线夹具合法");
@@ -7650,9 +7650,9 @@ fn a_reachable_bus_volume_lane_is_applied_at_the_output_stage() {
             destination_node: bus,
             kind: RoutingKind::SendToAux,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     let from_bus = id(51);
     project.routing_graph.edges.insert(
@@ -7663,9 +7663,9 @@ fn a_reachable_bus_volume_lane_is_applied_at_the_output_stage() {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     // ⭐ 让信号**只**经总线到母带：删掉默认夹具的 `lead → master` 直连，否则
     // 直达声会盖住总线推子的读数（单调性测不出来）。`lead → bus → master` 保留。
@@ -7973,9 +7973,9 @@ fn with_sidechain_edge(
             destination_node: destination,
             kind: RoutingKind::Sidechain,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.validate().expect("带侧链边的夹具必须合法");
     project
@@ -8078,9 +8078,9 @@ fn project_with_bus_route() -> YebanProjectV1 {
             destination_node: bus,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.routing_graph.edges.insert(
         id(42),
@@ -8090,9 +8090,9 @@ fn project_with_bus_route() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project
         .validate()
@@ -8115,9 +8115,9 @@ fn with_track_to_bus_edge(
             destination_node: destination,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.validate().expect("加普通音频边后工程必须合法");
     project
@@ -10047,9 +10047,9 @@ fn with_empty_tracks(mut project: YebanProjectV1, count: u32) -> YebanProjectV1 
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         project.routing_graph.nodes.push(track_id);
     }

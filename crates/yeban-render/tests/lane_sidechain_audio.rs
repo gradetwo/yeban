@@ -147,8 +147,8 @@ fn standard_chains(hat_devices: Vec<DeviceDefinition>) -> Vec<LaneChainDef> {
 }
 
 const NOTES: &[(u64, u8, u64)] = &[
-    (0, 35, 3_840),    // 808 长音（整段持续）
-    (0, 36, 240),      // kick ×4（每 960 tick 一拍）
+    (0, 35, 3_840), // 808 长音（整段持续）
+    (0, 36, 240),   // kick ×4（每 960 tick 一拍）
     (960, 36, 240),
     (1_920, 36, 240),
     (2_880, 36, 240),
@@ -256,8 +256,9 @@ fn project(
 fn render(project: &YebanProjectV1, track: EntityId, attach_lane: bool) -> (Vec<f32>, usize) {
     let timbre = EngineTimbre::from_project(project).expect("夹具必须成快照");
     let options = RenderOptions::l1(FRAMES, 2, SR, 0x5EED).with_threads(1);
-    let mut plan = RenderPlan::compile(&project.routing_graph, project.master_bus_track_id, options)
-        .expect("计划必须能编译");
+    let mut plan =
+        RenderPlan::compile(&project.routing_graph, project.master_bus_track_id, options)
+            .expect("计划必须能编译");
     let evaluated = if attach_lane {
         plan.attach_lane_key_routes(&lane_key_layouts(project, SR));
         plan.lane_key_evaluated_edge_ids().len()
@@ -425,8 +426,9 @@ fn cross_track_lane_edge_is_unevaluated() {
     );
     let timbre = EngineTimbre::from_project(&project).expect("夹具必须成快照");
     let options = RenderOptions::l1(FRAMES, 2, SR, 0x5EED).with_threads(1);
-    let mut plan = RenderPlan::compile(&project.routing_graph, project.master_bus_track_id, options)
-        .expect("计划必须能编译");
+    let mut plan =
+        RenderPlan::compile(&project.routing_graph, project.master_bus_track_id, options)
+            .expect("计划必须能编译");
     plan.attach_lane_key_routes(&lane_key_layouts(&project, SR));
     assert_eq!(
         plan.lane_key_evaluated_edge_ids().len(),
@@ -495,7 +497,10 @@ fn key_35_is_an_independent_audible_voice() {
     let kick = render_notes(&[(0, 36, 240)]);
     let bass_level = rms_db(&bass, 2_000..20_000);
     println!("808 长音段 RMS：{bass_level:.2} dBFS");
-    assert!(bass_level > -40.0, "键 35 必须出声（实测 {bass_level:.2} dBFS）");
+    assert!(
+        bass_level > -40.0,
+        "键 35 必须出声（实测 {bass_level:.2} dBFS）"
+    );
     assert_ne!(bass, kick, "键 35 与键 36 必须是两个独立声部");
 }
 
@@ -511,10 +516,7 @@ fn lane_endpoints_only_on_sidechain_edges() {
         source_lane: Some(36),
         dest_lane: Some(35),
     };
-    assert!(
-        base.validate().is_err(),
-        "非侧链边带 lane 端点必须响亮拒绝"
-    );
+    assert!(base.validate().is_err(), "非侧链边带 lane 端点必须响亮拒绝");
     let sidechain = RoutingEdge {
         kind: RoutingKind::Sidechain,
         ..base.clone()

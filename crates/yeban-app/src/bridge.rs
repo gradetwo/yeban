@@ -2143,9 +2143,9 @@ pub fn track_create_ops(
         destination_node: master.id,
         kind: kind.routing_kind(),
         gain_db: None,
-            source_lane: None,
+        source_lane: None,
         dest_lane: None,
-};
+    };
     let mut ops = Vec::with_capacity(5);
     ops.push(Op::AddTrack { track });
     // ⭐ 缺陷 **D-UI-4**：MIDI 轨**建轨即挂一台内置乐器**。在这之前，只用鼠标/键盘的
@@ -2982,9 +2982,9 @@ pub fn drum_gen_ops(
                             destination_node: master.id,
                             kind: RoutingKind::BusToMaster,
                             gain_db: None,
-                                                    source_lane: None,
+                            source_lane: None,
                             dest_lane: None,
-},
+                        },
                     });
                     bus_id
                 }
@@ -2997,9 +2997,9 @@ pub fn drum_gen_ops(
                     destination_node: drum_destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             });
             (track_id, false)
         }
@@ -7291,9 +7291,9 @@ pub fn sidechain_cycle_ops(project: &YebanProjectV1, track_id: EntityId) -> Vec<
             destination_node: track_id,
             kind: RoutingKind::Sidechain,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-};
+        };
         ops.push(Op::ConnectRouting { edge });
     }
 
@@ -10386,9 +10386,9 @@ mod tests {
                 destination_node: project.master_bus_track_id,
                 kind: RoutingKind::BusToMaster,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         project.routing_graph.edges.insert(
             EntityId::new(),
@@ -10398,9 +10398,9 @@ mod tests {
                 destination_node: bus_id,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
 
         let view = ViewState::from_project(&project).expect("view projection");

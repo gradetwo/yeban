@@ -171,9 +171,9 @@ fn three_track_project() -> YebanProjectV1 {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     project.routing_graph.nodes = vec![id(2), id(3), id(4), master];
@@ -1234,9 +1234,9 @@ fn bus_project() -> YebanProjectV1 {
                 destination_node: destination,
                 kind,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     project.routing_graph.edges.insert(
@@ -1247,9 +1247,9 @@ fn bus_project() -> YebanProjectV1 {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project.routing_graph.nodes = vec![id(2), id(3), id(4), bus, master];
     project

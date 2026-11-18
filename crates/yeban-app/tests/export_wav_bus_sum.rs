@@ -222,9 +222,9 @@ fn fixture_project(fixture: &Fixture, with_source: bool, with_send: bool) -> Yeb
                 destination_node,
                 kind,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     if with_send {
@@ -237,9 +237,9 @@ fn fixture_project(fixture: &Fixture, with_source: bool, with_send: bool) -> Yeb
                 destination_node: aux,
                 kind: RoutingKind::SendToAux,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     project.routing_graph.nodes.sort_unstable();

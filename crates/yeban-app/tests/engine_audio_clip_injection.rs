@@ -178,9 +178,9 @@ fn project_with_audio(asset: &AssetHash, starts: &[u64]) -> (YebanProjectV1, Ent
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
 
     let mut project = YebanProjectV1 {

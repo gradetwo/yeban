@@ -156,9 +156,9 @@ fn project(ids: Ids, reported_latency: u32) -> YebanProjectV1 {
                 destination_node: destination,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
 

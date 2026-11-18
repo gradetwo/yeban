@@ -108,9 +108,9 @@ fn fixture(loop_config: LoopConfig, notes: &[(u64, u64, u8, u8)]) -> (YebanProje
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
 
     (

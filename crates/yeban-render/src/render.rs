@@ -701,7 +701,14 @@ pub struct RenderPlan {
     /// 侧链边声明（编译期从图里抽出，边身份升序）：
     /// `(边身份, 源节点, 目的节点, 边的 gain_db, 源 lane 键, 目的 lane 键)`。
     /// 只存声明，不存求值状态；求值状态在 `key_routes` 与 `lane_key_routes`。
-    sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>, Option<u8>, Option<u8>)>,
+    sidechain_edges: Vec<(
+        EntityId,
+        EntityId,
+        EntityId,
+        Option<f32>,
+        Option<u8>,
+        Option<u8>,
+    )>,
     /// 已求值的键路由：目的槽位 -> （源槽位，边身份）。v1 单键：每目的至多一条。
     key_routes: BTreeMap<usize, (usize, EntityId)>,
     /// 已求值的 **lane 级**键路由（逐件＋侧链期 4）：节点 -> 该轨内的
@@ -1311,8 +1318,7 @@ impl RenderPlan {
         // 成环的同层声明边整组落选（环外边不受影响）。
         let cycle_edges = same_layer_cycle_edge_ids(&declarations, &self.slot_of, &level_of_slot);
         let block_width = self.options.block_size * self.options.channels;
-        for (edge_id, source_node, dest_node, key_gain_db, source_lane, dest_lane) in declarations
-        {
+        for (edge_id, source_node, dest_node, key_gain_db, source_lane, dest_lane) in declarations {
             // lane 级边（任一端带 lane 键）不走节点级挂接：由
             // `attach_lane_key_routes` 按布局解析；在这里当节点边求值
             // 会把整轨信号当键、与 lane 求值双重计数。
@@ -1432,7 +1438,12 @@ impl RenderPlan {
             else {
                 continue;
             };
-            if !layout.armed_groups.get(dest_group).copied().unwrap_or(false) {
+            if !layout
+                .armed_groups
+                .get(dest_group)
+                .copied()
+                .unwrap_or(false)
+            {
                 continue;
             }
             let routes = self.lane_key_routes.entry(dest_node).or_default();
@@ -1842,7 +1853,14 @@ impl RenderPlan {
 /// 判定用可达性：边 `u → v` 在环上 ⇔ `v` 能沿同层声明边到达 `u`。图规模
 /// 是工程节点数，逐点 DFS 是编译期一次性成本。
 fn same_layer_cycle_edge_ids(
-    declarations: &[(EntityId, EntityId, EntityId, Option<f32>, Option<u8>, Option<u8>)],
+    declarations: &[(
+        EntityId,
+        EntityId,
+        EntityId,
+        Option<f32>,
+        Option<u8>,
+        Option<u8>,
+    )],
     slot_of: &BTreeMap<EntityId, usize>,
     level_of_slot: &[u32],
 ) -> BTreeSet<EntityId> {

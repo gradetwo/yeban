@@ -208,9 +208,9 @@ mod tests {
                 destination_node: destination,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-};
+            };
             project.routing_graph.edges.insert(edge.id, edge);
         }
         project.validate().expect("模型层不判环, 因此它是'合法'的");

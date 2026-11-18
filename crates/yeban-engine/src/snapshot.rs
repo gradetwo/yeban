@@ -2553,9 +2553,9 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         let mut tracks = BTreeMap::new();
         tracks.insert(
@@ -2763,9 +2763,9 @@ mod tests {
                     destination_node: destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             );
         }
         let project = YebanProjectV1 {
@@ -2972,9 +2972,9 @@ mod tests {
                     destination_node: destination,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             );
         }
         let mut tracks = BTreeMap::new();
@@ -3058,9 +3058,9 @@ mod tests {
                     destination_node: master,
                     kind: RoutingKind::TrackToBus,
                     gain_db: None,
-                                    source_lane: None,
+                    source_lane: None,
                     dest_lane: None,
-},
+                },
             );
         }
         let mut tracks = BTreeMap::new();
@@ -3199,9 +3199,9 @@ mod tests {
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         let mut tracks = BTreeMap::new();
         tracks.insert(

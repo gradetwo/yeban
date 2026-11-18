@@ -110,9 +110,9 @@ fn two_track_project() -> (YebanProjectV1, EntityId, EntityId) {
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     (fixture.project, track_a, track_b)
 }

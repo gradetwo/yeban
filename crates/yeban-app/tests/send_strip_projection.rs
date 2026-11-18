@@ -171,9 +171,9 @@ fn project_with_second_send() -> YebanProjectV1 {
             destination_node: destination,
             kind: RoutingKind::SendToAux,
             gain_db: Some(-6.0),
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     project
 }

@@ -398,9 +398,9 @@ fn chain_project(
             destination_node: master,
             kind: RoutingKind::TrackToBus,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     let mut project = YebanProjectV1 {
         master_bus_track_id: master,
@@ -495,9 +495,9 @@ fn pdc_project(
                 destination_node: ids.master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     YebanProjectV1 {

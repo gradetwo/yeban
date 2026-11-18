@@ -3089,9 +3089,9 @@ fn meter_snapshot_with_tracks(revision: u64, tracks_wanted: usize) -> EngineSnap
                 destination_node: master,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         tracks.insert(
             track,
@@ -4035,9 +4035,9 @@ fn scenario_bus_routing(report: &mut Report) {
                 destination_node: destination,
                 kind: RoutingKind::SendToAux,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
         let back = EntityId::new();
         project.routing_graph.edges.insert(
@@ -4048,9 +4048,9 @@ fn scenario_bus_routing(report: &mut Report) {
                 destination_node: master,
                 kind: RoutingKind::BusToMaster,
                 gain_db: None,
-                            source_lane: None,
+                source_lane: None,
                 dest_lane: None,
-},
+            },
         );
     }
     // 构造期（窗口之外）确认：这份夹具真的启用了总线暂存池，并且三条非恒等
@@ -4165,9 +4165,9 @@ fn scenario_bus_insert(report: &mut Report) {
             destination_node: aux,
             kind: RoutingKind::SendToAux,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     let back = EntityId::new();
     project.routing_graph.edges.insert(
@@ -4178,9 +4178,9 @@ fn scenario_bus_insert(report: &mut Report) {
             destination_node: master,
             kind: RoutingKind::BusToMaster,
             gain_db: None,
-                    source_lane: None,
+            source_lane: None,
             dest_lane: None,
-},
+        },
     );
     // 构造期（窗口之外）确认：这份夹具真的启用了总线暂存池。
     let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具必须能编译成快照");
