@@ -512,7 +512,8 @@ fn audio_bus_nodes(project: &YebanProjectV1) -> BTreeSet<EntityId> {
 /// （绝对帧）。`0`（全部既有公开入口都传 0）⇒ 从头渲染，行为逐位不变。
 /// 大于 0 时透传给 [`RenderOptions::start_frame`]：`execute` 先把每个
 /// app 侧音源 `seek_to` 到该帧再出块，`options.frames` 是**从该帧起**的
-/// 输出帧数。跨起点的音符不追补发声、效果与平滑器冷启动（语义与 render
+/// 输出帧数。跨起点的音符由引擎音源预滚追补、与全程同段一致，起点前
+/// 已结束内容的尾音不带入、效果与平滑器冷启动（语义与 render
 /// 侧 `coldStart` 回显同一条）；音频片段按绝对帧寻址，出它在区间内的
 /// 部分。本参数只供内部与判据使用，⛔ 没有 CLI／UI 入口。
 ///
