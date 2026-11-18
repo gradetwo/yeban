@@ -15,7 +15,7 @@
 //! | 1 | `pan_oncc10=200` 可装载、深度落 100、告警载荷逐字可查 | `CcMod::delta` ＋ `Warning::ClampedModulationDepth` |
 //! | 2 | `pan_oncc10=-200` 钳到 −100 | 同上 |
 //! | 3 | 域内调制量（含两端点）不产生钳位告警 | `warnings()` 为空 |
-//! | 4 | 静态与畸形**没有**被一并放宽 | `amp_veltrack=101` 仍 `Err`；`pan_oncc10=abc` / `=inf` 仍 `Err`；曲线下标 / CC 号越界仍 `Err`；静态 `pan=200` 的现行行为（无值域校验、原样带出、无告警）逐字未变 |
+//! | 4 | 静态与畸形**没有**被一并放宽 | `amp_veltrack=101` 仍 `Err`；`pan_oncc10=abc` / `=inf` 仍 `Err`；曲线下标 / CC 号越界仍 `Err`；静态 `pan=200` 的口径已由 Wang 2026-11-18 后续裁决改钉（装载期钳位 ＋ `ClampedStaticValue` 告警，完整判据在 `tests/static_pan_clamp.rs`） |
 //! | 5 | 4 款真实 Karoryfer 入口装载成功且 region 数 > 0、`pan_oncc10` 钳位告警恰 1 条（跨 region 去重后） | include 展开 ＋ 解析归约（**装载级**；样本本体不在仓内，样本解码不在本 crate，不在本判据） |
 
 use std::path::{Path, PathBuf};
@@ -119,13 +119,25 @@ fn statics_and_malformed_values_are_not_relaxed() {
         ),
         "静态 `amp_veltrack=101` 必须仍是 FloatOutOfRange，实得 {outcome:?}"
     );
-    // 静态 `pan` 的现行行为逐字未变：装载层对它**没有**值域校验（原样
-    // 带出、求值期才钳位）⇒ `pan=200` 可装载、无钳位告警、读数 200。
-    // 本判据钉的是「钳位没有泄漏到静态路径」，⛔ 不是给静态 pan 新增值域。
+    // ⭐ **改钉（Wang 2026-11-18 后续裁决）**：本块原钉「静态 `pan=200`
+    // 原样带出、无告警、读数 200」（钳位不泄漏到静态路径）；后续裁决把
+    // 声像族静态值也纳入钳位 ＋ 告警 ⇒ 现钉新口径：`pan=200` 可装载、
+    // 读数钳到 100、恰一条 `ClampedStaticValue` 告警，且**没有**
+    // `ClampedModulationDepth`（静态与调制两个变体不混）。完整判据
+    // （position / width / 去重 / 真实文件回归）在
+    // `tests/static_pan_clamp.rs`。
     let instrument = parse_text("<region> sample=a.wav pan=200", &ParseLimits::default())
-        .expect("静态 pan 的现行行为必须逐字不变");
-    assert_eq!(instrument.regions()[0].pan, 200.0);
-    assert!(instrument.warnings().is_empty());
+        .expect("静态 pan 越界必须可装载（钳位、不拒载）");
+    assert_eq!(instrument.regions()[0].pan, 100.0);
+    assert_eq!(
+        instrument.warnings(),
+        &[Warning::ClampedStaticValue {
+            line: 1,
+            opcode: "pan".to_string(),
+            value: "200".to_string(),
+            clamped: "100".to_string(),
+        }]
+    );
     // 调制量的畸形取值维持现行错误（认不出 / 非有限都不是「越界」）。
     assert!(matches!(
         parse_text(
