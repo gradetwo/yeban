@@ -355,14 +355,15 @@ pub enum Warning {
         /// 1-based 行号。
         line: usize,
     },
-    /// `<control>set_ccN` 的取值不是十进制整数（登记语料里有 `set_cc32=63.5` 这类写法）：
-    /// **该条声明被丢弃**，文件继续解析。
+    /// `<control>set_ccN` 的取值无法按数值解读（字母、未展开的宏、空、全角数字），
+    /// 或是越过 `0..=127` 的小数：**该条声明被丢弃**，文件继续解析。
     ///
     /// 规范表格把它记作 Type = integer、Range = `0 to 127`
-    /// （<https://sfzformat.com/opcodes/set_ccN/>），因此非整数取值**没有**可表示的
-    /// 7 位值；但硬 `Err` 会让登记语料里那 10 个乐器整份无法加载，
-    /// 所以这里沿用「丢弃 + 告警」的既有口径（同 [`Warning::RegionWithoutSample`]）。
-    /// 取舍与读数见 [`crate::control`] 的模块文档。
+    /// （<https://sfzformat.com/opcodes/set_ccN/>）；但硬 `Err` 会让登记乐器整份
+    /// 无法加载，所以这里沿用「丢弃 + 告警」的既有口径
+    /// （同 [`Warning::RegionWithoutSample`]）。注意 `0..=127` 内的小数
+    /// （登记语料里 42 处 `set_ccN=63.5`）**不**落本告警：2026-11-18 修订后它按
+    /// `round` 取整为种子。取舍与读数见 [`crate::control`] 的模块文档。
     ///
     /// **整数但越界**（不在 `0..=127`）不走本告警，而是明确
     /// [`SfzError::IntegerOutOfRange`]。
@@ -3282,9 +3283,9 @@ mod tests {
                 Warning::MalformedSetCc {
                     line: 13,
                     opcode: "set_cc7".to_string(),
-                    value: "63.5".to_string(),
+                    value: "abc".to_string(),
                 },
-                "line 13: `set_cc7` value `63.5` is not an integer, declaration dropped",
+                "line 13: `set_cc7` value `abc` is not an integer, declaration dropped",
             ),
             (
                 Warning::Truncated {

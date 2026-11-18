@@ -5849,6 +5849,27 @@ mod tests {
     }
 
     #[test]
+    fn a_decimal_master_tune_seed_reaches_cc_defaults() {
+        // Virtuosity Drums 的真实形状（`01-basic-kit.sfz`）：`<control>` 用
+        // `set_cc90=63.5` 给主调音旋钮播种，`<global>` 以 `tune_cc90=1200` +
+        // `tune_curvecc90=1`（双极）消费它。种子被丢弃时 CC 落 0、双极曲线给
+        // −1200 音分，全库低一个八度（2026-11-18 耳验/审计定位，见
+        // `crate::control` 裁决第 2 条修订段）。修订后种子必须是 64（中点）。
+        let instrument = parse_text(
+            "<control>set_cc90=63.5\n<global>tune_cc90=1200 tune_curvecc90=1\n\
+             <group>key=36\n<region>sample=kick.wav lovel=96 hivel=127",
+            &Default::default(),
+        )
+        .expect("the kit shape must parse");
+        assert_eq!(instrument.cc_default(90), Some(64));
+        assert!(
+            instrument.warnings().is_empty(),
+            "no warning expected: {:?}",
+            instrument.warnings()
+        );
+    }
+
+    #[test]
     fn an_out_of_range_set_cc_value_is_an_explicit_error() {
         // **整数越界**是明确 Err（规范表格 Range = `0 to 127`）；登记语料里出现 0 次。
         let error = parse_text(
@@ -5864,20 +5885,35 @@ mod tests {
             ),
             "{error:?}"
         );
-        // **非整数取值**（登记语料里 42 处 `63.5`、10 个文件）只丢弃那一条并告警：
-        // 硬 `Err` 会让那些乐器整份无法加载（见 `crate::control` 的工程裁决第 2 条）。
-        let coerced = parse_text(
+        // **小数取值**（登记语料里 42 处 `63.5`、10 个文件）按 `round` 取整为种子
+        // （2026-11-18 修订，见 `crate::control` 工程裁决第 2 条的修订段）：作者用
+        // `63.5` 表示 7 位域精确中点，丢弃它会让双极 `tune_ccN` 在种子 0 处把
+        // 整库拉低至多 2400 音分。修订后无告警、种子为 64。
+        let rounded = parse_text(
             "<control>set_cc7=63.5 set_cc8=64\n<region>sample=a.wav",
             &Default::default(),
         )
-        .expect("a non-integer value must not make the whole file unloadable");
+        .expect("a decimal value must not make the whole file unloadable");
+        assert_eq!(rounded.cc_default(7), Some(64));
+        assert_eq!(rounded.cc_default(8), Some(64));
+        assert!(
+            rounded.warnings().is_empty(),
+            "a decimal seed must not warn: {:?}",
+            rounded.warnings()
+        );
+        // **非数值取值**只丢弃那一条并告警，文件继续解析。
+        let coerced = parse_text(
+            "<control>set_cc7=abc set_cc8=64\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("a non-numeric value must not make the whole file unloadable");
         assert_eq!(coerced.cc_default(7), None);
         assert_eq!(coerced.cc_default(8), Some(64));
         assert!(
             matches!(
                 coerced.warnings(),
                 [Warning::MalformedSetCc { line: 1, opcode, value }]
-                    if opcode == "set_cc7" && value == "63.5"
+                    if opcode == "set_cc7" && value == "abc"
             ),
             "{:?}",
             coerced.warnings()

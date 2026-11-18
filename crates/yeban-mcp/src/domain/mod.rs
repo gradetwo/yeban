@@ -4175,6 +4175,11 @@ fn plan_move_track(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 /// （SFZ，GM 映射）；电子族 `Op::InsertDevice` 一台内置合成鼓机
 /// （五键 GM 映射 + 按风格的 808 系音色定值，见 `yeban_theory::kit_setup`）。
 ///
+/// 效果层：预置带 `fx` 段时在鼓组之后追加效果器件（配方与 UI 路径共用
+/// `yeban_theory::drum_fx_device_specs` 一份，身份按本函数的确定性纪律
+/// 派生）；既有轨上已有同族效果（按参数名判读，与插入链投影同口径）
+/// 时不重复叠加。
+///
 /// 身份纪律：轨/片段/摆放/音符 id 全部由 `(目标, 风格, 种子, 三旋钮,
 /// 小节数, fill, 起始 tick)` 确定性派生 ⇒ 同参数重复调用命中同一身份
 /// （与段落构建的确定性 id 同一条纪律）；同种子同参数两次生成的片段
@@ -4288,6 +4293,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         .as_ref()
         .is_some_and(|track| track.sampler.is_some() || !track.devices.is_empty());
     let mut kit_note = "轨上已有音源，沿用现有鼓组";
+    let mut kit_added_device = false;
     if !has_instrument {
         match yeban_theory::kit_setup(&preset) {
             yeban_theory::DrumKitSetup::AcousticSfz { sfz_path } => {
@@ -4307,6 +4313,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                 device_name,
                 params,
             } => {
+                kit_added_device = true;
                 ops.push(Op::InsertDevice {
                     track_id,
                     slot_index: 0,
@@ -4328,6 +4335,64 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
                     },
                 });
                 kit_note = "装默认鼓组：合成鼓机（808 系电子件）";
+            }
+        }
+    }
+
+    // 效果层：预置 fx 段 → 效果器件（配方与 UI 路径共用一份；既有轨按
+    // 参数名判同族在场则跳过该族，用户效果优先）。
+    let mut fx_note = "无效果层（预置未带 fx 段）".to_owned();
+    if let Some(fx) = &preset.fx {
+        use yeban_render::inserts::{DelayField, ReverbField, StripField, TapeField};
+        let mut present = yeban_theory::DrumFxFamilies::default();
+        if let Some(track) = &existing_track {
+            for device in &track.devices {
+                if device.bypassed || device.kind != DeviceKind::InternalEffect {
+                    continue;
+                }
+                for param in &device.params {
+                    present.strip |= StripField::from_name(&param.name).is_some();
+                    present.tape |= TapeField::from_name(&param.name).is_some();
+                    present.reverb |= ReverbField::from_name(&param.name).is_some();
+                    present.delay |= DelayField::from_name(&param.name).is_some();
+                }
+            }
+        }
+        let mut slot_index = existing_track
+            .as_ref()
+            .map_or(0, |track| track.devices.len());
+        if kit_added_device {
+            slot_index += 1;
+        }
+        let specs = yeban_theory::drum_fx_device_specs(fx, present);
+        if specs.is_empty() {
+            fx_note = "效果层：同族效果已在轨上，未重复叠加".to_owned();
+        } else {
+            let names: Vec<&str> = specs.iter().map(|spec| spec.name).collect();
+            fx_note = format!("效果层（风格预置）：{}", names.join(" + "));
+            for spec in specs {
+                ops.push(Op::InsertDevice {
+                    track_id,
+                    slot_index,
+                    device: DeviceDefinition {
+                        id: ids::deterministic_id(&format!("drum-gen:fx-{}:{label}", spec.family)),
+                        name: spec.name.to_owned(),
+                        kind: DeviceKind::InternalEffect,
+                        bypassed: false,
+                        params: spec
+                            .params
+                            .into_iter()
+                            .map(|(name, value)| yeban_model::ParameterValue {
+                                name,
+                                value,
+                                unit: None,
+                            })
+                            .collect(),
+                        latency_samples: 0,
+                        plugin: None,
+                    },
+                });
+                slot_index += 1;
             }
         }
     }
@@ -4392,7 +4457,7 @@ fn plan_generate_drum_pattern(domain: &Domain, call: &ToolCall) -> Result<Plan, 
         "generate_drum_pattern",
         format!("生成鼓型：{} → 音轨 {track_id}", preset.name),
         format!(
-            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}",
+            "generate_drum_pattern {style} seed={seed} complexity={complexity} intensity={intensity} swing={swing_resolved} bars={bars} fill={fill} notes={}；{kit_note}；{fx_note}",
             generated.len(),
         ),
         ops,

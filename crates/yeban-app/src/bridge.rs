@@ -2843,7 +2843,12 @@ pub fn drum_gen_target<'a>(
 ///    [`yeban_theory::kit_setup`] 装默认鼓组：原声族 `SetTrackSampler` 绑
 ///    Virtuosity 基础组、电子族 `InsertDevice` 合成鼓机；已有音源 ⇒ 不动
 ///    （用户鼓组优先，与 MCP 同口径）；
-/// 3. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
+/// 3. 预置带 `fx` 段时按 [`drum_fx_devices`] 追加效果层（通道条 + 可选
+///    磁带 + 混响 + 可选延迟，槽位接在已有器件之后）。既有轨上去重按
+///    **效果族**判：轨上已有非旁通的同族内置效果（以参数名命中
+///    `yeban_dsp::device_param` 的族拼写表为准）⇒ 该族不重复叠加，
+///    用户的效果优先；
+/// 4. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
 ///    （tick 0 起、时长 = 小节数 × [`yeban_theory::TICKS_PER_BAR`]）。
 ///
 /// # Errors
@@ -2904,6 +2909,7 @@ pub fn drum_gen_ops(
         }
     };
 
+    let mut kit_added_device = false;
     if !has_instrument {
         match yeban_theory::kit_setup(preset) {
             yeban_theory::DrumKitSetup::AcousticSfz { sfz_path } => {
@@ -2922,6 +2928,7 @@ pub fn drum_gen_ops(
                 device_name,
                 params: device_params,
             } => {
+                kit_added_device = true;
                 ops.push(Op::InsertDevice {
                     track_id,
                     slot_index: 0,
@@ -2943,6 +2950,24 @@ pub fn drum_gen_ops(
                     },
                 });
             }
+        }
+    }
+
+    if let Some(fx) = &preset.fx {
+        let present = target.map_or_else(yeban_theory::DrumFxFamilies::default, |track| {
+            drum_fx_families_present(&track.devices)
+        });
+        let mut slot_index = target.map_or(0, |track| track.devices.len());
+        if kit_added_device {
+            slot_index += 1;
+        }
+        for device in drum_fx_devices(fx, present) {
+            ops.push(Op::InsertDevice {
+                track_id,
+                slot_index,
+                device,
+            });
+            slot_index += 1;
         }
     }
 
@@ -2981,6 +3006,57 @@ pub fn drum_gen_ops(
         },
     });
     Ok(ops)
+}
+
+/// 扫一遍轨上已有器件，按**参数名**判哪些效果族已经在场：非旁通的
+/// `InternalEffect` 器件只要带任一该族的已识别参数名（`yeban_dsp::
+/// device_param` 的拼写表）就算该族在场。按名判而不按器件名猜，与插入
+/// 链投影（`yeban_render::InsertChain::from_devices`）的识别口径一致——
+/// 投影按族取第一台命中器件，用户已有的同族效果会先被投影选中，
+/// 再叠一台只会成为死器件。
+fn drum_fx_families_present(devices: &[DeviceDefinition]) -> yeban_theory::DrumFxFamilies {
+    use yeban_dsp::device_param::{DelayField, ReverbField, StripField, TapeField};
+    let mut present = yeban_theory::DrumFxFamilies::default();
+    for device in devices {
+        if device.bypassed || device.kind != DeviceKind::InternalEffect {
+            continue;
+        }
+        for param in &device.params {
+            present.strip |= StripField::from_name(&param.name).is_some();
+            present.tape |= TapeField::from_name(&param.name).is_some();
+            present.reverb |= ReverbField::from_name(&param.name).is_some();
+            present.delay |= DelayField::from_name(&param.name).is_some();
+        }
+    }
+    present
+}
+
+/// 把预置 `fx` 段的器件配方（[`yeban_theory::drum_fx_device_specs`]，
+/// 与 MCP 路径共用一份）落成本路径的器件（身份随机分配）。
+fn drum_fx_devices(
+    fx: &yeban_theory::DrumFxPreset,
+    present: yeban_theory::DrumFxFamilies,
+) -> Vec<DeviceDefinition> {
+    yeban_theory::drum_fx_device_specs(fx, present)
+        .into_iter()
+        .map(|spec| DeviceDefinition {
+            id: EntityId::new(),
+            name: spec.name.to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: spec
+                .params
+                .into_iter()
+                .map(|(name, value)| ParameterValue {
+                    name,
+                    value,
+                    unit: None,
+                })
+                .collect(),
+            latency_samples: 0,
+            plugin: None,
+        })
+        .collect()
 }
 
 /// 解析摆放音频片段的目标轨：显式选中了某轨时尊重用户选择（非 `Audio` 轨由上游拒绝，
@@ -10258,7 +10334,11 @@ mod tests {
             .expect("trap 预置必须存在");
         let params = drum_params();
         let ops = drum_gen_ops(&project, &preset, &params, None).expect("新建鼓轨批次");
-        assert_eq!(ops.len(), 6, "建轨 3 + 装鼓组 1 + 片段 2: {ops:?}");
+        assert_eq!(
+            ops.len(),
+            8,
+            "建轨 3 + 装鼓组 1 + 效果层 2 + 片段 2: {ops:?}"
+        );
         match &ops[0] {
             Op::AddTrack { track } => {
                 assert_eq!(track.name, "Trap Drums");
@@ -10281,9 +10361,42 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
+        // 效果层接在鼓组之后：通道条（槽 1）+ 混响（槽 2），参数与风格文件一致。
+        match &ops[4] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 1);
+                assert_eq!(device.kind, DeviceKind::InternalEffect);
+                assert_eq!(device.name, "Channel Strip");
+                let fx = preset.fx.expect("trap 带 fx 段");
+                assert!(
+                    device
+                        .params
+                        .iter()
+                        .any(|p| p.name == "threshold_db" && p.value == fx.comp_threshold_db)
+                );
+                assert!(
+                    device
+                        .params
+                        .iter()
+                        .any(|p| p.name == "eq_low_gain" && p.value == fx.eq_low_db)
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        match &ops[5] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 2);
+                assert_eq!(device.name, "Reverb");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
         // 片段音符与 theory 生成逐项一致（tick / 音高 / 力度 / 时值）。
         let expected = yeban_theory::generate_drum_pattern(&preset, &params).unwrap();
-        match &ops[4] {
+        match &ops[6] {
             Op::AddClip { clip } => match &clip.content {
                 ClipContent::Midi { notes } => {
                     assert_eq!(notes.len(), expected.len());
@@ -10303,7 +10416,7 @@ mod tests {
             },
             other => panic!("unexpected op: {other:?}"),
         }
-        match &ops[5] {
+        match &ops[7] {
             Op::AddClipPlacement { placement, .. } => {
                 assert_eq!(placement.start_tick, 0);
                 assert_eq!(placement.duration_ticks, 4 * yeban_theory::TICKS_PER_BAR);
@@ -10328,6 +10441,20 @@ mod tests {
             }
             other => panic!("unexpected op: {other:?}"),
         }
+        // rock 的效果层：通道条 + 磁带 + 混响（采样器不占器件槽，槽位从 0 起）。
+        assert_eq!(
+            ops.len(),
+            9,
+            "建轨 3 + 绑鼓组 1 + 效果层 3 + 片段 2: {ops:?}"
+        );
+        let fx_names: Vec<&str> = ops[4..7]
+            .iter()
+            .map(|op| match op {
+                Op::InsertDevice { device, .. } => device.name.as_str(),
+                other => panic!("unexpected op: {other:?}"),
+            })
+            .collect();
+        assert_eq!(fx_names, ["Channel Strip", "Tape Saturation", "Reverb"]);
     }
 
     #[test]
@@ -10356,14 +10483,171 @@ mod tests {
             .expect("trap 预置必须存在");
         let ops =
             drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
-        assert_eq!(ops.len(), 2, "只应有片段两笔: {ops:?}");
-        assert!(matches!(ops[0], Op::AddClip { .. }));
+        // 鼓组不动（无装鼓组笔），但效果层照常补齐（该轨没有任何效果）：
+        // 通道条（槽 1，接在已有乐器之后）+ 混响（槽 2）+ 片段两笔。
+        assert_eq!(ops.len(), 4, "效果层 2 + 片段 2: {ops:?}");
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Op::SetTrackSampler { .. })),
+            "已有鼓组不得重绑采样器: {ops:?}"
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(
+                op,
+                Op::InsertDevice { device, .. }
+                    if device.kind == DeviceKind::InternalInstrument
+            )),
+            "已有鼓组不得重装乐器: {ops:?}"
+        );
+        match &ops[0] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 1);
+                assert_eq!(device.name, "Channel Strip");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
         match &ops[1] {
+            Op::InsertDevice {
+                slot_index, device, ..
+            } => {
+                assert_eq!(*slot_index, 2);
+                assert_eq!(device.name, "Reverb");
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+        assert!(matches!(ops[2], Op::AddClip { .. }));
+        match &ops[3] {
             Op::AddClipPlacement {
                 track_id: placed_on,
                 ..
             } => assert_eq!(*placed_on, track_id),
             other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drum_gen_ops_existing_track_with_user_reverb_keeps_it() {
+        let mut project = filled_project();
+        let track_id = EntityId::new();
+        let equipped = TrackV3 {
+            id: track_id,
+            name: "我的鼓轨".to_owned(),
+            kind: TrackKind::Midi,
+            sampler: Some(SamplerBinding {
+                path: "assets/samples/virtuosity-drums/Programs/01-basic-kit.sfz".to_owned(),
+                note_octave_override: None,
+            }),
+            devices: vec![DeviceDefinition {
+                id: EntityId::new(),
+                name: "我的混响".to_owned(),
+                kind: DeviceKind::InternalEffect,
+                bypassed: false,
+                params: vec![ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 0.9,
+                    unit: None,
+                }],
+                latency_samples: 0,
+                plugin: None,
+            }],
+            ..TrackV3::default()
+        };
+        project.tracks.insert(track_id, equipped);
+        let target = project.tracks.get(&track_id).unwrap();
+        let preset = yeban_theory::factory_drum_style("boombap")
+            .unwrap()
+            .expect("boombap 预置必须存在");
+        let ops =
+            drum_gen_ops(&project, &preset, &drum_params(), Some(target)).expect("既有轨批次");
+        // 混响族已在场 ⇒ 不重复叠加；通道条与磁带仍补（槽位接在用户混响之后）。
+        let inserted: Vec<&DeviceDefinition> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::InsertDevice { device, .. } => Some(device),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inserted.len(), 2, "只应补通道条 + 磁带: {ops:?}");
+        assert!(inserted.iter().all(|d| d.name != "Reverb"));
+        assert!(inserted.iter().any(|d| d.name == "Channel Strip"));
+        assert!(inserted.iter().any(|d| d.name == "Tape Saturation"));
+    }
+
+    #[test]
+    fn drum_gen_ops_factory_styles_all_carry_the_full_fx_layer() {
+        use yeban_dsp::device_param::{DelayField, ReverbField, StripField, TapeField};
+        let project = filled_project();
+        for preset in yeban_theory::factory_drum_styles().expect("出厂预置") {
+            let fx = preset.fx.expect("出厂风格必须带 fx 段");
+            let ops = drum_gen_ops(&project, &preset, &drum_params(), None)
+                .unwrap_or_else(|e| panic!("{} 生成失败: {e}", preset.id));
+            let effects: Vec<&DeviceDefinition> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    Op::InsertDevice { device, .. }
+                        if device.kind == DeviceKind::InternalEffect =>
+                    {
+                        Some(device)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let expected = 2 + usize::from(fx.tape.is_some()) + usize::from(fx.delay.is_some());
+            assert_eq!(
+                effects.len(),
+                expected,
+                "{} 效果器件数（通道条 + 混响 + 可选磁带/延迟）",
+                preset.id
+            );
+            // 每个参数名都必须被 dsp 族拼写表识别（写错名 = 死参数）。
+            for device in &effects {
+                for param in &device.params {
+                    assert!(
+                        StripField::from_name(&param.name).is_some()
+                            || TapeField::from_name(&param.name).is_some()
+                            || ReverbField::from_name(&param.name).is_some()
+                            || DelayField::from_name(&param.name).is_some(),
+                        "{} 的器件 {} 参数 {} 不被任何效果族识别",
+                        preset.id,
+                        device.name,
+                        param.name
+                    );
+                }
+            }
+            // 通道条参数与风格文件逐项一致。
+            let strip = effects
+                .iter()
+                .find(|d| d.name == "Channel Strip")
+                .expect("通道条必须在");
+            let value_of = |name: &str| {
+                strip
+                    .params
+                    .iter()
+                    .find(|p| p.name == name)
+                    .map(|p| p.value)
+            };
+            assert_eq!(value_of("eq_low_gain"), Some(fx.eq_low_db), "{}", preset.id);
+            assert_eq!(
+                value_of("threshold_db"),
+                Some(fx.comp_threshold_db),
+                "{}",
+                preset.id
+            );
+            assert_eq!(value_of("ratio"), Some(fx.comp_ratio), "{}", preset.id);
+            let reverb = effects
+                .iter()
+                .find(|d| d.name == "Reverb")
+                .expect("混响必须在");
+            assert!(
+                reverb
+                    .params
+                    .iter()
+                    .any(|p| p.name == "reverb_wet" && p.value == fx.reverb_wet),
+                "{} 混响湿电平与风格文件一致",
+                preset.id
+            );
         }
     }
 

@@ -20,6 +20,41 @@
     ]
   },
   "kit_family": "electronic",
+  "fx": {
+    "eq": {
+      "low_db": 2.0,
+      "mid_db": 0.5,
+      "high_db": 1.5,
+      "low_hz": 180,
+      "mid_hz": 1800,
+      "mid_q": 0.9,
+      "high_hz": 6000,
+      "hpf_hz": 30,
+      "cutoff_hz": 20000
+    },
+    "comp": {
+      "threshold_db": -13,
+      "ratio": 3,
+      "knee_db": 6,
+      "attack_s": 0.008,
+      "release_s": 0.11,
+      "makeup_db": 1.5
+    },
+    "output_db": 0.0,
+    "reverb": {
+      "size": 0.4,
+      "damp": 0.4,
+      "wet": 0.13,
+      "predelay_s": 0.01
+    },
+    "delay": {
+      "time_s": 0.242,
+      "feedback": 0.22,
+      "mix": 0.07,
+      "damp": 0.45,
+      "ping_pong": true
+    }
+  },
   "bpm": {
     "default": 124,
     "min": 120,

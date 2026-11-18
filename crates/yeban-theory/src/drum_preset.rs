@@ -107,8 +107,92 @@ pub struct DrumLanePreset {
     pub steps: Vec<DrumStep>,
 }
 
-/// 一个风格预置。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 磁带饱和段（`fx.tape`，可选）：给整组鼓加谐波与轻微高频滚降。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumTapePreset {
+    /// 驱动量 0..=1。
+    pub drive: f32,
+    /// 干湿比 0..=1。
+    pub mix: f32,
+    /// 湿路低通拐点（Hz）2000..=20000。
+    pub hf_hz: f32,
+    /// 曲线不对称量 0..=0.5（偶次谐波 = 「暖」的来源）。
+    pub asym: f32,
+}
+
+/// 延迟段（`fx.delay`，可选）：整轨插入式延迟（引擎无逐道发送，
+/// 因此出厂值一律低混合，只作空间/律动点缀，不作主效果）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumDelayPreset {
+    /// 延迟时间（秒）0.01..=2。
+    pub time_s: f32,
+    /// 反馈量 0..=0.9。
+    pub feedback: f32,
+    /// 湿电平 0..=0.6。
+    pub mix: f32,
+    /// 反馈高频阻尼 0..=1。
+    pub damp: f32,
+    /// 乒乓开关。
+    pub ping_pong: bool,
+}
+
+/// 风格效果层（`fx` 段）：按 Logic 通道条预置的思路给整轨鼓预调的
+/// 一套完整处理——三段 EQ + 高通/低通塑形、压缩、输出微调、插入混响，
+/// 按风格可选磁带饱和与延迟。生成时由 `yeban-app` 的 `drum_gen_ops`
+/// 翻译成轨上效果器件（EQ 与压缩合为一台通道条器件，见该函数文档）。
+///
+/// 字段缺失（旧格式文件无 `fx`）⇒ 生成走干声，与一期行为一致；
+/// 出厂 10 风格全部带 `fx`（判据钉住）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrumFxPreset {
+    /// EQ 低频搁架增益（dB）−18..=18。
+    pub eq_low_db: f32,
+    /// EQ 中频峰值增益（dB）−18..=18。
+    pub eq_mid_db: f32,
+    /// EQ 高频搁架增益（dB）−18..=18。
+    pub eq_high_db: f32,
+    /// EQ 低频转折（Hz）20..=1000。
+    pub eq_low_hz: f32,
+    /// EQ 中频中心（Hz）100..=8000。
+    pub eq_mid_hz: f32,
+    /// EQ 中频 Q 0.3..=6。
+    pub eq_mid_q: f32,
+    /// EQ 高频转折（Hz）1000..=16000。
+    pub eq_high_hz: f32,
+    /// 高通转折（Hz）0..=500；0 = 不启用。
+    pub hpf_hz: f32,
+    /// 低通截止（Hz）800..=20000；20000 = 不启用。
+    pub cutoff_hz: f32,
+    /// 压缩阈值（dBFS）−60..=0。
+    pub comp_threshold_db: f32,
+    /// 压缩比 1..=20。
+    pub comp_ratio: f32,
+    /// 压缩软膝（dB）0..=24。
+    pub comp_knee_db: f32,
+    /// 压缩起振（秒）0.0005..=0.2。
+    pub comp_attack_s: f32,
+    /// 压缩释放（秒）0.01..=1。
+    pub comp_release_s: f32,
+    /// 压缩 makeup（dB）−12..=12。
+    pub comp_makeup_db: f32,
+    /// 通道条输出微调（dB）−12..=12（风格间电平平衡的落点之一）。
+    pub output_db: f32,
+    /// 混响尺寸 0..=1。
+    pub reverb_size: f32,
+    /// 混响高频阻尼 0..=1。
+    pub reverb_damp: f32,
+    /// 混响湿电平 0..=1。
+    pub reverb_wet: f32,
+    /// 混响预延迟（秒）0..=0.1。
+    pub reverb_predelay_s: f32,
+    /// 磁带饱和（可选）。
+    pub tape: Option<DrumTapePreset>,
+    /// 延迟（可选）。
+    pub delay: Option<DrumDelayPreset>,
+}
+
+/// 一个风格预置。（不派生 `Eq`：`fx` 段含 `f32`。）
+#[derive(Debug, Clone, PartialEq)]
 pub struct DrumStylePreset {
     /// 稳定 id（ASCII 小写，如 `trap`）。
     pub id: String,
@@ -136,6 +220,8 @@ pub struct DrumStylePreset {
     pub lanes: Vec<DrumLanePreset>,
     /// fill（1 小节）的鼓道表；`None` = 该风格一期无 fill。
     pub fill_lanes: Option<Vec<DrumLanePreset>>,
+    /// 效果层预置（`fx` 段）；`None` = 文件未带效果段，生成走干声。
+    pub fx: Option<DrumFxPreset>,
 }
 
 impl DrumStylePreset {
@@ -223,6 +309,15 @@ impl DrumStylePreset {
                 Some(parse_lanes(fill_obj, "lanes", STEPS_PER_BAR)?)
             }
         };
+        let fx = match get_opt(obj, "fx") {
+            None => None,
+            Some(fx_json) => {
+                let fx_obj = fx_json
+                    .as_object()
+                    .ok_or_else(|| field_err("fx", "fx must be an object"))?;
+                Some(parse_fx(fx_obj)?)
+            }
+        };
         Ok(Self {
             id,
             name,
@@ -237,6 +332,7 @@ impl DrumStylePreset {
             bars,
             lanes,
             fill_lanes,
+            fx,
         })
     }
 
@@ -321,6 +417,216 @@ fn parse_lanes(
         });
     }
     Ok(lanes)
+}
+
+/// 读一个浮点字段并校验值域（值域与 `yeban-dsp` 对应器件的钳制域对齐：
+/// 预置写出界值是内容错误，必须在解析期响亮失败，不能等到渲染期被静默钳）。
+fn get_f32_ranged(
+    obj: &[(String, Json)],
+    key: &str,
+    field: &str,
+    min: f32,
+    max: f32,
+) -> Result<f32, DrumPresetError> {
+    let raw = match get(obj, key)? {
+        Json::Num(n) => *n,
+        _ => return Err(field_err(field, "expected a number")),
+    };
+    if !raw.is_finite() || raw < f64::from(min) || raw > f64::from(max) {
+        return Err(field_err(
+            field,
+            format!("value {raw} out of {min}..={max}"),
+        ));
+    }
+    #[allow(clippy::cast_possible_truncation)] // 已校验落在 f32 可精确承载的值域内
+    Ok(raw as f32)
+}
+
+fn parse_fx(obj: &[(String, Json)]) -> Result<DrumFxPreset, DrumPresetError> {
+    let eq = get_obj(obj, "eq")?;
+    let comp = get_obj(obj, "comp")?;
+    let reverb = get_obj(obj, "reverb")?;
+    let tape = match get_opt(obj, "tape") {
+        None => None,
+        Some(tape_json) => {
+            let t = tape_json
+                .as_object()
+                .ok_or_else(|| field_err("fx.tape", "tape must be an object"))?;
+            Some(DrumTapePreset {
+                drive: get_f32_ranged(t, "drive", "fx.tape.drive", 0.0, 1.0)?,
+                mix: get_f32_ranged(t, "mix", "fx.tape.mix", 0.0, 1.0)?,
+                hf_hz: get_f32_ranged(t, "hf_hz", "fx.tape.hf_hz", 2000.0, 20000.0)?,
+                asym: get_f32_ranged(t, "asym", "fx.tape.asym", 0.0, 0.5)?,
+            })
+        }
+    };
+    let delay = match get_opt(obj, "delay") {
+        None => None,
+        Some(delay_json) => {
+            let d = delay_json
+                .as_object()
+                .ok_or_else(|| field_err("fx.delay", "delay must be an object"))?;
+            let ping_pong = match get(d, "ping_pong")? {
+                Json::Bool(b) => *b,
+                _ => return Err(field_err("fx.delay.ping_pong", "expected a boolean")),
+            };
+            Some(DrumDelayPreset {
+                time_s: get_f32_ranged(d, "time_s", "fx.delay.time_s", 0.01, 2.0)?,
+                feedback: get_f32_ranged(d, "feedback", "fx.delay.feedback", 0.0, 0.9)?,
+                mix: get_f32_ranged(d, "mix", "fx.delay.mix", 0.0, 0.6)?,
+                damp: get_f32_ranged(d, "damp", "fx.delay.damp", 0.0, 1.0)?,
+                ping_pong,
+            })
+        }
+    };
+    Ok(DrumFxPreset {
+        eq_low_db: get_f32_ranged(eq, "low_db", "fx.eq.low_db", -18.0, 18.0)?,
+        eq_mid_db: get_f32_ranged(eq, "mid_db", "fx.eq.mid_db", -18.0, 18.0)?,
+        eq_high_db: get_f32_ranged(eq, "high_db", "fx.eq.high_db", -18.0, 18.0)?,
+        eq_low_hz: get_f32_ranged(eq, "low_hz", "fx.eq.low_hz", 20.0, 1000.0)?,
+        eq_mid_hz: get_f32_ranged(eq, "mid_hz", "fx.eq.mid_hz", 100.0, 8000.0)?,
+        eq_mid_q: get_f32_ranged(eq, "mid_q", "fx.eq.mid_q", 0.3, 6.0)?,
+        eq_high_hz: get_f32_ranged(eq, "high_hz", "fx.eq.high_hz", 1000.0, 16000.0)?,
+        hpf_hz: get_f32_ranged(eq, "hpf_hz", "fx.eq.hpf_hz", 0.0, 500.0)?,
+        cutoff_hz: get_f32_ranged(eq, "cutoff_hz", "fx.eq.cutoff_hz", 800.0, 20000.0)?,
+        comp_threshold_db: get_f32_ranged(
+            comp,
+            "threshold_db",
+            "fx.comp.threshold_db",
+            -60.0,
+            0.0,
+        )?,
+        comp_ratio: get_f32_ranged(comp, "ratio", "fx.comp.ratio", 1.0, 20.0)?,
+        comp_knee_db: get_f32_ranged(comp, "knee_db", "fx.comp.knee_db", 0.0, 24.0)?,
+        comp_attack_s: get_f32_ranged(comp, "attack_s", "fx.comp.attack_s", 0.0005, 0.2)?,
+        comp_release_s: get_f32_ranged(comp, "release_s", "fx.comp.release_s", 0.01, 1.0)?,
+        comp_makeup_db: get_f32_ranged(comp, "makeup_db", "fx.comp.makeup_db", -12.0, 12.0)?,
+        output_db: get_f32_ranged(obj, "output_db", "fx.output_db", -12.0, 12.0)?,
+        reverb_size: get_f32_ranged(reverb, "size", "fx.reverb.size", 0.0, 1.0)?,
+        reverb_damp: get_f32_ranged(reverb, "damp", "fx.reverb.damp", 0.0, 1.0)?,
+        reverb_wet: get_f32_ranged(reverb, "wet", "fx.reverb.wet", 0.0, 1.0)?,
+        reverb_predelay_s: get_f32_ranged(reverb, "predelay_s", "fx.reverb.predelay_s", 0.0, 0.1)?,
+        tape,
+        delay,
+    })
+}
+
+/// 效果族在场标记（生成侧的去重判据由调用方按参数名扫轨上已有器件得出，
+/// 判读口径在调用方：参数名命中 `yeban-dsp` 的族拼写表）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DrumFxFamilies {
+    /// 通道条族（EQ/滤波/压缩）已在场。
+    pub strip: bool,
+    /// 磁带族已在场。
+    pub tape: bool,
+    /// 混响族已在场。
+    pub reverb: bool,
+    /// 延迟族已在场。
+    pub delay: bool,
+}
+
+/// 一台待装效果器件的配方（名字 + 参数表）；身份（`EntityId`）由调用方
+/// 按各自纪律分配（UI 路径随机、MCP 路径确定性派生），配方只有这一份，
+/// 保证两条生成路径装出的效果层逐参数一致。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrumFxDeviceSpec {
+    /// 效果族标识（`strip` / `tape` / `reverb` / `delay`）。
+    pub family: &'static str,
+    /// 器件显示名。
+    pub name: &'static str,
+    /// `(参数名, 值)` 表，顺序稳定。参数名一律用 `yeban-dsp`
+    /// `device_param` 的规范拼写（与共享契约 `EFFECT_GROUPS` 一致）。
+    pub params: Vec<(String, f32)>,
+}
+
+/// 把 `fx` 段翻译成器件配方（跳过 `present` 里已在场的族）。
+///
+/// ⚠ EQ 与压缩必须合在**同一台**通道条器件里：插入链投影对通道条族只取
+/// 第一台命中器件，分开装两台（EQ 一台、压缩一台）时第二台会被静默忽略。
+/// 开关参数（`eq_enabled` 等）显式写出，保证对应级一定执行（投影的
+/// 「没写旋钮的级不执行」口径）。
+#[must_use]
+pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<DrumFxDeviceSpec> {
+    let mut specs = Vec::new();
+    if !present.strip {
+        let mut params: Vec<(String, f32)> = vec![
+            ("eq_enabled".to_owned(), 1.0),
+            ("eq_low_gain".to_owned(), fx.eq_low_db),
+            ("eq_low_freq".to_owned(), fx.eq_low_hz),
+            ("eq_mid_gain".to_owned(), fx.eq_mid_db),
+            ("eq_mid_freq".to_owned(), fx.eq_mid_hz),
+            ("eq_mid_q".to_owned(), fx.eq_mid_q),
+            ("eq_high_gain".to_owned(), fx.eq_high_db),
+            ("eq_high_freq".to_owned(), fx.eq_high_hz),
+        ];
+        if fx.hpf_hz > 0.0 {
+            params.push(("hpf_hz".to_owned(), fx.hpf_hz));
+        }
+        if fx.cutoff_hz < 20_000.0 {
+            params.push(("filter_enabled".to_owned(), 1.0));
+            params.push(("cutoff_hz".to_owned(), fx.cutoff_hz));
+        }
+        params.push(("compressor_enabled".to_owned(), 1.0));
+        params.push(("threshold_db".to_owned(), fx.comp_threshold_db));
+        params.push(("ratio".to_owned(), fx.comp_ratio));
+        params.push(("knee_db".to_owned(), fx.comp_knee_db));
+        params.push(("attack_s".to_owned(), fx.comp_attack_s));
+        params.push(("release_s".to_owned(), fx.comp_release_s));
+        params.push(("makeup_db".to_owned(), fx.comp_makeup_db));
+        if fx.output_db != 0.0 {
+            params.push(("output_gain_db".to_owned(), fx.output_db));
+        }
+        specs.push(DrumFxDeviceSpec {
+            family: "strip",
+            name: "Channel Strip",
+            params,
+        });
+    }
+    if let Some(tape) = &fx.tape
+        && !present.tape
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "tape",
+            name: "Tape Saturation",
+            params: vec![
+                ("tape_drive".to_owned(), tape.drive),
+                ("tape_mix".to_owned(), tape.mix),
+                ("tape_hf_hz".to_owned(), tape.hf_hz),
+                ("tape_asym".to_owned(), tape.asym),
+            ],
+        });
+    }
+    if !present.reverb {
+        specs.push(DrumFxDeviceSpec {
+            family: "reverb",
+            name: "Reverb",
+            params: vec![
+                ("reverb_size".to_owned(), fx.reverb_size),
+                ("reverb_damp".to_owned(), fx.reverb_damp),
+                ("reverb_wet".to_owned(), fx.reverb_wet),
+                ("reverb_predelay".to_owned(), fx.reverb_predelay_s),
+            ],
+        });
+    }
+    if let Some(delay) = &fx.delay
+        && !present.delay
+    {
+        specs.push(DrumFxDeviceSpec {
+            family: "delay",
+            name: "Delay",
+            params: vec![
+                ("delay_time_s".to_owned(), delay.time_s),
+                ("delay_feedback".to_owned(), delay.feedback),
+                ("delay_mix".to_owned(), delay.mix),
+                ("delay_damp".to_owned(), delay.damp),
+                (
+                    "delay_ping_pong".to_owned(),
+                    if delay.ping_pong { 1.0 } else { 0.0 },
+                ),
+            ],
+        });
+    }
+    specs
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +1118,82 @@ mod tests {
         assert!(preset.lanes[0].steps[0].is_hit());
         assert_eq!(preset.lanes[0].steps[10].tier, 1);
         assert!(preset.fill_lanes.is_none());
+        assert!(preset.fx.is_none(), "no fx section means dry generation");
+    }
+
+    const MINIMAL_FX: &str = r#""fx": {
+        "eq": {"low_db": 2.0, "mid_db": -1.0, "high_db": 1.5, "low_hz": 200,
+               "mid_hz": 1000, "mid_q": 0.9, "high_hz": 4200, "hpf_hz": 30,
+               "cutoff_hz": 20000},
+        "comp": {"threshold_db": -16, "ratio": 3, "knee_db": 6,
+                 "attack_s": 0.01, "release_s": 0.12, "makeup_db": 1.5},
+        "output_db": 0.5,
+        "reverb": {"size": 0.4, "damp": 0.45, "wet": 0.15, "predelay_s": 0.01},
+        "tape": {"drive": 0.3, "mix": 0.5, "hf_hz": 9000, "asym": 0.2},
+        "delay": {"time_s": 0.28, "feedback": 0.25, "mix": 0.1, "damp": 0.4,
+                  "ping_pong": true}
+    }"#;
+
+    #[test]
+    fn parses_fx_section_with_tape_and_delay() {
+        let text = MINIMAL.replace("\"bars\": 1,", &format!("\"bars\": 1, {MINIMAL_FX},"));
+        let preset = DrumStylePreset::from_json(&text).expect("valid fx preset");
+        let fx = preset.fx.expect("fx parsed");
+        assert_eq!(fx.eq_low_db, 2.0);
+        assert_eq!(fx.eq_mid_hz, 1000.0);
+        assert_eq!(fx.hpf_hz, 30.0);
+        assert_eq!(fx.cutoff_hz, 20000.0);
+        assert_eq!(fx.comp_threshold_db, -16.0);
+        assert_eq!(fx.comp_ratio, 3.0);
+        assert_eq!(fx.output_db, 0.5);
+        assert_eq!(fx.reverb_wet, 0.15);
+        let tape = fx.tape.expect("tape parsed");
+        assert_eq!(tape.drive, 0.3);
+        assert_eq!(tape.asym, 0.2);
+        let delay = fx.delay.expect("delay parsed");
+        assert_eq!(delay.time_s, 0.28);
+        assert!(delay.ping_pong);
+    }
+
+    #[test]
+    fn rejects_out_of_range_or_incomplete_fx() {
+        let base = MINIMAL.replace("\"bars\": 1,", &format!("\"bars\": 1, {MINIMAL_FX},"));
+        let wet_out = base.replace("\"wet\": 0.15", "\"wet\": 1.5");
+        assert!(
+            DrumStylePreset::from_json(&wet_out).is_err(),
+            "reverb wet above 1 must be rejected"
+        );
+        let missing_knee = base.replace("\"knee_db\": 6,", "");
+        assert!(
+            DrumStylePreset::from_json(&missing_knee).is_err(),
+            "a missing comp field must be rejected"
+        );
+        let bad_ratio = base.replace("\"ratio\": 3", "\"ratio\": 0.5");
+        assert!(
+            DrumStylePreset::from_json(&bad_ratio).is_err(),
+            "comp ratio below 1 must be rejected"
+        );
+    }
+
+    #[test]
+    fn factory_styles_all_carry_individually_tuned_fx() {
+        let styles = factory_drum_styles().expect("factory presets parse");
+        assert_eq!(styles.len(), 10);
+        let mut signatures = std::collections::BTreeSet::new();
+        for style in &styles {
+            let fx = style
+                .fx
+                .unwrap_or_else(|| panic!("factory style {} must carry an fx section", style.id));
+            signatures.insert((
+                fx.reverb_wet.to_bits(),
+                fx.comp_threshold_db.to_bits(),
+                fx.eq_low_db.to_bits(),
+            ));
+        }
+        assert!(
+            signatures.len() > 1,
+            "factory fx must be tuned per style, not one shared parameter set"
+        );
     }
 
     #[test]

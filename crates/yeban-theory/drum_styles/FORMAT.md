@@ -22,6 +22,27 @@ unknown shapes and out-of-range values are loud errors, never guesses.
 | `bars` | integer | pattern length in bars, 1..=8 (factory presets: 2) |
 | `lanes` | array | drum lanes (see below) |
 | `fill` | object, optional | `{"lanes": [...]}` with exactly 16 steps per lane (1 bar) |
+| `fx` | object, optional | per-style insert FX layer (see below); absent = dry generation. All 10 factory presets carry one, each tuned individually |
+
+## `fx` object
+
+The drum track's factory processing, in the shape of a Logic-style channel
+strip preset: EQ + compression + insert reverb as the base, with optional
+tape saturation and delay per style. Generation turns it into track insert
+devices; when a target track already carries a user device of the same
+family, that family is not duplicated.
+
+| field | type | meaning |
+|---|---|---|
+| `eq` | object | `low_db`/`mid_db`/`high_db` −18..=18 dB; `low_hz` 20..=1000, `mid_hz` 100..=8000, `mid_q` 0.3..=6, `high_hz` 1000..=16000; `hpf_hz` 0..=500 (0 = off); `cutoff_hz` 800..=20000 (20000 = off) |
+| `comp` | object | `threshold_db` −60..=0, `ratio` 1..=20, `knee_db` 0..=24, `attack_s` 0.0005..=0.2, `release_s` 0.01..=1, `makeup_db` −12..=12 |
+| `output_db` | number | strip output trim −12..=12 dB (one of the style-to-style level balance points) |
+| `reverb` | object | `size`/`damp`/`wet` 0..=1, `predelay_s` 0..=0.1 |
+| `tape` | object, optional | `drive`/`mix` 0..=1, `hf_hz` 2000..=20000, `asym` 0..=0.5 |
+| `delay` | object, optional | `time_s` 0.01..=2, `feedback` 0..=0.9, `mix` 0..=0.6, `damp` 0..=1, `ping_pong` bool. Whole-track insert (no per-lane sends exist), so factory mixes stay low |
+
+All `fx` sub-fields are required when their object is present; out-of-range
+values are parse errors, never clamped guesses.
 
 ## `source` object
 

@@ -178,9 +178,11 @@ pub use drum_gen::{
     generate_drum_pattern,
 };
 pub use drum_preset::{
-    ACOUSTIC_KIT_SFZ_PATH, DRUM_STYLE_FORMAT, DRUM_STYLE_FORMAT_VERSION, DrumKitSetup,
-    DrumLanePreset, DrumPresetError, DrumStep, DrumStylePreset, KitFamily, MAX_RATCHET,
-    STEPS_PER_BAR, factory_drum_style, factory_drum_style_ids, factory_drum_styles, kit_setup,
+    ACOUSTIC_KIT_SFZ_PATH, DRUM_STYLE_FORMAT, DRUM_STYLE_FORMAT_VERSION, DrumDelayPreset,
+    DrumFxDeviceSpec, DrumFxFamilies, DrumFxPreset, DrumKitSetup, DrumLanePreset, DrumPresetError,
+    DrumStep, DrumStylePreset, DrumTapePreset, KitFamily, MAX_RATCHET, STEPS_PER_BAR,
+    drum_fx_device_specs, factory_drum_style, factory_drum_style_ids, factory_drum_styles,
+    kit_setup,
 };
 pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};
