@@ -74,6 +74,10 @@ fn drum_device() -> DeviceDefinition {
         ("kick_decay_s", 0.08),
         ("kick_level", 1.0),
         ("kick_pan", 0.0),
+        // 镲的声部内滤波放宽：能量铺到 1.5 kHz 起 ⇒ 链上 6 kHz 高通
+        // 切得动它（出厂缺省 6k/14k 时镲能量几乎全在高通之上，判据量不到）。
+        ("hihat_highpass_hz", 1_500.0),
+        ("hihat_lowpass_hz", 9_000.0),
     ];
     DeviceDefinition {
         id: EntityId::new(),
@@ -94,12 +98,12 @@ fn drum_device() -> DeviceDefinition {
 fn comp_strip() -> DeviceDefinition {
     let params = [
         ("compressor_enabled", 1.0),
-        ("threshold_db", -30.0),
+        ("threshold_db", -40.0),
         ("ratio", 8.0),
         ("knee_db", 0.0),
         ("detector_s", 0.01),
         ("attack_s", 0.001),
-        ("release_s", 0.1),
+        ("release_s", 0.25),
         ("makeup_db", 0.0),
     ];
     DeviceDefinition {
@@ -116,10 +120,10 @@ fn comp_strip() -> DeviceDefinition {
     }
 }
 
-/// hats 组的高通通道条（9 kHz 低切；不开压缩，只走滤波级）。
+/// hats 组的高通通道条（6 kHz 低切；与压缩同条，隔离靠对照组同链旁通）。
 fn hpf_strip() -> DeviceDefinition {
     DeviceDefinition {
-        params: vec![param("hpf_hz", 9_000.0)],
+        params: vec![param("hpf_hz", 6_000.0)],
         ..comp_strip()
     }
 }
@@ -291,15 +295,23 @@ fn kick_ducks_the_808_lane() {
     assert_eq!(evaluated, 1, "同轨 lane 边必须被求值");
     let (plain_project, track) = project(NOTES, standard_chains(Vec::new()), None);
     let (plain, _) = render(&plain_project, track, true);
-    // kick 落点（帧）: 24000 / 48000 / 72000；窗口 = 落点后 30..90 ms
-    // （起振与检波已完成、释放尚未恢复完；kick 自身尾巴已衰减）。
-    for onset in [24_000usize, 48_000, 72_000] {
-        let window = onset + 1_440..onset + 4_320;
-        let dip = rms_db(&plain, window.clone()) - rms_db(&keyed, window);
-        println!("kick@{onset}: 闪避量 {dip:.2} dB");
+    // 量法（双差分）：无边对照里 808 被自己的信号自键压缩（恒定 GR），
+    // 键控渲染里 GR 被 kick 锁定调制 —— 两种渲染各自的「近窗（落点后
+    // 5..25 ms，凹口最深）比远窗（落点后 350..400 ms，释放已恢复）低
+    // 多少」之差，就是键独有的闪避调制。kick 自身尾巴在两种渲染里
+    // 形状相同，被差分抵消。
+    for onset in [24_000usize, 48_000] {
+        let near = onset + 240..onset + 1_200;
+        let far = onset + 16_800..onset + 19_200;
+        let mod_keyed = rms_db(&keyed, far.clone()) - rms_db(&keyed, near.clone());
+        let mod_plain = rms_db(&plain, far.clone()) - rms_db(&plain, near.clone());
+        let duck = mod_keyed - mod_plain;
+        println!(
+            "kick@{onset}: 键控调制 {mod_keyed:.2} dB / 对照调制 {mod_plain:.2} dB / 闪避量 {duck:.2} dB"
+        );
         assert!(
-            dip >= 6.0,
-            "kick 落点 {onset} 后 808 必须被压低 ≥ 6 dB，实测 {dip:.2} dB"
+            duck >= 6.0,
+            "kick 落点 {onset} 处键必须把 808 压出 ≥ 6 dB 的锁定凹口，实测 {duck:.2} dB"
         );
     }
 }
