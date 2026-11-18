@@ -56,6 +56,24 @@
 //!      都是明确 `Err`，不静默钳位）。
 //!
 //!    两种失败都**不**静默：一条有告警，一条有错误载荷。
+//!
+//!    ⭐ **追加修订段（2026-11-18，`line/drum-fx-layer`）** —— 上面第一条里
+//!    「`63.5` 没有可表示的值 ⇒ 丢弃」的前提被实测推翻，修订如下（原文保留备查）：
+//!    作者用 `63.5` 表示 7 位 CC 域的**精确中点**，且文件同时以双极曲线
+//!    （`tune_ccN=1200` + `tune_curveccN=1`）消费这些 CC —— 种子缺席时 CC 落 0，
+//!    双极曲线在 0 处给出 −满程偏移。2026-11-18 全库装载审计实测代价：
+//!    `virtuosity-drums`（`set_cc72/76/81/86/90=63.5` 全丢弃 ⇒ 鼓整组低
+//!    1200–2400 音分，kick 原样本 83 Hz 在渲染里落到约 25 Hz，即 boombap 耳验
+//!    怪音色的根因）、`body-percussion`（`set_cc41` 丢弃 ⇒ 全库低 1200 音分）、
+//!    `hungarian-zither`（`set_cc32` 丢弃 ⇒ 全库低 700 音分），共 2363 条 region。
+//!    且本 crate 对 ARIA `set_hdccN` 早有先例：浮点 CC 取值按 `round` 换算进
+//!    同一个 `u8` 域（见本文件末节）——「浮点不可表示」与该先例自相矛盾。
+//!    **新口径**：取值是 `0..=127` 内的有限小数 ⇒ `round` 取整为种子
+//!    （`63.5` → 64；残差至多半个 CC 步，在 1200 音分满程的 tune 旋钮上约
+//!    ±9.4 音分，听感可忽略）；无法按数值解读（字母、未展开宏、全角数字、空）
+//!    或小数越界 ⇒ 维持丢弃 + 告警；整数越界 ⇒ 维持明确 `Err`。
+//!    语料表里「解析器真正丢弃的声明数 42 / 10」是修订前的读数，修订后这 42 处
+//!    全部成为种子（值 64），丢弃数归零。
 //! 3. **只认 `<control>` 作用域**：规范正文第 2 句就是 "Used under the ‹`control`› header."。
 //!    与 `default_path` 同一条口径（本 crate 也只从 `<control>` 读它）。写在
 //!    `region` / `group` / `master` / `global` 里的 `set_ccN` 按未知 opcode 忽略。
@@ -172,10 +190,12 @@ pub(crate) enum SetCcOutcome {
         /// 规范表格 Range = `0 to 127` 的初始值。
         initial: u8,
     },
-    /// 名字像 `set_ccN`、**下标**也合法，但取值不是十进制整数（登记语料里有 `63.5`）。
+    /// 名字像 `set_ccN`、**下标**也合法，但取值无法按数值解读（字母、未展开的
+    /// `$VAR`、空、全角数字），或是一个越过 `0..=127` 的小数。
     ///
     /// 调用方**丢弃这一条声明**并产生 [`crate::Warning::MalformedSetCc`]，
-    /// 文件继续解析（见模块文档「工程裁决」第 2 条）。
+    /// 文件继续解析（见模块文档「工程裁决」第 2 条）。注意 `0..=127` 内的小数
+    /// **不**落这里：它按 `round` 取整为种子（2026-11-18 修订）。
     UnrepresentableValue,
 }
 
@@ -185,8 +205,10 @@ pub(crate) enum SetCcOutcome {
 ///
 /// 1. [`SetCcOutcome::NotThisOpcode`]：名字不是 `set_ccN`；
 /// 2. [`SetCcOutcome::Value`]：命中，`cc` 不越过 [`MAX_CC_DEFAULT_INDEX`]、
-///    取值不越过 [`MAX_CC_DEFAULT_VALUE`]；
-/// 3. [`SetCcOutcome::UnrepresentableValue`]：取值不是十进制整数（丢弃 + 告警）；
+///    取值不越过 [`MAX_CC_DEFAULT_VALUE`]；`0..=127` 内的小数按 `round`
+///    取整后同样落这一类（2026-11-18 修订）；
+/// 3. [`SetCcOutcome::UnrepresentableValue`]：取值无法按数值解读、或是越界小数
+///    （丢弃 + 告警）；
 /// 4. `Err(`[`crate::SfzError::IntegerOutOfRange`]`)`：**下标**越
 ///    [`MAX_CC_DEFAULT_INDEX`]（与 `label_ccN` 同一条容器界），或**取值是整数但不在**
 ///    `0..=127`（此时 `min` / `max` 是 `0` / `127`）。
@@ -218,9 +240,22 @@ pub(crate) fn set_cc_declaration(
             });
         }
     };
-    // 不是十进制整数（含没展开的 `$VAR` 文本）⇒ 丢弃 + 告警，**不**中断解析。
     let Some(parsed) = crate::parser::parse_int(value) else {
-        return Ok(SetCcOutcome::UnrepresentableValue);
+        // 不是十进制整数时再试小数（2026-11-18 修订，见模块文档裁决第 2 条的
+        // 修订段）：`0..=127` 内的有限小数按 `round` 取整为种子——`63.5` 是
+        // 7 位域的精确中点，作者意图无歧义，与 `set_hdccN` 的 `round` 换算同款。
+        // 不是数值（字母、未展开的 `$VAR`、全角数字、空）或小数越界
+        // ⇒ 丢弃 + 告警，**不**中断解析。
+        let decimal = value.trim().parse::<f32>().ok().filter(|v| {
+            v.is_finite() && (0.0..=f32::from(MAX_CC_DEFAULT_VALUE)).contains(v)
+        });
+        let Some(v) = decimal else {
+            return Ok(SetCcOutcome::UnrepresentableValue);
+        };
+        // 取值已限定在 `0..=127`，`round` 后仍在域内 ⇒ `as u8` 不截断。
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let initial = v.round() as u8;
+        return Ok(SetCcOutcome::Value { cc, initial });
     };
     if !(0..=i64::from(MAX_CC_DEFAULT_VALUE)).contains(&parsed) {
         return Err(SfzError::IntegerOutOfRange {
@@ -401,11 +436,23 @@ mod tests {
     }
 
     #[test]
-    fn a_non_integer_value_is_dropped_loudly_and_not_an_error() {
-        // 登记语料里 42 处 `63.5`（10 个文件）：硬 `Err` 会让那些乐器整份无法加载，
+    fn a_non_numeric_value_is_dropped_loudly_and_not_an_error() {
+        // 无法按数值解读的取值：硬 `Err` 会让整份文件无法加载，
         // 因此这里是「丢弃 + 告警」而不是错误（见模块文档「工程裁决」第 2 条）。
         // 没展开的 `$VAR` 文本也会落到这里（未定义宏按原样保留，见 `Warning::UndefinedMacro`）。
-        for text in ["63.5", "abc", "", "1.5", "12x", "$undefined_macro", "１２"] {
+        // 越界小数（`200.5` / `-1.5`）与非有限值同款：与 `set_hdccN` 的口径一致，
+        // 规范 Range 外的浮点不猜。
+        for text in [
+            "abc",
+            "",
+            "12x",
+            "$undefined_macro",
+            "１２",
+            "200.5",
+            "-1.5",
+            "NaN",
+            "inf",
+        ] {
             assert_eq!(
                 set_cc_declaration("set_cc7", text, 5).expect("not an error"),
                 SetCcOutcome::UnrepresentableValue,
@@ -417,6 +464,30 @@ mod tests {
             set_cc_declaration("set_cc7", "+64", 1).expect("plus sign"),
             SetCcOutcome::Value { cc: 7, initial: 64 }
         );
+    }
+
+    #[test]
+    fn a_decimal_value_in_range_rounds_to_the_nearest_seed() {
+        // 2026-11-18 修订（模块文档裁决第 2 条修订段）：登记语料里 42 处 `63.5`
+        // （10 个文件）是作者写的 7 位域精确中点。丢弃它曾让双极 tune_cc 在
+        // 种子 0 处把 3 款乐器整库拉低 700–2400 音分；按 `round` 取整后
+        // 种子落在中点 ±半步内（`63.5` → 64，与 `set_hdccN` 的换算同款）。
+        for (text, initial) in [
+            ("63.5", 64u8),
+            ("63.4", 63),
+            ("1.5", 2),
+            ("0.5", 1),
+            ("0.4", 0),
+            ("0.0", 0),
+            ("126.5", 127),
+            ("127.0", 127),
+        ] {
+            assert_eq!(
+                set_cc_declaration("set_cc7", text, 5).expect("decimal in range"),
+                SetCcOutcome::Value { cc: 7, initial },
+                "set_cc7={text} must seed {initial}"
+            );
+        }
     }
 
     #[test]
