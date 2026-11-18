@@ -234,6 +234,13 @@ impl SampleDelay {
         }
     }
 
+    /// ⭐ **stage 14**：处理**一对**声道（原地），参数取武装期 [`Self::set_params`]
+    /// 写入的那一份。左右各走自己那条延迟线、**同一个游标只推进一次**
+    /// （⛔ 不是"跑两遍 `process_mono`"——那会让右声道多推一倍）。
+    pub fn process_pair(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.process(self.params, left, right);
+    }
+
     /// 处理一段单声道切片（原地），参数取武装期 [`Self::set_params`] 写入的那一份。
     ///
     /// 实时插入链是单声道（`track_scratch`）：只用左声道那条线；右声道那条线不动。
@@ -270,6 +277,33 @@ impl SampleDelay {
 
 #[cfg(test)]
 mod tests {
+    /// ⭐ **stage 14 判据**：`process_pair` 必须与"两条独立单声道 `process_mono`"
+    /// **逐位相同**（＝ 左右各走自己那条线、游标只推进一次），且左右互不串线。
+    #[test]
+    fn the_sample_delay_pair_path_matches_two_mono_lines() {
+        let params = SampleDelayParams {
+            delay_samples: 3,
+            invert: true,
+        };
+        let mut pair = SampleDelay::new();
+        let mut mono_l = SampleDelay::new();
+        let mut mono_r = SampleDelay::new();
+        for device in [&mut pair, &mut mono_l, &mut mono_r] {
+            device.configure_with_capacity(48_000.0, 8);
+            device.set_params(params);
+        }
+        let mut left: Vec<f32> = (0..16).map(|index| index as f32 + 1.0).collect();
+        let mut right: Vec<f32> = (0..16).map(|index| -(index as f32) - 2.0).collect();
+        let mut ref_left = left.clone();
+        let mut ref_right = right.clone();
+        pair.process_pair(&mut left, &mut right);
+        mono_l.process_mono(&mut ref_left);
+        mono_r.process_mono(&mut ref_right);
+        assert_eq!(left, ref_left, "左声道必须与单声道线逐位相同");
+        assert_eq!(right, ref_right, "右声道必须与单声道线逐位相同");
+        assert_ne!(left[3], right[3], "两条线不许串线（读数必须各是自己的）");
+    }
+
     use super::*;
 
     fn configured() -> SampleDelay {
