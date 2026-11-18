@@ -84,7 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = writeln!(report, "## {id}\n");
         let _ = writeln!(report, "- 入口：`{rel}`");
         if !entry_abs.exists() {
-            let _ = writeln!(report, "- ⛔ SFZ 入口不在预期位置，跳过（待按来源拉文本）。\n");
+            let _ = writeln!(
+                report,
+                "- ⛔ SFZ 入口不在预期位置，跳过（待按来源拉文本）。\n"
+            );
             summary_rows.push(format!("| {id} | - | - | - | - | - | 入口缺失 |"));
             continue;
         }
@@ -244,7 +247,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         summary_rows.push(format!(
             "| {id} | {} | {} | {} | {} | {} |  |",
-            regions.len(), counts[0], counts[1], counts[2], counts[3]
+            regions.len(),
+            counts[0],
+            counts[1],
+            counts[2],
+            counts[3]
         ));
     }
 
@@ -253,8 +260,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = writeln!(
         out,
         "汇总：类 1 共 {} 条（{} 款）；类 2 共 {} 条（{} 款）；类 3 命中 {} 款；类 4 受影响 region 共 {} 条（{} 款）。\n",
-        totals[0], affected_instruments[0], totals[1], affected_instruments[1],
-        totals[2], totals[3], affected_instruments[3]
+        totals[0],
+        affected_instruments[0],
+        totals[1],
+        affected_instruments[1],
+        totals[2],
+        totals[3],
+        affected_instruments[3]
     );
     let _ = writeln!(
         out,

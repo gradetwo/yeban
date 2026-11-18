@@ -246,9 +246,11 @@ pub(crate) fn set_cc_declaration(
         // 7 位域的精确中点，作者意图无歧义，与 `set_hdccN` 的 `round` 换算同款。
         // 不是数值（字母、未展开的 `$VAR`、全角数字、空）或小数越界
         // ⇒ 丢弃 + 告警，**不**中断解析。
-        let decimal = value.trim().parse::<f32>().ok().filter(|v| {
-            v.is_finite() && (0.0..=f32::from(MAX_CC_DEFAULT_VALUE)).contains(v)
-        });
+        let decimal = value
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite() && (0.0..=f32::from(MAX_CC_DEFAULT_VALUE)).contains(v));
         let Some(v) = decimal else {
             return Ok(SetCcOutcome::UnrepresentableValue);
         };
