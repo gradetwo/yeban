@@ -503,7 +503,10 @@ use yeban_render::dither::{BitDepth, DitherRng, quantize};
 // ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
 // 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
 use yeban_plugin_host::PluginInstance;
-use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample, EngineTimbre, EngineTrackSource};
+use yeban_render::engine_source::{
+    ArmedSfzInput, ArmedSfzSample, EngineSourceError, EngineTimbre, EngineTrackSource,
+    LaneSplitSource,
+};
 use yeban_render::plugin_effect::PluginEffectSource;
 use yeban_render::plugin_source::PluginTrackSource;
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
@@ -514,8 +517,8 @@ use yeban_render::automation::{
     forced_insert_instances, macro_cascade_reaches, send_gain_automations,
 };
 use yeban_render::inserts::{
-    ignored_strip_devices, project_inserts_with_forced_instances, resolve_device_param,
-    track_has_unhandled_dsp,
+    ignored_strip_devices, lane_chain_has_unhandled_dsp, project_inserts_with_forced_instances,
+    resolve_device_param, track_has_unhandled_dsp,
 };
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -3094,12 +3097,16 @@ pub struct RenderArtifact {
     pub sidechain_edges_declared_without_key_input: usize,
     /// 逐件链（per-lane）读数：工程里全部音轨共声明了多少条逐件链组。
     ///
-    /// 与 [`Self::lane_chains_unapplied`] 一起读：逐件渲染（期 3）落地
-    /// 之前，声明的链一条都不发声——这个事实必须在回执里读得出来，
-    /// ⛔ 不许让"生成时写进了工程"冒充"渲染时生效了"。
+    /// 与 [`Self::lane_chains_unapplied`] 一起读：声明数是工程事实，
+    /// 未应用数是**本次渲染**的事实——⛔ 不许让"生成时写进了工程"
+    /// 冒充"渲染时生效了"，也不许把没进本次渲染的轨算成已应用。
     pub lane_chains_declared: usize,
-    /// 逐件链读数：声明了、但本次渲染没有应用的逐件链组数。期 2 恒等于
-    /// [`Self::lane_chains_declared`]；期 3 逐件渲染落地后归零。
+    /// 逐件链读数：声明了、但本次渲染没有应用的逐件链组数（期 3）。
+    ///
+    /// 应用的口径：该轨在本次渲染里真的建了分组源（[`LaneSplitSource`]）
+    /// 并进了渲染计划。轨没进本次渲染（不在源节点集里）、被插件音源
+    /// 胜出、或在快照里没有可发声音符 ⇒ 它的链组如实计入本数。
+    /// 全部声明都被应用时归零。
     pub lane_chains_unapplied: usize,
     /// 明确没渲染的部分（键序字典序，来自 `BTreeSet`）。
     pub unsupported: BTreeSet<&'static str>,
@@ -3468,7 +3475,14 @@ impl RenderArtifact {
 type PendingSource = (EntityId, TrackSource, Option<Box<dyn PluginInstance>>);
 /// 轨源装配产物：轨源＋可选宿主效果器实例＋收据。
 /// （乐器实例不住在这里 —— 它在装配期内已包进 `TrackSource.plugin`。）
-type SourceAssembly = (TrackSource, Option<Box<dyn PluginInstance>>, SourceReport);
+/// 源装配的返回值：轨源、效果器插件实例、逐轨报告，以及**本次装配真正
+/// 应用了的逐件链组数**（逐件处理线期 3；该轨没建分组源 ⇒ 0）。
+type SourceAssembly = (
+    TrackSource,
+    Option<Box<dyn PluginInstance>>,
+    SourceReport,
+    usize,
+);
 
 /// ⭐ 把请求的 tick 区间解析成帧区间，并对着**本次全程渲染**的帧数验界。
 ///
@@ -3611,15 +3625,16 @@ pub fn build(
         .values()
         .filter(|edge| edge.kind == RoutingKind::Sidechain)
         .count();
-    // 逐件链读数（期 2）：声明 = 全部音轨的 `lane_chains` 组数之和；
-    // 未应用 = 声明（离线逐件渲染在期 3 落地，本期一条都不应用，
-    // 两数如实同报，⛔ 不许报 0 未应用冒充已生效）。
+    // 逐件链读数（期 3）：声明 = 全部音轨的 `lane_chains` 组数之和；
+    // 已应用在下面第 4b 步逐轨装配时累计（真的建了分组源才算），
+    // 未应用 = 声明 − 已应用，在产物组装前绑定，⛔ 不许预先报 0
+    // 冒充已生效（期 2 的旧口径是未应用恒等于声明）。
     let lane_chains_declared: usize = project
         .tracks
         .values()
         .map(|track| track.lane_chains.len())
         .sum();
-    let lane_chains_unapplied = lane_chains_declared;
+    let mut lane_chains_applied_total = 0usize;
     // ⭐ 侧链键输入（v1）：没有键输入路径的条数**不能**在这里绑定 —— 计划还没
     // 编译，求值条数未知。它在主计划编译、设备泳道挂好、`attach_key_armed_nodes`
     // 挂接之后才绑定（声明条数 − 真的接上键输入的条数），见下面的挂接点。
@@ -3776,7 +3791,7 @@ pub fn build(
                 serde_json::json!({ "node": node.to_canonical_string() }),
             )
         })?;
-        let (source, effect, report) = build_source(
+        let (source, effect, report, lane_applied) = build_source(
             project,
             &timbre,
             track,
@@ -3792,6 +3807,7 @@ pub fn build(
             compressing.contains(&node),
             bus_source,
         )?;
+        lane_chains_applied_total += lane_applied;
         end_tick = end_tick.max(report.end_tick);
         reports.push(report);
         pending.push((node, source, effect));
@@ -4276,6 +4292,8 @@ pub fn build(
         )?,
     };
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
+    // 逐件链未应用数（期 3）：声明 − 本次渲染真的建了分组源的组数。
+    let lane_chains_unapplied = lane_chains_declared - lane_chains_applied_total;
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
     let notes_silenced: u64 = reports.iter().map(|report| report.notes_silenced).sum();
     let notes_ratcheted: u64 = reports.iter().map(|report| report.notes_ratcheted).sum();
@@ -5098,8 +5116,54 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 /// ⭐ `#274`：**采样器轨也走这一支**（`TrackV3.sampler` ⇒ 引擎的 SFZ 支路）；
 /// `sampler_bound` 只用于 `sources[].kind` 的命名 —— 它⛔ 不参与发声
 /// （旧的 `SamplerTrackSource` 已退休，⛔ 不再有第二份采样音源）。
+/// 一条轨的 MIDI 音源两形态（逐件处理线期 3）。
+///
+/// 无逐件链的轨走 [`Self::Plain`]（单个引擎源，与期 3 之前同一条路径、
+/// 逐位不变）；带 `lane_chains` 的轨走 [`Self::Lane`]（分组源：调度
+/// 按键组切分、逐组插入链与组声相、余量最后求和）。
+enum MidiSource {
+    /// 单引擎源（无逐件链）。
+    Plain(EngineTrackSource),
+    /// 逐件分组源（有逐件链且本次渲染真的应用）。
+    Lane(LaneSplitSource),
+}
+
+impl MidiSource {
+    /// 已排程音符数（两形态同口径：分组源报各组与余量之和）。
+    fn scheduled_notes(&self) -> usize {
+        match self {
+            Self::Plain(source) => source.scheduled_notes(),
+            Self::Lane(source) => source.scheduled_notes(),
+        }
+    }
+
+    /// 声部窃取计数句柄（两形态同口径）。
+    fn steal_counter(&self) -> Arc<AtomicU64> {
+        match self {
+            Self::Plain(source) => source.steal_counter(),
+            Self::Lane(source) => source.steal_counter(),
+        }
+    }
+}
+
+impl AudioSource for MidiSource {
+    fn seek_to(&mut self, frame: u64) -> Result<(), String> {
+        match self {
+            Self::Plain(source) => source.seek_to(frame),
+            Self::Lane(source) => source.seek_to(frame),
+        }
+    }
+
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        match self {
+            Self::Plain(source) => source.render_block(context, out),
+            Self::Lane(source) => source.render_block(context, out),
+        }
+    }
+}
+
 struct TrackSource {
-    midi: Option<EngineTrackSource>,
+    midi: Option<MidiSource>,
     /// ⭐ ADR-0069：本轨的宿主插件音源（`Some` ⇒ `midi` 为空，插件胜出；
     /// 采样器分支亦被胜出 —— 插件轨不建引擎源，⛔ 不叠两份声音）。
     plugin: Option<PluginTrackSource>,
@@ -5846,7 +5910,10 @@ fn build_source(
                 && device.kind == yeban_model::DeviceKind::InternalInstrument
                 && !device.params.is_empty()
         });
-    if track_has_unhandled_dsp(track) || sampler_drops_instrument_params {
+    if track_has_unhandled_dsp(track)
+        || lane_chain_has_unhandled_dsp(track)
+        || sampler_drops_instrument_params
+    {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
     // ⭐ ADR-0069：已被宿主的那台设备（首个非旁通、带绑定的外部乐器）不再登记
@@ -6333,34 +6400,48 @@ fn build_source(
     //   `--sfz` 旁路同形）⇒ 否则采样与复音会叠成两份声音。
     // ⚠ 没有可发声音符的纯音频轨也不建（一台引擎约 109 KB，白建没有收益）。
     // ⭐ ADR-0069：插件轨同样不建引擎源（插件胜出时 `midi` 为空）。
+    // ⭐ 逐件链（期 3）：带 `lane_chains` 的轨建分组源并计数已应用组数；
+    //    插件胜出或没有可发声音符时不建 ⇒ 该轨的链组如实留在未应用里。
+    let mut lane_applied = 0usize;
     let midi = if plugin.is_some() || timbre.scheduled_notes(track.id) == 0 {
         None
     } else {
         let (engine_l, engine_r) = centered_pan_gains(source_pan, pan_gains);
-        Some(
-            timbre
-                .track_source(track.id)
-                .map_err(|error| {
-                    render_failed(
-                        format!("引擎音源装配失败: {error}"),
-                        serde_json::json!({
-                            "reason": "engineSource",
-                            "cause": error.message(),
-                            "hint": format!(
-                                "轨道 {} 的引擎源装配失败（快照已投影成功时这一条不应出现）",
-                                track.id.to_canonical_string()
-                            ),
-                        }),
-                    )
-                })?
+        let engine_failed = |error: EngineSourceError| {
+            render_failed(
+                format!("引擎音源装配失败: {error}"),
+                serde_json::json!({
+                    "reason": "engineSource",
+                    "cause": error.message(),
+                    "hint": format!(
+                        "轨道 {} 的引擎源装配失败（快照已投影成功时这一条不应出现）",
+                        track.id.to_canonical_string()
+                    ),
+                }),
+            )
+        };
+        // ⭐ `#341`：把 `MidiCc` 泳道接成离线 CC 探针（没有 CC 泳道时
+        // 内部仍是 `None` ⇒ 走 `render_track`，与接线前逐位相同）。
+        if track.lane_chains.is_empty() {
+            Some(MidiSource::Plain(
+                timbre
+                    .track_source(track.id)
+                    .map_err(engine_failed)?
+                    .with_pan((engine_l, engine_r))
+                    .with_cc(project),
+            ))
+        } else {
+            let lane = timbre
+                .lane_track_source(track.id, &track.lane_chains, project.bpm)
+                .map_err(engine_failed)?
                 .with_pan((engine_l, engine_r))
-                // ⭐ `#341`：把 `MidiCc` 泳道接成离线 CC 探针（没有 CC 泳道时
-                // 内部仍是 `None` ⇒ 走 `render_track`，与接线前逐位相同）。
-                .with_cc(project),
-        )
+                .with_cc(project);
+            lane_applied = track.lane_chains.len();
+            Some(MidiSource::Lane(lane))
+        }
     };
     // ⭐ `#274`：把采样器轨的**声部窃取**句柄留到渲染之后（⛔ 不猜、⛔ 不静默）。
-    if sampler_bound && let Some(counter) = midi.as_ref().map(EngineTrackSource::steal_counter) {
+    if sampler_bound && let Some(counter) = midi.as_ref().map(MidiSource::steal_counter) {
         sampler_steals.insert(track.id, counter);
     }
     // ⭐ 本轨的 `TrackVolume` 自动化：构造期判定恒等快路径，非恒等才挂到源上。
@@ -6399,7 +6480,7 @@ fn build_source(
         peak: 0.0,
         sampler: sampler_report,
     };
-    Ok((source, effect, report))
+    Ok((source, effect, report, lane_applied))
 }
 
 /// 等功率（−3 dB）声相增益：`θ = (pan + 1) * π/4`，`(cos θ, sin θ)`。
