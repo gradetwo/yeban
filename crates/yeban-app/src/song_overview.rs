@@ -803,7 +803,11 @@ fn arm_sfz_input(
         .map(|(path, sample)| {
             (
                 path.clone(),
-                (std::sync::Arc::clone(&sample.pcm), sample.sample_hz),
+                (
+                    std::sync::Arc::clone(&sample.pcm),
+                    sample.channels,
+                    sample.sample_hz,
+                ),
             )
         })
         .collect();

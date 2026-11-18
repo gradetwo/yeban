@@ -121,12 +121,16 @@ impl From<SnapshotError> for EngineSourceError {
 /// * `path`：`region.sample_path()` 的**原样**字符串（⚠ 可能已拼上
 ///   `default_path=` 前缀）—— 它同时是 `SfzPlan::prepare_with_samples` 的**去重键**，
 ///   ⛔ 本层不做任何路径规范化（与引擎的 `PreparedSfz::prepare_with_samples` 同一句）；
-/// * `pcm`：单声道、归一化到 `[-1, 1]` 的样本帧；⭐ `#279` 起是 `Arc<Vec<f32>>`
-///   —— provider 直接交出它自己那份已解码 PCM 的 `Arc::clone`（⛔ 不复制元素），
-///   引擎摊平表也只 `Arc::clone` 它 ⇒ **同一份 PCM 只有一份字节**；
+/// * `pcm`：归一化到 `[-1, 1]` 的样本帧，**按 `channels` 交错存储**
+///   （立体声样本通路片起：立体声 PCM 左右交错原样交出，⛔ 不再折单声道）；
+///   ⭐ `#279` 起是 `Arc<Vec<f32>>` —— provider 直接交出它自己那份已解码 PCM
+///   的 `Arc::clone`（⛔ 不复制元素），引擎摊平表也只 `Arc::clone` 它
+///   ⇒ **同一份 PCM 只有一份字节**；
+/// * `channels`：`pcm` 的声道数（`1` ＝ 单声道、`2` ＝ 立体声；provider 的
+///   解码若仍是单声道口径就如实填 `1`，⛔ 不许拿交错长度冒充）；
 /// * `sample_hz`：该 PCM 的**原始采样率**（Hz）—— 播放速率换算交给引擎的
 ///   `RenderRates`（⛔ 本层不重采样）。
-pub type ArmedSfzSample = (String, (Arc<Vec<f32>>, f32));
+pub type ArmedSfzSample = (String, (Arc<Vec<f32>>, u16, f32));
 
 /// ⭐ `#274`：一条轨的**武装输入**（provider 的返回值）。
 ///
@@ -312,11 +316,12 @@ impl EngineTimbre {
             let provided: Vec<(String, InMemorySample)> = input
                 .samples
                 .into_iter()
-                .map(|(path, (pcm, sample_hz))| {
+                .map(|(path, (pcm, channels, sample_hz))| {
                     (
                         path,
                         InMemorySample {
                             pcm,
+                            channels,
                             sample_hz,
                             loop_points: None,
                         },
@@ -873,7 +878,7 @@ mod tests {
                 sfz_path.clone(),
                 vec![(
                     "tone.wav".to_owned(),
-                    (Arc::new(vec![0.25_f32; 4_800]), 48_000.0),
+                    (Arc::new(vec![0.25_f32; 4_800]), 1, 48_000.0),
                 )],
             )
         })
@@ -968,7 +973,7 @@ mod tests {
                     sfz_path.clone(),
                     vec![(
                         "tone.wav".to_owned(),
-                        (Arc::new(vec![0.25_f32; 4_800]), 48_000.0),
+                        (Arc::new(vec![0.25_f32; 4_800]), 1, 48_000.0),
                     )],
                 )
             })

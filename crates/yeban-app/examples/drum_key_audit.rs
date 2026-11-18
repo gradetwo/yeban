@@ -187,7 +187,7 @@ fn arm_for_key(sfz_abs: &Path, key: u8) -> Result<ArmedSfzInput, Box<dyn std::er
         let mono =
             yeban_decode::decode_mono_channel0(&file, &yeban_decode::DecodeOptions::default())
                 .map_err(|e| format!("decode {}: {e}", file.display()))?;
-        samples.push((sample_path, (Arc::new(mono.pcm), mono.sample_hz as f32)));
+        samples.push((sample_path, (Arc::new(mono.pcm), 1, mono.sample_hz as f32)));
     }
     Ok(ArmedSfzInput::new(sfz_abs.to_path_buf(), samples))
 }

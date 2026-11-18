@@ -53,10 +53,12 @@
 //!
 //! ## ⚠ 三条诚实登记（⛔ 不假装）
 //!
-//! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`] 解码成单声道 `f32`
-//!    （⭐ 任务单 `#85` 起按**后缀分派**：WAV 走 `yeban_render::wav::read_plain_wav_mono_f32`，
-//!    其余走 `yeban_decode::decode_path` —— 见下面的 ④），报告行里写出
-//!    `file(<path> frames=… rate=…)`。⚠ 仍然成立的两条限制：**WAV 那条腿**只吃 `hound`
+//! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`] 解码成**保声道**
+//!    交错 `f32`（⭐ 任务单 `#85` 起按**后缀分派**：WAV 走 `yeban_render::wav::read_plain_wav_f32`，
+//!    其余走 `yeban_decode::decode_path` —— 见下面的 ④；⭐ **立体声样本通路片起**
+//!    两条腿都**保留声道**、⛔ 不再折单声道 —— 取代 R315 的声道 0 口径，见台账新条），
+//!    报告行里写出
+//!    `file(<path> frames=… channels=… rate=…)`。⚠ 仍然成立的两条限制：**WAV 那条腿**只吃 `hound`
 //!    能读的 PCM／float WAV（16/24-bit 整数、32-bit 浮点）；任何一条腿读不到时都**如实回退**
 //!    到内存正弦 [`InMemorySample::sine`] 并把原因写进来源文案
 //!    （探测那一条 [`probe_note_energy`] 本身就用内存正弦 —— 它不解析 `sample=`）。
@@ -73,13 +75,16 @@
 //!
 //! | `sample=` 后缀 | 解码器 | 口径 |
 //! | :--- | :--- | :--- |
-//! | `.wav` / `.wave`（大小写不敏感） | `yeban_render::wav::read_plain_wav_mono_f32`（hound） | **逐位与接线前相同** —— 那条腿一个字节都没动 |
-//! | **其余**（`.flac` / `.ogg` / …） | `yeban_decode::decode_path`（symphonia：wav／ogg／flac／vorbis／adpcm） | ⭐ **显式折单声道**（取声道 0，与 hound 那条腿**同一口径**） |
+//! | `.wav` / `.wave`（大小写不敏感） | `yeban_render::wav::read_plain_wav_f32`（hound） | **保声道**：交错 PCM 原样读出（换算与单声道腿同一份本体、声道 0 逐位相同） |
+//! | **其余**（`.flac` / `.ogg` / …） | `yeban_decode::decode_path`（symphonia：wav／ogg／flac／vorbis／adpcm） | ⭐ **保声道**（交错原样，与 hound 那条腿**同一口径**） |
 //!
-//! ⚠ **口径差（⛔ 别踩）**：`DecodedAsset::samples()` 是**交织**多声道，而 hound 那条腿按
-//! `step_by(channels)` 取**声道 0** ⇒ 新腿必须做**同一件事**，⛔ 不能把交织数据当单声道
-//! （否则立体声样本会以 2× 长度、交替声道进入引擎）。两条腿因此对**同一份 PCM** 给出
-//! **逐位相同**的单声道 `f32`（端到端判据见 `tests/sfz_decoded_formats.rs`）。
+//! ⚠ **口径差（⛔ 别踩）**：`DecodedAsset::samples()` 是**交织**多声道。立体声通路片
+//! 之前两条腿都按 `step_by(channels)` 取**声道 0**（R315 裁决）；本片起交织数据
+//! **连同声道数**一起进 [`InMemorySample`]，由引擎按帧/交错步长取数 —— ⛔ 把交织
+//! 数据当单声道交给引擎（声道数字段填 1）会让立体声样本以 2× 帧数、左右交替
+//! 发声，比折声道 0 更糟。两条腿对同一文件给出的交错 `f32` 与声道数必须一致
+//! （端到端判据见 `tests/sfz_decoded_formats.rs`，已按本片改钉）。声道数 >2
+//! 两条腿都**响亮拒绝**（sfizz 文件池只收 1/2 声道，见 [`decode_with_hound`]）。
 //!
 //! ⚠ **采样率不匹配**：`DecodedAsset::sample_rate()` 与工程采样率不同时**不重采样** ——
 //! 它原样进 [`InMemorySample::sample_hz`]，由引擎既有的 `RenderRates::new(sample_hz, engine_hz)`
@@ -564,8 +569,11 @@ pub fn probe_note_energy(
 
 /// 把一个 SFZ 样本读成 [`InMemorySample`]（⭐ 任务单 `#85` 起支持 **FLAC／OGG**）。
 ///
-/// 多声道样本取**声道 0**（本仓的 SFZ 播放按单声道叠加；⛔ 不自己发明下混规则，文档写明）。
-/// **两条解码腿用同一口径**：WAV 走 `hound`（既有路径，逐位不变），其余走 `yeban_decode`。
+/// ⭐ **立体声样本通路片起保留声道**（取代 R315 的"取声道 0"裁决）：立体声样本
+/// 交错原样进 [`InMemorySample`] 并带声道数，引擎真立体声发声；⛔ 仍不自己
+/// 发明下混规则 —— 声道数 >2 的文件两条腿都**响亮拒绝**（sfizz 文件池口径）。
+/// **两条解码腿用同一口径**：WAV 走 `hound`（保声道腿，换算与旧单声道腿同一份
+/// 本体、声道 0 逐位不变），其余走 `yeban_decode`。
 ///
 /// # Errors
 ///
@@ -754,20 +762,46 @@ fn parse_wav_smpl_loop(payload: &[u8]) -> Option<SampleLoop> {
     Some(SampleLoop { start, end })
 }
 
-/// **WAV 腿**（⛔ 逐字保留接线前的实现，任务单 `#79`／`#83`）。
+/// ⭐ **声道数越界的响亮拒绝**（立体声样本通路片；两条解码腿共用）。
 ///
-/// ⭐ **共享实现**（`yeban-render`；MCP 线把它唯一化了）与本地那份**逐行同口径**：
-/// `Float32` 直用、`Int16`/`Int24` 除 `full_scale_max().max(1)`、`step_by(channels)` 取单声道，
-/// 且它的 `describe` 文案与本函数原来**一字不差**（`file(<path> frames=… rate=…)`）。
-/// ⇒ 适配只做**形状转换**（`InMemorySample` ＋ `u64` 帧数），⛔ 不隐藏任何语义差异。
+/// sfizz 的文件池只收单声道与立体声（`FilePool::getReaderInformation`：
+/// `channels != 1 && channels != 2` ⇒ 文件不可用），夜半照此口径：>2 声道
+/// ⛔ 不取前两声道、⛔ 不发明下混 —— 落 [`SampleReadFailure::Unreadable`]，
+/// detail 写明实际声道数与支持集，进装载报告（默认不能静默）。
+fn unsupported_channel_count(path: &Path, channels: u16) -> UnreadableSample {
+    UnreadableSample {
+        path: path.display().to_string(),
+        reason: SampleReadFailure::Unreadable,
+        detail: format!(
+            "`{}`: unsupported channel count {channels} (only mono and stereo sample files are supported)",
+            path.display()
+        ),
+    }
+}
+
+/// **WAV 腿**（任务单 `#79`／`#83` 的形状；⭐ 立体声样本通路片改走保声道读法）。
+///
+/// ⭐ **共享实现**（`yeban-render`）：改走 `read_plain_wav_f32` —— 与单声道腿
+/// **同一份换算本体**（`Float32` 直用、整数除 `2^(bits-1)`，render 侧判据钉
+/// 两腿声道 0 逐位相同），只是⛔ 不再 `step_by` 折掉其余声道：立体声 PCM
+/// 交错原样进 [`InMemorySample`] 并带声道数。`describe` 随之多一段
+/// `channels=<n>`（`file(<path> frames=… channels=… rate=…)`，两条腿同形）；
+/// 返回的帧数按**帧**计（交错长度 ÷ 声道数），与预算口径一致。
+/// 声道数 >2 ⇒ [`unsupported_channel_count`] 响亮拒绝。
 fn decode_with_hound(path: &Path) -> Result<(InMemorySample, u64, String), UnreadableSample> {
-    match yeban_render::wav::read_plain_wav_mono_f32(path) {
-        Ok((pcm, sample_rate, describe)) => {
-            let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+    match yeban_render::wav::read_plain_wav_f32(path) {
+        Ok((pcm, channels, sample_rate, describe)) => {
+            if channels > 2 {
+                return Err(unsupported_channel_count(path, channels));
+            }
+            let frames =
+                u64::try_from(pcm.len() / usize::from(channels.max(1))).unwrap_or(u64::MAX);
             Ok((
                 InMemorySample {
                     // ⭐ `#279`：解码结果包一次 `Arc` ⇒ 摊平表 `Arc::clone` 共享它。
                     pcm: Arc::new(pcm),
+                    // ⭐ 本片：声道数随 PCM 一起交出（`1` ＝ 单声道、与接线前逐位相同）。
+                    channels,
                     sample_hz: sample_rate as f32,
                     // ⭐ `#331`：文件自带的循环点（WAV 的 `smpl` 块）。`read_plain_wav`
                     // **不读**它（它只关心采样与格式）⇒ 这里单独扫一次 chunk 头。
@@ -791,42 +825,50 @@ fn decode_with_hound(path: &Path) -> Result<(InMemorySample, u64, String), Unrea
     }
 }
 
-/// ⭐ **通用解码腿**（任务单 `#85`）：`yeban_decode::decode_path` ⇒ 显式折单声道。
+/// ⭐ **通用解码腿**（任务单 `#85`）：`yeban_decode::decode_path` ⇒ 交错样本原样交出。
 ///
-/// ## 折单声道（⚠ 本函数存在的**唯一**理由）
+/// ## 保声道（⭐ 立体声样本通路片修订；原文保留于 git 历史）
 ///
-/// [`yeban_decode::DecodedAsset::samples`] 是**交织**样本（`frames × channels`），
-/// 而本仓 SFZ 播放的口径是**单声道声道 0**（与 [`decode_with_hound`] 的
-/// `step_by(channels)` 一字不差）⇒ 这里按**同一个** `step_by(channels)` 取声道 0。
-/// ⛔ 若直接交出交织缓冲，立体声样本会以 2× 长度、左右交替进入引擎（判据
-/// `sfz_decoded_formats::a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg` 会红）。
+/// 本函数在 `#85` 存在过的唯一理由是"把交织样本按 `step_by(channels)` 折成
+/// 声道 0"（R315 裁决：本仓 SFZ 播放按单声道叠加）。本片起该裁决被台账新条
+/// 取代：[`yeban_decode::DecodedAsset::samples`] 的交织样本（`frames × channels`）
+/// **连同声道数原样**进 [`InMemorySample`]，引擎按交错步长取数、立体声真发声。
+/// ⛔ 交出交织缓冲却把声道数填 1 仍然是错的（引擎会以 2× 帧数、左右交替
+/// 播放）—— 声道数与 PCM 必须同真。声道数 >2 ⇒ 与 WAV 腿同一个
+/// [`unsupported_channel_count`] 响亮拒绝。
 ///
 /// ## 与 WAV 腿的语义对齐
 ///
 /// * `sample_hz` ← [`yeban_decode::DecodedAsset::sample_rate`]（原样，⛔ 不重采样）；
-/// * `describe` ← 同一形状 `file(<path> frames=<折后帧数> rate=<文件采样率>)`；
-/// * 帧数 ← 折单声道**之后**的长度（= 每声道帧数，与 WAV 腿的 `samples.len()` 同义）。
+/// * `describe` ← 同一形状 `file(<path> frames=<帧数> channels=<声道数> rate=<文件采样率>)`；
+/// * 帧数 ← 交错长度 ÷ 声道数（= 每声道帧数，与 WAV 腿同义、与预算口径一致）。
 fn decode_with_yeban_decode(
     path: &Path,
 ) -> Result<(InMemorySample, u64, String), UnreadableSample> {
     match decode_path(path, &DecodeOptions::default()) {
         Ok(asset) => {
-            // `decode_path` 保证 `channels >= 1`（0 声道的布局在闸门处就被拒），
-            // `max(1)` 只是让"除零"在这条路径上不可能发生。
-            let channels = usize::from(asset.channels().max(1));
-            let pcm: Vec<f32> = asset.samples().iter().step_by(channels).copied().collect();
+            // `decode_path` 保证 `channels >= 1`（0 声道的布局在闸门处就被拒）。
+            let channels = asset.channels();
+            if channels > 2 {
+                return Err(unsupported_channel_count(path, channels));
+            }
+            let pcm: Vec<f32> = asset.samples().to_vec();
             let sample_rate = asset.sample_rate();
+            let frame_count = pcm.len() / usize::from(channels.max(1));
             let describe = format!(
-                "file({} frames={} rate={})",
+                "file({} frames={} channels={} rate={})",
                 path.display(),
-                pcm.len(),
+                frame_count,
+                channels,
                 sample_rate
             );
-            let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+            let frames = u64::try_from(frame_count).unwrap_or(u64::MAX);
             Ok((
                 InMemorySample {
                     // ⭐ `#279`：与 WAV 腿同一条 —— 包一次 `Arc`，摊平表共享它。
                     pcm: Arc::new(pcm),
+                    // ⭐ 本片：声道数随 PCM 一起交出。
+                    channels,
                     sample_hz: sample_rate as f32,
                     loop_points: None,
                 },
@@ -1125,6 +1167,7 @@ pub fn build_region_samples(instrument: &SfzInstrument, sfz_path: &Path) -> Regi
             line = BUILTIN_SILENCE_SOURCE.to_owned();
             InMemorySample {
                 pcm: Arc::new(Vec::new()),
+                channels: 1,
                 sample_hz: 48_000.0,
                 loop_points: None,
             }
@@ -1189,6 +1232,7 @@ pub fn region_sample_for(
         return Some((
             InMemorySample {
                 pcm: Arc::new(Vec::new()),
+                channels: 1,
                 sample_hz: 48_000.0,
                 loop_points: None,
             },
