@@ -89,9 +89,17 @@ fn malformed_family_forms_surface_as_unknown_instead_of_vanishing() {
 #[test]
 fn unknown_names_in_curve_and_effect_sections_warn() {
     let notes = unknown_notes("<curve> curve_index=7 v000=0 v127=1 frobnicate=2");
-    assert_eq!(notes.len(), 1, "<curve> 里的不认识名字必须响亮，实得 {notes:?}");
+    assert_eq!(
+        notes.len(),
+        1,
+        "<curve> 里的不认识名字必须响亮，实得 {notes:?}"
+    );
     let notes = unknown_notes("<effect> bus=main frobnicate=2");
-    assert_eq!(notes.len(), 1, "<effect> 里的不认识名字必须响亮，实得 {notes:?}");
+    assert_eq!(
+        notes.len(),
+        1,
+        "<effect> 里的不认识名字必须响亮，实得 {notes:?}"
+    );
     // 规范的曲线点与 effect 名不误报。
     assert!(unknown_notes("<curve> curve_index=7 v000=0 v042=0.5 v127=1").is_empty());
     assert!(unknown_notes("<effect> bus=main type=lshelf effect1=20").is_empty());

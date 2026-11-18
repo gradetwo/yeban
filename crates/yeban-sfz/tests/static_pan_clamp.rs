@@ -118,11 +118,13 @@ fn position_and_width_out_of_range_warn_and_still_load() {
     let position = load("<region> sample=a.wav position=150");
     assert_eq!(position.regions().len(), 1);
     assert_eq!(
-        position.regions()[0].position, 100.0,
+        position.regions()[0].position,
+        100.0,
         "钳位后的 100 必须即存储的 position 基准"
     );
     assert_eq!(
-        load("<region> sample=a.wav width=-250").regions()[0].width, -100.0,
+        load("<region> sample=a.wav width=-250").regions()[0].width,
+        -100.0,
         "钳位后的 -100 必须即存储的 width 基准"
     );
     assert_eq!(
@@ -257,7 +259,10 @@ fn strictness_outside_the_pan_family_is_unchanged() {
         Err(SfzError::InvalidFloat { .. })
     ));
     assert!(matches!(
-        parse_text("<region> sample=a.wav position=inf", &ParseLimits::default()),
+        parse_text(
+            "<region> sample=a.wav position=inf",
+            &ParseLimits::default()
+        ),
         Err(SfzError::NonFiniteFloat { .. })
     ));
 }
@@ -394,8 +399,16 @@ fn position_and_width_follow_the_pan_scope_inheritance() {
     // 作用域继承与 `pan` 同一条链：global 被 group 覆盖、group 被 region 覆盖。
     let text = "<global> width=10 position=-20\n<group> width=30\n<region> sample=a.wav position=5";
     let instrument = load(text);
-    assert_eq!(instrument.regions()[0].width, 30.0, "group 的 width 必须赢过 global");
-    assert_eq!(instrument.regions()[0].position, 5.0, "region 的 position 必须赢过 global");
+    assert_eq!(
+        instrument.regions()[0].width,
+        30.0,
+        "group 的 width 必须赢过 global"
+    );
+    assert_eq!(
+        instrument.regions()[0].position,
+        5.0,
+        "region 的 position 必须赢过 global"
+    );
     // 只在 global 声明时原样继承。
     let inherited = load("<global> width=-40 position=25\n<region> sample=a.wav");
     assert_eq!(inherited.regions()[0].width, -40.0);

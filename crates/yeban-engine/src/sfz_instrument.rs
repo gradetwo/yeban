@@ -1973,8 +1973,7 @@ use yeban_sfz::lfo::{GenericLfo, V1Lfo};
 use yeban_sfz::modulation::{
     AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
     cc_value_with_baked_and_vel2, pan_value_with_baked, position_value_with_baked,
-    tune_ratio_from_cents, width_value_with_baked,
-    tune_ratio_with_baked, volume_ratio_with_baked,
+    tune_ratio_from_cents, tune_ratio_with_baked, volume_ratio_with_baked, width_value_with_baked,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
@@ -6694,7 +6693,9 @@ impl PreparedSfz {
     /// 区域立体声像位置（百分比；`0` ＝ 中性）。
     #[must_use]
     pub fn region_position(&self, index: usize) -> f32 {
-        self.regions.get(index).map_or(0.0, |region| region.position)
+        self.regions
+            .get(index)
+            .map_or(0.0, |region| region.position)
     }
 
     /// 表里带 `position_onccN` 的区域条数。

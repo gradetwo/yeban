@@ -2235,14 +2235,24 @@ mod tests {
                 ModulationForm::Delta,
                 "10",
             ),
-            ("position_cc7", ModTarget::Position, ModulationForm::Delta, "7"),
+            (
+                "position_cc7",
+                ModTarget::Position,
+                ModulationForm::Delta,
+                "7",
+            ),
             (
                 "position_curvecc11",
                 ModTarget::Position,
                 ModulationForm::Curve,
                 "11",
             ),
-            ("positioncc3", ModTarget::Position, ModulationForm::Delta, "3"),
+            (
+                "positioncc3",
+                ModTarget::Position,
+                ModulationForm::Delta,
+                "3",
+            ),
             (
                 "width_oncc10",
                 ModTarget::Width,
