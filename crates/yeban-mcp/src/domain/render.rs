@@ -522,7 +522,7 @@ use yeban_render::inserts::{
 };
 use yeban_render::mastering;
 use yeban_render::render::{
-    AudioSource, BlockContext, L1_BLOCK_SIZE, OutputStage, RenderError, RenderOptions,
+    AudioSource, BlockContext, InputStage, L1_BLOCK_SIZE, OutputStage, RenderError, RenderOptions,
     RenderOutput, RenderPlan, SilentSource, db_to_linear, project_phase_align, track_latencies,
 };
 // **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
@@ -1768,14 +1768,15 @@ fn unrouted_tracks_warning(project: &YebanProjectV1, probe_nodes: &[EntityId]) -
     }))
 }
 
-/// ⭐ 第五份报告 A-4：**母带推子在限幅器之后**且被推过 0 dB 时的预警
+/// ⭐ 第五份报告 A-4：主总线推子被推过 0 dB 时的预警
 /// （`data.warnings[]` 的一条来源）。
 ///
-/// 母带链的顺序是：源/插入链（含限幅器）先算完，主总线轨的推子
-/// （`TrackV3::volume_db`）在第 9 步对整段输出**再乘一次**。推子 > 0 dB
-/// ⇒ 限幅器钉住的上限被推子整体抬高，超过 0 dBFS 的部分在量化时硬削波，
-/// 而削波预警（`exportClipping`）只报"削了多少"，不报"为什么削"。
-/// 本预警补上原因：**推子位置与推子值**。
+/// 母带链序修复后的顺序是：主总线轨的推子（`TrackV3::volume_db`）挂在计划
+/// 的**输入级**（求和之后、插入链之前），插入链（含限幅器）在推子**之后**
+/// 处理 —— 限幅器是母带链最后一环。因此推子 > 0 dB **不再**造成量化硬
+/// 削波（修复前推子在执行之后乘，+2 dB 实测 36 598 个削波样本）；它现在的
+/// 代价在限幅器一侧：多送进去的增益由限幅器多压回去，瞬态更平、
+/// 可能泵感。本预警报的就是这件事：**推子值与它现在的后果**。
 ///
 /// ⛔ 只生成 JSON：不改拓扑、不移动推子、不改一个样本（与削波预警同一条
 /// 纪律）。推子 ≤ 0 dB ⇒ `None`（**没有这条预警**，不是恒报）。
@@ -1786,10 +1787,11 @@ fn master_fader_warning(project: &YebanProjectV1) -> Option<Value> {
         return None;
     }
     let hint = format!(
-        "主总线推子被推到 +{fader_db:.2} dB。母带链的顺序是限幅器在前、推子在后：\
-         推子把限幅器钉住的输出整体再抬高 {fader_db:.2} dB，超过 0 dBFS 的部分\
-         在量化时被硬削波（削波量见 `exportClipping` 预警）。修法：把主总线推子\
-         回到 ≤ 0 dB，或在推子**之前**（插入链/源增益）降下等量增益。\
+        "主总线推子被推到 +{fader_db:.2} dB。母带链的顺序是推子在前、限幅器在后\
+         （限幅器是母带链最后一环）：推子抬高的信号先送进限幅器，成品峰值仍被\
+         限幅器天花板钉住，⛔ 不会再把限幅后的输出整体抬过 0 dBFS。代价在限幅器\
+         一侧：它要把多出的约 {fader_db:.2} dB 压回去，瞬态更平、可能有泵感。\
+         想要更响而不是更平：把推子回到 ≤ 0 dB，改用响度目标（`targetLufs`）达成。\
          ⛔ 本工具不自动改推子，音频一个字节都没动。"
     );
     Some(serde_json::json!({
@@ -3977,8 +3979,8 @@ pub fn build(
     //
     // 挂"计划里、非源节点、非主总线"的节点 —— 源节点的音量与声相仍在源侧（引擎的
     // `track_gain` / 片段增益 / `TrackSource` 的 R55 与 `pan_automation`），主总线的
-    // 推子与声相自动化仍在第 9 步（执行之后）；本层⛔ 不搬家 ⇒ 普通 MIDI/音频轨的
-    // 行为与 `#296` 之前**逐位相同**。
+    // 推子走计划的**输入级**（见执行之前的挂接）、声相自动化仍在第 9 步（执行之后）；
+    // 本层⛔ 不搬家 ⇒ 普通 MIDI/音频轨的行为与 `#296` 之前**逐位相同**。
     //
     // ⭐ `#303` 的**例外**：`compressing` 里的**源节点**也挂一个**只含声相**的输出级
     // （pre-pan tap，见 `inserts` 模块头 §1.1）。它们的推子仍在源侧（`is_source` 分支
@@ -4057,58 +4059,61 @@ pub fn build(
             master_pan_automation = Some(automation);
         }
     }
-    let mut output = plan
-        .execute(registry)
-        .map_err(|error| render_error("渲染执行", &error))?;
-    // 9. Master 轨增益 (在源侧无法表达: 它是总线节点)。
+    // ⭐ 母带链序修复：主总线的**推子**挂计划的**输入级**（求和之后、插入链
+    // 之前），⛔ 不再在执行之后乘（旧第 9 步的位置）。旧位置让主总线插入链
+    // 里的限幅器跑在推子**之前**：推子推过 0 dB 就把限幅器钉住的输出整体
+    // 抬过 0 dBFS（实测 +2 dB ⇒ 36 598 个削波样本、+4 dB ⇒ 88 346 个）。
+    // 挂进输入级后，推子只是把更多信号送进链里，链尾的限幅器是母带链
+    // 最后一环，成品峰值恒被天花板钉住。
     //
-    //    ⭐ 这是音量自动化的**第二个站点**：主总线没有源，`TrackVolume` 泳道不能在
-    //    `TrackSource` 里乘。这里在整段母带上按 128 帧块求值 + 逐样本平滑，乘
-    //    `静态主推子 × R55 比率`（`mute` 时静态主推子是 0.0）。
-    //    恒等快路径仍走**原来那一句** `scale_in_place`，因此没有自动化的工程逐字节不变。
-    //    ⭐ `#296`：主总线的**声相**不再登记为不支持 —— 静态 `pan` 在计划的输出级里
-    //    乘，`TrackPan` 自动化在下面（推子之后）按块乘绝对左右增益（裁决 B4：
-    //    推子 → 声相）。
+    // 口径与旧第 9 步逐条相同：`mute` ⇒ 静态增益 `0.0`；自动化是同一条
+    // `TrackGainAutomation`（静态主推子 × R55 比率，宏级联在它内部叠加）；
+    // 恒等（推子 0 dB 且泳道恒等）时输入级一个样本都不碰 ⇒ 没有主推子的
+    // 工程与接线前**逐位相同**（`InputStage` 的恒等快路径钉住这一点）。
     if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
         let master_gain = if master.mute {
             0.0
         } else {
             db_to_linear(master.volume_db)
         };
-        let mut automation = TrackGainAutomation::new(project, master.id, sample_rate);
-        if automation.is_identity() {
-            if master_gain != 1.0 {
-                math::scale_in_place(&mut output.samples, master_gain);
-            }
-        } else {
-            let frames = output.samples.len() / MASTER_CHANNELS;
-            // ⭐ B-1：自动化按**绝对帧**求值 ⇒ 区间渲染时首帧传区间起点
-            // （全程渲染时为 0，与旧行为逐位相同）。
-            automation.apply_gain_block(
-                &mut output.samples,
-                render_range.map_or(0, |range| range.start_frame),
-                frames,
-                MASTER_CHANNELS,
-                master_gain,
-            );
-        }
-        // ⭐ `#296`：非恒等的 `TrackPan` 泳道（静态声相已在计划里被关掉 ⇒ 这里乘的
-        // 是**绝对**左右增益，不是比率）。恒等 ⇒ `None`，一个样本都不碰。
-        if let Some(automation) = master_pan_automation.as_mut() {
-            let frames = output.samples.len() / MASTER_CHANNELS;
-            automation.apply_pan_block(
-                &mut output.samples,
-                render_range.map_or(0, |range| range.start_frame),
-                frames,
-                MASTER_CHANNELS,
-                pan_gains,
-            );
-        }
+        let automation = TrackGainAutomation::new(project, master.id, sample_rate);
+        plan.attach_input_stage(
+            master.id,
+            InputStage::new()
+                .with_gain(master_gain)
+                .with_gain_automation(automation),
+        );
     }
-    // 9-master-digest. 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest`
-    // 在 `execute` 里就按当时（未乘主推子）的样本算好了。`masterDigest` 的文档是
-    // “母带样本的位级 SHA-256” ⇒ 必须对**最终**样本重算，否则主推子/主自动化改变
-    // 了音频而摘要不变，读数与产物分叉。
+    let mut output = plan
+        .execute(registry)
+        .map_err(|error| render_error("渲染执行", &error))?;
+    // 9. Master 轨**声相自动化**（推子已在计划的输入级里乘完，见执行之前的挂接）。
+    //
+    //    ⭐ 母带链序修复：主总线**推子**（静态值 + `TrackVolume` 泳道）原在本步、
+    //    执行之后对整段输出乘 —— 那让主总线插入链里的限幅器跑在推子之前，
+    //    推子推过 0 dB 必削波。现改挂 [`InputStage`]（求和之后、插入链之前），
+    //    本步只剩声相：裁决 B4 的「推子 → 声相」顺序不变，且声相走等功率曲线
+    //    （[`pan_gains`] 的逐声道增益恒 ≤ 1.0），留在限幅器之后也不会把样本
+    //    推过天花板。
+    //    ⭐ `#296`：非恒等的 `TrackPan` 泳道（静态声相已在计划里被关掉 ⇒ 这里乘的
+    //    是**绝对**左右增益，不是比率）。恒等 ⇒ `None`，一个样本都不碰。
+    if let Some(automation) = master_pan_automation.as_mut() {
+        let frames = output.samples.len() / MASTER_CHANNELS;
+        // ⭐ B-1：自动化按**绝对帧**求值 ⇒ 区间渲染时首帧传区间起点
+        // （全程渲染时为 0，与旧行为逐位相同）。
+        automation.apply_pan_block(
+            &mut output.samples,
+            render_range.map_or(0, |range| range.start_frame),
+            frames,
+            MASTER_CHANNELS,
+            pan_gains,
+        );
+    }
+    // 9-master-digest. 主总线声相自动化是**执行之后**才乘的，而 `RenderOutput::digest`
+    // 在 `execute` 里就按当时（未乘声相自动化）的样本算好了。`masterDigest` 的文档是
+    // “母带样本的位级 SHA-256” ⇒ 必须对**最终**样本重算，否则声相自动化改变
+    // 了音频而摘要不变，读数与产物分叉。（推子已在计划内乘，摘要本来就含它；
+    // 本行对推子是幂等重算。）
     output.digest = RenderOutput::digest_of(&output.samples);
     // 9a. ⭐ #225：把逐源峰值从探针里取回来（**只读**：渲染已经结束，一个样本都不再改）。
     //     它们进 `sources[].peak` / `.peakDbfs`，也是削波预警点名"最响的源"的依据。
@@ -4152,8 +4157,8 @@ pub fn build(
     // ⭐ C-1 遗留：给了 `masteringClipper` 时同一 preset 再挂软削波段（先降 crest、
     // 伺服补剩余增益），回执在响度块回显参数与 `crestReductionDb`。
     // 位置在峰值归一化**之后**、削波/真峰值读数（10a）**之前** ⇒ 10a 起的全部
-    // 读数描述的都是**最终**样本。增益真的改了样本时，按第 9 步同一纪律重算摘要；
-    // 增益为 0（已达标 / 静音 / 测不出）时一个样本都不碰。
+    // 读数描述的都是**最终**样本。增益真的改了样本时，按 9-master-digest 同一纪律
+    // 重算摘要；增益为 0（已达标 / 静音 / 测不出）时一个样本都不碰。
     let mut loudness_outcome: Option<mastering::NormalizeOutcome> = None;
     if let Some(target) = request.target_lufs() {
         let frames = output.samples.len() / MASTER_CHANNELS;
@@ -4231,8 +4236,8 @@ pub fn build(
     ))
     // ⭐ 未入路由图的轨必须被点名（见 `unrouted_tracks_warning`，探针后已算好）。
     .chain(unrouted_warning)
-    // ⭐ 第五份报告 A-4：母带推子（限幅器之后）被推过 0 dB 必须被点名
-    // （见 `master_fader_warning`：削波的**原因**，与削波量分开报）。
+    // ⭐ 第五份报告 A-4：母带推子（限幅器**之前**）被推过 0 dB 必须被点名
+    // （见 `master_fader_warning`：代价在限幅器压减一侧，与削波量分开报）。
     .chain(master_fader_warning(project))
     .collect();
     // 10b. 响度读数 + 对 `targetLufs` 的判定（在抖动之前的浮点母带上）。

@@ -95,8 +95,8 @@ use yeban_render::automation::{
 };
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
-    AudioSource, BlockContext, OutputStage, RenderError, RenderOptions, RenderOutput, RenderPlan,
-    SilentSource, db_to_linear, project_phase_align, track_latencies,
+    AudioSource, BlockContext, InputStage, OutputStage, RenderError, RenderOptions, RenderOutput,
+    RenderPlan, SilentSource, db_to_linear, project_phase_align, track_latencies,
 };
 
 use yeban_engine::mixer::{BusLimiter, LOOKAHEAD_SAMPLES, PanLaw, pan_gains};
@@ -769,6 +769,27 @@ pub fn render_project_f32_with_plans_under(
         if !automation.is_identity() {
             master_pan_automation = Some(automation);
         }
+        // ⭐ 母带链序修复（与 MCP `yeban_render_master` 同一条）：主总线**推子**
+        // （静态 `volume_db`/`mute` ＋ `TrackVolume` 泳道）挂**输入级** ——
+        // 求和之后、插入链（含限幅器）之前。修复前推子在第 3b 步、执行之后
+        // 乘整段输出，限幅器被排到推子之前 ⇒ 推子 > 0 dB 直接削波。
+        // 恒等（0 dB ＋ 泳道恒等 ＋ 未 mute）⇒ `render_node` 一个样本都不碰，
+        // 无推子增益的工程逐位不变。
+        let master_gain = if master.mute {
+            0.0
+        } else {
+            db_to_linear(master.volume_db)
+        };
+        plan.attach_input_stage(
+            master.id,
+            InputStage::new()
+                .with_gain(master_gain)
+                .with_gain_automation(TrackGainAutomation::new(
+                    project,
+                    master.id,
+                    options.sample_rate,
+                )),
+        );
     }
 
     // ⭐ 任务单 `#303`：**pre-pan tap** —— 会执行压缩的**纯源轨**把声相搬到输出级。
@@ -1215,49 +1236,24 @@ pub fn render_project_f32_with_plans_under(
         .execute(tapped)
         .map_err(|error| WavExportError::Render(error.to_string()))?;
 
-    // ---- 3b. ⭐ 主总线的音量（含 `TrackVolume` 自动化）----
+    // ---- 3b. ⭐ 主总线的 `TrackPan` 自动化（推子之后、归一化之前）----
     //
-    // 主总线没有源：它的静态推子在任何源侧都无法表达，只能在执行之后乘。这是音量
-    // 自动化的**第二个站点**（MCP 的 `build` 第 9 步是同一条口径）：
-    //   - 恒等（没有可求值点 / 曲线处处等于静态值）⇒ 保留原来的“乘静态主推子”，
-    //     `1.0` 时一个样本都不碰 ⇒ 没有自动化的工程逐字节不变；
-    //   - 非恒等 ⇒ 按 128 帧块求值 + 逐样本平滑，乘 `静态主推子 × R55 比率`。
-    // ⚠ `mute` 与 MCP 同口径：主总线静音 ⇒ 静态主推子 `0.0`（全静音）。
-    if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
-        let master_gain = if master.mute {
-            0.0
-        } else {
-            db_to_linear(master.volume_db)
-        };
-        let mut automation = TrackGainAutomation::new(project, master.id, options.sample_rate);
-        if automation.is_identity() {
-            if master_gain != 1.0 {
-                for sample in &mut output.samples {
-                    *sample *= master_gain;
-                }
-            }
-        } else {
-            let frames = output.samples.len() / options.channels.max(1);
-            automation.apply_gain_block(
-                &mut output.samples,
-                // ⭐ B-1（app 侧补齐）：曲线按**绝对帧**读 ⇒ 区间渲染时
-                // 必须从 `start_frame` 起算（写 0 会静默读错一段曲线）。
-                start_frame,
-                frames,
-                options.channels,
-                master_gain,
-            );
-        }
-        // ⭐ `#296`：主总线的 `TrackPan` 自动化（推子之后、归一化之前）。静态声相
-        // 已在计划的输出级里乘过；非恒等时它被关掉，这里乘的是**绝对**左右增益。
-        if let Some(automation) = master_pan_automation.as_mut() {
-            let channels = options.channels.max(1);
-            let frames = output.samples.len() / channels;
-            // ⭐ B-1（app 侧补齐）：同上，绝对帧起点（见音量自动化处）。
-            automation.apply_pan_block(&mut output.samples, start_frame, frames, channels, |pan| {
-                pan_gains(pan, pan_law)
-            });
-        }
+    // ⭐ 母带链序修复：主总线**推子**（静态 `volume_db`/`mute` ＋ `TrackVolume`
+    // 泳道）原在本步、执行之后乘整段输出 —— 主总线插入链里的限幅器因此跑在
+    // 推子**之前**，推子 > 0 dB 直接削波。现已改挂第 1d 步的计划**输入级**
+    // （求和之后、插入链之前），与 MCP `yeban_render_master` 同一条。
+    // ⚠ `mute` 与 MCP 同口径：主总线静音 ⇒ 输入级静态增益 `0.0`（全静音）。
+    // 本步只剩声相：静态声相已在计划的输出级里乘过；非恒等时它被关掉，
+    // 这里乘的是**绝对**左右增益（裁决 B4：推子 → 声相）。声相走等功率曲线
+    // （`pan_gains` 逐声道增益恒 ≤ 1.0），留在限幅器之后也不会把样本推过天花板。
+    if let Some(automation) = master_pan_automation.as_mut() {
+        let channels = options.channels.max(1);
+        let frames = output.samples.len() / channels;
+        // ⭐ B-1（app 侧补齐）：曲线按**绝对帧**读 ⇒ 区间渲染时
+        // 必须从 `start_frame` 起算（写 0 会静默读错一段曲线）。
+        automation.apply_pan_block(&mut output.samples, start_frame, frames, channels, |pan| {
+            pan_gains(pan, pan_law)
+        });
     }
 
     // ---- 3c. ⭐ 母线限制器（任务单 `#302`；默认关）----
@@ -1308,9 +1304,11 @@ pub fn render_project_f32_with_plans_under(
         output.frames = options.frames;
     }
 
-    // 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest` 在 `execute`
-    // 里就按当时（未乘主推子）的样本算好了。`RenderProjectOutput::digest` 的文档是
+    // 主总线声相自动化与母线限制器是**执行之后**才乘的，而 `RenderOutput::digest`
+    // 在 `execute` 里就按当时（未乘声相自动化）的样本算好了。
+    // `RenderProjectOutput::digest` 的文档是
     // “渲染输出的位级摘要” ⇒ 对**最终**样本重算，否则摘要与 `samples` 分叉。
+    // （主推子已在计划内乘，摘要本来就含它；本行对推子是幂等重算。）
     output.digest = RenderOutput::digest_of(&output.samples);
 
     // 渲染结束后取回读数：⛔ 此后一个样本都不再改（只生成报告字段）。

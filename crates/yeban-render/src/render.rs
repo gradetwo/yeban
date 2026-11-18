@@ -56,9 +56,14 @@
 //! - **输出级**（[`OutputStage`]，任务单 `#296` / B2）：插入链**之后**、母线求和**之前**
 //!   的一级。`#296` 让**总线节点**有推子（`TrackVolume`）、**主总线**有声相；B2 再把
 //!   **总线**的静态声相 / `TrackPan` 自动化 / `mute` / `solo` 接到同一级（`mute`/`solo`
-//!   由调用方折算进静态 `gain`，输出级只乘 0/1 与推子）。主总线的 `TrackPan` 自动化与
-//!   推子仍由调用方在执行之后乘（主总线是终端节点）。其它节点是恒等输出级 ⇒
+//!   由调用方折算进静态 `gain`，输出级只乘 0/1 与推子）。主总线的 `TrackPan` 自动化
+//!   仍由调用方在执行之后乘（主总线是终端节点）；主总线的**推子**不在这一级 ——
+//!   它走下面的输入级。其它节点是恒等输出级 ⇒
 //!   `render_node` 的最后一级一个样本都不碰（零默认回归）。
+//! - **输入级**（[`InputStage`]，母带链序修复）：输入端求和**之后**、插入链**之前**
+//!   的一级增益。主总线推子（静态值 + `TrackVolume` 自动化）挂在这里 ⇒ 主总线
+//!   插入链（含限幅器）在推子**之后**处理，限幅器是母带链最后一环。此前推子只能
+//!   在 `execute` 之后由调用方乘（限幅器在前、推子在后 ⇒ 推过 0 dB 必削波）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -425,6 +430,12 @@ struct NodeState {
     delay_lines: Vec<DelayLine>,
     /// 延迟路径用的中转缓冲。
     scratch: Vec<f32>,
+    /// 本节点的**输入级**（母带链序修复）：求和之后、插入链之前的一级增益。
+    ///
+    /// 默认恒等。生产调用方只给**主总线**挂非恒等值（主推子 + 其
+    /// `TrackVolume` 自动化），让限幅器成为母带链最后一环；其余节点的
+    /// 推子各有既有落点（源侧 / 输出级），⛔ 不搬家。
+    input: InputStage,
     /// 本节点的插入链运行态 (通道条 → Freeverb → 卷积)。
     ///
     /// `None` 表示"本节点没有可执行器件" ⇒ `render_node` 整段跳过 ⇒ 逐位不退化。
@@ -481,6 +492,104 @@ impl Debug for PanCurve {
 impl PanCurve {
     fn gains(&self, pan: f32) -> (f32, f32) {
         (self.0)(pan)
+    }
+}
+
+/// 节点的**输入级**：输入端求和之后、插入链之前的一级增益
+/// （静态推子 + 可选 [`TrackGainAutomation`]；没有声相 —— 声相在
+/// [`OutputStage`]）。
+///
+/// ## 为什么存在（母带链序修复）
+///
+/// 通道条的物理顺序是「求和 → 推子 → 插入链」。此前主总线的推子在计划里
+/// **没有落点**：两个离线装配面（MCP `build` 第 9 步、app `render_core`
+/// 3b 步）只能在 `execute` **之后**对整段输出再乘一次 ⇒ 主总线插入链里的
+/// **限幅器跑在推子之前**，推子推过 0 dB 就把限幅器钉住的输出整体抬过
+/// 0 dBFS（实测：+2 dB ⇒ 36 598 个削波样本；+4 dB ⇒ 88 346 个）。本级把
+/// 主推子搬回链内：求和 → **推子（本级）** → 插入链（…… → 限幅器 ——
+/// 母带链最后一环）。两个装配面经 [`RenderPlan::attach_input_stage`] 挂它，
+/// ⛔ 不再在执行后乘主推子。
+///
+/// ## 恒等快路径（与 [`OutputStage`] 同一条纪律）
+///
+/// 增益 `1.0` 且自动化恒等（或未挂）⇒ [`Self::apply_gain`] 一个样本都不碰：
+/// 主推子 = 0 dB 的工程与接线前**逐位相同**。非恒等时走
+/// [`TrackGainAutomation::apply_gain_block`] —— 它恒等时退化为纯静态缩放、
+/// 非恒等时内部按 [`AUTOMATION_BLOCK_SIZE`] 以**绝对帧**分块，与 `execute`
+/// 的 L1 块边界对齐 ⇒ 自动化产物与旧「执行后整段乘一次」逐位相同
+/// （变的只是乘法与插入链的相对顺序，正是本级要修的那件事）。
+#[derive(Clone, Debug)]
+pub struct InputStage {
+    /// 静态线性推子增益。
+    gain: f32,
+    /// 本节点的 `TrackVolume` 自动化（`None` = 没有可求值泳道）。
+    gain_automation: Option<TrackGainAutomation>,
+}
+
+impl Default for InputStage {
+    /// 与 [`InputStage::new`] 相同：恒等（`gain = 1.0`、无自动化）。
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InputStage {
+    /// 恒等输入级（`gain = 1.0`、无自动化）。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            gain: 1.0,
+            gain_automation: None,
+        }
+    }
+
+    /// 设静态推子（线性增益；非有限值退回恒等，与 [`OutputStage::with_gain`] 同口径）。
+    #[must_use]
+    pub fn with_gain(mut self, gain: f32) -> Self {
+        self.gain = if gain.is_finite() { gain } else { 1.0 };
+        self
+    }
+
+    /// 挂上该节点的 `TrackVolume` 自动化（求值 / 5 ms 平滑 / 恒等判定都在
+    /// [`TrackGainAutomation`]；本层⛔ 不复制）。
+    #[must_use]
+    pub fn with_gain_automation(mut self, automation: TrackGainAutomation) -> Self {
+        self.gain_automation = Some(automation);
+        self
+    }
+
+    /// 恒等 ⇒ [`Self::apply_gain`] 一个样本都不碰。
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.gain == 1.0
+            && self
+                .gain_automation
+                .as_ref()
+                .is_none_or(TrackGainAutomation::is_identity)
+    }
+
+    /// 在**插入链之前**应用这一级：静态推子 × 可选 R55 自动化
+    /// （与 [`OutputStage::apply`] 的增益半边同一套语义，⛔ 不复制平滑实现）。
+    fn apply_gain(&mut self, out: &mut [f32], first_frame: u64, frames: usize, channels: usize) {
+        if channels == 0 || frames == 0 || self.is_identity() {
+            return;
+        }
+        let frames = frames.min(out.len() / channels);
+        if frames == 0 {
+            return;
+        }
+        match self.gain_automation.as_mut() {
+            Some(automation) => {
+                automation.apply_gain_block(out, first_frame, frames, channels, self.gain);
+            }
+            None => {
+                if self.gain != 1.0 {
+                    for sample in &mut out[..frames * channels] {
+                        *sample *= self.gain;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1154,6 +1263,9 @@ impl RenderPlan {
                     device_param_automations: Vec::new(),
                     delay_lines: Vec::new(),
                     scratch: vec![0.0; block_width],
+                    // 默认恒等：没有调用方挂主推子时，`render_node` 在插入链
+                    // 之前一个样本都不碰（零音频回归）。
+                    input: InputStage::new(),
                     inserts,
                     phase_delay: if effective_delay > 0 {
                         Some(DelayLine::new(effective_delay as usize, options.channels))
@@ -1440,6 +1552,19 @@ impl RenderPlan {
             return false;
         };
         self.states[slot].output = stage;
+        true
+    }
+
+    /// 给一个节点挂**输入级**（母带链序修复：主总线推子）。
+    ///
+    /// 落点是 `render_node` 的**输入端求和之后、插入链之前**。恒等输入级可以
+    /// 挂（一个样本都不碰）；返回 `false` = 该节点不在保留子图（被剪枝或
+    /// 未知）⇒ 调用方据此如实登记，而不是谎称"推子已应用"。
+    pub fn attach_input_stage(&mut self, node: EntityId, stage: InputStage) -> bool {
+        let Some(slot) = self.slot_of.get(&node).copied() else {
+            return false;
+        };
+        self.states[slot].input = stage;
         true
     }
 
@@ -1755,6 +1880,7 @@ fn detached_state(node: EntityId) -> NodeState {
         device_param_automations: Vec::new(),
         delay_lines: Vec::new(),
         scratch: Vec::new(),
+        input: InputStage::new(),
         inserts: None,
         phase_delay: None,
         phase_invert: false,
@@ -1766,7 +1892,8 @@ fn detached_state(node: EntityId) -> NodeState {
     }
 }
 
-/// 渲染一个节点的一块：**输入端求和**（自己的源 ＋ 全部入边）→ 插入链 → **输出级**
+/// 渲染一个节点的一块：**输入端求和**（自己的源 ＋ 全部入边）→ **输入级**
+/// （[`InputStage`]，主总线推子；恒等时不碰样本）→ 插入链 → **输出级**
 /// （[`OutputStage`]，任务单 `#296`）。
 ///
 /// ⭐ 任务单 `#240`（Logic Pro 的通道条语义）：Logic 的通道条只有一种形状 ——
@@ -1791,6 +1918,7 @@ fn render_node(
         device_param_automations,
         delay_lines,
         scratch,
+        input,
         inserts,
         phase_delay,
         phase_invert,
@@ -1848,6 +1976,18 @@ fn render_node(
             }
         }
     }
+    // ---- 输入级（母带链序修复）：求和之后、插入链之前 ----
+    //
+    // 主总线推子挂在这里（[`InputStage`]，调用方经 `attach_input_stage` 挂）：
+    // 推子先把信号送进插入链，链尾的限幅器因此是母带链最后一环 —— 推子推过
+    // 0 dB 只会让限幅器压得更多，⛔ 不再把限幅后的成品整体抬过 0 dBFS。
+    // 恒等（未挂 / 推子 0 dB）时一个样本都不碰。
+    input.apply_gain(
+        buffer,
+        context.first_frame,
+        context.frames,
+        context.channels,
+    );
     // 插入点: **输入端求和之后**（本票的裁决 —— Aux 返回轨因此也能被它自己的链处理）。
     // ⭐ 任务单 `#173`：主总线也走这一行（`inserts` 不再是 `None`）⇒ 导出里
     // master 上的设备真的生效；顺序与实时侧同一条链：EQ → 混响 → 卷积。
