@@ -339,8 +339,8 @@ fn hat_highpass_does_not_touch_kick() {
 fn dangling_dest_lane_is_unevaluated_and_bit_identical() {
     // chains 只有 hats 组：dest 键 35 没有组认领。
     let chains = vec![chain(&[42], "hats", Vec::new())];
-    let (project, track) = project(NOTES, chains, Some((36, 35)));
-    let (out, evaluated) = render(&project, track, true);
+    let (dangling_project, track) = project(NOTES, chains, Some((36, 35)));
+    let (out, evaluated) = render(&dangling_project, track, true);
     assert_eq!(evaluated, 0, "目的键落空的边不得求值");
     let chains = vec![chain(&[42], "hats", Vec::new())];
     let (plain_project, track) = project(NOTES, chains, None);
