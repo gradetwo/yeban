@@ -1483,6 +1483,31 @@ fn send_armed(share: &BranchShare<'_>, route: &RouteTarget) -> bool {
 /// （由 `self.snapshot.begin_block()` 借出）与一批 `&mut` 字段。把字段**逐个借出来**
 /// （`render_block` 顶部本来就 `let Self { … } = self;` 解构过一次）⇒ 两边的借用
 /// 互不相交，因此合法。本结构**只是借用视图**：不拥有状态、不分配、不引入新语义。
+/// ⭐ **stage 26/30**：一个节点的出边补偿量是否**全等**。
+///
+/// * **全等**（含所有单出边节点）⇒ 一条节点级延迟线就能同时满足每条边 ⇒ 既有快路
+///   （逐位不变）；
+/// * **不全等** ⇒ 必须逐边：每条边各自吃自己的 `D(u→s) = L(s) − arrival(u)`
+///   （`EdgeBank`，键是 `(源, 目的)`）。
+///
+/// 逐轨与总线两处**共用**这一个判据：两处口径不会漂移成"一边判等、一边判不等"。
+fn edges_share_one_shift(
+    edge_pdc: &crate::graph::EdgeBank,
+    node: &EntityId,
+    routes: &[RouteTarget],
+) -> bool {
+    let mut seen: Option<usize> = None;
+    for route in routes {
+        let shift = edge_pdc.delay_of(node, &route.destination()).unwrap_or(0);
+        match seen {
+            None => seen = Some(shift),
+            Some(first) if first != shift => return false,
+            Some(_) => {}
+        }
+    }
+    true
+}
+
 struct BranchShare<'a> {
     pdc: &'a mut CompensationBank,
     /// ⭐ **stage 26**：**逐边**补偿延迟池（键是 `(源, 目的)`）。
@@ -2174,6 +2199,14 @@ fn render_branch(
                 rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
             }
         }
+        // ⭐ **stage 30**：本轨的去向（任务单 `#154`）与"出边补偿量是否全等"必须在
+        // PDC **之前**定下来：
+        //   * 有音频出边 ⇒ 每条边一项（含增益）；
+        //   * 没有音频出边 ⇒ 一项"直连 master、单位增益"（接线前的行为）；
+        //   * 出边补偿量**不全等** ⇒ 节点级这条延迟线不参与（改为声相之后**逐边**
+        //     补偿，见 `route_panned_or_per_edge!`）。
+        let routes = routing.routes(&track);
+        let track_edges_uniform = edges_share_one_shift(share.edge_pdc, &track, routes);
         // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
         // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
         // "在进入总线求和节点前"。延迟量在快照边界武装好（见 2b''），
@@ -2188,15 +2221,21 @@ fn render_branch(
         //
         // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
         // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
-        if stereo_track {
-            // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
-            share.pdc.apply_pair(
-                &track,
-                &mut share.track_scratch[..frames],
-                &mut share.track_scratch_r[..frames],
-            );
-        } else {
-            share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        // ⚠ **stage 30 的分岔**：出边补偿量全等时仍走这里（节点级一条线，逐位不变）；
+        // 不全等时**跳过**它 —— 那一路的补偿量在声相之后逐边施加（`EdgeBank`），
+        // 若两边都施加就会补偿两次。代价如实登记：这一档下本轨的节点级延迟线
+        // 本量子不推进（与总线转发段 stage 26 慢路同一条边界）。
+        if track_edges_uniform {
+            if stereo_track {
+                // ⭐ stage 8：一条延迟线的**一个游标**同时服务左右两条缓冲。
+                share.pdc.apply_pair(
+                    &track,
+                    &mut share.track_scratch[..frames],
+                    &mut share.track_scratch_r[..frames],
+                );
+            } else {
+                share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+            }
         }
         // --- 手动相位对齐第一层：PDC 之后、声相/母线求和之前 ---
         //
@@ -2226,10 +2265,7 @@ fn render_branch(
         let pan_index = share.pan_gains[..*share.armed_pan_slots]
             .iter()
             .position(|(id, _, _)| *id == track);
-        // ⭐ 本轨的去向（任务单 `#154`）。`routes` 在构造期编译好：
-        //   * 有音频出边 ⇒ 每条边一项（含增益）；
-        //   * 没有音频出边 ⇒ 一项"直连 master、单位增益"（接线前的行为）。
-        let routes = routing.routes(&track);
+        // ⚠ `routes` 已在 PDC 之前绑定（stage 30：逐边分岔也要用它）。
         // ⚠ **逐位不变的快路**：只有一条"直连 master、单位增益"的出边时，走**原来那条**
         // 求和路径（常量/平滑两个分支逐字未动）⇒ 既有工程与三条承重指纹都不受影响。
         //
@@ -2257,6 +2293,60 @@ fn render_branch(
             frames: &mut *share.send_automation_frames,
             enabled: process_sends,
         };
+
+        // ⭐ **stage 30**：声相之后、进母线求和之前的**去向分岔**（两个调用点共用一份实现）。
+        //
+        // * **全等**（绝大多数工程）⇒ 既有快路：一次 `route_panned` 全部出边，逐位不变；
+        // * **不全等** ⇒ 逐边：把声相后的基信号（立体声）存回 `track_scratch(_r)`，每条边
+        //   拷一份、过**自己的**延迟线（`EdgeBank`）、只路由这一条边 ——
+        //   `arrival(track) + D(track→s) == L(s)` 在每条边上独立成立。
+        macro_rules! route_panned_or_per_edge {
+            ($frames:expr) => {{
+                if track_edges_uniform {
+                    route_panned(
+                        routes,
+                        routing,
+                        master,
+                        &share.reverb_scratch[0][..$frames],
+                        &share.reverb_scratch[1][..$frames],
+                        out,
+                        share.routing_buses,
+                        &mut sends,
+                    );
+                } else {
+                    share.track_scratch[..$frames]
+                        .copy_from_slice(&share.reverb_scratch[0][..$frames]);
+                    share.track_scratch_r[..$frames]
+                        .copy_from_slice(&share.reverb_scratch[1][..$frames]);
+                    for route in routes {
+                        {
+                            let (first, second) = share.reverb_scratch.split_at_mut(1);
+                            first[0][..$frames].copy_from_slice(&share.track_scratch[..$frames]);
+                            second[0][..$frames].copy_from_slice(&share.track_scratch_r[..$frames]);
+                        }
+                        {
+                            let (first, second) = share.reverb_scratch.split_at_mut(1);
+                            share.edge_pdc.apply_pair(
+                                &track,
+                                &route.destination(),
+                                &mut first[0][..$frames],
+                                &mut second[0][..$frames],
+                            );
+                        }
+                        route_panned(
+                            core::slice::from_ref(route),
+                            routing,
+                            master,
+                            &share.reverb_scratch[0][..$frames],
+                            &share.reverb_scratch[1][..$frames],
+                            out,
+                            share.routing_buses,
+                            &mut sends,
+                        );
+                    }
+                }
+            }};
+        }
         if process_bus_inserts {
             // ⭐ 任务单 `#158`：**处理型总线**的自身声源先以"声相之后"的立体声并入
             // **自己的**总线暂存槽（单位增益）。出边的增益**不在这里乘**：等 3a⁗
@@ -2351,16 +2441,7 @@ fn render_branch(
                         );
                     }
                 }
-                route_panned(
-                    routes,
-                    routing,
-                    master,
-                    &share.reverb_scratch[0][..frames],
-                    &share.reverb_scratch[1][..frames],
-                    out,
-                    share.routing_buses,
-                    &mut sends,
-                );
+                route_panned_or_per_edge!(frames);
             }
             *share.pan_automation_frames = share.pan_automation_frames.wrapping_add(frames as u64);
         } else {
@@ -2416,16 +2497,7 @@ fn render_branch(
                         );
                     }
                 }
-                route_panned(
-                    routes,
-                    routing,
-                    master,
-                    &share.reverb_scratch[0][..frames],
-                    &share.reverb_scratch[1][..frames],
-                    out,
-                    share.routing_buses,
-                    &mut sends,
-                );
+                route_panned_or_per_edge!(frames);
             }
         }
     }
@@ -2577,26 +2649,9 @@ fn render_branch(
             // 为什么 `D == 0` 也要调用：`DelayLine` 的"环的不变量"要求在停走带时
             // 也推进（与按轨那条同一条纪律），而且 `processed_blocks` 只在**非零**
             // 延迟时增长 ⇒ 零延迟的调用不会污染"真的补过"的读数。
-            let edges_share_one_shift = {
-                let mut uniform = true;
-                let mut seen: Option<usize> = None;
-                for route in routes {
-                    let shift = share
-                        .edge_pdc
-                        .delay_of(node, &route.destination())
-                        .unwrap_or(0);
-                    match seen {
-                        None => seen = Some(shift),
-                        Some(first) if first != shift => {
-                            uniform = false;
-                            break;
-                        }
-                        Some(_) => {}
-                    }
-                }
-                uniform
-            };
-            if edges_share_one_shift {
+            // ⭐ **stage 30**：与逐轨那一侧**同一个**判据（`edges_share_one_shift`）。
+            let uniform_edges = edges_share_one_shift(share.edge_pdc, node, routes);
+            if uniform_edges {
                 {
                     let (first, second) = share.reverb_scratch.split_at_mut(1);
                     share

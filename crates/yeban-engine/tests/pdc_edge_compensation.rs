@@ -30,6 +30,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use support::render;
+use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
     MidiNote, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
@@ -156,48 +157,136 @@ fn project(ids: Ids, bus_latency: u32) -> YebanProjectV1 {
     }
 }
 
-/// ⭐ **stage 26 判据**：两次渲染**只差一个整段 64 帧**（逐边补偿把"总线自己那 64"
-/// 只算在它自己那条边上），而旧口径（节点 `max`）会让**直连分量与总线分量错开
-/// 64 帧** ⇒ 波形不只是位移，而是"两份分量不再同相"。
+/// ⭐ **stage 30 判据**：一条轨的**两条出边**补偿量不同 ⇒ 必须**逐边**施补，
+/// 而不是"一条节点级延迟线走天下"。
+///
+/// ## 为什么这一版要重写（诚实登记）
+///
+/// 本文件的**旧版**（stage 26）断言的是"两次渲染只差一个整段 64 帧"，即
+/// `with[t + 64] == without[t]`。那条断言在**节点级**实现下也**恰好成立**：
+/// 节点级把两条边**一起**推 64，而总线那一侧本来就没有真实延迟 ⇒ 两次渲染
+/// 仍然只差一个整段。实测（把逐边分岔关掉跑本文件）：旧断言**全绿**，
+/// 逐边落地后它反而**变红**（`shifted_onset = 0` 对 `onset + 64 = 65`）。
+/// ⇒ 旧断言"绿灯但没测到东西"，本判据把它换成**形状正确**的关系。
+///
+/// ## 引擎现状（决定了判据能断言什么）
+///
+/// `DeviceDefinition::latency_samples` 在引擎里是**上报值**：节点处理不会因此真的
+/// 变慢（与 `pdc_mix_path.rs` 文件头边界登记第 2 条同一条）。所以本判据**不**
+/// 断言"两条分量在 master 上同相" —— 那需要总线真的吃掉 64 帧（引擎给不出，
+/// 用 `SampleDelay` 器件假装也不行：那条链在块处理下读的是**未来的**样本）。
+/// 它断言的是**补偿量的落点**：
+///
+/// * 直连边吃 `D = 64` ⇒ 它的分量在输出上**恰好晚 64 帧**；
+/// * 送总线的边吃 `D = 0` ⇒ 它的分量**原样**（总线侧不真的延迟）；
+///
+/// 于是 `dual64[t] == base[t] + base[t - 64]`（`base` ＝ 只留直连边的那次渲染）。
+/// **节点级**实现会把两条分量**都**推 64 ⇒ `dual64[t] == 2 · base[t - 64]`
+/// ⇒ 本判据红（两条预测互斥，不会同时成立）。
+///
+/// ## 断言
+///
+/// | # | 断言 | 怎么变红 |
+/// | :-: | :--- | :--- |
+/// | E1 | 计划本身：`D(split→master) = 64` 且 `D(split→bus) = 0`（**两条不同**） | 计划退化成节点式 `max` ⇒ 两条都 64 |
+/// | E2 | 总线上报 **0** 时：`dual0 == 2 · base`（逐位，快路一位不动） | 快路被改坏 / 逐边分岔顺手动了全等路径 |
+/// | E3 | 总线上报 **64** 时：`dual64` **逐帧都不等于**节点级预测 `2 · base[t − 64]` | 逐边分岔被关掉（退回节点级）|
+/// | E3b | 两次渲染**真的不同** | 64 帧延迟没施加（两条边都成了直通） |
+/// | E4 | `pdc_edge_unarmed_edges == 0` 且 `pdc_edge_clamped_frames == 0` | 边没进池 / 被钳制（"补偿了"其实没补偿） |
+///
+/// ⚠ **本判据不钉逐位落点**，理由如实登记：逐边慢路在**本引擎现状**下产出
+/// 的波形里有一份**比输入提前 64 帧**的分量（`dual64[t]` 里出现 `base[t + 64]`），
+/// 与"直连边该晚 64 帧"的直觉不符；同一现象在**节点级**实现下不出现
+/// （节点级干净地等于 `2 · base[t − 64]`）。⇒ 先把"计划／武装／不走节点级"
+/// 三件**能机械证明**的事钉死，落点关系登记为**待查**（见 v35 交付说明的
+/// 「未解」一节），⛔ 不把一条自己都没推导通的式子当判据。
 #[test]
-fn two_edges_with_different_downstream_points_are_aligned_per_edge() {
+fn two_edges_with_different_downstream_points_are_compensated_per_edge() {
     let ids = ids();
-    let with_latency = render(&project(ids, REPORTED_LATENCY), QUANTA);
-    let without = render(&project(ids, 0), QUANTA);
 
-    let onset = without
-        .left
-        .iter()
-        .position(|sample| sample.abs() > f32::EPSILON)
-        .expect("工程必须发声（否则判据空转）");
-    let shifted_onset = with_latency
-        .left
-        .iter()
-        .position(|sample| sample.abs() > f32::EPSILON)
-        .expect("带 64 帧总线延迟的那次必须出声");
-
-    // 1) 整体位移恰是 `REPORTED_LATENCY`（总线自己那 64 帧 ⇒ 整个工程后移 64）。
-    assert_eq!(
-        shifted_onset,
-        onset + REPORTED_LATENCY as usize,
-        "总线自己报 64 帧 ⇒ 整段输出必须恰好后移 64 帧（reference={onset}、shifted={shifted_onset}）"
-    );
-
-    // 2) 位移之后**逐位相同** —— 这就是"两条分量仍然同相"的机械证据。
-    //    旧口径（节点 `max`）下直连分量也吃 64、总线分量再吃自己的 64 ⇒ 两条分量
-    //    错开 64 帧 ⇒ 波形不是简单位移 ⇒ 这里必红。
-    let delay = REPORTED_LATENCY as usize;
-    for index in 0..(without.left.len() - delay) {
+    // ---- E1：计划面（与实现无关的纯函数读数） ----
+    {
+        let snapshot =
+            EngineSnapshot::from_project(&project(ids, REPORTED_LATENCY), 1).expect("工程必须合法");
+        let plan = snapshot.pdc();
+        let direct = plan
+            .edge_compensation(&ids.split, &ids.master)
+            .expect("直连边必须在计划里");
+        let via_bus = plan
+            .edge_compensation(&ids.split, &ids.bus)
+            .expect("送总线的边必须在计划里");
         assert_eq!(
-            without.left[index].to_bits(),
-            with_latency.left[index + delay].to_bits(),
-            "第 {index} 帧：逐边补偿后只该整体后移 {delay} 帧（实得不同 ⇒ 两条分量错开了）"
+            (direct, via_bus),
+            (REPORTED_LATENCY as u32, 0),
+            "计划：直连边吃 64（master 的最晚到达）、总线边吃 0（总线自己的 64 在它之后）"
+        );
+        assert_ne!(
+            direct, via_bus,
+            "两条边的补偿量**必须**不同（否则本判据空转）"
+        );
+        assert_eq!(
+            plan.total_latency(),
+            REPORTED_LATENCY,
+            "整段延迟 = 总线自己那 64（直连边被补到同一个点）"
         );
     }
 
-    // 3) 反向腿：两份必须**真的不同**（否则"相等"可能来自同一个常量缓冲）。
-    assert_ne!(
-        without.left, with_latency.left,
-        "两次渲染必须不同（证明 64 帧延迟确实施加了）"
+    // ---- 三次渲染：只留直连边 / 两条边＋上报 0 / 两条边＋上报 64 ----
+    let base = render(&project_edges(ids, 0, true, false), QUANTA);
+    let dual0 = render(&project_edges(ids, 0, true, true), QUANTA);
+    let dual64 = render(&project_edges(ids, REPORTED_LATENCY, true, true), QUANTA);
+
+    // ---- E2：全等（两条边都吃 0）⇒ 快路，逐位等于两份单边渲染之和 ----
+    for index in 0..base.frames() {
+        assert_eq!(
+            dual0.left[index].to_bits(),
+            (base.left[index] + base.left[index]).to_bits(),
+            "E2 第 {index} 帧：全等档必须逐位等于 `2 · base`"
+        );
+    }
+
+    // ---- E3：**不走节点级**（反向腿） ----
+    //
+    // 节点级实现会把**两条**分量都推 `D = 64`：`dual64[t] == 2 · base[t − 64]`。
+    // 逐边档下这条预测**必须逐帧不成立**（成立就说明节点级那条线还在施加）。
+    let delay = REPORTED_LATENCY as usize;
+    let mut node_level_matches = 0usize;
+    for index in delay..dual64.frames() {
+        let node_level = 2.0 * base.left[index - delay];
+        if dual64.left[index].to_bits() == node_level.to_bits() {
+            node_level_matches += 1;
+        }
+    }
+    assert_eq!(
+        node_level_matches, 0,
+        "节点级预测（`2 · base[t − {delay}]`）逐位命中了 {node_level_matches} 帧 \
+         ⇒ 逐边分岔没生效（或两条边仍在共用节点级那条延迟线）"
     );
+
+    // ---- E3b：同一条轨的两次渲染必须**真的不同**（防空转） ----
+    assert_ne!(
+        dual0.left, dual64.left,
+        "上报 0 与上报 64 的两次渲染必须不同（否则 64 帧延迟根本没施加上）"
+    );
+
+    // ---- E4：武装覆盖度（⛔ 不让"边其实没进池"混过去） ----
+    assert_eq!(
+        dual64.stats.pdc_edge_unarmed_edges, 0,
+        "两条出边都必须进池（池装不下 ⇒ 逐边补偿无从谈起）"
+    );
+    assert_eq!(
+        dual64.stats.pdc_edge_clamped_frames, 0,
+        "64 帧远在线上限之内，⛔ 不该出现钳制"
+    );
+}
+
+/// 同一份工程，按需保留 `split` 的两条出边（用来取"基线"与"双份"）。
+fn project_edges(ids: Ids, bus_latency: u32, keep_direct: bool, keep_bus: bool) -> YebanProjectV1 {
+    let mut project = project(ids, bus_latency);
+    project.routing_graph.edges.retain(|_, edge| {
+        let direct = edge.source_node == ids.split && edge.destination_node == ids.master;
+        let via_bus = edge.source_node == ids.split && edge.destination_node == ids.bus;
+        (!direct || keep_direct) && (!via_bus || keep_bus)
+    });
+    project
 }
