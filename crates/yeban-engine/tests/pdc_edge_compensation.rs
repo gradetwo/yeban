@@ -193,13 +193,28 @@ fn project(ids: Ids, bus_latency: u32) -> YebanProjectV1 {
 /// | E3 | 总线上报 **64** 时：`dual64` **逐帧都不等于**节点级预测 `2 · base[t − 64]` | 逐边分岔被关掉（退回节点级）|
 /// | E3b | 两次渲染**真的不同** | 64 帧延迟没施加（两条边都成了直通） |
 /// | E4 | `pdc_edge_unarmed_edges == 0` 且 `pdc_edge_clamped_frames == 0` | 边没进池 / 被钳制（"补偿了"其实没补偿） |
+/// | E5 | 波形落点：`dual64[t] == base[t] + base[t − 64]` **逐位** | 任一分量落点偏离计划（提前/旋转/重复喂线） |
 ///
-/// ⚠ **本判据不钉逐位落点**，理由如实登记：逐边慢路在**本引擎现状**下产出
-/// 的波形里有一份**比输入提前 64 帧**的分量（`dual64[t]` 里出现 `base[t + 64]`），
-/// 与"直连边该晚 64 帧"的直觉不符；同一现象在**节点级**实现下不出现
-/// （节点级干净地等于 `2 · base[t − 64]`）。⇒ 先把"计划／武装／不走节点级"
-/// 三件**能机械证明**的事钉死，落点关系登记为**待查**（见 v35 交付说明的
-/// 「未解」一节），⛔ 不把一条自己都没推导通的式子当判据。
+/// ## 待查项收口（stage 30 登记 → 本线查清并修复）
+///
+/// stage 30 时本判据**不钉逐位落点**，因为逐边慢路产出的波形里有一份
+/// **比输入提前 64 帧**的分量（`dual64[t]` 里出现 `base[t + 64]`），与"直连边
+/// 该晚 64 帧"的直觉不符，而同一现象在**节点级**实现下不出现。本线
+/// （`line/pdc-waveform-investigation`）的实测分解（逐位命中帧数／1024 帧）：
+/// `busonly == base` 全中、`dir64 == base[t − 64]` 全中、期望式
+/// `dual64 == base + base[t − 64]` 只中每量子的后半（512）、而
+/// `dual64 == base + rotate64(base)`（每量子内前 64 帧取 `base[t + 64]`、
+/// 后 64 帧取 `base[t − 64]`）**全中**。插桩计数：每量子 `EdgeBank::apply_pair`
+/// 被调用 4 次 —— 逐轨段以真实块处理两条边（输出正确），其后**总线转发段
+/// （3a⁗）又以全零块处理一遍**。
+///
+/// 根因：3a⁗ 遍历 `RoutingPlan::slots()`（全部可渲染节点，含纯轨），把每个
+/// 节点的总线累积再转发一次。纯轨 `split` 无入边 ⇒ 累积恒零，但它的边线已被
+/// 逐轨段喂过真实块；第二遍零块让延迟线把未到点的真实信号尾巴
+/// （`B[64..128]`）提前吐出并路由进 master ⇒ 每量子旋转。节点级对照干净，
+/// 是因为那类工程 `uses_buses == false`、3a⁗ 整段跳过；`dual0` 干净，是因为
+/// 各线 D = 0 时第二遍输出恒零。修复：3a⁗ 跳过无入边节点（其累积可证恒空，
+/// 见 `rt.rs` 该处注释）。修复后 E5 成立 ⇒ 落点自此钉死。
 #[test]
 fn two_edges_with_different_downstream_points_are_compensated_per_edge() {
     let ids = ids();
@@ -278,6 +293,25 @@ fn two_edges_with_different_downstream_points_are_compensated_per_edge() {
         dual64.stats.pdc_edge_clamped_frames, 0,
         "64 帧远在线上限之内，⛔ 不该出现钳制"
     );
+
+    // ---- E5：波形落点（stage 30 待查项收口，根因见文件头） ----
+    //
+    // 直连分量恰好晚 64 帧、经总线分量原样：`dual64[t] == base[t] + base[t − 64]`
+    // （`t < 64` 时第二项为零）。修复前本式只在每量子的后半成立（前半是被总线
+    // 转发段第二遍喂线提前吐出的 `base[t + 64]`）⇒ 本断言对旧实现必红、对
+    // 修复后实现逐位全中。
+    for index in 0..base.frames() {
+        let delayed = if index >= delay {
+            base.left[index - delay]
+        } else {
+            0.0
+        };
+        assert_eq!(
+            dual64.left[index].to_bits(),
+            (base.left[index] + delayed).to_bits(),
+            "E5 第 {index} 帧：直连分量必须恰好晚 {delay} 帧、经总线分量必须原样"
+        );
+    }
 }
 
 /// 同一份工程，按需保留 `split` 的两条出边（用来取"基线"与"双份"）。
