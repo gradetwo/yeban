@@ -318,7 +318,12 @@ fn hat_highpass_does_not_touch_kick() {
     };
     let (with_hpf, track) = project(notes, chains(vec![hpf_strip()]), None);
     let (keyed_a, _) = render(&with_hpf, track, true);
-    let (without_hpf, track) = project(notes, chains(Vec::new()), None);
+    // 对照 = 同一条链、只把低切置 0（旁通位）：两份渲染的唯一差别是高通。
+    let bypassed = DeviceDefinition {
+        params: vec![param("hpf_hz", 0.0)],
+        ..comp_strip()
+    };
+    let (without_hpf, track) = project(notes, chains(vec![bypassed]), None);
     let (keyed_b, _) = render(&without_hpf, track, true);
     // 首个 hat 在帧 12000；其前只有 kick ⇒ 逐位相同。
     for (index, (a, b)) in keyed_a[..12_000 * 2]
