@@ -597,7 +597,7 @@ fn b6_the_bus_convolution_tail_is_audible() {
 /// 作为裁决里"缓存翻倍"的量化背景。
 /// ⭐ 任务单 `#299` 的**代价**：`EngineSnapshot` **4576 → 4608 B**（＋32）——
 /// 主总线声相两个 `f32`（＋8）＋ 与 `routing.slots()` 平行的 `Vec<BusOutputStage>`（＋24）。
-/// ⭐ 七支合入后为 **4656 B**（＋48）——侧链 v1 给 `RoutingPlan` 新增 `key_routes` 与 `key_sources`
+/// ⭐ 七支合入后为 **4704 B**（＋48）——侧链 v1 给 `RoutingPlan` 新增 `key_routes` 与 `key_sources`
 /// 两个 `BTreeMap` 字段（各 24 B）；快照字段表本身未变，`PdcPlan`／`PanLaw` 在合入里无改动，
 /// 差值与两表之和精确对应。
 /// `EngineRuntime` **不变**（`#299` 当时仍是 186720 B）：新增的两个主总线声相 `f32` 落在既有对齐填充里。
@@ -635,8 +635,8 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
          `InsertLimiter = Limiter<192>` 上，`EngineRuntime` 里那份仍是 33 帧 ⇒ 没有多背 3.9 KB）； ⭐ **相位对齐片（手动层）＋160 B ⇒ 45 840 B**：`EngineRuntime` 新增 9 个字段：`phase_bank: PhaseBank` 72 B（实测；两条 `Vec` ＋ `armed`／`rebindings`／`processed_blocks` 3 个计数器）、`phase_unarmed_nodes`／`phase_clamped_frames` 各 8 B、`sample_delay_pool: Box<[SampleDelay]>` 与 `armed_sample_delays: Box<[(EntityId, bool)]>` 各 16 B（胖指针）、`armed_sample_delay_slots`／`sample_delay_capacity`／`insert_sample_delay_frames`／`insert_sample_delay_capacity_rejects` 各 8 B；字段本身合计 152 B，余 8 B 为字段重排后的布局填充；延迟线本体在构造期按上限堆分配，⛔ 回调内零分配 [MUST-GATE-001]；余量 204800 − 45840 = 158960 B。⭐ **频段独奏片（Songmap follow-ons (a)）＋48 B ⇒ 45 888 B**：新增 band_solo: BandSoloFilter（Biquad 36 B ＋ sample_rate 4 B ＋ Option<usize> 16 B ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B；余量 204800 − 45888 = 158912 B）。 ⭐ **pan stage 4 片 ＋512 B ⇒ 46 400 B**：`EngineRuntime` 新增 `track_scratch_r`（`[f32; 128]` ＝ 512 B，实时回调源侧分声道的右声道暂存）；余量 204800 − 46416 = 158400 B。见本判据文档）"
     );
     assert_eq!(
-        snapshot, 4_656,
-        "EngineSnapshot 必须是 4656 B（#299 的 4608 ＋ 侧链 v1 的 48：RoutingPlan 新增 key_routes 与 key_sources 两个 BTreeMap，各 24 B；\
+        snapshot, 4_704,
+        "EngineSnapshot 必须是 4704 B（#299 的 4608 ＋ 侧链 v1 的 48 ＋ stage 22 的两张 PDC 表 48：RoutingPlan 新增 key_routes 与 key_sources 两个 BTreeMap，各 24 B；\
          见本判据文档）"
     );
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");

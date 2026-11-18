@@ -2431,8 +2431,13 @@ fn render_branch(
     // 已为它**跳过**了同一条链 ⇒ 每量子恰好跑一次（裁决与代价见模块头）。
     // 下混的输入是"发送之和 ＋ 它自己的声源"（后者由逐轨循环并入本槽）。
     //
-    // ⚠ **总线 PDC 仍未接**：本片只补插入链；边上的补偿延迟线与"总线级 PDC"是
-    // 另一个切片（与 `#154` 登记的边界一致）。
+    // ⭐ **stage 22 起总线级 PDC 已接**：每条总线的输出在**输出级之后、转发之前**
+    // 走 `CompensationBank::apply_pair` 的**成对**补偿延迟线（左右共用一条线的一个
+    // 游标）；⛔ 旧的"仍未接"登记作废。
+    //
+    // ⚠ 仍登记的两条边界：①一个节点只有**一条**延迟线 ⇒ 多出边只能共用一个补偿量
+    // （计划按"最长下游求和点"取值）；②离线渲染器与实时侧现在**同一张表**
+    // （下游求和式），`#154` 里"两边会不一致"的旧口径随之失效。
     if buses_needed {
         let slots = routing.slots();
         for (index, node) in slots.iter().enumerate() {
@@ -2535,6 +2540,25 @@ fn render_branch(
                         second[0][frame] = right;
                     }
                 }
+            }
+            // ⭐ **stage 22 —— 总线级 PDC 落地**：本总线的输出也走补偿延迟线。
+            //
+            // 位置：**输出级之后、转发之前**（`D(v)` 的定义就是"这个节点的输出
+            // 晚多少"）；⛔ 不在插入链之前（那会把器件自己的链延迟也提前补掉）。
+            //
+            // 为什么必须成对：stage 15 起总线信号是**两条**声道（`routing_buses`
+            // 的 `stereo_mut()`），左右共用同一条延迟线的写头 ⇒ 用 `apply_pair`
+            // （与主总线/试听分支的成对口径一致），⛔ 不能各 apply 一次（那会让
+            // 两条线各自累计 `processed_blocks`，读数翻倍、相位也可能错开）。
+            //
+            // 为什么 `D == 0` 也要调用：`DelayLine` 的"环的不变量"要求在停走带时
+            // 也推进（与按轨那条同一条纪律），而且 `processed_blocks` 只在**非零**
+            // 延迟时增长 ⇒ 零延迟的调用不会污染"真的补过"的读数。
+            {
+                let (first, second) = share.reverb_scratch.split_at_mut(1);
+                share
+                    .pdc
+                    .apply_pair(node, &mut first[0][..frames], &mut second[0][..frames]);
             }
             route_panned(
                 routes,

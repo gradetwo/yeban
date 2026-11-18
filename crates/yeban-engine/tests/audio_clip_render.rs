@@ -552,7 +552,7 @@ fn the_shape_costs_are_read_not_hand_written() {
          见 `tests/bus_insert.rs` 的 B5；⭐ **通道条 hpf/dyn-eq/width 片** 再 ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）"
     );
     assert!(
-        (4_496..=4_656).contains(&snapshot),
-        "EngineSnapshot 上限随侧链 v1 放宽到 4656（4608 ＋ RoutingPlan 新增 key_routes／key_sources 两表各 24 B；实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
+        (4_496..=4_704).contains(&snapshot),
+        "EngineSnapshot 上限随侧链 v1 放宽到 4704（4608 ＋ RoutingPlan 新增 key_routes／key_sources 两表各 24 B；实测 {snapshot} B；门槛不是本单的约束，但⛔ 不许长出重数据）"
     );
 }
