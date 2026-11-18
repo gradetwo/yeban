@@ -1175,6 +1175,21 @@ pub struct Region<'a> {
     /// 告警（旧口径是原样透传、求值期才钳位 —— 求值期本来就钳位
     /// ⇒ 听感零变化，见 [`clamp_static_pan_family`]）。
     pub pan: f32,
+    /// ⭐ **立体声像位置（`position`，%，规范范围 -100..=100，缺省 0）**。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/position/>：只对**立体声
+    /// 样本**生效，作用在 [`Region::width`] 的通道混合**之后**；sfizz 的
+    /// 实现是第二个声像级（与 `pan` 同一条等功率律，见 yeban-engine 的
+    /// 立体声级 `apply_stereo_width_position`）。装载期值域执法与
+    /// [`Region::pan`] 同款（[`clamp_static_pan_family`]）。
+    pub position: f32,
+    /// ⭐ **立体声宽度（`width`，%，规范范围 -100..=100，缺省 100）**。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/width/>：**100 ＝ 立体声
+    /// 原样**（缺省值，sfizz `Defaults.cpp` 同数，⛔ 不是 0）；0 ⇒ 两声道
+    /// 合成单声道；负值 ⇒ 左右互换。只对**立体声样本**生效。装载期值域
+    /// 执法与 [`Region::pan`] 同款（[`clamp_static_pan_family`]）。
+    pub width: f32,
     /// 轮替序号（`seq_position`，默认 1）。
     pub seq_position: u32,
     /// 轮替长度（`seq_length`，默认 1）。
@@ -2966,19 +2981,24 @@ pub(crate) fn build_region<'a>(
         None => 0.0,
     };
     // ⭐ 声像族其余两员（`position` / `width`，%；规范范围同为
-    // −100..=100）：本装载器**尚未建模**这两个参数（无存储、无求值，
-    // 旧行为是按未知 opcode 忽略）。Wang 2026-11-18 裁决把声像族静态值
-    // 的值域执法放在装载期 ⇒ 在此读取点对**可解析的有限数值**做越界
-    // 检查并告警（钳位值即生效值，将来建模时在同一读取点落存储）；
-    // 不可解析 / 非有限的写法维持旧行为（忽略，⛔ 不新增拒载），
-    // 域内值同样无告警、行为逐字不变。
-    for opcode in ["position", "width"] {
-        if let Some(value) = scopes.get(opcode)
-            && let Ok(parsed) = value.as_f32()
-        {
-            clamp_static_pan_family(opcode, parsed, line, &mut warnings);
-        }
-    }
+    // −100..=100）—— **建模补全（Wang 2026-11-18 令）**：上一线只有本
+    // 读取点的值域检查（无存储、无求值）；现在与 `pan` **完全同款**落值：
+    // 经 [`clamp_static_pan_family`] 钳位 ＋ 告警后存进 [`Region`]，
+    // 作用域继承同走 `scopes.get` 的四级链。
+    // ⚠ **行为变更（如实登记）**：不可解析 / 非有限的写法此前在此被
+    // 忽略，现在与 `pan` 一样走 `as_f32` 的明确 `Err` —— 「默认不能
+    // 静默」（Wang 2026-11-18 开发规则）的机械后果，⛔ 不再静默吞畸形值。
+    let position = match scopes.get("position") {
+        Some(value) => clamp_static_pan_family("position", value.as_f32()?, line, &mut warnings),
+        None => 0.0,
+    };
+    // ⚠ `width` 的缺省是 **100**（立体声原样），⛔ 不是 0 —— sfizz
+    // `Defaults.cpp` 与规范页表格行同数；缺省若写 0 会把所有立体声
+    // 样本压成单声道。
+    let width = match scopes.get("width") {
+        Some(value) => clamp_static_pan_family("width", value.as_f32()?, line, &mut warnings),
+        None => 100.0,
+    };
 
     // ---- 轮替 / 分组 ----
     let seq_position = read_u32(&scopes, "seq_position", None, 1)?;
@@ -3117,6 +3137,8 @@ pub(crate) fn build_region<'a>(
             amp_random,
             amplitude,
             pan,
+            position,
+            width,
             seq_position,
             seq_length,
             lorand,
@@ -4839,6 +4861,8 @@ mod tests {
             volume: 0.0,
             amp_random: 0.0,
             pan: 0.0,
+            position: 0.0,
+            width: 100.0,
             seq_position,
             seq_length,
             lorand: LORAND_DEFAULT,

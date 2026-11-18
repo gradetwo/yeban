@@ -954,6 +954,35 @@ pub enum ModTarget {
     /// （由 [`crate::instrument`] 单独读）。`cutoff_smoothccN`／`cutoff_stepccN`
     /// 落不进四后缀 ⇒ 按未知 opcode 忽略（与本模块其余四族同口径）。
     Cutoff,
+    /// ⭐⭐ `position`（**百分比**；声像族建模补全片的新目标，与 `pan` 同单位类别）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ %**（⛔ 不是基准 `position`）：
+    /// 基准 `position` 是 [`crate::Region::position`]（摊平表的
+    /// `PreparedRegion::position`），本目标只贡献**逐块可变的增量**
+    /// （见 [`position_value_with_baked`]）。
+    ///
+    /// ⚠ 本变体**只由 `position<suffix>` 四族**到达（`positionccN` /
+    /// `position_ccN` / `position_onccN` / `position_curveccN`；带下划线的
+    /// 两形是 ARIA 扩展行）；`position_smoothccN` / `position_stepccN`
+    /// 落不进四后缀 ⇒ 按未知 opcode 处理（与本模块其余族同口径）。
+    /// 域 `-100..=100`（与 `pan` 同族口径：sfizz 的 `positionMod` 给
+    /// ±200，本仓声像族随 `pan` 页表行取 ±100，且求值和另钳 ±100
+    /// ⇒ 更深的量没有额外可达值）。**加在末尾** ⇒ 既有十二个目标的
+    /// 下标一个都没动。
+    Position,
+    /// ⭐⭐ `width`（**百分比**；声像族建模补全片的新目标，与 `pan` 同单位类别）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ %**（⛔ 不是基准 `width`）：
+    /// 基准 `width` 是 [`crate::Region::width`]（缺省 **100** ＝ 立体声原样；
+    /// 摊平表的 `PreparedRegion::width`），本目标只贡献**逐块可变的增量**
+    /// （见 [`width_value_with_baked`]）。
+    ///
+    /// ⚠ 本变体**只由 `width<suffix>` 四族**到达（`widthccN` / `width_ccN` /
+    /// `width_onccN` / `width_curveccN`；`width_onccN` 是 SFZ v2 表行）；
+    /// `width_smoothccN` / `width_stepccN` 落不进四后缀 ⇒ 按未知 opcode
+    /// 处理。域 `-100..=100`（与 [`Self::Position`] 同口径）。**加在末尾**
+    /// ⇒ 既有十三个目标的下标一个都没动。
+    Width,
 }
 
 impl ModTarget {
@@ -969,10 +998,15 @@ impl ModTarget {
     /// ⭐ **被修订的只是条目数**：五个既有 ampeg 目标的下标（0..=4）逐位不变；
     /// `Amplitude`／`Tune`／`Volume` 的下标由 [`AmpegParam::COUNT`] 派生（7／8／9），
     /// 相对序不变 ⇒ 每个目标**自身**的求和序（同目标内按 CC 升序）逐位不变。
-    pub const COUNT: usize = 12;
+    ///
+    /// ⭐ ⭐ **追加修订段（声像族建模补全片）—— 被修订的是上面那个总数那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条）：声像族补上 [`Self::Position`]／
+    /// [`Self::Width`] ⇒ 总数变 **14**。⭐ **被修订的只是条目数**：既有十二个
+    /// 目标的下标（相对序与绝对序）逐位不变，两名新目标分居末尾两格。
+    pub const COUNT: usize = 14;
 
-    /// 全部十二个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 12] = [
+    /// 全部十四个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 14] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
@@ -990,9 +1024,12 @@ impl ModTarget {
         Self::Pan,
         // ⭐⭐ 本片新增（stage 5）：`cutoff` 同样**加在末尾** ⇒ 既有十一个下标一个都不动。
         Self::Cutoff,
+        // ⭐⭐ 声像族建模补全片：`position`／`width` 同样**加在末尾** ⇒ 既有十二个下标一个都不动。
+        Self::Position,
+        Self::Width,
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=9`）；**这个序就是求和序**。
+    /// 在 [`Self::ALL`] 里的下标（`0..=13`）；**这个序就是求和序**。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -1002,6 +1039,8 @@ impl ModTarget {
             Self::Volume => AmpegParam::COUNT + 2,
             Self::Pan => AmpegParam::COUNT + 3,
             Self::Cutoff => AmpegParam::COUNT + 4,
+            Self::Position => AmpegParam::COUNT + 5,
+            Self::Width => AmpegParam::COUNT + 6,
         }
     }
 
@@ -1021,6 +1060,8 @@ impl ModTarget {
             Self::Volume => "volume",
             Self::Pan => "pan",
             Self::Cutoff => "cutoff",
+            Self::Position => "position",
+            Self::Width => "width",
         }
     }
 
@@ -1029,7 +1070,13 @@ impl ModTarget {
     pub const fn ampeg(self) -> Option<AmpegParam> {
         match self {
             Self::Ampeg(param) => Some(param),
-            Self::Amplitude | Self::Tune | Self::Volume | Self::Pan | Self::Cutoff => None,
+            Self::Amplitude
+            | Self::Tune
+            | Self::Volume
+            | Self::Pan
+            | Self::Cutoff
+            | Self::Position
+            | Self::Width => None,
         }
     }
 
@@ -1065,6 +1112,9 @@ impl ModTarget {
             Self::Pan => ModUnit::Percent,
             // 本片：`cutoff` 页 Modulation 表 Unit ＝ Hz。
             Self::Cutoff => ModUnit::Hertz,
+            // 声像族建模补全片：`position`／`width` 的 Modulation 表 Unit ＝ %（与 `pan` 同一类别，⛔ 不新开）。
+            Self::Position => ModUnit::Percent,
+            Self::Width => ModUnit::Percent,
         }
     }
 
@@ -1143,6 +1193,12 @@ impl ModTarget {
             // 本片：`cutoff` 页 Range ＝ `0 to SampleRate/2`，delta 因而取 ±24000 Hz
             // （44.1 kHz 族的半个采样率；更高采样率由 dsp 侧的系数钳制接住）。
             Self::Cutoff => (MIN_CUTOFF_MODULATION_DELTA, MAX_CUTOFF_MODULATION_DELTA),
+            // 声像族建模补全片：与 `pan` 同域 `-100..=100`（sfizz 的
+            // `positionMod`／`widthMod` 给 ±200；本仓声像族随 `pan` 页
+            // 表行取 ±100，且两者的求值和另钳 ±100 ⇒ ±200 域里超出
+            // ±100 的部分没有额外可达值）。
+            Self::Position => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            Self::Width => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
         }
     }
 }
@@ -1299,6 +1355,44 @@ pub fn pan_value_with_baked(
     };
     let (pan, _unresolved) = cc_value_with_baked(base, ModTarget::Pan, mods, probe);
     pan.clamp(MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
+}
+
+/// ⭐⭐ `position` 调制的**唯一求值**（声像族建模补全片）：百分比基准 ＋ CC
+/// 增量，**钳到 `-100..=100`** —— 与 [`pan_value_with_baked`] 同款三条：
+///
+/// * `probe == None` ⇒ 一项 CC 都不读 ⇒ **原样返回 `base`**；
+/// * 钳位是**语义**的一部分（`position` 的定义域就是 `-100..=100`）；
+/// * 求值本体是 [`cc_value_with_baked`]（与其它目标**同一份**，⛔ 没有第二套求和）。
+#[must_use]
+pub fn position_value_with_baked(
+    base: f32,
+    mods: &[BakedCcMod],
+    probe: Option<&dyn Fn(u8) -> u8>,
+) -> f32 {
+    let Some(probe) = probe else {
+        return base;
+    };
+    let (position, _unresolved) = cc_value_with_baked(base, ModTarget::Position, mods, probe);
+    position.clamp(MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
+}
+
+/// ⭐⭐ `width` 调制的**唯一求值**（声像族建模补全片）：百分比基准 ＋ CC
+/// 增量，**钳到 `-100..=100`** —— 与 [`pan_value_with_baked`] 同款三条。
+///
+/// ⚠ 基准缺省是 **100**（立体声原样），⛔ 不是 0：`width = 100` ＋ 正增量
+/// 钳到 100（不能更宽）、负增量才让声像变窄 —— 钳位域本身仍是同一对
+/// ±100（`width` 的定义域就是 `-100..=100`）。
+#[must_use]
+pub fn width_value_with_baked(
+    base: f32,
+    mods: &[BakedCcMod],
+    probe: Option<&dyn Fn(u8) -> u8>,
+) -> f32 {
+    let Some(probe) = probe else {
+        return base;
+    };
+    let (width, _unresolved) = cc_value_with_baked(base, ModTarget::Width, mods, probe);
+    width.clamp(MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
 }
 
 /// ⭐⭐ 一个八度的音分数（**音分 → 音高比** 换算的唯一分母；任务单 `#116`）。
@@ -1537,6 +1631,45 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
             return None;
         }
         return Some((ModTarget::Pan, form, digits));
+    }
+    // ⭐⭐ `position` 族（声像族建模补全片）：与 `pan` **同款**的四后缀识别
+    // （⛔ 不另开一套）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、
+    // `_oncc` 在 `cc` 之前。
+    // ⚠ 裸 `position=`（**静态基准**）在这里被 `strip_prefix("cc")?` 挡掉
+    // ⇒ 它不是本族目标（由 [`crate::instrument`] 单独读）；
+    // `position_smoothccN`／`position_stepccN` 落不进四后缀 ⇒ 不是本族。
+    if let Some(tail) = name.strip_prefix("position") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Position, form, digits));
+    }
+    // ⭐⭐ `width` 族（声像族建模补全片）：与 `pan` **同款**的四后缀识别。
+    // ⚠ 裸 `width=`（**静态基准**，缺省 100）同样被挡掉 ⇒ 不是本族目标；
+    // `width_smoothccN`／`width_stepccN` 落不进四后缀 ⇒ 不是本族。
+    if let Some(tail) = name.strip_prefix("width") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Width, form, digits));
     }
     // ⭐⭐ `cutoff` 族（本片 stage 5）：与 `pan`／`amplitude` **同款**的四后缀识别
     // （⛔ 不另开一套）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、`_oncc` 在 `cc` 之前。
@@ -1990,7 +2123,7 @@ mod tests {
         // `21`**（以及本数组末尾那一项）—— `#124` 在**末尾**追加第 22 项 `gain_cc9`
         // （`gain_ccN` 与那四个 `volume` 拼写落**同一个目标**）⇒ 行数 `21 → 22`。
         // ⚠ **被修订的只有行数**：`#104`～`#119` 的**前 21 项逐字未动**、归属一个都没改。
-        let cases: [(&str, ModTarget, ModulationForm, &str); 22] = [
+        let cases: [(&str, ModTarget, ModulationForm, &str); 30] = [
             (
                 "ampeg_attackcc100",
                 ModTarget::Ampeg(AmpegParam::Attack),
@@ -2094,6 +2227,36 @@ mod tests {
             // ⚠ 本单**只**收这一个拼写：⛔ `gain_onccN`／⛔ `gain_curveccN`／⛔ `gainccN`
             // （规范 Modulation 表里 `gain` 开头的**只有 `gain_ccN` 这一行**）。
             ("gain_cc9", ModTarget::Volume, ModulationForm::Delta, "9"),
+            // ⭐⭐ 声像族建模补全片：`position`／`width` 两族的四种后缀 ——
+            // 与 `pan` 族**同款**（⛔ 不另开一套识别）。
+            (
+                "position_oncc10",
+                ModTarget::Position,
+                ModulationForm::Delta,
+                "10",
+            ),
+            ("position_cc7", ModTarget::Position, ModulationForm::Delta, "7"),
+            (
+                "position_curvecc11",
+                ModTarget::Position,
+                ModulationForm::Curve,
+                "11",
+            ),
+            ("positioncc3", ModTarget::Position, ModulationForm::Delta, "3"),
+            (
+                "width_oncc10",
+                ModTarget::Width,
+                ModulationForm::Delta,
+                "10",
+            ),
+            ("width_cc7", ModTarget::Width, ModulationForm::Delta, "7"),
+            (
+                "width_curvecc11",
+                ModTarget::Width,
+                ModulationForm::Curve,
+                "11",
+            ),
+            ("widthcc3", ModTarget::Width, ModulationForm::Delta, "3"),
         ];
         for (name, target, form, digits) in cases {
             assert_eq!(
@@ -2198,6 +2361,21 @@ mod tests {
             "gain_oncc1",
             "gain_curvecc1",
             "gaincc1",
+            // ⭐ 声像族建模补全片：裸基准、smooth/step 形、空/畸形下标
+            // ⛔ 都不是本族（与 `volume` 族同口径）。
+            "position",
+            "width",
+            "position_smoothcc1",
+            "position_stepcc1",
+            "width_smoothcc1",
+            "width_stepcc1",
+            "position_oncc",
+            "width_cc",
+            "width_curvecc",
+            "position_oncc1x",
+            "width_cc-1",
+            "positions_oncc1",
+            "widths_oncc1",
         ] {
             assert_eq!(parse_modulation_name(bad), None, "{bad:?} must not match");
         }
@@ -2244,11 +2422,40 @@ mod tests {
         assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Pan);
         // ⭐ 本片（stage 5）：`Cutoff` 加在 `Pan` **之后** ⇒ "末尾"移到 `Cutoff`；
         // 既有十一个目标的下标**一个都没动**。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Cutoff);
+        //
+        // ⭐ ⭐ **追加修订段（声像族建模补全片）—— 被修订的是上面那句里
+        // "`Cutoff` 在 `COUNT - 1`（＝末尾）"那一支**（⛔ 原文一字未删，
+        // 口径同台账第 278 条）：补全片把 `Position`／`Width` 加在 `Cutoff`
+        // **之后** ⇒ "末尾"移到 `Width`，`Cutoff` 退到 `COUNT - 3`、`Position`
+        // 居 `COUNT - 2`。⚠ **被修订的只是"末尾"这个位置**：既有十二个目标
+        // 的下标**一个都没动** ⇒ 上面 `COUNT - 4` 起的四条相对断言逐位不变，
+        // 本条由 `COUNT - 1` 改钉 `COUNT - 3`。
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 3], ModTarget::Cutoff);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Position);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Width);
         assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
         assert_eq!(ModTarget::Volume.index(), AmpegParam::COUNT + 2);
         assert_eq!(ModTarget::Pan.index(), AmpegParam::COUNT + 3);
         assert_eq!(ModTarget::Cutoff.index(), AmpegParam::COUNT + 4);
+        assert_eq!(ModTarget::Position.index(), AmpegParam::COUNT + 5);
+        assert_eq!(ModTarget::Width.index(), AmpegParam::COUNT + 6);
+        // ⭐ 声像族两名新目标的单位与域（与 `Pan` 同读数）。
+        assert_eq!(ModTarget::Position.name(), "position");
+        assert_eq!(ModTarget::Width.name(), "width");
+        assert_eq!(ModTarget::Position.ampeg(), None);
+        assert_eq!(ModTarget::Width.ampeg(), None);
+        assert_eq!(ModTarget::Position.mod_unit(), ModUnit::Percent);
+        assert_eq!(ModTarget::Width.mod_unit(), ModUnit::Percent);
+        assert_eq!(ModTarget::Position.unit(), "%");
+        assert_eq!(ModTarget::Width.unit(), "%");
+        assert_eq!(
+            ModTarget::Position.delta_range(),
+            (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
+        );
+        assert_eq!(
+            ModTarget::Width.delta_range(),
+            (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
+        );
         assert_eq!(ModTarget::Tune.name(), "tune");
         assert_eq!(ModTarget::Tune.ampeg(), None);
         assert!(!ModTarget::Tune.is_time(), "`tune_onccN` 的单位是音分");
