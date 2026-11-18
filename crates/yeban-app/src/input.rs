@@ -1323,9 +1323,7 @@ impl InputContext {
                 (Key::Character('f'), false, false) => {
                     Resolution::Action(Action::FocusSidebarSearch)
                 }
-                (Key::Character('b'), true, false) => {
-                    Resolution::Action(Action::ToggleBrowser)
-                }
+                (Key::Character('b'), true, false) => Resolution::Action(Action::ToggleBrowser),
                 (Key::Character('b'), false, true) => Resolution::Action(Action::ToggleSidebar),
                 // **界面决定**（⛔ 不是规范点名）：标准 DAW 的**剪辑**静音键（轨静音是裸 `m`，
                 // 见第 6 步；两者靠作用域分开：`selected-track-id` vs `selected-clip-ulid`）。

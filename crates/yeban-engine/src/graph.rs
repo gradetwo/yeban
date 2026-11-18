@@ -561,11 +561,7 @@ impl PdcPlan {
     /// 逐边表里最大的一个补偿量（0 = 全表都是直通）。
     #[must_use]
     pub fn max_edge_compensation(&self) -> u32 {
-        self.edge_compensation
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(0)
+        self.edge_compensation.values().copied().max().unwrap_or(0)
     }
 
     /// `D(v) = L_max - arrival(v)`；`v` 不可达 master 时返回 `None`（无对齐意义）。

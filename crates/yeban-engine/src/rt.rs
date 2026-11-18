@@ -5319,10 +5319,10 @@ impl EngineRuntime {
                 // 但**分开记账**：`RearmShortfall::unarmed_nodes` 在边池里的语义是
                 // "没武装上的**边**数" ⇒ 记进 `pdc_edge_unarmed_edges`。
                 let edge_shortfall = edge_pdc.rearm(current.pdc());
-                *pdc_edge_unarmed_edges = pdc_edge_unarmed_edges
-                    .wrapping_add(edge_shortfall.unarmed_nodes as u64);
-                *pdc_edge_clamped_frames = pdc_edge_clamped_frames
-                    .wrapping_add(edge_shortfall.clamped_frames);
+                *pdc_edge_unarmed_edges =
+                    pdc_edge_unarmed_edges.wrapping_add(edge_shortfall.unarmed_nodes as u64);
+                *pdc_edge_clamped_frames =
+                    pdc_edge_clamped_frames.wrapping_add(edge_shortfall.clamped_frames);
 
                 // --- 2b'''') 手动相位对齐第一层：把这一份快照的逐轨延时/反转武装进预分配相位池 ---
                 //

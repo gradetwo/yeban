@@ -21401,7 +21401,8 @@ fn dispatch_aether_command(ui: &MainWindow, cmd: &str) {
                 "grid-strength-strong" => 2,
                 _ => 0,
             };
-            ui.global::<crate::ui::Tokens<'_>>().set_grid_strength(level);
+            ui.global::<crate::ui::Tokens<'_>>()
+                .set_grid_strength(level);
         }
         "toggle-clip-matrix" => {
             ui.set_show_clip_matrix(!ui.get_show_clip_matrix());

@@ -127,11 +127,11 @@ use yeban_engine::param::{
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::routing::edge_carries_audio;
 use yeban_engine::rt::{EngineRuntime, EngineStats};
-use yeban_engine::stats_mirror::EngineStatsMirror;
 use yeban_engine::sfz_instrument::SfzPlan;
 use yeban_engine::snapshot::{
     EngineSnapshot, RetireQueue, SnapshotError, SnapshotSlot, retire_channel,
 };
+use yeban_engine::stats_mirror::EngineStatsMirror;
 use yeban_engine::transport::{TransportMirror, TransportReading, TransportState};
 use yeban_model::AutomationTarget;
 use yeban_model::EntityId;
@@ -2096,9 +2096,8 @@ impl EngineHost {
         let pdc_edge_compensation_max = self
             .current_snapshot()
             .map_or(0, |snapshot| snapshot.pdc().max_edge_compensation());
-        let (pdc_chain_compensation_max, pdc_compensated_nodes) = self
-            .current_snapshot()
-            .map_or((0, 0), |snapshot| {
+        let (pdc_chain_compensation_max, pdc_compensated_nodes) =
+            self.current_snapshot().map_or((0, 0), |snapshot| {
                 // `chain_compensations()` 是 `(节点, 补偿量)` 的迭代器（不是 `&BTreeMap`）。
                 let mut peak = 0u32;
                 let mut nodes = 0usize;

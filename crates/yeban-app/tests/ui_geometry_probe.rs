@@ -24,9 +24,12 @@ fn dump(width: u32, height: u32) {
     let project = demo_project();
     let view = ViewState::from_project(&project).expect("演示工程必须能投影");
     let scene = DemoScene::from_view(&view);
-    let mut port = LivePort::new(Size::new(width, height), Permission::Interactive, None, || {
-        host::build_main_window(&view, &scene)
-    })
+    let mut port = LivePort::new(
+        Size::new(width, height),
+        Permission::Interactive,
+        None,
+        || host::build_main_window(&view, &scene),
+    )
     .expect("Tier-1 平台 + 主窗口");
     port.refresh_tree(None).expect("必须能抓控件树");
 
@@ -81,10 +84,7 @@ fn dump(width: u32, height: u32) {
             last.y + last.height,
             last.y + last.height + yeban_app::automation::TRACK_LANE_TOP_PX
         );
-        println!(
-            "内容高(注入+42+46)    : {:.1}",
-            injected + 42.0 + 46.0
-        );
+        println!("内容高(注入+42+46)    : {:.1}", injected + 42.0 + 46.0);
     }
     println!("===== 结束 =====\n");
 
