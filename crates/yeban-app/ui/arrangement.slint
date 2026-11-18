@@ -2100,6 +2100,43 @@ export component ArrangementViewport inherits Rectangle {
                     }
                 }
             }
+
+            // ⭐ 轨道区纵向滚动指示（UI 补丁 v6）：`arr_tracks_flickable` 早就能滚，但界面上
+            // 没有任何可见提示 —— 1460×700 实测下第 4 轨与末尾「＋ 点击添加新轨道」被滚出
+            // 视野，创作者只能靠"盲滚"发现下面还有内容。
+            // 判据只看「内容高 > 可视高」：演示工程在 1920×1080 下内容不高 ⇒ 不画，
+            // golden 逐像素不变；纯视觉条，不新增任何文案，不影响 9 个语种的词表。
+            // 两处颜色按半透明口径换等效实色（原稿 #ffffff10 / #64748b80 按扁平车道底
+            // #1D2333 合成取整），不使用半透明。
+            if arr_tracks_flickable.content-height > arr_tracks_flickable.height + 1px : Rectangle {
+                arr_scroll_bar := Rectangle {
+                    x: parent.width - 7px;
+                    y: 3px;
+                    width: 4px;
+                    height: parent.height - 6px;
+                    border-radius: 2px;
+                    background: #2b3140;
+
+                    // 滑块高宽比 = 可视高 / 内容高；位置 = 已滚动比例。
+                    // ⚠ 必须挂在**带 id 的外层**（`arr_scroll_bar.thumb-h`）：内层 Rectangle 的
+                    // `self` 指自己，写成 `self.thumb-h` 会编译失败（实测报 does not have property）。
+                    property <length> thumb-h: Math.max(
+                        28px,
+                        (parent.height * arr_tracks_flickable.height) / arr_tracks_flickable.content-height
+                    );
+
+                    Rectangle {
+                        width: parent.width;
+                        height: arr_scroll_bar.thumb-h;
+                        y: Math.min(
+                            parent.height - arr_scroll_bar.thumb-h,
+                            Math.max(0px, (-arr_tracks_flickable.content-y) * (arr_tracks_flickable.height / arr_tracks_flickable.content-height))
+                        );
+                        border-radius: 2px;
+                        background: #404c5f;
+                    }
+                }
+            }
         }
     }
 
