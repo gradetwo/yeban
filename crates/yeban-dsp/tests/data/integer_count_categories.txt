@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 327 条：collection_size 68 ／ value_bound 246 ／ element_value_bound 5 ／ condition_counter 8
+# 合计 328 条：collection_size 68 ／ value_bound 247 ／ element_value_bound 5 ／ condition_counter 8
 src/band_solo.rs|centers_and_q_are_geometric_means|value_bound|assert!(                 (q - expected / (hi - lo)).abs() < 1e-4,                 "频段 {ban
 src/band_solo.rs|illegal_sample_rate_falls_back_to_48k|value_bound|assert_eq!(                 filter.sample_rate(),                 48_000.0,               
 src/band_solo.rs|response_is_unity_at_center_and_rejects_a_decade_away|value_bound|assert!(             filter.response_db(center).abs() < 0.5,             "中心 {center} Hz 处
@@ -232,6 +232,7 @@ src/sample_delay.rs|process_mono_moves_pulse_by_armed_params|collection_size|ass
 src/sample_delay.rs|pulse_moves_exactly_n_samples|collection_size|assert_eq!(left.len(), 6000
 src/sample_delay.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|value_bound|assert_eq!(l1, l2
 src/sample_delay.rs|same_params_same_output_twice|value_bound|assert_eq!(l1, l2
+src/sample_delay.rs|the_sample_delay_pair_path_matches_two_mono_lines|value_bound|assert_ne!(left[3], right[3], "两条线不许串线（读数必须各是自己的）"
 src/sample_delay.rs|zero_delay_no_invert_is_bitwise_passthrough|value_bound|assert!(             !SampleDelayParams {                 delay_samples: 1,               
 src/sample_edit.rs|correct_pitch_lands_within_half_a_cent|value_bound|assert!(             cents <= TUNE_DEADBAND_CENTS,             "校正后 {} Hz，偏离 {cents:.3} 音分
 src/sample_edit.rs|measure_fundamental_finds_a_pure_sine_within_one_cent|value_bound|assert!(             cents < 1.0,             "440 Hz 正弦测得 {} Hz，偏离 {cents:.3} 音分（限 1 音分）"
