@@ -243,6 +243,17 @@ pub struct PdcPlan {
     ///
     /// ⚠ 实时侧在 **stage 22** 起改为按本表武装（`CompensationBank::rearm` 读它）。
     chain_compensation: BTreeMap<EntityId, u32>,
+    /// ⭐ **stage 26 —— 逐边补偿 `D(u→s) = L(s) − arrival(u)`**（`(源, 目的)` 升序）。
+    ///
+    /// 与 [`Self::chain_compensation`] 的关系：后者把**同一节点的所有出边取 `max`**
+    /// （一个节点只有一条延迟线时唯一可行的解）；本表把每条边单独记下来 ⇒ 一个节点
+    /// 出多条边、且各边下游求和点不同时，**每条边拿自己的补偿量**，不再被 `max`
+    /// 拖着走。
+    ///
+    /// 逐边不变量不变：`∀ u → s: arrival(u) + D(u→s) == L(s)`。
+    ///
+    /// ⚠ 单出边节点上两列**恒等**（`max` 只有一项）⇒ 老工程的听感与读数一位不动。
+    edge_compensation: BTreeMap<(EntityId, EntityId), u32>,
     excluded: Vec<EntityId>,
     total_latency: u32,
     output_latency: u32,
@@ -444,6 +455,28 @@ impl PdcPlan {
             chain_compensation.insert(*node, wanted);
         }
 
+        // --- 5. ⭐ **stage 26**：逐边补偿表 ---
+        //
+        // 与第 4 段同一个 `need`（`L(s) − arrival(u)`），只是**不再对出边取 max**：
+        // 每条边一行。`master` 作为源的边恒 0（求和节点不延迟自己）。
+        let mut edge_compensation: BTreeMap<(EntityId, EntityId), u32> = BTreeMap::new();
+        for node in &reachable {
+            let node_arrival = arrival.get(node).copied().unwrap_or(0);
+            if let Some(next) = successors.get(node) {
+                for successor in next {
+                    if !reachable.contains(successor) {
+                        continue;
+                    }
+                    let need = if node == &master {
+                        0
+                    } else {
+                        reachable_latency(successor).saturating_sub(node_arrival)
+                    };
+                    edge_compensation.insert((*node, *successor), need);
+                }
+            }
+        }
+
         let excluded: Vec<EntityId> = nodes
             .iter()
             .copied()
@@ -457,6 +490,7 @@ impl PdcPlan {
             compensation,
             downstream,
             chain_compensation,
+            edge_compensation,
             excluded,
             total_latency,
             output_latency,
@@ -507,6 +541,31 @@ impl PdcPlan {
     /// 按 `EntityId` 升序的全部下游式补偿（`master` 自己的值恒为 0，故不单独过滤）。
     pub fn chain_compensations(&self) -> impl Iterator<Item = (&EntityId, &u32)> {
         self.chain_compensation.iter()
+    }
+
+    /// ⭐ **stage 26**：`u → s` 这一条边的补偿量 `D(u→s)`（采样点）。
+    ///
+    /// 边不在计划里（含 `s` 不可达 master）⇒ `None`。
+    #[must_use]
+    pub fn edge_compensation(&self, from: &EntityId, to: &EntityId) -> Option<u32> {
+        self.edge_compensation.get(&(*from, *to)).copied()
+    }
+
+    /// 全部逐边补偿，按 `(源, 目的)` 升序。
+    pub fn edge_compensations(&self) -> impl Iterator<Item = ((&EntityId, &EntityId), &u32)> {
+        self.edge_compensation
+            .iter()
+            .map(|((from, to), shift)| ((from, to), shift))
+    }
+
+    /// 逐边表里最大的一个补偿量（0 = 全表都是直通）。
+    #[must_use]
+    pub fn max_edge_compensation(&self) -> u32 {
+        self.edge_compensation
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
     }
 
     /// `D(v) = L_max - arrival(v)`；`v` 不可达 master 时返回 `None`（无对齐意义）。
@@ -1028,6 +1087,145 @@ impl CompensationBank {
             .binary_search_by(|(candidate, _)| candidate.cmp(node))
             .ok()
             .map(|index| &self.entries[index].1)
+    }
+}
+
+/// ⭐ **stage 26 —— 逐边补偿延迟池**（`(源, 目的)` 键控）。
+///
+/// 与 [`CompensationBank`] 同形（构造期预分配 ＋ 快照边界 `rearm` ＋ 逐块
+/// `apply_pair`），差别只有一处：**键是一条边**，不是节点。
+///
+/// 为什么需要它：`chain_compensation` 对一个节点的**所有出边取 `max`** ⇒ 出边
+/// 下游求和点不同时，短边被那条 `max` 拖着多补（或被少补），逐边不变量
+/// `arrival(u) + D(u→s) == L(s)` 就只在最长的那条边上成立。本池让每条边拿
+/// 自己的补偿量。
+///
+/// ⚠ 口径：键 `(源, 目的)` 是**路由图里的有向边**，与模型侧的边身份**不是**同一个
+/// 概念（后者是 `EntityId`，一条边一个 id）。这里要的是"同一个源、两条不同的
+/// 目的"能分开 ⇒ 必须用二元键。
+pub struct EdgeBank {
+    /// 键升序（`PdcPlan::edge_compensation` 是 `BTreeMap<(EntityId, EntityId), u32>`）。
+    entries: Vec<((EntityId, EntityId), DelayLine)>,
+    /// 已武装条数（`entries[..armed]` 有效且按键升序）。
+    armed: usize,
+    /// 槽位换主人的累计次数（与 [`CompensationBank::rebindings`] 同口径）。
+    rebindings: u64,
+    /// 真的施加过**非零**延迟的"边·块"次数（与 [`CompensationBank::processed_blocks`]
+    /// 同口径）。
+    processed_blocks: u64,
+}
+
+impl EdgeBank {
+    /// 构造期预分配 `slots` 条上限 `max_delay_samples` 的线（实时路径：回调内零分配）。
+    #[must_use]
+    pub fn preallocated(slots: usize, max_delay_samples: usize) -> Self {
+        let entries = (0..slots)
+            .map(|_| {
+                (
+                    (EntityId::default(), EntityId::default()),
+                    DelayLine::new(max_delay_samples),
+                )
+            })
+            .collect();
+        Self {
+            entries,
+            armed: 0,
+            rebindings: 0,
+            processed_blocks: 0,
+        }
+    }
+
+    /// 按计划的逐边表重新武装（零分配：只写键、`set_delay`、换主人时 `reset`）。
+    pub fn rearm(&mut self, plan: &PdcPlan) -> RearmShortfall {
+        let mut shortfall = RearmShortfall::default();
+        let mut armed = 0usize;
+        let mut rebindings = 0u64;
+        for (edge, &wanted) in plan.edge_compensation.iter() {
+            if armed >= self.entries.len() {
+                shortfall.unarmed_nodes += 1;
+                continue;
+            }
+            let wanted = wanted as usize;
+            let (slot_edge, line) = &mut self.entries[armed];
+            if *slot_edge != *edge {
+                line.reset();
+                *slot_edge = *edge;
+                rebindings = rebindings.wrapping_add(1);
+            }
+            let actual = line.set_delay(wanted);
+            if actual != wanted {
+                shortfall.clamped_frames += (wanted - actual) as u64;
+            }
+            armed += 1;
+        }
+        self.armed = armed;
+        self.rebindings = self.rebindings.wrapping_add(rebindings);
+        shortfall
+    }
+
+    /// 已武装的条数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.armed
+    }
+
+    /// 预分配的槽位数。
+    #[must_use]
+    pub fn slots(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否一条都没武装。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.armed == 0
+    }
+
+    /// 见 [`Self::processed_blocks`]。
+    #[must_use]
+    pub const fn processed_blocks(&self) -> u64 {
+        self.processed_blocks
+    }
+
+    /// 见 [`Self::rebindings`]。
+    #[must_use]
+    pub const fn rebindings(&self) -> u64 {
+        self.rebindings
+    }
+
+    /// 这条边计划上的补偿量（`None` = 这条边不在池里）。
+    #[must_use]
+    pub fn delay_of(&self, from: &EntityId, to: &EntityId) -> Option<usize> {
+        let key = (*from, *to);
+        self.entries[..self.armed]
+            .binary_search_by(|(candidate, _)| candidate.cmp(&key))
+            .ok()
+            .map(|index| self.entries[index].1.delay())
+    }
+
+    /// 对**一条边**的搬运用块施加补偿延迟（左右共用一条线的一个游标）。
+    ///
+    /// 返回 `true` 表示池里确实有这条边（即使是直通），`false` 表示这条边不在
+    /// 本计划里（调用方应视为"无需补偿"）。
+    pub fn apply_pair(
+        &mut self,
+        from: &EntityId,
+        to: &EntityId,
+        left: &mut [f32],
+        right: &mut [f32],
+    ) -> bool {
+        let key = (*from, *to);
+        match self.entries[..self.armed].binary_search_by(|(candidate, _)| candidate.cmp(&key)) {
+            Ok(index) => {
+                let line = &mut self.entries[index].1;
+                self.processed_blocks = self
+                    .processed_blocks
+                    .wrapping_add(u64::from(line.delay() != 0));
+                line.process_pair_in_place(left, right);
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 

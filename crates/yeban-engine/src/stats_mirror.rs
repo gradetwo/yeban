@@ -193,6 +193,10 @@ pub struct EngineStatsMirror {
     param_unmapped_events: AtomicU64,
     param_capacity_drops: AtomicU64,
     pdc_unarmed_nodes: AtomicU64,
+    /// ⭐ stage 26：逐边补偿池未武装的**边**数。
+    pdc_edge_unarmed_edges: AtomicU64,
+    /// ⭐ stage 26：逐边补偿被容量钳掉的帧数。
+    pdc_edge_clamped_frames: AtomicU64,
     pdc_clamped_frames: AtomicU64,
     pdc_processed_blocks: AtomicU64,
     phase_unarmed_nodes: AtomicU64,
@@ -273,6 +277,8 @@ impl EngineStatsMirror {
             param_unmapped_events: AtomicU64::new(0),
             param_capacity_drops: AtomicU64::new(0),
             pdc_unarmed_nodes: AtomicU64::new(0),
+            pdc_edge_unarmed_edges: AtomicU64::new(0),
+            pdc_edge_clamped_frames: AtomicU64::new(0),
             pdc_clamped_frames: AtomicU64::new(0),
             pdc_processed_blocks: AtomicU64::new(0),
             phase_unarmed_nodes: AtomicU64::new(0),
@@ -401,6 +407,11 @@ impl EngineStatsMirror {
             .store(stats.param_capacity_drops, Ordering::Relaxed);
         self.pdc_unarmed_nodes
             .store(stats.pdc_unarmed_nodes, Ordering::Relaxed);
+
+        self.pdc_edge_unarmed_edges
+            .store(stats.pdc_edge_unarmed_edges, Ordering::Relaxed);
+        self.pdc_edge_clamped_frames
+            .store(stats.pdc_edge_clamped_frames, Ordering::Relaxed);
         self.pdc_clamped_frames
             .store(stats.pdc_clamped_frames, Ordering::Relaxed);
         self.pdc_processed_blocks
@@ -521,6 +532,8 @@ impl EngineStatsMirror {
             param_unmapped_events: self.param_unmapped_events.load(Ordering::Relaxed),
             param_capacity_drops: self.param_capacity_drops.load(Ordering::Relaxed),
             pdc_unarmed_nodes: self.pdc_unarmed_nodes.load(Ordering::Relaxed),
+            pdc_edge_unarmed_edges: self.pdc_edge_unarmed_edges.load(Ordering::Relaxed),
+            pdc_edge_clamped_frames: self.pdc_edge_clamped_frames.load(Ordering::Relaxed),
             pdc_clamped_frames: self.pdc_clamped_frames.load(Ordering::Relaxed),
             pdc_processed_blocks: self.pdc_processed_blocks.load(Ordering::Relaxed),
             phase_unarmed_nodes: self.phase_unarmed_nodes.load(Ordering::Relaxed),
@@ -627,6 +640,8 @@ mod tests {
             param_unmapped_events: 42,
             param_capacity_drops: 43,
             pdc_unarmed_nodes: 22,
+            pdc_edge_unarmed_edges: 220,
+            pdc_edge_clamped_frames: 221,
             pdc_clamped_frames: 23,
             pdc_processed_blocks: 24,
             phase_unarmed_nodes: 57,

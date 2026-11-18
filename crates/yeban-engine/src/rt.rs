@@ -250,7 +250,7 @@ use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
 // 也是实时 SFZ 通路的 CC 探针来源）。定长、`Copy`、零分配（见该模块文档）。
 use crate::cc_state::ControlChangeState;
 use crate::fpu::{self, FtzDazOutcome};
-use crate::graph::{CompensationBank, PhaseBank};
+use crate::graph::{CompensationBank, EdgeBank, PhaseBank};
 use crate::insert::{
     ChannelStrip, ChannelStripParams, CompressorParams, ConvolutionReverb, ConvolutionReverbParams,
     Reverb, ReverbParams, SampleDelay, SampleDelayParams,
@@ -720,6 +720,13 @@ pub struct EngineStats {
     /// 非 0 = 那一份计划里有节点**没有**得到补偿。它是"容量不足不静默"的机械形式：
     /// 只把补偿"尽力而为"地做掉，会让相位对齐悄悄失效而没有任何读数。
     pub pdc_unarmed_nodes: u64,
+    /// ⭐ **stage 26**：因**逐边**补偿池槽位用尽而未能武装的**边**数（累计；正常恒为 0）。
+    ///
+    /// 与 [`Self::pdc_unarmed_nodes`] **分开记账**：一个是"节点没补上"，一个是"某条边
+    /// 没补上"，混在一个数里就分不出是谁的容量不够（编排与排障要能分开看）。
+    pub pdc_edge_unarmed_edges: u64,
+    /// ⭐ **stage 26**：逐边池里因延迟线容量上限被钳掉的补偿帧数（累计；正常恒为 0）。
+    pub pdc_edge_clamped_frames: u64,
     /// 因延迟线**容量上限**（[`MAX_PDC_DELAY_FRAMES`]）而被钳掉的补偿帧数
     /// （累计；正常恒为 0）。
     pub pdc_clamped_frames: u64,
@@ -1478,6 +1485,12 @@ fn send_armed(share: &BranchShare<'_>, route: &RouteTarget) -> bool {
 /// 互不相交，因此合法。本结构**只是借用视图**：不拥有状态、不分配、不引入新语义。
 struct BranchShare<'a> {
     pdc: &'a mut CompensationBank,
+    /// ⭐ **stage 26**：**逐边**补偿延迟池（键是 `(源, 目的)`）。
+    ///
+    /// 与 `pdc` 并存：单出边节点上两者逐字相同（`chain_compensation` 的 `max`
+    /// 只有一项）；只有"一个节点出多条边、各边下游求和点不同"时，本池才给出
+    /// 与 `pdc` 不同的（也是正确的）逐边量。
+    edge_pdc: &'a mut EdgeBank,
     /// 手动相位对齐第一层：逐轨延时＋极性反转池（与 `pdc` 同款借用视图）。
     phase_bank: &'a mut PhaseBank,
     params: &'a mut ParamTable,
@@ -2541,37 +2554,88 @@ fn render_branch(
                     }
                 }
             }
-            // ⭐ **stage 22 —— 总线级 PDC 落地**：本总线的输出也走补偿延迟线。
+            // ⭐ **stage 22 —— 总线级 PDC 落地**；⭐ **stage 26 —— 逐边**。
             //
-            // 位置：**输出级之后、转发之前**（`D(v)` 的定义就是"这个节点的输出
-            // 晚多少"）；⛔ 不在插入链之前（那会把器件自己的链延迟也提前补掉）。
+            // 位置：**输出级之后、转发之前**（`D` 的定义就是"这个节点的输出晚
+            // 多少"）；⛔ 不在插入链之前（那会把器件自己的链延迟也提前补掉）。
             //
-            // 为什么必须成对：stage 15 起总线信号是**两条**声道（`routing_buses`
-            // 的 `stereo_mut()`），左右共用同一条延迟线的写头 ⇒ 用 `apply_pair`
-            // （与主总线/试听分支的成对口径一致），⛔ 不能各 apply 一次（那会让
-            // 两条线各自累计 `processed_blocks`，读数翻倍、相位也可能错开）。
+            // ## stage 26 的分岔（本题的落点）
+            //
+            // `chain_compensation` 对一个节点的**所有出边取 `max`** ⇒ 出边下游
+            // 求和点不同时，短边会被那条 `max` 拖着多补/少补。这里先看**本节点的
+            // 出边延迟是否一致**：
+            //   * **一致**（绝大多数工程，含所有单出边节点）⇒ 走**原路**（一条
+            //     节点线 ＋ 一次 `route_panned` 全部出边）—— 逐位不变；
+            //   * **不一致** ⇒ 逐边：把输出级的基信号留在 `track_scratch` 里，每条边
+            //     各自拷一份、各自过**自己的**延迟线（`EdgeBank`），再路由**这一条**
+            //     边。`arrival(u) + D(u→s) == L(s)` 在每条边上独立成立。
+            //
+            // 为什么必须成对：stage 15 起总线信号是**两条**声道，左右共用同一条
+            // 延迟线的写头 ⇒ 用 `apply_pair`（⛔ 不能各 apply 一次：那会让两条线
+            // 各自累计 `processed_blocks`，读数翻倍、相位也可能错开）。
             //
             // 为什么 `D == 0` 也要调用：`DelayLine` 的"环的不变量"要求在停走带时
             // 也推进（与按轨那条同一条纪律），而且 `processed_blocks` 只在**非零**
             // 延迟时增长 ⇒ 零延迟的调用不会污染"真的补过"的读数。
-            {
-                let (first, second) = share.reverb_scratch.split_at_mut(1);
-                share
-                    .pdc
-                    .apply_pair(node, &mut first[0][..frames], &mut second[0][..frames]);
-            }
-            route_panned(
-                routes,
-                routing,
-                master,
-                &share.reverb_scratch[0][..frames],
-                &share.reverb_scratch[1][..frames],
-                out,
-                share.routing_buses,
-                // ⭐ `#261`：总线的出边（例如 aux→master）与轨的出边同一把尺子。
-                // ⚠ 这一段在 `process_insert_chain` **之后** ⇒ 此处才借发送量表
-                // （那个助手要整份 `&mut BranchShare`）。
-                &mut SendTable {
+            let edges_share_one_shift = {
+                let mut uniform = true;
+                let mut seen: Option<usize> = None;
+                for route in routes {
+                    let shift = share
+                        .edge_pdc
+                        .delay_of(node, &route.destination())
+                        .unwrap_or(0);
+                    match seen {
+                        None => seen = Some(shift),
+                        Some(first) if first != shift => {
+                            uniform = false;
+                            break;
+                        }
+                        Some(_) => {}
+                    }
+                }
+                uniform
+            };
+            if edges_share_one_shift {
+                {
+                    let (first, second) = share.reverb_scratch.split_at_mut(1);
+                    share
+                        .pdc
+                        .apply_pair(node, &mut first[0][..frames], &mut second[0][..frames]);
+                }
+                route_panned(
+                    routes,
+                    routing,
+                    master,
+                    &share.reverb_scratch[0][..frames],
+                    &share.reverb_scratch[1][..frames],
+                    out,
+                    share.routing_buses,
+                    // ⭐ `#261`：总线的出边（例如 aux→master）与轨的出边同一把尺子。
+                    // ⚠ 这一段在 `process_insert_chain` **之后** ⇒ 此处才借发送量表
+                    // （那个助手要整份 `&mut BranchShare`）。
+                    &mut SendTable {
+                        edges: &share.armed_sends[..*share.armed_send_slots],
+                        slots: *share.armed_send_slots,
+                        gains: &mut *share.armed_send_gain,
+                        armed: share.armed_send_armed,
+                        replay: &*share.armed_send_replay,
+                        advanced: &mut *share.send_advanced,
+                        frames: &mut *share.send_automation_frames,
+                        enabled: process_sends,
+                    },
+                );
+            } else {
+                // ⭐ **stage 26 慢路**：出边延迟不一致 ⇒ 逐边补偿。
+                //
+                // 基信号（输出级之后、补偿之前）搬进 `track_scratch` 那一对 ——
+                // 此时它已空闲（插入链那一段用完就还回来了）。
+                {
+                    let (first, second) = share.reverb_scratch.split_at_mut(1);
+                    share.track_scratch[..frames].copy_from_slice(&first[0][..frames]);
+                    share.track_scratch_r[..frames].copy_from_slice(&second[0][..frames]);
+                }
+                let mut sends = SendTable {
                     edges: &share.armed_sends[..*share.armed_send_slots],
                     slots: *share.armed_send_slots,
                     gains: &mut *share.armed_send_gain,
@@ -2580,8 +2644,34 @@ fn render_branch(
                     advanced: &mut *share.send_advanced,
                     frames: &mut *share.send_automation_frames,
                     enabled: process_sends,
-                },
-            );
+                };
+                for route in routes {
+                    {
+                        let (first, second) = share.reverb_scratch.split_at_mut(1);
+                        first[0][..frames].copy_from_slice(&share.track_scratch[..frames]);
+                        second[0][..frames].copy_from_slice(&share.track_scratch_r[..frames]);
+                    }
+                    {
+                        let (first, second) = share.reverb_scratch.split_at_mut(1);
+                        share.edge_pdc.apply_pair(
+                            node,
+                            &route.destination(),
+                            &mut first[0][..frames],
+                            &mut second[0][..frames],
+                        );
+                    }
+                    route_panned(
+                        core::slice::from_ref(route),
+                        routing,
+                        master,
+                        &share.reverb_scratch[0][..frames],
+                        &share.reverb_scratch[1][..frames],
+                        out,
+                        share.routing_buses,
+                        &mut sends,
+                    );
+                }
+            }
         }
     }
 
@@ -2799,8 +2889,20 @@ pub struct EngineRuntime {
     /// （修订变化时）用 [`CompensationBank::rearm`] 重新武装 —— 只写 `set_delay`，
     /// 因此回调内**零分配** [MUST-GATE-001]。
     pdc: CompensationBank,
+    /// ⭐ **stage 26**：逐边补偿池（与 `pdc` 同形，键是 `(源, 目的)`）。
+    ///
+    /// 一个节点出多条边时 `chain_compensation` 只能给一个 `max` ⇒ 短边会被拖着走。
+    /// 本池按边武装，转发段按每一条边各取各的延迟线。
+    ///
+    /// 容量与 `pdc` 相同（[`PDC_SLOTS`] 条 × [`MAX_PDC_DELAY_FRAMES`]）—— 边数通常
+    /// 比节点数少，装不下时进 `pdc_unarmed_nodes`（与节点池同一本账，⛔ 不静默）。
+    edge_pdc: EdgeBank,
     /// 见 [`EngineStats::pdc_unarmed_nodes`]。
     pdc_unarmed_nodes: u64,
+    /// 见 [`EngineStats::pdc_edge_unarmed_edges`]。
+    pdc_edge_unarmed_edges: u64,
+    /// 见 [`EngineStats::pdc_edge_clamped_frames`]。
+    pdc_edge_clamped_frames: u64,
     /// 见 [`EngineStats::pdc_clamped_frames`]。
     pdc_clamped_frames: u64,
     /// 手动相位对齐第一层：逐轨延时＋极性反转的预分配池（与 `pdc` 同形）。
@@ -3534,7 +3636,14 @@ impl EngineRuntime {
                 pdc,
                 CompensationBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES)
             );
+            // ⭐ stage 26：逐边补偿池 —— 与节点池同一条纪律：构造期一次分配。
+            put!(
+                edge_pdc,
+                EdgeBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES)
+            );
             put!(pdc_unarmed_nodes, 0);
+            put!(pdc_edge_unarmed_edges, 0);
+            put!(pdc_edge_clamped_frames, 0);
             put!(pdc_clamped_frames, 0);
             // 手动相位对齐池：**构造期**按上限预分配（回调内绝不再分配）。
             // 单线 9600 采样 × 64 槽 ≈ 2.4 MiB（f32），在构造期一次付清。
@@ -4027,6 +4136,8 @@ impl EngineRuntime {
             param_unmapped_events: self.params.unmapped(),
             param_capacity_drops: self.params.capacity_drops(),
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
+            pdc_edge_unarmed_edges: self.pdc_edge_unarmed_edges,
+            pdc_edge_clamped_frames: self.pdc_edge_clamped_frames,
             pdc_clamped_frames: self.pdc_clamped_frames,
             phase_unarmed_nodes: self.phase_unarmed_nodes,
             phase_clamped_frames: self.phase_clamped_frames,
@@ -4770,7 +4881,10 @@ impl EngineRuntime {
             strip_output_gain_events,
             strip_output_gain_value_rejects,
             pdc,
+            edge_pdc,
             pdc_unarmed_nodes,
+            pdc_edge_unarmed_edges,
+            pdc_edge_clamped_frames,
             pdc_clamped_frames,
             phase_bank,
             phase_unarmed_nodes,
@@ -5201,6 +5315,14 @@ impl EngineRuntime {
                 let shortfall = pdc.rearm(current.pdc());
                 *pdc_unarmed_nodes = pdc_unarmed_nodes.wrapping_add(shortfall.unarmed_nodes as u64);
                 *pdc_clamped_frames = pdc_clamped_frames.wrapping_add(shortfall.clamped_frames);
+                // ⭐ **stage 26**：逐边池与节点池在**同一处快照边界**武装（同一份计划），
+                // 但**分开记账**：`RearmShortfall::unarmed_nodes` 在边池里的语义是
+                // "没武装上的**边**数" ⇒ 记进 `pdc_edge_unarmed_edges`。
+                let edge_shortfall = edge_pdc.rearm(current.pdc());
+                *pdc_edge_unarmed_edges = pdc_edge_unarmed_edges
+                    .wrapping_add(edge_shortfall.unarmed_nodes as u64);
+                *pdc_edge_clamped_frames = pdc_edge_clamped_frames
+                    .wrapping_add(edge_shortfall.clamped_frames);
 
                 // --- 2b'''') 手动相位对齐第一层：把这一份快照的逐轨延时/反转武装进预分配相位池 ---
                 //
@@ -5685,6 +5807,7 @@ impl EngineRuntime {
             {
                 let mut share = BranchShare {
                     pdc: &mut *pdc,
+                    edge_pdc: &mut *edge_pdc,
                     phase_bank: &mut *phase_bank,
                     params: &mut *params,
                     // ⭐ 共享借用：写它的是**上面**那个出队闭包，本处只读（NLL：可变借用已结束）。
@@ -9293,6 +9416,7 @@ mod tests {
                 armed_pan_gains,
                 control_change,
                 pdc,
+                edge_pdc,
                 phase_bank,
                 params,
                 bank,
@@ -9357,6 +9481,7 @@ mod tests {
             pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
             let mut share = BranchShare {
                 pdc,
+                edge_pdc,
                 phase_bank,
                 params,
                 control_change: &*control_change,

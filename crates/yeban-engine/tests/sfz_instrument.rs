@@ -274,8 +274,8 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// ⭐ **频段独奏片（Songmap follow-ons (a)）＋48 B ⇒ 45 888 B**：新增 band_solo: BandSoloFilter（Biquad 36 B ＋ sample_rate 4 B ＋ Option<usize> 16 B ＝ 56 B，布局重排后落进 8 B 既有填充，实测 ＋48 B；余量 204800 − 45888 = 158912 B）。
 /// ⭐ **pan stage 4 片 ＋512 B ⇒ 46 400 B**：`EngineRuntime` 新增 `track_scratch_r`
 /// （`[f32; DEFAULT_BLOCK_FRAMES]` ＝ 128 × 4 B ＝ 512 B），实时侧"源侧已分声道"的
-/// 轨用它装右声道；其余轨这条路一次都不碰。余量 204800 − 46416 = 158400 B。
-const ENGINE_RUNTIME_BYTES: usize = 46_416;
+/// 轨用它装右声道；其余轨这条路一次都不碰。余量 204800 − 46480 = 158320 B。
+const ENGINE_RUNTIME_BYTES: usize = 46_480;
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [

@@ -127,6 +127,7 @@ use yeban_engine::param::{
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::routing::edge_carries_audio;
 use yeban_engine::rt::{EngineRuntime, EngineStats};
+use yeban_engine::stats_mirror::EngineStatsMirror;
 use yeban_engine::sfz_instrument::SfzPlan;
 use yeban_engine::snapshot::{
     EngineSnapshot, RetireQueue, SnapshotError, SnapshotSlot, retire_channel,
@@ -404,6 +405,9 @@ struct FreshRuntime {
     retire: RetireQueue,
     events: EventSender,
     mirror: std::sync::Arc<TransportMirror>,
+    /// ⭐ **stage 25**：`EngineStats` 的跨线程只读镜像（与运行时里那一份是**同一个**
+    /// `Arc`）。设备腿把运行时 move 进 cpal 回调之后，控制面只剩这一份能读。
+    stats_mirror: std::sync::Arc<EngineStatsMirror>,
     collector: MeterCollector,
 }
 
@@ -446,13 +450,55 @@ fn fresh_runtime(slot: &std::sync::Arc<SnapshotSlot>) -> FreshRuntime {
         track_slots_from_env(),
     );
     let mirror = std::sync::Arc::clone(runtime.transport_mirror());
+    // `stats_mirror()` 本身就返回 `Arc` 的一份克隆（不分配）。
+    let stats_mirror = runtime.stats_mirror();
     FreshRuntime {
         runtime,
         retire,
         events,
         mirror,
+        stats_mirror,
         collector,
     }
+}
+
+/// ⭐ **stage 25**：[`EngineHost::performance_ledger`] 返回的那一行读数。
+///
+/// 全部字段来自引擎（`EngineStats` ＋ 快照自己的 `PdcPlan`），⛔ 没有一个由 app
+/// 推算或缓存旧值 —— 与"不发明第二份统计来源"同一条纪律。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PerformanceLedger {
+    /// 这一代引擎处理过的量子数（"有没有真的跑起来"的唯一见证）。
+    pub quanta: u64,
+    /// ⭐ stage 18：**分声道**（左右各乘各的增益、不下混）渲染过的帧数。
+    pub stereo_track_frames: u64,
+    /// ⭐ stage 20：**处理型总线**插入链跑过的帧数（与 `insert_strip_frames` 不同口径）。
+    pub bus_insert_frames: u64,
+    /// 通道条插入链跑过的帧数。
+    pub insert_strip_frames: u64,
+    /// PDC 真的**挪动**过的帧数（"补偿到底有没有生效"的见证）。
+    pub pdc_alignment_frames: u32,
+    /// ⭐ stage 21：`chain_compensation` 里最大的一个补偿量（帧）。
+    pub pdc_chain_compensation_max: u32,
+    /// 补偿量 **> 0** 的节点数。
+    pub pdc_compensated_nodes: usize,
+    /// ⭐ **stage 26**：**逐边**补偿里最大的一个补偿量（帧）。
+    ///
+    /// 与 [`Self::pdc_chain_compensation_max`] 是两个口径：后者是"节点式"（一个节点
+    /// 一条线），这里是"一条边一条线"。两者可以不同 —— 上游求和点不同的两条边本来
+    /// 就该吃不同的补偿量。
+    pub pdc_edge_compensation_max: u32,
+    /// 这份读数从哪来（设备腿只能读镜像）。
+    pub source: LedgerSource,
+}
+
+/// 性能台账的**读数来源**。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LedgerSource {
+    /// 控制驱动：`EngineRuntime` 在宿主手里，读同线程的 `stats()`。
+    Runtime,
+    /// 设备腿：运行时在 cpal 回调线程上，读 `EngineStatsMirror`（引擎每量子发布）。
+    Mirror,
 }
 
 /// 一次走带动作的**记录**（走带接线判据的注入点）。
@@ -811,6 +857,13 @@ pub struct EngineHost {
     events: Option<EventSender>,
     /// RT → UI 的走带读数镜面（与 `EngineRuntime` 里那一份是**同一个** `Arc`）。
     transport_mirror: Option<std::sync::Arc<TransportMirror>>,
+    /// ⭐ **stage 25**：`EngineStats` 的跨线程只读镜像（与运行时里那一份是**同一个**
+    /// `Arc`，在 `fresh_runtime` 里克隆出来、**在运行时被 move 走之前**）。
+    ///
+    /// 为什么必须留着它：设备腿（`open_device` 成功）之后 `runtime` 是 `None`
+    /// ⇒ 旧实现下 [`Self::engine_stats`] 恒为 `None`，控制面（界面 / 诊断包 / MCP）
+    /// **看不到**引擎健康读数。本字段就是"不发明第二份统计来源"的那条搬运。
+    stats_mirror: Option<std::sync::Arc<EngineStatsMirror>>,
     /// **R55 自动化下发的读数**：累计写进 SPSC 的 `SetParam` 条数。
     automation_published: u64,
     /// **R55 自动化下发的读数**：因"装不下"（SPSC 满 / 批次上限）而没有写进去的条数。
@@ -1271,6 +1324,7 @@ impl EngineHost {
             retire,
             events,
             mirror,
+            stats_mirror,
             collector,
         } = fresh_runtime(&slot);
 
@@ -1296,6 +1350,7 @@ impl EngineHost {
         self.retire = Some(retire);
         self.events = Some(events);
         self.transport_mirror = Some(mirror);
+        self.stats_mirror = Some(stats_mirror);
         self.generation = generation;
         self.snapshot_revision = revision;
         // 新运行时 ⇒ 新 `ParamTable`（默认值）⇒ 去重缓存清掉，下一跳全量重发。
@@ -1386,6 +1441,7 @@ impl EngineHost {
             retire,
             mut events,
             mirror,
+            stats_mirror,
             collector,
         } = fresh_runtime(&slot);
 
@@ -1433,6 +1489,8 @@ impl EngineHost {
         self.runtime = None;
         self.events = Some(events);
         self.transport_mirror = Some(mirror);
+        // ⭐ **stage 25**：运行时已经 move 进回调 ⇒ 统计只剩这份镜像可读。
+        self.stats_mirror = Some(stats_mirror);
         self.retire = Some(retire);
         self.device = Some(handle);
         // 新运行时 ⇒ 新 `ParamTable`（默认值）⇒ 去重缓存清掉，下一跳全量重发。
@@ -2000,19 +2058,70 @@ impl EngineHost {
     /// `EngineStats::snapshot_switches` 是"音频读路径真的换了快照"的见证
     /// （它是 `SnapshotReader::begin_block` 里计的数）。
     ///
-    /// ⚠ **设备腿活跃时返回 `None`**：那一代的 `EngineRuntime` 已经 move 进 cpal 回调，
-    /// 控制线程拿不到它。走带读数（`TransportMirror`）、电平（独立 SPSC）与快照槽计数
-    /// （[`EngineHost::snapshot_counts`]）不受影响。要在这里也读到统计，需要一份
-    /// "跨线程只读的 `EngineStats` 镜像" —— **本票不做**（登记为 needs，不发明第二份
-    /// 统计来源）。
+    /// ⭐ **stage 25 起设备腿也读得到**：控制驱动（`runtime` 在手里）读同线程的
+    /// [`EngineRuntime::stats`]；设备腿（运行时在 cpal 回调线程上）读
+    /// [`yeban_engine::stats_mirror::EngineStatsMirror`] —— 那一份**不是**第二份统计，
+    /// 就是引擎每量子 `publish` 出来的同一批读数（见 `stats_mirror` 模块文档）。
+    ///
+    /// ⛔ 没有引擎时仍然是 `None`（不编造冷值）。
     #[must_use]
     pub fn engine_stats(&self) -> Option<EngineStats> {
-        self.runtime.as_deref().map(EngineRuntime::stats)
+        if let Some(runtime) = self.runtime.as_deref() {
+            return Some(runtime.stats());
+        }
+        self.stats_mirror.as_ref().map(|mirror| mirror.read())
     }
 
     // -----------------------------------------------------------------------
     // 走带（`line/transport-engine`）
     // -----------------------------------------------------------------------
+
+    /// ⭐ **stage 25**：**app 侧性能台账的一行**（引擎健康读数的唯一消费口径）。
+    ///
+    /// 为什么要有它（⛔ 不是"再数一遍"）：引擎侧 `EngineStats` 的字段已经很多，
+    /// 而界面 / 诊断包 / 外部工具真正关心的是**这七个数**：量子数、分声道渲染帧数、
+    /// 总线插入链帧数、通道条插入链帧数、PDC 对齐帧数、PDC 链补偿峰值与吃到补偿的节点数。
+    /// 这里做的是**同一份读数的搬运**（`engine_stats()` ＋ 快照里的 `PdcPlan`），
+    /// 一个数都不由 app 自己推算。
+    ///
+    /// 三条 newer 读数（`stereo_track_frames` / `bus_insert_frames` /
+    /// `pdc_chain_compensation_max`）在 stage 18／20／21 才进引擎、在 stage 25 才
+    /// **接到 app**：之前它们只在引擎内部数着，控制面（含设备腿）完全看不见。
+    #[must_use]
+    pub fn performance_ledger(&self) -> Option<PerformanceLedger> {
+        let (stats, source) = match self.runtime.as_deref() {
+            Some(runtime) => (runtime.stats(), LedgerSource::Runtime),
+            None => (self.stats_mirror.as_ref()?.read(), LedgerSource::Mirror),
+        };
+        let pdc_edge_compensation_max = self
+            .current_snapshot()
+            .map_or(0, |snapshot| snapshot.pdc().max_edge_compensation());
+        let (pdc_chain_compensation_max, pdc_compensated_nodes) = self
+            .current_snapshot()
+            .map_or((0, 0), |snapshot| {
+                // `chain_compensations()` 是 `(节点, 补偿量)` 的迭代器（不是 `&BTreeMap`）。
+                let mut peak = 0u32;
+                let mut nodes = 0usize;
+                for (_node, shift) in snapshot.pdc().chain_compensations() {
+                    peak = peak.max(*shift);
+                    if *shift > 0 {
+                        nodes += 1;
+                    }
+                }
+                (peak, nodes)
+            });
+        Some(PerformanceLedger {
+            source,
+            quanta: stats.quanta,
+            stereo_track_frames: stats.stereo_track_frames,
+            bus_insert_frames: stats.bus_insert_frames,
+            insert_strip_frames: stats.insert_strip_frames,
+            pdc_alignment_frames: stats.pdc_alignment_frames,
+            pdc_chain_compensation_max,
+            pdc_compensated_nodes,
+            pdc_edge_compensation_max,
+        })
+    }
 
     /// 当前走带读数（**来自引擎**；还没有引擎时是中性冷值）。
     ///
@@ -2833,6 +2942,58 @@ mod tests {
             before_db,
             "失败之后当前快照仍是老那一份"
         );
+    }
+
+    /// ⭐ 判据（**stage 25**）：性能台账是**引擎读数的搬运**，不是第二份统计。
+    ///
+    /// 钉三件事：
+    /// 1. 没有引擎 ⇒ `None`（⛔ 不编造冷值）；
+    /// 2. 控制驱动 ⇒ `source = Runtime`，七个字段与 `engine_stats()` **逐字段相等**
+    ///    （除两个来自快照 `PdcPlan` 的以外 —— 它们必须与快照里的计划一致）；
+    /// 3. 设备腿的等价性（`source = Mirror`）在 `yeban-engine` 侧由
+    ///    `stats_mirror` 的静止点判据钉住：镜像与 `stats()` 逐字段相等（本机造不出设备腿）。
+    #[test]
+    fn performance_ledger_carries_engine_readings_verbatim() {
+        let project = demo_project();
+        let mut host = EngineHost::new();
+        assert!(
+            host.performance_ledger().is_none(),
+            "没有引擎 ⇒ 台账必须是 `None`（⛔ 不编造冷值）"
+        );
+
+        host.reload(&project, 4).expect("重建");
+        let ledger = host.performance_ledger().expect("有引擎必有台账");
+        let stats = host.engine_stats().expect("控制驱动必有统计");
+        assert_eq!(ledger.source, LedgerSource::Runtime);
+        assert_eq!(ledger.quanta, stats.quanta, "量子数必须逐字等于引擎读数");
+        assert_eq!(ledger.quanta, 4, "reload 推了 4 个量子");
+        assert_eq!(ledger.stereo_track_frames, stats.stereo_track_frames);
+        assert_eq!(ledger.bus_insert_frames, stats.bus_insert_frames);
+        assert_eq!(ledger.insert_strip_frames, stats.insert_strip_frames);
+        assert_eq!(ledger.pdc_alignment_frames, stats.pdc_alignment_frames);
+
+        // 两条来自快照 `PdcPlan` 的读数必须与快照里的计划**逐字一致**。
+        let snapshot = host.current_snapshot().expect("有引擎必有快照");
+        let mut peak = 0u32;
+        let mut nodes = 0usize;
+        for (_node, shift) in snapshot.pdc().chain_compensations() {
+            peak = peak.max(*shift);
+            if *shift > 0 {
+                nodes += 1;
+            }
+        }
+        assert_eq!(ledger.pdc_chain_compensation_max, peak);
+        assert_eq!(ledger.pdc_compensated_nodes, nodes);
+        assert_eq!(
+            ledger.pdc_edge_compensation_max,
+            snapshot.pdc().max_edge_compensation(),
+            "逐边补偿峰值必须与快照计划逐字一致"
+        );
+
+        // 再推量子 ⇒ 量子数前进（台账跟着引擎走，⛔ 不是一次性快照）。
+        host.pump(2);
+        let moved = host.performance_ledger().expect("有引擎必有台账");
+        assert_eq!(moved.quanta, ledger.quanta + 2, "台账必须反映最新读数");
     }
 
     /// 判据 10：没有引擎时心跳是**中性**的（全 0，不 panic），发布如实报 `NoEngine`。
