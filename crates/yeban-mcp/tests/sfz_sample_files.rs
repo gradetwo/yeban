@@ -7,7 +7,8 @@
 //! | a | 同一 SFZ、同一音符：`sample=` 指向**真实** WAV ｖｓ 指向**不存在**的路径 ⇒ 两次渲染的 WAV **可区分**（逐样本最大绝对差 ≠ 0）＋ **两侧都非静音** | `a_real_sample_file_changes_the_rendered_bytes_and_both_sides_are_audible` |
 //! | b | **常量样本**（全 `0.25`）⇒ 文件侧的**持续段极差 ≈ 0**、内存正弦侧极差明显 | 同上 |
 //! | c | 装载响应如实：读到 ⇒ `sampleFilesRead=true` ＋ 区域 `sampleFileState=file(<path> frames=N rate=R)`；读不到 ⇒ `unreadable(...)` 带原因，且**装载仍然成功** | `the_load_response_reports_the_file_it_really_read` |
-//! | d | **上界**：单文件超过字节上限 ⇒ **拒绝读取**并记原因（⛔ 不静默截断），装载仍成功 | `an_oversized_sample_file_is_refused_loudly_and_does_not_break_the_load` |
+//! | d | **上界**：单文件超过字节上限（256 MiB）⇒ **拒绝读取**并记原因（⛔ 不静默截断），装载仍成功 | `an_oversized_sample_file_is_refused_loudly_and_does_not_break_the_load` |
+//! | g | **> 64 MiB 的真实样本可装载**：24-bit 立体声 1 200 万帧（盘上 ≈ 72 MB）真 WAV ⇒ 读入并如实报帧数（字节门 64 → 256 MiB 对齐的回归钉；帧数在总量门内） | `a_sample_file_over_64_mib_loads_after_the_byte_gate_alignment` |
 //! | e | 相对路径按 **SFZ 文件所在目录**解析（⛔ 不是进程 cwd） | `the_load_response_reports_the_file_it_really_read`（夹具与 SFZ 同目录，cwd 不是那里） |
 //! | f | **文件样本按它自己的采样率换算步进比**（44.1 kHz 文件在 48 kHz 输出上必须按 `44100/48000` 重采样，⛔ 不能拿 `engine_hz` 当 `sample_hz`） | `a_44k_sample_file_plays_at_its_own_rate_not_the_engine_rate` |
 //!
@@ -86,6 +87,45 @@ fn write_constant_wav(path: &Path, value: f64, frames: usize, sample_rate: u32) 
     out.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
     out.extend_from_slice(&data);
     std::fs::write(path, &out).expect("写常量样本夹具");
+}
+
+/// **手写**一份常量值的 24-bit **立体声** WAV（⛔ 不用被测写入器自证）。
+///
+/// 两声道同值；**流式写盘**（8 192 帧一块循环写满），不在内存里攒整份 ——
+/// 判据 g 的夹具有 1 200 万帧（72 MB），攒法会让夹具本身先吃掉几百 MB。
+fn write_constant_wav_stereo(path: &Path, value: f64, frames: usize, sample_rate: u32) {
+    use std::io::Write as _;
+    let scaled = (value * ((1_i32 << 23) - 1) as f64).round() as i32;
+    let scaled_bytes = scaled.to_le_bytes();
+    let sample3 = &scaled_bytes[..3];
+    let data_len = frames * 6;
+    let mut header = Vec::with_capacity(44);
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&u32::try_from(36 + data_len).expect("尺寸").to_le_bytes());
+    header.extend_from_slice(b"WAVEfmt ");
+    header.extend_from_slice(&16_u32.to_le_bytes());
+    header.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    header.extend_from_slice(&2_u16.to_le_bytes()); // 立体声
+    header.extend_from_slice(&sample_rate.to_le_bytes());
+    header.extend_from_slice(&(sample_rate * 6).to_le_bytes()); // byte rate
+    header.extend_from_slice(&6_u16.to_le_bytes()); // block align
+    header.extend_from_slice(&24_u16.to_le_bytes()); // bits
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&u32::try_from(data_len).expect("尺寸").to_le_bytes());
+    let mut file = std::fs::File::create(path).expect("建大样本夹具");
+    file.write_all(&header).expect("写头");
+    let mut block = Vec::with_capacity(8_192 * 6);
+    for _ in 0..8_192 {
+        block.extend_from_slice(sample3);
+        block.extend_from_slice(sample3);
+    }
+    let mut remaining = frames;
+    while remaining > 0 {
+        let take = remaining.min(8_192);
+        file.write_all(&block[..take * 6]).expect("写数据块");
+        remaining -= take;
+    }
+    file.flush().expect("刷盘");
 }
 
 fn dispatcher_with_project() -> Dispatcher {
@@ -394,10 +434,10 @@ fn the_load_response_reports_the_file_it_really_read() {
 #[test]
 fn an_oversized_sample_file_is_refused_loudly_and_does_not_break_the_load() {
     let scratch = Scratch::new("oversize");
-    // **稀疏**文件：`set_len` 不写数据（APFS 支持），因此造一个 > 64 MiB 的"文件"是廉价的。
+    // **稀疏**文件：`set_len` 不写数据（APFS 支持），因此造一个 > 256 MiB 的"文件"是廉价的。
     let big = scratch.join("big.wav");
     let file = std::fs::File::create(&big).expect("建大文件");
-    file.set_len(64 * 1024 * 1024 + 1).expect("置长度");
+    file.set_len(256 * 1024 * 1024 + 1).expect("置长度");
     drop(file);
 
     let sfz = scratch.join("big.sfz");
@@ -425,6 +465,48 @@ fn an_oversized_sample_file_is_refused_loudly_and_does_not_break_the_load() {
         "原因必须说清是**上界**（⛔ 不是静默截断）: {state}"
     );
     assert_eq!(data["sampleFramesLoaded"], 0, "一个字节都不许读进来");
+}
+
+/// 判据 g：**> 64 MiB 的真实样本必须能装载**（单文件字节门 64 → 256 MiB
+/// 对齐的回归钉）。
+///
+/// 夹具：24-bit 立体声 48 kHz、12 000 000 帧的真 WAV —— 盘上
+/// 72 000 044 字节（> 64 MiB、< 256 MiB）；解码 1 200 万帧 < 6 400 万帧
+/// 总量门 ⇒ 字节门放行后不会被帧数门挡。修复前本夹具的读数是
+/// `unreadable(…超过单文件上限…)`、`sampleFilesRead=false`。
+#[test]
+fn a_sample_file_over_64_mib_loads_after_the_byte_gate_alignment() {
+    let scratch = Scratch::new("over64");
+    let wav = scratch.join("long-stereo.wav");
+    write_constant_wav_stereo(&wav, 0.25, 12_000_000, 48_000);
+    let bytes = std::fs::metadata(&wav).expect("元数据").len();
+    assert!(
+        bytes > 64 * 1024 * 1024 && bytes < 256 * 1024 * 1024,
+        "夹具字节数必须落在 (64 MiB, 256 MiB): {bytes}"
+    );
+    let sfz = scratch.join("long.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=long-stereo.wav key=60 pitch_keycenter=60\n",
+    )
+    .expect("写 SFZ");
+
+    let mut dispatcher = dispatcher_with_project();
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let data = &loaded["data"];
+    assert_eq!(data["sampleFilesRead"], true, "{data}");
+    let source = data["sampleSource"].as_str().expect("source");
+    println!("[sfz-file] >64 MiB 样本来源: {source}");
+    assert!(
+        source.contains("frames=12000000") && source.contains("rate=48000"),
+        "真读到的帧数/采样率必须如实: {source}"
+    );
+    assert_eq!(data["sampleFramesLoaded"], 12_000_000, "解码帧数必须如实");
 }
 
 /// 判据 f：**文件样本按它自己的采样率换算步进比**（回归：MCP 侧曾把 `engine_hz`
