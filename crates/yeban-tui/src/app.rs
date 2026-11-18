@@ -5,22 +5,28 @@
 //! 依赖）；导出走 `yeban_app::render_core` + `yeban_app::export_wav` 的生产渲染路径；
 //! 共享键位走 `yeban_app::input::InputContext::resolve`（GUI 策略表的唯一解析器）。
 //!
-//! v1 的编辑（静音/独奏/音量/声相/改名）是**直接改工程文档再 `publish_project`**
-//! 发布新快照：不经 GUI 的撤销端口 ⇒ 撤销/重做在 v1 未接（键位照 GUI，按下如实
-//! 报错），这是已登记的缺口，不是静默假装。
+//! 二期起，编辑（静音/独奏/音量/声相/改名/片段移动与删除/速度）一律经
+//! `yeban_app::undo::UndoPort::commit_ops` 提交（与 GUI 同一个撤销端口、同一种
+//! `Op`），撤销/重做走 `UndoPort::perform`；工程文档以端口的当前版为准
+//! （`port.project()`），本地 `project` 只是它的镜像。保存时把提交图谱写回
+//! 归档的 `history.dag`，重开后历史可恢复（`session_from_archive`）。
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use yeban_app::engine_host::{EditMark, EngineHost};
 use yeban_app::export_wav::WavExportOptions;
 use yeban_app::input::{Action, InputContext, MixerParam, Resolution};
+use yeban_app::undo::{ActionOutcome, UiAction, UndoPort};
 use yeban_engine::meter::{MeterCollector, MeterFrame};
 use yeban_engine::ring::TransportCommand;
 use yeban_engine::transport::{TransportReading, TransportState};
 use yeban_model::container::ProjectArchive;
 use yeban_model::ids::EntityId;
-use yeban_model::project::{TrackKind, YebanProjectV1};
+use yeban_model::ops::Op;
+use yeban_model::project::{AutomationTarget, ClipPlacement, TrackKind, YebanProjectV1};
 
 use crate::keymap::{Mode, Pane, ViMachine, ViMotion, ViOutcome, to_logical};
 
@@ -37,10 +43,21 @@ pub struct ExportReceipt {
     pub bits: u16,
 }
 
+/// 当前墙钟（毫秒，Unix 纪元）：撤销会话的提交时间戳来源（与 GUI 同一口径，
+/// 只作提交元数据，不进工程语义）。
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// 应用状态。
 pub struct App {
-    /// 当前工程文档（唯一可变权威，与 GUI 同一条口径）。
+    /// 当前工程文档（`UndoPort` 当前版的镜像：每次提交/撤销后从端口刷新）。
     pub project: YebanProjectV1,
+    /// 撤销端口（与 GUI 同一个 `UndoPort`：编辑提交与撤销/重做的唯一落点）。
+    port: Rc<UndoPort>,
     /// 打开时保住的归档资产（保存时走全保真路径，导出时喂给渲染）。
     archive: Option<ProjectArchive>,
     /// 当前工程文件路径（`None` = 内存中的演示工程，尚未落盘）。
@@ -75,8 +92,6 @@ pub struct App {
     pub log: Vec<String>,
     /// 有未保存修改。
     pub dirty: bool,
-    /// 文档代次计数（充当 `EditMark` 的单调标记；v1 无撤销栈，见模块文档）。
-    edit_seq: usize,
     /// 主总线最新峰值（线性幅度，带衰减保持，供底栏电平条）。
     pub master_peak: f32,
     /// 是否请求退出（主循环读）。
@@ -121,6 +136,21 @@ impl App {
         archive: Option<ProjectArchive>,
         project_path: Option<PathBuf>,
     ) -> Result<Self, String> {
+        // 撤销会话：与 GUI 共用同一份配方（`session_from_archive`）：归档里有
+        // 合法 `history.dag` 就恢复历史，空图谱开新会话，非法图谱如实报错。
+        let archive = archive.unwrap_or_else(|| ProjectArchive {
+            project: project.clone(),
+            history_dag: Vec::new(),
+            assets: Vec::new(),
+            embedded_presets: Vec::new(),
+        });
+        let source = project_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<demo>".to_owned());
+        let session = yeban_app::undo::session_from_archive(&source, &archive, now_ms())?;
+        let port = Rc::new(UndoPort::new(session));
+        let project = port.project();
         let mut host = EngineHost::new();
         if let Some(dir) = project_path.as_deref().and_then(Path::parent) {
             host.set_project_dir(Some(dir.to_path_buf()));
@@ -130,9 +160,12 @@ impl App {
             .map_err(|error| format!("引擎图构建失败：{error:?}"))?;
         // 与 GUI 同一条纪律：加载即停住（reload 本身不碰走带状态）。
         host.stop();
+        // 初始快照已经反映开局标记（与 GUI 装配同一条，首笔发布走增量）。
+        host.mark_applied(EditMark::from_display(&port.display()));
         let mut app = Self {
             project,
-            archive,
+            port,
+            archive: Some(archive),
             project_path,
             host,
             collector: Some(rebuild.collector),
@@ -149,7 +182,6 @@ impl App {
             rename: None,
             log: Vec::new(),
             dirty: false,
-            edit_seq: 0,
             master_peak: 0.0,
             quit: false,
             last_export: None,
@@ -299,9 +331,30 @@ impl App {
         self.log_line("回到起点".to_owned());
     }
 
-    fn publish_edit(&mut self, what: &str) {
-        self.edit_seq = self.edit_seq.saturating_add(1);
-        let mark = EditMark::new(None, self.edit_seq);
+    /// 一次编辑的唯一落点：经撤销端口提交 `ops`（进提交史、可撤销），
+    /// 成功后以端口当前版刷新镜像并增量发布到引擎。
+    ///
+    /// `message` 是提交信息（英文，进 `history.dag`）；`what` 是状态行的人话
+    /// （中文）。提交被拒（模型校验不过）时工程一位不动、如实记日志。
+    fn commit_edit(&mut self, message: &str, ops: Vec<Op>, what: &str) {
+        match self.port.commit_ops(now_ms(), message, ops) {
+            Ok(_) => {
+                self.sync_from_port();
+                self.publish_snapshot(what);
+            }
+            Err(refusal) => self.log_line(format!("{what} 被拒绝：{refusal}")),
+        }
+    }
+
+    /// 以撤销端口的当前版刷新本地镜像（提交/撤销/重做后必走）。
+    fn sync_from_port(&mut self) {
+        self.project = self.port.project();
+        self.refresh_track_ids();
+    }
+
+    /// 把当前镜像增量发布到引擎（标记取端口显示态，与 GUI 同一口径）。
+    fn publish_snapshot(&mut self, what: &str) {
+        let mark = EditMark::from_display(&self.port.display());
         match self.host.publish_project(&self.project, mark) {
             Ok(_) => {
                 self.dirty = true;
@@ -311,17 +364,58 @@ impl App {
         }
     }
 
+    /// 撤销 `steps` 步（GUI `Ctrl+Z` 与 Vi `u` 的共同落点）。
+    pub fn undo(&mut self, steps: usize) {
+        let action = if steps == 1 {
+            UiAction::Undo
+        } else {
+            UiAction::UndoMany(steps)
+        };
+        self.apply_history_outcome("撤销", self.port.perform(action));
+    }
+
+    /// 重做 `steps` 步（GUI `Ctrl+Shift+Z` 与 Vi `Ctrl+R` 的共同落点）。
+    pub fn redo(&mut self, steps: usize) {
+        let action = if steps == 1 {
+            UiAction::Redo
+        } else {
+            UiAction::RedoMany(steps)
+        };
+        self.apply_history_outcome("重做", self.port.perform(action));
+    }
+
+    fn apply_history_outcome(&mut self, what: &str, outcome: ActionOutcome) {
+        match outcome {
+            ActionOutcome::Changed { steps, .. } => {
+                self.sync_from_port();
+                self.publish_snapshot(&format!("{what} {steps} 步"));
+            }
+            ActionOutcome::Refused { detail } => {
+                self.log_line(format!("{what}被拒绝：{detail}"));
+            }
+            ActionOutcome::DisplayOnly => {}
+        }
+    }
+
     /// 切换选中轨静音（GUI 裸 `M`）。
     pub fn toggle_mute(&mut self) {
         let Some(id) = self.selected_track_id() else {
             return;
         };
-        if let Some(track) = self.project.tracks.get_mut(&id) {
-            track.mute = !track.mute;
-            let state = if track.mute { "静音" } else { "取消静音" };
-            let name = track.name.clone();
-            self.publish_edit(&format!("{name} {state}"));
-        }
+        let Some(track) = self.project.tracks.get(&id) else {
+            return;
+        };
+        let (old_mute, name) = (track.mute, track.name.clone());
+        let state = if old_mute { "取消静音" } else { "静音" };
+        self.commit_edit(
+            "tui: set track mute",
+            vec![Op::SetTrackMute {
+                track_id: id,
+                old_mute,
+                new_mute: !old_mute,
+            }],
+            &format!("{name} {state}"),
+        );
     }
 
     /// 切换选中轨独奏（GUI 裸 `S`）。
@@ -329,38 +423,162 @@ impl App {
         let Some(id) = self.selected_track_id() else {
             return;
         };
-        if let Some(track) = self.project.tracks.get_mut(&id) {
-            track.solo = !track.solo;
-            let state = if track.solo { "独奏" } else { "取消独奏" };
-            let name = track.name.clone();
-            self.publish_edit(&format!("{name} {state}"));
-        }
+        let Some(track) = self.project.tracks.get(&id) else {
+            return;
+        };
+        let (old_solo, name) = (track.solo, track.name.clone());
+        let state = if old_solo { "取消独奏" } else { "独奏" };
+        self.commit_edit(
+            "tui: set track solo",
+            vec![Op::SetTrackSolo {
+                track_id: id,
+                old_solo,
+                new_solo: !old_solo,
+            }],
+            &format!("{name} {state}"),
+        );
     }
 
     /// 混音微调（GUI `Cmd/Ctrl+Alt+方向` 的落点）：音量 ±1.0 dB / 声相 ±0.1，
     /// 值域与 GUI 推子同一套夹紧（`FADER_MIN_DB..=FADER_MAX_DB` / `-1.0..=1.0`）。
+    /// 提交走 `Op::SetParam`（与 GUI 混音台推子松手同一条路径）。
     pub fn nudge_mixer(&mut self, param: MixerParam, direction: i32) {
         let Some(id) = self.selected_track_id() else {
             return;
         };
-        if let Some(track) = self.project.tracks.get_mut(&id) {
-            let what = match param {
-                MixerParam::Volume => {
-                    let next = (track.volume_db + direction as f32 * 1.0).clamp(
-                        yeban_app::bridge::FADER_MIN_DB,
-                        yeban_app::bridge::FADER_MAX_DB,
-                    );
-                    track.volume_db = next;
-                    format!("{} 音量 {next:+.1} dB", track.name)
-                }
-                MixerParam::Pan => {
-                    let next = (track.pan + direction as f32 * 0.1).clamp(-1.0, 1.0);
-                    track.pan = next;
-                    format!("{} 声相 {next:+.1}", track.name)
-                }
-            };
-            self.publish_edit(&what);
+        let Some(track) = self.project.tracks.get(&id) else {
+            return;
+        };
+        let (target, old_val, new_val, what) = match param {
+            MixerParam::Volume => {
+                let next = (track.volume_db + direction as f32 * 1.0).clamp(
+                    yeban_app::bridge::FADER_MIN_DB,
+                    yeban_app::bridge::FADER_MAX_DB,
+                );
+                (
+                    AutomationTarget::TrackVolume { track_id: id },
+                    track.volume_db,
+                    next,
+                    format!("{} 音量 {next:+.1} dB", track.name),
+                )
+            }
+            MixerParam::Pan => {
+                let next = (track.pan + direction as f32 * 0.1).clamp(-1.0, 1.0);
+                (
+                    AutomationTarget::TrackPan { track_id: id },
+                    track.pan,
+                    next,
+                    format!("{} 声相 {next:+.1}", track.name),
+                )
+            }
+        };
+        self.commit_edit(
+            "tui: set mixer param",
+            vec![Op::SetParam {
+                target,
+                old_val,
+                new_val,
+            }],
+            &what,
+        );
+    }
+
+    /// 光标处的片段摆放（选中轨上）：优先「包含光标 tick 的摆放」，其次
+    /// 「起点 ≥ 光标 tick 的第一个摆放」；都没有返回 `None`。
+    /// 返回 `(轨道, 摆放身份, 摆放快照)`。
+    fn clip_at_cursor(&self) -> Option<(EntityId, EntityId, ClipPlacement)> {
+        let track_id = self.selected_track_id()?;
+        let track = self.project.tracks.get(&track_id)?;
+        let tick = u64::try_from(self.cursor_bar).unwrap_or(0) * self.bar_ticks();
+        let containing = track
+            .clips
+            .values()
+            .find(|p| tick >= p.start_tick && tick < p.start_tick + p.duration_ticks);
+        let placement = containing.or_else(|| {
+            track
+                .clips
+                .values()
+                .filter(|p| p.start_tick >= tick)
+                .min_by_key(|p| p.start_tick)
+        })?;
+        Some((track_id, placement.id, placement.clone()))
+    }
+
+    /// 平移光标处片段 `bars` 小节（负数向左；片段网格焦点下的 `H`/`L`）。
+    /// 走 `Op::MoveClipPlacement`，可撤销；光标跟随片段新起点。
+    pub fn move_clip_at_cursor(&mut self, bars: i32) {
+        let Some((track_id, placement_id, placement)) = self.clip_at_cursor() else {
+            self.log_line("光标处无片段可移动".to_owned());
+            return;
+        };
+        let delta = i64::try_from(self.bar_ticks()).unwrap_or(i64::MAX) * i64::from(bars);
+        let new_start = i64::try_from(placement.start_tick)
+            .unwrap_or(i64::MAX)
+            .saturating_add(delta)
+            .max(0);
+        let new_start = u64::try_from(new_start).unwrap_or(0);
+        if new_start == placement.start_tick {
+            self.log_line("片段已在最左，无变化".to_owned());
+            return;
         }
+        self.commit_edit(
+            "tui: move clip placement",
+            vec![Op::MoveClipPlacement {
+                track_id,
+                placement_id,
+                old_start_tick: placement.start_tick,
+                new_start_tick: new_start,
+            }],
+            "移动片段",
+        );
+        if self.project.tracks[&track_id]
+            .clips
+            .contains_key(&placement_id)
+        {
+            self.cursor_bar =
+                usize::try_from(new_start / self.bar_ticks().max(1)).unwrap_or(usize::MAX);
+        }
+    }
+
+    /// 删除光标处片段（片段网格焦点下 GUI `Delete`/`Backspace` 的落点）。
+    /// 走 `Op::RemoveClipPlacement`（只删摆放，片段池条目不动），可撤销。
+    pub fn delete_clip_at_cursor(&mut self) {
+        let Some((track_id, placement_id, placement)) = self.clip_at_cursor() else {
+            self.log_line("光标处无片段可删除".to_owned());
+            return;
+        };
+        self.commit_edit(
+            "tui: remove clip placement",
+            vec![Op::RemoveClipPlacement {
+                track_id,
+                placement_id,
+                previous_placement: placement,
+            }],
+            "删除片段",
+        );
+    }
+
+    /// 定位播放头到第 `bar` 小节（0 起；走带状态，非文档编辑，不进撤销史）。
+    pub fn seek_to_bar(&mut self, bar: usize) {
+        let ticks = u64::try_from(bar).unwrap_or(0) * self.bar_ticks();
+        self.host
+            .send_transport(&[TransportCommand::SeekTicks(ticks)]);
+        self.cursor_bar = bar;
+        self.log_line(format!("定位到第 {} 小节", bar + 1));
+    }
+
+    /// 设工程速度（BPM）：走 `Op::SetTempo`，可撤销。
+    pub fn set_tempo(&mut self, new_bpm: f64) {
+        let old_bpm = self.project.bpm;
+        if (old_bpm - new_bpm).abs() < f64::EPSILON {
+            self.log_line(format!("速度已是 {new_bpm:.1} BPM，无变化"));
+            return;
+        }
+        self.commit_edit(
+            "tui: set tempo",
+            vec![Op::SetTempo { old_bpm, new_bpm }],
+            &format!("速度 {old_bpm:.1} → {new_bpm:.1} BPM"),
+        );
     }
 
     /// Vi 计数前缀的当前值（状态行显示用）。
@@ -408,7 +626,10 @@ impl App {
     /// 写盘失败时返回错误文本。
     pub fn save_to(&mut self, path: &Path) -> Result<String, String> {
         if let Some(archive) = &mut self.archive {
-            archive.project = self.project.clone();
+            // 工程与提交图谱一次从端口读出（同一版），重开时历史可恢复；
+            // 资产池不动（本线不新增资产，装载时的资产原样保留）。
+            archive.project = self.port.project();
+            archive.history_dag = yeban_model::commit::encode_history_dag(&self.port.graph());
             yeban_app::save::save_archive_file(archive, path)
                 .map_err(|error| format!("保存失败：{error}"))?;
         } else {
@@ -550,11 +771,32 @@ impl App {
                 Resolution::PassThrough => {}
             }
         }
+        // TUI 自加键（K3 改判）：`Ctrl+R` = 重做（Vi 习惯；GUI 表无此格，
+        // 解析已 PassThrough 到这里）。crossterm 对 Ctrl+R 给 Char('r')+CONTROL。
+        if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char('r') {
+            self.redo(1);
+            return;
+        }
         // 第二段：Vi 导航层（只吃无修饰/仅 Shift 的字符键）。
         if !modified && let KeyCode::Char(ch) = event.code {
+            // 片段网格焦点下的片段平移键（TUI 自加）：`H`/`L` 按小节平移
+            // 光标处片段（计数前缀 = 小节数）。删除不用自加键 —— 走 GUI 的
+            // `Delete`/`Backspace`（画布语义 = `DeleteSelection`，见分发层）。
+            // 轨道/检查器焦点下 `H`/`L` 不绑定（落 Vi 层得 NotVi）。
+            if self.focus == Pane::Grid && matches!(ch, 'H' | 'L') {
+                let count = i32::try_from(self.vi.count().unwrap_or(1)).unwrap_or(i32::MAX);
+                self.vi.reset();
+                if ch == 'H' {
+                    self.move_clip_at_cursor(-count);
+                } else {
+                    self.move_clip_at_cursor(count);
+                }
+                return;
+            }
             match self.vi.feed_char(ch) {
                 ViOutcome::Pending => {}
                 ViOutcome::Motion(motion, count) => self.apply_motion(motion, count),
+                ViOutcome::Undo(steps) => self.undo(steps),
                 ViOutcome::EnterCommand => {
                     self.mode = Mode::Command;
                     self.cmdline.clear();
@@ -634,8 +876,17 @@ impl App {
             Action::ZoomOut => {
                 self.bar_cols = self.bar_cols.saturating_sub(1).max(2);
             }
-            Action::Undo | Action::Redo => {
-                self.log_line("撤销/重做未在 TUI v1 接入（无撤销栈，已登记缺口）".to_owned());
+            Action::Undo => self.undo(1),
+            Action::Redo => self.redo(1),
+            Action::DeleteSelection => {
+                // GUI 画布的 `Delete`/`Backspace`：片段网格焦点下删光标处
+                // 片段（经撤销端口，可撤销）；其它焦点下 TUI 尚无选区删除，
+                // 如实报未接，不假装。
+                if self.focus == Pane::Grid {
+                    self.delete_clip_at_cursor();
+                } else {
+                    self.log_line("删除选区只在片段网格焦点下接入（Tab 切焦点）".to_owned());
+                }
             }
             other => {
                 self.log_line(format!("GUI 动作 {other:?} 未在 TUI v1 实现"));
@@ -676,11 +927,21 @@ impl App {
                     self.log_line("改名取消：名字为空".to_owned());
                     return;
                 }
-                if let Some(id) = self.selected_track_id() {
-                    if let Some(track) = self.project.tracks.get_mut(&id) {
-                        track.name = trimmed.clone();
+                if let Some(id) = self.selected_track_id()
+                    && let Some(track) = self.project.tracks.get(&id)
+                {
+                    let old_name = track.name.clone();
+                    if old_name != trimmed {
+                        self.commit_edit(
+                            "tui: set track name",
+                            vec![Op::SetTrackName {
+                                track_id: id,
+                                old_name,
+                                new_name: trimmed.clone(),
+                            }],
+                            &format!("改名为「{trimmed}」"),
+                        );
                     }
-                    self.publish_edit(&format!("改名为「{trimmed}」"));
                 }
             }
             KeyCode::Backspace => {
@@ -778,6 +1039,20 @@ impl App {
             "play" => {
                 self.host.play();
                 self.log_line("播放".to_owned());
+            }
+            "seek" => {
+                // :seek <bar> —— 播放头定位到第 bar 小节（0 起，与小节光标同读数）。
+                match rest.parse::<usize>() {
+                    Ok(bar) => self.seek_to_bar(bar),
+                    Err(_) => self.log_line("用法：:seek <小节号（0 起）>".to_owned()),
+                }
+            }
+            "tempo" => {
+                // :tempo <bpm> —— 设工程速度（经撤销端口提交，可撤销）。
+                match rest.parse::<f64>() {
+                    Ok(bpm) if bpm > 0.0 => self.set_tempo(bpm),
+                    _ => self.log_line("用法：:tempo <BPM>".to_owned()),
+                }
             }
             "stop" => self.stop(),
             "rewind" => self.go_to_beginning(),

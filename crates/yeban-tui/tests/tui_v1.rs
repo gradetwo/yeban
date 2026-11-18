@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 
 use yeban_engine::transport::TransportState;
 use yeban_tui::app::App;
-use yeban_tui::keymap::Mode;
+use yeban_tui::keymap::{Mode, Pane};
 use yeban_tui::ui;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -210,4 +210,120 @@ fn save_and_reopen_roundtrip() {
     assert_eq!(reopened.track_ids.len(), app.track_ids.len());
     assert_eq!(reopened.project.bpm, app.project.bpm);
     let _ = std::fs::remove_file(&path);
+}
+
+/// K3 撤销/重做接线：GUI 键（Ctrl+Z / Ctrl+Shift+Z）与 TUI 自加的 Vi 键
+/// （`u` / Ctrl+R）落到同一个撤销端口；计数撤销一次退多步。
+#[test]
+fn undo_redo_wired_through_gui_and_vi_keys() {
+    let mut app = App::with_demo().expect("demo app");
+    let track_id = app.track_ids[0];
+    assert!(!app.project.tracks[&track_id].mute);
+
+    // GUI 共享键 m 静音 → 进提交史。
+    app.handle_key(char_key('m'));
+    assert!(app.project.tracks[&track_id].mute, "m 应切换静音");
+    // Vi `u` 撤销。
+    app.handle_key(char_key('u'));
+    assert!(!app.project.tracks[&track_id].mute, "u 应撤销静音");
+    // Vi `Ctrl+R` 重做。
+    app.handle_key(key_with(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(app.project.tracks[&track_id].mute, "Ctrl+R 应重做静音");
+    // GUI `Ctrl+Z` 撤销。
+    app.handle_key(key_with(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert!(!app.project.tracks[&track_id].mute, "Ctrl+Z 应撤销静音");
+    // GUI `Ctrl+Shift+Z` 重做。
+    app.handle_key(key_with(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert!(
+        app.project.tracks[&track_id].mute,
+        "Ctrl+Shift+Z 应重做静音"
+    );
+
+    // 计数撤销：再叠两笔编辑（第二条轨静音 + 本轨独奏），3u 一次全退。
+    let other_id = app.track_ids[1];
+    app.handle_key(char_key('j'));
+    app.handle_key(char_key('m'));
+    assert!(app.project.tracks[&other_id].mute);
+    app.handle_key(char_key('k'));
+    app.handle_key(char_key('s'));
+    assert!(app.project.tracks[&track_id].solo);
+    app.handle_key(char_key('3'));
+    app.handle_key(char_key('u'));
+    assert!(!app.project.tracks[&track_id].mute, "3u 应退掉第一笔静音");
+    assert!(!app.project.tracks[&other_id].mute, "3u 应退掉第二笔静音");
+    assert!(!app.project.tracks[&track_id].solo, "3u 应退掉独奏");
+    // 史已空：再按 u 只如实被拒，工程不动。
+    app.handle_key(char_key('u'));
+    assert!(!app.project.tracks[&track_id].mute);
+}
+
+/// 编辑一轮：片段网格焦点下 `L` 平移片段（走 MoveClipPlacement）、
+/// GUI `Delete` 删摆放、`:tempo` 改速度、`:seek` 定位播放头；
+/// 每笔文档编辑都可撤销。
+#[test]
+fn grid_clip_move_delete_tempo_and_seek() {
+    let mut app = App::with_demo().expect("demo app");
+    // 找第一条带摆放的轨与其起点最早的摆放。
+    let mut found = None;
+    for (index, id) in app.track_ids.iter().enumerate() {
+        if let Some(track) = app.project.tracks.get(id)
+            && let Some(placement) = track.clips.values().min_by_key(|p| p.start_tick)
+        {
+            found = Some((index, *id, placement.id, placement.start_tick));
+            break;
+        }
+    }
+    let (index, track_id, placement_id, old_start) = found.expect("演示工程应有片段摆放");
+    app.selected = index;
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Pane::Grid);
+    app.cursor_bar = usize::try_from(old_start / app.bar_ticks()).unwrap_or(0);
+
+    // L：右移一小节（TUI 自加键，计数前缀 = 小节数）。
+    app.handle_key(key_with(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    let moved = app.project.tracks[&track_id].clips[&placement_id].start_tick;
+    assert_eq!(moved, old_start + app.bar_ticks(), "L 应右移一小节");
+    // u 撤销平移。
+    app.handle_key(char_key('u'));
+    assert_eq!(
+        app.project.tracks[&track_id].clips[&placement_id].start_tick, old_start,
+        "u 应撤销平移"
+    );
+
+    // Delete：删光标处摆放（GUI 画布键 DeleteSelection 的落点）。
+    app.handle_key(key(KeyCode::Delete));
+    assert!(
+        !app.project.tracks[&track_id]
+            .clips
+            .contains_key(&placement_id),
+        "Delete 应删掉摆放"
+    );
+    // Ctrl+Z 恢复摆放。
+    app.handle_key(key_with(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert!(
+        app.project.tracks[&track_id]
+            .clips
+            .contains_key(&placement_id),
+        "Ctrl+Z 应恢复摆放"
+    );
+
+    // :tempo 改速度（经撤销端口），u 恢复。
+    let old_bpm = app.project.bpm;
+    app.execute_command("tempo 90");
+    assert_eq!(app.project.bpm, 90.0, ":tempo 应改工程速度");
+    app.handle_key(char_key('u'));
+    assert_eq!(app.project.bpm, old_bpm, "u 应恢复速度");
+
+    // :seek 定位播放头（走带状态，不进撤销史）。
+    app.execute_command("seek 2");
+    app.tick();
+    assert_eq!(app.cursor_bar, 2);
+    assert_eq!(
+        app.transport().position_ticks,
+        2 * app.bar_ticks(),
+        ":seek 应把播放头定位到第 2 小节起点"
+    );
 }

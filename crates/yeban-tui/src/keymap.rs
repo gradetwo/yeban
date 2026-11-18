@@ -17,7 +17,7 @@
 //! | 回到起点 | `Enter` | `Enter`（同） | 已接 |
 //! | 保存工程 | `Cmd/Ctrl+S` | `Ctrl+S`（同）＋ `:w` | 已接 |
 //! | 打开工程 | `Cmd/Ctrl+O` | `Ctrl+O` 提示＋ `:open <path>` | 已接（命令行形态） |
-//! | 撤销 / 重做 | `Cmd/Ctrl+Z` / `Cmd/Ctrl+Shift+Z` | 同键 | 未接 v1（无撤销栈，如实报） |
+//! | 撤销 / 重做 | `Cmd/Ctrl+Z` / `Cmd/Ctrl+Shift+Z` | 同键＋ Vi `u` / `Ctrl+R` | 已接（二期，走 `UndoPort`） |
 //! | 选中轨静音 | `M` | `M`（同） | 已接 |
 //! | 选中轨独奏 | `S` | `S`（同） | 已接 |
 //! | 选中轨音量 ±1 dB | `Cmd/Ctrl+Alt+↑/↓` | `Ctrl+Alt+↑/↓`（同） | 已接 |
@@ -39,8 +39,11 @@
 //!   在 TUI 里记为「未接」。将来 TUI 若加工具，须另行裁决，不许默默改回。
 //! - **K2 `+/-`**：本线原 brief 曾定「检查器聚焦时 +/- 调音量」。GUI 的音量键是
 //!   `Cmd/Ctrl+Alt+↑/↓`（共享动作）⇒ 按口径从 GUI，`+/-` 不作音量键（未绑定）。
-//! - **K3 `u`**：Vi 习惯 `u` = 撤销，但 GUI 撤销是 `Cmd/Ctrl+Z`（共享动作）⇒ 从 GUI，
-//!   `u` 不绑定；且 v1 未接撤销栈，两键都只如实报「未接」。
+//! - **K3 `u` / `Ctrl+R`**：一期裁决是「撤销从 GUI 键，`u` 不绑定」（当时无
+//!   撤销栈）。二期（Wang 2026-11-18 令推进完善）改判：GUI 键仍是基础
+//!   （`Ctrl+Z` / `Ctrl+Shift+Z` 照走 GUI 解析表），TUI **再加自己的** Vi 键
+//!   —— `u` = 撤销（可带计数前缀，`3u` 撤三步）、`Ctrl+R` = 重做。两路都落到
+//!   同一个 `yeban_app::undo::UndoPort`，不另造撤销栈。
 //! - **K4 `Enter`**：Vi 习惯 Enter 无动作，GUI `Enter` = 回到起点（共享动作）⇒ 从 GUI。
 //!   Insert/Command 模式里的 Enter 是模式内提交，不在此列。
 //! - **K5 `q`**：Vi 习惯裸 `q` 退出。TUI 只认 `:q`（模式层），裸 `q` 不绑定，防误触。
@@ -122,6 +125,8 @@ pub enum ViOutcome {
     EnterCommand,
     /// `i` —— 进 Insert（改名）。
     EnterInsert,
+    /// `u` —— 撤销（附计数，缺省 1；二期 K3 改判，见模块文档）。
+    Undo(usize),
     /// 不是 Vi 键，交还给上层（上层也不认就忽略）。
     NotVi,
 }
@@ -200,6 +205,7 @@ impl ViMachine {
                 self.reset();
                 ViOutcome::EnterCommand
             }
+            'u' => ViOutcome::Undo(self.take_count()),
             'i' => {
                 self.reset();
                 ViOutcome::EnterInsert
@@ -308,6 +314,15 @@ mod tests {
             ViOutcome::NotVi,
             "裸 q 不绑定 (冲突 K5)"
         );
+    }
+
+    #[test]
+    fn u_is_undo_with_count() {
+        let mut machine = ViMachine::new();
+        assert_eq!(machine.feed_char('u'), ViOutcome::Undo(1));
+        let outcomes = feed(&mut machine, "3u");
+        assert_eq!(outcomes.last(), Some(&ViOutcome::Undo(3)));
+        assert_eq!(machine.count(), None, "动作后计数必须清空");
     }
 
     #[test]
