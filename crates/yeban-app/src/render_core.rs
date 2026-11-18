@@ -90,8 +90,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use yeban_model::{AssetHash, EntityId, RoutingKind, YebanProjectV1};
 use yeban_render::automation::{
     TrackGainAutomation, TrackPanAutomation, compressing_nodes_with_lanes,
-    device_param_automations, forced_insert_instances, macro_cascade_reaches, pan_automations,
-    send_gain_automations,
+    device_param_automations, forced_insert_instances, lane_key_layouts, macro_cascade_reaches,
+    pan_automations, send_gain_automations,
 };
 use yeban_render::inserts::project_inserts_with_forced_instances;
 use yeban_render::render::{
@@ -701,6 +701,8 @@ pub fn render_project_f32_with_plans_under(
     // `RenderPlan::attach_key_armed_nodes`）。没有侧链边的工程不改任何计划槽 ⇒
     // 产物逐字节不变。
     plan.attach_key_armed_nodes(&compressing);
+    // ⭐ 逐件＋侧链期 4：lane 级侧链边与 MCP 同一挂接点、同一解析规则。
+    plan.attach_lane_key_routes(&lane_key_layouts(project, options.sample_rate));
 
     // ---- 1d. ⭐ 输出级（任务单 `#296` ＋ B2）：总线推子 / 声相 / mute / solo ＋ 主总线声相 ----
     //

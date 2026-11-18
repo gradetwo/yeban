@@ -1935,6 +1935,49 @@ pub fn switches_compressor(automation: &DeviceParamAutomation) -> bool {
 /// 只自动化了 `threshold_db` 等其它压缩参数的轨也**不**置位 —— 静态关时那台压缩器
 /// 仍然不执行（`#304` 边界 1），检波参考点无需搬。
 #[must_use]
+/// ⭐ 逐件＋侧链期 4：把工程里每条带 `lane_chains` 的轨投影成
+/// [`crate::render::LaneKeyLayout`]（组键集合 ＋ 逐组武装判定），供
+/// [`crate::render::RenderPlan::attach_lane_key_routes`] 消费。
+///
+/// 武装判定 = 该组的链投影 `InsertChain::compresses_statically` —— 与
+/// [`crate::engine_source::LaneSplitSource`] 构造组运行态的**同一份投影**
+/// （`InsertChain::from_devices`），⛔ 不是第二套判定。lane 器件不可
+/// 自动化（期 3 既定边界）⇒ 静态判定即运行事实，不需要泳道并集。
+/// 没有 `lane_chains` 的轨不进表（其 lane 边无布局可解析 ⇒ 未求值）。
+#[must_use]
+pub fn lane_key_layouts(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+) -> BTreeMap<EntityId, crate::render::LaneKeyLayout> {
+    let mut out = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        if track.lane_chains.is_empty() {
+            continue;
+        }
+        let groups = track
+            .lane_chains
+            .iter()
+            .map(|chain| chain.keys.clone())
+            .collect();
+        let armed_groups = track
+            .lane_chains
+            .iter()
+            .map(|chain| {
+                crate::inserts::InsertChain::from_devices(&chain.devices, sample_rate, project.bpm)
+                    .compresses_statically()
+            })
+            .collect();
+        out.insert(
+            *track_id,
+            crate::render::LaneKeyLayout {
+                groups,
+                armed_groups,
+            },
+        );
+    }
+    out
+}
+
 pub fn compressing_nodes_with_lanes(
     tracks: &BTreeMap<EntityId, TrackV3>,
     automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,

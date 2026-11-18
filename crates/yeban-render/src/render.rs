@@ -221,6 +221,46 @@ pub trait AudioSource: Send + Sync {
         let _ = frame;
         Err("该音源未实现定位（seek_to），不能从非 0 帧起渲染".to_owned())
     }
+
+    /// ⭐ 逐件＋侧链期 4：把 lane 级键路由装进本源（只有逐件分组源
+    /// [`crate::engine_source::LaneSplitSource`] 接受）。
+    ///
+    /// 返回 `true` = 已接受并将在渲染时求值；缺省 `false` = 本源不接受
+    /// ⇒ [`RenderPlan::execute`] 响亮失败（⛔ 不静默丢弃已求值的路由：
+    /// 收据已经把这条边算作已求值，源不兑现就是假收据）。
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        let _ = routes;
+        false
+    }
+}
+
+/// ⭐ 一条 **lane 级**侧链键路由（逐件＋侧链期 4）：同一条轨内，
+/// `source_group` 组的**链前**信号（设计 §6 R4 定案的抽头点）喂
+/// `dest_group` 组链里压缩器的检波器。组下标 = 该轨 `lane_chains` 序。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneKeyRoute {
+    /// 声明这条路由的侧链边身份。
+    pub edge_id: EntityId,
+    /// 源 lane 组下标（键信号 = 该组链前渲染）。
+    pub source_group: usize,
+    /// 目的 lane 组下标（该组链以键模式处理）。
+    pub dest_group: usize,
+    /// 键增益（线性；边 `gain_db` 的线性值，`None` ⇒ 1.0）。
+    pub key_gain: f32,
+}
+
+/// ⭐ 一条轨的逐件 lane 布局快照（逐件＋侧链期 4）：调用方从工程投影
+/// （[`crate::automation::lane_key_layouts`]），`attach_lane_key_routes`
+/// 消费。`armed_groups[i]` = 第 i 组的链投影含启用压缩器 —— 与
+/// [`crate::engine_source::LaneSplitSource`] 构造组运行态的同一份投影
+/// （`InsertChain::compresses_statically`），⛔ 不是第二套判定；
+/// lane 器件不可自动化（期 3 既定边界）⇒ 静态判定即运行事实。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaneKeyLayout {
+    /// 每组的键集合（组序 = 工程 `lane_chains` 序）。
+    pub groups: Vec<Vec<u8>>,
+    /// 每组是否武装（与 `groups` 同长）。
+    pub armed_groups: Vec<bool>,
 }
 
 /// 一条**确定输出 0** 的音轨源（`clips` 为空且没绑采样器）。
@@ -659,11 +699,15 @@ pub struct RenderPlan {
     /// 槽位 -> 节点身份 (供 `bus_reduction_order` 使用)。
     slot_of: BTreeMap<EntityId, usize>,
     /// 侧链边声明（编译期从图里抽出，边身份升序）：
-    /// `(边身份, 源节点, 目的节点, 边的 gain_db)`。
-    /// 只存声明，不存求值状态；求值状态在 `key_routes`。
-    sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>)>,
+    /// `(边身份, 源节点, 目的节点, 边的 gain_db, 源 lane 键, 目的 lane 键)`。
+    /// 只存声明，不存求值状态；求值状态在 `key_routes` 与 `lane_key_routes`。
+    sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>, Option<u8>, Option<u8>)>,
     /// 已求值的键路由：目的槽位 -> （源槽位，边身份）。v1 单键：每目的至多一条。
     key_routes: BTreeMap<usize, (usize, EntityId)>,
+    /// 已求值的 **lane 级**键路由（逐件＋侧链期 4）：节点 -> 该轨内的
+    /// 路由表。由 [`Self::attach_lane_key_routes`] 按调用方给的布局解析；
+    /// `execute` 装源后把路由交給该节点的源（源不接受 ⇒ 响亮失败）。
+    lane_key_routes: BTreeMap<EntityId, Vec<LaneKeyRoute>>,
     /// 同层键的层内渲染序：层号 -> 该层全部槽位的渲染顺序（拓扑序，源在目的之前）。
     ///
     /// 只为「有已求值同层键边」的层登记；不在表里的层在 `execute` 里走并行
@@ -1029,7 +1073,14 @@ impl RenderPlan {
 
         // 侧链声明（`#337` 的另一半：边本身不搬音频，但声明要留给键挂接）。
         // `BTreeMap` 值迭代 = 边身份升序 ⇒ 挂接时"第一条生效"即按此顺序。
-        let sidechain_edges: Vec<(EntityId, EntityId, EntityId, Option<f32>)> = graph
+        let sidechain_edges: Vec<(
+            EntityId,
+            EntityId,
+            EntityId,
+            Option<f32>,
+            Option<u8>,
+            Option<u8>,
+        )> = graph
             .edges
             .values()
             .filter(|edge| edge.kind == RoutingKind::Sidechain)
@@ -1039,6 +1090,8 @@ impl RenderPlan {
                     edge.source_node,
                     edge.destination_node,
                     edge.gain_db,
+                    edge.source_lane,
+                    edge.dest_lane,
                 )
             })
             .collect();
@@ -1209,6 +1262,7 @@ impl RenderPlan {
             slot_of,
             sidechain_edges,
             key_routes: BTreeMap::new(),
+            lane_key_routes: BTreeMap::new(),
             layer_key_orders: BTreeMap::new(),
         })
     }
@@ -1257,7 +1311,14 @@ impl RenderPlan {
         // 成环的同层声明边整组落选（环外边不受影响）。
         let cycle_edges = same_layer_cycle_edge_ids(&declarations, &self.slot_of, &level_of_slot);
         let block_width = self.options.block_size * self.options.channels;
-        for (edge_id, source_node, dest_node, key_gain_db) in declarations {
+        for (edge_id, source_node, dest_node, key_gain_db, source_lane, dest_lane) in declarations
+        {
+            // lane 级边（任一端带 lane 键）不走节点级挂接：由
+            // `attach_lane_key_routes` 按布局解析；在这里当节点边求值
+            // 会把整轨信号当键、与 lane 求值双重计数。
+            if source_lane.is_some() || dest_lane.is_some() {
+                continue;
+            }
             let Some(&dest_slot) = self.slot_of.get(&dest_node) else {
                 continue;
             };
@@ -1332,14 +1393,81 @@ impl RenderPlan {
         self.layer_key_orders = orders;
     }
 
-    /// 已求值的键路由边身份（按目的槽位序）。收据的"未求值"计数 =
-    /// 声明条数 − 本表长度。
+    /// ⭐ 逐件＋侧链期 4：解析 **lane 级**侧链边（任一端带 lane 键的声明）。
+    ///
+    /// `layouts` = 调用方从工程投影的逐轨 lane 布局（见 [`LaneKeyLayout`]）。
+    /// 求值条件（全满足才求值，缺一即落选、收据计未求值、渲染不报错）：
+    ///
+    /// 1. 源与目的必须是**同一节点**（同轨 lane→lane；跨轨 lane 边本期
+    ///    不求值 —— 跨轨抽头要把分组源的组信号引出节点边界，是下一期
+    ///    的规格，见期 4 回执缺口）；
+    /// 2. **两端都**带 lane 键（只带一端的混合边本期不求值：节点级信号
+    ///    与 lane 组信号之间没有已定义的抽头/落点）；
+    /// 3. 两端的键都属于该轨某个 lane 组（落在余量里的键没有链、
+    ///    没有抽头点 ⇒ 不求值）；
+    /// 4. 目的组武装（其链投影含启用压缩器，布局的 `armed_groups`)；
+    /// 5. 同一目的组至多一条（边身份升序第一条合格边生效，与节点级
+    ///    单键口径一致）。
+    ///
+    /// 调用纪律：构造期调用（允许分配），`execute` 之前完成；可与
+    /// [`Self::attach_key_armed_nodes`] 任意先后（两者消费不相交的声明子集）。
+    pub fn attach_lane_key_routes(&mut self, layouts: &BTreeMap<EntityId, LaneKeyLayout>) {
+        for (edge_id, source_node, dest_node, key_gain_db, source_lane, dest_lane) in
+            self.sidechain_edges.clone()
+        {
+            let (Some(source_key), Some(dest_key)) = (source_lane, dest_lane) else {
+                continue;
+            };
+            if source_node != dest_node {
+                continue;
+            }
+            let Some(layout) = layouts.get(&dest_node) else {
+                continue;
+            };
+            if !self.slot_of.contains_key(&dest_node) {
+                continue;
+            }
+            let group_of = |key: u8| layout.groups.iter().position(|keys| keys.contains(&key));
+            let (Some(source_group), Some(dest_group)) = (group_of(source_key), group_of(dest_key))
+            else {
+                continue;
+            };
+            if !layout.armed_groups.get(dest_group).copied().unwrap_or(false) {
+                continue;
+            }
+            let routes = self.lane_key_routes.entry(dest_node).or_default();
+            if routes.iter().any(|route| route.dest_group == dest_group) {
+                continue;
+            }
+            routes.push(LaneKeyRoute {
+                edge_id,
+                source_group,
+                dest_group,
+                key_gain: key_gain_db.map_or(1.0, db_to_linear),
+            });
+        }
+    }
+
+    /// 已求值的 **lane 级**键路由边身份（节点序、节点内解析序）。
+    #[must_use]
+    pub fn lane_key_evaluated_edge_ids(&self) -> Vec<EntityId> {
+        self.lane_key_routes
+            .values()
+            .flat_map(|routes| routes.iter().map(|route| route.edge_id))
+            .collect()
+    }
+
+    /// 已求值的键路由边身份（节点级按目的槽位序，lane 级附于其后）。
+    /// 收据的"未求值"计数 = 声明条数 − 本表长度。
     #[must_use]
     pub fn key_evaluated_edge_ids(&self) -> Vec<EntityId> {
-        self.key_routes
+        let mut ids: Vec<EntityId> = self
+            .key_routes
             .values()
             .map(|&(_, edge_id)| edge_id)
-            .collect()
+            .collect();
+        ids.extend(self.lane_key_evaluated_edge_ids());
+        ids
     }
 
     /// 保留下来的节点身份 (按 `(层号, EntityId)` 排列)。
@@ -1586,6 +1714,23 @@ impl RenderPlan {
             }
         }
 
+        // ---- 1a. ⭐ 逐件＋侧链期 4：把已求值的 lane 键路由交給对应节点的源 ----
+        //
+        // 收据已在挂接时把这些边算作已求值 ⇒ 源不接受就是假收据：
+        // 响亮失败，⛔ 不静默丢弃。没有 lane 路由的计划一个源都不碰。
+        for (node, routes) in &self.lane_key_routes {
+            let slot = self.slot_of[node];
+            let Some(source) = self.states[slot].source.as_mut() else {
+                return Err(RenderError::MissingSource(*node));
+            };
+            if !source.attach_lane_keys(routes) {
+                return Err(RenderError::Source {
+                    node: *node,
+                    message: "lane 级侧链键路由无处落点：该节点的源不是逐件分组源".to_owned(),
+                });
+            }
+        }
+
         // ---- 1b. ⭐ 第五份报告 B-1：区间渲染先定位 ----
         //
         // `start_frame > 0` 时把每个已装载的源冷启动定位到起点（语义见
@@ -1697,13 +1842,13 @@ impl RenderPlan {
 /// 判定用可达性：边 `u → v` 在环上 ⇔ `v` 能沿同层声明边到达 `u`。图规模
 /// 是工程节点数，逐点 DFS 是编译期一次性成本。
 fn same_layer_cycle_edge_ids(
-    declarations: &[(EntityId, EntityId, EntityId, Option<f32>)],
+    declarations: &[(EntityId, EntityId, EntityId, Option<f32>, Option<u8>, Option<u8>)],
     slot_of: &BTreeMap<EntityId, usize>,
     level_of_slot: &[u32],
 ) -> BTreeSet<EntityId> {
     let mut adjacency: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut same_layer: Vec<(EntityId, usize, usize)> = Vec::new();
-    for (edge_id, source_node, dest_node, _) in declarations {
+    for (edge_id, source_node, dest_node, ..) in declarations {
         let (Some(&source_slot), Some(&dest_slot)) =
             (slot_of.get(source_node), slot_of.get(dest_node))
         else {
@@ -1974,10 +2119,10 @@ mod tests {
             destination_node: destination,
             kind: RoutingKind::TrackToBus,
             gain_db,
-        }
             source_lane: None,
-        dest_lane: None,
-}
+            dest_lane: None,
+        }
+    }
 
     fn graph(nodes: &[EntityId], edges: Vec<RoutingEdge>) -> RoutingGraph {
         RoutingGraph {
@@ -3426,10 +3571,10 @@ mod tests {
             destination_node: destination,
             kind: RoutingKind::Sidechain,
             gain_db: None,
-        }
             source_lane: None,
-        dest_lane: None,
-}
+            dest_lane: None,
+        }
+    }
 
     /// 造一条带压缩器的插入链（bus 上的键目的）：阈值 −12 dB、4:1、硬膝、
     /// 检波 1 ms、起振 1 ms、释放 50 ms、无 makeup。

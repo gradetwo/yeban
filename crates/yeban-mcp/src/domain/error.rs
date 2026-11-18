@@ -211,6 +211,8 @@ pub fn code_for_model(error: &ModelError) -> ErrorCode {
         | ModelError::LaneChainKeysNotAscending { .. }
         | ModelError::LaneChainsNotOrdered
         | ModelError::LaneChainDeviceLatency { .. }
+        // 逐件＋侧链期 4：lane 端点挂在非侧链边上 —— 同款"载荷形状不合法"。
+        | ModelError::RoutingLaneEndpointsOnNonSidechain { .. }
         | ModelError::TempoMapZeroTick { .. } => ErrorCode::InvalidParameterRange,
         ModelError::SchemaVersionTooNew { .. }
         | ModelError::ReaderTooOld { .. }

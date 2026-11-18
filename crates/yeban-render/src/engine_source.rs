@@ -74,7 +74,7 @@ use yeban_sfz::parser::ParseLimits;
 
 use crate::automation::{CcProbe, centered_pan_gains};
 use crate::inserts::{InsertChain, InsertRuntime};
-use crate::render::{AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError};
+use crate::render::{AudioSource, BlockContext, L1_BLOCK_SIZE, LaneKeyRoute, RenderError};
 
 /// 引擎音源装配失败（快照投影 / `arm_from_snapshot`）。
 ///
@@ -1010,6 +1010,16 @@ pub struct LaneSplitSource {
     remainder_steals: Arc<AtomicU64>,
     /// 累加用的暂存缓冲（第一份直接写入 `out`，其余份先写这里再累加）。
     scratch: Vec<f32>,
+    /// ⭐ 逐件＋侧链期 4：已求值的 lane 键路由（`execute` 经
+    /// `attach_lane_keys` 装入；空 ⇒ `render_block` 走原路逐位不变）。
+    key_routes: Vec<LaneKeyRoute>,
+    /// 键源组下标（升序去重，`key_routes` 装入时算好）。
+    key_source_groups: Vec<usize>,
+    /// 目的组下标 → `key_routes` 下标（无路由 ⇒ `None`）。
+    key_route_for_dest: Vec<Option<usize>>,
+    /// 逐组的**链前**键缓冲（只给键源组分配；键 = 该组链与组声相
+    /// 之前的原始渲染，设计 §6 R4 定案的同轨链前抽头）。
+    key_buffers: Vec<Vec<f32>>,
     /// 轨声相（`(左, 右)`；默认 `(1.0, 1.0)` ＝ 居中，与单源同一缺省）。
     pan: (f32, f32),
     /// 全部子源窃取数之和的句柄（每块末尾由各子源句柄汇总写回）。
@@ -1082,6 +1092,10 @@ impl LaneSplitSource {
             remainder,
             remainder_steals,
             scratch: Vec::new(),
+            key_routes: Vec::new(),
+            key_source_groups: Vec::new(),
+            key_route_for_dest: Vec::new(),
+            key_buffers: Vec::new(),
             pan: (1.0, 1.0),
             steals: Arc::new(AtomicU64::new(0)),
         })
@@ -1177,7 +1191,188 @@ impl LaneSplitSource {
     }
 }
 
+    /// ⭐ 逐件＋侧链期 4：带 lane 键路由时的**两遍**渲染。
+    ///
+    /// 第一遍：每个**键源组**先把本块的原始节目（链前、组声相前 ——
+    /// 设计 §6 R4 定案的同轨链前抽头）渲进自己的键缓冲。两遍是必需的：
+    /// 目的组在组序里可能排在源组**之前**（808 键 35 < kick 键 36），
+    /// 单遍顺序渲染在目的组处理时拿不到本块的键。
+    ///
+    /// 第二遍按原固定顺序逐组出声（组序、余量最后、轨声相在求和后）：
+    /// 键源组的节目从键缓冲**复制**（⛔ 不二次渲染 —— 引擎推进契约
+    /// 每块恰好一次），目的组链以 `process_with_key` 处理，其余组与
+    /// 无键原路同形。键缓冲全程只读（同一源可喂多个目的、各带增益）。
+    fn render_block_keyed(
+        &mut self,
+        context: BlockContext,
+        out: &mut [f32],
+    ) -> Result<(), RenderError> {
+        let channels = context.channels.max(1);
+        let frames = context.frames.min(out.len() / channels);
+        let width = frames * channels;
+        // 与原路同一条响亮口径（键模式的 `process_with_key` 只支持
+        // 立体声交错）：非立体声且任一组链可执行或有键路由 ⇒ 指名失败。
+        if channels != 2
+            && (self.groups.iter().any(|group| group.runtime.is_some())
+                || !self.key_routes.is_empty())
+        {
+            return Err(RenderError::UnsupportedInsertChannels(channels));
+        }
+        if self.scratch.len() < width {
+            self.scratch.resize(width, 0.0);
+        }
+        // 第一遍：键源组链前渲染（组下标升序，确定性）。
+        for &group_index in &self.key_source_groups {
+            if self.key_buffers[group_index].len() < width {
+                self.key_buffers[group_index].resize(width, 0.0);
+            }
+            self.groups[group_index]
+                .source
+                .render_block(context, &mut self.key_buffers[group_index][..width])?;
+        }
+        // 第二遍：逐组出声，求和顺序与无键原路一致。
+        let mut started = false;
+        for group_index in 0..self.groups.len() {
+            let is_key_source = self.key_source_groups.contains(&group_index);
+            let route = self.key_route_for_dest[group_index].map(|i| self.key_routes[i]);
+            if started {
+                fill_group_keyed(
+                    &mut self.groups[group_index],
+                    group_index,
+                    is_key_source,
+                    route,
+                    &self.key_buffers,
+                    context,
+                    &mut self.scratch[..width],
+                )?;
+                for (slot, sample) in out[..width].iter_mut().zip(&self.scratch[..width]) {
+                    *slot += *sample;
+                }
+            } else {
+                fill_group_keyed(
+                    &mut self.groups[group_index],
+                    group_index,
+                    is_key_source,
+                    route,
+                    &self.key_buffers,
+                    context,
+                    &mut out[..width],
+                )?;
+                started = true;
+            }
+        }
+        if started {
+            self.remainder
+                .render_block(context, &mut self.scratch[..width])?;
+            for (slot, sample) in out[..width].iter_mut().zip(&self.scratch[..width]) {
+                *slot += *sample;
+            }
+        } else {
+            self.remainder.render_block(context, &mut out[..width])?;
+        }
+        // 轨声相与窃取汇总：与无键原路同形同位。
+        let (gain_l, gain_r) = self.pan;
+        if gain_l != 1.0 || gain_r != 1.0 {
+            for frame in 0..frames {
+                let base = frame * channels;
+                out[base] *= gain_l;
+                if channels > 1 {
+                    out[base + 1] *= gain_r;
+                }
+            }
+        }
+        let total: u64 = self
+            .groups
+            .iter()
+            .map(|group| group.steals.load(Ordering::Relaxed))
+            .sum::<u64>()
+            + self.remainder_steals.load(Ordering::Relaxed);
+        self.steals.store(total, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// ⭐ 逐件＋侧链期 4：在键控渲染的第二遍里完成一组（渲染或复制键
+/// 缓冲 → 组链（目的组走键模式）→ 组声相），写满 `target`。
+///
+/// 与 [`LaneSplitSource::render_part`] 的差别只有两处：节目可以来自
+/// 键缓冲复制（键源组在第一遍已渲染过），链可以带键。其余契约
+/// （无组音符 ⇒ 链整段跳过、组声相 `(1, 1)` 不乘）与 `render_part` 一致。
+#[allow(clippy::too_many_arguments)]
+fn fill_group_keyed(
+    group: &mut LaneGroup,
+    group_index: usize,
+    is_key_source: bool,
+    route: Option<LaneKeyRoute>,
+    key_buffers: &[Vec<f32>],
+    context: BlockContext,
+    target: &mut [f32],
+) -> Result<(), RenderError> {
+    let channels = context.channels.max(1);
+    let frames = context.frames.min(target.len() / channels);
+    let width = frames * channels;
+    if is_key_source {
+        target[..width].copy_from_slice(&key_buffers[group_index][..width]);
+    } else {
+        group.source.render_block(context, target)?;
+    }
+    if frames == 0 {
+        return Ok(());
+    }
+    if group.has_notes && let Some(runtime) = &mut group.runtime {
+        let mut offset = 0usize;
+        while offset < frames {
+            let chunk = (frames - offset).min(L1_BLOCK_SIZE);
+            let segment = &mut target[offset * channels..(offset + chunk) * channels];
+            match route {
+                Some(route) => runtime.process_with_key(
+                    segment,
+                    &key_buffers[route.source_group][offset * channels..(offset + chunk) * channels],
+                    route.key_gain,
+                ),
+                None => runtime.process(segment),
+            }
+            offset += chunk;
+        }
+    }
+    if let Some((gain_l, gain_r)) = group.pan
+        && (gain_l != 1.0 || gain_r != 1.0)
+    {
+        for frame in 0..frames {
+            let base = frame * channels;
+            target[base] *= gain_l;
+            if channels > 1 {
+                target[base + 1] *= gain_r;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl AudioSource for LaneSplitSource {
+    fn attach_lane_keys(&mut self, routes: &[LaneKeyRoute]) -> bool {
+        // 路由下标由 plan 按同一份布局解析；越界 = 调用方与本源的组序
+        // 不一致 ⇒ 拒绝接受（`execute` 据此响亮失败），⛔ 不静默截断。
+        if routes.iter().any(|route| {
+            route.source_group >= self.groups.len() || route.dest_group >= self.groups.len()
+        }) {
+            return false;
+        }
+        self.key_routes = routes.to_vec();
+        let mut sources: Vec<usize> = routes.iter().map(|route| route.source_group).collect();
+        sources.sort_unstable();
+        sources.dedup();
+        self.key_source_groups = sources;
+        self.key_route_for_dest = vec![None; self.groups.len()];
+        for (index, route) in routes.iter().enumerate() {
+            self.key_route_for_dest[route.dest_group] = Some(index);
+        }
+        if self.key_buffers.len() < self.groups.len() {
+            self.key_buffers.resize_with(self.groups.len(), Vec::new);
+        }
+        true
+    }
+
     fn seek_to(&mut self, frame: u64) -> Result<(), String> {
         for group in &mut self.groups {
             group.source.seek_to(frame)?;
@@ -1186,6 +1381,11 @@ impl AudioSource for LaneSplitSource {
     }
 
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        // ⭐ 逐件＋侧链期 4：有 lane 键路由走两遍键控路；无路由走原路
+        // （原路函数体一字未动 ⇒ 无 lane 侧链的工程逐位不变）。
+        if !self.key_routes.is_empty() {
+            return self.render_block_keyed(context, out);
+        }
         let channels = context.channels.max(1);
         let frames = context.frames.min(out.len() / channels);
         let width = frames * channels;

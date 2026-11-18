@@ -245,10 +245,9 @@ pub struct DrumReverbPreset {
 }
 
 /// 逐件链的侧链声明（`lane_chains[].chain.sidechain`）：本组压缩的
-/// key 源 = `key_keys` 这些键命中的声部信号。格式层只落声明；
-/// lane 级侧链求值在期 4 落地，生成期见到声明响亮拒绝（见
-/// [`lane_chain_generation_violations`]），不出厂预置在期 5 之前不写
-/// 本段（设计裁决）。
+/// key 源 = `key_keys` 这些键命中的声部信号。逐件＋侧链期 4 起，
+/// 生成路径把声明落成同轨 lane 级侧链边（`Op::ConnectRouting`，
+/// render 侧真求值）；出厂预置的侧链值期 5 才写（设计裁决）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumLaneSidechainPreset {
     /// key 源键组（严格升序、非空；必须是本预置鼓道键的子集）。
@@ -279,7 +278,7 @@ pub struct DrumLaneChainPreset {
     pub delay: Option<DrumDelayPreset>,
     /// 本组声相覆盖（可选）−1..=1。
     pub pan: Option<f32>,
-    /// 侧链声明（可选；格式可写，生成期 4 前拒绝，出厂值期 5 才写）。
+    /// 侧链声明（可选；期 4 起生成落成 lane 级侧链边，出厂值期 5 才写）。
     pub sidechain: Option<DrumLaneSidechainPreset>,
 }
 
@@ -815,7 +814,7 @@ fn parse_key_group(
 /// 解析 `lane_chains` 段（可选；缺省 = 空表）。规范化校验在本层完成：
 /// 组数上限、组内升序非空、组间不重叠、组按首键升序、键必须是本预置
 /// 鼓道（主道 ∪ fill 道）的键、链内至少一段处理、侧链 key 键是鼓道
-/// 键的子集。choke 组不拆分与侧链声明拒绝是**生成期**校验（依赖所选
+/// 键的子集。choke 组不拆分是**生成期**校验（依赖所选
 /// SFZ 程序与落地期次，见 [`lane_chain_generation_violations`]）。
 fn parse_lane_chains(
     obj: &[(String, Json)],
@@ -1216,8 +1215,7 @@ pub fn drum_fx_device_specs(fx: &DrumFxPreset, present: DrumFxFamilies) -> Vec<D
 /// （逐件链格式没有这个字段）；③ EQ 与压缩仍合在**同一台**通道条
 /// 器件里（与 [`drum_fx_device_specs`] 同一口径）。`pan` 与
 /// `sidechain` 不产器件：pan 进模型的 `LaneChainDef::pan`；sidechain
-/// 是期 4 的求值输入，生成在期 4 之前由
-/// [`lane_chain_generation_violations`] 响亮拒绝。
+/// 由生成路径落成 lane 级侧链边（期 4），不进器件表。
 #[must_use]
 pub fn drum_lane_device_specs(chain: &DrumLaneChainPreset) -> Vec<DrumFxDeviceSpec> {
     let mut specs = Vec::new();
@@ -2255,7 +2253,7 @@ fn acoustic_covered_keys(sfz_path: Option<&str>) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// 逐件链生成校验（choke 组不拆分 + 侧链声明拒绝；生成路径共用）
+// 逐件链生成校验（choke 组不拆分；生成路径共用）
 // ---------------------------------------------------------------------------
 
 /// 原声鼓组在**指定 SFZ 程序**下的 choke（exclusive / off_by）互斥组：
@@ -2283,26 +2281,17 @@ pub fn choke_groups(sfz_path: Option<&str>) -> Vec<Vec<u8>> {
 /// 逐件链的**生成期**违规清单（空 = 可生成）。生成路径（MCP
 /// `yeban_generate_drum_pattern` 与 UI `drum_gen_ops`）在覆盖审计之后
 /// 调用本函数，非空即响亮拒绝并逐条点名——与
-/// [`uncovered_pattern_keys`] 同一「默认不能静默」口径。两类违规：
+/// [`uncovered_pattern_keys`] 同一「默认不能静默」口径。一类违规：
 ///
-/// 1. **侧链声明**：预置的逐件链带 `sidechain` 段。格式层可写，但
-///    lane 级侧链求值在期 4 才落地；期 4 之前生成带侧链声明的逐件链
-///    等于静默丢弃声明，响亮拒绝。出厂预置的侧链值期 5 才写。
-/// 2. **choke 组被拆分**（仅原声族）：本预置用到的键里，同一 choke
+/// 1. **choke 组被拆分**（仅原声族）：本预置用到的键里，同一 choke
 ///    组的键不得分布在两条不同的逐件链里，也不得一部分分组、一部分
 ///    留在整轨链上——逐件渲染按组分引擎，拆开后互掐关系断裂
 ///    （踩镲掐不开镲的语义被静默改掉）。整组同链或整组不分组才合法。
 #[must_use]
 pub fn lane_chain_generation_violations(preset: &DrumStylePreset) -> Vec<String> {
     let mut violations = Vec::new();
-    for chain in &preset.lane_chains {
-        if let Some(sidechain) = &chain.sidechain {
-            violations.push(format!(
-                "逐件链组 `{}` 声明了侧链（key 键 {:?}）：lane 级侧链求值在期 4 落地，本期生成响亮拒绝，不静默丢弃声明",
-                chain.name, sidechain.key_keys
-            ));
-        }
-    }
+    // 侧链声明已由期 4 落成生成路径的 lane 级侧链边，不再是违规
+    // （期 4 之前在此响亮拒绝，历史见 git）。
     if preset.kit_family != KitFamily::Acoustic || preset.lane_chains.is_empty() {
         return violations;
     }
@@ -3196,7 +3185,7 @@ mod tests {
 
     #[test]
     fn lane_chain_generation_violations_cover_sidechain_and_choke() {
-        // 侧链声明：格式可解析，生成期拒绝（期 4 前）。
+        // 侧链声明：格式可解析，期 4 起生成落边、不再违规。
         let sidechained = DrumStylePreset::from_json(&preset_with_lanes(
             "electronic",
             &[36, 42],
@@ -3206,11 +3195,9 @@ mod tests {
                 \"sidechain\": {\"key_keys\": [36]}}}]",
         ))
         .expect("sidechain declaration parses");
-        let violations = lane_chain_generation_violations(&sidechained);
-        assert_eq!(violations.len(), 1);
         assert!(
-            violations[0].contains("期 4"),
-            "违规须点名期次: {violations:?}"
+            lane_chain_generation_violations(&sidechained).is_empty(),
+            "期 4 起侧链声明落边生成，不再是违规"
         );
 
         // 原声 basic：帽组 {42,44,46}，预置用到 42/46。只把 42 分组 ⇒

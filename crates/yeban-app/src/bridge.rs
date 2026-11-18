@@ -2858,7 +2858,8 @@ pub fn drum_gen_target<'a>(
 ///    用户的效果优先；
 /// 4. 预置带 `lane_chains` 段时整表写入逐件链（`SetTrackLaneChains`）：
 ///    既有轨已有用户逐件链 ⇒ 不覆盖（用户链优先，与 MCP 同口径）；
-///    生成前先过逐件链生成校验（choke 拆分 / 侧链声明 ⇒ 响亮拒绝）；
+///    生成前先过逐件链生成校验（choke 拆分 ⇒ 响亮拒绝）；预置的侧链
+///    声明同步落成同轨 lane 级侧链边（期 4，与 MCP 同口径）；
 /// 5. `AddClip`（片段内容即 theory 生成的音符列）+ `AddClipPlacement`
 ///    （tick 0 起、时长 = 小节数 × [`yeban_theory::TICKS_PER_BAR`]）。
 ///
@@ -3088,6 +3089,39 @@ pub fn drum_gen_ops(
                 old_lane_chains: existing_chains,
                 new_lane_chains: lane_chains,
             });
+            // ⭐ 逐件＋侧链期 4：预置的侧链声明落成同轨 lane 级侧链边
+            // （与 MCP 生成路径同口径；同端点边已存在则跳过，不叠加）。
+            for chain in preset.lane_chains.iter() {
+                let Some(sidechain) = &chain.sidechain else {
+                    continue;
+                };
+                let (Some(&source_key), Some(&dest_key)) =
+                    (sidechain.key_keys.first(), chain.keys.first())
+                else {
+                    continue;
+                };
+                let already = project.routing_graph.edges.values().any(|edge| {
+                    edge.kind == RoutingKind::Sidechain
+                        && edge.source_node == track_id
+                        && edge.destination_node == track_id
+                        && edge.source_lane == Some(source_key)
+                        && edge.dest_lane == Some(dest_key)
+                });
+                if already {
+                    continue;
+                }
+                ops.push(Op::ConnectRouting {
+                    edge: RoutingEdge {
+                        id: EntityId::new(),
+                        source_node: track_id,
+                        destination_node: track_id,
+                        kind: RoutingKind::Sidechain,
+                        gain_db: None,
+                        source_lane: Some(source_key),
+                        dest_lane: Some(dest_key),
+                    },
+                });
+            }
         }
     }
 

@@ -514,7 +514,7 @@ use yeban_render::plugin_source::PluginTrackSource;
 use yeban_render::automation::{
     APPLIED_DEVICE_PARAM_NAMES, LaneResidual, TrackGainAutomation, TrackPanAutomation,
     centered_pan_gains, compressing_nodes_with_lanes, device_param_automations,
-    forced_insert_instances, macro_cascade_reaches, send_gain_automations,
+    forced_insert_instances, lane_key_layouts, macro_cascade_reaches, send_gain_automations,
 };
 use yeban_render::inserts::{
     ignored_strip_devices, lane_chain_has_unhandled_dsp, project_inserts_with_forced_instances,
@@ -3095,6 +3095,12 @@ pub struct RenderArtifact {
     /// 都没有被求值（"你的侧链现在什么都不做"）；`(0, 0)` 且声明 `N > 0` 条 =
     /// 全部求值。⛔ 不要把这个数读成"求和了"。
     pub sidechain_edges_declared_without_key_input: usize,
+    /// ⭐ 逐件＋侧链期 4：**lane 级**侧链边里被求值的条数（同轨
+    /// lane→lane、两端键都落组、目的组武装）。与
+    /// [`Self::sidechain_edges_declared_without_key_input`] 一起读：
+    /// 声明了 lane 边但本数 = 0 ⇒ 那些边没有被求值（跨轨/混合端点/
+    /// 键落余量/目的组未武装，逐条原因看渲染计划的解析规则）。
+    pub sidechain_lane_edges_evaluated: usize,
     /// 逐件链（per-lane）读数：工程里全部音轨共声明了多少条逐件链组。
     ///
     /// 与 [`Self::lane_chains_unapplied`] 一起读：声明数是工程事实，
@@ -3417,6 +3423,11 @@ impl RenderArtifact {
         map.insert(
             "sidechainEdgesDeclaredWithoutKeyInput".to_owned(),
             Value::from(self.sidechain_edges_declared_without_key_input),
+        );
+        // ⭐ 逐件＋侧链期 4：lane 级侧链被求值的条数（与未求值数同读）。
+        map.insert(
+            "sidechainLaneEdgesEvaluated".to_owned(),
+            Value::from(self.sidechain_lane_edges_evaluated),
         );
         // 逐件链读数（期 2）：声明数与未应用数。本期渲染不应用任何逐件链，
         // 两数恒等；期 3 逐件渲染落地后未应用数归零。
@@ -3970,6 +3981,10 @@ pub fn build(
     // 每目的边身份升序第一条合格边生效）。没有键输入路径的条数 = 声明条数 −
     // 真的接上键输入的条数（已求值边恒是声明边的子集，减法不下溢）。
     plan.attach_key_armed_nodes(&compressing);
+    // ⭐ 逐件＋侧链期 4：lane 级侧链边按逐轨布局解析（同轨 lane→lane）。
+    // 布局与分组源构造同一份投影；未求值的 lane 边计入下面的未求值数。
+    plan.attach_lane_key_routes(&lane_key_layouts(project, sample_rate));
+    let sidechain_lane_edges_evaluated = plan.lane_key_evaluated_edge_ids().len();
     let sidechain_edges_declared_without_key_input =
         sidechain_edges_in_routing_graph - plan.key_evaluated_edge_ids().len();
     // ⭐ 任务单 `#296` ＋ B2：总线的**输出级**（`render_node` 的插入链之后）——
@@ -4348,6 +4363,7 @@ pub fn build(
         sidechain_edges_summed_as_ordinary_audio,
         sidechain_edges_in_routing_graph,
         sidechain_edges_declared_without_key_input,
+        sidechain_lane_edges_evaluated,
         lane_chains_declared,
         lane_chains_unapplied,
         unsupported,
