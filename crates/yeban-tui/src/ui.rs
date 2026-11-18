@@ -19,7 +19,7 @@ use crate::keymap::{Mode, Pane};
 use crate::theme;
 
 /// 画一帧。
-pub fn draw(frame: &mut Frame, app: &mut App) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let root = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -48,7 +48,7 @@ fn pane_block(title: &str, focused: bool) -> Block<'_> {
         .title(title.to_owned())
 }
 
-fn draw_top_bar(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_top_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let reading = app.transport();
     let (bar, beat, tick) = app.position_bar_beat();
     let (glyph, glyph_color) = match reading.state {
@@ -128,9 +128,9 @@ fn truncate_to(text: &str, width: usize) -> String {
     out
 }
 
-fn draw_tracks(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let focused = app.focus == Pane::Tracks;
-    let mut items: Vec<ListItem> = Vec::with_capacity(app.track_ids.len() + 1);
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(app.track_ids.len() + 1);
     items.push(ListItem::new(Line::from(Span::styled(
         "  名称            静 独  音量",
         Style::default().fg(theme::INK2),
@@ -163,7 +163,7 @@ fn draw_tracks(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_grid(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_grid(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let focused = app.focus == Pane::Grid;
     let block = pane_block("片段", focused);
     let inner = block.inner(area);
@@ -193,9 +193,9 @@ fn draw_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     let offset = app.bar_offset.min(total.saturating_sub(1));
     let bar_ticks = app.bar_ticks().max(1);
 
-    let mut lines: Vec<Line> = Vec::with_capacity(app.track_ids.len() + 1);
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(app.track_ids.len() + 1);
     // 标尺行：小节号 + 播放头 ▼ + 光标下划线。
-    let mut ruler: Vec<Span> = Vec::new();
+    let mut ruler: Vec<Span<'_>> = Vec::new();
     for i in 0..visible {
         let bar = offset + i;
         if bar >= total {
@@ -235,7 +235,7 @@ fn draw_grid(frame: &mut Frame, area: Rect, app: &mut App) {
         } else {
             theme::BG_LANE2
         };
-        let mut spans: Vec<Span> = Vec::new();
+        let mut spans: Vec<Span<'_>> = Vec::new();
         for i in 0..visible {
             let bar = offset + i;
             if bar >= total {
@@ -274,7 +274,7 @@ fn draw_grid(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(paragraph, inner);
 }
 
-fn draw_inspector(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let focused = app.focus == Pane::Inspector;
     let block = pane_block("检查器", focused);
     let inner = block.inner(area);
@@ -371,7 +371,7 @@ fn text_bar(fraction: f32, width: usize) -> String {
     )
 }
 
-fn draw_bottom(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
