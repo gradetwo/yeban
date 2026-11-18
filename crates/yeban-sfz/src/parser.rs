@@ -54,7 +54,8 @@
 //! 把其余 region 一起丢掉。
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -423,11 +424,13 @@ pub enum Warning {
     /// 调制深度走 [`Warning::ClampedModulationDepth`]；非数值 / 非有限的
     /// 畸形取值维持现行 `InvalidFloat` / `NonFiniteFloat`（`pan` 本体）。
     ///
-    /// ⚠ `position` / `width` 在本装载器里**尚无存储与求值语义**（未建模
-    /// 参数）：本变体记录的是装载期在读取点做的**值域执法** —— 可解析的
-    /// 有限数值越界即告警（钳位值即其生效值，将来建模时在同一读取点
-    /// 落存储）；不可解析 / 非有限的写法维持旧行为（按未建模 opcode
-    /// 忽略，⛔ 不因本变体新增拒载）。
+    /// ⚠ **追加修订段（声像族建模补全片）—— 被修订的是本段旧文里
+    /// 「`position` / `width` 尚无存储与求值语义」那一支**（⛔ 旧口径
+    /// 见 git 历史）：两参数现已建模（`Region::position` /
+    /// `Region::width` ＋ 调制目标 ＋ 引擎立体声级），本变体对三者的
+    /// 口径**统一**为「装载期钳位 ＋ 告警、钳位值即落值」；不可解析 /
+    /// 非有限的写法改走 `as_f32` 的明确 `Err`（与 `pan` 一致，
+    /// 「默认不能静默」）。
     ///
     /// 去重口径与 [`Warning::ClampedModulationDepth`] 相同：同一声明经
     /// 作用域继承被多个 region 重读时，跨 region 按 (opcode, 原值,
@@ -441,6 +444,30 @@ pub enum Warning {
         value: String,
         /// 钳位后的静态值（文本形式；即值域的某一端）。
         clamped: String,
+    },
+    /// ⭐ **不认识的 opcode 名**：该名字在作用域里出现，但装载器**没有
+    /// 任何一处读它**（Wang 2026-11-18 开发规则「默认不能静默」的首个
+    /// 适用面 —— 旧行为是静默忽略）。
+    ///
+    /// * 判定走**消费登记**：归约每条 region 时，`Scopes::get` 查过的
+    ///   名字与各家族遍历认领过的名字都登记在案；作用域表里没被登记的
+    ///   名字即本变体（登记跨 region 累积，见 [`Parser::finalize_region`]
+    ///   与 [`Parser::finish`] 的扫尾）。`<curve>` / `<effect>` 段里不被
+    ///   认领的名字在插入点直接发本变体；`<control>` 段在文件尾扫尾；
+    /// * **按名去重**：同一份乐器里同一个不认识的名字只记一条，条数以
+    ///   不同名字数为界，⛔ 不逐 region 刷满告警表；
+    /// * 名字**被认得但取值畸形**不走本变体（那是明确 `Err` 或既有降级
+    ///   告警的领地）；本变体只管「根本没人读」；
+    /// * 无 `sample` 被整体丢弃的 region **不扫**（其丢弃已由
+    ///   `RegionWithoutSample` 告警，其 region 表内名字不逐名报；
+    ///   group / master / global / control 表的名字在文件尾扫尾仍会被扫到）。
+    UnknownOpcode {
+        /// 1-based 行号（首次扫到该名字的 region 段头行；`<curve>` /
+        /// `<effect>` 插入点为该段段头行；文件尾扫尾为最后一条 region
+        /// 的段头行）。
+        line: usize,
+        /// opcode 名（原文，大小写敏感）。
+        name: String,
     },
     /// 警告数达到 [`ParseLimits::max_warnings`] 后的**截断标记**。
     ///
@@ -507,6 +534,9 @@ impl core::fmt::Display for Warning {
                 f,
                 "line {line}: `{opcode}` value {value} out of range, clamped to {clamped}"
             ),
+            Self::UnknownOpcode { line, name } => {
+                write!(f, "line {line}: unknown opcode `{name}` ignored")
+            }
             Self::Truncated { kept, dropped } => write!(
                 f,
                 "warning list capped at {kept}: {dropped} warning(s) dropped"
@@ -1153,6 +1183,12 @@ struct Parser<'a> {
     /// 缺省 0 ⇒ 解析结果与未实现本入参之前逐位相同。
     external_shift: i32,
     warnings: Vec<Warning>,
+    /// ⭐ 已消费 opcode 名登记（未知 opcode 告警的依据，见
+    /// [`Warning::UnknownOpcode`]）：归约侧经 `Scopes` 写入，跨 region
+    /// 累积、解析全程不清空。
+    consumed_opcodes: RefCell<BTreeSet<String>>,
+    /// 已发过 [`Warning::UnknownOpcode`] 的名字（按名去重）。
+    noted_unknown_opcodes: BTreeSet<String>,
     warnings_truncated: bool,
 }
 
@@ -1207,6 +1243,8 @@ impl<'a> Parser<'a> {
             control_octave_offset: 0,
             external_shift: 0,
             warnings: Vec::new(),
+            consumed_opcodes: RefCell::new(BTreeSet::new()),
+            noted_unknown_opcodes: BTreeSet::new(),
             warnings_truncated: false,
         }
     }
@@ -1263,6 +1301,7 @@ impl<'a> Parser<'a> {
         if scope == Scope::Control
             && let Some(index) = crate::label::cc_label_index(name.as_ref(), line)?
         {
+            self.note_consumed_opcode(name.as_ref());
             self.control_cc_labels.insert(index, value.clone());
         }
         // 同一个 `<control>` 段里的 `set_ccN` 是**初值**声明（见 [`crate::control`]）：
@@ -1271,9 +1310,11 @@ impl<'a> Parser<'a> {
         if scope == Scope::Control {
             match crate::control::set_cc_declaration(name.as_ref(), value.as_ref(), line)? {
                 crate::control::SetCcOutcome::Value { cc, initial } => {
+                    self.note_consumed_opcode(name.as_ref());
                     self.control_cc_defaults.insert(cc, initial);
                 }
                 crate::control::SetCcOutcome::UnrepresentableValue => {
+                    self.note_consumed_opcode(name.as_ref());
                     self.warn(Warning::MalformedSetCc {
                         line,
                         opcode: name.to_string(),
@@ -1287,9 +1328,11 @@ impl<'a> Parser<'a> {
             // 的 `UnrepresentableValue` 口径，⛔ 不中断整份乐器解析）。
             match crate::control::set_hdcc_declaration(name.as_ref(), value.as_ref(), line)? {
                 crate::control::SetHdccOutcome::Value { cc, initial } => {
+                    self.note_consumed_opcode(name.as_ref());
                     self.control_cc_hd_defaults.insert(cc, initial);
                 }
                 crate::control::SetHdccOutcome::UnrepresentableValue => {
+                    self.note_consumed_opcode(name.as_ref());
                     self.warn(Warning::MalformedSetCc {
                         line,
                         opcode: name.to_string(),
@@ -1307,10 +1350,12 @@ impl<'a> Parser<'a> {
             // 而移位本身只作用于 region 的音高字段，⛔ 不回头改写宏定义。
             match name.as_ref() {
                 "note_offset" => {
+                    self.note_consumed_opcode("note_offset");
                     self.control_note_offset = OpcodeValue::new("note_offset", value.clone(), line)
                         .as_int(-127, 127)? as i32;
                 }
                 "octave_offset" => {
+                    self.note_consumed_opcode("octave_offset");
                     self.control_octave_offset =
                         OpcodeValue::new("octave_offset", value.clone(), line).as_int(-10, 10)?
                             as i32;
@@ -1372,7 +1417,14 @@ impl<'a> Parser<'a> {
             .strip_prefix('v')
             .filter(|digits| digits.len() == 3 && digits.bytes().all(|byte| byte.is_ascii_digit()))
         else {
-            // 不是 `vNNN`（例如 `v5` / `v0000` / 任何未知 opcode）：与全文件口径一致地忽略。
+            // 不是 `vNNN`（例如 `v5` / `v0000` / 任何未知 opcode）：记一条
+            // 按名去重的未知 opcode 告警（「默认不能静默」），⛔ 不再静默吞。
+            if self.noted_unknown_opcodes.insert(text.to_string()) {
+                self.warn(Warning::UnknownOpcode {
+                    line,
+                    name: text.to_string(),
+                });
+            }
             return Ok(());
         };
         let at = digits
@@ -1438,7 +1490,14 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let Some(index) = send_index(text) else {
-                    // 非规范 opcode（例如 Rapture 的厂商私有 opcode）：与全文件口径一致地忽略。
+                    // 非规范 opcode（例如 Rapture 的厂商私有 opcode）：记一条
+                    // 按名去重的未知 opcode 告警（「默认不能静默」）。
+                    if self.noted_unknown_opcodes.insert(text.to_string()) {
+                        self.warn(Warning::UnknownOpcode {
+                            line,
+                            name: text.to_string(),
+                        });
+                    }
                     return Ok(());
                 };
                 let parsed = OpcodeValue::new(text, value, line).as_f32()?;
@@ -1533,12 +1592,55 @@ impl<'a> Parser<'a> {
     }
 
     /// 结束当前 `<region>`：归约成 [`Region`] 并压栈。
+    /// 记下「这个名字本装载器认得」（消费登记，见
+    /// [`Warning::UnknownOpcode`]）；解析器插入点（`<control>` 特殊名）
+    /// 与归约侧的 `Scopes` 共用同一张登记表。
+    fn note_consumed_opcode(&self, name: &str) {
+        crate::instrument::note_consumed_name(&self.consumed_opcodes, name);
+    }
+
+    /// ⭐ 扫作用域表里**没人读过**的 opcode 名，逐名发
+    /// [`Warning::UnknownOpcode`]（按名去重）。`include_control` 只在
+    /// 文件尾扫尾时为真（`<control>` 是文件级作用域，逐 region 扫没有
+    /// 意义）；`<midi>` 段按名逐字保存、本就不经消费登记，⛔ 不扫
+    /// （那是「按设计原样暴露」，不是丢弃）。
+    fn scan_unknown_opcodes(&mut self, line: usize, include_control: bool) {
+        let unknown: Vec<String> = {
+            let consumed = self.consumed_opcodes.borrow();
+            let mut maps: Vec<&OpcodeMap<'a>> =
+                vec![&self.region, &self.group, &self.master, &self.global];
+            if include_control {
+                maps.push(&self.control);
+            }
+            let mut found: Vec<String> = Vec::new();
+            for map in maps {
+                for name in map.keys() {
+                    let name: &str = name.as_ref();
+                    if !consumed.contains(name)
+                        && !self.noted_unknown_opcodes.contains(name)
+                        && !found.iter().any(|n| n == name)
+                    {
+                        found.push(name.to_string());
+                    }
+                }
+            }
+            found
+        };
+        for name in unknown {
+            self.noted_unknown_opcodes.insert(name.clone());
+            self.warn(Warning::UnknownOpcode { line, name });
+        }
+    }
+
     fn finalize_region(&mut self) -> Result<(), SfzError> {
         if self.scope != Scope::Region {
             return Ok(());
         }
         let line = self.region_line;
         let default_path = self.control.get("default_path").cloned();
+        if default_path.is_some() {
+            self.note_consumed_opcode("default_path");
+        }
         // `<control>` 的移位声明（插入期已校验）：合成半音移位，随 `default_path`
         // 同一条位置语义通道传给归约 —— 在本 region 归约时有效的那一份。
         // ⭐ 文件自带 (a) 与解析入参的外部移位在此相加成施加用的总移位；
@@ -1557,6 +1659,7 @@ impl<'a> Parser<'a> {
             &self.group,
             &self.master,
             &self.global,
+            &self.consumed_opcodes,
             default_path,
             RegionShift {
                 applied: declared_shift + self.external_shift,
@@ -1576,9 +1679,20 @@ impl<'a> Parser<'a> {
             }
             self.warn(warning);
         }
+        let built_region = built.is_some();
         match built {
             Some(region) => self.regions.push(region),
             None => self.warn(Warning::RegionWithoutSample { line }),
+        }
+        // ⭐ 未知 opcode 扫尾：本条 region 归约后，四个作用域表里还没被
+        // 消费登记的名字就是没人读的（持久作用域里的名字在后续 region
+        // 仍有被登记的机会，但告警按名去重、只记首次扫到）。必须在
+        // 清空 region 表之前扫。⛔ 只对**建成**的 region 扫：无 `sample`
+        // 的段整体丢弃（已有 `RegionWithoutSample` 响亮告警），其表内
+        // 名字根本没进入归约，逐名再报会把「认得但没轮到读」的名字
+        // （如 `key`）误报成未知；持久作用域的名字在文件尾扫尾仍会被扫到。
+        if built_region {
+            self.scan_unknown_opcodes(line, false);
         }
         self.region.clear();
         Ok(())
@@ -1862,7 +1976,14 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Instrument<'a> {
+    fn finish(mut self) -> Instrument<'a> {
+        // ⭐ 文件尾扫尾：从未被任何 region 归约扫到的残表（`<control>`
+        // 全表、没有 region 跟随的 `<group>` / `<master>` / `<global>`
+        // 残表）在这里补扫未知 opcode（行号取最后一条 region 的段头
+        // 行，与归约期扫尾同一口径的近似）。必须在任何字段被部分移动
+        // 之前跑。
+        let tail_line = self.region_line;
+        self.scan_unknown_opcodes(tail_line, true);
         // ⭐ `set_ccN`（SFZ v2 精确整数）赢过 `set_hdccN` / `set_realccN`（ARIA 换算值）：
         // `or_insert` 只填整数表没声明过的 CC —— 优先级与文件里的书写顺序**无关**。
         let mut cc_defaults = self.control_cc_defaults;
@@ -3374,7 +3495,7 @@ mod tests {
     ///
     /// R48：这张表**必须**与 `warning_arm` 的臂编号一一对应
     /// （由 `the_warning_golden_table_covers_every_arm_number` 守住）。
-    fn warning_display_cases() -> [(Warning, &'static str); 10] {
+    fn warning_display_cases() -> [(Warning, &'static str); 11] {
         [
             (
                 Warning::IgnoredHeader {
@@ -3442,6 +3563,13 @@ mod tests {
                 },
                 "line 15: `pan` value 200 out of range, clamped to 100",
             ),
+            (
+                Warning::UnknownOpcode {
+                    line: 16,
+                    name: "frobnicate".to_string(),
+                },
+                "line 16: unknown opcode `frobnicate` ignored",
+            ),
         ]
     }
 
@@ -3450,7 +3578,7 @@ mod tests {
         // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
         // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
         let cases = warning_display_cases();
-        assert_eq!(cases.len(), 10, "one case per variant");
+        assert_eq!(cases.len(), 11, "one case per variant");
         for (warning, expected) in cases {
             assert_eq!(format!("{warning}"), expected, "Display for {warning:?}");
         }
@@ -3474,6 +3602,7 @@ mod tests {
             Warning::Truncated { .. } => 7,
             Warning::ClampedModulationDepth { .. } => 8,
             Warning::ClampedStaticValue { .. } => 9,
+            Warning::UnknownOpcode { .. } => 10,
         }
     }
 

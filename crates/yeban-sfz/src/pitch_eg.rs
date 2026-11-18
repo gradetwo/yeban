@@ -285,6 +285,9 @@ fn scope_value<'m, 'a>(
     scopes: &'m crate::instrument::Scopes<'_, 'a>,
     name: &str,
 ) -> Option<&'m std::borrow::Cow<'a, str>> {
+    // 消费登记与 `Scopes::get` 同口径（未知 opcode 告警的依据）：
+    // 本模块绕开 `get` 是因为名字是动态拼的，但「认得」这件事必须登记。
+    scopes.note_consumed(name);
     [scopes.region, scopes.group, scopes.master, scopes.global]
         .into_iter()
         .find_map(|map| map.get(name))
